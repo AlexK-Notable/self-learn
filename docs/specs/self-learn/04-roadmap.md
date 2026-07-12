@@ -56,7 +56,9 @@ with the minimum surface, per the pre-mortem's lesson.
 
 Scope: detached pre-analysis worker (any host — **fully append-only**:
 analysis proposals + merge proposals as new files, never record writes;
-coalesced, flock'd per machine, restricted `--allowedTools`) · SessionStart
+coalesced, flock'd per machine, restricted `--allowedTools`; analyst prompt
+carries the **rejected-proposal digest** as negative exemplars — never
+re-propose a declined lesson class, `01` §3.3) · SessionStart
 pending-count line (manual `settings.json`
 registration — a documented install step, not an assumed one) ·
 `notify-send` thresholds · staleness alarm (computed by the SessionStart
@@ -87,8 +89,10 @@ entries appear in triage with origin preserved.
 ## M4 — Gated futures
 
 Whatever `03-decisions.md` gates open: standalone UI (G-3/O-1), statistical
-layer (G-1), portability extraction (G-2), forensic drain (G-4), znote
-backend (G-5). Each arrives with its own blind review (P10).
+layer (G-1 — evaluate SkillOpt-Sleep before building), portability
+extraction (G-2), forensic drain (G-4), znote backend (G-5), staleness
+revalidation (G-6). Each arrives with its own blind review (P10). The
+team-scale staging that would fire most of these is `06-horizon.md`.
 
 ## Success metrics (honest at n=1 — counted, not modeled)
 

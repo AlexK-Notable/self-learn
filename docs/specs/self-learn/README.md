@@ -25,6 +25,8 @@ human routes it.
 | `03-decisions.md` | The decision register: settled / open / v2-gated (with explicit activation triggers) |
 | `04-roadmap.md` | Build milestones, acceptance fixture, success metrics |
 | `05-evidence.md` | The empirical facts this design is built on, with sources |
+| `06-horizon.md` | The team-scale future (~5–6 users, shared artifact repo): invariants, the six team problems, staged path |
+| `research/` | External evidence memos (SOTA surveys etc.) — shareable with blind reviewers, unlike `reviews/` |
 
 ## Ground rules for changing this corpus
 
@@ -64,3 +66,16 @@ human routes it.
   extended). Register: S-2/S-5/S-6/S-7 re-amended, S-8/S-12 settled.
   Details: `reviews/2026-07-12-blind-adjudication.md` (also withheld from
   future blind reviewers).
+- **2026-07-12 — SOTA survey folded + horizon set.** Five-stream external
+  research (`research/2026-07-12-sota-survey.md`) found independent
+  convergence on the corpus's load-bearing choices (curation gates, compiled
+  canon over retrieval, files over infra, bounded edits, proposals-never-
+  mutate) and no contradiction of any settled decision. New evidence
+  E-18–E-21. Short-term adoptions folded: **rejected-proposal digest** for
+  the M2 worker (SkillOpt's rejected-edit-buffer pattern), **trigger-first
+  phrasing** as a compiler rule (`02` §4), **G-6** staleness revalidation
+  gated (Copilot's citation-revalidation pattern), SkillOpt-Sleep named as
+  G-1's evaluate-first reference. **Planning horizon reframed to team scale**
+  (~5–6 users, shared artifact repo — user directive): new `06-horizon.md`
+  (invariants, scope tiers, PR-based routing authority, provenance/trust,
+  staged path). v1 scope and all gate triggers unchanged.

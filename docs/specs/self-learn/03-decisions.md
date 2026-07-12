@@ -38,11 +38,18 @@ observable trigger fires.*
 
 | # | Capability | Gen-1 spec to reuse | Activation trigger |
 |---|---|---|---|
-| G-1 | Statistical layer: corroboration counts, reputation/outcome signals, decay clocks, quarantine machine | decisions doc §0c/§C8/§E2.2 (archived) | A second regular human user, **or** a measured recurrence (same lesson captured ≥2× after routing), **or** >50 active routed lessons in one host |
+| G-1 | Statistical layer: corroboration counts, reputation/outcome signals, decay clocks, quarantine machine | decisions doc §0c/§C8/§E2.2 (archived); **evaluate microsoft/SkillOpt-Sleep first** — transcript-harvest → replay-gated skill edits, Claude Code backend, shipping since 2026-07 (SOTA survey) — before building anything bespoke | A second regular human user, **or** a measured recurrence (same lesson captured ≥2× after routing), **or** >50 active routed lessons in one host |
 | G-2 | Portability: manifest + capability probe + adapter tiers | archived A1/A3 + example TOMLs (the two-repo proof) | A second host repo with a real user wanting self-learn |
 | G-3 | Standalone UI (web/TUI) | — (O-1 graduates here if its gate fires) | O-1's condition |
 | G-4 | Forensic analysis layer (flag-and-store scorer → LLM drain) | archived §C2 | G-1 active **and** transcript volume worth mining |
 | G-5 | znote store backend (vector dedup, DB queries) | archived B2 | Lesson volume where lexical clustering visibly misses merges |
+| G-6 | Staleness revalidation: compiler/`--selftest` checks each routed lesson's referenced target (file, path, device, behavior) still exists, flagging stale canon for supersession | Copilot Memory's citation-revalidation + expiry pattern (E-21) — gate-the-read as a *complement* to our gate-the-write, not a replacement | First routed lesson observed stale in live canon, **or** a shared-repo deployment (`06-horizon.md` Stage 2 — team velocity makes canon rot faster than one person notices) |
+
+*Horizon note (2026-07-12):* the planning horizon is **team scale** — a
+shared artifact repo with ~5–6 regular users (`06-horizon.md`). That makes
+G-1 and G-2 *destinations with unfired triggers*, not speculative options.
+The triggers themselves are unchanged: the horizon informs design headroom,
+it does not pre-fire gates.
 
 ## The register's own rule
 

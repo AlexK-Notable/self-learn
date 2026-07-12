@@ -176,7 +176,11 @@ Compilers own exactly the region between their markers, and nothing else:
 Rules: entries are one tight line each, carrying the record id for
 provenance; the compiler regenerates the whole section idempotently from
 `resolved/` records routed to it; text *outside* the markers is never
-touched.
+touched. Entries are **trigger-first** — "**When ⟨trigger⟩:** ⟨instruction⟩",
+never a bare imperative: the record's `## Trigger` section exists precisely
+to be compiled this way, and a rule that names its firing condition is one
+the model can recognize *in the moment* (Devin's trigger-description
+precedent, E-20; free discipline, enforced by the compiler).
 
 **Overflow rule (mechanical, not aspirational):** a managed section caps at
 **10 entries or ~150 words** (per-target override allowed). At the cap the

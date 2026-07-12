@@ -98,6 +98,59 @@ architecture red-team, pre-mortem — + 1× Sonnet 5 mechanics fact-check).*
   and per-turn `attributionSkill` are free, reliable structural signals.
   (Banked from gen 1's transcript study — constrains any future appender.)
 
+## From the 2026-07-12 SOTA survey (external; five research streams — full provenance: `research/2026-07-12-sota-survey.md`)
+
+- **E-18 · Automatic consolidation is the failure point; curation gates
+  decide the sign.** Zhang et al. 2026 (arXiv:2605.12978): continuously
+  LLM-consolidated memories degrade **below the no-memory baseline** — even
+  consolidating from correct solutions — while raw episodic retention
+  matched or doubled forced consolidation; the summarization step itself is
+  the lossy operation. Cui et al. 2026 (arXiv:2606.17591): the *same*
+  accumulated experience lands below zero-shot or dramatically above it
+  depending solely on whether a curation loop governs rule retention. OEP
+  (arXiv:2605.18930): >50% poisoning success planting wrong lessons, because
+  agents "over-trust self-generated reflections"; Misevolution
+  (arXiv:2509.26354): safety-alignment decay under unsupervised
+  self-evolution. P1 (nothing influences pre-routing) and
+  merges-as-proposals are externally load-bearing, not house style.
+- **E-19 · Compiled rules beat memory retrieval for standing corrections.**
+  TRACE (arXiv:2606.13174, June 2026) — the one paper framing self-learn's
+  exact setting (an individual's corrections to a coding agent that don't
+  persist) — compiles corrections into enforceable rules: residual
+  preference violations 2.0–60.5% vs a Mem0 retrieval baseline leaving
+  **57.5%** still violated. Direct external support for P2.
+- **E-20 · The industry converged on the two-tier, gated, file-based
+  pattern.** Every shipped coding agent separates curated static canon
+  (CLAUDE.md/AGENTS.md/Rules) from disposable auto-memory, and every
+  vendor's docs steer users to the static layer for durable knowledge.
+  The approval-gated products (Devin Knowledge, Cursor Memories, Amp) gate
+  at the **moment of capture** — suggest → edit/dismiss → save — not via a
+  standing queue. Files beat vector infrastructure at personal scale by the
+  platforms' own data (Letta: grep-over-files 74.0% vs Mem0's 68.5% on
+  LoCoMo; full-context ~73%). Bounded incremental edits are unanimous (ACE's
+  "context collapse", SkillOpt's edit-budget-as-textual-learning-rate,
+  our marker-bounded sections). Anthropic's Dreams API consolidates into a
+  **separate output store, input never modified**, explicitly for human
+  keep-or-discard — independent arrival at proposals-never-mutate-records.
+  Also: SkillOpt's **rejected-edit buffer** (rejections fed back as negative
+  exemplars so the optimizer stops repeating declined directions) is the one
+  SOTA mechanism portable to our regime today.
+- **E-21 · Team-scale precedents and hazards** *(banked for `06-horizon.md`)*.
+  Devin Knowledge ships the scope model for shared knowledge: per-user /
+  organization / enterprise tiers + repo-pinning. Copilot Memory substitutes
+  machine staleness-detection for human review: every stored fact carries a
+  code citation revalidated against the current branch before reuse, plus a
+  hard 28-day expiry (gate-the-*read*, vs Devin/Cursor's gate-the-*write*).
+  Hazards at shared scale: 26.1% of community-contributed skills contained
+  vulnerabilities (arXiv:2602.12430 — provenance/trust tiers are mandatory
+  once canon is shared); "Skills in the Wild" (arXiv:2604.04323): retrieval
+  among many skills is weak and *composing* skills degrades performance —
+  the per-section cap and narrowest-surface bias get more load-bearing as
+  the catalog grows, not less. No study anywhere evaluates the low-volume
+  single-user regime; the smallest "sample-efficient" result is ~152
+  examples — v1's acceptance fixture is the only evidence about our regime
+  that will exist.
+
 ## From the gen-1 review trail (process facts)
 
 - **E-4 · Sequential lock-in is real.** Gen 1's C-group volume analysis

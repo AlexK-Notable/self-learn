@@ -174,6 +174,13 @@ next review collapses). This is how *"Claude has tried X multiple times…"*
 surfaces without any cross-session statistical infrastructure: the pending
 bucket **is** the corroboration corpus, examined at analysis time.
 
+From M2 the analyst prompt also carries a **rejected-proposal digest** — the
+recent rejections in `resolved/` with their resolving commit messages — as
+negative exemplars, so the worker stops proposing classes of lesson the
+human has already declined (SkillOpt's rejected-edit-buffer pattern, E-20).
+A queue that re-surfaces rejected material is the fastest way to re-run E-3;
+the digest costs nothing because rejection provenance already lives in git.
+
 ### 3.4 Review surface
 
 - **`/self-learn:review`** (Claude Code command/skill — v1's UI): loads a
