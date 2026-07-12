@@ -28,7 +28,20 @@ architecture red-team, pre-mortem — + 1× Sonnet 5 mechanics fact-check).*
 - **E-8 · Per-session repo writes storm autosync.** The inotify watcher
   commits+pushes on any tracked-file change; gen 1's per-session counter
   bumps would have produced a commit per session start and raced the
-  detached workers. Mutable state belongs in `~/.cache`.
+  detached workers. Mutable state belongs in `~/.cache`. The same watcher
+  also *publishes*: any new tracked file reaches the remote within the
+  debounce window — a captured record is pushed seconds after `teach`,
+  before any human review. (This is why captures are secret-scanned and why
+  review sessions pause the watcher via sentinel.)
+- **E-17 · `~/.claude/CLAUDE.md` is chezmoi-managed.** Verified 2026-07-11:
+  `chezmoi managed` lists `.claude/CLAUDE.md`. Any writer that edits the
+  target file directly creates drift that the next `chezmoi apply` silently
+  reverts — a compiler targeting user scope must write through chezmoi
+  (`chezmoi re-add` after the edit) or its managed section is clobbered.
+  And `re-add` updates only the *local* chezmoi source working tree:
+  cross-machine propagation additionally requires committing+pushing the
+  dotfiles repo — the user-scope compiler owns both steps (blind re-review
+  2026-07-12).
 
 ## From Claude Code's documented mechanics (fact-checked 2026-07-11)
 
@@ -61,6 +74,15 @@ architecture red-team, pre-mortem — + 1× Sonnet 5 mechanics fact-check).*
 - **E-14 · Skill activation has no unified hook.** PreToolUse-on-Skill covers
   model invocation; user-typed `/name` bypasses it (UserPromptExpansion
   fires instead). Another reason delivery rides file content, not hooks.
+- **E-16 · AskUserQuestion is a 2–4-option surface.** Each question takes at
+  most **four** authored options (a free-text "Other" is always auto-added,
+  never authored); options support a markdown `preview` (fit for rendering
+  diffs) and questions support `multiSelect` (fit for bulk operations) —
+  but the two **don't compose**: previews render only on single-select
+  questions, so a bulk card must be self-describing.
+  Verified 2026-07-11 against the live tool schema. A five-action card
+  (Apply/Edit/Discuss/Reject/Defer) is unimplementable as one question —
+  the same class of mechanics error as E-12/E-14.
 
 ## From the agentic-engineering evidence base (adversarially verified corpus)
 

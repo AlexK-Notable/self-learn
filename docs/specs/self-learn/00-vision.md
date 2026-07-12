@@ -54,9 +54,10 @@ Two distinctions from gen 1 survive intact and matter everywhere:
 > When enough is pending (or something has waited too long), you get a quiet
 > nudge — a session-start line, a desktop notification. You open
 > `/self-learn:review`. Each learning arrives as a card: the lesson, the
-> proposal, the diff. You tap **Apply**, or **Edit**, or **Discuss** (the
-> agent that analyzed it knows skills, hooks, and this repo's conventions),
-> or **Reject**, or **Defer**. Fifteen items take a few minutes. The session
+> proposal, the diff. You tap **Apply**, or **Discuss** (the agent that
+> analyzed it knows skills, hooks, and this repo's conventions — and editing
+> the lesson or its diff happens here), or **Reject**, or **Defer**. A batch
+> of ten to fifteen items takes a few minutes. The session
 > ends with real commits: SKILL.md sections updated, a CLAUDE.md line added,
 > maybe a new hook scaffolded for you to approve.
 >

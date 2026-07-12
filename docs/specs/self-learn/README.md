@@ -35,3 +35,32 @@ human routes it.
    receive the docs and a mandate, never the expected conclusion.
 3. No code until the user ratifies the corpus; build happens in this worktree
    per the repo's worktree → test → merge convention.
+
+## Revision log
+
+- **2026-07-11 — refinement pass (draft, unratified).** Spec-bug fixes
+  (evidence mutability contradiction, AskUserQuestion option limit, defer
+  semantics, diff-as-preview ambiguity, `routed/`→`resolved/`),
+  environment-verified gaps (chezmoi-managed `~/.claude/CLAUDE.md`, autosync
+  pre-review publication + review-race, machine-local flock), and
+  enhancements (in-session capture extraction, model-prompted offers O-6,
+  backlog already-canon flagging, bounded review batches, per-lesson
+  commits, managed-section overflow cap, ha-note unification O-7). New
+  evidence: E-16, E-17. **S-8/S-12 reopened** (freeze-at-routing) pending
+  blind review per ground rule 2. Findings→edits map:
+  `reviews/2026-07-11-refinement-review.md` — for a *blind* re-review, give
+  the reviewer the corpus without that memo.
+- **2026-07-12 — blind adjudication + concurrency red-team (folded in).**
+  Two blind reviewers (memo withheld). **S-8/S-12 SETTLED** —
+  freeze-at-routing ADOPTED, with the secret-scan-on-every-write rider.
+  Concurrency findings folded: review **self-pushes** (the sync's clean-tree
+  branch never pushes); correction = **supersede + recompile**, not
+  per-lesson `git revert` (unsound against regenerating sections);
+  **merges-as-proposals** — the worker is now fully append-only and the
+  designated-host/claim-marker machinery is deleted; sentinel **heartbeated**
+  (TTL means dead, not long); `superseded_by: canon` formally defined with a
+  `graduate` verb; routed-and-corrected metric excludes canon graduations;
+  chezmoi user-scope writes must also commit+push the dotfiles repo (E-17
+  extended). Register: S-2/S-5/S-6/S-7 re-amended, S-8/S-12 settled.
+  Details: `reviews/2026-07-12-blind-adjudication.md` (also withheld from
+  future blind reviewers).
