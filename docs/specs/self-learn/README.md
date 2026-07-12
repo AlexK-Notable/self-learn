@@ -97,3 +97,10 @@ human routes it.
   destination, gated on M2). **E-2 demoted to casual-solo floor** — the
   sizing environment is heavy daily work use (user directive; E-2 caveat,
   06-horizon §1).
+- **2026-07-12 — ratification calls, first batch (user).** **O-5 settled as
+  S-13**: auto-memory pruning is a post-decision, post-processing sweep —
+  never in-flight, never inline with adjudication. **O-6 amended**: the
+  offer gate is quality, not count — gen-1's ≤2-interruptions budget
+  superseded as artificial; serious corrections are never rationed. **O-7
+  parked**: ha-note stays independent until the library matures — focus is
+  the standalone tool, not claude-skills internals.

@@ -101,10 +101,13 @@ znote-compatible for a future backend (v2 gate G-5).
   the platform already captures project-scoped lessons discretionarily
   (E-7); we drain it rather than duplicate it. Auto-memory is machine-local,
   so importing into the in-repo bucket is also what makes those lessons
-  multi-machine. On routing — or rejection — the compiler may prune the
-  corresponding memory entry with confirmation (keeping MEMORY.md lean is
-  part of the value; a rejected entry left behind eats the E-7 cap forever,
-  O-5). Imports **dedupe by `evidence.origin` against all records in all
+  multi-machine. Pruning the corresponding memory entry is a
+  **post-processing sweep (S-13)**: it runs only over records that have
+  reached a terminal status (routed or rejected) — never while a record is
+  in flight, never inline with adjudication — batched at end of review or
+  on the next import run, with visible confirmation (keeping MEMORY.md lean
+  is part of the value; a rejected entry left behind eats the E-7 cap
+  forever). Imports **dedupe by `evidence.origin` against all records in all
   statuses** — a rejected entry must not resurrect on the next run, and
   because the dedupe ledger *is* the records, it syncs across machines for
   free. v1 drains this repo's own project memory; sweeping other projects'
@@ -128,7 +131,11 @@ znote-compatible for a future backend (v2 gate G-5).
   skill is active, *offer* `self-learn teach`"). Still explicit,
   human-confirmed capture — S-3's rationale intact — and the only automatic
   supply the **skill** scope would have (auto-memory feeds only the
-  project/user scopes). Revocable in one line if it over-offers.
+  project/user scopes). The filter is **significance, not count**: several
+  serious corrections in one session all get offers — no per-session cap
+  (gen-1's ≤2 budget is superseded as artificial; user 2026-07-12). The
+  guard against low-quality offers is the filter words themselves,
+  revocable in one line if they over-offer.
 - **[v1.1, optional] SessionEnd appender** — a *precision*-tuned structural
   scan (error→fix pairs, `interrupted`, explicit teaching phrases with
   co-occurrence gating; E-10) that appends candidate records. Ships only
