@@ -97,6 +97,19 @@ human routes it.
   destination, gated on M2). **E-2 demoted to casual-solo floor** — the
   sizing environment is heavy daily work use (user directive; E-2 caveat,
   06-horizon §1).
+- **2026-07-12 — acceptance fixtures hardened (independent review, folded).**
+  §0 rewritten per `reviews/2026-07-12-fixture-review.md`: the sourcing
+  rule was self-defeating (existing-canon lessons already pass at
+  baseline); **A reframed as the hook fixture** (deterministic enforcement
+  claim — the `.storage` rule already lives in the loaded SKILL.md body,
+  so the behavioral A/B had no delta arm), evaluated at **M3 exit**;
+  **B sharpened to the silent-substitution rule** (Edit tool self-verifies;
+  the failure class is `sed -i`-style zero-match no-ops) with the
+  chezmoi-apply persistence check; **C pinned to the `data.host`-reload
+  references-only lesson** via plan-elicitation trials. Qualification gate
+  added (absence proof · demonstrated baseline ≥2/3 failures · written
+  binary predicate), trial protocol (outside-repo cwd, attribution set,
+  3/3 pass bar), one-fixture-per-surface stated as a constraint.
 - **2026-07-12 — ratification calls, first batch (user).** **O-5 settled as
   S-13**: auto-memory pruning is a post-decision, post-processing sweep —
   never in-flight, never inline with adjudication. **O-6 amended**: the

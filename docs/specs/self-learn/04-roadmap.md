@@ -5,20 +5,87 @@ test-first, merge to master when green (repo convention).*
 
 ## 0. Pre-build acceptance fixture (defines "worth it" before anything exists)
 
-Pick **three known, real failure modes** from the existing canon — candidates:
-the `.storage`-while-running edit (home-assistant), the anchored-edit
-verification rule, one hypr-doctor post-update behavior. For each, write
-down: the trigger situation, today's failure shape, and the observable
-success ("Claude stops the container first without being told").
+*(Rewritten 2026-07-12 after the independent fixture review —
+`reviews/2026-07-12-fixture-review.md`. The original wording carried a
+class error: "pick from the existing canon" selects for lessons whose
+baseline already passes, because this user hand-folds lessons into canon
+effectively — the very fact `00-vision.md` opens with. Fixtures come from
+the corpus **excluding any surface loaded during the trial**.)*
 
-These three are the corpus's definition of success: after M1+M2, routing
-them through self-learn must produce canon/hook changes that **visibly change
-behavior in a live session** (manual A/B: fresh session, provoke the trigger,
-observe). Each SKILL.md-routed fixture gets **≥3 fresh-session provocations**
-— one trial of a stochastic system is an anecdote, not a result; the
-hook-routed fixture is deterministic and needs one. If routed canon doesn't
-move behavior on hand-picked best cases, no amount of pipeline
-sophistication was going to matter — stop and rethink.
+Three fixtures, **one per delivery surface** — the mapping is a constraint,
+not a coincidence (a set that collapses onto one surface proves little).
+`references/` append is deliberately left unproven: its value claim is
+progressive disclosure, which no single-session A/B can score.
+
+**A — hook surface: the `.storage`-while-running guard.** The claim under
+test is **deterministic enforcement of an already-probabilistically-followed
+rule** — not new model behavior: the rule already lives in home-assistant's
+activation-loaded SKILL.md body, so a behavioral A/B has no delta arm.
+Predicate: before routing, an Edit/Write targeting a `.storage/*.json` path
+in a sandbox tree passes unguarded; after routing, the compiled PreToolUse
+guard denies it. One mechanical trial each side; no live HA involved (the
+guard's primary predicate is the path pattern — locally testable).
+Deliberate side effect, stated so nobody misreads it: A's teach record
+duplicates existing canon, so it also exercises the analyst's
+**already-canon flagging** — a feature of the fixture, not a failure.
+**Evaluated at M3 exit**, where the hook compiler lives — A essentially
+*is* M3's exit criterion; the M1+M2 checkpoint covers B and C only.
+
+**B — user-scope CLAUDE.md surface: the silent-substitution rule.** The
+lesson, sharpened (the built-in Edit tool self-verifies — the failure class
+is scripted edits that exit 0 on zero matches): *"Before any in-place
+scripted text substitution whose failure is silent (`sed -i`, `perl -pi`,
+awk rewrite, ad-hoc script), first print the anchor's match count against
+the exact target files; after the edit, verify the replacement landed. A
+zero-match substitution is a failure to report, never a success."*
+Provocation harness: a canned scratch repo whose contents subtly deviate
+from the task's phrasing (e.g. "replace the `timeout = 30` setting in these
+12 configs" where four spell it `timeout=30`), task phrased as a bulk edit.
+Predicate: the transcript shows a match-count check against the target
+files before the first substitution command, and the zero-match files are
+reported, never claimed done. This is also the fixture that proves the
+**E-17 chezmoi coupling**: after routing, run `chezmoi apply` and verify
+the managed section survives.
+
+**C — SKILL.md surface: a references-only lesson promoted into the loaded
+body.** Pinned: **"a config-entry reload does NOT re-read `data.host` — an
+IP change needs the stop→edit→start surgery"** (home-assistant; lives only
+in `references/GOTCHAS.md`, absent from the loaded SKILL.md body — the
+promotion *is* the mechanism self-learn claims to provide). Trials run in
+**plan-elicitation mode** (sanctioned for fixtures whose real execution
+touches live infra): provoke with a changed-IP scenario plus "state your
+exact plan before touching anything," and score the stated plan. Predicate:
+the plan says stop → edit → start (the config surgery), not "reload the
+integration." Backup if C's baseline unexpectedly passes: the
+registry-write-batching GOTCHAS entry, same shape.
+
+**Qualification gate — a candidate is not a fixture until it passes this:**
+
+1. **Absence proof**: the instruction is absent from every surface loaded
+   during the trial (grep the SKILL.md body, both CLAUDE.md files, and
+   hook outputs) — the class error that made the original fixture A
+   unfalsifiable as specified.
+2. **Baseline demonstrated, not assumed**: ≥3 pre-routing fresh-session
+   provocations with **≥2 failures** for the stochastic fixtures (B, C);
+   one mechanical pre-routing trial for A (the unguarded call passes). A
+   fixture whose baseline doesn't fail cannot show a change.
+3. **A written binary predicate**, fixed before routing — post-routing
+   scoring is transcript inspection, never judgment.
+
+**Trial protocol (all fixtures):** fresh session, cwd **outside this repo**
+(its CLAUDE.md names and describes the skills under test), no priming — a
+provocation that mentions the lesson tests reading comprehension, not
+learning. Per trial, record the attribution set: `attributionSkill` (did
+the skill activate — free and reliable, E-10), SessionStart hook output
+(the hypr-doctor drift line varies day to day), and cwd — so a failed
+trial names its broken link: capture, compilation, loading/activation, or
+compliance. **Pass bar: 3/3 post-routing provocations for B and C** (these
+are hand-picked best cases; anything less gets each failure attributed
+before the fixture is called passed). One trial of a stochastic system is
+an anecdote, not a result.
+
+If routed canon doesn't move behavior on hand-picked best cases, no amount
+of pipeline sophistication was going to matter — stop and rethink.
 
 ## M1 — The core loop (teach → triage → canon)
 
@@ -91,8 +158,10 @@ unification) against a month of observed supply. (`/teach` moved to M1 —
 it's the primary capture UX, not an optional wrapper; O-4.)
 
 **Exit criteria:** one real anti-pattern lesson routed end-to-end into a
-working PreToolUse hook through the explicit-approval flow; auto-memory
-entries appear in triage with origin preserved.
+working PreToolUse hook through the explicit-approval flow — **this is
+acceptance fixture A (§0), evaluated here** (the hook compiler ships in
+M3, so §0's staging puts A's trial at this exit, not the M1+M2
+checkpoint); auto-memory entries appear in triage with origin preserved.
 
 ## M4 — Gated futures
 
@@ -116,7 +185,9 @@ team-scale staging that would fire most of these is `06-horizon.md`.
   rate — blind adjudication 2026-07-12). Per-lesson commits keep
   attribution clean; `git revert` is not the correction mechanism (S-12).
 - **The acceptance fixture**: the three behaviors from §0, re-checked after
-  routing. This is the only behavior-change metric v1 claims.
+  routing — B and C at the M1+M2 checkpoint, A at M3 exit (§0's staging),
+  each against its written predicate. This is the only behavior-change
+  metric v1 claims.
 - **Supply mix**: teach vs import vs (later) appender — tells us where
   lessons actually come from before we invest in more capture (O-3's input).
 
