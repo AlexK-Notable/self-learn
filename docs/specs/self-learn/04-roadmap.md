@@ -24,7 +24,11 @@ sophistication was going to matter — stop and rethink.
 
 Scope: record schema + ledger ops (create/supersede/move) · `self-learn`
 CLI (`teach` with scope/type/structured-field/`--route` flags, `list`,
-`status`, `graduate`, `--selftest`; secret scan on **every** record write) ·
+`status`, **`route`/`reject`/`defer`** — the resolution verbs own
+compile+commit, sentinel set/heartbeat/release, self-push, and `--note`
+(`resolution_note`); `graduate`, `--selftest`; `--json` on read verbs; the
+slash command is a thin caller (S-2 amendment, `07-review-ui.md` §4);
+secret scan on **every** record write) ·
 `/teach` wrapper with in-session extraction (O-4) · backlog importer with
 already-canon flagging · `/self-learn:review` command (bounded batches,
 four-option cards with diff previews, bulk-acknowledge, TTL'd+heartbeated
@@ -58,10 +62,14 @@ Scope: detached pre-analysis worker (any host — **fully append-only**:
 analysis proposals + merge proposals as new files, never record writes;
 coalesced, flock'd per machine, restricted `--allowedTools`; analyst prompt
 carries the **rejected-proposal digest** as negative exemplars — never
-re-propose a declined lesson class, `01` §3.3) · SessionStart
+re-propose a declined lesson class, `01` §3.3; the digest reads
+`resolution_note` where present) · SessionStart
 pending-count line (manual `settings.json`
 registration — a documented install step, not an assumed one) ·
-`notify-send` thresholds · staleness alarm (computed by the SessionStart
+**per-worker-run ambient notifications** carrying the aggregate line and
+record ids in the payload (the TUI deep-link contract, `07-review-ui.md`
+§4 — honored from day one) · threshold escalation `notify-send` ·
+staleness alarm (computed by the SessionStart
 hook from the worker's `~/.cache` last-run marker) · review consumes
 precomputed proposals (one-tap fast path).
 

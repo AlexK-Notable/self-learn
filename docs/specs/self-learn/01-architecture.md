@@ -207,9 +207,12 @@ the digest costs nothing because rejection provenance already lives in git.
   what remains **and pushing its commits** — `claude-skills-sync`'s
   clean-tree branch never pushes, so without a self-push, routed canon would
   sit unpublished until some unrelated change dirtied the tree.
-  For its duration the command sets an **autosync pause sentinel** in
+  For its duration the review holds an **autosync pause sentinel** in
   `~/.cache` so mid-review working-tree states are never committed out from
-  under it with a generic sync message. Two honesty notes: the watcher does
+  under it with a generic sync message — sentinel set/heartbeat/release are
+  **CLI-owned** and scope to the mutation flow, never to a window's
+  lifetime (a resident TUI open all day must not pause autosync all day —
+  `07-review-ui.md` §4). Two honesty notes: the watcher does
   **not** honor any sentinel today — teaching `bin/claude-skills-watch`/
   `claude-skills-sync` to check it is a named M1 deliverable in the *main*
   repo (on master), not an existing capability — and the sentinel carries a
@@ -220,8 +223,16 @@ the digest costs nothing because rejection provenance already lives in git.
   machines at once are an operating-discipline no (see §5). Discuss
   drops into normal conversation with the analysis context loaded, then
   returns to the queue.
-- **`self-learn` CLI** (portable core): `list`, `status`, `teach`, `import`,
-  `graduate <id>`, `--selftest`. `graduate` is the owning verb for the
+- **`self-learn` CLI** (portable core): `teach`, `import`, `list`, `status`,
+  **`route <id>` · `reject <id>` · `defer <id>`** (the resolution verbs),
+  `graduate <id>`, `--selftest`; read verbs take `--json`. **All resolution
+  mechanics live in the CLI** *(recorded 2026-07-12 — `07-review-ui.md` §4)*:
+  compile+commit, sentinel set/heartbeat/release, session self-push, and
+  `--note` capture (`resolution_note`, `02` §2) belong to the verbs — so
+  every surface (the slash command today, the resident TUI at G-3, a PR
+  flow at team scale) is a thin caller of the same substrate. If routing
+  logic ever lives in the slash command's prompt, later surfaces inherit
+  nothing. `graduate` is the owning verb for the
   hand-weave transition (`02-schema.md` §4): it marks a routed lesson
   `superseded_by: canon` so the compiler drops its managed-section line —
   the same move ha-note exposes as `--promoted`. The CLI is the dependable
@@ -253,10 +264,22 @@ lesson that can live with a skill or a repo should.
 
 ### 3.6 Notifications
 
-Threshold-batched, never per-item: SessionStart context line
-("📥 self-learn: 7 pending, oldest 9d — /self-learn:review") + `notify-send`
-when crossing thresholds (default: ≥5 pending, or oldest >7 days) + optional
-statusline count. Also a **staleness alarm**: "worker hasn't completed a run
+**Ambient and informative, never demanding** *(S-9 amended 2026-07-12 —
+`07-review-ui.md` §1)*: the model is a list the user attends to at their
+convenience, kept visible by notifications that carry the new event *plus*
+the standing aggregate — *"an agent has proposed an update to
+home-assistant. 4 pending decisions from 1 skill and 2 projects
+outstanding."* Notifications fire per **worker run**, not per record (the
+worker coalesces, so bursts arrive as one line — natural rate limiting),
+their payload carries the record ids (the TUI deep-link contract, honored
+from M2 day one), and ignoring one costs nothing — the aggregate rides
+along on the next. Neither bracket failure mode is acceptable: no modal
+popup treadmill (notification fatigue = queue death, E-3 in different
+clothes), no invisible backlog (ha-note's grave). Alongside the per-run
+events: SessionStart context line
+("📥 self-learn: 7 pending, oldest 9d — /self-learn:review"), escalation
+`notify-send` when thresholds are crossed unattended (default: ≥5 pending,
+or oldest >7 days), and an optional statusline count. Also a **staleness alarm**: "worker hasn't completed a run
 in N days" — the silent-death guard for the analysis path. The alarm's owner
 is the **SessionStart hook** that already computes the pending count:
 comparing the worker's last-run marker in `~/.cache` is one stat call, and

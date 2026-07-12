@@ -32,6 +32,8 @@ routing:                  # written on routing; null before
   # by id recovers it.
 supersedes: null
 superseded_by: null
+resolution_note: null     # optional; the human's why, written once at
+                          #   resolution (route/reject/graduate) — see §2
 ---
 
 ## Trigger
@@ -111,10 +113,21 @@ standard safe rebase-halt (`01` §5) rather than being excluded outright.
   included (blind re-review 2026-07-12) — and never per-session; nothing in
   this schema is touched by merely *using* Claude Code (the gen-1
   counter/autosync-storm bug is excluded by construction, E-8).
+- **`resolution_note`** *(added 2026-07-12, UI direction — `07-review-ui.md`)*:
+  optional free text, written **exactly once** at resolution
+  (route/reject/graduate; the CLI verbs take `--note`, the review card's
+  free-text path feeds it), echoed into the resolving commit message. Legal
+  under freeze-at-routing — it is part of the resolution event, not a later
+  edit of substance. It is the user's *why*, and it is fuel: the M2 worker's
+  rejected-proposal digest reads it, so a noted denial teaches the analyst
+  why that proposal class loses. Secret-scanned like every record-body
+  write.
 - **Lifecycle notes for the implementer** *(deliberate choices, stated so no
   one hunts for missing fields)*: rejection/supersession provenance is
   carried by git — the resolving commit's author, date, and message are the
-  who/when/why, so there are no `rejected_at`/`reason` fields · `status:
+  who/when, so there are no `rejected_at`/`reason` fields *(amended
+  2026-07-12: the **why** may now live in `resolution_note`, above; git
+  remains the who/when)* · `status:
   routed` records live in `resolved/` (the directory is the umbrella for all
   terminal statuses; the status stays precise) · a deferred record keeps
   `status: deferred` while hidden — queue membership is *computed* from

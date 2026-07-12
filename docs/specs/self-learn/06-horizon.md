@@ -20,9 +20,12 @@ for granted stop being safe. The SOTA survey (E-18–E-21,
 `research/2026-07-12-sota-survey.md`) supplies shipped precedents for most
 of it.
 
-**What multiplies at N≈6 — and what doesn't.** Capture volume multiplies
-roughly linearly (call it 5–10×: more users, plus network effects of visible
-captures prompting more captures). Two qualitatively new signals appear that
+**What multiplies at N≈6 — and what doesn't.** Capture volume multiplies on
+**two axes: headcount and per-user intensity**. E-2's floor is one person's
+*casual* use; a work environment means multiple concurrent Claude Code
+instances per person per day (user directive 2026-07-12), so the sizing
+assumption is lessons per *day* across the team — headcount alone
+understates it. Two qualitatively new signals appear that
 no amount of solo usage produces: **independent corroboration** (two people
 hitting the same gotcha without seeing each other's capture — the honest
 version of `sightings`) and **measured recurrence** (a routed lesson failing

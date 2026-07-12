@@ -26,6 +26,7 @@ human routes it.
 | `04-roadmap.md` | Build milestones, acceptance fixture, success metrics |
 | `05-evidence.md` | The empirical facts this design is built on, with sources |
 | `06-horizon.md` | The team-scale future (~5–6 users, shared artifact repo): invariants, the six team problems, staged path |
+| `07-review-ui.md` | The resident TUI (recorded destination surface): attend-at-convenience, embedded SDK adjudication pane, the don't-subvert contracts on v1/M2 |
 | `research/` | External evidence memos (SOTA surveys etc.) — shareable with blind reviewers, unlike `reviews/` |
 
 ## Ground rules for changing this corpus
@@ -79,3 +80,20 @@ human routes it.
   (~5–6 users, shared artifact repo — user directive): new `06-horizon.md`
   (invariants, scope tiers, PR-based routing authority, provenance/trust,
   staged path). v1 scope and all gate triggers unchanged.
+- **2026-07-12 — review-UI vision recorded (user-specified).** New
+  `07-review-ui.md`: resident TUI as the destination adjudication surface —
+  attend-at-convenience (ambient notifications carrying event + aggregate;
+  neither popup treadmill nor invisible backlog), deep-link into the
+  decision, embedded **SDK adjudication pane** (fresh session per item over
+  a stable cached doctrine prefix; agent iterates, only the human's button
+  routes). Consequent amendments: **S-2** (all resolution mechanics —
+  `route`/`reject`/`defer` verbs, sentinel, self-push, `--note` — live in
+  the CLI; slash command is a thin caller; `--json` on reads), **S-9**
+  (per-worker-run ambient events with aggregate replace pure thresholds;
+  "never per-item" refined to "never per-item-*demanding*"),
+  **`resolution_note`** added to the schema (M1; feeds the M2 digest;
+  amends the git-only-provenance lifecycle bullet), M2 notification payload
+  carries record ids, **O-1/G-3 rewritten** (TUI is the recorded
+  destination, gated on M2). **E-2 demoted to casual-solo floor** — the
+  sizing environment is heavy daily work use (user directive; E-2 caveat,
+  06-horizon §1).

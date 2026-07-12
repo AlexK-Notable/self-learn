@@ -17,6 +17,13 @@ architecture red-team, pre-mortem — + 1× Sonnet 5 mechanics fact-check).*
   gen 1's measurement loop existed to detect. Projected durable behavioral
   yield: ~1/month across all skills. Any mechanism needing corroboration≥2,
   recurrence, or reputation volume cannot reach signal at this scale.
+  **Planning caveat (2026-07-12, user directive): this is the *casual solo*
+  floor, not the sizing number.** The target environment is heavy daily
+  work use — multiple concurrent Claude Code instances per person, several
+  projects — where supply is lessons per *day*, not per month
+  (`06-horizon.md` §1, `07-review-ui.md` §1). E-2 still governs what the
+  *solo* deployment can measure; it must not be used to argue a
+  volume-dependent feature is forever unreachable.
 - **E-3 · Queues die here.** ha-note's promotion queue — *lighter* than any
   approval gate, since unpromoted entries were still usable — was worked
   **exactly once** (all 18 promotions dated 2026-06-15); 10 later entries
