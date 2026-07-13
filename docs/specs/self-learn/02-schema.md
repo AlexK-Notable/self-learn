@@ -64,7 +64,11 @@ diff: proposals/lrn-4c1e9a2f.diff   # PREVIEW ONLY — compilers regenerate from
 record_sha: sha256:a1b2c3d4e5f6     # of the normalized record at analysis
                                     #   time — proposal staleness = hash
                                     #   mismatch, NEVER file mtime (git
-                                    #   checkouts rewrite mtimes; M2 review)
+                                    #   checkouts rewrite mtimes; M2 review).
+                                    #   STAMPED BY THE CLI at proposal
+                                    #   validation, never emitted by the
+                                    #   model (same normalization fn as
+                                    #   evidence.origin's content hash)
 model: claude-opus-4-8
 analyzed_at: 2026-07-12T09:25:12Z
 ```
