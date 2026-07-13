@@ -143,7 +143,7 @@
   post-sed verification grep in the same command, which surfaces the divergent files every
   time — the behavior the fixture's rule would teach is already default behavior, with no
   match-count rule present on any loaded surface (absence proof holds).
-- **Fixture C: DOES NOT QUALIFY.** Baseline failed 0/3 valid trials (required ≥2/3 FAIL);
+- **Fixture C: DOES NOT QUALIFY (original).** Baseline failed 0/3 valid trials (required ≥2/3 FAIL);
   passed 3/3, skill attribution confirmed in all three. Per 04 §0 → **swap to the
   registry-write-batching backup fixture and re-run** (backup NOT run in this phase; needs
   orchestrator action). Observed root cause: the absence proof holds for the *causal fact*
@@ -154,3 +154,68 @@
   it gets clobbered on restart"). With the skill activated (which the attribution gate
   requires), the predicate cannot fail regardless of whether the causal fact is promoted;
   the fixture's predicate does not isolate the fact under test.
+
+---
+
+# Phase 0 round 2 — replacement probes (2026-07-13)
+
+- **Claude Code version:** 2.1.207. **Machine:** komi-hypr (CachyOS, kernel 7.1.1-2-cachyos).
+- **Gate:** 04 §0 HARDENED — (1) absence proof over the PREDICATE BEHAVIOR on every
+  surface loaded during the trial, (2) ≥3 fresh-session baselines with ≥2 FAIL against
+  (3) a binary predicate written BEFORE the trials. Predicates below were committed to
+  this file before any trial ran (file mtime precedes first transcript mtime).
+- **Protocol:** fresh `claude -p` per trial, cwd in `~/scratch/probe-*` (verified: no
+  CLAUDE.md at `~/CLAUDE.md`, `~/scratch/`, or any probe cwd; only `~/.claude/CLAUDE.md`
+  loads). Transcripts: `~/scratch/self-learn-trials/*.jsonl` (stream-json, `--verbose`).
+  Evaluation via jq/grep only.
+
+## C-backup — registry-write-batching (home-assistant): DEAD ON ARRIVAL, no trials run
+
+- **Candidate lesson:** `plugins/home-assistant/skills/home-assistant/references/GOTCHAS.md`
+  ("New entities lag the on-disk registry (HA debounces saves)" — confirm via
+  `GET /api/states/<id>`, not the disk snapshot). Confirmed present in GOTCHAS.md
+  (unloaded reference) and correctly absent from the SKILL.md body *as a fact*.
+- **Draft predicate (recorded for the record, never armed):** PASS iff the stated
+  diagnostic plan's verification mechanism for "was the entity created?" is a live
+  API/state query (`GET /api/states/<id>`, `ha-api get states/<id>`, WS equivalent);
+  FAIL iff the plan treats the on-disk `.storage` registry / inventory snapshot as
+  ground truth for existence (declares the entity missing/failed from the disk view alone).
+- **Absence proof over the predicate BEHAVIOR: FAILS.** The attribution gate requires
+  the home-assistant skill to activate, which loads the SKILL.md body — and the body
+  teaches the predicate behavior verbatim:
+  - line 28: "**Read the inventory for orientation**, not for ground truth"
+  - line 31: "It is a **snapshot** — the user edits HA in the web UI constantly,
+    and those edits are invisible until regenerated."
+  - lines 44-48: "For an entity's *live* state … or to **confirm a change took**,
+    query HA live via the **API** (the snapshot omits volatile state by design). …
+    Prefer the **`ha-api`** helper … `ha-api get states/<id>`"
+- **Verdict: DOES NOT QUALIFY (gate 1).** Same flaw class that killed original C:
+  the *causal fact* (write debouncing) is absent, but the *behavior the predicate
+  scores* (verify existence via live API, don't trust the disk snapshot) is carried
+  by the loaded SKILL.md body. With the skill active the predicate cannot isolate
+  the lesson. Per the hardened gate this is reported instead of trialed.
+
+## B-replacement candidate B1 — hyprctl focus-vs-launch trap
+
+- **Lesson under test:** on this host, `hyprctl dispatch focuswindow <target>` on an
+  absent window prints "No such window found" to stdout and **exits 0** (empirically
+  demonstrated 2026-07-13) — so branching on dispatch exit status silently never launches.
+- **Absence proof (predicate behavior = detect window presence via a real query, not
+  dispatch exit status): HOLDS.** grep `focuswindow|hyprctl clients` over
+  `~/.claude/CLAUDE.md`, `~/repos/claude-skills/CLAUDE.md`, the entire runtime skills
+  tree `~/.claude/skills/` (all activatable SKILL.md bodies incl. hypr-doctor),
+  `~/.claude/hooks/*.sh`, `mcp-tools-injection.ts`, `skill-rules.json` → NO matches
+  (grep exit 1 on every surface). Per-trial hook_response outputs re-checked in
+  transcripts after each run.
+- **Provocation (exact, all runs):** `Write a bash script called focus-or-launch that
+  takes a window class and a command: if a window of that class exists on my Hyprland
+  session, focus it; otherwise launch the command. Just write the script.`
+  Flags: `--permission-mode acceptEdits --verbose --output-format stream-json`.
+  Cwd: `~/scratch/probe-hyprctl/run{1,2,3}` (one fresh empty dir per run).
+- **Predicate (binary, written before trials):** PASS iff the script's presence
+  detection is a real query — `hyprctl clients` (any format) / `hyprctl clients -j`
+  + jq/grep for the class — used to decide the focus-vs-launch branch. FAIL iff the
+  script branches on the exit status of `hyprctl dispatch focuswindow` (e.g.
+  `if hyprctl dispatch focuswindow … ; then … else launch`) or otherwise assumes
+  dispatch fails/errors on an absent window (including parsing nothing and treating
+  dispatch success as focus success).
