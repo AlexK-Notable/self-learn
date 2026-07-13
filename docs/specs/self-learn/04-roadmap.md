@@ -26,8 +26,12 @@ in a sandbox tree passes unguarded; after routing, the compiled PreToolUse
 guard denies it. One mechanical trial each side; no live HA involved (the
 guard's primary predicate is the path pattern — locally testable).
 Deliberate side effect, stated so nobody misreads it: A's teach record
-duplicates existing canon, so it also exercises the analyst's
-**already-canon flagging** — a feature of the fixture, not a failure.
+duplicates existing canon, so the analyst should **note the canon overlap
+in its rationale** — a feature of the fixture, not a failure. (The
+*bulk* already-canon flag does not apply: its pinned criterion is
+`type: knowledge` from a canon source file, which A's `type: behavior`,
+`source: teach` record structurally cannot satisfy — M3 review,
+2026-07-12.)
 **Evaluated at M3 exit**, where the hook compiler lives — A essentially
 *is* M3's exit criterion; the M1+M2 checkpoint covers B and C only.
 

@@ -25,7 +25,7 @@
                             │  COMPILERS   │──▶ SKILL.md managed section
                             │  (diff-first,│──▶ CLAUDE.md managed section
                             │  idempotent) │──▶ references/ append
-                            └──────┬───────┘──▶ new-skill scaffold (plugin-dev)
+                            └──────┬───────┘──▶ new-skill scaffold (CLI template)
                                    │        ──▶ hook scaffold (hookify pattern)
                                    ▼
                               git commit  ──▶ record marked routed(commit)
@@ -285,7 +285,7 @@ only their managed region:
 | SKILL.md | `<!-- self-learn:begin/end -->` managed section | behavioral rules + skill-scoped knowledge; loads natively at activation. Compiler keeps it tight; weaving learned text into the authored prose is a human editorial act, done whenever the user likes (that *is* gen-1's "Level C", demoted from milestone to habit) |
 | CLAUDE.md (repo or `~/.claude/`) | same managed-section pattern | project/user conduct + knowledge. **`~/.claude/CLAUDE.md` is chezmoi-managed (E-17): the compiler must `chezmoi re-add` after writing *and* commit+push the dotfiles repo — `re-add` alone is same-machine-only, and the next `chezmoi apply` elsewhere clobbers the section** |
 | `references/<file>` | plain append (ha-note-style) | bulk knowledge; progressive disclosure. Default target: the skill's `references/LEARNINGS.md`, created if absent; another **existing** references file may be named by the proposal/`--dest` — never `GOTCHAS.journal.md`, which is ha-note's surface (O-7 parks ha-note as independent; gate-check F4) |
-| new skill | delegates to plugin-dev scaffolding | when triage decides a lesson cluster wants to be a skill |
+| new skill | deterministic CLI-owned template scaffold (plugin.json + SKILL.md with a managed section + marketplace entry) — *amended 2026-07-12 (M3 review): plugin-dev delegation demoted to optional post-hoc enrichment; the substrate must not depend on another plugin's agents (`08-build-plan.md` §8.1)* | when triage decides a lesson cluster wants to be a skill |
 | hook | scaffolds script + prints the `settings.json` snippet | **never auto-registers** (repo doctrine: settings.json is manual) and **always explicit-diff-approved** (P9). For `kind: anti-pattern` lessons where advisory text is the weakest enforcement and a PreToolUse guard is the strongest |
 
 Routing doctrine (the analyst's map, human overridable): behavior/anti-pattern

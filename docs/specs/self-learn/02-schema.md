@@ -97,6 +97,15 @@ Merge-proposal lifecycle: removed (`git rm`) when the cluster is collapsed at
 review, **or** as soon as any member record resolves individually — a partial
 cluster is invalid and must not resurface as a card.
 
+**Hook-destination extension** *(M3; the one documented exception to
+regenerate-at-apply)*: a `destination: hook` proposal additionally carries
+the structured compile input — `hook: {tools: […], path_regex: "…",
+deny_message: "…"}` plus the full generated script text and the analyst's
+allow/deny example inputs. The route verb applies that content **verbatim**
+(byte-identical to the approved diff; P9 — the target is executable);
+a `record_sha` mismatch aborts and forces re-analysis + fresh approval,
+never silent regeneration (`08-build-plan.md` §8.1).
+
 Keeping the proposal out of the record means that after capture, **the only
 writer of a pending record is the human** — the worker's clustering emits
 merge *proposals*, never record edits (blind re-review 2026-07-12). A stale

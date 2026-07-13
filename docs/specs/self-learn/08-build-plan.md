@@ -128,6 +128,14 @@ prompt, transcript location, predicate result, attribution — in
 
 Fixture A needs only its one mechanical pre-routing trial (unguarded
 `.storage` edit passes in a sandbox tree) and is **evaluated at M3 exit**.
+Its harness (M3-5): a generator in `docs/specs/self-learn/fixtures/`
+creates a scratch tree containing `.storage/core.config` and sibling
+non-`.storage` files. The **post-routing trial is a live fresh session**
+with the compiled guard's snippet actually registered: an Edit attempt on
+the `.storage` path must be denied by the hook (and a sibling-file edit
+must pass) — stdin-piped JSON fixtures are T17's unit layer and are NOT
+acceptance evidence, because only a live session can catch a wrong
+matcher or a bad registration path.
 
 ## 3. M1 task breakdown (dependency order; each = tests + code + DoD)
 
@@ -248,6 +256,9 @@ after T2–T4; T12 anytime.
 | Fixture provocation authoring, and B failing to qualify | Human + strong reasoner | §2 escalation |
 | Any corpus contradiction or settled-decision pressure | Human | §0 rule 5 |
 | Cluster survivor choice (M2) | Worker nominates (`suggested_survivor`); human confirms/overrides on the collapse card | 02 §1, §7.1 |
+| Guard predicate scope — deliberate over-blocking (M3) | A deterministic guard often over-blocks its conditional rule (fixture A's path-only guard denies legitimate stopped-container edits too). The analyst must state the over-block explicitly in the rationale; the human accepts or narrows it on the card — never decided silently by the builder | §8.1 |
+| Guard allow/deny test-case authoring (M3) | Analyst authors 2–3 allow + 2–3 deny examples per hook proposal; route replays them pre-commit, failures abort | §8.1 replay pin |
+| Live-guard false positive — disable now vs supersede (M3) | Human: hand-remove the settings.json entry for immediate relief; supersede for the durable correction | §8.1 rollback pin, §5 |
 | Worker prompt quality tuning (excerpt selection, digest phrasing, clustering sensitivity — incl. exit (b) retries) | Human + strong reasoner, never the T13 implementer | §7.3 (b) |
 | Worker model default (cost vs proposal quality) | User — the pin carries `claude-sonnet-5` as a starting point, the trade is theirs | §7.1 |
 | Escalation cadence calibration (first week of real use) | User | §7.1 thresholds pin |
@@ -288,6 +299,11 @@ after T2–T4; T12 anytime.
 - **Auto-memory dir format shifts mid-M1:** invoke S-14's fallback — slip
   the importer to v1.1, note it in 03, continue; do not chase a moving
   format inside M1.
+- **A routed guard blocks legitimate work (M3):** immediate relief =
+  hand-remove its settings.json entry (the hook is inert without it);
+  durable correction = supersede the record (which `git rm`s the script
+  per the §8.1 rollback pin) — never hand-edit the generated script,
+  which would drift from its record.
 
 ## 6. M1 acceptance & merge procedure
 
@@ -420,11 +436,14 @@ acceptance (§7.3).*
 
 | Contract | Pin |
 |---|---|
-| Hook compiler output | `route <id> --dest hook` scaffolds `plugins/<p>/hooks/self-learn-<record-id>-<slug>.sh` (bash, shebang'd, executable) + prints the `settings.json` registration snippet. **Never auto-registers** (repo doctrine: settings.json is manual) — registration is a documented human step, and the hook is inert until then. The in-repo precedent to copy is `universal-directory-organizer`'s fail-closed PreToolUse guard, NOT a fresh invention |
-| Generated guard shape | PreToolUse protocol: read the hook JSON from stdin; decide on `tool_name` ∈ a pinned set (typically `Edit\|Write`) plus a **path/argument regex derived from the record's Trigger**; deny = exit 2 with a one-line stderr message citing the rule and the record id (`self-learn lrn-…: <instruction>`); allow = exit 0. The regex is proposed by the analyst and **shown in full in the approval diff** — deriving a deterministic predicate from prose is a §4 judgment (analyst proposes, human reads the actual regex; P9 means the diff approval IS the safety gate) |
-| Hook approval flow | The route card/verb shows the entire generated script as the diff (not a summary). Approval routes the record and commits the script; the settings.json snippet is printed and logged in the commit body. install.sh's existing hooks surface symlinks it into `~/.claude/hooks/` at next run |
-| Hook selftest | `--selftest` (M3 extension): each routed-to-hook record's script exists, is executable, and — if registered in `settings.json` — the registration references the symlinked path that exists. Read-only checks; loud on failure |
-| New-skill compiler | `route <id> --dest new-skill` creates a **deterministic minimal scaffold** with the CLI's own template — `plugins/<name>/.claude-plugin/plugin.json`, `skills/<name>/SKILL.md` (frontmatter + a managed section containing the routed lesson(s)) — and appends the marketplace.json entry. No dependency on the plugin-dev plugin for the substrate; enriching the new skill afterwards (description tuning, references) is a normal session activity where plugin-dev *may* be used. Skill naming is a §4 human call (the card proposes, the human confirms) |
+| Hook compiler output | `route <id> --dest hook` scaffolds the guard script (bash, shebang'd, executable) + prints the `settings.json` registration snippet. Script path: skill-scoped records → `plugins/<p>/hooks/`, project/user-scoped → `plugins/self-learn/hooks/` (M3-7). Filename: `self-learn-<8hex-id>-<slug>.sh` — id **without** the `lrn-` prefix; slug = kebab-case of the first ≤4 Trigger words, `[a-z0-9-]`, ≤32 chars (M3-6). **Never auto-registers** (repo doctrine: settings.json is manual). The in-repo precedent to copy is `universal-directory-organizer`'s fail-closed PreToolUse guard, NOT a fresh invention. **Snippet template, literal** (M3-1 — ground-truthed against the live settings.json): `"PreToolUse": [{"matcher": "Edit\|Write", "hooks": [{"type": "command", "command": "$HOME/.claude/hooks/self-learn-<id>-<slug>.sh"}]}]` — **the matcher is the TOOL-NAME set only; the path regex lives exclusively in-script** (a path regex in the matcher field never fires) |
+| Generated guard shape | PreToolUse protocol (ground-truthed against `organizer-guard.sh`): read the hook JSON from stdin; decide on `tool_name` ∈ the pinned set plus a **path regex applied to the named `tool_input` field — `Edit`/`Write` → `.tool_input.file_path`, `Bash` → `.tool_input.command`** (M3-8; never regex the raw JSON blob); deny = exit 2 with a one-line stderr message citing the rule and the record id (`self-learn lrn-…: <instruction>`); allow = exit 0; malformed stdin fails closed (ERR-trap, precedent's pattern). Deriving the regex from Trigger prose is a §4 judgment (analyst proposes, human reads the actual regex) |
+| Hook apply convention — **deliberate exception to regenerate-at-apply** (M3-2) | For `--dest hook` the proposal carries the **structured compile input** — `hook: {tools: […], path_regex: "…", deny_message: "…"}` and the full generated script text — and the route verb applies that content **verbatim, byte-identical to what the human approved** (P9: eyes on the exact executable diff). A `record_sha` mismatch at apply time **aborts and forces re-analysis + fresh approval — never silent regeneration**. This is the one documented exception to 01 §3.4's regenerate-at-apply rule, and it exists because the compile input lives in the proposal, not the frozen record |
+| Guard test replay (M3-12) | The hook proposal also carries 2–3 **allow** and 2–3 **deny** example inputs (analyst-authored); `route --dest hook` replays them against the generated script **before committing** — any mismatch aborts the route. T17 tests the replay machinery; the per-guard cases ride each proposal |
+| Hook approval flow | The route card/verb shows the entire generated script as the diff (not a summary). Approval routes the record and commits the script; the settings.json snippet is printed and logged in the commit body; **the verb ends by printing the required manual steps: run `./install.sh` (the symlink materializes only then) and add the snippet to settings.json** (M3-11) — until both, the hook is inert by design |
+| Hook correction/rollback (M3-4) | Superseding or graduating a hook-routed record **`git rm`s the script in the same commit** and prints an un-registration reminder for the settings.json entry + the dead `~/.claude/hooks/` symlink. Immediate disable (guard blocking legitimate work right now) = remove the settings.json entry by hand; durable correction = supersede (§5 playbook). S-12's "supersede + recompile" for hooks means: script removed, registration manually retired — there is no section to regenerate |
+| Hook selftest | `--selftest` (M3 extension): each **currently-routed** (not superseded/graduated) hook record's script exists and is executable; any `settings.json` registration referencing a `self-learn-*` hook whose script or symlink is missing is flagged (the inverse case — script present for a superseded record — is also flagged, as an incomplete supersession). Read-only checks; loud on failure |
+| New-skill compiler | `route <id> --dest new-skill:<name>` (the name slot is the confirmed §4 human call) creates a **deterministic minimal scaffold** with the CLI's own template — `plugins/<name>/.claude-plugin/plugin.json` (`name`, `version: "0.1.0"`, `description` — the key set the repo's real manifests share), `skills/<name>/SKILL.md` (frontmatter + a managed section containing the routed lesson(s)) — and appends a marketplace.json entry shaped like the repo's existing entries. **Collision rule (M3-9):** if `plugins/<name>` already exists, append the lesson only when its SKILL.md carries a self-learn managed section (i.e., it was self-learn-scaffolded); otherwise **refuse** — never inject into a foreign authored SKILL.md. The route ends by printing "run `./install.sh`" (M3-11). No dependency on the plugin-dev plugin for the substrate; post-hoc enrichment is a normal session activity where plugin-dev *may* be used |
 | Statusline count | Optional, default OFF; if the user asks: a statusline script calling `status --json --fast`, budget rules same as the SessionStart hook. Not part of M3 acceptance |
 | O-3 / O-7 revisit | [protocol] with the user, data-driven: `status --json` gains a `supply_mix` block (counts of resolved+pending by `source`) — the O-3 input 04's metrics name. The revisit is a conversation, not a build task; its outcome lands as dated register edits in 03 |
 
@@ -439,11 +458,16 @@ acceptance (§7.3).*
   registration pointing at a missing path. *DoD:* a fixture anti-pattern
   record routes to a working guard in a sandbox tree.
 - **T18 · New-skill compiler.** Template scaffold + marketplace append
-  (idempotent — re-route to the same skill name must not duplicate the
-  entry). *Tests:* scaffold validates against an existing plugin's shape
-  (plugin.json parses, SKILL.md frontmatter well-formed, managed section
-  present); marketplace entry appended once. *DoD:* scaffolded plugin
-  passes the same structural checks install.sh relies on.
+  (idempotent — re-route to the same self-learn-scaffolded skill must not
+  duplicate the entry; foreign-plugin collision refuses per the §8.1
+  pin). *Tests:* both JSON files parse; `plugins/<name>/skills/<name>/
+  SKILL.md` exists with well-formed frontmatter + managed section;
+  marketplace `.plugins[].name` contains the entry exactly once —
+  **these are the only structural facts install.sh actually consumes**
+  (its discovery is marketplace names + the skills path glob; it runs no
+  manifest validation — don't invent checks it doesn't perform);
+  collision refusal on a fixture foreign plugin. *DoD:* scaffolded
+  plugin symlinks correctly on a real `./install.sh` run at §8.3.
 - **T19 · `supply_mix` in status + metrics counters.** The counted-not-
   modeled numbers 04 §Success-metrics names: time-to-triage, queue
   health, routed-and-corrected (excluding `superseded_by: canon`),
@@ -453,9 +477,11 @@ acceptance (§7.3).*
   block; numbers match the fixture by hand-count.
 - **T20 · O-3/O-7 revisit + fixture A.** [protocol] — schedule with the
   user once a month of real supply exists; fixture A's post-routing
-  trial per §2/04 §0 (route the `.storage` record through T17's
-  compiler, register the guard manually, run the mechanical denied-call
-  check in a sandbox tree; pre-routing pass already recorded in Phase 0).
+  trial per §2/04 §0: route the `.storage` record through T17's
+  compiler, **run `./install.sh`** (the symlink exists only then),
+  register the snippet manually, then the **live fresh-session trial per
+  §2's fixture-A harness** (denied on `.storage`, allowed on a sibling;
+  pre-routing pass already recorded in Phase 0).
 
 ### 8.3 M3 acceptance (04-M3 exit, tagged)
 
