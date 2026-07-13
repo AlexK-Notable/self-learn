@@ -32,7 +32,7 @@ human routes it.
 | `09-surface-spec.md` | **Design authority for the G-3 adjudication surface** (web revision, 2026-07-12): interaction model, surfaces/routes, files-as-truth data flow, security middleware, the adjudication pane (Agent SDK engine default / CLI stream-json alternative, empirically probed), degradation table, stack selection |
 | `10-surface-build-plan.md` | **Execution authority for the G-3 build** (gated on G-3's trigger): surface-local pins + verify-at-build ledger, acceptance fixtures incl. live trials, task DAG U1–U11, judgment routing, playbooks — 09 wins on conflict; shared pins stay owned by 08 |
 | `research/` | External evidence memos (SOTA surveys etc.) — shareable with blind reviewers, unlike `reviews/` |
-| `fixtures/` | Fixture harness generators + `trials.md` (the Phase-0/§0 trial log) |
+| `fixtures/` | Will hold the fixture harness generators + trial logs (`trials.md`, `ui-trials.md`) once the builds run — empty until Phase 0 executes (no code exists yet) |
 
 ## Ground rules for changing this corpus
 

@@ -533,6 +533,8 @@ subscription auth):
 ### 4.4 Configuration (complete list)
 
 `SELF_LEARN_HOME` (existing) · `SELF_LEARN_UI_PORT` ·
+`SELF_LEARN_UI_BROWSER` (launcher-only — consumed by
+`self-learn-ui-open`, never by the server; X-1, 2026-07-13) ·
 `SELF_LEARN_PANE_MODEL` · `SELF_LEARN_PANE_BUDGET_USD` ·
 `SELF_LEARN_PANE_MAX_TURNS` · `SELF_LEARN_PANE_ENGINE` (`sdk` |
 `cli`, default `sdk`; `cli` → exit "engine not built — 09 §4.1").

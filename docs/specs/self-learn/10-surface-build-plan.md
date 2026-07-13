@@ -56,9 +56,9 @@ additions:
 | Code layout | UI package: `plugins/self-learn/ui/` — a uv project (`pyproject.toml`, `src/self_learn_ui/…`, `templates/`, `static/`, `tests/`). Entry point: `plugins/self-learn/scripts/self-learn-ui` (shebang'd, extensionless): `#!/usr/bin/env bash` + `exec uv run --project "$(dirname "$(readlink -f "$0")")/../ui" self-learn-ui "$@"` — **`readlink -f` is load-bearing** (carried, P3-1): install.sh deploys scripts as `~/bin` *symlinks*, so bare `$(dirname "$0")` resolves beside the symlink, not the repo (`home-net-capture` precedent; same rule for sibling-path references in `self-learn-ui-open`/`self-learn-notify`). Subcommands: `self-learn-ui serve` (foreground server — what systemd runs) · `self-learn-ui --help` | 09 §3, §6; repo CLAUDE.md |
 | Service | `plugins/self-learn/systemd/self-learn-ui.service` (`ExecStart=%h/bin/self-learn-ui serve`, `Restart=on-failure`), installed/enabled by install.sh **via the same mechanism as the existing watcher unit** (exact install-side wiring verified at U10 against install.sh as it then stands — a repo-convention consume, not a new invention). Foreground `self-learn-ui serve` is the documented no-systemd fallback | 09 §3 |
 | Network & security | Bind `127.0.0.1` only, port `SELF_LEARN_UI_PORT` default **7357**. Middleware (all in one module, ~30 lines, tested in T-A): reject unless `Host` ∈ {`127.0.0.1:<port>`, `localhost:<port>`}; bearer token minted per service start (`secrets.token_urlsafe`), written 0600 to `$XDG_RUNTIME_DIR/self-learn/ui-token`; `GET /?token=…` (any path) sets it as a `SameSite=Strict; HttpOnly` cookie and 303-redirects to the clean URL; every mutating route is POST-only and requires valid cookie **and** the `HX-Request` header (cross-site forms cannot set custom headers); failure → 403 page naming `self-learn-ui-open`. **Render-path pins (W-1, 2026-07-12)**: Jinja environment constructed with autoescape ON (never disabled per-block); ALL markdown rendering (records, rationale free-text, pane blocks — pages and SSE frames alike) through markdown-it-py constructed with **`html=False`** (never the default preset — it passes raw HTML, empirically confirmed); trusted raw-HTML injections limited to Pygments output + own templates; every response carries `Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'`; CSP consequences pinned (W-9): Pygments in **class mode + served stylesheet** (never `noclasses` inline styles), no inline `style=`/`<style>` anywhere, `font-src 'self'` added iff a font is bundled | 09 §3 |
-| Companion scripts | `plugins/self-learn/scripts/self-learn-ui-open` (launcher, **the only WM/browser-aware file**: ensure service via `systemctl --user start self-learn-ui.service` (skip if systemctl absent); read token; focus existing window `hyprctl dispatch focuswindow class:self-learn-ui`, else launch app window — browser resolved in order `$SELF_LEARN_UI_BROWSER` → `chromium` → `google-chrome-stable` → fallback `xdg-open <url>`; app-window launch pins `--app=<tokened-url> --class=self-learn-ui` and degrades to `xdg-open` when unsupported) · `plugins/self-learn/scripts/self-learn-notify` — **argv pinned, carried verbatim (P3-6)**: `self-learn-notify --line "<rendered human string>" --ids <csv-of-record-ids>`; `notify-send -A open --wait`; on `open` → `self-learn-ui-open --record <first-id>`; no daemon — one process per notification | 09 §3; 08 §7.1 |
+| Companion scripts | `plugins/self-learn/scripts/self-learn-ui-open` (launcher, **the only WM/browser-aware file**: ensure service via `systemctl --user start self-learn-ui.service` (skip if systemctl absent); read token; **window-presence detection pinned (X-3, empirically grounded 2026-07-13: `hyprctl dispatch focuswindow` on an absent window prints "No such window found" and exits 0 — NEVER branch on its exit code)**: query `hyprctl clients -j` for the class first; if present, dispatch focuswindow; else launch app window — browser resolved in order `$SELF_LEARN_UI_BROWSER` → `chromium` → `google-chrome-stable` → fallback `xdg-open <url>`; app-window launch pins `--app=<tokened-url> --class=self-learn-ui` and degrades to `xdg-open` when unsupported) · `plugins/self-learn/scripts/self-learn-notify` — **argv pinned, carried verbatim (P3-6)**: `self-learn-notify --line "<rendered human string>" --ids <csv-of-record-ids>`; `notify-send -A open --wait`; on `open` → `self-learn-ui-open --record <first-id>`; no daemon — one process per notification | 09 §3; 08 §7.1 |
 | Dependencies | `fastapi` + `uvicorn` + `jinja2` + `pygments` + `markdown-it-py` + `watchfiles` + `PyYAML` + **`claude-agent-sdk>=0.2.116,<0.3` (minor-pinned; probes ran on 0.2.116)**; dev/test: `pytest`, `pytest-asyncio`, `httpx`. **Vendored static, committed**: `static/htmx-2.0.9.min.js` (exact version + recorded sha256 in the file header comment; the htmx 4.x line is ignored) · `static/app.js` (authored, ~40-line keydown handler + EventSource client) · `static/style.css`. No node, no bundler, no CDN. Python ≥3.11 | 09 §6 |
-| Keymap (single source) | `keymap.py` table: `j/k`+arrows move · `Enter/l` drill · `Esc/h` up (Esc in pane = interrupt first) · `a` route · `d` reject · `f` defer · `g` graduate · `i` iterate · `o` cycle destination · `n` note · `r` retry pane · `?` help overlay. Armed action: resolution key arms, `Enter` executes, any other key disarms. Keys inert while focus is in a text input. **No Ctrl/Alt chords** (browser owns them — 09 §1). Rendered from the one table into the footer partial, the help overlay, AND the JSON blob `app.js` consumes — never duplicated. Install/docs note: Vimium-class extensions need a `localhost:7357` exclusion (U10 docs item) | 09 §1 |
+| Keymap (single source) | `keymap.py` table: `j/k`+arrows move · `Enter/l` drill · `Esc/h` up (Esc in pane = interrupt first) · `a` route · `d` reject · `f` defer · `g` graduate · `i` iterate · `o` cycle destination · `n` note · `r` retry pane · `q` (pane focused) close split — ends the session (09 §2.4; X-2) · `?` help overlay. Armed action: resolution key arms, `Enter` executes, any other key disarms. Keys inert while focus is in a text input. **No Ctrl/Alt chords** (browser owns them — 09 §1). Rendered from the one table into the footer partial, the help overlay, AND the JSON blob `app.js` consumes — never duplicated. Install/docs note: Vimium-class extensions need a `localhost:7357` exclusion (U10 docs item) | 09 §1 |
 | SSE protocol | `GET /events` (EventSource in app.js; token-cookie-gated like every route): JSON envelopes, one `type` field each: `{"type":"refresh","scope":"front"\|"bucket:<b>"\|"record:<id>"}` (client re-requests its current partial if in scope) · `{"type":"applying","verb":…,"id":…,"state":"start"\|"done"\|"error"}` · `{"type":"bulk_progress","done":n,"total":m,"failed_id":null\|id}` · `{"type":"banner","text":…}` · pane events namespaced `{"type":"pane_delta","text":…}` / `{"type":"pane_block","html":…}` / `{"type":"pane_tool","name":…,"target":…}` / `{"type":"pane_result","status":…,"cost":…,"turns":…}`. Unknown types ignored client-side. Reconnect: EventSource auto-retry + the 10 s poll fallback (09 §5) | 09 §3, §4 |
 | Pane `sdk` engine construction | **Empirically pinned (probes memo)**: `ClaudeSDKClient` (streaming mode — `can_use_tool` refuses to run under string-prompt `query()`, and the finite-generator `query()` pattern closes the control channel: footguns A/C) with `ClaudeAgentOptions`: `include_partial_messages=True` (chunk-level deltas ~5 Hz — probe 1) · `setting_sources=[]` **explicitly** (unset loads the full user environment — probe 3; never rely on the documented default) · `system_prompt` = compiled doctrine string (09 §4.2) · **`allowed_tools=[]`** (a listed tool is auto-approved before the callback — footgun B) · `disallowed_tools=["Bash","Task","WebSearch","WebFetch"]` (structural denies as belt; the callback is the braces) · `can_use_tool` = the charter callback (canonicalize paths via `realpath` before matching; **read scope per 09 §4.3's W-3 pin**: reads inside `cwd` auto-approve and never reach the callback — accepted; the callback allows Read/Grep/Glob under resolved `SELF_LEARN_HOME` and denies-with-reason every read outside the repo; Edit/Write per 09 §4.3's exact-file rules; deny-with-reason otherwise) · `cwd` = bucket root · `model=$SELF_LEARN_PANE_MODEL` · `fallback_model`, `max_turns`, `max_budget_usd` — **fields empirically confirmed on 0.2.116** (phase-A introspection; re-verify at U5) · session-persistence-off + strict-MCP: exact option names resolved at U5 start (verify-at-build ledger). Wrapper-side cap enforcement exists only as the contingency for a future SDK dropping a field (09 §4.2/W-4). Tolerate unknown message types mid-stream (`RateLimitEvent` observed on Max OAuth). Interrupt: SDK interrupt call, then client close at +2 s, kill at +5 s | 09 §4.1–4.3 |
 | Engine event protocol (internal seam) | `PaneEngine.start(ctx) → AsyncIterator[PaneEvent]`; `PaneEvent = block_start(kind) \| text_delta(str) \| tool_use(name, target) \| file_changed(path) \| result(status, cost_usd\|None, error\|None)`; `send(str)`, `interrupt()`, `close()`. The UI imports only this module; SDK message parsing lives entirely inside the sdk engine. The specced-not-built `cli` engine (09 §4.1) satisfies the same seam; its invocation pin set is the TUI revision's §1 row (git history `1ce408c`) | 09 §4.1 |
@@ -71,8 +71,12 @@ additions:
 | Screen-state derivation | Pure functions: `(list --json output, status --json output, merge-yaml set, sentinel mtime) → screen model` — templates render models; no route handler reads ledger files directly; all reads go through one `ledger.py` module (testable headless, 09 §7) | 09 §3, §7 |
 
 **Verify-at-build ledger** (each gets a scripted check at its task's
-start; failures route per §5): exact `ClaudeAgentOptions` names for —
-session-persistence off · strict MCP (`max_turns` ·
+start; failures route per §5): exact `ClaudeAgentOptions` name for —
+session-persistence off (no matching field found on 0.2.116 by
+terminal-review introspection; **named fallback: pass the CLI's
+`--no-session-persistence` through the confirmed-present
+`extra_args` option** — X-7) · strict MCP (`strict_mcp_config`
+confirmed present on 0.2.116, same introspection; `max_turns` ·
 `max_budget_usd` · `fallback_model` pre-verified 2026-07-12 by
 phase-A introspection on 0.2.116, alongside the probes'
 `include_partial_messages`, `setting_sources`, `can_use_tool`,
@@ -108,7 +112,10 @@ predicate).
   redirect flow · a record body containing `<script>` and
   `<img onerror=…>` payloads renders escaped (page AND SSE
   `pane_block` frame) · the pinned CSP header present on every
-  response (W-1)**. *Predicate:* every 09 §2/§3 behavior named in this
+  response (W-1) · no `style=` attribute in the rendered diff
+  partial (X-9 — a `noclasses` Pygments regression ships
+  safe-but-unstyled under the CSP; this assertion catches it in
+  CI)**. *Predicate:* every 09 §2/§3 behavior named in this
   sentence has a test that fails when its logic is inverted.
 - **T-B · Pane permission live refusal** (live, logged): a real
   `sdk`-engine session over a sacrificial record in a throwaway
@@ -201,8 +208,11 @@ in brackets.
   `self-learn` returning each exit code.
 - **U7 · Service & launcher** [U3]: systemd unit, token minting +
   middleware wiring end-to-end, `self-learn-ui-open` (shimmed
-  systemctl/hyprctl/browser tests), deep-link edge cases
-  (resolved-id → bucket + banner, first-id rule).
+  systemctl/hyprctl/browser tests — incl. the X-3 detection: shim
+  `hyprctl clients -j` with and without the class present and assert
+  focus-vs-launch branches; never assert on dispatch exit code),
+  deep-link edge cases (resolved-id → bucket + banner, first-id
+  rule).
 - **U8 · Notifier swap** [U7]: `self-learn-notify` helper (pinned
   argv); the M2 emission point swap (the 08 §7.1 pointer executes — a
   change in the *worker's* notify call, same PR, own test: headless
@@ -218,10 +228,17 @@ in brackets.
   scripts via the existing glob + installs/enables the service unit
   (verify symlinks + no dangling — repo CLAUDE.md deploy-sweep rule);
   SKILL.md + README sections (launch, keys, env vars, engine note,
-  browser notes incl. the Vimium localhost exclusion); `10`
-  change-control appendix opened.
+  browser notes incl. the Vimium localhost exclusion, and the
+  **Hyprland window-rule snippet for the app-window class as a
+  documented optional manual step** — X-4: the pinned presentation
+  works without it; the rule is polish); `10` change-control appendix
+  opened.
 - **U11 · Acceptance** [all]: run T-B/T-C/T-D/T-E live, log
-  `ui-trials.md`, walk the degradation table, then §6.
+  `ui-trials.md`, walk the degradation table, **plus one
+  browser-level acceptance pass (X-5, closing 09 §7's Playwright
+  item): drive the armed-key resolution flow and an SSE-refreshed
+  partial swap in a real browser via Playwright/claude-in-chrome,
+  logged in `ui-trials.md`** — CI stays httpx-level; then §6.
 
 Parallelism: U5 alongside U2–U4; U7/U8 alongside U5/U6. Polish
 backlog (explicitly deferred, not silently dropped): `proposal
@@ -271,6 +288,10 @@ exceeds ~500 rows; dark/light theme via `prefers-color-scheme`
 - **systemd absent / non-Linux host**: documented foreground
   `self-learn-ui serve`; the launcher skips `systemctl` when absent
   (§1). Notifications/WM focus degrade per 09 §5.
+- **`$XDG_RUNTIME_DIR` unset** (headless/SSH — X-8): the token file
+  falls back to `~/.cache/claude-skills/self-learn/ui-token` (0600,
+  XDG_CACHE_HOME-resolved) with a one-line logged notice; semantics
+  otherwise unchanged.
 - **SSE buffering trouble**: uvicorn on localhost needs no proxy; the
   pinned implementation flushes per event. If a future proxy appears
   in front (Stage 2), that deployment owns `X-Accel-Buffering` — out

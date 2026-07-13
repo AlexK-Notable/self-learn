@@ -90,7 +90,40 @@ memo is withheld from blind reviewers.*
 - **Reviewer**: a third, fresh Fable agent — no authorship, no
   remediation involvement in this cycle (terminal-verdict
   eligibility), blind to reviews/.
-- **Mandate**: review 10-surface-build-plan.md to the 08 standard;
-  end-to-end coherence sweep 00–10 (traced, not asserted); framing
-  lens + empirical discipline per ground rule 4; then the three
-  terminal conditions.
+- **Review + TERMINAL VERDICT (2026-07-13): PASS — all three
+  conditions, zero gates, nine minors.** The reviewer ran its own
+  live verifications (full `ClaudeAgentOptions` introspection incl.
+  the bonus `strict_mcp_config` presence + the missing
+  session-persistence field; markdown-it `html=False` re-check; an
+  independent re-run of the W-3 read-boundary mechanics with
+  `permission_denials` evidence; the `hyprctl dispatch` exit-0
+  gotcha; C1/C2/C8 circumstance facts ground-checked).
+  - **T1 coherence PASS** — twelve contract families traced
+    file:line across every speaking document, all AGREE; amendments
+    landed; no stale renamed-doc references outside sanctioned
+    history; correction chain intact at every site the falsified
+    auth claim ever touched.
+  - **T2 implementability PASS** — "a competent orchestrator running
+    Opus 4.8/Sonnet 5-tier agents can build this from 10 + the
+    corpus alone"; load-bearing pins independently re-verified true,
+    the rest on the verify-at-build ledger with routed failures.
+  - **T3 fit-for-circumstance PASS** — judged against C1–C9 (ground-
+    checked) and the binding §6 answers; framing lens applied: the
+    one unpriced region found (native GUI toolkits / editor-embedded
+    surfaces) loses on the same decisive axes that eliminated the
+    TUI, so it cannot disturb V1 — recorded as an observation, not a
+    map-basis defect.
+  - Minors X-1..X-9: env-var completeness (X-1), keymap `q` (X-2),
+    launcher focus-detection gotcha — empirically demonstrated
+    (X-3), unowned window-rule (X-4), missing browser-level
+    acceptance channel (X-5), README fixtures-row tense (X-6),
+    session-persistence fallback unnamed (X-7), XDG_RUNTIME_DIR
+    playbook hole (X-8), no owning assertion for the W-9 Pygments
+    pin (X-9).
+- **Post-verdict fold (orchestrator, same day): all nine minors
+  landed** (09 §4.4/§1-keymap-consumer, 10 §1 launcher detection +
+  keymap + ledger + T-A/U7/U10/U11 + §5 playbook, README fixtures
+  row). Folds sent back to the terminal reviewer for disposition
+  verification — never self-certify, even after a PASS.
+- **Fold verification (same terminal reviewer): recorded below when
+  returned.**
