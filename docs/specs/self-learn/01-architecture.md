@@ -271,7 +271,9 @@ the digest costs nothing because rejection provenance already lives in git.
   calls `hold` itself, 09 §3), and a bare verb self-holds and releases
   what it created; **every mutating invocation re-touches the sentinel — that is
   the heartbeat** (no daemon process). `graduate` is the owning verb for the
-  hand-weave transition (`02-schema.md` §4): it marks a routed lesson
+  hand-weave transition (`02-schema.md` §4): it marks a routed — or
+  pending already-canon (the bulk-acknowledge door, 02 §4; dated
+  2026-07-12/P2-2) — lesson
   `superseded_by: canon` so the compiler drops its managed-section line —
   the same move ha-note exposes as `--promoted`. The CLI is the dependable
   substrate; the slash command is the experience.

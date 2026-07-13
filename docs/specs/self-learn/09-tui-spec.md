@@ -78,7 +78,9 @@ ignoring costs nothing. This section pins the mechanics 07 left open.
 
 - A table of buckets with pending learnings: bucket name, scope
   (skill/project/user), pending count, oldest pending age, unanalyzed
-  count (records with no proposal yet). Sorted oldest-first (the queue's
+  count (records with no *usable* analysis — the worker's own
+  eligibility predicate: no schema-valid proposal, or hash-stale;
+  pinned in 08 §1, one shared function — P2-4). Sorted oldest-first (the queue's
   health is age, not size — 04's time-to-triage metric).
 - A **status strip** (bottom): worker last-run age, staleness alarm
   (worker overdue per its escalation pins), total pending, sentinel state
@@ -100,7 +102,8 @@ ignoring costs nothing. This section pins the mechanics 07 left open.
   whose value set is 02 §1's pinned enum (`skill-md | claude-md |
   reference | new-skill | hook`; the section headers above are display
   labels for these enum values, not a second vocabulary) — plus two
-  synthetic groups: **unanalyzed** (no proposal yet) and **clusters**
+  synthetic groups: **unanalyzed** (the 08 §1 predicate — no schema-valid
+  proposal or hash-stale) and **clusters**
   (merge-proposals). Groups render as sections, not tabs — one scroll.
 - Row: id (short), age, title (first Trigger/Fact line — same derivation
   as `list --json .title`), sightings count, deferred badge when
@@ -382,12 +385,20 @@ for `sdk`):
   the CLI binary is unreachable without Bash, and approval is a TUI
   keystroke calling the verb from TUI code. Proposer ≠ approver, by
   construction — same trust geometry as the worker.
-- **Post-iterate stamping**: anything the pane agent writes into a
-  proposal is **unstamped by definition** (models cannot compute
-  `record_sha` — M2-21). On session end, the TUI invokes the CLI's
-  validate-and-stamp surface for that id (`self-learn proposal validate
-  <id>` — a thin CLI verb reusing the validation+stamping *logic* of
-  08 §7 run-sequence step 4, **with one pinned semantic difference**:
+- **Post-iterate stamping and scanning**: anything the pane agent
+  writes into a proposal is **unstamped by definition** (models cannot
+  compute `record_sha` — M2-21), and its direct record edits are a
+  write path that bypasses CLI verbs — which the S-8 secret-scan rider
+  covers only if something scans it (P2-1, 2026-07-12). On session end,
+  the TUI invokes the CLI's validate surface for that id
+  (`self-learn proposal validate <id>` — a thin CLI verb that stamps
+  `record_sha` AND **secret-scans the record body + proposal siblings**
+  per the 08 §1 scan pin; a scan hit reports the matched span, exits
+  non-zero, and surfaces in the pane's error strip — redaction is the
+  human's move via Iterate, never automatic. The verb commits nothing:
+  records and proposals are working files pre-resolution. It reuses the
+  validation+stamping *logic* of 08 §7 run-sequence step 4, **with one
+  pinned semantic difference**:
   on schema-invalid input the verb **reports — exit non-zero with the
   reason — and never deletes** (P1-3, 2026-07-12). Delete-on-invalid is
   a *worker run-sequence* behavior for unattended output; a pane
@@ -432,6 +443,7 @@ surface from the verb, per its own pins), and notifications are absent.
 | No proposal for a record | Detail renders record-only; Iterate works from scratch (the agent generates the proposal — the M1 inline-analysis path through a different door). |
 | Proposal stale (`record_sha` mismatch) | Badge + hint to Iterate; approve stays available (the verb re-validates authoritatively at apply — the TUI badge is advisory UI, the CLI is the enforcer). |
 | Verb exits non-zero (dirty target, push failure, scan refusal…) | Error strip with the verb's stderr verbatim; state re-read from files; nothing optimistic. The verb's own messages are the contract — the TUI adds no interpretation. |
+| `proposal validate` scan hit at session end | Error strip shows the matched span + rule; the record/proposal stay as written (report-never-delete); Detail badges the item "scan-blocked" until a re-validate passes — resolution verbs remain available but `route` will refuse per its own scan (defense in depth). |
 | Record resolved elsewhere mid-view | Watch fires → "resolved elsewhere" banner → Bucket page. |
 | `events.jsonl` absent/corrupt line | Skip + log; wake-ups degrade to the poll; ledger walk is truth. |
 | Socket stale (dead instance left it) | Connect fails → remove + take over (standard liveness-check-then-bind). |
@@ -525,11 +537,12 @@ files+watch architecture makes eventual coherence the default anyway.
 **Landed 2026-07-12 (phase 2)** as dated edits at every named site; the
 list below is the authoritative set the Phase-1 gate reviewed:
 
-1. **07 §3** — "small Agent SDK session" → "agent session behind the
-   PaneEngine interface (`cli` default / `sdk` alternative — 09 §4.1)";
-   the prompt-cache sentence gains the 5-minute-TTL honesty caveat
-   (caching = opportunistic, never a dependency). Both changes cite the
-   two research memos.
+1. **07 §3** — "small Agent SDK session" → an engine-abstracted agent
+   session (`cli` stream-json default / Agent SDK specced alternative —
+   09 §4.1); the prompt-cache sentence gains the 5-minute-TTL honesty
+   caveat (caching = opportunistic, never a dependency). *(As landed:
+   the engine amendment cites the SDK memo directly; the cache
+   amendment cites 09 §4.2, which carries the memo citation — P2-6.)*
 2. **08 §1 pins table** — `--json` stubs row (the anticipated "G-3
    hardens" clause fires; consumers 09 §2.1–2.3):
    (a) `status --json`: add `unanalyzed` per bucket;
@@ -549,7 +562,12 @@ list below is the authoritative set the Phase-1 gate reviewed:
    reusing run-sequence step 4's validate+stamp logic for one id, with
    pinned divergence: **report-never-delete on invalid** (worker runs
    keep delete-on-invalid for unattended output; the verb serves
-   attended iteration — 09 §4.3, P1-3). T13's task list gains it.
+   attended iteration — 09 §4.3, P1-3). *(Extended 2026-07-12/P2-1: the
+   verb also runs the 08 §1 secret scan over the record body + proposal
+   siblings — the S-8 rider's enforcement point for writes that bypass
+   CLI verbs; callers = pane session end AND the slash review's
+   Discuss-edit at card completion (08 T10). Commits nothing. 02 §2
+   gained the enforcement-points pointer.)* T13's task list gains it.
 4. **08 §7.1** — notification emission: dated pointer that at G-3 the
    `notify-send` call moves into `self-learn-notify` (detached, action-
    capable, same payload + events.jsonl line unchanged; 09 §3).
