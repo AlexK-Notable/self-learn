@@ -265,6 +265,12 @@ class Record:
         return self._fm.get("resolution_note")
 
     @property
+    def redacted(self) -> bool:
+        """True iff the secret scan redacted spans in this record (08 §1
+        Secret-scan pin: ``--redact`` sets frontmatter ``redacted: true``)."""
+        return self._fm.get("redacted") is True
+
+    @property
     def deferred_until(self):
         return self._fm.get("deferred_until")
 
@@ -388,6 +394,16 @@ class Record:
             raise ValidationError("resolution_note must be non-empty text")
         self._fm["resolution_note"] = note
 
+    def set_redacted(self, value: bool = True) -> None:
+        """Mark that the secret scan replaced spans (``--redact``). Absent
+        when never redacted — writers set it only on an actual redaction."""
+        if not isinstance(value, bool):
+            raise ValidationError(f"redacted must be a bool, got {value!r}")
+        if value:
+            self._fm["redacted"] = True
+        else:
+            self._fm.pop("redacted", None)
+
     # ------------------------------------------------- evidence (append-only)
 
     def append_evidence(self, entry: dict) -> None:
@@ -468,6 +484,9 @@ class Record:
         note = fm.get("resolution_note")
         if note is not None and not isinstance(note, str):
             raise ValidationError("resolution_note must be null or text")
+        redacted = fm.get("redacted")
+        if redacted is not None and not isinstance(redacted, bool):
+            raise ValidationError(f"redacted must be a bool, got {redacted!r}")
         count = fm.get("deferred_count")
         if count is not None and (
             not isinstance(count, int) or isinstance(count, bool) or count < 0

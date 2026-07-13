@@ -64,7 +64,7 @@ def test_status_human_line_with_buckets(sandbox_home, capsys):
 @pytest.mark.parametrize(
     ("command", "task"),
     [
-        ("teach", "T5"),
+        # ("teach", …) removed at T5 — teach is real now (tests/test_teach.py)
         ("route", "T7"),
         ("reject", "T7"),
         ("defer", "T7"),
@@ -83,9 +83,9 @@ def test_stub_subcommands_exit_2(sandbox_home, capsys, command, task):
 
 
 def test_stub_subcommand_tolerates_extra_args(sandbox_home, capsys):
-    rc = cli.main(["teach", "some lesson", "--skill", "home-assistant"])
+    rc = cli.main(["route", "lrn-4c1e9a2f", "--dest", "skill-md"])
     assert rc == 2
-    assert "not built until T5" in capsys.readouterr().err
+    assert "not built until T7" in capsys.readouterr().err
 
 
 def test_selftest_stub_exits_0(sandbox_home, capsys):

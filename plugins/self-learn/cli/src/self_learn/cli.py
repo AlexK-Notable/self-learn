@@ -1,9 +1,11 @@
-"""self-learn CLI — argparse skeleton (T1) + real `status`/`list` (T3).
+"""self-learn CLI — argparse skeleton (T1) + real `status`/`list` (T3) +
+`teach` (T5).
 
 Remaining subcommands land at their build-plan tasks; until then each stub
 exits 2 with a pointer to the task that builds it. `status` and `list`
 compute over the shared queue/eligibility functions in ledger_ops (08 §1
-`--json`-stubs pin incl. the G-3 hardening; §7.1 step 2 / P2-4).
+`--json`-stubs pin incl. the G-3 hardening; §7.1 step 2 / P2-4). `teach`
+lives in :mod:`self_learn.teach`.
 """
 
 from __future__ import annotations
@@ -14,10 +16,10 @@ import sys
 
 from .ledger import discover_buckets, resolve_home
 from .ledger_ops import list_items, status_infos, unparseable_pending
+from .teach import add_teach_parser, run_teach
 
 # subcommand -> build-plan task that implements it (08-build-plan.md §3/§7.2)
 STUB_TASKS: dict[str, str] = {
-    "teach": "T5",
     "route": "T7",
     "reject": "T7",
     "defer": "T7",
@@ -56,6 +58,8 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="include_deferred",
         help="superset: also show records whose deferred_until is in the future",
     )
+
+    add_teach_parser(sub)
 
     for name, task in STUB_TASKS.items():
         sub.add_parser(name, help=f"not built until {task}", add_help=False)
@@ -156,6 +160,17 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_list(
             as_json=args.as_json, include_deferred=args.include_deferred
         )
+
+    if args.command == "teach":
+        # Real subcommand: extras that parse_known_args swallowed (kept for
+        # the option-less stubs) are hard errors here, not silent drops.
+        if _extra:
+            print(
+                f"self-learn teach: unrecognized arguments: {' '.join(_extra)}",
+                file=sys.stderr,
+            )
+            return EXIT_USAGE
+        return run_teach(args)
 
     task = STUB_TASKS[args.command]
     print(f"self-learn {args.command}: not built until {task}", file=sys.stderr)
