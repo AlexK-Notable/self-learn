@@ -89,6 +89,18 @@ of pipeline sophistication was going to matter — stop and rethink.
 
 ## M1 — The core loop (teach → triage → canon)
 
+**Packaging + versions (pinned 2026-07-12, implementability review):**
+self-learn is a new plugin at `plugins/self-learn/` — `.claude-plugin/
+plugin.json`, a `marketplace.json` entry, `skills/self-learn/SKILL.md`,
+slash commands under `commands/` (namespaced `/self-learn:teach`,
+`/self-learn:review`), and the CLI at `scripts/self-learn` (Python/uv,
+shebang'd, no extension) symlinked to `~/bin` by `install.sh`'s existing
+glob. The CLI locates the ledger via `SELF_LEARN_HOME` (default
+`~/repos/claude-skills`) so captures work from any cwd and tests point at
+sandbox repos. **Version↔milestone mapping: v1.0 = M1+M2; v1.1 = M3+** —
+which places S-14's auto-memory importer in M1, below (its former M3
+listing was stale). Full interface pins: `08-build-plan.md` §1.
+
 Scope: record schema + ledger ops (create/supersede/move) · `self-learn`
 CLI (`teach` with scope/type/structured-field/`--route` flags, `list`,
 `status`, **`route`/`reject`/`defer`** — the resolution verbs own
@@ -97,7 +109,10 @@ compile+commit, sentinel set/heartbeat/release, self-push, and `--note`
 slash command is a thin caller (S-2 amendment, `07-review-ui.md` §4);
 secret scan on **every** record write) ·
 `/teach` wrapper with in-session extraction (O-4) · backlog importer with
-already-canon flagging · `/self-learn:review` command (bounded batches,
+already-canon flagging (criterion pinned in `01` §3.2) · **auto-memory
+importer** (S-14: origin-dedupe across all statuses per `02` §2's key
+format; S-13's post-decision prune sweep with visible confirmation) ·
+`/self-learn:review` command (bounded batches,
 four-option cards with diff previews, bulk-acknowledge, TTL'd+heartbeated
 autosync pause sentinel, **self-push at session end** — the sync's
 clean-tree branch never pushes) · **pause-sentinel support in
@@ -106,22 +121,40 @@ master with its own test; the watcher honors no sentinel today, and it must
 ignore only sentinels whose heartbeat is older than the ~2 h TTL · three compilers
 (SKILL.md managed section, CLAUDE.md managed section — chezmoi-aware for
 user scope (E-17) — references append) · commit flow with record→commit
-linkage, one commit per routed lesson · the O-6 standing offer line, if O-6
-settles yes.
+linkage, one commit per routed lesson · the S-15 standing offer line
+(settled yes — it lives in `~/.claude/CLAUDE.md` as a documented
+chezmoi-managed install step, not compiler output; exact wording pinned in
+`08-build-plan.md` §1, because the filter words are load-bearing spec).
 
-**Exit criteria:** (a) `teach --route` round-trips lesson→diff→commit on
-home-assistant in one motion; (b) backlog import of home-assistant's GOTCHAS
+Known residual, accepted: home-network's capture prompts commit+push this
+repo directly, bypassing the sentinel — but they `git add` only their own
+reference files, so they cannot sweep mid-review `.self-learn` state, and
+their non-FF pushes already tolerate failure (`08-build-plan.md` §5).
+
+**Exit criteria** *(tagged: [auto] = mechanically testable; [protocol] =
+human-in-the-loop run, scripted in `08-build-plan.md`)*: (a) [protocol]
+`teach --route` round-trips lesson→diff→commit on home-assistant in one
+motion; (b) [protocol] backlog import of home-assistant's GOTCHAS
 flags the already-canon majority into one bulk-acknowledge and produces a
 card set — the behavioral minority (E-2: ~5–7) plus analyst-flagged misfiles
 — that one bounded review session fully triages, ending in real commits;
-(c) `--selftest` passes and fails loud when the compiler target markers are
-missing; (d) all writes honor the layout/mutation rules in `02-schema.md`
-(verified by tests, including the no-per-session-writes rule and the
-secret-scan refusal path).
+(c) [auto] `--selftest` passes and fails loud when a target that should
+have a managed section (≥1 routed record) lacks markers (`02` §4's
+bootstrap rule covers first-route targets); (d) [auto] all writes honor
+the layout/mutation rules in `02-schema.md` (verified by tests, including
+the no-per-session-writes rule and the secret-scan refusal path);
+(e) [auto] auto-memory import round-trips: entries appear in triage with
+origin preserved, re-import resurrects nothing (including rejected
+records), and the S-13 prune sweep edits `MEMORY.md` only for
+terminal-status records, with visible confirmation.
 
 Note: M1 has **no worker and no notifications** — analysis runs inline during
 `review` (slower per item, zero infrastructure). This proves the loop's value
-with the minimum surface, per the pre-mortem's lesson.
+with the minimum surface, per the pre-mortem's lesson. Inline analysis
+**writes the same `proposals/lrn-<id>.yaml` sibling the M2 worker will
+write**, so `route` always reads a proposal file (with `--dest` as the
+human override) and M1→M2 is a pure producer swap — never analysis logic
+living in the slash command's prompt (`07-review-ui.md` §4 contract 1).
 
 ## M2 — Surfacing (worker + nudges)
 
@@ -148,20 +181,21 @@ collapses it into one routed survivor + one superseded record with
 trips the staleness alarm within its window; (d) a 10-item triage session
 completes in under ~5 minutes using only card taps.
 
-## M3 — v1.1 (supply widening + remaining compilers)
+## M3 — Remaining compilers + supply review (v1.1)
 
-Scope: auto-memory importer (O-2, origin-dedupe across all statuses, prune
-on route *and* reject per O-5) · hook compiler (scaffold + settings.json
+Scope: hook compiler (scaffold + settings.json
 snippet, P9 flow) · new-skill compiler (plugin-dev delegation) · statusline
 count (optional) · revisit O-3 (SessionEnd appender) and O-7 (ha-note
 unification) against a month of observed supply. (`/teach` moved to M1 —
-it's the primary capture UX, not an optional wrapper; O-4.)
+it's the primary capture UX, not an optional wrapper; O-4. The auto-memory
+importer moved to M1 per S-14 — 2026-07-12; the *other-projects* memory
+sweep remains O-2's G-2-gated extension, not M3 scope.)
 
 **Exit criteria:** one real anti-pattern lesson routed end-to-end into a
 working PreToolUse hook through the explicit-approval flow — **this is
 acceptance fixture A (§0), evaluated here** (the hook compiler ships in
 M3, so §0's staging puts A's trial at this exit, not the M1+M2
-checkpoint); auto-memory entries appear in triage with origin preserved.
+checkpoint).
 
 ## M4 — Gated futures
 

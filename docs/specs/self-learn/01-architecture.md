@@ -82,7 +82,11 @@ znote-compatible for a future backend (v2 gate G-5).
 - **`self-learn teach "<lesson>"`** — the primary channel. Flags: scope
   (above), `--type behavior|knowledge` (default: inferred, confirmed in
   output), `--trigger`/`--instruction`/`--evidence-session` (structured
-  fields), `--route` (skip the bucket: analyze + apply + commit now, P3).
+  fields), `--route` (skip the bucket: analyze + apply + commit now, P3 —
+  it **prints the diff as it applies, with no confirmation prompt**:
+  invocation is the approval; in-session callers pass structured fields plus
+  the destination, and a bare-terminal `--route` with no destination runs a
+  one-shot analyst — implementability review 2026-07-12).
   **The primary UX is in-session capture with the session model as the
   extractor**: the user says "capture that as a lesson" (or runs `/teach`),
   and the Claude that just *watched the failure* — holding the transcript,
@@ -118,7 +122,13 @@ znote-compatible for a future backend (v2 gate G-5).
   everything else — deriving a trigger from a knowledge fact is inference
   and gets human eyes (gen-1 review finding). **The import flags knowledge
   entries whose substance already lives in loaded canon** — the GOTCHAS
-  journal *is* a reference doc — so triage presents those as one
+  journal *is* a reference doc. Pinned criterion (implementability review
+  2026-07-12): flag = `type: knowledge` **and** the source file is itself
+  canon (the entry's current home already serves it); behavioral entries
+  are never bulk-flagged; the call is a model judgment by the importing
+  session (M1) or worker (M2), recorded in the proposal sibling, and a
+  wrong flag costs one mis-grouped card the human de-selects from the bulk
+  card. So triage presents the flagged majority as one
   bulk-acknowledge card (resolved as `superseded_by: canon` — the schema's
   existing already-in-canon semantics, `02-schema.md` §4 — no diff) and spends its
   per-item cards on the behavioral minority (E-2: ~5–7 of ~58) plus anything
@@ -239,13 +249,25 @@ the digest costs nothing because rejection provenance already lives in git.
   every surface (the slash command today, the resident TUI at G-3, a PR
   flow at team scale) is a thin caller of the same substrate. If routing
   logic ever lives in the slash command's prompt, later surfaces inherit
-  nothing. `graduate` is the owning verb for the
+  nothing. Verb mechanics pinned by the 2026-07-12 implementability review
+  (details: `08-build-plan.md` §1): `route <id>` always **reads the
+  proposal sibling** (M1's inline analysis writes the same file the M2
+  worker will — a pure producer swap), with `--dest` as the human
+  override; verbs stage **only the files they touched** (never `git add
+  -A`) and abort if the compile target carries unrelated uncommitted
+  edits; each verb commits then pushes (loud on failure; the review's end
+  summary retries); `sentinel hold|heartbeat|release` are explicit
+  subcommands — the slash review wraps its whole batch, the future TUI
+  wraps only apply flows, and a bare verb self-holds and releases what it
+  created; **every mutating invocation re-touches the sentinel — that is
+  the heartbeat** (no daemon process). `graduate` is the owning verb for the
   hand-weave transition (`02-schema.md` §4): it marks a routed lesson
   `superseded_by: canon` so the compiler drops its managed-section line —
   the same move ha-note exposes as `--promoted`. The CLI is the dependable
   substrate; the slash command is the experience.
 - **`--selftest`** (inherited from ha-note): proves capture path, worker
-  spawn, and compiler dry-run still work — loud, not silent, when dead.
+  spawn (M2+ — M1 has no worker; the check is conditional), and compiler
+  dry-run still work — loud, not silent, when dead.
 
 ### 3.5 Compilers (the routing targets)
 

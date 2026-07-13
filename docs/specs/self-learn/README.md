@@ -28,7 +28,9 @@ human routes it.
 | `05-evidence.md` | The empirical facts this design is built on, with sources |
 | `06-horizon.md` | The team-scale future (~5–6 users, shared artifact repo): invariants, the six team problems, staged path |
 | `07-review-ui.md` | The resident TUI (recorded destination surface): attend-at-convenience, embedded SDK adjudication pane, the don't-subvert contracts on v1/M2 |
+| `08-build-plan.md` | **Execution authority for the build**: pinned interface contracts, the Phase-0 fixture runbook, the M1 task DAG, judgment-call routing, eventuality playbooks — written so any orchestrator can run the build |
 | `research/` | External evidence memos (SOTA surveys etc.) — shareable with blind reviewers, unlike `reviews/` |
+| `fixtures/` | Fixture harness generators + `trials.md` (the Phase-0/§0 trial log) |
 
 ## Ground rules for changing this corpus
 
@@ -119,6 +121,27 @@ human routes it.
   added (absence proof · demonstrated baseline ≥2/3 failures · written
   binary predicate), trial protocol (outside-repo cwd, attribution set,
   3/3 pass bar), one-fixture-per-surface stated as a constraint.
+- **2026-07-12 — implementability review folded; build plan added.** Two
+  independent post-ratification passes (orchestrator read + one blind-to-
+  each-other Fable reviewer with ground-truthing against the live repos;
+  memo: `reviews/2026-07-12-implementability-review.md`, withheld from
+  blind reviewers) hunted gaps that would mislead doc-only implementation
+  sub-agents. Six blockers closed with dated edits: **packaging pinned**
+  (plugin layout, `SELF_LEARN_HOME`, command namespace — 04-M1), **the
+  sentinel's cross-repo contract pinned** (path/mtime-TTL/check-in-sync —
+  02 §3), **marker bootstrap rule** (02 §4), **`route` reads proposal
+  siblings — M1 inline analysis writes them** (01 §3.4, 04-M1),
+  **already-canon flag criterion** (01 §3.2), and the **S-14/M3
+  contradiction resolved** — v1.0 = M1+M2, v1.1 = M3+; the auto-memory
+  importer moves to M1 (03 note, 04). Risk fixes folded: resolution-verb
+  commit formats + per-verb push (02 §2), `superseded_by` merge-loser
+  boundary (02 §2), `evidence.origin` key stability (02 §2), proposal
+  cleanup at resolution (02 §3), `--route` no-prompt semantics + sentinel
+  hold/release scoping (01), chezmoi drift guard, offer-line placement +
+  wording, home-net residual (04-M1/08). E-16 re-verified against the
+  live tool schema. New: **`08-build-plan.md`** — the durable,
+  orchestrator-agnostic execution plan (pins table, fixture runbook, task
+  DAG T1–T12, judgment routing, playbooks, acceptance procedure).
 - **2026-07-12 — ratification calls, first batch (user).** **O-5 settled as
   S-13**: auto-memory pruning is a post-decision, post-processing sweep —
   never in-flight, never inline with adjudication. **O-6 amended**: the

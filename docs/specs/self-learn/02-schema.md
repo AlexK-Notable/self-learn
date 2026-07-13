@@ -3,7 +3,8 @@
 ## 1. The record
 
 One file per learning: YAML frontmatter (machine fields) + markdown body
-(the lesson itself). Filenames: `lrn-<8char-id>.md`.
+(the lesson itself). Filenames: `lrn-<8char-id>.md` — 8 **random lowercase
+hex** chars.
 
 ```yaml
 ---
@@ -88,6 +89,14 @@ standard safe rebase-halt (`01` §5) rather than being excluded outright.
   the merged record's provenance) but existing entries are never rewritten
   or removed. *(Draft 1 listed `evidence` as immutable while also having the
   cluster pass append to it; this resolves that contradiction.)*
+- **`evidence.origin` is a stable dedupe key** *(implementability review
+  2026-07-12)*: `<repo-relative-path>#<anchor>`, where the anchor is a
+  heading/date anchor when the source has one
+  (`GOTCHAS.journal.md#2026-06-08`) or `sha256:<first-12-hex>` of the
+  normalized entry text when it doesn't (auto-memory bullets). **Never line
+  numbers** — the key must survive file reflow, or rejected entries
+  resurrect on the next import (the exact failure the dedupe exists to
+  prevent).
 - **Evidence quotes are minimal, and every record-body write is
   secret-scanned** — capture (`teach`), review edits, and merge collapses
   alike. Records are tracked files: autosync publishes each write to the
@@ -104,6 +113,11 @@ standard safe rebase-halt (`01` §5) rather than being excluded outright.
   and carries no routing linkage. The two meanings are opposites — a failure
   and a success — and metrics must never conflate them (`04-roadmap.md`).
   Graduation's owning verb: `self-learn graduate <id>` (or the review card).
+  One boundary case pinned (implementability review 2026-07-12):
+  **merge-collapse losers** — records that were never routed, merely
+  redundant — take `superseded_by: <survivor-id>` while still pending; the
+  *corrective* reading ("the lesson was wrong") applies only when the
+  superseded record had reached `routed`.
 - **Lifecycle metadata may mutate**: `status`, `routing`, `sightings`,
   `scope`/`kind` (triage may re-classify — the filing is never frozen).
   `deferred` adds `deferred_until` (default: +30 days — the record is
@@ -129,7 +143,13 @@ standard safe rebase-halt (`01` §5) rather than being excluded outright.
   2026-07-12: the **why** may now live in `resolution_note`, above; git
   remains the who/when)* · `status:
   routed` records live in `resolved/` (the directory is the umbrella for all
-  terminal statuses; the status stays precise) · a deferred record keeps
+  terminal statuses; the status stays precise) · **every resolution verb
+  commits**, with pinned message formats — `self-learn: route lrn-… →
+  <target>` · `self-learn: reject lrn-…` · `self-learn: defer lrn-… until
+  <date>` · `self-learn: graduate lrn-…` · `self-learn: supersede lrn-… →
+  lrn-…` — and `resolution_note` becomes the commit body, so no resolution
+  ever rides an anonymous autosync commit (the M2 digest greps these
+  messages; implementability review 2026-07-12) · a deferred record keeps
   `status: deferred` while hidden — queue membership is *computed* from
   `deferred_until`, not read off the status · `teach --route` writes its
   record directly to `resolved/` as `status: routed`, never transiting
@@ -169,9 +189,22 @@ plugins/<p>/skills/<s>/.self-learn/
   — minus deferred records whose `deferred_until` is still in the future —
   with no index to maintain or corrupt. *(Draft 1 called this directory
   `routed/`, which misnamed the rejected and superseded records it also
-  holds.)*
+  holds.)* Resolution also `git rm`s the record's proposal siblings
+  (`proposals/lrn-<id>.{yaml,diff}`) — the M2 digest reads `resolved/`
+  records and resolving commit messages, never stale proposal files
+  (implementability review 2026-07-12).
 - Transient state (worker locks, run markers, coalescing timers) lives in
-  `~/.cache/claude-skills/self-learn/`, never in the repo.
+  `~/.cache/claude-skills/self-learn/`, never in the repo. **The autosync
+  pause sentinel is part of this contract** *(the one cross-repo interface;
+  implementability review 2026-07-12)*: path
+  `~/.cache/claude-skills/self-learn/autosync-pause`; contents one
+  informational line (`pid=… host=… started=…`) — **semantics ride the
+  file's mtime only**: the sentinel is *live* iff mtime is younger than the
+  2 h TTL; every mutating CLI invocation re-touches it (that is the
+  heartbeat); `claude-skills-sync` (main repo) checks it at top-of-run and
+  exits 0 without committing while live — the watcher inherits the check
+  because it only ever calls sync. A stale sentinel is ignored and may be
+  deleted by either side.
 - The format is znote-compatible (md + frontmatter) by design; a znote
   backend (v2 gate G-5) is a relocation, not a migration.
 
@@ -189,7 +222,11 @@ Compilers own exactly the region between their markers, and nothing else:
 Rules: entries are one tight line each, carrying the record id for
 provenance; the compiler regenerates the whole section idempotently from
 `resolved/` records routed to it; text *outside* the markers is never
-touched. Entries are **trigger-first** — "**When ⟨trigger⟩:** ⟨instruction⟩",
+touched. **Bootstrap rule** *(implementability review 2026-07-12 — no
+target file has markers today, so the very first route hits this)*: on the
+first route to a target with no markers, the compiler appends the marker
+pair at end-of-file and proceeds; `--selftest` flags only targets that
+*should* have a section (≥1 record routed to them) but lack markers. Entries are **trigger-first** — "**When ⟨trigger⟩:** ⟨instruction⟩",
 never a bare imperative: the record's `## Trigger` section exists precisely
 to be compiled this way, and a rule that names its firing condition is one
 the model can recognize *in the moment* (Devin's trigger-description
