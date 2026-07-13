@@ -519,3 +519,49 @@ scope.
   not archaeology.
 - This plan is complete when M1 exits; M2 execution planning extends this
   file (same structure) rather than starting a new one.
+
+## Appendix — Build findings (dated; §9 discipline)
+
+- **2026-07-13 · Phase 0: both fixtures failed to qualify** — baselines
+  passed 3/3 each on claude-fable-5 (B: grep-before-sed + post-verify is
+  baseline-native; C: the loaded SKILL.md body itself teaches the
+  stop→edit→start surgery — the original absence proof covered the
+  causal fact, not the predicate behavior). Disposition (user-decided):
+  B → probe for a genuinely baseline-failing, environment-specific
+  lesson; C → backup swap under a **hardened gate**: the absence proof
+  must cover the PREDICATE BEHAVIOR across every loaded surface. The
+  hardened gate then also disqualified the named C backup
+  (registry-write-batching) pre-trial — same flaw class. Fixture
+  selection principle recorded: on a frontier model, delta-provable
+  fixtures are environment-specific/arbitrary-convention lessons, not
+  general good practice. Evidence: `fixtures/trials.md`.
+- **2026-07-13 · `proposal validate` pulled forward T13 → T11** — T10's
+  review prompt calls it at Discuss-edit completion and every
+  ingredient (validate/stamp/scan) existed at M1; T13 extends rather
+  than builds it. Pinned semantics unchanged (§7.1 row).
+- **2026-07-13 · Canonical test invocation** — `cd plugins/self-learn/cli
+  && uv run pytest -q`. From the repo root, pytest collects other uv
+  projects' suites (cron-claude) and fails on their imports; §6.1's
+  "full automated suite" means the cli-project invocation.
+- **2026-07-13 · T7 route ordering** — compile-before-ledger-op (the
+  §3 T7 letter order (d)→(e) is impossible literally: the proposal must
+  be read before resolution deletes it), which also makes the §5
+  chezmoi/crash playbooks literally true. Crash between compile and
+  ledger op = re-run route, idempotent.
+- **2026-07-13 · `--dest reference:<file>`** — the "another existing
+  references file" case (References pin) is expressed as a dest
+  qualifier since the proposal enum stays 02 §1-strict; M3's
+  `new-skill:<name>` will extend the same validator.
+- **2026-07-13 · Missing compile target** — SKILL.md/named references
+  targets REFUSE when absent (broken skill); `<home>/CLAUDE.md` is
+  created empty + bootstrapped on first claude-md route (a repo without
+  a CLAUDE.md is not an error).
+- **2026-07-13 · Analyst invocation (T8)** — doctrine text via
+  `--append-system-prompt`, `--allowedTools Read,Grep,Glob`, model
+  `SELF_LEARN_ANALYST_MODEL` (default claude-sonnet-5), timeout
+  `SELF_LEARN_ANALYST_TIMEOUT` (120 s); analyst/deterministic-path
+  failures capture the record to `pending/` (never lost), exit 4.
+  Literal flag syntax re-verified at T13 alongside the worker's.
+- **2026-07-13 · teach behavior-kind default** — `surface-rule`,
+  echoed with override hint (a kind is schema-required and the DoD
+  invocation carries none).
