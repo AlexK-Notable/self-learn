@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# self-learn — thin wrapper over the uv project at ../cli.
+# readlink -f is LOAD-BEARING: install.sh deploys this file as a ~/bin
+# symlink; $(dirname "$0") would resolve beside the symlink, not the repo
+# (home-net-capture precedent).
+exec uv run --project "$(dirname "$(readlink -f "$0")")/../cli" self-learn "$@"
