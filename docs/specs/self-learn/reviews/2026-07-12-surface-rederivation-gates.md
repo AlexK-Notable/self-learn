@@ -69,8 +69,28 @@ memo is withheld from blind reviewers.*
   terminal-push race named benign. W-6 → bucket group relabeled
   "no analysis yet". W-7 → verified mechanism + Firefox note in
   09 §1. W-8 → residual named in 09 §4.3, cross-ref 02 §2 P2-1a.
-- **Gate re-check (same reviewer): pending.**
+- **Gate re-check (same reviewer): PASS (2026-07-13).** All eight
+  dispositions VERIFIED-CLOSED — by trace, and by live test where
+  load-bearing (caps introspection re-run; out-of-cwd read → callback
+  routing AND deny enforcement proven — a mechanism probe 2 had not
+  tested; renderer re-check). The reviewer independently endorsed the
+  C6 framing judgment (render-path correction does not disturb the
+  binding V1 answer). The remediation minted two new MINORs — the
+  pattern holds, now 6-of-7 batches: **W-9** (CSP `style-src`
+  consequences unpinned: Pygments must run class-mode + served
+  stylesheet, no inline styles, `font-src` iff bundling) and **W-10**
+  (dangling "P2-1a" anchor + non-verbatim 02 §2 quote). Both folded
+  same-day (09 §3/§4.3, 10 §1), plus an attribution-honesty fix the
+  re-check flagged as a caveat: 09 §4.3 no longer credits probe 2
+  with the out-of-cwd routing fact — it credits the re-check's own
+  live test.
 
 ## Phase B — 10 + end-to-end corpus sweep + terminal verdict
 
-Pending phase A gate close.
+- **Reviewer**: a third, fresh Fable agent — no authorship, no
+  remediation involvement in this cycle (terminal-verdict
+  eligibility), blind to reviews/.
+- **Mandate**: review 10-surface-build-plan.md to the 08 standard;
+  end-to-end coherence sweep 00–10 (traced, not asserted); framing
+  lens + empirical discipline per ground rule 4; then the three
+  terminal conditions.

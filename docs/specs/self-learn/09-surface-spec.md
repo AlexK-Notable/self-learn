@@ -266,7 +266,13 @@ permission surface of §4.3).
   script-src 'self'; style-src 'self'; img-src 'self' data:;
   connect-src 'self'` (the app vendors its only script — inline
   scripts and external loads are dead even if something slips
-  through). All of the above is v1 scope, pinned in 10 §1 and tested
+  through). Pinned consequences of that header (W-9, 2026-07-13):
+  **Pygments runs in class mode with a served stylesheet** — never
+  `noclasses` inline-style mode, whose `style=""` spans the CSP would
+  silently drop; **no inline `style=` attributes or `<style>` blocks
+  anywhere** in templates/partials; fonts are `system-ui`-class
+  system fonts — add `font-src 'self'` if and only if a font is ever
+  bundled. All of the above is v1 scope, pinned in 10 §1 and tested
   in T-A (a record body containing `<script>`/`onerror` payloads must
   render escaped; the CSP header must be present). Together with the
   Host/token/POST pins this is **~50 lines of middleware + renderer
@@ -461,11 +467,13 @@ allows/denies per the rules below; paths are canonicalized
 tolerated and skipped (`RateLimitEvent` appears mid-stream on
 subscription auth):
 
-- **Read scope, pinned enforceably (W-3, 2026-07-12).** Probe 2
-  established the enforcement reality: in default permission mode,
-  read tools **auto-approve inside `cwd` and never reach the
-  callback**; reads *outside* `cwd` are permission-worthy and DO
-  route to `can_use_tool`. The pin therefore has two tiers:
+- **Read scope, pinned enforceably (W-3, 2026-07-12).** The
+  enforcement reality, with honest attribution: probe 2 showed reads
+  **auto-approve inside `cwd` and never reach the callback**; that
+  reads *outside* `cwd` DO route to `can_use_tool` — and that a
+  callback deny actually blocks them — was verified live by the
+  phase-A gate re-check (out-of-cwd read denied, recorded in
+  `ResultMessage.permission_denials`; 2026-07-13). The pin therefore has two tiers:
   free reads inside `cwd` = the bucket root (the item's own subtree —
   harmless by construction); the callback **allows** `Read`/`Grep`/
   `Glob` on paths under the resolved `SELF_LEARN_HOME` repo tree
@@ -507,9 +515,10 @@ subscription auth):
   only, never validation. Residual, named (W-8, 2026-07-12): between
   an agent write and the session-end scan, autosync can publish the
   un-scanned record body to the private remote — on this one path the
-  S-8 rider is detect-at-checkpoint, not prevent-at-write, exactly the
-  accepted posture 02 §2 records ("detection, not prevention" —
-  P2-1a). Canon remains protected by the resolution verbs' own scan.
+  S-8 rider is detect-at-checkpoint, not prevent-at-write: exactly the
+  accepted posture 02 §2 records (it "detects at the checkpoint
+  rather than preventing at the keystroke" — P2-1). Canon remains
+  protected by the resolution verbs' own scan.
 - **Permission-surface fallback ladder** (rebuilt for the sdk engine):
   rung 1 = `canUseTool` exact-file callback (default; probes memo is
   the pre-build evidence, the live refusal trial T-B the build-time
