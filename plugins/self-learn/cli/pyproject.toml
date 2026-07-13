@@ -8,7 +8,9 @@ authors = [
     { name = "Alex K", email = "alexkechichian1@gmail.com" },
 ]
 keywords = ["claude", "claude-code", "self-learning", "ledger"]
-dependencies = []
+dependencies = [
+    "ruamel.yaml>=0.18",
+]
 
 [project.scripts]
 self-learn = "self_learn.cli:entrypoint"
