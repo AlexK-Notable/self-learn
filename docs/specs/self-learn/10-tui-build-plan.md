@@ -32,10 +32,12 @@ discipline; repo conventions). TUI-specific additions:
    08 T13's fake) that replays canned stream-json transcripts; the ONLY
    live-model executions in this plan are the §2 live trials, run
    deliberately and logged.
-8. **Tests never touch the user's desktop.** `notify-send`, `hyprctl`,
-   and `ghostty` are PATH-shimmed in tests; `$XDG_RUNTIME_DIR` is
-   redirected to a tmpdir. Live desktop behavior is §2 acceptance, not
-   CI.
+8. **Tests never touch the user's desktop or real cache.**
+   `notify-send`, `hyprctl`, and `ghostty` are PATH-shimmed in tests;
+   `$XDG_RUNTIME_DIR` **and `$XDG_CACHE_HOME`** are redirected to
+   tmpdirs — the TUI resolves its cache home via `XDG_CACHE_HOME`
+   (default `~/.cache`, so the pinned literal paths hold in production;
+   P3-10b). Live desktop behavior is §2 acceptance, not CI.
 9. **The Textual major version is pinned** (§1) and never bumped
    mid-build. A forced bump (security) is a §4 escalation.
 
@@ -43,11 +45,11 @@ discipline; repo conventions). TUI-specific additions:
 
 | Contract | Pin | Cites |
 |---|---|---|
-| Code layout | TUI package: `plugins/self-learn/tui/` — a uv project (`pyproject.toml`, `src/self_learn_tui/…`, `tests/`). Entry point: `plugins/self-learn/scripts/self-learn-tui` (shebang'd, extensionless): `#!/usr/bin/env bash` + `exec uv run --project "$(dirname "$0")/../tui" self-learn-tui "$@"` — a PEP 723 single file cannot hold a multi-module app; the wrapper keeps the ~/bin convention while uv owns the env. install.sh's existing scripts glob symlinks it to `~/bin` | 09 §6; repo CLAUDE.md |
-| Companion scripts | `plugins/self-learn/scripts/self-learn-tui-open` (launcher: socket-forward + `hyprctl dispatch focuswindow class:self-learn-tui`, else `ghostty --class=self-learn-tui -e self-learn-tui …`; **the only WM/terminal-aware file** — degrades to plain `self-learn-tui` exec when `hyprctl`/`ghostty` absent) · `plugins/self-learn/scripts/self-learn-notify` (detached action-capable notifier per 08 §7.1's G-3 pointer: `notify-send -A open --wait`, on `open` → `self-learn-tui-open --record <first-id>`; no daemon — one process per notification, exits on dismiss/timeout/click) | 09 §3 |
-| Dependencies | `textual>=8,<9` (major pinned — trade study churn risk) · `watchfiles` · `PyYAML` · stdlib elsewhere. **No claude-agent-sdk in v1** (sdk engine is specced-not-built, 09 §4.1). Python ≥3.11 | 09 §6, §4.1 |
+| Code layout | TUI package: `plugins/self-learn/tui/` — a uv project (`pyproject.toml`, `src/self_learn_tui/…`, `tests/`). Entry point: `plugins/self-learn/scripts/self-learn-tui` (shebang'd, extensionless): `#!/usr/bin/env bash` + `exec uv run --project "$(dirname "$(readlink -f "$0")")/../tui" self-learn-tui "$@"` — **`readlink -f` is load-bearing** (P3-1, 2026-07-12): install.sh deploys these scripts as `~/bin` *symlinks*, so a bare `$(dirname "$0")` resolves beside the symlink, not the repo (the in-repo precedent is `home-net-capture`'s `readlink -f` pattern; same rule for any sibling-path reference in `self-learn-tui-open`/`self-learn-notify`). A PEP 723 single file cannot hold a multi-module app; the wrapper keeps the ~/bin convention while uv owns the env. install.sh's existing scripts glob symlinks it to `~/bin` | 09 §6; repo CLAUDE.md |
+| Companion scripts | `plugins/self-learn/scripts/self-learn-tui-open` (launcher: socket-forward + `hyprctl dispatch focuswindow class:self-learn-tui`, else `ghostty --class=self-learn-tui -e self-learn-tui …`; **the only WM/terminal-aware file** — degrades to plain `self-learn-tui` exec when `hyprctl`/`ghostty` absent) · `plugins/self-learn/scripts/self-learn-notify` (detached action-capable notifier per 08 §7.1's G-3 pointer: `notify-send -A open --wait`, on `open` → `self-learn-tui-open --record <first-id>`; no daemon — one process per notification, exits on dismiss/timeout/click). **Argv pinned (P3-6):** `self-learn-notify --line "<rendered human string>" --ids <csv-of-record-ids>` — the worker passes the same template output and ids it already logs to events.jsonl; T-D's fixture uses this exact surface, so the fixture and the U8 worker swap cannot diverge | 09 §3 |
+| Dependencies | `textual[syntax]>=8,<9` (major pinned — trade study churn risk; the `[syntax]` extra is required by the Diff-rendering row's tree-sitter YAML highlighting — P3-4) · `watchfiles` · `PyYAML` · stdlib elsewhere. **No claude-agent-sdk in v1** (sdk engine is specced-not-built, 09 §4.1). Python ≥3.11 | 09 §6, §4.1 |
 | Keymap (single source) | `j/k`+arrows move · `Enter/l` drill · `Esc/h` up (Esc in pane = interrupt first) · `a` route · `d` reject · `f` defer · `g` graduate · `i` iterate · `o` cycle destination · `n` note · `r` retry pane · `?` help overlay · `q` quit (in pane: close split). Armed action: any resolution key arms, `Enter` executes, any other key disarms. Defined once in code (`keymap.py`), rendered into footer + help from that table — never duplicated | 09 §1 |
-| Socket protocol | `$XDG_RUNTIME_DIR/self-learn/tui.sock`; one JSON line per connection: `{"navigate": "<record-id>"}` → response line `{"ok": true}`; anything unparseable → `{"ok": false}` and ignore. Bind: if connect succeeds on an existing socket, forward + exit 0; if connect fails, unlink + bind (stale takeover). Socket mode 0600 | 09 §3 |
+| Socket protocol | `$XDG_RUNTIME_DIR/self-learn/tui.sock`; one JSON line per connection: `{"navigate": "<record-id>"}` — or `{"navigate": null}` for a bare second invocation (= focus/no-op navigation; P3-5) — → response line `{"ok": true}`; anything unparseable → `{"ok": false}` and ignore. Bind: if connect succeeds on an existing socket, forward + exit 0; if connect fails, unlink + bind (stale takeover). Socket mode 0600. Invocation surface: `self-learn-tui [--record <id>] [--no-socket]` (`--no-socket` = run detached, never bind nor forward — the §5 socket playbook's escape hatch, now part of the pinned surface) | 09 §3 |
 | Pane `cli` engine invocation | Literal set, **verified against the live CLI at U5 start** (properties are the pin, exact syntax may track the CLI): `claude -p --input-format stream-json --output-format stream-json --include-partial-messages --verbose --system-prompt-file <cache>/pane-doctrine.md --setting-sources <empty/none — exact syntax verified at U5> --strict-mcp-config --no-session-persistence --model $SELF_LEARN_PANE_MODEL --fallback-model claude-haiku-4-5 --max-budget-usd $SELF_LEARN_PANE_BUDGET_USD --max-turns $SELF_LEARN_PANE_MAX_TURNS --disallowedTools "Bash,Task,WebSearch,WebFetch" --allowedTools "Read,Grep,Glob,Edit(<abs pending/lrn-ID.md>),Write(<abs proposals/lrn-ID.yaml>),Edit(<abs proposals/lrn-ID.yaml>),Write(<abs proposals/lrn-ID.diff>),Edit(<abs proposals/lrn-ID.diff>)"` with cwd = the bucket root. Interrupt = stream-json interrupt control message, then SIGTERM at +2 s, SIGKILL at +5 s. First user message = per-item context (09 §4.2's excerpt rule = 08 §7's worker rule) | 09 §4.2–4.3 |
 | Engine event protocol (internal seam) | `PaneEngine.start(ctx) → AsyncIterator[PaneEvent]`; `PaneEvent = block_start(kind) \| text_delta(str) \| tool_use(name, target) \| file_changed(path) \| result(status, cost_usd\|None, error\|None)`; `send(str)`, `interrupt()`, `close()`. The TUI imports only this module; stream-json parsing lives entirely inside the cli engine | 09 §4.1 |
 | Doctrine compile | `<cache>/pane-doctrine.md` = concat of `references/routing-doctrine.md` + `references/pane-charter.md` (both tracked in the plugin; charter authored in U5 from 09 §4.3's charter text). Recompiled when either source mtime > compiled mtime. Byte-stable between recompiles | 09 §4.2 |
@@ -60,10 +62,14 @@ discipline; repo conventions). TUI-specific additions:
 
 Verify-at-build ledger (each gets a scripted check at its task's start;
 failures route per §5): `--setting-sources` empty-value syntax · exact
-`--max-turns` flag name · stream-json event schema against the live CLI
-version (record `claude --version` in the U5 test log) · exact-path
-`allowedTools` rules honored (the §2 live refusal trial is the arbiter;
-fallback ladder 09 §4.3) · `--include-partial-messages` event shape.
+`--max-turns` flag name *(pre-verified 2026-07-12 on 2.1.207: accepted
+though absent from `--help` — P3-3 review probe; re-verify at build)* ·
+stream-json event schema against the live CLI version (record
+`claude --version` in the U5 test log) · exact-path `allowedTools`
+rules honored (the §2 live refusal trial is the arbiter; fallback
+ladder 09 §4.3) · `--include-partial-messages` event shape · **the
+input-side interrupt control-message shape** (P3-3; fallback = the
+SIGTERM/SIGKILL ladder, already pinned).
 
 ## 2. Acceptance fixtures & live trials (defined FIRST, built last)
 
@@ -76,7 +82,11 @@ command, environment, outcome, pass/fail against its predicate).
   proposals; merge clusters; homogeneous already-canon group) → assert
   the derived Front/Bucket/Detail models field-by-field, and Pilot-drive
   the full key flow (arm→disarm→confirm, note entry, `o` cycling +
-  parameterized-destination skip, bulk-collapse arming `graduate`).
+  parameterized-destination skip, bulk-collapse arming `graduate`,
+  **cluster expand → survivor select/override → arm `route <survivor>
+  --collapse <cluster-id>` with argv asserted against the fake
+  `self-learn`** (P3-2), and **advance-to-next after resolution +
+  bucket-clear return to Front** (P3-9)).
   *Predicate:* every 09 §2 behavior named in this sentence has a test
   that fails when its logic is inverted.
 - **T-B · Pane permission live refusal** (live, logged): a real `cli`
@@ -130,8 +140,10 @@ brackets.
   disable-during-run, error strip (stderr verbatim), bulk graduate loop
   (`--no-push` + terminal push, halt-on-failure), interrupt-first
   dispatch check (stub pane), post-verb refresh. *Tests:* PATH-shimmed
-  fake `self-learn` asserting argv sequences (incl. push-on-abort);
-  race test: verb during fake-iteration → interrupt called first.
+  fake `self-learn` asserting argv sequences (incl. push-on-abort AND
+  `route <survivor> --collapse <cluster-id>` from the cluster flow —
+  P3-2); race test: verb during fake-iteration → interrupt called
+  first.
 - **U5 · Pane engine (cli)** [U1]: PaneEngine interface, stream-json
   client (spawn/parse/partial-messages/send/interrupt ladder/result),
   permission-flag compilation from the charter surface, doctrine
@@ -228,9 +240,10 @@ virtualization if a bucket ever exceeds ~500 rows.
 ## 6. Acceptance & merge
 
 1. §2 complete (T-A CI + four live trials logged + degradation walk).
-2. Deploy sweep: `install.sh` rerun; `~/bin/self-learn-tui{,—open}`,
-   `~/bin/self-learn-notify` symlinks live and non-dangling (repo
-   CLAUDE.md rule); fresh-shell launch works.
+2. Deploy sweep: `install.sh` rerun; `~/bin/self-learn-tui`,
+   `~/bin/self-learn-tui-open`, `~/bin/self-learn-notify` symlinks live
+   and non-dangling (repo CLAUDE.md rule); fresh-shell launch works
+   **through the symlink** (the P3-1 failure mode is exactly here).
 3. Worktree → master merge per repo convention; autosync publishes.
 4. 03's G-3 row gains a dated "shipped" note; README revision log
    entry; project memory update.

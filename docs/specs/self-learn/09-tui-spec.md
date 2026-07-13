@@ -211,7 +211,14 @@ S-8, inside the permission surface of §4.3).
   `/self-learn:review` session) surface the same way — the watch fires,
   the view re-reads. If the record currently open in Detail disappears
   (resolved elsewhere), Detail shows a "resolved elsewhere" banner and
-  returns to the Bucket page. No locks, no leases: concurrent surfaces
+  returns to the Bucket page — **and if that record was under active
+  iteration, the pane session is interrupted first (same §4.2 ladder;
+  the banner implies the interrupt — P3-8, 2026-07-12)**: an agent
+  holding Edit on a just-resolved record must not keep writing (its
+  Edit-only record grant cannot recreate the moved file, and a
+  rewritten proposal is an orphan the worker sweeps — bounded either
+  way, but interrupt-first keeps the rule uniform with local
+  resolution). No locks, no leases: concurrent surfaces
   stay coherent because files are the only truth (07 §3).
 - **Verb invocation**: subprocess `self-learn <verb> <id> [--dest …]
   [--note …] [--collapse …]`, exit status + stderr captured. The TUI
@@ -379,10 +386,14 @@ code and compiled to engine config (flags for `cli`, options + callback
 for `sdk`):
 
 - **Allowed**: `Read`, `Grep`, `Glob` (corpus + target canon are
-  readable); `Edit`/`Write` on **exactly** the item's own files:
-  `pending/lrn-<id>.md`, `proposals/lrn-<id>.yaml`,
-  `proposals/lrn-<id>.diff` — absolute-path rules, no wildcards beyond
-  the id's own siblings.
+  readable); on **exactly** the item's own files: `Edit` on
+  `pending/lrn-<id>.md` (the record always exists — granting `Write`
+  would let a session recreate it whole, the resurrection vector §3
+  closes; deliberate least-privilege narrowing, P3-7, 2026-07-12), and
+  `Write`+`Edit` on `proposals/lrn-<id>.yaml` /
+  `proposals/lrn-<id>.diff` (proposals may not exist yet — the
+  no-proposal Iterate creates them) — absolute-path rules, no wildcards
+  beyond the id's own siblings.
 - **Denied, structurally**: `Bash` (with it, every write restriction is
   void — the worker's own pin, E-18), `Task`, `WebSearch`, `WebFetch`,
   MCP (`--strict-mcp-config` with none configured), everything else not
@@ -450,7 +461,7 @@ surface from the verb, per its own pins), and notifications are absent.
 | Proposal stale (`record_sha` mismatch) | Badge + hint to Iterate; approve stays available (the verb re-validates authoritatively at apply — the TUI badge is advisory UI, the CLI is the enforcer). |
 | Verb exits non-zero (dirty target, push failure, scan refusal…) | Error strip with the verb's stderr verbatim; state re-read from files; nothing optimistic. The verb's own messages are the contract — the TUI adds no interpretation. |
 | `proposal validate` scan hit at session end | Discriminated by the verb's pinned exit codes (08 §7.1: 0 clean · 1 schema-invalid · 2 scan hit — never by parsing stderr). Error strip shows the verb's report verbatim; the record/proposal stay as written (report-never-delete); Detail badges the item "scan-blocked" until a re-validate exits 0 — resolution verbs remain available but refuse on their own full-file scan (08 §1 pin/P2-7: a scan-blocked record can never route into canon). |
-| Record resolved elsewhere mid-view | Watch fires → "resolved elsewhere" banner → Bucket page. |
+| Record resolved elsewhere mid-view | Watch fires → "resolved elsewhere" banner → Bucket page; if under active iteration, the pane session is interrupted first (§3/P3-8). |
 | `events.jsonl` absent/corrupt line | Skip + log; wake-ups degrade to the poll; ledger walk is truth. |
 | Socket stale (dead instance left it) | Connect fails → remove + take over (standard liveness-check-then-bind). |
 | swaync/action support absent | Notifications degrade to M2's informative-only behavior. |
@@ -472,8 +483,11 @@ isolated is recorded below instead.
   exists specifically for LLM-rate output) and the highlighted diff
   (Pygments `DiffLexer` via Rich, already a core dependency). Best
   testing story in the field (Pilot + `pytest-textual-snapshot`);
-  packaging is a PEP 723 `uv run --script` shebang — exactly this repo's
-  `~/bin` convention; one language across CLI, TUI, and the `sdk` engine
+  packaging rides `uv` under a shebang'd `~/bin` entry point — exactly
+  this repo's convention *(as built: a uv **project** + thin wrapper
+  script, not a PEP 723 single file — a multi-module app outgrows one
+  file; recorded deviation, 10 §1/P3-7, 2026-07-12)*; one language
+  across CLI, TUI, and the `sdk` engine
   (`claude-agent-sdk` is Python). Lowest estimated build effort by a
   wide margin (Ink would hand-build scroll, list windowing, stream
   batching, and diff rendering).
