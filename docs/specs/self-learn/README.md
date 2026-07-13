@@ -2,7 +2,8 @@
 
 *Single-authored 2026-07-12, replacing the gen-1 harness spec (archived at
 `../archive/gen1-self-learning-harness/` — its README explains why). Status:
-**design, no code**. Everything here was written together, as one system, with
+**RATIFIED 2026-07-12** (revision log) — M1 build is next; no code exists
+yet. Everything here was written together, as one system, with
 the full evidence of three review rounds and the repo's own usage history baked
 in from the start — not iterated into shape.*
 
@@ -97,6 +98,14 @@ human routes it.
   destination, gated on M2). **E-2 demoted to casual-solo floor** — the
   sizing environment is heavy daily work use (user directive; E-2 caveat,
   06-horizon §1).
+- **2026-07-12 — RATIFIED.** Final calls locked (user-delegated): **S-14**
+  (O-2 — auto-memory importer in v1.0), **S-15** (O-6 — quality-gated teach
+  offers in v1.0), **O-1 settled** (TUI after M2; G-3 owns the gate).
+  Register: **15 settled · 1 open (O-3, deliberately empirical — M3
+  revisits with supply data) · 1 parked (O-7) · 6 v2-gated.** Ground rule 3
+  is satisfied: M1 may begin (test-first, in this worktree; first actions
+  are the §0 baseline-qualification trials for fixtures B and C, which
+  need no code).
 - **2026-07-12 — acceptance fixtures hardened (independent review, folded).**
   §0 rewritten per `reviews/2026-07-12-fixture-review.md`: the sourcing
   rule was self-defeating (existing-canon lessons already pass at
