@@ -92,8 +92,11 @@ of pipeline sophistication was going to matter — stop and rethink.
 **Packaging + versions (pinned 2026-07-12, implementability review):**
 self-learn is a new plugin at `plugins/self-learn/` — `.claude-plugin/
 plugin.json`, a `marketplace.json` entry, `skills/self-learn/SKILL.md`,
-slash commands under `commands/` (namespaced `/self-learn:teach`,
-`/self-learn:review`), and the CLI at `scripts/self-learn` (Python/uv,
+slash commands under `commands/` (expected `/self-learn:teach`,
+`/self-learn:review` — deployed by a new install.sh commands surface,
+with a written flat-name fallback if colon-namespacing doesn't
+materialize; `08-build-plan.md` §1 "Command deploy"), and the CLI at
+`scripts/self-learn` (Python/uv,
 shebang'd, no extension) symlinked to `~/bin` by `install.sh`'s existing
 glob. The CLI locates the ledger via `SELF_LEARN_HOME` (default
 `~/repos/claude-skills`) so captures work from any cwd and tests point at

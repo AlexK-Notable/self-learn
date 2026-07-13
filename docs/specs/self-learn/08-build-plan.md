@@ -107,8 +107,11 @@ prompt, transcript location, predicate result, attribution — in
 **C — `data.host`-reload promotion.**
 1. *Absence proof:* the claim under test is specifically **"a config-entry
    reload does NOT re-read `data.host`"** — grep the home-assistant
-   SKILL.md **body** for that causal fact; confirm it exists only in
-   `references/GOTCHAS.md`. Known non-hit, pre-dismissed (gate-check F6):
+   SKILL.md **body** for that causal fact; confirm it lives only under
+   `references/` (both `GOTCHAS.md` and `GOTCHAS.journal.md` carry it —
+   both are unloaded reference files, and 04 §0's binding standard is
+   "absent from every surface *loaded during the trial*"). Known non-hit,
+   pre-dismissed (gate-check F6):
    the SKILL.md body contains `--fix "stop container, edit, start"` inside
    an ha-note usage example — that names the surgery without the
    reload-doesn't-reread fact, and does not void the fixture.
@@ -138,7 +141,10 @@ after T2–T4; T12 anytime.
   install.sh commands surface** per the §1 Command-deploy pin (edited in
   this worktree, merged at §6). *Tests:* CLI runs from a symlink; home
   resolution honors the env var; install.sh change is idempotent (re-run
-  = no-op) and shellcheck-clean. *DoD:* `self-learn status` on an empty
+  = no-op) and lint-clean **scoped to the added block** (`shellcheck` if
+  available, else `bash -n` — shellcheck is not installed on this machine
+  and must not become a sudo detour; the pre-existing script is not held
+  to the same bar). *DoD:* `self-learn status` on an empty
   sandbox prints zero-state without error.
 - **T2 · Record schema module.** Parse/write/validate records (02 §1–§2):
   frontmatter round-trip, body sections by type, id generation (8 lowercase
@@ -303,23 +309,78 @@ after T2–T4; T12 anytime.
 6. Update the corpus README revision log; update project memory and the
    znote hub with the milestone state.
 
-## 7. M2 / M3 briefs (pins to honor; detail lives in 01/04)
+## 7. M2 execution plan (worker + surfacing)
 
-**M2:** worker = detached `claude -p` (setsid + machine-local flock in
-`~/.cache/claude-skills/self-learn/`, coalesced runs, `--allowedTools`
-restricted to repo reads + new files under `.self-learn/**/proposals/`),
-writing analysis + merge proposals only; analyst prompt = the doctrine
-file + the rejected-proposal digest (built from `resolved/` + commit
-messages — G-11's formats make this a grep); last-run marker feeds the
-SessionStart staleness line; notifications per worker run via
-`notify-send`, payload = aggregate line + record ids (07 §4 contract 3);
-SessionStart hook registered **manually** in settings.json (documented
-step). Exit criteria per 04-M2 (tag: a–c [auto-ish], d [protocol]).
+*Detailed 2026-07-12 for the phased implementability gate. Same operating
+rules (§0), same escalation routing (§4). M2 starts only after M1 exits
+(§6).*
 
-**M3:** hook compiler (P9: scaffold + settings.json snippet, never
-auto-register), new-skill via plugin-dev delegation, statusline count,
-O-3/O-7 revisits against a month of supply-mix data, fixture A trial =
-exit criterion.
+### 7.1 M2 pins (extends the §1 table)
+
+| Contract | Pin |
+|---|---|
+| Worker trigger | Kick-driven, not scheduled: `teach` (without `--route`) and `import` end by calling `self-learn worker kick`, which touches a dirty-marker and, if no coalesce window is open, `setsid`-spawns `self-learn worker run --coalesce` (sleep **10 min** default, then run). No systemd unit, no cron — nothing to rot when supply is quiet (E-5) |
+| Worker serialization | Machine-local `flock` on `~/.cache/claude-skills/self-learn/worker.lock`; a second kick during a window is a no-op (the open window absorbs it) |
+| Worker run sequence | (1) `claude-skills-sync` first (pull current state — narrows multi-machine add/add windows); (2) enumerate pending records lacking a proposal, or whose record mtime > proposal `analyzed_at` (re-analysis after edits); (3) one `claude -p` invocation per run covering the batch + the cluster pass; (4) touch `worker.last-run`; (5) emit the notification |
+| Worker `claude -p` | `--allowedTools` = repo reads + `Write` restricted to `.self-learn/**/proposals/` paths (the append-only guarantee is this flag — test asserts the constructed invocation string); model from `SELF_LEARN_WORKER_MODEL`, default a mid-tier model (proposals are human-gated; cost beats brilliance here); prompt = `routing-doctrine.md` + rejected-proposal digest + record bodies + target-canon excerpts; output = proposal/merge YAML per 02 §1 |
+| Rejected-proposal digest | Built by the CLI (not the model) from the last **20** rejected records in `resolved/`: id, title line, `resolution_note` if present, resolving commit subject (`git log --grep "self-learn: reject"`). Injected as negative exemplars ("never re-propose these classes") |
+| Multi-machine honesty note | Two machines' workers CAN both write `proposals/lrn-<id>.yaml` before syncing (01 §3.3's "never collide" holds for *distinct* records only). The run-starts-with-sync step narrows the window; a residual add/add degrades to autosync's standard safe rebase-halt (01 §5) — accepted, same as every other cross-machine collision in the design |
+| Event log (the deep-link contract's durable half) | Every worker run with ≥1 new proposal appends one JSON line to `~/.cache/claude-skills/self-learn/events.jsonl`: `{ts, event, record_ids, aggregate}`. `notify-send` renders the human-visible line (new event + standing aggregate, S-9 format); the events file is what the G-3 TUI will deep-link from — ids exist machine-readably from M2 day one (07 §4 contract 3) even though `notify-send` itself carries no payload |
+| Threshold escalation | Checked at worker-run end AND by the SessionStart hook: ≥5 pending or oldest >7 days → one `notify-send` escalation line (not per-record) |
+| SessionStart hook | `plugins/self-learn/hooks/self-learn-pending.sh` → `~/.claude/hooks/` via install.sh's existing hooks surface; **manual settings.json registration, documented** (repo doctrine). Prints the pending line ("📥 self-learn: 7 pending, oldest 9d — /self-learn:review") + the staleness alarm. Budget: pure filesystem scan, no git/network, <200 ms |
+| Staleness alarm predicate | Fires iff (≥1 pending record lacks a proposal) AND (`worker.last-run` mtime > **3 days** old). Quiet queues with no un-analyzed supply never alarm — a kick-driven worker that hasn't run because nothing arrived is healthy |
+| Review fast path | `/self-learn:review` uses an existing fresh proposal as-is (one-tap); falls back to M1 inline analysis when the proposal is missing or stale — the M1 path is kept, not replaced |
+
+### 7.2 M2 tasks
+
+- **T13 · Worker.** `worker kick|run` per the pins; digest builder;
+  re-analysis staleness rule; `worker.last-run`; failure logging to
+  `~/.cache/claude-skills/self-learn/worker.log` (a failed run does NOT
+  touch last-run — the alarm is the detector). *Tests:* PATH-shimmed fake
+  `claude` (records its argv; asserts `--allowedTools` restriction and
+  prompt composition); flock contention (second run blocks/skips);
+  coalesce window absorbs kicks; failed run leaves last-run untouched;
+  digest content from a fixture `resolved/` set. *DoD:* on a sandbox
+  ledger, `teach` → kick → (shimmed) run → proposal sibling appears,
+  events.jsonl line appended, last-run touched.
+- **T14 · Notifications.** events.jsonl writer + `notify-send` rendering
+  (aggregate line format per 01 §3.6) + threshold escalation. *Tests:*
+  event-line schema; aggregate math (N pending across M scopes); escalation
+  fires at the pinned thresholds, once per run. *DoD:* fixture run emits
+  the S-9-format line verbatim.
+- **T15 · SessionStart hook.** Per the pin; plus the settings.json snippet
+  + registration doc in the plugin README. *Tests:* output format; <200 ms
+  on a 100-record fixture; staleness predicate truth table (4 cases).
+  *DoD:* hook script green + install doc updated; registration itself is
+  a documented manual step (§4 routes it to the human).
+- **T16 · Review fast path + merge collapse.** Review consumes fresh
+  proposals one-tap; merge-proposal cards (cluster → single card, human
+  collapse: route survivor + `evidence` gains merged provenance +
+  losers `superseded_by: <survivor-id>` per 02 §2's boundary rule,
+  `sightings` set). *Tests:* collapse mechanics on a fixture cluster
+  (record states + section output + commits); stale-proposal fallback.
+  *DoD:* 04-M2 exit (b)'s mechanical half green.
+
+### 7.3 M2 acceptance (04-M2 exit criteria, tagged)
+
+(a) [auto, shimmed] taught lesson gains a proposal within one worker
+cycle, no session involved; (b) [auto + protocol] planted near-duplicate
+pair → merge proposal → next review collapses to one routed survivor +
+one superseded record with `sightings: 2`; (c) [auto, clock-mocked]
+killed worker trips the staleness alarm at the pinned predicate;
+(d) [protocol] 10-item triage in <~5 min on card taps alone. Plus:
+fixtures **B and C final call at this M1+M2 checkpoint** (04 §0 staging;
+§6.5 pre-armed them at M1 exit). After acceptance: register the
+SessionStart hook (manual), update README/memory/hub.
+
+## 8. M3 brief (detailed at phase 3 of the gate process)
+
+Hook compiler (P9: scaffold + settings.json snippet, never
+auto-register), new-skill via plugin-dev delegation, statusline count
+(optional), O-3/O-7 revisits against a month of supply-mix data, fixture
+A trial = exit criterion. This section is intentionally a brief until M2's
+gate passes; its detailing follows the same review → remediate → gate
+cycle.
 
 ## 8. Change control
 
