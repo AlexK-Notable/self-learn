@@ -406,14 +406,64 @@ fixtures **B and C final call at this M1+M2 checkpoint** (04 §0 staging;
 §6.5 pre-armed them at M1 exit). After acceptance: register the
 SessionStart hook (manual), update README/memory/hub.
 
-## 8. M3 brief (detailed at phase 3 of the gate process)
+## 8. M3 execution plan (remaining compilers + supply review)
 
-Hook compiler (P9: scaffold + settings.json snippet, never
-auto-register), new-skill via plugin-dev delegation, statusline count
-(optional), O-3/O-7 revisits against a month of supply-mix data, fixture
-A trial = exit criterion. This section is intentionally a brief until M2's
-gate passes; its detailing follows the same review → remediate → gate
-cycle.
+*Detailed 2026-07-12 for the phased implementability gate. Same operating
+rules (§0), same escalation routing (§4). M3 starts only after M2's
+acceptance (§7.3).*
+
+### 8.1 M3 pins (extends §1/§7.1)
+
+| Contract | Pin |
+|---|---|
+| Hook compiler output | `route <id> --dest hook` scaffolds `plugins/<p>/hooks/self-learn-<record-id>-<slug>.sh` (bash, shebang'd, executable) + prints the `settings.json` registration snippet. **Never auto-registers** (repo doctrine: settings.json is manual) — registration is a documented human step, and the hook is inert until then. The in-repo precedent to copy is `universal-directory-organizer`'s fail-closed PreToolUse guard, NOT a fresh invention |
+| Generated guard shape | PreToolUse protocol: read the hook JSON from stdin; decide on `tool_name` ∈ a pinned set (typically `Edit\|Write`) plus a **path/argument regex derived from the record's Trigger**; deny = exit 2 with a one-line stderr message citing the rule and the record id (`self-learn lrn-…: <instruction>`); allow = exit 0. The regex is proposed by the analyst and **shown in full in the approval diff** — deriving a deterministic predicate from prose is a §4 judgment (analyst proposes, human reads the actual regex; P9 means the diff approval IS the safety gate) |
+| Hook approval flow | The route card/verb shows the entire generated script as the diff (not a summary). Approval routes the record and commits the script; the settings.json snippet is printed and logged in the commit body. install.sh's existing hooks surface symlinks it into `~/.claude/hooks/` at next run |
+| Hook selftest | `--selftest` (M3 extension): each routed-to-hook record's script exists, is executable, and — if registered in `settings.json` — the registration references the symlinked path that exists. Read-only checks; loud on failure |
+| New-skill compiler | `route <id> --dest new-skill` creates a **deterministic minimal scaffold** with the CLI's own template — `plugins/<name>/.claude-plugin/plugin.json`, `skills/<name>/SKILL.md` (frontmatter + a managed section containing the routed lesson(s)) — and appends the marketplace.json entry. No dependency on the plugin-dev plugin for the substrate; enriching the new skill afterwards (description tuning, references) is a normal session activity where plugin-dev *may* be used. Skill naming is a §4 human call (the card proposes, the human confirms) |
+| Statusline count | Optional, default OFF; if the user asks: a statusline script calling `status --json --fast`, budget rules same as the SessionStart hook. Not part of M3 acceptance |
+| O-3 / O-7 revisit | [protocol] with the user, data-driven: `status --json` gains a `supply_mix` block (counts of resolved+pending by `source`) — the O-3 input 04's metrics name. The revisit is a conversation, not a build task; its outcome lands as dated register edits in 03 |
+
+### 8.2 M3 tasks
+
+- **T17 · Hook compiler.** Per the pins: scaffold generator, snippet
+  printer, approval-diff flow through the existing `route` machinery,
+  selftest extension. *Tests:* generated script against stdin fixtures
+  (denied call exits 2 with the pinned message shape; allowed call exits
+  0; malformed stdin fails closed); scaffold placement + executability;
+  snippet content; selftest catches a deleted script and a
+  registration pointing at a missing path. *DoD:* a fixture anti-pattern
+  record routes to a working guard in a sandbox tree.
+- **T18 · New-skill compiler.** Template scaffold + marketplace append
+  (idempotent — re-route to the same skill name must not duplicate the
+  entry). *Tests:* scaffold validates against an existing plugin's shape
+  (plugin.json parses, SKILL.md frontmatter well-formed, managed section
+  present); marketplace entry appended once. *DoD:* scaffolded plugin
+  passes the same structural checks install.sh relies on.
+- **T19 · `supply_mix` in status + metrics counters.** The counted-not-
+  modeled numbers 04 §Success-metrics names: time-to-triage, queue
+  health, routed-and-corrected (excluding `superseded_by: canon`),
+  supply mix. All computed from the ledger + git on demand — no state
+  files. *Tests:* fixture ledger → known counts; canon-graduations
+  excluded from the corrected metric. *DoD:* `status --json` carries the
+  block; numbers match the fixture by hand-count.
+- **T20 · O-3/O-7 revisit + fixture A.** [protocol] — schedule with the
+  user once a month of real supply exists; fixture A's post-routing
+  trial per §2/04 §0 (route the `.storage` record through T17's
+  compiler, register the guard manually, run the mechanical denied-call
+  check in a sandbox tree; pre-routing pass already recorded in Phase 0).
+
+### 8.3 M3 acceptance (04-M3 exit, tagged)
+
+[protocol] One real anti-pattern lesson routed end-to-end into a working,
+manually-registered PreToolUse hook through the explicit-approval flow —
+**this is acceptance fixture A**, scored against §2's mechanical
+predicate (unguarded pass before routing — recorded in Phase 0 — guard
+denies after). [auto] T17/T18/T19 suites green. Then: v1.1 declared,
+metrics collection begins (04 §Success-metrics), O-3/O-7 revisit
+scheduled, README/memory/hub updated. TUI work (G-3) remains gated on
+its own trigger and its own blind review — explicitly out of this plan's
+scope.
 
 ## 9. Change control
 
