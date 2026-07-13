@@ -155,3 +155,19 @@ V4. Standing weighting for future conflicts: keyboard/security vs
 
 Testing serves this map; nothing above is a prerequisite to asking
 the V-questions.
+
+## 6. User answers (binding, 2026-07-12 — AskUserQuestion, routed before any freeze)
+
+| # | Question | Answer |
+|---|---|---|
+| V1 | Platform | **Localhost web app** (FastAPI + Jinja + vendored htmx + SSE, systemd --user, 127.0.0.1) |
+| V2 | Residency requirement | **Any dedicated window** — ambient presence + instant attend; terminal residency per se is NOT part of the product (07 §3's sentence reinterpreted, dated amendment) |
+| V3 | Pane engine default | **Agent SDK** (original directive restored; canUseTool charter enforcement; CLI stream-json becomes the specced alternative behind the PaneEngine seam) |
+| V4 | Standing weighting | **DX & agent leverage** win by default over keyboard-ownership/network-surface when they conflict and mitigations exist |
+
+These answers bind this cycle (README ground rule 4). Consequence:
+the coherent choice is B + SDK — a server-rendered localhost web
+surface whose Iterate pane runs the Agent SDK engine. Discriminating
+probes (§5: SDK partial-streaming granularity, canUseTool behavior)
+are now live and must be empirically run before 09's §4 pins freeze —
+they ground pin wording (fallback ladders), not the engine choice.
