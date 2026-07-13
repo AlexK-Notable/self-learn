@@ -261,3 +261,21 @@ human routes it.
   only independent re-check caught. Process record:
   `reviews/2026-07-12-surface-rederivation-gates.md` (withheld from
   blind reviewers). Build stays gated on G-3's trigger.
+- **2026-07-13 — M1 BUILT AND MERGED (v1.0 core loop live).** All twelve
+  08 §3 tasks executed test-first in the worktree by per-task
+  implementation agents (376 tests green; per-task commits T1…T11 +
+  T12's sentinel check live on master since f198e49); merged to master
+  (523fbf5), deployed via install.sh — `~/bin/self-learn`, the skill,
+  and colon-namespaced `/self-learn:teach` + `/self-learn:review`
+  verified live. S-15 offer line applied through the guarded chezmoi
+  flow (which caught and reconciled real pre-existing drift — E-17
+  vindicated). Build findings recorded in 08's appendix, including:
+  **Phase 0 disqualified both fixtures** (baselines passed 3/3 on
+  claude-fable-5 — general-good-practice lessons are baseline-native
+  on a frontier model) → user-directed replacement probes for
+  environment-specific candidates under a hardened qualification gate
+  (absence proof must cover the predicate behavior; the gate also
+  killed the named C backup pre-trial); `proposal validate` pulled
+  forward T13→T11. Remaining M1 exit items: the two [protocol] runs
+  (exit a: one-motion teach --route; exit b: the GOTCHAS backlog-import
+  review session) and fixture ratification + post-routing trials.
