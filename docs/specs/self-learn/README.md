@@ -43,6 +43,16 @@ human routes it.
    receive the docs and a mandate, never the expected conclusion.
 3. No code until the user ratifies the corpus; build happens in this worktree
    per the repo's worktree → test → merge convention.
+4. *(Added 2026-07-12, after the SDK-auth false-fact failure — znote
+   `zQgIhHiqhJFes7RRzU4bF`.)* **Sourced ≠ true, and true ≠ right-for-us.**
+   A decision-relevant claim that is locally testable gets an empirical
+   test before it may ground a decision — quoting live docs is not
+   verification. And every material-decision review includes a
+   **framing lens**: what option or assumption was never priced; does
+   the stated frame fit the actual circumstance (this user, this
+   workflow, this maintenance reality). Problem-space map before option
+   comparison; the user's values questions routed early and binding,
+   never as post-hoc veto footnotes.
 
 ## Revision log
 

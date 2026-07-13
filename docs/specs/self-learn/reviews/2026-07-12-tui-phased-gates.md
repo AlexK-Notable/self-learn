@@ -140,6 +140,27 @@ only the independent re-check caught.**
   documentation alone"); 3 Design quality PASS (choices judged on the
   axes, not on rationale-text existence).**
 
+## POST-GATE CORRECTION (2026-07-12, same day — user challenge)
+
+The terminal verdict's design-quality condition cited "cli engine
+default grounded in source-verified economics" — **that ground was
+false.** The user challenged the "SDK is API-key-only" claim; an
+empirical test disproved it in minutes (subscription OAuth works;
+`research/2026-07-12-sdk-auth-empirical-test.md`). All three phases'
+reviewers had "ground-truthed" the claim by confirming the quote exists
+in live docs — none tested it. A user-commissioned DX study
+(`research/2026-07-12-tui-vs-web-dx-study.md`) further showed the
+Phase-0 trade study's TUI-only frame hid a decisively
+easier-to-develop-for alternative (localhost web app). Failure analysis
+(three modes: sourced ≠ true; frame narrowing — reviewers inherit the
+author's frame; asymmetric retroactivity / true ≠ right-for-us):
+znote `zQgIhHiqhJFes7RRzU4bF`, memory
+`verification-and-framing-doctrine`, README ground rule 4 (new).
+**Status: 09/10 remain structurally gated, but their platform/framework
+/engine decisions are REOPENED** pending a further /goal cycle
+(holistic problem-space map, early user-values routing, framing lens in
+all reviews). Do not build from 09/10 until that cycle lands.
+
 ## Standing notes
 
 - Lesson tally closed at **5-for-6**: phases 1 and 2 remediations each
