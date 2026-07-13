@@ -173,3 +173,11 @@ all reviews). Do not build from 09/10 until that cycle lands.
 - Build start remains gated on G-3's trigger (M2 shipped, worker
   proven); running 10 before that is itself a routed escalation
   (10 §4).
+
+*(Rename note, 2026-07-12: the post-correction cycle rewrote and
+renamed the gated docs — `09-tui-spec.md` → `09-surface-spec.md`,
+`10-tui-build-plan.md` → `10-surface-build-plan.md` (platform → web,
+engine → SDK, per binding user answers). The TUI revisions this memo
+reviews live in git history through `1ce408c`. This memo is the
+process record of that superseded cycle; its substrate findings
+(P1-x/P2-x/P3-x) remain live pins, carried into the web revision.)*

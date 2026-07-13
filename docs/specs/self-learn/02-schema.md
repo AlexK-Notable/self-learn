@@ -258,10 +258,14 @@ plugins/<p>/skills/<s>/.self-learn/
   (implementability review 2026-07-12).
 - Transient state (worker locks, run markers, coalescing timers) lives in
   `~/.cache/claude-skills/self-learn/`, never in the repo. *(G-3
-  addition, 2026-07-12 — 09 §3/§10:)* the TUI follows suit — `tui.log`
-  and the compiled `pane-doctrine.md` live there; its single-instance
-  socket lives under `$XDG_RUNTIME_DIR/self-learn/` (sockets belong in
-  the runtime dir, not the cache). No new state locations. **The autosync
+  addition, 2026-07-12 — 09 §3/§10; revised same day with the platform
+  re-decision, 09-surface-spec.md:)* the adjudication surface follows
+  suit — `ui.log` and the compiled `pane-doctrine.md` live there; its
+  runtime bearer token lives under `$XDG_RUNTIME_DIR/self-learn/`
+  (`ui-token`, 0600 — runtime secrets belong in the runtime dir, not
+  the cache; replaces the TUI revision's socket entry — the socket
+  subsystem was deleted with the platform change). No new state
+  locations. **The autosync
   pause sentinel is part of this contract** *(the one cross-repo interface;
   implementability review 2026-07-12)*: path
   `~/.cache/claude-skills/self-learn/autosync-pause`; contents one

@@ -1,10 +1,24 @@
-# 07 — Review UI: the resident TUI (recorded vision)
+# 07 — Review UI: the destination adjudication surface (recorded vision)
 
 *User-specified direction, 2026-07-12. This is the **destination surface**
 for adjudication — recorded now so that v1 (the `/self-learn:review`
-scaffolding) is built as a skin over substrate the TUI will reuse, never as
-the place where mechanics live. Gated at G-3; prerequisite is M2 (worker
-proposals are this UI's fuel). O-1 and S-2 point here.*
+scaffolding) is built as a skin over substrate the surface will reuse,
+never as the place where mechanics live. Gated at G-3; prerequisite is M2
+(worker proposals are this UI's fuel). O-1 and S-2 point here.*
+
+*(Platform amendment, 2026-07-12 — the post-correction problem-space
+cycle: this vision was recorded as a **resident TUI**; the platform was
+re-decided the same day to a **localhost server-rendered web app in a
+dedicated chromeless app window**, from a holistic option-space map
+with the user's answers routed first and binding
+(`research/2026-07-12-adjudication-surface-problem-space.md` §6;
+design authority `09-surface-spec.md`). The user's binding V2 refines
+this document's "the resident window is the point": the requirement is
+**ambient presence + instant attend in any dedicated window** —
+terminal residency per se is not part of the product. Everything
+below that is not about the terminal — the interaction model, the
+surfaces, the pane invariants, the §4 contracts — stands unchanged;
+read "TUI" as "the surface".)*
 
 ## 1. The interaction model: attend-at-convenience
 
@@ -82,7 +96,13 @@ system. Design rules:
   empirical test — both engines ride the same credential chain,
   subscription included; `research/2026-07-12-sdk-auth-empirical-test.md`.
   The engine default stands on capability + uniformity, 09 §4.1 as
-  corrected.)* The invariants in
+  corrected.)* *(Re-amended 2026-07-12, post-correction cycle: with the
+  auth ground void, the user's binding V3 **restored the Agent SDK as
+  the default engine** — this bullet's original wording — with the CLI
+  subprocess as the specced alternative; empirical probes of SDK
+  streaming and `canUseTool` grounded the pins:
+  `research/2026-07-12-sdk-pane-probes.md`, 09 §4.1 web revision.)*
+  The invariants in
   this bullet are engine-independent and unchanged.)* The **system
   prompt — the adjudication doctrine: routing map, repo conventions,
   what the agent may and may not do — is deliberately stable and

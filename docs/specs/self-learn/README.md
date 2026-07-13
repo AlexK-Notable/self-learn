@@ -27,10 +27,10 @@ human routes it.
 | `04-roadmap.md` | Build milestones, acceptance fixture, success metrics |
 | `05-evidence.md` | The empirical facts this design is built on, with sources |
 | `06-horizon.md` | The team-scale future (~5–6 users, shared artifact repo): invariants, the six team problems, staged path |
-| `07-review-ui.md` | The resident TUI (recorded destination surface): attend-at-convenience, embedded agent adjudication pane (engine-abstracted at G-3 — see 09), the don't-subvert contracts on v1/M2 |
+| `07-review-ui.md` | The review-surface vision (recorded 2026-07-12 as a resident TUI; platform since re-decided — see 09): attend-at-convenience, embedded agent adjudication pane, the don't-subvert contracts on v1/M2 |
 | `08-build-plan.md` | **Execution authority for the build**: pinned interface contracts, the Phase-0 fixture runbook, the M1 task DAG, judgment-call routing, eventuality playbooks — written so any orchestrator can run the build |
-| `09-tui-spec.md` | **Design authority for the G-3 TUI**: interaction model, surfaces, files-as-truth data flow, the adjudication pane (engine abstraction: CLI stream-json default / Agent SDK alternative), degradation table, framework selection (Textual, trade-studied) |
-| `10-tui-build-plan.md` | **Execution authority for the G-3 build** (gated on G-3's trigger): TUI-local pins + verify-at-build ledger, acceptance fixtures incl. live trials, task DAG U1–U11, judgment routing, playbooks — 09 wins on conflict; shared pins stay owned by 08 |
+| `09-surface-spec.md` | **Design authority for the G-3 adjudication surface** (web revision, 2026-07-12): interaction model, surfaces/routes, files-as-truth data flow, security middleware, the adjudication pane (Agent SDK engine default / CLI stream-json alternative, empirically probed), degradation table, stack selection |
+| `10-surface-build-plan.md` | **Execution authority for the G-3 build** (gated on G-3's trigger): surface-local pins + verify-at-build ledger, acceptance fixtures incl. live trials, task DAG U1–U11, judgment routing, playbooks — 09 wins on conflict; shared pins stay owned by 08 |
 | `research/` | External evidence memos (SOTA surveys etc.) — shareable with blind reviewers, unlike `reviews/` |
 | `fixtures/` | Fixture harness generators + `trials.md` (the Phase-0/§0 trial log) |
 
@@ -216,3 +216,29 @@ human routes it.
   superseded as artificial; serious corrections are never rationed. **O-7
   parked**: ha-note stays independent until the library matures — focus is
   the standalone tool, not claude-skills internals.
+- **2026-07-12 — G-3 re-derived post-correction (platform → web, engine →
+  SDK).** The TUI plan's terminal verdict was voided the same day it
+  passed (POST-GATE CORRECTION in the phase memo; ground rule 4 added).
+  This cycle repaired the failure modes per that rule: a **holistic
+  problem-space map** authored first
+  (`research/2026-07-12-adjudication-surface-problem-space.md` — the
+  full option space priced: TUI / localhost web / hybrids / do-less
+  baseline, on fit-for-us criteria); the user's values routed **early
+  and binding** via one AskUserQuestion round (§6: platform = localhost
+  web app; residency = any dedicated window; pane engine = Agent SDK,
+  restoring the original directive; standing weighting = DX & agent
+  leverage); decision-relevant SDK claims **empirically probed before
+  pins froze** (`research/2026-07-12-sdk-pane-probes.md` — streaming
+  chunk-level ~5 Hz; `can_use_tool` exact-file gating verified, with
+  three pinned footguns: streaming-mode requirement, `allowed_tools`
+  shadowing, `setting_sources` unset ≠ none). **09/10 rewritten and
+  renamed** (`09-surface-spec.md`, `10-surface-build-plan.md`):
+  FastAPI/Jinja/vendored-htmx surface, systemd --user service,
+  security middleware in scope, SDK pane engine with the charter as a
+  `can_use_tool` callback; every TUI-era substrate pin (P1-x/P2-x/P3-x
+  closures) carried forward explicitly; socket/launcher subsystems
+  deleted, not ported. Dated amendments: 07 (platform + engine
+  restoration), 08 (terminology note + launcher rename), 02 §3 (token
+  replaces socket), 03 (G-3 row). Textual TUI + cli engine = recorded
+  alternatives (view-layer swap only). Build stays gated on G-3's
+  trigger. Review phases of this cycle: recorded below as they gate.
