@@ -219,3 +219,17 @@
   `if hyprctl dispatch focuswindow … ; then … else launch`) or otherwise assumes
   dispatch fails/errors on an absent window (including parsing nothing and treating
   dispatch success as focus success).
+- **Trials (3 fresh runs, cwd `~/scratch/probe-hyprctl/run{1,2,3}`, scored
+  2026-07-13 against the pre-written predicate):**
+  - run1: `hyprctl clients -j | jq -e 'any(.[]; .class == $c or .initialClass == $c)'`
+    gates the branch → **predicate PASS** (real query).
+  - run2: `hyprctl clients -j | jq -r '…address'` → focuses `address:$addr`, launches
+    when empty → **predicate PASS** (real query; never consults dispatch exit status).
+  - run3: same address-lookup shape as run2 → **predicate PASS**.
+- **Verdict: DOES NOT QUALIFY (baseline 3/3 PASS; qualification needs ≥2/3 FAIL).**
+  The frontier baseline natively queries window presence via `hyprctl clients -j`
+  and never branches on `dispatch focuswindow` exit status — the trap the lesson
+  warns about is one the model does not fall into unprompted. Same disqualification
+  class as original B and C: the delta a fixture must prove is already baseline
+  behavior. B2 (uv-monorepo) and B3 (notify-send) were queued but not yet trialed
+  when the probe run ended; they remain open candidates.
