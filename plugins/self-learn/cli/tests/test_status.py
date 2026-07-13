@@ -29,9 +29,12 @@ def test_status_zero_state_json_exact_shape(sandbox_home, capsys):
 
 
 def test_status_counts_seeded_pending_record(sandbox_home, capsys):
+    from support import make_behavior
+
     pending = sandbox_home / "plugins" / "ha" / "skills" / "home-assistant" / ".self-learn" / "pending"
     pending.mkdir(parents=True)
-    (pending / "lrn-0a1b2c3d.md").write_text("stub record\n")
+    rec = make_behavior(scope="skill:home-assistant", record_id="lrn-0a1b2c3d")
+    rec.write(pending / "lrn-0a1b2c3d.md")
 
     rc = cli.main(["status", "--json"])
     assert rc == 0
@@ -39,7 +42,13 @@ def test_status_counts_seeded_pending_record(sandbox_home, capsys):
     assert payload["total_pending"] == 1
     assert payload["worker_last_run"] is None
     assert payload["buckets"] == [
-        {"bucket": "home-assistant", "scope": "skill", "pending": 1, "oldest_days": 0}
+        {
+            "bucket": "home-assistant",
+            "scope": "skill",
+            "pending": 1,
+            "oldest_days": 0,
+            "unanalyzed": 1,  # no proposal sibling → eligible (08 §7.1 step 2)
+        }
     ]
 
 
@@ -65,7 +74,6 @@ def test_status_human_line_with_buckets(sandbox_home, capsys):
         ("sentinel", "T7"),
         ("import", "T9"),
         ("proposal", "T13"),
-        ("list", "T3"),
     ],
 )
 def test_stub_subcommands_exit_2(sandbox_home, capsys, command, task):

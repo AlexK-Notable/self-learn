@@ -1,9 +1,9 @@
-"""self-learn CLI — argparse skeleton (T1).
+"""self-learn CLI — argparse skeleton (T1) + real `status`/`list` (T3).
 
-Real subcommands land at their build-plan tasks; until then each stub exits 2
-with a pointer to the task that builds it. ``status`` is real (zero-state +
---json per the §1 M1-minimal shape); its pending counting is the T1 stub in
-ledger.py (T3 owns queue semantics).
+Remaining subcommands land at their build-plan tasks; until then each stub
+exits 2 with a pointer to the task that builds it. `status` and `list`
+compute over the shared queue/eligibility functions in ledger_ops (08 §1
+`--json`-stubs pin incl. the G-3 hardening; §7.1 step 2 / P2-4).
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ import json
 import sys
 
 from .ledger import discover_buckets, resolve_home
+from .ledger_ops import list_items, status_infos, unparseable_pending
 
 # subcommand -> build-plan task that implements it (08-build-plan.md §3/§7.2)
 STUB_TASKS: dict[str, str] = {
@@ -26,7 +27,6 @@ STUB_TASKS: dict[str, str] = {
     "sentinel": "T7",
     "import": "T9",
     "proposal": "T13",
-    "list": "T3",
 }
 
 EXIT_OK = 0
@@ -48,23 +48,36 @@ def _build_parser() -> argparse.ArgumentParser:
     status = sub.add_parser("status", help="show bucket/pending overview")
     status.add_argument("--json", action="store_true", dest="as_json")
 
+    list_p = sub.add_parser("list", help="list queued records")
+    list_p.add_argument("--json", action="store_true", dest="as_json")
+    list_p.add_argument(
+        "--include-deferred",
+        action="store_true",
+        dest="include_deferred",
+        help="superset: also show records whose deferred_until is in the future",
+    )
+
     for name, task in STUB_TASKS.items():
         sub.add_parser(name, help=f"not built until {task}", add_help=False)
 
     return parser
 
 
+def _warn_unparseable(home) -> None:
+    """Unparseable pending files are excluded from the queue — never
+    silently: name each one on stderr."""
+    for bucket in discover_buckets(home):
+        for path in unparseable_pending(bucket):
+            print(
+                f"self-learn: warning: skipping unparseable record {path}",
+                file=sys.stderr,
+            )
+
+
 def _cmd_status(as_json: bool) -> int:
-    buckets = discover_buckets(resolve_home())
-    infos = [
-        {
-            "bucket": b.name,
-            "scope": b.scope,
-            "pending": b.pending_count(),
-            "oldest_days": b.oldest_days(),
-        }
-        for b in buckets
-    ]
+    home = resolve_home()
+    _warn_unparseable(home)
+    infos = status_infos(home)
     total_pending = sum(i["pending"] for i in infos)
 
     if as_json:
@@ -84,7 +97,41 @@ def _cmd_status(as_json: bool) -> int:
     print(f"self-learn: {total_pending} pending across {len(infos)} bucket{plural}")
     for i in infos:
         age = "" if i["oldest_days"] is None else f", oldest {i['oldest_days']}d"
-        print(f"  {i['bucket']} ({i['scope']}): {i['pending']} pending{age}")
+        print(
+            f"  {i['bucket']} ({i['scope']}): {i['pending']} pending, "
+            f"{i['unanalyzed']} unanalyzed{age}"
+        )
+    return EXIT_OK
+
+
+def _proposal_cell(item: dict) -> str:
+    if not item["has_proposal"]:
+        return "-"
+    return "fresh" if item["proposal_fresh"] else "stale"
+
+
+def _cmd_list(as_json: bool, include_deferred: bool) -> int:
+    home = resolve_home()
+    _warn_unparseable(home)
+    items = list_items(home, include_deferred=include_deferred)
+
+    if as_json:
+        print(json.dumps(items))
+        return EXIT_OK
+
+    if not items:
+        print("self-learn: 0 records")
+        return EXIT_OK
+
+    print(
+        f"{'ID':<13} {'AGE':>4} {'STATUS':<9} {'TYPE':<9} "
+        f"{'PROPOSAL':<8} {'SCOPE':<22} TITLE"
+    )
+    for i in items:
+        print(
+            f"{i['id']:<13} {str(i['age_days']) + 'd':>4} {i['status']:<9} "
+            f"{i['type']:<9} {_proposal_cell(i):<8} {i['scope']:<22} {i['title']}"
+        )
     return EXIT_OK
 
 
@@ -104,6 +151,11 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "status":
         return _cmd_status(as_json=args.as_json)
+
+    if args.command == "list":
+        return _cmd_list(
+            as_json=args.as_json, include_deferred=args.include_deferred
+        )
 
     task = STUB_TASKS[args.command]
     print(f"self-learn {args.command}: not built until {task}", file=sys.stderr)

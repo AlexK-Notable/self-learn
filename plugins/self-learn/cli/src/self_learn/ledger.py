@@ -6,20 +6,18 @@ Pins (docs/specs/self-learn/08-build-plan.md §1):
 - Bucket discovery: skill buckets = glob ``plugins/*/skills/*/.self-learn/``
   under home; the project+user bucket = ``<home>/.self-learn/``.
 
-Pending counting here is a T1 stub (counts ``pending/*.md`` files by name,
-age by file mtime); T3 owns real queue semantics (deferred_until hiding etc.).
+Queue semantics (deferred_until hiding, eligibility) live in
+:mod:`self_learn.ledger_ops` — :func:`Bucket.pending_files` is the raw
+directory listing that feeds them, never a queue definition of its own.
 """
 
 from __future__ import annotations
 
 import os
-import time
 from dataclasses import dataclass
 from pathlib import Path
 
 DEFAULT_HOME = "~/repos/claude-skills"
-
-_SECONDS_PER_DAY = 86400
 
 
 def resolve_home() -> Path:
@@ -37,22 +35,12 @@ class Bucket:
     name: str
 
     def pending_files(self) -> list[Path]:
-        """T1 stub queue: every pending/*.md file (T3 adds deferral hiding)."""
+        """Raw listing: every pending/*.md file, sorted by name. Queue
+        membership (deferral hiding) is computed in ledger_ops.queue()."""
         pending_dir = self.path / "pending"
         if not pending_dir.is_dir():
             return []
         return sorted(p for p in pending_dir.glob("*.md") if p.is_file())
-
-    def pending_count(self) -> int:
-        return len(self.pending_files())
-
-    def oldest_days(self) -> int | None:
-        """Age in whole days of the oldest pending record (by mtime); None if empty."""
-        files = self.pending_files()
-        if not files:
-            return None
-        oldest_mtime = min(p.stat().st_mtime for p in files)
-        return max(0, int((time.time() - oldest_mtime) / _SECONDS_PER_DAY))
 
 
 def discover_buckets(home: Path | None = None) -> list[Bucket]:

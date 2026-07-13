@@ -42,7 +42,7 @@ def test_plugin_dir_without_self_learn_is_not_a_bucket(tmp_path):
     assert discover_buckets(tmp_path) == []
 
 
-def test_pending_count_and_oldest_days_stub(tmp_path):
+def test_pending_files_lists_md_only_sorted(tmp_path):
     d = _mk_skill_bucket(tmp_path, "p", "s")
     pending = d / "pending"
     pending.mkdir()
@@ -50,12 +50,13 @@ def test_pending_count_and_oldest_days_stub(tmp_path):
     (pending / "lrn-cafef00d.md").write_text("stub record\n")
     (pending / "not-a-record.txt").write_text("ignored\n")
     (bucket,) = discover_buckets(tmp_path)
-    assert bucket.pending_count() == 2
-    assert bucket.oldest_days() == 0  # just created
+    assert [p.name for p in bucket.pending_files()] == [
+        "lrn-cafef00d.md",
+        "lrn-deadbeef.md",
+    ]
 
 
-def test_pending_empty_gives_none_oldest(tmp_path):
+def test_pending_files_empty_without_pending_dir(tmp_path):
     _mk_skill_bucket(tmp_path, "p", "s")
     (bucket,) = discover_buckets(tmp_path)
-    assert bucket.pending_count() == 0
-    assert bucket.oldest_days() is None
+    assert bucket.pending_files() == []
