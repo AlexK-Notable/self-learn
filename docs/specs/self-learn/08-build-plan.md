@@ -55,7 +55,8 @@ them; do not silently change them.**
 
 | Contract | Pin | Also in |
 |---|---|---|
-| Package | Plugin `plugins/self-learn/`: `.claude-plugin/plugin.json`, marketplace entry, `skills/self-learn/SKILL.md`, `commands/teach.md` + `commands/review.md` (→ `/self-learn:teach`, `/self-learn:review`), CLI `scripts/self-learn` (Python/uv, shebang, no extension → `~/bin` via install.sh's existing glob) | 04-M1 |
+| Package | Plugin `plugins/self-learn/`: `.claude-plugin/plugin.json`, marketplace entry, `skills/self-learn/SKILL.md`, `commands/teach.md` + `commands/review.md`, CLI `scripts/self-learn` (Python/uv, shebang, no extension → `~/bin` via install.sh's existing glob) | 04-M1 |
+| Command deploy *(gate-check F1, 2026-07-12 — install.sh has no commands surface today and `claude plugin install` is forbidden here)* | T1 adds a commands surface to `install.sh`: symlink each `plugins/<p>/commands/` **directory** → `~/.claude/commands/<p>` (live-editable, same pattern as skills). Subdirectory namespacing yields `/self-learn:teach`, `/self-learn:review`. **Verification is part of §6.2**; if a fresh session does not show the colon-namespaced names, fall back to flat files `~/.claude/commands/self-learn-{teach,review}.md` → `/self-learn-teach`, `/self-learn-review` — a rename, not a redesign; record which form landed. Side effect, accepted: the surface also activates other plugins' dormant `commands/` dirs (currently only `wow-addon-management`) — consistent with the repo's live-symlink deploy model; note it in the install log | 04-M1 |
 | Ledger home | `SELF_LEARN_HOME` env var, default `~/repos/claude-skills`; all bucket paths resolve against it; tests override it | 04-M1 |
 | Bucket discovery | skill buckets = glob `plugins/*/skills/*/.self-learn/`; project+user bucket = `<home>/.self-learn/` (user records tagged `scope: user`) | 01 §2, 02 §3 |
 | Record ids | `lrn-` + 8 random lowercase hex | 02 §1 |
@@ -64,7 +65,10 @@ them; do not silently change them.**
 | Resolution verbs | `route <id> [--dest <target>] [--note …]` · `reject <id> [--note …]` · `defer <id> [--until <date>] [--note …]` (default +30 d) · `graduate <id> [--note …]`. `route` reads `proposals/lrn-<id>.yaml` (M1 inline analysis writes it; M2 worker takes over — pure producer swap); `--dest` overrides. Every verb: stage **only touched files** (never `-A`); abort if the compile target has unrelated uncommitted edits (tell the user to commit/stash); commit with the pinned message (02 §2, note → commit body); then push | 01 §3.4, 02 §2 |
 | Push | Per-verb `git push` after commit; on non-FF, `git pull --rebase --autostash` then retry once; on failure: **loud** warning + keep local commit; review session end re-attempts (`self-learn push` exists as a bare verb) | 01 §3.4 |
 | Proposal lifecycle | Resolution `git rm`s `proposals/lrn-<id>.{yaml,diff}`; M2 digest reads `resolved/` + commit messages only | 02 §3 |
-| Secret scan | Built-in regex module (no external tool dependency): private-key headers, AWS `AKIA…`, GitHub `ghp_/gho_/github_pat_`, Slack `xox…`, JWT `eyJ…\.eyJ…`, `(password\|passwd\|secret\|token\|api[_-]?key)\s*[=:]\s*\S{8,}`, high-entropy base64/hex runs ≥ 40 chars. Default = **refuse**, printing the matched span + rule; `--redact` replaces the span with `[redacted:<rule>]` and sets frontmatter `redacted: true`; **no bypass flag in v1**. Runs on every record-body write (S-8 rider) including `resolution_note` | 02 §2 |
+| Secret scan | Built-in regex module (no external tool dependency): private-key headers, AWS `AKIA…`, GitHub `ghp_/gho_/github_pat_`, Slack `xox…`, JWT `eyJ…\.eyJ…`, `(password\|passwd\|secret\|token\|api[_-]?key)\s*[=:]\s*\S{8,}`, high-entropy runs: base64 ≥ 40 chars, **hex ≥ 48 chars** (40-hex git SHAs and 8-hex record ids must pass — gate-check F2). Default = **refuse**, printing the matched span + rule; `--redact` replaces the span with `[redacted:<rule>]` and sets frontmatter `redacted: true`; **no bypass flag in v1**. Runs on every record-body write (S-8 rider) including `resolution_note` | 02 §2 |
+| Backlog import sources | `import --backlog home-assistant` reads **`references/GOTCHAS.journal.md` only** (the ha-note accumulation surface — E-2's ~58-entry corpus). `GOTCHAS.md` (curated canon) and `GOTCHAS.revisions.md` (history) are **not** imported: curated entries are already-canon by definition and cross-file duplicates would defeat origin-dedupe and double exit (b)'s card set (gate-check F3) | 01 §3.2 |
+| References compiler target | Reference-routed lessons append to the skill's `references/LEARNINGS.md` (created if absent) unless the proposal/`--dest` names another **existing** references file. Never `GOTCHAS.journal.md` — that is ha-note's surface and O-7 parks ha-note as independent (gate-check F4) | 01 §3.5 |
+| Corrective supersession surface | `teach --supersedes <old-id>` captures the replacement; when the replacement routes, the same commit marks the old record (`superseded_by`, move to `resolved/`) and recompiles, message `self-learn: route lrn-new → <target> (supersedes lrn-old)`. A bare metadata-only `supersede <old-id> <new-id>` verb also exists (commit format per 02 §2). Both in M1/T7 — S-12 makes this the only correction path, so it cannot ship late (gate-check F5) | 02 §2, S-12 |
 | Dedupe key | `evidence.origin` = `<path>#<anchor>` or `<path>#sha256:<12 hex>` of normalized entry text; never line numbers | 02 §2 |
 | Managed-section bootstrap | First route to a markerless target: append marker pair at EOF, proceed; `--selftest` flags only should-have-section targets | 02 §4 |
 | Already-canon flag | `type: knowledge` AND source file is itself canon; behavioral entries never bulk-flagged; judgment recorded in the proposal sibling | 01 §3.2 |
@@ -101,9 +105,13 @@ prompt, transcript location, predicate result, attribution — in
 5. *Attribution per trial:* cwd, SessionStart hook output, tool calls used.
 
 **C — `data.host`-reload promotion.**
-1. *Absence proof:* grep the home-assistant SKILL.md **body** for the
-   stop→edit→start surgery; confirm the lesson exists only in
-   `references/GOTCHAS.md`.
+1. *Absence proof:* the claim under test is specifically **"a config-entry
+   reload does NOT re-read `data.host`"** — grep the home-assistant
+   SKILL.md **body** for that causal fact; confirm it exists only in
+   `references/GOTCHAS.md`. Known non-hit, pre-dismissed (gate-check F6):
+   the SKILL.md body contains `--fix "stop container, edit, start"` inside
+   an ha-note usage example — that names the surgery without the
+   reload-doesn't-reread fact, and does not void the fixture.
 2. *Provocation:* changed-IP scenario ("HA moved to 192.168.1.x — update
    the integration") + "state your exact plan before touching anything";
    plan-elicitation mode, no live HA action. ≥3 baseline runs, fresh
@@ -124,11 +132,14 @@ Tasks are sized for one implementation agent each. T1–T11 in the worktree;
 T12 on main-repo master. Parallelizable groups: {T2,T4} after T1; {T5,T6}
 after T2–T4; T12 anytime.
 
-- **T1 · Plugin scaffold.** `plugins/self-learn/` skeleton per §1 Package
-  pin; marketplace entry; CLI entry point with arg parsing + `--selftest`
-  stub; `SELF_LEARN_HOME` resolution. *Tests:* CLI runs from a symlink;
-  home resolution honors the env var. *DoD:* `self-learn status` on an
-  empty sandbox prints zero-state without error.
+- **T1 · Plugin scaffold + deploy surfaces.** `plugins/self-learn/`
+  skeleton per §1 Package pin; marketplace entry; CLI entry point with arg
+  parsing + `--selftest` stub; `SELF_LEARN_HOME` resolution; **the
+  install.sh commands surface** per the §1 Command-deploy pin (edited in
+  this worktree, merged at §6). *Tests:* CLI runs from a symlink; home
+  resolution honors the env var; install.sh change is idempotent (re-run
+  = no-op) and shellcheck-clean. *DoD:* `self-learn status` on an empty
+  sandbox prints zero-state without error.
 - **T2 · Record schema module.** Parse/write/validate records (02 §1–§2):
   frontmatter round-trip, body sections by type, id generation (8 lowercase
   hex), field mutation rules (freeze-at-routing enforced in code paths).
@@ -162,7 +173,9 @@ after T2–T4; T12 anytime.
   survive; chezmoi abort paths. *DoD:* all golden tests green; a routed
   record's line appears trigger-first with its id.
 - **T7 · Resolution verbs + sentinel + commit/push.** Per §1 pins:
-  route/reject/defer/graduate, `--note` → `resolution_note` + commit body,
+  route/reject/defer/graduate **+ the supersession surface** (`teach
+  --supersedes` completion-at-route, bare `supersede <old> <new>`),
+  `--note` → `resolution_note` + commit body,
   dirty-target abort, targeted staging, pinned messages, per-verb push
   with rebase-retry, `sentinel hold|heartbeat|release`, self-hold rules,
   `self-learn push`. *Tests:* sandbox repo with bare remote — each verb's
@@ -177,7 +190,8 @@ after T2–T4; T12 anytime.
   produce the proposal, then applies. *Tests:* `--route --dest …` end to
   end without any model (deterministic); the analyst path mocked. *DoD:*
   04 exit (a)'s mechanical half (the [protocol] run happens at §6).
-- **T9 · Importers.** Backlog: GOTCHAS parser (entry boundaries, date
+- **T9 · Importers.** Backlog: `GOTCHAS.journal.md` parser — journal only,
+  per the §1 sources pin (entry boundaries, date
   anchors → `evidence.origin`), already-canon flagging recorded in
   proposal siblings, behavioral-minority card set. Auto-memory: MEMORY.md +
   topic-file parser, content-hash origins, dedupe across **all** statuses,
@@ -270,7 +284,10 @@ after T2–T4; T12 anytime.
 1. Full automated suite green in the worktree ([auto] criteria c, d, e).
 2. Merge worktree → master per repo convention; run `./install.sh`
    (idempotent) on this machine; verify: `~/bin/self-learn` symlink,
-   skill symlink, `/self-learn:review` visible in a fresh session; sweep
+   skill symlink, `~/.claude/commands/self-learn` symlink, and the review
+   command visible in a fresh session — expected `/self-learn:review`;
+   if colon-namespacing doesn't materialize, apply the §1 Command-deploy
+   fallback (flat names) and record which form landed; sweep
    `~/.claude/hooks/` for dangling symlinks (repo doctrine).
 3. Apply the offer-line chezmoi edit (documented install step).
 4. [protocol] runs with the user: exit (a) one-motion `teach --route` on

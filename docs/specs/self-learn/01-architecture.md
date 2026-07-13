@@ -81,7 +81,9 @@ znote-compatible for a future backend (v2 gate G-5).
 
 - **`self-learn teach "<lesson>"`** — the primary channel. Flags: scope
   (above), `--type behavior|knowledge` (default: inferred, confirmed in
-  output), `--trigger`/`--instruction`/`--evidence-session` (structured
+  output), `--supersedes <old-id>` (corrective replacement — the
+  supersession completes when the new record routes; gate-check F5),
+  `--trigger`/`--instruction`/`--evidence-session` (structured
   fields), `--route` (skip the bucket: analyze + apply + commit now, P3 —
   it **prints the diff as it applies, with no confirmation prompt**:
   invocation is the approval; in-session callers pass structured fields plus
@@ -116,9 +118,13 @@ znote-compatible for a future backend (v2 gate G-5).
   because the dedupe ledger *is* the records, it syncs across machines for
   free. v1 drains this repo's own project memory; sweeping other projects'
   memory dirs for skill-/user-scoped entries is O-2's open extension.
-- **Backlog importer** — `self-learn import --backlog <skill>` mines existing
-  canon (ha-note GOTCHAS journal, SKILL.md gotcha sections) into pending
-  records **once**, as an honest one-shot ETL. These enter triage like
+- **Backlog importer** — `self-learn import --backlog <skill>` mines the
+  skill's accumulation surface into pending records **once**, as an honest
+  one-shot ETL. For home-assistant that is **`references/GOTCHAS.journal.md`
+  only** (gate-check F3, 2026-07-12): the curated `GOTCHAS.md` is authored
+  canon (already-canon by definition) and the revisions file is history —
+  importing them would double the card set with cross-file duplicates that
+  origin-dedupe cannot catch. These enter triage like
   everything else — deriving a trigger from a knowledge fact is inference
   and gets human eyes (gen-1 review finding). **The import flags knowledge
   entries whose substance already lives in loaded canon** — the GOTCHAS
@@ -278,7 +284,7 @@ only their managed region:
 |---|---|---|
 | SKILL.md | `<!-- self-learn:begin/end -->` managed section | behavioral rules + skill-scoped knowledge; loads natively at activation. Compiler keeps it tight; weaving learned text into the authored prose is a human editorial act, done whenever the user likes (that *is* gen-1's "Level C", demoted from milestone to habit) |
 | CLAUDE.md (repo or `~/.claude/`) | same managed-section pattern | project/user conduct + knowledge. **`~/.claude/CLAUDE.md` is chezmoi-managed (E-17): the compiler must `chezmoi re-add` after writing *and* commit+push the dotfiles repo — `re-add` alone is same-machine-only, and the next `chezmoi apply` elsewhere clobbers the section** |
-| `references/<file>` | plain append (ha-note-style) | bulk knowledge; progressive disclosure |
+| `references/<file>` | plain append (ha-note-style) | bulk knowledge; progressive disclosure. Default target: the skill's `references/LEARNINGS.md`, created if absent; another **existing** references file may be named by the proposal/`--dest` — never `GOTCHAS.journal.md`, which is ha-note's surface (O-7 parks ha-note as independent; gate-check F4) |
 | new skill | delegates to plugin-dev scaffolding | when triage decides a lesson cluster wants to be a skill |
 | hook | scaffolds script + prints the `settings.json` snippet | **never auto-registers** (repo doctrine: settings.json is manual) and **always explicit-diff-approved** (P9). For `kind: anti-pattern` lessons where advisory text is the weakest enforcement and a PreToolUse guard is the strongest |
 
