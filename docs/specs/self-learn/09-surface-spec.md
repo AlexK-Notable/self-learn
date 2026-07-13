@@ -54,9 +54,11 @@ ignoring costs nothing. This section pins the mechanics.
   server-rendered web app on 127.0.0.1 (§3). Its standing presentation
   is a **chromeless browser app window**
   (`--app=http://127.0.0.1:<port>/` with a stable window class) pinned
-  by a Hyprland window rule — the dedicated-window feel the vision
-  wanted, per the user's binding V2: ambient presence + instant attend,
-  in *any* dedicated window. (Mechanism verified live 2026-07-12,
+  by a Hyprland window rule *(the rule is optional polish — the
+  presentation degrades gracefully without it; snippet documented as
+  a manual step at 10 U10 — X-10, 2026-07-13)* — the dedicated-window
+  feel the vision wanted, per the user's binding V2: ambient presence
+  + instant attend, in *any* dedicated window. (Mechanism verified live 2026-07-12,
   phase-A reviewer: `chromium --app=… --class=self-learn-ui-test`
   under Hyprland 0.55.4 yields a native-Wayland window with that
   app_id, `xwayland: false` — `hyprctl dispatch focuswindow class:…`

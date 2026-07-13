@@ -150,9 +150,10 @@ predicate).
   strip); interrupted-then-approve completes.
 
 Merge to master requires: T-A green in CI; T-B/T-C/T-D/T-E each with
-a passing dated entry in `ui-trials.md`; the 09 §5 degradation table
-walked row-by-row with each row's behavior demonstrated (test or
-logged manual check).
+a passing dated entry in `ui-trials.md`; **the U11 browser-level
+acceptance pass logged in `ui-trials.md` (X-5/X-11)**; the 09 §5
+degradation table walked row-by-row with each row's behavior
+demonstrated (test or logged manual check).
 
 ## 3. Task DAG
 
@@ -290,8 +291,11 @@ exceeds ~500 rows; dark/light theme via `prefers-color-scheme`
   (§1). Notifications/WM focus degrade per 09 §5.
 - **`$XDG_RUNTIME_DIR` unset** (headless/SSH — X-8): the token file
   falls back to `~/.cache/claude-skills/self-learn/ui-token` (0600,
-  XDG_CACHE_HOME-resolved) with a one-line logged notice; semantics
-  otherwise unchanged.
+  XDG_CACHE_HOME-resolved) with a one-line logged notice.
+  **Token-path resolution is ONE shared function/rule — the launcher
+  applies the same fallback when it reads the token** (X-12;
+  otherwise an unset-runtime-dir launcher would open an un-tokened
+  URL and 403-loop into a message naming itself as the fix).
 - **SSE buffering trouble**: uvicorn on localhost needs no proxy; the
   pinned implementation flushes per event. If a future proxy appears
   in front (Stage 2), that deployment owns `X-Accel-Buffering` — out
@@ -317,7 +321,8 @@ exceeds ~500 rows; dark/light theme via `prefers-color-scheme`
 
 ## 6. Acceptance & merge
 
-1. §2 complete (T-A CI + four live trials logged + degradation walk).
+1. §2 complete (T-A CI + four live trials logged + the browser-level
+   acceptance pass logged + degradation walk).
 2. Deploy sweep: `install.sh` rerun; `~/bin/self-learn-ui`,
    `~/bin/self-learn-ui-open`, `~/bin/self-learn-notify` symlinks
    live and non-dangling (repo CLAUDE.md rule); the service unit

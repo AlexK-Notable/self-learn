@@ -242,3 +242,22 @@ human routes it.
   replaces socket), 03 (G-3 row). Textual TUI + cli engine = recorded
   alternatives (view-layer swap only). Build stays gated on G-3's
   trigger. Review phases of this cycle: recorded below as they gate.
+- **2026-07-13 — G-3 re-derivation cycle COMPLETE: terminal verdict PASS.**
+  Phase A (09 design, fresh reviewer, framing lens + empirical mandate):
+  FAIL — render-path XSS un-priced (W-1, caught as a *map mispricing* by
+  the framing lens; sanitization + CSP now v1 pins), a still-live
+  falsified "SDK has no fallback" claim killed by live introspection
+  (W-2), pane read scope contradictory (W-3, re-pinned two-tier and
+  empirically confirmed) — remediated, re-check PASS. Phase B (10 to the
+  08 standard + traced 00–10 sweep, third reviewer — no authorship, no
+  remediation): **zero gates; T1 coherence PASS (twelve contract
+  families traced file:line, all AGREE); T2 implementability PASS
+  (Opus 4.8/Sonnet 5-tier agents from the docs alone); T3
+  fit-for-circumstance PASS (judged against the map's C1–C9 and the
+  user's binding answers)**. Nine minors folded post-verdict; fold
+  verified by the terminal reviewer, verdict affirmed standing; three
+  wording residuals folded per the reviewer's own dispositions.
+  Never-self-certify tally: 7-of-8 remediation batches minted findings
+  only independent re-check caught. Process record:
+  `reviews/2026-07-12-surface-rederivation-gates.md` (withheld from
+  blind reviewers). Build stays gated on G-3's trigger.

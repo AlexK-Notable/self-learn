@@ -125,5 +125,32 @@ memo is withheld from blind reviewers.*
   keymap + ledger + T-A/U7/U10/U11 + §5 playbook, README fixtures
   row). Folds sent back to the terminal reviewer for disposition
   verification — never self-certify, even after a PASS.
-- **Fold verification (same terminal reviewer): recorded below when
-  returned.**
+- **Fold verification (same terminal reviewer, 2026-07-13): all nine
+  X-1..X-9 VERIFIED-CLOSED; the terminal verdict (T1/T2/T3 PASS)
+  explicitly affirmed as standing over the folded state (826114a).**
+  The fold minted three wording/enumeration residuals — the pattern
+  in miniature, tally now 7-of-8 batches: X-10 (09 §1 still called
+  the window rule pinned while 10 demoted it to optional), X-11 (the
+  new browser acceptance pass missing from §2/§6.1's merge-gate
+  enumerations), X-12 (token-path fallback not stated as shared
+  between server and launcher). All three folded same-day by
+  applying the reviewer's own dispositions verbatim; the reviewer
+  had already affirmed the verdict independent of them and none
+  touches a contract family, security control, or tested behavior.
+
+## Outcome
+
+**CYCLE COMPLETE, TERMINAL VERDICT PASS (2026-07-13).** The G-3
+adjudication surface is re-derived and gated: localhost
+server-rendered web app + Agent SDK pane engine, per the user's four
+binding answers, on an honestly priced option space, with every
+decision-relevant testable claim empirically grounded before it
+carried weight. Standing lessons upheld: never self-certify
+(7-of-8 remediation batches minted findings, caught only by
+independent re-check); the framing lens earns its keep (it caught
+the render-path XSS as a *map mispricing*, not just a build gap);
+reviewers now test claims instead of citing them (three of this
+cycle's reviewers ran their own live probes unprompted beyond
+mandate). Build remains gated on G-3's trigger (M2 shipped, worker
+proven). Docs: 09-surface-spec.md · 10-surface-build-plan.md ·
+problem-space map + 5 research memos.
