@@ -262,10 +262,14 @@ the digest costs nothing because rejection provenance already lives in git.
   override; verbs stage **only the files they touched** (never `git add
   -A`) and abort if the compile target carries unrelated uncommitted
   edits; each verb commits then pushes (loud on failure; the review's end
-  summary retries); `sentinel hold|heartbeat|release` are explicit
+  summary retries) *(G-3 amendment 2026-07-12 — 08 §1/09 §10 item 7:
+  verbs accept `--no-push` for TUI bulk loops, which terminate with the
+  bare `push` verb on exit success or abort; single resolutions push
+  per-verb, unchanged)*; `sentinel hold|heartbeat|release` are explicit
   subcommands — the slash review wraps its whole batch, the future TUI
-  wraps only apply flows, and a bare verb self-holds and releases what it
-  created; **every mutating invocation re-touches the sentinel — that is
+  wraps only apply flows (provided by per-verb self-hold — the TUI never
+  calls `hold` itself, 09 §3), and a bare verb self-holds and releases
+  what it created; **every mutating invocation re-touches the sentinel — that is
   the heartbeat** (no daemon process). `graduate` is the owning verb for the
   hand-weave transition (`02-schema.md` §4): it marks a routed lesson
   `superseded_by: canon` so the compiler drops its managed-section line —

@@ -63,7 +63,7 @@ different producers. Many producers, one adjudication surface.
   reads them, so a note on a denial teaches the analyst *why* that class
   of proposal loses.
 
-## 3. The embedded adjudication agent (in-window SDK)
+## 3. The embedded adjudication agent (the in-window pane)
 
 “Iterate” opens an agent pane **inside the TUI** — no new Claude Code
 terminal per decision. The resident window is the point: notification →
@@ -71,15 +71,25 @@ click → decide → leave it open as the standing window into the learning
 system. Design rules:
 
 - **Fresh session per adjudication, stable shared prefix.** Each Iterate
-  spawns a small Agent SDK session seeded from the files (record +
-  proposal + target canon excerpt). The **system prompt — the adjudication
-  doctrine: routing map, repo conventions, what the agent may and may not
-  do — is deliberately stable and shared**, so it sits in prompt cache
-  across a burst: a user clearing three or four decisions inside a 20–30
-  minute window pays the doctrine's tokens once. Per-item context is
-  appended after the cached prefix, never interleaved into it. (The
-  doctrine document is single-sourced with the worker's analyst prompt —
-  one routing doctrine, two consumers.)
+  spawns a small agent session seeded from the files (record + proposal
+  + target canon excerpt). *(Amended 2026-07-12, G-3 design — 09 §4.1:
+  "Agent SDK session" generalized to an engine-abstracted agent session
+  — `claude -p` stream-json subprocess by default, Agent SDK as the
+  specced alternative. Empirical grounding: the SDK is API-key-only
+  while the CLI rides the user's standing auth, and the CLI's streaming
+  and fallback capabilities were verified live —
+  `research/2026-07-12-agent-sdk-verification.md`. The invariants in
+  this bullet are engine-independent and unchanged.)* The **system
+  prompt — the adjudication doctrine: routing map, repo conventions,
+  what the agent may and may not do — is deliberately stable and
+  shared**, byte-stable so it caches whenever the API's cache window
+  allows. *(Amended 2026-07-12: the original "pays the doctrine's tokens
+  once per 20–30 minute burst" overstated it — the API's default cache
+  TTL is 5 minutes; caching is opportunistic economics, never a design
+  dependency — 09 §4.2.)* Per-item context is appended after the cached
+  prefix, never interleaved into it. (The doctrine document is
+  single-sourced with the worker's analyst prompt — one routing
+  doctrine; the pane's charter appendix rides beside it, 09 §4.2.)
 - **The agent iterates; only the human's button routes (P1).** The pane's
   agent may edit the pending record (legal pre-routing, S-8), regenerate
   the proposal and diff, answer questions about the target canon. It holds

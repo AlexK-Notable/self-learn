@@ -4,8 +4,9 @@
 `07-review-ui.md` (the recorded vision) and grounded in three research
 memos: `research/2026-07-12-agent-sdk-verification.md` (live SDK docs),
 `research/2026-07-12-tui-environment-grounding.md` (live host + live CLI
-flags), `research/2026-07-12-tui-framework-trade-study.md`. Status:
-DRAFT until the Phase-1 gate passes.*
+flags), `research/2026-07-12-tui-framework-trade-study.md`. Status: **Phase-1
+gate PASSED 2026-07-12** (independent review → remediation → independent
+re-check); §10's amendments landed in the corpus the same day (phase 2).*
 
 **Authority.** This document is the **design authority for the G-3 TUI**,
 sitting beside 00–07 in the corpus family:
@@ -521,8 +522,8 @@ files+watch architecture makes eventual coherence the default anyway.
 
 ## 10. Corpus amendments this spec necessitates
 
-Landed as dated edits when this spec's Phase-1 gate passes (listed here
-so the gate reviews the *set*):
+**Landed 2026-07-12 (phase 2)** as dated edits at every named site; the
+list below is the authoritative set the Phase-1 gate reviewed:
 
 1. **07 §3** — "small Agent SDK session" → "agent session behind the
    PaneEngine interface (`cli` default / `sdk` alternative — 09 §4.1)";

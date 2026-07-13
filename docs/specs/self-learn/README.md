@@ -27,7 +27,7 @@ human routes it.
 | `04-roadmap.md` | Build milestones, acceptance fixture, success metrics |
 | `05-evidence.md` | The empirical facts this design is built on, with sources |
 | `06-horizon.md` | The team-scale future (~5–6 users, shared artifact repo): invariants, the six team problems, staged path |
-| `07-review-ui.md` | The resident TUI (recorded destination surface): attend-at-convenience, embedded SDK adjudication pane, the don't-subvert contracts on v1/M2 |
+| `07-review-ui.md` | The resident TUI (recorded destination surface): attend-at-convenience, embedded agent adjudication pane (engine-abstracted at G-3 — see 09), the don't-subvert contracts on v1/M2 |
 | `08-build-plan.md` | **Execution authority for the build**: pinned interface contracts, the Phase-0 fixture runbook, the M1 task DAG, judgment-call routing, eventuality playbooks — written so any orchestrator can run the build |
 | `09-tui-spec.md` | **Design authority for the G-3 TUI**: interaction model, surfaces, files-as-truth data flow, the adjudication pane (engine abstraction: CLI stream-json default / Agent SDK alternative), degradation table, framework selection (Textual, trade-studied) |
 | `research/` | External evidence memos (SOTA surveys etc.) — shareable with blind reviewers, unlike `reviews/` |

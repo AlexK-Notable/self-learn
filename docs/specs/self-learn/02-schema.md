@@ -59,6 +59,19 @@ lessons becomes two records.
 destination: hook         # skill-md | claude-md | reference | new-skill | hook
 alternates: [skill-md]
 rationale: "deterministic guard beats advisory text for a destructive edit"
+already_canon: false      # true ⇒ the lesson is already fully present in
+                          #   loaded canon (01 §3.2's criterion). A
+                          #   structured field, not prose: UI surfaces
+                          #   group and bulk-resolve on it, and 07 §4
+                          #   contract 2 forbids parsing it out of
+                          #   rationale text. Set by the backlog importer
+                          #   and the worker; `list --json` surfaces it.
+                          #   Bulk resolution of a true-flagged group is
+                          #   GRADUATION (§2 `superseded_by: canon`),
+                          #   never rejection. (Added 2026-07-12, G-3
+                          #   phase 2 — 09 §2.2/P1-2; previously this
+                          #   judgment lived only in free-form rationale.)
+already_canon_reason: ""  # optional one-liner rendered on the detail page
 diff: proposals/lrn-4c1e9a2f.diff   # PREVIEW ONLY — compilers regenerate from
                                     # the record at apply time (01 §3.5)
 record_sha: sha256:a1b2c3d4e5f6     # of the normalized record at analysis
@@ -235,7 +248,11 @@ plugins/<p>/skills/<s>/.self-learn/
   records and resolving commit messages, never stale proposal files
   (implementability review 2026-07-12).
 - Transient state (worker locks, run markers, coalescing timers) lives in
-  `~/.cache/claude-skills/self-learn/`, never in the repo. **The autosync
+  `~/.cache/claude-skills/self-learn/`, never in the repo. *(G-3
+  addition, 2026-07-12 — 09 §3/§10:)* the TUI follows suit — `tui.log`
+  and the compiled `pane-doctrine.md` live there; its single-instance
+  socket lives under `$XDG_RUNTIME_DIR/self-learn/` (sockets belong in
+  the runtime dir, not the cache). No new state locations. **The autosync
   pause sentinel is part of this contract** *(the one cross-repo interface;
   implementability review 2026-07-12)*: path
   `~/.cache/claude-skills/self-learn/autosync-pause`; contents one
