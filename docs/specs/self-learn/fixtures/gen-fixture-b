@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Fixture B harness generator (08 §2): creates a scratch repo with 12
+# config files — 8 spelling `timeout = 30`, 4 spelling `timeout=30`.
+# Reproducible: same layout every run. Usage: gen-fixture-b [target-dir]
+set -euo pipefail
+
+TARGET="${1:-$HOME/scratch/self-learn-fixture-b}"
+rm -rf "$TARGET"
+mkdir -p "$TARGET"
+cd "$TARGET"
+
+spaced=(app.conf db.conf cache.conf worker.conf api.conf queue.conf log.conf net.conf)
+tight=(auth.conf metrics.conf backup.conf sync.conf)
+
+for f in "${spaced[@]}"; do
+  cat > "$f" <<EOF
+# ${f%.conf} service configuration
+host = 127.0.0.1
+port = 8080
+timeout = 30
+retries = 3
+EOF
+done
+
+for f in "${tight[@]}"; do
+  cat > "$f" <<EOF
+# ${f%.conf} service configuration
+host=127.0.0.1
+port=8080
+timeout=30
+retries=3
+EOF
+done
+
+git init -q
+git add -A
+git -c user.email=fixture@local -c user.name=fixture commit -qm "fixture-b baseline"
+echo "fixture-b generated at $TARGET (8 spaced / 4 tight)"
