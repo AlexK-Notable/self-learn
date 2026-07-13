@@ -40,6 +40,7 @@ __all__ = [
     "push_pending",
     "push_with_retry",
     "stage",
+    "staged_diff",
 ]
 
 #: Distinct non-zero exits (08 §1 Push pin: failures are loud AND distinct).
@@ -75,6 +76,17 @@ def stage(repo: Path, paths: Iterable[Path | str]) -> list[Path]:
     if existing:
         _git_ok(repo, "add", "--", *[str(p) for p in existing])
     return existing
+
+
+def staged_diff(repo: Path, paths: Iterable[Path | str] = ()) -> str:
+    """``git diff --cached [-- <paths>]`` — the pre-commit diff of what a
+    verb staged. T8's ``teach --route`` prints this (08 §1 `teach --route`
+    pin: prints the diff as it applies)."""
+    args = ["diff", "--cached"]
+    path_args = [str(p) for p in paths]
+    if path_args:
+        args += ["--", *path_args]
+    return _git_ok(repo, *args).stdout
 
 
 def commit(repo: Path, message: str, body: str | None = None) -> str:

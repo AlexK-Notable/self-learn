@@ -419,14 +419,24 @@ def test_bad_kind_value_rejected(home, capsys):
     assert all_pending(home) == []
 
 
-# --------------------------------------------------------- --route (→ T8)
+# ------------------------------------------- --route flag family (T8 gate)
+# The live --route paths are covered in test_route_cli.py; here: the
+# route-only flags without --route are usage errors, nothing written.
 
 
 @pytest.mark.parametrize(
-    "extra", [["--route"], ["--dest", "skill-md"], ["--route", "--dest", "skill-md"]]
+    "extra",
+    [["--dest", "skill-md"], ["--note", "why"], ["--no-push"]],
 )
-def test_route_and_dest_deferred_to_t8(home, capsys, extra):
+def test_route_family_flags_need_route(home, capsys, extra):
     rc = run_cli(DOD_ARGS + extra)
     assert rc == 2
-    assert "lands at T8" in capsys.readouterr().err
+    assert "needs --route" in capsys.readouterr().err
+    assert all_pending(home) == []
+
+
+def test_route_bad_dest_is_usage_error(home, capsys):
+    rc = run_cli(DOD_ARGS + ["--route", "--dest", "bogus"])
+    assert rc == 2
+    assert "--dest must be one of" in capsys.readouterr().err
     assert all_pending(home) == []

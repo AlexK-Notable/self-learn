@@ -65,13 +65,7 @@ def test_status_human_line_with_buckets(sandbox_home, capsys):
     ("command", "task"),
     [
         # ("teach", …) removed at T5 — teach is real now (tests/test_teach.py)
-        ("route", "T7"),
-        ("reject", "T7"),
-        ("defer", "T7"),
-        ("graduate", "T7"),
-        ("supersede", "T7"),
-        ("push", "T7"),
-        ("sentinel", "T7"),
+        # (verbs / push / sentinel removed at T8 — real now, test_route_cli.py)
         ("import", "T9"),
         ("proposal", "T13"),
     ],
@@ -83,9 +77,9 @@ def test_stub_subcommands_exit_2(sandbox_home, capsys, command, task):
 
 
 def test_stub_subcommand_tolerates_extra_args(sandbox_home, capsys):
-    rc = cli.main(["route", "lrn-4c1e9a2f", "--dest", "skill-md"])
+    rc = cli.main(["import", "--backlog", "home-assistant"])
     assert rc == 2
-    assert "not built until T7" in capsys.readouterr().err
+    assert "not built until T9" in capsys.readouterr().err
 
 
 def test_selftest_stub_exits_0(sandbox_home, capsys):

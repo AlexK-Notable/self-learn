@@ -1,6 +1,7 @@
-"""``self-learn teach`` — capture one lesson into the ledger (T5).
+"""``self-learn teach`` — capture one lesson into the ledger (T5), or
+route it in one motion (``--route``, T8).
 
-Flag surface (01 §3.2 + 08 §1 pins; ``--route`` handler deferred to T8):
+Flag surface (01 §3.2 + 08 §1 pins):
 
   self-learn teach [LESSON]
     scope      ``--skill <name>`` | ``--project`` | ``--user``
@@ -26,8 +27,20 @@ Flag surface (01 §3.2 + 08 §1 pins; ``--route`` handler deferred to T8):
                ``--redact`` replaces each span with ``[redacted:<rule>]``
                and sets frontmatter ``redacted: true``; NO bypass flag
                in v1 (08 §1 Secret-scan pin)
-    deferred   ``--route`` / ``--dest`` — parsed so T8 only swaps the
-               handler, but exit 2 ("teach --route lands at T8") for now
+    routing    ``--route`` — skip the pending bucket: compose → scan →
+               write DIRECTLY to the bucket's ``resolved/`` as
+               ``status: routed`` (02 §2 lifecycle note: never transiting
+               ``pending/``) → compile → print the applied diff → pinned
+               commit → push. NO confirmation prompt anywhere: invocation
+               is the approval (08 §1 `teach --route` pin).
+               ``--dest <target>`` makes the path deterministic and
+               zero-model (in-session callers pass structured fields +
+               ``--dest``); a bare ``--route`` with no ``--dest`` runs the
+               one-shot ``claude -p`` analyst against the routing doctrine
+               file — flags documented in :mod:`self_learn.analyst`.
+               ``--note <text>`` → ``resolution_note`` + commit body;
+               ``--no-push`` commits exactly as pinned, skips only the
+               push. All three require/imply ``--route``.
 
 Composition: structured fields win; the positional LESSON fills a missing
 Instruction (behavior) or Fact (knowledge). Type inference heuristic
@@ -38,8 +51,12 @@ before / after / if …) → behavior; a declarative sentence → knowledge.
 Scan-then-write (02 §2): the composed body and every evidence quote are
 scanned BEFORE anything touches disk.
 
-Exit codes: 0 created · 2 usage/validation (nothing written) · 3 secret
-scan refusal (nothing written).
+Exit codes: 0 created (or routed) · 2 usage/validation (nothing written;
+includes a missing routing-doctrine file, pre-spawn) · 3 secret scan
+refusal (nothing written) · 4 analyst failure — the record was safely
+captured to ``pending/`` as a normal teach (never lost). A route that
+commits but fails to push still exits 0: the commit is kept, the push
+failure is loud, and ``self-learn push`` retries it.
 """
 
 from __future__ import annotations
@@ -49,6 +66,9 @@ import re
 import sys
 from datetime import datetime, timezone
 
+from . import analyst, verbs
+from .chezmoi import ChezmoiAbort, ChezmoiError
+from .compilers import CompileError
 from .ledger import resolve_home
 from .ledger_ops import LedgerOpsError, create_record, record_title
 from .records import KINDS, RECORD_ID_RE, Record, RecordError
@@ -59,6 +79,7 @@ __all__ = ["add_teach_parser", "infer_type", "run_teach"]
 EXIT_OK = 0
 EXIT_USAGE = 2
 EXIT_SCAN = 3
+EXIT_ANALYST = 4  # analysis/route failed — record captured to pending/
 
 DEFAULT_BEHAVIOR_KIND = "surface-rule"
 
@@ -125,8 +146,28 @@ def add_teach_parser(sub) -> argparse.ArgumentParser:
         action="store_true",
         help="on a secret-scan hit, redact spans instead of refusing",
     )
-    p.add_argument("--route", action="store_true", help="(T8) analyze + apply + commit now")
-    p.add_argument("--dest", metavar="TARGET", help="(T8) routing destination for --route")
+    p.add_argument(
+        "--route",
+        action="store_true",
+        help="skip the bucket: analyze + apply + commit now (invocation = approval)",
+    )
+    p.add_argument(
+        "--dest",
+        metavar="TARGET",
+        help="with --route: deterministic destination (skill-md | claude-md | "
+        "reference[:<file>]); omitted → one-shot analyst",
+    )
+    p.add_argument(
+        "--note",
+        metavar="TEXT",
+        help="with --route: resolution note (record frontmatter + commit body)",
+    )
+    p.add_argument(
+        "--no-push",
+        action="store_true",
+        dest="no_push",
+        help="with --route: commit exactly as pinned, skip only the push",
+    )
     return p
 
 
@@ -147,9 +188,21 @@ def _now_iso() -> str:
 
 
 def run_teach(args: argparse.Namespace) -> int:
-    # T8's surface exists so it only swaps the handler; nothing behind it yet.
-    if args.route or args.dest is not None:
-        return _fail("teach --route lands at T8")
+    # ---- --route flag-family validation (before anything composes)
+    for flag, given in (
+        ("--dest", args.dest is not None),
+        ("--note", args.note is not None),
+        ("--no-push", args.no_push),
+    ):
+        if given and not args.route:
+            return _fail(f"{flag} needs --route")
+    if args.route and args.dest is not None:
+        try:
+            destination, _ = verbs._parse_dest(args.dest)
+        except verbs.VerbError as exc:
+            return _fail(str(exc))
+        if destination in verbs.M3_DESTINATIONS:
+            return _fail(f"destination {destination!r} is not built until M3")
 
     lesson = _clean(args.lesson)
     trigger = _clean(args.trigger)
@@ -284,6 +337,9 @@ def run_teach(args: argparse.Namespace) -> int:
             entry["quote"] = quote
         record.append_evidence(entry)
 
+    if args.route:
+        return _route_now(args, record)
+
     try:
         path = create_record(resolve_home(), record)
     except LedgerOpsError as exc:
@@ -296,5 +352,95 @@ def run_teach(args: argparse.Namespace) -> int:
         )
     kind_part = f" ({record.kind})" if record.kind else ""
     print(f"created {record.id} → {path}")
+    print(f"  {record.type}{kind_part} · {record.scope} · {record_title(record)}")
+    return EXIT_OK
+
+
+# --------------------------------------------------------------- --route (T8)
+
+
+def _capture_to_pending(home, record_text: str, reason: str, hint: str) -> int:
+    """Fallback on any post-composition routing failure: the composed
+    record (pristine, pre-routing-mutation snapshot) is captured to
+    ``pending/`` as a NORMAL teach — the lesson is never lost."""
+    record = Record.from_text(record_text)
+    try:
+        path = create_record(home, record)
+    except LedgerOpsError as exc:  # capture itself failed — nothing written
+        print(f"self-learn teach: {reason}", file=sys.stderr)
+        return _fail(f"and the pending capture also failed: {exc}")
+    print(
+        f"self-learn teach: {reason} — record captured to pending; {hint}",
+        file=sys.stderr,
+    )
+    print(f"created {record.id} → {path} (pending)")
+    return EXIT_ANALYST
+
+
+def _route_now(args: argparse.Namespace, record: Record) -> int:
+    """The one-motion path: destination (``--dest``, or the one-shot
+    analyst), then :func:`verbs.route_direct` — straight to ``resolved/``,
+    compile, diff print, pinned commit, push. Invocation = approval: no
+    confirmation prompt anywhere (08 §1 `teach --route` pin)."""
+    home = resolve_home()
+    dest = args.dest
+
+    if dest is None:
+        # Bare --route: the one-shot analyst (flags in self_learn.analyst).
+        doctrine = analyst.doctrine_path(home)
+        if not doctrine.is_file():
+            return _fail(f"routing doctrine not installed — T10 ({doctrine})")
+        try:
+            proposal = analyst.analyze(home, record)
+        except analyst.AnalystError as exc:
+            return _capture_to_pending(
+                home,
+                record.to_text(),
+                f"analysis failed ({exc})",
+                "run review or route --dest",
+            )
+        dest = proposal["destination"]
+        rationale = proposal.get("rationale") or ""
+        print(f"analyst: destination {dest} — {rationale}")
+
+    snapshot = record.to_text()  # pristine copy for the never-lost fallback
+    try:
+        result = verbs.route_direct(
+            home, record, dest=dest, note=args.note, no_push=args.no_push
+        )
+    except verbs.SecretRefusal as exc:
+        print(str(exc), file=sys.stderr)
+        return EXIT_SCAN
+    except (
+        verbs.VerbError,
+        LedgerOpsError,
+        CompileError,
+        ChezmoiAbort,
+        ChezmoiError,
+    ) as exc:
+        return _capture_to_pending(
+            home,
+            snapshot,
+            f"route failed ({exc})",
+            "fix the cause, then `self-learn route <id>`",
+        )
+
+    # The applied diff — printed, never prompted on (invocation = approval).
+    if result.diff:
+        print(result.diff, end="" if result.diff.endswith("\n") else "\n")
+
+    if args.supersedes is not None:
+        print(f"supersedes {args.supersedes}: completed in the same commit")
+    if result.push is None:
+        push_note = "not pushed — --no-push"
+    elif result.push.ok:
+        push_note = "pushed"
+    else:
+        push_note = "PUSH FAILED — commit kept; run `self-learn push`"
+    destination = (record.routing or {}).get("destination", dest)
+    kind_part = f" ({record.kind})" if record.kind else ""
+    print(
+        f"routed {record.id} → {destination} @ {result.commit_sha[:7]} ({push_note})"
+    )
     print(f"  {record.type}{kind_part} · {record.scope} · {record_title(record)}")
     return EXIT_OK
