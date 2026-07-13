@@ -61,31 +61,17 @@ def test_status_human_line_with_buckets(sandbox_home, capsys):
     assert "project (project+user)" in out
 
 
-@pytest.mark.parametrize(
-    ("command", "task"),
-    [
-        # ("teach", …) removed at T5 — teach is real now (tests/test_teach.py)
-        # (verbs / push / sentinel removed at T8 — real now, test_route_cli.py)
-        ("import", "T9"),
-        ("proposal", "T13"),
-    ],
-)
-def test_stub_subcommands_exit_2(sandbox_home, capsys, command, task):
-    rc = cli.main([command])
-    assert rc == 2
-    assert f"not built until {task}" in capsys.readouterr().err
+# (teach stub removed at T5; verbs/push/sentinel at T8; import/proposal at
+# T11 — all real now: test_teach.py, test_route_cli.py, test_import_cli.py,
+# test_proposal_validate.py, test_selftest.py.)
 
 
-def test_stub_subcommand_tolerates_extra_args(sandbox_home, capsys):
-    rc = cli.main(["import", "--backlog", "home-assistant"])
-    assert rc == 2
-    assert "not built until T9" in capsys.readouterr().err
-
-
-def test_selftest_stub_exits_0(sandbox_home, capsys):
-    rc = cli.main(["--selftest"])
-    assert rc == 0
-    assert capsys.readouterr().out.strip() == "selftest: not built until T11"
+def test_argparse_errors_return_2_not_systemexit(sandbox_home, capsys):
+    # main() is an int-returning API: argparse-level failures (bad choice,
+    # missing required group) come back as 2, never as an escaping
+    # SystemExit.
+    assert cli.main(["sentinel", "bogus"]) == 2
+    assert cli.main(["import"]) == 2
 
 
 def test_no_command_prints_help_exits_2(sandbox_home, capsys):
