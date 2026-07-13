@@ -247,6 +247,10 @@ after T2–T4; T12 anytime.
 | Reject-vs-route, graduation timing | Human, by design | Review cards |
 | Fixture provocation authoring, and B failing to qualify | Human + strong reasoner | §2 escalation |
 | Any corpus contradiction or settled-decision pressure | Human | §0 rule 5 |
+| Cluster survivor choice (M2) | Worker nominates (`suggested_survivor`); human confirms/overrides on the collapse card | 02 §1, §7.1 |
+| Worker prompt quality tuning (excerpt selection, digest phrasing, clustering sensitivity — incl. exit (b) retries) | Human + strong reasoner, never the T13 implementer | §7.3 (b) |
+| Worker model default (cost vs proposal quality) | User — the pin carries `claude-sonnet-5` as a starting point, the trade is theirs | §7.1 |
+| Escalation cadence calibration (first week of real use) | User | §7.1 thresholds pin |
 
 ## 5. Eventuality playbooks
 
@@ -317,32 +321,45 @@ rules (§0), same escalation routing (§4). M2 starts only after M1 exits
 
 ### 7.1 M2 pins (extends the §1 table)
 
+*(Hardened 2026-07-12 after the phase-2 implementability review — gates
+M2-1…M2-5 and minors folded.)*
+
 | Contract | Pin |
 |---|---|
-| Worker trigger | Kick-driven, not scheduled: `teach` (without `--route`) and `import` end by calling `self-learn worker kick`, which touches a dirty-marker and, if no coalesce window is open, `setsid`-spawns `self-learn worker run --coalesce` (sleep **10 min** default, then run). No systemd unit, no cron — nothing to rot when supply is quiet (E-5) |
-| Worker serialization | Machine-local `flock` on `~/.cache/claude-skills/self-learn/worker.lock`; a second kick during a window is a no-op (the open window absorbs it) |
-| Worker run sequence | (1) `claude-skills-sync` first (pull current state — narrows multi-machine add/add windows); (2) enumerate pending records lacking a proposal, or whose record mtime > proposal `analyzed_at` (re-analysis after edits); (3) one `claude -p` invocation per run covering the batch + the cluster pass; (4) touch `worker.last-run`; (5) emit the notification |
-| Worker `claude -p` | `--allowedTools` = repo reads + `Write` restricted to `.self-learn/**/proposals/` paths (the append-only guarantee is this flag — test asserts the constructed invocation string); model from `SELF_LEARN_WORKER_MODEL`, default a mid-tier model (proposals are human-gated; cost beats brilliance here); prompt = `routing-doctrine.md` + rejected-proposal digest + record bodies + target-canon excerpts; output = proposal/merge YAML per 02 §1 |
-| Rejected-proposal digest | Built by the CLI (not the model) from the last **20** rejected records in `resolved/`: id, title line, `resolution_note` if present, resolving commit subject (`git log --grep "self-learn: reject"`). Injected as negative exemplars ("never re-propose these classes") |
+| Worker trigger + coalesce mechanics | Kick-driven, not scheduled — no systemd unit, no cron (E-5). `teach` (without `--route`) and `import` end by calling `self-learn worker kick`: (1) `touch worker.dirty`; (2) under `flock -n worker.spawn.lock` (two racing kicks serialize; the loser exits absorbed): if `worker.window` names a **live** pid → exit (open window absorbs the kick); else `setsid`-spawn `self-learn worker run --coalesce`, writing the child pid to `worker.window`. A dead pid in `worker.window` = closed window (reboot/kill safe). `--coalesce` sleeps `SELF_LEARN_COALESCE_SECS` (default **600**; tests set ~0), then takes `worker.lock` (blocking), removes `worker.window`, and runs. `worker.dirty` is deleted **after** enumeration, so a kick landing mid-run re-marks it; at run end, if `worker.dirty` exists again → one follow-on window is spawned. All state files under `~/.cache/claude-skills/self-learn/` |
+| Worker run sequence | (1) sync first — **only** if `SELF_LEARN_HOME` is the real claude-skills repo and `bin/claude-skills-sync` exists there (tests PATH-shim it; absence = log + skip); (2) enumerate: pending records, **excluding future-`deferred_until`** (same queue computation as `list`), lacking a schema-valid proposal or whose current normalized-body hash ≠ proposal `record_sha` (**content identity, never mtime** — git checkouts rewrite mtimes; unparseable proposal = missing); **batch cap 15, oldest first** — leftovers keep `worker.dirty` set for a follow-on window; (3) one `timeout 15m claude -p` invocation covering the batch + cluster pass; (4) validate every proposal file written: schema-invalid files are deleted + logged; (5) re-check each proposed id is *still pending* (drop resolved ones from the event) and sweep orphan proposals (no matching pending record → `git rm`); (6) run "succeeded" iff ≥1 valid proposal landed or nothing was eligible — only then touch `worker.last-run`; partial success (3 of 5 valid) succeeds and notifies for the valid ids only; (7) emit the event + notification |
+| Worker `claude -p` invocation | **Literal flag set, verified against the live CLI at T13 start** (syntax may need adjusting to what the CLI actually accepts — the *property* is the pin): `--allowedTools "Read,Grep,Glob,Write(<HOME>/plugins/**/.self-learn/proposals/**),Write(<HOME>/.self-learn/proposals/**)"` where `<HOME>` = resolved `SELF_LEARN_HOME`. **No `Bash`, no `Edit` — ever**: with shell access the write restriction is void (do NOT copy home-net-capture's `--allowed-tools` line, which grants Bash; the append-only guarantee IS this flag, E-18). Two tests: the constructed-invocation assertion (cheap), plus the §7.3 live refusal check (real). Model: `SELF_LEARN_WORKER_MODEL`, default **`claude-sonnet-5`** (verified once at T13 start with `claude --model claude-sonnet-5 -p 'ok'`; proposals are human-gated — cost beats brilliance; changing the default is the user's call, §4). Prompt = `routing-doctrine.md` + rejected digest + record bodies + target-canon excerpts (= the candidate target's managed section ± 20 lines, or the whole file when < 200 lines). Output = proposal/merge YAML per 02 §1 (incl. `record_sha`) |
+| Rejected-proposal digest | Built by the CLI (not the model) from the last **20** rejected records in `resolved/`, ordered by **resolving-commit author date, newest first** (`git log --grep "self-learn: reject"`): id, title line, `resolution_note` if present, commit subject. Injected as negative exemplars ("never re-propose these classes") |
+| Merge proposals + collapse surface | Schema in 02 §1 (`merge-<8hex>`, same-bucket-only, `suggested_survivor`, `record_shas`; invalidated when any member resolves). Collapse is a **CLI verb extension, never slash-command logic** (07 §4 contract 1): `route <survivor-id> --collapse <cluster-id> [--dest …] [--note …]` — in one commit: appends the losers' `evidence` provenance to the survivor, sets `sightings`, routes the survivor, marks losers `superseded_by: <survivor-id>` + moves them to `resolved/`, `git rm`s the merge proposal and the losers' analysis proposals. Commit message: `self-learn: route lrn-X → <target> (collapse merge-<cid>, supersedes lrn-Y, lrn-Z)` |
 | Multi-machine honesty note | Two machines' workers CAN both write `proposals/lrn-<id>.yaml` before syncing (01 §3.3's "never collide" holds for *distinct* records only). The run-starts-with-sync step narrows the window; a residual add/add degrades to autosync's standard safe rebase-halt (01 §5) — accepted, same as every other cross-machine collision in the design |
-| Event log (the deep-link contract's durable half) | Every worker run with ≥1 new proposal appends one JSON line to `~/.cache/claude-skills/self-learn/events.jsonl`: `{ts, event, record_ids, aggregate}`. `notify-send` renders the human-visible line (new event + standing aggregate, S-9 format); the events file is what the G-3 TUI will deep-link from — ids exist machine-readably from M2 day one (07 §4 contract 3) even though `notify-send` itself carries no payload |
-| Threshold escalation | Checked at worker-run end AND by the SessionStart hook: ≥5 pending or oldest >7 days → one `notify-send` escalation line (not per-record) |
-| SessionStart hook | `plugins/self-learn/hooks/self-learn-pending.sh` → `~/.claude/hooks/` via install.sh's existing hooks surface; **manual settings.json registration, documented** (repo doctrine). Prints the pending line ("📥 self-learn: 7 pending, oldest 9d — /self-learn:review") + the staleness alarm. Budget: pure filesystem scan, no git/network, <200 ms |
-| Staleness alarm predicate | Fires iff (≥1 pending record lacks a proposal) AND (`worker.last-run` mtime > **3 days** old). Quiet queues with no un-analyzed supply never alarm — a kick-driven worker that hasn't run because nothing arrived is healthy |
-| Review fast path | `/self-learn:review` uses an existing fresh proposal as-is (one-tap); falls back to M1 inline analysis when the proposal is missing or stale — the M1 path is kept, not replaced |
+| Event log (the deep-link contract's durable half) | Every worker run with ≥1 valid new proposal appends one JSON line to `~/.cache/claude-skills/self-learn/events.jsonl`: `{ts: <iso8601>, event: "proposals"\|"escalation", record_ids: […], aggregate: {pending: <n>, buckets: [{bucket, pending}…]}}`. Machine-local by nature — ids from other machines' runs never appear here; the ledger is the recovery path. Size-capped: truncate oldest lines past ~1 MB (same for `worker.log`). Re-analysis of an edited record **does** count as a new-proposal event (revocable one-liner if it proves noisy). `notify-send` renders only the human line; the events file is what the G-3 TUI deep-links from (07 §4 contract 3) |
+| Notification rendering | Template, pinned: `self-learn: {n} new proposal{s} for {bucket-list}. {total} pending across {k} scope{s} — /self-learn:review` — scopes = distinct buckets with ≥1 pending; deferred records excluded from all counts (02 §2). Delivery uses the sync script's own `note()` pattern: `command -v notify-send && notify-send … \|\| echo … >&2`; **notification failure never fails a run** (headless/SSH has no DBus) |
+| Threshold escalation | Owned by **worker-run end only**: ≥5 pending or oldest >7 days → one escalation `notify-send`, debounced to once per 24 h via a `~/.cache` last-escalated marker. The SessionStart hook **prints** the escalation line into session context but never calls `notify-send` (multiple daily session starts would be S-9's popup treadmill). Thresholds are v1 constants — changing them is an edit to this pin, not a config file (no config surface exists in v1 beyond the two env vars) |
+| SessionStart hook | `plugins/self-learn/hooks/self-learn-pending.sh` → `~/.claude/hooks/` via install.sh's existing hooks surface; **manual settings.json registration, documented** (repo doctrine). Prints the pending line ("📥 self-learn: 7 pending, oldest 9d — /self-learn:review") + staleness + escalation lines. Implementation: calls **`self-learn status --json --fast`** — a guaranteed-cheap CLI path (frontmatter-only scan of `pending/`, no git, no network; budget < 500 ms warm). **Queue semantics are never reimplemented in bash** — one computation, owned by the CLI |
+| Staleness alarm predicate | Fires iff (≥1 pending record lacks a valid proposal) AND (`worker.last-run` mtime > **3 days** old **or the file is missing** — missing = infinitely old, so a fresh install with un-analyzed synced records alarms rather than hiding a wedge). Quiet queues with no un-analyzed supply never alarm |
+| Review fast path | `/self-learn:review` uses an existing schema-valid proposal whose `record_sha` matches as-is (one-tap); falls back to M1 inline analysis when the proposal is missing, invalid, or hash-stale — the M1 path is kept, not replaced |
+| `status --json` amendment | `worker_last_run` becomes `<iso8601>\|null` (null = never ran on this machine) |
 
 ### 7.2 M2 tasks
 
-- **T13 · Worker.** `worker kick|run` per the pins; digest builder;
-  re-analysis staleness rule; `worker.last-run`; failure logging to
-  `~/.cache/claude-skills/self-learn/worker.log` (a failed run does NOT
-  touch last-run — the alarm is the detector). *Tests:* PATH-shimmed fake
-  `claude` (records its argv; asserts `--allowedTools` restriction and
-  prompt composition); flock contention (second run blocks/skips);
-  coalesce window absorbs kicks; failed run leaves last-run untouched;
-  digest content from a fixture `resolved/` set. *DoD:* on a sandbox
-  ledger, `teach` → kick → (shimmed) run → proposal sibling appears,
-  events.jsonl line appended, last-run touched.
+- **T13 · Worker.** `worker kick|run` per the pins (spawn-lock, window
+  pidfile with liveness, dirty-marker lifecycle, batch cap, timeout,
+  output validation, orphan sweep, mid-run-resolution re-check); digest
+  builder; content-hash staleness; `worker.last-run`; failure logging to
+  `~/.cache/claude-skills/self-learn/worker.log` (a failed run — zero
+  valid proposals with eligible records — does NOT touch last-run; the
+  alarm is the detector). *Tests:* PATH-shimmed fake `claude` (records
+  argv; asserts the literal `--allowedTools` value and absence of
+  Bash/Edit; prompt composition) and PATH-shimmed `claude-skills-sync`;
+  two racing kicks spawn one window; dead-pid window reopens; kick
+  mid-run re-marks dirty and triggers a follow-on; malformed-YAML output
+  deleted + run fails; partial output (3/5 valid) succeeds, notifies 3;
+  hash-unchanged records skipped, edited record re-analyzed, git-checkout
+  mtime change alone does NOT re-analyze; deferred records skipped;
+  orphan proposal swept; digest content + ordering from a fixture
+  `resolved/` set. *DoD:* on a sandbox ledger, `teach` → kick →
+  (shimmed) run → valid proposal sibling appears, events.jsonl line
+  appended with the pinned schema, last-run touched.
 - **T14 · Notifications.** events.jsonl writer + `notify-send` rendering
   (aggregate line format per 01 §3.6) + threshold escalation. *Tests:*
   event-line schema; aggregate math (N pending across M scopes); escalation
@@ -353,22 +370,38 @@ rules (§0), same escalation routing (§4). M2 starts only after M1 exits
   on a 100-record fixture; staleness predicate truth table (4 cases).
   *DoD:* hook script green + install doc updated; registration itself is
   a documented manual step (§4 routes it to the human).
-- **T16 · Review fast path + merge collapse.** Review consumes fresh
-  proposals one-tap; merge-proposal cards (cluster → single card, human
-  collapse: route survivor + `evidence` gains merged provenance +
-  losers `superseded_by: <survivor-id>` per 02 §2's boundary rule,
-  `sightings` set). *Tests:* collapse mechanics on a fixture cluster
-  (record states + section output + commits); stale-proposal fallback.
-  *DoD:* 04-M2 exit (b)'s mechanical half green.
+- **T16 · Review fast path + collapse verb.** The `route … --collapse
+  <cluster-id>` CLI extension per the §7.1 pin (all collapse mechanics in
+  the verb — the review card only invokes it; 07 §4 contract 1); review
+  consumes fresh valid proposals one-tap; merge-proposal cards (cluster →
+  single card; survivor pre-selected from `suggested_survivor`,
+  overridable). *Tests:* collapse on a fixture cluster — one commit,
+  survivor routed with merged evidence + `sightings`, losers
+  `superseded_by: <survivor-id>` in `resolved/`, merge + loser proposals
+  `git rm`'d, pinned commit-message shape; invalidated-cluster handling
+  (member resolved first → merge proposal swept, card never shown);
+  hash-stale and unparseable proposal fallback to inline. *DoD:* 04-M2
+  exit (b)'s mechanical half green **and the 07 §4 contract checklist
+  re-run over the M2 additions** (contract 1 especially).
 
 ### 7.3 M2 acceptance (04-M2 exit criteria, tagged)
 
 (a) [auto, shimmed] taught lesson gains a proposal within one worker
-cycle, no session involved; (b) [auto + protocol] planted near-duplicate
+cycle, no session involved; (a′) [protocol] **real-worker smoke** — one
+un-shimmed run against ≥1 real record produces schema-valid YAML that
+`route` consumes end-to-end, **and** a live refusal check: a real
+`claude -p` run under the pinned `--allowedTools`, instructed to write
+outside `proposals/`, is refused (this is the only test that can catch a
+flag syntax that doesn't do what's believed — the constructed-string
+assertion cannot); (b) [auto + protocol] planted near-duplicate
 pair → merge proposal → next review collapses to one routed survivor +
-one superseded record with `sightings: 2`; (c) [auto, clock-mocked]
+one superseded record with `sightings: 2` — the worker gets **≤3 runs
+with prompt tuning between attempts** to emit the merge proposal; still
+none → escalate per §0 rule 5 (clustering sensitivity is a §4 tuning
+call, not a build defect); (c) [auto, clock-mocked]
 killed worker trips the staleness alarm at the pinned predicate;
-(d) [protocol] 10-item triage in <~5 min on card taps alone. Plus:
+(d) [protocol] 10-item triage in <~5 min on card taps alone, seeded from
+the smoke run's ledger state. Plus:
 fixtures **B and C final call at this M1+M2 checkpoint** (04 §0 staging;
 §6.5 pre-armed them at M1 exit). After acceptance: register the
 SessionStart hook (manual), update README/memory/hub.
@@ -382,7 +415,7 @@ A trial = exit criterion. This section is intentionally a brief until M2's
 gate passes; its detailing follows the same review → remediate → gate
 cycle.
 
-## 8. Change control
+## 9. Change control
 
 - Pins in §1 change only with a dated edit here + a pointer from the
   corpus doc that co-owns them; if a pin change would alter a settled

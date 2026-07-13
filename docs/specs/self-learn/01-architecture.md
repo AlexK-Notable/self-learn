@@ -307,7 +307,10 @@ home-assistant. 4 pending decisions from 1 skill and 2 projects
 outstanding."* Notifications fire per **worker run**, not per record (the
 worker coalesces, so bursts arrive as one line — natural rate limiting),
 their payload carries the record ids (the TUI deep-link contract, honored
-from M2 day one), and ignoring one costs nothing — the aggregate rides
+from M2 day one — concretely: the ids live in a machine-readable event
+log the CLI appends per run, `08-build-plan.md` §7.1, and `notify-send`
+renders only the human-visible string; amended 2026-07-12, M2 review),
+and ignoring one costs nothing — the aggregate rides
 along on the next. Neither bracket failure mode is acceptable: no modal
 popup treadmill (notification fatigue = queue death, E-3 in different
 clothes), no invisible backlog (ha-note's grave). Alongside the per-run

@@ -61,9 +61,37 @@ alternates: [skill-md]
 rationale: "deterministic guard beats advisory text for a destructive edit"
 diff: proposals/lrn-4c1e9a2f.diff   # PREVIEW ONLY — compilers regenerate from
                                     # the record at apply time (01 §3.5)
+record_sha: sha256:a1b2c3d4e5f6     # of the normalized record at analysis
+                                    #   time — proposal staleness = hash
+                                    #   mismatch, NEVER file mtime (git
+                                    #   checkouts rewrite mtimes; M2 review)
 model: claude-opus-4-8
 analyzed_at: 2026-07-12T09:25:12Z
 ```
+
+**The merge proposal** (M2; same directory, `proposals/merge-<8hex>.yaml`):
+
+```yaml
+cluster_id: merge-9f3d2c1a
+records: [lrn-4c1e9a2f, lrn-77ab01cd]   # SAME BUCKET ONLY in v1 — the worker
+                                        #   never emits a cross-bucket cluster;
+                                        #   if it judges records in different
+                                        #   buckets to be one lesson, it splits
+                                        #   them into per-bucket proposals
+suggested_survivor: lrn-4c1e9a2f        # worker's nomination (best-formed
+                                        #   trigger/instruction); the human's
+                                        #   collapse card confirms or overrides
+rationale: "same .storage-while-running lesson: one teach, one backlog import"
+record_shas:
+  lrn-4c1e9a2f: sha256:a1b2c3d4e5f6
+  lrn-77ab01cd: sha256:0f9e8d7c6b5a
+model: claude-sonnet-5
+analyzed_at: 2026-07-13T02:10:00Z
+```
+
+Merge-proposal lifecycle: removed (`git rm`) when the cluster is collapsed at
+review, **or** as soon as any member record resolves individually — a partial
+cluster is invalid and must not resurface as a card.
 
 Keeping the proposal out of the record means that after capture, **the only
 writer of a pending record is the human** — the worker's clustering emits

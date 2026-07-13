@@ -101,7 +101,9 @@ system. Design rules:
 2. **`--json` on the read verbs** — the TUI parses structures, not
    human-formatted text.
 3. **Notification payload carries record ids** from M2 day one — the
-   deep-link contract exists before the TUI does.
+   deep-link contract exists before the TUI does. (Concretely: the ids
+   ride the CLI's per-run event log, `08-build-plan.md` §7.1;
+   `notify-send` renders only the human string — amended 2026-07-12.)
 4. **The sentinel scopes to mutation windows, never window lifetime.** A
    resident TUI open all day must not hold the autosync pause all day; the
    pause wraps the apply flow (CLI-managed), and the heartbeat/TTL
