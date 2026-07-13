@@ -49,8 +49,9 @@ ignoring costs nothing. This section pins the mechanics 07 left open.
   Detail with the stack behind it, so `Esc` still walks up sensibly.
 - **Action keys on Detail** (also usable on a Bucket row): `a` approve
   (route), `d` deny (reject), `i` iterate (agent pane), `f` defer, `g`
-  graduate (offered only when the record qualifies), `o` override
-  destination, `n` attach/edit a resolution note.
+  graduate (always available; highlighted when the proposal flags
+  already-canon — §2.3), `o` override destination, `n` attach/edit a
+  resolution note.
 - **Arm-then-confirm, never modal-confirm.** Resolution keys **arm** the
   action bar: it shows exactly what will run (verb, id, destination, note
   present/absent) and `Enter` executes, any other key disarms. One extra
@@ -211,8 +212,9 @@ S-8, inside the permission surface of §4.3).
   time** (concurrent verbs would race the git index); while one runs,
   navigation stays live, further resolution keys are disabled with a
   visible "applying…" state, and bulk loops render per-item progress.
-  If the record under **active iteration** is resolved (`a`/`d`/`f`/`g`
-  while its pane session runs), the TUI **first interrupts the session**
+  If the record under **active iteration** is resolved — by keypress
+  *or* by a bulk loop reaching it (the check lives at verb dispatch,
+  not at the keyboard) — the TUI **first interrupts the session**
   (the §4.2 escalation ladder, ≤5 s worst case), then runs the verb —
   never concurrently: the pane agent holds live write permission on the
   exact files the verb is about to `git mv`/`git rm`, and an unserialized
@@ -558,13 +560,16 @@ so the gate reviews the *set*):
    under `$XDG_RUNTIME_DIR/self-learn/` (sockets belong in the runtime
    dir, not the cache — P1-6, 2026-07-12). No new locations.
 7. **08 §1 resolution-verbs row** — batch extension: resolution verbs
-   gain `--no-push` (commit as pinned, skip the push) plus a bare
-   `self-learn push` verb, **for TUI bulk loops only**: a ~50-record
-   canon-acknowledge loop must not be ~50 sequential network pushes
-   (P1-10). The loop-end `push` preserves the self-push property (the
-   surface's end state is always pushed); the unpushed window is the
-   loop's own duration, bounded and sentinel-protected. Single
-   resolutions keep per-verb push unchanged.
+   gain `--no-push` (commit as pinned, skip the push), **for TUI bulk
+   loops only**: a ~50-record canon-acknowledge loop must not be ~50
+   sequential network pushes (P1-10). The loop terminates with the
+   **existing** bare `self-learn push` verb (already pinned — 08 §1
+   Push row, 01 §3.4; this amendment adds only the flag, P1-16a), which
+   runs on loop exit **success or abort** (P1-16b — an aborted loop's
+   committed records must still publish; push-only-on-success would
+   recreate the exact committed-but-unpushed hole 01 §3.4's self-push
+   rule closes). The unpushed window is the loop's own bounded
+   duration. Single resolutions keep per-verb push unchanged.
 8. **08 §1 sentinel row** — clarifying sentence: for the TUI, "wraps
    only apply flows" is *provided by* per-verb self-hold — the TUI never
    calls `sentinel hold` itself (P1-8; 09 §3 is the controlling

@@ -29,6 +29,7 @@ human routes it.
 | `06-horizon.md` | The team-scale future (~5–6 users, shared artifact repo): invariants, the six team problems, staged path |
 | `07-review-ui.md` | The resident TUI (recorded destination surface): attend-at-convenience, embedded SDK adjudication pane, the don't-subvert contracts on v1/M2 |
 | `08-build-plan.md` | **Execution authority for the build**: pinned interface contracts, the Phase-0 fixture runbook, the M1 task DAG, judgment-call routing, eventuality playbooks — written so any orchestrator can run the build |
+| `09-tui-spec.md` | **Design authority for the G-3 TUI**: interaction model, surfaces, files-as-truth data flow, the adjudication pane (engine abstraction: CLI stream-json default / Agent SDK alternative), degradation table, framework selection (Textual, trade-studied) |
 | `research/` | External evidence memos (SOTA surveys etc.) — shareable with blind reviewers, unlike `reviews/` |
 | `fixtures/` | Fixture harness generators + `trials.md` (the Phase-0/§0 trial log) |
 
@@ -159,6 +160,23 @@ human routes it.
   `reviews/2026-07-12-phased-gate-process.md` (withheld from blind
   reviewers). 08-build-plan is now the gated execution authority for
   M1→M3; build may start at 08 §2.
+- **2026-07-12 — G-3 TUI: empirical grounding + design spec gated
+  (phase 1 of 3).** Three research memos landed (`research/`): live
+  Agent SDK verification (API-key-only auth, 5-min cache TTL, no
+  fallback model), live-host + live-CLI grounding (Ghostty/swaync;
+  `claude` 2.1.207 verifies every pane-critical flag), framework trade
+  study (Textual over Ink, "not genuinely close on fit"; bus-factor-1
+  caveat recorded with switch conditions). New **`09-tui-spec.md`** —
+  design authority for the G-3 TUI, refining 07 with two evidence-driven
+  dated departures (PaneEngine abstraction, CLI-subprocess default over
+  the SDK; caching demoted to opportunistic) and a §10 amendment set for
+  02/03/07/08. Phase-1 gate: independent review FAIL (4 gates — bulk
+  collapse armed reject where the corpus pins graduation; already-canon
+  flag had no structured field; validate-verb delete semantics;
+  verb/agent write race) → remediated → **gate re-check PASS** (two
+  wording residuals folded). Phases 2–3 (corpus reconciliation;
+  execution plan `10-tui-build-plan.md`) follow. Build stays gated on
+  G-3's trigger (M2 shipped).
 - **2026-07-12 — ratification calls, first batch (user).** **O-5 settled as
   S-13**: auto-memory pruning is a post-decision, post-processing sweep —
   never in-flight, never inline with adjudication. **O-6 amended**: the
