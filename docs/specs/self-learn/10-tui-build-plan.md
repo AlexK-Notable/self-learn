@@ -149,8 +149,10 @@ brackets.
   permission-flag compilation from the charter surface, doctrine
   compiler, pane-charter.md authored, verify-at-build ledger executed
   and logged. *Tests:* canned-transcript fake `claude` (happy path,
-  error result, mid-stream kill, malformed line → skip+log). *DoD:*
-  events replay byte-exact; live smoke deferred to T-B/T-E.
+  error result, mid-stream kill, malformed line → skip+log; assert
+  `interrupt()` is a no-op on an ended session — phase-3 reviewer
+  note). *DoD:* events replay byte-exact; live smoke deferred to
+  T-B/T-E.
 - **U6 · Iterate split** [U3, U5]: split layout, MarkdownStream
   transcript, input line, session lifecycle (fresh per Iterate, one
   live at a time, budget/turn-cap surfacing, cost footer), Esc

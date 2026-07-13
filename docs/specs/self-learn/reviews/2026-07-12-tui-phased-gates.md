@@ -104,4 +104,51 @@ only the independent re-check caught.**
 
 ## Phase 3 — execution plan + end-to-end corpus review
 
-*(pending)*
+- **10-tui-build-plan.md authored** during phase 2's review window
+  (held in scratchpad until that gate closed to keep the phase-2
+  reviewer blind to unreviewed material), landed `0a9755a` with
+  P2-aware updates.
+- **Review (fresh Fable — third distinct reviewer, no authorship or
+  remediation involvement): FAIL** — 2 gates, 8 minors, against a
+  terminal-condition scorecard of coherence PASS / implementability
+  FAIL-pending / design-quality PASS. P3-1: the pinned `~/bin` entry
+  wrapper resolved sibling paths through the deployment *symlink*
+  (`$(dirname "$0")` → `~/tui`); the reviewer ground-truthed
+  install.sh's link line and cited home-net-capture's `readlink -f`
+  precedent. P3-2: the cluster-collapse adjudication flow —
+  fully-designed in 09 §2.2 — had no owning test; acceptance could go
+  green with it absent (T-A's predicate is scoped to behaviors its
+  sentence names). Minors: interrupt-message shape missing from the
+  verify-at-build ledger, `[syntax]` extra, socket bare-invocation +
+  `--no-socket` unpinned, notify argv inventable, two unrecorded 09↔10
+  divergences (uv-project packaging; Edit-only record grant), external
+  resolution of an iterating record unspecified, advance-to-next
+  untested, em-dash filename + XDG_CACHE_HOME test hygiene. Notable
+  positive ground-truth: every pane-critical flag verified live,
+  including probing `--max-turns` (accepted though undocumented).
+- **Remediation** (`c935ddc`): all ten; the Edit-only record grant
+  recorded as deliberate least-privilege (a session cannot recreate a
+  `git mv`'d record — strengthens the P1-4/P3-8 bound).
+- **Gate re-check (same reviewer): PASS + TERMINAL VERDICT.** All ten
+  dispositions verified (wrapper path arithmetic re-checked; cluster
+  flow inside the test net); the targeted introduced-defect hunt found
+  nothing gate-severity (one folded U5 assertion note: `interrupt()`
+  no-op on ended sessions). **Terminal conditions: 1 Coherence PASS
+  (traced, not asserted — nine contract families + authority chain);
+  2 Implementability PASS ("Opus 4.8 / Sonnet 5-tier agents can
+  execute U1–U11, TUI and adjudication pane included, from the
+  documentation alone"); 3 Design quality PASS (choices judged on the
+  axes, not on rationale-text existence).**
+
+## Standing notes
+
+- Lesson tally closed at **5-for-6**: phases 1 and 2 remediations each
+  minted re-check findings; phase 3's remediation was the first to
+  survive its re-check clean (its two probes came back
+  no-hazard/consistent). The discipline stays: never self-certify.
+- The Textual-vs-Ink bus-factor-vs-longevity weighting is a recorded
+  **user values choice** (09 §6, trade study §d) — surfaced in the gate
+  reports; flipping it later is a view-layer rewrite only.
+- Build start remains gated on G-3's trigger (M2 shipped, worker
+  proven); running 10 before that is itself a routed escalation
+  (10 §4).

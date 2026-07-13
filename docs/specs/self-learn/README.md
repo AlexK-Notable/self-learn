@@ -185,7 +185,20 @@ human routes it.
   bypass CLI verbs (pane + review Discuss-edit) — closed by extending
   `proposal validate <id>` into the scan enforcement point (exit codes
   0/1/2 pinned; resolution verbs scan the full record file as the
-  no-bypass backstop).
+  no-bypass backstop). **Phase-3 gate PASS + TERMINAL VERDICT (same
+  day):** new **`10-tui-build-plan.md`** — execution authority for the
+  G-3 build (TUI-local pins + verify-at-build ledger, fixtures
+  T-A..T-E with live trials, task DAG U1–U11, judgment routing,
+  playbooks). First review failed it on a symlink-breaking wrapper pin
+  and an untested cluster-collapse flow (+8 minors); remediated;
+  re-check clean. Terminal conditions, from the third independent
+  reviewer: coherence PASS (nine contract families traced
+  cross-document), implementability PASS ("Opus 4.8 / Sonnet 5-tier
+  agents can execute U1–U11, TUI and adjudication pane included, from
+  the documentation alone"), design quality PASS. Build start stays
+  gated on G-3's trigger. Process record:
+  `reviews/2026-07-12-tui-phased-gates.md` (withheld from blind
+  reviewers).
 - **2026-07-12 — ratification calls, first batch (user).** **O-5 settled as
   S-13**: auto-memory pruning is a post-decision, post-processing sweep —
   never in-flight, never inline with adjudication. **O-6 amended**: the
