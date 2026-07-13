@@ -56,7 +56,12 @@ ignoring costs nothing. This section pins the mechanics.
   (`--app=http://127.0.0.1:<port>/` with a stable window class) pinned
   by a Hyprland window rule — the dedicated-window feel the vision
   wanted, per the user's binding V2: ambient presence + instant attend,
-  in *any* dedicated window. A plain browser tab works identically
+  in *any* dedicated window. (Mechanism verified live 2026-07-12,
+  phase-A reviewer: `chromium --app=… --class=self-learn-ui-test`
+  under Hyprland 0.55.4 yields a native-Wayland window with that
+  app_id, `xwayland: false` — `hyprctl dispatch focuswindow class:…`
+  matches. Chromium-family only; Firefox has no `--app` equivalent
+  and takes the plain-tab degradation, §5.) A plain browser tab works identically
   (degradation, §5); the server neither knows nor cares.
 - **Keyboard accelerators, single keys only.** `j`/`k` (and arrows)
   move within a list, `Enter`/`l` drill in, `Esc`/`h` go up a level,
@@ -127,13 +132,18 @@ ignoring costs nothing. This section pins the mechanics.
 - Records grouped by **proposed destination** — `proposal.destination`,
   02 §1's pinned enum (`skill-md | claude-md | reference | new-skill |
   hook`; headers are display labels, not a second vocabulary) — plus
-  two synthetic groups: **unanalyzed** and **clusters**. Group
+  two synthetic groups: **"no analysis yet"** and **clusters**. (The
+  group's display label is deliberately NOT "unanalyzed" — W-6,
+  2026-07-12: the Front page's `unanalyzed` *count* uses the worker
+  eligibility predicate, a different measure; distinct labels keep a
+  future maintainer from conflating them.) Group
   precedence carried verbatim (P2-9): a record with *any* proposal file
   rows under its `destination` group — hash-stale ones carry the stale
-  badge there — so the **unanalyzed group holds only records with no
-  proposal file at all**; the Front page's `unanalyzed` *count* keeps
-  the worker's eligibility predicate (a different measure, documented
-  as such). Groups render as sections, not tabs — one scroll.
+  badge there — so the **"no analysis yet" group holds only records
+  with no proposal file at all**; the Front page's `unanalyzed`
+  *count* keeps the worker's eligibility predicate (a different
+  measure, documented as such; distinct display labels per W-6).
+  Groups render as sections, not tabs — one scroll.
 - Row: id (short), age, title (first Trigger/Fact line — same
   derivation as `list --json .title`), sightings count, deferred badge
   when `deferred_until` is future (dimmed at the bottom; fetched via
@@ -157,7 +167,12 @@ ignoring costs nothing. This section pins the mechanics.
   per item (SSE, §3); a mid-loop failure stops the loop with the
   failing id on screen. Loop latency uses the `--no-push` batch
   amendment + terminal `self-learn push` on exit **success or abort**
-  (08 §1 as amended; P1-10/P1-16).
+  (08 §1 as amended; P1-10/P1-16). One benign race, named (W-5,
+  2026-07-12): each looped verb releases its own sentinel, so autosync
+  may push the loop's commits between the last release and the
+  terminal push — the terminal push then no-ops. Harmless (commits
+  exist, files are truth); the terminal push is the guarantee of last
+  resort, not the only publisher.
 
 ### 2.3 Detail page — one decision, fully explained
 
@@ -232,9 +247,30 @@ permission surface of §4.3).
   SameSite=Strict cookie and redirects to the clean URL; every
   mutating route is **POST-only** and requires the cookie plus htmx's
   custom header (CSRF belt-and-braces). Failure renders a 403 page
-  naming the launcher (`self-learn-ui-open`) as the fix. This is
-  ~30 lines of middleware and it is **in scope for v1, not optional
-  hardening** (10 §1 pins it; T-A tests it).
+  naming the launcher (`self-learn-ui-open`) as the fix.
+  **Render-path hardening (added 2026-07-12, phase-A gate W-1 — the
+  content this server renders is adversarial by construction: records
+  are captured from sessions that read arbitrary web/tool content, and
+  pane blocks are model output; unsanitized, a `<script>` payload in
+  either executes inside the token-cookied origin, satisfies SameSite
+  AND can set `HX-Request` — defeating every mutating-route control
+  above and the P1 human-gate invariant itself. Empirically confirmed:
+  markdown-it-py's default preset passes raw HTML through):**
+  (a) Jinja autoescape ON for all templates (pinned, never disabled
+  per-block); (b) markdown rendered with **`html=False`** — raw HTML
+  in markdown is escaped, never passed through — for every
+  file-sourced and pane-sourced render, page and SSE frame alike;
+  (c) the only trusted raw-HTML injections are Pygments' own generated
+  markup and the app's templates; (d) a **`Content-Security-Policy`
+  response header on every response**: `default-src 'none';
+  script-src 'self'; style-src 'self'; img-src 'self' data:;
+  connect-src 'self'` (the app vendors its only script — inline
+  scripts and external loads are dead even if something slips
+  through). All of the above is v1 scope, pinned in 10 §1 and tested
+  in T-A (a record body containing `<script>`/`onerror` payloads must
+  render escaped; the CSP header must be present). Together with the
+  Host/token/POST pins this is **~50 lines of middleware + renderer
+  configuration — in scope for v1, not optional hardening**.
 - **Reads**: `list --json` / `status --json` for lists and counts; raw
   files (record md, proposal yaml, diff) for Detail, and raw
   `proposals/merge-*.yaml` for cluster groups (structured YAML —
@@ -318,7 +354,7 @@ user's binding V3 and probes run before these pins froze
 | Auth / economics | Identical — both resolve the same credential chain, subscription OAuth included (empirical-test memo) | Identical |
 | Token-level streaming | **Verified empirically** (probes memo, probe 1): `include_partial_messages=True` emits raw Anthropic stream events before the final message; granularity is chunk-level (~5 Hz, ~14 words/delta over a ~150-word answer) — smooth live rendering, not per-token | `--include-partial-messages` verified live on 2.1.207 |
 | Permission surface | **In-process `can_use_tool` callback, verified empirically** (probes memo, probe 2): fires per tool call with absolute paths, denial reason surfaces to the agent, denials fail closed and land in `ResultMessage.permission_denials`. Caveats pinned in §4.3: callback requires `ClaudeSDKClient` streaming mode, and a gated tool listed in `allowed_tools` is auto-approved **before** the callback runs | flag rules only; PreToolUse-guard fallback |
-| Model fallback / caps | `fallback_model`, budget and turn caps: presence verified at build (10 §1 ledger); absent options degrade per §5 | `--fallback-model`, `--max-budget-usd`, `--max-turns` verified live |
+| Model fallback / caps | **Verified empirically 2026-07-12** (phase-A reviewer, dataclass introspection on installed 0.2.116): `ClaudeAgentOptions` exposes `fallback_model`, `max_turns`, `max_budget_usd` as real fields. (This also corrects the grounding memo's doc-derived "the Agent SDK has no fallback equivalent" — false on the pinned stack; dated correction landed there.) Re-verified against the resolved SDK version at build (10 §1 ledger) | `--fallback-model`, `--max-budget-usd`, `--max-turns` verified live |
 | Interface stability | semver'd typed library (version-pinned, 10 §1) | stream-json protocol, versioned with the CLI |
 | Uniformity | Second dependency (bundled CLI binary rides the wheel; `cli_path` can point at the system CLI) | One engine family with the worker |
 
@@ -379,14 +415,15 @@ pattern; no client-side markdown dependency).
   5-minute default TTL). The byte-stable prefix maximizes whatever
   caching the auth path provides; the design budget assumes zero cache
   hits and stays acceptable.
-- **Caps**: budget `SELF_LEARN_PANE_BUDGET_USD` (default 1.00) and
-  turn cap `SELF_LEARN_PANE_MAX_TURNS` (default 15), mapped to the
-  SDK's cap options (exact option names verified at build; a cap the
-  SDK cannot express is enforced by the engine wrapper itself —
-  count turns, kill + `result(error_turn_cap)` — never silently
-  dropped). Model `SELF_LEARN_PANE_MODEL`, default `claude-sonnet-5`,
-  fallback `claude-haiku-4-5` when the SDK exposes fallback (build
-  ledger; absence = no fallback, acceptable for a human-gated pane).
+- **Caps**: budget `SELF_LEARN_PANE_BUDGET_USD` (default 1.00) →
+  `max_budget_usd`, turn cap `SELF_LEARN_PANE_MAX_TURNS` (default 15)
+  → `max_turns`, model `SELF_LEARN_PANE_MODEL` (default
+  `claude-sonnet-5`) with `fallback_model=claude-haiku-4-5` — all
+  three option fields **empirically confirmed present on 0.2.116**
+  (§4.1 table; re-verify at build). Wrapper-side cap enforcement
+  (count turns, kill + `result(error_*)`) exists ONLY as the
+  contingency for a future SDK version dropping a field — it is not a
+  co-equal build path (W-4, 2026-07-12).
 - **Cost honesty** (carried): the pane footer renders the `result`
   event's cost/usage verbatim when present (subscription auth may
   report 0/absent — render what the engine reports, never invent a
@@ -424,8 +461,23 @@ allows/denies per the rules below; paths are canonicalized
 tolerated and skipped (`RateLimitEvent` appears mid-stream on
 subscription auth):
 
-- **Allowed**: `Read`, `Grep`, `Glob` (corpus + target canon are
-  readable); on **exactly** the item's own files (carried, P3-7):
+- **Read scope, pinned enforceably (W-3, 2026-07-12).** Probe 2
+  established the enforcement reality: in default permission mode,
+  read tools **auto-approve inside `cwd` and never reach the
+  callback**; reads *outside* `cwd` are permission-worthy and DO
+  route to `can_use_tool`. The pin therefore has two tiers:
+  free reads inside `cwd` = the bucket root (the item's own subtree —
+  harmless by construction); the callback **allows** `Read`/`Grep`/
+  `Glob` on paths under the resolved `SELF_LEARN_HOME` repo tree
+  (target canon, doctrine, corpus — repo-wide readability is accepted
+  and stated: the repo policy is no secrets in any tracked file) and
+  **denies with reason every read outside the repo** (e.g. the
+  user-scope `~/.claude/CLAUDE.md` — its excerpt already rides in the
+  first user message per the excerpt rule; the agent is told to work
+  from it or ask the human). "Corpus + target canon" below is this
+  rule, not a third scope.
+- **Allowed**: `Read`, `Grep`, `Glob` per the read-scope pin above;
+  write access on **exactly** the item's own files (carried, P3-7):
   `Edit` on `pending/lrn-<id>.md` (the record always exists — granting
   `Write` would let a session recreate it whole, the resurrection
   vector §3 closes), and `Write`+`Edit` on `proposals/lrn-<id>.yaml` /
@@ -452,7 +504,12 @@ subscription auth):
   re-validate exits 0, and resolution verbs refuse on their own
   full-file scan regardless (P2-7 — the no-bypass backstop). The verb
   commits nothing. Mid-session `file_changed` events trigger re-render
-  only, never validation.
+  only, never validation. Residual, named (W-8, 2026-07-12): between
+  an agent write and the session-end scan, autosync can publish the
+  un-scanned record body to the private remote — on this one path the
+  S-8 rider is detect-at-checkpoint, not prevent-at-write, exactly the
+  accepted posture 02 §2 records ("detection, not prevention" —
+  P2-1a). Canon remains protected by the resolution verbs' own scan.
 - **Permission-surface fallback ladder** (rebuilt for the sdk engine):
   rung 1 = `canUseTool` exact-file callback (default; probes memo is
   the pre-build evidence, the live refusal trial T-B the build-time
@@ -516,7 +573,13 @@ iterate on localhost directly.
   mitigated by the §3 security pins (in scope v1, tested in T-A);
   (2) browser keyboard limits — mitigated by the no-chords keymap rule
   and the Vimium exclusion note; (3) htmx 4.x churn — irrelevant by
-  vendoring 2.0.9.
+  vendoring 2.0.9; (4) **rendered content is adversarial** (records
+  originate in sessions that read the web; pane blocks are model
+  output) — mitigated by the §3 render-path pins (autoescape +
+  `html=False` + CSP; added 2026-07-12, W-1 — this risk was missing
+  from the problem-space map's security pricing and is recorded there
+  as a dated correction; the pricing delta is small and does not
+  disturb the platform answer).
 - **The recorded runner-up is the Textual TUI** (this document's prior
   revision, git history) — switch conditions: the user re-weights
   toward total keyboard ownership / zero network surface (reversing

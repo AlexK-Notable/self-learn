@@ -70,6 +70,15 @@ C6. **Security posture**: single-user Linux box. A 127.0.0.1 server
     that mutates state and spawns Claude subprocesses adds a real but
     small, standard surface (bind-local + Host validation + bearer
     token + POST-only ≈ 30 lines). The TUI has zero network surface.
+    *(Dated correction, 2026-07-12 — phase-A review W-1, framing
+    lens: this pricing omitted the **render-path** surface — a web
+    app rendering agent- and web-sourced content must also pin output
+    sanitization (autoescape + `html=False` markdown) and a CSP
+    header, or stored XSS inside the token-cookied origin defeats the
+    mutation controls. Corrected cost ≈ 50 lines + renderer config —
+    still small; the reviewer and orchestrator judged the delta does
+    not disturb the V1 platform answer, and it is recorded here so
+    the answer's basis stays honest.)*
 C7. **Engine facts (post-correction)**: SDK and CLI ride the same
     credential chain, subscription included — auth/economics is VOID
     as a discriminator. Both engines must run with emptied

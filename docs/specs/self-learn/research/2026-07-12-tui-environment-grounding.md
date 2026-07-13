@@ -57,7 +57,7 @@ under their normal (subscription) auth**:
 | Token-level partial streaming | `--include-partial-messages` (stream-json only) |
 | Byte-stable system prompt | `--system-prompt` / `--system-prompt-file`, `--exclude-dynamic-system-prompt-sections` |
 | Tool restriction | `--allowedTools`, `--disallowedTools`, `--permission-mode` |
-| Model control | `--model`, `--fallback-model` (automatic fallback — the Agent SDK has no equivalent per the SDK memo §6), `--effort` |
+| Model control | `--model`, `--fallback-model` ~~(automatic fallback — the Agent SDK has no equivalent per the SDK memo §6)~~ **CORRECTED 2026-07-12 (phase-A reviewer, empirical — dataclass introspection on installed claude-agent-sdk 0.2.116): `ClaudeAgentOptions` DOES expose `fallback_model`, `max_turns`, and `max_budget_usd`; the SDK-memo-§6 absence claim was doc-derived and is false on the pinned stack**, `--effort` |
 | Cost/turn caps | `--max-budget-usd` (and turn caps per headless docs — verify exact flag at build) |
 | Context hygiene | `--setting-sources` (empty ⇒ no CLAUDE.md), `--settings`, `--strict-mcp-config`, `--add-dir` |
 | Session lifecycle | `--session-id`, `--resume`, `--fork-session`, `--no-session-persistence` |
