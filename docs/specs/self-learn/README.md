@@ -30,6 +30,7 @@ human routes it.
 | `07-review-ui.md` | The resident TUI (recorded destination surface): attend-at-convenience, embedded agent adjudication pane (engine-abstracted at G-3 — see 09), the don't-subvert contracts on v1/M2 |
 | `08-build-plan.md` | **Execution authority for the build**: pinned interface contracts, the Phase-0 fixture runbook, the M1 task DAG, judgment-call routing, eventuality playbooks — written so any orchestrator can run the build |
 | `09-tui-spec.md` | **Design authority for the G-3 TUI**: interaction model, surfaces, files-as-truth data flow, the adjudication pane (engine abstraction: CLI stream-json default / Agent SDK alternative), degradation table, framework selection (Textual, trade-studied) |
+| `10-tui-build-plan.md` | **Execution authority for the G-3 build** (gated on G-3's trigger): TUI-local pins + verify-at-build ledger, acceptance fixtures incl. live trials, task DAG U1–U11, judgment routing, playbooks — 09 wins on conflict; shared pins stay owned by 08 |
 | `research/` | External evidence memos (SOTA surveys etc.) — shareable with blind reviewers, unlike `reviews/` |
 | `fixtures/` | Fixture harness generators + `trials.md` (the Phase-0/§0 trial log) |
 
@@ -176,7 +177,15 @@ human routes it.
   verb/agent write race) → remediated → **gate re-check PASS** (two
   wording residuals folded). Phases 2–3 (corpus reconciliation;
   execution plan `10-tui-build-plan.md`) follow. Build stays gated on
-  G-3's trigger (M2 shipped).
+  G-3's trigger (M2 shipped). **Phase-2 gate PASS (same day):** the nine
+  09 §10 amendments landed as dated edits (01/02/03/07/08); the
+  independent cross-document sweep (nine contract families, file:line
+  traced) caught one real contradiction — the S-8 every-write
+  secret-scan invariant had no mechanism on agent-mediated edits that
+  bypass CLI verbs (pane + review Discuss-edit) — closed by extending
+  `proposal validate <id>` into the scan enforcement point (exit codes
+  0/1/2 pinned; resolution verbs scan the full record file as the
+  no-bypass backstop).
 - **2026-07-12 — ratification calls, first batch (user).** **O-5 settled as
   S-13**: auto-memory pruning is a post-decision, post-processing sweep —
   never in-flight, never inline with adjudication. **O-6 amended**: the

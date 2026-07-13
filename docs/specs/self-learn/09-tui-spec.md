@@ -102,8 +102,14 @@ ignoring costs nothing. This section pins the mechanics 07 left open.
   whose value set is 02 §1's pinned enum (`skill-md | claude-md |
   reference | new-skill | hook`; the section headers above are display
   labels for these enum values, not a second vocabulary) — plus two
-  synthetic groups: **unanalyzed** (the 08 §1 predicate — no schema-valid
-  proposal or hash-stale) and **clusters**
+  synthetic groups: **unanalyzed** and **clusters**. Group precedence
+  (P2-9, 2026-07-12): a record with *any* proposal file rows under its
+  `destination` group — hash-stale ones carry the stale badge there —
+  so the **unanalyzed group holds only records with no proposal file at
+  all**; the Front page's `unanalyzed` *count* keeps the worker's
+  eligibility predicate (08 §1 — it answers "how much analysis work is
+  queued", a different question than "which rows lack a destination"),
+  and the two are documented as different measures
   (merge-proposals). Groups render as sections, not tabs — one scroll.
 - Row: id (short), age, title (first Trigger/Fact line — same derivation
   as `list --json .title`), sightings count, deferred badge when
@@ -443,7 +449,7 @@ surface from the verb, per its own pins), and notifications are absent.
 | No proposal for a record | Detail renders record-only; Iterate works from scratch (the agent generates the proposal — the M1 inline-analysis path through a different door). |
 | Proposal stale (`record_sha` mismatch) | Badge + hint to Iterate; approve stays available (the verb re-validates authoritatively at apply — the TUI badge is advisory UI, the CLI is the enforcer). |
 | Verb exits non-zero (dirty target, push failure, scan refusal…) | Error strip with the verb's stderr verbatim; state re-read from files; nothing optimistic. The verb's own messages are the contract — the TUI adds no interpretation. |
-| `proposal validate` scan hit at session end | Error strip shows the matched span + rule; the record/proposal stay as written (report-never-delete); Detail badges the item "scan-blocked" until a re-validate passes — resolution verbs remain available but `route` will refuse per its own scan (defense in depth). |
+| `proposal validate` scan hit at session end | Discriminated by the verb's pinned exit codes (08 §7.1: 0 clean · 1 schema-invalid · 2 scan hit — never by parsing stderr). Error strip shows the verb's report verbatim; the record/proposal stay as written (report-never-delete); Detail badges the item "scan-blocked" until a re-validate exits 0 — resolution verbs remain available but refuse on their own full-file scan (08 §1 pin/P2-7: a scan-blocked record can never route into canon). |
 | Record resolved elsewhere mid-view | Watch fires → "resolved elsewhere" banner → Bucket page. |
 | `events.jsonl` absent/corrupt line | Skip + log; wake-ups degrade to the poll; ledger walk is truth. |
 | Socket stale (dead instance left it) | Connect fails → remove + take over (standard liveness-check-then-bind). |

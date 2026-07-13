@@ -163,8 +163,11 @@ standard safe rebase-halt (`01` §5) rather than being excluded outright.
   scan their own writes; writes that bypass CLI verbs — the review
   Discuss-edit and the G-3 pane agent's edits — are scanned by
   `self-learn proposal validate <id>` at card completion / pane session
-  end, 08 §7.1. The every-write claim names its mechanism on every
-  path.)*
+  end, 08 §7.1 — on those two paths the scan **detects at the
+  checkpoint rather than preventing at the keystroke** (agent writes
+  may sync before the checkpoint runs; the resolution verbs' own
+  full-file scan is the no-bypass backstop before anything reaches
+  canon). The every-write claim names its mechanism on every path.)*
 - **`superseded_by` ∈ {`null`, `<record-id>`, `"canon"`}.** A record-id
   marks *corrective* supersession — the lesson was wrong and a new record
   replaces it. `canon` marks **graduation** — the substance now lives in

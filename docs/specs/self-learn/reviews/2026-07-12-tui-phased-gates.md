@@ -67,7 +67,40 @@ identical to M2-21. Never self-certify a gate.
 
 ## Phase 2 — contracts + corpus reconciliation
 
-*(pending)*
+- **Amendments landed** (`3f5867a`): all nine 09 §10 items as dated
+  edits across 01/02/03/07/08 + README, plus an orchestrator
+  stale-reference sweep (07 §3 heading, README doc row, 01 §3.4 verb
+  mechanics, 08 already-canon row).
+- **Review (fresh Fable, blind): FAIL** — the required cross-document
+  sweep (nine contract families, file:line traces, AGREE/CONFLICT per
+  family) agreed on eight of nine and surfaced one genuine
+  contradiction: **P2-1 — the S-8 every-record-write secret-scan
+  invariant had no enforcement mechanism on the pane agent's direct
+  record edits** (and, pre-existingly, on the slash review's
+  Discuss-edit path); the amendment set had pinned `proposal validate`
+  as proposals-only, cementing the hole. Minors: 01's graduate wording
+  under-inclusive for the pending-already-canon door; 03 asserting a
+  not-yet-existing 10-doc; `unanalyzed` predicate unpinned; a
+  three-cell table row; §10 item-1 citation overstatement.
+- **Remediation** (`480fedb`): `proposal validate <id>` extended into
+  the S-8 rider's enforcement point for verb-bypassing writes —
+  secret-scans record body + all proposal siblings, report + exit
+  non-zero, never delete/auto-redact, commits nothing; callers = pane
+  session end + Discuss-edit card completion (T10); 02 §2
+  enforcement-points paragraph; all minors.
+- **Gate re-check (same reviewer): PASS.** All six dispositions closed;
+  the targeted hunt found three remediation-introduced
+  under-specifications, folded same-day: P2-7 (resolution verbs pinned
+  to scan the **full record file** they rewrite — refusal = the
+  no-bypass backstop 09 §5 relies on), P2-8 (validate exit codes pinned
+  0/1/2 so the scan-blocked badge never parses prose), P2-9 (bucket
+  group precedence: any-proposal → destination group with stale badge;
+  unanalyzed group = no proposal file; Front count keeps the worker
+  predicate, documented as a different measure). Plus the 02 §2
+  detection-not-prevention honesty half-sentence (P2-1a residue).
+
+**Lesson tally now 5-for-5: every remediation batch has minted findings
+only the independent re-check caught.**
 
 ## Phase 3 — execution plan + end-to-end corpus review
 
