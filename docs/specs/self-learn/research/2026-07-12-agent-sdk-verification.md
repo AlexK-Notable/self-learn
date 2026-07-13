@@ -5,6 +5,19 @@
 GitHub repos) on 2026-07-12, for the G-3 TUI design. Every section cites
 its sources. Shareable with blind reviewers (research/, not reviews/).*
 
+> **CORRECTION (2026-07-12, post-gate — user challenge, empirically
+> tested):** §2's authentication note ("API key authentication only …
+> does NOT support claude.ai subscription OAuth") is **WRONG as a
+> technical claim**. The SDK runs on subscription OAuth — proven on
+> this machine with no API key present, both bundled-CLI and
+> system-CLI; the official auth doc lists subscription `/login`
+> credentials as the default fallback for "the surfaces that wrap
+> [the CLI], including … the Agent SDK". The doc sentence quoted below
+> is a *third-party-product policy*, not an auth mechanic. Full
+> evidence: `2026-07-12-sdk-auth-empirical-test.md`. The §2 text below
+> is preserved unedited as the record of what the docs-only pass
+> concluded.*
+
 *Orchestrator's flags — claims in this report that the 09 design treats as
 **verify-at-build pins with fallbacks** rather than settled facts:*
 

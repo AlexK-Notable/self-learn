@@ -75,10 +75,14 @@ system. Design rules:
   + target canon excerpt). *(Amended 2026-07-12, G-3 design — 09 §4.1:
   "Agent SDK session" generalized to an engine-abstracted agent session
   — `claude -p` stream-json subprocess by default, Agent SDK as the
-  specced alternative. Empirical grounding: the SDK is API-key-only
-  while the CLI rides the user's standing auth, and the CLI's streaming
+  specced alternative. Empirical grounding: the CLI's streaming
   and fallback capabilities were verified live —
-  `research/2026-07-12-agent-sdk-verification.md`. The invariants in
+  `research/2026-07-12-agent-sdk-verification.md`. *(Corrected
+  2026-07-12: that memo's API-key-only auth note was disproven by
+  empirical test — both engines ride the same credential chain,
+  subscription included; `research/2026-07-12-sdk-auth-empirical-test.md`.
+  The engine default stands on capability + uniformity, 09 §4.1 as
+  corrected.)* The invariants in
   this bullet are engine-independent and unchanged.)* The **system
   prompt — the adjudication doctrine: routing map, repo conventions,
   what the agent may and may not do — is deliberately stable and

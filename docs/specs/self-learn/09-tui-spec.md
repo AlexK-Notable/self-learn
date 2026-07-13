@@ -289,7 +289,7 @@ wrapper that spawns the Claude Code CLI:
 
 | | `cli` engine — `claude -p` stream-json | `sdk` engine — `claude-agent-sdk` (Python) |
 |---|---|---|
-| Auth / economics | The user's normal CLI auth (subscription) — same as the M2 worker and every `claude -p` worker in this repo | **API-key only per live docs** (SDK memo §2) — per-token billing for every pane session |
+| Auth / economics | The user's normal CLI auth (subscription) — same as the M2 worker and every `claude -p` worker in this repo | ~~API-key only per live docs~~ **CORRECTED 2026-07-12 (user challenge, empirical test — `research/2026-07-12-sdk-auth-empirical-test.md`): identical — the SDK resolves the same credential chain, subscription OAuth included; this row is a tie and the economics ground below is void** |
 | Token-level streaming | `--include-partial-messages` **verified on the live binary** | Not documented as exposed (SDK memo flag 2) |
 | Model fallback | `--fallback-model` verified present | No fallback option (SDK memo §6) |
 | Permission surface | `--allowedTools` rules (path-scoped rule syntax is the same one 08 §7 pins for the worker) + `--disallowedTools Bash` | Same flags **plus** in-process `canUseTool` callback (exact-file allowlist in code) |
@@ -298,20 +298,27 @@ wrapper that spawns the Claude Code CLI:
 
 **Decision: the `cli` engine is the default; the `sdk` engine is the
 recorded alternative behind the same interface.** Grounds (the quality
-axes): *economics* — a heavy-daily-use resident tool on API-key billing
-converts a subscription workflow into a metered one, and the SDK's
-API-key-only stance is source-verified; *capability* — token streaming
-and model fallback are verified on the `cli` side and unverified/absent
-on the `sdk` side; *architecture* — one engine family across worker and
-pane. The SDK alternative is kept **specced, not built**: v1 implements
+axes) *(as corrected 2026-07-12 — the original economics ground cited
+the SDK memo's API-key-only auth note, which the user challenged and an
+empirical test disproved: both engines ride the same credential chain,
+subscription included; `research/2026-07-12-sdk-auth-empirical-test.md`.
+The decision stands on the surviving grounds, and is closer than
+originally framed)*: *capability* — token streaming and model fallback
+are verified on the `cli` side and unverified/absent per docs on the
+`sdk` surface; *architecture* — one engine family across worker and
+pane, zero new dependency. The empirical test also measured why 09
+§4.2's emptied `--setting-sources` is load-bearing for **both**
+engines: defaults load `~/.claude` settings/skills — a 68k-token cache
+write per fresh session on this host. The SDK alternative is kept **specced, not built**: v1 implements
 the `cli` engine only; `SELF_LEARN_PANE_ENGINE=sdk` exits with "engine
 not built — see 09 §4.1" (P1-11, 2026-07-12 — a solo maintainer should
 not keep a second engine green for a deployment gated years out). The
 interface seam is the deliverable; this subsection is the `sdk`
 engine's spec (`canUseTool` exact-file callback replacing the flag
-rules, `claude-agent-sdk` Python, API-key auth per the SDK memo) for
-whichever trigger fires first: the `cli` engine's permission
-verification failing (§4.3 fallback ladder), or an API-key/team
+rules, `claude-agent-sdk` Python; auth = the same credential chain as
+the CLI, subscription included — corrected 2026-07-12, empirical-test
+memo) for whichever trigger fires first: the `cli` engine's permission
+verification failing (§4.3 fallback ladder), or a team/API-key
 deployment (06-horizon) wanting it. This is a dated amendment to 07 §3
 (§10) — the vision's invariants (fresh session per adjudication, stable
 doctrine prefix, agent iterates / human routes) are engine-independent
