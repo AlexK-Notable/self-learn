@@ -78,10 +78,13 @@ ignoring costs nothing. This section pins the mechanics 07 left open.
   (skill/project/user), pending count, oldest pending age, unanalyzed
   count (records with no proposal yet). Sorted oldest-first (the queue's
   health is age, not size — 04's time-to-triage metric).
-- A **status strip** (bottom): worker last-run + result, staleness alarm
+- A **status strip** (bottom): worker last-run age, staleness alarm
   (worker overdue per its escalation pins), total pending, sentinel state
   if live (someone is mid-apply somewhere). Data: `status --json` plus
-  the sentinel file's mtime read directly (read-only).
+  the sentinel file's mtime read directly (read-only). No run *result*
+  renders here — `worker_last_run` is the only pinned field and failed
+  runs deliberately never touch it (08 T13); run forensics stay in
+  `worker.log`, outside the TUI's scope (P1-7, 2026-07-12).
 - Data source: `self-learn status --json` and `list --json` (08 §1 pinned
   shapes). The Front page never walks the ledger itself — if the pinned
   shapes lack a field the Front page needs (they currently lack
@@ -91,14 +94,21 @@ ignoring costs nothing. This section pins the mechanics 07 left open.
 
 ### 2.2 Bucket page — grouped pending
 
-- Records grouped by **proposed destination** (proposal.destination:
-  hook / skill-update / claude-md / references / new-skill), plus two
+- Records grouped by **proposed destination** — `proposal.destination`,
+  whose value set is 02 §1's pinned enum (`skill-md | claude-md |
+  reference | new-skill | hook`; the section headers above are display
+  labels for these enum values, not a second vocabulary) — plus two
   synthetic groups: **unanalyzed** (no proposal yet) and **clusters**
   (merge-proposals). Groups render as sections, not tabs — one scroll.
 - Row: id (short), age, title (first Trigger/Fact line — same derivation
   as `list --json .title`), sightings count, deferred badge when
   `deferred_until` is future (rendered dimmed at the bottom, since the
-  queue proper excludes them), already-canon flag when set.
+  queue proper excludes them — fetched via `list --json
+  --include-deferred`, a flagged superset of the pinned queue shape;
+  §10 item 2), already-canon flag when `proposal.already_canon` is set
+  (a structured proposal field added by amendment — §10 item 2a; the
+  flag previously lived only in free-form rationale, unusable under
+  07 §4 contract 2's no-text-parsing rule).
 - **Cluster rows** (merge-proposals): one row per cluster showing member
   count and the suggested survivor; expanding (`Enter`) lists members;
   the survivor choice is a selection within the expanded view; approve
@@ -106,10 +116,17 @@ ignoring costs nothing. This section pins the mechanics 07 left open.
   verbatim).
 - **Bulk collapse**: a homogeneous already-canon group (the backlog-
   import case, 01 §3.2) renders as a single collapsible decision row
-  ("N already-canon records — reject all"), arming a loop of per-record
-  verbs. The TUI loops **individual pinned verbs**; it never invents a
-  bulk CLI surface that doesn't exist. Progress renders per item; a
-  mid-loop failure stops the loop with the failing id on screen.
+  ("N already-canon records — acknowledge all as canon"), arming a loop
+  of per-record **`graduate <id>`** verbs — canon-supersession, never
+  rejection: 02 §2 pins `superseded_by: canon` as the already-canon
+  resolution and forbids conflating graduations with rejections (the
+  rejected-proposal digest greps `reject` commits; a graduation bulk
+  landing as rejects would flood its negative-exemplar window —
+  P1-1, 2026-07-12). The TUI loops **individual pinned verbs**; it never
+  invents a bulk CLI surface that doesn't exist. Progress renders per
+  item; a mid-loop failure stops the loop with the failing id on screen.
+  Bulk-loop latency (each verb commits + pushes) is addressed by the
+  `--no-push` batch amendment (§10 item 7).
 
 ### 2.3 Detail page — one decision, fully explained
 
@@ -134,8 +151,18 @@ Three stacked regions (07 §2's finding / change / why), one scroll:
 
 Action bar at the bottom (armed states per §1). `o` (override
 destination) cycles the destination the armed `route` will pass via
-`--dest`; the overridden value renders distinctly so the user sees the
-analyst's suggestion vs. their override.
+`--dest` — **among the parameter-free values only** (`skill-md`,
+`claude-md`, `reference` with its pinned default `LEARNINGS.md`).
+`new-skill:<name>` needs a name and `hook` needs a structured hook block
+neither of which a cycling key can supply: those destinations are
+reachable via Iterate (the agent restructures the proposal) or the CLI
+directly, and the cycle skips them with a footer hint saying so (P1-9a,
+2026-07-12). The overridden value renders distinctly so the user sees
+the analyst's suggestion vs. their override. `g` (graduate) is always
+available on Detail for a pending record — the verb is legal whenever
+the user recognizes already-canon knowledge — and is *highlighted* in
+the footer when `proposal.already_canon` is set (affordance, not
+qualification logic; P1-9b).
 
 ### 2.4 The iterate split
 
@@ -144,8 +171,10 @@ re-renders when the agent edits files), right = the **agent pane**
 (§4): streaming transcript + a single-line input for talking to the
 agent. `Esc` in the pane interrupts the stream; `q` in the pane closes
 the split (ending the session) and returns to full Detail. Approve/deny
-keys stay live during iteration — adjudication never waits for the agent
-to finish (interrupting-then-approving is legal and common).
+keys stay live during iteration — arming works at any time, and
+executing a resolution on the record under iteration auto-interrupts the
+session first (the serialization rule, §3): adjudication never waits
+for the agent to *finish*, only for its bounded interrupt.
 
 ## 3. Process & data architecture
 
@@ -157,9 +186,12 @@ pane agent's tool calls (record/proposal edits, legal pre-routing per
 S-8, inside the permission surface of §4.3).
 
 - **Reads**: `list --json` / `status --json` for lists and counts; raw
-  files (record md, proposal yaml, diff) for Detail; `events.jsonl` only
-  as a wake-up signal, never as state (the ledger is authoritative;
-  events are machine-local, 08 §7.1).
+  files (record md, proposal yaml, diff) for Detail, **and raw
+  `proposals/merge-*.yaml` for the Bucket page's cluster groups** (the
+  merge-proposal schema is structured YAML — reading it is
+  files-as-truth, not text-parsing; `list --json` stays record-level);
+  `events.jsonl` only as a wake-up signal, never as state (the ledger
+  is authoritative; events are machine-local, 08 §7.1).
 - **Refresh**: filesystem watch (inotify via the framework's watcher or
   `watchfiles`) on the bucket `pending/` + `proposals/` dirs and
   `events.jsonl`, debounced ~300 ms; a 10 s poll as fallback where inotify
@@ -174,7 +206,20 @@ S-8, inside the permission surface of §4.3).
   [--note …] [--collapse …]`, exit status + stderr captured. The TUI
   renders outcome from the verb's exit status and the subsequent
   file-state refresh — it never parses human-formatted stdout for state
-  (07 §4 contract 2). Sentinel hold/heartbeat/release is entirely inside
+  (07 §4 contract 2). **Execution model**: verbs run async so the UI
+  never blocks, but strictly **serialized — one verb subprocess at a
+  time** (concurrent verbs would race the git index); while one runs,
+  navigation stays live, further resolution keys are disabled with a
+  visible "applying…" state, and bulk loops render per-item progress.
+  If the record under **active iteration** is resolved (`a`/`d`/`f`/`g`
+  while its pane session runs), the TUI **first interrupts the session**
+  (the §4.2 escalation ladder, ≤5 s worst case), then runs the verb —
+  never concurrently: the pane agent holds live write permission on the
+  exact files the verb is about to `git mv`/`git rm`, and an unserialized
+  agent write could resurrect a resolved record as a duplicate pending
+  file (P1-4, 2026-07-12). "Adjudication never waits" survives in the
+  only form that matters: the wait is the interrupt's bounded grace, not
+  the agent's convenience. Sentinel hold/heartbeat/release is entirely inside
   the verb (08 §1); the TUI holds nothing, so a TUI open for days holds
   the autosync pause for zero seconds beyond each verb's own window
   (07 §4 contract 4 by construction).
@@ -182,7 +227,13 @@ S-8, inside the permission surface of §4.3).
   `$XDG_RUNTIME_DIR/self-learn/tui.sock`. Launch behavior of
   `self-learn-tui [--record <id>]`: if the socket answers, send
   `{"navigate": "<id>"}` and exit 0 (the resident instance navigates);
-  else become the instance. Terminal-window focus is the launcher's job,
+  else become the instance. Deep-link edge cases (P1-9c, 2026-07-12):
+  a multi-id worker-run notification deep-links to the **first id** in
+  its `record_ids` (the aggregate context makes any single landing spot
+  acceptable; the rest are one `Esc` away in the bucket); an id already
+  resolved by click time lands on that record's Bucket page with a
+  "resolved elsewhere" banner (same behavior as mid-view resolution,
+  §5), or Front if the bucket can't be derived. Terminal-window focus is the launcher's job,
   not the TUI's: the desktop entry point `self-learn-tui-open` (a tiny
   script) either focuses the existing window (`hyprctl dispatch
   focuswindow` on a pinned window class, set by launching the terminal
@@ -233,10 +284,16 @@ converts a subscription workflow into a metered one, and the SDK's
 API-key-only stance is source-verified; *capability* — token streaming
 and model fallback are verified on the `cli` side and unverified/absent
 on the `sdk` side; *architecture* — one engine family across worker and
-pane. The SDK alternative is kept specced because `canUseTool` gives
-strictly stronger in-process permissioning and because API-key
-deployments (team scale, 06-horizon) may prefer it; it must stay
-buildable behind the interface. This is a dated amendment to 07 §3
+pane. The SDK alternative is kept **specced, not built**: v1 implements
+the `cli` engine only; `SELF_LEARN_PANE_ENGINE=sdk` exits with "engine
+not built — see 09 §4.1" (P1-11, 2026-07-12 — a solo maintainer should
+not keep a second engine green for a deployment gated years out). The
+interface seam is the deliverable; this subsection is the `sdk`
+engine's spec (`canUseTool` exact-file callback replacing the flag
+rules, `claude-agent-sdk` Python, API-key auth per the SDK memo) for
+whichever trigger fires first: the `cli` engine's permission
+verification failing (§4.3 fallback ladder), or an API-key/team
+deployment (06-horizon) wanting it. This is a dated amendment to 07 §3
 (§10) — the vision's invariants (fresh session per adjudication, stable
 doctrine prefix, agent iterates / human routes) are engine-independent
 and unchanged.
@@ -259,8 +316,13 @@ engine to the transport.
 - **Prompt structure**: system prompt = the **compiled doctrine file**
   passed via `--system-prompt-file` — byte-stable across sessions by
   construction: `routing-doctrine.md` (the single source, 08 §1 — one
-  file, *four* consumers after this spec) + the **pane charter** appendix
-  (§4.3's rules rendered as prose, a tracked file compiled next to it).
+  file, three loaders, the G-3 pane already counted among them) + the
+  **pane charter** appendix (§4.3's rules rendered as prose, a tracked
+  file: `plugins/self-learn/skills/self-learn/references/
+  pane-charter.md`). Compilation is a runtime concat: the TUI writes
+  `~/.cache/claude-skills/self-learn/pane-doctrine.md` at startup and
+  re-concats when either source's mtime changes; the compiled artifact
+  is cache, never tracked (P1-12, 2026-07-12).
   `--setting-sources` emptied so no CLAUDE.md rides in (context hygiene +
   byte-stability; exact empty-value syntax is a build-time pin).
   Per-item context — record body, proposal + diff if present, target
@@ -319,15 +381,32 @@ for `sdk`):
   construction — same trust geometry as the worker.
 - **Post-iterate stamping**: anything the pane agent writes into a
   proposal is **unstamped by definition** (models cannot compute
-  `record_sha` — M2-21). On session end (or file_changed on a proposal),
-  the TUI invokes the CLI's validate-and-stamp surface for that id
-  (`self-learn proposal validate <id>` — a thin CLI verb exposing the
-  exact validation+stamping step the worker already runs internally,
-  08 §7 run-sequence step 4). Until stamped, Detail shows the proposal
-  as stale — which is true. This verb is a **new 08 §7 pin** (dated
-  edit; §10): it adds no new logic, only a callable entry to logic M2
-  already builds, and it is what makes pane output equal-citizen with
-  worker output instead of a hash-discipline hole.
+  `record_sha` — M2-21). On session end, the TUI invokes the CLI's
+  validate-and-stamp surface for that id (`self-learn proposal validate
+  <id>` — a thin CLI verb reusing the validation+stamping *logic* of
+  08 §7 run-sequence step 4, **with one pinned semantic difference**:
+  on schema-invalid input the verb **reports — exit non-zero with the
+  reason — and never deletes** (P1-3, 2026-07-12). Delete-on-invalid is
+  a *worker run-sequence* behavior for unattended output; a pane
+  proposal mid-iteration legitimately passes through invalid
+  intermediate states, and the file is the agent's and user's
+  work-in-progress, not orphaned worker litter). Mid-session
+  `file_changed` events trigger **re-render only, never validation**;
+  the single authoritative validate runs at session end. Until stamped,
+  Detail shows the proposal as stale — which is true. This verb is a
+  **new 08 §7 pin** (dated edit; §10): it adds a callable entry to
+  logic M2 already builds, and it is what makes pane output
+  equal-citizen with worker output instead of a hash-discipline hole.
+- **Permission-surface fallback ladder** (P1-13, 2026-07-12): the
+  charter rests on exact-path `Edit`/`Write` allow rules, whose live-doc
+  status the SDK memo flags (its flag 1). The build's live refusal
+  check (§7) is the arbiter. If exact-path rules fail it: fallback 1 =
+  a PreToolUse guard delivered via `--settings` (a TUI-owned settings
+  JSON whose hook script denies any Edit/Write outside the item
+  allowlist — the organizer-guard pattern this repo already runs);
+  fallback 2 = the `sdk` engine's in-process `canUseTool` (its §4.1
+  build trigger). A failed verification is a pivot down this ladder,
+  never a stall and never a loosened surface.
 
 ### 4.4 Configuration (complete list)
 
@@ -448,22 +527,48 @@ so the gate reviews the *set*):
    the prompt-cache sentence gains the 5-minute-TTL honesty caveat
    (caching = opportunistic, never a dependency). Both changes cite the
    two research memos.
-2. **08 §1 pins table** — `--json` stubs row: add `unanalyzed` (per
-   bucket) to `status --json`, add `proposal_fresh` + `destination` to
-   `list --json` items (computed by the CLI with the shared
-   normalization function; the anticipated "G-3 hardens" clause fires).
-   Dated edit noting 09 §2.1/§2.3 as consumer.
+2. **08 §1 pins table** — `--json` stubs row (the anticipated "G-3
+   hardens" clause fires; consumers 09 §2.1–2.3):
+   (a) `status --json`: add `unanalyzed` per bucket;
+   (b) `list --json` items: add `proposal_fresh`, `destination` (value
+   set = 02 §1's enum verbatim), `already_canon` — all computed by the
+   CLI (shared normalization function; no TUI-side derivation);
+   (c) new flag `list --json --include-deferred`: superset including
+   future-deferred records (the pinned default stays the queue shape —
+   worker enumeration is untouched).
+2a. **02 §1 proposal schema** — add `already_canon: bool` (+ optional
+   `already_canon_reason`) as a structured field (P1-2, 2026-07-12: the
+   flag previously lived only in prose rationale — unreadable under
+   07 §4 contract 2; the 08 §1 backlog row's "recorded in the proposal
+   sibling" gains its field). The backlog importer and worker set it;
+   `list --json` surfaces it.
 3. **08 §7** — new pin: `self-learn proposal validate <id>` — CLI verb
-   exposing run-sequence step 4's validate+stamp for one id (consumer:
-   pane post-iterate stamping, 09 §4.3). T13's task list gains it.
+   reusing run-sequence step 4's validate+stamp logic for one id, with
+   pinned divergence: **report-never-delete on invalid** (worker runs
+   keep delete-on-invalid for unattended output; the verb serves
+   attended iteration — 09 §4.3, P1-3). T13's task list gains it.
 4. **08 §7.1** — notification emission: dated pointer that at G-3 the
    `notify-send` call moves into `self-learn-notify` (detached, action-
    capable, same payload + events.jsonl line unchanged; 09 §3).
 5. **03-decisions G-3 row** — status update: vision spec → full spec
    (09) + build plan (10); trigger unchanged.
-6. **02 §3 storage layout** — one line: the TUI's transient state
-   (socket, tui.log) lives under the existing
-   `~/.cache/claude-skills/self-learn/` home (no new location).
+6. **02 §3 storage layout** — one line: the TUI's transient state lives
+   in the existing homes — `tui.log` + compiled `pane-doctrine.md` under
+   `~/.cache/claude-skills/self-learn/`, the single-instance socket
+   under `$XDG_RUNTIME_DIR/self-learn/` (sockets belong in the runtime
+   dir, not the cache — P1-6, 2026-07-12). No new locations.
+7. **08 §1 resolution-verbs row** — batch extension: resolution verbs
+   gain `--no-push` (commit as pinned, skip the push) plus a bare
+   `self-learn push` verb, **for TUI bulk loops only**: a ~50-record
+   canon-acknowledge loop must not be ~50 sequential network pushes
+   (P1-10). The loop-end `push` preserves the self-push property (the
+   surface's end state is always pushed); the unpushed window is the
+   loop's own duration, bounded and sentinel-protected. Single
+   resolutions keep per-verb push unchanged.
+8. **08 §1 sentinel row** — clarifying sentence: for the TUI, "wraps
+   only apply flows" is *provided by* per-verb self-hold — the TUI never
+   calls `sentinel hold` itself (P1-8; 09 §3 is the controlling
+   design).
 
 No settled decision's *inputs* change: S-2/S-9 and the 07 §4 contracts
 are honored, not amended; the engine decision amends a vision detail
