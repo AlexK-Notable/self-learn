@@ -142,6 +142,23 @@ human routes it.
   live tool schema. New: **`08-build-plan.md`** — the durable,
   orchestrator-agnostic execution plan (pins table, fixture runbook, task
   DAG T1–T12, judgment routing, playbooks, acceptance procedure).
+- **2026-07-12 — phased implementability gates: M1/M2/M3 all PASS (full
+  plan, TUI excluded).** User-directed cycle — per-phase independent
+  review → remediation → independent gate check — run to the terminal
+  condition: an independent reviewer's verdict that a mid-tier agent
+  could implement the full plan from the documentation alone. M1 gated
+  after the command-deploy blocker (F1) was pinned; M2's execution plan
+  (08 §7) was authored, reviewed (5 gates: merge-proposal schema,
+  collapse verb, allowedTools, content-hash staleness, coalesce
+  mechanics), remediated, and passed — including a reviewer-caught
+  blocker *introduced by* a remediation (M2-21: models can't hash;
+  the CLI stamps `record_sha`); M3's execution plan (08 §8) likewise
+  (5 gates: snippet template, verbatim-apply exception, new-skill
+  compiler contradiction — S-6/01 amended to CLI-owned scaffold — hook
+  rollback, live fixture-A harness). Process record:
+  `reviews/2026-07-12-phased-gate-process.md` (withheld from blind
+  reviewers). 08-build-plan is now the gated execution authority for
+  M1→M3; build may start at 08 §2.
 - **2026-07-12 — ratification calls, first batch (user).** **O-5 settled as
   S-13**: auto-memory pruning is a post-decision, post-processing sweep —
   never in-flight, never inline with adjudication. **O-6 amended**: the
