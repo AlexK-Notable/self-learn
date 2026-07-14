@@ -86,6 +86,11 @@ diff: proposals/lrn-<id>.diff   # optional PREVIEW ONLY — compilers
                                 # regenerate from the record at apply time
 model: <the model producing this analysis>
 analyzed_at: <ISO-8601 UTC timestamp>
+card:                     # human-facing sections (§8). The section set,
+  headline: "…"           #   display order, and each section's writing
+  impact: "…"             #   instruction live in card-sections.yaml —
+  discuss: "…"            #   load it and write every section it requires
+                          #   for this proposal kind. Never invent keys.
 ```
 
 Rules:
