@@ -445,6 +445,34 @@ def test_validate_proposal_requires_core_fields():
     validate_proposal(proposal_dict())  # baseline sane
 
 
+def test_validate_proposal_card_shape():
+    # Optional: pre-contract proposals (no card) stay valid.
+    validate_proposal(proposal_dict())
+    # Valid card: mapping of non-empty str → non-empty str; keys are NOT
+    # enforced against the registry here (02 §1 M1 posture), so an
+    # unknown-but-well-formed key passes.
+    validate_proposal(
+        proposal_dict(
+            card={
+                "headline": "The bedroom never turned red at night.",
+                "impact": "Next time Claude checks the AL mode switch first.",
+                "discuss": "Nothing contentious.",
+                "future-section": "unknown keys are the registry's business",
+            }
+        )
+    )
+    with pytest.raises(ProposalError, match="card must be a non-empty mapping"):
+        validate_proposal(proposal_dict(card="just a string"))
+    with pytest.raises(ProposalError, match="card must be a non-empty mapping"):
+        validate_proposal(proposal_dict(card={}))
+    with pytest.raises(ProposalError, match="non-empty text"):
+        validate_proposal(proposal_dict(card={"headline": "   "}))
+    with pytest.raises(ProposalError, match="non-empty text"):
+        validate_proposal(proposal_dict(card={"impact": None}))
+    with pytest.raises(ProposalError, match="keys must be non-empty"):
+        validate_proposal(proposal_dict(card={"": "text"}))
+
+
 def test_validate_merge_proposal():
     from ruamel.yaml import YAML
 

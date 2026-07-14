@@ -270,6 +270,23 @@ def read_proposal(path: Path) -> dict:
     return _load_yaml_map(path)
 
 
+def _validate_card(data: dict) -> None:
+    """02 §1 `card:` map — human-facing review sections. Optional; shape
+    only (mapping of non-empty str → non-empty str). The section SET is
+    governed by the skill's card-sections.yaml registry, deliberately
+    not enforced here: required-section strictness is revisited at T13."""
+    card = data.get("card")
+    if card is None:
+        return
+    if not isinstance(card, dict) or not card:
+        raise ProposalError("card must be a non-empty mapping of sections")
+    for key, text in card.items():
+        if not isinstance(key, str) or not key.strip():
+            raise ProposalError("card section keys must be non-empty strings")
+        if not isinstance(text, str) or not text.strip():
+            raise ProposalError(f"card section {key!r} must be non-empty text")
+
+
 def validate_proposal(data: dict) -> None:
     """02 §1 single-record proposal schema. Raises :class:`ProposalError`."""
     if not isinstance(data, dict):
@@ -302,6 +319,7 @@ def validate_proposal(data: dict) -> None:
     sha = data.get("record_sha")
     if sha is not None and not (isinstance(sha, str) and SHA_ANCHOR_RE.match(sha)):
         raise ProposalError(f"record_sha must match sha256:<12 hex>, got {sha!r}")
+    _validate_card(data)
 
 
 def validate_merge_proposal(data: dict) -> None:
@@ -333,6 +351,7 @@ def validate_merge_proposal(data: dict) -> None:
     for rid, sha in shas.items():
         if not (isinstance(sha, str) and SHA_ANCHOR_RE.match(sha)):
             raise ProposalError(f"record_shas[{rid}] must match sha256:<12 hex>")
+    _validate_card(data)  # collapse cards carry human-facing sections too
 
 
 def write_proposal(home: Path, record_id: str, data: dict) -> Path:
