@@ -19,9 +19,10 @@ Let `HOME_REPO = ${SELF_LEARN_HOME:-~/repos/claude-skills}` throughout.
 2. Read the routing doctrine — you will analyze with it:
    `HOME_REPO/plugins/self-learn/skills/self-learn/references/routing-doctrine.md`
    and the card-section registry beside it (`card-sections.yaml`) — the
-   sections it defines are what you will write per proposal and show per
-   card, in its order, under its labels. Never hardcode a section name
-   this file doesn't currently make you load from there.
+   sections it defines are what you write per proposal and show per
+   card, in its order, under its labels. This command deliberately names
+   no section keys: the registry is the only source of the section set,
+   so section changes never require editing this file.
 3. `self-learn list --json` — build the queue: `status: pending` items
    (deferred ones are already excluded), **oldest first**, at most **10
    cards this session** (respect a `--skill <name>` scope from
@@ -100,8 +101,11 @@ card, the right resolution is graduation, not routing: replace Apply with
 redundant — the lesson won.
 
 **Bulk-acknowledge** — a homogeneous group of already-canon records gets
-**one** multiSelect card listing them (id + title + reason), not N detail
-cards. Every selected record resolves via its own
+**one** multiSelect card listing them, not N detail cards. Each item gets
+**one human line** (the proposal's first card section in registry order —
+what the episode was about, in plain words) plus where canon already covers it
+(`already_canon_reason`); the record id rides along as metadata, never
+as the label. Every selected record resolves via its own
 `self-learn graduate <id>` call; any the user de-selects gets an
 individual card in this batch.
 
