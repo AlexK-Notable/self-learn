@@ -18,6 +18,10 @@ Let `HOME_REPO = ${SELF_LEARN_HOME:-~/repos/claude-skills}` throughout.
    heartbeat it on every mutation; you release it at the end.)
 2. Read the routing doctrine — you will analyze with it:
    `HOME_REPO/plugins/self-learn/skills/self-learn/references/routing-doctrine.md`
+   and the card-section registry beside it (`card-sections.yaml`) — the
+   sections it defines are what you will write per proposal and show per
+   card, in its order, under its labels. Never hardcode a section name
+   this file doesn't currently make you load from there.
 3. `self-learn list --json` — build the queue: `status: pending` items
    (deferred ones are already excluded), **oldest first**, at most **10
    cards this session** (respect a `--skill <name>` scope from
@@ -37,8 +41,11 @@ schema):
    `HOME_REPO/.self-learn/` for project/user).
 2. Apply the doctrine and write the proposal sibling
    `<bucket>/proposals/lrn-<id>.yaml` — destination, alternates,
-   rationale, already_canon(+reason), model, analyzed_at. **Never emit
-   `record_sha`** — the CLI stamps it next.
+   rationale, already_canon(+reason), model, analyzed_at, **and the
+   `card:` map** — every section the registry requires for this proposal
+   kind, written per that section's `instruction` and the doctrine §8
+   register (story first; concrete behavioral before/after; steelman the
+   no). **Never emit `record_sha`** — the CLI stamps it next.
 3. `self-learn proposal validate <id>` — validates the schema and stamps
    `record_sha`. Exit 1 = your YAML is schema-invalid: fix it and
    re-validate. Exit 2 = secret-scan hit: treat as blocked (below).
