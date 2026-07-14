@@ -279,3 +279,24 @@ human routes it.
   forward T13→T11. Remaining M1 exit items: the two [protocol] runs
   (exit a: one-motion teach --route; exit b: the GOTCHAS backlog-import
   review session) and fixture ratification + post-routing trials.
+- **2026-07-14 — M1 [protocol] runs done; decision-support contract
+  landed.** Exit (a): one-motion `teach --route` on home-assistant
+  (lrn-e2e4026b → LEARNINGS.md, analyst-chosen destination, ~7 s).
+  Exit (b): the real backlog-import review session (32 records
+  imported; first batch of 10 resolved — 7 graduated against curated
+  GOTCHAS.md, 3 routed to reference; sentinel/verbs/push all clean).
+  **E-3 honeymoon verdict: throughput PASS, comprehension FAIL** — the
+  user could not defend the approvals from the cards shown, and ruled
+  the REPL "definitively not the right venue" (logged as G-3 trigger
+  evidence; build stays gated on M2). Same-day remedy, the
+  **decision-support contract**: 02 §1 `card:` map; routing-doctrine §8
+  (story first, concrete behavioral before/after, steelman-the-no);
+  `card-sections.yaml` — a section registry holding the set, order,
+  labels, required-ness, and per-section generation prompts, so
+  changing what decision-makers see is a one-file edit that no surface
+  or validator change can break (extensibility per the user's explicit
+  direction); validator shape-check (e702afb, 377 tests green);
+  /self-learn:review re-carded sections-first; 09 §2.3 amended to
+  render cards data-driven. Fixture probes: B1 (hyprctl focus-trap)
+  DNQ'd — baseline 3/3 queried `hyprctl clients -j` unprompted; B2/B3
+  remain open candidates awaiting user direction.
