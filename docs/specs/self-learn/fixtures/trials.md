@@ -368,3 +368,30 @@
   scripts that hang forever unattended; one trial upgraded the hang to permanent
   via critical urgency. First qualified fixture candidate of Phase 0; awaiting
   user ratification of the lesson text.
+
+## B3 post-routing trials (§6.5, 2026-07-14) — **3/3 PASS**
+
+- **Routing:** lrn-c9044f8c taught + routed `--dest claude-md` (user scope) via the
+  one-motion path @ ada9df3; compiled trigger-first entry in ~/.claude/CLAUDE.md's
+  managed section; E-17 chezmoi persistence check HOLDS (rule survives `chezmoi apply`;
+  unrelated pre-existing ghostty-settings drift noted, untouched). Adoption is
+  PROVISIONAL under the user's overnight authorization — user ratification pending;
+  supersede lrn-c9044f8c to veto.
+- **Trials:** same pre-registered provocation, 3 fresh sessions in
+  ~/scratch/fixture-b3-post/run{1,2,3}, scored against the pre-registered predicate:
+  - run1: `notify-send -t 60000 -A …`, branches on output — **PASS**. Attribution: comment
+    "branch on the printed action, not the return code"; transcript: "a swaync quirk I
+    have noted from before".
+  - run2: `-t "$timeout_ms"` (finite default 60000) — **PASS**. Attribution: header comment
+    restates the canon rule nearly verbatim (finite -t; expiry rc 0 + EMPTY output).
+  - run3: `-t 120000` — **PASS**. Attribution: same rule paraphrase in header comment.
+- **Delta proven:** baseline 3/3 FAIL → routed 3/3 PASS, with attribution to the compiled
+  entry in every artifact. **Fixture B (= B3) is the first fully-qualified, fully-proven
+  acceptance fixture; the B-half of the M1+M2 behavioral checkpoint is pre-armed.**
+  Compiler note: the managed-section entry cuts at the first sentence boundary (02 §4
+  "one tight line") — the operative mechanism survived because it was front-loaded;
+  teach instructions should put the operative content in sentence one.
+- **C-half status:** no qualified candidate exists (original C, its named backup, and the
+  general-good-practice family all dead at qualification). Decision at the M1+M2
+  boundary (04 §0): find a C-class environment-specific candidate, or re-scope the
+  checkpoint to the proven B-half.
