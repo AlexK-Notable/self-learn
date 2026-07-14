@@ -187,7 +187,7 @@ Register rules that apply across all sections:
   decline (cost, redundancy, doubt) or says "nothing contentious"
   explicitly. The reader should never have to ask "what should I even
   discuss?" — the card tells them, and an honest "nothing here" is what
-  licenses fast approval with confidence instead of instead of it.
+  licenses fast approval with confidence rather than in place of it.
 - **`rationale` stays machine-facing.** It justifies the destination to
   the next analyst (and feeds the M2 rejected-proposal digest). Do not
   repurpose it as card copy, and do not duplicate card copy into it.

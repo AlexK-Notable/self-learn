@@ -84,6 +84,29 @@ record_sha: sha256:a1b2c3d4e5f6     # of the normalized record at analysis
                                     #   evidence.origin's content hash)
 model: claude-opus-4-8
 analyzed_at: 2026-07-12T09:25:12Z
+card:                     # human-facing review-card sections (added
+  headline: "…"           #   2026-07-14, decision-support contract —
+  impact: "…"             #   routing-doctrine.md §8). A map of section
+  discuss: "…"            #   key → markdown text. The section SET —
+                          #   keys, labels, display order, required-ness,
+                          #   and each section's writing instruction —
+                          #   lives in the skill's card-sections.yaml
+                          #   registry, NOT here and NOT in any surface:
+                          #   analysts write the sections the registry
+                          #   requires; surfaces render the map
+                          #   generically in registry order, skipping
+                          #   absent keys and rendering unknown keys
+                          #   last. Adding/changing/retiring a section
+                          #   is an edit to the registry file only.
+                          #   VALIDATOR POSTURE (M1): `card` is optional
+                          #   (pre-contract proposals stay valid) and
+                          #   shape-checked only — a mapping of
+                          #   non-empty string → non-empty string; the
+                          #   secret scan already covers it via the
+                          #   full-sibling-text rule. Required-section
+                          #   enforcement is analyst discipline until
+                          #   T13, where the worker's output QA revisits
+                          #   strictness (08 §7).
 ```
 
 **The merge proposal** (M2; same directory, `proposals/merge-<8hex>.yaml`):
