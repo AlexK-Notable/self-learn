@@ -233,3 +233,138 @@
   class as original B and C: the delta a fixture must prove is already baseline
   behavior. B2 (uv-monorepo) and B3 (notify-send) were queued but not yet trialed
   when the probe run ended; they remain open candidates.
+
+---
+
+# Phase 0 round 3 — B2/B3 qualification probes (2026-07-14)
+
+- **Claude Code version:** 2.1.208. **Model:** claude-fable-5 (baseline + orchestrator).
+  **Machine:** komi-hypr (CachyOS, kernel 7.1.1-2-cachyos, Hyprland, swaync at
+  `/usr/bin/swaync`, notify-send 0.8.8, swaync config `timeout: 10`,
+  `timeout-low: 5`, `timeout-critical: 0`).
+- **Protocol:** 04 §0 HARDENED gate. Gate 0 = causal fact demonstrated empirically on
+  this host before anything else. Gate 1 = absence proof over the PREDICATE BEHAVIOR
+  on every loaded surface, greps + exit codes recorded. Trials = fresh `claude -p
+  "<provocation>" --permission-mode acceptEdits`, one per dir
+  `~/scratch/probe-<name>/run{1,2,3}`, scored on ARTIFACTS (files written), not
+  transcript prose; no stream-json (absence re-checks done against the static hook
+  files + plugin cache instead — all SessionStart-injected content sources grepped).
+  Verified before trials: no `CLAUDE.md` at `~/`, `~/scratch/`, or any probe cwd.
+
+## B2 — uv monorepo test invocation: DOES NOT QUALIFY (killed at gate 0, no trials)
+
+- **Candidate lesson (as sketched):** "self-learn suite must run as
+  `cd plugins/self-learn/cli && uv run pytest -q`; there is no root pyproject, so
+  repo-root `pytest`/`uv run pytest` fails."
+- **Gate-0 empirical demonstration (2026-07-14, this host):**
+  - Ground truth: no `pyproject.toml` at repo root, `~/repos/`, or `~/` (checked);
+    the only two live in `plugins/cron-claude/` and `plugins/self-learn/cli/`
+    (each with its own `.venv`). A user-level pytest exists at `~/.local/bin/pytest`
+    (Python 3.14).
+  - Correct invocation: `cd plugins/self-learn/cli && uv run pytest -q` →
+    **377 passed in 6.82s, exit 0**.
+  - Naive repo-root `uv run pytest -q`: uv does NOT error "no project" — it silently
+    falls back to the ambient environment and runs `~/.local/bin/pytest` with
+    rootdir = repo root, which collects the whole monorepo and dies **loudly**:
+    `Interrupted: 28 errors during collection`, exit 2 (ModuleNotFoundError for
+    `cron_claude`, `self_learn`, … — every test module errors).
+  - Naive bare `pytest` inside `plugins/self-learn/cli` (ambient interpreter, no
+    venv): 20 collection errors, exit 2. Also loud.
+  - Suspected destructive side effect DISPROVEN: repo-root pytest creates
+    `.pytest_cache/` at root, which root `.gitignore` does NOT list — but pytest
+    writes `.pytest_cache/.gitignore` containing `*` ("Created by pytest
+    automatically"), so git never sees it (demonstrated in a scratch `git init`
+    repo: `git status --porcelain` shows nothing for the cache dir;
+    `git check-ignore .pytest_cache` exits 1, yet porcelain is clean). Autosync
+    cannot commit it. (Housekeeping: the demonstration briefly created
+    `.pytest_cache/` at the live repo root; verified git-invisible, then removed.
+    Final `git status --porcelain` clean.)
+- **Gate-0 verdict: no teeth.** Every naive invocation fails loudly and immediately;
+  there is no misleading success and no destructive side effect. The correct
+  invocation is one `ls` away (`plugins/self-learn/cli/pyproject.toml` with
+  `[tool.pytest.ini_options] testpaths=["tests"]` and a `.venv` sitting next to
+  it). A frontier baseline's failure mode is "explores a few seconds, then
+  succeeds" — exactly the class the doctrine disqualifies: no binary predicate can
+  honestly separate lesson-knowledge from ordinary exploration, so a ≥2/3 baseline
+  FAIL is unreachable. Killed per doctrine without burning trials. No reshaped
+  same-family candidate survives either: the only genuine hazard hypothesis
+  (autosync committing root `.pytest_cache`) is empirically false (above).
+
+## B3 — notify-send action-button hang under swaync: **QUALIFIES (3/3 baseline FAIL)**
+
+- **Lesson under test:** on this host (swaync), `notify-send` with action buttons
+  (`-A`/`--action`) and no explicit expire timeout **blocks forever** when the user
+  doesn't click: swaync moves the expired popup into the notification center
+  without emitting `NotificationClosed`, so the client's wait never ends. Bound the
+  wait explicitly — finite `-t <ms>` (client-side cap; returns rc=0 with stderr
+  "Wait timeout expired" and EMPTY action output, so branch on output, not rc),
+  or `-e`/transient (swaync then closes on popup expiry), or a `timeout(1)` wrapper.
+- **Gate-0 empirical demonstration (2026-07-14, live probes, cleaned up after via
+  DBus `CloseNotification`):**
+  - `notify-send -p -t 3000 "probe"` (no actions): returns in 34 ms, rc 0 —
+    fire-and-forget is unaffected.
+  - `timeout 30 notify-send -A yes=Yes -A no=No "probe"` (no `-t`): **rc 124 at
+    30.005 s** — still blocked 20 s after the 10 s popup timeout; killed
+    externally. THE TRAP.
+  - `timeout 20 notify-send -p -t 3000 -A yes=Yes -A no=No "probe"`: returns at
+    **3.011 s**, rc 0, stderr `Wait timeout expired`, stdout only the id — finite
+    `-t` caps the wait client-side.
+  - `timeout 25 notify-send -p -e -A yes=Yes -A no=No "probe"`: returns at
+    **10.053 s** (= swaync popup timeout), rc 0 — swaync closes transient
+    notifications on expiry, so the wait ends.
+- **Absence proof (predicate behavior = bound the wait of an action-button
+  notification), greps recorded 2026-07-14 before trials:**
+  - `grep -nEi 'notify-send|swaync|libnotify|NotificationClosed|transient|expire.time|action button' ~/.claude/CLAUDE.md` → exit 1.
+  - same pattern over `~/repos/claude-skills/CLAUDE.md` → exit 0, ONE hit (line 73:
+    autosync "stops and `notify-send`s" on rebase conflict) — fire-and-forget
+    mention, no wait/action semantics; surface additionally NOT loaded in trials
+    (cwd `~/scratch/probe-notify/run{1,2,3}`).
+  - `grep -RnEil '…' ~/.claude/skills/` (`-R`, because the skill dirs are symlinks —
+    an earlier `-r` sweep false-negatived) → 4 hits, all non-carrying:
+    cron-claude SKILL.md:45 (OnFailure notify-send alert, fire-and-forget),
+    hypr-doctor SKILL.md + references/recovery-playbook.md (swaync as a systemd
+    unit that double-launched), home-network SKILL.md:236,294 ("notify-send fires
+    with verdict", fire-and-forget). None mentions actions, `--wait`, timeouts, or
+    close semantics; none of these skills triggers on the provocation either.
+  - `grep -lE 'notify-send|swaync' ~/.claude/hooks/*` → exit 1.
+  - `grep -nEi 'notify-send|swaync|libnotify|notification' ~/.claude/skills/skill-rules.json` → exit 1.
+  - `grep -RilE 'notify-send|swaync' ~/.claude/plugins/cache/` (source content for
+    SessionStart hook injections: superpowers, remember, MCP-tools) → exit 1.
+  - **Absence proof HOLDS** over the predicate behavior on every loaded surface.
+- **Pre-registration:** provocation + predicate written to
+  `~/scratch/probe-notify/predicate.txt` at 00:26:51 PDT, before run1's artifact
+  (00:27:46), run2 (00:28:40), run3 (00:29:24) — mtimes recorded.
+- **Provocation (exact, all runs):** `Write a bash script called ask-choice in this
+  directory: it takes a question as $1, shows a desktop notification with Yes and
+  No action buttons, and prints yes or no to stdout according to which button I
+  click. Just write the script — don't run it.`
+  Flags: `--permission-mode acceptEdits`. Cwd: `~/scratch/probe-notify/run{1,2,3}`.
+- **Predicate (binary, artifact-scored, pre-registered verbatim):** FAIL iff the
+  script's action-notification call (notify-send with `-A`/`--action`, or a raw
+  D-Bus Notify carrying actions, including any dbus-monitor/gdbus wait loop for
+  ActionInvoked) is unbounded on this host — i.e. ALL absent: (a) explicit FINITE
+  expire timeout on that call (`-t`/`--expire-time` > 0; `-t 0` counts as absent),
+  (b) transient hint (`-e`/`--transient`/equivalent `--hint`), (c) external bound
+  (`timeout(1)`, background + timed kill, `read -t`, or any mechanism guaranteeing
+  return without user interaction). PASS iff any of (a)/(b)/(c) present. VOID if
+  the artifact uses no action-notification at all (zenity/rofi dialog).
+- **Trials (scored on `run{1,2,3}/ask-choice` artifacts):**
+  - run1 — **FAIL.** `choice="$(notify-send --wait --app-name=ask-choice
+    --action=yes=Yes --action=no=No "$question")"` — no `-t`, no `-e`, no external
+    bound. Header comment even claims "Exits 1 with no output if the notification
+    is dismissed **or times out**" — a timeout return that swaync never delivers.
+  - run2 — **FAIL.** `notify-send --urgency=critical --action=yes=Yes
+    --action=no=No` — no `-t`/`-e`/bound, and critical urgency maps to swaync's
+    `timeout-critical: 0` (popup never expires): the script *deliberately* chose
+    the never-returning configuration ("keeps the notification on screen until
+    acted on"). Transcript note: the model even identified swaync as the running
+    daemon and still produced the unbounded call.
+  - run3 — **FAIL.** `notify-send -A yes=Yes -A no=No` — no `-t`/`-e`/bound;
+    comment claims return on "dismissed/expired without clicking", which does not
+    happen on this host.
+- **Verdict: QUALIFIES — baseline FAILED 3/3 (needs ≥2/3).** The environment-specific
+  delta is real: the baseline consistently assumes the daemon closes expired
+  action-notifications (true on dunst/mako, false on swaync-with-center) and ships
+  scripts that hang forever unattended; one trial upgraded the hang to permanent
+  via critical urgency. First qualified fixture candidate of Phase 0; awaiting
+  user ratification of the lesson text.
