@@ -300,3 +300,26 @@ human routes it.
   render cards data-driven. Fixture probes: B1 (hyprctl focus-trap)
   DNQ'd — baseline 3/3 queried `hyprctl clients -j` unprompted; B2/B3
   remain open candidates awaiting user direction.
+- **2026-07-14 (overnight) — backlog fully drained; fixture B proven
+  end-to-end.** Under explicit user authorization ("do as much as you
+  can... even the stuff needing my validation"), the remaining 22 HA
+  records were analyzed under the new card contract and the safe subset
+  resolved: 11 graduated (curated GOTCHAS.md covers them; canon even
+  corrects one record's data=writeback claim), 9 routed to
+  LEARNINGS.md, 1 deferred (unverified hypothesis). Two records held
+  for the user with full cards: pyscript log.info (tensions with
+  canon's marker advice) and chezmoi `chezmoi cd` (skill-md-now vs
+  M3-hook). Fixture probes: **B2 dead at gate 0** (all naive pytest
+  paths fail loudly — no honest predicate); **B3 QUALIFIED 3/3
+  baseline FAIL** (notify-send -A under swaync blocks forever
+  unbounded; predicate pre-registered). B3 adopted PROVISIONALLY
+  (ratification pending — supersede lrn-c9044f8c to veto): routed to
+  user CLAUDE.md via the chezmoi compiler (E-17 persistence HOLDS),
+  then **post-routing trials 3/3 PASS with attribution** in every
+  artifact — baseline 3/3 FAIL → routed 3/3 PASS is the first complete
+  behavioral delta the system has produced. B-half of the M1+M2
+  checkpoint pre-armed; C-half has no candidate → boundary decision
+  (04 §0): hunt a C-class environment-specific lesson or re-scope to
+  the B-half. Compiler note recorded: managed-section entries cut at
+  the first sentence — front-load the operative content. Queue: 2
+  pending (both user-held). znote hub current through session 3.
