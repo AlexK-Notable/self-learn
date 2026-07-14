@@ -145,3 +145,49 @@ edits, help rewrite) a record:
   instruction, a user error, or too vague to fire), say so plainly in the
   rationale and recommend rejection — a queue that routes everything is
   as dead as one that routes nothing.
+
+## 8. The decision-support contract (write for the returning human)
+
+*Added 2026-07-14, after the first real review session: throughput was
+fine, comprehension was hollow. The reviewer approved ten cards in ten
+minutes without the context to defend any of them — machine-oriented
+cards convert human adjudication into rubber-stamping, and the system's
+premise is the adjudication.*
+
+The machine fields above (`destination`, `rationale`, `already_canon`)
+justify **filing**. They do not support a **decision**. The reviewer is
+a human returning cold, possibly a week or more after the episode that
+birthed the lesson; every card must equip that reader, not the analyst
+who wrote it. The human-facing content lives in the proposal's `card:`
+map, and its sections are defined in one place:
+
+**`card-sections.yaml` (beside this file) is the section registry** —
+key, display label, order, required-ness, and the per-section writing
+instruction. Load it and write every section it requires for the
+proposal at hand; each section's `instruction` is your generation
+prompt for that section. Surfaces render the sections generically in
+registry order, so changing, adding, or retiring a section — or
+rewriting the prompt that produces one — is an edit to the registry
+file only. Never hardcode a section name into a surface, and never
+invent card keys the registry doesn't define.
+
+Register rules that apply across all sections:
+
+- **Story first, plumbing last.** Open with what happened, in the
+  domestic terms the human lived ("the bedroom never turned red at
+  night"), not the compressed slug the machine stores. Record ids,
+  destination enums, and diff previews are footer metadata on every
+  surface — present, but demoted.
+- **Concrete behavioral before/after.** The value of routing a lesson
+  is a behavior change; name it the way a fixture predicate would:
+  "next time Claude does X, it will Y instead of Z." If you cannot
+  write that sentence, question whether the lesson is routable at all —
+  say so in `rationale`.
+- **Steelman the no.** Every routing card names the best reason to
+  decline (cost, redundancy, doubt) or says "nothing contentious"
+  explicitly. The reader should never have to ask "what should I even
+  discuss?" — the card tells them, and an honest "nothing here" is what
+  licenses fast approval with confidence instead of instead of it.
+- **`rationale` stays machine-facing.** It justifies the destination to
+  the next analyst (and feeds the M2 rejected-proposal digest). Do not
+  repurpose it as card copy, and do not duplicate card copy into it.
