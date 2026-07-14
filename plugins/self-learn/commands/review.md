@@ -62,9 +62,11 @@ returning cold after a week away. Machine metadata — record id,
 destination enum, scope, diff preview — is a compact footer AFTER the
 human sections, never the opener. Do not lead with `lrn-…`, do not
 paste record slugs as titles, and do not let filing rationale masquerade
-as decision context. The "Worth discussing" section always appears — it
-is the reader's foothold for the Discuss option, and an explicit
-"nothing contentious" licenses fast approval.
+as decision context. Render every section present in the proposal's
+`card:` map — including any whose content is "nothing here": an explicit
+all-clear is decision information, not filler, and the registry's
+instructions say which section gives the reader their foothold for the
+Discuss option.
 
 One AskUserQuestion per record — **four options** (the tool's hard
 limit; free-text "Other" is always there beyond them):
