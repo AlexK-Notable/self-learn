@@ -1,0 +1,70 @@
+# card-sections.yaml — the review-card section registry (single source).
+#
+# THE CONTRACT (all three analyst loaders + every surface obey this):
+#
+#   * A proposal's human-facing content lives in its `card:` map — one
+#     entry per section, keyed by the keys below, value = markdown text.
+#   * ANALYSTS (M1 inline review, M2 worker, G-3 pane) load this file and
+#     write every section whose `required` applies to the proposal at
+#     hand, following that section's `instruction` — the instruction IS
+#     the generation prompt for that section.
+#   * SURFACES (slash-command cards, the G-3 web UI) render sections
+#     GENERICALLY: iterate by ascending `order`, emit `label` + text for
+#     each key present, skip keys that are absent, and render unknown
+#     keys last using the raw key as the label. No surface may hardcode
+#     a section name into layout code or command prose.
+#   * Therefore: to change, add, or retire a section — or to rewrite the
+#     prompt that generates one — edit THIS FILE ONLY. Nothing downstream
+#     breaks, because nothing downstream knows section names.
+#
+# `required` values: always | routing (routing proposals only, i.e.
+# already_canon false) | optional. In M1 the validator checks only the
+# card map's SHAPE (strings, non-empty); required-section enforcement is
+# analyst discipline until the T13 worker lands (see 02 §1).
+
+headline:
+  label: "What this is about"
+  order: 10
+  required: always
+  instruction: >
+    One or two plain sentences stating the lesson the way a human would
+    tell the story — what happened, in domestic terms, and what the fix
+    or fact is. Name dates, rooms, devices, and systems; never open with
+    a record id, a destination enum, or an unexpanded acronym. A reader
+    returning after a week away must recognize the episode from this
+    line alone.
+
+provenance:
+  label: "Where this came from"
+  order: 20
+  required: optional
+  instruction: >
+    One short phrase locating the lesson's origin: the date and the
+    activity ("July 3rd, Adaptive Lighting debugging"). Derive it from
+    the record's evidence/origin; write it only when it adds recognition
+    value beyond the headline.
+
+impact:
+  label: "What changes if you keep it"
+  order: 30
+  required: routing
+  instruction: >
+    The concrete behavioral before/after, both sides. Keep: "next time
+    Claude does X, it will Y instead of Z" — name the actual behavior
+    that changes, the same way a fixture predicate names it. Decline:
+    what saying no costs — is the lesson rediscoverable, and what did it
+    cost the first time (an evening, a broken config, nothing much)? Two
+    to four tight sentences; decisive, not exhaustive.
+
+discuss:
+  label: "Worth discussing"
+  order: 40
+  required: routing
+  instruction: >
+    The steelman of saying no, or the one genuinely live tension (an
+    overlapping pending record, a debatable destination, a claim that
+    deserves a skeptical read). This is the reader's foothold for the
+    Discuss option — name what there is to talk about so they never have
+    to ask "what should I even ask?". If nothing is contentious, say
+    "Nothing contentious" plus the one filing call being made; that
+    answer licenses a fast, confident approval and is never filler.
