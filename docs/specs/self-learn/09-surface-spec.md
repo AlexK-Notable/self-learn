@@ -688,6 +688,17 @@ until landed, this list is authoritative:
    trigger unchanged.
 5. **README** — doc-table rows for 09/10 renamed + revision-log entry
    for this cycle.
+6. *(added 2026-07-14, landed same day)* **Decision-support contract**:
+   02 §1 gains the optional `card:` map; routing-doctrine.md gains §8 +
+   the `card-sections.yaml` registry (single source of the section set
+   and each section's generation prompt); `validate_proposal` shape-
+   checks the map; /self-learn:review renders cards card-sections-first.
+   §2.3 above consumes it. Origin: first real review session
+   (2026-07-14) — E-3 honeymoon verdict revised to "throughput pass,
+   comprehension fail"; the user's venue verdict ("the REPL is
+   definitively not the right venue for review") is recorded as G-3
+   trigger evidence, with the build still gated on M2 (the worker fills
+   the surface).
 
 Already-landed amendments from the TUI revision that this revision
 **keeps consuming unchanged** (no re-landing needed): 08 §1 `--json`
