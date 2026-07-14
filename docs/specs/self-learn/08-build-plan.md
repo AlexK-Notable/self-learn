@@ -565,3 +565,16 @@ scope.
 - **2026-07-13 · teach behavior-kind default** — `surface-rule`,
   echoed with override hint (a kind is schema-required and the DoD
   invocation carries none).
+- **2026-07-14 · Decision-support contract (card sections)** — first
+  real review session revised E-3's honeymoon verdict: throughput pass,
+  comprehension fail (machine-led cards → rubber-stamp approvals).
+  Landed same day: 02 §1 optional `card:` map (shape-checked by
+  `validate_proposal`, both proposal kinds; scan coverage was already
+  whole-file); routing-doctrine §8 register rules; `card-sections.yaml`
+  registry = single source of the section set AND each section's
+  generation prompt — surfaces render generically, so section evolution
+  is a registry-only edit. **T13 consequence:** the worker loads the
+  registry and emits `card:` per proposal; required-section strictness
+  in the validator is decided there (M1 leaves it analyst discipline).
+  The user's venue verdict (REPL definitively wrong for review) is
+  logged as G-3 trigger evidence; the surface build stays gated on M2.
