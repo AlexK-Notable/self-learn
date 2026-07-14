@@ -178,6 +178,18 @@ ignoring costs nothing. This section pins the mechanics.
 
 ### 2.3 Detail page — one decision, fully explained
 
+*Amended 2026-07-14 (decision-support contract — routing-doctrine §8,
+02 §1 `card:`):* the page **opens with the proposal's `card:` sections,
+rendered data-driven** from the skill's `card-sections.yaml` registry —
+iterate ascending `order`, emit `label` + markdown text for each key
+present, skip absent keys, render unknown keys last with the raw key as
+label. **No per-section component, template branch, or hardcoded key
+anywhere in the server or templates** — adding/changing/retiring a
+section must be a registry-file edit with zero UI diff. The three
+machine regions below follow the card sections; the first review
+session (2026-07-14, slash-command venue) is the measured evidence for
+this ordering: machine-led cards produced rubber-stamp approvals.
+
 Three stacked regions (07 §2's finding / change / why), one scroll:
 
 1. **Finding** — record Trigger + Instruction rendered from the
