@@ -54,13 +54,25 @@ Only then present the card. A card must never show an unanalyzed record.
 
 ## The card
 
+**Layout — the card is the `card:` map, rendered for a human.** The
+question text is the card sections in registry order (headline leading,
+under the registry's labels where a label helps), written for a reader
+returning cold after a week away. Machine metadata — record id,
+destination enum, scope, diff preview — is a compact footer AFTER the
+human sections, never the opener. Do not lead with `lrn-…`, do not
+paste record slugs as titles, and do not let filing rationale masquerade
+as decision context. The "Worth discussing" section always appears — it
+is the reader's foothold for the Discuss option, and an explicit
+"nothing contentious" licenses fast approval.
+
 One AskUserQuestion per record — **four options** (the tool's hard
 limit; free-text "Other" is always there beyond them):
 
-- **Apply** — show the proposed destination and a short diff preview of
-  what the managed section/reference gains. Honesty note on the card: the
-  compiler regenerates from the record at apply time, so what lands may
-  differ in detail from the preview. On choice:
+- **Apply** — the option's description names the destination; the
+  preview may carry the diff of what the managed section/reference
+  gains. Honesty note on the card: the compiler regenerates from the
+  record at apply time, so what lands may differ in detail from the
+  preview. On choice:
   `self-learn route <id>` (proposal's destination) or
   `self-learn route <id> --dest <target>` if the user overrides; add
   `--note "…"` if they give a why.
