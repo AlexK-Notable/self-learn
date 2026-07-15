@@ -462,3 +462,21 @@ human routes it.
   worker output mid-validation. 497 tests. M2 acceptance (08 §7.3)
   still pending: live smoke + refusal check, planted-duplicate
   collapse, timed triage.
+- **2026-07-15 — doc 12 drafted (transcript miner) — AWAITING
+  RATIFICATION.** User-commissioned autonomous-capture design; reopens
+  O-3 (the register's sole open item) and absorbs the fire-miner
+  follow-on from 08's appendix. Core shape: nightly cron-claude batch →
+  deterministic structural digest (drop tool-result bodies, keep all
+  human/assistant text + error/retry annotations) → one contained
+  claude -p reader driven by a versioned mining rubric → mechanical
+  ledger reconciliation → capped, scanned, verb-gated landing into
+  pending/ with source: session (schema field already forward-declared).
+  Mined records never auto-route — the miner is doctrinally "continuous
+  import." The user's embedding-retrieval hypothesis was assessed and
+  recorded in §5: declined at the transcript side (speech-act signal is
+  structural; ranking layers only lose recall once cost is out of the
+  frame), adopted as the pinned scaling path for ledger-side
+  dedup/recurrence matching, where it strictly dominates the Jaccard
+  heuristic. Five ratification questions in §6 (O-3 gate, privacy
+  scope, caps, rejected-resurfacing, trigger shape). Nothing builds
+  until they're answered.
