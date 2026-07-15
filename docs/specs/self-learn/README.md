@@ -414,3 +414,13 @@ human routes it.
   entry (11 §2.1). Suite: 427. Build decisions in the 08 appendix
   entry of the same date (teach --route defers follow-up flags to M2;
   metadata scan is refuse-only).
+- **2026-07-15 — now-tranche audit round.** Per never-self-certify, two
+  independent reviewers (spec-conformance + adversarial code) audited
+  the build before it was called done. One blocker survived to master
+  for under an hour: capture-time metadata flags (`--env`, `--session`)
+  bypassed the secret scan, and the one-motion route path would have
+  committed and pushed a secret typed into them. Fixed with whole-text
+  scan coverage plus a nine-item robustness batch (atomic multi-file
+  flush, duplicate-event dedup, crash-tolerant report, follow-up
+  status gating with an orphaned-follow-up warning on
+  graduate/supersede). Details: 08 appendix, same date. 439 tests.

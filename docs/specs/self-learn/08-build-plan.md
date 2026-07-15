@@ -628,3 +628,24 @@ scope.
   free-text metadata (`--verified-how`, `--incident-cost`) is
   refuse-only on a scan hit — no redact path for short retypable
   phrases. 427 tests.
+- **2026-07-15 · Now-tranche post-build audit (two independent
+  reviewers; never-self-certify, tally now 9-for-10)** — one BLOCKER
+  confirmed and fixed: `teach --env`/`--session` values reached tracked
+  files unscanned (via `teach --route`, committed AND pushed — the
+  route_direct scan covered `record.body` only, not frontmatter). Fix:
+  the teach meta scan covers every free-text flag, and `route_direct`
+  scans `record.to_text()` — the same whole-file coverage as the
+  on-disk verbs. Robustness batch from the same audit: all-or-nothing
+  multi-file flush (lock-all → scan-all → move; the pinned
+  "whole-flush refusal, spool intact" is now literally true at month
+  rollover); crash-reflush duplicate lines deduped at read (counts stay
+  honest); schema-less telemetry lines never crash `report`; vanished
+  spool files skipped; torn tracked lines healed; `open_followups`
+  gates on `status: routed` and graduate/supersede WARN when they
+  retire an open follow-up (E-2 dead-letter guard) — the upgrade plan
+  moves to the successor explicitly, never silently; the teach
+  failure-fallback emits its `capture` event (the ceiling label
+  depends on an exactly-counted numerator); `surface-budget` events
+  now emitted from the compile step; `telemetry note` no longer
+  heartbeats the sentinel (cache-only + model-emittable must not
+  extend a review hold). 439 tests.
