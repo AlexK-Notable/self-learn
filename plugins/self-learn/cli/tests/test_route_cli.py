@@ -374,10 +374,10 @@ def test_defer_cli_until_date(env, capsys):
     assert f"defer {record.id} → deferred until 2027-01-01 @" in out
 
 
-def test_defer_cli_bad_date_exits_2(env, capsys):
+def test_defer_cli_bad_date_is_usage_error(env, capsys):
     record = seed_pending(env)
     rc = cli.main(["defer", record.id, "--until", "next tuesday"])
-    assert rc == 2
+    assert rc == 64
     assert "YYYY-MM-DD" in capsys.readouterr().err
 
 
@@ -413,15 +413,15 @@ def test_verb_no_push_then_bare_push(env, capsys):
     assert env.remote_subject() == f"self-learn: reject {record.id}"
 
 
-def test_unknown_record_id_exits_2(env, capsys):
+def test_unknown_record_id_is_usage_error(env, capsys):
     rc = cli.main(["reject", "lrn-deadbeef"])
-    assert rc == 2
+    assert rc == 64
     assert "not found" in capsys.readouterr().err
 
 
-def test_malformed_record_id_exits_2(env, capsys):
+def test_malformed_record_id_is_usage_error(env, capsys):
     rc = cli.main(["route", "not-an-id"])
-    assert rc == 2
+    assert rc == 64
     assert "not a record id" in capsys.readouterr().err
 
 

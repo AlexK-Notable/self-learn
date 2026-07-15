@@ -131,6 +131,18 @@ class VerbResult:
     staged: list[Path] = field(default_factory=list)
     push: gitops.PushResult | None = None  # None = --no-push
     compile_result: object | None = None  # SectionResult | ReferenceResult | UserScopeResult
+
+    def over_cap_note(self) -> str | None:
+        """02 §4: the compiler flags-on-exceed; callers MUST surface it —
+        the next review session opens with a graduation card."""
+        cr = self.compile_result
+        if cr is not None and getattr(cr, "over_cap", False):
+            return (
+                f"WARNING: managed section over cap ({getattr(cr, 'cap_reason', '?')})"
+                " — graduate the oldest entries; next review opens with a"
+                " graduation card (02 §4)"
+            )
+        return None
     sentinel_owned: bool = False
     diff: str | None = None  # route_direct: staged diff (pre-commit), T8 prints it
 

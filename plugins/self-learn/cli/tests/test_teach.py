@@ -402,7 +402,7 @@ def test_unknown_skill_errors_and_writes_nothing(home, capsys):
 
 def test_unrecognized_flag_rejected(home, capsys):
     rc = run_cli(["teach", "a fact", "--bogus"])
-    assert rc == 2
+    assert rc == 64
     assert "--bogus" in capsys.readouterr().err
     assert all_pending(home) == []
 

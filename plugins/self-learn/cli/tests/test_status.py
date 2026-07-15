@@ -68,13 +68,14 @@ def test_status_human_line_with_buckets(sandbox_home, capsys):
 
 def test_argparse_errors_return_2_not_systemexit(sandbox_home, capsys):
     # main() is an int-returning API: argparse-level failures (bad choice,
-    # missing required group) come back as 2, never as an escaping
-    # SystemExit.
-    assert cli.main(["sentinel", "bogus"]) == 2
-    assert cli.main(["import"]) == 2
+    # missing required group) come back as argparse's own 2, never as an
+    # escaping SystemExit. (Deliberate CLI usage errors exit 64 — EX_USAGE —
+    # so machine consumers never see them aliased onto pinned exit-2s.)
+    assert cli.main(["sentinel", "bogus"]) == 2  # argparse choice error — argparse owns this exit
+    assert cli.main(["import"]) == 2  # argparse missing-group error
 
 
-def test_no_command_prints_help_exits_2(sandbox_home, capsys):
+def test_no_command_prints_help_is_usage_error(sandbox_home, capsys):
     rc = cli.main([])
-    assert rc == 2
+    assert rc == 64
     assert "usage:" in capsys.readouterr().err
