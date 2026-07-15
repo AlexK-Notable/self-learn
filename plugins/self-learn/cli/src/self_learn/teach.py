@@ -368,15 +368,16 @@ def run_teach(args: argparse.Namespace) -> int:
     except RecordError as exc:
         return _fail(str(exc))
 
-    # Free-text metadata is published in the record file: scan it like the
-    # body. No redact path here — a hit refuses outright (short user-typed
-    # phrases; retype them clean).
-    meta_hits = [
-        h
-        for text in (args.verified_how, args.incident_cost)
-        if text
-        for h in scan(text)
-    ]
+    # Free-text metadata is published in the record file: scan ALL of it
+    # like the body — verified_how/incident_cost, every --env key and
+    # value, and the --session id (audit 2026-07-15: --env values escaped
+    # the scan; with --route the secret would have been committed and
+    # pushed). No redact path here — a hit refuses outright (short
+    # user-typed phrases; retype them clean).
+    meta_texts = [args.verified_how, args.incident_cost, session]
+    for item in args.env or ():
+        meta_texts.append(item)
+    meta_hits = [h for text in meta_texts if text for h in scan(text)]
     if meta_hits:
         print(format_refusal(meta_hits), file=sys.stderr)
         return EXIT_SCAN
@@ -444,6 +445,11 @@ def _capture_to_pending(home, record_text: str, reason: str, hint: str) -> int:
     print(
         f"self-learn teach: {reason} — record captured to pending; {hint}",
         file=sys.stderr,
+    )
+    # Still a capture (audit 2026-07-15): an uncounted fallback would push
+    # report's "ceiling" below the true rate, breaking the label's meaning.
+    telemetry.spool_quiet(
+        "capture", source="teach", scope=record.scope, record=record.id
     )
     print(f"created {record.id} → {path} (pending)")
     return EXIT_ANALYST

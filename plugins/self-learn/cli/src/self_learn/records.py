@@ -538,6 +538,12 @@ class Record:
                 f"record {self.id} has no routing block — follow-ups ride "
                 "routing (11 §2.1); route first"
             )
+        if self.status != "routed":
+            raise MutationError(
+                f"record {self.id} is {self.status!r} — follow-ups attach to "
+                "LIVE routed coverage only (11 §2.1); a superseded lesson's "
+                "upgrade plan belongs on its successor"
+            )
         fu = {"action": action}
         if unblocks_on is not None:
             fu["unblocks_on"] = unblocks_on

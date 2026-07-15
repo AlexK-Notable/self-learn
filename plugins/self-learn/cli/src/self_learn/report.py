@@ -115,7 +115,7 @@ def gather(home: Path | str, *, today: date | None = None) -> dict:
     events = read_events(home)
     kinds: Counter = Counter(e.get("kind") for e in events)
     decline_reasons: Counter = Counter(
-        e.get("reason", "unspecified")
+        (e.get("reason") if isinstance(e.get("reason"), str) else "unspecified")
         for e in events
         if e.get("kind") == "offer-declined"
     )

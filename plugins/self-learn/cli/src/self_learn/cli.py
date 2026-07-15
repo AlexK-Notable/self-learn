@@ -13,10 +13,12 @@ wrappers over :mod:`self_learn.verbs`; validate + selftest live in
 Verb exit codes (T7's mapping, surfaced here): 0 success · a verb refusal
 carries its exception's ``exit_code`` (``VerbError`` 1;
 ``DestinationNotBuilt`` 2; ``SecretRefusal`` 1 — P2-7 refusal) · unknown /
-malformed record id (``LedgerOpsError``) 2 · a push failure after a kept
-commit exits with the push result's code (``EXIT_PUSH_FAILED`` 3,
-``EXIT_REBASE_CONFLICT`` 4 — gitops). `proposal validate` has its own
-pinned trio (P2-8): 0 valid+stamped · 1 schema-invalid · 2 scan hit.
+malformed record id (``LedgerOpsError``) and every other usage error 64
+(EX_USAGE — audit 2026-07-14: never 2, which P2-8 pins for scan hits) · a
+push failure after a kept commit exits with the push result's code
+(``EXIT_PUSH_FAILED`` 3, ``EXIT_REBASE_CONFLICT`` 4 — gitops). `proposal
+validate` has its own pinned trio (P2-8): 0 valid+stamped · 1
+schema-invalid · 2 scan hit.
 """
 
 from __future__ import annotations
@@ -38,11 +40,13 @@ from .import_memory import import_memory, prune_memory
 from .ledger import discover_buckets, resolve_home
 from .ledger_ops import (
     LedgerOpsError,
+    find_record_path,
     list_items,
     open_followups,
     status_infos,
     unparseable_pending,
 )
+from .records import Record, RecordError
 from .teach import add_teach_parser, run_teach
 from .telemetry import DECLINE_REASONS
 
@@ -325,6 +329,8 @@ def _finish_verb(result: verbs.VerbResult, target: str) -> int:
         f"{result.action} {result.record_id} → {target} "
         f"@ {result.commit_sha[:7]} ({_push_note(result)})"
     )
+    for warning in result.warnings:
+        print(warning, file=sys.stderr)
     if (note := result.over_cap_note()) is not None:
         print(note, file=sys.stderr)
     if result.push is not None and not result.push.ok:
@@ -464,8 +470,15 @@ def _cmd_import(args: argparse.Namespace) -> int:
     except LedgerOpsError as exc:  # unknown skill bucket
         print(f"self-learn import: {exc}", file=sys.stderr)
         return EXIT_USAGE
-    for rid in report.created:  # code-emitted capture events (11 §4.3)
-        telemetry.spool_quiet("capture", source=report.source, record=rid)
+    # Code-emitted capture events (11 §4.3 payload: source + bucket/scope).
+    for rid in report.created:
+        try:
+            scope = Record.from_path(find_record_path(home, rid)).scope
+        except (LedgerOpsError, RecordError):
+            scope = None  # scope is a payload nicety, never worth failing on
+        telemetry.spool_quiet(
+            "capture", source=report.source, record=rid, scope=scope
+        )
     print(report.summary())
     return EXIT_OK
 
@@ -513,6 +526,7 @@ def _cmd_telemetry(args: argparse.Namespace) -> int:
         print(f"noted {args.kind} → {path} (spool; flushes with the next verb)")
         return EXIT_OK
     if args.telemetry_command == "flush":
+        sentinel.heartbeat()  # tracked-plane write = mutating invocation
         try:
             flush_report = telemetry.flush(resolve_home())
         except telemetry.ScanRefusal as exc:
@@ -594,9 +608,12 @@ def main(argv: list[str] | None = None) -> int:
             as_json=args.as_json, include_deferred=args.include_deferred
         )
 
-    if args.command in ("teach", "import", "prune-memory", "proposal", "telemetry", "report"):
+    if args.command in ("teach", "import", "prune-memory", "proposal", "report"):
         sentinel.heartbeat()  # 08 §1: every mutating invocation touches a
         # live sentinel; heartbeat never resurrects a stale one.
+        # (`telemetry note` is cache-only and model-emittable — it must
+        # not extend a review hold's liveness; `telemetry flush` heartbeats
+        # in its own branch.)
 
     if args.command == "teach":
         code = run_teach(args)

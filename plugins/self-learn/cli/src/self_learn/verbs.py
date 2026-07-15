@@ -51,7 +51,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from . import gitops, sentinel
+from . import gitops, sentinel, telemetry
 from .chezmoi import compile_user_scope
 from .compilers import compile_managed_file, compile_reference
 from .ledger import discover_buckets
@@ -146,6 +146,7 @@ class VerbResult:
         return None
     sentinel_owned: bool = False
     diff: str | None = None  # route_direct: staged diff (pre-commit), T8 prints it
+    warnings: list[str] = field(default_factory=list)  # callers MUST print
 
 
 # ------------------------------------------------------------------ helpers
@@ -182,6 +183,25 @@ def _scan_or_refuse(paths: list[Path], note: str | None) -> None:
         + "\n".join(parts),
         all_hits,
     )
+
+
+def _orphaned_followup_warning(path: Path, record_id: str) -> list[str]:
+    """A record leaving 'routed' with an OPEN follow-up drops off the
+    open-follow-up list (status gate) — say so loudly instead of letting
+    the planned upgrade dead-letter (E-2; audit 2026-07-15)."""
+    try:
+        record = Record.from_path(path)
+    except RecordError:
+        return []
+    fu = record.follow_up
+    if fu is None or record.status != "routed":
+        return []
+    return [
+        f"WARNING: {record_id} carries an open follow-up "
+        f"({fu.get('action')!r}) — this resolution retires it from the "
+        "open list; if the upgrade is still wanted, put it on the "
+        "successor (route --follow-up) or a fresh capture"
+    ]
 
 
 def _abort_if_dirty(home: Path, target: Path) -> None:
@@ -362,6 +382,15 @@ def _compile_for_destination(
     else:  # unreachable: enum-checked by callers
         raise VerbError(f"unroutable destination {destination!r}")
 
+    # surface-budget event (11 §4.3: compilers, inside verb flow) — the
+    # attention-tax ledger. Spooled here, flushed by the calling verb.
+    telemetry.spool_quiet(
+        "surface-budget",
+        target=destination,
+        words=getattr(compile_result, "word_count", None),
+        overflow=bool(getattr(compile_result, "over_cap", False)),
+    )
+
     return compile_result, target_path
 
 
@@ -508,10 +537,11 @@ def route_direct(
             f"destination {destination!r} is not built until M3"
         )
 
-    # (a) P2-7 rider: scan every body this call publishes. The record is
-    # not on disk yet, so its text is scanned directly (teach scanned the
-    # parts pre-compose; this is the write-boundary backstop).
-    findings = secret_scan(record.body)
+    # (a) P2-7 rider: scan every byte this call publishes — the FULL record
+    # text, frontmatter included, exactly like the on-disk verbs' whole-file
+    # scan (audit 2026-07-15: body-only scanning let frontmatter metadata
+    # — env values, evidence session ids — reach a pushed commit unscanned).
+    findings = secret_scan(record.to_text())
     if findings:
         raise SecretRefusal(
             "secret scan hit — refusing this route (P2-7; no bypass):\n"
@@ -679,6 +709,7 @@ def graduate(
     home = Path(home)
     path = find_record_path(home, record_id)  # pending OR resolved
     _scan_or_refuse([path], note)
+    warnings = _orphaned_followup_warning(path, record_id)
     hold = sentinel.hold()
     sentinel.heartbeat()
     try:
@@ -695,6 +726,7 @@ def graduate(
             staged=staged,
             push=push,
             sentinel_owned=hold.owned,
+            warnings=warnings,
         )
     finally:
         hold.release()
@@ -717,6 +749,7 @@ def supersede(
     old_path = find_record_path(home, old_id)  # pending OR routed flavor
     find_record_path(home, new_id)  # the replacement must exist
     _scan_or_refuse([old_path], note)
+    warnings = _orphaned_followup_warning(old_path, old_id)
     hold = sentinel.hold()
     sentinel.heartbeat()
     try:
@@ -731,6 +764,7 @@ def supersede(
             staged=staged,
             push=push,
             sentinel_owned=hold.owned,
+            warnings=warnings,
         )
     finally:
         hold.release()

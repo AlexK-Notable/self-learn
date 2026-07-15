@@ -37,6 +37,7 @@ import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TextIO
 
 from .scan import format_refusal
 from .scan import scan as secret_scan
@@ -203,10 +204,18 @@ class FlushReport:
 def flush(home: Path | str) -> FlushReport:
     """Move every spooled event into the tracked plane (11 §4.2).
 
-    Scan-at-flush: every line is secret-scanned first; a hit raises
-    :class:`ScanRefusal` with the file, line number, and span — nothing
-    is moved, the spool is intact (belt-and-suspenders; payloads are
-    ids/enums by schema).
+    ALL-OR-NOTHING (audit 2026-07-15): every spool file is locked and
+    every line scanned BEFORE anything moves — a single scan hit raises
+    :class:`ScanRefusal` and no file is flushed, so "spool intact" is
+    true even across a month-rollover multi-file spool. Locks are taken
+    in sorted-name order; appenders only ever hold one lock at a time,
+    so ordering cannot deadlock.
+
+    Crash windows (documented, not fully closed): dying between the
+    tracked append and the spool truncate re-flushes those lines next
+    time — :func:`read_events` dedupes identical lines, so downstream
+    counts stay honest. A torn trailing tracked line (crash mid-append)
+    is healed by prefixing a newline before the next append.
 
     The tracked files are appended, never staged or committed here —
     autosync commits them on its normal cycle; a resolution verb's
@@ -218,60 +227,87 @@ def flush(home: Path | str) -> FlushReport:
     if not sdir.is_dir():
         return report
 
-    for spool_path in sorted(sdir.glob("*.jsonl")):
-        with open(spool_path, "r+", encoding="utf-8") as fh:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+    opened: list[tuple[Path, TextIO, list[str]]] = []
+    try:
+        # Phase 1: lock every spool file and scan every line. Nothing is
+        # written until every line of every file has passed.
+        for spool_path in sorted(sdir.glob("*.jsonl")):
             try:
-                lines = [ln for ln in fh.read().splitlines() if ln.strip()]
-                if not lines:
-                    continue
-                for i, line in enumerate(lines, 1):
-                    hits = secret_scan(line)
-                    if hits:
-                        raise ScanRefusal(
-                            "secret scan hit at flush — refusing the flush; "
-                            f"spool intact ({spool_path}:{i}):\n"
-                            + format_refusal(hits)
-                        )
-                target = telemetry_dir(home) / spool_path.name
-                target.parent.mkdir(parents=True, exist_ok=True)
-                with open(target, "a", encoding="utf-8") as out:
-                    fcntl.flock(out.fileno(), fcntl.LOCK_EX)
-                    try:
-                        out.write("\n".join(lines) + "\n")
-                        out.flush()
-                    finally:
-                        fcntl.flock(out.fileno(), fcntl.LOCK_UN)
-                # Truncate in place: the inode stays stable, so a writer
-                # blocked on our flock appends to THIS file, never a
-                # deleted one.
-                fh.seek(0)
-                fh.truncate()
-                report.events += len(lines)
-                report.files.append(target)
-            finally:
+                fh = open(spool_path, "r+", encoding="utf-8")
+            except (FileNotFoundError, OSError):
+                continue  # vanished between glob and open (cache cleaner)
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+            lines = [ln for ln in fh.read().splitlines() if ln.strip()]
+            opened.append((spool_path, fh, lines))
+        for spool_path, _fh, lines in opened:
+            for i, line in enumerate(lines, 1):
+                hits = secret_scan(line)
+                if hits:
+                    raise ScanRefusal(
+                        "secret scan hit at flush — refusing the WHOLE "
+                        f"flush; spool intact ({spool_path}:{i}):\n"
+                        + format_refusal(hits)
+                    )
+
+        # Phase 2: everything scanned clean — move file by file.
+        for spool_path, fh, lines in opened:
+            if not lines:
+                continue
+            target = telemetry_dir(home) / spool_path.name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with open(target, "a+", encoding="utf-8") as out:
+                fcntl.flock(out.fileno(), fcntl.LOCK_EX)
+                try:
+                    # Heal a torn trailing line from a previous crashed
+                    # append: never concatenate onto it.
+                    out.seek(0)
+                    existing = out.read()
+                    if existing and not existing.endswith("\n"):
+                        out.write("\n")
+                    out.write("\n".join(lines) + "\n")
+                    out.flush()
+                finally:
+                    fcntl.flock(out.fileno(), fcntl.LOCK_UN)
+            # Truncate in place: the inode stays stable, so a writer
+            # blocked on our flock appends to THIS file, never a
+            # deleted one.
+            fh.seek(0)
+            fh.truncate()
+            report.events += len(lines)
+            report.files.append(target)
+    finally:
+        for _path, fh, _lines in opened:
+            try:
                 fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            finally:
+                fh.close()
     return report
 
 
 def read_events(home: Path | str) -> list[dict]:
     """Every event in the tracked plane, ts-ordered (11 §5: ts is the
     order; cross-machine order is partial and callers must say so).
-    Malformed lines are skipped, never fatal — telemetry is cheap truth."""
+
+    Lenient by design — telemetry is cheap truth, never fatal: non-JSON
+    lines, non-mapping lines, and lines without a string ``kind`` are
+    skipped; byte-identical duplicate lines (the crash-between-append-
+    and-truncate re-flush window) are counted once."""
     tdir = telemetry_dir(home)
     events: list[dict] = []
+    seen: set[str] = set()
     if not tdir.is_dir():
         return events
     for path in sorted(tdir.glob("*.jsonl")):
         for line in path.read_text(encoding="utf-8").splitlines():
             line = line.strip()
-            if not line:
+            if not line or line in seen:
                 continue
             try:
                 event = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if isinstance(event, dict):
+            if isinstance(event, dict) and isinstance(event.get("kind"), str):
+                seen.add(line)
                 events.append(event)
     events.sort(key=lambda e: str(e.get("ts", "")))
     return events

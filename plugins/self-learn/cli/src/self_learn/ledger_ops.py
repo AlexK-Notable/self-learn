@@ -501,7 +501,10 @@ def open_followups(home: Path) -> list[dict]:
             except RecordError:
                 continue
             fu = record.follow_up
-            if fu is None:
+            # status gate (audit 2026-07-15): a superseded/graduated record
+            # may still CARRY the block, but its lifecycle ended — the
+            # successor owns any surviving upgrade plan.
+            if fu is None or record.status != "routed":
                 continue
             out.append(
                 {

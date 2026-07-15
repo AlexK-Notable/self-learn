@@ -49,6 +49,21 @@ to stop the container").
   Instruction/Context text instead).
 - **Supersession** — if this lesson *corrects* an already-routed record
   you know of, add `--supersedes <lrn-id>`.
+- **Capture-time grounding (11 §3 — infer, don't interrogate).** You hold
+  the transcript, so INFER these from it and simply show them in the §3
+  echo for correction — never add extra question rounds (that would break
+  ambient capture, E-3):
+  - `--verified [--verified-how "…"]` — was the lesson actually repro'd or
+    tested in this session, and how?
+  - `--incident-cost "…"` — what the incident cost, in human terms
+    ("an evening", "two failed deploys").
+  - `--generality environment-specific|general-practice|uncertain` —
+    environment quirk or general practice? Environment-specific lessons
+    are the ones that measurably change behavior; say so honestly.
+  - `--env component=version` (repeatable) — versions the lesson visibly
+    depends on (the tool that misbehaved, the daemon's version if it came
+    up). Only what the transcript actually shows; skip when unknown.
+  All optional — a capture with none of them is still a good capture.
 
 ## 3. Echo and confirm — never silently capture
 
@@ -57,6 +72,13 @@ Trigger/Instruction (or Fact/Context), evidence quote — and ask for
 confirmation. Explicit, human-confirmed capture is a hard rule: if the
 user does not confirm (or corrects the composition), revise or drop it.
 Capture nothing they haven't seen.
+
+If the user declines the capture outright, log the decline before moving
+on — `self-learn telemetry note offer-declined --reason
+<not-durable|wrong|duplicate|private|later|other>` (S-15 clause, 11 §4.3:
+declined offers are the denominator the system cannot otherwise see;
+cache-only, no repo write, pick the enum value that best matches their
+words).
 
 ## 4. Call the CLI with structured flags
 
