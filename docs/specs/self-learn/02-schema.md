@@ -153,6 +153,16 @@ standard safe rebase-halt (`01` §5) rather than being excluded outright.
 
 ## 2. Field rules
 
+> **Amendment 2026-07-15 (11 §3, ratified):** the frontmatter gains the
+> adjudication-plane fields — `verified`/`verified_how`, `incident_cost`,
+> `generality`, `env`, `routing.follow_up` → `follow_up_done`,
+> `recurrences` (append-only, ts+origin minimal facts), `last_confirmed`,
+> `links.contradicts`. All optional (existing records stay valid), all
+> **metadata class** like `superseded_by` — verb-written, mutable in every
+> status; the substance freeze below is untouched. The owning verbs and
+> their pinned commit subjects are 11 §2.5's table; tolerate-notes land in
+> `recurrences[].note`, never `resolution_note` (which stays write-once).
+
 - **Substance freezes at routing** *(S-8/S-12 — settled 2026-07-12,
   blind-adjudicated ADOPT)*: while
   `pending`, the body and filing may be edited freely — a typo in your own

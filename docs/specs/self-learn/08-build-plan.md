@@ -82,7 +82,7 @@ them; do not silently change them.**
 | Already-canon flag | `type: knowledge` AND source file is itself canon; behavioral entries never bulk-flagged; judgment recorded in the proposal sibling — *structured as the `already_canon` field, 02 §1 (G-3 amendment 2026-07-12; previously prose-only)*; bulk resolution of a flagged group = **graduation, never rejection** (02 §2) | 01 §3.2, 02 §1 |
 | Routing doctrine file | `plugins/self-learn/skills/self-learn/references/routing-doctrine.md` — the single source (01 §3.5's map + narrowest-surface bias + repo conventions). Consumers: M1 inline analysis, M2 worker prompt, G-3 TUI pane. One file, three loaders — never fork it |  |
 | `teach --route` | Prints diff, applies, **no confirm prompt** (invocation = approval). In-session callers pass structured fields + `--dest`; bare-terminal `--route` without `--dest` runs a one-shot `claude -p` analyst against the doctrine file | 01 §3.2 |
-| Offer line (S-15) | Lives in `~/.claude/CLAUDE.md` (chezmoi-managed — a **documented install step**, edited through chezmoi, not compiler output). Exact text: *"When I correct a mistake you made, or state a rule/preference that should change how you work beyond this task, offer once and briefly to capture it (`self-learn teach`). Offer only for durable lessons — corrections of wrong behavior, standing preferences, gotchas that will recur — never for one-off task instructions. Several serious corrections in one session each deserve an offer."* Load-bearing spec; revocable by deleting the paragraph | 04-M1 |
+| Offer line (S-15) | Lives in `~/.claude/CLAUDE.md` (chezmoi-managed — a **documented install step**, edited through chezmoi, not compiler output). Exact text: *"When I correct a mistake you made, or state a rule/preference that should change how you work beyond this task, offer once and briefly to capture it (`self-learn teach`); if declined, log it: `self-learn telemetry note offer-declined [--reason <enum>]`. Offer only for durable lessons — corrections of wrong behavior, standing preferences, gotchas that will recur — never for one-off task instructions. Several serious corrections in one session each deserve an offer."* Load-bearing spec; revocable by deleting the paragraph. **Pin edit 2026-07-15 (11 §4.3/§8, ratified): the decline-logging clause was added when `telemetry note` landed — offer semantics unchanged.** | 04-M1 |
 | `--json` stubs (M1-minimal; the TUI contract hardens them at G-3) | `list --json` → array of `{id, type, scope, kind, status, created_at, age_days, deferred_until, sightings, has_proposal, title}` (`title` = first line of Trigger/Fact). `status --json` → `{buckets: [{bucket, scope, pending, oldest_days}], total_pending, worker_last_run: null}`. *(G-3 hardening landed 2026-07-12 — 09 §10 item 2, consumers 09 §2.1–2.3: `list --json` items gain `proposal_fresh` (bool, CLI-computed with the shared normalization fn), `destination` (02 §1's enum verbatim), `already_canon` (02 §1 field); new flag `list --json --include-deferred` returns the superset including future-deferred records — the unflagged default and the worker's queue computation are untouched; `status --json` buckets gain `unanalyzed` — predicate pinned: **the worker's own eligibility computation** (pending, non-deferred, lacking a schema-valid proposal or hash-stale — §7.1 run-sequence step 2), one shared function, never a second definition (P2-4).)* | 07 §4 |
 | Versions | v1.0 = M1+M2 · v1.1 = M3+ | 04, S-14 |
 
@@ -603,3 +603,28 @@ scope.
   now touch a live sentinel. (4) **Over-cap flag has a consumer** —
   route/teach --route print the graduation-card WARNING; review.md opens
   the next batch with the card. All landed ff159a6, 377 tests.
+- **2026-07-15 · 11's now-tranche LANDED (pre-T13, per 11 §7)** — the
+  telemetry/lifecycle layer's M1-era builds, in the order 11 pins:
+  (1) §3 schema fields + validator (capture-time grounding, follow-ups,
+  recurrences, last_confirmed, contradicts — all optional, metadata
+  class); (2) `route --follow-up [--unblocks-on --follow-up-note]` +
+  `followup done` (pinned commit subject; done-notes live in
+  `follow_up_done.done_note`, never `resolution_note`); (3) telemetry
+  spool library + `telemetry note` (NOTE_KINDS = the two offer kinds
+  only; reason enum enforced) + flush-in-verbs
+  (teach/import/resolutions/report) + scan-at-flush (whole-flush
+  refusal, spool intact; flush truncates in place so a concurrent
+  appender can never write into a deleted inode); (4) code-emitted
+  `capture` events from teach (both paths) and import; (5) `report` v1
+  file-walking (11 §5's sanctioned pre-index divergence) with the
+  honesty labels pinned: declined-count = LOWER bound, capture rate =
+  optimistic CEILING, no-observed-fires = candidates-not-dead-weight;
+  (6) `status` gains `open_followups` on the FULL paths only — the
+  §7.1 `--json --fast` pin is untouched. S-15 pin edit applied (§1 row,
+  plugin README, live `~/.claude/CLAUDE.md` via the chezmoi flow).
+  Build decisions recorded: `teach --route` does NOT take follow-up
+  flags yet (review-route is where known-partial coverage is judged;
+  extend at M2 if one-motion captures turn out to want it), and teach's
+  free-text metadata (`--verified-how`, `--incident-cost`) is
+  refuse-only on a scan hit — no redact path for short retypable
+  phrases. 427 tests.

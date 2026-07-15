@@ -26,8 +26,12 @@ prompt after.
 | Verb | Semantics (one line) |
 |---|---|
 | `status` / `list` | Pending overview / queued records; `--json`; `list --include-deferred` |
-| `teach` | Capture ONE lesson into `pending/` (scan-then-write). Scope: `--skill <name>` \| `--project` \| `--user`; type: `--type behavior --trigger … --instruction …` or `--type knowledge --fact … [--context …]`; `--route [--dest …]` resolves immediately |
-| `route <id> [--dest …]` | Compile the record into its destination (proposal or override), commit + push |
+| `teach` | Capture ONE lesson into `pending/` (scan-then-write). Scope: `--skill <name>` \| `--project` \| `--user`; type: `--type behavior --trigger … --instruction …` or `--type knowledge --fact … [--context …]`; `--route [--dest …]` resolves immediately. Capture-time grounding (optional-but-offered, 11 §3): `--verified [--verified-how …]`, `--incident-cost …`, `--generality environment-specific\|general-practice\|uncertain`, `--env COMP=VER` (repeatable) |
+| `route <id> [--dest …]` | Compile the record into its destination (proposal or override), commit + push. Known-partial coverage: `--follow-up <action> [--unblocks-on <gate>] [--follow-up-note …]` rides the routing block |
+| `followup done <id> [--note …]` | Clear a routed record's open follow-up into a dated `follow_up_done` block |
+| `telemetry note <kind> [--reason …]` | Spool one offer-ledger event (`offer-made` \| `offer-declined`, reason enum: not-durable\|wrong\|duplicate\|private\|later\|other). Cache-only — no repo write, no commit |
+| `telemetry flush` | Spool → tracked `.self-learn/telemetry/` files (scan-at-flush; autosync commits them). Teach/import/resolution verbs flush automatically |
+| `report [--json]` | Facts layer v1: lifecycle counts, open follow-ups, deferred aging, offer ledger (capture rate labeled as a ceiling — declined-offer logging is best-effort) |
 | `reject <id>` / `defer <id> [--until D]` / `graduate <id>` | Resolve without routing: rejected / hidden until date (default +30 d) / woven into authored canon |
 | `supersede <old> <new>` | Mark a lesson corrected by a newer one (metadata + recompile) |
 | `push` | Retry unpushed resolution commits (rebase-retry, never auto-resolve) |
@@ -54,8 +58,8 @@ rule printed), `--redact` opt-in on capture surfaces, no bypass flag.
 - Analyst (bare-terminal `teach --route`): `SELF_LEARN_ANALYST_MODEL`
   (default `claude-sonnet-5`), `SELF_LEARN_ANALYST_TIMEOUT` (default 120 s).
 - Exit codes — verbs: 0 ok · 1 refusal (dirty target, scan hit, chezmoi
-  abort) · 2 usage/unknown id/unbuilt destination · 3 push failed (commit
-  kept — run `self-learn push`) · 4 rebase conflict.
+  abort) · 2 unbuilt destination (M3) · 3 push failed (commit kept — run
+  `self-learn push`) · 4 rebase conflict · 64 usage/unknown id.
   `proposal validate`: **0 valid+stamped · 1 schema-invalid (file intact) ·
   2 scan hit (wins)**. `--selftest`: 0 all green · 1 any FAIL.
 

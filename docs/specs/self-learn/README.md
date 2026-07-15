@@ -396,3 +396,21 @@ human routes it.
   (the layer itself), 04 §0 boundary banner, 08 §6 completion.
   **With §6 fully satisfied, M1 is formally EXITED; M2 (worker,
   T13–T16 + 11's riders) is unblocked.**
+- **2026-07-15 — 11's now-tranche BUILT (M2 development opened).** The
+  telemetry/lifecycle layer's pre-worker builds landed on the
+  `self-improve-lib` worktree branch, test-first, in 11 §7's order:
+  the §3 schema fields + validator; `route --follow-up` +
+  `followup done` (pinned subject `self-learn: follow-up done on
+  lrn-…`); the cache-spool library, `telemetry note` (offer ledger,
+  closed reason enum), `telemetry flush`, flush-in-verbs with
+  scan-at-flush; code-emitted `capture` events (teach + import);
+  `report` v1 (file-walking, honesty labels: declined-count = lower
+  bound ⇒ capture rate = optimistic ceiling; no-observed-fires framed
+  as confirm-held candidates, never dead weight); `status` gains
+  `open_followups` (full paths only — the `--json --fast` pin holds).
+  S-15's decline-logging clause applied everywhere the offer line is
+  pinned (08 §1, plugin README, live `~/.claude/CLAUDE.md` via
+  chezmoi). lrn-98d42215's follow-up backfilled as the field's first
+  entry (11 §2.1). Suite: 427. Build decisions in the 08 appendix
+  entry of the same date (teach --route defers follow-up flags to M2;
+  metadata scan is refuse-only).

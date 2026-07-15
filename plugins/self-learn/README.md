@@ -47,7 +47,7 @@ Paste this text exactly (load-bearing spec — 08 §1; revocable by deleting
 the paragraph):
 
 ```
-When I correct a mistake you made, or state a rule/preference that should change how you work beyond this task, offer once and briefly to capture it (`self-learn teach`). Offer only for durable lessons — corrections of wrong behavior, standing preferences, gotchas that will recur — never for one-off task instructions. Several serious corrections in one session each deserve an offer.
+When I correct a mistake you made, or state a rule/preference that should change how you work beyond this task, offer once and briefly to capture it (`self-learn teach`); if declined, log it: `self-learn telemetry note offer-declined [--reason <enum>]`. Offer only for durable lessons — corrections of wrong behavior, standing preferences, gotchas that will recur — never for one-off task instructions. Several serious corrections in one session each deserve an offer.
 ```
 
 ## M2 note — SessionStart hook (not yet)
