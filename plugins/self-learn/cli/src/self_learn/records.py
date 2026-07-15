@@ -41,6 +41,7 @@ from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap
 
 __all__ = [
+    "GENERALITIES",
     "MutationError",
     "Record",
     "RecordError",
@@ -55,6 +56,13 @@ TYPES = frozenset({"behavior", "knowledge"})
 KINDS = frozenset({"anti-pattern", "surface-rule", "reasoning-pattern"})
 SOURCES = frozenset({"teach", "auto-memory", "backlog", "session"})
 STATUSES = frozenset({"pending", "routed", "rejected", "deferred", "superseded"})
+
+#: 11 §3: capture-time grounding classes. The strongest known predictor of
+#: behavioral value (six dead fixture candidates were all general practice).
+GENERALITIES = frozenset({"environment-specific", "general-practice", "uncertain"})
+
+#: Scalar types allowed in env-hint values (versions, model names).
+_ENV_SCALARS = (str, int, float)
 
 #: Statuses in which the record is still a draft: substance edits allowed.
 DRAFT_STATUSES = frozenset({"pending", "deferred"})
@@ -252,6 +260,60 @@ class Record:
         value = self._fm.get("routing")
         return copy.deepcopy(dict(value)) if value is not None else None
 
+    # -- 11 §3 adjudication-plane fields (all optional; metadata class,
+    # -- same as superseded_by: verb-written, mutable in every status).
+
+    @property
+    def verified(self) -> bool | None:
+        return self._fm.get("verified")
+
+    @property
+    def verified_how(self) -> str | None:
+        return self._fm.get("verified_how")
+
+    @property
+    def incident_cost(self) -> str | None:
+        return self._fm.get("incident_cost")
+
+    @property
+    def generality(self) -> str | None:
+        return self._fm.get("generality")
+
+    @property
+    def env(self) -> dict | None:
+        value = self._fm.get("env")
+        return copy.deepcopy(dict(value)) if value is not None else None
+
+    @property
+    def follow_up(self) -> dict | None:
+        """The OPEN follow-up on the routing block (11 §2.1), if any."""
+        routing = self._fm.get("routing")
+        if routing is None:
+            return None
+        value = routing.get("follow_up")
+        return copy.deepcopy(dict(value)) if value is not None else None
+
+    @property
+    def follow_up_done(self) -> dict | None:
+        value = self._fm.get("follow_up_done")
+        return copy.deepcopy(dict(value)) if value is not None else None
+
+    @property
+    def recurrences(self) -> tuple:
+        """Read-only view of the append-only recurrence list (11 §2.2)."""
+        return tuple(copy.deepcopy(dict(r)) for r in self._fm.get("recurrences") or [])
+
+    @property
+    def last_confirmed(self):
+        return self._fm.get("last_confirmed")
+
+    @property
+    def contradicts(self) -> tuple:
+        links = self._fm.get("links")
+        if not links:
+            return ()
+        return tuple(links.get("contradicts") or ())
+
     @property
     def supersedes(self) -> str | None:
         return self._fm.get("supersedes")
@@ -336,6 +398,8 @@ class Record:
             missing = {"routed_at", "destination", "by"} - set(routing)
             if missing:
                 raise ValidationError(f"routing block missing {sorted(missing)}")
+            if routing.get("follow_up") is not None:
+                _validate_follow_up(routing["follow_up"])
             routing = dict(routing)
         self._fm["routing"] = routing
 
@@ -404,6 +468,125 @@ class Record:
         else:
             self._fm.pop("redacted", None)
 
+    # ---------------------------------------- 11 §3 metadata-class setters
+
+    def set_verified(self, value: bool | None, how: str | None = None) -> None:
+        """Capture-time grounding grade (11 §3). ``None`` clears both
+        fields; ``how`` without a verified value is meaningless."""
+        if value is None:
+            if how is not None:
+                raise ValidationError("verified_how needs a verified value")
+            self._fm.pop("verified", None)
+            self._fm.pop("verified_how", None)
+            return
+        if not isinstance(value, bool):
+            raise ValidationError(f"verified must be a bool, got {value!r}")
+        self._fm["verified"] = value
+        if how is not None:
+            if not isinstance(how, str) or not how.strip():
+                raise ValidationError("verified_how must be non-empty text")
+            self._fm["verified_how"] = how
+
+    def set_incident_cost(self, value: str | None) -> None:
+        if value is None:
+            self._fm.pop("incident_cost", None)
+            return
+        if not isinstance(value, str) or not value.strip():
+            raise ValidationError("incident_cost must be non-empty text")
+        self._fm["incident_cost"] = value
+
+    def set_generality(self, value: str | None) -> None:
+        if value is None:
+            self._fm.pop("generality", None)
+            return
+        if value not in GENERALITIES:
+            raise ValidationError(
+                f"generality must be one of {sorted(GENERALITIES)}, got {value!r}"
+            )
+        self._fm["generality"] = value
+
+    def set_env(self, value: dict | None) -> None:
+        """Versions PRESENT at capture — an ambient hint (11 §3): code
+        cannot know what a lesson is 'about'; user-supplied entries win."""
+        if value is None:
+            self._fm.pop("env", None)
+            return
+        _validate_env(value)
+        self._fm["env"] = dict(value)
+
+    def set_last_confirmed(self, value) -> None:
+        """Written by ``confirm-held`` (11 §2.2): a human observed the rule
+        working. Age-since-confirmation is the staleness metric."""
+        if value is None:
+            self._fm.pop("last_confirmed", None)
+            return
+        self._fm["last_confirmed"] = value
+
+    def set_follow_up(
+        self,
+        action: str,
+        *,
+        unblocks_on: str | None = None,
+        note: str | None = None,
+    ) -> None:
+        """Attach the known-partial follow-up to the routing block
+        (11 §2.1). The record must be routed — a follow-up is a planned
+        upgrade to landed coverage, not a pre-routing wish."""
+        routing = self._fm.get("routing")
+        if routing is None:
+            raise MutationError(
+                f"record {self.id} has no routing block — follow-ups ride "
+                "routing (11 §2.1); route first"
+            )
+        fu = {"action": action}
+        if unblocks_on is not None:
+            fu["unblocks_on"] = unblocks_on
+        if note is not None:
+            fu["note"] = note
+        _validate_follow_up(fu)
+        routing["follow_up"] = fu
+
+    def complete_follow_up(
+        self, *, done_at: str | None = None, done_note: str | None = None
+    ) -> None:
+        """``followup done`` (11 §2.5): clear ``routing.follow_up``, moving
+        it to a dated top-level ``follow_up_done`` block."""
+        routing = self._fm.get("routing")
+        open_fu = routing.get("follow_up") if routing is not None else None
+        if open_fu is None:
+            raise MutationError(f"record {self.id} has no open follow-up")
+        done = dict(open_fu)
+        done["done_at"] = done_at if done_at is not None else _now_iso()[:10]
+        if done_note is not None:
+            if not isinstance(done_note, str) or not done_note.strip():
+                raise ValidationError("done_note must be non-empty text")
+            done["done_note"] = done_note
+        del routing["follow_up"]
+        self._fm["follow_up_done"] = done
+
+    def append_recurrence(self, entry: dict) -> None:
+        """Append one confirmed recurrence (11 §2.2) — append-only, dated,
+        carrying the minimal facts; ``ref`` is a courtesy pointer."""
+        _validate_recurrence(entry)
+        if self._fm.get("recurrences") is None:
+            self._fm["recurrences"] = []
+        self._fm["recurrences"].append(dict(entry))
+
+    def append_contradicts(self, target: str) -> None:
+        """Append one contradiction edge (11 §2.4): a record id or a canon
+        anchor string."""
+        if not isinstance(target, str) or not target.strip():
+            raise ValidationError("contradicts target must be non-empty text")
+        links = self._fm.get("links")
+        if links is None:
+            links = CommentedMap()
+            self._fm["links"] = links
+        if links.get("contradicts") is None:
+            links["contradicts"] = []
+        if target in links["contradicts"]:
+            raise ValidationError(f"{self.id} already contradicts {target!r}")
+        links["contradicts"].append(target)
+
     # ------------------------------------------------- evidence (append-only)
 
     def append_evidence(self, entry: dict) -> None:
@@ -469,6 +652,8 @@ class Record:
             missing = {"routed_at", "destination", "by"} - set(routing)
             if missing:
                 raise ValidationError(f"routing block missing {sorted(missing)}")
+            if routing.get("follow_up") is not None:
+                _validate_follow_up(routing["follow_up"])
         supersedes = fm.get("supersedes")
         if supersedes is not None and not _is_record_id(supersedes):
             raise ValidationError(f"supersedes must be null or a record id, got {supersedes!r}")
@@ -492,6 +677,43 @@ class Record:
             not isinstance(count, int) or isinstance(count, bool) or count < 0
         ):
             raise ValidationError(f"deferred_count must be a non-negative int, got {count!r}")
+
+        # ---- 11 §3 adjudication-plane fields (all optional)
+        verified = fm.get("verified")
+        if verified is not None and not isinstance(verified, bool):
+            raise ValidationError(f"verified must be a bool, got {verified!r}")
+        how = fm.get("verified_how")
+        if how is not None:
+            if not isinstance(how, str) or not how.strip():
+                raise ValidationError("verified_how must be non-empty text")
+            if verified is None:
+                raise ValidationError("verified_how needs a verified value")
+        cost = fm.get("incident_cost")
+        if cost is not None and (not isinstance(cost, str) or not cost.strip()):
+            raise ValidationError("incident_cost must be non-empty text")
+        generality = fm.get("generality")
+        if generality is not None and generality not in GENERALITIES:
+            raise ValidationError(
+                f"generality must be one of {sorted(GENERALITIES)}, got {generality!r}"
+            )
+        env = fm.get("env")
+        if env is not None:
+            _validate_env(env)
+        done = fm.get("follow_up_done")
+        if done is not None:
+            _validate_follow_up(done)
+            if done.get("done_at") is None:
+                raise ValidationError("follow_up_done needs done_at (11 §2.5)")
+        recurrences = fm.get("recurrences")
+        if recurrences is not None:
+            if not isinstance(recurrences, list):
+                raise ValidationError("recurrences must be a list")
+            for entry in recurrences:
+                _validate_recurrence(entry)
+        links = fm.get("links")
+        if links is not None:
+            _validate_links(links)
+
         self._validate_body(fm["type"], self._body)
 
     @staticmethod
@@ -513,6 +735,58 @@ class Record:
         for name in optional:
             if headings.count(name) > 1:
                 raise ValidationError(f"duplicate optional '## {name}' section")
+
+
+def _validate_follow_up(fu: object) -> None:
+    """Shape of a follow-up block (open or done): ``action`` required;
+    ``unblocks_on``/``note`` optional human-readable strings (11 §2.1)."""
+    if not isinstance(fu, dict):
+        raise ValidationError(f"follow_up must be a mapping, got {fu!r}")
+    action = fu.get("action")
+    if not isinstance(action, str) or not action.strip():
+        raise ValidationError("follow_up needs a non-empty action (11 §2.1)")
+    for key in ("unblocks_on", "note", "done_note"):
+        value = fu.get(key)
+        if value is not None and (not isinstance(value, str) or not value.strip()):
+            raise ValidationError(f"follow_up {key} must be non-empty text")
+
+
+def _validate_env(env: object) -> None:
+    if not isinstance(env, dict) or not env:
+        raise ValidationError("env must be a non-empty mapping of component → version")
+    for key, value in env.items():
+        if not isinstance(key, str) or not key.strip():
+            raise ValidationError(f"env keys must be non-empty strings, got {key!r}")
+        if not isinstance(value, _ENV_SCALARS) or isinstance(value, bool):
+            raise ValidationError(
+                f"env values must be version scalars, got {key}: {value!r}"
+            )
+
+
+def _validate_recurrence(entry: object) -> None:
+    """One confirmed recurrence: ts + origin are the minimal facts copied
+    out of the event; note/ref optional (ref = courtesy pointer, 11 §2.2)."""
+    if not isinstance(entry, dict) or not entry:
+        raise ValidationError(f"recurrence must be a non-empty mapping, got {entry!r}")
+    for key in ("ts", "origin"):
+        value = entry.get(key)
+        if value is None or (isinstance(value, str) and not value.strip()):
+            raise ValidationError(f"recurrence needs {key} (11 §2.2), got {entry!r}")
+
+
+def _validate_links(links: object) -> None:
+    if not isinstance(links, dict):
+        raise ValidationError("links must be a mapping")
+    contradicts = links.get("contradicts")
+    if contradicts is None:
+        return
+    if not isinstance(contradicts, list) or not contradicts:
+        raise ValidationError("links.contradicts must be a non-empty list")
+    for target in contradicts:
+        if not isinstance(target, str) or not target.strip():
+            raise ValidationError(
+                f"contradicts targets must be non-empty strings, got {target!r}"
+            )
 
 
 def _validate_scope(scope: object) -> None:
