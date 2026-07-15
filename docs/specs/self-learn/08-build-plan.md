@@ -578,3 +578,9 @@ scope.
   in the validator is decided there (M1 leaves it analyst discipline).
   The user's venue verdict (REPL definitively wrong for review) is
   logged as G-3 trigger evidence; the surface build stays gated on M2.
+- **2026-07-14 · Telemetry/lifecycle layer PROPOSED** — see
+  `11-telemetry-and-lifecycle.md` (follow-ups, recurrences, telemetry
+  plane, index/report). Its "now" tranche (§7) is M1-era small builds;
+  its worker riders (fire mining, recurrence matching, not-holding
+  cards) bind T13's scope when ratified. M3 gains a pinned first step:
+  drain the follow-up list.

@@ -324,3 +324,17 @@ human routes it.
   the B-half. Compiler note recorded: managed-section entries cut at
   the first sentence — front-load the operative content. Queue: 2
   pending (both user-held). znote hub current through session 3.
+- **2026-07-14 — 11-telemetry-and-lifecycle.md DRAFTED (PROPOSED).**
+  User-directed design session: routed lessons are claims, not
+  facts-in-perpetuity; the system must measure certainty instead of
+  declaring it. New layer: follow-ups (done-but-upgradeable, no new
+  lifecycle status), recurrence suspects→confirmation (the "not
+  holding" card), capture-time context (incident cost, generality, env
+  fingerprint, verified), the observation plane (actor-scoped
+  append-only telemetry JSONL — offer ledger, card outcomes, fires
+  from transcript mining), the disposable index + report, and five
+  standing multi-machine posture principles (single-writer by
+  construction; two planes one-way flow; regenerate-never-merge;
+  causal order from git ancestry; same-machine concurrency as the
+  common case). §8 claims no settled decision reopens — top-to-bottom
+  consistency audit commissioned same day.
