@@ -337,9 +337,10 @@ after T2–T4; T12 anytime.
    home-assistant; exit (b) the real backlog-import review session (this
    is also the E-3 honeymoon test — schedule it when the user has ~30
    minutes).
-5. *(Done for the B-half 2026-07-14 — B := B3 routed via one-motion teach,
-   post-routing 3/3 PASS; C-half awaits the boundary decision — 04 §0
-   banner.)* Route fixtures B and C through the system (their records via `teach`),
+5. *(COMPLETE 2026-07-15: B-half proven 3/3 (2026-07-14); C-half re-scoped
+   away by the user's boundary call — 04 §0 banner. **All §6 criteria are
+   now satisfied: M1 EXITED 2026-07-15. M2 (§7) is unblocked**, with T13's
+   scope extended by 11's worker riders.)* Route fixtures B and C through the system (their records via `teach`),
    then run the §0 post-routing trials — 3/3 each against the written
    predicates, attribution recorded per trial (B also proves the E-17
    chezmoi persistence check: `chezmoi apply` then re-grep). **B and C

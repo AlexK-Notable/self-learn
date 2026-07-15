@@ -15,6 +15,14 @@ test-first, merge to master when green (repo convention).*
 > decision (find a C-class environment-specific lesson, or re-scope the
 > checkpoint to the proven B-half) is with the user. The protocol below
 > remains the method record; do not execute the original B/C provocations.
+>
+> **Boundary call, 2026-07-15 (user):** no further machine-specific quirk
+> candidates exist ("i genuinely can't think of anything else") — the
+> **M1+M2 behavioral checkpoint is re-scoped to the proven B-half**.
+> Rider: 11's recurrence/fire telemetry (ratified same day) generalizes
+> the fixture concept — continuous measurement of routed rules replaces
+> one-shot C-class proofs as the ongoing behavioral evidence engine, so
+> the C-slot's evidentiary role is superseded, not merely waived.
 
 *(Rewritten 2026-07-12 after the independent fixture review —
 `reviews/2026-07-12-fixture-review.md`. The original wording carried a

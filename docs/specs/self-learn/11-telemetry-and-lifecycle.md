@@ -1,6 +1,6 @@
 # 11 — The life of a lesson after routing: telemetry, lifecycle, and the facts layer
 
-**Status: PROPOSED, v2 (drafted 2026-07-14; v2 same day after a
+**Status: RATIFIED 2026-07-15 (user-delegated — "review them yourself and answer the questions you would ask me"; the Q&A is in the README revision log; any answer is user-vetoable, veto = dated register edit). v2 (drafted 2026-07-14; v2 same day after a
 four-agent audit — the corpus-coherence and adversarial reviewers
 independently confirmed that v1's observation plane violated P6/E-8 and
 S-7, its worker emitters violated S-5/E-18, and its §8 no-reopen
