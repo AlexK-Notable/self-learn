@@ -360,3 +360,38 @@ human routes it.
   (S-7 amendment + S-15 pin edit declared for ratification). 11 remains
   PROPOSED — ratifiable-with-edits per the adversarial verdict, edits
   now landed; user ratification still owed.
+- **2026-07-15 — 11 RATIFIED (user-delegated) · M1 EXITED · checkpoint
+  re-scoped.** The user declined to read 11 v2 and delegated: "review
+  them yourself and try to answer the questions you would ask me." The
+  questions and self-answered calls, each vetoable by dated register
+  edit:
+  **Q1 — telemetry lives in the repo (committed, synced): acceptable?**
+  YES — the user's explicit directive was multi-machine-first hard
+  facts; cache-only telemetry would forfeit cross-machine analytics;
+  volume is KB/month of ids and enums; the spool/flush mechanism keeps
+  every storage pin's letter.
+  **Q2 — the pinned offer line in ~/.claude/CLAUDE.md grows a
+  decline-logging clause: acceptable?** YES — the user asked for the
+  denominator; the cost per decline lands on the model, not the user;
+  applied only when the spool verb ships (S-15 row).
+  **Q3 — decline reasons: enum or free text?** ENUM — the user's
+  no-secrets-in-tracked-files posture is absolute and autosync
+  publishes in seconds; a decline interesting enough to explain is a
+  teach, not a payload.
+  **Q4 — a worker pass reads local session transcripts for fire
+  detection: acceptable?** YES with the existing pins — local-only,
+  non-textual anchors, CLI-validated output; the user's own data on
+  the user's own machine feeding the user's own analytics.
+  **Q5 — four new verbs of CLI surface: worth the maintenance?** YES —
+  the alternative is unowned mutations, the exact rot 02 §2's
+  discipline exists to prevent; each verb is small, pinned, testable.
+  **Q6 — accept one proven fixture (B3) and re-scope the C-half?** The
+  user answered directly ("i genuinely can't think of anything else").
+  Re-scoped, with the recorded rider that 11's recurrence/fire
+  telemetry supersedes the C-slot's evidentiary role: continuous
+  measurement of routed rules replaces one-shot proofs.
+  Register edits landed: S-7 amended (telemetry storage class), S-15
+  amended (offer-line clause, deferred to build time), S-16 added
+  (the layer itself), 04 §0 boundary banner, 08 §6 completion.
+  **With §6 fully satisfied, M1 is formally EXITED; M2 (worker,
+  T13–T16 + 11's riders) is unblocked.**
