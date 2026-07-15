@@ -23,9 +23,11 @@ Let `HOME_REPO = ${SELF_LEARN_HOME:-~/repos/claude-skills}` throughout.
    card, in its order, under its labels. This command deliberately names
    no section keys: the registry is the only source of the section set,
    so section changes never require editing this file.
-3. `self-learn list --json` — build the queue: `status: pending` items
-   (deferred ones are already excluded), **oldest first**, at most **10
-   cards this session** (respect a `--skill <name>` scope from
+3. `self-learn list --json` — build the queue: **treat every item the
+   CLI returns as queued** (it already excludes still-deferred records;
+   an expired deferral resurfaces with `status: deferred` — never filter
+   on `status` yourself), **oldest first**, at most **10 cards this
+   session** (respect a `--skill <name>` scope from
    $ARGUMENTS). Bounded batches are the point: a session that tries to
    drain everything is the session that kills the habit. Say up front how
    many are pending and how many this batch covers.
