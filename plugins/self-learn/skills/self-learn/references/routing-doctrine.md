@@ -123,8 +123,9 @@ edits, help rewrite) a record:
   `.storage/*.json` while HA is running", not "when working with HA".
   Concrete artifacts (paths, commands, tool names) beat abstractions.
 - `## Instruction` carries the *what* and the *why* in one or two
-  sentences — the why is what stops the rule being cargo-culted or
-  wrongly generalized.
+  sentences **on a single line** (the compiler takes the whole first
+  line — audit 2026-07-14) — the why is what stops the rule being
+  cargo-culted or wrongly generalized.
 - A record whose Trigger cannot be written as a firing condition is
   usually a `knowledge` record wearing the wrong type — say so in the
   rationale and propose the re-classification.

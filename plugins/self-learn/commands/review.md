@@ -113,6 +113,10 @@ as the label. Every selected record resolves via its own
 `self-learn graduate <id>` call; any the user de-selects gets an
 individual card in this batch.
 
+If any route in this session printed the over-cap WARNING (managed
+section at its entry/word cap), open the next batch with a graduation
+card for that section's oldest entries (02 §4).
+
 Read each verb's output line: it reports the commit and push state. A
 non-zero exit means the verb refused (secret scan, dirty target, unknown
 id) — show the user the CLI's message verbatim and handle it on the card;
