@@ -4,8 +4,9 @@
 `../archive/gen1-self-learning-harness/` — its README explains why). Status:
 **RATIFIED 2026-07-12** · **M1 SHIPPED 2026-07-13** (v1.0 core loop live —
 CLI + slash commands deployed, backlog drained; see revision log) ·
-**11-telemetry PROPOSED 2026-07-14** (v2 after the four-agent audit;
-awaiting user ratification). Everything here was written together, as one system, with
+**11-telemetry RATIFIED 2026-07-15** (v2 after the four-agent audit;
+user-delegated, Q&A in the revision log) · **M1 EXITED 2026-07-15 — M2 is
+next**. Everything here was written together, as one system, with
 the full evidence of three review rounds and the repo's own usage history baked
 in from the start — not iterated into shape.*
 
@@ -33,7 +34,7 @@ human routes it.
 | `08-build-plan.md` | **Execution authority for the build**: pinned interface contracts, the Phase-0 fixture runbook, the M1 task DAG, judgment-call routing, eventuality playbooks — written so any orchestrator can run the build |
 | `09-surface-spec.md` | **Design authority for the G-3 adjudication surface** (web revision, 2026-07-12): interaction model, surfaces/routes, files-as-truth data flow, security middleware, the adjudication pane (Agent SDK engine default / CLI stream-json alternative, empirically probed), degradation table, stack selection |
 | `10-surface-build-plan.md` | **Execution authority for the G-3 build** (gated on G-3's trigger): surface-local pins + verify-at-build ledger, acceptance fixtures incl. live trials, task DAG U1–U11, judgment routing, playbooks — 09 wins on conflict; shared pins stay owned by 08 |
-| `11-telemetry-and-lifecycle.md` | **PROPOSED (2026-07-14)** — the life of a lesson after routing: follow-ups, recurrence tracking (suspect→confirm), certainty-as-measured-events, the three-plane data model (record frontmatter / actor-scoped telemetry JSONL / disposable index+report), and the standing multi-machine posture principles |
+| `11-telemetry-and-lifecycle.md` | **RATIFIED 2026-07-15 (v2; user-delegated — Q&A in the revision log)** — the life of a lesson after routing: follow-ups, recurrence tracking (suspect→confirm), certainty-as-measured-events, the three-plane data model (record frontmatter / actor-scoped telemetry JSONL / disposable index+report), and the standing multi-machine posture principles |
 | `research/` | External evidence memos (SOTA surveys etc.) — shareable with blind reviewers, unlike `reviews/` |
 | `fixtures/` | `gen-fixture-b` + `trials.md` (Phase 0 rounds 1–3: six candidates disqualified, B3 qualified + proven 3/3 post-routing — the system's primary behavioral evidence); `ui-trials.md` lands with the G-3 build |
 
