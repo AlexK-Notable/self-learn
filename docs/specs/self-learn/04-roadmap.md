@@ -5,6 +5,17 @@ test-first, merge to master when green (repo convention).*
 
 ## 0. Pre-build acceptance fixture (defines "worth it" before anything exists)
 
+> **Superseded in part, 2026-07-13/14 (Phase 0 outcome — see 08's
+> Build-findings appendix + `fixtures/trials.md`):** original B, original C,
+> C's named backup, and three replacement candidates all disqualified at the
+> hardened gate (baselines pass — general good practice is baseline-native
+> on a frontier model). **B := B3, the notify-send/swaync action-button
+> hang — qualified 3/3 baseline FAIL, proven 3/3 post-routing PASS with
+> attribution.** The C-half has no qualified candidate; the M1+M2 boundary
+> decision (find a C-class environment-specific lesson, or re-scope the
+> checkpoint to the proven B-half) is with the user. The protocol below
+> remains the method record; do not execute the original B/C provocations.
+
 *(Rewritten 2026-07-12 after the independent fixture review —
 `reviews/2026-07-12-fixture-review.md`. The original wording carried a
 class error: "pick from the existing canon" selects for lessons whose
@@ -191,7 +202,7 @@ completes in under ~5 minutes using only card taps.
 ## M3 — Remaining compilers + supply review (v1.1)
 
 Scope: hook compiler (scaffold + settings.json
-snippet, P9 flow) · new-skill compiler (plugin-dev delegation) · statusline
+snippet, P9 flow) · new-skill compiler (CLI-owned template — S-6 as amended 2026-07-12; plugin-dev = optional post-hoc enrichment) · statusline
 count (optional) · revisit O-3 (SessionEnd appender) and O-7 (ha-note
 unification) against a month of observed supply. (`/teach` moved to M1 —
 it's the primary capture UX, not an optional wrapper; O-4. The auto-memory
@@ -226,7 +237,8 @@ team-scale staging that would fire most of these is `06-horizon.md`.
   rate — blind adjudication 2026-07-12). Per-lesson commits keep
   attribution clean; `git revert` is not the correction mechanism (S-12).
 - **The acceptance fixture**: the three behaviors from §0, re-checked after
-  routing — B and C at the M1+M2 checkpoint, A at M3 exit (§0's staging),
+  routing — B (= B3, already proven 2026-07-14) at the M1+M2 checkpoint, the
+  C-half per the boundary decision, A at M3 exit (§0's staging),
   each against its written predicate. This is the only behavior-change
   metric v1 claims.
 - **Supply mix**: teach vs import vs (later) appender — tells us where

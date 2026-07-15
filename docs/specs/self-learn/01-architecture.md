@@ -339,7 +339,7 @@ documented install step, not an assumed one.
    --skill home-assistant`.
 2. A record lands in `plugins/home-assistant/…/.self-learn/pending/`,
    `type: behavior`, `kind: anti-pattern`, source `teach`.
-3. The worker (on the designated analysis host) writes the proposal sibling:
+3. The worker (any machine — §3.3) writes the proposal sibling:
    *destination: hook candidate (PreToolUse guard on Edit/Write to
    `.storage/*` paths) + SKILL.md rule as fallback; draft diff for both.* It
    also notes the backlog import already holds a similar GOTCHAS entry →

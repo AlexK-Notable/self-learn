@@ -68,7 +68,8 @@ The review surface is **Claude Code itself** in v1 — the "agents that
 understand the underlying systems" are Claude with the plugin-dev, hookify,
 and repo-convention skills loaded, which is both free and always current. The
 data layer is designed so a standalone graphical UI can be added later without
-migration; that timing is an explicit gated decision (`03-decisions.md`, O-1),
+migration; that timing is an explicit gated decision (`03-decisions.md`, O-1
+— since settled: surface after M2, G-3 gates),
 not a rejection of the dream.
 
 ## 3. The ten principles (each carries its evidence)
