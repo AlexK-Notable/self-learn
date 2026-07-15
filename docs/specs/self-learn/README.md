@@ -4,8 +4,8 @@
 `../archive/gen1-self-learning-harness/` — its README explains why). Status:
 **RATIFIED 2026-07-12** · **M1 SHIPPED 2026-07-13** (v1.0 core loop live —
 CLI + slash commands deployed, backlog drained; see revision log) ·
-**11-telemetry PROPOSED 2026-07-14** (pre-ratification, audit edits in
-flight). Everything here was written together, as one system, with
+**11-telemetry PROPOSED 2026-07-14** (v2 after the four-agent audit;
+awaiting user ratification). Everything here was written together, as one system, with
 the full evidence of three review rounds and the repo's own usage history baked
 in from the start — not iterated into shape.*
 
