@@ -55,6 +55,11 @@ schema):
 
 Only then present the card. A card must never show an unanalyzed record.
 
+**Fast path (M2):** a record whose proposal is fresh and schema-valid
+(`has_proposal` + `proposal_fresh` both true — usually the background
+worker's output) is presented AS-IS, one tap, no re-analysis. The inline
+analysis above is the fallback, kept forever, never the default.
+
 ## The card
 
 **Layout — the card is the `card:` map, rendered for a human.** The
@@ -116,6 +121,39 @@ individual card in this batch.
 If any route in this session printed the over-cap WARNING (managed
 section at its entry/word cap), open the next batch with a graduation
 card for that section's oldest entries (02 §4).
+
+**Merge cards (M2).** Before the per-record cards, list
+`<bucket>/proposals/merge-*.yaml`. A cluster whose members are ALL still
+pending gets ONE card (never per-member cards): show each member's
+leading card section (registry order), with the `suggested_survivor` pre-selected and overridable.
+Apply resolves the whole cluster in one verb call:
+`self-learn route <survivor-id> --collapse <cluster-id> [--dest …]` —
+all mechanics (evidence merge, sightings, losers superseded, proposal
+sweep) live in the verb. A cluster with any resolved member is
+invalidated — never show its card; the worker sweeps the file.
+
+**Contradiction edges.** If a proposal carries `contradicts:`, say so on
+the card in plain words ("this conflicts with <target>"). After a route
+the user approves, apply each edge they accept with
+`self-learn link contradicts <id> <target>` — proposed by the analyst,
+written only by the verb (11 §2.4).
+
+**"Not holding" cards (11 §2.2).** After the queue cards, read
+`self-learn report --json`: any ROUTED record with unconfirmed
+recurrence-suspect telemetry (suspects exist beyond the record's own
+`recurrences` list — match on the event `nonce` vs recorded `ref`s) gets
+one card: *"Routed <date>. Sighted <N> times since. Revise, escalate,
+tolerate, or retire?"* The resolutions map to verbs:
+- **Revise** → capture the better wording (`self-learn teach
+  --supersedes <id> …`) and route it — supersession does the retirement.
+- **Escalate** → same, routed toward the stronger surface (`--dest`).
+- **Tolerate** → `self-learn confirm-recurrence <id> --event <nonce>
+  --tolerate --note "<why the rule stays>"`.
+- **Retire** → discuss; retirement without a successor is
+  `self-learn graduate <id>` (woven into canon) or a bare supersede —
+  the user chooses, you never guess.
+A plain confirmation (recurrence is real, fix comes later) is
+`confirm-recurrence` without `--tolerate`.
 
 Read each verb's output line: it reports the commit and push state. A
 non-zero exit means the verb refused (secret scan, dirty target, unknown

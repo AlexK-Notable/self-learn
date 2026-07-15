@@ -434,3 +434,18 @@ human routes it.
   flaw found and fixed in the process (event nonce for honest dedupe),
   one docstring recovery claim falsified and corrected. Details: 08
   appendix, same date.
+- **2026-07-15 — M2 code complete (T13–T16 + 11's riders), acceptance
+  pending.** The background worker exists: capturing a lesson now opens
+  a coalescing analysis window (no scheduler — the capture itself is
+  the trigger), and a write-restricted model pass produces the review
+  cards' proposals ahead of time, so review becomes one-tap where the
+  worker got there first. Duplicate lessons collapse in one commit.
+  The "is this rule actually holding?" loop is live end-to-end at the
+  suspect level: deterministic detection → telemetry → not-holding
+  card → confirm/tolerate verbs. Deliberately NOT built: the
+  transcript fire miner (proposed as its own follow-on; the honesty
+  labels in `report` already account for it) and the SQLite index
+  (file-walk still cheap). What still gates the M2 exit: the three
+  protocol runs in 08 §7.3 — a real un-shimmed worker smoke + the
+  write-restriction refusal check, the planted-duplicate collapse
+  proof, and a timed 10-item triage.

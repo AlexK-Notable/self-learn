@@ -50,12 +50,27 @@ the paragraph):
 When I correct a mistake you made, or state a rule/preference that should change how you work beyond this task, offer once and briefly to capture it (`self-learn teach`); if declined, log it: `self-learn telemetry note offer-declined [--reason <enum>]`. Offer only for durable lessons — corrections of wrong behavior, standing preferences, gotchas that will recur — never for one-off task instructions. Several serious corrections in one session each deserve an offer.
 ```
 
-## M2 note — SessionStart hook (not yet)
+## SessionStart hook (M2) — manual registration required
 
-M1 has no worker and no hooks. When M2 lands, its SessionStart staleness
-check will need **manual registration in `~/.claude/settings.json`**
-(install.sh symlinks hook scripts but never edits settings.json — it is
-load-bearing and stays manual, per the repo's per-plugin-hooks convention).
+`hooks/self-learn-pending.sh` prints the pending line, the worker
+staleness alarm, and the escalation line into session context. It only
+formats `self-learn status --fast` output (queue semantics live in the
+CLI, never in bash) and never calls notify-send.
+
+install.sh symlinks the script into `~/.claude/hooks/`; registration in
+`~/.claude/settings.json` is **manual** (settings.json is load-bearing —
+per the repo's per-plugin-hooks convention). Add under `"hooks"`:
+
+```json
+"SessionStart": [
+  {"matcher": "",
+   "hooks": [{"type": "command",
+              "command": "$HOME/.claude/hooks/self-learn-pending.sh"}]}
+]
+```
+
+Staleness fires iff ≥1 pending record lacks a valid proposal AND
+`worker.last-run` is >3 days old or missing. Quiet queues never alarm.
 
 ## Environment
 
@@ -65,6 +80,9 @@ load-bearing and stays manual, per the repo's per-plugin-hooks convention).
 | `SELF_LEARN_ANALYST_MODEL` | `claude-sonnet-5` | model for the one-shot `teach --route` analyst |
 | `SELF_LEARN_ANALYST_TIMEOUT` | `120` | analyst timeout, seconds |
 | `SELF_LEARN_MEMORY_DIR` | `~/.claude/projects/-home-komi-repos-claude-skills/memory` | `import --memory` / `prune-memory` default dir |
+| `SELF_LEARN_WORKER_MODEL` | `claude-sonnet-5` | model for the background worker's analysis pass |
+| `SELF_LEARN_COALESCE_SECS` | `600` | worker kick coalescing window, seconds |
+| `SELF_LEARN_WORKER_AUTOKICK` | (unset) | set `0` to disable teach/import auto-kick (test suites) |
 
 ## Troubleshooting
 

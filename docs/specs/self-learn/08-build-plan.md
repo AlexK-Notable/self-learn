@@ -679,3 +679,33 @@ scope.
   between sentinel.py and claude-skills-sync with no shared source —
   both sides' suites now run, but a one-sided change is caught only by
   its own side.
+- **2026-07-15 · T13–T16 BUILT (M2 code complete; §7.3 acceptance
+  PENDING)** — worker kick/coalesce/run per every §7.1 pin (spawn lock,
+  window pidfile liveness, dirty-marker lifecycle, batch cap 15,
+  content-hash staleness, delete-on-invalid unattended output, orphan +
+  invalidated-merge sweep, mid-run re-check, last-run-only-on-success,
+  events.jsonl + pinned notification template + 24h-debounced
+  escalation); `status --fast` + SessionStart hook (formatting-only
+  bash; settings.json snippet documented in the plugin README);
+  `route --collapse` with the pinned one-commit mechanics; review.md
+  gains fast-path/merge/not-holding cards. 11's M2 riders landed:
+  deterministic recurrence-suspect detection (origin-match /
+  title-token-overlap ≥0.6 Jaccard, deduped across runs) feeding
+  `confirm-recurrence` (facts copied from the event by nonce;
+  tolerate-why in `recurrences[].note`), `confirm-held`,
+  `link contradicts`, proposal `contradicts:` (structured field).
+  Deliberate scope decisions: (1) the transcript FIRE MINER is NOT
+  built — recurrence suspects cover the "not holding" half of 11's
+  observation goals; fire observation needs a transcript-mining design
+  of its own (retention window, anchor extraction) and is proposed as
+  an M2.5/M3 follow-on rather than rushed here — `report` continues to
+  label no-observed-fires accordingly; (2) the SQLite index/FTS5
+  stays deferred until `report`'s file-walk measurably hurts (11 §5
+  sanctions the divergence); analyst-calibration metrics wait for
+  card-decided events, which have no writer until a card surface emits
+  them. Worker suite: kick races, dead-pid reopen, follow-on, argv
+  pins (no Bash/Edit), partial success, mtime-vs-content staleness,
+  digest, template verbatim, escalation debounce, 5-case staleness
+  truth table, <500ms budget. 487 tests. §7.3's protocol halves —
+  (a′) live un-shimmed smoke + refusal check, (b) planted-duplicate
+  collapse, (d) 10-item triage — remain to run before M2 exits.

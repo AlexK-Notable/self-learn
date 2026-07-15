@@ -34,6 +34,12 @@ prompt after.
 | `report [--json]` | Facts layer v1: lifecycle counts, open follow-ups, deferred aging, offer ledger (capture rate labeled as a ceiling — declined-offer logging is best-effort) |
 | `reject <id>` / `defer <id> [--until D]` / `graduate <id>` | Resolve without routing: rejected / hidden until date (default +30 d) / woven into authored canon |
 | `supersede <old> <new>` | Mark a lesson corrected by a newer one (metadata + recompile) |
+| `route <survivor> --collapse <cluster-id>` | Collapse a worker-proposed duplicate cluster in ONE commit: evidence merged, sightings summed, losers superseded by the survivor |
+| `confirm-recurrence <id> --event <nonce> [--tolerate --note …]` | A routed rule was sighted failing again: append the dated recurrence (facts copied from the telemetry event). Tolerate = the rule stays, with the why |
+| `confirm-held <id>` | A routed rule was seen working: stamp `last_confirmed` (the staleness metric is age-since-confirmation) |
+| `link contradicts <id> <target>` | First-class contradiction edge to a record id or canon anchor |
+| `worker kick` / `worker run [--coalesce]` | Background pre-analysis: teach/import kick a coalescing window (flock + pidfile; no scheduler); the run writes proposals via a write-restricted `claude -p` (no Bash/Edit), validates + stamps them, emits events + notifications |
+| `status --fast` | Pending-only frontmatter scan for the SessionStart hook (<500 ms; staleness + escalation flags) |
 | `push` | Retry unpushed resolution commits (rebase-retry, never auto-resolve) |
 | `sentinel hold\|heartbeat\|release` | Pause the repo's autosync during review batches (2 h mtime TTL) |
 | `import --backlog <skill>` \| `--memory [dir]` | One-shot ETL: GOTCHAS journal / auto-memory topic files → pending records (idempotent, origin-deduped) |
