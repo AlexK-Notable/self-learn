@@ -747,3 +747,21 @@ scope.
   defeat lock unity (single-user single-env in practice); the
   step5-filter-to-empty success case has no shim-reachable test.
   497 tests.
+- **2026-07-15 · Worker invocation syntax verified against the live CLI
+  (the §7.1 pin's own T13-start instruction) — §7.3(a′) refusal check
+  PASSED.** The pinned `--allowedTools "…Write(<path>/**)…"` form does
+  NOT work on the live CLI: path-scoped write rules are a settings-file
+  feature, and the rule FAMILY governing Write is `Edit(...)` —
+  `Write(path)` rules match nothing. Verified invocation (the property
+  is unchanged: no Bash, no Edit tool, writes only under the two
+  proposals/ globs): `--allowedTools "Read,Grep,Glob"`
+  `--disallowedTools "Bash,Edit,NotebookEdit,Task,WebFetch,WebSearch"`
+  `--settings <cache>/worker.settings.json` where the settings carry
+  `permissions.allow: ["Edit(//<home>/plugins/**/.self-learn/proposals/**)",
+  "Edit(//<home>/.self-learn/proposals/**)"]`. Live matrix, all four
+  cells: out-of-scope Write DENIED · both bucket scopes ALLOWED · Edit
+  tool invocations error while the rule family still grants Write ·
+  bare `Write(...)`/relative rules dead. The first refusal-check run
+  also proved WHY the pin demanded it: the constructed-string
+  assertion had been green over an invocation that denied every write
+  — a real worker run would have produced zero proposals forever.

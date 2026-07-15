@@ -183,17 +183,31 @@ def test_run_happy_path(env, claude_shim, monkeypatch):
 
 
 def test_run_argv_pins(env, claude_shim, monkeypatch):
+    """E-18 property (flag syntax adjusted at T13 per the pin's own
+    instruction): read-only allowedTools, Bash/Edit explicitly
+    disallowed, Write granted ONLY via the settings file's two
+    proposals-scoped rules."""
     rid = seed_pending(env)
     monkeypatch.setenv("CLAUDE_SHIM_SCRIPT", shim_writes(env, rid))
     worker.run(env.home)
     argv = claude_shim["log"].read_text(encoding="utf-8").split("\0")[:-1]
     allowed = argv[argv.index("--allowedTools") + 1]
-    assert allowed == worker.allowed_tools(env.home)
-    assert allowed.startswith("Read,Grep,Glob,Write(")
-    assert "Bash" not in allowed  # E-18: the flag IS the guarantee
-    assert f"Write({env.home}/plugins/**/.self-learn/proposals/**)" in allowed
-    assert f"Write({env.home}/.self-learn/proposals/**)" in allowed
-    assert "Edit" not in allowed
+    assert allowed == "Read,Grep,Glob"
+    assert "Write" not in allowed and "Bash" not in allowed
+    disallowed = argv[argv.index("--disallowedTools") + 1]
+    assert "Bash" in disallowed and "Edit" in disallowed
+    settings_path = argv[argv.index("--settings") + 1]
+    rules = json.loads(Path(settings_path).read_text(encoding="utf-8"))[
+        "permissions"
+    ]["allow"]
+    # live-verified rule family: Edit(...) governs Write; Write(...) rules
+    # match nothing on the live CLI (T13-start check, 2026-07-15)
+    assert rules == [
+        f"Edit(/{env.home}/plugins/**/.self-learn/proposals/**)",
+        f"Edit(/{env.home}/.self-learn/proposals/**)",
+    ]
+    for rule in rules:  # // prefix = filesystem-absolute in rule syntax
+        assert rule.startswith("Edit(//")
     assert argv[argv.index("--model") + 1] == "claude-sonnet-5"
     prompt = argv[argv.index("-p") + 1]
     assert "About to edit .storage while HA is running." in prompt  # record body

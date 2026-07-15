@@ -65,15 +65,18 @@ from .normalize import sha_anchor
 from .records import Record, RecordError
 
 __all__ = [
+    "ALLOWED_TOOLS",
     "DEFAULT_COALESCE_SECS",
     "DEFAULT_WORKER_MODEL",
+    "DISALLOWED_TOOLS",
     "RunResult",
-    "allowed_tools",
     "batch_cap",
     "build_argv",
     "cache_dir",
     "kick",
     "run",
+    "write_permission_rules",
+    "write_settings_file",
 ]
 
 DEFAULT_COALESCE_SECS = 600
@@ -161,18 +164,47 @@ def batch_cap() -> int:
     return BATCH_CAP
 
 
-def allowed_tools(home: Path) -> str:
-    """The pinned --allowedTools value — the append-only guarantee IS this
-    flag (E-18): no Bash, no Edit, ever."""
+#: Read-only tool grant — Write is deliberately ABSENT here: path-scoped
+#: Write rules ride the settings file (write_permission_rules); the live
+#: CLI's --allowedTools cannot express path scopes (verified at T13 per
+#: the pin's own instruction: the flag syntax was adjusted, the PROPERTY
+#: is unchanged — no Bash, no Edit, Write only under proposals/).
+ALLOWED_TOOLS = "Read,Grep,Glob"
+DISALLOWED_TOOLS = "Bash,Edit,NotebookEdit,Task,WebFetch,WebSearch"
+
+
+def write_permission_rules(home: Path) -> list[str]:
+    """The two pinned Write scopes, in settings-file rule syntax —
+    verified against the LIVE CLI (T13-start check, 2026-07-15):
+    file-write scoping rides the ``Edit(...)`` rule FAMILY (it governs
+    Write too); ``Write(path)`` rules match nothing. `//` = filesystem-
+    absolute, gitignore ** semantics. The Edit TOOL itself stays in
+    DISALLOWED_TOOLS — live-verified that the tool disable and the rule
+    family coexist: Write lands inside the scope, Edit invocations
+    error, everything outside the scope is denied."""
     home = Path(home)
-    return (
-        "Read,Grep,Glob,"
-        f"Write({home}/plugins/**/.self-learn/proposals/**),"
-        f"Write({home}/.self-learn/proposals/**)"
+    return [
+        f"Edit(/{home}/plugins/**/.self-learn/proposals/**)",
+        f"Edit(/{home}/.self-learn/proposals/**)",
+    ]
+
+
+def write_settings_file(home: Path) -> Path:
+    """Per-run settings file carrying the Write scope (E-18: this file +
+    DISALLOWED_TOOLS IS the append-only guarantee)."""
+    path = _p("worker.settings.json")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {"permissions": {"allow": write_permission_rules(home)}},
+            indent=2,
+        ),
+        encoding="utf-8",
     )
+    return path
 
 
-def build_argv(home: Path, prompt: str) -> list[str]:
+def build_argv(home: Path, prompt: str, settings_path: Path) -> list[str]:
     return [
         "claude",
         "-p",
@@ -180,7 +212,11 @@ def build_argv(home: Path, prompt: str) -> list[str]:
         "--model",
         worker_model(),
         "--allowedTools",
-        allowed_tools(home),
+        ALLOWED_TOOLS,
+        "--disallowedTools",
+        DISALLOWED_TOOLS,
+        "--settings",
+        str(settings_path),
     ]
 
 
@@ -900,7 +936,7 @@ def run(home: Path | str, *, coalesce: bool = False) -> RunResult:
             else:
                 prompt = _compose_prompt(home, batch)
                 snap = _proposal_snapshot(home)
-                argv = build_argv(home, prompt)
+                argv = build_argv(home, prompt, write_settings_file(home))
                 try:
                     proc = subprocess.run(
                         argv,
