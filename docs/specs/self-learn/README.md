@@ -2,8 +2,10 @@
 
 *Single-authored 2026-07-12, replacing the gen-1 harness spec (archived at
 `../archive/gen1-self-learning-harness/` — its README explains why). Status:
-**RATIFIED 2026-07-12** (revision log) — M1 build is next; no code exists
-yet. Everything here was written together, as one system, with
+**RATIFIED 2026-07-12** · **M1 SHIPPED 2026-07-13** (v1.0 core loop live —
+CLI + slash commands deployed, backlog drained; see revision log) ·
+**11-telemetry PROPOSED 2026-07-14** (pre-ratification, audit edits in
+flight). Everything here was written together, as one system, with
 the full evidence of three review rounds and the repo's own usage history baked
 in from the start — not iterated into shape.*
 
@@ -33,7 +35,7 @@ human routes it.
 | `10-surface-build-plan.md` | **Execution authority for the G-3 build** (gated on G-3's trigger): surface-local pins + verify-at-build ledger, acceptance fixtures incl. live trials, task DAG U1–U11, judgment routing, playbooks — 09 wins on conflict; shared pins stay owned by 08 |
 | `11-telemetry-and-lifecycle.md` | **PROPOSED (2026-07-14)** — the life of a lesson after routing: follow-ups, recurrence tracking (suspect→confirm), certainty-as-measured-events, the three-plane data model (record frontmatter / actor-scoped telemetry JSONL / disposable index+report), and the standing multi-machine posture principles |
 | `research/` | External evidence memos (SOTA surveys etc.) — shareable with blind reviewers, unlike `reviews/` |
-| `fixtures/` | Will hold the fixture harness generators + trial logs (`trials.md`, `ui-trials.md`) once the builds run — empty until Phase 0 executes (no code exists yet) |
+| `fixtures/` | `gen-fixture-b` + `trials.md` (Phase 0 rounds 1–3: six candidates disqualified, B3 qualified + proven 3/3 post-routing — the system's primary behavioral evidence); `ui-trials.md` lands with the G-3 build |
 
 ## Ground rules for changing this corpus
 
