@@ -28,15 +28,23 @@ import sys
 from datetime import date
 from pathlib import Path
 
-from . import selfcheck, sentinel, verbs
+from . import report as report_mod
+from . import selfcheck, sentinel, telemetry, verbs
 from .chezmoi import ChezmoiAbort, ChezmoiError
 from .compilers import CompileError
 from .import_backlog import import_backlog
 from .import_common import ImporterError
 from .import_memory import import_memory, prune_memory
 from .ledger import discover_buckets, resolve_home
-from .ledger_ops import LedgerOpsError, list_items, status_infos, unparseable_pending
+from .ledger_ops import (
+    LedgerOpsError,
+    list_items,
+    open_followups,
+    status_infos,
+    unparseable_pending,
+)
 from .teach import add_teach_parser, run_teach
+from .telemetry import DECLINE_REASONS
 
 EXIT_OK = 0
 # 64 = sysexits EX_USAGE — deliberately NOT 2, which P2-8 pins as the
@@ -101,6 +109,24 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="TARGET",
         help="override the proposal: skill-md | claude-md | reference[:<file>]",
     )
+    route.add_argument(
+        "--follow-up",
+        dest="follow_up",
+        metavar="ACTION",
+        help="known-partial coverage (11 §2.1): the planned upgrade, on the routing block",
+    )
+    route.add_argument(
+        "--unblocks-on",
+        dest="unblocks_on",
+        metavar="GATE",
+        help="with --follow-up: human-readable gate label (e.g. M3)",
+    )
+    route.add_argument(
+        "--follow-up-note",
+        dest="follow_up_note",
+        metavar="TEXT",
+        help="with --follow-up: why the strong form matters",
+    )
 
     reject = _verb("reject", "reject a pending record")
     reject.add_argument("id", metavar="ID")
@@ -115,6 +141,48 @@ def _build_parser() -> argparse.ArgumentParser:
     supersede = _verb("supersede", "mark OLD superseded by NEW (metadata only)")
     supersede.add_argument("old_id", metavar="OLD_ID")
     supersede.add_argument("new_id", metavar="NEW_ID")
+
+    followup = sub.add_parser(
+        "followup", help="follow-up lifecycle on routed records (11 §2.1)"
+    )
+    followup_sub = followup.add_subparsers(dest="followup_command", metavar="<verb>")
+    fdone = followup_sub.add_parser(
+        "done", help="clear an open follow-up into a dated follow_up_done block"
+    )
+    fdone.add_argument("id", metavar="ID")
+    fdone.add_argument("--note", metavar="TEXT", help="done note → record + commit body")
+    fdone.add_argument(
+        "--no-push",
+        action="store_true",
+        dest="no_push",
+        help="commit exactly as pinned, skip only the push",
+    )
+
+    telemetry_p = sub.add_parser(
+        "telemetry", help="observation plane (11 §4): note (spool) | flush"
+    )
+    telemetry_sub = telemetry_p.add_subparsers(
+        dest="telemetry_command", metavar="<verb>"
+    )
+    tnote = telemetry_sub.add_parser(
+        "note",
+        help="spool one offer-ledger event (cache-only — no repo write, no commit)",
+    )
+    tnote.add_argument(
+        "kind", metavar="KIND", help="offer-made | offer-declined (model-emitted kinds)"
+    )
+    tnote.add_argument(
+        "--reason",
+        metavar="WHY",
+        help=f"offer-declined only; closed enum: {' | '.join(DECLINE_REASONS)}",
+    )
+    telemetry_sub.add_parser(
+        "flush", help="spool → tracked telemetry files (scan-at-flush; no commit)"
+    )
+
+    sub.add_parser(
+        "report", help="facts layer v1 (11 §5): lifecycle + telemetry counts"
+    ).add_argument("--json", action="store_true", dest="as_json")
 
     sub.add_parser("push", help="publish pending local commits (pinned retry)")
 
@@ -174,11 +242,15 @@ def _cmd_status(as_json: bool) -> int:
     _warn_unparseable(home)
     infos = status_infos(home)
     total_pending = sum(i["pending"] for i in infos)
+    # 11 §2.1: one line on the FULL status paths only — the future
+    # `--json --fast` path stays a pending/-only scan (08 §7.1).
+    followups = len(open_followups(home))
 
     if as_json:
         payload = {
             "buckets": infos,
             "total_pending": total_pending,
+            "open_followups": followups,
             "worker_last_run": None,
         }
         print(json.dumps(payload))
@@ -195,6 +267,11 @@ def _cmd_status(as_json: bool) -> int:
         print(
             f"  {i['bucket']} ({i['scope']}): {i['pending']} pending, "
             f"{i['unanalyzed']} unanalyzed{age}"
+        )
+    if followups:
+        plural = "s" if followups != 1 else ""
+        print(
+            f"  {followups} open follow-up{plural} (`self-learn report` lists them)"
         )
     return EXIT_OK
 
@@ -265,12 +342,27 @@ def _cmd_verb(args: argparse.Namespace) -> int:
     home = resolve_home()
     try:
         if args.command == "route":
+            follow_up = None
+            if args.follow_up is not None:
+                follow_up = {"action": args.follow_up}
+                if args.unblocks_on is not None:
+                    follow_up["unblocks_on"] = args.unblocks_on
+                if args.follow_up_note is not None:
+                    follow_up["note"] = args.follow_up_note
+            elif args.unblocks_on is not None or args.follow_up_note is not None:
+                print(
+                    "self-learn route: --unblocks-on/--follow-up-note need "
+                    "--follow-up",
+                    file=sys.stderr,
+                )
+                return EXIT_USAGE
             result = verbs.route(
                 home,
                 args.id,
                 dest=args.dest,
                 note=args.note,
                 no_push=args.no_push,
+                follow_up=follow_up,
             )
             return _finish_verb(result, _routed_destination(result))
         if args.command == "reject":
@@ -372,6 +464,8 @@ def _cmd_import(args: argparse.Namespace) -> int:
     except LedgerOpsError as exc:  # unknown skill bucket
         print(f"self-learn import: {exc}", file=sys.stderr)
         return EXIT_USAGE
+    for rid in report.created:  # code-emitted capture events (11 §4.3)
+        telemetry.spool_quiet("capture", source=report.source, record=rid)
     print(report.summary())
     return EXIT_OK
 
@@ -382,6 +476,79 @@ def _cmd_prune_memory(args: argparse.Namespace) -> int:
     report = prune_memory(home, memory_dir, dry_run=args.dry_run)
     print(report.summary())
     return EXIT_OK
+
+
+def _cmd_followup(args: argparse.Namespace) -> int:
+    if args.followup_command != "done":
+        print("usage: self-learn followup done <id> [--note TEXT]", file=sys.stderr)
+        return EXIT_USAGE
+    try:
+        result = verbs.followup_done(
+            resolve_home(), args.id, note=args.note, no_push=args.no_push
+        )
+    except verbs.VerbError as exc:
+        print(f"self-learn followup done: {exc}", file=sys.stderr)
+        return exc.exit_code
+    except LedgerOpsError as exc:
+        print(f"self-learn followup done: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    return _finish_verb(result, "follow-up done")
+
+
+def _cmd_telemetry(args: argparse.Namespace) -> int:
+    if args.telemetry_command == "note":
+        if args.kind not in telemetry.NOTE_KINDS:
+            print(
+                f"self-learn telemetry note: kind must be one of "
+                f"{sorted(telemetry.NOTE_KINDS)} — every other kind is "
+                "code-emitted inside CLI paths (11 §4.3)",
+                file=sys.stderr,
+            )
+            return EXIT_USAGE
+        try:
+            path = telemetry.spool_event(args.kind, reason=args.reason)
+        except telemetry.TelemetryError as exc:
+            print(f"self-learn telemetry note: {exc}", file=sys.stderr)
+            return EXIT_USAGE
+        print(f"noted {args.kind} → {path} (spool; flushes with the next verb)")
+        return EXIT_OK
+    if args.telemetry_command == "flush":
+        try:
+            flush_report = telemetry.flush(resolve_home())
+        except telemetry.ScanRefusal as exc:
+            print(f"self-learn telemetry flush: {exc}", file=sys.stderr)
+            return exc.exit_code
+        print(flush_report.summary())
+        return EXIT_OK
+    print(
+        "usage: self-learn telemetry note <kind> [--reason WHY] | telemetry flush",
+        file=sys.stderr,
+    )
+    return EXIT_USAGE
+
+
+def _cmd_report(as_json: bool) -> int:
+    home = resolve_home()
+    # report is a flushing verb (11 §4.2) — its numbers include the spool.
+    _flush_spool_best_effort(home)
+    facts = report_mod.gather(home)
+    print(report_mod.render_json(facts) if as_json else report_mod.render_text(facts))
+    return EXIT_OK
+
+
+def _flush_spool_best_effort(home=None) -> None:
+    """11 §4.2: teach/import/resolution verbs flush the spool after their
+    own work. Best-effort — a flush problem is loud but never changes the
+    verb's outcome; a scan hit leaves the spool intact."""
+    try:
+        flush_report = telemetry.flush(home if home is not None else resolve_home())
+    except telemetry.ScanRefusal as exc:
+        print(f"self-learn: telemetry flush refused: {exc}", file=sys.stderr)
+    except OSError as exc:
+        print(f"self-learn: telemetry flush failed: {exc}", file=sys.stderr)
+    else:
+        if flush_report.events:
+            print(flush_report.summary(), file=sys.stderr)
 
 
 def _cmd_proposal(args: argparse.Namespace) -> int:
@@ -427,15 +594,30 @@ def main(argv: list[str] | None = None) -> int:
             as_json=args.as_json, include_deferred=args.include_deferred
         )
 
-    if args.command in ("teach", "import", "prune-memory", "proposal"):
+    if args.command in ("teach", "import", "prune-memory", "proposal", "telemetry", "report"):
         sentinel.heartbeat()  # 08 §1: every mutating invocation touches a
         # live sentinel; heartbeat never resurrects a stale one.
 
     if args.command == "teach":
-        return run_teach(args)
+        code = run_teach(args)
+        _flush_spool_best_effort()  # teach is a flushing verb (11 §4.2)
+        return code
 
     if args.command in VERB_COMMANDS:
-        return _cmd_verb(args)
+        code = _cmd_verb(args)
+        _flush_spool_best_effort()  # every resolution verb flushes (11 §4.2)
+        return code
+
+    if args.command == "followup":
+        code = _cmd_followup(args)
+        _flush_spool_best_effort()
+        return code
+
+    if args.command == "telemetry":
+        return _cmd_telemetry(args)
+
+    if args.command == "report":
+        return _cmd_report(as_json=args.as_json)
 
     if args.command == "push":
         return _cmd_push()
@@ -444,7 +626,9 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_sentinel(args.action)
 
     if args.command == "import":
-        return _cmd_import(args)
+        code = _cmd_import(args)
+        _flush_spool_best_effort()  # import is a flushing verb (11 §4.2)
+        return code
 
     if args.command == "prune-memory":
         return _cmd_prune_memory(args)

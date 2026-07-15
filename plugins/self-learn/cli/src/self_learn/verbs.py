@@ -65,7 +65,7 @@ from .ledger_ops import (
     supersede_record,
     validate_proposal,
 )
-from .records import Record, RecordError
+from .records import Record, RecordError, _validate_follow_up
 from .scan import format_refusal
 from .scan import scan as secret_scan
 
@@ -78,6 +78,7 @@ __all__ = [
     "VerbError",
     "VerbResult",
     "defer",
+    "followup_done",
     "graduate",
     "push_pending",
     "reject",
@@ -376,13 +377,20 @@ def route(
     no_push: bool = False,
     user_claude_md: Path | str | None = None,
     chezmoi_bin: str = "chezmoi",
+    follow_up: dict | None = None,
 ) -> VerbResult:
     """Route a pending record into canon. See the module docstring for the
     pinned sequence; commit message ``self-learn: route lrn-… → <target>``
     (+ `` (supersedes lrn-…)`` when the record completes a
     ``teach --supersedes`` capture — old record superseded in the SAME
-    commit)."""
+    commit). ``follow_up`` (11 §2.1: {action, unblocks_on?, note?}) rides
+    the routing block — known-partial coverage, status stays terminal."""
     home = Path(home)
+    if follow_up is not None:
+        try:
+            _validate_follow_up(follow_up)
+        except RecordError as exc:
+            raise VerbError(str(exc)) from exc
     path = find_record_path(home, record_id, statuses=("pending",))
 
     # (a) scan the record file BEFORE trusting its contents.
@@ -409,11 +417,18 @@ def route(
         routed_at = _now_iso()
 
         # In-memory routed copy: the compile input for the record being
-        # routed (its file is only rewritten at the ledger op below).
+        # routed (its file is only rewritten at the ledger op below). The
+        # follow_up rides here too, so a malformed one fails BEFORE the
+        # compile step, never between compile and ledger op.
+        shadow_routing = {
+            "routed_at": routed_at,
+            "destination": destination,
+            "by": "human",
+        }
+        if follow_up is not None:
+            shadow_routing["follow_up"] = dict(follow_up)
         shadow = Record.from_path(path)
-        shadow.set_routing(
-            {"routed_at": routed_at, "destination": destination, "by": "human"}
-        )
+        shadow.set_routing(shadow_routing)
         shadow.set_status("routed")
 
         exclude = {record_id} | ({old_id} if old_id else set())
@@ -438,6 +453,7 @@ def route(
             destination=destination,
             routed_at=routed_at,
             note=note,
+            follow_up=follow_up,
         )
         if old_id is not None:
             # teach --supersedes completion-at-route: SAME commit (08 §1
@@ -710,6 +726,49 @@ def supersede(
         return VerbResult(
             action="supersede",
             record_id=old_id,
+            commit_message=message,
+            commit_sha=sha,
+            staged=staged,
+            push=push,
+            sentinel_owned=hold.owned,
+        )
+    finally:
+        hold.release()
+
+
+def followup_done(
+    home: Path | str,
+    record_id: str,
+    *,
+    note: str | None = None,
+    no_push: bool = False,
+) -> VerbResult:
+    """Clear a routed record's open follow-up (11 §2.5): move
+    ``routing.follow_up`` to a dated ``follow_up_done`` block. Standard
+    resolution-verb sequence; commit ``self-learn: follow-up done on
+    lrn-…``; the note lands in ``follow_up_done.done_note`` + the commit
+    body — ``resolution_note`` stays write-once and untouched (02 §2)."""
+    home = Path(home)
+    path = find_record_path(home, record_id)
+    _scan_or_refuse([path], note)
+    record = Record.from_path(path)
+    if record.follow_up is None:
+        raise VerbError(
+            f"record {record_id} has no open follow-up — nothing to clear"
+        )
+    hold = sentinel.hold()
+    sentinel.heartbeat()
+    try:
+        try:
+            record.complete_follow_up(done_note=note)
+        except RecordError as exc:
+            raise VerbError(str(exc)) from exc
+        record.write(path)
+        message = f"self-learn: follow-up done on {record_id}"
+        staged, sha, push = _commit_and_push(home, [path], message, note, no_push)
+        return VerbResult(
+            action="followup-done",
+            record_id=record_id,
             commit_message=message,
             commit_sha=sha,
             staged=staged,

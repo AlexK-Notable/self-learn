@@ -25,7 +25,12 @@ def test_status_zero_state_json_exact_shape(sandbox_home, capsys):
     rc = cli.main(["status", "--json"])
     assert rc == 0
     payload = json.loads(capsys.readouterr().out)
-    assert payload == {"buckets": [], "total_pending": 0, "worker_last_run": None}
+    assert payload == {
+        "buckets": [],
+        "total_pending": 0,
+        "open_followups": 0,
+        "worker_last_run": None,
+    }
 
 
 def test_status_counts_seeded_pending_record(sandbox_home, capsys):

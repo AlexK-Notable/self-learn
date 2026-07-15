@@ -39,4 +39,9 @@ def test_wrapper_runs_through_symlink(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
-    assert payload == {"buckets": [], "total_pending": 0, "worker_last_run": None}
+    assert payload == {
+        "buckets": [],
+        "total_pending": 0,
+        "open_followups": 0,
+        "worker_last_run": None,
+    }

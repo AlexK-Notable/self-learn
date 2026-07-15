@@ -33,6 +33,7 @@ import fcntl
 import json
 import os
 import socket
+import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -53,6 +54,7 @@ __all__ = [
     "read_events",
     "spool_dir",
     "spool_event",
+    "spool_quiet",
     "telemetry_dir",
 ]
 
@@ -170,6 +172,17 @@ def spool_event(kind: str, *, now: datetime | None = None, **payload) -> Path:
         finally:
             fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
     return path
+
+
+def spool_quiet(kind: str, **payload) -> Path | None:
+    """Best-effort :func:`spool_event` for code-emitted events inside verb
+    flows (capture, surface-budget): telemetry must never break the verb —
+    a spool failure is a loud stderr warning, nothing more."""
+    try:
+        return spool_event(kind, **payload)
+    except (TelemetryError, OSError) as exc:
+        print(f"self-learn: telemetry spool failed: {exc}", file=sys.stderr)
+        return None
 
 
 @dataclass

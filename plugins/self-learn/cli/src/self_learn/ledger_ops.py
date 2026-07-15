@@ -414,6 +414,7 @@ def resolve_record(
     routed_at: str | None = None,
     superseded_by: str | None = None,
     note: str | None = None,
+    follow_up: dict | None = None,
 ) -> list[Path]:
     """File-op half of a resolution: update frontmatter via T2's mutation
     API, ``git mv`` pending→resolved (fs move when untracked), and remove
@@ -434,16 +435,21 @@ def resolve_record(
             "supersession needs superseded_by (<record-id> or 'canon')"
         )
 
+    if follow_up is not None and new_status != "routed":
+        raise LedgerOpsError(
+            "a follow-up rides the routing block (11 §2.1) — routed only"
+        )
     path = find_record_path(home, record_id)
     record = Record.from_path(path)
     if new_status == "routed":
-        record.set_routing(
-            {
-                "routed_at": routed_at if routed_at is not None else _now_iso(),
-                "destination": destination,
-                "by": by,
-            }
-        )
+        routing = {
+            "routed_at": routed_at if routed_at is not None else _now_iso(),
+            "destination": destination,
+            "by": by,
+        }
+        if follow_up is not None:
+            routing["follow_up"] = dict(follow_up)
+        record.set_routing(routing)
     if superseded_by is not None:
         record.set_superseded_by(superseded_by)
     record.set_status(new_status)
@@ -477,6 +483,37 @@ def supersede_record(
     return resolve_record(
         home, old_id, "superseded", superseded_by=superseded_by, note=note
     )
+
+
+def open_followups(home: Path) -> list[dict]:
+    """Every OPEN follow-up (11 §2.1): resolved records whose routing block
+    still carries ``follow_up``. Walks ``resolved/`` only — follow-ups ride
+    routing, so pending records can never have one. NOT part of
+    ``status --json --fast`` (that path is pinned pending/-only, 08 §7.1)."""
+    out: list[dict] = []
+    for bucket in discover_buckets(home):
+        resolved = bucket.path / "resolved"
+        if not resolved.is_dir():
+            continue
+        for path in sorted(resolved.glob("lrn-*.md")):
+            try:
+                record = Record.from_path(path)
+            except RecordError:
+                continue
+            fu = record.follow_up
+            if fu is None:
+                continue
+            out.append(
+                {
+                    "id": record.id,
+                    "bucket": bucket.name,
+                    "action": fu.get("action"),
+                    "unblocks_on": fu.get("unblocks_on"),
+                    "note": fu.get("note"),
+                    "routed_at": _ts_str((record.routing or {}).get("routed_at")),
+                }
+            )
+    return out
 
 
 def defer_record(home: Path, record_id: str, until=None) -> list[Path]:

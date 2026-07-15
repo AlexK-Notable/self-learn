@@ -66,12 +66,12 @@ import re
 import sys
 from datetime import datetime, timezone
 
-from . import analyst, verbs
+from . import analyst, telemetry, verbs
 from .chezmoi import ChezmoiAbort, ChezmoiError
 from .compilers import CompileError
 from .ledger import resolve_home
 from .ledger_ops import LedgerOpsError, create_record, record_title
-from .records import KINDS, RECORD_ID_RE, Record, RecordError
+from .records import GENERALITIES, KINDS, RECORD_ID_RE, Record, RecordError
 from .scan import format_refusal, redact, scan
 
 __all__ = ["add_teach_parser", "infer_type", "run_teach"]
@@ -140,6 +140,38 @@ def add_teach_parser(sub) -> argparse.ArgumentParser:
         "--supersedes",
         metavar="LRN_ID",
         help="record the corrective-supersession link on the new record",
+    )
+    # 11 §3 capture-time grounding — optional-but-offered; cheap while the
+    # wound is fresh, unreconstructable later. Bare-CLI teach never prompts.
+    p.add_argument(
+        "--verified",
+        action="store_true",
+        help="the lesson was verified at capture (repro'd, tested)",
+    )
+    p.add_argument(
+        "--verified-how",
+        dest="verified_how",
+        metavar="TEXT",
+        help="with --verified: how it was verified",
+    )
+    p.add_argument(
+        "--incident-cost",
+        dest="incident_cost",
+        metavar="TEXT",
+        help="what the incident cost, in human terms ('an evening')",
+    )
+    p.add_argument(
+        "--generality",
+        choices=tuple(sorted(GENERALITIES)),
+        help="environment quirk or general practice? (the strongest known "
+        "predictor of behavioral value)",
+    )
+    p.add_argument(
+        "--env",
+        action="append",
+        metavar="COMPONENT=VERSION",
+        help="version present at capture (repeatable; user entries win "
+        "over ambient hints)",
     )
     p.add_argument(
         "--redact",
@@ -315,6 +347,40 @@ def run_teach(args: argparse.Namespace) -> int:
     except RecordError as exc:
         return _fail(str(exc))
 
+    # ---- 11 §3 capture-time grounding (optional-but-offered)
+    if args.verified_how and not args.verified:
+        return _fail("--verified-how needs --verified")
+    try:
+        if args.verified:
+            record.set_verified(True, how=_clean(args.verified_how))
+        if args.incident_cost is not None:
+            record.set_incident_cost(_clean(args.incident_cost))
+        if args.generality is not None:
+            record.set_generality(args.generality)
+        if args.env:
+            env: dict = {}
+            for item in args.env:
+                key, sep, value = item.partition("=")
+                if not sep or not key.strip() or not value.strip():
+                    return _fail(f"--env needs COMPONENT=VERSION, got {item!r}")
+                env[key.strip()] = value.strip()
+            record.set_env(env)
+    except RecordError as exc:
+        return _fail(str(exc))
+
+    # Free-text metadata is published in the record file: scan it like the
+    # body. No redact path here — a hit refuses outright (short user-typed
+    # phrases; retype them clean).
+    meta_hits = [
+        h
+        for text in (args.verified_how, args.incident_cost)
+        if text
+        for h in scan(text)
+    ]
+    if meta_hits:
+        print(format_refusal(meta_hits), file=sys.stderr)
+        return EXIT_SCAN
+
     # ---- scan-then-write (02 §2: full body + evidence quotes, before disk)
     body_hits = scan(record.body)
     quote_hits = scan(quote) if quote else []
@@ -344,6 +410,12 @@ def run_teach(args: argparse.Namespace) -> int:
         path = create_record(resolve_home(), record)
     except LedgerOpsError as exc:
         return _fail(str(exc))
+
+    # Code-emitted capture event (11 §4.3) — the accepted-offer half of the
+    # denominator; the declined half is `telemetry note offer-declined`.
+    telemetry.spool_quiet(
+        "capture", source="teach", scope=record.scope, record=record.id
+    )
 
     if args.supersedes is not None:
         print(
@@ -424,6 +496,10 @@ def _route_now(args: argparse.Namespace, record: Record) -> int:
             f"route failed ({exc})",
             "fix the cause, then `self-learn route <id>`",
         )
+
+    telemetry.spool_quiet(
+        "capture", source="teach", scope=record.scope, record=record.id
+    )
 
     # The applied diff — printed, never prompted on (invocation = approval).
     if result.diff:

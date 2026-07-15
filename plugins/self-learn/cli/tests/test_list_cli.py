@@ -188,6 +188,7 @@ def test_status_json_pinned_shape_with_unanalyzed(home, capsys):
             },
         ],
         "total_pending": 3,
+        "open_followups": 0,
         "worker_last_run": None,
     }
 
