@@ -319,6 +319,20 @@ def validate_proposal(data: dict) -> None:
     sha = data.get("record_sha")
     if sha is not None and not (isinstance(sha, str) and SHA_ANCHOR_RE.match(sha)):
         raise ProposalError(f"record_sha must match sha256:<12 hex>, got {sha!r}")
+    contradicts = data.get("contradicts")
+    if contradicts is not None:
+        # 11 §2.4/§8: structured field, never parsed out of rationale prose
+        # (the already_canon precedent). Targets: record ids or canon
+        # anchors; the human applies them via `link contradicts`.
+        if (
+            not isinstance(contradicts, list)
+            or not contradicts
+            or any(not isinstance(t, str) or not t.strip() for t in contradicts)
+        ):
+            raise ProposalError(
+                "contradicts must be a non-empty list of record ids / "
+                "canon anchors (11 §2.4)"
+            )
     _validate_card(data)
 
 

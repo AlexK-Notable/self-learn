@@ -120,6 +120,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="override the proposal: skill-md | claude-md | reference[:<file>]",
     )
     route.add_argument(
+        "--collapse",
+        metavar="CLUSTER_ID",
+        help="collapse a merge cluster into this survivor (one commit; "
+        "losers superseded — 08 §7.1 Merge-proposals pin)",
+    )
+    route.add_argument(
         "--follow-up",
         dest="follow_up",
         metavar="ACTION",
@@ -151,6 +157,39 @@ def _build_parser() -> argparse.ArgumentParser:
     supersede = _verb("supersede", "mark OLD superseded by NEW (metadata only)")
     supersede.add_argument("old_id", metavar="OLD_ID")
     supersede.add_argument("new_id", metavar="NEW_ID")
+
+    cr = _verb(
+        "confirm-recurrence",
+        "confirm a recurrence suspect onto a routed record (11 §2.2)",
+    )
+    cr.add_argument("id", metavar="ID")
+    cr.add_argument(
+        "--event",
+        required=True,
+        metavar="NONCE",
+        help="the recurrence-suspect telemetry event's nonce (see report)",
+    )
+    cr.add_argument(
+        "--tolerate",
+        action="store_true",
+        help="the rule stays despite the recurrence (needs --note: the why)",
+    )
+
+    ch = _verb("confirm-held", "record that a routed rule was seen working")
+    ch.add_argument("id", metavar="ID")
+
+    link = sub.add_parser("link", help="record graph edges (11 §2.4)")
+    link_sub = link.add_subparsers(dest="link_command", metavar="<edge>")
+    lc = link_sub.add_parser(
+        "contradicts", help="mark ID as contradicting TARGET (id or canon anchor)"
+    )
+    lc.add_argument("id", metavar="ID")
+    lc.add_argument("target", metavar="TARGET")
+    lc.add_argument("--note", metavar="TEXT", help="why → commit body")
+    lc.add_argument(
+        "--no-push", action="store_true", dest="no_push",
+        help="commit exactly as pinned, skip only the push",
+    )
 
     followup = sub.add_parser(
         "followup", help="follow-up lifecycle on routed records (11 §2.1)"
@@ -313,7 +352,8 @@ def _cmd_status(as_json: bool) -> int:
             "buckets": infos,
             "total_pending": total_pending,
             "open_followups": followups,
-            "worker_last_run": None,
+            # 08 §7.1 amendment: iso8601 | null (null = never ran here)
+            "worker_last_run": worker.last_run_iso(),
         }
         print(json.dumps(payload))
         return EXIT_OK
@@ -427,6 +467,7 @@ def _cmd_verb(args: argparse.Namespace) -> int:
                 note=args.note,
                 no_push=args.no_push,
                 follow_up=follow_up,
+                collapse=args.collapse,
             )
             return _finish_verb(result, _routed_destination(result))
         if args.command == "reject":
@@ -464,6 +505,21 @@ def _cmd_verb(args: argparse.Namespace) -> int:
                 no_push=args.no_push,
             )
             return _finish_verb(result, args.new_id)
+        if args.command == "confirm-recurrence":
+            result = verbs.confirm_recurrence(
+                home,
+                args.id,
+                event_ref=args.event,
+                tolerate=args.tolerate,
+                note=args.note,
+                no_push=args.no_push,
+            )
+            return _finish_verb(result, "recurrence confirmed")
+        if args.command == "confirm-held":
+            result = verbs.confirm_held(
+                home, args.id, note=args.note, no_push=args.no_push
+            )
+            return _finish_verb(result, "confirmed holding")
     except verbs.VerbError as exc:  # incl. SecretRefusal, DestinationNotBuilt
         print(f"self-learn {args.command}: {exc}", file=sys.stderr)
         return exc.exit_code
@@ -634,7 +690,38 @@ def _cmd_proposal(args: argparse.Namespace) -> int:
         return EXIT_USAGE
 
 
-VERB_COMMANDS = frozenset({"route", "reject", "defer", "graduate", "supersede"})
+VERB_COMMANDS = frozenset(
+    {
+        "route",
+        "reject",
+        "defer",
+        "graduate",
+        "supersede",
+        "confirm-recurrence",
+        "confirm-held",
+    }
+)
+
+
+def _cmd_link(args: argparse.Namespace) -> int:
+    if args.link_command != "contradicts":
+        print("usage: self-learn link contradicts <id> <target>", file=sys.stderr)
+        return EXIT_USAGE
+    try:
+        result = verbs.link_contradicts(
+            resolve_home(),
+            args.id,
+            args.target,
+            note=args.note,
+            no_push=args.no_push,
+        )
+    except verbs.VerbError as exc:
+        print(f"self-learn link contradicts: {exc}", file=sys.stderr)
+        return exc.exit_code
+    except LedgerOpsError as exc:
+        print(f"self-learn link contradicts: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    return _finish_verb(result, f"contradicts {args.target}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -691,6 +778,11 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "followup":
         code = _cmd_followup(args)
+        _flush_spool_best_effort()
+        return code
+
+    if args.command == "link":
+        code = _cmd_link(args)
         _flush_spool_best_effort()
         return code
 

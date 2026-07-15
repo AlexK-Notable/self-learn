@@ -66,6 +66,7 @@ from .ledger_ops import (
     read_proposal,
     resolve_record,
     supersede_record,
+    validate_merge_proposal,
     validate_proposal,
 )
 from .records import Record, RecordError, _validate_follow_up
@@ -80,9 +81,12 @@ __all__ = [
     "SecretRefusal",
     "VerbError",
     "VerbResult",
+    "confirm_held",
+    "confirm_recurrence",
     "defer",
     "followup_done",
     "graduate",
+    "link_contradicts",
     "push_pending",
     "reject",
     "route",
@@ -400,6 +404,33 @@ def _compile_for_destination(
 # -------------------------------------------------------------------- verbs
 
 
+def _load_cluster(
+    home: Path, bucket_dir: Path, record_id: str, cluster_id: str
+) -> tuple[Path, list[str]]:
+    """Collapse preflight (08 §7.1 Merge-proposals pin): the merge proposal
+    must exist, be schema-valid, name the survivor, and every member must
+    still be pending in THIS bucket (any member resolved ⇒ the cluster is
+    invalidated — the worker sweeps it; refuse here)."""
+    merge_path = bucket_dir / "proposals" / f"{cluster_id}.yaml"
+    if not merge_path.is_file():
+        raise VerbError(f"no merge proposal {cluster_id} in {bucket_dir}")
+    data = read_proposal(merge_path)
+    validate_merge_proposal(data)
+    members = list(data["records"])
+    if record_id not in members:
+        raise VerbError(
+            f"survivor {record_id} is not a member of {cluster_id} "
+            f"({', '.join(members)})"
+        )
+    for rid in members:
+        if not (bucket_dir / "pending" / f"{rid}.md").is_file():
+            raise VerbError(
+                f"cluster {cluster_id} is invalidated: member {rid} is no "
+                "longer pending — the worker sweeps it; nothing to collapse"
+            )
+    return merge_path, [rid for rid in members if rid != record_id]
+
+
 def route(
     home: Path | str,
     record_id: str,
@@ -410,6 +441,7 @@ def route(
     user_claude_md: Path | str | None = None,
     chezmoi_bin: str = "chezmoi",
     follow_up: dict | None = None,
+    collapse: str | None = None,
 ) -> VerbResult:
     """Route a pending record into canon. See the module docstring for the
     pinned sequence; commit message ``self-learn: route lrn-… → <target>``
@@ -433,6 +465,17 @@ def route(
         old_path = find_record_path(home, old_id)
         _scan_or_refuse([old_path], None)  # this verb rewrites it too (P2-7)
 
+    losers: list[str] = []
+    merge_path: Path | None = None
+    if collapse is not None:
+        merge_path, losers = _load_cluster(
+            home, path.parent.parent, record_id, collapse
+        )
+        # every loser file is rewritten by this verb (P2-7)
+        _scan_or_refuse(
+            [path.parent / f"{rid}.md" for rid in losers], None
+        )
+
     # (b) sentinel self-hold + heartbeat.
     hold = sentinel.hold()
     sentinel.heartbeat()
@@ -444,9 +487,32 @@ def route(
                 f"destination {destination!r} is not built until M3"
             )
 
-        suffix = f" (supersedes {old_id})" if old_id else ""
+        if collapse is not None:
+            # Pinned commit shape: route lrn-X → <target> (collapse
+            # merge-<cid>, supersedes lrn-Y, lrn-Z)
+            suffix = f" (collapse {collapse}, supersedes {', '.join(losers)})"
+        else:
+            suffix = f" (supersedes {old_id})" if old_id else ""
         message = f"self-learn: route {record_id} → {destination}{suffix}"
         routed_at = _now_iso()
+
+        if collapse is not None:
+            # Merge the losers into the survivor's PENDING file first:
+            # evidence gains their provenance (append-only is the door),
+            # sightings becomes the cluster total. The shadow below then
+            # reads the merged content, so the compile sees it too.
+            loser_records = [
+                Record.from_path(path.parent / f"{rid}.md") for rid in losers
+            ]
+            total_sightings = record.sightings + sum(
+                lr.sightings for lr in loser_records
+            )
+            survivor = Record.from_path(path)
+            for lr in loser_records:
+                for entry in lr.evidence:
+                    survivor.append_evidence(entry)
+            survivor.set_sightings(total_sightings)
+            survivor.write(path)
 
         # In-memory routed copy: the compile input for the record being
         # routed (its file is only rewritten at the ledger op below). The
@@ -491,6 +557,18 @@ def route(
             # teach --supersedes completion-at-route: SAME commit (08 §1
             # Corrective-supersession pin).
             touched = touched + supersede_record(home, old_id, record_id)
+        for loser_id in losers:
+            # collapse: losers superseded by the survivor, SAME commit;
+            # their analysis proposals (and the merge proposal, via the
+            # survivor's own sibling sweep) are removed by resolve_record.
+            touched = touched + supersede_record(home, loser_id, record_id)
+        if merge_path is not None and merge_path.exists():
+            # belt-and-braces: the sibling sweep removes it when it names
+            # the survivor; an inconsistent leftover is removed here.
+            from .ledger_ops import _remove_file
+
+            if _remove_file(home, merge_path):
+                touched = touched + [merge_path]
         if target_path is not None:
             touched = touched + [target_path]
 
@@ -805,6 +883,164 @@ def followup_done(
         staged, sha, push = _commit_and_push(home, [path], message, note, no_push)
         return VerbResult(
             action="followup-done",
+            record_id=record_id,
+            commit_message=message,
+            commit_sha=sha,
+            staged=staged,
+            push=push,
+            sentinel_owned=hold.owned,
+        )
+    finally:
+        hold.release()
+
+
+def confirm_recurrence(
+    home: Path | str,
+    record_id: str,
+    *,
+    event_ref: str,
+    tolerate: bool = False,
+    note: str | None = None,
+    no_push: bool = False,
+) -> VerbResult:
+    """Human confirmation of a recurrence suspect (11 §2.2/§2.5): append
+    to the record's append-only ``recurrences:`` list, copying the minimal
+    facts (ts, origin) OUT of the telemetry event named by ``event_ref``
+    (the event's ``nonce``); the ref stays a courtesy pointer. Tolerate
+    (``--tolerate --note "<why the rule stays>"``) records the why in
+    ``recurrences[].note`` — NEVER ``resolution_note`` (write-once, 02 §2).
+    Commit: ``self-learn: recurrence confirmed on lrn-…``."""
+    home = Path(home)
+    if tolerate and not note:
+        raise VerbError(
+            "--tolerate needs --note: 'the rule stays' without the why is "
+            "exactly the dead-letter 11 §2.2 exists to prevent"
+        )
+    event = next(
+        (
+            e
+            for e in telemetry.read_events(home)
+            if e.get("kind") == "recurrence-suspect"
+            and e.get("nonce") == event_ref
+        ),
+        None,
+    )
+    if event is None:
+        raise VerbError(
+            f"no recurrence-suspect event with nonce {event_ref!r} in the "
+            "tracked telemetry — flush first (`self-learn telemetry flush`) "
+            "or check `self-learn report`"
+        )
+    path = find_record_path(home, record_id)
+    _scan_or_refuse([path], note)
+    record = Record.from_path(path)
+    if record.status != "routed":
+        raise VerbError(
+            f"record {record_id} is {record.status!r} — recurrences confirm "
+            "against LIVE routed coverage (11 §2.2)"
+        )
+    hold = sentinel.hold()
+    sentinel.heartbeat()
+    try:
+        entry = {
+            "ts": event.get("ts"),
+            "origin": event.get("origin"),
+            "ref": event_ref,
+        }
+        if note is not None:
+            entry["note"] = note
+        try:
+            record.append_recurrence(entry)
+        except RecordError as exc:
+            raise VerbError(str(exc)) from exc
+        record.write(path)
+        message = f"self-learn: recurrence confirmed on {record_id}"
+        staged, sha, push = _commit_and_push(home, [path], message, note, no_push)
+        return VerbResult(
+            action="confirm-recurrence",
+            record_id=record_id,
+            commit_message=message,
+            commit_sha=sha,
+            staged=staged,
+            push=push,
+            sentinel_owned=hold.owned,
+        )
+    finally:
+        hold.release()
+
+
+def confirm_held(
+    home: Path | str,
+    record_id: str,
+    *,
+    note: str | None = None,
+    no_push: bool = False,
+) -> VerbResult:
+    """A human observed the rule working (11 §2.2): write
+    ``last_confirmed`` (today). Age-since-confirmation, not
+    age-since-capture, is the staleness metric. Commit:
+    ``self-learn: confirmed holding lrn-…``."""
+    home = Path(home)
+    path = find_record_path(home, record_id)
+    _scan_or_refuse([path], note)
+    record = Record.from_path(path)
+    if record.status != "routed":
+        raise VerbError(
+            f"record {record_id} is {record.status!r} — only live routed "
+            "rules can be confirmed as holding"
+        )
+    hold = sentinel.hold()
+    sentinel.heartbeat()
+    try:
+        record.set_last_confirmed(_now_iso()[:10])
+        record.write(path)
+        message = f"self-learn: confirmed holding {record_id}"
+        staged, sha, push = _commit_and_push(home, [path], message, note, no_push)
+        return VerbResult(
+            action="confirm-held",
+            record_id=record_id,
+            commit_message=message,
+            commit_sha=sha,
+            staged=staged,
+            push=push,
+            sentinel_owned=hold.owned,
+        )
+    finally:
+        hold.release()
+
+
+def link_contradicts(
+    home: Path | str,
+    record_id: str,
+    target: str,
+    *,
+    note: str | None = None,
+    no_push: bool = False,
+) -> VerbResult:
+    """First-class contradiction edge (11 §2.4): append ``target`` (a
+    record id or canon anchor) to ``links.contradicts``. Commit:
+    ``self-learn: link lrn-… contradicts <target>``."""
+    home = Path(home)
+    path = find_record_path(home, record_id)
+    _scan_or_refuse([path], note)
+    if secret_scan(target):
+        raise SecretRefusal(
+            "secret scan hit in the contradicts target — refusing (P2-7)",
+            secret_scan(target),
+        )
+    record = Record.from_path(path)
+    hold = sentinel.hold()
+    sentinel.heartbeat()
+    try:
+        try:
+            record.append_contradicts(target)
+        except RecordError as exc:
+            raise VerbError(str(exc)) from exc
+        record.write(path)
+        message = f"self-learn: link {record_id} contradicts {target}"
+        staged, sha, push = _commit_and_push(home, [path], message, note, no_push)
+        return VerbResult(
+            action="link-contradicts",
             record_id=record_id,
             commit_message=message,
             commit_sha=sha,
