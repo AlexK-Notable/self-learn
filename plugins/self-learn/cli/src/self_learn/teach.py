@@ -442,5 +442,7 @@ def _route_now(args: argparse.Namespace, record: Record) -> int:
     print(
         f"routed {record.id} → {destination} @ {result.commit_sha[:7]} ({push_note})"
     )
+    if (cap_note := result.over_cap_note()) is not None:
+        print(cap_note, file=sys.stderr)
     print(f"  {record.type}{kind_part} · {record.scope} · {record_title(record)}")
     return EXIT_OK

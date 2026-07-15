@@ -152,10 +152,10 @@ def test_scan_hit_wins_over_schema_invalid(home, capsys):
 
 def test_unknown_record_id_is_a_usage_error(home, capsys):
     rc = cli.main(["proposal", "validate", "lrn-deadbeef"])
-    assert rc == 2
+    assert rc == 64
     assert "not found" in capsys.readouterr().err
 
 
 def test_proposal_without_verb_is_usage_error(home, capsys):
     rc = cli.main(["proposal"])
-    assert rc == 2
+    assert rc == 64

@@ -90,16 +90,18 @@ class TestEntryFormat:
         line = entry_line(golden_records()[0])
         assert line == (
             "- **When about to edit a `.storage/*.json` file while Home Assistant "
-            "is running:** stop the HA container first. *(lrn-4c1e9a2f)*"
+            "is running:** stop the HA container first. HA caches `.storage` in memory and rewrites it on shutdown, so a live edit is silently clobbered. *(lrn-4c1e9a2f)*"
         )
 
     def test_knowledge_is_fact_one_liner_with_id(self):
         line = entry_line(golden_records()[1])
         assert line == "- A config-entry reload does not re-read `data.host`. *(lrn-77ab01cd)*"
 
-    def test_instruction_tightened_to_first_sentence(self):
+    def test_instruction_keeps_the_why(self):
+        # Audit 2026-07-14: the first-sentence cut silently dropped the why;
+        # the whole first line survives (doctrine §6), the word cap polices.
         line = entry_line(golden_records()[0])
-        assert "caches" not in line  # second sentence dropped
+        assert "caches" in line  # the why sentence survives
 
     def test_every_entry_is_one_line(self):
         for record in golden_records():

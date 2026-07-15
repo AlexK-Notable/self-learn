@@ -39,7 +39,11 @@ from .ledger_ops import LedgerOpsError, list_items, status_infos, unparseable_pe
 from .teach import add_teach_parser, run_teach
 
 EXIT_OK = 0
-EXIT_USAGE = 2
+# 64 = sysexits EX_USAGE — deliberately NOT 2, which P2-8 pins as the
+# proposal-validate scan-hit code (audit 2026-07-14: machine consumers must
+# never see usage errors aliased onto scan hits). argparse's own flag-error
+# exit stays 2 but cannot occur on a well-formed programmatic invocation.
+EXIT_USAGE = 64
 
 #: The auto-memory location for THIS repo (08 §3 T9/T11; MEMORY.md + topic
 #: files). Env-overridable; tests always override — the real dir is never
@@ -244,6 +248,8 @@ def _finish_verb(result: verbs.VerbResult, target: str) -> int:
         f"{result.action} {result.record_id} → {target} "
         f"@ {result.commit_sha[:7]} ({_push_note(result)})"
     )
+    if (note := result.over_cap_note()) is not None:
+        print(note, file=sys.stderr)
     if result.push is not None and not result.push.ok:
         return result.push.exit_code
     return EXIT_OK
@@ -420,6 +426,10 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_list(
             as_json=args.as_json, include_deferred=args.include_deferred
         )
+
+    if args.command in ("teach", "import", "prune-memory", "proposal"):
+        sentinel.heartbeat()  # 08 §1: every mutating invocation touches a
+        # live sentinel; heartbeat never resurrects a stale one.
 
     if args.command == "teach":
         return run_teach(args)

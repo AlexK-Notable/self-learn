@@ -66,9 +66,9 @@ def test_import_backlog_rerun_is_idempotent_at_cli_level(home, capsys):
     assert out.startswith("import --backlog: 0 created")
 
 
-def test_import_backlog_unknown_skill_exits_2(home, capsys):
+def test_import_backlog_unknown_skill_is_usage_error(home, capsys):
     rc = cli.main(["import", "--backlog", "no-such-skill"])
-    assert rc == 2
+    assert rc == 64
     assert capsys.readouterr().err
 
 

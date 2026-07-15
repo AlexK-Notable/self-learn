@@ -152,13 +152,11 @@ def _body_sections(record: Record) -> dict[str, str]:
 
 
 def _one_liner(text: str) -> str:
-    """Mechanical tightening: first non-empty line, cut at the first
-    ``". "`` sentence boundary (period kept)."""
-    line = next((ln.strip() for ln in text.strip().splitlines() if ln.strip()), "")
-    m = re.search(r"\. ", line)
-    if m:
-        line = line[: m.start() + 1]
-    return line
+    """Mechanical tightening: the whole first non-empty LINE. No sentence
+    cut (audit 2026-07-14): doctrine §6's Instruction carries the what AND
+    the why in one or two sentences on a single line, and cutting at the
+    first period silently dropped the why; the §4 word cap polices bloat."""
+    return next((ln.strip() for ln in text.strip().splitlines() if ln.strip()), "")
 
 
 def _lower_first(text: str) -> str:
