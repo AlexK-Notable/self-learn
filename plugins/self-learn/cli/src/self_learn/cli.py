@@ -31,7 +31,7 @@ from datetime import date
 from pathlib import Path
 
 from . import report as report_mod
-from . import selfcheck, sentinel, telemetry, verbs
+from . import selfcheck, sentinel, telemetry, verbs, worker
 from .chezmoi import ChezmoiAbort, ChezmoiError
 from .compilers import CompileError
 from .import_backlog import import_backlog
@@ -83,6 +83,12 @@ def _build_parser() -> argparse.ArgumentParser:
 
     status = sub.add_parser("status", help="show bucket/pending overview")
     status.add_argument("--json", action="store_true", dest="as_json")
+    status.add_argument(
+        "--fast",
+        action="store_true",
+        help="pending/-only frontmatter scan, no git (SessionStart budget; "
+        "implies --json; excludes follow-up counts — 08 §7.1)",
+    )
 
     list_p = sub.add_parser("list", help="list queued records")
     list_p.add_argument("--json", action="store_true", dest="as_json")
@@ -188,6 +194,20 @@ def _build_parser() -> argparse.ArgumentParser:
         "report", help="facts layer v1 (11 §5): lifecycle + telemetry counts"
     ).add_argument("--json", action="store_true", dest="as_json")
 
+    worker_p = sub.add_parser(
+        "worker", help="background pre-analysis worker: kick | run (08 §7.1)"
+    )
+    worker_sub = worker_p.add_subparsers(dest="worker_command", metavar="<verb>")
+    worker_sub.add_parser(
+        "kick", help="mark dirty + open a coalescing window (absorbed if open)"
+    )
+    wrun = worker_sub.add_parser("run", help="one worker run (normally spawned)")
+    wrun.add_argument(
+        "--coalesce",
+        action="store_true",
+        help="sleep SELF_LEARN_COALESCE_SECS first (the kick-spawned form)",
+    )
+
     sub.add_parser("push", help="publish pending local commits (pinned retry)")
 
     sentinel_p = sub.add_parser(
@@ -239,6 +259,44 @@ def _warn_unparseable(home) -> None:
                 f"self-learn: warning: skipping unparseable record {path}",
                 file=sys.stderr,
             )
+
+
+def _cmd_status_fast() -> int:
+    """08 §7.1 SessionStart pin: guaranteed-cheap, pending/-only. The bash
+    hook consumes this — queue semantics live HERE, never in bash."""
+    print(json.dumps(worker.fast_status(resolve_home())))
+    return EXIT_OK
+
+
+def _cmd_worker(args: argparse.Namespace) -> int:
+    home = resolve_home()
+    if args.worker_command == "kick":
+        outcome = worker.kick(home)
+        print(f"worker kick: {outcome}")
+        return EXIT_OK
+    if args.worker_command == "run":
+        result = worker.run(home, coalesce=args.coalesce)
+        n = len(result.proposed)
+        print(
+            f"worker run: {result.status} — {n} proposal(s), "
+            f"{len(result.merge_proposed)} merge, {result.eligible} eligible,"
+            f" {result.suspects} recurrence suspect(s)"
+        )
+        return EXIT_OK if result.status in ("ok", "idle") else 1
+    print("usage: self-learn worker kick | worker run [--coalesce]", file=sys.stderr)
+    return EXIT_USAGE
+
+
+def _kick_after_capture() -> None:
+    """teach (without --route) and import end by calling worker kick
+    (08 §7.1 trigger pin). Never fails the capture."""
+    try:
+        outcome = worker.kick(resolve_home())
+    except OSError as exc:
+        print(f"self-learn: worker kick failed: {exc}", file=sys.stderr)
+        return
+    if outcome == "spawned":
+        print("worker: analysis window opened", file=sys.stderr)
 
 
 def _cmd_status(as_json: bool) -> int:
@@ -601,6 +659,8 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_USAGE
 
     if args.command == "status":
+        if args.fast:
+            return _cmd_status_fast()
         return _cmd_status(as_json=args.as_json)
 
     if args.command == "list":
@@ -618,6 +678,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "teach":
         code = run_teach(args)
         _flush_spool_best_effort()  # teach is a flushing verb (11 §4.2)
+        # Kick when a PENDING record landed (08 §7.1 trigger pin):
+        # plain teach success, or a --route that fell back to pending (4).
+        if (code == EXIT_OK and not args.route) or code == 4:
+            _kick_after_capture()
         return code
 
     if args.command in VERB_COMMANDS:
@@ -645,7 +709,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "import":
         code = _cmd_import(args)
         _flush_spool_best_effort()  # import is a flushing verb (11 §4.2)
+        if code == EXIT_OK:
+            _kick_after_capture()
         return code
+
+    if args.command == "worker":
+        return _cmd_worker(args)
 
     if args.command == "prune-memory":
         return _cmd_prune_memory(args)

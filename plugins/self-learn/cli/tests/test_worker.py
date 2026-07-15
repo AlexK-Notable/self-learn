@@ -1,0 +1,458 @@
+"""T13/T14/T15: worker kick/coalesce/run, digest, validation + sweep,
+events.jsonl, notification template, escalation, fast status, and the
+11 §2.2 recurrence-suspect rider.
+
+The `claude` binary is a PATH shim that records argv and writes proposal
+files per a test-provided script; `claude-skills-sync` is a sandbox stub.
+All cache state is XDG-redirected; the ledger is a sandbox git repo.
+"""
+
+import json
+import os
+import stat
+import subprocess
+import time
+from pathlib import Path
+
+import pytest
+
+from self_learn import cli, telemetry, worker
+from self_learn.ledger_ops import create_record, write_proposal
+from self_learn.records import Record
+from support import commit_all, git, make_behavior, make_home, proposal_dict
+
+SKILL_MD = "# s skill\n\nAuthored prose stays put.\n"
+
+PROPOSAL_YAML = """destination: skill-md
+alternates: [reference]
+rationale: "shim-written proposal"
+already_canon: false
+model: claude-sonnet-5
+analyzed_at: "2026-07-15T00:00:00Z"
+card:
+  headline: "A test headline."
+  impact: "Next time Claude does X it will Y."
+  discuss: "Nothing contentious."
+"""
+
+
+@pytest.fixture(autouse=True)
+def redirect(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg-cache"))
+    monkeypatch.setenv("SELF_LEARN_ACTOR", "testhost")
+
+
+class Env:
+    def __init__(self, tmp_path):
+        self.home = make_home(tmp_path)
+        self.skill_dir = self.home / "plugins" / "s-plugin" / "skills" / "s"
+        self.skill_md = self.skill_dir / "SKILL.md"
+        self.skill_md.write_text(SKILL_MD, encoding="utf-8")
+        self.bare = tmp_path / "remote.git"
+        subprocess.run(
+            ["git", "init", "-q", "--bare", "-b", "main", str(self.bare)],
+            check=True,
+        )
+        git(self.home, "remote", "add", "origin", str(self.bare))
+        commit_all(self.home, "seed")
+        git(self.home, "push", "-q", "-u", "origin", "main")
+        self.proposals = self.skill_dir / ".self-learn" / "proposals"
+
+
+@pytest.fixture()
+def env(tmp_path, monkeypatch):
+    e = Env(tmp_path)
+    monkeypatch.setenv("SELF_LEARN_HOME", str(e.home))
+    return e
+
+
+@pytest.fixture()
+def claude_shim(tmp_path, monkeypatch, env):
+    """PATH shim: records argv NUL-separated; runs $CLAUDE_SHIM_SCRIPT
+    (a bash snippet, e.g. writing proposal files); exits $CLAUDE_SHIM_EXIT."""
+    shims = tmp_path / "shims"
+    shims.mkdir(exist_ok=True)
+    log = tmp_path / "claude-argv.log"
+    shim = shims / "claude"
+    shim.write_text(
+        "#!/usr/bin/env bash\n"
+        f'printf \'%s\\0\' "$@" > "{log}"\n'
+        'if [ -n "${CLAUDE_SHIM_SCRIPT-}" ]; then bash -c "$CLAUDE_SHIM_SCRIPT"; fi\n'
+        'exit "${CLAUDE_SHIM_EXIT-0}"\n',
+        encoding="utf-8",
+    )
+    shim.chmod(shim.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setenv("PATH", f"{shims}:{os.environ['PATH']}")
+    return {"log": log, "dir": shims}
+
+
+def seed_pending(env, rid="lrn-0000aaaa", created_at=None):
+    record = make_behavior(record_id=rid, created_at=created_at)
+    create_record(env.home, record)
+    commit_all(env.home, f"pending {rid}")
+    return rid
+
+
+def shim_writes(env, rid) -> str:
+    path = env.proposals / f"{rid}.yaml"
+    return (
+        f"mkdir -p {env.proposals} && cat > {path} <<'YAML'\n{PROPOSAL_YAML}YAML"
+    )
+
+
+# ------------------------------------------------------------------- kick
+
+
+def test_kick_spawns_one_window_and_second_is_absorbed(env, monkeypatch):
+    monkeypatch.delenv("SELF_LEARN_WORKER_AUTOKICK")
+    spawned = []
+
+    def fake_spawn(home):
+        spawned.append(home)
+        return os.getpid()  # a live pid
+
+    monkeypatch.setattr(worker, "_spawn_window", fake_spawn)
+    assert worker.kick(env.home) == "spawned"
+    assert worker.kick(env.home) == "absorbed-window"
+    assert len(spawned) == 1
+    assert (worker.cache_dir() / "worker.dirty").is_file()
+
+
+def test_dead_pid_window_reopens(env, monkeypatch):
+    monkeypatch.delenv("SELF_LEARN_WORKER_AUTOKICK")
+    worker.cache_dir().mkdir(parents=True, exist_ok=True)
+    (worker.cache_dir() / "worker.window").write_text("999999999")
+    monkeypatch.setattr(worker, "_spawn_window", lambda home: os.getpid())
+    assert worker.kick(env.home) == "spawned"
+
+
+def test_autokick_disabled_is_noop(env):
+    assert worker.kick(env.home) == "disabled"
+    assert not (worker.cache_dir() / "worker.dirty").exists()
+
+
+def test_teach_kicks_import_kicks(env, monkeypatch, capsys):
+    monkeypatch.delenv("SELF_LEARN_WORKER_AUTOKICK")
+    kicked = []
+    monkeypatch.setattr(worker, "kick", lambda home: kicked.append(home) or "spawned")
+    rc = cli.main(
+        ["teach", "--skill", "s", "--type", "knowledge", "--fact", "A fact."]
+    )
+    assert rc == 0
+    assert len(kicked) == 1
+
+
+def test_teach_route_success_does_not_kick(env, monkeypatch):
+    seeded = seed_pending(env)  # ensures repo has ledger dirs
+    monkeypatch.delenv("SELF_LEARN_WORKER_AUTOKICK")
+    kicked = []
+    monkeypatch.setattr(worker, "kick", lambda home: kicked.append(home) or "spawned")
+    rc = cli.main(
+        [
+            "teach", "--skill", "s", "--type", "knowledge",
+            "--fact", "Routed directly.", "--route", "--dest", "reference",
+            "--no-push",
+        ]
+    )
+    assert rc == 0
+    assert kicked == []
+
+
+# -------------------------------------------------------------------- run
+
+
+def test_run_happy_path(env, claude_shim, monkeypatch):
+    rid = seed_pending(env)
+    monkeypatch.setenv("CLAUDE_SHIM_SCRIPT", shim_writes(env, rid))
+    result = worker.run(env.home)
+    assert result.status == "ok"
+    assert result.proposed == [rid]
+    # proposal stamped by the CLI (model never emits record_sha)
+    text = (env.proposals / f"{rid}.yaml").read_text(encoding="utf-8")
+    assert "record_sha: sha256:" in text
+    # last-run touched; events line appended with pinned schema
+    assert (worker.cache_dir() / "worker.last-run").is_file()
+    events = (
+        (worker.cache_dir() / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    )
+    line = json.loads(events[-1])
+    assert line["event"] == "proposals"
+    assert line["record_ids"] == [rid]
+    assert line["aggregate"]["pending"] == 1
+    assert line["aggregate"]["buckets"] == [{"bucket": "s", "pending": 1}]
+
+
+def test_run_argv_pins(env, claude_shim, monkeypatch):
+    rid = seed_pending(env)
+    monkeypatch.setenv("CLAUDE_SHIM_SCRIPT", shim_writes(env, rid))
+    worker.run(env.home)
+    argv = claude_shim["log"].read_text(encoding="utf-8").split("\0")[:-1]
+    allowed = argv[argv.index("--allowedTools") + 1]
+    assert allowed == worker.allowed_tools(env.home)
+    assert allowed.startswith("Read,Grep,Glob,Write(")
+    assert "Bash" not in allowed  # E-18: the flag IS the guarantee
+    assert f"Write({env.home}/plugins/**/.self-learn/proposals/**)" in allowed
+    assert f"Write({env.home}/.self-learn/proposals/**)" in allowed
+    assert "Edit" not in allowed
+    assert argv[argv.index("--model") + 1] == "claude-sonnet-5"
+    prompt = argv[argv.index("-p") + 1]
+    assert "About to edit .storage while HA is running." in prompt  # record body
+    assert "Authored prose stays put." in prompt  # target-canon excerpt
+
+
+def test_run_idle_when_nothing_eligible(env, claude_shim):
+    result = worker.run(env.home)
+    assert result.status == "idle"
+    assert (worker.cache_dir() / "worker.last-run").is_file()
+    assert not claude_shim["log"].exists()  # claude never invoked
+
+
+def test_run_invalid_output_deleted_and_run_fails(env, claude_shim, monkeypatch):
+    rid = seed_pending(env)
+    bad = env.proposals / f"{rid}.yaml"
+    monkeypatch.setenv(
+        "CLAUDE_SHIM_SCRIPT",
+        f"mkdir -p {env.proposals} && printf 'destination: bogus\\n' > {bad}",
+    )
+    result = worker.run(env.home)
+    assert result.status == "failed"
+    assert not bad.exists()  # deleted (unattended policy)
+    assert result.invalid_deleted == [f"{rid}.yaml"]
+    assert not (worker.cache_dir() / "worker.last-run").exists()
+
+
+def test_run_partial_success(env, claude_shim, monkeypatch):
+    ra = seed_pending(env, "lrn-0000aaaa", created_at="2026-07-01T00:00:00Z")
+    rb = seed_pending(env, "lrn-0000bbbb", created_at="2026-07-02T00:00:00Z")
+    good = shim_writes(env, ra)
+    bad = f"printf 'destination: bogus\\n' > {env.proposals}/{rb}.yaml"
+    monkeypatch.setenv("CLAUDE_SHIM_SCRIPT", f"{good}\n{bad}")
+    result = worker.run(env.home)
+    assert result.status == "ok"  # partial success succeeds (pinned)
+    assert result.proposed == [ra]
+    assert result.invalid_deleted == [f"{rb}.yaml"]
+    assert (worker.cache_dir() / "worker.last-run").is_file()
+
+
+def test_fresh_proposals_skipped_stale_reanalyzed(env, claude_shim, monkeypatch):
+    """Content identity, never mtime: a fresh valid proposal keeps the
+    record out of the batch; editing the record body re-analyzes."""
+    rid = seed_pending(env)
+    write_proposal(env.home, rid, proposal_dict())
+    from self_learn.ledger_ops import stamp_proposal
+
+    stamp_proposal(env.home, rid)
+    monkeypatch.setenv("CLAUDE_SHIM_SCRIPT", shim_writes(env, rid))
+    result = worker.run(env.home)
+    assert result.status == "idle"  # nothing eligible — fresh proposal
+
+    # mtime churn alone must NOT re-analyze (git checkouts rewrite mtimes)
+    rpath = env.skill_dir / ".self-learn" / "pending" / f"{rid}.md"
+    os.utime(rpath, (time.time(), time.time()))
+    assert worker.run(env.home).status == "idle"
+
+    # a real body edit re-analyzes
+    record = Record.from_path(rpath)
+    record.set_body(record.body.replace("Stop the container", "Halt the container"))
+    record.write(rpath)
+    result = worker.run(env.home)
+    assert result.status == "ok"
+    assert result.proposed == [rid]
+
+
+def test_deferred_records_skipped(env, claude_shim):
+    rid = seed_pending(env)
+    rpath = env.skill_dir / ".self-learn" / "pending" / f"{rid}.md"
+    record = Record.from_path(rpath)
+    record.set_status("deferred")
+    record.set_deferred_until("2099-01-01")
+    record.write(rpath)
+    assert worker.run(env.home).status == "idle"
+
+
+def test_orphan_proposal_swept(env, claude_shim, monkeypatch):
+    rid = seed_pending(env)
+    # a PRE-EXISTING orphan (its record resolved on another machine, say):
+    # step-5's sweep owns it — step-4 validation only sees run-written files
+    orphan = env.proposals / "lrn-99999999.yaml"
+    orphan.parent.mkdir(parents=True, exist_ok=True)
+    orphan.write_text(PROPOSAL_YAML, encoding="utf-8")
+    monkeypatch.setenv("CLAUDE_SHIM_SCRIPT", shim_writes(env, rid))
+    result = worker.run(env.home)
+    assert result.status == "ok"
+    assert not orphan.exists()
+    assert "lrn-99999999.yaml" in result.orphans_swept
+
+
+def test_kick_mid_run_triggers_followon(env, claude_shim, monkeypatch):
+    rid = seed_pending(env)
+    # the shim re-marks dirty mid-run, as a landing kick would
+    dirty = worker.cache_dir() / "worker.dirty"
+    monkeypatch.setenv(
+        "CLAUDE_SHIM_SCRIPT", f"{shim_writes(env, rid)}\ntouch {dirty}"
+    )
+    spawned = []
+    monkeypatch.setattr(worker, "_spawn_window", lambda home: spawned.append(1) or 12345)
+    result = worker.run(env.home)
+    assert result.followon is True
+    assert spawned == [1]
+
+
+def test_sync_first_runs_sandbox_script(env, claude_shim, monkeypatch):
+    marker = env.home / "sync-ran"
+    script = env.home / "bin" / "claude-skills-sync"
+    script.parent.mkdir(exist_ok=True)
+    script.write_text(f"#!/usr/bin/env bash\ntouch {marker}\n", encoding="utf-8")
+    script.chmod(script.stat().st_mode | stat.S_IEXEC)
+    worker.run(env.home)
+    assert marker.exists()
+
+
+# ------------------------------------------------------------------ digest
+
+
+def test_digest_contains_rejected_with_notes(env, claude_shim, monkeypatch):
+    rid = seed_pending(env, "lrn-0000dddd")
+    assert cli.main(["reject", rid, "--note", "one-off task instruction", "--no-push"]) == 0
+    digest = worker._digest(env.home)
+    assert rid in digest
+    assert "one-off task instruction" in digest
+
+
+# ------------------------------------------------- T14: template + escalation
+
+
+def test_notification_template_verbatim():
+    assert worker.render_notification(2, ["s", "project"], 7, 2) == (
+        "self-learn: 2 new proposals for s, project. "
+        "7 pending across 2 scopes — /self-learn:review"
+    )
+    assert worker.render_notification(1, ["s"], 1, 1) == (
+        "self-learn: 1 new proposal for s. 1 pending across 1 scope — "
+        "/self-learn:review"
+    )
+
+
+def test_escalation_fires_and_debounces(env, claude_shim):
+    for i in range(5):
+        seed_pending(env, f"lrn-0000000{i}")
+    result = worker.run(env.home)  # 5 pending → threshold
+    assert result.escalated is True
+    events = [
+        json.loads(ln)
+        for ln in (worker.cache_dir() / "events.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert any(e["event"] == "escalation" and e["record_ids"] == [] for e in events)
+    # debounced: a second run within 24 h does not escalate again
+    assert worker.run(env.home).escalated is False
+
+
+def test_no_escalation_under_thresholds(env, claude_shim, monkeypatch):
+    rid = seed_pending(env)
+    monkeypatch.setenv("CLAUDE_SHIM_SCRIPT", shim_writes(env, rid))
+    assert worker.run(env.home).escalated is False
+
+
+# --------------------------------------------- 11 §2.2 recurrence suspects
+
+
+def test_recurrence_suspect_spooled_once(env, claude_shim, monkeypatch):
+    routed = seed_pending(env, "lrn-0000aaaa")
+    write_proposal(env.home, routed, proposal_dict())
+    commit_all(env.home, "p")
+    assert cli.main(["route", routed, "--no-push"]) == 0
+    # a new capture with the SAME trigger text → title-token-overlap
+    rid2 = seed_pending(env, "lrn-0000bbbb")
+    monkeypatch.setenv("CLAUDE_SHIM_SCRIPT", shim_writes(env, rid2))
+    result = worker.run(env.home)
+    assert result.suspects == 1
+    events = telemetry.read_events(env.home)
+    suspects = [e for e in events if e["kind"] == "recurrence-suspect"]
+    assert len(suspects) == 1
+    assert suspects[0]["record"] == routed
+    assert suspects[0]["origin"] == rid2
+    assert suspects[0]["basis"] == "title-token-overlap"
+    # a second run does not re-emit the same pair
+    result2 = worker.run(env.home)
+    assert result2.suspects == 0
+
+
+# ---------------------------------------------------- T15: fast status
+
+
+def test_fast_status_shape_and_semantics(env, claude_shim, monkeypatch):
+    rid = seed_pending(env)
+    # one analyzed (fresh proposal), one deferred-hidden
+    write_proposal(env.home, rid, proposal_dict())
+    from self_learn.ledger_ops import stamp_proposal
+
+    stamp_proposal(env.home, rid)
+    rid2 = seed_pending(env, "lrn-0000bbbb")
+    rpath = env.skill_dir / ".self-learn" / "pending" / f"{rid2}.md"
+    record = Record.from_path(rpath)
+    record.set_status("deferred")
+    record.set_deferred_until("2099-01-01")
+    record.write(rpath)
+
+    payload = worker.fast_status(env.home)
+    assert payload["total_pending"] == 1  # deferred hidden
+    assert payload["unanalyzed_total"] == 0  # fresh proposal
+    assert payload["worker_last_run"] is None
+    assert payload["staleness_alarm"] is False  # no un-analyzed supply
+    assert payload["escalate"] is False
+
+
+def test_staleness_predicate_truth_table(env, monkeypatch):
+    """Pinned predicate: (≥1 un-analyzed) AND (last-run >3d old OR
+    missing). Five cases."""
+    cache = worker.cache_dir()
+    cache.mkdir(parents=True, exist_ok=True)
+    last_run = cache / "worker.last-run"
+
+    # 1: no pending at all → never alarms
+    assert worker.fast_status(env.home)["staleness_alarm"] is False
+
+    rid = seed_pending(env)  # un-analyzed supply exists from here on
+
+    # 2: un-analyzed + last-run MISSING → alarms (missing = infinitely old)
+    assert worker.fast_status(env.home)["staleness_alarm"] is True
+
+    # 3: un-analyzed + fresh last-run → quiet
+    last_run.touch()
+    assert worker.fast_status(env.home)["staleness_alarm"] is False
+
+    # 4: un-analyzed + last-run 4 days old → alarms
+    old = time.time() - 4 * 24 * 3600
+    os.utime(last_run, (old, old))
+    assert worker.fast_status(env.home)["staleness_alarm"] is True
+
+    # 5: analyzed supply only + old last-run → quiet (no un-analyzed)
+    write_proposal(env.home, rid, proposal_dict())
+    from self_learn.ledger_ops import stamp_proposal
+
+    stamp_proposal(env.home, rid)
+    assert worker.fast_status(env.home)["staleness_alarm"] is False
+
+
+def test_status_fast_cli_and_worker_last_run(env, capsys):
+    rid = seed_pending(env)
+    rc = cli.main(["status", "--fast"])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["total_pending"] == 1
+    assert payload["unanalyzed_total"] == 1
+    assert payload["worker_last_run"] is None
+
+
+def test_fast_status_budget(env):
+    """<500 ms warm on a 100-record fixture (pinned budget)."""
+    for i in range(100):
+        create_record(env.home, make_behavior(record_id=f"lrn-{i:08x}"))
+    worker.fast_status(env.home)  # warm
+    start = time.monotonic()
+    payload = worker.fast_status(env.home)
+    elapsed = time.monotonic() - start
+    assert payload["total_pending"] >= 100
+    assert elapsed < 0.5, f"fast status took {elapsed:.3f}s"
