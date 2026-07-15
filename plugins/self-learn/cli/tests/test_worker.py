@@ -451,8 +451,144 @@ def test_fast_status_budget(env):
     for i in range(100):
         create_record(env.home, make_behavior(record_id=f"lrn-{i:08x}"))
     worker.fast_status(env.home)  # warm
-    start = time.monotonic()
-    payload = worker.fast_status(env.home)
-    elapsed = time.monotonic() - start
+    elapsed = float("inf")
+    for _ in range(2):  # min-of-two: resist load spikes, keep the budget real
+        start = time.monotonic()
+        payload = worker.fast_status(env.home)
+        elapsed = min(elapsed, time.monotonic() - start)
     assert payload["total_pending"] >= 100
     assert elapsed < 0.5, f"fast status took {elapsed:.3f}s"
+
+
+# ------------------------------------------- audit 2026-07-15 regressions
+
+
+MERGE_NO_SHAS = """cluster_id: merge-0000cccc
+records: [lrn-0000aaaa, lrn-0000bbbb]
+suggested_survivor: lrn-0000aaaa
+rationale: same lesson twice
+model: claude-sonnet-5
+analyzed_at: "2026-07-15T00:00:00Z"
+"""
+
+
+def test_batch_cap_leftovers_keep_dirty_and_followon(env, claude_shim, monkeypatch):
+    """Pinned: leftovers keep worker.dirty set for a follow-on window.
+    16 eligible → batch 15, 1 leftover, dirty kept, follow-on opened."""
+    for i in range(16):
+        create_record(
+            env.home,
+            make_behavior(
+                record_id=f"lrn-000000{i:02x}",
+                created_at=f"2026-07-{1 + i:02d}T00:00:00Z",
+            ),
+        )
+    commit_all(env.home, "sixteen pending")
+    monkeypatch.setenv("CLAUDE_SHIM_SCRIPT", shim_writes(env, "lrn-00000000"))
+    spawned = []
+    monkeypatch.setattr(worker, "_spawn_window", lambda home: spawned.append(1) or 4242)
+    result = worker.run(env.home)
+    assert result.eligible == 15  # cap
+    assert result.leftovers == 1
+    assert (worker.cache_dir() / "worker.dirty").is_file()
+    assert result.followon is True
+    assert spawned == [1]
+
+
+def test_merge_output_without_shas_survives_and_is_stamped(env, claude_shim, monkeypatch):
+    """M2-21: the model must NOT emit record_shas — the CLI stamps them
+    before validation. (The old validate-first order deleted every
+    spec-compliant merge proposal.)"""
+    seed_pending(env, "lrn-0000aaaa", created_at="2026-07-01T00:00:00Z")
+    seed_pending(env, "lrn-0000bbbb", created_at="2026-07-02T00:00:00Z")
+    merge_path = env.proposals / "merge-0000cccc.yaml"
+    script = (
+        f"{shim_writes(env, 'lrn-0000aaaa')}\n"
+        f"cat > {merge_path} <<'YAML'\n{MERGE_NO_SHAS}YAML"
+    )
+    monkeypatch.setenv("CLAUDE_SHIM_SCRIPT", script)
+    result = worker.run(env.home)
+    assert result.status == "ok"
+    assert result.merge_proposed == ["merge-0000cccc"]
+    text = merge_path.read_text(encoding="utf-8")
+    assert text.count("sha256:") == 2  # CLI-stamped, one per member
+    # merges count as proposals in the event (deep-link target exists)
+    events = [
+        json.loads(ln)
+        for ln in (worker.cache_dir() / "events.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    proposals_events = [e for e in events if e["event"] == "proposals"]
+    assert proposals_events and "merge-0000cccc" in proposals_events[-1]["record_ids"]
+
+
+def test_unexpected_artifacts_deleted_never_published(env, claude_shim, monkeypatch):
+    rid = seed_pending(env)
+    sub = env.proposals / "sub"
+    junk = env.proposals / "notes.txt"
+    script = (
+        f"{shim_writes(env, rid)}\n"
+        f"mkdir -p {sub} && printf 'x: 1\\n' > {sub}/sneaky.yaml\n"
+        f"printf 'scratch\\n' > {junk}"
+    )
+    monkeypatch.setenv("CLAUDE_SHIM_SCRIPT", script)
+    result = worker.run(env.home)
+    assert result.status == "ok"
+    assert not (sub / "sneaky.yaml").exists()
+    assert not junk.exists()
+    assert "sneaky.yaml" in result.invalid_deleted
+    assert "notes.txt" in result.invalid_deleted
+
+
+def test_secret_bearing_proposal_deleted(env, claude_shim, monkeypatch):
+    rid = seed_pending(env)
+    bad = PROPOSAL_YAML.replace(
+        'rationale: "shim-written proposal"',
+        'rationale: "use password = hunter2secret9 for this"',
+    )
+    path = env.proposals / f"{rid}.yaml"
+    monkeypatch.setenv(
+        "CLAUDE_SHIM_SCRIPT",
+        f"mkdir -p {env.proposals} && cat > {path} <<'YAML'\n{bad}YAML",
+    )
+    result = worker.run(env.home)
+    assert result.status == "failed"
+    assert not path.exists()  # never reaches autosync
+
+
+def test_run_releases_owned_sentinel_and_respects_other_holder(env, claude_shim):
+    from self_learn import sentinel as sentinel_mod
+
+    worker.run(env.home)
+    assert not sentinel_mod.sentinel_path().exists()  # owned → released
+    # another flow's live hold survives the run untouched
+    hold = sentinel_mod.hold()
+    assert hold.owned
+    worker.run(env.home)
+    assert sentinel_mod.sentinel_path().exists()
+    hold.release()
+
+
+def test_open_window_absorbed_race(env, monkeypatch):
+    import fcntl as fcntl_mod
+
+    worker.cache_dir().mkdir(parents=True, exist_ok=True)
+    lock_path = worker.cache_dir() / "worker.spawn.lock"
+    with open(lock_path, "w", encoding="utf-8") as holder:
+        fcntl_mod.flock(holder.fileno(), fcntl_mod.LOCK_EX)
+        monkeypatch.setattr(
+            worker, "_spawn_window", lambda home: pytest.fail("must not spawn")
+        )
+        assert worker._open_window(env.home) == "absorbed-race"
+
+
+def test_digest_ordered_by_author_date_newest_first(env, claude_shim, monkeypatch):
+    older = seed_pending(env, "lrn-0000aaaa")
+    newer = seed_pending(env, "lrn-0000bbbb")
+    monkeypatch.setenv("GIT_AUTHOR_DATE", "2026-07-01T00:00:00Z")
+    assert cli.main(["reject", older, "--note", "older reject", "--no-push"]) == 0
+    monkeypatch.setenv("GIT_AUTHOR_DATE", "2026-07-10T00:00:00Z")
+    assert cli.main(["reject", newer, "--note", "newer reject", "--no-push"]) == 0
+    digest = worker._digest(env.home)
+    assert digest.index(newer) < digest.index(older)

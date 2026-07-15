@@ -709,3 +709,41 @@ scope.
   truth table, <500ms budget. 487 tests. §7.3's protocol halves —
   (a′) live un-shimmed smoke + refusal check, (b) planted-duplicate
   collapse, (d) 10-item triage — remain to run before M2 exits.
+- **2026-07-15 · M2 pre-merge audit (two independent reviewers; tally
+  10-for-11)** — three blockers, all fixed before the branch touched
+  master: (1) batch-cap leftovers silently stranded (`worker.dirty` now
+  kept when eligible > cap, follow-on window covers the tail — the
+  pin's letter); (2) validate-before-stamp deleted every spec-compliant
+  worker merge proposal (the model is correctly told never to emit
+  record_shas; the CLI now stamps FIRST — §7.3(b) was unpassable
+  un-shimmed and the suite hid it because fixtures pre-filled the
+  hashes); (3) the collapse pre-mutation corrupted the survivor on the
+  routine DirtyTargetError abort-and-retry path (empirically: sightings
+  3-for-2, duplicated evidence, autosync publishing the intermediate) —
+  the merge is now built in memory, written only after the compile
+  passes, and `merged_from` provenance markers make any retry
+  idempotent. Pin extensions, dated: the worker run now SELF-HOLDS the
+  sentinel (sync-first still precedes it; without the hold, autosync's
+  rebase-autostash could transiently remove a just-written proposal
+  mid-validation — deleting VALID output — and published raw unstamped
+  model text mid-run); the orphan sweep uses plain unlink, NOT `git rm`
+  (a staged deletion from an uncommitting background process can leak
+  into a racing verb's whole-index commit; autosync's `add -A` commits
+  the deletion). Minors fixed: digest sorted by author date (anchored
+  grep, no Revert echo, skip unresolvable ids); run-end follow-on goes
+  through the spawn lock; success decided on landed-valid (not the
+  post-mid-run-resolution filter); merges count as proposals in
+  event/notification (cluster ids ride record_ids as deep-link
+  targets); `fast_status` freshness = the SAME predicate as
+  `is_unanalyzed` (schema validity included); worker output is
+  secret-scanned and non-contract artifacts under proposals/ are
+  deleted-never-published (snapshot went recursive to match the Write
+  glob); confirm-recurrence refuses a ref already confirmed;
+  link contradicts refuses self-edges and dangling record-id targets;
+  collapse+supersedes subject keeps both links; enumeration uses THE
+  shared sort key; hook line matches the pinned example + jq guards.
+  Accepted residuals, documented: pid-reuse false-liveness on the
+  window check (staleness alarm is the rescue); mixed-XDG environments
+  defeat lock unity (single-user single-env in practice); the
+  step5-filter-to-empty success case has no shim-reachable test.
+  497 tests.

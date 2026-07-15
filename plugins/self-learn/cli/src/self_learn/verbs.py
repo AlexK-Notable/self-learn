@@ -69,7 +69,7 @@ from .ledger_ops import (
     validate_merge_proposal,
     validate_proposal,
 )
-from .records import Record, RecordError, _validate_follow_up
+from .records import RECORD_ID_RE, Record, RecordError, _validate_follow_up
 from .scan import format_refusal
 from .scan import scan as secret_scan
 
@@ -489,30 +489,46 @@ def route(
 
         if collapse is not None:
             # Pinned commit shape: route lrn-X → <target> (collapse
-            # merge-<cid>, supersedes lrn-Y, lrn-Z)
-            suffix = f" (collapse {collapse}, supersedes {', '.join(losers)})"
+            # merge-<cid>, supersedes lrn-Y, lrn-Z) — a teach --supersedes
+            # link on the survivor rides the same list (audit 2026-07-15:
+            # it used to vanish from the subject).
+            superseded = losers + ([old_id] if old_id else [])
+            suffix = f" (collapse {collapse}, supersedes {', '.join(superseded)})"
         else:
             suffix = f" (supersedes {old_id})" if old_id else ""
         message = f"self-learn: route {record_id} → {destination}{suffix}"
         routed_at = _now_iso()
 
+        merged: Record | None = None
         if collapse is not None:
-            # Merge the losers into the survivor's PENDING file first:
-            # evidence gains their provenance (append-only is the door),
-            # sightings becomes the cluster total. The shadow below then
-            # reads the merged content, so the compile sees it too.
-            loser_records = [
-                Record.from_path(path.parent / f"{rid}.md") for rid in losers
-            ]
-            total_sightings = record.sightings + sum(
-                lr.sightings for lr in loser_records
-            )
-            survivor = Record.from_path(path)
-            for lr in loser_records:
+            # Merge the losers into an IN-MEMORY survivor: evidence gains
+            # their provenance plus one merged_from marker per loser, and
+            # sightings becomes the cluster total. NOTHING is written to
+            # disk until the compile step has passed (audit 2026-07-15:
+            # writing first meant a routine DirtyTargetError abort left a
+            # half-merged pending file that autosync published, and the
+            # prescribed retry double-merged — sightings 3-for-2,
+            # duplicated evidence). The merged_from markers also make a
+            # crash-window retry idempotent: an already-folded loser is
+            # skipped.
+            merged = Record.from_path(path)
+            already_folded = {
+                e.get("merged_from")
+                for e in merged.evidence
+                if e.get("merged_from")
+            }
+            total_sightings = merged.sightings
+            for rid in losers:
+                if rid in already_folded:
+                    continue
+                lr = Record.from_path(path.parent / f"{rid}.md")
                 for entry in lr.evidence:
-                    survivor.append_evidence(entry)
-            survivor.set_sightings(total_sightings)
-            survivor.write(path)
+                    merged.append_evidence(entry)
+                merged.append_evidence(
+                    {"merged_from": rid, "sightings": lr.sightings, "ts": routed_at}
+                )
+                total_sightings += lr.sightings
+            merged.set_sightings(total_sightings)
 
         # In-memory routed copy: the compile input for the record being
         # routed (its file is only rewritten at the ledger op below). The
@@ -525,7 +541,11 @@ def route(
         }
         if follow_up is not None:
             shadow_routing["follow_up"] = dict(follow_up)
-        shadow = Record.from_path(path)
+        shadow = (
+            Record.from_text(merged.to_text())
+            if merged is not None
+            else Record.from_path(path)
+        )
         shadow.set_routing(shadow_routing)
         shadow.set_status("routed")
 
@@ -543,7 +563,11 @@ def route(
             message=message,
         )
 
-        # (d) the ledger op — same routed_at the compile used.
+        # (d) the ledger op — same routed_at the compile used. For a
+        # collapse, the merged survivor lands on disk only NOW, after the
+        # compile step passed (nothing to corrupt on a compile abort).
+        if merged is not None:
+            merged.write(path)
         touched = resolve_record(
             home,
             record_id,
@@ -939,6 +963,12 @@ def confirm_recurrence(
             f"record {record_id} is {record.status!r} — recurrences confirm "
             "against LIVE routed coverage (11 §2.2)"
         )
+    if any(r.get("ref") == event_ref for r in record.recurrences):
+        raise VerbError(
+            f"event {event_ref} is already confirmed on {record_id} — "
+            "double-confirming would overstate recurrence pressure, the "
+            "exact signal this verb keeps honest (audit 2026-07-15)"
+        )
     hold = sentinel.hold()
     sentinel.heartbeat()
     try:
@@ -1021,6 +1051,10 @@ def link_contradicts(
     record id or canon anchor) to ``links.contradicts``. Commit:
     ``self-learn: link lrn-… contradicts <target>``."""
     home = Path(home)
+    if target == record_id:
+        raise VerbError("a record cannot contradict itself")
+    if RECORD_ID_RE.match(target):
+        find_record_path(home, target)  # record-id targets must exist
     path = find_record_path(home, record_id)
     _scan_or_refuse([path], note)
     if secret_scan(target):

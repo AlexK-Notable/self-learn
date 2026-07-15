@@ -47,8 +47,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import telemetry
+from . import sentinel, telemetry
 from .ledger import discover_buckets
+from .scan import scan as secret_scan
 from .ledger_ops import (
     ProposalError,
     _dump_yaml,
@@ -202,20 +203,16 @@ def _spawn_window(home: Path) -> int:
     return proc.pid
 
 
-def kick(home: Path | str) -> str:
-    """The pinned kick. Returns the outcome (for logs/tests):
-    ``spawned`` | ``absorbed-window`` | ``absorbed-race`` | ``disabled``."""
-    if os.environ.get("SELF_LEARN_WORKER_AUTOKICK") == "0":
-        return "disabled"
-    home = Path(home)
-    cache_dir().mkdir(parents=True, exist_ok=True)
-    _p("worker.dirty").touch()
-
+def _open_window(home: Path) -> str:
+    """Lock-guarded window opener, shared by :func:`kick` and the
+    run-end follow-on (audit 2026-07-15: the follow-on previously
+    bypassed the spawn lock and could double-spawn against a mid-run
+    kick). Returns ``spawned`` | ``absorbed-window`` | ``absorbed-race``."""
     with open(_p("worker.spawn.lock"), "w", encoding="utf-8") as lock_fh:
         try:
             fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            return "absorbed-race"  # the racing kick's spawn covers us
+            return "absorbed-race"  # the racing opener's spawn covers us
         try:
             window = _p("worker.window")
             if window.is_file():
@@ -227,10 +224,21 @@ def kick(home: Path | str) -> str:
                     return "absorbed-window"
             pid = _spawn_window(home)
             window.write_text(str(pid), encoding="utf-8")
-            log(f"kick: window opened (pid {pid})")
+            log(f"window opened (pid {pid})")
             return "spawned"
         finally:
             fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+
+
+def kick(home: Path | str) -> str:
+    """The pinned kick. Returns the outcome (for logs/tests):
+    ``spawned`` | ``absorbed-window`` | ``absorbed-race`` | ``disabled``."""
+    if os.environ.get("SELF_LEARN_WORKER_AUTOKICK") == "0":
+        return "disabled"
+    home = Path(home)
+    cache_dir().mkdir(parents=True, exist_ok=True)
+    _p("worker.dirty").touch()
+    return _open_window(home)
 
 
 # -------------------------------------------------------------------- run
@@ -243,7 +251,10 @@ class RunResult:
     merge_proposed: list[str] = field(default_factory=list)
     invalid_deleted: list[str] = field(default_factory=list)
     orphans_swept: list[str] = field(default_factory=list)
+    buckets: list[str] = field(default_factory=list)  # received proposals
+    valid_landed: int = 0  # step-6 success basis, BEFORE step-5 filtering
     eligible: int = 0
+    leftovers: int = 0  # eligible beyond the batch cap (follow-on covers)
     suspects: int = 0
     escalated: bool = False
     followon: bool = False
@@ -261,10 +272,14 @@ def _sync_first(home: Path) -> None:
         log("sync-first: no bin/claude-skills-sync here — skipped")
 
 
-def _enumerate(home: Path) -> tuple[list, int, list[dict]]:
-    """(batch entries needing analysis, total pending, per-bucket counts).
-    Same queue computation as `list` — deferred hidden; oldest first;
-    batch cap 15 (leftovers keep worker.dirty for a follow-on)."""
+def _enumerate(home: Path) -> tuple[list, int, int, list[dict]]:
+    """(batch, leftovers, total pending, per-bucket counts). Same queue
+    computation as `list` — deferred hidden; oldest first with the SAME
+    sort key as `list` (audit 2026-07-15: str-sort diverged on mixed
+    timestamp representations); batch cap 15 — leftovers keep
+    ``worker.dirty`` set for a follow-on window (pinned)."""
+    from .ledger_ops import _sort_key  # THE shared ordering
+
     needing = []
     total_pending = 0
     per_bucket: list[dict] = []
@@ -276,13 +291,18 @@ def _enumerate(home: Path) -> tuple[list, int, list[dict]]:
         for entry in entries:
             if is_unanalyzed(entry):
                 needing.append(entry)
-    needing.sort(key=lambda e: str(e.record.created_at))
-    return needing[: batch_cap()], total_pending, per_bucket
+    needing.sort(key=_sort_key)
+    batch = needing[: batch_cap()]
+    return batch, len(needing) - len(batch), total_pending, per_bucket
 
 
 def _digest(home: Path, limit: int = 20) -> str:
     """Rejected-proposal digest — CLI-built negative exemplars (pinned):
-    last `limit` rejected records by resolving-commit author date."""
+    last `limit` rejected records ordered by resolving-commit AUTHOR
+    DATE, newest first (audit 2026-07-15: topo order diverges from
+    author-date order under rebase-based autosync, so the rows are
+    sorted explicitly; the grep is line-anchored so a Revert subject
+    quoting the message does not re-list an undone rejection)."""
     proc = subprocess.run(
         [
             "git",
@@ -290,28 +310,29 @@ def _digest(home: Path, limit: int = 20) -> str:
             str(home),
             "log",
             "--grep",
-            "self-learn: reject",
+            "^self-learn: reject ",
             "--format=%ad%x09%s",
             "--date=iso-strict",
-            f"-{limit * 2}",
         ],
         capture_output=True,
         text=True,
     )
     if proc.returncode != 0:
         return "(no rejected-proposal history available)"
-    lines = []
+    rows = sorted(
+        (row.split("\t", 1) for row in proc.stdout.splitlines() if "\t" in row),
+        key=lambda pair: pair[0],
+        reverse=True,  # author date, newest first (pinned)
+    )
+    lines: list[str] = []
     seen: set[str] = set()
-    for row in proc.stdout.splitlines():
-        if "\t" not in row:
-            continue
-        _ad, subject = row.split("\t", 1)
+    for _ad, subject in rows:
         parts = subject.split()
         rid = next((p for p in parts if p.startswith("lrn-")), None)
         if rid is None or rid in seen:
             continue
         seen.add(rid)
-        title, note = "?", None
+        title, note = None, None
         for bucket in discover_buckets(home):
             path = bucket.path / "resolved" / f"{rid}.md"
             if path.is_file():
@@ -322,6 +343,8 @@ def _digest(home: Path, limit: int = 20) -> str:
                 except RecordError:
                     pass
                 break
+        if title is None:
+            continue  # not a resolvable reject here — never inject noise
         entry = f"- {rid}: {title}"
         if note:
             entry += f" — rejected because: {note}"
@@ -421,16 +444,21 @@ def _compose_prompt(home: Path, batch: list) -> str:
 
 
 def _proposal_snapshot(home: Path) -> dict[Path, str]:
+    """Recursive over proposals/ (audit 2026-07-15: the Write glob is
+    recursive, so a model writing proposals/sub/x.yml must be SEEN — an
+    unseen file would be silently autosync-published)."""
     snap: dict[Path, str] = {}
     for bucket in discover_buckets(home):
         pdir = bucket.path / "proposals"
         if not pdir.is_dir():
             continue
-        for path in pdir.glob("*.yaml"):
+        for path in pdir.rglob("*"):
+            if not path.is_file():
+                continue
             try:
                 snap[path] = sha_anchor(path.read_text(encoding="utf-8"))
-            except OSError:
-                continue
+            except (OSError, UnicodeDecodeError):
+                snap[path] = "unreadable"
     return snap
 
 
@@ -443,40 +471,67 @@ def _written_since(home: Path, snap: dict[Path, str]) -> list[Path]:
 
 
 def _git_rm_or_unlink(home: Path, path: Path) -> None:
-    tracked = (
-        subprocess.run(
-            ["git", "-C", str(home), "ls-files", "--error-unmatch", str(path)],
-            capture_output=True,
-        ).returncode
-        == 0
-    )
-    if tracked:
-        subprocess.run(
-            ["git", "-C", str(home), "rm", "-q", "--cached", str(path)],
-            capture_output=True,
-        )
+    """Plain unlink, deliberately NOT `git rm` (audit 2026-07-15, dated
+    letter-adjustment to the §7.1 orphan-sweep row): staging a deletion
+    from an uncommitting background process can leak into a racing
+    verb's whole-index commit, breaking surgical-staging discipline.
+    Autosync's own `add -A` commits the deletion on its next cycle."""
     path.unlink(missing_ok=True)
+
+
+def _bucket_name(home: Path, path: Path) -> str | None:
+    for bucket in discover_buckets(home):
+        try:
+            path.relative_to(bucket.path)
+        except ValueError:
+            continue
+        return bucket.name
+    return None
 
 
 def _validate_written(home: Path, written: list[Path]) -> RunResult:
     """Run-sequence step 4: schema-invalid worker output is DELETED and
     logged (unattended policy — the attended `proposal validate` verb
     reports-never-deletes); valid proposals get record_sha stamped by the
-    CLI, overwriting anything the model wrote."""
+    CLI, overwriting anything the model wrote. Audit 2026-07-15 riders:
+    (1) merge proposals are STAMPED BEFORE validation — the model is
+    correctly told never to emit record_shas, so validate-first deleted
+    every spec-compliant merge; (2) every surviving file is secret-
+    scanned (model-authored rationale is otherwise the one tracked write
+    autosync would publish unscanned) — a hit deletes, same unattended
+    policy; (3) anything under proposals/ that is not a top-level
+    lrn-*.yaml / merge-*.yaml is model litter: deleted + logged, never
+    silently published."""
     result = RunResult(status="failed")
     for path in written:
         name = path.stem
+        expected_shape = (
+            path.parent.name == "proposals"
+            and path.suffix == ".yaml"
+            and (name.startswith("lrn-") or name.startswith("merge-"))
+        )
         try:
+            if not expected_shape:
+                raise ProposalError(
+                    "unexpected artifact outside the proposal naming contract"
+                )
+            hits = secret_scan(path.read_text(encoding="utf-8"))
+            if hits:
+                raise ProposalError(
+                    f"secret scan hit ({hits[0].rule}) — never published"
+                )
             data = read_proposal(path)
             if name.startswith("merge-"):
-                validate_merge_proposal(data)
+                # STAMP FIRST (M2-21: models cannot compute hashes), then
+                # validate the completed document.
                 shas = {}
-                for rid in data.get("records", []):
+                for rid in data.get("records") or []:
                     rpath = path.parent.parent / "pending" / f"{rid}.md"
                     if not rpath.is_file():
                         raise ProposalError(f"merge member {rid} not pending")
                     shas[rid] = sha_anchor(Record.from_path(rpath).body)
                 data["record_shas"] = shas
+                validate_merge_proposal(data)
                 _dump_yaml(data, path)  # same writer as stamping
                 result.merge_proposed.append(data["cluster_id"])
             else:
@@ -486,10 +541,14 @@ def _validate_written(home: Path, written: list[Path]) -> RunResult:
                     raise ProposalError(f"no pending record for {name}")
                 stamp_proposal(home, name)
                 result.proposed.append(name)
+            bucket = _bucket_name(home, path)
+            if bucket and bucket not in result.buckets:
+                result.buckets.append(bucket)
         except Exception as exc:  # noqa: BLE001 — unattended: delete + log
             log(f"run: invalid worker output {path.name} deleted ({exc})")
             result.invalid_deleted.append(path.name)
             _git_rm_or_unlink(home, path)
+    result.valid_landed = len(result.proposed) + len(result.merge_proposed)
     return result
 
 
@@ -751,10 +810,15 @@ def fast_status(home: Path | str) -> dict:
             if ppath.is_file():
                 try:
                     pdata = yaml.load(ppath.read_text(encoding="utf-8"))
-                    fresh = (
+                    # SAME predicate as is_unanalyzed: hash match AND
+                    # schema validity (audit 2026-07-15: a sha-intact but
+                    # schema-broken proposal must not suppress the alarm).
+                    if (
                         isinstance(pdata, dict)
                         and pdata.get("record_sha") == sha_anchor(body)
-                    )
+                    ):
+                        validate_proposal(dict(pdata))
+                        fresh = True
                 except Exception:  # noqa: BLE001
                     fresh = False
             if not fresh:
@@ -805,21 +869,34 @@ def run(home: Path | str, *, coalesce: bool = False) -> RunResult:
 
     with open(_p("worker.lock"), "w", encoding="utf-8") as lock_fh:
         fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)  # blocking (pinned)
+        # Sync FIRST (the sync script no-ops under a live sentinel), THEN
+        # self-hold the sentinel for the rest of the run (audit
+        # 2026-07-15, pin extension recorded in the 08 appendix: without
+        # it, autosync's rebase-autostash can transiently remove a
+        # just-written proposal mid-validation — deleting VALID output —
+        # and publishes raw unstamped model text mid-run). Same
+        # discipline as the verbs: skip-if-held-by-other, release iff
+        # owned; a crashed run goes stale at the 2 h TTL.
+        _p("worker.window").unlink(missing_ok=True)
+        _sync_first(home)
+        hold = sentinel.hold()
+        sentinel.heartbeat()
         try:
-            _p("worker.window").unlink(missing_ok=True)
-            _sync_first(home)
-
-            batch, total_pending, per_bucket = _enumerate(home)
-            _p("worker.dirty").unlink(missing_ok=True)  # AFTER enumeration
+            batch, leftovers, total_pending, per_bucket = _enumerate(home)
+            if leftovers == 0:
+                _p("worker.dirty").unlink(missing_ok=True)  # AFTER enumeration
+            else:
+                # pinned: leftovers keep worker.dirty set → follow-on window
+                _p("worker.dirty").touch()
+                log(f"run: {leftovers} eligible beyond the batch cap — "
+                    "dirty kept for a follow-on window")
 
             suspects = _recurrence_suspects(home, batch)
 
             if not batch:
                 _p("worker.last-run").touch()
                 log(f"run: idle (0 eligible, {total_pending} pending)")
-                result = RunResult(
-                    status="idle", eligible=0, suspects=suspects
-                )
+                result = RunResult(status="idle", eligible=0, suspects=suspects)
             else:
                 prompt = _compose_prompt(home, batch)
                 snap = _proposal_snapshot(home)
@@ -841,34 +918,39 @@ def run(home: Path | str, *, coalesce: bool = False) -> RunResult:
                     log("run: claude CLI not found on PATH")
                 except subprocess.TimeoutExpired:
                     log(f"run: claude timed out after {INVOKE_TIMEOUT_SECS}s")
+                sentinel.heartbeat()  # the invocation may have taken 15 min
 
                 written = _written_since(home, snap)
                 result = _validate_written(home, written)
                 _still_pending(home, result)
                 result.eligible = len(batch)
+                result.leftovers = leftovers
                 result.suspects = suspects
 
-                if result.proposed or result.merge_proposed:
+                # Step 6 (audit fix): success is decided on what LANDED
+                # valid, not on what survived step-5's mid-run-resolution
+                # filter — a run whose every proposal got resolved by a
+                # racing human still did its job.
+                if result.valid_landed:
                     result.status = "ok"
                     _p("worker.last-run").touch()
-                    buckets = sorted(
-                        {
-                            b.name
-                            for b in discover_buckets(home)
-                            for rid in result.proposed
-                            if (b.path / "pending" / f"{rid}.md").is_file()
-                        }
-                    ) or ["(none)"]
+                    # Merge proposals COUNT as proposals for the event +
+                    # notification (a merge card is a reviewable
+                    # proposal); cluster ids ride record_ids so the
+                    # deep-link contract has a target.
+                    ids = result.proposed + result.merge_proposed
+                    n = len(result.proposed) + len(result.merge_proposed)
                     aggregate = {"pending": total_pending, "buckets": per_bucket}
-                    append_event("proposals", result.proposed, aggregate)
-                    _notify(
-                        render_notification(
-                            len(result.proposed),
-                            buckets,
-                            total_pending,
-                            len(per_bucket),
+                    if ids:
+                        append_event("proposals", ids, aggregate)
+                        _notify(
+                            render_notification(
+                                n,
+                                sorted(result.buckets) or ["(unknown)"],
+                                total_pending,
+                                len(per_bucket),
+                            )
                         )
-                    )
                     log(
                         f"run: ok — {len(result.proposed)} proposal(s), "
                         f"{len(result.merge_proposed)} merge, "
@@ -890,13 +972,15 @@ def run(home: Path | str, *, coalesce: bool = False) -> RunResult:
                 telemetry.flush(home)
             except telemetry.TelemetryError as exc:
                 log(f"run: telemetry flush refused ({exc})")
-
-            if _p("worker.dirty").is_file():
-                # a kick landed mid-run: ONE follow-on window (pinned)
-                pid = _spawn_window(home)
-                _p("worker.window").write_text(str(pid), encoding="utf-8")
-                log(f"run: follow-on window opened (pid {pid})")
-                result.followon = True
-            return result
         finally:
+            hold.release()
             fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+
+    # Follow-on OUTSIDE the run lock and through the spawn lock (audit
+    # 2026-07-15: the old direct spawn bypassed kick's serialization and
+    # could double-spawn against a mid-run kick).
+    if _p("worker.dirty").is_file():
+        outcome = _open_window(home)
+        log(f"run: follow-on window: {outcome}")
+        result.followon = outcome == "spawned"
+    return result

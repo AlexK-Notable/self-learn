@@ -266,3 +266,50 @@ def test_report_lists_recurrence_and_contradiction_state(env, capsys):
     facts = json.loads(capsys.readouterr().out)
     live = [r for r in facts["routed_live"] if r["id"] == rid]
     assert live and live[0]["recurrences"] == 1
+
+
+# ------------------------------------------- audit 2026-07-15 regressions
+
+
+def test_collapse_abort_leaves_pending_pristine_then_retry_clean(env):
+    """The blocker: a routine DirtyTargetError abort must leave the
+    survivor's pending file UNTOUCHED (the old pre-write left a
+    half-merged file that autosync published, and the prescribed retry
+    double-merged: sightings 3-for-2, duplicated evidence)."""
+    seed_cluster(env)
+    env.skill_md.write_text(SKILL_MD + "\nunrelated drift\n", encoding="utf-8")
+    rc = cli.main(["route", SURVIVOR, "--collapse", CLUSTER, "--no-push"])
+    assert rc == 1  # dirty target refused
+
+    pristine = Record.from_path(env.ledger / "pending" / f"{SURVIVOR}.md")
+    assert pristine.sightings == 1
+    assert not any(e.get("session") == "sess-b" for e in pristine.evidence)
+    assert not any(e.get("merged_from") for e in pristine.evidence)
+
+    # the documented recovery: clean the target, re-run — exactly once merged
+    commit_all(env.home, "commit the drift")
+    rc = cli.main(["route", SURVIVOR, "--collapse", CLUSTER, "--no-push"])
+    assert rc == 0
+    survivor = Record.from_path(env.ledger / "resolved" / f"{SURVIVOR}.md")
+    assert survivor.sightings == 2
+    assert sum(1 for e in survivor.evidence if e.get("session") == "sess-b") == 1
+    assert sum(1 for e in survivor.evidence if e.get("merged_from") == LOSER) == 1
+
+
+def test_confirm_same_event_twice_refused(env):
+    rid = seed_routed(env)
+    nonce = spool_suspect(env, rid)
+    assert cli.main(["confirm-recurrence", rid, "--event", nonce, "--no-push"]) == 0
+    rc = cli.main(["confirm-recurrence", rid, "--event", nonce, "--no-push"])
+    assert rc == 1  # double-confirm would overstate recurrence pressure
+    record = Record.from_path(env.ledger / "resolved" / f"{rid}.md")
+    assert len(record.recurrences) == 1
+
+
+def test_link_contradicts_self_and_missing_target_refused(env, capsys):
+    rid = seed_routed(env)
+    rc = cli.main(["link", "contradicts", rid, rid, "--no-push"])
+    assert rc == 1
+    assert "itself" in capsys.readouterr().err
+    rc = cli.main(["link", "contradicts", rid, "lrn-99999999", "--no-push"])
+    assert rc == 64  # record-id target must exist (unknown id = usage)

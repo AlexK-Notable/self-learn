@@ -449,3 +449,16 @@ human routes it.
   protocol runs in 08 §7.3 — a real un-shimmed worker smoke + the
   write-restriction refusal check, the planted-duplicate collapse
   proof, and a timed 10-item triage.
+- **2026-07-15 — M2 pre-merge audit round.** For the first time the
+  audit ran BEFORE the merge (once M2 is on master, every real capture
+  spawns a real worker run — unaudited was not acceptable). Two
+  reviewers found three blockers the 487-green suite could not see:
+  stranded backlog beyond the batch cap, every model-written merge
+  proposal being deleted by a validation-order bug (the fixtures
+  pre-filled exactly what the spec forbids the model to emit), and a
+  collapse retry that double-merged evidence after a routine abort.
+  All fixed with regression tests; the worker also gained a sentinel
+  self-hold after the reviewer showed autosync could delete valid
+  worker output mid-validation. 497 tests. M2 acceptance (08 §7.3)
+  still pending: live smoke + refusal check, planted-duplicate
+  collapse, timed triage.

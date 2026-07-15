@@ -23,15 +23,15 @@ command -v jq >/dev/null 2>&1 || exit 0
 out="$(self-learn status --fast 2>/dev/null)" || exit 0
 [ -n "$out" ] || exit 0
 
-total="$(jq -r '.total_pending // 0' <<<"$out")"
-oldest="$(jq -r '.oldest_days // 0' <<<"$out")"
-stale="$(jq -r '.staleness_alarm // false' <<<"$out")"
-escalate="$(jq -r '.escalate // false' <<<"$out")"
-unanalyzed="$(jq -r '.unanalyzed_total // 0' <<<"$out")"
+total="$(jq -r '.total_pending // 0' <<<"$out" 2>/dev/null)" || exit 0
+oldest="$(jq -r '.oldest_days // 0' <<<"$out" 2>/dev/null)" || exit 0
+stale="$(jq -r '.staleness_alarm // false' <<<"$out" 2>/dev/null)" || exit 0
+escalate="$(jq -r '.escalate // false' <<<"$out" 2>/dev/null)" || exit 0
+unanalyzed="$(jq -r '.unanalyzed_total // 0' <<<"$out" 2>/dev/null)" || exit 0
 
 if [ "$total" -gt 0 ]; then
-  plural="s"; [ "$total" = 1 ] && plural=""
-  echo "📥 self-learn: ${total} pending lesson${plural}, oldest ${oldest}d — /self-learn:review"
+  # pinned example format (08 §7.1): "📥 self-learn: 7 pending, oldest 9d — /self-learn:review"
+  echo "📥 self-learn: ${total} pending, oldest ${oldest}d — /self-learn:review"
 fi
 
 if [ "$stale" = "true" ]; then
