@@ -340,3 +340,23 @@ human routes it.
   causal order from git ancestry; same-machine concurrency as the
   common case). §8 claims no settled decision reopens — top-to-bottom
   consistency audit commissioned same day.
+- **2026-07-14 — four-agent top-to-bottom audit; 11 revised to v2.**
+  User-commissioned full-system check (corpus coherence · code-vs-spec ·
+  deployed state/ledger · adversarial review of 11). Deployed state:
+  HEALTHY (zero dangling symlinks, 36 records self-consistent, canon 1:1,
+  both user-held cards user-resolved → queue 0 pending). Code: HIGH
+  conformance — all safety pins to the letter; four fixes landed
+  (usage-exit 64, keep-the-why compiler, heartbeat coverage, over-cap
+  surfacing) + review.md's deferred-resurface filter bug. Corpus: stale
+  pre-build language swept (README header, fixtures row, 04 §0/08 §2
+  supersession banners, designated-host leftover, S-6/O-4/O-1/S-2
+  bookkeeping). **11 v1's headline guarantees were falsified** by two
+  independent auditors (per-session tracked writes broke P6/E-8+S-7;
+  worker emitters broke S-5; free-text payloads broke the scan claim;
+  ancestry ordering unstable under rebase; unowned mutations) — **v2
+  repairs all confirmed findings**: cache spool + verb-flush, CLI-only
+  emission, enum decline reasons + scan-at-flush, ts-primary ordering,
+  §2.5 verb table with pinned commits, honest §8 touch-point table
+  (S-7 amendment + S-15 pin edit declared for ratification). 11 remains
+  PROPOSED — ratifiable-with-edits per the adversarial verdict, edits
+  now landed; user ratification still owed.

@@ -591,3 +591,14 @@ scope.
   its worker riders (fire mining, recurrence matching, not-holding
   cards) bind T13's scope when ratified. M3 gains a pinned first step:
   drain the follow-up list.
+- **2026-07-14 · Audit-batch pin amendments (four-agent system audit)** —
+  (1) **CLI usage errors exit 64** (EX_USAGE), never 2: P2-8's scan-hit
+  code is no longer aliased by unknown-id/bad-flag paths (argparse's own
+  flag-error 2 remains argparse-owned; teach's documented exit table
+  unchanged). (2) **Compiler keeps the whole first line** — the
+  first-sentence cut silently dropped doctrine §6's "why"; goldens
+  updated, §6 now says "on a single line". (3) **Heartbeat covers every
+  mutating invocation** — teach/import/prune-memory/proposal dispatch
+  now touch a live sentinel. (4) **Over-cap flag has a consumer** —
+  route/teach --route print the graduation-card WARNING; review.md opens
+  the next batch with the card. All landed ff159a6, 377 tests.
