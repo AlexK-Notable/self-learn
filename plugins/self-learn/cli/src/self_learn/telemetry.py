@@ -32,6 +32,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import secrets
 import socket
 import sys
 from dataclasses import dataclass, field
@@ -151,6 +152,12 @@ def spool_event(kind: str, *, now: datetime | None = None, **payload) -> Path:
         "kind": kind,
         "actor": actor(),
         "schema_version": SCHEMA_VERSION,
+        # Uniqueness nonce: two DISTINCT events can otherwise be
+        # byte-identical (same second, same payload — e.g. two declined
+        # offers in one burst), and read_events' crash-reflush dedupe
+        # would wrongly collapse them. With the nonce, identical lines
+        # can only be re-flushes. (Caught by the regime-audit tests.)
+        "nonce": secrets.token_hex(4),
     }
     for key, value in payload.items():
         if value is None:

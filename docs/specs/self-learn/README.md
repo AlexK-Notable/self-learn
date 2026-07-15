@@ -424,3 +424,13 @@ human routes it.
   flush, duplicate-event dedup, crash-tolerant report, follow-up
   status gating with an orphaned-follow-up warning on
   graduate/supersede). Details: 08 appendix, same date. 439 tests.
+- **2026-07-15 — testing-regime audit (user-commissioned).** "How much
+  mock theater are we living on?" Answer, by two independent methods
+  (adversarial static review + mutation testing): very little — 89% of
+  planted bugs caught, real-git effect assertions throughout — but two
+  converging blind spots existed (the capture-rate number was never
+  asserted; spool locking was untested narrative) plus an orphaned-
+  shell-suite problem. Thirteen tests added (452 total), one design
+  flaw found and fixed in the process (event nonce for honest dedupe),
+  one docstring recovery claim falsified and corrected. Details: 08
+  appendix, same date.

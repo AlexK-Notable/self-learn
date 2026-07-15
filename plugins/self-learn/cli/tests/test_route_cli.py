@@ -272,9 +272,10 @@ def test_teach_route_analyst_routes_to_shim_destination(env, claude_shim, capsys
     assert argv[argv.index("--append-system-prompt") + 1] == DOCTRINE_TEXT
     assert argv[argv.index("--model") + 1] == DEFAULT_ANALYST_MODEL
     allowed = argv[argv.index("--allowedTools") + 1]
+    # The exact-string equality IS the no-write-tools assertion — a
+    # separate "Bash not in allowed" check could never fail (audit
+    # 2026-07-15: removed as a can't-fail assertion).
     assert allowed == ANALYST_ALLOWED_TOOLS == "Read,Grep,Glob"
-    for forbidden in ("Bash", "Edit", "Write"):
-        assert forbidden not in allowed
     prompt = argv[argv.index("-p") + 1]
     assert "About to edit .storage while HA is running." in prompt
 

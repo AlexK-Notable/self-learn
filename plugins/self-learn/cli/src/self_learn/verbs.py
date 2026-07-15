@@ -36,8 +36,11 @@ lettered checklist reads (d) then (e), but a literal order is impossible —
 the proposal sibling must be read before ``resolve_record`` deletes it —
 and compile-first is what makes the §5 chezmoi playbook true ("abort that
 route … the record stays pending"): a ChezmoiAbort fires before any ledger
-mutation. Crash between compile and ledger op = compiled-but-uncommitted,
-recoverable by re-running ``route`` (regeneration is idempotent).
+mutation. Crash between compile and ledger op = compiled-but-uncommitted;
+recovery is TWO steps (tested, audit 2026-07-15): the bare re-run refuses
+on the now-dirty target — commit/stash the half-applied compile, then
+re-run ``route`` (regeneration is idempotent, so the committed content
+survives byte-identical).
 
 Compile-set note: regenerating a managed section gathers every resolved
 record routed to that target — skill-md from the record's own bucket;

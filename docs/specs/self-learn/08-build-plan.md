@@ -649,3 +649,33 @@ scope.
   now emitted from the compile step; `telemetry note` no longer
   heartbeats the sentinel (cache-only + model-emittable must not
   extend a review hold). 439 tests.
+- **2026-07-15 · Testing-regime audit (user-commissioned; two
+  independent methods)** — a static adversarial test reviewer plus an
+  empirical mutation prober measured the suite instead of trusting it.
+  Convergent verdict: NOT mock theater — 89% mutation kill rate (16/18
+  planted bugs caught by specifically-aimed tests), ~85–90% of tests
+  assert real effects (real git remotes, remote-state assertions, zero
+  unittest.mock; goldens anchored by hand-written literals). Both
+  probes independently found the same two blind spots, now closed with
+  13 new tests (suite 439 → 452): capture-rate VALUE assertions
+  (labels were checked, the number never was — the swapped formula
+  passed 439 tests), flock observation + a 4-process spool-contention
+  test (locking was untested narrative), analyst-timeout → pending
+  (sleeping shim; removing the timeout had been undetectable), the
+  route-failure never-lost door, route_direct duplicate-id guard,
+  spool_quiet under an unwritable cache, crash-window two-step
+  recovery (which falsified the old "just re-run route" docstring —
+  corrected: commit/stash the half-applied target first), pytest
+  wrappers for the two ORPHANED shell suites (sentinel-test.sh,
+  install-commands-test.sh — good tests nothing ran), and a
+  skipif-gated REAL-chezmoi round trip (sandboxed source/dest/config;
+  the chezmoi leg previously ended at an argv shim everywhere). Writing
+  the tests surfaced one genuine design flaw: events lacked uniqueness,
+  so the crash-reflush dedupe collapsed legitimate same-second
+  duplicates — every event now carries a random nonce, making
+  byte-identical lines provably re-flushes. Both surviving mutations
+  re-verified KILLED against the fixed tree. One can't-fail assertion
+  removed. Known remaining gap (accepted): sentinel TTL is duplicated
+  between sentinel.py and claude-skills-sync with no shared source —
+  both sides' suites now run, but a one-sided change is caught only by
+  its own side.
