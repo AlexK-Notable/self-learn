@@ -1,10 +1,12 @@
 # 12 — The transcript miner: autonomous capture, mined provenance, and the embeddings question
 
-**Status: DRAFT 2026-07-15 — user-commissioned ("spec it properly"). This
-document deliberately reopens O-3, the register's sole open item; nothing
-here builds until the user ratifies (§6 carries the questions). It also
-absorbs the "transcript fire miner" follow-on recorded in 08's appendix —
-fire observation and lesson mining are one corpus walk with two outputs.**
+**Status: RATIFIED 2026-07-15, same day as draft — user: "build now
+without a shadow of a doubt." §8 records the ratification round (every §6
+question answered, three user requirements added, six design additions
+accepted). O-3 is resolved by this document (03-decisions carries the
+dated edit). Absorbs the "transcript fire miner" follow-on from 08's
+appendix — fire observation and lesson mining are one corpus walk with
+two outputs. §9 is the build plan.**
 
 ## 0. Origin and the O-3 contract
 
