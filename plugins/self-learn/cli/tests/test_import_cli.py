@@ -17,22 +17,31 @@ import pytest
 
 from self_learn import cli
 
-from support import make_home
+from support import make_env
 
 FIXTURES = Path(__file__).parent / "fixtures"
 SKILL = "home-assistant"
 
 
 @pytest.fixture
-def home(tmp_path, monkeypatch):
-    h = make_home(tmp_path, skills=(SKILL,))
-    monkeypatch.setenv("SELF_LEARN_HOME", str(h))
+def env(tmp_path, monkeypatch):
+    # project_path for --memory imports defaults to git-toplevel of cwd;
+    # pin it to a sandbox repo so nothing real is resolved.
+    e = make_env(tmp_path, skills=(SKILL,))
+    monkeypatch.setenv("SELF_LEARN_HOME", str(e.ledger))
     monkeypatch.delenv("SELF_LEARN_MEMORY_DIR", raising=False)
-    return h
+    monkeypatch.chdir(e.host)
+    return e
 
 
-def seed_journal(home: Path) -> None:
-    refs = home / "plugins" / f"{SKILL}-plugin" / "skills" / SKILL / "references"
+@pytest.fixture
+def home(env):
+    return env.ledger
+
+
+def seed_journal(env) -> None:
+    # doc 13 §2: the journal lives in the HOST skill dir, not the ledger.
+    refs = env.skill_dir / "references"
     refs.mkdir(parents=True, exist_ok=True)
     shutil.copy(FIXTURES / "gotchas-journal-excerpt.md", refs / "GOTCHAS.journal.md")
     shutil.copy(FIXTURES / "gotchas-canon-excerpt.md", refs / "GOTCHAS.md")
@@ -47,8 +56,8 @@ def memory_copy(tmp_path: Path) -> Path:
 # ---------------------------------------------------------------- backlog
 
 
-def test_import_backlog_prints_summary_exit_0(home, capsys):
-    seed_journal(home)
+def test_import_backlog_prints_summary_exit_0(env, capsys):
+    seed_journal(env)
     rc = cli.main(["import", "--backlog", SKILL])
     assert rc == 0
     out = capsys.readouterr().out
@@ -56,8 +65,8 @@ def test_import_backlog_prints_summary_exit_0(home, capsys):
     assert out.count("+ lrn-") == 7
 
 
-def test_import_backlog_rerun_is_idempotent_at_cli_level(home, capsys):
-    seed_journal(home)
+def test_import_backlog_rerun_is_idempotent_at_cli_level(env, capsys):
+    seed_journal(env)
     assert cli.main(["import", "--backlog", SKILL]) == 0
     capsys.readouterr()
     rc = cli.main(["import", "--backlog", SKILL])

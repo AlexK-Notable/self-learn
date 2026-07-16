@@ -33,7 +33,7 @@ from self_learn.analyst import doctrine_path
 from self_learn.compilers import BEGIN_MARKER, compile_managed_file
 from self_learn.ledger_ops import create_record, write_proposal
 from self_learn.records import Record
-from support import commit_all, git, make_behavior, make_home, proposal_dict
+from support import commit_all, git, make_behavior, make_env, proposal_dict
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 SRC_DIR = Path(__file__).resolve().parents[1] / "src"
@@ -48,18 +48,23 @@ def redirect(tmp_path, monkeypatch):
 
 
 class Env:
+    """doc-13 pair: `home` is the LEDGER; `bucket` its skill:s bucket;
+    canon (skill_md) lives in the paired HOST repo (make_env seeds it with
+    the same content as SKILL_MD)."""
+
     def __init__(self, tmp_path):
-        self.home = make_home(tmp_path)
-        self.skill_dir = self.home / "plugins" / "s-plugin" / "skills" / "s"
-        self.skill_md = self.skill_dir / "SKILL.md"
-        self.skill_md.write_text(SKILL_MD, encoding="utf-8")
+        sandbox = make_env(tmp_path)
+        self.home = sandbox.ledger
+        self.host = sandbox.host
+        self.skill_dir = sandbox.skill_dir  # HOST skill dir
+        self.skill_md = sandbox.skill_md
+        self.bucket = self.home / "skills" / "s"  # LEDGER skill bucket
         self.bare = tmp_path / "remote.git"
         subprocess.run(
             ["git", "init", "-q", "--bare", "-b", "main", str(self.bare)],
             check=True,
         )
         git(self.home, "remote", "add", "origin", str(self.bare))
-        commit_all(self.home, "seed")
         git(self.home, "push", "-q", "-u", "origin", "main")
 
 
@@ -204,10 +209,10 @@ TEACH_ROUTE_ARGS = [
 
 
 def _install_doctrine(env):
-    path = doctrine_path(env.home)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(DOCTRINE_TEXT, encoding="utf-8")
-    commit_all(env.home, "doctrine")
+    # doc 13 T-H3: the routing doctrine ships PACKAGE-relative (beside the
+    # skill), not in any ledger home — it is always present, so nothing to
+    # install. Assert the invariant instead of writing a home copy.
+    assert doctrine_path().is_file()
 
 
 def test_analyst_timeout_captures_to_pending(env, tmp_path, monkeypatch, capsys):
@@ -226,7 +231,7 @@ def test_analyst_timeout_captures_to_pending(env, tmp_path, monkeypatch, capsys)
     assert rc == 4
     err = capsys.readouterr().err
     assert "timed out" in err
-    pending = list((env.skill_dir / ".self-learn" / "pending").glob("lrn-*.md"))
+    pending = list((env.bucket / "pending").glob("lrn-*.md"))
     assert len(pending) == 1  # never lost
 
 
@@ -240,7 +245,7 @@ def test_route_failure_door_captures_to_pending(env, capsys):
     assert rc == 4
     err = capsys.readouterr().err
     assert "captured to pending" in err
-    pending = list((env.skill_dir / ".self-learn" / "pending").glob("lrn-*.md"))
+    pending = list((env.bucket / "pending").glob("lrn-*.md"))
     assert len(pending) == 1
     # teach is a flushing verb, so by exit the event is in the TRACKED
     # plane, not the spool.
@@ -274,7 +279,7 @@ def test_spool_quiet_failure_never_breaks_teach(env, tmp_path, capsys):
         captured = capsys.readouterr()
         assert "telemetry spool failed" in captured.err
         pending = list(
-            (env.skill_dir / ".self-learn" / "pending").glob("lrn-*.md")
+            (env.bucket / "pending").glob("lrn-*.md")
         )
         assert len(pending) == 1
     finally:
@@ -298,7 +303,7 @@ def test_route_crash_window_recovery_is_two_step(env, capsys):
 
     # Simulate the crashed first run: compile landed, ledger op did not.
     shadow = Record.from_path(
-        env.skill_dir / ".self-learn" / "pending" / f"{rid}.md"
+        env.bucket / "pending" / f"{rid}.md"
     )
     shadow.set_routing(
         {"routed_at": "2026-07-15T00:00:00Z", "destination": "skill-md", "by": "human"}
@@ -313,12 +318,13 @@ def test_route_crash_window_recovery_is_two_step(env, capsys):
     assert "commit/stash first" in capsys.readouterr().err
 
     # Step 2: commit the half-applied target, re-run: succeeds, content
-    # identical (regeneration idempotent), record resolved.
-    commit_all(env.home, "half-applied compile from crashed run")
+    # identical (regeneration idempotent), record resolved. The target
+    # lives in the HOST repo now (doc 13 §4), so commit there.
+    commit_all(env.host, "half-applied compile from crashed run")
     before = env.skill_md.read_text(encoding="utf-8")
     assert cli.main(["route", rid]) == 0
     assert env.skill_md.read_text(encoding="utf-8") == before
-    assert (env.skill_dir / ".self-learn" / "resolved" / f"{rid}.md").is_file()
+    assert (env.bucket / "resolved" / f"{rid}.md").is_file()
 
 
 # ------------------------------------------------------- shell-suite wrappers

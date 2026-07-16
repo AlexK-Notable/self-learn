@@ -19,7 +19,7 @@ import pytest
 from self_learn import cli, telemetry, worker
 from self_learn.ledger_ops import create_record, write_proposal
 from self_learn.records import Record
-from support import commit_all, git, make_behavior, make_home, proposal_dict
+from support import commit_all, git, make_behavior, make_env, proposal_dict
 
 SKILL_MD = "# s skill\n\nAuthored prose stays put.\n"
 
@@ -43,20 +43,27 @@ def redirect(tmp_path, monkeypatch):
 
 
 class Env:
+    """doc-13 pair: `home` is the LEDGER (SELF_LEARN_HOME); the worker
+    reads/writes the ledger's skill bucket, and reads canon from the HOST
+    skill dir via the registry."""
+
     def __init__(self, tmp_path):
-        self.home = make_home(tmp_path)
-        self.skill_dir = self.home / "plugins" / "s-plugin" / "skills" / "s"
-        self.skill_md = self.skill_dir / "SKILL.md"
-        self.skill_md.write_text(SKILL_MD, encoding="utf-8")
+        sandbox = make_env(tmp_path)
+        self.home = sandbox.ledger
+        self.host = sandbox.host
+        self.skill_dir = sandbox.skill_dir  # HOST skill dir (canon source)
+        self.skill_md = sandbox.skill_md
+        # make_env already seeded SKILL.md with identical content; keep the
+        # HOST clean (no dangling uncommitted change).
+        self.bucket = self.home / "skills" / "s"  # LEDGER skill bucket
         self.bare = tmp_path / "remote.git"
         subprocess.run(
             ["git", "init", "-q", "--bare", "-b", "main", str(self.bare)],
             check=True,
         )
         git(self.home, "remote", "add", "origin", str(self.bare))
-        commit_all(self.home, "seed")
         git(self.home, "push", "-q", "-u", "origin", "main")
-        self.proposals = self.skill_dir / ".self-learn" / "proposals"
+        self.proposals = self.bucket / "proposals"
 
 
 @pytest.fixture()
@@ -188,8 +195,8 @@ def test_run_happy_path(env, claude_shim, monkeypatch):
 def test_run_argv_pins(env, claude_shim, monkeypatch):
     """E-18 property (flag syntax adjusted at T13 per the pin's own
     instruction): read-only allowedTools, Bash/Edit explicitly
-    disallowed, Write granted ONLY via the settings file's two
-    proposals-scoped rules."""
+    disallowed, Write granted ONLY via the settings file's ledger
+    proposals-scoped rules (doc 13: three)."""
     rid = seed_pending(env)
     monkeypatch.setenv("CLAUDE_SHIM_SCRIPT", shim_writes(env, rid))
     worker.run(env.home)
@@ -204,10 +211,12 @@ def test_run_argv_pins(env, claude_shim, monkeypatch):
         "permissions"
     ]["allow"]
     # live-verified rule family: Edit(...) governs Write; Write(...) rules
-    # match nothing on the live CLI (T13-start check, 2026-07-15)
+    # match nothing on the live CLI (T13-start check, 2026-07-15).
+    # doc 13: three ledger-scoped proposals dirs, no host path reachable.
     assert rules == [
-        f"Edit(/{env.home}/plugins/**/.self-learn/proposals/**)",
-        f"Edit(/{env.home}/.self-learn/proposals/**)",
+        f"Edit(/{env.home}/skills/**/proposals/**)",
+        f"Edit(/{env.home}/projects/**/proposals/**)",
+        f"Edit(/{env.home}/user/proposals/**)",
     ]
     for rule in rules:  # // prefix = filesystem-absolute in rule syntax
         assert rule.startswith("Edit(//")
@@ -268,7 +277,7 @@ def test_fresh_proposals_skipped_stale_reanalyzed(env, claude_shim, monkeypatch)
     assert result.status == "idle"  # nothing eligible — fresh proposal
 
     # mtime churn alone must NOT re-analyze (git checkouts rewrite mtimes)
-    rpath = env.skill_dir / ".self-learn" / "pending" / f"{rid}.md"
+    rpath = env.bucket / "pending" / f"{rid}.md"
     os.utime(rpath, (time.time(), time.time()))
     assert worker.run(env.home).status == "idle"
 
@@ -283,7 +292,7 @@ def test_fresh_proposals_skipped_stale_reanalyzed(env, claude_shim, monkeypatch)
 
 def test_deferred_records_skipped(env, claude_shim):
     rid = seed_pending(env)
-    rpath = env.skill_dir / ".self-learn" / "pending" / f"{rid}.md"
+    rpath = env.bucket / "pending" / f"{rid}.md"
     record = Record.from_path(rpath)
     record.set_status("deferred")
     record.set_deferred_until("2099-01-01")
@@ -411,7 +420,7 @@ def test_fast_status_shape_and_semantics(env, claude_shim, monkeypatch):
 
     stamp_proposal(env.home, rid)
     rid2 = seed_pending(env, "lrn-0000bbbb")
-    rpath = env.skill_dir / ".self-learn" / "pending" / f"{rid2}.md"
+    rpath = env.bucket / "pending" / f"{rid2}.md"
     record = Record.from_path(rpath)
     record.set_status("deferred")
     record.set_deferred_until("2099-01-01")

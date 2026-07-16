@@ -1,8 +1,9 @@
-"""SELF_LEARN_HOME resolution (08-build-plan §1 Ledger-home pin)."""
+"""SELF_LEARN_HOME resolution (doc 13 §1 Q1 / H-1: independent ledger home,
+default ``~/.self-learn``)."""
 
 from pathlib import Path
 
-from self_learn.ledger import resolve_home
+from self_learn.ledger import DEFAULT_HOME, resolve_home
 
 
 def test_env_var_wins(monkeypatch, tmp_path):
@@ -12,12 +13,13 @@ def test_env_var_wins(monkeypatch, tmp_path):
 
 def test_default_when_unset(monkeypatch):
     monkeypatch.delenv("SELF_LEARN_HOME", raising=False)
-    assert resolve_home() == Path("~/repos/claude-skills").expanduser()
+    assert DEFAULT_HOME == "~/.self-learn"
+    assert resolve_home() == Path("~/.self-learn").expanduser()
 
 
 def test_empty_env_var_falls_back_to_default(monkeypatch):
     monkeypatch.setenv("SELF_LEARN_HOME", "")
-    assert resolve_home() == Path("~/repos/claude-skills").expanduser()
+    assert resolve_home() == Path("~/.self-learn").expanduser()
 
 
 def test_tilde_in_env_var_is_expanded(monkeypatch):

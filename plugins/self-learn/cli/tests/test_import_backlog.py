@@ -29,7 +29,7 @@ from self_learn.ledger_ops import queue, read_proposal, resolve_record
 from self_learn.normalize import sha_anchor
 from self_learn.records import Record
 
-from support import make_home
+from support import make_env
 
 FIXTURES = Path(__file__).parent / "fixtures"
 JOURNAL_FIXTURE = FIXTURES / "gotchas-journal-excerpt.md"
@@ -47,13 +47,16 @@ DATE_ORIGINS = {
 
 
 def setup_home(tmp_path: Path, with_canon: bool = True) -> tuple[Path, Path]:
-    home = make_home(tmp_path, skills=(SKILL,))
-    refs = home / "plugins" / f"{SKILL}-plugin" / "skills" / SKILL / "references"
+    # doc 13 §2: the GOTCHAS journal is source material living in the HOST
+    # skill dir; the ledger bucket holds records only. import_backlog
+    # resolves references/ from the registered skills-root host.
+    env = make_env(tmp_path, skills=(SKILL,))
+    refs = env.skill_dir / "references"
     refs.mkdir(parents=True)
     shutil.copy(JOURNAL_FIXTURE, refs / "GOTCHAS.journal.md")
     if with_canon:
         shutil.copy(CANON_FIXTURE, refs / "GOTCHAS.md")
-    return home, refs
+    return env.ledger, refs
 
 
 def bucket_of(home: Path):
@@ -137,7 +140,8 @@ def test_type_inference_title_initial_imperative_only(tmp_path):
 
 
 def test_missing_journal_raises(tmp_path):
-    home = make_home(tmp_path, skills=(SKILL,))
+    # host skill dir exists (via make_env) but has no references/ journal
+    home = make_env(tmp_path, skills=(SKILL,)).ledger
     with pytest.raises(ImporterError):
         import_backlog(home, SKILL)
 

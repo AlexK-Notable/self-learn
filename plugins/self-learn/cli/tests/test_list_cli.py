@@ -74,7 +74,9 @@ def test_list_json_full_pinned_shape(home, capsys):
 
 
 def test_list_json_no_proposal_defaults(home, capsys):
-    create_record(home, make_knowledge(record_id="lrn-aa000001", fact="The fact line."))
+    create_record(
+        home, make_knowledge(scope="user", record_id="lrn-aa000001", fact="The fact line.")
+    )
     (item,) = _list_json(capsys)
     assert item["kind"] is None
     assert item["title"] == "The fact line."
@@ -94,8 +96,8 @@ def test_list_json_stale_proposal_not_fresh(home, capsys):
 
 
 def test_list_json_hides_future_deferred_by_default(home, capsys):
-    create_record(home, make_knowledge(record_id="lrn-aa000001"))
-    create_record(home, make_knowledge(record_id="lrn-bb000002"))
+    create_record(home, make_knowledge(scope="user", record_id="lrn-aa000001"))
+    create_record(home, make_knowledge(scope="user", record_id="lrn-bb000002"))
     defer_record(home, "lrn-bb000002", "2099-01-01")
 
     items = _list_json(capsys)
@@ -109,7 +111,7 @@ def test_list_json_hides_future_deferred_by_default(home, capsys):
 
 
 def test_list_json_past_deferred_visible_again(home, capsys):
-    create_record(home, make_knowledge(record_id="lrn-aa000001"))
+    create_record(home, make_knowledge(scope="user", record_id="lrn-aa000001"))
     defer_record(home, "lrn-aa000001", "2020-01-01")
     items = _list_json(capsys)
     assert [i["id"] for i in items] == ["lrn-aa000001"]
@@ -164,8 +166,9 @@ def test_status_json_pinned_shape_with_unanalyzed(home, capsys):
         home, make_behavior(scope="skill:home-assistant", record_id="lrn-cc000003")
     )
     defer_record(home, "lrn-cc000003", "2099-01-01")
-    # project bucket: 1 unanalyzed
-    create_record(home, make_knowledge(record_id="lrn-dd000004"))
+    # user bucket: 1 unanalyzed (the "project+user" combined scope is dead;
+    # doc 13 §3 splits it into separate project and user buckets)
+    create_record(home, make_knowledge(scope="user", record_id="lrn-dd000004"))
 
     rc = cli.main(["status", "--json"])
     assert rc == 0
@@ -180,8 +183,8 @@ def test_status_json_pinned_shape_with_unanalyzed(home, capsys):
                 "unanalyzed": 1,
             },
             {
-                "bucket": "project",
-                "scope": "project+user",
+                "bucket": "user",
+                "scope": "user",
                 "pending": 1,
                 "oldest_days": 0,
                 "unanalyzed": 1,
@@ -194,7 +197,7 @@ def test_status_json_pinned_shape_with_unanalyzed(home, capsys):
 
 
 def test_status_human_mentions_unanalyzed(home, capsys):
-    create_record(home, make_knowledge(record_id="lrn-aa000001"))
+    create_record(home, make_knowledge(scope="user", record_id="lrn-aa000001"))
     rc = cli.main(["status"])
     assert rc == 0
     out = capsys.readouterr().out

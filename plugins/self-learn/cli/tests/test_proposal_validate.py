@@ -31,13 +31,15 @@ def home(tmp_path, monkeypatch):
 
 
 def seed_record(home: Path, fact: str = "The Nova serves Glances on :61208.") -> Record:
-    record = make_knowledge(scope="project", fact=fact)
+    # user scope: a single flat bucket needing no project_path (doc 13 §3),
+    # keeping this suite focused on the validate verb, not bucket routing.
+    record = make_knowledge(scope="user", fact=fact)
     create_record(home, record)
     return record
 
 
 def proposal_path(home: Path, rid: str) -> Path:
-    return home / ".self-learn" / "proposals" / f"{rid}.yaml"
+    return home / "user" / "proposals" / f"{rid}.yaml"
 
 
 def commit_count(home: Path) -> int:
@@ -114,7 +116,7 @@ def test_scan_hit_in_record_body_exits_2_with_span_report(home, capsys):
     assert "github-token" in err and GHP_TOKEN in err  # span + rule
     # never deletes, never auto-redacts, never stamps
     assert ppath.read_bytes() == before
-    record_file = home / ".self-learn" / "pending" / f"{record.id}.md"
+    record_file = home / "user" / "pending" / f"{record.id}.md"
     assert GHP_TOKEN in record_file.read_text(encoding="utf-8")
 
 
