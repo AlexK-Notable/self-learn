@@ -356,7 +356,9 @@ def test_run_lands_candidate(home, transcripts, monkeypatch):
     write_transcript(transcripts, "sess-e2e", [u("work"), a("found the cause")])
     shim_reader(monkeypatch, {"candidates": [candidate()], "fires": []})
     kicked = []
-    monkeypatch.setattr(miner.worker, "kick", lambda h: kicked.append(h) or "spawned")
+    monkeypatch.setattr(
+        miner.worker, "kick", lambda h, **kw: kicked.append(h) or "spawned"
+    )
     result = miner.run(home, trigger="timer")
     assert result.status == "ok"
     assert len(result.landed) == 1
@@ -680,7 +682,9 @@ def test_maybe_kick_disabled_fresh_spawned(home, monkeypatch):
     assert miner.maybe_kick(home) == "disabled"  # conftest sets AUTOKICK=0
     monkeypatch.setenv("SELF_LEARN_MINER_AUTOKICK", "1")
     spawned = []
-    monkeypatch.setattr(miner, "_spawn_run", lambda h: spawned.append(h) or 4242)
+    monkeypatch.setattr(
+        miner, "_spawn_run", lambda h, **kw: spawned.append(h) or 4242
+    )
     assert miner.maybe_kick(home) == "spawned"  # no last-run = infinitely old
     assert spawned == [home]
     (miner.miner_dir() / "miner.last-run").touch()
@@ -710,7 +714,7 @@ def test_status_fast_carries_miner_keys(home, capsys):
 def test_cli_mine_run_and_status(home, transcripts, monkeypatch, capsys):
     write_transcript(transcripts, "sess-cli", [u("work")])
     shim_reader(monkeypatch, {"candidates": [candidate(session="sess-cli")], "fires": []})
-    monkeypatch.setattr(miner.worker, "kick", lambda h: "disabled")
+    monkeypatch.setattr(miner.worker, "kick", lambda h, **kw: "disabled")
     assert cli.main(["mine", "run", "--trigger", "timer"]) == 0
     out = capsys.readouterr().out
     assert "mine run: ok — 1 landed" in out
@@ -731,7 +735,7 @@ def test_report_tracks_mined_supply(home, transcripts, monkeypatch, capsys):
 
     write_transcript(transcripts, "sess-rep", [u("work")])
     shim_reader(monkeypatch, {"candidates": [candidate(session="sess-rep")], "fires": []})
-    monkeypatch.setattr(miner.worker, "kick", lambda h: "disabled")
+    monkeypatch.setattr(miner.worker, "kick", lambda h, **kw: "disabled")
     rid = miner.run(home).landed[0]
     facts = report.gather(home)
     assert facts["mined"]["pending"] == 1
@@ -836,7 +840,7 @@ def test_watchdog_cooldown_after_failed_attempt(home, transcripts, monkeypatch):
     assert miner.run(home).status == "failed"
     assert not (miner.miner_dir() / "miner.last-run").is_file()  # alarm intact
     spawned = []
-    monkeypatch.setattr(miner, "_spawn_run", lambda h: spawned.append(h) or 1)
+    monkeypatch.setattr(miner, "_spawn_run", lambda h, **kw: spawned.append(h) or 1)
     assert miner.maybe_kick(home) == "cooling"  # attempt marker is fresh
     assert spawned == []
     # once the cool-down passes, the watchdog may retry

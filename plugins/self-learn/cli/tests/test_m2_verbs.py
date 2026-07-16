@@ -22,6 +22,7 @@ from support import (
     make_env,
     merge_proposal_text,
     proposal_dict,
+    verb_subject,
 )
 
 SKILL_MD = "# s skill\n\nAuthored prose stays put.\n"
@@ -53,7 +54,7 @@ class Env:
         self.ledger = self.home / "skills" / "s"  # LEDGER skill bucket
 
     def subject(self):
-        return git(self.home, "log", "-1", "--format=%s").stdout.strip()
+        return verb_subject(self.home)  # newest non-telemetry-flush commit
 
     def commits_since_seed(self):
         return int(
@@ -107,10 +108,16 @@ def test_collapse_one_commit_full_mechanics(env):
         f"self-learn: route {SURVIVOR} → skill-md "
         f"(collapse {CLUSTER}, supersedes {LOSER})"
     )
-    count = git(
-        env.home, "rev-list", "--count", f"{head_before}..HEAD"
-    ).stdout.strip()
-    assert count == "1"
+    # ONE verb commit: the collapse is atomic. Telemetry's own flush
+    # commit may ride on top (doc 13 H-5 — audit 2026-07-16 MAJOR 3), so
+    # count what the VERB wrote, which is what "one commit" ever meant.
+    subjects = git(
+        env.home, "log", "--format=%s", f"{head_before}..HEAD"
+    ).stdout.splitlines()
+    verb_commits = [
+        s for s in subjects if not s.startswith("self-learn: telemetry flush")
+    ]
+    assert len(verb_commits) == 1
 
     # survivor routed with merged evidence + cluster sightings
     survivor = Record.from_path(env.ledger / "resolved" / f"{SURVIVOR}.md")

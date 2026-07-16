@@ -117,7 +117,7 @@ def test_kick_spawns_one_window_and_second_is_absorbed(env, monkeypatch):
     monkeypatch.delenv("SELF_LEARN_WORKER_AUTOKICK")
     spawned = []
 
-    def fake_spawn(home):
+    def fake_spawn(home, *, no_push=False):  # no_push: BLOCKER 3 signature
         spawned.append(home)
         return os.getpid()  # a live pid
 
@@ -132,7 +132,9 @@ def test_dead_pid_window_reopens(env, monkeypatch):
     monkeypatch.delenv("SELF_LEARN_WORKER_AUTOKICK")
     worker.cache_dir().mkdir(parents=True, exist_ok=True)
     (worker.cache_dir() / "worker.window").write_text("999999999")
-    monkeypatch.setattr(worker, "_spawn_window", lambda home: os.getpid())
+    monkeypatch.setattr(
+        worker, "_spawn_window", lambda home, *, no_push=False: os.getpid()
+    )
     assert worker.kick(env.home) == "spawned"
 
 
@@ -144,19 +146,34 @@ def test_autokick_disabled_is_noop(env):
 def test_teach_kicks_import_kicks(env, monkeypatch, capsys):
     monkeypatch.delenv("SELF_LEARN_WORKER_AUTOKICK")
     kicked = []
-    monkeypatch.setattr(worker, "kick", lambda home: kicked.append(home) or "spawned")
+    monkeypatch.setattr(
+        worker,
+        "kick",
+        # no_push: the kick signature carries the invoking verb's
+        # --no-push to the spawned worker (BLOCKER 3).
+        lambda home, *, no_push=False: kicked.append((home, no_push)) or "spawned",
+    )
     rc = cli.main(
         ["teach", "--skill", "s", "--type", "knowledge", "--fact", "A fact."]
     )
     assert rc == 0
     assert len(kicked) == 1
+    # A plain teach never asked for --no-push, so the spawned worker is
+    # free to publish (BLOCKER 3: no_push is opt-in, not the default).
+    assert kicked[0][1] is False
 
 
 def test_teach_route_success_does_not_kick(env, monkeypatch):
     seeded = seed_pending(env)  # ensures repo has ledger dirs
     monkeypatch.delenv("SELF_LEARN_WORKER_AUTOKICK")
     kicked = []
-    monkeypatch.setattr(worker, "kick", lambda home: kicked.append(home) or "spawned")
+    monkeypatch.setattr(
+        worker,
+        "kick",
+        # no_push: the kick signature carries the invoking verb's
+        # --no-push to the spawned worker (BLOCKER 3).
+        lambda home, *, no_push=False: kicked.append((home, no_push)) or "spawned",
+    )
     rc = cli.main(
         [
             "teach", "--skill", "s", "--type", "knowledge",
@@ -322,20 +339,35 @@ def test_kick_mid_run_triggers_followon(env, claude_shim, monkeypatch):
         "CLAUDE_SHIM_SCRIPT", f"{shim_writes(env, rid)}\ntouch {dirty}"
     )
     spawned = []
-    monkeypatch.setattr(worker, "_spawn_window", lambda home: spawned.append(1) or 12345)
+    monkeypatch.setattr(
+        worker, "_spawn_window", lambda home, *, no_push=False: spawned.append(1) or 12345
+    )
     result = worker.run(env.home)
     assert result.followon is True
     assert spawned == [1]
 
 
-def test_sync_first_runs_sandbox_script(env, claude_shim, monkeypatch):
+def test_run_never_execs_a_sync_script_from_the_ledger_home(env, claude_shim):
+    """MINOR 10 (audit 2026-07-16): the sync-first step is GONE. It looked
+    for `<home>/bin/claude-skills-sync` — which the ledger home will never
+    contain, since doc 13 H-5 gives the ledger no watcher — so it logged
+    "skipped" on every run forever. This replaces the old
+    test_sync_first_runs_sandbox_script, which pinned the removed
+    behavior: an executable at that path must now be IGNORED, not run
+    (the ledger home is data; the worker never execs out of it)."""
     marker = env.home / "sync-ran"
     script = env.home / "bin" / "claude-skills-sync"
     script.parent.mkdir(exist_ok=True)
     script.write_text(f"#!/usr/bin/env bash\ntouch {marker}\n", encoding="utf-8")
     script.chmod(script.stat().st_mode | stat.S_IEXEC)
+
     worker.run(env.home)
-    assert marker.exists()
+
+    assert not marker.exists()
+    assert not hasattr(worker, "_sync_first")
+    assert "sync-first" not in (worker.cache_dir() / "worker.log").read_text(
+        encoding="utf-8"
+    )
 
 
 # ------------------------------------------------------------------ digest
@@ -516,7 +548,9 @@ def test_batch_cap_leftovers_keep_dirty_and_followon(env, claude_shim, monkeypat
     commit_all(env.home, "sixteen pending")
     monkeypatch.setenv("CLAUDE_SHIM_SCRIPT", shim_writes(env, "lrn-00000000"))
     spawned = []
-    monkeypatch.setattr(worker, "_spawn_window", lambda home: spawned.append(1) or 4242)
+    monkeypatch.setattr(
+        worker, "_spawn_window", lambda home, *, no_push=False: spawned.append(1) or 4242
+    )
     result = worker.run(env.home)
     assert result.eligible == 15  # cap
     assert result.leftovers == 1
@@ -608,7 +642,9 @@ def test_open_window_absorbed_race(env, monkeypatch):
     with open(lock_path, "w", encoding="utf-8") as holder:
         fcntl_mod.flock(holder.fileno(), fcntl_mod.LOCK_EX)
         monkeypatch.setattr(
-            worker, "_spawn_window", lambda home: pytest.fail("must not spawn")
+            worker,
+            "_spawn_window",
+            lambda home, *, no_push=False: pytest.fail("must not spawn"),
         )
         assert worker._open_window(env.home) == "absorbed-race"
 

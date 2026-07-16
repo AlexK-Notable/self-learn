@@ -77,6 +77,7 @@ __all__ = [
     "compile_managed_text",
     "compile_managed_file",
     "compile_reference",
+    "reference_target_path",
 ]
 
 #: Marker pair, exactly per 02 §4.
@@ -307,6 +308,20 @@ def _reference_block(record: Record, *, on: date | None = None) -> str:
             lines.append("")
             lines.append(f"**Context:** {context}")
     return "\n".join(lines)
+
+
+def reference_target_path(
+    references_dir: Path | str, dest: str | None = None
+) -> Path:
+    """WHERE a reference route lands: ``dest`` (basename or path, resolved
+    against ``references_dir``) else the default ``LEARNINGS.md``. The one
+    place that mapping lives — :func:`compile_reference` writes here, and
+    recompile / the drift check READ here (audit 2026-07-16 BLOCKER 2:
+    both were blind to reference destinations entirely)."""
+    if dest is None:
+        return Path(references_dir) / DEFAULT_REFERENCE_BASENAME
+    path = Path(dest)
+    return path if path.is_absolute() else Path(references_dir) / path
 
 
 def compile_reference(

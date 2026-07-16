@@ -106,16 +106,46 @@ reference[:<file>]`. When in doubt, let it land pending.
 
 ## 5. Read the exit honestly
 
-- **0** — created (or routed). Report the record id line the CLI printed.
-- **2** — usage/validation error; nothing was written. Fix the flags and retry.
+The COMPLETE contract — every code `teach` can return. The distinction
+that matters in all of them: *was the record written, and is it safe?*
+
+- **0** — created (or routed) **and committed**. Report the record id line
+  the CLI printed. This is the only code that means "safe".
+- **2** — usage/validation error; nothing was written. Fix the flags and
+  retry.
 - **3** — the secret scan refused: something in the composed text (usually
   the quote) looks like a credential. Tell the user which span tripped it
   (the CLI printed span + rule), then either **shorten/rephrase the quote**
   and retry, or re-run with `--redact` to store it with the span replaced.
   There is no bypass flag — that is deliberate.
 - **4** — (only with `--route` and no `--dest`) the one-shot analyst
-  failed; the record was **safely captured to pending/** as a normal
-  teach. Nothing is lost — say so.
+  failed; the record was **safely captured to pending/ and committed** as a
+  normal teach. Nothing is lost — say so.
+- **5** — the ledger home is missing or is not a git repo. **Nothing was
+  written.** The CLI names the home it tried; do not create it by hand and
+  do not retry into a different one — show the user the message.
+- **6** — a git operation failed **before anything was written** (usually:
+  another producer — a worker or the miner — held the commit lock too
+  long). The lock is taken before the record is created, so nothing is on
+  disk and nothing is half-done: **re-run the same command** once the
+  other producer finishes. The lesson is not lost, but it is not captured
+  either — do not report it as captured.
+- **7** — the record **IS written but its commit FAILED** (a wedged git).
+  This is NOT a success with a footnote: nothing else ever commits a
+  capture (doc 13 H-5 — the ledger has no watcher and every other producer
+  stages only its own paths), so a re-clone would destroy it. The CLI
+  prints the repair; the short form is `self-learn reconcile`. Show it to
+  the user and say the lesson is *on disk but unpublished*.
+
+Note **a failed PUSH is still 0/4** — the commit is kept, the CLI says so
+loudly, and `self-learn push` republishes it. Only an uncommitted record
+is a failure.
+
+The distinction 6-vs-7 is the whole point: one integer per STATE, not per
+cause. 6 and 7 are both "git failed"; they are different codes because
+"nothing was written" and "the write landed, the commit did not" call for
+opposite actions from you (retry vs. repair). They agree with the same
+codes in `/self-learn:review` — one meaning per code, every surface.
 
 Do not go beyond the capture: no editing of SKILL.md/CLAUDE.md, no git
 commands, no routing decisions of your own. Routing belongs to

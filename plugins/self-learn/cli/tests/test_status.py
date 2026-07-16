@@ -9,8 +9,19 @@ from self_learn import cli
 
 @pytest.fixture
 def sandbox_home(monkeypatch, tmp_path):
+    """An INITIALIZED but record-less ledger home — the legitimate zero
+    state, and exactly what a fresh CLONE looks like: a git repo with
+    hosts.yaml and no bucket dirs (git stores no empty dirs).
+
+    A bare mkdir is NOT this: it is a broken home, and since the audit
+    2026-07-16 BLOCKER 11 fix the read surfaces say so loudly rather than
+    reporting a confident "0 pending" for a ledger nobody can see (see
+    TestHomeState in test_hosting_fixes.py)."""
+    from support import init_repo
+
     home = tmp_path / "ledger-home"
-    home.mkdir()
+    init_repo(home)
+    (home / "hosts.yaml").write_text("skills_root: null\nprojects: []\n", encoding="utf-8")
     monkeypatch.setenv("SELF_LEARN_HOME", str(home))
     return home
 

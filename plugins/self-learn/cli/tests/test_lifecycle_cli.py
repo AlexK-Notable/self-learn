@@ -21,6 +21,8 @@ from support import (
     make_behavior,
     make_env,
     proposal_dict,
+    verb_files,
+    verb_subject,
 )
 
 SKILL_MD = SKILL_MD_SEED.format(name="s")
@@ -53,13 +55,13 @@ class Env:
             git(repo, "push", "-q", "-u", "origin", "main")
         self.seed_subject = self.local_subject()
 
+    # The verb's own commit = newest non-telemetry-flush commit (doc 13
+    # H-5: telemetry commits itself now — audit 2026-07-16 MAJOR 3).
     def local_subject(self):
-        return git(self.home, "log", "-1", "--format=%s").stdout.strip()
+        return verb_subject(self.home)
 
     def committed_paths(self):
-        return git(
-            self.home, "show", "--name-only", "--format=", "HEAD"
-        ).stdout.split()
+        return verb_files(self.home)
 
 
 @pytest.fixture()

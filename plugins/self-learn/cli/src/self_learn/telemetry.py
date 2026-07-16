@@ -212,7 +212,7 @@ class FlushReport:
         return f"telemetry flush: {self.events} event{plural} → {names}"
 
 
-def flush(home: Path | str) -> FlushReport:
+def flush(home: Path | str, *, push: bool = True) -> FlushReport:
     """Move every spooled event into the tracked plane (11 §4.2).
 
     ALL-OR-NOTHING (audit 2026-07-15): every spool file is locked and
@@ -228,9 +228,26 @@ def flush(home: Path | str) -> FlushReport:
     counts stay honest. A torn trailing tracked line (crash mid-append)
     is healed by prefixing a newline before the next append.
 
-    The tracked files are appended, never staged or committed here —
-    autosync commits them on its normal cycle; a resolution verb's
-    surgical commit must never sweep them in.
+    The flushed files are staged (surgically — only the files this flush
+    touched) and committed in the LEDGER repo with the pinned subject
+    ``self-learn: telemetry flush <n> event(s)``, then best-effort pushed
+    behind the :func:`gitops.has_remote` guard. ``push=False`` commits but
+    publishes nothing — a verb invoked with ``--no-push`` said "keep this
+    local", and a flush that pushed anyway would publish that verb's
+    commit out from under it.
+
+    That commit is this function's job because nothing else does it any
+    more (audit 2026-07-16 MAJOR 3): the old docstring justified appending
+    without committing by "autosync commits them on its normal cycle", but
+    doc 13 H-5 removed the watcher from the ledger and no producer
+    replaced it — so the tracked plane was never committed, never pushed,
+    invisible on machine B, and destroyed by a re-clone. H-5's rule is
+    that producers commit their own writes; telemetry is a producer. (A
+    resolution verb's surgical commit still must never sweep these in —
+    hence a commit of their own, not a shared one.)
+
+    Git trouble is loud but never fatal: the events are already in the
+    tracked file, and the next flush's commit sweeps them in.
     """
     home = Path(home)
     sdir = spool_dir()
@@ -292,7 +309,56 @@ def flush(home: Path | str) -> FlushReport:
                 fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
             finally:
                 fh.close()
+
+    _commit_flush(home, report, push=push)
     return report
+
+
+def _commit_flush(home: Path, report: FlushReport, *, push: bool = True) -> None:
+    """H-5 (doc 13 §5): the producer commits its own writes. Surgical
+    staging (only the flushed files), pinned subject, best-effort push.
+    The lock covers stage→commit only; the push sits outside it (a push
+    touches no index — see the :mod:`self_learn.gitops` docstring for the
+    scope and the probe behind it).
+
+    Unlike a capture, an uncommitted flush is genuinely benign and stays a
+    warning: the events are already on disk and the NEXT flush commits
+    them (BLOCKER B's "wrote something, then reported success" audit —
+    this is the one path where that is actually true)."""
+    if not report.files:
+        return
+    from . import gitops  # deferred: gitops is imported by every verb path
+
+    try:
+        # This flush was the reported thief: it runs from the DETACHED
+        # worker (run end) as well as from foreground verbs, and its bare
+        # index-wide commit swept a racing verb's git mv-ed rename into
+        # "self-learn: telemetry flush N events" — the verb's pinned
+        # subject then never entered history (H-6). Lock the section;
+        # scope the commit to the flushed files.
+        with gitops.commit_lock(home):
+            gitops.stage(home, report.files)
+            plural = "s" if report.events != 1 else ""
+            gitops.commit(
+                home,
+                f"self-learn: telemetry flush {report.events} event{plural}",
+                paths=report.files,
+            )
+    except gitops.GitOpsError as exc:
+        print(
+            f"self-learn: telemetry flush commit failed ({exc}) — the events "
+            "are flushed but uncommitted; the next flush commits them",
+            file=sys.stderr,
+        )
+        return
+    if push:
+        try:
+            gitops.push_if_remote(home)
+        except gitops.GitOpsError as exc:
+            print(
+                f"self-learn: telemetry flush committed but not pushed ({exc})",
+                file=sys.stderr,
+            )
 
 
 def read_events(home: Path | str) -> list[dict]:

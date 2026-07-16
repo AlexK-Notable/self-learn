@@ -60,6 +60,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import gitops
 from . import scan as scan_mod
 from .import_common import ImporterError, ImportReport, commit_import, existing_origins
 from .ledger_ops import bucket_dir_for_scope, create_record, stamp_proposal, write_proposal
@@ -220,6 +221,27 @@ def import_backlog(
     known = existing_origins(home)
     report = ImportReport(source="backlog")
 
+    # ONE lock across [first write → commit] (audit 2026-07-16 round 7 —
+    # the invariant). The loop's writes are local file ops and its commit
+    # is `commit_import`, which takes the lock again re-entrantly; the
+    # push it does sits outside. Refusing here (a busy neighbour) costs
+    # nothing: the import is idempotent by origin and simply re-runs.
+    with gitops.commit_lock(home):
+        _import_entries(home, entries, origins, known, scope, canon_norm, report)
+        report.committed = commit_import(home, report)  # H-5: one commit/run
+    return report
+
+
+def _import_entries(
+    home: Path,
+    entries: list,
+    origins: list[str],
+    known: set[str],
+    scope: str,
+    canon_norm: str | None,
+    report: ImportReport,
+) -> None:
+    """The write loop. **The caller holds the ledger lock.**"""
     for entry, origin in zip(entries, origins):
         if origin in known:
             report.skipped_dup.append(origin)
@@ -268,5 +290,4 @@ def import_backlog(
             # Card-set data for exit (b): behavior-type + unflagged knowledge.
             report.behavioral_minority.append(record.id)
 
-    commit_import(home, report)  # H-5: one ledger commit per run
-    return report
+    return None

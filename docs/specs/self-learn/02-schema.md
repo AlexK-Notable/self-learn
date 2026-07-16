@@ -27,6 +27,17 @@ routing:                  # written on routing; null before
   routed_at: 2026-07-13T18:02:00Z
   destination: hook
   by: human               # always human in v1
+  reference_file: null    # 2026-07-16 (doc 13 audit): `reference`
+                          #   destination ONLY — WHICH references file got
+                          #   the entry (`--dest reference:<file>`); absent
+                          #   ⇒ LEARNINGS.md, the pre-doc-13 default, so
+                          #   records routed before the field existed still
+                          #   read correctly (the audit verified this
+                          #   against all 14 live reference-routed
+                          #   records). Load-bearing: recompile and the
+                          #   drift check READ it to find the target.
+                          #   compilers.reference_target_path is the one
+                          #   place that mapping lives.
   # no commit hash here — a commit's own hash can't live in a file it
   # contains. The record→commit link is the commit MESSAGE, which carries
   # the record id ("self-learn: route lrn-4c1e9a2f → hook"); git log --grep

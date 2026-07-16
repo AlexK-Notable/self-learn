@@ -26,8 +26,16 @@ def test_wrapper_runs_through_symlink(tmp_path):
     link.parent.mkdir()
     link.symlink_to(WRAPPER)
 
+    # An INITIALIZED, record-less home (git repo + hosts.yaml — what a
+    # fresh clone is): a bare dir is a BROKEN home and now exits non-zero,
+    # loudly (audit 2026-07-16 BLOCKER 11). This test is about the
+    # WRAPPER's path resolution, so it hands the CLI a home it can answer.
     sandbox_home = tmp_path / "empty-repo"
     sandbox_home.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main", str(sandbox_home)], check=True)
+    (sandbox_home / "hosts.yaml").write_text(
+        "skills_root: null\nprojects: []\n", encoding="utf-8"
+    )
 
     env = dict(os.environ, SELF_LEARN_HOME=str(sandbox_home))
     result = subprocess.run(

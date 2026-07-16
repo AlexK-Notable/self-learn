@@ -34,12 +34,13 @@ non-zero exit on any FAIL:
         missing/broken markers FAIL naming the file. Targets with zero
         routed records are never flagged (the bootstrap rule covers
         first-route targets);
-    (d) drift check (doc 13 §4.2) — every ROUTED skill-md/claude-md
-        record's ``(lrn-…)`` marker must sit inside its compiled target's
-        managed section (targets resolved via hosts.yaml, the same logic
-        the verbs use); missing target or marker FAILs naming
-        ``self-learn recompile``; skipped cleanly when hosts.yaml is
-        absent;
+    (d) drift check (doc 13 §4.2) — every ROUTED record must be present
+        in its canon: a skill-md/claude-md record's ``(lrn-…)`` marker
+        inside its compiled target's managed section, a ``reference``
+        record's id inside its references file (targets resolved via
+        hosts.yaml, the same logic the verbs use); missing target, marker,
+        or entry FAILs naming ``self-learn recompile``; skipped cleanly
+        when hosts.yaml is absent;
     (e) sentinel writability — hold + release a probe at the real
         cache-path resolution; a pre-existing LIVE sentinel (another
         flow's hold) is heartbeated, never deleted;
@@ -53,11 +54,18 @@ import sys
 import tempfile
 from pathlib import Path
 
+from . import gitops
 from . import scan as scan_mod
 from . import sentinel
-from .compilers import BEGIN_MARKER, END_MARKER, CompileError, compile_managed_text
+from .compilers import (
+    BEGIN_MARKER,
+    END_MARKER,
+    CompileError,
+    compile_managed_text,
+    reference_target_path,
+)
 from .hosts import HostsError, hosts_path, load_hosts, skill_dir_for
-from .ledger import Bucket, discover_buckets
+from .ledger import Bucket, discover_buckets, home_state, home_state_message
 from .ledger_ops import (
     ProposalError,
     bucket_project_path,
@@ -135,8 +143,28 @@ def proposal_validate(home: Path, record_id: str) -> int:
         return EXIT_SCHEMA_INVALID
 
     # (3) Stamp in place — same code path as worker step (4); overwrites
-    # any model-emitted record_sha. No commit: working files pre-resolution.
-    stamp_proposal(home, record_id)
+    # any model-emitted record_sha. No commit: working files pre-resolution
+    # (the worker's run-end commit carries them; a resolution deletes them).
+    #
+    # Locked anyway (audit 2026-07-16 round 7 — surfaced by the invariant
+    # check, which had no idea this verb existed; that is the point of
+    # enumerating surfaces from the code). The rewrite targets a TRACKED
+    # file, so a racing producer's `pull --rebase --autostash` can stash it
+    # mid-write and restore it into a conflict — and the "no commit" pin
+    # makes that WORSE, not better: nobody here would notice. The lock is
+    # local and measured in milliseconds. Its absence would have been a
+    # judgement nobody made.
+    try:
+        with gitops.commit_lock(home):
+            stamp_proposal(home, record_id)
+    except gitops.GitOpsError as exc:
+        print(
+            f"proposal validate: {record_id} is valid, but the stamp was "
+            f"not written ({exc}) — nothing was changed; retry once the "
+            "other producer finishes",
+            file=sys.stderr,
+        )
+        return gitops.EXIT_GIT_FAILED
     print(f"proposal validate: {record_id} valid — record_sha stamped in place")
     return EXIT_VALID
 
@@ -165,6 +193,30 @@ def _target_for(home: Path, bucket: Bucket, record: Record) -> Path | None:
     return None  # reference/new-skill/hook: no managed markers
 
 
+def _reference_target_for(home: Path, bucket: Bucket, record: Record) -> Path | None:
+    """The references FILE one reference-routed record landed in — the
+    same resolution the verbs use: the record's own
+    ``routing.reference_file`` (absent ⇒ the default LEARNINGS.md) under
+    the host's references dir. None = unresolvable (unregistered/missing
+    host, or a scope with no references dir)."""
+    routing = record.routing or {}
+    if routing.get("destination") != "reference":
+        return None
+    try:
+        if bucket.scope == "skill":
+            refs = skill_dir_for(load_hosts(home), bucket.name) / "references"
+        elif record.scope == "project":
+            host = bucket_project_path(bucket.path)
+            if host is None:
+                return None
+            refs = Path(host) / "references"
+        else:
+            return None
+    except HostsError:
+        return None
+    return reference_target_path(refs, routing.get("reference_file"))
+
+
 def _section_targets(home: Path) -> dict[Path, list[Record]]:
     """Managed-section targets that SHOULD have a section: target file →
     the resolved records routed to it (any record whose routing names the
@@ -188,12 +240,33 @@ def _section_targets(home: Path) -> dict[Path, list[Record]]:
 
 
 def _check_drift(home: Path) -> tuple[bool, str]:
-    """Doc 13 §4.2 drift check: every ROUTED record with a managed
-    destination must have its ``(lrn-…)`` entry marker inside its
-    compiled target's managed section — a two-phase interruption leaves
-    the ledger routed and the canon stale, and ``self-learn recompile``
-    is the one-command repair. Skips cleanly when hosts.yaml is absent
-    (nothing registered → nothing compiled anywhere)."""
+    """Doc 13 §4.2 drift check: every ROUTED record must be PRESENT in the
+    canon it was routed into — a managed destination's ``(lrn-…)`` entry
+    marker inside its target's managed section, and a ``reference``
+    destination's id somewhere in its references file. A two-phase
+    interruption leaves the ledger routed and the canon stale, and
+    ``self-learn recompile`` is the one-command repair.
+
+    References are checked here (audit 2026-07-16 BLOCKER 2): they used to
+    be filtered out alongside new-skill/hook, so an interrupted reference
+    route — the case where the entry is silently ABSENT rather than stale
+    — was the one kind of drift this check swore was impossible.
+
+    Skips cleanly when hosts.yaml is absent (nothing registered → nothing
+    compiled anywhere) — but only once the home is one we can actually
+    read. A missing / not-a-repo home has no hosts.yaml either, so "not
+    checked" rendered exactly like "checked, clean" (audit 2026-07-16
+    MAJOR 5): the B-11 silent all-clear wearing a PASS. A ledger nobody
+    can see cannot certify canon.
+
+    The refusal set mirrors :func:`cli._home_gate` EXACTLY — missing and
+    not-a-repo only. ``uninitialized`` is deliberately NOT a failure there
+    (it is a real repo that simply was never bootstrapped, and the first
+    capture bootstraps it), and a ledger with no layout and no hosts.yaml
+    has no canon to have drifted from: that is a true, quiet skip."""
+    state = home_state(home)
+    if state in ("missing", "not-a-repo"):
+        return False, home_state_message(state, home)
     if not hosts_path(home).is_file():
         return True, "hosts.yaml absent — drift not checked"
     failures: list[str] = []
@@ -209,12 +282,31 @@ def _check_drift(home: Path) -> tuple[bool, str]:
                 continue
             if record.status != "routed" or record.superseded_by is not None:
                 continue
-            if (record.routing or {}).get("destination") not in (
-                "skill-md",
-                "claude-md",
-            ):
+            destination = (record.routing or {}).get("destination")
+            if destination not in ("skill-md", "claude-md", "reference"):
                 continue
             checked += 1
+
+            if destination == "reference":
+                ref_target = _reference_target_for(home, bucket, record)
+                if ref_target is None:
+                    failures.append(
+                        f"{record.id}: references target unresolvable via "
+                        "hosts.yaml — register the host, then "
+                        "`self-learn recompile`"
+                    )
+                elif not ref_target.is_file():
+                    failures.append(
+                        f"{record.id}: references file {ref_target} missing "
+                        "— run `self-learn recompile`"
+                    )
+                elif record.id not in ref_target.read_text(encoding="utf-8"):
+                    failures.append(
+                        f"{record.id}: entry missing from {ref_target} — run "
+                        "`self-learn recompile`"
+                    )
+                continue
+
             target = _target_for(home, bucket, record)
             if target is None:
                 failures.append(

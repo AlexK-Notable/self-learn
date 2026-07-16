@@ -8,7 +8,7 @@ Function layer only — T8 wires these into the CLI. Public signatures:
     defer(home, record_id, *, until=None, note=None, no_push=False) -> VerbResult
     graduate(home, record_id, *, note=None, no_push=False) -> VerbResult
     supersede(home, old_id, new_id, *, note=None, no_push=False) -> VerbResult
-    push_pending(home) -> gitops.PushResult          # bare `self-learn push`
+    push_pending(home) -> PushReport                 # bare `self-learn push`
 
 Every verb runs the pinned sequence (08 §1 Resolution-verbs / Secret-scan /
 Sentinel-scoping pins; 02 §2 commit formats; doc 13 §4 two-phase revision):
@@ -55,6 +55,7 @@ the skills root hosts its own CLAUDE.md canon).
 
 from __future__ import annotations
 
+import contextlib
 import sys
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
@@ -62,17 +63,30 @@ from pathlib import Path
 
 from . import gitops, sentinel, telemetry
 from .chezmoi import ChezmoiAbort, ChezmoiError, compile_user_scope, preflight_user_scope
-from .compilers import CompileError, compile_managed_file, compile_reference
-from .hosts import HostsError, is_project_host, load_hosts, skill_dir_for
+from .compilers import (
+    CompileError,
+    compile_managed_file,
+    compile_reference,
+    reference_target_path,
+)
+from .hosts import (
+    HostsError,
+    is_project_host,
+    load_hosts,
+    skill_dir_for,
+    validate_host_path,
+)
 from .ledger import discover_buckets
 from .ledger_ops import (
     PROPOSAL_DESTINATIONS,
+    LedgerOpsError,
     bucket_dir_for_scope,
     bucket_project_path,
     defer_record,
     ensure_project_meta,
     find_record_path,
     read_proposal,
+    require_writable_home,
     resolve_record,
     supersede_record,
     validate_merge_proposal,
@@ -87,6 +101,7 @@ __all__ = [
     "DestinationNotBuilt",
     "DirtyTargetError",
     "NoProposalError",
+    "PushReport",
     "RecompileEntry",
     "RecompileResult",
     "SecretRefusal",
@@ -240,17 +255,84 @@ def _abort_if_dirty(repo: Path, target: Path) -> None:
         )
 
 
-def _commit_and_push(
+def _ledger_write(home: Path):
+    """THE ledger critical section: hold :func:`gitops.commit_lock` from a
+    verb's first ledger mutation through its commit — and no further
+    (audit 2026-07-16 round 3; see the ``gitops`` module docstring for the
+    probe that fixed this scope).
+
+    It must open before the first mutation, not at ``commit()``:
+    ``resolve_record`` ``git mv``s (staging a rename instantly) and
+    rewrites record files in the worktree, and a racing producer entering
+    ``pull --rebase --autostash`` in that window stashes both away — probed
+    to leave the record in pending/ AND resolved/ at once, exit 0, `git
+    status` clean.
+
+    It must CLOSE at the commit. The previous shape (a whole-verb
+    decorator) also held the ledger lock across the compile, the host
+    phase and the push, none of which touch the ledger's index — a wedged
+    remote therefore blocked every other producer for a full TCP timeout,
+    and, worse, the shape made it look like host rebases were covered when
+    they took no host lock at all. Pushes now sit outside; the rebase takes
+    its own lock inside :func:`gitops.push_with_retry`, in whichever repo
+    is actually being rebased.
+
+    Re-entrant, so a verb may hold it across helpers that take it again."""
+    return gitops.commit_lock(home)
+
+
+def _stage_and_commit(
     home: Path,
     touched: list[Path],
     message: str,
     note: str | None,
-    no_push: bool,
-) -> tuple[list[Path], str, gitops.PushResult | None]:
-    staged = gitops.stage(home, touched)
-    sha = gitops.commit(home, message, body=note)
-    push = None if no_push else gitops.push_with_retry(home)
-    return staged, sha, push
+) -> tuple[list[Path], str]:
+    """Stage → pinned commit. **Callers must already hold**
+    :func:`_ledger_write` (it is re-entrant, and taken here too so a future
+    caller that forgets still gets the commit half).
+
+    ``paths=touched`` — NOT ``paths=staged``: :func:`gitops.stage` returns
+    only paths that still EXIST, but a resolution's touched list also names
+    the ``git mv``-ed old path, which must ride the pathspec or the commit
+    splits the rename in half (see :func:`gitops.known_paths`, which
+    filters the list git cannot match)."""
+    with gitops.commit_lock(home):
+        return _commit_ledger(home, touched, message, note)
+
+
+def _commit_ledger(
+    home: Path, touched: list[Path], message: str, note: str | None = None
+) -> tuple[list[Path], str]:
+    """Stage → pinned commit, INSIDE the caller's :func:`_ledger_write`,
+    with the state fact attached to any failure.
+
+    Everything this function does is post-mutation by construction — the
+    caller has already run ``resolve_record`` (a ``git mv`` + a record
+    rewrite) — and ``ledger_ops`` raises ``LedgerOpsError``, never
+    ``GitOpsError``. So a ``GitOpsError`` reaching HERE can only come from
+    ``stage``/``commit``, which means: the ledger is mutated and the commit
+    did not land. That is :class:`gitops.HalfWrittenError`, and it is
+    raised HERE — in the verb layer — precisely because ``gitops`` cannot
+    know it (audit 2026-07-16 round 7 BLOCKER 2; the gitops docstring
+    already said "that is the verb's fact to state, not this module's",
+    and the verb was stating the opposite fact unconditionally)."""
+    try:
+        staged = gitops.stage(home, touched)
+        sha = gitops.commit(home, message, body=note, paths=touched)
+    except gitops.HalfWrittenError:
+        raise
+    except gitops.GitOpsError as exc:
+        raise gitops.HalfWrittenError.for_commit(home, message, touched, exc) from exc
+    return staged, sha
+
+
+def _push_ledger(home: Path, no_push: bool) -> gitops.PushResult | None:
+    """The ledger push — OUTSIDE the commit lock (no index involvement)
+    and behind the no-remote guard (audit 2026-07-16 MAJOR E: seven verbs
+    still called ``push_with_retry`` unguarded, so on a remote-less ledger
+    — the state doc 13 §7.1 step 5 creates on purpose — every one of them
+    exited 3 with a false "PUSH FAILED" over a perfect commit)."""
+    return None if no_push else gitops.push_if_remote(home)
 
 
 def _parse_dest(dest: str) -> tuple[str, str | None]:
@@ -336,23 +418,44 @@ class TargetSpec:
     ref_name: str | None = None
 
 
+def _gate_host(home: Path, path: Path | str, kind: str) -> Path:
+    """PREFLIGHT the host itself (audit 2026-07-16 MAJOR 5b/6): registered
+    is not the same as sound. hosts.yaml is data — a hand edit, or a repo
+    that MOVED since registration, can name a path that does not exist, is
+    not a git repo, or IS the ledger home. Unchecked, the old code sailed
+    past preflight (``target.is_file()`` is False for a vanished host, so
+    even the dirty check was skipped), COMMITTED THE LEDGER, and only then
+    failed at ``write_text`` — drift with no repair, or canon written
+    outside any repo. This raises before any commit."""
+    try:
+        return validate_host_path(home, path, kind)
+    except HostsError as exc:
+        raise VerbError(str(exc)) from exc
+
+
 def _hosts_skill_dir(home: Path, name: str) -> tuple[Path, Path]:
-    """(skills_root, host skill dir) via the registry — HostsError → VerbError."""
+    """(skills_root, host skill dir) via the registry — HostsError →
+    VerbError. The root is gate-validated (MAJOR 6: a typo'd
+    ``skills_root`` must never reach a compiler)."""
     hosts = load_hosts(home)
     try:
         skill_dir = skill_dir_for(hosts, name)
     except HostsError as exc:
         raise VerbError(str(exc)) from exc
-    return hosts.skills_root, skill_dir
+    return _gate_host(home, hosts.skills_root, "skills-root"), skill_dir
 
 
 def _project_host_or_refuse(
     home: Path, bucket_dir: Path, project_path: Path | None = None
 ) -> Path:
     """The doc 13 Q2 gate: a project bucket compiles into its recorded
-    host ONLY when that host is registered at route time. The refusal
-    message is pinned so the review card can show the one command that
-    unblocks it."""
+    host ONLY when that host is registered at route time AND that host is
+    sound on disk. The refusal messages are pinned so the review card can
+    show the one command that unblocks it — ``host add`` for a host that
+    was never registered, ``host rebind`` for one whose repo moved (audit
+    2026-07-16 MAJOR 5: the old refusal named ``host add /old/path``,
+    which then refused because /old/path no longer exists — an impossible
+    command)."""
     host = project_path if project_path is not None else bucket_project_path(bucket_dir)
     if host is None:
         raise VerbError(
@@ -361,7 +464,7 @@ def _project_host_or_refuse(
         )
     if not is_project_host(load_hosts(home), host):
         raise VerbError(f"host not registered — self-learn host add {host}")
-    return Path(host)
+    return _gate_host(home, host, "project")
 
 
 def _resolve_target(
@@ -420,10 +523,11 @@ def _resolve_target(
             raise VerbError(
                 "no skills root registered — self-learn host add <path> --skills-root"
             )
-        target = hosts.skills_root / "CLAUDE.md"
+        root = _gate_host(home, hosts.skills_root, "skills-root")
+        target = root / "CLAUDE.md"
         if check_dirty and target.is_file():
-            _abort_if_dirty(hosts.skills_root, target)
-        return TargetSpec("claude-md", "skill-root", bucket_dir, target, hosts.skills_root)
+            _abort_if_dirty(root, target)
+        return TargetSpec("claude-md", "skill-root", bucket_dir, target, root)
 
     if destination == "reference":
         if scope.startswith("skill:"):
@@ -438,7 +542,11 @@ def _resolve_target(
                 "the user host is the chezmoi-managed CLAUDE.md, it has no "
                 "references dir (doc 13 §2)"
             )
-        probe = refs_dir / (ref_name or "LEARNINGS.md")
+        # The compiler owns this mapping — "the one place that mapping
+        # lives" (compilers.reference_target_path's docstring). This site
+        # re-implemented it with its own "LEARNINGS.md" literal (audit
+        # 2026-07-16 MINOR 7): two copies of one rule, free to drift.
+        probe = reference_target_path(refs_dir, ref_name)
         if check_dirty and probe.is_file():
             _abort_if_dirty(host, probe)
         return TargetSpec(
@@ -540,23 +648,40 @@ def _host_phase(
 ) -> tuple[object | None, str | None]:
     """Steps (e): compile + HOST commit under the sentinel hold. On ANY
     failure after the ledger commit: loud drift warning naming
-    ``self-learn recompile``; the ledger stays truth (doc 13 §4.2)."""
+    ``self-learn recompile``; the ledger stays truth (doc 13 §4.2).
+
+    The HOST's commit lock spans compile→commit, for the same reason the
+    ledger's spans mutation→commit: the compile WRITES the managed file
+    into the host worktree, and a racing self-learn producer rebasing that
+    host (``push_with_retry`` → ``pull --rebase --autostash``) would stash
+    the freshly compiled file away mid-flight. Always ledger→host, the one
+    ordering, so composing them cannot deadlock. Note the lock is partial
+    by design for hosts — a human's own ``git add`` in their repo takes no
+    lock of ours, which is exactly why the commit is ALSO pathspec-scoped
+    to ``host_paths``."""
+    lock = (
+        gitops.commit_lock(spec.host_repo)
+        if spec.host_repo is not None
+        else contextlib.nullcontext()
+    )
     try:
-        compile_result, host_paths = _apply_target(
-            home, spec, routed_record, chezmoi_bin=chezmoi_bin, message=message
-        )
-        host_sha = None
-        if spec.host_repo is not None and host_paths:
-            changed = getattr(compile_result, "changed", None)
-            applied = getattr(compile_result, "applied", None)
-            if changed is not False and applied is not False:
-                gitops.stage(spec.host_repo, host_paths)
-                rel = host_paths[0].relative_to(spec.host_repo)
-                host_sha = gitops.commit(
-                    spec.host_repo,
-                    f"self-learn: apply {record_id} → {rel} ({spec.destination})",
-                    body=note,
-                )
+        with lock:
+            compile_result, host_paths = _apply_target(
+                home, spec, routed_record, chezmoi_bin=chezmoi_bin, message=message
+            )
+            host_sha = None
+            if spec.host_repo is not None and host_paths:
+                changed = getattr(compile_result, "changed", None)
+                applied = getattr(compile_result, "applied", None)
+                if changed is not False and applied is not False:
+                    gitops.stage(spec.host_repo, host_paths)
+                    rel = host_paths[0].relative_to(spec.host_repo)
+                    host_sha = gitops.commit(
+                        spec.host_repo,
+                        f"self-learn: apply {record_id} → {rel} ({spec.destination})",
+                        body=note,
+                        paths=host_paths,
+                    )
         return compile_result, host_sha
     except _HOST_PHASE_ERRORS as exc:
         warning = (
@@ -708,35 +833,41 @@ def route(
 
         # (d) LEDGER phase (doc 13 §4.1: ledger commit FIRST — the ledger
         # is the source of truth; canon is compiled from it afterwards).
-        if merged is not None:
-            merged.write(path)
-        touched = resolve_record(
-            home,
-            record_id,
-            "routed",
-            destination=destination,
-            routed_at=routed_at,
-            note=note,
-            follow_up=follow_up,
-        )
-        if old_id is not None:
-            # teach --supersedes completion-at-route: SAME commit (08 §1
-            # Corrective-supersession pin).
-            touched = touched + supersede_record(home, old_id, record_id)
-        for loser_id in losers:
-            # collapse: losers superseded by the survivor, SAME commit;
-            # their analysis proposals (and the merge proposal, via the
-            # survivor's own sibling sweep) are removed by resolve_record.
-            touched = touched + supersede_record(home, loser_id, record_id)
-        if merge_path is not None and merge_path.exists():
-            # belt-and-braces: the sibling sweep removes it when it names
-            # the survivor; an inconsistent leftover is removed here.
-            from .ledger_ops import _remove_file
+        # The lock opens HERE — at the first mutation, not at the commit —
+        # and closes at the commit; see :func:`_ledger_write`.
+        with _ledger_write(home):
+            if merged is not None:
+                merged.write(path)
+            touched = resolve_record(
+                home,
+                record_id,
+                "routed",
+                destination=destination,
+                routed_at=routed_at,
+                note=note,
+                follow_up=follow_up,
+                reference_file=ref_name if destination == "reference" else None,
+            )
+            if old_id is not None:
+                # teach --supersedes completion-at-route: SAME commit (08 §1
+                # Corrective-supersession pin).
+                touched = touched + supersede_record(home, old_id, record_id)
+            for loser_id in losers:
+                # collapse: losers superseded by the survivor, SAME commit;
+                # their analysis proposals (and the merge proposal, via the
+                # survivor's own sibling sweep) are removed by resolve_record.
+                touched = touched + supersede_record(home, loser_id, record_id)
+            if merge_path is not None and merge_path.exists():
+                # belt-and-braces: the sibling sweep removes it when it names
+                # the survivor; an inconsistent leftover is removed here.
+                from .ledger_ops import _remove_file
 
-            if _remove_file(home, merge_path):
-                touched = touched + [merge_path]
-        staged = gitops.stage(home, touched)
-        sha = gitops.commit(home, message, body=note)
+                if _remove_file(home, merge_path):
+                    touched = touched + [merge_path]
+            # paths=touched, not paths=staged: the git mv-ed OLD path is
+            # gone from the worktree (so `stage` drops it) but MUST ride
+            # the pathspec or the rename commits in half.
+            staged, sha = _commit_ledger(home, touched, message, note)
 
         # (e) HOST phase: compile from the committed ledger state + host
         # commit (pinned apply subject), still under the sentinel hold.
@@ -755,11 +886,12 @@ def route(
             warnings=warnings,
         )
 
-        # (f) push ledger, then push host (pinned retry) unless --no-push.
-        push = None if no_push else gitops.push_with_retry(home)
+        # (f) push ledger, then push host (pinned retry, has_remote-guarded)
+        # unless --no-push.
+        push = None if no_push else gitops.push_if_remote(home)
         host_push = None
         if not no_push and host_sha is not None and spec.host_repo is not None:
-            host_push = gitops.push_with_retry(spec.host_repo)
+            host_push = gitops.push_if_remote(spec.host_repo)
         return VerbResult(
             action="route",
             record_id=record_id,
@@ -803,6 +935,12 @@ def route_direct(
     --cached`` of the touched paths) for T8 to print — invocation is the
     approval, so the diff is informational, never a prompt."""
     home = Path(home)
+    # BLOCKER 11 (audit 2026-07-16): this path writes a record straight
+    # into resolved/ — gate the home BEFORE anything lands on disk.
+    try:
+        require_writable_home(home)
+    except LedgerOpsError as exc:
+        raise VerbError(str(exc)) from exc
     destination, ref_name = _parse_dest(dest)
     if destination in M3_DESTINATIONS:
         raise DestinationNotBuilt(
@@ -862,27 +1000,35 @@ def route_direct(
         suffix = f" (supersedes {old_id})" if old_id else ""
         message = f"self-learn: route {record.id} → {destination}{suffix}"
 
-        record.set_routing(
-            {"routed_at": _now_iso(), "destination": destination, "by": "human"}
-        )
+        routing = {"routed_at": _now_iso(), "destination": destination, "by": "human"}
+        if destination == "reference" and ref_name is not None:
+            routing["reference_file"] = ref_name  # BLOCKER 2: name the file
+        record.set_routing(routing)
         record.set_status("routed")
         if note is not None:
             record.set_resolution_note(note)
 
         # (d) LEDGER phase: write directly to resolved/ — the pending/ dir
-        # is never touched (02 §2 lifecycle note).
-        resolved_path.parent.mkdir(parents=True, exist_ok=True)
-        record.write(resolved_path)
-        touched: list[Path] = [resolved_path]
-        if record.scope == "project":
-            touched.append(ensure_project_meta(bucket_dir, project_path))
-        if old_id is not None:
-            # teach --supersedes completion-at-route: SAME commit (08 §1
-            # Corrective-supersession pin).
-            touched = touched + supersede_record(home, old_id, record.id)
-        staged = gitops.stage(home, touched)
-        diff = gitops.staged_diff(home, staged)
-        sha = gitops.commit(home, message, body=note)
+        # is never touched (02 §2 lifecycle note). Locked from the first
+        # mutation through the commit (:func:`_ledger_write`).
+        with _ledger_write(home):
+            resolved_path.parent.mkdir(parents=True, exist_ok=True)
+            record.write(resolved_path)
+            touched: list[Path] = [resolved_path]
+            if record.scope == "project":
+                touched.append(ensure_project_meta(bucket_dir, project_path))
+            if old_id is not None:
+                # teach --supersedes completion-at-route: SAME commit (08 §1
+                # Corrective-supersession pin).
+                touched = touched + supersede_record(home, old_id, record.id)
+            try:
+                staged = gitops.stage(home, touched)
+                diff = gitops.staged_diff(home, staged)
+            except gitops.GitOpsError as exc:  # post-mutation: see _commit_ledger
+                raise gitops.HalfWrittenError.for_commit(
+                    home, message, touched, exc
+                ) from exc
+            _, sha = _commit_ledger(home, touched, message, note)
 
         # (e) HOST phase.
         warnings: list[str] = []
@@ -904,11 +1050,11 @@ def route_direct(
             ).stdout
             diff = diff + host_diff
 
-        # (f) push ledger, then push host.
-        push = None if no_push else gitops.push_with_retry(home)
+        # (f) push ledger, then push host (both has_remote-guarded).
+        push = None if no_push else gitops.push_if_remote(home)
         host_push = None
         if not no_push and host_sha is not None and spec.host_repo is not None:
-            host_push = gitops.push_with_retry(spec.host_repo)
+            host_push = gitops.push_if_remote(spec.host_repo)
         return VerbResult(
             action="route",
             record_id=record.id,
@@ -942,9 +1088,11 @@ def reject(
     hold = sentinel.hold()
     sentinel.heartbeat()
     try:
-        touched = resolve_record(home, record_id, "rejected", note=note)
         message = f"self-learn: reject {record_id}"
-        staged, sha, push = _commit_and_push(home, touched, message, note, no_push)
+        with _ledger_write(home):
+            touched = resolve_record(home, record_id, "rejected", note=note)
+            staged, sha = _stage_and_commit(home, touched, message, note)
+        push = _push_ledger(home, no_push)
         return VerbResult(
             action="reject",
             record_id=record_id,
@@ -976,10 +1124,12 @@ def defer(
     hold = sentinel.hold()
     sentinel.heartbeat()
     try:
-        touched = defer_record(home, record_id, until)
-        deferred_until = _date_str(Record.from_path(touched[0]).deferred_until)
-        message = f"self-learn: defer {record_id} until {deferred_until}"
-        staged, sha, push = _commit_and_push(home, touched, message, note, no_push)
+        with _ledger_write(home):
+            touched = defer_record(home, record_id, until)
+            deferred_until = _date_str(Record.from_path(touched[0]).deferred_until)
+            message = f"self-learn: defer {record_id} until {deferred_until}"
+            staged, sha = _stage_and_commit(home, touched, message, note)
+        push = _push_ledger(home, no_push)
         return VerbResult(
             action="defer",
             record_id=record_id,
@@ -1012,11 +1162,13 @@ def graduate(
     hold = sentinel.hold()
     sentinel.heartbeat()
     try:
-        touched = resolve_record(
-            home, record_id, "superseded", superseded_by="canon", note=note
-        )
         message = f"self-learn: graduate {record_id}"
-        staged, sha, push = _commit_and_push(home, touched, message, note, no_push)
+        with _ledger_write(home):
+            touched = resolve_record(
+                home, record_id, "superseded", superseded_by="canon", note=note
+            )
+            staged, sha = _stage_and_commit(home, touched, message, note)
+        push = _push_ledger(home, no_push)
         return VerbResult(
             action="graduate",
             record_id=record_id,
@@ -1074,11 +1226,12 @@ def supersede(
                     chezmoi_bin=chezmoi_bin,
                 )
 
-        # (d) LEDGER phase.
-        touched = supersede_record(home, old_id, new_id, note=note)
+        # (d) LEDGER phase (locked from the first mutation through the
+        # commit — :func:`_ledger_write`).
         message = f"self-learn: supersede {old_id} → {new_id}"
-        staged = gitops.stage(home, touched)
-        sha = gitops.commit(home, message, body=note)
+        with _ledger_write(home):
+            touched = supersede_record(home, old_id, new_id, note=note)
+            staged, sha = _commit_ledger(home, touched, message, note)
 
         # (e) HOST phase: recompile the target — the entry drops out.
         compile_result = None
@@ -1095,11 +1248,11 @@ def supersede(
                 warnings=warnings,
             )
 
-        # (f) push ledger, then host.
-        push = None if no_push else gitops.push_with_retry(home)
+        # (f) push ledger, then host (both has_remote-guarded).
+        push = None if no_push else gitops.push_if_remote(home)
         host_push = None
         if not no_push and host_sha is not None and spec.host_repo is not None:
-            host_push = gitops.push_with_retry(spec.host_repo)
+            host_push = gitops.push_if_remote(spec.host_repo)
         return VerbResult(
             action="supersede",
             record_id=old_id,
@@ -1145,9 +1298,11 @@ def followup_done(
             record.complete_follow_up(done_note=note)
         except RecordError as exc:
             raise VerbError(str(exc)) from exc
-        record.write(path)
         message = f"self-learn: follow-up done on {record_id}"
-        staged, sha, push = _commit_and_push(home, [path], message, note, no_push)
+        with _ledger_write(home):
+            record.write(path)
+            staged, sha = _stage_and_commit(home, [path], message, note)
+        push = _push_ledger(home, no_push)
         return VerbResult(
             action="followup-done",
             record_id=record_id,
@@ -1226,9 +1381,11 @@ def confirm_recurrence(
             record.append_recurrence(entry)
         except RecordError as exc:
             raise VerbError(str(exc)) from exc
-        record.write(path)
         message = f"self-learn: recurrence confirmed on {record_id}"
-        staged, sha, push = _commit_and_push(home, [path], message, note, no_push)
+        with _ledger_write(home):
+            record.write(path)
+            staged, sha = _stage_and_commit(home, [path], message, note)
+        push = _push_ledger(home, no_push)
         return VerbResult(
             action="confirm-recurrence",
             record_id=record_id,
@@ -1266,9 +1423,11 @@ def confirm_held(
     sentinel.heartbeat()
     try:
         record.set_last_confirmed(_now_iso()[:10])
-        record.write(path)
         message = f"self-learn: confirmed holding {record_id}"
-        staged, sha, push = _commit_and_push(home, [path], message, note, no_push)
+        with _ledger_write(home):
+            record.write(path)
+            staged, sha = _stage_and_commit(home, [path], message, note)
+        push = _push_ledger(home, no_push)
         return VerbResult(
             action="confirm-held",
             record_id=record_id,
@@ -1313,9 +1472,11 @@ def link_contradicts(
             record.append_contradicts(target)
         except RecordError as exc:
             raise VerbError(str(exc)) from exc
-        record.write(path)
         message = f"self-learn: link {record_id} contradicts {target}"
-        staged, sha, push = _commit_and_push(home, [path], message, note, no_push)
+        with _ledger_write(home):
+            record.write(path)
+            staged, sha = _stage_and_commit(home, [path], message, note)
+        push = _push_ledger(home, no_push)
         return VerbResult(
             action="link-contradicts",
             record_id=record_id,
@@ -1329,11 +1490,75 @@ def link_contradicts(
         hold.release()
 
 
-def push_pending(home: Path | str) -> gitops.PushResult:
+@dataclass(frozen=True)
+class PushReport:
+    """What ``self-learn push`` published, per repo (ledger first, then
+    every registered host that had unpushed commits)."""
+
+    entries: list[tuple[Path, gitops.PushResult]] = field(default_factory=list)
+
+    @property
+    def ok(self) -> bool:
+        return all(r.ok for _repo, r in self.entries)
+
+    @property
+    def retried(self) -> bool:
+        return any(r.retried for _repo, r in self.entries)
+
+    @property
+    def exit_code(self) -> int:
+        for _repo, r in self.entries:
+            if not r.ok:
+                return r.exit_code
+        return 0
+
+
+def push_pending(home: Path | str) -> PushReport:
     """The bare ``self-learn push`` verb: publish pending local commits
-    with the pinned retry. Read-only w.r.t. records — no sentinel, no
-    heartbeat (it mutates nothing the watcher could race)."""
-    return gitops.push_pending(Path(home))
+    with the pinned retry — for the LEDGER **and every registered host**
+    (audit 2026-07-16 MAJOR 4: a failed HOST push had no retry path at
+    all; ``push`` was ledger-only, so the one command the failure message
+    names — "run `self-learn push`" — could not actually republish the
+    canon commit it was talking about).
+
+    Hosts with nothing unpushed are skipped silently; a host whose repo is
+    unsound (moved away, hand-edited entry) is skipped LOUDLY rather than
+    failing the ledger push — publishing truth must not hinge on a broken
+    canon host. Read-only w.r.t. records — no sentinel, no heartbeat (it
+    mutates nothing the watcher could race)."""
+    home = Path(home)
+    entries: list[tuple[Path, gitops.PushResult]] = [
+        (home, gitops.push_pending(home))
+    ]
+
+    try:
+        hosts = load_hosts(home)
+    except HostsError as exc:
+        print(f"self-learn push: hosts.yaml unreadable ({exc})", file=sys.stderr)
+        return PushReport(entries)
+
+    seen: set[Path] = {home.resolve()}
+    candidates = [(hosts.skills_root, "skills-root")] + [
+        (p, "project") for p in hosts.projects
+    ]
+    for raw, kind in candidates:
+        if raw is None:
+            continue
+        problem = None
+        try:
+            repo = validate_host_path(home, raw, kind)
+        except HostsError as exc:
+            problem = str(exc)
+            repo = Path(raw).expanduser()
+        if problem is not None:
+            print(f"self-learn push: skipping {repo} — {problem}", file=sys.stderr)
+            continue
+        if repo in seen:
+            continue
+        seen.add(repo)
+        if gitops.unpushed_commits(repo):
+            entries.append((repo, gitops.push_if_remote(repo)))
+    return PushReport(entries)
 
 
 # --------------------------------------------------------------- recompile
@@ -1362,19 +1587,31 @@ class RecompileResult:
 def recompile(home: Path | str, *, no_push: bool = False) -> RecompileResult:
     """The doc-13 drift repair (H-2: recompile is always safe and repairs
     any two-phase interruption). For every ROUTED record, recompute each
-    managed target — skill-md files and project/skill-root claude-md
-    files; references are untouched (append-only), and the chezmoi-managed
-    user file keeps its own guarded flow — and commit any HOST whose file
-    changed (pinned subject ``self-learn: recompile <relative target>``).
-    Idempotent: a second run compiles byte-identical content and commits
-    nothing. Unregistered hosts and dirty targets are skipped LOUDLY,
-    never guessed at (H-3)."""
+    managed target — skill-md files and project/skill-root claude-md files
+    (the chezmoi-managed user file keeps its own guarded flow) — and
+    RE-APPEND every reference-routed record to its references file, then
+    commit any HOST whose file changed (pinned subject ``self-learn:
+    recompile <relative target>``).
+
+    References are append-only, which is exactly why they belong here
+    (audit 2026-07-16 BLOCKER 2): a ``reference`` route interrupted
+    between the ledger commit and the host apply used to leave NO canon
+    entry and NO way back — recompile filtered references out, so the one
+    advertised repair did nothing and the drift check called it clean.
+    :func:`compilers.compile_reference` is record-id-idempotent, so
+    re-appending an entry that IS there is a no-op and re-appending one
+    that is missing is the repair.
+
+    Idempotent overall: a second run compiles byte-identical content and
+    commits nothing. Unregistered/unsound hosts and dirty targets are
+    skipped LOUDLY, never guessed at (H-3)."""
     home = Path(home)
     result = RecompileResult()
 
-    # Enumerate managed targets off the routed records (the ledger is the
-    # source of truth — targets are derived, never listed anywhere else).
+    # Enumerate targets off the routed records (the ledger is the source of
+    # truth — targets are derived, never listed anywhere else).
     specs: dict[tuple[Path | None, Path | None], TargetSpec] = {}
+    ref_work: dict[tuple[Path, Path], tuple[TargetSpec, list[Record]]] = {}
     for bucket in discover_buckets(home):
         resolved = bucket.path / "resolved"
         if not resolved.is_dir():
@@ -1387,21 +1624,31 @@ def recompile(home: Path | str, *, no_push: bool = False) -> RecompileResult:
             if record.status != "routed" or record.superseded_by is not None:
                 continue
             destination = (record.routing or {}).get("destination")
-            if destination not in ("skill-md", "claude-md"):
+            if destination not in ("skill-md", "claude-md", "reference"):
                 continue
             if destination == "claude-md" and record.scope == "user":
                 continue  # chezmoi flow owns the user file — not recompiled
+            ref_name = (
+                (record.routing or {}).get("reference_file")
+                if destination == "reference"
+                else None
+            )
             try:
                 spec = _resolve_target(
                     home,
                     bucket.path,
                     record.scope,
                     destination,
-                    None,
+                    ref_name,
                     check_dirty=False,
                 )
             except VerbError as exc:
                 result.warnings.append(f"{record.id}: {exc}")
+                continue
+            if destination == "reference":
+                probe = reference_target_path(spec.refs_dir, spec.ref_name)
+                entry = ref_work.setdefault((spec.host_repo, probe), (spec, []))
+                entry[1].append(record)
                 continue
             specs.setdefault((spec.host_repo, spec.target), spec)
 
@@ -1420,29 +1667,92 @@ def recompile(home: Path | str, *, no_push: bool = False) -> RecompileResult:
                     f"{target}: uncommitted changes — commit/stash, then re-run"
                 )
                 continue
-            try:
-                compile_result, host_paths = _apply_target(home, spec, None)
-            except (CompileError, OSError) as exc:
-                result.entries.append(
-                    RecompileEntry(target=target, changed=False, skipped=str(exc))
+            # compile→commit under the HOST's lock (see :func:`_host_phase`:
+            # the compile writes the managed file into the host worktree, so
+            # a racing autostash there would stash it away mid-flight).
+            with gitops.commit_lock(host_repo):
+                try:
+                    compile_result, host_paths = _apply_target(home, spec, None)
+                except (CompileError, OSError) as exc:
+                    result.entries.append(
+                        RecompileEntry(target=target, changed=False, skipped=str(exc))
+                    )
+                    result.warnings.append(f"{target}: {exc}")
+                    continue
+                if not compile_result.changed:
+                    result.entries.append(
+                        RecompileEntry(target=target, changed=False)
+                    )
+                    continue
+                gitops.stage(host_repo, host_paths)
+                rel = target.relative_to(host_repo)
+                sha = gitops.commit(
+                    host_repo, f"self-learn: recompile {rel}", paths=host_paths
                 )
-                result.warnings.append(f"{target}: {exc}")
-                continue
-            if not compile_result.changed:
-                result.entries.append(RecompileEntry(target=target, changed=False))
-                continue
-            gitops.stage(host_repo, host_paths)
-            rel = target.relative_to(host_repo)
-            sha = gitops.commit(host_repo, f"self-learn: recompile {rel}")
             result.entries.append(
                 RecompileEntry(target=target, changed=True, commit_sha=sha)
             )
             if host_repo not in touched_hosts:
                 touched_hosts.append(host_repo)
+
+        # Reference targets: re-append every routed record (idempotent per
+        # record id), commit the file ONCE if anything landed.
+        for (host_repo, probe), (spec, records) in sorted(
+            ref_work.items(), key=lambda kv: str(kv[0][1])
+        ):
+            if probe.is_file() and gitops.paths_dirty(host_repo, probe):
+                result.entries.append(
+                    RecompileEntry(target=probe, changed=False, skipped="dirty")
+                )
+                result.warnings.append(
+                    f"{probe}: uncommitted changes — commit/stash, then re-run"
+                )
+                continue
+            # The lock ENCLOSES the compile loop (audit 2026-07-16 round 7
+            # MAJOR 3): ``compile_reference`` APPENDS to the references
+            # file, which is TRACKED in the host — the one shape a racing
+            # autostash does not leave alone (verified: autostash leaves
+            # conflict markers in tracked modifications; untracked files
+            # survive, which is why the teach/worker/miner windows are the
+            # benign ones and this was not). It used to open at the commit
+            # below, asymmetric with the managed-file path above, which
+            # correctly wraps ``_apply_target``. Same rule, both paths:
+            # lock before the first mutation of the repo.
+            with gitops.commit_lock(host_repo):  # ledger→host order
+                applied = False
+                failed = False
+                for record in sorted(records, key=lambda r: r.id):
+                    try:
+                        ref_result = compile_reference(
+                            spec.refs_dir, record, dest=spec.ref_name
+                        )
+                    except (CompileError, OSError) as exc:
+                        result.warnings.append(f"{record.id}: {exc}")
+                        failed = True
+                        continue
+                    applied = applied or ref_result.applied or ref_result.created
+                if not applied:
+                    if not failed:
+                        result.entries.append(
+                            RecompileEntry(target=probe, changed=False)
+                        )
+                    continue
+                gitops.stage(host_repo, [probe])
+                rel = probe.relative_to(host_repo)
+                sha = gitops.commit(
+                    host_repo, f"self-learn: recompile {rel}", paths=[probe]
+                )
+            result.entries.append(
+                RecompileEntry(target=probe, changed=True, commit_sha=sha)
+            )
+            if host_repo not in touched_hosts:
+                touched_hosts.append(host_repo)
+
         if not no_push:
+            # Outside every lock (a push touches no index); the rebase
+            # fallback takes the HOST's own lock inside push_with_retry.
             for host_repo in touched_hosts:
-                if gitops.has_remote(host_repo):
-                    gitops.push_with_retry(host_repo)
+                gitops.push_if_remote(host_repo)
     finally:
         hold.release()
     return result

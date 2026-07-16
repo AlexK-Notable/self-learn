@@ -43,6 +43,8 @@ from support import (
     make_behavior,
     make_env,
     make_knowledge,
+    verb_files,
+    verb_subject,
 )
 
 
@@ -125,8 +127,15 @@ class TestDiscovery:
         scopes = {row["scope"] for row in status_infos(env.ledger)}
         assert scopes == {"skill", "project", "user"}  # "project+user" is dead
 
-    def test_slug_for_matches_projects_convention(self):
-        assert slug_for("/home/komi/repos/x") == "-home-komi-repos-x"
+    def test_slug_for_keeps_readable_shape_and_disambiguates(self):
+        # Claude Code's readable projects-dir shape is still the PREFIX,
+        # but the slug now carries a digest of the resolved path: the
+        # readable form alone is many-to-one, which cross-homed one
+        # project's lessons into another's canon (audit 2026-07-16
+        # BLOCKER 1). See TestSlugCollision in test_hosting_fixes.py.
+        slug = slug_for("/home/komi/repos/x")
+        assert slug.startswith("-home-komi-repos-x-")
+        assert len(slug) == len("-home-komi-repos-x-") + 8
 
 
 class TestBucketDirForScope:
@@ -236,11 +245,11 @@ class TestProducerCommits:
         pending = list((bucket / "pending").glob("lrn-*.md"))
         assert len(pending) == 1
         rid = pending[0].stem
-        assert subjects(env.ledger)[0] == f"self-learn: capture {rid} (project)"
+        # H-5: the capture commit is the newest NON-telemetry commit —
+        # telemetry now commits itself on top (audit 2026-07-16 MAJOR 3).
+        assert verb_subject(env.ledger) == f"self-learn: capture {rid} (project)"
         # the capture commit carries the record AND the bucket meta
-        files = git(
-            env.ledger, "show", "--name-only", "--format=", "HEAD"
-        ).stdout.split()
+        files = verb_files(env.ledger)
         assert f"projects/{slug_for(project_repo)}/pending/{rid}.md" in files
         assert f"projects/{slug_for(project_repo)}/meta.yaml" in files
 
@@ -528,13 +537,18 @@ class TestCacheAndSentinel:
         (old / "spool" / "2026-07.host.jsonl").write_text("{}\n", encoding="utf-8")
 
         new = worker.cache_dir()
-        assert (new / "worker.log").read_text(encoding="utf-8") == "log line\n"
+        # the old log is carried over intact; the shim APPENDS its own
+        # audit line (2026-07-16 MINOR 9: it must never move state
+        # silently), so the old content is a prefix, not the whole file.
+        log = (new / "worker.log").read_text(encoding="utf-8")
+        assert log.startswith("log line\n")
+        assert "cache migration" in log
         assert (new / "events.jsonl").is_file()
         assert (new / "miner" / "journal.jsonl").is_file()
         assert (new / "spool" / "2026-07.host.jsonl").is_file()
         # one-time: a second call must not disturb the migrated state
         assert worker.cache_dir() == new
-        assert (new / "worker.log").is_file()
+        assert (new / "worker.log").read_text(encoding="utf-8") == log
 
     def test_sentinel_path_is_global(self, tmp_path, monkeypatch):
         xdg = tmp_path / "xdg"

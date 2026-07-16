@@ -125,6 +125,24 @@ def import_memory(
     known = existing_origins(home)
     report = ImportReport(source="auto-memory")
 
+    # ONE lock across [first write → commit] (audit 2026-07-16 round 7 —
+    # the invariant). `commit_import` takes it again re-entrantly and
+    # pushes outside it. Refusing here costs nothing: the import is
+    # idempotent by origin and re-runs.
+    with gitops.commit_lock(home):
+        _import_topics(home, memory_dir, project_path, known, report)
+        report.committed = commit_import(home, report)  # H-5: one commit/run
+    return report
+
+
+def _import_topics(
+    home: Path,
+    memory_dir: Path,
+    project_path: Path,
+    known: set[str],
+    report: ImportReport,
+) -> None:
+    """The write loop. **The caller holds the ledger lock.**"""
     for path in sorted(memory_dir.glob("*.md")):
         if path.name == INDEX_BASENAME:
             continue
@@ -166,8 +184,7 @@ def import_memory(
         report.created.append(record.id)
         report.origins[record.id] = origin
 
-    commit_import(home, report)  # H-5: one ledger commit per run
-    return report
+    return None
 
 
 # ------------------------------------------------------------------ prune

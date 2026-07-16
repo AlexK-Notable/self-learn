@@ -34,7 +34,7 @@ from pathlib import Path
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
-from .ledger import Bucket, discover_buckets
+from .ledger import Bucket, discover_buckets, home_state, home_state_message
 from .normalize import sha_anchor
 from .records import RECORD_ID_RE, Record, RecordError
 
@@ -244,11 +244,34 @@ def bucket_dir_for_scope(
 def ensure_project_meta(bucket_dir: Path, project_path: Path | str) -> Path:
     """Write ``meta.yaml`` ({"path": <resolved project path>}) beside a
     project bucket on first creation (doc 13 §3: the slug alone is lossy).
-    Existing meta is never rewritten. Returns the meta path."""
+    Existing meta is never rewritten — but a MISMATCH is refused, never
+    silently accepted (audit 2026-07-16 BLOCKER 1): if the bucket already
+    claims a different project, this caller's records would compile into
+    that other project's canon. Two paths can only meet here through a
+    slug collision or a hand-edit, and both are bugs, not routine.
+    Re-pointing a bucket at a moved repo is ``host rebind``'s job.
+    Returns the meta path."""
     bucket_dir.mkdir(parents=True, exist_ok=True)
     meta = bucket_dir / "meta.yaml"
+    wanted = Path(project_path).expanduser().resolve()
     if not meta.is_file():
-        _dump_yaml({"path": str(Path(project_path).expanduser().resolve())}, meta)
+        _dump_yaml({"path": str(wanted)}, meta)
+        return meta
+    recorded = bucket_project_path(bucket_dir)
+    if recorded is None:
+        raise LedgerOpsError(
+            f"{meta} is unreadable or has no path — a project bucket "
+            "without its recorded path cannot be trusted to compile "
+            "anywhere (doc 13 §3); repair it or re-capture"
+        )
+    if Path(recorded).expanduser().resolve() != wanted:
+        raise LedgerOpsError(
+            f"project bucket {bucket_dir} belongs to {recorded}, not "
+            f"{wanted} — refusing to file this project's records in "
+            "another project's bucket (they would compile into ITS "
+            "CLAUDE.md); if that repo MOVED, run `self-learn host rebind "
+            f"{recorded} {wanted}`"
+        )
     return meta
 
 
@@ -266,6 +289,22 @@ def bucket_project_path(bucket_dir: Path) -> Path | None:
     return Path(value) if isinstance(value, str) and value else None
 
 
+def require_writable_home(home: Path | str) -> Path:
+    """The WRITE-surface home gate (audit 2026-07-16 BLOCKER 11): refuse
+    BEFORE writing anything when the home is missing or is not a git repo.
+
+    Without it, ``teach`` into a nonexistent home happily created the
+    bucket dirs, wrote the record, and THEN failed its commit ("record
+    written but uncommitted") — leaving the lesson in an untracked
+    directory that nothing will ever push, in a home the user probably
+    did not mean. A missing bucket dir inside a VALID home is different
+    and still auto-creates: that is ordinary."""
+    state = home_state(home)
+    if state in ("missing", "not-a-repo"):
+        raise LedgerOpsError(home_state_message(state, home))
+    return Path(home)
+
+
 def create_record(
     home: Path, record: Record, *, project_path: Path | None = None
 ) -> Path:
@@ -273,6 +312,7 @@ def create_record(
     on demand. Project-scoped records need ``project_path`` and get a
     ``meta.yaml`` written beside the bucket on first creation (doc 13 §3).
     Returns the created path."""
+    require_writable_home(home)  # nothing is written into a broken home
     bucket_dir = bucket_dir_for_scope(home, record.scope, project_path=project_path)
     if record.scope == "project":
         ensure_project_meta(bucket_dir, project_path)
@@ -471,6 +511,7 @@ def resolve_record(
     superseded_by: str | None = None,
     note: str | None = None,
     follow_up: dict | None = None,
+    reference_file: str | None = None,
 ) -> list[Path]:
     """File-op half of a resolution: update frontmatter via T2's mutation
     API, ``git mv`` pending→resolved (fs move when untracked), and remove
@@ -503,6 +544,12 @@ def resolve_record(
             "destination": destination,
             "by": by,
         }
+        if reference_file is not None:
+            # WHICH references file this landed in (audit 2026-07-16
+            # BLOCKER 2): ``destination: reference`` alone is lossy, and
+            # recompile / the drift check cannot repair a file they cannot
+            # name. Absent on old records ⇒ the default LEARNINGS.md.
+            routing["reference_file"] = reference_file
         if follow_up is not None:
             routing["follow_up"] = dict(follow_up)
         record.set_routing(routing)

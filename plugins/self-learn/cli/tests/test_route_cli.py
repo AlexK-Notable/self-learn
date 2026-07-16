@@ -17,7 +17,17 @@ from self_learn import analyst, cli, sentinel
 from self_learn.analyst import ANALYST_ALLOWED_TOOLS, DEFAULT_ANALYST_MODEL
 from self_learn.ledger_ops import create_record, write_proposal
 from self_learn.records import Record
-from support import SKILL_MD_SEED, commit_all, git, make_behavior, make_env, proposal_dict
+from support import (
+    SKILL_MD_SEED,
+    commit_all,
+    git,
+    last_verb_sha,
+    make_behavior,
+    make_env,
+    proposal_dict,
+    verb_files,
+    verb_subject,
+)
 
 SKILL_MD = SKILL_MD_SEED.format(name="s")
 
@@ -81,22 +91,28 @@ class Env:
         self.seed_subject = self.local_subject()
 
     # -- ledger (home) side
+    #
+    # doc 13 H-5 (audit 2026-07-16 MAJOR 3): telemetry commits ITSELF now,
+    # on top of the verb's commit — so "the verb's commit" is the newest
+    # NON-flush commit, not HEAD. The assertions keep their strength: the
+    # verb commit must still be the newest thing besides the flush, with
+    # its exact pinned subject and its exact file list.
     def local_subject(self):
-        return git(self.home, "log", "-1", "--format=%s").stdout.strip()
+        return verb_subject(self.home)
 
     def local_body(self):
-        return git(self.home, "log", "-1", "--format=%B").stdout
+        return git(
+            self.home, "log", "-1", "--format=%B", last_verb_sha(self.home)
+        ).stdout
 
     def remote_subject(self):
-        return git(self.bare, "log", "-1", "--format=%s").stdout.strip()
+        return verb_subject(self.bare)
 
     def remote_files(self):
         return git(self.bare, "ls-tree", "-r", "--name-only", "HEAD").stdout.split()
 
     def committed_files(self):
-        return git(
-            self.home, "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"
-        ).stdout.split()
+        return verb_files(self.home)
 
     # -- host side (compiled canon)
     def host_subject(self):
@@ -347,7 +363,9 @@ def test_route_cli_with_proposal_sibling(env, capsys):
     assert env.local_subject() == f"self-learn: route {record.id} → skill-md"
     assert env.remote_subject() == f"self-learn: route {record.id} → skill-md"
     assert record.id in env.skill_md.read_text(encoding="utf-8")
-    sha7 = git(env.home, "rev-parse", "--short=7", "HEAD").stdout.strip()
+    sha7 = git(
+        env.home, "rev-parse", "--short=7", last_verb_sha(env.home)
+    ).stdout.strip()
     assert f"route {record.id} → skill-md @ {sha7} (pushed)" in out
 
 

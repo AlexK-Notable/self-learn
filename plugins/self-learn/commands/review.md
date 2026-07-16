@@ -155,10 +155,41 @@ tolerate, or retire?"* The resolutions map to verbs:
 A plain confirmation (recurrence is real, fix comes later) is
 `confirm-recurrence` without `--tolerate`.
 
-Read each verb's output line: it reports the commit and push state. A
-non-zero exit means the verb refused (secret scan, dirty target, unknown
-id) — show the user the CLI's message verbatim and handle it on the card;
-never work around a refusal with direct file or git operations.
+Read each verb's output line: it reports the commit and push state. Show
+the CLI's message verbatim on the card and never work around it with
+direct file or git operations. A non-zero exit is not one thing — read
+which:
+
+- **1** — the verb REFUSED (secret scan, dirty compile target, an
+  unregistered host, an unknown id). Nothing was written.
+- **2** — `route` to a destination whose compiler lands at M3.
+- **3** — committed, but the **push failed**. The resolution is safe
+  locally; `self-learn push` retries it (see Session end).
+- **4** — committed, but the push hit a **rebase conflict**. The rebase was
+  aborted and the commit kept; this one needs a human `git pull --rebase`.
+- **5** — the ledger home is missing / not a git repo. Nothing was written
+  and nothing can be: stop the batch and tell the user.
+- **6** — a git operation failed or timed out **before the verb wrote
+  anything** (commonly: another producer — a worker or the miner — held
+  the commit lock too long). The lock is taken before the first mutation,
+  so nothing is half-done: it is safe to retry once the other producer
+  finishes.
+- **7** — the record WAS written but its **commit failed**. This is the
+  opposite of 6 and must never be treated as it: the record has already
+  moved (e.g. pending→resolved) and a blind retry fails with 64 "record
+  not found". The CLI prints the exact repair command — show it verbatim
+  and say the ledger is half-written. `self-learn reconcile` fixes the
+  simple cases (an uncommitted record); a half-committed rename needs the
+  printed command.
+- **64** — usage error (bad flag/id).
+
+Only 3, 4 and 7 mean "the ledger changed"; 1, 5, 6 and 64 mean it did not.
+
+Codes 6 and 7 exist separately because they used to be one code making one
+claim, which was true for one of its two causes (audit 2026-07-16). If you
+ever see a self-learn surface report a state it cannot know — "nothing was
+written" from a layer that did not do the writing — that is the same bug
+class, and it is worth a capture.
 
 ## Session end
 
