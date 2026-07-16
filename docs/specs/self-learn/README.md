@@ -538,6 +538,42 @@ human routes it.
   along. Build = T-H1…T-H5 in a worktree with a pre-migration audit;
   acceptance includes a foreign-project mined candidate landing in its
   own project bucket.
+- **2026-07-15/16 — T-H3 BUILT; the lock-invariant audit rounds**
+  *(backfilled 2026-07-16 — the post-mortem below flagged that this
+  round lived only in branch commit messages).* Doc 13's code refactor
+  landed on the worktree branch in three strokes: the core (dda4a0a —
+  ledger home layout + hosts.yaml registry, per-project buckets with
+  meta.yaml-on-first-create, two-phase route/supersede with pinned
+  apply subjects and a drift warning naming `recompile`,
+  producers-commit (H-5) across teach/import/miner, package-relative
+  doctrine/registry, home-namespaced cache (H-4), the global sentinel;
+  new test_hosting.py, 39 tests green); the suite migration (43f8abe —
+  two agents on disjoint file sets, no src changes, intent preserved by
+  re-pinning two assertions rather than dropping them; 579 tests); then
+  the hardening (c03a076): **seven independent review rounds** (2
+  pre-merge audits + 5 verifications) fixed 11 original findings plus
+  4+4 minted by the first two fix rounds. Round 3 re-scoped the commit
+  lock to `[first mutation → commit]` after probing proved BOTH the
+  original scope and the orchestrator's proposed replacement wrong —
+  its justification is measured, not argued: without it a racing `pull
+  --rebase --autostash` commits conflict markers INTO a record file at
+  exit 0 with a clean `git status`. Round 4 generalized the rule into
+  `tests/test_lock_invariant.py` — a call-graph property (AST fixpoint,
+  derived entrypoints, fail-closed exemptions) rather than a surface
+  list — which immediately forced 4 fixes nobody had listed (miner
+  fold, worker sweeps, both importers, proposal validate). Also landed:
+  `HalfWrittenError`/exit 7 (constructor REQUIRES `repair=`, so no
+  layer can report the state without naming the fix), the `reconcile`
+  verb wired into miner run-start, push, and repair messages,
+  `--no-push` threaded through worker AND miner spawns, push_if_remote
+  on all ten verbs, timeout-bounded git calls. Known-narrower-than-
+  claimed gaps recorded, not fixed (function-scoped exemptions;
+  11/19 runtime argvs bail on validation before the lock; nine
+  checker-evasion spellings with no live occupants). 754 tests,
+  2 skipped. Doc 13 §7.2 records the invariant as H-7/H-8 (229c6c3);
+  the runtime instruction files + miner-unit env pin the handoff
+  claimed were already in-branch were verified absent and landed
+  before the merge (fd238af).
 - **2026-07-16 — session post-mortem (independent, user-directed).** The
   25-day session that produced this corpus (06-22 discovery → 07-16 T-H3)
   documented from the transcripts alone by an agent that did not
