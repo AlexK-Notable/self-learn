@@ -273,6 +273,54 @@ costs nothing, but it protects a memory that does not yet exist.
   until step 1 is live; nothing in T-H1..5 blocks or presupposes it
   beyond the package-relative doctrine/rubric pin.
 
+## 7.2 The concurrency invariant (added 2026-07-16, after 7 review rounds)
+
+H-5 made concurrent producers the norm (teach, import, the kicked
+worker, the nightly miner, and the verbs all commit into ONE ledger
+repo, several from detached processes). That promoted a dormant git
+wart into a live corruption path, and hardening it consumed four fix
+rounds. The durable outcomes:
+
+- **H-7 · No ledger/host mutation may precede its `commit_lock`.** The
+  lock opens BEFORE the first mutation of a repo and is held through
+  that repo's commit. Scope is `[first mutation → commit]` — NOT the
+  whole verb (that held the lock across network pushes, blocking every
+  other producer) and NOT `[stage → commit]` (verbs mutate before they
+  stage, e.g. `resolve_record`'s `git mv`). Push runs OUTSIDE the lock;
+  `push_with_retry` takes the lock itself around `pull --rebase
+  --autostash + re-push`, in the repo being rebased, so no caller can
+  forget it. Every git call is timeout-bounded.
+- **Why the lock exists (measured, not argued):** without it, a racing
+  `pull --rebase --autostash` commits git CONFLICT MARKERS into a
+  record file and reports success — an unparseable record, exit 0,
+  clean `git status`. The pathspec-commit layer survives a pure rename
+  and a non-colliding edit; it cannot survive this.
+- **H-8 · The rule is machine-checked, not review-checked.**
+  `tests/test_lock_invariant.py` states H-7 as a call-graph property:
+  every function parsed from source, mutating leaves propagated by
+  fixpoint, entrypoints derived (a root = no in-package caller), a
+  violation = an obligation reaching a root. Exemptions are
+  fail-closed. This exists because four rounds of patching the
+  *reported* sites simply relocated the bug to the file nobody listed.
+- **A layer must not assert state it cannot know.** `HalfWrittenError`
+  (exit 7) vs a clean refusal (exit 6) are different facts; the
+  constructor *requires* `repair=`, so no surface can report
+  half-written state without naming the fix. `reconcile` (verb +
+  miner-run-start + `push`) makes an uncommitted record self-healing
+  rather than narrated data loss.
+
+**Recorded as narrower-than-claimed** (final verifier, 2026-07-16 —
+none reachable by current code; fix when touched): exemptions are
+function-scoped, so a ledger write added inside an already-exempt
+function escapes the check; 11 of 19 runtime lock-contention cases bail
+on validation before reaching the lock (notably `host add`, whose
+fixture pre-registers the host); nine checker-evasion spellings exist
+(aliased writes, `getattr`, dynamically-built git argv, absolute
+imports) — the checker pins today's house style, not the rule itself.
+The model's own writes (the worker's `claude -p`, `cwd=home`) can never
+be lock-guarded and are unfixable by AST — `reconcile` is the answer
+there.
+
 ## 8. Invariants
 
 - **H-1** · One ledger home per machine, explicit (`~/.self-learn` or
