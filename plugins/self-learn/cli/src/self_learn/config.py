@@ -22,13 +22,22 @@ Current keys::
     # ~/.self-learn/config.yaml  (commit it: git -C ~/.self-learn add
     # config.yaml && git commit -m "policy: enable one-motion hook routes")
     one_motion_route:
-      hook: true        # allow `teach --route --dest hook --hook-input …`
+      hook: true        # allow one-motion hook routes: `teach --route
+                        #   --dest hook --hook-input …` AND a bare
+                        #   `teach --route` whose analyst proposes
+                        #   destination: hook (doctrine §7 — the model
+                        #   authors the compile input; the CLI still
+                        #   generates the script, validates, scans,
+                        #   replays, and prints the applied bytes)
       new-skill: true   # allow `teach --route --dest new-skill:<name>`
 
-Anything else under those keys — ``false``, ``"true"`` (a string),
-``yes`` unquoted resolves to a YAML bool and works, but ``"yes"`` quoted
-does not — refuses. Malformed values WARN on stderr (fail-closed must not
-also be silent, or a typo reads as a policy decision).
+ONLY the YAML 1.2 boolean ``true`` enables. Everything else refuses —
+``false``, ``null``, ``"true"`` (a string), and ``yes`` in ANY spelling:
+the safe loader is YAML 1.2 core schema, where bare ``yes`` is the
+STRING ``"yes"``, not a boolean (verified: both ``hook: yes`` and
+``hook: 'yes'`` refuse with the same WARN). Malformed values WARN on
+stderr (fail-closed must not also be silent, or a typo reads as a
+policy decision).
 """
 
 from __future__ import annotations
