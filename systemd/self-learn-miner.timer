@@ -1,0 +1,12 @@
+# Nightly mining pass. Persistent=true is R1 layer 1: a machine asleep at
+# 03:30 runs the missed pass at next boot.
+[Unit]
+Description=self-learn transcript miner — nightly
+
+[Timer]
+OnCalendar=*-*-* 03:30
+Persistent=true
+RandomizedDelaySec=15m
+
+[Install]
+WantedBy=timers.target

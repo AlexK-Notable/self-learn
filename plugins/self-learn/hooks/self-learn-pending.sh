@@ -42,4 +42,12 @@ if [ "$escalate" = "true" ]; then
   echo "🔺 self-learn: backlog over threshold (≥5 pending or oldest >7d) — a review session is due"
 fi
 
+# Doc 12 R1 layer 3: the miner has not completed a run in >36h (timer,
+# watchdog, and manual force all touch the same marker) — a silent death
+# becomes humanly visible within a day.
+miner_stale="$(jq -r '.miner_stale // false' <<<"$out" 2>/dev/null)" || exit 0
+if [ "$miner_stale" = "true" ]; then
+  echo "⚠️  self-learn: transcript miner hasn't completed a run in >36h — check \`self-learn mine status\` / miner.log"
+fi
+
 exit 0

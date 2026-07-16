@@ -83,6 +83,36 @@ Staleness fires iff ≥1 pending record lacks a valid proposal AND
 | `SELF_LEARN_WORKER_MODEL` | `claude-sonnet-5` | model for the background worker's analysis pass |
 | `SELF_LEARN_COALESCE_SECS` | `600` | worker kick coalescing window, seconds |
 | `SELF_LEARN_WORKER_AUTOKICK` | (unset) | set `0` to disable teach/import auto-kick (test suites) |
+| `SELF_LEARN_MINER` | (unset) | set `0` to disable the transcript miner entirely (runs + watchdog + staleness alarm) |
+| `SELF_LEARN_MINER_AUTOKICK` | (unset) | set `0` to disable only the >24 h verb watchdog spawn |
+| `SELF_LEARN_MINER_MODEL` | `claude-sonnet-5` | model for the miner's contained reader pass |
+| `SELF_LEARN_MINE_CAP_PER_SESSION` | `2` | landings allowed per scanned session (use-scaled cap) |
+| `SELF_LEARN_MINE_CAP_MAX` | `15` | absolute landing ceiling per run |
+| `SELF_LEARN_MINE_PENDING_GATE` | `25` | miner lands nothing while total pending ≥ this |
+| `SELF_LEARN_TRANSCRIPTS_DIR` | `~/.claude/projects` | transcript corpus root (tests redirect it) |
+
+## Transcript miner (doc 12) — nightly timer registration
+
+The miner is the third capture producer: it walks session transcripts,
+digests them structurally, runs one contained `claude -p` reader (same
+write-restriction posture as the worker, pointed at a cache spool), and
+lands `source: session` records in `pending/` — capped, secret-scanned,
+never routed. Register the nightly timer (R1 layer 1; `Persistent=true`
+covers a machine asleep at 03:30):
+
+```bash
+ln -sf ~/repos/claude-skills/systemd/self-learn-miner.{service,timer} \
+    ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now self-learn-miner.timer
+```
+
+Layers 2–3 need no registration: any `self-learn` verb spawns a catch-up
+run when the last one is >24 h old, and the SessionStart hook prints a
+staleness line at >36 h. Force a run any time with `self-learn mine run`
+(`--since YYYY-MM-DD` for a deliberate historical sweep); inspect runs
+with `self-learn mine status` (the run journal answers what was caught,
+skipped, folded, and clipped — the same data the future web UI reads).
 
 ## Troubleshooting
 

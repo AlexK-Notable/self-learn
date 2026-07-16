@@ -56,6 +56,10 @@ def gather(home: Path | str, *, today: date | None = None) -> dict:
     rejected = 0
     routed_live = []  # currently-routed rules (the attention-tax payers)
     deferred: list[dict] = []
+    # Doc 12 T-M5: mined supply (source: session) tracked per decision
+    # class — the accept rate below is THE metric that decides the
+    # miner's fate (and, per class, the autonomy ladder's evidence).
+    mined: Counter = Counter()
 
     for bucket in discover_buckets(home):
         counts = Counter()
@@ -69,6 +73,11 @@ def gather(home: Path | str, *, today: date | None = None) -> dict:
                 except RecordError:
                     continue
                 counts[record.status] += 1
+                if record.source == "session":
+                    if record.status == "superseded" and record.superseded_by == "canon":
+                        mined["graduated"] += 1
+                    else:
+                        mined[record.status] += 1
                 if record.routing is not None:
                     routed_ever += 1
                 if record.status == "routed":
@@ -129,6 +138,15 @@ def gather(home: Path | str, *, today: date | None = None) -> dict:
         superseded_after_routing / routed_ever if routed_ever else None
     )
 
+    mined_adjudicated = (
+        mined["routed"] + mined["graduated"] + mined["rejected"]
+    )
+    mined_accept_rate = (
+        (mined["routed"] + mined["graduated"]) / mined_adjudicated
+        if mined_adjudicated
+        else None  # honesty: measured over adjudicated cards only
+    )
+
     return {
         "generated": str(today),
         "buckets": buckets,
@@ -143,6 +161,14 @@ def gather(home: Path | str, *, today: date | None = None) -> dict:
         "rejected": rejected,
         "open_followups": open_followups(home),
         "deferred": deferred,
+        "mined": {
+            "pending": mined["pending"],
+            "routed": mined["routed"],
+            "graduated": mined["graduated"],
+            "rejected": mined["rejected"],
+            "adjudicated": mined_adjudicated,
+            "accept_rate": mined_accept_rate,
+        },
         "telemetry": {
             "events_by_kind": dict(kinds),
             "decline_reasons": dict(decline_reasons),
@@ -186,6 +212,16 @@ def render_text(facts: dict) -> str:
         f"{facts['graduated']} graduated into authored canon · "
         f"{facts['rejected']} rejected"
     )
+
+    mined = facts.get("mined") or {}
+    if any(mined.get(k) for k in ("pending", "routed", "graduated", "rejected")):
+        lines.append("")
+        lines.append(
+            f"Mined supply (transcript miner): {mined['pending']} pending · "
+            f"{mined['routed']} routed · {mined['graduated']} graduated · "
+            f"{mined['rejected']} rejected — accept rate "
+            f"{_pct(mined['accept_rate'])} (adjudicated cards only)"
+        )
 
     followups = facts["open_followups"]
     lines.append("")

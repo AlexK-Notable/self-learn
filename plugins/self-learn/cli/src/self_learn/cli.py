@@ -31,7 +31,7 @@ from datetime import date
 from pathlib import Path
 
 from . import report as report_mod
-from . import selfcheck, sentinel, telemetry, verbs, worker
+from . import miner, selfcheck, sentinel, telemetry, verbs, worker
 from .chezmoi import ChezmoiAbort, ChezmoiError
 from .compilers import CompileError
 from .import_backlog import import_backlog
@@ -247,6 +247,30 @@ def _build_parser() -> argparse.ArgumentParser:
         help="sleep SELF_LEARN_COALESCE_SECS first (the kick-spawned form)",
     )
 
+    mine_p = sub.add_parser(
+        "mine", help="transcript miner: run | status (doc 12)"
+    )
+    mine_sub = mine_p.add_subparsers(dest="mine_command", metavar="<verb>")
+    mrun = mine_sub.add_parser(
+        "run", help="one mining pass over unread transcripts (timer/manual/kick)"
+    )
+    mrun.add_argument(
+        "--trigger",
+        choices=("timer", "manual", "kick"),
+        default="manual",
+        help="journal attribution for this run (default: manual)",
+    )
+    mrun.add_argument(
+        "--since",
+        metavar="YYYY-MM-DD",
+        help="deliberate backfill: re-read transcripts modified on/after "
+        "this date from line 0 (origin dedup makes replays safe)",
+    )
+    mstatus = mine_sub.add_parser(
+        "status", help="last runs, outcomes, and staleness — from the journal"
+    )
+    mstatus.add_argument("--json", dest="as_json", action="store_true")
+
     sub.add_parser("push", help="publish pending local commits (pinned retry)")
 
     sentinel_p = sub.add_parser(
@@ -302,9 +326,72 @@ def _warn_unparseable(home) -> None:
 
 def _cmd_status_fast() -> int:
     """08 §7.1 SessionStart pin: guaranteed-cheap, pending/-only. The bash
-    hook consumes this — queue semantics live HERE, never in bash."""
-    print(json.dumps(worker.fast_status(resolve_home())))
+    hook consumes this — queue semantics live HERE, never in bash. Doc 12
+    R1 layer 3: the miner's staleness keys ride the same payload (two
+    stats, still cheap)."""
+    data = worker.fast_status(resolve_home())
+    data["miner_last_run"] = miner.last_run_iso()
+    data["miner_stale"] = miner.stale()
+    print(json.dumps(data))
     return EXIT_OK
+
+
+def _cmd_mine(args: argparse.Namespace) -> int:
+    home = resolve_home()
+    if args.mine_command == "run":
+        result = miner.run(home, trigger=args.trigger, since=args.since)
+        print(
+            f"mine run: {result.status} — {len(result.landed)} landed, "
+            f"{len(result.folded)} folded, {len(result.recurrences)} "
+            f"recurrence(s), {result.fires} fire(s)"
+        )
+        return EXIT_OK if result.status != "failed" else 1
+    if args.mine_command == "status":
+        entries = miner.read_journal()
+        if args.as_json:
+            print(
+                json.dumps(
+                    {
+                        "last_run": miner.last_run_iso(),
+                        "stale": miner.stale(),
+                        "runs": entries,
+                    }
+                )
+            )
+            return EXIT_OK
+        last = miner.last_run_iso() or "never (on this machine)"
+        print(f"miner last run: {last}" + ("  ⚠ STALE (>36h)" if miner.stale() else ""))
+        if not entries:
+            print("no journaled runs yet")
+            return EXIT_OK
+        for e in entries[-10:]:
+            line = (
+                f"{e.get('ts', '?')}  {e.get('status', '?'):9s} "
+                f"trigger={e.get('trigger', '?')}"
+            )
+            if e.get("status") == "ok":
+                line += (
+                    f"  scanned={e.get('sessions_scanned', 0)} "
+                    f"landed={e.get('landed', 0)} folded={e.get('folded', 0)} "
+                    f"recurrences={e.get('recurrences', 0)} "
+                    f"fires={e.get('fires', 0)} cap={e.get('cap', '?')}"
+                )
+            elif e.get("status") == "held-gate":
+                line += f"  pending={e.get('pending')} ≥ gate={e.get('gate')}"
+            elif e.get("status") == "failed":
+                line += f"  reason: {e.get('reason', '?')}"
+            print(line)
+            for o in e.get("outcomes", []) or []:
+                extra = {
+                    k: v
+                    for k, v in o.items()
+                    if k not in ("origin", "outcome") and v
+                }
+                suffix = f"  {extra}" if extra else ""
+                print(f"    {o.get('outcome', '?'):22s} {o.get('origin', '?')}{suffix}")
+        return EXIT_OK
+    print("usage: self-learn mine run [--trigger …] [--since …] | mine status", file=sys.stderr)
+    return EXIT_USAGE
 
 
 def _cmd_worker(args: argparse.Namespace) -> int:
@@ -738,6 +825,17 @@ def main(argv: list[str] | None = None) -> int:
         parser.print_help(sys.stderr)
         return EXIT_USAGE
 
+    # Doc 12 R1 layer 2: every CLI invocation is a watchdog tick — spawn a
+    # detached mining run when the last one is >24 h old. Never blocks,
+    # never fails the command; `mine` itself is excluded (no self-trigger).
+    if args.command != "mine":
+        try:
+            outcome = miner.maybe_kick(resolve_home())
+            if outcome == "spawned":
+                print("miner: catch-up run spawned (>24h)", file=sys.stderr)
+        except Exception:  # noqa: BLE001 — watchdog must never break a verb
+            pass
+
     if _extra:
         print(
             f"self-learn {args.command}: unrecognized arguments: {' '.join(_extra)}",
@@ -807,6 +905,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "worker":
         return _cmd_worker(args)
+
+    if args.command == "mine":
+        return _cmd_mine(args)
 
     if args.command == "prune-memory":
         return _cmd_prune_memory(args)

@@ -1,0 +1,15 @@
+# self-learn transcript miner (doc 12) — one mining pass.
+# Registration (manual, like the autosync unit):
+#   ln -sf ~/repos/claude-skills/systemd/self-learn-miner.{service,timer} \
+#       ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now self-learn-miner.timer
+[Unit]
+Description=self-learn transcript miner (nightly pass)
+
+[Service]
+Type=oneshot
+ExecStart=%h/bin/self-learn mine run --trigger timer
+# The run spawns a contained `claude -p` reader; give it headroom.
+TimeoutStartSec=30m
+Nice=10

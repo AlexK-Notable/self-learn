@@ -39,6 +39,8 @@ prompt after.
 | `confirm-held <id>` | A routed rule was seen working: stamp `last_confirmed` (the staleness metric is age-since-confirmation) |
 | `link contradicts <id> <target>` | First-class contradiction edge to a record id or canon anchor |
 | `worker kick` / `worker run [--coalesce]` | Background pre-analysis: teach/import kick a coalescing window (flock + pidfile; no scheduler); the run writes proposals via a write-restricted `claude -p` (no Bash/Edit), validates + stamps them, emits events + notifications |
+| `mine run [--trigger …] [--since YYYY-MM-DD]` | Transcript miner (doc 12): digest unread session transcripts → contained reader → land `source: session` candidates in pending (use-scaled cap, secret-scanned, origin-deduped; NEVER routes). Nightly timer + >24 h verb watchdog + manual force all call this |
+| `mine status [--json]` | The run journal: last run, staleness, and per-candidate outcomes (landed / folded / recurrence / dropped-and-why) |
 | `status --fast` | Pending-only frontmatter scan for the SessionStart hook (<500 ms; staleness + escalation flags) |
 | `push` | Retry unpushed resolution commits (rebase-retry, never auto-resolve) |
 | `sentinel hold\|heartbeat\|release` | Pause the repo's autosync during review batches (2 h mtime TTL) |
