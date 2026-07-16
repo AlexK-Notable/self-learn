@@ -523,3 +523,18 @@ human routes it.
   Persistent=true). The miner is operational: capture is now
   autonomous, review remains human, and the A2 autonomy ladder waits
   on accept-rate data.
+- **2026-07-16 — doc 13 RATIFIED (hosting & separation).** User
+  directive ("we need an independent home for the ledger") after the
+  separation discussion surfaced two structural facts: project scope
+  was quietly host-specific (the doc-12 miner made cross-project
+  mis-homing live), and the cache plane was an unclaimed per-machine
+  singleton. Ratified calls: home `~/.self-learn` · project buckets
+  auto-create with a route-time host-registration gate · filter-repo
+  history extraction (the rejected-proposal digest reads resolution
+  commits — H-6) · ledger-first sequencing, product-repo extraction as
+  step 2. Revision of record: 02 §2's single-commit route atomicity is
+  superseded by "ledger is truth, canon is compiled output" — the
+  chezmoi user-scope path was the standing two-repo precedent all
+  along. Build = T-H1…T-H5 in a worktree with a pre-migration audit;
+  acceptance includes a foreign-project mined candidate landing in its
+  own project bucket.
