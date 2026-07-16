@@ -765,3 +765,74 @@ scope.
   also proved WHY the pin demanded it: the constructed-string
   assertion had been green over an invocation that denied every write
   — a real worker run would have produced zero proposals forever.
+- **2026-07-16 · M3 BUILT (T17–T19; T20 + acceptance remain protocol).**
+  Branch `m3-hook-compiler`, test-first, six task commits, 754 → 840
+  tests. Findings → dispositions (§9 discipline), each a spec gap or a
+  judgment the docs did not pre-answer:
+  1. **Hook-proposal key names pinned** — 02 §1's hook extension says the
+     proposal carries the hook block "plus the full generated script text
+     and the analyst's allow/deny example inputs" without naming keys:
+     pinned as top-level `script:` (string) and
+     `examples: {allow: […], deny: […]}` (2–3 each, tool_name ∈
+     hook.tools — an example naming an unguarded tool is vacuous and the
+     validator refuses it). `path_regex` is validated against **grep -E
+     itself** (the engine the guard runs), memoized for the freshness
+     paths.
+  2. **Who writes the script bytes was unstated** — resolved by the
+     M2-21 precedent applied to executables: `stamp_proposal` (the one
+     path both `proposal validate` and the worker's step-4 flow through)
+     GENERATES `script` from the structured input + the record's
+     Trigger, overwriting anything the model wrote. Hand-tuning = edit
+     the hook block, re-validate; the route applies the stamped bytes
+     verbatim (M3-2). Hook stamping refuses knowledge records (the slug
+     and the firing condition come from `## Trigger`).
+  3. **H-2 vs the verbatim-apply exception** — "recompile repairs any
+     two-phase interruption" had no mechanism for hooks (the compile
+     input lives in the proposal, which the route's ledger commit
+     deletes). Resolved: `routing.hook` stores the APPROVED artifacts
+     (tools/regex/message + host-relative `script_path` + the exact
+     script bytes); drift selftest and `recompile` re-APPLY those bytes
+     — never a regeneration from changed inputs, so M3-2's letter holds.
+  4. **`graduate` gains a hook host phase** — M3-4 names graduation, but
+     graduate was ledger-only ("the line drops at the next recompile"),
+     and no recompile ever visits a hook script. Both supersede and
+     graduate now `git rm` the script in a pinned host commit
+     (`… (hook removed)`) + print the un-registration reminder.
+  5. **`route --dest hook` requires the proposal even with the
+     override** — there is nothing else to apply; the refusal names the
+     doctrine §5.1 recipe. `teach --route`/route_direct refuse hook AND
+     new-skill (`ONE_MOTION_UNROUTABLE`); **`DestinationNotBuilt`/exit 2
+     is retired** — all five destinations compile; verb exit 2 no longer
+     exists (P2-8's proposal-validate scan-hit keeps 2 unaliased).
+  6. **Guard-shape hardenings beyond the precedent** (both test-pinned):
+     `grep -E` rc ≥ 2 (broken regex) fails CLOSED — inside an `if` it
+     would fall through to allow — and empty stdin fails closed (jq
+     exits 0 on empty input).
+  7. **New-skill preflight refuses a marketplace-less skills root**
+     (the pin appends to existing entries; the scaffold never creates a
+     marketplace) — and the route subject carries the name
+     (`route lrn-… → new-skill:<name>`). SKILL.md/plugin.json
+     descriptions seed deterministically from the first routed lesson's
+     trigger.
+  8. **T19 resolution timestamps** — routed records use `routed_at`;
+     reject/graduate/supersede recover the FIRST resolution commit's
+     author date from the ledger's own log (02 §2: git is the who/when);
+     collapse losers ride the route subject's supersedes-suffix. Empty
+     data answers null, never a confident zero.
+  9. **Selftest gains the hooks check** (script exists/executable/
+     byte-matches approved; superseded-with-surviving-script flagged as
+     incomplete supersession; settings.json `self-learn-*` registrations
+     must resolve through `~/.claude/hooks/` — dangling = the silent
+     no-op drift). Reads `SELF_LEARN_CLAUDE_DIR` (tests redirect it
+     suite-wide; production default `~/.claude`, read-only).
+  10. **The worklist drain is packaged, not executed** — the build ran
+     READ-ONLY on the real ledger, so the pinned first step ships as
+     `fixtures/m3-worklist/` (runbook + three validator-clean draft
+     proposals, each guard behaviorally proven in
+     `test_route_hook.py::TestWorklistGuards`). Doctrine §5.1 (the
+     analyst's hook-block contract, incl. the §4 explicit-over-block
+     rationale rule) landed so future analysts can author hook proposals.
+  Still owed at §8.3: the [protocol] halves — fixture A's live
+  fresh-session trial through a real registered guard, the O-3/O-7
+  revisit, install.sh run + registration, README revision-log entry —
+  all user-present by design.

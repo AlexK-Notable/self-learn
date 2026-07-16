@@ -1,0 +1,25 @@
+# Draft hook proposal for the lrn-98d42215 successor (chezmoi cd guard).
+# Copy to ~/.self-learn/skills/chezmoi/proposals/lrn-<newid>.yaml, then
+# `self-learn proposal validate lrn-<newid>` (stamps record_sha + script).
+# Behaviorally proven: cli/tests/test_route_hook.py::TestWorklistGuards.
+destination: hook
+alternates: [skill-md]
+rationale: >-
+  Deterministic denial beats advisory text for a call that silently blocks
+  a non-interactive shell for the full timeout. OVER-BLOCK, stated: the
+  guard denies `chezmoi cd` even in a genuinely interactive terminal
+  session driven through the Bash tool — acceptable, since the Bash tool
+  is never interactive; no legitimate Claude Code call survives.
+model: claude-fable-5
+analyzed_at: "2026-07-16T12:00:00Z"
+hook:
+  tools: [Bash]
+  path_regex: "(^|[;&|[:space:]])chezmoi[[:space:]]+cd([[:space:]]|$)"
+  deny_message: 'chezmoi cd spawns an interactive child shell and blocks — use git -C "$(chezmoi source-path)" instead'
+examples:
+  allow:
+    - {tool_name: Bash, tool_input: {command: "chezmoi diff"}}
+    - {tool_name: Bash, tool_input: {command: "git -C \"$(chezmoi source-path)\" status"}}
+  deny:
+    - {tool_name: Bash, tool_input: {command: "chezmoi cd"}}
+    - {tool_name: Bash, tool_input: {command: "cd /tmp && chezmoi cd"}}

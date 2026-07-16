@@ -1,0 +1,27 @@
+# Draft hook proposal for the sudo-npm-global guard (follow-up on
+# lrn-6883f824; the record to supersede is the user-scope prevention rule
+# lrn-d5f6b31b — see drain-runbook.md). Copy beside the successor record,
+# then `self-learn proposal validate lrn-<newid>`.
+destination: hook
+alternates: [claude-md]
+rationale: >-
+  A root npm global install silently splits pacman ownership and blocks
+  every later system update — worth a hard deny over advisory text.
+  OVER-BLOCK, stated: the regex also denies sudo-wrapped forms with
+  intervening flags (`sudo -E npm install ... -g`) and would deny a
+  hypothetical machine where a sudo global npm install is intended;
+  on THIS Arch host no such case is legitimate. `sudo npm --version`
+  and user-prefix installs pass.
+model: claude-fable-5
+analyzed_at: "2026-07-16T12:00:00Z"
+hook:
+  tools: [Bash]
+  path_regex: "sudo([[:space:]]+[^[:space:]]+)*[[:space:]]+npm[[:space:]]+(install|i|add)([[:space:]]+[^[:space:]]+)*[[:space:]]+(-g|--global)"
+  deny_message: "never sudo npm install -g here — it splits pacman's npm ownership (3-week silent update block, 2026-07); use pacman/paru or a user prefix"
+examples:
+  allow:
+    - {tool_name: Bash, tool_input: {command: "npm install -g yarn --prefix ~/.local"}}
+    - {tool_name: Bash, tool_input: {command: "sudo npm --version"}}
+  deny:
+    - {tool_name: Bash, tool_input: {command: "sudo npm install -g corepack"}}
+    - {tool_name: Bash, tool_input: {command: "sudo npm install --global npm@latest"}}

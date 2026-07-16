@@ -89,6 +89,13 @@ limit; free-text "Other" is always there beyond them):
   `self-learn route <id>` (proposal's destination) or
   `self-learn route <id> --dest <target>` if the user overrides; add
   `--note "…"` if they give a why.
+  **Hook proposals are the one exception to regenerate-at-apply
+  (M3-2):** the preview must show the proposal's `script` field IN FULL
+  — the exact executable bytes the route will commit verbatim (P9: eyes
+  on the exact diff, never a summary) — plus the analyst's stated
+  over-block from the rationale. After a hook Apply, the CLI prints two
+  required manual steps (./install.sh + the settings.json snippet):
+  relay them verbatim — the guard is inert until both are done.
 - **Discuss** — open-ended: drop into conversation with the record and
   proposal in context. You may **edit the pending record** per the user's
   direction (pending substance is freely editable; use Edit on the record
@@ -164,8 +171,11 @@ direct file or git operations. A non-zero exit is not one thing — read
 which:
 
 - **1** — the verb REFUSED (secret scan, dirty compile target, an
-  unregistered host, an unknown id). Nothing was written.
-- **2** — `route` to a destination whose compiler lands at M3.
+  unregistered host, an unknown id; on a hook route also: no validated
+  hook proposal, a stale `record_sha`, or a failed example replay).
+  Nothing was written. *(All five destinations compile as of M3 — the
+  old exit-2 "compiler lands at M3" no longer exists for verbs; a hook
+  refusal names the missing step, show it verbatim.)*
 - **3** — committed, but the **push failed**. The resolution is safe
   locally; `self-learn push` retries it (see Session end).
 - **4** — committed, but the push hit a **rebase conflict**. The rebase was

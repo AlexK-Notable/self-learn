@@ -68,8 +68,11 @@ rule printed), `--redact` opt-in on capture surfaces, no bypass flag.
 - Analyst (bare-terminal `teach --route`): `SELF_LEARN_ANALYST_MODEL`
   (default `claude-sonnet-5`), `SELF_LEARN_ANALYST_TIMEOUT` (default 120 s).
 - Exit codes — verbs: 0 ok · 1 refusal (dirty target, scan hit, chezmoi
-  abort) · 2 unbuilt destination (M3) · 3 push failed (commit kept — run
-  `self-learn push`) · 4 rebase conflict · 64 usage/unknown id.
+  abort, replay/freshness abort on a hook route) · 3 push failed (commit
+  kept — run `self-learn push`) · 4 rebase conflict · 64 usage/unknown
+  id. (All five destinations compile as of M3 — hook needs a validated
+  hook proposal, new-skill is `--dest new-skill:<name>`; the old exit-2
+  "unbuilt destination" is gone.)
   `proposal validate`: **0 valid+stamped · 1 schema-invalid (file intact) ·
   2 scan hit (wins)**. `--selftest`: 0 all green · 1 any FAIL.
 

@@ -1,0 +1,26 @@
+# Draft hook proposal for the lrn-25968266 successor (uv .venv-copy
+# guard, project scope — claude-skills). Copy to the project bucket's
+# proposals/, then `self-learn proposal validate lrn-<newid>`.
+destination: hook
+alternates: [claude-md]
+rationale: >-
+  The copied venv's editable install silently executes the ORIGINAL
+  tree's code — two invalidated mutation runs in one session. A guard on
+  copy commands that carry a .venv path is deterministic where the
+  advisory was ignorable. OVER-BLOCK, stated: the regex denies ANY
+  cp -r/rsync whose text mentions a .venv path, including a deliberate
+  venv backup — the deny message names the sanctioned move (delete +
+  re-sync), and a human can still run the copy outside the guarded tool.
+model: claude-fable-5
+analyzed_at: "2026-07-16T12:00:00Z"
+hook:
+  tools: [Bash]
+  path_regex: "(cp[[:space:]]+-[a-zA-Z]*r|rsync[[:space:]])(.*[[:space:]])?[^[:space:]]*\\.venv"
+  deny_message: "a copied .venv still points at the ORIGINAL tree — rm -rf <copy>/.venv and `uv sync` in the copy first (lesson: two invalidated mutation runs)"
+examples:
+  allow:
+    - {tool_name: Bash, tool_input: {command: "cp -r src/ /tmp/scratch/"}}
+    - {tool_name: Bash, tool_input: {command: "rm -rf /tmp/copy/.venv"}}
+  deny:
+    - {tool_name: Bash, tool_input: {command: "cp -r project/.venv /tmp/copy/.venv"}}
+    - {tool_name: Bash, tool_input: {command: "rsync -a proj/.venv/ /tmp/copy/.venv/"}}
