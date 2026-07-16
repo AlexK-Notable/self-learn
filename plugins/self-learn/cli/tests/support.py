@@ -246,6 +246,28 @@ def proposal_dict(**overrides) -> dict:
     return base
 
 
+def hook_proposal_fields() -> dict:
+    """The M3 hook-destination extension (02 §1): a ``destination: hook``
+    proposal must carry the structured compile input + replay examples."""
+    return {
+        "hook": {
+            "tools": ["Edit", "Write"],
+            "path_regex": r"\.storage/",
+            "deny_message": "stop the HA container first",
+        },
+        "examples": {
+            "allow": [
+                {"tool_name": "Edit", "tool_input": {"file_path": "/x/config.yaml"}},
+                {"tool_name": "Write", "tool_input": {"file_path": "/x/notes.md"}},
+            ],
+            "deny": [
+                {"tool_name": "Edit", "tool_input": {"file_path": "/x/.storage/a"}},
+                {"tool_name": "Write", "tool_input": {"file_path": "/y/.storage/b"}},
+            ],
+        },
+    }
+
+
 def merge_proposal_text(cluster_id: str, records: list[str], survivor: str) -> str:
     shas = "\n".join(f"  {r}: sha256:000000000000" for r in records)
     ids = ", ".join(records)

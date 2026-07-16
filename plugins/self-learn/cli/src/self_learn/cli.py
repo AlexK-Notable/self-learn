@@ -12,7 +12,8 @@ wrappers over :mod:`self_learn.verbs`; validate + selftest live in
 
 Verb exit codes (T7's mapping, surfaced here): 0 success · a verb refusal
 carries its exception's ``exit_code`` (``VerbError`` 1;
-``DestinationNotBuilt`` 2; ``SecretRefusal`` 1 — P2-7 refusal) · unknown /
+``SecretRefusal`` 1 — P2-7 refusal; all five destinations compile as of
+M3 — the old ``DestinationNotBuilt`` 2 is gone) · unknown /
 malformed record id (``LedgerOpsError``) and every other usage error 64
 (EX_USAGE — audit 2026-07-14: never 2, which P2-8 pins for scan hits) · a
 push failure after a kept commit exits with the push result's code
@@ -132,7 +133,9 @@ def _build_parser() -> argparse.ArgumentParser:
     route.add_argument(
         "--dest",
         metavar="TARGET",
-        help="override the proposal: skill-md | claude-md | reference[:<file>]",
+        help="override the proposal: skill-md | claude-md | "
+        "reference[:<file>] | new-skill:<name> | hook (needs a hook "
+        "proposal)",
     )
     route.add_argument(
         "--collapse",
@@ -595,6 +598,11 @@ def _cmd_status(as_json: bool) -> int:
             "open_followups": followups,
             # 08 §7.1 amendment: iso8601 | null (null = never ran here)
             "worker_last_run": worker.last_run_iso(),
+            # T19 (08 §8.1 O-3/O-7-revisit row): supply mix + the 04
+            # success-metrics counters — FULL status only; the --fast
+            # SessionStart path stays a pending/-only scan, no git.
+            "supply_mix": report_mod.supply_mix(home),
+            "metrics": report_mod.ledger_metrics(home),
         }
         print(json.dumps(payload))
         return EXIT_OK
@@ -686,11 +694,19 @@ def _phase_note(push: gitops.PushResult | None) -> str:
 def _finish_verb(result: verbs.VerbResult, target: str) -> int:
     """One-line success summary: id, action, target, short sha, push state
     (ledger AND host). Exit 0, or the distinct push-failure code — a HOST
-    push failure counts exactly like a ledger one (MAJOR 4)."""
+    push failure counts exactly like a ledger one (MAJOR 4).
+
+    A hook route carries the ENTIRE generated script as ``diff`` (08 §8.1
+    approval flow — never a summary) and the required manual steps as
+    ``post_notes`` (M3-11): both print here, script first."""
+    if result.diff:
+        print(result.diff)
     print(
         f"{result.action} {result.record_id} → {target} "
         f"@ {result.commit_sha[:7]} ({push_note(result)})"
     )
+    for note_line in result.post_notes:
+        print(note_line)
     for warning in result.warnings:
         print(warning, file=sys.stderr)
     if (note := result.over_cap_note()) is not None:
@@ -794,7 +810,7 @@ def _cmd_verb(args: argparse.Namespace) -> int:
                 home, args.id, note=args.note, no_push=args.no_push
             )
             return _finish_verb(result, "confirmed holding")
-    except verbs.VerbError as exc:  # incl. SecretRefusal, DestinationNotBuilt
+    except verbs.VerbError as exc:  # incl. SecretRefusal
         print(f"self-learn {args.command}: {exc}", file=sys.stderr)
         return exc.exit_code
     except LedgerOpsError as exc:  # unknown/malformed id, proposal trouble

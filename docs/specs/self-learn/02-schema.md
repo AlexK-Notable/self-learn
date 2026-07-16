@@ -38,6 +38,18 @@ routing:                  # written on routing; null before
                           #   drift check READ it to find the target.
                           #   compilers.reference_target_path is the one
                           #   place that mapping lives.
+  hook:                   # 2026-07-16 (M3): `hook` destination ONLY —
+    script_path: hooks/…  #   host-relative path of the applied guard and
+    script: "#!/usr/…"    #   the exact APPROVED script bytes (M3-2:
+                          #   drift check + recompile re-APPLY these
+                          #   bytes, never regenerate from changed
+                          #   inputs; --selftest byte-compares disk vs
+                          #   this field). Secret-scanned like all
+                          #   record writes; ~2 KB per routed hook.
+  new_skill: <name>       # 2026-07-16 (M3): `new-skill` destination ONLY —
+                          #   which plugin/skill the scaffold created;
+                          #   recompile, drift, markers, and supersede
+                          #   READ it to find the target.
   # no commit hash here — a commit's own hash can't live in a file it
   # contains. The record→commit link is the commit MESSAGE, which carries
   # the record id ("self-learn: route lrn-4c1e9a2f → hook"); git log --grep

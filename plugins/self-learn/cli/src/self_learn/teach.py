@@ -68,6 +68,9 @@ from datetime import datetime, timezone
 
 from pathlib import Path
 
+from ruamel.yaml import YAML
+from ruamel.yaml.error import YAMLError
+
 from . import analyst, gitops, telemetry, verbs
 from .chezmoi import ChezmoiAbort, ChezmoiError
 from .compilers import CompileError
@@ -217,6 +220,15 @@ def add_teach_parser(sub) -> argparse.ArgumentParser:
         dest="no_push",
         help="with --route: commit exactly as pinned, skip only the push",
     )
+    p.add_argument(
+        "--hook-input",
+        dest="hook_input",
+        metavar="YAML",
+        help="with --route --dest hook (config-gated, S-10 amendment): the "
+        "compile input file — {rationale, hook: {tools, path_regex, "
+        "deny_message}, examples: {allow, deny}}; the CLI generates the "
+        "script, validates, scans, replays, and prints the applied bytes",
+    )
     return p
 
 
@@ -341,6 +353,7 @@ def run_teach(args: argparse.Namespace) -> int:
         ("--dest", args.dest is not None),
         ("--note", args.note is not None),
         ("--no-push", args.no_push),
+        ("--hook-input", args.hook_input is not None),
     ):
         if given and not args.route:
             return _fail(f"{flag} needs --route")
@@ -349,8 +362,21 @@ def run_teach(args: argparse.Namespace) -> int:
             destination, _ = verbs._parse_dest(args.dest)
         except verbs.VerbError as exc:
             return _fail(str(exc))
-        if destination in verbs.M3_DESTINATIONS:
-            return _fail(f"destination {destination!r} is not built until M3")
+        # S-10 amendment 2026-07-16: the refusal is the DEFAULT, opted out
+        # of only by the committed <home>/config.yaml (fail-closed parse).
+        # The message is unchanged from the hard-coded era.
+        if not verbs.one_motion_allowed(resolve_home(), destination):
+            return _fail(
+                f"destination {destination!r} cannot be routed in one "
+                "motion — capture without --route, then `self-learn route "
+                "<id> --dest "
+                + ("hook` (with an approved hook proposal)" if destination == "hook"
+                   else "new-skill:<name>`")
+            )
+        if args.hook_input is not None and destination != "hook":
+            return _fail("--hook-input needs --route --dest hook")
+    elif args.hook_input is not None:
+        return _fail("--hook-input needs --route --dest hook")
 
     lesson = _clean(args.lesson)
     trigger = _clean(args.trigger)
@@ -627,6 +653,20 @@ def _route_now(
         return code
     dest = args.dest
 
+    hook_input = None
+    if args.hook_input is not None:
+        # S-10 one-motion hook: the compile-input file. Fail-closed load —
+        # any parse problem is a usage refusal before anything composes.
+        try:
+            loaded = YAML(typ="safe").load(
+                Path(args.hook_input).read_text(encoding="utf-8")
+            )
+        except (OSError, YAMLError, UnicodeDecodeError) as exc:
+            return _fail(f"--hook-input unreadable: {exc}")
+        if not isinstance(loaded, dict):
+            return _fail("--hook-input must be a YAML mapping (doctrine §5.1)")
+        hook_input = loaded
+
     if dest is None:
         # Bare --route: the one-shot analyst (flags in self_learn.analyst).
         doctrine = analyst.doctrine_path()
@@ -646,6 +686,12 @@ def _route_now(
         dest = proposal["destination"]
         rationale = proposal.get("rationale") or ""
         print(f"analyst: destination {dest} — {rationale}")
+        if dest == "hook" and hook_input is None:
+            # config-enabled one-motion: the analyst's proposal IS the
+            # compile input (it carries the §5.1 hook block + examples,
+            # or route_direct's validation refuses and the capture falls
+            # back to pending — never lost).
+            hook_input = proposal
 
     snapshot = record.to_text()  # pristine copy for the never-lost fallback
     try:
@@ -656,6 +702,7 @@ def _route_now(
             note=args.note,
             no_push=args.no_push,
             project_path=project_path,
+            hook_input=hook_input,
         )
     except verbs.SecretRefusal as exc:
         print(str(exc), file=sys.stderr)
@@ -701,6 +748,10 @@ def _route_now(
     if (cap_note := result.over_cap_note()) is not None:
         print(cap_note, file=sys.stderr)
     print(f"  {record.type}{kind_part} · {record.scope} · {record_title(record)}")
+    # M3-11 (one-motion hook/new-skill, config-enabled): the required
+    # manual steps — the guard stays inert until settings.json is edited.
+    for note_line in result.post_notes:
+        print(note_line)
 
     # EXIT 0 even when a push failed — the DOCUMENTED pin (08 §1; this
     # module's docstring: "A route that commits but fails to push still

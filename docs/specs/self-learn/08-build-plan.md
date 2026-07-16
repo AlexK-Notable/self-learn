@@ -463,9 +463,10 @@ acceptance (§7.3).*
 | Hook apply convention — **deliberate exception to regenerate-at-apply** (M3-2) | For `--dest hook` the proposal carries the **structured compile input** — `hook: {tools: […], path_regex: "…", deny_message: "…"}` and the full generated script text — and the route verb applies that content **verbatim, byte-identical to what the human approved** (P9: eyes on the exact executable diff). A `record_sha` mismatch at apply time **aborts and forces re-analysis + fresh approval — never silent regeneration**. This is the one documented exception to 01 §3.4's regenerate-at-apply rule, and it exists because the compile input lives in the proposal, not the frozen record |
 | Guard test replay (M3-12) | The hook proposal also carries 2–3 **allow** and 2–3 **deny** example inputs (analyst-authored); `route --dest hook` replays them against the generated script **before committing** — any mismatch aborts the route. T17 tests the replay machinery; the per-guard cases ride each proposal |
 | Hook approval flow | The route card/verb shows the entire generated script as the diff (not a summary). Approval routes the record and commits the script; the settings.json snippet is printed and logged in the commit body; **the verb ends by printing the required manual steps: run `./install.sh` (the symlink materializes only then) and add the snippet to settings.json** (M3-11) — until both, the hook is inert by design |
-| Hook correction/rollback (M3-4) | Superseding or graduating a hook-routed record **`git rm`s the script in the same commit** and prints an un-registration reminder for the settings.json entry + the dead `~/.claude/hooks/` symlink. Immediate disable (guard blocking legitimate work right now) = remove the settings.json entry by hand; durable correction = supersede (§5 playbook). S-12's "supersede + recompile" for hooks means: script removed, registration manually retired — there is no section to regenerate |
+| Hook correction/rollback (M3-4) | Superseding or graduating a hook-routed record **`git rm`s the script in its own pinned host commit** (`… (hook removed)`) — post-doc-13 the ledger and host are separate repos, so "same commit" is impossible; the ledger resolution commits first, then the host removal (two-phase, interruption flagged by `--selftest` as incomplete supersession) — and prints an un-registration reminder for the settings.json entry + the dead `~/.claude/hooks/` symlink. Immediate disable (guard blocking legitimate work right now) = remove the settings.json entry by hand; durable correction = supersede (§5 playbook). S-12's "supersede + recompile" for hooks means: script removed, registration manually retired — there is no section to regenerate |
 | Hook selftest | `--selftest` (M3 extension): each **currently-routed** (not superseded/graduated) hook record's script exists and is executable; any `settings.json` registration referencing a `self-learn-*` hook whose script or symlink is missing is flagged (the inverse case — script present for a superseded record — is also flagged, as an incomplete supersession). Read-only checks; loud on failure |
 | New-skill compiler | `route <id> --dest new-skill:<name>` (the name slot is the confirmed §4 human call) creates a **deterministic minimal scaffold** with the CLI's own template — `plugins/<name>/.claude-plugin/plugin.json` (`name`, `version: "0.1.0"`, `description` — the key set the repo's real manifests share), `skills/<name>/SKILL.md` (frontmatter + a managed section containing the routed lesson(s)) — and appends a marketplace.json entry shaped like the repo's existing entries. **Collision rule (M3-9):** if `plugins/<name>` already exists, append the lesson only when its SKILL.md carries a self-learn managed section (i.e., it was self-learn-scaffolded); otherwise **refuse** — never inject into a foreign authored SKILL.md. The route ends by printing "run `./install.sh`" (M3-11). No dependency on the plugin-dev plugin for the substrate; post-hoc enrichment is a normal session activity where plugin-dev *may* be used |
+| One-motion policy config *(S-10 amendment 2026-07-16 — user ruling: "shouldn't be hard-coded. make it configurable")* | `<ledger-home>/config.yaml`, key `one_motion_route: {hook: <bool>, new-skill: <bool>}` — a COMMITTED operator opt-in (deliberately not hosts.yaml, whose contract distrusts hand edits, and deliberately not an env var: what executable code may auto-commit belongs in git history). Fail-closed parse: only the YAML boolean `true` enables; missing/malformed/false/strings refuse, malformed shapes warn on stderr. Default = the review-gated refusal, message unchanged. Enabled hook path (`teach --route --dest hook --hook-input <yaml>`, or the analyst's hook proposal on a bare `--route`): the CLI generates the script (caller `script` ignored — M2-21 for executables), validates the §5.1 schema, secret-scans the whole compile input, replays the examples PRE-commit, prints the applied bytes in full, and ends with the M3-11 manual steps — settings.json registration stays manual, so activation is human regardless. Per-destination gates independent | 03 S-10 |
 | Statusline count | Optional, default OFF; if the user asks: a statusline script calling `status --json --fast`, budget rules same as the SessionStart hook. Not part of M3 acceptance |
 | O-3 / O-7 revisit | [protocol] with the user, data-driven: `status --json` gains a `supply_mix` block (counts of resolved+pending by `source`) — the O-3 input 04's metrics name. The revisit is a conversation, not a build task; its outcome lands as dated register edits in 03 |
 
@@ -765,3 +766,84 @@ scope.
   also proved WHY the pin demanded it: the constructed-string
   assertion had been green over an invocation that denied every write
   — a real worker run would have produced zero proposals forever.
+- **2026-07-16 · M3 BUILT (T17–T19; T20 + acceptance remain protocol).**
+  Branch `m3-hook-compiler`, test-first, six task commits, 754 → 840
+  tests. Findings → dispositions (§9 discipline), each a spec gap or a
+  judgment the docs did not pre-answer:
+  1. **Hook-proposal key names pinned** — 02 §1's hook extension says the
+     proposal carries the hook block "plus the full generated script text
+     and the analyst's allow/deny example inputs" without naming keys:
+     pinned as top-level `script:` (string) and
+     `examples: {allow: […], deny: […]}` (2–3 each, tool_name ∈
+     hook.tools — an example naming an unguarded tool is vacuous and the
+     validator refuses it). `path_regex` is validated against **grep -E
+     itself** (the engine the guard runs), memoized for the freshness
+     paths.
+  2. **Who writes the script bytes was unstated** — resolved by the
+     M2-21 precedent applied to executables: `stamp_proposal` (the one
+     path both `proposal validate` and the worker's step-4 flow through)
+     GENERATES `script` from the structured input + the record's
+     Trigger, overwriting anything the model wrote. Hand-tuning = edit
+     the hook block, re-validate; the route applies the stamped bytes
+     verbatim (M3-2). Hook stamping refuses knowledge records (the slug
+     and the firing condition come from `## Trigger`).
+  3. **H-2 vs the verbatim-apply exception** — "recompile repairs any
+     two-phase interruption" had no mechanism for hooks (the compile
+     input lives in the proposal, which the route's ledger commit
+     deletes). Resolved: `routing.hook` stores the APPROVED artifacts
+     (tools/regex/message + host-relative `script_path` + the exact
+     script bytes); drift selftest and `recompile` re-APPLY those bytes
+     — never a regeneration from changed inputs, so M3-2's letter holds.
+  4. **`graduate` gains a hook host phase** — M3-4 names graduation, but
+     graduate was ledger-only ("the line drops at the next recompile"),
+     and no recompile ever visits a hook script. Both supersede and
+     graduate now `git rm` the script in a pinned host commit
+     (`… (hook removed)`) + print the un-registration reminder.
+  5. **`route --dest hook` requires the proposal even with the
+     override** — there is nothing else to apply; the refusal names the
+     doctrine §5.1 recipe. `teach --route`/route_direct refuse hook AND
+     new-skill (`ONE_MOTION_UNROUTABLE`); **`DestinationNotBuilt`/exit 2
+     is retired** — all five destinations compile; verb exit 2 no longer
+     exists (P2-8's proposal-validate scan-hit keeps 2 unaliased).
+  6. **Guard-shape hardenings beyond the precedent** (both test-pinned):
+     `grep -E` rc ≥ 2 (broken regex) fails CLOSED — inside an `if` it
+     would fall through to allow — and empty stdin fails closed (jq
+     exits 0 on empty input).
+  7. **New-skill preflight refuses a marketplace-less skills root**
+     (the pin appends to existing entries; the scaffold never creates a
+     marketplace) — and the route subject carries the name
+     (`route lrn-… → new-skill:<name>`). SKILL.md/plugin.json
+     descriptions seed deterministically from the first routed lesson's
+     trigger.
+  8. **T19 resolution timestamps** — routed records use `routed_at`;
+     reject/graduate/supersede recover the FIRST resolution commit's
+     author date from the ledger's own log (02 §2: git is the who/when);
+     collapse losers ride the route subject's supersedes-suffix. Empty
+     data answers null, never a confident zero.
+  9. **Selftest gains the hooks check** (script exists/executable/
+     byte-matches approved; superseded-with-surviving-script flagged as
+     incomplete supersession; settings.json `self-learn-*` registrations
+     must resolve through `~/.claude/hooks/` — dangling = the silent
+     no-op drift). Reads `SELF_LEARN_CLAUDE_DIR` (tests redirect it
+     suite-wide; production default `~/.claude`, read-only).
+  10. **The worklist drain is packaged, not executed** — the build ran
+     READ-ONLY on the real ledger, so the pinned first step ships as
+     `fixtures/m3-worklist/` (runbook + three validator-clean draft
+     proposals, each guard behaviorally proven in
+     `test_route_hook.py::TestWorklistGuards`). Doctrine §5.1 (the
+     analyst's hook-block contract, incl. the §4 explicit-over-block
+     rationale rule) landed so future analysts can author hook proposals.
+  Still owed at §8.3: the [protocol] halves — fixture A's live
+  fresh-session trial through a real registered guard, the O-3/O-7
+  revisit, install.sh run + registration, README revision-log entry —
+  all user-present by design.
+  **Revision to disposition 5 (2026-07-16, user ruling):** the
+  `ONE_MOTION_UNROUTABLE` refusal is no longer hard-coded — it is the
+  DEFAULT of the new One-motion-policy-config pin (§8.1 row above; S-10
+  amendment in 03). With no config the behavior and messages are
+  byte-identical to what the adversarial review verified; a committed
+  `config.yaml` opt-in unlocks `teach --route --dest hook --hook-input
+  <yaml>` / `--dest new-skill:<name>` with the full integrity chain
+  intact and the applied script bytes printed. `one_motion_allowed()` is
+  the single policy gate (teach precheck + route_direct — one
+  computation, two callers).

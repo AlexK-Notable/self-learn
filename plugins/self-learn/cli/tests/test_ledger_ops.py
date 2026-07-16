@@ -31,6 +31,7 @@ from self_learn.records import Record
 from support import (
     commit_all,
     git,
+    hook_proposal_fields,
     init_repo,
     make_behavior,
     make_env,
@@ -441,7 +442,13 @@ def test_stale_becomes_fresh_after_record_edit_plus_restamp(tmp_path):
 def test_write_and_read_proposal_roundtrip(tmp_path):
     home = make_home(tmp_path)
     create_record(home, make_behavior(record_id="lrn-aa000001"))
-    p = write_proposal(home, "lrn-aa000001", proposal_dict(destination="hook"))
+    p = write_proposal(
+        home,
+        "lrn-aa000001",
+        # 02 §1 hook extension (M3): destination hook carries the
+        # structured compile input + replay examples.
+        proposal_dict(destination="hook", **hook_proposal_fields()),
+    )
     data = read_proposal(p)
     assert data["destination"] == "hook"
     validate_proposal(data)

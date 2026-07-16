@@ -29,6 +29,7 @@ import re
 import subprocess
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
+from functools import lru_cache
 from pathlib import Path
 
 from ruamel.yaml import YAML
@@ -369,8 +370,116 @@ def _validate_card(data: dict) -> None:
             raise ProposalError(f"card section {key!r} must be non-empty text")
 
 
+#: 08 §4 replay row: 2–3 allow + 2–3 deny examples per hook proposal.
+_HOOK_EXAMPLES_MIN, _HOOK_EXAMPLES_MAX = 2, 3
+_HOOK_KEYS = ("tools", "path_regex", "deny_message")
+
+
+@lru_cache(maxsize=256)
+def _ere_problem(pattern: str) -> str | None:
+    """Memoized :func:`hook_compiler.validate_ere` — validation runs on
+    every eligibility computation (``list``/``status --fast`` freshness),
+    and each uncached check is a grep subprocess."""
+    from .hook_compiler import validate_ere
+
+    return validate_ere(pattern)
+
+
+def _validate_hook_extension(data: dict) -> None:
+    """02 §1 hook-destination extension (M3): ``hook:`` structured compile
+    input + analyst-authored replay ``examples``; ``script`` is optional
+    at validation — the CLI stamps it (:func:`stamp_proposal`), the model's
+    emitted value is never trusted with executable bytes."""
+    from .hook_compiler import GUARDABLE_TOOLS
+
+    dest = data.get("destination")
+    present = [k for k in ("hook", "examples", "script") if data.get(k) is not None]
+    if dest != "hook":
+        if present:
+            raise ProposalError(
+                f"{'/'.join(present)} only belong on a destination: hook "
+                f"proposal, got destination {dest!r}"
+            )
+        return
+
+    hook = data.get("hook")
+    if not isinstance(hook, dict):
+        raise ProposalError(
+            "a hook proposal carries the structured compile input — "
+            "hook: {tools, path_regex, deny_message} (02 §1 hook extension)"
+        )
+    unknown = sorted(set(hook) - set(_HOOK_KEYS))
+    if unknown:
+        raise ProposalError(f"unknown hook key(s) {unknown} — allowed: {list(_HOOK_KEYS)}")
+    missing = sorted(set(_HOOK_KEYS) - set(hook))
+    if missing:
+        raise ProposalError(f"hook block missing {missing}")
+    tools = hook.get("tools")
+    if (
+        not isinstance(tools, list)
+        or not tools
+        or any(t not in GUARDABLE_TOOLS for t in tools)
+        or len(set(tools)) != len(tools)
+    ):
+        raise ProposalError(
+            f"hook.tools must be a non-empty duplicate-free list from "
+            f"{list(GUARDABLE_TOOLS)}, got {tools!r}"
+        )
+    regex = hook.get("path_regex")
+    if not isinstance(regex, str) or not regex.strip():
+        raise ProposalError("hook.path_regex must be non-empty text")
+    problem = _ere_problem(regex)
+    if problem is not None:
+        raise ProposalError(f"hook.path_regex is not a valid ERE regex: {problem}")
+    deny = hook.get("deny_message")
+    if not isinstance(deny, str) or not deny.strip() or "\n" in deny:
+        raise ProposalError(
+            "hook.deny_message must be non-empty and one line (the pinned "
+            "deny is a ONE-line stderr message, 08 §8.1)"
+        )
+
+    examples = data.get("examples")
+    if not isinstance(examples, dict) or set(examples) != {"allow", "deny"}:
+        raise ProposalError(
+            "a hook proposal carries replay examples: "
+            "examples: {allow: […], deny: […]} (M3-12)"
+        )
+    for verdict in ("allow", "deny"):
+        cases = examples[verdict]
+        if (
+            not isinstance(cases, list)
+            or not _HOOK_EXAMPLES_MIN <= len(cases) <= _HOOK_EXAMPLES_MAX
+        ):
+            raise ProposalError(
+                f"examples.{verdict} must list {_HOOK_EXAMPLES_MIN}–"
+                f"{_HOOK_EXAMPLES_MAX} example inputs (08 §4 replay row)"
+            )
+        for i, case in enumerate(cases):
+            if (
+                not isinstance(case, dict)
+                or not isinstance(case.get("tool_input"), dict)
+                or case.get("tool_name") not in tools
+            ):
+                raise ProposalError(
+                    f"examples.{verdict}[{i}] must be "
+                    "{tool_name: <one of hook.tools>, tool_input: {…}} — an "
+                    "example naming an unguarded tool_name is vacuous (the "
+                    "guard allows unguarded tools by design)"
+                )
+
+    script = data.get("script")
+    if script is not None and (
+        not isinstance(script, str) or not script.startswith("#!")
+    ):
+        raise ProposalError(
+            "script must be the full shebang'd guard text (CLI-stamped; "
+            "leave it out and run `self-learn proposal validate`)"
+        )
+
+
 def validate_proposal(data: dict) -> None:
-    """02 §1 single-record proposal schema. Raises :class:`ProposalError`."""
+    """02 §1 single-record proposal schema (incl. the M3 hook-destination
+    extension). Raises :class:`ProposalError`."""
     if not isinstance(data, dict):
         raise ProposalError("proposal is not a mapping")
     dest = data.get("destination")
@@ -378,6 +487,7 @@ def validate_proposal(data: dict) -> None:
         raise ProposalError(
             f"destination must be one of {list(PROPOSAL_DESTINATIONS)}, got {dest!r}"
         )
+    _validate_hook_extension(data)
     for key in ("rationale", "model"):
         value = data.get(key)
         if not isinstance(value, str) or not value.strip():
@@ -463,7 +573,16 @@ def write_proposal(home: Path, record_id: str, data: dict) -> Path:
 def stamp_proposal(home: Path, record_id: str) -> Path:
     """Overwrite the proposal's ``record_sha`` with the sha-anchor of the
     record's CURRENT normalized body (T2's single normalization fn) — the
-    CLI stamps, the model's emitted value is never trusted (08 §7.1)."""
+    CLI stamps, the model's emitted value is never trusted (08 §7.1).
+
+    Hook proposals get a second stamp on the same principle (M2-21
+    applied to executable bytes): ``script`` is GENERATED here from the
+    structured compile input (``hook:`` block + the record's Trigger),
+    overwriting anything the model wrote. Both attended validation
+    (``proposal validate``) and the worker's run-sequence step (4) flow
+    through this one function, so no path ships model-authored script
+    text. Hand-tuning a guard = edit the hook block, re-validate; the
+    route verb then applies the stamped bytes VERBATIM (M3-2)."""
     record_path = find_record_path(home, record_id)
     record = Record.from_path(record_path)
     path = _proposal_path(record_path.parent.parent, record_id)
@@ -471,8 +590,41 @@ def stamp_proposal(home: Path, record_id: str) -> Path:
         raise ProposalError(f"no proposal sibling for {record_id} at {path}")
     data = _load_yaml_map(path)
     data["record_sha"] = sha_anchor(record.body)
+    if data.get("destination") == "hook":
+        data["script"] = _generate_hook_script(record, data)
     _dump_yaml(data, path)
     return path
+
+
+def _generate_hook_script(record: Record, data: dict) -> str:
+    """The CLI-owned script generation for a hook proposal: structured
+    input in, deterministic bash out (hook_compiler). The Trigger's first
+    line seeds the M3-6 slug — hook routes therefore require a behavior
+    record (a guard's firing condition IS the trigger, doctrine §6)."""
+    from .hook_compiler import HookCompileError, generate_script
+
+    if record.type != "behavior":
+        raise ProposalError(
+            f"hook destination needs a behavior record with a ## Trigger — "
+            f"{record.id} is type {record.type!r}"
+        )
+    hook = data.get("hook")
+    if not isinstance(hook, dict):
+        raise ProposalError(
+            f"proposal for {record.id} has destination hook but no hook "
+            "block — nothing to compile (02 §1 hook extension)"
+        )
+    trigger = record_title(record)
+    try:
+        return generate_script(
+            record.id,
+            trigger,
+            list(hook.get("tools") or []),
+            str(hook.get("path_regex") or ""),
+            str(hook.get("deny_message") or ""),
+        )
+    except HookCompileError as exc:
+        raise ProposalError(str(exc)) from exc
 
 
 def remove_proposal_siblings(home: Path, bucket_dir: Path, record_id: str) -> list[Path]:
@@ -512,6 +664,8 @@ def resolve_record(
     note: str | None = None,
     follow_up: dict | None = None,
     reference_file: str | None = None,
+    hook: dict | None = None,
+    new_skill: str | None = None,
 ) -> list[Path]:
     """File-op half of a resolution: update frontmatter via T2's mutation
     API, ``git mv`` pending→resolved (fs move when untracked), and remove
@@ -536,6 +690,21 @@ def resolve_record(
         raise LedgerOpsError(
             "a follow-up rides the routing block (11 §2.1) — routed only"
         )
+    if hook is not None and (new_status != "routed" or destination != "hook"):
+        raise LedgerOpsError(
+            "routing.hook rides a hook routing only (08 §8.1 apply pin)"
+        )
+    if new_skill is not None and (
+        new_status != "routed" or destination != "new-skill"
+    ):
+        raise LedgerOpsError(
+            "routing.new_skill rides a new-skill routing only (08 §8.1)"
+        )
+    if destination == "new-skill" and new_skill is None:
+        raise LedgerOpsError(
+            "a new-skill routing must name the skill (routing.new_skill) — "
+            "recompile and the drift check read it to find the target"
+        )
     path = find_record_path(home, record_id)
     record = Record.from_path(path)
     if new_status == "routed":
@@ -552,6 +721,14 @@ def resolve_record(
             routing["reference_file"] = reference_file
         if follow_up is not None:
             routing["follow_up"] = dict(follow_up)
+        if hook is not None:
+            # The APPROVED compile artifacts (M3-2): the exact script
+            # bytes + their host-relative path, so drift checks and
+            # `recompile` can re-apply what the human saw — never
+            # regenerate from changed inputs.
+            routing["hook"] = dict(hook)
+        if new_skill is not None:
+            routing["new_skill"] = new_skill
         record.set_routing(routing)
     if superseded_by is not None:
         record.set_superseded_by(superseded_by)

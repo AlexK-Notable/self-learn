@@ -57,13 +57,26 @@ from __future__ import annotations
 
 import contextlib
 import sys
+import tempfile
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
 
+from . import config as policy_config
 from . import gitops, sentinel, telemetry
+from .hook_compiler import replay_examples, script_name, settings_snippet
+from .normalize import sha_anchor
+from .skill_scaffold import (
+    SkillScaffoldError,
+    marketplace_with_entry,
+    plugin_manifest_text,
+    scaffold_description,
+    skill_md_seed,
+    validate_skill_name,
+)
 from .chezmoi import ChezmoiAbort, ChezmoiError, compile_user_scope, preflight_user_scope
 from .compilers import (
+    BEGIN_MARKER,
     CompileError,
     compile_managed_file,
     compile_reference,
@@ -80,12 +93,14 @@ from .ledger import discover_buckets
 from .ledger_ops import (
     PROPOSAL_DESTINATIONS,
     LedgerOpsError,
+    ProposalError,
     bucket_dir_for_scope,
     bucket_project_path,
     defer_record,
     ensure_project_meta,
     find_record_path,
     read_proposal,
+    record_title,
     require_writable_home,
     resolve_record,
     supersede_record,
@@ -98,7 +113,6 @@ from .scan import scan as secret_scan
 
 __all__ = [
     "DEFAULT_USER_CLAUDE_MD",
-    "DestinationNotBuilt",
     "DirtyTargetError",
     "NoProposalError",
     "PushReport",
@@ -111,6 +125,7 @@ __all__ = [
     "confirm_held",
     "confirm_recurrence",
     "defer",
+    "one_motion_allowed",
     "followup_done",
     "graduate",
     "link_contradicts",
@@ -124,8 +139,27 @@ __all__ = [
 
 DEFAULT_USER_CLAUDE_MD = Path("~/.claude/CLAUDE.md")
 
-#: Destinations whose compilers land at M3 (08 §1 route pin: exit 2 "M3").
-M3_DESTINATIONS = frozenset({"new-skill", "hook"})
+#: Destinations the one-motion path (``teach --route`` /
+#: :func:`route_direct`) refuses BY DEFAULT: a ``hook`` route applies
+#: human-approved executable bytes (M3-2 — a one-motion capture has no
+#: proposal to review), and ``new-skill``'s name slot is a route-time
+#: human call (08 §8.1). *S-10 amendment 2026-07-16 (user ruling): the
+#: refusal is a DEFAULT, not a hard-code — a committed
+#: ``<home>/config.yaml`` ``one_motion_route: {hook: true, …}`` opts a
+#: destination in per :func:`one_motion_allowed`; parsing is fail-closed,
+#: and the enabled hook path still runs the full integrity chain and
+#: prints the applied bytes. settings.json registration stays manual
+#: either way — no guard fires without a human edit.*
+ONE_MOTION_UNROUTABLE = frozenset({"new-skill", "hook"})
+
+
+def one_motion_allowed(home: Path | str, destination: str) -> bool:
+    """The S-10 policy gate: True when ``destination`` may route in one
+    motion — either it never needed review (not in the set) or the
+    operator opted in via the committed config (fail-closed parse)."""
+    if destination not in ONE_MOTION_UNROUTABLE:
+        return True
+    return policy_config.one_motion_enabled(home, destination)
 
 
 class VerbError(Exception):
@@ -148,12 +182,6 @@ class DirtyTargetError(VerbError):
 
 class NoProposalError(VerbError):
     """route without ``--dest`` and without a proposal sibling."""
-
-
-class DestinationNotBuilt(VerbError):
-    """new-skill / hook route: the compiler lands at M3."""
-
-    exit_code = 2
 
 
 @dataclass
@@ -180,8 +208,12 @@ class VerbResult:
             )
         return None
     sentinel_owned: bool = False
-    diff: str | None = None  # route_direct: staged diff (pre-commit), T8 prints it
+    diff: str | None = None  # route_direct: staged diff · hook route: the
+    #   ENTIRE generated script (08 §8.1 approval flow — never a summary)
     warnings: list[str] = field(default_factory=list)  # callers MUST print
+    post_notes: list[str] = field(default_factory=list)  # required manual
+    #   steps (M3-11: settings.json snippet, ./install.sh) — callers print
+    #   to stdout; the hook is inert by design until the human does them
     # doc 13 §4 two-phase: the HOST half of a canon-touching verb. All None
     # for ledger-only verbs, for the chezmoi user flow (the dotfiles repo
     # commits itself), and after a host-phase failure (drift warning set).
@@ -337,18 +369,24 @@ def _push_ledger(home: Path, no_push: bool) -> gitops.PushResult | None:
 
 def _parse_dest(dest: str) -> tuple[str, str | None]:
     """Parse an explicit ``--dest`` value. Returns (destination,
-    named-reference-file) — the ``reference:<file>`` form names an existing
-    references file (08 §1 References-compiler pin's "another existing
-    references file")."""
+    qualifier) — ``reference:<file>`` names an existing references file
+    (08 §1 References-compiler pin) and ``new-skill:<name>`` names the
+    skill to scaffold (08 §8.1 — the name slot is the human's call)."""
     if dest.startswith("reference:"):
         name = dest.split(":", 1)[1]
         if not name:
             raise VerbError("reference:<file> needs a file name")
         return "reference", name
+    if dest.startswith("new-skill:"):
+        name = dest.split(":", 1)[1]
+        try:
+            return "new-skill", validate_skill_name(name)
+        except SkillScaffoldError as exc:
+            raise VerbError(str(exc)) from exc
     if dest not in PROPOSAL_DESTINATIONS:
         raise VerbError(
             f"--dest must be one of {list(PROPOSAL_DESTINATIONS)} "
-            f"(or reference:<file>), got {dest!r}"
+            f"(or reference:<file> / new-skill:<name>), got {dest!r}"
         )
     return dest, None
 
@@ -409,13 +447,14 @@ class TargetSpec:
     ``host_repo`` is None only for the chezmoi user flow (the dotfiles
     repo commits itself)."""
 
-    destination: str  # skill-md | claude-md | reference
+    destination: str  # skill-md | claude-md | reference | hook | new-skill
     scope_kind: str  # "skill" | "project" | "skill-root" | "user"
     bucket_dir: Path
     target: Path | None  # None for a default (created-on-demand) reference
     host_repo: Path | None
     refs_dir: Path | None = None
     ref_name: str | None = None
+    new_skill: str | None = None  # new-skill only: the human-named skill
 
 
 def _gate_host(home: Path, path: Path | str, kind: str) -> Path:
@@ -529,6 +568,51 @@ def _resolve_target(
             _abort_if_dirty(root, target)
         return TargetSpec("claude-md", "skill-root", bucket_dir, target, root)
 
+    if destination == "new-skill":
+        if ref_name is None:
+            raise VerbError(
+                "new-skill needs a name — the name slot is the human's "
+                "call (08 §8.1): route --dest new-skill:<name>"
+            )
+        name = validate_skill_name(ref_name)
+        hosts = load_hosts(home)
+        if hosts.skills_root is None:
+            raise VerbError(
+                "no skills root registered — the scaffold lands under it; "
+                "self-learn host add <path> --skills-root"
+            )
+        root = _gate_host(home, hosts.skills_root, "skills-root")
+        marketplace = root / ".claude-plugin" / "marketplace.json"
+        if not marketplace.is_file():
+            raise VerbError(
+                f"skills root {root} has no .claude-plugin/marketplace.json "
+                "— the scaffold appends an entry to an EXISTING marketplace "
+                "(08 §8.1); it never creates one"
+            )
+        plugin_dir = root / "plugins" / name
+        target = plugin_dir / "skills" / name / "SKILL.md"
+        if plugin_dir.exists():
+            # M3-9 collision rule: append only into a self-learn-scaffolded
+            # skill (its SKILL.md carries a managed section); anything else
+            # is a FOREIGN authored plugin — refuse, never inject.
+            if not (
+                target.is_file()
+                and BEGIN_MARKER in target.read_text(encoding="utf-8")
+            ):
+                raise VerbError(
+                    f"plugins/{name} already exists and is a foreign "
+                    "authored plugin (no self-learn managed section in its "
+                    "SKILL.md) — refusing to inject (M3-9); pick another "
+                    "name or route to its skill-md through review"
+                )
+        if check_dirty:
+            for probe in (target, marketplace):
+                if probe.is_file():
+                    _abort_if_dirty(root, probe)
+        return TargetSpec(
+            "new-skill", "skill-root", bucket_dir, target, root, new_skill=name
+        )
+
     if destination == "reference":
         if scope.startswith("skill:"):
             root, skill_dir = _hosts_skill_dir(home, scope.partition(":")[2])
@@ -556,12 +640,332 @@ def _resolve_target(
     raise VerbError(f"unroutable destination {destination!r}")
 
 
+# ---------------------------------------------------------------- hooks (T17)
+
+
+@dataclass(frozen=True)
+class HookApplyResult:
+    """Host-phase outcome for a hook script write (mirrors the compile
+    results' duck type: ``changed`` gates the host commit)."""
+
+    path: Path
+    changed: bool
+    applied: bool = True
+
+
+@dataclass(frozen=True)
+class _HookRoute:
+    """Everything a hook route pre-flights before any commit."""
+
+    spec: TargetSpec
+    meta: dict  # the routing.hook payload (approved compile artifacts)
+    snippet: str
+    script: str
+
+
+def _hooks_dir_for(home: Path, scope: str) -> tuple[Path, Path]:
+    """M3-7 script placement, via the hosts registry: skill-scoped →
+    ``plugins/<p>/hooks/`` (the plugin owning the skill), project/user →
+    ``plugins/self-learn/hooks/`` — all under the gated skills root (the
+    hooks ride install.sh's existing ``plugins/*/hooks/*.sh`` deploy
+    surface). Returns (host_repo, hooks_dir)."""
+    if scope.startswith("skill:"):
+        root, skill_dir = _hosts_skill_dir(home, scope.partition(":")[2])
+        return root, skill_dir.parent.parent / "hooks"
+    hosts = load_hosts(home)
+    if hosts.skills_root is None:
+        raise VerbError(
+            "no skills root registered — hook scripts land under it; "
+            "self-learn host add <path> --skills-root"
+        )
+    root = _gate_host(home, hosts.skills_root, "skills-root")
+    return root, root / "plugins" / "self-learn" / "hooks"
+
+
+def _resolve_hook_target(home: Path, record: Record, bucket_dir: Path) -> TargetSpec:
+    """PRE-FLIGHT the hook script path (raises before any commit)."""
+    root, hooks_dir = _hooks_dir_for(home, record.scope)
+    trigger = record_title(record)
+    try:
+        name = script_name(record.id, trigger)
+    except Exception as exc:  # HookCompileError: unsluggable trigger
+        raise VerbError(str(exc)) from exc
+    target = hooks_dir / name
+    if target.exists():
+        raise VerbError(
+            f"hook script already exists at {target} — refusing to "
+            "overwrite; supersede the record that owns it first"
+        )
+    scope_kind = "skill" if record.scope.startswith("skill:") else record.scope
+    return TargetSpec("hook", scope_kind, bucket_dir, target, root)
+
+
+def _replay_hook_examples(script: str, examples: dict) -> None:
+    """M3-12: replay the analyst's allow/deny examples against the exact
+    bytes the route will commit — BEFORE anything commits. Any mismatch
+    aborts. (The scratch copy lives in a TemporaryDirectory and is never
+    committed anywhere.)"""
+    with tempfile.TemporaryDirectory(prefix="self-learn-hook-replay-") as scratch:
+        probe = Path(scratch) / "guard.sh"
+        probe.write_text(script, encoding="utf-8")
+        probe.chmod(0o700)
+        mismatches = replay_examples(probe, examples)
+    if mismatches:
+        raise VerbError(
+            "guard replay failed — aborting the route (M3-12; the record "
+            "stays pending):\n  " + "\n  ".join(mismatches)
+        )
+
+
+def _prepare_one_motion_hook(
+    home: Path, record: Record, bucket_dir: Path, hook_input: dict | None
+) -> _HookRoute:
+    """The S-10-amended one-motion hook pre-flight: same integrity chain
+    as the review-gated path — CLI-generated script (never caller-authored
+    bytes), full schema validation, secret scan over every byte the route
+    will publish, placement gates, and the M3-12 replay — all BEFORE the
+    record or the script land anywhere. The only thing the config opt-in
+    removed is the pending-record review pause; visibility survives (the
+    caller prints the applied bytes) and activation stays manual."""
+    if hook_input is None:
+        raise VerbError(
+            "one-motion hook route needs the compile input — pass "
+            "--hook-input <yaml> carrying {rationale, hook: {tools, "
+            "path_regex, deny_message}, examples: {allow, deny}} "
+            "(routing-doctrine §5.1)"
+        )
+    data = dict(hook_input)
+    data.setdefault("destination", "hook")
+    if data["destination"] != "hook":
+        raise VerbError(
+            f"--hook-input names destination {data['destination']!r} — "
+            "one-motion hook input must be hook-destined"
+        )
+    # bookkeeping fields the schema requires but that carry no judgment;
+    # rationale is NOT defaulted — the over-block statement is the §4
+    # judgment and must come from the author.
+    data.setdefault("model", "one-motion-cli")
+    data.setdefault("analyzed_at", _now_iso())
+    # CLI-generated bytes, exactly like stamp_proposal (M2-21 for
+    # executables): anything the caller wrote in `script` is overwritten.
+    from .ledger_ops import _generate_hook_script  # same module family
+
+    try:
+        data["script"] = _generate_hook_script(record, data)
+    except ProposalError as exc:
+        raise VerbError(str(exc)) from exc
+    data["record_sha"] = sha_anchor(record.body)
+    try:
+        validate_proposal(data)
+    except ProposalError as exc:
+        raise VerbError(f"hook compile input invalid: {exc}") from exc
+
+    # P2-7: scan EVERY byte this route publishes — the whole compile
+    # input (rationale, regex, messages, examples) plus the generated
+    # script (the record text is scanned by the caller).
+    import json as _json
+
+    findings = secret_scan(_json.dumps(data, default=str))
+    if findings:
+        raise SecretRefusal(
+            "secret scan hit in the hook compile input — refusing this "
+            "route (P2-7; no bypass):\n" + format_refusal(findings),
+            findings,
+        )
+
+    spec = _resolve_hook_target(home, record, bucket_dir)
+    _replay_hook_examples(data["script"], data["examples"])
+
+    hook = data["hook"]
+    rel = spec.target.relative_to(spec.host_repo).as_posix()
+    meta = {
+        "tools": list(hook["tools"]),
+        "path_regex": hook["path_regex"],
+        "deny_message": hook["deny_message"],
+        "script_path": rel,
+        "script": data["script"],
+    }
+    snippet = settings_snippet(list(hook["tools"]), spec.target.name)
+    return _HookRoute(
+        spec=spec, meta=meta, snippet=snippet, script=data["script"]
+    )
+
+
+def _prepare_hook_route(
+    home: Path, bucket_dir: Path, record: Record
+) -> _HookRoute:
+    """The hook route's pre-flight: proposal-carried compile input
+    (M3-2), CLI-stamped script, record_sha freshness, replay — every
+    refusal lands before any commit."""
+    proposal_path = bucket_dir / "proposals" / f"{record.id}.yaml"
+    if not proposal_path.is_file():
+        raise VerbError(
+            f"hook routes apply a proposal-carried, approved script — no "
+            f"proposal for {record.id}; author proposals/{record.id}.yaml "
+            "with the hook block (routing-doctrine §5.1), then "
+            f"`self-learn proposal validate {record.id}`"
+        )
+    # P2-7: this verb publishes proposal-derived bytes into canon — scan
+    # the proposal file itself, not only the record.
+    _scan_or_refuse([proposal_path], None)
+    data = read_proposal(proposal_path)
+    try:
+        validate_proposal(data)
+    except ProposalError as exc:
+        raise VerbError(f"hook proposal invalid: {exc}") from exc
+    if data.get("destination") != "hook":
+        raise VerbError(
+            f"proposal for {record.id} proposes "
+            f"{data.get('destination')!r}, not hook — a hook route needs "
+            "the §5.1 compile input; re-analyze or author a hook proposal"
+        )
+    script = data.get("script")
+    if not script:
+        raise VerbError(
+            f"hook proposal for {record.id} has no stamped script — run "
+            f"`self-learn proposal validate {record.id}` (the CLI "
+            "generates the bytes; they are never model-authored)"
+        )
+    if data.get("record_sha") != sha_anchor(record.body):
+        raise VerbError(
+            f"record {record.id} changed since analysis (record_sha "
+            "mismatch) — aborting (M3-2: re-analysis + fresh approval, "
+            "never silent regeneration); re-review the proposal, then "
+            f"`self-learn proposal validate {record.id}` restamps it"
+        )
+
+    spec = _resolve_hook_target(home, record, bucket_dir)
+    _replay_hook_examples(script, data["examples"])
+
+    hook = data["hook"]
+    rel = spec.target.relative_to(spec.host_repo).as_posix()
+    meta = {
+        "tools": list(hook["tools"]),
+        "path_regex": hook["path_regex"],
+        "deny_message": hook["deny_message"],
+        "script_path": rel,
+        "script": script,
+    }
+    snippet = settings_snippet(list(hook["tools"]), spec.target.name)
+    return _HookRoute(spec=spec, meta=meta, snippet=snippet, script=script)
+
+
+def _hook_manual_steps(snippet: str, name: str) -> list[str]:
+    """M3-11: the route ends by printing the required manual steps — the
+    hook is inert by design until both are done."""
+    return [
+        "hook routed — two manual steps remain (the guard is INERT until "
+        "both):",
+        f"  1. run ./install.sh — the ~/.claude/hooks/{name} symlink "
+        "materializes only then",
+        "  2. add this to ~/.claude/settings.json (hooks):\n"
+        f"     {snippet}",
+    ]
+
+
+def _write_hook_script(target: Path, script: str) -> HookApplyResult:
+    """Write the APPROVED bytes (verbatim — M3-2) + executable bit.
+    Idempotent: byte-identical executable content reports unchanged."""
+    current = (
+        target.read_text(encoding="utf-8") if target.is_file() else None
+    )
+    executable = target.is_file() and bool(target.stat().st_mode & 0o100)
+    if current == script and executable:
+        return HookApplyResult(path=target, changed=False)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(script, encoding="utf-8")
+    target.chmod(target.stat().st_mode | 0o755)
+    return HookApplyResult(path=target, changed=True)
+
+
+def _hook_script_location(
+    home: Path, record: Record, warnings: list[str]
+) -> tuple[Path, Path, str] | None:
+    """PRE-FLIGHT the M3-4 rollback: where the routed record's script
+    lives. Returns (host_repo, script_path, rel), or None (with a loud
+    warning) when the record carries no script_path."""
+    meta = (record.routing or {}).get("hook") or {}
+    rel = meta.get("script_path")
+    if not rel:
+        warnings.append(
+            f"{record.id} is hook-routed but carries no routing.hook."
+            "script_path — remove its guard script by hand"
+        )
+        return None
+    hosts = load_hosts(home)
+    if hosts.skills_root is None:
+        raise VerbError(
+            "no skills root registered — cannot locate the hook script to "
+            "remove; self-learn host add <path> --skills-root"
+        )
+    root = _gate_host(home, hosts.skills_root, "skills-root")
+    return root, root / rel, rel
+
+
+def _remove_hook_script(
+    home: Path,
+    removal: tuple[Path, Path, str],
+    record_id: str,
+    note: str | None,
+    warnings: list[str],
+    post_notes: list[str],
+) -> str | None:
+    """M3-4 host phase: ``git rm`` the script (same resolution flow —
+    ledger committed first, host commit pinned ``… (hook removed)``) and
+    print the un-registration reminder. A failure is loud, never a
+    rollback (the ledger stays truth)."""
+    host_repo, script, rel = removal
+    name = script.name
+    post_notes.append(
+        f"hook retired — finish by hand: remove the settings.json "
+        f"PreToolUse entry for {name} and the dead ~/.claude/hooks/{name} "
+        "symlink (install.sh only adds links, it never removes them)"
+    )
+    if not script.is_file():
+        warnings.append(
+            f"hook script {script} already absent — nothing to remove"
+        )
+        return None
+    try:
+        with gitops.commit_lock(host_repo):
+            gitops._git(  # noqa: SLF001 — same module family
+                host_repo, "rm", "-q", "--ignore-unmatch", "--", str(script)
+            )
+            if script.exists():
+                # untracked script: plain unlink — nothing tracked changed,
+                # so there is nothing to commit
+                script.unlink()
+                return None
+            return gitops.commit(
+                host_repo,
+                f"self-learn: apply {record_id} → {rel} (hook removed)",
+                body=note,
+                paths=[script],
+            )
+    except (gitops.GitOpsError, OSError) as exc:
+        warning = (
+            f"HOOK REMOVAL FAILED after the ledger commit ({exc}) — remove "
+            f"{script} by hand; the ledger stays truth (H-2)"
+        )
+        print(f"self-learn: {warning}", file=sys.stderr)
+        warnings.append(warning)
+        return None
+
+
 def _compile_set(home: Path, spec: TargetSpec) -> list[Record]:
     """The compile set, read straight off disk (the ledger op commits
     FIRST now — no shadow copies; superseded old records already dropped
     out via the compiler's status filter)."""
     if spec.destination == "skill-md":
         return _routed_to([spec.bucket_dir], "skill-md")
+    if spec.destination == "new-skill":
+        # a scaffolded skill may collect lessons from ANY bucket — the
+        # name on the routing block is the grouping key.
+        return [
+            r
+            for r in _routed_to(_all_bucket_dirs(home), "new-skill")
+            if (r.routing or {}).get("new_skill") == spec.new_skill
+        ]
     if spec.scope_kind == "user":
         return _routed_to(
             _all_bucket_dirs(home), "claude-md", scope_pred=lambda s: s == "user"
@@ -588,7 +992,23 @@ def _apply_target(
     """HOST-phase compile (doc 13 §4 step e): write the target from the
     committed ledger state. Returns (compile_result, host paths to stage —
     empty for the chezmoi user flow, which commits its own repo)."""
-    if spec.destination == "reference":
+    if spec.destination == "new-skill":
+        compile_result, host_paths = _apply_new_skill(home, spec)
+    elif spec.destination == "hook":
+        # M3-2 verbatim apply: the APPROVED bytes ride the routing block
+        # (copied there at the ledger phase), so the host phase — and any
+        # later recompile repair — re-applies exactly what the human saw.
+        meta = (
+            (routed_record.routing or {}).get("hook") if routed_record else None
+        ) or {}
+        script = meta.get("script")
+        if not script:
+            raise VerbError(
+                "hook record carries no routing.hook.script — nothing to apply"
+            )
+        compile_result = _write_hook_script(spec.target, script)
+        host_paths = [spec.target] if compile_result.changed else []
+    elif spec.destination == "reference":
         if routed_record is None:  # supersede/recompile never touch references
             raise VerbError("reference targets are append-only — nothing to apply")
         compile_result = compile_reference(
@@ -622,6 +1042,83 @@ def _apply_target(
         overflow=bool(getattr(compile_result, "over_cap", False)),
     )
     return compile_result, host_paths
+
+
+@dataclass(frozen=True)
+class NewSkillApplyResult:
+    """Host-phase outcome for a new-skill scaffold/recompile (duck-typed
+    like the other compile results: ``changed`` gates the host commit)."""
+
+    path: Path
+    changed: bool
+    scaffolded: bool  # plugin.json/SKILL.md/marketplace entry created now
+    section: object | None = None  # the inner SectionResult
+    applied: bool = True
+
+    @property
+    def over_cap(self) -> bool:
+        return bool(getattr(self.section, "over_cap", False))
+
+    @property
+    def cap_reason(self):
+        return getattr(self.section, "cap_reason", None)
+
+    @property
+    def word_count(self):
+        return getattr(self.section, "word_count", None)
+
+
+def _apply_new_skill(home: Path, spec: TargetSpec) -> tuple[NewSkillApplyResult, list[Path]]:
+    """The T18 host apply: deterministic scaffold on first route (M3-9 —
+    plugin.json + SKILL.md, marketplace entry appended exactly once),
+    ordinary managed-section recompile ever after. Idempotent: a second
+    run over unchanged records writes nothing."""
+    records = _compile_set(home, spec)
+    if not records:
+        raise VerbError(
+            f"no routed records name new-skill:{spec.new_skill} — nothing "
+            "to compile"
+        )
+    name = spec.new_skill
+    root = spec.host_repo
+    target = spec.target
+    plugin_dir = root / "plugins" / name
+    manifest = plugin_dir / ".claude-plugin" / "plugin.json"
+    marketplace = root / ".claude-plugin" / "marketplace.json"
+    # deterministic description: seeded from the FIRST routed lesson
+    # (the compile set is already in pinned (routed_at, id) order).
+    description = scaffold_description(records[0])
+
+    changed = False
+    scaffolded = False
+    if not manifest.is_file():
+        manifest.parent.mkdir(parents=True, exist_ok=True)
+        manifest.write_text(
+            plugin_manifest_text(name, description), encoding="utf-8"
+        )
+        changed = scaffolded = True
+    if not target.is_file():
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(skill_md_seed(name, description), encoding="utf-8")
+        changed = scaffolded = True
+    section = compile_managed_file(target, records)
+    changed = changed or section.changed
+
+    try:
+        market_text, market_changed = marketplace_with_entry(
+            marketplace.read_text(encoding="utf-8"), name, description
+        )
+    except SkillScaffoldError as exc:
+        raise VerbError(str(exc)) from exc
+    if market_changed:
+        marketplace.write_text(market_text, encoding="utf-8")
+        changed = True
+
+    result = NewSkillApplyResult(
+        path=target, changed=changed, scaffolded=scaffolded, section=section
+    )
+    # SKILL.md first: the pinned apply subject names host_paths[0].
+    return result, [target, manifest, marketplace]
 
 
 #: Host-phase failure classes: loud drift warning, never a rollback (H-2).
@@ -774,23 +1271,27 @@ def route(
     try:
         bucket_dir = path.parent.parent
         destination, ref_name = _resolve_destination(bucket_dir, record_id, dest)
-        if destination in M3_DESTINATIONS:
-            raise DestinationNotBuilt(
-                f"destination {destination!r} is not built until M3"
-            )
 
         # (c) PRE-FLIGHT: registry gates (H-3 / doc 13 Q2) + host-repo
         # dirty checks + chezmoi drift/dirty for user scope. Every refusal
-        # lands HERE — before any commit; the record stays pending.
-        spec = _resolve_target(
-            home,
-            bucket_dir,
-            record.scope,
-            destination,
-            ref_name,
-            user_claude_md=user_claude_md,
-            chezmoi_bin=chezmoi_bin,
-        )
+        # lands HERE — before any commit; the record stays pending. Hook
+        # routes additionally pre-flight the proposal-carried script:
+        # stamp presence, record_sha freshness (M3-2), and the M3-12
+        # example replay against the exact bytes.
+        hook_route: _HookRoute | None = None
+        if destination == "hook":
+            hook_route = _prepare_hook_route(home, bucket_dir, record)
+            spec = hook_route.spec
+        else:
+            spec = _resolve_target(
+                home,
+                bucket_dir,
+                record.scope,
+                destination,
+                ref_name,
+                user_claude_md=user_claude_md,
+                chezmoi_bin=chezmoi_bin,
+            )
 
         if collapse is not None:
             # Pinned commit shape: route lrn-X → <target> (collapse
@@ -801,7 +1302,10 @@ def route(
             suffix = f" (collapse {collapse}, supersedes {', '.join(superseded)})"
         else:
             suffix = f" (supersedes {old_id})" if old_id else ""
-        message = f"self-learn: route {record_id} → {destination}{suffix}"
+        message_target = (
+            f"new-skill:{ref_name}" if destination == "new-skill" else destination
+        )
+        message = f"self-learn: route {record_id} → {message_target}{suffix}"
         routed_at = _now_iso()
 
         merged: Record | None = None
@@ -847,6 +1351,8 @@ def route(
                 note=note,
                 follow_up=follow_up,
                 reference_file=ref_name if destination == "reference" else None,
+                hook=hook_route.meta if hook_route is not None else None,
+                new_skill=ref_name if destination == "new-skill" else None,
             )
             if old_id is not None:
                 # teach --supersedes completion-at-route: SAME commit (08 §1
@@ -871,7 +1377,13 @@ def route(
 
         # (e) HOST phase: compile from the committed ledger state + host
         # commit (pinned apply subject), still under the sentinel hold.
+        # Hook routes log the settings.json snippet in the host commit
+        # body (M3-11) alongside any --note.
         warnings: list[str] = []
+        host_note = note
+        if hook_route is not None:
+            snippet_block = f"settings.json snippet:\n{hook_route.snippet}"
+            host_note = f"{note}\n\n{snippet_block}" if note else snippet_block
         routed_record = Record.from_path(
             bucket_dir / "resolved" / f"{record_id}.md"
         )
@@ -880,7 +1392,7 @@ def route(
             spec,
             record_id,
             routed_record=routed_record,
-            note=note,
+            note=host_note,
             chezmoi_bin=chezmoi_bin,
             message=message,
             warnings=warnings,
@@ -901,7 +1413,22 @@ def route(
             push=push,
             compile_result=compile_result,
             sentinel_owned=hold.owned,
+            # 08 §8.1 approval flow: the verb shows the ENTIRE script as
+            # the diff, and ends by printing the required manual steps.
+            diff=hook_route.script if hook_route is not None else None,
             warnings=warnings,
+            post_notes=(
+                _hook_manual_steps(hook_route.snippet, spec.target.name)
+                if hook_route is not None
+                else [
+                    f"new skill scaffolded at plugins/{ref_name} — run "
+                    "./install.sh to symlink it into ~/.claude/skills "
+                    "(M3-11); enrich the prose post-hoc whenever you like"
+                ]
+                if destination == "new-skill"
+                and getattr(compile_result, "scaffolded", False)
+                else []
+            ),
             host_commit_sha=host_sha,
             host_push=host_push,
             target=spec.target,
@@ -920,6 +1447,7 @@ def route_direct(
     user_claude_md: Path | str | None = None,
     chezmoi_bin: str = "chezmoi",
     project_path: Path | None = None,
+    hook_input: dict | None = None,
 ) -> VerbResult:
     """``teach --route``'s writer (02 §2 lifecycle note): the composed,
     not-yet-on-disk record is written DIRECTLY into its bucket's
@@ -942,9 +1470,20 @@ def route_direct(
     except LedgerOpsError as exc:
         raise VerbError(str(exc)) from exc
     destination, ref_name = _parse_dest(dest)
-    if destination in M3_DESTINATIONS:
-        raise DestinationNotBuilt(
-            f"destination {destination!r} is not built until M3"
+    if not one_motion_allowed(home, destination):
+        # The DEFAULT posture (S-10 amendment 2026-07-16): refuse with the
+        # pinned message; a committed config.yaml opt-in is the only door.
+        hint = (
+            "the hook flow is capture → analyst proposal (compile input + "
+            "examples) → human approval of the exact script: teach WITHOUT "
+            "--route, then `self-learn route <id> --dest hook`"
+            if destination == "hook"
+            else "capture first, then `self-learn route <id> --dest "
+            "new-skill:<name>` — the name is a route-time human call"
+        )
+        raise VerbError(
+            f"destination {destination!r} cannot be routed in one motion — "
+            + hint
         )
 
     # (a) P2-7 rider: scan every byte this call publishes — the FULL record
@@ -985,24 +1524,42 @@ def route_direct(
             raise VerbError(f"record {record.id} already exists in {bucket_dir}")
 
         # (c) PRE-FLIGHT — registry gates + host dirty checks, before any
-        # write (the composed record is still only in memory).
-        spec = _resolve_target(
-            home,
-            bucket_dir,
-            record.scope,
-            destination,
-            ref_name,
-            user_claude_md=user_claude_md,
-            chezmoi_bin=chezmoi_bin,
-            project_path=project_path,
-        )
+        # write (the composed record is still only in memory). One-motion
+        # hook (config-enabled) runs the FULL integrity chain here:
+        # CLI-generated script, schema validation, whole-input secret
+        # scan, and the M3-12 replay — every refusal lands before any
+        # write.
+        hook_route: _HookRoute | None = None
+        if destination == "hook":
+            hook_route = _prepare_one_motion_hook(
+                home, record, bucket_dir, hook_input
+            )
+            spec = hook_route.spec
+        else:
+            spec = _resolve_target(
+                home,
+                bucket_dir,
+                record.scope,
+                destination,
+                ref_name,
+                user_claude_md=user_claude_md,
+                chezmoi_bin=chezmoi_bin,
+                project_path=project_path,
+            )
 
         suffix = f" (supersedes {old_id})" if old_id else ""
-        message = f"self-learn: route {record.id} → {destination}{suffix}"
+        message_target = (
+            f"new-skill:{ref_name}" if destination == "new-skill" else destination
+        )
+        message = f"self-learn: route {record.id} → {message_target}{suffix}"
 
         routing = {"routed_at": _now_iso(), "destination": destination, "by": "human"}
         if destination == "reference" and ref_name is not None:
             routing["reference_file"] = ref_name  # BLOCKER 2: name the file
+        if destination == "new-skill":
+            routing["new_skill"] = ref_name
+        if hook_route is not None:
+            routing["hook"] = hook_route.meta
         record.set_routing(routing)
         record.set_status("routed")
         if note is not None:
@@ -1030,14 +1587,19 @@ def route_direct(
                 ) from exc
             _, sha = _commit_ledger(home, touched, message, note)
 
-        # (e) HOST phase.
+        # (e) HOST phase. Hook routes log the settings snippet in the host
+        # commit body (M3-11), same as the review-gated path.
         warnings: list[str] = []
+        host_note = note
+        if hook_route is not None:
+            snippet_block = f"settings.json snippet:\n{hook_route.snippet}"
+            host_note = f"{note}\n\n{snippet_block}" if note else snippet_block
         compile_result, host_sha = _host_phase(
             home,
             spec,
             record.id,
             routed_record=record,
-            note=note,
+            note=host_note,
             chezmoi_bin=chezmoi_bin,
             message=message,
             warnings=warnings,
@@ -1049,6 +1611,22 @@ def route_direct(
                 spec.host_repo, "show", "--format=", host_sha
             ).stdout
             diff = diff + host_diff
+        if hook_route is not None:
+            # The user's ruling keeps VISIBILITY without the gate: the
+            # applied script bytes lead the printed diff, in full.
+            diff = hook_route.script + "\n--- ledger ---\n" + diff
+
+        post_notes: list[str] = []
+        if hook_route is not None:
+            post_notes = _hook_manual_steps(hook_route.snippet, spec.target.name)
+        elif destination == "new-skill" and getattr(
+            compile_result, "scaffolded", False
+        ):
+            post_notes = [
+                f"new skill scaffolded at plugins/{ref_name} — run "
+                "./install.sh to symlink it into ~/.claude/skills "
+                "(M3-11); enrich the prose post-hoc whenever you like"
+            ]
 
         # (f) push ledger, then push host (both has_remote-guarded).
         push = None if no_push else gitops.push_if_remote(home)
@@ -1066,6 +1644,7 @@ def route_direct(
             sentinel_owned=hold.owned,
             diff=diff,
             warnings=warnings,
+            post_notes=post_notes,
             host_commit_sha=host_sha,
             host_push=host_push,
             target=spec.target,
@@ -1159,16 +1738,37 @@ def graduate(
     path = find_record_path(home, record_id)  # pending OR resolved
     _scan_or_refuse([path], note)
     warnings = _orphaned_followup_warning(path, record_id)
+    record = Record.from_path(path)
     hold = sentinel.hold()
     sentinel.heartbeat()
     try:
+        # M3-4: graduating a hook-routed record also retires its script —
+        # there is no managed section whose next recompile would drop it.
+        removal: tuple[Path, Path, str] | None = None
+        if (
+            record.status == "routed"
+            and (record.routing or {}).get("destination") == "hook"
+        ):
+            removal = _hook_script_location(home, record, warnings)
+
         message = f"self-learn: graduate {record_id}"
         with _ledger_write(home):
             touched = resolve_record(
                 home, record_id, "superseded", superseded_by="canon", note=note
             )
             staged, sha = _stage_and_commit(home, touched, message, note)
+
+        host_sha = None
+        post_notes: list[str] = []
+        if removal is not None:
+            host_sha = _remove_hook_script(
+                home, removal, record_id, note, warnings, post_notes
+            )
+
         push = _push_ledger(home, no_push)
+        host_push = None
+        if not no_push and host_sha is not None and removal is not None:
+            host_push = gitops.push_if_remote(removal[0])
         return VerbResult(
             action="graduate",
             record_id=record_id,
@@ -1178,6 +1778,9 @@ def graduate(
             push=push,
             sentinel_owned=hold.owned,
             warnings=warnings,
+            post_notes=post_notes,
+            host_commit_sha=host_sha,
+            host_push=host_push,
         )
     finally:
         hold.release()
@@ -1211,20 +1814,25 @@ def supersede(
     hold = sentinel.hold()
     sentinel.heartbeat()
     try:
-        # (c) PRE-FLIGHT the recompile target when this drops a live entry.
+        # (c) PRE-FLIGHT the recompile target when this drops a live entry
+        # — or the hook script this retires (M3-4).
         spec: TargetSpec | None = None
+        removal: tuple[Path, Path, str] | None = None
         if old_record.status == "routed":
-            destination = (old_record.routing or {}).get("destination")
-            if destination in ("skill-md", "claude-md"):
+            routing = old_record.routing or {}
+            destination = routing.get("destination")
+            if destination in ("skill-md", "claude-md", "new-skill"):
                 spec = _resolve_target(
                     home,
                     old_path.parent.parent,
                     old_record.scope,
                     destination,
-                    None,
+                    routing.get("new_skill") if destination == "new-skill" else None,
                     user_claude_md=user_claude_md,
                     chezmoi_bin=chezmoi_bin,
                 )
+            elif destination == "hook":
+                removal = _hook_script_location(home, old_record, warnings)
 
         # (d) LEDGER phase (locked from the first mutation through the
         # commit — :func:`_ledger_write`).
@@ -1233,9 +1841,12 @@ def supersede(
             touched = supersede_record(home, old_id, new_id, note=note)
             staged, sha = _commit_ledger(home, touched, message, note)
 
-        # (e) HOST phase: recompile the target — the entry drops out.
+        # (e) HOST phase: recompile the target — the entry drops out. For
+        # hooks: git rm the script in the host repo (M3-4 rollback pin)
+        # and print the un-registration reminder.
         compile_result = None
         host_sha = None
+        post_notes: list[str] = []
         if spec is not None:
             compile_result, host_sha = _host_phase(
                 home,
@@ -1247,12 +1858,21 @@ def supersede(
                 message=message,
                 warnings=warnings,
             )
+        elif removal is not None:
+            host_sha = _remove_hook_script(
+                home, removal, old_id, note, warnings, post_notes
+            )
 
         # (f) push ledger, then host (both has_remote-guarded).
         push = None if no_push else gitops.push_if_remote(home)
         host_push = None
-        if not no_push and host_sha is not None and spec.host_repo is not None:
-            host_push = gitops.push_if_remote(spec.host_repo)
+        host_repo = (
+            spec.host_repo if spec is not None
+            else removal[0] if removal is not None
+            else None
+        )
+        if not no_push and host_sha is not None and host_repo is not None:
+            host_push = gitops.push_if_remote(host_repo)
         return VerbResult(
             action="supersede",
             record_id=old_id,
@@ -1263,6 +1883,7 @@ def supersede(
             compile_result=compile_result,
             sentinel_owned=hold.owned,
             warnings=warnings,
+            post_notes=post_notes,
             host_commit_sha=host_sha,
             host_push=host_push,
             target=spec.target if spec is not None else None,
@@ -1612,6 +2233,7 @@ def recompile(home: Path | str, *, no_push: bool = False) -> RecompileResult:
     # truth — targets are derived, never listed anywhere else).
     specs: dict[tuple[Path | None, Path | None], TargetSpec] = {}
     ref_work: dict[tuple[Path, Path], tuple[TargetSpec, list[Record]]] = {}
+    hook_work: list[tuple[Record, Path, Path, str]] = []  # record, host, abs, rel
     for bucket in discover_buckets(home):
         resolved = bucket.path / "resolved"
         if not resolved.is_dir():
@@ -1624,15 +2246,38 @@ def recompile(home: Path | str, *, no_push: bool = False) -> RecompileResult:
             if record.status != "routed" or record.superseded_by is not None:
                 continue
             destination = (record.routing or {}).get("destination")
-            if destination not in ("skill-md", "claude-md", "reference"):
+            if destination not in (
+                "skill-md", "claude-md", "reference", "hook", "new-skill"
+            ):
                 continue
             if destination == "claude-md" and record.scope == "user":
                 continue  # chezmoi flow owns the user file — not recompiled
-            ref_name = (
-                (record.routing or {}).get("reference_file")
-                if destination == "reference"
-                else None
-            )
+            if destination == "hook":
+                # H-2 for hooks: re-APPLY the approved bytes from
+                # routing.hook (never a regeneration from new inputs —
+                # M3-2's verbatim rule holds here too).
+                meta = (record.routing or {}).get("hook") or {}
+                if not meta.get("script") or not meta.get("script_path"):
+                    result.warnings.append(
+                        f"{record.id}: hook-routed but routing.hook carries "
+                        "no script — cannot repair; supersede + re-route"
+                    )
+                    continue
+                try:
+                    removal = _hook_script_location(home, record, result.warnings)
+                except VerbError as exc:
+                    result.warnings.append(f"{record.id}: {exc}")
+                    continue
+                if removal is not None:
+                    host_repo, script_abs, rel = removal
+                    hook_work.append((record, host_repo, script_abs, rel))
+                continue
+            if destination == "reference":
+                ref_name = (record.routing or {}).get("reference_file")
+            elif destination == "new-skill":
+                ref_name = (record.routing or {}).get("new_skill")
+            else:
+                ref_name = None
             try:
                 spec = _resolve_target(
                     home,
@@ -1744,6 +2389,41 @@ def recompile(home: Path | str, *, no_push: bool = False) -> RecompileResult:
                 )
             result.entries.append(
                 RecompileEntry(target=probe, changed=True, commit_sha=sha)
+            )
+            if host_repo not in touched_hosts:
+                touched_hosts.append(host_repo)
+
+        # Hook scripts: re-apply the APPROVED bytes where missing, edited,
+        # or stripped of the executable bit (a hook two-phase interruption
+        # is exactly a missing script — H-2's repair must cover it).
+        for record, host_repo, script_abs, rel in sorted(
+            hook_work, key=lambda item: str(item[2])
+        ):
+            if script_abs.is_file() and gitops.paths_dirty(host_repo, script_abs):
+                result.entries.append(
+                    RecompileEntry(target=script_abs, changed=False, skipped="dirty")
+                )
+                result.warnings.append(
+                    f"{script_abs}: uncommitted changes — commit/stash, then re-run"
+                )
+                continue
+            with gitops.commit_lock(host_repo):  # ledger→host order
+                apply_result = _write_hook_script(
+                    script_abs, (record.routing or {})["hook"]["script"]
+                )
+                if not apply_result.changed:
+                    result.entries.append(
+                        RecompileEntry(target=script_abs, changed=False)
+                    )
+                    continue
+                gitops.stage(host_repo, [script_abs])
+                sha = gitops.commit(
+                    host_repo,
+                    f"self-learn: recompile {rel}",
+                    paths=[script_abs],
+                )
+            result.entries.append(
+                RecompileEntry(target=script_abs, changed=True, commit_sha=sha)
             )
             if host_repo not in touched_hosts:
                 touched_hosts.append(host_repo)

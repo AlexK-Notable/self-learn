@@ -52,4 +52,12 @@ def test_wrapper_runs_through_symlink(tmp_path):
         "total_pending": 0,
         "open_followups": 0,
         "worker_last_run": None,
+        # T19 blocks (zero-state: empty mix, null medians — never fake 0s)
+        "supply_mix": {},
+        "metrics": {
+            "time_to_triage_median_days": None,
+            "pending_total": 0,
+            "pending_over_30d_pct": None,
+            "routed_and_corrected": 0,
+        },
     }

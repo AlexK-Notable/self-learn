@@ -10,9 +10,10 @@ as one-record-per-file markdown under the ledger home (`~/.self-learn`, its
 own git repo, independent of any code repo — doc 13) in `skills/<name>/`,
 `projects/<slug>/`, and `user/` buckets, triaged in bounded review
 sessions, and **routed by explicit human verbs** into canon: a skill's
-SKILL.md managed section, CLAUDE.md, or a references file. Nothing edits
-canon silently; every resolution is a pinned git commit. Full
-architecture: `docs/specs/self-learn/` (01–04, 13).
+SKILL.md managed section, CLAUDE.md, a references file, a deterministic
+guard hook (M3 — human-approved script, verbatim two-phase apply), or a
+new-skill scaffold. Nothing edits canon silently; every resolution is a
+pinned git commit. Full architecture: `docs/specs/self-learn/` (01–04, 13).
 
 ## When to offer capture
 
@@ -49,7 +50,7 @@ prompt after.
 | `import --backlog <skill>` \| `--memory [dir]` | One-shot ETL: GOTCHAS journal / auto-memory topic files → pending records (idempotent, origin-deduped) |
 | `prune-memory [--dry-run] [dir]` | S-13 sweep: delete memory files whose records reached a terminal status |
 | `proposal validate <id>` | Scan + schema-check + stamp a record's proposal sibling — REQUIRED after any direct edit of a pending record outside CLI verbs |
-| `--selftest` | Loud PASS/FAIL install checks (capture, compiler dry-run, 02 §4 markers, sentinel) |
+| `--selftest` | Loud PASS/FAIL install checks (capture, compiler dry-run, 02 §4 markers, sentinel, hooks: script intact/executable/byte-matched, incomplete supersession, dangling settings.json registrations) |
 
 All record-body writes pass the secret scan: default **refuse** (span +
 rule printed), `--redact` opt-in on capture surfaces, no bypass flag.
@@ -65,11 +66,24 @@ rule printed), `--redact` opt-in on capture surfaces, no bypass flag.
 ## Environment & exit codes
 
 - `SELF_LEARN_HOME` — the ledger home (default `~/.self-learn`).
+- `SELF_LEARN_CLAUDE_DIR` — where hook selfchecks read `settings.json` /
+  `hooks/` (default `~/.claude`; tests redirect it).
+- `<home>/config.yaml` — operator policy, COMMITTED in the ledger repo
+  (S-10 amendment 2026-07-16): `one_motion_route: {hook: true,
+  new-skill: true}` enables `teach --route --dest hook --hook-input
+  <yaml>` / `--dest new-skill:<name>`. Default (no file) = refuse and
+  keep the review-gated flow; parsing is fail-closed (only the YAML
+  boolean `true` enables). Enabled hook routes still validate, scan,
+  and replay the compile input pre-commit and PRINT the applied script;
+  the settings.json registration step stays manual either way.
 - Analyst (bare-terminal `teach --route`): `SELF_LEARN_ANALYST_MODEL`
   (default `claude-sonnet-5`), `SELF_LEARN_ANALYST_TIMEOUT` (default 120 s).
 - Exit codes — verbs: 0 ok · 1 refusal (dirty target, scan hit, chezmoi
-  abort) · 2 unbuilt destination (M3) · 3 push failed (commit kept — run
-  `self-learn push`) · 4 rebase conflict · 64 usage/unknown id.
+  abort, replay/freshness abort on a hook route) · 3 push failed (commit
+  kept — run `self-learn push`) · 4 rebase conflict · 64 usage/unknown
+  id. (All five destinations compile as of M3 — hook needs a validated
+  hook proposal, new-skill is `--dest new-skill:<name>`; the old exit-2
+  "unbuilt destination" is gone.)
   `proposal validate`: **0 valid+stamped · 1 schema-invalid (file intact) ·
   2 scan hit (wins)**. `--selftest`: 0 all green · 1 any FAIL.
 

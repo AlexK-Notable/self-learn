@@ -156,6 +156,13 @@ NOT_REPO_TRUTH = {
     # THIS check, 2026-07-16: no review round had named it. Judged, not
     # assumed — which is what a fail-closed list is for.)
     "selfcheck._check_capture": "transient scratch under the home, never committed",
+    # T17 (M3): the guard-replay probe writes the proposal's script bytes
+    # into a TemporaryDirectory, executes the analyst's examples against
+    # it, and the directory is deleted on exit. Nothing under any repo;
+    # the REAL script write (the host phase / recompile) goes through
+    # _write_hook_script under the host's commit_lock and is checked by
+    # the main analysis like every other host mutation.
+    "verbs._replay_hook_examples": "transient scratch: replay copy in a TemporaryDirectory, executed then deleted",
 }
 
 

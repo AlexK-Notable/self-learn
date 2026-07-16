@@ -20,16 +20,19 @@ Honesty pins carried from 11 §4.3/§5:
 from __future__ import annotations
 
 import json
+import re
+import statistics
 from collections import Counter
 from datetime import date, datetime, timezone
 from pathlib import Path
 
+from . import gitops
 from .ledger import discover_buckets
 from .ledger_ops import open_followups
 from .records import Record, RecordError
 from .telemetry import read_events
 
-__all__ = ["gather", "render_json", "render_text"]
+__all__ = ["gather", "ledger_metrics", "render_json", "render_text", "supply_mix"]
 
 
 def _days_since(value, today: date) -> int | None:
@@ -41,6 +44,124 @@ def _days_since(value, today: date) -> int | None:
     except ValueError:
         return None
     return (today - then).days
+
+
+def _walk_records(home: Path):
+    """(record) for every parseable pending/resolved record file."""
+    for bucket in discover_buckets(home):
+        for sub in ("pending", "resolved"):
+            directory = bucket.path / sub
+            if not directory.is_dir():
+                continue
+            for path in sorted(directory.glob("lrn-*.md")):
+                try:
+                    yield Record.from_path(path)
+                except RecordError:
+                    continue
+
+
+def supply_mix(home: Path | str) -> dict[str, int]:
+    """08 §8.1 O-3-revisit row: counts of pending+resolved records by
+    ``source`` — where lessons actually come from (04 §Success-metrics'
+    supply-mix input). Ledger-only, no git, no state files."""
+    counts: Counter = Counter(r.source for r in _walk_records(Path(home)))
+    return dict(counts)
+
+
+#: Resolution-verb commit subjects (02 §2 pinned formats). Every lrn-id in
+#: a matching subject resolved in that commit — collapse losers ride the
+#: route subject's "supersedes …" suffix, so extracting ALL ids is the
+#: honest read.
+_RESOLUTION_SUBJECT_RE = re.compile(
+    r"^self-learn: (?:route|reject|graduate|supersede) "
+)
+_LRN_ID_RE = re.compile(r"lrn-[0-9a-f]{8}")
+
+
+def _resolution_dates(home: Path) -> dict[str, str]:
+    """record id → the date (YYYY-MM-DD) of its FIRST resolution commit,
+    from the ledger's own history (02 §2: git is the who/when for
+    non-routed resolutions). Empty on a history-less repo."""
+    try:
+        proc = gitops._git(  # noqa: SLF001 — same module family
+            home, "log", "--format=%aI%x09%s"
+        )
+    except gitops.GitOpsError:
+        return {}
+    if proc.returncode != 0:
+        return {}
+    dates: dict[str, str] = {}
+    # log is newest-first: walk reversed so the FIRST (oldest) resolution
+    # wins — a later metadata commit must not restate the triage moment.
+    for line in reversed(proc.stdout.splitlines()):
+        ts, _, subject = line.partition("\t")
+        if not _RESOLUTION_SUBJECT_RE.match(subject):
+            continue
+        for rid in _LRN_ID_RE.findall(subject):
+            dates.setdefault(rid, ts[:10])
+    return dates
+
+
+def ledger_metrics(home: Path | str, *, today: date | None = None) -> dict:
+    """The 04 §Success-metrics counters (T19) — counted, never modeled;
+    computed from the ledger + git on demand, no state files:
+
+    - ``time_to_triage_median_days``: median days a RESOLVED lesson sat
+      pending (created_at → routed_at, or the resolution commit's author
+      date for reject/graduate/supersede). None when nothing resolved —
+      no data is "n/a", never a confident zero.
+    - ``pending_over_30d_pct`` / ``pending_total``: queue health — % of
+      status-pending records older than 30 days (the ha-note failure
+      signature was 100%; sustained >50% means P3–P5 failed).
+    - ``routed_and_corrected``: routed lessons later CORRECTIVELY
+      superseded — excludes ``superseded_by: canon`` graduations, which
+      are successes (04; blind adjudication 2026-07-12).
+    """
+    home = Path(home)
+    today = today if today is not None else datetime.now(timezone.utc).date()
+    resolution_dates: dict[str, str] | None = None  # lazy: git only if needed
+
+    triage_days: list[int] = []
+    pending_ages: list[int] = []
+    corrected = 0
+    for record in _walk_records(home):
+        if record.status == "pending":
+            age = _days_since(record.created_at, today)
+            if age is not None:
+                pending_ages.append(age)
+            continue
+        if record.routing is not None and record.superseded_by is not None:
+            if record.superseded_by != "canon":
+                corrected += 1
+        if record.status in ("routed", "rejected", "superseded"):
+            resolved_on = None
+            if record.routing is not None:
+                resolved_on = (record.routing or {}).get("routed_at")
+            if resolved_on is None:
+                if resolution_dates is None:
+                    resolution_dates = _resolution_dates(home)
+                resolved_on = resolution_dates.get(record.id)
+            if resolved_on is None:
+                continue  # unattributable (pre-history import): skip, honest
+            created_age = _days_since(record.created_at, today)
+            resolved_age = _days_since(str(resolved_on)[:10], today)
+            if created_age is None or resolved_age is None:
+                continue
+            triage_days.append(created_age - resolved_age)
+
+    over_30 = sum(1 for age in pending_ages if age > 30)
+    return {
+        "time_to_triage_median_days": (
+            float(statistics.median(triage_days)) if triage_days else None
+        ),
+        "pending_total": len(pending_ages),
+        "pending_over_30d_pct": (
+            round(100.0 * over_30 / len(pending_ages), 1)
+            if pending_ages
+            else None
+        ),
+        "routed_and_corrected": corrected,
+    }
 
 
 def gather(home: Path | str, *, today: date | None = None) -> dict:

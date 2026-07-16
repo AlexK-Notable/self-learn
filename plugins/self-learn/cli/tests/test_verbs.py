@@ -223,12 +223,22 @@ class TestRouteDestination:
         assert env.pending(OLD).exists()
         assert env.local_subject() == LEDGER_SEED  # nothing committed
 
-    @pytest.mark.parametrize("dest", ["new-skill", "hook"])
-    def test_m3_destinations_exit_2(self, env, dest):
+    def test_new_skill_without_name_refused(self, env):
+        # T18 supersedes the old exit-2 "not built" refusal: the compiler
+        # exists, but the name slot is the human's call (08 §8.1) — a bare
+        # --dest new-skill must name the recipe and touch nothing.
         seed(env)
-        with pytest.raises(verbs.DestinationNotBuilt) as exc:
-            verbs.route(env.home, OLD, dest=dest)
-        assert exc.value.exit_code == 2
+        with pytest.raises(verbs.VerbError, match="new-skill:<name>"):
+            verbs.route(env.home, OLD, dest="new-skill")
+        assert env.pending(OLD).exists()
+
+    def test_hook_without_proposal_refused(self, env):
+        # T17 supersedes the old "not built until M3" refusal: hook is
+        # built, but it applies a proposal-carried approved script (M3-2)
+        # — a bare --dest hook with no proposal has nothing to compile.
+        seed(env)
+        with pytest.raises(verbs.VerbError, match="proposal"):
+            verbs.route(env.home, OLD, dest="hook")
         assert env.pending(OLD).exists()
 
     def test_bogus_dest_rejected(self, env):

@@ -41,15 +41,23 @@ non-zero exit on any FAIL:
         hosts.yaml, the same logic the verbs use); missing target, marker,
         or entry FAILs naming ``self-learn recompile``; skipped cleanly
         when hosts.yaml is absent;
-    (e) sentinel writability — hold + release a probe at the real
+    (e) hook check (M3 — 08 §8.1 Hook-selftest pin): every currently-
+        routed hook record's script exists, is executable, and matches
+        the approved bytes; superseded records with a surviving script
+        are flagged as incomplete supersessions; settings.json
+        registrations naming a ``self-learn-*`` hook must resolve through
+        ``~/.claude/hooks/`` (missing/dangling = the silent-no-op drift);
+    (f) sentinel writability — hold + release a probe at the real
         cache-path resolution; a pre-existing LIVE sentinel (another
         flow's hold) is heartbeated, never deleted;
-    (f) worker check — stubbed M2-conditional: prints
+    (g) worker check — stubbed M2-conditional: prints
         ``worker: M2 — not checked``.
 """
 
 from __future__ import annotations
 
+import json
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -182,6 +190,17 @@ def _target_for(home: Path, bucket: Bucket, record: Record) -> Path | None:
             return skill_dir_for(load_hosts(home), bucket.name) / "SKILL.md"
         except HostsError:
             return None
+    if destination == "new-skill":
+        # T18: the scaffolded skill's SKILL.md is an ordinary managed
+        # target from the first route on — routing.new_skill names it.
+        name = (record.routing or {}).get("new_skill")
+        try:
+            root = load_hosts(home).skills_root
+        except HostsError:
+            return None
+        if not name or root is None:
+            return None
+        return root / "plugins" / name / "skills" / name / "SKILL.md"
     if destination == "claude-md":
         if record.scope == "user":
             return DEFAULT_USER_CLAUDE_MD.expanduser()
@@ -283,7 +302,9 @@ def _check_drift(home: Path) -> tuple[bool, str]:
             if record.status != "routed" or record.superseded_by is not None:
                 continue
             destination = (record.routing or {}).get("destination")
-            if destination not in ("skill-md", "claude-md", "reference"):
+            if destination not in (
+                "skill-md", "claude-md", "reference", "new-skill"
+            ):
                 continue
             checked += 1
 
@@ -400,6 +421,152 @@ def _check_markers(targets: dict[Path, list[Record]]) -> tuple[bool, str]:
     return True, f"marker pairs intact on {len(targets)} target(s)"
 
 
+def claude_runtime_dir() -> Path:
+    """Where hook symlinks + settings.json live: ``SELF_LEARN_CLAUDE_DIR``
+    (tests) or ``~/.claude``. Read-only for every check here."""
+    env = os.environ.get("SELF_LEARN_CLAUDE_DIR")
+    return Path(env) if env else Path("~/.claude").expanduser()
+
+
+def _registered_hook_commands(settings_path: Path) -> tuple[list[str], str | None]:
+    """Every hook command string registered in settings.json (all events).
+    Returns (commands, problem) — problem is set when the file exists but
+    cannot be parsed (a broken settings.json must FAIL loudly, not read as
+    'nothing registered')."""
+    if not settings_path.is_file():
+        return [], None
+    try:
+        data = json.loads(settings_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return [], f"unparseable {settings_path}: {exc}"
+    commands: list[str] = []
+    hooks_cfg = data.get("hooks")
+    if not isinstance(hooks_cfg, dict):
+        return [], None
+    for entries in hooks_cfg.values():
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            for hook in entry.get("hooks") or []:
+                cmd = hook.get("command") if isinstance(hook, dict) else None
+                if isinstance(cmd, str):
+                    commands.append(cmd)
+    return commands, None
+
+
+def _check_hooks(home: Path, claude_dir: Path) -> tuple[bool, str]:
+    """M3 selftest extension (08 §8.1 Hook-selftest pin), read-only:
+
+    - every CURRENTLY-ROUTED hook record's script exists, is executable,
+      and carries the APPROVED bytes (``routing.hook.script``) — anything
+      else FAILs naming ``self-learn recompile``;
+    - a superseded/graduated hook record whose script still exists is an
+      incomplete supersession (the M3-4 removal did not finish);
+    - any settings.json registration referencing a ``self-learn-*`` hook
+      whose ``~/.claude/hooks`` symlink is missing or dangling is flagged
+      (the exact drift that silently no-ops a guard — repo doctrine).
+
+    Loud, never mutating. Ledger-side checks skip cleanly when hosts.yaml
+    is absent (nothing registered → nothing compiled anywhere), same rule
+    as the drift check."""
+    failures: list[str] = []
+    checked = 0
+    stale = 0
+
+    hosts_known = hosts_path(home).is_file()
+    root = None
+    if hosts_known:
+        try:
+            root = load_hosts(home).skills_root
+        except HostsError as exc:
+            failures.append(f"hosts.yaml unreadable: {exc}")
+
+    for bucket in discover_buckets(home):
+        resolved = bucket.path / "resolved"
+        if not resolved.is_dir():
+            continue
+        for path in sorted(resolved.glob("lrn-*.md")):
+            try:
+                record = Record.from_path(path)
+            except RecordError:
+                continue
+            routing = record.routing or {}
+            if routing.get("destination") != "hook":
+                continue
+            meta = routing.get("hook") or {}
+            rel = meta.get("script_path")
+            live = record.status == "routed" and record.superseded_by is None
+            if not hosts_known:
+                continue  # skip cleanly — mirrored on the summary below
+            if rel is None or root is None:
+                if live:
+                    failures.append(
+                        f"{record.id}: hook-routed but its script is "
+                        "unresolvable (no routing.hook.script_path or no "
+                        "skills root) — supersede + re-route"
+                    )
+                continue
+            script = root / rel
+            if live:
+                checked += 1
+                if not script.is_file():
+                    failures.append(
+                        f"{record.id}: hook script {script} missing — run "
+                        "`self-learn recompile`"
+                    )
+                elif not script.stat().st_mode & 0o100:
+                    failures.append(
+                        f"{record.id}: hook script {script} is not "
+                        "executable — run `self-learn recompile`"
+                    )
+                elif script.read_text(encoding="utf-8") != meta.get("script"):
+                    failures.append(
+                        f"{record.id}: hook script {script} drifted from "
+                        "the approved bytes — never hand-edit a generated "
+                        "guard; run `self-learn recompile` (durable change "
+                        "= supersede)"
+                    )
+            elif script.is_file():
+                stale += 1
+                failures.append(
+                    f"{record.id}: INCOMPLETE SUPERSESSION — record is "
+                    f"{record.status} but its script {script} still "
+                    "exists; remove it and retire its settings.json entry"
+                )
+
+    settings_path = claude_dir / "settings.json"
+    commands, problem = _registered_hook_commands(settings_path)
+    if problem is not None:
+        failures.append(problem)
+    registrations = 0
+    for cmd in commands:
+        name = Path(cmd).name
+        if not name.startswith("self-learn-"):
+            continue
+        registrations += 1
+        link = claude_dir / "hooks" / name
+        # exists() follows symlinks: a dangling symlink reads as missing —
+        # exactly the silently-no-op'd-guard failure this check exists for.
+        if not link.exists():
+            failures.append(
+                f"settings.json registers {cmd} but {link} is missing or "
+                "dangling — run ./install.sh (or retire the entry)"
+            )
+
+    if failures:
+        return False, "; ".join(failures)
+    if not hosts_known and checked == 0 and registrations == 0:
+        return True, "hosts.yaml absent — hook scripts not checked"
+    if checked == 0 and registrations == 0:
+        return True, "no hook-routed records and no self-learn registrations"
+    return True, (
+        f"{checked} live hook script(s) intact; {registrations} "
+        "registration(s) resolvable"
+    )
+
+
 def _check_sentinel() -> tuple[bool, str]:
     """(d) Hold + release a probe at the real cache-path resolution. A
     pre-existing LIVE sentinel belongs to another flow: heartbeat it as
@@ -433,6 +600,7 @@ def run_selftest(home: Path) -> int:
         ("compiler", *_check_compiler(targets)),
         ("markers", *_check_markers(targets)),
         ("drift", *_check_drift(home)),
+        ("hooks", *_check_hooks(home, claude_runtime_dir())),
         ("sentinel", *_check_sentinel()),
     ]
 
