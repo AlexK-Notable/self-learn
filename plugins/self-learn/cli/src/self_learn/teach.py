@@ -66,10 +66,15 @@ import re
 import sys
 from datetime import datetime, timezone
 
-from . import analyst, telemetry, verbs
+from pathlib import Path
+
+from . import analyst, gitops, telemetry, verbs
 from .chezmoi import ChezmoiAbort, ChezmoiError
 from .compilers import CompileError
-from .ledger import resolve_home
+from .gitops import EXIT_GIT_FAILED as _EXIT_GIT_FAILED
+from .gitops import EXIT_HALF_WRITTEN as _EXIT_HALF_WRITTEN
+from .ledger import EXIT_NO_HOME as _EXIT_NO_HOME
+from .ledger import home_state, home_state_message, resolve_home
 from .ledger_ops import LedgerOpsError, create_record, record_title
 from .records import GENERALITIES, KINDS, RECORD_ID_RE, Record, RecordError
 from .scan import format_refusal, redact, scan
@@ -80,6 +85,18 @@ EXIT_OK = 0
 EXIT_USAGE = 2
 EXIT_SCAN = 3
 EXIT_ANALYST = 4  # analysis/route failed — record captured to pending/
+# 5, 6 and 7 are the SHARED codes, imported (not re-pinned) from the
+# modules that own the concepts — see their docstrings. teach used to
+# return its own EXIT_USAGE(2) for a bad home while all eight other
+# surfaces returned 5 (audit 2026-07-16 MINOR G); importing is what keeps
+# that unified. Round 7 BLOCKER 2: sharing the INTEGER was never enough —
+# teach documented 6 as "the record IS written", the verbs documented the
+# same 6 as "nothing was written", and both were right about themselves.
+# One code, one state fact, every surface: 6 = nothing written · 7 = the
+# write landed, its commit did not.
+EXIT_NO_HOME = _EXIT_NO_HOME              # bad ledger home — nothing written
+EXIT_GIT_FAILED = _EXIT_GIT_FAILED        # git failed BEFORE any write
+EXIT_HALF_WRITTEN = _EXIT_HALF_WRITTEN    # record WRITTEN but not committed
 
 DEFAULT_BEHAVIOR_KIND = "surface-rule"
 
@@ -203,6 +220,20 @@ def add_teach_parser(sub) -> argparse.ArgumentParser:
     return p
 
 
+def _home_gate(home) -> int | None:
+    """teach's WRITE-surface home gate — the same answer every other
+    surface gives (:data:`EXIT_NO_HOME`), refused before anything is
+    written. ledger_ops.require_writable_home also refuses, but as a
+    LedgerOpsError that teach mapped onto its own EXIT_USAGE(2) — a code
+    that means "you typed the command wrong", not "your ledger is
+    missing" (audit 2026-07-16 MINOR G)."""
+    state = home_state(home)
+    if state in ("missing", "not-a-repo"):
+        print(f"self-learn teach: {home_state_message(state, home)}", file=sys.stderr)
+        return EXIT_NO_HOME
+    return None
+
+
 def _fail(msg: str) -> int:
     print(f"self-learn teach: {msg}", file=sys.stderr)
     return EXIT_USAGE
@@ -217,6 +248,91 @@ def _clean(value: str | None) -> str | None:
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _project_path() -> Path:
+    """Project scope binds to THIS session's project (doc 13 §3: producers
+    know the path — teach uses cwd): the git toplevel of cwd, else cwd."""
+    return gitops.toplevel(Path.cwd()) or Path.cwd()
+
+
+def _capture_txn(
+    home: Path,
+    record: Record,
+    project_path: Path | None,
+    *,
+    no_push: bool = False,
+) -> tuple[Path, bool]:
+    """Write the record and commit it as ONE locked transaction, then push
+    outside the lock. Returns (path, committed).
+
+    H-5 (doc 13 §5): producers commit their own writes — every capture gets
+    an attributable ledger commit (pinned subject) + best-effort push;
+    pending captures no longer ride anonymous autosync commits. Under H-5
+    there is no watcher and every other producer stages only its own paths,
+    so a capture that fails to commit is committed by nobody, ever. That
+    makes it a FAILURE, not a warning (audit 2026-07-16 BLOCKER B — probed:
+    `teach` blocked 120 s behind a hanging push, printed "created lrn-…",
+    then **exited 0** on an uncommitted record, while claiming "nothing was
+    written").
+
+    **The lock opens before ``create_record``** (audit 2026-07-16 round 7 —
+    the invariant: no ledger mutation may precede its lock). It used to
+    open at the commit, which made teach's exit 6 mean "the record IS
+    written but uncommitted" while the SAME code on the resolution verbs
+    meant "nothing was written" — one integer, two opposite states, each
+    documented as the truth in a different command file. With the lock
+    first, teach's codes say what every other surface's say: a lock
+    timeout is a clean refusal that wrote nothing (:data:`EXIT_GIT_FAILED`,
+    re-run it), and only a COMMIT failure is half-written
+    (:data:`EXIT_HALF_WRITTEN`, repair printed).
+
+    Creating a record is the benign half of the invariant (a new file is
+    untracked, and an autostash cannot see it) — but ``meta.yaml`` is
+    tracked once the bucket has been committed once, and defence in depth
+    against a data-loss class is worth a lock held for the milliseconds of
+    a local write.
+
+    The push sits OUTSIDE the lock (a push touches no index — see the
+    ``gitops`` module docstring for the re-scope). ``no_push`` honors
+    ``teach --no-push`` on the capture path: the flag used to bind only
+    ``--route``, so a plain ``teach --no-push`` pushed here regardless."""
+    message = f"self-learn: capture {record.id} ({record.scope})"
+    with gitops.commit_lock(home):  # BEFORE the first mutation
+        path = create_record(home, record, project_path=project_path)
+        touched = [path]
+        meta = path.parent.parent / "meta.yaml"
+        if meta.is_file():
+            touched.append(meta)
+        try:
+            gitops.stage(home, touched)
+            gitops.commit(home, message, paths=touched)
+        except gitops.GitOpsError as exc:
+            print(
+                f"self-learn: CAPTURE NOT COMMITTED ({exc})\n"
+                f"  The record IS written: {path}\n"
+                "  Nothing else will ever commit it (doc 13 H-5: no watcher "
+                "on the ledger; every other producer stages only its own "
+                "paths), so a re-clone would destroy it.\n"
+                f"  Repair: self-learn reconcile   (or, by hand: "
+                f"git -C {home} add -- {path} && git -C {home} commit "
+                f"-m {message!r})",
+                file=sys.stderr,
+            )
+            return path, False
+    if not no_push:
+        try:
+            gitops.push_if_remote(home)
+        except gitops.GitOpsError as exc:
+            # The commit is safe; only publication failed. Loud, not fatal —
+            # `self-learn push` republishes it (unlike an uncommitted record,
+            # a local commit is not one clone away from gone).
+            print(
+                f"self-learn: capture committed but NOT pushed ({exc}) — run "
+                "`self-learn push` to publish it",
+                file=sys.stderr,
+            )
+    return path, True
 
 
 def run_teach(args: argparse.Namespace) -> int:
@@ -404,13 +520,33 @@ def run_teach(args: argparse.Namespace) -> int:
             entry["quote"] = quote
         record.append_evidence(entry)
 
-    if args.route:
-        return _route_now(args, record)
+    project_path = _project_path() if scope == "project" else None
 
+    if args.route:
+        return _route_now(args, record, project_path)
+
+    home = resolve_home()
+    if (code := _home_gate(home)) is not None:
+        return code
     try:
-        path = create_record(resolve_home(), record)
+        # H-5: producers commit their writes. no_push is always False here
+        # today (validation makes --no-push imply --route), passed for
+        # correctness if that pin ever widens.
+        path, committed = _capture_txn(
+            home, record, project_path, no_push=args.no_push
+        )
     except LedgerOpsError as exc:
         return _fail(str(exc))
+    except gitops.GitOpsError as exc:
+        # The lock is taken BEFORE the write (round 7), so this is the one
+        # git failure teach can honestly call clean: nothing was written.
+        print(
+            f"self-learn teach: {exc}\n"
+            "  Nothing was written — re-run this command once the other "
+            "producer finishes.",
+            file=sys.stderr,
+        )
+        return EXIT_GIT_FAILED
 
     # Code-emitted capture event (11 §4.3) — the accepted-offer half of the
     # denominator; the declined half is `telemetry note offer-declined`.
@@ -426,20 +562,40 @@ def run_teach(args: argparse.Namespace) -> int:
     kind_part = f" ({record.kind})" if record.kind else ""
     print(f"created {record.id} → {path}")
     print(f"  {record.type}{kind_part} · {record.scope} · {record_title(record)}")
-    return EXIT_OK
+    # An uncommitted capture is a FAILURE, not a footnote (BLOCKER B): with
+    # no watcher (H-5) nothing else will ever commit it. _capture_txn has
+    # already printed what is wrong and how to repair it. The code is
+    # HALF_WRITTEN, not GIT_FAILED (round 7 BLOCKER 2): the record is on
+    # disk, which is the opposite of 6's promise.
+    return EXIT_OK if committed else EXIT_HALF_WRITTEN
 
 
 # --------------------------------------------------------------- --route (T8)
 
 
-def _capture_to_pending(home, record_text: str, reason: str, hint: str) -> int:
+def _capture_to_pending(
+    home,
+    record_text: str,
+    reason: str,
+    hint: str,
+    project_path: Path | None,
+    *,
+    no_push: bool = False,
+) -> int:
     """Fallback on any post-composition routing failure: the composed
     record (pristine, pre-routing-mutation snapshot) is captured to
-    ``pending/`` as a NORMAL teach — the lesson is never lost."""
+    ``pending/`` as a NORMAL teach — the lesson is never lost.
+
+    ``no_push`` carries the route's ``--no-push`` onto the fallback
+    (BLOCKER 3): this is the live teach path that KICKS a worker (the CLI
+    kicks on exit 4), so it is exactly where an unbound flag leaked."""
     record = Record.from_text(record_text)
     try:
-        path = create_record(home, record)
-    except LedgerOpsError as exc:  # capture itself failed — nothing written
+        # H-5: still a producer write
+        path, committed = _capture_txn(home, record, project_path, no_push=no_push)
+    except (LedgerOpsError, gitops.GitOpsError) as exc:
+        # capture itself failed — nothing written (the lock is taken before
+        # the write, round 7)
         print(f"self-learn teach: {reason}", file=sys.stderr)
         return _fail(f"and the pending capture also failed: {exc}")
     print(
@@ -452,20 +608,28 @@ def _capture_to_pending(home, record_text: str, reason: str, hint: str) -> int:
         "capture", source="teach", scope=record.scope, record=record.id
     )
     print(f"created {record.id} → {path} (pending)")
-    return EXIT_ANALYST
+    # EXIT_ANALYST(4) promises "safely captured to pending/, nothing lost".
+    # If the commit failed that promise is FALSE, and the stronger, truer
+    # code wins (BLOCKER B; round 7: and the true code for "written but not
+    # committed" is HALF_WRITTEN, not GIT_FAILED).
+    return EXIT_ANALYST if committed else EXIT_HALF_WRITTEN
 
 
-def _route_now(args: argparse.Namespace, record: Record) -> int:
+def _route_now(
+    args: argparse.Namespace, record: Record, project_path: Path | None
+) -> int:
     """The one-motion path: destination (``--dest``, or the one-shot
     analyst), then :func:`verbs.route_direct` — straight to ``resolved/``,
     compile, diff print, pinned commit, push. Invocation = approval: no
     confirmation prompt anywhere (08 §1 `teach --route` pin)."""
     home = resolve_home()
+    if (code := _home_gate(home)) is not None:
+        return code
     dest = args.dest
 
     if dest is None:
         # Bare --route: the one-shot analyst (flags in self_learn.analyst).
-        doctrine = analyst.doctrine_path(home)
+        doctrine = analyst.doctrine_path()
         if not doctrine.is_file():
             return _fail(f"routing doctrine not installed — T10 ({doctrine})")
         try:
@@ -476,6 +640,8 @@ def _route_now(args: argparse.Namespace, record: Record) -> int:
                 record.to_text(),
                 f"analysis failed ({exc})",
                 "run review or route --dest",
+                project_path,
+                no_push=args.no_push,
             )
         dest = proposal["destination"]
         rationale = proposal.get("rationale") or ""
@@ -484,7 +650,12 @@ def _route_now(args: argparse.Namespace, record: Record) -> int:
     snapshot = record.to_text()  # pristine copy for the never-lost fallback
     try:
         result = verbs.route_direct(
-            home, record, dest=dest, note=args.note, no_push=args.no_push
+            home,
+            record,
+            dest=dest,
+            note=args.note,
+            no_push=args.no_push,
+            project_path=project_path,
         )
     except verbs.SecretRefusal as exc:
         print(str(exc), file=sys.stderr)
@@ -501,6 +672,8 @@ def _route_now(args: argparse.Namespace, record: Record) -> int:
             snapshot,
             f"route failed ({exc})",
             "fix the cause, then `self-learn route <id>`",
+            project_path,
+            no_push=args.no_push,
         )
 
     telemetry.spool_quiet(
@@ -513,18 +686,47 @@ def _route_now(args: argparse.Namespace, record: Record) -> int:
 
     if args.supersedes is not None:
         print(f"supersedes {args.supersedes}: completed in the same commit")
-    if result.push is None:
-        push_note = "not pushed — --no-push"
-    elif result.push.ok:
-        push_note = "pushed"
-    else:
-        push_note = "PUSH FAILED — commit kept; run `self-learn push`"
+    # BOTH push phases, via the shared renderer (audit 2026-07-16 MAJOR 4:
+    # this path read result.push only, so a failed HOST push printed
+    # "(pushed)" and returned 0 — the canon commit unpublished and
+    # unmentioned). Deferred import: cli imports this module.
+    from .cli import push_note
+
     destination = (record.routing or {}).get("destination", dest)
     kind_part = f" ({record.kind})" if record.kind else ""
     print(
-        f"routed {record.id} → {destination} @ {result.commit_sha[:7]} ({push_note})"
+        f"routed {record.id} → {destination} @ {result.commit_sha[:7]} "
+        f"({push_note(result)})"
     )
     if (cap_note := result.over_cap_note()) is not None:
         print(cap_note, file=sys.stderr)
     print(f"  {record.type}{kind_part} · {record.scope} · {record_title(record)}")
+
+    # EXIT 0 even when a push failed — the DOCUMENTED pin (08 §1; this
+    # module's docstring: "A route that commits but fails to push still
+    # exits 0: the commit is kept, the push failure is loud, and
+    # `self-learn push` retries it").
+    #
+    # Audit 2026-07-16 BLOCKER 2: a fix batch folded gitops' push exits
+    # into teach's return (`return push.exit_code`). But teach's 3 and 4
+    # are ALREADY TAKEN and mean something else entirely —
+    # EXIT_SCAN(3) = "secret scan refused → re-run with --redact" and
+    # EXIT_ANALYST(4) = "record safely captured to pending/, nothing lost"
+    # (commands/teach.md §5 tells the agent exactly that). gitops'
+    # EXIT_PUSH_FAILED is 3 and EXIT_REBASE_CONFLICT is 4, so a routed,
+    # compiled, committed record that merely failed to PUSH reported
+    # itself as an unwritten scan refusal or a pending-bucket fallback —
+    # both catastrophically wrong for a record that DID route.
+    #
+    # M4's exit-code folding is right for the `route` VERB, where
+    # push-failure=3 is the established meaning; it must not extend here.
+    # The failure is surfaced by push_note()'s "PUSH FAILED — commit kept;
+    # run `self-learn push`" line above, per phase, ledger and host.
+    if any(p is not None and not p.ok for p in (result.push, result.host_push)):
+        print(
+            "self-learn teach: the record is routed, compiled and committed; "
+            "only the PUSH failed — nothing is lost. Run `self-learn push` to "
+            "publish it.",
+            file=sys.stderr,
+        )
     return EXIT_OK

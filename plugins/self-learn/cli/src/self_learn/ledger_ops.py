@@ -34,7 +34,7 @@ from pathlib import Path
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
-from .ledger import Bucket, discover_buckets
+from .ledger import Bucket, discover_buckets, home_state, home_state_message
 from .normalize import sha_anchor
 from .records import RECORD_ID_RE, Record, RecordError
 
@@ -45,7 +45,9 @@ __all__ = [
     "PROPOSAL_DESTINATIONS",
     "QueueEntry",
     "bucket_dir_for_scope",
+    "bucket_project_path",
     "create_record",
+    "ensure_project_meta",
     "defer_record",
     "find_record_path",
     "is_unanalyzed",
@@ -206,34 +208,114 @@ def _deferred_hidden(record: Record, now: datetime) -> bool:
 # ---------------------------------------------------------- bucket routing
 
 
-def bucket_dir_for_scope(home: Path, scope: str) -> Path:
-    """Map a record scope to its bucket dir (08 §1 Bucket-discovery pin):
-    ``skill:<name>`` → the ``.self-learn`` of the plugin dir that contains
-    that skill; ``project``/``user`` → ``<home>/.self-learn``."""
-    if scope in ("project", "user"):
-        return home / ".self-learn"
+def bucket_dir_for_scope(
+    home: Path, scope: str, *, project_path: Path | None = None
+) -> Path:
+    """Map a record scope to its bucket dir (doc 13 §3 layout):
+    ``skill:<name>`` → ``<home>/skills/<name>`` — but the name is
+    validity-gated against the registered skills-root HOST first (H-3:
+    capture may be open, but a skill bucket that no host skill backs is a
+    typo, not a bucket); ``user`` → ``<home>/user``; ``project`` →
+    ``<home>/projects/<slug_for(project_path)>`` (the path is REQUIRED —
+    project buckets are per-project now, doc 13 §0 point 2)."""
+    from .hosts import HostsError, load_hosts, skill_dir_for, slug_for
+
+    if scope == "user":
+        return home / "user"
+    if scope == "project":
+        if project_path is None:
+            raise LedgerOpsError(
+                "project scope needs a project_path — per-project buckets "
+                "(doc 13 §3) cannot be resolved without the project's path"
+            )
+        return home / "projects" / slug_for(project_path)
     if isinstance(scope, str) and scope.startswith("skill:"):
         name = scope[len("skill:") :]
-        matches = sorted(p for p in home.glob(f"plugins/*/skills/{name}") if p.is_dir())
-        if not matches:
-            raise LedgerOpsError(
-                f"no plugin under {home} contains a skill named {name!r}"
-            )
-        if len(matches) > 1:
-            raise LedgerOpsError(
-                f"skill name {name!r} is ambiguous across plugins: "
-                + ", ".join(str(m) for m in matches)
-            )
-        return matches[0] / ".self-learn"
+        try:
+            skill_dir_for(load_hosts(home), name)  # validity gate only
+        except HostsError as exc:
+            raise LedgerOpsError(str(exc)) from exc
+        return home / "skills" / name
     raise LedgerOpsError(
         f"scope must be skill:<name>, project, or user, got {scope!r}"
     )
 
 
-def create_record(home: Path, record: Record) -> Path:
+def ensure_project_meta(bucket_dir: Path, project_path: Path | str) -> Path:
+    """Write ``meta.yaml`` ({"path": <resolved project path>}) beside a
+    project bucket on first creation (doc 13 §3: the slug alone is lossy).
+    Existing meta is never rewritten — but a MISMATCH is refused, never
+    silently accepted (audit 2026-07-16 BLOCKER 1): if the bucket already
+    claims a different project, this caller's records would compile into
+    that other project's canon. Two paths can only meet here through a
+    slug collision or a hand-edit, and both are bugs, not routine.
+    Re-pointing a bucket at a moved repo is ``host rebind``'s job.
+    Returns the meta path."""
+    bucket_dir.mkdir(parents=True, exist_ok=True)
+    meta = bucket_dir / "meta.yaml"
+    wanted = Path(project_path).expanduser().resolve()
+    if not meta.is_file():
+        _dump_yaml({"path": str(wanted)}, meta)
+        return meta
+    recorded = bucket_project_path(bucket_dir)
+    if recorded is None:
+        raise LedgerOpsError(
+            f"{meta} is unreadable or has no path — a project bucket "
+            "without its recorded path cannot be trusted to compile "
+            "anywhere (doc 13 §3); repair it or re-capture"
+        )
+    if Path(recorded).expanduser().resolve() != wanted:
+        raise LedgerOpsError(
+            f"project bucket {bucket_dir} belongs to {recorded}, not "
+            f"{wanted} — refusing to file this project's records in "
+            "another project's bucket (they would compile into ITS "
+            "CLAUDE.md); if that repo MOVED, run `self-learn host rebind "
+            f"{recorded} {wanted}`"
+        )
+    return meta
+
+
+def bucket_project_path(bucket_dir: Path) -> Path | None:
+    """Read a project bucket's recorded absolute path from its
+    ``meta.yaml`` (None when missing/unparseable — callers refuse)."""
+    meta = Path(bucket_dir) / "meta.yaml"
+    if not meta.is_file():
+        return None
+    try:
+        data = _load_yaml_map(meta)
+    except ProposalError:
+        return None
+    value = data.get("path")
+    return Path(value) if isinstance(value, str) and value else None
+
+
+def require_writable_home(home: Path | str) -> Path:
+    """The WRITE-surface home gate (audit 2026-07-16 BLOCKER 11): refuse
+    BEFORE writing anything when the home is missing or is not a git repo.
+
+    Without it, ``teach`` into a nonexistent home happily created the
+    bucket dirs, wrote the record, and THEN failed its commit ("record
+    written but uncommitted") — leaving the lesson in an untracked
+    directory that nothing will ever push, in a home the user probably
+    did not mean. A missing bucket dir inside a VALID home is different
+    and still auto-creates: that is ordinary."""
+    state = home_state(home)
+    if state in ("missing", "not-a-repo"):
+        raise LedgerOpsError(home_state_message(state, home))
+    return Path(home)
+
+
+def create_record(
+    home: Path, record: Record, *, project_path: Path | None = None
+) -> Path:
     """Write a Record into its bucket's ``pending/``, creating bucket dirs
-    on demand. Returns the created path."""
-    bucket_dir = bucket_dir_for_scope(home, record.scope)
+    on demand. Project-scoped records need ``project_path`` and get a
+    ``meta.yaml`` written beside the bucket on first creation (doc 13 §3).
+    Returns the created path."""
+    require_writable_home(home)  # nothing is written into a broken home
+    bucket_dir = bucket_dir_for_scope(home, record.scope, project_path=project_path)
+    if record.scope == "project":
+        ensure_project_meta(bucket_dir, project_path)
     pending = bucket_dir / "pending"
     pending.mkdir(parents=True, exist_ok=True)
     path = pending / f"{record.id}.md"
@@ -429,6 +511,7 @@ def resolve_record(
     superseded_by: str | None = None,
     note: str | None = None,
     follow_up: dict | None = None,
+    reference_file: str | None = None,
 ) -> list[Path]:
     """File-op half of a resolution: update frontmatter via T2's mutation
     API, ``git mv`` pending→resolved (fs move when untracked), and remove
@@ -461,6 +544,12 @@ def resolve_record(
             "destination": destination,
             "by": by,
         }
+        if reference_file is not None:
+            # WHICH references file this landed in (audit 2026-07-16
+            # BLOCKER 2): ``destination: reference`` alone is lossy, and
+            # recompile / the drift check cannot repair a file they cannot
+            # name. Absent on old records ⇒ the default LEARNINGS.md.
+            routing["reference_file"] = reference_file
         if follow_up is not None:
             routing["follow_up"] = dict(follow_up)
         record.set_routing(routing)

@@ -14,9 +14,18 @@ import pytest
 from self_learn import cli, telemetry
 from self_learn.ledger_ops import create_record, write_proposal
 from self_learn.records import Record
-from support import commit_all, git, make_behavior, make_home, proposal_dict
+from support import (
+    SKILL_MD_SEED,
+    commit_all,
+    git,
+    make_behavior,
+    make_env,
+    proposal_dict,
+    verb_files,
+    verb_subject,
+)
 
-SKILL_MD = "# s skill\n\nAuthored prose stays put.\n"
+SKILL_MD = SKILL_MD_SEED.format(name="s")
 
 
 @pytest.fixture(autouse=True)
@@ -26,27 +35,33 @@ def redirect(tmp_path, monkeypatch):
 
 
 class Env:
-    def __init__(self, tmp_path):
-        self.home = make_home(tmp_path)
-        self.skill_dir = self.home / "plugins" / "s-plugin" / "skills" / "s"
-        self.skill_md = self.skill_dir / "SKILL.md"
-        self.skill_md.write_text(SKILL_MD, encoding="utf-8")
-        self.bare = tmp_path / "remote.git"
-        subprocess.run(
-            ["git", "init", "-q", "--bare", "-b", "main", str(self.bare)],
-            check=True,
-        )
-        git(self.home, "remote", "add", "origin", str(self.bare))
-        commit_all(self.home, "seed")
-        git(self.home, "push", "-q", "-u", "origin", "main")
+    """doc-13 sandbox pair: LEDGER home (records + hosts.yaml) with a bare
+    remote, plus the HOST repo (compiled canon) with its own bare remote so
+    two-phase routing pushes cleanly."""
 
+    def __init__(self, tmp_path):
+        e = make_env(tmp_path)
+        self.home = e.ledger
+        self.host = e.host
+        self.skill_dir = e.skill_dir  # host-side
+        self.skill_md = e.skill_md  # host-side (seeded by make_env)
+        self.bare = tmp_path / "remote.git"
+        self.host_bare = tmp_path / "host-remote.git"
+        for bare, repo in ((self.bare, self.home), (self.host_bare, self.host)):
+            subprocess.run(
+                ["git", "init", "-q", "--bare", "-b", "main", str(bare)], check=True
+            )
+            git(repo, "remote", "add", "origin", str(bare))
+            git(repo, "push", "-q", "-u", "origin", "main")
+        self.seed_subject = self.local_subject()
+
+    # The verb's own commit = newest non-telemetry-flush commit (doc 13
+    # H-5: telemetry commits itself now — audit 2026-07-16 MAJOR 3).
     def local_subject(self):
-        return git(self.home, "log", "-1", "--format=%s").stdout.strip()
+        return verb_subject(self.home)
 
     def committed_paths(self):
-        return git(
-            self.home, "show", "--name-only", "--format=", "HEAD"
-        ).stdout.split()
+        return verb_files(self.home)
 
 
 @pytest.fixture()
@@ -57,6 +72,7 @@ def env(tmp_path, monkeypatch):
 
 
 def seed_pending(env, record_id="lrn-0000aaaa"):
+    # skill-scoped record → lands in the LEDGER skills/s bucket.
     record = make_behavior(record_id=record_id)
     create_record(env.home, record)
     write_proposal(env.home, record_id, proposal_dict())
@@ -65,8 +81,9 @@ def seed_pending(env, record_id="lrn-0000aaaa"):
 
 
 def resolved_record(env, record_id="lrn-0000aaaa"):
+    # resolved records live in the LEDGER, not the host skill dir (doc 13 §3)
     return Record.from_path(
-        env.skill_dir / ".self-learn" / "resolved" / f"{record_id}.md"
+        env.home / "skills" / "s" / "resolved" / f"{record_id}.md"
     )
 
 
@@ -158,9 +175,10 @@ def test_telemetry_note_spools_offer_declined(env, capsys):
     event = json.loads(spool[0].read_text().splitlines()[0])
     assert event["kind"] == "offer-declined"
     assert event["reason"] == "later"
-    # spool-only: nothing in the repo, nothing committed (11 §2.5)
-    assert not (env.home / ".self-learn" / "telemetry").exists()
-    assert env.local_subject() == "pending record" or env.local_subject() == "seed"
+    # spool-only: nothing in the tracked plane, nothing committed (11 §2.5).
+    # make_env pre-creates telemetry/, so the pin is that it stays EMPTY.
+    assert list((env.home / "telemetry").glob("*.jsonl")) == []
+    assert env.local_subject() in ("pending record", env.seed_subject)
 
 
 def test_telemetry_note_rejects_code_emitted_kinds(env, capsys):
@@ -180,7 +198,7 @@ def test_telemetry_flush_moves_spool(env, capsys):
     rc = cli.main(["telemetry", "flush"])
     assert rc == 0
     assert "1 event" in capsys.readouterr().out
-    tracked = list((env.home / ".self-learn" / "telemetry").glob("*.jsonl"))
+    tracked = list((env.home / "telemetry").glob("*.jsonl"))
     assert len(tracked) == 1
 
 
@@ -190,7 +208,7 @@ def test_resolution_verb_flushes_spool_but_never_commits_telemetry(env):
     rc = cli.main(["route", rid])
     assert rc == 0
     # flushed into the tracked plane by the verb...
-    tracked = list((env.home / ".self-learn" / "telemetry").glob("*.jsonl"))
+    tracked = list((env.home / "telemetry").glob("*.jsonl"))
     assert len(tracked) == 1
     # ...but NEVER swept into the verb's surgical commit (11 §4.2)
     assert env.local_subject().startswith(f"self-learn: route {rid}")
@@ -215,7 +233,7 @@ def test_teach_emits_capture_event(env):
     )
     assert rc == 0
     # teach is a flushing verb: the capture event is already tracked
-    tracked = list((env.home / ".self-learn" / "telemetry").glob("*.jsonl"))
+    tracked = list((env.home / "telemetry").glob("*.jsonl"))
     assert len(tracked) == 1
     event = json.loads(tracked[0].read_text().splitlines()[0])
     assert event["kind"] == "capture"
@@ -258,7 +276,7 @@ def test_teach_capture_time_fields_land_on_record(env, capsys):
     out = capsys.readouterr().out
     rid = next(w for w in out.split() if w.startswith("lrn-"))
     record = Record.from_path(
-        env.skill_dir / ".self-learn" / "pending" / f"{rid}.md"
+        env.home / "skills" / "s" / "pending" / f"{rid}.md"
     )
     assert record.verified is True
     assert record.verified_how == "repro'd twice"

@@ -50,6 +50,7 @@ __all__ = [
     "ChezmoiError",
     "UserScopeResult",
     "compile_user_scope",
+    "preflight_user_scope",
 ]
 
 #: §5 playbook intent, verbatim tail on both abort paths.
@@ -95,6 +96,26 @@ def _check(proc: subprocess.CompletedProcess) -> subprocess.CompletedProcess:
     return proc
 
 
+def preflight_user_scope(target: Path | str, *, chezmoi: str = "chezmoi") -> None:
+    """Steps 1–2 of the guarded sequence, standalone (doc 13 §4: two-phase
+    routes run every dirty-check in PRE-FLIGHT, before the ledger commit —
+    for the chezmoi-managed user file, these two checks ARE that check).
+    Raises :class:`ChezmoiAbort` on drift/dirty; nothing has been touched."""
+    target = Path(target)
+
+    # 1. Pre-existing drift on the target? Never re-add over drift (§5).
+    diff = _check(_run([chezmoi, "diff", str(target)]))
+    if diff.stdout.strip():
+        raise ChezmoiAbort(
+            f"chezmoi reports pre-existing drift on {target}: {_ABORT_ADVICE}"
+        )
+
+    # 2. Dotfiles repo clean? A dirty repo would entangle our commit.
+    status = _check(_run([chezmoi, "git", "--", "status", "--porcelain"]))
+    if status.stdout.strip():
+        raise ChezmoiAbort(f"dotfiles repo has uncommitted changes: {_ABORT_ADVICE}")
+
+
 def compile_user_scope(
     target: Path | str,
     records: list[Record],
@@ -111,17 +132,7 @@ def compile_user_scope(
     """
     target = Path(target)
 
-    # 1. Pre-existing drift on the target? Never re-add over drift (§5).
-    diff = _check(_run([chezmoi, "diff", str(target)]))
-    if diff.stdout.strip():
-        raise ChezmoiAbort(
-            f"chezmoi reports pre-existing drift on {target}: {_ABORT_ADVICE}"
-        )
-
-    # 2. Dotfiles repo clean? A dirty repo would entangle our commit.
-    status = _check(_run([chezmoi, "git", "--", "status", "--porcelain"]))
-    if status.stdout.strip():
-        raise ChezmoiAbort(f"dotfiles repo has uncommitted changes: {_ABORT_ADVICE}")
+    preflight_user_scope(target, chezmoi=chezmoi)  # steps 1–2
 
     # 3. Edit the real target file (managed-section compiler).
     section = compile_managed_file(

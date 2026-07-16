@@ -30,11 +30,9 @@ def redirect(tmp_path, monkeypatch):
 
 @pytest.fixture()
 def home(tmp_path, monkeypatch):
+    # doc-13: `home` is the LEDGER; make_home also builds the paired HOST
+    # (tmp_path/host-repo) whose registered skill dir supplies skill:s.
     h = make_home(tmp_path)
-    (h / "plugins" / "s-plugin" / "skills" / "s" / "SKILL.md").write_text(
-        "# s\n", encoding="utf-8"
-    )
-    commit_all(h, "seed")
     monkeypatch.setenv("SELF_LEARN_HOME", str(h))
     return h
 
@@ -345,9 +343,11 @@ def candidate(**over):
 
 def pending_ids(home):
     out = []
-    for d in home.glob("plugins/*/skills/*/.self-learn/pending/lrn-*.md"):
+    for d in home.glob("skills/*/pending/lrn-*.md"):
         out.append(d.stem)
-    for d in home.glob(".self-learn/pending/lrn-*.md"):
+    for d in home.glob("projects/*/pending/lrn-*.md"):
+        out.append(d.stem)
+    for d in home.glob("user/pending/lrn-*.md"):
         out.append(d.stem)
     return out
 
@@ -356,12 +356,14 @@ def test_run_lands_candidate(home, transcripts, monkeypatch):
     write_transcript(transcripts, "sess-e2e", [u("work"), a("found the cause")])
     shim_reader(monkeypatch, {"candidates": [candidate()], "fires": []})
     kicked = []
-    monkeypatch.setattr(miner.worker, "kick", lambda h: kicked.append(h) or "spawned")
+    monkeypatch.setattr(
+        miner.worker, "kick", lambda h, **kw: kicked.append(h) or "spawned"
+    )
     result = miner.run(home, trigger="timer")
     assert result.status == "ok"
     assert len(result.landed) == 1
     rid = result.landed[0]
-    path = home / "plugins/s-plugin/skills/s/.self-learn/pending" / f"{rid}.md"
+    path = home / "skills/s/pending" / f"{rid}.md"
     assert path.is_file()
     record = Record.from_path(path)
     assert record.source == "session"
@@ -414,7 +416,7 @@ def test_fold_into_matching_pending(home, transcripts, monkeypatch):
     result = miner.run(home)
     assert result.folded == [existing.id] and result.landed == []
     refreshed = Record.from_path(
-        home / "plugins/s-plugin/skills/s/.self-learn/pending" / f"{existing.id}.md"
+        home / "skills/s/pending" / f"{existing.id}.md"
     )
     assert any(
         ev.get("origin") == "transcript:sess-fold#L42" for ev in refreshed.evidence
@@ -425,7 +427,7 @@ def test_fold_into_matching_pending(home, transcripts, monkeypatch):
 def _resolve(home, record, status):
     """Move a pending record to resolved/ with the given status."""
     record.set_status(status)
-    resolved = home / "plugins/s-plugin/skills/s/.self-learn/resolved"
+    resolved = home / "skills/s/resolved"
     resolved.mkdir(parents=True, exist_ok=True)
     path = resolved / f"{record.id}.md"
     record.write(path)
@@ -680,7 +682,9 @@ def test_maybe_kick_disabled_fresh_spawned(home, monkeypatch):
     assert miner.maybe_kick(home) == "disabled"  # conftest sets AUTOKICK=0
     monkeypatch.setenv("SELF_LEARN_MINER_AUTOKICK", "1")
     spawned = []
-    monkeypatch.setattr(miner, "_spawn_run", lambda h: spawned.append(h) or 4242)
+    monkeypatch.setattr(
+        miner, "_spawn_run", lambda h, **kw: spawned.append(h) or 4242
+    )
     assert miner.maybe_kick(home) == "spawned"  # no last-run = infinitely old
     assert spawned == [home]
     (miner.miner_dir() / "miner.last-run").touch()
@@ -710,7 +714,7 @@ def test_status_fast_carries_miner_keys(home, capsys):
 def test_cli_mine_run_and_status(home, transcripts, monkeypatch, capsys):
     write_transcript(transcripts, "sess-cli", [u("work")])
     shim_reader(monkeypatch, {"candidates": [candidate(session="sess-cli")], "fires": []})
-    monkeypatch.setattr(miner.worker, "kick", lambda h: "disabled")
+    monkeypatch.setattr(miner.worker, "kick", lambda h, **kw: "disabled")
     assert cli.main(["mine", "run", "--trigger", "timer"]) == 0
     out = capsys.readouterr().out
     assert "mine run: ok — 1 landed" in out
@@ -731,14 +735,14 @@ def test_report_tracks_mined_supply(home, transcripts, monkeypatch, capsys):
 
     write_transcript(transcripts, "sess-rep", [u("work")])
     shim_reader(monkeypatch, {"candidates": [candidate(session="sess-rep")], "fires": []})
-    monkeypatch.setattr(miner.worker, "kick", lambda h: "disabled")
+    monkeypatch.setattr(miner.worker, "kick", lambda h, **kw: "disabled")
     rid = miner.run(home).landed[0]
     facts = report.gather(home)
     assert facts["mined"]["pending"] == 1
     assert facts["mined"]["adjudicated"] == 0
     assert facts["mined"]["accept_rate"] is None  # honesty: none adjudicated
     # adjudicate it: mark routed, accept rate becomes 1.0
-    path = home / "plugins/s-plugin/skills/s/.self-learn/pending" / f"{rid}.md"
+    path = home / "skills/s/pending" / f"{rid}.md"
     record = Record.from_path(path)
     record.set_status("routed")
     resolved = path.parent.parent / "resolved"
@@ -836,7 +840,7 @@ def test_watchdog_cooldown_after_failed_attempt(home, transcripts, monkeypatch):
     assert miner.run(home).status == "failed"
     assert not (miner.miner_dir() / "miner.last-run").is_file()  # alarm intact
     spawned = []
-    monkeypatch.setattr(miner, "_spawn_run", lambda h: spawned.append(h) or 1)
+    monkeypatch.setattr(miner, "_spawn_run", lambda h, **kw: spawned.append(h) or 1)
     assert miner.maybe_kick(home) == "cooling"  # attempt marker is fresh
     assert spawned == []
     # once the cool-down passes, the watchdog may retry
@@ -949,7 +953,7 @@ def test_bad_session_ref_and_oversize_fields_dropped(home, transcripts, monkeypa
     assert outcomes.count("dropped-invalid") == 3  # 2 bad refs + 1 oversize field
     assert "quote-dropped-overlength" in outcomes
     rid = result.landed[0]
-    for bucket_dir in home.glob("plugins/*/skills/*/.self-learn/pending"):
+    for bucket_dir in home.glob("skills/*/pending"):
         path = bucket_dir / f"{rid}.md"
         if path.is_file():
             record = Record.from_path(path)
@@ -980,7 +984,7 @@ def test_fold_bumps_sightings(home, transcripts, monkeypatch):
     )
     miner.run(home)
     refreshed = Record.from_path(
-        home / "plugins/s-plugin/skills/s/.self-learn/pending" / f"{existing.id}.md"
+        home / "skills/s/pending" / f"{existing.id}.md"
     )
     assert refreshed.sightings == 2
 

@@ -53,7 +53,9 @@ def test_spool_appends_not_overwrites(tmp_path):
 
 def test_spool_is_cache_only_never_touches_home(home):
     telemetry.spool_event("offer-made", now=NOW)
-    assert not (home / ".self-learn" / "telemetry").exists()
+    # make_env pre-creates <home>/telemetry/ — the pin is that spooling
+    # writes NOTHING into the tracked plane, so it must stay empty.
+    assert list(telemetry.telemetry_dir(home).iterdir()) == []
 
 
 def test_unknown_kind_refused():
@@ -113,7 +115,7 @@ def test_flush_empty_spool_is_noop(home):
     report = telemetry.flush(home)
     assert report.events == 0
     assert "spool empty" in report.summary()
-    assert not (home / ".self-learn" / "telemetry").exists()
+    assert list(telemetry.telemetry_dir(home).iterdir()) == []
 
 
 def test_flush_scan_hit_refuses_and_keeps_spool(home):
@@ -126,7 +128,7 @@ def test_flush_scan_hit_refuses_and_keeps_spool(home):
     with pytest.raises(telemetry.ScanRefusal, match="spool intact"):
         telemetry.flush(home)
     # nothing moved, spool intact
-    assert not (home / ".self-learn" / "telemetry").exists()
+    assert list(telemetry.telemetry_dir(home).iterdir()) == []
     assert len(spool.read_text().splitlines()) == 2
 
 
@@ -142,7 +144,7 @@ def test_flush_summary_names_files(home):
 
 def test_read_events_ts_ordered_and_lenient(home):
     tdir = telemetry.telemetry_dir(home)
-    tdir.mkdir(parents=True)
+    tdir.mkdir(parents=True, exist_ok=True)  # make_env pre-creates it
     (tdir / "2026-07.other.jsonl").write_text(
         '{"ts":"2026-07-15T13:00:00Z","kind":"capture"}\n'
         "not json at all\n"

@@ -31,17 +31,16 @@ def age(path: Path, seconds: float) -> None:
 
 class TestPath:
     def test_resolves_xdg_cache_home(self, cache_dir):
+        # doc 13 §6: the cache namespace dropped the host it no longer
+        # belongs to — no "claude-skills" segment.
         assert sentinel.sentinel_path() == (
-            cache_dir / "claude-skills" / "self-learn" / "autosync-pause"
+            cache_dir / "self-learn" / "autosync-pause"
         )
 
     def test_defaults_to_home_dot_cache(self, monkeypatch):
         monkeypatch.delenv("XDG_CACHE_HOME")
         assert sentinel.sentinel_path() == (
-            Path("~/.cache").expanduser()
-            / "claude-skills"
-            / "self-learn"
-            / "autosync-pause"
+            Path("~/.cache").expanduser() / "self-learn" / "autosync-pause"
         )
 
 

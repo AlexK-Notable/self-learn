@@ -37,6 +37,7 @@ in or drive :func:`run` directly.
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 import shutil
@@ -48,7 +49,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import sentinel, telemetry
-from .ledger import discover_buckets
+from .hosts import HostsError, load_hosts, skill_dir_for
+from .ledger import discover_buckets, resolve_home
+from .ledger_ops import bucket_project_path
 from .scan import scan as secret_scan
 from .ledger_ops import (
     ProposalError,
@@ -74,6 +77,7 @@ __all__ = [
     "build_argv",
     "cache_dir",
     "kick",
+    "package_skill_refs",
     "run",
     "write_permission_rules",
     "write_settings_file",
@@ -96,10 +100,100 @@ ESCALATE_DEBOUNCE_SECS = 24 * 60 * 60
 SUSPECT_JACCARD = 0.6
 
 
+def package_skill_refs() -> Path:
+    """The skill's references dir, resolved relative to THIS package
+    (doc 13 T-H3: doctrine/rubric/registry ship with the product beside
+    the skill — never via any home; this also pre-clears the step-2
+    product-repo extraction). src/self_learn/worker.py → parents[3] is
+    ``plugins/self-learn``."""
+    return Path(__file__).resolve().parents[3] / "skills" / "self-learn" / "references"
+
+
 def cache_dir() -> Path:
+    """Per-ledger-home cache namespace (doc 13 §6, H-4):
+    ``${XDG_CACHE_HOME:-~/.cache}/self-learn/home-<sha256(home)[:8]>/`` —
+    a future second home (06's team ledger) is a config away. Resolves
+    the home itself via :func:`ledger.resolve_home` (cheap env read).
+
+    Migration shim from the OLD un-namespaced path
+    (``…/claude-skills/self-learn`` — the name embeds the host the cache
+    no longer belongs to): see :func:`_migrate_cache`."""
     cache = os.environ.get("XDG_CACHE_HOME")
     base = Path(cache).expanduser() if cache else Path("~/.cache").expanduser()
-    return base / "claude-skills" / "self-learn"
+    digest = hashlib.sha256(str(resolve_home()).encode("utf-8")).hexdigest()[:8]
+    new = base / "self-learn" / f"home-{digest}"
+    new.mkdir(parents=True, exist_ok=True)
+    _migrate_cache(base / "claude-skills" / "self-learn", new)
+    return new
+
+
+#: Written only after a COMPLETE migration — its absence means "retry".
+MIGRATION_MARKER = ".migrated-from-claude-skills"
+
+#: Live processes hold these (flock / pid window); moving them out from
+#: under a running worker or miner is how you get two of them. They are
+#: regenerable per-machine state, so they are left behind deliberately.
+_MIGRATION_SKIP = ("worker.lock", "worker.spawn.lock", "worker.window")
+
+
+def _migrate_cache(old: Path, new: Path) -> None:
+    """Move the pre-doc-13 cache state into the home-namespaced dir
+    (doc 13 §6). Idempotent and RETRIED until it completes: the marker is
+    written only after a full clean pass, so a partial move (disk full,
+    permissions, a file vanishing mid-move) is re-attempted on the next
+    call instead of leaving the rest orphaned in the old path forever
+    (audit 2026-07-16 MINOR 9: the shim ran once, only when the new dir
+    did not exist, and swallowed every failure with `except: pass`).
+
+    Lock/window files are deliberately NOT moved (:data:`_MIGRATION_SKIP`)
+    — a LIVE worker or miner may hold them, and moving a flock'd file out
+    from under it lets a second run start; they are regenerable. Every
+    move and every failure is logged; nothing here is ever fatal (cache
+    state is never load-bearing truth).
+
+    Logging goes through :func:`_log_to` rather than :func:`log`: this
+    runs INSIDE :func:`cache_dir`, and ``log`` resolves the cache dir —
+    which would recurse until the marker exists.
+    """
+    if (new / MIGRATION_MARKER).exists() or not old.is_dir():
+        return
+    moved: list[str] = []
+    failed: list[str] = []
+    left: list[str] = []
+    for entry in sorted(old.iterdir()):
+        if entry.name in _MIGRATION_SKIP:
+            left.append(entry.name)
+            continue
+        target = new / entry.name
+        if target.exists():
+            left.append(entry.name)  # newer state already here — never clobber
+            continue
+        try:
+            shutil.move(str(entry), str(target))
+            moved.append(entry.name)
+        except (OSError, shutil.Error) as exc:
+            failed.append(f"{entry.name} ({exc})")
+    if moved or failed:
+        _log_to(
+            new / "worker.log",
+            f"cache migration {old} → {new}: moved {moved or 'nothing'}; "
+            f"left {left or 'nothing'}; FAILED {failed or 'nothing'}",
+        )
+    if failed:
+        _log_to(
+            new / "worker.log",
+            "cache migration incomplete — will retry on the next run",
+        )
+        return
+    try:
+        (new / MIGRATION_MARKER).write_text(
+            f"{_now_iso()} migrated from {old}\n", encoding="utf-8"
+        )
+    except OSError as exc:
+        _log_to(
+            new / "worker.log",
+            f"cache migration: marker write failed ({exc}) — will retry",
+        )
 
 
 def _p(name: str) -> Path:
@@ -110,13 +204,22 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _log_to(path: Path, message: str) -> None:
+    """Append one timestamped line to an EXPLICIT log path (capped ~1 MB).
+    The migration shim needs this: it runs inside :func:`cache_dir`, so it
+    cannot use :func:`log`, which resolves the cache dir to find its."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(f"{_now_iso()} {message}\n")
+    except OSError:
+        return  # a log we cannot write is never worth failing a run over
+    _truncate_oldest(path, LOG_CAP_BYTES)
+
+
 def log(message: str) -> None:
     """Append one timestamped line to worker.log (capped ~1 MB)."""
-    path = _p("worker.log")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "a", encoding="utf-8") as fh:
-        fh.write(f"{_now_iso()} {message}\n")
-    _truncate_oldest(path, LOG_CAP_BYTES)
+    _log_to(_p("worker.log"), message)
 
 
 def _truncate_oldest(path: Path, cap: int) -> None:
@@ -174,18 +277,19 @@ DISALLOWED_TOOLS = "Bash,Edit,NotebookEdit,Task,WebFetch,WebSearch"
 
 
 def write_permission_rules(home: Path) -> list[str]:
-    """The two pinned Write scopes, in settings-file rule syntax —
-    verified against the LIVE CLI (T13-start check, 2026-07-15):
-    file-write scoping rides the ``Edit(...)`` rule FAMILY (it governs
-    Write too); ``Write(path)`` rules match nothing. `//` = filesystem-
-    absolute, gitignore ** semantics. The Edit TOOL itself stays in
-    DISALLOWED_TOOLS — live-verified that the tool disable and the rule
-    family coexist: Write lands inside the scope, Edit invocations
-    error, everything outside the scope is denied."""
+    """The pinned Write scopes on the doc-13 ledger layout, in
+    settings-file rule syntax — verified against the LIVE CLI (T13-start
+    check, 2026-07-15): file-write scoping rides the ``Edit(...)`` rule
+    FAMILY (it governs Write too); ``Write(path)`` rules match nothing.
+    `//` = filesystem-absolute, gitignore ** semantics. The Edit TOOL
+    itself stays in DISALLOWED_TOOLS. The scopes point at LEDGER
+    proposals dirs ONLY — never at any host repo (H-3: no autonomous
+    process writes canon)."""
     home = Path(home)
     return [
-        f"Edit(/{home}/plugins/**/.self-learn/proposals/**)",
-        f"Edit(/{home}/.self-learn/proposals/**)",
+        f"Edit(/{home}/skills/**/proposals/**)",
+        f"Edit(/{home}/projects/**/proposals/**)",
+        f"Edit(/{home}/user/proposals/**)",
     ]
 
 
@@ -226,11 +330,45 @@ def build_argv(home: Path, settings_path: Path) -> list[str]:
 # ------------------------------------------------------------------- kick
 
 
-def _spawn_window(home: Path) -> int:
+#: Env var carrying an invoking verb's ``--no-push`` to the worker it
+#: spawns (audit 2026-07-16 BLOCKER 3).
+NO_PUSH_ENV = "SELF_LEARN_NO_PUSH"
+
+
+def no_push_requested() -> bool:
+    """True iff this process was told not to push.
+
+    THE PROCESS-BOUNDARY READER, and nothing else. A spawn is detached, so
+    a parent's flag can only reach a child as inherited environment; the
+    child reads it ONCE here, at its dispatch surface, and from there it
+    travels as an ordinary parameter (audit 2026-07-16 BLOCKER D: when
+    no-push lived only in the ambient environment, `reject --no-push`
+    spawned a miner that never had the var set and published the whole
+    branch — an ambient policy that simply was not there).
+
+    SEMANTICS, deliberately narrow: ``--no-push`` means *this invocation
+    and anything it spawns* does not push. It is "not now", NOT "never" — a
+    later independent worker, miner, or timer run may still publish the
+    commit; ``--no-push`` keeps a record local for the moment, and nothing
+    in the ledger promises permanence. To keep something out of the remote
+    for good, it must not be committed to a pushed branch at all."""
+    return os.environ.get(NO_PUSH_ENV) == "1"
+
+
+def _spawn_window(home: Path, *, no_push: bool = False) -> int:
     """setsid-spawn a coalescing run; returns the child pid. Split out so
-    tests can monkeypatch spawning without faking flocks."""
+    tests can monkeypatch spawning without faking flocks.
+
+    ``no_push`` rides the child's ENV (BLOCKER 3): the spawn is detached
+    (``start_new_session=True``), so the parent's flag reaches it only as
+    inherited environment — and without it, ``teach --no-push`` published
+    the very record the user said keep local, via the worker teach itself
+    kicked (worker run-end ``git push`` publishes the WHOLE branch)."""
     log_path = _p("worker.log")
     log_path.parent.mkdir(parents=True, exist_ok=True)
+    env = dict(os.environ)
+    if no_push:
+        env[NO_PUSH_ENV] = "1"
     with open(log_path, "a", encoding="utf-8") as out:
         proc = subprocess.Popen(
             [sys.executable, "-m", "self_learn.cli", "worker", "run", "--coalesce"],
@@ -238,15 +376,21 @@ def _spawn_window(home: Path) -> int:
             stdout=out,
             stderr=subprocess.STDOUT,
             start_new_session=True,
+            env=env,
         )
     return proc.pid
 
 
-def _open_window(home: Path) -> str:
+def _open_window(home: Path, *, no_push: bool = False) -> str:
     """Lock-guarded window opener, shared by :func:`kick` and the
     run-end follow-on (audit 2026-07-15: the follow-on previously
     bypassed the spawn lock and could double-spawn against a mid-run
-    kick). Returns ``spawned`` | ``absorbed-window`` | ``absorbed-race``."""
+    kick). Returns ``spawned`` | ``absorbed-window`` | ``absorbed-race``.
+
+    ``no_push`` propagates to a spawned child (BLOCKER 3). An ABSORBED kick
+    inherits the already-running window's policy — correct: absorption
+    means an existing run already covers this work, and a run that was
+    allowed to push is not retroactively muzzled."""
     with open(_p("worker.spawn.lock"), "w", encoding="utf-8") as lock_fh:
         try:
             fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -261,7 +405,7 @@ def _open_window(home: Path) -> str:
                     pid = -1
                 if pid > 0 and _pid_alive(pid):
                     return "absorbed-window"
-            pid = _spawn_window(home)
+            pid = _spawn_window(home, no_push=no_push)
             window.write_text(str(pid), encoding="utf-8")
             log(f"window opened (pid {pid})")
             return "spawned"
@@ -269,15 +413,18 @@ def _open_window(home: Path) -> str:
             fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
 
 
-def kick(home: Path | str) -> str:
+def kick(home: Path | str, *, no_push: bool = False) -> str:
     """The pinned kick. Returns the outcome (for logs/tests):
-    ``spawned`` | ``absorbed-window`` | ``absorbed-race`` | ``disabled``."""
+    ``spawned`` | ``absorbed-window`` | ``absorbed-race`` | ``disabled``.
+
+    ``no_push`` binds the spawned worker to the caller's ``--no-push``
+    (BLOCKER 3) — see :func:`no_push_requested` for the exact semantics."""
     if os.environ.get("SELF_LEARN_WORKER_AUTOKICK") == "0":
         return "disabled"
     home = Path(home)
     cache_dir().mkdir(parents=True, exist_ok=True)
     _p("worker.dirty").touch()
-    return _open_window(home)
+    return _open_window(home, no_push=no_push)
 
 
 # -------------------------------------------------------------------- run
@@ -297,18 +444,16 @@ class RunResult:
     suspects: int = 0
     escalated: bool = False
     followon: bool = False
-
-
-def _sync_first(home: Path) -> None:
-    script = home / "bin" / "claude-skills-sync"
-    if script.is_file() and os.access(script, os.X_OK):
-        proc = subprocess.run(
-            [str(script)], cwd=str(home), capture_output=True, text=True
-        )
-        if proc.returncode != 0:
-            log(f"sync-first: nonzero exit {proc.returncode} (continuing)")
-    else:
-        log("sync-first: no bin/claude-skills-sync here — skipped")
+    #: Every ledger path this run wrote or deleted — the surgical staging
+    #: set for the run-end commit (H-5: producers commit their own writes).
+    touched: list[Path] = field(default_factory=list)
+    commit_sha: str | None = None
+    #: True iff this run's commit landed — the push's gate. Distinct from
+    #: ``commit_sha is not None`` only in intent: it answers "is there
+    #: anything to publish?", which is the question the caller asks OUTSIDE
+    #: the lock (round 7: the commit moved inside `_harvest`'s lock, the
+    #: push must not follow it in).
+    committed: bool = False
 
 
 def _enumerate(home: Path) -> tuple[list, int, int, list[dict]]:
@@ -398,12 +543,26 @@ def _digest(home: Path, limit: int = 20) -> str:
 
 def _canon_excerpt(home: Path, entry) -> str:
     """The candidate target's managed section ± 20 lines, or the whole
-    file when < 200 lines (pinned prompt ingredient)."""
+    file when < 200 lines (pinned prompt ingredient). Targets resolve
+    through the hosts registry now (doc 13): skill scope → the skills
+    root's SKILL.md; project scope → the bucket's meta-recorded host
+    CLAUDE.md; user scope → the real user CLAUDE.md."""
     scope = entry.record.scope
+    target: Path | None = None
     if scope.startswith("skill:"):
-        target = entry.bucket_dir.parent / "SKILL.md"
-    else:
-        target = home / "CLAUDE.md"
+        try:
+            target = skill_dir_for(
+                load_hosts(home), scope.partition(":")[2]
+            ) / "SKILL.md"
+        except HostsError:
+            return "(skill target unresolvable — no registered skills root)"
+    elif scope == "project":
+        host = bucket_project_path(entry.bucket_dir)
+        if host is None:
+            return "(project target unresolvable — bucket has no meta.yaml)"
+        target = Path(host) / "CLAUDE.md"
+    else:  # user
+        target = Path("~/.claude/CLAUDE.md").expanduser()
     if not target.is_file():
         return f"(target {target.name} does not exist yet)"
     lines = target.read_text(encoding="utf-8").splitlines()
@@ -421,7 +580,7 @@ def _canon_excerpt(home: Path, entry) -> str:
 
 _PROMPT_TEMPLATE = """You are the self-learn routing analyst worker. For EACH pending record
 below, write one proposal file at
-<bucket>/.self-learn/proposals/lrn-<id>.yaml (the bucket path is given
+<bucket>/proposals/lrn-<id>.yaml (the bucket path is given
 per record). Follow the routing doctrine exactly — including §5 (the
 proposal schema; NEVER emit record_sha) and §8 (write every card section
 the registry requires; the registry follows the doctrine below). You may
@@ -430,7 +589,7 @@ anchors) when a lesson conflicts with existing canon.
 
 After the per-record pass: if two or more of THESE pending records in the
 SAME bucket are the same lesson, additionally write ONE merge proposal at
-<bucket>/.self-learn/proposals/merge-<8 lowercase hex>.yaml with keys:
+<bucket>/proposals/merge-<8 lowercase hex>.yaml with keys:
 cluster_id, records (the lrn ids), suggested_survivor, rationale, model,
 analyzed_at. Do not emit record_shas — the CLI stamps them.
 
@@ -449,11 +608,10 @@ Never re-propose the classes below (recently rejected):
 
 
 def _compose_prompt(home: Path, batch: list) -> str:
-    doctrine_path = (
-        home
-        / "plugins/self-learn/skills/self-learn/references/routing-doctrine.md"
-    )
-    registry_path = doctrine_path.parent / "card-sections.yaml"
+    # PACKAGE-relative (doc 13 T-H3): doctrine + registry ship with the
+    # product beside the skill — never resolved through any home.
+    doctrine_path = package_skill_refs() / "routing-doctrine.md"
+    registry_path = package_skill_refs() / "card-sections.yaml"
     doctrine = (
         doctrine_path.read_text(encoding="utf-8")
         if doctrine_path.is_file()
@@ -509,13 +667,178 @@ def _written_since(home: Path, snap: dict[Path, str]) -> list[Path]:
     return sorted(out)
 
 
-def _git_rm_or_unlink(home: Path, path: Path) -> None:
-    """Plain unlink, deliberately NOT `git rm` (audit 2026-07-15, dated
-    letter-adjustment to the §7.1 orphan-sweep row): staging a deletion
-    from an uncommitting background process can leak into a racing
-    verb's whole-index commit, breaking surgical-staging discipline.
-    Autosync's own `add -A` commits the deletion on its next cycle."""
+def _git_rm_or_unlink(home: Path, path: Path, result: "RunResult | None" = None) -> None:
+    """Unlink now; the deletion is STAGED AND COMMITTED at run end by
+    :func:`_commit_run`, never here.
+
+    The 2026-07-15 letter-adjustment to the §7.1 orphan-sweep row was
+    right that a background process must not park a deletion in the index
+    for a racing verb's whole-index commit to swallow — but its second
+    half ("autosync's `add -A` commits the deletion on its next cycle")
+    died with the watcher (doc 13 H-5; audit 2026-07-16 MAJOR 3), leaving
+    the worker's deletions committed by nobody. Both concerns hold at
+    once: delete during the run, then stage surgically and commit ONCE at
+    run end — the index carries this run's paths only for the moment it
+    takes to commit them."""
     path.unlink(missing_ok=True)
+    if result is not None:
+        result.touched.append(path)
+
+
+def _tracked(home: Path, path: Path) -> bool:
+    from . import gitops
+
+    return (
+        gitops._git(  # noqa: SLF001 — same module family
+            home, "ls-files", "--error-unmatch", "--", str(path)
+        ).returncode
+        == 0
+    )
+
+
+def _commit_run(home: Path, result: RunResult, *, no_push: bool = False) -> None:
+    """H-5 (doc 13 §5): the worker commits its OWN writes at run end —
+    validated proposals, and its deletions (invalid model output, orphan
+    and invalidated-merge sweeps) — with the pinned subject
+    ``self-learn: worker <n> proposal(s)``, then a best-effort push behind
+    the has_remote guard.
+
+    Audit 2026-07-16 MAJOR 3: nobody committed the worker's proposals once
+    H-5 removed the watcher, so machine B re-analyzed every record from
+    scratch and a re-clone destroyed the analysis. Staging stays SURGICAL
+    (this run's paths only — never ``add -A``): a deleted path is staged
+    only when git tracks it, an existing path only when it is one this run
+    wrote. Git trouble is logged, never fatal — proposals are regenerable.
+
+    BLOCKER 4 (2026-07-16): this is one of the two BACKGROUND committers M3
+    added to the ledger — Popen-detached, kicked by every teach/import, so
+    it fires while foreground verbs are mid-``git mv``. The stage→commit
+    runs inside the repo's commit lock, and the commit carries its own
+    pathspec.
+
+    Round 7: the lock is taken by :func:`_commit_locked`, and ``run`` takes
+    it EARLIER still (in :func:`_harvest`, before ``_validate_written``
+    deletes anything) — re-entrantly, so this entry point keeps working
+    standalone. The push stays outside every lock.
+
+    BLOCKER 3: the push honors :func:`no_push_requested` — the invoking
+    verb's ``--no-push`` binds the worker IT spawned, or ``teach --no-push``
+    keeps a record local only until the worker it kicked publishes the whole
+    branch a second later."""
+    if not _commit_locked(home, result):
+        return
+    _push_run(home, no_push=no_push)
+
+
+def _commit_locked(home: Path, result: RunResult) -> bool:
+    """Stage → commit this run's paths. Takes the lock (re-entrant: `run`
+    already holds it). True iff a commit landed.
+
+    Staging stays SURGICAL (this run's paths only — never ``add -A``): a
+    deleted path is staged only when git tracks it, an existing path only
+    when it is one this run wrote. Audit 2026-07-16 MAJOR 3: nobody
+    committed the worker's proposals once H-5 removed the watcher, so
+    machine B re-analyzed every record from scratch and a re-clone
+    destroyed the analysis. Git trouble is logged, never fatal — proposals
+    are regenerable."""
+    from . import gitops
+
+    if not result.touched:
+        return False
+    stage: list[str] = []
+    for path in dict.fromkeys(result.touched):  # de-dup, order-stable
+        if path.exists() or _tracked(home, path):
+            stage.append(str(path))
+    if not stage:
+        return False
+    # BLOCKER B: EVERY GitOpsError is caught, including the one raised by
+    # ACQUIRING the lock (a timeout) and by a git call that blew its own
+    # timeout. This is a detached, Popen'd process: an escaping exception
+    # is a stack dump into worker.log and a dead run, for a condition —
+    # "another producer is committing right now" — that is not even an
+    # error. Proposals are regenerable; the next run redoes this.
+    try:
+        with gitops.commit_lock(home):
+            proc = gitops._git(home, "add", "--", *stage)  # noqa: SLF001
+            if proc.returncode != 0:
+                log(f"run: staging failed ({(proc.stderr or proc.stdout).strip()})")
+                return False
+            # Scoped to THIS run's paths: an index-wide --quiet would answer
+            # about someone else's staged work (pathspec discipline).
+            if (
+                gitops._git(  # noqa: SLF001
+                    home, "diff", "--cached", "--quiet", "--", *stage
+                ).returncode
+                == 0
+            ):
+                return False  # nothing changed (byte-identical re-stamp)
+            n = result.valid_landed
+            result.commit_sha = gitops.commit(
+                home,
+                f"self-learn: worker {n} proposal{'s' if n != 1 else ''}",
+                paths=stage,
+            )
+    except gitops.GitOpsError as exc:
+        log(f"run: commit failed ({exc}) — proposals left uncommitted")
+        return False
+    return True
+
+
+def _push_run(home: Path, *, no_push: bool) -> None:
+    """The push — OUTSIDE every lock (it touches no index — see the gitops
+    module docstring for the re-scope) and outside the commit's try: a push
+    failure must never look like a commit failure."""
+    from . import gitops
+
+    if no_push:
+        log("run: push skipped — --no-push in effect")
+        return
+    try:
+        push = gitops.push_if_remote(home)
+    except gitops.GitOpsError as exc:
+        # BLOCKER B: this is a DETACHED process. A traceback here goes to
+        # worker.log and kills the run; the proposals are committed and a
+        # later run republishes them.
+        log(f"run: push errored ({exc}) — commit kept locally")
+        return
+    if not push.ok:
+        log(f"run: push failed ({push.detail}) — commit kept locally")
+
+
+def _cache_clear(name: str) -> None:
+    """Delete one of the worker's CACHE flag files.
+
+    A one-line helper for a one-line operation, and it earns that: the
+    lock-invariant check (tests/test_lock_invariant.py) reads a bare
+    ``.unlink()`` in ``run`` as a repo mutation and cannot tell
+    ``$XDG_CACHE_HOME/.../worker.window`` from a ledger record — and it is
+    right not to guess. Naming the cache writes makes ``run``'s remaining
+    filesystem mutations exactly the ones that touch the LEDGER, which is
+    what the invariant is about. The code now says which files it means."""
+    _p(name).unlink(missing_ok=True)
+
+
+def _harvest(home: Path, written: list[Path]) -> RunResult:
+    """Validate + sweep + commit, as ONE locked section (audit 2026-07-16
+    round 7 — the invariant: no ledger mutation may precede its lock).
+
+    A lock failure is LOGGED, never raised: this runs in a Popen-detached
+    process where an escaping exception is a stack dump into worker.log and
+    a dead run (BLOCKER B), for a condition — "another producer is
+    committing right now" — that is not an error. Because the lock is taken
+    BEFORE the first mutation, refusing here costs nothing: the model's
+    output stays on disk untouched and the next run validates it."""
+    from . import gitops
+
+    try:
+        with gitops.commit_lock(home):
+            result = _validate_written(home, written)
+            _still_pending(home, result)
+            result.committed = _commit_locked(home, result)
+            return result
+    except gitops.GitOpsError as exc:
+        log(f"run: could not take the ledger lock ({exc}) — nothing swept")
+        return RunResult(status="failed")
 
 
 def _bucket_name(home: Path, path: Path) -> str | None:
@@ -573,6 +896,7 @@ def _validate_written(home: Path, written: list[Path]) -> RunResult:
                 validate_merge_proposal(data)
                 _dump_yaml(data, path)  # same writer as stamping
                 result.merge_proposed.append(data["cluster_id"])
+                result.touched.append(path)
             else:
                 validate_proposal(data)
                 rpath = path.parent.parent / "pending" / f"{name}.md"
@@ -580,13 +904,14 @@ def _validate_written(home: Path, written: list[Path]) -> RunResult:
                     raise ProposalError(f"no pending record for {name}")
                 stamp_proposal(home, name)
                 result.proposed.append(name)
+                result.touched.append(path)
             bucket = _bucket_name(home, path)
             if bucket and bucket not in result.buckets:
                 result.buckets.append(bucket)
         except Exception as exc:  # noqa: BLE001 — unattended: delete + log
             log(f"run: invalid worker output {path.name} deleted ({exc})")
             result.invalid_deleted.append(path.name)
-            _git_rm_or_unlink(home, path)
+            _git_rm_or_unlink(home, path, result)
     result.valid_landed = len(result.proposed) + len(result.merge_proposed)
     return result
 
@@ -610,7 +935,7 @@ def _still_pending(home: Path, result: RunResult) -> None:
             if not (bucket.path / "pending" / f"{path.stem}.md").is_file():
                 log(f"run: orphan proposal {path.name} swept")
                 result.orphans_swept.append(path.name)
-                _git_rm_or_unlink(home, path)
+                _git_rm_or_unlink(home, path, result)
         for path in sorted(pdir.glob("merge-*.yaml")):
             try:
                 members = read_proposal(path).get("records", [])
@@ -622,7 +947,7 @@ def _still_pending(home: Path, result: RunResult) -> None:
             ):
                 log(f"run: invalidated merge proposal {path.name} swept")
                 result.orphans_swept.append(path.name)
-                _git_rm_or_unlink(home, path)
+                _git_rm_or_unlink(home, path, result)
 
 
 # ------------------------------------------- recurrence suspects (11 §2.2)
@@ -900,30 +1225,37 @@ def fast_status(home: Path | str) -> dict:
 # --------------------------------------------------------------- the run
 
 
-def run(home: Path | str, *, coalesce: bool = False) -> RunResult:
+def run(
+    home: Path | str, *, coalesce: bool = False, no_push: bool | None = None
+) -> RunResult:
+    """``no_push=None`` reads the process boundary once
+    (:func:`no_push_requested`) and then threads the answer as a parameter
+    — BLOCKER D: the policy is data, not ambience."""
     home = Path(home)
+    if no_push is None:
+        no_push = no_push_requested()
     cache_dir().mkdir(parents=True, exist_ok=True)
     if coalesce:
         time.sleep(coalesce_secs())
 
     with open(_p("worker.lock"), "w", encoding="utf-8") as lock_fh:
         fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)  # blocking (pinned)
-        # Sync FIRST (the sync script no-ops under a live sentinel), THEN
-        # self-hold the sentinel for the rest of the run (audit
-        # 2026-07-15, pin extension recorded in the 08 appendix: without
-        # it, autosync's rebase-autostash can transiently remove a
-        # just-written proposal mid-validation — deleting VALID output —
-        # and publishes raw unstamped model text mid-run). Same
-        # discipline as the verbs: skip-if-held-by-other, release iff
-        # owned; a crashed run goes stale at the 2 h TTL.
-        _p("worker.window").unlink(missing_ok=True)
-        _sync_first(home)
+        # Self-hold the sentinel for the rest of the run. There is no
+        # sync-first step any more (audit 2026-07-16 MINOR 10): it looked
+        # for `<home>/bin/claude-skills-sync`, which the LEDGER home will
+        # never contain — doc 13 H-5 gives the ledger no watcher at all,
+        # so every run logged "skipped" forever. The sentinel hold remains
+        # (it pauses the HOST repos' autosync during the canon-adjacent
+        # window) with the same discipline as the verbs:
+        # skip-if-held-by-other, release iff owned; a crashed run goes
+        # stale at the 2 h TTL.
+        _cache_clear("worker.window")
         hold = sentinel.hold()
         sentinel.heartbeat()
         try:
             batch, leftovers, total_pending, per_bucket = _enumerate(home)
             if leftovers == 0:
-                _p("worker.dirty").unlink(missing_ok=True)  # AFTER enumeration
+                _cache_clear("worker.dirty")  # AFTER enumeration
             else:
                 # pinned: leftovers keep worker.dirty set → follow-on window
                 _p("worker.dirty").touch()
@@ -971,8 +1303,23 @@ def run(home: Path | str, *, coalesce: bool = False) -> RunResult:
                     sentinel.heartbeat()
 
                 written = _written_since(home, snap)
-                result = _validate_written(home, written)
-                _still_pending(home, result)
+                # [first mutation → commit] under ONE lock (audit
+                # 2026-07-16 round 7, THE invariant). `_validate_written`
+                # DELETES schema-invalid model output and sweeps orphaned
+                # and invalidated-merge proposals — deletions of TRACKED
+                # files, i.e. exactly the worktree mutation a racing `pull
+                # --rebase --autostash` stashes and restores into a
+                # conflict. They used to run here, unlocked, and be
+                # committed by `_commit_run`'s separate lock later; the
+                # window between the two was the hazard. The model
+                # invocation above stays OUTSIDE the lock — it takes
+                # minutes and writes only its own new (untracked) files.
+                #
+                # The lock is taken here rather than inside `_commit_run`
+                # so the section is CONTINUOUS; `_commit_run` takes it
+                # again re-entrantly, which is why it can still be called
+                # on its own (the miner's and the tests' path).
+                result = _harvest(home, written)
                 result.eligible = len(batch)
                 result.leftovers = leftovers
                 result.suspects = suspects
@@ -1014,12 +1361,24 @@ def run(home: Path | str, *, coalesce: bool = False) -> RunResult:
                         "is the detector)"
                     )
 
+            # H-5: the producer commits its own writes (proposals +
+            # sweeps) — done inside `_harvest`'s lock above, because the
+            # sweeps are mutations and the lock must precede them (round
+            # 7). The PUSH is what is left to do, and it belongs out here:
+            # outside the lock, because it touches no index.
+            if result.committed:
+                _push_run(home, no_push=no_push)
+
             result.escalated = _maybe_escalate(home, total_pending, per_bucket)
 
             # Worker runs are kick-chained from teach/import — still the
             # human-triggered class (11 §4.2): flush the spool.
+            # push=not no_push_requested() (BLOCKER 3): flush defaults to
+            # push=True, so a --no-push teach's own kicked worker published
+            # the whole branch here — including the record the user asked to
+            # keep local. The flush still COMMITS (H-5); only the push waits.
             try:
-                telemetry.flush(home)
+                telemetry.flush(home, push=not no_push)
             except telemetry.TelemetryError as exc:
                 log(f"run: telemetry flush refused ({exc})")
         finally:
@@ -1030,7 +1389,9 @@ def run(home: Path | str, *, coalesce: bool = False) -> RunResult:
     # 2026-07-15: the old direct spawn bypassed kick's serialization and
     # could double-spawn against a mid-run kick).
     if _p("worker.dirty").is_file():
-        outcome = _open_window(home)
+        # The follow-on inherits THIS run's no-push policy (BLOCKER 3):
+        # otherwise the muzzled worker's own successor would push instead.
+        outcome = _open_window(home, no_push=no_push)
         log(f"run: follow-on window: {outcome}")
         result.followon = outcome == "spawned"
     return result

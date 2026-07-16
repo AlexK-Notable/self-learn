@@ -19,9 +19,10 @@ from support import (
     commit_all,
     git,
     make_behavior,
-    make_home,
+    make_env,
     merge_proposal_text,
     proposal_dict,
+    verb_subject,
 )
 
 SKILL_MD = "# s skill\n\nAuthored prose stays put.\n"
@@ -34,23 +35,26 @@ def redirect(tmp_path, monkeypatch):
 
 
 class Env:
+    """doc-13 pair: `home` is the LEDGER; `ledger` is its skill:s bucket;
+    canon (skill_md) lives in the paired HOST repo."""
+
     def __init__(self, tmp_path):
-        self.home = make_home(tmp_path)
-        self.skill_dir = self.home / "plugins" / "s-plugin" / "skills" / "s"
-        self.skill_md = self.skill_dir / "SKILL.md"
-        self.skill_md.write_text(SKILL_MD, encoding="utf-8")
+        sandbox = make_env(tmp_path)
+        self.home = sandbox.ledger
+        self.host = sandbox.host
+        self.skill_dir = sandbox.skill_dir  # HOST skill dir
+        self.skill_md = sandbox.skill_md    # make_env seeded identical content
         self.bare = tmp_path / "remote.git"
         subprocess.run(
             ["git", "init", "-q", "--bare", "-b", "main", str(self.bare)],
             check=True,
         )
         git(self.home, "remote", "add", "origin", str(self.bare))
-        commit_all(self.home, "seed")
         git(self.home, "push", "-q", "-u", "origin", "main")
-        self.ledger = self.skill_dir / ".self-learn"
+        self.ledger = self.home / "skills" / "s"  # LEDGER skill bucket
 
     def subject(self):
-        return git(self.home, "log", "-1", "--format=%s").stdout.strip()
+        return verb_subject(self.home)  # newest non-telemetry-flush commit
 
     def commits_since_seed(self):
         return int(
@@ -104,10 +108,16 @@ def test_collapse_one_commit_full_mechanics(env):
         f"self-learn: route {SURVIVOR} → skill-md "
         f"(collapse {CLUSTER}, supersedes {LOSER})"
     )
-    count = git(
-        env.home, "rev-list", "--count", f"{head_before}..HEAD"
-    ).stdout.strip()
-    assert count == "1"
+    # ONE verb commit: the collapse is atomic. Telemetry's own flush
+    # commit may ride on top (doc 13 H-5 — audit 2026-07-16 MAJOR 3), so
+    # count what the VERB wrote, which is what "one commit" ever meant.
+    subjects = git(
+        env.home, "log", "--format=%s", f"{head_before}..HEAD"
+    ).stdout.splitlines()
+    verb_commits = [
+        s for s in subjects if not s.startswith("self-learn: telemetry flush")
+    ]
+    assert len(verb_commits) == 1
 
     # survivor routed with merged evidence + cluster sightings
     survivor = Record.from_path(env.ledger / "resolved" / f"{SURVIVOR}.md")
@@ -286,8 +296,9 @@ def test_collapse_abort_leaves_pending_pristine_then_retry_clean(env):
     assert not any(e.get("session") == "sess-b" for e in pristine.evidence)
     assert not any(e.get("merged_from") for e in pristine.evidence)
 
-    # the documented recovery: clean the target, re-run — exactly once merged
-    commit_all(env.home, "commit the drift")
+    # the documented recovery: clean the target, re-run — exactly once
+    # merged. The dirty target lives in the HOST repo now (doc 13 §4).
+    commit_all(env.host, "commit the drift")
     rc = cli.main(["route", SURVIVOR, "--collapse", CLUSTER, "--no-push"])
     assert rc == 0
     survivor = Record.from_path(env.ledger / "resolved" / f"{SURVIVOR}.md")

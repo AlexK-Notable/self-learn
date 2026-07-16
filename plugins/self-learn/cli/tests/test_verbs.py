@@ -1,10 +1,12 @@
 """T7 resolution verbs: route / reject / defer / graduate / supersede +
 sentinel wiring + commit/push (08 §1 Resolution-verbs, Secret-scan P2-7,
 Sentinel-scoping, Push, Corrective-supersession, Managed-section-bootstrap
-pins; 02 §2 pinned commit formats).
+pins; 02 §2 pinned commit formats; doc 13 §4 two-phase routing — the
+ledger commits first, canon lands in the HOST repo).
 
-All git activity happens in sandbox repos under tmpdirs with bare remotes;
-the sentinel is XDG-redirected; chezmoi is a PATH shim.
+All git activity happens in sandbox repos under tmpdirs with bare remotes
+(one per repo of the ledger/host pair); the sentinel is XDG-redirected;
+chezmoi is a PATH shim.
 """
 
 import os
@@ -17,9 +19,17 @@ import pytest
 
 from self_learn import gitops, sentinel, verbs
 from self_learn.compilers import BEGIN_MARKER, END_MARKER
+from self_learn.hosts import host_add
 from self_learn.ledger_ops import LedgerOpsError, create_record, write_proposal
 from self_learn.records import Record
-from support import commit_all, git, make_behavior, make_home, proposal_dict
+from support import (
+    commit_all,
+    git,
+    init_repo,
+    make_behavior,
+    make_env,
+    proposal_dict,
+)
 
 OLD = "lrn-0000aaaa"
 NEW = "lrn-0000bbbb"
@@ -44,20 +54,30 @@ def cache_dir(tmp_path, monkeypatch):
     return cache
 
 
+LEDGER_SEED = "ledger seed"
+
+
 class Env:
+    """The doc-13 pair: `home` is the LEDGER (SELF_LEARN_HOME target),
+    `host` the registered skills-root/project HOST repo. Both get bare
+    remotes — two-phase routes push both."""
+
     def __init__(self, tmp_path):
-        self.home = make_home(tmp_path)
-        self.skill_dir = self.home / "plugins" / "s-plugin" / "skills" / "s"
-        self.skill_md = self.skill_dir / "SKILL.md"
-        self.skill_md.write_text(SKILL_MD, encoding="utf-8")
-        self.bare = tmp_path / "remote.git"
-        subprocess.run(
-            ["git", "init", "-q", "--bare", "-b", "main", str(self.bare)],
-            check=True,
-        )
-        git(self.home, "remote", "add", "origin", str(self.bare))
-        commit_all(self.home, "seed")
-        git(self.home, "push", "-q", "-u", "origin", "main")
+        sandbox = make_env(tmp_path)
+        self.home = sandbox.ledger
+        self.host = sandbox.host
+        self.skill_dir = sandbox.skill_dir
+        self.skill_md = sandbox.skill_md
+        self.bucket = self.home / "skills" / "s"
+        self.bare = tmp_path / "ledger-remote.git"
+        self.host_bare = tmp_path / "host-remote.git"
+        for repo, bare in ((self.home, self.bare), (self.host, self.host_bare)):
+            subprocess.run(
+                ["git", "init", "-q", "--bare", "-b", "main", str(bare)],
+                check=True,
+            )
+            git(repo, "remote", "add", "origin", str(bare))
+            git(repo, "push", "-q", "-u", "origin", "main")
 
     # -- inspection helpers ------------------------------------------------
 
@@ -73,19 +93,30 @@ class Env:
     def remote_files(self):
         return git(self.bare, "ls-tree", "-r", "--name-only", "HEAD").stdout.split()
 
-    def remote_show(self, relpath):
-        return git(self.bare, "show", f"HEAD:{relpath}").stdout
+    def host_subject(self):
+        return git(self.host, "log", "-1", "--format=%s").stdout.strip()
+
+    def host_remote_subject(self):
+        return git(self.host_bare, "log", "-1", "--format=%s").stdout.strip()
+
+    def host_remote_show(self, relpath):
+        return git(self.host_bare, "show", f"HEAD:{relpath}").stdout
 
     def committed_files(self):
         return git(
             self.home, "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"
         ).stdout.split()
 
+    def host_committed_files(self):
+        return git(
+            self.host, "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"
+        ).stdout.split()
+
     def pending(self, rid):
-        return self.skill_dir / ".self-learn" / "pending" / f"{rid}.md"
+        return self.bucket / "pending" / f"{rid}.md"
 
     def resolved(self, rid):
-        return self.skill_dir / ".self-learn" / "resolved" / f"{rid}.md"
+        return self.bucket / "resolved" / f"{rid}.md"
 
 
 @pytest.fixture
@@ -123,8 +154,10 @@ def chezmoi_shim(tmp_path, monkeypatch):
 
 class TestRouteDoD:
     def test_create_route_push_round_trip(self, env):
-        """T7 DoD: the sandbox remote ends with the record in resolved/,
-        the compiled section, and one pinned-message commit."""
+        """T7 DoD (doc 13 §4 shape): the LEDGER remote ends with the
+        record in resolved/ under one pinned route commit; the HOST
+        remote ends with the compiled section under one pinned apply
+        commit — both pushed."""
         seed(env)
         result = verbs.route(env.home, OLD, dest="skill-md")
 
@@ -132,9 +165,15 @@ class TestRouteDoD:
         assert result.commit_message == message
         assert result.push is not None and result.push.ok
         assert env.remote_subject() == message
-        rel = f"plugins/s-plugin/skills/s/.self-learn/resolved/{OLD}.md"
+        rel = f"skills/s/resolved/{OLD}.md"
         assert rel in env.remote_files()
-        remote_skill = env.remote_show("plugins/s-plugin/skills/s/SKILL.md")
+        # HOST phase: pinned apply subject, compiled canon, pushed too
+        assert result.host_push is not None and result.host_push.ok
+        assert env.host_remote_subject() == (
+            f"self-learn: apply {OLD} → "
+            "plugins/s-plugin/skills/s/SKILL.md (skill-md)"
+        )
+        remote_skill = env.host_remote_show("plugins/s-plugin/skills/s/SKILL.md")
         assert BEGIN_MARKER in remote_skill and END_MARKER in remote_skill
         assert OLD in remote_skill
         # local ledger agrees
@@ -165,7 +204,7 @@ class TestRouteDestination:
         learnings = env.skill_dir / "references" / "LEARNINGS.md"
         assert learnings.is_file() and OLD in learnings.read_text(encoding="utf-8")
         # proposal sibling removed at resolution, and the commit carries it
-        assert not (env.skill_dir / ".self-learn" / "proposals" / f"{OLD}.yaml").exists()
+        assert not (env.bucket / "proposals" / f"{OLD}.yaml").exists()
 
     def test_dest_overrides_proposal(self, env):
         seed(env)
@@ -182,7 +221,7 @@ class TestRouteDestination:
         with pytest.raises(verbs.NoProposalError, match="no proposal"):
             verbs.route(env.home, OLD)
         assert env.pending(OLD).exists()
-        assert env.local_subject() == "seed"  # nothing committed
+        assert env.local_subject() == LEDGER_SEED  # nothing committed
 
     @pytest.mark.parametrize("dest", ["new-skill", "hook"])
     def test_m3_destinations_exit_2(self, env, dest):
@@ -197,20 +236,30 @@ class TestRouteDestination:
         with pytest.raises(verbs.VerbError, match="--dest must be one of"):
             verbs.route(env.home, OLD, dest="banana")
 
-    def test_project_scope_claude_md_created_on_first_route(self, env):
-        """Judgment call under test: a repo with no CLAUDE.md gets one
-        created + bootstrapped on the first claude-md route."""
+    def test_project_scope_claude_md_created_on_first_route(self, tmp_path, env):
+        """Judgment call under test: a registered project host with no
+        CLAUDE.md gets one created + bootstrapped on the first claude-md
+        route (the host phase commits it in the PROJECT repo)."""
+        proj = tmp_path / "proj-repo"
+        init_repo(proj)
+        (proj / "README.md").write_text("proj\n", encoding="utf-8")
+        commit_all(proj, "proj seed")
+        host_add(env.home, proj, "project")
         record = make_behavior(scope="project", record_id=OLD)
-        create_record(env.home, record)
+        create_record(env.home, record, project_path=proj)
 
-        result = verbs.route(env.home, OLD, dest="claude-md")
+        result = verbs.route(env.home, OLD, dest="claude-md", no_push=True)
 
-        target = env.home / "CLAUDE.md"
+        target = proj / "CLAUDE.md"
         assert target.is_file()
         text = target.read_text(encoding="utf-8")
         assert BEGIN_MARKER in text and OLD in text
-        assert "CLAUDE.md" in env.committed_files()
+        committed = git(
+            proj, "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"
+        ).stdout.split()
+        assert "CLAUDE.md" in committed
         assert result.commit_message == f"self-learn: route {OLD} → claude-md"
+        assert result.host_commit_sha is not None
 
 
 class TestRouteGuards:
@@ -222,7 +271,7 @@ class TestRouteGuards:
             verbs.route(env.home, OLD, dest="skill-md")
 
         assert env.pending(OLD).exists()  # record untouched
-        assert env.local_subject() == "seed"
+        assert env.local_subject() == LEDGER_SEED
         # the dirty edit is still there, unclobbered
         assert "uncommitted edit" in env.skill_md.read_text(encoding="utf-8")
 
@@ -244,7 +293,7 @@ class TestRouteGuards:
         assert "password = hunter2secret99" in str(exc.value)
         assert path.read_text(encoding="utf-8") == poisoned  # nothing written
         assert env.pending(OLD).exists()
-        assert env.local_subject() == "seed"
+        assert env.local_subject() == LEDGER_SEED
         assert BEGIN_MARKER not in env.skill_md.read_text(encoding="utf-8")
 
     def test_note_is_scanned_too(self, env):
@@ -287,7 +336,7 @@ class TestRouteCommit:
         assert result.push is None
         message = f"self-learn: route {OLD} → skill-md"
         assert env.local_subject() == message
-        assert env.remote_subject() == "seed"  # not published yet
+        assert env.remote_subject() == LEDGER_SEED  # not published yet
 
         push = verbs.push_pending(env.home)
         assert push.ok
@@ -323,10 +372,10 @@ class TestRouteSupersedes:
         message = f"self-learn: route {NEW} → skill-md (supersedes {OLD})"
         assert result.commit_message == message
         assert env.local_subject() == message
-        # both record files ride the SAME commit
+        # both record files ride the SAME ledger commit
         committed = env.committed_files()
-        assert f"plugins/s-plugin/skills/s/.self-learn/resolved/{NEW}.md" in committed
-        assert f"plugins/s-plugin/skills/s/.self-learn/resolved/{OLD}.md" in committed
+        assert f"skills/s/resolved/{NEW}.md" in committed
+        assert f"skills/s/resolved/{OLD}.md" in committed
         # old record: superseded_by + still in resolved/
         old = Record.from_path(env.resolved(OLD))
         assert old.status == "superseded"
@@ -361,7 +410,7 @@ class TestRouteUserScope:
         # ledger commit in the home repo, same pinned message; the target
         # itself lives in the dotfiles repo, so it is NOT in this commit
         assert env.local_subject() == message
-        assert (env.home / ".self-learn" / "resolved" / f"{OLD}.md").is_file()
+        assert (env.home / "user" / "resolved" / f"{OLD}.md").is_file()
         assert result.compile_result.committed
 
 

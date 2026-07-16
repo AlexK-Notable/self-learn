@@ -11,11 +11,12 @@ import json
 import pytest
 
 from self_learn import cli
+from self_learn.hosts import slug_for
 from self_learn.ledger_ops import create_record
 from self_learn.records import Record
 from self_learn.teach import infer_type
 
-from support import make_behavior, make_home
+from support import init_repo, make_behavior, make_env
 
 # 4 + 36 chars — fires the github-token rule (see test_scan.py).
 SECRET = "ghp_" + "abcdefghijklmnopqrstuvwxyz0123456789"
@@ -35,10 +36,21 @@ DOD_ARGS = [
 
 
 @pytest.fixture
-def home(monkeypatch, tmp_path):
-    h = make_home(tmp_path, skills=("home-assistant",))
-    monkeypatch.setenv("SELF_LEARN_HOME", str(h))
-    return h
+def proj(tmp_path):
+    """The session's project (doc 13 §3): teach derives project scope from
+    the git-toplevel of cwd, so pin cwd to a sandbox repo — never the real
+    worktree — for deterministic, isolated project buckets."""
+    p = tmp_path / "proj-repo"
+    init_repo(p)
+    return p
+
+
+@pytest.fixture
+def home(monkeypatch, tmp_path, proj):
+    env = make_env(tmp_path, skills=("home-assistant",))
+    monkeypatch.setenv("SELF_LEARN_HOME", str(env.ledger))
+    monkeypatch.chdir(proj)  # binds project-scope captures to `proj`
+    return env.ledger
 
 
 def run_cli(argv):
@@ -50,7 +62,9 @@ def run_cli(argv):
 
 
 def all_pending(home):
-    return sorted(home.glob("**/.self-learn/pending/*.md"))
+    # doc 13 §3 layout: pending/ dirs live under skills/<n>, projects/<slug>,
+    # user/ — never the old in-repo .self-learn buckets.
+    return sorted(home.glob("**/pending/*.md"))
 
 
 def sole_record(home):
@@ -65,7 +79,7 @@ def test_dod_invocation_lands_conforming_pending_record(home, capsys):
     assert run_cli(DOD_ARGS) == 0
     out = capsys.readouterr().out
     path, rec = sole_record(home)
-    bucket = home / "plugins/home-assistant-plugin/skills/home-assistant/.self-learn"
+    bucket = home / "skills" / "home-assistant"
     assert path.parent == bucket / "pending"
     assert rec.type == "behavior"
     assert rec.scope == "skill:home-assistant"
@@ -79,7 +93,7 @@ def test_dod_invocation_lands_conforming_pending_record(home, capsys):
     assert "(inferred" not in out
 
 
-def test_structured_knowledge_project_scope(home, capsys):
+def test_structured_knowledge_project_scope(home, proj, capsys):
     rc = run_cli(
         [
             "teach",
@@ -94,7 +108,7 @@ def test_structured_knowledge_project_scope(home, capsys):
     )
     assert rc == 0
     path, rec = sole_record(home)
-    assert path.parent == home / ".self-learn" / "pending"
+    assert path.parent == home / "projects" / slug_for(proj) / "pending"
     assert rec.type == "knowledge" and rec.scope == "project"
     assert "## Fact" in rec.body and "## Context" in rec.body
 
@@ -104,7 +118,7 @@ def test_user_scope_bare_text(home):
     assert rc == 0
     path, rec = sole_record(home)
     assert rec.scope == "user"
-    assert path.parent == home / ".self-learn" / "pending"
+    assert path.parent == home / "user" / "pending"
 
 
 def test_default_scope_is_project(home):

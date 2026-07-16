@@ -31,13 +31,22 @@ from datetime import date, datetime
 from pathlib import Path
 
 from . import report as report_mod
-from . import miner, selfcheck, sentinel, telemetry, verbs, worker
+from . import hosts as hosts_mod
+from . import reconcile as reconcile_mod
+from . import gitops, miner, selfcheck, sentinel, telemetry, verbs, worker
 from .chezmoi import ChezmoiAbort, ChezmoiError
 from .compilers import CompileError
 from .import_backlog import import_backlog
 from .import_common import ImporterError
 from .import_memory import import_memory, prune_memory
-from .ledger import discover_buckets, resolve_home
+from .gitops import EXIT_GIT_FAILED
+from .ledger import (
+    EXIT_NO_HOME,
+    discover_buckets,
+    home_state,
+    home_state_message,
+    resolve_home,
+)
 from .ledger_ops import (
     LedgerOpsError,
     find_record_path,
@@ -56,6 +65,12 @@ EXIT_OK = 0
 # never see usage errors aliased onto scan hits). argparse's own flag-error
 # exit stays 2 but cannot occur on a well-formed programmatic invocation.
 EXIT_USAGE = 64
+
+#: Re-exported (defined in :mod:`self_learn.ledger` / :mod:`self_learn.
+#: gitops`, beside the concepts they name) so every surface — including
+#: `teach`, which used to pin its own — returns the SAME integer.
+#: EXIT_NO_HOME 5: the home is missing / not a git repo (BLOCKER 11).
+#: EXIT_GIT_FAILED 6: a GitOpsError reached dispatch (BLOCKER B).
 
 #: The auto-memory location for THIS repo (08 §3 T9/T11; MEMORY.md + topic
 #: files). Env-overridable; tests always override — the real dir is never
@@ -273,6 +288,55 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("push", help="publish pending local commits (pinned retry)")
 
+    rec = sub.add_parser(
+        "reconcile",
+        help="commit ledger records/proposals a producer left uncommitted",
+    )
+    rec.add_argument(
+        "--no-push", action="store_true", help="commit only; do not publish"
+    )
+
+    host_p = sub.add_parser(
+        "host",
+        help="compile-host registry (doc 13 §3): add | rebind | remove | list",
+    )
+    host_sub = host_p.add_subparsers(dest="host_command", metavar="<verb>")
+    hadd = host_sub.add_parser(
+        "add", help="register a repo canon may compile into (H-3)"
+    )
+    hadd.add_argument("path", metavar="PATH")
+    hadd.add_argument(
+        "--skills-root",
+        action="store_true",
+        dest="skills_root",
+        help="register as THE skills root (plugins/*/skills/* live there) "
+        "instead of a project host",
+    )
+    hrebind = host_sub.add_parser(
+        "rebind",
+        help="re-point a project bucket + its hosts.yaml entry at a MOVED "
+        "repo (one ledger commit)",
+    )
+    hrebind.add_argument("ref", metavar="SLUG-OR-OLD-PATH")
+    hrebind.add_argument("new_path", metavar="NEW-PATH")
+    hrm = host_sub.add_parser(
+        "remove", help="deregister a host (records and buckets are untouched)"
+    )
+    hrm.add_argument("path", metavar="PATH")
+    host_sub.add_parser("list", help="show the registered hosts")
+
+    recompile_p = sub.add_parser(
+        "recompile",
+        help="recompute every managed canon target from the ledger — the "
+        "doc-13 drift repair (idempotent)",
+    )
+    recompile_p.add_argument(
+        "--no-push",
+        action="store_true",
+        dest="no_push",
+        help="commit host changes exactly as pinned, skip only the pushes",
+    )
+
     sentinel_p = sub.add_parser(
         "sentinel", help="autosync-pause sentinel: hold | heartbeat | release"
     )
@@ -313,6 +377,22 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _home_gate(home) -> int | None:
+    """The read-surface home gate (audit 2026-07-16 BLOCKER 11): a
+    missing / not-a-repo home is LOUD and non-zero — never a confident
+    "0 pending, exit 0" for a ledger nobody can see. An initialized home
+    with no records is a legitimate quiet zero (None → carry on); an
+    uninitialized repo warns but still answers (it exists, and the first
+    capture bootstraps its dirs).
+
+    Returns an exit code to return immediately, or None to continue."""
+    state = home_state(home)
+    if state == "ok":
+        return None
+    print(f"self-learn: {home_state_message(state, home)}", file=sys.stderr)
+    return None if state == "uninitialized" else EXIT_NO_HOME
+
+
 def _warn_unparseable(home) -> None:
     """Unparseable pending files are excluded from the queue — never
     silently: name each one on stderr."""
@@ -328,8 +408,36 @@ def _cmd_status_fast() -> int:
     """08 §7.1 SessionStart pin: guaranteed-cheap, pending/-only. The bash
     hook consumes this — queue semantics live HERE, never in bash. Doc 12
     R1 layer 3: the miner's staleness keys ride the same payload (two
-    stats, still cheap)."""
-    data = worker.fast_status(resolve_home())
+    stats, still cheap).
+
+    The hook jq-parses stdout, so stdout stays VALID JSON in every state
+    (audit 2026-07-16 BLOCKER 11) — the home's state rides the payload as
+    ``home_state`` and the hook prints the warning. A bad home also exits
+    non-zero and says so on stderr, for humans and for any caller that
+    checks."""
+    home = resolve_home()
+    state = home_state(home)
+    if state != "ok":
+        # Valid-JSON stdout FIRST (the hook's contract), then the loud line.
+        print(
+            json.dumps(
+                {
+                    "home_state": state,
+                    "home": str(home),
+                    "total_pending": 0,
+                    "unanalyzed_total": 0,
+                    "oldest_days": 0,
+                    "staleness_alarm": False,
+                    "escalate": False,
+                    "miner_last_run": None,
+                    "miner_stale": False,
+                }
+            )
+        )
+        print(f"self-learn: {home_state_message(state, home)}", file=sys.stderr)
+        return EXIT_OK if state == "uninitialized" else EXIT_NO_HOME
+    data = worker.fast_status(home)
+    data["home_state"] = state
     data["miner_last_run"] = miner.last_run_iso()
     data["miner_stale"] = miner.stale()
     print(json.dumps(data))
@@ -348,12 +456,30 @@ def _cmd_mine(args: argparse.Namespace) -> int:
                     file=sys.stderr,
                 )
                 return EXIT_USAGE
-        result = miner.run(home, trigger=args.trigger, since=args.since)
+        # The process boundary is read HERE, at the child's dispatch
+        # surface, and travels as a parameter from here on (BLOCKER D).
+        result = miner.run(
+            home,
+            trigger=args.trigger,
+            since=args.since,
+            no_push=worker.no_push_requested(),
+        )
         print(
             f"mine run: {result.status} — {len(result.landed)} landed, "
             f"{len(result.folded)} folded, {len(result.recurrences)} "
             f"recurrence(s), {result.fires} fire(s)"
         )
+        if result.status == "landed-uncommitted":
+            # BLOCKER B (c): records written, commit failed, cursors gone.
+            # Round 7 MAJOR 4: no longer data loss — name the recovery.
+            print(
+                "self-learn mine: candidates were written but NOT committed "
+                "— run `self-learn reconcile` to commit them now; the next "
+                "mine run reconciles them automatically. See `self-learn "
+                "mine status` and the miner log.",
+                file=sys.stderr,
+            )
+            return gitops.EXIT_HALF_WRITTEN
         return EXIT_OK if result.status != "failed" else 1
     if args.mine_command == "status":
         entries = miner.read_journal()
@@ -378,13 +504,20 @@ def _cmd_mine(args: argparse.Namespace) -> int:
                 f"{e.get('ts', '?')}  {e.get('status', '?'):9s} "
                 f"trigger={e.get('trigger', '?')}"
             )
-            if e.get("status") == "ok":
+            # MINOR (audit 2026-07-16 round 7): the counts expanded for
+            # "ok" ONLY, so a `landed-uncommitted` row rendered bare —
+            # hiding the landed count on the one status where "how many
+            # records are at risk?" is the question being asked. Both
+            # statuses journal the same keys; both render them.
+            if e.get("status") in ("ok", "landed-uncommitted"):
                 line += (
                     f"  scanned={e.get('sessions_scanned', 0)} "
                     f"landed={e.get('landed', 0)} folded={e.get('folded', 0)} "
                     f"recurrences={e.get('recurrences', 0)} "
                     f"fires={e.get('fires', 0)} cap={e.get('cap', '?')}"
                 )
+            if e.get("status") == "landed-uncommitted":
+                line += "  ⚠ uncommitted — `self-learn reconcile` commits them"
             elif e.get("status") == "held-gate":
                 line += f"  pending={e.get('pending')} ≥ gate={e.get('gate')}"
             elif e.get("status") == "failed":
@@ -410,7 +543,9 @@ def _cmd_worker(args: argparse.Namespace) -> int:
         print(f"worker kick: {outcome}")
         return EXIT_OK
     if args.worker_command == "run":
-        result = worker.run(home, coalesce=args.coalesce)
+        result = worker.run(
+            home, coalesce=args.coalesce, no_push=worker.no_push_requested()
+        )
         n = len(result.proposed)
         print(
             f"worker run: {result.status} — {n} proposal(s), "
@@ -422,11 +557,19 @@ def _cmd_worker(args: argparse.Namespace) -> int:
     return EXIT_USAGE
 
 
-def _kick_after_capture() -> None:
+def _kick_after_capture(*, no_push: bool = False) -> None:
     """teach (without --route) and import end by calling worker kick
-    (08 §7.1 trigger pin). Never fails the capture."""
+    (08 §7.1 trigger pin). Never fails the capture.
+
+    ``no_push`` binds the SPAWNED worker to the invoking verb's
+    ``--no-push`` (audit 2026-07-16 BLOCKER 3): the kicked worker is
+    detached and commits + pushes at run end, and ``git push`` publishes the
+    whole branch — so without this, ``teach --no-push`` wrote the record
+    unpublished and the worker it kicked published it seconds later. See
+    :func:`worker.no_push_requested` for the "not now, not never"
+    semantics."""
     try:
-        outcome = worker.kick(resolve_home())
+        outcome = worker.kick(resolve_home(), no_push=no_push)
     except OSError as exc:
         print(f"self-learn: worker kick failed: {exc}", file=sys.stderr)
         return
@@ -436,6 +579,8 @@ def _kick_after_capture() -> None:
 
 def _cmd_status(as_json: bool) -> int:
     home = resolve_home()
+    if (code := _home_gate(home)) is not None:
+        return code
     _warn_unparseable(home)
     infos = status_infos(home)
     total_pending = sum(i["pending"] for i in infos)
@@ -482,6 +627,8 @@ def _proposal_cell(item: dict) -> str:
 
 def _cmd_list(as_json: bool, include_deferred: bool) -> int:
     home = resolve_home()
+    if (code := _home_gate(home)) is not None:
+        return code
     _warn_unparseable(home)
     items = list_items(home, include_deferred=include_deferred)
 
@@ -508,27 +655,49 @@ def _cmd_list(as_json: bool, include_deferred: bool) -> int:
 # ------------------------------------------------------- verb wiring (T8)
 
 
-def _push_note(result: verbs.VerbResult) -> str:
-    if result.push is None:
+def push_note(result: verbs.VerbResult) -> str:
+    """The push half of a verb's one-line summary — BOTH phases (audit
+    2026-07-16 MAJOR 4): ``VerbResult.host_push`` was set by every
+    canon-touching verb and read by nobody, so a failed HOST push printed
+    "(pushed)" and exited 0 — the canon commit sat unpublished with no
+    sign anything was wrong.
+
+    A clean two-phase route still reads "(pushed)": one word, both repos.
+    Anything else is spelled out per phase."""
+    ledger = _phase_note(result.push)
+    if result.host_push is None:
+        return ledger
+    host = _phase_note(result.host_push)
+    if ledger == host == "pushed":
+        return "pushed"  # ledger + host, both clean
+    return f"ledger {ledger}; host {host}"
+
+
+def _phase_note(push: gitops.PushResult | None) -> str:
+    if push is None:
         return "not pushed — --no-push"
-    if result.push.ok:
+    if push.skipped:
+        return "not pushed — no remote configured"
+    if push.ok:
         return "pushed"
     return "PUSH FAILED — commit kept; run `self-learn push`"
 
 
 def _finish_verb(result: verbs.VerbResult, target: str) -> int:
-    """One-line success summary: id, action, target, short sha, push state.
-    Exit 0, or the push result's distinct code when the push failed."""
+    """One-line success summary: id, action, target, short sha, push state
+    (ledger AND host). Exit 0, or the distinct push-failure code — a HOST
+    push failure counts exactly like a ledger one (MAJOR 4)."""
     print(
         f"{result.action} {result.record_id} → {target} "
-        f"@ {result.commit_sha[:7]} ({_push_note(result)})"
+        f"@ {result.commit_sha[:7]} ({push_note(result)})"
     )
     for warning in result.warnings:
         print(warning, file=sys.stderr)
     if (note := result.over_cap_note()) is not None:
         print(note, file=sys.stderr)
-    if result.push is not None and not result.push.ok:
-        return result.push.exit_code
+    for push in (result.push, result.host_push):
+        if push is not None and not push.ok:
+            return push.exit_code
     return EXIT_OK
 
 
@@ -539,7 +708,16 @@ def _routed_destination(result: verbs.VerbResult) -> str:
 
 
 def _cmd_verb(args: argparse.Namespace) -> int:
+    """Home-gated like every other surface (doc 13 B-11). Two reasons, one
+    line: a bad home used to reach ``find_record_path`` and come back "no
+    such record lrn-…" — blaming the ID for a home nobody could see; and
+    since BLOCKER 4 the verbs take a commit lock on the ledger, which for a
+    missing / not-a-repo home raises GitOpsError — an uncaught traceback
+    (found 2026-07-16 by running the verbs against a missing home; the
+    suite never did, so it stayed green through both)."""
     home = resolve_home()
+    if (code := _home_gate(home)) is not None:
+        return code
     try:
         if args.command == "route":
             follow_up = None
@@ -626,16 +804,244 @@ def _cmd_verb(args: argparse.Namespace) -> int:
         # broken markers / user-scope chezmoi aborts: refused, nothing lost
         print(f"self-learn {args.command}: {exc}", file=sys.stderr)
         return 1
+    except gitops.HalfWrittenError as exc:
+        # The commit itself failed, AFTER resolve_record moved the record.
+        # Probed 2026-07-16 (round 7 BLOCKER 2): this used to take the
+        # branch below and exit 6 — whose documented meaning is "refused
+        # BEFORE writing, safe to retry" — over a record that had ALREADY
+        # moved pending→resolved; the documented retry then failed 64
+        # "record not found". Same exception, same code, opposite state.
+        return _report_half_written(args.command, exc)
+    except gitops.GitOpsError as exc:
+        # A lock timeout / wedged git / unwritable repo, raised BEFORE the
+        # first mutation. Probed 2026-07-16 (BLOCKER B): a second process
+        # merely HOLDING the commit lock made reject/push/recompile die
+        # with an uncaught traceback. The "nothing was written" claim this
+        # code carries is safe by construction — and only because the lock
+        # is taken before the first mutation and every post-mutation git
+        # failure is re-raised as HalfWrittenError above.
+        print(f"self-learn {args.command}: {exc}", file=sys.stderr)
+        return EXIT_GIT_FAILED
     raise AssertionError(f"unhandled verb {args.command!r}")  # pragma: no cover
 
 
+def _cmd_host(args: argparse.Namespace) -> int:
+    """The ``host`` surface. Audit 2026-07-16 round 7 BLOCKER 1: this was
+    the ONE dispatch surface with no ``GitOpsError`` catch — probed, `host
+    rebind` against a merely-held lock exited 1 with a traceback. It is
+    home-gated for the same reason ``_cmd_verb`` is (a missing home makes
+    ``commit_lock_path`` raise), and every git failure now lands on the
+    same two documented codes as every other verb."""
+    home = resolve_home()
+    if args.host_command in ("add", "rebind", "remove") and (
+        (code := _home_gate(home)) is not None
+    ):
+        return code
+    try:
+        return _cmd_host_inner(args, home)
+    except gitops.HalfWrittenError as exc:
+        return _report_half_written(f"host {args.host_command}", exc)
+    except gitops.GitOpsError as exc:  # lock timeout / wedged git: nothing written
+        print(f"self-learn host {args.host_command}: {exc}", file=sys.stderr)
+        return EXIT_GIT_FAILED
+
+
+def _report_half_written(surface: str, exc: gitops.HalfWrittenError) -> int:
+    """The ONE renderer for :data:`EXIT_HALF_WRITTEN` (round 7 BLOCKER 2).
+
+    A surface may not report this state without printing the repair — so
+    printing it is not left to each surface's discretion, it is this
+    function, and the exception type is what forces the call."""
+    print(
+        f"self-learn {surface}: WRITE NOT COMMITTED ({exc})\n"
+        "  The ledger IS mutated — this is NOT a clean refusal and a blind "
+        "retry is not safe.\n"
+        f"  Repair: {exc.repair}",
+        file=sys.stderr,
+    )
+    return gitops.EXIT_HALF_WRITTEN
+
+
+def _cmd_host_inner(args: argparse.Namespace, home) -> int:
+    if args.host_command == "add":
+        kind = "skills-root" if args.skills_root else "project"
+        try:
+            registry = hosts_mod.host_add(home, args.path, kind)
+        except hosts_mod.HostsError as exc:
+            print(f"self-learn host add: {exc}", file=sys.stderr)
+            return EXIT_USAGE
+        print(f"host add: {kind} {Path(args.path).expanduser().resolve()}")
+        print(
+            f"  registry: skills_root={registry.skills_root or '(none)'} · "
+            f"{len(registry.projects)} project host(s)"
+        )
+        return EXIT_OK
+    if args.host_command == "rebind":
+        try:
+            bucket = hosts_mod.host_rebind(home, args.ref, args.new_path)
+        except (hosts_mod.HostsError, LedgerOpsError) as exc:
+            print(f"self-learn host rebind: {exc}", file=sys.stderr)
+            return EXIT_USAGE
+        target = Path(args.new_path).expanduser().resolve()
+        print(f"host rebind: {args.ref} → {target}")
+        print(f"  bucket: {bucket}")
+        return EXIT_OK
+
+    if args.host_command == "remove":
+        try:
+            registry = hosts_mod.host_remove(home, args.path)
+        except hosts_mod.HostsError as exc:
+            print(f"self-learn host remove: {exc}", file=sys.stderr)
+            return EXIT_USAGE
+        print(f"host remove: {Path(args.path).expanduser().resolve()}")
+        print(
+            f"  registry: skills_root={registry.skills_root or '(none)'} · "
+            f"{len(registry.projects)} project host(s)"
+        )
+        print("  the bucket and its records are untouched — only the "
+              "compile gate closed")
+        return EXIT_OK
+
+    if args.host_command == "list":
+        try:
+            registry = hosts_mod.load_hosts(home)
+        except hosts_mod.HostsError as exc:
+            print(f"self-learn host list: {exc}", file=sys.stderr)
+            return 1
+        # `list` stays lenient and SHOWS a broken entry marked broken —
+        # exploding on a bad entry hides exactly the thing you ran `list`
+        # to find (MAJOR 6). The canon-writing gates are what refuse.
+        print(f"skills_root: {_host_line(home, registry.skills_root, 'skills-root')}")
+        if registry.projects:
+            print("projects:")
+            for p in registry.projects:
+                print(f"  - {_host_line(home, p, 'project')}")
+        else:
+            print("projects: (none registered)")
+        return EXIT_OK
+    print(
+        "usage: self-learn host add <path> [--skills-root] | "
+        "host rebind <slug-or-old-path> <new-path> | host remove <path> | "
+        "host list",
+        file=sys.stderr,
+    )
+    return EXIT_USAGE
+
+
+def _host_line(home, path, kind: str) -> str:
+    """One registry line, with any gate problem spelled out inline."""
+    if path is None:
+        return "(none registered)"
+    problem = hosts_mod.host_path_problem(home, path, kind)
+    return str(path) if problem is None else f"{path}  ⚠ BROKEN — {problem}"
+
+
+def _cmd_recompile(args: argparse.Namespace) -> int:
+    """Audit 2026-07-16 MAJOR 5: recompile had no home gate, so against a
+    missing home it printed "no managed targets (no routed records)" and
+    exited 0 — the ADVERTISED drift repair telling a user whose canon is
+    actually adrift that all is well. It is the loudest possible place for
+    B-11's silent all-clear: the drift warning names this command, so a
+    confident zero here ends the trail."""
+    home = resolve_home()
+    if (code := _home_gate(home)) is not None:
+        return code
+    try:
+        result = verbs.recompile(home, no_push=args.no_push)
+    except gitops.GitOpsError as exc:  # BLOCKER B: never a traceback
+        print(f"self-learn recompile: {exc}", file=sys.stderr)
+        return EXIT_GIT_FAILED
+    for warning in result.warnings:
+        print(f"recompile: WARNING {warning}", file=sys.stderr)
+    if not result.entries:
+        print("recompile: no managed targets (no routed records)")
+        return EXIT_OK
+    for entry in result.entries:
+        if entry.skipped:
+            state = f"skipped ({entry.skipped})"
+        elif entry.changed:
+            state = f"recompiled @ {entry.commit_sha[:7]}"
+        else:
+            state = "up to date"
+        print(f"recompile: {entry.target} — {state}")
+    return EXIT_OK
+
+
 def _cmd_push() -> int:
-    result = verbs.push_pending(resolve_home())
-    if result.ok:
-        print("push: ok" + (" (after rebase-retry)" if result.retried else ""))
+    """Publish the ledger AND every registered host with unpushed commits
+    (MAJOR 4: the host half had no retry path — this verb was ledger-only,
+    so the command the failure message names could not fix it).
+
+    Home-gated (audit 2026-07-16 MAJOR 5): on a missing / not-a-repo home
+    this died with an uncaught GitOpsError traceback — a stack trace where
+    every other push failure in this CLI is a plain sentence naming the
+    fix."""
+    home = resolve_home()
+    if (code := _home_gate(home)) is not None:
+        return code
+    try:
+        # Round 7 MAJOR 4: publishing a ledger whose records were never
+        # committed is the moment the H-5 gap is most visible — `push` is
+        # what a human runs when something went wrong, so it heals first.
+        # Cheap and idempotent on a clean ledger (one `git status`).
+        healed = reconcile_mod.reconcile(home, no_push=True)
+        if healed.healed:
+            print(
+                f"push: reconciled {len(healed.committed)} orphaned record(s) "
+                "first (a producer wrote them but could not commit them)"
+            )
+        report = verbs.push_pending(home)
+    except gitops.HalfWrittenError as exc:
+        return _report_half_written("push", exc)
+    except gitops.GitOpsError as exc:  # BLOCKER B: never a traceback
+        print(f"self-learn push: {exc}", file=sys.stderr)
+        return EXIT_GIT_FAILED
+    for repo, result in report.entries:
+        state = "ok" + (" (after rebase-retry)" if result.retried else "")
+        if not result.ok:
+            state = "FAILED"
+        print(f"push: {repo} — {state}")
+    if report.ok:
         return EXIT_OK
     # gitops already printed the loud warning; exit with the distinct code.
-    return result.exit_code
+    return report.exit_code
+
+
+def _cmd_reconcile(args: argparse.Namespace) -> int:
+    """``self-learn reconcile`` (round 7 MAJOR 4): commit what a producer
+    wrote and could not commit. See :mod:`self_learn.reconcile` for why
+    "reported honestly" was not the same as "recovered"."""
+    home = resolve_home()
+    if (code := _home_gate(home)) is not None:
+        return code
+    try:
+        result = reconcile_mod.reconcile(home, no_push=args.no_push)
+    except gitops.HalfWrittenError as exc:
+        return _report_half_written("reconcile", exc)
+    except gitops.GitOpsError as exc:
+        print(f"self-learn reconcile: {exc}", file=sys.stderr)
+        return EXIT_GIT_FAILED
+    for line in result.blocked:
+        print(
+            f"reconcile: NOT touched — {line}\n"
+            "  a staged rename/deletion is a half-committed resolution; "
+            "reconcile never commits one half of a `git mv` (it would leave "
+            "the record in pending/ AND resolved/). Use the repair command "
+            "the verb printed.",
+            file=sys.stderr,
+        )
+    if not result.committed:
+        print("reconcile: nothing uncommitted — the ledger is whole")
+        return EXIT_OK
+    print(
+        f"reconcile: committed {len(result.committed)} orphaned path(s) "
+        f"@ {result.sha[:7]}"
+    )
+    for path in result.committed:
+        print(f"  {path}")
+    if result.push is not None and not result.push.ok:
+        return result.push.exit_code
+    return EXIT_OK
 
 
 def _cmd_sentinel(action: str) -> int:
@@ -680,6 +1086,18 @@ def _cmd_import(args: argparse.Namespace) -> int:
     except LedgerOpsError as exc:  # unknown skill bucket
         print(f"self-learn import: {exc}", file=sys.stderr)
         return EXIT_USAGE
+    except gitops.GitOpsError as exc:
+        # The importers take the ledger lock BEFORE their first write
+        # (round 7), so reaching here means the lock was never acquired:
+        # nothing was written, and the import is idempotent by origin —
+        # re-running it is exactly right.
+        print(
+            f"self-learn import: {exc}\n"
+            "  Nothing was written — re-run once the other producer "
+            "finishes (import is idempotent).",
+            file=sys.stderr,
+        )
+        return EXIT_GIT_FAILED
     # Code-emitted capture events (11 §4.3 payload: source + bucket/scope).
     for rid in report.created:
         try:
@@ -690,7 +1108,11 @@ def _cmd_import(args: argparse.Namespace) -> int:
             "capture", source=report.source, record=rid, scope=scope
         )
     print(report.summary())
-    return EXIT_OK
+    # BLOCKER B: records on disk that nobody committed are not a success.
+    # Round 7 BLOCKER 2's sweep: and the code for that state is 7, not 6 —
+    # the records ARE written, which is the exact opposite of what 6
+    # promises. `commit_import` has already printed the repair.
+    return EXIT_OK if report.committed else gitops.EXIT_HALF_WRITTEN
 
 
 def _cmd_prune_memory(args: argparse.Namespace) -> int:
@@ -705,9 +1127,12 @@ def _cmd_followup(args: argparse.Namespace) -> int:
     if args.followup_command != "done":
         print("usage: self-learn followup done <id> [--note TEXT]", file=sys.stderr)
         return EXIT_USAGE
+    home = resolve_home()
+    if (code := _home_gate(home)) is not None:  # see _cmd_verb
+        return code
     try:
         result = verbs.followup_done(
-            resolve_home(), args.id, note=args.note, no_push=args.no_push
+            home, args.id, note=args.note, no_push=args.no_push
         )
     except verbs.VerbError as exc:
         print(f"self-learn followup done: {exc}", file=sys.stderr)
@@ -715,6 +1140,9 @@ def _cmd_followup(args: argparse.Namespace) -> int:
     except LedgerOpsError as exc:
         print(f"self-learn followup done: {exc}", file=sys.stderr)
         return EXIT_USAGE
+    except gitops.GitOpsError as exc:  # BLOCKER B: never a traceback
+        print(f"self-learn followup done: {exc}", file=sys.stderr)
+        return EXIT_GIT_FAILED
     return _finish_verb(result, "follow-up done")
 
 
@@ -753,6 +1181,8 @@ def _cmd_telemetry(args: argparse.Namespace) -> int:
 
 def _cmd_report(as_json: bool) -> int:
     home = resolve_home()
+    if (code := _home_gate(home)) is not None:
+        return code
     # report is a flushing verb (11 §4.2) — its numbers include the spool.
     _flush_spool_best_effort(home)
     facts = report_mod.gather(home)
@@ -760,12 +1190,19 @@ def _cmd_report(as_json: bool) -> int:
     return EXIT_OK
 
 
-def _flush_spool_best_effort(home=None) -> None:
+def _flush_spool_best_effort(home=None, *, no_push: bool = False) -> None:
     """11 §4.2: teach/import/resolution verbs flush the spool after their
     own work. Best-effort — a flush problem is loud but never changes the
-    verb's outcome; a scan hit leaves the spool intact."""
+    verb's outcome; a scan hit leaves the spool intact.
+
+    ``no_push`` carries the calling verb's ``--no-push`` through: the
+    flush commits (H-5 — telemetry is a producer, audit 2026-07-16
+    MAJOR 3) but must not PUSH, or it would publish the very commit the
+    verb was told to keep local."""
     try:
-        flush_report = telemetry.flush(home if home is not None else resolve_home())
+        flush_report = telemetry.flush(
+            home if home is not None else resolve_home(), push=not no_push
+        )
     except telemetry.ScanRefusal as exc:
         print(f"self-learn: telemetry flush refused: {exc}", file=sys.stderr)
     except OSError as exc:
@@ -803,6 +1240,8 @@ def _cmd_link(args: argparse.Namespace) -> int:
     if args.link_command != "contradicts":
         print("usage: self-learn link contradicts <id> <target>", file=sys.stderr)
         return EXIT_USAGE
+    if (code := _home_gate(resolve_home())) is not None:  # see _cmd_verb
+        return code
     try:
         result = verbs.link_contradicts(
             resolve_home(),
@@ -817,10 +1256,41 @@ def _cmd_link(args: argparse.Namespace) -> int:
     except LedgerOpsError as exc:
         print(f"self-learn link contradicts: {exc}", file=sys.stderr)
         return EXIT_USAGE
+    except gitops.GitOpsError as exc:  # BLOCKER B: never a traceback
+        print(f"self-learn link contradicts: {exc}", file=sys.stderr)
+        return EXIT_GIT_FAILED
     return _finish_verb(result, f"contradicts {args.target}")
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Dispatch, with the last-resort ``GitOpsError`` net (audit
+    2026-07-16 round 7 BLOCKER 1).
+
+    Every surface catches its own — that is where the state fact is known,
+    and only the surface can tell "nothing written" (6) from "half
+    written" (7). This net exists because ``_cmd_host`` proved the
+    per-surface rule is a thing a human can simply FORGET: it shipped with
+    no catch at all and turned a merely-held lock into a stack trace. A
+    net cannot know the state fact, so it makes the conservative claim —
+    it never says "nothing was written" — and the structural test
+    (tests/test_lock_invariant.py) is what keeps surfaces from relying on
+    it."""
+    try:
+        return _main(argv)
+    except gitops.HalfWrittenError as exc:  # pragma: no cover - net
+        return _report_half_written("(unrouted)", exc)
+    except gitops.GitOpsError as exc:  # pragma: no cover - net
+        print(
+            f"self-learn: git operation failed: {exc}\n"
+            "  This surface did not say whether anything was written — run "
+            "`self-learn reconcile` to commit any orphaned record, then "
+            "`self-learn status`.",
+            file=sys.stderr,
+        )
+        return EXIT_GIT_FAILED
+
+
+def _main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     try:
         args, _extra = parser.parse_known_args(argv)
@@ -839,7 +1309,13 @@ def main(argv: list[str] | None = None) -> int:
     # never fails the command; `mine` itself is excluded (no self-trigger).
     if args.command != "mine":
         try:
-            outcome = miner.maybe_kick(resolve_home())
+            # no_push is passed EXPLICITLY (BLOCKER D): this tick runs
+            # before dispatch for every command, so `reject --no-push` used
+            # to spawn a miner that pushed the whole branch — the flag it
+            # was told nothing about.
+            outcome = miner.maybe_kick(
+                resolve_home(), no_push=getattr(args, "no_push", False)
+            )
             if outcome == "spawned":
                 print("miner: catch-up run spawned (>24h)", file=sys.stderr)
         except Exception:  # noqa: BLE001 — watchdog must never break a verb
@@ -871,26 +1347,28 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "teach":
         code = run_teach(args)
-        _flush_spool_best_effort()  # teach is a flushing verb (11 §4.2)
+        # teach is a flushing verb (11 §4.2); --no-push rides along
+        _flush_spool_best_effort(no_push=getattr(args, "no_push", False))
         # Kick when a PENDING record landed (08 §7.1 trigger pin):
         # plain teach success, or a --route that fell back to pending (4).
         if (code == EXIT_OK and not args.route) or code == 4:
-            _kick_after_capture()
+            _kick_after_capture(no_push=getattr(args, "no_push", False))
         return code
 
     if args.command in VERB_COMMANDS:
         code = _cmd_verb(args)
-        _flush_spool_best_effort()  # every resolution verb flushes (11 §4.2)
+        # every resolution verb flushes (11 §4.2); --no-push rides along
+        _flush_spool_best_effort(no_push=getattr(args, "no_push", False))
         return code
 
     if args.command == "followup":
         code = _cmd_followup(args)
-        _flush_spool_best_effort()
+        _flush_spool_best_effort(no_push=getattr(args, "no_push", False))
         return code
 
     if args.command == "link":
         code = _cmd_link(args)
-        _flush_spool_best_effort()
+        _flush_spool_best_effort(no_push=getattr(args, "no_push", False))
         return code
 
     if args.command == "telemetry":
@@ -902,14 +1380,25 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "push":
         return _cmd_push()
 
+    if args.command == "reconcile":
+        return _cmd_reconcile(args)
+
+    if args.command == "host":
+        return _cmd_host(args)
+
+    if args.command == "recompile":
+        sentinel.heartbeat()  # mutating invocation class (08 §1)
+        return _cmd_recompile(args)
+
     if args.command == "sentinel":
         return _cmd_sentinel(args.action)
 
     if args.command == "import":
         code = _cmd_import(args)
-        _flush_spool_best_effort()  # import is a flushing verb (11 §4.2)
+        # import is a flushing verb (11 §4.2); --no-push rides along
+        _flush_spool_best_effort(no_push=getattr(args, "no_push", False))
         if code == EXIT_OK:
-            _kick_after_capture()
+            _kick_after_capture(no_push=getattr(args, "no_push", False))
         return code
 
     if args.command == "worker":

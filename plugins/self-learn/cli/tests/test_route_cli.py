@@ -13,16 +13,28 @@ import time
 
 import pytest
 
-from self_learn import cli, sentinel
+from self_learn import analyst, cli, sentinel
 from self_learn.analyst import ANALYST_ALLOWED_TOOLS, DEFAULT_ANALYST_MODEL
 from self_learn.ledger_ops import create_record, write_proposal
 from self_learn.records import Record
-from support import commit_all, git, make_behavior, make_home, proposal_dict
+from support import (
+    SKILL_MD_SEED,
+    commit_all,
+    git,
+    last_verb_sha,
+    make_behavior,
+    make_env,
+    proposal_dict,
+    verb_files,
+    verb_subject,
+)
 
-SKILL_MD = "# s skill\n\nAuthored prose stays put.\n"
+SKILL_MD = SKILL_MD_SEED.format(name="s")
 
-DOCTRINE_MARKER = "ROUTING-DOCTRINE-MARKER-7f3a"
-DOCTRINE_TEXT = f"# Routing doctrine\n\n{DOCTRINE_MARKER}\n\nNarrowest surface wins.\n"
+# doc 13 T-H3: the routing doctrine now ships with the CLI PACKAGE (one
+# file, package-relative) — it is ALWAYS present, no longer installed into
+# any home. Tests read the shipped text rather than seeding their own.
+DOCTRINE_TEXT = analyst.doctrine_path().read_text(encoding="utf-8")
 
 # argv NUL-separated: args (the doctrine text, the prompt) are multi-line.
 CLAUDE_SHIM = """#!/usr/bin/env bash
@@ -55,52 +67,76 @@ def cache_dir(tmp_path, monkeypatch):
 
 
 class Env:
-    """Sandbox ledger home (skill `s` + SKILL.md) with a bare remote."""
+    """The doc-13 sandbox pair: an independent LEDGER home (skill `s`
+    bucket, hosts.yaml registering the host) with a bare remote, plus the
+    HOST repo (plugins/s-plugin/skills/s/SKILL.md) with its own bare remote
+    so the two-phase canon push is clean. Records live in the ledger; canon
+    compiles into the host."""
 
     def __init__(self, tmp_path):
-        self.home = make_home(tmp_path)
-        self.skill_dir = self.home / "plugins" / "s-plugin" / "skills" / "s"
-        self.skill_md = self.skill_dir / "SKILL.md"
-        self.skill_md.write_text(SKILL_MD, encoding="utf-8")
+        e = make_env(tmp_path)
+        self.home = e.ledger
+        self.host = e.host
+        self.skill_dir = e.skill_dir  # host-side plugins/s-plugin/skills/s
+        self.skill_md = e.skill_md  # host-side SKILL.md (seeded by make_env)
         self.bare = tmp_path / "remote.git"
-        subprocess.run(
-            ["git", "init", "-q", "--bare", "-b", "main", str(self.bare)],
-            check=True,
-        )
-        git(self.home, "remote", "add", "origin", str(self.bare))
-        commit_all(self.home, "seed")
-        git(self.home, "push", "-q", "-u", "origin", "main")
+        self.host_bare = tmp_path / "host-remote.git"
+        for bare, repo in ((self.bare, self.home), (self.host_bare, self.host)):
+            subprocess.run(
+                ["git", "init", "-q", "--bare", "-b", "main", str(bare)], check=True
+            )
+            git(repo, "remote", "add", "origin", str(bare))
+            git(repo, "push", "-q", "-u", "origin", "main")
+        # the ledger's seed subject, for "commit stayed local" assertions
+        self.seed_subject = self.local_subject()
 
+    # -- ledger (home) side
+    #
+    # doc 13 H-5 (audit 2026-07-16 MAJOR 3): telemetry commits ITSELF now,
+    # on top of the verb's commit — so "the verb's commit" is the newest
+    # NON-flush commit, not HEAD. The assertions keep their strength: the
+    # verb commit must still be the newest thing besides the flush, with
+    # its exact pinned subject and its exact file list.
     def local_subject(self):
-        return git(self.home, "log", "-1", "--format=%s").stdout.strip()
+        return verb_subject(self.home)
 
     def local_body(self):
-        return git(self.home, "log", "-1", "--format=%B").stdout
+        return git(
+            self.home, "log", "-1", "--format=%B", last_verb_sha(self.home)
+        ).stdout
 
     def remote_subject(self):
-        return git(self.bare, "log", "-1", "--format=%s").stdout.strip()
+        return verb_subject(self.bare)
 
     def remote_files(self):
         return git(self.bare, "ls-tree", "-r", "--name-only", "HEAD").stdout.split()
 
     def committed_files(self):
+        return verb_files(self.home)
+
+    # -- host side (compiled canon)
+    def host_subject(self):
+        return git(self.host, "log", "-1", "--format=%s").stdout.strip()
+
+    def host_committed_files(self):
         return git(
-            self.home, "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"
+            self.host, "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"
         ).stdout.split()
 
+    # -- ledger bucket paths (skills/s/{pending,resolved})
     def pending_files(self):
-        pending = self.skill_dir / ".self-learn" / "pending"
+        pending = self.home / "skills" / "s" / "pending"
         return sorted(pending.glob("lrn-*.md")) if pending.is_dir() else []
 
     def resolved_files(self):
-        resolved = self.skill_dir / ".self-learn" / "resolved"
+        resolved = self.home / "skills" / "s" / "resolved"
         return sorted(resolved.glob("lrn-*.md")) if resolved.is_dir() else []
 
     def pending(self, rid):
-        return self.skill_dir / ".self-learn" / "pending" / f"{rid}.md"
+        return self.home / "skills" / "s" / "pending" / f"{rid}.md"
 
     def resolved(self, rid):
-        return self.skill_dir / ".self-learn" / "resolved" / f"{rid}.md"
+        return self.home / "skills" / "s" / "resolved" / f"{rid}.md"
 
 
 @pytest.fixture
@@ -126,23 +162,6 @@ def claude_shim(tmp_path, monkeypatch):
     monkeypatch.setenv("CLAUDE_SHIM_LOG", str(log))
     monkeypatch.setenv("CLAUDE_SHIM_OUT", str(out))
     return {"log": log, "out": out}
-
-
-def install_doctrine(env):
-    doctrine = (
-        env.home
-        / "plugins"
-        / "self-learn"
-        / "skills"
-        / "self-learn"
-        / "references"
-        / "routing-doctrine.md"
-    )
-    doctrine.parent.mkdir(parents=True)
-    doctrine.write_text(DOCTRINE_TEXT, encoding="utf-8")
-    commit_all(env.home, "install doctrine")
-    git(env.home, "push", "-q")
-    return doctrine
 
 
 def seed_pending(env, rid="lrn-0000aaaa", **kwargs):
@@ -174,19 +193,22 @@ def test_teach_route_dest_end_to_end(env, capsys):
     assert record.routing["destination"] == "skill-md"
     assert record.routing["by"] == "human"
 
-    # Compiled section carries the record's line.
+    # Compiled section carries the record's line — in the HOST's SKILL.md.
     assert record.id in env.skill_md.read_text(encoding="utf-8")
 
-    # Pinned commit; only the touched paths; pushed to the bare remote.
+    # Two-phase (doc 13 §4): LEDGER commit moves the record to resolved/;
+    # HOST commit applies the compiled SKILL.md. Each repo touched exactly
+    # its own path, and both were pushed.
     assert env.local_subject() == f"self-learn: route {record.id} → skill-md"
-    assert sorted(env.committed_files()) == sorted(
-        [
-            f"plugins/s-plugin/skills/s/.self-learn/resolved/{record.id}.md",
-            "plugins/s-plugin/skills/s/SKILL.md",
-        ]
-    )
+    assert env.committed_files() == [f"skills/s/resolved/{record.id}.md"]
     assert env.remote_subject() == f"self-learn: route {record.id} → skill-md"
-    assert f".self-learn/resolved/{record.id}.md" in "\n".join(env.remote_files())
+    assert f"skills/s/resolved/{record.id}.md" in "\n".join(env.remote_files())
+
+    assert env.host_subject() == (
+        f"self-learn: apply {record.id} → "
+        "plugins/s-plugin/skills/s/SKILL.md (skill-md)"
+    )
+    assert env.host_committed_files() == ["plugins/s-plugin/skills/s/SKILL.md"]
 
     # The applied diff was printed (no confirmation prompt anywhere).
     assert "diff --git" in out
@@ -224,9 +246,9 @@ def test_teach_route_dest_supersedes_same_commit(env, capsys):
         == f"self-learn: route {new_record.id} → skill-md (supersedes {old.id})"
     )
     committed = env.committed_files()
-    assert f".self-learn/resolved/{old.id}.md" in "\n".join(committed)
-    assert f".self-learn/resolved/{new_record.id}.md" in "\n".join(committed)
-    # Superseded records never compile (the old line is absent).
+    assert f"resolved/{old.id}.md" in "\n".join(committed)
+    assert f"resolved/{new_record.id}.md" in "\n".join(committed)
+    # Superseded records never compile (the old line is absent from the HOST).
     assert old.id not in env.skill_md.read_text(encoding="utf-8")
 
 
@@ -235,7 +257,7 @@ def test_teach_route_no_push_then_push(env, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     assert "not pushed — --no-push" in out
-    assert env.remote_subject() == "seed"  # commit stayed local
+    assert env.remote_subject() == env.seed_subject  # commit stayed local
 
     assert cli.main(["push"]) == 0
     assert env.remote_subject().startswith("self-learn: route lrn-")
@@ -245,7 +267,6 @@ def test_teach_route_no_push_then_push(env, capsys):
 
 
 def test_teach_route_analyst_routes_to_shim_destination(env, claude_shim, capsys):
-    install_doctrine(env)
     claude_shim["out"].write_text(
         "```yaml\n"
         "destination: skill-md\n"
@@ -292,7 +313,6 @@ def test_teach_route_analyst_routes_to_shim_destination(env, claude_shim, capsys
 def test_teach_route_analyst_failure_captures_to_pending(
     env, claude_shim, capsys, monkeypatch, sabotage
 ):
-    install_doctrine(env)
     claude_shim["out"].write_text(sabotage["stdout"], encoding="utf-8")
     if "exit" in sabotage:
         monkeypatch.setenv("CLAUDE_SHIM_EXIT", sabotage["exit"])
@@ -309,8 +329,17 @@ def test_teach_route_analyst_failure_captures_to_pending(
     assert "captured to pending" in captured.err
 
 
-def test_teach_route_missing_doctrine_exits_2_pre_spawn(env, claude_shim, capsys):
-    # No doctrine installed; the shim must never be spawned.
+def test_teach_route_missing_doctrine_exits_2_pre_spawn(
+    env, claude_shim, capsys, monkeypatch, tmp_path
+):
+    # doc 13 T-H3: the doctrine ships package-relative and is normally
+    # always present. Force the "not installed" branch by pointing the
+    # package-refs resolver at an empty dir — the shim must never spawn.
+    empty_refs = tmp_path / "empty-refs"
+    empty_refs.mkdir()
+    monkeypatch.setattr(
+        "self_learn.worker.package_skill_refs", lambda: empty_refs
+    )
     rc = cli.main(TEACH_ARGS + ["--route"])
     err = capsys.readouterr().err
     assert rc == 2
@@ -334,7 +363,9 @@ def test_route_cli_with_proposal_sibling(env, capsys):
     assert env.local_subject() == f"self-learn: route {record.id} → skill-md"
     assert env.remote_subject() == f"self-learn: route {record.id} → skill-md"
     assert record.id in env.skill_md.read_text(encoding="utf-8")
-    sha7 = git(env.home, "rev-parse", "--short=7", "HEAD").stdout.strip()
+    sha7 = git(
+        env.home, "rev-parse", "--short=7", last_verb_sha(env.home)
+    ).stdout.strip()
     assert f"route {record.id} → skill-md @ {sha7} (pushed)" in out
 
 

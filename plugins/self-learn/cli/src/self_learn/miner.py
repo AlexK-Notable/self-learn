@@ -45,9 +45,11 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import sentinel, telemetry, worker
+from . import gitops, sentinel, telemetry, worker
+from . import reconcile as reconcile_mod
+from .hosts import load_hosts
 from .import_common import existing_origins
-from .ledger import discover_buckets
+from .ledger import discover_buckets, home_state, home_state_message
 from .ledger_ops import LedgerOpsError, create_record, record_title
 from .records import GENERALITIES, KINDS, RECORD_ID_RE, Record, RecordError
 from .scan import scan as secret_scan
@@ -394,6 +396,24 @@ def _norm_command(cmd: str) -> str:
     return " ".join(str(cmd).split()[:2])
 
 
+def _slice_cwd(s: SessionSlice) -> str | None:
+    """The session's working directory — the FIRST ``cwd`` field seen in
+    the slice (transcript lines carry one per entry). Binds a
+    project-scoped candidate to ITS project (doc 13 §0 point 2: the
+    miner reads every project's transcripts, so the project path must
+    come from the transcript, never from any global default)."""
+    for raw in s.lines:
+        try:
+            entry = json.loads(raw)
+        except ValueError:
+            continue
+        if isinstance(entry, dict):
+            cwd = entry.get("cwd")
+            if isinstance(cwd, str) and cwd:
+                return cwd
+    return None
+
+
 def digest_transcript(s: SessionSlice) -> tuple[str | None, bool]:
     """(digest-or-None, halt) for one session slice.
 
@@ -542,12 +562,11 @@ def build_reader_argv(settings_path: Path) -> list[str]:
     ]
 
 
-def _rubric(home: Path) -> tuple[str, str]:
-    """(text, version). Version comes from a `rubric-version:` marker."""
-    path = (
-        home
-        / "plugins/self-learn/skills/self-learn/references/mining-rubric.md"
-    )
+def _rubric() -> tuple[str, str]:
+    """(text, version). Version comes from a `rubric-version:` marker.
+    PACKAGE-relative (doc 13 T-H3): the rubric ships with the product
+    beside the skill — never resolved through any home."""
+    path = worker.package_skill_refs() / "mining-rubric.md"
     if not path.is_file():
         return ("(rubric missing — mine conservatively: corrections, "
                 "verified gotchas, stated standing preferences only)"), "none"
@@ -653,7 +672,7 @@ correct and common answer.
 def _compose_prompt(home: Path, digests: list[str], output_path: Path) -> str:
     return _PROMPT_TEMPLATE.format(
         output_path=output_path,
-        rubric=_rubric(home)[0],
+        rubric=_rubric()[0],
         ledger=_ledger_index(home),
         canon=_canon_index(home),
         digests="\n\n".join(digests),
@@ -709,7 +728,10 @@ def _invoke_reader(home: Path, prompt: str) -> Path | None:
 
 @dataclass
 class MineResult:
-    status: str  # ok | idle | held-gate | failed | disabled | busy
+    #: ok | idle | held-gate | failed | disabled | busy |
+    #: landed-uncommitted (BLOCKER B (c): candidates written, commit
+    #: failed, cursors advanced anyway — never re-mined, never published)
+    status: str
     run_id: str = ""
     sessions_scanned: int = 0
     landed: list[str] = field(default_factory=list)
@@ -718,6 +740,10 @@ class MineResult:
     fires: int = 0
     dropped: int = 0
     outcomes: list[dict] = field(default_factory=list)
+    touched: list[Path] = field(default_factory=list)  # ledger paths to commit (H-5)
+    #: True iff the landing commit failed — the records are on disk and
+    #: untracked. Drives ``status`` (and thus `mine status` + the CLI exit).
+    landing_uncommitted: bool = False
 
 
 def _outcome(result: MineResult, origin: str, outcome: str, **extra) -> None:
@@ -768,15 +794,19 @@ def _rejected_mark_landed(rid: str) -> None:
 
 
 def _valid_skill_scope(home: Path, scope: str) -> bool:
-    """The SKILL directory must exist — not the bucket (which only exists
-    after a first capture; create_record creates it on demand). The name
-    is regex-gated BEFORE it reaches any glob (audit: `skill:s*` would
-    otherwise validate against a real skill and land with a nonsense
-    scope string)."""
+    """The SKILL directory must exist in the registered skills-root HOST
+    (doc 13 H-3) — not the bucket (which only exists after a first
+    capture; create_record creates it on demand). The name is regex-gated
+    BEFORE it reaches any glob (audit: `skill:s*` would otherwise
+    validate against a real skill and land with a nonsense scope
+    string). No skills root registered → no skill scope is valid."""
     name = scope.partition(":")[2]
     if not _SKILL_NAME_RE.match(name):
         return False
-    return any(p.is_dir() for p in home.glob(f"plugins/*/skills/{name}"))
+    root = load_hosts(home).skills_root
+    if root is None:
+        return False
+    return any(p.is_dir() for p in root.glob(f"plugins/*/skills/{name}"))
 
 
 def _build_record(home: Path, cand: dict) -> Record:
@@ -871,8 +901,16 @@ def _event_seen(home: Path) -> set[tuple[str, str, str]]:
 
 
 def _reconcile_and_land(
-    home: Path, parsed: dict, result: MineResult, cap: int
+    home: Path,
+    parsed: dict,
+    result: MineResult,
+    cap: int,
+    cwds: dict[str, str] | None = None,
 ) -> None:
+    """``cwds`` maps session id → that session's transcript ``cwd``; a
+    project-scoped candidate lands in the bucket for THAT path (doc 13
+    §3) — no cwd on file → dropped-invalid, never a guessed bucket."""
+    cwds = cwds or {}
     origins = existing_origins(home)
     seen_events = _event_seen(home)
     candidates = parsed.get("candidates") or []
@@ -929,6 +967,7 @@ def _reconcile_and_land(
                 if pending_path is not None:
                     record.write(pending_path)
                     result.folded.append(record.id)
+                    result.touched.append(pending_path)
                     _outcome(result, origin, "folded", record=record.id)
                     origins.add(origin)
                     continue
@@ -987,15 +1026,31 @@ def _reconcile_and_land(
             _outcome(result, origin, "scan-refused", rule=hits[0].rule)
             log(f"run: candidate {origin} refused by secret scan ({hits[0].rule})")
             continue
+        project_path = None
+        if record.scope == "project":
+            cwd = cwds.get(session_id)
+            if not cwd:
+                _outcome(
+                    result,
+                    origin,
+                    "dropped-invalid",
+                    reason="no cwd for project scope",
+                )
+                continue
+            project_path = Path(cwd)
         entry = {"session": session_id, "ts": _now_iso(), "origin": origin}
         if quote:
             entry["quote"] = quote
         record.append_evidence(entry)
         try:
-            path = create_record(home, record)
+            path = create_record(home, record, project_path=project_path)
         except LedgerOpsError as exc:
             _outcome(result, origin, "dropped-land-failed", reason=str(exc)[:200])
             continue
+        result.touched.append(path)
+        meta = path.parent.parent / "meta.yaml"
+        if meta.is_file():
+            result.touched.append(meta)
         if resurface_of is not None:
             _rejected_mark_landed(resurface_of)
             _outcome(result, origin, "resurfaced", record=resurface_of,
@@ -1072,7 +1127,22 @@ def read_journal(limit: int = 20) -> list[dict]:
 # ------------------------------------------------------- watchdog (R1 L2)
 
 
-def _spawn_run(home: Path) -> int:
+def _spawn_run(home: Path, *, no_push: bool = False) -> int:
+    """setsid-spawn a mining run; returns the child pid.
+
+    ``no_push`` rides the child's ENV because a detached spawn gives no
+    other channel — the SAME mechanism worker._spawn_window uses, and the
+    only place an env var is legitimate (BLOCKER D). This Popen had no
+    ``env=`` at all, and nothing ever set SELF_LEARN_NO_PUSH in the
+    PARENT's environ (worker.py builds it into the worker child's env dict
+    only), so the var the child looked for could not exist: probed —
+    ``reject --no-push`` → watchdog spawns a miner → child sees no var →
+    pushes the whole branch, publishing the very commit the flag was
+    protecting."""
+    env = dict(os.environ)
+    env.pop(worker.NO_PUSH_ENV, None)
+    if no_push:
+        env[worker.NO_PUSH_ENV] = "1"
     with open(miner_dir() / "miner.log", "a", encoding="utf-8") as out:
         proc = subprocess.Popen(
             [sys.executable, "-m", "self_learn.cli", "mine", "run",
@@ -1081,6 +1151,7 @@ def _spawn_run(home: Path) -> int:
             stdout=out,
             stderr=subprocess.STDOUT,
             start_new_session=True,
+            env=env,
         )
     return proc.pid
 
@@ -1092,12 +1163,17 @@ def _last_attempt_age_secs() -> float:
         return float("inf")
 
 
-def maybe_kick(home: Path | str) -> str:
+def maybe_kick(home: Path | str, *, no_push: bool = False) -> str:
     """Verb-invocation watchdog: spawn a detached run when the last
     COMPLETED run is >24 h old AND the last ATTEMPT is >2 h old (audit:
     without the attempt cool-down, a persistently failing reader turns
     every CLI invocation into a full walk + 15-minute model attempt).
-    Returns disabled | fresh | cooling | busy | spawned."""
+    Returns disabled | fresh | cooling | busy | spawned.
+
+    ``no_push`` is the INVOKING verb's flag, passed explicitly (BLOCKER
+    D). This watchdog ticks before every command except `mine`, so any
+    ``--no-push`` verb can spawn a miner; the spawned run must inherit the
+    policy or the flag is a lie the moment the watchdog fires."""
     if (
         os.environ.get("SELF_LEARN_MINER") == "0"
         or os.environ.get("SELF_LEARN_MINER_AUTOKICK") == "0"
@@ -1113,7 +1189,7 @@ def maybe_kick(home: Path | str) -> str:
         except BlockingIOError:
             return "busy"
         try:
-            pid = _spawn_run(Path(home))
+            pid = _spawn_run(Path(home), no_push=no_push)
             log(f"watchdog: last run >24h — spawned run (pid {pid})")
             return "spawned"
         finally:
@@ -1123,8 +1199,19 @@ def maybe_kick(home: Path | str) -> str:
 # ------------------------------------------------------------------ run
 
 
-def run(home: Path | str, *, trigger: str = "manual", since: str | None = None) -> MineResult:
+def run(
+    home: Path | str,
+    *,
+    trigger: str = "manual",
+    since: str | None = None,
+    no_push: bool | None = None,
+) -> MineResult:
+    """``no_push=None`` reads the process boundary once
+    (:func:`worker.no_push_requested`) and threads the answer as a
+    parameter from there (BLOCKER D)."""
     home = Path(home)
+    if no_push is None:
+        no_push = worker.no_push_requested()
     if os.environ.get("SELF_LEARN_MINER") == "0":
         return MineResult(status="disabled")
     t0 = time.time()
@@ -1142,11 +1229,25 @@ def run(home: Path | str, *, trigger: str = "manual", since: str | None = None) 
             "ts": _now_iso(),
             "run_id": run_id,
             "trigger": trigger,
-            "rubric_version": _rubric(home)[1],
+            "rubric_version": _rubric()[1],
             "model": miner_model(),
         }
+
+        # BLOCKER 11 (audit 2026-07-16): the nightly miner resolves the
+        # home too — and a unit resolving a DIFFERENT home than the shell
+        # is the live failure mode. Mining into the void would land
+        # candidates nobody ever sees; fail loudly in the log AND the
+        # journal (`mine status` is the surface that notices).
+        state = home_state(home)
+        if state in ("missing", "not-a-repo"):
+            reason = home_state_message(state, home)
+            log(f"run {run_id}: REFUSED — {reason}")
+            _journal({**base, "status": "failed", "reason": reason[:300],
+                      "duration_secs": round(time.time() - t0, 1)})
+            return MineResult(status="failed", run_id=run_id)
+
         try:
-            return _run_locked(home, since, t0, run_id, base)
+            return _run_locked(home, since, t0, run_id, base, no_push=no_push)
         except Exception as exc:  # noqa: BLE001 — A1: EVERY run journals,
             # even a crashed one (audit B1: an uncaught error previously
             # left no journal entry at all — invisible to mine status).
@@ -1164,8 +1265,35 @@ def run(home: Path | str, *, trigger: str = "manual", since: str | None = None) 
 
 
 def _run_locked(
-    home: Path, since: str | None, t0: float, run_id: str, base: dict
+    home: Path,
+    since: str | None,
+    t0: float,
+    run_id: str,
+    base: dict,
+    *,
+    no_push: bool = False,
 ) -> MineResult:
+    # SELF-HEALING (audit 2026-07-16 round 7 MAJOR 4). Before mining
+    # anything new, commit whatever a previous producer wrote and could
+    # not commit — very much including THIS miner's own last run, whose
+    # `landed-uncommitted` status meant "these records are untracked, the
+    # cursors advanced past them, and a clone deletes them". Reporting
+    # that honestly was not recovery; this is. It runs FIRST, so a nightly
+    # timer is enough to close the window without a human ever being told.
+    # Idempotent and cheap on a clean ledger; never fatal — a miner that
+    # cannot heal must still mine.
+    try:
+        healed = reconcile_mod.reconcile(home, no_push=no_push)
+        if healed.healed:
+            log(
+                f"run {run_id}: reconciled {len(healed.committed)} orphaned "
+                f"path(s) from an earlier run @ {healed.sha[:7]}"
+            )
+        for line in healed.blocked:
+            log(f"run {run_id}: reconcile left a half-committed change: {line}")
+    except gitops.GitOpsError as exc:
+        log(f"run {run_id}: reconcile step skipped ({exc})")
+
     # First-activation forward-only pin (§8 R2, audit B2): seed cursors at
     # the current end of every existing transcript and stop — history is
     # reachable only through the deliberate --since backfill.
@@ -1180,6 +1308,7 @@ def _run_locked(
     slices = walk(since)
     digests: list[str] = []
     processed: list[tuple[SessionSlice, bool]] = []
+    cwds: dict[str, str] = {}  # session id → transcript cwd (doc 13 §3)
     excluded = 0
     total_chars = 0
     deferred_files = 0
@@ -1195,6 +1324,9 @@ def _run_locked(
         total_chars += len(digest)
         digests.append(digest)
         processed.append((s, halt))
+        cwd = _slice_cwd(s)
+        if cwd:
+            cwds[s.session_id] = cwd
 
     result = MineResult(
         status="idle", run_id=run_id, sessions_scanned=len(digests)
@@ -1247,14 +1379,38 @@ def _run_locked(
     cap = cap_for(len(digests))
     hold = sentinel.hold()
     try:
-        _reconcile_and_land(home, parsed, result, cap)
+        # ONE lock spanning [first mutation → commit] (audit 2026-07-16
+        # round 7): the lock used to open at the commit below, but
+        # `_reconcile_and_land` mutates first — a FOLD rewrites an
+        # existing pending record, and that file is TRACKED, so a racing
+        # `pull --rebase --autostash` stashes the rewrite and restores it
+        # into a conflict. Landing a NEW record is the benign half
+        # (untracked files survive an autostash); folding is not, and both
+        # live in the same call.
+        with gitops.commit_lock(home):
+            _reconcile_and_land(home, parsed, result, cap, cwds)
+            _commit_landing(home, result, run_id, no_push=no_push)
+    except gitops.GitOpsError as exc:
+        # BLOCKER B: every GitOpsError is caught — including a lock
+        # TIMEOUT, which is not an error but a busy neighbour. This is a
+        # detached timer job; an escaping exception is a stack dump in
+        # miner.log and a dead nightly run. A timeout HERE is now a clean
+        # no-op: the lock is taken before the first mutation.
+        result.landing_uncommitted = bool(result.landed)
+        log(f"run {run_id}: could not take the ledger lock ({exc})")
     finally:
         hold.release()
 
     _advance_cursors(processed)
     (miner_dir() / "miner.last-run").touch()
-    result.status = "ok"
-    _journal({**base, "status": "ok",
+    # A run whose landings never committed is NOT "ok" (BLOCKER B (c)):
+    # `mine status` would otherwise report a clean nightly run over records
+    # that no clone will ever see. It is no longer DATA LOSS, though (round
+    # 7 MAJOR 4): the next run's `reconcile` step commits them, and so does
+    # `self-learn reconcile` / `self-learn push` on demand.
+    result.status = "landed-uncommitted" if result.landing_uncommitted else "ok"
+    _journal({**base, "status": result.status,
+              "landing_uncommitted": result.landing_uncommitted,
               "sessions_scanned": len(digests),
               "excluded": excluded,
               "deferred_files": deferred_files,
@@ -1266,7 +1422,7 @@ def _run_locked(
               "outcomes": result.outcomes,
               "duration_secs": round(time.time() - t0, 1)})
     log(
-        f"run {run_id}: ok — {len(result.landed)} landed, "
+        f"run {run_id}: {result.status} — {len(result.landed)} landed, "
         f"{len(result.folded)} folded, {len(result.recurrences)} "
         f"recurrence(s), {result.fires} fire(s)"
     )
@@ -1283,3 +1439,55 @@ def _run_locked(
     if result.landed:
         worker.kick(home)  # analyzed before any human sees the card
     return result
+
+
+def _commit_landing(
+    home: Path, result: MineResult, run_id: str, *, no_push: bool
+) -> None:
+    """The landing commit. **The caller holds the lock** — everything here
+    is post-mutation by construction (audit 2026-07-16 round 7).
+
+    H-5 (doc 13 §5): the miner is a producer — it commits its own landings
+    (pinned subject) + pushes best-effort. NOTE: this deliberately CHANGES
+    the doc-12 §10 adjustment that landings ride autosync — doc 13 H-5
+    supersedes it (the ledger home has no watcher, ever).
+
+    BLOCKER 4 (2026-07-16): the miner is the OTHER background committer M3
+    put in the ledger (a nightly timer), racing every foreground verb. The
+    section is locked (by the caller now, so the FOLD is covered too) and
+    the commit is pathspec-scoped.
+
+    A commit failure here is not fatal and not silent: the run's status
+    becomes ``landed-uncommitted`` and the NEXT run's reconcile step (or
+    `self-learn reconcile`) commits the records (round 7 MAJOR 4). Before
+    that they were simply lost — the cursors advance regardless, so
+    nothing ever re-mined them."""
+    if not (result.landed and result.touched):
+        return
+    try:
+        gitops.stage(home, result.touched)
+        gitops.commit(
+            home,
+            f"self-learn: mine {len(result.landed)} candidate(s) ({run_id})",
+            paths=result.touched,
+        )
+    except gitops.GitOpsError as exc:
+        result.landing_uncommitted = True
+        log(
+            f"run {run_id}: LANDING NOT COMMITTED ({exc}) — "
+            f"{len(result.landed)} candidate(s) are written but untracked, "
+            "and the cursors still advance; the next run reconciles them "
+            f"(or run `self-learn reconcile` now against {home})"
+        )
+        return
+    # push OUTSIDE the lock would be better still, but this runs under the
+    # caller's lock; push_with_retry is re-entrant, and the miner is a
+    # detached timer job whose push blocking a foreground verb for a
+    # network timeout is the lesser evil against splitting the section.
+    if no_push:
+        log(f"run {run_id}: push skipped — --no-push in effect")
+        return
+    try:
+        gitops.push_if_remote(home)
+    except gitops.GitOpsError as exc:
+        log(f"run {run_id}: push errored ({exc}) — commit kept")

@@ -31,7 +31,9 @@ from self_learn.records import Record
 from support import (
     commit_all,
     git,
+    init_repo,
     make_behavior,
+    make_env,
     make_home,
     make_knowledge,
     merge_proposal_text,
@@ -47,31 +49,44 @@ def _bucket(home, name="s"):
 # ------------------------------------------------------------ create_record
 
 
-def test_create_record_skill_scope_resolves_plugin_dir(tmp_path):
+def test_create_record_skill_scope_resolves_skill_bucket(tmp_path):
+    # doc 13 §3: skill buckets live under <home>/skills/<name>, gated on
+    # the skill existing in the registered skills-root HOST.
     home = make_home(tmp_path, skills=("home-assistant",))
     rec = make_behavior(scope="skill:home-assistant")
     path = create_record(home, rec)
     assert path == (
-        home
-        / "plugins"
-        / "home-assistant-plugin"
-        / "skills"
-        / "home-assistant"
-        / ".self-learn"
-        / "pending"
-        / f"{rec.id}.md"
+        home / "skills" / "home-assistant" / "pending" / f"{rec.id}.md"
     )
     assert path.is_file()
     assert Record.from_path(path).status == "pending"
 
 
-@pytest.mark.parametrize("scope", ["project", "user"])
-def test_create_record_project_and_user_share_root_bucket(tmp_path, scope):
+def test_create_record_user_scope_lands_in_user_bucket(tmp_path):
     home = make_home(tmp_path)
-    rec = make_knowledge(scope=scope)
+    rec = make_knowledge(scope="user")
     path = create_record(home, rec)
-    assert path == home / ".self-learn" / "pending" / f"{rec.id}.md"
+    assert path == home / "user" / "pending" / f"{rec.id}.md"
     assert path.is_file()
+
+
+def test_create_record_project_scope_needs_and_uses_project_path(tmp_path):
+    # doc 13 §3: project buckets are per-project — the path is REQUIRED
+    # and recorded in meta.yaml beside the bucket (the slug alone is lossy).
+    from self_learn.hosts import slug_for
+    from self_learn.ledger_ops import bucket_project_path
+
+    home = make_home(tmp_path)
+    with pytest.raises(LedgerOpsError, match="project_path"):
+        create_record(home, make_knowledge(scope="project"))
+    proj = tmp_path / "proj-repo"
+    init_repo(proj)
+    rec = make_knowledge(scope="project")
+    path = create_record(home, rec, project_path=proj)
+    bucket_dir = home / "projects" / slug_for(proj)
+    assert path == bucket_dir / "pending" / f"{rec.id}.md"
+    assert path.is_file()
+    assert bucket_project_path(bucket_dir) == proj.resolve()
 
 
 def test_create_record_unknown_skill_raises(tmp_path):
@@ -82,10 +97,12 @@ def test_create_record_unknown_skill_raises(tmp_path):
 
 
 def test_create_record_ambiguous_skill_raises(tmp_path):
-    home = make_home(tmp_path, skills=("s",))
-    (home / "plugins" / "other-plugin" / "skills" / "s").mkdir(parents=True)
+    # Ambiguity is now judged against the registered skills-root HOST:
+    # two plugins there carrying the same skill name refuse the capture.
+    env = make_env(tmp_path, skills=("s",))
+    (env.host / "plugins" / "other-plugin" / "skills" / "s").mkdir(parents=True)
     with pytest.raises(LedgerOpsError, match="ambiguous"):
-        create_record(home, make_behavior(scope="skill:s"))
+        create_record(env.ledger, make_behavior(scope="skill:s"))
 
 
 def test_create_record_duplicate_id_raises(tmp_path):
@@ -257,7 +274,9 @@ def test_supersede_pending_record_moves_and_links(tmp_path):
 
 def test_graduation_marks_superseded_by_canon(tmp_path):
     home = make_home(tmp_path)
-    pending_path = create_record(home, make_knowledge(record_id="lrn-aa000001"))
+    pending_path = create_record(
+        home, make_knowledge(scope="user", record_id="lrn-aa000001")
+    )
     supersede_record(home, "lrn-aa000001", "canon")
     moved = Record.from_path(pending_path.parent.parent / "resolved" / "lrn-aa000001.md")
     assert moved.status == "superseded"

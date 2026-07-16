@@ -18,13 +18,15 @@ degrades soft, never blind.
 from __future__ import annotations
 
 import re
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from . import gitops
 from .ledger import discover_buckets
 from .records import Record, RecordError
 
-__all__ = ["ImportReport", "ImporterError", "existing_origins"]
+__all__ = ["ImportReport", "ImporterError", "commit_import", "existing_origins"]
 
 
 class ImporterError(Exception):
@@ -45,6 +47,11 @@ class ImportReport:
     flagged_canon: list[str] = field(default_factory=list)
     behavioral_minority: list[str] = field(default_factory=list)
     scan_refused: list[str] = field(default_factory=list)
+    touched: list[Path] = field(default_factory=list)  # ledger paths (H-5 commit)
+    #: False iff the records were written but their commit FAILED — the
+    #: CLI turns this into a non-zero exit (BLOCKER B: 'wrote something,
+    #: then reported success' is the class of bug being closed).
+    committed: bool = True
 
     def summary(self) -> str:
         """Human-readable run summary (visible confirmation; CLI prints it)."""
@@ -71,6 +78,65 @@ class ImportReport:
         for origin in self.scan_refused:
             lines.append(f"  ! scan-refused {origin}")
         return "\n".join(lines)
+
+
+def commit_import(home: Path, report: ImportReport) -> bool:
+    """H-5 (doc 13 §5): importers are producers — ONE ledger commit per
+    run (pinned subject ``self-learn: import <n> record(s) --<source>``)
+    + best-effort push. No-op when nothing was created.
+
+    Returns True iff the records are COMMITTED (or there was nothing to
+    commit). Same rule as ``teach``: with no watcher (H-5) nobody else
+    ever commits them, so an uncommitted import is a failure the caller
+    must surface, not a warning (audit 2026-07-16 BLOCKER B).
+
+    The commit is locked + pathspec-scoped, so a racing background
+    worker/miner can neither steal this import's files nor have its own
+    swept in here; the push sits OUTSIDE the lock (it touches no index).
+
+    **The importers hold the lock across their whole write loop** (audit
+    2026-07-16 round 7 — the invariant: no ledger mutation may precede its
+    lock), so ``commit_lock`` here is re-entrant and this function keeps
+    working standalone. That matters most for ``--memory``, whose loop
+    rewrites the TRACKED MEMORY.md index as it goes.
+
+    No ``--no-push`` guard here: ``import`` HAS no such flag. It used to
+    call ``worker.no_push_requested()``, which reads an env var that only
+    ever exists in a worker/miner CHILD — `import` runs in the parent, so
+    the guard could not fire, and the comment above it described a flag
+    that does not exist (audit 2026-07-16 MAJOR F). Deleted rather than
+    invented: nothing in the product asks for `import --no-push` today."""
+    if not report.created or not report.touched:
+        return True
+    n = len(report.created)
+    try:
+        with gitops.commit_lock(home):
+            gitops.stage(home, report.touched)
+            gitops.commit(
+                home,
+                f"self-learn: import {n} record(s) --{report.source}",
+                paths=report.touched,
+            )
+    except gitops.GitOpsError as exc:
+        print(
+            f"self-learn: IMPORT NOT COMMITTED ({exc})\n"
+            f"  The {n} record(s) ARE written under {home}, but nothing else "
+            "will ever commit them (doc 13 H-5: no watcher on the ledger).\n"
+            f"  Repair: self-learn reconcile   (or, by hand: git -C {home} "
+            f"add -A && git -C {home} commit -m 'self-learn: import {n} "
+            f"record(s) --{report.source}')",
+            file=sys.stderr,
+        )
+        return False
+    try:
+        gitops.push_if_remote(home)
+    except gitops.GitOpsError as exc:
+        print(
+            f"self-learn: import committed but NOT pushed ({exc}) — run "
+            "`self-learn push` to publish it",
+            file=sys.stderr,
+        )
+    return True
 
 
 # Fallback extraction from unparseable record files: both the flow style the

@@ -19,7 +19,7 @@ import pytest
 from self_learn import cli, telemetry, worker
 from self_learn.ledger_ops import create_record, write_proposal
 from self_learn.records import Record
-from support import commit_all, git, make_behavior, make_home, proposal_dict
+from support import commit_all, git, make_behavior, make_env, proposal_dict
 
 SKILL_MD = "# s skill\n\nAuthored prose stays put.\n"
 
@@ -43,20 +43,27 @@ def redirect(tmp_path, monkeypatch):
 
 
 class Env:
+    """doc-13 pair: `home` is the LEDGER (SELF_LEARN_HOME); the worker
+    reads/writes the ledger's skill bucket, and reads canon from the HOST
+    skill dir via the registry."""
+
     def __init__(self, tmp_path):
-        self.home = make_home(tmp_path)
-        self.skill_dir = self.home / "plugins" / "s-plugin" / "skills" / "s"
-        self.skill_md = self.skill_dir / "SKILL.md"
-        self.skill_md.write_text(SKILL_MD, encoding="utf-8")
+        sandbox = make_env(tmp_path)
+        self.home = sandbox.ledger
+        self.host = sandbox.host
+        self.skill_dir = sandbox.skill_dir  # HOST skill dir (canon source)
+        self.skill_md = sandbox.skill_md
+        # make_env already seeded SKILL.md with identical content; keep the
+        # HOST clean (no dangling uncommitted change).
+        self.bucket = self.home / "skills" / "s"  # LEDGER skill bucket
         self.bare = tmp_path / "remote.git"
         subprocess.run(
             ["git", "init", "-q", "--bare", "-b", "main", str(self.bare)],
             check=True,
         )
         git(self.home, "remote", "add", "origin", str(self.bare))
-        commit_all(self.home, "seed")
         git(self.home, "push", "-q", "-u", "origin", "main")
-        self.proposals = self.skill_dir / ".self-learn" / "proposals"
+        self.proposals = self.bucket / "proposals"
 
 
 @pytest.fixture()
@@ -110,7 +117,7 @@ def test_kick_spawns_one_window_and_second_is_absorbed(env, monkeypatch):
     monkeypatch.delenv("SELF_LEARN_WORKER_AUTOKICK")
     spawned = []
 
-    def fake_spawn(home):
+    def fake_spawn(home, *, no_push=False):  # no_push: BLOCKER 3 signature
         spawned.append(home)
         return os.getpid()  # a live pid
 
@@ -125,7 +132,9 @@ def test_dead_pid_window_reopens(env, monkeypatch):
     monkeypatch.delenv("SELF_LEARN_WORKER_AUTOKICK")
     worker.cache_dir().mkdir(parents=True, exist_ok=True)
     (worker.cache_dir() / "worker.window").write_text("999999999")
-    monkeypatch.setattr(worker, "_spawn_window", lambda home: os.getpid())
+    monkeypatch.setattr(
+        worker, "_spawn_window", lambda home, *, no_push=False: os.getpid()
+    )
     assert worker.kick(env.home) == "spawned"
 
 
@@ -137,19 +146,34 @@ def test_autokick_disabled_is_noop(env):
 def test_teach_kicks_import_kicks(env, monkeypatch, capsys):
     monkeypatch.delenv("SELF_LEARN_WORKER_AUTOKICK")
     kicked = []
-    monkeypatch.setattr(worker, "kick", lambda home: kicked.append(home) or "spawned")
+    monkeypatch.setattr(
+        worker,
+        "kick",
+        # no_push: the kick signature carries the invoking verb's
+        # --no-push to the spawned worker (BLOCKER 3).
+        lambda home, *, no_push=False: kicked.append((home, no_push)) or "spawned",
+    )
     rc = cli.main(
         ["teach", "--skill", "s", "--type", "knowledge", "--fact", "A fact."]
     )
     assert rc == 0
     assert len(kicked) == 1
+    # A plain teach never asked for --no-push, so the spawned worker is
+    # free to publish (BLOCKER 3: no_push is opt-in, not the default).
+    assert kicked[0][1] is False
 
 
 def test_teach_route_success_does_not_kick(env, monkeypatch):
     seeded = seed_pending(env)  # ensures repo has ledger dirs
     monkeypatch.delenv("SELF_LEARN_WORKER_AUTOKICK")
     kicked = []
-    monkeypatch.setattr(worker, "kick", lambda home: kicked.append(home) or "spawned")
+    monkeypatch.setattr(
+        worker,
+        "kick",
+        # no_push: the kick signature carries the invoking verb's
+        # --no-push to the spawned worker (BLOCKER 3).
+        lambda home, *, no_push=False: kicked.append((home, no_push)) or "spawned",
+    )
     rc = cli.main(
         [
             "teach", "--skill", "s", "--type", "knowledge",
@@ -188,8 +212,8 @@ def test_run_happy_path(env, claude_shim, monkeypatch):
 def test_run_argv_pins(env, claude_shim, monkeypatch):
     """E-18 property (flag syntax adjusted at T13 per the pin's own
     instruction): read-only allowedTools, Bash/Edit explicitly
-    disallowed, Write granted ONLY via the settings file's two
-    proposals-scoped rules."""
+    disallowed, Write granted ONLY via the settings file's ledger
+    proposals-scoped rules (doc 13: three)."""
     rid = seed_pending(env)
     monkeypatch.setenv("CLAUDE_SHIM_SCRIPT", shim_writes(env, rid))
     worker.run(env.home)
@@ -204,10 +228,12 @@ def test_run_argv_pins(env, claude_shim, monkeypatch):
         "permissions"
     ]["allow"]
     # live-verified rule family: Edit(...) governs Write; Write(...) rules
-    # match nothing on the live CLI (T13-start check, 2026-07-15)
+    # match nothing on the live CLI (T13-start check, 2026-07-15).
+    # doc 13: three ledger-scoped proposals dirs, no host path reachable.
     assert rules == [
-        f"Edit(/{env.home}/plugins/**/.self-learn/proposals/**)",
-        f"Edit(/{env.home}/.self-learn/proposals/**)",
+        f"Edit(/{env.home}/skills/**/proposals/**)",
+        f"Edit(/{env.home}/projects/**/proposals/**)",
+        f"Edit(/{env.home}/user/proposals/**)",
     ]
     for rule in rules:  # // prefix = filesystem-absolute in rule syntax
         assert rule.startswith("Edit(//")
@@ -268,7 +294,7 @@ def test_fresh_proposals_skipped_stale_reanalyzed(env, claude_shim, monkeypatch)
     assert result.status == "idle"  # nothing eligible — fresh proposal
 
     # mtime churn alone must NOT re-analyze (git checkouts rewrite mtimes)
-    rpath = env.skill_dir / ".self-learn" / "pending" / f"{rid}.md"
+    rpath = env.bucket / "pending" / f"{rid}.md"
     os.utime(rpath, (time.time(), time.time()))
     assert worker.run(env.home).status == "idle"
 
@@ -283,7 +309,7 @@ def test_fresh_proposals_skipped_stale_reanalyzed(env, claude_shim, monkeypatch)
 
 def test_deferred_records_skipped(env, claude_shim):
     rid = seed_pending(env)
-    rpath = env.skill_dir / ".self-learn" / "pending" / f"{rid}.md"
+    rpath = env.bucket / "pending" / f"{rid}.md"
     record = Record.from_path(rpath)
     record.set_status("deferred")
     record.set_deferred_until("2099-01-01")
@@ -313,20 +339,35 @@ def test_kick_mid_run_triggers_followon(env, claude_shim, monkeypatch):
         "CLAUDE_SHIM_SCRIPT", f"{shim_writes(env, rid)}\ntouch {dirty}"
     )
     spawned = []
-    monkeypatch.setattr(worker, "_spawn_window", lambda home: spawned.append(1) or 12345)
+    monkeypatch.setattr(
+        worker, "_spawn_window", lambda home, *, no_push=False: spawned.append(1) or 12345
+    )
     result = worker.run(env.home)
     assert result.followon is True
     assert spawned == [1]
 
 
-def test_sync_first_runs_sandbox_script(env, claude_shim, monkeypatch):
+def test_run_never_execs_a_sync_script_from_the_ledger_home(env, claude_shim):
+    """MINOR 10 (audit 2026-07-16): the sync-first step is GONE. It looked
+    for `<home>/bin/claude-skills-sync` — which the ledger home will never
+    contain, since doc 13 H-5 gives the ledger no watcher — so it logged
+    "skipped" on every run forever. This replaces the old
+    test_sync_first_runs_sandbox_script, which pinned the removed
+    behavior: an executable at that path must now be IGNORED, not run
+    (the ledger home is data; the worker never execs out of it)."""
     marker = env.home / "sync-ran"
     script = env.home / "bin" / "claude-skills-sync"
     script.parent.mkdir(exist_ok=True)
     script.write_text(f"#!/usr/bin/env bash\ntouch {marker}\n", encoding="utf-8")
     script.chmod(script.stat().st_mode | stat.S_IEXEC)
+
     worker.run(env.home)
-    assert marker.exists()
+
+    assert not marker.exists()
+    assert not hasattr(worker, "_sync_first")
+    assert "sync-first" not in (worker.cache_dir() / "worker.log").read_text(
+        encoding="utf-8"
+    )
 
 
 # ------------------------------------------------------------------ digest
@@ -411,7 +452,7 @@ def test_fast_status_shape_and_semantics(env, claude_shim, monkeypatch):
 
     stamp_proposal(env.home, rid)
     rid2 = seed_pending(env, "lrn-0000bbbb")
-    rpath = env.skill_dir / ".self-learn" / "pending" / f"{rid2}.md"
+    rpath = env.bucket / "pending" / f"{rid2}.md"
     record = Record.from_path(rpath)
     record.set_status("deferred")
     record.set_deferred_until("2099-01-01")
@@ -507,7 +548,9 @@ def test_batch_cap_leftovers_keep_dirty_and_followon(env, claude_shim, monkeypat
     commit_all(env.home, "sixteen pending")
     monkeypatch.setenv("CLAUDE_SHIM_SCRIPT", shim_writes(env, "lrn-00000000"))
     spawned = []
-    monkeypatch.setattr(worker, "_spawn_window", lambda home: spawned.append(1) or 4242)
+    monkeypatch.setattr(
+        worker, "_spawn_window", lambda home, *, no_push=False: spawned.append(1) or 4242
+    )
     result = worker.run(env.home)
     assert result.eligible == 15  # cap
     assert result.leftovers == 1
@@ -599,7 +642,9 @@ def test_open_window_absorbed_race(env, monkeypatch):
     with open(lock_path, "w", encoding="utf-8") as holder:
         fcntl_mod.flock(holder.fileno(), fcntl_mod.LOCK_EX)
         monkeypatch.setattr(
-            worker, "_spawn_window", lambda home: pytest.fail("must not spawn")
+            worker,
+            "_spawn_window",
+            lambda home, *, no_push=False: pytest.fail("must not spawn"),
         )
         assert worker._open_window(env.home) == "absorbed-race"
 
