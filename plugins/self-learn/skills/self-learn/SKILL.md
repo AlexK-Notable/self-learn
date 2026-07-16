@@ -10,9 +10,10 @@ as one-record-per-file markdown under the ledger home (`~/.self-learn`, its
 own git repo, independent of any code repo — doc 13) in `skills/<name>/`,
 `projects/<slug>/`, and `user/` buckets, triaged in bounded review
 sessions, and **routed by explicit human verbs** into canon: a skill's
-SKILL.md managed section, CLAUDE.md, or a references file. Nothing edits
-canon silently; every resolution is a pinned git commit. Full
-architecture: `docs/specs/self-learn/` (01–04, 13).
+SKILL.md managed section, CLAUDE.md, a references file, a deterministic
+guard hook (M3 — human-approved script, verbatim two-phase apply), or a
+new-skill scaffold. Nothing edits canon silently; every resolution is a
+pinned git commit. Full architecture: `docs/specs/self-learn/` (01–04, 13).
 
 ## When to offer capture
 
@@ -49,7 +50,7 @@ prompt after.
 | `import --backlog <skill>` \| `--memory [dir]` | One-shot ETL: GOTCHAS journal / auto-memory topic files → pending records (idempotent, origin-deduped) |
 | `prune-memory [--dry-run] [dir]` | S-13 sweep: delete memory files whose records reached a terminal status |
 | `proposal validate <id>` | Scan + schema-check + stamp a record's proposal sibling — REQUIRED after any direct edit of a pending record outside CLI verbs |
-| `--selftest` | Loud PASS/FAIL install checks (capture, compiler dry-run, 02 §4 markers, sentinel) |
+| `--selftest` | Loud PASS/FAIL install checks (capture, compiler dry-run, 02 §4 markers, sentinel, hooks: script intact/executable/byte-matched, incomplete supersession, dangling settings.json registrations) |
 
 All record-body writes pass the secret scan: default **refuse** (span +
 rule printed), `--redact` opt-in on capture surfaces, no bypass flag.
@@ -65,6 +66,8 @@ rule printed), `--redact` opt-in on capture surfaces, no bypass flag.
 ## Environment & exit codes
 
 - `SELF_LEARN_HOME` — the ledger home (default `~/.self-learn`).
+- `SELF_LEARN_CLAUDE_DIR` — where hook selfchecks read `settings.json` /
+  `hooks/` (default `~/.claude`; tests redirect it).
 - Analyst (bare-terminal `teach --route`): `SELF_LEARN_ANALYST_MODEL`
   (default `claude-sonnet-5`), `SELF_LEARN_ANALYST_TIMEOUT` (default 120 s).
 - Exit codes — verbs: 0 ok · 1 refusal (dirty target, scan hit, chezmoi

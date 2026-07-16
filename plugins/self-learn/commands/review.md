@@ -171,9 +171,9 @@ direct file or git operations. A non-zero exit is not one thing — read
 which:
 
 - **1** — the verb REFUSED (secret scan, dirty compile target, an
-  unregistered host, an unknown id; on a hook route also: no validated
-  hook proposal, a stale `record_sha`, or a failed example replay).
-  Nothing was written. *(All five destinations compile as of M3 — the
+  unregistered host; on a hook route also: no validated hook proposal,
+  a stale `record_sha`, or a failed example replay). An unknown record
+  id is **64** (usage), not 1. Nothing was written. *(All five destinations compile as of M3 — the
   old exit-2 "compiler lands at M3" no longer exists for verbs; a hook
   refusal names the missing step, show it verbatim.)*
 - **3** — committed, but the **push failed**. The resolution is safe
