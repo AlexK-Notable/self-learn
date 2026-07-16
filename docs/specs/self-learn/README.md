@@ -538,3 +538,21 @@ human routes it.
   along. Build = T-H1…T-H5 in a worktree with a pre-migration audit;
   acceptance includes a foreign-project mined candidate landing in its
   own project bucket.
+- **2026-07-16 — session post-mortem (independent, user-directed).** The
+  25-day session that produced this corpus (06-22 discovery → 07-16 T-H3)
+  documented from the transcripts alone by an agent that did not
+  participate and was given no account of events, with the load-bearing
+  claims re-verified against the live machine:
+  `reviews/2026-07-16-session-post-mortem.md`. Confirms the T-H3 branch at
+  **754 passed / 2 skipped**, the cutover unrun (`~/.self-learn` absent),
+  and the 39-vs-177 test split between the directed separation and the
+  elective concurrency work. Records the session's two governing
+  corrections — the user's falsification of the SDK-auth claim (already
+  ground rule 4) and the orchestrator's own disclosure that **H-5**
+  (producers-commit, no ledger watcher) was an unforced preference written
+  as a "therefore" and never put to the user among doc 13's four
+  ratification calls. **Open and unrouted:** the H-5 call itself (ship /
+  descope / park); the memo's §6 also flags that the miner has **never
+  executed** (timer registered, `LAST` empty) and that the T-H3 build +
+  its four audit rounds are recorded only in branch commit messages, not
+  here. Like its siblings, withheld from blind reviewers.
