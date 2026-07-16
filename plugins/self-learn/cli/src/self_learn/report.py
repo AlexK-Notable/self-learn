@@ -74,8 +74,15 @@ def gather(home: Path | str, *, today: date | None = None) -> dict:
                     continue
                 counts[record.status] += 1
                 if record.source == "session":
-                    if record.status == "superseded" and record.superseded_by == "canon":
-                        mined["graduated"] += 1
+                    if record.status == "superseded":
+                        if record.superseded_by == "canon":
+                            mined["graduated"] += 1
+                        elif record.routing is not None:
+                            # accepted (routed), later replaced — stays in
+                            # the accept-rate numerator+denominator
+                            mined["routed"] += 1
+                        else:
+                            mined["superseded_unrouted"] += 1
                     else:
                         mined[record.status] += 1
                 if record.routing is not None:
@@ -163,9 +170,11 @@ def gather(home: Path | str, *, today: date | None = None) -> dict:
         "deferred": deferred,
         "mined": {
             "pending": mined["pending"],
+            "deferred": mined["deferred"],
             "routed": mined["routed"],
             "graduated": mined["graduated"],
             "rejected": mined["rejected"],
+            "superseded_unrouted": mined["superseded_unrouted"],
             "adjudicated": mined_adjudicated,
             "accept_rate": mined_accept_rate,
         },

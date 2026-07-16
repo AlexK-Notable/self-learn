@@ -288,6 +288,56 @@ spirit).
   self-learn command spans are excluded at Phase 0; Phase 3 dedup is
   the backstop, not the mechanism.
 
+## 10. Pre-merge audit round (2026-07-15, two independent reviewers)
+
+Two blind-to-each-other auditors (adversarial code + systems blast
+radius) each returned merge-blocking verdicts; all blockers and majors
+were fixed with regression tests reproducing the exact scenarios. The
+findings that ADJUSTED pinned behavior (dated letter-adjustments):
+
+1. **Prompts ride stdin, never argv** — Linux caps one argv element at
+   128 KiB (verified E2BIG live); a busy night's digests exceed it.
+   Applied to the miner AND the M2 worker (whose 15-record batch prompt
+   was plausibly already over the limit — latent since T13).
+2. **The reader has NO filesystem tools** (§2 Phase 2 strengthened):
+   unlike the worker, its whole evidence base is in the prompt, and
+   transcript digests are attacker-influenceable — Read/Grep/Glob are
+   disallowed; Write exists only via the spool-scoped rule family.
+   Field-length caps enforced at landing (quote 400, fields 1000 chars,
+   refuse-not-clip); model-authored session/line refs are regex-gated
+   before they touch origins or telemetry.
+3. **A self-learn command tag halts the REST of the session, forever**
+   (M-5 tightened): the draft's "span ends at the next genuine user
+   turn" collapsed on the first review reply, mining every card's
+   verbatim lesson text back as fake sightings. Halt state persists in
+   the cursor file across slice splits. Recall loss is cheap; evidence
+   corruption is not.
+4. **First run = cursor initialization only** (§8 R2 made real): status
+   `initialized`, every existing transcript seeded at EOF, files already
+   containing self-learn markers halted outright. Measured stake: 267 MB
+   / 538 transcripts on the build machine.
+5. **Watchdog attempt cool-down (2 h)** beside the 24 h completed-run
+   check — a persistently failing reader must not turn every CLI
+   invocation into a walk + 15-minute model attempt.
+6. **Worker re-asserts the sentinel after its model pass** — a
+   concurrent short holder (miner landing) could create-then-release
+   the sentinel a mid-run worker had merely joined, deleting autosync
+   cover before validation (the exact race the 2026-07-15 self-hold pin
+   closed, reopened from the other side).
+7. **Fire / recurrence-suspect events dedupe by (kind, record, origin)**
+   — crash-replay and the documented `--since` replay previously
+   duplicated both classes.
+8. **Spec adjustments accepted:** mined landings ride autosync commits
+   (like teach and import; the §9 pinned `self-learn: mine …` subject is
+   dropped — no consumer greps it, and capture-producers have never
+   owned commits); held-gate skips the entire run body including fire
+   observation (saves the model pass; cursors hold so nothing is lost)
+   and touches last-run (the ≥5-pending escalation alarms on the same
+   condition the gate reacts to); the run journal stays cache-local.
+
+Suite after the round: 540 (30 miner + 13 audit regressions on top of
+the pre-audit 497).
+
 ## 8. Ratification round 1 (2026-07-15, user present)
 
 **Q1 — build now.** User: "build now without a shadow of a doubt.

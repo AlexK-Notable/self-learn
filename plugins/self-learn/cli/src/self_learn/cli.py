@@ -27,7 +27,7 @@ import argparse
 import json
 import os
 import sys
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 from . import report as report_mod
@@ -339,6 +339,15 @@ def _cmd_status_fast() -> int:
 def _cmd_mine(args: argparse.Namespace) -> int:
     home = resolve_home()
     if args.mine_command == "run":
+        if args.since is not None:
+            try:
+                datetime.fromisoformat(args.since)
+            except ValueError:
+                print(
+                    f"self-learn mine: --since needs YYYY-MM-DD, got {args.since!r}",
+                    file=sys.stderr,
+                )
+                return EXIT_USAGE
         result = miner.run(home, trigger=args.trigger, since=args.since)
         print(
             f"mine run: {result.status} — {len(result.landed)} landed, "

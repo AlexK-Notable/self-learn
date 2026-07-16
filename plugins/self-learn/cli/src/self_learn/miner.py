@@ -35,9 +35,11 @@ import fcntl
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import time
+import traceback
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -73,10 +75,25 @@ DEFAULT_CAP_MAX = 15
 DEFAULT_PENDING_GATE = 25
 REJECTED_RESURFACE_SIGHTINGS = 3  # §8 Q4
 KICK_AFTER_SECS = 24 * 60 * 60  # R1 layer 2: verb autokick
+ATTEMPT_COOLDOWN_SECS = 2 * 60 * 60  # audit 2026-07-15: failure backoff —
+# without it a persistently failing reader converts every CLI invocation
+# into a full walk+digest+15-min model attempt
 STALE_AFTER_SECS = 36 * 60 * 60  # R1 layer 3: SessionStart alarm
 INVOKE_TIMEOUT_SECS = 15 * 60
 JOURNAL_CAP_BYTES = 2_000_000
 DEFAULT_MINER_MODEL = "claude-sonnet-5"
+
+#: Injection-bandwidth caps (audit 2026-07-15: transcript text is
+#: attacker-influenceable and landed fields autosync to the remote —
+#: oversize model output is refused, never clipped into canon).
+MAX_QUOTE_CHARS = 400
+MAX_FIELD_CHARS = 1_000
+
+#: Model-authored reference validation (audit: session/line build the
+#: evidence origin, which lands in tracked files and telemetry — free
+#: text there is both a scan bypass and a flush-wedge risk).
+_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{3,63}$")
+_SKILL_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 
 #: Digest limits — a runaway session must not blow the reader's context.
 MAX_TEXT_CHARS = 2_000  # per kept turn
@@ -185,6 +202,8 @@ class SessionSlice:
     project: str
     start_line: int  # 0-based index of the first NEW line
     lines: list[str]
+    stat_size: int = 0  # file size observed BEFORE the read (skip basis;
+    # taken pre-read so an append racing the read forces a re-read next run)
 
 
 def _cursors_path() -> Path:
@@ -205,10 +224,69 @@ def _save_cursors(cursors: dict) -> None:
     )
 
 
+def _complete_lines(path: Path) -> list[str] | None:
+    """The file's newline-TERMINATED lines (audit 2026-07-15: a transcript
+    mid-append at walk time must not have its torn tail consumed by the
+    cursor — the partial line is left for the next run)."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    if not text:
+        return []
+    if not text.endswith("\n"):
+        cut = text.rfind("\n")
+        text = text[: cut + 1] if cut >= 0 else ""
+    return text.splitlines()
+
+
+def _contains_self_learn(text: str) -> bool:
+    return _COMMAND_SPAN_RE.search(text) is not None or any(
+        h in text for h in SELF_PROMPT_HEADERS
+    )
+
+
+def initialized() -> bool:
+    return bool(_load_cursors().get("__initialized__"))
+
+
+def initialize_cursors() -> int:
+    """First-activation forward-only pin (doc 12 §8 R2, audit B2): seed
+    every EXISTING transcript's cursor at its current end so night one
+    mines nothing — history is reachable only through the deliberate
+    ``--since`` backfill. Files containing self-learn machinery markers
+    anywhere in their existing history are halted outright (M-5: an
+    in-flight review/worker session's tail must not become minable just
+    because the cursor was seeded past its header). Returns the number of
+    files seeded."""
+    root = transcripts_root()
+    cursors = _load_cursors()
+    seeded = 0
+    if root.is_dir():
+        for path in sorted(root.glob("*/*.jsonl")):
+            try:
+                size = path.stat().st_size  # pre-read (same race rule as walk)
+            except OSError:
+                continue
+            lines = _complete_lines(path)
+            if lines is None:
+                continue
+            entry: dict = {"lines": len(lines), "size": size}
+            if _contains_self_learn("\n".join(lines)):
+                entry["halt"] = True
+            cursors[str(path)] = entry
+            seeded += 1
+    cursors["__initialized__"] = _now_iso()
+    _save_cursors(cursors)
+    return seeded
+
+
 def walk(since: str | None = None) -> list[SessionSlice]:
-    """Every transcript with unread lines. ``since`` (YYYY-MM-DD) is the
-    deliberate-backfill override: files modified on/after that date are
-    re-read from line 0 (origin dedup makes replays safe)."""
+    """Every transcript with unread COMPLETE lines, oldest-modified first.
+    ``since`` (YYYY-MM-DD) is the deliberate-backfill override: files
+    modified on/after that date are re-read from line 0 (origin dedup
+    makes landing replays safe). Halted files (self-learn machinery,
+    M-5) are skipped without reading."""
     root = transcripts_root()
     if not root.is_dir():
         return []
@@ -218,23 +296,28 @@ def walk(since: str | None = None) -> list[SessionSlice]:
             datetime.fromisoformat(since).replace(tzinfo=timezone.utc).timestamp()
         )
     cursors = _load_cursors()
-    slices: list[SessionSlice] = []
+    candidates: list[tuple[float, Path, int, int]] = []
     for path in sorted(root.glob("*/*.jsonl")):
+        entry = cursors.get(str(path), {})
         try:
-            mtime = path.stat().st_mtime
+            st = path.stat()
         except OSError:
             continue
         if since_ts is not None:
-            if mtime < since_ts:
+            if st.st_mtime < since_ts:
                 continue
             start = 0
         else:
-            start = int(cursors.get(str(path), {}).get("lines", 0))
-        try:
-            lines = path.read_text(encoding="utf-8").splitlines()
-        except (OSError, UnicodeDecodeError):
-            continue
-        if len(lines) <= start:
+            if entry.get("halt"):
+                continue
+            if st.st_size == entry.get("size"):
+                continue  # unchanged since last read — skip the I/O
+            start = int(entry.get("lines", 0))
+        candidates.append((st.st_mtime, path, start, st.st_size))
+    slices: list[SessionSlice] = []
+    for _mtime, path, start, size in sorted(candidates, key=lambda t: t[0]):
+        lines = _complete_lines(path)
+        if lines is None or len(lines) <= start:
             continue
         slices.append(
             SessionSlice(
@@ -243,15 +326,23 @@ def walk(since: str | None = None) -> list[SessionSlice]:
                 project=path.parent.name,
                 start_line=start,
                 lines=lines[start:],
+                stat_size=size,
             )
         )
     return slices
 
 
-def _advance_cursors(slices: list[SessionSlice]) -> None:
+def _advance_cursors(processed: list[tuple[SessionSlice, bool]]) -> None:
+    """Advance past each slice's complete lines; a True halt flag is
+    persisted so the REST of that session (including future appends) is
+    never mined (audit 2026-07-15: exclusion state must survive cursor
+    splits — it was slice-local before)."""
     cursors = _load_cursors()
-    for s in slices:
-        cursors[str(s.path)] = {"lines": s.start_line + len(s.lines)}
+    for s, halt in processed:
+        entry: dict = {"lines": s.start_line + len(s.lines), "size": s.stat_size}
+        if halt or cursors.get(str(s.path), {}).get("halt"):
+            entry["halt"] = True
+        cursors[str(s.path)] = entry
     _save_cursors(cursors)
 
 
@@ -303,18 +394,26 @@ def _norm_command(cmd: str) -> str:
     return " ".join(str(cmd).split()[:2])
 
 
-def digest_transcript(s: SessionSlice) -> str | None:
-    """One session's structural digest — or None when the whole session is
-    excluded (self-prompt header, M-5) or contributes nothing minable.
+def digest_transcript(s: SessionSlice) -> tuple[str | None, bool]:
+    """(digest-or-None, halt) for one session slice.
 
     Kept: user text turns (verbatim, clipped), assistant text turns,
     tool-use name + command shape, tool-result status + first/last lines.
-    Dropped: tool-result bodies, tool-use payloads, self-learn command
-    spans. Annotated: errors, retry clusters.
+    Dropped: tool-result bodies and tool-use payloads.
+
+    halt=True means the REST of this session — including future appends —
+    must never be mined; the caller persists it into the cursor. Two
+    halters (M-5, tightened by audit 2026-07-15): a self-prompt header
+    (the system's own claude -p machinery), and ANY self-learn command
+    tag — the old "span ends at the next genuine user turn" rule
+    collapsed on the first review reply, feeding every card's lesson text
+    (which the reader would dutifully match against the ledger) back into
+    the miner as fake sightings. Recall loss from over-exclusion is cheap;
+    evidence corruption is not.
     """
     out: list[str] = []
+    halt = False
     first_user_seen = False
-    in_selflearn_span = False
     command_counts: dict[str, list[int]] = {}  # norm shape -> [uses, errors]
     last_tool_shape: dict[str, str] = {}  # tool_use id -> display shape
     last_tool_norm: dict[str, str] = {}  # tool_use id -> norm shape
@@ -346,16 +445,12 @@ def digest_transcript(s: SessionSlice) -> str | None:
                         user_text.strip().startswith(h)
                         for h in SELF_PROMPT_HEADERS
                     ):
-                        return None  # the system's own machinery (M-5)
+                        return None, True  # own machinery: halt forever
                 if _COMMAND_SPAN_RE.search(user_text):
-                    in_selflearn_span = True
-                    continue
-                # A genuine user text turn ends a self-learn command span.
-                in_selflearn_span = False
+                    halt = True
+                    break  # everything after the tag is off-limits
                 out.append(f"[user L{lineno}] {_clip(user_text)}")
             for block in results:
-                if in_selflearn_span:
-                    continue
                 is_err = bool(block.get("is_error"))
                 tid = str(block.get("tool_use_id"))
                 shape = last_tool_shape.get(tid, "?")
@@ -368,8 +463,6 @@ def digest_transcript(s: SessionSlice) -> str | None:
                     f"{_edges(_result_text(block))}"
                 )
         elif etype == "assistant":
-            if in_selflearn_span:
-                continue
             for block in _blocks(message):
                 btype = block.get("type")
                 if btype == "text":
@@ -388,7 +481,7 @@ def digest_transcript(s: SessionSlice) -> str | None:
                         last_tool_norm[str(block.get("id"))] = norm
                     last_tool_shape[str(block.get("id"))] = shape
     if not out:
-        return None
+        return None, halt
 
     clusters = [
         f"[retry-cluster {shape} ×{uses}, {errs} error(s)]"
@@ -399,7 +492,7 @@ def digest_transcript(s: SessionSlice) -> str | None:
     body = "\n".join(clusters + out)
     if len(body) > MAX_DIGEST_CHARS:
         body = body[:MAX_DIGEST_CHARS] + "\n…[session digest clipped]"
-    return f"{header}\n{body}"
+    return f"{header}\n{body}", halt
 
 
 # ----------------------------------------------- Phase 2: the reader pass
@@ -424,17 +517,26 @@ def write_reader_settings() -> Path:
     return path
 
 
-def build_reader_argv(prompt: str, settings_path: Path) -> list[str]:
+#: The miner's reader gets NO filesystem tools (audit 2026-07-15,
+#: injection hardening): unlike the worker — which must open record
+#: files — the reader's entire evidence base rides in the prompt, and
+#: transcript digests are attacker-influenceable text. Write stays
+#: available only through the settings-file Edit rule family, scoped to
+#: the cache spool.
+READER_DISALLOWED_TOOLS = worker.DISALLOWED_TOOLS + ",Read,Grep,Glob"
+
+
+def build_reader_argv(settings_path: Path) -> list[str]:
+    """The prompt is deliberately NOT in argv: Linux caps one argv element
+    at 128 KiB and a busy night's digests exceed it (audit B1, verified
+    E2BIG live) — the prompt goes to the reader on stdin."""
     return [
         "claude",
         "-p",
-        prompt,
         "--model",
         miner_model(),
-        "--allowedTools",
-        worker.ALLOWED_TOOLS,
         "--disallowedTools",
-        worker.DISALLOWED_TOOLS,
+        READER_DISALLOWED_TOOLS,
         "--settings",
         str(settings_path),
     ]
@@ -559,29 +661,40 @@ def _compose_prompt(home: Path, digests: list[str], output_path: Path) -> str:
 
 
 def _invoke_reader(home: Path, prompt: str) -> Path | None:
-    """Run the contained reader; return the output file path if it exists.
-    Split out so tests shim the model with a fake writer."""
+    """Run the contained reader (prompt on STDIN — audit B1); return the
+    output file path if it exists. Split out so tests shim the model with
+    a fake writer. On timeout the reader's whole process group is killed
+    (a hung node child must not outlive the 15-minute budget)."""
     out_path = spool_dir() / OUTPUT_BASENAME
     out_path.unlink(missing_ok=True)
-    argv = build_reader_argv(prompt, write_reader_settings())
+    argv = build_reader_argv(write_reader_settings())
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             argv,
             cwd=str(home),
-            capture_output=True,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             text=True,
-            timeout=INVOKE_TIMEOUT_SECS,
+            start_new_session=True,
         )
+        try:
+            output, _ = proc.communicate(prompt, timeout=INVOKE_TIMEOUT_SECS)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+            proc.wait()
+            log(f"run: claude timed out after {INVOKE_TIMEOUT_SECS}s")
+            return None
         if proc.returncode != 0:
-            log(
-                f"run: claude exited {proc.returncode}: "
-                f"{(proc.stderr or proc.stdout)[:400]}"
-            )
+            log(f"run: claude exited {proc.returncode}: {(output or '')[:400]}")
     except FileNotFoundError:
         log("run: claude CLI not found on PATH")
         return None
-    except subprocess.TimeoutExpired:
-        log(f"run: claude timed out after {INVOKE_TIMEOUT_SECS}s")
+    except OSError as exc:  # audit B1: E2BIG-class failures must journal,
+        log(f"run: reader invocation failed ({exc})")  # never crash the run
         return None
     # Artifact contract: exactly OUTPUT_BASENAME; strays are litter.
     for path in spool_dir().iterdir():
@@ -656,9 +769,12 @@ def _rejected_mark_landed(rid: str) -> None:
 
 def _valid_skill_scope(home: Path, scope: str) -> bool:
     """The SKILL directory must exist — not the bucket (which only exists
-    after a first capture; create_record creates it on demand)."""
+    after a first capture; create_record creates it on demand). The name
+    is regex-gated BEFORE it reaches any glob (audit: `skill:s*` would
+    otherwise validate against a real skill and land with a nonsense
+    scope string)."""
     name = scope.partition(":")[2]
-    if not name or "/" in name or name.startswith("."):
+    if not _SKILL_NAME_RE.match(name):
         return False
     return any(p.is_dir() for p in home.glob(f"plugins/*/skills/{name}"))
 
@@ -675,24 +791,34 @@ def _build_record(home: Path, cand: dict) -> Record:
     if rtype == "behavior":
         kind = str(cand.get("kind") or "surface-rule")
         if kind not in KINDS:
-            kind = "surface-rule"
+            raise RecordError(f"bad kind {kind!r}")  # drop, never coerce
+        trigger = str(cand.get("trigger") or "").strip()
+        instruction = str(cand.get("instruction") or "").strip()
+        if len(trigger) > MAX_FIELD_CHARS or len(instruction) > MAX_FIELD_CHARS:
+            raise RecordError("field over injection-bandwidth cap")
         record = Record.create(
             type="behavior",
             scope=scope,
             source="session",
             kind=kind,
-            trigger=str(cand.get("trigger") or "").strip(),
-            instruction=str(cand.get("instruction") or "").strip(),
+            trigger=trigger,
+            instruction=instruction,
         )
     elif rtype == "knowledge":
+        fact = str(cand.get("fact") or "").strip()
+        context = (
+            (str(cand.get("context")).strip() or None)
+            if cand.get("context")
+            else None
+        )
+        if len(fact) > MAX_FIELD_CHARS or len(context or "") > MAX_FIELD_CHARS:
+            raise RecordError("field over injection-bandwidth cap")
         record = Record.create(
             type="knowledge",
             scope=scope,
             source="session",
-            fact=str(cand.get("fact") or "").strip(),
-            context=(str(cand.get("context")).strip() or None)
-            if cand.get("context")
-            else None,
+            fact=fact,
+            context=context,
         )
     else:
         raise RecordError(f"bad type {rtype!r}")
@@ -706,30 +832,70 @@ def _build_record(home: Path, cand: dict) -> Record:
     return record
 
 
-def _scan_candidate(record: Record, cand: dict) -> list:
-    texts = [record.body]
-    for key in ("quote", "verified_how", "incident_cost", "why_durable"):
+def _scan_candidate(record: Record, cand: dict, quote: str) -> list:
+    """Scan everything that will land or be journaled. ``quote`` is the
+    EFFECTIVE quote (post length-cap), not the raw candidate field."""
+    texts = [record.body, quote]
+    for key in ("verified_how", "incident_cost", "why_durable"):
         if cand.get(key):
             texts.append(str(cand[key]))
-    return [h for t in texts for h in secret_scan(t)]
+    return [h for t in texts if t for h in secret_scan(t)]
+
+
+def _valid_ref(cand: dict) -> tuple[str, int] | None:
+    """Validate the model-authored (session, line) pair — these build the
+    evidence origin, which lands in tracked files and telemetry events
+    (all-or-nothing flush: one secret-shaped span there would wedge every
+    future flush). Free text is refused, never passed through."""
+    session_id = str(cand.get("session") or "")
+    line = cand.get("line")
+    if not _SESSION_ID_RE.match(session_id):
+        return None
+    if not isinstance(line, int) or isinstance(line, bool) or not (
+        1 <= line <= 10_000_000
+    ):
+        return None
+    return session_id, line
+
+
+def _event_seen(home: Path) -> set[tuple[str, str, str]]:
+    """(kind, record, origin) for fire/recurrence-suspect events —
+    replay dedup (audit: crash-replay and the DOCUMENTED --since replay
+    duplicated both classes; nonces make byte-dedup useless)."""
+    seen: set[tuple[str, str, str]] = set()
+    for e in telemetry.read_events(home):
+        kind = e.get("kind")
+        if kind in ("fire", "recurrence-suspect"):
+            seen.add((kind, str(e.get("record")), str(e.get("origin"))))
+    return seen
 
 
 def _reconcile_and_land(
     home: Path, parsed: dict, result: MineResult, cap: int
 ) -> None:
     origins = existing_origins(home)
+    seen_events = _event_seen(home)
     candidates = parsed.get("candidates") or []
     if not isinstance(candidates, list):
         candidates = []
     for cand in candidates:
         if not isinstance(cand, dict):
             continue
-        session_id = str(cand.get("session") or "unknown")
-        line = cand.get("line")
-        origin = f"transcript:{session_id}#L{line if line else '?'}"
+        ref = _valid_ref(cand)
+        if ref is None:
+            _outcome(result, "(invalid-ref)", "dropped-invalid",
+                     reason="bad session/line reference")
+            continue
+        session_id, line = ref
+        origin = f"transcript:{session_id}#L{line}"
         if origin in origins:
             _outcome(result, origin, "skipped-known-origin")
             continue
+
+        quote = str(cand.get("quote") or "")
+        if len(quote) > MAX_QUOTE_CHARS:
+            quote = ""  # injection-bandwidth cap: evidence rides the ref
+            _outcome(result, origin, "quote-dropped-overlength")
 
         # --- match-claim verification (never trust the model's claim raw)
         match = cand.get("match") or {}
@@ -737,16 +903,23 @@ def _reconcile_and_land(
         target = _find_record(home, str(claimed_id)) if claimed_id else None
         if claimed_id and target is None:
             _outcome(
-                result, origin, "match-claim-invalid", claimed=str(claimed_id)
+                result, origin, "match-claim-invalid", claimed=str(claimed_id)[:40]
             )
             # demote to no-match; fall through to landing
+        resurface_of: str | None = None
+        resurface_n = 0
         if target is not None:
             record, sub = target
             if sub == "pending":
                 entry = {"session": session_id, "ts": _now_iso(), "origin": origin}
-                if cand.get("quote") and not secret_scan(str(cand["quote"])):
-                    entry["quote"] = str(cand["quote"])
+                if quote:
+                    if secret_scan(quote):
+                        _outcome(result, origin, "fold-quote-scan-refused",
+                                 record=record.id)
+                    else:
+                        entry["quote"] = quote
                 record.append_evidence(entry)
+                record.set_sightings(record.sightings + 1)  # spec Phase 3
                 pending_path = None
                 for bucket in discover_buckets(home):
                     p = bucket.path / "pending" / f"{record.id}.md"
@@ -760,14 +933,20 @@ def _reconcile_and_land(
                     origins.add(origin)
                     continue
             elif record.status == "routed":
-                telemetry.spool_quiet(
-                    "recurrence-suspect",
-                    record=record.id,
-                    origin=origin,
-                    basis="miner-match",
-                )
-                result.recurrences.append(record.id)
-                _outcome(result, origin, "recurrence", record=record.id)
+                key = ("recurrence-suspect", record.id, origin)
+                if key not in seen_events:
+                    telemetry.spool_quiet(
+                        "recurrence-suspect",
+                        record=record.id,
+                        origin=origin,
+                        basis="miner-match",
+                    )
+                    seen_events.add(key)
+                    result.recurrences.append(record.id)
+                    _outcome(result, origin, "recurrence", record=record.id)
+                else:
+                    _outcome(result, origin, "recurrence-already-known",
+                             record=record.id)
                 continue
             elif record.status == "rejected":
                 n = _rejected_counter_bump(record.id, origin)
@@ -786,8 +965,9 @@ def _reconcile_and_land(
                     f"{n}× since — resurfaced per doc 12 §8 Q4. "
                     + str(cand.get("why_durable") or "")
                 ).strip()
-                _rejected_mark_landed(record.id)
-                # falls through to landing
+                # marked landed only AFTER create_record succeeds (audit:
+                # marking here + a cap/scan drop killed resurfacing forever)
+                resurface_of, resurface_n = record.id, n
             else:
                 _outcome(result, origin, "skipped-resolved", record=record.id)
                 continue
@@ -802,20 +982,24 @@ def _reconcile_and_land(
         except RecordError as exc:
             _outcome(result, origin, "dropped-invalid", reason=str(exc)[:200])
             continue
-        hits = _scan_candidate(record, cand)
+        hits = _scan_candidate(record, cand, quote)
         if hits:
             _outcome(result, origin, "scan-refused", rule=hits[0].rule)
             log(f"run: candidate {origin} refused by secret scan ({hits[0].rule})")
             continue
         entry = {"session": session_id, "ts": _now_iso(), "origin": origin}
-        if cand.get("quote"):
-            entry["quote"] = str(cand["quote"])
+        if quote:
+            entry["quote"] = quote
         record.append_evidence(entry)
         try:
             path = create_record(home, record)
         except LedgerOpsError as exc:
             _outcome(result, origin, "dropped-land-failed", reason=str(exc)[:200])
             continue
+        if resurface_of is not None:
+            _rejected_mark_landed(resurface_of)
+            _outcome(result, origin, "resurfaced", record=resurface_of,
+                     sightings=resurface_n)
         origins.add(origin)
         result.landed.append(record.id)
         _outcome(
@@ -838,19 +1022,24 @@ def _reconcile_and_land(
                 continue
             rid = str(fire.get("record") or "")
             outcome = str(fire.get("outcome") or "")
-            if not RECORD_ID_RE.match(rid) or outcome not in (
-                "complied",
-                "violated",
+            ref = _valid_ref(fire)
+            if (
+                ref is None
+                or not RECORD_ID_RE.match(rid)
+                or outcome not in ("complied", "violated")
             ):
                 continue
-            if _find_record(home, rid) is None:
+            found = _find_record(home, rid)
+            if found is None or found[0].status != "routed":
+                continue  # fires only against live routed rules
+            origin = f"transcript:{ref[0]}#L{ref[1]}"
+            key = ("fire", rid, origin)
+            if key in seen_events:
                 continue
             telemetry.spool_quiet(
-                "fire",
-                record=rid,
-                origin=f"transcript:{fire.get('session')}#L{fire.get('line')}",
-                outcome=outcome,
+                "fire", record=rid, origin=origin, outcome=outcome
             )
+            seen_events.add(key)
             result.fires += 1
 
 
@@ -896,9 +1085,19 @@ def _spawn_run(home: Path) -> int:
     return proc.pid
 
 
+def _last_attempt_age_secs() -> float:
+    try:
+        return time.time() - (miner_dir() / "miner.last-attempt").stat().st_mtime
+    except FileNotFoundError:
+        return float("inf")
+
+
 def maybe_kick(home: Path | str) -> str:
-    """Verb-invocation watchdog: spawn a detached run when the last one is
-    >24 h old. Returns disabled | fresh | busy | spawned."""
+    """Verb-invocation watchdog: spawn a detached run when the last
+    COMPLETED run is >24 h old AND the last ATTEMPT is >2 h old (audit:
+    without the attempt cool-down, a persistently failing reader turns
+    every CLI invocation into a full walk + 15-minute model attempt).
+    Returns disabled | fresh | cooling | busy | spawned."""
     if (
         os.environ.get("SELF_LEARN_MINER") == "0"
         or os.environ.get("SELF_LEARN_MINER_AUTOKICK") == "0"
@@ -906,6 +1105,8 @@ def maybe_kick(home: Path | str) -> str:
         return "disabled"
     if _last_run_age_secs() <= KICK_AFTER_SECS:
         return "fresh"
+    if _last_attempt_age_secs() <= ATTEMPT_COOLDOWN_SECS:
+        return "cooling"
     with open(miner_dir() / "miner.spawn.lock", "w", encoding="utf-8") as fh:
         try:
             fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -935,121 +1136,150 @@ def run(home: Path | str, *, trigger: str = "manual", since: str | None = None) 
             fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return MineResult(status="busy")
+        (miner_dir() / "miner.last-attempt").touch()  # watchdog cool-down
 
-        rubric_version = _rubric(home)[1]
         base = {
             "ts": _now_iso(),
             "run_id": run_id,
             "trigger": trigger,
-            "rubric_version": rubric_version,
+            "rubric_version": _rubric(home)[1],
             "model": miner_model(),
         }
-
-        slices = walk(since)
-        digests: list[str] = []
-        digested: list[SessionSlice] = []
-        excluded = 0
-        total_chars = 0
-        deferred_files = 0
-        for s in slices:
-            digest = digest_transcript(s)
-            if digest is None:
-                excluded += 1
-                digested.append(s)  # nothing minable — cursor still advances
-                continue
-            if total_chars + len(digest) > MAX_PROMPT_DIGESTS_CHARS:
-                deferred_files += 1  # stays behind the cursor for next run
-                continue
-            total_chars += len(digest)
-            digests.append(digest)
-            digested.append(s)
-
-        result = MineResult(
-            status="idle", run_id=run_id, sessions_scanned=len(digests)
-        )
-
-        if not digests:
-            _advance_cursors(digested)
-            (miner_dir() / "miner.last-run").touch()
-            _journal({**base, "status": "idle", "sessions_scanned": 0,
-                      "excluded": excluded,
-                      "duration_secs": round(time.time() - t0, 1)})
-            log(f"run {run_id}: idle (nothing new)")
-            return result
-
-        # Flood gate (§8 Q3): don't advance cursors — nothing is missed.
-        total_pending = worker.fast_status(home)["total_pending"]
-        gate = pending_gate()
-        if total_pending >= gate:
-            result.status = "held-gate"
-            (miner_dir() / "miner.last-run").touch()
-            _journal({**base, "status": "held-gate",
-                      "pending": total_pending, "gate": gate,
-                      "sessions_ready": len(digests),
-                      "duration_secs": round(time.time() - t0, 1)})
-            log(f"run {run_id}: held — {total_pending} pending ≥ gate {gate}")
-            return result
-
-        out_path = spool_dir() / OUTPUT_BASENAME
-        prompt = _compose_prompt(home, digests, out_path)
-        artifact = _invoke_reader(home, prompt)
-        if artifact is None:
-            result.status = "failed"
+        try:
+            return _run_locked(home, since, t0, run_id, base)
+        except Exception as exc:  # noqa: BLE001 — A1: EVERY run journals,
+            # even a crashed one (audit B1: an uncaught error previously
+            # left no journal entry at all — invisible to mine status).
+            log(f"run {run_id}: CRASHED — {exc}\n{traceback.format_exc()}")
             _journal({**base, "status": "failed",
-                      "reason": "reader produced no output",
-                      "sessions_scanned": len(digests),
+                      "reason": f"crashed: {exc}"[:300],
                       "duration_secs": round(time.time() - t0, 1)})
-            return result
-        try:
-            parsed = json.loads(artifact.read_text(encoding="utf-8"))
-            if not isinstance(parsed, dict):
-                raise ValueError("output is not a JSON object")
-        except (OSError, ValueError) as exc:
-            result.status = "failed"
-            _journal({**base, "status": "failed",
-                      "reason": f"unparseable reader output: {exc}",
-                      "sessions_scanned": len(digests),
-                      "duration_secs": round(time.time() - t0, 1)})
-            return result
-
-        cap = cap_for(len(digests))
-        hold = sentinel.hold()
-        try:
-            _reconcile_and_land(home, parsed, result, cap)
-        finally:
-            hold.release()
-
-        _advance_cursors(digested)
-        (miner_dir() / "miner.last-run").touch()
-        result.status = "ok"
-        _journal({**base, "status": "ok",
-                  "sessions_scanned": len(digests),
-                  "excluded": excluded,
-                  "deferred_files": deferred_files,
-                  "cap": cap,
-                  "landed": len(result.landed),
-                  "folded": len(result.folded),
-                  "recurrences": len(result.recurrences),
-                  "fires": result.fires,
-                  "outcomes": result.outcomes,
-                  "duration_secs": round(time.time() - t0, 1)})
-        log(
-            f"run {run_id}: ok — {len(result.landed)} landed, "
-            f"{len(result.folded)} folded, {len(result.recurrences)} "
-            f"recurrence(s), {result.fires} fire(s)"
-        )
-
-        try:
-            telemetry.flush(home)
-        except telemetry.TelemetryError as exc:
-            log(f"run {run_id}: telemetry flush refused ({exc})")
-
-        if result.landed:
-            worker.kick(home)  # analyzed before any human sees the card
-        return result
+            return MineResult(status="failed", run_id=run_id)
     finally:
         try:
             fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
         except OSError:
             pass
         lock_fh.close()
+
+
+def _run_locked(
+    home: Path, since: str | None, t0: float, run_id: str, base: dict
+) -> MineResult:
+    # First-activation forward-only pin (§8 R2, audit B2): seed cursors at
+    # the current end of every existing transcript and stop — history is
+    # reachable only through the deliberate --since backfill.
+    if not initialized():
+        seeded = initialize_cursors()
+        (miner_dir() / "miner.last-run").touch()
+        _journal({**base, "status": "initialized", "files_seeded": seeded,
+                  "duration_secs": round(time.time() - t0, 1)})
+        log(f"run {run_id}: initialized forward-only ({seeded} files seeded)")
+        return MineResult(status="initialized", run_id=run_id)
+
+    slices = walk(since)
+    digests: list[str] = []
+    processed: list[tuple[SessionSlice, bool]] = []
+    excluded = 0
+    total_chars = 0
+    deferred_files = 0
+    for s in slices:
+        digest, halt = digest_transcript(s)
+        if digest is None:
+            excluded += 1
+            processed.append((s, halt))  # nothing minable — cursor advances
+            continue
+        if total_chars + len(digest) > MAX_PROMPT_DIGESTS_CHARS:
+            deferred_files += 1  # stays behind the cursor for next run
+            continue
+        total_chars += len(digest)
+        digests.append(digest)
+        processed.append((s, halt))
+
+    result = MineResult(
+        status="idle", run_id=run_id, sessions_scanned=len(digests)
+    )
+
+    if not digests:
+        _advance_cursors(processed)
+        (miner_dir() / "miner.last-run").touch()
+        _journal({**base, "status": "idle", "sessions_scanned": 0,
+                  "excluded": excluded,
+                  "duration_secs": round(time.time() - t0, 1)})
+        log(f"run {run_id}: idle (nothing new)")
+        return result
+
+    # Flood gate (§8 Q3): don't advance cursors — nothing is missed.
+    total_pending = worker.fast_status(home)["total_pending"]
+    gate = pending_gate()
+    if total_pending >= gate:
+        result.status = "held-gate"
+        (miner_dir() / "miner.last-run").touch()
+        _journal({**base, "status": "held-gate",
+                  "pending": total_pending, "gate": gate,
+                  "sessions_ready": len(digests),
+                  "duration_secs": round(time.time() - t0, 1)})
+        log(f"run {run_id}: held — {total_pending} pending ≥ gate {gate}")
+        return result
+
+    out_path = spool_dir() / OUTPUT_BASENAME
+    prompt = _compose_prompt(home, digests, out_path)
+    artifact = _invoke_reader(home, prompt)
+    if artifact is None:
+        result.status = "failed"
+        _journal({**base, "status": "failed",
+                  "reason": "reader produced no output",
+                  "sessions_scanned": len(digests),
+                  "duration_secs": round(time.time() - t0, 1)})
+        return result
+    try:
+        parsed = json.loads(artifact.read_text(encoding="utf-8"))
+        if not isinstance(parsed, dict):
+            raise ValueError("output is not a JSON object")
+    except (OSError, ValueError) as exc:
+        result.status = "failed"
+        _journal({**base, "status": "failed",
+                  "reason": f"unparseable reader output: {exc}",
+                  "sessions_scanned": len(digests),
+                  "duration_secs": round(time.time() - t0, 1)})
+        return result
+
+    cap = cap_for(len(digests))
+    hold = sentinel.hold()
+    try:
+        _reconcile_and_land(home, parsed, result, cap)
+    finally:
+        hold.release()
+
+    _advance_cursors(processed)
+    (miner_dir() / "miner.last-run").touch()
+    result.status = "ok"
+    _journal({**base, "status": "ok",
+              "sessions_scanned": len(digests),
+              "excluded": excluded,
+              "deferred_files": deferred_files,
+              "cap": cap,
+              "landed": len(result.landed),
+              "folded": len(result.folded),
+              "recurrences": len(result.recurrences),
+              "fires": result.fires,
+              "outcomes": result.outcomes,
+              "duration_secs": round(time.time() - t0, 1)})
+    log(
+        f"run {run_id}: ok — {len(result.landed)} landed, "
+        f"{len(result.folded)} folded, {len(result.recurrences)} "
+        f"recurrence(s), {result.fires} fire(s)"
+    )
+
+    # Flush only when this run actually produced events — an empty nightly
+    # flush would put a machine-triggered commit on the tracked telemetry
+    # plane for nothing (audit m8).
+    if result.landed or result.folded or result.recurrences or result.fires:
+        try:
+            telemetry.flush(home)
+        except telemetry.TelemetryError as exc:
+            log(f"run {run_id}: telemetry flush refused ({exc})")
+
+    if result.landed:
+        worker.kick(home)  # analyzed before any human sees the card
+    return result

@@ -204,11 +204,14 @@ def write_settings_file(home: Path) -> Path:
     return path
 
 
-def build_argv(home: Path, prompt: str, settings_path: Path) -> list[str]:
+def build_argv(home: Path, settings_path: Path) -> list[str]:
+    """The prompt is deliberately NOT in argv (audit 2026-07-15, shared
+    with the miner's B1): Linux caps one argv element at 128 KiB, and a
+    full batch — 15 records × (record + canon excerpt) + doctrine +
+    registry — plausibly exceeds it. The prompt rides stdin instead."""
     return [
         "claude",
         "-p",
-        prompt,
         "--model",
         worker_model(),
         "--allowedTools",
@@ -936,11 +939,12 @@ def run(home: Path | str, *, coalesce: bool = False) -> RunResult:
             else:
                 prompt = _compose_prompt(home, batch)
                 snap = _proposal_snapshot(home)
-                argv = build_argv(home, prompt, write_settings_file(home))
+                argv = build_argv(home, write_settings_file(home))
                 try:
                     proc = subprocess.run(
                         argv,
                         cwd=str(home),
+                        input=prompt,  # stdin — argv caps at 128 KiB (audit)
                         capture_output=True,
                         text=True,
                         timeout=INVOKE_TIMEOUT_SECS,
@@ -954,7 +958,17 @@ def run(home: Path | str, *, coalesce: bool = False) -> RunResult:
                     log("run: claude CLI not found on PATH")
                 except subprocess.TimeoutExpired:
                     log(f"run: claude timed out after {INVOKE_TIMEOUT_SECS}s")
-                sentinel.heartbeat()  # the invocation may have taken 15 min
+                except OSError as exc:
+                    log(f"run: claude invocation failed ({exc})")
+                # The invocation may have taken 15 min — and a CONCURRENT
+                # short holder (e.g. the miner's landing phase) may have
+                # created-then-RELEASED the sentinel we joined, deleting
+                # autosync cover mid-run (audit 2026-07-15: owner/joiner
+                # race). heartbeat() returns False on a missing file and
+                # never resurrects: re-assert the hold before validation.
+                if not sentinel.heartbeat():
+                    hold = sentinel.hold()
+                    sentinel.heartbeat()
 
                 written = _written_since(home, snap)
                 result = _validate_written(home, written)

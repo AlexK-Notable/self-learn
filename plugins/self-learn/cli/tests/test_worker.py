@@ -73,17 +73,20 @@ def claude_shim(tmp_path, monkeypatch, env):
     shims = tmp_path / "shims"
     shims.mkdir(exist_ok=True)
     log = tmp_path / "claude-argv.log"
+    prompt_log = tmp_path / "claude-prompt.log"
     shim = shims / "claude"
     shim.write_text(
         "#!/usr/bin/env bash\n"
         f'printf \'%s\\0\' "$@" > "{log}"\n'
+        # the prompt rides STDIN (audit 2026-07-15: argv caps at 128 KiB)
+        f'cat > "{prompt_log}" || true\n'
         'if [ -n "${CLAUDE_SHIM_SCRIPT-}" ]; then bash -c "$CLAUDE_SHIM_SCRIPT"; fi\n'
         'exit "${CLAUDE_SHIM_EXIT-0}"\n',
         encoding="utf-8",
     )
     shim.chmod(shim.stat().st_mode | stat.S_IEXEC)
     monkeypatch.setenv("PATH", f"{shims}:{os.environ['PATH']}")
-    return {"log": log, "dir": shims}
+    return {"log": log, "prompt": prompt_log, "dir": shims}
 
 
 def seed_pending(env, rid="lrn-0000aaaa", created_at=None):
@@ -209,7 +212,11 @@ def test_run_argv_pins(env, claude_shim, monkeypatch):
     for rule in rules:  # // prefix = filesystem-absolute in rule syntax
         assert rule.startswith("Edit(//")
     assert argv[argv.index("--model") + 1] == "claude-sonnet-5"
-    prompt = argv[argv.index("-p") + 1]
+    # The prompt is NOT in argv (audit 2026-07-15: 128 KiB argv cap; a
+    # full batch exceeds it) — it rides stdin.
+    assert "-p" in argv
+    assert not any("About to edit" in a for a in argv)
+    prompt = claude_shim["prompt"].read_text(encoding="utf-8")
     assert "About to edit .storage while HA is running." in prompt  # record body
     assert "Authored prose stays put." in prompt  # target-canon excerpt
 
@@ -606,3 +613,26 @@ def test_digest_ordered_by_author_date_newest_first(env, claude_shim, monkeypatc
     assert cli.main(["reject", newer, "--note", "newer reject", "--no-push"]) == 0
     digest = worker._digest(env.home)
     assert digest.index(newer) < digest.index(older)
+
+
+def test_run_reasserts_sentinel_deleted_mid_pass(env, claude_shim, monkeypatch):
+    """Audit 2026-07-15 (miner round, M2): a concurrent short holder (the
+    miner's landing phase) that created the sentinel can release-delete it
+    while this worker run — a mere joiner — is mid-model-pass. The run
+    must re-assert the hold before validation, or autosync's rebase can
+    eat valid proposals mid-validation."""
+    from self_learn import sentinel
+
+    rid = seed_pending(env)
+    sentinel_path = sentinel.sentinel_path()
+    # the shim simulates the racing holder: it deletes the sentinel file
+    # during the model pass, after writing its proposal
+    monkeypatch.setenv(
+        "CLAUDE_SHIM_SCRIPT",
+        shim_writes(env, rid) + f'\nrm -f "{sentinel_path}"',
+    )
+    result = worker.run(env.home)
+    assert result.status == "ok" and result.proposed == [rid]
+    # the re-assert happened: a sentinel existed during validation and the
+    # run's own release removed it at the end (owned)
+    assert not sentinel_path.exists()

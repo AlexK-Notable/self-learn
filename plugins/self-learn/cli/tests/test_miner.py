@@ -10,6 +10,8 @@ pre-satisfied spec-forbidden fields.
 
 import fcntl
 import json
+import os
+import time
 from pathlib import Path
 
 import pytest
@@ -42,6 +44,10 @@ def transcripts(tmp_path, monkeypatch):
     root = tmp_path / "transcripts"
     (root / "-home-u-proj").mkdir(parents=True)
     monkeypatch.setenv("SELF_LEARN_TRANSCRIPTS_DIR", str(root))
+    # Most tests exercise steady-state mining: mark the forward-only
+    # initialization as already done (its own behavior is tested in
+    # test_first_run_initializes_forward_only).
+    miner._save_cursors({"__initialized__": "test-fixture"})
     return root
 
 
@@ -128,7 +134,8 @@ def test_digest_keeps_speech_drops_tool_bodies(transcripts):
             a("The root cause was a stale fixture."),
         ],
     )
-    digest = miner.digest_transcript(slice_of(p))
+    digest, halt = miner.digest_transcript(slice_of(p))
+    assert not halt
     assert "please fix the flaky test" in digest
     assert "The root cause was a stale fixture." in digest
     assert "noise line 25" not in digest  # body dropped to edges
@@ -144,7 +151,7 @@ def test_digest_error_and_retry_cluster(transcripts):
         lines.append(result(f"t{i}", "boom", is_error=(i < 2)))
     lines.append(u("ugh, again"))
     p = write_transcript(transcripts, "sess2", lines)
-    digest = miner.digest_transcript(slice_of(p))
+    digest, _halt = miner.digest_transcript(slice_of(p))
     assert "ERROR" in digest
     assert "[retry-cluster Bash:make build ×3, 2 error(s)]" in digest
 
@@ -155,16 +162,20 @@ def test_digest_excludes_own_machinery(transcripts):
         "worker-sess",
         [u("You are the self-learn routing analyst worker. Records below."), a("ok")],
     )
-    assert miner.digest_transcript(slice_of(p)) is None
+    assert miner.digest_transcript(slice_of(p)) == (None, True)
     p2 = write_transcript(
         transcripts,
         "miner-sess",
         [u("You are the self-learn transcript miner. Digests below."), a("ok")],
     )
-    assert miner.digest_transcript(slice_of(p2)) is None
+    assert miner.digest_transcript(slice_of(p2)) == (None, True)
 
 
-def test_digest_excludes_selflearn_command_span(transcripts):
+def test_digest_selflearn_tag_halts_rest_of_session(transcripts):
+    """Audit 2026-07-15 B2: the old span rule collapsed on the first user
+    reply — a review session's card content (verbatim lesson text) was
+    mined back as fake sightings. The tag now halts the WHOLE remainder,
+    including the user's own review replies, forever."""
     p = write_transcript(
         transcripts,
         "sess3",
@@ -172,20 +183,50 @@ def test_digest_excludes_selflearn_command_span(transcripts):
             u("normal work before"),
             u("<command-name>/self-learn:review</command-name> run it"),
             a("Card 1 of 3: the lesson about storage edits…"),
-            u("back to normal work now"),
-            a("resuming the actual task"),
+            u("route it"),  # the realistic next turn — a review reply
+            a("Card 2 of 3: another lesson's full trigger text…"),
         ],
     )
-    digest = miner.digest_transcript(slice_of(p))
+    digest, halt = miner.digest_transcript(slice_of(p))
+    assert halt is True
     assert "normal work before" in digest
-    assert "Card 1 of 3" not in digest  # inside the span
-    assert "back to normal work now" in digest
-    assert "resuming the actual task" in digest
+    assert "Card 1 of 3" not in digest
+    assert "route it" not in digest
+    assert "Card 2 of 3" not in digest
+
+
+def test_halt_persists_across_slices(home, transcripts, monkeypatch):
+    """Exclusion state must survive cursor splits: a review session still
+    being written when the miner runs must stay excluded when its TAIL
+    arrives in the next run's slice."""
+    p = write_transcript(
+        transcripts,
+        "sess-split",
+        [u("real work"), u("<command-name>/self-learn:review</command-name> go")],
+    )
+    shim_reader(monkeypatch, {"candidates": [], "fires": []})
+    assert miner.run(home).status == "ok"
+    # the session continues after the first run
+    with open(p, "a", encoding="utf-8") as fh:
+        fh.write(a("Card 1: verbatim lesson text that must never be mined") + "\n")
+    captured = {}
+
+    def spy(h, prompt):
+        captured["prompt"] = prompt
+        out = miner.spool_dir() / miner.OUTPUT_BASENAME
+        out.write_text(json.dumps({"candidates": [], "fires": []}))
+        return out
+
+    monkeypatch.setattr(miner, "_invoke_reader", spy)
+    result = miner.run(home)
+    assert result.status == "idle"  # halted file skipped without reading
+    assert "captured" not in captured or "Card 1" not in captured.get("prompt", "")
 
 
 def test_digest_plain_string_content(transcripts):
     p = write_transcript(transcripts, "sess4", [u_str("string-content user turn")])
-    assert "string-content user turn" in miner.digest_transcript(slice_of(p))
+    digest, _halt = miner.digest_transcript(slice_of(p))
+    assert "string-content user turn" in digest
 
 
 # ------------------------------------------------------------- walk
@@ -195,7 +236,7 @@ def test_walk_cursor_advance_and_append(transcripts):
     p = write_transcript(transcripts, "sess5", [u("one"), u("two")])
     slices = miner.walk()
     assert len(slices) == 1 and slices[0].start_line == 0
-    miner._advance_cursors(slices)
+    miner._advance_cursors([(s, False) for s in slices])
     assert miner.walk() == []
     with open(p, "a", encoding="utf-8") as fh:
         fh.write(u("three") + "\n")
@@ -206,7 +247,7 @@ def test_walk_cursor_advance_and_append(transcripts):
 
 def test_walk_since_rereads_from_zero(transcripts):
     p = write_transcript(transcripts, "sess6", [u("old content")])
-    miner._advance_cursors(miner.walk())
+    miner._advance_cursors([(s, False) for s in miner.walk()])
     assert miner.walk() == []
     slices = miner.walk(since="2020-01-01")
     assert len(slices) == 1 and slices[0].start_line == 0
@@ -440,9 +481,10 @@ def test_rejected_resurfaces_on_third_sighting(home, transcripts, monkeypatch):
                 == "dropped-rejected"
             )
     assert len(result.landed) == 1  # third sighting resurfaces (§8 Q4)
-    outcome = miner.read_journal()[-1]["outcomes"][0]
-    assert outcome["outcome"] == "landed"
-    assert "previously rejected" in outcome["why"]
+    outcomes = miner.read_journal()[-1]["outcomes"]
+    assert any(o["outcome"] == "resurfaced" for o in outcomes)
+    landed = next(o for o in outcomes if o["outcome"] == "landed")
+    assert "previously rejected" in landed["why"]
     # …and only once: a fourth sighting stays dropped
     write_transcript(transcripts, "sess-rej3", [u("sighting 3")])
     shim_reader(
@@ -578,13 +620,39 @@ def test_reader_argv_and_settings(home, monkeypatch):
     assert len(rules) == 1
     assert rules[0].startswith("Edit(/") and rules[0].endswith("/spool/**)")
     assert str(home) not in rules[0]  # repo entirely out of write reach
-    argv = miner.build_reader_argv("PROMPT", settings)
-    assert argv[:3] == ["claude", "-p", "PROMPT"]
+    argv = miner.build_reader_argv(settings)
+    # audit B1: the prompt is NEVER in argv (128 KiB kernel cap) — stdin.
+    assert argv[:2] == ["claude", "-p"]
+    assert "PROMPT" not in argv
     assert "claude-test-model" in argv
-    i = argv.index("--allowedTools")
-    assert argv[i + 1] == "Read,Grep,Glob"
+    # injection hardening: the reader gets NO filesystem tools at all —
+    # its whole evidence base is in the prompt.
+    assert "--allowedTools" not in argv
     j = argv.index("--disallowedTools")
-    assert "Bash" in argv[j + 1] and "Edit" in argv[j + 1]
+    for tool in ("Bash", "Edit", "Read", "Grep", "Glob", "WebFetch"):
+        assert tool in argv[j + 1]
+
+
+def test_reader_survives_oversize_prompt(home, tmp_path, monkeypatch):
+    """Audit B1 regression: a >128 KiB prompt must reach the reader (via
+    stdin) instead of crashing exec with E2BIG — exercised through the
+    REAL exec path with a PATH shim."""
+    shims = tmp_path / "shims-big"
+    shims.mkdir()
+    spool = miner.spool_dir()
+    got = tmp_path / "got-prompt"
+    shim = shims / "claude"
+    shim.write_text(
+        "#!/usr/bin/env bash\n"
+        f'cat > "{got}"\n'
+        f'echo \'{{"candidates": [], "fires": []}}\' > "{spool}/{miner.OUTPUT_BASENAME}"\n'
+    )
+    shim.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{shims}:/usr/bin")
+    big_prompt = "X" * 300_000  # > the 131072-byte argv limit
+    out = miner._invoke_reader(home, big_prompt)
+    assert out is not None and out.is_file()
+    assert got.stat().st_size == 300_000
 
 
 def test_artifact_contract_sweeps_strays(home, tmp_path, monkeypatch):
@@ -594,6 +662,7 @@ def test_artifact_contract_sweeps_strays(home, tmp_path, monkeypatch):
     shim = shims / "claude"
     shim.write_text(
         "#!/usr/bin/env bash\n"
+        "cat > /dev/null\n"  # consume the stdin prompt
         f'echo stray > "{spool}/litter.txt"\n'
         f'echo \'{{"candidates": [], "fires": []}}\' > "{spool}/{miner.OUTPUT_BASENAME}"\n'
     )
@@ -681,3 +750,249 @@ def test_report_tracks_mined_supply(home, transcripts, monkeypatch, capsys):
     assert facts["mined"]["accept_rate"] == 1.0
     text = report.render_text(facts)
     assert "Mined supply (transcript miner)" in text
+
+
+# ----------------------------------------- audit-fix regressions (round 1)
+
+
+def test_first_run_initializes_forward_only(home, transcripts, monkeypatch):
+    """Audit B2: night one seeds cursors at EOF and mines NOTHING; history
+    is reachable only via --since. A pre-existing file containing
+    self-learn machinery markers is halted outright."""
+    miner._save_cursors({})  # fresh machine: not initialized
+    write_transcript(transcripts, "sess-history", [u("old lesson-rich work")])
+    write_transcript(
+        transcripts,
+        "sess-live-review",
+        [u("work"), u("<command-name>/self-learn:review</command-name> go")],
+    )
+    called = []
+    monkeypatch.setattr(miner, "_invoke_reader", lambda *a: called.append(1))
+    result = miner.run(home)
+    assert result.status == "initialized"
+    assert not called  # nothing mined
+    assert miner.read_journal()[-1]["status"] == "initialized"
+    assert miner.read_journal()[-1]["files_seeded"] == 2
+    assert miner.initialized()
+    # in-flight review session halted even though its cursor was seeded
+    cursors = miner._load_cursors()
+    halted = [k for k, v in cursors.items() if isinstance(v, dict) and v.get("halt")]
+    assert any("sess-live-review" in k for k in halted)
+    # second run: nothing new → idle, history untouched
+    shim_reader(monkeypatch, {"candidates": [], "fires": []})
+    assert miner.run(home).status == "idle"
+    # new appends after initialization ARE mined
+    with open(transcripts / "-home-u-proj" / "sess-history.jsonl", "a") as fh:
+        fh.write(u("fresh correction after init") + "\n")
+    spy = {}
+
+    def fake(h, prompt):
+        spy["prompt"] = prompt
+        out = miner.spool_dir() / miner.OUTPUT_BASENAME
+        out.write_text(json.dumps({"candidates": [], "fires": []}))
+        return out
+
+    monkeypatch.setattr(miner, "_invoke_reader", fake)
+    assert miner.run(home).status == "ok"
+    assert "fresh correction after init" in spy["prompt"]
+    assert "old lesson-rich work" not in spy["prompt"]
+
+
+def test_torn_trailing_line_left_for_next_run(transcripts):
+    p = transcripts / "-home-u-proj" / "sess-torn.jsonl"
+    p.write_text(u("complete line") + "\n" + '{"type":"user","mes', encoding="utf-8")
+    slices = miner.walk()
+    assert len(slices) == 1 and len(slices[0].lines) == 1
+    miner._advance_cursors([(slices[0], False)])
+    # the torn tail completes later
+    with open(p, "a", encoding="utf-8") as fh:
+        fh.write('sage":{"role":"user","content":"finished now"}}\n')
+    slices = miner.walk()
+    assert len(slices) == 1
+    assert slices[0].start_line == 1  # the once-torn line is NOW read
+    assert "finished now" in slices[0].lines[0]
+
+
+def test_walk_skips_unchanged_files_without_reading(transcripts, monkeypatch):
+    p = write_transcript(transcripts, "sess-skip", [u("one")])
+    slices = miner.walk()
+    miner._advance_cursors([(s, False) for s in slices])
+    reads = []
+    real = miner._complete_lines
+    monkeypatch.setattr(
+        miner, "_complete_lines", lambda path: reads.append(path) or real(path)
+    )
+    assert miner.walk() == []
+    assert reads == []  # size unchanged → no I/O
+    assert p.is_file()
+
+
+def test_watchdog_cooldown_after_failed_attempt(home, transcripts, monkeypatch):
+    """Audit M1/M4: a failing reader must not turn every CLI invocation
+    into a fresh mining attempt — attempts have their own 2h cool-down."""
+    monkeypatch.setenv("SELF_LEARN_MINER_AUTOKICK", "1")
+    write_transcript(transcripts, "sess-cool", [u("work")])
+    monkeypatch.setattr(miner, "_invoke_reader", lambda *a: None)  # reader broken
+    assert miner.run(home).status == "failed"
+    assert not (miner.miner_dir() / "miner.last-run").is_file()  # alarm intact
+    spawned = []
+    monkeypatch.setattr(miner, "_spawn_run", lambda h: spawned.append(h) or 1)
+    assert miner.maybe_kick(home) == "cooling"  # attempt marker is fresh
+    assert spawned == []
+    # once the cool-down passes, the watchdog may retry
+    old = time.time() - miner.ATTEMPT_COOLDOWN_SECS - 60
+    os.utime(miner.miner_dir() / "miner.last-attempt", (old, old))
+    assert miner.maybe_kick(home) == "spawned"
+
+
+def test_resurface_not_killed_by_cap(home, transcripts, monkeypatch):
+    """Audit M1 (code): reaching the resurface threshold in a run whose
+    cap is exhausted must NOT permanently mark the rejected id landed."""
+    rejected = make_behavior()
+    _resolve(home, rejected, "rejected")
+    monkeypatch.setenv("SELF_LEARN_MINE_CAP_PER_SESSION", "1")
+    monkeypatch.setenv("SELF_LEARN_MINE_CAP_MAX", "1")
+    # two prior sightings on the counter
+    for i in range(2):
+        miner._rejected_counter_bump(rejected.id, f"transcript:seed#L{i}")
+    write_transcript(transcripts, "sess-rescap", [u("work")])
+    shim_reader(
+        monkeypatch,
+        {
+            "candidates": [
+                # cap-eater lands first
+                candidate(session="sess-rescap", line=1,
+                          trigger="Unrelated first candidate trigger"),
+                # third sighting arrives with the cap already consumed
+                candidate(session="sess-rescap", line=2,
+                          match={"record": rejected.id, "status": "rejected"}),
+            ],
+            "fires": [],
+        },
+    )
+    result = miner.run(home)
+    assert len(result.landed) == 1  # only the cap-eater
+    outcomes = [o["outcome"] for o in miner.read_journal()[-1]["outcomes"]]
+    assert "dropped-cap" in outcomes
+    # the pathway is NOT dead: next run (cap free) lands the resurfaced one
+    write_transcript(transcripts, "sess-rescap2", [u("more work")])
+    shim_reader(
+        monkeypatch,
+        {
+            "candidates": [
+                candidate(session="sess-rescap2", line=3,
+                          match={"record": rejected.id, "status": "rejected"})
+            ],
+            "fires": [],
+        },
+    )
+    result = miner.run(home)
+    assert len(result.landed) == 1
+    assert any(
+        o["outcome"] == "resurfaced" for o in miner.read_journal()[-1]["outcomes"]
+    )
+
+
+def test_fire_and_recurrence_replays_deduped(home, transcripts, monkeypatch):
+    """Audit M2: --since replays and crash-replays must not duplicate
+    fire / recurrence-suspect telemetry."""
+    routed = make_behavior()
+    _resolve(home, routed, "routed")
+    write_transcript(transcripts, "sess-replay", [u("work")])
+    payload = {
+        "candidates": [
+            candidate(session="sess-replay", line=7,
+                      match={"record": routed.id, "status": "routed"})
+        ],
+        "fires": [
+            {"record": routed.id, "session": "sess-replay", "line": 9,
+             "outcome": "violated"}
+        ],
+    }
+    shim_reader(monkeypatch, payload)
+    assert miner.run(home).status == "ok"
+    # flush so read_events sees them, then replay the same session
+    telemetry.flush(home)
+    shim_reader(monkeypatch, payload)
+    result = miner.run(home, since="2020-01-01")
+    assert result.recurrences == [] and result.fires == 0
+    events = telemetry.read_events(home)
+    assert len([e for e in events if e.get("kind") == "fire"]) == 1
+    assert len([e for e in events if e.get("kind") == "recurrence-suspect"]) == 1
+
+
+def test_bad_session_ref_and_oversize_fields_dropped(home, transcripts, monkeypatch):
+    """Audit M3: model-authored session/line are validated (they build the
+    origin that lands in tracked files + telemetry); oversize fields are
+    refused, oversize quotes dropped."""
+    write_transcript(transcripts, "sess-val", [u("work")])
+    shim_reader(
+        monkeypatch,
+        {
+            "candidates": [
+                candidate(session="ghp_secretlooking token !!", line=1),
+                candidate(session="sess-val", line="not-an-int"),
+                candidate(session="sess-val", line=2,
+                          trigger="T" * 2000),  # over MAX_FIELD_CHARS
+                candidate(session="sess-val", line=3,
+                          quote="Q" * 1000),  # quote dropped, candidate lands
+            ],
+            "fires": [
+                {"record": "lrn-deadbeef", "session": "x y z", "line": 1,
+                 "outcome": "violated"}
+            ],
+        },
+    )
+    result = miner.run(home)
+    assert len(result.landed) == 1
+    outcomes = [o["outcome"] for o in miner.read_journal()[-1]["outcomes"]]
+    assert outcomes.count("dropped-invalid") == 3  # 2 bad refs + 1 oversize field
+    assert "quote-dropped-overlength" in outcomes
+    rid = result.landed[0]
+    for bucket_dir in home.glob("plugins/*/skills/*/.self-learn/pending"):
+        path = bucket_dir / f"{rid}.md"
+        if path.is_file():
+            record = Record.from_path(path)
+            assert all("quote" not in ev for ev in record.evidence)
+
+
+def test_bad_kind_dropped_not_coerced(home, transcripts, monkeypatch):
+    write_transcript(transcripts, "sess-kind", [u("work")])
+    shim_reader(
+        monkeypatch,
+        {"candidates": [candidate(session="sess-kind", kind="brilliant-idea")],
+         "fires": []},
+    )
+    result = miner.run(home)
+    assert result.landed == []
+    assert miner.read_journal()[-1]["outcomes"][0]["outcome"] == "dropped-invalid"
+
+
+def test_fold_bumps_sightings(home, transcripts, monkeypatch):
+    existing = make_behavior()
+    create_record(home, existing)
+    write_transcript(transcripts, "sess-sigh", [u("again")])
+    shim_reader(
+        monkeypatch,
+        {"candidates": [candidate(session="sess-sigh",
+                                  match={"record": existing.id, "status": "pending"})],
+         "fires": []},
+    )
+    miner.run(home)
+    refreshed = Record.from_path(
+        home / "plugins/s-plugin/skills/s/.self-learn/pending" / f"{existing.id}.md"
+    )
+    assert refreshed.sightings == 2
+
+
+def test_crash_mid_run_still_journals(home, transcripts, monkeypatch):
+    """Audit B1 (journal half): ANY unhandled error inside the run must
+    leave a failed journal entry, never vanish."""
+    write_transcript(transcripts, "sess-crash", [u("work")])
+    def boom(*a, **k):
+        raise RuntimeError("synthetic mid-run crash")
+    monkeypatch.setattr(miner, "_compose_prompt", boom)
+    result = miner.run(home)
+    assert result.status == "failed"
+    entry = miner.read_journal()[-1]
+    assert entry["status"] == "failed" and "synthetic mid-run crash" in entry["reason"]
