@@ -8,7 +8,7 @@ import pytest
 from self_learn import cli
 from self_learn.ledger_ops import create_record, defer_record, stamp_proposal, write_proposal
 
-from support import days_ago, make_behavior, make_home, make_knowledge, proposal_dict
+from support import hook_proposal_fields, days_ago, make_behavior, make_home, make_knowledge, proposal_dict
 
 PINNED_ITEM_KEYS = [
     "id",
@@ -52,7 +52,14 @@ def test_list_json_full_pinned_shape(home, capsys):
     write_proposal(
         home,
         "lrn-aa000001",
-        proposal_dict(destination="hook", already_canon=True, already_canon_reason="in canon"),
+        proposal_dict(
+            destination="hook",
+            already_canon=True,
+            already_canon_reason="in canon",
+            # 02 §1 hook extension (M3): destination hook now requires
+            # the structured compile input + replay examples.
+            **hook_proposal_fields(),
+        ),
     )
     stamp_proposal(home, "lrn-aa000001")
 

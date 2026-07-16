@@ -112,6 +112,48 @@ Rules:
 - One record, one proposal. If two pending records look like one lesson,
   say so in `rationale`; merge proposals are the M2 worker's mechanism.
 
+### 5.1 Hook proposals carry the compile input (M3 — 02 §1 hook extension)
+
+A `destination: hook` proposal additionally carries the **structured
+compile input** and the **replay examples** — the CLI generates the guard
+script from them (you never write executable bytes; any `script:` you
+emit is overwritten at stamping, like `record_sha`):
+
+```yaml
+destination: hook
+alternates: [skill-md]     # always include a non-hook alternate
+hook:
+  tools: [Edit, Write]     # subset of Edit | Write | Bash — the tools with
+                           #   a pinned tool_input field (08 §8.1 M3-8)
+  path_regex: '\.storage/' # ERE, applied to Edit/Write .tool_input.file_path
+                           #   or Bash .tool_input.command — never the raw JSON
+  deny_message: "stop the HA container first — .storage is rewritten on shutdown"
+examples:                  # 2–3 each; replayed against the generated script
+  allow:                   #   at route time — any mismatch aborts the route
+    - {tool_name: Edit, tool_input: {file_path: /x/configuration.yaml}}
+    - {tool_name: Write, tool_input: {file_path: /x/notes.md}}
+  deny:
+    - {tool_name: Edit, tool_input: {file_path: /x/.storage/core.config}}
+    - {tool_name: Write, tool_input: {file_path: /y/.storage/auth}}
+```
+
+Rules for the hook block:
+
+- **Only behavior records route to hooks** — the guard's firing condition
+  IS the `## Trigger` (its first ≤4 words also name the script file).
+- **State the over-block explicitly in `rationale`** (08 §4): a
+  deterministic guard usually over-blocks its conditional rule — a
+  path-only `.storage` guard also denies legitimate stopped-container
+  edits. Name what legitimate work the guard will refuse; the human
+  accepts or narrows it. Never leave the over-block implicit.
+- `deny_message` is one line, shown to the blocked model as
+  `self-learn lrn-…: <deny_message>` — carry the *why* so the model can
+  explain the refusal and pick the sanctioned alternative.
+- Every example's `tool_name` must be in `hook.tools` (an example naming
+  an unguarded tool is vacuous — guards allow unguarded tools by design).
+  Make the allow examples REALISTIC near-misses, not strawmen: the
+  closest legitimate calls you expect the guard to let through.
+
 ## 6. Write triggers the compiler can use (trigger-first)
 
 Managed-section entries compile as **"When ⟨trigger⟩: ⟨instruction⟩"** —
@@ -136,12 +178,13 @@ edits, help rewrite) a record:
   `defer`, or `graduate`; you never edit canon; you never edit the record
   (pending-record edits are the human's, made in review). Your entire
   output is the proposal file.
-- **`new-skill` and `hook` may be proposed but cannot compile until M3.**
-  If one of them is the honest best destination, set it as
-  `destination` — the judgment is valuable — but **always** include a
-  routable alternate (`skill-md` or `claude-md`) in `alternates` and note
-  the M3 gap in the rationale, so the human can route the lesson somewhere
-  real today (`route --dest`) instead of parking it.
+- **`new-skill` and `hook` compile at M3, with extra human steps.** A
+  `hook` proposal must carry the §5.1 compile input; the human approves
+  the exact generated script at route time, and registration stays
+  manual. A `new-skill` proposal never names the skill — the name is the
+  human's call at route time (`route --dest new-skill:<name>`). For both,
+  **always** include a routable alternate (`skill-md` or `claude-md`) in
+  `alternates` so the human can choose the cheaper surface.
 - When no destination is defensible (the lesson is a one-off task
   instruction, a user error, or too vague to fire), say so plainly in the
   rationale and recommend rejection — a queue that routes everything is
