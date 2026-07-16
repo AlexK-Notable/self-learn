@@ -598,6 +598,11 @@ def _cmd_status(as_json: bool) -> int:
             "open_followups": followups,
             # 08 §7.1 amendment: iso8601 | null (null = never ran here)
             "worker_last_run": worker.last_run_iso(),
+            # T19 (08 §8.1 O-3/O-7-revisit row): supply mix + the 04
+            # success-metrics counters — FULL status only; the --fast
+            # SessionStart path stays a pending/-only scan, no git.
+            "supply_mix": report_mod.supply_mix(home),
+            "metrics": report_mod.ledger_metrics(home),
         }
         print(json.dumps(payload))
         return EXIT_OK

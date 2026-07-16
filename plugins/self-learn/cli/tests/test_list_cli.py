@@ -200,6 +200,16 @@ def test_status_json_pinned_shape_with_unanalyzed(home, capsys):
         "total_pending": 3,
         "open_followups": 0,
         "worker_last_run": None,
+        # T19: supply mix counts pending+resolved by source (the deferred
+        # record still counts — it exists, teach-sourced); the metrics'
+        # pending_total is STATUS-pending, so the deferred one drops out.
+        "supply_mix": {"teach": 4},
+        "metrics": {
+            "time_to_triage_median_days": None,
+            "pending_total": 3,
+            "pending_over_30d_pct": 0.0,
+            "routed_and_corrected": 0,
+        },
     }
 
 

@@ -41,6 +41,15 @@ def test_status_zero_state_json_exact_shape(sandbox_home, capsys):
         "total_pending": 0,
         "open_followups": 0,
         "worker_last_run": None,
+        # T19: supply mix + 04 success-metrics counters ride full status;
+        # zero-state is honest — empty mix, null medians, never fake zeros.
+        "supply_mix": {},
+        "metrics": {
+            "time_to_triage_median_days": None,
+            "pending_total": 0,
+            "pending_over_30d_pct": None,
+            "routed_and_corrected": 0,
+        },
     }
 
 
