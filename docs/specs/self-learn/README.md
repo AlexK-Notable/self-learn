@@ -35,7 +35,7 @@ human routes it.
 | `09-surface-spec.md` | **Design authority for the G-3 adjudication surface** (web revision, 2026-07-12): interaction model, surfaces/routes, files-as-truth data flow, security middleware, the adjudication pane (Agent SDK engine default / CLI stream-json alternative, empirically probed), degradation table, stack selection |
 | `10-surface-build-plan.md` | **Execution authority for the G-3 build** (gated on G-3's trigger): surface-local pins + verify-at-build ledger, acceptance fixtures incl. live trials, task DAG U1–U11, judgment routing, playbooks — 09 wins on conflict; shared pins stay owned by 08 |
 | `11-telemetry-and-lifecycle.md` | **RATIFIED 2026-07-15 (v2; user-delegated — Q&A in the revision log)** — the life of a lesson after routing: follow-ups, recurrence tracking (suspect→confirm), certainty-as-measured-events, the three-plane data model (record frontmatter / actor-scoped telemetry JSONL / disposable index+report), and the standing multi-machine posture principles |
-| `12-transcript-miner.md` | **DRAFT 2026-07-15 — awaiting ratification (§6)** — autonomous capture: the nightly transcript miner as a third producer ("continuous import"), structural-digest → rubric-driven reader → verb-gated landing, fire observation folded in, and the §5 embeddings decision of record (declined transcript-side, pinned as the ledger-side scaling path) |
+| `12-transcript-miner.md` | **RATIFIED 2026-07-15 (same-day; §8 records the round — resolves O-3)** — autonomous capture: the nightly transcript miner as a third producer ("continuous import"), structural-digest → rubric-driven reader → verb-gated landing with use-scaled caps, run-journal observability contract (feeds the future G-3 miner pane), 24h three-layer watchdog, staged-autonomy ladder for future review autonomy, fire observation folded in, and the §5 embeddings decision of record (declined transcript-side, pinned as the ledger-side scaling path). §9 is the build plan |
 | `research/` | External evidence memos (SOTA surveys etc.) — shareable with blind reviewers, unlike `reviews/` |
 | `fixtures/` | `gen-fixture-b` + `trials.md` (Phase 0 rounds 1–3: six candidates disqualified, B3 qualified + proven 3/3 post-routing — the system's primary behavioral evidence); `ui-trials.md` lands with the G-3 build |
 
@@ -481,3 +481,21 @@ human routes it.
   heuristic. Five ratification questions in §6 (O-3 gate, privacy
   scope, caps, rejected-resurfacing, trigger shape). Nothing builds
   until they're answered.
+- **2026-07-15 — doc 12 RATIFIED same day (user present) — O-3
+  resolved; register 16 settled · 0 open (O-7 parked, 6 v2-gated).**
+  User: "build now without a shadow of a doubt"; autonomous capture
+  with manual review now, autonomous review as a stated future goal.
+  Ratification round (doc 12 §8): all projects mined; caps scale with
+  use (2×sessions, ceiling 15, gate 25 — loose by directive, tunable);
+  rejected matches resurface once after 3 fresh sightings; nightly
+  systemd timer (not literally cron-claude — the miner entrypoint is a
+  CLI verb). User requirements: 24h three-layer watchdog
+  (Persistent=true + verb autokick + SessionStart staleness), manual
+  `mine run`, web-UI force-run + full run insight — satisfied by the
+  run-journal contract (A1), the pinned data plane for the future G-3
+  miner pane. Accepted additions: staged-autonomy ladder (A2 — the
+  evidence substrate for future autonomous review: per-class accept
+  rates from day one), rubric version stamping, notification restraint,
+  cache-local multi-machine posture. Build (doc 12 §9, T-M1…T-M5)
+  proceeds in a worktree with a pre-merge audit — the change activates
+  real background behavior.
