@@ -376,11 +376,13 @@ def test_route_cli_no_proposal_no_dest_exits_1(env, capsys):
     assert "no proposal" in capsys.readouterr().err
 
 
-def test_route_cli_m3_destination_exits_2(env, capsys):
+def test_route_cli_bare_new_skill_exits_1_naming_the_recipe(env, capsys):
+    # supersedes the M1-era exit-2 "not built until M3" check: the
+    # compiler exists (T18), but the name slot is the human's call.
     record = seed_pending(env)
     rc = cli.main(["route", record.id, "--dest", "new-skill"])
-    assert rc == 2
-    assert "not built until T18" in capsys.readouterr().err
+    assert rc == 1
+    assert "new-skill:<name>" in capsys.readouterr().err
     assert env.pending(record.id).is_file()  # untouched
 
 

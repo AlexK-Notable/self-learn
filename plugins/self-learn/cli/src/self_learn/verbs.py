@@ -65,8 +65,17 @@ from pathlib import Path
 from . import gitops, sentinel, telemetry
 from .hook_compiler import replay_examples, script_name, settings_snippet
 from .normalize import sha_anchor
+from .skill_scaffold import (
+    SkillScaffoldError,
+    marketplace_with_entry,
+    plugin_manifest_text,
+    scaffold_description,
+    skill_md_seed,
+    validate_skill_name,
+)
 from .chezmoi import ChezmoiAbort, ChezmoiError, compile_user_scope, preflight_user_scope
 from .compilers import (
+    BEGIN_MARKER,
     CompileError,
     compile_managed_file,
     compile_reference,
@@ -103,7 +112,6 @@ from .scan import scan as secret_scan
 
 __all__ = [
     "DEFAULT_USER_CLAUDE_MD",
-    "DestinationNotBuilt",
     "DirtyTargetError",
     "NoProposalError",
     "PushReport",
@@ -158,12 +166,6 @@ class DirtyTargetError(VerbError):
 
 class NoProposalError(VerbError):
     """route without ``--dest`` and without a proposal sibling."""
-
-
-class DestinationNotBuilt(VerbError):
-    """new-skill route: the compiler lands at T18 (hook landed T17)."""
-
-    exit_code = 2
 
 
 @dataclass
@@ -351,18 +353,24 @@ def _push_ledger(home: Path, no_push: bool) -> gitops.PushResult | None:
 
 def _parse_dest(dest: str) -> tuple[str, str | None]:
     """Parse an explicit ``--dest`` value. Returns (destination,
-    named-reference-file) — the ``reference:<file>`` form names an existing
-    references file (08 §1 References-compiler pin's "another existing
-    references file")."""
+    qualifier) — ``reference:<file>`` names an existing references file
+    (08 §1 References-compiler pin) and ``new-skill:<name>`` names the
+    skill to scaffold (08 §8.1 — the name slot is the human's call)."""
     if dest.startswith("reference:"):
         name = dest.split(":", 1)[1]
         if not name:
             raise VerbError("reference:<file> needs a file name")
         return "reference", name
+    if dest.startswith("new-skill:"):
+        name = dest.split(":", 1)[1]
+        try:
+            return "new-skill", validate_skill_name(name)
+        except SkillScaffoldError as exc:
+            raise VerbError(str(exc)) from exc
     if dest not in PROPOSAL_DESTINATIONS:
         raise VerbError(
             f"--dest must be one of {list(PROPOSAL_DESTINATIONS)} "
-            f"(or reference:<file>), got {dest!r}"
+            f"(or reference:<file> / new-skill:<name>), got {dest!r}"
         )
     return dest, None
 
@@ -423,13 +431,14 @@ class TargetSpec:
     ``host_repo`` is None only for the chezmoi user flow (the dotfiles
     repo commits itself)."""
 
-    destination: str  # skill-md | claude-md | reference
+    destination: str  # skill-md | claude-md | reference | hook | new-skill
     scope_kind: str  # "skill" | "project" | "skill-root" | "user"
     bucket_dir: Path
     target: Path | None  # None for a default (created-on-demand) reference
     host_repo: Path | None
     refs_dir: Path | None = None
     ref_name: str | None = None
+    new_skill: str | None = None  # new-skill only: the human-named skill
 
 
 def _gate_host(home: Path, path: Path | str, kind: str) -> Path:
@@ -542,6 +551,51 @@ def _resolve_target(
         if check_dirty and target.is_file():
             _abort_if_dirty(root, target)
         return TargetSpec("claude-md", "skill-root", bucket_dir, target, root)
+
+    if destination == "new-skill":
+        if ref_name is None:
+            raise VerbError(
+                "new-skill needs a name — the name slot is the human's "
+                "call (08 §8.1): route --dest new-skill:<name>"
+            )
+        name = validate_skill_name(ref_name)
+        hosts = load_hosts(home)
+        if hosts.skills_root is None:
+            raise VerbError(
+                "no skills root registered — the scaffold lands under it; "
+                "self-learn host add <path> --skills-root"
+            )
+        root = _gate_host(home, hosts.skills_root, "skills-root")
+        marketplace = root / ".claude-plugin" / "marketplace.json"
+        if not marketplace.is_file():
+            raise VerbError(
+                f"skills root {root} has no .claude-plugin/marketplace.json "
+                "— the scaffold appends an entry to an EXISTING marketplace "
+                "(08 §8.1); it never creates one"
+            )
+        plugin_dir = root / "plugins" / name
+        target = plugin_dir / "skills" / name / "SKILL.md"
+        if plugin_dir.exists():
+            # M3-9 collision rule: append only into a self-learn-scaffolded
+            # skill (its SKILL.md carries a managed section); anything else
+            # is a FOREIGN authored plugin — refuse, never inject.
+            if not (
+                target.is_file()
+                and BEGIN_MARKER in target.read_text(encoding="utf-8")
+            ):
+                raise VerbError(
+                    f"plugins/{name} already exists and is a foreign "
+                    "authored plugin (no self-learn managed section in its "
+                    "SKILL.md) — refusing to inject (M3-9); pick another "
+                    "name or route to its skill-md through review"
+                )
+        if check_dirty:
+            for probe in (target, marketplace):
+                if probe.is_file():
+                    _abort_if_dirty(root, probe)
+        return TargetSpec(
+            "new-skill", "skill-root", bucket_dir, target, root, new_skill=name
+        )
 
     if destination == "reference":
         if scope.startswith("skill:"):
@@ -814,6 +868,14 @@ def _compile_set(home: Path, spec: TargetSpec) -> list[Record]:
     out via the compiler's status filter)."""
     if spec.destination == "skill-md":
         return _routed_to([spec.bucket_dir], "skill-md")
+    if spec.destination == "new-skill":
+        # a scaffolded skill may collect lessons from ANY bucket — the
+        # name on the routing block is the grouping key.
+        return [
+            r
+            for r in _routed_to(_all_bucket_dirs(home), "new-skill")
+            if (r.routing or {}).get("new_skill") == spec.new_skill
+        ]
     if spec.scope_kind == "user":
         return _routed_to(
             _all_bucket_dirs(home), "claude-md", scope_pred=lambda s: s == "user"
@@ -840,7 +902,9 @@ def _apply_target(
     """HOST-phase compile (doc 13 §4 step e): write the target from the
     committed ledger state. Returns (compile_result, host paths to stage —
     empty for the chezmoi user flow, which commits its own repo)."""
-    if spec.destination == "hook":
+    if spec.destination == "new-skill":
+        compile_result, host_paths = _apply_new_skill(home, spec)
+    elif spec.destination == "hook":
         # M3-2 verbatim apply: the APPROVED bytes ride the routing block
         # (copied there at the ledger phase), so the host phase — and any
         # later recompile repair — re-applies exactly what the human saw.
@@ -888,6 +952,83 @@ def _apply_target(
         overflow=bool(getattr(compile_result, "over_cap", False)),
     )
     return compile_result, host_paths
+
+
+@dataclass(frozen=True)
+class NewSkillApplyResult:
+    """Host-phase outcome for a new-skill scaffold/recompile (duck-typed
+    like the other compile results: ``changed`` gates the host commit)."""
+
+    path: Path
+    changed: bool
+    scaffolded: bool  # plugin.json/SKILL.md/marketplace entry created now
+    section: object | None = None  # the inner SectionResult
+    applied: bool = True
+
+    @property
+    def over_cap(self) -> bool:
+        return bool(getattr(self.section, "over_cap", False))
+
+    @property
+    def cap_reason(self):
+        return getattr(self.section, "cap_reason", None)
+
+    @property
+    def word_count(self):
+        return getattr(self.section, "word_count", None)
+
+
+def _apply_new_skill(home: Path, spec: TargetSpec) -> tuple[NewSkillApplyResult, list[Path]]:
+    """The T18 host apply: deterministic scaffold on first route (M3-9 —
+    plugin.json + SKILL.md, marketplace entry appended exactly once),
+    ordinary managed-section recompile ever after. Idempotent: a second
+    run over unchanged records writes nothing."""
+    records = _compile_set(home, spec)
+    if not records:
+        raise VerbError(
+            f"no routed records name new-skill:{spec.new_skill} — nothing "
+            "to compile"
+        )
+    name = spec.new_skill
+    root = spec.host_repo
+    target = spec.target
+    plugin_dir = root / "plugins" / name
+    manifest = plugin_dir / ".claude-plugin" / "plugin.json"
+    marketplace = root / ".claude-plugin" / "marketplace.json"
+    # deterministic description: seeded from the FIRST routed lesson
+    # (the compile set is already in pinned (routed_at, id) order).
+    description = scaffold_description(records[0])
+
+    changed = False
+    scaffolded = False
+    if not manifest.is_file():
+        manifest.parent.mkdir(parents=True, exist_ok=True)
+        manifest.write_text(
+            plugin_manifest_text(name, description), encoding="utf-8"
+        )
+        changed = scaffolded = True
+    if not target.is_file():
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(skill_md_seed(name, description), encoding="utf-8")
+        changed = scaffolded = True
+    section = compile_managed_file(target, records)
+    changed = changed or section.changed
+
+    try:
+        market_text, market_changed = marketplace_with_entry(
+            marketplace.read_text(encoding="utf-8"), name, description
+        )
+    except SkillScaffoldError as exc:
+        raise VerbError(str(exc)) from exc
+    if market_changed:
+        marketplace.write_text(market_text, encoding="utf-8")
+        changed = True
+
+    result = NewSkillApplyResult(
+        path=target, changed=changed, scaffolded=scaffolded, section=section
+    )
+    # SKILL.md first: the pinned apply subject names host_paths[0].
+    return result, [target, manifest, marketplace]
 
 
 #: Host-phase failure classes: loud drift warning, never a rollback (H-2).
@@ -1040,10 +1181,6 @@ def route(
     try:
         bucket_dir = path.parent.parent
         destination, ref_name = _resolve_destination(bucket_dir, record_id, dest)
-        if destination == "new-skill":
-            raise DestinationNotBuilt(
-                "destination 'new-skill' is not built until T18"
-            )
 
         # (c) PRE-FLIGHT: registry gates (H-3 / doc 13 Q2) + host-repo
         # dirty checks + chezmoi drift/dirty for user scope. Every refusal
@@ -1075,7 +1212,10 @@ def route(
             suffix = f" (collapse {collapse}, supersedes {', '.join(superseded)})"
         else:
             suffix = f" (supersedes {old_id})" if old_id else ""
-        message = f"self-learn: route {record_id} → {destination}{suffix}"
+        message_target = (
+            f"new-skill:{ref_name}" if destination == "new-skill" else destination
+        )
+        message = f"self-learn: route {record_id} → {message_target}{suffix}"
         routed_at = _now_iso()
 
         merged: Record | None = None
@@ -1122,6 +1262,7 @@ def route(
                 follow_up=follow_up,
                 reference_file=ref_name if destination == "reference" else None,
                 hook=hook_route.meta if hook_route is not None else None,
+                new_skill=ref_name if destination == "new-skill" else None,
             )
             if old_id is not None:
                 # teach --supersedes completion-at-route: SAME commit (08 §1
@@ -1189,6 +1330,13 @@ def route(
             post_notes=(
                 _hook_manual_steps(hook_route.snippet, spec.target.name)
                 if hook_route is not None
+                else [
+                    f"new skill scaffolded at plugins/{ref_name} — run "
+                    "./install.sh to symlink it into ~/.claude/skills "
+                    "(M3-11); enrich the prose post-hoc whenever you like"
+                ]
+                if destination == "new-skill"
+                and getattr(compile_result, "scaffolded", False)
                 else []
             ),
             host_commit_sha=host_sha,
@@ -1538,14 +1686,15 @@ def supersede(
         spec: TargetSpec | None = None
         removal: tuple[Path, Path, str] | None = None
         if old_record.status == "routed":
-            destination = (old_record.routing or {}).get("destination")
-            if destination in ("skill-md", "claude-md"):
+            routing = old_record.routing or {}
+            destination = routing.get("destination")
+            if destination in ("skill-md", "claude-md", "new-skill"):
                 spec = _resolve_target(
                     home,
                     old_path.parent.parent,
                     old_record.scope,
                     destination,
-                    None,
+                    routing.get("new_skill") if destination == "new-skill" else None,
                     user_claude_md=user_claude_md,
                     chezmoi_bin=chezmoi_bin,
                 )
@@ -1964,7 +2113,9 @@ def recompile(home: Path | str, *, no_push: bool = False) -> RecompileResult:
             if record.status != "routed" or record.superseded_by is not None:
                 continue
             destination = (record.routing or {}).get("destination")
-            if destination not in ("skill-md", "claude-md", "reference", "hook"):
+            if destination not in (
+                "skill-md", "claude-md", "reference", "hook", "new-skill"
+            ):
                 continue
             if destination == "claude-md" and record.scope == "user":
                 continue  # chezmoi flow owns the user file — not recompiled
@@ -1988,11 +2139,12 @@ def recompile(home: Path | str, *, no_push: bool = False) -> RecompileResult:
                     host_repo, script_abs, rel = removal
                     hook_work.append((record, host_repo, script_abs, rel))
                 continue
-            ref_name = (
-                (record.routing or {}).get("reference_file")
-                if destination == "reference"
-                else None
-            )
+            if destination == "reference":
+                ref_name = (record.routing or {}).get("reference_file")
+            elif destination == "new-skill":
+                ref_name = (record.routing or {}).get("new_skill")
+            else:
+                ref_name = None
             try:
                 spec = _resolve_target(
                     home,

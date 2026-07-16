@@ -190,6 +190,17 @@ def _target_for(home: Path, bucket: Bucket, record: Record) -> Path | None:
             return skill_dir_for(load_hosts(home), bucket.name) / "SKILL.md"
         except HostsError:
             return None
+    if destination == "new-skill":
+        # T18: the scaffolded skill's SKILL.md is an ordinary managed
+        # target from the first route on — routing.new_skill names it.
+        name = (record.routing or {}).get("new_skill")
+        try:
+            root = load_hosts(home).skills_root
+        except HostsError:
+            return None
+        if not name or root is None:
+            return None
+        return root / "plugins" / name / "skills" / name / "SKILL.md"
     if destination == "claude-md":
         if record.scope == "user":
             return DEFAULT_USER_CLAUDE_MD.expanduser()
@@ -291,7 +302,9 @@ def _check_drift(home: Path) -> tuple[bool, str]:
             if record.status != "routed" or record.superseded_by is not None:
                 continue
             destination = (record.routing or {}).get("destination")
-            if destination not in ("skill-md", "claude-md", "reference"):
+            if destination not in (
+                "skill-md", "claude-md", "reference", "new-skill"
+            ):
                 continue
             checked += 1
 

@@ -223,11 +223,13 @@ class TestRouteDestination:
         assert env.pending(OLD).exists()
         assert env.local_subject() == LEDGER_SEED  # nothing committed
 
-    def test_new_skill_not_built_until_t18(self, env):
+    def test_new_skill_without_name_refused(self, env):
+        # T18 supersedes the old exit-2 "not built" refusal: the compiler
+        # exists, but the name slot is the human's call (08 §8.1) — a bare
+        # --dest new-skill must name the recipe and touch nothing.
         seed(env)
-        with pytest.raises(verbs.DestinationNotBuilt) as exc:
+        with pytest.raises(verbs.VerbError, match="new-skill:<name>"):
             verbs.route(env.home, OLD, dest="new-skill")
-        assert exc.value.exit_code == 2
         assert env.pending(OLD).exists()
 
     def test_hook_without_proposal_refused(self, env):

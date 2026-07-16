@@ -12,7 +12,8 @@ wrappers over :mod:`self_learn.verbs`; validate + selftest live in
 
 Verb exit codes (T7's mapping, surfaced here): 0 success · a verb refusal
 carries its exception's ``exit_code`` (``VerbError`` 1;
-``DestinationNotBuilt`` 2; ``SecretRefusal`` 1 — P2-7 refusal) · unknown /
+``SecretRefusal`` 1 — P2-7 refusal; all five destinations compile as of
+M3 — the old ``DestinationNotBuilt`` 2 is gone) · unknown /
 malformed record id (``LedgerOpsError``) and every other usage error 64
 (EX_USAGE — audit 2026-07-14: never 2, which P2-8 pins for scan hits) · a
 push failure after a kept commit exits with the push result's code
@@ -132,7 +133,9 @@ def _build_parser() -> argparse.ArgumentParser:
     route.add_argument(
         "--dest",
         metavar="TARGET",
-        help="override the proposal: skill-md | claude-md | reference[:<file>]",
+        help="override the proposal: skill-md | claude-md | "
+        "reference[:<file>] | new-skill:<name> | hook (needs a hook "
+        "proposal)",
     )
     route.add_argument(
         "--collapse",
@@ -802,7 +805,7 @@ def _cmd_verb(args: argparse.Namespace) -> int:
                 home, args.id, note=args.note, no_push=args.no_push
             )
             return _finish_verb(result, "confirmed holding")
-    except verbs.VerbError as exc:  # incl. SecretRefusal, DestinationNotBuilt
+    except verbs.VerbError as exc:  # incl. SecretRefusal
         print(f"self-learn {args.command}: {exc}", file=sys.stderr)
         return exc.exit_code
     except LedgerOpsError as exc:  # unknown/malformed id, proposal trouble

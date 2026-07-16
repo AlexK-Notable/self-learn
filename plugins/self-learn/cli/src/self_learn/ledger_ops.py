@@ -665,6 +665,7 @@ def resolve_record(
     follow_up: dict | None = None,
     reference_file: str | None = None,
     hook: dict | None = None,
+    new_skill: str | None = None,
 ) -> list[Path]:
     """File-op half of a resolution: update frontmatter via T2's mutation
     API, ``git mv`` pending→resolved (fs move when untracked), and remove
@@ -693,6 +694,17 @@ def resolve_record(
         raise LedgerOpsError(
             "routing.hook rides a hook routing only (08 §8.1 apply pin)"
         )
+    if new_skill is not None and (
+        new_status != "routed" or destination != "new-skill"
+    ):
+        raise LedgerOpsError(
+            "routing.new_skill rides a new-skill routing only (08 §8.1)"
+        )
+    if destination == "new-skill" and new_skill is None:
+        raise LedgerOpsError(
+            "a new-skill routing must name the skill (routing.new_skill) — "
+            "recompile and the drift check read it to find the target"
+        )
     path = find_record_path(home, record_id)
     record = Record.from_path(path)
     if new_status == "routed":
@@ -715,6 +727,8 @@ def resolve_record(
             # `recompile` can re-apply what the human saw — never
             # regenerate from changed inputs.
             routing["hook"] = dict(hook)
+        if new_skill is not None:
+            routing["new_skill"] = new_skill
         record.set_routing(routing)
     if superseded_by is not None:
         record.set_superseded_by(superseded_by)
