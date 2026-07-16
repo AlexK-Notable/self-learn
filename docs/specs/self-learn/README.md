@@ -592,3 +592,24 @@ human routes it.
   executed** (timer registered, `LAST` empty) and that the T-H3 build +
   its four audit rounds are recorded only in branch commit messages, not
   here. Like its siblings, withheld from blind reviewers.
+- **2026-07-16 — CUTOVER EXECUTED: the ledger lives at `~/.self-learn`.**
+  The §7.1 runbook ran to completion. Extraction carried **51 commits**
+  of ledger history and the reconcile hard gate matched exactly the
+  snapshot's **39 records**; the home bootstrapped with hosts.yaml,
+  project meta.yaml, and the code-derived slug bucket (ledger commit
+  6c7263b), private remote `github.com/AlexK-Notable/self-learn-ledger`;
+  the code merged to master (cf23ae5) and the in-repo buckets removed
+  in one recoverable commit (f6bd7f0); the miner unit now pins
+  `Environment=SELF_LEARN_HOME=%h/.self-learn` (B-1 — the systemd user
+  manager inherits no shell env). **T-H5 partially discharged:**
+  selftest 5/5 green on the new layout; a hand-broken marker caught by
+  three independent checks (compiler + markers + drift) and restored
+  under sentinel guard; the first post-cutover capture committed and
+  pushed by its own producer (lrn-316a5411 — install.sh restarts
+  autosync mid-window, itself a lesson the cutover taught). **Still
+  open:** the overnight miner run under the new cache, an organic
+  foreign-project mined card, and the user-present route half — no
+  route has yet exercised the two-phase host apply live. SessionStart
+  hook symlinked (PC-1) but its settings.json registration remains
+  user-manual. Next after T-H5 settles: product-repo extraction
+  (step 2, §8-thin).
