@@ -68,6 +68,14 @@ rule printed), `--redact` opt-in on capture surfaces, no bypass flag.
 - `SELF_LEARN_HOME` — the ledger home (default `~/.self-learn`).
 - `SELF_LEARN_CLAUDE_DIR` — where hook selfchecks read `settings.json` /
   `hooks/` (default `~/.claude`; tests redirect it).
+- `<home>/config.yaml` — operator policy, COMMITTED in the ledger repo
+  (S-10 amendment 2026-07-16): `one_motion_route: {hook: true,
+  new-skill: true}` enables `teach --route --dest hook --hook-input
+  <yaml>` / `--dest new-skill:<name>`. Default (no file) = refuse and
+  keep the review-gated flow; parsing is fail-closed (only the YAML
+  boolean `true` enables). Enabled hook routes still validate, scan,
+  and replay the compile input pre-commit and PRINT the applied script;
+  the settings.json registration step stays manual either way.
 - Analyst (bare-terminal `teach --route`): `SELF_LEARN_ANALYST_MODEL`
   (default `claude-sonnet-5`), `SELF_LEARN_ANALYST_TIMEOUT` (default 120 s).
 - Exit codes — verbs: 0 ok · 1 refusal (dirty target, scan hit, chezmoi

@@ -185,6 +185,12 @@ edits, help rewrite) a record:
   human's call at route time (`route --dest new-skill:<name>`). For both,
   **always** include a routable alternate (`skill-md` or `claude-md`) in
   `alternates` so the human can choose the cheaper surface.
+  *(S-10 amendment 2026-07-16: one-motion `teach --route` to these two
+  destinations is config-gated — default refuse; the operator may enable
+  it via the committed ledger `config.yaml` `one_motion_route:` map. When
+  enabled, a hook proposal you author for a bare `--route` still needs
+  the FULL §5.1 block — the CLI validates, scans, replays, and prints the
+  script it applies; settings.json registration remains manual.)*
 - When no destination is defensible (the lesson is a one-off task
   instruction, a user error, or too vague to fire), say so plainly in the
   rationale and recommend rejection — a queue that routes everything is

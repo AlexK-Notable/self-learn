@@ -175,7 +175,10 @@ which:
   a stale `record_sha`, or a failed example replay). An unknown record
   id is **64** (usage), not 1. Nothing was written. *(All five destinations compile as of M3 — the
   old exit-2 "compiler lands at M3" no longer exists for verbs; a hook
-  refusal names the missing step, show it verbatim.)*
+  refusal names the missing step, show it verbatim. The ledger
+  `config.yaml` `one_motion_route:` opt-in — S-10 amendment 2026-07-16 —
+  affects only one-motion `teach --route`; inside review you always
+  route captured records through the cards, config or no config.)*
 - **3** — committed, but the **push failed**. The resolution is safe
   locally; `self-learn push` retries it (see Session end).
 - **4** — committed, but the push hit a **rebase conflict**. The rebase was
