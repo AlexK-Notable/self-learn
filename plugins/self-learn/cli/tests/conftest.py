@@ -25,3 +25,8 @@ def _worker_test_defaults(monkeypatch, tmp_path):
     monkeypatch.setenv(
         "SELF_LEARN_TRANSCRIPTS_DIR", str(tmp_path / "_no_transcripts")
     )
+    # The selftest hook check reads settings.json + ~/.claude/hooks (M3):
+    # tests must never see the real ~/.claude — redirect it per-test.
+    monkeypatch.setenv(
+        "SELF_LEARN_CLAUDE_DIR", str(tmp_path / "claude-dir-default")
+    )
