@@ -287,3 +287,125 @@ spirit).
 - **M-5 · The system never mines itself.** Worker runs, miner runs, and
   self-learn command spans are excluded at Phase 0; Phase 3 dedup is
   the backstop, not the mechanism.
+
+## 8. Ratification round 1 (2026-07-15, user present)
+
+**Q1 — build now.** User: "build now without a shadow of a doubt.
+Autonomous lesson capture with 'manual' human review, and potentially
+autonomous review, are goals." O-3 resolved (dated edit in 03); the
+register stands at 16 settled · 0 open. The E-11 never-load-bearing
+clause survives as M-3.
+
+**Q2 — all projects.** The miner reads every project's transcripts.
+Legitimacy chain: single-user machine → secret scan on every landing →
+human review before canon.
+
+**Q3 — caps scale with use, start loose.** User: a fixed 3/run is
+constrictive on a 12-hour day. Amended: per-run landing cap =
+`min(CAP_PER_SESSION × sessions_scanned, CAP_MAX)`, defaults 2 and 15;
+pending-gate default 25. All env-tunable
+(`SELF_LEARN_MINE_CAP_PER_SESSION`, `SELF_LEARN_MINE_CAP_MAX`,
+`SELF_LEARN_MINE_PENDING_GATE`). M-4 amended accordingly: the *values*
+scale; the *enforcement* stays hard, and the journal records every clip.
+
+**Q4 — resurface on evidence.** A candidate matching a rejected record
+is dropped and counted (cache-side, per rejected id); at 3 fresh
+sightings it lands once, its why-durable carrying the resurfacing
+context ("previously rejected as lrn-X; sighted 3× since") so the
+analyst's card surfaces it honestly. No schema change.
+
+**Q5 — nightly batch confirmed** over SessionEnd (§3 rationale stands).
+Mechanism note: the schedule is a plain systemd user timer executing
+`self-learn mine run` — not literally a cron-claude job, because
+cron-claude schedules `claude -p` prompts and the miner's entrypoint is
+a CLI verb that spawns its own contained `claude -p` internally.
+
+**User requirements added:**
+
+- **R1 · 24-hour watchdog, three layers:** `Persistent=true` on the
+  timer (machine-was-off → fires at next boot); any self-learn verb
+  opportunistically kicks a detached `mine run` when the last run is
+  >24h old and no run is live (timer-broke; suite-disabled via
+  `SELF_LEARN_MINER_AUTOKICK=0`, runtime kill via
+  `SELF_LEARN_MINER=0`); the SessionStart status line gains a
+  miner-staleness clause at >36h (everything-broke — a silent death is
+  humanly visible within a day).
+- **R2 · Manual force:** `self-learn mine run` executes immediately
+  (the timer calls the same verb). Force controls *timing* only — caps
+  and the secret scan are never bypassable. `--since <date>` performs a
+  deliberate historical sweep (first-run cursor is otherwise *now*:
+  forward-only, no backlog flood).
+- **R3 · Web-UI rider (binds 09/10 when G-3 builds):** the miner pane
+  is a pure reader of the run journal plus exactly one action endpoint
+  (force-run). All insight questions — last run, caught, skipped,
+  choices made — are answered by the journal contract below, never by
+  UI-side inference.
+
+**Design additions accepted with the ratification:**
+
+- **A1 · Run journal (first-class contract).** Every run appends one
+  JSONL entry: run id, trigger (timer|manual|kick), sessions scanned,
+  rubric version, model, duration, per-candidate outcomes — `landed` /
+  `folded(lrn-id)` / `recurrence(lrn-id)` / `dropped-rejected(lrn-id)` /
+  `dropped-cap` / `held-pending-gate` / `scan-refused(rule)` — plus
+  missed-window honesty when retention outran the cursor. Lives in the
+  miner's cache dir (machine-local; nightly journal-only repo commits
+  would be noise; G-3 runs on this machine and reads it directly).
+  `self-learn mine status` renders the same journal in the terminal —
+  CLI parity precedes the UI.
+- **A2 · Staged-autonomy ladder (the "potentially autonomous review"
+  path).** L0 (now): human routes everything. L1: auto-resolve
+  duplicate-folds and already-canon graduations. L2: auto-route
+  high-confidence records to *reference* files (unloaded surface, cheap
+  revert). L3: loaded canon (skill-md/claude-md) — human-gated longest.
+  Each level activates by dated register edit, justified by measured
+  per-class accept rates; therefore calibration (§4) tracks accept rate
+  by kind × scope × confidence bucket × rubric version from day one.
+  M-1 is untouched: the *miner* never routes at any level — the ladder
+  governs the review component, not capture.
+- **A3 · Rubric version stamping** on every run and journal entry, so
+  accept-rate shifts are attributable to rubric edits.
+- **A4 · Notification restraint.** Mined landings ride existing
+  surfaces (pending count, SessionStart line, worker notification); no
+  new popups. The journal is where detail lives.
+- **A5 · Multi-machine posture.** Cursors and journals are cache-local
+  per machine; each machine mines its own transcripts; the ledger's
+  Phase-3 reconciliation is the cross-machine meeting point. No
+  coordination protocol needed.
+
+## 9. Build plan (execution notes)
+
+Worktree milestone (`self-learn-miner` branch), pre-merge audited per
+the 2026-07-15 doctrine (this change activates real background behavior
+— audit BEFORE merge), then live-verified.
+
+- **T-M1 · digest + walk + cursors** — transcript JSONL parser, Phase-1
+  structural digest (fixture-tested on synthetic transcripts: user turns
+  kept, tool-result bodies dropped to status+edges, error/retry
+  annotations, self-learn command-span and worker/miner-header
+  exclusions), per-file line cursors in cache, `--since` override.
+- **T-M2 · reader invocation** — worker-posture `claude -p` (allowed
+  Read/Grep/Glob; settings-file Edit rule family over the miner spool
+  only; timeout; `SELF_LEARN_MINER_MODEL` default claude-sonnet-5);
+  prompt = mining rubric (versioned reference file) + ledger index +
+  compiled canon list + digests; artifact contract: one
+  `mine-<runid>.json`, schema-validated, stray spool files deleted.
+- **T-M3 · reconciliation + landing** — CLI verifies every claimed
+  match id/status (the model's claim is never trusted raw; a wrong claim
+  demotes the candidate to `none` and is journaled); outcomes per §2
+  Phase 3 + Q4 resurfacing counter; landing via the import writer path
+  (`source: session`), scaled caps, pending-gate, sentinel hold, pinned
+  commit `self-learn: mine <n> candidate(s) (<run-id>)`, worker kick.
+- **T-M4 · scheduling + watchdog + status** — systemd user units
+  (repo `systemd/`, `Persistent=true`, documented registration), verb
+  autokick >24h (conftest disables), fast-status miner clause (>36h),
+  `mine run`/`mine status` dispatch, run journal writer.
+- **T-M5 · calibration surface** — card-decided telemetry gains the
+  source dimension; `report` shows mined supply and accept rate
+  (honesty label: adjudicated cards only).
+- **Acceptance (user-present):** (m-a) a real overnight or forced run
+  over genuine transcripts lands ≥1 sensible candidate that survives
+  review; (m-b) the watchdog demonstrably fires after a >24h gap;
+  (m-c) `mine status` answers "what happened last night" without
+  reading code; (m-d) a planted secret in a synthetic transcript is
+  refused at landing and journaled as `scan-refused`.
