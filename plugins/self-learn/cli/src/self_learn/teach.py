@@ -349,8 +349,14 @@ def run_teach(args: argparse.Namespace) -> int:
             destination, _ = verbs._parse_dest(args.dest)
         except verbs.VerbError as exc:
             return _fail(str(exc))
-        if destination in verbs.M3_DESTINATIONS:
-            return _fail(f"destination {destination!r} is not built until M3")
+        if destination in verbs.ONE_MOTION_UNROUTABLE:
+            return _fail(
+                f"destination {destination!r} cannot be routed in one "
+                "motion — capture without --route, then `self-learn route "
+                "<id> --dest "
+                + ("hook` (with an approved hook proposal)" if destination == "hook"
+                   else "new-skill:<name>`")
+            )
 
     lesson = _clean(args.lesson)
     trigger = _clean(args.trigger)

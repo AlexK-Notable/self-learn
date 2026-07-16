@@ -664,6 +664,7 @@ def resolve_record(
     note: str | None = None,
     follow_up: dict | None = None,
     reference_file: str | None = None,
+    hook: dict | None = None,
 ) -> list[Path]:
     """File-op half of a resolution: update frontmatter via T2's mutation
     API, ``git mv`` pending→resolved (fs move when untracked), and remove
@@ -688,6 +689,10 @@ def resolve_record(
         raise LedgerOpsError(
             "a follow-up rides the routing block (11 §2.1) — routed only"
         )
+    if hook is not None and (new_status != "routed" or destination != "hook"):
+        raise LedgerOpsError(
+            "routing.hook rides a hook routing only (08 §8.1 apply pin)"
+        )
     path = find_record_path(home, record_id)
     record = Record.from_path(path)
     if new_status == "routed":
@@ -704,6 +709,12 @@ def resolve_record(
             routing["reference_file"] = reference_file
         if follow_up is not None:
             routing["follow_up"] = dict(follow_up)
+        if hook is not None:
+            # The APPROVED compile artifacts (M3-2): the exact script
+            # bytes + their host-relative path, so drift checks and
+            # `recompile` can re-apply what the human saw — never
+            # regenerate from changed inputs.
+            routing["hook"] = dict(hook)
         record.set_routing(routing)
     if superseded_by is not None:
         record.set_superseded_by(superseded_by)

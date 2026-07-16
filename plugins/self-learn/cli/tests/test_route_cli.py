@@ -380,7 +380,7 @@ def test_route_cli_m3_destination_exits_2(env, capsys):
     record = seed_pending(env)
     rc = cli.main(["route", record.id, "--dest", "new-skill"])
     assert rc == 2
-    assert "not built until M3" in capsys.readouterr().err
+    assert "not built until T18" in capsys.readouterr().err
     assert env.pending(record.id).is_file()  # untouched
 
 

@@ -223,12 +223,20 @@ class TestRouteDestination:
         assert env.pending(OLD).exists()
         assert env.local_subject() == LEDGER_SEED  # nothing committed
 
-    @pytest.mark.parametrize("dest", ["new-skill", "hook"])
-    def test_m3_destinations_exit_2(self, env, dest):
+    def test_new_skill_not_built_until_t18(self, env):
         seed(env)
         with pytest.raises(verbs.DestinationNotBuilt) as exc:
-            verbs.route(env.home, OLD, dest=dest)
+            verbs.route(env.home, OLD, dest="new-skill")
         assert exc.value.exit_code == 2
+        assert env.pending(OLD).exists()
+
+    def test_hook_without_proposal_refused(self, env):
+        # T17 supersedes the old "not built until M3" refusal: hook is
+        # built, but it applies a proposal-carried approved script (M3-2)
+        # — a bare --dest hook with no proposal has nothing to compile.
+        seed(env)
+        with pytest.raises(verbs.VerbError, match="proposal"):
+            verbs.route(env.home, OLD, dest="hook")
         assert env.pending(OLD).exists()
 
     def test_bogus_dest_rejected(self, env):

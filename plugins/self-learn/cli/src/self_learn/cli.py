@@ -686,11 +686,19 @@ def _phase_note(push: gitops.PushResult | None) -> str:
 def _finish_verb(result: verbs.VerbResult, target: str) -> int:
     """One-line success summary: id, action, target, short sha, push state
     (ledger AND host). Exit 0, or the distinct push-failure code — a HOST
-    push failure counts exactly like a ledger one (MAJOR 4)."""
+    push failure counts exactly like a ledger one (MAJOR 4).
+
+    A hook route carries the ENTIRE generated script as ``diff`` (08 §8.1
+    approval flow — never a summary) and the required manual steps as
+    ``post_notes`` (M3-11): both print here, script first."""
+    if result.diff:
+        print(result.diff)
     print(
         f"{result.action} {result.record_id} → {target} "
         f"@ {result.commit_sha[:7]} ({push_note(result)})"
     )
+    for note_line in result.post_notes:
+        print(note_line)
     for warning in result.warnings:
         print(warning, file=sys.stderr)
     if (note := result.over_cap_note()) is not None:
