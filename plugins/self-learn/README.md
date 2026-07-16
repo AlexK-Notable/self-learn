@@ -76,7 +76,7 @@ Staleness fires iff ≥1 pending record lacks a valid proposal AND
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `SELF_LEARN_HOME` | `~/repos/claude-skills` | ledger repo root; all buckets resolve under it |
+| `SELF_LEARN_HOME` | `~/.self-learn` | the ledger home (its own git repo); all buckets resolve under it |
 | `SELF_LEARN_ANALYST_MODEL` | `claude-sonnet-5` | model for the one-shot `teach --route` analyst |
 | `SELF_LEARN_ANALYST_TIMEOUT` | `120` | analyst timeout, seconds |
 | `SELF_LEARN_MEMORY_DIR` | `~/.claude/projects/-home-komi-repos-claude-skills/memory` | `import --memory` / `prune-memory` default dir |

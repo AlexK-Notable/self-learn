@@ -6,11 +6,13 @@ description: Capture, triage, and route durable session lessons into canon. Use 
 # self-learn
 
 A git-backed lesson ledger with a human decision gate. Lessons are captured
-as one-record-per-file markdown under `.self-learn/` buckets (per-skill +
-repo root), triaged in bounded review sessions, and **routed by explicit
-human verbs** into canon: a skill's SKILL.md managed section, CLAUDE.md,
-or a references file. Nothing edits canon silently; every resolution is a
-pinned git commit. Full architecture: `docs/specs/self-learn/` (01–04).
+as one-record-per-file markdown under the ledger home (`~/.self-learn`, its
+own git repo, independent of any code repo — doc 13) in `skills/<name>/`,
+`projects/<slug>/`, and `user/` buckets, triaged in bounded review
+sessions, and **routed by explicit human verbs** into canon: a skill's
+SKILL.md managed section, CLAUDE.md, or a references file. Nothing edits
+canon silently; every resolution is a pinned git commit. Full
+architecture: `docs/specs/self-learn/` (01–04, 13).
 
 ## When to offer capture
 
@@ -30,7 +32,7 @@ prompt after.
 | `route <id> [--dest …]` | Compile the record into its destination (proposal or override), commit + push. Known-partial coverage: `--follow-up <action> [--unblocks-on <gate>] [--follow-up-note …]` rides the routing block |
 | `followup done <id> [--note …]` | Clear a routed record's open follow-up into a dated `follow_up_done` block |
 | `telemetry note <kind> [--reason …]` | Spool one offer-ledger event (`offer-made` \| `offer-declined`, reason enum: not-durable\|wrong\|duplicate\|private\|later\|other). Cache-only — no repo write, no commit |
-| `telemetry flush` | Spool → tracked `.self-learn/telemetry/` files (scan-at-flush; autosync commits them). Teach/import/resolution verbs flush automatically |
+| `telemetry flush` | Spool → tracked `telemetry/` files in the ledger home (scan-at-flush; the flush commits them — every producer commits its own writes, H-5). Teach/import/resolution verbs flush automatically |
 | `report [--json]` | Facts layer v1: lifecycle counts, open follow-ups, deferred aging, offer ledger (capture rate labeled as a ceiling — declined-offer logging is best-effort) |
 | `reject <id>` / `defer <id> [--until D]` / `graduate <id>` | Resolve without routing: rejected / hidden until date (default +30 d) / woven into authored canon |
 | `supersede <old> <new>` | Mark a lesson corrected by a newer one (metadata + recompile) |
@@ -62,7 +64,7 @@ rule printed), `--redact` opt-in on capture surfaces, no bypass flag.
 
 ## Environment & exit codes
 
-- `SELF_LEARN_HOME` — ledger repo root (default `~/repos/claude-skills`).
+- `SELF_LEARN_HOME` — the ledger home (default `~/.self-learn`).
 - Analyst (bare-terminal `teach --route`): `SELF_LEARN_ANALYST_MODEL`
   (default `claude-sonnet-5`), `SELF_LEARN_ANALYST_TIMEOUT` (default 120 s).
 - Exit codes — verbs: 0 ok · 1 refusal (dirty target, scan hit, chezmoi

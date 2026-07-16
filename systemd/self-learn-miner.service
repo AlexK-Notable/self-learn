@@ -9,6 +9,9 @@ Description=self-learn transcript miner (nightly pass)
 
 [Service]
 Type=oneshot
+# B-1 (doc 13 §7.1): the systemd user manager does not inherit the shell's
+# env — pin the ledger home explicitly so the unit and the shell agree.
+Environment=SELF_LEARN_HOME=%h/.self-learn
 ExecStart=%h/bin/self-learn mine run --trigger timer
 # The run spawns a contained `claude -p` reader; give it headroom.
 TimeoutStartSec=30m

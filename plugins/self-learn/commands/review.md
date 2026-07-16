@@ -10,14 +10,16 @@ never run git, never implement routing mechanics yourself. If you find
 yourself about to compile or commit something, stop: that is the verb's
 job.
 
-Let `HOME_REPO = ${SELF_LEARN_HOME:-~/repos/claude-skills}` throughout.
+Let `LEDGER = ${SELF_LEARN_HOME:-~/.self-learn}` throughout — the ledger
+home, its own git repo, independent of any code repo (doc 13).
 
 ## Session start
 
 1. `self-learn sentinel hold` — pause autosync for the batch. (The verbs
    heartbeat it on every mutation; you release it at the end.)
 2. Read the routing doctrine — you will analyze with it:
-   `HOME_REPO/plugins/self-learn/skills/self-learn/references/routing-doctrine.md`
+   `~/.claude/skills/self-learn/references/routing-doctrine.md` (the
+   deployed skill's references dir)
    and the card-section registry beside it (`card-sections.yaml`) — the
    sections it defines are what you write per proposal and show per
    card, in its order, under its labels. This command deliberately names
@@ -39,9 +41,10 @@ false, or `proposal_fresh` false), perform the inline analysis the M2
 worker will later take over (a pure producer swap — same file, same
 schema):
 
-1. Read the record (`pending/lrn-<id>.md` in its bucket:
-   `plugins/<p>/skills/<name>/.self-learn/` for `skill:<name>` scope,
-   `HOME_REPO/.self-learn/` for project/user).
+1. Read the record (`pending/lrn-<id>.md` in its bucket under `LEDGER`:
+   `skills/<name>/` for `skill:<name>` scope, `projects/<slug>/` for
+   project scope (the slug appears in `list --json` output), `user/` for
+   user scope).
 2. Apply the doctrine and write the proposal sibling
    `<bucket>/proposals/lrn-<id>.yaml` — destination, alternates,
    rationale, already_canon(+reason), model, analyzed_at, **and the
