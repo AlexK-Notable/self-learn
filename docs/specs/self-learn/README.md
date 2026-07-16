@@ -499,3 +499,26 @@ human routes it.
   cache-local multi-machine posture. Build (doc 12 §9, T-M1…T-M5)
   proceeds in a worktree with a pre-merge audit — the change activates
   real background behavior.
+- **2026-07-15/16 — doc 12 BUILT, AUDITED, MERGED, ACTIVATED.** Worktree
+  build (T-M1…T-M5) landed at 527 tests; the pre-merge audit doctrine
+  paid off a second time: two independent reviewers (code-adversarial +
+  systems blast-radius) found 4 blockers — argv-borne prompts crashing
+  E2BIG on any busy night (also latent in the M2 worker since T13),
+  the first-run forward-only pin unimplemented (multi-hundred-MB history
+  flood auto-triggered at first post-merge session start), the
+  review-span exclusion collapsing on the first review reply (card text
+  mined back as fake sightings — silent evidence corruption), and an
+  unjournaled crash path — plus 6 majors (sentinel owner/joiner race
+  re-exposing the rebase-eats-proposals window, no watchdog backoff,
+  injection hardening: reader stripped of ALL filesystem tools + field
+  caps + ref validation, replay-duplicated fire/recurrence events, the
+  resurface counter self-killing at the cap, unscanned model-authored
+  origins that could wedge every future telemetry flush). All fixed
+  with scenario-reproducing regression tests; doc 12 §10 records the
+  round and its dated pin adjustments. Merged at 540 tests; live
+  verification: selftest green, first run `initialized` (122 files
+  seeded forward-only), `mine status` + `status --fast` miner keys
+  live, nightly timer registered and enabled (next fire 03:40,
+  Persistent=true). The miner is operational: capture is now
+  autonomous, review remains human, and the A2 autonomy ladder waits
+  on accept-rate data.
