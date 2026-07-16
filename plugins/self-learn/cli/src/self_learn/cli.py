@@ -31,6 +31,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 from . import report as report_mod
+from . import hosts as hosts_mod
 from . import miner, selfcheck, sentinel, telemetry, verbs, worker
 from .chezmoi import ChezmoiAbort, ChezmoiError
 from .compilers import CompileError
@@ -272,6 +273,35 @@ def _build_parser() -> argparse.ArgumentParser:
     mstatus.add_argument("--json", dest="as_json", action="store_true")
 
     sub.add_parser("push", help="publish pending local commits (pinned retry)")
+
+    host_p = sub.add_parser(
+        "host", help="compile-host registry (doc 13 §3): add | list"
+    )
+    host_sub = host_p.add_subparsers(dest="host_command", metavar="<verb>")
+    hadd = host_sub.add_parser(
+        "add", help="register a repo canon may compile into (H-3)"
+    )
+    hadd.add_argument("path", metavar="PATH")
+    hadd.add_argument(
+        "--skills-root",
+        action="store_true",
+        dest="skills_root",
+        help="register as THE skills root (plugins/*/skills/* live there) "
+        "instead of a project host",
+    )
+    host_sub.add_parser("list", help="show the registered hosts")
+
+    recompile_p = sub.add_parser(
+        "recompile",
+        help="recompute every managed canon target from the ledger — the "
+        "doc-13 drift repair (idempotent)",
+    )
+    recompile_p.add_argument(
+        "--no-push",
+        action="store_true",
+        dest="no_push",
+        help="commit host changes exactly as pinned, skip only the pushes",
+    )
 
     sentinel_p = sub.add_parser(
         "sentinel", help="autosync-pause sentinel: hold | heartbeat | release"
@@ -629,6 +659,57 @@ def _cmd_verb(args: argparse.Namespace) -> int:
     raise AssertionError(f"unhandled verb {args.command!r}")  # pragma: no cover
 
 
+def _cmd_host(args: argparse.Namespace) -> int:
+    home = resolve_home()
+    if args.host_command == "add":
+        kind = "skills-root" if args.skills_root else "project"
+        try:
+            registry = hosts_mod.host_add(home, args.path, kind)
+        except hosts_mod.HostsError as exc:
+            print(f"self-learn host add: {exc}", file=sys.stderr)
+            return EXIT_USAGE
+        print(f"host add: {kind} {Path(args.path).expanduser().resolve()}")
+        print(
+            f"  registry: skills_root={registry.skills_root or '(none)'} · "
+            f"{len(registry.projects)} project host(s)"
+        )
+        return EXIT_OK
+    if args.host_command == "list":
+        try:
+            registry = hosts_mod.load_hosts(home)
+        except hosts_mod.HostsError as exc:
+            print(f"self-learn host list: {exc}", file=sys.stderr)
+            return 1
+        print(f"skills_root: {registry.skills_root or '(none registered)'}")
+        if registry.projects:
+            print("projects:")
+            for p in registry.projects:
+                print(f"  - {p}")
+        else:
+            print("projects: (none registered)")
+        return EXIT_OK
+    print("usage: self-learn host add <path> [--skills-root] | host list", file=sys.stderr)
+    return EXIT_USAGE
+
+
+def _cmd_recompile(args: argparse.Namespace) -> int:
+    result = verbs.recompile(resolve_home(), no_push=args.no_push)
+    for warning in result.warnings:
+        print(f"recompile: WARNING {warning}", file=sys.stderr)
+    if not result.entries:
+        print("recompile: no managed targets (no routed records)")
+        return EXIT_OK
+    for entry in result.entries:
+        if entry.skipped:
+            state = f"skipped ({entry.skipped})"
+        elif entry.changed:
+            state = f"recompiled @ {entry.commit_sha[:7]}"
+        else:
+            state = "up to date"
+        print(f"recompile: {entry.target} — {state}")
+    return EXIT_OK
+
+
 def _cmd_push() -> int:
     result = verbs.push_pending(resolve_home())
     if result.ok:
@@ -901,6 +982,13 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "push":
         return _cmd_push()
+
+    if args.command == "host":
+        return _cmd_host(args)
+
+    if args.command == "recompile":
+        sentinel.heartbeat()  # mutating invocation class (08 §1)
+        return _cmd_recompile(args)
 
     if args.command == "sentinel":
         return _cmd_sentinel(args.action)

@@ -1,8 +1,9 @@
 """Auto-memory importer + S-13 prune sweep (T9).
 
-Import (01 §3.2 / S-14): drain the native memory directory
-(``~/.claude/projects/<proj>/memory/``) into the project+user bucket as
-pending records, origin preserved. Shape studied against the real dir:
+Import (01 §3.2 / S-14; doc 13 §3): drain the native memory directory
+(``~/.claude/projects/<proj>/memory/``) into the per-project bucket
+(project-typed memories) / the user bucket as pending records, origin
+preserved. Shape studied against the real dir:
 ``MEMORY.md`` is an index of ``- [Title](file.md) — hook`` lines; each
 topic file is YAML frontmatter (``name`` / ``description`` /
 ``metadata.type`` / ``originSessionId``) + markdown body.
@@ -50,8 +51,9 @@ from pathlib import Path
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
+from . import gitops
 from . import scan as scan_mod
-from .import_common import ImporterError, ImportReport, existing_origins
+from .import_common import ImporterError, ImportReport, commit_import, existing_origins
 from .ledger import discover_buckets
 from .ledger_ops import create_record
 from .normalize import sha_anchor
@@ -105,13 +107,20 @@ def _first_line(text: str) -> str:
 # ----------------------------------------------------------------- import
 
 
-def import_memory(home: Path, memory_dir: Path) -> ImportReport:
+def import_memory(
+    home: Path, memory_dir: Path, *, project_path: Path | None = None
+) -> ImportReport:
     """Import every topic file under *memory_dir* (one file = one record)
-    into the project+user bucket. Idempotent via the all-statuses origin
-    index; scan-then-write."""
+    into the per-project bucket (project-typed memories) or the user
+    bucket. ``project_path`` binds the project records (doc 13 §3:
+    import_memory imports THIS project's memory — default: the git
+    toplevel of cwd, else cwd). Idempotent via the all-statuses origin
+    index; scan-then-write; ONE ledger commit per run (H-5)."""
     memory_dir = Path(memory_dir)
     if not memory_dir.is_dir():
         raise ImporterError(f"no memory directory at {memory_dir}")
+    if project_path is None:
+        project_path = gitops.toplevel(Path.cwd()) or Path.cwd()
 
     known = existing_origins(home)
     report = ImportReport(source="auto-memory")
@@ -145,10 +154,19 @@ def import_memory(home: Path, memory_dir: Path) -> ImportReport:
             report.scan_refused.append(origin)
             continue
         record.append_evidence({"origin": origin})
-        create_record(home, record)
+        created = create_record(
+            home,
+            record,
+            project_path=project_path if record.scope == "project" else None,
+        )
+        report.touched.append(created)
+        meta = created.parent.parent / "meta.yaml"
+        if meta.is_file() and meta not in report.touched:
+            report.touched.append(meta)
         report.created.append(record.id)
         report.origins[record.id] = origin
 
+    commit_import(home, report)  # H-5: one ledger commit per run
     return report
 
 

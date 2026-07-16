@@ -36,11 +36,13 @@ __all__ = [
     "GitOpsError",
     "PushResult",
     "commit",
+    "has_remote",
     "paths_dirty",
     "push_pending",
     "push_with_retry",
     "stage",
     "staged_diff",
+    "toplevel",
 ]
 
 #: Distinct non-zero exits (08 §1 Push pin: failures are loud AND distinct).
@@ -97,6 +99,25 @@ def commit(repo: Path, message: str, body: str | None = None) -> str:
         args += ["-m", body]
     _git_ok(repo, *args)
     return _git_ok(repo, "rev-parse", "HEAD").stdout.strip()
+
+
+def has_remote(repo: Path) -> bool:
+    """True iff the repo has any configured remote — the best-effort-push
+    gate for producer commits (doc 13 H-5: producers push their own
+    writes; a remoteless sandbox/bootstrap ledger simply keeps them)."""
+    proc = _git(repo, "remote")
+    return proc.returncode == 0 and bool(proc.stdout.strip())
+
+
+def toplevel(path: Path | str) -> Path | None:
+    """``git rev-parse --show-toplevel`` for *path*'s repo, or None when
+    outside any repo — the project-path resolver teach/import use
+    (doc 13 §3: producers know the path; teach uses cwd's toplevel)."""
+    proc = _git(Path(path), "rev-parse", "--show-toplevel")
+    if proc.returncode != 0:
+        return None
+    out = proc.stdout.strip()
+    return Path(out) if out else None
 
 
 def paths_dirty(repo: Path, target: Path | str) -> bool:

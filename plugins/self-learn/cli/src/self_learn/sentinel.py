@@ -1,9 +1,14 @@
 """Autosync pause sentinel (T7).
 
-Contract (08 §1 Sentinel + Sentinel-scoping pins; 02 §3):
+Contract (08 §1 Sentinel + Sentinel-scoping pins; 02 §3; doc 13 §4.4):
 
-- Path: ``${XDG_CACHE_HOME:-~/.cache}/claude-skills/self-learn/autosync-pause``
-  — resolved from the environment at every call so tests can redirect it.
+- Path: ``${XDG_CACHE_HOME:-~/.cache}/self-learn/autosync-pause`` —
+  resolved from the environment at every call so tests can redirect it.
+  GLOBAL, deliberately NOT home-namespaced (unlike the worker cache,
+  H-4): the sentinel is a cross-repo pause contract — it exists to pause
+  a HOST's autosync during the seconds of a canon apply+commit, and any
+  host's sync script must be able to find it without knowing which
+  ledger home is applying.
 - Content: exactly one informational line ``pid=<pid> host=<host>
   started=<iso>``. Content is informational ONLY — **semantics ride the
   file's mtime**: the sentinel is *live* iff its mtime is younger than the
@@ -46,10 +51,11 @@ SENTINEL_TTL_SECONDS = 2 * 60 * 60
 
 
 def sentinel_path() -> Path:
-    """The pinned sentinel location, XDG-resolved at call time."""
+    """The pinned sentinel location, XDG-resolved at call time. Global —
+    NOT home-namespaced (doc 13 §4.4: a cross-repo pause contract)."""
     cache = os.environ.get("XDG_CACHE_HOME")
     base = Path(cache).expanduser() if cache else Path("~/.cache").expanduser()
-    return base / "claude-skills" / "self-learn" / "autosync-pause"
+    return base / "self-learn" / "autosync-pause"
 
 
 def sentinel_line(now: datetime | None = None) -> str:

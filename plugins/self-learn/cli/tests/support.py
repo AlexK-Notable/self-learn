@@ -36,16 +36,61 @@ def commit_all(repo: Path, message: str = "seed") -> None:
     git(repo, "commit", "-q", "-m", message)
 
 
-# ------------------------------------------------------------ ledger home
+# ------------------------------------------------- ledger home + host repo
+
+
+class SandboxEnv:
+    """The doc-13 fixture surface: an independent LEDGER home plus one
+    sandbox HOST repo (skills root + registered project host in one)."""
+
+    def __init__(self, ledger: Path, host: Path, skills: tuple[str, ...]):
+        self.ledger = ledger
+        self.host = host
+        first = skills[0] if skills else "s"
+        self.skill_dir = host / "plugins" / f"{first}-plugin" / "skills" / first
+        self.skill_md = self.skill_dir / "SKILL.md"
+
+
+SKILL_MD_SEED = "# {name} skill\n\nAuthored prose stays put.\n"
+CLAUDE_MD_SEED = "# host project\n\nAuthored context stays put.\n"
+
+
+def make_env(tmp_path: Path, skills: tuple[str, ...] = ("s",)) -> SandboxEnv:
+    """Build the NEW (doc 13 §3) sandbox pair:
+
+    - HOST repo at ``tmp_path/host-repo``: ``plugins/<n>-plugin/skills/<n>/
+      SKILL.md`` per skill + a root ``CLAUDE.md``, git init + seed commit.
+    - LEDGER home at ``tmp_path/ledger-home``: git repo with the layout
+      dirs (``skills/ projects/ user/ telemetry/``) and a ``hosts.yaml``
+      registering the host repo as BOTH skills root and project host.
+    """
+    host = tmp_path / "host-repo"
+    init_repo(host)
+    for name in skills:
+        skill_dir = host / "plugins" / f"{name}-plugin" / "skills" / name
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            SKILL_MD_SEED.format(name=name), encoding="utf-8"
+        )
+    (host / "CLAUDE.md").write_text(CLAUDE_MD_SEED, encoding="utf-8")
+    commit_all(host, "host seed")
+
+    ledger = tmp_path / "ledger-home"
+    init_repo(ledger)
+    for sub in ("skills", "projects", "user", "telemetry"):
+        (ledger / sub).mkdir()
+    (ledger / "hosts.yaml").write_text(
+        f"skills_root: {host}\nprojects:\n  - path: {host}\n", encoding="utf-8"
+    )
+    commit_all(ledger, "ledger seed")
+    return SandboxEnv(ledger, host, skills)
 
 
 def make_home(tmp_path: Path, skills: tuple[str, ...] = ("s",)) -> Path:
-    """A sandbox ledger home (git repo) with plugin/skill dirs for `skills`."""
-    home = tmp_path / "ledger-home"
-    init_repo(home)
-    for name in skills:
-        (home / "plugins" / f"{name}-plugin" / "skills" / name).mkdir(parents=True)
-    return home
+    """A sandbox ledger home on the doc-13 layout (see :func:`make_env`);
+    returns the LEDGER path — the paired host repo sits at
+    ``tmp_path/host-repo``."""
+    return make_env(tmp_path, skills).ledger
 
 
 # --------------------------------------------------------------- records

@@ -18,13 +18,15 @@ degrades soft, never blind.
 from __future__ import annotations
 
 import re
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from . import gitops
 from .ledger import discover_buckets
 from .records import Record, RecordError
 
-__all__ = ["ImportReport", "ImporterError", "existing_origins"]
+__all__ = ["ImportReport", "ImporterError", "commit_import", "existing_origins"]
 
 
 class ImporterError(Exception):
@@ -45,6 +47,7 @@ class ImportReport:
     flagged_canon: list[str] = field(default_factory=list)
     behavioral_minority: list[str] = field(default_factory=list)
     scan_refused: list[str] = field(default_factory=list)
+    touched: list[Path] = field(default_factory=list)  # ledger paths (H-5 commit)
 
     def summary(self) -> str:
         """Human-readable run summary (visible confirmation; CLI prints it)."""
@@ -71,6 +74,30 @@ class ImportReport:
         for origin in self.scan_refused:
             lines.append(f"  ! scan-refused {origin}")
         return "\n".join(lines)
+
+
+def commit_import(home: Path, report: ImportReport) -> None:
+    """H-5 (doc 13 §5): importers are producers — ONE ledger commit per
+    run (pinned subject ``self-learn: import <n> record(s) --<source>``)
+    + best-effort push. No-op when nothing was created; a git failure is
+    loud but never un-imports the records."""
+    if not report.created or not report.touched:
+        return
+    n = len(report.created)
+    try:
+        gitops.stage(home, report.touched)
+        gitops.commit(
+            home, f"self-learn: import {n} record(s) --{report.source}"
+        )
+    except gitops.GitOpsError as exc:
+        print(
+            f"self-learn: import commit failed ({exc}) — records written "
+            "but uncommitted",
+            file=sys.stderr,
+        )
+        return
+    if gitops.has_remote(home):
+        gitops.push_with_retry(home)
 
 
 # Fallback extraction from unparseable record files: both the flow style the

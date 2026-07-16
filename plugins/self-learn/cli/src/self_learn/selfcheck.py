@@ -34,10 +34,16 @@ non-zero exit on any FAIL:
         missing/broken markers FAIL naming the file. Targets with zero
         routed records are never flagged (the bootstrap rule covers
         first-route targets);
-    (d) sentinel writability — hold + release a probe at the real
+    (d) drift check (doc 13 §4.2) — every ROUTED skill-md/claude-md
+        record's ``(lrn-…)`` marker must sit inside its compiled target's
+        managed section (targets resolved via hosts.yaml, the same logic
+        the verbs use); missing target or marker FAILs naming
+        ``self-learn recompile``; skipped cleanly when hosts.yaml is
+        absent;
+    (e) sentinel writability — hold + release a probe at the real
         cache-path resolution; a pre-existing LIVE sentinel (another
         flow's hold) is heartbeated, never deleted;
-    (e) worker check — stubbed M2-conditional: prints
+    (f) worker check — stubbed M2-conditional: prints
         ``worker: M2 — not checked``.
 """
 
@@ -50,9 +56,11 @@ from pathlib import Path
 from . import scan as scan_mod
 from . import sentinel
 from .compilers import BEGIN_MARKER, END_MARKER, CompileError, compile_managed_text
-from .ledger import discover_buckets
+from .hosts import HostsError, hosts_path, load_hosts, skill_dir_for
+from .ledger import Bucket, discover_buckets
 from .ledger_ops import (
     ProposalError,
+    bucket_project_path,
     find_record_path,
     read_proposal,
     stamp_proposal,
@@ -136,11 +144,33 @@ def proposal_validate(home: Path, record_id: str) -> int:
 # ----------------------------------------------------------------- selftest
 
 
+def _target_for(home: Path, bucket: Bucket, record: Record) -> Path | None:
+    """The compiled canon file for one skill-md/claude-md record, resolved
+    through the hosts registry — the SAME resolution the verbs use
+    (doc 13 §4). None = unresolvable (unregistered/missing host)."""
+    destination = (record.routing or {}).get("destination")
+    if destination == "skill-md" and bucket.scope == "skill":
+        try:
+            return skill_dir_for(load_hosts(home), bucket.name) / "SKILL.md"
+        except HostsError:
+            return None
+    if destination == "claude-md":
+        if record.scope == "user":
+            return DEFAULT_USER_CLAUDE_MD.expanduser()
+        if record.scope == "project":
+            host = bucket_project_path(bucket.path)
+            return None if host is None else Path(host) / "CLAUDE.md"
+        root = load_hosts(home).skills_root  # skill-scoped claude-md
+        return None if root is None else root / "CLAUDE.md"
+    return None  # reference/new-skill/hook: no managed markers
+
+
 def _section_targets(home: Path) -> dict[Path, list[Record]]:
     """Managed-section targets that SHOULD have a section: target file →
     the resolved records routed to it (any record whose routing names the
     destination — graduated entries keep their markers, so presence still
-    counts)."""
+    counts). Targets resolve via hosts.yaml; unresolvable records are
+    skipped here (the drift check reports them)."""
     targets: dict[Path, list[Record]] = {}
     for bucket in discover_buckets(home):
         resolved = bucket.path / "resolved"
@@ -151,19 +181,67 @@ def _section_targets(home: Path) -> dict[Path, list[Record]]:
                 record = Record.from_path(path)
             except RecordError:
                 continue  # unparseable resolved files are T3's problem, not (c)'s
-            destination = (record.routing or {}).get("destination")
-            if destination == "skill-md" and bucket.scope == "skill":
-                target = bucket.path.parent / "SKILL.md"
-            elif destination == "claude-md":
-                target = (
-                    DEFAULT_USER_CLAUDE_MD.expanduser()
-                    if record.scope == "user"
-                    else home / "CLAUDE.md"
-                )
-            else:
-                continue  # reference/new-skill/hook: no managed markers
-            targets.setdefault(target, []).append(record)
+            target = _target_for(home, bucket, record)
+            if target is not None:
+                targets.setdefault(target, []).append(record)
     return targets
+
+
+def _check_drift(home: Path) -> tuple[bool, str]:
+    """Doc 13 §4.2 drift check: every ROUTED record with a managed
+    destination must have its ``(lrn-…)`` entry marker inside its
+    compiled target's managed section — a two-phase interruption leaves
+    the ledger routed and the canon stale, and ``self-learn recompile``
+    is the one-command repair. Skips cleanly when hosts.yaml is absent
+    (nothing registered → nothing compiled anywhere)."""
+    if not hosts_path(home).is_file():
+        return True, "hosts.yaml absent — drift not checked"
+    failures: list[str] = []
+    checked = 0
+    for bucket in discover_buckets(home):
+        resolved = bucket.path / "resolved"
+        if not resolved.is_dir():
+            continue
+        for path in sorted(resolved.glob("lrn-*.md")):
+            try:
+                record = Record.from_path(path)
+            except RecordError:
+                continue
+            if record.status != "routed" or record.superseded_by is not None:
+                continue
+            if (record.routing or {}).get("destination") not in (
+                "skill-md",
+                "claude-md",
+            ):
+                continue
+            checked += 1
+            target = _target_for(home, bucket, record)
+            if target is None:
+                failures.append(
+                    f"{record.id}: target unresolvable via hosts.yaml — "
+                    "register the host, then `self-learn recompile`"
+                )
+                continue
+            if not target.is_file():
+                failures.append(
+                    f"{record.id}: target {target} missing — run "
+                    "`self-learn recompile`"
+                )
+                continue
+            text = target.read_text(encoding="utf-8")
+            begin = text.find(BEGIN_MARKER)
+            end = text.find(END_MARKER)
+            section = text[begin:end] if 0 <= begin < end else ""
+            if f"({record.id})" not in section:
+                failures.append(
+                    f"{record.id}: entry marker missing from {target} — "
+                    "run `self-learn recompile`"
+                )
+    if failures:
+        return False, "; ".join(failures)
+    if not checked:
+        return True, "no routed managed-destination records — no drift possible"
+    return True, f"{checked} routed record(s) present in their compiled targets"
 
 
 def _check_capture(home: Path) -> tuple[bool, str]:
@@ -262,6 +340,7 @@ def run_selftest(home: Path) -> int:
         ("capture", *_check_capture(home)),
         ("compiler", *_check_compiler(targets)),
         ("markers", *_check_markers(targets)),
+        ("drift", *_check_drift(home)),
         ("sentinel", *_check_sentinel()),
     ]
 

@@ -45,7 +45,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import sentinel, telemetry, worker
+from . import gitops, sentinel, telemetry, worker
+from .hosts import load_hosts
 from .import_common import existing_origins
 from .ledger import discover_buckets
 from .ledger_ops import LedgerOpsError, create_record, record_title
@@ -394,6 +395,24 @@ def _norm_command(cmd: str) -> str:
     return " ".join(str(cmd).split()[:2])
 
 
+def _slice_cwd(s: SessionSlice) -> str | None:
+    """The session's working directory — the FIRST ``cwd`` field seen in
+    the slice (transcript lines carry one per entry). Binds a
+    project-scoped candidate to ITS project (doc 13 §0 point 2: the
+    miner reads every project's transcripts, so the project path must
+    come from the transcript, never from any global default)."""
+    for raw in s.lines:
+        try:
+            entry = json.loads(raw)
+        except ValueError:
+            continue
+        if isinstance(entry, dict):
+            cwd = entry.get("cwd")
+            if isinstance(cwd, str) and cwd:
+                return cwd
+    return None
+
+
 def digest_transcript(s: SessionSlice) -> tuple[str | None, bool]:
     """(digest-or-None, halt) for one session slice.
 
@@ -542,12 +561,11 @@ def build_reader_argv(settings_path: Path) -> list[str]:
     ]
 
 
-def _rubric(home: Path) -> tuple[str, str]:
-    """(text, version). Version comes from a `rubric-version:` marker."""
-    path = (
-        home
-        / "plugins/self-learn/skills/self-learn/references/mining-rubric.md"
-    )
+def _rubric() -> tuple[str, str]:
+    """(text, version). Version comes from a `rubric-version:` marker.
+    PACKAGE-relative (doc 13 T-H3): the rubric ships with the product
+    beside the skill — never resolved through any home."""
+    path = worker.package_skill_refs() / "mining-rubric.md"
     if not path.is_file():
         return ("(rubric missing — mine conservatively: corrections, "
                 "verified gotchas, stated standing preferences only)"), "none"
@@ -653,7 +671,7 @@ correct and common answer.
 def _compose_prompt(home: Path, digests: list[str], output_path: Path) -> str:
     return _PROMPT_TEMPLATE.format(
         output_path=output_path,
-        rubric=_rubric(home)[0],
+        rubric=_rubric()[0],
         ledger=_ledger_index(home),
         canon=_canon_index(home),
         digests="\n\n".join(digests),
@@ -718,6 +736,7 @@ class MineResult:
     fires: int = 0
     dropped: int = 0
     outcomes: list[dict] = field(default_factory=list)
+    touched: list[Path] = field(default_factory=list)  # ledger paths to commit (H-5)
 
 
 def _outcome(result: MineResult, origin: str, outcome: str, **extra) -> None:
@@ -768,15 +787,19 @@ def _rejected_mark_landed(rid: str) -> None:
 
 
 def _valid_skill_scope(home: Path, scope: str) -> bool:
-    """The SKILL directory must exist — not the bucket (which only exists
-    after a first capture; create_record creates it on demand). The name
-    is regex-gated BEFORE it reaches any glob (audit: `skill:s*` would
-    otherwise validate against a real skill and land with a nonsense
-    scope string)."""
+    """The SKILL directory must exist in the registered skills-root HOST
+    (doc 13 H-3) — not the bucket (which only exists after a first
+    capture; create_record creates it on demand). The name is regex-gated
+    BEFORE it reaches any glob (audit: `skill:s*` would otherwise
+    validate against a real skill and land with a nonsense scope
+    string). No skills root registered → no skill scope is valid."""
     name = scope.partition(":")[2]
     if not _SKILL_NAME_RE.match(name):
         return False
-    return any(p.is_dir() for p in home.glob(f"plugins/*/skills/{name}"))
+    root = load_hosts(home).skills_root
+    if root is None:
+        return False
+    return any(p.is_dir() for p in root.glob(f"plugins/*/skills/{name}"))
 
 
 def _build_record(home: Path, cand: dict) -> Record:
@@ -871,8 +894,16 @@ def _event_seen(home: Path) -> set[tuple[str, str, str]]:
 
 
 def _reconcile_and_land(
-    home: Path, parsed: dict, result: MineResult, cap: int
+    home: Path,
+    parsed: dict,
+    result: MineResult,
+    cap: int,
+    cwds: dict[str, str] | None = None,
 ) -> None:
+    """``cwds`` maps session id → that session's transcript ``cwd``; a
+    project-scoped candidate lands in the bucket for THAT path (doc 13
+    §3) — no cwd on file → dropped-invalid, never a guessed bucket."""
+    cwds = cwds or {}
     origins = existing_origins(home)
     seen_events = _event_seen(home)
     candidates = parsed.get("candidates") or []
@@ -929,6 +960,7 @@ def _reconcile_and_land(
                 if pending_path is not None:
                     record.write(pending_path)
                     result.folded.append(record.id)
+                    result.touched.append(pending_path)
                     _outcome(result, origin, "folded", record=record.id)
                     origins.add(origin)
                     continue
@@ -987,15 +1019,31 @@ def _reconcile_and_land(
             _outcome(result, origin, "scan-refused", rule=hits[0].rule)
             log(f"run: candidate {origin} refused by secret scan ({hits[0].rule})")
             continue
+        project_path = None
+        if record.scope == "project":
+            cwd = cwds.get(session_id)
+            if not cwd:
+                _outcome(
+                    result,
+                    origin,
+                    "dropped-invalid",
+                    reason="no cwd for project scope",
+                )
+                continue
+            project_path = Path(cwd)
         entry = {"session": session_id, "ts": _now_iso(), "origin": origin}
         if quote:
             entry["quote"] = quote
         record.append_evidence(entry)
         try:
-            path = create_record(home, record)
+            path = create_record(home, record, project_path=project_path)
         except LedgerOpsError as exc:
             _outcome(result, origin, "dropped-land-failed", reason=str(exc)[:200])
             continue
+        result.touched.append(path)
+        meta = path.parent.parent / "meta.yaml"
+        if meta.is_file():
+            result.touched.append(meta)
         if resurface_of is not None:
             _rejected_mark_landed(resurface_of)
             _outcome(result, origin, "resurfaced", record=resurface_of,
@@ -1142,7 +1190,7 @@ def run(home: Path | str, *, trigger: str = "manual", since: str | None = None) 
             "ts": _now_iso(),
             "run_id": run_id,
             "trigger": trigger,
-            "rubric_version": _rubric(home)[1],
+            "rubric_version": _rubric()[1],
             "model": miner_model(),
         }
         try:
@@ -1180,6 +1228,7 @@ def _run_locked(
     slices = walk(since)
     digests: list[str] = []
     processed: list[tuple[SessionSlice, bool]] = []
+    cwds: dict[str, str] = {}  # session id → transcript cwd (doc 13 §3)
     excluded = 0
     total_chars = 0
     deferred_files = 0
@@ -1195,6 +1244,9 @@ def _run_locked(
         total_chars += len(digest)
         digests.append(digest)
         processed.append((s, halt))
+        cwd = _slice_cwd(s)
+        if cwd:
+            cwds[s.session_id] = cwd
 
     result = MineResult(
         status="idle", run_id=run_id, sessions_scanned=len(digests)
@@ -1247,7 +1299,24 @@ def _run_locked(
     cap = cap_for(len(digests))
     hold = sentinel.hold()
     try:
-        _reconcile_and_land(home, parsed, result, cap)
+        _reconcile_and_land(home, parsed, result, cap, cwds)
+        if result.landed and result.touched:
+            # H-5 (doc 13 §5): the miner is a producer — it commits its
+            # own landings (pinned subject) + pushes best-effort. NOTE:
+            # this deliberately CHANGES the doc-12 §10 adjustment that
+            # landings ride autosync — doc 13 H-5 supersedes it (the
+            # ledger home has no watcher, ever).
+            try:
+                gitops.stage(home, result.touched)
+                gitops.commit(
+                    home,
+                    f"self-learn: mine {len(result.landed)} candidate(s) "
+                    f"({run_id})",
+                )
+                if gitops.has_remote(home):
+                    gitops.push_with_retry(home)
+            except gitops.GitOpsError as exc:
+                log(f"run {run_id}: landing commit failed ({exc})")
     finally:
         hold.release()
 

@@ -66,7 +66,9 @@ import re
 import sys
 from datetime import datetime, timezone
 
-from . import analyst, telemetry, verbs
+from pathlib import Path
+
+from . import analyst, gitops, telemetry, verbs
 from .chezmoi import ChezmoiAbort, ChezmoiError
 from .compilers import CompileError
 from .ledger import resolve_home
@@ -217,6 +219,35 @@ def _clean(value: str | None) -> str | None:
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _project_path() -> Path:
+    """Project scope binds to THIS session's project (doc 13 §3: producers
+    know the path — teach uses cwd): the git toplevel of cwd, else cwd."""
+    return gitops.toplevel(Path.cwd()) or Path.cwd()
+
+
+def _commit_capture(home: Path, record: Record, path: Path) -> None:
+    """H-5 (doc 13 §5): producers commit their own writes — every capture
+    gets an attributable ledger commit (pinned subject) + best-effort
+    push; pending captures no longer ride anonymous autosync commits.
+    A git failure is loud but never un-captures the record."""
+    try:
+        touched = [path]
+        meta = path.parent.parent / "meta.yaml"
+        if meta.is_file():
+            touched.append(meta)
+        gitops.stage(home, touched)
+        gitops.commit(home, f"self-learn: capture {record.id} ({record.scope})")
+    except gitops.GitOpsError as exc:
+        print(
+            f"self-learn: capture commit failed ({exc}) — the record is "
+            "written but uncommitted",
+            file=sys.stderr,
+        )
+        return
+    if gitops.has_remote(home):
+        gitops.push_with_retry(home)
 
 
 def run_teach(args: argparse.Namespace) -> int:
@@ -404,13 +435,17 @@ def run_teach(args: argparse.Namespace) -> int:
             entry["quote"] = quote
         record.append_evidence(entry)
 
-    if args.route:
-        return _route_now(args, record)
+    project_path = _project_path() if scope == "project" else None
 
+    if args.route:
+        return _route_now(args, record, project_path)
+
+    home = resolve_home()
     try:
-        path = create_record(resolve_home(), record)
+        path = create_record(home, record, project_path=project_path)
     except LedgerOpsError as exc:
         return _fail(str(exc))
+    _commit_capture(home, record, path)  # H-5: producers commit their writes
 
     # Code-emitted capture event (11 §4.3) — the accepted-offer half of the
     # denominator; the declined half is `telemetry note offer-declined`.
@@ -432,16 +467,19 @@ def run_teach(args: argparse.Namespace) -> int:
 # --------------------------------------------------------------- --route (T8)
 
 
-def _capture_to_pending(home, record_text: str, reason: str, hint: str) -> int:
+def _capture_to_pending(
+    home, record_text: str, reason: str, hint: str, project_path: Path | None
+) -> int:
     """Fallback on any post-composition routing failure: the composed
     record (pristine, pre-routing-mutation snapshot) is captured to
     ``pending/`` as a NORMAL teach — the lesson is never lost."""
     record = Record.from_text(record_text)
     try:
-        path = create_record(home, record)
+        path = create_record(home, record, project_path=project_path)
     except LedgerOpsError as exc:  # capture itself failed — nothing written
         print(f"self-learn teach: {reason}", file=sys.stderr)
         return _fail(f"and the pending capture also failed: {exc}")
+    _commit_capture(home, record, path)  # H-5: still a producer write
     print(
         f"self-learn teach: {reason} — record captured to pending; {hint}",
         file=sys.stderr,
@@ -455,7 +493,9 @@ def _capture_to_pending(home, record_text: str, reason: str, hint: str) -> int:
     return EXIT_ANALYST
 
 
-def _route_now(args: argparse.Namespace, record: Record) -> int:
+def _route_now(
+    args: argparse.Namespace, record: Record, project_path: Path | None
+) -> int:
     """The one-motion path: destination (``--dest``, or the one-shot
     analyst), then :func:`verbs.route_direct` — straight to ``resolved/``,
     compile, diff print, pinned commit, push. Invocation = approval: no
@@ -465,7 +505,7 @@ def _route_now(args: argparse.Namespace, record: Record) -> int:
 
     if dest is None:
         # Bare --route: the one-shot analyst (flags in self_learn.analyst).
-        doctrine = analyst.doctrine_path(home)
+        doctrine = analyst.doctrine_path()
         if not doctrine.is_file():
             return _fail(f"routing doctrine not installed — T10 ({doctrine})")
         try:
@@ -476,6 +516,7 @@ def _route_now(args: argparse.Namespace, record: Record) -> int:
                 record.to_text(),
                 f"analysis failed ({exc})",
                 "run review or route --dest",
+                project_path,
             )
         dest = proposal["destination"]
         rationale = proposal.get("rationale") or ""
@@ -484,7 +525,12 @@ def _route_now(args: argparse.Namespace, record: Record) -> int:
     snapshot = record.to_text()  # pristine copy for the never-lost fallback
     try:
         result = verbs.route_direct(
-            home, record, dest=dest, note=args.note, no_push=args.no_push
+            home,
+            record,
+            dest=dest,
+            note=args.note,
+            no_push=args.no_push,
+            project_path=project_path,
         )
     except verbs.SecretRefusal as exc:
         print(str(exc), file=sys.stderr)
@@ -501,6 +547,7 @@ def _route_now(args: argparse.Namespace, record: Record) -> int:
             snapshot,
             f"route failed ({exc})",
             "fix the cause, then `self-learn route <id>`",
+            project_path,
         )
 
     telemetry.spool_quiet(

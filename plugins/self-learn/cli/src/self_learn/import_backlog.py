@@ -61,7 +61,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import scan as scan_mod
-from .import_common import ImporterError, ImportReport, existing_origins
+from .import_common import ImporterError, ImportReport, commit_import, existing_origins
 from .ledger_ops import bucket_dir_for_scope, create_record, stamp_proposal, write_proposal
 from .normalize import sha_anchor
 from .records import Record
@@ -193,9 +193,17 @@ def import_backlog(
     Idempotent: origins already present anywhere in the ledger are skipped.
     """
     scope = f"skill:{skill_name}"
-    bucket_dir = bucket_dir_for_scope(home, scope)  # validates the skill exists
+    bucket_dir_for_scope(home, scope)  # validates the skill via the registry
     if journal_path is None:
-        journal_path = bucket_dir.parent / "references" / JOURNAL_BASENAME
+        # The journal lives in the HOST skill dir now (doc 13 §2): the
+        # ledger bucket holds records only, never source material.
+        from .hosts import HostsError, load_hosts, skill_dir_for
+
+        try:
+            skill_dir = skill_dir_for(load_hosts(home), skill_name)
+        except HostsError as exc:
+            raise ImporterError(str(exc)) from exc
+        journal_path = skill_dir / "references" / JOURNAL_BASENAME
     journal_path = Path(journal_path)
     if not journal_path.is_file():
         raise ImporterError(f"no journal at {journal_path}")
@@ -228,13 +236,13 @@ def import_backlog(
         if entry.date is not None and not origin.endswith(entry.date):
             evidence["note"] = f"journal entry dated {entry.date}"
         record.append_evidence(evidence)
-        create_record(home, record)
+        report.touched.append(create_record(home, record))
         report.created.append(record.id)
         report.origins[record.id] = origin
 
         if record.type == "knowledge" and _canon_match(entry.title, canon_norm):
             # Flag lives in the proposal sibling; the record stays clean.
-            write_proposal(
+            proposal_path = write_proposal(
                 home,
                 record.id,
                 {
@@ -254,9 +262,11 @@ def import_backlog(
                 },
             )
             stamp_proposal(home, record.id)  # CLI stamps record_sha (08 §7.1)
+            report.touched.append(proposal_path)
             report.flagged_canon.append(record.id)
         else:
             # Card-set data for exit (b): behavior-type + unflagged knowledge.
             report.behavioral_minority.append(record.id)
 
+    commit_import(home, report)  # H-5: one ledger commit per run
     return report

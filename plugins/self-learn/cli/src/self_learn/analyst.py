@@ -62,17 +62,17 @@ __all__ = [
     "ANALYST_ALLOWED_TOOLS",
     "DEFAULT_ANALYST_MODEL",
     "DEFAULT_ANALYST_TIMEOUT",
-    "DOCTRINE_RELPATH",
+    "DOCTRINE_BASENAME",
     "AnalystError",
     "analyze",
     "build_argv",
     "doctrine_path",
 ]
 
-#: 08 §1 Routing-doctrine pin — the single source, under the plugin tree.
-DOCTRINE_RELPATH = Path(
-    "plugins/self-learn/skills/self-learn/references/routing-doctrine.md"
-)
+#: 08 §1 Routing-doctrine pin — the single source. Doc 13 T-H3 moved its
+#: resolution to the CLI PACKAGE (the doctrine ships with the product
+#: beside the skill — never via any ledger home).
+DOCTRINE_BASENAME = "routing-doctrine.md"
 
 #: Read-only tool set — NO Bash/Edit/Write, ever (see module docstring).
 ANALYST_ALLOWED_TOOLS = "Read,Grep,Glob"
@@ -102,9 +102,13 @@ class AnalystError(Exception):
     pending capture (the record is never lost)."""
 
 
-def doctrine_path(home: Path | str) -> Path:
-    """The routing doctrine file under ``SELF_LEARN_HOME``'s plugin tree."""
-    return Path(home) / DOCTRINE_RELPATH
+def doctrine_path() -> Path:
+    """The routing doctrine file, PACKAGE-relative (doc 13 T-H3: one
+    file, three loaders — worker, analyst, skill — all off the product
+    tree, never any home)."""
+    from .worker import package_skill_refs
+
+    return package_skill_refs() / DOCTRINE_BASENAME
 
 
 def _model() -> str:
@@ -159,7 +163,7 @@ def analyze(home: Path | str, record: Record) -> dict:
     dict (destination/alternates/rationale + CLI-stamped ``record_sha``,
     model, analyzed_at). Raises :class:`AnalystError` on ANY failure —
     exactly one parse attempt, no reprompt."""
-    doctrine = doctrine_path(home)
+    doctrine = doctrine_path()
     if not doctrine.is_file():
         # Callers check first for the pinned exit-2 message; this guard is
         # defense in depth for library use.

@@ -1,10 +1,14 @@
-"""Ledger-home resolution and bucket discovery.
+"""Ledger-home resolution and bucket discovery (doc 13 §3 layout).
 
-Pins (docs/specs/self-learn/08-build-plan.md §1):
-- Ledger home: ``SELF_LEARN_HOME`` env var, default ``~/repos/claude-skills``,
-  expanduser'd. All bucket paths resolve against it.
-- Bucket discovery: skill buckets = glob ``plugins/*/skills/*/.self-learn/``
-  under home; the project+user bucket = ``<home>/.self-learn/``.
+Pins (doc 13 §1 Q1 / §3; H-1):
+- Ledger home: ``SELF_LEARN_HOME`` env var, default ``~/.self-learn``,
+  expanduser'd — explicit, never inferred from cwd. All bucket paths
+  resolve against it.
+- Bucket discovery on the independent-home layout:
+  ``skills/<name>/`` → one skill bucket each (name = the dir name);
+  ``projects/<slug>/`` → one project bucket each (name = the slug dir,
+  path recorded in the sibling ``meta.yaml`` — the slug alone is lossy);
+  ``user/`` → the single user bucket. Only dirs that exist.
 
 Queue semantics (deferred_until hiding, eligibility) live in
 :mod:`self_learn.ledger_ops` — :func:`Bucket.pending_files` is the raw
@@ -17,7 +21,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-DEFAULT_HOME = "~/repos/claude-skills"
+DEFAULT_HOME = "~/.self-learn"
 
 
 def resolve_home() -> Path:
@@ -28,10 +32,10 @@ def resolve_home() -> Path:
 
 @dataclass(frozen=True)
 class Bucket:
-    """One .self-learn bucket: its directory, scope, and display name."""
+    """One ledger bucket: its directory, scope, and display name."""
 
     path: Path
-    scope: str  # "skill" | "project+user"
+    scope: str  # "skill" | "project" | "user"
     name: str
 
     def pending_files(self) -> list[Path]:
@@ -46,16 +50,19 @@ class Bucket:
 def discover_buckets(home: Path | None = None) -> list[Bucket]:
     """Return every existing bucket under the ledger home (may be empty).
 
-    Skill buckets are named after their skill directory; the repo-root
-    project+user bucket is named "project".
+    Skill buckets under ``skills/``, per-project buckets under
+    ``projects/`` (named by slug), and the single ``user/`` bucket.
     """
     if home is None:
         home = resolve_home()
     buckets: list[Bucket] = []
-    for p in sorted(home.glob("plugins/*/skills/*/.self-learn")):
+    for p in sorted(home.glob("skills/*")):
         if p.is_dir():
-            buckets.append(Bucket(path=p, scope="skill", name=p.parent.name))
-    root = home / ".self-learn"
-    if root.is_dir():
-        buckets.append(Bucket(path=root, scope="project+user", name="project"))
+            buckets.append(Bucket(path=p, scope="skill", name=p.name))
+    for p in sorted(home.glob("projects/*")):
+        if p.is_dir():
+            buckets.append(Bucket(path=p, scope="project", name=p.name))
+    user = home / "user"
+    if user.is_dir():
+        buckets.append(Bucket(path=user, scope="user", name="user"))
     return buckets

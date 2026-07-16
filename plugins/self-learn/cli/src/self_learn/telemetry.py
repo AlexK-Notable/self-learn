@@ -2,16 +2,16 @@
 
 Two-plane mechanism, pinned by the 2026-07-14 audit (11 §4.2):
 
-- **Any process may append events to the SPOOL** —
-  ``${XDG_CACHE_HOME:-~/.cache}/claude-skills/self-learn/spool/
-  <month>.<actor>.jsonl`` — untracked transient state (S-7's ``~/.cache``
-  class). Single-line JSON, ``flock`` on append (same-machine concurrent
-  sessions are the common case).
+- **Any process may append events to the SPOOL** — ``<home-namespaced
+  cache>/spool/<month>.<actor>.jsonl`` (doc 13 §6 / H-4: under
+  ``${XDG_CACHE_HOME:-~/.cache}/self-learn/home-<hash>/``) — untracked
+  transient state (S-7's ``~/.cache`` class). Single-line JSON, ``flock``
+  on append (same-machine concurrent sessions are the common case).
 - **Only human-triggered CLI verbs flush** the spool into the tracked
-  plane — ``<home>/.self-learn/telemetry/<month>.<actor>.jsonl`` (root
-  bucket, committed by autosync, NEVER staged by a resolution verb's
-  surgical commit). At flush the §1 secret scan runs over every flushed
-  line; a hit refuses the whole flush and leaves the spool intact.
+  plane — ``<home>/telemetry/<month>.<actor>.jsonl`` (doc 13 §3 layout;
+  NEVER staged by a resolution verb's surgical commit). At flush the §1
+  secret scan runs over every flushed line; a hit refuses the whole
+  flush and leaves the spool intact.
 
 Content discipline (11 §4.4): events carry ids, enums, versions, hashes,
 counts — never lesson body text, quotes, transcript spans, or free text.
@@ -97,9 +97,12 @@ class ScanRefusal(TelemetryError):
 
 
 def _cache_base() -> Path:
-    cache = os.environ.get("XDG_CACHE_HOME")
-    base = Path(cache).expanduser() if cache else Path("~/.cache").expanduser()
-    return base / "claude-skills" / "self-learn"
+    """The home-namespaced worker cache (doc 13 §6, H-4). Deferred import:
+    worker imports this module at load time, so the top level must not
+    import worker back."""
+    from .worker import cache_dir
+
+    return cache_dir()
 
 
 def spool_dir() -> Path:
@@ -108,10 +111,11 @@ def spool_dir() -> Path:
 
 
 def telemetry_dir(home: Path | str) -> Path:
-    """The tracked plane: ``<home>/.self-learn/telemetry/`` (root bucket).
-    Bucket discovery and ``--selftest`` skip this directory — its files
-    are observation lines, not records (11 §4.2)."""
-    return Path(home) / ".self-learn" / "telemetry"
+    """The tracked plane: ``<home>/telemetry/`` (doc 13 §3 layout — a
+    top-level dir of the independent ledger home). Bucket discovery and
+    ``--selftest`` skip this directory — its files are observation lines,
+    not records (11 §4.2)."""
+    return Path(home) / "telemetry"
 
 
 def actor() -> str:

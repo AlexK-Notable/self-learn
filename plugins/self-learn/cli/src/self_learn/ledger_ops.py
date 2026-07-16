@@ -45,7 +45,9 @@ __all__ = [
     "PROPOSAL_DESTINATIONS",
     "QueueEntry",
     "bucket_dir_for_scope",
+    "bucket_project_path",
     "create_record",
+    "ensure_project_meta",
     "defer_record",
     "find_record_path",
     "is_unanalyzed",
@@ -206,34 +208,74 @@ def _deferred_hidden(record: Record, now: datetime) -> bool:
 # ---------------------------------------------------------- bucket routing
 
 
-def bucket_dir_for_scope(home: Path, scope: str) -> Path:
-    """Map a record scope to its bucket dir (08 §1 Bucket-discovery pin):
-    ``skill:<name>`` → the ``.self-learn`` of the plugin dir that contains
-    that skill; ``project``/``user`` → ``<home>/.self-learn``."""
-    if scope in ("project", "user"):
-        return home / ".self-learn"
+def bucket_dir_for_scope(
+    home: Path, scope: str, *, project_path: Path | None = None
+) -> Path:
+    """Map a record scope to its bucket dir (doc 13 §3 layout):
+    ``skill:<name>`` → ``<home>/skills/<name>`` — but the name is
+    validity-gated against the registered skills-root HOST first (H-3:
+    capture may be open, but a skill bucket that no host skill backs is a
+    typo, not a bucket); ``user`` → ``<home>/user``; ``project`` →
+    ``<home>/projects/<slug_for(project_path)>`` (the path is REQUIRED —
+    project buckets are per-project now, doc 13 §0 point 2)."""
+    from .hosts import HostsError, load_hosts, skill_dir_for, slug_for
+
+    if scope == "user":
+        return home / "user"
+    if scope == "project":
+        if project_path is None:
+            raise LedgerOpsError(
+                "project scope needs a project_path — per-project buckets "
+                "(doc 13 §3) cannot be resolved without the project's path"
+            )
+        return home / "projects" / slug_for(project_path)
     if isinstance(scope, str) and scope.startswith("skill:"):
         name = scope[len("skill:") :]
-        matches = sorted(p for p in home.glob(f"plugins/*/skills/{name}") if p.is_dir())
-        if not matches:
-            raise LedgerOpsError(
-                f"no plugin under {home} contains a skill named {name!r}"
-            )
-        if len(matches) > 1:
-            raise LedgerOpsError(
-                f"skill name {name!r} is ambiguous across plugins: "
-                + ", ".join(str(m) for m in matches)
-            )
-        return matches[0] / ".self-learn"
+        try:
+            skill_dir_for(load_hosts(home), name)  # validity gate only
+        except HostsError as exc:
+            raise LedgerOpsError(str(exc)) from exc
+        return home / "skills" / name
     raise LedgerOpsError(
         f"scope must be skill:<name>, project, or user, got {scope!r}"
     )
 
 
-def create_record(home: Path, record: Record) -> Path:
+def ensure_project_meta(bucket_dir: Path, project_path: Path | str) -> Path:
+    """Write ``meta.yaml`` ({"path": <resolved project path>}) beside a
+    project bucket on first creation (doc 13 §3: the slug alone is lossy).
+    Existing meta is never rewritten. Returns the meta path."""
+    bucket_dir.mkdir(parents=True, exist_ok=True)
+    meta = bucket_dir / "meta.yaml"
+    if not meta.is_file():
+        _dump_yaml({"path": str(Path(project_path).expanduser().resolve())}, meta)
+    return meta
+
+
+def bucket_project_path(bucket_dir: Path) -> Path | None:
+    """Read a project bucket's recorded absolute path from its
+    ``meta.yaml`` (None when missing/unparseable — callers refuse)."""
+    meta = Path(bucket_dir) / "meta.yaml"
+    if not meta.is_file():
+        return None
+    try:
+        data = _load_yaml_map(meta)
+    except ProposalError:
+        return None
+    value = data.get("path")
+    return Path(value) if isinstance(value, str) and value else None
+
+
+def create_record(
+    home: Path, record: Record, *, project_path: Path | None = None
+) -> Path:
     """Write a Record into its bucket's ``pending/``, creating bucket dirs
-    on demand. Returns the created path."""
-    bucket_dir = bucket_dir_for_scope(home, record.scope)
+    on demand. Project-scoped records need ``project_path`` and get a
+    ``meta.yaml`` written beside the bucket on first creation (doc 13 §3).
+    Returns the created path."""
+    bucket_dir = bucket_dir_for_scope(home, record.scope, project_path=project_path)
+    if record.scope == "project":
+        ensure_project_meta(bucket_dir, project_path)
     pending = bucket_dir / "pending"
     pending.mkdir(parents=True, exist_ok=True)
     path = pending / f"{record.id}.md"

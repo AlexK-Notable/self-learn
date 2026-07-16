@@ -37,6 +37,7 @@ in or drive :func:`run` directly.
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 import shutil
@@ -48,7 +49,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import sentinel, telemetry
-from .ledger import discover_buckets
+from .hosts import HostsError, load_hosts, skill_dir_for
+from .ledger import discover_buckets, resolve_home
+from .ledger_ops import bucket_project_path
 from .scan import scan as secret_scan
 from .ledger_ops import (
     ProposalError,
@@ -74,6 +77,7 @@ __all__ = [
     "build_argv",
     "cache_dir",
     "kick",
+    "package_skill_refs",
     "run",
     "write_permission_rules",
     "write_settings_file",
@@ -96,10 +100,38 @@ ESCALATE_DEBOUNCE_SECS = 24 * 60 * 60
 SUSPECT_JACCARD = 0.6
 
 
+def package_skill_refs() -> Path:
+    """The skill's references dir, resolved relative to THIS package
+    (doc 13 T-H3: doctrine/rubric/registry ship with the product beside
+    the skill — never via any home; this also pre-clears the step-2
+    product-repo extraction). src/self_learn/worker.py → parents[3] is
+    ``plugins/self-learn``."""
+    return Path(__file__).resolve().parents[3] / "skills" / "self-learn" / "references"
+
+
 def cache_dir() -> Path:
+    """Per-ledger-home cache namespace (doc 13 §6, H-4):
+    ``${XDG_CACHE_HOME:-~/.cache}/self-learn/home-<sha256(home)[:8]>/`` —
+    a future second home (06's team ledger) is a config away. Resolves
+    the home itself via :func:`ledger.resolve_home` (cheap env read).
+
+    One-time migration shim: on first creation, if the OLD un-namespaced
+    path (``…/claude-skills/self-learn``) exists, its state (worker.*,
+    events.jsonl, miner/, spool/) moves here — best-effort, per entry."""
     cache = os.environ.get("XDG_CACHE_HOME")
     base = Path(cache).expanduser() if cache else Path("~/.cache").expanduser()
-    return base / "claude-skills" / "self-learn"
+    digest = hashlib.sha256(str(resolve_home()).encode("utf-8")).hexdigest()[:8]
+    new = base / "self-learn" / f"home-{digest}"
+    if not new.is_dir():
+        new.mkdir(parents=True, exist_ok=True)
+        old = base / "claude-skills" / "self-learn"
+        if old.is_dir() and not any(new.iterdir()):
+            for entry in sorted(old.iterdir()):
+                try:
+                    shutil.move(str(entry), str(new / entry.name))
+                except (OSError, shutil.Error):
+                    pass  # best-effort: cache state is never load-bearing
+    return new
 
 
 def _p(name: str) -> Path:
@@ -174,18 +206,19 @@ DISALLOWED_TOOLS = "Bash,Edit,NotebookEdit,Task,WebFetch,WebSearch"
 
 
 def write_permission_rules(home: Path) -> list[str]:
-    """The two pinned Write scopes, in settings-file rule syntax —
-    verified against the LIVE CLI (T13-start check, 2026-07-15):
-    file-write scoping rides the ``Edit(...)`` rule FAMILY (it governs
-    Write too); ``Write(path)`` rules match nothing. `//` = filesystem-
-    absolute, gitignore ** semantics. The Edit TOOL itself stays in
-    DISALLOWED_TOOLS — live-verified that the tool disable and the rule
-    family coexist: Write lands inside the scope, Edit invocations
-    error, everything outside the scope is denied."""
+    """The pinned Write scopes on the doc-13 ledger layout, in
+    settings-file rule syntax — verified against the LIVE CLI (T13-start
+    check, 2026-07-15): file-write scoping rides the ``Edit(...)`` rule
+    FAMILY (it governs Write too); ``Write(path)`` rules match nothing.
+    `//` = filesystem-absolute, gitignore ** semantics. The Edit TOOL
+    itself stays in DISALLOWED_TOOLS. The scopes point at LEDGER
+    proposals dirs ONLY — never at any host repo (H-3: no autonomous
+    process writes canon)."""
     home = Path(home)
     return [
-        f"Edit(/{home}/plugins/**/.self-learn/proposals/**)",
-        f"Edit(/{home}/.self-learn/proposals/**)",
+        f"Edit(/{home}/skills/**/proposals/**)",
+        f"Edit(/{home}/projects/**/proposals/**)",
+        f"Edit(/{home}/user/proposals/**)",
     ]
 
 
@@ -398,12 +431,26 @@ def _digest(home: Path, limit: int = 20) -> str:
 
 def _canon_excerpt(home: Path, entry) -> str:
     """The candidate target's managed section ± 20 lines, or the whole
-    file when < 200 lines (pinned prompt ingredient)."""
+    file when < 200 lines (pinned prompt ingredient). Targets resolve
+    through the hosts registry now (doc 13): skill scope → the skills
+    root's SKILL.md; project scope → the bucket's meta-recorded host
+    CLAUDE.md; user scope → the real user CLAUDE.md."""
     scope = entry.record.scope
+    target: Path | None = None
     if scope.startswith("skill:"):
-        target = entry.bucket_dir.parent / "SKILL.md"
-    else:
-        target = home / "CLAUDE.md"
+        try:
+            target = skill_dir_for(
+                load_hosts(home), scope.partition(":")[2]
+            ) / "SKILL.md"
+        except HostsError:
+            return "(skill target unresolvable — no registered skills root)"
+    elif scope == "project":
+        host = bucket_project_path(entry.bucket_dir)
+        if host is None:
+            return "(project target unresolvable — bucket has no meta.yaml)"
+        target = Path(host) / "CLAUDE.md"
+    else:  # user
+        target = Path("~/.claude/CLAUDE.md").expanduser()
     if not target.is_file():
         return f"(target {target.name} does not exist yet)"
     lines = target.read_text(encoding="utf-8").splitlines()
@@ -421,7 +468,7 @@ def _canon_excerpt(home: Path, entry) -> str:
 
 _PROMPT_TEMPLATE = """You are the self-learn routing analyst worker. For EACH pending record
 below, write one proposal file at
-<bucket>/.self-learn/proposals/lrn-<id>.yaml (the bucket path is given
+<bucket>/proposals/lrn-<id>.yaml (the bucket path is given
 per record). Follow the routing doctrine exactly — including §5 (the
 proposal schema; NEVER emit record_sha) and §8 (write every card section
 the registry requires; the registry follows the doctrine below). You may
@@ -430,7 +477,7 @@ anchors) when a lesson conflicts with existing canon.
 
 After the per-record pass: if two or more of THESE pending records in the
 SAME bucket are the same lesson, additionally write ONE merge proposal at
-<bucket>/.self-learn/proposals/merge-<8 lowercase hex>.yaml with keys:
+<bucket>/proposals/merge-<8 lowercase hex>.yaml with keys:
 cluster_id, records (the lrn ids), suggested_survivor, rationale, model,
 analyzed_at. Do not emit record_shas — the CLI stamps them.
 
@@ -449,11 +496,10 @@ Never re-propose the classes below (recently rejected):
 
 
 def _compose_prompt(home: Path, batch: list) -> str:
-    doctrine_path = (
-        home
-        / "plugins/self-learn/skills/self-learn/references/routing-doctrine.md"
-    )
-    registry_path = doctrine_path.parent / "card-sections.yaml"
+    # PACKAGE-relative (doc 13 T-H3): doctrine + registry ship with the
+    # product beside the skill — never resolved through any home.
+    doctrine_path = package_skill_refs() / "routing-doctrine.md"
+    registry_path = package_skill_refs() / "card-sections.yaml"
     doctrine = (
         doctrine_path.read_text(encoding="utf-8")
         if doctrine_path.is_file()
