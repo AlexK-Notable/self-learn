@@ -165,6 +165,33 @@ def seed_record(ledger: Path, record: Record, *, project_path: Path | None = Non
     return create_record(ledger, record, project_path=project_path)
 
 
+def resolve_record_directly(
+    ledger: Path,
+    bucket_dir: Path,
+    record: Record,
+    *,
+    destination: str = "skill-md",
+    status: str = "routed",
+) -> None:
+    """Move a pending record's file straight to resolved/, bypassing the
+    real verb (no git commit needed) — enough to exercise the
+    resolved-elsewhere READ path (09 §11 P1-9c), which only cares that
+    the record's status is no longer pending/deferred, AND the U9
+    bulk-loop-resume idempotency check (10 §5 playbook: "re-running the
+    bulk row is idempotent — already-resolved ids vanish from the
+    group")."""
+    record.set_status(status)
+    if status == "routed":
+        record.set_routing(
+            {"routed_at": "2026-07-01T00:00:00Z", "destination": destination, "by": "human"}
+        )
+    dest_path = bucket_dir / "resolved" / f"{record.id}.md"
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    record.write(dest_path)
+    pending_path = bucket_dir / "pending" / f"{record.id}.md"
+    pending_path.unlink(missing_ok=True)
+
+
 # -------------------------------------------------------------- proposals
 
 

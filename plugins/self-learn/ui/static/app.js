@@ -175,17 +175,37 @@
    */
   const POLL_FALLBACK_MS = 10000;
 
-  function currentScope() {
+  /**
+   * The scope(s) THIS page currently cares about. The watcher
+   * (ledger.py's _scope_for_path) only ever emits "front" or
+   * "bucket:<name>" for filesystem changes — it has no per-record
+   * granularity, since a directory-level watch event doesn't know which
+   * file within it changed. Explicit post-action pushes (a resolution
+   * verb, a pane session's file_changed/result) DO push "record:<id>"
+   * for the exact record acted on. Detail therefore must watch BOTH its
+   * own record scope (explicit pushes) AND its own bucket scope
+   * (watcher-driven changes, including an EXTERNAL resolution via a
+   * concurrent CLI verb this server never sees a POST for — 09 §3/§5
+   * "resolved elsewhere"/P3-8). Front has no [data-record-id]/data-bucket
+   * of its own; "front" is its only scope, but see inScope() below for
+   * why that still catches bucket-scoped events too (Front aggregates
+   * every bucket's counts, so any bucket change is relevant to it).
+   */
+  function currentScopes() {
+    const scopes = [];
     const article = document.querySelector("[data-record-id]");
-    if (article) return "record:" + article.getAttribute("data-record-id");
+    if (article) scopes.push("record:" + article.getAttribute("data-record-id"));
     const body = document.body;
-    if (body && body.dataset && body.dataset.bucket) return "bucket:" + body.dataset.bucket;
-    return "front";
+    if (body && body.dataset && body.dataset.bucket) scopes.push("bucket:" + body.dataset.bucket);
+    if (scopes.length === 0) scopes.push("front");
+    return scopes;
   }
 
   function inScope(scope) {
-    if (scope === "front") return true;
-    return scope === currentScope();
+    if (scope === "front") return true; // a front-scoped event is a broadcast
+    const mine = currentScopes();
+    if (mine.indexOf("front") !== -1) return true; // the Front page matches every scope
+    return mine.indexOf(scope) !== -1;
   }
 
   function reload() {

@@ -33,7 +33,7 @@
     <script src="/static/htmx-2.0.9.min.js" defer></script>
     <script src="/static/app.js" defer></script>
   </head>
-  <body>
+  <body{% block body_attrs %}{% endblock %}>
     <div id="self-learn-ui-reconnect-strip" class="reconnect-strip" hidden>
       live updates reconnecting&hellip;
     </div>
