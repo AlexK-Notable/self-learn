@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+# self-learn-ui-open — deep-link launcher / window-focuser (10 §1
+# "Companion scripts" row; 09 §3 "Deep-link + launcher"). The ONLY
+# WM/browser-aware file in the surface (10 §1) — everything else in the
+# surface is browser/WM-agnostic by design.
+#
+# Usage: self-learn-ui-open [--record <id>]
+#
+# Sequence (pinned):
+#   1. Ensure the service is up (systemctl --user start
+#      self-learn-ui.service) — skipped silently if systemctl is absent
+#      (10 §5 "systemd absent" playbook).
+#   2. Resolve the bearer token: primary $XDG_RUNTIME_DIR/self-learn/
+#      ui-token; X-8/X-12 fallback (XDG_RUNTIME_DIR unset — headless/SSH)
+#      is the home-namespaced cache dir's ui-token (09 §11 Y-3). ONE
+#      shared resolution below (X-12: the launcher must apply the SAME
+#      fallback the server/ui package uses when it writes the token, or
+#      an unset-runtime-dir launcher opens an un-tokened URL and
+#      403-loops).
+#
+#      This mirrors self_learn.worker.cache_dir() / self_learn.ledger.
+#      resolve_home() (doc 13 §6/H-4, 09 §11 Y-3) IN BASH rather than
+#      shelling out to `uv run python -c ...`: the U1 wrapper test suite
+#      (ui/tests/test_wrapper.py) deliberately keeps real `uv run`
+#      invocation OUT of its tests ("this suite never depends on network
+#      access for uv run's own resolution") — shelling to Python here
+#      would reintroduce exactly that dependency for every test touching
+#      the X-8 fallback. The formula is small and doc-13-pinned, so
+#      mirroring it is the P2-4 "one-computation rule" applied to the one
+#      piece of it that is cheap and stable to duplicate; a real drift
+#      between this and the CLI's derivation is a §4-class finding, not a
+#      silent guess (verified byte-identical against
+#      hashlib.sha256(str(Path(home).expanduser())
+#      .encode()).hexdigest()[:8] during build).
+#   3. Window-presence detection (X-3, empirically pinned 2026-07-13):
+#      query `hyprctl clients -j` for the class FIRST — NEVER branch on
+#      `hyprctl dispatch focuswindow`'s exit code (it prints "No such
+#      window found" and still exits 0). Present -> focus the window;
+#      absent -> launch. hyprctl absent entirely -> skip detection,
+#      launch (degrade gracefully).
+#   4. Launch: browser resolved in order $SELF_LEARN_UI_BROWSER ->
+#      chromium -> google-chrome-stable, as a dedicated app window
+#      (`--app=<tokened-url> --class=self-learn-ui`); final fallback is
+#      a plain `xdg-open <url>` tab when no chromium-family browser is
+#      found.
+#
+# NOTE: unlike scripts/self-learn, scripts/self-learn-ui, and this
+# file's own sibling scripts/self-learn-notify, this script has no
+# sibling-project dependency to resolve — it never reads $0 — so the
+# P3-1 readlink -f pattern does not apply here; nothing in it depends on
+# where the ~/bin symlink (vs. the repo) lives.
+set -euo pipefail
+
+WINDOW_CLASS="self-learn-ui"
+RECORD_ID=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --record)
+      if [[ $# -lt 2 ]]; then
+        echo "self-learn-ui-open: --record requires a value" >&2
+        exit 2
+      fi
+      RECORD_ID="$2"
+      shift 2
+      ;;
+    *)
+      echo "self-learn-ui-open: unknown argument: $1" >&2
+      exit 2
+      ;;
+  esac
+done
+
+# --- 1. ensure the service is up ---------------------------------------
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl --user start self-learn-ui.service >/dev/null 2>&1 || true
+fi
+
+# --- 2. resolve the bearer token ---------------------------------------
+
+# Mirrors self_learn.ledger.resolve_home()'s Path(...).expanduser():
+# only a LEADING ~ is expanded (bash never auto-expands a ~ that arrives
+# inside a variable's value); a trailing slash is stripped to match
+# Python's str(Path(...)) normalization.
+_slug_expand_home() {
+  local raw="$1" expanded
+  case "$raw" in
+    "~") expanded="$HOME" ;;
+    "~/"*) expanded="$HOME/${raw#\~/}" ;;
+    *) expanded="$raw" ;;
+  esac
+  while [[ "$expanded" != "/" && "$expanded" == */ ]]; do
+    expanded="${expanded%/}"
+  done
+  printf '%s' "$expanded"
+}
+
+_slug_ledger_home() {
+  _slug_expand_home "${SELF_LEARN_HOME:-~/.self-learn}"
+}
+
+# Mirrors self_learn.worker.cache_dir() (doc 13 §6/H-4, 09 §11 Y-3):
+# ${XDG_CACHE_HOME:-~/.cache}/self-learn/home-<sha256(resolved home)[:8]>/
+_slug_cache_dir() {
+  local base home_str digest
+  base="$(_slug_expand_home "${XDG_CACHE_HOME:-~/.cache}")"
+  home_str="$(_slug_ledger_home)"
+  digest="$(printf '%s' "$home_str" | sha256sum | cut -c1-8)"
+  printf '%s/self-learn/home-%s' "$base" "$digest"
+}
+
+_resolve_token_path() {
+  if [[ -n "${XDG_RUNTIME_DIR:-}" ]]; then
+    printf '%s/self-learn/ui-token' "$XDG_RUNTIME_DIR"
+  else
+    printf '%s/ui-token' "$(_slug_cache_dir)"
+  fi
+}
+
+TOKEN_PATH="$(_resolve_token_path)"
+TOKEN=""
+if [[ -r "$TOKEN_PATH" ]]; then
+  TOKEN="$(cat "$TOKEN_PATH")"
+fi
+
+# --- URL shape (10 §1 "Companion scripts" row) --------------------------
+PORT="${SELF_LEARN_UI_PORT:-7357}"
+if [[ -n "$RECORD_ID" ]]; then
+  URL="http://127.0.0.1:${PORT}/record/${RECORD_ID}"
+else
+  URL="http://127.0.0.1:${PORT}/"
+fi
+if [[ -n "$TOKEN" ]]; then
+  URL="${URL}?token=${TOKEN}"
+fi
+
+# --- 3/4. window-presence detection + launch -----------------------------
+_window_present() {
+  command -v jq >/dev/null 2>&1 || return 1
+  local clients
+  clients="$(hyprctl clients -j 2>/dev/null)" || return 1
+  jq -e --arg cls "$WINDOW_CLASS" 'any(.[]?; .class == $cls)' \
+    >/dev/null 2>&1 <<<"$clients"
+}
+
+_resolve_browser() {
+  local candidate
+  for candidate in "${SELF_LEARN_UI_BROWSER:-}" chromium google-chrome-stable; do
+    [[ -z "$candidate" ]] && continue
+    if command -v "$candidate" >/dev/null 2>&1; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+_launch() {
+  local browser
+  if browser="$(_resolve_browser)"; then
+    "$browser" "--app=${URL}" "--class=${WINDOW_CLASS}" >/dev/null 2>&1 &
+    disown 2>/dev/null || true
+  else
+    xdg-open "$URL" >/dev/null 2>&1 &
+    disown 2>/dev/null || true
+  fi
+}
+
+if command -v hyprctl >/dev/null 2>&1; then
+  if _window_present; then
+    hyprctl dispatch focuswindow "class:${WINDOW_CLASS}" >/dev/null 2>&1 || true
+  else
+    _launch
+  fi
+else
+  _launch
+fi
