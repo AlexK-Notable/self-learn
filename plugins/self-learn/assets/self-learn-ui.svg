@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- self-learn launcher icon (feedback round 1 item 6). The mark is the
+     system's loop: a lesson (gold dot) held inside the capture→review→
+     route cycle (accent ring arrow). Colors come from the UI's own dark
+     design tokens (style.css): bg-inset #16171c, accent #82abf5, warning
+     gold #e5c26e — self-contained bg so it reads on any launcher theme. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <rect width="256" height="256" rx="56" fill="#16171c"/>
+  <path d="M 159 74.3 A 62 62 0 1 1 97 74.3"
+        fill="none" stroke="#82abf5" stroke-width="18" stroke-linecap="round"/>
+  <polygon points="112.6,65.3 103.5,85.6 90.5,63" fill="#82abf5"/>
+  <circle cx="128" cy="128" r="18" fill="#e5c26e"/>
+</svg>

@@ -1,10 +1,11 @@
 {% extends "base.html" %}
 {% block title %}self-learn — report{% endblock %}
+{% block page_kind %}report{% endblock %}
 
 {% block status_strip %}
 <div class="status-strip">
   <span class="brand">self-learn</span>
-  <a data-key-action="up" href="/">&larr; Front</a>
+  <a data-key-action="up" href="/" title="Back to the front page (Esc or h)">&larr; Front</a>
   <span class="status-item">report</span>
 </div>
 {% endblock %}

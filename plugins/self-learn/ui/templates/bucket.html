@@ -1,12 +1,13 @@
 {% extends "base.html" %}
 {% block title %}self-learn — {{ model.bucket }}{% endblock %}
+{% block page_kind %}bucket{% endblock %}
 {% block body_attrs %} data-bucket="{{ model.bucket }}"{% endblock %}
 
 {% block status_strip %}
 <div class="status-strip">
   <span class="brand">self-learn</span>
-  <a data-key-action="up" href="/">&larr; Front</a>
-  <span class="status-item">{{ model.bucket }} ({{ model.scope }})</span>
+  <a data-key-action="up" href="/" title="Back to the front page (Esc or h)">&larr; Front</a>
+  <span class="status-item" title="The bucket you're reviewing, and where its lessons apply">{{ model.bucket }} ({{ model.scope }})</span>
 </div>
 {% endblock %}
 

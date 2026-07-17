@@ -186,6 +186,58 @@ class TestFrontPage:
         assert "bucket clear" in r.text.lower()
 
 
+class TestFeedbackRound1Chrome:
+    """Feedback round 1 (2026-07-17-ui-feedback-01) items 1/2/4/8: sortable
+    headers, plain-words tooltips, context-filtered footer wiring, and the
+    Deferred column — the server-rendered halves (app.js/style.css do the
+    client halves)."""
+
+    def _front_html(self, tmp_path: Path) -> str:
+        sb = make_env(tmp_path)
+        seed_record(sb.ledger, make_behavior(scope="skill:s"))
+        c, _runner = make_client(sb)
+        return c.get("/").text
+
+    def test_every_bucket_column_is_sortable(self, tmp_path: Path) -> None:
+        html = self._front_html(tmp_path)
+        for key in ("name", "scope", "pending", "oldest", "unanalyzed", "deferred"):
+            assert f'data-sort-key="{key}"' in html
+        assert 'aria-sort="none"' in html
+        assert 'class="sort-header"' in html
+
+    def test_deferred_column_renders(self, tmp_path: Path) -> None:
+        html = self._front_html(tmp_path)
+        assert ">Deferred<" in html
+
+    def test_oldest_cell_carries_numeric_sort_value(self, tmp_path: Path) -> None:
+        # "—"/"3d" render text must never feed the client sort compare
+        html = self._front_html(tmp_path)
+        assert 'data-sort-key="oldest" data-sort-value="' in html
+
+    def test_status_items_carry_plain_words_tooltips(self, tmp_path: Path) -> None:
+        html = self._front_html(tmp_path)
+        # Y-9 register: explanations in human words, one per status item
+        assert 'title="Lessons waiting for your decision' in html
+        assert 'title="The background analyst' in html
+        assert html.count('<span class="status-item" title=') >= 4
+
+    def test_footer_entries_carry_context_and_action(self, tmp_path: Path) -> None:
+        html = self._front_html(tmp_path)
+        assert 'data-context="global"' in html
+        assert 'data-context="list"' in html
+        assert 'data-action="iterate"' in html
+
+    def test_each_page_names_itself_for_the_footer_filter(self, tmp_path: Path) -> None:
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+        c, _runner = make_client(sb)
+        assert 'data-page="front"' in c.get("/").text
+        assert 'data-page="bucket"' in c.get("/bucket/skill/s").text
+        assert f'data-page="detail"' in c.get(f"/record/{rec.id}").text
+        assert 'data-page="report"' in c.get("/report").text
+
+
 # -------------------------------------------------------------------- Bucket
 
 

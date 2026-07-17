@@ -62,6 +62,20 @@ link "$P/scripts/self-learn-ui" "$BIN_DIR/self-learn-ui"
 link "$P/scripts/self-learn-ui-open" "$BIN_DIR/self-learn-ui-open"
 link "$P/scripts/self-learn-notify" "$BIN_DIR/self-learn-notify"
 
+say "== desktop launcher (G-3; feedback round 1 item 6) =="
+APPS_DIR="$HOME/.local/share/applications"
+ICON_DIR="$HOME/.local/share/icons/hicolor/scalable/apps"
+mkdir -p "$APPS_DIR" "$ICON_DIR"
+# The .desktop entry is GENERATED, not symlinked: Exec= needs an absolute
+# path (the desktop spec expands neither ~ nor $HOME, and launchers do
+# not inherit an interactive shell's PATH — ~/bin isn't findable there).
+run "sed 's|@BIN@|$BIN_DIR|' '$P/assets/self-learn-ui.desktop.in' > '$APPS_DIR/self-learn-ui.desktop'"
+say "  gen   ~/.local/share/applications/self-learn-ui.desktop"
+link "$P/assets/self-learn-ui.svg" "$ICON_DIR/self-learn-ui.svg"
+if command -v update-desktop-database >/dev/null 2>&1; then
+  run "update-desktop-database '$APPS_DIR' 2>/dev/null || true"
+fi
+
 say "== SessionStart pending hook =="
 link "$P/hooks/self-learn-pending.sh" "$HOOKS_DIR/self-learn-pending.sh"
 say "  (register in ~/.claude/settings.json as a SessionStart hook — manual)"
