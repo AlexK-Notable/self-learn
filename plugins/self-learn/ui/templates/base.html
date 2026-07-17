@@ -41,7 +41,9 @@
     <script src="/static/htmx-2.0.9.min.js" defer></script>
     <script src="/static/app.js" defer></script>
   </head>
-  <body{% block body_attrs %}{% endblock %}>
+  {# data-page drives the context-filtered keymap footer (style.css):
+     each page names itself so only its usable keys render visible. #}
+  <body data-page="{% block page_kind %}{% endblock %}"{% block body_attrs %}{% endblock %}>
     <div id="self-learn-ui-reconnect-strip" class="reconnect-strip" hidden>
       live updates reconnecting&hellip;
     </div>

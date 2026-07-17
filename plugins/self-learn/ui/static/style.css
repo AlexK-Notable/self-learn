@@ -230,13 +230,23 @@ header {
   color: var(--slu-fg-muted);
 }
 
+/* Hoverable explanations (feedback round 1 item 2): a status item that
+   carries a title= signals it — dotted underline + help cursor. */
+.status-item[title] {
+  cursor: help;
+  text-decoration: underline dotted;
+  text-decoration-color: var(--slu-border-strong);
+  text-underline-offset: 3px;
+}
+
+/* Feedback round 1 item 3: clickable must look clickable — strip links
+   are accent-colored, not muted (reverses the ui-polish muting). */
 .status-strip a {
-  color: var(--slu-fg-muted);
+  color: var(--slu-accent);
   text-decoration: none;
 }
 
 .status-strip a:hover {
-  color: var(--slu-accent);
   text-decoration: underline;
 }
 
@@ -268,6 +278,54 @@ footer {
 
 .keymap-footer-entry {
   white-space: nowrap;
+}
+
+/* Context-filtered footer (feedback round 1 item 4): every entry renders
+   (single-source keymap), but only the keys usable on the CURRENT page
+   show. body[data-page] names the page; :has() (chromium-pinned client,
+   09 §1) lights up holding/pane keys only while such a row/pane actually
+   exists in the DOM — so the filter stays correct across htmx swaps with
+   no JS. The ? overlay remains the full reference. */
+.keymap-footer-entry {
+  display: none;
+}
+
+.keymap-footer-entry[data-context="global"] {
+  display: inline;
+}
+
+body[data-page="front"] .keymap-footer-entry[data-context="list"],
+body[data-page="bucket"] .keymap-footer-entry[data-context="list"],
+body[data-page="bucket"] .keymap-footer-entry[data-context="detail"],
+body[data-page="detail"] .keymap-footer-entry[data-context="detail"] {
+  display: inline;
+}
+
+/* Bucket rows take the resolution quad but have no Iterate pane — that
+   one detail key stays hidden there. */
+body[data-page="bucket"] .keymap-footer-entry[data-action="iterate"] {
+  display: none;
+}
+
+body:has(.holding-row) .keymap-footer-entry[data-context="holding"] {
+  display: inline;
+}
+
+body:has(.pane-region[data-pane-state]) .keymap-footer-entry[data-context="pane"] {
+  display: inline;
+}
+
+/* While a pane session is live there is no Iterate button to press —
+   the key would be a no-op (review 2026-07-17 round-1, NIT-3). */
+body:has(.pane-region[data-pane-state]) .keymap-footer-entry[data-action="iterate"] {
+  display: none;
+}
+
+/* The footer's own trailing "? full reference" entry already covers the
+   help key — the keymap's help row would render ? twice. (Same
+   specificity as the data-context="global" show rule; later wins.) */
+.keymap-footer-entry[data-action="help"] {
+  display: none;
 }
 
 kbd {
@@ -457,11 +515,12 @@ tbody tr:hover {
 
 /* The Front bucket walk: lead column dominant, numbers quiet; foreign
    bucket slugs can be enormous — ellipsize, the full slug stays in the
-   href/hover. */
+   href/hover. Accent-colored (item 3): a bucket name IS a link and must
+   read as one. */
 .bucket-walk a {
   font-weight: 600;
   text-decoration: none;
-  color: var(--slu-fg);
+  color: var(--slu-accent);
   display: inline-block;
   max-width: 46ch;
   overflow: hidden;
@@ -471,8 +530,51 @@ tbody tr:hover {
 }
 
 .bucket-walk a:hover {
-  color: var(--slu-accent);
   text-decoration: underline;
+}
+
+/* Sortable column headers (item 1): a real <button> for a11y/keyboard,
+   restyled to the th's own typography so the header row stays quiet —
+   affordance comes from the pointer, hover accent, and sort arrows. */
+.sort-header {
+  font: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+  text-transform: inherit;
+  letter-spacing: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  cursor: pointer;
+}
+
+.sort-header:hover {
+  color: var(--slu-accent);
+}
+
+.sort-header::after {
+  /* reserve the arrow's slot so headers don't shift on first sort */
+  content: "";
+  display: inline-block;
+  width: 1.1em;
+}
+
+th[aria-sort="ascending"] .sort-header {
+  color: var(--slu-fg);
+}
+
+th[aria-sort="descending"] .sort-header {
+  color: var(--slu-fg);
+}
+
+th[aria-sort="ascending"] .sort-header::after {
+  content: " \2191"; /* ↑ */
+}
+
+th[aria-sort="descending"] .sort-header::after {
+  content: " \2193"; /* ↓ */
 }
 
 /* ------------------------------------------------------- rows / cards --- */
@@ -516,16 +618,16 @@ tr[data-row].selected {
   opacity: 0.6;
 }
 
+/* Item 3: record leads are links — accent-colored, underline on hover. */
 .record-row-lead {
   font-weight: 600;
-  color: var(--slu-fg);
+  color: var(--slu-accent);
   text-decoration: none;
   display: block;
   margin-bottom: 0.35rem;
 }
 
 .record-row-lead:hover {
-  color: var(--slu-accent);
   text-decoration: underline;
 }
 

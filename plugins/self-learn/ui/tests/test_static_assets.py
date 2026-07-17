@@ -55,6 +55,23 @@ def test_app_js_exists_and_has_keydown_and_eventsource_stubs() -> None:
     assert "EventSource" in app_js
 
 
+def test_app_js_has_column_sort_handler() -> None:
+    """Feedback round 1 item 1: the Front table's client-side sort lives
+    here (CSP: no inline JS anywhere else to put it)."""
+    app_js = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    assert "data-sort-key" in app_js
+    assert "aria-sort" in app_js
+
+
+def test_style_css_filters_keymap_footer_by_context() -> None:
+    """Feedback round 1 item 4: only the current page's usable keys show
+    in the footer — driven by body[data-page] + :has(), zero JS."""
+    css = (STATIC_DIR / "style.css").read_text(encoding="utf-8")
+    assert '.keymap-footer-entry[data-context="global"]' in css
+    assert 'body[data-page="front"]' in css
+    assert 'body:has(.pane-region[data-pane-state])' in css
+
+
 def test_style_css_has_prefers_color_scheme_block() -> None:
     css = (STATIC_DIR / "style.css").read_text(encoding="utf-8")
     assert "prefers-color-scheme: dark" in css

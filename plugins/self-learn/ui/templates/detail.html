@@ -6,13 +6,14 @@
    must also watch its own bucket's scope, not just its own record's, to
    notice an EXTERNAL resolution (a concurrent CLI verb bypassing this
    server). See static/app.js's currentScopes()/inScope(). #}
+{% block page_kind %}detail{% endblock %}
 {% block body_attrs %} data-bucket="{{ model.bucket }}"{% endblock %}
 
 {% block status_strip %}
 <div class="status-strip">
   <span class="brand">self-learn</span>
-  <a data-key-action="up" href="/bucket/{{ model.scope }}/{{ model.bucket }}">&larr; {{ model.bucket }}</a>
-  <span class="status-item">{{ model.id }}</span>
+  <a data-key-action="up" href="/bucket/{{ model.scope }}/{{ model.bucket }}" title="Back to this record's bucket (Esc or h)">&larr; {{ model.bucket }}</a>
+  <span class="status-item" title="This lesson's record id in the ledger">{{ model.id }}</span>
 </div>
 {% endblock %}
 

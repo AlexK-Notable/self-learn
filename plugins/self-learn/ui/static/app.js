@@ -167,6 +167,50 @@
   document.addEventListener("keydown", onKeyDown);
 
   /**
+   * Front bucket-table column sort (feedback round 1 item 1). Click a
+   * header to sort by that column; click again to flip direction. Sorting
+   * reorders the ACTUAL tbody rows, so j/k selection (rows() reads DOM
+   * order) follows the sort with no extra state. Cells carry
+   * data-sort-value so "—" and "12d" render text never feeds the compare.
+   */
+  function sortValue(row, key, type) {
+    const cell = row.querySelector('td[data-sort-key="' + key + '"]');
+    const raw = cell ? cell.getAttribute("data-sort-value") : "";
+    return type === "number" ? parseFloat(raw || "0") : (raw || "");
+  }
+
+  function sortBucketTable(button) {
+    const key = button.getAttribute("data-sort-key");
+    const type = button.getAttribute("data-sort-type") || "text";
+    const table = button.closest("table");
+    const tbody = table && table.querySelector("tbody");
+    if (!key || !tbody) return;
+
+    const th = button.closest("th");
+    const ascending = th.getAttribute("aria-sort") !== "ascending";
+    table.querySelectorAll("th[aria-sort]").forEach(function (other) {
+      other.setAttribute("aria-sort", "none");
+    });
+    th.setAttribute("aria-sort", ascending ? "ascending" : "descending");
+
+    Array.from(tbody.querySelectorAll("tr"))
+      .sort(function (a, b) {
+        const va = sortValue(a, key, type);
+        const vb = sortValue(b, key, type);
+        const cmp = type === "number" ? va - vb : String(va).localeCompare(String(vb));
+        return ascending ? cmp : -cmp;
+      })
+      .forEach(function (row) {
+        tbody.appendChild(row);
+      });
+  }
+
+  document.addEventListener("click", function (event) {
+    const button = event.target.closest && event.target.closest("button[data-sort-key]");
+    if (button) sortBucketTable(button);
+  });
+
+  /**
    * EventSource client for GET /events (09 §3 / 10 §1 SSE protocol row).
    * `refresh` re-requests the current partial when in scope; `banner`
    * shows a one-line notice; unknown types are ignored (10 §1).

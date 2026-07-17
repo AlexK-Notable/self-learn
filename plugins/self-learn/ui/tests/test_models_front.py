@@ -109,6 +109,47 @@ class TestBucketOrdering:
         )
 
 
+class TestDeferredColumn:
+    """Feedback round 1 item 8: per-bucket deferred counts, computed from
+    the SAME list read Front already makes."""
+
+    def _buckets(self):
+        return [
+            {"bucket": "a", "scope": "skill", "pending": 2, "oldest_days": 3, "unanalyzed": 0},
+            {"bucket": "b", "scope": "skill", "pending": 1, "oldest_days": 1, "unanalyzed": 0},
+        ]
+
+    def test_future_deferrals_count_per_bucket(self):
+        future = (NOW + timedelta(days=10)).isoformat()
+        list_read = CliRead(data=[
+            {"id": "lrn-1", "bucket": "a", "deferred_until": future},
+            {"id": "lrn-2", "bucket": "a", "deferred_until": future},
+            {"id": "lrn-3", "bucket": "b", "deferred_until": None},
+        ])
+        model = build_front_model(
+            list_read, _status(self._buckets()), _report(), _mine(), sentinel_mtime=None, now=NOW
+        )
+        by_name = {b.name: b.deferred for b in model.buckets}
+        assert by_name == {"a": 2, "b": 0}
+
+    def test_expired_deferral_does_not_count(self):
+        past = (NOW - timedelta(days=1)).isoformat()
+        list_read = CliRead(data=[
+            {"id": "lrn-1", "bucket": "a", "deferred_until": past},
+        ])
+        model = build_front_model(
+            list_read, _status(self._buckets()), _report(), _mine(), sentinel_mtime=None, now=NOW
+        )
+        assert {b.name: b.deferred for b in model.buckets} == {"a": 0, "b": 0}
+
+    def test_failed_list_read_yields_zero_counts_not_a_crash(self):
+        failing = CliRead(data=None, error="list failed")
+        model = build_front_model(
+            failing, _status(self._buckets()), _report(), _mine(), sentinel_mtime=None, now=NOW
+        )
+        assert all(b.deferred == 0 for b in model.buckets)
+
+
 class TestWorkerStaleness:
     def test_no_unanalyzed_supply_never_alarms_even_if_worker_never_ran(self):
         buckets = [{"bucket": "s", "scope": "skill", "pending": 1, "oldest_days": 1, "unanalyzed": 0}]

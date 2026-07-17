@@ -1,15 +1,18 @@
 {% extends "base.html" %}
 {% block title %}self-learn — Front{% endblock %}
+{% block page_kind %}front{% endblock %}
 
+{# Feedback round 1 item 2: every status item explains itself on hover,
+   in plain words (Y-9 — no system vocabulary without a translation). #}
 {% block status_strip %}
 <div class="status-strip">
   <span class="brand">self-learn</span>
-  <span class="status-item">worker: {{ model.status.worker_stale_label }}</span>
-  <span class="status-item">pending: {{ model.status.total_pending }}</span>
-  <span class="status-item">follow-ups: {{ model.status.open_followups }}</span>
-  <span class="status-item">{{ model.status.sentinel_label }}</span>
-  <span class="status-item">{{ model.miner.stale_label }}</span>
-  <a class="status-item" href="/report">report</a>
+  <span class="status-item" title="The background analyst that pre-reads new lessons and drafts a routing proposal for each. Overdue means lessons are waiting but it hasn't run recently.">worker: {{ model.status.worker_stale_label }}</span>
+  <span class="status-item" title="Lessons waiting for your decision, across every bucket.">pending: {{ model.status.total_pending }}</span>
+  <span class="status-item" title="Promises recorded while routing (things to circle back on) that are still open.">follow-ups: {{ model.status.open_followups }}</span>
+  <span class="status-item" title="Whether background syncing of the lesson ledger is running normally. It pauses only while a change is being written.">{{ model.status.sentinel_label }}</span>
+  <span class="status-item" title="The background pass that reads finished conversations looking for lessons worth keeping.">{{ model.miner.stale_label }}</span>
+  <a class="status-item" href="/report" title="Open the full activity report: what landed, what's held, and how the system is doing.">report</a>
 </div>
 {% endblock %}
 
@@ -33,18 +36,30 @@
   {% if not model.buckets %}
   <p>Nothing pending anywhere. Good triage.</p>
   {% else %}
+  {# Feedback round 1 items 1 + 8: clickable, sortable column headers
+     (app.js sorts the tbody client-side; j/k selection reads DOM order,
+     so it follows the sort for free) + a Deferred column. Numeric cells
+     carry data-sort-value so "—"/suffixed text never confuses the sort. #}
   <table class="bucket-walk">
     <thead>
-      <tr><th>Bucket</th><th>Scope</th><th>Pending</th><th>Oldest</th><th>Unanalyzed</th></tr>
+      <tr>
+        <th aria-sort="none"><button type="button" class="sort-header" data-sort-key="name" data-sort-type="text" title="Sort by bucket name">Bucket</button></th>
+        <th aria-sort="none"><button type="button" class="sort-header" data-sort-key="scope" data-sort-type="text" title="Sort by where the bucket's lessons apply">Scope</button></th>
+        <th aria-sort="none"><button type="button" class="sort-header" data-sort-key="pending" data-sort-type="number" title="Sort by lessons waiting for a decision">Pending</button></th>
+        <th aria-sort="none"><button type="button" class="sort-header" data-sort-key="oldest" data-sort-type="number" title="Sort by the age of the oldest waiting lesson">Oldest</button></th>
+        <th aria-sort="none"><button type="button" class="sort-header" data-sort-key="unanalyzed" data-sort-type="number" title="Sort by lessons the analyst hasn't pre-read yet">Unanalyzed</button></th>
+        <th aria-sort="none"><button type="button" class="sort-header" data-sort-key="deferred" data-sort-type="number" title="Sort by snoozed lessons that will resurface later">Deferred</button></th>
+      </tr>
     </thead>
     <tbody>
       {% for b in model.buckets %}
       <tr data-row>
-        <td><a href="/bucket/{{ b.scope }}/{{ b.name }}">{{ b.name }}</a></td>
-        <td>{{ b.scope }}</td>
-        <td>{{ b.pending }}</td>
-        <td>{{ (b.oldest_days ~ "d") if b.oldest_days is not none else "—" }}</td>
-        <td>{{ b.unanalyzed }}</td>
+        <td data-sort-key="name" data-sort-value="{{ b.name }}"><a href="/bucket/{{ b.scope }}/{{ b.name }}">{{ b.name }}</a></td>
+        <td data-sort-key="scope" data-sort-value="{{ b.scope }}">{{ b.scope }}</td>
+        <td data-sort-key="pending" data-sort-value="{{ b.pending }}">{{ b.pending }}</td>
+        <td data-sort-key="oldest" data-sort-value="{{ b.oldest_days if b.oldest_days is not none else -1 }}">{{ (b.oldest_days ~ "d") if b.oldest_days is not none else "—" }}</td>
+        <td data-sort-key="unanalyzed" data-sort-value="{{ b.unanalyzed }}">{{ b.unanalyzed }}</td>
+        <td data-sort-key="deferred" data-sort-value="{{ b.deferred }}">{{ b.deferred if b.deferred else "—" }}</td>
       </tr>
       {% endfor %}
     </tbody>

@@ -232,6 +232,10 @@ class BucketRow:
     pending: int
     oldest_days: int | None
     unanalyzed: int
+    #: Feedback round 1 item 8: how many of this bucket's records are
+    #: currently snoozed (deferred_until in the future). Counted from the
+    #: SAME list read Front already makes — never a second CLI call.
+    deferred: int
 
 
 @dataclass(frozen=True)
@@ -451,6 +455,18 @@ def build_front_model(
 
     status_data = status_read.data if status_read.ok and status_read.data else {}
     buckets_raw = status_data.get("buckets") or []
+    # Keyed by bucket NAME only — `list --json` items carry no scope
+    # field, so two same-named buckets in different scopes would each
+    # show the combined count (review 2026-07-17 round-1, MINOR-2). The
+    # whole app assumes bucket-name uniqueness (next_record_url and the
+    # Bucket page filter the same way); fixing it properly is an 08 §1
+    # substrate edit (+scope on list items), not a UI-side derivation.
+    deferred_by_bucket: dict[str, int] = {}
+    if list_read.ok:
+        for item in list_read.data or []:
+            if _is_deferred(item.get("deferred_until"), now):
+                bucket_name = item.get("bucket") or ""
+                deferred_by_bucket[bucket_name] = deferred_by_bucket.get(bucket_name, 0) + 1
     buckets = tuple(
         sorted(
             (
@@ -460,6 +476,7 @@ def build_front_model(
                     pending=b["pending"],
                     oldest_days=b.get("oldest_days"),
                     unanalyzed=b["unanalyzed"],
+                    deferred=deferred_by_bucket.get(b["bucket"], 0),
                 )
                 for b in buckets_raw
             ),

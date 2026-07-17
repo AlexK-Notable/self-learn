@@ -1,14 +1,18 @@
 {# Keymap footer (10 §1 Keymap row): rendered from keymap_entries, the
    SAME self_learn_ui.keymap.KEYMAP the JSON blob and the help overlay
    render from — never a second hand-authored list. #}
+{# Feedback round 1 item 4: every entry still renders (single source),
+   but carries its context so style.css can show ONLY the keys usable on
+   the current page (body[data-page] + :has() for the live pane /
+   holding rows). The ? overlay stays the full reference. #}
 <nav class="keymap-footer" aria-label="keyboard shortcuts">
   {% for entry in keymap_entries %}
-  <span class="keymap-footer-entry">
+  <span class="keymap-footer-entry" data-context="{{ entry.context }}" data-action="{{ entry.action }}">
     <kbd>{{ entry["keys"][0] }}</kbd>
     <span class="keymap-footer-label">{{ entry.label }}</span>
   </span>
   {% endfor %}
-  <span class="keymap-footer-entry">
+  <span class="keymap-footer-entry" data-context="global">
     <kbd>?</kbd>
     <span class="keymap-footer-label">full reference</span>
   </span>

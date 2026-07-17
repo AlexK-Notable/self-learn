@@ -1,0 +1,21 @@
+# self-learn-ui.desktop template (feedback round 1 item 6). install.sh
+# GENERATES the runtime entry from this file (sed @BIN@ -> the user's
+# ~/bin) because the desktop spec expands neither ~ nor $HOME in Exec=,
+# and launchers do not inherit an interactive shell's PATH.
+#
+# StartupWMClass caveat (T-D, 2026-07-17): chromium honors --class when
+# it launches fresh, but a native-Wayland chromium that is ALREADY
+# running derives the window's app_id from the URL instead
+# (chrome-127.0.0.1__…-Default) — in that case the launcher may show a
+# generic icon for the running window. Cosmetic only; the launcher entry
+# itself always carries the right icon.
+[Desktop Entry]
+Type=Application
+Name=self-learn
+GenericName=Lesson review
+Comment=Review captured lessons and decide where each one lands
+Exec=@BIN@/self-learn-ui-open
+Icon=self-learn-ui
+Terminal=false
+Categories=Utility;
+StartupWMClass=self-learn-ui

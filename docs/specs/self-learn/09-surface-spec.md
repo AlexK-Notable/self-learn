@@ -917,6 +917,22 @@ removed the last competing workstream — the build gate is open.*
   surface: registration is a canon-target decision, deliberately
   human + CLI (10 §4 row added). Data: `list --json
   .host_registered` (08 §1 edit).
+  **Amended 2026-07-17 (feedback round 1 item 5):** the 10 §4 row's
+  own revisit condition — "explicit user ask" — fired, near-verbatim:
+  *"I should essentially be able to do everything I need to do via UI
+  and not have to open a terminal."* The v1 rationale conflated the
+  DECISION with the HAND: registration remains a canon-target
+  decision and remains the human's, but a UI arm/confirm round-trip
+  IS the human deciding — the surface may now arm `host add <path>`
+  through the SAME arm-then-confirm verb runner as every other
+  mutation (§1; the verb stays the enforcer, its refusal renders
+  verbatim, §5 unchanged). Corollary, the generalized principle: any
+  surface text that asks the user to run a terminal command is a
+  defect unless deliberately out of scope — sweep every
+  copyable-command surface (this notice on Bucket AND Detail is the
+  live case; audit error strips and registration snippets) and either
+  arm it or record why not. Build gated on this amendment's own blind
+  review (standing discipline).
 - **Y-12 · `/report` screen.** One read-only page rendering `report
   --json` **plus `status --json`'s `metrics` and `supply_mix` blocks
   (gate-zero correction 2026-07-17: those two live in status, not
