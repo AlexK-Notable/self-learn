@@ -321,6 +321,110 @@ The model's own writes (the worker's `claude -p`, `cwd=home`) can never
 be lock-guarded and are unfixable by AST — `reconcile` is the answer
 there.
 
+## 7.3 Step-2 runbook — product-repo extraction (DRAFT 2026-07-17; execution gated on D1–D3 ratification)
+
+*Step 1 is live and T-H5 is fully discharged (2026-07-17: first real
+mine green; the organic foreign-project card landed from the zmk-config
+repo), so the §8-thin veil comes off. This section is the §7.1-grade
+runbook. It moves CODE and CORPUS only — the ledger (step 1's product)
+and every compiled canon target stay exactly where they are.*
+
+### What moves, what stays (the boundary, stated once)
+
+| Moves to the product repo | Stays in claude-skills |
+|---|---|
+| `plugins/self-learn/cli/` (uv project, tests) | every compiled canon target: SKILL.md sections, `CLAUDE.md`, references |
+| `plugins/self-learn/skills/self-learn/` (SKILL.md + references — doctrine/registry ride the package, T-H3 already pinned) | skill-scope guard scripts (canon in their OWNING plugin: `plugins/chezmoi/hooks/…`) |
+| `plugins/self-learn/commands/` (review/teach) | **project/user-scope guard scripts → relocated to `hooks/self-learn/` (D1)** |
+| `plugins/self-learn/hooks/self-learn-pending.sh` (a PRODUCT hook, not canon) | `hosts.yaml` semantics: skills_root remains this repo — unchanged |
+| `plugins/self-learn/scripts/self-learn` (~/bin shim; `readlink -f` makes it repo-agnostic) | the claude-skills autosync watcher |
+| `docs/specs/self-learn/` corpus (+ fixtures, research, reviews) via filter-repo (H-6: history preserved) | `~/.self-learn` (untouched — that was step 1) |
+| `systemd/self-learn-miner.{service,timer}` | |
+
+### Decisions requiring ratification before execution
+
+- **D1 — M3-7 amendment (the one real design question).** Guard
+  scripts are CANON (compiled from records), and canon lives in
+  registered HOSTS — but M3-7 currently lands project/user-scope
+  guards under `plugins/self-learn/hooks/`, i.e. inside the PRODUCT's
+  plugin dir. That conflation was invisible while product and host
+  shared a repo; extraction forces the split. **Recommendation:**
+  amend M3-7 so project/user-scope guards land at
+  `<skills_root>/hooks/self-learn/` (a canon directory of the host,
+  swept by the host's install.sh), and migrate the two live records
+  (`lrn-dd9489b2`, `lrn-4f5971c8`): `git mv` the scripts, update each
+  record's `routing.hook.script_path` (one pinned ledger commit — the
+  only hand-edit of a resolved record this runbook permits), re-run
+  install.sh. Script FILENAMES never change, so `~/.claude/hooks/`
+  symlink names and the user's settings.json entries survive
+  untouched. *Rejected alternative:* leaving a stub
+  `plugins/self-learn/hooks/` in claude-skills — two repos owning
+  pieces of one plugin is exactly the ambiguity doc 13 exists to kill.
+- **D2 — product repo identity.** Recommendation:
+  `github.com/AlexK-Notable/self-learn`, private, same
+  posture as `self-learn-ledger`.
+- **D3 — product-repo autosync.** Recommendation: mirror the
+  claude-skills watcher (small edits autosync; multi-commit work in
+  worktrees — the discipline already exists and the shim/units make
+  live editing just as valuable there).
+
+### The runbook
+
+0. **Snapshot + preconditions.** Tree clean, suite green, selftest
+   6/6, no code work in flight. Snapshot dir
+   `~/.local/state/self-learn-extraction-<date>/` records: master sha,
+   `ls -l` of `~/.claude/{skills,commands,hooks}` and `~/bin` (the
+   symlink surfaces this migration re-points).
+1. **D1 first, in claude-skills, as its own commit** (so the
+   extraction filter never carries the guards out): `git mv` the two
+   guards → `hooks/self-learn/`; extend install.sh's per-plugin hooks
+   sweep to also walk `hooks/self-learn/*.sh`; pinned ledger commit
+   updating the two `script_path` fields; `./install.sh`;
+   `self-learn --selftest` hooks check green. **install.sh restarts
+   autosync (lrn-316a5411)** — no window needs to stay closed here,
+   but step 2 stops daemons AFTER this, not before.
+2. **Stop the claude-skills autosync watcher** for the surgery
+   window; leave the miner timer (it touches only the ledger) but do
+   not run it mid-swap.
+3. **Extract with history:** fresh clone → `git filter-repo` keeping
+   `plugins/self-learn/`, `docs/specs/self-learn/`,
+   `systemd/self-learn-miner.*` — layout PRESERVED (the shim's
+   `../cli` relative path, package-relative doctrine loading, and the
+   test suite all keep working with zero path edits; restructuring is
+   a later, separate decision).
+4. **Product repo bring-up:** own thin install.sh (five surfaces:
+   skill symlink, commands dir symlink, `~/bin/self-learn` shim,
+   `self-learn-pending.sh` hook symlink, `uv sync` + miner units) —
+   same idempotent link-with-backup idiom; README; `gh repo create`
+   per D2; push; run install.sh; full suite; selftest.
+5. **Removal commit in claude-skills:** `git rm -r
+   plugins/self-learn docs/specs/self-learn
+   systemd/self-learn-miner.*`; drop the marketplace entry; update
+   CLAUDE.md (skills table, autosync notes). `hooks/self-learn/` and
+   its sweep REMAIN — they are host canon now (D1).
+6. **Re-link + dangling sweep:** re-run claude-skills install.sh;
+   then sweep `~/.claude/skills`, `~/.claude/commands`,
+   `~/.claude/hooks`, `~/bin` for symlinks pointing into deleted
+   paths (the hypr-doctor-drift dead-hook precedent — a dangling hook
+   symlink no-ops SILENTLY; this sweep is the step most tempting to
+   skip and the one that has already bitten once).
+7. **Verify, fresh session:** `~/bin/self-learn status` resolves via
+   the product repo; selftest 6/6 (hosts.yaml untouched — drift check
+   proves canon compilation still lands in claude-skills);
+   `systemctl --user start self-learn-miner.service` green;
+   SessionStart pending hook prints; `/self-learn:review` loads; the
+   three guards still registered + resolvable; restart both
+   autosync watchers (claude-skills + D3's, if ratified).
+8. **Bookkeeping:** doc 13 revision note (step 2 executed), README
+   revision log, project memory, handoff. Retain the snapshot until
+   the first product-repo dev cycle completes.
+
+**Rollback at any point before step 5's push:** delete the product
+repo clone. After step 5: the pre-removal master sha is tagged in the
+snapshot; `git revert` the removal commit + re-run install.sh restores
+every symlink — no ledger or canon state is touched at any step, so
+rollback is purely a code-repo affair.
+
 ## 8. Invariants
 
 - **H-1** · One ledger home per machine, explicit (`~/.self-learn` or
