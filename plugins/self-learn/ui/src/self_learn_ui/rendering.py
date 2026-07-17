@@ -96,16 +96,28 @@ _STYLESHEET_HEADER = f"""\
 
 
 def _theme_defs(style: str) -> str:
-    """One theme's token defs, minus its surface rule: the theme's own
-    ``.highlight {{ background: … }}`` line is dropped so style.css stays
-    the single owner of preview surfaces in both themes."""
+    """One theme's token defs, minus its surface *background*: style.css
+    owns preview surfaces in both themes, but every non-background
+    declaration on the theme's own ``.highlight`` rule (github-dark also
+    sets its default foreground there) is preserved — dropping the whole
+    line silently discarded the dark default ``color`` (adversarial
+    review 2026-07-17, finding #2)."""
     formatter = HtmlFormatter(cssclass=PYGMENTS_CSS_CLASS, style=style)
-    lines = [
-        line
-        for line in formatter.get_style_defs(f".{PYGMENTS_CSS_CLASS}").splitlines()
-        if not line.startswith(f".{PYGMENTS_CSS_CLASS} {{")
-    ]
-    return "\n".join(lines)
+    prefix = f".{PYGMENTS_CSS_CLASS} {{"
+    out: list[str] = []
+    for line in formatter.get_style_defs(f".{PYGMENTS_CSS_CLASS}").splitlines():
+        if line.startswith(prefix):
+            body = line[len(prefix):].rsplit("}", 1)[0]
+            kept = [
+                d.strip()
+                for d in body.split(";")
+                if d.strip() and not d.strip().startswith("background")
+            ]
+            if kept:
+                out.append(f"{prefix} {'; '.join(kept)} }}")
+            continue
+        out.append(line)
+    return "\n".join(out)
 
 
 def pygments_stylesheet() -> str:

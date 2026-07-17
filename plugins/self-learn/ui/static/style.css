@@ -504,6 +504,14 @@ tr[data-row].selected {
   outline-offset: -2px;
 }
 
+/* The sticky header is opaque — without this, app.js's
+   scrollIntoView(block:"nearest") on upward k-navigation parks the
+   selected row's leading title UNDER the header (adversarial review
+   2026-07-17, finding #1). Margin comfortably clears the ~2.4rem strip. */
+[data-row] {
+  scroll-margin-top: 3.4rem;
+}
+
 .record-row-deferred {
   opacity: 0.6;
 }
