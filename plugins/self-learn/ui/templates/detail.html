@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+{% block title %}self-learn — {{ model.id }}{% endblock %}
+
+{% block status_strip %}
+<div class="status-strip">
+  <a data-key-action="up" href="/bucket/{{ model.scope }}/{{ model.bucket }}">&larr; {{ model.bucket }}</a>
+  <span class="status-item">{{ model.id }}</span>
+</div>
+{% endblock %}
+
+{% block content %}
+<article data-record-id="{{ model.id }}">
+
+  {% for badge in model.badges %}
+  <span class="badge badge-{{ badge.kind }}">{{ badge.text }}</span>
+  {% endfor %}
+
+  {% if not model.host_registered %}
+  <p class="banner banner-warning">
+    Unregistered project.
+    {% if model.host_add_command %}
+    Run <code>{{ model.host_add_command }}</code> to register it.
+    {% else %}
+    No skills root candidate is known yet.
+    {% endif %}
+    Resolution stays available below.
+  </p>
+  {% endif %}
+
+  {% if model.cards %}
+  <section aria-label="proposal cards">
+    {% for card in model.cards %}
+    <div class="card-section">
+      <h2>{{ card.label }}</h2>
+      <div class="card-text">{{ card.text | markdown }}</div>
+    </div>
+    {% endfor %}
+  </section>
+  {% endif %}
+
+  <section aria-label="finding">
+    <h2>Finding</h2>
+    <p class="provenance">{{ model.finding.provenance_text }}</p>
+    <div class="record-body">{{ model.finding.body | markdown }}</div>
+    {% if model.finding.evidence %}
+    <ul class="evidence">
+      {% for e in model.finding.evidence %}
+      <li>{{ e.get("quote", "") }} <span class="evidence-origin">({{ e.get("origin", "") }})</span></li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+  </section>
+
+  <section aria-label="change">
+    <h2>Change</h2>
+    {% if model.change.kind == "none" %}
+    <p>{{ model.change.message }}</p>
+    {% elif model.change.kind == "diff" %}
+    <div class="diff-preview">{{ model.change.content | pygments_diff }}</div>
+    <p class="preview-caption">{{ model.change.caption }}</p>
+    {% elif model.change.kind == "proposal-yaml" %}
+    <div class="yaml-preview">{{ model.change.content | pygments_yaml }}</div>
+    <p class="preview-caption">{{ model.change.caption }}</p>
+    {% elif model.change.kind == "hook" %}
+    <div class="hook-script">{{ model.change.content | pygments_bash }}</div>
+    {% if model.change.replay_examples %}
+    <div class="replay-examples">
+      <h3>Replay examples</h3>
+      <p>allow: {{ model.change.replay_examples.get("allow", []) | length }} &middot;
+         deny: {{ model.change.replay_examples.get("deny", []) | length }}</p>
+      {% for ex in model.change.replay_examples.get("allow", []) %}
+      <p class="replay-example replay-allow">allow: {{ ex }}</p>
+      {% endfor %}
+      {% for ex in model.change.replay_examples.get("deny", []) %}
+      <p class="replay-example replay-deny">deny: {{ ex }}</p>
+      {% endfor %}
+    </div>
+    {% endif %}
+    <p class="preview-caption">{{ model.change.caption }}</p>
+    {% elif model.change.kind == "new-skill" %}
+    <p>{{ model.change.content }}</p>
+    <p class="preview-caption">{{ model.change.caption }}</p>
+    {% endif %}
+  </section>
+
+  <section aria-label="why">
+    <h2>Why</h2>
+    {% if model.why.rationale %}
+    <div class="rationale">{{ model.why.rationale | markdown }}</div>
+    {% endif %}
+    {% if model.why.destination %}<p>Suggested destination: {{ model.why.destination }}</p>{% endif %}
+    {% if model.why.alternates %}
+    <p>Alternates: {{ model.why.alternates | join(", ") }}</p>
+    {% endif %}
+    {% if model.why.already_canon %}
+    <p class="badge badge-already-canon">already canon{% if model.why.already_canon_reason %} — {{ model.why.already_canon_reason }}{% endif %}</p>
+    {% endif %}
+    <p class="badge badge-{{ model.why.freshness }}">{{ model.why.freshness_label }}</p>
+  </section>
+
+  {% if model.contradicts %}
+  <section aria-label="contradicts">
+    <h2>Contradicts</h2>
+    <ul>
+      {% for target in model.contradicts %}
+      <li>this conflicts with <code>{{ target }}</code></li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+
+  {% with kind="detail", armed=None, dom_id="action-bar-" ~ model.id, record_id=model.id, dest=(model.why.destination if model.why.destination in model.destination_cycle else None), event=None, target=None, already_canon=model.why.already_canon %}
+    {% include "partials/action_bar.html" %}
+  {% endwith %}
+
+</article>
+{% endblock %}

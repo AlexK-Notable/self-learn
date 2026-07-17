@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block title %}self-learn — {{ model.bucket }}{% endblock %}
+
+{% block status_strip %}
+<div class="status-strip">
+  <a data-key-action="up" href="/">&larr; Front</a>
+  <span class="status-item">{{ model.bucket }} ({{ model.scope }})</span>
+</div>
+{% endblock %}
+
+{% block content %}
+{% if notice == "resolved-elsewhere" %}
+<p class="banner banner-notice">That record was resolved elsewhere.</p>
+{% endif %}
+
+{% if list_error %}
+<div class="error-strip" role="alert"><p>{{ list_error }}</p></div>
+{% endif %}
+
+{% if not model.host_registered %}
+<p class="banner banner-warning">
+  Unregistered project.
+  {% if model.host_add_command %}
+  Run <code>{{ model.host_add_command }}</code> to register it.
+  {% else %}
+  No skills root candidate is known yet.
+  {% endif %}
+  Resolution stays available below.
+</p>
+{% endif %}
+
+{% for cluster in model.clusters %}
+<div class="cluster-row" data-row>
+  <p>{{ cluster.member_count }} similar records — suggested survivor
+    <code>{{ cluster.suggested_survivor }}</code></p>
+  <button type="button" data-key-action="drill_in"
+          hx-get="/cluster/{{ model.scope }}/{{ model.bucket }}/{{ cluster.cluster_id }}"
+          hx-target="#cluster-target-{{ cluster.cluster_id }}" hx-swap="innerHTML">
+    Expand
+  </button>
+  <div id="cluster-target-{{ cluster.cluster_id }}"></div>
+</div>
+{% endfor %}
+
+{% for group in model.groups %}
+<section aria-label="{{ group.label }}">
+  <h2>{{ group.label }}</h2>
+
+  {% if group.bulk_collapse %}
+  <div class="bulk-collapse-row" data-row>
+    <p>{{ group.bulk_collapse.text }}</p>
+    <form hx-post="/bucket/{{ model.scope }}/{{ model.bucket }}/graduate-bulk" hx-swap="none">
+      <input type="hidden" name="ids" value="{{ group.bulk_collapse.ids | join(',') }}">
+      <button type="submit" data-key-action="graduate">Acknowledge all as canon</button>
+    </form>
+  </div>
+  {% endif %}
+
+  {% for row in group.rows %}
+  <div class="record-row {{ 'record-row-deferred' if row.deferred else '' }}" data-row>
+    <a href="/record/{{ row.id }}" class="record-row-lead">{{ row.leading_text }}</a>
+    <span class="record-row-meta">
+      {% for badge in row.badges %}
+      <span class="badge badge-{{ badge.kind }}">{{ badge.text }}</span>
+      {% endfor %}
+      <span class="record-row-id">{{ row.id }}</span>
+      <span class="record-row-age">{{ row.age_days }}d</span>
+    </span>
+    {% with kind="detail", armed=None, dom_id="action-bar-" ~ row.id, record_id=row.id, dest=row.destination, event=None, target=None, already_canon=row.already_canon %}
+      {% include "partials/action_bar.html" %}
+    {% endwith %}
+  </div>
+  {% endfor %}
+</section>
+{% endfor %}
+{% endblock %}

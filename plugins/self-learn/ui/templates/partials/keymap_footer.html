@@ -1,0 +1,15 @@
+{# Keymap footer (10 §1 Keymap row): rendered from keymap_entries, the
+   SAME self_learn_ui.keymap.KEYMAP the JSON blob and the help overlay
+   render from — never a second hand-authored list. #}
+<nav class="keymap-footer" aria-label="keyboard shortcuts">
+  {% for entry in keymap_entries %}
+  <span class="keymap-footer-entry">
+    <kbd>{{ entry["keys"][0] }}</kbd>
+    <span class="keymap-footer-label">{{ entry.label }}</span>
+  </span>
+  {% endfor %}
+  <span class="keymap-footer-entry">
+    <kbd>?</kbd>
+    <span class="keymap-footer-label">full reference</span>
+  </span>
+</nav>

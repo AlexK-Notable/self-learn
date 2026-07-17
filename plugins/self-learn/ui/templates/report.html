@@ -1,0 +1,119 @@
+{% extends "base.html" %}
+{% block title %}self-learn — report{% endblock %}
+
+{% block status_strip %}
+<div class="status-strip">
+  <a data-key-action="up" href="/">&larr; Front</a>
+  <span class="status-item">report</span>
+</div>
+{% endblock %}
+
+{% block content %}
+{# 09 §11 Y-12: report --json merged with status --json's metrics/
+   supply_mix, rendered verbatim, read-only. No charts, no derived
+   numbers the CLI didn't compute (04 counted-not-modeled). #}
+{% if report_error %}
+<div class="error-strip" role="alert"><p>{{ report_error }}</p></div>
+{% endif %}
+{% if status_error %}
+<div class="error-strip" role="alert"><p>{{ status_error }}</p></div>
+{% endif %}
+
+{% if report %}
+<section aria-label="lifecycle counts">
+  <h1>Lifecycle</h1>
+  <dl>
+    <dt>routed_ever</dt><dd>{{ report.routed_ever }}</dd>
+    <dt>superseded_after_routing</dt><dd>{{ report.superseded_after_routing }}</dd>
+    <dt>supersede_rate</dt><dd>{{ report.supersede_rate }}</dd>
+    <dt>graduated</dt><dd>{{ report.graduated }}</dd>
+    <dt>rejected</dt><dd>{{ report.rejected }}</dd>
+  </dl>
+</section>
+
+<section aria-label="routed live">
+  <h2>Routed &amp; live ({{ report.routed_live | length }})</h2>
+  <table>
+    <thead><tr><th>id</th><th>bucket</th><th>routed_days_ago</th><th>recurrences</th></tr></thead>
+    <tbody>
+      {% for r in report.routed_live %}
+      <tr><td>{{ r.id }}</td><td>{{ r.bucket }}</td><td>{{ r.routed_days_ago }}</td><td>{{ r.recurrences }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section aria-label="recurrence suspects">
+  <h2>Recurrence suspects ({{ report.recurrence_suspects | length }})</h2>
+  <table>
+    <thead><tr><th>id</th><th>nonce</th><th>seen_at</th></tr></thead>
+    <tbody>
+      {% for s in report.recurrence_suspects %}
+      <tr><td>{{ s.id }}</td><td>{{ s.nonce }}</td><td>{{ s.seen_at }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section aria-label="open follow-ups">
+  <h2>Open follow-ups ({{ report.open_followups | length }})</h2>
+  <table>
+    <thead><tr><th>id</th><th>bucket</th><th>action</th><th>unblocks_on</th><th>routed_at</th></tr></thead>
+    <tbody>
+      {% for f in report.open_followups %}
+      <tr><td>{{ f.id }}</td><td>{{ f.bucket }}</td><td>{{ f.action }}</td><td>{{ f.unblocks_on }}</td><td>{{ f.routed_at }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+<section aria-label="mined supply">
+  <h2>Mined supply</h2>
+  <dl>
+    {% for k, v in report.mined.items() %}
+    <dt>{{ k }}</dt><dd>{{ v }}</dd>
+    {% endfor %}
+  </dl>
+</section>
+
+<section aria-label="telemetry">
+  <h2>Telemetry</h2>
+  <dl>
+    {% for k, v in report.telemetry.items() %}
+    {% if v is mapping %}
+    <dt>{{ k }}</dt><dd>{% for kk, vv in v.items() %}{{ kk }}: {{ vv }}{{ ", " if not loop.last }}{% endfor %}</dd>
+    {% else %}
+    <dt>{{ k }}</dt><dd>{{ v }}</dd>
+    {% endif %}
+    {% endfor %}
+  </dl>
+</section>
+
+{% if metrics %}
+<section aria-label="metrics">
+  <h2>Metrics (04, honesty-labeled)</h2>
+  <dl>
+    {% for k, v in metrics.items() %}
+    <dt>{{ k }}</dt><dd>{{ v }}</dd>
+    {% endfor %}
+  </dl>
+</section>
+{% endif %}
+
+{% if supply_mix %}
+<section aria-label="supply mix">
+  <h2>Supply mix</h2>
+  <dl>
+    {% for k, v in supply_mix.items() %}
+    <dt>{{ k }}</dt><dd>{{ v }}</dd>
+    {% endfor %}
+  </dl>
+</section>
+{% endif %}
+
+<section aria-label="raw report">
+  <h2>Raw (verbatim)</h2>
+  <pre class="raw-report">{{ report | tojson(indent=2) }}</pre>
+</section>
+{% endif %}
+{% endblock %}

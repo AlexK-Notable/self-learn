@@ -1,0 +1,109 @@
+{# The one action-bar partial (09 §1 arm-then-confirm; 09 §2's "also
+   usable on a Bucket row"). ARMED rendering is shared across every
+   `kind`; UNARMED rendering branches on `kind` because each context's
+   trigger set differs (detail quad / holding t-c / followup done /
+   contradicts offer). CSP: no inline style=, no inline <script>. #}
+<div id="{{ dom_id }}" class="action-bar" data-armed="{{ 'true' if armed else 'false' }}" data-key-context="{{ kind }}">
+  {% if error %}
+  <p class="error-strip" role="alert">{{ error }}</p>
+  {% endif %}
+
+  {% if armed %}
+  <form hx-post="/record/{{ armed.record_id }}/action/confirm"
+        hx-target="#{{ dom_id }}" hx-swap="outerHTML">
+    <input type="hidden" name="verb" value="{{ armed.verb }}">
+    <input type="hidden" name="kind" value="{{ kind }}">
+    {% if armed.dest %}<input type="hidden" name="dest" value="{{ armed.dest }}">{% endif %}
+    {% if armed.collapse %}<input type="hidden" name="collapse" value="{{ armed.collapse }}">{% endif %}
+    {% if armed.note %}<input type="hidden" name="note" value="{{ armed.note }}">{% endif %}
+    {% if armed.until %}<input type="hidden" name="until" value="{{ armed.until }}">{% endif %}
+    {% if armed.event %}<input type="hidden" name="event" value="{{ armed.event }}">{% endif %}
+    {% if armed.tolerate %}<input type="hidden" name="tolerate" value="true">{% endif %}
+    {% if armed.target %}<input type="hidden" name="target" value="{{ armed.target }}">{% endif %}
+    <p class="action-bar-armed">
+      <strong>{{ armed.verb_label }}</strong>
+      <code>{{ armed.record_id }}</code>
+      {% if armed.dest %}<span class="arrow">&rarr;</span> <span class="dest">{{ armed.dest }}</span>{% endif %}
+      {% if armed.target %}<span class="arrow">&rarr;</span> <span class="dest">{{ armed.target }}</span>{% endif %}
+      <span class="note-presence">{{ "note attached" if armed.note_present else "no note" }}</span>
+      <span class="confirm-hint"><kbd>Enter</kbd> to confirm &middot; any other key cancels</span>
+    </p>
+    {% if armed.show_note_hint %}
+    <p class="note-hint"><kbd>n</kbd> to say why</p>
+    {% endif %}
+    <button type="submit" data-key-action="confirm">Confirm</button>
+  </form>
+  <form hx-post="/record/{{ armed.record_id }}/action/disarm"
+        hx-target="#{{ dom_id }}" hx-swap="outerHTML">
+    <input type="hidden" name="kind" value="{{ disarm_vals.kind }}">
+    {% if disarm_vals.dest %}<input type="hidden" name="dest" value="{{ disarm_vals.dest }}">{% endif %}
+    {% if disarm_vals.event %}<input type="hidden" name="event" value="{{ disarm_vals.event }}">{% endif %}
+    {% if disarm_vals.target %}<input type="hidden" name="target" value="{{ disarm_vals.target }}">{% endif %}
+    <button type="submit" data-key-action="disarm">Cancel</button>
+  </form>
+
+  {% elif kind == "holding" %}
+  <form id="form-{{ dom_id }}">
+    <input type="hidden" name="event" value="{{ event }}">
+    <label>Note <input type="text" name="note" placeholder="why the rule stays"></label>
+    <button type="button" data-key-action="tolerate"
+            hx-post="/record/{{ record_id }}/action/arm" hx-include="#form-{{ dom_id }}"
+            hx-vals='{"verb":"confirm-recurrence","kind":"holding","tolerate":"true"}'
+            hx-target="#{{ dom_id }}" hx-swap="outerHTML">Tolerate (t)</button>
+    <button type="button" data-key-action="confirm_recurrence"
+            hx-post="/record/{{ record_id }}/action/arm" hx-include="#form-{{ dom_id }}"
+            hx-vals='{"verb":"confirm-recurrence","kind":"holding"}'
+            hx-target="#{{ dom_id }}" hx-swap="outerHTML">Confirm (c)</button>
+    <button type="button" data-key-action="graduate"
+            hx-post="/record/{{ record_id }}/action/arm" hx-include="#form-{{ dom_id }}"
+            hx-vals='{"verb":"graduate","kind":"holding"}'
+            hx-target="#{{ dom_id }}" hx-swap="outerHTML">Graduate (g)</button>
+  </form>
+  <p class="session-note">Revise / Escalate: capture with <code>teach --supersedes</code> (session work).</p>
+
+  {% elif kind == "followup" %}
+  <form id="form-{{ dom_id }}">
+    <label>Note <input type="text" name="note" placeholder="optional done note"></label>
+    <button type="button" data-key-action="followup_done"
+            hx-post="/record/{{ record_id }}/action/arm" hx-include="#form-{{ dom_id }}"
+            hx-vals='{"verb":"followup-done","kind":"followup"}'
+            hx-target="#{{ dom_id }}" hx-swap="outerHTML">Mark done</button>
+  </form>
+
+  {% elif kind == "contradicts" %}
+  <button type="button" data-key-action="link_contradicts"
+          hx-post="/record/{{ record_id }}/action/arm"
+          hx-vals='{{ ({"verb": "link-contradicts", "kind": "contradicts", "target": target}) | tojson }}'
+          hx-target="#{{ dom_id }}" hx-swap="outerHTML">Link contradiction &rarr; {{ target }}</button>
+
+  {% else %}
+  <form id="form-{{ dom_id }}">
+    <input type="hidden" name="dest" value="{{ dest or '' }}">
+    <label>Note <input type="text" name="note" placeholder="optional resolution note"></label>
+    <button type="button" data-key-action="route"
+            hx-post="/record/{{ record_id }}/action/arm" hx-include="#form-{{ dom_id }}"
+            hx-vals='{"verb":"route","kind":"detail"}'
+            hx-target="#{{ dom_id }}" hx-swap="outerHTML">Approve (a)</button>
+    <button type="button" data-key-action="reject"
+            hx-post="/record/{{ record_id }}/action/arm" hx-include="#form-{{ dom_id }}"
+            hx-vals='{"verb":"reject","kind":"detail"}'
+            hx-target="#{{ dom_id }}" hx-swap="outerHTML">Deny (d)</button>
+    <button type="button" data-key-action="defer"
+            hx-post="/record/{{ record_id }}/action/arm" hx-include="#form-{{ dom_id }}"
+            hx-vals='{"verb":"defer","kind":"detail"}'
+            hx-target="#{{ dom_id }}" hx-swap="outerHTML">Defer (f)</button>
+    <button type="button" data-key-action="graduate"
+            hx-post="/record/{{ record_id }}/action/arm" hx-include="#form-{{ dom_id }}"
+            hx-vals='{"verb":"graduate","kind":"detail"}'
+            hx-target="#{{ dom_id }}" hx-swap="outerHTML">
+      Graduate (g){% if already_canon %} <span class="badge badge-already-canon">already canon</span>{% endif %}
+    </button>
+    <button type="button" data-key-action="cycle_destination"
+            hx-post="/record/{{ record_id }}/action/cycle-destination" hx-include="#form-{{ dom_id }}"
+            hx-target="#{{ dom_id }}" hx-swap="outerHTML">
+      Destination: {{ dest or "(analyst suggestion)" }} (o)
+      {% if dest %}<span class="hint">hook / new-skill need Iterate — not cycle-reachable</span>{% endif %}
+    </button>
+  </form>
+  {% endif %}
+</div>
