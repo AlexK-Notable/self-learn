@@ -96,6 +96,50 @@ def claude_shim(tmp_path, monkeypatch, env):
     return {"log": log, "prompt": prompt_log, "dir": shims}
 
 
+@pytest.fixture()
+def notify_shim(claude_shim, tmp_path):
+    """PATH shim for `self-learn-notify` (10 U8): lives in the SAME
+    shims dir `claude_shim` already put on PATH, so both binaries
+    resolve together. Logs argv NUL-separated; `NOTIFY_SHIM_SCRIPT` (a
+    bash snippet, e.g. `sleep N`) lets a test simulate the helper
+    blocking on `notify-send --wait` without touching the real desktop —
+    the worker must return long before it exits."""
+    log = tmp_path / "notify-argv.log"
+    shim = claude_shim["dir"] / "self-learn-notify"
+    shim.write_text(
+        "#!/usr/bin/env bash\n"
+        f'printf \'%s\\0\' "$@" > "{log}"\n'
+        'if [ -n "${NOTIFY_SHIM_SCRIPT-}" ]; then bash -c "$NOTIFY_SHIM_SCRIPT"; fi\n'
+        'exit 0\n',
+        encoding="utf-8",
+    )
+    shim.chmod(shim.stat().st_mode | stat.S_IEXEC)
+    return {"log": log, "dir": claude_shim["dir"]}
+
+
+def _wait_for_file(path: Path, timeout: float = 5.0) -> None:
+    """Poll for a file a DETACHED child writes asynchronously — the
+    worker returns before the spawned helper necessarily has."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if path.exists():
+            return
+        time.sleep(0.02)
+
+
+def _path_without_real_notify_helper(*leading_dirs: Path) -> str:
+    """Build a PATH with `leading_dirs` first, then the inherited PATH
+    with any directory that would resolve a REAL `self-learn-notify`
+    filtered out — so a "helper absent" test stays true even on a
+    machine (like this repo's own dev host) where self-learn-notify is
+    actually deployed to `~/bin` (repo CLAUDE.md deploy surface)."""
+    parts = [str(d) for d in leading_dirs]
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        if entry and not (Path(entry) / "self-learn-notify").exists():
+            parts.append(entry)
+    return os.pathsep.join(parts)
+
+
 def seed_pending(env, rid="lrn-0000aaaa", created_at=None):
     record = make_behavior(record_id=rid, created_at=created_at)
     create_record(env.home, record)
@@ -393,6 +437,95 @@ def test_notification_template_verbatim():
         "self-learn: 1 new proposal for s. 1 pending across 1 scope — "
         "/self-learn:review"
     )
+
+
+def test_notify_uses_helper_with_pinned_argv_and_matching_ids(
+    env, claude_shim, notify_shim, monkeypatch
+):
+    """10 U8: the proposals notification's transport swaps to a detached
+    spawn of `self-learn-notify`, pinned argv (10 §1) — `--line` carries
+    the byte-unchanged `render_notification` template, `--ids` carries
+    the SAME ids `append_event` already logged, comma-joined."""
+    rid = seed_pending(env)
+    monkeypatch.setenv("CLAUDE_SHIM_SCRIPT", shim_writes(env, rid))
+    worker.run(env.home)
+
+    _wait_for_file(notify_shim["log"])
+    argv = notify_shim["log"].read_text(encoding="utf-8").split("\0")[:-1]
+    assert argv == [
+        "--line",
+        worker.render_notification(1, ["s"], 1, 1),
+        "--ids",
+        rid,
+    ]
+
+    events = [
+        json.loads(ln)
+        for ln in (worker.cache_dir() / "events.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    line = events[-1]
+    assert line["event"] == "proposals"
+    assert line["record_ids"] == [rid]
+    # byte-for-byte: the helper's --ids is the events line's record_ids,
+    # comma-joined — never a second computation.
+    assert argv[3] == ",".join(line["record_ids"])
+
+
+def test_notify_helper_absent_falls_back_to_direct_notify_send(
+    env, claude_shim, monkeypatch, tmp_path
+):
+    """Graceful degradation (headless/partial-deploy safety, 09 §5):
+    `self-learn-notify` missing from PATH → the old M2 direct
+    notify-send path is taken, no crash, logged one line."""
+    rid = seed_pending(env)
+    monkeypatch.setenv("CLAUDE_SHIM_SCRIPT", shim_writes(env, rid))
+
+    notify_send_log = tmp_path / "notify-send.log"
+    shim = claude_shim["dir"] / "notify-send"
+    shim.write_text(
+        "#!/usr/bin/env bash\n"
+        f'printf \'%s\\0\' "$@" > "{notify_send_log}"\n'
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    shim.chmod(shim.stat().st_mode | stat.S_IEXEC)
+    # self-learn-notify deliberately NOT added to claude_shim["dir"];
+    # strip any other PATH entry that would resolve a real one too.
+    monkeypatch.setenv("PATH", _path_without_real_notify_helper(claude_shim["dir"]))
+
+    result = worker.run(env.home)
+    assert result.status == "ok"  # no crash
+
+    argv = notify_send_log.read_text(encoding="utf-8").split("\0")[:-1]
+    assert argv == ["self-learn", worker.render_notification(1, ["s"], 1, 1)]
+
+    log_text = (worker.cache_dir() / "worker.log").read_text(encoding="utf-8")
+    assert "self-learn-notify not on PATH" in log_text
+
+
+def test_notify_never_blocks_worker_on_detached_helper(
+    env, claude_shim, notify_shim, monkeypatch
+):
+    """The helper is spawned DETACHED — the worker must never wait on
+    its exit (self-learn-notify itself blocks on `notify-send --wait`
+    until acted on or expired; that latency must never become the
+    worker's)."""
+    rid = seed_pending(env)
+    monkeypatch.setenv("CLAUDE_SHIM_SCRIPT", shim_writes(env, rid))
+    monkeypatch.setenv("NOTIFY_SHIM_SCRIPT", "sleep 5")
+
+    start = time.monotonic()
+    result = worker.run(env.home)
+    elapsed = time.monotonic() - start
+
+    assert result.status == "ok"
+    assert elapsed < 2.0, f"worker.run blocked on the notify helper ({elapsed:.2f}s)"
+    # confirm the helper really was invoked (not silently skipped) —
+    # give the still-sleeping detached child time to have written argv.
+    _wait_for_file(notify_shim["log"])
+    assert notify_shim["log"].exists()
 
 
 def test_escalation_fires_and_debounces(env, claude_shim):

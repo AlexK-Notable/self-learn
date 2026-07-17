@@ -1,0 +1,31 @@
+# self-learn adjudication UI (doc 09/10 surface) — the localhost web
+# server. Resident, not one-shot: "the server IS the single instance"
+# (09 §3) — multiple browser tabs/windows are concurrent readers of the
+# one running process, so this unit stays up rather than firing per
+# request. Conventions mirror self-learn-miner.service (comment header,
+# %h-relative paths, explicit env pin).
+#
+# Registration (manual, like the miner units and the autosync watcher):
+#   ln -sf ~/repos/self-learn/systemd/self-learn-ui.service \
+#       ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now self-learn-ui.service
+#
+# systemd absent / non-Linux host (10 §5): the documented fallback is
+# running `self-learn-ui serve` in the foreground — this unit is a
+# convenience, not a hard dependency.
+[Unit]
+Description=self-learn adjudication UI (localhost web server)
+
+[Service]
+Type=simple
+# B-1 (doc 13 §7.1), carried from self-learn-miner.service: the systemd
+# user manager does not inherit the shell's env — pin the ledger home
+# explicitly so the unit and the shell agree.
+Environment=SELF_LEARN_HOME=%h/.self-learn
+ExecStart=%h/bin/self-learn-ui serve
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

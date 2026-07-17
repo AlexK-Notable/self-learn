@@ -25,6 +25,10 @@ PINNED_ITEM_KEYS = [
     "proposal_fresh",
     "destination",
     "already_canon",
+    # 09 §11 Y-2/Y-11 substrate (10 U0, 2026-07-17):
+    "bucket",
+    "host_registered",
+    "source",
 ]
 
 
@@ -78,6 +82,9 @@ def test_list_json_full_pinned_shape(home, capsys):
     assert item["proposal_fresh"] is True
     assert item["destination"] == "hook"
     assert item["already_canon"] is True
+    assert item["bucket"] == "home-assistant"
+    assert item["host_registered"] is True  # skills_root registered by make_home
+    assert item["source"] == "teach"
 
 
 def test_list_json_no_proposal_defaults(home, capsys):
@@ -91,6 +98,9 @@ def test_list_json_no_proposal_defaults(home, capsys):
     assert item["proposal_fresh"] is False
     assert item["destination"] is None
     assert item["already_canon"] is False
+    assert item["bucket"] == "user"
+    assert item["host_registered"] is True  # skills_root registered by make_home
+    assert item["source"] == "teach"
 
 
 def test_list_json_stale_proposal_not_fresh(home, capsys):

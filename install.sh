@@ -1,19 +1,27 @@
 #!/usr/bin/env bash
 # install.sh — self-learn product deploy (live symlinks; doc 13 §7.3).
 #
-# Deploys exactly five surfaces + the miner units:
+# Deploys exactly eight surfaces + the miner units + the G-3 UI unit:
 #   - ~/.claude/skills/self-learn    -> plugins/self-learn/skills/self-learn
 #   - ~/.claude/commands/self-learn  -> plugins/self-learn/commands
 #   - ~/bin/self-learn               -> plugins/self-learn/scripts/self-learn
 #   - ~/.claude/hooks/self-learn-pending.sh -> plugins/self-learn/hooks/…
 #   - uv sync of the CLI project
 #   - ~/.config/systemd/user/self-learn-miner.{service,timer} -> systemd/…
+#   - ~/bin/self-learn-ui            -> plugins/self-learn/scripts/self-learn-ui
+#   - ~/bin/self-learn-ui-open       -> plugins/self-learn/scripts/self-learn-ui-open
+#   - ~/bin/self-learn-notify        -> plugins/self-learn/scripts/self-learn-notify
+#   - ~/.config/systemd/user/self-learn-ui.service -> systemd/self-learn-ui.service
+#     (G-3 surface — 10 §1 "Service"/"Companion scripts" rows; explicit link
+#     lines mirroring the miner-units block below, no glob — 13 §7.3)
 #
 # What this deliberately does NOT touch (13 §7.3 D1 — the product repo is
 # a tool; compiled output lands in the USER'S hosts):
 #   - guard scripts (they are host canon, e.g. claude-skills hooks/self-learn/)
 #   - settings.json (load-bearing; registrations stay manual)
 #   - any autosync watcher (D3: this repo syncs by manual push only)
+#   - enabling/starting either systemd unit (miner timer or the G-3 UI
+#     service) — enable is always a documented, printed manual line
 set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SKILLS_DIR="$HOME/.claude/skills"
@@ -49,6 +57,11 @@ link "$P/commands" "$COMMANDS_DIR/self-learn"
 say "== CLI shim (~/bin) =="
 link "$P/scripts/self-learn" "$BIN_DIR/self-learn"
 
+say "== G-3 surface scripts (~/bin) =="
+link "$P/scripts/self-learn-ui" "$BIN_DIR/self-learn-ui"
+link "$P/scripts/self-learn-ui-open" "$BIN_DIR/self-learn-ui-open"
+link "$P/scripts/self-learn-notify" "$BIN_DIR/self-learn-notify"
+
 say "== SessionStart pending hook =="
 link "$P/hooks/self-learn-pending.sh" "$HOOKS_DIR/self-learn-pending.sh"
 say "  (register in ~/.claude/settings.json as a SessionStart hook — manual)"
@@ -65,5 +78,11 @@ link "$REPO/systemd/self-learn-miner.service" "$UNIT_DIR/self-learn-miner.servic
 link "$REPO/systemd/self-learn-miner.timer" "$UNIT_DIR/self-learn-miner.timer"
 run "systemctl --user daemon-reload"
 say "  enable with: systemctl --user enable --now self-learn-miner.timer"
+
+say "== G-3 surface unit (systemd --user) =="
+link "$REPO/systemd/self-learn-ui.service" "$UNIT_DIR/self-learn-ui.service"
+run "systemctl --user daemon-reload"
+say "  ACTION NEEDED: enable with: systemctl --user enable --now self-learn-ui.service"
+say "  (no-systemd fallback: run 'self-learn-ui serve' in the foreground — 10 §5)"
 
 say "done."

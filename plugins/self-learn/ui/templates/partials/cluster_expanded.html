@@ -1,0 +1,25 @@
+{# 09 §2.2 cluster rows: expanding lists members inline; the survivor
+   choice is a selection within the expanded view; approve arms
+   `route <survivor> --collapse <cluster-id>` (08 §7.1 pin). One button
+   per member — clicking IS the survivor selection (no separate radio +
+   confirm step needed; the arm/confirm dance is the confirm step). #}
+<div class="cluster-expanded" id="cluster-{{ name }}-{{ cluster.cluster_id }}">
+  <p class="cluster-rationale">{{ cluster.rationale }}</p>
+  <ul class="cluster-members">
+    {% for member_id in cluster.records %}
+    <li>
+      <span class="cluster-member-id">{{ member_id }}</span>
+      {% if member_id == cluster.suggested_survivor %}
+      <span class="badge badge-suggested">suggested survivor</span>
+      {% endif %}
+      <button type="button" data-key-action="route"
+              hx-post="/record/{{ member_id }}/action/arm"
+              hx-vals='{{ ({"verb": "route", "kind": "detail", "collapse": cluster.cluster_id}) | tojson }}'
+              hx-target="#action-bar-{{ member_id }}" hx-swap="outerHTML">
+        Route as survivor
+      </button>
+      <div id="action-bar-{{ member_id }}"></div>
+    </li>
+    {% endfor %}
+  </ul>
+</div>

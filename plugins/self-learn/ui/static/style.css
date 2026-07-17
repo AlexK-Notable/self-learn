@@ -1,0 +1,363 @@
+/*
+ * self-learn-ui — base stylesheet (10 §1 Dependencies row; 09 §11 Y-10).
+ *
+ * Scaffold only at U1: the custom-properties block below is the ONE
+ * source of color tokens for both themes — every future rule (badges,
+ * status strip, action bar, pane) reads these variables rather than
+ * hardcoding colors, so a theme fix is a one-place edit.
+ *
+ * Y-10 pins, restated here as build constraints for U3 authors:
+ *   - Dark/light via `prefers-color-scheme` — promoted from the polish
+ *     backlog into U1/U3 scope (this file's job at U1; wiring the
+ *     variables into components is U3's).
+ *   - Color is NEVER the sole carrier of a distinction (fresh/stale,
+ *     scan-blocked, deferred, mined, already-canon, unregistered-host,
+ *     applying/error): every badge/status element needs a text label or
+ *     glyph too. That rule lives in the templates U3 writes — this file
+ *     only supplies non-color-exclusive tokens (no "just red = bad").
+ *   - CSP pin (09 §3, W-9): NO inline `style=` attributes or `<style>`
+ *     blocks anywhere in templates/partials — every rule lives in this
+ *     served stylesheet (or a future sibling), never inline. Pygments
+ *     renders in class mode against this file, never `noclasses`.
+ */
+
+:root {
+  color-scheme: light dark;
+
+  /* Light theme (default). */
+  --slu-bg: #ffffff;
+  --slu-bg-raised: #f4f4f5;
+  --slu-fg: #1a1a1e;
+  --slu-fg-muted: #55565c;
+  --slu-border: #d7d7db;
+  --slu-accent: #1f5fbf;
+  --slu-accent-fg: #ffffff;
+  --slu-danger: #a3221f;
+  --slu-danger-bg: #fbe6e5;
+  --slu-success: #1e6b3a;
+  --slu-success-bg: #e3f3e8;
+  --slu-warning: #8a5a00;
+  --slu-warning-bg: #fbeed7;
+  --slu-focus-ring: #1f5fbf;
+  --slu-font: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --slu-font-mono: ui-monospace, "SFMono-Regular", Consolas, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --slu-bg: #17181c;
+    --slu-bg-raised: #202126;
+    --slu-fg: #e7e7ea;
+    --slu-fg-muted: #a6a7ad;
+    --slu-border: #34353b;
+    --slu-accent: #6fa8ff;
+    --slu-accent-fg: #0c1524;
+    --slu-danger: #ff8a85;
+    --slu-danger-bg: #3a1c1b;
+    --slu-success: #7fd79b;
+    --slu-success-bg: #163a24;
+    --slu-warning: #f0c46a;
+    --slu-warning-bg: #3a2c0c;
+    --slu-focus-ring: #6fa8ff;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--slu-bg);
+  color: var(--slu-fg);
+  font-family: var(--slu-font);
+}
+
+a {
+  color: var(--slu-accent);
+}
+
+:focus-visible {
+  outline: 2px solid var(--slu-focus-ring);
+  outline-offset: 2px;
+}
+
+code,
+pre {
+  font-family: var(--slu-font-mono);
+}
+
+/* ---------------------------------------------------------------- U3 --- */
+
+.reconnect-strip {
+  background: var(--slu-warning-bg);
+  color: var(--slu-warning);
+  padding: 0.25rem 0.75rem;
+  text-align: center;
+  font-size: 0.85em;
+}
+
+.status-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  padding: 0.5rem 1rem;
+  border-bottom: 1px solid var(--slu-border);
+}
+
+.status-item {
+  color: var(--slu-fg-muted);
+}
+
+.keymap-footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  padding: 0.5rem 1rem;
+  border-top: 1px solid var(--slu-border);
+  font-size: 0.85em;
+  color: var(--slu-fg-muted);
+}
+
+.keymap-footer-entry kbd,
+.help-overlay kbd,
+.action-bar kbd {
+  border: 1px solid var(--slu-border);
+  border-radius: 3px;
+  padding: 0 0.35em;
+  background: var(--slu-bg-raised);
+}
+
+.help-overlay {
+  position: fixed;
+  inset: 0;
+  background: color-mix(in srgb, var(--slu-bg) 70%, transparent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.help-overlay[hidden] {
+  display: none;
+}
+
+.help-overlay-panel {
+  background: var(--slu-bg-raised);
+  border: 1px solid var(--slu-border);
+  border-radius: 6px;
+  padding: 1rem 1.5rem;
+  max-height: 80vh;
+  overflow-y: auto;
+}
+
+.help-context {
+  color: var(--slu-fg-muted);
+  font-size: 0.85em;
+}
+
+.banner {
+  padding: 0.5rem 1rem;
+  border-radius: 4px;
+  margin: 0.5rem 0;
+}
+
+.banner-notice {
+  background: var(--slu-bg-raised);
+  color: var(--slu-fg);
+}
+
+.banner-warning {
+  background: var(--slu-warning-bg);
+  color: var(--slu-warning);
+}
+
+.error-strip {
+  background: var(--slu-danger-bg);
+  color: var(--slu-danger);
+  padding: 0.5rem 1rem;
+  border-radius: 4px;
+}
+
+.badge {
+  display: inline-block;
+  border-radius: 3px;
+  padding: 0.1em 0.5em;
+  font-size: 0.8em;
+  border: 1px solid var(--slu-border);
+  background: var(--slu-bg-raised);
+  color: var(--slu-fg);
+}
+
+.badge-stale,
+.badge-scan-blocked,
+.badge-error {
+  background: var(--slu-danger-bg);
+  color: var(--slu-danger);
+}
+
+.badge-already-canon,
+.badge-fresh {
+  background: var(--slu-success-bg);
+  color: var(--slu-success);
+}
+
+.badge-deferred,
+.badge-unregistered-host,
+.badge-applying {
+  background: var(--slu-warning-bg);
+  color: var(--slu-warning);
+}
+
+.badge-schema-invalid {
+  background: var(--slu-danger-bg);
+  color: var(--slu-danger);
+}
+
+.record-row,
+.holding-row,
+.followup-row,
+.bulk-collapse-row,
+.cluster-row {
+  border: 1px solid var(--slu-border);
+  border-radius: 4px;
+  padding: 0.5rem 0.75rem;
+  margin: 0.5rem 0;
+}
+
+.record-row[data-row]:focus,
+.record-row[data-row].selected,
+tr[data-row].selected {
+  outline: 2px solid var(--slu-focus-ring);
+  outline-offset: -2px;
+}
+
+.record-row-deferred {
+  opacity: 0.6;
+}
+
+.record-row-lead {
+  font-weight: 600;
+}
+
+.record-row-meta {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  color: var(--slu-fg-muted);
+  font-size: 0.85em;
+}
+
+.action-bar {
+  margin-top: 0.5rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.action-bar-armed {
+  background: var(--slu-bg-raised);
+  padding: 0.35rem 0.6rem;
+  border-radius: 4px;
+}
+
+.note-hint {
+  color: var(--slu-warning);
+  font-size: 0.85em;
+}
+
+.preview-caption {
+  color: var(--slu-fg-muted);
+  font-size: 0.85em;
+  font-style: italic;
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+th,
+td {
+  border-bottom: 1px solid var(--slu-border);
+  padding: 0.3rem 0.5rem;
+  text-align: left;
+}
+
+/* ---------------------------------------------------------------- U6 --- */
+/* The iterate split (09 §2.4): left = record/diff, right = pane region. */
+
+.detail-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1rem;
+  align-items: start;
+}
+
+@media (min-width: 60rem) {
+  .detail-grid {
+    grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  }
+}
+
+.detail-right {
+  position: sticky;
+  top: 0;
+}
+
+.pane-region {
+  border: 1px solid var(--slu-border);
+  border-radius: 4px;
+  padding: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+#pane-transcript {
+  max-height: 60vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.pane-block {
+  border-left: 2px solid var(--slu-border);
+  padding-left: 0.5rem;
+}
+
+.pane-tool {
+  color: var(--slu-fg-muted);
+  font-size: 0.85em;
+  font-family: var(--slu-font-mono);
+}
+
+.pane-activity {
+  color: var(--slu-fg-muted);
+  font-style: italic;
+}
+
+.pane-result {
+  color: var(--slu-fg-muted);
+  font-size: 0.85em;
+  display: flex;
+  gap: 0.5rem;
+}
+
+/* htmx indicator styles — normally injected inline by htmx on boot, but the
+   pinned CSP (style-src 'self') blocks that injection, so they are served
+   here instead and htmx's own injection is disabled via the htmx-config meta
+   in base.html (U11 browser trial, 2026-07-17 / W-9). */
+.htmx-indicator {
+  opacity: 0;
+  transition: opacity 200ms ease-in;
+}
+.htmx-request .htmx-indicator {
+  opacity: 1;
+}
+.htmx-request.htmx-indicator {
+  opacity: 1;
+}

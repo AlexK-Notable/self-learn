@@ -891,6 +891,12 @@ def _cmd_host_inner(args: argparse.Namespace, home) -> int:
             f"  registry: skills_root={registry.skills_root or '(none)'} · "
             f"{len(registry.projects)} project host(s)"
         )
+        # 09 §11 Y-2 companion (10 U0): registration is a consent moment —
+        # name the consequence, don't leave it implicit.
+        print(
+            "  consent: registers this repo's canon surfaces as compile "
+            "targets and analyst-readable"
+        )
         return EXIT_OK
     if args.host_command == "rebind":
         try:
@@ -1052,9 +1058,15 @@ def _cmd_reconcile(args: argparse.Namespace) -> int:
     if not result.committed:
         print("reconcile: nothing uncommitted — the ledger is whole")
         return EXIT_OK
+    # ReconcileResult.sha is str | None by field default, but every path
+    # that reaches here (committed non-empty) came through a successful
+    # gitops.commit(), which always returns a str — sha is None here only
+    # if that invariant is ever broken, and this must stay loud, not crash
+    # a report of an otherwise-successful commit.
+    sha_display = result.sha[:7] if result.sha is not None else "(sha unknown)"
     print(
         f"reconcile: committed {len(result.committed)} orphaned path(s) "
-        f"@ {result.sha[:7]}"
+        f"@ {sha_display}"
     )
     for path in result.committed:
         print(f"  {path}")

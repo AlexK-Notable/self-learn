@@ -1,0 +1,84 @@
+<!--
+  self-learn-ui — base template skeleton (10 §1 task U1; 09 §1/§2).
+
+  Scaffold only: no routes render this yet (U3 constructs the Jinja
+  environment, wires the app, and fills these blocks/partials). Structure
+  only — header/status-strip slot, one content block, keymap footer
+  partial slot, per the task brief.
+
+  AUTOESCAPE MARKER (09 §3 render-path pin, W-1): the Jinja Environment
+  that loads this template MUST be constructed with autoescape=True and
+  MUST NEVER disable it per-block (the "autoescape false" block tag is
+  banned in this app — note it is deliberately never spelled out here
+  with its real curly-percent delimiters, because Jinja parses tags
+  inside HTML comments too; spelling it out literally broke template
+  loading with an "Unexpected end of template" error the first time
+  this file was actually rendered). That wiring lives in
+  self_learn_ui.app's create_app() (U3) — this comment is the marker
+  the task brief asks for, not a substitute for the real
+  construction-site pin.
+
+  CSP marker (09 §3, W-9): no inline `style=` attributes or `<style>`
+  blocks are permitted anywhere in this template or its partials — see
+  static/style.css. No inline `<script>` either — static/app.js only.
+-->
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    {# htmx injects an inline style element for its indicator on boot; the
+       pinned CSP (style-src 'self', no unsafe-inline) blocks it, throwing a
+       console error on every swap and killing the indicator fade. Disable
+       the injection here (htmx reads this meta before boot) — the indicator
+       CSS lives in style.css instead. (U11 browser trial, 2026-07-17 / W-9.) #}
+    <meta name="htmx-config" content='{"includeIndicatorStyles": false}' />
+    <title>{% block title %}self-learn{% endblock %}</title>
+    {# empty data: icon suppresses the /favicon.ico 404 (CSP img-src allows data:) #}
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="/static/style.css" />
+    <link rel="stylesheet" href="/static/pygments.css" />
+    <script src="/static/htmx-2.0.9.min.js" defer></script>
+    <script src="/static/app.js" defer></script>
+  </head>
+  <body{% block body_attrs %}{% endblock %}>
+    <div id="self-learn-ui-reconnect-strip" class="reconnect-strip" hidden>
+      live updates reconnecting&hellip;
+    </div>
+
+    <header>
+      {% block header %}
+      {# Status strip slot (09 §2.1): worker last-run age, staleness
+         alarm, total pending, sentinel state, miner last-run age +
+         staleness + open-follow-ups count (Y-5/Y-6). Populated from
+         status --json / mine status --json at U3 via ledger.py (U2). #}
+      {% block status_strip %}{% endblock %}
+      {% endblock %}
+    </header>
+
+    <main id="self-learn-ui-content">
+      {% block content %}{% endblock %}
+    </main>
+
+    <footer>
+      {# Keymap footer partial slot (10 §1 Keymap row): rendered from the
+         SAME source as the JSON blob below and the ?  help overlay —
+         self_learn_ui.keymap.KEYMAP. #}
+      {% block keymap_footer %}
+        {% include "partials/keymap_footer.html" %}
+      {% endblock %}
+    </footer>
+
+    {% block keymap_help %}
+      {% include "partials/help_overlay.html" %}
+    {% endblock %}
+
+    {# The single-source keymap JSON blob app.js reads (see app.js's
+       loadKeymap()). Populated via self_learn_ui.keymap.keymap_json(),
+       threaded into every page's context by routes.py's _base_ctx(). #}
+    <script id="self-learn-ui-keymap" type="application/json">
+      {% block keymap_json %}{{ keymap_json | safe }}{% endblock %}
+    </script>
+  </body>
+</html>
+

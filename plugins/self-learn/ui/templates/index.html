@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% block title %}self-learn — Front{% endblock %}
+
+{% block status_strip %}
+<div class="status-strip">
+  <span class="status-item">worker: {{ model.status.worker_stale_label }}</span>
+  <span class="status-item">pending: {{ model.status.total_pending }}</span>
+  <span class="status-item">follow-ups: {{ model.status.open_followups }}</span>
+  <span class="status-item">{{ model.status.sentinel_label }}</span>
+  <span class="status-item">{{ model.miner.stale_label }}</span>
+  <a class="status-item" href="/report">report</a>
+</div>
+{% endblock %}
+
+{% block content %}
+{% if notice == "resolved-elsewhere" %}
+<p class="banner banner-notice">That record was resolved elsewhere.</p>
+{% elif notice == "bucket-clear" %}
+<p class="banner banner-notice">Bucket clear — nothing pending there now.</p>
+{% elif notice == "not-found" %}
+<p class="banner banner-notice">That record could not be found.</p>
+{% endif %}
+
+{% if not model.ok %}
+<div class="error-strip" role="alert">
+  {% for err in model.errors %}<p>{{ err }}</p>{% endfor %}
+</div>
+{% endif %}
+
+<section aria-label="bucket walk">
+  <h1>Buckets</h1>
+  {% if not model.buckets %}
+  <p>Nothing pending anywhere. Good triage.</p>
+  {% else %}
+  <table class="bucket-walk">
+    <thead>
+      <tr><th>Bucket</th><th>Scope</th><th>Pending</th><th>Oldest</th><th>Unanalyzed</th></tr>
+    </thead>
+    <tbody>
+      {% for b in model.buckets %}
+      <tr data-row>
+        <td><a href="/bucket/{{ b.scope }}/{{ b.name }}">{{ b.name }}</a></td>
+        <td>{{ b.scope }}</td>
+        <td>{{ b.pending }}</td>
+        <td>{{ (b.oldest_days ~ "d") if b.oldest_days is not none else "—" }}</td>
+        <td>{{ b.unanalyzed }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</section>
+
+{% if model.holding %}
+<section aria-label="is it holding">
+  <h2>Is it holding?</h2>
+  {% for row in model.holding %}
+  <div class="holding-row" data-row>
+    <p>{{ row.text }}</p>
+    {% with kind="holding", armed=None, dom_id="action-bar-" ~ row.id, record_id=row.id, event=row.newest_nonce, dest=None, target=None %}
+      {% include "partials/action_bar.html" %}
+    {% endwith %}
+  </div>
+  {% endfor %}
+</section>
+{% endif %}
+
+{% if model.followups %}
+<section aria-label="open follow-ups">
+  <h2>Open follow-ups</h2>
+  {% for row in model.followups %}
+  <div class="followup-row" data-row>
+    <p>{{ row.action or "(no action recorded)" }}{% if row.unblocks_on %} — unblocks on {{ row.unblocks_on }}{% endif %}</p>
+    {% if row.note %}<p class="followup-note">{{ row.note }}</p>{% endif %}
+    {% with kind="followup", armed=None, dom_id="action-bar-" ~ row.id, record_id=row.id, event=None, dest=None, target=None %}
+      {% include "partials/action_bar.html" %}
+    {% endwith %}
+  </div>
+  {% endfor %}
+</section>
+{% endif %}
+
+<section aria-label="miner">
+  <h2>Miner</h2>
+  {% if model.miner.ok %}
+  <p>last run: {{ model.miner.last_run or "never" }} — {{ model.miner.stale_label }}</p>
+  <details>
+    <summary>runs</summary>
+    <ul>
+      {% for run in model.miner.runs %}
+      <li>{{ run.ts }} — {{ run.status_label }} ({{ run.trigger }}) — scanned {{ run.sessions_scanned }},
+        landed {{ run.landed }}, folded {{ run.folded }}, recurrences {{ run.recurrences }}</li>
+      {% endfor %}
+    </ul>
+  </details>
+  {% else %}
+  <p class="error-strip" role="alert">{{ model.miner.error }}</p>
+  {% endif %}
+  <form>
+    <button type="submit" formmethod="post" formaction="/mine/run"
+            hx-post="/mine/run" hx-swap="none">Force run</button>
+  </form>
+</section>
+{% endblock %}

@@ -538,3 +538,93 @@ path more than adding tracks.
   (5) (non-canon file inside a registered host denied LIVE), the
   shell-branch fallback got its read surface pinned, and two
   cosmetic fixes.
+- **2026-07-17 · Interim adversarial review (Opus): NOT CLEAN → all
+  folded.** Fresh independent reviewer, probes executed, reviews/
+  withheld. **1 BLOCKER:** every production Iterate session died at
+  start with `TypeError` — the wave-1 join (`dd01fe1`) reconciled
+  `default_canon_read_roots` to one-arg and fixed `charter.py` + its
+  tests, but missed the SECOND consumer, `engine/sdk.py`, whose
+  default was the now-one-arg fn called zero-arg; every engine/charter
+  test injected a zero-arg fake, so the green suite was mock theater
+  over a dead production path. Orchestrator's own join miss. Fixed:
+  `SdkPaneEngine.canon_read_roots_fn` defaults to `None` (charter
+  builds the home-threaded closure), plus a regression test that
+  drives `_build_options` through the EXACT production construction
+  (no fake injected) — the gap that hid it. **1 MAJOR:** the per-start
+  bearer token leaked into uvicorn's access log (→ journald under the
+  unit) via `GET /?token=…` logged before the 303 strips it — fixed
+  with `access_log=False` (localhost single-user; the app keeps its
+  own ui.log). **3 MINOR:** Pyright had 2 errors (the blocker's
+  type-fingerprint + a loose `-> tuple[object, str]` annotation) — now
+  0; `pane_result.turns` was hardwired `None` on a false honesty
+  justification (`ResultMessage.num_turns` IS reported on 0.2.121) —
+  now plumbed end-to-end with a test; the launcher hash-mirror
+  diverged on `//`/`/.` homes — tightened (above). Verified-clean by
+  the reviewer (executed): the charter permission callback (traversal/
+  symlink/prefix/id-sibling/fail-closed battery), the security
+  middleware (CSP on every response class, Host/token/CSRF), the XSS
+  surface (every `|safe` justified), SSE through the middleware, runner
+  serialization + interrupt-first ordering, and the load-bearing doc
+  pins. Delta re-check owed before merge.
+- **2026-07-17 · Wave-1/2 build findings (orchestrated build, Sonnet
+  agents).** (a) U0 found and fixed a LATENT POST-EXTRACTION BUG in
+  shipped code: `verbs._hooks_dir_for` still wrote project/user-scope
+  guards to the pre-D1 `plugins/self-learn/hooks/` — a path that no
+  longer exists in the host repo; reconciled to
+  `<skills_root>/hooks/self-learn/` (readers were safe: they resolve
+  via the record's stored `script_path`). (b) The wave-1 join
+  reconciled a cross-track signature assumption:
+  `canon_read_roots(hosts)` (U0) vs zero-arg (U5) — fixed at the
+  seam, fail-closed preserved, end-to-end join tests added. (c) U5's
+  verify-at-build ledger ran on SDK 0.2.121: all pre-verified fields
+  present EXCEPT session persistence — the X-7 contingency fired as
+  pinned (`--no-session-persistence` via `extra_args`). U5 also
+  fixed a self-found symlink-follow bug in its write-path check
+  before commit. (d) U7 CORRECTED THE PINNED NOTIFIER PROSE: on
+  notify-send 0.8.8, `-A open` prints the action's numeric index
+  ("0") on click, never "open" — the working form is
+  `-A "open=Open"` (NAME=label); verified live under swaync with a
+  bounded wait. §1's Companion-scripts row reads through this
+  finding. (e) DELIBERATE DEVIATION, flagged for review: the
+  launcher's X-8 token-path fallback mirrors the cache-hash formula
+  (`sha256(str(expanduser(home)))[:8]`) in bash rather than shelling
+  to the CLI — rationale: keeping `uv run` (and its network
+  resolution) out of the script and its CI; a cross-check test pins
+  the mirror byte-identical to the Python formula. Known residual:
+  `str(Path(...))` normalizes trailing/double slashes, bash does not
+  — a SELF_LEARN_HOME with a trailing slash would diverge. The
+  interim review adjudicated KEEP (the `self-learn paths --json`
+  replacement was only a conditional U0 pin and was never built; the
+  import path was chosen instead — REPLACE would reintroduce `uv run`
+  and its network resolution into the launcher + CI). The bash
+  normalization was TIGHTENED 2026-07-17 to collapse `//`, drop `/.`
+  segments, and strip trailing slashes — verified byte-identical to
+  `str(PurePosixPath(...))` across those cases plus `..`-preserved; the
+  X-12 loop this could once have caused is closed.
+- **2026-07-17 · U10 shipped: deploy + docs.** `install.sh` gained
+  explicit link lines (no glob, mirroring the existing miner-units
+  block) for the three companion scripts (`self-learn-ui`,
+  `self-learn-ui-open`, `self-learn-notify` → `~/bin`) and a new
+  `== G-3 surface unit (systemd --user) ==` block linking
+  `systemd/self-learn-ui.service` → `~/.config/systemd/user/` +
+  `daemon-reload`; enable stays a printed `ACTION NEEDED:` manual line
+  (`systemctl --user enable --now self-learn-ui.service`), never
+  auto-run — same posture as the miner timer, per §1's Service row.
+  Verified by `--dry-run` from the build worktree (a different path
+  than the live-deployed `~/repos/self-learn`, so every link reported
+  as a fresh `link` rather than `ok` — expected; the worktree is not
+  the live install target). No live symlinks, no `daemon-reload`, no
+  enable were run — deferred to U11 acceptance, which needs the
+  service actually running for T-C/T-D per §6.2. `shellcheck` is not
+  installed on this host and was not pulled via container to avoid an
+  unrequested side effect; verification substitute was `bash -n`
+  (clean) plus manual review against the miner block's idiom. README
+  gained a "G-3 surface" section (what/launch/keymap table/complete
+  env-var table/pane-engine note/browser notes incl. the Vimium
+  `localhost:7357` exclusion/the optional Hyprland window-rule
+  snippet, framed as polish per X-4/X-10) and updated Layout + Install
+  blocks; SKILL.md gained a short section framing the surface as the
+  richer review venue alongside `/self-learn:review` (same CLI verbs,
+  not a second system). No code bugs found in `ui/`/`cli/` during this
+  task — none of that surface was touched (out of scope; frozen and
+  reviewed per the task charter).

@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# self-learn-ui — thin wrapper over the uv project at ../ui.
+# readlink -f is LOAD-BEARING (10 §1, carried P3-1): install.sh deploys
+# this file as a ~/bin symlink; $(dirname "$0") would resolve beside the
+# symlink, not the repo (home-net-capture precedent; same rule as
+# scripts/self-learn and the sibling self-learn-ui-open/self-learn-notify).
+exec uv run --project "$(dirname "$(readlink -f "$0")")/../ui" self-learn-ui "$@"

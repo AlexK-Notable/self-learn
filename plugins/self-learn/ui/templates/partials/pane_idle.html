@@ -1,0 +1,17 @@
+{# The pane region when NOT split (09 §2.4): just the Iterate control,
+   plus a persisted validate badge/strip if a past session left one (09
+   §4.3: "until a re-validate exits 0" — survives `q` close). Always the
+   SAME dom id as partials/pane.html / pane_armed.html so every pane
+   route can swap this one region uniformly. #}
+<div id="pane-region-wrapper" class="pane-region pane-idle">
+  <button type="button" data-key-action="iterate"
+          hx-post="/record/{{ record_id }}/pane/start"
+          hx-target="#pane-region-wrapper" hx-swap="outerHTML">Iterate (i)</button>
+
+  {% if pane and pane.validate_exit_code is not none and pane.validate_exit_code != 0 %}
+  <p class="badge badge-{{ 'scan-blocked' if pane.validate_exit_code == 2 else 'schema-invalid' }}">
+    {{ 'scan-blocked' if pane.validate_exit_code == 2 else 'schema invalid' }}
+  </p>
+  <p class="error-strip" role="alert">{{ pane.validate_stderr }}</p>
+  {% endif %}
+</div>
