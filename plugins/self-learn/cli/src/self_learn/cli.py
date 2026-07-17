@@ -975,8 +975,11 @@ def _cmd_recompile(args: argparse.Namespace) -> int:
     for entry in result.entries:
         if entry.skipped:
             state = f"skipped ({entry.skipped})"
-        elif entry.changed:
+        elif entry.changed and entry.commit_sha:
             state = f"recompiled @ {entry.commit_sha[:7]}"
+        elif entry.changed:
+            # the chezmoi user flow commits its own repo — no host sha
+            state = "recompiled (dotfiles repo committed)"
         else:
             state = "up to date"
         print(f"recompile: {entry.target} — {state}")

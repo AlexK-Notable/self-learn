@@ -594,7 +594,9 @@ cluster_id, records (the lrn ids), suggested_survivor, rationale, model,
 analyzed_at. Do not emit record_shas — the CLI stamps them.
 cluster_id MUST equal the merge-<8 hex> token of the filename itself
 (file merge-a1b2c3d4.yaml → cluster_id: merge-a1b2c3d4) — never a
-descriptive slug; the validator fail-closed deletes anything else.
+descriptive slug: the validator deletes ids that don't match the
+merge-<8 hex> pattern, and a pattern-valid id that differs from the
+filename token is dead on arrival at route --collapse.
 
 Never re-propose the classes below (recently rejected):
 {digest}

@@ -989,15 +989,46 @@ def _compile_set(home: Path, spec: TargetSpec) -> list[Record]:
         return _routed_to(
             _all_bucket_dirs(home), "claude-md", scope_pred=lambda s: s == "user"
         )
-    if spec.scope_kind == "project":
-        return _routed_to(
-            [spec.bucket_dir], "claude-md", scope_pred=lambda s: s == "project"
-        )
-    # skill-root: every skill bucket's claude-md-routed records
-    skill_dirs = [b.path for b in discover_buckets(home) if b.scope == "skill"]
-    return _routed_to(
-        skill_dirs, "claude-md", scope_pred=lambda s: s.startswith("skill:")
-    )
+    # project / skill-root claude-md: ONE file can serve BOTH roles — a
+    # repo registered as project host AND skills root (the shipped
+    # claude-skills shape). The compile set must be the UNION of every
+    # scope that resolves to this file, or each route of one scope
+    # ERASES the other scope's lines and recompile cannot restore them
+    # (adversarial review 2026-07-17 finding 3; latent since M1). A
+    # single-role host degenerates to exactly the old per-scope set.
+    host = spec.host_repo.resolve() if spec.host_repo is not None else None
+    records: list[Record] = []
+    seen: set[str] = set()
+    for bucket in discover_buckets(home):
+        if bucket.scope != "project":
+            continue
+        project = bucket_project_path(bucket.path)
+        if project is None or host is None:
+            continue
+        if Path(project).resolve() != host:
+            continue
+        for r in _routed_to(
+            [bucket.path], "claude-md", scope_pred=lambda s: s == "project"
+        ):
+            if r.id not in seen:
+                seen.add(r.id)
+                records.append(r)
+    hosts = load_hosts(home)
+    if (
+        hosts.skills_root is not None
+        and host is not None
+        and Path(hosts.skills_root).resolve() == host
+    ):
+        skill_dirs = [
+            b.path for b in discover_buckets(home) if b.scope == "skill"
+        ]
+        for r in _routed_to(
+            skill_dirs, "claude-md", scope_pred=lambda s: s.startswith("skill:")
+        ):
+            if r.id not in seen:
+                seen.add(r.id)
+                records.append(r)
+    return records
 
 
 @dataclass(frozen=True)
@@ -1063,6 +1094,7 @@ def _retirement_host_phase(
     warnings: list[str],
     post_notes: list[str],
     skip_target: Path | None = None,
+    user_push: bool = True,
 ) -> tuple[str | None, Path | None]:
     """HOST phase of a retirement: recompile the doc target (the entry
     drops — the ledger already committed the resolution) or ``git rm``
@@ -1081,6 +1113,7 @@ def _retirement_host_phase(
             chezmoi_bin=chezmoi_bin,
             message=message,
             warnings=warnings,
+            user_push=user_push,
         )
         return host_sha, retirement.spec.host_repo
     if retirement.removal is not None:
@@ -1098,6 +1131,7 @@ def _apply_target(
     *,
     chezmoi_bin: str = "chezmoi",
     message: str | None = None,
+    user_push: bool = True,
 ) -> tuple[object, list[Path]]:
     """HOST-phase compile (doc 13 §4 step e): write the target from the
     committed ledger state. Returns (compile_result, host paths to stage —
@@ -1131,6 +1165,7 @@ def _apply_target(
             _compile_set(home, spec),
             chezmoi=chezmoi_bin,
             commit_message=message,
+            push=user_push,
         )
         host_paths = []
     else:
@@ -1252,6 +1287,7 @@ def _host_phase(
     chezmoi_bin: str,
     message: str,
     warnings: list[str],
+    user_push: bool = True,
 ) -> tuple[object | None, str | None]:
     """Steps (e): compile + HOST commit under the sentinel hold. On ANY
     failure after the ledger commit: loud drift warning naming
@@ -1274,7 +1310,12 @@ def _host_phase(
     try:
         with lock:
             compile_result, host_paths = _apply_target(
-                home, spec, routed_record, chezmoi_bin=chezmoi_bin, message=message
+                home,
+                spec,
+                routed_record,
+                chezmoi_bin=chezmoi_bin,
+                message=message,
+                user_push=user_push,
             )
             host_sha = None
             if spec.host_repo is not None and host_paths:
@@ -1524,6 +1565,7 @@ def route(
             chezmoi_bin=chezmoi_bin,
             message=message,
             warnings=warnings,
+            user_push=not no_push,
         )
 
         # (e2) retirement HOST phase for the superseded old record — its
@@ -1544,6 +1586,7 @@ def route(
                 warnings=warnings,
                 post_notes=retire_notes,
                 skip_target=spec.target,
+                user_push=not no_push,
             )
 
         # (f) push ledger, then push host (pinned retry, has_remote-guarded)
@@ -1772,6 +1815,7 @@ def route_direct(
             chezmoi_bin=chezmoi_bin,
             message=message,
             warnings=warnings,
+            user_push=not no_push,
         )
         if host_sha is not None and spec.host_repo is not None:
             # the applied-canon half of the printed diff (informational —
@@ -1802,6 +1846,7 @@ def route_direct(
                 warnings=warnings,
                 post_notes=retire_notes,
                 skip_target=spec.target,
+                user_push=not no_push,
             )
 
         post_notes: list[str] = []
@@ -1971,6 +2016,7 @@ def graduate(
             message=message,
             warnings=warnings,
             post_notes=post_notes,
+            user_push=not no_push,
         )
 
         push = _push_ledger(home, no_push)
@@ -2065,6 +2111,7 @@ def supersede(
                 chezmoi_bin=chezmoi_bin,
                 message=message,
                 warnings=warnings,
+                user_push=not no_push,
             )
         elif removal is not None:
             host_sha = _remove_hook_script(
@@ -2569,11 +2616,15 @@ def recompile(
                     chezmoi_bin=chezmoi_bin,
                     message="self-learn: recompile user CLAUDE.md",
                     warnings=result.warnings,
+                    user_push=not no_push,
                 )
                 result.entries.append(
                     RecompileEntry(
                         target=target,
-                        changed=bool(getattr(compile_result, "changed", False)),
+                        # UserScopeResult reports committed, not changed —
+                        # the dotfiles repo commits itself, no commit_sha
+                        # of ours to show (delta review finding 1)
+                        changed=bool(getattr(compile_result, "committed", False)),
                     )
                 )
                 continue

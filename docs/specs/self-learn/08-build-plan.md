@@ -897,3 +897,23 @@ scope.
   `merge-<8 hex>` filename token (run-1 finding: the analyst wrote a
   descriptive slug; the validator correctly fail-closed deleted it —
   prompt tuning routed through human+strong-reasoner per §4).
+  **Adversarial review (blind, same day): verdict CLEAN**; interruption
+  window, skip_target aliasing, collapse-loser reachability, m-4/m-5
+  soundness, and idempotency all held under executed probes (11 of the
+  13 new tests fail on the parent commit; the tz failure reproduced live
+  on parent during the review). Delta fixes from its findings, all
+  regression-tested (873→876): (1) the recompile user-file entry now
+  reports `UserScopeResult.committed` (was a nonexistent `.changed` —
+  always False; CLI would have crashed printing a None sha once fixed
+  naively); (2) `--no-push` now reaches the chezmoi flow —
+  `compile_user_scope(push=)` threaded as `user_push` through
+  route/route_direct/supersede/graduate/recompile (pre-existing on
+  route; new surfaces made it urgent); (3) **pre-existing since M1,
+  found by the review's live probe**: one repo registered as BOTH
+  project host and skills root (the shipped claude-skills shape)
+  compiled its CLAUDE.md from ONE scope's records per route — each
+  route of one scope ERASED the other scope's lines. `_compile_set` now
+  unions every scope resolving to the same file (single-role hosts
+  degenerate to the old set exactly); (4) the worker prompt's validator
+  claim tightened (pattern-enforced, filename-equality dies at
+  collapse).

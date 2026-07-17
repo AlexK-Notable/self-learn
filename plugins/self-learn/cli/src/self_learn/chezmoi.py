@@ -124,6 +124,7 @@ def compile_user_scope(
     max_words: int = DEFAULT_MAX_WORDS,
     chezmoi: str = "chezmoi",
     commit_message: str | None = None,
+    push: bool = True,
 ) -> UserScopeResult:
     """Run the full guarded sequence against ``target``. See module docstring.
 
@@ -148,6 +149,7 @@ def compile_user_scope(
     message = commit_message or f"self-learn: update managed section in {target.name}"
     _check(_run([chezmoi, "git", "--", "add", "-A"]))
     _check(_run([chezmoi, "git", "--", "commit", "-m", message]))
-    _check(_run([chezmoi, "git", "--", "push"]))
+    if push:
+        _check(_run([chezmoi, "git", "--", "push"]))
 
     return UserScopeResult(section=section, committed=True, commit_message=message)

@@ -281,8 +281,18 @@ class TestRecompileCompleteness:
         create_record(env.ledger, successor)
         supersede_record(env.ledger, OLD_ID, NEW_ID)
 
-        verbs.recompile(env.ledger, no_push=True, user_claude_md=user_md)
+        result = verbs.recompile(env.ledger, no_push=True,
+                                 user_claude_md=user_md)
         assert OLD_MARK not in user_md.read_text(encoding="utf-8")
+        # delta review finding 1: the entry reports the real outcome
+        # (UserScopeResult.committed, not a nonexistent .changed)
+        assert any(e.changed for e in result.entries
+                   if e.target == user_md)
+        # delta review finding 2: --no-push must not push the dotfiles
+        # repo — compile_user_scope takes push=False on this path
+        argv = log.read_text(encoding="utf-8")
+        assert "git -- commit" in argv       # the guarded commit ran
+        assert "git -- push" not in argv     # ...but never a push
 
     def test_user_file_drift_skips_loudly(self, env, tmp_path, monkeypatch):
         bindir = tmp_path / "shim-bin"
@@ -400,3 +410,47 @@ class TestResolutionDatesUtc:
         )
         dates = _resolution_dates(repo)
         assert dates["lrn-aa000001"] == "2026-07-17"
+
+
+# ------------------------------------- shared CLAUDE.md (both host roles)
+
+
+class TestSharedClaudeMdUnion:
+    """One repo registered as BOTH project host and skills root (the
+    shipped claude-skills shape): the compiled CLAUDE.md section must be
+    the UNION of both scopes — pre-fix, each route of one scope erased
+    the other scope's lines (adversarial review 2026-07-17, finding 3;
+    latent since M1)."""
+
+    def _seed_both(self, env):
+        rec = make_behavior(scope="project", record_id=OLD_ID,
+                            trigger=OLD_TRIGGER)
+        create_record(env.ledger, rec, project_path=env.host)
+        verbs.route(env.ledger, OLD_ID, dest="claude-md", no_push=True)
+        rec2 = make_behavior(scope="skill:s", record_id=NEW_ID,
+                             trigger=NEW_TRIGGER)
+        create_record(env.ledger, rec2)
+        verbs.route(env.ledger, NEW_ID, dest="claude-md", no_push=True)
+        return env.host / "CLAUDE.md"
+
+    def test_skill_route_preserves_project_lines(self, env):
+        claude_md = self._seed_both(env)
+        text = claude_md.read_text(encoding="utf-8")
+        assert OLD_MARK in text, "project-scope line erased by skill route"
+        assert NEW_MARK in text
+
+    def test_recompile_preserves_union_and_is_idempotent(self, env):
+        claude_md = self._seed_both(env)
+        result = verbs.recompile(env.ledger, no_push=True)
+        text = claude_md.read_text(encoding="utf-8")
+        assert OLD_MARK in text and NEW_MARK in text
+        assert not any(e.changed for e in result.entries), (
+            "recompile after a clean union route must be a no-op"
+        )
+
+    def test_retiring_one_scope_keeps_the_other(self, env):
+        claude_md = self._seed_both(env)
+        verbs.graduate(env.ledger, OLD_ID, no_push=True)
+        text = claude_md.read_text(encoding="utf-8")
+        assert OLD_MARK not in text
+        assert NEW_MARK in text
