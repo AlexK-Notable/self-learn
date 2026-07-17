@@ -321,7 +321,7 @@ The model's own writes (the worker's `claude -p`, `cwd=home`) can never
 be lock-guarded and are unfixable by AST — `reconcile` is the answer
 there.
 
-## 7.3 Step-2 runbook — product-repo extraction (drafted 2026-07-17; **D1–D3 ratified same day** — execution awaits the explicit go)
+## 7.3 Step-2 runbook — product-repo extraction (drafted + ratified + **EXECUTED 2026-07-17**, user: "execute")
 
 *Step 1 is live and T-H5 is fully discharged (2026-07-17: first real
 mine green; the organic foreign-project card landed from the zmk-config

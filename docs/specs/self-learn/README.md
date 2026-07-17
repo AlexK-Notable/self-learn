@@ -685,3 +685,20 @@ human routes it.
   AlexK-Notable/self-learn, private. D3: NO autosync on the product
   repo — manual pushes (recommendation declined). Execution of §7.3
   awaits the explicit go.
+
+- **2026-07-17 — STEP 2 EXECUTED (13 §7.3): the product is standalone.**
+  This corpus now lives in AlexK-Notable/self-learn (139 commits of
+  history preserved via filter-repo). Sequence as run: D1 guard
+  relocation first (git mv → claude-skills hooks/self-learn/, ledger
+  script_path commit, symlinks repointed, selftest green — and
+  lrn-316a5411 fired live: install.sh restarted autosync inside the
+  window, caught and re-stopped per its own rule); extraction;
+  product bring-up (own install.sh: five surfaces + miner units,
+  private remote, suite 875 passed / 3 skipped — two boundary tests
+  now skip loudly when host context is absent); removal commit in
+  claude-skills (marketplace entry dropped, CLAUDE.md boundary note);
+  dangling-symlink sweep CLEAN across all five surfaces; verified
+  live from the new home (shim → product repo, selftest 6/6, miner
+  units repointed + started, pending hook prints, autosync restored).
+  No ledger or canon state touched at any step. Post-extraction:
+  corpus edits land HERE with manual pushes (D3).
