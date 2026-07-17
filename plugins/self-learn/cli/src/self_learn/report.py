@@ -32,7 +32,14 @@ from .ledger_ops import open_followups
 from .records import Record, RecordError
 from .telemetry import read_events
 
-__all__ = ["gather", "ledger_metrics", "render_json", "render_text", "supply_mix"]
+__all__ = [
+    "gather",
+    "ledger_metrics",
+    "recurrence_suspects",
+    "render_json",
+    "render_text",
+    "supply_mix",
+]
 
 
 def _days_since(value, today: date) -> int | None:
@@ -176,6 +183,39 @@ def ledger_metrics(home: Path | str, *, today: date | None = None) -> dict:
     }
 
 
+def recurrence_suspects(home: Path | str) -> list[dict]:
+    """09 §11 Y-4 (10 U0 substrate): unconfirmed recurrence-suspect
+    telemetry against currently-``routed`` records — rows ``{id, nonce,
+    seen_at}``, ts-ordered (``read_events`` order).
+
+    This EXPOSES the M2 deterministic detection
+    (``worker._recurrence_suspects``, which spools the events in the first
+    place) — it never re-derives suspicion. All this does is filter the
+    tracked plane down to "still open": the target record is still
+    ``routed`` (a superseded/rejected target's suspects are moot — 11
+    §2.2 confirms against LIVE routed coverage, same rule
+    ``confirm_recurrence`` enforces) and the event's nonce has not already
+    been copied into that record's ``recurrences[].ref`` (confirmed —
+    double-listing would overstate recurrence pressure, the exact thing
+    ``confirm_recurrence`` itself refuses)."""
+    home = Path(home)
+    routed: dict[str, Record] = {
+        r.id: r for r in _walk_records(home) if r.status == "routed"
+    }
+    rows: list[dict] = []
+    for event in read_events(home):
+        if event.get("kind") != "recurrence-suspect":
+            continue
+        nonce = event.get("nonce")
+        record = routed.get(event.get("record"))
+        if record is None or nonce is None:
+            continue
+        if any(r.get("ref") == nonce for r in record.recurrences):
+            continue  # already confirmed
+        rows.append({"id": record.id, "nonce": nonce, "seen_at": event.get("ts")})
+    return rows
+
+
 def gather(home: Path | str, *, today: date | None = None) -> dict:
     """Walk every bucket + the tracked telemetry plane into one facts map."""
     home = Path(home)
@@ -300,6 +340,7 @@ def gather(home: Path | str, *, today: date | None = None) -> dict:
         "graduated": graduated,
         "rejected": rejected,
         "open_followups": open_followups(home),
+        "recurrence_suspects": recurrence_suspects(home),
         "deferred": deferred,
         "mined": {
             "pending": mined["pending"],

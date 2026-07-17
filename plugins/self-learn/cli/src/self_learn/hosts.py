@@ -53,6 +53,7 @@ __all__ = [
     "HOST_KINDS",
     "Hosts",
     "HostsError",
+    "canon_read_roots",
     "host_add",
     "host_rebind",
     "host_remove",
@@ -65,6 +66,10 @@ __all__ = [
     "slug_for",
     "validate_host_path",
 ]
+
+#: 13 §7.3/D1: the guard-canon dir for project/user-scope hook records,
+#: relative to the registered skills root.
+HOOK_CANON_USER_DIR = "hooks/self-learn"
 
 HOST_KINDS = ("skills-root", "project")
 
@@ -450,3 +455,57 @@ def skill_dir_for(hosts: Hosts, name: str) -> Path:
             + ", ".join(str(m) for m in matches)
         )
     return matches[0]
+
+
+def canon_read_roots(hosts: Hosts) -> list[Path]:
+    """The pane charter's read-scope helper (09 §11 Y-2, built at 10 U0):
+    given the registered host set, the CANON-SURFACE read prefixes — never
+    a whole host repo (H-3's ``host add`` consents to compilers WRITING
+    managed sections, not a model session reading an entire tree,
+    untracked files included). Every returned path is ``resolve()``d
+    (realpath-canonicalized); the pane callback matches candidate reads as
+    path prefixes against this list — existence on disk is NOT required
+    (a freshly-registered host's ``hooks/self-learn/`` may not exist yet,
+    and that is still an allowed prefix for the guard the analyst is about
+    to write there).
+
+    Three families, all under the registered hosts (never
+    ``SELF_LEARN_HOME`` or the plugin's own ``references/`` dir — those
+    are the OTHER two roots of the three-root scope; a caller composes all
+    three, this function owns only the host-derived ones):
+
+    - skill trees under ``skills_root`` — ``plugins/*/skills/*/`` (each
+      resolved existing skill directory; SKILL.md + its references live
+      inside it);
+    - the hook-canon dirs (13 §7.3/D1): ``<skills_root>/hooks/self-learn/``
+      (project/user-scope guards; included even if not yet created) and
+      each existing ``plugins/*/hooks/`` (skill-scope guards, one per
+      plugin that has any);
+    - each registered PROJECT host's compile-target files — its
+      ``CLAUDE.md`` (the literal target ``verbs._resolve_target`` writes
+      via ``host / "CLAUDE.md"``) and its whole ``references/`` dir (the
+      literal ``host / "references"`` root ``verbs._resolve_target``'s
+      ``reference`` branch resolves against — covers ``LEARNINGS.md`` and
+      any other named reference file inside it; the compiler's own
+      ``"references"`` literal is reused here rather than re-listing
+      individual filenames).
+
+    User scope is deliberately absent: its ``~/.claude/CLAUDE.md`` target
+    stays excerpt-only in the pane's first message (Y-2), never a read
+    root.
+    """
+    roots: list[Path] = []
+    if hosts.skills_root is not None:
+        root = hosts.skills_root.resolve()
+        roots.extend(
+            sorted(p.resolve() for p in root.glob("plugins/*/skills/*") if p.is_dir())
+        )
+        roots.append((root / HOOK_CANON_USER_DIR).resolve())
+        roots.extend(
+            sorted(p.resolve() for p in root.glob("plugins/*/hooks") if p.is_dir())
+        )
+    for project in hosts.projects:
+        host = Path(project).resolve()
+        roots.append((host / "CLAUDE.md").resolve())
+        roots.append((host / "references").resolve())
+    return roots

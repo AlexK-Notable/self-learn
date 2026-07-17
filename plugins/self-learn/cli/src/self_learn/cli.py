@@ -891,6 +891,12 @@ def _cmd_host_inner(args: argparse.Namespace, home) -> int:
             f"  registry: skills_root={registry.skills_root or '(none)'} · "
             f"{len(registry.projects)} project host(s)"
         )
+        # 09 §11 Y-2 companion (10 U0): registration is a consent moment —
+        # name the consequence, don't leave it implicit.
+        print(
+            "  consent: registers this repo's canon surfaces as compile "
+            "targets and analyst-readable"
+        )
         return EXIT_OK
     if args.host_command == "rebind":
         try:
