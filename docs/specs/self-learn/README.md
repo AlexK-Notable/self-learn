@@ -702,3 +702,23 @@ human routes it.
   units repointed + started, pending hook prints, autosync restored).
   No ledger or canon state touched at any step. Post-extraction:
   corpus edits land HERE with manual pushes (D3).
+
+- **2026-07-17 — M3 [protocol] EXIT COMPLETE: first live guard denial.**
+  The user authorized the settings.json edit directly ("fully
+  authorized to make any changes you wish"); all three guards
+  registered under one PreToolUse "Bash" matcher. The first live
+  denial arrived seconds later — and organically: the agent's own
+  smoke-test command *contained* the sudo-npm trigger text, and the
+  production path (settings.json → PreToolUse → exit 2) blocked the
+  real Bash tool call before it ran. Deliberate verification followed
+  with trigger text assembled via string concatenation so the live
+  hook wouldn't intercept the tester: all three guards deny on their
+  trigger (exit 2, lesson message on stderr) and allow clean commands
+  (exit 0); `--selftest` shows 3 live scripts intact, 4 registrations
+  resolvable. §8.3 predicate satisfied: unguarded-pass-before recorded
+  at capture (each drain lesson's incident IS the unguarded pass),
+  guard-denies-after observed live. **v1.1 declared** (annotated tag
+  on this repo). Metrics collection begins as of this date — 04's
+  success metrics are counted by `self-learn report`, baseline n
+  starts accruing now. O-3/O-7 revisit (T20): schedule with the user
+  once ~a month of real supply exists — target on/after 2026-08-17.
