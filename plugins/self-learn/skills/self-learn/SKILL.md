@@ -63,6 +63,20 @@ rule printed), `--redact` opt-in on capture surfaces, no bypass flag.
   options (route / reject / defer / discuss), bulk-acknowledge, session-end
   push. Routing doctrine: `references/routing-doctrine.md`.
 
+## The G-3 surface — a richer review venue
+
+Alongside `/self-learn:review`, pending lessons can be reviewed and routed
+in a dedicated localhost web app (`self-learn-ui-open`): keyboard-driven,
+one decision fully explained per screen, with an agent pane ("iterate")
+for talking through a lesson before routing it. Same CLI verbs underneath
+— it's a different venue for the same review-then-route act, not a second
+system. The slash command stays as the in-session option when leaving
+Claude Code isn't worth it; the surface is the better choice for a batch
+or for anything that benefits from more screen space. Install/launch/
+keymap/env vars are documented in the product README's "G-3 surface"
+section; design is `docs/specs/self-learn/09-surface-spec.md` +
+`10-surface-build-plan.md`.
+
 ## Environment & exit codes
 
 - `SELF_LEARN_HOME` — the ledger home (default `~/.self-learn`).
