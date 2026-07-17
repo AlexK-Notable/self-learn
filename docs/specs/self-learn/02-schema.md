@@ -272,8 +272,10 @@ standard safe rebase-halt (`01` §5) rather than being excluded outright.
   `status: deferred` while hidden — queue membership is *computed* from
   `deferred_until`, not read off the status · `teach --route` writes its
   record directly to `resolved/` as `status: routed`, never transiting
-  `pending/` · `source: session` has no v1 writer — forward-declared for the
-  v1.1 SessionEnd appender (O-3) · record ids are **random**
+  `pending/` · `source: session` is written by the doc-12 transcript miner
+  *(swept 2026-07-17 — this line predated the miner: it originally
+  forward-declared the enum for a v1.1 SessionEnd appender (O-3);
+  O-3 settled 2026-07-15 as the miner instead, live since M2.5)* · record ids are **random**
   (collision-resistant across offline machines); a sequential counter would
   add/add-conflict on every parallel capture.
 - **`kind` drives routing, not decay.** Gen 1 gave `kind` decay clocks and
@@ -313,7 +315,12 @@ plugins/<p>/skills/<s>/.self-learn/
   records and resolving commit messages, never stale proposal files
   (implementability review 2026-07-12).
 - Transient state (worker locks, run markers, coalescing timers) lives in
-  `~/.cache/claude-skills/self-learn/`, never in the repo. *(G-3
+  the per-home cache dir `${XDG_CACHE_HOME:-~/.cache}/self-learn/
+  home-<sha256(resolved SELF_LEARN_HOME)[:8]>/`, never in the repo.
+  *(Paths re-based 2026-07-17 per doc 13 §6/H-4 — the cutover moved
+  `~/.cache/claude-skills/self-learn/` → `~/.cache/self-learn/…` in
+  code 2026-07-16 but this line was not swept then; 09 §11 Y-3 is the
+  surface-side consumer.)* *(G-3
   addition, 2026-07-12 — 09 §3/§10; revised same day with the platform
   re-decision, 09-surface-spec.md:)* the adjudication surface follows
   suit — `ui.log` and the compiled `pane-doctrine.md` live there; its
@@ -324,7 +331,10 @@ plugins/<p>/skills/<s>/.self-learn/
   locations. **The autosync
   pause sentinel is part of this contract** *(the one cross-repo interface;
   implementability review 2026-07-12)*: path
-  `~/.cache/claude-skills/self-learn/autosync-pause`; contents one
+  `${XDG_CACHE_HOME:-~/.cache}/self-learn/autosync-pause` (a machine
+  singleton — deliberately NOT home-namespaced; it pauses the host
+  repo's autosync machine-wide; path per 13 §6, matches
+  `sentinel.py`); contents one
   informational line (`pid=… host=… started=…`) — **semantics ride the
   file's mtime only**: the sentinel is *live* iff mtime is younger than the
   2 h TTL; every mutating CLI invocation re-touches it (that is the

@@ -722,3 +722,48 @@ human routes it.
   success metrics are counted by `self-learn report`, baseline n
   starts accruing now. O-3/O-7 revisit (T20): schedule with the user
   once ~a month of real supply exists — target on/after 2026-08-17.
+
+- **2026-07-17 — G-3 pre-build re-ground (09 §11 Y-1…Y-12 + 10
+  amendments).** *(Substrate details in this entry were corrected by
+  the gate-zero round below — read both.)* The surface docs froze 2026-07-13/14; docs 11/12/13
+  and M3 landed after. This pass re-grounds every pin those changes
+  killed and fills the feature gaps, as dated edits: pane read scope
+  re-derived for the post-13 topology (ledger + hosts.yaml roots +
+  references dir — the old single-root wording would have denied all
+  canon reads); cache paths re-based to the home-namespaced dir (02
+  §3 swept — its literals had survived the cutover unswept, sentinel
+  path included); product-repo build posture (no autosync, manual
+  push, explicit install links); new surface scope: not-holding
+  cards, miner block (12 R3 honored: journal reader + force-run
+  only), follow-ups, contradicts edges, hook/new-skill Detail
+  rendering, unregistered-host flow, /report screen; pinned UX
+  rules: human-language-first rows (E-21 + the jargon lesson) and
+  color-never-sole-carrier (the user's theme is daltonized) with
+  dark theme promoted into scope. Substrate: 08 §1 dated block
+  (list bucket/host_registered/source; report recurrence_suspects +
+  open_followups rows; mine status --json; optional
+  sections_over_cap) as new task U0. 10 §8 added: the parallel
+  execution plan (file-ownership partition, five tracks, wave
+  schedule, hard-blocker list, per-agent worktree mechanics). Gate
+  zero pinned: independent spec review before any build agent
+  consumes this set.
+
+- **2026-07-17 — gate zero ran on the re-ground: NOT CLEAN → folded
+  same session.** Blind adversarial review (fresh agent, reviews/
+  withheld, everything verified against the live CLI and source)
+  returned 2 blockers + 6 majors + 6 minors. The blockers: 10 §1's
+  pane-engine row still carried the dead single-root read scope; and
+  Y-2's first draft (whole-host-root reads) was judged a prospective
+  loosening — host registration consents to compilers WRITING canon,
+  not to a model session READING an entire repo, untracked files
+  included. Resolution: read scope narrowed to canon surfaces via a
+  CLI-owned canon_read_roots() helper + a consent line in host add;
+  recorded as a dated 03 note on the G-3 row, user-ratifiable toward
+  the wider posture. The review also proved two "new" substrate
+  pieces already exist (mine status --json since M2.5;
+  report open_followups — including a wrong shape pin in the draft),
+  caught an install/enable contradiction, a dead token-fallback
+  literal, a §8-vs-§3 scheduling conflict with a stranded middleware
+  half, and un-swept autosync assumptions in W-5/W-8. All folded as
+  dated corrections marked "gate-zero"; the full findings list lives
+  in 10's Build-findings appendix. Delta re-check ran before commit.

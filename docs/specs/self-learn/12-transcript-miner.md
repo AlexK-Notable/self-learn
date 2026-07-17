@@ -389,7 +389,11 @@ a CLI verb that spawns its own contained `claude -p` internally.
   is a pure reader of the run journal plus exactly one action endpoint
   (force-run). All insight questions — last run, caught, skipped,
   choices made — are answered by the journal contract below, never by
-  UI-side inference.
+  UI-side inference. *(Consumed 2026-07-17: 09 §11 Y-5 designs the
+  pane to this rider; the journal's JSON rendering is the EXISTING
+  `mine status --json` (shipped with the miner) — shape recorded in
+  08 §1's dated substrate edit, nothing built. CLI parity preceded
+  the UI, as A1 required.)*
 
 **Design additions accepted with the ratification:**
 

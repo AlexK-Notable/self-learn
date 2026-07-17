@@ -118,11 +118,14 @@ ignoring costs nothing. This section pins the mechanics.
   (queue health is age, not size — 04's time-to-triage metric).
 - A **status strip**: worker last-run age, staleness alarm (worker
   overdue per its escalation pins), total pending, sentinel state if
-  live (someone is mid-apply somewhere). Data: `status --json` plus the
+  live (someone is mid-apply somewhere), **miner last-run age +
+  staleness and open-follow-ups count (added 2026-07-17 — §11
+  Y-5/Y-6)**. Data: `status --json` and `mine status --json` plus the
   sentinel file's mtime read directly (read-only). No run *result*
-  renders here — `worker_last_run` is the only pinned field and failed
-  runs deliberately never touch it (08 T13); run forensics stay in
-  `worker.log` (P1-7).
+  renders here — `worker_last_run` is the only pinned worker field and
+  failed runs deliberately never touch it (08 T13); run forensics stay
+  in `worker.log` (P1-7); miner run rows render on the miner section
+  (Y-5), not the strip.
 - Data source: `self-learn status --json` and `list --json` (08 §1
   pinned shapes, including the G-3 hardening fields already landed:
   `unanalyzed`, `proposal_fresh`, `destination`, `already_canon`,
@@ -146,12 +149,16 @@ ignoring costs nothing. This section pins the mechanics.
   *count* keeps the worker's eligibility predicate (a different
   measure, documented as such; distinct display labels per W-6).
   Groups render as sections, not tabs — one scroll.
-- Row: id (short), age, title (first Trigger/Fact line — same
-  derivation as `list --json .title`), sightings count, deferred badge
-  when `deferred_until` is future (dimmed at the bottom; fetched via
-  `list --json --include-deferred`), already-canon flag when
-  `proposal.already_canon` is set (the structured field, P1-2 — never
-  parsed from rationale prose, 07 §4 contract 2).
+- Row *(order amended 2026-07-17 — §11 Y-9, the human-language-first
+  rule)*: **the human line leads** — the proposal's leading card
+  section when a proposal exists, else the title (first Trigger/Fact
+  line, same derivation as `list --json .title`); then age, sightings
+  count, a "mined" provenance badge when `source` is `session` (§11
+  Y-5), deferred badge when `deferred_until` is future (dimmed at the
+  bottom; fetched via `list --json --include-deferred`), already-canon
+  flag when `proposal.already_canon` is set (the structured field,
+  P1-2 — never parsed from rationale prose, 07 §4 contract 2). The
+  `lrn-…` id renders as trailing metadata, never as the row's label.
 - **Cluster rows** (merge-proposals): one row per cluster showing
   member count and the suggested survivor; expanding (`Enter`) lists
   members inline (an htmx partial swap); the survivor choice is a
@@ -174,7 +181,12 @@ ignoring costs nothing. This section pins the mechanics.
   may push the loop's commits between the last release and the
   terminal push — the terminal push then no-ops. Harmless (commits
   exist, files are truth); the terminal push is the guarantee of last
-  resort, not the only publisher.
+  resort, not the only publisher. *(Post-13 note, 2026-07-17: the
+  ledger repo has no autosync watcher (13 H-5), so W-5's benign race
+  is void as described — the terminal push IS the only in-loop
+  publisher now; the pin stays because it also covers reconcile- or
+  verb-driven pushes from concurrent processes, the same
+  no-op-if-published logic.)*
 
 ### 2.3 Detail page — one decision, fully explained
 
@@ -202,6 +214,14 @@ Three stacked regions (07 §2's finding / change / why), one scroll:
    YAML renders via Pygments' YAML lexer. When the proposal exists but
    the diff sibling doesn't, render the proposal's proposed text; when
    nothing exists, render "no analysis yet — `i` to analyze now".
+   *(Amended 2026-07-17 — §11 Y-7:)* a proposal with destination
+   `hook` renders its **entire stored script** (bash lexer) plus the
+   replay examples as this region — the M3 "whole script as the diff"
+   pin, honored by the surface — and the caption swaps to the M3
+   verbatim-apply wording (what you see IS the bytes the verb applies;
+   a `record_sha` mismatch aborts at the verb, never silently
+   regenerates). Destination `new-skill:<name>` renders the scaffold
+   name + structure preview.
 3. **Why** — proposal rationale, suggested destination (+ alternates),
    already-canon reasoning if set, `record_sha` freshness badge:
    **fresh** or **stale** (record edited since analysis — Iterate to
@@ -301,8 +321,9 @@ permission surface of §4.3).
   ~300 ms; changes push an **SSE event** to connected pages, which
   re-request their current partial (htmx swap); a 10 s client poll is
   the fallback when SSE is disconnected. Any verb completion forces a
-  push. External mutations (autosync pull, a concurrent
-  `/self-learn:review` session) surface the same way. If the record
+  push. External mutations (a concurrent `/self-learn:review`
+  session, verb- or reconcile-driven pulls — the post-13 ledger has
+  no autosync watcher) surface the same way. If the record
   open in Detail disappears (resolved elsewhere), Detail shows a
   "resolved elsewhere" banner and swaps to the Bucket page — **and if
   that record was under active iteration, the pane session is
@@ -354,9 +375,12 @@ permission surface of §4.3).
   renders actions natively; without an action-capable daemon the
   helper degrades to informative-only, exactly M2's behavior.
 - **Server-owned state**: none in the repo. A log at
-  `~/.cache/claude-skills/self-learn/ui.log` (size-capped like
-  `worker.log`), the compiled `pane-doctrine.md` (§4.2), and the
-  runtime token file. No config file in v1 — env vars only (§4.4).
+  `<cache>/ui.log` (size-capped like `worker.log`), the compiled
+  `pane-doctrine.md` (§4.2), and the runtime token file. No config
+  file in v1 — env vars only (§4.4). *(`<cache>` re-based 2026-07-17
+  to the doc-13 home-namespaced cache dir — §11 Y-3; the literal
+  `~/.cache/claude-skills/self-learn/` of the original revision is
+  the pre-13 path and is dead.)*
 
 ## 4. The adjudication pane
 
@@ -416,10 +440,9 @@ pattern; no client-side markdown dependency).
   one file, three loaders) + the **pane charter** appendix (§4.3
   rendered as prose, tracked:
   `plugins/self-learn/skills/self-learn/references/pane-charter.md`).
-  Compilation is a runtime concat to
-  `~/.cache/claude-skills/self-learn/pane-doctrine.md`, re-concat when
-  either source's mtime changes; the compiled artifact is cache, never
-  tracked. Passed to the SDK as its system-prompt option (byte-stable
+  Compilation is a runtime concat to `<cache>/pane-doctrine.md`
+  (cache dir per §11 Y-3), re-concat when either source's mtime
+  changes; the compiled artifact is cache, never tracked. Passed to the SDK as its system-prompt option (byte-stable
   across sessions by construction). **`setting_sources` explicitly
   `[]`** — no CLAUDE.md/skills/hooks ride in. This pin is load-bearing
   twice over: the empirical-test memo measured a 68k-token cache write
@@ -481,23 +504,29 @@ allows/denies per the rules below; paths are canonicalized
 tolerated and skipped (`RateLimitEvent` appears mid-stream on
 subscription auth):
 
-- **Read scope, pinned enforceably (W-3, 2026-07-12).** The
-  enforcement reality, with honest attribution: probe 2 showed reads
-  **auto-approve inside `cwd` and never reach the callback**; that
-  reads *outside* `cwd` DO route to `can_use_tool` — and that a
-  callback deny actually blocks them — was verified live by the
-  phase-A gate re-check (out-of-cwd read denied, recorded in
-  `ResultMessage.permission_denials`; 2026-07-13). The pin therefore has two tiers:
-  free reads inside `cwd` = the bucket root (the item's own subtree —
-  harmless by construction); the callback **allows** `Read`/`Grep`/
-  `Glob` on paths under the resolved `SELF_LEARN_HOME` repo tree
-  (target canon, doctrine, corpus — repo-wide readability is accepted
-  and stated: the repo policy is no secrets in any tracked file) and
-  **denies with reason every read outside the repo** (e.g. the
-  user-scope `~/.claude/CLAUDE.md` — its excerpt already rides in the
-  first user message per the excerpt rule; the agent is told to work
-  from it or ask the human). "Corpus + target canon" below is this
-  rule, not a third scope.
+- **Read scope, pinned enforceably (W-3, 2026-07-12; scope set
+  re-derived 2026-07-17 — §11 Y-2, after doc 13 split the one-repo
+  topology this bullet assumed).** The enforcement reality, with
+  honest attribution: probe 2 showed reads **auto-approve inside
+  `cwd` and never reach the callback**; that reads *outside* `cwd` DO
+  route to `can_use_tool` — and that a callback deny actually blocks
+  them — was verified live by the phase-A gate re-check (out-of-cwd
+  read denied, recorded in `ResultMessage.permission_denials`;
+  2026-07-13). The pin therefore has two tiers: free reads inside
+  `cwd` = the bucket root (the item's own subtree — harmless by
+  construction); the callback **allows** `Read`/`Grep`/`Glob` on the
+  three read roots pinned in §11 Y-2 (ledger tree, registered hosts'
+  **canon surfaces** via the CLI-owned `canon_read_roots()` helper,
+  plugin references dir) and **denies with
+  reason every read outside them** (e.g. the user-scope
+  `~/.claude/CLAUDE.md` — its excerpt already rides in the first user
+  message per the excerpt rule; the agent is told to work from it or
+  ask the human). *(The original single-root wording — "under the
+  resolved `SELF_LEARN_HOME` repo tree (target canon, doctrine,
+  corpus)" — described the pre-13 monorepo, where one repo held all
+  three. Post-13, `SELF_LEARN_HOME` is the ledger alone; following
+  the old wording verbatim would deny the analyst every canon and
+  doctrine read. Y-2 is the authoritative scope set.)*
 - **Allowed**: `Read`, `Grep`, `Glob` per the read-scope pin above;
   write access on **exactly** the item's own files (carried, P3-7):
   `Edit` on `pending/lrn-<id>.md` (the record always exists — granting
@@ -526,9 +555,12 @@ subscription auth):
   re-validate exits 0, and resolution verbs refuse on their own
   full-file scan regardless (P2-7 — the no-bypass backstop). The verb
   commits nothing. Mid-session `file_changed` events trigger re-render
-  only, never validation. Residual, named (W-8, 2026-07-12): between
-  an agent write and the session-end scan, autosync can publish the
-  un-scanned record body to the private remote — on this one path the
+  only, never validation. Residual, named (W-8, 2026-07-12; mechanism
+  updated 2026-07-17): between an agent write and the session-end
+  scan, a concurrent push of the ledger — post-13 not autosync (the
+  ledger has no watcher, 13 H-5) but any verb- or reconcile-driven
+  push from another process — can publish the un-scanned record body
+  to the private remote; on this one path the
   S-8 rider is detect-at-checkpoint, not prevent-at-write: exactly the
   accepted posture 02 §2 records (it "detects at the checkpoint
   rather than preventing at the keystroke" — P2-1). Canon remains
@@ -644,8 +676,9 @@ Detailed fixtures live in 10; the design constrains them:
   no state that isn't a file (plus the runtime token).
 - **No remote bind, no multi-user auth in v1** — 127.0.0.1 only; team
   scale is 06's staged path, not a v1 latch.
-- **No dashboards/scores** — the status strip is counted facts only
-  (counted-not-modeled, 04).
+- **No dashboards/scores** — the status strip and the `/report`
+  screen (§11 Y-12) render counted facts with 04's honesty labels
+  only; nothing modeled, no charts in v1 (counted-not-modeled, 04).
 - **No in-surface capture** (`teach` lives where the lesson happens;
   this is the adjudication surface, not a fifth producer).
 - **No notification ownership** — the server never sends
@@ -713,3 +746,189 @@ No settled decision's *inputs* change beyond the G-3 row itself: the
 amendments revise vision details (07 §3) under a recorded user
 decision. If a reviewer finds otherwise, that finding reopens the
 register per P10 before anything lands.
+
+## 11. 2026-07-17 amendment set (post-11/12/13/M3 re-ground)
+
+*This spec froze 2026-07-13 (cards amendment 07-14). Four structural
+changes landed after it: doc 11 (telemetry & lifecycle — recurrence
+suspects, "not holding" cards, follow-ups, contradicts), doc 12 (the
+transcript miner + its R3 web-UI rider), doc 13 (ledger cutover to
+`~/.self-learn` + the §7.3 product extraction), and M3 (hook + new-
+skill compilers, shipped and live — v1.1). This set re-grounds every
+pin those changes touched and folds the session-measured UX lessons
+(E-21 presenter contamination; the doubly-proven jargon failure).
+Tagged Y-n; each item names its consuming section. The G-3 trigger
+(M2 shipped + worker proven) fired 2026-07-15 and M3's completion
+removed the last competing workstream — the build gate is open.*
+
+- **Y-1 · Topology re-ground (13 §7.3).** The product — CLI, plugin,
+  this corpus, and the UI package this spec designs — lives in the
+  standalone product repo (`AlexK-Notable/self-learn`,
+  `~/repos/self-learn`). `SELF_LEARN_HOME` resolves to the **ledger**
+  repo (`~/.self-learn`, its own git repo): buckets, telemetry,
+  `hosts.yaml`. Target canon lives in **registered host repos**
+  (`hosts.yaml`: `skills_root` + `projects[].path`). The deployed
+  skill/commands/hooks are `~/.claude` symlinks into the product repo.
+  Every section that assumed the pre-13 monorepo (one repo = ledger +
+  canon + corpus) reads through this item.
+- **Y-2 · Pane read scope, re-derived (consumes §4.3's W-3 tiers;
+  replaces its scope set; revised same day after the gate-zero blind
+  review read the first draft as a prospective loosening — the
+  narrowed form below is what the register records).** Three allowed
+  read roots, each resolved and `realpath`-canonicalized at session
+  start, matched as path prefixes: **(1)** the resolved
+  `SELF_LEARN_HOME` tree (the ledger — records, proposals,
+  telemetry; `cwd` = bucket root stays inside it); **(2)** each
+  registered host's **canon surfaces only — never the whole host
+  repo**: the skill trees under `skills_root`
+  (`plugins/*/skills/*/` — SKILL.md + references), each project
+  host's compile-target files (CLAUDE.md, LEARNINGS.md, its
+  reference-file dirs), and the **hook-canon dirs** (13 §7.3/D1:
+  `<skills_root>/hooks/self-learn/` for project/user-scope guards,
+  `plugins/*/hooks/` for skill-scope — a pane session on a
+  hook-destination record must be able to read existing guards for
+  overlap checks; delta-review fold 2026-07-17) — enumerated by
+  **one CLI-owned helper**
+  (`canon_read_roots()`, built at 10 U0; the pane callback imports
+  it, never keeps a second list — P2-4); **(3)** the plugin
+  `references/` dir (routing-doctrine.md, card-sections.yaml,
+  pane-charter.md), resolved relative to the ui package's own
+  installed location — never via `SELF_LEARN_HOME`. Everything else:
+  deny with reason (user-scope `~/.claude/CLAUDE.md` stays
+  excerpt-only in the first user message — unchanged). **Why
+  canon-surfaces, not host roots** (the gate-zero finding, accepted):
+  `host add` consents to *compilers writing managed sections* — it
+  was never consent for a model-backed session to read an entire
+  repo tree, untracked files included; whole-root reads would have
+  silently widened with every future registration (and Y-11 actively
+  encourages registering foreign repos). Canon surfaces are exactly
+  what the analyst must quote and diff against (already-canon
+  checks, target excerpts); anything beyond them, the agent asks the
+  human — deny-with-reason is the ask. Companion (U0):
+  `host add` prints a one-line consent note naming the consequence
+  ("registers this repo's canon surfaces as compile targets and
+  analyst-readable"). Write scope is UNCHANGED (the item's own
+  files, exact-path — §4.3).
+- **Y-3 · Transient-state paths re-based (13 §6 / H-4).** `<cache>` =
+  `${XDG_CACHE_HOME:-~/.cache}/self-learn/home-<sha256(resolved
+  SELF_LEARN_HOME)[:8]>/` — the CLI already owns this derivation as
+  one function; the ui package **imports it, never reimplements it**
+  (P2-4's one-computation rule). Lives there: `ui.log`,
+  `pane-doctrine.md`, and the X-8/X-12 token-file fallback. The
+  runtime token's primary home stays `$XDG_RUNTIME_DIR/self-learn/`.
+  02 §3's transient-state line updates accordingly (§10 item 3 is
+  superseded on paths by this item).
+- **Y-4 · "Is it holding?" section (11 §2.2 lands on the surface).**
+  Front gains a section after the bucket walk: routed records with
+  unconfirmed recurrence suspects (suspects beyond the record's own
+  confirmed `recurrences`, nonce-matched — the CLI's existing
+  deterministic computation, exposed via `report --json
+  .recurrence_suspects`, 08 §1 dated edit; the server never
+  re-derives it). Row, in plain words: "Routed <date>. Sighted <N>
+  times since." Actions *(key set completed 2026-07-17 after gate
+  zero — 11 §2.2's card is four-way and every way needs an
+  affordance)*: **`t` tolerate** — arms `confirm-recurrence
+  <id> --event <nonce> --tolerate` (note encouraged, the "why the
+  rule stays"); **`c` confirm** — same verb without `--tolerate`
+  (recurrence is real, fix comes later); **retire** — `g` graduate
+  works directly on the row (woven into canon; supersede-style
+  retirement stays session work). Revise and Escalate remain
+  session work — they are *captures* (`teach --supersedes`), and §8's
+  no-in-surface-capture stands; the row says so in plain words and
+  shows the command. One suspect card per record, newest nonce.
+- **Y-5 · Miner section (12 R3/A1, binding).** The Front page gains a
+  miner block: last-run age + staleness on the status strip (§2.1),
+  and an expandable run list (per-run: outcome, trigger, scanned,
+  landed, folded, recurrences — the A1 journal rendered verbatim) via
+  `mine status --json` — **which already exists (shipped with the miner,
+  M2.5; gate-zero correction 2026-07-17: the first draft wrongly
+  listed it as new substrate)** — emitting the pinned `{last_run,
+  stale, runs: […]}`; the journal file stays the
+  truth and the CLI owns staleness derivation ("CLI parity precedes
+  the UI", 12 A1). Exactly **one action**: force-run, arming
+  `self-learn mine run` (R3's one-action pin — nothing else is
+  actionable from the miner block). Mined pending records carry a
+  "mined" provenance badge on rows and Detail (from `list --json
+  .source`, 08 §1 edit) — provenance display, zero behavioral
+  difference (12's L0 rung: mined cards adjudicate identically).
+- **Y-6 · Follow-ups.** The status strip shows the open-follow-ups
+  count (`status --json .open_followups`, existing); a small
+  read-only list from `report --json .open_followups` — **which already
+  exists** (rows `{id, bucket, action, unblocks_on, note, routed_at}`
+  — gate-zero correction 2026-07-17: the first draft wrongly pinned a
+  new conflicting shape; the surface consumes the existing one) —
+  renders each with `followup done <id>` arming. Counted facts;
+  no aging alarms in v1.
+- **Y-7 · Hook & new-skill proposals on Detail.** Consumed at §2.3
+  region 2 (amended in place): full stored script + replay examples
+  for `hook`; scaffold preview for `new-skill:<name>`; M3
+  verbatim-apply caption instead of the regenerate-at-apply caption —
+  the one documented exception (08 M3 pins) surfaces truthfully.
+- **Y-8 · Contradiction edges (11 §2.4).** Detail renders a
+  proposal's `contradicts:` list in plain words ("this conflicts with
+  <target>") above the action bar. After a successful `route`, the
+  response partial offers each accepted edge as its own armed action
+  — `link contradicts <id> <target>` — analyst proposes, the human
+  accepts per edge, only the verb writes. Declining an edge is just
+  not arming it.
+- **Y-9 · Human-language-first rendering (pinned UX rule; evidence:
+  E-21 measured presenter contamination live, and the 2026-07-16
+  review session's "i don't even know what you mean by a guard").**
+  Across every screen: the leading text of any row or card is the
+  proposal's leading card section (registry order) or the record
+  title — never an id, enum value, or scope slug; `lrn-…` ids,
+  destination enums, and bucket slugs render as trailing/footer
+  metadata. Group headers and action labels are plain words (the
+  §2.2 display-label rule generalized). The **pane charter authored
+  at build (§4.3/10 U5) must include the routing-doctrine §8
+  register**: pane prose renders directly to the decision-maker, so
+  system vocabulary in pane output is a defect, not a style choice.
+- **Y-10 · Color never the sole carrier (accessibility pin) + dark
+  theme in v1.** Every badge/status distinction (fresh/stale,
+  scan-blocked, deferred, mined, already-canon, unregistered-host,
+  applying/error) carries a text label or glyph — hue alone is
+  forbidden. Grounds: the standing user theme is daltonized;
+  hue-only signals would be invisible by construction to this
+  surface's own user. Dark/light via `prefers-color-scheme` is
+  **promoted from the 10 §3 polish backlog into U3 scope** (CSS
+  custom-properties block; styling is cheap here — the promotion is
+  dated and deliberate).
+- **Y-11 · Unregistered-host flow (live case: the first organically
+  mined card sits in a foreign bucket today).** A record whose
+  bucket has no `hosts.yaml` registration renders an "unregistered
+  project" notice on Bucket and Detail with the exact copyable
+  command (`self-learn host add <path>`). Resolution arming stays
+  available — the verb is the enforcer and its refusal renders
+  verbatim (§5 row added). v1 does **not** arm `host add` from the
+  surface: registration is a canon-target decision, deliberately
+  human + CLI (10 §4 row added). Data: `list --json
+  .host_registered` (08 §1 edit).
+- **Y-12 · `/report` screen.** One read-only page rendering `report
+  --json` **plus `status --json`'s `metrics` and `supply_mix` blocks
+  (gate-zero correction 2026-07-17: those two live in status, not
+  report — the screen merges the two pinned reads, deriving
+  nothing)**: the 04 metrics with their honesty labels, supply mix,
+  mined accept rate, supersede rate, routed-live rows with
+  recurrence counts, telemetry counters. Reached by a Front link
+  (no dedicated key). No charts, no scores, no derived numbers the
+  CLI didn't compute (04 counted-not-modeled; §8 amended in place).
+
+**Substrate edits this set requires elsewhere** (same discipline as
+§10 — until landed, this list is authoritative; corrected after gate
+zero 2026-07-17 against the live CLI): **08 §1** dated edit — the
+genuinely NEW fields are `list --json` +`bucket`, `+host_registered`,
+`+source`; `report --json` +`recurrence_suspects`; the CLI-owned
+`canon_read_roots()` helper + the `host add` consent line (Y-2);
+optional-if-cheap `status --json .sections_over_cap` for a
+graduation-opener banner — all built as 10's U0. Already existing and
+merely CONSUMED (the first draft mis-listed them as new): `mine
+status --json` (shipped M2.5, shape `{last_run, stale, runs}`) and
+`report --json .open_followups` (rows `{id, bucket, action,
+unblocks_on, note, routed_at}`). **12 R3** gains a dated pointer line;
+**02 §3** transient-state pointer per Y-3. 03's register: the gate-
+zero blind review DID read Y-2's first draft (whole-host-root reads)
+as a prospective loosening — per this paragraph's own rule that
+finding reopened the register; the resolution is the narrowed
+canon-surfaces scope now in Y-2, recorded as a dated 03 note on the
+G-3 row (pending user ratification — the user may still choose the
+wider posture; the narrow one is the conservative default).

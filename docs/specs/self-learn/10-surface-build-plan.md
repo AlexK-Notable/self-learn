@@ -28,7 +28,13 @@ do not start.
 Rules 1–6 of 08 §0 apply verbatim (worktree; autosync hazard on
 master; test-first honestly; tests never touch the real ledger or
 `~/.claude` — `SELF_LEARN_HOME` always points at a throwaway repo in
-tests; escalation discipline; repo conventions). Surface-specific
+tests; escalation discipline; repo conventions). *(Amended 2026-07-17
+— 13 §7.3 D1/D3: the build happens in the **product repo**
+(`~/repos/self-learn`), which has **no autosync** — rule 1's worktree
+discipline is re-motivated, not dropped: worktrees now exist for
+**parallel-agent isolation** (§8), not autosync racing; a solo
+serial build may work directly on a feature branch. Merges land by
+**manual push** — nothing publishes automatically.)* Surface-specific
 additions:
 
 7. **Tests never talk to the network or a real model.** UI logic is
@@ -53,22 +59,23 @@ additions:
 
 | Contract | Pin | Cites |
 |---|---|---|
-| Code layout | UI package: `plugins/self-learn/ui/` — a uv project (`pyproject.toml`, `src/self_learn_ui/…`, `templates/`, `static/`, `tests/`). Entry point: `plugins/self-learn/scripts/self-learn-ui` (shebang'd, extensionless): `#!/usr/bin/env bash` + `exec uv run --project "$(dirname "$(readlink -f "$0")")/../ui" self-learn-ui "$@"` — **`readlink -f` is load-bearing** (carried, P3-1): install.sh deploys scripts as `~/bin` *symlinks*, so bare `$(dirname "$0")` resolves beside the symlink, not the repo (`home-net-capture` precedent; same rule for sibling-path references in `self-learn-ui-open`/`self-learn-notify`). Subcommands: `self-learn-ui serve` (foreground server — what systemd runs) · `self-learn-ui --help` | 09 §3, §6; repo CLAUDE.md |
-| Service | `plugins/self-learn/systemd/self-learn-ui.service` (`ExecStart=%h/bin/self-learn-ui serve`, `Restart=on-failure`), installed/enabled by install.sh **via the same mechanism as the existing watcher unit** (exact install-side wiring verified at U10 against install.sh as it then stands — a repo-convention consume, not a new invention). Foreground `self-learn-ui serve` is the documented no-systemd fallback | 09 §3 |
+| Code layout | UI package: `plugins/self-learn/ui/` — **in the product repo `~/repos/self-learn` (13 §7.3; amended 2026-07-17 — every `plugins/self-learn/…` path in this document resolves there, never in claude-skills)** — a uv project (`pyproject.toml`, `src/self_learn_ui/…`, `templates/`, `static/`, `tests/`). Entry point: `plugins/self-learn/scripts/self-learn-ui` (shebang'd, extensionless): `#!/usr/bin/env bash` + `exec uv run --project "$(dirname "$(readlink -f "$0")")/../ui" self-learn-ui "$@"` — **`readlink -f` is load-bearing** (carried, P3-1): install.sh deploys scripts as `~/bin` *symlinks*, so bare `$(dirname "$0")` resolves beside the symlink, not the repo (`home-net-capture` precedent; same rule for sibling-path references in `self-learn-ui-open`/`self-learn-notify`). Subcommands: `self-learn-ui serve` (foreground server — what systemd runs) · `self-learn-ui --help` | 09 §3, §6, §11 Y-1; repo CLAUDE.md |
+| Service | `systemd/self-learn-ui.service` beside the miner units in the product repo (`ExecStart=%h/bin/self-learn-ui serve`, `Restart=on-failure`), installed by the **product repo's install.sh via explicit link lines mirroring its miner-units block** *(amended 2026-07-17 — the product install.sh links surfaces explicitly, no glob; "same mechanism as the existing watcher unit" referred to claude-skills' installer and is dead)*; enable stays a documented manual line (`systemctl --user enable --now self-learn-ui.service` — same posture as the miner timer). The three companion scripts likewise get explicit link lines to `~/bin` at U10. Foreground `self-learn-ui serve` is the documented no-systemd fallback | 09 §3, §11 Y-1 |
 | Network & security | Bind `127.0.0.1` only, port `SELF_LEARN_UI_PORT` default **7357**. Middleware (all in one module, ~30 lines, tested in T-A): reject unless `Host` ∈ {`127.0.0.1:<port>`, `localhost:<port>`}; bearer token minted per service start (`secrets.token_urlsafe`), written 0600 to `$XDG_RUNTIME_DIR/self-learn/ui-token`; `GET /?token=…` (any path) sets it as a `SameSite=Strict; HttpOnly` cookie and 303-redirects to the clean URL; every mutating route is POST-only and requires valid cookie **and** the `HX-Request` header (cross-site forms cannot set custom headers); failure → 403 page naming `self-learn-ui-open`. **Render-path pins (W-1, 2026-07-12)**: Jinja environment constructed with autoescape ON (never disabled per-block); ALL markdown rendering (records, rationale free-text, pane blocks — pages and SSE frames alike) through markdown-it-py constructed with **`html=False`** (never the default preset — it passes raw HTML, empirically confirmed); trusted raw-HTML injections limited to Pygments output + own templates; every response carries `Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'`; CSP consequences pinned (W-9): Pygments in **class mode + served stylesheet** (never `noclasses` inline styles), no inline `style=`/`<style>` anywhere, `font-src 'self'` added iff a font is bundled | 09 §3 |
 | Companion scripts | `plugins/self-learn/scripts/self-learn-ui-open` (launcher, **the only WM/browser-aware file**: ensure service via `systemctl --user start self-learn-ui.service` (skip if systemctl absent); read token; **window-presence detection pinned (X-3, empirically grounded 2026-07-13: `hyprctl dispatch focuswindow` on an absent window prints "No such window found" and exits 0 — NEVER branch on its exit code)**: query `hyprctl clients -j` for the class first; if present, dispatch focuswindow; else launch app window — browser resolved in order `$SELF_LEARN_UI_BROWSER` → `chromium` → `google-chrome-stable` → fallback `xdg-open <url>`; app-window launch pins `--app=<tokened-url> --class=self-learn-ui` and degrades to `xdg-open` when unsupported) · `plugins/self-learn/scripts/self-learn-notify` — **argv pinned, carried verbatim (P3-6)**: `self-learn-notify --line "<rendered human string>" --ids <csv-of-record-ids>`; `notify-send -A open --wait`; on `open` → `self-learn-ui-open --record <first-id>`; no daemon — one process per notification | 09 §3; 08 §7.1 |
 | Dependencies | `fastapi` + `uvicorn` + `jinja2` + `pygments` + `markdown-it-py` + `watchfiles` + `PyYAML` + **`claude-agent-sdk>=0.2.116,<0.3` (minor-pinned; probes ran on 0.2.116)**; dev/test: `pytest`, `pytest-asyncio`, `httpx`. **Vendored static, committed**: `static/htmx-2.0.9.min.js` (exact version + recorded sha256 in the file header comment; the htmx 4.x line is ignored) · `static/app.js` (authored, ~40-line keydown handler + EventSource client) · `static/style.css`. No node, no bundler, no CDN. Python ≥3.11 | 09 §6 |
-| Keymap (single source) | `keymap.py` table: `j/k`+arrows move · `Enter/l` drill · `Esc/h` up (Esc in pane = interrupt first) · `a` route · `d` reject · `f` defer · `g` graduate · `i` iterate · `o` cycle destination · `n` note · `r` retry pane · `q` (pane focused) close split — ends the session (09 §2.4; X-2) · `?` help overlay. Armed action: resolution key arms, `Enter` executes, any other key disarms. Keys inert while focus is in a text input. **No Ctrl/Alt chords** (browser owns them — 09 §1). Rendered from the one table into the footer partial, the help overlay, AND the JSON blob `app.js` consumes — never duplicated. Install/docs note: Vimium-class extensions need a `localhost:7357` exclusion (U10 docs item) | 09 §1 |
+| Keymap (single source) | `keymap.py` table: `j/k`+arrows move · `Enter/l` drill · `Esc/h` up (Esc in pane = interrupt first) · `a` route · `d` reject · `f` defer · `g` graduate · `i` iterate · `o` cycle destination · `n` note · `t` tolerate / `c` confirm (on an "is it holding?" row — arm `confirm-recurrence …` with/without `--tolerate`; 09 §11 Y-4; added 2026-07-17) · `r` retry pane · `q` (pane focused) close split — ends the session (09 §2.4; X-2) · `?` help overlay. Armed action: resolution key arms, `Enter` executes, any other key disarms. Keys inert while focus is in a text input. **No Ctrl/Alt chords** (browser owns them — 09 §1). Rendered from the one table into the footer partial, the help overlay, AND the JSON blob `app.js` consumes — never duplicated. Install/docs note: Vimium-class extensions need a `localhost:7357` exclusion (U10 docs item) | 09 §1 |
 | SSE protocol | `GET /events` (EventSource in app.js; token-cookie-gated like every route): JSON envelopes, one `type` field each: `{"type":"refresh","scope":"front"\|"bucket:<b>"\|"record:<id>"}` (client re-requests its current partial if in scope) · `{"type":"applying","verb":…,"id":…,"state":"start"\|"done"\|"error"}` · `{"type":"bulk_progress","done":n,"total":m,"failed_id":null\|id}` · `{"type":"banner","text":…}` · pane events namespaced `{"type":"pane_delta","text":…}` / `{"type":"pane_block","html":…}` / `{"type":"pane_tool","name":…,"target":…}` / `{"type":"pane_result","status":…,"cost":…,"turns":…}`. Unknown types ignored client-side. Reconnect: EventSource auto-retry + the 10 s poll fallback (09 §5) | 09 §3, §4 |
-| Pane `sdk` engine construction | **Empirically pinned (probes memo)**: `ClaudeSDKClient` (streaming mode — `can_use_tool` refuses to run under string-prompt `query()`, and the finite-generator `query()` pattern closes the control channel: footguns A/C) with `ClaudeAgentOptions`: `include_partial_messages=True` (chunk-level deltas ~5 Hz — probe 1) · `setting_sources=[]` **explicitly** (unset loads the full user environment — probe 3; never rely on the documented default) · `system_prompt` = compiled doctrine string (09 §4.2) · **`allowed_tools=[]`** (a listed tool is auto-approved before the callback — footgun B) · `disallowed_tools=["Bash","Task","WebSearch","WebFetch"]` (structural denies as belt; the callback is the braces) · `can_use_tool` = the charter callback (canonicalize paths via `realpath` before matching; **read scope per 09 §4.3's W-3 pin**: reads inside `cwd` auto-approve and never reach the callback — accepted; the callback allows Read/Grep/Glob under resolved `SELF_LEARN_HOME` and denies-with-reason every read outside the repo; Edit/Write per 09 §4.3's exact-file rules; deny-with-reason otherwise) · `cwd` = bucket root · `model=$SELF_LEARN_PANE_MODEL` · `fallback_model`, `max_turns`, `max_budget_usd` — **fields empirically confirmed on 0.2.116** (phase-A introspection; re-verify at U5) · session-persistence-off + strict-MCP: exact option names resolved at U5 start (verify-at-build ledger). Wrapper-side cap enforcement exists only as the contingency for a future SDK dropping a field (09 §4.2/W-4). Tolerate unknown message types mid-stream (`RateLimitEvent` observed on Max OAuth). Interrupt: SDK interrupt call, then client close at +2 s, kill at +5 s | 09 §4.1–4.3 |
+| Pane `sdk` engine construction | **Empirically pinned (probes memo)**: `ClaudeSDKClient` (streaming mode — `can_use_tool` refuses to run under string-prompt `query()`, and the finite-generator `query()` pattern closes the control channel: footguns A/C) with `ClaudeAgentOptions`: `include_partial_messages=True` (chunk-level deltas ~5 Hz — probe 1) · `setting_sources=[]` **explicitly** (unset loads the full user environment — probe 3; never rely on the documented default) · `system_prompt` = compiled doctrine string (09 §4.2) · **`allowed_tools=[]`** (a listed tool is auto-approved before the callback — footgun B) · `disallowed_tools=["Bash","Task","WebSearch","WebFetch"]` (structural denies as belt; the callback is the braces) · `can_use_tool` = the charter callback (canonicalize paths via `realpath` before matching; **read scope per 09 §11 Y-2's three roots** *(amended 2026-07-17 — gate-zero blocker: this row previously pinned the pre-13 single-root scope, which post-13 denies every canon and doctrine read)*: reads inside `cwd` auto-approve and never reach the callback — accepted; the callback allows Read/Grep/Glob under (1) resolved `SELF_LEARN_HOME`, (2) the registered hosts' canon surfaces via the CLI-owned `canon_read_roots()` helper (U0; imported, never a second list — same import-vs-shell decision as the cache-path function, resolved once at U1 for both; if shell is picked, pin a `self-learn paths --json` read surface at U0 exposing both — never parse human output), (3) the plugin references dir resolved from the ui package's own location; denies-with-reason every read outside them; Edit/Write per 09 §4.3's exact-file rules; deny-with-reason otherwise) · `cwd` = bucket root · `model=$SELF_LEARN_PANE_MODEL` · `fallback_model`, `max_turns`, `max_budget_usd` — **fields empirically confirmed on 0.2.116** (phase-A introspection; re-verify at U5) · session-persistence-off + strict-MCP: exact option names resolved at U5 start (verify-at-build ledger). Wrapper-side cap enforcement exists only as the contingency for a future SDK dropping a field (09 §4.2/W-4). Tolerate unknown message types mid-stream (`RateLimitEvent` observed on Max OAuth). Interrupt: SDK interrupt call, then client close at +2 s, kill at +5 s | 09 §4.1–4.3 |
 | Engine event protocol (internal seam) | `PaneEngine.start(ctx) → AsyncIterator[PaneEvent]`; `PaneEvent = block_start(kind) \| text_delta(str) \| tool_use(name, target) \| file_changed(path) \| result(status, cost_usd\|None, error\|None)`; `send(str)`, `interrupt()`, `close()`. The UI imports only this module; SDK message parsing lives entirely inside the sdk engine. The specced-not-built `cli` engine (09 §4.1) satisfies the same seam; its invocation pin set is the TUI revision's §1 row (git history `1ce408c`) | 09 §4.1 |
 | Doctrine compile | `<cache>/pane-doctrine.md` = concat of `references/routing-doctrine.md` + `references/pane-charter.md` (both tracked in the plugin; charter authored in U5 from 09 §4.3's charter text). Recompiled when either source mtime > compiled mtime. Byte-stable between recompiles; read into the `system_prompt` string at session start | 09 §4.2 |
-| Server transient state | `~/.cache/claude-skills/self-learn/ui.log` (capped ~1 MB, same truncation as `worker.log`) · `<cache>/pane-doctrine.md` · `$XDG_RUNTIME_DIR/self-learn/ui-token`. Nothing else; no config file | 02 §3, 09 §3/§4.4 |
+| Server transient state | `<cache>` = the doc-13 home-namespaced dir `${XDG_CACHE_HOME:-~/.cache}/self-learn/home-<sha256(resolved SELF_LEARN_HOME)[:8]>/` — **imported from the CLI's existing derivation function, never reimplemented** (09 §11 Y-3; P2-4 one-computation rule; the ui package declares the cli package as a path dependency for this one import, or shells `self-learn` for the path — resolved at U1, recorded in the ledger below). Contents: `ui.log` (capped ~1 MB, same truncation as `worker.log`) · `pane-doctrine.md` · the token-file fallback (X-8/X-12). Primary token home stays `$XDG_RUNTIME_DIR/self-learn/ui-token`. Nothing else; no config file | 02 §3, 09 §3/§4.4/§11 Y-3 |
 | Env vars (complete) | `SELF_LEARN_HOME` (08) · `SELF_LEARN_UI_PORT` (default `7357`) · `SELF_LEARN_UI_BROWSER` (launcher only) · `SELF_LEARN_PANE_MODEL` (default `claude-sonnet-5`) · `SELF_LEARN_PANE_BUDGET_USD` (default `1.00`) · `SELF_LEARN_PANE_MAX_TURNS` (default `15`) · `SELF_LEARN_PANE_ENGINE` (`sdk`; `cli` → exit with "engine not built — 09 §4.1") | 09 §4.4 |
 | Refresh mechanics | `watchfiles` watcher over every bucket's `pending/` + `proposals/` + `events.jsonl`, 300 ms debounce; SSE `refresh` push; 10 s client poll fallback; forced push after every verb return. Bucket set re-discovered on Front-page request (a new skill's first record must appear without restart) | 09 §3 |
 | Verb runner | One subprocess at a time server-wide (asyncio queue — multiple tabs share it); resolution POSTs rejected with "applying…" state while running; interrupt-first check **at verb dispatch** (09 §3, P1-4); bulk loop = sequential `graduate <id> --no-push` + terminal `self-learn push` on exit **success or abort** (08 §1 as amended); per-item progress via SSE; halt-on-first-failure with failing id shown | 09 §2.2, §3 |
 | Rendering | Diffs: Pygments `DiffLexer`; proposal YAML: Pygments YAML lexer; markdown (records, transcripts' finished blocks): `markdown-it-py` server-side; live pane deltas append as plain text, blocks re-render server-side at block boundaries (09 §4.1 — no client-side markdown dependency). The preview-honesty caption is a fixed string under every diff (02 §4's wording) | 09 §2.3, §4.1 |
-| Screen-state derivation | Pure functions: `(list --json output, status --json output, merge-yaml set, sentinel mtime) → screen model` — templates render models; no route handler reads ledger files directly; all reads go through one `ledger.py` module (testable headless, 09 §7) | 09 §3, §7 |
+| Screen-state derivation | Pure functions: `(list --json output, status --json output, report --json output, mine status --json output, merge-yaml set, sentinel mtime) → screen model` — templates render models; no route handler reads ledger files directly; all reads go through one `ledger.py` module (testable headless, 09 §7) | 09 §3, §7, §11 |
+| CLI substrate consumed (new pieces built at U0) | The 08 §1 dated edit of 2026-07-17 (the G-3 surface substrate block), scope corrected after gate zero against the live CLI. **New at U0:** `list --json` items gain `bucket` (display name: skill name \| project slug \| `user`), `host_registered` (bool, `hosts.yaml`-derived), `source` (02's provenance enum verbatim); `report --json` gains `recurrence_suspects` rows `{id, nonce, seen_at}` (the M2 deterministic suspect computation **exposed, never reimplemented**); the CLI-owned `canon_read_roots()` helper + `host add` consent line (09 §11 Y-2); optional-if-cheap `status --json .sections_over_cap` (02 §4 cap check → Front graduation-opener banner; decided at U0 by cost, dropped loudly if skipped). **Existing, merely consumed** (first draft mis-listed them as new — gate-zero finding): `mine status --json` (shipped M2.5; `{last_run, stale, runs: […]}` — journal file remains truth, staleness derivation CLI-owned) and `report --json .open_followups` (rows `{id, bucket, action, unblocks_on, note, routed_at}`). The server consumes these fields ONLY — a missing field remains a dated 08 §1 edit, never server-side derivation (09 §2.1 rule, unchanged) | 08 §1 (2026-07-17 edit); 09 §11 Y-2/Y-4/Y-5/Y-6/Y-11 |
 
 **Verify-at-build ledger** (each gets a scripted check at its task's
 start; failures route per §5): exact `ClaudeAgentOptions` name for —
@@ -115,17 +122,34 @@ predicate).
   response (W-1) · no `style=` attribute in the rendered diff
   partial (X-9 — a `noclasses` Pygments regression ships
   safe-but-unstyled under the CSP; this assertion catches it in
-  CI)**. *Predicate:* every 09 §2/§3 behavior named in this
-  sentence has a test that fails when its logic is inverted.
+  CI)**. *(Extended 2026-07-17 for the 09 §11 set:)* an
+  "is it holding?" row arming `confirm-recurrence <id> --event
+  <nonce> --tolerate` with argv asserted (Y-4) · post-route
+  contradicts-edge partial arming `link contradicts <id> <target>`
+  per accepted edge (Y-8) · a hook-destination Detail rendering the
+  full stored script + replay examples with the M3 caption (Y-7) ·
+  an unregistered-host record rendering the notice + copyable
+  `host add` command while arming stays live (Y-11) · the miner
+  block rendering journal rows with force-run as its ONLY action
+  (Y-5) · `/report` rendering counted fields verbatim (Y-12) · a
+  row's leading text is never a raw `lrn-…` id (Y-9, asserted on a
+  proposal-less AND a proposal-bearing record) · every badge in the
+  rendered partials carries a text label (Y-10 — assert no
+  badge-classed element is empty of text). *Predicate:* every 09
+  §2/§3/§11 behavior named in this sentence has a test that fails
+  when its logic is inverted.
 - **T-B · Pane permission live refusal** (live, logged): a real
   `sdk`-engine session over a sacrificial record in a throwaway
   `SELF_LEARN_HOME`, instructed verbatim to (1) run `git log` via
   Bash, (2) write a file outside its allowlist, (3) read a file
   outside the repo (e.g. `~/.zshrc` — the W-3 read boundary), (4)
-  edit its own record — expect refuse/refuse/refuse/succeed, with (1)
-  blocked by `disallowed_tools` and (2)/(3) by the callback
+  edit its own record, (5 — added at the delta review, the narrowed
+  scope's signature behavior) read a NON-canon file inside a
+  registered host repo (a source file outside every canon surface) —
+  expect refuse/refuse/refuse/succeed/refuse, with (1)
+  blocked by `disallowed_tools` and (2)/(3)/(5) by the callback
   (`ResultMessage.permission_denials` is the evidence — probes memo).
-  *Predicate:* 4/4; any failure of (1)–(3) triggers the 09 §4.3
+  *Predicate:* 5/5; any failure of (1)–(3)/(5) triggers the 09 §4.3
   ladder and re-trial before U6 proceeds.
 - **T-C · End-to-end adjudication** (live, logged): seeded record +
   valid proposal in a throwaway repo with a bare remote → service up →
@@ -160,18 +184,38 @@ demonstrated (test or logged manual check).
 Each task = tests + code + DoD, same contract as 08 §3. Dependencies
 in brackets.
 
+- **U0 · CLI substrate** [] *(added 2026-07-17 — 09 §11's substrate
+  edits; lives entirely in `plugins/self-learn/cli/`, no ui-package
+  dependency; scope corrected after gate zero against the live
+  CLI)*: the genuinely new 08 §1 fields — `list --json`
+  `bucket`/`host_registered`/`source`; `report --json`
+  `recurrence_suspects`; the CLI-owned `canon_read_roots()` helper
+  (09 §11 Y-2) + the `host add` consent line; the optional
+  `sections_over_cap` call (build or drop loudly). NOT built here
+  (already exist, merely consumed): `mine status --json`,
+  `report --json .open_followups`. Tests in the cli suite per its
+  own conventions. *DoD:* new fields present on constructed ledgers
+  incl. a foreign (unregistered) bucket and a routed record with a
+  planted suspect; `canon_read_roots()` returns exactly the canon
+  surfaces on a two-host fixture; cli suite green; the 08 §1 dated
+  edit (landed with the 2026-07-17 amendment pass) verified accurate
+  against the built fields — any mismatch is a finding.
 - **U1 · Scaffold** []: uv project, entry wrapper (+`serve`
   subcommand), vendored htmx (hash recorded) + `app.js` skeleton +
-  base template/CSS, env parsing, capped logging, keymap module, CI
-  wiring (pytest + pytest-asyncio + httpx). *DoD:*
-  `self-learn-ui --help` runs from a clean clone via the wrapper;
-  lint+test skeleton green.
-- **U2 · Ledger model** [U1]: `ledger.py` — CLI `--json` invocations
-  (list incl. `--include-deferred`, status), record/proposal/merge
-  YAML + diff readers, screen-model derivation (pure), watcher +
-  debounce + poll + forced refresh, bucket re-discovery. *Tests:*
-  T-A's model half. *DoD:* screen models correct on all constructed
-  ledgers.
+  base template/CSS (incl. the Y-10 `prefers-color-scheme` variable
+  block), env parsing, capped logging (Y-3 cache dir — resolve the
+  import-vs-shell question for the CLI's cache-path function here,
+  record in the ledger), keymap module, CI wiring (pytest +
+  pytest-asyncio + httpx). *DoD:* `self-learn-ui --help` runs from a
+  clean clone via the wrapper; lint+test skeleton green.
+- **U2 · Ledger model** [U0, U1]: `ledger.py` — CLI `--json`
+  invocations (list incl. `--include-deferred`, status, report,
+  mine status), record/proposal/merge YAML + diff readers,
+  screen-model derivation (pure — incl. the Y-4 suspect rows, Y-5
+  miner block, Y-6 follow-ups, Y-11 unregistered flag, Y-12 report
+  model), watcher + debounce + poll + forced refresh, bucket
+  re-discovery. *Tests:* T-A's model half. *DoD:* screen models
+  correct on all constructed ledgers.
 - **U3 · Routes & templates** [U2]: Front/Bucket/Detail routes +
   partials, status strip, action bar (arm/confirm/disarm as POSTs),
   note input, help overlay, banners ("resolved elsewhere",
@@ -196,7 +240,9 @@ in brackets.
   (happy path, error result, mid-stream kill, malformed line →
   skip+log, unknown event type → skip, `interrupt()` no-op on an
   ended session); callback unit tests (path canonicalization, id
-  siblings only). *DoD:* events replay byte-exact; live smoke
+  siblings only, and the Y-2 three-root read scope: ledger-tree
+  allow, canon-surface allow via a faked `canon_read_roots()`,
+  non-canon host file DENIED, outside-everything denied-with-reason). *DoD:* events replay byte-exact; live smoke
   deferred to T-B/T-E.
 - **U6 · Iterate split** [U3, U5]: split layout, SSE transcript
   (delta append + block re-render), input line, session lifecycle
@@ -225,9 +271,13 @@ in brackets.
   fallback when no `text_delta`, SSE reconnect strip, 403 page,
   no-proposal Detail, stale badge, corrupt events line,
   worker-overdue strip, plain-tab fallback).
-- **U10 · Deploy + docs** [U1–U9]: install.sh picks up the three
-  scripts via the existing glob + installs/enables the service unit
-  (verify symlinks + no dangling — repo CLAUDE.md deploy-sweep rule);
+- **U10 · Deploy + docs** [U1–U9]: the product repo's install.sh
+  gains explicit link lines for the three scripts and the ui service
+  unit, mirroring its miner-units block — it has no glob (13 §7.3;
+  corrected 2026-07-17, gate-zero finding); enable stays a
+  documented manual line, actually run + logged at U11 acceptance
+  (T-C/T-D need the live service). Verify symlinks + no dangling —
+  deploy-sweep rule;
   SKILL.md + README sections (launch, keys, env vars, engine note,
   browser notes incl. the Vimium localhost exclusion, and the
   **Hyprland window-rule snippet for the app-window class as a
@@ -241,12 +291,13 @@ in brackets.
   partial swap in a real browser via Playwright/claude-in-chrome,
   logged in `ui-trials.md`** — CI stays httpx-level; then §6.
 
-Parallelism: U5 alongside U2–U4; U7/U8 alongside U5/U6. Polish
-backlog (explicitly deferred, not silently dropped): `proposal
+Parallelism: superseded 2026-07-17 by **§8 — the parallel execution
+plan** (tracks, file-ownership partition, join points, blockers).
+Polish backlog (explicitly deferred, not silently dropped): `proposal
 validate` inside the auto-interrupt sequence (carried from the TUI
 revision's backlog); pagination/virtual scrolling if a bucket ever
-exceeds ~500 rows; dark/light theme via `prefers-color-scheme`
-(styling is cheap here — but it is polish, not scope).
+exceeds ~500 rows. *(Dark/light theme left this backlog 2026-07-17 —
+promoted into U1/U3 scope by 09 §11 Y-10.)*
 
 ## 4. Judgment calls that stay routed
 
@@ -260,7 +311,8 @@ exceeds ~500 rows; dark/light theme via `prefers-color-scheme`
 | Building the `cli` engine (ladder rung 4, 09 §4.1) | Human confirms the trigger fired |
 | Binding beyond 127.0.0.1, weakening any security middleware check | Human (06-horizon Stage-2 territory, never a build-time convenience) |
 | A keybinding conflict with browser-reserved keys surfacing in practice | Propose remap to human; keymap is UX surface |
-| G-3 trigger not fired but build requested | Human (gate discipline) |
+| G-3 trigger not fired but build requested | Human (gate discipline) *(trigger recorded as fired: M2 shipped + worker proven 2026-07-15; M3 complete + v1.1 tagged 2026-07-17 — see appendix)* |
+| Arming `host add` from the surface (a canon-target decision) | Human — deliberately absent in v1 (09 §11 Y-11); revisit only on explicit user ask |
 | A 09↔corpus or 09↔10 conflict discovered mid-build | Stop; finding; human (authority rule, header) |
 
 ## 5. Eventuality playbooks
@@ -290,8 +342,10 @@ exceeds ~500 rows; dark/light theme via `prefers-color-scheme`
   `self-learn-ui serve`; the launcher skips `systemctl` when absent
   (§1). Notifications/WM focus degrade per 09 §5.
 - **`$XDG_RUNTIME_DIR` unset** (headless/SSH — X-8): the token file
-  falls back to `~/.cache/claude-skills/self-learn/ui-token` (0600,
-  XDG_CACHE_HOME-resolved) with a one-line logged notice.
+  falls back to `<cache>/ui-token` — the home-namespaced cache dir of
+  §1's transient-state row (0600) — with a one-line logged notice.
+  *(Path corrected 2026-07-17; the pre-13 literal this playbook
+  carried contradicted the amended §1 row — gate-zero finding.)*
   **Token-path resolution is ONE shared function/rule — the launcher
   applies the same fallback when it reads the token** (X-12;
   otherwise an unset-runtime-dir launcher would open an un-tokened
@@ -326,9 +380,17 @@ exceeds ~500 rows; dark/light theme via `prefers-color-scheme`
 2. Deploy sweep: `install.sh` rerun; `~/bin/self-learn-ui`,
    `~/bin/self-learn-ui-open`, `~/bin/self-learn-notify` symlinks
    live and non-dangling (repo CLAUDE.md rule); the service unit
-   installed + enabled; fresh-shell launch works **through the
-   symlink** (the P3-1 failure mode is exactly here).
-3. Worktree → master merge per repo convention; autosync publishes.
+   linked + `daemon-reload` run, and the documented manual enable
+   line executed + logged as part of U11 acceptance *(aligned
+   2026-07-17 with §1's Service row — install.sh links, the human
+   enables; gate-zero finding)*; fresh-shell launch works **through
+   the symlink** (the P3-1 failure mode is exactly here).
+3. Feature branch → master merge; **manual push** (13 §7.3 D3 — the
+   product repo has no autosync; nothing publishes until pushed).
+   *(Amended 2026-07-17; "autosync publishes" was the pre-extraction
+   posture.)* Before the merge: one independent adversarial review
+   of the assembled branch (repo standing discipline — never
+   self-certify), findings folded, delta re-checked.
 4. 03's G-3 row gains a dated "shipped" note; README revision-log
    entry; project memory update.
 5. Open questions harvested into the change-control appendix (§7),
@@ -341,3 +403,138 @@ co-owner pointer (08 for shared pins, 09 for design); new build-time
 gaps get dated **Build findings** appendix entries (finding →
 disposition) so the next agent inherits answers, not archaeology.
 This plan is complete when §6 exits.
+
+## 8. Parallel execution plan (added 2026-07-17)
+
+*The DAG in §3 was written for a serial builder. This section maps it
+onto concurrent agents: which units are genuinely isolated, where the
+hard serialization points are, and the mechanics that keep parallel
+work conflict-free. Nothing here changes any task's content or DoD —
+it only schedules them.*
+
+**File-ownership partition** (the thing that makes parallelism safe —
+near-zero path overlap between concurrent tracks; `pyproject.toml`
+and CI config are owned by U1 and afterwards change only through the
+orchestrator):
+
+| Track | Tasks | Owns (exclusively while active) |
+|---|---|---|
+| A · CLI substrate | U0 | `plugins/self-learn/cli/**` + the 08 §1 dated edit |
+| B · Scaffold | U1 | `plugins/self-learn/ui/**` (creates it), `scripts/self-learn-ui` |
+| C · Core server | U2 → U3 → U4, **plus U7's server-side half** (token minting + middleware wiring — it lives in C's files) | `ui/src/self_learn_ui/{ledger,models,routes,middleware,runner}*.py`, `templates/**`, `static/app.js` *(U3 authors its EventSource client + keydown handler)*, `static/style.css` |
+| D · Pane | U5 | `ui/src/self_learn_ui/engine/**`, `skills/self-learn/references/pane-charter.md`, doctrine compiler module |
+| E · Companion scripts | U7's script+unit halves ONLY *(clarified after gate zero: U7's server-side token/middleware half belongs to track C inside U3 — §3's U7 [U3] bracket refers to the wave-3 integration check, not the script authoring)* | `scripts/self-learn-ui-open`, `scripts/self-learn-notify`, `systemd/self-learn-ui.service`, their shim tests |
+
+**Schedule** (arrows = hard dependency; tracks on the same line run
+concurrently):
+
+1. **Gate zero (serial, before any build agent):** the 09 §11
+   amendment set has passed its independent spec review (appendix
+   entry below) — build agents consume reviewed docs, never a live
+   draft.
+2. **Wave 1 — A ∥ B.** U0 and U1 share no files (different
+   packages). Both are small; wave 1 is short.
+3. **Wave 2 — C ∥ D ∥ E** (all gated on U1; C also on U0). Within C,
+   U2→U3→U4 stay serial: **U3 is the integration hub** (routes +
+   templates + middleware touch everything) and is deliberately
+   single-agent — splitting it buys conflicts, not speed. D depends
+   only on U1 (the `PaneEngine` seam + engine tests are self-
+   contained; FakeEngine consumers in C code against the pinned seam,
+   §1). E is contract-driven end-to-end (argv, token path, URL shape,
+   unit content are all pinned in §1) and testable with shims alone;
+   its one integration check (real token flow) waits for U3, and
+   U7's DoD completes only at that wave-3 check.
+4. **Wave 3 — joins (each starts when ITS OWN brackets are met, not
+   together).** U6 [U3+U5] · U8 [U7 + a small cli-side
+   emission-point change — lands in the cli package, so coordinate
+   with track A's territory: either the same agent or after A merges]
+   · then U9 [U4, U6, U7] — U9 is gated on the other joins, not
+   concurrent with them.
+5. **Wave 4 — serial tail.** U10 (deploy + docs; single agent — it
+   edits install.sh, README, SKILL.md, the appendix) → U11
+   (acceptance: live trials + browser pass + degradation walk).
+6. **Merge gate:** one independent adversarial review of the
+   assembled feature branch (§6.3), findings folded, delta
+   re-checked, then master merge + manual push.
+
+**Hard serialization points (the honest blocker list):**
+
+- **Gate zero** — the spec review. Everything blocks on it; it is the
+  cheapest item on this list to start immediately.
+- **U1** — defines the package layout, seam module, keymap table, and
+  CI that every ui-side agent imports. Keep it minimal so the gate is
+  short; resist scope creep into U1.
+- **U3** — the template/route hub; intra-track serial by design.
+- **U5's verify-at-build ledger** — the SDK field re-verification runs
+  at U5 start (serial within D, minutes not hours).
+- **U11** — irreducibly serial and environment-bound: T-B/T-E burn a
+  real model session, T-C needs the deployed service, T-D needs the
+  live desktop (swaync click → window focus) and is best run with the
+  user present. Nothing downstream exists, so this bounds the tail,
+  not the middle.
+- **Visual-taste iterations** (§4) — human-in-the-loop with
+  screenshots; batch them at U3-done and U6-done rather than
+  per-partial.
+
+**Worktree mechanics** (product repo — no autosync, D3): the
+orchestrator holds the feature branch; each wave-2/3 agent works in
+its **own git worktree on a child branch** off the feature head (one
+branch cannot be checked out twice; per-agent worktrees also isolate
+uv venvs). The orchestrator merges child branches at each wave
+boundary — with the ownership table above, textual conflicts should
+be zero and any conflict is itself a finding (two tracks touched one
+file → the partition was violated → stop and look). Agents never
+push; only the orchestrator pushes, only at the end (§6.3).
+
+**Wall-clock shape:** the critical path is U1 → U2 → U3 → U6 → U9 →
+U10 → U11. Tracks A, D, and E hide entirely inside the C window;
+if anything, over-provisioning agents on C's *tests* (T-A's fixture
+matrix is wide and embarrassingly parallel to write) shortens the
+path more than adding tracks.
+
+## Appendix — Build findings (dated; §7 discipline)
+
+- **2026-07-17 · Pre-build re-ground (this amendment set).** 09
+  gained §11 (Y-1…Y-12) + in-place amendments at §2.1/§2.2/§2.3/
+  §3/§4.2/§4.3/§8; 10 gained the D3 posture note (§0), corrected
+  §1 rows (product-repo layout, product install.sh, home-namespaced
+  cache, substrate-consumption row, `t` key), T-A extensions, U0,
+  U1/U2 DoD touches, §4 rows (trigger fired; no in-surface
+  `host add`), §6.3 manual-push + review gate, §8, and this
+  appendix. Driver: docs 11/12/13 + M3 all landed after this plan
+  froze — the read-scope pin, cache paths, install mechanism, and
+  "autosync publishes" were factually dead, and the surface lacked
+  screens for lifecycle features (not-holding, miner, follow-ups,
+  hook proposals) the review skill already carries. Disposition:
+  landed as dated edits; independent spec review = gate zero (§8)
+  before any build agent runs.
+- **2026-07-17 · Gate zero ran: NOT CLEAN → folded.** Blind
+  adversarial review (fresh agent, reviews/ withheld, verified
+  against live CLI + source): 2 blockers — this plan's §1 pane-engine
+  row still pinned the dead single-root read scope against Y-2
+  (fixed: three-root pin, `canon_read_roots()` import); Y-2's first
+  draft (whole-host-root reads) judged a prospective loosening —
+  `host add` consents to compilers *writing* canon, not a model
+  session *reading* the whole tree, untracked files included
+  (fixed: scope narrowed to canon surfaces via one CLI-owned helper
+  + a consent line in `host add`; recorded as a dated 03 note,
+  user-ratifiable). 6 majors folded: `mine status --json` and
+  `report --json .open_followups` already existed (U0/08 §1 scope
+  corrected — the reviewer proved both against the live CLI, incl.
+  one wrong shape pin `{id, note, opened}` vs the real
+  `{…, routed_at}`); U10/§6.2 vs §1 install/enable contradiction;
+  X-8's dead token-fallback literal; §8-vs-§3 U7 scheduling
+  contradiction + the stranded middleware half; 09's un-swept W-5/
+  W-8/refresh-line autosync assumptions (ledger has no watcher post-
+  13). 7 minors folded (early drafts under-counted as 6): `c` confirm key + retire affordance on Y-4;
+  Y-12's supply_mix/metrics source correction; U9 join wording +
+  app.js ownership; U0 same-commit DoD; 03 trigger note (landed);
+  02:275 stale "no v1 writer" line (landed). Verified-clean list in
+  the reviewer's record. Delta re-check ran on the folds before
+  commit: verdict CLEAN, with one functional residual folded in the
+  same motion — `canon_read_roots()` must include the hook-canon
+  dirs (13 §7.3/D1), else a pane session on a hook-destination
+  record cannot read existing guards; plus T-B gained instruction
+  (5) (non-canon file inside a registered host denied LIVE), the
+  shell-branch fallback got its read surface pinned, and two
+  cosmetic fixes.
