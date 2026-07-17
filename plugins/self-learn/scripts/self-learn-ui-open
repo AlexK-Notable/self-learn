@@ -82,17 +82,32 @@ fi
 # only a LEADING ~ is expanded (bash never auto-expands a ~ that arrives
 # inside a variable's value); a trailing slash is stripped to match
 # Python's str(Path(...)) normalization.
+# Normalize like Python's str(Path(...)): a LEADING ~ expands (bash never
+# auto-expands a ~ inside a variable value), then collapse repeated
+# slashes, drop "." segments, strip a trailing slash — but KEEP ".."
+# (PurePosixPath does not resolve it). This must match byte-for-byte so
+# the launcher and the server hash the SAME string into the same
+# home-<digest> cache path (X-12 shared-resolution rule); the interim
+# review found "//" and "/." homes diverging and this closes that.
 _slug_expand_home() {
-  local raw="$1" expanded
+  local raw="$1" expanded seg out=""
   case "$raw" in
     "~") expanded="$HOME" ;;
     "~/"*) expanded="$HOME/${raw#\~/}" ;;
     *) expanded="$raw" ;;
   esac
-  while [[ "$expanded" != "/" && "$expanded" == */ ]]; do
-    expanded="${expanded%/}"
+  local absolute=0
+  [[ "$expanded" == /* ]] && absolute=1
+  local IFS=/
+  for seg in $expanded; do
+    [[ -z "$seg" || "$seg" == "." ]] && continue
+    out="$out/$seg"
   done
-  printf '%s' "$expanded"
+  if [[ "$absolute" == 1 ]]; then
+    printf '%s' "${out:-/}"
+  else
+    printf '%s' "${out#/}"
+  fi
 }
 
 _slug_ledger_home() {

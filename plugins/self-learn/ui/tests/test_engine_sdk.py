@@ -72,7 +72,7 @@ async def test_happy_path(tmp_path: Path) -> None:
         BlockStart(kind="text"),
         TextDelta(text="Hello "),
         TextDelta(text="world"),
-        Result(status="success", cost_usd=0.001, error=None),
+        Result(status="success", cost_usd=0.001, error=None, turns=1),
     ]
 
 
@@ -190,3 +190,69 @@ async def test_close_is_idempotent() -> None:
     engine = _engine()
     await engine.close()
     await engine.close()  # must not raise on a session that never started
+
+
+# -- production construction path (interim-review BLOCKER regression) -----
+#
+# The wave-1 join reconciled `default_canon_read_roots` to one-arg but the
+# suite injected a zero-arg fake into EVERY engine/charter test, so the
+# production default (SdkPaneEngine built with no canon_read_roots_fn, as
+# build_pane_manager's engine_factory does) was never exercised — it would
+# have raised TypeError on the FIRST real Iterate. These tests build the
+# engine exactly as the factory does and drive _build_options, the method
+# every session start runs, with NO fake injected.
+
+def _real_home(tmp_path: Path) -> Path:
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
+    skills_root = tmp_path / "skillsrepo"
+    (skills_root / "plugins" / "demo" / "skills" / "demo").mkdir(parents=True, exist_ok=True)
+    (home / "hosts.yaml").write_text(f"skills_root: {skills_root}\nprojects: []\n")
+    return home
+
+
+def test_build_options_works_with_production_default_canon_fn(tmp_path: Path) -> None:
+    """SdkPaneEngine constructed the way build_pane_manager's factory does
+    — NO canon_read_roots_fn injected — must build its options (and thus
+    its can_use_tool charter) without raising. This is the exact path the
+    zero-arg-fake mock theater hid."""
+    home = _real_home(tmp_path)
+    bucket = tmp_path / "bucket"
+    bucket.mkdir()
+    engine = SdkPaneEngine(
+        model="claude-sonnet-5",
+        max_turns=15,
+        max_budget_usd=1.0,
+        cli_path=str(FAKE_CLI),
+    )
+    ctx = PaneContext(
+        record_id="abc123",
+        bucket_root=bucket,
+        self_learn_home=home,
+        system_prompt="doctrine",
+        first_message="hi",
+    )
+    options = engine._build_options(ctx)  # the per-session-start call
+    assert options.can_use_tool is not None  # charter built, no TypeError
+
+
+def test_result_carries_turn_count() -> None:
+    """num_turns flows from ResultMessage into Result.turns (interim-review
+    MINOR 4 — the field IS reported by the SDK; it must not render None)."""
+    engine = SdkPaneEngine(
+        model="claude-sonnet-5",
+        max_turns=15,
+        max_budget_usd=1.0,
+        cli_path=str(FAKE_CLI),
+    )
+
+    class _Msg:
+        subtype = "success"
+        total_cost_usd = 0.01
+        is_error = False
+        errors: list[str] = []
+        result = ""
+        num_turns = 4
+
+    mapped = engine._map_result(_Msg())
+    assert mapped.turns == 4

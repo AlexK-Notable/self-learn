@@ -23,8 +23,12 @@ from __future__ import annotations
 
 import argparse
 import sys
+from typing import TYPE_CHECKING
 
 from .env import EngineNotBuiltError, EnvConfig, EnvError, load_env
+
+if TYPE_CHECKING:
+    from fastapi import FastAPI
 
 PROG = "self-learn-ui"
 
@@ -42,7 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _build_server_app(env: EnvConfig) -> tuple[object, str]:
+def _build_server_app(env: EnvConfig) -> tuple["FastAPI", str]:
     """Mint + write the per-start token, build the real ASGI app. Split
     out of :func:`_serve` so a test can call it directly (no uvicorn, no
     blocking) to assert the app/token side without spawning a server —
@@ -74,7 +78,13 @@ def _serve() -> int:
     # Foreground, blocking (09 §3 / 10 §1 Service row) — returns once
     # uvicorn receives a shutdown signal (SIGTERM/SIGINT), exactly what
     # systemd's ExecStart + Restart=on-failure expects to manage.
-    uvicorn.run(app, host="127.0.0.1", port=env.ui_port)
+    # access_log=False is load-bearing (interim-review MAJOR, 2026-07-17):
+    # the deep-link arrives as `GET /?token=<secret>` and uvicorn's access
+    # logger records the full request line BEFORE the 303 strips it — under
+    # the systemd unit that lands in the journal, persisting every minted
+    # token. This localhost single-user service has no operational need for
+    # per-request access logs; the app keeps its own ui.log.
+    uvicorn.run(app, host="127.0.0.1", port=env.ui_port, access_log=False)
     return 0
 
 

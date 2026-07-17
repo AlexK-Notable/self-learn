@@ -67,7 +67,7 @@ from claude_agent_sdk import (
 
 from .. import uilog
 from .base import BlockStart, FileChanged, PaneContext, PaneEngine, PaneEvent, Result, TextDelta, ToolUse
-from .charter import build_can_use_tool, default_canon_read_roots
+from .charter import build_can_use_tool
 
 __all__ = ["DEFAULT_FALLBACK_MODEL", "SdkPaneEngine"]
 
@@ -127,7 +127,7 @@ class SdkPaneEngine(PaneEngine):
         max_turns: int,
         max_budget_usd: float,
         cli_path: str | Path | None = None,
-        canon_read_roots_fn: Callable[[], Iterable[Path | str]] = default_canon_read_roots,
+        canon_read_roots_fn: Callable[[], Iterable[Path | str]] | None = None,
         interrupt_grace_secs: float = DEFAULT_INTERRUPT_GRACE_SECS,
         interrupt_kill_secs: float = DEFAULT_INTERRUPT_KILL_SECS,
     ) -> None:
@@ -318,4 +318,10 @@ class SdkPaneEngine(PaneEngine):
                 error = message.result
             else:
                 error = message.subtype
-        return Result(status=message.subtype, cost_usd=message.total_cost_usd, error=error)
+        turns = getattr(message, "num_turns", None)
+        return Result(
+            status=message.subtype,
+            cost_usd=message.total_cost_usd,
+            error=error,
+            turns=turns if isinstance(turns, int) else None,
+        )

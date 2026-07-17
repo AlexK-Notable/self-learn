@@ -78,11 +78,15 @@ class Result:
     (verbatim — 09's cost-honesty rule: never invent or reinterpret it).
     ``cost_usd`` is ``None`` when the engine reports none (subscription
     auth may report zero/absent — render what is reported). ``error`` is
-    ``None`` on a clean result."""
+    ``None`` on a clean result. ``turns`` is the engine-reported turn
+    count (``ResultMessage.num_turns``) — ``None`` only when the engine
+    genuinely reports none; the footer renders it verbatim (09 §4.2's
+    "cost footer … plus turn count", 10 §1 SSE ``turns`` pin)."""
 
     status: str
     cost_usd: float | None
     error: str | None
+    turns: int | None = None
 
 
 #: The sum type both engines emit (10 §1). A plain ``Union`` — not a

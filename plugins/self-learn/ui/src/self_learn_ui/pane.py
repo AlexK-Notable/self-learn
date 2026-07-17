@@ -287,6 +287,7 @@ class _Live:
     current_text: str = ""
     result_status: str | None = None
     result_cost_usd: float | None = None
+    result_turns: int | None = None
     error_message: str | None = None
     cap_hit: bool = False
 
@@ -294,17 +295,12 @@ class _Live:
 @dataclass(frozen=True)
 class PaneSnapshot:
     """A read-only rendering view — ``routes.py``'s ONLY window into pane
-    state (never mutate through it). ``result_turns`` is always ``None``:
-    the engine seam's :class:`~self_learn_ui.engine.base.Result` carries
-    ``status``/``cost_usd``/``error`` only — no turn count field, despite
-    09 §4.2's "cost footer ... plus turn count" and 10 §1's SSE row
-    listing a ``turns`` field on ``pane_result``. That is a real gap
-    between the already-merged engine seam (U5, off-limits to this
-    track) and the spec; rather than reach into engine internals to add
-    it, this field renders structurally absent — consistent with the
-    SAME cost-honesty rule ("render what is reported, never invent a
-    number") extended to turns. Flagged as a build finding, not patched
-    around."""
+    state (never mutate through it). ``result_turns`` is the engine-
+    reported turn count from :class:`~self_learn_ui.engine.base.Result`
+    (``num_turns``), ``None`` only when the engine reports none — the
+    footer renders it verbatim (09 §4.2's "cost footer … plus turn
+    count", 10 §1's SSE ``turns`` pin). The interim-review seam gap
+    (Result once lacked a turn field) was closed 2026-07-17."""
 
     record_id: str
     state: str
@@ -391,7 +387,7 @@ class PaneManager:
             current_html=current_html,
             result_status=live.result_status,
             result_cost_usd=live.result_cost_usd,
-            result_turns=None,  # see PaneSnapshot's docstring — seam gap
+            result_turns=live.result_turns,
             error_message=live.error_message,
             cap_hit=live.cap_hit,
             validate_exit_code=validate[0] if validate else None,
@@ -542,11 +538,17 @@ class PaneManager:
             await self._finalize_current(live)
             live.result_status = event.status
             live.result_cost_usd = event.cost_usd
+            live.result_turns = event.turns
             live.cap_hit = bool(event.error) and _is_cap_hit(event.status)
             live.error_message = event.error
             live.state = STATE_ENDED if event.error else STATE_AWAITING_INPUT
             await self._app_hub.publish(
-                {"type": "pane_result", "status": event.status, "cost": event.cost_usd, "turns": None}
+                {
+                    "type": "pane_result",
+                    "status": event.status,
+                    "cost": event.cost_usd,
+                    "turns": event.turns,
+                }
             )
             if event.error is None:
                 await self._post_session_validate(live.record_id)

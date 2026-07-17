@@ -538,6 +538,34 @@ path more than adding tracks.
   (5) (non-canon file inside a registered host denied LIVE), the
   shell-branch fallback got its read surface pinned, and two
   cosmetic fixes.
+- **2026-07-17 · Interim adversarial review (Opus): NOT CLEAN → all
+  folded.** Fresh independent reviewer, probes executed, reviews/
+  withheld. **1 BLOCKER:** every production Iterate session died at
+  start with `TypeError` — the wave-1 join (`dd01fe1`) reconciled
+  `default_canon_read_roots` to one-arg and fixed `charter.py` + its
+  tests, but missed the SECOND consumer, `engine/sdk.py`, whose
+  default was the now-one-arg fn called zero-arg; every engine/charter
+  test injected a zero-arg fake, so the green suite was mock theater
+  over a dead production path. Orchestrator's own join miss. Fixed:
+  `SdkPaneEngine.canon_read_roots_fn` defaults to `None` (charter
+  builds the home-threaded closure), plus a regression test that
+  drives `_build_options` through the EXACT production construction
+  (no fake injected) — the gap that hid it. **1 MAJOR:** the per-start
+  bearer token leaked into uvicorn's access log (→ journald under the
+  unit) via `GET /?token=…` logged before the 303 strips it — fixed
+  with `access_log=False` (localhost single-user; the app keeps its
+  own ui.log). **3 MINOR:** Pyright had 2 errors (the blocker's
+  type-fingerprint + a loose `-> tuple[object, str]` annotation) — now
+  0; `pane_result.turns` was hardwired `None` on a false honesty
+  justification (`ResultMessage.num_turns` IS reported on 0.2.121) —
+  now plumbed end-to-end with a test; the launcher hash-mirror
+  diverged on `//`/`/.` homes — tightened (above). Verified-clean by
+  the reviewer (executed): the charter permission callback (traversal/
+  symlink/prefix/id-sibling/fail-closed battery), the security
+  middleware (CSP on every response class, Host/token/CSRF), the XSS
+  surface (every `|safe` justified), SSE through the middleware, runner
+  serialization + interrupt-first ordering, and the load-bearing doc
+  pins. Delta re-check owed before merge.
 - **2026-07-17 · Wave-1/2 build findings (orchestrated build, Sonnet
   agents).** (a) U0 found and fixed a LATENT POST-EXTRACTION BUG in
   shipped code: `verbs._hooks_dir_for` still wrote project/user-scope
@@ -565,5 +593,11 @@ path more than adding tracks.
   the mirror byte-identical to the Python formula. Known residual:
   `str(Path(...))` normalizes trailing/double slashes, bash does not
   — a SELF_LEARN_HOME with a trailing slash would diverge. The
-  interim review adjudicates keep-vs-replace (candidate replacement:
-  the U0-pinned `self-learn paths --json` surface).
+  interim review adjudicated KEEP (the `self-learn paths --json`
+  replacement was only a conditional U0 pin and was never built; the
+  import path was chosen instead — REPLACE would reintroduce `uv run`
+  and its network resolution into the launcher + CI). The bash
+  normalization was TIGHTENED 2026-07-17 to collapse `//`, drop `/.`
+  segments, and strip trailing slashes — verified byte-identical to
+  `str(PurePosixPath(...))` across those cases plus `..`-preserved; the
+  X-12 loop this could once have caused is closed.
