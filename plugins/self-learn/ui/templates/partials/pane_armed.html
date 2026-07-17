@@ -1,0 +1,18 @@
+{# 09 §2.4: "iterate-on-another-record while live -> armed prompt to
+   interrupt current first". Confirming POSTs force=true (interrupts the
+   OTHER session, then starts fresh here); Cancel re-renders the idle
+   panel without starting anything. #}
+<div id="pane-region-wrapper" class="pane-region pane-armed">
+  <p class="banner banner-warning">
+    <code>{{ blocked_by }}</code> is being iterated right now. Interrupt it
+    and start iterating this record instead?
+  </p>
+  <form hx-post="/record/{{ record_id }}/pane/start"
+        hx-target="#pane-region-wrapper" hx-swap="outerHTML">
+    <input type="hidden" name="force" value="true">
+    <button type="submit" data-key-action="confirm_interrupt">Interrupt &amp; iterate here</button>
+  </form>
+  <button type="button" data-key-action="cancel_iterate"
+          hx-get="/record/{{ record_id }}/pane/panel"
+          hx-target="#pane-region-wrapper" hx-swap="outerHTML">Cancel</button>
+</div>
