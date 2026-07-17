@@ -17,7 +17,7 @@
  *     arm/disarm state of its own; the DOM (an action-bar's
  *     data-armed="true"/"false") is where that state actually lives.
  *   - Esc is context-sensitive: an armed bar treats it (like any other
- *     key) as "disarm"; otherwise it is "up a level" (same as h).
+ *     key) as "disarm"; otherwise it is "up a level" (same as a).
  *   - `n` focuses the note input rather than dispatching a server call
  *     (09 §1: "an inline single-line input in the action bar").
  */

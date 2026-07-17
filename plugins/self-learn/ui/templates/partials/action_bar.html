@@ -83,11 +83,11 @@
     <button type="button" data-key-action="route"
             hx-post="/record/{{ record_id }}/action/arm" hx-include="#form-{{ dom_id }}"
             hx-vals='{"verb":"route","kind":"detail"}'
-            hx-target="#{{ dom_id }}" hx-swap="outerHTML">Approve (a)</button>
+            hx-target="#{{ dom_id }}" hx-swap="outerHTML">Approve (e)</button>
     <button type="button" data-key-action="reject"
             hx-post="/record/{{ record_id }}/action/arm" hx-include="#form-{{ dom_id }}"
             hx-vals='{"verb":"reject","kind":"detail"}'
-            hx-target="#{{ dom_id }}" hx-swap="outerHTML">Deny (d)</button>
+            hx-target="#{{ dom_id }}" hx-swap="outerHTML">Deny (x)</button>
     <button type="button" data-key-action="defer"
             hx-post="/record/{{ record_id }}/action/arm" hx-include="#form-{{ dom_id }}"
             hx-vals='{"verb":"defer","kind":"detail"}'

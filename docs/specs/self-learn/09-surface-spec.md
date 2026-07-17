@@ -81,7 +81,13 @@ ignoring costs nothing. This section pins the mechanics.
   unaffected and was live-confirmed.)*
 - **Keyboard accelerators, single keys only.** `j`/`k` (and arrows)
   move within a list, `Enter`/`l` drill in, `Esc`/`h` go up a level,
-  action keys per below. Implemented as a small vendored `app.js`
+  action keys per below. *(Amended 2026-07-17, user-directed remap —
+  feedback session: the layout recenters on gaming controls, not vim:
+  `w`/`s` (and `↑`/`↓`) move within a list, `Enter`/`d`/`→` drill in,
+  `Esc`/`a`/`←` go up a level. Navigation taking `a`/`d` evicted the
+  approve/deny bindings — see the action-keys bullet's amendment.
+  Everything else in this bullet — single keys, one-source keymap
+  table, inert-in-inputs, no chords — unchanged.)* Implemented as a small vendored `app.js`
   keydown handler (~40 lines) driven by a keymap table the server
   renders as JSON — one source of truth (10 §1). Keys are inert while
   focus is in a text input (the standard Gmail/Linear rule). **No
@@ -100,7 +106,12 @@ ignoring costs nothing. This section pins the mechanics.
   (route), `d` deny (reject), `i` iterate (agent pane), `f` defer, `g`
   graduate (always available; highlighted when the proposal flags
   already-canon — §2.3), `o` override destination, `n` attach/edit a
-  resolution note.
+  resolution note. *(Amended 2026-07-17, same remap: `e` approve
+  (games' "use/interact" key), `x` deny — `a`/`d` now navigate.
+  `i`/`f`/`g`/`o`/`n` and the holding/pane keys unchanged. Keymap
+  invariant made explicit by the remap: app.js dispatches on first
+  key match with no context filter, so every key is globally unique
+  across the table — pinned by test.)*
 - **Arm-then-confirm, never modal-confirm** (carried): a resolution
   key **arms** the action bar — it shows exactly what will run (verb,
   id, destination, note present/absent) and `Enter` executes (a POST),

@@ -55,13 +55,16 @@ def test_no_ctrl_alt_chords() -> None:
 
 
 def test_pinned_key_bindings() -> None:
+    """Gaming-centric layout (user-directed remap 2026-07-17; dated
+    09 §1/§2 amendment): WASD + arrows navigate; approve/deny moved to
+    e/x because navigation evicted a/d."""
     by_action = {entry.action: entry.keys for entry in KEYMAP}
-    assert by_action["move_down"] == ("j", "ArrowDown")
-    assert by_action["move_up"] == ("k", "ArrowUp")
-    assert by_action["drill_in"] == ("Enter", "l")
-    assert by_action["up"] == ("Escape", "h")
-    assert by_action["route"] == ("a",)
-    assert by_action["reject"] == ("d",)
+    assert by_action["move_down"] == ("s", "ArrowDown")
+    assert by_action["move_up"] == ("w", "ArrowUp")
+    assert by_action["drill_in"] == ("Enter", "d", "ArrowRight")
+    assert by_action["up"] == ("Escape", "a", "ArrowLeft")
+    assert by_action["route"] == ("e",)
+    assert by_action["reject"] == ("x",)
     assert by_action["defer"] == ("f",)
     assert by_action["graduate"] == ("g",)
     assert by_action["iterate"] == ("i",)
@@ -72,6 +75,19 @@ def test_pinned_key_bindings() -> None:
     assert by_action["retry"] == ("r",)
     assert by_action["close_pane"] == ("q",)
     assert by_action["help"] == ("?",)
+
+
+def test_every_key_is_globally_unique() -> None:
+    """app.js dispatches on the FIRST entry whose keys contain the
+    pressed key, with no context filter — a duplicate key across any
+    two entries would silently shadow the later one."""
+    seen: dict[str, str] = {}
+    for entry in KEYMAP:
+        for key in entry.keys:
+            assert key not in seen, (
+                f"key {key!r} bound to both {seen[key]} and {entry.action}"
+            )
+            seen[key] = entry.action
 
 
 def test_holding_row_keys_are_t_and_c() -> None:
