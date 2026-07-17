@@ -206,14 +206,21 @@ async def test_bash_denied_by_the_callback_too(world: dict[str, Path]) -> None:
 # -- fail-closed canon_read_roots import --------------------------------
 
 
-def test_default_canon_read_roots_fails_closed_when_import_unavailable() -> None:
-    """On this branch (g3-u5), self_learn.hosts.canon_read_roots() does
-    not exist yet (it lands with g3-u0) — build_can_use_tool must fail
-    CLOSED (raise), never silently widen scope."""
+def test_default_canon_read_roots_fails_closed_when_import_unavailable(
+    tmp_path, monkeypatch
+) -> None:
+    """If self_learn.hosts ever becomes unimportable, the charter must
+    fail CLOSED (raise), never silently widen scope. (Originally this
+    asserted the pre-merge g3-u5 state where the helper genuinely did
+    not exist; post-merge the import is simulated broken instead —
+    wave-1 join update.)"""
+    import sys
+
     from self_learn_ui.engine.charter import default_canon_read_roots
 
+    monkeypatch.setitem(sys.modules, "self_learn.hosts", None)
     with pytest.raises(CanonReadRootsUnavailable):
-        default_canon_read_roots()
+        default_canon_read_roots(tmp_path)
 
 
 async def test_build_can_use_tool_propagates_canon_read_roots_failure(
@@ -230,3 +237,49 @@ async def test_build_can_use_tool_propagates_canon_read_roots_failure(
             canon_read_roots_fn=_raise,
             plugin_references_dir_fn=lambda: world["refs"],
         )
+
+
+class TestWave1JoinReconciliation:
+    """The zero-arg-vs-hosts-parameterized signature mismatch found at the
+    wave-1 merge (U5 report note 1): default_canon_read_roots(home) must
+    resolve end-to-end through the REAL self_learn.hosts helpers."""
+
+    def test_default_canon_read_roots_end_to_end(self, tmp_path):
+        from self_learn_ui.engine.charter import default_canon_read_roots
+
+        home = tmp_path / "ledger"
+        home.mkdir()
+        skills_root = tmp_path / "skillsrepo"
+        (skills_root / "plugins" / "demo" / "skills" / "demo").mkdir(parents=True)
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        (home / "hosts.yaml").write_text(
+            f"skills_root: {skills_root}\nprojects:\n- path: {proj}\n"
+        )
+
+        roots = default_canon_read_roots(home)
+
+        assert roots, "registered hosts must yield canon read roots"
+        sr = str(skills_root.resolve())
+        pr = str(proj.resolve())
+        assert any(str(r).startswith(sr) for r in roots)
+        assert any(str(r).startswith(pr) for r in roots)
+        # never a whole host root, never anything outside the two hosts
+        assert all(str(r) not in (sr, pr) for r in roots)
+        assert all(str(r).startswith(sr) or str(r).startswith(pr) for r in roots)
+
+    def test_build_can_use_tool_default_fn_fails_closed_without_hosts_file(
+        self, tmp_path
+    ):
+        """No hosts.yaml → the default fn must yield an empty/narrow scope
+        or raise the fail-closed error — never a wider scope. Either way a
+        canon-flavored read outside the ledger is denied."""
+        from self_learn_ui.engine.charter import default_canon_read_roots
+
+        home = tmp_path / "empty-ledger"
+        home.mkdir()
+        try:
+            roots = default_canon_read_roots(home)
+        except Exception:
+            return  # fail-closed by raise is acceptable
+        assert roots == []

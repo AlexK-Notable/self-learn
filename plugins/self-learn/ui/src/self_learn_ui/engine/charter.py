@@ -14,11 +14,9 @@ time (09 §11 Y-2):
 2. each registered host's **canon surfaces only** — enumerated by the
    CLI-owned ``self_learn.hosts.canon_read_roots()`` helper, imported
    through a thin indirection (:func:`default_canon_read_roots`) so
-   tests can inject a fake. The real helper lands on the ``g3-u0``
-   branch, not this one — until that branch merges, the indirection's
-   import fails and the charter **fails closed** (raises
-   :class:`CanonReadRootsUnavailable`), never widening scope to
-   compensate,
+   tests can inject a fake. If the import ever fails the charter
+   **fails closed** (raises :class:`CanonReadRootsUnavailable`), never
+   widening scope to compensate,
 3. the plugin ``references/`` dir, resolved relative to the ui
    package's own installed location (:func:`self_learn_ui.doctrine.
    plugin_references_dir`) — never via ``SELF_LEARN_HOME``.
@@ -87,24 +85,30 @@ class CanonReadRootsUnavailable(RuntimeError):
     """
 
 
-def default_canon_read_roots() -> list[Path]:
+def default_canon_read_roots(self_learn_home: Path) -> list[Path]:
     """Thin indirection over ``self_learn.hosts.canon_read_roots()`` (09
-    §11 Y-2 root 2) — imported lazily, at call time, so a worktree that
-    hasn't merged ``g3-u0`` yet doesn't fail at *module import* time, only
-    when a pane session actually needs the root list. Tests never call
+    §11 Y-2 root 2) — imported lazily, at call time. Tests never call
     this — they inject a fake root-list callable into
     :func:`build_can_use_tool` instead.
+
+    Takes the resolved ledger home because the CLI helper's real
+    signature is ``canon_read_roots(hosts)`` — the host set loads from
+    ``<home>/hosts.yaml`` (wave-1 join reconciliation: U5 assumed
+    zero-arg; U0 built it hosts-parameterized).
     """
     try:
-        from self_learn.hosts import canon_read_roots  # type: ignore[attr-defined]
+        from self_learn.hosts import (  # type: ignore[attr-defined]
+            canon_read_roots,
+            load_hosts,
+        )
     except ImportError as exc:
         raise CanonReadRootsUnavailable(
-            "self_learn.hosts.canon_read_roots() is not available on this "
-            "branch yet (lands with g3-u0) — the pane charter fails CLOSED "
-            "rather than widen its read scope to compensate. Once g3-u0 "
-            "merges, this resolves with no code change here."
+            "self_learn.hosts.canon_read_roots() could not be imported — "
+            "the pane charter fails CLOSED rather than widen its read "
+            "scope to compensate."
         ) from exc
-    return [Path(root).resolve() for root in canon_read_roots()]
+    hosts = load_hosts(self_learn_home)
+    return [Path(root).resolve() for root in canon_read_roots(hosts)]
 
 
 @dataclass(frozen=True)
@@ -169,7 +173,7 @@ def build_can_use_tool(
     self_learn_home: Path,
     bucket_root: Path,
     record_id: str,
-    canon_read_roots_fn: Callable[[], Iterable[Path | str]] = default_canon_read_roots,
+    canon_read_roots_fn: Callable[[], Iterable[Path | str]] | None = None,
     plugin_references_dir_fn: Callable[[], Path] = plugin_references_dir,
 ) -> CanUseTool:
     """Build the ``can_use_tool`` callback for one pane session.
@@ -182,6 +186,10 @@ def build_can_use_tool(
     can't be resolved — a session that can't establish its read scope
     must never start with a silently narrower (or wider) one.
     """
+    if canon_read_roots_fn is None:
+        home = self_learn_home
+        canon_read_roots_fn = lambda: default_canon_read_roots(home)  # noqa: E731
+
     paths = _resolve_charter_paths(
         self_learn_home=self_learn_home,
         bucket_root=bucket_root,
