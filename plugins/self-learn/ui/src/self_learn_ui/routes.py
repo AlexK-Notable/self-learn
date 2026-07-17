@@ -26,7 +26,7 @@ from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from starlette.responses import StreamingResponse
 
-from . import ledger, models, rendering
+from . import ledger, models, pane, rendering
 from .keymap import keymap_as_dicts, keymap_json
 from .models import PARAMETER_FREE_DESTINATIONS
 from .sse import envelope_applying, envelope_banner, envelope_bulk_progress, event_stream
@@ -155,6 +155,16 @@ def _templates(request: Request):
 
 def _home(request: Request) -> Path:
     return request.app.state.env.self_learn_home
+
+
+def _pane_manager(request: Request) -> "pane.PaneManager | None":
+    """``None`` until the orchestrator applies U6's one-line app.py
+    wiring (see ``pane.build_pane_manager``'s docstring) — every pane
+    route degrades to a 503 rather than crashing when it's absent, so
+    the rest of the app (approve/deny/defer/graduate, per 09 §5's
+    invariant: "adjudication never depends on any optional subsystem")
+    keeps working even before that line lands."""
+    return getattr(request.app.state, "pane_manager", None)
 
 
 def _render(request: Request, name: str, ctx: dict[str, Any], status_code: int = 200) -> HTMLResponse:
@@ -305,7 +315,118 @@ def detail_page(request: Request, record_id: str) -> Response:
         host_registered=host_registered,
         host_add_command=host_add_command,
     )
-    return _render(request, "detail.html", {"model": model, "armed": None})
+
+    # 09 §2.4: Detail renders the iterate split whenever a pane session
+    # (live OR just-ended) exists for THIS record; otherwise the plain
+    # Iterate control (plus any persisted validate badge — 09 §4.3).
+    manager = _pane_manager(request)
+    pane_snapshot = manager.snapshot(record_id) if manager is not None else None
+    pane_split = pane_snapshot is not None and pane_snapshot.state != pane.STATE_IDLE
+
+    return _render(
+        request,
+        "detail.html",
+        {
+            "model": model,
+            "armed": None,
+            "record_id": record_id,
+            "pane": pane_snapshot,
+            "pane_split": pane_split,
+        },
+    )
+
+
+# ------------------------------------------------------------------- pane
+#
+# The iterate split's routes (task U6, 09 §2.4/§4.2). Every route swaps
+# the SAME #pane-region-wrapper id via htmx (pane.html / pane_idle.html /
+# pane_armed.html all render that one id), so start/send/interrupt/retry
+# are interchangeable swap targets from the client's point of view. A
+# missing pane_manager (before the orchestrator's one-line app.py wiring
+# lands) degrades every route here to a 503 — never a 500 — per 09 §5's
+# "adjudication never depends on any optional subsystem" invariant.
+
+def _pane_not_wired() -> HTMLResponse:
+    """A fresh response per call (never a shared module-level instance —
+    Response objects are mutated in place by SecurityMiddleware's CSP
+    header, and reusing one across concurrent requests is a footgun even
+    when idempotent in practice)."""
+    return HTMLResponse(
+        "self-learn-ui: pane manager not wired — see pane.build_pane_manager()",
+        status_code=503,
+    )
+
+
+@router.post("/record/{record_id}/pane/start", response_class=HTMLResponse)
+async def pane_start(request: Request, record_id: str, force: bool = Form(False)) -> HTMLResponse:
+    manager = _pane_manager(request)
+    if manager is None:
+        return _pane_not_wired()
+    outcome = await manager.start(record_id, force=force)
+    if outcome == "armed":
+        return _render(
+            request,
+            "partials/pane_armed.html",
+            {"record_id": record_id, "blocked_by": manager.active_record_id},
+        )
+    snapshot = manager.snapshot(record_id)
+    return _render(request, "partials/pane.html", {"record_id": record_id, "pane": snapshot})
+
+
+@router.post("/record/{record_id}/pane/send", response_class=HTMLResponse)
+async def pane_send(request: Request, record_id: str, text: str = Form(...)) -> HTMLResponse:
+    manager = _pane_manager(request)
+    if manager is None:
+        return _pane_not_wired()
+    await manager.send(record_id, text)
+    snapshot = manager.snapshot(record_id)
+    return _render(request, "partials/pane.html", {"record_id": record_id, "pane": snapshot})
+
+
+@router.post("/record/{record_id}/pane/interrupt", response_class=HTMLResponse)
+async def pane_interrupt(request: Request, record_id: str) -> HTMLResponse:
+    manager = _pane_manager(request)
+    if manager is None:
+        return _pane_not_wired()
+    await manager.interrupt(record_id)
+    snapshot = manager.snapshot(record_id)
+    return _render(request, "partials/pane.html", {"record_id": record_id, "pane": snapshot})
+
+
+@router.post("/record/{record_id}/pane/retry", response_class=HTMLResponse)
+async def pane_retry(request: Request, record_id: str) -> HTMLResponse:
+    """``r`` on an errored/cap-hit pane (09 §5): the record's own ENDED
+    session is cleared and a fresh one started — never forces past a
+    DIFFERENT record's live session (that is the armed-prompt's job)."""
+    manager = _pane_manager(request)
+    if manager is None:
+        return _pane_not_wired()
+    await manager.start(record_id)
+    snapshot = manager.snapshot(record_id)
+    return _render(request, "partials/pane.html", {"record_id": record_id, "pane": snapshot})
+
+
+@router.post("/record/{record_id}/pane/close", response_class=HTMLResponse)
+async def pane_close(request: Request, record_id: str) -> Response:
+    """``q`` (09 §2.4): ends the session, discards the transcript, and
+    returns to full (non-split) Detail."""
+    manager = _pane_manager(request)
+    if manager is not None:
+        await manager.close(record_id)
+    resp = Response(status_code=200)
+    resp.headers["HX-Redirect"] = f"/record/{record_id}"
+    return resp
+
+
+@router.get("/record/{record_id}/pane/panel", response_class=HTMLResponse)
+def pane_panel(request: Request, record_id: str) -> HTMLResponse:
+    """Re-render the pane region from CURRENT state with no side effect —
+    the armed prompt's Cancel control lands here."""
+    manager = _pane_manager(request)
+    snapshot = manager.snapshot(record_id) if manager is not None else None
+    if snapshot is not None and snapshot.state != pane.STATE_IDLE:
+        return _render(request, "partials/pane.html", {"record_id": record_id, "pane": snapshot})
+    return _render(request, "partials/pane_idle.html", {"record_id": record_id, "pane": snapshot})
 
 
 # ---------------------------------------------------------------- miner
@@ -548,6 +669,14 @@ async def action_confirm(
         target=target or None,
     )
 
+    # 09 §3 P1-4 / P3-8: resolving a record under active iteration
+    # interrupts FIRST, at verb dispatch — never concurrently with a
+    # live pane session's writes to the very files this verb is about
+    # to git mv/rm.
+    manager = _pane_manager(request)
+    if manager is not None:
+        await manager.interrupt_active_session(record_id)
+
     await _publish_applying(request, verb, record_id, "start")
     result = await runner.run(argv)
     await _publish_applying(request, verb, record_id, "done" if result.ok else "error")
@@ -617,10 +746,15 @@ async def graduate_bulk(request: Request, scope: str, name: str, ids: str = Form
     runner = request.app.state.runner
     id_list = [i for i in ids.split(",") if i]
     hub = getattr(request.app.state, "app_hub", None)
+    manager = _pane_manager(request)
 
     failed_id: str | None = None
     done = 0
     for record_id in id_list:
+        # Same interrupt-first rule as action_confirm — "by keypress OR
+        # by a bulk loop reaching it" (09 §3).
+        if manager is not None:
+            await manager.interrupt_active_session(record_id)
         argv = build_argv("graduate", record_id, no_push=True)
         result = await runner.run(argv)
         if not result.ok:

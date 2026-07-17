@@ -98,7 +98,21 @@
     if (link) window.location.href = link.getAttribute("href");
   }
 
+  /** Esc-in-pane interrupts the stream FIRST (keymap.py's "up" row: "Back
+   * / up a level (interrupts the pane first, if focused)" — 09 §2.4). The
+   * interrupt control (pane.html) only renders while a turn is plausibly
+   * in flight (starting/streaming/interrupting — pane.py's
+   * INTERRUPTIBLE_STATES), so an idle/ended pane falls straight through
+   * to ordinary up-navigation instead of swallowing the keypress. */
+  function isPaneInterruptible() {
+    const region = document.querySelector(".pane-region[data-pane-state]");
+    if (!region) return false;
+    const state = region.getAttribute("data-pane-state");
+    return state === "starting" || state === "streaming" || state === "interrupting";
+  }
+
   function goUp() {
+    if (isPaneInterruptible() && clickAction("interrupt")) return;
     if (clickAction("up")) return;
     window.history.back();
   }
@@ -222,13 +236,70 @@
         case "banner":
           showBanner(envelope.text);
           break;
+        case "pane_delta":
+          appendPaneDelta(envelope.text);
+          break;
+        case "pane_block":
+          appendPaneBlock(envelope.html);
+          break;
+        case "pane_tool":
+          appendPaneTool(envelope.name, envelope.target);
+          break;
         default:
-          // applying / bulk_progress / pane_* — U4/U6 territory; ignored
-          // here (10 §1: unknown types are ignored client-side).
+          // applying / bulk_progress / pane_result — pane_result's
+          // authoritative footer arrives via the pane POST response's
+          // own swap (pane.py's design note); ignored here (10 §1:
+          // unknown types are ignored client-side).
           break;
       }
     };
     return source;
+  }
+
+  /**
+   * Pane transcript SSE appenders (09 §2.4/§4.1; wired at U6). Best-effort
+   * only: a browser tab NOT currently viewing this record's split has no
+   * #pane-transcript element, and these silently no-op — the authoritative
+   * content always arrives via the next full pane-region swap regardless
+   * (pane.py's foreground-drain design: the POST response IS the final
+   * state). `pane_block`'s html is server-rendered with html=False
+   * (rendering.py) — the SAME primitive the page-level swap uses, so
+   * inserting it here carries no additional trust.
+   */
+  function paneTranscript() {
+    return document.getElementById("pane-transcript");
+  }
+
+  function appendPaneDelta(text) {
+    const el = paneTranscript();
+    if (!el || typeof text !== "string") return;
+    let live = el.querySelector(".pane-block-live-delta");
+    if (!live) {
+      live = document.createElement("div");
+      live.className = "pane-block pane-block-live-delta";
+      el.appendChild(live);
+    }
+    live.appendChild(document.createTextNode(text));
+  }
+
+  function appendPaneBlock(html) {
+    const el = paneTranscript();
+    if (!el || typeof html !== "string") return;
+    const live = el.querySelector(".pane-block-live-delta");
+    if (live) live.remove(); // the finalized block below supersedes it
+    const wrapper = document.createElement("div");
+    wrapper.className = "pane-block";
+    wrapper.innerHTML = html;
+    el.appendChild(wrapper);
+  }
+
+  function appendPaneTool(name, target) {
+    const el = paneTranscript();
+    if (!el || typeof name !== "string") return;
+    const p = document.createElement("p");
+    p.className = "pane-tool";
+    p.textContent = target ? "tool: " + name + " → " + target : "tool: " + name;
+    el.appendChild(p);
   }
 
   function showBanner(text) {

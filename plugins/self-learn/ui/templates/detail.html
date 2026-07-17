@@ -9,7 +9,8 @@
 {% endblock %}
 
 {% block content %}
-<article data-record-id="{{ model.id }}">
+<div class="detail-grid">
+<article data-record-id="{{ model.id }}" class="detail-left">
 
   {% for badge in model.badges %}
   <span class="badge badge-{{ badge.kind }}">{{ badge.text }}</span>
@@ -114,4 +115,18 @@
   {% endwith %}
 
 </article>
+
+{# The iterate split (09 §2.4): right column, Iterate/armed/live pane
+   region — all three variants share the SAME #pane-region-wrapper id so
+   every pane route (start/send/interrupt/retry/panel) can swap it
+   uniformly. `record_id`/`pane` are threaded into this context by
+   routes.py's detail_page(). #}
+<div class="detail-right">
+  {% if pane_split %}
+    {% include "partials/pane.html" %}
+  {% else %}
+    {% include "partials/pane_idle.html" %}
+  {% endif %}
+</div>
+</div>
 {% endblock %}

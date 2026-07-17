@@ -210,6 +210,11 @@ pre {
   color: var(--slu-warning);
 }
 
+.badge-schema-invalid {
+  background: var(--slu-danger-bg);
+  color: var(--slu-danger);
+}
+
 .record-row,
 .holding-row,
 .followup-row,
@@ -279,4 +284,65 @@ td {
   border-bottom: 1px solid var(--slu-border);
   padding: 0.3rem 0.5rem;
   text-align: left;
+}
+
+/* ---------------------------------------------------------------- U6 --- */
+/* The iterate split (09 §2.4): left = record/diff, right = pane region. */
+
+.detail-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1rem;
+  align-items: start;
+}
+
+@media (min-width: 60rem) {
+  .detail-grid {
+    grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  }
+}
+
+.detail-right {
+  position: sticky;
+  top: 0;
+}
+
+.pane-region {
+  border: 1px solid var(--slu-border);
+  border-radius: 4px;
+  padding: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+#pane-transcript {
+  max-height: 60vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.pane-block {
+  border-left: 2px solid var(--slu-border);
+  padding-left: 0.5rem;
+}
+
+.pane-tool {
+  color: var(--slu-fg-muted);
+  font-size: 0.85em;
+  font-family: var(--slu-font-mono);
+}
+
+.pane-activity {
+  color: var(--slu-fg-muted);
+  font-style: italic;
+}
+
+.pane-result {
+  color: var(--slu-fg-muted);
+  font-size: 0.85em;
+  display: flex;
+  gap: 0.5rem;
 }

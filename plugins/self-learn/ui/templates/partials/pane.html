@@ -1,0 +1,66 @@
+{# The live/ended pane region (09 §2.4/§4.1/§4.2/§5). Transcript renders
+   FINISHED blocks as server-rendered markdown (html=False — rendering.py;
+   XSS-safe, same primitive the SSE pane_block frame uses) and a live
+   in-flight block (or an activity indicator when no text_delta has
+   arrived yet — 09 §5's per-block fallback). SSE (pane_delta/pane_block/
+   pane_tool) gives the live token-by-token feel in a browser tab; this
+   same markup is also the POST response's final-state render, so a
+   client with SSE disconnected (09 §5's poll fallback) still sees
+   correct content on the next swap. #}
+<div id="pane-region-wrapper" class="pane-region" data-key-context="pane" data-pane-state="{{ pane.state }}">
+  <div id="pane-transcript" aria-live="polite">
+    {% for block in pane.blocks %}
+      {% if block.kind == "tool" %}
+      <p class="pane-tool">tool: <code>{{ block.tool_name }}</code>{% if block.tool_target %} &rarr; <code>{{ block.tool_target }}</code>{% endif %}</p>
+      {% else %}
+      <div class="pane-block">{{ block.html | safe }}</div>
+      {% endif %}
+    {% endfor %}
+    {% if pane.current_kind %}
+      {% if pane.current_html %}
+      <div class="pane-block pane-block-live">{{ pane.current_html | safe }}</div>
+      {% else %}
+      <p class="pane-activity" aria-live="polite">thinking&hellip;</p>
+      {% endif %}
+    {% endif %}
+  </div>
+
+  {% if pane.error_message %}
+  <p class="error-strip" role="alert">
+    {% if pane.cap_hit %}cap hit — r to continue in a fresh session{% else %}{{ pane.error_message }}{% endif %}
+  </p>
+  <button type="button" data-key-action="retry"
+          hx-post="/record/{{ record_id }}/pane/retry"
+          hx-target="#pane-region-wrapper" hx-swap="outerHTML">Retry (r)</button>
+  {% elif pane.result_status %}
+  <p class="pane-result">
+    <span class="pane-result-status">{{ pane.result_status }}</span>
+    {% if pane.result_cost_usd is not none %}<span class="pane-result-cost">${{ "%.4f"|format(pane.result_cost_usd) }}</span>{% endif %}
+    {% if pane.result_turns is not none %}<span class="pane-result-turns">{{ pane.result_turns }} turns</span>{% endif %}
+  </p>
+  {% endif %}
+
+  {% if pane.validate_exit_code is not none and pane.validate_exit_code != 0 %}
+  <p class="badge badge-{{ 'scan-blocked' if pane.validate_exit_code == 2 else 'schema-invalid' }}">
+    {{ 'scan-blocked' if pane.validate_exit_code == 2 else 'schema invalid' }}
+  </p>
+  <p class="error-strip" role="alert">{{ pane.validate_stderr }}</p>
+  {% endif %}
+
+  {% if pane.state != "ended" %}
+  <form id="pane-input-form"
+        hx-post="/record/{{ record_id }}/pane/send"
+        hx-target="#pane-region-wrapper" hx-swap="outerHTML">
+    <label>Send <input type="text" name="text" placeholder="follow-up message"></label>
+    <button type="submit" data-key-action="pane_send">Send</button>
+  </form>
+  {% endif %}
+
+  {% if pane.state in ("starting", "streaming", "interrupting") %}
+  <button type="button" data-key-action="interrupt"
+          hx-post="/record/{{ record_id }}/pane/interrupt"
+          hx-target="#pane-region-wrapper" hx-swap="outerHTML">Interrupt (Esc)</button>
+  {% endif %}
+  <button type="button" data-key-action="close_pane"
+          hx-post="/record/{{ record_id }}/pane/close">Close (q)</button>
+</div>
