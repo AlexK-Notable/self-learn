@@ -60,13 +60,22 @@ class TestCreateApp:
             r = c.get(f"/static/{name}")
             assert r.status_code == 200, name
 
-    def test_default_runner_is_not_wired(self, tmp_path: Path) -> None:
+    def test_default_runner_is_the_real_serialized_runner(self, tmp_path: Path) -> None:
+        # U4 note: this assertion was updated from U3's seam-stub
+        # expectation (NotWiredRunner as the default) to U4's pinned
+        # replacement (10 §3 task U4: "wire the real runner as the
+        # default" in app.py) — U4's task brief names app.py as its own
+        # file and this is the one test in this file that directly
+        # encodes the stub default it was tasked with retiring. Every
+        # other test in this file (and in test_routes.py) is unaffected:
+        # they all pass `runner=FakeRunner()` explicitly, which still
+        # overrides this default exactly as before.
         sb = make_env(tmp_path)
         env = load_env(sb.env)
         app = create_app(env=env, token=TOKEN, start_watcher=False)
-        from self_learn_ui.runner import NotWiredRunner
+        from self_learn_ui.runner import RealRunner
 
-        assert isinstance(app.state.runner, NotWiredRunner)
+        assert isinstance(app.state.runner, RealRunner)
 
     def test_wrong_port_in_env_changes_host_allowlist(self, tmp_path: Path) -> None:
         sb = make_env(tmp_path)

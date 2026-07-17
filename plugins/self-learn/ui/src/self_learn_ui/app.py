@@ -22,7 +22,7 @@ from . import ledger, rendering
 from .env import EnvConfig
 from .middleware import SecurityMiddleware
 from .routes import router
-from .runner import NotWiredRunner, VerbRunner
+from .runner import RealRunner, VerbRunner
 from .sse import AppEventHub
 
 __all__ = ["create_app"]
@@ -58,12 +58,18 @@ def create_app(
     written 0600 via :func:`self_learn_ui.middleware.write_token_file`;
     tests: any fixed string) — the middleware needs it at construction
     time, before any request arrives. ``runner`` defaults to
-    :class:`NotWiredRunner` (loud failure on any mutating call) until U4
-    injects the real serialized subprocess queue; tests inject a
-    :class:`self_learn_ui.runner.FakeRunner`."""
+    :class:`self_learn_ui.runner.RealRunner` (U4's serialized async
+    subprocess queue, wired to this app's own ``refresh_hub`` so every
+    verb forces a push on completion) — the injectable seam stays live
+    for tests, which pass :class:`self_learn_ui.runner.FakeRunner`
+    explicitly."""
     refresh_hub = refresh_hub if refresh_hub is not None else ledger.RefreshHub()
     app_hub = app_hub if app_hub is not None else AppEventHub()
-    runner = runner if runner is not None else NotWiredRunner()
+    runner = (
+        runner
+        if runner is not None
+        else RealRunner(home=env.self_learn_home, refresh_callback=refresh_hub.force_refresh)
+    )
     stop_event = asyncio.Event()
 
     @asynccontextmanager
