@@ -11,6 +11,7 @@ import json
 import os
 import stat
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -558,8 +559,21 @@ class TestCacheAndSentinel:
         assert "home-" not in str(path)  # deliberately NOT home-namespaced
 
     def test_sync_script_checks_the_global_sentinel_path(self):
-        # refs = <repo>/plugins/self-learn/skills/self-learn/references
-        script = worker.package_skill_refs().parents[4] / "bin" / "claude-skills-sync"
+        # The sentinel contract's OTHER half lives in the HOST's autosync
+        # sync script (claude-skills bin/claude-skills-sync) — a repo this
+        # product was extracted FROM (13 §7.3), so the script is only
+        # present on machines with that host checked out at its usual
+        # path. Absent → skip loudly; the live half of the contract is
+        # still exercised every run by the selftest sentinel check.
+        script = (
+            Path.home() / "repos" / "claude-skills" / "bin" / "claude-skills-sync"
+        )
+        if not script.is_file():
+            pytest.skip(
+                "host sync script not on this machine (product repo is "
+                "standalone since 13 §7.3) — sentinel contract covered "
+                "by selftest"
+            )
         text = script.read_text(encoding="utf-8")
         assert "/self-learn/autosync-pause" in text
         assert "claude-skills/self-learn/autosync-pause" not in text
