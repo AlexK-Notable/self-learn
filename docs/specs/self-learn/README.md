@@ -613,3 +613,37 @@ human routes it.
   hook symlinked (PC-1) but its settings.json registration remains
   user-manual. Next after T-H5 settles: product-repo extraction
   (step 2, §8-thin).
+- **2026-07-16 — M3 BUILT, TWICE-REVIEWED, MERGED (same day as the
+  cutover; 3-agent workflow: worktree builder ∥ sandboxed acceptance
+  runner → blind adversarial reviewer).** T17 hook compiler (all six
+  §8.1 pins: CLI-generated guards, verbatim two-phase apply with the
+  approved bytes stored on `routing.hook`, M3-12 replay pre-commit,
+  supersede/graduate host-phase removal, `--selftest` hooks check),
+  T18 new-skill scaffold (`route --dest new-skill:<name>`, M3-9
+  foreign-plugin refusal), T19 `supply_mix` + success metrics in
+  `status --json`. 754 → 860 tests; seven spec gaps found and
+  dispositioned in the 08 appendix (§9), none silently absorbed.
+  **Review round 1: NOT CLEAN** — zero code blockers (shell-injection,
+  fail-closed guard matrix, lock invariant, and idempotence all held
+  under *executed* attack) but one governance MAJOR: the build
+  hard-coded a refusal of one-motion `hook`/`new-skill` routing,
+  narrowing settled S-10 without the register reopening. **Resolved by
+  user ruling** ("this is exactly the kind of thing that shouldn't be
+  hard-coded. make it configurable") → committed `<ledger>/config.yaml`
+  `one_motion_route` policy, default OFF, fail-closed parse; dated
+  S-10 amendment. **Delta review: CLEAN** (YAML-injection refused;
+  the analyst path provably cannot smuggle script bytes — the CLI
+  regenerates unconditionally; all type-checker flags proven dead
+  branches). **Scope ruling same day** (S-10 row): the flag opens BOTH
+  one-motion roads — explicit `--hook-input` and analyst-authored bare
+  `--route`; split knob considered and rejected. Also same day: M2
+  acceptance (b) worker half PASSED in a fully sandboxed ledger clone
+  (planted near-duplicate → schema-conformant `merge-a1c3e7f2`, run 2
+  of 3; run 1 exposed a worker-prompt gap — descriptive `cluster_id`
+  correctly fail-closed by the validator — queued for §4 prompt
+  tuning). The collapse half stayed user-present by design: the
+  acceptance agent itself caught that a sandbox clone's `meta.yaml`
+  points at the REAL host repo, so a sandbox collapse would have
+  compiled real canon. M3 [protocol] exit still owed (user-present):
+  fixture-A live trial, first hook route + install.sh + settings.json
+  registration, worklist drain via `fixtures/m3-worklist/`.
