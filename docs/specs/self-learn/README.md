@@ -767,3 +767,33 @@ human routes it.
   half, and un-swept autosync assumptions in W-5/W-8. All folded as
   dated corrections marked "gate-zero"; the full findings list lives
   in 10's Build-findings appendix. Delta re-check ran before commit.
+
+- **2026-07-17 — G-3 adjudication surface SHIPPED.** The localhost web
+  review UI (09/10) is built, reviewed, merged to master, and deployed
+  live (`self-learn-ui.service`, 127.0.0.1:7357). Orchestrated build:
+  Sonnet builder agents U0–U10 in per-agent git worktrees per 10 §8's
+  wave plan (CLI substrate; ui scaffold; ledger/models; routes+security+
+  SSE; SDK pane engine + charter; verb runner; iterate split; notifier
+  swap; degradation walk; deploy/docs), Opus reviewers. ui 481 tests /
+  cli 894·3, pyright clean. **Never self-certified** — five review passes,
+  each folded CLEAN: gate-zero (the spec re-ground) → interim adversarial
+  + delta → U11 live acceptance (T-A CI; T-B/T-E live SDK; T-C end-to-end;
+  T-D desktop deep-link with the user; browser pass via Playwright) →
+  final assembled-branch review + delta. Six real defects surfaced that
+  the green suites could not see, each masked by a fake or environment-
+  specific: 2 spec blockers (gate-zero), 1 interim blocker (a wave-1
+  join miss — sdk.py kept a one-arg default called zero-arg, hidden by
+  zero-arg-fake mock theater across every engine test), and 3 at
+  acceptance (T-B: the charter double-prefixed the already-`lrn-`-prefixed
+  record_id → the pane could never edit its own record/proposal; T-D:
+  chromium-on-Wayland ignores `--class` for `--app` windows when chromium
+  is already running → class-only focus never matched; final review: the
+  title-focus fallback was dead because it gated on `focuswindow`'s
+  always-0 exit code). Trials logged in `fixtures/ui-trials.md`; corpus
+  amended at 09 §1 (window-class), 03 (G-3 SHIPPED + the canon-surfaces
+  read-scope posture, user-ratifiable). Deploy: `install.sh` links
+  `self-learn-ui{,-open,-notify}` → `~/bin` and the service unit; the
+  service is enabled and serving the real ledger. Residual UX backlog
+  (none blocking): Esc-interrupt uses the 5 s kill backstop on
+  subscription auth; a push-failure on an otherwise-successful route is
+  not surfaced in-UI; cross-record deep-links open a new window (09 §5).
