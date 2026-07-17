@@ -1,0 +1,90 @@
+/*
+ * self-learn-ui — base stylesheet (10 §1 Dependencies row; 09 §11 Y-10).
+ *
+ * Scaffold only at U1: the custom-properties block below is the ONE
+ * source of color tokens for both themes — every future rule (badges,
+ * status strip, action bar, pane) reads these variables rather than
+ * hardcoding colors, so a theme fix is a one-place edit.
+ *
+ * Y-10 pins, restated here as build constraints for U3 authors:
+ *   - Dark/light via `prefers-color-scheme` — promoted from the polish
+ *     backlog into U1/U3 scope (this file's job at U1; wiring the
+ *     variables into components is U3's).
+ *   - Color is NEVER the sole carrier of a distinction (fresh/stale,
+ *     scan-blocked, deferred, mined, already-canon, unregistered-host,
+ *     applying/error): every badge/status element needs a text label or
+ *     glyph too. That rule lives in the templates U3 writes — this file
+ *     only supplies non-color-exclusive tokens (no "just red = bad").
+ *   - CSP pin (09 §3, W-9): NO inline `style=` attributes or `<style>`
+ *     blocks anywhere in templates/partials — every rule lives in this
+ *     served stylesheet (or a future sibling), never inline. Pygments
+ *     renders in class mode against this file, never `noclasses`.
+ */
+
+:root {
+  color-scheme: light dark;
+
+  /* Light theme (default). */
+  --slu-bg: #ffffff;
+  --slu-bg-raised: #f4f4f5;
+  --slu-fg: #1a1a1e;
+  --slu-fg-muted: #55565c;
+  --slu-border: #d7d7db;
+  --slu-accent: #1f5fbf;
+  --slu-accent-fg: #ffffff;
+  --slu-danger: #a3221f;
+  --slu-danger-bg: #fbe6e5;
+  --slu-success: #1e6b3a;
+  --slu-success-bg: #e3f3e8;
+  --slu-warning: #8a5a00;
+  --slu-warning-bg: #fbeed7;
+  --slu-focus-ring: #1f5fbf;
+  --slu-font: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --slu-font-mono: ui-monospace, "SFMono-Regular", Consolas, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --slu-bg: #17181c;
+    --slu-bg-raised: #202126;
+    --slu-fg: #e7e7ea;
+    --slu-fg-muted: #a6a7ad;
+    --slu-border: #34353b;
+    --slu-accent: #6fa8ff;
+    --slu-accent-fg: #0c1524;
+    --slu-danger: #ff8a85;
+    --slu-danger-bg: #3a1c1b;
+    --slu-success: #7fd79b;
+    --slu-success-bg: #163a24;
+    --slu-warning: #f0c46a;
+    --slu-warning-bg: #3a2c0c;
+    --slu-focus-ring: #6fa8ff;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--slu-bg);
+  color: var(--slu-fg);
+  font-family: var(--slu-font);
+}
+
+a {
+  color: var(--slu-accent);
+}
+
+:focus-visible {
+  outline: 2px solid var(--slu-focus-ring);
+  outline-offset: 2px;
+}
+
+code,
+pre {
+  font-family: var(--slu-font-mono);
+}
