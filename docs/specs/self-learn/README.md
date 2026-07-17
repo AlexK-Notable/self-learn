@@ -647,3 +647,24 @@ human routes it.
   compiled real canon. M3 [protocol] exit still owed (user-present):
   fixture-A live trial, first hook route + install.sh + settings.json
   registration, worklist drain via `fixtures/m3-worklist/`.
+
+- **2026-07-17 — worklist drained + retirement-cleanup dev pass**
+  (Fable session, evening 07-16 local). Review session (user-present):
+  lrn-316a5411 routed to project claude-md; ALL THREE m3-worklist
+  guards captured→validated→routed (chezmoi-cd superseding
+  lrn-98d42215; sudo-npm at user scope superseding lrn-d5f6b31b,
+  lrn-6883f824's follow-up closed; uv-venv-copy WITHOUT supersede —
+  the text regex can't see whole-tree copies, advisory kept, user
+  ratified); hypr-doctor over-cap resolved by graduating lrn-6883f824
+  into the recovery playbook (224→110 words). install.sh run;
+  settings.json registration handed to the user (M3 [protocol] exit
+  then rests on the first live guard denial). The drain exposed that
+  supersede-at-route/graduate left stale advisory lines — fixed same
+  night as the **retirement-cleanup dev pass** (08 appendix
+  2026-07-17, two blind adversarial verdicts CLEAN, 860→876 tests):
+  retirement host phase shared by route/route_direct/graduate,
+  recompile completeness (all-retired targets, chezmoi user file, m-4
+  hook-removal repair), m-5 script re-derive, worker cluster_id pin,
+  T19 median UTC normalization, and the review-found pre-M1 latent
+  shared-CLAUDE.md scope-erasure bug (union compile set). Live
+  repair verified: both stale lines dropped, selftest 6/6.
