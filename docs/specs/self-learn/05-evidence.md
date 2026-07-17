@@ -169,3 +169,22 @@ architecture red-team, pre-mortem — + 1× Sonnet 5 mechanics fact-check).*
   that the same-day blind review found BLOCKING issues in; blind reviews
   produced every material course correction this project has had. Hence
   "blind review before settling" (P10).
+
+## From live operation (post-M3)
+
+- **E-21 · Presenter contamination is real (measured 2026-07-16).** In
+  the first real drain session, the WORKER-authored card sections
+  (registry-constrained: "domestic terms", "never open with a record
+  id") were plain-language clean — but the session agent PRESENTING
+  them framed the batch in system vocabulary ("guards", "drain kit",
+  "supersede"), and the user answered the card: *"i have no idea what
+  you mean by a guard."* Re-presented in plain terms ("tripwire",
+  concrete yes/no consequences), the same three proposals were
+  approved instantly. The card CONTENT contract held; the unprompted
+  presenter leaked its context. This is direct evidence for 09 §4.2's
+  two pins — the pane charter as the presenter's entire duty spec, and
+  `setting_sources: []` isolation (a presenter that never sees the
+  engineering context cannot leak it) — and for G-3 over the
+  slash-command surface generally: in the slash flow the presenter is
+  whatever session happens to be running, and its language discipline
+  is aspirational, not structural.
