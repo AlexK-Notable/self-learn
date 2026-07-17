@@ -214,6 +214,40 @@ def test_hyprctl_absent_skips_detection_and_launches(tmp_path: Path) -> None:
     assert "--class=self-learn-ui" in content
 
 
+def test_window_present_by_title_focuses_when_class_is_url_derived(
+    tmp_path: Path,
+) -> None:
+    """T-D live trial (2026-07-17): when chromium is already running it
+    derives the --app window's app_id from the URL and IGNORES --class,
+    so the window's class is e.g. `chrome-127.0.0.1__record_lrn-…-Default`,
+    never `self-learn-ui`. The launcher must still recognize an existing
+    UI window by its "self-learn — " TITLE prefix and focus it, rather
+    than spawning yet another window."""
+    hyprctl_log = tmp_path / "hyprctl.log"
+    chromium_log = tmp_path / "chromium.log"
+    bindir = _hermetic_bindir(
+        tmp_path,
+        hyprctl=_HYPRCTL_BODY_TMPL.format(
+            log=hyprctl_log,
+            clients_json=(
+                '[{"class":"chrome-127.0.0.1__record_lrn-07dcbf0f-Default",'
+                '"title":"self-learn — lrn-07dcbf0f"}]'
+            ),
+        ),
+        chromium=_LOGGING_LAUNCH_TMPL.format(log=chromium_log),
+    )
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    env = _env(tmp_path, bindir, XDG_RUNTIME_DIR=str(runtime_dir))
+
+    result = _run(env)
+
+    assert result.returncode == 0
+    hyprctl_content = _wait_for_nonempty(hyprctl_log)
+    assert "dispatch focuswindow" in hyprctl_content  # focused, not launched
+    assert not chromium_log.exists() or chromium_log.stat().st_size == 0
+
+
 # --- Token resolution: primary vs. X-8/X-12 fallback -------------------
 
 

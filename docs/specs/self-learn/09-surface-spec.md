@@ -65,6 +65,20 @@ ignoring costs nothing. This section pins the mechanics.
   matches. Chromium-family only; Firefox has no `--app` equivalent
   and takes the plain-tab degradation, §5.) A plain browser tab works identically
   (degradation, §5); the server neither knows nor cares.
+  *(Amended 2026-07-17 — T-D live trial: the 2026-07-12 verification
+  holds only for a FRESH chromium. When chromium is already running —
+  the common case — an `--app` window is created by the existing
+  process, which derives the Wayland app_id from the URL
+  (`chrome-<host>__…-Default`) and IGNORES `--class`; a dedicated
+  `--user-data-dir` does not change this. So class-only window matching
+  is unreliable. `self-learn-ui-open` therefore matches an existing UI
+  window by the stable page-TITLE prefix "self-learn — " as well as the
+  class (X-3 amended, 10 §1). Residual: focusing an existing window
+  cannot re-navigate it to a different record, so cross-record
+  deep-links still open a new window — the §5 "new window each time"
+  degradation, now scoped to that case. The deep-link primary chain —
+  notify → click → dedicated window on the correct record — is
+  unaffected and was live-confirmed.)*
 - **Keyboard accelerators, single keys only.** `j`/`k` (and arrows)
   move within a list, `Enter`/`l` drill in, `Esc`/`h` go up a level,
   action keys per below. Implemented as a small vendored `app.js`

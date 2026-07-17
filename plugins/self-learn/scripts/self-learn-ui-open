@@ -150,11 +150,22 @@ if [[ -n "$TOKEN" ]]; then
 fi
 
 # --- 3/4. window-presence detection + launch -----------------------------
+# The window's app_id is matched TWO ways (T-D live trial, 2026-07-17):
+# the pinned WINDOW_CLASS (works when chromium launches fresh and honors
+# --class), OR the page-title prefix "self-learn — " (the server sets it
+# on every page; robust when chromium is ALREADY running and derives the
+# app_id from the URL as `chrome-<host>__…-Default`, ignoring --class —
+# a native-Wayland chromium behavior that defeats a class-only match).
+# The title match focuses an existing UI window regardless of class; a
+# deep-link to a *different* record still opens correctly (a new window if
+# no reuse) — 09 §5's "new window each time" degradation, not a failure.
+_TITLE_PREFIX="self-learn — "
 _window_present() {
   command -v jq >/dev/null 2>&1 || return 1
   local clients
   clients="$(hyprctl clients -j 2>/dev/null)" || return 1
-  jq -e --arg cls "$WINDOW_CLASS" 'any(.[]?; .class == $cls)' \
+  jq -e --arg cls "$WINDOW_CLASS" --arg tp "$_TITLE_PREFIX" \
+    'any(.[]?; .class == $cls or (.title // "" | startswith($tp)))' \
     >/dev/null 2>&1 <<<"$clients"
 }
 
@@ -183,7 +194,11 @@ _launch() {
 
 if command -v hyprctl >/dev/null 2>&1; then
   if _window_present; then
-    hyprctl dispatch focuswindow "class:${WINDOW_CLASS}" >/dev/null 2>&1 || true
+    # Focus by class first (fresh-chromium case); fall back to the title
+    # prefix (already-running-chromium case, where the class is URL-derived).
+    hyprctl dispatch focuswindow "class:${WINDOW_CLASS}" >/dev/null 2>&1 \
+      || hyprctl dispatch focuswindow "title:^${_TITLE_PREFIX}" >/dev/null 2>&1 \
+      || true
   else
     _launch
   fi
