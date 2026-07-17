@@ -69,10 +69,13 @@ acceptance, supersede-vs-keep — are yours at step 4.
    # add the printed PreToolUse snippet to ~/.claude/settings.json
    ```
 
-5. **Recompile once at the end** — a supersede-escalation to a different
-   surface leaves the old advisory line in its managed section until the
-   next compile: `self-learn recompile` drops them; `self-learn --selftest`
-   should then be fully green (the new hooks check included).
+5. **Verify at the end** — since the 2026-07-17 retirement-cleanup pass,
+   a supersede-escalation drops the old advisory line from its managed
+   section in the same motion (the route runs the old record's host
+   phase itself; 08 appendix 2026-07-17). `self-learn recompile` remains
+   the safety net for interrupted runs and now really does repair the
+   all-retired-target and user-file cases; `self-learn --selftest`
+   should be fully green (the hooks check included).
 
 Rollback any time: hand-remove the settings.json entry for immediate
 relief; `self-learn supersede <hook-record> <replacement>` (or graduate)

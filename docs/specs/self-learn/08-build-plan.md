@@ -847,3 +847,53 @@ scope.
   intact and the applied script bytes printed. `one_motion_allowed()` is
   the single policy gate (teach precheck + route_direct — one
   computation, two callers).
+
+- **2026-07-17 · Post-M3 dev pass: retirement cleanup + metrics tz**
+  (found live during the first real drain session, 2026-07-16 evening —
+  the chezmoi/sudo-npm guards' supersede-escalations left both old
+  advisory lines in canon). Six findings → one pass, all landed with
+  regression tests (`test_retirement_cleanup.py`, 860→873):
+  1. **Supersede-completion-at-route had no host phase for the OLD
+     record** — the standalone `supersede` verb recompiled the old
+     target since M1, but `teach --supersedes` + route-of-the-successor
+     (the drain kit's shape) only did the ledger half. Route and
+     route_direct now share `_retirement_preflight`/`_retirement_
+     host_phase` with supersede: the old doc target recompiles (or the
+     old guard script is removed, M3-4) in the same motion, pre-flighted
+     before any commit, skipped when the successor just regenerated the
+     same file.
+  2. **Graduate was metadata-only for doc targets** ("drops at the next
+     compile") — which stranded the line FOREVER when the graduated
+     record was the target's last (see 3). Graduate now runs the same
+     retirement host phase. 02 §4's sentence ("lets the compiler drop
+     it") stays true — the compile is now simply immediate.
+  3. **Recompile enumerated targets only off still-ACTIVE routed
+     records** — a target whose last record retired was never revisited,
+     so H-2's "repairs any two-phase interruption" was false for exactly
+     the stale-line class. Retired records now enumerate their doc
+     target too (the regeneration itself reads only active records);
+     references stay append-only (retired entries are history, never
+     re-appended).
+  4. **Recompile skipped the chezmoi user file entirely** — now
+     enumerated, with the same E-17 preflight the route path uses:
+     drift/dirty skips LOUDLY (warning + skipped entry), the apply goes
+     through `_host_phase` (lock discipline; compile_user_scope commits
+     its own repo).
+  5. **m-4 discharged** — recompile removes a RETIRED hook record's
+     still-on-disk script (interrupted removal repair), silent when
+     already absent, dirty-skip preserved. **m-5 discharged** — the
+     review-gated hook route re-derives the script from the record +
+     hook block and refuses on any byte mismatch with the stamp
+     (record_sha binds the record, not the script; generation is
+     deterministic, so the check is exact).
+  6. **T19 triage median mixed timezones** — `git log %aI` carries the
+     author's LOCAL offset and was truncated to a local date, while
+     created_at/routed_at/today are UTC; the median self-disagreed for a
+     few hours around UTC midnight (caught as a "flaky" test at
+     2026-07-17 ~01:00Z, hand-count 15.0 vs computed 14.5). Resolution
+     dates now normalize to UTC before truncating; a deterministic
+     forced-offset regression test replaces reliance on wall-clock luck.
+  Also: the worker merge-proposal prompt pins `cluster_id` to the
+  `merge-<8 hex>` filename token (run-1 finding: the analyst wrote a
+  descriptive slug; the validator correctly fail-closed deleted it —
+  prompt tuning routed through human+strong-reasoner per §4).
