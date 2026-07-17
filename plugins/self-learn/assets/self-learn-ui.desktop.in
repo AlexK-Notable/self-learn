@@ -17,5 +17,5 @@ Comment=Review captured lessons and decide where each one lands
 Exec=@BIN@/self-learn-ui-open
 Icon=self-learn-ui
 Terminal=false
-Categories=Utility;Development;
+Categories=Utility;
 StartupWMClass=self-learn-ui

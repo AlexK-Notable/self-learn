@@ -65,7 +65,7 @@ link "$P/scripts/self-learn-notify" "$BIN_DIR/self-learn-notify"
 say "== desktop launcher (G-3; feedback round 1 item 6) =="
 APPS_DIR="$HOME/.local/share/applications"
 ICON_DIR="$HOME/.local/share/icons/hicolor/scalable/apps"
-mkdir -p "$APPS_DIR" "$ICON_DIR"
+run "mkdir -p '$APPS_DIR' '$ICON_DIR'"
 # The .desktop entry is GENERATED, not symlinked: Exec= needs an absolute
 # path (the desktop spec expands neither ~ nor $HOME, and launchers do
 # not inherit an interactive shell's PATH — ~/bin isn't findable there).

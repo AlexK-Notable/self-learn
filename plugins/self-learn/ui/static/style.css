@@ -315,6 +315,12 @@ body:has(.pane-region[data-pane-state]) .keymap-footer-entry[data-context="pane"
   display: inline;
 }
 
+/* While a pane session is live there is no Iterate button to press —
+   the key would be a no-op (review 2026-07-17 round-1, NIT-3). */
+body:has(.pane-region[data-pane-state]) .keymap-footer-entry[data-action="iterate"] {
+  display: none;
+}
+
 /* The footer's own trailing "? full reference" entry already covers the
    help key — the keymap's help row would render ? twice. (Same
    specificity as the data-context="global" show rule; later wins.) */

@@ -455,6 +455,12 @@ def build_front_model(
 
     status_data = status_read.data if status_read.ok and status_read.data else {}
     buckets_raw = status_data.get("buckets") or []
+    # Keyed by bucket NAME only — `list --json` items carry no scope
+    # field, so two same-named buckets in different scopes would each
+    # show the combined count (review 2026-07-17 round-1, MINOR-2). The
+    # whole app assumes bucket-name uniqueness (next_record_url and the
+    # Bucket page filter the same way); fixing it properly is an 08 §1
+    # substrate edit (+scope on list items), not a UI-side derivation.
     deferred_by_bucket: dict[str, int] = {}
     if list_read.ok:
         for item in list_read.data or []:
