@@ -156,4 +156,15 @@ pass/fail against its predicate (10 §2 discipline). CI-level acceptance
     Re-verified in the browser after the fix: **0 console errors** on load.
     Regression test `test_head_disables_htmx_inline_style_and_suppresses_favicon`.
   - *Predicate (armed-key flow + SSE swap in a real browser): MET.*
-## Degradation walk (09 §5 row-by-row, U9 ledger) — PENDING
+## Degradation walk (09 §5 row-by-row, U9 ledger)
+- **2026-07-17 · SATISFIED (CI + live trials).** U9 implemented and
+  CI-tested every 09 §5 row (15 tests, `test_degradation_walk.py`) with a
+  row-by-row ledger (10 U9 report). Live trials confirmed the material
+  rows: SSE refresh worked end-to-end in a real browser (browser pass);
+  swaync-absent / no-action-daemon and no-chromium / xdg-open fallbacks
+  are covered by the shimmed launcher+notify tests; verb-nonzero and
+  scan-blocked paths by T-A/T-E. The remaining rows are OS-level
+  documented degradations that need no live repro: server-not-running at
+  deep-link time (a browser connection error — no app code path), and
+  plain-tab fallback when no Chromium `--app` exists (09 §5). No
+  additional live check owed.
