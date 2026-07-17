@@ -601,3 +601,30 @@ path more than adding tracks.
   segments, and strip trailing slashes — verified byte-identical to
   `str(PurePosixPath(...))` across those cases plus `..`-preserved; the
   X-12 loop this could once have caused is closed.
+- **2026-07-17 · U10 shipped: deploy + docs.** `install.sh` gained
+  explicit link lines (no glob, mirroring the existing miner-units
+  block) for the three companion scripts (`self-learn-ui`,
+  `self-learn-ui-open`, `self-learn-notify` → `~/bin`) and a new
+  `== G-3 surface unit (systemd --user) ==` block linking
+  `systemd/self-learn-ui.service` → `~/.config/systemd/user/` +
+  `daemon-reload`; enable stays a printed `ACTION NEEDED:` manual line
+  (`systemctl --user enable --now self-learn-ui.service`), never
+  auto-run — same posture as the miner timer, per §1's Service row.
+  Verified by `--dry-run` from the build worktree (a different path
+  than the live-deployed `~/repos/self-learn`, so every link reported
+  as a fresh `link` rather than `ok` — expected; the worktree is not
+  the live install target). No live symlinks, no `daemon-reload`, no
+  enable were run — deferred to U11 acceptance, which needs the
+  service actually running for T-C/T-D per §6.2. `shellcheck` is not
+  installed on this host and was not pulled via container to avoid an
+  unrequested side effect; verification substitute was `bash -n`
+  (clean) plus manual review against the miner block's idiom. README
+  gained a "G-3 surface" section (what/launch/keymap table/complete
+  env-var table/pane-engine note/browser notes incl. the Vimium
+  `localhost:7357` exclusion/the optional Hyprland window-rule
+  snippet, framed as polish per X-4/X-10) and updated Layout + Install
+  blocks; SKILL.md gained a short section framing the surface as the
+  richer review venue alongside `/self-learn:review` (same CLI verbs,
+  not a second system). No code bugs found in `ui/`/`cli/` during this
+  task — none of that surface was touched (out of scope; frozen and
+  reviewed per the task charter).
