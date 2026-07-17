@@ -1,0 +1,84 @@
+"""rendering.py — the render-path hardening pins (09 §3 W-1/W-9; 10 §1
+"Rendering" row): every markdown render (records, rationale, pane text,
+page AND SSE frame alike) goes through :func:`render_markdown`, which is
+constructed with ``html=False`` — markdown-it-py's DEFAULT preset passes
+raw HTML through (empirically confirmed, see the module-level assertion
+below and 09 §3's own citation of this fact); this module's whole reason
+to exist is making that mistake structurally impossible to reach from
+routes.py.
+
+Diffs and proposal YAML render via Pygments in **class mode** (a served
+stylesheet, never ``noclasses`` inline styles — W-9: a ``noclasses``
+regression ships safe-but-unstyled under the CSP's ``style-src 'self'``,
+silently dropping every ``style=""`` span). :func:`pygments_stylesheet`
+is the one source of that served CSS — ``static/pygments.css`` is
+generated from it once (a checked-in file, not regenerated per-request,
+matching the vendored-htmx posture: no request-time Pygments stylesheet
+computation).
+"""
+
+from __future__ import annotations
+
+from markdown_it import MarkdownIt
+from pygments import highlight as _pygments_highlight
+from pygments.formatters import HtmlFormatter
+from pygments.lexers import BashLexer, DiffLexer, YamlLexer
+
+__all__ = [
+    "PYGMENTS_CSS_CLASS",
+    "PREVIEW_HONESTY_CAPTION",
+    "pygments_stylesheet",
+    "render_bash",
+    "render_diff",
+    "render_markdown",
+    "render_yaml",
+]
+
+PYGMENTS_CSS_CLASS = "highlight"
+
+#: html=False EXPLICITLY — the default preset's html=True is the
+#: vulnerability 09 §3 W-1 names by name. One module-level instance;
+#: never constructed ad hoc elsewhere (a second construction site could
+#: drift back to the dangerous default).
+_MD = MarkdownIt("commonmark", {"html": False})
+assert _MD.options["html"] is False, "markdown-it-py html=False pin regressed"
+
+_FORMATTER = HtmlFormatter(cssclass=PYGMENTS_CSS_CLASS, nowrap=False)
+
+#: Carried from 02 §4 — same wording models.py already exports (models.py
+#: is U2 territory; this module renders, it never re-derives the string).
+PREVIEW_HONESTY_CAPTION = (
+    "compilers regenerate from the record at apply time — this preview is "
+    "advisory"
+)
+
+
+def render_markdown(text: str) -> str:
+    """Record bodies, proposal rationale, pane transcript blocks — every
+    markdown-sourced string in the app, page and SSE frame alike. Raw HTML
+    in *text* is escaped, never passed through (W-1)."""
+    return _MD.render(text or "")
+
+
+def render_diff(text: str) -> str:
+    """Pygments ``DiffLexer``, class mode (W-9) — ``proposals/lrn-<id>.diff``."""
+    return _pygments_highlight(text or "", DiffLexer(), _FORMATTER)
+
+
+def render_yaml(text: str) -> str:
+    """Pygments YAML lexer, class mode — the raw proposal sibling text
+    when no ``.diff`` exists (09 §2.3)."""
+    return _pygments_highlight(text or "", YamlLexer(), _FORMATTER)
+
+
+def render_bash(text: str) -> str:
+    """Pygments bash lexer, class mode — a hook proposal's FULL stored
+    script (09 §11 Y-7: "renders its entire stored script")."""
+    return _pygments_highlight(text or "", BashLexer(), _FORMATTER)
+
+
+def pygments_stylesheet() -> str:
+    """The served stylesheet class-mode rendering depends on (W-9). Used
+    to (re)generate the checked-in ``static/pygments.css`` — not called
+    per-request in the running app."""
+    return _FORMATTER.get_style_defs(f".{PYGMENTS_CSS_CLASS}")

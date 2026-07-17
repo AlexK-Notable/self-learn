@@ -41,8 +41,20 @@ def test_base_template_has_no_inline_style_blocks() -> None:
 
 
 def test_base_template_has_no_inline_script_blocks() -> None:
-    """Only the JSON data blob script tag is allowed — no executable
-    inline <script> (CSP: script-src 'self', app.js is vendored)."""
-    assert 'src="/static/app.js"' not in BASE_HTML  # not yet wired at U1
+    """Only vendored <script src=...> tags and the JSON data blob are
+    allowed — no executable inline <script> body anywhere (CSP:
+    script-src 'self'). Wired at U3 (10 §3 task U3: "app.js EventSource
+    client + keydown handler")."""
+    assert 'src="/static/app.js"' in BASE_HTML  # wired at U3
     assert "static/htmx-2.0.9.min.js" in BASE_HTML
     assert 'type="application/json"' in BASE_HTML
+    # No inline, non-JSON <script>...</script> body: every <script> tag
+    # in this file is either self-closing-via-src or the JSON data blob.
+    import re as _re2
+
+    for match in _re2.finditer(r"<script\b([^>]*)>(.*?)</script>", BASE_HTML_NO_COMMENTS, _re2.S):
+        attrs, body = match.group(1), match.group(2)
+        if "src=" in attrs:
+            assert body.strip() == "", "a src= script tag must have no inline body"
+        else:
+            assert 'type="application/json"' in attrs

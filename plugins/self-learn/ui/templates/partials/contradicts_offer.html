@@ -1,0 +1,14 @@
+{# 09 §11 Y-8: after a successful route, offer each proposal-declared
+   contradicts edge as its own armed `link contradicts` action. Declining
+   an edge is just not arming it — no explicit skip control needed. #}
+<div class="contradicts-offer">
+  <p>Routed. This proposal named conflicting canon:</p>
+  {% for edge in edges %}
+  <div class="contradicts-edge">
+    <p>this conflicts with <code>{{ edge.target }}</code></p>
+    {% with kind="contradicts", armed=None, dom_id=edge.dom_id, target=edge.target, dest=None, event=None, record_id=record_id %}
+      {% include "partials/action_bar.html" %}
+    {% endwith %}
+  </div>
+  {% endfor %}
+</div>

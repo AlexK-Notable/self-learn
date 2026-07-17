@@ -1,0 +1,16 @@
+{# The `?` help overlay (09 §1: "a layer, not a modal — any action key
+   acts immediately from it"). app.js toggles the `visible` class; no
+   focus trap, no inert background — keys stay live underneath. Rendered
+   from the SAME keymap_entries as the footer + JSON blob. #}
+<div id="self-learn-ui-help" class="help-overlay" hidden>
+  <div class="help-overlay-panel">
+    <h2>Keyboard reference</h2>
+    <dl>
+      {% for entry in keymap_entries %}
+      <dt>{{ entry["keys"] | join(" / ") }}</dt>
+      <dd>{{ entry.label }} <span class="help-context">({{ entry.context }})</span></dd>
+      {% endfor %}
+    </dl>
+    <p>Press <kbd>?</kbd> again, or any other key, to dismiss.</p>
+  </div>
+</div>
