@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block title %}self-learn — {{ model.bucket }}{% endblock %}
+{% block body_attrs %} data-bucket="{{ model.bucket }}"{% endblock %}
 
 {% block status_strip %}
 <div class="status-strip">

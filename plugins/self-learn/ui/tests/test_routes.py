@@ -17,7 +17,6 @@ from pathlib import Path
 import pytest
 from starlette.testclient import TestClient
 
-from self_learn.records import Record
 from self_learn_ui.app import create_app
 from self_learn_ui.env import load_env
 from self_learn_ui.keymap import keymap_as_dicts, keymap_json
@@ -30,6 +29,7 @@ from support import (
     make_behavior,
     make_env,
     merge_proposal_text,
+    resolve_record_directly,
     seed_proposal,
     seed_record,
 )
@@ -44,30 +44,6 @@ def make_client(sb, *, runner: FakeRunner | None = None, port: int = 7357) -> tu
     c = TestClient(app, base_url=f"http://127.0.0.1:{port}")
     c.cookies.set("slu_token", TOKEN)
     return c, runner
-
-
-def resolve_record_directly(
-    ledger: Path,
-    bucket_dir: Path,
-    record: Record,
-    *,
-    destination: str = "skill-md",
-    status: str = "routed",
-) -> None:
-    """Move a pending record's file straight to resolved/, bypassing the
-    real verb (no git commit needed) — enough to exercise the
-    resolved-elsewhere READ path (09 §11 P1-9c), which only cares that
-    the record's status is no longer pending/deferred."""
-    record.set_status(status)
-    if status == "routed":
-        record.set_routing(
-            {"routed_at": "2026-07-01T00:00:00Z", "destination": destination, "by": "human"}
-        )
-    dest_path = bucket_dir / "resolved" / f"{record.id}.md"
-    dest_path.parent.mkdir(parents=True, exist_ok=True)
-    record.write(dest_path)
-    pending_path = bucket_dir / "pending" / f"{record.id}.md"
-    pending_path.unlink(missing_ok=True)
 
 
 # ------------------------------------------------------------- pure helpers

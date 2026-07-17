@@ -1,5 +1,12 @@
 {% extends "base.html" %}
 {% block title %}self-learn — {{ model.id }}{% endblock %}
+{# 09 §3/§5 "resolved elsewhere": the watcher only knows bucket-level
+   granularity (ledger.py's _scope_for_path never emits record:<id> for
+   filesystem changes — only explicit post-action pushes do), so Detail
+   must also watch its own bucket's scope, not just its own record's, to
+   notice an EXTERNAL resolution (a concurrent CLI verb bypassing this
+   server). See static/app.js's currentScopes()/inScope(). #}
+{% block body_attrs %} data-bucket="{{ model.bucket }}"{% endblock %}
 
 {% block status_strip %}
 <div class="status-strip">
