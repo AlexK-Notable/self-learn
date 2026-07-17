@@ -152,6 +152,21 @@ class TestFrontPage:
         r = c.get("/")
         assert 'href="/report"' in r.text
 
+    def test_head_disables_htmx_inline_style_and_suppresses_favicon(
+        self, tmp_path: Path
+    ) -> None:
+        """htmx injects an inline style element on boot; the pinned CSP
+        blocks it, throwing a console error on every swap and killing the
+        indicator fade (U11 browser trial 2026-07-17). The head must carry
+        the htmx-config meta that disables the injection and a data: favicon
+        link that suppresses the /favicon.ico 404 — both CSP-safe."""
+        sb = make_env(tmp_path)
+        c, _runner = make_client(sb)
+        html = c.get("/").text
+        assert 'name="htmx-config"' in html
+        assert '"includeIndicatorStyles": false' in html
+        assert 'rel="icon"' in html
+
     def test_status_strip_renders(self, tmp_path: Path) -> None:
         sb = make_env(tmp_path)
         c, _runner = make_client(sb)

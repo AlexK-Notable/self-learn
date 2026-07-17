@@ -27,7 +27,15 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    {# htmx injects an inline style element for its indicator on boot; the
+       pinned CSP (style-src 'self', no unsafe-inline) blocks it, throwing a
+       console error on every swap and killing the indicator fade. Disable
+       the injection here (htmx reads this meta before boot) — the indicator
+       CSS lives in style.css instead. (U11 browser trial, 2026-07-17 / W-9.) #}
+    <meta name="htmx-config" content='{"includeIndicatorStyles": false}' />
     <title>{% block title %}self-learn{% endblock %}</title>
+    {# empty data: icon suppresses the /favicon.ico 404 (CSP img-src allows data:) #}
+    <link rel="icon" href="data:," />
     <link rel="stylesheet" href="/static/style.css" />
     <link rel="stylesheet" href="/static/pygments.css" />
     <script src="/static/htmx-2.0.9.min.js" defer></script>

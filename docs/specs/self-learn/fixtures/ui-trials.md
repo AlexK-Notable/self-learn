@@ -60,7 +60,67 @@ pass/fail against its predicate (10 §2 discipline). CI-level acceptance
   - *Predicate (incremental render; subprocess gone within the 5 s kill
     bound): MET, with the interrupt-latency note above.*
 
-## T-C · End-to-end adjudication (live, no model) — PENDING
+## T-C · End-to-end adjudication (live, no model)
+- **2026-07-17 · PASS.** Env: throwaway ledger git repo with a bare
+  `origin` remote + a registered project host git repo; seeded a
+  project-scope record via the real `self-learn teach`, hand-wrote +
+  `proposal validate`d a `reference`-destination proposal (record_sha
+  stamped). Started the real service against it (port 7361), authed via
+  the token→cookie flow, then executed the route through the **real HTTP
+  POST** `/record/<id>/action/confirm` (verb=route, dest=reference,
+  HX-Request header). Verified entirely from git/filesystem, not UI
+  output:
+  - record moved to `resolved/` ✓; pending gone ✓; proposal `git rm`'d ✓
+  - host `references/LEARNINGS.md` compiled with the fact ✓ (two-phase
+    ledger→host routing)
+  - ledger commit `self-learn: route lrn-… → reference` present ✓
+  - sentinel released (absent after) ✓
+  - **push:** landed on the bare remote after `git branch --set-upstream`
+    — the route verb does `git push -q` (gitops `push_with_retry`), which
+    needs a tracking branch; my baseline seed pushed without `-u`, so the
+    in-trial push initially reported "PUSH FAILED — commit kept" (the
+    verb's correct soft-failure behavior: commit safe locally). With
+    upstream set (as the real `~/.self-learn` clone has), `self-learn
+    push` landed both route commits on the remote. **Test-setup artifact,
+    not a product defect** — re-verified.
+  - *Predicate: MET.*
+  - **Backlog note (minor UX):** a push-failure on an otherwise-successful
+    route is exit-0 (commit kept), so the web UI shows success and does
+    NOT surface the "unpushed" warning (matches the CLI's stderr-only
+    behavior, but a web user has no terminal). Candidate: a status-strip
+    "unpushed commits" indicator beside the existing sentinel state.
 ## T-D · Deep-link chain (live desktop, needs user present) — PENDING
-## Browser-level acceptance (X-5, Playwright/claude-in-chrome) — PENDING
+## Browser-level acceptance (X-5, Playwright)
+- **2026-07-17 · PASS (real browser, Playwright).** claude-in-chrome was
+  not connected; used Playwright against a real server (port 7362) on a
+  throwaway ledger. Verified live:
+  - **Token→cookie→clean-URL:** navigating to `/?token=…` landed on
+    `http://127.0.0.1:7362/` (token stripped by the 303) — real-browser
+    confirmation of the flow.
+  - **Render:** front page, status strip, bucket walk, miner block with
+    Force-run, and the complete keymap footer (all 15 keys from the
+    single-source table).
+  - **Keyboard handler (app.js):** `?` opened the help overlay
+    (`#self-learn-ui-help`, visible).
+  - **SSE-refreshed partial swap:** with the browser idle on Front, a
+    `self-learn teach` from the CLI drove the watcher → SSE → htmx swap;
+    the bucket's pending count went 0→1 and the status strip updated to
+    "pending: 1" with NO reload. End-to-end live refresh confirmed.
+  - **Armed-key resolution flow:** on the record Detail, `f` armed
+    "Defer lrn-… · Enter to confirm"; Enter executed the real verb — the
+    record became `status: deferred`, `deferred_until` +30d, excluded
+    from the queue. Full arm→confirm→effect in a real browser.
+  - **Two findings caught & FIXED (2026-07-17):**
+    1. htmx 2.0.9 injects an inline `<style>` for its indicator on boot;
+       the pinned CSP (`style-src 'self'`) blocked it, throwing a console
+       error on **every** swap and disabling the indicator fade — a W-9
+       gap (the pin covered our templates' inline styles, not htmx's
+       runtime injection). Fixed: `<meta name="htmx-config"
+       content='{"includeIndicatorStyles": false}'>` in the head (htmx
+       reads it pre-boot) + the indicator CSS served from style.css.
+    2. `/favicon.ico` 404 (cosmetic). Fixed: `<link rel="icon"
+       href="data:,">` (CSP `img-src` allows `data:`).
+    Re-verified in the browser after the fix: **0 console errors** on load.
+    Regression test `test_head_disables_htmx_inline_style_and_suppresses_favicon`.
+  - *Predicate (armed-key flow + SSE swap in a real browser): MET.*
 ## Degradation walk (09 §5 row-by-row, U9 ledger) — PENDING

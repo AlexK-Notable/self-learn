@@ -346,3 +346,18 @@ td {
   display: flex;
   gap: 0.5rem;
 }
+
+/* htmx indicator styles — normally injected inline by htmx on boot, but the
+   pinned CSP (style-src 'self') blocks that injection, so they are served
+   here instead and htmx's own injection is disabled via the htmx-config meta
+   in base.html (U11 browser trial, 2026-07-17 / W-9). */
+.htmx-indicator {
+  opacity: 0;
+  transition: opacity 200ms ease-in;
+}
+.htmx-request .htmx-indicator {
+  opacity: 1;
+}
+.htmx-request.htmx-indicator {
+  opacity: 1;
+}
