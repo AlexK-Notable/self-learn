@@ -145,11 +145,20 @@ def _resolve_charter_paths(
     # REQUESTED path (the model-supplied, untrusted ``tool_input``) gets
     # the full symlink-following ``.resolve()``, in the callback below.
     read_roots = (home_root, *canon_roots, refs_root)
+    # ``record_id`` is the CANONICAL, already-``lrn-``-prefixed id — it is
+    # what ``list --json`` emits, what ``/record/<id>`` carries, and what
+    # the resolution verbs receive (routes.py). The on-disk files are
+    # ``<record_id>.md`` / ``.yaml`` / ``.diff`` — do NOT prepend another
+    # ``lrn-`` (T-B live trial 2026-07-17: the old ``f"lrn-{record_id}"``
+    # built ``lrn-lrn-<hex>`` and denied the agent every edit of its own
+    # record/proposal — its whole job — because unit tests passed bare
+    # ids and never exercised the canonical form).
+    stem = record_id if record_id.startswith("lrn-") else f"lrn-{record_id}"
     return CharterPaths(
         read_roots=read_roots,
-        record_path=bucket / "pending" / f"lrn-{record_id}.md",
-        proposal_yaml_path=bucket / "proposals" / f"lrn-{record_id}.yaml",
-        proposal_diff_path=bucket / "proposals" / f"lrn-{record_id}.diff",
+        record_path=bucket / "pending" / f"{stem}.md",
+        proposal_yaml_path=bucket / "proposals" / f"{stem}.yaml",
+        proposal_diff_path=bucket / "proposals" / f"{stem}.diff",
     )
 
 

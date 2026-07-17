@@ -283,3 +283,37 @@ class TestWave1JoinReconciliation:
         except Exception:
             return  # fail-closed by raise is acceptable
         assert roots == []
+
+
+# -- canonical (lrn-prefixed) record_id — T-B live-trial regression ------
+
+
+async def test_canonical_prefixed_id_allows_own_record_edit(world: dict[str, Path]) -> None:
+    """Production passes the CANONICAL, already-``lrn-``-prefixed id
+    (``list --json`` ids, ``/record/<id>``). The T-B live trial
+    (2026-07-17) caught the charter double-prefixing it into
+    ``lrn-lrn-<hex>`` and denying the agent EVERY edit of its own
+    record/proposal — its whole job. The unit suite missed it by passing
+    bare ids. This asserts the canonical form allows the own-record edit
+    and the own-proposal write against the REAL on-disk filenames."""
+    can_use_tool = build_can_use_tool(
+        self_learn_home=world["home"],
+        bucket_root=world["bucket"],
+        record_id="lrn-abc123",  # canonical, prefixed — the production form
+        canon_read_roots_fn=lambda: [world["canon_file"]],
+        plugin_references_dir_fn=lambda: world["refs"],
+    )
+    record = world["bucket"] / "pending" / "lrn-abc123.md"  # NOT lrn-lrn-abc123
+    proposal = world["bucket"] / "proposals" / "lrn-abc123.yaml"
+    edit = await can_use_tool(
+        "Edit", {"file_path": str(record), "old_string": "a", "new_string": "b"}, CTX
+    )
+    assert isinstance(edit, PermissionResultAllow)
+    write = await can_use_tool("Write", {"file_path": str(proposal), "content": "x"}, CTX)
+    assert isinstance(write, PermissionResultAllow)
+    # a double-prefixed path (the bug's artifact) must NOT be writable
+    bug_path = world["bucket"] / "pending" / "lrn-lrn-abc123.md"
+    denied = await can_use_tool(
+        "Edit", {"file_path": str(bug_path), "old_string": "a", "new_string": "b"}, CTX
+    )
+    assert isinstance(denied, PermissionResultDeny)
