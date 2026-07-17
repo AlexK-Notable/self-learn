@@ -1061,6 +1061,47 @@ def _notify(message: str) -> None:
     print(message, file=sys.stderr)
 
 
+def _notify_with_ids(message: str, ids: list[str]) -> None:
+    """G-3 emission point (10 U8; 09 §3 "Notifications" / 08 §7.1
+    "Notification rendering" pointer): the ids-bearing (proposals)
+    notification's transport swaps from a direct ``notify-send`` call to
+    a DETACHED spawn of the pinned companion script, with the pinned
+    argv (10 §1 "Companion scripts" row) —
+
+        self-learn-notify --line "<message>" --ids <csv-of-record-ids>
+
+    resolved via PATH (the ``~/bin`` deploy surface). Template, payload,
+    and the events.jsonl line are untouched by this swap — ``message``
+    is still exactly ``render_notification``'s output and ``ids`` is
+    still exactly the ids ``append_event`` already logged; only the
+    transport changes.
+
+    Never waited on: one process per notification, and the worker must
+    never block on swaync/the click-action listener (self-learn-notify
+    itself blocks on ``notify-send --wait`` until the notification is
+    acted on or expires — that latency must never become the worker's).
+    Helper absent (partial/headless deploy, or PATH resolution/spawn
+    failure) degrades to the M2 direct-notify-send path (:func:`_notify`),
+    logged once — the same graceful-degradation posture 09 §5 pins for
+    "swaync absent / action unsupported"."""
+    helper = shutil.which("self-learn-notify")
+    if not helper:
+        log("notify: self-learn-notify not on PATH — falling back to direct notify-send")
+        _notify(message)
+        return
+    try:
+        subprocess.Popen(
+            [helper, "--line", message, "--ids", ",".join(ids)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError:
+        log("notify: failed to spawn self-learn-notify — falling back to direct notify-send")
+        _notify(message)
+
+
 def _oldest_pending_days(home: Path) -> int:
     oldest = 0
     now = datetime.now(timezone.utc)
@@ -1345,13 +1386,14 @@ def run(
                     aggregate = {"pending": total_pending, "buckets": per_bucket}
                     if ids:
                         append_event("proposals", ids, aggregate)
-                        _notify(
+                        _notify_with_ids(
                             render_notification(
                                 n,
                                 sorted(result.buckets) or ["(unknown)"],
                                 total_pending,
                                 len(per_bucket),
-                            )
+                            ),
+                            ids,
                         )
                     log(
                         f"run: ok — {len(result.proposed)} proposal(s), "
