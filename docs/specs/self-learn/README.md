@@ -668,3 +668,12 @@ human routes it.
   T19 median UTC normalization, and the review-found pre-M1 latent
   shared-CLAUDE.md scope-erasure bug (union compile set). Live
   repair verified: both stale lines dropped, selftest 6/6.
+
+- **2026-07-17 — step-2 extraction runbook drafted (13 §7.3)** after
+  the forced miner run went green and landed the organic
+  foreign-project card (lrn-4bcdd0a0, zmk-config bucket auto-created;
+  H-3 held — capture open, canon registered), fully discharging T-H5
+  and opening the step-2 gate. Runbook is DRAFT: execution gated on
+  D1 (M3-7 amendment — project/user guards become host canon at
+  hooks/self-learn/, two live records' script_path migrated), D2
+  (repo identity), D3 (product autosync posture).
