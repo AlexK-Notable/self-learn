@@ -1,0 +1,855 @@
+"""models.py — PURE screen-state derivation (09 §3/§7, 10 §1 "Screen-state
+derivation" pin): ``(list --json, status --json, report --json, mine
+status --json, merge-yaml set, sentinel mtime) → screen model``.
+
+Nothing in this module does I/O. Every function takes already-loaded data
+(CLI JSON as plain dicts wrapped in :class:`CliRead`, parsed proposal/merge
+YAML as plain dicts, a parsed :class:`self_learn.records.Record`, the
+card-sections registry as a plain list) and returns frozen dataclasses.
+:mod:`self_learn_ui.ledger` is the ONLY module that touches a filesystem or
+spawns a subprocess; it constructs the inputs these functions consume.
+
+Three screen models, one per surface (09 §2):
+
+- :func:`build_front_model` → :class:`FrontModel` (09 §2.1: bucket walk +
+  status strip + Y-4 "is it holding?" + Y-6 follow-ups + Y-5 miner block).
+- :func:`build_bucket_model` → :class:`BucketModel` (09 §2.2: grouped
+  pending records, cluster rows, bulk collapse, Y-9/Y-11).
+- :func:`build_detail_model` → :class:`DetailModel` (09 §2.3: card
+  sections rendered generically off the registry, finding/change/why
+  regions, Y-7/Y-8/Y-9/Y-11).
+
+Y-10 (accessibility): every badge/status distinction carries a non-empty
+text label — never hue alone. :class:`Badge` is the shared carrier; every
+``*_label`` field is likewise always a non-empty string.
+
+Y-9 (human-language-first): the leading text of any row/card is the
+proposal's leading card section (registry order) or the record title —
+NEVER a raw id, enum value, or scope slug. :func:`leading_text` is the one
+place this is decided.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Any
+
+from self_learn import sentinel as sl_sentinel
+from self_learn import worker as sl_worker
+from self_learn.records import Record
+
+__all__ = [
+    "HOOK_VERBATIM_CAPTION",
+    "NO_ANALYSIS_MESSAGE",
+    "PARAMETER_FREE_DESTINATIONS",
+    "PREVIEW_HONESTY_CAPTION",
+    "Badge",
+    "BucketModel",
+    "BucketRow",
+    "BulkCollapseRow",
+    "CardSection",
+    "ChangeRegion",
+    "ClusterRow",
+    "CliRead",
+    "DestinationGroup",
+    "DetailModel",
+    "FindingRegion",
+    "FollowupRow",
+    "FrontModel",
+    "HoldingRow",
+    "MinerBlock",
+    "MinerRun",
+    "RecordRow",
+    "StatusStrip",
+    "WhyRegion",
+    "build_bucket_model",
+    "build_card_sections",
+    "build_detail_model",
+    "build_front_model",
+    "host_add_command",
+    "leading_text",
+]
+
+#: 09 §2.3 action bar `o` pin: destinations a cycling key can supply
+#: without extra structure. ``new-skill:<name>`` and ``hook`` need
+#: structure a cycling key cannot supply (reachable via Iterate/CLI).
+PARAMETER_FREE_DESTINATIONS: tuple[str, ...] = ("skill-md", "claude-md", "reference")
+
+#: 02 §4's preview-honesty caption (standing, non-hook proposals/diffs).
+PREVIEW_HONESTY_CAPTION = (
+    "compilers regenerate from the record at apply time — this preview is "
+    "advisory"
+)
+
+#: 09 §11 Y-7 — the M3 verbatim-apply caption for hook-destination proposals.
+HOOK_VERBATIM_CAPTION = (
+    "what you see IS the bytes the verb applies; a record_sha mismatch "
+    "aborts at the verb, never silently regenerates"
+)
+
+NO_ANALYSIS_MESSAGE = "no analysis yet — `i` to analyze now"
+
+#: 09 §2.2 group labels — plain words, deliberately NOT "unanalyzed"
+#: (W-6: that word names the Front page's eligibility *count*, a
+#: different measure; distinct labels keep the two from being conflated).
+_GROUP_LABELS: dict[str, str] = {
+    "skill-md": "Skill doc",
+    "claude-md": "Project instructions",
+    "reference": "Reference file",
+    "new-skill": "New skill",
+    "hook": "Guard hook",
+    "malformed": "Proposal needs repair",
+    "no-analysis": "No analysis yet",
+}
+_GROUP_ORDER: tuple[str, ...] = (
+    "skill-md",
+    "claude-md",
+    "reference",
+    "new-skill",
+    "hook",
+    "malformed",
+    "no-analysis",
+)
+
+_MINER_STATUS_LABELS: dict[str, str] = {
+    "ok": "completed",
+    "idle": "idle — nothing new to scan",
+    "failed": "failed",
+    "landed-uncommitted": "landed, not yet committed",
+    "initialized": "initialized (first run)",
+    "held-gate": "held at the pending gate",
+}
+
+
+# --------------------------------------------------------------- CliRead
+
+
+@dataclass(frozen=True)
+class CliRead:
+    """One CLI ``--json`` invocation's outcome. ``error`` is set (and
+    ``data`` is ``None``) on ANY failure — spawn error, non-zero exit,
+    unparseable JSON — so a CLI invocation failure surfaces as an explicit
+    model state, never a silent empty list (task pin)."""
+
+    data: Any | None
+    error: str | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.error is None
+
+
+# -------------------------------------------------------------- helpers
+
+
+def _parse_dt(value: str | None) -> datetime | None:
+    """Lenient ISO-8601 (or bare ``YYYY-MM-DD``) → aware UTC datetime."""
+    if not value:
+        return None
+    text = value[:-1] + "+00:00" if value.endswith("Z") else value
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _is_deferred(deferred_until: str | None, now: datetime) -> bool:
+    """Deferred membership per 02 §2: ``deferred_until`` is in the FUTURE
+    relative to ``now`` (a past date means deferral has lapsed — the
+    record resurfaces, and ``deferred_until`` may still be populated)."""
+    dt = _parse_dt(deferred_until)
+    return dt is not None and dt > now
+
+
+def host_add_command(scope: str, project_path: str | None) -> str | None:
+    """09 §11 Y-11's exact copyable command. Only derivable for project
+    buckets whose recorded ``meta.yaml`` path is known — a skill bucket's
+    host path cannot be inferred from ledger data alone until *some*
+    skills root is registered (there is no candidate path to suggest)."""
+    if scope == "project" and project_path:
+        return f"self-learn host add {project_path}"
+    return None
+
+
+def build_card_sections(
+    card: dict[str, str] | None, registry: list[dict]
+) -> tuple["CardSection", ...]:
+    """The card-sections.yaml contract, rendered generically (09 §2.3 /
+    the registry file's own docstring): iterate ascending ``order``, emit
+    label + text for each key PRESENT in ``card``, skip absent keys,
+    render unknown keys last (raw key as label). No section name is ever
+    hardcoded here."""
+    if not card:
+        return ()
+    known = {r["key"]: r for r in registry}
+    sections: list[CardSection] = []
+    for r in sorted(registry, key=lambda r: r["order"]):
+        text = card.get(r["key"])
+        if text:
+            sections.append(
+                CardSection(key=r["key"], label=r["label"], order=r["order"], text=text)
+            )
+    unknown_keys = sorted(k for k in card if k not in known and card.get(k))
+    for key in unknown_keys:
+        sections.append(CardSection(key=key, label=key, order=10**9, text=card[key]))
+    return tuple(sections)
+
+
+def leading_text(
+    proposal: dict | None, registry: list[dict], title: str
+) -> str:
+    """09 §11 Y-9: the proposal's leading card section (registry order)
+    when a proposal exists, else the record title — NEVER a raw id."""
+    if proposal:
+        cards = build_card_sections(proposal.get("card"), registry)
+        if cards:
+            return cards[0].text
+    return title or "(untitled)"
+
+
+# ---------------------------------------------------------------- Badge
+
+
+@dataclass(frozen=True)
+class Badge:
+    """Y-10: hue is never the sole carrier — every badge carries text."""
+
+    text: str
+    kind: str
+
+
+# ---------------------------------------------------------- Front model
+
+
+@dataclass(frozen=True)
+class BucketRow:
+    name: str
+    scope: str
+    pending: int
+    oldest_days: int | None
+    unanalyzed: int
+
+
+@dataclass(frozen=True)
+class StatusStrip:
+    worker_last_run: str | None
+    worker_stale: bool
+    worker_stale_label: str
+    total_pending: int
+    open_followups: int
+    sentinel_live: bool
+    sentinel_label: str
+
+
+@dataclass(frozen=True)
+class HoldingRow:
+    """09 §11 Y-4 — a routed record with unconfirmed recurrence suspects."""
+
+    id: str
+    bucket: str
+    routed_days_ago: int | None
+    sighted_count: int
+    newest_nonce: str
+    text: str
+
+
+@dataclass(frozen=True)
+class FollowupRow:
+    """09 §11 Y-6 — passthrough of ``report --json .open_followups``."""
+
+    id: str
+    bucket: str
+    action: str | None
+    unblocks_on: str | None
+    note: str | None
+    routed_at: str | None
+
+
+@dataclass(frozen=True)
+class MinerRun:
+    ts: str | None
+    status: str
+    status_label: str
+    trigger: str | None
+    sessions_scanned: int | None
+    landed: int | None
+    folded: int | None
+    recurrences: int | None
+    fires: int | None
+
+
+@dataclass(frozen=True)
+class MinerBlock:
+    """09 §11 Y-5 — ``mine status --json`` rendered verbatim; force-run
+    is its only action (wired at U3/U4, not modeled here)."""
+
+    ok: bool
+    error: str | None
+    last_run: str | None
+    stale: bool
+    stale_label: str
+    runs: tuple[MinerRun, ...]
+
+
+@dataclass(frozen=True)
+class FrontModel:
+    ok: bool
+    errors: tuple[str, ...]
+    buckets: tuple[BucketRow, ...]
+    status: StatusStrip
+    holding: tuple[HoldingRow, ...]
+    followups: tuple[FollowupRow, ...]
+    miner: MinerBlock
+
+
+def _worker_stale(
+    worker_last_run: str | None, now: datetime, total_unanalyzed: int
+) -> bool:
+    """Reuses the worker's OWN escalation threshold
+    (:data:`self_learn.worker.STALE_AFTER_SECS`) — never a second
+    definition. Gated on unanalyzed supply existing at all, mirroring
+    :func:`self_learn.worker.fast_status`'s own gate: no supply, no alarm."""
+    if total_unanalyzed < 1:
+        return False
+    if worker_last_run is None:
+        return True  # missing = infinitely old (fast_status's own rule)
+    dt = _parse_dt(worker_last_run)
+    if dt is None:
+        return True
+    return (now - dt).total_seconds() > sl_worker.STALE_AFTER_SECS
+
+
+def _sentinel_live(mtime: float | None, now: datetime) -> bool:
+    """mtime-younger-than-TTL = live; TTL imported from
+    :mod:`self_learn.sentinel`, never re-pinned here."""
+    if mtime is None:
+        return False
+    return (now.timestamp() - mtime) < sl_sentinel.SENTINEL_TTL_SECONDS
+
+
+def _build_holding_rows(report_data: dict | None) -> tuple[HoldingRow, ...]:
+    if not report_data:
+        return ()
+    suspects = report_data.get("recurrence_suspects") or []
+    routed_live = {r["id"]: r for r in (report_data.get("routed_live") or [])}
+    grouped: dict[str, list[dict]] = {}
+    for s in suspects:
+        rid = s.get("id")
+        if not isinstance(rid, str):
+            continue
+        grouped.setdefault(rid, []).append(s)
+    rows: list[HoldingRow] = []
+    for record_id, events in grouped.items():
+        events_sorted = sorted(events, key=lambda e: e.get("seen_at") or "")
+        newest = events_sorted[-1]
+        live = routed_live.get(record_id)
+        bucket = live["bucket"] if live else ""
+        routed_days_ago = live.get("routed_days_ago") if live else None
+        count = len(events)
+        when = (
+            f"Routed {routed_days_ago}d ago."
+            if routed_days_ago is not None
+            else "Routing date unknown."
+        )
+        plural = "time" if count == 1 else "times"
+        text = f"{when} Sighted {count} {plural} since."
+        rows.append(
+            HoldingRow(
+                id=record_id,
+                bucket=bucket,
+                routed_days_ago=routed_days_ago,
+                sighted_count=count,
+                newest_nonce=str(newest.get("nonce", "")),
+                text=text,
+            )
+        )
+    return tuple(sorted(rows, key=lambda r: r.id))
+
+
+def _build_followup_rows(report_data: dict | None) -> tuple[FollowupRow, ...]:
+    if not report_data:
+        return ()
+    return tuple(
+        FollowupRow(
+            id=f["id"],
+            bucket=f["bucket"],
+            action=f.get("action"),
+            unblocks_on=f.get("unblocks_on"),
+            note=f.get("note"),
+            routed_at=f.get("routed_at"),
+        )
+        for f in (report_data.get("open_followups") or [])
+    )
+
+
+def _build_miner_runs(runs: list[dict]) -> tuple[MinerRun, ...]:
+    out = []
+    for e in runs:
+        status = e.get("status") or "unknown"
+        out.append(
+            MinerRun(
+                ts=e.get("ts"),
+                status=status,
+                status_label=_MINER_STATUS_LABELS.get(status, status),
+                trigger=e.get("trigger"),
+                sessions_scanned=e.get("sessions_scanned"),
+                landed=e.get("landed"),
+                folded=e.get("folded"),
+                recurrences=e.get("recurrences"),
+                fires=e.get("fires"),
+            )
+        )
+    return tuple(out)
+
+
+def _build_miner_block(mine_read: CliRead) -> MinerBlock:
+    if not mine_read.ok or mine_read.data is None:
+        return MinerBlock(
+            ok=False,
+            error=mine_read.error,
+            last_run=None,
+            stale=True,
+            stale_label="miner status unavailable",
+            runs=(),
+        )
+    data = mine_read.data
+    stale = bool(data.get("stale"))
+    label = "miner overdue (>36h)" if stale else "miner current"
+    return MinerBlock(
+        ok=True,
+        error=None,
+        last_run=data.get("last_run"),
+        stale=stale,
+        stale_label=label,
+        runs=_build_miner_runs(data.get("runs") or []),
+    )
+
+
+def build_front_model(
+    list_read: CliRead,
+    status_read: CliRead,
+    report_read: CliRead,
+    mine_read: CliRead,
+    *,
+    sentinel_mtime: float | None,
+    now: datetime | None = None,
+) -> FrontModel:
+    """09 §2.1: the bucket walk + status strip + Y-4/Y-5/Y-6 sections.
+    ``list_read`` is accepted (and its error surfaced) even though this
+    model does not otherwise consume list rows directly — Bucket pages
+    own record-level rendering; Front only needs its error state."""
+    now = now if now is not None else datetime.now(timezone.utc)
+    errors = tuple(
+        r.error
+        for r in (list_read, status_read, report_read, mine_read)
+        if r.error
+    )
+
+    status_data = status_read.data if status_read.ok and status_read.data else {}
+    buckets_raw = status_data.get("buckets") or []
+    buckets = tuple(
+        sorted(
+            (
+                BucketRow(
+                    name=b["bucket"],
+                    scope=b["scope"],
+                    pending=b["pending"],
+                    oldest_days=b.get("oldest_days"),
+                    unanalyzed=b["unanalyzed"],
+                )
+                for b in buckets_raw
+            ),
+            key=lambda b: (b.oldest_days is None, -(b.oldest_days or 0)),
+        )
+    )
+
+    total_pending = status_data.get("total_pending", 0)
+    open_followups = status_data.get("open_followups", 0)
+    worker_last_run = status_data.get("worker_last_run")
+    total_unanalyzed = sum(b.unanalyzed for b in buckets)
+    stale = _worker_stale(worker_last_run, now, total_unanalyzed)
+    if total_unanalyzed < 1:
+        worker_label = "worker current — nothing unanalyzed"
+    elif stale:
+        worker_label = "worker overdue"
+    else:
+        worker_label = "worker current"
+
+    sentinel_live = _sentinel_live(sentinel_mtime, now)
+    sentinel_label = (
+        "autosync paused — a canon apply is in flight"
+        if sentinel_live
+        else "autosync live"
+    )
+
+    status_strip = StatusStrip(
+        worker_last_run=worker_last_run,
+        worker_stale=stale,
+        worker_stale_label=worker_label,
+        total_pending=total_pending,
+        open_followups=open_followups,
+        sentinel_live=sentinel_live,
+        sentinel_label=sentinel_label,
+    )
+
+    report_data = report_read.data if report_read.ok else None
+
+    return FrontModel(
+        ok=not errors,
+        errors=errors,
+        buckets=buckets,
+        status=status_strip,
+        holding=_build_holding_rows(report_data),
+        followups=_build_followup_rows(report_data),
+        miner=_build_miner_block(mine_read),
+    )
+
+
+# --------------------------------------------------------- Bucket model
+
+
+@dataclass(frozen=True)
+class RecordRow:
+    id: str
+    leading_text: str
+    age_days: int
+    sightings: int
+    destination: str | None
+    deferred: bool
+    already_canon: bool
+    badges: tuple[Badge, ...]
+
+
+@dataclass(frozen=True)
+class BulkCollapseRow:
+    """09 §2.2 carried P1-1: a homogeneous already-canon group renders as
+    ONE collapsible decision row arming a loop of per-record ``graduate``
+    verbs — never rejection."""
+
+    count: int
+    ids: tuple[str, ...]
+    text: str
+
+
+@dataclass(frozen=True)
+class DestinationGroup:
+    key: str
+    label: str
+    rows: tuple[RecordRow, ...]
+    bulk_collapse: BulkCollapseRow | None
+
+
+@dataclass(frozen=True)
+class ClusterRow:
+    cluster_id: str
+    member_ids: tuple[str, ...]
+    member_count: int
+    suggested_survivor: str
+    rationale: str
+
+
+@dataclass(frozen=True)
+class BucketModel:
+    bucket: str
+    scope: str
+    host_registered: bool
+    host_add_command: str | None
+    groups: tuple[DestinationGroup, ...]
+    clusters: tuple[ClusterRow, ...]
+
+
+def _group_key_for(item: dict) -> str:
+    if not item.get("has_proposal"):
+        return "no-analysis"
+    dest = item.get("destination")
+    if dest in _GROUP_LABELS and dest not in ("no-analysis", "malformed"):
+        return dest
+    return "malformed"
+
+
+def _record_badges(item: dict, deferred: bool, stale: bool) -> tuple[Badge, ...]:
+    badges: list[Badge] = []
+    if item.get("source") == "session":
+        badges.append(Badge("mined", "mined"))
+    if deferred:
+        badges.append(Badge("deferred", "deferred"))
+    if item.get("already_canon"):
+        badges.append(Badge("already canon", "already-canon"))
+    if stale:
+        badges.append(Badge("stale — record edited since analysis", "stale"))
+    return tuple(badges)
+
+
+def build_bucket_model(
+    bucket_name: str,
+    scope: str,
+    items: list[dict],
+    proposals: dict[str, dict | None],
+    clusters_raw: list[dict],
+    registry: list[dict],
+    *,
+    host_registered: bool,
+    host_add_command: str | None,
+    now: datetime | None = None,
+) -> BucketModel:
+    """09 §2.2: group precedence (P2-9), the Y-9 human-language-first row
+    rule, deferred-dimmed-at-bottom ordering, cluster rows, and bulk
+    collapse for a homogeneous already-canon group."""
+    now = now if now is not None else datetime.now(timezone.utc)
+    clustered_ids = {rid for c in clusters_raw for rid in (c.get("records") or [])}
+
+    groups_map: dict[str, list[RecordRow]] = {k: [] for k in _GROUP_ORDER}
+    for item in items:
+        rid = item["id"]
+        if rid in clustered_ids:
+            continue
+        proposal = proposals.get(rid)
+        group_key = _group_key_for(item)
+        deferred = _is_deferred(item.get("deferred_until"), now)
+        stale = bool(item.get("has_proposal")) and not item.get("proposal_fresh", False)
+        row = RecordRow(
+            id=rid,
+            leading_text=leading_text(proposal, registry, item.get("title", "")),
+            age_days=item.get("age_days", 0),
+            sightings=item.get("sightings", 1),
+            destination=item.get("destination"),
+            deferred=deferred,
+            already_canon=bool(item.get("already_canon")),
+            badges=_record_badges(item, deferred, stale),
+        )
+        groups_map[group_key].append(row)
+
+    groups: list[DestinationGroup] = []
+    for key in _GROUP_ORDER:
+        rows = groups_map[key]
+        if not rows:
+            continue
+        # Deferred pushed to the bottom, dimmed — stable sort preserves
+        # the existing oldest-first order within each half.
+        rows = sorted(rows, key=lambda r: r.deferred)
+        bulk: BulkCollapseRow | None = None
+        if key not in ("no-analysis", "malformed") and all(
+            r.already_canon for r in rows
+        ):
+            bulk = BulkCollapseRow(
+                count=len(rows),
+                ids=tuple(r.id for r in rows),
+                text=f"{len(rows)} already-canon records — acknowledge all as canon",
+            )
+            rows = ()
+        groups.append(
+            DestinationGroup(
+                key=key, label=_GROUP_LABELS[key], rows=tuple(rows), bulk_collapse=bulk
+            )
+        )
+
+    clusters = tuple(
+        ClusterRow(
+            cluster_id=c["cluster_id"],
+            member_ids=tuple(c.get("records") or ()),
+            member_count=len(c.get("records") or ()),
+            suggested_survivor=c.get("suggested_survivor", ""),
+            rationale=c.get("rationale", ""),
+        )
+        for c in clusters_raw
+    )
+
+    return BucketModel(
+        bucket=bucket_name,
+        scope=scope,
+        host_registered=host_registered,
+        host_add_command=host_add_command,
+        groups=tuple(groups),
+        clusters=clusters,
+    )
+
+
+# --------------------------------------------------------- Detail model
+
+
+@dataclass(frozen=True)
+class CardSection:
+    key: str
+    label: str
+    order: int
+    text: str
+
+
+@dataclass(frozen=True)
+class FindingRegion:
+    title: str
+    record_type: str
+    body: str
+    evidence: tuple[dict, ...]
+    source: str
+    sightings: int
+    created_at: str | None
+    provenance_text: str
+
+
+@dataclass(frozen=True)
+class ChangeRegion:
+    """09 §2.3 region 2 / Y-7. ``kind`` selects what U3 renders:
+    ``none`` (no proposal — ``message`` carries the CTA), ``diff``
+    (Pygments DiffLexer), ``proposal-yaml`` (Pygments YAML lexer, the
+    proposal's raw sibling text), ``hook`` (the FULL stored script + its
+    replay examples, M3 verbatim-apply caption), ``new-skill`` (scaffold
+    preview)."""
+
+    kind: str
+    content: str | None
+    caption: str
+    message: str | None = None
+    replay_examples: dict | None = None
+    scaffold_name: str | None = None
+
+
+@dataclass(frozen=True)
+class WhyRegion:
+    rationale: str | None
+    destination: str | None
+    alternates: tuple[str, ...]
+    already_canon: bool
+    already_canon_reason: str | None
+    freshness: str
+    freshness_label: str
+
+
+@dataclass(frozen=True)
+class DetailModel:
+    id: str
+    bucket: str
+    scope: str
+    status: str
+    cards: tuple[CardSection, ...]
+    finding: FindingRegion
+    change: ChangeRegion
+    why: WhyRegion
+    contradicts: tuple[str, ...]
+    destination_cycle: tuple[str, ...]
+    badges: tuple[Badge, ...]
+    host_registered: bool
+    host_add_command: str | None
+
+
+def _build_finding(record: Record, title: str) -> FindingRegion:
+    parts = [record.source, f"{record.sightings} sighting(s)"]
+    if record.created_at:
+        parts.append(f"created {record.created_at}")
+    return FindingRegion(
+        title=title or "(untitled)",
+        record_type=record.type,
+        body=record.body,
+        evidence=tuple(dict(e) for e in record.evidence),
+        source=record.source,
+        sightings=record.sightings,
+        created_at=str(record.created_at) if record.created_at else None,
+        provenance_text=" · ".join(parts),
+    )
+
+
+def _build_change(
+    proposal: dict | None, diff_text: str | None, proposal_raw_text: str | None
+) -> ChangeRegion:
+    if proposal is None:
+        return ChangeRegion(
+            kind="none", content=None, caption="", message=NO_ANALYSIS_MESSAGE
+        )
+    destination = proposal.get("destination")
+    if destination == "hook":
+        return ChangeRegion(
+            kind="hook",
+            content=proposal.get("script"),
+            caption=HOOK_VERBATIM_CAPTION,
+            replay_examples=proposal.get("examples"),
+        )
+    if destination == "new-skill":
+        name = proposal.get("new_skill")
+        content = (
+            f"new skill scaffold: {name}"
+            if name
+            else "new skill scaffold (name chosen at route time)"
+        )
+        return ChangeRegion(
+            kind="new-skill",
+            content=content,
+            caption=PREVIEW_HONESTY_CAPTION,
+            scaffold_name=name,
+        )
+    if diff_text is not None:
+        return ChangeRegion(kind="diff", content=diff_text, caption=PREVIEW_HONESTY_CAPTION)
+    if proposal_raw_text is not None:
+        return ChangeRegion(
+            kind="proposal-yaml", content=proposal_raw_text, caption=PREVIEW_HONESTY_CAPTION
+        )
+    return ChangeRegion(kind="none", content=None, caption="", message=NO_ANALYSIS_MESSAGE)
+
+
+def _build_why(item: dict, proposal: dict | None) -> WhyRegion:
+    has_proposal = bool(item.get("has_proposal"))
+    fresh = bool(item.get("proposal_fresh"))
+    if not has_proposal:
+        freshness, label = "none", "no analysis yet"
+    elif fresh:
+        freshness, label = "fresh", "fresh"
+    else:
+        freshness, label = (
+            "stale",
+            "stale — record edited since analysis (Iterate to regenerate)",
+        )
+    return WhyRegion(
+        rationale=(proposal or {}).get("rationale"),
+        destination=item.get("destination"),
+        alternates=tuple((proposal or {}).get("alternates") or ()),
+        already_canon=bool(item.get("already_canon")),
+        already_canon_reason=(proposal or {}).get("already_canon_reason"),
+        freshness=freshness,
+        freshness_label=label,
+    )
+
+
+def build_detail_model(
+    item: dict,
+    record: Record,
+    proposal: dict | None,
+    diff_text: str | None,
+    proposal_raw_text: str | None,
+    registry: list[dict],
+    *,
+    bucket: str,
+    scope: str,
+    host_registered: bool,
+    host_add_command: str | None,
+    now: datetime | None = None,
+) -> DetailModel:
+    """09 §2.3: card-sections-first render + the three machine regions."""
+    now = now if now is not None else datetime.now(timezone.utc)
+    title = item.get("title", "")
+    deferred = _is_deferred(item.get("deferred_until"), now)
+    stale = bool(item.get("has_proposal")) and not item.get("proposal_fresh", False)
+
+    badges = list(_record_badges(item, deferred, stale))
+    if not host_registered:
+        badges.append(Badge("unregistered project", "unregistered-host"))
+
+    contradicts = tuple((proposal or {}).get("contradicts") or ())
+
+    return DetailModel(
+        id=record.id,
+        bucket=bucket,
+        scope=scope,
+        status=record.status,
+        cards=build_card_sections((proposal or {}).get("card"), registry),
+        finding=_build_finding(record, title),
+        change=_build_change(proposal, diff_text, proposal_raw_text),
+        why=_build_why(item, proposal),
+        contradicts=contradicts,
+        destination_cycle=PARAMETER_FREE_DESTINATIONS,
+        badges=tuple(badges),
+        host_registered=host_registered,
+        host_add_command=host_add_command,
+    )
