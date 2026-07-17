@@ -664,11 +664,23 @@ class _HookRoute:
 
 
 def _hooks_dir_for(home: Path, scope: str) -> tuple[Path, Path]:
-    """M3-7 script placement, via the hosts registry: skill-scoped →
-    ``plugins/<p>/hooks/`` (the plugin owning the skill), project/user →
-    ``plugins/self-learn/hooks/`` — all under the gated skills root (the
-    hooks ride install.sh's existing ``plugins/*/hooks/*.sh`` deploy
-    surface). Returns (host_repo, hooks_dir)."""
+    """M3-7 script placement, via the hosts registry, AS AMENDED by the
+    D1 ratification (doc 13 §7.3, 2026-07-17): skill-scoped →
+    ``plugins/<p>/hooks/`` (the plugin owning the skill — canon in ITS
+    plugin dir, unchanged); project/user-scoped → ``hooks/self-learn/``
+    (a canon dir of the skills-root host itself, NOT the product's own
+    plugin dir — guard scripts are host canon, and the product repo
+    receives nothing but its own development work, doc 13 §7.3's
+    governing principle). Both live under the gated skills root (the
+    hooks ride install.sh's ``hooks/self-learn/*.sh`` +
+    ``plugins/*/hooks/*.sh`` deploy surfaces). Returns
+    (host_repo, hooks_dir).
+
+    The two live pre-D1 guards (lrn-dd9489b2, lrn-4f5971c8) were migrated
+    by hand at the D1 runbook step 1 — their ``routing.hook.script_path``
+    is the truth for THEM; readers of an already-routed hook location use
+    that stored path (:func:`_hook_script_location`), never re-derive it
+    here. This function only matters for a NEW route."""
     if scope.startswith("skill:"):
         root, skill_dir = _hosts_skill_dir(home, scope.partition(":")[2])
         return root, skill_dir.parent.parent / "hooks"
@@ -679,7 +691,7 @@ def _hooks_dir_for(home: Path, scope: str) -> tuple[Path, Path]:
             "self-learn host add <path> --skills-root"
         )
     root = _gate_host(home, hosts.skills_root, "skills-root")
-    return root, root / "plugins" / "self-learn" / "hooks"
+    return root, root / "hooks" / "self-learn"
 
 
 def _resolve_hook_target(home: Path, record: Record, bucket_dir: Path) -> TargetSpec:

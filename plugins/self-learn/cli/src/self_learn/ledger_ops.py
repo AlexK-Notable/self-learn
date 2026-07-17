@@ -35,6 +35,7 @@ from pathlib import Path
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
+from . import hosts as hosts_mod
 from .ledger import Bucket, discover_buckets, home_state, home_state_message
 from .normalize import sha_anchor
 from .records import RECORD_ID_RE, Record, RecordError
@@ -930,18 +931,35 @@ def _sort_key(entry: QueueEntry):
     return (dt or datetime.fromtimestamp(0, tz=timezone.utc), entry.record.id)
 
 
+def _bucket_host_registered(hosts: hosts_mod.Hosts, bucket: Bucket) -> bool:
+    """09 §11 Y-2/Y-11 predicate (built at 10 U0): project scope is
+    registered iff the bucket's OWN recorded path (its ``meta.yaml``) is a
+    registered project host; skill/user scope is registered iff a skills
+    root is registered at all (both compile through it — doc 13 §2)."""
+    if bucket.scope == "project":
+        recorded = bucket_project_path(bucket.path)
+        if recorded is None:
+            return False
+        return hosts_mod.is_project_host(hosts, recorded)
+    return hosts.skills_root is not None
+
+
 def list_items(
     home: Path, *, include_deferred: bool = False, now: datetime | None = None
 ) -> list[dict]:
     """`list --json` items in the pinned shape (08 §1 `--json`-stubs pin,
-    G-3 hardening included), oldest first."""
+    G-3 hardening + the 2026-07-17 G-3-surface-substrate fields included),
+    oldest first."""
     now = _now(now)
-    entries: list[QueueEntry] = []
+    hosts = hosts_mod.load_hosts(home)
+    entries: list[tuple[Bucket, QueueEntry]] = []
     for bucket in discover_buckets(home):
-        entries.extend(queue(bucket, include_deferred=include_deferred, now=now))
-    entries.sort(key=_sort_key)
+        entries.extend(
+            (bucket, e) for e in queue(bucket, include_deferred=include_deferred, now=now)
+        )
+    entries.sort(key=lambda be: _sort_key(be[1]))
     items = []
-    for entry in entries:
+    for bucket, entry in entries:
         record = entry.record
         info = proposal_info(entry)
         items.append(
@@ -960,6 +978,9 @@ def list_items(
                 "proposal_fresh": info["proposal_fresh"],
                 "destination": info["destination"],
                 "already_canon": info["already_canon"],
+                "bucket": bucket.name,
+                "host_registered": _bucket_host_registered(hosts, bucket),
+                "source": record.source,
             }
         )
     return items
