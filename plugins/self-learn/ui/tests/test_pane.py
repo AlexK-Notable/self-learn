@@ -175,16 +175,34 @@ async def test_full_lifecycle_happy_path_publishes_sse_and_typesets_blocks() -> 
     assert envelopes[4] == {"type": "pane_result", "status": "success", "cost": 0.01, "turns": None}
 
 
-async def test_result_turns_is_structurally_absent_never_invented() -> None:
-    """The engine seam's Result carries no turn count (a real gap between
-    the already-merged engine seam and 09 §4.2's 'plus turn count' —
-    documented on PaneSnapshot). Rendered as None, never 0 or guessed."""
+async def test_result_turns_is_none_only_when_engine_reports_none() -> None:
+    """When the engine genuinely reports no turn count, render None —
+    never 0 or a guess (cost-honesty rule extended to turns)."""
     engine = FakeEngine(turns=[[Result(status="success", cost_usd=None, error=None)]])
     manager, *_ = _manager(engines={RECORD_ID: engine})
     await manager.start(RECORD_ID)
     snap = manager.snapshot(RECORD_ID)
     assert snap.result_turns is None
     assert snap.result_cost_usd is None  # absent cost renders as absent, never 0
+
+
+async def test_result_turns_flows_to_snapshot_and_envelope() -> None:
+    """A real engine-reported turn count (ResultMessage.num_turns → the
+    seam's Result.turns) must reach BOTH the snapshot and the pane_result
+    SSE envelope — the interim-review seam gap was closed, and the pane
+    hop must not re-drop it (final-review MINOR: this hop had no positive
+    test, so a regression to hardwired None here would pass silently)."""
+    engine = FakeEngine(
+        turns=[[Result(status="success", cost_usd=0.02, error=None, turns=7)]]
+    )
+    manager, runner, app_hub, refresh_hub = _manager(engines={RECORD_ID: engine})
+    sub = app_hub.subscribe()
+    await manager.start(RECORD_ID)
+    snap = manager.snapshot(RECORD_ID)
+    assert snap.result_turns == 7
+    envelopes = await _drain_queue(sub)
+    result_env = next(e for e in envelopes if e["type"] == "pane_result")
+    assert result_env["turns"] == 7
 
 
 # -------------------------------------------------------- no text_delta

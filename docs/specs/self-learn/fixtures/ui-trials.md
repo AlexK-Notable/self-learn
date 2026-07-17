@@ -111,12 +111,20 @@ pass/fail against its predicate (10 §2 discipline). CI-level acceptance
     A dedicated `--user-data-dir` did NOT restore it (still URL-derived) —
     so the X-3 class-only focus-detection can never find the window, and
     every deep-link would spawn a new one.
-  - **Fix (self-learn-ui-open):** match an existing UI window by its
-    stable page-TITLE prefix "self-learn — " in addition to the class,
-    and focus by `title:` when the class match misses. Re-tested live:
-    a second launcher run FOCUSED the existing window (window count stayed
-    1) instead of spawning another. Regression test
-    `test_window_present_by_title_focuses_when_class_is_url_derived`.
+  - **Fix (self-learn-ui-open), corrected after the final review's MAJOR:**
+    match an existing UI window by its stable page-TITLE prefix
+    "self-learn — " (or the class) via `hyprctl clients -j`, resolve its
+    **address**, and `focuswindow address:<addr>`. The first fix attempt
+    dispatched `focuswindow class:… || focuswindow title:…` — but
+    `focuswindow` exits 0 even when it matches nothing (X-3, the script's
+    own header pin), so the `||` short-circuited and the title focus never
+    ran: the window was detected but never raised. Corrected to
+    address-based focus, never gating on the dispatch exit code. Re-tested
+    live *properly*: focused a different window, ran the launcher, and
+    `hyprctl activewindow` became the UI window's address (0x55d80fd66220)
+    with the window count unchanged — genuine focus, not just
+    spawn-suppression. Regression tests now assert `focuswindow
+    address:<addr>` (fail if the broken class-`||`-title form returns).
   - **Residual (accepted, 09 §5 degradation):** focus-existing now works,
     but focusing does not RE-NAVIGATE the window to a different record
     (chromium `--app` can't be messaged a new URL) — a deep-link to a

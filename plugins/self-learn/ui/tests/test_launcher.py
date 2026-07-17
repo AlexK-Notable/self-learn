@@ -156,7 +156,8 @@ def test_window_present_dispatches_focuswindow_and_never_launches(
     bindir = _hermetic_bindir(
         tmp_path,
         hyprctl=_HYPRCTL_BODY_TMPL.format(
-            log=hyprctl_log, clients_json='[{"class":"self-learn-ui"}]'
+            log=hyprctl_log,
+            clients_json='[{"class":"self-learn-ui","address":"0xAAA","title":"self-learn — Front"}]',
         ),
         chromium=_LOGGING_LAUNCH_TMPL.format(log=chromium_log),
     )
@@ -170,7 +171,9 @@ def test_window_present_dispatches_focuswindow_and_never_launches(
     # Give the (non-backgrounded, synchronous) dispatch call a moment —
     # there is nothing to launch, so poll the hyprctl log directly.
     hyprctl_content = _wait_for_nonempty(hyprctl_log)
-    assert "dispatch focuswindow class:self-learn-ui" in hyprctl_content
+    # Focus is dispatched by the matched window's ADDRESS, never by keying
+    # off `focuswindow`'s (always-0) exit code (final-review MAJOR, X-3).
+    assert "dispatch focuswindow address:0xAAA" in hyprctl_content
     assert not chromium_log.exists() or chromium_log.stat().st_size == 0
 
 
@@ -231,7 +234,7 @@ def test_window_present_by_title_focuses_when_class_is_url_derived(
             log=hyprctl_log,
             clients_json=(
                 '[{"class":"chrome-127.0.0.1__record_lrn-07dcbf0f-Default",'
-                '"title":"self-learn — lrn-07dcbf0f"}]'
+                '"address":"0xBEEF","title":"self-learn — lrn-07dcbf0f"}]'
             ),
         ),
         chromium=_LOGGING_LAUNCH_TMPL.format(log=chromium_log),
@@ -244,7 +247,12 @@ def test_window_present_by_title_focuses_when_class_is_url_derived(
 
     assert result.returncode == 0
     hyprctl_content = _wait_for_nonempty(hyprctl_log)
-    assert "dispatch focuswindow" in hyprctl_content  # focused, not launched
+    # The class is URL-derived (not self-learn-ui), so the window is found
+    # by TITLE and focused by its ADDRESS — proving the fix is effective,
+    # not merely that some dispatch was emitted (final-review MAJOR). If
+    # the title match were removed, the address would be empty and chromium
+    # would launch instead — this assertion would then fail.
+    assert "dispatch focuswindow address:0xBEEF" in hyprctl_content
     assert not chromium_log.exists() or chromium_log.stat().st_size == 0
 
 
