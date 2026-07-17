@@ -177,6 +177,34 @@ class TestReportRecurrenceSuspects:
             {"id": rid, "nonce": nonce, "seen_at": ts}
         ]
 
+    def test_malformed_telemetry_line_is_skipped_not_crashed(self, env):
+        # Telemetry is untrusted input (11 §4.2 — any process may spool a
+        # line; a hand-edited/corrupt tracked file is not impossible).
+        # Wrong-typed `record`/`nonce` fields must never crash report.
+        rid = _route(env)
+        good_nonce, good_ts = _spool_suspect(env, rid, origin="lrn-0000eeee")
+        tdir = telemetry.telemetry_dir(env.ledger)
+        tdir.mkdir(parents=True, exist_ok=True)
+        (tdir / "manual.jsonl").write_text(
+            "\n".join(
+                [
+                    # record is an int, not a str — must not blow up a
+                    # dict lookup keyed by record id
+                    json.dumps({"kind": "recurrence-suspect", "record": 123, "nonce": "aaaa0000"}),
+                    # nonce missing entirely
+                    json.dumps({"kind": "recurrence-suspect", "record": rid}),
+                    # nonce explicitly null
+                    json.dumps({"kind": "recurrence-suspect", "record": rid, "nonce": None}),
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        facts = gather(env.ledger)  # must not raise
+        assert facts["recurrence_suspects"] == [
+            {"id": rid, "nonce": good_nonce, "seen_at": good_ts}
+        ]
+
 
 # ------------------------------------------------------- canon_read_roots
 

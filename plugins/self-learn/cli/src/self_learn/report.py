@@ -207,8 +207,14 @@ def recurrence_suspects(home: Path | str) -> list[dict]:
         if event.get("kind") != "recurrence-suspect":
             continue
         nonce = event.get("nonce")
-        record = routed.get(event.get("record"))
-        if record is None or nonce is None:
+        record_id = event.get("record")
+        # Telemetry lines are untrusted input (11 §4.2: any process may
+        # spool one) — a malformed/hand-edited line (wrong-typed or
+        # missing ``record``/``nonce``) is skipped, never a crash.
+        if not isinstance(record_id, str) or not isinstance(nonce, str):
+            continue
+        record = routed.get(record_id)
+        if record is None:
             continue
         if any(r.get("ref") == nonce for r in record.recurrences):
             continue  # already confirmed

@@ -165,15 +165,18 @@ class TestRouteHook:
         allow = run_guard(script, {"tool_name": "Edit", "tool_input": {"file_path": "/ok.yaml"}})
         assert allow.returncode == 0
 
-    def test_project_scope_lands_under_self_learn_plugin(self, env):
-        # M3-7: project/user-scoped records → plugins/self-learn/hooks/.
+    def test_project_scope_lands_under_skills_root_hooks_self_learn(self, env):
+        # M3-7, as amended by the D1 ratification (doc 13 §7.3,
+        # 2026-07-17): project/user-scoped records → the skills-root
+        # host's OWN hooks/self-learn/ — canon of the host, never the
+        # product's plugin dir.
         rid = "lrn-0000cccc"
         record = make_behavior(scope="project", record_id=rid, trigger=TRIGGER)
         create_record(env.home, record, project_path=env.host)
         write_proposal(env.home, rid, hook_proposal())
         stamp_proposal(env.home, rid)
         verbs.route(env.home, rid)
-        rel = f"plugins/self-learn/hooks/{script_name(rid, TRIGGER)}"
+        rel = f"hooks/self-learn/{script_name(rid, TRIGGER)}"
         assert (env.host / rel).is_file()
         assert env.host_subject() == f"self-learn: apply {rid} → {rel} (hook)"
 
