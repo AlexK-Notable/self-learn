@@ -78,9 +78,21 @@ _RESOLUTION_SUBJECT_RE = re.compile(
 _LRN_ID_RE = re.compile(r"lrn-[0-9a-f]{8}")
 
 
+def _utc_date(ts: str) -> str:
+    """``%aI`` carries the author's LOCAL offset, but every other date in
+    the triage metric (created_at, routed_at, today) is UTC — normalize
+    before truncating, or the calendar day disagrees for a few hours
+    around UTC midnight and the median walks (caught live 2026-07-17
+    ~01:00Z: median 14.5 where the hand-count says 15.0)."""
+    try:
+        return datetime.fromisoformat(ts).astimezone(timezone.utc).date().isoformat()
+    except ValueError:
+        return ts[:10]
+
+
 def _resolution_dates(home: Path) -> dict[str, str]:
-    """record id → the date (YYYY-MM-DD) of its FIRST resolution commit,
-    from the ledger's own history (02 §2: git is the who/when for
+    """record id → the UTC date (YYYY-MM-DD) of its FIRST resolution
+    commit, from the ledger's own history (02 §2: git is the who/when for
     non-routed resolutions). Empty on a history-less repo."""
     try:
         proc = gitops._git(  # noqa: SLF001 — same module family
@@ -98,7 +110,7 @@ def _resolution_dates(home: Path) -> dict[str, str]:
         if not _RESOLUTION_SUBJECT_RE.match(subject):
             continue
         for rid in _LRN_ID_RE.findall(subject):
-            dates.setdefault(rid, ts[:10])
+            dates.setdefault(rid, _utc_date(ts))
     return dates
 
 

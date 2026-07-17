@@ -592,6 +592,9 @@ SAME bucket are the same lesson, additionally write ONE merge proposal at
 <bucket>/proposals/merge-<8 lowercase hex>.yaml with keys:
 cluster_id, records (the lrn ids), suggested_survivor, rationale, model,
 analyzed_at. Do not emit record_shas — the CLI stamps them.
+cluster_id MUST equal the merge-<8 hex> token of the filename itself
+(file merge-a1b2c3d4.yaml → cluster_id: merge-a1b2c3d4) — never a
+descriptive slug; the validator fail-closed deletes anything else.
 
 Never re-propose the classes below (recently rejected):
 {digest}
