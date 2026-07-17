@@ -315,6 +315,13 @@ body:has(.pane-region[data-pane-state]) .keymap-footer-entry[data-context="pane"
   display: inline;
 }
 
+/* The footer's own trailing "? full reference" entry already covers the
+   help key — the keymap's help row would render ? twice. (Same
+   specificity as the data-context="global" show rule; later wins.) */
+.keymap-footer-entry[data-action="help"] {
+  display: none;
+}
+
 kbd {
   display: inline-block;
   min-width: 1.5em;
