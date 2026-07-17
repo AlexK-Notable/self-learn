@@ -538,3 +538,32 @@ path more than adding tracks.
   (5) (non-canon file inside a registered host denied LIVE), the
   shell-branch fallback got its read surface pinned, and two
   cosmetic fixes.
+- **2026-07-17 · Wave-1/2 build findings (orchestrated build, Sonnet
+  agents).** (a) U0 found and fixed a LATENT POST-EXTRACTION BUG in
+  shipped code: `verbs._hooks_dir_for` still wrote project/user-scope
+  guards to the pre-D1 `plugins/self-learn/hooks/` — a path that no
+  longer exists in the host repo; reconciled to
+  `<skills_root>/hooks/self-learn/` (readers were safe: they resolve
+  via the record's stored `script_path`). (b) The wave-1 join
+  reconciled a cross-track signature assumption:
+  `canon_read_roots(hosts)` (U0) vs zero-arg (U5) — fixed at the
+  seam, fail-closed preserved, end-to-end join tests added. (c) U5's
+  verify-at-build ledger ran on SDK 0.2.121: all pre-verified fields
+  present EXCEPT session persistence — the X-7 contingency fired as
+  pinned (`--no-session-persistence` via `extra_args`). U5 also
+  fixed a self-found symlink-follow bug in its write-path check
+  before commit. (d) U7 CORRECTED THE PINNED NOTIFIER PROSE: on
+  notify-send 0.8.8, `-A open` prints the action's numeric index
+  ("0") on click, never "open" — the working form is
+  `-A "open=Open"` (NAME=label); verified live under swaync with a
+  bounded wait. §1's Companion-scripts row reads through this
+  finding. (e) DELIBERATE DEVIATION, flagged for review: the
+  launcher's X-8 token-path fallback mirrors the cache-hash formula
+  (`sha256(str(expanduser(home)))[:8]`) in bash rather than shelling
+  to the CLI — rationale: keeping `uv run` (and its network
+  resolution) out of the script and its CI; a cross-check test pins
+  the mirror byte-identical to the Python formula. Known residual:
+  `str(Path(...))` normalizes trailing/double slashes, bash does not
+  — a SELF_LEARN_HOME with a trailing slash would diverge. The
+  interim review adjudicates keep-vs-replace (candidate replacement:
+  the U0-pinned `self-learn paths --json` surface).
