@@ -321,7 +321,7 @@ The model's own writes (the worker's `claude -p`, `cwd=home`) can never
 be lock-guarded and are unfixable by AST — `reconcile` is the answer
 there.
 
-## 7.3 Step-2 runbook — product-repo extraction (DRAFT 2026-07-17; execution gated on D1–D3 ratification)
+## 7.3 Step-2 runbook — product-repo extraction (drafted 2026-07-17; **D1–D3 ratified same day** — execution awaits the explicit go)
 
 *Step 1 is live and T-H5 is fully discharged (2026-07-17: first real
 mine green; the organic foreign-project card landed from the zmk-config
@@ -360,13 +360,23 @@ and every compiled canon target stay exactly where they are.*
   untouched. *Rejected alternative:* leaving a stub
   `plugins/self-learn/hooks/` in claude-skills — two repos owning
   pieces of one plugin is exactly the ambiguity doc 13 exists to kill.
-- **D2 — product repo identity.** Recommendation:
-  `github.com/AlexK-Notable/self-learn`, private, same
-  posture as `self-learn-ledger`.
-- **D3 — product-repo autosync.** Recommendation: mirror the
-  claude-skills watcher (small edits autosync; multi-commit work in
-  worktrees — the discipline already exists and the shim/units make
-  live editing just as valuable there).
+  **RATIFIED 2026-07-17 (user, stating the governing principle):**
+  *"stays in claude-skills. the goal would be to treat the learning
+  system as a tool unto itself that anyone could install and use for
+  their own skills. nothing should get committed to its repo other
+  than work that's specific to its development."* This is the
+  product-boundary rule for ALL future routing surfaces: compiled
+  output of any kind lands in the USER'S hosts, never in the product
+  repo — the product repo receives only its own development work.
+  M3-7 is amended accordingly (08 §8.1 note).
+- **D2 — product repo identity.** **RATIFIED 2026-07-17:**
+  `github.com/AlexK-Notable/self-learn`, private, same posture as
+  `self-learn-ledger`.
+- **D3 — product-repo autosync.** **RATIFIED 2026-07-17: NO watcher
+  — manual pushes only** (recommendation to mirror was declined).
+  Consistent with D1's boundary: the product repo changes only when
+  someone is deliberately developing it; ambient sync is a
+  skills-repo affordance, not a product-repo one.
 
 ### The runbook
 

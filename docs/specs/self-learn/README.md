@@ -677,3 +677,11 @@ human routes it.
   D1 (M3-7 amendment — project/user guards become host canon at
   hooks/self-learn/, two live records' script_path migrated), D2
   (repo identity), D3 (product autosync posture).
+
+- **2026-07-17 — D1–D3 ratified (13 §7.3):** D1 guards stay in
+  claude-skills at hooks/self-learn/ — user's governing principle:
+  the product repo is a tool anyone could install; nothing commits
+  there but its own development (M3-7 amended, 08 appendix). D2:
+  AlexK-Notable/self-learn, private. D3: NO autosync on the product
+  repo — manual pushes (recommendation declined). Execution of §7.3
+  awaits the explicit go.

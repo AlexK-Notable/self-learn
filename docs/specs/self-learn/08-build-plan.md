@@ -917,3 +917,13 @@ scope.
   degenerate to the old set exactly); (4) the worker prompt's validator
   claim tightened (pattern-enforced, filename-equality dies at
   collapse).
+
+- **2026-07-17 · M3-7 amended by the D1 ratification (13 §7.3):**
+  project/user-scope guard scripts are HOST CANON, landing at
+  `<skills_root>/hooks/self-learn/`, not in the product's plugin dir
+  (the original placement conflated product and host while they shared
+  a repo). Governing principle (user, verbatim in 13 §7.3): the product
+  repo receives nothing but its own development work. The two live
+  guards (lrn-dd9489b2, lrn-4f5971c8) migrate `script_path` in runbook
+  step 1; script filenames — and therefore ~/.claude/hooks names and
+  settings.json entries — never change.
