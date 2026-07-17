@@ -82,7 +82,11 @@ def _seed(tmp_path: Path):
 class TestPaneManagerNotWired:
     def test_start_degrades_to_503_never_500(self, tmp_path: Path) -> None:
         sb, rec = _seed(tmp_path)
-        c, _runner = make_client(sb)  # no pane_manager attached
+        c, _runner = make_client(sb)
+        # create_app() wires a real pane manager by default since the
+        # U6 merge — force the not-wired state the degrade path guards
+        # (09 §5: adjudication never depends on an optional subsystem).
+        c.app.state.pane_manager = None
         r = c.post(f"/record/{rec.id}/pane/start", headers=HX)
         assert r.status_code == 503
 

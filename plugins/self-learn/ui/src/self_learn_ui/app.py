@@ -18,7 +18,7 @@ from fastapi.templating import Jinja2Templates
 from jinja2 import Environment, FileSystemLoader
 from starlette.staticfiles import StaticFiles
 
-from . import ledger, rendering
+from . import ledger, pane, rendering
 from .env import EnvConfig
 from .middleware import SecurityMiddleware
 from .routes import router
@@ -93,6 +93,9 @@ def create_app(
     app.state.app_hub = app_hub
     app.state.templates = _build_templates()
     app.state.watch_stop_event = stop_event
+    app.state.pane_manager = pane.build_pane_manager(
+        env=env, runner=runner, app_hub=app_hub, refresh_hub=refresh_hub
+    )
 
     app.add_middleware(SecurityMiddleware, port=env.ui_port, token=token)
     app.include_router(router)
