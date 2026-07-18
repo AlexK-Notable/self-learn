@@ -58,7 +58,11 @@
       {% endblock %}
     </header>
 
-    <main id="self-learn-ui-content">
+    {# tabindex="-1" (09 §11 Y-19 item 3): programmatically focusable —
+       never in the tab order — so app.js's ensureContentFocus() can
+       guarantee the keyboard contract is live on load without adding
+       this landmark to Tab-key navigation. #}
+    <main id="self-learn-ui-content" tabindex="-1">
       {% block content %}{% endblock %}
     </main>
 

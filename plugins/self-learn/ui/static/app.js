@@ -99,6 +99,54 @@
     if (link) window.location.href = link.getAttribute("href");
   }
 
+  /**
+   * 09 §11 Y-19 item 3 (survey P1a): the first actionable row is
+   * selected on load, not just on the first w/s press. Every navigation
+   * in this app is a full document load (queue-walk hops arrive via
+   * HX-Redirect, SSE/poll refreshes go through the reload() chokepoint
+   * below — there is no htmx partial swap that
+   * changes the row list), so a single DOMContentLoaded hook covers
+   * "on load AND every queue-walk hop" without a second wiring point.
+   * A no-op when a row is already selected (defensive — nothing in this
+   * app currently pre-renders .selected, but a future server-side
+   * default per the survey's alternative mechanism must not fight this).
+   */
+  function ensureRowSelected() {
+    const list = rows();
+    if (!list.length) return;
+    if (list.some((r) => r.classList.contains("selected"))) return;
+    list[0].classList.add("selected");
+  }
+
+  /**
+   * 09 §11 Y-19 item 3: guarantee the keyboard contract is live without
+   * a prior click, by making sure nothing UNEXPECTED already holds
+   * focus. The keydown handler is document-level and only goes inert
+   * inside a text input (focusIsTextInput above), so a fresh document
+   * load already works without this — this is the belt for the survey's
+   * own robustness framing, not a fix for an observed dead key. It must
+   * NEVER steal focus from a pane's send input (a live Iterate/bucket
+   * chat session) or from the note field inside an armed/unarmed action
+   * bar (the U14/Y-16 armed-bar and error-strip focus behaviors this
+   * item must not break) — so it only acts when the active element is
+   * still the untouched document default (body/html), never when
+   * something has already, legitimately, taken focus.
+   */
+  function ensureContentFocus() {
+    const content = document.getElementById("self-learn-ui-content");
+    if (!content || typeof content.focus !== "function") return;
+    const active = document.activeElement;
+    if (active && active !== document.body && active !== document.documentElement) {
+      return; // something already holds focus on purpose — never steal it
+    }
+    content.focus({ preventScroll: true });
+  }
+
+  document.addEventListener("DOMContentLoaded", function () {
+    ensureRowSelected();
+    ensureContentFocus();
+  });
+
   /** Esc-in-pane interrupts the stream FIRST (keymap.py's "up" row: "Back
    * / up a level (interrupts the pane first, if focused)" — 09 §2.4). The
    * interrupt control (pane.html) only renders while a turn is plausibly

@@ -20,17 +20,20 @@ needed for T-A (09 §7 / 10 §2 T-A).
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Form, Request
+from fastapi import APIRouter, BackgroundTasks, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from starlette.responses import StreamingResponse
 
 from self_learn.hosts import is_repo_root
+from self_learn.records import Record
 
 from . import ledger, models, pane, proposals, rendering
 from .keymap import keymap_as_dicts, keymap_json
+from .prefetch import DetailPrefetchCache
 from .sse import envelope_applying, envelope_banner, envelope_bulk_progress, event_stream
 
 router = APIRouter()
@@ -142,24 +145,136 @@ def cycle_destination(current: str | None, scope: str) -> str:
     return cycle[(idx + 1) % len(cycle)]
 
 
-def next_record_url(home: Path, bucket_name: str, resolved_id: str) -> str:
-    """09 §2 / P3-9's "flow after resolution": the next pending record in
-    the SAME bucket (any destination group, oldest-first per the CLI's own
-    list order), excluding *resolved_id* itself. ``/?notice=bucket-clear``
-    when nothing remains — Front, not the now-empty bucket page (09 §1:
-    "if the bucket empties, return to Front with a one-line bucket-clear
-    banner")."""
+def _next_pending_id(home: Path, bucket_name: str, exclude_id: str) -> str | None:
+    """The next pending record in the SAME bucket (any destination group,
+    oldest-first per the CLI's own list order), excluding *exclude_id*
+    itself, or ``None`` when nothing remains. The ONE shared computation
+    (P2-4) behind both :func:`next_record_url` (the queue-walk's actual
+    hop target) and the Y-19 item 1 prefetch trigger in
+    :func:`detail_page` — the prefetch warms exactly the record the walk
+    would land on next, never a second guess at what "next" means."""
     read = ledger.list_items(home, include_deferred=False)
     if not read.ok or not read.data:
+        return None
+    for item in read.data:
+        if item.get("bucket") == bucket_name and item.get("id") != exclude_id:
+            return item["id"]
+    return None
+
+
+def next_record_url(home: Path, bucket_name: str, resolved_id: str) -> str:
+    """09 §2 / P3-9's "flow after resolution": the next pending record in
+    the SAME bucket, excluding *resolved_id* itself. ``/?notice=bucket-
+    clear`` when nothing remains — Front, not the now-empty bucket page
+    (09 §1: "if the bucket empties, return to Front with a one-line
+    bucket-clear banner")."""
+    next_id = _next_pending_id(home, bucket_name, resolved_id)
+    if next_id is None:
         return f"/?notice={NOTICE_BUCKET_CLEAR}"
-    remaining = [
-        item
-        for item in read.data
-        if item.get("bucket") == bucket_name and item.get("id") != resolved_id
-    ]
-    if not remaining:
-        return f"/?notice={NOTICE_BUCKET_CLEAR}"
-    return f"/record/{remaining[0]['id']}"
+    return f"/record/{next_id}"
+
+
+# --------------------------------------------------- Y-19 item 1: prefetch
+
+
+@dataclass(frozen=True)
+class DetailReadBundle:
+    """Everything Detail's reads assemble for one record — the exact
+    shape :func:`_gather_detail_bundle` returns, cached verbatim by the
+    Y-19 item 1 prefetch (:mod:`self_learn_ui.prefetch`). Deliberately
+    excludes anything live/in-memory (pane snapshot, proposal slot) —
+    those are never cached, always read fresh at render time, per
+    09 §3's "no state that isn't a file" posture: this bundle is a memo
+    of FILE reads only."""
+
+    location: ledger.RecordLocation
+    record: Record
+    item: dict
+    proposal: dict | None
+    diff_text: str | None
+    proposal_raw_text: str | None
+    registry: list[dict]
+    host_registered: bool
+    host_add_command: str | None
+
+
+def _gather_detail_bundle(home: Path, record_id: str) -> DetailReadBundle | None:
+    """The full CLI-read set Detail needs, assembled ONCE (P2-4) and
+    shared by two callers: the fresh-render path in :func:`detail_page`
+    on a cache miss, and the Y-19 item 1 background prefetch task
+    (:func:`_warm_detail_prefetch`). ``None`` when the record can't be
+    resolved at all (unknown id) — callers branch on that exactly as the
+    former ``_load_detail`` did."""
+    location = ledger.locate_record(home, record_id)
+    if location is None:
+        return None
+    record = ledger.read_record(location.path)
+    if record is None:
+        return None
+    list_read = ledger.list_items(home, include_deferred=True)
+    item = None
+    if list_read.ok:
+        item = next((i for i in (list_read.data or []) if i.get("id") == record_id), None)
+    if item is None:
+        # Resolved records fall out of `list --json` (pending-only) —
+        # synthesize the minimal shape Detail needs from the record itself.
+        item = {
+            "id": record.id,
+            "has_proposal": False,
+            "proposal_fresh": False,
+            "destination": None,
+            "already_canon": False,
+            "deferred_until": None,
+            "source": record.source,
+            "bucket": location.bucket_name,
+            "host_registered": True,
+            "title": models.leading_text(None, [], ""),
+        }
+    proposal, _err = ledger.read_proposal_raw(location.bucket_dir, record_id)
+    diff_text = ledger.read_diff(location.bucket_dir, record_id)
+    proposal_raw_text = ledger.read_proposal_text(location.bucket_dir, record_id)
+    registry = ledger.read_registry()
+    host_registered = item.get("host_registered", True)
+    host_add_command = models.host_add_command(
+        location.scope, ledger.project_path_for(location.bucket_dir)
+    )
+    return DetailReadBundle(
+        location=location,
+        record=record,
+        item=item,
+        proposal=proposal,
+        diff_text=diff_text,
+        proposal_raw_text=proposal_raw_text,
+        registry=registry,
+        host_registered=host_registered,
+        host_add_command=host_add_command,
+    )
+
+
+def _warm_detail_prefetch(
+    cache: DetailPrefetchCache,
+    hub: "ledger.RefreshHub",
+    home: Path,
+    record_id: str,
+) -> None:
+    """09 §11 Y-19 item 1 (survey P2b): warm the queue-walk's likely next
+    hop. The generation is captured BEFORE the reads run — if a refresh
+    (a concurrent resolution, a mined arrival, anything) lands mid-read,
+    the entry is stamped against an already-superseded generation and is
+    therefore stale the INSTANT it is written, never served (the
+    CRITICAL staleness rule: no window where a half-fresh read can look
+    valid). A read failure (the record vanished between the trigger and
+    this task running) simply stores nothing — the next navigation falls
+    through to the ordinary fresh path, exactly the cache-miss behavior.
+    Runs as a plain sync function (FastAPI/Starlette dispatches a
+    non-coroutine ``BackgroundTasks`` callable through a threadpool) —
+    :func:`_gather_detail_bundle` is blocking I/O (subprocess + file
+    reads), never a model call (zero token cost, per the survey's own
+    framing)."""
+    generation = hub.generation
+    bundle = _gather_detail_bundle(home, record_id)
+    if bundle is not None:
+        cache.put(record_id, generation, bundle)
 
 
 # ---------------------------------------------------------------- template ctx
@@ -304,44 +419,32 @@ def bucket_page(request: Request, scope: str, name: str, notice: str | None = No
 # --------------------------------------------------------------------- Detail
 
 
-def _load_detail(home: Path, record_id: str):
-    """Returns ``(location, record, item, bucket)`` or ``None`` triples
-    on any failure to resolve — callers branch on ``None``."""
-    location = ledger.locate_record(home, record_id)
-    if location is None:
-        return None
-    record = ledger.read_record(location.path)
-    if record is None:
-        return None
-    list_read = ledger.list_items(home, include_deferred=True)
-    item = None
-    if list_read.ok:
-        item = next((i for i in (list_read.data or []) if i.get("id") == record_id), None)
-    if item is None:
-        # Resolved records fall out of `list --json` (pending-only) —
-        # synthesize the minimal shape Detail needs from the record itself.
-        item = {
-            "id": record.id,
-            "has_proposal": False,
-            "proposal_fresh": False,
-            "destination": None,
-            "already_canon": False,
-            "deferred_until": None,
-            "source": record.source,
-            "bucket": location.bucket_name,
-            "host_registered": True,
-            "title": models.leading_text(None, [], ""),
-        }
-    return location, record, item
+def _detail_cache(request: Request) -> DetailPrefetchCache | None:
+    return getattr(request.app.state, "detail_prefetch", None)
+
+
+def _refresh_hub(request: Request) -> "ledger.RefreshHub | None":
+    return getattr(request.app.state, "refresh_hub", None)
 
 
 @router.get("/record/{record_id}", response_class=HTMLResponse)
-def detail_page(request: Request, record_id: str) -> Response:
+def detail_page(request: Request, record_id: str, background_tasks: BackgroundTasks) -> Response:
     home = _home(request)
-    loaded = _load_detail(home, record_id)
-    if loaded is None:
+    hub = _refresh_hub(request)
+    generation = hub.generation if hub is not None else 0
+
+    # Y-19 item 1: a warm hit skips every subprocess/file read below —
+    # bundle is IDENTICAL in shape whether it came from the cache or a
+    # fresh gather (same function produced it either way, P2-4). A miss
+    # (never prefetched, or prefetched-then-invalidated) falls through to
+    # the ordinary read exactly as before this amendment.
+    cache = _detail_cache(request)
+    bundle = cache.get(record_id, generation) if cache is not None else None
+    if bundle is None:
+        bundle = _gather_detail_bundle(home, record_id)
+    if bundle is None:
         return RedirectResponse(url=f"/?notice={NOTICE_NOT_FOUND}", status_code=303)
-    location, record, item = loaded
+    location, record, item = bundle.location, bundle.record, bundle.item
 
     if record.status not in ("pending", "deferred"):
         # 09 §11 P1-9c: land on the Bucket page with a banner; Front if
@@ -354,31 +457,25 @@ def detail_page(request: Request, record_id: str) -> Response:
         target = f"/bucket/{location.scope}/{location.bucket_name}?notice={NOTICE_RESOLVED_ELSEWHERE}"
         return RedirectResponse(url=target, status_code=303)
 
-    proposal, _err = ledger.read_proposal_raw(location.bucket_dir, record_id)
-    diff_text = ledger.read_diff(location.bucket_dir, record_id)
-    proposal_raw_text = ledger.read_proposal_text(location.bucket_dir, record_id)
-    registry = ledger.read_registry()
-    host_registered = item.get("host_registered", True)
-    host_add_command = models.host_add_command(
-        location.scope, ledger.project_path_for(location.bucket_dir)
-    )
-
     model = models.build_detail_model(
         item,
         record,
-        proposal,
-        diff_text,
-        proposal_raw_text,
-        registry,
+        bundle.proposal,
+        bundle.diff_text,
+        bundle.proposal_raw_text,
+        bundle.registry,
         bucket=location.bucket_name,
         scope=location.scope,
-        host_registered=host_registered,
-        host_add_command=host_add_command,
+        host_registered=bundle.host_registered,
+        host_add_command=bundle.host_add_command,
     )
 
     # 09 §2.4: Detail renders the iterate split whenever a pane session
     # (live OR just-ended) exists for THIS record; otherwise the plain
     # Iterate control (plus any persisted validate badge — 09 §4.3).
+    # Deliberately NEVER cached (prefetch.py's docstring): live/in-memory
+    # state is read fresh on every render regardless of the bundle's
+    # cache/miss origin.
     manager = _pane_manager(request)
     pane_snapshot = manager.snapshot(record_id) if manager is not None else None
     pane_split = pane_snapshot is not None and pane_snapshot.state != pane.STATE_IDLE
@@ -391,7 +488,7 @@ def detail_page(request: Request, record_id: str) -> Response:
     if slot is not None and slot.current is not None and slot.current.record_id == record_id:
         record_proposal = slot.current
 
-    return _render(
+    response = _render(
         request,
         "detail.html",
         {
@@ -409,6 +506,21 @@ def detail_page(request: Request, record_id: str) -> Response:
             ),
         },
     )
+
+    # Y-19 item 1: warm the queue-walk's likely next hop — the exact
+    # record next_record_url would land on if the human resolves THIS
+    # one right now. Scheduled as a background task (FastAPI attaches it
+    # below) so it never delays this page's own paint; explicitly
+    # attached to the response rather than relied on to auto-attach,
+    # since this route returns a Response object directly (FastAPI only
+    # auto-attaches BackgroundTasks when it builds the Response itself).
+    if cache is not None and hub is not None:
+        next_id = _next_pending_id(home, location.bucket_name, record_id)
+        if next_id is not None:
+            background_tasks.add_task(_warm_detail_prefetch, cache, hub, home, next_id)
+            response.background = background_tasks
+
+    return response
 
 
 # ------------------------------------------------------------------- pane
@@ -502,6 +614,54 @@ def pane_panel(request: Request, record_id: str) -> HTMLResponse:
     if snapshot is not None and snapshot.state != pane.STATE_IDLE:
         return _render(request, "partials/pane.html", {"record_id": record_id, "pane": snapshot})
     return _render(request, "partials/pane_idle.html", {"record_id": record_id, "pane": snapshot})
+
+
+# --------------------------------------------------------------- worker
+
+
+@router.post("/worker/kick")
+async def worker_kick(request: Request) -> Response:
+    """09 §11 Y-19 item 2 (survey P2a): the missing symmetric affordance
+    to :func:`mine_run` below — the M2 proposal drafter had NO UI trigger
+    at all before this route (the survey's "single most surprising
+    finding"). Same pattern as ``mine_run``: no arm-then-confirm ceremony
+    (this is ``worker kick``, the idempotent-by-construction trigger — see
+    below — never a resolution verb), a forced front-scope refresh so the
+    status strip's ``worker: …`` label and the bucket table's
+    ``unanalyzed`` counts update as proposals land, an ``HX-Redirect``
+    back to Front.
+
+    UNLIKE ``mine_run``, this does NOT hold the server resident for the
+    whole analysis pass (Y-14 — ``mine run`` "executes immediately", 12
+    §"R2"/08 §7.1, so THAT await genuinely spans the whole mining run;
+    ``worker kick`` is a different verb): per 08 §7.1, ``self-learn
+    worker kick`` touches ``worker.dirty``, takes ``worker.spawn.lock``,
+    and — unless a coalescing window is already open — ``setsid``-spawns
+    the real ``worker run --coalesce`` DETACHED before returning. The
+    subprocess this route awaits is that short-lived kick, not the
+    worker's own run, so this request's in-flight window is the kick's
+    own runtime (milliseconds to the flock, no model call in it at all);
+    the detached worker keeps analyzing — and can itself outlive an
+    idle-exit — long after this request and even this server process are
+    gone. This is exactly the "detached spawn, not an in-process await"
+    posture the parallel affordance needs.
+
+    Double-click safety is CLI-owned, not button-owned — mirroring
+    ``mine_run``'s own template, which carries no client-side guard
+    either (10 §1 "Verb runner" row's one-subprocess-at-a-time
+    serialization is the only brace either button gets from THIS layer).
+    ``worker.kick()``'s own flock + ``worker.window`` pid file absorb a
+    second kick landing while a window is already open — the CLI
+    documents the outcomes as ``spawned`` \\| ``absorbed-window`` \\|
+    ``absorbed-race`` \\| ``disabled``; two rapid clicks can produce AT
+    MOST one spawned worker, never two, by construction in the CLI layer
+    this route calls into unchanged."""
+    runner = request.app.state.runner
+    await runner.run(["worker", "kick"])
+    _force_refresh(request, "front")
+    resp = Response(status_code=200)
+    resp.headers["HX-Redirect"] = "/"
+    return resp
 
 
 # ---------------------------------------------------------------- miner

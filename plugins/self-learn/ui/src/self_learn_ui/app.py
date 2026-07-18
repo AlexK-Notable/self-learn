@@ -22,6 +22,7 @@ from . import ledger, pane, rendering
 from .env import EnvConfig
 from .idle import ActivityTracker, IdleMonitor
 from .middleware import SecurityMiddleware
+from .prefetch import DetailPrefetchCache
 from .routes import router
 from .runner import RealRunner, VerbRunner
 from .sse import AppEventHub
@@ -135,6 +136,11 @@ def create_app(
     app.state.pane_manager = pane.build_pane_manager(
         env=env, runner=runner, app_hub=app_hub, refresh_hub=refresh_hub
     )
+    # 09 §11 Y-19 item 1: the next-record prefetch cache. One instance per
+    # server (same lifetime as refresh_hub, which it is generation-gated
+    # against — self_learn_ui.prefetch's module docstring has the full
+    # staleness contract).
+    app.state.detail_prefetch = DetailPrefetchCache()
 
     app.add_middleware(SecurityMiddleware, port=env.ui_port, token=token, tracker=tracker)
     app.include_router(router)

@@ -96,6 +96,16 @@
 </section>
 {% endif %}
 
+<section aria-label="worker">
+  <h2>Worker</h2>
+  <p>{{ model.status.worker_stale_label }}</p>
+  <form>
+    <button type="submit" formmethod="post" formaction="/worker/kick"
+            hx-post="/worker/kick" hx-swap="none"
+            title="Force the pre-analysis worker to draft routing proposals for anything waiting — the same one-click affordance as the miner's, below.">Force run</button>
+  </form>
+</section>
+
 <section aria-label="miner">
   <h2>Miner</h2>
   {% if model.miner.ok %}
