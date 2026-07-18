@@ -690,3 +690,45 @@ class TestNonBlockingStartRoutes:
         panel = c.get("/bucket/skill/s/pane/panel")
         assert "bucket chat reply" in panel.text
         assert runner.calls == []  # bucket sessions owe no validate
+
+
+class TestLifespanShutdown:
+    def test_lifespan_shutdown_tears_down_the_live_pane(self, tmp_path: Path) -> None:
+        # Code-review MINOR-2: pre-Y-15 an in-flight turn lived inside a
+        # request uvicorn's graceful shutdown waited for; the background
+        # drain does not — the lifespan finally must tear it down, never
+        # leak a free-floating task or an open engine child.
+        from typing import cast
+
+        from fastapi import FastAPI
+
+        from self_learn_ui.engine.base import TextDelta as _TextDelta
+
+        sb, rec = _seed(tmp_path)
+        runner = FakeRunner()
+        env = load_env(sb.env)
+        app = cast(FastAPI, create_app(env=env, token=TOKEN, runner=runner, start_watcher=False))
+        engine = _GatedRouteEngine([_TextDelta(text="never delivered")])
+
+        def context_builder(record_id: str) -> "pane.PaneContext":
+            return pane.build_pane_context(sb.ledger, record_id, read_doctrine_fn=lambda: "D")
+
+        manager = pane.PaneManager(
+            engine_factory=lambda: engine,  # type: ignore[arg-type,return-value]
+            context_builder=context_builder,
+            app_hub=app.state.app_hub,
+            refresh_hub=app.state.refresh_hub,
+            runner=runner,
+        )
+        app.state.pane_manager = manager
+
+        with TestClient(app, base_url="http://127.0.0.1:7357") as c:
+            c.cookies.set("slu_token", TOKEN)
+            r = c.post(f"/record/{rec.id}/pane/start", headers=HX)
+            assert r.status_code == 200
+            assert manager.active_record_id == rec.id
+
+        # The with-exit ran the lifespan finally: session gone, engine
+        # closed, nothing left running.
+        assert manager.active_record_id is None
+        assert engine.close_calls == 1

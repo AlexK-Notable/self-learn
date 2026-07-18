@@ -16,7 +16,9 @@
 <div id="pane-region-wrapper" class="pane-region" data-key-context="pane" data-pane-state="{{ pane.state }}"
      data-pane-panel-url="{{ pane_base | default('/record/' ~ record_id ~ '/pane') }}/panel">
   <div id="pane-transcript" aria-live="polite">
-    {% if pane.state in ("starting", "streaming", "interrupting") and not pane.blocks and not pane.current_kind %}
+    {# NOT shown while interrupting (review NIT-2): a stopping session
+       must never claim to be starting — Y-9 honesty. #}
+    {% if pane.state in ("starting", "streaming") and not pane.blocks and not pane.current_kind %}
     <p class="pane-activity" id="pane-starting-line" aria-live="polite">Starting the conversation&hellip;</p>
     {% endif %}
     {% for block in pane.blocks %}

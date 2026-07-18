@@ -33,7 +33,10 @@ manager-current publishes nothing and clears nothing (the identity
 guard). ``send()`` keeps the ORIGINAL awaited-in-request convention —
 its POST response renders the post-turn state (Y-15/F6: send's
 authoritative-swap semantics untouched) — but dispatches an engine turn
-ONLY at awaiting-input (Y-15/F2: one in-flight turn per session, ever).
+ONLY at awaiting-input (Y-15/F2: one in-flight turn per session, ever —
+including the post-Result validate window, which stays INSIDE the turn:
+the drain tail runs the validate and parks at awaiting-input only after
+it completes).
 Esc during the pre-connect window latches ``interrupt_requested``; the
 drain honors the latch at its first post-connect boundary and a
 never-connected turn parks ENDED without starting (Y-15/F4).
@@ -465,6 +468,11 @@ class _Live:
     #: The drain already replayed the latched interrupt to the engine —
     #: one replay per turn (engine interrupt is idempotent, delta R4).
     interrupt_replayed: bool = False
+    #: The CURRENT turn ended with a clean Result (review MAJOR-1): the
+    #: drain tail runs the post-session validate and only THEN parks at
+    #: awaiting-input — the validate window stays inside the turn, so
+    #: send() can never dispatch into it. Reset at every drain entry.
+    turn_had_clean_result: bool = False
 
 
 @dataclass(frozen=True)
@@ -600,26 +608,27 @@ class PaneManager:
         (F5) — and the first turn drains in a background task; callers
         render the STARTING snapshot and the SSE stream fills it. Tests
         join deterministically via :meth:`wait_for_turn`."""
-        if self._live is not None:
+        while self._live is not None:
             if self._live.record_id != record_id:
                 if not force:
                     return "armed"
                 await self._teardown_live()
-            elif self._live.state != STATE_ENDED:
+                continue  # re-run the guard after the await (F5)
+            if self._live.state != STATE_ENDED:
                 return "resumed"
-            else:
-                old, self._live = self._live, None
-                # r-retry same-key window (Y-15/F3): the predecessor's
-                # drain is disposed BEFORE the successor claims — a late
-                # clear from it can never wipe the new session's slot.
-                await self._dispose_drain(old)
-            if self._live is not None:
-                # The teardown/dispose awaited; a concurrent start
-                # claimed the slot meanwhile — re-run the guard's answer
-                # rather than clobbering the claimant (F5).
-                if self._live.record_id == record_id and self._live.state != STATE_ENDED:
-                    return "resumed"
-                return "armed"
+            old, self._live = self._live, None
+            # r-retry same-key window (Y-15/F3 + review MINOR-1): the
+            # predecessor's drain is disposed AND its engine closed
+            # BEFORE the successor claims — a late clear can never wipe
+            # the new session's slot, and no SDK/CLI child leaks per
+            # retry (an errored/cap-hit session's engine was never
+            # closed by its own turn). The loop re-runs the guard after
+            # these awaits (F5); a same-key ENDED claimant landing in
+            # this window is cleared too, never armed against its own
+            # record (review NIT-1).
+            await self._dispose_drain(old)
+            if old.engine is not None:
+                await old.engine.close()
 
         live = _Live(record_id=record_id)
         self._live = live  # synchronous with the guard above (F5)
@@ -744,6 +753,15 @@ class PaneManager:
         await self._teardown_live()
         return True
 
+    async def shutdown(self) -> None:
+        """App-shutdown teardown (``app.py``'s lifespan ``finally``;
+        review MINOR-2): pre-Y-15 an in-flight turn lived inside a
+        request uvicorn's graceful shutdown waited for — the background
+        drain does not, so the lifespan tears the live session down
+        explicitly (drain cancelled-or-awaited, engine closed, slot
+        cleared) instead of leaking a free-floating task."""
+        await self._teardown_live()
+
     async def _teardown_live(self) -> None:
         if self._live is None:
             return
@@ -817,6 +835,7 @@ class PaneManager:
     async def _drain(self, live: _Live, events: AsyncIterator[PaneEvent]) -> None:
         if live.state != STATE_INTERRUPTING:
             live.state = STATE_STREAMING
+        live.turn_had_clean_result = False
         async for event in events:
             if self._live is not live:
                 # Identity guard (Y-15/F3): an orphaned drain publishes
@@ -829,8 +848,25 @@ class PaneManager:
                 assert live.engine is not None
                 await live.engine.interrupt()
             await self._handle_event(live, event)
-        if live.state != STATE_ENDED:
-            live.state = STATE_AWAITING_INPUT
+        if live.state == STATE_ENDED:
+            return
+        # Review MAJOR-1: the post-session validate runs INSIDE the turn
+        # — the state parks at awaiting-input only after it completes,
+        # so send() ("busy" outside awaiting-input) can never dispatch a
+        # second engine turn into the validate window (F2's "ONE
+        # in-flight turn per session, ever", now including this tail).
+        # The pane_result push already went out at the Result event (R2
+        # at-least-once); the validate badge lands one refresh later via
+        # _post_session_validate's own force_refresh — the accepted
+        # two-step render. Bucket sessions write nothing (09 §4.5), so
+        # they owe no validate; record sessions keep the 08 §7.1 pin.
+        if (
+            live.turn_had_clean_result
+            and self._live is live
+            and parse_bucket_session_key(live.record_id) is None
+        ):
+            await self._post_session_validate(live.record_id)
+        live.state = STATE_AWAITING_INPUT
 
     async def _finalize_current(self, live: _Live) -> None:
         if live.current_kind is None:
@@ -869,7 +905,14 @@ class PaneManager:
             live.result_turns = event.turns
             live.cap_hit = bool(event.error) and _is_cap_hit(event.status)
             live.error_message = event.error
-            live.state = STATE_ENDED if event.error else STATE_AWAITING_INPUT
+            if event.error:
+                live.state = STATE_ENDED
+            else:
+                # Review MAJOR-1: a clean Result does NOT park the
+                # session here — the state stays streaming through the
+                # drain tail's validate; awaiting-input is the tail's
+                # last act.
+                live.turn_had_clean_result = True
             if self._live is not live:
                 # Identity guard (Y-15/F3): _finalize_current awaited
                 # above, so a teardown may have interleaved — an
@@ -888,14 +931,6 @@ class PaneManager:
                     "turns": event.turns,
                 }
             )
-            if (
-                event.error is None
-                and self._live is live
-                and parse_bucket_session_key(live.record_id) is None
-            ):
-                # Bucket sessions write nothing (09 §4.5) — no validate
-                # obligation; record sessions keep the 08 §7.1 pin.
-                await self._post_session_validate(live.record_id)
 
     async def _post_session_validate(self, record_id: str) -> None:
         """09 §4.3 / task brief: on session end, ``self-learn proposal

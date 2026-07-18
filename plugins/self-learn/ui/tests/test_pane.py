@@ -1119,3 +1119,123 @@ class TestNonBlockingStart:
         engine.gate.set()
         await manager.wait_for_turn()
         assert runner.calls == [["proposal", "validate", RECORD_ID]]
+
+
+class _SlowValidateRunner(FakeRunner):
+    """Blocks inside the post-session validate — pins the code-review
+    MAJOR-1 window: the turn is not over until validate completes, so a
+    send landing between the Result event and validate's return must be
+    "busy", never a concurrent second engine turn."""
+
+    def __init__(self) -> None:
+        import asyncio
+
+        super().__init__()
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def run(self, argv: list[str]) -> RunResult:
+        self.entered.set()
+        await self.release.wait()
+        return await super().run(argv)
+
+
+class TestPostResultValidateWindow:
+    """Code-review fold (MAJOR-1 + MINOR-1 + NIT-1/NIT-3 branch tests)."""
+
+    async def test_send_during_the_post_result_validate_window_is_busy(self) -> None:
+        engine = FakeEngine(
+            turns=[
+                [Result("success", 0.0, None)],
+                [Result("success", 0.0, None)],
+            ]
+        )
+        runner = _SlowValidateRunner()
+        runner.queue_result(RunResult(0))
+        runner.queue_result(RunResult(0))
+        # Keep `runner` bound to the _SlowValidateRunner it already is —
+        # _manager returns the same object, but rebinding through its
+        # FakeRunner-typed tuple would erase the subclass for pyright.
+        manager, _runner, app_hub, _refresh = _manager(engines={RECORD_ID: engine}, runner=runner)
+        sub = app_hub.subscribe()
+
+        await manager.start(RECORD_ID)
+        await runner.entered.wait()  # the drain is INSIDE validate now
+
+        # pane_result already went out (R2 at-least-once) but the turn
+        # is NOT over — awaiting-input arrives only after validate.
+        frames = await _drain_queue(sub)
+        assert any(f["type"] == "pane_result" for f in frames)
+        assert manager.snapshot(RECORD_ID).state == pane.STATE_STREAMING
+        assert await manager.send(RECORD_ID, "sneaky mid-validate send") == "busy"
+        assert engine.sent == []  # the engine never saw it
+
+        runner.release.set()
+        await manager.wait_for_turn()
+        assert manager.snapshot(RECORD_ID).state == pane.STATE_AWAITING_INPUT
+        assert await manager.send(RECORD_ID, "now") == "sent"
+        assert engine.sent == ["now"]
+
+    async def test_retry_closes_the_predecessors_engine(self) -> None:
+        # MINOR-1: an errored/cap-hit session's engine was never closed
+        # by its own turn — the r-retry same-key branch closes it before
+        # the successor claims (no orphaned SDK/CLI child per retry).
+        first = _RaisingEngine()
+        engines_iter = iter([first, FakeEngine(turns=[[Result("success", 0.0, None)]])])
+        manager, *_ = _manager(default_engine_factory=lambda: next(engines_iter))
+
+        await _start_and_join(manager, RECORD_ID)
+        assert manager.snapshot(RECORD_ID).state == pane.STATE_ENDED
+        assert first.close_calls == 0
+
+        assert await _start_and_join(manager, RECORD_ID) == "started"
+        assert first.close_calls == 1
+        assert manager.snapshot(RECORD_ID).state == pane.STATE_AWAITING_INPUT
+
+    async def test_concurrent_claim_during_the_retry_dispose_window(self) -> None:
+        # NIT-3 (the F5 sub-claim): a start landing while the retry is
+        # inside its dispose/close awaits wins the slot; the retry's
+        # re-guard loop yields "armed" — never a clobbered claimant.
+        import asyncio
+
+        class _SlowCloseEngine(PaneEngine):
+            def __init__(self) -> None:
+                self.gate = asyncio.Event()
+                self.interrupt_calls = 0
+                self.close_calls = 0
+
+            async def start(self, ctx: PaneContext):
+                raise RuntimeError("first engine dies")
+                yield  # pragma: no cover
+
+            async def send(self, text: str):
+                raise RuntimeError("never")
+                yield  # pragma: no cover
+
+            async def interrupt(self) -> None:
+                self.interrupt_calls += 1
+
+            async def close(self) -> None:
+                self.close_calls += 1
+                await self.gate.wait()
+
+        slow = _SlowCloseEngine()
+        calls = {"n": 0}
+
+        def factory() -> PaneEngine:
+            calls["n"] += 1
+            return slow if calls["n"] == 1 else FakeEngine(turns=[[Result("success", 0.0, None)]])
+
+        manager, *_ = _manager(default_engine_factory=factory)
+        await _start_and_join(manager, RECORD_ID)
+        assert manager.snapshot(RECORD_ID).state == pane.STATE_ENDED
+
+        retry = asyncio.create_task(manager.start(RECORD_ID))
+        await asyncio.sleep(0)  # retry parked inside old.engine.close()
+        assert manager.active_record_id is None  # the dispose window is open
+
+        assert await manager.start("lrn-bb000002") == "started"  # concurrent claim
+        slow.gate.set()
+        assert await retry == "armed"  # the re-guard loop, not a clobber
+        assert manager.active_record_id == "lrn-bb000002"
+        await manager.wait_for_turn()

@@ -406,6 +406,10 @@
   var PANE_COMPLETION_RETRY_MS = 1500;
 
   function paneSwapBlocked(region) {
+    // Page-wide armed check — intentionally WIDER than the R1 pin
+    // (which names only the pane region's own armed prompt/input):
+    // deferral-only, so the failure direction is a late swap, never a
+    // clobbered decision (code-review NIT-3, acknowledged).
     if (findArmedBar()) return true;
     if (region.classList.contains("pane-armed")) return true; // armed interrupt prompt
     var input = region.querySelector('#pane-input-form input[name="text"]');
