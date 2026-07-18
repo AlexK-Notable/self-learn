@@ -544,6 +544,75 @@ in brackets.
   intervention (pane opened after the merge shows the
   ancestor-project clause in its judgment).
 
+- **U18 · Miner episode brief — capture, exclusion, and collapsed
+  display** [spans cli + ui] *(added 2026-07-18 — UX enhancement survey
+  item 5; 12 §11 miner contract; 02 §1 body-section + compiler-exclusion
+  pin; 09 §2.3 display; 09 §11 Y-21. Parallel round-authors hold
+  Y-19/Y-20 and their own U-rows; the orchestrator reconciles U-numbering
+  at merge, as U15↔U14 did)*. Three edges, one row:
+  **(a) miner (cli package).** The reader's structured-output schema
+  gains an optional `episode_brief` string (12 §2 Phase 2). **The brief
+  is composed into `record.body` inside `_build_record`
+  (miner.py:812–862) — before `_scan_candidate` (miner.py:1024), never
+  in `create_record` (miner.py:1046, which runs after the scan)**: this
+  compose-before-scan ordering is the invariant that makes "no new scan
+  path" true (an unscanned attacker-influenceable prose field otherwise).
+  Written for `source: session` net-new landings only (never on a
+  Phase-3 sighting-append, never for teach/import). Enforcement at
+  landing (12 §10-2 posture): a dedicated section char cap
+  (**≤1200 chars** ≈ the 200-word bound; **one-sided** — ceiling
+  enforced, the 100-word floor is rubric-only) **refuses the whole
+  candidate + journals** on over-ceiling (refuse-not-clip; accepts the
+  cost of losing an otherwise-valid lesson under probation, observable in
+  the journal); the existing whole-record **secret scan** (M-2) covers
+  the brief with **no new scan path, given the compose-before-scan
+  order**. The brief is **free prose with no structured refs** — the
+  evidence quote's `_valid_ref` ref-gating does not apply and is not
+  added (12 §11). `records.py` registers `## Episode brief` as an
+  optional body section for **both** type tuples (documented, and
+  duplicate-guarded only once registered), leaving it optional (no
+  `required` weight).
+  **(b) compiler exclusion (cli package).** No compiler change — the
+  exclusion holds by construction (compilers `sections.get(...)` by
+  explicit name; no whole-body dump). Add a **regression test**: a record
+  carrying a `## Episode brief` compiles to a managed section, a
+  reference-journal entry, and a hook whose outputs contain **none** of
+  the brief text.
+  **(c) ui (ui package).** The finding model in **`models.py`**
+  (`_build_finding`/`FindingRegion` — `ledger.py` is the I/O module, not
+  the model builder) **splits the `## Episode brief` section out** of
+  `record.body` before it becomes `finding.body`, and exposes it
+  separately (e.g. `episode_brief`); `detail.html` renders it as a
+  **collapsed, expandable** block **below** Trigger/Instruction/evidence,
+  absent → renders nothing (no placeholder). Disclosure affordance
+  matches the round-4 legend pattern (a key or click; exact key a build
+  call — keep global-key-uniqueness). No `list --json` change; no
+  freshness badge (the brief has no `record_sha`).
+  *Tests:* cli-suite — reader-schema round-trips an `episode_brief`; a
+  net-new `source: session` land writes the `## Episode brief` section and
+  a teach/import land does **not**; a sighting-append does not add/overwrite
+  a brief; over-cap refuses-and-journals (never truncates); a planted
+  secret **placed only in the brief** refuses at landing and journals
+  `scan-refused` (the compose-before-scan invariant — asserts the brief is
+  in `record.body` when `_scan_candidate` runs); a
+  `proposal validate` on a pending record whose brief was edited to
+  contain a secret **re-scans and flags it** (the non-CLI-edit checkpoint,
+  02 §1/§2 — pins that a human-added/edited brief is caught); the
+  compiler-exclusion regression test (b). ui-suite — a record with a brief
+  renders the collapsed block below decision content and never inline/above;
+  a record without one renders no block and no placeholder; the finding
+  model's decision-content body excludes the brief text. *DoD:* cli + ui
+  suites green; **live miner-run trial** logged in `ui-trials.md` — a
+  forced `mine run` over a synthetic transcript with a clear
+  failure→fix arc (or a real overnight run) lands a `source: session`
+  record whose `## Episode brief` reconstructs the arc in plain words
+  within the cap and carries no verbatim transcript span beyond the
+  evidence quote; opening that record on Detail shows the brief collapsed
+  below the decision content, expandable on summon, with Trigger/Instruction
+  and the diff still above the fold; recompiling the record's eventual
+  target confirms the brief text appears in **no** compiled canon
+  (12 §11 acceptance m-e/m-f/m-g).
+
 Parallelism: superseded 2026-07-17 by **§8 — the parallel execution
 plan** (tracks, file-ownership partition, join points, blockers).
 Polish backlog (explicitly deferred, not silently dropped): `proposal

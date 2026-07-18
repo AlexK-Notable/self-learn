@@ -123,7 +123,11 @@ Structured output (schema-validated, like the worker):
 - **candidates** — draft record fields (type/kind/scope guess, Trigger +
   Instruction in the record's voice, shortest-span evidence quote + turn
   ref, inferred grounding: verified/verified_how/incident_cost/
-  generality) plus `confidence` and a one-line `why_durable`;
+  generality) plus `confidence`, a one-line `why_durable`, and — *added
+  2026-07-18, §11* — an optional **`episode_brief`**: a 100–200-word
+  plain-words reconstruction of the episode, written from the same digest
+  read and landed into the record body's `## Episode brief` section (§11
+  is the full contract);
 - **fire observations** — given the compiled canon index (record id +
   trigger line, supplied in the prompt): spans where a routed rule's
   situation occurred, marked complied|violated, with turn ref.
@@ -463,3 +467,134 @@ the 2026-07-15 doctrine (this change activates real background behavior
   (m-c) `mine status` answers "what happened last night" without
   reading code; (m-d) a planted secret in a synthetic transcript is
   refused at landing and journaled as `scan-refused`.
+
+## 11. Episode briefs — the miner's second record-side output (amendment 2026-07-18, Y-21/U18)
+
+*UX enhancement survey (`research/2026-07-18-ux-enhancement-survey.md`)
+Q4 / shortlist item 5. User's framing: "should the agent that does the
+mining also write up a longer brief that can be shown when the user
+clicks into a potential lesson within a bucket." Register entry
+09 §11 Y-21; build contract 10 §3 U18. This section is the miner-side
+normative pin; 02 §1 owns the record-body-section + compiler-exclusion
+pin, 09 §2.3 owns the Detail display obligation.*
+
+**The gap this closes.** The miner is the **only actor in the pipeline
+that ever reads the full transcript**. The worker reads the record +
+target canon, not the session; the human at review reads the card; and
+the transcript itself is pruned on `cleanupPeriodDays` (§0/§3), so by
+review time the raw episode is usually gone. Today the miner keeps only
+a one-line `why_durable` and the shortest-span evidence quote and
+discards the arc — the clearest case in the system of *capture-time
+context lost before decision time*. The brief captures that arc while it
+still exists.
+
+**What the miner writes.** For a candidate it is landing as a NEW
+`source: session` record (Phase 4), the reader emits an optional
+`episode_brief` field (§2 Phase 2 structured output) and the CLI writes
+it into the record body as a `## Episode brief` section. Contract:
+
+- **Author + timing: miner only, at land, same run.** The reader
+  already spent the digest-read tokens in the one Phase-2 `claude -p`;
+  the brief is **marginal output tokens in that same call** — no new
+  run, no new model pass, no analyst involvement. The brief is a
+  record-body section (the capture producer's native artifact), **never
+  a proposal `card:` section** — cards are the analyst's artifact and
+  writing miner content into one would break the producer/consumer
+  boundary §1's "no card-registry change" pin preserved (the resolution
+  is argued at 02 §1's episode-brief amendment).
+- **Only for records the miner actually authors.** No brief on
+  `source: teach` (a human-confirmed teach has the live conversation the
+  CLI never saw — the human *was* the context; nothing to reconstruct)
+  or `source: backlog`/`auto-memory` (the importer never held a
+  transcript). A later analyst-written brief is explicitly declined for
+  M1: the worker reads record + canon, not the session, so it has no
+  episode to reconstruct — RD §8's story-first card `headline` already
+  carries the analyst's returning-human duty for non-mined records. The
+  brief exists **iff `source: session`**.
+- **On a sighting-append (Phase 3 match to a pending record), the brief
+  is NOT written** — an existing record's brief is not the miner's to
+  overwrite, and a matched sighting produces no new record body. Only a
+  net-new landing carries a brief.
+- **Size + register.** 100–200 words, story form per RD §8: the
+  attempt → failure → correction → resolution arc **in the domestic
+  terms the human lived** — what was tried, what broke, what the fix
+  was. No record ids, no destination enums, no unexpanded acronyms
+  (the Y-9 plain-words register). It **retells; it does not quote** —
+  **no verbatim transcript spans beyond the existing evidence-quote
+  rules** (the shortest-span `quote` stays the record's only verbatim
+  transcript span; teach's evidence rule and §2 Phase 1 are unchanged).
+- **Cost note.** Marginal *generation* cost only on the miner side
+  (output tokens in an already-paid call); zero new infrastructure.
+  **Downstream, though, it is recurring input:** every later worker /
+  analyst / pane run that reads a mined record now ingests the brief as
+  ~1200 chars of **input tokens** each time — small but not zero, and
+  the "marginal output tokens" framing covers only the miner side.
+  It widens the mined record's footprint during the miner's calibration
+  probation (§4), but a legible episode brief plausibly *raises* the
+  mined-card accept rate — the reviewer can defend the decision — which
+  is exactly the metric that decides the miner's fate (§4). Worth trying
+  **within** probation, measured on the same accept-rate surface.
+
+**Landing safety (the leak surface a reconstruction raises).** The brief
+rides the Phase-4 landing exactly as every other landed field — and its
+one non-negotiable build invariant is **compose-before-scan**:
+
+- **Compose site: `_build_record` (miner.py:812–862), before
+  `_scan_candidate` (miner.py:1024).** The "no new scan path" guarantee
+  holds *only* if the brief bytes are already in `record.body` when the
+  scan runs. The `_build_record` → `_scan_candidate` → `create_record`
+  (miner.py:1046) order means the brief **must** be composed into the
+  record body inside `_build_record` — **never** in `create_record`,
+  which runs *after* the scan and would ship an unscanned,
+  attacker-influenceable prose field. Ordering invariant (pin, tested by
+  m-g): the brief the secret scan sees is byte-identical to the brief
+  that lands.
+- **Secret-scanned** — the per-record landing scan (M-2, refuse default,
+  no bypass) covers the whole record file including the brief; a trip
+  refuses the landing and is journaled `scan-refused` (acceptance m-g
+  below). No new scan path — the brief is body bytes the scan already
+  walks, *given the compose-before-scan invariant above*.
+- **Field-length cap, refuse-not-clip** (§10-2 posture): a dedicated
+  cap for the section (pin **≤1200 chars** ≈ the 200-word bound). The
+  cap is **one-sided by design** — the ceiling is enforced; the 100-word
+  floor is rubric guidance only (under-length is a quality nudge, not a
+  safety issue, so it never refuses). Over the ceiling refuses the
+  **whole candidate** (refuse-not-clip — never a truncated brief on a
+  landed record), which **can lose an otherwise-valid lesson**; that
+  cost is accepted deliberately under miner probation (§4), and the
+  journal entry makes it observable — revisit if it fires in practice.
+- **Free prose, no structured refs.** The brief is narrative prose that
+  builds **no origin string** and carries **no structured session/line
+  fields** — so the evidence quote's ref-gating (`_valid_ref`, which
+  guards the *structured* session/line fields that assemble an origin)
+  **does not apply and is not required here**. The whole-record secret
+  scan plus the char cap are the brief's **complete** landing defenses.
+  The reader still has **no filesystem tools** — the brief is generated
+  from the in-prompt digest alone.
+
+**No staleness machinery.** The brief describes the **past** (the origin
+episode), so it cannot go stale against a later record edit the way a
+proposal can (no `record_sha`, no freshness badge, no regeneration). It
+is body substance like Trigger/Instruction: freely editable while the
+record is `pending` (02 §2 freeze-at-routing), editable in Discuss / the
+pane like any other body text and scanned by the same
+`proposal validate` checkpoint (02 §2), and frozen at routing with the
+rest. A human who finds it wrong or leaky edits or deletes the section —
+no special path.
+
+**No backfill.** Records that landed before this amendment have no
+brief and their transcripts may already be pruned, so there is nothing
+to reconstruct — **no backfill run**. An absent `## Episode brief`
+renders nothing (09 §2.3): no block, no placeholder, no apology.
+
+**Acceptance extended (user-present):** (m-e) a forced `mine run` over a
+synthetic transcript with a clear failure→fix arc lands a record whose
+`## Episode brief` reconstructs the arc in plain words within the word
+cap, carries no verbatim transcript span beyond the evidence quote, and
+survives the landing scan; (m-f) a brief that would exceed the char cap
+refuses the candidate and journals it (refuse-not-clip); (m-g) a planted
+secret placed **in the brief text** of a synthetic candidate is refused
+at landing and journaled `scan-refused` — the test that proves the
+compose-before-scan invariant (a secret reaching the record only via the
+brief must still be caught, which holds iff the brief was composed in
+`_build_record` before `_scan_candidate`).
