@@ -183,8 +183,18 @@ class IdleMonitor:
     async def run(self) -> None:
         """The task :func:`self_learn_ui.app.create_app` starts when the
         resolved window is > 0. Cancellation (app shutdown) is the only
-        exit besides the signal itself."""
+        exit besides the signal itself.
+
+        An unexpected exception from a sample must never kill this task
+        silently (code-review MINOR): a dead monitor is resident-forever
+        with no symptom — the exact failure Y-14 exists to remove, in
+        its least observable form. Log and keep sampling.
+        (``CancelledError`` is a ``BaseException`` — the guard below
+        never swallows shutdown.)"""
         while True:
             await asyncio.sleep(self._sample)
-            if await self.sample_once():
-                return
+            try:
+                if await self.sample_once():
+                    return
+            except Exception as exc:  # noqa: BLE001 - deliberate keep-alive
+                uilog.log(f"idle monitor: sample failed, continuing: {exc}")

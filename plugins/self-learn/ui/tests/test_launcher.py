@@ -647,6 +647,55 @@ def test_unchanged_token_with_connect_counts_as_ready(tmp_path: Path) -> None:
     assert "token=tok-fresh" in _wait_for_nonempty(chromium_log)
 
 
+def test_cold_start_polls_for_a_delayed_token(tmp_path: Path) -> None:
+    # Code-review NIT, folded: the synchronous-start-hook test releases
+    # on iteration 1, so this variant delays BOTH signals past several
+    # poll iterations — the real Type=simple shape (start returns,
+    # token lands later, bind later still) — pinning that the loop
+    # actually polls rather than checking once.
+    import threading
+
+    chromium_log = tmp_path / "chromium.log"
+    systemctl_log = tmp_path / "systemctl.log"
+    runtime_dir = tmp_path / "runtime"
+    token_path = runtime_dir / "self-learn" / "ui-token"
+    token_path.parent.mkdir(parents=True)
+    token_path.write_text("tok-stale", encoding="utf-8")
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]  # bound but NOT listening yet
+
+    def server_comes_up() -> None:
+        token_path.write_text("tok-fresh", encoding="utf-8")
+        sock.listen(1)
+
+    timer = threading.Timer(0.4, server_comes_up)
+    try:
+        bindir = _hermetic_bindir(
+            tmp_path,
+            systemctl=_SYSTEMCTL_TMPL.format(log=systemctl_log, state="inactive"),
+            chromium=_LOGGING_LAUNCH_TMPL.format(log=chromium_log),
+        )
+        env = _env(
+            tmp_path,
+            bindir,
+            XDG_RUNTIME_DIR=str(runtime_dir),
+            SELF_LEARN_UI_PORT=str(port),
+        )
+        timer.start()
+        start = time.monotonic()
+        result = _run(env)
+        elapsed = time.monotonic() - start
+    finally:
+        timer.cancel()
+        sock.close()
+
+    assert result.returncode == 0
+    assert 0.3 < elapsed < 3.0, "must poll past the delay, then release promptly"
+    assert "token=tok-fresh" in _wait_for_nonempty(chromium_log)
+
+
 def test_cold_start_timeout_degrades_to_stale_token(tmp_path: Path) -> None:
     # Token never changes, nothing ever listens: the launcher burns the
     # ≤5 s budget, then proceeds with what is readable — today's 403

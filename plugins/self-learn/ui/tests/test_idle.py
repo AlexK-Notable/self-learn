@@ -275,6 +275,35 @@ async def test_monitor_run_loops_until_exit_and_is_cancellable() -> None:
     assert fired2["count"] == 1
 
 
+async def test_monitor_survives_a_raising_sample() -> None:
+    # Code-review MINOR, pinned: an exception escaping a sample is
+    # logged and sampling continues — a silently dead monitor is
+    # resident-forever with no symptom.
+    clock = FakeClock()
+    monitor, _, pane, fired = _monitor(clock=clock)
+
+    calls = {"n": 0}
+
+    def flaky_predicate_leg() -> bool:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("leg exploded")
+        return False  # not busy
+
+    monitor._runner_busy = flaky_predicate_leg  # first sample raises
+    clock.advance(601)
+    task = asyncio.ensure_future(monitor.run())
+    try:
+        await asyncio.wait_for(task, timeout=2)
+    except TimeoutError:
+        raise AssertionError("monitor should have exited on sample 2")
+    finally:
+        if not task.done():
+            task.cancel()
+    assert calls["n"] >= 2  # kept sampling after the raise
+    assert fired["count"] == 1
+
+
 # ------------------------------------------------------- app-level wiring
 
 
@@ -336,7 +365,9 @@ def test_create_app_starts_idle_task_only_when_window_positive(tmp_path) -> None
     with TestClient(app, base_url="http://127.0.0.1:7357"):
         assert app.state.idle_task is not None
         assert not app.state.idle_task.done()
-    # lifespan exit cancels the monitor — no leak, no exit fired
+    # 10 §3 U13 pin, asserted (code-review MINOR): lifespan exit
+    # CANCELS the monitor — deleting the cancel() must fail this test.
+    assert app.state.idle_task.cancelled() or app.state.idle_task.done()
 
     app2 = create_app(
         env=env, token="t", runner=FakeRunner(), start_watcher=False
