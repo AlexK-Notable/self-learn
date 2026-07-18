@@ -72,11 +72,11 @@ additions:
 | Pane proposal tool *(added 2026-07-17 — 09 §4.5/Y-13)* | In-process SDK MCP server named `self-learn-surface` (via `create_sdk_mcp_server` — presence verified on installed 0.2.121 at drafting; re-verify at U12 on the resolved version) exposing exactly ONE tool: `propose_verb(verb, record_id, dest?, note?, until?)`. `ClaudeAgentOptions.mcp_servers` carries only this entry; `allowed_tools` stays `[]` (footgun B); the charter callback allows the tool's fully-qualified name (`mcp__self-learn-surface__propose_verb`) exactly — T-B proves the call routes through the callback. Handler (server code) validates: verb ∈ {route, reject, defer, graduate}; record_id pending AND in-scope (record session → own record only; bucket session → own bucket only); dest accepts the full 02 §1 surface forms (`skill-md \| claude-md \| reference[:<file>] \| new-skill:<name> \| hook` — refuse only on parse failure, structural validity stays the verb's); until parses ISO; note ≤200 chars — refused at intake, never display-truncated (delta R4: displayed note must be byte-identical to the executed `--note`). Valid → occupy the **server-held single proposal slot** (in-memory beside the pane session manager; clear-set: confirm · dismiss · proposing-session end/interrupt/error/`q` · record leaves pending · restart; page navigation does NOT clear — in-scope renders re-render the bar) and render the **WAITING** proposal bar (NOT `[data-armed]`; server-assembled: verb/id/dest/date = server-truth fields, Y-9 leading line, note under an "agent-suggested note:" label display-capped ~200 chars, dismiss button) + SSE `pane_proposal` **scope-gated like `refresh`** (the record's Detail + its bucket page only). `y` arms the waiting bar through the STANDARD armed contract (Enter executes, any other key disarms back to waiting); Enter never acts on a waiting bar; the `pane_proposal` client handler no-ops while any `[data-armed]` element exists (belt — the structural brace is that the incoming bar is waiting-state). **Single-armed-bar-per-document is a tested invariant.** Invalid → refusal string to the agent, nothing renders. **Refuse-not-replace** while the slot is occupied (waiting or armed). Confirm POST → standing runner path (serialized, interrupt-first for record sessions — bucket sessions exempt, they hold zero writes and survive the confirm; scan; stale-record confirm takes the verb's own refusal path and clears the slot). Tool return is immediate: rendered-and-waiting, no cancel notification. *(Amended 2026-07-18 — feedback round 3 item 3, 09 §4.5/§11 Y-18, incl. its same-day review fold:)* closed verb list +`rehome` with required `to` (registered project, path or slug) — intake-validated against hosts.yaml (unregistered target / target==current bucket / non-project record all refuse with teaching strings); resolved target is a server-truth bar field (leading line "move this lesson to the ⟨basename⟩ project", resolved path as disambiguating metadata); the bucket-change staleness leg on WAITING and ARMED alike — arm AND confirm routes re-compare the slot's bucket against `locate_record`'s current bucket, mismatch → **slot cleared + plain-words notice** (the resolved-elsewhere shape; never a disarm — that term is pinned to mean the bar survives to waiting, stale facts intact; delta fold F10) (render/arm-time checks, never a watcher hook); confirm argv `rehome <id> --to <resolved-path>`; built at U15 | 09 §4.5 (as reworked same day), §4.3, §11 Y-13, §11 Y-18 |
 | Server transient state | `<cache>` = the doc-13 home-namespaced dir `${XDG_CACHE_HOME:-~/.cache}/self-learn/home-<sha256(resolved SELF_LEARN_HOME)[:8]>/` — **imported from the CLI's existing derivation function, never reimplemented** (09 §11 Y-3; P2-4 one-computation rule; the ui package declares the cli package as a path dependency for this one import, or shells `self-learn` for the path — resolved at U1, recorded in the ledger below). Contents: `ui.log` (capped ~1 MB, same truncation as `worker.log`) · `pane-doctrine.md` · the token-file fallback (X-8/X-12). Primary token home stays `$XDG_RUNTIME_DIR/self-learn/ui-token`. Nothing else; no config file | 02 §3, 09 §3/§4.4/§11 Y-3 |
 | Env vars (complete) | `SELF_LEARN_HOME` (08) · `SELF_LEARN_UI_PORT` (default `7357`) · `SELF_LEARN_UI_BROWSER` (launcher only) · `SELF_LEARN_PANE_MODEL` (default `claude-sonnet-5`) · `SELF_LEARN_PANE_BUDGET_USD` (default `1.00`) · `SELF_LEARN_PANE_MAX_TURNS` (default `15`) · `SELF_LEARN_PANE_ENGINE` (`sdk`; `cli` → exit with "engine not built — 09 §4.1") · `SELF_LEARN_UI_IDLE_EXIT_SECONDS` (Y-14: idle self-exit window, seconds; default `600` under the systemd unit, unarmed in a foreground `serve` unless set; ≤ `0` disables) · `SELF_LEARN_UI_MONITOR` (launcher only, like `SELF_LEARN_UI_BROWSER` — the monitor `self-learn-ui-open` ensures the app window onto) *(row re-synced with 09 §4.4 2026-07-18, feedback round 2 item 6 review: both vars had landed in 09 §4.4 without this mirror row — the row stays a mirror of 09 §4.4, additions there land here in the same edit)* | 09 §4.4 |
-| Refresh mechanics | `watchfiles` watcher over every bucket's `pending/` + `proposals/` + `events.jsonl`, 300 ms debounce; SSE `refresh` push; 10 s client poll fallback; forced push after every verb return. Bucket set re-discovered on Front-page request (a new skill's first record must appear without restart) | 09 §3 |
+| Refresh mechanics | `watchfiles` watcher over every bucket's `pending/` + `proposals/` + `events.jsonl`, 300 ms debounce; SSE `refresh` push; 10 s client poll fallback; forced push after every verb return. Bucket set re-discovered on Front-page request (a new skill's first record must appear without restart) *(Amended 2026-07-18 — 09 §11 Y-16, feedback round 3 item 1: the forced push fires on FAILED verbs too, and `host add` argv carries no record id so its scope is `front` — a broadcast every page answers with a full reload, the code-read suspect for the vanishing error strip. The push itself is unchanged; the CLIENT defer lives at the single `reload()` chokepoint so all present and future reload paths are covered — at fold time three: the refresh handler, the poll fallback, and the `pane_proposal` reload legs (enumeration informative, chokepoint normative — reworked same day at the amendment's blind review, F3). Three-leg defer predicate, reload deferred while any holds: `[data-verb-error]` in the document · a verb-confirm POST in flight (submit→swap-settle flag — the failure push is queued before the route renders, so the SSE frame can beat the htmx swap; F4) · any `[data-armed="true"]` bar (release-on-re-arm would clobber the fresh armed bar; F5). Deferred-not-dropped: fires when no leg holds — dismiss, or the armed bar resolving.)* | 09 §3, §5, §11 Y-16 |
 | Verb runner | One subprocess at a time server-wide (asyncio queue — multiple tabs share it); resolution POSTs rejected with "applying…" state while running; interrupt-first check **at verb dispatch** (09 §3, P1-4); bulk loop = sequential `graduate <id> --no-push` + terminal `self-learn push` on exit **success or abort** (08 §1 as amended); per-item progress via SSE; halt-on-first-failure with failing id shown | 09 §2.2, §3 |
 | Rendering | Diffs: Pygments `DiffLexer`; proposal YAML: Pygments YAML lexer; markdown (records, transcripts' finished blocks): `markdown-it-py` server-side; live pane deltas append as plain text, blocks re-render server-side at block boundaries (09 §4.1 — no client-side markdown dependency). The preview-honesty caption is a fixed string under every diff (02 §4's wording) | 09 §2.3, §4.1 |
 | Screen-state derivation | Pure functions: `(list --json output, status --json output, report --json output, mine status --json output, merge-yaml set, sentinel mtime) → screen model` — templates render models; no route handler reads ledger files directly; all reads go through one `ledger.py` module (testable headless, 09 §7) | 09 §3, §7, §11 |
-| CLI substrate consumed (new pieces built at U0) | The 08 §1 dated edit of 2026-07-17 (the G-3 surface substrate block), scope corrected after gate zero against the live CLI. **New at U0:** `list --json` items gain `bucket` (display name: skill name \| project slug \| `user`), `host_registered` (bool, `hosts.yaml`-derived), `source` (02's provenance enum verbatim); `report --json` gains `recurrence_suspects` rows `{id, nonce, seen_at}` (the M2 deterministic suspect computation **exposed, never reimplemented**); the CLI-owned `canon_read_roots()` helper + `host add` consent line (09 §11 Y-2); optional-if-cheap `status --json .sections_over_cap` (02 §4 cap check → Front graduation-opener banner; decided at U0 by cost, dropped loudly if skipped). **Existing, merely consumed** (first draft mis-listed them as new — gate-zero finding): `mine status --json` (shipped M2.5; `{last_run, stale, runs: […]}` — journal file remains truth, staleness derivation CLI-owned) and `report --json .open_followups` (rows `{id, bucket, action, unblocks_on, note, routed_at}`). The server consumes these fields ONLY — a missing field remains a dated 08 §1 edit, never server-side derivation (09 §2.1 rule, unchanged) | 08 §1 (2026-07-17 edit); 09 §11 Y-2/Y-4/Y-5/Y-6/Y-11 |
+| CLI substrate consumed (new pieces built at U0) | The 08 §1 dated edit of 2026-07-17 (the G-3 surface substrate block), scope corrected after gate zero against the live CLI. **New at U0:** `list --json` items gain `bucket` (display name: skill name \| project slug \| `user`), `host_registered` (bool, `hosts.yaml`-derived), `source` (02's provenance enum verbatim); `report --json` gains `recurrence_suspects` rows `{id, nonce, seen_at}` (the M2 deterministic suspect computation **exposed, never reimplemented**); the CLI-owned `canon_read_roots()` helper + `host add` consent line (09 §11 Y-2); optional-if-cheap `status --json .sections_over_cap` (02 §4 cap check → Front graduation-opener banner; decided at U0 by cost, dropped loudly if skipped). **Existing, merely consumed** (first draft mis-listed them as new — gate-zero finding): `mine status --json` (shipped M2.5; `{last_run, stale, runs: […]}` — journal file remains truth, staleness derivation CLI-owned) and `report --json .open_followups` (rows `{id, bucket, action, unblocks_on, note, routed_at}`). The server consumes these fields ONLY — a missing field remains a dated 08 §1 edit, never server-side derivation (09 §2.1 rule, unchanged) *(Extended 2026-07-18 — 09 §11 Y-17 / 13 §3, feedback round 3 item 2, built with U14 in the cli package: `host add --init <path>` (git init + empty root commit at the exact path before the existing validation, per the Y-17 semantics matrix) + the CLI-owned repo-root predicate — "the exact resolved path is itself a git repo root" — which the server IMPORTS for `needs_init` at arm and confirm (the `canon_read_roots()` posture; never a second implementation))* | 08 §1 (2026-07-17 edit); 09 §11 Y-2/Y-4/Y-5/Y-6/Y-11/Y-17 |
 
 **Verify-at-build ledger** (each gets a scripted check at its task's
 start; failures route per §5): exact `ClaudeAgentOptions` name for —
@@ -167,7 +167,38 @@ predicate).
   any other record is refused · a proposal with verb `host add` (or
   anything off the closed list) is refused · the Bucket page
   renders the `p`-key pane split with the proposal-bar region
-  present. *Predicate:* every 09 §2/§3/§11 behavior named in this
+  present. *(Extended 2026-07-18 for Y-16/Y-17 — feedback round 3
+  items 1+2:)* the host-add confirm error leg renders the
+  plain-words failure sentence leading, the stderr as a demoted
+  detail line below it (both asserted present, sentence first), the
+  `[data-verb-error]` marker, and the dismiss affordance (the
+  disarm route restoring the notice — the reload-defer itself is
+  browser-level JS, proven at the U14 live re-trial, not here) ·
+  arm on a non-repo-root path renders the git-init disclosure
+  sentence and confirm's argv is asserted as `host add --init
+  <meta.yaml path>` against the fake `self-learn`; arm on a
+  repo-root path renders NO disclosure and no `--init`; the F1
+  consent invariant asserted in BOTH race directions by flipping
+  the fixture path between arm and confirm: becomes-repo
+  (disclosure shown, root by confirm) → `--init` DROPPED, plain
+  add registers; goes-stale (no disclosure shown, non-root by
+  confirm) → plain add runs and the committability refusal renders
+  through the Y-16 error leg — NEVER a silent init; plus the
+  disclosure-confirm variant's marker/route cannot force `--init`
+  on a repo-root path (forged or stale marker → plain add) · cli
+  suite: the
+  Y-17 semantics matrix row-by-row on real throwaway repos (no-op
+  on a repo root incl. a ZERO-COMMIT repo — F7; init + empty root
+  commit with the pinned subject
+  on a plain dir AND on a dir inside a parent work tree — the
+  nested repo asserted at the exact path; the failed-root-commit
+  retry skips the init leg and must NOT assert the commit subject
+  — F7; clean refusal on a missing dir AND on a regular file,
+  never raw git stderr — F8; kind/ledger-home refusals BEFORE any
+  init — an invalid kind on a non-repo dir leaves it
+  un-initialized, F6;
+  behavior byte-unchanged without `--init`). *Predicate:* every
+  09 §2/§3/§11 behavior named in this
   sentence has a test that fails when its logic is inverted.
 - **T-B · Pane permission live refusal** (live, logged): a real
   `sdk`-engine session over a sacrificial record in a throwaway
@@ -405,6 +436,62 @@ in brackets.
   without `q` → server still exits (the F1 path); (d) a launcher
   click attempted during the shutdown drain, outcome logged even if
   it is the accepted 403 degradation.
+
+- **U14 · Registration flow — persistent readable error +
+  git-init-on-register** [U3] *(added 2026-07-18 — 09 §11
+  Y-16/Y-17 + 13 §3's `--init` mirror, feedback round 3 items 1+2;
+  one gated cycle, the two share the host-add code surface:
+  routes.py's host-add triple, `host_add_bar.html`, app.js's
+  reload paths, cli `hosts.py`. Reworked same day at the
+  amendments' blind review — F1–F9 folded here and in 09/13.)*:
+  **empirical wipe-pin FIRST** —
+  reproduce the flash-then-vanish browser-level and record the
+  actual wipe mechanism in this document's appendix BEFORE fixing
+  (code-read suspect, independently confirmed at the review: the
+  runner's unconditional post-verb
+  `front`-scope push → app.js full-page reload; the
+  any-key-disarms keyup reads implausible — the error leg renders
+  `data-armed="false"` — but the one client-side defer braces both
+  regardless; the pin must ALSO rule explicitly on the
+  SSE-frame-vs-htmx-swap ordering — the F4 pre-render race —
+  before the defense is accepted); then the Y-16 fix —
+  `[data-verb-error]` marker on the error rendering, the defer at
+  app.js's single `reload()` CHOKEPOINT (all reload paths incl.
+  the `pane_proposal` legs — F3) with the three-leg predicate:
+  marker present · verb-confirm POST in flight, submit→swap-settle
+  flag (F4) · any `[data-armed="true"]` bar (F5) —
+  deferred-not-dropped, released on dismiss or when the armed bar
+  resolves; the plain-words failure sentence ("registration did not
+  complete" — F2, re-corrected at the delta review's F11: "was not
+  registered" is false in the HalfWritten leg, where hosts.yaml
+  already carries the entry) with stderr as
+  a demoted detail line (the §5 narrow exception, this leg only);
+  dismiss reuses the disarm route — no fourth route; and the Y-17
+  build — cli: `host add --init` per the semantics matrix
+  (pure-argument refusals before the init leg — F6; zero-commit
+  root + best-effort-once root commit — F7; clean file-path
+  refusal — F8) + the
+  CLI-owned repo-root helper; ui: server-side `needs_init` at arm
+  AND re-derived at confirm, the disclosure sentence in the arm
+  banner (required content: a new git repository will be created
+  at <path> as part of registering), and the F1 consent invariant
+  — `--init` executed only when the arm rendering displayed the
+  disclosure AND the confirm-time re-derivation holds; any
+  mismatch runs plain `host add`. *Tests:* the T-A
+  Y-16/Y-17 extension (httpx + template level, both F1 race
+  directions) + the cli matrix
+  suite (real throwaway repos, per the hosts suite's own
+  conventions). *DoD:* T-A green incl. the extension; cli suite
+  green; live re-trial logged in `ui-trials.md`: (a) register a
+  throwaway NON-git project from the browser — arm shows the
+  disclosure, confirm inits + registers in one motion, the notice
+  clears (the keyboards reproduction); (b) force a registration
+  failure (ledger-home target, or unset git identity in a scratch
+  HOME) — the error renders readable, SURVIVES at least one forced
+  refresh push while displayed, and clears only on dismiss/re-arm;
+  (c) the appendix entry pinning the observed wipe mechanism —
+  including the F4 ordering ruling —
+  exists before the fix commit.
 
 - **U15 · Record re-home — verb + pane proposability** [U12] *(added
   2026-07-18 — feedback round 3 item 3; 09 §4.5/§11 Y-18 incl. its

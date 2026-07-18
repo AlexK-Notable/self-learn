@@ -93,6 +93,35 @@ HOSTS     repos holding COMPILED canon: claude-skills (SKILL.md managed
   to know where canon may land. Registration is a CLI verb
   (`self-learn host add <path>`), never a hand edit the compilers
   trust blindly (the verb validates the path and stamps the entry).
+  *(Amended 2026-07-18 — feedback round 3 item 2; normative text at
+  09 §11 Y-17, this bullet is its CLI-side mirror. Reworked the
+  same day at the amendment's blind review — F6/F7/F8 folded.)*
+  `host add`
+  gains `--init`: `git init` + an empty root commit (pinned subject
+  `self-learn: init for host registration`) at the EXACT path,
+  performed before the path validation, which then runs
+  unchanged — the pure-argument refusals (kind validity,
+  ledger-home existence) stay AHEAD of the init leg as they run
+  today, so an invalid invocation never leaves an initialized repo
+  behind (F6). Semantics per the Y-17 matrix: no-op when the path
+  is
+  already a repo root — a zero-commit repo counts as a root, and
+  the root commit is best-effort-once: a failed empty commit is
+  not retried, the retry skips the init leg (F7);
+  init-at-the-exact-path when it is not a root —
+  including when a parent repo's work tree swallows it (nested
+  repos are acceptable and intended); clean refusal on a missing
+  dir OR a regular file, never a fall-through to raw git stderr
+  (F8 — `--init` initializes existing directories only, it
+  creates nothing); all other refusals and the
+  idempotent re-add unchanged; without `--init`, behavior
+  byte-unchanged. The deciding predicate — "the exact resolved path
+  is itself a git repo root" — is one CLI-owned helper (the
+  is-inside-work-tree check cannot carry this: it passes for paths
+  inside a parent work tree); the UI imports it for its
+  disclosure banner. The committability invariant is untouched —
+  `--init` is how a not-yet-repo project opts INTO it, disclosed,
+  never a bypass.
 
 ## 4. Routing across repos — the revision of record
 
