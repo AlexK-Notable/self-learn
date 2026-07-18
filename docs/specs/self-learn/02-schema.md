@@ -278,7 +278,47 @@ standard safe rebase-halt (`01` §5) rather than being excluded outright.
   O-3 settled 2026-07-15 as the miner instead, live since M2.5)* · record ids are **random**
   (collision-resistant across offline machines); a sequential counter would
   add/add-conflict on every parallel capture.
-- **`kind` drives routing, not decay.** Gen 1 gave `kind` decay clocks and
+- **`self-learn rehome <id> --to <path-or-slug>`** *(added 2026-07-18 —
+  feedback round 3 item 3; 09 §11 Y-17 is the surface register entry)*:
+  moves a **pending** record to another **registered project** bucket —
+  the repair for capture-cwd filing the lesson under a narrower repo
+  than its real firing range (the umbrella-project case,
+  routing-doctrine §3). `--to` accepts the registered project's path or
+  its bucket slug (the `host rebind` naming precedent — the two things
+  a human can say). What moves: `pending/lrn-<id>.md` alone, one
+  `git mv` into the target bucket's `pending/`; the target bucket's
+  `{pending,resolved,proposals}/` dirs are created if absent and its
+  `meta.yaml` stamped from the registered path (13 §3) — hosts.yaml
+  stays the only registration authority; the verb registers nothing.
+  The record file is **byte-untouched**: `scope: project` already reads
+  correctly in the destination, so a re-home is a filing move, never a
+  substance edit (the freeze rules above are unaffected; `sightings`,
+  `evidence`, deferral metadata all ride along unchanged — a deferred
+  record moves and stays deferred). **Proposal siblings are swept
+  (`git rm proposals/lrn-<id>.{yaml,diff}`), never moved**: the
+  analyst's destination judgment is bucket-relative (which CLAUDE.md,
+  which references file) and `record_sha` staleness cannot catch a
+  move — the hash is of record content, which didn't change — so a
+  carried sibling would render an honest-looking stale card. The
+  worker re-analyzes any proposal-less pending record on its next run;
+  re-proposal in the new home is the honest cost of the move. One
+  ledger commit, pinned subject `self-learn: rehome lrn-… →
+  projects/<slug>`; optional `--note` rides the commit body only
+  (rehome is not a resolution — `resolution_note` stays write-once and
+  untouched). Refusals, each checked on **status, never mere
+  existence** (`find_record_path` also sees `resolved/`) and rendered
+  verbatim on the surface (09 §5): unknown id · record not in
+  `pending/` with status `pending`/`deferred` (a resolved lesson does
+  not move — supersede is the correction machinery) · target not a
+  registered project (the refusal names `self-learn host add <path>`
+  as the human's repair) · target == the record's current bucket ·
+  source not a project bucket (**M1 is project→project only** —
+  user-scope targets and skill/user-scope sources are dated future
+  work, not silent extensions: a cross-scope move is a
+  re-classification with its own consent story). Sequence otherwise
+  standard for a record-writing verb: secret scan of the note,
+  `commit_lock` before the first mutation, sentinel self-hold +
+  heartbeat, targeted staging, push. Gen 1 gave `kind` decay clocks and
   injection priority; those needed the statistical layer. What remains is
   its routing value: anti-pattern → hook candidate · surface-rule → SKILL.md
   rule · reasoning-pattern → SKILL.md/CLAUDE.md prose.

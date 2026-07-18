@@ -925,6 +925,16 @@ mutation seam. Everything below is one tool, one bar, one POST.
   structural validity, e.g. a `hook` dest without stored script bytes
   refuses at the verb and the refusal renders verbatim, §5), `reject`
   (optional `note`), `defer` (optional `until`, ISO date), `graduate`.
+  *(Amended 2026-07-18 — feedback round 3 item 3; §11 Y-17:)* plus
+  `rehome` (required `to` — a **registered project**, named by path or
+  bucket slug; the confirm rebuilds argv from the slot as
+  `rehome <record-id> --to <server-resolved-path>` — 02 §2 pins the
+  verb). Y-11 consistency, stated so the exclusion list stays honest:
+  `rehome` may only name a target **already in hosts.yaml**, so the
+  agent widens no read scope and mints no write target — exactly the
+  two things the `host add` exclusion protects; an unregistered
+  umbrella project stays a fact the agent tells the human, never a
+  registration path.
   **Excluded, dated:** `host add` (Y-11's no-agent-path pin —
   the agent must never widen its own read scope or mint write
   targets; the design brief predated that pin and is corrected by
@@ -947,7 +957,19 @@ mutation seam. Everything below is one tool, one bar, one POST.
   with a teaching string naming the record's scope and the valid
   alternatives, so an armable-but-impossible proposal never renders.
   Other structural validity — e.g. a hook dest without stored script
-  bytes — stays the verb's to enforce.)*
+  bytes — stays the verb's to enforce.)* *(Amended 2026-07-18 —
+  feedback round 3 item 3; §11 Y-17, following the same round-2
+  intake-teaching precedent:)* `to` only applies to `rehome` and is
+  validated **at intake** against the registered-project set
+  (hosts.yaml, the CLI's own authority): an unregistered target
+  refuses with a teaching string naming the human's register
+  affordance ("the human can register it first — the Register
+  control / `self-learn host add <path>`"); `to` naming the record's
+  **current** bucket refuses ("already lives there — nothing to
+  move"); a non-project-scoped record refuses (M1 is
+  project→project only, per 02 §2's verb pin). The resolved target
+  is a **server-truth field** on the bar — the handler stores the
+  hosts.yaml path it resolved, never the agent's raw string.
 - **One proposal at a time — refuse, never replace.** While a
   proposal slot is occupied (waiting OR armed — see the state pins
   below), further `propose_verb` calls refuse with "a proposal is
@@ -965,7 +987,11 @@ mutation seam. Everything below is one tool, one bar, one POST.
   human confirm · human dismiss · the proposing session ending for
   any reason (result, interrupt, error, cap, `q`) · the record
   leaving pending (resolved elsewhere — the §3 banner path also
-  clears the slot) · server restart. Page navigation does NOT clear
+  clears the slot) · server restart. *(Extended 2026-07-18 — §11
+  Y-17:)* · the record leaving its **bucket** (a CLI-side `rehome`
+  while a proposal waits — detected on the same file-event path as
+  resolved-elsewhere; a waiting bar whose bucket facts have gone
+  stale must never survive into the human's arm). Page navigation does NOT clear
   it: any render of a page in the proposal's scope re-renders the
   waiting bar (the slot is server truth, so the bar survives
   reloads). 09 §3's server-owned-state list reads through this
@@ -985,7 +1011,11 @@ mutation seam. Everything below is one tool, one bar, one POST.
   the confirm executes** — assembled from the SERVER-validated args. **Server-truth anchor: verb, record id,
   destination, and date are validated server fields; the note IS
   agent prose and is labeled as such** (the review's F7 — the bar
-  never pretends otherwise). The waiting bar is NOT `[data-armed]`:
+  never pretends otherwise). *(Added 2026-07-18 — §11 Y-17:)* a
+  `rehome` bar's target joins the server-truth set (resolved
+  against hosts.yaml at intake), and its leading line is Y-9
+  domestic — "move this lesson to the *keyboards* project" — with
+  the resolved path as trailing metadata beside the id. The waiting bar is NOT `[data-armed]`:
   `y` (unbound until now; global-uniqueness invariant holds) arms it
   through the STANDARD armed contract — Enter executes, any other
   key disarms **back to waiting** — giving the agent's proposal
@@ -1583,6 +1613,69 @@ removed the last competing workstream — the build gate is open.*
   side. Substrate: no CLI change, no SSE-protocol change — server
   code, templates, and app.js's `pane_result` completion handler
   only.
+
+- **Y-17 · Record re-home — verb, pane proposability, and the
+  ancestor-project judgment** *(added 2026-07-18 — feedback round 3
+  item 3, `feedback/2026-07-18-ui-feedback-03.md`; Y-16 is left free
+  for the round-3 items-1/2 author working in parallel — the
+  orchestrator renumbers at merge if their set differs)*. The user's
+  directive, near-verbatim: *"anything that got registered as a
+  lesson for zmk-config-offsetkey should have been registered under
+  repos/keyboards… i'd like it to be a bit smarter about this and
+  make choices the way that I would."* A record's bucket is fixed at
+  capture time from the session cwd; until now neither the analyst
+  nor the human could move it. Two halves, one dated set:
+  **Mechanism (the verb — normative pin at 02 §2):**
+  `self-learn rehome <id> --to <path-or-slug>` moves a PENDING
+  record between **registered project** buckets. One `git mv` of the
+  record file, one ledger commit
+  (`self-learn: rehome lrn-… → projects/<slug>`), target bucket dirs
+  + `meta.yaml` created if absent (13 §3); the record's bytes —
+  including `scope: project` — are untouched. **Proposal siblings
+  are swept, never moved** (decision of record): the analyst's
+  destination judgment is bucket-relative and `record_sha` staleness
+  cannot catch a move (the hash is of record content, which did not
+  change), so a carried sibling would render an honest-looking stale
+  card; the worker re-proposes in the new home. Refusals check
+  **status, never existence** (locate/find machinery also sees
+  `resolved/`): unknown id · not pending · target unregistered
+  (refusal names `host add` as the human's repair) · target ==
+  current bucket · non-project scope (M1 is project→project only;
+  user-scope target and cross-scope moves are dated future work).
+  **Judgment (doctrine):** routing-doctrine §3 gains the
+  ancestor-project clause — when a lesson's firing range extends
+  beyond its repo, the nearest registered ANCESTOR project may be
+  the narrowest surface that still fires, honestly applied; the
+  analyst proposes a re-home naming the evidence (which trigger
+  elements live outside the repo). One file teaches all three
+  consumers (M2 worker, review skill, pane — the doctrine compile's
+  mtime rule picks it up without code changes).
+  Surface decisions of record, each dated here: **(1)** `rehome`
+  joins the §4.5 closed proposable list with required `to`,
+  validated AT INTAKE against hosts.yaml (the round-2
+  teach-the-agent-at-proposal-time precedent) — Y-11's no-agent-path
+  pin holds because only already-registered targets are nameable;
+  **(2)** the waiting → `y` → Enter spine is byte-unchanged; the
+  confirm rebuilds argv from the slot (`rehome <id> --to
+  <resolved-path>`), target rendered as server truth, leading line
+  Y-9 domestic ("move this lesson to the *keyboards* project");
+  **(3)** **no human-side re-home control in M1** — agent-proposal
+  plus the CLI verb are the two hands; a direct picker key would
+  spend keymap surface on a rare act (the Y-11 no-affordance-key
+  precedent) and needs target-cycling machinery v1 doesn't have.
+  Revisit condition, auditable: an explicit user ask or a live
+  session where the human wanted a move and no pane was open;
+  **(4)** the §4.5 slot clear-set gains the bucket-change leg (a
+  CLI-side rehome mid-proposal must clear the waiting bar);
+  **(5)** NO proposal-YAML field — a batch-analyst re-home
+  recommendation is prose in `rationale`/card, the mechanics are the
+  pane path or the CLI (doctrine §5 pins it so M2 workers never
+  invent a key). Post-confirm surface behavior: Detail keeps working
+  (record lookup is id-based, bucket-independent) and both source
+  and destination bucket pages refresh off the standard file events.
+  Substrate: no `list --json` change — bucket membership is already
+  the pinned `bucket` field; build lands as 10 §3 U15.
+
 **Substrate edits this set requires elsewhere** (same discipline as
 §10 — until landed, this list is authoritative; corrected after gate
 zero 2026-07-17 against the live CLI): **08 §1** dated edit — the

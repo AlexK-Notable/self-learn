@@ -81,6 +81,12 @@ HOSTS     repos holding COMPILED canon: claude-skills (SKILL.md managed
   A bucket records its project's absolute path at creation (`meta.yaml`
   beside the bucket; the slug alone is lossy). Producers know the path:
   teach uses cwd; the miner reads the transcript's own `cwd` field.
+  *(Added 2026-07-18 — feedback round 3 item 3, 02 §2's `rehome` pin:)*
+  a bucket can also be created by `self-learn rehome` moving a pending
+  record into a registered project that has no bucket yet — dirs +
+  `meta.yaml` stamped from the hosts.yaml entry, same shape as a
+  capture-created bucket; hosts.yaml remains the only registration
+  authority either way.
 - **User bucket** replaces the root bucket's user half; compile target
   unchanged (chezmoi flow).
 - `hosts.yaml` is data, tracked in the ledger repo — one file to read

@@ -49,6 +49,27 @@ Loaded-surface budget is the scarce resource: managed sections cap at 10
 entries / ~150 words, and every routed token dilutes attention at every
 activation.
 
+**The bias reads on the lesson's real firing range, not on where it was
+captured** *(added 2026-07-18 — feedback round 3 item 3; 09 §11 Y-17)*.
+A record's bucket is fixed at capture time from the session cwd, and
+cwd is sometimes the wrong answer: when the trigger's elements live
+outside the capture repo — the live case: a keyboard lesson captured in
+a zmk-config repo whose trigger spans Hyprland/keyd/xkb host configs —
+the capture repo is NOT a surface that still fires, because the lesson
+will never be loaded in the sessions where the mistake happens. In that
+case the **nearest registered ancestor project** (the umbrella repo
+that contains the trigger's surfaces) is the narrowest surface that
+still fires, honestly applied — the same bias, not an exception to it.
+When you see this, propose a **re-home** (the `rehome` verb — through
+your proposal tool where you have one, as prose in `rationale` where
+you don't), and **name the evidence: which trigger elements live
+outside the record's own repo**. A re-home proposal without that
+evidence is a hunch, not a judgment. Two guardrails: never leap to user
+scope just because the trigger spans two repos — check for the ancestor
+project first; and an unregistered ancestor is a fact you tell the
+human ("register ~/repos/keyboards and this lesson can move there"),
+never something you register or assume.
+
 ## 4. Repo conventions that bear on routing
 
 - `~/.claude/CLAUDE.md` is **chezmoi-managed**. You never handle that:
@@ -111,6 +132,12 @@ Rules:
   won; it just doesn't need a new home.
 - One record, one proposal. If two pending records look like one lesson,
   say so in `rationale`; merge proposals are the M2 worker's mechanism.
+- **There is no `rehome:` proposal field** *(pinned 2026-07-18 — Y-17)*:
+  a re-home recommendation (§3's ancestor-project clause) is PROSE —
+  state it in `rationale` and the card's discuss section, with the
+  outside-the-repo evidence. The mechanics run through the pane's
+  proposal tool or the human's own CLI, never through a YAML key; do
+  not invent one, the validator will not accept it.
 
 ### 5.1 Hook proposals carry the compile input (M3 — 02 §1 hook extension)
 
@@ -175,7 +202,9 @@ edits, help rewrite) a record:
 ## 7. Your boundaries
 
 - **Propose only. The human routes.** You never call `route`, `reject`,
-  `defer`, or `graduate`; you never edit canon; you never edit the record
+  `defer`, or `graduate` — *(2026-07-18: nor `rehome`; a re-home is
+  proposable where you have the proposal tool, and executes only off
+  the human's own confirm)* — you never edit canon; you never edit the record
   (pending-record edits are the human's, made in review). Your entire
   output is the proposal file.
 - **`new-skill` and `hook` compile at M3, with extra human steps.** A
