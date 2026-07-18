@@ -673,11 +673,26 @@ def _proposal_cell(item: dict) -> str:
     return "fresh" if item["proposal_fresh"] else "stale"
 
 
-def _add_surface_fill(home: Path, items: list[dict]) -> None:
+def _add_surface_fill(
+    home: Path,
+    items: list[dict],
+    *,
+    user_claude_md: Path | str | None = None,
+) -> None:
     """09 §11 Y-20 / 08 §1: mutate each item in place, adding its
     ``surface_fill`` object. One cache dict spans every item passed in, so
     records sharing a target (one skill's SKILL.md, the one user-scope
-    CLAUDE.md) pay for the compile exactly once per invocation (08 §1 e)."""
+    CLAUDE.md) pay for the compile exactly once per invocation (08 §1 e).
+
+    ``user_claude_md`` is an internal passthrough to
+    :func:`verbs.surface_fill` (blind-review F5) — there is no CLI flag
+    for it; ``_cmd_list`` never passes anything but the default, so real
+    invocations keep reading the real chezmoi-managed file for a
+    user-scope record, exactly like every other verb call site. It exists
+    so an in-process caller (a test) can override the target WITHOUT
+    going through a subprocess — the real hazard this closes is a
+    CLI-path test calling this function directly on a user-scope pending
+    record and silently reading ``~/.claude/CLAUDE.md``."""
     cache: dict = {}
     for item in items:
         try:
@@ -686,7 +701,7 @@ def _add_surface_fill(home: Path, items: list[dict]) -> None:
             continue  # can't happen off list_items's own output; defensive
         bucket_dir = path.parent.parent
         item["surface_fill"] = verbs.surface_fill(
-            home, bucket_dir, item["scope"], cache=cache
+            home, bucket_dir, item["scope"], user_claude_md=user_claude_md, cache=cache
         )
 
 

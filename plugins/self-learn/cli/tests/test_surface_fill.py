@@ -2,10 +2,20 @@
 10 §3 U17) — the loaded-surface budget indicator's read-only fill probe.
 
 Covers: flag-gating (unflagged byte-unchanged; --id record scoping, delta
-F9), key-set correctness (reference never a key; VerbError legs — missing
-SKILL.md, unregistered host, scope-invalid — omit keys), count correctness
-against the compiler's own numbers, the entries/words overflow cap, and
-memoization (N records sharing one target compile exactly once).
+F9), key-set correctness (reference never a key; VerbError/CompileError
+legs — missing SKILL.md, unregistered host, scope-invalid, a corrupted
+managed-section marker pair — omit keys without crashing the whole `list`
+call), count correctness against the compiler's own numbers, the
+entries/words overflow cap, and memoization (N records sharing one target
+compile exactly once).
+
+Hygiene trap (blind-review F5): ``verbs.surface_fill`` resolves a
+user-scope ``claude-md`` target to the REAL chezmoi-managed
+``~/.claude/CLAUDE.md`` unless ``user_claude_md`` is explicitly
+overridden — exactly like every other ``_resolve_target`` call site
+(``route`` included). Never call it, or ``cli._add_surface_fill``, on a
+user-scope record without passing ``user_claude_md`` — a CLI-path test
+that forgets this reads (never writes) the real file.
 """
 
 from __future__ import annotations
@@ -15,6 +25,7 @@ import json
 import pytest
 
 from self_learn import cli, verbs
+from self_learn.compilers import BEGIN_MARKER, END_MARKER
 from self_learn.ledger_ops import (
     bucket_dir_for_scope,
     create_record,
@@ -82,10 +93,11 @@ class TestFlagGating:
         (item,) = _list_json(capsys)
         assert "surface_fill" not in item
 
-    def test_unflagged_output_matches_flagless_baseline(self, env, capsys):
-        """The unflagged path is byte-unchanged: identical dict shape with
-        or without the two new argparse options merely being present on
-        the parser (they default off)."""
+    def test_unflagged_list_is_deterministic_across_repeated_calls(self, env, capsys):
+        """The unflagged path is byte-unchanged and deterministic: two
+        back-to-back unflagged calls, with the two new argparse options
+        merely present on the parser (defaulted off), produce identical
+        output — no `surface_fill` key crept in either."""
         rec = make_behavior(scope="skill:s", record_id="lrn-aa000001", created_at=days_ago(1))
         create_record(env.ledger, rec)
 
@@ -160,6 +172,30 @@ class TestKeySet:
         (item,) = _list_json(capsys, "--surface-fill")
         assert "reference" not in item["surface_fill"]
 
+    def test_reference_probe_is_never_even_attempted(self, env, capsys, monkeypatch):
+        """F4: strengthen the above — a mutation that adds "reference" to
+        SURFACE_FILL_CAPPED_DESTINATIONS is otherwise absorbed by the
+        target-is-None guard inside surface_fill (the key never makes it
+        into the object, so the assertion above still passes), which
+        means that assertion alone does NOT kill the mutation. Spy on the
+        resolver itself and assert "reference" is never among the
+        destinations it was asked to resolve at all."""
+        rec = make_behavior(scope="skill:s", record_id="lrn-aa000001", created_at=days_ago(1))
+        create_record(env.ledger, rec)
+
+        probed: list[str] = []
+        real_resolve = verbs._resolve_target
+
+        def spying(home, bucket_dir, scope, destination, ref_name, **kwargs):
+            probed.append(destination)
+            return real_resolve(home, bucket_dir, scope, destination, ref_name, **kwargs)
+
+        monkeypatch.setattr(verbs, "_resolve_target", spying)
+
+        _list_json(capsys, "--surface-fill")
+        assert "reference" not in probed
+        assert set(probed) == {"skill-md", "claude-md"}
+
     def test_skill_scope_gets_both_capped_keys(self, env, capsys):
         rec = make_behavior(scope="skill:s", record_id="lrn-aa000001", created_at=days_ago(1))
         create_record(env.ledger, rec)
@@ -219,6 +255,60 @@ class TestKeySet:
             "entries": 0, "entries_cap": 10, "words": 0, "words_cap": 150,
             "over_cap": False,
         }
+
+
+# ------------------------------------------------------------ degraded legs
+
+
+class TestDegradedLegs:
+    def test_corrupted_marker_pair_omits_the_key_without_crashing_list(
+        self, env, capsys
+    ):
+        """F2 (blind-review, live-demonstrated): a corrupted managed-
+        section marker pair (two BEGIN markers, one END) makes
+        `compile_managed_text` raise `CompileError` — that must degrade
+        exactly like a `VerbError` (omit this ONE destination's key) and
+        must NOT crash the whole `list --json` call. Before the fix this
+        propagated uncaught, `list` exited non-zero, and the UI's
+        `_load_detail` fell back to a synthesized item that loses the
+        ENTIRE proposal/why/change region for every record sharing that
+        target — not just the corrupted one."""
+        env.skill_md.write_text(
+            f"{BEGIN_MARKER}\nstray\n{BEGIN_MARKER}\nstray2\n{END_MARKER}\n",
+            encoding="utf-8",
+        )
+        rec = make_behavior(scope="skill:s", record_id="lrn-aa000001", created_at=days_ago(1))
+        create_record(env.ledger, rec)
+
+        (item,) = _list_json(capsys, "--surface-fill")  # asserts rc == 0
+        assert "skill-md" not in item["surface_fill"]
+        # claude-md is a DIFFERENT target (the skills-root host's own
+        # CLAUDE.md) — untouched by the skill-md corruption, still present.
+        assert "claude-md" in item["surface_fill"]
+
+    def test_corrupted_marker_pair_does_not_blank_other_records_sharing_the_target(
+        self, env, capsys
+    ):
+        """The reviewer's exact failure mode: a SECOND pending record in
+        the SAME skill bucket (so it shares the corrupted skill-md
+        target) must still get a clean `list --json --surface-fill`
+        response — its OWN claude-md key present, only skill-md
+        omitted — not an exit-nonzero that would blank its whole Detail
+        page."""
+        env.skill_md.write_text(
+            f"{BEGIN_MARKER}\nstray\n{BEGIN_MARKER}\nstray2\n{END_MARKER}\n",
+            encoding="utf-8",
+        )
+        r1 = make_behavior(scope="skill:s", record_id="lrn-aa000001", created_at=days_ago(1))
+        r2 = make_behavior(scope="skill:s", record_id="lrn-aa000002", created_at=days_ago(2))
+        create_record(env.ledger, r1)
+        create_record(env.ledger, r2)
+
+        items = _list_json(capsys, "--surface-fill")
+        assert len(items) == 2
+        for item in items:
+            assert "skill-md" not in item["surface_fill"]
+            assert "claude-md" in item["surface_fill"]
 
 
 # --------------------------------------------------------- count correctness

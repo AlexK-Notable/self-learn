@@ -906,24 +906,48 @@ def _build_change(
     return ChangeRegion(kind="none", content=None, caption="", message=NO_ANALYSIS_MESSAGE)
 
 
+#: Blind-review F1 fix: how close to a cap counts as "near" enough to earn
+#: the nearness clause — fewer than 3 entries of headroom, or the word
+#: axis at/past 80% of its budget. Below both, and not over cap, the bare
+#: fill fact is the whole sentence (an empty/low surface saying "lands
+#: near the cap" is not just uninformative, it inverts the feature's
+#: point: the emptiest surface is the BEST route target).
+_NEAR_ENTRIES_HEADROOM = 2
+_NEAR_WORDS_RATIO = 0.8
+
+
 def _budget_text(destination: str, fill: dict) -> str:
     """09 §11 Y-20 / §2.3: the plain-words fill sentence for a CAPPED
     destination — the CLI supplies the datum (``entries``/``entries_cap``/
-    ``words``/``words_cap``), this is the template. The word-cap phrasing
-    fires when ``words`` is proportionally the tighter (binding)
-    constraint — a structural comparison, never a fuzzy "near" guess. At
-    or over cap the sentence states the same fill fact; the escalation
-    itself is the EXISTING 02 §4 over-cap WARNING (surfaced through the
-    verb's own stderr at route time), not duplicated here (spec point 5)."""
+    ``words``/``words_cap``/``over_cap``), this is the template. The
+    nearness clause (word-cap or entries-cap phrasing) is gated on ACTUAL
+    proximity (blind-review F1) — never appended unconditionally — using
+    the SAME datum the CLI already computed, no fuzzy guess: over cap, or
+    within :data:`_NEAR_ENTRIES_HEADROOM` entries of the cap, or the word
+    axis at/past :data:`_NEAR_WORDS_RATIO` of its budget. Below every one
+    of those, the sentence is the bare fill fact alone — honest and
+    sufficient for a section nowhere near full. When a clause IS earned,
+    the word-cap phrasing fires when ``words`` is proportionally the
+    tighter (binding) constraint. At or over cap the sentence still
+    states only the fill fact; the escalation itself is the EXISTING
+    02 §4 over-cap WARNING (surfaced through the verb's own stderr at
+    route time), not duplicated here (spec point 5)."""
     entries, entries_cap = fill["entries"], fill["entries_cap"]
     words, words_cap = fill["words"], fill["words_cap"]
+    over_cap = bool(fill.get("over_cap"))
     base = (
         f"this {destination} section already holds {entries} of its "
         f"{entries_cap} entries"
     )
-    words_bound = entries_cap > 0 and words_cap > 0 and (
-        (words / words_cap) > (entries / entries_cap)
-    )
+
+    entries_ratio = (entries / entries_cap) if entries_cap else 0.0
+    words_ratio = (words / words_cap) if words_cap else 0.0
+    entries_near = entries_cap > 0 and (entries_cap - entries) <= _NEAR_ENTRIES_HEADROOM
+    words_near = words_cap > 0 and words_ratio >= _NEAR_WORDS_RATIO
+    if not (over_cap or entries_near or words_near):
+        return base
+
+    words_bound = words_ratio > entries_ratio
     tail = (
         " — and is near its word budget"
         if words_bound

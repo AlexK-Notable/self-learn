@@ -1120,16 +1120,25 @@ def surface_fill(
                 user_claude_md=user_claude_md,
                 check_dirty=False,
             )
-        except VerbError:
+            target = spec.target
+            if target is None:  # reference-shaped spec — never reached
+                continue  # here, kept defensive (TargetSpec.target is Optional)
+            key = target.resolve()
+            if key not in cache:
+                # blind-review F2: the read + compile step is inside the
+                # SAME try as the resolve — a corrupted managed-section
+                # marker pair (CompileError) or an unreadable/undecodable
+                # target (OSError/UnicodeDecodeError) is exactly as
+                # degradable as a VerbError (scope-invalid, missing
+                # SKILL.md, unregistered host): omit this destination's
+                # key and move on, never let one broken target's read
+                # crash the WHOLE `list --json` call for every record —
+                # that would blank the Detail page's entire proposal/why
+                # region for every OTHER record sharing that target too.
+                text = target.read_text(encoding="utf-8") if target.is_file() else ""
+                cache[key] = compile_managed_text(text, _compile_set(home, spec))
+        except (VerbError, CompileError, OSError, UnicodeDecodeError):
             continue
-        target = spec.target
-        if target is None:  # reference-shaped spec — never reached here,
-            continue  # kept defensive since TargetSpec.target is Optional
-        key = target.resolve()
-        if key not in cache:
-            text = target.read_text(encoding="utf-8") if target.is_file() else ""
-            section = compile_managed_text(text, _compile_set(home, spec))
-            cache[key] = section
         section = cache[key]
         result[destination] = {
             "entries": section.entry_count,
