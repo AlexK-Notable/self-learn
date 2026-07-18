@@ -20,6 +20,7 @@ from starlette.staticfiles import StaticFiles
 
 from . import ledger, pane, rendering
 from .env import EnvConfig
+from .idle import ActivityTracker, IdleMonitor
 from .middleware import SecurityMiddleware
 from .routes import router
 from .runner import RealRunner, VerbRunner
@@ -52,6 +53,8 @@ def create_app(
     refresh_hub: ledger.RefreshHub | None = None,
     app_hub: AppEventHub | None = None,
     start_watcher: bool = True,
+    idle_exit_seconds: float = 0,
+    idle_exit_callback=None,
 ) -> FastAPI:
     """Construct one server instance. ``token`` is minted by the caller
     (production: :mod:`self_learn_ui.cli`'s ``serve`` at process start,
@@ -62,7 +65,16 @@ def create_app(
     subprocess queue, wired to this app's own ``refresh_hub`` so every
     verb forces a push on completion) — the injectable seam stays live
     for tests, which pass :class:`self_learn_ui.runner.FakeRunner`
-    explicitly."""
+    explicitly.
+
+    ``idle_exit_seconds`` (Y-14, 09 §3): > 0 starts the idle monitor in
+    the lifespan — the caller (``cli.serve``) resolves the arming rule
+    via :func:`self_learn_ui.idle.resolve_idle_window`; the default 0
+    keeps every existing test construction resident. The tracker is
+    built unconditionally (cheap; the middleware and SSE generator use
+    it either way). ``idle_exit_callback`` is the injectable exit seam
+    — production ``None`` means SIGTERM-to-self; tests inject a flag
+    setter (never a real SIGTERM in-suite, 10 §3 U13)."""
     refresh_hub = refresh_hub if refresh_hub is not None else ledger.RefreshHub()
     app_hub = app_hub if app_hub is not None else AppEventHub()
     runner = (
@@ -71,20 +83,38 @@ def create_app(
         else RealRunner(home=env.self_learn_home, refresh_callback=refresh_hub.force_refresh)
     )
     stop_event = asyncio.Event()
+    tracker = ActivityTracker()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         watch_task: asyncio.Task | None = None
+        idle_task: asyncio.Task | None = None
+        app.state.idle_task = None
         if start_watcher:
             watch_task = asyncio.ensure_future(
                 ledger.watch_ledger(env.self_learn_home, refresh_hub, stop_event=stop_event)
             )
+        if idle_exit_seconds > 0:
+            monitor = IdleMonitor(
+                tracker=tracker,
+                subscriber_count=lambda: (
+                    refresh_hub.subscriber_count + app_hub.subscriber_count
+                ),
+                runner_busy=lambda: runner.busy,
+                pane_manager=app.state.pane_manager,
+                window_seconds=idle_exit_seconds,
+                exit_callback=idle_exit_callback,
+            )
+            idle_task = asyncio.ensure_future(monitor.run())
+            app.state.idle_task = idle_task
         try:
             yield
         finally:
             stop_event.set()
             if watch_task is not None:
                 watch_task.cancel()
+            if idle_task is not None:
+                idle_task.cancel()
 
     app = FastAPI(lifespan=lifespan)
     app.state.env = env
@@ -93,11 +123,12 @@ def create_app(
     app.state.app_hub = app_hub
     app.state.templates = _build_templates()
     app.state.watch_stop_event = stop_event
+    app.state.activity_tracker = tracker
     app.state.pane_manager = pane.build_pane_manager(
         env=env, runner=runner, app_hub=app_hub, refresh_hub=refresh_hub
     )
 
-    app.add_middleware(SecurityMiddleware, port=env.ui_port, token=token)
+    app.add_middleware(SecurityMiddleware, port=env.ui_port, token=token, tracker=tracker)
     app.include_router(router)
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 

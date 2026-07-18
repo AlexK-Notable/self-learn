@@ -31,6 +31,7 @@ from self_learn_ui.engine.base import (
     ToolUse,
 )
 from self_learn_ui.ledger import RefreshHub, locate_record, read_diff, read_proposal_raw, read_record
+from self_learn_ui.proposals import VerbProposal
 from self_learn_ui.runner import FakeRunner, RunResult
 from self_learn_ui.sse import AppEventHub
 
@@ -715,3 +716,77 @@ class TestBuildPaneContext:
         sb = make_env(tmp_path)
         with pytest.raises(LookupError):
             pane.build_pane_context(sb.ledger, "lrn-ffffffff")
+
+
+# --------------------------------------------- Y-14 idle-lifecycle surfaces
+
+
+class TestIdleLifecycleSurfaces:
+    """has_interruptible_session / teardown_parked (10 §3 U13) against
+    the REAL PaneManager + FakeEngine — the monitor-side behavior is in
+    test_idle.py against a FakePane; this class pins the two surfaces'
+    real semantics, including the delta-R4 idempotence case."""
+
+    async def test_streaming_session_is_interruptible_parked_is_not(self) -> None:
+        engine = FakeEngine(
+            turns=[[BlockStart(kind="text"), TextDelta(text="hi"),
+                    Result(status="success", cost_usd=0.0, error=None)]]
+        )
+        manager, _, _, _ = _manager(engines={RECORD_ID: engine})
+        assert manager.has_interruptible_session() is False  # no session
+        await manager.start(RECORD_ID)
+        # FakeEngine turns drain synchronously in start() -> parked at
+        # awaiting-input by the time start() returns.
+        assert manager.snapshot(RECORD_ID).state == pane.STATE_AWAITING_INPUT
+        assert manager.has_interruptible_session() is False
+
+    async def test_teardown_parked_tears_down_awaiting_input(self) -> None:
+        engine = FakeEngine(
+            turns=[[BlockStart(kind="text"), TextDelta(text="hi"),
+                    Result(status="success", cost_usd=0.0, error=None)]]
+        )
+        manager, _, _, _ = _manager(engines={RECORD_ID: engine})
+        await manager.start(RECORD_ID)
+        assert manager.snapshot(RECORD_ID).state == pane.STATE_AWAITING_INPUT
+        assert await manager.teardown_parked() is True
+        # standard teardown ran: engine interrupted + closed, no live left
+        assert engine.interrupt_calls == 1
+        assert engine.close_calls == 1
+        assert manager.active_record_id is None
+        assert manager.snapshot(RECORD_ID).state == pane.STATE_IDLE
+
+    async def test_teardown_parked_noop_without_session(self) -> None:
+        manager, _, _, _ = _manager()
+        assert await manager.teardown_parked() is False
+
+    async def test_teardown_parked_clears_proposal_slot(self) -> None:
+        # Y-13 clear-set: teardown ends the proposing session.
+        engine = FakeEngine(
+            turns=[[BlockStart(kind="text"), TextDelta(text="hi"),
+                    Result(status="success", cost_usd=0.0, error=None)]]
+        )
+        manager, _, _, _ = _manager(engines={RECORD_ID: engine})
+        await manager.start(RECORD_ID)
+        proposal = VerbProposal(
+            verb="defer", record_id=RECORD_ID, bucket_scope="skill",
+            bucket_name="s", session_key=RECORD_ID, title="T",
+            dest=None, note=None, until=None,
+        )
+        manager.proposal_slot.occupy(proposal)
+        assert manager.proposal_slot.current is not None
+        assert await manager.teardown_parked() is True
+        assert manager.proposal_slot.current is None
+
+    async def test_teardown_parked_idempotent_against_ended_engine(self) -> None:
+        # Delta R4: a parked ENDED session's engine may already be
+        # closed (error paths) — teardown must not raise.
+        engine = FakeEngine(
+            turns=[[BlockStart(kind="text"), TextDelta(text="x"),
+                    Result(status="error", cost_usd=0.0, error="boom")]]
+        )
+        manager, _, _, _ = _manager(engines={RECORD_ID: engine})
+        await manager.start(RECORD_ID)
+        snap = manager.snapshot(RECORD_ID)
+        assert snap.state == pane.STATE_ENDED
+        await engine.close()  # already closed once by the error path or here
+        assert await manager.teardown_parked() is True  # second close: no raise

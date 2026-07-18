@@ -89,3 +89,26 @@ def test_bad_budget_raises_env_error() -> None:
 def test_bad_max_turns_raises_env_error() -> None:
     with pytest.raises(EnvError):
         load_env({"SELF_LEARN_PANE_MAX_TURNS": "lots"})
+
+
+# ------------------------------------------ Y-14: SELF_LEARN_UI_IDLE_EXIT_SECONDS
+
+
+def test_idle_exit_seconds_unset_is_none() -> None:
+    # None (not 0, not 600): the arming rule in idle.resolve_idle_window
+    # must be able to tell "unset" from "explicitly configured".
+    cfg = load_env({})
+    assert cfg.ui_idle_exit_seconds is None
+
+
+def test_idle_exit_seconds_parses_int_including_negative() -> None:
+    assert load_env({"SELF_LEARN_UI_IDLE_EXIT_SECONDS": "120"}).ui_idle_exit_seconds == 120
+    # ≤0 disables at the arming rule — parsing NEVER errors on it
+    # (pinned at the Y-14 spec gate, 09 §4.4).
+    assert load_env({"SELF_LEARN_UI_IDLE_EXIT_SECONDS": "0"}).ui_idle_exit_seconds == 0
+    assert load_env({"SELF_LEARN_UI_IDLE_EXIT_SECONDS": "-5"}).ui_idle_exit_seconds == -5
+
+
+def test_idle_exit_seconds_non_numeric_raises_env_error() -> None:
+    with pytest.raises(EnvError):
+        load_env({"SELF_LEARN_UI_IDLE_EXIT_SECONDS": "soon"})

@@ -49,9 +49,9 @@ def make_app() -> FastAPI:
     return app
 
 
-def client(app: FastAPI) -> TestClient:
+def client(app: FastAPI, **kwargs) -> TestClient:
     # base_url controls the Host header TestClient sends.
-    return TestClient(app, base_url=f"http://127.0.0.1:{PORT}")
+    return TestClient(app, base_url=f"http://127.0.0.1:{PORT}", **kwargs)
 
 
 class TestHostAllowlist:
@@ -253,3 +253,70 @@ class TestTokenFile:
         monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
         path = write_token_file(mint_token())
         assert path.parent.is_dir()
+
+
+# ------------------------------------------------- Y-14: activity tracking
+
+
+class TestActivityTracking:
+    """The middleware maintains the idle predicate's legs 2 and 5
+    (in-flight counter, completion clock) around EVERY dispatched
+    request — including 403s (any local probe is activity). The
+    decrement lives in a ``finally`` (delta R3): a handler that raises
+    (the client-disconnect-cancellation shape) must never leak a
+    permanent in-flight count."""
+
+    def _tracked_app(self):
+        from self_learn_ui.idle import ActivityTracker
+
+        tracker = ActivityTracker()
+        app = FastAPI()
+        app.add_middleware(SecurityMiddleware, port=PORT, token=TOKEN, tracker=tracker)
+        seen = {}
+
+        @app.get("/")
+        def index():
+            seen["in_flight_during"] = tracker.in_flight
+            return PlainTextResponse("front")
+
+        @app.get("/boom")
+        def boom():
+            raise RuntimeError("handler died mid-request")
+
+        return app, tracker, seen
+
+    def test_request_counts_in_flight_and_stamps_completion(self) -> None:
+        app, tracker, seen = self._tracked_app()
+        c = client(app)
+        before = tracker.quiet_seconds()
+        assert before >= 0.0
+        resp = c.get("/", cookies={TOKEN_COOKIE_NAME: TOKEN})
+        assert resp.status_code == 200
+        assert seen["in_flight_during"] == 1
+        assert tracker.in_flight == 0
+        assert tracker.quiet_seconds() < 1.0
+
+    def test_403_is_still_activity(self) -> None:
+        app, tracker, _ = self._tracked_app()
+        c = client(app)
+        resp = c.get("/")  # no cookie -> 403
+        assert resp.status_code == 403
+        assert tracker.in_flight == 0
+        assert tracker.quiet_seconds() < 1.0
+
+    def test_raising_handler_never_leaks_in_flight(self) -> None:
+        # Delta R3: the decrement runs in a finally, so an exception
+        # (or a cancellation, which unwinds the same way) cannot leave
+        # a permanent in-flight count blocking idle exit forever.
+        app, tracker, _ = self._tracked_app()
+        c = client(app, raise_server_exceptions=False)
+        resp = c.get("/boom", cookies={TOKEN_COOKIE_NAME: TOKEN})
+        assert resp.status_code == 500
+        assert tracker.in_flight == 0
+
+    def test_untracked_construction_still_works(self) -> None:
+        # tracker=None (the pre-Y-14 construction every existing test
+        # uses) must stay valid.
+        app = make_app()
+        c = client(app)
+        assert c.get("/", cookies={TOKEN_COOKIE_NAME: TOKEN}).status_code == 200

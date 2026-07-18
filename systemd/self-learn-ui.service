@@ -1,9 +1,15 @@
 # self-learn adjudication UI (doc 09/10 surface) — the localhost web
-# server. Resident, not one-shot: "the server IS the single instance"
-# (09 §3) — multiple browser tabs/windows are concurrent readers of the
-# one running process, so this unit stays up rather than firing per
-# request. Conventions mirror self-learn-miner.service (comment header,
-# %h-relative paths, explicit env pin).
+# server. Resident WHILE IN USE (09 §3, Y-14 2026-07-18): "the server
+# IS the single instance" — multiple browser tabs/windows are
+# concurrent readers of the one running process — but the process
+# self-exits cleanly (exit 0) after ~10 idle minutes with no pages
+# open, no verb running, and no agent session mid-turn. Under
+# Restart=on-failure below, a clean exit stays down; the launcher
+# (self-learn-ui-open — notification click / .desktop entry) starts it
+# again on demand, so `enable --now` is optional: a boot-time start
+# just idles out after one window, harmlessly. Crash-restart behavior
+# is unchanged. Conventions mirror self-learn-miner.service (comment
+# header, %h-relative paths, explicit env pin).
 #
 # Registration (manual, like the miner units and the autosync watcher):
 #   ln -sf ~/repos/self-learn/systemd/self-learn-ui.service \

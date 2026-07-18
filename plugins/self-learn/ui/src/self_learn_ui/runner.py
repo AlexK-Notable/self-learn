@@ -71,6 +71,14 @@ class VerbRunner(ABC):
     serialization itself — that discipline lives in the concrete
     implementation, per the task brief."""
 
+    @property
+    def busy(self) -> bool:
+        """Y-14 idle-predicate leg (09 §3): is a verb subprocess in
+        flight right now? Base answer is False — only
+        :class:`RealRunner` actually serializes and therefore actually
+        knows; fakes stay non-busy unless a test says otherwise."""
+        return False
+
     @abstractmethod
     async def run(self, argv: list[str]) -> RunResult:
         """Run ``self-learn <argv...>`` and return its outcome. Never
@@ -241,6 +249,13 @@ class RealRunner(VerbRunner):
         self._interrupt_active_session: InterruptHook = (
             interrupt_active_session or _default_interrupt_hook
         )
+
+    @property
+    def busy(self) -> bool:
+        """True while a verb subprocess (or its interrupt-first hook)
+        holds the serialization lock — the Y-14 idle predicate's
+        "runner between verbs" leg reads this (09 §3)."""
+        return self._lock.locked()
 
     def set_interrupt_hook(self, hook: InterruptHook | None) -> None:
         """Plug in (or clear) the pane track's session-interrupt hook

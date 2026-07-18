@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import shutil
+import socket
 import stat
 import subprocess
 import time
@@ -41,6 +42,7 @@ _REQUIRED_REAL_BINS = (
     "mkdir",
     "dirname",
     "readlink",
+    "sleep",
 )
 
 _EXEC_MODE = (
@@ -126,6 +128,30 @@ exit 0
 
 _LOGGING_LAUNCH_TMPL = """
 echo "$*" >> "{log}"
+exit 0
+"""
+
+# Y-14 readiness-wait fakes: a systemctl that reports a snapshot state
+# on `is-active` (stdout — the launcher captures it) and can run an
+# arbitrary hook on `start` (e.g. writing the fresh token, simulating
+# the server coming up).
+_SYSTEMCTL_TMPL = """
+echo "$*" >> "{log}"
+if [[ "$2" == "is-active" ]]; then
+  echo "{state}"
+fi
+exit 0
+"""
+
+_SYSTEMCTL_START_HOOK_TMPL = """
+echo "$*" >> "{log}"
+if [[ "$2" == "is-active" ]]; then
+  echo "{state}"
+fi
+if [[ "$2" == "start" ]]; then
+  {start_hook}
+  exit {start_rc}
+fi
 exit 0
 """
 
@@ -415,7 +441,10 @@ def test_systemctl_present_starts_the_service(tmp_path: Path) -> None:
     chromium_log = tmp_path / "chromium.log"
     bindir = _hermetic_bindir(
         tmp_path,
-        systemctl=_LOGGING_LAUNCH_TMPL.format(log=systemctl_log),
+        # Answers "active" to is-active: a WARM service, so this test
+        # never enters the Y-14 readiness wait (that wait has its own
+        # tests below) — it pins only that start is always invoked.
+        systemctl=_SYSTEMCTL_TMPL.format(log=systemctl_log, state="active"),
         chromium=_LOGGING_LAUNCH_TMPL.format(log=chromium_log),
     )
     runtime_dir = tmp_path / "runtime"
@@ -484,3 +513,199 @@ def test_port_override_respected(tmp_path: Path) -> None:
     assert result.returncode == 0
     content = _wait_for_nonempty(chromium_log)
     assert "http://127.0.0.1:9999/record/lrn-x" in content
+
+
+# --- Y-14 readiness wait (09 §3 "Deep-link + launcher"; 10 §3 U13) --------
+#
+# Cold ⟺ is-active snapshot anything other than `active`; one ≤5 s
+# budget: fresh token THEN TCP connect; unchanged-token-plus-connect
+# counts as ready (delta R2); timeout degrades to the stale-token URL
+# (the 403 page names this script). Durations are asserted coarsely —
+# fast paths must finish far under the 5 s budget, the timeout path
+# must actually burn it.
+
+
+def _listener() -> tuple[socket.socket, int]:
+    """A real localhost listener — bash's /dev/tcp connect completes
+    against the listen backlog, no accept() needed."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    sock.listen(1)
+    return sock, sock.getsockname()[1]
+
+
+def _closed_port() -> int:
+    """An ephemeral port that is bound-then-closed, so connects fail fast."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+    return port
+
+
+def test_warm_service_skips_readiness_wait(tmp_path: Path) -> None:
+    chromium_log = tmp_path / "chromium.log"
+    systemctl_log = tmp_path / "systemctl.log"
+    bindir = _hermetic_bindir(
+        tmp_path,
+        systemctl=_SYSTEMCTL_TMPL.format(log=systemctl_log, state="active"),
+        chromium=_LOGGING_LAUNCH_TMPL.format(log=chromium_log),
+    )
+    runtime_dir = tmp_path / "runtime"
+    (runtime_dir / "self-learn").mkdir(parents=True)
+    (runtime_dir / "self-learn" / "ui-token").write_text("tok-warm", encoding="utf-8")
+    env = _env(
+        tmp_path,
+        bindir,
+        XDG_RUNTIME_DIR=str(runtime_dir),
+        SELF_LEARN_UI_PORT=str(_closed_port()),  # nothing listening: a wait would burn 5 s
+    )
+
+    start = time.monotonic()
+    result = _run(env)
+    elapsed = time.monotonic() - start
+
+    assert result.returncode == 0
+    assert elapsed < 3.0, "warm service must skip the wait entirely"
+    assert "token=tok-warm" in _wait_for_nonempty(chromium_log)
+
+
+def test_cold_start_waits_for_fresh_token_then_connect(tmp_path: Path) -> None:
+    chromium_log = tmp_path / "chromium.log"
+    systemctl_log = tmp_path / "systemctl.log"
+    runtime_dir = tmp_path / "runtime"
+    token_path = runtime_dir / "self-learn" / "ui-token"
+    token_path.parent.mkdir(parents=True)
+    token_path.write_text("tok-stale", encoding="utf-8")
+
+    sock, port = _listener()
+    try:
+        bindir = _hermetic_bindir(
+            tmp_path,
+            # `start` writes the fresh token — the simulated server
+            # coming up (write precedes bind; the listener is already
+            # bound here, which only shortens phase 2).
+            systemctl=_SYSTEMCTL_START_HOOK_TMPL.format(
+                log=systemctl_log,
+                state="inactive",
+                start_hook=f'printf tok-fresh > "{token_path}"',
+                start_rc=0,
+            ),
+            chromium=_LOGGING_LAUNCH_TMPL.format(log=chromium_log),
+        )
+        env = _env(
+            tmp_path,
+            bindir,
+            XDG_RUNTIME_DIR=str(runtime_dir),
+            SELF_LEARN_UI_PORT=str(port),
+        )
+
+        start = time.monotonic()
+        result = _run(env)
+        elapsed = time.monotonic() - start
+    finally:
+        sock.close()
+
+    assert result.returncode == 0
+    assert elapsed < 3.0, "fresh token + open port must release immediately"
+    assert "token=tok-fresh" in _wait_for_nonempty(chromium_log)
+
+
+def test_unchanged_token_with_connect_counts_as_ready(tmp_path: Path) -> None:
+    # Delta R2, the double-click case: the second launcher snapshots the
+    # already-fresh token during the first launcher's cold start — a
+    # token change never comes, but a successful connect is proof.
+    chromium_log = tmp_path / "chromium.log"
+    systemctl_log = tmp_path / "systemctl.log"
+    runtime_dir = tmp_path / "runtime"
+    token_path = runtime_dir / "self-learn" / "ui-token"
+    token_path.parent.mkdir(parents=True)
+    token_path.write_text("tok-fresh", encoding="utf-8")
+
+    sock, port = _listener()
+    try:
+        bindir = _hermetic_bindir(
+            tmp_path,
+            systemctl=_SYSTEMCTL_TMPL.format(log=systemctl_log, state="activating"),
+            chromium=_LOGGING_LAUNCH_TMPL.format(log=chromium_log),
+        )
+        env = _env(
+            tmp_path,
+            bindir,
+            XDG_RUNTIME_DIR=str(runtime_dir),
+            SELF_LEARN_UI_PORT=str(port),
+        )
+
+        start = time.monotonic()
+        result = _run(env)
+        elapsed = time.monotonic() - start
+    finally:
+        sock.close()
+
+    assert result.returncode == 0
+    assert elapsed < 3.0, "connect success must not burn the budget on token-watch"
+    assert "token=tok-fresh" in _wait_for_nonempty(chromium_log)
+
+
+def test_cold_start_timeout_degrades_to_stale_token(tmp_path: Path) -> None:
+    # Token never changes, nothing ever listens: the launcher burns the
+    # ≤5 s budget, then proceeds with what is readable — today's 403
+    # degradation (the page names this script), never a hard failure.
+    chromium_log = tmp_path / "chromium.log"
+    systemctl_log = tmp_path / "systemctl.log"
+    runtime_dir = tmp_path / "runtime"
+    token_path = runtime_dir / "self-learn" / "ui-token"
+    token_path.parent.mkdir(parents=True)
+    token_path.write_text("tok-stale", encoding="utf-8")
+
+    bindir = _hermetic_bindir(
+        tmp_path,
+        systemctl=_SYSTEMCTL_TMPL.format(log=systemctl_log, state="inactive"),
+        chromium=_LOGGING_LAUNCH_TMPL.format(log=chromium_log),
+    )
+    env = _env(
+        tmp_path,
+        bindir,
+        XDG_RUNTIME_DIR=str(runtime_dir),
+        SELF_LEARN_UI_PORT=str(_closed_port()),
+    )
+
+    start = time.monotonic()
+    result = subprocess.run(
+        [str(SCRIPT)], env=env, capture_output=True, text=True, timeout=15
+    )
+    elapsed = time.monotonic() - start
+
+    assert result.returncode == 0
+    assert elapsed >= 4.0, "the budget must actually be spent before degrading"
+    assert "token=tok-stale" in _wait_for_nonempty(chromium_log)
+
+
+def test_failed_start_skips_the_wait(tmp_path: Path) -> None:
+    # start exiting non-zero (unit missing, masked, ...) is not a cold
+    # start the launcher can wait out — proceed immediately.
+    chromium_log = tmp_path / "chromium.log"
+    systemctl_log = tmp_path / "systemctl.log"
+    bindir = _hermetic_bindir(
+        tmp_path,
+        systemctl=_SYSTEMCTL_START_HOOK_TMPL.format(
+            log=systemctl_log, state="inactive", start_hook=":", start_rc=1
+        ),
+        chromium=_LOGGING_LAUNCH_TMPL.format(log=chromium_log),
+    )
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    env = _env(
+        tmp_path,
+        bindir,
+        XDG_RUNTIME_DIR=str(runtime_dir),
+        SELF_LEARN_UI_PORT=str(_closed_port()),
+    )
+
+    start = time.monotonic()
+    result = _run(env)
+    elapsed = time.monotonic() - start
+
+    assert result.returncode == 0
+    assert elapsed < 3.0
+    assert _wait_for_nonempty(chromium_log)

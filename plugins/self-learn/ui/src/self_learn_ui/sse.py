@@ -80,6 +80,11 @@ class AppEventHub:
     def unsubscribe(self, q: "asyncio.Queue[dict]") -> None:
         self._subscribers.discard(q)
 
+    @property
+    def subscriber_count(self) -> int:
+        """Y-14 idle-predicate leg (09 §3): connected SSE clients."""
+        return len(self._subscribers)
+
     async def publish(self, envelope: dict) -> None:
         for q in list(self._subscribers):
             await q.put(envelope)
@@ -90,12 +95,21 @@ class AppEventHub:
 
 
 async def event_stream(
-    refresh_hub: RefreshHub, app_hub: AppEventHub
+    refresh_hub: RefreshHub, app_hub: AppEventHub, tracker=None
 ) -> AsyncIterator[str]:
     """Merge both hubs into one client-facing SSE text stream for the
     duration of one connection. Unsubscribes both on disconnect
     (``GeneratorExit`` via the ``finally``, e.g. a client navigating away
-    or the server shutting down)."""
+    or the server shutting down).
+
+    ``tracker`` (Y-14, optional): the middleware stamps the activity
+    clock when *dispatch* returns — for a streaming response that is
+    connect time, not close time — so this generator's ``finally``
+    additionally stamps on disconnect. Without it, closing the last
+    tab an hour after opening it would look like an hour of quiet and
+    the idle monitor would exit ~one sample later instead of one full
+    window later (09 §3 leg 5's intent: the window counts from
+    last-tab-close)."""
     refresh_q = refresh_hub.subscribe()
     app_q = app_hub.subscribe()
     pending: set[asyncio.Task] = {
@@ -120,3 +134,5 @@ async def event_stream(
             task.cancel()
         refresh_hub.unsubscribe(refresh_q)
         app_hub.unsubscribe(app_q)
+        if tracker is not None:
+            tracker.mark_activity()
