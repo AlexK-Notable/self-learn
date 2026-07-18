@@ -172,6 +172,19 @@ def _build_parser() -> argparse.ArgumentParser:
     graduate = _verb("graduate", "mark a lesson graduated into authored canon")
     graduate.add_argument("id", metavar="ID")
 
+    rehome = _verb(
+        "rehome", "move a pending record to another registered project bucket"
+    )
+    rehome.add_argument("id", metavar="ID")
+    rehome.add_argument(
+        "--to",
+        required=True,
+        metavar="PATH_OR_SLUG",
+        help="the registered project to move it to — its path or its "
+        "bucket slug (project→project only; the target must already be "
+        "in hosts.yaml — self-learn host add <path> registers it)",
+    )
+
     supersede = _verb("supersede", "mark OLD superseded by NEW (metadata only)")
     supersede.add_argument("old_id", metavar="OLD_ID")
     supersede.add_argument("new_id", metavar="NEW_ID")
@@ -786,6 +799,12 @@ def _cmd_verb(args: argparse.Namespace) -> int:
                 home, args.id, note=args.note, no_push=args.no_push
             )
             return _finish_verb(result, "canon")
+        if args.command == "rehome":
+            result = verbs.rehome(
+                home, args.id, to=args.to, note=args.note, no_push=args.no_push
+            )
+            # pinned subject: "self-learn: rehome lrn-… → projects/<slug>"
+            return _finish_verb(result, _routed_destination(result))
         if args.command == "supersede":
             result = verbs.supersede(
                 home,
@@ -1260,6 +1279,7 @@ VERB_COMMANDS = frozenset(
         "reject",
         "defer",
         "graduate",
+        "rehome",
         "supersede",
         "confirm-recurrence",
         "confirm-held",

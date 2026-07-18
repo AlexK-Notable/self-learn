@@ -33,8 +33,12 @@ from self_learn_ui.proposals import (
 )
 from self_learn_ui.runner import FakeRunner, RunResult
 
+from self_learn.hosts import slug_for
+
 from support import (
+    commit_all,
     enter_client,
+    init_repo,
     make_behavior,
     make_env,
     make_knowledge,
@@ -904,3 +908,305 @@ class TestBucketCharterVariant:
             assert type(prefix).__name__ == "PermissionResultDeny"
 
         run(check())
+
+
+# ------------------------------------------------------- rehome (Y-18 / U15)
+#
+# 09 §4.5 as amended 2026-07-18 (feedback round 3 item 3; §11 Y-18):
+# `rehome` joins the closed proposable set with required `to`, validated
+# AT INTAKE against hosts.yaml; the resolved target is a server-truth bar
+# field; the bucket-change staleness leg clears the slot + renders a
+# plain-words notice on the arm AND confirm routes — never a disarm.
+
+from self_learn_ui.routes import NOTICE_PROPOSAL_MOVED, build_argv  # noqa: E402
+
+
+def _seed_two_projects(tmp_path: Path):
+    """A ledger with TWO registered projects: host A (make_env's combined
+    host, holding the record's bucket) and host B — a second registered
+    project with a distinctive basename and NO bucket yet."""
+    sb = make_env(tmp_path)
+    host_b = tmp_path / "repos" / "keyboards"
+    init_repo(host_b)
+    (host_b / "README.md").write_text("b\n", encoding="utf-8")
+    commit_all(host_b, "host-b seed")
+    (sb.ledger / "hosts.yaml").write_text(
+        f"skills_root: {sb.host}\nprojects:\n  - path: {sb.host}\n"
+        f"  - path: {host_b}\n",
+        encoding="utf-8",
+    )
+    rec = make_knowledge(scope="project")
+    seed_record(sb.ledger, rec, project_path=sb.host)
+    return sb, host_b, rec
+
+
+def _project_bucket(sb, host) -> Path:
+    return sb.ledger / "projects" / slug_for(host)
+
+
+def _move_record_cli_side(sb, rec, host_b) -> None:
+    """Simulate a CLI-side `rehome`: the record file leaves its bucket
+    for host B's (freshly created) bucket — pending, bytes untouched."""
+    src = _project_bucket(sb, sb.host) / "pending" / f"{rec.id}.md"
+    dst = _project_bucket(sb, host_b) / "pending" / f"{rec.id}.md"
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    src.rename(dst)
+
+
+class TestValidateRehome:
+    def test_happy_path_stores_the_resolved_registered_path(self, tmp_path: Path) -> None:
+        sb, host_b, rec = _seed_two_projects(tmp_path)
+        result = validate_proposal(
+            sb.ledger,
+            _record_scope(rec),
+            {"verb": "rehome", "record_id": rec.id, "to": str(host_b)},
+        )
+        assert isinstance(result, VerbProposal)
+        assert result.verb == "rehome"
+        # server truth: the RESOLVED hosts.yaml path, never the raw string
+        assert result.to == str(host_b.resolve())
+        assert result.to_basename == "keyboards"
+        assert result.bucket_scope == "project"
+        assert result.bucket_name == slug_for(sb.host)
+
+    def test_to_accepts_the_bucket_slug(self, tmp_path: Path) -> None:
+        sb, host_b, rec = _seed_two_projects(tmp_path)
+        result = validate_proposal(
+            sb.ledger,
+            _record_scope(rec),
+            {"verb": "rehome", "record_id": rec.id, "to": slug_for(host_b)},
+        )
+        assert isinstance(result, VerbProposal)
+        assert result.to == str(host_b.resolve())
+
+    def test_rehome_requires_to(self, tmp_path: Path) -> None:
+        sb, host_b, rec = _seed_two_projects(tmp_path)
+        for args in (
+            {"verb": "rehome", "record_id": rec.id},
+            {"verb": "rehome", "record_id": rec.id, "to": ""},
+        ):
+            result = validate_proposal(sb.ledger, _record_scope(rec), args)
+            assert isinstance(result, str)
+            assert "rehome needs to" in result
+
+    def test_to_refused_on_every_other_verb(self, tmp_path: Path) -> None:
+        sb, host_b, rec = _seed_two_projects(tmp_path)
+        result = validate_proposal(
+            sb.ledger,
+            _record_scope(rec),
+            {"verb": "route", "record_id": rec.id, "to": str(host_b)},
+        )
+        assert result == "proposal refused: to only applies to rehome proposals"
+
+    def test_unregistered_target_teaches_the_register_affordance(self, tmp_path: Path) -> None:
+        sb, host_b, rec = _seed_two_projects(tmp_path)
+        stranger = tmp_path / "repos" / "stranger"
+        result = validate_proposal(
+            sb.ledger,
+            _record_scope(rec),
+            {"verb": "rehome", "record_id": rec.id, "to": str(stranger)},
+        )
+        assert isinstance(result, str)
+        assert "not a registered project" in result
+        # the teaching string names the human's register affordance
+        assert "Register control" in result
+        assert "self-learn host add <path>" in result
+
+    def test_target_equals_current_bucket_refuses(self, tmp_path: Path) -> None:
+        sb, host_b, rec = _seed_two_projects(tmp_path)
+        result = validate_proposal(
+            sb.ledger,
+            _record_scope(rec),
+            {"verb": "rehome", "record_id": rec.id, "to": str(sb.host)},
+        )
+        assert isinstance(result, str)
+        assert "nothing to move" in result
+
+    def test_non_project_record_refuses(self, tmp_path: Path) -> None:
+        sb, host_b, _ = _seed_two_projects(tmp_path)
+        skill_rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, skill_rec)
+        result = validate_proposal(
+            sb.ledger,
+            _record_scope(skill_rec),
+            {"verb": "rehome", "record_id": skill_rec.id, "to": str(host_b)},
+        )
+        assert isinstance(result, str)
+        assert "project→project only" in result
+
+
+class TestRehomeProposalRoutes:
+    def _occupy_rehome(self, manager, sb, host_b, rec, **kw) -> VerbProposal:
+        prop = VerbProposal(
+            verb="rehome",
+            record_id=rec.id,
+            bucket_scope="project",
+            bucket_name=slug_for(sb.host),
+            session_key=rec.id,
+            title="The router reserves 192.168.1.232 for the Nova.",
+            to=str(host_b.resolve()),
+            **kw,
+        )
+        assert manager.proposal_slot.occupy(prop)
+        return prop
+
+    def test_build_argv_rehome(self) -> None:
+        assert build_argv("rehome", "lrn-0000aaaa", to="/w/keyboards", note="n") == [
+            "rehome", "lrn-0000aaaa", "--to", "/w/keyboards", "--note", "n",
+        ]
+
+    def test_waiting_bar_copy_leads_domestic_with_resolved_path_trailing(self, tmp_path: Path) -> None:
+        """Y-18 fold F7: the leading line is 'move this lesson to the
+        ⟨basename⟩ project'; the resolved path renders as trailing
+        disambiguating metadata beside the id."""
+        sb, host_b, rec = _seed_two_projects(tmp_path)
+        c, runner, manager = make_client(sb)
+        self._occupy_rehome(manager, sb, host_b, rec)
+        page = c.get(f"/record/{rec.id}").text
+        assert "move this lesson to the keyboards project" in page
+        assert str(host_b.resolve()) in page
+        assert 'data-proposal="waiting"' in page
+        lead = page.find("move this lesson to the keyboards project")
+        path_pos = page.find(str(host_b.resolve()), lead)
+        id_pos = page.find(rec.id, lead)
+        assert lead != -1 and path_pos != -1 and id_pos != -1
+        assert lead < path_pos
+        assert lead < id_pos
+
+    def test_confirm_rebuilds_argv_from_the_slot_resolved_target(self, tmp_path: Path) -> None:
+        sb, host_b, rec = _seed_two_projects(tmp_path)
+        c, runner, manager = make_client(sb)
+        self._occupy_rehome(manager, sb, host_b, rec, note="umbrella project")
+        armed = manager.proposal_slot.arm(rec.id)
+        assert armed is not None
+        resp = c.post(
+            "/proposal/confirm",
+            data={"record_id": rec.id, "kind": "detail", "nonce": armed.nonce},
+            headers=HX,
+        )
+        assert [
+            "rehome", rec.id, "--to", str(host_b.resolve()),
+            "--note", "umbrella project",
+        ] in runner.calls
+        assert manager.proposal_slot.current is None
+        assert "HX-Redirect" in resp.headers
+
+    def test_human_action_bar_has_no_rehome_path(self, tmp_path: Path) -> None:
+        """Y-18 decision 3: no human-side re-home key or control in M1 —
+        the standing action-bar routes refuse the verb outright."""
+        sb, host_b, rec = _seed_two_projects(tmp_path)
+        c, runner, manager = make_client(sb)
+        for path in (
+            f"/record/{rec.id}/action/arm",
+            f"/record/{rec.id}/action/confirm",
+        ):
+            resp = c.post(path, data={"verb": "rehome", "kind": "detail"}, headers=HX)
+            assert resp.status_code == 400, path
+        assert runner.calls == []
+
+
+class TestBucketStalenessLeg:
+    """Y-18 folds F2/F5/F10: a CLI-side rehome while a proposal is
+    WAITING or ARMED — the arm AND confirm routes compare the slot's
+    captured bucket against locate_record's current bucket, and on
+    mismatch the outcome is identical: cleared slot + plain-words
+    notice. Never the verb, never a disarm, never a waiting bar."""
+
+    def _occupy_project(self, manager, sb, rec, **kw) -> VerbProposal:
+        prop = VerbProposal(
+            verb="reject",
+            record_id=rec.id,
+            bucket_scope="project",
+            bucket_name=slug_for(sb.host),
+            session_key=rec.id,
+            **kw,
+        )
+        assert manager.proposal_slot.occupy(prop)
+        return prop
+
+    def _assert_cleared_with_notice(self, manager, runner, text: str) -> None:
+        assert NOTICE_PROPOSAL_MOVED in text
+        assert manager.proposal_slot.current is None
+        assert 'data-armed="true"' not in text
+        assert 'data-proposal="waiting"' not in text
+        assert runner.calls == []
+
+    def test_waiting_proposal_arm_after_cli_move_clears_with_notice(self, tmp_path: Path) -> None:
+        sb, host_b, rec = _seed_two_projects(tmp_path)
+        c, runner, manager = make_client(sb)
+        prop = self._occupy_project(manager, sb, rec)
+        _move_record_cli_side(sb, rec, host_b)
+        out = c.post(
+            "/proposal/arm",
+            data={"record_id": rec.id, "kind": "detail", "nonce": prop.nonce},
+            headers=HX,
+        ).text
+        self._assert_cleared_with_notice(manager, runner, out)
+
+    def test_armed_proposal_confirm_after_cli_move_clears_with_notice(self, tmp_path: Path) -> None:
+        """The load-bearing confirm-side check: without it Enter on a
+        stale armed bar would execute the verb against the record in its
+        NEW bucket."""
+        sb, host_b, rec = _seed_two_projects(tmp_path)
+        c, runner, manager = make_client(sb)
+        self._occupy_project(manager, sb, rec)
+        armed = manager.proposal_slot.arm(rec.id)
+        assert armed is not None
+        _move_record_cli_side(sb, rec, host_b)
+        out = c.post(
+            "/proposal/confirm",
+            data={"record_id": rec.id, "kind": "detail", "nonce": armed.nonce},
+            headers=HX,
+        ).text
+        self._assert_cleared_with_notice(manager, runner, out)
+
+    def test_armed_proposal_arm_rerender_after_cli_move_same_outcome(self, tmp_path: Path) -> None:
+        sb, host_b, rec = _seed_two_projects(tmp_path)
+        c, runner, manager = make_client(sb)
+        self._occupy_project(manager, sb, rec)
+        armed = manager.proposal_slot.arm(rec.id)
+        assert armed is not None
+        _move_record_cli_side(sb, rec, host_b)
+        out = c.post(
+            "/proposal/arm",
+            data={"record_id": rec.id, "kind": "detail", "nonce": armed.nonce},
+            headers=HX,
+        ).text
+        self._assert_cleared_with_notice(manager, runner, out)
+
+    def test_bucket_kind_gets_the_same_cleared_outcome(self, tmp_path: Path) -> None:
+        """WAITING and ARMED end in the IDENTICAL cleared-slot+notice
+        outcome on the bucket pane's region too."""
+        sb, host_b, rec = _seed_two_projects(tmp_path)
+        c, runner, manager = make_client(sb)
+        prop = self._occupy_project(manager, sb, rec)
+        _move_record_cli_side(sb, rec, host_b)
+        out = c.post(
+            "/proposal/arm",
+            data={"record_id": rec.id, "kind": "bucket", "nonce": prop.nonce},
+            headers=HX,
+        ).text
+        self._assert_cleared_with_notice(manager, runner, out)
+        assert "proposal-region-empty" in out
+
+    def test_rehome_proposal_itself_goes_stale_when_record_moves(self, tmp_path: Path) -> None:
+        """A rehome proposal whose record was ALREADY moved CLI-side dies
+        the same way — the agent re-proposes against the new home."""
+        sb, host_b, rec = _seed_two_projects(tmp_path)
+        c, runner, manager = make_client(sb)
+        prop = VerbProposal(
+            verb="rehome",
+            record_id=rec.id,
+            bucket_scope="project",
+            bucket_name=slug_for(sb.host),
+            session_key=rec.id,
+            to=str(host_b.resolve()),
+        )
+        assert manager.proposal_slot.occupy(prop)
+        _move_record_cli_side(sb, rec, host_b)
+        out = c.post(
+            "/proposal/arm",
+            data={"record_id": rec.id, "kind": "detail", "nonce": prop.nonce},
+            headers=HX,
+        ).text
+        self._assert_cleared_with_notice(manager, runner, out)

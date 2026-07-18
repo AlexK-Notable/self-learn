@@ -39,6 +39,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+from self_learn.hosts import HostsError, load_hosts, slug_for
 from self_learn.ledger_ops import record_title
 
 from . import ledger
@@ -60,8 +61,10 @@ __all__ = [
 #: 09 §4.5's CLOSED verb list. Extending it is a dated spec edit, never a
 #: code-only change (10 §4 judgment row). `host add` is excluded by
 #: Y-11's no-agent-path pin; collapse and the telemetry verbs by dated
-#: v1 decision.
-PROPOSABLE_VERBS = frozenset({"route", "reject", "defer", "graduate"})
+#: v1 decision. `rehome` joined 2026-07-18 (feedback round 3 item 3;
+#: §11 Y-18) — Y-11 holds because only already-registered targets are
+#: nameable: the agent widens no read scope and mints no write target.
+PROPOSABLE_VERBS = frozenset({"route", "reject", "defer", "graduate", "rehome"})
 
 #: 10 §1: the in-process SDK MCP server name and the single tool it
 #: exposes. The fully-qualified form is what the charter callback's
@@ -130,11 +133,23 @@ class VerbProposal:
     dest: str | None = None
     note: str | None = None
     until: str | None = None
+    #: rehome only (09 §4.5 as amended 2026-07-18 / §11 Y-18): the
+    #: RESOLVED registered-project path — a server-truth bar field, the
+    #: hosts.yaml path the handler resolved, never the agent's raw
+    #: string. The confirm rebuilds argv from it.
+    to: str | None = None
     armed: bool = False
     #: Server nonce (review F5): arm/confirm/disarm/dismiss POSTs must
     #: echo it, so a clear-then-reoccupy between the human's read and
     #: their keystroke can never act on a proposal they haven't seen.
     nonce: str = field(default_factory=lambda: secrets.token_urlsafe(8))
+
+    @property
+    def to_basename(self) -> str:
+        """Y-18 fold F7: the bar's ⟨name⟩ is the registered path's
+        BASENAME (slugs are unreadable); when two registered projects
+        share a basename the trailing resolved path disambiguates."""
+        return Path(self.to).name if self.to else ""
 
 
 class ProposalSlot:
@@ -204,6 +219,22 @@ class ProposalSlot:
 
 def _refuse(reason: str) -> str:
     return f"proposal refused: {reason}"
+
+
+def _registered_project_for(home: Path, to: str) -> Path | None:
+    """Resolve ``to`` (a registered project's path or its bucket slug —
+    the ``host rebind`` naming precedent) against hosts.yaml, the CLI's
+    own registration authority. None when nothing registered matches."""
+    try:
+        hosts = load_hosts(home)
+    except HostsError:
+        return None
+    candidate = Path(to).expanduser()
+    for project in hosts.projects:
+        registered = Path(project).expanduser()
+        if slug_for(registered) == to or registered.resolve() == candidate.resolve():
+            return registered.resolve()
+    return None
 
 
 def validate_proposal(
@@ -294,6 +325,43 @@ def validate_proposal(
                 f"is {location.scope}-scoped — use claude-md"
             )
 
+    # 09 §4.5 as amended 2026-07-18 (feedback round 3 item 3; §11 Y-18,
+    # the round-2 teach-the-agent-at-proposal-time precedent): `to` only
+    # applies to rehome and is validated AT INTAKE against the
+    # registered-project set (hosts.yaml, the CLI's own authority) — an
+    # armable-but-impossible proposal never renders. The stored target
+    # is the RESOLVED hosts.yaml path (server truth), never the agent's
+    # raw string.
+    to = args.get("to")
+    resolved_to: str | None = None
+    if to is not None and verb != "rehome":
+        return _refuse("to only applies to rehome proposals")
+    if verb == "rehome":
+        if not isinstance(to, str) or not to:
+            return _refuse(
+                "rehome needs to — the registered project to move this "
+                "lesson to (path or bucket slug)"
+            )
+        if location.scope != "project":
+            return _refuse(
+                f"rehome is project→project only (M1) — {record_id} is "
+                f"{location.scope}-scoped and cannot move"
+            )
+        target = _registered_project_for(home, to)
+        if target is None:
+            return _refuse(
+                f"to {to!r} is not a registered project — the human can "
+                "register it first (the Register control / `self-learn "
+                "host add <path>`); tell them, never propose an "
+                "unregistered target"
+            )
+        if slug_for(target) == location.bucket_name:
+            return _refuse(
+                f"{record_id} already lives in the {target.name} project "
+                "— nothing to move"
+            )
+        resolved_to = str(target)
+
     until = args.get("until")
     if until is not None:
         if verb != "defer":
@@ -326,6 +394,7 @@ def validate_proposal(
         dest=dest,
         note=note,
         until=until,
+        to=resolved_to,
     )
 
 
