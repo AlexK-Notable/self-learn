@@ -32,11 +32,14 @@ content change between the human's read and their keystroke.
 from __future__ import annotations
 
 import re
+import secrets
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import date
 from pathlib import Path
 from typing import Any
+
+from self_learn.ledger_ops import record_title
 
 from . import ledger
 
@@ -80,11 +83,19 @@ TOOL_ACCEPTED_MESSAGE = (
 #: surface forms. Refuse only on PARSE failure; structural validity
 #: (e.g. a hook dest without stored script bytes) stays the verb's to
 #: enforce, its refusal rendering verbatim.
-_DEST_RE = re.compile(r"^(skill-md|claude-md|reference(:.+)?|new-skill:.+|hook)$")
+#: ``\Z`` anchors, never ``$`` (code review F8: Python ``$`` matches
+#: before a trailing newline — a dest with an invisible trailing byte
+#: would validate and render indistinguishably from the clean form).
+_DEST_RE = re.compile(r"\A(skill-md|claude-md|reference(:.+)?|new-skill:.+|hook)\Z")
 
-_RECORD_ID_RE = re.compile(r"^lrn-[0-9a-f]{8}$")
+_RECORD_ID_RE = re.compile(r"\Alrn-[0-9a-f]{8}\Z")
 
-_ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_ISO_DATE_RE = re.compile(r"\A\d{4}-\d{2}-\d{2}\Z")
+
+#: Review F9: dest's parameterized suffixes are agent-authored text
+#: rendered in the bar's server-truth position — intake-capped like the
+#: note (parse validity stays the verb's; this is a register/layout cap).
+DEST_MAX_CHARS = 100
 
 
 @dataclass(frozen=True)
@@ -112,10 +123,18 @@ class VerbProposal:
     bucket_scope: str
     bucket_name: str
     session_key: str
+    #: The record's Y-9 human line (the CLI's own ``record_title``
+    #: derivation, imported — P2-4), captured at validation so the bar
+    #: LEADS with it and the id renders as trailing metadata (review F2).
+    title: str = ""
     dest: str | None = None
     note: str | None = None
     until: str | None = None
     armed: bool = False
+    #: Server nonce (review F5): arm/confirm/disarm/dismiss POSTs must
+    #: echo it, so a clear-then-reoccupy between the human's read and
+    #: their keystroke can never act on a proposal they haven't seen.
+    nonce: str = field(default_factory=lambda: secrets.token_urlsafe(8))
 
 
 class ProposalSlot:
@@ -136,19 +155,31 @@ class ProposalSlot:
         self._current = proposal
         return True
 
-    def arm(self, record_id: str) -> VerbProposal | None:
+    def _matches(self, record_id: str, nonce: str | None) -> bool:
+        """Identity match for a human POST (review F5): record AND nonce —
+        a clear-then-reoccupy mints a new nonce, so a keystroke aimed at
+        the OLD proposal takes the stale path, never the new content."""
+        return (
+            self._current is not None
+            and self._current.record_id == record_id
+            and (nonce is None or self._current.nonce == nonce)
+        )
+
+    def arm(self, record_id: str, nonce: str | None = None) -> VerbProposal | None:
         """Arm the waiting proposal for ``record_id``; None when the slot
-        holds nothing for that record (a stale POST — render unarmed)."""
-        if self._current is None or self._current.record_id != record_id:
+        holds nothing matching (a stale POST — render unarmed)."""
+        if not self._matches(record_id, nonce):
             return None
+        assert self._current is not None
         self._current = replace(self._current, armed=True)
         return self._current
 
-    def disarm(self, record_id: str) -> VerbProposal | None:
+    def disarm(self, record_id: str, nonce: str | None = None) -> VerbProposal | None:
         """Back to WAITING — never cleared (09 §4.5: disarm returns the
         bar to waiting; dismissal is the explicit clear)."""
-        if self._current is None or self._current.record_id != record_id:
+        if not self._matches(record_id, nonce):
             return None
+        assert self._current is not None
         self._current = replace(self._current, armed=False)
         return self._current
 
@@ -212,6 +243,12 @@ def validate_proposal(
     location = ledger.locate_record(home, record_id)
     if location is None:
         return _refuse(f"{record_id} is not a pending record")
+    # Review F1: "resolves to a PENDING record" means STATUS, not mere
+    # existence — locate_record also finds resolved/ records, and a
+    # consent bar must never advertise an impossible action.
+    record = ledger.read_record(location.path)
+    if record is None or record.status not in ("pending", "deferred"):
+        return _refuse(f"{record_id} is not a pending record (already resolved?)")
     if scope.kind == "bucket":
         assert scope.bucket_dir is not None
         if Path(location.bucket_dir).resolve() != Path(scope.bucket_dir).resolve():
@@ -228,6 +265,10 @@ def validate_proposal(
             return _refuse(
                 f"dest {dest!r} does not parse — accepted forms: skill-md, "
                 "claude-md, reference, reference:<file>, new-skill:<name>, hook"
+            )
+        if len(dest) > DEST_MAX_CHARS:
+            return _refuse(
+                f"dest is {len(dest)} characters — the cap is {DEST_MAX_CHARS}"
             )
 
     until = args.get("until")
@@ -258,6 +299,7 @@ def validate_proposal(
         bucket_scope=location.scope,
         bucket_name=location.bucket_name,
         session_key=scope.session_key,
+        title=record_title(record),
         dest=dest,
         note=note,
         until=until,

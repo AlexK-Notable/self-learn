@@ -386,6 +386,14 @@
     var recordMatch =
       typeof envelope.record_id === "string" &&
       scopes.indexOf("record:" + envelope.record_id) !== -1;
+    // A page WITH a record identity honors only its own record — a
+    // sibling record's Detail in the same bucket must NOT react
+    // (review F7: the pinned gate is the record's own Detail plus its
+    // bucket's Bucket page, nothing wider).
+    if (document.querySelector("[data-record-id]")) {
+      if (recordMatch) reload();
+      return;
+    }
     var bucketMatch =
       typeof envelope.bucket === "string" &&
       scopes.indexOf("bucket:" + envelope.bucket) !== -1;

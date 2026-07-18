@@ -683,6 +683,21 @@ async def _publish_applying(request: Request, verb: str, record_id: str, state: 
         await hub.publish(envelope_applying(verb, record_id, state))
 
 
+def _sweep_stale_proposal(request: Request) -> None:
+    """Review F3/F4: after any verb execution that can resolve records
+    this handler didn't name (bulk loops, collapse members), re-check the
+    slot's record — if it no longer reads as pending/deferred, clear
+    (the 'record leaving pending' clear-set member, swept)."""
+    slot = _proposal_slot(request)
+    if slot is None or slot.current is None:
+        return
+    rid = slot.current.record_id
+    location = ledger.locate_record(_home(request), rid)
+    record = ledger.read_record(location.path) if location is not None else None
+    if record is None or record.status not in ("pending", "deferred"):
+        slot.clear_for_record(rid)
+
+
 def _force_refresh(request: Request, scope: str = "front") -> None:
     hub = getattr(request.app.state, "refresh_hub", None)
     if hub is not None:
@@ -748,6 +763,9 @@ async def action_confirm(
         slot = _proposal_slot(request)
         if slot is not None:
             slot.clear_for_record(record_id)
+    # A collapse resolves cluster MEMBERS beyond record_id (review F4).
+    if collapse:
+        _sweep_stale_proposal(request)
 
     if verb == "route":
         proposal, _err = ledger.read_proposal_raw(
@@ -948,8 +966,11 @@ def _proposal_gone(request: Request, kind: str, record_id: str, *, error: str | 
 
 
 @router.post("/proposal/arm", response_class=HTMLResponse)
-def proposal_arm(
-    request: Request, record_id: str = Form(...), kind: str = Form("detail")
+async def proposal_arm(
+    request: Request,
+    record_id: str = Form(...),
+    kind: str = Form("detail"),
+    nonce: str = Form(""),
 ) -> HTMLResponse:
     slot = _proposal_slot(request)
     if slot is None:
@@ -965,45 +986,63 @@ def proposal_arm(
         if record is None or record.status not in ("pending", "deferred"):
             slot.clear_for_record(record_id)
             return _proposal_gone(request, kind, record_id, error="that record was resolved elsewhere")
-    prop = slot.arm(record_id)
+    prop = slot.arm(record_id, nonce or None)
     if prop is None:
         return _proposal_gone(request, kind, record_id)
     return _render(request, "partials/proposal_bar.html", _proposal_ctx(prop, kind))
 
 
 @router.post("/proposal/disarm", response_class=HTMLResponse)
-def proposal_disarm(
-    request: Request, record_id: str = Form(...), kind: str = Form("detail")
+async def proposal_disarm(
+    request: Request,
+    record_id: str = Form(...),
+    kind: str = Form("detail"),
+    nonce: str = Form(""),
 ) -> HTMLResponse:
     slot = _proposal_slot(request)
     if slot is None:
         return _pane_not_wired()
-    prop = slot.disarm(record_id)
+    prop = slot.disarm(record_id, nonce or None)
     if prop is None:
         return _proposal_gone(request, kind, record_id)
     return _render(request, "partials/proposal_bar.html", _proposal_ctx(prop, kind))
 
 
 @router.post("/proposal/dismiss", response_class=HTMLResponse)
-def proposal_dismiss(
-    request: Request, record_id: str = Form(...), kind: str = Form("detail")
+async def proposal_dismiss(
+    request: Request,
+    record_id: str = Form(...),
+    kind: str = Form("detail"),
+    nonce: str = Form(""),
 ) -> HTMLResponse:
     slot = _proposal_slot(request)
     if slot is None:
         return _pane_not_wired()
-    slot.clear_for_record(record_id)
+    current = slot.current
+    if current is not None and current.record_id == record_id and (
+        not nonce or current.nonce == nonce
+    ):
+        slot.clear_for_record(record_id)
     return _proposal_gone(request, kind, record_id)
 
 
 @router.post("/proposal/confirm", response_class=HTMLResponse)
 async def proposal_confirm(
-    request: Request, record_id: str = Form(...), kind: str = Form("detail")
+    request: Request,
+    record_id: str = Form(...),
+    kind: str = Form("detail"),
+    nonce: str = Form(""),
 ) -> Response:
     slot = _proposal_slot(request)
     if slot is None:
         return _pane_not_wired()
     prop = slot.current
-    if prop is None or prop.record_id != record_id or not prop.armed:
+    if (
+        prop is None
+        or prop.record_id != record_id
+        or not prop.armed
+        or (nonce and prop.nonce != nonce)
+    ):
         # Stale confirm (slot cleared/changed since the bar rendered) —
         # never execute anything the human isn't looking at.
         return _proposal_gone(request, kind, record_id)
@@ -1213,6 +1252,7 @@ async def graduate_bulk(request: Request, scope: str, name: str, ids: str = Form
 
     await runner.run(["push"])
     _force_refresh(request, f"bucket:{name}")
+    _sweep_stale_proposal(request)  # review F3: bulk-graduated records
 
     if failed_id is not None:
         return _render(

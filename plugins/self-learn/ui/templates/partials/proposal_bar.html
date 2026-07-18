@@ -16,12 +16,15 @@
   <p class="error-strip" role="alert">{{ error }}</p>
   {% endif %}
 
+  {# Y-9 (review F2): the record's human line LEADS; the id is trailing
+     metadata. verb/title/dest/date are server-truth fields. #}
   <p class="proposal-lead">
     <span class="proposal-source-label">Agent proposes:</span>
     <strong>{{ verb_label }}</strong>
-    <code>{{ proposal.record_id }}</code>
+    <span class="proposal-title">{{ proposal.title or "(untitled record)" }}</span>
     {% if proposal.dest %}<span class="arrow">&rarr;</span> <span class="dest">{{ proposal.dest }}</span>{% endif %}
     {% if proposal.until %}<span class="dest">until {{ proposal.until }}</span>{% endif %}
+    <code class="record-row-id">{{ proposal.record_id }}</code>
   </p>
   {% if proposal.note %}
   <p class="proposal-note"><span class="proposal-note-label">agent-suggested note:</span> {{ proposal.note }}</p>
@@ -31,6 +34,7 @@
   <form hx-post="/proposal/confirm" hx-target="#proposal-bar" hx-swap="outerHTML">
     <input type="hidden" name="record_id" value="{{ proposal.record_id }}">
     <input type="hidden" name="kind" value="{{ kind }}">
+    <input type="hidden" name="nonce" value="{{ proposal.nonce }}">
     <p class="action-bar-armed">
       <span class="confirm-hint"><kbd>Enter</kbd> to confirm &middot; any other key returns it to waiting</span>
     </p>
@@ -39,6 +43,7 @@
   <form hx-post="/proposal/disarm" hx-target="#proposal-bar" hx-swap="outerHTML">
     <input type="hidden" name="record_id" value="{{ proposal.record_id }}">
     <input type="hidden" name="kind" value="{{ kind }}">
+    <input type="hidden" name="nonce" value="{{ proposal.nonce }}">
     <button type="submit" data-key-action="disarm">Back to waiting</button>
   </form>
 
@@ -46,11 +51,13 @@
   <form hx-post="/proposal/arm" hx-target="#proposal-bar" hx-swap="outerHTML">
     <input type="hidden" name="record_id" value="{{ proposal.record_id }}">
     <input type="hidden" name="kind" value="{{ kind }}">
+    <input type="hidden" name="nonce" value="{{ proposal.nonce }}">
     <button type="submit" data-key-action="arm_proposal">Review &amp; arm (y)</button>
   </form>
   <form hx-post="/proposal/dismiss" hx-target="#proposal-bar" hx-swap="outerHTML">
     <input type="hidden" name="record_id" value="{{ proposal.record_id }}">
     <input type="hidden" name="kind" value="{{ kind }}">
+    <input type="hidden" name="nonce" value="{{ proposal.nonce }}">
     <button type="submit">Dismiss</button>
   </form>
   {% endif %}

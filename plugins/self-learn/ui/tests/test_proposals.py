@@ -183,6 +183,45 @@ class TestValidateProposal:
             )
             assert isinstance(result, str), bad
 
+    def test_resolved_record_refused_at_intake(self, tmp_path: Path) -> None:
+        """Review F1: 'resolves to a PENDING record' means STATUS —
+        locate_record also finds resolved/ records; a consent bar must
+        never advertise an impossible action."""
+        sb, (rec,) = _seed(tmp_path)
+        resolve_record_directly(sb.ledger, _bucket_dir(sb), rec)
+        result = validate_proposal(
+            sb.ledger, _bucket_scope(sb), {"verb": "route", "record_id": rec.id, "dest": "skill-md"}
+        )
+        assert isinstance(result, str)
+        assert "resolved" in result
+
+    def test_title_captured_for_the_y9_leading_line(self, tmp_path: Path) -> None:
+        """Review F2: the bar LEADS with the record's human line."""
+        sb, (rec,) = _seed(tmp_path)
+        result = validate_proposal(
+            sb.ledger, _record_scope(rec), {"verb": "graduate", "record_id": rec.id}
+        )
+        assert isinstance(result, VerbProposal)
+        assert result.title  # the Trigger first line, non-empty
+
+    def test_dest_intake_length_cap(self, tmp_path: Path) -> None:
+        sb, (rec,) = _seed(tmp_path)
+        result = validate_proposal(
+            sb.ledger, _record_scope(rec),
+            {"verb": "route", "record_id": rec.id, "dest": "new-skill:" + "x" * 200},
+        )
+        assert isinstance(result, str)
+
+    def test_trailing_newline_dest_refused(self, tmp_path: Path) -> None:
+        """Review F8: \Z anchors — an invisible trailing byte must not
+        validate."""
+        sb, (rec,) = _seed(tmp_path)
+        result = validate_proposal(
+            sb.ledger, _record_scope(rec),
+            {"verb": "route", "record_id": rec.id, "dest": "skill-md\n"},
+        )
+        assert isinstance(result, str)
+
     def test_empty_string_optionals_are_absent(self, tmp_path: Path) -> None:
         """T-B(6) live finding 2026-07-17: the model filled optional tool
         params with "" — an empty dest/note/until must read as ABSENT,
@@ -283,6 +322,21 @@ class TestProposalSlotLifecycle:
             bucket_name="s",
             session_key=session_key,
         )
+
+    def test_nonce_mismatch_never_arms_or_disarms(self) -> None:
+        """Review F5: a clear-then-reoccupy mints a new nonce — a POST
+        carrying the OLD nonce takes the stale path, never the new
+        content."""
+        slot = ProposalSlot()
+        first = self._proposal()
+        slot.occupy(first)
+        old_nonce = first.nonce
+        slot.clear()
+        second = self._proposal()
+        slot.occupy(second)
+        assert slot.arm("lrn-aa000001", old_nonce) is None
+        assert slot.current is not None and not slot.current.armed
+        assert slot.arm("lrn-aa000001", second.nonce) is not None
 
     def test_disarm_returns_to_waiting_never_clears(self) -> None:
         slot = ProposalSlot()
@@ -435,20 +489,65 @@ class TestProposalRoutes:
     def test_arm_disarm_roundtrip(self, tmp_path: Path) -> None:
         sb, (rec,) = _seed(tmp_path)
         c, runner, manager = make_client(sb)
-        _occupy(manager, rec)
-        armed = c.post("/proposal/arm", data={"record_id": rec.id, "kind": "detail"}, headers=HX).text
+        prop = _occupy(manager, rec)
+        armed = c.post(
+            "/proposal/arm",
+            data={"record_id": rec.id, "kind": "detail", "nonce": prop.nonce},
+            headers=HX,
+        ).text
         assert 'data-armed="true"' in armed
         assert "Enter" in armed
-        disarmed = c.post("/proposal/disarm", data={"record_id": rec.id, "kind": "detail"}, headers=HX).text
+        disarmed = c.post(
+            "/proposal/disarm",
+            data={"record_id": rec.id, "kind": "detail", "nonce": prop.nonce},
+            headers=HX,
+        ).text
         assert 'data-proposal="waiting"' in disarmed
         assert manager.proposal_slot.current is not None  # back to waiting, not cleared
+
+    def test_stale_nonce_confirm_is_a_no_op(self, tmp_path: Path) -> None:
+        """Review F5, the confirm half: dismiss + re-propose between the
+        human's read and their Enter — the old bar's confirm carries the
+        old nonce and must execute NOTHING."""
+        sb, (rec,) = _seed(tmp_path)
+        c, runner, manager = make_client(sb)
+        first = _occupy(manager, rec, verb="reject")
+        manager.proposal_slot.arm(rec.id)
+        old_nonce = first.nonce
+        manager.proposal_slot.clear()
+        second = _occupy(manager, rec, verb="route", dest="skill-md")
+        manager.proposal_slot.arm(rec.id)
+        c.post(
+            "/proposal/confirm",
+            data={"record_id": rec.id, "kind": "detail", "nonce": old_nonce},
+            headers=HX,
+        )
+        assert runner.calls == []
+        assert manager.proposal_slot.current is not None  # untouched
+
+    def test_bar_leads_with_the_human_line_id_trailing(self, tmp_path: Path) -> None:
+        """Review F2 (Y-9): the waiting bar's leading text is the record
+        title; the lrn- id renders after it as metadata."""
+        sb, (rec,) = _seed(tmp_path)
+        c, runner, manager = make_client(sb)
+        _occupy(manager, rec, title="About to edit .storage while HA is running.")
+        page = c.get(f"/record/{rec.id}").text
+        title_pos = page.find("About to edit .storage")
+        id_pos = page.find(rec.id, title_pos)
+        assert title_pos != -1 and id_pos != -1
+        assert title_pos < id_pos
 
     def test_confirm_executes_exactly_the_slot_argv_and_clears(self, tmp_path: Path) -> None:
         sb, (rec,) = _seed(tmp_path)
         c, runner, manager = make_client(sb)
         _occupy(manager, rec, verb="defer", until="2026-09-01", note="agent thought")
-        manager.proposal_slot.arm(rec.id)
-        resp = c.post("/proposal/confirm", data={"record_id": rec.id, "kind": "detail"}, headers=HX)
+        armed_prop = manager.proposal_slot.arm(rec.id)
+        assert armed_prop is not None
+        resp = c.post(
+            "/proposal/confirm",
+            data={"record_id": rec.id, "kind": "detail", "nonce": armed_prop.nonce},
+            headers=HX,
+        )
         assert ["defer", rec.id, "--until", "2026-09-01", "--note", "agent thought"] in runner.calls
         assert manager.proposal_slot.current is None
         assert "HX-Redirect" in resp.headers
@@ -536,9 +635,13 @@ class TestProposalRoutes:
         runner = FakeRunner()
         runner.queue_result(RunResult(1, stderr="refused: scan hit"))
         c, runner, manager = make_client(sb, runner=runner)
-        _occupy(manager, rec)
+        prop = _occupy(manager, rec)
         manager.proposal_slot.arm(rec.id)
-        out = c.post("/proposal/confirm", data={"record_id": rec.id, "kind": "detail"}, headers=HX).text
+        out = c.post(
+            "/proposal/confirm",
+            data={"record_id": rec.id, "kind": "detail", "nonce": prop.nonce},
+            headers=HX,
+        ).text
         assert "refused: scan hit" in out
         assert manager.proposal_slot.current is None
 
@@ -549,6 +652,22 @@ class TestProposalRoutes:
         c.post(
             f"/record/{rec.id}/action/confirm",
             data={"verb": "graduate", "kind": "detail"},
+            headers=HX,
+        )
+        assert manager.proposal_slot.current is None
+
+    def test_bulk_graduate_sweeps_a_stale_proposal(self, tmp_path: Path) -> None:
+        """Review F3: bulk-resolved records must not leave a stale bar."""
+        sb, (rec,) = _seed(tmp_path)
+        c, runner, manager = make_client(sb)
+        _occupy(manager, rec)
+        # The fake runner doesn't move files — simulate the resolution the
+        # real graduate performs, then run the bulk loop (whose sweep
+        # re-reads status).
+        resolve_record_directly(sb.ledger, _bucket_dir(sb), rec)
+        c.post(
+            "/bucket/skill/s/graduate-bulk",
+            data={"ids": rec.id},
             headers=HX,
         )
         assert manager.proposal_slot.current is None
@@ -599,7 +718,11 @@ class TestBucketPane:
         )
         manager.proposal_slot.occupy(prop)
         manager.proposal_slot.arm(rec.id)
-        resp = c.post("/proposal/confirm", data={"record_id": rec.id, "kind": "bucket"}, headers=HX)
+        resp = c.post(
+            "/proposal/confirm",
+            data={"record_id": rec.id, "kind": "bucket", "nonce": prop.nonce},
+            headers=HX,
+        )
         assert ["graduate", rec.id] in runner.calls
         assert resp.headers.get("HX-Redirect") == "/bucket/skill/s"
 
