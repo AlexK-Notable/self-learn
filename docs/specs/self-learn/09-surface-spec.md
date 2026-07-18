@@ -780,9 +780,13 @@ never error)* · `SELF_LEARN_UI_MONITOR` *(added 2026-07-18 —
 feedback round 2 item 6: launcher-only — consumed by
 `self-learn-ui-open`, never by the server; the same X-1 posture as
 `SELF_LEARN_UI_BROWSER`. Names the monitor the launcher ensures the
-app window onto after focus/launch: focuswindow by address, then
-`movewindow mon:<name>`, skipped when `hyprctl clients -j`/`monitors
--j` already place it there; a fresh window is polled for ≤5 s. Unset
+app window onto after focus/launch: focuswindow by address, then —
+only after `activewindow -j` confirms OUR window actually holds
+focus (a JSON read, never an exit-code branch; the review's
+stale-address gate: a vanished window must not move whatever the
+user has focused) — `movewindow mon:<name>`, skipped when `hyprctl
+clients -j`/`monitors -j` already place it there; a fresh window is
+polled for ≤5 s. Unset
 = compositor placement (today's behavior, zero new dispatches);
 hyprctl absent or the window never appearing = silent degrade. The
 value is host-specific and wired host-side after merge — never
