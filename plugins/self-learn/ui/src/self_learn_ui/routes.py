@@ -970,7 +970,7 @@ async def proposal_arm(
     request: Request,
     record_id: str = Form(...),
     kind: str = Form("detail"),
-    nonce: str = Form(""),
+    nonce: str = Form(...),
 ) -> HTMLResponse:
     slot = _proposal_slot(request)
     if slot is None:
@@ -986,7 +986,7 @@ async def proposal_arm(
         if record is None or record.status not in ("pending", "deferred"):
             slot.clear_for_record(record_id)
             return _proposal_gone(request, kind, record_id, error="that record was resolved elsewhere")
-    prop = slot.arm(record_id, nonce or None)
+    prop = slot.arm(record_id, nonce)
     if prop is None:
         return _proposal_gone(request, kind, record_id)
     return _render(request, "partials/proposal_bar.html", _proposal_ctx(prop, kind))
@@ -997,12 +997,12 @@ async def proposal_disarm(
     request: Request,
     record_id: str = Form(...),
     kind: str = Form("detail"),
-    nonce: str = Form(""),
+    nonce: str = Form(...),
 ) -> HTMLResponse:
     slot = _proposal_slot(request)
     if slot is None:
         return _pane_not_wired()
-    prop = slot.disarm(record_id, nonce or None)
+    prop = slot.disarm(record_id, nonce)
     if prop is None:
         return _proposal_gone(request, kind, record_id)
     return _render(request, "partials/proposal_bar.html", _proposal_ctx(prop, kind))
@@ -1013,15 +1013,13 @@ async def proposal_dismiss(
     request: Request,
     record_id: str = Form(...),
     kind: str = Form("detail"),
-    nonce: str = Form(""),
+    nonce: str = Form(...),
 ) -> HTMLResponse:
     slot = _proposal_slot(request)
     if slot is None:
         return _pane_not_wired()
     current = slot.current
-    if current is not None and current.record_id == record_id and (
-        not nonce or current.nonce == nonce
-    ):
+    if current is not None and current.record_id == record_id and current.nonce == nonce:
         slot.clear_for_record(record_id)
     return _proposal_gone(request, kind, record_id)
 
@@ -1031,7 +1029,7 @@ async def proposal_confirm(
     request: Request,
     record_id: str = Form(...),
     kind: str = Form("detail"),
-    nonce: str = Form(""),
+    nonce: str = Form(...),
 ) -> Response:
     slot = _proposal_slot(request)
     if slot is None:
@@ -1041,7 +1039,7 @@ async def proposal_confirm(
         prop is None
         or prop.record_id != record_id
         or not prop.armed
-        or (nonce and prop.nonce != nonce)
+        or prop.nonce != nonce
     ):
         # Stale confirm (slot cleared/changed since the bar rendered) —
         # never execute anything the human isn't looking at.

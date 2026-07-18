@@ -557,16 +557,37 @@ class TestProposalRoutes:
         POST against an un-armed slot is a no-op."""
         sb, (rec,) = _seed(tmp_path)
         c, runner, manager = make_client(sb)
-        _occupy(manager, rec)
-        c.post("/proposal/confirm", data={"record_id": rec.id, "kind": "detail"}, headers=HX)
+        prop = _occupy(manager, rec)
+        c.post(
+            "/proposal/confirm",
+            data={"record_id": rec.id, "kind": "detail", "nonce": prop.nonce},
+            headers=HX,
+        )
         assert runner.calls == []
         assert manager.proposal_slot.current is not None  # untouched
+
+    def test_missing_nonce_is_a_422_never_a_bypass(self, tmp_path: Path) -> None:
+        """Delta residual 1: an empty/missing nonce must never bypass the
+        identity check — the field is REQUIRED on all four routes."""
+        sb, (rec,) = _seed(tmp_path)
+        c, runner, manager = make_client(sb)
+        _occupy(manager, rec)
+        manager.proposal_slot.arm(rec.id)
+        for path in ("/proposal/arm", "/proposal/disarm", "/proposal/dismiss", "/proposal/confirm"):
+            resp = c.post(path, data={"record_id": rec.id, "kind": "detail"}, headers=HX)
+            assert resp.status_code == 422, path
+        assert runner.calls == []
+        assert manager.proposal_slot.current is not None
 
     def test_dismiss_clears_and_next_proposal_succeeds(self, tmp_path: Path) -> None:
         sb, (rec,) = _seed(tmp_path)
         c, runner, manager = make_client(sb)
-        _occupy(manager, rec)
-        out = c.post("/proposal/dismiss", data={"record_id": rec.id, "kind": "detail"}, headers=HX).text
+        prop = _occupy(manager, rec)
+        out = c.post(
+            "/proposal/dismiss",
+            data={"record_id": rec.id, "kind": "detail", "nonce": prop.nonce},
+            headers=HX,
+        ).text
         assert manager.proposal_slot.current is None
         assert "Approve (e)" in out  # detail region got its standing bar back
         assert manager.proposal_slot.occupy(
@@ -623,9 +644,13 @@ class TestProposalRoutes:
     def test_stale_arm_after_external_resolution_renders_gone(self, tmp_path: Path) -> None:
         sb, (rec,) = _seed(tmp_path)
         c, runner, manager = make_client(sb)
-        _occupy(manager, rec)
+        prop = _occupy(manager, rec)
         resolve_record_directly(sb.ledger, _bucket_dir(sb), rec)
-        out = c.post("/proposal/arm", data={"record_id": rec.id, "kind": "detail"}, headers=HX).text
+        out = c.post(
+            "/proposal/arm",
+            data={"record_id": rec.id, "kind": "detail", "nonce": prop.nonce},
+            headers=HX,
+        ).text
         assert "resolved elsewhere" in out
         assert manager.proposal_slot.current is None
         assert runner.calls == []
