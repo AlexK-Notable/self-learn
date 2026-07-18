@@ -74,6 +74,59 @@ Instruction` (what to do, carrying the *why*). `knowledge` → `## Fact` +
 optional `## Context`. One lesson per record; a capture containing two
 lessons becomes two records.
 
+**`## Episode brief` — a miner-only, compiler-excluded body section**
+*(added 2026-07-18 — UX survey item 5; doc 12 §11 is the miner-side
+contract, 09 §2.3 the display, 09 §11 Y-21 the register, 10 §3 U18 the
+build).* An **optional** body section, permitted on records of **either
+type** but **only when `source: session`** — a 100–200-word plain-words
+reconstruction of the origin episode (the attempt→failure→correction→
+resolution arc, in the human's domestic terms), written by the
+**transcript miner** at land from its transcript read (doc 12 §11). It is
+a *record-body* section, not a proposal `card:` section, for a load-
+bearing reason: **cards are the analyst's artifact** (the `card:` map
+below, written by the M2 worker / pane per `card-sections.yaml` and
+routing-doctrine §8), while **the record body is the capture producer's
+artifact** — the miner writes records, never cards, and doc 12 §1's "no
+card-registry change" pin depends on that boundary. Homing the brief in
+the body keeps the miner writing only what it already writes (a record),
+needs no card-registry change, and does not couple the brief's existence
+to a later successful worker run. *(Alternates weighed and rejected: a
+`card:` section written by the miner — producer writing the analyst's
+artifact, and cards render at the TOP of Detail, pushing decision content
+down; a record field lifted into a card by the worker — couples the brief
+to the worker run and still lands it in the top card region; a
+frontmatter field — prose does not belong in machine frontmatter and it
+would bloat every `list --json` parse; a sibling file — the analyst's
+space, an extra thing to sweep on rehome/resolve and scan out-of-band,
+whereas a body section is secret-scanned on every write (§2), moves
+byte-untouched on rehome (§2 `rehome`), and is git-versioned with the
+record.)*
+
+- **Validator (register it as optional; do not gate compilers on it).**
+  `## Episode brief` joins the record's **optional** body sections
+  (`records.py` `OPTIONAL_SECTIONS`), permitted for both `behavior` and
+  `knowledge` records and subject to the one-lesson duplicate guard
+  (`_validate_body` already refuses a repeated section). Existing records
+  stay valid (unknown headings already pass; this merely *documents and
+  de-duplicates* the section). It carries **no** `required` weight — a
+  mined record without one is valid (no-backfill, below).
+- **Compiler exclusion — pinned, and it holds by construction.** Every
+  compiler selects body sections by **explicit heading name** —
+  `compilers.py` `_body_sections()` maps all `## …` headings, then each
+  compiler reads only the names it wants: the managed-section compiler
+  and the reference-journal compiler both do `sections.get("Trigger")`,
+  `.get("Instruction")`, `.get("Fact")`, `.get("Context")` and **nothing
+  else**; there is no whole-body dump anywhere in `compilers.py` or
+  `hook_compiler.py`. So `## Episode brief` is extracted into the map but
+  **never read into any compile target** — it can never reach a managed
+  section, a `references/` journal entry, a hook script, or a scaffold.
+  **Obligation (do not regress):** no compiler may add a
+  `sections.get("Episode brief")` (or any glob-all-sections) read, and a
+  regression test asserts that for a record carrying a `## Episode
+  brief`, **no** compiled output (managed section, reference journal,
+  hook) contains the brief text. The brief is decision-surface material
+  only (09 §2.3); it must never leak into canon.
+
 **The proposal sibling.** The pre-analysis worker writes its analysis to
 `proposals/lrn-<id>.yaml` beside the record — never into the record itself:
 

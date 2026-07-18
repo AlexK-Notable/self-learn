@@ -251,7 +251,29 @@ Three stacked regions (07 §2's finding / change / why), one scroll:
 
 1. **Finding** — record Trigger + Instruction rendered from the
    pending file, evidence quotes with origins, provenance line (source,
-   sightings, created, teacher at team scale).
+   sightings, created, teacher at team scale). *(Amended 2026-07-18 —
+   §11 Y-21, UX survey item 5:)* when the record carries a `## Episode
+   brief` body section (miner-written, `source: session` only — 02 §1,
+   12 §11), the Detail page renders it as a **collapsed, expandable**
+   block **below** the decision content (Trigger + Instruction +
+   evidence), never inline in the decision text and never above it —
+   FB4 principle 3: decision content owns the screen, recognition
+   context recedes until summoned; a **longer** brief must not push
+   Trigger/Instruction or the diff below the fold. **Build obligation:**
+   the Finding region today renders the whole record body as one blob
+   (`model.finding.body | markdown`), so the finding model
+   (`ledger.py`) must **split the `## Episode brief` section out** — the
+   decision-content body renders as now, and the brief is exposed
+   separately (e.g. `model.finding.episode_brief`) for the collapsed
+   render. Collapsed by default, one summon to expand (a key or click —
+   the exact affordance is a build call, matching the round-4 hotkey-
+   legend disclosure pattern); the expand affordance appears **iff** the
+   section exists — **absent brief renders nothing**: no block, no
+   placeholder, no apology (the generic skip-absent posture). **No
+   staleness surface** — the brief describes the past, has no
+   `record_sha`, gets no freshness badge (12 §11). **Bucket-page rows
+   do not grow** (§2.2): the brief is click-into content by the user's
+   own framing, reached only on Detail.
 2. **Change** — the diff preview from `proposals/lrn-<id>.diff` when
    present, Pygments-highlighted (`DiffLexer`, server-side), with the
    standing preview-honesty caption ("compilers regenerate from the
@@ -1959,6 +1981,42 @@ removed the last competing workstream — the build gate is open.*
   intended, the human follows the lesson to its new home (fold F8).
   Substrate: no `list --json` change — bucket membership is already
   the pinned `bucket` field; build lands as 10 §3 U15.
+- **Y-21 · Miner episode brief on the Detail page** *(added 2026-07-18 —
+  UX enhancement survey (`research/2026-07-18-ux-enhancement-survey.md`)
+  Q4 / shortlist item 5; parallel round-authors hold Y-19/Y-20)*. The
+  user's framing, verbatim: *"should the agent that does the mining also
+  write up a longer brief that can be shown when the user clicks into a
+  potential lesson within a bucket."* The miner is the only actor that
+  reads the full transcript, and transcripts prune before review — so the
+  episode story is lost by decision time unless captured at mine time.
+  **Mechanism (owned elsewhere):** the miner writes a 100–200-word plain-
+  words `## Episode brief` **record-body** section for `source: session`
+  records only, at land, from the same digest read — normative pin 12
+  §11; body-section + compiler-exclusion pin 02 §1; validator registers
+  it optional and **no compiler ever reads it** (compilers select body
+  sections by explicit heading name, so the brief is inert to canon by
+  construction — 02 §1 obligation + regression test). **It is a record
+  body section, never a proposal `card:` section** — cards are the
+  analyst's artifact, the record body the capture producer's; the miner
+  writes records, not cards (the producer/consumer boundary doc 12 §1's
+  "no card-registry change" pin preserved). **Surface decisions of
+  record (this entry owns them):** **(1)** §2.3 renders the brief
+  **collapsed + expandable, below** the decision content (Trigger +
+  Instruction + evidence), never inline/above — FB4 principle 3, a longer
+  brief must not push decision content below the fold; the finding model
+  (`ledger.py`) **splits `## Episode brief` out of the whole-body blob**
+  so decision content renders as now and the brief renders separately;
+  **(2)** **absent brief renders nothing** — no block, no placeholder, no
+  apology (no-backfill: pre-amendment records have no brief and their
+  transcripts may be pruned); **(3)** **bucket-page rows do not grow**
+  (§2.2) — the brief is click-into content by the user's own framing;
+  **(4)** **no staleness machinery** — the brief describes the past, has
+  no `record_sha` and no freshness badge (12 §11); it is body substance,
+  freely editable while pending (02 §2), scanned by the same
+  `proposal validate` checkpoint on pane/Discuss edits, frozen at routing
+  with the rest. **No `list --json` change** — the brief is a body
+  section the Detail render reads from the pending file (like
+  Trigger/Instruction), not a JSON field; build lands as 10 §3 U18.
 
 **Substrate edits this set requires elsewhere** (same discipline as
 §10 — until landed, this list is authoritative; corrected after gate
