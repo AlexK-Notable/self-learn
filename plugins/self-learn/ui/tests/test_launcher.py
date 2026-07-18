@@ -217,9 +217,14 @@ def test_window_absent_launches_browser_and_never_dispatches(
     runtime_dir.mkdir()
     env = _env(tmp_path, bindir, XDG_RUNTIME_DIR=str(runtime_dir))
 
+    start = time.monotonic()
     result = _run(env)
+    elapsed = time.monotonic() - start
 
     assert result.returncode == 0
+    # Delta F3: SELF_LEARN_UI_MONITOR unset must mean NO placement poll
+    # on the fresh-launch path — a ≤5 s poll here would show as ≥5 s.
+    assert elapsed < 3.0, "monitor unset: fresh launch must not poll"
     chromium_content = _wait_for_nonempty(chromium_log)
     assert "--class=self-learn-ui" in chromium_content
     assert "--app=http://127.0.0.1:7357/" in chromium_content
@@ -771,10 +776,11 @@ def test_failed_start_skips_the_wait(tmp_path: Path) -> None:
 # browser launch is backgrounded), so hyprctl's log is complete once the
 # subprocess returns — read it directly, no polling needed.
 
-# A fake hyprctl that also answers `monitors -j` — for the
-# already-on-target refinement (the clients `monitor` field is a
-# NUMERIC id; the script must map it via monitors -j .name).
-_HYPRCTL_WITH_MONITORS_TMPL = """
+# A fake hyprctl answering all three placement reads — `clients -j`
+# (the clients `monitor` field is a NUMERIC id), `monitors -j` (the
+# id→name map), and `activewindow -j` (the F2 stale-address gate: the
+# move only fires when OUR address holds focus).
+_HYPRCTL_PLACEMENT_TMPL = """
 echo "$*" >> "{log}"
 if [[ "$1" == "clients" ]]; then
   echo '{clients_json}'
@@ -782,13 +788,16 @@ fi
 if [[ "$1" == "monitors" ]]; then
   echo '{monitors_json}'
 fi
+if [[ "$1" == "activewindow" ]]; then
+  echo '{active_json}'
+fi
 exit 0
 """
 
 # A fake hyprctl whose window "appears" only AFTER the first clients
 # query (flag file = the launch happened): the presence check sees [],
 # the placement poll then finds the window — the real fresh-launch
-# timeline.
+# timeline. activewindow answers ours so the F2 gate passes.
 _HYPRCTL_APPEARING_TMPL = """
 echo "$*" >> "{log}"
 if [[ "$1" == "clients" ]]; then
@@ -799,6 +808,9 @@ if [[ "$1" == "clients" ]]; then
     echo '[]'
   fi
 fi
+if [[ "$1" == "activewindow" ]]; then
+  echo '{active_json}'
+fi
 exit 0
 """
 
@@ -806,17 +818,20 @@ exit 0
 def test_monitor_set_moves_existing_window_focus_then_move(
     tmp_path: Path,
 ) -> None:
-    # Window present; the fake serves NO monitors -j output, so current
-    # placement is unknown -> the script must move unconditionally
-    # (idempotent), with focuswindow-by-address strictly BEFORE
-    # movewindow (movewindow acts on the focused window).
+    # Window present; the fake serves an EMPTY monitors -j map, so
+    # current placement is unknown -> the script must move
+    # unconditionally (idempotent), with focuswindow-by-address strictly
+    # BEFORE movewindow (movewindow acts on the focused window).
+    # activewindow answers OUR address, so the F2 gate passes.
     hyprctl_log = tmp_path / "hyprctl.log"
     chromium_log = tmp_path / "chromium.log"
     bindir = _hermetic_bindir(
         tmp_path,
-        hyprctl=_HYPRCTL_BODY_TMPL.format(
+        hyprctl=_HYPRCTL_PLACEMENT_TMPL.format(
             log=hyprctl_log,
             clients_json='[{"class":"self-learn-ui","address":"0xAAA","title":"self-learn — Front","monitor":0}]',
+            monitors_json="[]",
+            active_json='{"address":"0xAAA"}',
         ),
         chromium=_LOGGING_LAUNCH_TMPL.format(log=chromium_log),
     )
@@ -850,7 +865,11 @@ def test_monitor_set_fresh_launch_polls_then_places(tmp_path: Path) -> None:
         hyprctl=_HYPRCTL_APPEARING_TMPL.format(
             log=hyprctl_log,
             flag=tmp_path / "window-appeared.flag",
-            clients_json='[{"class":"self-learn-ui","address":"0xF00","title":"self-learn — Front"}]',
+            # honest hyprctl shape (delta F4): real clients rows always
+            # carry a numeric `monitor` id; no monitors -j answer here,
+            # so placement stays unknown -> move fires.
+            clients_json='[{"class":"self-learn-ui","address":"0xF00","title":"self-learn — Front","monitor":0}]',
+            active_json='{"address":"0xF00"}',
         ),
         chromium=_LOGGING_LAUNCH_TMPL.format(log=chromium_log),
     )
@@ -880,14 +899,21 @@ def test_monitor_set_skips_move_when_already_on_target(tmp_path: Path) -> None:
     # The refinement: clients -j carries a NUMERIC monitor id (1); the
     # script maps it via monitors -j to "DP-2" == the target -> zero
     # placement dispatches (the step-3 focus still fires as always).
+    # TWO-window fixture (delta F4): an unrelated window sits FIRST on a
+    # NON-target monitor — a selector bug that read the first row's
+    # monitor instead of OUR address's would resolve DP-1 and move.
     hyprctl_log = tmp_path / "hyprctl.log"
     chromium_log = tmp_path / "chromium.log"
     bindir = _hermetic_bindir(
         tmp_path,
-        hyprctl=_HYPRCTL_WITH_MONITORS_TMPL.format(
+        hyprctl=_HYPRCTL_PLACEMENT_TMPL.format(
             log=hyprctl_log,
-            clients_json='[{"class":"self-learn-ui","address":"0xAAA","title":"self-learn — Front","monitor":1}]',
+            clients_json=(
+                '[{"class":"kitty","address":"0xDEAD","title":"shell","monitor":0},'
+                '{"class":"self-learn-ui","address":"0xAAA","title":"self-learn — Front","monitor":1}]'
+            ),
             monitors_json='[{"id":0,"name":"DP-1"},{"id":1,"name":"DP-2"}]',
+            active_json='{"address":"0xAAA"}',
         ),
         chromium=_LOGGING_LAUNCH_TMPL.format(log=chromium_log),
     )
@@ -906,6 +932,72 @@ def test_monitor_set_skips_move_when_already_on_target(tmp_path: Path) -> None:
     log = hyprctl_log.read_text(encoding="utf-8")
     assert "dispatch focuswindow address:0xAAA" in log
     assert "movewindow" not in log, "already on target: zero move dispatches"
+
+
+def test_stale_address_skips_move_of_unrelated_window(tmp_path: Path) -> None:
+    # Delta F2: the window vanished between address resolve and focus —
+    # activewindow -j reports a DIFFERENT address (the user's unrelated
+    # window). The move must be skipped (an X-3-compliant JSON gate,
+    # never an rc branch on the focus dispatch): moving would relocate
+    # a window the user never asked us to touch.
+    hyprctl_log = tmp_path / "hyprctl.log"
+    chromium_log = tmp_path / "chromium.log"
+    bindir = _hermetic_bindir(
+        tmp_path,
+        hyprctl=_HYPRCTL_PLACEMENT_TMPL.format(
+            log=hyprctl_log,
+            clients_json='[{"class":"self-learn-ui","address":"0xAAA","title":"self-learn — Front","monitor":0}]',
+            monitors_json="[]",
+            active_json='{"address":"0xBEEF"}',
+        ),
+        chromium=_LOGGING_LAUNCH_TMPL.format(log=chromium_log),
+    )
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    env = _env(
+        tmp_path,
+        bindir,
+        XDG_RUNTIME_DIR=str(runtime_dir),
+        SELF_LEARN_UI_MONITOR="DP-2",
+    )
+
+    result = _run(env)
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+    log = hyprctl_log.read_text(encoding="utf-8")
+    assert "dispatch focuswindow address:0xAAA" in log
+    assert "movewindow" not in log, "focus not ours: the move must not fire"
+
+
+def test_non_json_hyprctl_output_degrades_to_launch(tmp_path: Path) -> None:
+    # Delta F1 regression (the demonstrated rc-5 exit): hyprctl exits 0
+    # but prints NON-JSON — jq exits 5 inside _ui_window_address, which
+    # under set -e used to kill the launcher from within $() at the
+    # presence check (and ×50 in the placement poll). The source-level
+    # `|| true` makes garbage read as "no window": launch proceeds,
+    # rc 0, and the placement poll gives up silently on its budget.
+    hyprctl_log = tmp_path / "hyprctl.log"
+    chromium_log = tmp_path / "chromium.log"
+    bindir = _hermetic_bindir(
+        tmp_path,
+        hyprctl=_HYPRCTL_BODY_TMPL.format(
+            log=hyprctl_log, clients_json="not json at all"
+        ),
+        chromium=_LOGGING_LAUNCH_TMPL.format(log=chromium_log),
+    )
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    # Monitor UNSET keeps this on the fast path: the presence check is
+    # the exposure being pinned (the poll's ×50 exposure is the same
+    # guarded call; the slow degrade path has its own test above).
+    env = _env(tmp_path, bindir, XDG_RUNTIME_DIR=str(runtime_dir))
+
+    result = _run(env)
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+    assert "--class=self-learn-ui" in _wait_for_nonempty(chromium_log)
 
 
 def test_monitor_set_window_never_appears_degrades_silently(
