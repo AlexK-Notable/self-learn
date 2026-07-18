@@ -469,6 +469,33 @@ class TestArmedHostAdd:
         assert r.status_code == 400
         assert runner.calls == []
 
+    def test_stray_meta_yaml_in_skill_bucket_still_refused(self, tmp_path: Path) -> None:
+        """The scope gate is an EXPLICIT check, not just path-presence
+        (review 2026-07-17 host-add, F5): a skill bucket carrying a
+        stray meta.yaml path must not arm registration."""
+        sb = make_env(tmp_path)
+        seed_record(sb.ledger, make_behavior(scope="skill:s"))
+        (sb.ledger / "skills" / "s" / "meta.yaml").write_text(
+            f"path: {sb.host}\n", encoding="utf-8"
+        )
+        c, runner = make_client(sb)
+        r = c.post("/bucket/skill/s/host-add/confirm", headers={"HX-Request": "true"})
+        assert r.status_code == 400
+        assert runner.calls == []
+
+    def test_registered_project_bucket_shows_no_host_add_bar(self, tmp_path: Path) -> None:
+        sb = make_env(tmp_path)
+        rec = make_knowledge(scope="project", fact="A registered-host fact.")
+        from self_learn.ledger_ops import create_record
+
+        create_record(sb.ledger, rec, project_path=sb.host)
+        name = next((sb.ledger / "projects").iterdir()).name
+        c, _runner = make_client(sb)
+        r = c.get(f"/bucket/project/{name}")
+        assert r.status_code == 200
+        assert "host-add-bar" not in r.text
+        assert "Register this project" not in r.text
+
 
 class TestDetailPage:
     def test_deep_link_lands_on_detail(self, tmp_path: Path) -> None:

@@ -774,12 +774,16 @@ def _host_add_ctx(
 
 def _host_add_target(request: Request, scope: str, name: str) -> tuple["ledger.Bucket", str] | Response:
     """Resolve bucket + server-derived project path, or an error Response."""
+    if scope != "project":
+        # Y-11 scope limitation, checked EXPLICITLY — not just via the
+        # path being underivable (a stray meta.yaml in a skill bucket
+        # must not arm registration; review 2026-07-17 host-add, F5).
+        return HTMLResponse("registration arms for project buckets only", status_code=400)
     bucket = _find_bucket(_home(request), scope, name)
     if bucket is None:
         return HTMLResponse("bucket not found", status_code=404)
     path = ledger.project_path_for(bucket.path)
     if not path:
-        # Y-11 scope limitation: nothing derivable outside project buckets.
         return HTMLResponse("no registration candidate for this bucket", status_code=400)
     return bucket, path
 
