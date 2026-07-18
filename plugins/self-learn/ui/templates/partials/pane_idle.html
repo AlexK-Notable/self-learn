@@ -4,11 +4,17 @@
    SAME dom id as partials/pane.html / pane_armed.html so every pane
    route can swap this one region uniformly. #}
 <div id="pane-region-wrapper" class="pane-region pane-idle">
-  <button type="button" data-key-action="iterate"
-          hx-post="/record/{{ record_id }}/pane/start"
-          hx-target="#pane-region-wrapper" hx-swap="outerHTML">Iterate (i)</button>
+  <button type="button" data-key-action="{{ 'bucket_pane' if bucket_pane else 'iterate' }}"
+          hx-post="{{ pane_base | default('/record/' ~ record_id ~ '/pane') }}/start"
+          hx-target="#pane-region-wrapper" hx-swap="outerHTML">{% if bucket_pane %}Open bucket chat (p){% else %}Iterate (i){% endif %}</button>
+  {% if bucket_pane %}
+  <p class="pane-hint">Chat about this bucket &mdash; the agent can answer
+    questions about the queue and suggest resolutions; nothing runs
+    unless you confirm.</p>
+  {% else %}
   <p class="pane-hint">No agent session on this record yet &mdash; Iterate opens one
     to refine the proposal or draft what the buttons can't.</p>
+  {% endif %}
 
   {% if pane and pane.validate_exit_code is not none and pane.validate_exit_code != 0 %}
   <p class="badge badge-{{ 'scan-blocked' if pane.validate_exit_code == 2 else 'schema-invalid' }}">

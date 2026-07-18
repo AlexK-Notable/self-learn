@@ -182,7 +182,8 @@ main#self-learn-ui-content {
 
 /* The iterate split needs more room than reading pages. (:has is fine —
    the only supported client is a current chromium, 09 §1.) */
-main#self-learn-ui-content:has(.detail-grid) {
+main#self-learn-ui-content:has(.detail-grid),
+main#self-learn-ui-content:has(.bucket-grid) {
   max-width: 96rem;
 }
 
@@ -326,6 +327,22 @@ body:has(.pane-region[data-pane-state]) .keymap-footer-entry[data-action="iterat
    specificity as the data-context="global" show rule; later wins.) */
 .keymap-footer-entry[data-action="help"] {
   display: none;
+}
+
+/* Y-13 keys, shown only where they do anything: `p` on the Bucket page
+   while its open-chat button exists (hidden once the pane is live —
+   same rule as Iterate above); `y` only while a WAITING proposal bar is
+   actually rendered. */
+body[data-page="bucket"] .keymap-footer-entry[data-context="bucket"] {
+  display: inline;
+}
+
+body[data-page="bucket"]:has(.pane-region[data-pane-state]) .keymap-footer-entry[data-context="bucket"] {
+  display: none;
+}
+
+body:has(.proposal-bar[data-proposal="waiting"]) .keymap-footer-entry[data-context="proposal"] {
+  display: inline;
 }
 
 /* Armed state is modal by design (Enter confirms, any key cancels) —
@@ -838,6 +855,55 @@ details[open] > summary {
   .detail-grid {
     grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
   }
+}
+
+/* Y-13: the Bucket page splits like Detail — record list left, bucket
+   chat pane right. Same breakpoints, list gets the wider column. */
+.bucket-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1.25rem;
+  align-items: start;
+}
+
+@media (min-width: 60rem) {
+  .bucket-grid {
+    grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  }
+}
+
+.bucket-right {
+  position: sticky;
+  top: 3.4rem; /* clears the sticky header, same as .detail-right */
+}
+
+/* Y-13: the proposal bar. Waiting state is visibly the AGENT's ask —
+   accent-bordered but NOT the armed treatment (it is not [data-armed];
+   Enter does nothing to it until the human's own y arms it). */
+.proposal-bar {
+  border-left: 3px solid var(--slu-accent);
+}
+
+.proposal-source-label,
+.proposal-note-label {
+  color: var(--slu-fg-muted);
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.proposal-note {
+  color: var(--slu-fg-muted);
+  font-size: 0.88rem;
+  margin: 0.25rem 0;
+}
+
+.proposal-lead {
+  margin: 0.25rem 0;
+}
+
+.proposal-region-empty {
+  display: contents;
 }
 
 .detail-left {

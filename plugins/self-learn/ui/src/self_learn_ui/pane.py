@@ -49,9 +49,10 @@ merge.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from self_learn.hosts import HostsError, load_hosts, skill_dir_for
 from self_learn.records import Record
@@ -62,11 +63,13 @@ from .engine.base import BlockStart, FileChanged, PaneContext, PaneEngine, PaneE
 from .engine.sdk import DEFAULT_FALLBACK_MODEL, SdkPaneEngine
 from .env import EnvConfig
 from .ledger import RefreshHub
+from .proposals import ProposalSlot, SessionScope, make_propose_handler
 from .rendering import render_markdown
 from .runner import VerbRunner
 from .sse import AppEventHub
 
 __all__ = [
+    "BUCKET_CONTEXT_ROW_CAP",
     "PANE_STATES",
     "STATE_AWAITING_INPUT",
     "STATE_ENDED",
@@ -77,9 +80,13 @@ __all__ = [
     "PaneManager",
     "PaneSnapshot",
     "TranscriptBlock",
+    "bucket_session_key",
+    "build_bucket_pane_context",
     "build_pane_context",
     "build_pane_manager",
+    "compose_bucket_message",
     "compose_first_message",
+    "parse_bucket_session_key",
     "target_canon_excerpt",
 ]
 
@@ -225,18 +232,34 @@ def compose_first_message(
     return "\n\n".join(parts)
 
 
+def _record_propose_handler(
+    home: Path,
+    record_id: str,
+    slot: ProposalSlot | None,
+    publish: "Callable[[dict], Awaitable[None]] | None",
+) -> "Callable[[dict[str, Any]], Awaitable[str]] | None":
+    if slot is None or publish is None:
+        return None
+    scope = SessionScope(kind="record", session_key=record_id, record_id=record_id)
+    return make_propose_handler(home=home, scope=scope, slot=slot, publish=publish)
+
+
 def build_pane_context(
     home: Path,
     record_id: str,
     *,
     read_doctrine_fn: Callable[[], str] = read_doctrine,
+    slot: ProposalSlot | None = None,
+    publish: "Callable[[dict], Awaitable[None]] | None" = None,
 ) -> PaneContext:
     """Assembles one Iterate session's :class:`PaneContext` from
     ``ledger.py`` reads (09 §4.2). ``read_doctrine_fn`` defaults to the
     real compiled-doctrine reader (tests inject one pointed at a
     tmp-rooted compiled path — see ``doctrine.py``'s own test suite for
     the established pattern: real tracked sources, redirected compiled
-    output)."""
+    output). ``slot``/``publish`` (Y-13) wire the session's
+    ``propose_verb`` handler; both-or-neither — without them the session
+    simply has no proposal tool (the pre-Y-13 shape, kept for tests)."""
     location = ledger.locate_record(home, record_id)
     if location is None:
         raise LookupError(f"pane: record {record_id} not found under {home}")
@@ -260,6 +283,135 @@ def build_pane_context(
         self_learn_home=home,
         system_prompt=read_doctrine_fn(),
         first_message=first_message,
+        session_kind="record",
+        propose_handler=_record_propose_handler(home, record_id, slot, publish),
+    )
+
+
+# ------------------------------------------------- bucket pane (Y-13)
+
+#: 09 §11 Y-13 decision 5: the bucket first message caps its record list
+#: at 50 rows with an HONEST truncation line — never a silent cut.
+BUCKET_CONTEXT_ROW_CAP = 50
+
+_BUCKET_KEY_PREFIX = "bucket:"
+
+
+def bucket_session_key(scope: str, name: str) -> str:
+    """The PaneManager session key for a bucket pane — a synthetic key in
+    the same keyspace as record ids (one manager, one live session across
+    BOTH variants — 09 §4.2 as amended)."""
+    return f"{_BUCKET_KEY_PREFIX}{scope}/{name}"
+
+
+def parse_bucket_session_key(key: str) -> tuple[str, str] | None:
+    """``("<scope>", "<name>")`` when *key* is a bucket session key, else
+    ``None`` (it's a plain record id)."""
+    if not key.startswith(_BUCKET_KEY_PREFIX):
+        return None
+    scope, sep, name = key[len(_BUCKET_KEY_PREFIX):].partition("/")
+    if not sep or not scope or not name:
+        return None
+    return scope, name
+
+
+def compose_bucket_message(
+    scope: str,
+    name: str,
+    items: list[dict],
+    clusters: list[dict],
+    *,
+    host_registered: bool = True,
+    row_cap: int = BUCKET_CONTEXT_ROW_CAP,
+) -> str:
+    """The bucket session's first user message (09 §11 Y-13 decision 5):
+    bucket summary + grouped pending rows — leading human line first
+    (Y-9: the ``list --json`` title derivation), id as trailing metadata,
+    destination, freshness, deferred/cluster tags — capped with an honest
+    truncation line. Ambiguity about which record an instruction means is
+    the agent's clarifying question, never a guess (doctrine §8; the
+    surface-model prose carries that instruction)."""
+    lines = [
+        f"=== BUCKET {name} (scope: {scope}) ===",
+        f"pending records: {len(items)}"
+        + ("" if host_registered else " · host NOT registered (no canon writes possible yet)"),
+    ]
+    for item in items[:row_cap]:
+        title = item.get("title") or "(untitled record)"
+        dest = item.get("destination") or "no analysis yet"
+        fresh = "fresh" if item.get("proposal_fresh") else (
+            "stale" if item.get("has_proposal") else "unanalyzed"
+        )
+        tags = [f"id={item.get('id')}", f"destination={dest}", fresh]
+        if item.get("deferred_until"):
+            tags.append(f"deferred until {item['deferred_until']}")
+        if item.get("source") == "session":
+            tags.append("mined")
+        lines.append(f"- {title}  [{', '.join(tags)}]")
+    if len(items) > row_cap:
+        lines.append(
+            f"(list truncated: showing {row_cap} of {len(items)} pending "
+            "records — ask the human, or ask for a specific record id)"
+        )
+    for cluster in clusters:
+        lines.append(
+            f"- cluster {cluster.get('cluster_id')}: "
+            f"{len(cluster.get('members', []) or [])} similar records, "
+            f"suggested survivor {cluster.get('suggested_survivor')}"
+        )
+    return "\n".join(lines)
+
+
+def build_bucket_pane_context(
+    home: Path,
+    scope: str,
+    name: str,
+    *,
+    read_doctrine_fn: Callable[[], str] = read_doctrine,
+    slot: ProposalSlot | None = None,
+    publish: "Callable[[dict], Awaitable[None]] | None" = None,
+) -> PaneContext:
+    """The bucket pane's :class:`PaneContext` (09 §2.2/§4.5): bucket
+    first-message context, ``session_kind="bucket"`` (zero write
+    allowance — the charter variant), and a bucket-scoped
+    ``propose_verb`` handler."""
+    bucket = next(
+        (b for b in ledger.discover_buckets(home) if b.scope == scope and b.name == name),
+        None,
+    )
+    if bucket is None:
+        raise LookupError(f"pane: bucket {scope}/{name} not found under {home}")
+    list_read = ledger.list_items(home, include_deferred=True)
+    items = [
+        item for item in (list_read.data or []) if item.get("bucket") == name
+    ] if list_read.ok else []
+    clusters = ledger.read_clusters(bucket.path)
+    host_registered = bool(items[0].get("host_registered", True)) if items else True
+
+    key = bucket_session_key(scope, name)
+    handler = None
+    if slot is not None and publish is not None:
+        session_scope = SessionScope(
+            kind="bucket",
+            session_key=key,
+            bucket_dir=bucket.path,
+            bucket_scope=scope,
+            bucket_name=name,
+        )
+        handler = make_propose_handler(
+            home=home, scope=session_scope, slot=slot, publish=publish
+        )
+
+    return PaneContext(
+        record_id=key,
+        bucket_root=bucket.path,
+        self_learn_home=home,
+        system_prompt=read_doctrine_fn(),
+        first_message=compose_bucket_message(
+            scope, name, items, clusters, host_registered=host_registered
+        ),
+        session_kind="bucket",
+        propose_handler=handler,
     )
 
 
@@ -346,12 +498,19 @@ class PaneManager:
         app_hub: AppEventHub,
         refresh_hub: RefreshHub,
         runner: VerbRunner,
+        proposal_slot: ProposalSlot | None = None,
     ) -> None:
         self._engine_factory = engine_factory
         self._context_builder = context_builder
         self._app_hub = app_hub
         self._refresh_hub = refresh_hub
         self._runner = runner
+        # Y-13 (09 §4.5): the server-held single proposal slot. Owned
+        # here because its clear-set is session-coupled ("the proposing
+        # session ending for any reason" clears it). Optional so pre-Y-13
+        # test constructions keep working; routes fall back to a slot of
+        # their own absence-tolerantly via `proposal_slot` property.
+        self._proposal_slot = proposal_slot if proposal_slot is not None else ProposalSlot()
         self._live: _Live | None = None
         # 09 §4.3: "a scan hit badges the item 'scan-blocked' until a
         # re-validate exits 0" — this outlives the pane session itself
@@ -362,6 +521,10 @@ class PaneManager:
     @property
     def active_record_id(self) -> str | None:
         return self._live.record_id if self._live else None
+
+    @property
+    def proposal_slot(self) -> ProposalSlot:
+        return self._proposal_slot
 
     def snapshot(self, record_id: str) -> PaneSnapshot:
         """Always returns a snapshot (never ``None``) — ``state`` is
@@ -425,6 +588,8 @@ class PaneManager:
         except Exception as exc:  # noqa: BLE001 - a pane-visible error, not a 500
             live.error_message = str(exc)
             live.state = STATE_ENDED
+        if live.state == STATE_ENDED:
+            self._proposal_slot.clear_for_session(live.record_id)
         return "started"
 
     async def send(self, record_id: str, text: str) -> str:
@@ -448,6 +613,8 @@ class PaneManager:
         except Exception as exc:  # noqa: BLE001
             live.error_message = str(exc)
             live.state = STATE_ENDED
+        if live.state == STATE_ENDED:
+            self._proposal_slot.clear_for_session(live.record_id)
         return "sent"
 
     async def interrupt(self, record_id: str) -> bool:
@@ -471,6 +638,8 @@ class PaneManager:
             return False
         await self._live.engine.close()
         self._live = None
+        # Y-13 clear-set: the proposing session ended (`q`).
+        self._proposal_slot.clear_for_session(record_id)
         return True
 
     async def interrupt_active_session(self, record_id: str) -> bool:
@@ -494,6 +663,9 @@ class PaneManager:
         live, self._live = self._live, None
         await live.engine.interrupt()
         await live.engine.close()
+        # Y-13 clear-set: teardown ends the proposing session (interrupt
+        # via verb dispatch, or a forced start on another item).
+        self._proposal_slot.clear_for_session(live.record_id)
 
     # ------------------------------------------------------------- draining
 
@@ -542,6 +714,11 @@ class PaneManager:
             live.cap_hit = bool(event.error) and _is_cap_hit(event.status)
             live.error_message = event.error
             live.state = STATE_ENDED if event.error else STATE_AWAITING_INPUT
+            if live.state == STATE_ENDED:
+                # Y-13 clear-set: error/cap results END the proposing
+                # session (a clean result leaves it awaiting-input — the
+                # human reviews the waiting bar while the session lives).
+                self._proposal_slot.clear_for_session(live.record_id)
             await self._app_hub.publish(
                 {
                     "type": "pane_result",
@@ -550,7 +727,9 @@ class PaneManager:
                     "turns": event.turns,
                 }
             )
-            if event.error is None:
+            if event.error is None and parse_bucket_session_key(live.record_id) is None:
+                # Bucket sessions write nothing (09 §4.5) — no validate
+                # obligation; record sessions keep the 08 §7.1 pin.
                 await self._post_session_validate(live.record_id)
 
     async def _post_session_validate(self, record_id: str) -> None:
@@ -601,8 +780,18 @@ def build_pane_manager(
             max_budget_usd=env.pane_budget_usd,
         )
 
-    def context_builder(record_id: str) -> PaneContext:
-        return build_pane_context(env.self_learn_home, record_id)
+    slot = ProposalSlot()
+
+    def context_builder(session_key: str) -> PaneContext:
+        parsed = parse_bucket_session_key(session_key)
+        if parsed is not None:
+            scope, name = parsed
+            return build_bucket_pane_context(
+                env.self_learn_home, scope, name, slot=slot, publish=app_hub.publish
+            )
+        return build_pane_context(
+            env.self_learn_home, session_key, slot=slot, publish=app_hub.publish
+        )
 
     return PaneManager(
         engine_factory=engine_factory,
@@ -610,4 +799,5 @@ def build_pane_manager(
         app_hub=app_hub,
         refresh_hub=refresh_hub,
         runner=runner,
+        proposal_slot=slot,
     )

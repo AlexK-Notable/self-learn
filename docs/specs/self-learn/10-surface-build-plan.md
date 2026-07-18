@@ -565,6 +565,24 @@ path more than adding tracks.
 
 ## Appendix — Build findings (dated; §7 discipline)
 
+- **2026-07-17 · U12 build (Y-13 chat panes).** Three dated notes:
+  (1) **propose_verb tool schema** — the SDK's dict-of-types schema
+  shorthand marks every key required; the T-B(6) live trial caught the
+  model filling `until=""` and the validator refusing a valid route.
+  The tool now declares a real JSON Schema (`required: [verb,
+  record_id]` only) and the validator normalizes empty-string optionals
+  to absent (belt; regression-tested). (2) **`pane_proposal` envelope
+  carries `bucket` alongside `record_id`** — the §1 SSE row's scope
+  gate needs the bucket page to match without a record→bucket lookup
+  client-side; the envelope stays content-free (the bar re-fetches
+  server-rendered). (3) **Slot staleness checks STATUS, not
+  existence** — `locate_record` also finds resolved/ records, so the
+  arm-time re-check reads the record and requires pending/deferred
+  (caught by the T-A stale-arm fixture on first run). T-B rows (6)-(8)
+  and the U12 DoD browser trial are logged in `fixtures/ui-trials.md`
+  (row 7 pass-by-composition: the in-context layer refuses before the
+  handler's closed list is reachable; the handler half is unit-pinned).
+
 - **2026-07-17 · Pre-build re-ground (this amendment set).** 09
   gained §11 (Y-1…Y-12) + in-place amendments at §2.1/§2.2/§2.3/
   §3/§4.2/§4.3/§8; 10 gained the D3 posture note (§0), corrected

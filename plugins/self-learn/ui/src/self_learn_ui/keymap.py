@@ -30,7 +30,9 @@ from dataclasses import asdict, dataclass
 
 #: Contexts a key's binding applies in. ``global`` fires everywhere keys
 #: are live; the others gate on where focus/attention currently is.
-Context = str  # "global" | "list" | "detail" | "holding" | "pane"
+#: Context gates DISPLAY only (footer filtering, style.css) — dispatch is
+#: first-match with no context filter, which is why every key is unique.
+Context = str  # "global" | "list" | "detail" | "holding" | "pane" | "bucket" | "proposal"
 
 
 @dataclass(frozen=True)
@@ -78,6 +80,15 @@ KEYMAP: tuple[KeymapEntry, ...] = (
     KeymapEntry(("c",), "confirm", "Confirm recurrence", "holding"),
     KeymapEntry(("r",), "retry", "Retry pane", "pane"),
     KeymapEntry(("q",), "close_pane", "Close split (ends the session)", "pane"),
+    # Y-13 (09 §1/§2.2/§4.5, 2026-07-17): both keys were unbound — the
+    # global-uniqueness invariant holds (tested). `p` only does anything
+    # where its button exists (the Bucket page); `y` only where a WAITING
+    # proposal bar is rendered — the footer shows each only in context
+    # (style.css). Enter NEVER acts on a waiting proposal bar: `y` arms
+    # it through the standard armed contract first (two keystrokes, the
+    # same consent path as every human-initiated action).
+    KeymapEntry(("p",), "bucket_pane", "Open bucket chat pane", "bucket"),
+    KeymapEntry(("y",), "arm_proposal", "Review agent proposal (arm)", "proposal"),
     KeymapEntry(("?",), "help", "Help overlay", "global"),
 )
 

@@ -23,6 +23,8 @@ EXPECTED_ACTIONS = {
     "confirm",
     "retry",
     "close_pane",
+    "bucket_pane",
+    "arm_proposal",
     "help",
 }
 
@@ -74,6 +76,12 @@ def test_pinned_key_bindings() -> None:
     assert by_action["confirm"] == ("c",)
     assert by_action["retry"] == ("r",)
     assert by_action["close_pane"] == ("q",)
+    # Y-13 (dated 09 §1 amendment 2026-07-17): both previously unbound.
+    # `p` opens the bucket chat pane; `y` arms a WAITING proposal bar
+    # (Enter never acts on a waiting bar — y-then-Enter is the pinned
+    # two-keystroke consent path).
+    assert by_action["bucket_pane"] == ("p",)
+    assert by_action["arm_proposal"] == ("y",)
     assert by_action["help"] == ("?",)
 
 

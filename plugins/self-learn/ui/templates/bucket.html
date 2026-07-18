@@ -20,6 +20,19 @@
 <div class="error-strip" role="alert"><p>{{ list_error }}</p></div>
 {% endif %}
 
+{# Y-13 (09 §2.2/§4.5): the bucket page splits like Detail — left the
+   grouped record list, right the bucket chat pane (`p`), with any
+   pending proposal's bar adjacent to the pane. The pane region and the
+   proposal region are both stable swap targets. #}
+<div class="bucket-grid">
+<div class="bucket-left">
+
+{% if bucket_proposal %}
+  {% with proposal=bucket_proposal, kind="bucket", verb_label=proposal_verb_label, error=None %}
+    {% include "partials/proposal_bar.html" %}
+  {% endwith %}
+{% endif %}
+
 {% if not model.host_registered %}
   {% with armed=False, scope=model.scope, name=model.bucket, record_id=None, can_arm=(model.host_add_command is not none), path=None, error=None %}
     {% include "partials/host_add_bar.html" %}
@@ -70,4 +83,18 @@
   {% endfor %}
 </section>
 {% endfor %}
+</div>
+
+<div class="bucket-right">
+  {% with record_id=bucket_pane_key %}
+    {% if pane_split %}
+      {% include "partials/pane.html" %}
+    {% else %}
+      {% with bucket_pane=True %}
+        {% include "partials/pane_idle.html" %}
+      {% endwith %}
+    {% endif %}
+  {% endwith %}
+</div>
+</div>
 {% endblock %}

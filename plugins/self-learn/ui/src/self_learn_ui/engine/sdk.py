@@ -63,9 +63,12 @@ from claude_agent_sdk import (
     ToolResultBlock,
     ToolUseBlock,
     UserMessage,
+    create_sdk_mcp_server,
+    tool,
 )
 
 from .. import uilog
+from ..proposals import PROPOSAL_SERVER_NAME, PROPOSAL_TOOL_NAME, PROPOSAL_TOOL_QUALIFIED_NAME
 from .base import BlockStart, FileChanged, PaneContext, PaneEngine, PaneEvent, Result, TextDelta, ToolUse
 from .charter import build_can_use_tool
 
@@ -209,11 +212,58 @@ class SdkPaneEngine(PaneEngine):
             await asyncio.sleep(0.05)
 
     def _build_options(self, ctx: PaneContext) -> ClaudeAgentOptions:
+        # Y-13 (09 §4.3 as amended): the strict MCP config carries exactly
+        # ONE entry — the server's own in-process tool server exposing
+        # propose_verb — and only when the session was handed a handler.
+        # The handler runs in server code (self_learn_ui.proposals); the
+        # charter's allow-rule matches the fully-qualified name EXACTLY.
+        # `allowed_tools` stays [] (footgun B) — T-B(6) proves the call
+        # routes through the callback on the resolved SDK version.
+        mcp_servers: dict[str, Any] = {}
+        extra_allowed: tuple[str, ...] = ()
+        if ctx.propose_handler is not None:
+            handler = ctx.propose_handler
+
+            # A FULL JSON Schema, not the dict-of-types shorthand: the
+            # shorthand marks every key required, and the T-B(6) live
+            # trial showed the model then fills optionals with "" —
+            # which the handler must treat as absent (belt in
+            # proposals.validate_proposal; this schema is the braces).
+            @tool(
+                PROPOSAL_TOOL_NAME,
+                "Propose a resolution verb (route/reject/defer/graduate) on a "
+                "pending record. The human sees the proposal and decides — "
+                "nothing executes unless they confirm. Args: verb, record_id, "
+                "and optionally dest (route only), note (<=200 chars), "
+                "until (defer only, YYYY-MM-DD).",
+                {
+                    "type": "object",
+                    "properties": {
+                        "verb": {"type": "string"},
+                        "record_id": {"type": "string"},
+                        "dest": {"type": "string"},
+                        "note": {"type": "string"},
+                        "until": {"type": "string"},
+                    },
+                    "required": ["verb", "record_id"],
+                },
+            )
+            async def propose_verb_tool(args: dict[str, Any]) -> dict[str, Any]:
+                text = await handler(args)
+                return {"content": [{"type": "text", "text": text}]}
+
+            mcp_servers[PROPOSAL_SERVER_NAME] = create_sdk_mcp_server(
+                name=PROPOSAL_SERVER_NAME, tools=[propose_verb_tool]
+            )
+            extra_allowed = (PROPOSAL_TOOL_QUALIFIED_NAME,)
+
         can_use_tool = build_can_use_tool(
             self_learn_home=ctx.self_learn_home,
             bucket_root=ctx.bucket_root,
             record_id=ctx.record_id,
             canon_read_roots_fn=self._canon_read_roots_fn,
+            extra_allowed_tools=extra_allowed,
+            zero_write=ctx.session_kind == "bucket",
         )
         # X-7 fallback (see module docstring): no ClaudeAgentOptions field
         # matches "session persistence" on the resolved SDK — pass the
@@ -228,6 +278,7 @@ class SdkPaneEngine(PaneEngine):
             disallowed_tools=["Bash", "Task", "WebSearch", "WebFetch"],
             can_use_tool=can_use_tool,
             strict_mcp_config=True,
+            mcp_servers=mcp_servers,
             model=self._model,
             fallback_model=self._fallback_model,
             max_turns=self._max_turns,

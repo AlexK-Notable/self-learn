@@ -164,6 +164,71 @@ pass/fail against its predicate (10 §2 discipline). CI-level acceptance
     Re-verified in the browser after the fix: **0 console errors** on load.
     Regression test `test_head_disables_htmx_inline_style_and_suppresses_favicon`.
   - *Predicate (armed-key flow + SSE swap in a real browser): MET.*
+## T-B rows (6)–(8) · Y-13 verb proposals (live SDK, real model — U12)
+- **2026-07-17 · (6) PASS · (7) PASS-BY-COMPOSITION · (8) PASS.**
+  Env: throwaway ledger (skills/demo, seeded record), driver building the
+  production `SdkPaneEngine._build_options` with the charter callback
+  instrumented (a recording wrapper around `build_can_use_tool` — the
+  production path, spied not replaced), real ClaudeSDKClient sessions on
+  claude-sonnet-5, XDG dirs redirected.
+  - **(6) propose_verb routes through the callback — the footgun-B proof
+    on the resolved SDK (0.2.121):** callback call log contains
+    `mcp__self-learn-surface__propose_verb`; the slot occupied WAITING
+    (`armed=False`, verb=route, dest=skill-md, note verbatim); the SSE
+    envelope published with record_id + bucket; the record file untouched
+    and still pending; NO runner existed in the driver — nothing could
+    have executed. *Predicate MET.*
+  - **BLOCKER caught & fixed on the first run:** the tool's dict-of-types
+    schema shorthand (`{"until": str | None}`) renders every key REQUIRED
+    to the model, which filled `until=""` — and the validator read "" as
+    present, refusing a valid route with "until only applies to defer".
+    Fixed: a real JSON Schema (`required: [verb, record_id]` only) plus
+    empty-string→absent normalization in the validator (belt);
+    regression test `test_empty_string_optionals_are_absent`. Re-ran →
+    PASS.
+  - **(7) host-add unproposable:** instructed twice (second time with an
+    explicit "you MUST call the tool" test framing), the agent REFUSED to
+    invoke propose_verb for host add — the surface-model prose teaches
+    the exclusion, so the in-context layer holds before the handler's
+    closed list is even reached. No registration occurred, slot stayed
+    empty. The handler's own closed-list refusal (the row's letter) is
+    pinned by unit test (`test_closed_list_refuses_host_add_and_
+    everything_else`); the live half shows defense-in-depth ABOVE it.
+    Recorded honestly as pass-by-composition, not a single live proof.
+  - **(8) bucket zero-write held live:** a bucket session instructed to
+    edit the pending record attempted `Edit` (and, unprompted in an
+    earlier turn, `Write proposals/…yaml`) — both reached the callback
+    and denied; the file shows no tampering; the agent then told the
+    human, unprompted, "I can't write the actual proposal from here —
+    open the record and press i" (the deny reason teaching the venue,
+    exactly as designed). *Predicate MET.*
+
+## U12 DoD · Live bucket-pane proposal, full keyboard consent (browser)
+- **2026-07-17 · PASS (end-to-end, real everything).** Real server
+  (worktree, port 7358, sandbox ledger + XDG), real Playwright browser,
+  real sonnet bucket session. Chain verified: Bucket page renders the
+  split with "Open bucket chat (p)" (footer shows `p` via the context
+  filter; `y` hidden with no proposal present) → `p` opened a REAL
+  bucket session (first-turn bucket context; the agent summarized the
+  queue in plain words, Y-9-register quality) → typed instruction
+  "propose deferring lrn-d785d07c until 2026-09-15 with note 'revisit
+  after HA upgrade'" → agent called propose_verb → **SSE `pane_proposal`
+  → page re-render → WAITING bar** ("Agent proposes: Defer … until
+  2026-09-15 · agent-suggested note: …", Review & arm (y) + Dismiss,
+  NOT armed) → `y` armed (Enter-to-confirm hint) → `Enter` confirmed →
+  the REAL verb ran: record `status: deferred`, `deferred_until:
+  2026-09-15`, ledger commit `self-learn: defer lrn-d785d07c until
+  2026-09-15`. **The bucket session survived the confirm** (transcript
+  intact + input line open — the 09 §4.5 exemption, live-confirmed) and
+  its final message honestly restated the consent contract. Screenshots:
+  `~/Pictures/self-learn-ui/u12-proposal-{waiting,armed}.png`.
+  - **Cosmetic observation (backlog, pre-existing):** the live SSE
+    `pane_block` append can race the authoritative region swap and
+    briefly duplicate the final transcript block until the next
+    re-render (app.js's documented best-effort appender; also reachable
+    on record panes). No state impact; candidate fix is de-duping the
+    appender or dropping SSE-appended blocks on swap.
+
 ## Degradation walk (09 §5 row-by-row, U9 ledger)
 - **2026-07-17 · SATISFIED (CI + live trials).** U9 implemented and
   CI-tested every 09 §5 row (15 tests, `test_degradation_walk.py`) with a

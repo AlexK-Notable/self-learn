@@ -1,4 +1,6 @@
-{# The live/ended pane region (09 §2.4/§4.1/§4.2/§5). Transcript renders
+{# The live/ended pane region — `pane_base` (Y-13) parameterizes the
+   POST base URL: "/record/<id>/pane" on Detail, "/bucket/<scope>/<name>/pane"
+   for the bucket pane (09 §2.2); defaulted for Detail includes below. (09 §2.4/§4.1/§4.2/§5). Transcript renders
    FINISHED blocks as server-rendered markdown (html=False — rendering.py;
    XSS-safe, same primitive the SSE pane_block frame uses) and a live
    in-flight block (or an activity indicator when no text_delta has
@@ -30,7 +32,7 @@
     {% if pane.cap_hit %}cap hit — r to continue in a fresh session{% else %}{{ pane.error_message }}{% endif %}
   </p>
   <button type="button" data-key-action="retry"
-          hx-post="/record/{{ record_id }}/pane/retry"
+          hx-post="{{ pane_base | default('/record/' ~ record_id ~ '/pane') }}/retry"
           hx-target="#pane-region-wrapper" hx-swap="outerHTML">Retry (r)</button>
   {% elif pane.result_status %}
   <p class="pane-result">
@@ -49,7 +51,7 @@
 
   {% if pane.state != "ended" %}
   <form id="pane-input-form"
-        hx-post="/record/{{ record_id }}/pane/send"
+        hx-post="{{ pane_base | default('/record/' ~ record_id ~ '/pane') }}/send"
         hx-target="#pane-region-wrapper" hx-swap="outerHTML">
     <label>Send <input type="text" name="text" placeholder="follow-up message"></label>
     <button type="submit" data-key-action="pane_send">Send</button>
@@ -58,9 +60,9 @@
 
   {% if pane.state in ("starting", "streaming", "interrupting") %}
   <button type="button" data-key-action="interrupt"
-          hx-post="/record/{{ record_id }}/pane/interrupt"
+          hx-post="{{ pane_base | default('/record/' ~ record_id ~ '/pane') }}/interrupt"
           hx-target="#pane-region-wrapper" hx-swap="outerHTML">Interrupt (Esc)</button>
   {% endif %}
   <button type="button" data-key-action="close_pane"
-          hx-post="/record/{{ record_id }}/pane/close">Close (q)</button>
+          hx-post="{{ pane_base | default('/record/' ~ record_id ~ '/pane') }}/close">Close (q)</button>
 </div>
