@@ -503,6 +503,18 @@ entries into `references/` or weave them into the authored prose.
 Loaded-surface budget is the scarce resource (E-6: ≥60% of preloaded skill
 content is attention dilution) — the cap is what keeps P2's native loading
 from quietly becoming the preloading it replaced.
+*(Cross-reference added 2026-07-18 — UX-survey item 4; 09 §11 Y-20 / 08 §1
+`surface_fill` / 10 §3 U17:)* this cap — and how close a candidate section
+already sits to it — is **surfaced at the routing decision** by the review
+surface, in plain words ("this section already holds 8 of its 10 entries"),
+computed at render from the compiler's own count via the opt-in
+`list --json --surface-fill` field (only the capped destinations
+`skill-md`/`claude-md` carry it; `reference`, being this overflow sink,
+is cap-free and shows a static "no cap" note instead). The over-cap WARNING and graduation-opener flow named above
+stay the authoritative enforcement (an over-cap route still applies + flags);
+Y-20 only makes the fill **visible before** that boundary so the
+narrowest-surface choice (routing-doctrine §3) is made with the cost in view
+rather than discovered at apply-time rejection.
 Moving a lesson from the managed section into the authored prose is a human
 edit, recorded with **`self-learn graduate <id>`** (or the equivalent review
 card) — which marks the record `superseded_by: canon` and lets the compiler
