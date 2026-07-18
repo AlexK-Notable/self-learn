@@ -77,8 +77,9 @@ lessons becomes two records.
 **`## Episode brief` — a miner-only, compiler-excluded body section**
 *(added 2026-07-18 — UX survey item 5; doc 12 §11 is the miner-side
 contract, 09 §2.3 the display, 09 §11 Y-21 the register, 10 §3 U18 the
-build).* An **optional** body section, permitted on records of **either
-type** but **only when `source: session`** — a 100–200-word plain-words
+build).* An **optional** body section, written only for
+`source: session` records (a producer convention, not a validator gate —
+see below) — a 100–200-word plain-words
 reconstruction of the origin episode (the attempt→failure→correction→
 resolution arc, in the human's domestic terms), written by the
 **transcript miner** at land from its transcript read (doc 12 §11). It is
