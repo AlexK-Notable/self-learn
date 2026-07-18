@@ -657,6 +657,27 @@ class PaneManager:
         await self._teardown_live()
         return True
 
+    def has_interruptible_session(self) -> bool:
+        """Y-14 idle-predicate leg (09 §3): an agent mid-turn
+        (starting/streaming/interrupting) is work-in-flight and blocks
+        idle exit; a parked (awaiting-input/ended) session does NOT —
+        it is torn down by :meth:`teardown_parked` instead."""
+        return self._live is not None and self._live.state in INTERRUPTIBLE_STATES
+
+    async def teardown_parked(self) -> bool:
+        """Tear down a parked (non-INTERRUPTIBLE) live session through
+        the standard teardown — clearing the proposal slot via the
+        Y-13 clear-set — and report whether one existed. The idle
+        monitor calls this and then DEFERS its exit decision (delta
+        R1: teardown awaits engine calls, so teardown and signal never
+        share a step). Engine ``interrupt()``/``close()`` are
+        idempotent against already-ended sessions (delta R4 — pinned
+        by test)."""
+        if self._live is None or self._live.state in INTERRUPTIBLE_STATES:
+            return False
+        await self._teardown_live()
+        return True
+
     async def _teardown_live(self) -> None:
         if self._live is None:
             return

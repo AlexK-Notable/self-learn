@@ -1216,8 +1216,14 @@ def bucket_pane_panel(request: Request, scope: str, name: str) -> HTMLResponse:
 async def events(request: Request) -> StreamingResponse:
     refresh_hub = request.app.state.refresh_hub
     app_hub = request.app.state.app_hub
+    # Y-14: the tracker rides along so the stream's own disconnect
+    # stamps the activity clock (the middleware's completion stamp for
+    # a streaming response fires at CONNECT time — dispatch returns
+    # when the response starts, not when the stream closes).
+    tracker = getattr(request.app.state, "activity_tracker", None)
     return StreamingResponse(
-        event_stream(refresh_hub, app_hub), media_type="text/event-stream"
+        event_stream(refresh_hub, app_hub, tracker=tracker),
+        media_type="text/event-stream",
     )
 
 

@@ -368,6 +368,11 @@ class RefreshHub:
     def unsubscribe(self, q: "asyncio.Queue[RefreshEvent]") -> None:
         self._subscribers.discard(q)
 
+    @property
+    def subscriber_count(self) -> int:
+        """Y-14 idle-predicate leg (09 §3): connected SSE clients."""
+        return len(self._subscribers)
+
     async def publish(self, event: RefreshEvent) -> None:
         for q in list(self._subscribers):
             await q.put(event)

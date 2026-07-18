@@ -54,11 +54,15 @@ def _build_server_app(env: EnvConfig) -> tuple["FastAPI", str]:
     ``tests/test_serve.py`` (a real subprocess on an ephemeral port, the
     same process boundary systemd's ``ExecStart`` uses)."""
     from .app import create_app
+    from .idle import resolve_idle_window
     from .middleware import mint_token, write_token_file
 
     token = mint_token()
     write_token_file(token)
-    app = create_app(env=env, token=token)
+    # Y-14 (09 §3): idle self-exit arms only under the systemd unit
+    # unless SELF_LEARN_UI_IDLE_EXIT_SECONDS is set explicitly — the
+    # arming rule lives in resolve_idle_window.
+    app = create_app(env=env, token=token, idle_exit_seconds=resolve_idle_window(env))
     return app, token
 
 

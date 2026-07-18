@@ -9,7 +9,12 @@ the *complete* var list, per 10 §1) · ``SELF_LEARN_PANE_MODEL`` (default
 ``SELF_LEARN_PANE_MAX_TURNS`` (default ``15``) · ``SELF_LEARN_PANE_ENGINE``
 (``sdk`` | ``cli``, default ``sdk``; ``cli`` is the specced-not-built
 alternative, 09 §4.1 — selecting it is a hard exit with the pinned
-message, never a silent fallback).
+message, never a silent fallback) · ``SELF_LEARN_UI_IDLE_EXIT_SECONDS``
+(Y-14, 09 §4.4: idle self-exit window in seconds; default 600 under
+the systemd unit, unarmed in a foreground ``serve`` unless set
+explicitly — the arming rule lives in
+:func:`self_learn_ui.idle.resolve_idle_window`, this module only
+parses; any value ≤ 0 disables, negatives never error).
 
 Nothing else in v1; no config file (09 §4.4).
 """
@@ -29,6 +34,12 @@ DEFAULT_PANE_MODEL = "claude-sonnet-5"
 DEFAULT_PANE_BUDGET_USD = 1.00
 DEFAULT_PANE_MAX_TURNS = 15
 DEFAULT_PANE_ENGINE = "sdk"
+#: Y-14 (09 §4.4): the default idle window — applied by
+#: :func:`self_learn_ui.idle.resolve_idle_window` ONLY under the
+#: systemd unit; ``EnvConfig.ui_idle_exit_seconds`` stays ``None``
+#: when the var is unset so the arming rule can tell "default" from
+#: "explicitly 600".
+DEFAULT_UI_IDLE_EXIT_SECONDS = 600
 
 _VALID_ENGINES = ("sdk", "cli")
 
@@ -57,6 +68,9 @@ class EnvConfig:
     pane_budget_usd: float
     pane_max_turns: int
     pane_engine: str
+    #: ``None`` = unset (arming rule decides); an int = explicit
+    #: (≤ 0 disables — pinned at the Y-14 spec gate, never an error).
+    ui_idle_exit_seconds: int | None = None
 
 
 def _parse_int(raw: str, name: str) -> int:
@@ -108,6 +122,11 @@ def load_env(environ: dict[str, str] | None = None) -> EnvConfig:
         _parse_int(turns_raw, "SELF_LEARN_PANE_MAX_TURNS") if turns_raw else DEFAULT_PANE_MAX_TURNS
     )
 
+    idle_raw = env.get("SELF_LEARN_UI_IDLE_EXIT_SECONDS")
+    ui_idle_exit_seconds = (
+        _parse_int(idle_raw, "SELF_LEARN_UI_IDLE_EXIT_SECONDS") if idle_raw else None
+    )
+
     pane_engine = (env.get("SELF_LEARN_PANE_ENGINE") or DEFAULT_PANE_ENGINE).strip()
     if pane_engine not in _VALID_ENGINES:
         raise EnvError(
@@ -124,4 +143,5 @@ def load_env(environ: dict[str, str] | None = None) -> EnvConfig:
         pane_budget_usd=pane_budget_usd,
         pane_max_turns=pane_max_turns,
         pane_engine=pane_engine,
+        ui_idle_exit_seconds=ui_idle_exit_seconds,
     )

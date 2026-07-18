@@ -6,11 +6,23 @@
 #
 # Usage: self-learn-ui-open [--record <id>]
 #
-# Sequence (pinned):
-#   1. Ensure the service is up (systemctl --user start
-#      self-learn-ui.service) — skipped silently if systemctl is absent
-#      (10 §5 "systemd absent" playbook).
-#   2. Resolve the bearer token: primary $XDG_RUNTIME_DIR/self-learn/
+# Sequence (pinned; re-ordered 2026-07-18 — Y-14, 09 §3 "Deep-link +
+# launcher": token path now resolves FIRST because the service-up step
+# needs a pre-start token snapshot):
+#   1. Resolve the token path, snapshot service state + token bytes,
+#      ensure the service is up (systemctl --user start
+#      self-learn-ui.service — skipped silently if systemctl is absent,
+#      10 §5 "systemd absent" playbook), then the Y-14 READINESS WAIT:
+#      cold start ⟺ snapshot state anything other than `active` (a
+#      click landing in an idle-exit shutdown drain is a cold start
+#      too) AND start succeeded → one ≤5 s budget polling for a token
+#      that differs from the snapshot (the server writes it before
+#      binding), THEN a TCP connect on the port; an unchanged token
+#      WITH a successful connect also counts as ready (delta R2, the
+#      double-click case). Timeout falls through to today's
+#      403-page-names-this-script degradation — never a new failure
+#      mode.
+#   2. Read the bearer token: primary $XDG_RUNTIME_DIR/self-learn/
 #      ui-token; X-8/X-12 fallback (XDG_RUNTIME_DIR unset — headless/SSH)
 #      is the home-namespaced cache dir's ui-token (09 §11 Y-3). ONE
 #      shared resolution below (X-12: the launcher must apply the SAME
@@ -71,12 +83,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# --- 1. ensure the service is up ---------------------------------------
-if command -v systemctl >/dev/null 2>&1; then
-  systemctl --user start self-learn-ui.service >/dev/null 2>&1 || true
-fi
-
-# --- 2. resolve the bearer token ---------------------------------------
+# --- 2. resolve the bearer token path -----------------------------------
 
 # Mirrors self_learn.ledger.resolve_home()'s Path(...).expanduser():
 # only a LEADING ~ is expanded (bash never auto-expands a ~ that arrives
@@ -133,13 +140,73 @@ _resolve_token_path() {
 }
 
 TOKEN_PATH="$(_resolve_token_path)"
+PORT="${SELF_LEARN_UI_PORT:-7357}"
+
+# --- 1. ensure the service is up + Y-14 readiness wait (09 §3) -----------
+_PRE_STATE="absent"   # systemctl absent entirely -> never wait (10 §5)
+_PRE_TOKEN=""
+_START_OK=0
+if command -v systemctl >/dev/null 2>&1; then
+  # is-active prints the state word (active/inactive/failed/activating/
+  # deactivating) even when it exits non-zero — capture, never gate on rc.
+  _PRE_STATE="$(systemctl --user is-active self-learn-ui.service 2>/dev/null || true)"
+  if [[ -r "$TOKEN_PATH" ]]; then
+    _PRE_TOKEN="$(cat "$TOKEN_PATH" 2>/dev/null || true)"
+  fi
+  if systemctl --user start self-learn-ui.service >/dev/null 2>&1; then
+    _START_OK=1
+  fi
+fi
+
+# TCP probe via bash's /dev/tcp — no extra binary; even a request the
+# server would 403 proves liveness (the probe never sends bytes).
+_port_open() {
+  # Subshell: the fd opens and closes with it; exit status IS the
+  # connect result.
+  ( exec 3<>"/dev/tcp/127.0.0.1/${PORT}" ) 2>/dev/null
+}
+
+# Cold start ⟺ snapshot state was anything other than `active` (Y-14:
+# failed/activating/deactivating are cold starts too — a click landing
+# in an idle-exit shutdown drain must wait for the NEW instance's
+# token). One shared ≤5 s budget across both phases: fresh token, THEN
+# TCP connect (the server writes the token before binding, so
+# freshness alone can release into connection-refused). An unchanged
+# token WITH a successful connect also counts as ready (delta R2, the
+# double-click case: a second launcher snapshots the already-fresh
+# token — waiting for a change would burn the whole budget). Timeout:
+# fall through with whatever is readable — the 403 page names this
+# script as the fix, same as today.
+if [[ "$_PRE_STATE" != "active" && "$_START_OK" == 1 ]]; then
+  _i=0
+  while (( _i < 50 )); do
+    if [[ -r "$TOKEN_PATH" ]]; then
+      _now_token="$(cat "$TOKEN_PATH" 2>/dev/null || true)"
+      if [[ -n "$_now_token" && "$_now_token" != "$_PRE_TOKEN" ]]; then
+        break  # fresh token — phase 2 (connect) continues on the same budget
+      fi
+    fi
+    if _port_open; then
+      break  # R2: server is up and serving on the snapshot token
+    fi
+    sleep 0.1
+    _i=$(( _i + 1 ))
+  done
+  while (( _i < 50 )); do
+    if _port_open; then
+      break
+    fi
+    sleep 0.1
+    _i=$(( _i + 1 ))
+  done
+fi
+
 TOKEN=""
 if [[ -r "$TOKEN_PATH" ]]; then
   TOKEN="$(cat "$TOKEN_PATH")"
 fi
 
 # --- URL shape (10 §1 "Companion scripts" row) --------------------------
-PORT="${SELF_LEARN_UI_PORT:-7357}"
 if [[ -n "$RECORD_ID" ]]; then
   URL="http://127.0.0.1:${PORT}/record/${RECORD_ID}"
 else

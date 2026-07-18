@@ -140,16 +140,34 @@ class SecurityMiddleware(BaseHTTPMiddleware):
     middleware + renderer configuration"). Constructed once per app with
     the service's port and per-start token."""
 
-    def __init__(self, app, *, port: int, token: str) -> None:
+    def __init__(self, app, *, port: int, token: str, tracker=None) -> None:
         super().__init__(app)
         self._allowed_hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
         self._token = token
+        # Y-14 (09 §3): in-flight counter + completion clock. EVERY
+        # dispatched request counts — 403s and static included (any
+        # local probe is activity; accepted residual). The decrement
+        # lives in a ``finally`` (delta R3: a client-disconnect
+        # CancelledError mid-handler must not leak a permanent
+        # in-flight count).
+        self._tracker = tracker
 
     def _authed(self, request: Request) -> bool:
         cookie = request.cookies.get(TOKEN_COOKIE_NAME)
         return cookie is not None and hmac.compare_digest(cookie, self._token)
 
     async def dispatch(
+        self, request: Request, call_next: RequestResponseEndpoint
+    ) -> Response:
+        if self._tracker is None:
+            return await self._dispatch_inner(request, call_next)
+        self._tracker.request_started()
+        try:
+            return await self._dispatch_inner(request, call_next)
+        finally:
+            self._tracker.request_finished()
+
+    async def _dispatch_inner(
         self, request: Request, call_next: RequestResponseEndpoint
     ) -> Response:
         host = (request.headers.get("host") or "").lower()
