@@ -111,7 +111,10 @@ ignoring costs nothing. This section pins the mechanics.
   `i`/`f`/`g`/`o`/`n` and the holding/pane keys unchanged. Keymap
   invariant made explicit by the remap: app.js dispatches on first
   key match with no context filter, so every key is globally unique
-  across the table — pinned by test.)*
+  across the table — pinned by test.)* *(Amended 2026-07-17, item 7 —
+  §11 Y-13: `p` opens the bucket-context pane on the Bucket page
+  (§4.5); `p` was unbound, so the global-uniqueness invariant holds.
+  On Detail the pane remains `i` — one pane vocabulary, two contexts.)*
 - **Arm-then-confirm, never modal-confirm** (carried): a resolution
   key **arms** the action bar — it shows exactly what will run (verb,
   id, destination, note present/absent) and `Enter` executes (a POST),
@@ -190,6 +193,15 @@ ignoring costs nothing. This section pins the mechanics.
   selection within the expanded view; approve arms
   `route <survivor> --collapse <cluster-id>` (08 §7 pin, consumed
   verbatim).
+- **Bucket pane** *(added 2026-07-17, item 7 — §11 Y-13)*: `p` splits
+  the Bucket page exactly as `i` splits Detail (§2.4's layout,
+  generalized): left = the grouped record list (live), right = the
+  agent pane (§4) started with **bucket context** (§4.5's context
+  pin). The bucket session answers questions about the queue and may
+  propose resolutions on any record in the bucket via the §4.5
+  proposal tool; it holds **zero write allowance** (§4.3 as amended —
+  record editing belongs to the record pane). `Esc`/`q`/`r` behave as
+  on the Detail split.
 - **Bulk collapse** (carried verbatim, P1-1): a homogeneous
   already-canon group renders as a single collapsible decision row
   ("N already-canon records — acknowledge all as canon"), arming a loop
@@ -275,7 +287,10 @@ keys stay live during iteration — arming works at any time, and
 executing a resolution on the record under iteration auto-interrupts
 the session first (the serialization rule, §3; P1-4 carried):
 adjudication never waits for the agent to *finish*, only for its
-bounded interrupt.
+bounded interrupt. *(Amended 2026-07-17, item 7 — §11 Y-13: the pane
+agent may itself propose a resolution via §4.5's tool; the proposal
+renders as the SAME armed action bar the keys arm — one consent
+surface, whoever suggested the verb.)*
 
 ## 3. Process & data architecture
 
@@ -459,14 +474,28 @@ pattern; no client-side markdown dependency).
   Iterates: adjudication context is small and rebuilt from files, and
   a stale session's view of edited files is a liability. Session
   persistence off (SDK option; verified at build — these ephemeral
-  sessions must not pollute resume lists).
+  sessions must not pollute resume lists). *(Amended 2026-07-17,
+  item 7 — §11 Y-13: the bucket pane (§2.2) is the same lifecycle —
+  fresh session per open, ephemeral transcript, same engine, same
+  caps — differing only in its first-message context (§4.5) and its
+  zero write allowance (§4.3). "One live session at a time" below
+  covers BOTH variants: bucket pane and record pane never coexist;
+  opening either while the other runs takes the existing armed
+  interrupt prompt.)*
 - **Prompt structure** (carried, P1-12): system prompt = the
   **compiled doctrine** — `routing-doctrine.md` (single source, 08 §1;
   one file, three loaders) + the **pane charter** appendix (§4.3
   rendered as prose, tracked:
-  `plugins/self-learn/skills/self-learn/references/pane-charter.md`).
+  `plugins/self-learn/skills/self-learn/references/pane-charter.md`)
+  *(+ third source added 2026-07-17, item 7 — §11 Y-13: the
+  **surface model**, tracked
+  `plugins/self-learn/skills/self-learn/references/pane-surface-model.md`
+  — what the buckets/scopes/verbs/screens are and what the human
+  sees, authored in the routing-doctrine §8 register per Y-9, so
+  "talk to me about my buckets and routing" works without the agent
+  rediscovering the system each session)*.
   Compilation is a runtime concat to `<cache>/pane-doctrine.md`
-  (cache dir per §11 Y-3), re-concat when either source's mtime
+  (cache dir per §11 Y-3), re-concat when any source's mtime
   changes; the compiled artifact is cache, never tracked. Passed to the SDK as its system-prompt option (byte-stable
   across sessions by construction). **`setting_sources` explicitly
   `[]`** — no CLAUDE.md/skills/hooks ride in. This pin is load-bearing
@@ -559,15 +588,32 @@ subscription auth):
   vector §3 closes), and `Write`+`Edit` on `proposals/lrn-<id>.yaml` /
   `proposals/lrn-<id>.diff` (proposals may not exist yet) —
   absolute-path checks in the callback, no wildcards beyond the id's
-  own siblings.
+  own siblings. *(Amended 2026-07-17, item 7 — §11 Y-13: this write
+  allowance is the RECORD session's. A **bucket session (§2.2) holds
+  zero write allowance** — it binds no single item, so there are no
+  "item's own files"; the callback denies every write with a reason
+  that names the record pane as the venue for edits.)*
 - **Denied, structurally**: `Bash` (with it, every write restriction
   is void — E-18), `Task`, `WebSearch`, `WebFetch`, MCP (strict MCP
   config with none configured), everything else not allowed above.
-  `cwd` = the bucket root.
-- **No path to route** (07 §4, P1): the resolution verbs are not
-  tools, the CLI binary is unreachable without Bash, and approval is a
-  POST from the human's window calling the verb from server code.
-  Proposer ≠ approver, by construction.
+  `cwd` = the bucket root. *(Amended 2026-07-17, item 7 — §11 Y-13:
+  the strict MCP config now carries exactly ONE entry — the
+  server's own in-process tool server (`create_sdk_mcp_server`,
+  present on the pinned SDK — verified on installed 0.2.121 at
+  drafting) exposing exactly one tool, §4.5's `propose_verb`. It runs
+  in the server's process; there is no external transport. Every
+  other MCP surface stays denied. The callback's allow-rule matches
+  the tool's fully-qualified name exactly; `allowed_tools` stays
+  empty (footgun B), and T-B must prove the tool call routes through
+  the callback on the resolved SDK version.)*
+- **No path to EXECUTE a verb** *(amended 2026-07-17, item 7 — §11
+  Y-13; previously "No path to route")* (07 §4, P1): the resolution
+  verbs are not tools, the CLI binary is unreachable without Bash,
+  and approval is a POST from the human's window calling the verb
+  from server code. §4.5's `propose_verb` is a path to *request*, not
+  execute: its entire effect is rendering the armed consent bar to
+  the human; the runner is invoked only by the human's confirm POST.
+  Proposer ≠ approver, by construction — unchanged.
 - **Post-iterate stamping and scanning** (carried verbatim —
   P1-3/P2-1/M2-21 closures): anything the pane agent writes into a
   proposal is unstamped by definition (models cannot compute
@@ -610,6 +656,74 @@ subscription auth):
 `SELF_LEARN_PANE_MAX_TURNS` · `SELF_LEARN_PANE_ENGINE` (`sdk` |
 `cli`, default `sdk`; `cli` → exit "engine not built — 09 §4.1").
 Nothing else in v1; no config file.
+
+### 4.5 Verb proposals from the pane *(added 2026-07-17 — feedback round 1 item 7; §11 Y-13 is the register entry)*
+
+The pane agent can **request** a resolution; the human's standing
+arm/confirm bar is the consent surface; the runner remains the single
+mutation seam. Everything below is one tool, one bar, one POST.
+
+- **The tool.** One in-process tool, `propose_verb`, served by the
+  UI server's own SDK MCP server (§4.3 as amended — no external
+  transport; the handler runs in server code). Signature:
+  `propose_verb(verb, record_id, dest?, note?, until?)`.
+  **Proposable verb set, v1 (closed list):** `route` (with optional
+  `dest` from 02 §1's pinned enum — the VERB stays the enforcer of
+  structural validity, e.g. a `hook` dest without stored script bytes
+  refuses at the verb and the refusal renders verbatim, §5), `reject`
+  (optional `note`), `defer` (optional `until`, ISO date), `graduate`.
+  **Excluded, dated:** `host add` (Y-11's no-agent-path pin —
+  the agent must never widen its own read scope or mint write
+  targets; the design brief predated that pin and is corrected by
+  this line); `route --collapse` (cluster consent has its own
+  expanded-row survivor flow, and a pane proposal binding cluster
+  state adds serialization surface v1 doesn't need); the telemetry
+  verbs (`confirm-recurrence`, `followup done`, `link contradicts` —
+  Y-4/Y-6/Y-8 rows are their consent surfaces). Extending the set is
+  a dated edit to this list, never a code-only change.
+- **Server-side validation, before anything renders.** The handler
+  validates: verb in the closed list; `record_id` resolves to a
+  PENDING record **in the session's own scope** — the record session
+  may name only its own record; a bucket session may name any pending
+  record in its bucket; `dest` in the pinned enum; `until` parses.
+  Any failure returns a refusal string to the agent (it can correct
+  itself or ask the human) and renders nothing.
+- **One proposal at a time — refuse, never replace.** While a
+  pane-proposed bar is armed, further `propose_verb` calls refuse
+  with "a proposal is already awaiting the human". Rationale: a
+  replace rule would let the bar's content change between the
+  human's read and their Enter — what-you-see-is-what-you-confirm is
+  the arm/confirm spine's whole point. (Judgment row, 10 §4.)
+- **Rendering.** A valid proposal renders the **existing**
+  `.action-bar[data-armed]` contract in the pane's proposal-bar
+  region (Detail: the standing action bar; Bucket: a proposal bar
+  adjacent to the pane) — verb, the record's human line (Y-9), id as
+  trailing metadata, destination, note/date — assembled from the
+  SERVER-validated args, never echoed agent prose. The armed-state
+  exclusivity rule (Y-11 build pin: an armed bar inerts every other
+  bar's triggers) applies unchanged. The transcript logs only that a
+  proposal was made (the `tool_use` event line); the bar carries the
+  consent. SSE gains one envelope type, `pane_proposal`, that
+  triggers the bar swap on connected pages.
+- **Confirm / cancel.** `Enter` on the armed bar POSTs from the
+  human's window through the same routes every human-armed bar uses;
+  the runner executes the verb with all standing rules — serialized,
+  scan/refusal path, and **interrupt-first**: a confirmed resolution
+  on the record under active iteration interrupts the session before
+  the verb runs (§3, P1-4 — yes, this means confirming the pane's own
+  proposal ends the pane session; the transcript's final line says
+  so in plain words). Any other key disarms, exactly like every
+  armed bar. The tool's return to the agent is immediate and honest:
+  "rendered — the human decides; you will not be notified of a
+  cancel." An executed verb surfaces to a still-live session the way
+  every external mutation does (file events, or the interrupt).
+- **What this does NOT change.** Session-end `proposal validate`
+  (§4.3) — unchanged; bucket sessions write nothing so they add no
+  validate obligation (confirmed verbs scan in-verb regardless,
+  P2-7). Cross-bucket batch instructions ("route everything older
+  than 30 days") stay out of v1 — each proposal is one record, one
+  bar, one Enter. No auto-confirm, no trusted-verb list, no consent
+  bypass of any kind.
 
 ## 5. Error handling & degradation
 
@@ -992,6 +1106,43 @@ removed the last competing workstream — the build gate is open.*
   (no dedicated key). No charts, no scores, no derived numbers the
   CLI didn't compute (04 counted-not-modeled; §8 amended in place).
 
+- **Y-13 · Agentic chat panes with verb proposals (feedback round 1
+  item 7 — G-3's second act; design brief
+  `feedback/2026-07-17-chat-panes-design-brief.md`).** The user's
+  directive, near-verbatim: a chat window on Bucket AND per-record,
+  system-aware ("the contexts it should be ready to talk to me
+  about — my buckets, the lesson, routing"), and able to act
+  ("shouldn't just be a chat bot. if i tell it to route to a
+  different bucket, for example, it should be able to do that").
+  **Invariant treatment: refines, never repeals, "only the human
+  routes"** — the agent gains a path to REQUEST (one tool that
+  renders the standing armed bar), never a path to EXECUTE (the verb
+  runs only off the human's confirm POST); 07 §3's bullet carries the
+  dated refinement note. Normative mechanism lives at §4.5; consuming
+  amendments: §1 (`p` key), §2.2 (bucket pane), §2.4 (proposal bar on
+  the iterate split), §4.2 (surface-model third prompt source; bucket
+  session = same lifecycle), §4.3 (single in-process MCP tool server;
+  "no path to execute"; bucket sessions hold zero write allowance).
+  Decisions of record, each dated here: **(1)** proposable set =
+  route/reject/defer/graduate ONLY — `host add` excluded (Y-11's
+  no-agent-path pin overrides the brief's suggestion), collapse and
+  the telemetry verbs excluded v1; **(2)** refuse-not-replace while
+  a proposal is armed (what-you-see-is-what-you-confirm); **(3)** ONE
+  live session globally across both pane variants (the brief's
+  default posture, adopted; revisit only on felt cramping in use);
+  **(4)** bucket sessions read-and-propose only; **(5)** bucket-pane
+  first-message context = bucket summary + grouped pending rows
+  (leading human line per Y-9, id as metadata, destination,
+  freshness, deferred/cluster tags), capped at 50 rows with an
+  honest truncation line — ambiguity about which record an
+  instruction means is a clarifying question, never a guess
+  (doctrine §8); **(6)** mechanism grounded empirically at drafting:
+  `tool`/`create_sdk_mcp_server`/`mcp_servers` all present on
+  installed SDK 0.2.121 — T-B must still prove the callback sees the
+  tool call on the resolved build version (footgun B lineage).
+  Substrate: NO new CLI fields — the pane consumes `list --json`
+  shapes the surface already reads; the surface-model reference file
+  is new tracked prose (10 U5's authoring task grows it).
 **Substrate edits this set requires elsewhere** (same discipline as
 §10 — until landed, this list is authoritative; corrected after gate
 zero 2026-07-17 against the live CLI): **08 §1** dated edit — the
