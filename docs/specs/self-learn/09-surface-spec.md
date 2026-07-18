@@ -317,6 +317,50 @@ permission surface of §4.3).
   socket/takeover subsystem of the TUI revision is deleted, not
   ported. Multiple windows/tabs are legal concurrent readers; mutating
   actions serialize in the verb runner regardless of origin.
+  *(Amended 2026-07-18 — §11 Y-14; reworked same day after its own
+  blind spec review, findings folded in place: residency is now
+  **resident while in use**, not resident-forever. The server
+  self-monitors an idle predicate — ALL of: zero SSE subscribers;
+  zero in-flight HTTP requests; the verb runner between verbs; no
+  live pane session in an INTERRUPTIBLE state (starting / streaming
+  / interrupting — an agent mid-turn is work-in-flight; a session
+  parked at awaiting-input does NOT block, see the teardown line
+  below); and no HTTP request COMPLETION for
+  `SELF_LEARN_UI_IDLE_EXIT_SECONDS` seconds (the request clock
+  stamps at completion, never arrival — an in-flight bulk loop or
+  long mine run must not age toward idleness while it works; the
+  in-flight-zero leg is the belt for the same class) — sampled by
+  one in-process task on the SAME event loop as the request
+  handlers, which decides and signals in one loop step (no `await`
+  between predicate read and signal — nothing can interleave).
+  When the predicate holds, the monitor first tears down any parked
+  (awaiting-input / ended) pane session through the standard
+  teardown (which clears the proposal slot via §4.5's clear-set),
+  then exits CLEANLY: SIGTERM to self → uvicorn graceful shutdown →
+  exit 0. **Teardown and exit never share a step** (delta R1): the
+  teardown awaits engine calls, so a sample that finds a parked
+  session tears it down and DEFERS the exit decision — the signal
+  fires only on a later sample whose full predicate read reaches
+  the signal with no `await` in between (a request completing
+  during a teardown must be seen before any exit). Under the unit's existing `Restart=on-failure`, a clean
+  exit stays down; the launcher's idempotent `systemctl --user
+  start` — already step 1 of `self-learn-ui-open` — is the
+  resurrection path, and crash-restart behavior is unchanged.
+  **Arming rule (systemd-absent playbook preserved by
+  construction):** self-exit arms by default ONLY under the unit
+  (detected via systemd's `INVOCATION_ID`); a foreground
+  `self-learn-ui serve` (10 §5's documented fallback, where no
+  launcher resurrection exists) stays resident unless the env var
+  is set explicitly. The single-instance invariant is untouched: at
+  most one server; there is now legitimately zero. In-memory
+  casualties of an idle exit, honestly enumerated: the proposal
+  slot and the parked pane snapshot (both already pinned ephemeral
+  — 09 §4.2 "closing the split discards it; outcomes live in
+  files"), AND the scan-blocked badge map (§4.3 carries the dated
+  acceptance: the badge is advisory and does not survive an idle
+  exit; the verbs' own full-file scan — P2-7 — is the enforcer).
+  With zero SSE clients and no requests for the whole window, no
+  page was open to be reading any of them.)*
 - **Security surface** (new obligation the TUI never had; priced in
   the problem-space map C6, accepted under binding V4): bind-local;
   reject requests whose `Host` isn't `127.0.0.1:<port>`/`localhost:
@@ -411,6 +455,30 @@ permission surface of §4.3).
   **first id** in its `record_ids`; an id already resolved by click
   time lands on that record's Bucket page with a "resolved elsewhere"
   banner, or Front if the bucket can't be derived.
+  *(Amended 2026-07-18 — §11 Y-14; reworked same day at the blind
+  spec review: the launcher gains a **readiness wait**, closing the
+  cold-start 403 race that idle-exit turns from once-per-boot into
+  routine: `systemctl --user start` returns when the process
+  spawns, BEFORE the server process mints and writes the new
+  per-start token (app build code writes it, then uvicorn binds) —
+  a launcher that reads the token file immediately opens a
+  stale-token URL and lands on the 403 page. Pinned sequence:
+  snapshot service state and current token bytes BEFORE starting;
+  if the snapshot state was **anything other than `active`**
+  (inactive, failed, activating, deactivating — a click landing in
+  an idle-exit shutdown drain is a cold start too) AND the start
+  command succeeded, poll inside one ≤5 s budget for BOTH: token
+  content that differs from the snapshot (or first appears), THEN a
+  successful TCP connect on `127.0.0.1:<port>` (the token is
+  written before the bind — freshness alone can release into
+  connection-refused). An unchanged token WITH a successful connect
+  also counts as ready (delta R2, the double-click case: a second
+  launcher snapshots the already-fresh token and would otherwise
+  burn the full budget waiting for a change that never comes). On
+  timeout, proceed with whatever is
+  readable — the existing 403-page-names-the-launcher degradation,
+  not a new failure mode. A warm (`active`) service skips the wait
+  entirely; systemd-absent hosts never enter it.)*
 - **Notifications** (sender side; carried): M2's pinned notifier is
   unchanged until G-3 lands. At G-3, the emission point swaps to the
   detached helper `self-learn-notify` (`notify-send -A open --wait`,
@@ -632,7 +700,11 @@ subscription auth):
   codes 0 clean · 1 schema-invalid · 2 scan hit — never stderr
   parsing; a scan hit badges the item "scan-blocked" until a
   re-validate exits 0, and resolution verbs refuse on their own
-  full-file scan regardless (P2-7 — the no-bypass backstop). The verb
+  full-file scan regardless (P2-7 — the no-bypass backstop).
+  *(Dated acceptance 2026-07-18 — §11 Y-14: the badge map is
+  in-memory and does not survive an idle exit, which Y-14 makes
+  routine rather than rare; the badge is advisory UI, and P2-7's
+  in-verb scan is the enforcer that survives every restart.)* The verb
   commits nothing. Mid-session `file_changed` events trigger re-render
   only, never validation. Residual, named (W-8, 2026-07-12; mechanism
   updated 2026-07-17): between an agent write and the session-end
@@ -662,7 +734,12 @@ subscription auth):
 `self-learn-ui-open`, never by the server; X-1, 2026-07-13) ·
 `SELF_LEARN_PANE_MODEL` · `SELF_LEARN_PANE_BUDGET_USD` ·
 `SELF_LEARN_PANE_MAX_TURNS` · `SELF_LEARN_PANE_ENGINE` (`sdk` |
-`cli`, default `sdk`; `cli` → exit "engine not built — 09 §4.1").
+`cli`, default `sdk`; `cli` → exit "engine not built — 09 §4.1") ·
+`SELF_LEARN_UI_IDLE_EXIT_SECONDS` *(added 2026-07-18 — §11 Y-14:
+idle self-exit window, seconds; default `600` under the systemd
+unit, unarmed in a foreground `serve` unless set explicitly; any
+value ≤ `0` disables self-exit — pinned at the review, negatives
+never error)*.
 Nothing else in v1; no config file.
 
 ### 4.5 Verb proposals from the pane *(added 2026-07-17 — feedback round 1 item 7; §11 Y-13 is the register entry)*
@@ -1217,6 +1294,50 @@ removed the last competing workstream — the build gate is open.*
   shapes the surface already reads; the surface-model reference file
   is new tracked prose (authored at 10 U12 — corrected at the
   rework; the first draft said U5, a task already closed).
+
+- **Y-14 · Idle lifecycle — resident while in use** *(added
+  2026-07-18; the queued idle-lifecycle refinement on the ratified
+  roadmap: UI-completion → packaging, Go parked. Reworked the same
+  day after its own blind spec review returned NOT SOUND — 4 MAJOR
+  / 2 MINOR, all folded: the awaiting-input hole, the request-clock
+  stamp point, the honest casualty list, the systemd-absent arming
+  rule, the not-`active` cold-start condition, the TCP readiness
+  probe)*. The user's requirement, near-verbatim: the server should
+  "live and die appropriately for users so they don't have to
+  manage it themselves". Decisions of record: **(1)** the server
+  self-exits cleanly on a five-legged idle predicate (normative
+  text at §3's server bullet: no SSE subscribers, no in-flight
+  requests, runner between verbs, no INTERRUPTIBLE pane session,
+  request-completion clock aged past the window); the window is
+  `SELF_LEARN_UI_IDLE_EXIT_SECONDS` (default 600; ≤0 disables —
+  §4.4); **(2)** exit mechanism is SIGTERM-to-self → uvicorn
+  graceful shutdown → exit 0 — no new systemd semantics:
+  `Restart=on-failure` already reads a clean exit as "stay down"
+  and crash-restart is unchanged; **(3)** the launcher — already
+  the only start path a user touches (notification click,
+  `.desktop` entry) — is the resurrection path, and gains the
+  readiness wait (§3's launcher bullet: fresh token THEN TCP
+  connect, cold ⟺ snapshot state not `active`), which also closes
+  a PRE-EXISTING cold-boot 403 race the resident posture had been
+  masking; **(4)** systemd **socket activation was considered and
+  rejected**: it does not fix the token race (the token is written
+  by app code, not handed off with a socket), adds unit plumbing to
+  a file users install by symlink, and the launcher already owns
+  cold-start; **(5 — the review's F1 judgment call, resolved toward
+  the user's requirement):** only an INTERRUPTIBLE session
+  (starting/streaming/interrupting) blocks exit; a session parked
+  at awaiting-input with zero clients for the full window is torn
+  down through the standard teardown before exit — 09 §4.2 already
+  pins the transcript as ephemeral, and the alternative (any
+  non-ENDED session blocks) silently re-creates resident-forever
+  for anyone who ever iterates and closes the window without `q`,
+  which is the most common walk-away path; **(6)** self-exit arms
+  only under the systemd unit (`INVOCATION_ID` detection) —
+  foreground `serve` on systemd-absent hosts (10 §5) has no
+  resurrection path and stays resident unless the env var is set
+  explicitly. Substrate: no CLI changes, no storage changes; one
+  env var, one unit-comment re-word, launcher edit, ~60 lines of
+  server code (10 §3 U13).
 **Substrate edits this set requires elsewhere** (same discipline as
 §10 — until landed, this list is authoritative; corrected after gate
 zero 2026-07-17 against the live CLI): **08 §1** dated edit — the

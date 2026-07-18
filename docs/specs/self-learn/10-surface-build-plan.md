@@ -360,6 +360,50 @@ in brackets.
   bucket-pane session proposes a defer on a seeded record and the
   human confirm executes it (logged in `ui-trials.md`).
 
+- **U13 · Idle lifecycle (resident while in use)** [U9] *(added
+  2026-07-18 — 09 §3/§4.4/§11 Y-14 as reworked at their own blind
+  review; ships as its own small gated cycle)*: the in-server idle
+  monitor task (~30 s sample; the five predicate legs read the two
+  hubs' subscriber counts, a middleware-maintained in-flight
+  request counter, the runner's busy state, the pane manager's
+  INTERRUPTIBLE-state check, and a middleware-stamped
+  last-request-COMPLETION monotonic clock; the monitor runs on the
+  request event loop and decides-then-signals in one loop step — no
+  `await` between predicate read and signal) + parked-pane teardown
+  before clean self-exit (SIGTERM to self);
+  `SELF_LEARN_UI_IDLE_EXIT_SECONDS` through `EnvConfig` (≤0 ⇒
+  disabled — negatives pinned, never an error) with the
+  `INVOCATION_ID` arming rule; the launcher's readiness wait
+  (snapshot state + token bytes before `systemctl --user start`;
+  cold ⟺ snapshot not `active`; one ≤5 s budget: fresh token THEN
+  TCP connect on the port; timeout degrades to today's 403 path);
+  the unit-file header comment re-worded from "resident, not
+  one-shot" to the Y-14 posture (incl. a note that `enable --now`
+  boot-starts now idle out — harmless). *Tests:* predicate unit
+  tests with injected clock and exit callback (never a real SIGTERM
+  in-suite), covering the awaiting-input-tears-down case, the
+  in-flight-long-request case (clock stamps at completion), each
+  leg blocking alone, the teardown-defers-exit case (a request
+  completing during a parked-session teardown blocks the signal —
+  delta R1), and the in-flight counter decrementing in a `finally`
+  (a client-disconnect-cancelled handler must never leak a
+  permanent in-flight count — delta R3); monitor task lifecycle
+  (armed only per the rule, cancelled at shutdown); engine
+  `close()` idempotent against already-closed parked sessions
+  (delta R4); launcher readiness-wait branches in the hermetic-PATH
+  harness (warm-service skip, cold-start fresh-token+connect,
+  not-`active`-but-not-`inactive` snapshot states,
+  token-unchanged-but-connect-succeeds counted as early success —
+  the double-click case, delta R2 — and cold-start timeout
+  degradation). *DoD:* live
+  trial logged in `ui-trials.md` — with a shortened idle window:
+  (a) close all pages → the service exits 0 and lands inactive
+  (never failed); (b) `self-learn-ui-open` cold-starts it and opens
+  a tokened page with no 403; (c) Iterate → result → close window
+  without `q` → server still exits (the F1 path); (d) a launcher
+  click attempted during the shutdown drain, outcome logged even if
+  it is the accepted 403 degradation.
+
 Parallelism: superseded 2026-07-17 by **§8 — the parallel execution
 plan** (tracks, file-ownership partition, join points, blockers).
 Polish backlog (explicitly deferred, not silently dropped): `proposal
