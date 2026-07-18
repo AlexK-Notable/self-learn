@@ -14,6 +14,8 @@ from self_learn_ui.models import (
     PARAMETER_FREE_DESTINATIONS,
     PREVIEW_HONESTY_CAPTION,
     build_detail_model,
+    correct_destination,
+    destinations_for_scope,
 )
 
 NOW = datetime(2026, 7, 17, 12, 0, 0, tzinfo=timezone.utc)
@@ -253,11 +255,104 @@ class TestContradicts:
 
 
 class TestDestinationCycle:
-    def test_cycle_is_always_the_parameter_free_set(self):
+    def test_skill_scope_cycle_is_the_full_parameter_free_set(self):
+        # Regression pin (feedback round 2 item 3): scope-filtering must
+        # not change what a skill-scoped record offers.
         model = _build(_item())
         assert model.destination_cycle == PARAMETER_FREE_DESTINATIONS
         assert "hook" not in model.destination_cycle
         assert "new-skill" not in model.destination_cycle
+
+    def test_project_scope_cycle_never_offers_skill_md(self):
+        model = _build(_item(scope="project"), scope="project")
+        assert model.destination_cycle == ("claude-md", "reference")
+
+    def test_user_scope_cycle_is_claude_md_only(self):
+        model = _build(_item(scope="user"), scope="user")
+        assert model.destination_cycle == ("claude-md",)
+
+
+class TestDestinationsForScope:
+    def test_cli_scope_rules_projected_onto_the_parameter_free_set(self):
+        # Ground truth: the route verb's target resolver — skill-md needs
+        # skill:<name> scope; reference needs skill or project; claude-md
+        # is valid everywhere.
+        assert destinations_for_scope("skill") == PARAMETER_FREE_DESTINATIONS
+        assert destinations_for_scope("project") == ("claude-md", "reference")
+        assert destinations_for_scope("user") == ("claude-md",)
+
+    def test_unknown_scope_degrades_to_the_everywhere_valid_singleton(self):
+        assert destinations_for_scope("unknown") == ("claude-md",)
+
+
+class TestDestinationDefault:
+    """09 §2.3 as amended 2026-07-18 (feedback round 2 item 3): the armed
+    default is always a destination the record's scope can accept, and a
+    correction is explained in plain words."""
+
+    def test_scope_valid_suggestion_passes_through_without_note(self):
+        proposal = {"destination": "skill-md", "rationale": "x"}
+        model = _build(
+            _item(has_proposal=True, destination="skill-md"), proposal=proposal
+        )
+        assert model.destination_default == "skill-md"
+        assert model.destination_note is None
+
+    def test_skill_md_on_project_corrects_to_claude_md_with_note(self):
+        # The live 2026-07-17 stranding: skill-md proposed on a project
+        # record armed, then the CLI refused after the human's confirm.
+        proposal = {"destination": "skill-md", "rationale": "x"}
+        model = _build(
+            _item(scope="project", has_proposal=True, destination="skill-md"),
+            proposal=proposal,
+            scope="project",
+        )
+        assert model.destination_default == "claude-md"
+        assert model.destination_note is not None
+        assert "skill-md" in model.destination_note
+        assert "corrected to claude-md" in model.destination_note
+        # Y-9 register: human words — no scope slugs, no CLI jargon.
+        assert "scope" not in model.destination_note
+
+    def test_reference_on_user_corrects_to_claude_md_with_note(self):
+        proposal = {"destination": "reference", "rationale": "x"}
+        model = _build(
+            _item(scope="user", has_proposal=True, destination="reference"),
+            proposal=proposal,
+            scope="user",
+        )
+        assert model.destination_default == "claude-md"
+        assert model.destination_note is not None
+        assert "reference" in model.destination_note
+
+    def test_hook_and_new_skill_stay_the_verbs_to_enforce(self):
+        # No dest armed at all — route reads the proposal's own
+        # destination and remains the enforcer of structural validity.
+        for dest in ("hook", "new-skill"):
+            proposal = {"destination": dest, "rationale": "x"}
+            model = _build(
+                _item(scope="project", has_proposal=True, destination=dest),
+                proposal=proposal,
+                scope="project",
+            )
+            assert model.destination_default is None, dest
+            assert model.destination_note is None, dest
+
+    def test_no_analysis_no_default_no_note(self):
+        model = _build(_item())
+        assert model.destination_default is None
+        assert model.destination_note is None
+
+    def test_correct_destination_is_the_one_shared_rule(self):
+        # The bucket rows and Detail thread the same function — displayed
+        # == armed == executed on both surfaces.
+        assert correct_destination("project", "skill-md") == (
+            "claude-md",
+            "the analyst suggested skill-md, which only exists for a "
+            "skill's own lessons — corrected to claude-md",
+        )
+        assert correct_destination("skill", "skill-md") == ("skill-md", None)
+        assert correct_destination("user", None) == (None, None)
 
 
 class TestBadges:

@@ -29,7 +29,6 @@ from starlette.responses import StreamingResponse
 
 from . import ledger, models, pane, proposals, rendering
 from .keymap import keymap_as_dicts, keymap_json
-from .models import PARAMETER_FREE_DESTINATIONS
 from .sse import envelope_applying, envelope_banner, envelope_bulk_progress, event_stream
 
 router = APIRouter()
@@ -108,15 +107,20 @@ def build_argv(
     return argv
 
 
-def cycle_destination(current: str | None) -> str:
-    """09 §2.3's `o` pin: cycle among :data:`PARAMETER_FREE_DESTINATIONS`
+def cycle_destination(current: str | None, scope: str) -> str:
+    """09 §2.3's `o` pin: cycle among the parameter-free destinations
     ONLY — ``new-skill``/``hook`` are structurally unreachable from this
     function, which is what "the cycle skips them" means in practice
-    (there is nothing to skip — they were never in the cycle set)."""
-    if current not in PARAMETER_FREE_DESTINATIONS:
-        return PARAMETER_FREE_DESTINATIONS[0]
-    idx = PARAMETER_FREE_DESTINATIONS.index(current)
-    return PARAMETER_FREE_DESTINATIONS[(idx + 1) % len(PARAMETER_FREE_DESTINATIONS)]
+    (there is nothing to skip — they were never in the cycle set). As
+    amended 2026-07-18 (feedback round 2 item 3) the set is additionally
+    scope-filtered (:func:`models.destinations_for_scope`) — the CLI's
+    own scope rules, honored BEFORE the human can arm anything: a
+    project/user record can never cycle onto skill-md."""
+    cycle = models.destinations_for_scope(scope)
+    if current not in cycle:
+        return cycle[0]
+    idx = cycle.index(current)
+    return cycle[(idx + 1) % len(cycle)]
 
 
 def next_record_url(home: Path, bucket_name: str, resolved_id: str) -> str:
@@ -579,6 +583,11 @@ def _unarmed_context(
         "record_id": record_id,
         "dom_id": _dom_id(kind, record_id, target),
         "dest": dest,
+        # The scope-correction note (09 §2.3 as amended 2026-07-18) is
+        # threaded only at initial page render, like already_canon below
+        # — a round-trip drops the explanation, never the correction:
+        # `dest` itself is always a scope-valid value on every path.
+        "dest_note": None,
         "event": event,
         "target": target,
         # P1-9b: `g` is always available, highlighted (affordance, not
@@ -655,6 +664,19 @@ def action_arm(
     return _render(request, "partials/action_bar.html", ctx)
 
 
+def _scope_corrected_dest(request: Request, record_id: str, dest: str | None) -> str | None:
+    """Client-echoed dest values re-enter ARMABLE renders (disarm, a
+    failed confirm's re-render) — re-derive validity server-side so
+    every unarmed bar's hidden field is scope-valid by construction,
+    never by trusting the echo (review 2026-07-18 F2). Scope from the
+    ledger, never a client field; the corrected value is what renders
+    AND arms (displayed == armed == executed)."""
+    location = ledger.locate_record(_home(request), record_id)
+    scope = location.scope if location is not None else "user"
+    corrected, _note = models.correct_destination(scope, dest or None)
+    return corrected
+
+
 @router.post("/record/{record_id}/action/disarm", response_class=HTMLResponse)
 def action_disarm(
     request: Request,
@@ -664,15 +686,33 @@ def action_disarm(
     event: str | None = Form(None),
     target: str | None = Form(None),
 ) -> HTMLResponse:
+    dest = _scope_corrected_dest(request, record_id, dest)
     ctx = _unarmed_context(kind=kind, record_id=record_id, dest=dest, event=event, target=target)
     return _render(request, "partials/action_bar.html", ctx)
 
 
 @router.post("/record/{record_id}/action/cycle-destination", response_class=HTMLResponse)
 def action_cycle_destination(
-    request: Request, record_id: str, current: str | None = Form(None)
+    request: Request, record_id: str, dest: str | None = Form(None)
 ) -> HTMLResponse:
-    new_dest = cycle_destination(current or None)
+    # The Form param is `dest` because that is the field the rendered
+    # form actually carries (action_bar.html's hidden input, posted via
+    # hx-include) — review 2026-07-18 F1: the handler read a `current`
+    # field no template sent, so the cycle never advanced in a browser.
+    # test_routes.py's template-truth test drives this route with the
+    # rendered form's own fields so that class of mismatch fails loudly.
+    #
+    # Scope from the ledger, never a client field (09 §2.3 as amended
+    # 2026-07-18). An unlocatable record degrades to "user" — its cycle
+    # is the everywhere-valid claude-md singleton, so even this fallback
+    # can never offer a destination the CLI would refuse on scope.
+    # Located-but-RESOLVED is accepted-risk under the stateless-bar
+    # posture (review 2026-07-18 F3): the cycle still renders, and a
+    # later confirm takes the CLI's own refusal path while the SSE
+    # refresh lands the resolved-elsewhere banner (09 §3).
+    location = ledger.locate_record(_home(request), record_id)
+    scope = location.scope if location is not None else "user"
+    new_dest = cycle_destination(dest or None, scope)
     ctx = _unarmed_context(kind="detail", record_id=record_id, dest=new_dest, event=None, target=None)
     return _render(request, "partials/action_bar.html", ctx)
 
@@ -750,7 +790,10 @@ async def action_confirm(
 
     if not result.ok:
         _force_refresh(request, f"record:{record_id}")
-        ctx = _unarmed_context(kind=kind, record_id=record_id, dest=dest, event=event, target=target)
+        # F2: the re-render is armable again — the echoed dest goes back
+        # through the scope rule, same as disarm.
+        corrected = _scope_corrected_dest(request, record_id, dest)
+        ctx = _unarmed_context(kind=kind, record_id=record_id, dest=corrected, event=event, target=target)
         ctx["error"] = result.stderr or f"self-learn {' '.join(argv)} failed"
         return _render(request, "partials/action_bar.html", ctx)
 

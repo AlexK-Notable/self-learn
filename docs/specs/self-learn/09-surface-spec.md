@@ -274,7 +274,19 @@ destination) cycles the destination the armed `route` will pass via
 `claude-md`, `reference`). `new-skill:<name>` and `hook` need
 structure a cycling key cannot supply: reachable via Iterate or the
 CLI directly; the cycle skips them with a footer hint saying so
-(P1-9a, carried). The overridden value renders distinctly (analyst's
+(P1-9a, carried). *(Amended 2026-07-18 — feedback round 2 item 3: the
+cycle is additionally **scope-filtered** to what the route verb's own
+scope rules (02 §1 destination forms, enforced in the CLI's target
+resolver) can accept for THIS record — `skill-md` only for
+skill-scoped records, `reference` only for skill/project, `claude-md`
+everywhere; and when the analyst's suggested destination is
+scope-invalid — the live 2026-07-17 stranding: `skill-md` proposed on
+a project record — the bar presents a corrected valid default plus a
+plain-words note saying what changed and why. The armed bar always
+shows the destination the confirm will execute, byte-identical. No
+posture change: this surfaces the CLI's existing refusals as
+prevention; the error strip stays stderr-verbatim per §5.)* The
+overridden value renders distinctly (analyst's
 suggestion vs. override). `g` is always available on Detail for a
 pending record and *highlighted* when `proposal.already_canon` is set
 (affordance, not qualification logic; P1-9b, carried).
@@ -823,7 +835,14 @@ mutation seam. Everything below is one tool, one bar, one POST.
   may name only its own record; a bucket session may name any pending
   record in its bucket; `dest` in the pinned enum; `until` parses.
   Any failure returns a refusal string to the agent (it can correct
-  itself or ask the human) and renders nothing.
+  itself or ask the human) and renders nothing. *(Amended 2026-07-18 —
+  feedback round 2 item 3, narrowing the same-day F9 clause below:
+  `dest` is also **scope-checked at intake** against the CLI's own
+  scope rules — a `skill-md` proposal on a non-skill record refuses
+  with a teaching string naming the record's scope and the valid
+  alternatives, so an armable-but-impossible proposal never renders.
+  Other structural validity — e.g. a hook dest without stored script
+  bytes — stays the verb's to enforce.)*
 - **One proposal at a time — refuse, never replace.** While a
   proposal slot is occupied (waiting OR armed — see the state pins
   below), further `propose_verb` calls refuse with "a proposal is

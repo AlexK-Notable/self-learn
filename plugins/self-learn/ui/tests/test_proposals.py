@@ -36,6 +36,7 @@ from self_learn_ui.runner import FakeRunner, RunResult
 from support import (
     make_behavior,
     make_env,
+    make_knowledge,
     resolve_record_directly,
     seed_record,
 )
@@ -159,6 +160,69 @@ class TestValidateProposal:
                 sb.ledger, _record_scope(rec), {"verb": "route", "record_id": rec.id, "dest": dest}
             )
             assert isinstance(result, str), dest
+
+    def test_skill_md_refused_for_a_project_record(self, tmp_path: Path) -> None:
+        """09 §4.5 as amended 2026-07-18 (feedback round 2 item 3): dest
+        is scope-checked at intake — the human never sees an
+        armable-but-impossible proposal, and the refusal teaches the
+        agent the valid alternatives."""
+        sb = make_env(tmp_path)
+        rec = make_knowledge(scope="project")
+        seed_record(sb.ledger, rec, project_path=sb.host)
+        scope = SessionScope(kind="record", session_key=rec.id, record_id=rec.id)
+        result = validate_proposal(
+            sb.ledger, scope, {"verb": "route", "record_id": rec.id, "dest": "skill-md"}
+        )
+        assert isinstance(result, str)
+        assert "skill-md only exists for skill-scoped lessons" in result
+        assert "project-scoped" in result
+        assert "claude-md or reference" in result
+
+    def test_skill_md_refused_from_a_bucket_session_too(self, tmp_path: Path) -> None:
+        from self_learn_ui import ledger as ui_ledger
+
+        sb = make_env(tmp_path)
+        rec = make_knowledge(scope="project")
+        seed_record(sb.ledger, rec, project_path=sb.host)
+        loc = ui_ledger.locate_record(sb.ledger, rec.id)
+        assert loc is not None
+        scope = SessionScope(
+            kind="bucket",
+            session_key=pane.bucket_session_key("project", loc.bucket_name),
+            bucket_dir=loc.bucket_dir,
+            bucket_scope="project",
+            bucket_name=loc.bucket_name,
+        )
+        result = validate_proposal(
+            sb.ledger, scope, {"verb": "route", "record_id": rec.id, "dest": "skill-md"}
+        )
+        assert isinstance(result, str)
+        assert "skill-md only exists for skill-scoped lessons" in result
+
+    def test_user_record_refuses_skill_md_and_reference(self, tmp_path: Path) -> None:
+        # The user host is the chezmoi-managed CLAUDE.md alone — no
+        # references dir (the route verb's own refusal, honored at intake).
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="user")
+        seed_record(sb.ledger, rec)
+        scope = SessionScope(kind="record", session_key=rec.id, record_id=rec.id)
+        r1 = validate_proposal(
+            sb.ledger, scope, {"verb": "route", "record_id": rec.id, "dest": "skill-md"}
+        )
+        assert isinstance(r1, str)
+        assert "use claude-md" in r1
+        assert "reference" not in r1  # user scope must not be taught reference
+        r2 = validate_proposal(
+            sb.ledger, scope,
+            {"verb": "route", "record_id": rec.id, "dest": "reference:notes.md"},
+        )
+        assert isinstance(r2, str)
+        assert "reference files live with a skill or project" in r2
+        # claude-md stays proposable everywhere.
+        ok = validate_proposal(
+            sb.ledger, scope, {"verb": "route", "record_id": rec.id, "dest": "claude-md"}
+        )
+        assert isinstance(ok, VerbProposal)
 
     def test_dest_only_on_route_until_only_on_defer(self, tmp_path: Path) -> None:
         sb, (rec,) = _seed(tmp_path)

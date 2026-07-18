@@ -67,6 +67,8 @@ __all__ = [
     "build_card_sections",
     "build_detail_model",
     "build_front_model",
+    "correct_destination",
+    "destinations_for_scope",
     "host_add_command",
     "leading_text",
 ]
@@ -75,6 +77,59 @@ __all__ = [
 #: without extra structure. ``new-skill:<name>`` and ``hook`` need
 #: structure a cycling key cannot supply (reachable via Iterate/CLI).
 PARAMETER_FREE_DESTINATIONS: tuple[str, ...] = ("skill-md", "claude-md", "reference")
+
+#: 09 §2.3 as amended 2026-07-18 (feedback round 2 item 3): the CLI's
+#: own scope rules (the route verb's ``_resolve_target``), projected
+#: onto the parameter-free set — skill-md needs ``skill:<name>`` scope;
+#: reference needs skill or project (the user host is the
+#: chezmoi-managed CLAUDE.md, no references dir); claude-md is valid
+#: for every scope. Keyed by :class:`~self_learn_ui.ledger.RecordLocation`
+#: scope tags; unknown scopes fall back to the everywhere-valid
+#: singleton so the surface can never offer an impossible destination.
+_SCOPE_DESTINATIONS: dict[str, tuple[str, ...]] = {
+    "skill": PARAMETER_FREE_DESTINATIONS,
+    "project": ("claude-md", "reference"),
+    "user": ("claude-md",),
+}
+
+#: Y-9 wording for the corrected-default note: why the analyst's
+#: suggestion cannot land here, in human words (no scope slugs).
+_DEST_CORRECTION_REASONS: dict[str, str] = {
+    "skill-md": "which only exists for a skill's own lessons",
+    "reference": "which needs a skill or project to keep the file in",
+}
+
+
+def destinations_for_scope(scope: str) -> tuple[str, ...]:
+    """The `o`-cycle set for one record's scope (09 §2.3 as amended
+    2026-07-18): only destinations the route verb can actually accept
+    for that scope — prevention, so the confirm can never hand the CLI
+    a structurally impossible ``--dest``."""
+    return _SCOPE_DESTINATIONS.get(scope, ("claude-md",))
+
+
+def correct_destination(
+    scope: str, suggested: str | None
+) -> tuple[str | None, str | None]:
+    """09 §2.3 as amended 2026-07-18 (feedback round 2 item 3): the
+    ``(default destination, plain-words note)`` the action bar presents.
+    A scope-valid suggestion passes through untouched (note ``None``);
+    a parameter-free suggestion the scope makes impossible (the live
+    bug: skill-md proposed on a project record) becomes the scope's
+    first valid destination plus a Y-9 note saying so — the value shown
+    IS the value the arm/confirm executes. ``hook``/``new-skill`` (and
+    no-analysis) stay ``(None, None)``: the route verb reads the
+    proposal's own destination and remains the enforcer of their
+    structural validity."""
+    cycle = destinations_for_scope(scope)
+    if suggested is None or suggested not in PARAMETER_FREE_DESTINATIONS:
+        return None, None
+    if suggested in cycle:
+        return suggested, None
+    corrected = cycle[0]
+    reason = _DEST_CORRECTION_REASONS.get(suggested, "which this lesson's home cannot hold")
+    note = f"the analyst suggested {suggested}, {reason} — corrected to {corrected}"
+    return corrected, note
 
 #: 02 §4's preview-honesty caption (standing, non-hook proposals/diffs).
 PREVIEW_HONESTY_CAPTION = (
@@ -536,6 +591,12 @@ class RecordRow:
     age_days: int
     sightings: int
     destination: str | None
+    #: What the row's action bar arms as ``--dest`` (09 §2.3 as amended
+    #: 2026-07-18): :func:`correct_destination` of ``destination`` —
+    #: never a value the record's scope makes impossible. ``destination``
+    #: above stays the analyst's raw suggestion (grouping/display).
+    destination_default: str | None
+    destination_note: str | None
     deferred: bool
     already_canon: bool
     badges: tuple[Badge, ...]
@@ -628,12 +689,15 @@ def build_bucket_model(
         group_key = _group_key_for(item)
         deferred = _is_deferred(item.get("deferred_until"), now)
         stale = bool(item.get("has_proposal")) and not item.get("proposal_fresh", False)
+        dest_default, dest_note = correct_destination(scope, item.get("destination"))
         row = RecordRow(
             id=rid,
             leading_text=leading_text(proposal, registry, item.get("title", "")),
             age_days=item.get("age_days", 0),
             sightings=item.get("sightings", 1),
             destination=item.get("destination"),
+            destination_default=dest_default,
+            destination_note=dest_note,
             deferred=deferred,
             already_canon=bool(item.get("already_canon")),
             badges=_record_badges(item, deferred, stale),
@@ -748,6 +812,11 @@ class DetailModel:
     why: WhyRegion
     contradicts: tuple[str, ...]
     destination_cycle: tuple[str, ...]
+    #: 09 §2.3 as amended 2026-07-18: what the unarmed bar's hidden dest
+    #: field carries (and so what Approve arms/executes) + the Y-9 note
+    #: shown when the analyst's suggestion was scope-corrected.
+    destination_default: str | None
+    destination_note: str | None
     badges: tuple[Badge, ...]
     host_registered: bool
     host_add_command: str | None
@@ -854,6 +923,7 @@ def build_detail_model(
         badges.append(Badge("unregistered project", "unregistered-host"))
 
     contradicts = tuple((proposal or {}).get("contradicts") or ())
+    dest_default, dest_note = correct_destination(scope, item.get("destination"))
 
     return DetailModel(
         id=record.id,
@@ -865,7 +935,9 @@ def build_detail_model(
         change=_build_change(proposal, diff_text, proposal_raw_text),
         why=_build_why(item, proposal),
         contradicts=contradicts,
-        destination_cycle=PARAMETER_FREE_DESTINATIONS,
+        destination_cycle=destinations_for_scope(scope),
+        destination_default=dest_default,
+        destination_note=dest_note,
         badges=tuple(badges),
         host_registered=host_registered,
         host_add_command=host_add_command,

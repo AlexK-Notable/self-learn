@@ -842,6 +842,15 @@ details[open] > summary {
   flex-basis: 100%;
 }
 
+/* 09 §2.3 (amended 2026-07-18): the scope-correction note — decision
+   support beside the Destination button; informational, not a warning. */
+.dest-note {
+  color: var(--slu-fg-muted);
+  font-size: 0.8rem;
+  margin: 0;
+  flex-basis: 100%;
+}
+
 /* ------------------------------------------------------- detail page --- */
 
 .detail-grid {
