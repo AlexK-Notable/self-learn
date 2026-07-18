@@ -824,6 +824,37 @@ class TestDetailPage:
         r = c.get(f"/record/{rec.id}")
         assert "no analysis yet" in r.text.lower()
 
+    def test_episode_brief_renders_collapsed_below_decision_content(
+        self, tmp_path: Path
+    ) -> None:
+        """09 §2.3 Y-21 / 10 §3 U18: a record carrying '## Episode brief'
+        renders it as a collapsed, expandable block BELOW decision content
+        (Trigger/Instruction/evidence), never inline/above."""
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s", source="session")
+        rec.set_body(
+            rec.body.rstrip("\n")
+            + "\n\n## Episode brief\nTried the quick fix, it broke, so we did it properly.\n"
+        )
+        seed_record(sb.ledger, rec)
+        c, _runner = make_client(sb)
+        r = c.get(f"/record/{rec.id}")
+        assert r.status_code == 200
+        assert 'data-key-action="toggle_brief"' in r.text
+        assert "Tried the quick fix, it broke, so we did it properly." in r.text
+        # never inline/above: the decision content markers precede it
+        assert r.text.index('class="record-body"') < r.text.index("Episode brief (b)")
+        assert r.text.index("Episode brief (b)") > r.text.index("Stop the container first.")
+
+    def test_no_episode_brief_renders_no_block_no_placeholder(self, tmp_path: Path) -> None:
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+        c, _runner = make_client(sb)
+        r = c.get(f"/record/{rec.id}")
+        assert 'data-key-action="toggle_brief"' not in r.text
+        assert "Episode brief" not in r.text
+
 
 # --------------------------------------------------- arm / disarm / confirm
 

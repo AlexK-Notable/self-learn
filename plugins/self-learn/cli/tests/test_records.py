@@ -178,6 +178,50 @@ class TestValidation:
             parse_record(text)
 
 
+class TestEpisodeBriefSection:
+    """02 §1 amendment (10 §3 U18): '## Episode brief' registers as an
+    OPTIONAL body section for both types — no ``required`` weight, and
+    duplicate-guarded like any other registered optional section once it
+    is known to ``_validate_body``."""
+
+    def test_optional_on_behavior_and_round_trips(self):
+        record = make_behavior()
+        record.set_body(
+            record.body.rstrip("\n") + "\n\n## Episode brief\nThe retold story.\n"
+        )
+        text = record.to_text()
+        reparsed = parse_record(text)
+        assert reparsed.to_text() == text
+        assert "## Episode brief" in reparsed.body
+        assert "The retold story." in reparsed.body
+
+    def test_optional_on_knowledge_and_round_trips(self):
+        record = make_knowledge()
+        record.set_body(
+            record.body.rstrip("\n") + "\n\n## Episode brief\nThe retold story.\n"
+        )
+        text = record.to_text()
+        reparsed = parse_record(text)
+        assert reparsed.to_text() == text
+        assert "## Episode brief" in reparsed.body
+
+    def test_absent_is_valid_no_backfill(self):
+        # A mined record without a brief is valid — no required weight,
+        # and pre-amendment records have no brief and stay valid too.
+        record = make_behavior()
+        assert "## Episode brief" not in record.body  # never raises
+
+    def test_duplicate_episode_brief_rejected(self):
+        record = make_behavior()
+        body = (
+            record.body.rstrip("\n")
+            + "\n\n## Episode brief\nFirst telling.\n"
+            + "\n## Episode brief\nSecond telling.\n"
+        )
+        with pytest.raises(ValidationError, match="duplicate optional"):
+            record.set_body(body)
+
+
 class TestTwoLessonRejection:
     def test_two_triggers_rejected(self):
         record = make_behavior()

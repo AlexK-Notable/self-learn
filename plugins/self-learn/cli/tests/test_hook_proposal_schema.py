@@ -195,3 +195,29 @@ class TestStamp:
         write_proposal(env.ledger, record.id, proposal_dict())
         data = read_proposal(stamp_proposal(env.ledger, record.id))
         assert "script" not in data
+
+    def test_episode_brief_excluded_from_generated_hook_script(self, tmp_path):
+        """10 §3 U18 (b) / 02 §1: compiler exclusion extends to the hook
+        compiler — record_title() (the trigger the script generator
+        consumes) walks only the '## Trigger' section, so a record's
+        '## Episode brief' text can never reach the generated script bytes."""
+        marker = "ZZZ-EPISODE-BRIEF-MUST-NOT-LEAK-INTO-HOOK-ZZZ"
+        env = make_env(tmp_path)
+        record = Record.create(
+            type="behavior",
+            scope="skill:s",
+            source="session",
+            kind="anti-pattern",
+            trigger="About to edit `.storage/*.json` while HA is running.",
+            instruction="Stop the container first.",
+        )
+        record.set_body(
+            record.body.rstrip("\n") + f"\n\n## Episode brief\n{marker} happened.\n"
+        )
+        pending = env.ledger / "skills" / "s" / "pending"
+        pending.mkdir(parents=True, exist_ok=True)
+        record.write(pending / f"{record.id}.md")
+        write_proposal(env.ledger, record.id, hook_proposal())
+        data = read_proposal(stamp_proposal(env.ledger, record.id))
+        assert marker not in data["script"]
+        assert "about-to-edit" in data["script"]  # the trigger DID compile (slug)

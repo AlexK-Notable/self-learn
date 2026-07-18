@@ -53,6 +53,18 @@
       {% endfor %}
     </ul>
     {% endif %}
+    {# Y-21 (09 §2.3/§11, 10 §3 U18): the miner's episode brief, collapsed
+       and expandable, BELOW decision content — never inline/above it.
+       Absent brief renders NOTHING (no-backfill: no block, no
+       placeholder). <summary> is a native disclosure control: a
+       synthesized click (app.js's clickAction) toggles the parent
+       <details> with no extra JS needed. #}
+    {% if model.finding.episode_brief %}
+    <details class="episode-brief">
+      <summary data-key-action="toggle_brief">Episode brief (b)</summary>
+      <div class="episode-brief-text">{{ model.finding.episode_brief | markdown }}</div>
+    </details>
+    {% endif %}
   </section>
 
   <section aria-label="change">

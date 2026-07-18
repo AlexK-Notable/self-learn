@@ -71,6 +71,14 @@ KEYMAP: tuple[KeymapEntry, ...] = (
     KeymapEntry(("i",), "iterate", "Iterate (open agent pane)", "detail"),
     KeymapEntry(("o",), "cycle_destination", "Cycle destination", "detail"),
     KeymapEntry(("n",), "note", "Attach / edit note", "detail"),
+    # Y-21 (09 §2.3/§11, 2026-07-18): click-or-key disclosure for the
+    # miner's episode brief — a native <details>/<summary> element, so the
+    # default dispatch (clickAction) needs no app.js special case: a
+    # synthesized click on <summary> toggles its <details> natively.
+    # `b` was unbound — the global-uniqueness invariant holds (tested).
+    # Only renders where a '## Episode brief' section exists (detail-only,
+    # and only when the record actually carries one).
+    KeymapEntry(("b",), "toggle_brief", "Toggle episode brief", "detail"),
     KeymapEntry(
         ("t",),
         "tolerate",

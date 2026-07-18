@@ -959,8 +959,20 @@ details[open] > summary {
 
 .card-text p,
 .record-body p,
-.rationale p {
+.rationale p,
+.episode-brief-text p {
   margin: 0.35rem 0;
+}
+
+/* Y-21 (09 §2.3/§11, U18): the miner's episode brief — collapsed below
+   decision content, click-or-key (b) expandable via native <details>. */
+.episode-brief {
+  margin-top: 0.6rem;
+}
+
+.episode-brief-text {
+  color: var(--slu-fg-muted);
+  font-size: 0.9rem;
 }
 
 .provenance {

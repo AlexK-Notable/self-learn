@@ -64,13 +64,13 @@ def _item(**overrides):
     return base
 
 
-def _build(item, proposal=None, diff_text=None, proposal_raw_text=None, **kw):
+def _build(item, proposal=None, diff_text=None, proposal_raw_text=None, record=None, **kw):
     kwargs: dict[str, Any] = dict(
         bucket="s", scope="skill", host_registered=True, host_add_command=None, now=NOW
     )
     kwargs.update(kw)
     return build_detail_model(
-        item, _record(), proposal, diff_text, proposal_raw_text, REGISTRY, **kwargs
+        item, record or _record(), proposal, diff_text, proposal_raw_text, REGISTRY, **kwargs
     )
 
 
@@ -106,6 +106,33 @@ class TestFinding:
     def test_title_falls_back_to_untitled_never_blank_silently(self):
         model = _build(_item(title=""))
         assert model.finding.title == "(untitled)"
+
+
+class TestEpisodeBrief:
+    """09 §2.3 Y-21 / 10 §3 U18: the finding model splits '## Episode
+    brief' out of the record body — decision content renders exactly as
+    it did before the brief existed, and the brief exposes separately."""
+
+    def test_absent_brief_is_none_and_body_unchanged(self):
+        model = _build(_item())
+        assert model.finding.episode_brief is None
+        assert "Stop the container first." in model.finding.body
+
+    def test_brief_present_is_split_out_of_body(self):
+        with_brief = _record()
+        with_brief.set_body(
+            with_brief.body.rstrip("\n")
+            + "\n\n## Episode brief\nTried the quick fix, it broke, so we did it properly.\n"
+        )
+        model = _build(_item(), record=with_brief)
+        assert model.finding.episode_brief == (
+            "Tried the quick fix, it broke, so we did it properly."
+        )
+        # decision content is byte-identical to the no-brief case
+        without_brief = _build(_item())
+        assert model.finding.body == without_brief.finding.body
+        assert "Episode brief" not in model.finding.body
+        assert "Tried the quick fix" not in model.finding.body
 
 
 class TestChangeRegionNoProposal:

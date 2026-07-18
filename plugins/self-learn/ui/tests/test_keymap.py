@@ -26,6 +26,7 @@ EXPECTED_ACTIONS = {
     "bucket_pane",
     "arm_proposal",
     "help",
+    "toggle_brief",
 }
 
 
@@ -83,6 +84,8 @@ def test_pinned_key_bindings() -> None:
     assert by_action["bucket_pane"] == ("p",)
     assert by_action["arm_proposal"] == ("y",)
     assert by_action["help"] == ("?",)
+    # Y-21 (09 §2.3/§11, 2026-07-18): the episode-brief disclosure toggle.
+    assert by_action["toggle_brief"] == ("b",)
 
 
 def test_every_key_is_globally_unique() -> None:

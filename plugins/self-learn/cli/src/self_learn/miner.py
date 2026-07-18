@@ -91,6 +91,13 @@ DEFAULT_MINER_MODEL = "claude-sonnet-5"
 MAX_QUOTE_CHARS = 400
 MAX_FIELD_CHARS = 1_000
 
+#: 12 §11 / 02 §1 (U18): the episode brief's dedicated cap, one-sided by
+#: design — ≈ the 200-word bound. The 100-word floor is rubric guidance
+#: only (never enforced). Over the ceiling refuses the WHOLE candidate,
+#: same refuse-not-clip posture as MAX_FIELD_CHARS above — never a
+#: truncated brief on a landed record.
+MAX_EPISODE_BRIEF_CHARS = 1_200
+
 #: Model-authored reference validation (audit: session/line build the
 #: evidence origin, which lands in tracked files and telemetry — free
 #: text there is both a scan bypass and a flush-wedge risk).
@@ -638,6 +645,7 @@ JSON, this shape:
       "generality": "environment-specific" | "general-practice" | "uncertain",
       "confidence": "high" | "medium" | "low",
       "why_durable": "<one line: why this will recur>",
+      "episode_brief": "<OPTIONAL, 100-200 words: the attempt -> failure -> correction -> resolution arc, told in the plain, domestic terms the human lived it in — no record ids, no destination names (skill-md/hook/etc.), no unexpanded acronyms. RETELL, never quote: no verbatim transcript spans beyond the shortest-span quote above. Omit the field entirely when there is nothing worth reconstructing.>",
       "match": {{"record": "lrn-…" | null, "status": "pending" | "routed" | "rejected" | null}}
     }}
   ],
@@ -653,7 +661,10 @@ is the same lesson as an existing record, name it (the CLI verifies your
 claim; a wrong id demotes the candidate). Never emit secrets, tokens, or
 credentials in any field — shorten quotes around them. Emit nothing for
 sessions that contain no durable lesson: an empty candidates list is a
-correct and common answer.
+correct and common answer. `episode_brief` is optional narrative prose
+(100-200 words) reconstructing the episode so a human can recognize it
+again after the transcript is gone — plain words, no jargon, a retelling
+never a quotation; leave it out rather than pad it to reach the floor.
 
 === MINING RUBRIC ===
 {rubric}
@@ -852,6 +863,26 @@ def _build_record(home: Path, cand: dict) -> Record:
         )
     else:
         raise RecordError(f"bad type {rtype!r}")
+    # 12 §11 / 02 §1 (U18): the episode brief COMPOSES INTO record.body
+    # HERE — before _scan_candidate runs (miner.py:1024) — never in
+    # create_record (which runs after the scan). This ordering is the
+    # whole compose-before-scan invariant: the brief is body bytes the
+    # secret scan already walks (record.body is in _scan_candidate's
+    # text list) ONLY because it landed in the body before the scan call.
+    # Both record types register "Episode brief" as optional (records.py
+    # OPTIONAL_SECTIONS), so record.set_body's re-validation accepts it.
+    # Free prose, no structured refs — no _valid_ref gating applies here.
+    episode_brief = str(cand.get("episode_brief") or "").strip()
+    if episode_brief:
+        if len(episode_brief) > MAX_EPISODE_BRIEF_CHARS:
+            # Refuse-not-clip (§10-2 posture): over the ceiling drops the
+            # WHOLE candidate, never a truncated brief on a landed record.
+            raise RecordError(
+                f"episode brief over cap ({MAX_EPISODE_BRIEF_CHARS} chars)"
+            )
+        record.set_body(
+            record.body.rstrip("\n") + "\n\n## Episode brief\n" + episode_brief + "\n"
+        )
     if cand.get("verified"):
         record.set_verified(True, how=(cand.get("verified_how") or None))
     if cand.get("incident_cost"):

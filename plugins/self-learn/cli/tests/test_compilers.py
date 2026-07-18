@@ -337,3 +337,72 @@ class TestReferencesCompiler:
         compile_reference(refs, record)
         text = (refs / "LEARNINGS.md").read_text(encoding="utf-8")
         assert "**Context:** Seen on the 2026-06 move." in text
+
+
+# --------------------------------------- episode-brief compiler exclusion (U18)
+
+
+def _routed_record_with_brief(record_id: str, marker: str) -> Record:
+    """A behavior record carrying a '## Episode brief' section (added while
+    still pending, then routed) — the compiler-exclusion regression's
+    fixture. ``marker`` is a distinctive string that must never surface in
+    any compiled output (02 §1's "no compiler ever reads it" pin)."""
+    record = Record.create(
+        type="behavior",
+        scope="skill:home-assistant",
+        kind="anti-pattern",
+        source="session",
+        trigger="About to edit a `.storage/*.json` file while Home Assistant is running.",
+        instruction="Stop the HA container first.",
+        record_id=record_id,
+    )
+    record.set_body(
+        record.body.rstrip("\n")
+        + f"\n\n## Episode brief\n{marker} — the whole retelling of the episode.\n"
+    )
+    return routed(record)
+
+
+class TestEpisodeBriefCompilerExclusion:
+    """10 §3 U18 (b) / 02 §1's compiler-exclusion obligation: a record
+    carrying a ``## Episode brief`` section compiles to a managed section
+    (SKILL.md / CLAUDE.md — same ``compile_managed_text``, so one exercise
+    covers both real targets) and a reference-journal entry whose outputs
+    contain NONE of the brief text. Exclusion holds by construction
+    (compilers.py never does ``sections.get("Episode brief")``); these
+    tests are the do-not-regress guard."""
+
+    MARKER = "ZZZ-EPISODE-BRIEF-MUST-NOT-LEAK-ZZZ"
+
+    def test_excluded_from_managed_section(self):
+        record = _routed_record_with_brief("lrn-eb000001", self.MARKER)
+        pre = f"{BEGIN_MARKER}\n{END_MARKER}\n"
+        result = compile_managed_text(pre, [record])
+        assert self.MARKER not in result.text
+        assert "lrn-eb000001" in result.text  # the entry itself DID compile
+
+    def test_excluded_on_recompile(self):
+        """A second regeneration pass (the recompile path — e.g. after an
+        unrelated record is added/routed) must stay leak-free too, not
+        just the first pass."""
+        record = _routed_record_with_brief("lrn-eb000002", self.MARKER)
+        pre = f"{BEGIN_MARKER}\n{END_MARKER}\n"
+        first = compile_managed_text(pre, [record])
+        second = compile_managed_text(first.text, [record, golden_records()[1]])
+        assert self.MARKER not in second.text
+        assert "lrn-eb000002" in second.text and "lrn-77ab01cd" in second.text
+
+    def test_excluded_from_reference_journal(self, tmp_path):
+        record = _routed_record_with_brief("lrn-eb000003", self.MARKER)
+        refs = tmp_path / "references"
+        result = compile_reference(refs, record)
+        text = result.path.read_text(encoding="utf-8")
+        assert self.MARKER not in text
+        assert "lrn-eb000003" in text  # the entry itself DID compile
+
+    def test_entry_line_excludes_brief(self):
+        """entry_line is the primitive both the managed-section and
+        (indirectly, via _body_sections) reference compilers build on —
+        asserting it directly pins the exclusion at its source."""
+        record = _routed_record_with_brief("lrn-eb000004", self.MARKER)
+        assert self.MARKER not in entry_line(record)
