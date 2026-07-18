@@ -551,26 +551,37 @@ in brackets.
   Y-19/Y-20 and their own U-rows; the orchestrator reconciles U-numbering
   at merge, as U15↔U14 did)*. Three edges, one row:
   **(a) miner (cli package).** The reader's structured-output schema
-  gains an optional `episode_brief` string (12 §2 Phase 2); the Phase-4
-  landing writer writes it into the record body as a `## Episode brief`
-  section for `source: session` net-new landings only (never on a
+  gains an optional `episode_brief` string (12 §2 Phase 2). **The brief
+  is composed into `record.body` inside `_build_record`
+  (miner.py:812–862) — before `_scan_candidate` (miner.py:1024), never
+  in `create_record` (miner.py:1046, which runs after the scan)**: this
+  compose-before-scan ordering is the invariant that makes "no new scan
+  path" true (an unscanned attacker-influenceable prose field otherwise).
+  Written for `source: session` net-new landings only (never on a
   Phase-3 sighting-append, never for teach/import). Enforcement at
-  landing, all **refuse-not-clip** (12 §10-2 posture): a dedicated
-  section char cap (**≤1200 chars** ≈ the 200-word bound) refuses + journals
-  an over-cap candidate; the existing whole-record **secret scan** (M-2)
-  covers the brief with no new scan path; model-authored session/line
-  refs inside the brief are **regex-gated** exactly as the evidence
-  quote's are. `records.py` registers `## Episode brief` as an optional
-  body section for both types (documented, duplicate-guarded), leaving
-  the section optional (no `required` weight).
+  landing (12 §10-2 posture): a dedicated section char cap
+  (**≤1200 chars** ≈ the 200-word bound; **one-sided** — ceiling
+  enforced, the 100-word floor is rubric-only) **refuses the whole
+  candidate + journals** on over-ceiling (refuse-not-clip; accepts the
+  cost of losing an otherwise-valid lesson under probation, observable in
+  the journal); the existing whole-record **secret scan** (M-2) covers
+  the brief with **no new scan path, given the compose-before-scan
+  order**. The brief is **free prose with no structured refs** — the
+  evidence quote's `_valid_ref` ref-gating does not apply and is not
+  added (12 §11). `records.py` registers `## Episode brief` as an
+  optional body section for **both** type tuples (documented, and
+  duplicate-guarded only once registered), leaving it optional (no
+  `required` weight).
   **(b) compiler exclusion (cli package).** No compiler change — the
   exclusion holds by construction (compilers `sections.get(...)` by
   explicit name; no whole-body dump). Add a **regression test**: a record
   carrying a `## Episode brief` compiles to a managed section, a
   reference-journal entry, and a hook whose outputs contain **none** of
   the brief text.
-  **(c) ui (ui package).** `ledger.py`'s finding model **splits the
-  `## Episode brief` section out** of `model.finding.body` and exposes it
+  **(c) ui (ui package).** The finding model in **`models.py`**
+  (`_build_finding`/`FindingRegion` — `ledger.py` is the I/O module, not
+  the model builder) **splits the `## Episode brief` section out** of
+  `record.body` before it becomes `finding.body`, and exposes it
   separately (e.g. `episode_brief`); `detail.html` renders it as a
   **collapsed, expandable** block **below** Trigger/Instruction/evidence,
   absent → renders nothing (no placeholder). Disclosure affordance
@@ -581,7 +592,12 @@ in brackets.
   net-new `source: session` land writes the `## Episode brief` section and
   a teach/import land does **not**; a sighting-append does not add/overwrite
   a brief; over-cap refuses-and-journals (never truncates); a planted
-  secret in the brief refuses at landing and journals `scan-refused`; the
+  secret **placed only in the brief** refuses at landing and journals
+  `scan-refused` (the compose-before-scan invariant — asserts the brief is
+  in `record.body` when `_scan_candidate` runs); a
+  `proposal validate` on a pending record whose brief was edited to
+  contain a secret **re-scans and flags it** (the non-CLI-edit checkpoint,
+  02 §1/§2 — pins that a human-added/edited brief is caught); the
   compiler-exclusion regression test (b). ui-suite — a record with a brief
   renders the collapsed block below decision content and never inline/above;
   a record without one renders no block and no placeholder; the finding

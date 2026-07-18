@@ -105,11 +105,27 @@ record.)*
 - **Validator (register it as optional; do not gate compilers on it).**
   `## Episode brief` joins the record's **optional** body sections
   (`records.py` `OPTIONAL_SECTIONS`), permitted for both `behavior` and
-  `knowledge` records and subject to the one-lesson duplicate guard
-  (`_validate_body` already refuses a repeated section). Existing records
-  stay valid (unknown headings already pass; this merely *documents and
-  de-duplicates* the section). It carries **no** `required` weight — a
-  mined record without one is valid (no-backfill, below).
+  `knowledge` records. The one-lesson duplicate guard **will** refuse a
+  repeated `## Episode brief` **once the section is registered** — the
+  U18 build adds `"Episode brief"` to both type tuples; `_validate_body`
+  only duplicate-guards names it knows, so the guard does not apply until
+  then. Existing records stay valid (unknown headings already pass; this
+  merely *documents and de-duplicates* the section). It carries **no**
+  `required` weight — a mined record without one is valid (no-backfill,
+  below).
+- **`source: session` is a producer-side convention, not a validator or
+  render gate — stated honestly.** In practice only the miner writes a
+  brief, and only onto `source: session` records (12 §11). But the
+  validator does not key the section to `source`, and the Detail render
+  keys on **section presence**, not provenance. So a human who, on the
+  Discuss / pane edit path, adds a `## Episode brief` to a `teach`
+  record produces a record that **validates and renders** — this is
+  **accepted**: it is a human editing their own pending record's body
+  (legal under §2 freeze-at-routing), the same edit path that can rewrite
+  Trigger or Instruction, and it is covered by the same
+  `proposal validate` secret-scan checkpoint (§2) that guards every
+  non-CLI body write. The gate that matters — the leak surface — is the
+  scan, and the scan is provenance-blind by design.
 - **Compiler exclusion — pinned, and it holds by construction.** Every
   compiler selects body sections by **explicit heading name** —
   `compilers.py` `_body_sections()` maps all `## …` headings, then each

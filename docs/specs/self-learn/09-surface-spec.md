@@ -261,11 +261,12 @@ Three stacked regions (07 §2's finding / change / why), one scroll:
    context recedes until summoned; a **longer** brief must not push
    Trigger/Instruction or the diff below the fold. **Build obligation:**
    the Finding region today renders the whole record body as one blob
-   (`model.finding.body | markdown`), so the finding model
-   (`ledger.py`) must **split the `## Episode brief` section out** — the
-   decision-content body renders as now, and the brief is exposed
-   separately (e.g. `model.finding.episode_brief`) for the collapsed
-   render. Collapsed by default, one summon to expand (a key or click —
+   (`model.finding.body | markdown`), so the finding model — built in
+   **`models.py`** (`_build_finding`, `FindingRegion`; `ledger.py` is
+   the I/O module, not the model builder) — must **split the `## Episode
+   brief` section out** of `record.body` before it becomes
+   `finding.body`, and expose the brief separately (e.g.
+   `model.finding.episode_brief`) for the collapsed render. Collapsed by default, one summon to expand (a key or click —
    the exact affordance is a build call, matching the round-4 hotkey-
    legend disclosure pattern); the expand affordance appears **iff** the
    section exists — **absent brief renders nothing**: no block, no
@@ -2004,8 +2005,9 @@ removed the last competing workstream — the build gate is open.*
   **collapsed + expandable, below** the decision content (Trigger +
   Instruction + evidence), never inline/above — FB4 principle 3, a longer
   brief must not push decision content below the fold; the finding model
-  (`ledger.py`) **splits `## Episode brief` out of the whole-body blob**
-  so decision content renders as now and the brief renders separately;
+  in **`models.py`** (`_build_finding`/`FindingRegion`, not `ledger.py`)
+  **splits `## Episode brief` out of the whole-body blob** so decision
+  content renders as now and the brief renders separately;
   **(2)** **absent brief renders nothing** — no block, no placeholder, no
   apology (no-backfill: pre-amendment records have no brief and their
   transcripts may be pruned); **(3)** **bucket-page rows do not grow**

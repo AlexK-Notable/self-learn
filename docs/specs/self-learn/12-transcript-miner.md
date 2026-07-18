@@ -523,29 +523,54 @@ it into the record body as a `## Episode brief` section. Contract:
   **no verbatim transcript spans beyond the existing evidence-quote
   rules** (the shortest-span `quote` stays the record's only verbatim
   transcript span; teach's evidence rule and §2 Phase 1 are unchanged).
-- **Cost note.** Marginal generation cost only (output tokens in an
-  already-paid call); zero new infrastructure. It widens the mined
-  record's footprint during the miner's calibration probation (§4), but
-  a legible episode brief plausibly *raises* the mined-card accept rate
-  — the reviewer can defend the decision — which is exactly the metric
-  that decides the miner's fate (§4). Worth trying **within** probation,
-  measured on the same accept-rate surface.
+- **Cost note.** Marginal *generation* cost only on the miner side
+  (output tokens in an already-paid call); zero new infrastructure.
+  **Downstream, though, it is recurring input:** every later worker /
+  analyst / pane run that reads a mined record now ingests the brief as
+  ~1200 chars of **input tokens** each time — small but not zero, and
+  the "marginal output tokens" framing covers only the miner side.
+  It widens the mined record's footprint during the miner's calibration
+  probation (§4), but a legible episode brief plausibly *raises* the
+  mined-card accept rate — the reviewer can defend the decision — which
+  is exactly the metric that decides the miner's fate (§4). Worth trying
+  **within** probation, measured on the same accept-rate surface.
 
 **Landing safety (the leak surface a reconstruction raises).** The brief
-rides the Phase-4 landing exactly as every other landed field:
+rides the Phase-4 landing exactly as every other landed field — and its
+one non-negotiable build invariant is **compose-before-scan**:
 
+- **Compose site: `_build_record` (miner.py:812–862), before
+  `_scan_candidate` (miner.py:1024).** The "no new scan path" guarantee
+  holds *only* if the brief bytes are already in `record.body` when the
+  scan runs. The `_build_record` → `_scan_candidate` → `create_record`
+  (miner.py:1046) order means the brief **must** be composed into the
+  record body inside `_build_record` — **never** in `create_record`,
+  which runs *after* the scan and would ship an unscanned,
+  attacker-influenceable prose field. Ordering invariant (pin, tested by
+  m-g): the brief the secret scan sees is byte-identical to the brief
+  that lands.
 - **Secret-scanned** — the per-record landing scan (M-2, refuse default,
   no bypass) covers the whole record file including the brief; a trip
-  refuses the landing and is journaled `scan-refused` (a-d acceptance
-  extended below). No new scan path — the brief is body bytes.
+  refuses the landing and is journaled `scan-refused` (acceptance m-g
+  below). No new scan path — the brief is body bytes the scan already
+  walks, *given the compose-before-scan invariant above*.
 - **Field-length cap, refuse-not-clip** (§10-2 posture): a dedicated
-  cap for the section (pin **≤1200 chars** ≈ the 200-word bound); over
-  cap refuses the candidate, journaled, never truncated.
-- **Attacker-influenceable input** (§10-2): the digest is untrusted, so
-  any model-authored session/line refs the brief carries are **regex-
-  gated before landing** exactly as the evidence quote's refs are; the
-  reader still has **no filesystem tools** — the brief is generated from
-  the in-prompt digest alone.
+  cap for the section (pin **≤1200 chars** ≈ the 200-word bound). The
+  cap is **one-sided by design** — the ceiling is enforced; the 100-word
+  floor is rubric guidance only (under-length is a quality nudge, not a
+  safety issue, so it never refuses). Over the ceiling refuses the
+  **whole candidate** (refuse-not-clip — never a truncated brief on a
+  landed record), which **can lose an otherwise-valid lesson**; that
+  cost is accepted deliberately under miner probation (§4), and the
+  journal entry makes it observable — revisit if it fires in practice.
+- **Free prose, no structured refs.** The brief is narrative prose that
+  builds **no origin string** and carries **no structured session/line
+  fields** — so the evidence quote's ref-gating (`_valid_ref`, which
+  guards the *structured* session/line fields that assemble an origin)
+  **does not apply and is not required here**. The whole-record secret
+  scan plus the char cap are the brief's **complete** landing defenses.
+  The reader still has **no filesystem tools** — the brief is generated
+  from the in-prompt digest alone.
 
 **No staleness machinery.** The brief describes the **past** (the origin
 episode), so it cannot go stale against a later record edit the way a
@@ -568,5 +593,8 @@ synthetic transcript with a clear failure→fix arc lands a record whose
 cap, carries no verbatim transcript span beyond the evidence quote, and
 survives the landing scan; (m-f) a brief that would exceed the char cap
 refuses the candidate and journals it (refuse-not-clip); (m-g) a planted
-secret placed in the brief text of a synthetic candidate is refused at
-landing and journaled `scan-refused`.
+secret placed **in the brief text** of a synthetic candidate is refused
+at landing and journaled `scan-refused` — the test that proves the
+compose-before-scan invariant (a secret reaching the record only via the
+brief must still be caught, which holds iff the brief was composed in
+`_build_record` before `_scan_candidate`).
