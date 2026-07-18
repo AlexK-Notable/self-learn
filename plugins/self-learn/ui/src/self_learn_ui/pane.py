@@ -836,6 +836,16 @@ class PaneManager:
         if live.state != STATE_INTERRUPTING:
             live.state = STATE_STREAMING
         live.turn_had_clean_result = False
+        # Per-turn latch reset (delta residual on the MAJOR-1 fold): an
+        # Esc latched during a PREVIOUS turn's validate window — which
+        # the tail parks without clearing — must never replay into THIS
+        # turn's first event, interrupting the turn the user just asked
+        # for. Safe: there is no suspension point between the wrapper's
+        # pre-connect latch check (or send()'s awaiting-input guard) and
+        # this entry, so no legitimate Esc is erased; any Esc after
+        # entry latches afresh.
+        live.interrupt_requested = False
+        live.interrupt_replayed = False
         async for event in events:
             if self._live is not live:
                 # Identity guard (Y-15/F3): an orphaned drain publishes

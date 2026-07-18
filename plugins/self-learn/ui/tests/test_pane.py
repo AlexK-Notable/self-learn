@@ -1239,3 +1239,36 @@ class TestPostResultValidateWindow:
         assert await retry == "armed"  # the re-guard loop, not a clobber
         assert manager.active_record_id == "lrn-bb000002"
         await manager.wait_for_turn()
+
+    async def test_esc_during_the_validate_window_never_interrupts_the_next_turn(self) -> None:
+        # Delta residual on the MAJOR-1 fold: the validate window is
+        # INTERRUPTIBLE (state stays streaming) — an Esc there latches,
+        # the tail parks awaiting-input WITHOUT clearing the latch, and
+        # without the per-turn reset the user's NEXT send turn would
+        # replay engine.interrupt() at its first event, interrupting the
+        # very turn they just asked for.
+        engine = FakeEngine(
+            turns=[
+                [Result("success", 0.0, None)],
+                [BlockStart(kind="text"), TextDelta(text="reply"), Result("success", 0.0, None)],
+            ]
+        )
+        runner = _SlowValidateRunner()
+        runner.queue_result(RunResult(0))
+        runner.queue_result(RunResult(0))
+        manager, _runner, *_ = _manager(engines={RECORD_ID: engine}, runner=runner)
+
+        await manager.start(RECORD_ID)
+        await runner.entered.wait()  # inside the validate window
+        assert await manager.interrupt(RECORD_ID) is True  # Esc lands here
+        calls_after_esc = engine.interrupt_calls
+
+        runner.release.set()
+        await manager.wait_for_turn()
+        assert manager.snapshot(RECORD_ID).state == pane.STATE_AWAITING_INPUT  # tail parks
+
+        assert await manager.send(RECORD_ID, "follow-up") == "sent"
+        # ZERO replays into the new turn — the stale latch was reset at
+        # the turn's drain entry.
+        assert engine.interrupt_calls == calls_after_esc
+        assert manager.snapshot(RECORD_ID).state == pane.STATE_AWAITING_INPUT
