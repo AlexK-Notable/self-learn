@@ -256,3 +256,91 @@ def test_result_carries_turn_count() -> None:
 
     mapped = engine._map_result(_Msg())
     assert mapped.turns == 4
+
+
+# -- bounded interrupt/close awaits (09 §4.2 as tuned 2026-07-18) ----------
+#
+# T-E follow-up: the SDK fast-interrupt is ineffective on the
+# subscription-auth streaming path, so the escalation ladder is the
+# COMMON Esc path — grace/kill tuned to 1 s / 2.5 s, and EVERY await on
+# the interrupt/close path is bounded (the Y-14 idle monitor awaits this
+# exact path in teardown_parked; an unbounded hang there silently
+# re-creates resident-forever).
+
+
+class _HangingClient:
+    """Stands in for ClaudeSDKClient with a wedged transport: interrupt()
+    and/or disconnect() never return."""
+
+    def __init__(self, *, hang_interrupt: bool = False, hang_disconnect: bool = False):
+        self.hang_interrupt = hang_interrupt
+        self.hang_disconnect = hang_disconnect
+        self.interrupt_calls = 0
+        self.disconnect_calls = 0
+
+    async def interrupt(self) -> None:
+        self.interrupt_calls += 1
+        if self.hang_interrupt:
+            await asyncio.sleep(3600)
+
+    async def disconnect(self) -> None:
+        self.disconnect_calls += 1
+        if self.hang_disconnect:
+            await asyncio.sleep(3600)
+
+
+def _wedged_engine(client: _HangingClient, *, grace: float = 0.05, kill: float = 0.12) -> SdkPaneEngine:
+    engine = SdkPaneEngine(
+        model="claude-sonnet-5",
+        max_turns=5,
+        max_budget_usd=1.0,
+        cli_path=FAKE_CLI,
+        canon_read_roots_fn=lambda: [],
+        interrupt_grace_secs=grace,
+        interrupt_kill_secs=kill,
+    )
+    engine._client = client  # type: ignore[assignment]  # noqa: SLF001 - wedged transport stand-in
+    engine._session_active = True  # noqa: SLF001
+    return engine
+
+
+def test_default_ladder_constants_match_the_tuned_pin() -> None:
+    # 09 §4.2 (tuned 2026-07-18): 1 s grace, 2.5 s kill — a keystroke
+    # deserves ~2.7 s worst case, not ~5.3 s.
+    from self_learn_ui.engine.sdk import (
+        DEFAULT_INTERRUPT_GRACE_SECS,
+        DEFAULT_INTERRUPT_KILL_SECS,
+    )
+
+    assert DEFAULT_INTERRUPT_GRACE_SECS == 1.0
+    assert DEFAULT_INTERRUPT_KILL_SECS == 2.5
+
+
+async def test_hung_sdk_interrupt_call_escalates_to_close_within_grace() -> None:
+    # The SDK interrupt() call ITSELF is bounded: a wedged transport
+    # must not stall the ladder before it starts.
+    client = _HangingClient(hang_interrupt=True)
+    engine = _wedged_engine(client)
+    await asyncio.wait_for(engine.interrupt(), timeout=2.0)
+    assert client.interrupt_calls == 1
+    assert client.disconnect_calls == 1  # escalated to close
+    assert engine._client is None  # noqa: SLF001
+
+
+async def test_hung_disconnect_is_abandoned_within_kill_window() -> None:
+    # close() must return even when disconnect() never does — logged and
+    # abandoned, never a stalled caller.
+    client = _HangingClient(hang_disconnect=True)
+    engine = _wedged_engine(client)
+    await asyncio.wait_for(engine.close(), timeout=2.0)
+    assert client.disconnect_calls == 1
+    assert engine._client is None  # noqa: SLF001
+
+
+async def test_hung_interrupt_then_hung_disconnect_still_returns() -> None:
+    # Worst case both awaits wedge: total teardown stays bounded by
+    # grace + kill — the idle monitor's teardown_parked can never hang.
+    client = _HangingClient(hang_interrupt=True, hang_disconnect=True)
+    engine = _wedged_engine(client)
+    await asyncio.wait_for(engine.interrupt(), timeout=2.0)
+    assert client.disconnect_calls == 1

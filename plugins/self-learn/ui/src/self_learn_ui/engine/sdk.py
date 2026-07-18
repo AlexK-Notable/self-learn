@@ -79,8 +79,11 @@ __all__ = ["DEFAULT_FALLBACK_MODEL", "SdkPaneEngine"]
 DEFAULT_FALLBACK_MODEL = "claude-haiku-4-5"
 
 #: 09 §4.2's interrupt ladder timings.
-DEFAULT_INTERRUPT_GRACE_SECS = 2.0
-DEFAULT_INTERRUPT_KILL_SECS = 5.0
+#: Tuned 2026-07-18 (09 §4.2, T-E follow-up): the SDK fast-interrupt is
+#: ineffective on the subscription-auth streaming path, so the ladder is
+#: the COMMON Esc path — a keystroke deserves ~2.7 s worst case, not ~5.3.
+DEFAULT_INTERRUPT_GRACE_SECS = 1.0
+DEFAULT_INTERRUPT_KILL_SECS = 2.5
 
 #: File-writing tool names that make a completed ToolResultBlock worth
 #: turning into a FileChanged event (09 §2.4's live re-render signal).
@@ -172,7 +175,20 @@ class SdkPaneEngine(PaneEngine):
         if self._client is None or not self._session_active:
             return  # no-op: nothing running (never started, or already ended)
         try:
-            await self._client.interrupt()
+            # The SDK call itself is bounded by the grace window (09 §4.2
+            # as tuned 2026-07-18: every await on this path is bounded —
+            # a wedged transport must not stall the ladder before it
+            # starts).
+            await asyncio.wait_for(
+                self._client.interrupt(), timeout=self._interrupt_grace_secs
+            )
+        except TimeoutError:
+            uilog.log(
+                "pane engine interrupt: SDK interrupt() unresponsive within "
+                "grace — escalating to close"
+            )
+            await self.close()
+            return
         except Exception as exc:  # noqa: BLE001 - any transport failure escalates
             uilog.log(f"pane engine interrupt: SDK interrupt() failed, escalating: {exc}")
             await self.close()
@@ -201,7 +217,20 @@ class SdkPaneEngine(PaneEngine):
         self._session_active = False
         if client is not None:
             try:
-                await client.disconnect()
+                # Bounded by the kill window (09 §4.2 as tuned
+                # 2026-07-18): the SDK's own terminate/kill escalation
+                # has run by then; on timeout we log and abandon — an
+                # orphaned awaitable is the lesser evil vs a stalled
+                # caller (the Y-14 idle monitor awaits this exact path
+                # in teardown_parked).
+                await asyncio.wait_for(
+                    client.disconnect(), timeout=self._interrupt_kill_secs
+                )
+            except TimeoutError:
+                uilog.log(
+                    "pane engine close: disconnect() unresponsive within the "
+                    "kill window — abandoning (subprocess escalation already ran)"
+                )
             except Exception as exc:  # noqa: BLE001 - close() must never raise
                 uilog.log(f"pane engine close: disconnect() raised: {exc}")
 

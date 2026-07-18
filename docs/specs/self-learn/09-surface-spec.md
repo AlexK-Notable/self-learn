@@ -613,10 +613,24 @@ pattern; no client-side markdown dependency).
   report 0/absent — render what the engine reports, never invent a
   number), plus turn count.
 - **Interrupt**: `Esc` → `engine.interrupt()` (the SDK's interrupt
-  call; escalate to terminating the SDK client/subprocess after 2 s
-  grace, kill after 5). Interrupting never discards file changes
-  already written (files are truth; the re-render already showed
-  them).
+  call; escalate to terminating the SDK client/subprocess after
+  **1 s** grace, kill after **2.5 s**). *(Tuned 2026-07-18 from
+  2 s/5 s — the T-E follow-up: the SDK fast-interrupt is ineffective
+  on the subscription-auth streaming path, so the ladder is the
+  COMMON Esc path, not the emergency path, and a keystroke deserves
+  a ~2.7 s worst case, not ~5.3 s. Force-close was live-proven
+  non-destructive at T-E — files are truth. Same amendment pins:
+  **every await on the interrupt/close path is bounded** — the SDK
+  `interrupt()` call itself gets the grace bound (a wedged transport
+  must not stall the ladder before it starts), and `close()`'s
+  `disconnect()` gets the kill bound, logging and abandoning on
+  timeout (the SDK's internal terminate/kill escalation has already
+  run by then; an abandoned awaitable is the lesser evil vs a caller
+  stalled forever — the Y-14 idle monitor awaits this exact path in
+  `teardown_parked`, where an unbounded hang would silently
+  re-create resident-forever).)* Interrupting never discards file
+  changes already written (files are truth; the re-render already
+  showed them).
 - **One live session at a time** server-wide (carried — same
   serialization ground as verbs). Iterate on another record while a
   session runs → armed prompt to interrupt the current one first.
