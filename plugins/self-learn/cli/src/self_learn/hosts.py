@@ -51,6 +51,7 @@ from . import gitops
 
 __all__ = [
     "HOST_KINDS",
+    "INIT_COMMIT_SUBJECT",
     "Hosts",
     "HostsError",
     "canon_read_roots",
@@ -60,6 +61,7 @@ __all__ = [
     "host_path_problem",
     "hosts_path",
     "is_project_host",
+    "is_repo_root",
     "load_hosts",
     "save_hosts",
     "skill_dir_for",
@@ -182,6 +184,94 @@ def _is_git_repo(path: Path) -> bool:
     return proc.returncode == 0 and proc.stdout.strip() == "true"
 
 
+#: 09 §11 Y-17 / 13 §3: the pinned subject of the ``--init`` leg's empty
+#: root commit. Best-effort-ONCE (F7): a zero-commit repo already counts
+#: as a root, so after a failed empty commit the retry skips the init leg
+#: entirely and this subject may never exist for that host.
+INIT_COMMIT_SUBJECT = "self-learn: init for host registration"
+
+
+def is_repo_root(path: Path | str) -> bool:
+    """The Y-17 predicate (09 §11 Y-17 decision 2 / 13 §3): is the EXACT
+    resolved path itself a git repository ROOT — i.e. its own ``git -C
+    <path> rev-parse --show-toplevel``? The existing is-inside-work-tree
+    check cannot carry this decision: it answers TRUE for a path
+    swallowed by a PARENT repo's work tree. A ZERO-COMMIT repo counts as
+    a root (F7 — ``--show-toplevel`` resolves before the first commit).
+
+    CLI-owned and IMPORTED by the ui server for its ``needs_init``
+    derivation at arm and confirm (the ``canon_read_roots()`` posture —
+    one implementation, both sides of the seam, never a second)."""
+    target = Path(path).expanduser()
+    if not target.is_dir():
+        return False
+    target = target.resolve()
+    proc = subprocess.run(
+        ["git", "-C", str(target), "rev-parse", "--show-toplevel"],
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        return False
+    toplevel = proc.stdout.strip()
+    return bool(toplevel) and Path(toplevel).resolve() == target
+
+
+def _init_for_registration(path: Path | str) -> None:
+    """The ``--init`` leg (09 §11 Y-17 semantics matrix; 13 §3 mirror):
+    make the exact path a committable repo BEFORE the standard
+    validation runs. Callers run this AFTER the pure-argument refusals
+    (kind validity, ledger-home existence — F6: an invalid invocation
+    must never leave an initialized repo behind) and BEFORE
+    :func:`validate_host_path`.
+
+    Matrix rows realized here:
+
+    - path IS already a repo root (zero-commit included — F7): no-op;
+      preserves ``host add``'s idempotency and absorbs the arm→confirm
+      becomes-repo race instead of failing the confirm;
+    - path is a directory and NOT a root — including inside a parent
+      repo's work tree (nested repos are acceptable and intended):
+      ``git init`` at the exact path + an empty root commit with
+      :data:`INIT_COMMIT_SUBJECT`;
+    - path missing OR a regular file: clean refusal in this verb's own
+      words, never a fall-through to raw git stderr (F8) — ``--init``
+      initializes existing directories only, it creates nothing;
+    - root-commit failure (unset git identity is the realistic case):
+      raise with git's stderr and NO hosts.yaml mutation. Honesty pin:
+      init is not transactional with the add — the path stays an
+      initialized zero-commit repo (harmless), and the retry no-ops
+      this leg entirely (best-effort-ONCE, F7)."""
+    target = Path(path).expanduser()
+    if is_repo_root(target):
+        return
+    if not target.is_dir():
+        what = "is a regular file, not a directory" if target.exists() else "does not exist on disk"
+        raise HostsError(
+            f"--init initializes existing directories only — {target} "
+            f"{what}; create the project directory first, then re-run"
+        )
+    target = target.resolve()
+    init = subprocess.run(
+        ["git", "init", str(target)], capture_output=True, text=True
+    )
+    if init.returncode != 0:
+        raise HostsError(f"git init {target} failed: {init.stderr.strip()}")
+    commit = subprocess.run(
+        ["git", "-C", str(target), "commit", "--allow-empty", "-m", INIT_COMMIT_SUBJECT],
+        capture_output=True,
+        text=True,
+    )
+    if commit.returncode != 0:
+        raise HostsError(
+            f"{target} was initialized (git init) but the empty root "
+            f"commit failed: {commit.stderr.strip()} — nothing was "
+            "registered; the path stays a zero-commit repo and a retry "
+            "skips the init step (fix your git identity or commit in "
+            "the repo yourself, then re-run)"
+        )
+
+
 def host_path_problem(home: Path | str, path: Path | str, kind: str) -> str | None:
     """The ONE host-path predicate (audit 2026-07-16 MAJOR 6): a host path
     must exist on disk, be a git repo, and MUST NOT be the ledger home
@@ -226,12 +316,22 @@ def validate_host_path(home: Path | str, path: Path | str, kind: str) -> Path:
     return Path(path).expanduser().resolve()
 
 
-def host_add(home: Path | str, path: Path | str, kind: str) -> Hosts:
+def host_add(
+    home: Path | str, path: Path | str, kind: str, *, init: bool = False
+) -> Hosts:
     """The ``host add`` verb's backing function (doc 13 §3): validate the
     path (must exist, must be a git repo), rewrite hosts.yaml, and commit
     it in the LEDGER repo — pinned subject
     ``self-learn: host add <kind> <path>``. Idempotent: re-adding an
     already-registered host changes nothing and commits nothing.
+
+    ``init`` (09 §11 Y-17, 2026-07-18): run the ``--init`` leg
+    (:func:`_init_for_registration`) between the pure-argument refusals
+    and the path validation — validation ordering is normative (F6): the
+    read-only kind/ledger-home refusals FIRST (an invalid kind must
+    never leave an initialized repo behind), then init, then the path
+    validation + idempotency exactly as they run today. Without
+    ``init``, behavior is byte-unchanged.
 
     Lock discipline (audit 2026-07-16 round 7 BLOCKER 1): the lock opens
     BEFORE :func:`save_hosts`, not at the commit. hosts.yaml is TRACKED,
@@ -243,6 +343,8 @@ def host_add(home: Path | str, path: Path | str, kind: str) -> Hosts:
         raise HostsError(f"kind must be one of {list(HOST_KINDS)}, got {kind!r}")
     if not home.is_dir():
         raise HostsError(f"ledger home {home} does not exist")
+    if init:
+        _init_for_registration(path)
     target = validate_host_path(home, path, kind)
 
     hosts = load_hosts(home)

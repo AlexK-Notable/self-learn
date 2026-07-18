@@ -63,6 +63,31 @@ def test_app_js_has_column_sort_handler() -> None:
     assert "aria-sort" in app_js
 
 
+def test_app_js_reload_chokepoint_defers_on_the_three_leg_predicate() -> None:
+    """Y-16 (U14): the reload-defer is browser-level behavior proven at
+    the live re-trial; what is pinnable headless is the STRUCTURE — one
+    reload() chokepoint whose defer predicate names all three legs, an
+    unconditional in-flight release on error/abort (the F14 fold), and
+    no reload path bypassing the chokepoint."""
+    app_js = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    # Leg (a): the error-rendering marker.
+    assert "[data-verb-error]" in app_js
+    # Leg (b): the confirm-in-flight flag, set at request start…
+    assert "confirmInFlight" in app_js
+    assert "htmx:beforeRequest" in app_js
+    # …cleared at swap settle AND on the no-swap failure legs (F14).
+    assert "htmx:afterSettle" in app_js
+    for event in ("htmx:responseError", "htmx:sendError", "htmx:sendAbort", "htmx:timeout"):
+        assert event in app_js, f"missing unconditional-release event {event}"
+    # Leg (c): any armed bar (findArmedBar inside the predicate).
+    assert "reloadDeferred" in app_js
+    # Deferred, never dropped:
+    assert "reloadPending" in app_js
+    # The chokepoint is the ONLY caller of window.location.reload() —
+    # every present and future reload path is covered structurally (F3).
+    assert app_js.count("window.location.reload()") == 1
+
+
 def test_style_css_filters_keymap_footer_by_context() -> None:
     """Feedback round 1 item 4: only the current page's usable keys show
     in the footer — driven by body[data-page] + :has(), zero JS."""

@@ -328,6 +328,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help="register as THE skills root (plugins/*/skills/* live there) "
         "instead of a project host",
     )
+    hadd.add_argument(
+        "--init",
+        action="store_true",
+        dest="init",
+        help="git init + an empty root commit at PATH first, when it is "
+        "not already a repo root (09 §11 Y-17: existing directories "
+        "only; no-op when PATH is already a root, zero-commit included; "
+        "nested inside a parent work tree is intended)",
+    )
     hrebind = host_sub.add_parser(
         "rebind",
         help="re-point a project bucket + its hosts.yaml entry at a MOVED "
@@ -901,7 +910,7 @@ def _cmd_host_inner(args: argparse.Namespace, home) -> int:
     if args.host_command == "add":
         kind = "skills-root" if args.skills_root else "project"
         try:
-            registry = hosts_mod.host_add(home, args.path, kind)
+            registry = hosts_mod.host_add(home, args.path, kind, init=args.init)
         except hosts_mod.HostsError as exc:
             print(f"self-learn host add: {exc}", file=sys.stderr)
             return EXIT_USAGE

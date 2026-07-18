@@ -18,11 +18,13 @@ import pytest
 from self_learn import cli, gitops, miner, sentinel, verbs, worker
 from self_learn.compilers import BEGIN_MARKER, END_MARKER
 from self_learn.hosts import (
+    INIT_COMMIT_SUBJECT,
     Hosts,
     HostsError,
     host_add,
     hosts_path,
     is_project_host,
+    is_repo_root,
     load_hosts,
     slug_for,
 )
@@ -232,6 +234,213 @@ class TestHostsRegistry:
         before = head(env.ledger)
         host_add(env.ledger, project_repo, "project")
         assert head(env.ledger) == before
+
+
+# -------------------------------------- host add --init (09 §11 Y-17, U14)
+
+
+@pytest.fixture
+def git_identity(tmp_path, monkeypatch):
+    """Deterministic global git identity for the init leg's empty root
+    commit (the init'd repo has no local config yet — the commit reads
+    the global one, which CI may lack and the failure row must unset)."""
+    cfg = tmp_path / "gitconfig-global"
+    cfg.write_text(
+        "[user]\n\tname = Test\n\temail = test@example.com\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(cfg))
+    monkeypatch.setenv("GIT_CONFIG_SYSTEM", "/dev/null")
+    for var in ("GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME",
+                "GIT_COMMITTER_EMAIL", "EMAIL"):
+        monkeypatch.delenv(var, raising=False)
+    return cfg
+
+
+@pytest.fixture
+def no_git_identity(tmp_path, monkeypatch):
+    """The realistic root-commit failure: no identity anywhere git looks
+    (sandbox repos keep working — init_repo stamps LOCAL config)."""
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+    monkeypatch.setenv("GIT_CONFIG_SYSTEM", "/dev/null")
+    for var in ("GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME",
+                "GIT_COMMITTER_EMAIL", "EMAIL"):
+        monkeypatch.delenv(var, raising=False)
+
+
+def _target_commit_subjects(repo):
+    proc = git(repo, "log", "--format=%s")
+    return proc.stdout.strip().splitlines()
+
+
+class TestIsRepoRoot:
+    """The Y-17 predicate: exact resolved path == its own --show-toplevel;
+    the is-inside-work-tree check cannot carry this (passes for paths a
+    parent work tree swallows)."""
+
+    def test_repo_root_true(self, project_repo):
+        assert is_repo_root(project_repo) is True
+
+    def test_zero_commit_repo_counts_as_root(self, tmp_path):
+        bare = tmp_path / "zero-commit"
+        init_repo(bare)  # no commit
+        assert is_repo_root(bare) is True
+
+    def test_subdir_inside_a_work_tree_is_not_a_root(self, project_repo):
+        sub = project_repo / "inner"
+        sub.mkdir()
+        assert is_repo_root(sub) is False
+
+    def test_plain_dir_false(self, tmp_path):
+        plain = tmp_path / "plain"
+        plain.mkdir()
+        assert is_repo_root(plain) is False
+
+    def test_missing_path_false(self, tmp_path):
+        assert is_repo_root(tmp_path / "missing") is False
+
+    def test_regular_file_false(self, tmp_path):
+        f = tmp_path / "a-file"
+        f.write_text("not a dir\n", encoding="utf-8")
+        assert is_repo_root(f) is False
+
+
+class TestHostAddInit:
+    """The Y-17 semantics matrix, row by row (09 §11 Y-17 decision 3 /
+    13 §3 mirror / 10 §2 T-A cli-suite extension)."""
+
+    def test_noop_on_existing_repo_root(self, env, project_repo, git_identity):
+        before = head(project_repo)
+        hosts = host_add(env.ledger, project_repo, "project", init=True)
+        assert is_project_host(hosts, project_repo)
+        assert head(project_repo) == before  # init leg no-op'd: no new commit
+        assert INIT_COMMIT_SUBJECT not in _target_commit_subjects(project_repo)
+
+    def test_noop_on_zero_commit_root(self, env, tmp_path, git_identity):
+        # F7: a zero-commit repo counts as a root — the add proceeds and
+        # the init leg leaves the repo commit-less.
+        target = tmp_path / "zero-commit-target"
+        init_repo(target)
+        hosts = host_add(env.ledger, target, "project", init=True)
+        assert is_project_host(hosts, target)
+        count = git(target, "rev-list", "--all", "--count").stdout.strip()
+        assert count == "0"
+
+    def test_plain_dir_inits_with_pinned_root_commit(
+        self, env, tmp_path, git_identity
+    ):
+        target = tmp_path / "plain-project"
+        target.mkdir()
+        (target / "notes.txt").write_text("plain text project\n", encoding="utf-8")
+        hosts = host_add(env.ledger, target, "project", init=True)
+        assert is_project_host(hosts, target)
+        assert is_repo_root(target)
+        assert _target_commit_subjects(target) == [INIT_COMMIT_SUBJECT]
+        # And the ledger commit keeps the unchanged host-add subject.
+        assert (
+            subjects(env.ledger)[0]
+            == f"self-learn: host add project {target.resolve()}"
+        )
+
+    def test_dir_inside_parent_work_tree_inits_the_exact_path(
+        self, env, tmp_path, git_identity
+    ):
+        # Nested repos are acceptable and intended (the keyboards live
+        # case): init lands at the EXACT path, never the parent root.
+        parent = tmp_path / "parent-repo"
+        init_repo(parent)
+        sub = parent / "inner-project"
+        sub.mkdir()
+        hosts = host_add(env.ledger, sub, "project", init=True)
+        assert is_project_host(hosts, sub)
+        toplevel = git(sub, "rev-parse", "--show-toplevel").stdout.strip()
+        assert Path(toplevel).resolve() == sub.resolve()
+        assert _target_commit_subjects(sub) == [INIT_COMMIT_SUBJECT]
+        # The parent repo gained nothing.
+        assert git(parent, "rev-list", "--all", "--count").stdout.strip() == "0"
+
+    def test_missing_dir_clean_refusal_never_raw_git_stderr(self, env, tmp_path):
+        # F8: --init initializes existing directories only; it creates
+        # nothing — and the refusal is the verb's own sentence.
+        missing = tmp_path / "never-created"
+        with pytest.raises(HostsError, match="existing directories only"):
+            host_add(env.ledger, missing, "project", init=True)
+        assert not missing.exists()
+        assert not is_project_host(load_hosts(env.ledger), missing)
+
+    def test_regular_file_clean_refusal(self, env, tmp_path):
+        f = tmp_path / "a-file"
+        f.write_text("not a dir\n", encoding="utf-8")
+        with pytest.raises(HostsError, match="existing directories only"):
+            host_add(env.ledger, f, "project", init=True)
+        assert f.is_file()  # untouched
+
+    def test_invalid_kind_refused_before_init_leaves_dir_uninitialized(
+        self, env, tmp_path
+    ):
+        # F6: the pure-argument refusals run BEFORE the init leg — an
+        # invalid kind must never leave an initialized repo behind.
+        plain = tmp_path / "kind-victim"
+        plain.mkdir()
+        with pytest.raises(HostsError, match="kind must be one of"):
+            host_add(env.ledger, plain, "banana", init=True)
+        assert not (plain / ".git").exists()
+
+    def test_missing_ledger_home_refused_before_init(self, tmp_path):
+        plain = tmp_path / "home-victim"
+        plain.mkdir()
+        with pytest.raises(HostsError, match="ledger home"):
+            host_add(tmp_path / "no-such-home", plain, "project", init=True)
+        assert not (plain / ".git").exists()
+
+    def test_failed_root_commit_mutates_nothing_and_retry_skips_init_leg(
+        self, env, tmp_path, no_git_identity
+    ):
+        # The matrix's failure row + the F7 best-effort-ONCE pin: unset
+        # identity fails the empty commit AFTER git init succeeded —
+        # non-zero, git's stderr surfaced, NO hosts.yaml mutation, path
+        # honestly left a zero-commit repo; the retry no-ops the init
+        # leg, so the pinned subject never exists for this host (the
+        # test must NOT assert it on the retry path).
+        target = tmp_path / "no-identity-project"
+        target.mkdir()
+        ledger_head = head(env.ledger)
+        with pytest.raises(HostsError, match="empty root"):
+            host_add(env.ledger, target, "project", init=True)
+        assert not is_project_host(load_hosts(env.ledger), target)
+        assert head(env.ledger) == ledger_head  # no ledger commit either
+        assert is_repo_root(target)  # honest half-init state
+        # Retry: the zero-commit repo counts as a root — init leg skipped,
+        # registration proceeds (ledger commits use its LOCAL identity).
+        hosts = host_add(env.ledger, target, "project", init=True)
+        assert is_project_host(hosts, target)
+        assert git(target, "rev-list", "--all", "--count").stdout.strip() == "0"
+
+    def test_without_init_behavior_byte_unchanged(self, env, tmp_path):
+        plain = tmp_path / "still-refused"
+        plain.mkdir()
+        with pytest.raises(HostsError, match="not a git repo"):
+            host_add(env.ledger, plain, "project")
+        assert not (plain / ".git").exists()
+
+    def test_cli_flag_wires_init(self, env, tmp_path, monkeypatch, git_identity):
+        monkeypatch.setenv("SELF_LEARN_HOME", str(env.ledger))
+        target = tmp_path / "cli-flag-project"
+        target.mkdir()
+        rc = cli.main(["host", "add", "--init", str(target)])
+        assert rc == 0
+        assert is_project_host(load_hosts(env.ledger), target)
+        assert _target_commit_subjects(target) == [INIT_COMMIT_SUBJECT]
+
+    def test_cli_without_flag_still_refuses_non_repo(
+        self, env, tmp_path, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("SELF_LEARN_HOME", str(env.ledger))
+        plain = tmp_path / "cli-plain"
+        plain.mkdir()
+        rc = cli.main(["host", "add", str(plain)])
+        assert rc != 0
+        assert "not a git repo" in capsys.readouterr().err
+        assert not (plain / ".git").exists()
 
 
 # --------------------------------------------------- producers commit (H-5)

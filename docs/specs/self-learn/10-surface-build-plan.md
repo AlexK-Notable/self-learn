@@ -749,6 +749,36 @@ path more than adding tracks.
 
 ## Appendix — Build findings (dated; §7 discipline)
 
+- **2026-07-18 · U14 empirical wipe-pin (Y-16; recorded BEFORE the
+  fix commit, per the U14 DoD (c)).** Reproduced end-to-end at the
+  server seam (`ui/tests/test_registration_wipe.py`: a real
+  `RealRunner` over a fake failing `self-learn`, wired to the app's
+  real `RefreshHub`, driven through the real host-add confirm
+  route). **Ruling — the wipe IS the code-read prime suspect,
+  confirmed:** the runner's unconditional post-verb refresh push
+  fires on failure too; `host add` argv carries no `lrn-` token, so
+  `extract_record_id` returns None and the push scope is **`front`**
+  (asserted) — the broadcast scope app.js's `refresh` handler
+  answers with a full `window.location.reload()` at the chokepoint,
+  re-rendering the bar from files and erasing the just-swapped
+  error partial. The second candidate (the any-key-disarms keyup)
+  is ruled implausible AND braced: the error leg renders
+  `data-armed="false"` (asserted in the same suite), so the keydown
+  handler's armed branch cannot fire on the post-confirm keyup; the
+  chokepoint defer covers it regardless. **F4 ordering ruling
+  (SSE-frame-vs-htmx-swap), empirical:** the `RefreshEvent` is
+  queued for the SSE writer BEFORE the confirm handler renders the
+  error partial (timeline asserted `push → render`, with a
+  subscribed consumer already holding the frame when the response
+  lands) — the frame is in flight while the error HTML does not yet
+  exist, so it can beat the htmx swap client-side; a marker-only
+  defer predicate would re-create the original symptom, which is
+  why the predicate's in-flight leg (b) (flag set at form submit,
+  cleared on completion/error/abort) is required, not optional.
+  Browser-level residue (the observed vanish pre-fix; the error
+  surviving a forced push once the defer lands) stays on the U14
+  DoD live re-trial list — this pin is the headless seam half.
+
 - **2026-07-18 · U13 live trial (Y-14 idle lifecycle).** The DoD
   trial caught the drafted exit mechanism failing in production:
   SIGTERM-to-self exits **143**, not 0 — uvicorn 0.29+

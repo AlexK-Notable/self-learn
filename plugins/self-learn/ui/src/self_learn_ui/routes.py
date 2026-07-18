@@ -27,6 +27,8 @@ from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from starlette.responses import StreamingResponse
 
+from self_learn.hosts import is_repo_root
+
 from . import ledger, models, pane, proposals, rendering
 from .keymap import keymap_as_dicts, keymap_json
 from .sse import envelope_applying, envelope_banner, envelope_bulk_progress, event_stream
@@ -874,18 +876,59 @@ def _bucket_name_for(home: Path, record_id: str) -> str | None:
 #   - the path is SERVER-derived from the bucket's meta.yaml
 #     (ledger.project_path_for) — a client field never supplies it;
 #   - the only client-influenced value is which page confirm returns
-#     to, constrained to a record-id shape (else the bucket page);
+#     to, constrained to a record-id shape (else the bucket page),
+#     PLUS — on disclosure arms only — the Y-17 one-bit marker below;
 #   - the ARM state renders the consent consequence (the CLI prints it
 #     on stdout, which the runner contract discards);
 #   - project buckets only — skill/user notices keep prose fallback.
+#
+# 09 §11 Y-17 (2026-07-18, U14): `needs_init` is derived SERVER-side at
+# arm AND re-derived at confirm via the CLI-owned `is_repo_root` helper
+# (imported — the canon_read_roots posture, never a second
+# implementation). Operationalization of record (builder's choice, the
+# marker-field variant): the arm-with-disclosure rendering carries a
+# server-rendered hidden field `init_disclosed=1` in its confirm form —
+# ONE client-supplied bit standing for "the ARM rendering displayed the
+# disclosure". The consent invariant (Y-17 F1): the executed argv
+# includes `--init` only when that bit is present AND the confirm-time
+# re-derivation still holds; ANY mismatch runs plain `host add`. The
+# bit can only ever WEAKEN execution (toward plain add / a clean
+# refusal), never strengthen it — a forged or stale marker on a
+# repo-root path is neutralized by the re-derivation (worst outcome: a
+# clean refusal), and read-run divergence is permitted in the
+# weaker-than-read direction ONLY (F13).
+#
+# 09 §11 Y-16 (2026-07-18, U14): the confirm's error leg renders the
+# plain-words failure sentence LEADING with the CLI stderr demoted to a
+# secondary detail line (the narrow dated §5 exception, this leg only),
+# carries the `[data-verb-error]` marker app.js's reload-defer keys on,
+# and persists until dismiss (the disarm route — no fourth route) or
+# re-arm. The wipe mechanism is pinned empirically in
+# tests/test_registration_wipe.py + 10's appendix (U14 entry).
 
 _RECORD_ID_RE = re.compile(r"^lrn-[0-9a-f]{8}$")
 
+#: Y-16's required copy (the F2/F11 twice-corrected sentence): true in
+#: EVERY failure leg, including HalfWritten — where hosts.yaml already
+#: carries the entry and "was not registered" would be false. The
+#: demoted stderr detail carries the state facts and the repair.
+HOST_ADD_ERROR_LEAD = "Registration did not complete."
 
-def build_host_add_argv(path: str) -> list[str]:
-    """``self-learn host add <path>`` — the one argv this surface maps
-    to (mirrors the CLI parser verbatim, same rule as build_argv)."""
-    return ["host", "add", path]
+
+def build_host_add_argv(path: str, *, init: bool = False) -> list[str]:
+    """``self-learn host add [--init] <path>`` — the one argv this
+    surface maps to (mirrors the CLI parser verbatim, same rule as
+    build_argv). ``init`` is decided by the Y-17 consent invariant at
+    the confirm route, never by a client field alone."""
+    return ["host", "add", "--init", path] if init else ["host", "add", path]
+
+
+def _needs_init(path: str) -> bool:
+    """Y-17: does registering *path* require the ``--init`` leg — i.e.
+    is the exact resolved path NOT already a git repo root? One
+    predicate, CLI-owned (:func:`self_learn.hosts.is_repo_root`),
+    imported for both the arm derivation and the confirm re-derivation."""
+    return not is_repo_root(path)
 
 
 def _host_add_ctx(
@@ -896,6 +939,7 @@ def _host_add_ctx(
     armed: bool,
     path: str | None = None,
     error: str | None = None,
+    needs_init: bool = False,
 ) -> dict[str, Any]:
     return {
         "armed": armed,
@@ -906,6 +950,8 @@ def _host_add_ctx(
         "can_arm": True,  # routes only render this ctx for project buckets
         "host_registered": False,
         "error": error,
+        "error_lead": HOST_ADD_ERROR_LEAD,
+        "needs_init": needs_init,
     }
 
 
@@ -934,7 +980,17 @@ def host_add_arm(
         return resolved
     _bucket, path = resolved
     rid = record_id if record_id and _RECORD_ID_RE.match(record_id) else None
-    ctx = _host_add_ctx(scope=scope, name=name, record_id=rid, armed=True, path=path)
+    ctx = _host_add_ctx(
+        scope=scope,
+        name=name,
+        record_id=rid,
+        armed=True,
+        path=path,
+        # Y-17: server-derived, never a client field — when True the arm
+        # banner shows the git-init disclosure + the real --init argv,
+        # and the confirm form carries the server-rendered marker bit.
+        needs_init=_needs_init(path),
+    )
     return _render(request, "partials/host_add_bar.html", ctx)
 
 
@@ -952,7 +1008,11 @@ def host_add_disarm(
 
 @router.post("/bucket/{scope}/{name}/host-add/confirm", response_class=HTMLResponse)
 async def host_add_confirm(
-    request: Request, scope: str, name: str, record_id: str | None = Form(None)
+    request: Request,
+    scope: str,
+    name: str,
+    record_id: str | None = Form(None),
+    init_disclosed: str | None = Form(None),
 ) -> Response:
     resolved = _host_add_target(request, scope, name)
     if isinstance(resolved, Response):
@@ -960,9 +1020,25 @@ async def host_add_confirm(
     _bucket, path = resolved
     rid = record_id if record_id and _RECORD_ID_RE.match(record_id) else None
 
+    # Y-17 consent invariant (F1): `--init` executes ONLY when (a) the
+    # arm rendering displayed the disclosure (the server-rendered marker
+    # bit, posted back verbatim) AND (b) the confirm-time re-derivation
+    # still holds. Any mismatch — becomes-repo (disclosed, but a root by
+    # now: --init dropped, the plain add registers) or goes-stale (not
+    # disclosed, a non-root by now: the plain add runs and the CLI's
+    # committability refusal flows into the Y-16 error leg) — runs plain
+    # `host add`; never a silent init. A forged marker cannot force an
+    # init on a repo-root path: the re-derivation gates every init, so
+    # the bit only ever WEAKENS execution relative to what was read.
+    use_init = init_disclosed == "1" and _needs_init(path)
+
     runner = request.app.state.runner
-    result = await runner.run(build_host_add_argv(path))
+    result = await runner.run(build_host_add_argv(path, init=use_init))
     if not result.ok:
+        # Y-16 error leg: plain-words sentence leading, stderr demoted,
+        # [data-verb-error] marker, dismiss via the disarm route — and
+        # it PERSISTS client-side (app.js defers broadcast reloads while
+        # the marker is in the DOM).
         ctx = _host_add_ctx(
             scope=scope,
             name=name,
