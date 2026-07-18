@@ -397,6 +397,133 @@ def test_run_dedupes_by_origin_across_runs(home, transcripts, monkeypatch):
     assert len(pending_ids(home)) == 1
 
 
+# --------------------------------------------- episode briefs (12 §11 / U18)
+
+
+def test_episode_brief_lands_in_body_for_session_source(home, transcripts, monkeypatch):
+    """m-e (partial, unit-level): a candidate's optional episode_brief
+    composes into the landed record's '## Episode brief' body section."""
+    brief = "Tried the quick fix first, it broke the build, so we reverted and did it properly."
+    write_transcript(transcripts, "sess-brief", [u("work")])
+    shim_reader(
+        monkeypatch,
+        {"candidates": [candidate(session="sess-brief", episode_brief=brief)], "fires": []},
+    )
+    result = miner.run(home)
+    assert len(result.landed) == 1
+    record = Record.from_path(home / "skills/s/pending" / f"{result.landed[0]}.md")
+    assert record.source == "session"
+    assert "## Episode brief" in record.body
+    assert brief in record.body
+
+
+def test_episode_brief_absent_when_not_provided(home, transcripts, monkeypatch):
+    """The section is optional — no episode_brief in the candidate means no
+    section on the landed record (no-backfill posture: absence is valid)."""
+    write_transcript(transcripts, "sess-nobrief", [u("work")])
+    shim_reader(
+        monkeypatch, {"candidates": [candidate(session="sess-nobrief")], "fires": []}
+    )
+    result = miner.run(home)
+    assert len(result.landed) == 1
+    record = Record.from_path(home / "skills/s/pending" / f"{result.landed[0]}.md")
+    assert "## Episode brief" not in record.body
+
+
+def test_teach_sourced_record_never_carries_episode_brief(home):
+    """The brief is written ONLY by the miner's _build_record — a
+    teach/import-created record (this ledger's create_record path, never
+    touching miner.py) has no section, by construction (12 §11)."""
+    record = make_behavior()
+    create_record(home, record)
+    landed = Record.from_path(home / "skills/s/pending" / f"{record.id}.md")
+    assert landed.source == "teach"
+    assert "## Episode brief" not in landed.body
+
+
+def test_episode_brief_not_added_on_sighting_append(home, transcripts, monkeypatch):
+    """Phase 3 fold path (matched sighting on a pending record) never
+    writes or overwrites a brief — only a net-new landing carries one."""
+    existing = make_behavior()
+    create_record(home, existing)
+    write_transcript(transcripts, "sess-fold-brief", [u("hit it again")])
+    shim_reader(
+        monkeypatch,
+        {
+            "candidates": [
+                candidate(
+                    session="sess-fold-brief",
+                    episode_brief="This should never land on the folded record.",
+                    match={"record": existing.id, "status": "pending"},
+                )
+            ],
+            "fires": [],
+        },
+    )
+    result = miner.run(home)
+    assert result.folded == [existing.id] and result.landed == []
+    refreshed = Record.from_path(home / "skills/s/pending" / f"{existing.id}.md")
+    assert "## Episode brief" not in refreshed.body
+
+
+def test_episode_brief_over_cap_refuses_whole_candidate(home, transcripts, monkeypatch):
+    """m-f: a brief over the ≤1200-char ceiling refuses the WHOLE
+    candidate (refuse-not-clip) and journals it — never a truncated brief
+    on a landed record."""
+    write_transcript(transcripts, "sess-overcap", [u("work")])
+    shim_reader(
+        monkeypatch,
+        {
+            "candidates": [
+                candidate(session="sess-overcap", episode_brief="X" * 1300)
+            ],
+            "fires": [],
+        },
+    )
+    result = miner.run(home)
+    assert result.landed == []
+    outcomes = [o["outcome"] for o in miner.read_journal()[-1]["outcomes"]]
+    assert "dropped-invalid" in outcomes
+    assert pending_ids(home) == []
+
+
+def test_episode_brief_only_secret_refused_at_landing(home, transcripts, monkeypatch):
+    """m-g: the compose-before-scan proof. A secret placed ONLY in the
+    episode_brief field (Trigger/Instruction/quote all clean) is still
+    caught, because _build_record composes the brief into record.body
+    BEFORE _scan_candidate runs — the whole-record scan then walks it as
+    ordinary body bytes, no new scan path required."""
+    secret = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6Q7r8"
+    write_transcript(transcripts, "sess-brief-secret", [u("work")])
+    shim_reader(
+        monkeypatch,
+        {
+            "candidates": [
+                candidate(
+                    session="sess-brief-secret",
+                    episode_brief=f"Fixed it by rotating the leaked token {secret} immediately.",
+                )
+            ],
+            "fires": [],
+        },
+    )
+    result = miner.run(home)
+    assert result.landed == []
+    assert miner.read_journal()[-1]["outcomes"][0]["outcome"] == "scan-refused"
+    assert pending_ids(home) == []
+
+
+def test_reader_prompt_pins_episode_brief_instruction(home):
+    """Live model output cannot be asserted in a unit test — pin the
+    prompt TEXT instead (100-200 words, plain-words retell-never-quote
+    register, optional-and-omittable framing)."""
+    prompt = miner._compose_prompt(home, ["(digest)"], Path("/tmp/out.json"))
+    assert '"episode_brief"' in prompt
+    assert "100-200 words" in prompt
+    assert "RETELL, never quote" in prompt
+    assert "optional" in prompt.lower()
+
+
 def test_fold_into_matching_pending(home, transcripts, monkeypatch):
     existing = make_behavior()
     create_record(home, existing)

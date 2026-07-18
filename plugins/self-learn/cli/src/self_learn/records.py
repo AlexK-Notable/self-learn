@@ -69,7 +69,15 @@ DRAFT_STATUSES = frozenset({"pending", "deferred"})
 
 #: Required / optional body section headings by record type (02 §1).
 REQUIRED_SECTIONS = {"behavior": ("Trigger", "Instruction"), "knowledge": ("Fact",)}
-OPTIONAL_SECTIONS = {"behavior": (), "knowledge": ("Context",)}
+#: "Episode brief" (02 §1 amendment, 10 §3 U18): a miner-only, optional
+#: body section for BOTH types — no ``required`` weight, duplicate-guarded
+#: by ``_validate_body`` once registered here like any other optional
+#: section. Producer-side convention (miner writes it only for
+#: ``source: session``), not a validator or render gate (02 §1).
+OPTIONAL_SECTIONS = {
+    "behavior": ("Episode brief",),
+    "knowledge": ("Context", "Episode brief"),
+}
 
 _HEADING_RE = re.compile(r"^## +(.+?)\s*$", re.MULTILINE)
 _DELIM = "---"

@@ -136,6 +136,28 @@ def test_scan_hit_in_proposal_free_text_exits_2(home, capsys):
 # ------------------------------------------------------ case 4: both → 2
 
 
+def test_scan_hit_in_edited_episode_brief_exits_2(home, capsys):
+    """02 §1/§2 (10 §3 U18): a human-added/edited '## Episode brief' rides
+    the SAME proposal-validate checkpoint as any other body text — no
+    special-cased hole. A secret added to the brief on the Discuss/pane
+    edit path (not the miner's own compose-before-scan write) is caught
+    at the next `proposal validate` re-scan."""
+    record = seed_record(home)
+    write_proposal(home, record.id, proposal_dict(record_sha="sha256:000000000000"))
+    record_path = home / "user" / "pending" / f"{record.id}.md"
+    fresh = Record.from_path(record_path)
+    fresh.set_body(
+        fresh.body.rstrip("\n")
+        + f"\n\n## Episode brief\nRotated the leaked {GHP_TOKEN} token immediately.\n"
+    )
+    fresh.write(record_path)
+
+    rc = cli.main(["proposal", "validate", record.id])
+
+    assert rc == 2
+    assert "github-token" in capsys.readouterr().err
+
+
 def test_scan_hit_wins_over_schema_invalid(home, capsys):
     record = seed_record(home, fact=f"Leaked {GHP_TOKEN} in the build log.")
     path = proposal_path(home, record.id)

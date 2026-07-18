@@ -31,6 +31,7 @@ place this is decided.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -770,6 +771,11 @@ class FindingRegion:
     sightings: int
     created_at: str | None
     provenance_text: str
+    #: 09 §2.3 Y-21 / 10 §3 U18: the '## Episode brief' section split OUT
+    #: of ``body`` above (never inline in the decision content). None when
+    #: the record carries no brief (no-backfill posture: absent renders
+    #: nothing, not a placeholder).
+    episode_brief: str | None = None
 
 
 @dataclass(frozen=True)
@@ -822,19 +828,54 @@ class DetailModel:
     host_add_command: str | None
 
 
+#: Local heading matcher — mirrors records.py's private ``_HEADING_RE``
+#: (not exported; the model builder owns section EXTRACTION the same way
+#: compilers.py's ``_body_sections`` does for the CLI package, 02 §1).
+_HEADING_RE = re.compile(r"^## +(.+?)\s*$", re.MULTILINE)
+
+
+def _split_episode_brief(body: str) -> tuple[str, str | None]:
+    """09 §2.3 Y-21 / 10 §3 U18: split the optional '## Episode brief'
+    section OUT of a record body, so the Finding region's decision
+    content (Trigger/Instruction/Fact/Context) renders exactly as it did
+    before the brief existed, and the brief renders separately, collapsed,
+    below it. Returns ``(body_without_brief, brief_text_or_none)``; a
+    record with no brief section returns ``(body, None)`` unchanged."""
+    matches = list(_HEADING_RE.finditer(body))
+    if not matches:
+        return body, None
+    brief: str | None = None
+    kept_spans: list[tuple[int, int]] = []
+    for i, m in enumerate(matches):
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(body)
+        if m.group(1) == "Episode brief":
+            brief = body[m.end() : end].strip()
+        else:
+            kept_spans.append((m.start(), end))
+    if brief is None:
+        return body, None
+    if not kept_spans:
+        return "", brief
+    prefix = body[: kept_spans[0][0]]
+    kept_text = "".join(body[start:end] for start, end in kept_spans)
+    return (prefix + kept_text).rstrip("\n") + "\n", brief
+
+
 def _build_finding(record: Record, title: str) -> FindingRegion:
     parts = [record.source, f"{record.sightings} sighting(s)"]
     if record.created_at:
         parts.append(f"created {record.created_at}")
+    body, episode_brief = _split_episode_brief(record.body)
     return FindingRegion(
         title=title or "(untitled)",
         record_type=record.type,
-        body=record.body,
+        body=body,
         evidence=tuple(dict(e) for e in record.evidence),
         source=record.source,
         sightings=record.sightings,
         created_at=str(record.created_at) if record.created_at else None,
         provenance_text=" · ".join(parts),
+        episode_brief=episode_brief,
     )
 
 
