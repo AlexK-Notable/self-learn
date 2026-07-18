@@ -312,7 +312,7 @@ promoted into U1/U3 scope by 09 §11 Y-10.)*
 | Binding beyond 127.0.0.1, weakening any security middleware check | Human (06-horizon Stage-2 territory, never a build-time convenience) |
 | A keybinding conflict with browser-reserved keys surfacing in practice | Propose remap to human; keymap is UX surface |
 | G-3 trigger not fired but build requested | Human (gate discipline) *(trigger recorded as fired: M2 shipped + worker proven 2026-07-15; M3 complete + v1.1 tagged 2026-07-17 — see appendix)* |
-| Arming `host add` from the surface (a canon-target decision) | Armed via the surface's arm/confirm runner — the human still decides; the UI is the hand *(amended 2026-07-17: the "explicit user ask" fired — feedback round 1 item 5; see the 09 §11 Y-11 amendment of the same date)* |
+| Arming `host add` from the surface (a canon-target decision) | Armed via the surface's arm/confirm spine — the human still decides; the UI is the hand *(amended 2026-07-17: the row previously read "Human — deliberately absent in v1; revisit only on explicit user ask", and that ask fired — feedback round 1 item 5. Build pins — server-derived path, consent-in-arm-state, bucket-scoped route triple, project-scope-only, no keymap entry, no agent path — live in the 09 §11 Y-11 amendment of the same date)* |
 | A 09↔corpus or 09↔10 conflict discovered mid-build | Stop; finding; human (authority rule, header) |
 
 ## 5. Eventuality playbooks
