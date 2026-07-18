@@ -1,2 +1,0 @@
-[       9ms] [ERROR] Failed to load resource: the server responded with a status of 500 (Internal Server Error) @ http://127.0.0.1:7358/record/lrn-1fb953f6:0
-[      24ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://127.0.0.1:7358/favicon.ico:0
