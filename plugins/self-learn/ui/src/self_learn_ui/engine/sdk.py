@@ -38,12 +38,15 @@ module attaches a logging handler that forwards the SDK's own
 ``logger.debug`` calls for those two cases into ``uilog``, rather than
 re-implementing the tolerance a second time.
 
-Interrupt ladder (09 §4.2): SDK ``interrupt()`` call, then force-close the
-client if the turn is still active after ``interrupt_grace_secs``
-(default 2s), with a further ``interrupt_kill_secs`` (default 5s total)
-before giving up and closing regardless. ``interrupt()`` on a session that
-never started, or whose last turn already produced a ``Result``, is a
-no-op (10 §3 U5's pinned test case).
+Interrupt ladder (09 §4.2, tuned 2026-07-18): bounded SDK ``interrupt()``
+ack, then force-close the client if the turn is still active after
+``interrupt_grace_secs`` (default 1s), killing at ``interrupt_kill_secs``
+(default 2.5s) — every wait derived from ONE deadline anchored at the
+keystroke, and ``close()``'s ``disconnect()`` shield-and-abandoned at the
+kill bound (never cancelled — a raw cancel would pierce the SDK
+transport's shielded SIGTERM/SIGKILL escalation). ``interrupt()`` on a
+session that never started, or whose last turn already produced a
+``Result``, is a no-op (10 §3 U5's pinned test case).
 """
 
 from __future__ import annotations
@@ -118,6 +121,12 @@ def _install_log_forwarding() -> None:
 def _tool_target(tool_input: dict[str, Any]) -> str | None:
     value = tool_input.get("file_path")
     return value if isinstance(value, str) and value else None
+
+
+#: Strong references to abandoned disconnect tasks (asyncio's registry
+#: holds tasks weakly; delta nit — keep one until done so the background
+#: SDK escalation can never be garbage-collected mid-kill).
+_ABANDONED_DISCONNECTS: set["asyncio.Task[None]"] = set()
 
 
 def _log_abandoned_disconnect(task: "asyncio.Task[None]") -> None:
@@ -260,6 +269,8 @@ class SdkPaneEngine(PaneEngine):
                 "bound — caller released; SDK subprocess escalation "
                 "continues in the background"
             )
+            _ABANDONED_DISCONNECTS.add(task)
+            task.add_done_callback(_ABANDONED_DISCONNECTS.discard)
             task.add_done_callback(_log_abandoned_disconnect)
         except Exception as exc:  # noqa: BLE001 - close() must never raise
             uilog.log(f"pane engine close: disconnect() raised: {exc}")
