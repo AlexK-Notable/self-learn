@@ -183,6 +183,13 @@ def validate_proposal(
     """The 09 §4.5 / 10 §1 validation chain, in pinned order. Returns a
     :class:`VerbProposal` or a refusal string for the agent (it can
     correct itself or ask the human). Nothing renders on refusal."""
+    # Empty strings are ABSENT (T-B(6) live finding, 2026-07-17: under
+    # the SDK's dict-of-types schema shorthand the model filled optional
+    # params with "" — the schema is now a real JSON Schema with only
+    # verb/record_id required, and this normalization is the belt so a
+    # ""-filling model never turns a valid route into a refusal).
+    args = {k: (None if v == "" else v) for k, v in args.items()}
+
     verb = args.get("verb")
     if not isinstance(verb, str) or verb not in PROPOSABLE_VERBS:
         allowed = ", ".join(sorted(PROPOSABLE_VERBS))

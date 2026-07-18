@@ -183,6 +183,27 @@ class TestValidateProposal:
             )
             assert isinstance(result, str), bad
 
+    def test_empty_string_optionals_are_absent(self, tmp_path: Path) -> None:
+        """T-B(6) live finding 2026-07-17: the model filled optional tool
+        params with "" — an empty dest/note/until must read as ABSENT,
+        never refuse a valid proposal."""
+        sb, (rec,) = _seed(tmp_path)
+        result = validate_proposal(
+            sb.ledger,
+            _record_scope(rec),
+            {"verb": "route", "record_id": rec.id, "dest": "skill-md",
+             "note": "n", "until": ""},
+        )
+        assert isinstance(result, VerbProposal)
+        assert result.until is None
+        result2 = validate_proposal(
+            sb.ledger,
+            _record_scope(rec),
+            {"verb": "graduate", "record_id": rec.id, "dest": "", "note": "", "until": ""},
+        )
+        assert isinstance(result2, VerbProposal)
+        assert result2.dest is None and result2.note is None
+
     def test_note_capped_at_intake_never_truncated(self, tmp_path: Path) -> None:
         """Delta R4: the displayed note must be byte-identical to the
         executed --note — over-cap notes REFUSE, they never truncate."""

@@ -224,6 +224,11 @@ class SdkPaneEngine(PaneEngine):
         if ctx.propose_handler is not None:
             handler = ctx.propose_handler
 
+            # A FULL JSON Schema, not the dict-of-types shorthand: the
+            # shorthand marks every key required, and the T-B(6) live
+            # trial showed the model then fills optionals with "" —
+            # which the handler must treat as absent (belt in
+            # proposals.validate_proposal; this schema is the braces).
             @tool(
                 PROPOSAL_TOOL_NAME,
                 "Propose a resolution verb (route/reject/defer/graduate) on a "
@@ -232,11 +237,15 @@ class SdkPaneEngine(PaneEngine):
                 "and optionally dest (route only), note (<=200 chars), "
                 "until (defer only, YYYY-MM-DD).",
                 {
-                    "verb": str,
-                    "record_id": str,
-                    "dest": str | None,
-                    "note": str | None,
-                    "until": str | None,
+                    "type": "object",
+                    "properties": {
+                        "verb": {"type": "string"},
+                        "record_id": {"type": "string"},
+                        "dest": {"type": "string"},
+                        "note": {"type": "string"},
+                        "until": {"type": "string"},
+                    },
+                    "required": ["verb", "record_id"],
                 },
             )
             async def propose_verb_tool(args: dict[str, Any]) -> dict[str, Any]:
