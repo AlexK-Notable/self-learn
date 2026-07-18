@@ -99,8 +99,8 @@ ignoring costs nothing. This section pins the mechanics.
   action key acts immediately from it).
 - **Three screens, one stack, URLs as state**: Front `/` → Bucket
   `/bucket/<scope>/<name>` → Detail `/record/<id>`. The browser's
-  back/forward IS the stack walk; `Esc`/`h` navigate up
-  programmatically. A deep-link lands directly on Detail with the
+  back/forward IS the stack walk; `Esc`/`a`/`←` navigate up
+  programmatically *(keys per the 2026-07-17 remap amendment above)*. A deep-link lands directly on Detail with the
   stack derivable from the URL, so up-navigation still walks sensibly.
 - **Action keys on Detail** (also usable on a Bucket row): `a` approve
   (route), `d` deny (reject), `i` iterate (agent pane), `f` defer, `g`

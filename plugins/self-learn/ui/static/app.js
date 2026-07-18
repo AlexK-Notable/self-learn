@@ -73,9 +73,10 @@
     if (input) input.focus();
   }
 
-  /** j/k move a `.selected` marker among the visible [data-row] elements
-   * within #self-learn-ui-content (Front's bucket table, a Bucket page's
-   * record rows). Enter/l opens the selected row's link. */
+  /** w/s (and arrows) move a `.selected` marker among the visible
+   * [data-row] elements within #self-learn-ui-content (Front's bucket
+   * table, a Bucket page's record rows). Enter/d/ArrowRight opens the
+   * selected row's link. */
   function rows() {
     return Array.from(document.querySelectorAll("#self-learn-ui-content [data-row]"));
   }
@@ -169,7 +170,7 @@
   /**
    * Front bucket-table column sort (feedback round 1 item 1). Click a
    * header to sort by that column; click again to flip direction. Sorting
-   * reorders the ACTUAL tbody rows, so j/k selection (rows() reads DOM
+   * reorders the ACTUAL tbody rows, so w/s selection (rows() reads DOM
    * order) follows the sort with no extra state. Cells carry
    * data-sort-value so "—" and "12d" render text never feeds the compare.
    */
