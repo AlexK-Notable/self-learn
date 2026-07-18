@@ -336,8 +336,19 @@ permission surface of §4.3).
   When the predicate holds, the monitor first tears down any parked
   (awaiting-input / ended) pane session through the standard
   teardown (which clears the proposal slot via §4.5's clear-set),
-  then exits CLEANLY: SIGTERM to self → uvicorn graceful shutdown →
-  exit 0. **Teardown and exit never share a step** (delta R1): the
+  then exits CLEANLY — by setting uvicorn's own ``should_exit`` flag,
+  which drives the standard graceful shutdown and lets the process
+  RETURN with exit 0. *(Mechanism corrected 2026-07-18 at the U13
+  live trial, which caught the first-drafted SIGTERM-to-self failing
+  in production: uvicorn 0.29+ ``capture_signals`` restores default
+  handlers and RE-RAISES every captured signal after graceful
+  shutdown, so a self-signaled process dies BY SIGNAL — the parent
+  reports 143, systemd logs "Failed with result exit-code", and
+  ``Restart=on-failure`` RESTARTS the service: the exact opposite of
+  stay-down. Three restart cycles observed live before the fix. The
+  spec-gate review had verified the SIGTERM claim as sound —
+  plausible-but-wrong on the installed uvicorn; the DoD trial is what
+  caught it.)* **Teardown and exit never share a step** (delta R1): the
   teardown awaits engine calls, so a sample that finds a parked
   session tears it down and DEFERS the exit decision — the signal
   fires only on a later sample whose full predicate read reaches
@@ -1310,10 +1321,13 @@ removed the last competing workstream — the build gate is open.*
   requests, runner between verbs, no INTERRUPTIBLE pane session,
   request-completion clock aged past the window); the window is
   `SELF_LEARN_UI_IDLE_EXIT_SECONDS` (default 600; ≤0 disables —
-  §4.4); **(2)** exit mechanism is SIGTERM-to-self → uvicorn
-  graceful shutdown → exit 0 — no new systemd semantics:
-  `Restart=on-failure` already reads a clean exit as "stay down"
-  and crash-restart is unchanged; **(3)** the launcher — already
+  §4.4); **(2)** exit mechanism is uvicorn's ``should_exit``
+  flag → graceful shutdown → a genuine return → exit 0 — no new
+  systemd semantics: `Restart=on-failure` already reads a clean exit
+  as "stay down" and crash-restart is unchanged *(corrected
+  2026-07-18 at the U13 live trial — the drafted SIGTERM-to-self
+  exits 143 via uvicorn's capture_signals re-raise and gets
+  RESTARTED; see §3)*; **(3)** the launcher — already
   the only start path a user touches (notification click,
   `.desktop` entry) — is the resurrection path, and gains the
   readiness wait (§3's launcher bullet: fresh token THEN TCP

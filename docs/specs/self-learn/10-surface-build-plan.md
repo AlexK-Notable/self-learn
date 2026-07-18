@@ -370,7 +370,9 @@ in brackets.
   last-request-COMPLETION monotonic clock; the monitor runs on the
   request event loop and decides-then-signals in one loop step — no
   `await` between predicate read and signal) + parked-pane teardown
-  before clean self-exit (SIGTERM to self);
+  before clean self-exit (uvicorn ``should_exit`` flag — corrected at
+  the live trial, 09 §3: SIGTERM-to-self dies 143 via the
+  capture_signals re-raise and gets restarted);
   `SELF_LEARN_UI_IDLE_EXIT_SECONDS` through `EnvConfig` (≤0 ⇒
   disabled — negatives pinned, never an error) with the
   `INVOCATION_ID` arming rule; the launcher's readiness wait
@@ -608,6 +610,21 @@ matrix is wide and embarrassingly parallel to write) shortens the
 path more than adding tracks.
 
 ## Appendix — Build findings (dated; §7 discipline)
+
+- **2026-07-18 · U13 live trial (Y-14 idle lifecycle).** The DoD
+  trial caught the drafted exit mechanism failing in production:
+  SIGTERM-to-self exits **143**, not 0 — uvicorn 0.29+
+  ``capture_signals`` re-raises the captured signal after graceful
+  shutdown, so the process dies by signal and ``Restart=on-failure``
+  restarts it (three cycles observed live). Both blind reviews had
+  verified the SIGTERM claim as sound from the code's shape —
+  plausible-but-wrong on the installed uvicorn 0.51. Fix: ``serve``
+  constructs an explicit ``uvicorn.Server`` and the idle callback
+  sets ``server.should_exit`` (same graceful path, genuine return,
+  real exit 0); ``idle.default_exit`` demoted to a documented
+  last-resort fallback. Lesson for the register: systemd/signal
+  semantics claims are live-trial-only facts — no review pass
+  substitutes for watching ``systemctl show`` after the exit.
 
 - **2026-07-17 · U12 build (Y-13 chat panes).** Three dated notes:
   (1) **propose_verb tool schema** — the SDK's dict-of-types schema

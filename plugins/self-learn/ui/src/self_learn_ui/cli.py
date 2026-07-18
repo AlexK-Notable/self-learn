@@ -59,10 +59,32 @@ def _build_server_app(env: EnvConfig) -> tuple["FastAPI", str]:
 
     token = mint_token()
     write_token_file(token)
-    # Y-14 (09 §3): idle self-exit arms only under the systemd unit
-    # unless SELF_LEARN_UI_IDLE_EXIT_SECONDS is set explicitly — the
-    # arming rule lives in resolve_idle_window.
-    app = create_app(env=env, token=token, idle_exit_seconds=resolve_idle_window(env))
+    # Y-14 (09 §3, mechanism corrected at the U13 live trial): the idle
+    # exit callback sets uvicorn's own ``should_exit`` flag — NO signal.
+    # The first-drafted SIGTERM-to-self died by re-raised signal (exit
+    # 143): uvicorn's capture_signals restores default handlers and
+    # re-raises every captured signal AFTER graceful shutdown, so the
+    # process never returns 0 and Restart=on-failure RESTARTS it — the
+    # exact opposite of stay-down. ``should_exit`` drives the identical
+    # graceful shutdown path with a genuine return, so ``_serve``
+    # really exits 0. The holder is filled by ``_serve`` once the
+    # Server object exists; an unfilled holder no-ops (tests, callers
+    # that never run uvicorn).
+    exit_holder: dict = {}
+
+    def request_idle_exit() -> None:
+        server = exit_holder.get("server")
+        if server is not None:
+            server.should_exit = True
+
+    app = create_app(
+        env=env,
+        token=token,
+        idle_exit_seconds=resolve_idle_window(env),
+        idle_exit_callback=request_idle_exit,
+    )
+    app.state.idle_exit_holder = exit_holder
+    app.state.request_idle_exit = request_idle_exit
     return app, token
 
 
@@ -80,15 +102,21 @@ def _serve() -> int:
 
     app, _token = _build_server_app(env)
     # Foreground, blocking (09 §3 / 10 §1 Service row) — returns once
-    # uvicorn receives a shutdown signal (SIGTERM/SIGINT), exactly what
-    # systemd's ExecStart + Restart=on-failure expects to manage.
+    # uvicorn receives a shutdown signal (SIGTERM/SIGINT) or the Y-14
+    # idle monitor sets ``should_exit`` (the explicit Server object
+    # exists exactly so the monitor has that flag to set — see
+    # _build_server_app; on idle exit this returns and we exit 0,
+    # which Restart=on-failure reads as stay-down).
     # access_log=False is load-bearing (interim-review MAJOR, 2026-07-17):
     # the deep-link arrives as `GET /?token=<secret>` and uvicorn's access
     # logger records the full request line BEFORE the 303 strips it — under
     # the systemd unit that lands in the journal, persisting every minted
     # token. This localhost single-user service has no operational need for
     # per-request access logs; the app keeps its own ui.log.
-    uvicorn.run(app, host="127.0.0.1", port=env.ui_port, access_log=False)
+    config = uvicorn.Config(app, host="127.0.0.1", port=env.ui_port, access_log=False)
+    server = uvicorn.Server(config)
+    app.state.idle_exit_holder["server"] = server
+    server.run()
     return 0
 
 

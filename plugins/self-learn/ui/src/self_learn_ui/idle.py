@@ -115,9 +115,15 @@ class ActivityTracker:
 
 
 def default_exit() -> None:
-    """SIGTERM to self → uvicorn graceful shutdown → exit 0 (09 §3:
-    under ``Restart=on-failure`` a clean exit stays down; the launcher
-    is the resurrection path)."""
+    """Last-resort fallback ONLY — production never uses it. The real
+    exit path (09 §3 as corrected at the U13 live trial) is the
+    ``should_exit`` callback ``cli._build_server_app`` injects: uvicorn
+    0.29+ ``capture_signals`` re-raises a captured SIGTERM after
+    graceful shutdown, so a self-signal dies BY SIGNAL (parent reports
+    143) and ``Restart=on-failure`` restarts the service — the exact
+    opposite of stay-down. This SIGTERM fallback exists only so a
+    caller that armed the monitor without wiring a callback still
+    shuts down rather than silently never exiting."""
     os.kill(os.getpid(), signal.SIGTERM)
 
 

@@ -57,12 +57,17 @@ def test_no_args_prints_help_and_returns_zero(
 def test_serve_wires_and_runs_the_real_app_under_uvicorn(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """U4: `serve` no longer stubs — it builds the real ASGI app (default
-    runner = RealRunner, per app.py) and hands it to uvicorn.run() on
-    127.0.0.1:$SELF_LEARN_UI_PORT, in the foreground (rc 0 once uvicorn
-    returns). uvicorn.run is monkeypatched so this stays a fast,
-    non-blocking unit test — the real end-to-end server is test_serve.py's
-    job."""
+    """U4 (+U13): `serve` builds the real ASGI app (default runner =
+    RealRunner, per app.py) and runs it under an explicit
+    ``uvicorn.Server`` on 127.0.0.1:$SELF_LEARN_UI_PORT, in the
+    foreground (rc 0 once the server returns). The explicit Server —
+    rather than ``uvicorn.run`` — exists so the Y-14 idle callback has
+    a ``should_exit`` flag to set (the live-trial-corrected exit
+    mechanism, 09 §3): this test also pins that
+    ``app.state.request_idle_exit()`` reaches THE server instance
+    serve runs. ``uvicorn.Server.run`` is monkeypatched so this stays
+    a fast, non-blocking unit test — the real end-to-end server is
+    test_serve.py's job."""
     _clear_self_learn_env(monkeypatch)
     ledger_home = tmp_path / "ledger-home"
     ledger_home.mkdir()
@@ -75,20 +80,31 @@ def test_serve_wires_and_runs_the_real_app_under_uvicorn(
 
     import uvicorn
 
-    calls: list[dict] = []
+    calls: list = []
 
-    def fake_run(app, *, host: str, port: int, **kwargs) -> None:
-        calls.append({"app": app, "host": host, "port": port})
+    def fake_run(self) -> None:  # bound to the Server instance
+        calls.append(self)
 
-    monkeypatch.setattr(uvicorn, "run", fake_run)
+    monkeypatch.setattr(uvicorn.Server, "run", fake_run)
 
     rc = main(["serve"])
     assert rc == 0
     assert len(calls) == 1
-    assert calls[0]["host"] == "127.0.0.1"
-    assert calls[0]["port"] == 18357
+    server = calls[0]
+    assert server.config.host == "127.0.0.1"
+    assert server.config.port == 18357
+    assert server.config.access_log is False
     # A real FastAPI app was actually constructed, not a stand-in.
-    assert calls[0]["app"].__class__.__name__ == "FastAPI"
+    app = server.config.app
+    assert app.__class__.__name__ == "FastAPI"
+
+    # Y-14 (live-trial-corrected mechanism): the idle callback sets
+    # should_exit on the very Server instance serve runs — never a
+    # signal (SIGTERM dies 143 via uvicorn's capture_signals re-raise
+    # and gets RESTARTED by on-failure).
+    assert server.should_exit is False
+    app.state.request_idle_exit()
+    assert server.should_exit is True
 
     # The per-start token was minted and written 0600 (middleware pin).
     token_path = tmp_path / "runtime" / "self-learn" / "ui-token"
