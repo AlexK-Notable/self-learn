@@ -136,11 +136,24 @@ def list_items(
     home: Path,
     *,
     include_deferred: bool = False,
+    surface_fill: bool = False,
+    record_id: str | None = None,
     env: dict[str, str] | None = None,
 ) -> CliRead:
+    """09 §11 Y-20 / 08 §1 `surface_fill`: ``surface_fill=True`` passes
+    the CLI's opt-in ``--surface-fill`` flag (default OFF — every other
+    call site, Front/Bucket, leaves it off, per blind-review F4: those
+    paints never show fill, so they must not pay for it). ``record_id``
+    passes ``--id`` (delta F9) — the ONE call site that combines both is
+    Detail's own read, which needs fill for its one displayed record, not
+    every pending record's."""
     args = ["list", "--json"]
     if include_deferred:
         args.append("--include-deferred")
+    if surface_fill:
+        args.append("--surface-fill")
+    if record_id is not None:
+        args += ["--id", record_id]
     return _invoke_json(args, home=home, env=env)
 
 

@@ -313,7 +313,13 @@ def _load_detail(home: Path, record_id: str):
     record = ledger.read_record(location.path)
     if record is None:
         return None
-    list_read = ledger.list_items(home, include_deferred=True)
+    # 09 §11 Y-20 / delta F9: the ONE call site that passes --surface-fill,
+    # scoped via --id to this one record — Front/Bucket never request it
+    # (blind-review F4), and this record's ≤2 targets, not every pending
+    # record's (delta F9 sync).
+    list_read = ledger.list_items(
+        home, include_deferred=True, surface_fill=True, record_id=record_id
+    )
     item = None
     if list_read.ok:
         item = next((i for i in (list_read.data or []) if i.get("id") == record_id), None)

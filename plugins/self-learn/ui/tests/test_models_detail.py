@@ -13,6 +13,7 @@ from self_learn_ui.models import (
     NO_ANALYSIS_MESSAGE,
     PARAMETER_FREE_DESTINATIONS,
     PREVIEW_HONESTY_CAPTION,
+    REFERENCE_NO_CAP_LINE,
     build_detail_model,
     correct_destination,
     destinations_for_scope,
@@ -239,6 +240,113 @@ class TestWhyRegion:
         )
         assert model.why.already_canon is True
         assert model.why.already_canon_reason == "SKILL.md already covers this"
+
+
+class TestSurfaceBudgets:
+    """09 §11 Y-20 / 08 §1 `surface_fill` -> `model.why.budgets`: the Why
+    region's single budget surface. Template-truth: the sentence is built
+    once in models.py off the CLI's datum, never re-derived per render."""
+
+    def test_no_surface_fill_key_yields_only_the_static_reference_line(self):
+        # skill scope, no `surface_fill` in the item at all (as if the
+        # caller forgot --surface-fill, or the CLI omitted every capped
+        # key) -> skill-md/claude-md rows are simply absent; reference
+        # is unconditional for a scope where it's a valid candidate.
+        model = _build(_item(), scope="skill")
+        assert [b.destination for b in model.why.budgets] == ["reference"]
+        assert model.why.budgets[0].text == REFERENCE_NO_CAP_LINE
+
+    def test_both_capped_destinations_render_their_datum(self):
+        fill = {
+            "skill-md": {
+                "entries": 8, "entries_cap": 10, "words": 10, "words_cap": 150,
+                "over_cap": False,
+            },
+            "claude-md": {
+                "entries": 0, "entries_cap": 10, "words": 0, "words_cap": 150,
+                "over_cap": False,
+            },
+        }
+        model = _build(_item(surface_fill=fill), scope="skill")
+        by_dest = {b.destination: b for b in model.why.budgets}
+        assert set(by_dest) == {"skill-md", "claude-md", "reference"}
+        # the spec's own illustrative sentence, verbatim (09 §11 Y-20 / §2.3):
+        assert by_dest["skill-md"].text == (
+            "this skill-md section already holds 8 of its 10 entries — a "
+            "route here lands near the cap"
+        )
+        assert by_dest["claude-md"].text == (
+            "this claude-md section already holds 0 of its 10 entries — a "
+            "route here lands near the cap"
+        )
+        assert by_dest["reference"].text == REFERENCE_NO_CAP_LINE
+
+    def test_words_binding_constraint_gets_the_word_cap_phrasing(self):
+        fill = {
+            "skill-md": {
+                "entries": 2, "entries_cap": 10, "words": 140, "words_cap": 150,
+                "over_cap": False,
+            },
+        }
+        model = _build(_item(surface_fill=fill), scope="skill")
+        by_dest = {b.destination: b for b in model.why.budgets}
+        assert "near its word budget" in by_dest["skill-md"].text
+        assert "lands near the cap" not in by_dest["skill-md"].text
+
+    def test_missing_key_renders_nothing_for_that_destination(self):
+        # skill-md omitted (as a VerbError leg would leave it, F5) —
+        # no row at all for it, never a zero, never a placeholder.
+        fill = {
+            "claude-md": {
+                "entries": 3, "entries_cap": 10, "words": 12, "words_cap": 150,
+                "over_cap": False,
+            },
+        }
+        model = _build(_item(surface_fill=fill), scope="skill")
+        destinations = [b.destination for b in model.why.budgets]
+        assert "skill-md" not in destinations
+        assert "claude-md" in destinations
+        assert "reference" in destinations
+
+    def test_over_cap_flag_passes_through_without_extra_markup(self):
+        # 09 §11 Y-20(5): the fill fact only — the escalation itself is
+        # the EXISTING 02 §4 warning (surfaced elsewhere, at route time),
+        # never duplicated into this sentence.
+        fill = {
+            "skill-md": {
+                "entries": 11, "entries_cap": 10, "words": 33, "words_cap": 150,
+                "over_cap": True,
+            },
+        }
+        model = _build(_item(surface_fill=fill), scope="skill")
+        by_dest = {b.destination: b for b in model.why.budgets}
+        assert by_dest["skill-md"].over_cap is True
+        assert "holds 11 of its 10 entries" in by_dest["skill-md"].text
+        assert "WARNING" not in by_dest["skill-md"].text
+
+    def test_user_scope_never_offers_reference(self):
+        # destinations_for_scope("user") == ("claude-md",) — reference is
+        # not a scope-valid candidate at all, so no static line either.
+        fill = {
+            "claude-md": {
+                "entries": 0, "entries_cap": 10, "words": 0, "words_cap": 150,
+                "over_cap": False,
+            },
+        }
+        model = _build(_item(surface_fill=fill), scope="user")
+        assert [b.destination for b in model.why.budgets] == ["claude-md"]
+
+    def test_project_scope_never_offers_skill_md(self):
+        fill = {
+            "claude-md": {
+                "entries": 1, "entries_cap": 10, "words": 4, "words_cap": 150,
+                "over_cap": False,
+            },
+        }
+        model = _build(_item(surface_fill=fill), scope="project")
+        destinations = [b.destination for b in model.why.budgets]
+        assert "skill-md" not in destinations
+        assert destinations == ["claude-md", "reference"]
 
 
 class TestContradicts:

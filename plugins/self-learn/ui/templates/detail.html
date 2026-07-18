@@ -100,6 +100,18 @@
     <p class="badge badge-already-canon">already canon{% if model.why.already_canon_reason %} — {{ model.why.already_canon_reason }}{% endif %}</p>
     {% endif %}
     <p class="badge badge-{{ model.why.freshness }}">{{ model.why.freshness_label }}</p>
+    {# 09 §11 Y-20 / §2.3: the single budget surface — every scope-valid
+       candidate's loaded-surface fill, plain words. A missing capped key
+       (F5) is simply absent from model.why.budgets; nothing renders for
+       it (no zero, no placeholder). The armed action bar below carries
+       NO budget datum — pinned negative (F2), never wired here. #}
+    {% if model.why.budgets %}
+    <ul class="surface-budgets">
+      {% for budget in model.why.budgets %}
+      <li class="surface-budget surface-budget-{{ budget.destination }}{% if budget.over_cap %} surface-budget-over-cap{% endif %}">{{ budget.text }}</li>
+      {% endfor %}
+    </ul>
+    {% endif %}
   </section>
 
   {% if model.contradicts %}

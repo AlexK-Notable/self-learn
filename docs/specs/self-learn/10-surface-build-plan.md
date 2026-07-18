@@ -603,6 +603,13 @@ in brackets.
   claude-md fill side by side, `reference` shows the static line;
   routing a *second* record to the same target and re-opening Detail
   shows the incremented fill (the render-time freshness property).
+  *(2026-07-18 U17 build, delta F9 — reviewer-sanctioned: `list --json`
+  gains a NEW record-scoping flag **`--id <record-id>`**, so
+  `list --json --surface-fill --id <record-id>` computes fill for ONLY
+  the displayed record's ≤2 targets instead of every pending record's.
+  The UI Detail call site (`ledger.list_items`) uses this variant;
+  unflagged and non-`--id` behavior is unchanged (08 §1's matching
+  dated edit).)*
 
 - **U18 · Miner episode brief — capture, exclusion, and collapsed
   display** [spans cli + ui] *(added 2026-07-18 — UX enhancement survey
