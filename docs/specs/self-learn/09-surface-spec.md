@@ -725,9 +725,12 @@ mutation seam. Everything below is one tool, one bar, one POST.
   swaps)*: a valid proposal renders a **waiting** proposal bar —
   full content visible: verb, the record's human line (Y-9), id as
   trailing metadata, destination, date, and the note rendered under
-  an explicit "agent-suggested note:" label, display-capped (~200
-  chars, full text on the record) — assembled from the
-  SERVER-validated args. **Server-truth anchor: verb, record id,
+  an explicit "agent-suggested note:" label — **capped at intake**
+  *(delta review R4: a display-only cap would let the human confirm
+  note text they only partially read)*: the handler refuses notes
+  over 200 characters with a refusal string (the agent shortens and
+  retries), so **the note displayed is byte-identical to the note
+  the confirm executes** — assembled from the SERVER-validated args. **Server-truth anchor: verb, record id,
   destination, and date are validated server fields; the note IS
   agent prose and is labeled as such** (the review's F7 — the bar
   never pretends otherwise). The waiting bar is NOT `[data-armed]`:

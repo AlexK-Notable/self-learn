@@ -120,10 +120,12 @@ system. Design rules:
   no path to `route` — approval is the TUI action, which calls the CLI
   verb. Same trust geometry as the worker: proposer ≠ approver, by
   construction. *(Refined 2026-07-17, feedback round 1 item 7 — 09 §4.5 /
-  §11 Y-13: the pane agent may now REQUEST a resolution via a single
-  server-owned proposal tool, which renders the surface's standing
-  arm/confirm bar to the human; the agent still holds no path to
-  EXECUTE any verb — the executing POST originates from the human's
+  §11 Y-13, wording per the same-day rework: the pane agent may now
+  REQUEST a resolution via a single server-owned proposal tool, which
+  renders a WAITING proposal bar to the human; the human's own
+  keystroke arms it and Enter confirms — the same two-step consent
+  path as every human-initiated action. The agent still holds no path
+  to EXECUTE any verb — the executing POST originates from the human's
   window, so proposer ≠ approver survives verbatim. A typed instruction
   in chat is a decision channel; the confirm keystroke is the decision.)*
 - **Outcomes land in the ledger, not in the pane.** An Iterate that

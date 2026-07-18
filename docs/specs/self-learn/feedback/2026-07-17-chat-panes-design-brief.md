@@ -6,6 +6,17 @@ mechanism (07/09: "agent iterates, only the human routes"), so it takes
 the standing treatment: this brief → dated 09 §4 amendments → blind
 review of the amendments → build. Nothing here authorizes code.
 
+> **Status update 2026-07-17 (later, same day):** CONSUMED — the Y-13
+> amendment set landed and passed its spec gate (blind review →
+> rework → delta SOUND; record `reviews/2026-07-17-chat-panes-spec.md`).
+> Where the ratified spec departs from this brief, the spec wins; the
+> two dated departures: (1) `host add` does NOT join the proposable
+> set (Y-11's no-agent-path pin, which postdates this brief,
+> overrides §"(a)"); (2) proposals do not render "the EXISTING armed
+> action-bar" directly — they render a WAITING bar the human's `y`
+> arms (the blind review proved the armed-swap shape could race a
+> human's pending Enter). 09 §4.5 is now the authority.
+
 ## The directive (user's words, 2026-07-17 walkthrough)
 
 A chat window on the Bucket page AND per-record. The agent must be
