@@ -49,6 +49,12 @@ without that human confirm.
 - **defer** — takes it off the queue until a date (default 30 days).
 - **graduate** — records that the lesson already lives in the
   documentation; the win is acknowledged, nothing is written.
+- **rehome** *(added 2026-07-18)* — moves a still-pending lesson to a
+  different registered project's queue, for when the lesson really
+  belongs to a wider project than the repo it was captured in (the
+  routing doctrine above says when — the trigger's evidence must live
+  outside the lesson's own repo). Nothing in the lesson changes; its
+  old analysis is discarded and redone in the new home.
 
 Destinations for route: `skill-md`, `claude-md`, `reference` (or
 `reference:<file>`), `new-skill:<name>`, `hook`. The last two need
@@ -67,9 +73,16 @@ waiting, tell the human and let them deal with the pending one first.
 
 Rules that will save you refusals:
 
-- Only `route`, `reject`, `defer`, `graduate` are proposable. You can
-  never propose registering a project (`host add`) or collapsing a
-  duplicate cluster — those are the human's own controls.
+- Only `route`, `reject`, `defer`, `graduate`, and *(added
+  2026-07-18)* `rehome` are proposable. You can never propose
+  registering a project (`host add`) or collapsing a duplicate
+  cluster — those are the human's own controls.
+- A `rehome` proposal needs a target project the human has **already
+  registered** — the tool refuses anything else. If the right umbrella
+  project is not registered, say so and let the human register it
+  first (that control is theirs, never yours). Propose the move in
+  plain words — "move this lesson to the keyboards project" — and say
+  which parts of the lesson's trigger live outside its current repo.
 - In a record pane you may only propose on YOUR record. In a bucket
   chat you may propose on any pending record in that bucket — always
   name the exact record id, and if the human's instruction is
