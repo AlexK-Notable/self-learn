@@ -3,7 +3,8 @@
    §4.3: "until a re-validate exits 0" — survives `q` close). Always the
    SAME dom id as partials/pane.html / pane_armed.html so every pane
    route can swap this one region uniformly. #}
-<div id="pane-region-wrapper" class="pane-region pane-idle">
+<div id="pane-region-wrapper" class="pane-region pane-idle"
+     data-pane-panel-url="{{ pane_base | default('/record/' ~ record_id ~ '/pane') }}/panel">
   <button type="button" data-key-action="{{ 'bucket_pane' if bucket_pane else 'iterate' }}"
           hx-post="{{ pane_base | default('/record/' ~ record_id ~ '/pane') }}/start"
           hx-target="#pane-region-wrapper" hx-swap="outerHTML">{% if bucket_pane %}Open bucket chat (p){% else %}Iterate (i){% endif %}</button>

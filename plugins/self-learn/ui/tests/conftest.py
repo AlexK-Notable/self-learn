@@ -30,3 +30,18 @@ def redirected_xdg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str,
         "runtime_dir": runtime_dir,
         "ledger_home": ledger_home,
     }
+
+
+@pytest.fixture(autouse=True)
+def _client_contexts():
+    """Arms support.CLIENT_STACK (Y-15: entered TestClients — one
+    persistent loop per test so background pane drains survive across
+    requests; exited/cleaned at test end)."""
+    import contextlib
+
+    import support
+
+    with contextlib.ExitStack() as stack:
+        support.CLIENT_STACK = stack
+        yield
+    support.CLIENT_STACK = None

@@ -251,3 +251,31 @@ def merge_proposal_text(cluster_id: str, records: list[str], survivor: str) -> s
         f"model: claude-sonnet-5\n"
         f"analyzed_at: 2026-07-13T02:10:00Z\n"
     )
+
+
+# ---------------------------------------------------- Y-15 client context
+#
+# The non-blocking pane start (09 §4.2 Y-15) drains the first turn as a
+# background task on the APP's event loop. A bare TestClient runs every
+# request on a throwaway per-request loop, which would destroy that task
+# mid-flight — so route tests that touch panes enter the client's
+# lifespan context (ONE persistent portal/loop per test) via the autouse
+# stack conftest.py arms, and join turns deterministically through that
+# same portal.
+
+CLIENT_STACK = None  # armed per-test by conftest._client_contexts
+
+
+def enter_client(client):
+    """Enter *client*'s lifespan/portal context for the current test —
+    required for any client whose requests spawn pane drains (Y-15)."""
+    if CLIENT_STACK is None:
+        raise RuntimeError("enter_client() used outside a test")
+    return CLIENT_STACK.enter_context(client)
+
+
+def join_pane_turn(client, manager) -> None:
+    """Deterministic join on the background first turn
+    (:meth:`PaneManager.wait_for_turn`) on the client's own loop."""
+    assert client.portal is not None, "join_pane_turn needs an entered client"
+    client.portal.call(manager.wait_for_turn)

@@ -115,6 +115,14 @@ def create_app(
                 watch_task.cancel()
             if idle_task is not None:
                 idle_task.cancel()
+            # Y-15 (code-review MINOR-2): the background pane drain no
+            # longer lives inside any request uvicorn's graceful
+            # shutdown waits for — tear the live session down with the
+            # app so shutdown never leaks a free-floating drain task or
+            # an open engine child.
+            manager = getattr(app.state, "pane_manager", None)
+            if manager is not None:
+                await manager.shutdown()
 
     app = FastAPI(lifespan=lifespan)
     app.state.env = env

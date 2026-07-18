@@ -21,7 +21,7 @@ from self_learn_ui.engine.base import BlockStart, FakeEngine, Result, TextDelta
 from self_learn_ui.env import load_env
 from self_learn_ui.runner import FakeRunner, RunResult
 
-from support import make_behavior, make_env, seed_record
+from support import enter_client, join_pane_turn, make_behavior, make_env, seed_record
 
 TOKEN = "test-token"
 HX = {"HX-Request": "true"}
@@ -33,6 +33,9 @@ def make_client(sb, *, runner: FakeRunner | None = None, port: int = 7357) -> tu
     app = create_app(env=env, token=TOKEN, runner=runner, start_watcher=False)
     c = TestClient(app, base_url=f"http://127.0.0.1:{port}")
     c.cookies.set("slu_token", TOKEN)
+    # Y-15: pane drains are background tasks on the app's event loop —
+    # every client here runs on ONE persistent portal (support.py).
+    enter_client(c)
     return c, runner
 
 
@@ -115,14 +118,17 @@ class TestDetailSplitRendering:
         engine = FakeEngine(
             turns=[[BlockStart(kind="text"), TextDelta(text="analysis text"), Result("success", 0.01, None)]]
         )
-        c, runner, _manager = make_client_with_pane(sb, engines={rec.id: engine})
+        c, runner, manager = make_client_with_pane(sb, engines={rec.id: engine})
         runner.queue_result(RunResult(0))  # the post-session validate call
 
         start = c.post(f"/record/{rec.id}/pane/start", headers=HX)
         assert start.status_code == 200
-        assert "analysis text" in start.text
+        # Y-15: the POST returns the STARTING split — transcript content
+        # arrives over SSE, never in this response.
+        assert "Starting the conversation" in start.text
         assert 'data-key-action="close_pane"' in start.text
 
+        join_pane_turn(c, manager)
         detail = c.get(f"/record/{rec.id}")
         assert 'class="detail-left"' in detail.text
         assert 'class="detail-right"' in detail.text
@@ -133,21 +139,34 @@ class TestDetailSplitRendering:
 
 
 class TestPaneStartSendInterruptClose:
-    def test_start_renders_transcript_and_result_footer(self, tmp_path: Path) -> None:
+    def test_start_returns_starting_markup_then_panel_carries_the_result(self, tmp_path: Path) -> None:
+        # Y-15: the start POST is prompt — starting markup with the
+        # region ids/hooks the SSE handlers target, interrupt live, and
+        # the panel URL data attribute (delta R3); the result footer
+        # arrives on the completion swap's panel GET, never the POST.
         sb, rec = _seed(tmp_path)
         engine = FakeEngine(
             turns=[[BlockStart(kind="text"), TextDelta(text="hello there"), Result("success", 0.02, None)]]
         )
-        c, runner, _manager = make_client_with_pane(sb, engines={rec.id: engine})
+        c, runner, manager = make_client_with_pane(sb, engines={rec.id: engine})
         runner.queue_result(RunResult(0))
 
         r = c.post(f"/record/{rec.id}/pane/start", headers=HX)
         assert r.status_code == 200
-        assert "hello there" in r.text
-        assert "success" in r.text
-        assert "0.0200" in r.text
+        assert 'data-pane-state="starting"' in r.text
+        assert "Starting the conversation" in r.text
+        assert 'id="pane-transcript"' in r.text  # the SSE handlers' region exists NOW
+        assert f'data-pane-panel-url="/record/{rec.id}/pane/panel"' in r.text
+        assert 'data-key-action="interrupt"' in r.text  # Esc works from starting
+        assert "hello there" not in r.text  # transcript never rides the POST
+
+        join_pane_turn(c, manager)
+        panel = c.get(f"/record/{rec.id}/pane/panel")
+        assert "hello there" in panel.text
+        assert "success" in panel.text
+        assert "0.0200" in panel.text
         # AWAITING_INPUT: nothing in flight -> no interrupt control.
-        assert 'data-key-action="interrupt"' not in r.text
+        assert 'data-key-action="interrupt"' not in panel.text
         assert engine.started is True
 
     def test_send_continues_the_same_session(self, tmp_path: Path) -> None:
@@ -158,11 +177,14 @@ class TestPaneStartSendInterruptClose:
                 [BlockStart(kind="text"), TextDelta(text="follow-up reply"), Result("success", 0.0, None)],
             ]
         )
-        c, runner, _manager = make_client_with_pane(sb, engines={rec.id: engine})
+        c, runner, manager = make_client_with_pane(sb, engines={rec.id: engine})
         runner.queue_result(RunResult(0))
         runner.queue_result(RunResult(0))
 
         c.post(f"/record/{rec.id}/pane/start", headers=HX)
+        join_pane_turn(c, manager)
+        # Y-15/F6: send's authoritative-swap semantics are untouched —
+        # its POST response still renders the post-turn state.
         r = c.post(f"/record/{rec.id}/pane/send", data={"text": "please clarify"}, headers=HX)
         assert r.status_code == 200
         assert "follow-up reply" in r.text
@@ -174,6 +196,7 @@ class TestPaneStartSendInterruptClose:
         c, runner, manager = make_client_with_pane(sb, engines={rec.id: engine})
         runner.queue_result(RunResult(0))
         c.post(f"/record/{rec.id}/pane/start", headers=HX)
+        join_pane_turn(c, manager)
 
         r = c.post(f"/record/{rec.id}/pane/interrupt", headers=HX)
         assert r.status_code == 200
@@ -187,6 +210,7 @@ class TestPaneStartSendInterruptClose:
         c, runner, manager = make_client_with_pane(sb, engines={rec.id: engine})
         runner.queue_result(RunResult(0))
         c.post(f"/record/{rec.id}/pane/start", headers=HX)
+        join_pane_turn(c, manager)
         assert manager.snapshot(rec.id).blocks
 
         r = c.post(f"/record/{rec.id}/pane/close", headers=HX)
@@ -236,8 +260,13 @@ class TestEngineStartFailure:
 
         r = c.post(f"/record/{rec.id}/pane/start", headers=HX)
         assert r.status_code == 200
-        assert "connection refused" in r.text
-        assert 'data-key-action="retry"' in r.text
+        assert "Starting the conversation" in r.text  # the POST is pre-failure
+        join_pane_turn(c, manager)
+        # Y-15/F1: the failure lands via the pane_result-triggered
+        # completion swap — this panel GET is exactly that fetch.
+        panel = c.get(f"/record/{rec.id}/pane/panel")
+        assert "connection refused" in panel.text
+        assert 'data-key-action="retry"' in panel.text
         assert runner.calls == []  # no validate call on a failed session
 
 
@@ -247,9 +276,11 @@ class TestCapHitAndRetry:
         engine = FakeEngine(
             turns=[[Result(status="error_max_budget_usd", cost_usd=1.0, error="budget exceeded")]]
         )
-        c, runner, _manager = make_client_with_pane(sb, engines={rec.id: engine})
+        c, runner, manager = make_client_with_pane(sb, engines={rec.id: engine})
 
-        r = c.post(f"/record/{rec.id}/pane/start", headers=HX)
+        c.post(f"/record/{rec.id}/pane/start", headers=HX)
+        join_pane_turn(c, manager)
+        r = c.get(f"/record/{rec.id}/pane/panel")  # the completion swap's fetch
         assert "cap hit — r to continue in a fresh session" in r.text
         assert 'data-key-action="retry"' in r.text
         # An ENDED session is not continuable by send() — only by retry.
@@ -278,13 +309,19 @@ class TestCapHitAndRetry:
         c.app.state.pane_manager = manager
         runner.queue_result(RunResult(0))
 
-        first = c.post(f"/record/{rec.id}/pane/start", headers=HX)
+        c.post(f"/record/{rec.id}/pane/start", headers=HX)
+        join_pane_turn(c, manager)
+        first = c.get(f"/record/{rec.id}/pane/panel")
         assert "boom" in first.text
 
+        # r from the error state: a fresh engine, a fresh starting split.
         second = c.post(f"/record/{rec.id}/pane/retry", headers=HX)
         assert second.status_code == 200
-        assert calls["n"] == 2
+        assert "Starting the conversation" in second.text
         assert "boom" not in second.text
+        join_pane_turn(c, manager)
+        assert calls["n"] == 2
+        assert "boom" not in c.get(f"/record/{rec.id}/pane/panel").text
 
 
 # ------------------------------------------------------- post-session validate
@@ -294,18 +331,22 @@ class TestPostSessionValidateBadges:
     def test_exit_0_shows_no_badge(self, tmp_path: Path) -> None:
         sb, rec = _seed(tmp_path)
         engine = FakeEngine(turns=[[Result("success", 0.0, None)]])
-        c, runner, _manager = make_client_with_pane(sb, engines={rec.id: engine})
+        c, runner, manager = make_client_with_pane(sb, engines={rec.id: engine})
         runner.queue_result(RunResult(0))
-        r = c.post(f"/record/{rec.id}/pane/start", headers=HX)
+        c.post(f"/record/{rec.id}/pane/start", headers=HX)
+        join_pane_turn(c, manager)
+        r = c.get(f"/record/{rec.id}/pane/panel")
         assert "scan-blocked" not in r.text
         assert "schema invalid" not in r.text
 
     def test_exit_1_shows_schema_invalid_strip(self, tmp_path: Path) -> None:
         sb, rec = _seed(tmp_path)
         engine = FakeEngine(turns=[[Result("success", 0.0, None)]])
-        c, runner, _manager = make_client_with_pane(sb, engines={rec.id: engine})
+        c, runner, manager = make_client_with_pane(sb, engines={rec.id: engine})
         runner.queue_result(RunResult(1, stderr="self-learn: schema-invalid, missing rationale"))
-        r = c.post(f"/record/{rec.id}/pane/start", headers=HX)
+        c.post(f"/record/{rec.id}/pane/start", headers=HX)
+        join_pane_turn(c, manager)
+        r = c.get(f"/record/{rec.id}/pane/panel")
         assert "schema invalid" in r.text
         assert "missing rationale" in r.text
 
@@ -314,7 +355,9 @@ class TestPostSessionValidateBadges:
         engine = FakeEngine(turns=[[Result("success", 0.0, None)]])
         c, runner, manager = make_client_with_pane(sb, engines={rec.id: engine})
         runner.queue_result(RunResult(2, stderr="self-learn: secret scan hit"))
-        r = c.post(f"/record/{rec.id}/pane/start", headers=HX)
+        c.post(f"/record/{rec.id}/pane/start", headers=HX)
+        join_pane_turn(c, manager)
+        r = c.get(f"/record/{rec.id}/pane/panel")
         assert "scan-blocked" in r.text
         assert "secret scan hit" in r.text
 
@@ -344,6 +387,7 @@ class TestOneSessionRule:
         runner.queue_result(RunResult(0))
 
         c.post(f"/record/{rec_a.id}/pane/start", headers=HX)
+        join_pane_turn(c, manager)
         assert manager.active_record_id == rec_a.id
 
         armed = c.post(f"/record/{rec_b.id}/pane/start", headers=HX)
@@ -370,10 +414,13 @@ class TestOneSessionRule:
         runner.queue_result(RunResult(0))
 
         c.post(f"/record/{rec_a.id}/pane/start", headers=HX)
+        join_pane_turn(c, manager)
         r = c.post(f"/record/{rec_b.id}/pane/start", data={"force": "true"}, headers=HX)
 
         assert r.status_code == 200
-        assert "record b analysis" in r.text
+        assert "Starting the conversation" in r.text  # b's fresh starting split
+        join_pane_turn(c, manager)
+        assert "record b analysis" in c.get(f"/record/{rec_b.id}/pane/panel").text
         assert engine_a.interrupt_calls == 1
         assert engine_a.close_calls == 1
         assert manager.active_record_id == rec_b.id
@@ -388,6 +435,7 @@ class TestOneSessionRule:
         c, runner, manager = make_client_with_pane(sb, engines={rec_a.id: engine_a})
         runner.queue_result(RunResult(0))
         c.post(f"/record/{rec_a.id}/pane/start", headers=HX)
+        join_pane_turn(c, manager)
 
         r = c.get(f"/record/{rec_b.id}/pane/panel")
         assert r.status_code == 200
@@ -424,6 +472,7 @@ class TestResolveUnderIterationInterruptsFirst:
         c, runner, manager = make_client_with_pane(sb, engines={rec.id: engine}, runner=runner)
         runner.queue_result(RunResult(0))  # the post-session validate call
         c.post(f"/record/{rec.id}/pane/start", headers=HX)
+        join_pane_turn(c, manager)
         assert manager.active_record_id == rec.id
 
         r = c.post(
@@ -457,6 +506,7 @@ class TestResolveUnderIterationInterruptsFirst:
         runner.queue_result(RunResult(0))  # first record's iterate validate
         # Only iterate the FIRST id — the second should see a no-op hook call.
         c.post(f"/record/{ids[0]}/pane/start", headers=HX)
+        join_pane_turn(c, manager)
         assert manager.active_record_id == ids[0]
 
         r = c.post(
@@ -487,10 +537,12 @@ class TestPaneTranscriptXss:
         engine = FakeEngine(
             turns=[[BlockStart(kind="text"), TextDelta(text=payload), Result("success", 0.0, None)]]
         )
-        c, runner, _manager = make_client_with_pane(sb, engines={rec.id: engine})
+        c, runner, manager = make_client_with_pane(sb, engines={rec.id: engine})
         runner.queue_result(RunResult(0))
 
-        r = c.post(f"/record/{rec.id}/pane/start", headers=HX)
+        c.post(f"/record/{rec.id}/pane/start", headers=HX)
+        join_pane_turn(c, manager)
+        r = c.get(f"/record/{rec.id}/pane/panel")
         assert "<script>alert(1)</script>" not in r.text
         assert "&lt;script&gt;" in r.text
 
@@ -505,3 +557,178 @@ class TestPaneSecurity:
         c.cookies.clear()
         r = c.post(f"/record/{rec.id}/pane/start", headers=HX)
         assert r.status_code == 403
+
+
+# ------------------------------------------------- Y-15 non-blocking start
+
+
+class _GatedRouteEngine:
+    """PaneEngine-shaped double whose start() blocks on an asyncio.Event —
+    proves at the ROUTE level that the start POST returns while the first
+    turn is still running (Y-15). The gate is set via the client's portal
+    (Event is not thread-safe; the test thread never touches it directly)."""
+
+    def __init__(self, events) -> None:
+        import asyncio
+
+        self.gate = asyncio.Event()
+        self._events = list(events)
+        self.started = False
+        self.sent: list[str] = []
+        self.interrupt_calls = 0
+        self.close_calls = 0
+
+    async def start(self, ctx):
+        self.started = True
+        await self.gate.wait()
+        for event in self._events:
+            yield event
+
+    async def send(self, text: str):
+        self.sent.append(text)
+        return
+        yield  # pragma: no cover
+
+    async def interrupt(self) -> None:
+        self.interrupt_calls += 1
+
+    async def close(self) -> None:
+        self.close_calls += 1
+
+
+class TestNonBlockingStartRoutes:
+    def test_start_post_returns_while_the_turn_is_still_running(self, tmp_path: Path) -> None:
+        sb, rec = _seed(tmp_path)
+        engine = _GatedRouteEngine(
+            [BlockStart(kind="text"), TextDelta(text="slow analysis"), Result("success", 0.0, None)]
+        )
+        c, runner, manager = make_client_with_pane(sb, engines={rec.id: engine})  # type: ignore[dict-item]
+        runner.queue_result(RunResult(0))
+
+        r = c.post(f"/record/{rec.id}/pane/start", headers=HX)
+
+        # The response landed while the engine still holds the gate —
+        # the user-hit silent wall is structurally gone.
+        assert r.status_code == 200
+        assert not engine.gate.is_set()
+        assert 'data-pane-state="starting"' in r.text
+        assert "Starting the conversation" in r.text
+        assert 'id="pane-transcript"' in r.text
+        assert f'data-pane-panel-url="/record/{rec.id}/pane/panel"' in r.text
+        assert "slow analysis" not in r.text
+
+        assert c.portal is not None
+        c.portal.call(engine.gate.set)
+        join_pane_turn(c, manager)
+        panel = c.get(f"/record/{rec.id}/pane/panel")
+        assert "slow analysis" in panel.text
+        assert runner.calls == [["proposal", "validate", rec.id]]
+
+    def test_interrupt_during_starting_terminates_the_turn(self, tmp_path: Path) -> None:
+        # F4 at the route level: Esc lands while the first turn is in
+        # flight; once the engine becomes interruptible the latch is
+        # re-delivered and the turn ends.
+        sb, rec = _seed(tmp_path)
+        engine = _GatedRouteEngine([Result("success", 0.0, None)])
+        c, runner, manager = make_client_with_pane(sb, engines={rec.id: engine})  # type: ignore[dict-item]
+        runner.queue_result(RunResult(0))
+
+        c.post(f"/record/{rec.id}/pane/start", headers=HX)
+        r = c.post(f"/record/{rec.id}/pane/interrupt", headers=HX)
+        assert r.status_code == 200
+
+        assert c.portal is not None
+        c.portal.call(engine.gate.set)
+        join_pane_turn(c, manager)
+        assert engine.interrupt_calls >= 1
+        # The turn is over: the split is parked or ended, never stuck
+        # starting/streaming.
+        snap = manager.snapshot(rec.id)
+        assert snap.state in (pane.STATE_AWAITING_INPUT, pane.STATE_ENDED)
+
+    def test_bucket_pane_start_returns_starting_markup(self, tmp_path: Path) -> None:
+        # The bucket family shares the manager and the Y-15 contract.
+        sb, rec = _seed(tmp_path)
+        c, runner = make_client(sb)
+        key = pane.bucket_session_key("skill", "s")
+        engine = _GatedRouteEngine(
+            [BlockStart(kind="text"), TextDelta(text="bucket chat reply"), Result("success", 0.0, None)]
+        )
+
+        def context_builder(session_key: str) -> "pane.PaneContext":
+            parsed = pane.parse_bucket_session_key(session_key)
+            assert parsed is not None
+            scope, name = parsed
+            return pane.build_bucket_pane_context(
+                sb.ledger, scope, name, read_doctrine_fn=lambda: "DOCTRINE"
+            )
+
+        from typing import cast
+
+        from fastapi import FastAPI
+
+        app = cast(FastAPI, c.app)
+        manager = pane.PaneManager(
+            engine_factory=lambda: engine,  # type: ignore[arg-type,return-value]
+            context_builder=context_builder,
+            app_hub=app.state.app_hub,
+            refresh_hub=app.state.refresh_hub,
+            runner=runner,
+        )
+        app.state.pane_manager = manager
+
+        r = c.post("/bucket/skill/s/pane/start", headers=HX)
+        assert r.status_code == 200
+        assert not engine.gate.is_set()
+        assert 'data-pane-state="starting"' in r.text
+        assert "Starting the conversation" in r.text
+        assert 'data-pane-panel-url="/bucket/skill/s/pane/panel"' in r.text
+
+        assert c.portal is not None
+        c.portal.call(engine.gate.set)
+        join_pane_turn(c, manager)
+        panel = c.get("/bucket/skill/s/pane/panel")
+        assert "bucket chat reply" in panel.text
+        assert runner.calls == []  # bucket sessions owe no validate
+
+
+class TestLifespanShutdown:
+    def test_lifespan_shutdown_tears_down_the_live_pane(self, tmp_path: Path) -> None:
+        # Code-review MINOR-2: pre-Y-15 an in-flight turn lived inside a
+        # request uvicorn's graceful shutdown waited for; the background
+        # drain does not — the lifespan finally must tear it down, never
+        # leak a free-floating task or an open engine child.
+        from typing import cast
+
+        from fastapi import FastAPI
+
+        from self_learn_ui.engine.base import TextDelta as _TextDelta
+
+        sb, rec = _seed(tmp_path)
+        runner = FakeRunner()
+        env = load_env(sb.env)
+        app = cast(FastAPI, create_app(env=env, token=TOKEN, runner=runner, start_watcher=False))
+        engine = _GatedRouteEngine([_TextDelta(text="never delivered")])
+
+        def context_builder(record_id: str) -> "pane.PaneContext":
+            return pane.build_pane_context(sb.ledger, record_id, read_doctrine_fn=lambda: "D")
+
+        manager = pane.PaneManager(
+            engine_factory=lambda: engine,  # type: ignore[arg-type,return-value]
+            context_builder=context_builder,
+            app_hub=app.state.app_hub,
+            refresh_hub=app.state.refresh_hub,
+            runner=runner,
+        )
+        app.state.pane_manager = manager
+
+        with TestClient(app, base_url="http://127.0.0.1:7357") as c:
+            c.cookies.set("slu_token", TOKEN)
+            r = c.post(f"/record/{rec.id}/pane/start", headers=HX)
+            assert r.status_code == 200
+            assert manager.active_record_id == rec.id
+
+        # The with-exit ran the lifespan finally: session gone, engine
+        # closed, nothing left running.
+        assert manager.active_record_id is None
+        assert engine.close_calls == 1

@@ -2,7 +2,8 @@
    interrupt current first". Confirming POSTs force=true (interrupts the
    OTHER session, then starts fresh here); Cancel re-renders the idle
    panel without starting anything. #}
-<div id="pane-region-wrapper" class="pane-region pane-armed">
+<div id="pane-region-wrapper" class="pane-region pane-armed"
+     data-pane-panel-url="{{ pane_base | default('/record/' ~ record_id ~ '/pane') }}/panel">
   <p class="banner banner-warning">
     <code>{{ blocked_by }}</code> is being iterated right now. Interrupt it
     and start iterating this record instead?
