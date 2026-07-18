@@ -13,7 +13,14 @@ here as documentation rather than a field):
 - Keys are inert while focus is in a text input (09 §1).
 - **No Ctrl/Alt chords, ever** — the browser owns them.
 - ``Esc`` is context-sensitive: with the pane focused it interrupts the
-  stream first (09 §2.4); otherwise it is "up a level" like ``h``.
+  stream first (09 §2.4); otherwise it is "up a level" like ``a``.
+- **Layout is gaming-centric, not vim-centric** (user-directed remap,
+  2026-07-17, dated 09 §1/§2 amendment): WASD + arrows navigate
+  (``w``/``s`` move, ``d``/``ArrowRight`` open, ``a``/``ArrowLeft``
+  back), which evicted the old ``a`` approve / ``d`` deny — now ``e``
+  (the games' "use/interact" key) and ``x``. app.js dispatches on the
+  FIRST key match with no context filter, so every key must be unique
+  across the whole table (tested).
 """
 
 from __future__ import annotations
@@ -46,17 +53,17 @@ class KeymapEntry:
 #: The one source of truth (10 §1). Order is display order in the footer
 #: and help overlay.
 KEYMAP: tuple[KeymapEntry, ...] = (
-    KeymapEntry(("j", "ArrowDown"), "move_down", "Move down", "list"),
-    KeymapEntry(("k", "ArrowUp"), "move_up", "Move up", "list"),
-    KeymapEntry(("Enter", "l"), "drill_in", "Open", "list"),
+    KeymapEntry(("s", "ArrowDown"), "move_down", "Move down", "list"),
+    KeymapEntry(("w", "ArrowUp"), "move_up", "Move up", "list"),
+    KeymapEntry(("Enter", "d", "ArrowRight"), "drill_in", "Open", "list"),
     KeymapEntry(
-        ("Escape", "h"),
+        ("Escape", "a", "ArrowLeft"),
         "up",
         "Back / up a level (interrupts the pane first, if focused)",
         "global",
     ),
-    KeymapEntry(("a",), "route", "Approve", "detail"),
-    KeymapEntry(("d",), "reject", "Deny", "detail"),
+    KeymapEntry(("e",), "route", "Approve", "detail"),
+    KeymapEntry(("x",), "reject", "Deny", "detail"),
     KeymapEntry(("f",), "defer", "Defer", "detail"),
     KeymapEntry(("g",), "graduate", "Graduate", "detail"),
     KeymapEntry(("i",), "iterate", "Iterate (open agent pane)", "detail"),

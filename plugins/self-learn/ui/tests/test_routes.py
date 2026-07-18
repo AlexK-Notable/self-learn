@@ -498,7 +498,7 @@ class TestArmDisarmConfirm:
         )
         assert r.status_code == 200
         assert 'data-armed="false"' in r.text
-        assert "Approve (a)" in r.text
+        assert "Approve (e)" in r.text
 
     def test_confirm_route_calls_runner_with_exact_argv(self, tmp_path: Path) -> None:
         sb, rec = self._seed(tmp_path)
