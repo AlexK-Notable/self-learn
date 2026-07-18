@@ -996,8 +996,13 @@ mutation seam. Everything below is one tool, one bar, one POST.
   rehome that CREATES its destination bucket fires only source-side
   file events — **extended to compare the record's current bucket
   (`locate_record`) against the slot's captured bucket**. Both the
-  ARM route and the CONFIRM route make that comparison and take the
-  staleness path (disarm + a plain-words notice) on mismatch. The
+  ARM route and the CONFIRM route make that comparison, and on
+  mismatch the outcome is **clear the slot + a plain-words notice**
+  (the resolved-elsewhere shape) — never a *disarm*, which is pinned
+  to mean the bar survives back to WAITING: a surviving waiting bar
+  would carry exactly the stale bucket facts this leg exists to
+  kill, so the proposal dies and the agent re-proposes against the
+  record's new home *(delta fold F10)*. The
   confirm-side check is load-bearing, not belt: the CLI verbs locate
   records across ALL buckets, so without it Enter on a stale armed
   bar would execute the verb against the record in its NEW bucket —
@@ -1694,10 +1699,13 @@ removed the last competing workstream — the build gate is open.*
   **(4)** the §4.5 staleness machinery gains the bucket-change leg —
   WAITING and ARMED alike: the arm and confirm routes both
   re-compare the slot's captured bucket against the record's current
-  bucket and take the staleness path (disarm + plain-words notice)
-  on mismatch, because rehome is the first mechanism that makes a
-  pending record's bucket facts mutable (fold F2; detection is
-  render/arm-time checks, never a watcher hook — fold F5);
+  bucket, and on mismatch **clear the slot + render a plain-words
+  notice** — never a disarm, whose pinned meaning is
+  survives-to-waiting, i.e. a bar still carrying the stale bucket
+  facts (delta fold F10) — because rehome is the first mechanism
+  that makes a pending record's bucket facts mutable (fold F2;
+  detection is render/arm-time checks, never a watcher hook —
+  fold F5);
   **(5)** NO proposal-YAML field — a batch-analyst re-home
   recommendation is prose in `rationale`/card, the mechanics are the
   pane path or the CLI (doctrine §5 pins it so M2 workers never
