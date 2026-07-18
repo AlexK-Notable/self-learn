@@ -40,7 +40,12 @@ was the night's best catch:
   effectively instant on this stack; a spurious ack-timeout merely
   force-closes, live-proven non-destructive.
 
-Fold commit: dc18744. Delta verdict: recorded below.
+Fold commits: dc18744 + b3f4728. Delta round 1: NOT CLEAN — F3's
+docstring edit was claimed folded but had silently no-matched (the
+reviewer caught the discrepancy between the claim and the diff; edit
+scripts now assert their anchors). Delta round 2 (F3 landed + the
+abandoned-task strong-reference nit hardened): **CLEAN** — no
+residuals; gate closed 2026-07-18.
 
 ## Live retrial
 
