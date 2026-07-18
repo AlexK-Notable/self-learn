@@ -253,9 +253,93 @@
     return mine.indexOf(scope) !== -1;
   }
 
+  /**
+   * Y-16 (09 §11, U14): the client's single reload() CHOKEPOINT. Every
+   * client-initiated full reload — the SSE `refresh` handler, the 10s
+   * poll fallback, the `pane_proposal` handler's legs, and any future
+   * path — routes through here, so the defer is structural, not
+   * per-caller (F3). Reloads DEFER (never drop) while ANY leg holds:
+   *   (a) a [data-verb-error] element is in the document — the
+   *       persistent error rendering a broadcast reload would erase
+   *       (the empirically pinned wipe: the runner's post-verb
+   *       front-scope push, see tests/test_registration_wipe.py and
+   *       10's appendix U14 entry);
+   *   (b) a verb-confirm POST is in flight — flag set at submit,
+   *       cleared at swap settle on success and on error/abort
+   *       regardless (F4/F14: the runner queues the failure push
+   *       BEFORE the confirm route renders the error partial, so the
+   *       SSE frame can beat the htmx swap; a marker-only predicate
+   *       re-creates the original symptom);
+   *   (c) any [data-armed="true"] bar exists — releasing on re-arm
+   *       would reload over the fresh armed bar (F5, the Y-15
+   *       delta-R1 never-clobber-a-human-mid-decision hazard).
+   * Deferred-not-dropped: the pending reload fires when no leg holds
+   * (dismiss removes (a), completion/error/abort clears (b),
+   * disarm-or-resolve removes (c)); the release re-checks the whole
+   * predicate. Deliberate staleness (F9/F12): while any leg holds the
+   * page may go stale against the files — accepted; files stay truth
+   * and every hold has a user-reachable release. The server-side push
+   * is UNCHANGED — this defers only the client's render of it.
+   */
+  var reloadPending = false;
+  var confirmInFlight = false;
+
+  function reloadDeferred() {
+    if (document.querySelector("[data-verb-error]")) return true; // leg (a)
+    if (confirmInFlight) return true; // leg (b)
+    if (findArmedBar()) return true; // leg (c)
+    return false;
+  }
+
   function reload() {
+    if (reloadDeferred()) {
+      reloadPending = true; // deferred, never dropped
+      return;
+    }
     window.location.reload();
   }
+
+  function releaseReload() {
+    if (reloadPending) {
+      reloadPending = false;
+      reload(); // re-checks the predicate; re-defers if a leg still holds
+    }
+  }
+
+  /** Leg (b)'s flag: a verb-confirm POST (any .../confirm route) in
+   * flight. Set at htmx's request start; cleared unconditionally on
+   * completion (swap settle), error, or abort (the F14 fold) — a
+   * confirm that dies without a response must never leave the tab
+   * deferring reloads until a manual refresh. */
+  function isConfirmRequest(evt) {
+    var d = evt.detail || {};
+    var path =
+      (d.requestConfig && d.requestConfig.path) ||
+      (d.pathInfo && (d.pathInfo.finalRequestPath || d.pathInfo.requestPath)) ||
+      "";
+    return typeof path === "string" && /\/confirm$/.test(path);
+  }
+
+  document.addEventListener("htmx:beforeRequest", function (evt) {
+    if (isConfirmRequest(evt)) confirmInFlight = true;
+  });
+  // Success leg: cleared at swap SETTLE (never earlier — the error
+  // marker must be in the DOM before leg (b) lets go, else the raced
+  // SSE frame wipes it in the settle gap). Every settle also attempts
+  // release: dismiss/disarm swaps are what remove legs (a)/(c).
+  document.addEventListener("htmx:afterSettle", function (evt) {
+    if (isConfirmRequest(evt)) confirmInFlight = false;
+    releaseReload();
+  });
+  // Failure legs (F14): no swap will come — clear unconditionally.
+  ["htmx:responseError", "htmx:swapError", "htmx:sendError", "htmx:sendAbort", "htmx:timeout"].forEach(
+    function (name) {
+      document.addEventListener(name, function (evt) {
+        if (isConfirmRequest(evt)) confirmInFlight = false;
+        releaseReload();
+      });
+    }
+  );
 
   function showReconnectStrip(show) {
     const strip = document.getElementById("self-learn-ui-reconnect-strip");

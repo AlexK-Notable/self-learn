@@ -460,6 +460,21 @@ kbd {
   margin: 0;
 }
 
+/* Y-16 (U14): the persistent host-add error rendering — the plain-words
+   sentence leads; the CLI stderr renders below it, still verbatim and
+   visible without interaction, but visually demoted. */
+.verb-error .error-lead {
+  font-weight: 600;
+}
+
+.verb-error .error-detail {
+  color: var(--slu-fg-muted);
+  font-size: 0.8rem;
+  margin: 0.25rem 0 0.5rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 /* -------------------------------------------------------------- badges --- */
 
 .badge {

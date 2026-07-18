@@ -519,6 +519,212 @@ class TestArmedHostAdd:
         assert "Register this project" not in r.text
 
 
+def _plain_dir_sandbox(tmp_path: Path):
+    """A registered sandbox PLUS an unregistered project whose path is a
+    PLAIN DIRECTORY — not a git repo (the Y-17 keyboards live case),
+    holding one pending project-scoped record."""
+    sb = make_env(tmp_path)
+    foreign = tmp_path / "plain-project"
+    foreign.mkdir()
+    (foreign / "notes.txt").write_text("plain text project\n", encoding="utf-8")
+    rec = make_knowledge(
+        scope="project", fact="The plain project's tooling needs a wrapper."
+    )
+    from self_learn.ledger_ops import create_record
+
+    create_record(sb.ledger, rec, project_path=foreign)
+    bucket_name = next((sb.ledger / "projects").iterdir()).name
+    return sb, foreign, rec, bucket_name
+
+
+def _confirm_form_fields(html: str, scope: str, name: str) -> dict[str, str]:
+    """Template-truth (the round-2 Fix A precedent): exactly the fields
+    the RENDERED confirm form posts — what a browser actually sends —
+    never a hand-built dict mirroring the handler."""
+    section = html.split(f'hx-post="/bucket/{scope}/{name}/host-add/confirm"')[1]
+    section = section.split("</form>")[0]
+    return dict(re.findall(r'<input[^>]*name="([^"]+)"[^>]*value="([^"]*)"', section))
+
+
+class TestHostAddInitDisclosure:
+    """09 §11 Y-17 (U14): server-derived needs_init at arm AND confirm,
+    the disclosure sentence + real --init argv in the arm banner, and
+    the F1 consent invariant in BOTH race directions."""
+
+    def test_arm_on_non_root_renders_disclosure_and_init_argv(
+        self, tmp_path: Path
+    ) -> None:
+        sb, foreign, _rec, name = _plain_dir_sandbox(tmp_path)
+        c, runner = make_client(sb)
+        r = c.post(f"/bucket/project/{name}/host-add/arm", headers={"HX-Request": "true"})
+        assert r.status_code == 200
+        # Required content (Y-17 decision 4), plain words:
+        assert "new git repository will be created at" in r.text
+        assert "as part of registering" in r.text
+        # The displayed command shows the REAL argv:
+        assert f"self-learn host add --init {foreign}" in r.text
+        # The server-rendered one-bit marker rides the confirm form:
+        fields = _confirm_form_fields(r.text, "project", name)
+        assert fields.get("init_disclosed") == "1"
+        assert runner.calls == []  # arming never executes anything
+
+    def test_arm_on_repo_root_renders_no_disclosure_and_no_init(
+        self, tmp_path: Path
+    ) -> None:
+        sb, foreign, _rec, name = _plain_dir_sandbox(tmp_path)
+        init_repo(foreign)  # a repo root now — zero commits still counts
+        c, _runner = make_client(sb)
+        r = c.post(f"/bucket/project/{name}/host-add/arm", headers={"HX-Request": "true"})
+        assert r.status_code == 200
+        assert "new git repository" not in r.text
+        assert "--init" not in r.text
+        assert f"self-learn host add {foreign}" in r.text
+        fields = _confirm_form_fields(r.text, "project", name)
+        assert "init_disclosed" not in fields
+
+    def test_confirm_with_the_rendered_forms_own_fields_runs_init_argv(
+        self, tmp_path: Path
+    ) -> None:
+        # Template-truth: drive confirm with the rendered form's fields.
+        sb, foreign, _rec, name = _plain_dir_sandbox(tmp_path)
+        c, runner = make_client(sb)
+        r = c.post(f"/bucket/project/{name}/host-add/arm", headers={"HX-Request": "true"})
+        fields = _confirm_form_fields(r.text, "project", name)
+        r2 = c.post(
+            f"/bucket/project/{name}/host-add/confirm",
+            data=fields,
+            headers={"HX-Request": "true"},
+        )
+        assert runner.calls == [["host", "add", "--init", str(foreign)]]
+        assert r2.headers.get("HX-Redirect") == f"/bucket/project/{name}"
+
+    def test_becomes_repo_race_drops_init_and_the_plain_add_registers(
+        self, tmp_path: Path
+    ) -> None:
+        # F1 direction 1: disclosure shown, path a root by confirm →
+        # --init DROPPED (weaker-than-read, the only permitted
+        # divergence direction — F13), the plain add registers.
+        sb, foreign, _rec, name = _plain_dir_sandbox(tmp_path)
+        c, runner = make_client(sb)
+        r = c.post(f"/bucket/project/{name}/host-add/arm", headers={"HX-Request": "true"})
+        fields = _confirm_form_fields(r.text, "project", name)
+        assert fields.get("init_disclosed") == "1"
+        init_repo(foreign)  # the path becomes a repo between the POSTs
+        r2 = c.post(
+            f"/bucket/project/{name}/host-add/confirm",
+            data=fields,
+            headers={"HX-Request": "true"},
+        )
+        assert runner.calls == [["host", "add", str(foreign)]]  # no --init
+        assert r2.headers.get("HX-Redirect") == f"/bucket/project/{name}"
+
+    def test_goes_stale_race_runs_plain_add_into_the_error_leg(
+        self, tmp_path: Path
+    ) -> None:
+        # F1 direction 2: NO disclosure shown (path was a root at arm),
+        # non-root by confirm → the plain add runs (NEVER a silent
+        # init) and the CLI's committability refusal renders through
+        # the Y-16 error leg; re-arming would NOW show the disclosure.
+        import shutil
+
+        sb, foreign, _rec, name = _plain_dir_sandbox(tmp_path)
+        init_repo(foreign)
+        runner = FakeRunner()
+        runner.queue_result(
+            RunResult(1, stderr="self-learn host add: project host is not a git repo — canon hosts must be committable")
+        )
+        c, runner = make_client(sb, runner=runner)
+        r = c.post(f"/bucket/project/{name}/host-add/arm", headers={"HX-Request": "true"})
+        fields = _confirm_form_fields(r.text, "project", name)
+        assert "init_disclosed" not in fields
+        shutil.rmtree(foreign / ".git")  # goes stale between the POSTs
+        r2 = c.post(
+            f"/bucket/project/{name}/host-add/confirm",
+            data=fields,
+            headers={"HX-Request": "true"},
+        )
+        assert runner.calls == [["host", "add", str(foreign)]]  # plain, no init
+        assert "HX-Redirect" not in r2.headers
+        assert "data-verb-error" in r2.text
+        assert "Registration did not complete." in r2.text
+        # And the re-arm NOW discloses:
+        r3 = c.post(f"/bucket/project/{name}/host-add/arm", headers={"HX-Request": "true"})
+        assert "new git repository will be created at" in r3.text
+
+    def test_forged_marker_on_a_repo_root_path_never_inits(
+        self, tmp_path: Path
+    ) -> None:
+        # The confirm-time re-derivation gates every init: a forged (or
+        # stale) marker bit cannot force --init on a repo-root path.
+        sb, foreign, _rec, name = _plain_dir_sandbox(tmp_path)
+        init_repo(foreign)
+        c, runner = make_client(sb)
+        c.post(
+            f"/bucket/project/{name}/host-add/confirm",
+            data={"init_disclosed": "1"},
+            headers={"HX-Request": "true"},
+        )
+        assert runner.calls == [["host", "add", str(foreign)]]  # no --init
+
+
+class TestHostAddErrorLeg:
+    """09 §11 Y-16 (U14): the persistent, plain-words failure rendering —
+    the narrow dated §5 exception, this leg only. The client-side
+    reload-defer is browser-level JS (proven at the U14 live re-trial);
+    what is pinnable headless is pinned here + in
+    test_registration_wipe.py."""
+
+    STDERR = (
+        "self-learn host add: project host /x is not a git repo — canon "
+        "hosts must be committable (doc 13 §4 two-phase routing)"
+    )
+
+    def _failed_confirm(self, tmp_path: Path):
+        sb, _foreign, _rec, name = _plain_dir_sandbox(tmp_path)
+        runner = FakeRunner()
+        runner.queue_result(RunResult(1, stderr=self.STDERR))
+        c, runner = make_client(sb, runner=runner)
+        r = c.post(f"/bucket/project/{name}/host-add/confirm", headers={"HX-Request": "true"})
+        return c, runner, name, r
+
+    def test_sentence_leads_stderr_demoted_marker_and_dismiss_present(
+        self, tmp_path: Path
+    ) -> None:
+        _c, _runner, name, r = self._failed_confirm(tmp_path)
+        assert r.status_code == 200
+        # The plain-words sentence LEADS; the stderr renders BELOW it,
+        # verbatim, as the demoted detail line.
+        lead_at = r.text.index("Registration did not complete.")
+        detail_at = r.text.index("canon hosts must be committable")
+        assert lead_at < detail_at
+        assert 'class="error-detail"' in r.text
+        # The reload-defer marker (leg (a) of the chokepoint predicate):
+        assert "data-verb-error" in r.text
+        # Unarmed — the keyup candidate cannot fire on this rendering:
+        assert 'data-armed="false"' in r.text
+        # The dismiss affordance posts through the DISARM route (no
+        # fourth route):
+        assert f'hx-post="/bucket/project/{name}/host-add/disarm"' in r.text
+        assert "Dismiss" in r.text
+
+    def test_dismiss_restores_the_notice(self, tmp_path: Path) -> None:
+        c, _runner, name, r = self._failed_confirm(tmp_path)
+        assert "data-verb-error" in r.text
+        r2 = c.post(f"/bucket/project/{name}/host-add/disarm", headers={"HX-Request": "true"})
+        assert "data-verb-error" not in r2.text
+        assert "Unregistered project" in r2.text
+        assert "Register this project" in r2.text
+
+    def test_rearm_from_the_error_state_clears_it(self, tmp_path: Path) -> None:
+        c, _runner, name, r = self._failed_confirm(tmp_path)
+        # The error rendering keeps the re-arm affordance reachable…
+        assert "Register this project" in r.text
+        # …and re-arming renders the armed bar with no error residue.
+        r2 = c.post(f"/bucket/project/{name}/host-add/arm", headers={"HX-Request": "true"})
+        assert 'data-armed="true"' in r2.text
+        assert "data-verb-error" not in r2.text
+
+
 class TestDetailPage:
     def test_deep_link_lands_on_detail(self, tmp_path: Path) -> None:
         sb = make_env(tmp_path)

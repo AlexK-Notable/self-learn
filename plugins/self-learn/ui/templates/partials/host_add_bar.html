@@ -1,14 +1,34 @@
-{# Armed host-add (09 §11 Y-11, amended 2026-07-17): the surface's one
-   bucket-scoped mutation. Same .action-bar[data-armed] contract as the
-   record bars, so app.js's Enter-confirms / any-key-disarms applies
-   unchanged. The path shown is SERVER-derived (routes re-derive it at
-   every step; the only client field is the return-page record id).
+{# Armed host-add (09 §11 Y-11, amended 2026-07-17; Y-16/Y-17 2026-07-18,
+   U14): the surface's one bucket-scoped mutation. Same
+   .action-bar[data-armed] contract as the record bars, so app.js's
+   Enter-confirms / any-key-disarms applies unchanged. The path shown is
+   SERVER-derived (routes re-derive it at every step; the client fields
+   are the return-page record id plus, on disclosure arms ONLY, the
+   Y-17 one-bit marker `init_disclosed` — server-rendered, and the
+   confirm route's re-derivation gates every init, so the bit can only
+   weaken execution).
    The ARM state must carry the consent consequence in plain words —
-   the CLI prints it on stdout, which the verb runner discards (§3).
+   the CLI prints it on stdout, which the verb runner discards (§3) —
+   and, when the path is not a repo root, the Y-17 git-init disclosure
+   with the real --init argv on display.
+   The ERROR state (Y-16, the narrow dated §5 exception — this leg
+   only): the plain-words sentence LEADS, the CLI stderr renders below
+   it as a demoted detail line (still verbatim, still visible), the
+   block carries [data-verb-error] (app.js's reload-defer marker), and
+   Dismiss reuses the disarm route (no fourth route) to restore the
+   notice.
    CSP: no inline style/script. #}
 <div id="host-add-bar" class="action-bar host-add-bar" data-armed="{{ 'true' if armed else 'false' }}">
   {% if error %}
-  <p class="error-strip" role="alert">{{ error }}</p>
+  <div class="verb-error" data-verb-error="true" role="alert">
+    <p class="error-strip error-lead">{{ error_lead }}</p>
+    <p class="error-detail">{{ error }}</p>
+    <form hx-post="/bucket/{{ scope }}/{{ name }}/host-add/disarm"
+          hx-target="#host-add-bar" hx-swap="outerHTML">
+      {% if record_id %}<input type="hidden" name="record_id" value="{{ record_id }}">{% endif %}
+      <button type="submit">Dismiss</button>
+    </form>
+  </div>
   {% endif %}
 
   {% if armed %}
@@ -16,11 +36,16 @@
     Registering means lessons can be <strong>written into this project</strong>
     (its CLAUDE.md gains a managed section the next time you approve one)
     and the review agent may <strong>read its files</strong>.
-    This runs: <code>self-learn host add {{ path }}</code>
+    {% if needs_init %}
+    A new git repository will be created at <code>{{ path }}</code>
+    (<code>git init</code>) as part of registering.
+    {% endif %}
+    This runs: <code>self-learn host add {% if needs_init %}--init {% endif %}{{ path }}</code>
   </p>
   <form hx-post="/bucket/{{ scope }}/{{ name }}/host-add/confirm"
         hx-target="#host-add-bar" hx-swap="outerHTML">
     {% if record_id %}<input type="hidden" name="record_id" value="{{ record_id }}">{% endif %}
+    {% if needs_init %}<input type="hidden" name="init_disclosed" value="1">{% endif %}
     <p class="action-bar-armed">
       <strong>Register project</strong>
       <span class="confirm-hint"><kbd>Enter</kbd> to confirm &middot; any other key cancels</span>
@@ -34,6 +59,7 @@
   </form>
 
   {% else %}
+  {% if not error %}
   <p class="banner banner-warning">
     Unregistered project.
     {% if can_arm %}
@@ -43,6 +69,7 @@
     {% endif %}
     Resolution stays available below.
   </p>
+  {% endif %}
   {% if can_arm %}
   <form hx-post="/bucket/{{ scope }}/{{ name }}/host-add/arm"
         hx-target="#host-add-bar" hx-swap="outerHTML">
