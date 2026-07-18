@@ -1594,8 +1594,14 @@ removed the last competing workstream — the build gate is open.*
   plain-words error** *(added 2026-07-18 — feedback round 3 item 1,
   `feedback/2026-07-18-ui-feedback-03.md`; live-hit: the user's
   keyboards registration — Confirm → a red strip flashed too fast to
-  read → the bar cycled back to the unregistered notice)*. Two
-  defects, two pins:
+  read → the bar cycled back to the unregistered notice. Reworked
+  the same day after the amendment's own blind spec review returned
+  NOT SOUND — findings folded in place: the reload-chokepoint defer
+  (F3), the confirm-in-flight leg + the ordering ruling (F4), the
+  armed-bar release rule (F5), the corrected required copy (F2),
+  the deliberate staleness pin (F9). The review independently
+  CONFIRMED the code-read wipe diagnosis below — that part
+  stands.)*. Two defects, two pins:
   **(1) Persistence.** The failed host-add confirm's error rendering
   PERSISTS until the user dismisses it (an explicit dismiss
   affordance on the error rendering — reusing the existing disarm
@@ -1611,31 +1617,60 @@ removed the last competing workstream — the build gate is open.*
   from files and erasing the just-swapped error partial. The second
   candidate — the any-key-disarms keyup — reads as implausible in
   code (the error leg renders `data-armed="false"`), but the brace
-  is cheap and one mechanism covers both: the error rendering
-  carries a **`data-verb-error` marker**, and app.js DEFERS every
-  client-initiated full reload (the SSE `refresh` handler AND the
-  10 s poll fallback) while a `[data-verb-error]` element is in the
-  document — **deferred, not dropped** (the reload fires when
-  dismiss/re-arm removes the marker; the Y-15 delta-R1
-  hazard-class precedent extended). The server-side push itself is
+  is cheap and one mechanism covers both. **The defer lives at the
+  client's single `reload()` CHOKEPOINT** (F3): every
+  client-initiated full reload routes through one function and
+  defers there, so ALL present and future reload paths are covered
+  structurally — at fold time three exist (the SSE `refresh`
+  handler, the 10 s poll fallback, and the `pane_proposal`
+  handler's reload legs — the host-add bar renders on both pages
+  where proposal reloads fire, and the `[data-armed]` belt does
+  NOT protect the error leg, which renders unarmed); that
+  enumeration is informative, never normative — the chokepoint is
+  the pin. The defer predicate has three legs; the reload defers
+  while ANY holds: **(a)** a **`[data-verb-error]`** element is in
+  the document (the error rendering carries the marker); **(b)** a
+  verb-confirm POST is in flight on the page — a client-side flag
+  set at form submit, cleared at swap settle — because the runner
+  queues the failure push BEFORE the confirm route renders the
+  error partial, so the SSE frame can beat the htmx swap and a
+  marker-only predicate re-creates the original symptom (F4);
+  **(c)** any `[data-armed="true"]` bar exists — releasing on
+  re-arm would reload over the fresh armed bar, the exact
+  never-clobber-a-human-mid-decision hazard of the Y-15 delta-R1
+  precedent this extends (F5). **Deferred, not dropped**: the
+  reload fires when no leg holds — on dismiss, or after an armed
+  bar resolves. Deliberate staleness pin (F9): while the error is
+  displayed, every client reload is deferred and the page may go
+  stale against the files — accepted, bounded only by the user's
+  dismissal; files stay truth and the released reload re-syncs.
+  The server-side push itself is
   UNCHANGED — §5's "state re-read from files; nothing optimistic"
   stands; the exemption is the client's render of the error, never
   the push. Honesty pins: the error is render-state, not
   server-held state — navigating away discards it (deliberate; no
   error slot to leak); and every OTHER verb's error strip plausibly
-  dies to the same reload path — implementing the defer on the
-  shared error-strip rendering covers them for free and is
+  dies to the same reload path — the chokepoint defer covers them
+  for free and is
   encouraged, but only the host-add leg gets fixtures this cycle
   (M1-lean; a broader sweep is its own item if it recurs live).
   Testable: T-A asserts the rendered error partial (marker +
   content + dismiss); the reload-defer is proven at the U14
   browser-level re-trial (the error survives a forced refresh push
-  while rendered).
+  while rendered), and the empirical wipe-pin must rule EXPLICITLY
+  on the SSE-frame-vs-swap ordering (the F4 pre-render race)
+  before the defense is accepted.
   **(2) Plain words (Y-9) — the NARROW dated §5 exception.** The
   failed-registration leg leads with a human sentence; required
-  content: registering this project failed, nothing was changed,
-  the project is still unregistered, you can try again (exact copy
-  the builder's — the content is binding, the wording is not). The
+  content: registering this project failed, **the project was not
+  registered**, you can try again (exact copy the builder's — the
+  content is binding, the wording is not; the first draft's
+  "nothing was changed" was corrected at the review, F2 — it is
+  FALSE in two legs this spec itself pins: the Y-17 half-init
+  residue (init succeeded, add failed — a repo now exists) and the
+  existing HalfWrittenError leg (hosts.yaml rewritten,
+  uncommitted); the demoted stderr detail carries the state
+  facts). The
   CLI stderr renders BELOW it as a secondary detail line — still
   verbatim, still visible without interaction, visually demoted.
   Why the exception is justified: registration is the surface's
@@ -1656,7 +1691,11 @@ removed the last competing workstream — the build gate is open.*
   CLI** *(added 2026-07-18 — feedback round 3 item 2; the user's
   ruling verbatim: "make it clear that a git init will be performed
   when a user chooses to register a new project that isn't already
-  a repo through the UI")*. The committability invariant stands —
+  a repo through the UI". Reworked the same day after the
+  amendment's own blind spec review returned NOT SOUND — findings
+  folded in place: the F1 consent invariant (BLOCKER), the F6
+  refusal ordering, the F7 zero-commit residue, the F8 file-path
+  refusal)*. The committability invariant stands —
   canon writes are commits; audit, rollback, and recompile all diff
   against git (13 §4) — and the flow absorbs the gap instead of
   refusing at the human. Decisions of record:
@@ -1680,11 +1719,18 @@ removed the last competing workstream — the build gate is open.*
   `canon_read_roots()` posture — P2-4, never a second
   implementation).
   **(3) `--init` semantics — the matrix (each row a named CLI
-  test):** path IS already a repo root → no-op, the add proceeds
-  normally (refusal rejected deliberately: an arm→confirm race —
-  the path becoming a repo between the two POSTs — must not fail
-  the confirm; no-op also preserves `host add`'s idempotency) ·
-  path exists and is NOT a repo root — INCLUDING inside another
+  test):** ordering first (F6): the pure-argument, read-only
+  refusals — kind validity, ledger-home existence — run BEFORE the
+  init leg, exactly as they run first today (an invalid kind must
+  never leave an initialized repo behind); path validation and the
+  already-registered idempotency stay after it · path IS already a
+  repo root — a ZERO-COMMIT repo counts as a root (F7) → no-op,
+  the add proceeds normally (refusal rejected deliberately: an
+  arm→confirm race — the path becoming a repo between the two
+  POSTs — must not fail the confirm; no-op also preserves `host
+  add`'s idempotency) ·
+  path exists as a directory and is NOT a repo root — INCLUDING
+  inside another
   repo's work tree → `git init` at the exact path + an empty root
   commit (pinned subject: `self-learn: init for host
   registration`), then normal validation + add; nested repos are
@@ -1692,16 +1738,20 @@ removed the last competing workstream — the build gate is open.*
   around `zmk-config-offsetkey/` — git treats the inner repo as an
   untracked boundary), and init-at-the-exact-path is what makes
   registration mean "THIS path is the committable canon host",
-  never the accident of a parent repo · path does not exist →
-  refuse (existing refusal verbatim — `--init` initializes
-  repositories, it does not create directories) · ledger-home
-  refusal, kind checks, already-registered idempotency → unchanged,
-  evaluated after the init leg exactly as they run today ·
+  never the accident of a parent repo · path does not exist OR is
+  a regular file → clean refusal in the verb's own words, never a
+  fall-through to raw git stderr (F8) — `--init` initializes
+  existing directories only; it creates nothing ·
   root-commit failure (unset git identity is the realistic case) →
   non-zero exit with git's stderr and NO hosts.yaml mutation;
-  honesty pin: init is not transactional with the add — a failed
+  honesty pins: init is not transactional with the add — a failed
   add after a successful init leaves the path initialized, which
-  is harmless, and the retry no-ops the init leg · without
+  is harmless, and the retry no-ops the init leg; further (F7),
+  since a zero-commit repo counts as a root, the root commit is
+  **best-effort-ONCE** — after a failed empty commit the retry
+  skips the init leg entirely and the pinned subject may never
+  exist for that host; tests must not assert its existence on the
+  retry path · without
   `--init`: behavior byte-unchanged.
   **(4) UI side (Y-11's posture holds throughout).** The arm route
   derives `needs_init` SERVER-side via the imported repo-root
@@ -1711,9 +1761,27 @@ removed the last competing workstream — the build gate is open.*
   git repository will be created at <path> (`git init`) as part of
   registering** (plain words, Y-9; exact copy the builder's) — and
   the displayed command line shows the real argv
-  (`self-learn host add --init <path>`). The confirm RE-derives
-  `needs_init` at POST time (arm-time state can go stale) and
-  appends `--init` only when the re-derivation holds; the argv is
+  (`self-learn host add --init <path>`). **Consent invariant (the
+  review's F1 BLOCKER, resolved): the executed argv includes
+  `--init` only when (a) the ARM rendering actually displayed the
+  init disclosure AND (b) the confirm-time re-derivation still
+  holds; ANY mismatch in either direction runs PLAIN `host add`.**
+  Both race directions pinned: becomes-repo (disclosure was shown,
+  path a root by confirm) → `--init` dropped, the plain add
+  registers; goes-stale (NO disclosure shown, path a non-root by
+  confirm) → the plain add runs, the CLI's committability refusal
+  flows into Y-16's error leg, and the user re-arms and NOW sees
+  the disclosure — never a silent init, because a confirm-only
+  re-derivation would execute an argv the human never read
+  (what-you-read-is-what-runs, the same doctrine the proposal
+  confirm pins). Statelessly operationalized: the
+  arm-with-disclosure rendering posts through its own confirm
+  variant — a separate confirm route or a server-rendered marker
+  field, builder's choice; the path itself stays server-derived
+  either way (Y-11 posture), and because the re-derivation gates
+  leg (b), a stale or forged marker can never CAUSE an init on a
+  repo-root path — the worst mismatch outcome is a clean refusal.
+  The argv is
   otherwise unchanged and the client still supplies nothing but
   the return-page record id. When the path is not a repo root
   because a PARENT repo swallows it, `needs_init` is TRUE — the UI
