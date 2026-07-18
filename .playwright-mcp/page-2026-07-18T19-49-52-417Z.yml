@@ -1,0 +1,72 @@
+- generic [active] [ref=e1]:
+  - banner [ref=e2]:
+    - generic [ref=e3]:
+      - generic [ref=e4]: self-learn
+      - link "← Front" [ref=e5] [cursor=pointer]:
+        - /url: /
+      - generic "The bucket you're reviewing, and where its lessons apply" [ref=e6]: user (user)
+  - main [ref=e7]:
+    - generic [ref=e8]:
+      - generic [ref=e9]:
+        - paragraph [ref=e11]: Unregistered project. No skills root candidate is known yet. Resolution stays available below.
+        - region "Project instructions" [ref=e12]:
+          - heading "Project instructions" [level=2] [ref=e13]
+          - generic [ref=e14]:
+            - link "This looks like leftover test data, not a lesson from your work." [ref=e15] [cursor=pointer]:
+              - /url: /record/lrn-1fb953f6
+            - generic [ref=e16]:
+              - generic [ref=e17]: lrn-1fb953f6
+              - generic [ref=e18]: 0d
+            - generic [ref=e20]:
+              - generic [ref=e21]:
+                - text: Note
+                - textbox "Note" [ref=e22]:
+                  - /placeholder: optional resolution note
+              - button "Approve (e)" [ref=e23] [cursor=pointer]
+              - button "Deny (x)" [ref=e24] [cursor=pointer]
+              - button "Defer (f)" [ref=e25] [cursor=pointer]
+              - button "Graduate (g)" [ref=e26] [cursor=pointer]
+              - 'button "Destination: claude-md (o) hook / new-skill need Iterate — not cycle-reachable" [ref=e27] [cursor=pointer]':
+                - text: "Destination: claude-md (o)"
+                - generic [ref=e28]: hook / new-skill need Iterate — not cycle-reachable
+      - generic [ref=e30]:
+        - button "Open bucket chat (p)" [ref=e31] [cursor=pointer]
+        - paragraph [ref=e32]: Chat about this bucket — the agent can answer questions about the queue and suggest resolutions; nothing runs unless you confirm.
+  - contentinfo [ref=e33]:
+    - navigation "keyboard shortcuts" [ref=e34]:
+      - generic [ref=e35]:
+        - generic [ref=e36]: s
+        - text: Move down
+      - generic [ref=e37]:
+        - generic [ref=e38]: w
+        - text: Move up
+      - generic [ref=e39]:
+        - generic [ref=e40]: Enter
+        - text: Open
+      - generic [ref=e41]:
+        - generic [ref=e42]: Escape
+        - text: Back / up a level (interrupts the pane first, if focused)
+      - generic [ref=e43]:
+        - generic [ref=e44]: e
+        - text: Approve
+      - generic [ref=e45]:
+        - generic [ref=e46]: x
+        - text: Deny
+      - generic [ref=e47]:
+        - generic [ref=e48]: f
+        - text: Defer
+      - generic [ref=e49]:
+        - generic [ref=e50]: g
+        - text: Graduate
+      - generic [ref=e51]:
+        - generic [ref=e52]: o
+        - text: Cycle destination
+      - generic [ref=e53]:
+        - generic [ref=e54]: "n"
+        - text: Attach / edit note
+      - generic [ref=e55]:
+        - generic [ref=e56]: p
+        - text: Open bucket chat pane
+      - generic [ref=e57]:
+        - generic [ref=e58]: "?"
+        - text: full reference

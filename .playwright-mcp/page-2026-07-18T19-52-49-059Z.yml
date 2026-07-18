@@ -1,0 +1,120 @@
+- generic [active] [ref=f4e1]:
+  - banner [ref=f4e2]:
+    - generic [ref=f4e3]:
+      - generic [ref=f4e4]: self-learn
+      - link "← Front" [ref=f4e5] [cursor=pointer]:
+        - /url: /
+      - generic "The bucket you're reviewing, and where its lessons apply" [ref=f4e6]: user (user)
+  - main [ref=f4e7]:
+    - generic [ref=f4e8]:
+      - generic [ref=f4e9]:
+        - paragraph [ref=f4e11]: Unregistered project. No skills root candidate is known yet. Resolution stays available below.
+        - region "Project instructions" [ref=f4e12]:
+          - heading "Project instructions" [level=2] [ref=f4e13]
+          - generic [ref=f4e14]:
+            - link "This looks like leftover test data, not a lesson from your work." [ref=f4e15] [cursor=pointer]:
+              - /url: /record/lrn-1fb953f6
+            - generic [ref=f4e16]:
+              - generic [ref=f4e17]: lrn-1fb953f6
+              - generic [ref=f4e18]: 0d
+            - generic [ref=f4e20]:
+              - generic [ref=f4e21]:
+                - text: Note
+                - textbox "Note" [ref=f4e22]:
+                  - /placeholder: optional resolution note
+              - button "Approve (e)" [ref=f4e23] [cursor=pointer]
+              - button "Deny (x)" [ref=f4e24] [cursor=pointer]
+              - button "Defer (f)" [ref=f4e25] [cursor=pointer]
+              - button "Graduate (g)" [ref=f4e26] [cursor=pointer]
+              - 'button "Destination: claude-md (o) hook / new-skill need Iterate — not cycle-reachable" [ref=f4e27] [cursor=pointer]':
+                - text: "Destination: claude-md (o)"
+                - generic [ref=f4e28]: hook / new-skill need Iterate — not cycle-reachable
+      - generic [ref=f4e30]:
+        - generic [ref=f4e31]:
+          - paragraph [ref=f4e32]:
+            - text: "tool:"
+            - code [ref=f4e33]: Glob
+          - paragraph [ref=f4e34]:
+            - text: "tool:"
+            - code [ref=f4e35]: Read
+            - text: →
+            - code [ref=f4e36]: pending/lrn-1fb953f6.md
+          - paragraph [ref=f4e37]:
+            - text: "tool:"
+            - code [ref=f4e38]: Read
+            - text: →
+            - code [ref=f4e39]: proposals/lrn-1fb953f6.yaml
+          - paragraph [ref=f4e40]:
+            - text: "tool:"
+            - code [ref=f4e41]: Glob
+          - generic [ref=f4e42]:
+            - paragraph [ref=f4e43]:
+              - text: I looked at the one pending item in your
+              - strong [ref=f4e44]: user
+              - text: bucket.
+            - paragraph [ref=f4e45]:
+              - strong [ref=f4e46]: "What it is:"
+              - text: An entry called "U13 trial fixture" — and that name isn't incidental. Both lines of the actual content say outright that it was seeded by a test run of the review tool itself (a "U13 DoD trial," dated today), not something that came out of real work. The content itself describes a background process closing a paused review session before it could exit cleanly — a debugging detail about the review tool's own plumbing.
+            - paragraph [ref=f4e47]:
+              - strong [ref=f4e48]: "My recommendation: reject it."
+            - paragraph [ref=f4e49]:
+              - text: There's no "next time, do X instead of Y" behavior in here — nothing a future session would actually act on differently. If it got filed into your always-loaded personal rules file anyway (the technically-correct destination for this
+              - emphasis [ref=f4e50]: type
+              - text: "of entry), it would just be noise: a stray note about the review tool's internals sitting in a file that loads into every session of every project you touch. That's the most expensive shelf in the whole system, so it should only hold things that are actually rules to live by."
+            - paragraph [ref=f4e51]:
+              - text: "One caveat worth naming: if you"
+              - emphasis [ref=f4e52]: do
+              - text: want to track that underlying timing bug — a paused session getting torn down too early instead of exiting cleanly — that's a real thing worth fixing somewhere, just not as a "lesson" in this ledger. Happy to help you note it elsewhere if you want that tracked.
+            - paragraph [ref=f4e53]: Since your host for this bucket isn't registered yet, nothing can actually be written to canon regardless — so this is purely advisory review for now. Let me know if you'd like me to do anything else with it, or if you want to register the host first.
+        - paragraph [ref=f4e54]:
+          - generic [ref=f4e55]: success
+          - generic [ref=f4e56]: $0.2334
+          - generic [ref=f4e57]: 5 turns
+        - generic [ref=f4e58]:
+          - generic [ref=f4e59]:
+            - text: Send
+            - textbox "Send" [ref=f4e60]:
+              - /placeholder: follow-up message
+          - button "Send" [ref=f4e61] [cursor=pointer]
+        - button "Close (q)" [ref=f4e62] [cursor=pointer]
+  - contentinfo [ref=f4e63]:
+    - navigation "keyboard shortcuts" [ref=f4e64]:
+      - generic [ref=f4e65]:
+        - generic [ref=f4e66]: s
+        - text: Move down
+      - generic [ref=f4e67]:
+        - generic [ref=f4e68]: w
+        - text: Move up
+      - generic [ref=f4e69]:
+        - generic [ref=f4e70]: Enter
+        - text: Open
+      - generic [ref=f4e71]:
+        - generic [ref=f4e72]: Escape
+        - text: Back / up a level (interrupts the pane first, if focused)
+      - generic [ref=f4e73]:
+        - generic [ref=f4e74]: e
+        - text: Approve
+      - generic [ref=f4e75]:
+        - generic [ref=f4e76]: x
+        - text: Deny
+      - generic [ref=f4e77]:
+        - generic [ref=f4e78]: f
+        - text: Defer
+      - generic [ref=f4e79]:
+        - generic [ref=f4e80]: g
+        - text: Graduate
+      - generic [ref=f4e81]:
+        - generic [ref=f4e82]: o
+        - text: Cycle destination
+      - generic [ref=f4e83]:
+        - generic [ref=f4e84]: "n"
+        - text: Attach / edit note
+      - generic [ref=f4e85]:
+        - generic [ref=f4e86]: r
+        - text: Retry pane
+      - generic [ref=f4e87]:
+        - generic [ref=f4e88]: q
+        - text: Close split (ends the session)
+      - generic [ref=f4e89]:
+        - generic [ref=f4e90]: "?"
+        - text: full reference

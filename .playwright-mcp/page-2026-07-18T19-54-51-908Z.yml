@@ -1,0 +1,93 @@
+- generic [active] [ref=f7e1]:
+  - banner [ref=f7e2]:
+    - generic [ref=f7e3]:
+      - generic [ref=f7e4]: self-learn
+      - link "← user" [ref=f7e5] [cursor=pointer]:
+        - /url: /bucket/user/user
+      - generic "This lesson's record id in the ledger" [ref=f7e6]: lrn-1fb953f6
+  - main [ref=f7e7]:
+    - generic [ref=f7e8]:
+      - article [ref=f7e9]:
+        - generic [ref=f7e10]: unregistered project
+        - paragraph [ref=f7e12]: Unregistered project. No skills root candidate is known yet. Resolution stays available below.
+        - region "proposal cards" [ref=f7e13]:
+          - generic [ref=f7e14]:
+            - heading "What this is about" [level=2] [ref=f7e15]
+            - paragraph [ref=f7e17]: This looks like leftover test data, not a lesson from your work.
+          - generic [ref=f7e18]:
+            - heading "What changes if you keep it" [level=2] [ref=f7e19]
+            - paragraph [ref=f7e21]: Both lines of this entry say outright that they were seeded by a test trial run of the review tool itself ("U13 DoD trial"), not something that happened in a real working session. If it were filed into your always-loaded rules anyway, it would add a note about a background process closing a paused session too early — a debugging detail about the review tool's own plumbing, not a rule that changes how a future session behaves.
+          - generic [ref=f7e22]:
+            - heading "Worth discussing" [level=2] [ref=f7e23]
+            - paragraph [ref=f7e25]: "Best reason to decline: there's no \"next time, do X instead of Y\" behavior packed into this — it's a side effect noticed while testing the review pipeline, not a preference or gotcha from real work. Worth declining unless you specifically want to track the underlying timing issue (a paused review session getting torn down before it can exit cleanly) somewhere on purpose."
+        - region "finding" [ref=f7e26]:
+          - heading "Finding" [level=2] [ref=f7e27]
+          - paragraph [ref=f7e28]: teach · 1 sighting(s) · created 2026-07-18T08:30:15Z
+          - generic [ref=f7e29]:
+            - heading "Fact" [level=2] [ref=f7e30]
+            - paragraph [ref=f7e31]: "U13 trial fixture: the idle monitor tears down a parked pane session before clean exit"
+            - heading "Context" [level=2] [ref=f7e32]
+            - paragraph [ref=f7e33]: seeded by the U13 DoD trial (c), 2026-07-18
+        - region "change" [ref=f7e34]:
+          - heading "Change" [level=2] [ref=f7e35]
+          - generic [ref=f7e36]: "destination: claude-md alternates: [] already_canon: false already_canon_reason: \"\" rationale: > Front-matter is type: knowledge, scope: user, which the routing map sends to claude-md by default. But both the Fact and Context lines self-identify this record as a \"U13 trial fixture ... seeded by the U13 DoD trial (c)\" — language that reads as synthetic test data exercising the self-learn pipeline itself, not a standing fact learned from real work. There is no extractable \"next time Claude does X it will do Y instead\" behavior change: the content describes the adjudication surface's own idle-monitor teardown timing, not something a future Claude session would ever act on. Recommend the human reject this record rather than route test-fixture content into the always-loaded user-scope file; claude-md is named here only as the formal best-fit destination if it were routed. model: claude analyzed_at: \"2026-07-18T00:00:00Z\" card: headline: \"This looks like leftover test data, not a lesson from your work.\" impact: > Both lines of this entry say outright that they were seeded by a test trial run of the review tool itself (\"U13 DoD trial\"), not something that happened in a real working session. If it were filed into your always-loaded rules anyway, it would add a note about a background process closing a paused session too early — a debugging detail about the review tool's own plumbing, not a rule that changes how a future session behaves. discuss: > Best reason to decline: there's no \"next time, do X instead of Y\" behavior packed into this — it's a side effect noticed while testing the review pipeline, not a preference or gotcha from real work. Worth declining unless you specifically want to track the underlying timing issue (a paused review session getting torn down before it can exit cleanly) somewhere on purpose. record_sha: sha256:92e666cc1714"
+          - paragraph [ref=f7e39]: compilers regenerate from the record at apply time — this preview is advisory
+        - region "why" [ref=f7e40]:
+          - heading "Why" [level=2] [ref=f7e41]
+          - paragraph [ref=f7e43]: "Front-matter is type: knowledge, scope: user, which the routing map sends to claude-md by default. But both the Fact and Context lines self-identify this record as a \"U13 trial fixture ... seeded by the U13 DoD trial (c)\" — language that reads as synthetic test data exercising the self-learn pipeline itself, not a standing fact learned from real work. There is no extractable \"next time Claude does X it will do Y instead\" behavior change: the content describes the adjudication surface's own idle-monitor teardown timing, not something a future Claude session would ever act on. Recommend the human reject this record rather than route test-fixture content into the always-loaded user-scope file; claude-md is named here only as the formal best-fit destination if it were routed."
+          - paragraph [ref=f7e44]: "Suggested destination: claude-md"
+          - paragraph [ref=f7e45]: fresh
+        - generic [ref=f7e47]:
+          - generic [ref=f7e48]:
+            - text: Note
+            - textbox "Note" [ref=f7e49]:
+              - /placeholder: optional resolution note
+          - button "Approve (e)" [ref=f7e50] [cursor=pointer]
+          - button "Deny (x)" [ref=f7e51] [cursor=pointer]
+          - button "Defer (f)" [ref=f7e52] [cursor=pointer]
+          - button "Graduate (g)" [ref=f7e53] [cursor=pointer]
+          - 'button "Destination: claude-md (o) hook / new-skill need Iterate — not cycle-reachable" [ref=f7e54] [cursor=pointer]':
+            - text: "Destination: claude-md (o)"
+            - generic [ref=f7e55]: hook / new-skill need Iterate — not cycle-reachable
+      - generic [ref=f7e80]:
+        - generic [ref=f7e81]: "Let me analyze this pending learning record and existing proposal carefully. ## Record Analysis **Fact:** \"U13 trial fixture: the idle monitor tears down a parked pane session before clean exit\" **Context:** \"seeded by the U13 DoD trial (c), 2026-07-18\" **The Existing Proposal:** - destination: claude-md - alternates: [] (none listed) - already_canon: false - rationale suggests this is test data, not a real lesson, and recommends rejection The proposal's rationale is quite reasonable: it identifies that this record is synthetic test data (\"U13 trial fixture\") used to exercise the self-learn pipeline itself, not a standing fact from real work. It notes: 1. No extractable \"next time Claude does X, it will Y instead\" behavior change 2. Describes adjudication surface plumbing, not something a future session would act on 3. claude-md is only listed as formal best-fit IF it were routed (but rejection is recommended) ## My Assessment The proposal author is correct in their reasoning. This appears to be: 1. **Test data:** Explicitly marked as \"U13 trial fixture\" and \"seeded by the U13 DoD trial\" 2. **Not a standing lesson:** No behavioral change or preference encoded 3. **About internal tool mechanics:** It's about the idle monitor timing in the review tool itself, not a lesson about how to work However, I notice one issue with the existing proposal: - **Missing `alternates`:** The `alternates` field is empty `[]`, but according to the routing-doctrine, when the proposal recommends something other than routing (rejection in this case), alternates may be less critical. However, the rationale explicitly states \"claude-md is named here only as the formal best-fit destination if it were routed\" — this suggests it should be in alternates. Actually, re-reading the routing-doctrine more carefully: > `already_canon: true` only when the substance is **fully** present in canon that already loads... > Resolution of an already-canon record is **graduation** (`superseded_by: canon`), never rejection And for rejection cases, the routing-doctrine says (in section 7, \"Your boundaries\"): > When no destination is defensible (the lesson is a one-off task instruction, a user error, or too vague to fire), say so plainly in the rationale and recommend rejection This is exactly that case. The record is test data, not a real lesson. The recommendation to reject is sound. ## What I Should Do As the routing analyst in the pane (based on the charter), I should: 1. **Read and understand the record** ✓ (done above) 2. **Validate the proposal's reasoning** ✓ (the rejection is justified—this is synthetic test data with no actionable behavioral lesson) 3. **Check for routing-doctrine compliance** — The proposal follows the doctrine correctly by recommending rejection when no defensible destination exists. The `alternates` field being empty is acceptable here since rejection is the recommendation, not routing. be other destinations that work. But the charter asks me to improve the proposal if one exists, so I should consider what would actually be helpful here. The `alternates` field could list destinations that would work if someone chose to override the rejection — perhaps `skill-md` for skill-related routing. The `card:` sections look solid but might benefit from tighter language. I also notice the `record_sha` is included, though the doctrine advises against emitting it. Since I'm functioning as the routing analyst described in the doctrine, my focus should be on whether the recommendation itself is sound — and for lessons that are too vague or represent one-off instructions, rejection with a clear rationale is the right call. I can modify the proposal file, so I should refine it. The `alternates` field should list `claude-md` as a fallback option since that's identified as the formal best-fit destination if the rejection is overridden. The proposal itself is sound—it correctly identifies this as test data rather than genuine work—but I can polish the card sections for clarity. Since no specific request has been made yet, I'm waiting to see what the user wants me to address about this record. this pattern — it sets `destination: claude-md` as a formal best-fit, but the rationale makes clear this is a rejection recommendation. The issue is that `alternates: []` seems wrong if we're rejecting; there's no fallback routing option provided. Looking at the structure more carefully, I notice the proposal conflates two things: designating claude-md as the theoretical best destination while simultaneously arguing the lesson shouldn't be routed at all. The `alternates` field being empty creates a gap — if someone overrides the rejection decision, there's nowhere to send it. Either the alternates should list claude-md as a fallback, or the proposal needs clearer separation between \"this is where it would go if routed\" versus \"this should be rejected entirely.\" them work? The rationale is clear that there's no extractable behavior change here—the content describes internal system timing, not something a future Claude session would act on. So no destination actually works for routing this. That means `alternates: []` is correct, and claude-md shouldn't be listed there. The mention of claude-md in the rationale serves a different purpose: it shows I considered where this would go if forced to route, but I'm recommending against routing entirely. The proposal looks solid as written."
+        - generic [ref=f7e83]:
+          - generic [ref=f7e84]:
+            - text: Send
+            - textbox "Send" [ref=f7e85]:
+              - /placeholder: follow-up message
+          - button "Send" [ref=f7e86] [cursor=pointer]
+        - button "Interrupt (Esc)" [ref=f7e87] [cursor=pointer]
+        - button "Close (q)" [ref=f7e88] [cursor=pointer]
+  - contentinfo [ref=f7e60]:
+    - navigation "keyboard shortcuts" [ref=f7e61]:
+      - generic [ref=f7e62]:
+        - generic [ref=f7e63]: Escape
+        - text: Back / up a level (interrupts the pane first, if focused)
+      - generic [ref=f7e64]:
+        - generic [ref=f7e65]: e
+        - text: Approve
+      - generic [ref=f7e66]:
+        - generic [ref=f7e67]: x
+        - text: Deny
+      - generic [ref=f7e68]:
+        - generic [ref=f7e69]: f
+        - text: Defer
+      - generic [ref=f7e70]:
+        - generic [ref=f7e71]: g
+        - text: Graduate
+      - generic [ref=f7e74]:
+        - generic [ref=f7e75]: o
+        - text: Cycle destination
+      - generic [ref=f7e76]:
+        - generic [ref=f7e77]: "n"
+        - text: Attach / edit note
+      - generic [ref=f7e89]:
+        - generic [ref=f7e90]: r
+        - text: Retry pane
+      - generic [ref=f7e91]:
+        - generic [ref=f7e92]: q
+        - text: Close split (ends the session)
+      - generic [ref=f7e78]:
+        - generic [ref=f7e79]: "?"
+        - text: full reference

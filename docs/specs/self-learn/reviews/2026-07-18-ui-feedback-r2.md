@@ -84,4 +84,35 @@ Code gate + merge + live re-trials: recorded below.
 
 ## Round-2 code gate for Fix B, merge, live trials
 
-(recorded on receipt)
+Code gate: **NOT CLEAN** — MAJOR-1 proven with a live repro (the
+post-Result validate window entered awaiting-input before the drain
+finished; the completion swap handed the user a live send form inside
+it; a send there dispatched a concurrent second engine turn, with a
+state-stomp cascade to a third), MINOR-1 (r-retry leaked the
+predecessor's engine — one orphaned SDK child per retry), MINOR-2
+(app shutdown left the free-floating drain task undisposed), 3 NIT.
+Fold 4533728 (state flips to awaiting-input only after validate, in
+the drain tail; retry closes the old engine; PaneManager.shutdown()
+in the lifespan; while-loop re-guard; Y-9 starting-line honesty; the
+F5 dispose-window test) → second delta **NOT CLEAN** on one new
+empirically-proven residual the fold itself introduced (the validate
+window became INTERRUPTIBLE with an Interrupt button rendered — a
+stale Esc latch there replayed engine.interrupt() into the user's
+NEXT turn) → fold 704f087 (per-turn latch reset at _drain entry +
+mutation-checked named test) → final delta **CLEAN** (the reviewer
+re-ran their own repro probes and mutation tests on the final tree).
+
+Merged into master with A and C: **647 tests green**, src pyright
+zero. Y-15's three named re-trials run live before deploy (full log:
+fixtures/ui-trials.md "Y-15 re-trials"): (i) PASS vividly — instant
+split, starting line already cleared by the first streamed frame,
+live tool activity mid-turn, completion swap landed the result
+footer; (iii) PASS — Esc during starting terminated promptly, error
+strip + r + Close rendered via the completion swap; (ii)
+pass-by-composition, three forcing levers honestly recorded (the
+fallback model rescues a bogus model; route guards intercept a
+missing record; an unreadable record 500s the page — new backlog
+item), with the exception leg pinned by unit+route tests and the
+client path proven by (iii).
+
+**Round 2 gate CLOSED 2026-07-18: all three fixes shipped.**

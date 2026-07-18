@@ -298,3 +298,47 @@ shield-and-abandon close): 8 incremental deltas, interrupt at the
 original T-E), `close()` 0.00 s, PASS. The keystroke now costs
 ~2.9 s worst-case-observed against the amendment's "common-path
 ~2.7 s + Result propagation" claim and the 5 s arithmetic ceiling.
+
+## Y-15 re-trials · Non-blocking pane start (2026-07-18, dev sandbox, real model)
+
+The three re-trials the Y-15 register names, run on the merged tree
+before deploy:
+
+- **(i) Bucket-chat button → instant split + live stream — PASS,
+  vividly.** The split swapped in immediately on the click; by the
+  first snapshot the starting line had ALREADY been cleared by the
+  first streamed frame (F7 working) and live tool activity ("tool:
+  Read → pending/…") was rendering mid-turn. At completion the swap
+  landed the result footer (success · $0.2334 · 5 turns) and parked
+  at awaiting-input. The round-2 complaint (silent 30–90 s wall) is
+  dead. Bonus: Fix A visible live — the user-scope record rendered
+  the corrected `claude-md` default with the cycle note.
+- **(iii) Esc during starting — PASS.** Interrupt clicked in the
+  starting split seconds after Iterate; the turn terminated promptly
+  and the completion swap rendered the ended state: the SDK's
+  diagnostic verbatim in the error strip + Retry (r) + Close (q).
+  (Keymap note observed en route: body-focused Esc navigates back by
+  design — the pane-focused binding and the Interrupt button are the
+  interrupt paths.)
+- **(ii) Forced background-drain failure — pass-by-composition,
+  recorded honestly.** Three forcing levers were tried live: a bogus
+  `SELF_LEARN_PANE_MODEL` (the wired fallback model rescued the turn
+  — correct product behavior), a removed record (the route's own
+  not-found guard intercepts before any pane start), and an
+  unreadable record (the Detail PAGE 500s before Iterate is
+  reachable — a pre-existing degradation gap, new backlog item
+  below). The exception leg itself is pinned by the unit test
+  (exception-in-drain → ENDED + slot cleared + synthetic
+  `pane_result`) and the route test (error-strip markup from the
+  panel GET), and the client half of the path — `pane_result` →
+  completion swap → error strip + Retry in a real browser — is
+  exactly what trial (iii) proved live over the same envelope.
+
+New backlog observation from (ii)'s third lever: an unreadable
+(permission-denied) record file 500s the Detail page — predates this
+round; wants a §5-style degradation row + friendly render.
+
+Also live-confirmed en route: one-session-server-wide held (the
+record Iterate against a parked bucket session rendered the armed
+interrupt prompt, correctly naming the bucket session); close-then-
+claim worked; the reload-mid-drain snapshot rendered.
