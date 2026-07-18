@@ -619,15 +619,23 @@ pattern; no client-side markdown dependency).
   POST; app.js had deliberately ignored `pane_result`, so without
   this pin a failed background first turn is the silent wall
   reborn): on `pane_result`, the client re-fetches the session's own
-  **pane panel GET** (`…/pane/panel` — both route families have one)
+  **pane panel GET** (`…/pane/panel` — both route families have
+  one; the pane region carries its own panel URL as a data attribute
+  the handler reads, never scraped from `hx-post` values — delta R3)
   and swaps the pane region; that authoritative server-rendered swap
   IS the completion mechanism, for the clean AND error legs alike,
   and is also the cleanup bound on any append-vs-swap residue,
-  including a tab that reloaded mid-drain (F7). To make that hold on
-  every path, the background drain wrapper's exception leg publishes
-  `pane_result` too — an engine that dies without emitting its own
-  result still produces exactly one completion push. No new envelope
-  types. **Failure surfacing unchanged in substance**: an exception
+  including a tab that reloaded mid-drain (F7). The handler
+  suppresses (or defers) the swap while the pane region shows the
+  armed interrupt prompt or holds a focused non-empty send input —
+  the same hazard class §4.5's `[data-armed]` belt covers: never
+  clobber a human mid-decision or a half-typed draft (delta R1). To
+  make the completion hold on every path, the background drain
+  wrapper's exception leg publishes `pane_result` too — an engine
+  that dies without emitting its own result still produces at least
+  one completion push; the swap is idempotent and side-effect-free,
+  so a wrapper-leg publish after a handled Result is harmless
+  (delta R2). No new envelope types. **Failure surfacing unchanged in substance**: an exception
   in the background drain lands the session in the SAME ENDED/error
   state the blocking path produced (§5's engine-failure row: error
   strip + `r` retry; cap statuses keep their wording), and the §4.5
@@ -1532,11 +1540,16 @@ removed the last competing workstream — the build gate is open.*
   renders < 1 s and the stream fills live (browser); **(ii)** forced
   background-drain failure → error strip + `r` retry render at
   completion; **(iii)** Esc during starting terminates the turn
-  promptly. Consuming sections: §2.2 (bucket pane), §2.4 (iterate
-  split), §4.2 (normative start contract); 10 §1's SSE row carries
-  the build-plan side. Substrate: no CLI change, no SSE-protocol
-  change — server code, templates, and app.js's `pane_result`
-  completion handler only.
+  promptly. Delta-gate residuals folded same day (SOUND verdict,
+  three one-sentence pins now in §4.2's completion block): the
+  completion swap defers around an armed prompt or a half-typed
+  draft (R1), is idempotent/at-least-once (R2), and reads its panel
+  URL from the pane region's own data attribute (R3). Consuming
+  sections: §2.2 (bucket pane), §2.4 (iterate split), §4.2
+  (normative start contract); 10 §1's SSE row carries the build-plan
+  side. Substrate: no CLI change, no SSE-protocol change — server
+  code, templates, and app.js's `pane_result` completion handler
+  only.
 **Substrate edits this set requires elsewhere** (same discipline as
 §10 — until landed, this list is authoritative; corrected after gate
 zero 2026-07-17 against the live CLI): **08 §1** dated edit — the
