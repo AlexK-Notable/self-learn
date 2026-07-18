@@ -170,7 +170,7 @@ def resolve_record_directly(
     bucket_dir: Path,
     record: Record,
     *,
-    destination: str = "skill-md",
+    destination: str | None = None,
     status: str = "routed",
 ) -> None:
     """Move a pending record's file straight to resolved/, bypassing the
@@ -179,7 +179,12 @@ def resolve_record_directly(
     the record's status is no longer pending/deferred, AND the U9
     bulk-loop-resume idempotency check (10 §5 playbook: "re-running the
     bulk row is idempotent — already-resolved ids vanish from the
-    group")."""
+    group"). The default destination derives from the record's scope
+    (skill-md for skill:*, else claude-md — the CLI's own scope rules)
+    so fixtures never mint routing states the route verb could not have
+    produced (review 2026-07-18 flag)."""
+    if destination is None:
+        destination = "skill-md" if record.scope.startswith("skill:") else "claude-md"
     record.set_status(status)
     if status == "routed":
         record.set_routing(

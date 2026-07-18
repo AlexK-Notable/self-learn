@@ -11,6 +11,7 @@ the security matrix (Host/token/HX-Request live in test_middleware.py).
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -738,6 +739,21 @@ class TestArmDisarmConfirm:
 
 
 class TestOCycle:
+    # The endpoint reads the `dest` field because that is what the
+    # rendered form sends (hx-include posts the hidden input named
+    # "dest") — review 2026-07-18 F1: these tests once posted a
+    # `current` field mirroring the handler instead of the template,
+    # which entrenched a cycle that never advanced in a real browser.
+
+    @staticmethod
+    def _form_fields(html: str, record_id: str) -> dict[str, str]:
+        """Exactly the fields htmx's hx-include would post: the value-
+        carrying inputs of the unarmed bar's own form."""
+        section = html.split(f'id="form-action-bar-{record_id}"')[1].split("</form>")[0]
+        return dict(
+            re.findall(r'<input[^>]*name="([^"]+)"[^>]*value="([^"]*)"', section)
+        )
+
     def test_cycle_destination_endpoint_returns_parameter_free_destination(
         self, tmp_path: Path
     ) -> None:
@@ -747,7 +763,7 @@ class TestOCycle:
         c, _runner = make_client(sb)
         r = c.post(
             f"/record/{rec.id}/action/cycle-destination",
-            data={"current": ""},
+            data={"dest": ""},
             headers={"HX-Request": "true"},
         )
         assert r.status_code == 200
@@ -755,6 +771,33 @@ class TestOCycle:
 
         assert any(d in r.text for d in PARAMETER_FREE_DESTINATIONS)
         assert "hook" not in r.text.split("Destination:")[-1].split("<")[0]
+
+    def test_cycle_advances_using_the_rendered_forms_own_fields(
+        self, tmp_path: Path
+    ) -> None:
+        """Template-truth (review 2026-07-18 F1): drive the cycle with
+        the rendered form's OWN fields — what a browser actually posts —
+        and assert it ADVANCES. A handler/template field-name mismatch
+        (the F1 bug: handler read `current`, template sent `dest`, the
+        cycle stuck forever) fails loudly here instead of passing via
+        tests that mirror the handler."""
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+        c, _runner = make_client(sb)
+        fields = self._form_fields(c.get(f"/record/{rec.id}").text, rec.id)
+        assert "dest" in fields  # the field the endpoint must read
+        seen = []
+        for _ in range(2):
+            r = c.post(
+                f"/record/{rec.id}/action/cycle-destination",
+                data=fields,
+                headers={"HX-Request": "true"},
+            )
+            assert r.status_code == 200
+            fields = self._form_fields(r.text, rec.id)
+            seen.append(fields["dest"])
+        assert seen == ["skill-md", "claude-md"]  # advanced, not stuck
 
     def test_cycle_endpoint_project_record_never_offers_skill_md(
         self, tmp_path: Path
@@ -766,18 +809,18 @@ class TestOCycle:
         rec = make_knowledge(scope="project")
         seed_record(sb.ledger, rec, project_path=sb.host)
         c, _runner = make_client(sb)
-        current = ""
+        fields = {"dest": ""}
         seen = set()
         for _ in range(4):
             r = c.post(
                 f"/record/{rec.id}/action/cycle-destination",
-                data={"current": current},
+                data=fields,
                 headers={"HX-Request": "true"},
             )
             assert r.status_code == 200
             assert "skill-md" not in r.text
-            current = r.text.split('name="dest" value="')[1].split('"')[0]
-            seen.add(current)
+            fields = self._form_fields(r.text, rec.id)
+            seen.add(fields["dest"])
         assert seen == {"claude-md", "reference"}
 
     def test_cycle_endpoint_user_record_stays_claude_md(self, tmp_path: Path) -> None:
@@ -787,7 +830,7 @@ class TestOCycle:
         c, _runner = make_client(sb)
         r = c.post(
             f"/record/{rec.id}/action/cycle-destination",
-            data={"current": "claude-md"},
+            data={"dest": "claude-md"},
             headers={"HX-Request": "true"},
         )
         assert r.status_code == 200
@@ -833,6 +876,35 @@ class TestDestinationCorrection:
         assert r.status_code == 200
         assert 'name="dest" value="skill-md"' in r.text
         assert "the analyst suggested" not in r.text
+
+    def test_disarm_and_failed_confirm_rerender_scope_corrected(
+        self, tmp_path: Path
+    ) -> None:
+        """Review 2026-07-18 F2: client-echoed dest values re-entering
+        armable renders go back through the scope rule server-side — an
+        echoed skill-md on a project record renders (and would arm)
+        claude-md on BOTH the disarm and failed-confirm paths."""
+        sb = make_env(tmp_path)
+        rec = make_knowledge(scope="project")
+        seed_record(sb.ledger, rec, project_path=sb.host)
+        runner = FakeRunner()
+        runner.queue_result(RunResult(1, stderr="self-learn: refused"))
+        c, _runner = make_client(sb, runner=runner)
+        r = c.post(
+            f"/record/{rec.id}/action/disarm",
+            data={"kind": "detail", "dest": "skill-md"},
+            headers={"HX-Request": "true"},
+        )
+        assert 'name="dest" value="claude-md"' in r.text
+        assert 'value="skill-md"' not in r.text
+        r2 = c.post(
+            f"/record/{rec.id}/action/confirm",
+            data={"verb": "route", "kind": "detail", "dest": "skill-md"},
+            headers={"HX-Request": "true"},
+        )
+        assert "refused" in r2.text  # stderr verbatim, pinned
+        assert 'name="dest" value="claude-md"' in r2.text
+        assert 'value="skill-md"' not in r2.text
 
     def test_project_bucket_row_arms_the_corrected_destination(
         self, tmp_path: Path
