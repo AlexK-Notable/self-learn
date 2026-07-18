@@ -437,8 +437,10 @@ from quietly becoming the preloading it replaced.
 `surface_fill` / 10 §3 U17:)* this cap — and how close a candidate section
 already sits to it — is **surfaced at the routing decision** by the review
 surface, in plain words ("this section already holds 8 of its 10 entries"),
-computed at render from the compiler's own count via `list --json
-.surface_fill`. The over-cap WARNING and graduation-opener flow named above
+computed at render from the compiler's own count via the opt-in
+`list --json --surface-fill` field (only the capped destinations
+`skill-md`/`claude-md` carry it; `reference`, being this overflow sink,
+is cap-free and shows a static "no cap" note instead). The over-cap WARNING and graduation-opener flow named above
 stay the authoritative enforcement (an over-cap route still applies + flags);
 Y-20 only makes the fill **visible before** that boundary so the
 narrowest-surface choice (routing-doctrine §3) is made with the cost in view

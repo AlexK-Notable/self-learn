@@ -272,27 +272,37 @@ Three stacked regions (07 §2's finding / change / why), one scroll:
    **fresh** or **stale** (record edited since analysis — Iterate to
    regenerate). Staleness is computed by the CLI (`list --json
    .proposal_fresh`), never by the server hashing things itself.
-   *(Amended 2026-07-18 — §11 **Y-20**, UX-survey item 4:)* beside the
-   suggested destination **and each alternate**, render its
-   **loaded-surface budget** in plain words (Y-9) from `list --json
-   .surface_fill[<destination>]` (08 §1 field) — e.g. "this skill-md
-   section already holds 8 of its 10 entries — a route here lands near
-   the cap", and the **word**-cap phrasing ("…and is near its word
-   budget") when `words` is the binding constraint. The register is
-   decision-support (routing-doctrine §8): it states the fact the
-   narrowest-surface bias (RD §3) turns on, so the human *decides* with
-   the cost visible rather than discovering it at apply-time rejection.
-   The datum is the CLI's counts; the **sentence is the template's** —
-   the same division of labor as `proposal_fresh` → "fresh"/"stale"
-   (§5 rule: the server renders what the CLI computes, never derives a
-   threshold judgment of its own). A destination absent from
-   `surface_fill` (scope-invalid for this record, or no data) shows **no
-   indicator** — never a zero, never a guess. At/over cap the indicator
-   states the fill fact only; the escalation is the **existing** 02 §4
-   over-cap WARNING + graduation-opener flow (referenced, not
-   duplicated here) — when `surface_fill[<armed-dest>].over_cap` is
-   already true, that flow owns the "route still applies but flags the
-   section" story.
+   *(Amended 2026-07-18 — §11 **Y-20**, UX-survey item 4:)* the Why
+   region is the **single budget surface** (there is no armed-bar
+   budget — see the action-bar note below). Beside the suggested
+   destination **and each alternate**, render its **loaded-surface
+   budget** in plain words (Y-9). For the two **capped** destinations
+   (`skill-md`, `claude-md`) the fact comes from the CLI:
+   `list --json --surface-fill .surface_fill[<destination>]` (08 §1
+   field — the Detail render is the one call-site that passes
+   `--surface-fill`) — e.g. "this skill-md section already holds 8 of
+   its 10 entries — a route here lands near the cap", and the
+   **word**-cap phrasing ("…and is near its word budget") when `words`
+   is the binding constraint. For **`reference`** the line is
+   **template-static, no CLI datum, no probe** (blind-review F1 —
+   `reference` is the cap-free overflow sink; it carries no
+   `surface_fill` key): a fixed plain-words note, "reference files have
+   no cap — this is the overflow surface entries graduate into." The
+   register is decision-support (routing-doctrine §8): it states the
+   fact the narrowest-surface bias (RD §3) turns on, so the human
+   *decides* with the cost visible rather than discovering it at
+   apply-time rejection. For the capped destinations the datum is the
+   CLI's counts and the **sentence is the template's** — the same
+   division of labor as `proposal_fresh` → "fresh"/"stale" (§5 rule: the
+   server renders what the CLI computes, never derives a threshold
+   judgment of its own). A capped destination **absent** from
+   `surface_fill` (any `VerbError` from the read-only resolver — 08 §1
+   F5) shows **no indicator** — never a zero, never a guess. At/over cap
+   the indicator states the fill fact only; the escalation is the
+   **existing** 02 §4 over-cap WARNING + graduation-opener flow
+   (referenced, not duplicated here) — when
+   `surface_fill[<destination>].over_cap` is already true, that flow
+   owns the "route still applies but flags the section" story.
 
 Action bar at the bottom (armed states per §1). `o` (override
 destination) cycles the destination the armed `route` will pass via
@@ -314,27 +324,33 @@ posture change: this surfaces the CLI's existing refusals as
 prevention; the error strip stays stderr-verbatim per §5.)* The
 overridden value renders distinctly (analyst's
 suggestion vs. override). *(Amended 2026-07-18 — §11 **Y-20**,
-UX-survey item 4:)* the **armed action bar carries the
-loaded-surface budget of the destination the confirm will execute**,
-and it **updates on every `o` cross** to the newly-selected
-destination's `surface_fill` entry — this is why the field is keyed by
-the whole scope-filtered cycle set, not the suggested destination
-alone: the human cycling `o` is comparing surfaces ("skill-md holds
-8 of 10, claude-md holds 3 of 10"), which is exactly the RD §3
-narrowest-surface choice made on-screen instead of from memory. The
-budget shown is byte-consistent with the armed `--dest` (same
-scope-filter, same target resolver as the cycle itself). **Freshness:**
-`surface_fill` is computed **at render**, like `proposal_fresh` — never
-cached in the server, never derived. Because fill changes whenever
-*another* record routes, and a route to record X moves the fill of any
-record Y that shares X's target, the U16 next-record prefetch's
-**invalidation-on-verb-execution rule is load-bearing here and must be
-global-on-any-verb-completion, not per-record**: a warmed Detail
-partial's `surface_fill` is **not** exempt from the standing "any verb
-completion forces an SSE push → re-request the partial" rule (§3), and
-a prefetch cache that invalidated only on the prefetched record's own
-change would show a stale budget on Y after X routed. The U16 builder
-owns this invalidation; Y-20 depends on it covering `surface_fill`. `g` is always available on Detail for a
+UX-survey item 4:)* **the armed action bar carries NO budget datum**
+(blind-review F2 — pinned negative). It keeps showing only the
+selected destination *name*, exactly as today; `action_cycle_destination`
+reads the `dest` field and re-fetches nothing (and the codebase already
+documents that cycle round-trips DROP non-echoed context — the
+`dest_note`/`already_canon` precedent at routes.py:605-617), so wiring
+a per-cross budget through the cycle would need a new, staler datum
+path for no gain. The **Why region is the single budget surface**: it
+lists **every** scope-valid candidate with its budget at page render
+(the granularity decision above), so the narrowest-surface comparison
+("skill-md holds 8 of 10, claude-md holds 3 of 10", RD §3) is already
+on-screen without the bar carrying a second, drift-prone truth.
+**Freshness:** `surface_fill` is computed **at render**, like
+`proposal_fresh` — never cached in the server, never derived. Because
+fill changes whenever *another* record routes, and a route to record X
+moves the fill of any record Y that shares X's target, the U16
+next-record prefetch's **invalidation-on-verb-execution rule is
+load-bearing here and must be global-on-any-verb-completion, not
+per-record**: a warmed Detail partial's `surface_fill` is **not** exempt
+from the standing "any verb completion forces an SSE push → re-request
+the partial" rule (§3), and a prefetch cache that invalidated only on
+the prefetched record's own change would show a stale budget on Y after
+X routed. **U16/Y-19 live in a parallel worktree, so Y-20 cannot enforce
+this from its branch** — the orchestrator injects this invalidation
+obligation into U16's own row at merge (already messaged to the U16
+builder mid-build); until then Y-20's field is still correct at every
+*fresh* render, only the prefetch-warm case needs U16's coverage. `g` is always available on Detail for a
 pending record and *highlighted* when `proposal.already_canon` is set
 (affordance, not qualification logic; P1-9b, carried).
 
@@ -2015,29 +2031,45 @@ removed the last competing workstream — the build gate is open.*
   CLI-computed at render by the compiler machinery through the read-only
   target resolver; the server displays it and derives nothing (the §2.1
   missing-field rule; the §5 CLI-is-enforcer posture). **(2)
-  Granularity — the whole scope-filtered cycle set, not the suggested
-  destination alone.** Steelman for suggested-only: one target
-  resolution + read per render, cheapest. Steelman for the cycle set
-  (chosen): the decision the indicator serves is a *comparison* —
-  "route to the emptier surface" — and the `o` cycle IS that comparison
-  on-screen; a budget that only lit the suggested destination would go
-  dark exactly when the human overrides to weigh an alternative. The
-  cost delta is <=3 small file reads, memoized per target-path per
-  invocation (08 §1), no model tokens — cheap enough that the
-  comparison value wins. Keys mirror the §2.3 `o`-cycle scope filter
-  exactly. **(3) Freshness — render-time, coordinated with U16.** Fill
-  is time-varying (it moves when *other* records route), so it is
-  computed at render like `proposal_fresh`, never cached server-side.
-  The U16 next-record-prefetch invalidation-on-verb-execution rule is
-  **load-bearing** for this entry and must be **global-on-any-verb-
-  completion, not per-record** — a route to record X changes the budget
-  shown for any record Y sharing X's target, so a warmed Detail
-  partial's `surface_fill` is not exempt from the §3 "any verb
-  completion forces a push -> re-request the partial" rule (§2.3 armed-
-  bar paragraph states the dependency the U16 builder owns).
-  **(4) Display** — plain words (Y-9) beside the suggested destination
-  and each alternate in the Why region, AND on the armed action bar
-  where it tracks the `o`-selected `--dest` byte-for-byte (§2.3).
+  Granularity — every scope-valid candidate, but only the two CAPPED
+  destinations carry a CLI datum.** Steelman for suggested-only: one
+  target resolution + read, cheapest. Steelman for the full candidate
+  set (chosen): the decision is a *comparison* — "route to the emptier
+  surface" — and a budget that only lit the suggested destination would
+  go dark exactly when the human weighs an alternative, so the Why
+  region lists every candidate. **`skill-md` and `claude-md`** get their
+  fill from `surface_fill`; **`reference` is EXCLUDED from the field and
+  gets a template-static line** — "reference files have no cap — this is
+  the overflow surface entries graduate into" (blind-review F1: reference
+  has `target=None`, `compile_reference` is cap-free, and it IS the
+  overflow sink the cap graduates into — no fill to probe; no builder may
+  invent one). Cost: ≤2 capped targets per record, memoized per
+  target-path per invocation (08 §1), no model tokens. Keys mirror the
+  §2.3 scope filter, narrowed to the two capped destinations. **(3) Freshness — render-time, coordinated with U16, gated by
+  a flag.** Fill is time-varying (it moves when *other* records route),
+  so it is computed at render like `proposal_fresh`, never cached
+  server-side — and behind the new opt-in **`list --json --surface-fill`**
+  flag (default OFF) passed **only by the Detail render path**, so the
+  Front/Bucket paints that never show fill pay nothing (blind-review F4:
+  `_cmd_list` dumps all items eagerly on every paint). The U16
+  next-record-prefetch invalidation-on-verb-execution rule is
+  **load-bearing** and must be **global-on-any-verb-completion, not
+  per-record** — a route to record X changes the budget shown for any
+  record Y sharing X's target. **U16/Y-19 are a parallel worktree**, so
+  Y-20 cannot enforce this from its branch; the orchestrator injects the
+  obligation into U16's row at merge (blind-review F3, already messaged
+  to the U16 builder). Until then the field is correct at every fresh
+  render; only the prefetch-warm case needs U16's coverage.
+  **(4) Display — the Why region is the single budget surface; the
+  armed bar carries NO budget datum** (blind-review F2). The bar keeps
+  showing only the selected destination *name* as today —
+  `action_cycle_destination` re-fetches nothing and cycle round-trips
+  drop non-echoed context (the `dest_note` precedent, routes.py:605-617),
+  so a per-cross bar budget would need a new, staler datum path for no
+  gain. The Why region lists all candidates' budgets at render, which is
+  the whole comparison; plain words (Y-9) beside each — the two capped
+  destinations from `surface_fill`, `reference` as the static
+  no-cap line.
   **(5) At/over cap — reference, do not duplicate:** the existing 02 §4
   over-cap WARNING + graduation-opener flow owns the "route still
   applies but flags the section" escalation; Y-20 only makes the fill
