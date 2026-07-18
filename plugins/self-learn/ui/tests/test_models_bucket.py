@@ -99,6 +99,36 @@ class TestLeadingText:
         assert leading_text(None, REGISTRY, weird_title) == weird_title
 
 
+class TestRowDestinationDefault:
+    """09 §2.3 as amended 2026-07-18 (feedback round 2 item 3): a row's
+    armable dest is the scope-corrected default; `destination` stays the
+    analyst's raw suggestion for grouping."""
+
+    def test_project_bucket_row_corrects_skill_md(self):
+        items = [_item(scope="project", has_proposal=True, destination="skill-md")]
+        model = build_bucket_model(
+            "p", "project", items, {}, [], REGISTRY,
+            host_registered=True, host_add_command=None, now=NOW,
+        )
+        (group,) = model.groups
+        row = group.rows[0]
+        assert row.destination == "skill-md"  # grouping keeps the suggestion
+        assert row.destination_default == "claude-md"
+        assert row.destination_note is not None
+        assert "corrected to claude-md" in row.destination_note
+
+    def test_skill_bucket_row_passes_through_unchanged(self):
+        items = [_item(has_proposal=True, destination="skill-md")]
+        model = build_bucket_model(
+            "s", "skill", items, {}, [], REGISTRY,
+            host_registered=True, host_add_command=None, now=NOW,
+        )
+        (group,) = model.groups
+        row = group.rows[0]
+        assert row.destination_default == "skill-md"
+        assert row.destination_note is None
+
+
 class TestGroupPrecedence:
     def test_no_proposal_goes_to_no_analysis(self):
         items = [_item(has_proposal=False, destination=None)]

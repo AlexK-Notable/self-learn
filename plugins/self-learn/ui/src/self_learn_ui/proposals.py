@@ -270,6 +270,29 @@ def validate_proposal(
             return _refuse(
                 f"dest is {len(dest)} characters — the cap is {DEST_MAX_CHARS}"
             )
+        # 09 §4.5 as amended 2026-07-18 (feedback round 2 item 3): scope
+        # validity joins parse validity at intake — the CLI's own rules
+        # (the route verb's _resolve_target: skill-md needs skill:<name>
+        # scope; reference needs skill or project). A scope-impossible
+        # dest must never reach the human as an armable proposal; other
+        # structural validity (e.g. a hook dest without stored script
+        # bytes) stays the verb's to enforce.
+        dest_base = dest.partition(":")[0]
+        if dest_base == "skill-md" and location.scope != "skill":
+            alternates = (
+                "claude-md or reference[:file]"
+                if location.scope == "project"
+                else "claude-md"
+            )
+            return _refuse(
+                "skill-md only exists for skill-scoped lessons; this record "
+                f"is {location.scope}-scoped — use {alternates}"
+            )
+        if dest_base == "reference" and location.scope not in ("skill", "project"):
+            return _refuse(
+                "reference files live with a skill or project; this record "
+                f"is {location.scope}-scoped — use claude-md"
+            )
 
     until = args.get("until")
     if until is not None:

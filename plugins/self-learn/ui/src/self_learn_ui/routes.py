@@ -29,7 +29,6 @@ from starlette.responses import StreamingResponse
 
 from . import ledger, models, pane, proposals, rendering
 from .keymap import keymap_as_dicts, keymap_json
-from .models import PARAMETER_FREE_DESTINATIONS
 from .sse import envelope_applying, envelope_banner, envelope_bulk_progress, event_stream
 
 router = APIRouter()
@@ -108,15 +107,20 @@ def build_argv(
     return argv
 
 
-def cycle_destination(current: str | None) -> str:
-    """09 §2.3's `o` pin: cycle among :data:`PARAMETER_FREE_DESTINATIONS`
+def cycle_destination(current: str | None, scope: str) -> str:
+    """09 §2.3's `o` pin: cycle among the parameter-free destinations
     ONLY — ``new-skill``/``hook`` are structurally unreachable from this
     function, which is what "the cycle skips them" means in practice
-    (there is nothing to skip — they were never in the cycle set)."""
-    if current not in PARAMETER_FREE_DESTINATIONS:
-        return PARAMETER_FREE_DESTINATIONS[0]
-    idx = PARAMETER_FREE_DESTINATIONS.index(current)
-    return PARAMETER_FREE_DESTINATIONS[(idx + 1) % len(PARAMETER_FREE_DESTINATIONS)]
+    (there is nothing to skip — they were never in the cycle set). As
+    amended 2026-07-18 (feedback round 2 item 3) the set is additionally
+    scope-filtered (:func:`models.destinations_for_scope`) — the CLI's
+    own scope rules, honored BEFORE the human can arm anything: a
+    project/user record can never cycle onto skill-md."""
+    cycle = models.destinations_for_scope(scope)
+    if current not in cycle:
+        return cycle[0]
+    idx = cycle.index(current)
+    return cycle[(idx + 1) % len(cycle)]
 
 
 def next_record_url(home: Path, bucket_name: str, resolved_id: str) -> str:
@@ -579,6 +583,11 @@ def _unarmed_context(
         "record_id": record_id,
         "dom_id": _dom_id(kind, record_id, target),
         "dest": dest,
+        # The scope-correction note (09 §2.3 as amended 2026-07-18) is
+        # threaded only at initial page render, like already_canon below
+        # — a round-trip drops the explanation, never the correction:
+        # `dest` itself is always a scope-valid value on every path.
+        "dest_note": None,
         "event": event,
         "target": target,
         # P1-9b: `g` is always available, highlighted (affordance, not
@@ -672,7 +681,13 @@ def action_disarm(
 def action_cycle_destination(
     request: Request, record_id: str, current: str | None = Form(None)
 ) -> HTMLResponse:
-    new_dest = cycle_destination(current or None)
+    # Scope from the ledger, never a client field (09 §2.3 as amended
+    # 2026-07-18). An unlocatable record degrades to "user" — its cycle
+    # is the everywhere-valid claude-md singleton, so even this fallback
+    # can never offer a destination the CLI would refuse on scope.
+    location = ledger.locate_record(_home(request), record_id)
+    scope = location.scope if location is not None else "user"
+    new_dest = cycle_destination(current or None, scope)
     ctx = _unarmed_context(kind="detail", record_id=record_id, dest=new_dest, event=None, target=None)
     return _render(request, "partials/action_bar.html", ctx)
 

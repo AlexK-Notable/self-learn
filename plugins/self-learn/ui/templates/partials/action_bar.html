@@ -104,6 +104,10 @@
       Destination: {{ dest or "(analyst suggestion)" }} (o)
       {% if dest %}<span class="hint">hook / new-skill need Iterate — not cycle-reachable</span>{% endif %}
     </button>
+    {# The scope-correction note (09 §2.3 as amended 2026-07-18): plain
+       words, rendered beside the destination it corrected — the dest
+       above is what the arm/confirm executes, this says why it changed. #}
+    {% if dest_note %}<p class="dest-note">{{ dest_note }}</p>{% endif %}
   </form>
   {% endif %}
 </div>

@@ -113,15 +113,17 @@ class TestCycleDestination:
     def test_from_none_starts_at_first(self) -> None:
         from self_learn_ui.models import PARAMETER_FREE_DESTINATIONS
 
-        assert cycle_destination(None) == PARAMETER_FREE_DESTINATIONS[0]
+        assert cycle_destination(None, "skill") == PARAMETER_FREE_DESTINATIONS[0]
 
-    def test_cycles_through_the_whole_set_and_wraps(self) -> None:
+    def test_skill_scope_cycles_through_the_whole_set_and_wraps(self) -> None:
+        # Regression pin (feedback round 2 item 3): scope-filtering must
+        # leave skill-scoped behavior exactly as it was.
         from self_learn_ui.models import PARAMETER_FREE_DESTINATIONS
 
         seen = []
         current = None
         for _ in range(len(PARAMETER_FREE_DESTINATIONS) + 1):
-            current = cycle_destination(current)
+            current = cycle_destination(current, "skill")
             seen.append(current)
         assert seen[: len(PARAMETER_FREE_DESTINATIONS)] == list(PARAMETER_FREE_DESTINATIONS)
         assert seen[-1] == PARAMETER_FREE_DESTINATIONS[0]  # wrapped
@@ -131,9 +133,28 @@ class TestCycleDestination:
         # IS the "skip" (there's nothing to skip past).
         from self_learn_ui.models import PARAMETER_FREE_DESTINATIONS
 
-        for start in ("hook", "new-skill:foo", None, "bogus"):
-            result = cycle_destination(start)
-            assert result in PARAMETER_FREE_DESTINATIONS
+        for scope in ("skill", "project", "user", "unknown"):
+            for start in ("hook", "new-skill:foo", None, "bogus"):
+                result = cycle_destination(start, scope)
+                assert result in PARAMETER_FREE_DESTINATIONS
+
+    def test_project_scope_never_produces_skill_md(self) -> None:
+        # The CLI's own rule (route's target resolver): skill-md needs
+        # skill:<name> scope — the cycle must not offer what the confirm
+        # would refuse (feedback round 2 item 3).
+        seen = set()
+        current: str | None = None
+        for _ in range(5):
+            current = cycle_destination(current, "project")
+            seen.add(current)
+        assert seen == {"claude-md", "reference"}
+
+    def test_user_scope_is_claude_md_only(self) -> None:
+        # reference needs a skill or project home; the user host is the
+        # chezmoi-managed CLAUDE.md alone.
+        assert cycle_destination(None, "user") == "claude-md"
+        assert cycle_destination("claude-md", "user") == "claude-md"
+        assert cycle_destination("skill-md", "user") == "claude-md"
 
 
 # --------------------------------------------------------------------- Front
@@ -734,6 +755,104 @@ class TestOCycle:
 
         assert any(d in r.text for d in PARAMETER_FREE_DESTINATIONS)
         assert "hook" not in r.text.split("Destination:")[-1].split("<")[0]
+
+    def test_cycle_endpoint_project_record_never_offers_skill_md(
+        self, tmp_path: Path
+    ) -> None:
+        # Feedback round 2 item 3: the endpoint reads the record's scope
+        # from the ledger (never a client field) and cycles only what the
+        # route verb can accept for it.
+        sb = make_env(tmp_path)
+        rec = make_knowledge(scope="project")
+        seed_record(sb.ledger, rec, project_path=sb.host)
+        c, _runner = make_client(sb)
+        current = ""
+        seen = set()
+        for _ in range(4):
+            r = c.post(
+                f"/record/{rec.id}/action/cycle-destination",
+                data={"current": current},
+                headers={"HX-Request": "true"},
+            )
+            assert r.status_code == 200
+            assert "skill-md" not in r.text
+            current = r.text.split('name="dest" value="')[1].split('"')[0]
+            seen.add(current)
+        assert seen == {"claude-md", "reference"}
+
+    def test_cycle_endpoint_user_record_stays_claude_md(self, tmp_path: Path) -> None:
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="user")
+        seed_record(sb.ledger, rec)
+        c, _runner = make_client(sb)
+        r = c.post(
+            f"/record/{rec.id}/action/cycle-destination",
+            data={"current": "claude-md"},
+            headers={"HX-Request": "true"},
+        )
+        assert r.status_code == 200
+        assert 'name="dest" value="claude-md"' in r.text
+        assert "skill-md" not in r.text
+        assert 'value="reference"' not in r.text
+
+
+class TestDestinationCorrection:
+    """Feedback round 2 item 3 — the live 2026-07-17 stranding: a project
+    record whose analyst proposal said skill-md armed skill-md, and the
+    CLI refused only after the human's confirm. Prevention: the rendered
+    default (the hidden dest field Approve arms) is always scope-valid,
+    with a plain-words note when it was corrected."""
+
+    def test_project_detail_corrects_skill_md_default_with_note(
+        self, tmp_path: Path
+    ) -> None:
+        sb = make_env(tmp_path)
+        rec = make_knowledge(scope="project")
+        seed_record(sb.ledger, rec, project_path=sb.host)
+        seed_proposal(sb.ledger, rec.id, destination="skill-md")
+        c, _runner = make_client(sb)
+        r = c.get(f"/record/{rec.id}")
+        assert r.status_code == 200
+        assert 'name="dest" value="claude-md"' in r.text
+        assert "the analyst suggested skill-md" in r.text
+        assert "corrected to claude-md" in r.text
+        # displayed == armed: the ONLY armable dest value is the corrected
+        # one — skill-md never appears in a form field.
+        assert 'value="skill-md"' not in r.text
+
+    def test_skill_detail_keeps_the_analyst_suggestion_without_note(
+        self, tmp_path: Path
+    ) -> None:
+        # Regression: a scope-valid suggestion passes through untouched.
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+        seed_proposal(sb.ledger, rec.id, destination="skill-md")
+        c, _runner = make_client(sb)
+        r = c.get(f"/record/{rec.id}")
+        assert r.status_code == 200
+        assert 'name="dest" value="skill-md"' in r.text
+        assert "the analyst suggested" not in r.text
+
+    def test_project_bucket_row_arms_the_corrected_destination(
+        self, tmp_path: Path
+    ) -> None:
+        # The Bucket page's per-row bar is the same armable surface —
+        # same shared correction (models.correct_destination).
+        from self_learn_ui import ledger as ui_ledger
+
+        sb = make_env(tmp_path)
+        rec = make_knowledge(scope="project")
+        seed_record(sb.ledger, rec, project_path=sb.host)
+        seed_proposal(sb.ledger, rec.id, destination="skill-md")
+        loc = ui_ledger.locate_record(sb.ledger, rec.id)
+        assert loc is not None
+        c, _runner = make_client(sb)
+        r = c.get(f"/bucket/project/{loc.bucket_name}")
+        assert r.status_code == 200
+        assert 'name="dest" value="claude-md"' in r.text
+        assert 'value="skill-md"' not in r.text
+        assert "the analyst suggested skill-md" in r.text
 
 
 class TestAdvanceAndBucketClear:

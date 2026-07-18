@@ -122,7 +122,11 @@
       {% include "partials/proposal_bar.html" %}
     {% endwith %}
   {% else %}
-  {% with kind="detail", armed=None, dom_id="action-bar-" ~ model.id, record_id=model.id, dest=(model.why.destination if model.why.destination in model.destination_cycle else None), event=None, target=None, already_canon=model.why.already_canon %}
+  {# dest comes from the model's scope-corrected default (09 §2.3 as
+     amended 2026-07-18) — never the analyst's raw suggestion, so the
+     value the hidden field arms is always one the route verb's scope
+     rules can accept; dest_note explains a correction in plain words. #}
+  {% with kind="detail", armed=None, dom_id="action-bar-" ~ model.id, record_id=model.id, dest=model.destination_default, dest_note=model.destination_note, event=None, target=None, already_canon=model.why.already_canon %}
     {% include "partials/action_bar.html" %}
   {% endwith %}
   {% endif %}
