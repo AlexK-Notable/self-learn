@@ -445,7 +445,8 @@ permission surface of §4.3).
   iteration** is resolved — by keypress *or* by a bulk loop reaching
   it — the check lives **at verb dispatch**, not at the keyboard: the
   server **first interrupts the session** (§4.2 ladder, ≤5 s worst
-  case), then runs the verb — never concurrently (the pane agent holds
+  case — re-derived 2026-07-18 as ladder ≤2.5 s + bounded close
+  ≤2.5 s under the tuned constants), then runs the verb — never concurrently (the pane agent holds
   live write permission on the exact files the verb is about to
   `git mv`/`git rm`; an unserialized agent write could resurrect a
   resolved record as a duplicate pending file). Sentinel
@@ -614,23 +615,34 @@ pattern; no client-side markdown dependency).
   number), plus turn count.
 - **Interrupt**: `Esc` → `engine.interrupt()` (the SDK's interrupt
   call; escalate to terminating the SDK client/subprocess after
-  **1 s** grace, kill after **2.5 s**). *(Tuned 2026-07-18 from
+  **1 s** grace, kill after **2.5 s** — ONE deadline anchored at the
+  keystroke, every wait derived from it). *(Tuned 2026-07-18 from
   2 s/5 s — the T-E follow-up: the SDK fast-interrupt is ineffective
   on the subscription-auth streaming path, so the ladder is the
-  COMMON Esc path, not the emergency path, and a keystroke deserves
-  a ~2.7 s worst case, not ~5.3 s. Force-close was live-proven
-  non-destructive at T-E — files are truth. Same amendment pins:
-  **every await on the interrupt/close path is bounded** — the SDK
-  `interrupt()` call itself gets the grace bound (a wedged transport
-  must not stall the ladder before it starts), and `close()`'s
-  `disconnect()` gets the kill bound, logging and abandoning on
-  timeout (the SDK's internal terminate/kill escalation has already
-  run by then; an abandoned awaitable is the lesser evil vs a caller
-  stalled forever — the Y-14 idle monitor awaits this exact path in
-  `teardown_parked`, where an unbounded hang would silently
-  re-create resident-forever).)* Interrupting never discards file
-  changes already written (files are truth; the re-render already
-  showed them).
+  COMMON Esc path, not the emergency path. Common-path worst case
+  ~2.7 s; arithmetic ceiling = ladder (≤ 2.5 s, deadline-shared) +
+  bounded close (≤ 2.5 s) = **5 s** — §3's verb-dispatch "≤ 5 s
+  worst case" pin holds by construction. Force-close was live-proven
+  non-destructive at T-E — files are truth. Same amendment, caller-
+  side bounding pins (honest premises, per the gate review: the
+  installed SDK already bounds these internally at ~60 s / ~20 s —
+  this tightens them to keystroke scale and fixes the semantics):
+  the SDK `interrupt()` ack gets the grace bound (cancel-on-timeout
+  is safe there — the abandoned control request is moot once close()
+  disconnects); `close()`'s `disconnect()` gets the kill bound as
+  **shield-and-abandon, NEVER cancel** — a raw cancellation pierces
+  the SDK transport's shielded SIGTERM/SIGKILL escalation (the
+  transport's own docstring carries the caveat) and would leak a
+  live wedged CLI child while the caller reports "torn down"; the
+  shield keeps the caller bounded while the SDK finishes killing the
+  subprocess in the background, with completion logged. Bounded-per-
+  callee caveat, recorded: `wait_for` waits for the callee's
+  cancellation to complete, so a callee that suppressed
+  CancelledError could still stall — a per-callee contract the
+  installed SDK honors, not a structural guarantee. The Y-14 idle
+  monitor awaits this exact path in `teardown_parked`.)*
+  Interrupting never discards file changes already written (files
+  are truth; the re-render already showed them).
 - **One live session at a time** server-wide (carried — same
   serialization ground as verbs). Iterate on another record while a
   session runs → armed prompt to interrupt the current one first.

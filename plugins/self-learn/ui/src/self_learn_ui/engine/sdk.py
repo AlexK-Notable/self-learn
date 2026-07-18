@@ -120,6 +120,20 @@ def _tool_target(tool_input: dict[str, Any]) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+def _log_abandoned_disconnect(task: "asyncio.Task[None]") -> None:
+    """Retrieve the abandoned disconnect()'s outcome (never let it die as
+    an un-retrieved exception) and log the completion (review F4: the
+    abandoned teardown must be observable to actually have finished)."""
+    if task.cancelled():
+        uilog.log("pane engine close: abandoned disconnect() was cancelled")
+        return
+    exc = task.exception()
+    if exc is not None:
+        uilog.log(f"pane engine close: abandoned disconnect() finished with: {exc}")
+    else:
+        uilog.log("pane engine close: abandoned disconnect() completed")
+
+
 class SdkPaneEngine(PaneEngine):
     """The ``sdk`` engine. One instance is one pane session's worth of
     lifetime — a fresh :class:`SdkPaneEngine` per Iterate (09 §4.2: "fresh
@@ -174,11 +188,19 @@ class SdkPaneEngine(PaneEngine):
     async def interrupt(self) -> None:
         if self._client is None or not self._session_active:
             return  # no-op: nothing running (never started, or already ended)
+        # ONE Esc-anchored deadline (review F2): every wait below derives
+        # from it, so the ladder's total is ≤ interrupt_kill_secs and
+        # interrupt()+close() together stay ≤ 2×kill = 5 s — the 09 §3
+        # verb-dispatch pin ("≤ 5 s worst case") holds by arithmetic,
+        # not by hope.
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self._interrupt_kill_secs
         try:
-            # The SDK call itself is bounded by the grace window (09 §4.2
-            # as tuned 2026-07-18: every await on this path is bounded —
-            # a wedged transport must not stall the ladder before it
-            # starts).
+            # The SDK ack is bounded by the grace window (09 §4.2 as
+            # tuned 2026-07-18). Cancel-on-timeout is safe HERE: the
+            # abandoned control request is moot once close() disconnects
+            # the transport (contrast disconnect(), which must never be
+            # cancelled — see close()).
             await asyncio.wait_for(
                 self._client.interrupt(), timeout=self._interrupt_grace_secs
             )
@@ -194,18 +216,18 @@ class SdkPaneEngine(PaneEngine):
             await self.close()
             return
 
-        # Escalation ladder (09 §4.2): grace window, then force-close.
+        # Escalation ladder (09 §4.2): grace window, then force-close —
+        # both windows clipped to the shared deadline.
+        grace_left = min(self._interrupt_grace_secs, max(deadline - loop.time(), 0))
         try:
-            await asyncio.wait_for(
-                self._wait_until_inactive(), timeout=self._interrupt_grace_secs
-            )
+            await asyncio.wait_for(self._wait_until_inactive(), timeout=grace_left)
             return
         except TimeoutError:
             pass
         try:
             await asyncio.wait_for(
                 self._wait_until_inactive(),
-                timeout=max(self._interrupt_kill_secs - self._interrupt_grace_secs, 0),
+                timeout=max(deadline - loop.time(), 0),
             )
             return
         except TimeoutError:
@@ -215,24 +237,32 @@ class SdkPaneEngine(PaneEngine):
     async def close(self) -> None:
         client, self._client = self._client, None
         self._session_active = False
-        if client is not None:
-            try:
-                # Bounded by the kill window (09 §4.2 as tuned
-                # 2026-07-18): the SDK's own terminate/kill escalation
-                # has run by then; on timeout we log and abandon — an
-                # orphaned awaitable is the lesser evil vs a stalled
-                # caller (the Y-14 idle monitor awaits this exact path
-                # in teardown_parked).
-                await asyncio.wait_for(
-                    client.disconnect(), timeout=self._interrupt_kill_secs
-                )
-            except TimeoutError:
-                uilog.log(
-                    "pane engine close: disconnect() unresponsive within the "
-                    "kill window — abandoning (subprocess escalation already ran)"
-                )
-            except Exception as exc:  # noqa: BLE001 - close() must never raise
-                uilog.log(f"pane engine close: disconnect() raised: {exc}")
+        if client is None:
+            return
+        # SHIELD-and-abandon, never cancel (review F1, verified against
+        # the installed SDK + an empirical cancel probe): a plain
+        # wait_for CANCELS disconnect() on timeout, and a raw asyncio
+        # cancellation pierces the SDK transport's shielded
+        # SIGTERM/SIGKILL escalation (its own docstring carries the
+        # caveat) — the caller would return "bounded" while a wedged
+        # CLI child lives on with no further escalation. shield() keeps
+        # the CALLER bounded at the kill window while disconnect() —
+        # itself ~20 s-bounded inside the SDK — finishes killing the
+        # subprocess in the background.
+        task = asyncio.ensure_future(client.disconnect())
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(task), timeout=self._interrupt_kill_secs
+            )
+        except TimeoutError:
+            uilog.log(
+                "pane engine close: disconnect() still running at the kill "
+                "bound — caller released; SDK subprocess escalation "
+                "continues in the background"
+            )
+            task.add_done_callback(_log_abandoned_disconnect)
+        except Exception as exc:  # noqa: BLE001 - close() must never raise
+            uilog.log(f"pane engine close: disconnect() raised: {exc}")
 
     # -- internals ------------------------------------------------------
 

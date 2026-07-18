@@ -270,13 +270,22 @@ def test_result_carries_turn_count() -> None:
 
 class _HangingClient:
     """Stands in for ClaudeSDKClient with a wedged transport: interrupt()
-    and/or disconnect() never return."""
+    and/or disconnect() never return (or, with ``disconnect_delay``,
+    return late — the shield-and-abandon case)."""
 
-    def __init__(self, *, hang_interrupt: bool = False, hang_disconnect: bool = False):
+    def __init__(
+        self,
+        *,
+        hang_interrupt: bool = False,
+        hang_disconnect: bool = False,
+        disconnect_delay: float = 0.0,
+    ):
         self.hang_interrupt = hang_interrupt
         self.hang_disconnect = hang_disconnect
+        self.disconnect_delay = disconnect_delay
         self.interrupt_calls = 0
         self.disconnect_calls = 0
+        self.disconnect_completed = False
 
     async def interrupt(self) -> None:
         self.interrupt_calls += 1
@@ -287,6 +296,9 @@ class _HangingClient:
         self.disconnect_calls += 1
         if self.hang_disconnect:
             await asyncio.sleep(3600)
+        if self.disconnect_delay:
+            await asyncio.sleep(self.disconnect_delay)
+        self.disconnect_completed = True
 
 
 def _wedged_engine(client: _HangingClient, *, grace: float = 0.05, kill: float = 0.12) -> SdkPaneEngine:
@@ -335,6 +347,20 @@ async def test_hung_disconnect_is_abandoned_within_kill_window() -> None:
     await asyncio.wait_for(engine.close(), timeout=2.0)
     assert client.disconnect_calls == 1
     assert engine._client is None  # noqa: SLF001
+
+
+async def test_abandoned_disconnect_still_runs_to_completion() -> None:
+    # Review F1's load-bearing semantics, pinned: the kill bound releases
+    # the CALLER, but disconnect() is SHIELDED, never cancelled — the
+    # SDK's subprocess terminate/kill escalation must keep running in
+    # the background (a cancel would pierce the SDK's shielded
+    # escalation and leak a live wedged CLI child).
+    client = _HangingClient(disconnect_delay=0.3)
+    engine = _wedged_engine(client, grace=0.02, kill=0.05)
+    await asyncio.wait_for(engine.close(), timeout=1.0)  # caller bounded
+    assert client.disconnect_completed is False  # released before it finished
+    await asyncio.sleep(0.4)
+    assert client.disconnect_completed is True  # ...and it FINISHED anyway
 
 
 async def test_hung_interrupt_then_hung_disconnect_still_returns() -> None:
