@@ -1055,7 +1055,7 @@ notifications are absent.
 | Token cookie absent/stale (new browser, cleared cookies) | 403 page naming `self-learn-ui-open` as the fix (it re-mints the tokened URL). |
 | No proposal for a record | Detail renders record-only; Iterate works from scratch (the agent generates the proposal). |
 | Proposal stale (`record_sha` mismatch) | Badge + hint to Iterate; approve stays available (the verb re-validates authoritatively at apply — the badge is advisory UI, the CLI is the enforcer). |
-| Verb exits non-zero (dirty target, push failure, scan refusal…) | Error strip with the verb's stderr verbatim; state re-read from files; nothing optimistic. The verb's messages are the contract — the server adds no interpretation. |
+| Verb exits non-zero (dirty target, push failure, scan refusal…) | Error strip with the verb's stderr verbatim; state re-read from files; nothing optimistic. The verb's messages are the contract — the server adds no interpretation. *(Narrow dated exception, 2026-07-18 — feedback round 3 item 1, §11 Y-16: the host-add confirm leg ONLY leads with a plain-words sentence (Y-9) and demotes the stderr to a secondary detail line — still rendered, still verbatim, visually secondary; and its error rendering PERSISTS across refresh re-renders until the user dismisses or re-arms. Every other verb stays verbatim-first.)* |
 | `proposal validate` scan hit at session end | Exit-code discrimination (0/1/2); error strip shows the verb's report verbatim; record/proposal stay as written (report-never-delete); "scan-blocked" badge until a re-validate exits 0. |
 | Record resolved elsewhere mid-view | SSE fires → "resolved elsewhere" banner → Bucket page; if under active iteration, the pane session is interrupted first (§3/P3-8). |
 | `events.jsonl` absent/corrupt line | Skip + log; wake-ups degrade to the poll; ledger walk is truth. |
@@ -1409,6 +1409,12 @@ removed the last competing workstream — the build gate is open.*
   scope, §8/Y-4), (b) verb stderr rendered verbatim in error strips
   (§5 pins the server adds no interpretation), (c) the 403 page's
   `self-learn-ui-open` recovery line (no session to arm from).
+  **Amended 2026-07-18 (feedback round 3 items 1+2):** the confirm's
+  error leg and the arm state gain their own pins at Y-16 (persistent,
+  plain-words failure rendering — a narrow dated §5 exception scoped
+  to this leg) and Y-17 (server-derived `needs_init` banner variant
+  arming `host add --init`); the build pins above otherwise stand
+  unchanged.
 - **Y-12 · `/report` screen.** One read-only page rendering `report
   --json` **plus `status --json`'s `metrics` and `supply_mix` blocks
   (gate-zero correction 2026-07-17: those two live in status, not
@@ -1583,6 +1589,144 @@ removed the last competing workstream — the build gate is open.*
   side. Substrate: no CLI change, no SSE-protocol change — server
   code, templates, and app.js's `pane_result` completion handler
   only.
+
+- **Y-16 · Failed registration must be readable — persistent,
+  plain-words error** *(added 2026-07-18 — feedback round 3 item 1,
+  `feedback/2026-07-18-ui-feedback-03.md`; live-hit: the user's
+  keyboards registration — Confirm → a red strip flashed too fast to
+  read → the bar cycled back to the unregistered notice)*. Two
+  defects, two pins:
+  **(1) Persistence.** The failed host-add confirm's error rendering
+  PERSISTS until the user dismisses it (an explicit dismiss
+  affordance on the error rendering — reusing the existing disarm
+  route's notice re-render, no fourth route) or re-arms
+  registration. The wipe mechanism must be PINNED EMPIRICALLY at
+  build — reproduce the vanish browser-level and log the finding in
+  10's appendix BEFORE fixing. The code-read prime suspect: the
+  runner's forced post-verb refresh push fires on success AND
+  failure (10 §1 "forced push after every verb return"), `host add`
+  argv carries no `lrn-` id so the push scope is `front`, and
+  app.js treats a front-scoped `refresh` as a broadcast answered
+  with a full `window.location.reload()` — re-rendering the bar
+  from files and erasing the just-swapped error partial. The second
+  candidate — the any-key-disarms keyup — reads as implausible in
+  code (the error leg renders `data-armed="false"`), but the brace
+  is cheap and one mechanism covers both: the error rendering
+  carries a **`data-verb-error` marker**, and app.js DEFERS every
+  client-initiated full reload (the SSE `refresh` handler AND the
+  10 s poll fallback) while a `[data-verb-error]` element is in the
+  document — **deferred, not dropped** (the reload fires when
+  dismiss/re-arm removes the marker; the Y-15 delta-R1
+  hazard-class precedent extended). The server-side push itself is
+  UNCHANGED — §5's "state re-read from files; nothing optimistic"
+  stands; the exemption is the client's render of the error, never
+  the push. Honesty pins: the error is render-state, not
+  server-held state — navigating away discards it (deliberate; no
+  error slot to leak); and every OTHER verb's error strip plausibly
+  dies to the same reload path — implementing the defer on the
+  shared error-strip rendering covers them for free and is
+  encouraged, but only the host-add leg gets fixtures this cycle
+  (M1-lean; a broader sweep is its own item if it recurs live).
+  Testable: T-A asserts the rendered error partial (marker +
+  content + dismiss); the reload-defer is proven at the U14
+  browser-level re-trial (the error survives a forced refresh push
+  while rendered).
+  **(2) Plain words (Y-9) — the NARROW dated §5 exception.** The
+  failed-registration leg leads with a human sentence; required
+  content: registering this project failed, nothing was changed,
+  the project is still unregistered, you can try again (exact copy
+  the builder's — the content is binding, the wording is not). The
+  CLI stderr renders BELOW it as a secondary detail line — still
+  verbatim, still visible without interaction, visually demoted.
+  Why the exception is justified: registration is the surface's
+  ONBOARDING moment — the person it renders to has, by
+  construction, not yet integrated this project into the system,
+  and "canon hosts must be committable (doc 13 §4 two-phase
+  routing)" is system vocabulary aimed at spec readers, not at them
+  (the Y-9 jargon failure's third live instance). §5's
+  verbatim-first pin stands for every other verb: those stderr
+  lines name records and verbs the adjudicating user is already
+  holding. Scope: the host-add confirm leg ONLY; the §5 row
+  carries the dated exception note. Substrate: no CLI change;
+  consuming code is routes.py's host-add triple,
+  `host_add_bar.html`, and app.js's reload paths. Build unit:
+  10 §3 U14.
+
+- **Y-17 · Git init on register, disclosed — `--init` lives in the
+  CLI** *(added 2026-07-18 — feedback round 3 item 2; the user's
+  ruling verbatim: "make it clear that a git init will be performed
+  when a user chooses to register a new project that isn't already
+  a repo through the UI")*. The committability invariant stands —
+  canon writes are commits; audit, rollback, and recompile all diff
+  against git (13 §4) — and the flow absorbs the gap instead of
+  refusing at the human. Decisions of record:
+  **(1) Where the init lives: the CLI.** `self-learn host add
+  --init <path>` — the verb performs `git init` + an empty root
+  commit at the exact path BEFORE its existing validation, which
+  then runs unchanged. Grounds: the UI stays a thin caller — only
+  the verb writes; a server-side `git init` pre-step would mint a
+  second repo mutator outside the verb seam and split the edge
+  cases across two codebases; terminal users get the same
+  affordance for free; validation keeps its single enforcement
+  point. Rejected: the UI-side pre-step (above), and a standalone
+  init verb (two arms for one human decision).
+  **(2) The predicate is "repo ROOT", CLI-owned, imported.** One
+  new CLI-owned helper decides both sides of the seam: is the
+  exact resolved path itself a git repository root (`git -C <path>
+  rev-parse --show-toplevel` resolving to the path itself)? The
+  existing is-inside-work-tree check answers TRUE for a path
+  swallowed by a PARENT repo's work tree and cannot carry this
+  decision. The ui package imports the helper (the
+  `canon_read_roots()` posture — P2-4, never a second
+  implementation).
+  **(3) `--init` semantics — the matrix (each row a named CLI
+  test):** path IS already a repo root → no-op, the add proceeds
+  normally (refusal rejected deliberately: an arm→confirm race —
+  the path becoming a repo between the two POSTs — must not fail
+  the confirm; no-op also preserves `host add`'s idempotency) ·
+  path exists and is NOT a repo root — INCLUDING inside another
+  repo's work tree → `git init` at the exact path + an empty root
+  commit (pinned subject: `self-learn: init for host
+  registration`), then normal validation + add; nested repos are
+  acceptable and intended (the live case: `~/repos/keyboards`
+  around `zmk-config-offsetkey/` — git treats the inner repo as an
+  untracked boundary), and init-at-the-exact-path is what makes
+  registration mean "THIS path is the committable canon host",
+  never the accident of a parent repo · path does not exist →
+  refuse (existing refusal verbatim — `--init` initializes
+  repositories, it does not create directories) · ledger-home
+  refusal, kind checks, already-registered idempotency → unchanged,
+  evaluated after the init leg exactly as they run today ·
+  root-commit failure (unset git identity is the realistic case) →
+  non-zero exit with git's stderr and NO hosts.yaml mutation;
+  honesty pin: init is not transactional with the add — a failed
+  add after a successful init leaves the path initialized, which
+  is harmless, and the retry no-ops the init leg · without
+  `--init`: behavior byte-unchanged.
+  **(4) UI side (Y-11's posture holds throughout).** The arm route
+  derives `needs_init` SERVER-side via the imported repo-root
+  helper on the server-derived path — never a client field. When
+  `needs_init`: the ARM banner carries, beside the existing consent
+  consequence, the disclosure sentence — required content: **a new
+  git repository will be created at <path> (`git init`) as part of
+  registering** (plain words, Y-9; exact copy the builder's) — and
+  the displayed command line shows the real argv
+  (`self-learn host add --init <path>`). The confirm RE-derives
+  `needs_init` at POST time (arm-time state can go stale) and
+  appends `--init` only when the re-derivation holds; the argv is
+  otherwise unchanged and the client still supplies nothing but
+  the return-page record id. When the path is not a repo root
+  because a PARENT repo swallows it, `needs_init` is TRUE — the UI
+  discloses and inits the exact path rather than silently
+  registering a host whose canon commits would land in the parent.
+  Substrate: one CLI flag + one CLI helper (cli package, built
+  with the U14 cycle; 13 §3 carries the CLI-side dated mirror);
+  the consent line is unchanged. Open point, recorded not pinned:
+  terminal `host add` WITHOUT `--init` on a path inside a parent
+  work tree still passes today's is-inside-work-tree validation
+  and registers a host whose commits land in the parent repo —
+  tightening that predicate to repo-root is a separate CLI ruling,
+  not smuggled in here.
 **Substrate edits this set requires elsewhere** (same discipline as
 §10 — until landed, this list is authoritative; corrected after gate
 zero 2026-07-17 against the live CLI): **08 §1** dated edit — the
