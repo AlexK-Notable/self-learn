@@ -184,6 +184,8 @@ def build_can_use_tool(
     record_id: str,
     canon_read_roots_fn: Callable[[], Iterable[Path | str]] | None = None,
     plugin_references_dir_fn: Callable[[], Path] = plugin_references_dir,
+    extra_allowed_tools: tuple[str, ...] = (),
+    zero_write: bool = False,
 ) -> CanUseTool:
     """Build the ``can_use_tool`` callback for one pane session.
 
@@ -194,6 +196,15 @@ def build_can_use_tool(
     immediately (before returning a callback) if the canon-surface helper
     can't be resolved — a session that can't establish its read scope
     must never start with a silently narrower (or wider) one.
+
+    ``extra_allowed_tools`` (09 §4.3 as amended for Y-13): fully-qualified
+    tool names allowed EXACTLY — in practice only the in-process
+    ``propose_verb`` tool (its handler runs in server code and does its
+    own validation; the allow here is name-match only, never path logic).
+    ``zero_write=True`` is the BUCKET session variant (09 §4.5): every
+    ``Edit``/``Write`` denies with a reason naming the record pane as the
+    venue — a bucket session binds no single item, so there are no
+    "item's own files".
     """
     if canon_read_roots_fn is None:
         home = self_learn_home
@@ -206,12 +217,24 @@ def build_can_use_tool(
         canon_read_roots_fn=canon_read_roots_fn,
         plugin_references_dir_fn=plugin_references_dir_fn,
     )
+    allowed_exact = frozenset(extra_allowed_tools)
 
     async def can_use_tool(
         tool_name: str,
         tool_input: dict[str, Any],
         context: ToolPermissionContext,
     ) -> PermissionResultAllow | PermissionResultDeny:
+        if tool_name in allowed_exact:
+            return PermissionResultAllow()
+        if zero_write and tool_name in ("Write", "Edit", "NotebookEdit"):
+            return PermissionResultDeny(
+                message=(
+                    "self-learn pane charter: this bucket-level chat cannot "
+                    "edit files — record edits belong to the record's own "
+                    "pane (open the record and press i). You can still read, "
+                    "and you can propose resolutions with propose_verb."
+                )
+            )
         if tool_name in _READ_TOOLS:
             raw_target = _extract_target_path(tool_input)
             if raw_target is None:

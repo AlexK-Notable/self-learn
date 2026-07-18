@@ -27,7 +27,7 @@ from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from starlette.responses import StreamingResponse
 
-from . import ledger, models, pane, rendering
+from . import ledger, models, pane, proposals, rendering
 from .keymap import keymap_as_dicts, keymap_json
 from .models import PARAMETER_FREE_DESTINATIONS
 from .sse import envelope_applying, envelope_banner, envelope_bulk_progress, event_stream
@@ -219,11 +219,11 @@ def bucket_page(request: Request, scope: str, name: str, notice: str | None = No
         item for item in (list_read.data or []) if item.get("bucket") == name
     ] if list_read.ok else []
 
-    proposals: dict[str, dict | None] = {}
+    proposals_by_id: dict[str, dict | None] = {}
     for item in items:
         if item.get("has_proposal"):
             proposal, _err = ledger.read_proposal_raw(bucket.path, item["id"])
-            proposals[item["id"]] = proposal
+            proposals_by_id[item["id"]] = proposal
 
     clusters_raw = ledger.read_clusters(bucket.path)
     registry = ledger.read_registry()
@@ -234,16 +234,47 @@ def bucket_page(request: Request, scope: str, name: str, notice: str | None = No
         name,
         scope,
         items,
-        proposals,
+        proposals_by_id,
         clusters_raw,
         registry,
         host_registered=host_registered,
         host_add_command=host_add_command,
     )
+
+    # Y-13: the bucket pane split (09 §2.2) + any pending proposal on a
+    # record of THIS bucket (rendered adjacent to the pane).
+    manager = _pane_manager(request)
+    key = _bucket_pane_key(scope, name)
+    pane_snapshot = manager.snapshot(key) if manager is not None else None
+    pane_split = pane_snapshot is not None and pane_snapshot.state != pane.STATE_IDLE
+    slot = _proposal_slot(request)
+    bucket_proposal = None
+    if (
+        slot is not None
+        and slot.current is not None
+        and slot.current.bucket_name == name
+        and slot.current.bucket_scope == scope
+    ):
+        bucket_proposal = slot.current
+
     return _render(
         request,
         "bucket.html",
-        {"model": model, "notice": notice, "list_error": list_read.error},
+        {
+            "model": model,
+            "notice": notice,
+            "list_error": list_read.error,
+            "pane": pane_snapshot,
+            "pane_split": pane_split,
+            "pane_base": f"/bucket/{scope}/{name}/pane",
+            "bucket_pane_key": key,
+            "bucket_proposal": bucket_proposal,
+            "proposal_verb_label": (
+                _VERB_LABELS.get(bucket_proposal.verb, bucket_proposal.verb)
+                if bucket_proposal is not None
+                else None
+            ),
+        },
     )
 
 
@@ -291,7 +322,12 @@ def detail_page(request: Request, record_id: str) -> Response:
 
     if record.status not in ("pending", "deferred"):
         # 09 §11 P1-9c: land on the Bucket page with a banner; Front if
-        # the bucket can't be derived.
+        # the bucket can't be derived. Y-13 clear-set: the record left
+        # pending — a proposal on it must not survive (the banner path
+        # clears the slot, 09 §4.5).
+        slot = _proposal_slot(request)
+        if slot is not None:
+            slot.clear_for_record(record_id)
         target = f"/bucket/{location.scope}/{location.bucket_name}?notice={NOTICE_RESOLVED_ELSEWHERE}"
         return RedirectResponse(url=target, status_code=303)
 
@@ -324,6 +360,14 @@ def detail_page(request: Request, record_id: str) -> Response:
     pane_snapshot = manager.snapshot(record_id) if manager is not None else None
     pane_split = pane_snapshot is not None and pane_snapshot.state != pane.STATE_IDLE
 
+    # Y-13: a pending proposal on THIS record renders in the standing
+    # action-bar region (waiting or armed, from the server-held slot —
+    # navigation never clears it, any in-scope render re-renders it).
+    slot = _proposal_slot(request)
+    record_proposal = None
+    if slot is not None and slot.current is not None and slot.current.record_id == record_id:
+        record_proposal = slot.current
+
     return _render(
         request,
         "detail.html",
@@ -333,6 +377,13 @@ def detail_page(request: Request, record_id: str) -> Response:
             "record_id": record_id,
             "pane": pane_snapshot,
             "pane_split": pane_split,
+            "pane_base": f"/record/{record_id}/pane",
+            "record_proposal": record_proposal,
+            "proposal_verb_label": (
+                _VERB_LABELS.get(record_proposal.verb, record_proposal.verb)
+                if record_proposal is not None
+                else None
+            ),
         },
     )
 
@@ -690,6 +741,14 @@ async def action_confirm(
 
     _force_refresh(request, f"record:{record_id}")
 
+    # Y-13 clear-set: the record left pending — a pane proposal on it
+    # must not outlive the resolution (this is the same-server half; the
+    # detail_page banner path covers external resolutions on next render).
+    if verb in ("route", "reject", "graduate", "defer"):
+        slot = _proposal_slot(request)
+        if slot is not None:
+            slot.clear_for_record(record_id)
+
     if verb == "route":
         proposal, _err = ledger.read_proposal_raw(
             _bucket_dir_for(home, record_id), record_id
@@ -842,6 +901,275 @@ async def host_add_confirm(
     resp = Response(status_code=200)
     resp.headers["HX-Redirect"] = url
     return resp
+
+
+# ----------------------------------------------------- verb proposals (Y-13)
+#
+# 09 §4.5 (as reworked 2026-07-17): the pane agent's propose_verb tool
+# occupied the server-held slot and pushed an SSE `pane_proposal`; these
+# routes are the HUMAN's side. Proposals render WAITING (never
+# [data-armed]) — `y` arms through the standard armed contract, Enter
+# confirms, any other key disarms BACK TO WAITING, dismiss clears. The
+# confirm rebuilds argv from the SLOT (server truth), never from client
+# fields — what the human read is byte-identical to what runs.
+
+
+def _proposal_slot(request: Request) -> "proposals.ProposalSlot | None":
+    manager = _pane_manager(request)
+    return manager.proposal_slot if manager is not None else None
+
+
+def _proposal_ctx(prop: "proposals.VerbProposal", kind: str, *, error: str | None = None) -> dict[str, Any]:
+    return {
+        "proposal": prop,
+        "kind": kind,
+        "verb_label": _VERB_LABELS.get(prop.verb, prop.verb),
+        "error": error,
+    }
+
+
+def _proposal_gone(request: Request, kind: str, record_id: str, *, error: str | None = None) -> HTMLResponse:
+    """The slot no longer holds this record's proposal (stale POST, or a
+    just-cleared confirm): render the region's unarmed replacement —
+    Detail gets its standing unarmed action bar back, Bucket gets an
+    empty proposal region."""
+    if kind == "detail":
+        ctx = _unarmed_context(kind="detail", record_id=record_id, dest=None, event=None, target=None)
+        if error:
+            ctx["error"] = error
+        return _render(request, "partials/action_bar.html", ctx)
+    # Bucket pages keep a stable empty region (the SSE re-fetch target);
+    # error text goes through the template so it renders escaped.
+    return _render(
+        request,
+        "partials/proposal_bar.html",
+        {"proposal": None, "kind": kind, "error": error},
+    )
+
+
+@router.post("/proposal/arm", response_class=HTMLResponse)
+def proposal_arm(
+    request: Request, record_id: str = Form(...), kind: str = Form("detail")
+) -> HTMLResponse:
+    slot = _proposal_slot(request)
+    if slot is None:
+        return _pane_not_wired()
+    # Slot validity re-check at arm (09 §4.5 clear-set: the record leaving
+    # pending clears) — a stale proposal never arms. STATUS is the check,
+    # not mere existence: locate_record also finds resolved/ records (the
+    # _bucket_dir_for note).
+    current = slot.current
+    if current is not None and current.record_id == record_id:
+        location = ledger.locate_record(_home(request), record_id)
+        record = ledger.read_record(location.path) if location is not None else None
+        if record is None or record.status not in ("pending", "deferred"):
+            slot.clear_for_record(record_id)
+            return _proposal_gone(request, kind, record_id, error="that record was resolved elsewhere")
+    prop = slot.arm(record_id)
+    if prop is None:
+        return _proposal_gone(request, kind, record_id)
+    return _render(request, "partials/proposal_bar.html", _proposal_ctx(prop, kind))
+
+
+@router.post("/proposal/disarm", response_class=HTMLResponse)
+def proposal_disarm(
+    request: Request, record_id: str = Form(...), kind: str = Form("detail")
+) -> HTMLResponse:
+    slot = _proposal_slot(request)
+    if slot is None:
+        return _pane_not_wired()
+    prop = slot.disarm(record_id)
+    if prop is None:
+        return _proposal_gone(request, kind, record_id)
+    return _render(request, "partials/proposal_bar.html", _proposal_ctx(prop, kind))
+
+
+@router.post("/proposal/dismiss", response_class=HTMLResponse)
+def proposal_dismiss(
+    request: Request, record_id: str = Form(...), kind: str = Form("detail")
+) -> HTMLResponse:
+    slot = _proposal_slot(request)
+    if slot is None:
+        return _pane_not_wired()
+    slot.clear_for_record(record_id)
+    return _proposal_gone(request, kind, record_id)
+
+
+@router.post("/proposal/confirm", response_class=HTMLResponse)
+async def proposal_confirm(
+    request: Request, record_id: str = Form(...), kind: str = Form("detail")
+) -> Response:
+    slot = _proposal_slot(request)
+    if slot is None:
+        return _pane_not_wired()
+    prop = slot.current
+    if prop is None or prop.record_id != record_id or not prop.armed:
+        # Stale confirm (slot cleared/changed since the bar rendered) —
+        # never execute anything the human isn't looking at.
+        return _proposal_gone(request, kind, record_id)
+
+    home = _home(request)
+    runner = request.app.state.runner
+
+    # Capture argv from the SLOT before anything can clear it (the
+    # interrupt below tears down the proposing session, whose teardown
+    # clears the slot by session key).
+    argv = build_argv(
+        prop.verb,
+        prop.record_id,
+        dest=prop.dest,
+        note=prop.note,
+        until=prop.until,
+    )
+    slot.clear()  # Y-13 clear-set: human confirm
+
+    # Interrupt-first (09 §3 P1-4): a confirmed resolution on the record
+    # under active iteration interrupts that session before the verb runs.
+    # Bucket sessions never match a record id here — they hold zero write
+    # allowance, so they survive the confirm by construction (09 §4.5).
+    manager = _pane_manager(request)
+    if manager is not None:
+        await manager.interrupt_active_session(record_id)
+
+    await _publish_applying(request, prop.verb, record_id, "start")
+    result = await runner.run(argv)
+    await _publish_applying(request, prop.verb, record_id, "done" if result.ok else "error")
+    _force_refresh(request, f"record:{record_id}")
+
+    if not result.ok:
+        # The verb's own refusal path (09 §4.5: stderr verbatim, slot
+        # stays cleared — the agent can re-propose after the human reads).
+        return _proposal_gone(
+            request, kind, record_id,
+            error=result.stderr or f"self-learn {' '.join(argv)} failed",
+        )
+
+    if prop.verb == "route":
+        proposal_raw, _err = ledger.read_proposal_raw(
+            _bucket_dir_for(home, record_id), record_id
+        )
+        contradicts: tuple[str, ...] = tuple((proposal_raw or {}).get("contradicts") or [])
+        if contradicts:
+            edges = [
+                {"target": t, "dom_id": _dom_id("contradicts", record_id, t)}
+                for t in contradicts
+            ]
+            return _render(
+                request,
+                "partials/contradicts_offer.html",
+                {"record_id": record_id, "edges": edges},
+            )
+
+    if kind == "bucket":
+        url = f"/bucket/{prop.bucket_scope}/{prop.bucket_name}"
+    else:
+        bucket_name = _bucket_name_for(home, record_id)
+        url = next_record_url(home, bucket_name, record_id) if bucket_name else f"/?notice={NOTICE_BUCKET_CLEAR}"
+    resp = Response(status_code=200)
+    resp.headers["HX-Redirect"] = url
+    return resp
+
+
+# ------------------------------------------------------- bucket pane (Y-13)
+#
+# 09 §2.2: `p` splits the Bucket page exactly as `i` splits Detail — the
+# same PaneManager, the same one-live-session rule (opening either
+# variant while the other runs takes the existing armed interrupt
+# prompt), a synthetic session key, and zero write allowance in the
+# charter. Routes mirror the record pane's; templates parameterize the
+# POST base URL (`pane_base`).
+
+
+def _bucket_pane_key(scope: str, name: str) -> str:
+    return pane.bucket_session_key(scope, name)
+
+
+def _bucket_pane_ctx(scope: str, name: str, snapshot: Any) -> dict[str, Any]:
+    return {
+        "record_id": _bucket_pane_key(scope, name),
+        "pane": snapshot,
+        "pane_base": f"/bucket/{scope}/{name}/pane",
+        "pane_close_url": f"/bucket/{scope}/{name}",
+    }
+
+
+@router.post("/bucket/{scope}/{name}/pane/start", response_class=HTMLResponse)
+async def bucket_pane_start(
+    request: Request, scope: str, name: str, force: bool = Form(False)
+) -> HTMLResponse:
+    manager = _pane_manager(request)
+    if manager is None:
+        return _pane_not_wired()
+    key = _bucket_pane_key(scope, name)
+    outcome = await manager.start(key, force=force)
+    if outcome == "armed":
+        return _render(
+            request,
+            "partials/pane_armed.html",
+            {
+                "record_id": key,
+                "blocked_by": manager.active_record_id,
+                "pane_base": f"/bucket/{scope}/{name}/pane",
+            },
+        )
+    snapshot = manager.snapshot(key)
+    return _render(request, "partials/pane.html", _bucket_pane_ctx(scope, name, snapshot))
+
+
+@router.post("/bucket/{scope}/{name}/pane/send", response_class=HTMLResponse)
+async def bucket_pane_send(
+    request: Request, scope: str, name: str, text: str = Form(...)
+) -> HTMLResponse:
+    manager = _pane_manager(request)
+    if manager is None:
+        return _pane_not_wired()
+    key = _bucket_pane_key(scope, name)
+    await manager.send(key, text)
+    return _render(request, "partials/pane.html", _bucket_pane_ctx(scope, name, manager.snapshot(key)))
+
+
+@router.post("/bucket/{scope}/{name}/pane/interrupt", response_class=HTMLResponse)
+async def bucket_pane_interrupt(request: Request, scope: str, name: str) -> HTMLResponse:
+    manager = _pane_manager(request)
+    if manager is None:
+        return _pane_not_wired()
+    key = _bucket_pane_key(scope, name)
+    await manager.interrupt(key)
+    return _render(request, "partials/pane.html", _bucket_pane_ctx(scope, name, manager.snapshot(key)))
+
+
+@router.post("/bucket/{scope}/{name}/pane/retry", response_class=HTMLResponse)
+async def bucket_pane_retry(request: Request, scope: str, name: str) -> HTMLResponse:
+    manager = _pane_manager(request)
+    if manager is None:
+        return _pane_not_wired()
+    key = _bucket_pane_key(scope, name)
+    await manager.start(key)
+    return _render(request, "partials/pane.html", _bucket_pane_ctx(scope, name, manager.snapshot(key)))
+
+
+@router.post("/bucket/{scope}/{name}/pane/close", response_class=HTMLResponse)
+async def bucket_pane_close(request: Request, scope: str, name: str) -> Response:
+    manager = _pane_manager(request)
+    if manager is not None:
+        await manager.close(_bucket_pane_key(scope, name))
+    resp = Response(status_code=200)
+    resp.headers["HX-Redirect"] = f"/bucket/{scope}/{name}"
+    return resp
+
+
+@router.get("/bucket/{scope}/{name}/pane/panel", response_class=HTMLResponse)
+def bucket_pane_panel(request: Request, scope: str, name: str) -> HTMLResponse:
+    manager = _pane_manager(request)
+    key = _bucket_pane_key(scope, name)
+    snapshot = manager.snapshot(key) if manager is not None else None
+    if snapshot is not None and snapshot.state != pane.STATE_IDLE:
+        return _render(request, "partials/pane.html", _bucket_pane_ctx(scope, name, snapshot))
+    return _render(
+        request,
+        "partials/pane_idle.html",
+        {**_bucket_pane_ctx(scope, name, snapshot), "bucket_pane": True},
+    )
 
 
 # -------------------------------------------------------------------- SSE

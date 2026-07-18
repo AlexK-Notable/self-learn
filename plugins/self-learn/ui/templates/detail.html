@@ -113,9 +113,19 @@
   </section>
   {% endif %}
 
+  {# Y-13 (09 §4.5): a pending pane proposal on THIS record renders in
+     the standing action-bar region — WAITING until the human's `y` arms
+     it; otherwise the normal action bar. Server-held slot = server
+     truth, so navigation re-renders it here. #}
+  {% if record_proposal %}
+    {% with proposal=record_proposal, kind="detail", verb_label=proposal_verb_label, error=None %}
+      {% include "partials/proposal_bar.html" %}
+    {% endwith %}
+  {% else %}
   {% with kind="detail", armed=None, dom_id="action-bar-" ~ model.id, record_id=model.id, dest=(model.why.destination if model.why.destination in model.destination_cycle else None), event=None, target=None, already_canon=model.why.already_canon %}
     {% include "partials/action_bar.html" %}
   {% endwith %}
+  {% endif %}
 
 </article>
 

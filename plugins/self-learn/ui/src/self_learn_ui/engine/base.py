@@ -22,9 +22,10 @@ underlying session).
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator, Iterable
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 __all__ = [
     "BlockStart",
@@ -105,6 +106,14 @@ class PaneContext:
     ``self_learn_home`` and ``bucket_root`` are resolved, absolute paths
     (the charter canonicalizes again internally — belt and braces, never
     trust a caller's resolution alone for a permission boundary).
+
+    Y-13 additions (09 §4.5): ``session_kind`` selects the charter
+    variant — ``"bucket"`` sessions hold zero write allowance (09 §4.3
+    as amended; ``record_id`` then carries the manager's synthetic
+    session key, not a record). ``propose_handler`` is the server-side
+    ``propose_verb`` handler (:func:`self_learn_ui.proposals.
+    make_propose_handler`) — ``None`` disables the proposal tool
+    entirely (no MCP server is configured at all in that case).
     """
 
     record_id: str
@@ -112,6 +121,8 @@ class PaneContext:
     self_learn_home: Path
     system_prompt: str
     first_message: str
+    session_kind: str = "record"
+    propose_handler: "Callable[[dict[str, Any]], Awaitable[str]] | None" = None
 
 
 class PaneEngine(ABC):

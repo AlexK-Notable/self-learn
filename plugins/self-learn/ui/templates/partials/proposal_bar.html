@@ -1,0 +1,64 @@
+{# The pane verb-proposal bar (09 §4.5 as reworked 2026-07-17 / §11
+   Y-13). Proposals arrive WAITING — this bar is NOT [data-armed] until
+   the human's own `y` keystroke arms it, so a bar swapped in by SSE can
+   never catch a pending Enter (the F1 rework). Armed state follows the
+   STANDARD armed contract: Enter confirms, any other key disarms — back
+   to waiting, never cleared (dismiss is the explicit clear, a button).
+   Verb / record / destination / date are SERVER-truth fields from the
+   slot; the note is agent prose, labeled as such and intake-capped so
+   what renders is byte-identical to the --note the confirm executes.
+   CSP: no inline style=, no inline <script>. #}
+{% if proposal %}
+<div id="proposal-bar" class="action-bar proposal-bar"
+     data-armed="{{ 'true' if proposal.armed else 'false' }}"
+     data-proposal="{{ 'armed' if proposal.armed else 'waiting' }}">
+  {% if error %}
+  <p class="error-strip" role="alert">{{ error }}</p>
+  {% endif %}
+
+  <p class="proposal-lead">
+    <span class="proposal-source-label">Agent proposes:</span>
+    <strong>{{ verb_label }}</strong>
+    <code>{{ proposal.record_id }}</code>
+    {% if proposal.dest %}<span class="arrow">&rarr;</span> <span class="dest">{{ proposal.dest }}</span>{% endif %}
+    {% if proposal.until %}<span class="dest">until {{ proposal.until }}</span>{% endif %}
+  </p>
+  {% if proposal.note %}
+  <p class="proposal-note"><span class="proposal-note-label">agent-suggested note:</span> {{ proposal.note }}</p>
+  {% endif %}
+
+  {% if proposal.armed %}
+  <form hx-post="/proposal/confirm" hx-target="#proposal-bar" hx-swap="outerHTML">
+    <input type="hidden" name="record_id" value="{{ proposal.record_id }}">
+    <input type="hidden" name="kind" value="{{ kind }}">
+    <p class="action-bar-armed">
+      <span class="confirm-hint"><kbd>Enter</kbd> to confirm &middot; any other key returns it to waiting</span>
+    </p>
+    <button type="submit" data-key-action="confirm">Confirm</button>
+  </form>
+  <form hx-post="/proposal/disarm" hx-target="#proposal-bar" hx-swap="outerHTML">
+    <input type="hidden" name="record_id" value="{{ proposal.record_id }}">
+    <input type="hidden" name="kind" value="{{ kind }}">
+    <button type="submit" data-key-action="disarm">Back to waiting</button>
+  </form>
+
+  {% else %}
+  <form hx-post="/proposal/arm" hx-target="#proposal-bar" hx-swap="outerHTML">
+    <input type="hidden" name="record_id" value="{{ proposal.record_id }}">
+    <input type="hidden" name="kind" value="{{ kind }}">
+    <button type="submit" data-key-action="arm_proposal">Review &amp; arm (y)</button>
+  </form>
+  <form hx-post="/proposal/dismiss" hx-target="#proposal-bar" hx-swap="outerHTML">
+    <input type="hidden" name="record_id" value="{{ proposal.record_id }}">
+    <input type="hidden" name="kind" value="{{ kind }}">
+    <button type="submit">Dismiss</button>
+  </form>
+  {% endif %}
+</div>
+{% else %}
+<div id="proposal-bar" class="proposal-region-empty">
+  {% if error %}
+  <p class="error-strip" role="alert">{{ error }}</p>
+  {% endif %}
+</div>
+{% endif %}

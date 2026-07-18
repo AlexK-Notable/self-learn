@@ -310,6 +310,9 @@
         case "pane_tool":
           appendPaneTool(envelope.name, envelope.target);
           break;
+        case "pane_proposal":
+          handlePaneProposal(envelope);
+          break;
         default:
           // applying / bulk_progress / pane_result — pane_result's
           // authoritative footer arrives via the pane POST response's
@@ -365,6 +368,28 @@
     p.className = "pane-tool";
     p.textContent = target ? "tool: " + name + " → " + target : "tool: " + name;
     el.appendChild(p);
+  }
+
+  /**
+   * Y-13 (09 §4.5 / 10 §1 SSE row): a pane proposal landed in the
+   * server-held slot. Scope-gated like `refresh` — only the record's
+   * own Detail and its bucket's Bucket page act — and the handler
+   * no-ops while ANY [data-armed] bar exists (the belt; the structural
+   * brace is that the incoming bar renders WAITING, so even a missed
+   * suppression cannot redirect a pending Enter). Content never rides
+   * the envelope: a full reload re-renders the bar server-side from
+   * the slot, the same re-render path `refresh` uses.
+   */
+  function handlePaneProposal(envelope) {
+    if (findArmedBar()) return;
+    var scopes = currentScopes();
+    var recordMatch =
+      typeof envelope.record_id === "string" &&
+      scopes.indexOf("record:" + envelope.record_id) !== -1;
+    var bucketMatch =
+      typeof envelope.bucket === "string" &&
+      scopes.indexOf("bucket:" + envelope.bucket) !== -1;
+    if (recordMatch || bucketMatch) reload();
   }
 
   function showBanner(text) {
