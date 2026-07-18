@@ -1,4 +1,5 @@
-"""Resolution verbs (T7): route / reject / defer / graduate / supersede.
+"""Resolution verbs (T7): route / reject / defer / graduate / supersede —
+plus the non-resolution filing move `rehome` (02 §2, added 2026-07-18).
 
 Function layer only — T8 wires these into the CLI. Public signatures:
 
@@ -8,6 +9,7 @@ Function layer only — T8 wires these into the CLI. Public signatures:
     defer(home, record_id, *, until=None, note=None, no_push=False) -> VerbResult
     graduate(home, record_id, *, note=None, no_push=False) -> VerbResult
     supersede(home, old_id, new_id, *, note=None, no_push=False) -> VerbResult
+    rehome(home, record_id, *, to, note=None, no_push=False) -> VerbResult
     push_pending(home) -> PushReport                 # bare `self-learn push`
 
 Every verb runs the pinned sequence (08 §1 Resolution-verbs / Secret-scan /
@@ -87,6 +89,7 @@ from .hosts import (
     is_project_host,
     load_hosts,
     skill_dir_for,
+    slug_for,
     validate_host_path,
 )
 from .ledger import discover_buckets
@@ -99,6 +102,7 @@ from .ledger_ops import (
     defer_record,
     ensure_project_meta,
     find_record_path,
+    rehome_record,
     read_proposal,
     record_title,
     require_writable_home,
@@ -131,6 +135,7 @@ __all__ = [
     "link_contradicts",
     "push_pending",
     "recompile",
+    "rehome",
     "reject",
     "route",
     "route_direct",
@@ -1962,6 +1967,122 @@ def defer(
         push = _push_ledger(home, no_push)
         return VerbResult(
             action="defer",
+            record_id=record_id,
+            commit_message=message,
+            commit_sha=sha,
+            staged=staged,
+            push=push,
+            sentinel_owned=hold.owned,
+        )
+    finally:
+        hold.release()
+
+
+def _resolve_rehome_target(home: Path, to: str) -> Path:
+    """``--to`` accepts a registered project's path or its bucket slug
+    (the ``host rebind`` naming precedent — the two things a human can
+    say). hosts.yaml is the only authority (H-3); an unregistered target
+    refuses with ``host add`` named as the human's repair (02 §2 —
+    the verb registers nothing)."""
+    try:
+        hosts = load_hosts(home)
+    except HostsError as exc:
+        raise VerbError(str(exc)) from exc
+    candidate = Path(to).expanduser()
+    for project in hosts.projects:
+        registered = Path(project).expanduser()
+        if slug_for(registered) == to or registered.resolve() == candidate.resolve():
+            return registered.resolve()
+    raise VerbError(
+        f"target {to!r} is not a registered project — "
+        "self-learn host add <path> is the human's repair"
+    )
+
+
+def rehome(
+    home: Path | str,
+    record_id: str,
+    *,
+    to: str,
+    note: str | None = None,
+    no_push: bool = False,
+) -> VerbResult:
+    """Move a PENDING record to another registered project bucket
+    (02 §2 verb pin; 09 §11 Y-18) — the repair for capture-cwd filing a
+    lesson under a narrower repo than its real firing range. Ledger-only
+    (one commit, pinned subject ``self-learn: rehome lrn-… →
+    projects/<slug>``; ``--note`` rides the commit body only — rehome is
+    not a resolution, ``resolution_note`` stays untouched). The record's
+    bytes are untouched: a deferred record moves and stays deferred.
+    Proposal siblings are swept, never moved, plus any source-bucket
+    ``merge-*.yaml`` naming the record (:func:`ledger_ops.rehome_record`).
+
+    Refusals — each on STATUS, never mere existence (``find_record_path``
+    also sees ``resolved/``), all BEFORE any commit or dir creation:
+    unknown id · not pending/deferred · source not a project bucket (M1
+    is project→project only) · target not a registered project (the
+    refusal names ``host add``) · target == current bucket · id already
+    present in the target bucket, ``pending/`` OR ``resolved/`` (the
+    create-record collision precedent, F4)."""
+    home = Path(home)
+    path = find_record_path(home, record_id)  # pending OR resolved
+
+    # (a) scan the record file BEFORE trusting its contents — plus the
+    # note (F6: the file scan is a no-op in practice since the bytes do
+    # not change, but every record-writing verb scans both and
+    # uniformity beats the micro-optimization).
+    _scan_or_refuse([path], note)
+
+    record = Record.from_path(path)
+    if path.parent.name != "pending" or record.status not in (
+        "pending",
+        "deferred",
+    ):
+        raise VerbError(
+            f"record {record_id} is not pending (status "
+            f"{record.status!r}) — a resolved lesson does not move; "
+            "supersede is the correction machinery (02 §2)"
+        )
+    source_bucket = path.parent.parent
+    if source_bucket.parent != home / "projects":
+        raise VerbError(
+            f"record {record_id} lives in a non-project bucket "
+            f"({source_bucket.name}) — rehome is project→project only "
+            "(M1); user-scope targets and skill/user-scope sources are "
+            "dated future work, not silent extensions"
+        )
+
+    target_path = _resolve_rehome_target(home, to)
+    target_slug = slug_for(target_path)
+    target_bucket = home / "projects" / target_slug
+    if target_bucket == source_bucket:
+        raise VerbError(
+            f"record {record_id} already lives in projects/{target_slug} "
+            "— nothing to move"
+        )
+    # Destination collision (F4 — the create_record precedent), checked
+    # BEFORE any target-dir/meta.yaml creation: a duplicated id is
+    # corruption to surface, never to merge into.
+    for sub in ("pending", "resolved"):
+        if (target_bucket / sub / f"{record_id}.md").exists():
+            raise VerbError(
+                f"record {record_id} already exists in {target_bucket} — "
+                "a duplicated id is corruption to surface, never to merge "
+                "into; inspect both files by hand"
+            )
+
+    # (b) sentinel self-hold + heartbeat (standard record-writing verb
+    # sequence; rehome is ledger-only — no host phase).
+    hold = sentinel.hold()
+    sentinel.heartbeat()
+    try:
+        message = f"self-learn: rehome {record_id} → projects/{target_slug}"
+        with _ledger_write(home):
+            touched = rehome_record(home, record_id, target_bucket, target_path)
+            staged, sha = _commit_ledger(home, touched, message, note)
+        push = _push_ledger(home, no_push)
+        return VerbResult(
+            action="rehome",
             record_id=record_id,
             commit_message=message,
             commit_sha=sha,

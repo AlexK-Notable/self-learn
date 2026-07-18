@@ -18,6 +18,20 @@
 
   {# Y-9 (review F2): the record's human line LEADS; the id is trailing
      metadata. verb/title/dest/date are server-truth fields. #}
+  {% if proposal.verb == "rehome" %}
+  {# Y-18 (fold F7): the rehome lead is Y-9 domestic — "move this lesson
+     to the ⟨basename⟩ project"; the RESOLVED registered path (server
+     truth, hosts.yaml-resolved at intake) renders as trailing
+     disambiguating metadata beside the id — the disambiguator when two
+     registered projects share a basename. #}
+  <p class="proposal-lead">
+    <span class="proposal-source-label">Agent proposes:</span>
+    <strong>move this lesson to the {{ proposal.to_basename }} project</strong>
+    <span class="proposal-title">{{ proposal.title or "(untitled record)" }}</span>
+    <span class="dest proposal-rehome-target">{{ proposal.to }}</span>
+    <code class="record-row-id">{{ proposal.record_id }}</code>
+  </p>
+  {% else %}
   <p class="proposal-lead">
     <span class="proposal-source-label">Agent proposes:</span>
     <strong>{{ verb_label }}</strong>
@@ -26,6 +40,7 @@
     {% if proposal.until %}<span class="dest">until {{ proposal.until }}</span>{% endif %}
     <code class="record-row-id">{{ proposal.record_id }}</code>
   </p>
+  {% endif %}
   {% if proposal.note %}
   <p class="proposal-note"><span class="proposal-note-label">agent-suggested note:</span> {{ proposal.note }}</p>
   {% endif %}

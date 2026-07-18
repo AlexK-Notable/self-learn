@@ -46,12 +46,24 @@ _VERB_LABELS = {
     "reject": "Deny",
     "defer": "Defer",
     "graduate": "Graduate",
+    "rehome": "Move",
     "confirm-recurrence": "Confirm recurrence",
     "link-contradicts": "Link contradiction",
     "followup-done": "Mark follow-up done",
 }
 
-_KNOWN_VERBS = frozenset(_VERB_LABELS)
+#: Verbs the HUMAN action-bar routes accept. `rehome` is deliberately
+#: absent (09 §11 Y-18 decision 3: no human-side re-home key or control
+#: in M1 — agent proposal + the CLI verb are the two hands); its label
+#: above serves the proposal bar only.
+_KNOWN_VERBS = frozenset(_VERB_LABELS) - {"rehome"}
+
+#: The Y-18 bucket-change staleness notice (plain words, the
+#: resolved-elsewhere shape): a CLI-side rehome moved the record while
+#: a proposal was waiting/armed — the slot clears, never a disarm.
+NOTICE_PROPOSAL_MOVED = (
+    "that lesson moved to another project — the proposal no longer applies"
+)
 
 
 # ------------------------------------------------------------- pure helpers
@@ -68,6 +80,7 @@ def build_argv(
     event: str | None = None,
     tolerate: bool = False,
     target: str | None = None,
+    to: str | None = None,
     no_push: bool = False,
 ) -> list[str]:
     """The exact CLI argv one verb call maps to (matches
@@ -90,6 +103,10 @@ def build_argv(
             argv += ["--until", until]
     elif verb == "graduate":
         argv = ["graduate", record_id]
+    elif verb == "rehome":
+        # Y-18: the confirm rebuilds this from the slot's RESOLVED
+        # target (server truth) — `rehome <id> --to <resolved-path>`.
+        argv = ["rehome", record_id, "--to", to or ""]
     elif verb == "confirm-recurrence":
         argv = ["confirm-recurrence", record_id, "--event", event or ""]
         if tolerate:
@@ -1029,6 +1046,21 @@ async def proposal_arm(
         if record is None or record.status not in ("pending", "deferred"):
             slot.clear_for_record(record_id)
             return _proposal_gone(request, kind, record_id, error="that record was resolved elsewhere")
+        # Y-18 bucket-change leg (09 §4.5 as extended 2026-07-18, folds
+        # F2/F5/F10): rehome made a pending record's bucket facts
+        # mutable — compare the slot's captured bucket against the
+        # record's CURRENT bucket. Mismatch → clear the slot + a
+        # plain-words notice, NEVER a disarm (a surviving waiting bar
+        # would carry exactly the stale bucket facts this leg kills);
+        # the agent re-proposes against the record's new home.
+        if location is not None and (
+            location.scope,
+            location.bucket_name,
+        ) != (current.bucket_scope, current.bucket_name):
+            slot.clear_for_record(record_id)
+            return _proposal_gone(
+                request, kind, record_id, error=NOTICE_PROPOSAL_MOVED
+            )
     prop = slot.arm(record_id, nonce)
     if prop is None:
         return _proposal_gone(request, kind, record_id)
@@ -1091,6 +1123,23 @@ async def proposal_confirm(
     home = _home(request)
     runner = request.app.state.runner
 
+    # Y-18 bucket-change leg, the CONFIRM side — load-bearing, not belt
+    # (09 §4.5 as extended 2026-07-18): the CLI verbs locate records
+    # across ALL buckets, so without this check Enter on a stale armed
+    # bar would execute the verb against the record in its NEW bucket —
+    # compiling into a different project's canon than the bar the human
+    # read. Mismatch → clear the slot + plain-words notice (the
+    # resolved-elsewhere shape), never the verb and never a waiting bar.
+    # A missing/unlocatable record deliberately falls through: the
+    # stale-record confirm keeps taking the verb's own refusal path.
+    location = ledger.locate_record(home, record_id)
+    if location is not None and (
+        location.scope,
+        location.bucket_name,
+    ) != (prop.bucket_scope, prop.bucket_name):
+        slot.clear_for_record(record_id)
+        return _proposal_gone(request, kind, record_id, error=NOTICE_PROPOSAL_MOVED)
+
     # Capture argv from the SLOT before anything can clear it (the
     # interrupt below tears down the proposing session, whose teardown
     # clears the slot by session key).
@@ -1100,6 +1149,7 @@ async def proposal_confirm(
         dest=prop.dest,
         note=prop.note,
         until=prop.until,
+        to=prop.to,
     )
     slot.clear()  # Y-13 clear-set: human confirm
 

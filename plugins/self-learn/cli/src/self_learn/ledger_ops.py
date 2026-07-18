@@ -58,6 +58,7 @@ __all__ = [
     "queue",
     "read_proposal",
     "record_title",
+    "rehome_record",
     "resolve_record",
     "stamp_proposal",
     "status_infos",
@@ -753,6 +754,46 @@ def resolve_record(
     record.write(dest_path)
     touched.append(dest_path)
     touched.extend(remove_proposal_siblings(home, bucket_dir, record_id))
+    return touched
+
+
+def rehome_record(
+    home: Path, record_id: str, target_bucket: Path, project_path: Path
+) -> list[Path]:
+    """File-op half of ``rehome`` (02 §2 verb pin): one ``git mv`` of the
+    PENDING record file into *target_bucket*'s ``pending/`` — the record's
+    bytes are untouched (a re-home is a filing move, never a substance
+    edit) — plus the pinned sweep of its source-bucket proposal siblings
+    (``lrn-<id>.{yaml,diff}`` AND any ``merge-*.yaml`` naming it — the
+    resolution sweep's own shape, :func:`remove_proposal_siblings`).
+
+    The target bucket's ``{pending,resolved,proposals}/`` dirs are created
+    when absent and its ``meta.yaml`` stamped from *project_path* (the
+    hosts.yaml entry — 13 §3; hosts.yaml stays the only registration
+    authority, this op registers nothing). The destination-collision check
+    runs HERE too, BEFORE any dir/meta creation (belt — the verb has
+    already refused before taking the lock): a duplicated id is corruption
+    to surface, never to merge into. Returns the exact touched-path list;
+    deletions among them are pre-staged (git mv/rm) or were untracked."""
+    path = find_record_path(home, record_id, statuses=("pending",))
+    source_bucket = path.parent.parent
+    for sub in ("pending", "resolved"):
+        if (target_bucket / sub / path.name).exists():
+            raise LedgerOpsError(
+                f"record {record_id} already exists in {target_bucket} — a "
+                "duplicated id is corruption to surface, never to merge "
+                "into; inspect both files by hand"
+            )
+    meta = ensure_project_meta(target_bucket, project_path)
+    for sub in ("pending", "resolved", "proposals"):
+        (target_bucket / sub).mkdir(parents=True, exist_ok=True)
+    dest_path = target_bucket / "pending" / path.name
+    if _is_tracked(home, path):
+        _git_ok(home, "mv", str(path), str(dest_path))
+    else:
+        path.rename(dest_path)
+    touched: list[Path] = [path, dest_path, meta]
+    touched.extend(remove_proposal_siblings(home, source_bucket, record_id))
     return touched
 
 

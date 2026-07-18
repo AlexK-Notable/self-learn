@@ -301,11 +301,14 @@ class SdkPaneEngine(PaneEngine):
             # proposals.validate_proposal; this schema is the braces).
             @tool(
                 PROPOSAL_TOOL_NAME,
-                "Propose a resolution verb (route/reject/defer/graduate) on a "
-                "pending record. The human sees the proposal and decides — "
-                "nothing executes unless they confirm. Args: verb, record_id, "
-                "and optionally dest (route only), note (<=200 chars), "
-                "until (defer only, YYYY-MM-DD).",
+                "Propose a resolution verb (route/reject/defer/graduate/"
+                "rehome) on a pending record. The human sees the proposal "
+                "and decides — nothing executes unless they confirm. Args: "
+                "verb, record_id, and optionally dest (route only), note "
+                "(<=200 chars), until (defer only, YYYY-MM-DD), to (rehome "
+                "only — a REGISTERED project's path or bucket slug; an "
+                "unregistered project is a fact to tell the human, never a "
+                "proposal).",
                 {
                     "type": "object",
                     "properties": {
@@ -314,6 +317,7 @@ class SdkPaneEngine(PaneEngine):
                         "dest": {"type": "string"},
                         "note": {"type": "string"},
                         "until": {"type": "string"},
+                        "to": {"type": "string"},
                     },
                     "required": ["verb", "record_id"],
                 },
