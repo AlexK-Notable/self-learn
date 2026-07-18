@@ -776,7 +776,17 @@ subscription auth):
 idle self-exit window, seconds; default `600` under the systemd
 unit, unarmed in a foreground `serve` unless set explicitly; any
 value ≤ `0` disables self-exit — pinned at the review, negatives
-never error)*.
+never error)* · `SELF_LEARN_UI_MONITOR` *(added 2026-07-18 —
+feedback round 2 item 6: launcher-only — consumed by
+`self-learn-ui-open`, never by the server; the same X-1 posture as
+`SELF_LEARN_UI_BROWSER`. Names the monitor the launcher ensures the
+app window onto after focus/launch: focuswindow by address, then
+`movewindow mon:<name>`, skipped when `hyprctl clients -j`/`monitors
+-j` already place it there; a fresh window is polled for ≤5 s. Unset
+= compositor placement (today's behavior, zero new dispatches);
+hyprctl absent or the window never appearing = silent degrade. The
+value is host-specific and wired host-side after merge — never
+hardcoded in the product)*.
 Nothing else in v1; no config file.
 
 ### 4.5 Verb proposals from the pane *(added 2026-07-17 — feedback round 1 item 7; §11 Y-13 is the register entry)*
