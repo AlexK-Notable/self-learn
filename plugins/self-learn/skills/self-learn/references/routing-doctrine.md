@@ -50,7 +50,7 @@ entries / ~150 words, and every routed token dilutes attention at every
 activation.
 
 **The bias reads on the lesson's real firing range, not on where it was
-captured** *(added 2026-07-18 — feedback round 3 item 3; 09 §11 Y-17)*.
+captured** *(added 2026-07-18 — feedback round 3 item 3; 09 §11 Y-18)*.
 A record's bucket is fixed at capture time from the session cwd, and
 cwd is sometimes the wrong answer: when the trigger's elements live
 outside the capture repo — the live case: a keyboard lesson captured in
@@ -132,7 +132,7 @@ Rules:
   won; it just doesn't need a new home.
 - One record, one proposal. If two pending records look like one lesson,
   say so in `rationale`; merge proposals are the M2 worker's mechanism.
-- **There is no `rehome:` proposal field** *(pinned 2026-07-18 — Y-17)*:
+- **There is no `rehome:` proposal field** *(pinned 2026-07-18 — Y-18)*:
   a re-home recommendation (§3's ancestor-project clause) is PROSE —
   state it in `rationale` and the card's discuss section, with the
   outside-the-repo evidence. The mechanics run through the pane's

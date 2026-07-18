@@ -925,7 +925,7 @@ mutation seam. Everything below is one tool, one bar, one POST.
   structural validity, e.g. a `hook` dest without stored script bytes
   refuses at the verb and the refusal renders verbatim, §5), `reject`
   (optional `note`), `defer` (optional `until`, ISO date), `graduate`.
-  *(Amended 2026-07-18 — feedback round 3 item 3; §11 Y-17:)* plus
+  *(Amended 2026-07-18 — feedback round 3 item 3; §11 Y-18:)* plus
   `rehome` (required `to` — a **registered project**, named by path or
   bucket slug; the confirm rebuilds argv from the slot as
   `rehome <record-id> --to <server-resolved-path>` — 02 §2 pins the
@@ -958,7 +958,7 @@ mutation seam. Everything below is one tool, one bar, one POST.
   alternatives, so an armable-but-impossible proposal never renders.
   Other structural validity — e.g. a hook dest without stored script
   bytes — stays the verb's to enforce.)* *(Amended 2026-07-18 —
-  feedback round 3 item 3; §11 Y-17, following the same round-2
+  feedback round 3 item 3; §11 Y-18, following the same round-2
   intake-teaching precedent:)* `to` only applies to `rehome` and is
   validated **at intake** against the registered-project set
   (hosts.yaml, the CLI's own authority): an unregistered target
@@ -988,10 +988,24 @@ mutation seam. Everything below is one tool, one bar, one POST.
   any reason (result, interrupt, error, cap, `q`) · the record
   leaving pending (resolved elsewhere — the §3 banner path also
   clears the slot) · server restart. *(Extended 2026-07-18 — §11
-  Y-17:)* · the record leaving its **bucket** (a CLI-side `rehome`
-  while a proposal waits — detected on the same file-event path as
-  resolved-elsewhere; a waiting bar whose bucket facts have gone
-  stale must never survive into the human's arm). Page navigation does NOT clear
+  Y-18; reworked at its own blind-review fold, F2/F5:)* · the record
+  leaving its **bucket** (a CLI-side `rehome` while a proposal is
+  WAITING **or ARMED**). Detection is the same **render/arm-time
+  staleness checks** as resolved-elsewhere — never a watcher hook:
+  the ledger watcher does not re-scan bucket sets mid-run, and a
+  rehome that CREATES its destination bucket fires only source-side
+  file events — **extended to compare the record's current bucket
+  (`locate_record`) against the slot's captured bucket**. Both the
+  ARM route and the CONFIRM route make that comparison and take the
+  staleness path (disarm + a plain-words notice) on mismatch. The
+  confirm-side check is load-bearing, not belt: the CLI verbs locate
+  records across ALL buckets, so without it Enter on a stale armed
+  bar would execute the verb against the record in its NEW bucket —
+  compiling into a different project's canon than the bar the human
+  read. Why this leg is new at all: `rehome` is the FIRST mechanism
+  that makes a pending record's bucket facts mutable — every earlier
+  staleness check could safely assume a pending record stays where
+  it was validated. Page navigation does NOT clear
   it: any render of a page in the proposal's scope re-renders the
   waiting bar (the slot is server truth, so the bar survives
   reloads). 09 §3's server-owned-state list reads through this
@@ -1011,11 +1025,14 @@ mutation seam. Everything below is one tool, one bar, one POST.
   the confirm executes** — assembled from the SERVER-validated args. **Server-truth anchor: verb, record id,
   destination, and date are validated server fields; the note IS
   agent prose and is labeled as such** (the review's F7 — the bar
-  never pretends otherwise). *(Added 2026-07-18 — §11 Y-17:)* a
+  never pretends otherwise). *(Added 2026-07-18 — §11 Y-18:)* a
   `rehome` bar's target joins the server-truth set (resolved
   against hosts.yaml at intake), and its leading line is Y-9
   domestic — "move this lesson to the *keyboards* project" — with
-  the resolved path as trailing metadata beside the id. The waiting bar is NOT `[data-armed]`:
+  the resolved path as trailing metadata beside the id. ⟨name⟩ is
+  the registered path's **basename**, pinned (F7): slugs are
+  unreadable, and when two registered projects share a basename the
+  trailing resolved path is the disambiguator the human reads. The waiting bar is NOT `[data-armed]`:
   `y` (unbound until now; global-uniqueness invariant holds) arms it
   through the STANDARD armed contract — Enter executes, any other
   key disarms **back to waiting** — giving the agent's proposal
@@ -1614,11 +1631,13 @@ removed the last competing workstream — the build gate is open.*
   code, templates, and app.js's `pane_result` completion handler
   only.
 
-- **Y-17 · Record re-home — verb, pane proposability, and the
+- **Y-18 · Record re-home — verb, pane proposability, and the
   ancestor-project judgment** *(added 2026-07-18 — feedback round 3
-  item 3, `feedback/2026-07-18-ui-feedback-03.md`; Y-16 is left free
-  for the round-3 items-1/2 author working in parallel — the
-  orchestrator renumbers at merge if their set differs)*. The user's
+  item 3, `feedback/2026-07-18-ui-feedback-03.md`; the round-3
+  items-1/2 author's parallel worktree holds Y-16, Y-17, and U14, so
+  this entry renumbered Y-17→Y-18 at its blind-review fold; its
+  blind review returned NOT SOUND — 1 BLOCKER / 2 MAJOR / 4 MINOR /
+  2 NIT, all folded in place same day)*. The user's
   directive, near-verbatim: *"anything that got registered as a
   lesson for zmk-config-offsetkey should have been registered under
   repos/keyboards… i'd like it to be a bit smarter about this and
@@ -1636,11 +1655,16 @@ removed the last competing workstream — the build gate is open.*
   destination judgment is bucket-relative and `record_sha` staleness
   cannot catch a move (the hash is of record content, which did not
   change), so a carried sibling would render an honest-looking stale
-  card; the worker re-proposes in the new home. Refusals check
+  card; the worker re-proposes in the new home — and the same commit
+  sweeps any `merge-*.yaml` in the source bucket naming the record
+  (fold F3: partial clusters are invalid, 02 §1; matches the
+  resolution sweep). Refusals check
   **status, never existence** (locate/find machinery also sees
   `resolved/`): unknown id · not pending · target unregistered
   (refusal names `host add` as the human's repair) · target ==
-  current bucket · non-project scope (M1 is project→project only;
+  current bucket · id already present in the target bucket, checked
+  before any bucket creation (fold F4 — collision guard) ·
+  non-project scope (M1 is project→project only;
   user-scope target and cross-scope moves are dated future work).
   **Judgment (doctrine):** routing-doctrine §3 gains the
   ancestor-project clause — when a lesson's firing range extends
@@ -1658,21 +1682,31 @@ removed the last competing workstream — the build gate is open.*
   **(2)** the waiting → `y` → Enter spine is byte-unchanged; the
   confirm rebuilds argv from the slot (`rehome <id> --to
   <resolved-path>`), target rendered as server truth, leading line
-  Y-9 domestic ("move this lesson to the *keyboards* project");
+  Y-9 domestic ("move this lesson to the *keyboards* project" —
+  ⟨name⟩ pinned as the registered path's basename, the trailing
+  resolved path disambiguating shared basenames, fold F7);
   **(3)** **no human-side re-home control in M1** — agent-proposal
   plus the CLI verb are the two hands; a direct picker key would
   spend keymap surface on a rare act (the Y-11 no-affordance-key
   precedent) and needs target-cycling machinery v1 doesn't have.
   Revisit condition, auditable: an explicit user ask or a live
   session where the human wanted a move and no pane was open;
-  **(4)** the §4.5 slot clear-set gains the bucket-change leg (a
-  CLI-side rehome mid-proposal must clear the waiting bar);
+  **(4)** the §4.5 staleness machinery gains the bucket-change leg —
+  WAITING and ARMED alike: the arm and confirm routes both
+  re-compare the slot's captured bucket against the record's current
+  bucket and take the staleness path (disarm + plain-words notice)
+  on mismatch, because rehome is the first mechanism that makes a
+  pending record's bucket facts mutable (fold F2; detection is
+  render/arm-time checks, never a watcher hook — fold F5);
   **(5)** NO proposal-YAML field — a batch-analyst re-home
   recommendation is prose in `rationale`/card, the mechanics are the
   pane path or the CLI (doctrine §5 pins it so M2 workers never
   invent a key). Post-confirm surface behavior: Detail keeps working
   (record lookup is id-based, bucket-independent) and both source
-  and destination bucket pages refresh off the standard file events.
+  and destination bucket pages refresh off the standard file events;
+  after a confirmed rehome from a record pane, the existing
+  `next_record_url` redirect resolves in the record's NEW bucket —
+  intended, the human follows the lesson to its new home (fold F8).
   Substrate: no `list --json` change — bucket membership is already
   the pinned `bucket` field; build lands as 10 §3 U15.
 

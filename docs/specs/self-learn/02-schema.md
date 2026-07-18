@@ -279,7 +279,7 @@ standard safe rebase-halt (`01` §5) rather than being excluded outright.
   (collision-resistant across offline machines); a sequential counter would
   add/add-conflict on every parallel capture.
 - **`self-learn rehome <id> --to <path-or-slug>`** *(added 2026-07-18 —
-  feedback round 3 item 3; 09 §11 Y-17 is the surface register entry)*:
+  feedback round 3 item 3; 09 §11 Y-18 is the surface register entry)*:
   moves a **pending** record to another **registered project** bucket —
   the repair for capture-cwd filing the lesson under a narrower repo
   than its real firing range (the umbrella-project case,
@@ -301,7 +301,16 @@ standard safe rebase-halt (`01` §5) rather than being excluded outright.
   move — the hash is of record content, which didn't change — so a
   carried sibling would render an honest-looking stale card. The
   worker re-analyzes any proposal-less pending record on its next run;
-  re-proposal in the new home is the honest cost of the move. One
+  re-proposal in the new home is the honest cost of the move. **The
+  same commit also `git rm`s any `merge-*.yaml` in the SOURCE bucket
+  that names the record** *(review fold 2026-07-18, F3)*: a partial
+  cluster is invalid and must not resurface (§1's merge lifecycle) —
+  the resolution sweep already behaves exactly this way (08 §1), and a
+  narrower rehome sweep would strand an invalid merge file behind. A
+  worker mid-analysis on the moving record needs no special handling
+  *(F9)*: its late-landing analyst proposal is an orphan `lrn-*.yaml`
+  in the source bucket, swept by the worker's own next-run orphan
+  sweep, and the two writers serialize on `commit_lock`. One
   ledger commit, pinned subject `self-learn: rehome lrn-… →
   projects/<slug>`; optional `--note` rides the commit body only
   (rehome is not a resolution — `resolution_note` stays write-once and
@@ -312,13 +321,20 @@ standard safe rebase-halt (`01` §5) rather than being excluded outright.
   not move — supersede is the correction machinery) · target not a
   registered project (the refusal names `self-learn host add <path>`
   as the human's repair) · target == the record's current bucket ·
-  source not a project bucket (**M1 is project→project only** —
-  user-scope targets and skill/user-scope sources are dated future
-  work, not silent extensions: a cross-scope move is a
-  re-classification with its own consent story). Sequence otherwise
-  standard for a record-writing verb: secret scan of the note,
-  `commit_lock` before the first mutation, sentinel self-hold +
-  heartbeat, targeted staging, push. Gen 1 gave `kind` decay clocks and
+  `lrn-<id>.md` already present in the target bucket, `pending/` OR
+  `resolved/` *(F4 — the create-record collision precedent)*, checked
+  **before** any target-dir/`meta.yaml` creation: a duplicated id is
+  corruption to surface, never to merge into · source not a project
+  bucket (**M1 is project→project only** — user-scope targets and
+  skill/user-scope sources are dated future work, not silent
+  extensions: a cross-scope move is a re-classification with its own
+  consent story). Sequence otherwise standard for a record-writing
+  verb: secret scan of the record file AND the note *(F6 — the file
+  scan is a no-op in practice since the bytes don't change, but every
+  record-writing verb scans both and uniformity beats the
+  micro-optimization)*, `commit_lock` before the first mutation,
+  sentinel self-hold + heartbeat, targeted staging, push.
+- **`kind` drives routing, not decay.** Gen 1 gave `kind` decay clocks and
   injection priority; those needed the statistical layer. What remains is
   its routing value: anti-pattern → hook candidate · surface-rule → SKILL.md
   rule · reasoning-pattern → SKILL.md/CLAUDE.md prose.
