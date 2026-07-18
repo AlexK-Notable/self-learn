@@ -76,7 +76,7 @@ additions:
 | Verb runner | One subprocess at a time server-wide (asyncio queue — multiple tabs share it); resolution POSTs rejected with "applying…" state while running; interrupt-first check **at verb dispatch** (09 §3, P1-4); bulk loop = sequential `graduate <id> --no-push` + terminal `self-learn push` on exit **success or abort** (08 §1 as amended); per-item progress via SSE; halt-on-first-failure with failing id shown | 09 §2.2, §3 |
 | Rendering | Diffs: Pygments `DiffLexer`; proposal YAML: Pygments YAML lexer; markdown (records, transcripts' finished blocks): `markdown-it-py` server-side; live pane deltas append as plain text, blocks re-render server-side at block boundaries (09 §4.1 — no client-side markdown dependency). The preview-honesty caption is a fixed string under every diff (02 §4's wording) | 09 §2.3, §4.1 |
 | Screen-state derivation | Pure functions: `(list --json output, status --json output, report --json output, mine status --json output, merge-yaml set, sentinel mtime) → screen model` — templates render models; no route handler reads ledger files directly; all reads go through one `ledger.py` module (testable headless, 09 §7) | 09 §3, §7, §11 |
-| CLI substrate consumed (new pieces built at U0) | The 08 §1 dated edit of 2026-07-17 (the G-3 surface substrate block), scope corrected after gate zero against the live CLI. **New at U0:** `list --json` items gain `bucket` (display name: skill name \| project slug \| `user`), `host_registered` (bool, `hosts.yaml`-derived), `source` (02's provenance enum verbatim); `report --json` gains `recurrence_suspects` rows `{id, nonce, seen_at}` (the M2 deterministic suspect computation **exposed, never reimplemented**); the CLI-owned `canon_read_roots()` helper + `host add` consent line (09 §11 Y-2); optional-if-cheap `status --json .sections_over_cap` (02 §4 cap check → Front graduation-opener banner; decided at U0 by cost, dropped loudly if skipped). **Existing, merely consumed** (first draft mis-listed them as new — gate-zero finding): `mine status --json` (shipped M2.5; `{last_run, stale, runs: […]}` — journal file remains truth, staleness derivation CLI-owned) and `report --json .open_followups` (rows `{id, bucket, action, unblocks_on, note, routed_at}`). The server consumes these fields ONLY — a missing field remains a dated 08 §1 edit, never server-side derivation (09 §2.1 rule, unchanged) *(Extended 2026-07-18 — 09 §11 Y-17 / 13 §3, feedback round 3 item 2, built with U14 in the cli package: `host add --init <path>` (git init + empty root commit at the exact path before the existing validation, per the Y-17 semantics matrix) + the CLI-owned repo-root predicate — "the exact resolved path is itself a git repo root" — which the server IMPORTS for `needs_init` at arm and confirm (the `canon_read_roots()` posture; never a second implementation))* | 08 §1 (2026-07-17 edit); 09 §11 Y-2/Y-4/Y-5/Y-6/Y-11/Y-17 |
+| CLI substrate consumed (new pieces built at U0) | The 08 §1 dated edit of 2026-07-17 (the G-3 surface substrate block), scope corrected after gate zero against the live CLI. **New at U0:** `list --json` items gain `bucket` (display name: skill name \| project slug \| `user`), `host_registered` (bool, `hosts.yaml`-derived), `source` (02's provenance enum verbatim); `report --json` gains `recurrence_suspects` rows `{id, nonce, seen_at}` (the M2 deterministic suspect computation **exposed, never reimplemented**); the CLI-owned `canon_read_roots()` helper + `host add` consent line (09 §11 Y-2); optional-if-cheap `status --json .sections_over_cap` (02 §4 cap check → Front graduation-opener banner; decided at U0 by cost, dropped loudly if skipped). **Existing, merely consumed** (first draft mis-listed them as new — gate-zero finding): `mine status --json` (shipped M2.5; `{last_run, stale, runs: […]}` — journal file remains truth, staleness derivation CLI-owned) and `report --json .open_followups` (rows `{id, bucket, action, unblocks_on, note, routed_at}`). The server consumes these fields ONLY — a missing field remains a dated 08 §1 edit, never server-side derivation (09 §2.1 rule, unchanged) *(Extended 2026-07-18 — 09 §11 Y-17 / 13 §3, feedback round 3 item 2, built with U14 in the cli package: `host add --init <path>` (git init + empty root commit at the exact path before the existing validation, per the Y-17 semantics matrix) + the CLI-owned repo-root predicate — "the exact resolved path is itself a git repo root" — which the server IMPORTS for `needs_init` at arm and confirm (the `canon_read_roots()` posture; never a second implementation))* *(Extended 2026-07-18 — 09 §11 **Y-20** / §3 **U17**, UX-survey item 4: **`status --json .sections_over_cap` WAS DROPPED at U0** — the "dropped loudly if skipped" clause fired; it is not emitted (confirmed against the live `_cmd_status` payload, which carries only `buckets`/`total_pending`/`open_followups`/`worker_last_run`/`supply_mix`/`metrics`). It is **superseded** by U17's new render-time `list --json` **`surface_fill`** field (per-record, per-destination fill for the record in view — a different, decision-time fact from the dropped global over-cap *count*). Built at U17, not U0.)* | 08 §1 (2026-07-17 edit + 2026-07-18 Y-20 edit); 09 §11 Y-2/Y-4/Y-5/Y-6/Y-11/Y-17/Y-20 |
 
 **Verify-at-build ledger** (each gets a scripted check at its task's
 start; failures route per §5): exact `ClaudeAgentOptions` name for —
@@ -543,6 +543,53 @@ in brackets.
   recompile picks up the amended sources by mtime with no
   intervention (pane opened after the merge shows the
   ancestor-project clause in its judgment).
+
+- **U17 · Loaded-surface budget indicator at the routing decision**
+  [U0, U3; coordinates with U16] *(added 2026-07-18 — UX-enhancement
+  survey item 4 / Q3 P3a; 09 §11 Y-20; 08 §1 `surface_fill` edit;
+  02 §4 cross-ref)*: **CLI (cli package)** — the `list --json`
+  `surface_fill` field per the 08 §1 shape: a read-only fill probe that
+  (a) iterates the parameter-free destinations scope-valid for the
+  record via the **same scope predicate the `o` cycle uses** (no second
+  scope definition), (b) resolves each target path with the existing
+  `verbs._resolve_target(…, check_dirty=False)` (E-17 read-only mode —
+  no dirty-abort, no host-mutation preflight; a still-raising
+  scope-invalid destination is caught and its key omitted, never
+  zeroed), (c) counts via the compiler (`compilers.compile_managed_text`
+  over the records currently routed to that target, EXCLUDING the
+  pending record — `entry_count`/`word_count`/`over_cap` read straight
+  off `SectionResult`; a marker-less bootstrap target reports 0/0), (d)
+  reports the target's **effective** caps (defaults 10/~150; per-target
+  override honored where 02 §4 allows), (e) **memoizes per resolved
+  target-path within the invocation** so list-wide cost is bounded by
+  distinct target files. **UI (ui package)** — plain-words (Y-9)
+  rendering beside the suggested destination + each alternate in the Why
+  region (§2.3), AND on the armed action bar tracking the `o`-selected
+  `--dest` byte-for-byte; the datum is CLI counts, the sentence is the
+  template's (the `proposal_fresh` → words division); absent key ⇒ no
+  indicator; at/over cap defers to the 02 §4 WARNING/graduation flow
+  (not duplicated). The warmed-Detail-partial invalidation for
+  `surface_fill` is **U16's** responsibility (global-on-any-verb-
+  completion, per §2.3) — U17 asserts it, U16 owns it; if U16 has not
+  landed, U17's field is still correct at every fresh render, only the
+  prefetch-warm case needs U16's coverage. *Tests:* **cli-suite** on
+  constructed ledgers — empty/bootstrap section (0 of 10), partial fill
+  (8 of 10), at-cap and over-cap (`over_cap` true, `cap_reason`
+  entries vs words), a scope-invalid destination **absent** from the
+  object (skill-md on a project record), word-cap-binding case, and a
+  memoization assertion (N records sharing one `SKILL.md` ⇒ one file
+  read/compile); the pending record is excluded from its own count.
+  **ui-suite** — Why-region renders each scope-valid destination's fill
+  in words; the armed-bar fill **changes across an `o` cycle**; an
+  over-cap armed destination shows the fill fact and the 02 §4 WARNING,
+  not a duplicated graduation card; absent field renders nothing. *DoD:*
+  cli + ui suites green; live trial logged in `ui-trials.md` — on a
+  fixture whose skill-md section is seeded near cap, Detail shows "holds
+  N of its 10 entries" beside the destination, `o` cycling to claude-md
+  shows that surface's (lower) fill, and the armed bar's number matches
+  the destination the confirm executes; routing a *second* record to the
+  same target and re-opening Detail shows the incremented fill (the
+  render-time freshness property).
 
 Parallelism: superseded 2026-07-17 by **§8 — the parallel execution
 plan** (tracks, file-ownership partition, join points, blockers).
