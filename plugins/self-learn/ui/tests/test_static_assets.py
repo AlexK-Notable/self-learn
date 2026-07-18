@@ -88,6 +88,27 @@ def test_app_js_reload_chokepoint_defers_on_the_three_leg_predicate() -> None:
     assert app_js.count("window.location.reload()") == 1
 
 
+def test_app_js_auto_selects_first_row_and_guards_content_focus() -> None:
+    """09 §11 Y-19 item 3 (survey P1a): the JS half of "first actionable
+    row selected on load, keys live without a prior click" is browser
+    behavior — this pins the STRUCTURE (the DoD's live-trial line covers
+    the actual visible cursor + keypress). One DOMContentLoaded hook
+    drives both the selection and the focus guard; the focus guard must
+    read document.activeElement before acting (never steal focus
+    unconditionally) — that guard is what keeps this item from breaking
+    the pane-input / armed-bar focus behaviors it must not fight."""
+    app_js = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    assert "function ensureRowSelected" in app_js
+    assert "function ensureContentFocus" in app_js
+    assert "DOMContentLoaded" in app_js
+    assert "self-learn-ui-content" in app_js
+    # The steal-nothing guard: only acts when nothing else already holds
+    # focus on purpose.
+    assert "document.activeElement" in app_js
+    assert "ensureRowSelected();" in app_js
+    assert "ensureContentFocus();" in app_js
+
+
 def test_style_css_filters_keymap_footer_by_context() -> None:
     """Feedback round 1 item 4: only the current page's usable keys show
     in the footer — driven by body[data-page] + :has(), zero JS."""

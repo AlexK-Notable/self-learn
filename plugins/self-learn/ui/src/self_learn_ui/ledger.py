@@ -355,10 +355,32 @@ class RefreshHub:
     """Async pub/sub the SSE endpoint (U3) subscribes to. The verb
     runner (U4) publishes a forced refresh through :meth:`force_refresh`
     after every verb completes (09 §3: "Any verb completion forces a
-    push")."""
+    push").
+
+    Also the ONE staleness clock for 09 §11 Y-19 item 1's next-record
+    prefetch cache (:mod:`self_learn_ui.prefetch`): :attr:`generation`
+    increments on every event this hub ever publishes — a watchfiles-
+    detected file change (:func:`watch_ledger`) AND a verb completion
+    (:meth:`force_refresh`, called after every verb regardless of scope
+    or outcome) both already funnel through here, so gating the cache on
+    this single counter costs nothing new and is GLOBAL by construction:
+    a verb resolving one record bumps the SAME counter a completely
+    unrelated record's warmed entry is stamped against, invalidating it
+    too. This is deliberate, not merely convenient — 09 §2.3's surface-
+    fill budget datum (Y-20/U17) means routing record X can change what
+    a warm copy of record Y would have rendered (X's target surface's
+    fill level), so per-record invalidation would be unsound; the
+    coarse everything-invalidates-on-any-signal rule is the only
+    correct one here, matching the CRITICAL staleness rule item 1 is
+    built to."""
 
     def __init__(self) -> None:
         self._subscribers: set[asyncio.Queue] = set()
+        self._generation = 0
+
+    @property
+    def generation(self) -> int:
+        return self._generation
 
     def subscribe(self) -> "asyncio.Queue[RefreshEvent]":
         q: asyncio.Queue = asyncio.Queue()
@@ -374,11 +396,13 @@ class RefreshHub:
         return len(self._subscribers)
 
     async def publish(self, event: RefreshEvent) -> None:
+        self._generation += 1
         for q in list(self._subscribers):
             await q.put(event)
 
     def force_refresh(self, scope: str = "front") -> None:
         """Sync entry point (callable from non-async verb-runner code)."""
+        self._generation += 1
         event = RefreshEvent(scope=scope)
         for q in list(self._subscribers):
             q.put_nowait(event)

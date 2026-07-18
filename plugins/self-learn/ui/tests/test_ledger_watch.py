@@ -107,6 +107,30 @@ class TestRefreshHub:
         hub.force_refresh()
         assert q.get_nowait().scope == "front"
 
+    def test_generation_starts_at_zero(self) -> None:
+        assert ledger.RefreshHub().generation == 0
+
+    def test_force_refresh_increments_generation_regardless_of_scope(self) -> None:
+        """09 §11 Y-19 item 1: the ONE staleness clock the prefetch cache
+        is gated against — every force_refresh bumps it, no matter which
+        record/bucket the completed verb touched (the global-on-any-
+        verb-completion rule the Y-20/U17 surface-fill datum requires)."""
+        hub = ledger.RefreshHub()
+        hub.force_refresh("record:lrn-aa000001")
+        hub.force_refresh("bucket:s")
+        hub.force_refresh()  # front
+        assert hub.generation == 3
+
+    @pytest.mark.asyncio
+    async def test_publish_also_increments_generation(self) -> None:
+        """The watchfiles-driven leg (a concurrent CLI verb, a mined
+        arrival) is the OTHER event that must invalidate a warm prefetch
+        entry — publish() is the async counterpart of force_refresh()
+        and must bump the same counter."""
+        hub = ledger.RefreshHub()
+        await hub.publish(ledger.RefreshEvent(scope="front"))
+        assert hub.generation == 1
+
 
 class TestWatchLedgerLive:
     @pytest.mark.asyncio

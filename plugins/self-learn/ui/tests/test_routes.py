@@ -1455,3 +1455,232 @@ class TestRenderPathEscaping:
         c, _runner = make_client(sb)
         r = c.get(f"/record/{rec.id}")
         assert 'style="' not in r.text
+
+
+# ------------------------------------------------------ Y-19 item 2: worker
+
+
+class TestWorkerKick:
+    def test_argv_is_bare_worker_kick(self, tmp_path: Path) -> None:
+        """The exact CLI verb the survey names (P2a): ``self-learn worker
+        kick`` — never ``worker run`` (that would be an in-process await
+        spanning the whole analysis pass, the Y-14 violation this item is
+        built to avoid)."""
+        sb = make_env(tmp_path)
+        c, runner = make_client(sb)
+        r = c.post("/worker/kick", headers={"HX-Request": "true"})
+        assert r.status_code == 200
+        assert runner.calls == [["worker", "kick"]]
+
+    def test_redirects_to_front(self, tmp_path: Path) -> None:
+        sb = make_env(tmp_path)
+        c, _runner = make_client(sb)
+        r = c.post("/worker/kick", headers={"HX-Request": "true"})
+        assert r.headers.get("hx-redirect") == "/"
+
+    def test_forces_a_front_scope_refresh(self, tmp_path: Path) -> None:
+        """Mirrors mine_run's own pattern exactly: a forced front-scope
+        push so the status strip and bucket table pick up whatever the
+        detached worker eventually lands, live."""
+        sb = make_env(tmp_path)
+        env = load_env(sb.env)
+        from self_learn_ui import ledger as ledger_mod
+
+        hub = ledger_mod.RefreshHub()
+        q = hub.subscribe()
+        runner = FakeRunner()
+        from self_learn_ui.app import create_app
+
+        app = create_app(env=env, token=TOKEN, runner=runner, refresh_hub=hub, start_watcher=False)
+        c = TestClient(app, base_url="http://127.0.0.1:7357")
+        c.cookies.set("slu_token", TOKEN)
+        c.post("/worker/kick", headers={"HX-Request": "true"})
+        event = q.get_nowait()
+        assert event.scope == "front"
+
+    def test_double_click_is_safe_the_cli_kick_is_idempotent_not_the_button(
+        self, tmp_path: Path
+    ) -> None:
+        """No client-side double-click guard exists here, exactly like
+        mine_run's own template (10 §1 Verb runner row: one subprocess
+        at a time is the only server-layer brace either button gets).
+        Two rapid clicks issue two ``worker kick`` calls — safety is the
+        CLI's own flock/worker.window absorption (08 §7.1: a second kick
+        landing while a window is open outcomes as absorbed-window/
+        absorbed-race, never a second spawn), which this route does not
+        need to re-implement. This test pins the ROUTE's half of that
+        contract: two POSTs never escalate into two DIFFERENT argvs and
+        both complete cleanly (never a 5xx from a raced double call)."""
+        sb = make_env(tmp_path)
+        c, runner = make_client(sb)
+        r1 = c.post("/worker/kick", headers={"HX-Request": "true"})
+        r2 = c.post("/worker/kick", headers={"HX-Request": "true"})
+        assert r1.status_code == 200
+        assert r2.status_code == 200
+        assert runner.calls == [["worker", "kick"], ["worker", "kick"]]
+
+    def test_front_page_renders_the_force_run_button(self, tmp_path: Path) -> None:
+        sb = make_env(tmp_path)
+        c, _runner = make_client(sb)
+        r = c.get("/")
+        assert '/worker/kick' in r.text
+        assert "Force run" in r.text
+
+
+# -------------------------------------------------- Y-19 item 1: prefetch
+
+
+class TestNextRecordPrefetch:
+    def test_visiting_a_record_warms_the_next_ones_bundle_in_the_cache(
+        self, tmp_path: Path
+    ) -> None:
+        sb = make_env(tmp_path)
+        older = make_behavior(scope="skill:s", created_at="2026-01-01T00:00:00Z")
+        newer = make_behavior(scope="skill:s", created_at="2026-01-05T00:00:00Z")
+        seed_record(sb.ledger, older)
+        seed_record(sb.ledger, newer)
+        c, _runner = make_client(sb)
+        r = c.get(f"/record/{older.id}")
+        assert r.status_code == 200
+        cache = c.app.state.detail_prefetch
+        hub = c.app.state.refresh_hub
+        bundle = cache.get(newer.id, hub.generation)
+        assert bundle is not None
+        assert bundle.record.id == newer.id
+
+    def test_warm_hit_is_served_without_a_fresh_gather(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Proves the cache is actually CONSULTED, not just populated:
+        after warming, force a fresh _gather_detail_bundle call to raise
+        — if the warm entry were bypassed, this GET would 500."""
+        import self_learn_ui.routes as routes_mod
+
+        sb = make_env(tmp_path)
+        older = make_behavior(scope="skill:s", created_at="2026-01-01T00:00:00Z")
+        newer = make_behavior(scope="skill:s", created_at="2026-01-05T00:00:00Z")
+        seed_record(sb.ledger, older)
+        seed_record(sb.ledger, newer)
+        c, _runner = make_client(sb)
+        c.get(f"/record/{older.id}")  # warms `newer`
+
+        calls: list[str] = []
+        real_gather = routes_mod._gather_detail_bundle
+
+        def spy(home, record_id):  # noqa: ANN001
+            calls.append(record_id)
+            if record_id == newer.id:
+                raise AssertionError("must not re-gather a warm hit")
+            return real_gather(home, record_id)
+
+        monkeypatch.setattr(routes_mod, "_gather_detail_bundle", spy)
+        r = c.get(f"/record/{newer.id}")
+        assert r.status_code == 200
+        assert newer.id in r.text
+
+    def test_a_refresh_event_invalidates_the_warm_entry(self, tmp_path: Path) -> None:
+        sb = make_env(tmp_path)
+        older = make_behavior(scope="skill:s", created_at="2026-01-01T00:00:00Z")
+        newer = make_behavior(scope="skill:s", created_at="2026-01-05T00:00:00Z")
+        seed_record(sb.ledger, older)
+        seed_record(sb.ledger, newer)
+        c, _runner = make_client(sb)
+        c.get(f"/record/{older.id}")  # warms `newer`
+        cache = c.app.state.detail_prefetch
+        hub = c.app.state.refresh_hub
+        assert cache.get(newer.id, hub.generation) is not None
+
+        hub.force_refresh("front")  # e.g. the watchfiles leg, or any push
+
+        assert cache.get(newer.id, hub.generation) is None
+
+    def test_a_verb_on_an_unrelated_record_invalidates_the_whole_cache(
+        self, tmp_path: Path
+    ) -> None:
+        """Coordinator-pinned (mid-build message, folded into 09 §2.3 /
+        the U17 row): invalidation is GLOBAL-ON-ANY-VERB-COMPLETION, not
+        per-record — a verb on record X (a DIFFERENT bucket entirely)
+        must invalidate a warm copy of record Y. This is what the
+        Y-20/U17 surface-fill datum needs: routing X changes what a
+        rendering of Y should show, since they can share a target
+        surface."""
+        sb = make_env(tmp_path)
+        older = make_behavior(scope="skill:s", created_at="2026-01-01T00:00:00Z")
+        newer = make_behavior(scope="skill:s", created_at="2026-01-05T00:00:00Z")
+        unrelated = make_knowledge(scope="project")
+        seed_record(sb.ledger, older)
+        seed_record(sb.ledger, newer)
+        seed_record(sb.ledger, unrelated, project_path=sb.host)
+        c, _runner = make_client(sb)
+        c.get(f"/record/{older.id}")  # warms `newer`
+        cache = c.app.state.detail_prefetch
+        hub = c.app.state.refresh_hub
+        assert cache.get(newer.id, hub.generation) is not None
+
+        # Resolve a record in a COMPLETELY different bucket.
+        r = c.post(
+            f"/record/{unrelated.id}/action/confirm",
+            data={"verb": "reject", "kind": "detail"},
+            headers={"HX-Request": "true"},
+        )
+        assert r.status_code == 200
+
+        assert cache.get(newer.id, hub.generation) is None
+
+    def test_never_stale_an_externally_resolved_record_is_never_served_from_cache(
+        self, tmp_path: Path
+    ) -> None:
+        """End-to-end proof of the CRITICAL staleness rule: `newer` is
+        warmed while still pending, then resolved externally (as a
+        concurrent CLI session would), then the refresh the watcher
+        would have published lands. The next GET must show the record's
+        CURRENT (resolved) state — the resolved-elsewhere redirect —
+        never the stale pending bundle a naive cache would still hold."""
+        sb = make_env(tmp_path)
+        older = make_behavior(scope="skill:s", created_at="2026-01-01T00:00:00Z")
+        newer = make_behavior(scope="skill:s", created_at="2026-01-05T00:00:00Z")
+        seed_record(sb.ledger, older)
+        seed_record(sb.ledger, newer)
+        c, _runner = make_client(sb)
+        c.get(f"/record/{older.id}")  # warms `newer` while pending
+
+        # An external resolution (a concurrent CLI verb this server never
+        # saw a POST for) + the refresh push the watcher would publish.
+        resolve_record_directly(sb.ledger, sb.ledger / "skills" / "s", newer)
+        c.app.state.refresh_hub.force_refresh(f"record:{newer.id}")
+
+        r = c.get(f"/record/{newer.id}", follow_redirects=False)
+        assert r.status_code == 303
+        assert "resolved-elsewhere" in r.headers["location"]
+
+    def test_bucket_clear_next_id_none_schedules_no_prefetch(self, tmp_path: Path) -> None:
+        """The last pending record in a bucket has no "next" — nothing
+        is scheduled, and the cache stays empty (no crash on the None
+        branch)."""
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+        c, _runner = make_client(sb)
+        r = c.get(f"/record/{rec.id}")
+        assert r.status_code == 200
+        cache = c.app.state.detail_prefetch
+        assert cache.get(rec.id, c.app.state.refresh_hub.generation) is None
+
+
+# ------------------------------------------- Y-19 item 3: focus/selection
+
+
+class TestFocusTarget:
+    def test_content_landmark_is_programmatically_focusable(self, tmp_path: Path) -> None:
+        """Template-level half of item 3 (the JS half is browser-only,
+        pinned structurally in test_static_assets.py): tabindex="-1" on
+        #self-learn-ui-content is what makes app.js's ensureContentFocus()
+        legal — present on every screen via base.html."""
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+        c, _runner = make_client(sb)
+        for path in ("/", f"/bucket/skill/s", f"/record/{rec.id}"):
+            r = c.get(path)
+            assert 'id="self-learn-ui-content"' in r.text
+            assert 'tabindex="-1"' in r.text

@@ -648,6 +648,16 @@ tr[data-row].selected {
   outline-offset: -2px;
 }
 
+/* 09 §11 Y-19 item 3: #self-learn-ui-content is a programmatic focus
+   target only (tabindex="-1", base.html) — app.js's ensureContentFocus()
+   parks focus there so the document-level keydown contract is live
+   without a prior click. It carries the .selected row's own visible
+   cursor (above); a big outline around the whole content landmark would
+   be noise, not signal, so it is suppressed here specifically. */
+#self-learn-ui-content:focus {
+  outline: none;
+}
+
 /* The sticky header is opaque — without this, app.js's
    scrollIntoView(block:"nearest") on upward k-navigation parks the
    selected row's leading title UNDER the header (adversarial review

@@ -96,7 +96,16 @@ ignoring costs nothing. This section pins the mechanics.
   toward chords. Install notes cover the Vimium-class-extension
   localhost exclusion (10 §1). A persistent footer shows the live
   keymap; `?` overlays the full reference (a layer, not a modal — any
-  action key acts immediately from it).
+  action key acts immediately from it). *(Amended 2026-07-18 — U16/§11
+  Y-19 item 3, survey P1a: on EVERY list screen, the first actionable
+  row carries the `.selected` cursor from load — not only after the
+  first `w`/`s` press — and the content region is guaranteed
+  programmatic focus on load and after every queue-walk hop, so the key
+  contract above is live without a prior click. Both are presentational
+  only: no staleness surface, files remain truth, nothing here changes
+  what a key DOES, only when it starts working. The mechanism must never
+  steal focus from a live pane's send input or fight the U14 armed-bar/
+  error-strip focus behaviors — see §11 Y-19 for the full guard.)*
 - **Three screens, one stack, URLs as state**: Front `/` → Bucket
   `/bucket/<scope>/<name>` → Detail `/record/<id>`. The browser's
   back/forward IS the stack walk; `Esc`/`a`/`←` navigate up
@@ -162,6 +171,24 @@ ignoring costs nothing. This section pins the mechanics.
   `unanalyzed`, `proposal_fresh`, `destination`, `already_canon`,
   `--include-deferred`). The Front page never walks the ledger itself;
   a missing field is a dated 08 §1 edit, never server-side derivation.
+- **Worker Force-run** *(added 2026-07-18 — U16/§11 Y-19 item 2, survey
+  P2a)*: a button beside the worker's status-strip line, the missing
+  symmetric affordance to the miner's own Force-run (§2.1's status strip
+  already carries the miner's; the worker — the M2 proposal drafter, the
+  thing the whole surface exists to adjudicate — had none). Same
+  no-arm-then-confirm pattern as the miner's (idempotent-by-construction
+  trigger, not a resolution verb): one click POSTs `self-learn worker
+  kick`, forces a front-scope refresh, redirects back to Front. `worker
+  kick` is NOT `worker run` — per 08 §7.1 it touches `worker.dirty`,
+  takes `worker.spawn.lock`, and `setsid`-spawns the real analysis pass
+  DETACHED before returning, so this request's in-flight window is the
+  kick's own short runtime, never the whole coalesce+analysis pass —
+  Y-14's idle-exit posture is respected by construction (the detached
+  worker can keep running, and the server can still idle-exit, after
+  this request completes). Double-click safety is the CLI's own
+  flock/`worker.window` absorption (`spawned` \| `absorbed-window` \|
+  `absorbed-race` \| `disabled`), not a client-side guard — mirroring
+  the miner's button, which carries none either.
 
 ### 2.2 Bucket page — grouped pending
 
@@ -445,6 +472,30 @@ permission surface of §4.3).
   `proposals/merge-*.yaml` for cluster groups (structured YAML —
   files-as-truth, not text-parsing; `list --json` stays record-level);
   `events.jsonl` only as a wake-up signal, never as state (08 §7.1).
+  *(Amended 2026-07-18 — U16/§11 Y-19 item 1, survey P2b: while a
+  Detail page is open for record N, a background task warms record
+  N+1's own Reads bundle — the exact record the queue-walk would land
+  on next (the SAME computation `next_record_url` already makes, one
+  shared function) — so the post-confirm `HX-Redirect` hop can skip
+  this subprocess-read stall. Zero model cost: this is CLI reads +
+  server render only, never a `claude -p` call. CRITICAL staleness
+  rule, satisfied by construction, never by a timer: a warmed entry is
+  valid ONLY while stamped against the CURRENT generation of the
+  **Refresh** bullet's own hub below — the SAME single mechanism every
+  refresh push (a watchfiles-detected change OR a verb completion)
+  already funnels through, so this adds no second signal path. The
+  gate is deliberately GLOBAL, not scoped to the touched record: ANY
+  refresh invalidates the ENTIRE (single-slot) warm cache, because the
+  survey's §2 Q3 P3a loaded-surface-budget indicator (landing
+  separately, tracked as Y-20/U17) means routing one record can change
+  what an UNRELATED record's own rendering should show — once that
+  datum exists, a per-record invalidation would be unsound for that
+  reason alone, so this item builds the coarse rule from the start
+  rather than narrowing it later and having to re-derive why. A
+  cache miss (never warmed, or warmed-then-invalidated) falls straight
+  through to an ordinary fresh read — there is no code path that can
+  serve a stale bundle, only a hit-at-the-observed-generation or a
+  miss.)*
 - **Refresh**: `watchfiles` in the server over every bucket's
   `pending/` + `proposals/` dirs and `events.jsonl`, debounced
   ~300 ms; changes push an **SSE event** to connected pages, which
@@ -1959,6 +2010,88 @@ removed the last competing workstream — the build gate is open.*
   intended, the human follows the lesson to its new home (fold F8).
   Substrate: no `list --json` change — bucket membership is already
   the pinned `bucket` field; build lands as 10 §3 U15.
+
+- **Y-19 · Queue-walk trio — next-record prefetch, worker Force-run,
+  first-row auto-select + focus** *(added 2026-07-18 — U16, sourced from
+  `docs/specs/self-learn/research/2026-07-18-ux-enhancement-survey.md`
+  §2 Q1/Q2 and §4's ranked shortlist items 1–3; three independent
+  friction-only fixes shipped as one unit, none of them touching the
+  arm→confirm decision gate)*. The survey's own frame, carried
+  verbatim: reduce friction that is NOT the decision — navigation,
+  staleness, waiting — never friction that IS the decision. All three
+  items are client-presentational or CLI-triggering only; none spend
+  model tokens, none change what a verb does, none narrow or widen the
+  pane agent's authority.
+
+  **(1) Next-record prefetch (survey P2b, shortlist #1).** Consumed at
+  §3's Reads bullet (the mechanism) and §3's Refresh bullet (the
+  staleness gate it rides). While Detail is open for record N, a
+  background task warms record N+1's own read bundle — the exact
+  record `next_record_url` would land on — so the post-confirm
+  `HX-Redirect` hop paints without the subprocess-read stall every
+  other Detail load pays. Zero model cost (CLI reads + a server render,
+  never a `claude -p` turn). **CRITICAL staleness rule**, satisfied
+  structurally rather than by any timer: the warm entry is stamped
+  against the `RefreshHub`'s own generation counter — the SAME single
+  publish point every refresh (a watchfiles-detected file change OR a
+  completed verb) already funnels through (09 §3) — and is served ONLY
+  when the CURRENT generation still equals the stamped one; any
+  mismatch is an ordinary cache miss, never a stale render. Invalidation
+  is **GLOBAL, not per-record**: ANY refresh (regardless of scope, and
+  regardless of which record a completed verb touched) drops the
+  entire warm cache — a single-slot cache, since the queue-walk only
+  ever has one live "next" candidate. This is deliberate, not
+  merely-simple: the survey's §2 Q3 P3a loaded-surface-budget
+  indicator (tracked separately as Y-20/U17) means routing record X can
+  change what an unrelated record Y's own rendering should show (a
+  shared target surface's fill level), so a narrower per-record
+  invalidation would be unsound the moment that datum exists — this
+  item is built coarse from day one rather than needing a later
+  widening. Y-14 interaction: the background task is one in-flight
+  request, so it keeps the idle clock from aging only momentarily; a
+  lost/never-completed warm entry on an idle-exit mid-prefetch is an
+  ordinary cache miss, the same ephemeral-casualty posture §3 already
+  accepts for the pane proposal slot and the scan-blocked badge map —
+  never a correctness issue, since the generation gate is what proves
+  correctness, not the cache's survival.
+
+  **(2) Worker Force-run (survey P2a, shortlist #2).** Consumed at
+  §2.1 (the Front-page button). The missing symmetric affordance to the
+  miner's own Force-run — the survey's "single most surprising
+  finding" was that the M2 proposal drafter, the thing the entire
+  surface exists to adjudicate, had no UI trigger at all. `self-learn
+  worker kick` (never `worker run`) is the exact verb: per 08 §7.1 it
+  is itself a short-lived trigger that `setsid`-spawns the real
+  analysis pass DETACHED before returning, so awaiting it in the verb
+  runner never holds the server resident for the whole coalesce+analyze
+  window the way `mine run`'s own Force-run genuinely does (12 §"R2":
+  `mine run` "executes immediately", i.e. in-process, for its own
+  button) — Y-14's idle-exit posture is respected by construction, not
+  by a special case in this route. Double-click safety is CLI-owned
+  (the kick's own flock + `worker.window` absorption — outcomes
+  `spawned` \| `absorbed-window` \| `absorbed-race` \| `disabled`), not
+  a client-side guard, mirroring the miner's own button, which carries
+  none either.
+
+  **(3) First-row auto-select + guaranteed focus (survey P1a, shortlist
+  #3).** Consumed at §1's keyboard-accelerators bullet. On every list
+  screen (Front, Bucket), the first actionable row carries the
+  `.selected` cursor from load, not only after the first `w`/`s`
+  press, and the content region is guaranteed programmatic focus on
+  load and after every queue-walk hop — closing the "no visible cursor,
+  no signal keys are live" soft dead-end the survey named (Y-9-adjacent:
+  orientation, not decision content). Presentational only — no
+  staleness surface, nothing here is a file read. The mechanism must
+  never steal focus from a live pane's send input, nor fight the U14
+  armed-bar/error-strip focus behaviors: it acts only when nothing has
+  already, legitimately, taken focus (the untouched document default),
+  and a pre-selected row is styled as a neutral cursor, never an
+  endorsement — the record is merely oldest, not recommended (the
+  survey's own steelman against this item).
+
+  Substrate: no CLI change, no `list --json`/`status --json` shape
+  change, no new SSE envelope type. All three items are UI-package-only
+  (`plugins/self-learn/ui/`); build lands as 10 §3 U16.
 
 **Substrate edits this set requires elsewhere** (same discipline as
 §10 — until landed, this list is authoritative; corrected after gate
