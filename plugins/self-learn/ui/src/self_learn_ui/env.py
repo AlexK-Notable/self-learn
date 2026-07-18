@@ -14,7 +14,12 @@ message, never a silent fallback) · ``SELF_LEARN_UI_IDLE_EXIT_SECONDS``
 the systemd unit, unarmed in a foreground ``serve`` unless set
 explicitly — the arming rule lives in
 :func:`self_learn_ui.idle.resolve_idle_window`, this module only
-parses; any value ≤ 0 disables, negatives never error).
+parses; any value ≤ 0 disables, negatives never error) ·
+``SELF_LEARN_UI_MONITOR`` (added 2026-07-18 — feedback round 2 item 6;
+launcher-only, the same X-1 posture as ``SELF_LEARN_UI_BROWSER``:
+consumed by ``self-learn-ui-open`` to ensure the app window onto the
+named monitor, never read by the server itself; kept here so this
+module stays the single source of the *complete* var list, per 10 §1).
 
 Nothing else in v1; no config file (09 §4.4).
 """
@@ -71,6 +76,9 @@ class EnvConfig:
     #: ``None`` = unset (arming rule decides); an int = explicit
     #: (≤ 0 disables — pinned at the Y-14 spec gate, never an error).
     ui_idle_exit_seconds: int | None = None
+    #: Launcher-only, like :attr:`ui_browser` (feedback round 2 item 6,
+    #: 2026-07-18) — carried for list-completeness, never acted on here.
+    ui_monitor: str | None = None
 
 
 def _parse_int(raw: str, name: str) -> int:
@@ -108,6 +116,8 @@ def load_env(environ: dict[str, str] | None = None) -> EnvConfig:
 
     ui_browser = env.get("SELF_LEARN_UI_BROWSER") or None
 
+    ui_monitor = env.get("SELF_LEARN_UI_MONITOR") or None
+
     pane_model = env.get("SELF_LEARN_PANE_MODEL") or DEFAULT_PANE_MODEL
 
     budget_raw = env.get("SELF_LEARN_PANE_BUDGET_USD")
@@ -144,4 +154,5 @@ def load_env(environ: dict[str, str] | None = None) -> EnvConfig:
         pane_max_turns=pane_max_turns,
         pane_engine=pane_engine,
         ui_idle_exit_seconds=ui_idle_exit_seconds,
+        ui_monitor=ui_monitor,
     )

@@ -758,3 +758,243 @@ def test_failed_start_skips_the_wait(tmp_path: Path) -> None:
     assert result.returncode == 0
     assert elapsed < 3.0
     assert _wait_for_nonempty(chromium_log)
+
+
+# --- SELF_LEARN_UI_MONITOR placement (feedback round 2 item 6; 09 §4.4) --
+#
+# Launcher-only, same X-1 posture as SELF_LEARN_UI_BROWSER. Set + hyprctl
+# present: the window (fresh or existing) is ensured onto the named
+# monitor via focuswindow-by-address THEN `movewindow mon:<name>` —
+# skipped when clients -j/monitors -j already place it there. Unset =
+# zero new dispatches; hyprctl absent or window-never-appears = silent
+# degrade. The dispatches run in the script's foreground (only the
+# browser launch is backgrounded), so hyprctl's log is complete once the
+# subprocess returns — read it directly, no polling needed.
+
+# A fake hyprctl that also answers `monitors -j` — for the
+# already-on-target refinement (the clients `monitor` field is a
+# NUMERIC id; the script must map it via monitors -j .name).
+_HYPRCTL_WITH_MONITORS_TMPL = """
+echo "$*" >> "{log}"
+if [[ "$1" == "clients" ]]; then
+  echo '{clients_json}'
+fi
+if [[ "$1" == "monitors" ]]; then
+  echo '{monitors_json}'
+fi
+exit 0
+"""
+
+# A fake hyprctl whose window "appears" only AFTER the first clients
+# query (flag file = the launch happened): the presence check sees [],
+# the placement poll then finds the window — the real fresh-launch
+# timeline.
+_HYPRCTL_APPEARING_TMPL = """
+echo "$*" >> "{log}"
+if [[ "$1" == "clients" ]]; then
+  if [[ -f "{flag}" ]]; then
+    echo '{clients_json}'
+  else
+    : > "{flag}"  # builtin redirect — `touch` is not in the hermetic bin dir
+    echo '[]'
+  fi
+fi
+exit 0
+"""
+
+
+def test_monitor_set_moves_existing_window_focus_then_move(
+    tmp_path: Path,
+) -> None:
+    # Window present; the fake serves NO monitors -j output, so current
+    # placement is unknown -> the script must move unconditionally
+    # (idempotent), with focuswindow-by-address strictly BEFORE
+    # movewindow (movewindow acts on the focused window).
+    hyprctl_log = tmp_path / "hyprctl.log"
+    chromium_log = tmp_path / "chromium.log"
+    bindir = _hermetic_bindir(
+        tmp_path,
+        hyprctl=_HYPRCTL_BODY_TMPL.format(
+            log=hyprctl_log,
+            clients_json='[{"class":"self-learn-ui","address":"0xAAA","title":"self-learn — Front","monitor":0}]',
+        ),
+        chromium=_LOGGING_LAUNCH_TMPL.format(log=chromium_log),
+    )
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    env = _env(
+        tmp_path,
+        bindir,
+        XDG_RUNTIME_DIR=str(runtime_dir),
+        SELF_LEARN_UI_MONITOR="DP-2",
+    )
+
+    result = _run(env)
+
+    assert result.returncode == 0
+    log = hyprctl_log.read_text(encoding="utf-8")
+    focus_at = log.index("dispatch focuswindow address:0xAAA")
+    move_at = log.index("dispatch movewindow mon:DP-2")
+    assert focus_at < move_at, "focus-by-address must precede the move"
+    assert not chromium_log.exists() or chromium_log.stat().st_size == 0
+
+
+def test_monitor_set_fresh_launch_polls_then_places(tmp_path: Path) -> None:
+    # Fresh launch: presence check sees [], chromium launches, the ≤5 s
+    # placement poll finds the new window on its first iteration and the
+    # focus+move pair fires — fast (never burns the budget).
+    hyprctl_log = tmp_path / "hyprctl.log"
+    chromium_log = tmp_path / "chromium.log"
+    bindir = _hermetic_bindir(
+        tmp_path,
+        hyprctl=_HYPRCTL_APPEARING_TMPL.format(
+            log=hyprctl_log,
+            flag=tmp_path / "window-appeared.flag",
+            clients_json='[{"class":"self-learn-ui","address":"0xF00","title":"self-learn — Front"}]',
+        ),
+        chromium=_LOGGING_LAUNCH_TMPL.format(log=chromium_log),
+    )
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    env = _env(
+        tmp_path,
+        bindir,
+        XDG_RUNTIME_DIR=str(runtime_dir),
+        SELF_LEARN_UI_MONITOR="DP-2",
+    )
+
+    start = time.monotonic()
+    result = _run(env)
+    elapsed = time.monotonic() - start
+
+    assert result.returncode == 0
+    assert elapsed < 3.0, "window on first poll iteration must release fast"
+    assert _wait_for_nonempty(chromium_log), "the launch must still happen"
+    log = hyprctl_log.read_text(encoding="utf-8")
+    focus_at = log.index("dispatch focuswindow address:0xF00")
+    move_at = log.index("dispatch movewindow mon:DP-2")
+    assert focus_at < move_at
+
+
+def test_monitor_set_skips_move_when_already_on_target(tmp_path: Path) -> None:
+    # The refinement: clients -j carries a NUMERIC monitor id (1); the
+    # script maps it via monitors -j to "DP-2" == the target -> zero
+    # placement dispatches (the step-3 focus still fires as always).
+    hyprctl_log = tmp_path / "hyprctl.log"
+    chromium_log = tmp_path / "chromium.log"
+    bindir = _hermetic_bindir(
+        tmp_path,
+        hyprctl=_HYPRCTL_WITH_MONITORS_TMPL.format(
+            log=hyprctl_log,
+            clients_json='[{"class":"self-learn-ui","address":"0xAAA","title":"self-learn — Front","monitor":1}]',
+            monitors_json='[{"id":0,"name":"DP-1"},{"id":1,"name":"DP-2"}]',
+        ),
+        chromium=_LOGGING_LAUNCH_TMPL.format(log=chromium_log),
+    )
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    env = _env(
+        tmp_path,
+        bindir,
+        XDG_RUNTIME_DIR=str(runtime_dir),
+        SELF_LEARN_UI_MONITOR="DP-2",
+    )
+
+    result = _run(env)
+
+    assert result.returncode == 0
+    log = hyprctl_log.read_text(encoding="utf-8")
+    assert "dispatch focuswindow address:0xAAA" in log
+    assert "movewindow" not in log, "already on target: zero move dispatches"
+
+
+def test_monitor_set_window_never_appears_degrades_silently(
+    tmp_path: Path,
+) -> None:
+    # Fresh launch whose window NEVER shows up in clients -j (browser
+    # crashed, slow session, ...): the placement poll burns its ≤5 s
+    # budget then gives up silently — launch still happened, rc 0, no
+    # stderr, no movewindow. The one placement test allowed to be slow
+    # (mirrors the readiness-timeout test's posture: the budget must
+    # actually be spent, bounded by an explicit subprocess timeout).
+    hyprctl_log = tmp_path / "hyprctl.log"
+    chromium_log = tmp_path / "chromium.log"
+    bindir = _hermetic_bindir(
+        tmp_path,
+        hyprctl=_HYPRCTL_BODY_TMPL.format(log=hyprctl_log, clients_json="[]"),
+        chromium=_LOGGING_LAUNCH_TMPL.format(log=chromium_log),
+    )
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    env = _env(
+        tmp_path,
+        bindir,
+        XDG_RUNTIME_DIR=str(runtime_dir),
+        SELF_LEARN_UI_MONITOR="DP-2",
+    )
+
+    start = time.monotonic()
+    result = subprocess.run(
+        [str(SCRIPT)], env=env, capture_output=True, text=True, timeout=15
+    )
+    elapsed = time.monotonic() - start
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+    assert elapsed >= 4.0, "the placement budget must actually be spent"
+    assert _wait_for_nonempty(chromium_log), "degrade never loses the launch"
+    assert "movewindow" not in hyprctl_log.read_text(encoding="utf-8")
+
+
+def test_monitor_unset_never_dispatches_movewindow(tmp_path: Path) -> None:
+    # Unset = today's behavior exactly: focus the existing window, zero
+    # placement dispatches, zero placement polling (fast path stays fast).
+    hyprctl_log = tmp_path / "hyprctl.log"
+    chromium_log = tmp_path / "chromium.log"
+    bindir = _hermetic_bindir(
+        tmp_path,
+        hyprctl=_HYPRCTL_BODY_TMPL.format(
+            log=hyprctl_log,
+            clients_json='[{"class":"self-learn-ui","address":"0xAAA","title":"self-learn — Front"}]',
+        ),
+        chromium=_LOGGING_LAUNCH_TMPL.format(log=chromium_log),
+    )
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    env = _env(tmp_path, bindir, XDG_RUNTIME_DIR=str(runtime_dir))
+
+    start = time.monotonic()
+    result = _run(env)
+    elapsed = time.monotonic() - start
+
+    assert result.returncode == 0
+    assert elapsed < 3.0, "no monitor var -> no placement poll"
+    log = hyprctl_log.read_text(encoding="utf-8")
+    assert "dispatch focuswindow address:0xAAA" in log
+    assert "movewindow" not in log
+
+
+def test_hyprctl_absent_with_monitor_set_still_launches(tmp_path: Path) -> None:
+    # hyprctl absent entirely: placement is skipped silently along with
+    # detection — the browser still launches, rc 0, no stderr.
+    chromium_log = tmp_path / "chromium.log"
+    bindir = _hermetic_bindir(
+        tmp_path, chromium=_LOGGING_LAUNCH_TMPL.format(log=chromium_log)
+    )
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    env = _env(
+        tmp_path,
+        bindir,
+        XDG_RUNTIME_DIR=str(runtime_dir),
+        SELF_LEARN_UI_MONITOR="DP-2",
+    )
+
+    start = time.monotonic()
+    result = _run(env)
+    elapsed = time.monotonic() - start
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+    assert elapsed < 3.0, "no hyprctl -> no placement poll either"
+    assert "--class=self-learn-ui" in _wait_for_nonempty(chromium_log)

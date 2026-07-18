@@ -29,6 +29,7 @@ def test_defaults_with_empty_environ() -> None:
     assert cfg.self_learn_home == Path("~/.self-learn").expanduser()
     assert cfg.ui_port == DEFAULT_UI_PORT == 7357
     assert cfg.ui_browser is None
+    assert cfg.ui_monitor is None
     assert cfg.pane_model == DEFAULT_PANE_MODEL == "claude-sonnet-5"
     assert cfg.pane_budget_usd == DEFAULT_PANE_BUDGET_USD == 1.00
     assert cfg.pane_max_turns == DEFAULT_PANE_MAX_TURNS == 15
@@ -41,6 +42,7 @@ def test_all_vars_overridden() -> None:
             "SELF_LEARN_HOME": "/tmp/some-ledger",
             "SELF_LEARN_UI_PORT": "9001",
             "SELF_LEARN_UI_BROWSER": "firefox",
+            "SELF_LEARN_UI_MONITOR": "DP-2",
             "SELF_LEARN_PANE_MODEL": "claude-opus-4",
             "SELF_LEARN_PANE_BUDGET_USD": "2.50",
             "SELF_LEARN_PANE_MAX_TURNS": "30",
@@ -50,6 +52,7 @@ def test_all_vars_overridden() -> None:
     assert cfg.self_learn_home == Path("/tmp/some-ledger")
     assert cfg.ui_port == 9001
     assert cfg.ui_browser == "firefox"
+    assert cfg.ui_monitor == "DP-2"
     assert cfg.pane_model == "claude-opus-4"
     assert cfg.pane_budget_usd == 2.50
     assert cfg.pane_max_turns == 30
