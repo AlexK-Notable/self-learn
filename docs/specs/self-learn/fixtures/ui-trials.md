@@ -288,3 +288,13 @@ DoD trials run; one production BLOCKER caught and fixed mid-trial.
 
 Post-trial state: drop-in override removed (window back to the 600 s
 default on next service start); fresh tokened window left on DP-2.
+
+## T-E addendum · Tuned interrupt ladder retrial (2026-07-18)
+
+Same driver, same "count to 40 slowly" prompt, after the 09 §4.2
+tuning (1 s grace / 2.5 s kill, one Esc-anchored deadline,
+shield-and-abandon close): 8 incremental deltas, interrupt at the
+8th → **interrupt→Result teardown 2.90 s** (was ~5.3 s at the
+original T-E), `close()` 0.00 s, PASS. The keystroke now costs
+~2.9 s worst-case-observed against the amendment's "common-path
+~2.7 s + Result propagation" claim and the 5 s arithmetic ceiling.
