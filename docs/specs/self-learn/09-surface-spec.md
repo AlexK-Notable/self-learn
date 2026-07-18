@@ -113,8 +113,11 @@ ignoring costs nothing. This section pins the mechanics.
   key match with no context filter, so every key is globally unique
   across the table — pinned by test.)* *(Amended 2026-07-17, item 7 —
   §11 Y-13: `p` opens the bucket-context pane on the Bucket page
-  (§4.5); `p` was unbound, so the global-uniqueness invariant holds.
-  On Detail the pane remains `i` — one pane vocabulary, two contexts.)*
+  (§4.5), and `y` arms a WAITING pane proposal bar (§4.5's rework —
+  the proposal's own consent keystroke; Enter then confirms per the
+  standard armed contract). Both were unbound, so the
+  global-uniqueness invariant holds. On Detail the pane remains `i` —
+  one pane vocabulary, two contexts.)*
 - **Arm-then-confirm, never modal-confirm** (carried): a resolution
   key **arms** the action bar — it shows exactly what will run (verb,
   id, destination, note present/absent) and `Enter` executes (a POST),
@@ -287,10 +290,12 @@ keys stay live during iteration — arming works at any time, and
 executing a resolution on the record under iteration auto-interrupts
 the session first (the serialization rule, §3; P1-4 carried):
 adjudication never waits for the agent to *finish*, only for its
-bounded interrupt. *(Amended 2026-07-17, item 7 — §11 Y-13: the pane
-agent may itself propose a resolution via §4.5's tool; the proposal
-renders as the SAME armed action bar the keys arm — one consent
-surface, whoever suggested the verb.)*
+bounded interrupt. *(Amended 2026-07-17, item 7 — §11 Y-13, wording
+per the same-day rework: the pane agent may itself propose a
+resolution via §4.5's tool; the proposal renders as a WAITING bar in
+the standing action-bar region, and the human's `y` arms it through
+the same armed contract the keys use — one consent surface, one
+two-keystroke path, whoever suggested the verb.)*
 
 ## 3. Process & data architecture
 
@@ -420,7 +425,10 @@ permission surface of §4.3).
   file in v1 — env vars only (§4.4). *(`<cache>` re-based 2026-07-17
   to the doc-13 home-namespaced cache dir — §11 Y-3; the literal
   `~/.cache/claude-skills/self-learn/` of the original revision is
-  the pre-13 path and is dead.)*
+  the pre-13 path and is dead.)* *(Amended 2026-07-17, item 7 — §11
+  Y-13: plus ONE in-memory transient, the pane proposal slot —
+  §4.5's server-held pending proposal; never persisted, cleared per
+  §4.5's exhaustive clear-set, gone on restart by construction.)*
 
 ## 4. The adjudication pane
 
@@ -689,34 +697,84 @@ mutation seam. Everything below is one tool, one bar, one POST.
   Any failure returns a refusal string to the agent (it can correct
   itself or ask the human) and renders nothing.
 - **One proposal at a time — refuse, never replace.** While a
-  pane-proposed bar is armed, further `propose_verb` calls refuse
-  with "a proposal is already awaiting the human". Rationale: a
-  replace rule would let the bar's content change between the
-  human's read and their Enter — what-you-see-is-what-you-confirm is
-  the arm/confirm spine's whole point. (Judgment row, 10 §4.)
-- **Rendering.** A valid proposal renders the **existing**
-  `.action-bar[data-armed]` contract in the pane's proposal-bar
-  region (Detail: the standing action bar; Bucket: a proposal bar
-  adjacent to the pane) — verb, the record's human line (Y-9), id as
-  trailing metadata, destination, note/date — assembled from the
-  SERVER-validated args, never echoed agent prose. The armed-state
-  exclusivity rule (Y-11 build pin: an armed bar inerts every other
-  bar's triggers) applies unchanged. The transcript logs only that a
-  proposal was made (the `tool_use` event line); the bar carries the
-  consent. SSE gains one envelope type, `pane_proposal`, that
-  triggers the bar swap on connected pages.
-- **Confirm / cancel.** `Enter` on the armed bar POSTs from the
-  human's window through the same routes every human-armed bar uses;
-  the runner executes the verb with all standing rules — serialized,
-  scan/refusal path, and **interrupt-first**: a confirmed resolution
-  on the record under active iteration interrupts the session before
-  the verb runs (§3, P1-4 — yes, this means confirming the pane's own
-  proposal ends the pane session; the transcript's final line says
-  so in plain words). Any other key disarms, exactly like every
-  armed bar. The tool's return to the agent is immediate and honest:
-  "rendered — the human decides; you will not be notified of a
-  cancel." An executed verb surfaces to a still-live session the way
-  every external mutation does (file events, or the interrupt).
+  proposal slot is occupied (waiting OR armed — see the state pins
+  below), further `propose_verb` calls refuse with "a proposal is
+  already awaiting the human". Rationale: a replace rule would let
+  the bar's content change between the human's read and their Enter —
+  what-you-see-is-what-you-confirm is the arm/confirm spine's whole
+  point. (Judgment row, 10 §4.)
+- **Server-held proposal state** *(reworked same day after the blind
+  spec review — its F2)*: the pending proposal is the surface's
+  FIRST server-held armed-state precursor (the standing arm machine
+  is deliberately stateless server-side — armed state lives in the
+  rendered fragment). One in-memory slot beside the pane session
+  manager (one live session ⇒ one slot; never persisted — a server
+  restart clears it by construction). **Clear-set, exhaustive:**
+  human confirm · human dismiss · the proposing session ending for
+  any reason (result, interrupt, error, cap, `q`) · the record
+  leaving pending (resolved elsewhere — the §3 banner path also
+  clears the slot) · server restart. Page navigation does NOT clear
+  it: any render of a page in the proposal's scope re-renders the
+  waiting bar (the slot is server truth, so the bar survives
+  reloads). 09 §3's server-owned-state list reads through this
+  bullet (dated addition there).
+- **Rendering — proposals arrive WAITING, never armed** *(reworked
+  same day — the review's F1/F3 root cause: an SSE-driven swap could
+  replace a human-armed bar between the human's read and their
+  Enter, and the client's armed-exclusivity rule inerts keys, not
+  swaps)*: a valid proposal renders a **waiting** proposal bar —
+  full content visible: verb, the record's human line (Y-9), id as
+  trailing metadata, destination, date, and the note rendered under
+  an explicit "agent-suggested note:" label, display-capped (~200
+  chars, full text on the record) — assembled from the
+  SERVER-validated args. **Server-truth anchor: verb, record id,
+  destination, and date are validated server fields; the note IS
+  agent prose and is labeled as such** (the review's F7 — the bar
+  never pretends otherwise). The waiting bar is NOT `[data-armed]`:
+  `y` (unbound until now; global-uniqueness invariant holds) arms it
+  through the STANDARD armed contract — Enter executes, any other
+  key disarms **back to waiting** — giving the agent's proposal
+  exactly the same two-keystroke consent path as the human's own
+  actions, never a shorter one. Dismissing a waiting proposal is a
+  visible button on the bar (click — a rare act, the Register-button
+  precedent; no key spent). Enter NEVER acts on a waiting bar.
+  **Single-armed-bar invariant, now global and tested:** no rendered
+  page ever contains two `[data-armed]` elements — arming anything
+  (proposal included) goes through the standing exclusivity rule,
+  and the SSE `pane_proposal` handler no-ops while any
+  `[data-armed]` element exists (client suppression, belt) — but the
+  structural brace is that the incoming bar is waiting-state, so
+  even a missed suppression cannot redirect a pending Enter.
+  Detail: the waiting bar renders in the standing action-bar region
+  (swapping the unarmed bar only); Bucket: adjacent to the pane. The
+  transcript logs only that a proposal was made (the `tool_use`
+  event line); the bar carries the consent. SSE gains one envelope
+  type, `pane_proposal`, **scope-gated like `refresh`** (the
+  review's F8): only the record's own Detail and its bucket's Bucket
+  page act on it; other pages ignore it. The envelope never carries
+  bar content — the region re-fetches server-rendered.
+- **Confirm / cancel.** `Enter` on the ARMED proposal bar POSTs from
+  the human's window through the same routes every human-armed bar
+  uses; the runner executes the verb with all standing rules —
+  serialized, scan/refusal path, and **interrupt-first**: a
+  confirmed resolution on the record under active iteration
+  interrupts the session before the verb runs (§3, P1-4 — yes, this
+  means confirming the record pane's own proposal ends that pane
+  session; the transcript's final line says so in plain words).
+  **Bucket sessions are exempt from interrupt-first and survive the
+  confirm** *(the review's F6)*: they hold zero write allowance, so
+  there is no file race to serialize against; a still-live bucket
+  session learns of the executed verb the way every concurrent
+  surface does — file events. A confirm on a proposal whose record
+  was resolved elsewhere takes the verb's own refusal path (stderr
+  verbatim, §5) and clears the slot. The tool's return to the agent
+  is immediate and honest: "rendered — the human decides; you will
+  not be notified of a cancel." *(Validation clause, the review's
+  F9: `dest` accepts the full 02 §1 surface forms —
+  `skill-md | claude-md | reference[:<file>] | new-skill:<name> |
+  hook`; the handler refuses only on parse failure; structural
+  validity — e.g. a hook dest without stored script bytes — stays
+  the verb's to enforce, refusal rendering verbatim.)*
 - **What this does NOT change.** Session-end `proposal validate`
   (§4.3) — unchanged; bucket sessions write nothing so they add no
   validate obligation (confirmed verbs scan in-verb regardless,
@@ -1127,22 +1185,35 @@ removed the last competing workstream — the build gate is open.*
   route/reject/defer/graduate ONLY — `host add` excluded (Y-11's
   no-agent-path pin overrides the brief's suggestion), collapse and
   the telemetry verbs excluded v1; **(2)** refuse-not-replace while
-  a proposal is armed (what-you-see-is-what-you-confirm); **(3)** ONE
-  live session globally across both pane variants (the brief's
-  default posture, adopted; revisit only on felt cramping in use);
-  **(4)** bucket sessions read-and-propose only; **(5)** bucket-pane
-  first-message context = bucket summary + grouped pending rows
-  (leading human line per Y-9, id as metadata, destination,
-  freshness, deferred/cluster tags), capped at 50 rows with an
-  honest truncation line — ambiguity about which record an
+  the proposal slot is occupied (what-you-see-is-what-you-confirm);
+  **(3)** ONE live session globally across both pane variants (the
+  brief's default posture, adopted; revisit only on felt cramping in
+  use); **(4)** bucket sessions read-and-propose only, exempt from
+  interrupt-first (zero writes ⇒ no race), surviving confirms;
+  **(5)** bucket-pane first-message context = bucket summary +
+  grouped pending rows (leading human line per Y-9, id as metadata,
+  destination, freshness, deferred/cluster tags), capped at 50 rows
+  with an honest truncation line — ambiguity about which record an
   instruction means is a clarifying question, never a guess
   (doctrine §8); **(6)** mechanism grounded empirically at drafting:
   `tool`/`create_sdk_mcp_server`/`mcp_servers` all present on
   installed SDK 0.2.121 — T-B must still prove the callback sees the
-  tool call on the resolved build version (footgun B lineage).
+  tool call on the resolved build version (footgun B lineage);
+  **(7 — added at the same-day rework, after this amendment's own
+  blind spec review returned NEEDS REWORK; findings folded in
+  place):** proposals render WAITING, never armed — the human's `y`
+  arms, Enter confirms (two keystrokes, exact parity with the
+  human's own actions; kills the replace-under-Enter race the
+  review's F1 proved reachable through the stateless client-side
+  arm machine); the pending proposal is a server-held single
+  in-memory slot with an exhaustive clear-set (F2); single-armed-bar
+  -per-document is now a tested invariant (F3); `pane_proposal` SSE
+  is scope-gated (F8); the note renders as labeled agent prose,
+  display-capped (F7).
   Substrate: NO new CLI fields — the pane consumes `list --json`
   shapes the surface already reads; the surface-model reference file
-  is new tracked prose (10 U5's authoring task grows it).
+  is new tracked prose (authored at 10 U12 — corrected at the
+  rework; the first draft said U5, a task already closed).
 **Substrate edits this set requires elsewhere** (same discipline as
 §10 — until landed, this list is authoritative; corrected after gate
 zero 2026-07-17 against the live CLI): **08 §1** dated edit — the
