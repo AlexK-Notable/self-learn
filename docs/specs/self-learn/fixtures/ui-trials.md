@@ -241,3 +241,50 @@ pass/fail against its predicate (10 §2 discipline). CI-level acceptance
   deep-link time (a browser connection error — no app code path), and
   plain-tab fallback when no Chromium `--app` exists (09 §5). No
   additional live check owed.
+
+## U13 DoD · Idle lifecycle live trials (2026-07-18, autonomous overnight run)
+
+Shortened windows throughout (live service: 20 s via a temporary
+systemd drop-in; dev instance: 15 s explicit env). All four 10 §3 U13
+DoD trials run; one production BLOCKER caught and fixed mid-trial.
+
+- **(a) Close all pages → clean exit — FAILED FIRST, then PASS.**
+  First run: the service exited **143** and systemd RESTARTED it —
+  three failure cycles in the journal ("Main process exited,
+  code=exited, status=143", "Failed with result 'exit-code'").
+  Root cause: uvicorn 0.29+ `capture_signals` re-raises the captured
+  SIGTERM after graceful shutdown, so SIGTERM-to-self dies BY SIGNAL;
+  both blind reviews had passed that mechanism as sound
+  (plausible-but-wrong on installed uvicorn 0.51 — the live trial is
+  what caught it). Fixed to uvicorn's `should_exit` flag (afc1495);
+  re-run: `ActiveState=inactive Result=success ExecMainStatus=0` —
+  exits clean, stays down. Restart counter untouched thereafter.
+- **(b) Launcher cold start, no 403 — PASS.** With the service down
+  (post-(a) exit), `self-learn-ui-open` returned rc 0 in ~0.46 s;
+  the window opened directly on a tokened page (title
+  "self-learn — Front", never the 403 page). Window landed on DP-1
+  and was moved to DP-2 per the standing rule.
+- **(c) Walk-away (Iterate → result → close window, no `q`) — PASS,
+  with the delta-R1 choreography visible in the log.** Dev instance
+  (sandboxed home/runtime/cache, port 7358, foreground serve with the
+  var set explicitly — also proving the explicit-set-arms leg of the
+  Y-14 decision-6 rule; two earlier no-client runs of the same
+  instance exited `SERVER_EXIT=0`, proving the plain idle path
+  foreground too). A real SDK session on a seeded record reached
+  awaiting-input; page closed 01:36:24; ui.log then shows sample 1
+  tearing down the parked session ("sdk: Read task cancelled",
+  01:36:59) and DEFERRING, and sample 2 exiting ("idle monitor:
+  predicate held for 15s window — clean self-exit", 01:37:29);
+  wrapper captured `SERVER_EXIT=0`.
+- **(d) Launcher click during the shutdown drain — ATTEMPTED,
+  drain not hittable.** A 0.2 s poll on `is-active` watching for the
+  drain observed the service go from `active` to `inactive` between
+  samples — the no-connection drain is sub-200 ms, too fast to land a
+  click inside by any human-scale timing. The click 0.4 s later took
+  the ordinary cold-start path (= trial (b), PASS). Outcome logged
+  per the DoD's "even if it is the accepted degradation" clause; the
+  not-`active` snapshot condition that trial exists to exercise is
+  pinned hermetically in test_launcher.py instead.
+
+Post-trial state: drop-in override removed (window back to the 600 s
+default on next service start); fresh tokened window left on DP-2.

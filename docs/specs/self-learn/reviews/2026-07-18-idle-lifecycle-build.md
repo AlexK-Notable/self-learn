@@ -76,6 +76,42 @@ TWO stamped completions (EventSource's one-shot 403 + one reload onto
 the script-free 403 page), bounded and self-quenching — idle exit
 delayed by at most one window; no spec change needed.
 
+## Live-trial BLOCKER + second delta
+
+The DoD trial (a) caught a production BLOCKER both blind reviews had
+passed as sound: **SIGTERM-to-self exits 143** — uvicorn 0.29+
+`capture_signals` restores default handlers and re-raises the captured
+signal after graceful shutdown, so the process dies BY SIGNAL and
+`Restart=on-failure` RESTARTS it (three cycles in the journal; the
+exact opposite of stay-down). Fix (afc1495): `serve` constructs an
+explicit `uvicorn.Server`; the idle callback sets `server.should_exit`
+via a holder dict filled before `run()` — same graceful path, genuine
+return, real exit 0. `idle.default_exit` demoted to documented
+last-resort fallback. Dated corrections: 09 §3 mechanism sentence,
+Y-14 decision (2), 10 §3 U13 row, build-findings appendix (lesson
+recorded: signal/systemd semantics are live-trial-only facts).
+
+Second delta (same reviewer): **CLEAN** — verified against installed
+uvicorn 0.51 source that `handle_exit` does nothing but set the flag
+(identical graceful path minus the re-raise); holder late-binding
+airtight for every armable path; `default_exit` production-unreachable;
+the reworked serve test genuinely traps a regression to `uvicorn.run`
+(the holder stays unfilled → the final should_exit assertion fails).
+One NIT folded post-verdict: the empty-holder branch now logs instead
+of silently no-opping.
+
 ## Live trial (DoD)
 
-(recorded below — `fixtures/ui-trials.md` carries the full log)
+All four trials run 2026-07-18 (full log:
+`fixtures/ui-trials.md` "U13 DoD"): **(a)** FAILED-then-PASS — the
+143 BLOCKER above, then `Result=success ExecMainStatus=0`, stays
+down; **(b)** PASS — launcher cold start opens tokened, no 403;
+**(c)** PASS — walk-away path with the delta-R1 two-sample
+choreography visible in ui.log (teardown+defer at sample 1, clean
+exit at sample 2, `SERVER_EXIT=0`), foreground-explicit arming leg
+proven en route; **(d)** attempted — the no-connection drain is
+sub-200 ms and unhittable by timed click; degrades to (b)'s path,
+hermetic tests carry the not-`active` condition.
+
+**Gate CLOSED 2026-07-18: U13 shipped** (merge d5baa9f + live-trial
+fix afc1495 + NIT fold).

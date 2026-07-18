@@ -74,8 +74,20 @@ def _build_server_app(env: EnvConfig) -> tuple["FastAPI", str]:
 
     def request_idle_exit() -> None:
         server = exit_holder.get("server")
-        if server is not None:
-            server.should_exit = True
+        if server is None:
+            # Unreachable under _serve (holder filled before run()); an
+            # embedder who armed the monitor without running uvicorn
+            # would otherwise get "silently disarmed after the first
+            # idle window" — the monitor believes it signaled and stops
+            # sampling (delta NIT: make that visible).
+            from . import uilog
+
+            uilog.log(
+                "idle monitor: exit requested but no uvicorn server is "
+                "wired — nothing to stop (embedding without _serve?)"
+            )
+            return
+        server.should_exit = True
 
     app = create_app(
         env=env,
