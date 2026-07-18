@@ -34,6 +34,7 @@ from self_learn_ui.proposals import (
 from self_learn_ui.runner import FakeRunner, RunResult
 
 from support import (
+    enter_client,
     make_behavior,
     make_env,
     resolve_record_directly,
@@ -380,6 +381,7 @@ class TestProposalSlotLifecycle:
 
     async def _close_flow(self, manager: pane.PaneManager, slot: ProposalSlot, rec) -> None:
         await manager.start(rec.id)
+        await manager.wait_for_turn()  # Y-15: the first turn drains in the background
         slot.occupy(self._proposal(session_key=rec.id))
         await manager.close(rec.id)
         assert slot.current is None  # q close cleared it
@@ -408,6 +410,7 @@ class TestProposalSlotLifecycle:
                 proposal_slot=slot,
             )
             await manager.start(rec.id)
+            await manager.wait_for_turn()  # Y-15: join before the follow-up turn
             slot.occupy(self._proposal(session_key=rec.id))
             await manager.send(rec.id, "again")  # turn 2 -> error result -> ENDED
             assert slot.current is None
@@ -424,6 +427,9 @@ def make_client(sb, *, runner: FakeRunner | None = None) -> tuple[TestClient, Fa
     app = create_app(env=env, token=TOKEN, runner=runner, start_watcher=False)
     c = TestClient(app, base_url="http://127.0.0.1:7357")
     c.cookies.set("slu_token", TOKEN)
+    # Y-15: pane drains are background tasks on the app's event loop —
+    # run every request of a test on ONE persistent portal (support.py).
+    enter_client(c)
 
     slot = ProposalSlot()
 

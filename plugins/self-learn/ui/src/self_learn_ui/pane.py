@@ -15,20 +15,28 @@
   :class:`~self_learn_ui.runner.VerbRunner` seam, exit-code discriminated
   (0/1/2), never parsing stderr for logic — only displaying it verbatim.
 
-**Concurrency design note.** ``start``/``send`` AWAIT their engine turn to
-completion within the calling coroutine — the same convention
-``routes.py``'s ``action_confirm`` already uses for ``runner.run()`` —
-rather than spawning a background ``asyncio.Task``. This is safe for a
-REAL concurrent Esc-interrupt: every ASGI request already runs as its own
-task, so a concurrent ``POST .../pane/interrupt`` reaches
-``SdkPaneEngine.interrupt()`` while this module's ``_drain`` loop is
-mid-``async for``, and the interrupt escalation ladder (``engine/sdk.py``)
-unwinds the in-flight turn from there — no extra task bookkeeping needed
-here. The ``pane_*`` SSE pushes made DURING the drain already give a live
-browser tab the token-by-token feel; the POST response is simply the
-final state once the turn ends. Genuine concurrent-interrupt TIMING is a
-T-E live-trial concern (10 §2) — this module's own test suite exercises
-the interrupt/close/serialization call sequencing, not real-time overlap.
+**Concurrency design note (09 §4.2 "Start is non-blocking" — §11 Y-15,
+feedback round 2 item 1).** ``start()`` claims the live slot
+synchronously (no ``await`` between guard and assignment — the
+one-live-session invariant never depends on request-arrival luck) and
+returns immediately; engine construction, context building, and the
+first turn's drain all run in a background ``asyncio.Task``
+(:meth:`PaneManager._run_first_turn`). The ``pane_*`` SSE envelopes are
+the transport for first-turn content; the start POST's response is the
+starting-state markup those handlers target. Completion — clean or
+error — lands via the ``pane_result`` push (the client re-fetches the
+panel GET; the drain wrapper's exception leg publishes ``pane_result``
+too, so the swap fires on every completion path). Drain-task hygiene
+(Y-15/F3): every teardown path cancels-or-awaits the task BEFORE a
+successor can claim the slot, and a drain whose ``_Live`` is no longer
+manager-current publishes nothing and clears nothing (the identity
+guard). ``send()`` keeps the ORIGINAL awaited-in-request convention —
+its POST response renders the post-turn state (Y-15/F6: send's
+authoritative-swap semantics untouched) — but dispatches an engine turn
+ONLY at awaiting-input (Y-15/F2: one in-flight turn per session, ever).
+Esc during the pre-connect window latches ``interrupt_requested``; the
+drain honors the latch at its first post-connect boundary and a
+never-connected turn parks ENDED without starting (Y-15/F4).
 
 **One live session server-wide.** :class:`PaneManager` holds at most one
 in-flight session; ``start()`` on a DIFFERENT record while one is live
@@ -49,6 +57,7 @@ merge.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -432,7 +441,10 @@ class TranscriptBlock:
 @dataclass
 class _Live:
     record_id: str
-    engine: PaneEngine
+    #: None only during the STARTING window — the background first-turn
+    #: task constructs the engine AFTER the synchronous slot claim
+    #: (09 §4.2 Y-15/F5: nothing slow runs between guard and assignment).
+    engine: PaneEngine | None = None
     state: str = STATE_STARTING
     blocks: list[TranscriptBlock] = field(default_factory=list)
     current_kind: str | None = None
@@ -442,6 +454,17 @@ class _Live:
     result_turns: int | None = None
     error_message: str | None = None
     cap_hit: bool = False
+    #: The background first-turn drain (Y-15). None once disposed, and
+    #: always None for a session whose first turn ran to completion —
+    #: dispose happens through _dispose_drain on every teardown path.
+    drain_task: asyncio.Task | None = None
+    #: Y-15/F4 latch: Esc arrived while the turn was starting/streaming.
+    #: The drain honors it at its first post-connect boundary; a turn
+    #: that never connected parks ENDED without starting.
+    interrupt_requested: bool = False
+    #: The drain already replayed the latched interrupt to the engine —
+    #: one replay per turn (engine interrupt is idempotent, delta R4).
+    interrupt_replayed: bool = False
 
 
 @dataclass(frozen=True)
@@ -566,9 +589,17 @@ class PaneManager:
         """Fresh session per Iterate (09 §4.2). Returns ``"armed"`` when a
         DIFFERENT record is live and ``force`` is false (09 §2.4's armed
         prompt); ``"resumed"`` when the SAME record already has a live,
-        not-yet-ended session (a double Iterate is a no-op, not a second
-        engine); ``"started"`` otherwise — including the retry path (an
-        ENDED session for the same record is cleared and restarted)."""
+        not-yet-ended session (a double Iterate — including one landing
+        DURING the background first turn — is a no-op, not a second
+        engine; 09 §4.2 Y-15's turn-serialization pin); ``"started"``
+        otherwise — including the retry path (an ENDED session for the
+        same record is cleared and restarted).
+
+        Y-15: returns as soon as the session exists. The slot claim is
+        synchronous — no ``await`` between the guard and the assignment
+        (F5) — and the first turn drains in a background task; callers
+        render the STARTING snapshot and the SSE stream fills it. Tests
+        join deterministically via :meth:`wait_for_turn`."""
         if self._live is not None:
             if self._live.record_id != record_id:
                 if not force:
@@ -577,20 +608,36 @@ class PaneManager:
             elif self._live.state != STATE_ENDED:
                 return "resumed"
             else:
-                self._live = None
+                old, self._live = self._live, None
+                # r-retry same-key window (Y-15/F3): the predecessor's
+                # drain is disposed BEFORE the successor claims — a late
+                # clear from it can never wipe the new session's slot.
+                await self._dispose_drain(old)
+            if self._live is not None:
+                # The teardown/dispose awaited; a concurrent start
+                # claimed the slot meanwhile — re-run the guard's answer
+                # rather than clobbering the claimant (F5).
+                if self._live.record_id == record_id and self._live.state != STATE_ENDED:
+                    return "resumed"
+                return "armed"
 
-        ctx = self._context_builder(record_id)
-        engine = self._engine_factory()
-        live = _Live(record_id=record_id, engine=engine, state=STATE_STARTING)
-        self._live = live
-        try:
-            await self._drain(live, engine.start(ctx))
-        except Exception as exc:  # noqa: BLE001 - a pane-visible error, not a 500
-            live.error_message = str(exc)
-            live.state = STATE_ENDED
-        if live.state == STATE_ENDED:
-            self._proposal_slot.clear_for_session(live.record_id)
+        live = _Live(record_id=record_id)
+        self._live = live  # synchronous with the guard above (F5)
+        live.drain_task = asyncio.create_task(self._run_first_turn(live))
         return "started"
+
+    async def wait_for_turn(self) -> None:
+        """Deterministic join on the in-flight background first turn —
+        the test seam Y-15's FakeEngine suites use (and nothing else:
+        production callers never await this; the start POST returns
+        pre-drain by design)."""
+        live = self._live
+        task = live.drain_task if live is not None else None
+        if task is not None:
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
     async def send(self, record_id: str, text: str) -> str:
         """A follow-up turn on the already-open session (09 §4.2: "the
@@ -598,8 +645,12 @@ class PaneManager:
         session is open for this record, OR the record's session already
         ENDED (error/cap-hit — 09 §5's "r to continue in a FRESH
         session": an ended session is not continuable by ``send``, only
-        by ``start``'s retry path) — routes.py renders accordingly,
-        never a 500 from calling ``send`` on a torn-down engine."""
+        by ``start``'s retry path); ``"busy"`` while a turn is already
+        in flight (Y-15/F2's NEW obligation: an engine turn dispatches
+        ONLY at awaiting-input — mid-turn the route simply re-renders
+        the current split, never a concurrent second drain). Routes
+        render the snapshot for every outcome — never a 500 from
+        calling ``send`` on a torn-down engine."""
         if (
             self._live is None
             or self._live.record_id != record_id
@@ -607,13 +658,15 @@ class PaneManager:
         ):
             return "not-live"
         live = self._live
+        if live.state != STATE_AWAITING_INPUT or live.engine is None:
+            return "busy"
         live.state = STATE_STREAMING
         try:
             await self._drain(live, live.engine.send(text))
         except Exception as exc:  # noqa: BLE001
             live.error_message = str(exc)
             live.state = STATE_ENDED
-        if live.state == STATE_ENDED:
+        if live.state == STATE_ENDED and self._live is live:
             self._proposal_slot.clear_for_session(live.record_id)
         return "sent"
 
@@ -622,11 +675,22 @@ class PaneManager:
         session is live for this record; otherwise proxies straight to
         the engine's own interrupt ladder (``engine/sdk.py``) — never
         discards the transcript (09 §4.2: "interrupting never discards
-        file changes already written")."""
+        file changes already written").
+
+        Y-15/F4: an in-flight turn additionally latches
+        ``interrupt_requested`` — the pre-connect window's engine call
+        (or absence of an engine entirely) may be a silent no-op, so the
+        background drain re-delivers the interrupt at its first
+        post-connect boundary, and a turn that never connects parks
+        ENDED without starting (:meth:`_run_first_turn`)."""
         if self._live is None or self._live.record_id != record_id:
             return False
-        self._live.state = STATE_INTERRUPTING
-        await self._live.engine.interrupt()
+        live = self._live
+        if live.state in INTERRUPTIBLE_STATES:
+            live.interrupt_requested = True
+            live.state = STATE_INTERRUPTING
+        if live.engine is not None:
+            await live.engine.interrupt()
         return True
 
     async def close(self, record_id: str) -> bool:
@@ -636,8 +700,10 @@ class PaneManager:
         ledger/scan state, not transcript state."""
         if self._live is None or self._live.record_id != record_id:
             return False
-        await self._live.engine.close()
-        self._live = None
+        live, self._live = self._live, None
+        await self._dispose_drain(live)
+        if live.engine is not None:
+            await live.engine.close()
         # Y-13 clear-set: the proposing session ended (`q`).
         self._proposal_slot.clear_for_session(record_id)
         return True
@@ -682,17 +748,86 @@ class PaneManager:
         if self._live is None:
             return
         live, self._live = self._live, None
-        await live.engine.interrupt()
-        await live.engine.close()
+        # Y-15/F3: the drain task dies BEFORE the engine teardown and
+        # before any successor can claim the slot.
+        await self._dispose_drain(live)
+        if live.engine is not None:
+            await live.engine.interrupt()
+            await live.engine.close()
         # Y-13 clear-set: teardown ends the proposing session (interrupt
         # via verb dispatch, or a forced start on another item).
         self._proposal_slot.clear_for_session(live.record_id)
 
+    async def _dispose_drain(self, live: _Live) -> None:
+        """Cancel-or-await *live*'s background drain task (Y-15/F3's
+        first half). Runs on every teardown path; by the time it
+        returns, the task cannot run again — the identity guard in
+        :meth:`_drain`/:meth:`_run_first_turn` is the belt for a callee
+        that swallows the cancellation, not the primary mechanism."""
+        task, live.drain_task = live.drain_task, None
+        if task is None or task is asyncio.current_task():
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
     # ------------------------------------------------------------- draining
 
+    async def _run_first_turn(self, live: _Live) -> None:
+        """The background first turn (09 §4.2 Y-15): engine construction,
+        context build, and the drain — everything slower than the slot
+        claim. The exception leg publishes ``pane_result`` so the
+        client's completion swap fires on EVERY completion path (F1 —
+        at-least-once; the swap is idempotent, delta R2)."""
+        try:
+            if live.interrupt_requested:
+                # Esc landed before the turn ever connected (F4's
+                # pre-connect window): park ENDED without starting —
+                # nothing streamed, so nothing is discarded.
+                live.error_message = "interrupted before the conversation started — r starts a fresh one"
+                live.state = STATE_ENDED
+                if self._live is live:
+                    await self._app_hub.publish(
+                        {"type": "pane_result", "status": "interrupted", "cost": None, "turns": None}
+                    )
+            else:
+                # Context before engine — the factory/builder pair is a
+                # closure convention shared with the test harnesses
+                # (build_pane_manager's production closures are
+                # order-independent).
+                ctx = self._context_builder(live.record_id)
+                live.engine = self._engine_factory()
+                await self._drain(live, live.engine.start(ctx))
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - a pane-visible error, not a crash
+            live.error_message = str(exc)
+            live.state = STATE_ENDED
+            if self._live is live:
+                await self._app_hub.publish(
+                    {"type": "pane_result", "status": "error", "cost": None, "turns": None}
+                )
+        if live.state == STATE_ENDED and self._live is live:
+            # Y-13 clear-set, anchored at drain completion (Y-15: the
+            # moment that used to coincide with the POST return).
+            self._proposal_slot.clear_for_session(live.record_id)
+
     async def _drain(self, live: _Live, events: AsyncIterator[PaneEvent]) -> None:
-        live.state = STATE_STREAMING
+        if live.state != STATE_INTERRUPTING:
+            live.state = STATE_STREAMING
         async for event in events:
+            if self._live is not live:
+                # Identity guard (Y-15/F3): an orphaned drain publishes
+                # nothing and clears nothing.
+                return
+            if live.interrupt_requested and not live.interrupt_replayed:
+                # F4: first post-connect boundary — re-deliver the Esc
+                # that may have no-op'd pre-connect (idempotent, R4).
+                live.interrupt_replayed = True
+                assert live.engine is not None
+                await live.engine.interrupt()
             await self._handle_event(live, event)
         if live.state != STATE_ENDED:
             live.state = STATE_AWAITING_INPUT
@@ -735,6 +870,11 @@ class PaneManager:
             live.cap_hit = bool(event.error) and _is_cap_hit(event.status)
             live.error_message = event.error
             live.state = STATE_ENDED if event.error else STATE_AWAITING_INPUT
+            if self._live is not live:
+                # Identity guard (Y-15/F3): _finalize_current awaited
+                # above, so a teardown may have interleaved — an
+                # orphaned drain clears nothing and publishes nothing.
+                return
             if live.state == STATE_ENDED:
                 # Y-13 clear-set: error/cap results END the proposing
                 # session (a clean result leaves it awaiting-input — the
@@ -748,7 +888,11 @@ class PaneManager:
                     "turns": event.turns,
                 }
             )
-            if event.error is None and parse_bucket_session_key(live.record_id) is None:
+            if (
+                event.error is None
+                and self._live is live
+                and parse_bucket_session_key(live.record_id) is None
+            ):
                 # Bucket sessions write nothing (09 §4.5) — no validate
                 # obligation; record sessions keep the 08 §7.1 pin.
                 await self._post_session_validate(live.record_id)

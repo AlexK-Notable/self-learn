@@ -313,11 +313,17 @@
         case "pane_proposal":
           handlePaneProposal(envelope);
           break;
+        case "pane_result":
+          // Y-15 (09 §4.2 / 10 §1 SSE row): the turn's completion. The
+          // authoritative completion swap is a re-fetch of the pane
+          // panel GET — under the non-blocking start, the result
+          // footer / error strip / r retry / validate badge no longer
+          // ride any POST response.
+          schedulePaneCompletion();
+          break;
         default:
-          // applying / bulk_progress / pane_result — pane_result's
-          // authoritative footer arrives via the pane POST response's
-          // own swap (pane.py's design note); ignored here (10 §1:
-          // unknown types are ignored client-side).
+          // applying / bulk_progress — ignored here (10 §1: unknown
+          // types are ignored client-side).
           break;
       }
     };
@@ -325,20 +331,32 @@
   }
 
   /**
-   * Pane transcript SSE appenders (09 §2.4/§4.1; wired at U6). Best-effort
-   * only: a browser tab NOT currently viewing this record's split has no
-   * #pane-transcript element, and these silently no-op — the authoritative
-   * content always arrives via the next full pane-region swap regardless
-   * (pane.py's foreground-drain design: the POST response IS the final
-   * state). `pane_block`'s html is server-rendered with html=False
-   * (rendering.py) — the SAME primitive the page-level swap uses, so
-   * inserting it here carries no additional trust.
+   * Pane transcript SSE appenders (09 §2.4/§4.1; wired at U6, Y-15 makes
+   * them the first turn's ONLY content transport — the start POST returns
+   * starting-state markup, never transcript text). Best-effort per frame:
+   * a browser tab NOT currently viewing this record's split has no
+   * #pane-transcript element, and these silently no-op — the
+   * authoritative content always arrives via the next full pane-region
+   * swap regardless (the pane_result completion swap below, or any pane
+   * POST's own response). `pane_block`'s html is server-rendered with
+   * html=False (rendering.py) — the SAME primitive the page-level swap
+   * uses, so inserting it here carries no additional trust.
    */
   function paneTranscript() {
     return document.getElementById("pane-transcript");
   }
 
+  /** Y-15/F7: the "Starting the conversation…" line clears at the FIRST
+   * streamed frame; the pane_result completion swap is the authoritative
+   * cleanup bounding any residue (a mid-drain reload re-renders it
+   * server-side, and the swap replaces the whole region). */
+  function clearStartingLine() {
+    const line = document.getElementById("pane-starting-line");
+    if (line) line.remove();
+  }
+
   function appendPaneDelta(text) {
+    clearStartingLine();
     const el = paneTranscript();
     if (!el || typeof text !== "string") return;
     let live = el.querySelector(".pane-block-live-delta");
@@ -351,6 +369,7 @@
   }
 
   function appendPaneBlock(html) {
+    clearStartingLine();
     const el = paneTranscript();
     if (!el || typeof html !== "string") return;
     const live = el.querySelector(".pane-block-live-delta");
@@ -362,12 +381,52 @@
   }
 
   function appendPaneTool(name, target) {
+    clearStartingLine();
     const el = paneTranscript();
     if (!el || typeof name !== "string") return;
     const p = document.createElement("p");
     p.className = "pane-tool";
     p.textContent = target ? "tool: " + name + " → " + target : "tool: " + name;
     el.appendChild(p);
+  }
+
+  /**
+   * Y-15 completion swap (09 §4.2 / 10 §1 SSE row): on pane_result,
+   * re-fetch the pane region's OWN panel GET (data-pane-panel-url —
+   * delta R3, never scraped from hx-post values) and swap it in. The
+   * server-rendered panel is the authoritative completion for clean and
+   * error legs alike; the swap is idempotent and side-effect-free, so
+   * at-least-once delivery is fine (delta R2). Deferred — never fired —
+   * while the region shows the armed interrupt prompt or a focused
+   * non-empty send input (delta R1: same hazard class as the
+   * pane_proposal [data-armed] belt — never clobber a human
+   * mid-decision or a half-typed draft).
+   */
+  var paneCompletionTimer = null;
+  var PANE_COMPLETION_RETRY_MS = 1500;
+
+  function paneSwapBlocked(region) {
+    if (findArmedBar()) return true;
+    if (region.classList.contains("pane-armed")) return true; // armed interrupt prompt
+    var input = region.querySelector('#pane-input-form input[name="text"]');
+    return !!(input && document.activeElement === input && input.value.trim() !== "");
+  }
+
+  function schedulePaneCompletion() {
+    var region = document.querySelector(".pane-region[data-pane-panel-url]");
+    if (!region) return; // no pane region on this page — nothing to complete
+    if (paneSwapBlocked(region)) {
+      if (!paneCompletionTimer) {
+        paneCompletionTimer = window.setTimeout(function () {
+          paneCompletionTimer = null;
+          schedulePaneCompletion();
+        }, PANE_COMPLETION_RETRY_MS);
+      }
+      return;
+    }
+    var url = region.getAttribute("data-pane-panel-url");
+    if (!url || typeof window.htmx === "undefined") return;
+    window.htmx.ajax("GET", url, { target: "#pane-region-wrapper", swap: "outerHTML" });
   }
 
   /**
