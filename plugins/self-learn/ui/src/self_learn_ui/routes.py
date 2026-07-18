@@ -19,6 +19,7 @@ needed for T-A (09 §7 / 10 §2 T-A).
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -723,6 +724,120 @@ def _bucket_dir_for(home: Path, record_id: str) -> Path:
 def _bucket_name_for(home: Path, record_id: str) -> str | None:
     loc = ledger.locate_record(home, record_id)
     return loc.bucket_name if loc else None
+
+
+# -------------------------------------------------------------- armed host-add
+#
+# 09 §11 Y-11 (amended 2026-07-17): the surface's FIRST bucket-scoped
+# mutation — registration of an unregistered project through the same
+# arm/confirm SPINE (an .action-bar[data-armed] rendering, so app.js's
+# Enter-confirms / any-key-disarms works unchanged) but its own route
+# triple, because the record-scoped arm machine has nothing to hang a
+# path-parameter verb on. Build pins honored here:
+#   - the path is SERVER-derived from the bucket's meta.yaml
+#     (ledger.project_path_for) — a client field never supplies it;
+#   - the only client-influenced value is which page confirm returns
+#     to, constrained to a record-id shape (else the bucket page);
+#   - the ARM state renders the consent consequence (the CLI prints it
+#     on stdout, which the runner contract discards);
+#   - project buckets only — skill/user notices keep prose fallback.
+
+_RECORD_ID_RE = re.compile(r"^lrn-[0-9a-f]{8}$")
+
+
+def build_host_add_argv(path: str) -> list[str]:
+    """``self-learn host add <path>`` — the one argv this surface maps
+    to (mirrors the CLI parser verbatim, same rule as build_argv)."""
+    return ["host", "add", path]
+
+
+def _host_add_ctx(
+    *,
+    scope: str,
+    name: str,
+    record_id: str | None,
+    armed: bool,
+    path: str | None = None,
+    error: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "armed": armed,
+        "scope": scope,
+        "name": name,
+        "record_id": record_id,
+        "path": path,
+        "can_arm": True,  # routes only render this ctx for project buckets
+        "host_registered": False,
+        "error": error,
+    }
+
+
+def _host_add_target(request: Request, scope: str, name: str) -> tuple["ledger.Bucket", str] | Response:
+    """Resolve bucket + server-derived project path, or an error Response."""
+    bucket = _find_bucket(_home(request), scope, name)
+    if bucket is None:
+        return HTMLResponse("bucket not found", status_code=404)
+    path = ledger.project_path_for(bucket.path)
+    if not path:
+        # Y-11 scope limitation: nothing derivable outside project buckets.
+        return HTMLResponse("no registration candidate for this bucket", status_code=400)
+    return bucket, path
+
+
+@router.post("/bucket/{scope}/{name}/host-add/arm", response_class=HTMLResponse)
+def host_add_arm(
+    request: Request, scope: str, name: str, record_id: str | None = Form(None)
+) -> Response:
+    resolved = _host_add_target(request, scope, name)
+    if isinstance(resolved, Response):
+        return resolved
+    _bucket, path = resolved
+    rid = record_id if record_id and _RECORD_ID_RE.match(record_id) else None
+    ctx = _host_add_ctx(scope=scope, name=name, record_id=rid, armed=True, path=path)
+    return _render(request, "partials/host_add_bar.html", ctx)
+
+
+@router.post("/bucket/{scope}/{name}/host-add/disarm", response_class=HTMLResponse)
+def host_add_disarm(
+    request: Request, scope: str, name: str, record_id: str | None = Form(None)
+) -> Response:
+    resolved = _host_add_target(request, scope, name)
+    if isinstance(resolved, Response):
+        return resolved
+    rid = record_id if record_id and _RECORD_ID_RE.match(record_id) else None
+    ctx = _host_add_ctx(scope=scope, name=name, record_id=rid, armed=False)
+    return _render(request, "partials/host_add_bar.html", ctx)
+
+
+@router.post("/bucket/{scope}/{name}/host-add/confirm", response_class=HTMLResponse)
+async def host_add_confirm(
+    request: Request, scope: str, name: str, record_id: str | None = Form(None)
+) -> Response:
+    resolved = _host_add_target(request, scope, name)
+    if isinstance(resolved, Response):
+        return resolved
+    _bucket, path = resolved
+    rid = record_id if record_id and _RECORD_ID_RE.match(record_id) else None
+
+    runner = request.app.state.runner
+    result = await runner.run(build_host_add_argv(path))
+    if not result.ok:
+        ctx = _host_add_ctx(
+            scope=scope,
+            name=name,
+            record_id=rid,
+            armed=False,
+            error=result.stderr or "self-learn host add failed",
+        )
+        return _render(request, "partials/host_add_bar.html", ctx)
+
+    _force_refresh(request, f"bucket:{name}")
+    # Post-success (Y-11 pin): return to the arming page — the notice
+    # disappears because host_registered re-reads true on render.
+    url = f"/record/{rid}" if rid else f"/bucket/{scope}/{name}"
+    resp = Response(status_code=200)
+    resp.headers["HX-Redirect"] = url
+    return resp
 
 
 # -------------------------------------------------------------------- SSE

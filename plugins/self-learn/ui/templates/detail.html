@@ -26,15 +26,9 @@
   {% endfor %}
 
   {% if not model.host_registered %}
-  <p class="banner banner-warning">
-    Unregistered project.
-    {% if model.host_add_command %}
-    Run <code>{{ model.host_add_command }}</code> to register it.
-    {% else %}
-    No skills root candidate is known yet.
-    {% endif %}
-    Resolution stays available below.
-  </p>
+    {% with armed=False, scope=model.scope, name=model.bucket, record_id=model.id, can_arm=(model.host_add_command is not none), path=None, error=None %}
+      {% include "partials/host_add_bar.html" %}
+    {% endwith %}
   {% endif %}
 
   {% if model.cards %}

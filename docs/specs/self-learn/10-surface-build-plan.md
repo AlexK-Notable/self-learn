@@ -128,8 +128,16 @@ predicate).
   contradicts-edge partial arming `link contradicts <id> <target>`
   per accepted edge (Y-8) · a hook-destination Detail rendering the
   full stored script + replay examples with the M3 caption (Y-7) ·
-  an unregistered-host record rendering the notice + copyable
-  `host add` command while arming stays live (Y-11) · the miner
+  an unregistered-host PROJECT record rendering the notice with the
+  armed host-add flow — arm renders the consent consequence + the
+  server-derived path (a bogus client `path` field must be IGNORED,
+  argv asserted as `host add <meta.yaml path>`), confirm runs the verb,
+  disarm restores the notice, and record arming stays live throughout;
+  skill/user-scope notices keep the prose fallback; plus the
+  template-source assertion that the only `self-learn …` command
+  literals in templates are the Y-11 exempt list *(this line amended
+  2026-07-17 with the Y-11 amendment — it previously pinned the now-
+  superseded copyable-command rendering)* (Y-11) · the miner
   block rendering journal rows with force-run as its ONLY action
   (Y-5) · `/report` rendering counted fields verbatim (Y-12) · a
   row's leading text is never a raw `lrn-…` id (Y-9, asserted on a
@@ -221,8 +229,13 @@ in brackets.
   note input, help overlay, banners ("resolved elsewhere",
   bucket-clear), Pygments/markdown rendering, **security middleware**,
   SSE endpoint + `app.js` EventSource client + keydown handler.
-  *Tests:* httpx route/partial suite + middleware suite. *DoD:* T-A's
-  interaction + security halves green.
+  *(Extended 2026-07-17 with the Y-11 amendment:)* the armed host-add
+  surface — the bucket-scoped `host-add/{arm,disarm,confirm}` route
+  triple + id-less armed partial on the `.action-bar[data-armed]`
+  contract, server-derived path, consent-consequence rendering,
+  post-success bucket-scope refresh + redirect (09 §11 Y-11 build
+  pins). *Tests:* httpx route/partial suite + middleware suite.
+  *DoD:* T-A's interaction + security halves green.
 - **U4 · Verb runner** [U3]: serialized async subprocess queue,
   reject-during-run, error strip (stderr verbatim), bulk graduate
   loop (`--no-push` + terminal push success-or-abort,
