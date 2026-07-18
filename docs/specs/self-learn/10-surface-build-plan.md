@@ -461,8 +461,10 @@ in brackets.
   marker present · verb-confirm POST in flight, submit→swap-settle
   flag (F4) · any `[data-armed="true"]` bar (F5) —
   deferred-not-dropped, released on dismiss or when the armed bar
-  resolves; the plain-words failure sentence ("the project was not
-  registered" — F2) with stderr as
+  resolves; the plain-words failure sentence ("registration did not
+  complete" — F2, re-corrected at the delta review's F11: "was not
+  registered" is false in the HalfWritten leg, where hosts.yaml
+  already carries the entry) with stderr as
   a demoted detail line (the §5 narrow exception, this leg only);
   dismiss reuses the disarm route — no fourth route; and the Y-17
   build — cli: `host add --init` per the semantics matrix

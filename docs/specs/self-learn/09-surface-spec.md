@@ -1601,7 +1601,9 @@ removed the last competing workstream — the build gate is open.*
   armed-bar release rule (F5), the corrected required copy (F2),
   the deliberate staleness pin (F9). The review independently
   CONFIRMED the code-read wipe diagnosis below — that part
-  stands.)*. Two defects, two pins:
+  stands. Delta residuals folded same day: the twice-corrected
+  copy (F11), the widened staleness pin (F12).)*. Two defects,
+  two pins:
   **(1) Persistence.** The failed host-add confirm's error rendering
   PERSISTS until the user dismisses it (an explicit dismiss
   affordance on the error rendering — reusing the existing disarm
@@ -1640,10 +1642,20 @@ removed the last competing workstream — the build gate is open.*
   never-clobber-a-human-mid-decision hazard of the Y-15 delta-R1
   precedent this extends (F5). **Deferred, not dropped**: the
   reload fires when no leg holds — on dismiss, or after an armed
-  bar resolves. Deliberate staleness pin (F9): while the error is
-  displayed, every client reload is deferred and the page may go
-  stale against the files — accepted, bounded only by the user's
-  dismissal; files stay truth and the released reload re-syncs.
+  bar resolves. Deliberate staleness pin (F9; widened at the delta
+  review, F12 — the pin's scope is the PREDICATE, not just the
+  error): legs (b) and (c) defer with no error displayed at all,
+  and leg (c) is a page-global behavior change stated here
+  explicitly — ANY `[data-armed="true"]` bar, for any verb on the
+  page, now defers ALL broadcast reloads (pre-fold, only the pane
+  completion swap deferred around armed). While any leg holds, the
+  page may go stale against the files — accepted, including the
+  abandoned-tab bound: a tab left with an armed bar defers
+  indefinitely (nothing times an armed bar out). Acceptable
+  because files stay truth, every hold has a user-reachable
+  release, and no inter-leg deadlock exists — (b) clears at swap
+  settle on its own, dismiss removes (a), disarm-or-resolve
+  removes (c); the released reload re-syncs.
   The server-side push itself is
   UNCHANGED — §5's "state re-read from files; nothing optimistic"
   stands; the exemption is the client's render of the error, never
@@ -1662,15 +1674,18 @@ removed the last competing workstream — the build gate is open.*
   before the defense is accepted.
   **(2) Plain words (Y-9) — the NARROW dated §5 exception.** The
   failed-registration leg leads with a human sentence; required
-  content: registering this project failed, **the project was not
-  registered**, you can try again (exact copy the builder's — the
-  content is binding, the wording is not; the first draft's
-  "nothing was changed" was corrected at the review, F2 — it is
-  FALSE in two legs this spec itself pins: the Y-17 half-init
-  residue (init succeeded, add failed — a repo now exists) and the
-  existing HalfWrittenError leg (hosts.yaml rewritten,
-  uncommitted); the demoted stderr detail carries the state
-  facts). The
+  content: **registration did not complete** (exact copy the
+  builder's — the content is binding, the wording is not; twice
+  corrected at review: the first draft's "nothing was changed" is
+  FALSE in the Y-17 half-init residue and the HalfWrittenError leg
+  (F2), and the first fold's "the project was not registered" plus
+  its "you can try again" are BOTH false in the HalfWritten leg —
+  hosts.yaml on disk already contains the entry, `host_registered`
+  reads true on the next render, and the idempotent re-add
+  early-returns without repairing the missing commit (F11).
+  "Did not complete" is true in every failure leg; the demoted
+  stderr detail carries the state facts and the repair —
+  HalfWritten's own message already names both). The
   CLI stderr renders BELOW it as a secondary detail line — still
   verbatim, still visible without interaction, visually demoted.
   Why the exception is justified: registration is the surface's
@@ -1695,7 +1710,9 @@ removed the last competing workstream — the build gate is open.*
   amendment's own blind spec review returned NOT SOUND — findings
   folded in place: the F1 consent invariant (BLOCKER), the F6
   refusal ordering, the F7 zero-commit residue, the F8 file-path
-  refusal)*. The committability invariant stands —
+  refusal. Delta residuals folded same day: the honest
+  client-supplied-bit sentence (F10), the one-directional
+  divergence pin (F13))*. The committability invariant stands —
   canon writes are commits; audit, rollback, and recompile all diff
   against git (13 §4) — and the flow absorbs the gap instead of
   refusing at the human. Decisions of record:
@@ -1774,7 +1791,12 @@ removed the last competing workstream — the build gate is open.*
   the disclosure — never a silent init, because a confirm-only
   re-derivation would execute an argv the human never read
   (what-you-read-is-what-runs, the same doctrine the proposal
-  confirm pins). Statelessly operationalized: the
+  confirm pins). The becomes-repo direction does run LESS than
+  the human read (`--init` displayed, plain add executed) — that
+  divergence is deliberate and ONE-directional (delta review
+  F13): the executed argv may be WEAKER than the displayed one,
+  never stronger; weaker-than-read is the only direction read-run
+  divergence is ever permitted. Statelessly operationalized: the
   arm-with-disclosure rendering posts through its own confirm
   variant — a separate confirm route or a server-rendered marker
   field, builder's choice; the path itself stays server-derived
@@ -1782,8 +1804,16 @@ removed the last competing workstream — the build gate is open.*
   leg (b), a stale or forged marker can never CAUSE an init on a
   repo-root path — the worst mismatch outcome is a clean refusal.
   The argv is
-  otherwise unchanged and the client still supplies nothing but
-  the return-page record id. When the path is not a repo root
+  otherwise unchanged. Client-supplied surface, stated honestly
+  (delta review F10 — the previous "nothing but the return-page
+  record id" was false under the marker-field choice): the client
+  supplies the return-page record id PLUS, on disclosure arms
+  only, the one disclosure bit — as the marker field or as the
+  disclosure confirm route, whichever operationalization the
+  builder picked (the route choice carries the same one bit).
+  Bounded: that bit can only ever WEAKEN execution toward plain
+  `host add` / a clean refusal, never strengthen it — leg (b)'s
+  re-derivation gates every init. When the path is not a repo root
   because a PARENT repo swallows it, `needs_init` is TRUE — the UI
   discloses and inits the exact path rather than silently
   registering a host whose canon commits would land in the parent.
