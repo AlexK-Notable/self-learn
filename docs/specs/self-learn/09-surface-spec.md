@@ -204,7 +204,12 @@ ignoring costs nothing. This section pins the mechanics.
   propose resolutions on any record in the bucket via the §4.5
   proposal tool; it holds **zero write allowance** (§4.3 as amended —
   record editing belongs to the record pane). `Esc`/`q`/`r` behave as
-  on the Detail split.
+  on the Detail split. *(Amended 2026-07-18 — feedback round 2
+  item 1; §11 Y-15: `p` swaps the split in immediately in the same
+  starting state as Detail's `i` — the two variants share the pane
+  session manager and share §4.2's non-blocking start contract; this
+  bullet's "Open bucket chat" button is the exact control the user
+  hit the silent 30–90 s wall on.)*
 - **Bulk collapse** (carried verbatim, P1-1): a homogeneous
   already-canon group renders as a single collapsible decision row
   ("N already-canon records — acknowledge all as canon"), arming a loop
@@ -295,7 +300,16 @@ per the same-day rework: the pane agent may itself propose a
 resolution via §4.5's tool; the proposal renders as a WAITING bar in
 the standing action-bar region, and the human's `y` arms it through
 the same armed contract the keys use — one consent surface, one
-two-keystroke path, whoever suggested the verb.)*
+two-keystroke path, whoever suggested the verb.)* *(Amended
+2026-07-18 — feedback round 2 item 1; §11 Y-15: the split swaps in
+**immediately** on the Iterate POST, rendered in a **starting**
+state — a plain-words status line ("Starting the conversation…",
+the Y-9 register) where the transcript will appear; the first agent
+turn never rides the POST response. The live region then fills over
+the existing SSE stream (§3) exactly as any visible pane does.
+Normative contract at §4.2's start bullet. The user-measured failure
+this repairs, their words: "there was no indication that anything
+was happening after i clicked the button.")*
 
 ## 3. Process & data architecture
 
@@ -570,6 +584,44 @@ pattern; no client-side markdown dependency).
   covers BOTH variants: bucket pane and record pane never coexist;
   opening either while the other runs takes the existing armed
   interrupt prompt.)*
+- **Start is non-blocking** *(added 2026-07-18 — feedback round 2
+  item 1; §11 Y-15. The awaited-first-turn shape this replaces was a
+  build convention — pane.py's own concurrency note, citing the verb
+  runner's POST-awaits-completion pattern — never a spec pin; the
+  live trial proved it wrong for a 30–90 s first turn: the SSE
+  deltas published the whole time, but the client had no pane region
+  to receive them until the POST returned)*. The start POST returns
+  as soon as the session exists: the split renders in a **starting**
+  state carrying a Y-9 plain-words line ("Starting the
+  conversation…" — written for the decision-maker, never a spinner
+  alone), and the first turn drains in a **background task** on the
+  server's event loop. The SSE pane envelopes
+  (`pane_delta`/`pane_block`/`pane_tool`/`pane_result` — §3, 10 §1)
+  are the ONE transport that fills the live region, for the first
+  turn exactly as for every later one; the POST response carries the
+  markup those handlers target, never transcript content. **Failure
+  surfacing unchanged in substance**: an exception in the background
+  drain lands the session in the SAME ENDED/error state the blocking
+  path produced (§5's engine-failure row: error strip + `r` retry;
+  cap statuses keep their wording), pushed over SSE — and the §4.5
+  clear-set's proposing-session-error leg fires at drain completion,
+  exactly where the blocking path fired it, never from the POST
+  return. **Turn stacking pinned** (the existing state machine's
+  answer, stated): a second start POST during the background first
+  turn → same session key = "resumed" no-op re-rendering the current
+  split (never a second engine); different key = the standing armed
+  interrupt prompt; a `send` arriving while the session is mid-turn
+  (starting/streaming/interrupting) re-renders the current split
+  without dispatching a second engine turn — ONE in-flight turn per
+  session, ever; `send` at awaiting-input is untouched by this
+  amendment. **Not changed**: one live session server-wide (below);
+  interrupt-first at verb dispatch (§3 P1-4); the Esc ladder (below)
+  works from the starting state; the Y-14 idle predicate already
+  counts starting/streaming as INTERRUPTIBLE work-in-flight, so a
+  background first turn blocks idle exit by the existing leg (§3);
+  the ephemeral transcript; the post-session `proposal validate`
+  obligation, which fires when the background drain's clean result
+  lands.
 - **Prompt structure** (carried, P1-12): system prompt = the
   **compiled doctrine** — `routing-doctrine.md` (single source, 08 §1;
   one file, three loaders) + the **pane charter** appendix (§4.3
@@ -1378,6 +1430,38 @@ removed the last competing workstream — the build gate is open.*
   explicitly. Substrate: no CLI changes, no storage changes; one
   env var, one unit-comment re-word, launcher edit, ~60 lines of
   server code (10 §3 U13).
+
+- **Y-15 · Non-blocking pane start** *(added 2026-07-18 — feedback
+  round 2 item 1, `feedback/2026-07-18-ui-feedback-02.md`; own spec
+  gate before build per the standing discipline)*. The user's words,
+  live-hit on the bucket pane: *"'open bucket chat' doesn't seem to
+  do anything … there was no indication that anything was happening
+  after i clicked the button. it should pop open the interaction
+  window and let it have some kind of loading message or stream the
+  response or something."* Root cause, verified in code: the pane
+  manager's start awaited the ENTIRE first agent turn (30–90 s real
+  model) and the split only rendered from the POST response — the
+  `pane_*` SSE frames published the whole time into a client with no
+  region to receive them. Decisions of record: **(1)** the start
+  POST returns immediately with the split in a **starting** state (a
+  Y-9 plain-words line, never a bare spinner); **(2)** the first
+  turn drains as a server-side background task; the existing SSE
+  stream is the ONE transport that fills the live region — no new
+  envelope types, no protocol change; **(3)** a background-drain
+  exception lands the SAME ENDED/error state the blocking path
+  produced (§5 row unchanged), pushed over SSE, with the §4.5
+  clear-set's error leg firing at drain completion; **(4)** turn
+  stacking takes the existing state machine's answer, now stated as
+  a pin (§4.2): same-key start = "resumed" no-op, different-key
+  start = armed prompt, mid-turn `send` = no second engine turn;
+  **(5)** explicitly NOT reopened: one live session server-wide,
+  interrupt-first, Y-14's INTERRUPTIBLE idle leg (a starting/
+  streaming background drain blocks idle exit), awaiting-input
+  `send` semantics, the ephemeral transcript. Consuming sections:
+  §2.2 (bucket pane), §2.4 (iterate split), §4.2 (normative start
+  contract); 10 §1's SSE row carries the build-plan side. Substrate:
+  no CLI change, no SSE-protocol change — server code and templates
+  only.
 **Substrate edits this set requires elsewhere** (same discipline as
 §10 — until landed, this list is authoritative; corrected after gate
 zero 2026-07-17 against the live CLI): **08 §1** dated edit — the
