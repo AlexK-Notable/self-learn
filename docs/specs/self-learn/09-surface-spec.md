@@ -306,8 +306,11 @@ two-keystroke path, whoever suggested the verb.)* *(Amended
 state — a plain-words status line ("Starting the conversation…",
 the Y-9 register) where the transcript will appear; the first agent
 turn never rides the POST response. The live region then fills over
-the existing SSE stream (§3) exactly as any visible pane does.
-Normative contract at §4.2's start bullet. The user-measured failure
+the existing SSE stream (§3) exactly as any visible pane does, and
+the turn's completion — result footer or error strip + `r` — lands
+by §4.2's completion swap (the `pane_result`-triggered panel
+re-fetch). Normative contract at §4.2's start bullet. The
+user-measured failure
 this repairs, their words: "there was no indication that anything
 was happening after i clicked the button.")*
 
@@ -585,41 +588,83 @@ pattern; no client-side markdown dependency).
   opening either while the other runs takes the existing armed
   interrupt prompt.)*
 - **Start is non-blocking** *(added 2026-07-18 — feedback round 2
-  item 1; §11 Y-15. The awaited-first-turn shape this replaces was a
-  build convention — pane.py's own concurrency note, citing the verb
-  runner's POST-awaits-completion pattern — never a spec pin; the
-  live trial proved it wrong for a 30–90 s first turn: the SSE
-  deltas published the whole time, but the client had no pane region
-  to receive them until the POST returned)*. The start POST returns
-  as soon as the session exists: the split renders in a **starting**
-  state carrying a Y-9 plain-words line ("Starting the
-  conversation…" — written for the decision-maker, never a spinner
-  alone), and the first turn drains in a **background task** on the
-  server's event loop. The SSE pane envelopes
-  (`pane_delta`/`pane_block`/`pane_tool`/`pane_result` — §3, 10 §1)
-  are the ONE transport that fills the live region, for the first
-  turn exactly as for every later one; the POST response carries the
-  markup those handlers target, never transcript content. **Failure
-  surfacing unchanged in substance**: an exception in the background
-  drain lands the session in the SAME ENDED/error state the blocking
-  path produced (§5's engine-failure row: error strip + `r` retry;
-  cap statuses keep their wording), pushed over SSE — and the §4.5
-  clear-set's proposing-session-error leg fires at drain completion,
-  exactly where the blocking path fired it, never from the POST
-  return. **Turn stacking pinned** (the existing state machine's
-  answer, stated): a second start POST during the background first
-  turn → same session key = "resumed" no-op re-rendering the current
-  split (never a second engine); different key = the standing armed
-  interrupt prompt; a `send` arriving while the session is mid-turn
-  (starting/streaming/interrupting) re-renders the current split
-  without dispatching a second engine turn — ONE in-flight turn per
-  session, ever; `send` at awaiting-input is untouched by this
-  amendment. **Not changed**: one live session server-wide (below);
-  interrupt-first at verb dispatch (§3 P1-4); the Esc ladder (below)
-  works from the starting state; the Y-14 idle predicate already
-  counts starting/streaming as INTERRUPTIBLE work-in-flight, so a
-  background first turn blocks idle exit by the existing leg (§3);
-  the ephemeral transcript; the post-session `proposal validate`
+  item 1; §11 Y-15; reworked the same day after the amendment's own
+  blind spec review returned NOT SOUND — findings folded in place,
+  the register entry carries the tally. The awaited-first-turn shape
+  this replaces was a build convention — pane.py's own concurrency
+  note, citing the verb runner's POST-awaits-completion pattern —
+  never a spec pin; the live trial proved it wrong for a 30–90 s
+  first turn: the SSE deltas published the whole time, but the
+  client had no pane region to receive them until the POST
+  returned)*. The **start POST** returns as soon as the session
+  exists: the split renders in a **starting** state carrying a Y-9
+  plain-words line ("Starting the conversation…" — written for the
+  decision-maker, never a spinner alone), and the first turn drains
+  in a **background task** on the server's event loop. **Claim
+  before anything slow** (review F5): the live-slot guard and the
+  live-slot assignment are ONE synchronous step — no `await` between
+  them; context building, engine construction, and the drain all run
+  after the claim (the one-live-session invariant must never depend
+  on request-arrival luck). For the START POST specifically, the SSE
+  pane envelopes (`pane_delta`/`pane_block`/`pane_tool`/
+  `pane_result` — §3, 10 §1) are the transport for first-turn
+  content — the start response carries the starting markup those
+  handlers target, never transcript text; `send`'s existing
+  authoritative-swap semantics (its POST response renders the
+  post-turn state) are explicitly untouched (review F6). The
+  starting line clears at the first streamed frame (review F7).
+  **Completion delivery** (review F1, the blocker: every completion
+  artifact — result footer, error strip, `r` retry, validate badge —
+  is server-rendered swap content that no longer rides the start
+  POST; app.js had deliberately ignored `pane_result`, so without
+  this pin a failed background first turn is the silent wall
+  reborn): on `pane_result`, the client re-fetches the session's own
+  **pane panel GET** (`…/pane/panel` — both route families have one)
+  and swaps the pane region; that authoritative server-rendered swap
+  IS the completion mechanism, for the clean AND error legs alike,
+  and is also the cleanup bound on any append-vs-swap residue,
+  including a tab that reloaded mid-drain (F7). To make that hold on
+  every path, the background drain wrapper's exception leg publishes
+  `pane_result` too — an engine that dies without emitting its own
+  result still produces exactly one completion push. No new envelope
+  types. **Failure surfacing unchanged in substance**: an exception
+  in the background drain lands the session in the SAME ENDED/error
+  state the blocking path produced (§5's engine-failure row: error
+  strip + `r` retry; cap statuses keep their wording), and the §4.5
+  clear-set's proposing-session-error leg stays anchored to drain
+  completion — the moment that, in the blocking design, coincided
+  with the POST return and now stands alone. **Drain-task hygiene**
+  (review F3) — both halves pinned: teardown (verb-dispatch
+  interrupt, forced start, `q` close, idle teardown) cancels-or-
+  awaits the background drain task BEFORE returning, so no successor
+  session can claim the slot while a predecessor's drain can still
+  run; AND, belt on that ordering, an **identity guard** — a drain
+  whose session object is no longer the manager's current one
+  publishes nothing and clears nothing (the `r`-retry same-key
+  window must never let an orphaned drain wipe a successor's
+  proposal slot or spray stale SSE into the new session's pane).
+  **Turn serialization**: a second start POST during the background
+  first turn takes the existing state machine's answer — same
+  session key = "resumed" no-op re-rendering the current split
+  (never a second engine); different key = the standing armed
+  interrupt prompt. Mid-turn `send` is a NEW build obligation this
+  amendment creates, stated as such (review F2 — the pre-Y-15
+  machine had no guard because a blocking start made the window
+  structurally unreachable): `send` dispatches an engine turn ONLY
+  at awaiting-input; in any other state it re-renders the current
+  split without touching the engine — ONE in-flight turn per
+  session, ever; named test. **Esc during starting** (review F4): an
+  interrupt arriving in the pre-connect window must still terminate
+  the turn PROMPTLY once the engine becomes interruptible — the
+  build carries an interrupt-requested latch the drain honors at its
+  first post-connect boundary, or escalates through teardown; the
+  mechanics are the build's, the promptness obligation is this pin;
+  named test. **Not changed**: one live session server-wide (below);
+  interrupt-first at verb dispatch (§3 P1-4); the Esc ladder
+  (below); the Y-14 idle predicate already counts starting/streaming
+  as INTERRUPTIBLE work-in-flight, so a background first turn blocks
+  idle exit by the existing leg (§3); the ephemeral transcript;
+  `send` at awaiting-input; the post-session `proposal validate`
   obligation, which fires when the background drain's clean result
   lands.
 - **Prompt structure** (carried, P1-12): system prompt = the
@@ -1433,35 +1478,65 @@ removed the last competing workstream — the build gate is open.*
 
 - **Y-15 · Non-blocking pane start** *(added 2026-07-18 — feedback
   round 2 item 1, `feedback/2026-07-18-ui-feedback-02.md`; own spec
-  gate before build per the standing discipline)*. The user's words,
-  live-hit on the bucket pane: *"'open bucket chat' doesn't seem to
-  do anything … there was no indication that anything was happening
-  after i clicked the button. it should pop open the interaction
-  window and let it have some kind of loading message or stream the
-  response or something."* Root cause, verified in code: the pane
-  manager's start awaited the ENTIRE first agent turn (30–90 s real
-  model) and the split only rendered from the POST response — the
-  `pane_*` SSE frames published the whole time into a client with no
-  region to receive them. Decisions of record: **(1)** the start
-  POST returns immediately with the split in a **starting** state (a
-  Y-9 plain-words line, never a bare spinner); **(2)** the first
-  turn drains as a server-side background task; the existing SSE
-  stream is the ONE transport that fills the live region — no new
-  envelope types, no protocol change; **(3)** a background-drain
-  exception lands the SAME ENDED/error state the blocking path
-  produced (§5 row unchanged), pushed over SSE, with the §4.5
-  clear-set's error leg firing at drain completion; **(4)** turn
-  stacking takes the existing state machine's answer, now stated as
-  a pin (§4.2): same-key start = "resumed" no-op, different-key
-  start = armed prompt, mid-turn `send` = no second engine turn;
-  **(5)** explicitly NOT reopened: one live session server-wide,
+  gate before build per the standing discipline. Reworked the same
+  day after its own blind spec review returned NOT SOUND — 1
+  BLOCKER / 3 MAJOR / 4 MINOR / 1 NIT, all folded in place; the
+  review verified the resumed-no-op, armed-prompt, Y-14-leg, and
+  validate-timing claims of the first draft as honest — those
+  stand)*. The user's words, live-hit on the bucket pane: *"'open
+  bucket chat' doesn't seem to do anything … there was no indication
+  that anything was happening after i clicked the button. it should
+  pop open the interaction window and let it have some kind of
+  loading message or stream the response or something."* Root cause,
+  verified in code: the pane manager's start awaited the ENTIRE
+  first agent turn (30–90 s real model) and the split only rendered
+  from the POST response — the `pane_*` SSE frames published the
+  whole time into a client with no region to receive them. Decisions
+  of record: **(1)** the start POST returns immediately with the
+  split in a **starting** state (a Y-9 plain-words line, never a
+  bare spinner); the live-slot claim is synchronous — no `await`
+  between guard and assignment (F5); **(2)** the first turn drains
+  as a server-side background task; the existing SSE stream carries
+  first-turn content — no new envelope types, no protocol change —
+  scoped to the START POST only; `send`'s authoritative-swap
+  semantics untouched (F6); **(3 — the review's F1 BLOCKER,
+  resolved):** completion delivery is the `pane_result`-triggered
+  re-fetch of the session's pane panel GET, whose server-rendered
+  swap is authoritative for clean and error legs alike (app.js had
+  deliberately ignored `pane_result`; without this, the error
+  strip / `r` retry / result footer / validate badge — all POST-swap
+  content — never arrive, and a failed background first turn is the
+  silent wall reborn); the drain wrapper's exception leg publishes
+  `pane_result` so the swap fires on every completion path; the
+  same swap bounds append-vs-swap residue, incl. a mid-drain reload
+  (F7); **(4)** a background-drain exception lands the SAME
+  ENDED/error state the blocking path produced (§5 row unchanged),
+  with the §4.5 clear-set's error leg anchored at drain completion —
+  in the blocking design that moment coincided with the POST return;
+  it now stands alone; **(5)** drain-task disposal pinned (F3):
+  teardown cancels-or-awaits the background drain before returning,
+  AND an identity guard keeps a no-longer-current drain from
+  publishing or clearing against a successor (the `r`-retry same-key
+  window); **(6)** turn serialization: same-key start = "resumed"
+  no-op and different-key = armed prompt (the existing machine's
+  answer, stated); mid-turn `send` = no engine dispatch — a NEW
+  build obligation, stated as such (F2: the old machine had no
+  guard; the blocking start merely made the window unreachable) —
+  named test; Esc during starting must terminate the turn promptly
+  once the engine becomes interruptible (F4) — named test; **(7)**
+  explicitly NOT reopened: one live session server-wide,
   interrupt-first, Y-14's INTERRUPTIBLE idle leg (a starting/
   streaming background drain blocks idle exit), awaiting-input
-  `send` semantics, the ephemeral transcript. Consuming sections:
-  §2.2 (bucket pane), §2.4 (iterate split), §4.2 (normative start
-  contract); 10 §1's SSE row carries the build-plan side. Substrate:
-  no CLI change, no SSE-protocol change — server code and templates
-  only.
+  `send` semantics, the ephemeral transcript. **Re-trial set (F8)**,
+  named here for the live gate: **(i)** bucket-chat button → split
+  renders < 1 s and the stream fills live (browser); **(ii)** forced
+  background-drain failure → error strip + `r` retry render at
+  completion; **(iii)** Esc during starting terminates the turn
+  promptly. Consuming sections: §2.2 (bucket pane), §2.4 (iterate
+  split), §4.2 (normative start contract); 10 §1's SSE row carries
+  the build-plan side. Substrate: no CLI change, no SSE-protocol
+  change — server code, templates, and app.js's `pane_result`
+  completion handler only.
 **Substrate edits this set requires elsewhere** (same discipline as
 §10 — until landed, this list is authoritative; corrected after gate
 zero 2026-07-17 against the live CLI): **08 §1** dated edit — the
