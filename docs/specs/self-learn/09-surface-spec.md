@@ -928,22 +928,60 @@ removed the last competing workstream — the build gate is open.*
   surface: registration is a canon-target decision, deliberately
   human + CLI (10 §4 row added). Data: `list --json
   .host_registered` (08 §1 edit).
-  **Amended 2026-07-17 (feedback round 1 item 5):** the 10 §4 row's
-  own revisit condition — "explicit user ask" — fired, near-verbatim:
-  *"I should essentially be able to do everything I need to do via UI
-  and not have to open a terminal."* The v1 rationale conflated the
-  DECISION with the HAND: registration remains a canon-target
-  decision and remains the human's, but a UI arm/confirm round-trip
-  IS the human deciding — the surface may now arm `host add <path>`
-  through the SAME arm-then-confirm verb runner as every other
-  mutation (§1; the verb stays the enforcer, its refusal renders
-  verbatim, §5 unchanged). Corollary, the generalized principle: any
-  surface text that asks the user to run a terminal command is a
-  defect unless deliberately out of scope — sweep every
-  copyable-command surface (this notice on Bucket AND Detail is the
-  live case; audit error strips and registration snippets) and either
-  arm it or record why not. Build gated on this amendment's own blind
-  review (standing discipline).
+  **Amended 2026-07-17 (feedback round 1 item 5; reworked same day
+  after its blind spec review — findings folded below):** the 10 §4
+  row's own revisit condition — "explicit user ask" — fired,
+  near-verbatim: *"I should essentially be able to do everything I
+  need to do via UI and not have to open a terminal."* The v1
+  rationale conflated the DECISION with the HAND: registration
+  remains a canon-target decision and remains the human's, but a UI
+  arm/confirm round-trip IS the human deciding — the surface may now
+  arm `host add <path>`. Grounding: `host add` is strictly LESS
+  consequential than the already-armed `route` (ledger-only commit,
+  no push, no compile, trivially unwound via `host remove`), so §1's
+  arm rationale covers it with margin. Build pins (each a folded
+  review finding):
+  - **Path provenance (security):** the armed path is SERVER-derived
+    from the record's own bucket `meta.yaml`
+    (`ledger.project_path_for`, the same derivation
+    `host_add_command` already uses) — NEVER a client-submitted
+    value. A client field may pick the post-success return page (a
+    constrained relative shape), nothing more.
+  - **Consent visibility:** the CLI prints its consent line on
+    stdout, which the verb runner discards by contract (§3) — so the
+    ARM STATE must itself render the consequence in plain words:
+    registering makes the project a canon WRITE target (managed
+    section compiled in on the next route) and makes it
+    analyst-READABLE (pane read scope widens via
+    `canon_read_roots()`), plus the exact command that will run.
+  - **Surface shape:** "same runner" holds at the subprocess seam
+    only; the arming machine is record-scoped, so host-add gets the
+    surface's FIRST bucket-scoped arm/disarm/confirm route triple and
+    an id-less armed rendering (same `.action-bar[data-armed]`
+    contract, so Enter-confirms / any-key-disarms works unchanged).
+  - **Scope limitation:** derivable only for PROJECT buckets;
+    skill/user-scope unregistered notices keep their prose fallback
+    (no candidate path exists — a skills-root registration is a
+    different invocation).
+  - **Post-success:** confirm force-refreshes the bucket scope and
+    redirects back to the arming page (Detail if armed from a record,
+    else the Bucket page); the notice disappears because
+    `host_registered` re-reads true.
+  - **No affordance key:** deliberately NO keymap entry —
+    registration is a rare, once-per-project act; the keymap stays
+    lean (dated choice, not an omission).
+  - **No agent path:** §4.3's "no path to route" extends verbatim to
+    `host add` — the pane agent must never be able to widen its own
+    read scope or mint write targets.
+  Corollary, the generalized principle, now with an auditable
+  predicate: any surface text asking the user to run a terminal
+  command is a defect unless recorded here as exempt. T-A carries a
+  template-source assertion: the only `self-learn …` command literals
+  in templates are the EXEMPT LIST — (a) `teach --supersedes` in the
+  holding row's session-note (capture is deliberately out of surface
+  scope, §8/Y-4), (b) verb stderr rendered verbatim in error strips
+  (§5 pins the server adds no interpretation), (c) the 403 page's
+  `self-learn-ui-open` recovery line (no session to arm from).
 - **Y-12 · `/report` screen.** One read-only page rendering `report
   --json` **plus `status --json`'s `metrics` and `supply_mix` blocks
   (gate-zero correction 2026-07-17: those two live in status, not

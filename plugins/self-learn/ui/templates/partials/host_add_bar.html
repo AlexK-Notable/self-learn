@@ -1,0 +1,54 @@
+{# Armed host-add (09 §11 Y-11, amended 2026-07-17): the surface's one
+   bucket-scoped mutation. Same .action-bar[data-armed] contract as the
+   record bars, so app.js's Enter-confirms / any-key-disarms applies
+   unchanged. The path shown is SERVER-derived (routes re-derive it at
+   every step; the only client field is the return-page record id).
+   The ARM state must carry the consent consequence in plain words —
+   the CLI prints it on stdout, which the verb runner discards (§3).
+   CSP: no inline style/script. #}
+<div id="host-add-bar" class="action-bar host-add-bar" data-armed="{{ 'true' if armed else 'false' }}">
+  {% if error %}
+  <p class="error-strip" role="alert">{{ error }}</p>
+  {% endif %}
+
+  {% if armed %}
+  <p class="banner banner-warning">
+    Registering means lessons can be <strong>written into this project</strong>
+    (its CLAUDE.md gains a managed section the next time you approve one)
+    and the review agent may <strong>read its files</strong>.
+    This runs: <code>self-learn host add {{ path }}</code>
+  </p>
+  <form hx-post="/bucket/{{ scope }}/{{ name }}/host-add/confirm"
+        hx-target="#host-add-bar" hx-swap="outerHTML">
+    {% if record_id %}<input type="hidden" name="record_id" value="{{ record_id }}">{% endif %}
+    <p class="action-bar-armed">
+      <strong>Register project</strong>
+      <span class="confirm-hint"><kbd>Enter</kbd> to confirm &middot; any other key cancels</span>
+    </p>
+    <button type="submit" data-key-action="confirm">Confirm</button>
+  </form>
+  <form hx-post="/bucket/{{ scope }}/{{ name }}/host-add/disarm"
+        hx-target="#host-add-bar" hx-swap="outerHTML">
+    {% if record_id %}<input type="hidden" name="record_id" value="{{ record_id }}">{% endif %}
+    <button type="submit" data-key-action="disarm">Cancel</button>
+  </form>
+
+  {% else %}
+  <p class="banner banner-warning">
+    Unregistered project.
+    {% if can_arm %}
+    Lessons here can't land in it until it's registered.
+    {% else %}
+    No skills root candidate is known yet.
+    {% endif %}
+    Resolution stays available below.
+  </p>
+  {% if can_arm %}
+  <form hx-post="/bucket/{{ scope }}/{{ name }}/host-add/arm"
+        hx-target="#host-add-bar" hx-swap="outerHTML">
+    {% if record_id %}<input type="hidden" name="record_id" value="{{ record_id }}">{% endif %}
+    <button type="submit">Register this project&hellip;</button>
+  </form>
+  {% endif %}
+  {% endif %}
+</div>

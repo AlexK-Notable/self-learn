@@ -25,9 +25,12 @@ from self_learn_ui.runner import FakeRunner, RunResult
 
 from support import (
     bare_ledger,
+    commit_all,
     hook_proposal_fields,
+    init_repo,
     make_behavior,
     make_env,
+    make_knowledge,
     merge_proposal_text,
     resolve_record_directly,
     seed_proposal,
@@ -349,6 +352,149 @@ class TestBucketPage:
 
 
 # --------------------------------------------------------------------- Detail
+
+
+class TestArmedHostAdd:
+    """09 §11 Y-11 (amended 2026-07-17): the armed host-add flow — the
+    surface's first bucket-scoped mutation. Server-derived path, consent
+    consequence in the arm state, project-scope-only, constrained
+    return-page redirect."""
+
+    def _foreign_sandbox(self, tmp_path: Path):
+        """A registered sandbox PLUS a second git repo that is NOT in
+        hosts.yaml, holding one pending project-scoped record — the
+        exact Y-11 live case."""
+        sb = make_env(tmp_path)
+        foreign = tmp_path / "foreign-repo"
+        init_repo(foreign)
+        (foreign / "CLAUDE.md").write_text("# foreign project\n", encoding="utf-8")
+        commit_all(foreign, "foreign seed")
+        rec = make_knowledge(
+            scope="project",
+            fact="The foreign build breaks unless the workspace is re-initialized.",
+        )
+        from self_learn.ledger_ops import create_record
+
+        create_record(sb.ledger, rec, project_path=foreign)
+        bucket_name = next((sb.ledger / "projects").iterdir()).name
+        return sb, foreign, rec, bucket_name
+
+    def test_unregistered_project_bucket_offers_register_not_a_command(
+        self, tmp_path: Path
+    ) -> None:
+        sb, _foreign, _rec, name = self._foreign_sandbox(tmp_path)
+        c, _runner = make_client(sb)
+        r = c.get(f"/bucket/project/{name}")
+        assert r.status_code == 200
+        assert "Register this project" in r.text
+        # The superseded copyable-command rendering must be gone.
+        assert "Run <code>self-learn host add" not in r.text
+
+    def test_detail_offers_register_with_record_return(self, tmp_path: Path) -> None:
+        sb, _foreign, rec, _name = self._foreign_sandbox(tmp_path)
+        c, _runner = make_client(sb)
+        r = c.get(f"/record/{rec.id}")
+        assert "Register this project" in r.text
+        assert f'name="record_id" value="{rec.id}"' in r.text
+
+    def test_arm_renders_consent_and_server_derived_path(self, tmp_path: Path) -> None:
+        sb, foreign, _rec, name = self._foreign_sandbox(tmp_path)
+        c, runner = make_client(sb)
+        r = c.post(f"/bucket/project/{name}/host-add/arm", headers={"HX-Request": "true"})
+        assert r.status_code == 200
+        assert 'data-armed="true"' in r.text
+        # Consent consequence (Y-11 pin): both halves, plain words.
+        assert "written into this" in r.text
+        assert "read its files" in r.text
+        # The exact command with the SERVER-derived path.
+        assert f"self-learn host add {foreign}" in r.text
+        assert runner.calls == []  # arming never executes anything
+
+    def test_confirm_runs_server_derived_argv_and_ignores_client_path(
+        self, tmp_path: Path
+    ) -> None:
+        sb, foreign, rec, name = self._foreign_sandbox(tmp_path)
+        c, runner = make_client(sb)
+        r = c.post(
+            f"/bucket/project/{name}/host-add/confirm",
+            data={"record_id": rec.id, "path": "/tmp/evil-repo"},
+            headers={"HX-Request": "true"},
+        )
+        assert runner.calls == [["host", "add", str(foreign)]]
+        assert r.headers.get("HX-Redirect") == f"/record/{rec.id}"
+
+    def test_confirm_without_record_id_returns_to_bucket(self, tmp_path: Path) -> None:
+        sb, foreign, _rec, name = self._foreign_sandbox(tmp_path)
+        c, runner = make_client(sb)
+        r = c.post(f"/bucket/project/{name}/host-add/confirm", headers={"HX-Request": "true"})
+        assert runner.calls == [["host", "add", str(foreign)]]
+        assert r.headers.get("HX-Redirect") == f"/bucket/project/{name}"
+
+    def test_malformed_record_id_falls_back_to_bucket_redirect(
+        self, tmp_path: Path
+    ) -> None:
+        sb, _foreign, _rec, name = self._foreign_sandbox(tmp_path)
+        c, _runner = make_client(sb)
+        r = c.post(
+            f"/bucket/project/{name}/host-add/confirm",
+            data={"record_id": "../../etc/passwd"},
+            headers={"HX-Request": "true"},
+        )
+        assert r.headers.get("HX-Redirect") == f"/bucket/project/{name}"
+
+    def test_disarm_restores_the_notice(self, tmp_path: Path) -> None:
+        sb, _foreign, _rec, name = self._foreign_sandbox(tmp_path)
+        c, runner = make_client(sb)
+        r = c.post(f"/bucket/project/{name}/host-add/disarm", headers={"HX-Request": "true"})
+        assert 'data-armed="false"' in r.text
+        assert "Register this project" in r.text
+        assert runner.calls == []
+
+    def test_confirm_failure_renders_stderr_no_redirect(self, tmp_path: Path) -> None:
+        sb, _foreign, _rec, name = self._foreign_sandbox(tmp_path)
+        runner = FakeRunner()
+        runner.queue_result(RunResult(1, stderr="host add: not a git repository"))
+        c, runner = make_client(sb, runner=runner)
+        r = c.post(f"/bucket/project/{name}/host-add/confirm", headers={"HX-Request": "true"})
+        assert "HX-Redirect" not in r.headers
+        assert "not a git repository" in r.text
+
+    def test_skill_scope_bucket_refuses_to_arm(self, tmp_path: Path) -> None:
+        """Y-11 scope limitation: no derivable path outside project
+        buckets — the arm route refuses rather than guessing."""
+        sb = make_env(tmp_path)
+        seed_record(sb.ledger, make_behavior(scope="skill:s"))
+        c, runner = make_client(sb)
+        r = c.post("/bucket/skill/s/host-add/arm", headers={"HX-Request": "true"})
+        assert r.status_code == 400
+        assert runner.calls == []
+
+    def test_stray_meta_yaml_in_skill_bucket_still_refused(self, tmp_path: Path) -> None:
+        """The scope gate is an EXPLICIT check, not just path-presence
+        (review 2026-07-17 host-add, F5): a skill bucket carrying a
+        stray meta.yaml path must not arm registration."""
+        sb = make_env(tmp_path)
+        seed_record(sb.ledger, make_behavior(scope="skill:s"))
+        (sb.ledger / "skills" / "s" / "meta.yaml").write_text(
+            f"path: {sb.host}\n", encoding="utf-8"
+        )
+        c, runner = make_client(sb)
+        r = c.post("/bucket/skill/s/host-add/confirm", headers={"HX-Request": "true"})
+        assert r.status_code == 400
+        assert runner.calls == []
+
+    def test_registered_project_bucket_shows_no_host_add_bar(self, tmp_path: Path) -> None:
+        sb = make_env(tmp_path)
+        rec = make_knowledge(scope="project", fact="A registered-host fact.")
+        from self_learn.ledger_ops import create_record
+
+        create_record(sb.ledger, rec, project_path=sb.host)
+        name = next((sb.ledger / "projects").iterdir()).name
+        c, _runner = make_client(sb)
+        r = c.get(f"/bucket/project/{name}")
+        assert r.status_code == 200
+        assert "host-add-bar" not in r.text
+        assert "Register this project" not in r.text
 
 
 class TestDetailPage:

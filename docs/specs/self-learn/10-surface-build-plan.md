@@ -128,8 +128,16 @@ predicate).
   contradicts-edge partial arming `link contradicts <id> <target>`
   per accepted edge (Y-8) · a hook-destination Detail rendering the
   full stored script + replay examples with the M3 caption (Y-7) ·
-  an unregistered-host record rendering the notice + copyable
-  `host add` command while arming stays live (Y-11) · the miner
+  an unregistered-host PROJECT record rendering the notice with the
+  armed host-add flow — arm renders the consent consequence + the
+  server-derived path (a bogus client `path` field must be IGNORED,
+  argv asserted as `host add <meta.yaml path>`), confirm runs the verb,
+  disarm restores the notice, and record arming stays live throughout;
+  skill/user-scope notices keep the prose fallback; plus the
+  template-source assertion that the only `self-learn …` command
+  literals in templates are the Y-11 exempt list *(this line amended
+  2026-07-17 with the Y-11 amendment — it previously pinned the now-
+  superseded copyable-command rendering)* (Y-11) · the miner
   block rendering journal rows with force-run as its ONLY action
   (Y-5) · `/report` rendering counted fields verbatim (Y-12) · a
   row's leading text is never a raw `lrn-…` id (Y-9, asserted on a
@@ -221,8 +229,13 @@ in brackets.
   note input, help overlay, banners ("resolved elsewhere",
   bucket-clear), Pygments/markdown rendering, **security middleware**,
   SSE endpoint + `app.js` EventSource client + keydown handler.
-  *Tests:* httpx route/partial suite + middleware suite. *DoD:* T-A's
-  interaction + security halves green.
+  *(Extended 2026-07-17 with the Y-11 amendment:)* the armed host-add
+  surface — the bucket-scoped `host-add/{arm,disarm,confirm}` route
+  triple + id-less armed partial on the `.action-bar[data-armed]`
+  contract, server-derived path, consent-consequence rendering,
+  post-success bucket-scope refresh + redirect (09 §11 Y-11 build
+  pins). *Tests:* httpx route/partial suite + middleware suite.
+  *DoD:* T-A's interaction + security halves green.
 - **U4 · Verb runner** [U3]: serialized async subprocess queue,
   reject-during-run, error strip (stderr verbatim), bulk graduate
   loop (`--no-push` + terminal push success-or-abort,
@@ -312,7 +325,7 @@ promoted into U1/U3 scope by 09 §11 Y-10.)*
 | Binding beyond 127.0.0.1, weakening any security middleware check | Human (06-horizon Stage-2 territory, never a build-time convenience) |
 | A keybinding conflict with browser-reserved keys surfacing in practice | Propose remap to human; keymap is UX surface |
 | G-3 trigger not fired but build requested | Human (gate discipline) *(trigger recorded as fired: M2 shipped + worker proven 2026-07-15; M3 complete + v1.1 tagged 2026-07-17 — see appendix)* |
-| Arming `host add` from the surface (a canon-target decision) | Armed via the surface's arm/confirm runner — the human still decides; the UI is the hand *(amended 2026-07-17: the "explicit user ask" fired — feedback round 1 item 5; see the 09 §11 Y-11 amendment of the same date)* |
+| Arming `host add` from the surface (a canon-target decision) | Armed via the surface's arm/confirm spine — the human still decides; the UI is the hand *(amended 2026-07-17: the row previously read "Human — deliberately absent in v1; revisit only on explicit user ask", and that ask fired — feedback round 1 item 5. Build pins — server-derived path, consent-in-arm-state, bucket-scoped route triple, project-scope-only, no keymap entry, no agent path — live in the 09 §11 Y-11 amendment of the same date)* |
 | A 09↔corpus or 09↔10 conflict discovered mid-build | Stop; finding; human (authority rule, header) |
 
 ## 5. Eventuality playbooks

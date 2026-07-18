@@ -58,3 +58,26 @@ def test_base_template_has_no_inline_script_blocks() -> None:
             assert body.strip() == "", "a src= script tag must have no inline body"
         else:
             assert 'type="application/json"' in attrs
+
+
+def test_terminal_command_text_only_in_the_y11_exempt_surfaces() -> None:
+    """09 §11 Y-11 (amended 2026-07-17), the auditable predicate: any
+    surface text asking the user to run a terminal command is a defect
+    unless recorded exempt. Template-source half: the only `self-learn …`
+    command literal in templates is the ARMED host-add bar's own command
+    display (the sanctioned consequence rendering). The amendment's
+    other exempt entries don't appear as template literals at all —
+    `teach --supersedes` (action_bar.html) carries no `self-learn`
+    prefix, stderr strips render runtime values, and the 403 recovery
+    line is generated in middleware, not a template."""
+    import re as _re3
+
+    templates_dir = Path(__file__).resolve().parents[1] / "templates"
+    command_literal = _re3.compile(r"self-learn\s+[a-z]")
+    offenders = []
+    for path in sorted(templates_dir.rglob("*.html")):
+        if path.name == "host_add_bar.html":
+            continue  # the sanctioned armed command display
+        if command_literal.search(path.read_text(encoding="utf-8")):
+            offenders.append(path.name)
+    assert offenders == [], f"unsanctioned terminal-command text in: {offenders}"

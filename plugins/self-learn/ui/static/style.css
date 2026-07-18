@@ -328,6 +328,16 @@ body:has(.pane-region[data-pane-state]) .keymap-footer-entry[data-action="iterat
   display: none;
 }
 
+/* Armed state is modal by design (Enter confirms, any key cancels) —
+   the keyboard can never stack a second armed bar, but a MOUSE click
+   on another bar's trigger could, leaving Enter aimed at whichever bar
+   sits first in the DOM (review 2026-07-17 host-add, finding 4). While
+   any bar is armed, every other bar's triggers go inert; they return
+   the moment it disarms. */
+body:has(.action-bar[data-armed="true"]) .action-bar[data-armed="false"] button {
+  visibility: hidden;
+}
+
 kbd {
   display: inline-block;
   min-width: 1.5em;
