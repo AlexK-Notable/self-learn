@@ -342,3 +342,46 @@ Also live-confirmed en route: one-session-server-wide held (the
 record Iterate against a parked bucket session rendered the armed
 interrupt prompt, correctly naming the bucket session); close-then-
 claim worked; the reload-mid-drain snapshot rendered.
+
+## Round-3 DoD trials — U14 + U15 (2026-07-18, sandboxed instance)
+
+Full sandbox (redirected `SELF_LEARN_HOME`/`XDG_RUNTIME_DIR`/
+`XDG_CACHE_HOME`, port 7457, server run from the merged tree): ledger
+home + skills root + `projA` (git repo, registered), `projB` and
+`projC` (plain directories, unregistered), one pending trial record
+per bucket. Real browser via Playwright; the live service and the
+real ledger were never touched.
+
+- **U14 (a) git-init-on-register, end-to-end — PASS.** projB's bucket
+  showed the unregistered notice; Register armed the disclosure
+  banner: *"A new git repository will be created at ⟨path⟩ (`git
+  init`) as part of registering. This runs: `self-learn host add
+  --init ⟨path⟩`"* — the displayed command carried `--init` exactly
+  because the path was not a repo root. Confirm registered in one
+  motion: projB now a git repo whose first commit is the pinned
+  subject `self-learn: init for host registration`, hosts.yaml
+  carries the entry, and the notice cleared on the post-success
+  redirect.
+- **U14 (b) failed registration error persists, plain words — PASS.**
+  projC's directory was deleted after capture, so confirm hit the
+  CLI's missing-dir refusal. The error strip rendered *"Registration
+  did not complete."* leading with the CLI's clean refusal as the
+  demoted detail line — and it SURVIVED the post-verb refresh push
+  (3+ s observation window; on master-before-U14 this exact flow
+  wiped the strip via the front-scope broadcast reload — the
+  empirically pinned mechanism, 10 §Build findings U14 entry).
+  Dismiss restored the unregistered notice; the deferred reload
+  released cleanly (page state stayed truthful).
+- **U15 rehome via pane proposal, y+Enter — PASS.** projA's bucket
+  chat was asked to move the trial lesson to projB. The agent read
+  the record, REASONED about the target first (asked whether projB
+  was the deliberate choice — the amended ancestor-project doctrine
+  visibly in play; the compiled system prompt of the sandbox pane's
+  CLI child carried the new clause, confirmed by mtime-driven
+  recompile with zero code changes), then proposed: the waiting bar
+  rendered *"move this lesson to the projB project"* with the
+  resolved path + record id as trailing metadata and the agent's
+  note labeled as its suggestion. `y` armed, Enter confirmed: one
+  ledger commit `self-learn: rehome lrn-d598b7f3 → projects/…projB…`,
+  record pending in projB's queue, proposal slot cleared. The Y-15
+  instant-split + live tool streaming behavior re-confirmed en route.
