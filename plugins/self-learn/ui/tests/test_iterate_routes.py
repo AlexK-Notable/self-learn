@@ -17,7 +17,7 @@ from starlette.testclient import TestClient
 
 from self_learn_ui import pane
 from self_learn_ui.app import create_app
-from self_learn_ui.engine.base import BlockStart, FakeEngine, Result, TextDelta
+from self_learn_ui.engine.base import BlockStart, FakeEngine, FileChanged, Result, TextDelta
 from self_learn_ui.env import load_env
 from self_learn_ui.runner import FakeRunner, RunResult
 
@@ -222,6 +222,53 @@ class TestPaneStartSendInterruptClose:
         detail = c.get(f"/record/{rec.id}")
         assert 'data-key-action="iterate"' in detail.text
         assert "pane-block" not in detail.text
+
+
+# --------------------------------------------------- U21 post-iterate summary
+
+
+class TestPostIterateSummaryRoute:
+    """The result footer's new plain-words line, rendered — "part of the
+    SAME footer block ... persists in the snapshot exactly like the
+    footer does" (10 §3 U21 row)."""
+
+    def test_footer_line_present_after_pane_result_and_on_navigation_return(
+        self, tmp_path: Path
+    ) -> None:
+        sb, rec = _seed(tmp_path)
+        lesson_path = f"/anywhere/pending/{rec.id}.md"
+        engine = FakeEngine(
+            turns=[[FileChanged(path=lesson_path), Result("success", 0.0, None)]]
+        )
+        c, runner, manager = make_client_with_pane(sb, engines={rec.id: engine})
+        runner.queue_result(RunResult(0))  # the post-session validate call
+
+        c.post(f"/record/{rec.id}/pane/start", headers=HX)
+        join_pane_turn(c, manager)
+
+        panel = c.get(f"/record/{rec.id}/pane/panel")
+        assert 'class="pane-turn-summary"' in panel.text
+        assert "This turn changed: the lesson text." in panel.text
+
+        # navigation-return regression: a later plain Detail GET (the
+        # split re-render, not the SSE completion swap) shows the SAME
+        # line — the server derives nothing new, it just re-reads the
+        # persisted snapshot field.
+        detail = c.get(f"/record/{rec.id}")
+        assert 'class="pane-turn-summary"' in detail.text
+        assert "This turn changed: the lesson text." in detail.text
+
+    def test_no_changes_renders_the_nothing_variant(self, tmp_path: Path) -> None:
+        sb, rec = _seed(tmp_path)
+        engine = FakeEngine(turns=[[Result("success", 0.0, None)]])
+        c, runner, manager = make_client_with_pane(sb, engines={rec.id: engine})
+        runner.queue_result(RunResult(0))
+
+        c.post(f"/record/{rec.id}/pane/start", headers=HX)
+        join_pane_turn(c, manager)
+
+        panel = c.get(f"/record/{rec.id}/pane/panel")
+        assert "This turn changed: nothing." in panel.text
 
 
 # --------------------------------------------------------------- cap hit / r

@@ -75,7 +75,8 @@ from .engine.base import BlockStart, FileChanged, PaneContext, PaneEngine, PaneE
 from .engine.sdk import DEFAULT_FALLBACK_MODEL, SdkPaneEngine
 from .env import EnvConfig
 from .ledger import RefreshHub
-from .proposals import ProposalSlot, SessionScope, make_propose_handler
+from .models import _GROUP_LABELS
+from .proposals import PROPOSAL_TOOL_QUALIFIED_NAME, ProposalSlot, SessionScope, VerbProposal, make_propose_handler
 from .rendering import render_markdown
 from .runner import VerbRunner
 from .sse import AppEventHub
@@ -441,6 +442,77 @@ class TranscriptBlock:
     tool_target: str | None = None
 
 
+# ------------------------------------------------------- post-turn summary
+#
+# U21 (feedback round 5 item 7 / 10 §3 U21 row): the result footer's one
+# plain-words line, built from two named sources ONLY (gate m7 / 09 §2.1
+# holds — the server derives nothing new): the drain's own FileChanged
+# events (never a diff/read/git — see :func:`_classify_file_fact`), and
+# the propose_verb ToolUse + slot-placement composite (gate R5's
+# current-turn attribution — see :meth:`PaneManager._compose_turn_summary`).
+
+
+def _record_stem(record_id: str) -> str:
+    """Mirrors ``engine/charter.py``'s own stem derivation exactly (that
+    module is a one-way import for pane.py — SDK/charter internals stay
+    behind the engine seam per 09 §4.1 — so the ``lrn-`` convention is
+    reproduced here by filename, not imported)."""
+    return record_id if record_id.startswith("lrn-") else f"lrn-{record_id}"
+
+
+def _classify_file_fact(record_id: str, path: str) -> str:
+    """One ``FileChanged.path`` (engine/base.py:73), classified relative
+    to *record_id*'s own charter write-targets: the record's own pending
+    file, a proposal sibling (yaml or diff), or anything else — shown
+    shortened (its last two path segments; no diffing, no file reads,
+    no git — this is filename classification only)."""
+    stem = _record_stem(record_id)
+    name = Path(path).name
+    if name == f"{stem}.md":
+        return "the lesson text"
+    if name in (f"{stem}.yaml", f"{stem}.diff"):
+        return "the proposal"
+    parts = Path(path).parts
+    return "/".join(parts[-2:]) if len(parts) >= 2 else name
+
+
+def _join_facts(phrases: list[str]) -> str:
+    if not phrases:
+        return "nothing"
+    if len(phrases) == 1:
+        return phrases[0]
+    if len(phrases) == 2:
+        return f"{phrases[0]} and {phrases[1]}"
+    return ", ".join(phrases[:-1]) + f", and {phrases[-1]}"
+
+
+def _compose_file_facts(record_id: str, paths: list[str]) -> str:
+    """The dedup + classify + join pipeline (09 §2.1: the drain's own
+    events are the ONLY source) — "nothing" when *paths* is empty."""
+    seen_paths: list[str] = []
+    for p in paths:
+        if p not in seen_paths:
+            seen_paths.append(p)
+    phrases: list[str] = []
+    for p in seen_paths:
+        phrase = _classify_file_fact(record_id, p)
+        if phrase not in phrases:
+            phrases.append(phrase)
+    return _join_facts(phrases)
+
+
+def _proposal_clause(proposal: VerbProposal) -> str:
+    """The verb, plus its destination glossed via ``models._GROUP_LABELS``
+    (F5-9's map, reused — never a second map) when the proposal carries
+    one (dest applies to ``route`` proposals only — proposals.py's own
+    validation)."""
+    if proposal.dest:
+        dest_base = proposal.dest.partition(":")[0]
+        gloss = _GROUP_LABELS.get(dest_base, proposal.dest)
+        return f"{proposal.verb} to {gloss}"
+    return proposal.verb
+
+
 @dataclass
 class _Live:
     record_id: str
@@ -473,6 +545,28 @@ class _Live:
     #: awaiting-input — the validate window stays inside the turn, so
     #: send() can never dispatch into it. Reset at every drain entry.
     turn_had_clean_result: bool = False
+    #: U21: THIS turn's own FileChanged.path targets, dedup-appended in
+    #: arrival order — reset at every drain entry (per-turn, like the
+    #: latches above; never accumulates across turns).
+    turn_file_paths: list[str] = field(default_factory=list)
+    #: U21 gate R5 signal (a): THIS turn's drain saw a propose_verb
+    #: ToolUse. Reset at every drain entry.
+    turn_saw_propose_tooluse: bool = False
+    #: U21 gate R5's edge pin: the proposal slot's occupant nonce (or
+    #: None if empty) captured the FIRST time this turn's propose_verb
+    #: ToolUse lands — BEFORE the handler (which runs after the ToolUse
+    #: event is yielded) has a chance to occupy/refuse. Compared against
+    #: the slot's occupant at pane_result: unchanged means this turn's
+    #: call never placed anything (refused-by-occupancy, or never ran) —
+    #: a prior turn's still-waiting proposal must never misattribute to
+    #: this turn's summary (the exact R5 disaster). Reset at every drain
+    #: entry.
+    turn_propose_nonce_before: str | None = None
+    #: The composed post-turn summary line (U21), set once at this
+    #: turn's Result event — persists on the live session exactly like
+    #: result_status/cost/turns (rendered by the SAME footer block,
+    #: 09 §2.1: server derives nothing new at render time).
+    turn_summary: str | None = None
 
 
 @dataclass(frozen=True)
@@ -483,7 +577,10 @@ class PaneSnapshot:
     (``num_turns``), ``None`` only when the engine reports none — the
     footer renders it verbatim (09 §4.2's "cost footer … plus turn
     count", 10 §1's SSE ``turns`` pin). The interim-review seam gap
-    (Result once lacked a turn field) was closed 2026-07-17."""
+    (Result once lacked a turn field) was closed 2026-07-17. ``turn_summary``
+    (U21) is the post-iterate change-summary line — part of the SAME
+    footer block as ``result_status``; ``None`` before any Result has
+    landed for this session."""
 
     record_id: str
     state: str
@@ -497,6 +594,7 @@ class PaneSnapshot:
     cap_hit: bool
     validate_exit_code: int | None
     validate_stderr: str | None
+    turn_summary: str | None
 
 
 def _idle_snapshot(record_id: str, validate: tuple[int, str] | None) -> PaneSnapshot:
@@ -513,6 +611,7 @@ def _idle_snapshot(record_id: str, validate: tuple[int, str] | None) -> PaneSnap
         cap_hit=False,
         validate_exit_code=validate[0] if validate else None,
         validate_stderr=validate[1] if validate else None,
+        turn_summary=None,
     )
 
 
@@ -586,6 +685,7 @@ class PaneManager:
             cap_hit=live.cap_hit,
             validate_exit_code=validate[0] if validate else None,
             validate_stderr=validate[1] if validate else None,
+            turn_summary=live.turn_summary,
         )
 
     def validate_state(self, record_id: str) -> tuple[int, str] | None:
@@ -846,6 +946,15 @@ class PaneManager:
         # entry latches afresh.
         live.interrupt_requested = False
         live.interrupt_replayed = False
+        # U21 per-turn reset (same convention as the latches above): THIS
+        # turn's own file-change/propose-attribution state, never
+        # accumulated across turns — turn_summary itself is NOT reset
+        # here (it persists like result_status until the NEXT Result
+        # overwrites it, so a mid-turn re-render still shows the prior
+        # turn's summary rather than blanking it).
+        live.turn_file_paths = []
+        live.turn_saw_propose_tooluse = False
+        live.turn_propose_nonce_before = None
         async for event in events:
             if self._live is not live:
                 # Identity guard (Y-15/F3): an orphaned drain publishes
@@ -911,10 +1020,22 @@ class PaneManager:
             await self._finalize_current(live)
             live.blocks.append(TranscriptBlock(kind="tool", tool_name=event.name, tool_target=event.target))
             await self._app_hub.publish({"type": "pane_tool", "name": event.name, "target": event.target})
+            if event.name == PROPOSAL_TOOL_QUALIFIED_NAME and not live.turn_saw_propose_tooluse:
+                # U21 gate R5's edge pin: capture the slot's occupant
+                # BEFORE the handler (invoked by the SDK between this
+                # event and the tool's result) can occupy/refuse it —
+                # only on the FIRST such ToolUse this turn, so a retried
+                # call after an in-turn refusal keeps the true
+                # before-this-turn baseline.
+                live.turn_saw_propose_tooluse = True
+                current = self._proposal_slot.current
+                live.turn_propose_nonce_before = current.nonce if current is not None else None
         elif isinstance(event, FileChanged):
             # Task brief / 09 §2.4/§4.3: mid-session file_changed ->
             # re-render push ONLY, never validation.
             self._refresh_hub.force_refresh(f"record:{live.record_id}")
+            if event.path not in live.turn_file_paths:
+                live.turn_file_paths.append(event.path)
         elif isinstance(event, Result):
             await self._finalize_current(live)
             live.result_status = event.status
@@ -935,6 +1056,11 @@ class PaneManager:
                 # above, so a teardown may have interleaved — an
                 # orphaned drain clears nothing and publishes nothing.
                 return
+            # U21: composed AT pane_result, before any clear_for_session
+            # below could clear the very proposal this turn just placed
+            # (gate m7's "at pane_result" pin — the slot read below must
+            # see this turn's own placement, not its own aftermath).
+            live.turn_summary = self._compose_turn_summary(live)
             if live.state == STATE_ENDED:
                 # Y-13 clear-set: error/cap results END the proposing
                 # session (a clean result leaves it awaiting-input — the
@@ -948,6 +1074,39 @@ class PaneManager:
                     "turns": event.turns,
                 }
             )
+
+    def _compose_turn_summary(self, live: _Live) -> str:
+        """U21's post-iterate change-summary line (10 §3 U21 row). File
+        facts come from THIS turn's own accumulated FileChanged paths
+        (:func:`_compose_file_facts` — 09 §2.1: no diffing, no reads, no
+        git). The proposal clause appends iff BOTH gate R5 signals hold:
+        (a) this turn's drain saw a propose_verb ToolUse
+        (``live.turn_saw_propose_tooluse``), AND (b) the slot's CURRENT
+        occupant was placed by THIS session (matched by ``session_key``
+        — the SAME identity ``clear_for_session`` uses; a bucket
+        session's proposal names a pending RECORD elsewhere in the
+        bucket, so ``record_id`` is the wrong key there, session_key is
+        the one field both session kinds share with ``live.record_id``),
+        is WAITING (never armed), and whose nonce differs from the one
+        captured when the ToolUse landed (``live.turn_propose_nonce_before``)
+        — i.e. the slot actually changed during this turn, not merely
+        still holding a prior turn's still-waiting proposal that this
+        turn's call was refused against (the R5 edge case)."""
+        facts = _compose_file_facts(live.record_id, live.turn_file_paths)
+        proposal_clause: str | None = None
+        if live.turn_saw_propose_tooluse:
+            current = self._proposal_slot.current
+            if (
+                current is not None
+                and current.session_key == live.record_id
+                and not current.armed
+                and current.nonce != live.turn_propose_nonce_before
+            ):
+                proposal_clause = _proposal_clause(current)
+        line = f"This turn changed: {facts}"
+        if proposal_clause:
+            line += f", and proposed: {proposal_clause}"
+        return line + "."
 
     async def _post_session_validate(self, record_id: str) -> None:
         """09 §4.3 / task brief: on session end, ``self-learn proposal
