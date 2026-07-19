@@ -16,7 +16,8 @@ route/graduate quad, `read_proposal_raw`/`proposals_by_id` at `:367-371`,
 `:80-106`), `keymap.py` (`drill_in` `:60`, global-key-uniqueness),
 `telemetry.py` (`EVENT_KINDS` closed set, `card-shown`/`card-decided`).
 **Blind-gate round 1 folded (F1–F6 + builder warning), 2026-07-18;** F4
-is a live RULING REQUIRED box (§2) for the human at the spec gate.
+was a RULING REQUIRED box (§2), **resolved 2026-07-19: option (A),
+per-sweep count cap** — see the §2 resolution block.
 
 ## 0. What this is, and the one direction it must be paranoid in
 
@@ -206,6 +207,40 @@ triggers.**
 > makes deferral tolerable — it catches the erosion after the fact rather
 > than preventing it.)
 
+> ✅ **RULING RESOLVED 2026-07-19 (user): option (A) — per-sweep count
+> cap — is IN v1.** Pins that follow from the ruling:
+>
+> - **`FAST_SWEEP_CAP = 5`** records per sweep confirm (the loosest value
+>   in the box's suggested 3–5 range; the ruling ratified the mechanism,
+>   the constant is the author's pick within the ratified range and may
+>   tighten later without a new ruling — loosening beyond 5 would need
+>   one).
+> - **Enforced as a server-side BATCH-SIZE gate at the sweep loop
+>   handler** (the existing `envelope_bulk_progress` path): before
+>   looping the individual `route <id>` verbs, the handler counts the
+>   submitted ids and refuses a payload with more than `FAST_SWEEP_CAP`,
+>   rendering the refusal as escalate-to-Detail with nothing routed.
+>   The client-side tick limit is a pure convenience mirror, never the
+>   enforcement. **Doctrine reconciliation (deliberate):** a batch-size
+>   limit is *flow control*, not record-state derivation — the server
+>   still derives nothing authoritative about any individual record;
+>   per-record eligibility and freshness remain verb-enforced (the §2
+>   TOCTOU pin, unchanged). An individual `route` verb cannot see the
+>   batch count, so the cap cannot live in the verb layer without a
+>   bulk CLI surface, which §8 forbids — the sweep handler is the only
+>   seam that sees the batch, and counting ids is the full extent of
+>   its authority.
+> - **UI posture**: the sweep list disables further ticks once `k` are
+>   selected, with a plain-words line ("five at a time — confirm these
+>   first"). No batching ceremony beyond that; a legitimately large
+>   reference backfill is k-at-a-time by design (the friction IS the
+>   feature the ruling bought).
+> - **v1 knob home: a code constant**, not config. If the user ever
+>   asks for it to be tunable, the promotion home is a
+>   `fast_lane.sweep_cap` sub-key (the §8 section shape reserved for
+>   exactly this) added via a later FW-30 tier-table row; it is NOT
+>   added now.
+
 ## 3. The audit loop (the retroactive gate)
 
 **Cadence: monthly**, aligned with the report/telemetry month-file
@@ -393,6 +428,13 @@ the per-record Detail decision it defers to.
     walkthrough **on DP-2, never DP-1**, exercising the sweep, one-keystroke
     escalation, and a forced automatic trigger; logged in
     `fixtures/ui-trials.md`. Two-gate blind review like every unit.
+11. **Sweep-cap test (F4 resolution, 2026-07-19):** a sweep confirm
+    carrying more than `FAST_SWEEP_CAP` ids is refused server-side and
+    rendered as escalate-to-Detail (nothing routed); a sweep of exactly
+    `FAST_SWEEP_CAP` routes all of them; the client disables further
+    ticks once `k` are selected. Assert the server gate is
+    authoritative independent of the client tick-limit (a payload
+    forged past the client limit is still refused).
 
 ## 8. Non-goals (guard rails)
 
@@ -418,9 +460,12 @@ the per-record Detail decision it defers to.
   git history, synced and revocable by commit, never an env var. The §3
   audit-loop suspend-proposal targets *this one flag* (`enabled: false`),
   never a per-destination knob. (A single boolean would also work; the
-  section shape is chosen so a later `fast_lane:` sub-key — e.g. the F4
-  ruling's sweep cap or dwell — has a committed home without a schema
-  break.)
+  section shape is chosen so a later `fast_lane:` sub-key has a
+  committed home without a schema break. The F4 ruling, resolved
+  2026-07-19, made the sweep cap a **v1 code constant** — option A
+  ratified, dwell rejected — so the only sub-key candidate today is a
+  future `fast_lane.sweep_cap` promotion via an FW-30 tier-table row,
+  per the §2 resolution block.)
 - **No new telemetry event kind; no new plane.** Scalar fields on the
   closed set only (P7; §4).
 - **No bulk CLI surface** — the sweep loops individual pinned `route <id>`

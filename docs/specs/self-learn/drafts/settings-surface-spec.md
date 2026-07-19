@@ -139,38 +139,71 @@ decision; it is carried on the `notify.pending_escalation` row of the §3
 tier table (whose ratification is §7 item 1's ruling), not a separate
 ruling. The other two legs deliberately stay pinned.
 
-**Env-var relationship (pin, do not skip).** Every one of these knobs
-is *today* an env var (`SELF_LEARN_MINER_MODEL`,
-`SELF_LEARN_PANE_MODEL`, `SELF_LEARN_PANE_BUDGET_USD`, …). Config.yaml
-does **not** replace them; it becomes a **committed default layer under
-them**. Precedence, pinned: **explicit env var > config.yaml > code
-default.** Rationale: the systemd units pin env (`SELF_LEARN_HOME`
-etc.) and a machine-local override must still win over a synced policy
-file; but where no env var is set, the committed config governs (that
-is the whole point of "policy in git, not ambient shell state" — S-10).
+**Env-var relationship (pin — AMENDED by user ruling 2026-07-19).**
+Every one of these knobs is *today* an env var
+(`SELF_LEARN_MINER_MODEL`, `SELF_LEARN_PANE_MODEL`,
+`SELF_LEARN_PANE_BUDGET_USD`, …). Config.yaml does **not** delete them;
+env becomes the **fallback layer under config**. Precedence, pinned:
+**config.yaml > explicit env var > code default.** *(The user ruled
+this 2026-07-19, overruling this draft's original env-wins
+recommendation: the committed config — the thing the settings page
+edits — is the single source of truth; env vars fill gaps, never
+override a saved policy. The trade accepted with eyes open: a synced
+config.yaml overrides a machine-local env pin; a machine that needs a
+local exception must express it in config or unset the key.)*
+
+Boundary and safety pins that survive the flip:
+
+- **Bootstrap keys are env-only and OUTSIDE this precedence** —
+  `SELF_LEARN_HOME`, the `XDG_*` redirects, and anything that
+  determines *where config.yaml itself lives* cannot be governed by the
+  file they locate. The precedence covers only keys that have a
+  config.yaml schema row (§1.3 models, cadence, caps, budgets,
+  notify).
+- **Invalid config values fall through loudly, they do not dead-end.**
+  A key whose config value fails shape validation is skipped with the
+  §1.3 loud-default warn and resolution continues down the chain
+  (env var, then code default) — the fail-closed idiom is per-layer,
+  so a typo in config.yaml can never brick a role that a unit's env
+  var or the default would have served.
+- **Test/trial consequence (named so no one is surprised):** env
+  overrides used by sandboxes and trials (`SELF_LEARN_MINE_CAP_MAX`
+  etc.) keep working only while the sandbox's own config.yaml is
+  silent on that key. Sandbox fixtures that write a config must not
+  set keys their trial script overrides via env.
+
 Each resolver (`miner_model()`, `worker_model()`, `_model()`,
-`load_env()`) gains: `env var → config.yaml value → hard-coded
+`load_env()`) gains: `config.yaml value → env var → hard-coded
 default`, threaded through a single new `config.get(home, path,
 default, type)` helper beside `one_motion_enabled` so the fail-closed
 idiom lives in one module.
 
-**"The environment" is plural (F1 — the display cannot honestly claim
-otherwise).** Precedence resolves **per process**, and the three
-model-running contexts have **different, mutually-invisible
-environments**: the **UI server** process (its unit pins only
-`SELF_LEARN_HOME`), the **miner** systemd unit (its own
+**"The environment" is plural (F1) — NARROWED by the 2026-07-19
+config-wins ruling, not dissolved.** Precedence resolves **per
+process**, and the three model-running contexts have **different,
+mutually-invisible environments**: the **UI server** process (its unit
+pins only `SELF_LEARN_HOME`), the **miner** systemd unit (its own
 `Environment=` block, §5), and **interactive shells** that
 opportunistically spawn `maybe_kick`/`worker` (whatever the user
-exported). `config get` runs **inside the UI server process** and can
-read **only the UI server's** environment. It therefore *cannot detect*
-an env var set in the miner unit or a shell — a `SELF_LEARN_MINER_MODEL`
-pinned in the miner's unit will silently win over config for the miner's
-own runs, and the settings page has no way to see it. Consequence,
-pinned: any provenance the page shows is scoped to **"env vars visible
-to the UI server process"**, never a global claim, and the page must
-never assert "config governs" for a role whose *other* process may be
-env-shadowed. (This is why the DoD, §6, verifies the effect by watching
-an actual run, not by trusting the page's provenance label.)
+exported). Under config-wins the picture splits cleanly in two:
+
+- **A key SET in config.yaml is uniform everywhere.** All three
+  processes read the same config.yaml (same `SELF_LEARN_HOME`), and
+  config now outranks whatever env any of them carries — so for a
+  config-set key the page may state "this governs every role's runs"
+  as a fact. This is the honesty *gain* the ruling buys: the settings
+  page's edits are authoritative, no hedge needed.
+- **A key SILENT in config.yaml keeps the full F1 hedge.** Its
+  effective value is per-process env-or-default, and `config get`
+  (running in the UI server) can see only the UI server's own
+  environment — it *cannot detect* a `SELF_LEARN_MINER_MODEL` pinned
+  in the miner unit. Consequence, pinned: for config-silent keys any
+  provenance the page shows is scoped to **"env vars visible to the UI
+  server process"**, never a global claim.
+
+(The DoD, §6, still verifies effect by watching an actual run, not by
+trusting the page's provenance label — the config-set claim above is
+exactly what the DoD run confirms.)
 
 ### 1.3 Models-per-role: the four roles and invalid-model handling
 
@@ -206,7 +239,7 @@ CLI must never import the UI). Therefore, pinned:
   provenance for the **three CLI roles only**, plus the *raw stored*
   `models.pane` string (or null) — it does **not** compute pane
   provenance, because it cannot see `env.DEFAULT_PANE_MODEL` or the
-  pane env var's shadowing without importing the UI.
+  pane env var's gap-fill without importing the UI.
 - The **UI settings route** (new, in `routes.py`) calls `config get
   --json`, then computes the pane entry's `{value, source, default}`
   from its **own** `env.DEFAULT_PANE_MODEL` and `os.environ`, and merges
@@ -219,15 +252,19 @@ CLI must never import the UI). Therefore, pinned:
   roles + raw pane passthrough), `routes.py` (the merge).
 
 **Provenance authority is asymmetric — the pane row is the exception
-(MINOR 2).** The pane both **resolves and runs inside the UI server
-process** (`env.load_env()` → the in-process `engine_factory` at
-`pane.py:985` → `SdkPaneEngine`); no other process ever runs the pane.
-So a `SELF_LEARN_PANE_MODEL` the server sees in its own environment
-**authoritatively** shadows the pane — the display can state it as fact.
-The three CLI roles are the opposite: they run in **other** processes
-(miner unit, worker/analyst spawns), so what the UI server's own
-environment does or doesn't hold says nothing authoritative about their
-runs. §2.3 splits the row treatment on exactly this line.
+(MINOR 2; reworded 2026-07-19 for the config-wins ruling).** The pane
+both **resolves and runs inside the UI server process**
+(`env.load_env()` → the in-process `engine_factory` at `pane.py:985` →
+`SdkPaneEngine`); no other process ever runs the pane. **When
+config.yaml is silent on `models.pane`**, a `SELF_LEARN_PANE_MODEL`
+the server sees is the authoritative gap-fill and the display can
+state it as fact; when config sets `models.pane`, config wins like
+every role (§1.2) and no env var shadows it. The surviving asymmetry
+is only about which process can **observe** the env gap-fill: the
+pane's is in-process and visible; the three CLI roles run in **other**
+processes (miner unit, worker/analyst spawns), so what the UI server's
+own environment does or doesn't hold says nothing authoritative about
+their gap-fills. §2.3 splits the row treatment on exactly this line.
 
 **Invalid / unavailable model name — the loud-default rule.** Today
 these resolvers pass the string straight to `claude --model` with no
@@ -343,30 +380,35 @@ env|config|default, default}` — where `source` is computed against the
 **UI server process's** environment only (F1). The page renders
 `value`, and when `source != default` shows the `default` inline.
 
-When `source == env` (an env var is shadowing config **in this server's
-own environment**), the row is **read-only**, but the note splits by
-role authority (MINOR 2):
+**Row treatment under the 2026-07-19 config-wins ruling** (this
+subsection's original env-shadow read-only treatment assumed env-wins
+and is superseded):
 
-- **The pane row is authoritative.** The pane resolves and runs in the
-  UI server process (§1.3), so a `SELF_LEARN_PANE_MODEL` the server sees
-  *is* the model the pane will use. Give it the **strong, exact** note:
-  *"set by this server's environment — the pane runs here, so this is
-  the value in effect. Change it there, or unset it to use the saved
-  value."* No hedge; it is a fact.
-- **The three CLI-role rows (miner/worker/analyst) keep the honest
-  hedge (F1).** Their runs happen in other processes, so an env var in
-  the UI server's own environment is at best a hint: *"overridden in
-  this server's environment; the miner/worker runs in its own process
-  and may differ. Change it in that environment, or unset it here."* And
-  where those rows read `source == config`/`default`, the page still
-  does **not** promise the miner unit isn't env-shadowing that role
-  elsewhere — it promises only what the server can see.
+- **`source == config` — authoritative and editable, no hedge.**
+  Config outranks every process's env (§1.2), so a saved value governs
+  all roles' runs as a fact. This is the normal, strongest row state.
+- **`source == env` — editable, with a fill-in note.** Env can no
+  longer shadow config; `source == env` now means *config is silent
+  and an env var visible to this server is filling the gap*. The row
+  stays **writable** — saving a config value immediately outranks the
+  env var everywhere. The note splits by role authority (MINOR 2,
+  scope inverted from the original):
+  - **The pane row states the fill-in as fact** (the pane resolves and
+    runs in this server process, §1.3): *"currently from this server's
+    environment; save a value here to make it the policy."*
+  - **The three CLI-role rows keep the F1 hedge**: the env var this
+    server sees is at best a hint about the miner/worker/analyst's own
+    processes; their gap-fill may differ. *"No saved value — each
+    process uses its own environment or the default. Save a value here
+    to govern them all."*
+- **`source == default` — editable**, default shown inline; for
+  CLI-role rows the page still does not promise no *other* process is
+  env-filling (it promises only what the server can see, F1).
 
-The affordance is kept for all rows (not dropped): a live env override
-in the server's own environment is real and worth surfacing; only the
-*scope of the claim* is calibrated per role. This keeps the precedence
-rule (§1.2) visible without the S-10-class overclaim the charter warns
-against.
+This keeps the precedence rule (§1.2) visible without the S-10-class
+overclaim the charter warns against — and the one global claim the
+page now makes ("a saved value governs every role") is exactly the
+claim the ruling made true.
 
 ---
 
@@ -397,6 +439,17 @@ tier C (hand-edit only) vs promoting to a guarded tier-B toggle; (b)
 whether `models.analyst` and `models.worker` are one knob or two; (c)
 whether operator notes are UI-writable in v1 at all, or read-only-in-UI
 until the pane's FW-36 drafter is the sole writer.
+
+> ✅ **RULING RESOLVED 2026-07-19 (user): table ratified AS WRITTEN.**
+> The three judgment calls land on the recommendations: (a)
+> `one_motion_route` stays tier C, hand-edit + commit only; (b) the
+> four model knobs stay four separate tier-A keys (`models.miner` /
+> `models.worker` / `models.pane` / `models.analyst`); (c) operator
+> notes are UI-writable in v1 via the §4 safe shape (a separate
+> operator-notes file; the UI never writes `routing-doctrine.md`).
+> The `notify.pending_escalation` row's noted softening of the
+> `worker.py:93` pin (one leg promoted to config, age leg + debounce
+> stay pinned constants) is ratified with it.
 
 ---
 
@@ -616,9 +669,14 @@ packaging (charter sequencing pressure).
 - Config parse: fixture table — each key at default, valid, malformed,
   wrong-type, and missing — asserting fail-closed default + exactly one
   stderr warn per malformed key, and per-key independence (one bad key
-  doesn't poison others). Mirror `test_*config*` style.
-- Precedence: env > config > default proven for all four model
-  resolvers + pane budget/turns.
+  doesn't poison others); and a malformed config key **with its env
+  var set** resolves to the env value (§1.2 fall-through), still
+  emitting exactly one warn. Mirror `test_*config*` style.
+- Precedence: **config > env > default** (the 2026-07-19 ruling order)
+  proven for all four model resolvers + pane budget/turns; plus a
+  malformed-config-key-with-env-var-set case asserting **fall-through
+  to the env value** (§1.2 invalid-config fall-through), not straight
+  to default.
 - `config set`/`note-add`: unknown-key refusal, type-shape refusal,
   **secret-scan refusal** (planted token → refused, nothing written,
   nothing committed), successful write → one commit with the pinned
@@ -626,9 +684,11 @@ packaging (charter sequencing pressure).
 - Cadence: `cadence_hours` derives kick/stale; 24 reproduces 24h/36h;
   a short cadence trips autokick sooner (time-mocked, `AUTOKICK=0`
   discipline preserved).
-- Page: renders current-vs-default; env-shadowed row is read-only;
-  corrupt-config notice renders (no 500) — a `test_degradation_walk`
-  addition.
+- Page: renders current-vs-default; a `source == env` row is
+  **editable** and shows the fill-in note (pane row states it as fact;
+  the three CLI-role rows keep the F1 hedge), and saving a config
+  value flips the row to `source == config`; corrupt-config notice
+  renders (no 500) — a `test_degradation_walk` addition.
 - **DoD (round-4 instrument, charter):** a user walkthrough — change a
   model, save, confirm the commit in `git log`, confirm the next
   miner/worker/pane run uses it; add an operator note, confirm it
@@ -645,15 +705,19 @@ model-availability probe (§1.3). No exposure of tier-C boundaries (§3).
 
 ---
 
-## 7. Open items routed to the user (blocking build)
+## 7. Open items routed to the user — ALL RESOLVED 2026-07-19; build unblocked
 
-1. **§3 tier table** — the RULING REQUIRED; especially
-   `one_motion_route` staying hand-edit-only, worker/analyst one-vs-two
-   knobs, and whether operator notes are UI-writable in v1.
-2. **§5 timer frequency** — confirm the "frequent timer ships with
-   packaging" resolution, or rule that v1 cadence governs autokick/alarm
-   only and the scheduled pass stays nightly regardless.
-3. **§1.2 precedence** — confirm env > config > default (vs config
-   winning over env, which would let a synced policy override a
-   machine's local pin — the author recommends env-wins for exactly the
-   machine-local-override reason, but it is the user's economics call).
+1. **§3 tier table** — ✅ **ratified as written** (see the §3
+   resolution box: one_motion_route stays C; four separate model knobs;
+   operator notes UI-writable via the §4 shape).
+2. **§5 timer frequency** — ✅ **confirmed as spec'd**: v1 keeps the
+   nightly unit; `miner.cadence_hours` gates the run inside it (the
+   zero-work skip touches neither marker); the frequent-timer question
+   rides the packaging pivot, where the installer owns the unit file.
+3. **§1.2 precedence** — ✅ **the user ruled AGAINST the author's
+   recommendation: config.yaml > env var > code default.** The
+   committed config is the single source of truth; env fills gaps only.
+   §1.2 and §2.3 were amended same-day to carry the flip (bootstrap
+   keys excepted, invalid-value fall-through, sandbox-env caveat, row
+   treatment inverted). A machine-local exception must now be expressed
+   in config or by unsetting the key — accepted knowingly.
