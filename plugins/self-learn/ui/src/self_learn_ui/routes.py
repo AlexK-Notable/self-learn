@@ -1082,6 +1082,15 @@ async def action_confirm(
         target=target or None,
     )
 
+    # U-C3 fix: Y-8's contradicts offer is read from the PENDING record's
+    # proposal sibling — capture it BEFORE the verb runs (see
+    # _capture_contradicts's docstring for why an after-the-fact read is
+    # unsound for `route` specifically). Non-route verbs never consult
+    # this, so the read is skipped for them.
+    contradicts_pre: tuple[str, ...] = (
+        _capture_contradicts(home, record_id) if verb == "route" else ()
+    )
+
     # 09 §3 P1-4 / P3-8: resolving a record under active iteration
     # interrupts FIRST, at verb dispatch — never concurrently with a
     # live pane session's writes to the very files this verb is about
@@ -1116,22 +1125,8 @@ async def action_confirm(
     if collapse:
         _sweep_stale_proposal(request)
 
-    if verb == "route":
-        proposal, _err = ledger.read_proposal_raw(
-            _bucket_dir_for(home, record_id), record_id
-        )
-        contradicts_raw: list[str] = (proposal or {}).get("contradicts") or []
-        contradicts: tuple[str, ...] = tuple(contradicts_raw)
-        if contradicts:
-            edges = [
-                {"target": t, "dom_id": _dom_id("contradicts", record_id, t)}
-                for t in contradicts
-            ]
-            return _render(
-                request,
-                "partials/contradicts_offer.html",
-                {"record_id": record_id, "edges": edges},
-            )
+    if verb == "route" and contradicts_pre:
+        return _contradicts_offer_response(request, record_id, contradicts_pre)
 
     bucket_name = _bucket_name_for(home, record_id)
     url = next_record_url(home, bucket_name, record_id) if bucket_name else f"/?notice={NOTICE_BUCKET_CLEAR}"
@@ -1141,10 +1136,47 @@ async def action_confirm(
 
 
 def _bucket_dir_for(home: Path, record_id: str) -> Path:
-    """Best-effort bucket dir for a JUST-resolved id (it moved out of
-    ``pending/`` to ``resolved/`` — locate_record still finds it there)."""
+    """Best-effort bucket dir for *record_id* regardless of which side of
+    resolution it's on — ``locate_record`` finds it in ``pending/`` (the
+    pre-verb :func:`_capture_contradicts` call) exactly as it finds it in
+    ``resolved/`` afterward (every other caller here)."""
     loc = ledger.locate_record(home, record_id)
     return loc.bucket_dir if loc else home
+
+
+def _capture_contradicts(home: Path, record_id: str) -> tuple[str, ...]:
+    """U-C3 fix: read a PENDING record's proposal ``contradicts:`` list
+    — this MUST run before the verb's own subprocess executes. `route`'s
+    CLI success path (``ledger_ops.resolve_record`` ->
+    ``remove_proposal_siblings``, 08 §1 proposal-lifecycle pin) deletes
+    the proposal sibling as part of resolving the record; reading it
+    AFTER ``runner.run()`` returns therefore always finds the file
+    already gone in production (a real subprocess actually ran the
+    delete — the previous code only passed its own tests because the
+    FakeRunner records argv without executing it, leaving the seeded
+    proposal file untouched: mock theater). Capturing this tuple BEFORE
+    dispatch and rendering the Y-8 offer from it afterward is the fix."""
+    proposal, _err = ledger.read_proposal_raw(
+        _bucket_dir_for(home, record_id), record_id
+    )
+    return tuple((proposal or {}).get("contradicts") or [])
+
+
+def _contradicts_offer_response(
+    request: Request, record_id: str, contradicts: tuple[str, ...]
+) -> HTMLResponse:
+    """Y-8's per-edge offer, rendered from an ALREADY-CAPTURED contradicts
+    tuple (see :func:`_capture_contradicts`) — never a fresh read, which
+    would race the verb's own proposal-sibling deletion."""
+    edges = [
+        {"target": t, "dom_id": _dom_id("contradicts", record_id, t)}
+        for t in contradicts
+    ]
+    return _render(
+        request,
+        "partials/contradicts_offer.html",
+        {"record_id": record_id, "edges": edges},
+    )
 
 
 def _bucket_name_for(home: Path, record_id: str) -> str | None:
@@ -1514,6 +1546,13 @@ async def proposal_confirm(
         until=prop.until,
         to=prop.to,
     )
+    # U-C3 fix: same pre-verb capture as action_confirm (see
+    # _capture_contradicts) — `route`'s CLI success path deletes the
+    # proposal sibling as part of resolving the record, so this MUST be
+    # read before runner.run(), not after.
+    contradicts_pre: tuple[str, ...] = (
+        _capture_contradicts(home, record_id) if prop.verb == "route" else ()
+    )
     slot.clear()  # Y-13 clear-set: human confirm
 
     # Interrupt-first (09 §3 P1-4): a confirmed resolution on the record
@@ -1537,21 +1576,8 @@ async def proposal_confirm(
             error=result.stderr or f"self-learn {' '.join(argv)} failed",
         )
 
-    if prop.verb == "route":
-        proposal_raw, _err = ledger.read_proposal_raw(
-            _bucket_dir_for(home, record_id), record_id
-        )
-        contradicts: tuple[str, ...] = tuple((proposal_raw or {}).get("contradicts") or [])
-        if contradicts:
-            edges = [
-                {"target": t, "dom_id": _dom_id("contradicts", record_id, t)}
-                for t in contradicts
-            ]
-            return _render(
-                request,
-                "partials/contradicts_offer.html",
-                {"record_id": record_id, "edges": edges},
-            )
+    if prop.verb == "route" and contradicts_pre:
+        return _contradicts_offer_response(request, record_id, contradicts_pre)
 
     if kind == "bucket":
         url = f"/bucket/{prop.bucket_scope}/{prop.bucket_name}"

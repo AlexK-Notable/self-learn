@@ -321,13 +321,29 @@
    *   (c) any [data-armed="true"] bar exists — releasing on re-arm
    *       would reload over the fresh armed bar (F5, the Y-15
    *       delta-R1 never-clobber-a-human-mid-decision hazard).
+   *   (d) a [data-contradicts-offer] element is in the document (U-C3,
+   *       09 §11 Y-8): the post-route contradicts offer renders every
+   *       edge UNARMED (leg (c) alone does not hold it), yet the SAME
+   *       action that swapped it in also fires the routine post-verb
+   *       forced-refresh push (09 §3) — often arriving while this very
+   *       response is still settling. Without this leg that refresh
+   *       reloads the page out from under the human before they can
+   *       arm a single edge, silently discarding the offer exactly the
+   *       way the pre-fix server bug did, just one layer up. No
+   *       explicit release exists for this leg (unlike (a)/(c)) — the
+   *       pinned resolution is always a full page navigation (arming
+   *       and confirming an edge redirects away; leaving by any other
+   *       route loads a fresh document with no marker at all), so
+   *       "stale until the human leaves" is the intended, permanent
+   *       hold for this leg specifically.
    * Deferred-not-dropped: the pending reload fires when no leg holds
    * (dismiss removes (a), completion/error/abort clears (b),
-   * disarm-or-resolve removes (c)); the release re-checks the whole
-   * predicate. Deliberate staleness (F9/F12): while any leg holds the
-   * page may go stale against the files — accepted; files stay truth
-   * and every hold has a user-reachable release. The server-side push
-   * is UNCHANGED — this defers only the client's render of it.
+   * disarm-or-resolve removes (c), navigating away is (d)'s only
+   * release); the release re-checks the whole predicate. Deliberate
+   * staleness (F9/F12): while any leg holds the page may go stale
+   * against the files — accepted; files stay truth and every hold has
+   * a user-reachable release. The server-side push is UNCHANGED — this
+   * defers only the client's render of it.
    */
   var reloadPending = false;
   var confirmInFlight = false;
@@ -336,6 +352,7 @@
     if (document.querySelector("[data-verb-error]")) return true; // leg (a)
     if (confirmInFlight) return true; // leg (b)
     if (findArmedBar()) return true; // leg (c)
+    if (document.querySelector("[data-contradicts-offer]")) return true; // leg (d)
     return false;
   }
 

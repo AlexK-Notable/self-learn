@@ -19,8 +19,16 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from self_learn.ledger_ops import create_record, write_proposal
+from self_learn.ledger_ops import (
+    LedgerOpsError,
+    create_record,
+    find_record_path,
+    remove_proposal_siblings,
+    write_proposal,
+)
 from self_learn.records import Record
+
+from self_learn_ui.runner import FakeRunner, RunResult
 
 # ------------------------------------------------------------------ git
 
@@ -237,6 +245,45 @@ def hook_proposal_fields() -> dict:
 
 def seed_proposal(ledger: Path, record_id: str, **overrides) -> Path:
     return write_proposal(ledger, record_id, proposal_dict(**overrides))
+
+
+# ------------------------------------------------------ U-C3 regression
+#
+# The live-trial defect (09 §4/11 §2.4 Y-8): the real `route` CLI deletes
+# the record's proposal sibling as part of resolving it
+# (self_learn.ledger_ops.resolve_record -> remove_proposal_siblings, 08
+# §1) — a PLAIN FakeRunner never reproduces this (it only records argv),
+# which is exactly why the original Y-8 offer test passed against a UI
+# handler that read `contradicts` AFTER runner.run() while production
+# never rendered the offer at all (mock theater). This runner calls the
+# REAL removal function — the same one the live CLI subprocess runs —
+# so any route test built on it fails the instant a handler goes back to
+# a post-dispatch read.
+
+
+class RouteSideEffectRunner(FakeRunner):
+    """FakeRunner + the one real side effect that broke Y-8 in
+    production: a ``route`` call deletes the record's proposal
+    sibling(s) via the actual :func:`remove_proposal_siblings`, exactly
+    as the real CLI subprocess does at resolution. Every other verb
+    behaves like a plain FakeRunner (argv recorded, queued/default
+    result returned, no file touched)."""
+
+    def __init__(self, ledger_home: Path, *, default: RunResult | None = None) -> None:
+        super().__init__(default=default)
+        self._home = ledger_home
+
+    async def run(self, argv: list[str]) -> RunResult:
+        result = await super().run(argv)
+        if len(argv) >= 2 and argv[0] == "route":
+            record_id = argv[1]
+            try:
+                path = find_record_path(self._home, record_id)
+            except LedgerOpsError:
+                path = None
+            if path is not None:
+                remove_proposal_siblings(self._home, path.parent.parent, record_id)
+        return result
 
 
 def merge_proposal_text(cluster_id: str, records: list[str], survivor: str) -> str:

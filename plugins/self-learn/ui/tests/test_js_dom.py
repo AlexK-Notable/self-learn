@@ -423,6 +423,39 @@ class TestReloadDeferLegC:
         _assert_reloaded(page)
 
 
+class TestReloadDeferLegD:
+    """Leg (d), U-C3 (09 §11 Y-8): a [data-contradicts-offer] element
+    defers — the post-route contradicts offer renders every edge UNARMED
+    (leg (c) alone would not hold it), yet the same route confirm that
+    swaps it in also fires the routine post-verb forced-refresh push.
+    Without this leg, that refresh's reload() wipes the just-rendered
+    offer before the human can arm a single edge — the exact hazard
+    live-trial found (the offer never even rendering was the server-side
+    half of the same defect; this is the client-side half a naive server
+    fix alone would still leave open)."""
+
+    def test_contradicts_offer_defers_then_fires_on_removal(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        _open(page, server, "/")
+        page.evaluate(
+            "document.body.insertAdjacentHTML('beforeend', "
+            "'<div data-contradicts-offer=\"true\" id=\"t-offer\">"
+            "<div class=\"action-bar\" data-armed=\"false\"></div></div>')"
+        )
+        _arm_reload_sentinel(page)
+
+        server.push_refresh("front")
+        _assert_deferred(page)  # leg (d) holds — even though nothing is armed
+
+        # The offer's only pinned release is navigating away; simulate the
+        # human having left this rendering (removed from the DOM) followed
+        # by a settle, which re-checks the predicate and releases.
+        page.evaluate("document.getElementById('t-offer').remove()")
+        _dispatch_htmx(page, "htmx:afterSettle", "/record/x/action/arm")
+        _assert_reloaded(page)
+
+
 class TestReloadFiresWhenClear:
     """Control: with NO leg holding, a refresh reloads immediately — proves
     the defer tests above are detecting a real, otherwise-absent reload."""
