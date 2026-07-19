@@ -100,6 +100,17 @@ it as `--session`, never `--quote`. So the scan set below is the snippet
 fields only. Landing safety, pinned (mirrors the episode-brief
 compose-before-scan invariant, 12 §11):
 
+**Build-fold amendment (2026-07-19):** the shipped snippet also carries
+`scope` and, for behavior, `kind` — when the source dict has them (a
+full `candidates[]` entry does; the leaner `near_misses[]` entry, §1.3,
+does not). These are the *only* source §2.3's promote argv has for
+`teach --<scope> [--kind …]`; without them promote could not build a
+scope-correct call at all. Same scan + `MAX_NEARMISS_SNIPPET_CHARS`
+coverage applies to them as every other snippet field — no new landing
+surface. A `rubric-dropped` snippet with no `scope` (the common case,
+since `near_misses[]` never carries one) falls back to `teach`'s own
+documented project default (01 §2) at promote time.
+
 - **Build-pin — scan *before* `_outcome`, at EACH disposition site.** The
   snippet is `secret_scan`-ed **field-by-field** and reduced to a clean
   dict, `{scan_refused_rule: "<rule>"}`, or `{overlength: true}`
@@ -263,6 +274,16 @@ The honest low-ceremony mechanism (no synthetic transcripts, ever):
   acceptable here precisely because a mis-scored canary is *cheap* (unlike
   a missed dedup, 12 §5) — and the honest counts are themselves the signal
   that the heuristic needs work (a human-obvious catch scored `missed`).
+
+**Build-fold amendment (2026-07-19):** the "best-effort session id"
+plant records comes from a `CLAUDE_SESSION_ID` env var — nothing in the
+current stack sets it. Until an operator exports it (or a future
+producer wires it), a planted canary's `session` field is `null`, and
+the `missed` half of scoring (which requires it) never fires — `missed`
+is dormant in production. This is a degrade-safe absence, not a bug: an
+absent/wrong session id can only leave a canary `open` longer, never
+produce a false `missed`. `caught` scoring is unaffected (it needs no
+session id at all).
 
 **What canaries never do**: (1) never auto-generate or inject transcript
 content — the miner grading homework it wrote is worthless; (2) never

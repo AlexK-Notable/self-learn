@@ -1376,6 +1376,53 @@ def test_dropped_rejected_no_snippet_no_record_id(home, transcripts, monkeypatch
     assert dropped["sightings"] == 1
 
 
+def test_folded_disposition_is_already_canon_with_record_id(home, transcripts, monkeypatch):
+    """Blind-review fold 1: the `already-canon` fold-table row (folded,
+    skipped-resolved, recurrence, recurrence-already-known,
+    skipped-known-origin) was left unpinned — a silent remap (e.g.
+    `folded -> other`) would drop the matched-record link and show the
+    wrong plain-words reason, and every prior test still passed. Pins
+    BOTH: `disposition == "already-canon"` AND the matched record id
+    surviving into the journal entry."""
+    existing = make_behavior()
+    create_record(home, existing)
+    write_transcript(transcripts, "sess-fold-nm", [u("hit it again")])
+    shim_reader(
+        monkeypatch,
+        {
+            "candidates": [
+                candidate(
+                    session="sess-fold-nm",
+                    match={"record": existing.id, "status": "pending"},
+                )
+            ],
+            "fires": [],
+        },
+    )
+    result = miner.run(home)
+    assert result.folded == [existing.id]
+    outcomes = miner.read_journal()[-1]["outcomes"]
+    folded = next(o for o in outcomes if o["outcome"] == "folded")
+    assert folded["disposition"] == "already-canon"
+    assert folded["record"] == existing.id  # the matched-record link survives
+    assert folded["reason"]  # plain-words, Y-9 register — never empty
+    assert folded["promotable"] is False
+    assert "snippet" not in folded  # already-canon rows never carry one
+
+
+def test_every_disposition_has_a_reason(home):
+    """Blind-review fold 1 (table-completeness): every value
+    `_NEARMISS_DISPOSITION` can produce must have a plain-words reason —
+    an addition to the fold table with no matching `_NEARMISS_REASON`
+    entry would KeyError at journal-write time on the very outcome it
+    was meant to enrich (`_enrich_near_miss`'s `_NEARMISS_REASON[disposition]`
+    lookup, not `.get`)."""
+    dispositions = set(miner._NEARMISS_DISPOSITION.values())
+    assert dispositions  # the table itself is non-empty — a vacuous pass is not a pass
+    missing = dispositions - set(miner._NEARMISS_REASON)
+    assert not missing, f"disposition(s) in the fold table with no reason: {missing}"
+
+
 # ------------------------------------------------------- FW-34 §3: canaries
 
 
