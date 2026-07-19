@@ -28,7 +28,7 @@ file gets a dated disposition note on the item.*
 | `forward/supply-quality.md` | **A — Supply quality**: the miner becomes the main character (FW-1…FW-5) |
 | `forward/canon-lifecycle.md` | **B — Canon lifecycle back-half**: first-firing readiness for graduation, staleness, recurrence, supersession (FW-6…FW-9) |
 | `forward/packaging.md` | **C — Packaging & distribution**: the next major phase, mapped (FW-10…FW-15) |
-| `forward/ui-ux.md` | **D — UI/UX**: round 4, the JS harness, backlog burn-down, composition pressure (FW-16…FW-19) |
+| `forward/ui-ux.md` | **D — UI/UX**: round 4, the JS harness, backlog burn-down, composition pressure, settings surface (FW-16…FW-19, FW-30) |
 | `forward/sync-and-fleet.md` | **E — Sync & multi-machine**: push-state visibility and the divergence playbook (FW-20…FW-22) |
 | `forward/platform-drift.md` | **F — Platform drift**: the risks we don't control, and the watch protocol for each (FW-23…FW-25) |
 | `forward/process-and-horizon.md` | **G — Process debt & horizon discipline**: orchestration runbook, records index, suite budget, team-scale guard rails (FW-26…FW-29) |
@@ -81,6 +81,7 @@ building early is the failure mode).
 | FW-27 | Review-record + research index | BUILD | Cheap; with FW-26 |
 | FW-28 | Suite runtime budget | WATCH | CI wall-clock exceeds ~3 min |
 | FW-29 | Team-scale guard rails (what NOT to build early) | WATCH | Standing; see 06-horizon triggers |
+| FW-30 | Settings surface in the web UI (models-per-role, miner cadence, doctrine/rubric editing) | BUILD | User-requested 2026-07-18; dated addition per §7 — see `forward/ui-ux.md` §6 |
 
 ## 3. Sequencing: the recommended next three moves
 
@@ -112,6 +113,7 @@ moment they'll be asked.
 | Unpark round 4 — when? | O-9 | User's call; sequencing above recommends pre-packaging |
 | D3 manual-push posture at fleet scale | FW-22 | Foreseeable — only if a second host captures |
 | Miner autonomy ladder: any step up? | 12 §staged-autonomy | Foreseeable — only after FW-2's evidence window |
+| FW-30 settings exposure tiers: what's freely exposed vs guarded vs never | `forward/ui-ux.md` §5 | Foreseeable — routes first when FW-30 is spec'd |
 | S-18 model split — reopen? | 03 S-18 | Only on material model/pricing change |
 
 ## 5. The trigger table (event → dormant mechanism → FW item)

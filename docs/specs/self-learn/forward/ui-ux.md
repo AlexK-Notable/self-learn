@@ -100,7 +100,40 @@ growing, the structural answer is likely *modes* (a decision view vs
 an archaeology view) rather than more collapsing — noted here so the
 option is on record, deliberately unspec'd.
 
-## 5. Standing constraints on all of it
+## 5. FW-30 — Settings surface (dated addition 2026-07-18, user-requested)
+
+**The ask** (user, verbatim intent): a settings page deciding "which
+models do what, and what their miner schedule looks like… maybe even
+exposing a space for custom prompting of different parts of the
+pipeline."
+**The architectural invariant to pin at spec time**: the page is an
+**editor over committed config** (`config.yaml` in the ledger home,
+S-10's precedent — fail-closed parsing, policy in git history), never
+a live toggle store. Every save commits; settings become auditable and
+revocable the way routing decisions are.
+**Exposure tiers, proposed for the spec to ratify**:
+- *Expose freely*: models-per-role (miner / worker analyst / pane
+  engine — the S-18 economics are the user's), miner cadence (shape:
+  the systemd timer stays dumb and frequent, the miner reads its
+  window from config — the UI never writes systemd units),
+  notification thresholds, batch sizes.
+- *Expose with care*: routing-doctrine additions ("your standing
+  routing notes" — the feature most aligned with "make choices the way
+  I would"), miner rubric emphasis. Both change what agents propose,
+  never what executes without the human gate, so P1 holds either way.
+- *Never expose*: the pane charter / permission enforcement, the
+  secret scan, the consent invariants (Y-17-class), record schema.
+  These are boundaries, not preferences.
+**Interactions**: cohabits naturally with FW-14's `doctor` output
+(settings + health = one page); the config surface should stabilize
+**before** packaging freezes it for outside users (sequencing
+pressure toward the packaging phase); page composition falls under
+the round-4 principles and this doc's §4 convention.
+**Status**: recorded, unspec'd, ungated — graduates via the normal
+spec→gate chain when scheduled. The exposure-tier split above is the
+user decision the spec must route first (queued in 14 §4).
+
+## 6. Standing constraints on all of it
 
 Y-9 (jargon-free user-facing text) binds every new string; the round-4
 principles bind every layout choice now, parked or not; windows on
