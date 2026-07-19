@@ -164,12 +164,22 @@ while the pass itself is parked (O-9).
   (record: `reviews/2026-07-18-deep-specs.md`); doc-16 Stage C rides
   its stated ratification gate; builds await the user's go + the §4
   ruling queue.
-- *2026-07-19*: **FW-31 BUILT, pending gate** (Y-22 proposal-time lint —
-  `_validate_lint` + `lint` card section + routing-doctrine.md §9).
-  **FW-32 BUILT, pending gate** (Y-23 destination-bounded contradiction
-  check — narrowed worker-prompt line + `conflict` card section +
-  routing-doctrine.md §10). Built off `drafts/analyst-riders-spec.md` in
-  worktree `build/fw31-32-riders`.
+- *2026-07-19*: **FW-31 + FW-32 SHIPPED** (Y-22 proposal-time lint +
+  Y-23 destination-bounded contradiction check; gate CLEAN first pass,
+  merged da9e538) and **FW-34 SHIPPED** (Y-24 near-miss visibility +
+  canaries + 12 §12; gate CLEAN + 2 delta-verified MINOR folds, merged
+  8e48621). The four blocking rulings were resolved and folded into
+  the fast-lane/settings drafts (both re-gated SOUND, a01147e) —
+  **FW-35 and FW-30 are build-unblocked**. The DoD walk found and this
+  round fixed a latent Y-8 defect: the post-route contradicts offer
+  was unreachable live (proposal swept before the handler read it;
+  FakeRunner masked it) — U-C3/C3b shipped the pre-verb capture +
+  reload-defer + the instrumented falsification of the follow-up
+  alarm (stale cached app.js). Record:
+  `reviews/2026-07-19-rider-nearmiss-round.md`. **New backlog minted:**
+  multi-edge offer abandonment; promote bucket targeting (FW-34
+  amendment); near-miss snippet cap calibration (WATCH — 600 chars
+  refused the first real draft); static asset cache-busting.
 
 ## 6b. Dated additions log
 

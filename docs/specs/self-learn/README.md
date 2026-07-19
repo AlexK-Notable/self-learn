@@ -874,3 +874,20 @@ human routes it.
   SDK bundle exclusion verified live (PATH-claude fallback works,
   `research/2026-07-18-sdk-bundle-exclusion.md`), making a slim
   standalone distribution feasible.
+- **2026-07-19 — rider/near-miss round SHIPPED: FW-31/32 (Y-22 lint +
+  Y-23 bounded contradiction) + FW-34 (Y-24 near-miss + canaries + 12
+  §12), first round back on the S-18 default split.** The four
+  blocking rulings resolved and folded (fast-lane count cap; settings
+  table as written; timer as spec'd; **precedence flipped to
+  config > env > default**) — fast-lane/settings drafts re-gated
+  SOUND, FW-35/FW-30 build-unblocked. The DoD walk (live models, live
+  browser) proved lint and bounded contradiction end-to-end and found
+  a latent Y-8 defect — the post-route contradicts offer was
+  unreachable live (proposal swept before the post-verb read;
+  FakeRunner masked it) — fixed same-day (U-C3 pre-verb capture +
+  reload-defer leg (d); U-C3b instrumented falsification of the
+  follow-up alarm, root cause a stale cached app.js). Backlog minted:
+  multi-edge offer, promote bucket targeting, snippet-cap watch,
+  static cache-busting. Record:
+  `reviews/2026-07-19-rider-nearmiss-round.md`; trials in
+  `fixtures/ui-trials.md`.

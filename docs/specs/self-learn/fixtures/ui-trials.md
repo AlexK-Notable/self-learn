@@ -423,3 +423,79 @@ browser via Playwright.
   full live miner-run trial rides the next real miner cycle on the
   deployed code (observable in the next session's mined records —
   check for briefs then).
+
+## Rider/near-miss round DoD trials — FW-31/32 + FW-34 (+U-C3/C3b) (2026-07-19, sandboxed instance)
+
+Full sandbox (redirected `SELF_LEARN_HOME`/`XDG_RUNTIME_DIR`/
+`XDG_CACHE_HOME`/`SELF_LEARN_TRANSCRIPTS_DIR`, port 7457, server from
+the merged tree, real ledger and real transcripts untouched): ledger
+home + a registered scratch host carrying an `ha-ops` skill, real
+`worker run` and `mine run` model calls (claude-sonnet-5), real
+browser via Playwright.
+
+- **Y-22 lint emission (live model) — PASS, first draw.** The fuzzy
+  bait record ("About to edit HA files") came back
+  `trigger_recognizable: partial` with a concrete sharpening ("Name
+  the .storage/*.json glob… not 'HA files'"); the concrete sibling
+  came back `yes`/`true` with no sharpening. The Detail card rendered
+  the judgment as the plain-words "Would a fresh session catch this?"
+  section, after "Worth discussing", with the Y-9 leading line
+  untouched.
+- **Y-23 contradiction check (live model) — PASS with an honest
+  nuance.** First bait (the spec's own §2 worked example: mid-flash
+  rule vs stop-before-editing) did NOT fire — the model reasoned the
+  two rules govern different operations and judged them consistent, a
+  defensible read that suggests the spec's worked example is a
+  borderline case. Same-operation opposite-instruction bait fired
+  reliably on both subsequent draws: `contradicts: [<real id>]`, the
+  `conflict` card leading with the domestic gloss, quoting the
+  conflicting span, id demoted to the footer.
+- **Y-8/Y-23 offer flow — FAILED live, twice, then PASS; two real
+  defects shipped out of it.** (1) The post-route contradicts offer
+  had NEVER been reachable in production: the route verb deletes the
+  proposal sibling at resolution (08 §1), and the handler read
+  `contradicts` after the verb ran; the old test passed only via a
+  FakeRunner that deletes nothing — mock theater exposed by the first
+  producer to ever emit an edge. Fixed (U-C3, both confirm routes,
+  pre-verb capture + reload-defer leg (d) + deletion-faithful
+  RouteSideEffectRunner). (2) The retrial STILL failed — traced by
+  instrumentation (11 live orderings) to a stale cached `app.js` in
+  the trial browser: `StaticFiles` ships no cache-busting, so a tab
+  from before a deploy holds the old script across a server restart.
+  With fresh assets the flow passed end-to-end: route → "Routed. This
+  proposal named conflicting canon" → Link contradiction → Enter →
+  `links.contradicts` written in one ledger commit, queue advanced.
+- **FW-34 capped mine run (live model) — PASS, first attempt.** Cap=1
+  over a two-arc synthetic transcript: exactly one candidate landed
+  (rich record incl. episode brief) and one `cap-refused` near-miss
+  journaled with the plain-words reason. **Calibration finding:** the
+  real reader's draft exceeded `MAX_NEARMISS_SNIPPET_CHARS` (600), so
+  the first genuine near-miss was `{overlength: true}`,
+  `promotable: false` — refuse-not-clip behaved exactly as pinned,
+  and the feature's headline action was unavailable on its first
+  outing. Watch: the cap is likely too tight for real reader output.
+- **Near-miss drill + Promote — PASS** (drill legs live-model; the
+  promotable row data-seeded and logged as such, the real-model half
+  being the overlength row above). Collapsed by default; overlength
+  row = badge + reason only, no control; promotable row = dimmed
+  draft + the single Promote control; no dismiss/snooze anywhere. One
+  tap → real `teach` subprocess → pending record carrying the miner's
+  draft with `--session` evidence and NO quote. **Seam finding:** the
+  promoted record landed in the bucket of the UI server's own working
+  directory (teach `--project` resolves from CWD; the snippet carries
+  no project path) — sandbox-contained here, but in production a
+  transcript-derived near-miss would file under the server's project,
+  not the transcript's. Mitigation today: the rehome verb; proper fix
+  needs a small spec amendment (backlog).
+- **Canaries — PASS.** `plant` wrote only `canaries.json` (no
+  transcript file anywhere), the DP-2 guard refused with the pinned
+  message (exit 64), `mine status --json` carried the canaries block,
+  and the Front one-liner appended "canaries 0/1 caught".
+- **Bonus live confirmations en route:** the compiler's
+  regenerate-from-records contract swept hand-seeded (recordless)
+  managed-section entries on first real compile — by design; `link
+  contradicts` cleanly refused a target with no record (exit 64); a
+  worker analysis produced an unrequested-but-correct merge proposal
+  for the two same-lesson bait records; `proposal validate` triggered
+  the >24h miner catch-up watchdog in the aged sandbox (harmless,
+  worth knowing it fires during ordinary CLI use).
