@@ -111,7 +111,40 @@ channels, not a member.
 - Review fast lane (FW-35) is not worker work — UI/CLI stakes
   tiering; lives in the ui-ux theme.
 
-## 6. The user's feature re-ranking (2026-07-18, recorded)
+## 6. Implementation pointers (collected 2026-07-18, while context was hot)
+
+File:line anchors for the eventual spec authors — verified against
+master the day this doc was written; re-verify before building, drift
+is expected:
+
+- **FW-31/32 (analyst riders)**: the rejection-digest pattern to
+  imitate is `worker.py:483 _digest()` (CLI-built, injected into the
+  prompt at the `{digest}` slot ~line 602/641 — lint and contradiction
+  context ride the same assembly). Destination-section text for the
+  contradiction check comes via the Y-20 read-only path:
+  `verbs._resolve_target(check_dirty=False)` + `compilers.
+  compile_managed_text` (see `verbs.py` ~1123, `SURFACE_FILL_CAPPED_
+  DESTINATIONS`) — never a second parser.
+- **FW-34 (near-miss surface)**: journal machinery is `miner.py:130
+  journal_path()`, `:1135 _journal()`, `:1142 read_journal(limit)`;
+  the render feed is `mine status --json` (cli.py ~528) — the UI
+  consumes that, per the no-server-derivation rule.
+- **FW-36 field reports**: land as telemetry appends (11 §4's
+  actor-scoped plane, `telemetry.py`) written by the miner run —
+  compose alongside the existing journal write, never a new plane.
+- **FW-36 doctrine drafts**: the pane engine is `engine/sdk.py` (tool
+  schema precedent: `propose_verb`), the charter is
+  `engine/charter.py`; the doctrine file both drafts target is
+  `plugins/self-learn/skills/self-learn/references/
+  routing-doctrine.md` — drafts are *proposals beside it*, never
+  edits to it.
+- **UI JS invariants (FW-17's harness, and anyone touching app.js)**:
+  `static/app.js` — `clickAction():54`, `ensureRowSelected():114`,
+  `ensureContentFocus():135`, the reload-defer predicate block
+  ~310–383 (leg (a) `[data-verb-error]` check at :336; the settle/
+  error listener list incl. `htmx:swapError` at :383).
+
+## 7. The user's feature re-ranking (2026-07-18, recorded)
 
 **Upranked**: receipts digest, miner near-miss visibility, review
 fast lane, trigger lint, why-audit, contradiction check.

@@ -150,6 +150,16 @@ infrastructure without G-5's observed failure; the Go port stays parked
 fails* on Python; round 4's principles bind all interim UI work even
 while the pass itself is parked (O-9).
 
+## 6a. Dated dispositions
+
+- *2026-07-18*: **FW-26 SHIPPED** (`15-orchestration-runbook.md`;
+  round-reviewer verification against repo reality owed at the
+  maintenance round's close). **FW-27 SHIPPED** (`records-index.md`,
+  agent-built, 21/11/18 rows). **FW-17 + FW-18 IN BUILD** — the
+  maintenance round is running (user-directed, Opus agents by
+  explicit per-round override of S-18): unreadable-record spec pair
+  gated SOUND (b9cacc5), two builders in worktrees.
+
 ## 6b. Dated additions log
 
 - *2026-07-18*: FW-30 (settings surface) added on user request.
