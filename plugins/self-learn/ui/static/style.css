@@ -446,6 +446,22 @@ kbd {
   border: 1px solid color-mix(in srgb, var(--slu-warning) 30%, transparent);
 }
 
+/* F5-1/F5-2 (feedback round 5, U19 §1.2): the silent-no-op-key hint — a
+   distinct, transient element (app.js's showNoopHint/hideNoopHint), NOT
+   the persistent showBanner register (gate m5: no auto-clear there,
+   and this one self-clears on the next keypress or ~3s). Reuses the
+   .banner rhythm (O-9: one rhythm) but its own modifier so a future
+   banner style change never silently reshapes this too. */
+.noop-hint {
+  background: var(--slu-accent-bg);
+  color: var(--slu-fg-muted);
+  border: 1px solid color-mix(in srgb, var(--slu-accent) 30%, transparent);
+  padding: 0.55rem 0.9rem;
+  border-radius: var(--slu-radius-sm);
+  margin: 0.75rem 0;
+  font-size: 0.9rem;
+}
+
 .error-strip {
   background: var(--slu-danger-bg);
   color: var(--slu-danger);
@@ -993,6 +1009,14 @@ details[open] > summary {
 .episode-brief-text {
   color: var(--slu-fg-muted);
   font-size: 0.9rem;
+}
+
+/* F5-4 (feedback round 5, U19 §1.3): the raw-YAML Change fallback,
+   collapsed by default — same disclosure rhythm as .episode-brief
+   above (O-9: one rhythm), its own class only because it lives in a
+   different section and carries no `b`-key affordance. */
+.proposal-yaml-raw {
+  margin-top: 0.5rem;
 }
 
 .provenance {

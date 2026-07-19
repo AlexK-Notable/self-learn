@@ -56,7 +56,7 @@
      No proposal/destination is available in the degraded view, so the
      armable dest is empty; the route verb re-reads from files and is the
      enforcer. #}
-  {% with kind="detail", armed=None, dom_id="action-bar-" ~ salvage.record_id, record_id=salvage.record_id, dest=None, dest_note=None, event=None, target=None, already_canon=False %}
+  {% with kind="detail", armed=None, dom_id="action-bar-" ~ salvage.record_id, record_id=salvage.record_id, dest=None, dest_note=None, event=None, target=None, already_canon=False, destination_cycle=destinations_for_scope(scope) %}
     {% include "partials/action_bar.html" %}
   {% endwith %}
 

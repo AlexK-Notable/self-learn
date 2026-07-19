@@ -1,7 +1,11 @@
-{# The `?` help overlay (09 §1: "a layer, not a modal — any action key
-   acts immediately from it"). app.js toggles the `visible` class; no
-   focus trap, no inert background — keys stay live underneath. Rendered
-   from the SAME keymap_entries as the footer + JSON blob. #}
+{# The `?` help overlay (09 §1 as amended — F5-3, feedback round 5, U19
+   §1.1: "a layer, not a modal — any key dismisses it and does nothing
+   else; keys act on the page only while the overlay is closed"). app.js
+   toggles the element's `hidden` attribute (never a `visible` class —
+   the prior comment here was stale); no focus trap, no inert background
+   is needed because NO key reaches the page while the overlay is shown
+   (app.js's helpOverlayVisible() early-return). Rendered from the SAME
+   keymap_entries as the footer + JSON blob. #}
 <div id="self-learn-ui-help" class="help-overlay" hidden>
   <div class="help-overlay-panel">
     <h2>Keyboard reference</h2>

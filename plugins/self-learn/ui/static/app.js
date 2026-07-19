@@ -166,14 +166,42 @@
     window.history.back();
   }
 
+  /**
+   * F5-3 (feedback round 5, U19 §1.1 — help-overlay key containment):
+   * while the overlay is visible, ANY plain keydown closes it and stops
+   * — no key reaches the armed-bar branch, the KEYMAP dispatch, or
+   * goUp(). The overlay's own text ("Press ? again, or any other key,
+   * to dismiss") is the promise this makes true; before this fix Escape
+   * fell through to goUp() -> clickAction("interrupt") and silently
+   * cancelled a running Iterate. Ordering (gate n11): runs AFTER the
+   * text-input guard and the modifier-chord guard above, BEFORE every
+   * dispatch branch below (including the `?` toggle) — `?` keeps its
+   * toggle semantics only as a side effect: this branch handles the
+   * close half, the toggle's open half is the fallthrough when the
+   * overlay is already hidden. No focus trap, no new modal machinery —
+   * a visibility check + early return, nothing else.
+   */
+  function helpOverlayVisible() {
+    const overlay = document.getElementById("self-learn-ui-help");
+    return !!overlay && !overlay.hidden;
+  }
+
   function onKeyDown(event) {
     if (focusIsTextInput()) return;
     if (event.ctrlKey || event.altKey || event.metaKey) return; // no chords, ever
+
+    if (helpOverlayVisible()) {
+      hideNoopHint(); // any key also clears a stale hint (F5-1/2 below)
+      toggleHelp(); // overlay is visible -> this closes it
+      return;
+    }
 
     if (event.key === "?") {
       toggleHelp();
       return;
     }
+
+    hideNoopHint(); // F5-1/2: any key clears a stale no-op hint
 
     const armed = findArmedBar();
     if (armed) {
@@ -209,8 +237,78 @@
         toggleHelp();
         break;
       default:
-        clickAction(entry.action);
+        dispatchOrHint(entry.action);
     }
+  }
+
+  /**
+   * F5-1/F5-2 (feedback round 5, U19 §1.2 — silent no-op key feedback).
+   * Two reported-dead keys (`o` on a single-element destination cycle,
+   * `b` on a record without an episode brief) turned out to work, but
+   * no-op silently when gated — this gives every such gate a plain-words
+   * hint instead of nothing. ONE dispatch-site hook for BOTH shapes the
+   * server can signal (gate M1: the client never derives a no-op on its
+   * own, it only reads what's rendered):
+   *   1. present-but-noop — the control renders but is server-marked
+   *      gated via [data-noop-hint][data-noop-action="<action>"] (the
+   *      singleton-cycle `o` case: action_bar.html omits data-key-action
+   *      and adds this pair instead).
+   *   2. absent-target — nothing rendered for the action at all (no
+   *      [data-key-action], no [data-noop-hint]) — a static per-action
+   *      message from NOOP_MESSAGES (the briefless `b` case: the whole
+   *      <details class="episode-brief"> block is simply absent).
+   * A pane-proposal bar that has REPLACED the action bar hits leg 2 with
+   * no NOOP_MESSAGES entry for cycle_destination — deliberately silent,
+   * no scope message (it would be wrong there, gate M1's replaced-bar
+   * pin). The next gated key joins by adding a message here or a
+   * data-noop-hint attribute server-side — never a new mechanism.
+   */
+  const NOOP_MESSAGES = {
+    toggle_brief: "no episode brief on this record",
+  };
+
+  function dispatchOrHint(action) {
+    if (clickAction(action)) return;
+    const noop = document.querySelector(
+      '[data-noop-hint][data-noop-action="' + action + '"]'
+    );
+    if (noop) {
+      showNoopHint(noop.getAttribute("data-noop-hint"));
+      return;
+    }
+    const message = NOOP_MESSAGES[action];
+    if (message) showNoopHint(message);
+  }
+
+  /**
+   * Y-9 plain words, transient — auto-clears on the next keypress (see
+   * onKeyDown's hideNoopHint() calls above) or after NOOP_HINT_MS,
+   * whichever comes first. A NEW element (gate m5), never the
+   * persistent showBanner register (no auto-clear there, and a banner
+   * is meant to survive/stack — this is a single, self-clearing line).
+   */
+  const NOOP_HINT_MS = 3000;
+  var noopHintTimer = null;
+
+  function showNoopHint(text) {
+    const main = document.getElementById("self-learn-ui-content");
+    if (!main) return;
+    hideNoopHint();
+    const p = document.createElement("p");
+    p.className = "noop-hint";
+    p.setAttribute("data-noop-hint-active", "true");
+    p.textContent = text;
+    main.prepend(p);
+    noopHintTimer = window.setTimeout(hideNoopHint, NOOP_HINT_MS);
+  }
+
+  function hideNoopHint() {
+    if (noopHintTimer) {
+      window.clearTimeout(noopHintTimer);
+      noopHintTimer = null;
+    }
+    const el = document.querySelector("[data-noop-hint-active]");
+    if (el) el.remove();
   }
 
   document.addEventListener("keydown", onKeyDown);

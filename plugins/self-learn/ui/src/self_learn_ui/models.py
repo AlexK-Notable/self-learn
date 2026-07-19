@@ -73,6 +73,7 @@ __all__ = [
     "build_detail_model",
     "build_front_model",
     "correct_destination",
+    "destination_label",
     "destinations_for_scope",
     "host_add_command",
     "leading_text",
@@ -103,6 +104,21 @@ _DEST_CORRECTION_REASONS: dict[str, str] = {
     "skill-md": "which only exists for a skill's own lessons",
     "reference": "which needs a skill or project to keep the file in",
 }
+
+
+def destination_label(value: str | None) -> str:
+    """F5-9 (feedback round 5, U19 §1.5): Detail's action bar + Why
+    region gloss every destination enum through this — the SAME
+    ``_GROUP_LABELS`` map Bucket group headers already use (single
+    source: no second label map may exist; a builder adding one breaks
+    this rule). A live dict lookup, not a cached copy, so a corpus
+    change to ``_GROUP_LABELS`` is reflected immediately, everywhere.
+    ``None`` or an unrecognized value passes through unchanged (never a
+    placeholder) — forms/argv keep the raw enum regardless; only the
+    template's DISPLAY text goes through this."""
+    if value is None:
+        return ""
+    return _GROUP_LABELS.get(value, value)
 
 
 def destinations_for_scope(scope: str) -> tuple[str, ...]:
@@ -797,6 +813,12 @@ class BucketModel:
     #: `unreadable` field — never a server-side ledger derivation. 0
     #: renders no count line on the Bucket page.
     unreadable: int = 0
+    #: F5-1 (feedback round 5, U19 §1.2 gate M1): every row in a Bucket
+    #: page shares the SAME scope (one page = one bucket), so this is
+    #: computed once and threaded to every row's action bar — the
+    #: server-signaled no-op the `o` key hint reads (a singleton cycle
+    #: renders without `data-key-action`, per action_bar.html).
+    destination_cycle: tuple[str, ...] = ()
 
 
 def _group_key_for(item: dict) -> str:
@@ -909,6 +931,7 @@ def build_bucket_model(
         groups=tuple(groups),
         clusters=clusters,
         unreadable=unreadable,
+        destination_cycle=destinations_for_scope(scope),
     )
 
 
@@ -1045,9 +1068,12 @@ def _split_episode_brief(body: str) -> tuple[str, str | None]:
 
 
 def _build_finding(record: Record, title: str) -> FindingRegion:
+    # F5-6 (feedback round 5, U19 §1.4 gate M4): the raw "created ...Z"
+    # ISO stamp used to be baked into this pre-joined string, which no
+    # Jinja filter could reach — it is dropped here and rendered from the
+    # discrete `created_at` field below instead, as its own
+    # `humanize_ts`-filtered element on the same line (detail.html).
     parts = [record.source, f"{record.sightings} sighting(s)"]
-    if record.created_at:
-        parts.append(f"created {record.created_at}")
     body, episode_brief = _split_episode_brief(record.body)
     return FindingRegion(
         title=title or "(untitled)",

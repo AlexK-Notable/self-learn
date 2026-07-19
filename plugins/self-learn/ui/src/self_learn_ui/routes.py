@@ -882,6 +882,7 @@ def _unarmed_context(
     event: str | None,
     target: str | None,
     already_canon: bool = False,
+    scope: str = "user",
 ) -> dict[str, Any]:
     return {
         "armed": None,
@@ -902,6 +903,14 @@ def _unarmed_context(
         # round-trips default it to False, a harmless conservative
         # degradation since the highlight is cosmetic, never a gate.
         "already_canon": already_canon,
+        # F5-1 (feedback round 5, U19 §1.2 gate M1): the server-signaled
+        # singleton-cycle no-op — action_bar.html renders the cycle
+        # control without data-key-action when this has exactly one
+        # element. `scope` defaults to the everywhere-valid "user" so an
+        # un-threaded caller degrades to the same singleton the ledger's
+        # own unlocatable-record fallback uses (never a wider cycle than
+        # the record's actual scope could ever produce).
+        "destination_cycle": models.destinations_for_scope(scope),
     }
 
 
@@ -970,6 +979,18 @@ def action_arm(
     return _render(request, "partials/action_bar.html", ctx)
 
 
+def _record_scope(request: Request, record_id: str) -> str:
+    """Scope from the ledger, never a client field — shared by every site
+    that needs a record's scope to compute either a scope-corrected dest
+    (:func:`_scope_corrected_dest`) or its destination cycle (F5-1,
+    feedback round 5, U19 §1.2 gate M1). An unlocatable record degrades
+    to "user" — its cycle is the everywhere-valid claude-md singleton, so
+    even this fallback can never offer a destination the CLI would
+    refuse on scope."""
+    location = ledger.locate_record(_home(request), record_id)
+    return location.scope if location is not None else "user"
+
+
 def _scope_corrected_dest(request: Request, record_id: str, dest: str | None) -> str | None:
     """Client-echoed dest values re-enter ARMABLE renders (disarm, a
     failed confirm's re-render) — re-derive validity server-side so
@@ -977,8 +998,7 @@ def _scope_corrected_dest(request: Request, record_id: str, dest: str | None) ->
     never by trusting the echo (review 2026-07-18 F2). Scope from the
     ledger, never a client field; the corrected value is what renders
     AND arms (displayed == armed == executed)."""
-    location = ledger.locate_record(_home(request), record_id)
-    scope = location.scope if location is not None else "user"
+    scope = _record_scope(request, record_id)
     corrected, _note = models.correct_destination(scope, dest or None)
     return corrected
 
@@ -993,7 +1013,14 @@ def action_disarm(
     target: str | None = Form(None),
 ) -> HTMLResponse:
     dest = _scope_corrected_dest(request, record_id, dest)
-    ctx = _unarmed_context(kind=kind, record_id=record_id, dest=dest, event=event, target=target)
+    ctx = _unarmed_context(
+        kind=kind,
+        record_id=record_id,
+        dest=dest,
+        event=event,
+        target=target,
+        scope=_record_scope(request, record_id),
+    )
     return _render(request, "partials/action_bar.html", ctx)
 
 
@@ -1016,10 +1043,11 @@ def action_cycle_destination(
     # posture (review 2026-07-18 F3): the cycle still renders, and a
     # later confirm takes the CLI's own refusal path while the SSE
     # refresh lands the resolved-elsewhere banner (09 §3).
-    location = ledger.locate_record(_home(request), record_id)
-    scope = location.scope if location is not None else "user"
+    scope = _record_scope(request, record_id)
     new_dest = cycle_destination(dest or None, scope)
-    ctx = _unarmed_context(kind="detail", record_id=record_id, dest=new_dest, event=None, target=None)
+    ctx = _unarmed_context(
+        kind="detail", record_id=record_id, dest=new_dest, event=None, target=None, scope=scope
+    )
     return _render(request, "partials/action_bar.html", ctx)
 
 
@@ -1108,7 +1136,14 @@ async def action_confirm(
         # F2: the re-render is armable again — the echoed dest goes back
         # through the scope rule, same as disarm.
         corrected = _scope_corrected_dest(request, record_id, dest)
-        ctx = _unarmed_context(kind=kind, record_id=record_id, dest=corrected, event=event, target=target)
+        ctx = _unarmed_context(
+            kind=kind,
+            record_id=record_id,
+            dest=corrected,
+            event=event,
+            target=target,
+            scope=_record_scope(request, record_id),
+        )
         ctx["error"] = result.stderr or f"self-learn {' '.join(argv)} failed"
         return _render(request, "partials/action_bar.html", ctx)
 
@@ -1407,7 +1442,14 @@ def _proposal_gone(request: Request, kind: str, record_id: str, *, error: str | 
     Detail gets its standing unarmed action bar back, Bucket gets an
     empty proposal region."""
     if kind == "detail":
-        ctx = _unarmed_context(kind="detail", record_id=record_id, dest=None, event=None, target=None)
+        ctx = _unarmed_context(
+            kind="detail",
+            record_id=record_id,
+            dest=None,
+            event=None,
+            target=None,
+            scope=_record_scope(request, record_id),
+        )
         if error:
             ctx["error"] = error
         return _render(request, "partials/action_bar.html", ctx)

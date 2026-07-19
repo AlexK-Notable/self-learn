@@ -172,6 +172,26 @@ class TestRowDestinationDefault:
         assert row.destination_note is None
 
 
+class TestBucketDestinationCycle:
+    """F5-1 (feedback round 5, U19 §1.2 gate M1): one bucket = one scope,
+    so the cycle is computed once and shared by every row's action bar —
+    the server-signaled no-op the `o` key hint reads."""
+
+    def test_skill_bucket_full_parameter_free_cycle(self):
+        model = build_bucket_model(
+            "s", "skill", [], {}, [], REGISTRY,
+            host_registered=True, host_add_command=None, now=NOW,
+        )
+        assert model.destination_cycle == ("skill-md", "claude-md", "reference")
+
+    def test_user_bucket_is_the_singleton_cycle(self):
+        model = build_bucket_model(
+            "u", "user", [], {}, [], REGISTRY,
+            host_registered=True, host_add_command=None, now=NOW,
+        )
+        assert model.destination_cycle == ("claude-md",)
+
+
 class TestGroupPrecedence:
     def test_no_proposal_goes_to_no_analysis(self):
         items = [_item(has_proposal=False, destination=None)]

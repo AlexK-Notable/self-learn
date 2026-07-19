@@ -181,17 +181,16 @@ def _seed_ledger(tmp_path: Path) -> Path:
     return sb.ledger
 
 
-@pytest.fixture(scope="module")
-def server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[ServerHandle]:
-    tmp_path = tmp_path_factory.mktemp("js-dom")
-    ledger = _seed_ledger(tmp_path)
-
-    # NB: no global os.environ mutation here. The route handlers shell
-    # `self-learn ... --json`, and ledger._invoke_json pins SELF_LEARN_HOME
-    # to the sandbox per call; the CLI namespaces its cache by that home,
-    # so the child never touches the real ledger (the same isolation every
-    # in-process route test relies on). Mutating os.environ session-wide
-    # would leak into the rest of the suite.
+def _start_server(ledger: Path, thread_name: str) -> Iterator[ServerHandle]:
+    """The uvicorn-in-thread bring-up shared by every module server
+    fixture below (extracted at F5-1/F5-2, feedback round 5, U19 §1.2,
+    so a second ledger — ``noop_server``'s — doesn't hand-duplicate the
+    whole lifecycle). NB: no global os.environ mutation here. The route
+    handlers shell `self-learn ... --json`, and ledger._invoke_json pins
+    SELF_LEARN_HOME to the sandbox per call; the CLI namespaces its cache
+    by that home, so the child never touches the real ledger (the same
+    isolation every in-process route test relies on). Mutating
+    os.environ session-wide would leak into the rest of the suite."""
     port = _free_port()
     env = EnvConfig(
         self_learn_home=ledger,
@@ -219,7 +218,7 @@ def server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[ServerHandle]:
         asyncio.set_event_loop(loop)
         loop.run_until_complete(uv_server.serve())
 
-    thread = threading.Thread(target=_run, name="js-dom-uvicorn", daemon=True)
+    thread = threading.Thread(target=_run, name=thread_name, daemon=True)
     thread.start()
 
     deadline = time.monotonic() + _STARTUP_TIMEOUT_S
@@ -234,6 +233,13 @@ def server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[ServerHandle]:
     finally:
         uv_server.should_exit = True
         thread.join(timeout=_SHUTDOWN_TIMEOUT_S)
+
+
+@pytest.fixture(scope="module")
+def server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[ServerHandle]:
+    tmp_path = tmp_path_factory.mktemp("js-dom")
+    ledger = _seed_ledger(tmp_path)
+    yield from _start_server(ledger, "js-dom-uvicorn")
 
 
 @pytest.fixture(scope="module")
@@ -258,6 +264,56 @@ def page(browser: "Browser", server: ServerHandle) -> Iterator["Page"]:
     finally:
         context.close()
         server.clear_proposal()
+
+
+# F5-1/F5-2 (feedback round 5, U19 §1.2): a SEPARATE module-scoped ledger
+# + server from the pair above — the singleton `o`-cycle case needs a
+# user-scope record, which neither of `_seed_ledger`'s two skill-scoped
+# buckets provide, and adding one there would perturb every other test's
+# Front-page row-count/selection assumptions in this file for no reason.
+REC_USER = "lrn-05100001"  # scope=user — the everywhere-valid singleton cycle
+REC_NOOP_MULTI = "lrn-05300003"  # scope=skill:s, no brief — armed/proposal/`b` cases
+
+
+def _seed_noop_ledger(tmp_path: Path) -> Path:
+    sb = make_env(tmp_path, skills=("s",))
+    seed_record(
+        sb.ledger,
+        make_behavior(
+            scope="user",
+            record_id=REC_USER,
+            trigger="About to hand-edit a chezmoi-managed dotfile.",
+            instruction="Run chezmoi apply instead.",
+        ),
+    )
+    seed_record(
+        sb.ledger,
+        make_behavior(
+            scope="skill:s",
+            record_id=REC_NOOP_MULTI,
+            trigger="About to force-push over a shared branch.",
+            instruction="Pull and rebase first.",
+        ),
+    )
+    return sb.ledger
+
+
+@pytest.fixture(scope="module")
+def noop_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[ServerHandle]:
+    tmp_path = tmp_path_factory.mktemp("js-dom-noop")
+    ledger = _seed_noop_ledger(tmp_path)
+    yield from _start_server(ledger, "js-dom-noop-uvicorn")
+
+
+@pytest.fixture
+def noop_page(browser: "Browser", noop_server: ServerHandle) -> Iterator["Page"]:
+    context = browser.new_context()
+    pg = context.new_page()
+    try:
+        yield pg
+    finally:
+        context.close()
+        noop_server.clear_proposal()
 
 
 # --------------------------------------------------------------- helpers
@@ -727,3 +783,131 @@ class TestKeyDispatch:
         _open(page, server, f"/record/{REC_PROP}")
         with page.expect_request(lambda r: r.url.endswith("/proposal/disarm")):
             page.keyboard.press("z")
+
+
+# ============================================================= item 5:
+# F5-3 (feedback round 5, U19 §1.1) — help-overlay key containment. The
+# severest reported item: an open overlay let Escape fall through to
+# goUp() -> clickAction("interrupt"), silently cancelling a running
+# Iterate. Pinned negative: overlay open + Escape -> overlay closes AND
+# no interrupt fires.
+
+
+class TestHelpOverlayContainment:
+    def test_escape_closes_overlay_and_does_not_interrupt_inflight_pane(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        _open(page, server, f"/record/{REC_BRIEF}")
+        # The exact reported disaster: a pane turn plausibly in flight
+        # (same synthetic shape as the Esc-ladder test above) while the
+        # overlay is open.
+        page.evaluate(
+            """() => {
+                document.body.insertAdjacentHTML('beforeend',
+                  '<div class="pane-region" data-pane-state="streaming">'
+                  + '<a data-key-action="interrupt" href="#interrupted">stop</a></div>');
+            }"""
+        )
+        page.keyboard.press("?")
+        page.wait_for_selector("#self-learn-ui-help:not([hidden])")
+        page.keyboard.press("Escape")
+        assert page.evaluate("document.getElementById('self-learn-ui-help').hidden") is True
+        time.sleep(0.2)  # the interrupt link, if clicked, changes the hash synchronously
+        assert page.evaluate("location.hash") == ""
+
+    def test_s_closes_overlay_and_leaves_selection_unmoved(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        _open(page, server, "/")
+        before = _selected_index(page)
+        page.keyboard.press("?")
+        page.wait_for_selector("#self-learn-ui-help:not([hidden])")
+        page.keyboard.press("s")  # would move_down if it reached KEYMAP dispatch
+        assert page.evaluate("document.getElementById('self-learn-ui-help').hidden") is True
+        assert _selected_index(page) == before
+
+    def test_question_mark_still_toggles_open_and_closed(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        _open(page, server, "/")
+        assert page.evaluate("document.getElementById('self-learn-ui-help').hidden") is True
+        page.keyboard.press("?")
+        assert page.evaluate("document.getElementById('self-learn-ui-help').hidden") is False
+        page.keyboard.press("?")
+        assert page.evaluate("document.getElementById('self-learn-ui-help').hidden") is True
+
+    def test_keypress_in_focused_input_reaches_input_overlay_stays_open(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        """n11 ordering: the text-input guard runs BEFORE the dismiss
+        check — a focused input keeps receiving keys, and an
+        independently-opened overlay is left exactly as it was."""
+        _open(page, server, "/")
+        page.keyboard.press("?")
+        page.wait_for_selector("#self-learn-ui-help:not([hidden])")
+        page.evaluate(
+            "document.body.insertAdjacentHTML('beforeend', "
+            "'<input id=\"probe\" type=\"text\">')"
+        )
+        page.focus("#probe")
+        page.keyboard.press("s")
+        assert page.input_value("#probe") == "s"
+        assert page.evaluate("document.getElementById('self-learn-ui-help').hidden") is False
+
+
+# ============================================================= item 6:
+# F5-1/F5-2 (feedback round 5, U19 §1.2) — silent no-op key feedback.
+# Uses noop_page/noop_server (REC_USER, REC_NOOP_MULTI) — see the fixture
+# block above for why this needed its own ledger.
+
+
+class TestNoopKeyHints:
+    def test_o_on_user_scope_shows_scope_hint_dest_unchanged(
+        self, noop_page: "Page", noop_server: ServerHandle
+    ) -> None:
+        _open(noop_page, noop_server, f"/record/{REC_USER}")
+        before = noop_page.text_content(f"#action-bar-{REC_USER}")
+        noop_page.keyboard.press("o")
+        hint = noop_page.wait_for_selector("[data-noop-hint-active]")
+        assert hint.text_content() == "only one destination fits this lesson's scope"
+        after = noop_page.text_content(f"#action-bar-{REC_USER}")
+        assert before == after  # the destination text itself never changed
+
+    def test_o_on_proposal_replaced_bar_shows_no_hint(
+        self, noop_page: "Page", noop_server: ServerHandle
+    ) -> None:
+        noop_server.occupy_proposal(_proposal(REC_NOOP_MULTI))
+        _open(noop_page, noop_server, f"/record/{REC_NOOP_MULTI}")
+        noop_page.wait_for_selector("#proposal-bar")
+        assert noop_page.query_selector('[data-key-action="cycle_destination"]') is None
+        noop_page.keyboard.press("o")
+        time.sleep(0.3)
+        assert noop_page.query_selector("[data-noop-hint-active]") is None
+
+    def test_b_on_briefless_record_shows_brief_hint(
+        self, noop_page: "Page", noop_server: ServerHandle
+    ) -> None:
+        _open(noop_page, noop_server, f"/record/{REC_NOOP_MULTI}")
+        assert noop_page.query_selector("details.episode-brief") is None
+        noop_page.keyboard.press("b")
+        hint = noop_page.wait_for_selector("[data-noop-hint-active]")
+        assert hint.text_content() == "no episode brief on this record"
+
+    def test_hint_clears_on_next_keypress(
+        self, noop_page: "Page", noop_server: ServerHandle
+    ) -> None:
+        _open(noop_page, noop_server, f"/record/{REC_NOOP_MULTI}")
+        noop_page.keyboard.press("b")
+        noop_page.wait_for_selector("[data-noop-hint-active]")
+        noop_page.keyboard.press("w")  # any unrelated key
+        assert noop_page.query_selector("[data-noop-hint-active]") is None
+
+    def test_no_hint_when_a_bar_is_armed_and_o_is_pressed(
+        self, noop_page: "Page", noop_server: ServerHandle
+    ) -> None:
+        _open(noop_page, noop_server, f"/record/{REC_NOOP_MULTI}")
+        noop_page.keyboard.press("e")  # route -> arms the bar
+        noop_page.wait_for_selector(f'#action-bar-{REC_NOOP_MULTI}[data-armed="true"]')
+        noop_page.keyboard.press("o")  # armed branch: disarms, never dispatches
+        time.sleep(0.3)
+        assert noop_page.query_selector("[data-noop-hint-active]") is None

@@ -98,10 +98,28 @@
             hx-target="#{{ dom_id }}" hx-swap="outerHTML">
       Graduate (g){% if already_canon %} <span class="badge badge-already-canon">already canon</span>{% endif %}
     </button>
-    <button type="button" data-key-action="cycle_destination"
+    {# F5-1 (feedback round 5, U19 §1.2 gate M1): the cycle button ALWAYS
+       rendered, even when the record's own cycle has nowhere to go
+       (single-element cycle, e.g. user scope -> ("claude-md",)) — the
+       reported silent no-op. A singleton cycle drops data-key-action
+       (the key dispatch can't find it, so a client-side hint reads the
+       server signal below instead) and gains a data-noop-hint pair, the
+       action-keyed per gate R4. Display stays as today otherwise. #}
+    {% set _cycle = destination_cycle if destination_cycle is defined else () %}
+    <button type="button"
+            {% if (_cycle | length) == 1 %}
+            data-noop-hint="only one destination fits this lesson's scope"
+            data-noop-action="cycle_destination"
+            {% else %}
+            data-key-action="cycle_destination"
+            {% endif %}
             hx-post="/record/{{ record_id }}/action/cycle-destination" hx-include="#form-{{ dom_id }}"
             hx-target="#{{ dom_id }}" hx-swap="outerHTML">
-      Destination: {{ dest or "(analyst suggestion)" }} (o)
+      {# F5-9 (feedback round 5, U19 §1.5): the plain-words gloss
+         (models.py's single-source _GROUP_LABELS), enum demoted to the
+         title attribute (hover shows the raw value) — forms/argv below
+         keep the raw enum regardless, this is display-only. #}
+      Destination: {% if dest %}<span title="{{ dest }}">{{ dest | destination_label }}</span>{% else %}(analyst suggestion){% endif %} (o)
       {% if dest %}<span class="hint">hook / new-skill need Iterate — not cycle-reachable</span>{% endif %}
     </button>
     {# The scope-correction note (09 §2.3 as amended 2026-07-18): plain
