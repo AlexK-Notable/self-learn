@@ -320,6 +320,18 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     mstatus.add_argument("--json", dest="as_json", action="store_true")
 
+    canary_p = sub.add_parser(
+        "canary", help="recall check: plant a lesson, scored on later mining runs (FW-34 §3)"
+    )
+    canary_sub = canary_p.add_subparsers(dest="canary_command", metavar="<verb>")
+    cplant = canary_sub.add_parser(
+        "plant", help="drop a genuine lesson into the wild as a catchable canary"
+    )
+    cplant.add_argument("--lesson", required=True, metavar="TEXT")
+    cplant.add_argument(
+        "--expect", metavar="TEXT", help="optional trigger phrase the miner should catch"
+    )
+
     sub.add_parser("push", help="publish pending local commits (pinned retry)")
 
     rec = sub.add_parser(
@@ -527,15 +539,18 @@ def _cmd_mine(args: argparse.Namespace) -> int:
     if args.mine_command == "status":
         entries = miner.read_journal()
         if args.as_json:
-            print(
-                json.dumps(
-                    {
-                        "last_run": miner.last_run_iso(),
-                        "stale": miner.stale(),
-                        "runs": entries,
-                    }
-                )
-            )
+            payload = {
+                "last_run": miner.last_run_iso(),
+                "stale": miner.stale(),
+                "runs": entries,
+            }
+            # FW-34 §4: absent/empty when no canary has ever been planted
+            # — the one-liner appends "· canaries K/N caught" only when
+            # planted > 0.
+            canaries = miner.read_canaries_summary()
+            if canaries is not None:
+                payload["canaries"] = canaries
+            print(json.dumps(payload))
             return EXIT_OK
         last = miner.last_run_iso() or "never (on this machine)"
         print(f"miner last run: {last}" + ("  ⚠ STALE (>36h)" if miner.stale() else ""))
@@ -557,7 +572,8 @@ def _cmd_mine(args: argparse.Namespace) -> int:
                     f"  scanned={e.get('sessions_scanned', 0)} "
                     f"landed={e.get('landed', 0)} folded={e.get('folded', 0)} "
                     f"recurrences={e.get('recurrences', 0)} "
-                    f"fires={e.get('fires', 0)} cap={e.get('cap', '?')}"
+                    f"fires={e.get('fires', 0)} cap={e.get('cap', '?')} "
+                    f"near-misses={e.get('near_miss_count', 0)}"
                 )
             if e.get("status") == "landed-uncommitted":
                 line += "  ⚠ uncommitted — `self-learn reconcile` commits them"
@@ -576,6 +592,19 @@ def _cmd_mine(args: argparse.Namespace) -> int:
                 print(f"    {o.get('outcome', '?'):22s} {o.get('origin', '?')}{suffix}")
         return EXIT_OK
     print("usage: self-learn mine run [--trigger …] [--since …] | mine status", file=sys.stderr)
+    return EXIT_USAGE
+
+
+def _cmd_canary(args: argparse.Namespace) -> int:
+    if args.canary_command == "plant":
+        try:
+            canary_id = miner.plant_canary(args.lesson, args.expect)
+        except miner.CanaryError as exc:
+            print(f"self-learn canary: {exc}", file=sys.stderr)
+            return EXIT_USAGE
+        print(f"canary planted: {canary_id}")
+        return EXIT_OK
+    print("usage: self-learn canary plant --lesson TEXT [--expect TEXT]", file=sys.stderr)
     return EXIT_USAGE
 
 
@@ -1534,6 +1563,9 @@ def _main(argv: list[str] | None = None) -> int:
 
     if args.command == "mine":
         return _cmd_mine(args)
+
+    if args.command == "canary":
+        return _cmd_canary(args)
 
     if args.command == "prune-memory":
         return _cmd_prune_memory(args)
