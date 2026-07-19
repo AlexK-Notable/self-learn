@@ -32,6 +32,7 @@ file gets a dated disposition note on the item.*
 | `forward/sync-and-fleet.md` | **E — Sync & multi-machine**: push-state visibility and the divergence playbook (FW-20…FW-22) |
 | `forward/platform-drift.md` | **F — Platform drift**: the risks we don't control, and the watch protocol for each (FW-23…FW-25) |
 | `forward/process-and-horizon.md` | **G — Process debt & horizon discipline**: orchestration runbook, records index, suite budget, team-scale guard rails (FW-26…FW-29) |
+| `forward/worker-ecology.md` | **H — Worker ecology**: the four-worker community, its channels (field reports, briefs, doctrine drafts), the (c)-ish domain boundary, and the user's 2026-07-18 feature ranking (FW-31…FW-36) |
 
 ## 1. Where the system stands (one paragraph, pointers only)
 
@@ -81,7 +82,13 @@ building early is the failure mode).
 | FW-27 | Review-record + research index | BUILD | Cheap; with FW-26 |
 | FW-28 | Suite runtime budget | WATCH | CI wall-clock exceeds ~3 min |
 | FW-29 | Team-scale guard rails (what NOT to build early) | WATCH | Standing; see 06-horizon triggers |
-| FW-30 | Settings surface in the web UI (models-per-role, miner cadence, doctrine/rubric editing) | BUILD | User-requested 2026-07-18; dated addition per §7 — see `forward/ui-ux.md` §6 |
+| FW-30 | Settings surface in the web UI (models-per-role, miner cadence, doctrine/rubric editing) | BUILD | User-requested 2026-07-18; dated addition per §7 — see `forward/ui-ux.md` §5 |
+| FW-31 | Proposal-time lint: trigger recognizability + why-clause (analyst rider) | BUILD | Upranked by user 2026-07-18; supersedes cold-read at entry level |
+| FW-32 | Destination-bounded contradiction check (analyst rider) | BUILD | Upranked 2026-07-18; canon-wide detection stays G-5-gated |
+| FW-33 | Portfolio auditor: receipts digest + worker briefs + one-time why-audit | BUILD (deferred) | Upranked 2026-07-18; builds only when the digest is spec'd — the (c)-ish ruling |
+| FW-34 | Miner near-miss visibility (+ canary recall checks) | BUILD | Upranked 2026-07-18; mostly rendering over the existing run journal |
+| FW-35 | Review fast lane, stakes-tiered by destination | BUILD | Upranked 2026-07-18; hooks/user-scope never qualify — invariant, not default |
+| FW-36 | Worker ecology channels: miner field reports + pane doctrine drafts | BUILD | The ecology's two new information products; constitution in `forward/worker-ecology.md` §4 |
 
 ## 3. Sequencing: the recommended next three moves
 
@@ -142,6 +149,18 @@ infrastructure without G-5's observed failure; the Go port stays parked
 (O-8) and is not packaging's fallback plan until packaging *demonstrably
 fails* on Python; round 4's principles bind all interim UI work even
 while the pass itself is parked (O-9).
+
+## 6b. Dated additions log
+
+- *2026-07-18*: FW-30 (settings surface) added on user request.
+- *2026-07-18 (later same day)*: FW-31…FW-36 added from the user-seat
+  pain-point analysis + the user's re-ranking + the worker-domain
+  ruling ("(c)-ish": three domains pinned now — per-record judgment /
+  transcript intake / portfolio synthesis — auditor built only when
+  FW-33's digest is spec'd). Full ecology design:
+  `forward/worker-ecology.md`. Downranked in the same ruling:
+  challenge verb (deferred), cold-read audit (superseded by FW-31 at
+  entry level).
 
 ## 7. Change control
 
