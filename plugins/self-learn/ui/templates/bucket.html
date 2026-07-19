@@ -20,6 +20,12 @@
 <div class="error-strip" role="alert"><p>{{ list_error }}</p></div>
 {% endif %}
 
+{# 09 §5 unreadable-record row: this bucket's skip-and-count line,
+   sourced from `status --json`'s per-bucket `unreadable` field. #}
+{% if model.unreadable %}
+<p class="banner banner-notice" role="alert">{{ model.unreadable }} record{{ "s" if model.unreadable != 1 else "" }} could not be read.</p>
+{% endif %}
+
 {# Y-13 (09 §2.2/§4.5): the bucket page splits like Detail — left the
    grouped record list, right the bucket chat pane (`p`), with any
    pending proposal's bar adjacent to the pane. The pane region and the

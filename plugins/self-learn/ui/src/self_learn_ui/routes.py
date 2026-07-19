@@ -375,6 +375,18 @@ def bucket_page(request: Request, scope: str, name: str, notice: str | None = No
     host_registered = items[0].get("host_registered", True) if items else True
     host_add_command = models.host_add_command(scope, ledger.project_path_for(bucket.path))
 
+    # 09 §5 unreadable-record row: the skip-and-count line's number comes
+    # from `status --json`'s per-bucket `unreadable` field — never a
+    # server-side ledger derivation. A failed/old-CLI read (absent field)
+    # degrades to 0 (no line), never a crash.
+    status_read = ledger.status(home)
+    unreadable = 0
+    if status_read.ok and status_read.data:
+        for b in status_read.data.get("buckets", []):
+            if b.get("bucket") == name and b.get("scope") == scope:
+                unreadable = b.get("unreadable", 0)
+                break
+
     model = models.build_bucket_model(
         name,
         scope,
@@ -384,6 +396,7 @@ def bucket_page(request: Request, scope: str, name: str, notice: str | None = No
         registry,
         host_registered=host_registered,
         host_add_command=host_add_command,
+        unreadable=unreadable,
     )
 
     # Y-13: the bucket pane split (09 §2.2) + any pending proposal on a
@@ -450,7 +463,26 @@ def detail_page(request: Request, record_id: str, background_tasks: BackgroundTa
     if bundle is None:
         bundle = _gather_detail_bundle(home, record_id)
     if bundle is None:
-        return RedirectResponse(url=f"/?notice={NOTICE_NOT_FOUND}", status_code=303)
+        # _gather_detail_bundle returns None for TWO cases: an unknown id
+        # (locate_record found nothing) OR a located-but-unreadable record
+        # (read_record failed — any of the 09 §5 failure classes). Re-locate
+        # to tell them apart: a genuine miss redirects to Front; a file that
+        # exists on disk but can't be read renders the degraded salvage view
+        # (never a 500, never a silent "not found" — 09 §5 unreadable row).
+        location = ledger.locate_record(home, record_id)
+        if location is None:
+            return RedirectResponse(url=f"/?notice={NOTICE_NOT_FOUND}", status_code=303)
+        salvage = ledger.salvage_record(location.path, record_id)
+        return _render(
+            request,
+            "detail_degraded.html",
+            {
+                "salvage": salvage,
+                "record_id": record_id,
+                "bucket": location.bucket_name,
+                "scope": location.scope,
+            },
+        )
     location, record, item = bundle.location, bundle.record, bundle.item
 
     if record.status not in ("pending", "deferred"):

@@ -1182,7 +1182,11 @@ def fast_status(home: Path | str) -> dict:
         for path in bucket.pending_files():
             try:
                 text = path.read_text(encoding="utf-8")
-            except OSError:
+            except (OSError, UnicodeDecodeError):
+                # 09 §5 FW-18 crash-prevention: UnicodeDecodeError is a
+                # ValueError, not an OSError — undecodable bytes would
+                # otherwise crash the --fast scan. The --fast path still
+                # OMITS the `unreadable` count (this is skip-not-count).
                 continue
             lines = text.split("\n")
             if not lines or lines[0] != "---":

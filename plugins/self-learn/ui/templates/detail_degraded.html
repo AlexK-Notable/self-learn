@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}self-learn — {{ salvage.record_id }}{% endblock %}
+{% block page_kind %}detail{% endblock %}
+{# data-bucket so this degraded page still matches its own bucket's SSE
+   scope (a broadcast reload must re-render, never 404 — the verb runner
+   pushes a refresh even on FAILED verbs, 15 §7 gotcha). #}
+{% block body_attrs %} data-bucket="{{ bucket }}"{% endblock %}
+
+{% block status_strip %}
+<div class="status-strip">
+  <span class="brand">self-learn</span>
+  <a data-key-action="up" href="/bucket/{{ scope }}/{{ bucket }}" title="Back to this record's bucket (Esc or h)">&larr; {{ bucket }}</a>
+  <span class="status-item" title="This lesson's record id in the ledger">{{ salvage.record_id }}</span>
+</div>
+{% endblock %}
+
+{% block content %}
+{# 09 §5 unreadable-record row: a DEGRADED record view — never a 500.
+   Pinned salvage layers: id + path always; frontmatter fields only when
+   the block parsed to a mapping; the raw body verbatim as preformatted
+   text; NEVER section-parsed decision content. The action bar stays
+   rendered — the verbs remain the enforcers (a verb that cannot parse
+   the record refuses with its own message). #}
+<article data-record-id="{{ salvage.record_id }}" class="detail-left detail-degraded">
+
+  <p class="banner banner-notice" role="alert">This record's file could not be fully read.</p>
+
+  <section aria-label="record file">
+    <h2>Record</h2>
+    <dl class="salvage-meta">
+      <dt>id</dt><dd>{{ salvage.record_id }}</dd>
+      <dt>path</dt><dd><code>{{ salvage.path }}</code></dd>
+    </dl>
+  </section>
+
+  {% if salvage.frontmatter %}
+  <section aria-label="frontmatter">
+    <h2>Frontmatter</h2>
+    <dl class="salvage-frontmatter">
+      {% for key, value in salvage.frontmatter.items() %}
+      <dt>{{ key }}</dt><dd>{{ value }}</dd>
+      {% endfor %}
+    </dl>
+  </section>
+  {% endif %}
+
+  {% if salvage.raw_body is not none %}
+  <section aria-label="raw body">
+    <h2>Raw contents</h2>
+    <pre class="salvage-body">{{ salvage.raw_body }}</pre>
+  </section>
+  {% endif %}
+
+  {# The action bar stays rendered so approve/deny/defer/graduate remain
+     reachable — adjudication never depends on the record parsing (09 §5).
+     No proposal/destination is available in the degraded view, so the
+     armable dest is empty; the route verb re-reads from files and is the
+     enforcer. #}
+  {% with kind="detail", armed=None, dom_id="action-bar-" ~ salvage.record_id, record_id=salvage.record_id, dest=None, dest_note=None, event=None, target=None, already_canon=False %}
+    {% include "partials/action_bar.html" %}
+  {% endwith %}
+
+</article>
+{% endblock %}

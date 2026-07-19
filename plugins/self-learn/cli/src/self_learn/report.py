@@ -26,6 +26,8 @@ from collections import Counter
 from datetime import date, datetime, timezone
 from pathlib import Path
 
+from ruamel.yaml.error import YAMLError
+
 from . import gitops
 from .ledger import discover_buckets
 from .ledger_ops import open_followups
@@ -63,7 +65,12 @@ def _walk_records(home: Path):
             for path in sorted(directory.glob("lrn-*.md")):
                 try:
                     yield Record.from_path(path)
-                except RecordError:
+                # 09 §5 FW-18: skip EVERY read/parse failure class, not
+                # RecordError alone — an undecodable/vanished/YAML-broken
+                # file must never crash the full `status --json` path (its
+                # supply_mix/metrics walk feeds the surface the unreadable
+                # count rides on).
+                except (RecordError, OSError, UnicodeDecodeError, YAMLError):
                     continue
 
 
@@ -249,7 +256,8 @@ def gather(home: Path | str, *, today: date | None = None) -> dict:
             for path in sorted(directory.glob("lrn-*.md")):
                 try:
                     record = Record.from_path(path)
-                except RecordError:
+                # 09 §5 FW-18: same widened skip set as _walk_records.
+                except (RecordError, OSError, UnicodeDecodeError, YAMLError):
                     continue
                 counts[record.status] += 1
                 if record.source == "session":

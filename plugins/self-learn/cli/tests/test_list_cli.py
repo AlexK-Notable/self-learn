@@ -198,6 +198,7 @@ def test_status_json_pinned_shape_with_unanalyzed(home, capsys):
                 "pending": 2,  # future-deferred excluded from all counts
                 "oldest_days": 5,
                 "unanalyzed": 1,
+                "unreadable": 0,
             },
             {
                 "bucket": "user",
@@ -205,9 +206,11 @@ def test_status_json_pinned_shape_with_unanalyzed(home, capsys):
                 "pending": 1,
                 "oldest_days": 0,
                 "unanalyzed": 1,
+                "unreadable": 0,
             },
         ],
         "total_pending": 3,
+        "total_unreadable": 0,
         "open_followups": 0,
         "worker_last_run": None,
         # T19: supply mix counts pending+resolved by source (the deferred

@@ -48,6 +48,7 @@ from self_learn.ledger_ops import (
     read_proposal as _read_proposal_dict,
     validate_merge_proposal,
 )
+from ruamel.yaml.error import YAMLError
 from self_learn.records import Record, RecordError
 
 from .models import CliRead
@@ -58,6 +59,7 @@ __all__ = [
     "RecordLocation",
     "RefreshEvent",
     "RefreshHub",
+    "SalvageRecord",
     "discover_buckets",
     "list_items",
     "locate_record",
@@ -68,6 +70,7 @@ __all__ = [
     "read_proposal_raw",
     "read_proposal_text",
     "read_record",
+    "salvage_record",
     "read_registry",
     "report",
     "sentinel_mtime",
@@ -212,10 +215,73 @@ def locate_record(home: Path, record_id: str) -> RecordLocation | None:
 
 
 def read_record(path: Path) -> Record | None:
+    # 09 §5 unreadable-record row (FW-18): the catch set is EVERY
+    # read/parse failure class — an I/O error (vanished mid-render,
+    # permissions), undecodable bytes, or a ruamel YAML parse error — not
+    # RecordError alone. A None result routes the Detail page into the
+    # degraded salvage view (:func:`salvage_record`) instead of a 500;
+    # Front/Bucket skip the record and count it from `status --json`.
     try:
         return Record.from_path(path)
-    except RecordError:
+    except (RecordError, OSError, UnicodeDecodeError, YAMLError):
         return None
+
+
+@dataclass(frozen=True)
+class SalvageRecord:
+    """Best-effort salvage of an unreadable/unparseable record file for the
+    09 §5 degraded Detail view. Pinned salvage layers: ``record_id`` and
+    ``path`` ALWAYS; ``frontmatter`` fields ONLY when the frontmatter block
+    parses to a mapping; ``raw_body`` = the body text verbatim (best-effort
+    on undecodable bytes); NEVER section-parsed decision content."""
+
+    record_id: str
+    path: Path
+    frontmatter: dict | None
+    raw_body: str | None
+
+
+def _split_salvage(text: str) -> tuple[dict | None, str]:
+    """Split decodable record text into (frontmatter-map-or-None, body).
+    Never validates, never section-parses; frontmatter is surfaced ONLY
+    when the block parses to a mapping (09 §5)."""
+    lines = text.split("\n")
+    if not lines or lines[0] != "---":
+        return None, text  # no frontmatter block → whole text is the body
+    try:
+        close = lines[1:].index("---") + 1
+    except ValueError:
+        return None, text  # unterminated frontmatter → whole text as body
+    fm_text = "\n".join(lines[1:close])
+    body = "\n".join(lines[close + 1 :])
+    try:
+        loaded = pyyaml.safe_load(fm_text)
+    except pyyaml.YAMLError:
+        loaded = None
+    frontmatter = loaded if isinstance(loaded, dict) else None
+    return frontmatter, body
+
+
+def salvage_record(path: Path, record_id: str) -> SalvageRecord:
+    """Assemble the 09 §5 degraded-view salvage layers. NEVER raises: the
+    Detail route calls this exactly when :func:`read_record` already
+    failed, and the whole point is that it always yields a renderable
+    view (id + path at minimum)."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        # Undecodable bytes: a clean frontmatter/body split is impossible;
+        # salvage a best-effort body, never a (garbled) frontmatter map.
+        try:
+            replaced = path.read_bytes().decode("utf-8", errors="replace")
+        except OSError:
+            return SalvageRecord(record_id, path, None, None)
+        return SalvageRecord(record_id, path, None, replaced)
+    except OSError:
+        # Vanished / permissions: id + path only.
+        return SalvageRecord(record_id, path, None, None)
+    frontmatter, raw_body = _split_salvage(text)
+    return SalvageRecord(record_id, path, frontmatter, raw_body)
 
 
 def read_proposal_raw(bucket_dir: Path, record_id: str) -> tuple[dict | None, str | None]:

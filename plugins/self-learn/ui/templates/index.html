@@ -31,6 +31,12 @@
 </div>
 {% endif %}
 
+{# 09 §5 unreadable-record row: skip-and-count line, total across every
+   bucket, sourced from `status --json`'s `total_unreadable`. #}
+{% if model.status.total_unreadable %}
+<p class="banner banner-notice" role="alert">{{ model.status.total_unreadable }} record{{ "s" if model.status.total_unreadable != 1 else "" }} could not be read.</p>
+{% endif %}
+
 <section aria-label="bucket walk">
   <h1>Buckets</h1>
   {% if not model.buckets %}
