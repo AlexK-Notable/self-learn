@@ -2,9 +2,38 @@
    plus a persisted validate badge/strip if a past session left one (09
    §4.3: "until a re-validate exits 0" — survives `q` close). Always the
    SAME dom id as partials/pane.html / pane_armed.html so every pane
-   route can swap this one region uniformly. #}
+   route can swap this one region uniformly.
+
+   U22 (Y-28 §5): when a session was persisted for this key, a COLLAPSED
+   prior-conversation card renders in place of the bare "press i/p"
+   prompt — plain-words block count / relative time / lifecycle state
+   (never engine vocabulary, Y-9), with Resume (only when resumable),
+   View (always), and Start fresh (the existing start control, which
+   now archives-or-overwrites any existing history — §6). #}
 <div id="pane-region-wrapper" class="pane-region pane-idle"
      data-pane-panel-url="{{ pane_base | default('/record/' ~ record_id ~ '/pane') }}/panel">
+  {% if pane and pane.has_persisted_transcript %}
+  <div class="pane-prior-conversation" data-pane-resumable="{{ 'true' if pane.resumable else 'false' }}">
+    <p class="pane-prior-summary">
+      {{ pane.persisted_block_count }} block{{ '' if pane.persisted_block_count == 1 else 's' }}
+      {% if pane.persisted_relative_time %} &middot; {{ pane.persisted_relative_time }}{% endif %}
+      {% if pane.persisted_lifecycle_words %} &middot; {{ pane.persisted_lifecycle_words }}{% endif %}
+    </p>
+    <div class="pane-prior-controls">
+      {% if pane.resumable %}
+      <button type="button"
+              hx-post="{{ pane_base | default('/record/' ~ record_id ~ '/pane') }}/resume"
+              hx-target="#pane-region-wrapper" hx-swap="outerHTML">Resume</button>
+      {% endif %}
+      <button type="button"
+              hx-get="{{ pane_base | default('/record/' ~ record_id ~ '/pane') }}/view"
+              hx-target="#pane-region-wrapper" hx-swap="outerHTML">View</button>
+      <button type="button" data-key-action="{{ 'bucket_pane' if bucket_pane else 'iterate' }}"
+              hx-post="{{ pane_base | default('/record/' ~ record_id ~ '/pane') }}/start"
+              hx-target="#pane-region-wrapper" hx-swap="outerHTML">Start fresh</button>
+    </div>
+  </div>
+  {% else %}
   <button type="button" data-key-action="{{ 'bucket_pane' if bucket_pane else 'iterate' }}"
           hx-post="{{ pane_base | default('/record/' ~ record_id ~ '/pane') }}/start"
           hx-target="#pane-region-wrapper" hx-swap="outerHTML">{% if bucket_pane %}Open bucket chat (p){% else %}Iterate (i){% endif %}</button>
@@ -15,6 +44,7 @@
   {% else %}
   <p class="pane-hint">No agent session on this record yet &mdash; Iterate opens one
     to refine the proposal or draft what the buttons can't.</p>
+  {% endif %}
   {% endif %}
 
   {% if pane and pane.validate_exit_code is not none and pane.validate_exit_code != 0 %}

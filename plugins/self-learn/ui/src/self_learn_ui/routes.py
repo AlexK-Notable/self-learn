@@ -650,6 +650,46 @@ async def pane_start(request: Request, record_id: str, force: bool = Form(False)
     return _render(request, "partials/pane.html", {"record_id": record_id, "pane": snapshot})
 
 
+@router.post("/record/{record_id}/pane/resume", response_class=HTMLResponse)
+async def pane_resume(request: Request, record_id: str, force: bool = Form(False)) -> HTMLResponse:
+    """U22 (Y-28 §5's Resume control, idle-region-only): reopens a
+    persisted-but-not-live session. Same armed-prompt outcome as
+    ``start`` when a DIFFERENT record is live; degrades to the idle
+    region (never a 500) when the server-side §4e predicate refuses —
+    defense in depth beneath the button's own ``resumable`` gating."""
+    manager = _pane_manager(request)
+    if manager is None:
+        return _pane_not_wired()
+    outcome = await manager.resume(record_id, force=force)
+    if outcome == "armed":
+        return _render(
+            request,
+            "partials/pane_armed.html",
+            {"record_id": record_id, "blocked_by": manager.active_record_id},
+        )
+    if outcome == "not-resumable":
+        snapshot = manager.snapshot(record_id)
+        return _render(request, "partials/pane_idle.html", {"record_id": record_id, "pane": snapshot})
+    snapshot = manager.snapshot(record_id)
+    return _render(request, "partials/pane.html", {"record_id": record_id, "pane": snapshot})
+
+
+@router.get("/record/{record_id}/pane/view", response_class=HTMLResponse)
+def pane_view(request: Request, record_id: str) -> HTMLResponse:
+    """U22 (Y-28 §5's View control): a read-only reconstruction of the
+    persisted transcript, independent of any live session — swaps the
+    SAME ``#pane-region-wrapper`` id (no new page region). Degrades to
+    the idle region when nothing is persisted (a stale/raced click)."""
+    manager = _pane_manager(request)
+    if manager is None:
+        return _pane_not_wired()
+    view = manager.view_snapshot(record_id)
+    if view is None:
+        snapshot = manager.snapshot(record_id)
+        return _render(request, "partials/pane_idle.html", {"record_id": record_id, "pane": snapshot})
+    return _render(request, "partials/pane.html", {"record_id": record_id, "pane": view})
+
+
 @router.post("/record/{record_id}/pane/send", response_class=HTMLResponse)
 async def pane_send(request: Request, record_id: str, text: str = Form(...)) -> HTMLResponse:
     manager = _pane_manager(request)
@@ -685,8 +725,11 @@ async def pane_retry(request: Request, record_id: str) -> HTMLResponse:
 
 @router.post("/record/{record_id}/pane/close", response_class=HTMLResponse)
 async def pane_close(request: Request, record_id: str) -> Response:
-    """``q`` (09 §2.4): ends the session, discards the transcript, and
-    returns to full (non-split) Detail."""
+    """``q`` (09 §2.4). U22 (Y-28 §4c) reworked this from a hard discard
+    to a park-to-disk: the live session tears down and returns to full
+    (non-split) Detail exactly as before, but the transcript now
+    survives on disk — the next Iterate open shows the collapsed
+    prior-conversation card (§5) instead of a bare prompt."""
     manager = _pane_manager(request)
     if manager is not None:
         await manager.close(record_id)
@@ -1633,6 +1676,53 @@ async def bucket_pane_start(
         )
     snapshot = manager.snapshot(key)
     return _render(request, "partials/pane.html", _bucket_pane_ctx(scope, name, snapshot))
+
+
+@router.post("/bucket/{scope}/{name}/pane/resume", response_class=HTMLResponse)
+async def bucket_pane_resume(
+    request: Request, scope: str, name: str, force: bool = Form(False)
+) -> HTMLResponse:
+    """U22 — the bucket pane's Resume control (§5: "the bucket key is a
+    first-class session key, so the store, the card, and the controls
+    are the same code path")."""
+    manager = _pane_manager(request)
+    if manager is None:
+        return _pane_not_wired()
+    key = _bucket_pane_key(scope, name)
+    outcome = await manager.resume(key, force=force)
+    if outcome == "armed":
+        return _render(
+            request,
+            "partials/pane_armed.html",
+            {
+                "record_id": key,
+                "blocked_by": manager.active_record_id,
+                "pane_base": f"/bucket/{scope}/{name}/pane",
+            },
+        )
+    if outcome == "not-resumable":
+        snapshot = manager.snapshot(key)
+        return _render(
+            request, "partials/pane_idle.html", {**_bucket_pane_ctx(scope, name, snapshot), "bucket_pane": True}
+        )
+    snapshot = manager.snapshot(key)
+    return _render(request, "partials/pane.html", _bucket_pane_ctx(scope, name, snapshot))
+
+
+@router.get("/bucket/{scope}/{name}/pane/view", response_class=HTMLResponse)
+def bucket_pane_view(request: Request, scope: str, name: str) -> HTMLResponse:
+    """U22 — the bucket pane's View control."""
+    manager = _pane_manager(request)
+    if manager is None:
+        return _pane_not_wired()
+    key = _bucket_pane_key(scope, name)
+    view = manager.view_snapshot(key)
+    if view is None:
+        snapshot = manager.snapshot(key)
+        return _render(
+            request, "partials/pane_idle.html", {**_bucket_pane_ctx(scope, name, snapshot), "bucket_pane": True}
+        )
+    return _render(request, "partials/pane.html", _bucket_pane_ctx(scope, name, view))
 
 
 @router.post("/bucket/{scope}/{name}/pane/send", response_class=HTMLResponse)

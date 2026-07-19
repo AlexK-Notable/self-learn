@@ -61,13 +61,16 @@ merge.
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import AsyncIterator, Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from self_learn.hosts import HostsError, load_hosts, skill_dir_for
 from self_learn.records import Record
+from self_learn.worker import cache_dir
 
 from . import ledger
 from .doctrine import read_doctrine
@@ -80,6 +83,7 @@ from .proposals import PROPOSAL_TOOL_QUALIFIED_NAME, ProposalSlot, SessionScope,
 from .rendering import render_markdown
 from .runner import VerbRunner
 from .sse import AppEventHub
+from .store import PaneTranscriptStore, StoredSnapshot
 
 __all__ = [
     "BUCKET_CONTEXT_ROW_CAP",
@@ -140,6 +144,93 @@ def _is_cap_hit(status: str) -> bool:
 
 
 CAP_HIT_MESSAGE = "cap hit — r to continue in a fresh session"
+
+
+# ------------------------------------------------------- Y-28 / U22 resume
+#
+# Durable pane/Iterate transcripts with resume (09 §11 Y-28, 10 §3 U22).
+# Tier 1 (render-resume, always on) mirrors finalized TranscriptBlocks to
+# a cache-local JSONL via store.PaneTranscriptStore at the three pinned
+# append points below. Tier 2 (context-resume) rides the resolved SDK's
+# session_store/resume capability (engine/sdk.py) when a prior session's
+# sdk_session_id was captured; Tier 1.5 (first_message reinjection) is
+# the fallback when it was not (e.g. the session never reached a Result,
+# so the SDK never reported one).
+
+#: Y-28 §4e's three-clause resumable predicate excludes these — a
+#: session that ended in error/cap-hit is Tier-2-ineligible even though
+#: the record itself may still be pending (the live send() guard,
+#: pane.py:663-668, enforces this in-process; this constant is the
+#: same rule surviving a restart via the sidecar's terminal_status).
+_NON_RESUMABLE_TERMINAL_STATUSES = frozenset({"error", "cap-hit"})
+
+#: Tier-2 Resume's first query on the reconnected session (09/10's
+#: cost-honesty posture: never invent what the human said — this is
+#: plainly an engine-turn nudge, not a human message, and is never
+#: rendered to the human as if they typed it; the transcript view shows
+#: only the AGENT's response blocks, same as every other turn).
+_RESUME_NUDGE_MESSAGE = (
+    "(the human just resumed this conversation after a pause — the "
+    "restored session already carries the full prior context; wait for "
+    "their next instruction, or briefly acknowledge you're ready to "
+    "continue if that feels natural. Do not repeat the earlier analysis "
+    "unless asked.)"
+)
+
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _strip_html_tags(html: str) -> str:
+    """A naive tag stripper for Tier-1.5 reinjection (§1's fallback):
+    the persisted blocks are server-rendered markdown->HTML
+    (rendering.py, XSS-safe), not attacker input, so this is a plain
+    textual approximation for the model's context — never re-parsed as
+    markup anywhere."""
+    return _HTML_TAG_RE.sub("", html).strip()
+
+
+def _compose_reinjected_first_message(stored: StoredSnapshot, original_first_message: str) -> str:
+    """Tier 1.5 (§1's fallback / §8's "reinjection sends the transcript
+    once as first_message context"): the persisted transcript, textually
+    flattened, prefixed onto the SAME first_message the session would
+    otherwise have opened with (record body / bucket context) — so the
+    fresh engine gets both "what was already discussed" and "what this
+    session is about"."""
+    lines = ["=== PRIOR CONVERSATION (persisted — reinjected as context) ==="]
+    for block in stored.blocks:
+        if block.kind == "text" and block.html:
+            lines.append(_strip_html_tags(block.html))
+        elif block.kind == "tool":
+            target = f" -> {block.tool_target}" if block.tool_target else ""
+            lines.append(f"[tool used: {block.tool_name}{target}]")
+    if stored.truncated:
+        lines.append("(earlier turns not persisted — size cap)")
+    lines.append("=== END PRIOR CONVERSATION ===")
+    lines.append(original_first_message)
+    return "\n\n".join(lines)
+
+
+def _relative_time(iso: str | None) -> str | None:
+    """A plain-words relative time ("2h ago") for the collapsed
+    prior-conversation card (§5) — never the raw ISO timestamp (Y-9)."""
+    if not iso:
+        return None
+    try:
+        dt = datetime.fromisoformat(iso)
+    except ValueError:
+        return None
+    now = datetime.now(dt.tzinfo) if dt.tzinfo is not None else datetime.now()
+    seconds = max((now - dt).total_seconds(), 0)
+    if seconds < 60:
+        return "just now"
+    minutes = int(seconds // 60)
+    if minutes < 60:
+        return f"{minutes}m ago"
+    hours = int(minutes // 60)
+    if hours < 24:
+        return f"{hours}h ago"
+    days = int(hours // 24)
+    return f"{days}d ago"
 
 
 # ------------------------------------------------- target canon excerpt
@@ -567,6 +658,20 @@ class _Live:
     #: result_status/cost/turns (rendered by the SAME footer block,
     #: 09 §2.1: server derives nothing new at render time).
     turn_summary: str | None = None
+    #: U22 (Y-28): this session was claimed via resume(), not start() —
+    #: _run_first_turn reads this to call store.continue_existing()
+    #: (append to the SAME file) instead of store.start_new() (archive +
+    #: fresh header).
+    is_resume: bool = False
+    #: U22: resume()'s pre-built PaneContext (resume_session_id set for
+    #: Tier 2, or a reinjected first_message for Tier 1.5) —
+    #: _run_first_turn uses this in place of calling context_builder
+    #: again when set.
+    resume_ctx_override: PaneContext | None = None
+    #: U22: "resumed" (Tier 2 SDK-resume) | "reinjected" (Tier 1.5) |
+    #: None (an ordinary fresh session) — the honest lifecycle line
+    #: (§5) reads this; never claims a tier that did not actually fire.
+    resumed_note: str | None = None
 
 
 @dataclass(frozen=True)
@@ -595,9 +700,45 @@ class PaneSnapshot:
     validate_exit_code: int | None
     validate_stderr: str | None
     turn_summary: str | None
+    #: U22 (Y-28 §5): whether ANY transcript is persisted for this
+    #: session key, regardless of resumability — drives the idle
+    #: region's collapsed prior-conversation card vs the bare prompt.
+    has_persisted_transcript: bool = False
+    #: U22: the §4e three-clause predicate — gates the Resume control.
+    #: Always ``False`` on a LIVE snapshot (resume is an idle-only
+    #: action) and on a view-only snapshot.
+    resumable: bool = False
+    #: U22: the card's block-count fact — ``None`` when nothing persisted.
+    persisted_block_count: int | None = None
+    #: U22: the card's plain-words relative time ("2h ago") — Y-9, never
+    #: a raw ISO timestamp.
+    persisted_relative_time: str | None = None
+    #: U22: the card's plain-words state — "waiting for you" | "finished"
+    #: | "stopped early" | "hit an error" — NEVER engine vocabulary
+    #: (Y-9; §5's exact register).
+    persisted_lifecycle_words: str | None = None
+    #: U22: the honest per-tier annotation under a LIVE resumed/
+    #: reinjected/view-only session (§5) — "(resumed — earlier turns
+    #: restored)" / "(continued — earlier turns re-read as context)" /
+    #: "(view only)" / "(record resolved — view only)". ``None`` under
+    #: an ordinary fresh live session.
+    lifecycle_note: str | None = None
+    #: U22: a read-only reconstruction from disk (the View control) —
+    #: the template hides Send/Interrupt/Close-that-discards in favor
+    #: of a single non-destructive Back control.
+    view_only: bool = False
 
 
-def _idle_snapshot(record_id: str, validate: tuple[int, str] | None) -> PaneSnapshot:
+def _idle_snapshot(
+    record_id: str,
+    validate: tuple[int, str] | None,
+    *,
+    has_persisted_transcript: bool = False,
+    resumable: bool = False,
+    persisted_block_count: int | None = None,
+    persisted_relative_time: str | None = None,
+    persisted_lifecycle_words: str | None = None,
+) -> PaneSnapshot:
     return PaneSnapshot(
         record_id=record_id,
         state=STATE_IDLE,
@@ -612,6 +753,11 @@ def _idle_snapshot(record_id: str, validate: tuple[int, str] | None) -> PaneSnap
         validate_exit_code=validate[0] if validate else None,
         validate_stderr=validate[1] if validate else None,
         turn_summary=None,
+        has_persisted_transcript=has_persisted_transcript,
+        resumable=resumable,
+        persisted_block_count=persisted_block_count,
+        persisted_relative_time=persisted_relative_time,
+        persisted_lifecycle_words=persisted_lifecycle_words,
     )
 
 
@@ -629,6 +775,8 @@ class PaneManager:
         refresh_hub: RefreshHub,
         runner: VerbRunner,
         proposal_slot: ProposalSlot | None = None,
+        store: PaneTranscriptStore | None = None,
+        home: Path | None = None,
     ) -> None:
         self._engine_factory = engine_factory
         self._context_builder = context_builder
@@ -647,6 +795,25 @@ class PaneManager:
         # (surviving `q` close / a later plain Detail reload), so it is
         # NOT cleared when `_live` is discarded.
         self._validate_results: dict[str, tuple[int, str]] = {}
+        # U22 (Y-28): the Tier-1 render-event store. `None` keeps every
+        # pre-U22 test/construction working exactly as before — every
+        # store-touching branch below is `if self._store is not None`.
+        self._store = store
+        # U22: `home` powers the §4e resumable predicate's ledger checks
+        # (record status + bucket_dir match) — `None` disables the
+        # predicate safely (resumable always reads False, never raises).
+        self._home = home
+        # U22: Y-28 §6 says "opportunistic ... at manager construction" —
+        # but pruning needs the store's resolved dir (cache_dir() in
+        # production), and resolving THAT eagerly right here would touch
+        # the real cache dir at build_pane_manager()/create_app() time
+        # for every caller, including every test that constructs an app
+        # but never actually opens a pane (a regression against 10 §0
+        # rules 7/8). Deferred to the first REAL store touch instead
+        # (see :meth:`_maybe_prune_once`, called from :meth:`snapshot`) —
+        # "opportunistic" is satisfied by "at the first opportunity a
+        # pane is actually rendered," not literally at `__init__`.
+        self._pruned_once = False
 
     @property
     def active_record_id(self) -> str | None:
@@ -661,9 +828,10 @@ class PaneManager:
         :data:`STATE_IDLE` when there is no live session for this record
         (whether or not one ever ran); routes.py decides whether to
         render the split from ``state != STATE_IDLE``."""
+        self._maybe_prune_once()
         validate = self._validate_results.get(record_id)
         if self._live is None or self._live.record_id != record_id:
-            return _idle_snapshot(record_id, validate)
+            return self._idle_snapshot_with_persistence(record_id, validate)
         live = self._live
         current_html: str | None = None
         if live.current_kind is not None:
@@ -686,10 +854,135 @@ class PaneManager:
             validate_exit_code=validate[0] if validate else None,
             validate_stderr=validate[1] if validate else None,
             turn_summary=live.turn_summary,
+            has_persisted_transcript=self._store is not None,
+            resumable=False,  # U22: resume is an idle-only action
+            lifecycle_note=self._lifecycle_note_for(live),
         )
 
     def validate_state(self, record_id: str) -> tuple[int, str] | None:
         return self._validate_results.get(record_id)
+
+    # ------------------------------------------------------- U22 (Y-28)
+
+    def _maybe_prune_once(self) -> None:
+        """Y-28 §6's "opportunistic ... at manager construction," honored
+        at the first REAL store touch instead of literally at
+        ``__init__`` (see the constructor's comment) — one prune per
+        manager lifetime from this call site; :meth:`close`/
+        :meth:`_teardown_live` additionally prune on EVERY teardown per
+        the spec's other clause."""
+        if self._store is not None and not self._pruned_once:
+            self._pruned_once = True
+            self._store.prune()
+
+    def _lifecycle_note_for(self, live: "_Live") -> str | None:
+        if live.resumed_note == "resumed":
+            return "(resumed — earlier turns restored)"
+        if live.resumed_note == "reinjected":
+            return "(continued — earlier turns re-read as context)"
+        return None
+
+    def _idle_snapshot_with_persistence(
+        self, record_id: str, validate: tuple[int, str] | None
+    ) -> PaneSnapshot:
+        if self._store is None:
+            return _idle_snapshot(record_id, validate)
+        stored = self._store.read_snapshot(record_id)
+        if stored is None:
+            return _idle_snapshot(record_id, validate)
+        resumable = self._is_resumable(record_id, stored)
+        return _idle_snapshot(
+            record_id,
+            validate,
+            has_persisted_transcript=True,
+            resumable=resumable,
+            persisted_block_count=len(stored.blocks),
+            persisted_relative_time=_relative_time(stored.updated_at),
+            persisted_lifecycle_words=self._lifecycle_words(stored, resumable),
+        )
+
+    def _lifecycle_words(self, stored: StoredSnapshot, resumable: bool) -> str:
+        """§5's exact plain-words register — NEVER engine vocabulary."""
+        if stored.terminal_status == "error":
+            return "hit an error"
+        if stored.terminal_status == "cap-hit":
+            return "stopped early"
+        if resumable:
+            return "waiting for you"
+        return "finished"
+
+    def _is_resumable(self, session_key: str, stored: StoredSnapshot) -> bool:
+        """§4e's three-clause predicate, ALL required: status
+        pending/deferred (or the bucket still exists, for a bucket
+        session — buckets have no "status"), the record's CURRENT
+        ``bucket_dir`` resolved-equals the recorded one (a rehome
+        invalidates), and the sidecar's ``terminal_status`` is not
+        error/cap-hit (survives a restart, unlike the live ``send()``
+        guard alone)."""
+        if stored.terminal_status in _NON_RESUMABLE_TERMINAL_STATUSES:
+            return False
+        if not stored.bucket_dir or self._home is None:
+            return False
+        try:
+            recorded_dir = Path(stored.bucket_dir).resolve()
+        except OSError:
+            return False
+        parsed = parse_bucket_session_key(session_key)
+        if parsed is not None:
+            scope, name = parsed
+            bucket = next(
+                (b for b in ledger.discover_buckets(self._home) if b.scope == scope and b.name == name),
+                None,
+            )
+            return bucket is not None and Path(bucket.path).resolve() == recorded_dir
+        location = ledger.locate_record(self._home, session_key)
+        if location is None:
+            return False
+        record = ledger.read_record(location.path)
+        if record is None or record.status not in ("pending", "deferred"):
+            return False
+        return Path(location.bucket_dir).resolve() == recorded_dir
+
+    def view_snapshot(self, record_id: str) -> PaneSnapshot | None:
+        """The View control (§5): a read-only reconstruction straight
+        from the store, independent of any live session. ``None`` when
+        nothing is persisted (the route degrades to the idle region)."""
+        self._maybe_prune_once()
+        if self._store is None:
+            return None
+        stored = self._store.read_snapshot(record_id)
+        if stored is None:
+            return None
+        blocks = tuple(
+            TranscriptBlock(kind=b.kind, html=b.html, tool_name=b.tool_name, tool_target=b.tool_target)
+            for b in stored.blocks
+        )
+        result = stored.result
+        note = "(earlier turns unreadable)" if stored.corrupt else "(view only)"
+        if stored.truncated:
+            note = "(earlier turns not persisted — size cap)"
+        return PaneSnapshot(
+            record_id=record_id,
+            state=STATE_ENDED,
+            blocks=blocks,
+            current_kind=None,
+            current_html=None,
+            result_status=result.status if result else None,
+            result_cost_usd=result.cost_usd if result else None,
+            result_turns=result.turns if result else None,
+            error_message=None,
+            cap_hit=False,
+            validate_exit_code=None,
+            validate_stderr=None,
+            turn_summary=None,
+            has_persisted_transcript=True,
+            resumable=False,
+            persisted_block_count=len(stored.blocks),
+            persisted_relative_time=_relative_time(stored.updated_at),
+            persisted_lifecycle_words=None,
+            lifecycle_note=note,
+            view_only=True,
+        )
 
     # ----------------------------------------------------------- lifecycle
 
@@ -707,7 +1000,72 @@ class PaneManager:
         synchronous — no ``await`` between the guard and the assignment
         (F5) — and the first turn drains in a background task; callers
         render the STARTING snapshot and the SSE stream fills it. Tests
-        join deterministically via :meth:`wait_for_turn`."""
+        join deterministically via :meth:`wait_for_turn`.
+
+        U22 (Y-28 §6): this is ALWAYS a fresh session — if a transcript
+        was already persisted for ``record_id``, :meth:`_run_first_turn`
+        archives it (``store.start_new``) before the new header is
+        written, so "Start fresh" (the idle card's control) is simply
+        this same method."""
+        claim = await self._claim_live_slot(record_id, force=force)
+        if isinstance(claim, str):
+            return claim
+        live = claim
+        live.drain_task = asyncio.create_task(self._run_first_turn(live))
+        return "started"
+
+    async def resume(self, record_id: str, *, force: bool = False) -> str:
+        """U22 (Y-28 §1/§4/§5's Resume control): reopen a
+        persisted-but-not-live session, continuing the SAME transcript
+        file (never archived — contrast :meth:`start`). Same
+        one-live-session outcomes as :meth:`start` (``"armed"``/
+        ``"resumed"``); ``"not-resumable"`` when no store is wired or
+        the §4e predicate fails — server-side defense in depth beneath
+        the UI's own gating (the control only renders when the idle
+        snapshot already agreed).
+
+        Tries Tier 2 (SDK-resume) when the persisted sidecar carries a
+        captured ``sdk_session_id``; falls back to Tier 1.5 (first-
+        message reinjection) otherwise — EITHER WAY this dispatches one
+        real background first turn (like :meth:`start`), because a
+        silent reconnect-with-no-turn has no seam on the pinned
+        ``PaneEngine`` API (10 §1) and the reinjection tier has no
+        other way to "say" anything to the model at all. §8's cost
+        note ("Resume pays the history re-send for continuity") is
+        exactly this turn's cost."""
+        if self._store is None:
+            return "not-resumable"
+        stored = self._store.read_snapshot(record_id)
+        if stored is None or not self._is_resumable(record_id, stored):
+            return "not-resumable"
+        claim = await self._claim_live_slot(record_id, force=force)
+        if isinstance(claim, str):
+            return claim
+        live = claim
+        live.is_resume = True
+        base_ctx = self._context_builder(record_id)
+        if stored.sdk_session_id:
+            live.resume_ctx_override = replace(
+                base_ctx,
+                resume_session_id=stored.sdk_session_id,
+                first_message=_RESUME_NUDGE_MESSAGE,
+            )
+            live.resumed_note = "resumed"
+        else:
+            live.resume_ctx_override = replace(
+                base_ctx,
+                first_message=_compose_reinjected_first_message(stored, base_ctx.first_message),
+            )
+            live.resumed_note = "reinjected"
+        live.drain_task = asyncio.create_task(self._run_first_turn(live))
+        return "started"
+
+    async def _claim_live_slot(self, record_id: str, *, force: bool) -> "_Live | str":
+        """The one-live-session guard shared by :meth:`start` and
+        :meth:`resume` (Y-15/F5's synchronous-claim discipline, U22
+        fold): returns ``"armed"``/``"resumed"`` per the existing rules,
+        or a freshly-claimed, slot-assigned :class:`_Live` ready for its
+        caller to attach a ``drain_task`` to."""
         while self._live is not None:
             if self._live.record_id != record_id:
                 if not force:
@@ -732,8 +1090,7 @@ class PaneManager:
 
         live = _Live(record_id=record_id)
         self._live = live  # synchronous with the guard above (F5)
-        live.drain_task = asyncio.create_task(self._run_first_turn(live))
-        return "started"
+        return live
 
     async def wait_for_turn(self) -> None:
         """Deterministic join on the in-flight background first turn —
@@ -803,18 +1160,27 @@ class PaneManager:
         return True
 
     async def close(self, record_id: str) -> bool:
-        """``q`` (09 §2.4): ends the session and DISCARDS the transcript
-        (09 §4.2: "closing the split discards it — outcomes live in
-        files"). The validate badge (if any) is NOT cleared here — it is
-        ledger/scan state, not transcript state."""
+        """``q`` (09 §2.4). U22 (Y-28 §4c) reworks this from a hard
+        discard to a PARK-TO-DISK: every finalized block is already on
+        disk (§0's durability model — this method writes nothing new
+        except the trailing in-flight block, a nicety); the live
+        in-memory ``_Live`` is still torn down exactly as before (the
+        engine closes, the slot clears) so a subsequent Detail render
+        collapses to the idle region, now showing the collapsed
+        prior-conversation card (§5) instead of the bare prompt. The
+        validate badge (if any) is NOT cleared here — it is ledger/scan
+        state, not transcript state."""
         if self._live is None or self._live.record_id != record_id:
             return False
         live, self._live = self._live, None
         await self._dispose_drain(live)
+        self._flush_trailing_inflight(live)
         if live.engine is not None:
             await live.engine.close()
         # Y-13 clear-set: the proposing session ended (`q`).
         self._proposal_slot.clear_for_session(record_id)
+        if self._store is not None:
+            self._store.prune()
         return True
 
     async def interrupt_active_session(self, record_id: str) -> bool:
@@ -869,12 +1235,33 @@ class PaneManager:
         # Y-15/F3: the drain task dies BEFORE the engine teardown and
         # before any successor can claim the slot.
         await self._dispose_drain(live)
+        # U22 (Y-28 §0/§4b/§4d/§4f): every FINALIZED block is already on
+        # disk; this captures only a trailing IN-FLIGHT block so a
+        # restart/idle-park/verb-teardown loses nothing that was
+        # actually streamed. Never the durability mechanism — a nicety.
+        self._flush_trailing_inflight(live)
         if live.engine is not None:
             await live.engine.interrupt()
             await live.engine.close()
         # Y-13 clear-set: teardown ends the proposing session (interrupt
         # via verb dispatch, or a forced start on another item).
         self._proposal_slot.clear_for_session(live.record_id)
+        if self._store is not None:
+            self._store.prune()
+
+    def _flush_trailing_inflight(self, live: _Live) -> None:
+        """Y-28 §0's teardown-time capture: append the trailing
+        in-flight TEXT block (if any) — tool blocks are never left
+        in-flight (``_handle_event``'s ToolUse leg finalizes any pending
+        text block first, then appends the tool block atomically, so
+        ``current_kind`` is only ever ``"text"`` mid-stream). A no-op
+        when there is no store or nothing in flight yet (an in-flight
+        block with zero deltas so far renders "" — nothing worth
+        persisting)."""
+        if self._store is None or live.current_kind != "text" or not live.current_text:
+            return
+        html = render_markdown(live.current_text)
+        self._store.append_block(live.record_id, kind="text", html=html)
 
     async def _dispose_drain(self, live: _Live) -> None:
         """Cancel-or-await *live*'s background drain task (Y-15/F3's
@@ -914,8 +1301,24 @@ class PaneManager:
                 # Context before engine — the factory/builder pair is a
                 # closure convention shared with the test harnesses
                 # (build_pane_manager's production closures are
-                # order-independent).
-                ctx = self._context_builder(live.record_id)
+                # order-independent). U22: resume() pre-builds its own
+                # ctx (resume_session_id set, or first_message
+                # reinjected) — use it in place of a fresh
+                # context_builder call when present.
+                ctx = live.resume_ctx_override if live.resume_ctx_override is not None else self._context_builder(live.record_id)
+                if self._store is not None:
+                    if live.is_resume:
+                        # Y-28 §4/§6: Resume continues the SAME file —
+                        # never archived, never a fresh header.
+                        self._store.continue_existing(live.record_id)
+                    else:
+                        # Y-28 §6: start()/"Start fresh" — archive any
+                        # existing history, then a fresh header.
+                        self._store.start_new(
+                            live.record_id,
+                            record_id_or_bucket=live.record_id,
+                            bucket_dir=str(ctx.bucket_root),
+                        )
                 live.engine = self._engine_factory()
                 await self._drain(live, live.engine.start(ctx))
         except asyncio.CancelledError:
@@ -1001,6 +1404,16 @@ class PaneManager:
         live.blocks.append(TranscriptBlock(kind="text", html=html))
         live.current_kind = None
         live.current_text = ""
+        # U22 (Y-28 §1): the FIRST of the three pinned append points —
+        # incremental append, flush()ed at write (§0's durability
+        # model). Placed AFTER the in-memory mutation above for the
+        # exact same reordering reason as the publish below (FW-18 fix
+        # 2): a store write is not a suspension point in this runtime
+        # (plain sync file I/O), but keeping it beside the in-memory
+        # mutation — both before the only await in this method — keeps
+        # "the block is finalized" a single atomic-looking step.
+        if self._store is not None:
+            self._store.append_block(live.record_id, kind="text", html=html)
         await self._app_hub.publish({"type": "pane_block", "html": html})
 
     async def _handle_event(self, live: _Live, event: PaneEvent) -> None:
@@ -1019,6 +1432,11 @@ class PaneManager:
             # render AFTER a tool line that actually happened later.
             await self._finalize_current(live)
             live.blocks.append(TranscriptBlock(kind="tool", tool_name=event.name, tool_target=event.target))
+            # U22 (Y-28 §1): the SECOND pinned append point.
+            if self._store is not None:
+                self._store.append_block(
+                    live.record_id, kind="tool", tool_name=event.name, tool_target=event.target
+                )
             await self._app_hub.publish({"type": "pane_tool", "name": event.name, "target": event.target})
             if event.name == PROPOSAL_TOOL_QUALIFIED_NAME and not live.turn_saw_propose_tooluse:
                 # U21 gate R5's edge pin: capture the slot's occupant
@@ -1043,6 +1461,20 @@ class PaneManager:
             live.result_turns = event.turns
             live.cap_hit = bool(event.error) and _is_cap_hit(event.status)
             live.error_message = event.error
+            # U22 (Y-28 §1): the THIRD pinned append point — the
+            # terminal Result footer, plus the captured session_id
+            # (Tier 2's later resume target) and the terminal_status
+            # the §4e predicate reads back after a restart.
+            if self._store is not None:
+                self._store.append_result(
+                    live.record_id,
+                    status=event.status,
+                    cost_usd=event.cost_usd,
+                    turns=event.turns,
+                    error=event.error,
+                    cap_hit=live.cap_hit,
+                    session_id=event.session_id,
+                )
             if event.error:
                 live.state = STATE_ENDED
             else:
@@ -1148,12 +1580,26 @@ def build_pane_manager(
     ``getattr(..., None)`` and degrades to a 503 when absent, so the app
     keeps working (minus Iterate) even before this line lands."""
 
+    # U22 (Y-28 §2/§7): the store lives under the SAME cache_dir()
+    # namespace as ui-token/uilog — "the store imports only
+    # self_learn.worker.cache_dir, an existing public seam" (§7's
+    # verify-at-build pin). Tier 1's render-event mirror and Tier 2's
+    # SDK session mirror are separate subdirectories (store.py's module
+    # docstring — never the same artifact). Both are LAZY (cache_dir()
+    # is a zero-arg callable here, not called yet) — this function runs
+    # at create_app() time for every app instance, including tests that
+    # never open a pane; resolving cache_dir() (which unconditionally
+    # `mkdir`s its own base dir, pinned cli-package behavior) eagerly
+    # here would touch the real cache dir for all of them.
+    store = PaneTranscriptStore(lambda: cache_dir() / "panes")
+
     def engine_factory() -> PaneEngine:
         return SdkPaneEngine(
             model=env.pane_model,
             fallback_model=DEFAULT_FALLBACK_MODEL,
             max_turns=env.pane_max_turns,
             max_budget_usd=env.pane_budget_usd,
+            sdk_session_store_root=cache_dir() / "panes" / "sdk-sessions",
         )
 
     slot = ProposalSlot()
@@ -1176,4 +1622,6 @@ def build_pane_manager(
         refresh_hub=refresh_hub,
         runner=runner,
         proposal_slot=slot,
+        store=store,
+        home=env.self_learn_home,
     )

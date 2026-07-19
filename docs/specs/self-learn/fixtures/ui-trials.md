@@ -499,3 +499,59 @@ browser via Playwright.
   for the two same-lesson bait records; `proposal validate` triggered
   the >24h miner catch-up watchdog in the aged sandbox (harmless,
   worth knowing it fires during ordinary CLI use).
+
+## Y-28/U22 Tier-2 build-trial · session_store/resume (2026-07-19, raw SDK, real model)
+
+Per the spec's §1 build-trial gate ("mirrors U5's verify-at-build"), run
+BEFORE any `sdk.py`/`pane.py` wiring landed — a standalone driver against
+raw `claude_agent_sdk` (not `self_learn_ui` code), constructing the exact
+options shape the spec's primary configuration pins: `session_store=` set,
+`extra_args` WITHOUT `no-session-persistence`. Model `claude-sonnet-5`,
+subscription auth, a throwaway tmp dir (no ledger/XDG involvement — this
+probe predates any self_learn_ui wiring). Driver:
+`/tmp/claude-1000/.../scratchpad/tier2_probe.py` (two async probes).
+
+- **Probe (i) — does `session_store.append` populate the cache-local
+  mirror during a live streaming turn, flag dropped? PASS.** A fresh
+  `ClaudeSDKClient` with `session_store=<in-memory-backed adapter over a
+  tmp dir>` and no `no-session-persistence` extra_arg, queried "Reply
+  with exactly and only this phrase: PROBE-ONE-OK". `store.append` was
+  called (count 1 batch), a `<session_id>.jsonl` mirror file existed on
+  disk after `disconnect()` with 7 lines (the CLI's own transcript-entry
+  shape, opaque, round-tripped verbatim per the Protocol's contract), and
+  `ResultMessage.session_id` was captured (`10ee8369-297e-4b54-934d-
+  056e8eadbb9d`).
+- **Probe (ii) — does `resume=<session_id>` restore context on a FRESH
+  engine? PASS.** A brand-new `ClaudeSDKClient` (same `session_store`
+  adapter, `resume=<the captured id>`, no prior in-process state shared)
+  queried "Without me telling you again: what EXACT phrase did I ask you
+  to reply with in our previous message? Quote it exactly, nothing
+  else." Reply: `PROBE-ONE-OK` — the resumed session correctly recalled
+  a fact from a turn it never itself streamed, proving `resume=`
+  materialized the mirrored history into the new subprocess's context.
+
+**Outcome: BOTH probes PASSED → Tier 2 ships as SDK-resume** (not
+Tier-1.5 fallback). `engine/sdk.py`'s `TIER2_SESSION_STORE_ENABLED = True`
+and `_build_options` drops `no-session-persistence` + wires
+`session_store=CacheSdkSessionStore(...)` (every session, so a
+`session_id` is captured even on a first non-resumed Iterate) +
+`resume=ctx.resume_session_id` (set only on an explicit Y-28 Resume).
+The docstring correction (§7) landed alongside this fold — see
+`engine/sdk.py`'s module docstring, "session persistence (corrected
+2026-07-19, task U22 / Y-28)".
+
+No independent second trial of "does the flag suppress the mirror" was
+run separately — the primary config (flag dropped) is what shipped, per
+the spec's own framing ("the burden is on evidence, not on inertia" for
+KEEPING the flag, not for dropping it); §1 only requires that check if a
+trial of the flag-kept posture is attempted, which it was not, since the
+primary config already passed cleanly.
+
+**Residual — the DoD's live restart-resume walk (item 4) is NOT covered
+by this entry.** This entry satisfies §1's build-trial gate (which tier
+ships) and DoD item 3; the separate DoD item 4 ("open a record, `i` to
+Iterate, hold a real multi-turn conversation... `systemctl --user restart
+self-learn-ui`... Resume continues the conversation... Walk with the user
+as the DoD sign-off") is an attended live walk against the deployed
+service, owed as a follow-up session with the user present — not run as
+part of this build.

@@ -72,7 +72,9 @@ async def test_happy_path(tmp_path: Path) -> None:
         BlockStart(kind="text"),
         TextDelta(text="Hello "),
         TextDelta(text="world"),
-        Result(status="success", cost_usd=0.001, error=None, turns=1),
+        # U22 (Y-28 §1): session_id is now mapped from ResultMessage —
+        # the fake CLI's fixed SESSION_ID ("fake-session-1", fake_claude.py).
+        Result(status="success", cost_usd=0.001, error=None, turns=1, session_id="fake-session-1"),
     ]
 
 
@@ -256,6 +258,138 @@ def test_result_carries_turn_count() -> None:
 
     mapped = engine._map_result(_Msg())
     assert mapped.turns == 4
+
+
+# -- U22 (Y-28 §1/§7): session_id mapping + Tier-2 options wiring ---------
+
+
+def test_result_carries_session_id() -> None:
+    """ResultMessage.session_id -> Result.session_id (Y-28 §7's pinned
+    unit test) — the id pane.py persists for a later resume=."""
+    engine = SdkPaneEngine(
+        model="claude-sonnet-5",
+        max_turns=15,
+        max_budget_usd=1.0,
+        cli_path=str(FAKE_CLI),
+    )
+
+    class _Msg:
+        subtype = "success"
+        total_cost_usd = 0.01
+        is_error = False
+        errors: list[str] = []
+        result = ""
+        num_turns = 1
+        session_id = "sess-abc-123"
+
+    mapped = engine._map_result(_Msg())
+    assert mapped.session_id == "sess-abc-123"
+
+
+def test_result_session_id_absent_defaults_none() -> None:
+    """A stub without session_id (or a non-str value) never raises —
+    Result.session_id degrades to None, matching FakeEngine turns that
+    don't set it."""
+    engine = SdkPaneEngine(
+        model="claude-sonnet-5",
+        max_turns=15,
+        max_budget_usd=1.0,
+        cli_path=str(FAKE_CLI),
+    )
+
+    class _Msg:
+        subtype = "success"
+        total_cost_usd = 0.01
+        is_error = False
+        errors: list[str] = []
+        result = ""
+        num_turns = 1
+
+    assert engine._map_result(_Msg()).session_id is None
+
+
+def test_build_options_drops_flag_and_wires_session_store_when_root_set(tmp_path: Path) -> None:
+    """Y-28 §1/MAJOR-1: with a session-store root wired AND the module
+    gate on (the build-trial default), _build_options DROPS
+    no-session-persistence and sets session_store + resume=
+    ctx.resume_session_id — never both the flag and the store."""
+    home = _real_home(tmp_path)
+    bucket = tmp_path / "bucket"
+    bucket.mkdir()
+    engine = SdkPaneEngine(
+        model="claude-sonnet-5",
+        max_turns=15,
+        max_budget_usd=1.0,
+        cli_path=str(FAKE_CLI),
+        sdk_session_store_root=tmp_path / "sdk-sessions",
+    )
+    ctx = PaneContext(
+        record_id="abc123",
+        bucket_root=bucket,
+        self_learn_home=home,
+        system_prompt="doctrine",
+        first_message="hi",
+        resume_session_id="prior-session-id",
+    )
+    options = engine._build_options(ctx)
+    assert options.extra_args == {}
+    assert options.session_store is not None
+    assert options.resume == "prior-session-id"
+
+
+def test_build_options_fresh_session_still_wires_store_with_no_resume(tmp_path: Path) -> None:
+    """A FIRST (non-resumed) session must ALSO get session_store wired
+    (so a session_id is captured for a LATER resume) even though
+    resume= itself is None this time — Y-28 §7's "no CLI-substrate
+    line" pin: the mirror always runs when the root is configured."""
+    home = _real_home(tmp_path)
+    bucket = tmp_path / "bucket"
+    bucket.mkdir()
+    engine = SdkPaneEngine(
+        model="claude-sonnet-5",
+        max_turns=15,
+        max_budget_usd=1.0,
+        cli_path=str(FAKE_CLI),
+        sdk_session_store_root=tmp_path / "sdk-sessions",
+    )
+    ctx = PaneContext(
+        record_id="abc123",
+        bucket_root=bucket,
+        self_learn_home=home,
+        system_prompt="doctrine",
+        first_message="hi",
+    )
+    options = engine._build_options(ctx)
+    assert options.session_store is not None
+    assert options.resume is None
+    assert options.extra_args == {}
+
+
+def test_build_options_keeps_flag_when_no_session_store_root(tmp_path: Path) -> None:
+    """The pre-U22 posture is the safe default for any caller that
+    doesn't pass sdk_session_store_root (e.g. an old test construction,
+    or a future caller that deliberately opts out of Tier 2) —
+    no-session-persistence stays, session_store stays None."""
+    home = _real_home(tmp_path)
+    bucket = tmp_path / "bucket"
+    bucket.mkdir()
+    engine = SdkPaneEngine(
+        model="claude-sonnet-5",
+        max_turns=15,
+        max_budget_usd=1.0,
+        cli_path=str(FAKE_CLI),
+    )
+    ctx = PaneContext(
+        record_id="abc123",
+        bucket_root=bucket,
+        self_learn_home=home,
+        system_prompt="doctrine",
+        first_message="hi",
+    )
+    options = engine._build_options(ctx)
+    assert options.extra_args == {"no-session-persistence": None}
+    assert options.session_store is None
+    assert options.resume is None
 
 
 # -- bounded interrupt/close awaits (09 §4.2 as tuned 2026-07-18) ----------

@@ -1093,6 +1093,32 @@ details[open] > summary {
   margin: 0;
 }
 
+/* U22 (Y-28 §5): the collapsed prior-conversation card + its controls. */
+.pane-prior-conversation {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  width: 100%;
+}
+
+.pane-prior-summary {
+  color: var(--slu-fg-muted);
+  font-size: 0.85rem;
+  margin: 0;
+}
+
+.pane-prior-controls {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.pane-lifecycle-note {
+  color: var(--slu-fg-faint);
+  font-size: 0.8rem;
+  font-style: italic;
+  margin: 0;
+}
+
 #pane-transcript {
   max-height: 60vh;
   overflow-y: auto;
