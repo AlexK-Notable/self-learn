@@ -422,6 +422,64 @@ async def test_view_snapshot_is_view_only_and_ended(tmp_path: Path) -> None:
     assert view.lifecycle_note == "(view only)"
 
 
+async def test_view_of_errored_transcript_shows_plain_words_never_raw_subtype(tmp_path: Path) -> None:
+    """Blind-gate fold 1: view_snapshot sets error_message=None to
+    suppress the live Retry control, which otherwise left an errored
+    stored result falling through to pane.html's plain result-footer
+    branch — rendering the RAW engine subtype (error_during_execution)
+    verbatim, a Y-9 vocabulary leak the idle card's _lifecycle_words
+    route never had. The footer must show the SAME plain-words register,
+    and the raw subtype string must never appear anywhere in the
+    snapshot's rendered fields."""
+    sandbox, record, bucket_dir = _seed(tmp_path)
+    store = PaneTranscriptStore(tmp_path / "panes")
+    engine = FakeEngine(
+        turns=[[Result(status="error_during_execution", cost_usd=0.02, error="boom", turns=3)]]
+    )
+    manager, _ = _manager(home=sandbox.ledger, bucket_root=bucket_dir, store=store, engines={record.id: engine})
+    await _start_and_join(manager, record.id)
+    await manager.close(record.id)
+
+    view = manager.view_snapshot(record.id)
+    assert view is not None
+    assert view.result_status == "(this session hit an error)"
+    assert "error_during_execution" not in (view.result_status or "")
+    # cost/turns are numeric facts, not vocabulary — still shown.
+    assert view.result_cost_usd == 0.02
+    assert view.result_turns == 3
+
+
+async def test_view_of_cap_hit_transcript_shows_plain_words_never_raw_subtype(tmp_path: Path) -> None:
+    sandbox, record, bucket_dir = _seed(tmp_path)
+    store = PaneTranscriptStore(tmp_path / "panes")
+    engine = FakeEngine(
+        turns=[[Result(status="error_max_turns", cost_usd=0.5, error="cap hit", turns=15)]]
+    )
+    manager, _ = _manager(home=sandbox.ledger, bucket_root=bucket_dir, store=store, engines={record.id: engine})
+    await _start_and_join(manager, record.id)
+    await manager.close(record.id)
+
+    view = manager.view_snapshot(record.id)
+    assert view is not None
+    assert view.result_status == "(this session stopped early)"
+    assert "error_max_turns" not in (view.result_status or "")
+
+
+async def test_view_of_clean_transcript_shows_raw_status_unmapped(tmp_path: Path) -> None:
+    """The terminal-error override must not fire on a CLEAN result — a
+    successful session's status ("success") is not engine jargon and
+    passes through untouched, exactly as before this fold."""
+    sandbox, record, bucket_dir = _seed(tmp_path)
+    store = PaneTranscriptStore(tmp_path / "panes")
+    manager, _ = _manager(home=sandbox.ledger, bucket_root=bucket_dir, store=store)
+    await _start_and_join(manager, record.id)
+    await manager.close(record.id)
+
+    view = manager.view_snapshot(record.id)
+    assert view is not None
+    assert view.result_status == "success"
+
+
 # ------------------------------------------------ corrupt/missing degrades
 
 

@@ -209,8 +209,9 @@ def test_resumable_card_shows_resume_view_and_start_fresh(page: "Page", server: 
 
 def test_rehomed_card_has_no_resume_button(page: "Page", server: ServerHandle) -> None:
     """Resume is absent when resumable == False (§7's pinned js
-    assertion) — this record is RESOLVED, so its persisted transcript
-    still shows (has_persisted_transcript) but is view/start-fresh only."""
+    assertion) — this record was REHOMED (stays pending, but its bucket
+    moved — §4e MAJOR-2), so its persisted transcript still shows
+    (has_persisted_transcript) but is view/start-fresh only."""
     _open(page, server, f"/record/{REC_REHOMED}")
     wrapper = page.locator("#pane-region-wrapper")
     assert wrapper.locator(".pane-prior-conversation").count() == 1

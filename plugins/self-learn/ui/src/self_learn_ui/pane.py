@@ -233,6 +233,22 @@ def _relative_time(iso: str | None) -> str | None:
     return f"{days}d ago"
 
 
+def _terminal_status_words(terminal_status: str | None) -> str | None:
+    """The plain-words register for a persisted ``terminal_status``
+    (§5/Y-9) — NEVER engine vocabulary (never the raw ``error_during_
+    execution``/``error_max_turns`` subtype string). ``None`` when
+    *terminal_status* isn't a known terminal-error class (a clean/absent
+    result has no override here — the caller decides what to show
+    instead). The ONE map both the idle card's
+    :meth:`PaneManager._lifecycle_words` and the View footer's
+    :meth:`PaneManager.view_snapshot` read from — never a second one."""
+    if terminal_status == "error":
+        return "hit an error"
+    if terminal_status == "cap-hit":
+        return "stopped early"
+    return None
+
+
 # ------------------------------------------------- target canon excerpt
 #
 # Mirrors self_learn.worker._canon_excerpt EXACTLY (08 §7 / 09 §4.2's
@@ -903,10 +919,9 @@ class PaneManager:
 
     def _lifecycle_words(self, stored: StoredSnapshot, resumable: bool) -> str:
         """§5's exact plain-words register — NEVER engine vocabulary."""
-        if stored.terminal_status == "error":
-            return "hit an error"
-        if stored.terminal_status == "cap-hit":
-            return "stopped early"
+        words = _terminal_status_words(stored.terminal_status)
+        if words is not None:
+            return words
         if resumable:
             return "waiting for you"
         return "finished"
@@ -961,13 +976,30 @@ class PaneManager:
         note = "(earlier turns unreadable)" if stored.corrupt else "(view only)"
         if stored.truncated:
             note = "(earlier turns not persisted — size cap)"
+        # Fold 1 (blind gate, 2026-07-19): view_snapshot sets
+        # error_message=None to suppress the live Retry control (view-only
+        # has nothing to retry) — but that left an errored/cap-hit stored
+        # result falling through to pane.html's plain result-footer
+        # branch, which renders result_status VERBATIM. That branch has
+        # no Y-9 filter of its own (unlike the card, which always reads
+        # through _lifecycle_words), so the raw engine subtype
+        # (error_during_execution / error_max_turns) leaked to the human.
+        # Same map the card uses (_terminal_status_words) — never a
+        # second one — overrides the footer's status text for exactly
+        # the terminal-error case; a clean/absent result is untouched.
+        terminal_words = _terminal_status_words(stored.terminal_status)
+        result_status = (
+            f"(this session {terminal_words})"
+            if terminal_words is not None
+            else (result.status if result else None)
+        )
         return PaneSnapshot(
             record_id=record_id,
             state=STATE_ENDED,
             blocks=blocks,
             current_kind=None,
             current_html=None,
-            result_status=result.status if result else None,
+            result_status=result_status,
             result_cost_usd=result.cost_usd if result else None,
             result_turns=result.turns if result else None,
             error_message=None,
