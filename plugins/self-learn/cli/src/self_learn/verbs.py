@@ -79,8 +79,12 @@ from .skill_scaffold import (
 from .chezmoi import ChezmoiAbort, ChezmoiError, compile_user_scope, preflight_user_scope
 from .compilers import (
     BEGIN_MARKER,
+    DEFAULT_MAX_ENTRIES,
+    DEFAULT_MAX_WORDS,
     CompileError,
+    SectionResult,
     compile_managed_file,
+    compile_managed_text,
     compile_reference,
     reference_target_path,
 )
@@ -117,6 +121,7 @@ from .scan import scan as secret_scan
 
 __all__ = [
     "DEFAULT_USER_CLAUDE_MD",
+    "SURFACE_FILL_CAPPED_DESTINATIONS",
     "DirtyTargetError",
     "NoProposalError",
     "PushReport",
@@ -140,6 +145,7 @@ __all__ = [
     "route",
     "route_direct",
     "supersede",
+    "surface_fill",
 ]
 
 DEFAULT_USER_CLAUDE_MD = Path("~/.claude/CLAUDE.md")
@@ -156,6 +162,14 @@ DEFAULT_USER_CLAUDE_MD = Path("~/.claude/CLAUDE.md")
 #: prints the applied bytes. settings.json registration stays manual
 #: either way — no guard fires without a human edit.*
 ONE_MOTION_UNROUTABLE = frozenset({"new-skill", "hook"})
+
+#: 09 §11 Y-20 / 08 §1 `surface_fill` field: the ONLY two destinations a
+#: managed-section fill probe ever covers. ``reference`` is never in this
+#: set — it is the cap-free overflow sink (``target=None``,
+#: ``compile_reference`` has no cap, no ``_compile_set`` managed-section
+#: branch exists for it) and carries no "fill against a cap" to report;
+#: no builder may invent a reference probe (blind-review F1).
+SURFACE_FILL_CAPPED_DESTINATIONS: tuple[str, ...] = ("skill-md", "claude-md")
 
 
 def one_motion_allowed(home: Path | str, destination: str) -> bool:
@@ -1046,6 +1060,94 @@ def _compile_set(home: Path, spec: TargetSpec) -> list[Record]:
                 seen.add(r.id)
                 records.append(r)
     return records
+
+
+def surface_fill(
+    home: Path,
+    bucket_dir: Path,
+    scope: str,
+    *,
+    user_claude_md: Path | str | None = None,
+    cache: dict[Path, SectionResult] | None = None,
+) -> dict[str, dict]:
+    """09 §11 Y-20 / 08 §1 `surface_fill` field: a READ-ONLY loaded-surface
+    fill probe over the two CAPPED managed-section destinations
+    (:data:`SURFACE_FILL_CAPPED_DESTINATIONS`) — ``reference`` is never
+    probed (F1).
+
+    For each capped destination: resolve the target through the existing
+    :func:`_resolve_target` in E-17 read-only mode (``check_dirty=False``
+    — no dirty-abort, no host-mutation preflight; the SAME scope rules the
+    `o`-cycle honors, no second scope definition). ANY :class:`VerbError`
+    — scope-invalid, missing ``SKILL.md``, unregistered host, an unsound
+    registered host, no skills root registered — omits that destination's
+    key entirely (never a zero, never a guess; F5). A target that exists
+    on disk but carries no managed-section markers yet (bootstrap) or does
+    not exist on disk yet (first route to a fresh CLAUDE.md) reads as
+    empty text, which :func:`compilers.compile_managed_text` reports as
+    ``entries: 0`` / ``words: 0`` — a fully-available surface.
+
+    The compile set is the records ALREADY routed to that target
+    (:func:`_compile_set`); :func:`compilers.compile_managed_text` filters
+    to ``status == "routed"`` internally (``_eligible``), so a still-
+    pending record — including the one this probe is being computed for
+    — is never counted (no builder-side pending-exclusion filter needed,
+    F8). Caps are the compiler's effective defaults — there is no
+    per-target override mechanism yet (F6).
+
+    ``user_claude_md`` overrides the user-scope target the same way
+    :func:`route` accepts it (defaults to :data:`DEFAULT_USER_CLAUDE_MD`,
+    the real chezmoi-managed file — the correct real destination to
+    report fill for; test callers override it, same idiom as every other
+    ``_resolve_target`` call site).
+
+    ``cache`` memoizes one compiled :class:`~self_learn.compilers.SectionResult`
+    per resolved target path — pass the SAME dict across every record in
+    one CLI invocation so records sharing a target (e.g. every record in
+    one skill bucket, or every user-scoped record) pay for the compile
+    exactly once (08 §1 (e))."""
+    if cache is None:
+        cache = {}
+    result: dict[str, dict] = {}
+    for destination in SURFACE_FILL_CAPPED_DESTINATIONS:
+        try:
+            spec = _resolve_target(
+                home,
+                bucket_dir,
+                scope,
+                destination,
+                None,
+                user_claude_md=user_claude_md,
+                check_dirty=False,
+            )
+            target = spec.target
+            if target is None:  # reference-shaped spec — never reached
+                continue  # here, kept defensive (TargetSpec.target is Optional)
+            key = target.resolve()
+            if key not in cache:
+                # blind-review F2: the read + compile step is inside the
+                # SAME try as the resolve — a corrupted managed-section
+                # marker pair (CompileError) or an unreadable/undecodable
+                # target (OSError/UnicodeDecodeError) is exactly as
+                # degradable as a VerbError (scope-invalid, missing
+                # SKILL.md, unregistered host): omit this destination's
+                # key and move on, never let one broken target's read
+                # crash the WHOLE `list --json` call for every record —
+                # that would blank the Detail page's entire proposal/why
+                # region for every OTHER record sharing that target too.
+                text = target.read_text(encoding="utf-8") if target.is_file() else ""
+                cache[key] = compile_managed_text(text, _compile_set(home, spec))
+        except (VerbError, CompileError, OSError, UnicodeDecodeError):
+            continue
+        section = cache[key]
+        result[destination] = {
+            "entries": section.entry_count,
+            "entries_cap": DEFAULT_MAX_ENTRIES,
+            "words": section.word_count,
+            "words_cap": DEFAULT_MAX_WORDS,
+            "over_cap": section.over_cap,
+        }
+    return result
 
 
 @dataclass(frozen=True)

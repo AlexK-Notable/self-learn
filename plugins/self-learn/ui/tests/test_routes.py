@@ -856,6 +856,79 @@ class TestDetailPage:
         assert "Episode brief" not in r.text
 
 
+class TestSurfaceFillWhyRegion:
+    """09 §11 Y-20 / 08 §1 `surface_fill`, end-to-end through the real
+    CLI subprocess (ledger.list_items --surface-fill --id): Detail's Why
+    region renders each scope-valid candidate's budget in plain words;
+    `reference` is a static no-cap line; a missing key renders nothing;
+    the armed action bar carries none of it (negative assertion, F2)."""
+
+    def test_why_region_shows_the_skill_md_fill_sentence(self, tmp_path: Path) -> None:
+        sb = make_env(tmp_path)
+        for i in range(8):
+            routed = make_knowledge(scope="skill:s", record_id=f"lrn-bb00000{i}", fact=f"fact{i}")
+            seed_record(sb.ledger, routed)
+            resolve_record_directly(sb.ledger, sb.ledger / "skills" / "s", routed)
+
+        pending = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, pending)
+        c, _runner = make_client(sb)
+        r = c.get(f"/record/{pending.id}")
+        assert r.status_code == 200
+        assert "this skill-md section already holds 8 of its 10 entries" in r.text
+        assert "lands near the cap" in r.text
+
+    def test_why_region_shows_the_static_reference_line(self, tmp_path: Path) -> None:
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+        c, _runner = make_client(sb)
+        r = c.get(f"/record/{rec.id}")
+        assert "reference files have no cap" in r.text
+        assert "overflow surface entries graduate into" in r.text
+
+    def test_missing_skill_md_renders_nothing_for_that_destination(self, tmp_path: Path) -> None:
+        # a registered skill dir with no SKILL.md file inside -> the CLI
+        # omits the skill-md key (VerbError, F5) -> no row, no sentence.
+        sb = make_env(tmp_path)
+        (sb.host / "plugins" / "t-plugin" / "skills" / "t").mkdir(parents=True)
+        rec = make_behavior(scope="skill:t")
+        seed_record(sb.ledger, rec)
+        c, _runner = make_client(sb)
+        r = c.get(f"/record/{rec.id}")
+        assert r.status_code == 200
+        assert "skill-md section already holds" not in r.text
+        # claude-md still resolves (the skills-root host's own CLAUDE.md)
+        assert "claude-md section already holds" in r.text
+
+    def test_armed_action_bar_carries_no_budget_markup(self, tmp_path: Path) -> None:
+        sb = make_env(tmp_path)
+        for i in range(8):
+            routed = make_knowledge(scope="skill:s", record_id=f"lrn-cc00000{i}", fact=f"fact{i}")
+            seed_record(sb.ledger, routed)
+            resolve_record_directly(sb.ledger, sb.ledger / "skills" / "s", routed)
+
+        pending = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, pending)
+        c, _runner = make_client(sb)
+
+        # sanity: the Detail page's Why region DOES carry the fill text —
+        # proves the negative assertion below isn't vacuous.
+        detail = c.get(f"/record/{pending.id}")
+        assert "this skill-md section already holds 8 of its 10 entries" in detail.text
+
+        armed = c.post(
+            f"/record/{pending.id}/action/arm",
+            data={"verb": "route", "kind": "detail", "dest": "skill-md"},
+            headers={"HX-Request": "true"},
+        )
+        assert armed.status_code == 200
+        assert 'data-armed="true"' in armed.text
+        assert "entries" not in armed.text
+        assert "surface-budget" not in armed.text
+        assert "already holds" not in armed.text
+
+
 # --------------------------------------------------- arm / disarm / confirm
 
 

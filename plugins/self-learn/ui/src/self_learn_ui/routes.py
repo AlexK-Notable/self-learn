@@ -211,7 +211,14 @@ def _gather_detail_bundle(home: Path, record_id: str) -> DetailReadBundle | None
     record = ledger.read_record(location.path)
     if record is None:
         return None
-    list_read = ledger.list_items(home, include_deferred=True)
+    # 09 §11 Y-20 / delta F9: the ONE call site that passes --surface-fill,
+    # scoped via --id to this one record — Front/Bucket never request it
+    # (blind-review F4). Riding inside this bundle means the budget datum
+    # is cached and invalidated by the SAME Y-19 generation gate as the
+    # rest of Detail (global on any verb completion — Y-20 decision 3).
+    list_read = ledger.list_items(
+        home, include_deferred=True, surface_fill=True, record_id=record_id
+    )
     item = None
     if list_read.ok:
         item = next((i for i in (list_read.data or []) if i.get("id") == record_id), None)

@@ -114,6 +114,24 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="include_deferred",
         help="superset: also show records whose deferred_until is in the future",
     )
+    list_p.add_argument(
+        "--surface-fill",
+        action="store_true",
+        dest="surface_fill",
+        help="add per-record surface_fill (09 §11 Y-20): current fill of "
+        "each scope-valid CAPPED destination (skill-md/claude-md — never "
+        "reference). Default OFF; the unflagged --json output is "
+        "byte-unchanged. Costly (a routed-record scan per distinct "
+        "target) — pass --id to scope it to one record (delta F9).",
+    )
+    list_p.add_argument(
+        "--id",
+        metavar="ID",
+        dest="record_id",
+        help="scope the listing to one record id — with --surface-fill, "
+        "computes fill for ONLY this record's targets, not every pending "
+        "record's (delta F9; the UI Detail call site)",
+    )
 
     add_teach_parser(sub)
 
@@ -655,14 +673,55 @@ def _proposal_cell(item: dict) -> str:
     return "fresh" if item["proposal_fresh"] else "stale"
 
 
-def _cmd_list(as_json: bool, include_deferred: bool) -> int:
+def _add_surface_fill(
+    home: Path,
+    items: list[dict],
+    *,
+    user_claude_md: Path | str | None = None,
+) -> None:
+    """09 §11 Y-20 / 08 §1: mutate each item in place, adding its
+    ``surface_fill`` object. One cache dict spans every item passed in, so
+    records sharing a target (one skill's SKILL.md, the one user-scope
+    CLAUDE.md) pay for the compile exactly once per invocation (08 §1 e).
+
+    ``user_claude_md`` is an internal passthrough to
+    :func:`verbs.surface_fill` (blind-review F5) — there is no CLI flag
+    for it; ``_cmd_list`` never passes anything but the default, so real
+    invocations keep reading the real chezmoi-managed file for a
+    user-scope record, exactly like every other verb call site. It exists
+    so an in-process caller (a test) can override the target WITHOUT
+    going through a subprocess — the real hazard this closes is a
+    CLI-path test calling this function directly on a user-scope pending
+    record and silently reading ``~/.claude/CLAUDE.md``."""
+    cache: dict = {}
+    for item in items:
+        try:
+            path = find_record_path(home, item["id"])
+        except LedgerOpsError:
+            continue  # can't happen off list_items's own output; defensive
+        bucket_dir = path.parent.parent
+        item["surface_fill"] = verbs.surface_fill(
+            home, bucket_dir, item["scope"], user_claude_md=user_claude_md, cache=cache
+        )
+
+
+def _cmd_list(
+    as_json: bool,
+    include_deferred: bool,
+    surface_fill: bool = False,
+    record_id: str | None = None,
+) -> int:
     home = resolve_home()
     if (code := _home_gate(home)) is not None:
         return code
     _warn_unparseable(home)
     items = list_items(home, include_deferred=include_deferred)
+    if record_id is not None:
+        items = [i for i in items if i["id"] == record_id]
 
     if as_json:
+        if surface_fill:
+            _add_surface_fill(home, items)
         print(json.dumps(items))
         return EXIT_OK
 
@@ -1395,7 +1454,10 @@ def _main(argv: list[str] | None = None) -> int:
 
     if args.command == "list":
         return _cmd_list(
-            as_json=args.as_json, include_deferred=args.include_deferred
+            as_json=args.as_json,
+            include_deferred=args.include_deferred,
+            surface_fill=args.surface_fill,
+            record_id=args.record_id,
         )
 
     if args.command in ("teach", "import", "prune-memory", "proposal", "report"):

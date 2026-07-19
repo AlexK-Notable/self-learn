@@ -45,7 +45,9 @@ __all__ = [
     "NO_ANALYSIS_MESSAGE",
     "PARAMETER_FREE_DESTINATIONS",
     "PREVIEW_HONESTY_CAPTION",
+    "REFERENCE_NO_CAP_LINE",
     "Badge",
+    "BudgetRow",
     "BucketModel",
     "BucketRow",
     "BulkCollapseRow",
@@ -142,6 +144,14 @@ PREVIEW_HONESTY_CAPTION = (
 HOOK_VERBATIM_CAPTION = (
     "what you see IS the bytes the verb applies; a record_sha mismatch "
     "aborts at the verb, never silently regenerates"
+)
+
+#: 09 §11 Y-20 / 08 §1 F1 — the template-static line for `reference`: no
+#: CLI datum, no probe (reference is the cap-free overflow sink entries
+#: graduate INTO, so it has no fill to report against).
+REFERENCE_NO_CAP_LINE = (
+    "reference files have no cap — this is the overflow surface entries "
+    "graduate into."
 )
 
 NO_ANALYSIS_MESSAGE = "no analysis yet — `i` to analyze now"
@@ -796,6 +806,23 @@ class ChangeRegion:
 
 
 @dataclass(frozen=True)
+class BudgetRow:
+    """09 §11 Y-20 — one scope-valid candidate destination's loaded-surface
+    budget line for the Why region (the surface's SINGLE budget display;
+    the armed action bar carries none, F2). ``skill-md``/``claude-md`` are
+    CLI-datum rows built from `surface_fill`; a capped destination the CLI
+    omitted (any VerbError — F5) never becomes a row at all — the register
+    lists only what it can state a fact about. ``reference`` is always
+    present for a scope where it is a valid candidate — its text is the
+    fixed no-cap line, never a CLI datum (F1: it is the cap-free overflow
+    sink)."""
+
+    destination: str
+    text: str
+    over_cap: bool
+
+
+@dataclass(frozen=True)
 class WhyRegion:
     rationale: str | None
     destination: str | None
@@ -804,6 +831,10 @@ class WhyRegion:
     already_canon_reason: str | None
     freshness: str
     freshness_label: str
+    #: 09 §11 Y-20 — every scope-valid candidate's budget, in cycle order
+    #: (:func:`destinations_for_scope`); a capped destination with no
+    #: `surface_fill` key is simply absent from this tuple (F5).
+    budgets: tuple[BudgetRow, ...]
 
 
 @dataclass(frozen=True)
@@ -916,7 +947,89 @@ def _build_change(
     return ChangeRegion(kind="none", content=None, caption="", message=NO_ANALYSIS_MESSAGE)
 
 
-def _build_why(item: dict, proposal: dict | None) -> WhyRegion:
+#: Blind-review F1 fix: how close to a cap counts as "near" enough to earn
+#: the nearness clause — fewer than 3 entries of headroom, or the word
+#: axis at/past 80% of its budget. Below both, and not over cap, the bare
+#: fill fact is the whole sentence (an empty/low surface saying "lands
+#: near the cap" is not just uninformative, it inverts the feature's
+#: point: the emptiest surface is the BEST route target).
+_NEAR_ENTRIES_HEADROOM = 2
+_NEAR_WORDS_RATIO = 0.8
+
+
+def _budget_text(destination: str, fill: dict) -> str:
+    """09 §11 Y-20 / §2.3: the plain-words fill sentence for a CAPPED
+    destination — the CLI supplies the datum (``entries``/``entries_cap``/
+    ``words``/``words_cap``/``over_cap``), this is the template. The
+    nearness clause (word-cap or entries-cap phrasing) is gated on ACTUAL
+    proximity (blind-review F1) — never appended unconditionally — using
+    the SAME datum the CLI already computed, no fuzzy guess: over cap, or
+    within :data:`_NEAR_ENTRIES_HEADROOM` entries of the cap, or the word
+    axis at/past :data:`_NEAR_WORDS_RATIO` of its budget. Below every one
+    of those, the sentence is the bare fill fact alone — honest and
+    sufficient for a section nowhere near full. When a clause IS earned,
+    the word-cap phrasing fires when ``words`` is proportionally the
+    tighter (binding) constraint. At or over cap the sentence still
+    states only the fill fact; the escalation itself is the EXISTING
+    02 §4 over-cap WARNING (surfaced through the verb's own stderr at
+    route time), not duplicated here (spec point 5)."""
+    entries, entries_cap = fill["entries"], fill["entries_cap"]
+    words, words_cap = fill["words"], fill["words_cap"]
+    over_cap = bool(fill.get("over_cap"))
+    base = (
+        f"this {destination} section already holds {entries} of its "
+        f"{entries_cap} entries"
+    )
+
+    entries_ratio = (entries / entries_cap) if entries_cap else 0.0
+    words_ratio = (words / words_cap) if words_cap else 0.0
+    entries_near = entries_cap > 0 and (entries_cap - entries) <= _NEAR_ENTRIES_HEADROOM
+    words_near = words_cap > 0 and words_ratio >= _NEAR_WORDS_RATIO
+    if not (over_cap or entries_near or words_near):
+        return base
+
+    words_bound = words_ratio > entries_ratio
+    tail = (
+        " — and is near its word budget"
+        if words_bound
+        else " — a route here lands near the cap"
+    )
+    return base + tail
+
+
+def _budget_rows(item: dict, scope: str) -> tuple[BudgetRow, ...]:
+    """09 §11 Y-20(2): every scope-valid candidate destination
+    (:func:`destinations_for_scope` — the SAME scope predicate the `o`
+    cycle uses, no second scope definition), not just the suggestion —
+    the Why region is the single budget surface and the whole point is
+    the human weighing an ALTERNATIVE with its cost visible too. A capped
+    destination (`skill-md`/`claude-md`) with no `surface_fill` key is
+    simply skipped (F5: any VerbError leg omits the key, never a zero,
+    never a placeholder row). `reference` always gets the static no-cap
+    line when it is a scope-valid candidate — no probe, no key to be
+    absent (F1)."""
+    fills = item.get("surface_fill") or {}
+    rows: list[BudgetRow] = []
+    for destination in destinations_for_scope(scope):
+        if destination == "reference":
+            rows.append(
+                BudgetRow(destination="reference", text=REFERENCE_NO_CAP_LINE, over_cap=False)
+            )
+            continue
+        fill = fills.get(destination)
+        if fill is None:
+            continue
+        rows.append(
+            BudgetRow(
+                destination=destination,
+                text=_budget_text(destination, fill),
+                over_cap=bool(fill.get("over_cap")),
+            )
+        )
+    return tuple(rows)
+
+
+def _build_why(item: dict, proposal: dict | None, scope: str) -> WhyRegion:
     has_proposal = bool(item.get("has_proposal"))
     fresh = bool(item.get("proposal_fresh"))
     if not has_proposal:
@@ -936,6 +1049,7 @@ def _build_why(item: dict, proposal: dict | None) -> WhyRegion:
         already_canon_reason=(proposal or {}).get("already_canon_reason"),
         freshness=freshness,
         freshness_label=label,
+        budgets=_budget_rows(item, scope),
     )
 
 
@@ -974,7 +1088,7 @@ def build_detail_model(
         cards=build_card_sections((proposal or {}).get("card"), registry),
         finding=_build_finding(record, title),
         change=_build_change(proposal, diff_text, proposal_raw_text),
-        why=_build_why(item, proposal),
+        why=_build_why(item, proposal, scope),
         contradicts=contradicts,
         destination_cycle=destinations_for_scope(scope),
         destination_default=dest_default,
