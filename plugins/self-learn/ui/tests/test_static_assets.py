@@ -77,7 +77,13 @@ def test_app_js_reload_chokepoint_defers_on_the_three_leg_predicate() -> None:
     assert "htmx:beforeRequest" in app_js
     # …cleared at swap settle AND on the no-swap failure legs (F14).
     assert "htmx:afterSettle" in app_js
-    for event in ("htmx:responseError", "htmx:sendError", "htmx:sendAbort", "htmx:timeout"):
+    for event in (
+        "htmx:responseError",
+        "htmx:swapError",
+        "htmx:sendError",
+        "htmx:sendAbort",
+        "htmx:timeout",
+    ):
         assert event in app_js, f"missing unconditional-release event {event}"
     # Leg (c): any armed bar (findArmedBar inside the predicate).
     assert "reloadDeferred" in app_js
