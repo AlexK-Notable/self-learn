@@ -2299,3 +2299,57 @@ wider posture; the narrow one is the conservative default).
   section the Detail render reads from the pending file (like
   Trigger/Instruction), not a JSON field; build lands as 10 §3 U18.
 
+- **Y-22 · Proposal-time lint (analyst rider)** *(added 2026-07-19 — FW-31,
+  `drafts/analyst-riders-spec.md` §1)*. The analyst (M1 inline, M2 worker,
+  and the G-3 pane — all three producers) forms two judgments on a
+  `behavior` record and may write one suggestion: **trigger
+  recognizability** (would a fresh session, cold, recognize the firing
+  moment from `## Trigger` alone?) and **why-clause presence** (does
+  `## Instruction` carry the why on its compiled first line?). Output is a
+  structured, optional `lint:` proposal block — `trigger_recognizable`
+  (enum `yes`\|`partial`\|`no`), `why_present` (bool), `sharpening`
+  (optional non-empty string) — **never a numeric/confidence score**
+  (counted-not-modeled, 14 §6). Validated by a new `_validate_lint`
+  helper in `ledger_ops.py`, symmetric with `_validate_hook_extension`;
+  absence is always valid. Rendered by a new `lint` card section
+  (`card-sections.yaml`, order 50, after `discuss`) — the structured
+  block is authoritative, the card section its plain-words render (the
+  `already_canon`/`already_canon_reason` pattern, moved into the
+  registry). **Kind-aware MUST:** a `kind: reasoning-pattern` record's
+  inherent trigger softness is never treated as a defect — lint is
+  advisory only, never blocks/gates routing, and never auto-edits the
+  record. The judgment rules live in `routing-doctrine.md` §9 (the one
+  file all three producers load) — the M2 `_PROMPT_TEMPLATE` carries at
+  most a one-line pointer to it, never the rules themselves, which is
+  what keeps this three-producer rather than M2-only. **No consumer at
+  ship time** — the human decides in prose off the card; the block ships
+  now as counting substrate for the FW-33 portfolio auditor, an accepted
+  named-reader deferral, not an orphan field.
+
+- **Y-23 · Destination-bounded contradiction check (analyst rider)**
+  *(added 2026-07-19 — FW-32, `drafts/analyst-riders-spec.md` §2)*. The
+  analyst flags a suspected contradiction **only** against the
+  destination section's current entries already shown in that record's
+  candidate-target canon excerpt (`worker.py` `_canon_excerpt`) — **never**
+  a canon-wide scan (canon-wide detection stays G-5-gated). Two edits
+  carry the scope: the M2-only `_PROMPT_TEMPLATE` `contradicts:` line is
+  **narrowed** from "existing canon" to "an entry in the destination
+  section shown in the candidate-target excerpt", and a **new**
+  bounded-contradiction subsection (`routing-doctrine.md` §10) makes M1
+  inline and the pane emit the same bounded suspicion — the addition that
+  first makes front-half contradiction detection three-producer (the
+  propose→offer→verb back half, `routes.py`, was already producer-
+  agnostic and ships unchanged). Machine output is the **existing**
+  `contradicts:` list (11 §2.4, `link contradicts` verb input,
+  unchanged); the human-facing triple — target, conflicting span, one-
+  line reason — is authored into a **new `conflict` card section**
+  (`card-sections.yaml`, order 55, after `discuss`), plain words, no
+  jargon ("may clash with a rule you already kept", never
+  "canon"/"contradiction"), record id demoted to a footer. **MUSTs:**
+  advisory, dismissible, never blocks, never auto-writes the
+  `links.contradicts` edge (proposer ≠ approver — the human's accept
+  still runs `link contradicts`), and never claims completeness (no "no
+  contradictions found" assertion, only positive suspicions). Degrades
+  per the Y-20 F5 posture: an unresolvable/bootstrap excerpt omits both
+  `contradicts` and the `conflict` card entirely, never a guess.
+

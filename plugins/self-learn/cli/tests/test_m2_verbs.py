@@ -159,11 +159,116 @@ def test_collapse_survivor_must_be_member(env):
 
 
 def test_proposal_contradicts_field_validates():
+    # Regression guard (FW-32/Y-23): the contradicts field's validation
+    # is untouched by the destination-bounded contradiction rider — only
+    # the worker-prompt wording and the doctrine narrowed, never this
+    # shape check.
     validate_proposal(proposal_dict(contradicts=["lrn-889241d9", "chezmoi/SKILL.md#cd"]))
     with pytest.raises(ProposalError, match="contradicts"):
         validate_proposal(proposal_dict(contradicts=[]))
     with pytest.raises(ProposalError, match="contradicts"):
         validate_proposal(proposal_dict(contradicts=["  "]))
+
+
+# ------------------------------------------------------------ proposal lint
+
+
+def test_proposal_lint_field_well_formed_validates():
+    validate_proposal(
+        proposal_dict(
+            lint={
+                "trigger_recognizable": "partial",
+                "why_present": True,
+                "sharpening": "name the .storage/*.json glob, not 'HA files'",
+            }
+        )
+    )
+
+
+def test_proposal_lint_absent_stays_valid():
+    validate_proposal(proposal_dict())  # no `lint` key at all — baseline sane
+
+
+def test_proposal_lint_sharpening_is_optional():
+    validate_proposal(
+        proposal_dict(lint={"trigger_recognizable": "yes", "why_present": True})
+    )
+
+
+def test_proposal_lint_rejects_non_mapping():
+    with pytest.raises(ProposalError, match="lint must be a mapping"):
+        validate_proposal(proposal_dict(lint="partial"))
+
+
+def test_proposal_lint_rejects_enum_out_of_set():
+    with pytest.raises(ProposalError, match="trigger_recognizable"):
+        validate_proposal(
+            proposal_dict(lint={"trigger_recognizable": "maybe", "why_present": True})
+        )
+
+
+def test_proposal_lint_rejects_non_bool_why_present():
+    with pytest.raises(ProposalError, match="why_present"):
+        validate_proposal(
+            proposal_dict(lint={"trigger_recognizable": "yes", "why_present": "true"})
+        )
+
+
+def test_proposal_lint_rejects_empty_sharpening():
+    with pytest.raises(ProposalError, match="sharpening"):
+        validate_proposal(
+            proposal_dict(
+                lint={
+                    "trigger_recognizable": "yes",
+                    "why_present": True,
+                    "sharpening": "   ",
+                }
+            )
+        )
+
+
+def test_proposal_lint_rejects_non_string_sharpening():
+    with pytest.raises(ProposalError, match="sharpening"):
+        validate_proposal(
+            proposal_dict(
+                lint={
+                    "trigger_recognizable": "no",
+                    "why_present": False,
+                    "sharpening": 3,
+                }
+            )
+        )
+
+
+def test_reasoning_pattern_record_with_soft_trigger_lint_is_not_rejected():
+    """Kind-aware MUST (routing-doctrine.md §9): a `kind:
+    reasoning-pattern` record's inherent trigger softness is never a
+    route-blocker signal — lint is advisory only and no code path
+    inspects record kind to escalate a lint verdict. A `trigger_
+    recognizable: partial` judgment on a reasoning-pattern record
+    validates exactly like it would on any other record; the non-punitive
+    framing rule itself lives in doctrine text (asserted in
+    test_worker.py's doctrine-content tests), never enforced here."""
+    record = Record.create(
+        type="behavior",
+        scope="skill:s",
+        source="teach",
+        kind="reasoning-pattern",
+        trigger="When deciding how to route ambiguous work.",
+        instruction=(
+            "Prefer the narrowest surface that still fires — recognizing "
+            "'ambiguous work' takes judgment, not a fixed pattern."
+        ),
+    )
+    assert record.kind == "reasoning-pattern"
+    validate_proposal(
+        proposal_dict(
+            lint={
+                "trigger_recognizable": "partial",
+                "why_present": True,
+            }
+        )
+    )
 
 
 # --------------------------------------------------------------- rider verbs

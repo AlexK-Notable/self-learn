@@ -164,6 +164,12 @@ while the pass itself is parked (O-9).
   (record: `reviews/2026-07-18-deep-specs.md`); doc-16 Stage C rides
   its stated ratification gate; builds await the user's go + the §4
   ruling queue.
+- *2026-07-19*: **FW-31 BUILT, pending gate** (Y-22 proposal-time lint —
+  `_validate_lint` + `lint` card section + routing-doctrine.md §9).
+  **FW-32 BUILT, pending gate** (Y-23 destination-bounded contradiction
+  check — narrowed worker-prompt line + `conflict` card section +
+  routing-doctrine.md §10). Built off `drafts/analyst-riders-spec.md` in
+  worktree `build/fw31-32-riders`.
 
 ## 6b. Dated additions log
 

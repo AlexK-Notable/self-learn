@@ -68,3 +68,32 @@ discuss:
     to ask "what should I even ask?". If nothing is contentious, say
     "Nothing contentious" plus the one filing call being made; that
     answer licenses a fast, confident approval and is never filler.
+
+lint:
+  label: "Would a fresh session catch this?"
+  order: 50
+  required: optional
+  instruction: >
+    Render the trigger-recognizability and why-clause judgment (the
+    `lint:` block) as one or two plain sentences: would a fresh session,
+    cold, recognize the firing moment from the Trigger alone, and does
+    the Instruction carry its why? Name the concrete sharpening if there
+    is one — never a score, never a 0–10, never a confidence number. For
+    a `kind: reasoning-pattern` record, frame a soft trigger as expected
+    for that kind, not as a fault — reasoning-pattern lessons legitimately
+    route to prose and legitimately have softer triggers than an
+    anti-pattern hook.
+
+conflict:
+  label: "May clash with a rule you already kept"
+  order: 55
+  required: optional
+  instruction: >
+    Plain words, no jargon — never "canon", "contradiction", or an enum.
+    Lead with the domestic gloss of the clash (what the two rules would
+    each have Claude do), name the suspected target in everyday terms,
+    quote the shortest conflicting span, and give a one-line reason.
+    Demote the record id to a footer (doctrine §8). State it as a
+    suspicion the reader may dismiss, never a verdict — this section
+    never claims completeness ("no conflicts found" is not a thing it
+    says).

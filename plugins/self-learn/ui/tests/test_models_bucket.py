@@ -15,6 +15,18 @@ REGISTRY = [
     {"key": "provenance", "label": "Where this came from", "order": 20, "required": "optional"},
     {"key": "impact", "label": "What changes if you keep it", "order": 30, "required": "routing"},
     {"key": "discuss", "label": "Worth discussing", "order": 40, "required": "routing"},
+    {
+        "key": "lint",
+        "label": "Would a fresh session catch this?",
+        "order": 50,
+        "required": "optional",
+    },
+    {
+        "key": "conflict",
+        "label": "May clash with a rule you already kept",
+        "order": 55,
+        "required": "optional",
+    },
 ]
 
 
@@ -70,6 +82,37 @@ class TestCardSections:
         # — never rendered as a real, blank section.
         sections = build_card_sections({"headline": ""}, REGISTRY)
         assert sections == ()
+
+    def test_lint_and_conflict_render_after_discuss_in_registry_order(self):
+        """FW-31/FW-32 (analyst-riders-spec §8 card-render obligation): a
+        proposal carrying both riders' sections renders both, in registry
+        order, strictly after `discuss` — build_card_sections is generic
+        (no hardcoded section names), so this proves the two new registry
+        rows compose correctly with the existing four, not that any
+        section-specific code exists."""
+        card = {
+            "headline": "the story",
+            "discuss": "the tension",
+            "lint": "A fresh session might not catch this.",
+            "conflict": "May clash with a rule you already kept.",
+        }
+        sections = build_card_sections(card, REGISTRY)
+        assert [s.key for s in sections] == ["headline", "discuss", "lint", "conflict"]
+        assert sections[2].label == "Would a fresh session catch this?"
+        assert sections[3].label == "May clash with a rule you already kept"
+
+    def test_leading_text_unaffected_by_lint_and_conflict(self):
+        """Y-9 leading line is still `cards[0]` in registry order —
+        adding lint (50) and conflict (55) after discuss (40) must never
+        change which section leads."""
+        proposal = {
+            "card": {
+                "headline": "human sentence",
+                "lint": "would not be recognized cold",
+                "conflict": "clashes with another rule",
+            }
+        }
+        assert leading_text(proposal, REGISTRY, "ignored title") == "human sentence"
 
 
 class TestLeadingText:
