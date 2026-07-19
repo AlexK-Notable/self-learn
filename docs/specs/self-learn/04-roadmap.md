@@ -17,6 +17,8 @@ test-first, merge to master when green (repo convention).*
 > principles govern new UI work (O-9). This file remains the method
 > record for the milestones and the acceptance fixture; it is not the
 > live status tracker (that is the README header + revision log).
+> Forward planning has its own document now: `14-forward-work-map.md`
+> (the FW register) with theme deep-dives under `forward/`.
 
 ## 0. Pre-build acceptance fixture (defines "worth it" before anything exists)
 
