@@ -185,6 +185,75 @@ async def test_full_lifecycle_happy_path_publishes_sse_and_typesets_blocks() -> 
     assert envelopes[4] == {"type": "pane_result", "status": "success", "cost": 0.01, "turns": None}
 
 
+async def test_finalize_clears_current_before_publishing_no_double_render() -> None:
+    """SSE pane_block duplication bug (FW-18 fix 2): ``_finalize_current``
+    appended the finalized block to ``blocks`` and then ``await``ed the
+    ``pane_block`` publish BEFORE clearing ``current_kind``/``current_text``.
+    A ``snapshot()`` taken during that await window (a panel GET — e.g. the
+    pane_result completion swap re-fetch, or a mid-drain reload) saw the
+    block BOTH in ``blocks`` AND still in-flight as ``current_html``, so the
+    server-rendered panel typeset the same block twice.
+
+    This reproduces the exact window deterministically: a hub whose
+    ``publish`` takes a snapshot the instant a ``pane_block`` frame is
+    published. Kill: reorder ``_finalize_current`` to await the publish
+    before clearing ``current_*`` and this reddens — at publish time the
+    block's text is renderable twice (``current_kind`` set, ``current_html``
+    == the finalized block's html)."""
+
+    class _SnoopHub(AppEventHub):
+        def __init__(self, manager_holder: list) -> None:
+            super().__init__()
+            self._holder = manager_holder
+            self.observations: list[dict] = []
+
+        async def publish(self, envelope: dict) -> None:
+            if envelope.get("type") == "pane_block" and self._holder:
+                snap = self._holder[0].snapshot(RECORD_ID)
+                self.observations.append(
+                    {
+                        "current_kind": snap.current_kind,
+                        "current_html": snap.current_html,
+                        "block_htmls": [b.html for b in snap.blocks],
+                    }
+                )
+            await super().publish(envelope)
+
+    holder: list = []
+    hub = _SnoopHub(holder)
+    engine = FakeEngine(
+        turns=[
+            [
+                BlockStart(kind="text"),
+                TextDelta(text="Hello "),
+                TextDelta(text="world"),
+                ToolUse(name="Read", target="/x/record.md"),
+                Result(status="success", cost_usd=0.01, error=None),
+            ]
+        ]
+    )
+    manager, _runner, _app_hub, _refresh_hub = _manager(
+        engines={RECORD_ID: engine}, app_hub=hub
+    )
+    holder.append(manager)
+
+    await _start_and_join(manager, RECORD_ID)
+
+    assert hub.observations, "a pane_block frame must have been published"
+    for obs in hub.observations:
+        # At the pane_block publish, the block is already in `blocks`; it
+        # must NOT still be in-flight as the live block — otherwise a
+        # snapshot in this window renders it twice.
+        assert obs["current_kind"] is None, (
+            "finalize published pane_block while current_* was still set — "
+            "a snapshot here double-renders the block"
+        )
+        assert obs["current_html"] not in obs["block_htmls"], (
+            "the finalized block's html is ALSO the live current_html — "
+            "double render"
+        )
+
+
 async def test_result_turns_is_none_only_when_engine_reports_none() -> None:
     """When the engine genuinely reports no turn count, render None —
     never 0 or a guess (cost-honesty rule extended to turns)."""
