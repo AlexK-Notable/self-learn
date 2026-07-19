@@ -712,6 +712,26 @@ tr[data-row].selected {
   margin: 0.25rem 0 0;
 }
 
+/* 09 §11 Y-24 — the near-miss drill's rows. */
+.near-miss-row {
+  background: var(--slu-bg-raised);
+  border: 1px solid var(--slu-border);
+  border-radius: var(--slu-radius);
+  padding: 0.6rem 0.8rem;
+  margin: 0.4rem 0;
+}
+
+.near-miss-reason {
+  margin-left: 0.5rem;
+}
+
+.near-miss-draft {
+  color: var(--slu-fg-muted);
+  font-style: italic;
+  font-size: 0.88em;
+  margin: 0.35rem 0 0;
+}
+
 .session-note {
   color: var(--slu-fg-faint);
   font-size: 0.8rem;

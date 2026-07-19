@@ -598,3 +598,139 @@ at landing and journaled `scan-refused` — the test that proves the
 compose-before-scan invariant (a secret reaching the record only via the
 brief must still be caught, which holds iff the brief was composed in
 `_build_record` before `_scan_candidate`).
+
+## 12. Near-miss visibility + canary recall checks (amendment 2026-07-19,
+FW-34/Y-24)
+
+*Build-grade draft `drafts/miner-visibility-spec.md`, gated SOUND;
+charter `forward/worker-ecology.md` §5/§6 + `forward/supply-quality.md`
+§5. This section is the miner-side normative pin (mirrors §11's own
+split); 09 §11 Y-24 owns the surface obligation. Invariants **M-1**
+(never auto-route) and **M-3** (never load-bearing) are reaffirmed,
+unchanged.*
+
+**The gap this closes.** §8 A1's run journal already records a
+per-candidate `outcome` enum + the transcript `origin`, but never the
+candidate's draft content — so a near-miss (something the reader saw but
+the run did not land) is unrecoverable the moment its transcript prunes
+on `cleanupPeriodDays` (§0/§3). This amendment adds (a) a self-contained,
+pre-scanned snippet at the sites that already drop a candidate, so a
+near-miss survives pruning; (b) a human-facing `disposition` fold + a
+plain-words `reason`, computed once at journal-write time (the UI never
+re-derives them); (c) one promote action, riding `teach`; (d) low-
+ceremony canary recall counts. The journal's shipped `outcome` vocabulary
+is **unchanged** — this is additive.
+
+### 12.1 The disposition fold
+
+Every near-miss `outcome` is folded to exactly one of five human-facing
+`disposition`s, computed once when the run's journal entry is written
+(never re-derived downstream):
+
+| `disposition` | Folds | Promotable | Snippet | Record id |
+|---|---|---|---|---|
+| `cap-refused` | `dropped-cap` | yes | yes | — |
+| `rubric-dropped` | the new `near_misses[]` outcome (§12.2) | yes | yes | — |
+| `already-canon` | `folded`, `skipped-resolved`, `recurrence`, `recurrence-already-known`, `skipped-known-origin` | no | no | yes |
+| `rejected` | `dropped-rejected` | no | **never** | **never** |
+| `scan-blocked` | `scan-refused`, `fold-quote-scan-refused` | no | never (rule only) | no |
+| `other` | `dropped-invalid`, `dropped-land-failed`, `match-claim-invalid`, `quote-dropped-overlength` | no | no | no |
+
+`landed`/`resurfaced` carry no disposition — they are not near-misses.
+
+**The `rejected` double-absence** (a data pin, not merely a UI one): the
+`dropped-rejected` outcome (`miner.py`'s `_reconcile_and_land`, the
+rejected-status branch) no longer emits `record=record.id` — surfacing
+the id would invite re-promoting a lesson the human already said no to.
+Counts-only (`sightings` stays); the resurfacing counter
+(`_rejected_counter_bump`) remains the *only* path a rejected class
+returns.
+
+### 12.2 The self-contained snippet + the one reader-output extension
+
+For `cap-refused` and `rubric-dropped` only, the outcome carries
+`snippet`: `{type, trigger, instruction}` (behavior) or `{type, fact,
+context}` (knowledge), plus `why_durable` and — when the source dict
+carries them — `scope`/`kind` (a build-time addition beyond the
+draft's literal field list: the promote argv, §12.4, needs a scope to
+build `teach --<scope>`, and these are cheap, short, enum-shaped strings
+already covered by the same scan/cap). **No evidence quote, ever** — the
+snippet's provenance is the `origin` ref alone; promote passes it as
+`--session`, never `--quote`.
+
+- **Scan before `_outcome`, at each disposition site.** Field-by-field
+  `secret_scan`, reduced to a clean dict, `{scan_refused_rule: "<rule>"}`,
+  or `{overlength: true}`, **before** the `_outcome(...)` call — nothing
+  near-miss enters the journal unscanned. The `dropped-cap` branch used
+  to fire before any scan ran at all (the leak this amendment closes).
+- **Char-capped, refuse-not-clip.** `MAX_NEARMISS_SNIPPET_CHARS = 600`
+  (smaller than the episode brief's 1200 — a snippet is a draft stub,
+  not a story). Over the cap → `{overlength: true}`, counts only.
+- **`near_misses[]`** — the one genuine Phase-2 output-schema addition:
+  an optional array beside `candidates`/`fires`, `{type, trigger|fact,
+  instruction|context, why_durable, session, line, confidence}`. Every
+  field rides `MAX_FIELD_CHARS` (1000) refuse-not-clip (an over-length
+  field drops the WHOLE near-miss, mirroring `_build_record`'s candidate
+  cap), the snippet scan above, and `_valid_ref` gating on
+  `session`/`line` (an invalid ref drops the whole near-miss too — never
+  a guessed origin). The miner works completely without this array
+  (M-3); reader containment (Read/Grep/Glob-less) is untouched.
+- **Cache-local**, like the whole journal — never autosynced, never a
+  tracked file. Only an explicit human promote lifts a snippet into the
+  repo, through `teach`'s full scan/gate.
+
+### 12.3 Canary recall checks
+
+The honest low-ceremony mechanism (no synthetic transcripts, ever):
+
+- **Plant**: `self-learn canary plant --lesson "<description>" [--expect
+  "<phrase>"]` — a human act, run after genuinely stating the lesson
+  in-session. Writes one entry to `miner_dir()/canaries.json`
+  (cache-local, like the cursors), with a best-effort session id (no
+  reliable current-session channel exists for a bare CLI invocation; a
+  canary with none simply cannot score `missed`, only `caught`). Never
+  writes a transcript file. Refuses (nothing written) any lesson naming
+  DP-2 — the standing window-placement experiment (`supply-quality.md`
+  §5, FW-4) stays the first natural canary, adjudicated by human
+  judgment at review, and is never planted artificially.
+- **Score**: deterministic, after `_reconcile_and_land`, every mining
+  run. Reuses the WORKER's own recurrence-suspect similarity —
+  `worker._tokens` + `worker.SUSPECT_JACCARD` (0.6) — rather than
+  reimplementing it: no new infrastructure, drift-free. An open canary
+  is `caught` when its lesson/expect token-overlaps a record this run
+  landed or folded at or above the threshold; once its own source
+  session has itself been mined with no match, it is `missed`.
+- **Counts only**: `{planted, caught, missed}` + the open list. Never
+  enters `supply_mix` or the mined-accept-rate (`report`'s §4 surface)
+  — canary recall is an orthogonal probe, reported on its own line.
+
+### 12.4 `mine status --json` additions + degradation
+
+Per-run entries gain `near_miss_count`; each outcome dict additionally
+gains `disposition`, `reason`, `promotable` (bool — CLI-emitted, one
+rule: true iff `snippet` is a populated `{type,…}` dict), and `snippet`.
+Top-level `canaries: {planted, caught, missed, open: [{lesson,
+planted_at}]}`, absent when nothing has ever been planted. Degradation
+mirrors the shipped skip+log posture: a malformed snippet renders as
+enum+reason only; `canaries.json` unreadable → `{planted:0…}` + a
+`log()` line, never a crash; no backfill (pre-amendment near-misses have
+no snippet, `promotable: false`, nothing to reconstruct).
+
+### 12.5 The promote surface (09 §11 Y-24 owns the UI obligation)
+
+`POST /mine/near-miss/promote` rides `teach` — the existing human-
+capture writer, full scan/cap/pending-gate discipline unchanged. The
+server re-reads the snippet from a fresh `mine status --json` at
+promote time (never trusts a client-posted body) and rejects a
+non-promotable index outright. Consent posture: the tap *is* the
+confirmation (§0's legitimacy model) — one tap lands one real pending
+record in the correct bucket, which the worker analyzes before any
+human sees a card. There is no near-miss state left to manage once
+promoted; every other row either ages out with the rolling journal or
+stays a count.
+
+**Non-goals (unchanged from the charter):** no dismiss/snooze/note/seen
+on near-misses; no near-miss bucket, cards, or review cadence; no
+multi-run near-miss list; no auto-promotion (M-1); no re-litigating
+rejected records; canaries never synthesize transcript content, never
+enter supply metrics, never auto-plant, and never touch DP-2.

@@ -134,6 +134,11 @@ NOT_REPO_TRUTH = {
     "miner._invoke_reader": "XDG cache: the model's spool + its transcript",
     "miner._rejected_counter_bump": "XDG cache: the rejected-resurface counter",
     "miner._rejected_mark_landed": "XDG cache: the rejected-resurface counter",
+    # FW-34 §3: canaries.json — cache-local like cursors.json/journal.jsonl;
+    # `canary plant` never touches the ledger (t-h: no transcript, no repo).
+    "miner._save_canaries": "XDG cache: canaries.json",
+    "miner.plant_canary": "XDG cache: canaries.json",
+    "cli._cmd_canary": "XDG cache: canaries.json (see miner.plant_canary)",
     "telemetry.spool_quiet": "XDG cache: the telemetry spool (flush commits it)",
     # `sentinel hold|release` is the CLI face of the same cache file.
     "cli._cmd_sentinel": "XDG cache: the autosync-pause sentinel",
@@ -553,6 +558,7 @@ def _cmd_functions() -> list[str]:
 #: dispatch function is the same too-coarse granularity that let this class
 #: hide in the first place.
 _ARGV_FOR = {
+    "_cmd_canary": None,  # writes canaries.json (cache-local), not the ledger
     "_cmd_followup": [["followup", "done", "lrn-eeee0001"]],
     "_cmd_host": [
         ["host", "add", "{host}"],

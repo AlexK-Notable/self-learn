@@ -55,17 +55,23 @@ from .records import GENERALITIES, KINDS, RECORD_ID_RE, Record, RecordError
 from .scan import scan as secret_scan
 
 __all__ = [
+    "CanaryError",
     "DEFAULT_CAP_MAX",
     "DEFAULT_CAP_PER_SESSION",
     "DEFAULT_PENDING_GATE",
+    "MAX_NEARMISS_SNIPPET_CHARS",
     "MineResult",
     "build_reader_argv",
+    "canaries_path",
     "cap_for",
     "digest_transcript",
     "journal_path",
     "last_run_iso",
     "maybe_kick",
     "miner_dir",
+    "plant_canary",
+    "read_canaries_summary",
+    "read_journal",
     "run",
     "walk",
     "write_reader_settings",
@@ -97,6 +103,12 @@ MAX_FIELD_CHARS = 1_000
 #: same refuse-not-clip posture as MAX_FIELD_CHARS above — never a
 #: truncated brief on a landed record.
 MAX_EPISODE_BRIEF_CHARS = 1_200
+
+#: FW-34 §1.2: the near-miss snippet's own cap — smaller than the episode
+#: brief because a snippet is a draft stub (trigger/instruction or
+#: fact/context + why_durable), not a story. Refuse-not-clip: over the
+#: cap the near-miss records counts only, never a truncated draft.
+MAX_NEARMISS_SNIPPET_CHARS = 600
 
 #: Model-authored reference validation (audit: session/line build the
 #: evidence origin, which lands in tracked files and telemetry — free
@@ -931,6 +943,164 @@ def _event_seen(home: Path) -> set[tuple[str, str, str]]:
     return seen
 
 
+# ---------------------------------------- FW-34 §1: near-miss visibility
+
+#: §1.1's 5-way fold table: internal `outcome` → human-facing
+#: `disposition`. The journal's shipped outcome vocabulary is UNCHANGED
+#: (12 A1) — this is a read-time-independent, deterministic translation
+#: applied once at journal-write (never re-derived in the UI, the
+#: no-derivation rule). `landed`/`resurfaced` are absent on purpose: they
+#: are not near-misses, so they carry no disposition at all.
+_NEARMISS_DISPOSITION: dict[str, str] = {
+    "dropped-cap": "cap-refused",
+    "rubric-dropped": "rubric-dropped",
+    "folded": "already-canon",
+    "skipped-resolved": "already-canon",
+    "recurrence": "already-canon",
+    "recurrence-already-known": "already-canon",
+    "skipped-known-origin": "already-canon",
+    "dropped-rejected": "rejected",
+    "scan-refused": "scan-blocked",
+    "fold-quote-scan-refused": "scan-blocked",
+    "dropped-invalid": "other",
+    "dropped-land-failed": "other",
+    "match-claim-invalid": "other",
+    "quote-dropped-overlength": "other",
+}
+
+#: One plain-words (Y-9 register) line per disposition — no enums, no
+#: ids, no unexpanded acronyms.
+_NEARMISS_REASON: dict[str, str] = {
+    "cap-refused": "a real lesson, but this run had already landed its cap",
+    "rubric-dropped": "the reader saw a moment here but judged it below the durability bar",
+    "already-canon": "this is already reflected in an existing lesson",
+    "rejected": "a lesson like this was reviewed before and turned down",
+    "scan-blocked": "this looked like it might contain a secret, so it was held back",
+    "other": "this candidate could not be landed",
+}
+
+#: Dispositions a human can promote (§2.3, F5) — gated further by an
+#: actually-clean snippet at enrichment time.
+_PROMOTABLE_DISPOSITIONS = frozenset({"cap-refused", "rubric-dropped"})
+
+
+def _snippet_fields(cand: dict) -> dict | None:
+    """§1.2: ``{type, trigger, instruction}`` | ``{type, fact, context}``
+    + ``why_durable``, drawn from a candidate/near-miss dict already in
+    scope. ``None`` for an unrecognized ``type`` — never a guessed shape.
+    No evidence quote is ever included (§1.2 / F3-(a)).
+
+    Also carries ``scope``/``kind`` WHEN the source dict has them (a full
+    reader ``candidates[]`` entry does; the leaner ``near_misses[]``
+    schema, §1.3, does not) — §2.3's promote argv needs a scope to build
+    ``teach --<scope>``, and these are cheap, short, enum-shaped strings
+    already scanned/capped by the same snippet defenses. A rubric-dropped
+    row with no source scope simply has none here; the promote route
+    falls back to teach's own documented default (project, 01 §2)."""
+    rtype = str(cand.get("type") or "")
+    if rtype == "behavior":
+        fields: dict = {
+            "type": "behavior",
+            "trigger": str(cand.get("trigger") or "").strip(),
+            "instruction": str(cand.get("instruction") or "").strip(),
+        }
+        kind = str(cand.get("kind") or "").strip()
+        if kind:
+            fields["kind"] = kind
+    elif rtype == "knowledge":
+        fields = {"type": "knowledge", "fact": str(cand.get("fact") or "").strip()}
+        context = str(cand.get("context") or "").strip()
+        if context:
+            fields["context"] = context
+    else:
+        return None
+    scope = str(cand.get("scope") or "").strip()
+    if scope:
+        fields["scope"] = scope
+    why_durable = str(cand.get("why_durable") or "").strip()
+    if why_durable:
+        fields["why_durable"] = why_durable
+    return fields
+
+
+def _nearmiss_snippet(fields: dict) -> dict:
+    """§1.2 build-pin: field-by-field ``secret_scan``, evaluated BEFORE
+    the caller's ``_outcome`` call — nothing near-miss enters the journal
+    unscanned. Returns a clean dict, ``{scan_refused_rule}`` (rule name
+    only, never the content), or ``{overlength: True}``
+    (:data:`MAX_NEARMISS_SNIPPET_CHARS`, refuse-not-clip — checked
+    first, so an oversize attacker-influenceable blob is never scanned
+    for nothing)."""
+    total = sum(len(v) for v in fields.values() if isinstance(v, str))
+    if total > MAX_NEARMISS_SNIPPET_CHARS:
+        return {"overlength": True}
+    for value in fields.values():
+        if isinstance(value, str) and value:
+            hits = secret_scan(value)
+            if hits:
+                return {"scan_refused_rule": hits[0].rule}
+    return fields
+
+
+def _handle_near_misses(result: MineResult, parsed: dict) -> None:
+    """§1.3: the one reader-output extension — an optional
+    ``near_misses[]`` array beside ``candidates``/``fires``. Every field
+    rides the identical injection-bandwidth defenses as candidate fields:
+    :data:`MAX_FIELD_CHARS` refuse-not-clip (an over-length field drops
+    the WHOLE near-miss, mirroring `_build_record`'s candidate cap), the
+    §1.2 build-pin scan, and `_valid_ref` gating on the session/line ref
+    (an invalid ref drops the whole near-miss too — never a guessed
+    origin). The miner works completely without this array (M-3)."""
+    near_misses = parsed.get("near_misses") or []
+    if not isinstance(near_misses, list):
+        return
+    for nm in near_misses:
+        if not isinstance(nm, dict):
+            continue
+        ref = _valid_ref(nm)
+        if ref is None:
+            continue  # invalid ref drops the whole near-miss (§1.3)
+        session_id, line = ref
+        origin = f"transcript:{session_id}#L{line}"
+        fields = _snippet_fields(nm)
+        if fields is None:
+            continue  # unrecognized type — never a guessed shape
+        text_values = [v for k, v in fields.items() if k != "type"]
+        if any(len(v) > MAX_FIELD_CHARS for v in text_values):
+            continue  # refuse-not-clip: over-length drops the WHOLE near-miss
+        snippet = _nearmiss_snippet(fields)
+        _outcome(result, origin, "rubric-dropped", snippet=snippet)
+
+
+def _enrich_near_miss(outcome_entry: dict) -> dict:
+    """§1.1/§4: fold the internal `outcome` to its human-facing
+    `disposition` + one plain-words `reason`, and compute the ONE
+    `promotable` rule (F5): true iff a real content snippet exists — a
+    populated `{type,…}` dict, never `{scan_refused_rule}`/`{overlength}`/
+    absent. Non-near-miss outcomes (`landed`, `resurfaced`) pass through
+    unchanged — they gain no disposition at all."""
+    outcome_name = outcome_entry.get("outcome")
+    disposition = (
+        _NEARMISS_DISPOSITION.get(outcome_name)
+        if isinstance(outcome_name, str)
+        else None
+    )
+    if disposition is None:
+        return outcome_entry
+    enriched = dict(outcome_entry)
+    enriched["disposition"] = disposition
+    enriched["reason"] = _NEARMISS_REASON[disposition]
+    snippet = outcome_entry.get("snippet")
+    enriched["promotable"] = bool(
+        disposition in _PROMOTABLE_DISPOSITIONS
+        and isinstance(snippet, dict)
+        and "type" in snippet
+        and "scan_refused_rule" not in snippet
+        and "overlength" not in snippet
+    )
+    return enriched
+
+
 def _reconcile_and_land(
     home: Path,
     parsed: dict,
@@ -1021,11 +1191,15 @@ def _reconcile_and_land(
             elif record.status == "rejected":
                 n = _rejected_counter_bump(record.id, origin)
                 if n < 0 or n < REJECTED_RESURFACE_SIGHTINGS:
+                    # FW-34 §1.1 double-absence pin: no `record=` kwarg —
+                    # surfacing the rejected id would invite re-promoting
+                    # a lesson the human said no to. Counts-only
+                    # (`sightings` may stay); the resurfacing counter
+                    # above stays the ONLY path a rejected class returns.
                     _outcome(
                         result,
                         origin,
                         "dropped-rejected",
-                        record=record.id,
                         sightings=max(n, 0),
                     )
                     continue
@@ -1045,7 +1219,19 @@ def _reconcile_and_land(
         # --- landing (cap-checked, scan-gated)
         if len(result.landed) >= cap:
             result.dropped += 1
-            _outcome(result, origin, "dropped-cap")
+            # FW-34 §1.2 build-pin: scan BEFORE _outcome — this branch
+            # used to fire before _build_record/_scan_candidate ever ran,
+            # so cap-refused prose was never scanned at all. The near-miss
+            # snippet closes that leak; the candidate is still dropped
+            # unconditionally (the cap decision is unaffected by scan
+            # outcome — even a scan-refused snippet stays cap-refused).
+            snippet_fields = _snippet_fields(cand)
+            extra = (
+                {"snippet": _nearmiss_snippet(snippet_fields)}
+                if snippet_fields is not None
+                else {}
+            )
+            _outcome(result, origin, "dropped-cap", **extra)
             continue
         try:
             record = _build_record(home, cand)
@@ -1101,6 +1287,10 @@ def _reconcile_and_land(
         )
         log(f"run: landed {record.id} → {path}")
 
+    # FW-34 §1.3: the one reader-output extension — near-misses the
+    # rubric judged below the durability bar. Never affects landing.
+    _handle_near_misses(result, parsed)
+
     fires = parsed.get("fires") or []
     if isinstance(fires, list):
         for fire in fires:
@@ -1153,6 +1343,154 @@ def read_journal(limit: int = 20) -> list[dict]:
         if isinstance(entry, dict):
             out.append(entry)
     return out
+
+
+# --------------------------------------------------- FW-34 §3: canaries
+
+
+class CanaryError(Exception):
+    """``canary plant`` refusal (the DP-2 guard) — nothing written."""
+
+
+#: Case-insensitive: refuses "DP-2", "dp-2", embedded in longer text, etc.
+#: The standing DP-2 window-placement experiment (supply-quality §5,
+#: FW-4) must never be contaminated by an artificial plant.
+_DP2_RE = re.compile(r"dp-2", re.IGNORECASE)
+
+
+def canaries_path() -> Path:
+    return miner_dir() / "canaries.json"
+
+
+def _load_canaries() -> list[dict]:
+    try:
+        data = json.loads(canaries_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    canaries = data.get("canaries") if isinstance(data, dict) else None
+    return canaries if isinstance(canaries, list) else []
+
+
+def _save_canaries(canaries: list[dict]) -> None:
+    canaries_path().write_text(
+        json.dumps({"canaries": canaries}, indent=0, sort_keys=True),
+        encoding="utf-8",
+    )
+
+
+def plant_canary(lesson: str, expect: str | None = None) -> str:
+    """§3: a human act — the user states a genuine durable lesson
+    in-session as normal speech *and* runs this. Writes ONE entry to
+    :func:`canaries_path` (cache-local, like the cursors) and NOTHING
+    else — never a transcript file, never a ledger mutation (t-h: plant
+    creates/mutates no ``*.jsonl`` under any transcripts dir). Returns
+    the new canary's id. Raises :class:`CanaryError` (nothing written)
+    for an empty lesson or one naming DP-2 (guard, tested — the standing
+    experiment is never planted artificially)."""
+    lesson = (lesson or "").strip()
+    if not lesson:
+        raise CanaryError("--lesson needs a non-empty description")
+    expect = (expect or "").strip() or None
+    if _DP2_RE.search(lesson) or (expect and _DP2_RE.search(expect)):
+        raise CanaryError(
+            "refusing a lesson naming DP-2 — the standing window-placement "
+            "experiment (forward/supply-quality.md §5) is never planted "
+            "artificially; it is already live, adjudicated by human "
+            "judgment at review"
+        )
+    canaries = _load_canaries()
+    canary_id = uuid.uuid4().hex[:8]
+    canaries.append(
+        {
+            "id": canary_id,
+            "lesson": lesson,
+            "expect": expect,
+            "planted_at": _now_iso(),
+            # Best-effort — no reliable current-session channel exists for
+            # a bare CLI invocation; a canary with no session id can still
+            # be CAUGHT, it just never scores `missed` (§3).
+            "session": os.environ.get("CLAUDE_SESSION_ID") or None,
+            "status": "open",
+        }
+    )
+    _save_canaries(canaries)
+    return canary_id
+
+
+def _score_canaries(
+    home: Path, record_ids: list[str], mined_session_ids: set[str]
+) -> None:
+    """§3: deterministic scoring, run after `_reconcile_and_land`. Reuses
+    the WORKER's own recurrence-suspect similarity — `worker._tokens` +
+    `worker.SUSPECT_JACCARD` — rather than reimplementing it (no new
+    infrastructure, drift-free). An open canary is `caught` when its
+    lesson/expect token-overlaps a record this run landed or folded at or
+    above the Jaccard threshold; otherwise, once its own (best-effort)
+    source session has itself been mined with no match, it is `missed`.
+    A canary with no recorded session simply stays `open` until caught —
+    never a false `missed`. Counts only; a mis-scored canary is cheap
+    (unlike a missed dedup) and never enters `supply_mix` or the
+    mined-accept-rate (worker-ecology §4-3) — this function touches
+    nothing but ``canaries.json``."""
+    canaries = _load_canaries()
+    if not canaries:
+        return
+    title_tokens: list[set[str]] = []
+    for rid in dict.fromkeys(record_ids):
+        found = _find_record(home, rid)
+        if found is not None:
+            title_tokens.append(worker._tokens(record_title(found[0])))
+    changed = False
+    for c in canaries:
+        if not isinstance(c, dict) or c.get("status") != "open":
+            continue
+        lesson_tokens = worker._tokens(
+            f"{c.get('lesson') or ''} {c.get('expect') or ''}"
+        )
+        caught = False
+        for tt in title_tokens:
+            union = lesson_tokens | tt
+            if union and len(lesson_tokens & tt) / len(union) >= worker.SUSPECT_JACCARD:
+                caught = True
+                break
+        if caught:
+            c["status"] = "caught"
+            changed = True
+        elif c.get("session") and c["session"] in mined_session_ids:
+            c["status"] = "missed"
+            changed = True
+    if changed:
+        _save_canaries(canaries)
+
+
+def read_canaries_summary() -> dict | None:
+    """§4: the `mine status --json` top-level `canaries` field — `None`
+    (absent) when no canary has EVER been planted, so the one-liner adds
+    "· canaries K/N caught" only when `planted > 0`. Degradation: an
+    unreadable `canaries.json` (present but corrupt) reports the all-zero
+    shape + a `log()` line, never a crash (E-11 spirit / M-3)."""
+    path = canaries_path()
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        log(f"canaries.json unreadable ({exc}) — reporting zero")
+        return {"planted": 0, "caught": 0, "missed": 0, "open": []}
+    canaries = data.get("canaries") if isinstance(data, dict) else None
+    canaries = canaries if isinstance(canaries, list) else []
+    if not canaries:
+        return None
+    return {
+        "planted": len(canaries),
+        "caught": sum(1 for c in canaries if c.get("status") == "caught"),
+        "missed": sum(1 for c in canaries if c.get("status") == "missed"),
+        "open": [
+            {"lesson": c.get("lesson"), "planted_at": c.get("planted_at")}
+            for c in canaries
+            if c.get("status") == "open"
+        ],
+    }
 
 
 # ------------------------------------------------------- watchdog (R1 L2)
@@ -1432,6 +1770,20 @@ def _run_locked(
     finally:
         hold.release()
 
+    # FW-34 §3: deterministic canary scoring — after _reconcile_and_land,
+    # reusing worker._tokens/SUSPECT_JACCARD (never reimplemented), no
+    # reader change. Cache-local (canaries.json) and never fatal to the
+    # run — a scoring failure is logged, not raised (M-3 spirit; counts
+    # never enter supply_mix or the mined-accept-rate, worker-ecology §4-3).
+    try:
+        _score_canaries(
+            home,
+            result.landed + result.folded,
+            {s.session_id for s, _halt in processed},
+        )
+    except Exception as exc:  # noqa: BLE001 — canary scoring never crashes a run
+        log(f"run {run_id}: canary scoring skipped ({exc})")
+
     _advance_cursors(processed)
     (miner_dir() / "miner.last-run").touch()
     # A run whose landings never committed is NOT "ok" (BLOCKER B (c)):
@@ -1440,6 +1792,11 @@ def _run_locked(
     # 7 MAJOR 4): the next run's `reconcile` step commits them, and so does
     # `self-learn reconcile` / `self-learn push` on demand.
     result.status = "landed-uncommitted" if result.landing_uncommitted else "ok"
+    # FW-34 §1.1/§4: fold each outcome's disposition/reason/promotable at
+    # journal-write time (the no-derivation rule — the UI renders this
+    # verbatim, never re-maps it) + the per-run near_miss_count.
+    enriched_outcomes = [_enrich_near_miss(o) for o in result.outcomes]
+    near_miss_count = sum(1 for o in enriched_outcomes if "disposition" in o)
     _journal({**base, "status": result.status,
               "landing_uncommitted": result.landing_uncommitted,
               "sessions_scanned": len(digests),
@@ -1450,7 +1807,8 @@ def _run_locked(
               "folded": len(result.folded),
               "recurrences": len(result.recurrences),
               "fires": result.fires,
-              "outcomes": result.outcomes,
+              "outcomes": enriched_outcomes,
+              "near_miss_count": near_miss_count,
               "duration_secs": round(time.time() - t0, 1)})
     log(
         f"run {run_id}: {result.status} — {len(result.landed)} landed, "

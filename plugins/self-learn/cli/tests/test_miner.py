@@ -1127,3 +1127,472 @@ def test_crash_mid_run_still_journals(home, transcripts, monkeypatch):
     assert result.status == "failed"
     entry = miner.read_journal()[-1]
     assert entry["status"] == "failed" and "synthetic mid-run crash" in entry["reason"]
+
+
+# =================================================== FW-34: near-miss visibility
+
+SECRET = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6Q7r8"
+
+
+def test_cap_refused_journals_snippet(home, transcripts, monkeypatch):
+    """t-a: a cap-refused candidate journals a `snippet` that round-trips
+    its trigger/instruction, folded to disposition `cap-refused` and
+    marked `promotable`."""
+    monkeypatch.setenv("SELF_LEARN_MINE_CAP_PER_SESSION", "1")
+    write_transcript(transcripts, "sess-nm-a", [u("work")])
+    shim_reader(
+        monkeypatch,
+        {
+            "candidates": [
+                candidate(session="sess-nm-a", line=1),
+                candidate(
+                    session="sess-nm-a",
+                    line=2,
+                    trigger="Second distinct trigger about rsync",
+                ),
+            ],
+            "fires": [],
+        },
+    )
+    result = miner.run(home)
+    assert len(result.landed) == 1 and result.dropped == 1
+    outcomes = miner.read_journal()[-1]["outcomes"]
+    cap_refused = next(o for o in outcomes if o["outcome"] == "dropped-cap")
+    assert cap_refused["disposition"] == "cap-refused"
+    assert cap_refused["promotable"] is True
+    assert cap_refused["reason"]
+    snippet = cap_refused["snippet"]
+    assert snippet["type"] == "behavior"
+    assert snippet["trigger"] == "Second distinct trigger about rsync"
+    assert snippet["instruction"]
+    assert "why_durable" in snippet
+    assert "quote" not in snippet  # §1.2/F3-(a): no evidence quote, ever
+
+
+def test_cap_refused_secret_in_why_durable_refused(home, transcripts, monkeypatch):
+    """t-b (cap-refused leg): the pre-`_outcome` scan the dropped-cap
+    branch used to lack entirely — a planted secret in `why_durable` is
+    caught and never reaches the journal file's bytes."""
+    monkeypatch.setenv("SELF_LEARN_MINE_CAP_PER_SESSION", "1")
+    write_transcript(transcripts, "sess-nm-b", [u("work")])
+    shim_reader(
+        monkeypatch,
+        {
+            "candidates": [
+                candidate(session="sess-nm-b", line=1),
+                candidate(
+                    session="sess-nm-b",
+                    line=2,
+                    trigger="Second distinct trigger about rsync",
+                    why_durable=f"leaked token {SECRET} rotated",
+                ),
+            ],
+            "fires": [],
+        },
+    )
+    miner.run(home)
+    outcomes = miner.read_journal()[-1]["outcomes"]
+    cap_refused = next(o for o in outcomes if o["outcome"] == "dropped-cap")
+    assert cap_refused["snippet"] == {"scan_refused_rule": "github-token"}
+    assert cap_refused["promotable"] is False
+    raw = miner.journal_path().read_text(encoding="utf-8")
+    assert SECRET not in raw
+
+
+def test_rubric_dropped_secret_in_why_durable_refused(home, transcripts, monkeypatch):
+    """t-b (rubric-dropped leg): the SAME secret-in-`why_durable` plant,
+    on the `near_misses[]` handler — a partial (trigger/instruction-only)
+    scan would miss it; the field-by-field scan must not."""
+    write_transcript(transcripts, "sess-nm-c", [u("work")])
+    shim_reader(
+        monkeypatch,
+        {
+            "candidates": [],
+            "near_misses": [
+                {
+                    "type": "behavior",
+                    "trigger": "About to do something risky",
+                    "instruction": "Don't",
+                    "why_durable": f"leaked token {SECRET} rotated",
+                    "session": "sess-nm-c",
+                    "line": 5,
+                    "confidence": "medium",
+                }
+            ],
+            "fires": [],
+        },
+    )
+    miner.run(home)
+    outcomes = miner.read_journal()[-1]["outcomes"]
+    rubric = next(o for o in outcomes if o["outcome"] == "rubric-dropped")
+    assert rubric["disposition"] == "rubric-dropped"
+    assert rubric["snippet"] == {"scan_refused_rule": "github-token"}
+    assert rubric["promotable"] is False
+    raw = miner.journal_path().read_text(encoding="utf-8")
+    assert SECRET not in raw
+
+
+def test_cap_refused_overlength_snippet_no_content(home, transcripts, monkeypatch):
+    """t-c: an over-cap snippet becomes `{overlength: True}` — never a
+    clipped draft."""
+    monkeypatch.setenv("SELF_LEARN_MINE_CAP_PER_SESSION", "1")
+    write_transcript(transcripts, "sess-nm-d", [u("work")])
+    big = "X" * 700
+    shim_reader(
+        monkeypatch,
+        {
+            "candidates": [
+                candidate(session="sess-nm-d", line=1),
+                candidate(session="sess-nm-d", line=2, trigger=big),
+            ],
+            "fires": [],
+        },
+    )
+    miner.run(home)
+    outcomes = miner.read_journal()[-1]["outcomes"]
+    cap_refused = next(o for o in outcomes if o["outcome"] == "dropped-cap")
+    assert cap_refused["snippet"] == {"overlength": True}
+    assert cap_refused["promotable"] is False
+    raw = miner.journal_path().read_text(encoding="utf-8")
+    assert big not in raw
+
+
+def test_rubric_dropped_journals_snippet(home, transcripts, monkeypatch):
+    """A clean `near_misses[]` entry round-trips through `rubric-dropped`,
+    never lands, and is counted in `near_miss_count`."""
+    write_transcript(transcripts, "sess-nm-g", [u("work")])
+    shim_reader(
+        monkeypatch,
+        {
+            "candidates": [],
+            "near_misses": [
+                {
+                    "type": "behavior",
+                    "trigger": "Trigger text",
+                    "instruction": "Instruction text",
+                    "why_durable": "will recur",
+                    "session": "sess-nm-g",
+                    "line": 7,
+                    "confidence": "low",
+                }
+            ],
+            "fires": [],
+        },
+    )
+    result = miner.run(home)
+    assert result.landed == []
+    entry = miner.read_journal()[-1]
+    rubric = next(o for o in entry["outcomes"] if o["outcome"] == "rubric-dropped")
+    assert rubric["origin"] == "transcript:sess-nm-g#L7"
+    assert rubric["disposition"] == "rubric-dropped"
+    assert rubric["promotable"] is True
+    assert rubric["snippet"] == {
+        "type": "behavior",
+        "trigger": "Trigger text",
+        "instruction": "Instruction text",
+        "why_durable": "will recur",
+    }
+    assert entry["near_miss_count"] == 1
+
+
+def test_rubric_dropped_max_field_chars_refuse_not_clip(home, transcripts, monkeypatch):
+    """t-d (field cap): an over-`MAX_FIELD_CHARS` field drops the WHOLE
+    near-miss — never a clipped/guessed shape."""
+    write_transcript(transcripts, "sess-nm-e", [u("work")])
+    shim_reader(
+        monkeypatch,
+        {
+            "candidates": [],
+            "near_misses": [
+                {
+                    "type": "behavior",
+                    "trigger": "T" * (miner.MAX_FIELD_CHARS + 1),
+                    "instruction": "short",
+                    "why_durable": "will recur",
+                    "session": "sess-nm-e",
+                    "line": 5,
+                }
+            ],
+            "fires": [],
+        },
+    )
+    miner.run(home)
+    outcomes = miner.read_journal()[-1]["outcomes"]
+    assert not any(o["outcome"] == "rubric-dropped" for o in outcomes)
+
+
+def test_rubric_dropped_invalid_ref_drops_whole_near_miss(home, transcripts, monkeypatch):
+    """t-d (`_valid_ref` gating): a bad session id drops the whole
+    near-miss — never a guessed origin."""
+    write_transcript(transcripts, "sess-nm-f", [u("work")])
+    shim_reader(
+        monkeypatch,
+        {
+            "candidates": [],
+            "near_misses": [
+                {
+                    "type": "behavior",
+                    "trigger": "trigger",
+                    "instruction": "instruction",
+                    "why_durable": "will recur",
+                    "session": "bad session id!",
+                    "line": 5,
+                }
+            ],
+            "fires": [],
+        },
+    )
+    miner.run(home)
+    outcomes = miner.read_journal()[-1]["outcomes"]
+    assert not any(o["outcome"] == "rubric-dropped" for o in outcomes)
+    assert miner.read_journal()[-1]["near_miss_count"] == 0
+
+
+def test_dropped_rejected_no_snippet_no_record_id(home, transcripts, monkeypatch):
+    """t-e: the §1.1 double-absence — `dropped-rejected` carries neither
+    `snippet` nor `record`, counts-only."""
+    rejected = make_behavior()
+    _resolve(home, rejected, "rejected")
+    write_transcript(transcripts, "sess-rej-nm", [u("sighting")])
+    shim_reader(
+        monkeypatch,
+        {
+            "candidates": [
+                candidate(
+                    session="sess-rej-nm",
+                    match={"record": rejected.id, "status": "rejected"},
+                )
+            ],
+            "fires": [],
+        },
+    )
+    miner.run(home)
+    outcomes = miner.read_journal()[-1]["outcomes"]
+    dropped = next(o for o in outcomes if o["outcome"] == "dropped-rejected")
+    assert dropped["disposition"] == "rejected"
+    assert dropped["promotable"] is False
+    assert "snippet" not in dropped
+    assert "record" not in dropped
+    assert dropped["sightings"] == 1
+
+
+def test_folded_disposition_is_already_canon_with_record_id(home, transcripts, monkeypatch):
+    """Blind-review fold 1: the `already-canon` fold-table row (folded,
+    skipped-resolved, recurrence, recurrence-already-known,
+    skipped-known-origin) was left unpinned — a silent remap (e.g.
+    `folded -> other`) would drop the matched-record link and show the
+    wrong plain-words reason, and every prior test still passed. Pins
+    BOTH: `disposition == "already-canon"` AND the matched record id
+    surviving into the journal entry."""
+    existing = make_behavior()
+    create_record(home, existing)
+    write_transcript(transcripts, "sess-fold-nm", [u("hit it again")])
+    shim_reader(
+        monkeypatch,
+        {
+            "candidates": [
+                candidate(
+                    session="sess-fold-nm",
+                    match={"record": existing.id, "status": "pending"},
+                )
+            ],
+            "fires": [],
+        },
+    )
+    result = miner.run(home)
+    assert result.folded == [existing.id]
+    outcomes = miner.read_journal()[-1]["outcomes"]
+    folded = next(o for o in outcomes if o["outcome"] == "folded")
+    assert folded["disposition"] == "already-canon"
+    assert folded["record"] == existing.id  # the matched-record link survives
+    assert folded["reason"]  # plain-words, Y-9 register — never empty
+    assert folded["promotable"] is False
+    assert "snippet" not in folded  # already-canon rows never carry one
+
+
+def test_every_disposition_has_a_reason(home):
+    """Blind-review fold 1 (table-completeness): every value
+    `_NEARMISS_DISPOSITION` can produce must have a plain-words reason —
+    an addition to the fold table with no matching `_NEARMISS_REASON`
+    entry would KeyError at journal-write time on the very outcome it
+    was meant to enrich (`_enrich_near_miss`'s `_NEARMISS_REASON[disposition]`
+    lookup, not `.get`)."""
+    dispositions = set(miner._NEARMISS_DISPOSITION.values())
+    assert dispositions  # the table itself is non-empty — a vacuous pass is not a pass
+    missing = dispositions - set(miner._NEARMISS_REASON)
+    assert not missing, f"disposition(s) in the fold table with no reason: {missing}"
+
+
+# ------------------------------------------------------- FW-34 §3: canaries
+
+
+def test_canary_plant_writes_cache_entry(home):
+    canary_id = miner.plant_canary(
+        "always run go vet before committing Go changes", expect="go vet"
+    )
+    assert canary_id
+    canaries = miner._load_canaries()
+    assert len(canaries) == 1
+    assert canaries[0]["id"] == canary_id
+    assert canaries[0]["lesson"] == "always run go vet before committing Go changes"
+    assert canaries[0]["expect"] == "go vet"
+    assert canaries[0]["status"] == "open"
+
+
+def test_canary_caught_on_matching_landed_record(home, transcripts, monkeypatch):
+    """t-f (catch leg): a later run that lands a title-matching record
+    scores the open canary `caught`."""
+    miner.plant_canary(
+        "always run go vet before committing Go changes", expect="go vet"
+    )
+    write_transcript(transcripts, "sess-canary-catch", [u("go vet is important")])
+    shim_reader(
+        monkeypatch,
+        {
+            "candidates": [
+                candidate(
+                    session="sess-canary-catch",
+                    trigger="always run go vet before committing Go changes",
+                    instruction="run go vet",
+                )
+            ],
+            "fires": [],
+        },
+    )
+    result = miner.run(home)
+    assert result.landed
+    summary = miner.read_canaries_summary()
+    assert summary == {"planted": 1, "caught": 1, "missed": 0, "open": []}
+
+
+def test_canary_missed_when_source_session_mined_without_match(
+    home, transcripts, monkeypatch
+):
+    """t-f (missed leg): once the canary's own (best-effort) source
+    session has been mined with no match, it scores `missed`."""
+    monkeypatch.setenv("CLAUDE_SESSION_ID", "sess-canary-src")
+    miner.plant_canary("prefer editing files over rewriting them whole")
+    write_transcript(
+        transcripts, "sess-canary-src", [u("totally unrelated content about pizza")]
+    )
+    shim_reader(monkeypatch, {"candidates": [], "fires": []})
+    miner.run(home)
+    summary = miner.read_canaries_summary()
+    assert summary["missed"] == 1
+    assert summary["caught"] == 0
+    assert summary["open"] == []
+
+
+def test_canary_plant_refuses_dp2(home):
+    """t-g: `plant --lesson` naming DP-2 is refused — the standing
+    window-placement experiment is never planted artificially."""
+    with pytest.raises(miner.CanaryError):
+        miner.plant_canary("the DP-2 window placement rule should always apply")
+    assert miner._load_canaries() == []
+    # case-insensitive + inside --expect too
+    with pytest.raises(miner.CanaryError):
+        miner.plant_canary("a fine lesson", expect="matches dp-2 somehow")
+    assert miner._load_canaries() == []
+
+
+def test_canary_plant_cli_refuses_dp2(home, capsys):
+    """The CLI surface: a usage exit, nothing written."""
+    rc = cli.main(["canary", "plant", "--lesson", "always honor DP-2"])
+    assert rc == cli.EXIT_USAGE
+    assert "DP-2" in capsys.readouterr().err
+    assert miner._load_canaries() == []
+
+
+def test_canary_plant_writes_no_transcript(home, transcripts):
+    """t-h: plant creates/mutates no `*.jsonl` under any transcripts
+    dir — the honesty pin: canaries never forge transcript content."""
+    before = sorted(transcripts.rglob("*.jsonl"))
+    miner.plant_canary("always double check migrations before applying them")
+    after = sorted(transcripts.rglob("*.jsonl"))
+    assert before == after == []
+    assert miner.canaries_path().is_file()
+
+
+def test_canary_catch_does_not_affect_supply_metrics(tmp_path, monkeypatch):
+    """t-i: a run that scores a `caught` canary leaves `supply_mix` and
+    the mined-accept-rate byte-identical to the no-canary run."""
+    from self_learn import report as report_mod
+
+    def run_scenario(subdir: str, *, plant: bool) -> Path:
+        home = make_home(tmp_path / subdir)
+        monkeypatch.setenv("SELF_LEARN_HOME", str(home))
+        root = tmp_path / f"{subdir}-transcripts"
+        (root / "-home-u-proj").mkdir(parents=True)
+        monkeypatch.setenv("SELF_LEARN_TRANSCRIPTS_DIR", str(root))
+        miner._save_cursors({"__initialized__": "test-fixture"})
+        if plant:
+            miner.plant_canary(
+                "always run go vet before committing Go changes", expect="go vet"
+            )
+        write_transcript(root, "sess", [u("go vet is important")])
+        shim_reader(
+            monkeypatch,
+            {
+                "candidates": [
+                    candidate(
+                        session="sess",
+                        trigger="always run go vet before committing Go changes",
+                        instruction="run go vet",
+                    )
+                ],
+                "fires": [],
+            },
+        )
+        result = miner.run(home)
+        assert result.landed
+        return home
+
+    home_a = run_scenario("a", plant=True)
+    assert miner.read_canaries_summary()["caught"] == 1  # sanity: it WAS caught
+
+    home_b = run_scenario("b", plant=False)
+    assert miner.read_canaries_summary() is None  # sanity: no canary here
+
+    assert report_mod.supply_mix(home_a) == report_mod.supply_mix(home_b)
+    mined_a = report_mod.gather(home_a)["mined"]
+    mined_b = report_mod.gather(home_b)["mined"]
+    assert mined_a == mined_b
+
+
+def test_mine_status_json_carries_canaries_and_near_miss_count(
+    home, transcripts, monkeypatch, capsys
+):
+    """§4: `mine status --json` gains the top-level `canaries` block
+    (absent when none) and each run's `near_miss_count`."""
+    rc = cli.main(["mine", "status", "--json"])
+    assert rc == cli.EXIT_OK
+    payload = json.loads(capsys.readouterr().out)
+    assert "canaries" not in payload  # nothing planted yet
+
+    miner.plant_canary("always run go vet before committing Go changes")
+    monkeypatch.setenv("SELF_LEARN_MINE_CAP_PER_SESSION", "1")
+    write_transcript(transcripts, "sess-status", [u("work")])
+    shim_reader(
+        monkeypatch,
+        {
+            "candidates": [
+                candidate(session="sess-status", line=1),
+                candidate(
+                    session="sess-status",
+                    line=2,
+                    trigger="Second distinct trigger about rsync",
+                ),
+            ],
+            "fires": [],
+        },
+    )
+    miner.run(home)
+    rc = cli.main(["mine", "status", "--json"])
+    assert rc == cli.EXIT_OK
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["canaries"]["planted"] == 1
+    last_run = payload["runs"][-1]
+    assert last_run["near_miss_count"] == 1
+    outcome = next(o for o in last_run["outcomes"] if o["outcome"] == "dropped-cap")
+    assert outcome["disposition"] == "cap-refused"
+    assert outcome["promotable"] is True
