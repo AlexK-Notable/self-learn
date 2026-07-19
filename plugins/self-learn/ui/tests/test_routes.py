@@ -1048,6 +1048,34 @@ class TestArmDisarmConfirm:
         assert "dirty target tree" in r.text
         assert 'data-armed="false"' in r.text  # back to unarmed, nothing optimistic
 
+    def test_error_strip_carries_the_reload_defer_marker(self, tmp_path: Path) -> None:
+        """f5-errstrip live-DoD fix: app.js's leg (a) keys on
+        [data-verb-error] — action_bar.html's error strip predated that
+        leg and never carried it, so a post-verb refresh push reload-wiped
+        every failed-verb error (and, since U20, the commit-drift button
+        riding the same strip) before a human could read/act on it. Plain
+        render-shape assertion (the ordering hazard itself is modeled in
+        test_js_dom.py::TestErrorStripSurvivesInFlightRefresh, which needs
+        a real browser to observe app.js's reload-defer predicate)."""
+        sb, rec = self._seed(tmp_path)
+        runner = FakeRunner()
+        runner.queue_result(RunResult(1, stderr="self-learn: dirty target tree"))
+        c, _runner = make_client(sb, runner=runner)
+        r = c.post(
+            f"/record/{rec.id}/action/confirm",
+            data={"verb": "route", "kind": "detail", "dest": "skill-md"},
+            headers={"HX-Request": "true"},
+        )
+        assert r.status_code == 200
+        assert 'data-verb-error="true"' in r.text
+        # the marker sits on the SAME <p> as the error text, never a
+        # decoy element elsewhere in the fragment
+        assert re.search(
+            r'<p class="error-strip" role="alert" data-verb-error="true">'
+            r"self-learn: dirty target tree",
+            r.text,
+        )
+
 
 class TestOCycle:
     # The endpoint reads the `dest` field because that is what the

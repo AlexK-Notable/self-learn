@@ -9,7 +9,14 @@
    JS) is what makes the file list survive a stray SSE refresh mid-tap. #}
 <div id="{{ dom_id }}" class="action-bar" data-armed="{{ 'true' if (armed or (commit_drift and commit_drift.armed)) else 'false' }}" data-key-context="{{ kind }}">
   {% if error %}
-  <p class="error-strip" role="alert">{{ error }}</p>
+  {# live-trial defect fix (f5-errstrip): this strip predates app.js's
+     Y-16 leg (a) ([data-verb-error] defers a broadcast reload) and never
+     carried the marker — a failed verb's error + the U20 commit-drift
+     button were reload-wiped before the human could read/act on them
+     (FakeRunner tests never push the post-subprocess refresh, so this
+     was invisible to the suite). Release is automatic: this element
+     leaves the DOM on disarm/re-render, same as every other leg. #}
+  <p class="error-strip" role="alert" data-verb-error="true">{{ error }}</p>
   {% if commit_drift %}
   {# U20 §2.2: the ONE guided-commit action, composing inside this SAME
      error leg (no new region, O-9) — eligible only for a failed `route`

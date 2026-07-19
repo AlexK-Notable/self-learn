@@ -515,6 +515,78 @@ class TestCommitDriftArmedSurvivesRefresh:
         _assert_reloaded(page)
 
 
+class TestErrorStripSurvivesInFlightRefresh:
+    """Live DoD defect (f5-errstrip): dirty SKILL.md + route confirm on a
+    real record → the verb refused correctly, the response carried the
+    error strip + the commit-drift button — and the post-verb refresh
+    push (routes.py's ``_force_refresh``, fired BEFORE the failure
+    response is even built) reloaded the page before the human could
+    read/act, wiping both. Root cause: leg (a) keys on
+    ``[data-verb-error]``, which ``action_bar.html``'s error strip never
+    carried (only ``host_add_bar.html``'s did) — every failed-verb error
+    on the Detail/Bucket action bar has been reload-wiped live;
+    FakeRunner tests never push the post-subprocess refresh, so the
+    existing suite never saw it (this module's own real uvicorn +
+    real SSE push is what finally can).
+
+    Models the EXACT ordering ``TestReloadRaceLiveOrdering`` established
+    for leg (d): the refresh isn't a discrete "before" or "after" the
+    response, it can arrive WHILE the confirm is in flight and be
+    released at the SAME settle instant the error markup lands — so the
+    assertion that matters is what ``releaseReload()`` sees AT that
+    settle, not merely "eventually stays put"."""
+
+    def test_confirm_failure_error_and_button_survive_inflight_refresh(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        _open(page, server, "/")
+        # The pre-confirm armed bar — same shape action_bar.html renders
+        # while armed, about to POST .../action/confirm.
+        page.evaluate(
+            "document.body.insertAdjacentHTML('beforeend', "
+            "'<div class=\"action-bar\" data-armed=\"true\" id=\"t-bar\"></div>')"
+        )
+        _dispatch_htmx(page, "htmx:beforeRequest", "/record/x/action/confirm")
+        _arm_reload_sentinel(page)
+
+        # The refresh races the response — pushed mid-flight, exactly as
+        # RealRunner's post-subprocess refresh_callback (and routes.py's
+        # explicit _force_refresh, called before result.ok is even
+        # checked) do in production.
+        server.push_refresh(f"record:{REC_BRIEF}")
+        _assert_deferred(page)  # leg (b) holds — nothing armed/erroring yet
+
+        # The confirm response arrives: a failed verb re-renders the
+        # WHOLE action-bar unarmed, carrying the error strip AND (when
+        # eligible) the commit-drift button — the REAL shape
+        # action_bar.html emits post-fix.
+        page.evaluate(
+            "document.getElementById('t-bar').outerHTML = "
+            "'<div class=\"action-bar\" data-armed=\"false\" id=\"t-bar\">"
+            "<p class=\"error-strip\" role=\"alert\" data-verb-error=\"true\">"
+            "compile target has unrelated uncommitted changes</p>"
+            "<form><button data-key-action=\"commit_drift_arm\">Commit that "
+            "repo\\'s changes, then retry</button></form></div>'"
+        )
+        _dispatch_htmx(page, "htmx:afterSettle", "/record/x/action/confirm")
+        # THE ASSERTION: releaseReload()'s predicate re-check at the exact
+        # instant leg (b) lets go must find leg (a) already holding — the
+        # error strip AND the commit-drift button must still be showing,
+        # unreloaded, and therefore actionable.
+        _assert_deferred(page)
+        assert page.query_selector("[data-verb-error]") is not None
+        assert (
+            page.query_selector('[data-key-action="commit_drift_arm"]')
+            is not None
+        )
+
+        # Defer-never-drop, chained: dismiss/re-render removes the strip
+        # (leg (a)'s pinned release) and a settle still fires the reload.
+        page.evaluate("document.getElementById('t-bar').remove()")
+        _dispatch_htmx(page, "htmx:afterSettle", "/record/x/action/arm")
+        _assert_reloaded(page)
+
+
 class TestReloadDeferLegD:
     """Leg (d), U-C3 (09 §11 Y-8): a [data-contradicts-offer] element
     defers — the post-route contradicts offer renders every edge UNARMED

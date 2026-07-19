@@ -893,6 +893,34 @@ class TestBucketPane:
         assert ["graduate", rec.id] in runner.calls
         assert resp.headers.get("HX-Redirect") == "/bucket/skill/s"
 
+    def test_bucket_confirm_failure_error_strip_carries_reload_defer_marker(
+        self, tmp_path: Path
+    ) -> None:
+        """f5-errstrip live-DoD fix, the proposal_bar.html leg: unlike
+        kind="detail" (which renders via action_bar.html), a FAILED
+        kind="bucket" confirm renders _proposal_gone's proposal_bar.html
+        branch — proposal_confirm calls _force_refresh(f"record:{id}")
+        BEFORE checking result.ok, the exact race action_bar.html's fix
+        addresses. Plain render-shape assertion (the ordering hazard is
+        modeled in test_js_dom.py, which needs a real browser)."""
+        sb, (rec,) = _seed(tmp_path)
+        runner = FakeRunner()
+        runner.queue_result(RunResult(1, stderr="refused: scan hit"))
+        c, _runner, manager = make_client(sb, runner=runner)
+        prop = VerbProposal(
+            verb="graduate", record_id=rec.id, bucket_scope="skill", bucket_name="s",
+            session_key=pane.bucket_session_key("skill", "s"),
+        )
+        manager.proposal_slot.occupy(prop)
+        manager.proposal_slot.arm(rec.id)
+        out = c.post(
+            "/proposal/confirm",
+            data={"record_id": rec.id, "kind": "bucket", "nonce": prop.nonce},
+            headers=HX,
+        ).text
+        assert "refused: scan hit" in out
+        assert 'data-verb-error="true"' in out
+
 
 class TestBucketContext:
     def test_compose_bucket_message_caps_with_honest_truncation(self) -> None:
