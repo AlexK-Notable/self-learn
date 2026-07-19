@@ -891,3 +891,16 @@ human routes it.
   static cache-busting. Record:
   `reviews/2026-07-19-rider-nearmiss-round.md`; trials in
   `fixtures/ui-trials.md`.
+- **2026-07-19 (evening) — feedback round 5 SHIPPED: U19-U22.** Nine
+  user items → investigation (two "dead keys" were silent no-ops) →
+  two rulings (guided commit-first; pane persist+resume) → two spec
+  gates (both NOT SOUND first pass; folded SOUND) → four Sonnet
+  builds, six Opus code gates, all CLEAN → live DoD walk, which found
+  two latent defects no gate could see (action-bar error strips
+  reload-wiped since U14 — the leg-(a) marker was never on them; every
+  Tier-2 pane resume aborting — pyright stub methods read as
+  implemented by the SDK's object-identity probe) — both fixed,
+  re-gated, re-walked PASS, including genuine context recall across a
+  server SIGKILL and the two-commit guided-commit shape. Record:
+  `reviews/2026-07-19-feedback-round-5.md`; walk in
+  `fixtures/ui-trials.md`.

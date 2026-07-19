@@ -648,3 +648,62 @@ on the follow-up run) — a pre-existing browser-timing flake in a file
 this fix never touched, not a regression. pyright `ui/src`: 0
 errors/0 warnings (one narrowly-scoped, documented
 `# pyright: ignore[reportAbstractUsage]`).
+
+## Feedback round 5 DoD walk — U19/U20/U21/U22 (+2 walk-found fixes) (2026-07-19, sandboxed instance)
+
+Same sandbox ledger as the rider/near-miss round (port 7457, server
+from the merged tree, real ledger/service untouched; browser via
+Playwright, fresh context + hard reload per the stale-app.js lesson).
+
+- **Overlay containment (F5-3) — PASS, the exact reported disaster.**
+  `i` opened a real Iterate (SDK session, first turn in flight), `?`
+  opened the reference, Escape closed ONLY the overlay — same page,
+  session alive, turn ran to completion. Pre-round this exact
+  sequence cancelled the Iterate.
+- **Post-iterate summary (U21) — PASS.** After the live turn:
+  "This turn changed: the proposal." (the agent had rewritten the
+  proposal — and separately flagged the record already-canon). After
+  the later resume turn: "This turn changed: nothing." — correct both
+  ways.
+- **Durability + resume (U22) — PASS after one walk-found BLOCKER.**
+  Real session (35 blocks) → server SIGKILL → restart → the
+  prior-conversation card ("35 blocks · 1m ago · waiting for you") →
+  Resume. First attempt FAILED live: the SDK's resume materialization
+  calls SessionStore.list_subkeys(), and the adapter's
+  pyright-appeasing stub methods read as "implemented" under the
+  SDK's object-identity probe — every Tier-2 resume aborted
+  (degradation held: read-only restore, contained error, no 500; the
+  build-trial probe had missed it because its ad-hoc store defined no
+  stubs). Fixed (subclass, define ONLY append/load; the SDK's real
+  materialize_resume_session now under unit test; multi-turn probe
+  recalled both planted facts). Retrial: resume PASSED with genuine
+  context recall — the resumed agent's greeting referenced the
+  pre-kill work unprompted.
+- **Guided commit-first (U20/F5-5) — PASS after one walk-found
+  defect.** First attempt: the route refused correctly on the dirty
+  SKILL.md but the error strip + button were RELOAD-WIPED before a
+  human could act — reloadDeferred() leg (a) keys on
+  [data-verb-error], which only the U14 registration strip ever
+  emitted; the action-bar strip predates it. (FakeRunner tests are
+  structurally blind to the race.) Fixed (marker on action_bar +
+  proposal_bar strips, sweep table audited per call site). Retrial:
+  refusal renders verbatim + button survives → arm shows the repo +
+  exactly the one dirty file (dry-run truth) → Confirm → TWO separate
+  commits in the host repo ("chore: commit drift before self-learn
+  route" then "self-learn: apply lrn-44e031d9 → …") → record routed,
+  queue advanced. The ruling's shape, exactly.
+- **Humanized timestamps (F5-6) — PASS.** Front miner "last run: 12
+  hours ago", Detail "created 12 hours ago", the resume card "24m
+  ago". No bare ISO anywhere walked.
+- **No-op key hints (F5-1/2) — PASS** ("no episode brief on this
+  record" on `b`; verified via synchronous DOM read — the 3s
+  auto-clear outraces tool round-trips; the o-singleton leg rides its
+  js discriminators). Destination glosses (F5-9) and the collapsed
+  raw-proposal disclosure (F5-4) confirmed on every Detail visited.
+- **Walk-minted backlog:** bulk-graduate errors are invisible
+  (bucket.html posts with hx-swap="none" — response body never enters
+  the DOM; pre-existing); no keyboard path to Resume, and `i` on a
+  record with history means Start-fresh (archives) — for the keymap
+  owner; one intermittent js flake observed once
+  (test_no_hint_when_a_bar_is_armed_and_o_is_pressed; clean on
+  re-runs, two reviewers saw 925/925) — watch.

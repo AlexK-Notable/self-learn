@@ -181,6 +181,21 @@ while the pass itself is parked (O-9).
   amendment); near-miss snippet cap calibration (WATCH — 600 chars
   refused the first real draft); static asset cache-busting.
 
+- *2026-07-19 (evening)*: **FEEDBACK ROUND 5 SHIPPED** — nine user
+  items investigated (2 were silent-no-op UX gaps, not dead keys),
+  two rulings taken (guided commit-first, pin intact; pane transcript
+  persist+resume). U19 (overlay containment + no-op hints +
+  collapsible raw YAML + humanize_ts + destination glosses), U20
+  (host commit-drift verb + armed strip leg), U21 (post-iterate
+  change summary), U22 (durable pane transcripts + Tier-2 SDK resume,
+  Y-28) — all two-gate CLEAN, merged, live-walked. The walk found and
+  the round fixed two latent defects gates couldn't see: action-bar
+  error strips reload-wiped (leg-(a) marker missing) and every Tier-2
+  resume aborting (SDK identity-probe vs pyright stubs). Record:
+  `reviews/2026-07-19-feedback-round-5.md`. Backlog minted:
+  bulk-graduate errors invisible (hx-swap="none"); keyboard path to
+  Resume; js-flake watch; guided re-add for chezmoi drift.
+
 ## 6b. Dated additions log
 
 - *2026-07-18*: FW-30 (settings surface) added on user request.
