@@ -115,7 +115,10 @@
 <section aria-label="miner">
   <h2>Miner</h2>
   {% if model.miner.ok %}
-  <p>last run: {{ model.miner.last_run or "never" }} — {{ model.miner.stale_label }}</p>
+  {# 09 §11 Y-24 one-liner: N sessions read / K landed / M near-misses,
+     all drawn from the SAME latest ok/landed-uncommitted run; the
+     canary suffix appears only once something has ever been planted. #}
+  <p>miner: {{ model.miner.latest_sessions_scanned or 0 }} sessions read, {{ model.miner.latest_landed or 0 }} landed, {{ model.miner.near_miss_count }} near-miss{{ "es" if model.miner.near_miss_count != 1 else "" }}{% if model.miner.canaries %} &middot; canaries {{ model.miner.canaries.caught }}/{{ model.miner.canaries.planted }} caught{% endif %} — last run: {{ model.miner.last_run or "never" }} — {{ model.miner.stale_label }}</p>
   <details>
     <summary>runs</summary>
     <ul>
@@ -124,6 +127,33 @@
         landed {{ run.landed }}, folded {{ run.folded }}, recurrences {{ run.recurrences }}</li>
       {% endfor %}
     </ul>
+  </details>
+  {# Default-collapsed, latest run only (F4) — a snapshot of the last
+     pass, never an accumulating multi-run list. No dismiss/snooze/seen
+     control anywhere: Promote is the only exit (§2.4). #}
+  <details>
+    <summary>near-misses ({{ model.miner.near_miss_count }})</summary>
+    {% if not model.miner.near_miss_rows %}
+    <p>Nothing near-missed in the latest run.</p>
+    {% else %}
+    <ul class="near-miss-rows">
+      {% for row in model.miner.near_miss_rows %}
+      <li class="near-miss-row" data-row>
+        <span class="badge badge-{{ row.badge.kind }}">{{ row.badge.text }}</span>
+        <span class="near-miss-reason">{{ row.reason }}</span>
+        {% if row.record_id %}<a href="/record/{{ row.record_id }}">{{ row.record_id }}</a>{% endif %}
+        {% if row.draft_line %}<p class="near-miss-draft">{{ row.draft_line }}</p>{% endif %}
+        {% if row.promotable %}
+        <form hx-post="/mine/near-miss/promote" hx-swap="none">
+          <input type="hidden" name="run_id" value="{{ model.miner.latest_run_id }}">
+          <input type="hidden" name="index" value="{{ row.index }}">
+          <button type="submit">Promote to pending</button>
+        </form>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+    {% endif %}
   </details>
   {% else %}
   <p class="error-strip" role="alert">{{ model.miner.error }}</p>

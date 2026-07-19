@@ -51,6 +51,7 @@ __all__ = [
     "BucketModel",
     "BucketRow",
     "BulkCollapseRow",
+    "CanarySummary",
     "CardSection",
     "ChangeRegion",
     "ClusterRow",
@@ -63,6 +64,7 @@ __all__ = [
     "HoldingRow",
     "MinerBlock",
     "MinerRun",
+    "NearMissRow",
     "RecordRow",
     "StatusStrip",
     "WhyRegion",
@@ -185,6 +187,19 @@ _MINER_STATUS_LABELS: dict[str, str] = {
     "landed-uncommitted": "landed, not yet committed",
     "initialized": "initialized (first run)",
     "held-gate": "held at the pending gate",
+}
+
+#: 09 §11 Y-24 — the drill row's badge text per `disposition` (Y-10: a
+#: badge is never hue alone). Rendered verbatim from the CLI's own fold
+#: (miner.py's `disposition`) — this is display text ONLY, never a
+#: re-derivation of which class an outcome falls into.
+_NEARMISS_BADGE_LABELS: dict[str, str] = {
+    "cap-refused": "cap refused",
+    "rubric-dropped": "below the bar",
+    "already-canon": "already canon",
+    "rejected": "rejected",
+    "scan-blocked": "scan blocked",
+    "other": "not landed",
 }
 
 
@@ -357,9 +372,40 @@ class MinerRun:
 
 
 @dataclass(frozen=True)
+class NearMissRow:
+    """09 §11 Y-24 — one drill row, from the LATEST ok/landed-uncommitted
+    run only (spec F4: older runs' near-misses are never re-surfaced).
+    ``index`` is this outcome's position in that run's own ``outcomes``
+    list — the exact coordinate ``POST /mine/near-miss/promote`` sends;
+    the server re-reads the snippet from a fresh ``mine status --json``
+    at that (run_id, index), never trusting anything from this row."""
+
+    index: int
+    badge: Badge
+    reason: str
+    promotable: bool
+    #: The dimmed single-line draft (promotable rows only) — formats the
+    #: CLI-supplied snippet fields, never derives new meaning from them.
+    draft_line: str | None
+    #: `already-canon` rows only — links the matched record id.
+    record_id: str | None
+
+
+@dataclass(frozen=True)
+class CanarySummary:
+    """09 §11 Y-24 / FW-34 §4 — ``mine status --json``'s top-level
+    ``canaries`` block, rendered verbatim; ``None`` (absent) when no
+    canary has ever been planted (the one-liner's "· canaries K/N
+    caught" suffix)."""
+
+    planted: int
+    caught: int
+
+
+@dataclass(frozen=True)
 class MinerBlock:
-    """09 §11 Y-5 — ``mine status --json`` rendered verbatim; force-run
-    is its only action (wired at U3/U4, not modeled here)."""
+    """09 §11 Y-5 / Y-24 — ``mine status --json`` rendered verbatim;
+    force-run + (Y-24) Promote are its only actions."""
 
     ok: bool
     error: str | None
@@ -367,6 +413,17 @@ class MinerBlock:
     stale: bool
     stale_label: str
     runs: tuple[MinerRun, ...]
+    #: Y-24 one-liner: "miner: N sessions read, K landed, M near-misses"
+    #: — N/K/M all drawn from the SAME latest ok/landed-uncommitted run
+    #: (``None`` fields when no such run exists yet).
+    latest_run_id: str | None
+    latest_sessions_scanned: int | None
+    latest_landed: int | None
+    near_miss_count: int
+    #: The drill's rows — latest run only (F4).
+    near_miss_rows: tuple[NearMissRow, ...]
+    #: ``None`` when no canary has ever been planted.
+    canaries: CanarySummary | None
 
 
 @dataclass(frozen=True)
@@ -480,6 +537,73 @@ def _build_miner_runs(runs: list[dict]) -> tuple[MinerRun, ...]:
     return tuple(out)
 
 
+def _latest_ok_run(runs: list[dict]) -> dict | None:
+    """09 §11 Y-24 (F4): the latest ok/landed-uncommitted run — the SAME
+    run the one-liner's N/K/M counts describe. Older runs' near-misses
+    are never re-surfaced as rows (no accumulating multi-run list)."""
+    for entry in reversed(runs):
+        if entry.get("status") in ("ok", "landed-uncommitted"):
+            return entry
+    return None
+
+
+def _nearmiss_draft_line(snippet: Any) -> str | None:
+    """09 §11 Y-24 — the promotable row's dimmed single-line draft:
+    formats the CLI-supplied snippet's own fields (trigger/instruction
+    or fact/context), never derives new meaning from them. ``None`` for
+    a non-dict snippet (absent, ``{scan_refused_rule}``, ``{overlength}``
+    — none of which are ever passed here; the caller gates on
+    ``promotable`` first)."""
+    if not isinstance(snippet, dict):
+        return None
+    if "trigger" in snippet or "instruction" in snippet:
+        parts = [snippet.get("trigger"), snippet.get("instruction")]
+    elif "fact" in snippet or "context" in snippet:
+        parts = [snippet.get("fact"), snippet.get("context")]
+    else:
+        return None
+    text = " — ".join(p for p in parts if p)
+    return text or None
+
+
+def _build_near_miss_rows(latest: dict | None) -> tuple[NearMissRow, ...]:
+    """09 §11 Y-24: rows from the latest run's ``outcomes`` ONLY — an
+    entry with no ``disposition`` (``landed``/``resurfaced``) is not a
+    near-miss and contributes no row. ``index`` mirrors the outcome's
+    position in the CLI's own list, exactly what the promote endpoint
+    expects back."""
+    if not latest:
+        return ()
+    rows: list[NearMissRow] = []
+    for idx, o in enumerate(latest.get("outcomes") or []):
+        disposition = o.get("disposition")
+        if not isinstance(disposition, str):
+            continue
+        promotable = bool(o.get("promotable"))
+        rows.append(
+            NearMissRow(
+                index=idx,
+                badge=Badge(
+                    _NEARMISS_BADGE_LABELS.get(disposition, disposition), disposition
+                ),
+                reason=o.get("reason") or "",
+                promotable=promotable,
+                draft_line=_nearmiss_draft_line(o.get("snippet")) if promotable else None,
+                record_id=o.get("record") if disposition == "already-canon" else None,
+            )
+        )
+    return tuple(rows)
+
+
+def _build_canary_summary(data: dict) -> CanarySummary | None:
+    canaries = data.get("canaries")
+    if not isinstance(canaries, dict) or not canaries.get("planted"):
+        return None
+    return CanarySummary(
+        planted=int(canaries.get("planted") or 0), caught=int(canaries.get("caught") or 0)
+    )
+
+
 def _build_miner_block(mine_read: CliRead) -> MinerBlock:
     if not mine_read.ok or mine_read.data is None:
         return MinerBlock(
@@ -489,17 +613,31 @@ def _build_miner_block(mine_read: CliRead) -> MinerBlock:
             stale=True,
             stale_label="miner status unavailable",
             runs=(),
+            latest_run_id=None,
+            latest_sessions_scanned=None,
+            latest_landed=None,
+            near_miss_count=0,
+            near_miss_rows=(),
+            canaries=None,
         )
     data = mine_read.data
     stale = bool(data.get("stale"))
     label = "miner overdue (>36h)" if stale else "miner current"
+    runs = data.get("runs") or []
+    latest = _latest_ok_run(runs)
     return MinerBlock(
         ok=True,
         error=None,
         last_run=data.get("last_run"),
         stale=stale,
         stale_label=label,
-        runs=_build_miner_runs(data.get("runs") or []),
+        runs=_build_miner_runs(runs),
+        latest_run_id=latest.get("run_id") if latest else None,
+        latest_sessions_scanned=latest.get("sessions_scanned") if latest else None,
+        latest_landed=latest.get("landed") if latest else None,
+        near_miss_count=int((latest or {}).get("near_miss_count") or 0),
+        near_miss_rows=_build_near_miss_rows(latest),
+        canaries=_build_canary_summary(data),
     )
 
 

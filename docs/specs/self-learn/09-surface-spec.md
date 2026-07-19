@@ -2299,3 +2299,46 @@ wider posture; the narrow one is the conservative default).
   section the Detail render reads from the pending file (like
   Trigger/Instruction), not a JSON field; build lands as 10 §3 U18.
 
+- **Y-24 · Miner near-miss visibility + canary recall checks** *(added
+  2026-07-19 — FW-34, `drafts/miner-visibility-spec.md`, gated SOUND;
+  build-grade; mirrors the Y-21 episode-brief entry's shape)*. Extends
+  the existing Front **Miner** region ONLY — zero new top-level regions
+  (the FW-19 tripwire is not tripped). **One-liner** (always visible):
+  *"miner: N sessions read, K landed, M near-misses"* + the existing
+  `last run <ts> — <stale label>` line, with a `· canaries K/N caught`
+  suffix appended only once `planted > 0`. N/K/M are all drawn from the
+  **same latest `ok`/`landed-uncommitted` run** — never a cross-run mix.
+  **Drill**: a second, default-collapsed `<details summary="near-misses
+  (M)">` beside the existing `runs` disclosure (progressive disclosure,
+  09 §2.3's posture) — rows from **that one latest run only** (older
+  runs' near-misses are never re-surfaced; the charter's "aggregate
+  counts with an on-demand drill, never a second queue" rule). A row
+  shows the miner-emitted `disposition` badge (Y-10: text always
+  present) + the plain-words `reason`; a `promotable` row additionally
+  shows the snippet's trigger/instruction (or fact/context) as one
+  dimmed draft line; an `already-canon` row links the matched record id;
+  every other row shows the reason only. **No dismiss/snooze/seen —
+  Promote to pending is the only control**, and only on `promotable`
+  rows. **Mechanism (owned by 12 §12, the sibling miner-side amendment):**
+  the CLI folds every near-miss outcome to a 5-way `disposition` +
+  plain-words `reason` + a CLI-computed `promotable` flag at
+  journal-write time — the UI renders every one of these fields
+  verbatim, deriving nothing (the no-derivation rule). **Promote**:
+  `POST /mine/near-miss/promote` (sibling to `/mine/run`), body = run-id
+  + outcome index; the server RE-READS the snippet from a fresh `mine
+  status --json` (never trusts the posted body — mirrors the Y-18
+  rehome re-resolve) and rejects a non-promotable index; it builds the
+  exact `teach` argv from the snippet fields (`--<scope> --type … [--kind
+  …] --trigger/--instruction` or `--fact/--context`) plus `--session
+  <sid>` parsed from the origin — **never `--quote`** (a near-miss
+  carries no journaled evidence span). No arm-then-confirm ceremony —
+  matches `/mine/run`/`/worker/kick` (the tap is the confirmation; teach
+  is the human-capture writer with its own full scan/cap/pending-gate
+  discipline). **Canaries** ride the same one-liner's suffix and no
+  other surface — no new page, no new region; `mine status --json`'s
+  top-level `canaries` block is absent when nothing has ever been
+  planted. **Substrate**: `mine status --json` gains `near_miss_count`
+  per run and a top-level `canaries` object (12 §12); each outcome dict
+  gains `disposition`/`reason`/`promotable`/`snippet`. No `list --json`
+  change; no new keymap surface.
+

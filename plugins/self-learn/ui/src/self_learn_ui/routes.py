@@ -129,6 +129,57 @@ def build_argv(
     return argv
 
 
+#: FW-34 §2.3: pulls the session id out of a validated `transcript:<sid>#L<n>`
+#: origin — the ONLY provenance the promote argv ever carries (never `--quote`).
+_ORIGIN_RE = re.compile(r"^transcript:([^#]+)#L\d+$")
+
+
+def near_miss_teach_argv(snippet: dict, origin: str | None) -> list[str] | None:
+    """FW-34 §2.3: the exact `teach` argv a promotable near-miss snippet
+    builds — `teach --<scope> --type <t> [--kind …] --trigger …
+    --instruction …` (or `--fact`/`--context`) `--session <sid>`, NEVER
+    `--quote` (F3-(a) — a near-miss carries no journaled evidence span).
+    `--<scope>` falls back to teach's own documented project default
+    (01 §2) when the snippet carries none — the leaner `near_misses[]`
+    reader schema (§1.3) has no scope field at all, unlike a full
+    `candidates[]` entry. Returns `None` when the snippet/origin cannot
+    build a valid call (missing type, unparseable origin) — the caller
+    refuses rather than guess."""
+    if not isinstance(snippet, dict):
+        return None
+    match = _ORIGIN_RE.match(origin or "")
+    if not match:
+        return None
+    session_id = match.group(1)
+    scope = snippet.get("scope") or "project"
+    if isinstance(scope, str) and scope.startswith("skill:"):
+        argv = ["teach", "--skill", scope.partition(":")[2]]
+    elif scope == "user":
+        argv = ["teach", "--user"]
+    else:
+        argv = ["teach", "--project"]
+    rtype = snippet.get("type")
+    if rtype == "behavior":
+        trigger, instruction = snippet.get("trigger"), snippet.get("instruction")
+        if not trigger or not instruction:
+            return None
+        argv += ["--type", "behavior"]
+        if snippet.get("kind"):
+            argv += ["--kind", snippet["kind"]]
+        argv += ["--trigger", trigger, "--instruction", instruction]
+    elif rtype == "knowledge":
+        fact = snippet.get("fact")
+        if not fact:
+            return None
+        argv += ["--type", "knowledge", "--fact", fact]
+        if snippet.get("context"):
+            argv += ["--context", snippet["context"]]
+    else:
+        return None
+    argv += ["--session", session_id]
+    return argv
+
+
 def cycle_destination(current: str | None, scope: str) -> str:
     """09 §2.3's `o` pin: cycle among the parameter-free destinations
     ONLY — ``new-skill``/``hook`` are structurally unreachable from this
@@ -714,6 +765,43 @@ async def mine_run(request: Request) -> Response:
     which is why THOSE verbs get the arm dance and this doesn't)."""
     runner = request.app.state.runner
     await runner.run(["mine", "run", "--trigger", "manual"])
+    _force_refresh(request, "front")
+    resp = Response(status_code=200)
+    resp.headers["HX-Redirect"] = "/"
+    return resp
+
+
+@router.post("/mine/near-miss/promote")
+async def mine_near_miss_promote(
+    request: Request, run_id: str = Form(...), index: int = Form(...)
+) -> Response:
+    """09 §11 Y-24 §2.3 — the ONE near-miss action. The body is only a
+    coordinate (run-id + outcome index); the server RE-READS the
+    snippet from a FRESH `mine status --json` (server truth, never a
+    client-supplied body — mirrors the Y-18 rehome re-resolve) and
+    rejects a non-promotable index outright (400): a drill row can never
+    offer a Promote control the endpoint would then accept from a stale
+    or tampered post, because both read the identical `promotable` flag.
+    No arm-then-confirm ceremony (matches `/mine/run`/`/worker/kick` —
+    the tap IS the confirmation; `teach` is the human-capture writer with
+    its own full scan/field-cap/pending-gate discipline)."""
+    home = _home(request)
+    mine_read = ledger.mine_status(home)
+    run = None
+    if mine_read.ok and mine_read.data:
+        run = next(
+            (r for r in (mine_read.data.get("runs") or []) if r.get("run_id") == run_id),
+            None,
+        )
+    outcomes = (run or {}).get("outcomes") or []
+    outcome = outcomes[index] if 0 <= index < len(outcomes) else None
+    if outcome is None or not outcome.get("promotable"):
+        return HTMLResponse("that near-miss is not promotable", status_code=400)
+    argv = near_miss_teach_argv(outcome.get("snippet") or {}, outcome.get("origin"))
+    if argv is None:
+        return HTMLResponse("that near-miss is not promotable", status_code=400)
+    runner = request.app.state.runner
+    await runner.run(argv)
     _force_refresh(request, "front")
     resp = Response(status_code=200)
     resp.headers["HX-Redirect"] = "/"

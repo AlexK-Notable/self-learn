@@ -334,3 +334,155 @@ class TestMinerBlock:
         assert model.miner.error == "mine status blew up"
         # never a silent "everything's fine" default
         assert model.miner.stale is True
+
+
+class TestNearMissDrill:
+    """09 §11 Y-24 (FW-34 §2): the one-liner's N/K/M + the drill rows,
+    drawn from the LATEST ok/landed-uncommitted run only (F4)."""
+
+    def _run(self, **overrides):
+        base = {
+            "run_id": "abc12345",
+            "status": "ok",
+            "trigger": "manual",
+            "sessions_scanned": 3,
+            "landed": 1,
+            "folded": 0,
+            "recurrences": 0,
+            "fires": 0,
+            "near_miss_count": 2,
+            "outcomes": [
+                {
+                    "origin": "transcript:sess-a#L10",
+                    "outcome": "dropped-cap",
+                    "disposition": "cap-refused",
+                    "reason": "a real lesson, but this run had already landed its cap",
+                    "promotable": True,
+                    "snippet": {
+                        "type": "behavior",
+                        "trigger": "About to rm -rf the wrong dir",
+                        "instruction": "Double check pwd first",
+                    },
+                },
+                {
+                    "origin": "transcript:sess-b#L20",
+                    "outcome": "folded",
+                    "disposition": "already-canon",
+                    "reason": "this is already reflected in an existing lesson",
+                    "promotable": False,
+                    "record": "lrn-bbbbbbbb",
+                },
+                {
+                    "origin": "transcript:sess-c#L1",
+                    "outcome": "landed",
+                    "record": "lrn-cccccccc",
+                },
+            ],
+        }
+        base.update(overrides)
+        return base
+
+    def test_one_liner_counts_come_from_the_latest_ok_run(self):
+        runs = [
+            {"ts": "old", "status": "held-gate", "sessions_scanned": 99},
+            self._run(),
+        ]
+        model = build_front_model(
+            EMPTY_LIST, _status(), _report(), _mine(runs=runs), sentinel_mtime=None, now=NOW
+        )
+        assert model.miner.latest_sessions_scanned == 3
+        assert model.miner.latest_landed == 1
+        assert model.miner.near_miss_count == 2
+        assert model.miner.latest_run_id == "abc12345"
+
+    def test_drill_rows_exclude_landed_and_carry_badge_reason_promotable(self):
+        model = build_front_model(
+            EMPTY_LIST, _status(), _report(), _mine(runs=[self._run()]),
+            sentinel_mtime=None, now=NOW,
+        )
+        rows = model.miner.near_miss_rows
+        assert len(rows) == 2  # `landed` contributes no row
+        cap_row, canon_row = rows
+        assert cap_row.index == 0
+        assert cap_row.badge.kind == "cap-refused"
+        assert cap_row.badge.text  # Y-10: never empty
+        assert cap_row.promotable is True
+        assert cap_row.draft_line == "About to rm -rf the wrong dir — Double check pwd first"
+        assert cap_row.record_id is None
+        assert canon_row.index == 1
+        assert canon_row.badge.kind == "already-canon"
+        assert canon_row.promotable is False
+        assert canon_row.draft_line is None
+        assert canon_row.record_id == "lrn-bbbbbbbb"
+
+    def test_older_runs_near_misses_never_resurface_as_rows(self):
+        """F4: the drill is a snapshot of the latest run, never an
+        accumulating multi-run list."""
+        older = self._run(
+            near_miss_count=9,
+            outcomes=[
+                {
+                    "origin": "transcript:old#L1",
+                    "outcome": "dropped-cap",
+                    "disposition": "cap-refused",
+                    "reason": "old",
+                    "promotable": True,
+                    "snippet": {"type": "behavior", "trigger": "t", "instruction": "i"},
+                }
+            ],
+        )
+        newer = self._run(run_id="newer1", near_miss_count=1)
+        model = build_front_model(
+            EMPTY_LIST, _status(), _report(), _mine(runs=[older, newer]),
+            sentinel_mtime=None, now=NOW,
+        )
+        assert model.miner.latest_run_id == "newer1"
+        assert model.miner.near_miss_count == 1
+        assert len(model.miner.near_miss_rows) == 2  # from `newer` only
+
+    def test_non_promotable_row_never_carries_a_draft_line_even_with_snippet(self):
+        """A malformed/absent snippet must never leak into a draft line —
+        promotable gates the derivation, not merely snippet presence."""
+        run = self._run(
+            outcomes=[
+                {
+                    "origin": "transcript:sess-x#L1",
+                    "outcome": "scan-refused",
+                    "disposition": "scan-blocked",
+                    "reason": "held back",
+                    "promotable": False,
+                    "snippet": {"scan_refused_rule": "github-token"},
+                }
+            ]
+        )
+        model = build_front_model(
+            EMPTY_LIST, _status(), _report(), _mine(runs=[run]), sentinel_mtime=None, now=NOW
+        )
+        (row,) = model.miner.near_miss_rows
+        assert row.promotable is False
+        assert row.draft_line is None
+
+    def test_canaries_absent_when_none_planted(self):
+        model = build_front_model(
+            EMPTY_LIST, _status(), _report(), _mine(), sentinel_mtime=None, now=NOW
+        )
+        assert model.miner.canaries is None
+
+    def test_canaries_summary_carried_verbatim(self):
+        model = build_front_model(
+            EMPTY_LIST, _status(), _report(),
+            _mine(canaries={"planted": 3, "caught": 2, "missed": 1, "open": []}),
+            sentinel_mtime=None, now=NOW,
+        )
+        assert model.miner.canaries.planted == 3
+        assert model.miner.canaries.caught == 2
+
+    def test_no_ok_run_yet_yields_empty_drill_and_zero_counts(self):
+        model = build_front_model(
+            EMPTY_LIST, _status(), _report(),
+            _mine(runs=[{"ts": "x", "status": "failed", "reason": "boom"}]),
+            sentinel_mtime=None, now=NOW,
+        )
+        assert model.miner.near_miss_count == 0
+        assert model.miner.near_miss_rows == ()
+        assert model.miner.latest_run_id is None

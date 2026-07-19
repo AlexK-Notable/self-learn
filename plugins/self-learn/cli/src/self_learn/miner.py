@@ -988,7 +988,15 @@ def _snippet_fields(cand: dict) -> dict | None:
     """§1.2: ``{type, trigger, instruction}`` | ``{type, fact, context}``
     + ``why_durable``, drawn from a candidate/near-miss dict already in
     scope. ``None`` for an unrecognized ``type`` — never a guessed shape.
-    No evidence quote is ever included (§1.2 / F3-(a))."""
+    No evidence quote is ever included (§1.2 / F3-(a)).
+
+    Also carries ``scope``/``kind`` WHEN the source dict has them (a full
+    reader ``candidates[]`` entry does; the leaner ``near_misses[]``
+    schema, §1.3, does not) — §2.3's promote argv needs a scope to build
+    ``teach --<scope>``, and these are cheap, short, enum-shaped strings
+    already scanned/capped by the same snippet defenses. A rubric-dropped
+    row with no source scope simply has none here; the promote route
+    falls back to teach's own documented default (project, 01 §2)."""
     rtype = str(cand.get("type") or "")
     if rtype == "behavior":
         fields: dict = {
@@ -996,6 +1004,9 @@ def _snippet_fields(cand: dict) -> dict | None:
             "trigger": str(cand.get("trigger") or "").strip(),
             "instruction": str(cand.get("instruction") or "").strip(),
         }
+        kind = str(cand.get("kind") or "").strip()
+        if kind:
+            fields["kind"] = kind
     elif rtype == "knowledge":
         fields = {"type": "knowledge", "fact": str(cand.get("fact") or "").strip()}
         context = str(cand.get("context") or "").strip()
@@ -1003,6 +1014,9 @@ def _snippet_fields(cand: dict) -> dict | None:
             fields["context"] = context
     else:
         return None
+    scope = str(cand.get("scope") or "").strip()
+    if scope:
+        fields["scope"] = scope
     why_durable = str(cand.get("why_durable") or "").strip()
     if why_durable:
         fields["why_durable"] = why_durable

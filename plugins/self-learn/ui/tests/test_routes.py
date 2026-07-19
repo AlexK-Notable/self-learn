@@ -1631,6 +1631,284 @@ class TestWorkerKick:
         assert "Force run" in r.text
 
 
+# --------------------------------------------------- Y-24: near-miss promote
+
+
+def _sandboxed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """``make_env`` + a process-env redirect matching it: ``ledger.
+    mine_status()`` is called by the route WITHOUT an ``env=`` override
+    (it reads whatever the process's own os.environ carries for
+    ``XDG_CACHE_HOME``), so the subprocess it shells out to must see the
+    SAME cache dir this helper writes the journal into directly via the
+    cli package's own ``miner`` module — never the real ``~/.cache``."""
+    sb = make_env(tmp_path)
+    monkeypatch.setenv("XDG_CACHE_HOME", sb.env["XDG_CACHE_HOME"])
+    monkeypatch.setenv("XDG_RUNTIME_DIR", sb.env["XDG_RUNTIME_DIR"])
+    monkeypatch.setenv("SELF_LEARN_HOME", sb.env["SELF_LEARN_HOME"])
+    return sb
+
+
+def _seed_miner_run(*, promotable: bool = True, run_id: str = "run00001", **outcome_overrides):
+    """Writes ONE real journal entry (via the cli-package's own
+    ``miner._journal``) so the route's ``ledger.mine_status(home)`` —
+    which shells the REAL ``self-learn mine status --json`` — has a
+    near-miss outcome to read back. Call AFTER :func:`_sandboxed` so the
+    env vars miner_dir()/journal_path() resolve through are already
+    redirected."""
+    from self_learn import miner
+
+    outcome = {
+        "origin": "transcript:sess-nm#L7",
+        "outcome": "dropped-cap",
+        "disposition": "cap-refused",
+        "reason": "a real lesson, but this run had already landed its cap",
+        "promotable": promotable,
+        "snippet": {
+            "type": "behavior",
+            "trigger": "About to rm -rf the wrong dir",
+            "instruction": "Double check pwd first",
+            "scope": "project",
+        },
+    }
+    outcome.update(outcome_overrides)
+    miner._journal(
+        {
+            "ts": "2026-07-19T00:00:00Z",
+            "run_id": run_id,
+            "trigger": "manual",
+            "status": "ok",
+            "sessions_scanned": 1,
+            "landed": 0,
+            "folded": 0,
+            "recurrences": 0,
+            "fires": 0,
+            "near_miss_count": 1,
+            "outcomes": [outcome],
+            "duration_secs": 1.0,
+        }
+    )
+    return run_id
+
+
+class TestNearMissPromote:
+    """t-j: the promote endpoint re-reads server-side and builds the
+    exact ``teach`` argv — ``--session`` present, no ``--quote``."""
+
+    def test_promote_builds_teach_argv_with_session_no_quote(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        sb = _sandboxed(tmp_path, monkeypatch)
+        run_id = _seed_miner_run()
+        c, runner = make_client(sb)
+        r = c.post(
+            "/mine/near-miss/promote",
+            data={"run_id": run_id, "index": "0"},
+            headers={"HX-Request": "true"},
+        )
+        assert r.status_code == 200
+        assert len(runner.calls) == 1
+        argv = runner.calls[0]
+        assert argv == [
+            "teach",
+            "--project",
+            "--type",
+            "behavior",
+            "--trigger",
+            "About to rm -rf the wrong dir",
+            "--instruction",
+            "Double check pwd first",
+            "--session",
+            "sess-nm",
+        ]
+        assert "--session" in argv
+        assert "--quote" not in argv
+
+    def test_promote_redirects_to_front(self, tmp_path: Path, monkeypatch) -> None:
+        sb = _sandboxed(tmp_path, monkeypatch)
+        run_id = _seed_miner_run()
+        c, _runner = make_client(sb)
+        r = c.post("/mine/near-miss/promote", data={"run_id": run_id, "index": "0"}, headers={"HX-Request": "true"})
+        assert r.headers.get("hx-redirect") == "/"
+
+    def test_promote_rejects_non_promotable_index(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Server truth: even a client that posts a promotable-looking
+        index for an outcome the CLI marked `promotable: false` is
+        refused — the endpoint re-reads, never trusts the post body."""
+        sb = _sandboxed(tmp_path, monkeypatch)
+        run_id = _seed_miner_run(promotable=False)
+        c, runner = make_client(sb)
+        r = c.post("/mine/near-miss/promote", data={"run_id": run_id, "index": "0"}, headers={"HX-Request": "true"})
+        assert r.status_code == 400
+        assert runner.calls == []
+
+    def test_promote_rejects_unknown_run_id(self, tmp_path: Path, monkeypatch) -> None:
+        sb = _sandboxed(tmp_path, monkeypatch)
+        _seed_miner_run()
+        c, runner = make_client(sb)
+        r = c.post("/mine/near-miss/promote", data={"run_id": "no-such-run", "index": "0"}, headers={"HX-Request": "true"})
+        assert r.status_code == 400
+        assert runner.calls == []
+
+    def test_promote_rejects_out_of_range_index(self, tmp_path: Path, monkeypatch) -> None:
+        sb = _sandboxed(tmp_path, monkeypatch)
+        run_id = _seed_miner_run()
+        c, runner = make_client(sb)
+        r = c.post("/mine/near-miss/promote", data={"run_id": run_id, "index": "99"}, headers={"HX-Request": "true"})
+        assert r.status_code == 400
+        assert runner.calls == []
+
+    def test_promote_knowledge_snippet_uses_fact_context(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        sb = _sandboxed(tmp_path, monkeypatch)
+        run_id = _seed_miner_run(
+            snippet={
+                "type": "knowledge",
+                "fact": "The router reserves .232 for the Nova",
+                "context": "seen twice",
+                "scope": "user",
+            }
+        )
+        c, runner = make_client(sb)
+        r = c.post("/mine/near-miss/promote", data={"run_id": run_id, "index": "0"}, headers={"HX-Request": "true"})
+        assert r.status_code == 200
+        assert runner.calls == [
+            [
+                "teach",
+                "--user",
+                "--type",
+                "knowledge",
+                "--fact",
+                "The router reserves .232 for the Nova",
+                "--context",
+                "seen twice",
+                "--session",
+                "sess-nm",
+            ]
+        ]
+
+    def test_promote_skill_scope_snippet(self, tmp_path: Path, monkeypatch) -> None:
+        sb = _sandboxed(tmp_path, monkeypatch)
+        run_id = _seed_miner_run(
+            snippet={
+                "type": "behavior",
+                "trigger": "t",
+                "instruction": "i",
+                "kind": "anti-pattern",
+                "scope": "skill:s",
+            }
+        )
+        c, runner = make_client(sb)
+        c.post("/mine/near-miss/promote", data={"run_id": run_id, "index": "0"}, headers={"HX-Request": "true"})
+        assert runner.calls == [
+            [
+                "teach",
+                "--skill",
+                "s",
+                "--type",
+                "behavior",
+                "--kind",
+                "anti-pattern",
+                "--trigger",
+                "t",
+                "--instruction",
+                "i",
+                "--session",
+                "sess-nm",
+            ]
+        ]
+
+
+class TestNearMissDrillRendering:
+    """t-k: the drill is collapsed by default, shows only the latest
+    run's rows, and a non-promotable row carries no control."""
+
+    def test_drill_is_collapsed_by_default(self, tmp_path: Path, monkeypatch) -> None:
+        sb = _sandboxed(tmp_path, monkeypatch)
+        _seed_miner_run()
+        c, _runner = make_client(sb)
+        html = c.get("/").text
+        m = re.search(r"<details>\s*<summary>near-misses \(\d+\)</summary>", html)
+        assert m is not None
+        # the <details> tag itself carries no `open` attribute
+        details_tag = html[: m.start()].rsplit("<details", 1)[-1]
+        assert "open" not in details_tag.split(">")[0]
+
+    def test_promotable_row_shows_promote_button_non_promotable_does_not(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        sb = _sandboxed(tmp_path, monkeypatch)
+        from self_learn import miner
+
+        miner._journal(
+            {
+                "ts": "2026-07-19T00:00:00Z",
+                "run_id": "run00002",
+                "trigger": "manual",
+                "status": "ok",
+                "sessions_scanned": 1,
+                "landed": 0,
+                "folded": 0,
+                "recurrences": 0,
+                "fires": 0,
+                "near_miss_count": 2,
+                "outcomes": [
+                    {
+                        "origin": "transcript:sess-a#L1",
+                        "outcome": "dropped-cap",
+                        "disposition": "cap-refused",
+                        "reason": "a real lesson, but this run had already landed its cap",
+                        "promotable": True,
+                        "snippet": {
+                            "type": "behavior",
+                            "trigger": "promotable trigger text",
+                            "instruction": "promotable instruction text",
+                            "scope": "project",
+                        },
+                    },
+                    {
+                        "origin": "transcript:sess-b#L2",
+                        "outcome": "scan-refused",
+                        "disposition": "scan-blocked",
+                        "reason": "this looked like it might contain a secret, so it was held back",
+                        "promotable": False,
+                    },
+                ],
+                "duration_secs": 1.0,
+            }
+        )
+        c, _runner = make_client(sb)
+        html = c.get("/").text
+        assert html.count("Promote to pending") == 1
+        assert "promotable trigger text" in html
+        assert "scan blocked" in html  # the non-promotable row's badge text
+        assert "held back" in html  # its reason
+
+    def test_only_the_latest_runs_rows_render(self, tmp_path: Path, monkeypatch) -> None:
+        sb = _sandboxed(tmp_path, monkeypatch)
+        from self_learn import miner
+
+        _seed_miner_run(run_id="old-run")
+        # advance mtime ordering isn't needed — journal order IS run order
+        _seed_miner_run(
+            run_id="new-run",
+            **{
+                "snippet": {
+                    "type": "behavior",
+                    "trigger": "the NEWEST near-miss trigger",
+                    "instruction": "the newest instruction",
+                    "scope": "project",
+                }
+            },
+        )
+        c, _runner = make_client(sb)
+        html = c.get("/").text
+        assert "the NEWEST near-miss trigger" in html
+        assert "About to rm -rf the wrong dir" not in html  # old run's row absent
+
+
 # -------------------------------------------------- Y-19 item 1: prefetch
 
 
