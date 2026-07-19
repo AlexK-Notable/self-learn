@@ -36,6 +36,7 @@ from self_learn_ui.runner import FakeRunner, RunResult
 from self_learn.hosts import slug_for
 
 from support import (
+    RouteSideEffectRunner,
     commit_all,
     enter_client,
     init_repo,
@@ -43,6 +44,7 @@ from support import (
     make_env,
     make_knowledge,
     resolve_record_directly,
+    seed_proposal,
     seed_record,
 )
 
@@ -743,6 +745,72 @@ class TestProposalRoutes:
         ).text
         assert "refused: scan hit" in out
         assert manager.proposal_slot.current is None
+
+    def test_failed_pane_route_confirm_shows_error_not_the_contradicts_offer(
+        self, tmp_path: Path
+    ) -> None:
+        """Review fold 2 (NIT), the pane twin: a FAILED `route` proposal
+        confirm — even one whose record's proposal carries contradicts: —
+        takes the ordinary stale/error leg (_proposal_gone, stderr
+        verbatim), never the Y-8 offer."""
+        sb, (rec,) = _seed(tmp_path)
+        seed_proposal(
+            sb.ledger, rec.id, destination="skill-md",
+            contradicts=["skills/other/SKILL.md"],
+        )
+        runner = FakeRunner()
+        runner.queue_result(RunResult(1, stderr="refused: scan hit"))
+        c, _runner, manager = make_client(sb, runner=runner)
+        _occupy(manager, rec, verb="route", dest="skill-md")
+        prop = manager.proposal_slot.arm(rec.id)
+        assert prop is not None
+        out = c.post(
+            "/proposal/confirm",
+            data={"record_id": rec.id, "kind": "detail", "nonce": prop.nonce},
+            headers=HX,
+        ).text
+        assert "refused: scan hit" in out
+        assert "data-contradicts-offer" not in out
+        assert "skills/other/SKILL.md" not in out
+
+    def test_pane_route_confirm_offer_survives_the_routes_own_proposal_deletion(
+        self, tmp_path: Path
+    ) -> None:
+        """U-C3 regression: :func:`proposal_confirm` (the pane/propose_verb
+        confirm route — 09 §4.5, U12) has the SAME Y-8 contradicts-offer
+        branch as ``/record/.../action/confirm``, reading the record's
+        proposal sibling. It has the identical pre-fix hazard: the real
+        `route` CLI deletes that sibling as part of resolving the record
+        (ledger_ops.resolve_record -> remove_proposal_siblings, 08 §1), so
+        a read AFTER runner.run() finds nothing. RouteSideEffectRunner
+        reproduces exactly that deletion; the offer must still render
+        with the edge, proving this route also captures BEFORE dispatch."""
+        sb, (rec,) = _seed(tmp_path)
+        seed_proposal(
+            sb.ledger, rec.id, destination="skill-md",
+            contradicts=["skills/other/SKILL.md"],
+        )
+        runner = RouteSideEffectRunner(sb.ledger)
+        c, _runner, manager = make_client(sb, runner=runner)
+        _occupy(manager, rec, verb="route", dest="skill-md")
+        prop = manager.proposal_slot.arm(rec.id)
+        assert prop is not None
+        resp = c.post(
+            "/proposal/confirm",
+            data={"record_id": rec.id, "kind": "detail", "nonce": prop.nonce},
+            headers=HX,
+        )
+        assert resp.status_code == 200
+        assert "skills/other/SKILL.md" in resp.text
+        assert "HX-Redirect" not in resp.headers
+        # Review fold 1 (MINOR): assert the ACTUAL rendered partial
+        # carries app.js's leg (d) reload-defer marker (see the
+        # test_routes.py twin's identical fold note) — this route shares
+        # the same contradicts_offer.html template.
+        assert "data-contradicts-offer" in resp.text
+        assert not (
+            _bucket_dir(sb) / "proposals" / f"{rec.id}.yaml"
+        ).exists()
 
     def test_human_resolution_clears_proposal_on_same_record(self, tmp_path: Path) -> None:
         sb, (rec,) = _seed(tmp_path)

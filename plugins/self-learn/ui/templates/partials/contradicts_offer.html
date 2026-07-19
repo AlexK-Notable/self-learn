@@ -1,7 +1,20 @@
 {# 09 §11 Y-8: after a successful route, offer each proposal-declared
    contradicts edge as its own armed `link contradicts` action. Declining
-   an edge is just not arming it — no explicit skip control needed. #}
-<div class="contradicts-offer">
+   an edge is just not arming it — no explicit skip control needed.
+   U-C3 fix: this swaps into the SAME #action-bar-* slot a routine
+   post-verb refresh push targets (09 §11's forced-refresh-after-every-
+   verb pin) — the refresh fires unconditionally, often while this very
+   response is still in flight, and every edge below starts UNARMED
+   (findArmedBar() alone would not hold it). `data-contradicts-offer`
+   is app.js's reload-defer marker for exactly this rendering (the
+   [data-verb-error]/[data-armed=true] legs' own sibling — same
+   reload() chokepoint, see app.js's reloadDeferred() leg (d)): while
+   present, a broadcast SSE/poll reload defers rather than wiping the
+   offer out from under the human before they've armed anything. No
+   auto-release is needed — the pinned resolution IS a full page
+   navigation (arming+confirming an edge redirects; leaving the page
+   any other way loads a fresh document with no marker at all). #}
+<div class="contradicts-offer" data-contradicts-offer="true">
   <p>Routed. This proposal named conflicting canon:</p>
   {% for edge in edges %}
   <div class="contradicts-edge">

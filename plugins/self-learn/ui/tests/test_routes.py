@@ -25,6 +25,7 @@ from self_learn_ui.routes import build_argv, cycle_destination, next_record_url
 from self_learn_ui.runner import FakeRunner, RunResult
 
 from support import (
+    RouteSideEffectRunner,
     bare_ledger,
     commit_all,
     hook_proposal_fields,
@@ -1471,6 +1472,86 @@ class TestContradictsOffer:
         assert runner.calls[-1] == [
             "link", "contradicts", rec.id, "skills/other/SKILL.md"
         ]
+
+    def test_failed_route_shows_error_not_the_contradicts_offer(
+        self, tmp_path: Path
+    ) -> None:
+        """Review fold 2 (NIT): _capture_contradicts runs UNCONDITIONALLY
+        before dispatch whenever verb == "route" — independent of the
+        verb's eventual outcome. Pin that a FAILED route (the CLI's own
+        refusal, e.g. a scan hit) still takes the ordinary error leg —
+        stderr verbatim, action bar re-armable — and NEVER the Y-8 offer,
+        even though contradicts_pre is non-empty at the point of failure."""
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+        seed_proposal(
+            sb.ledger, rec.id, destination="skill-md",
+            contradicts=["skills/other/SKILL.md"],
+        )
+        runner = FakeRunner()
+        runner.queue_result(RunResult(1, stderr="refused: scan hit"))
+        c, _runner = make_client(sb, runner=runner)
+        r = c.post(
+            f"/record/{rec.id}/action/confirm",
+            data={"verb": "route", "kind": "detail", "dest": "skill-md"},
+            headers={"HX-Request": "true"},
+        )
+        assert r.status_code == 200
+        assert "refused: scan hit" in r.text
+        assert "data-contradicts-offer" not in r.text
+        assert "skills/other/SKILL.md" not in r.text
+
+    def test_offer_survives_the_routes_own_proposal_deletion(
+        self, tmp_path: Path
+    ) -> None:
+        """U-C3 regression (live-trial defect, verified 2026-07-19): the
+        REAL `route` CLI (self_learn.ledger_ops.resolve_record ->
+        remove_proposal_siblings, 08 §1) deletes the record's
+        proposals/<id>.yaml sibling as PART of resolving it — in
+        production this always raced ahead of the handler's own
+        proposal read when that read happened AFTER runner.run()
+        returned, so the offer never rendered even though a proposal
+        with contradicts: had been seeded (mock theater: the OTHER test
+        in this class passes with a plain FakeRunner precisely because a
+        FakeRunner records argv without ever deleting anything, which is
+        not what production's subprocess does).
+
+        RouteSideEffectRunner (support.py) calls the SAME production
+        removal function a real `self-learn route` subprocess call
+        triggers — so this test fails immediately if the fix regresses
+        to a post-dispatch read, and the final assertion proves the
+        deletion really happened (this isn't passing by accident)."""
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+        seed_proposal(
+            sb.ledger, rec.id, destination="skill-md",
+            contradicts=["skills/other/SKILL.md", "skills/third/SKILL.md"],
+        )
+        runner = RouteSideEffectRunner(sb.ledger)
+        c, _runner = make_client(sb, runner=runner)
+        r = c.post(
+            f"/record/{rec.id}/action/confirm",
+            data={"verb": "route", "kind": "detail", "dest": "skill-md"},
+            headers={"HX-Request": "true"},
+        )
+        assert r.status_code == 200
+        assert "skills/other/SKILL.md" in r.text
+        assert "skills/third/SKILL.md" in r.text
+        assert "hx-redirect" not in {k.lower() for k in r.headers}
+        # Review fold 1 (MINOR): the template↔app.js marker seam had no
+        # coverage — stripping data-contradicts-offer from
+        # contradicts_offer.html left the suite green because the JS test
+        # injects its own marker and this test only checked edge text.
+        # Assert the ACTUAL rendered partial carries the reload-defer
+        # marker app.js's leg (d) keys on.
+        assert "data-contradicts-offer" in r.text
+        # The side effect the fix must survive really happened — proof
+        # this test exercises the real hazard, not a no-op stand-in.
+        assert not (
+            sb.ledger / "skills" / "s" / "proposals" / f"{rec.id}.yaml"
+        ).exists()
 
     def test_route_without_contradicts_advances_directly(self, tmp_path: Path) -> None:
         sb = make_env(tmp_path)
