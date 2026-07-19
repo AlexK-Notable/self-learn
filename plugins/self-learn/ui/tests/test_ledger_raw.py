@@ -165,6 +165,21 @@ class TestReadRegistry:
         # ascending order — the registry's own render contract
         assert [r["order"] for r in registry] == sorted(r["order"] for r in registry)
 
+    def test_lint_and_conflict_sections_registered_after_discuss(self):
+        """FW-31/FW-32 (Y-22/Y-23): both riders register as optional card
+        sections ordered strictly after `discuss` (40) — neither may ever
+        hijack the Y-9 leading line, which is `cards[0]` in registry
+        order."""
+        registry = ledger.read_registry()
+        by_key = {r["key"]: r for r in registry}
+        assert by_key["lint"]["required"] == "optional"
+        assert by_key["conflict"]["required"] == "optional"
+        assert by_key["lint"]["order"] > by_key["discuss"]["order"]
+        assert by_key["conflict"]["order"] > by_key["discuss"]["order"]
+        # plain-words labels — no jargon leaking into the conflict label
+        for banned in ("canon", "contradiction"):
+            assert banned not in by_key["conflict"]["label"].lower()
+
 
 class TestSentinelMtime:
     def test_no_sentinel_file_is_none(self, sandbox, monkeypatch):

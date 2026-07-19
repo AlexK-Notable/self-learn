@@ -270,3 +270,89 @@ Register rules that apply across all sections:
 - **`rationale` stays machine-facing.** It justifies the destination to
   the next analyst (and feeds the M2 rejected-proposal digest). Do not
   repurpose it as card copy, and do not duplicate card copy into it.
+
+## 9. Proposal-time lint (Y-22)
+
+*(Added 2026-07-19 — FW-31.)* For **behavior** records only (knowledge
+records carry `## Fact`/`## Context`, no firing moment to recognize — omit
+the block for them), form two judgments and, when you can, one
+suggestion:
+
+1. **Trigger recognizability** — would a fresh session, cold, recognize
+   the firing moment from `## Trigger` alone? Concrete artifacts (paths,
+   commands, tool names) beat abstractions (§6).
+2. **Why-clause presence** — does `## Instruction` carry the *why* on its
+   first line (the compiler takes only that line), not a bare imperative?
+
+Write the verdicts as a structured `lint:` block on the proposal:
+
+```yaml
+lint:
+  trigger_recognizable: partial    # enum: yes | partial | no — NEVER a score
+  why_present: true                # bool
+  sharpening: "name the .storage/*.json glob, not 'HA files'"  # optional
+```
+
+**Verdicts are binary/enum, never a numeric score** — no 0–10, no
+confidence float, ever. `sharpening` is a single concrete rewrite
+suggestion in prose, optional, never a graded quantity. Render the same
+judgment in plain words in the card's `lint` section (card-sections.yaml)
+— the structured block is authoritative, the card section is its
+human-facing render, the same `already_canon`/`already_canon_reason`
+pattern moved into the registry.
+
+**Kind-aware posture (MUST).** Lint **never treats inherent trigger
+fuzziness of a `kind: reasoning-pattern` lesson as a defect.**
+Reasoning-pattern behaviors legitimately route to prose (§2) and
+legitimately have softer triggers than an anti-pattern hook. For such a
+record you may still offer a `sharpening`, but the card framing is
+non-punitive — `trigger_recognizable: partial` on a reasoning-pattern
+record is **not** a route-blocker signal, and lint must never flag it as
+reject-worthy.
+
+**What lint never does (MUSTs):**
+
+- **Never blocks or gates routing** — advisory only; a record with
+  `trigger_recognizable: no` still routes on the human's word.
+- **Never auto-edits the record** — the record body is the human's (S-8
+  freeze). Lint *suggests* a sharpening; the human may apply it on the
+  Discuss/pane edit path, scanned at the next `proposal validate`.
+- **Never rejects a reasoning-pattern lesson for a soft trigger** (above).
+
+## 10. Destination-bounded contradiction check (Y-23)
+
+*(Added 2026-07-19 — FW-32; narrows the §5 `contradicts:` field's scope,
+which previously read "existing canon" with no bound stated here.)*
+
+**Scope — bounded, not canon-wide.** Flag a suspected conflict **only**
+against the destination section's current entries — the `*(lrn-…)*`
+managed-section lines already shown to you in that record's candidate-
+target canon excerpt. **Do not scan canon-wide; canon-wide contradiction
+detection stays G-5-gated** (vector/retrieval infrastructure this system
+does not have). If the excerpt shows an entry that says the opposite of
+what this record would have Claude do, name it. If it doesn't, say
+nothing — silence, not a claim of "no contradictions found."
+
+**Output.** The machine field is the existing `contradicts: [<id or
+anchor>, …]` list (§5 — unchanged, it is the `link contradicts` verb's
+input). Additionally write a `conflict` card section (card-sections.yaml)
+— the human-facing triple: the suspected target, the shortest conflicting
+text span, and a one-line reason, in plain words that lead with the
+domestic gloss and demote the record id to a footer (§8): *"This may
+clash with a rule you already kept — 'never restart Home Assistant
+mid-flash' tells Claude to leave the container running, but this lesson
+tells it to stop the container first. (near: '…rewrites .storage on
+shutdown…'; lrn-77ab01cd.)"* Name every suspected target in the card
+prose when there is more than one; the flat `contradicts` list carries
+all the machine targets.
+
+**Relationship to the edge.** Your `contradicts` list is a **proposal** —
+a suspicion, nothing more. At routing, the human sees it as a dismissible
+offer; accepting it runs `link contradicts <record> <target>`, and only
+then is the edge written. You never write an edge yourself.
+
+**False-positive posture (MUSTs):** advisory, dismissible, **never
+blocks** routing, and you never auto-write an edge. The check is
+false-negative-tolerant by construction — you see only one bounded
+section — so **never claim completeness**: only ever state positive
+suspicions, never an "all clear."

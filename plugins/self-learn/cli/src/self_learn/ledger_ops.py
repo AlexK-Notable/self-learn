@@ -372,6 +372,41 @@ def _validate_card(data: dict) -> None:
             raise ProposalError(f"card section {key!r} must be non-empty text")
 
 
+#: FW-31/Y-22 lint block: enum, never a numeric score (counted-not-modeled,
+#: worker-ecology §4.3; routing-doctrine.md lint subsection is the source
+#: of judgment for these three fields).
+_LINT_TRIGGER_RECOGNIZABLE_VALUES = ("yes", "partial", "no")
+
+
+def _validate_lint(data: dict) -> None:
+    """02 §1 / FW-31 optional ``lint:`` block (behavior records only —
+    knowledge records have no firing moment to recognize). Symmetric with
+    :func:`_validate_hook_extension`: absence is always valid; presence is
+    shape-checked field by field and any malformed field is a
+    :class:`ProposalError`. ``trigger_recognizable`` is an enum,
+    ``why_present`` a bool, ``sharpening`` an optional non-empty string —
+    never a numeric/confidence score (14 §6; worker-ecology §4.3)."""
+    lint = data.get("lint")
+    if lint is None:
+        return
+    if not isinstance(lint, dict):
+        raise ProposalError("lint must be a mapping")
+    trigger = lint.get("trigger_recognizable")
+    if trigger not in _LINT_TRIGGER_RECOGNIZABLE_VALUES:
+        raise ProposalError(
+            "lint.trigger_recognizable must be one of "
+            f"{list(_LINT_TRIGGER_RECOGNIZABLE_VALUES)}, got {trigger!r}"
+        )
+    why_present = lint.get("why_present")
+    if not isinstance(why_present, bool):
+        raise ProposalError(f"lint.why_present must be a bool, got {why_present!r}")
+    sharpening = lint.get("sharpening")
+    if sharpening is not None and (
+        not isinstance(sharpening, str) or not sharpening.strip()
+    ):
+        raise ProposalError("lint.sharpening must be non-empty text when present")
+
+
 #: 08 §4 replay row: 2–3 allow + 2–3 deny examples per hook proposal.
 _HOOK_EXAMPLES_MIN, _HOOK_EXAMPLES_MAX = 2, 3
 _HOOK_KEYS = ("tools", "path_regex", "deny_message")
@@ -527,6 +562,7 @@ def validate_proposal(data: dict) -> None:
                 "contradicts must be a non-empty list of record ids / "
                 "canon anchors (11 §2.4)"
             )
+    _validate_lint(data)
     _validate_card(data)
 
 

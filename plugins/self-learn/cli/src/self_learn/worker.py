@@ -582,10 +582,12 @@ _PROMPT_TEMPLATE = """You are the self-learn routing analyst worker. For EACH pe
 below, write one proposal file at
 <bucket>/proposals/lrn-<id>.yaml (the bucket path is given
 per record). Follow the routing doctrine exactly — including §5 (the
-proposal schema; NEVER emit record_sha) and §8 (write every card section
-the registry requires; the registry follows the doctrine below). You may
-also propose an optional `contradicts:` list (record ids or canon
-anchors) when a lesson conflicts with existing canon.
+proposal schema; NEVER emit record_sha), §8 (write every card section
+the registry requires; the registry follows the doctrine below), §9
+(the proposal-time lint) and §10 (the destination-bounded contradiction
+check). You may also propose an optional `contradicts:` list (record ids
+or canon anchors) when a lesson conflicts with an entry in the
+destination section shown in the candidate-target excerpt below.
 
 After the per-record pass: if two or more of THESE pending records in the
 SAME bucket are the same lesson, additionally write ONE merge proposal at

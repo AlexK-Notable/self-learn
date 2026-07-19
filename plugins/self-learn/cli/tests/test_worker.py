@@ -19,7 +19,7 @@ import pytest
 from self_learn import cli, telemetry, worker
 from self_learn.ledger_ops import create_record, write_proposal
 from self_learn.records import Record
-from support import commit_all, git, make_behavior, make_env, proposal_dict
+from support import commit_all, git, make_behavior, make_env, make_home, proposal_dict
 
 SKILL_MD = "# s skill\n\nAuthored prose stays put.\n"
 
@@ -814,3 +814,106 @@ def test_run_reasserts_sentinel_deleted_mid_pass(env, claude_shim, monkeypatch):
     # the re-assert happened: a sentinel existed during validation and the
     # run's own release removed it at the end (owned)
     assert not sentinel_path.exists()
+
+
+# -------------------------------------- FW-31/FW-32 riders (Y-22/Y-23)
+
+
+def test_prompt_template_carries_pointers_not_lint_rules():
+    """Placement-invariant MUST (analyst-riders-spec §1/§8): the M2
+    template may point at the doctrine's lint/contradiction subsections
+    but must NEVER carry the rules themselves — else M1 inline and the
+    pane silently stop linting with no test failing (the exact silent
+    three-producer-break failure mode the spec calls out)."""
+    tpl = worker._PROMPT_TEMPLATE
+    assert "§9" in tpl  # pointer to the lint subsection
+    assert "§10" in tpl  # pointer to the contradiction subsection
+    for rule_text in (
+        "trigger_recognizable",
+        "why_present",
+        "reasoning-pattern",
+        "sharpening",
+    ):
+        assert rule_text not in tpl
+
+
+def test_prompt_template_narrows_contradicts_to_destination_section():
+    """Y-23: the M2-only contradicts line no longer invites a canon-wide
+    scan — narrowed to the destination section already shown in the
+    candidate-target excerpt (analyst-riders-spec §2)."""
+    tpl = worker._PROMPT_TEMPLATE
+    assert "existing canon" not in tpl
+    assert "destination section" in tpl
+    assert "contradicts" in tpl
+
+
+def test_routing_doctrine_carries_the_lint_rules_and_kind_aware_clause():
+    """The rules-in-doctrine placement is what makes lint three-producer
+    (M1 inline + M2 + the pane all load this one file) — proven against
+    the REAL shipped routing-doctrine.md, not a stub."""
+    text = (worker.package_skill_refs() / "routing-doctrine.md").read_text(
+        encoding="utf-8"
+    )
+    assert "trigger_recognizable" in text
+    assert "why_present" in text
+    # kind-aware non-punitive posture (pinned MUST)
+    assert "reasoning-pattern" in text
+    assert "reject-worthy" in text
+
+
+def test_routing_doctrine_carries_the_bounded_contradiction_subsection():
+    """Analyst-riders-spec §2/§7: the doctrine addition that first makes
+    front-half contradiction detection three-producer."""
+    text = (worker.package_skill_refs() / "routing-doctrine.md").read_text(
+        encoding="utf-8"
+    )
+    assert "destination section" in text
+    assert "G-5-gated" in text
+    assert "canon-wide" in text
+
+
+def test_canon_excerpt_unresolvable_skill_target_never_raises(tmp_path):
+    """Degradation leg (analyst-riders-spec §4, Y-20 F5 posture): an
+    unresolvable target reads as a sentinel string, never an exception —
+    the analyst then has no section to check and (per doctrine) omits
+    both `contradicts` and the `conflict` card, never guesses a target.
+    `_compose_prompt` must still assemble around the sentinel without
+    crashing the run."""
+    from self_learn.ledger import discover_buckets
+
+    from self_learn.ledger_ops import queue as _queue
+
+    home = make_home(tmp_path)
+    # Create while the host is still registered (creation itself is
+    # validity-gated, H-3) — THEN break registration to simulate the
+    # excerpt-time resolution failure the degradation leg covers.
+    create_record(home, make_behavior(record_id="lrn-0000aaaa"))
+    (home / "hosts.yaml").write_text("projects: []\n", encoding="utf-8")
+    (bucket,) = [b for b in discover_buckets(home) if b.name == "s"]
+    (entry,) = _queue(bucket)
+
+    excerpt = worker._canon_excerpt(home, entry)
+    assert "unresolvable" in excerpt
+
+    prompt = worker._compose_prompt(home, [entry])
+    assert "unresolvable" in prompt
+
+
+def test_worker_prompt_assembly_carries_the_real_doctrine_lint_schema(
+    env, claude_shim, monkeypatch
+):
+    """One-schema fixture (spec §8): the M2 worker's ACTUAL assembled
+    prompt — built from the real shipped routing-doctrine.md via
+    `_compose_prompt`, not a mock — carries the same `lint:` field names
+    the doctrine teaches every producer (M1 inline included: it loads the
+    identical file per `commands/review.md` step 2). No fork between
+    what the doctrine teaches and what a producer's prompt actually
+    carries."""
+    rid = seed_pending(env)
+    monkeypatch.setenv("CLAUDE_SHIM_SCRIPT", shim_writes(env, rid))
+    worker.run(env.home)
+    prompt = claude_shim["prompt"].read_text(encoding="utf-8")
+    assert "trigger_recognizable" in prompt
+    assert "why_present" in prompt
+    assert "§9" in prompt
+    assert "§10" in prompt
