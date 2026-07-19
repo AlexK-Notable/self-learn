@@ -13,7 +13,15 @@
      data-armed="{{ 'true' if proposal.armed else 'false' }}"
      data-proposal="{{ 'armed' if proposal.armed else 'waiting' }}">
   {% if error %}
-  <p class="error-strip" role="alert">{{ error }}</p>
+  {# f5-errstrip fix, same class of defect as action_bar.html's: this
+     region is a POST-confirm swap target too (proposal_confirm's
+     _force_refresh fires before the error render on a failed verb) —
+     [data-verb-error] defers the broadcast reload that would otherwise
+     wipe it. This branch (proposal truthy + error) has no live call
+     site today (_proposal_ctx never passes error= alongside a real
+     proposal) but shares the #proposal-bar id/target with the branch
+     below that DOES, so it is marked for the same reason, not blanket. #}
+  <p class="error-strip" role="alert" data-verb-error="true">{{ error }}</p>
   {% endif %}
 
   {# Y-9 (review F2): the record's human line LEADS; the id is trailing
@@ -80,7 +88,13 @@
 {% else %}
 <div id="proposal-bar" class="proposal-region-empty">
   {% if error %}
-  <p class="error-strip" role="alert">{{ error }}</p>
+  {# f5-errstrip fix (the LIVE leg): proposal_confirm calls
+     _force_refresh(f"record:{record_id}") unconditionally, then on a
+     failed verb renders THIS branch via _proposal_gone(kind="bucket",
+     error=...) — the exact race action_bar.html's fix addresses,
+     confirmed by reading the route: refresh fires before the error
+     response is even built. #}
+  <p class="error-strip" role="alert" data-verb-error="true">{{ error }}</p>
   {% endif %}
 </div>
 {% endif %}
