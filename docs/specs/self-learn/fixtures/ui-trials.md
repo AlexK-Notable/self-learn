@@ -555,3 +555,96 @@ self-learn-ui`... Resume continues the conversation... Walk with the user
 as the DoD sign-off") is an attended live walk against the deployed
 service, owed as a follow-up session with the user present — not run as
 part of this build.
+
+## U22-fix · live-DoD BLOCKER: `SessionStore.list_subkeys()` on Resume (2026-07-19, worktree f5-u22fix)
+
+**The DoD item-4 live walk above WAS attempted** (real browser, real SDK,
+sandbox): started a real Iterate on `lrn-7e81cf1a` (Tier-1 mirror + meta
+wrote correctly, `sdk_session_id 06126c50-d295-4cc6-b01f-74bd6b20810e`
+captured, `bucket_dir` resolved), SIGKILL'd the server, restarted — the
+prior-conversation card rendered correctly ("35 blocks · 1m ago · waiting
+for you", Tier 1 held) — then **Resume errored**: "SessionStore.
+list_subkeys() for session 06126c50-d295-4cc6-b01f-74bd6b20810e failed
+during resume materialization:". Degradation contained (Retry/Close, no
+500), but Tier 2 itself was broken — a genuine gap the two-probe trial
+above never caught.
+
+**Root cause (verified by reading + directly exercising the SDK's own
+source, not guesswork):** the raw probe above used an ad-hoc,
+minimally-duck-typed class defining ONLY `append`/`load` — never
+`list_subkeys`. The PRODUCT adapter (`CacheSdkSessionStore`, added when
+`sdk.py`/`store.py` were actually wired) additionally defined stub
+bodies for the four "optional" `SessionStore` methods
+(`list_sessions`/`list_session_summaries`/`delete`/`list_subkeys`, each
+just `raise NotImplementedError`) to satisfy pyright's structural-Protocol
+check without subclassing. That was the defect: the SDK's
+`materialize_resume_session()`
+(`claude_agent_sdk/_internal/session_resume.py:172-175`) only skips
+subkey enumeration when `_store_implements(store, "list_subkeys")`
+(`session_store_validation.py:8-14`) is `False` — and that function
+decides "implemented" by **identity comparison**
+(`getattr(type(store), method) is not getattr(SessionStore, method)`),
+never by calling the method. A stub override is a distinct function
+object from the Protocol's own default, so it read as "implemented,"
+and `materialize_resume_session` called it for real, hit the genuine
+`NotImplementedError`, and `_with_timeout`'s catch-all wrapped it into
+the RuntimeError the human saw — reproduced VERBATIM (down to the
+trailing bare colon) via a unit test importing and driving the SDK's
+real `materialize_resume_session()`
+(`tests/test_store.py::test_real_sdk_materialize_resume_session_
+succeeds_multi_turn`, kill-verified: reintroducing the stub reddens it
+with the identical text). This is independent of turn count — the
+`_store_implements` check is a static property of the class definition,
+not the session's content; the live walk's 35-block multi-turn history
+did not cause it, it just happened to be what the walk exercised first.
+
+**Fix:** `CacheSdkSessionStore` now properly subclasses `SessionStore`
+and defines ONLY `append`/`load`; the four optional methods are left
+completely UNDEFINED (inherited unchanged from the Protocol), so
+`_store_implements()` correctly reports `False` for all four and
+`materialize_resume_session` skips `_materialize_subkeys` exactly as
+the original raw probe's ad-hoc class caused it to. A `# pyright:
+ignore[reportAbstractUsage]` at the one production construction site
+(`engine/sdk.py`) documents the resulting pyright/runtime tension:
+pyright's Protocol-subclass heuristic treats any un-overridden
+`raise NotImplementedError`-bodied method as "abstract" for
+instantiation purposes, which is a static-analysis convention, not a
+real Python (or SDK) constraint — the SDK's own docs say exactly the
+opposite ("implementers may omit them... inherit them as absent
+markers").
+
+**End-to-end re-verification, real model, real multi-turn session, the
+ACTUAL shipped `self_learn_ui.store.CacheSdkSessionStore` (not a
+redefinition) — driver `/tmp/claude-1000/.../scratchpad/
+tier2_probe_multiturn.py` — PASS:**
+- First session: 3 real turns ("remember GIRAFFE" / "remember 42" /
+  a plain acknowledgment), `session_id` stable across all three turns
+  (`6e136b89-c6ed-4028-851b-8ffdab99e5b9`), `disconnect()`.
+- A brand-new `ClaudeSDKClient`, `resume=<that id>`, same store:
+  `connect()` — the exact call that raised pre-fix — **succeeded**.
+  Queried "what animal and number did I ask you to remember earlier?"
+  with NEITHER repeated in the prompt. Reply: `GIRAFFE,42` — the
+  resumed session recalled BOTH facts from turns it never itself
+  streamed, across a real materialize-resume round trip.
+
+**Spec correction landed:** the draft's §"SDK capability, verified
+empirically" bullet on `SessionStore`'s required methods now carries
+the load-bearing caveat — "only `append`/`load` required" is true for
+the write/resume-CONTENT path only; resume MATERIALIZATION additionally
+probes (and, if a store answers "yes," calls) `list_subkeys`, and the
+only way to correctly answer "no" is to leave the method completely
+undefined on a `SessionStore` subclass, never override it with any
+body at all.
+
+**Counts:** UI suite 925 passed (mirrors the earlier round's 922 +
+this round's 3 new tests: `test_store_implements_reports_false_for_
+undefined_optional_methods`, `test_real_sdk_materialize_resume_
+session_succeeds_multi_turn`, `test_real_sdk_materialize_resume_
+session_none_for_never_appended_key`) — one unrelated `test_js_dom.py`
+flake observed on the full run (`TestNoopKeyHints::test_no_hint_
+when_a_bar_is_armed_and_o_is_pressed`), reproduced-absent on an
+isolated re-run of that single test and the full suite (925/925 clean
+on the follow-up run) — a pre-existing browser-timing flake in a file
+this fix never touched, not a regression. pyright `ui/src`: 0
+errors/0 warnings (one narrowly-scoped, documented
+`# pyright: ignore[reportAbstractUsage]`).

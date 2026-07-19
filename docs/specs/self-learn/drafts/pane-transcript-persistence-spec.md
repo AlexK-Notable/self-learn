@@ -75,10 +75,11 @@ introspection + `claude --help`, `.venv` python on the resolved
 - `ResultMessage.session_id: str` is present on every turn — the id to
   capture for a later `resume`.
 - `SessionStore` (`types.py:1426-1543`) is a **duck-typed Protocol**;
-  only `append(key, entries)` and `load(key)` are required. `append`
-  mirrors the CLI's on-disk JSONL transcript entries (opaque pass-through
-  blobs) **AFTER the subprocess's local write** (`types.py:1451` — "Called
-  AFTER the subprocess's local write succeeds"); `load(key)` "materialized
+  only `append(key, entries)` and `load(key)` are required **for the
+  write/resume-content path**. `append` mirrors the CLI's on-disk JSONL
+  transcript entries (opaque pass-through blobs) **AFTER the
+  subprocess's local write** (`types.py:1451` — "Called AFTER the
+  subprocess's local write succeeds"); `load(key)` "materialized
   to a temporary JSONL file; the subprocess resumes from that file using
   its existing resume code" (`:1470-1484`). The docstring further documents
   (`types.py:1429`) "The subprocess still writes to local disk (set
@@ -86,6 +87,41 @@ introspection + `claude --help`, `.venv` python on the resolved
   that wants no durable CLI-side session can point `CLAUDE_CONFIG_DIR` at a
   swept temp dir rather than suppress persistence wholesale. The CLI also
   has `--resume`, `-c/--continue`, `--fork-session`.
+  **Correction (U22-fix, 2026-07-19, live-DoD-caught BLOCKER — the
+  "only required" claim needs a load-bearing caveat):** resume
+  MATERIALIZATION (`claude_agent_sdk/_internal/session_resume.py::
+  materialize_resume_session`, called by the SDK parent before every
+  Tier-2 subprocess spawn) additionally probes the OPTIONAL method
+  `list_subkeys` via `_store_implements()`
+  (`session_store_validation.py:8-14`) and, if that probe reports the
+  method "implemented," CALLS it (`session_resume.py:172-175`) to
+  enumerate subagent transcripts — an unhandled `NotImplementedError`
+  from that call is NOT treated as "optional, skip"; it propagates as a
+  `RuntimeError` that aborts the whole resume. Critically,
+  `_store_implements()` decides "implemented" by comparing
+  `getattr(type(store), method)` against `SessionStore`'s own default
+  **by object identity** — NOT by invoking the method and catching the
+  raise. A concrete adapter that defines its own body for an "optional"
+  method (even one that itself just `raise NotImplementedError`, written
+  to satisfy a static type checker's structural-Protocol check) is a
+  DIFFERENT function object from the Protocol's default, so it reads as
+  "implemented" and gets called for real. **The only way an optional
+  method genuinely reads as absent is to leave it completely undefined
+  on the adapter class — inherited unchanged from `SessionStore`
+  (subclassing it, never redefining the four optional methods with
+  stub bodies).** Live-trial evidence: a real DoD walk (Resume click)
+  hit exactly this — `CacheSdkSessionStore` initially DID define stub
+  `list_subkeys`/`list_sessions`/`list_session_summaries`/`delete`
+  bodies (added to satisfy pyright without subclassing the Protocol),
+  which surfaced as "SessionStore.list_subkeys() for session `<id>`
+  failed during resume materialization:" on every Tier-2 Resume,
+  independent of turn count. Reproduced by importing and driving the
+  SDK's REAL `materialize_resume_session()` in a unit test
+  (`tests/test_store.py::test_real_sdk_materialize_resume_session_
+  succeeds_multi_turn`), fixed by subclassing `SessionStore` and leaving
+  the four optional methods undefined, and re-verified live end-to-end
+  with a real multi-turn session + real resume (addendum entry,
+  `docs/specs/self-learn/fixtures/ui-trials.md`).
 - **The `sdk.py` U5-era docstring** ("no `ClaudeAgentOptions` field named
   anything like session persistence exists on the resolved SDK") **is now
   stale**: it was true of 0.2.116's *toggle*, but 0.2.121 ships a

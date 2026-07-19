@@ -40,13 +40,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from claude_agent_sdk.types import (
-    SessionKey,
-    SessionListSubkeysKey,
-    SessionStoreEntry,
-    SessionStoreListEntry,
-    SessionSummaryEntry,
-)
+from claude_agent_sdk import SessionStore
+from claude_agent_sdk.types import SessionKey, SessionStoreEntry
 
 from . import uilog
 
@@ -554,24 +549,52 @@ class PaneTranscriptStore:
 _SAFE_KEY_RE = re.compile(r"[^A-Za-z0-9_-]")
 
 
-class CacheSdkSessionStore:
+class CacheSdkSessionStore(SessionStore):
     """``claude_agent_sdk.types.SessionStore`` adapter (Y-28 §1 Tier 2):
     mirrors the CLI's own opaque transcript entries to ``root`` so a
     later engine can ``resume=<session_id>``. Entries are treated as
     pass-through blobs (the Protocol's own contract,
     ``types.py:1440-1484``) — this class never interprets their shape,
     only round-trips ``json.dumps``/``json.loads`` (the documented
-    invariant). Duck-typed (never subclasses ``SessionStore`` — the
-    SDK's own docs: "the SDK never uses isinstance for this"; subclassing
-    a ``Protocol`` class confuses static instantiation checks without
-    buying anything here) but matches its exact method signatures
-    (``SessionKey``/``SessionStoreEntry``) for static typing, and defines
-    the four OPTIONAL methods (this engine calls only ``append``/
-    ``load`` — ``PaneManager`` never lists or deletes sessions) as the
-    Protocol's own "raise NotImplementedError, an absent marker"
-    contract. Failures on the required two degrade silently (logged) —
-    the SDK itself already retries/backs off per its own docstring; a
-    store-side raise here would only make things worse."""
+    invariant).
+
+    **SUBCLASSES ``SessionStore`` and overrides ONLY ``append``/``load``
+    — the four OPTIONAL methods (``list_sessions``/
+    ``list_session_summaries``/``delete``/``list_subkeys``) are left
+    UNDEFINED here, inherited verbatim from the Protocol (2026-07-19
+    U22-fix, live-DoD-caught BLOCKER; see git history for the prior,
+    WRONG shape).** This is load-bearing, not stylistic: the SDK's own
+    ``_store_implements()`` probe
+    (``claude_agent_sdk/_internal/session_store_validation.py:8-14``)
+    decides whether a method is "implemented" by comparing
+    ``getattr(type(store), method, None)`` against
+    ``getattr(SessionStore, method, None)`` BY IDENTITY — it does NOT
+    call the method and catch ``NotImplementedError``. A prior version
+    of this class defined stub bodies for all four
+    (``async def list_subkeys(self, key): raise NotImplementedError``)
+    to satisfy pyright's structural-Protocol check without subclassing;
+    that made every stub a DISTINCT function object from
+    ``SessionStore``'s own, so ``_store_implements()`` reported ``True``
+    for all four — and ``materialize_resume_session()``
+    (``session_resume.py:172-175``) then unconditionally called
+    ``list_subkeys()`` on every Tier-2 Resume, which raised
+    ``NotImplementedError``, surfacing to the human as "SessionStore.
+    list_subkeys() for session <id> failed during resume materialization:"
+    (the exact live-trial failure, reproduced verbatim by a unit test
+    that imports and drives the SDK's REAL ``materialize_resume_session``
+    against this store). Leaving the four methods undefined makes
+    ``type(store).list_subkeys is SessionStore.list_subkeys`` hold
+    (same object, inherited), so ``_store_implements()`` correctly
+    reports ``False`` — ``materialize_resume_session`` skips
+    ``_materialize_subkeys`` entirely, exactly like the raw-SDK
+    build-trial probe (which never defined the four either — a plain
+    duck-typed class with no subclassing at all, which is why THAT
+    probe never hit this path). ``PaneManager`` never calls
+    ``list_sessions``/``list_session_summaries``/``delete``/
+    ``list_subkeys`` itself either way. Failures on the required two
+    degrade silently (logged) — the SDK itself already retries/backs
+    off per its own docstring; a store-side raise here would only make
+    things worse."""
 
     def __init__(self, root: Path) -> None:
         self._root = root
@@ -619,16 +642,10 @@ class CacheSdkSessionStore:
             return None
         return out or None
 
-    # -- optional SessionStore methods (never called by this engine) ---
-
-    async def list_sessions(self, project_key: str) -> list[SessionStoreListEntry]:
-        raise NotImplementedError
-
-    async def list_session_summaries(self, project_key: str) -> list[SessionSummaryEntry]:
-        raise NotImplementedError
-
-    async def delete(self, key: SessionKey) -> None:
-        raise NotImplementedError
-
-    async def list_subkeys(self, key: SessionListSubkeysKey) -> list[str]:
-        raise NotImplementedError
+    # The four OPTIONAL SessionStore methods (list_sessions/
+    # list_session_summaries/delete/list_subkeys) are DELIBERATELY left
+    # undefined — see the class docstring's load-bearing explanation.
+    # Do not add stub overrides here, even ones that just
+    # ``raise NotImplementedError`` — that flips the SDK's own
+    # ``_store_implements()`` probe from False to True and reintroduces
+    # the live-DoD BLOCKER this class exists to avoid.
