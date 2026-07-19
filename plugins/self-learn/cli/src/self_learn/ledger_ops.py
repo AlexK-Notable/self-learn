@@ -886,7 +886,14 @@ def _load_pending(bucket: Bucket) -> tuple[list[QueueEntry], list[Path]]:
     for path in bucket.pending_files():
         try:
             good.append(QueueEntry(path=path, record=Record.from_path(path)))
-        except RecordError:
+        # 09 §5 unreadable-record row (FW-18): the skip set is EVERY
+        # read/parse failure class, not RecordError alone — an I/O error
+        # (vanished mid-scan, permissions), undecodable bytes, or a ruamel
+        # YAML parse error must never crash a status/list walk. It is
+        # excluded-and-surfaced exactly like a schema-invalid record, and
+        # counted through `unparseable_pending` → `status --json`'s
+        # `unreadable` field.
+        except (RecordError, OSError, UnicodeDecodeError, YAMLError):
             bad.append(path)
     return good, bad
 
@@ -1030,7 +1037,10 @@ def list_items(
 def status_infos(home: Path, *, now: datetime | None = None) -> list[dict]:
     """`status --json` bucket rows: pending/oldest computed over the queue
     (deferred excluded from all counts, 02 §2); ``unanalyzed`` = the shared
-    eligibility count."""
+    eligibility count; ``unreadable`` = the count of pending files that
+    fail to read or parse (09 §5 FW-18), sourced from the SAME
+    :func:`unparseable_pending` skip computation `list`/`status` already
+    warn on — never a second definition."""
     now = _now(now)
     infos = []
     for bucket in discover_buckets(home):
@@ -1043,6 +1053,7 @@ def status_infos(home: Path, *, now: datetime | None = None) -> list[dict]:
                 "pending": len(entries),
                 "oldest_days": max(ages) if ages else None,
                 "unanalyzed": sum(1 for e in entries if is_unanalyzed(e, now=now)),
+                "unreadable": len(unparseable_pending(bucket)),
             }
         )
     return infos

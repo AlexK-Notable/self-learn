@@ -635,6 +635,12 @@ def _cmd_status(as_json: bool) -> int:
         payload = {
             "buckets": infos,
             "total_pending": total_pending,
+            # 09 §5 unreadable-record row (FW-18): per-bucket `unreadable`
+            # rides each buckets[] entry (from status_infos); the top-level
+            # total is the Front consumer's datum. The `--fast` path OMITS
+            # this field entirely (absence = unknown, never zero) — its
+            # frontmatter-only scan cannot detect the schema/section class.
+            "total_unreadable": sum(i["unreadable"] for i in infos),
             "open_followups": followups,
             # 08 §7.1 amendment: iso8601 | null (null = never ran here)
             "worker_last_run": worker.last_run_iso(),

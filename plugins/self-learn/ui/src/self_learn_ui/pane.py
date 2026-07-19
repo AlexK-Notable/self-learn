@@ -882,10 +882,17 @@ class PaneManager:
         if live.current_kind is None:
             return
         html = render_markdown(live.current_text)
+        # Mutate the transcript state to its CONSISTENT post-finalize shape
+        # (block appended, current-block cleared) BEFORE the publish await —
+        # the `await` below is a suspension point, and a snapshot() taken in
+        # that window (a panel GET: the pane_result completion swap re-fetch,
+        # a mid-drain reload) would otherwise see the block BOTH finalized in
+        # `blocks` AND still in-flight as `current_html`, typesetting it
+        # twice (FW-18 fix 2 — the SSE pane_block duplication bug).
         live.blocks.append(TranscriptBlock(kind="text", html=html))
-        await self._app_hub.publish({"type": "pane_block", "html": html})
         live.current_kind = None
         live.current_text = ""
+        await self._app_hub.publish({"type": "pane_block", "html": html})
 
     async def _handle_event(self, live: _Live, event: PaneEvent) -> None:
         if isinstance(event, BlockStart):

@@ -39,6 +39,7 @@ def test_status_zero_state_json_exact_shape(sandbox_home, capsys):
     assert payload == {
         "buckets": [],
         "total_pending": 0,
+        "total_unreadable": 0,
         "open_followups": 0,
         "worker_last_run": None,
         # T19: supply mix + 04 success-metrics counters ride full status;
@@ -76,8 +77,78 @@ def test_status_counts_seeded_pending_record(monkeypatch, tmp_path, capsys):
         "pending": 1,
         "oldest_days": 0,
         "unanalyzed": 1,  # no proposal sibling → eligible (08 §7.1 step 2)
+        "unreadable": 0,
     }
     assert rows["user"]["pending"] == 0
+
+
+# ---- 09 §5 FW-18: `status --json` unreadable count (full path only).
+
+
+def _seed_valid_plus_corrupt(monkeypatch, tmp_path):
+    """A home-assistant bucket with one VALID pending record plus two
+    unreadable ones (a YAML-parse error and undecodable bytes). Returns
+    the ledger home; SELF_LEARN_HOME is pointed at it."""
+    from self_learn.ledger_ops import create_record
+    from support import make_behavior, make_env
+
+    env = make_env(tmp_path, skills=("home-assistant",))
+    monkeypatch.setenv("SELF_LEARN_HOME", str(env.ledger))
+    path = create_record(
+        env.ledger,
+        make_behavior(scope="skill:home-assistant", record_id="lrn-0a1b2c3d"),
+    )
+    pending = path.parent
+    (pending / "lrn-badya111.md").write_text(
+        "---\nfoo: [unclosed\n---\nbody\n", encoding="utf-8"
+    )
+    (pending / "lrn-badby222.md").write_bytes(b"---\nid: \xff\xfe\n---\nbody\n")
+    return env.ledger
+
+
+def test_status_json_counts_unreadable_per_bucket_and_total(
+    monkeypatch, tmp_path, capsys
+):
+    """Kill: drop `unreadable` from status_infos (or mis-sum the top-level
+    total) and this reddens. The valid record still counts as pending; the
+    two corrupt ones count ONLY as unreadable, never as pending."""
+    _seed_valid_plus_corrupt(monkeypatch, tmp_path)
+    rc = cli.main(["status", "--json"])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    rows = {r["bucket"]: r for r in payload["buckets"]}
+    assert rows["home-assistant"]["pending"] == 1
+    assert rows["home-assistant"]["unreadable"] == 2
+    assert rows["user"]["unreadable"] == 0
+    assert payload["total_unreadable"] == 2
+
+
+def test_status_fast_omits_the_unreadable_field(monkeypatch, tmp_path, capsys):
+    """08 §1 FW-18: `--fast` OMITS the field entirely — its frontmatter-only
+    scan cannot detect the schema/section class, and absence ('unknown')
+    beats a possibly-wrong zero. Kill: leak `unreadable`/`total_unreadable`
+    into the fast payload and this reddens."""
+    _seed_valid_plus_corrupt(monkeypatch, tmp_path)
+    rc = cli.main(["status", "--json", "--fast"])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert "total_unreadable" not in payload
+    for b in payload.get("buckets", []):
+        assert "unreadable" not in b
+
+
+def test_status_fast_does_not_crash_on_undecodable_bytes(
+    monkeypatch, tmp_path, capsys
+):
+    """worker.fast_status's read_text catch widened to include
+    UnicodeDecodeError (FW-18 crash-prevention). Kill: narrow it back to
+    `except OSError:` and the decode error propagates → the fast scan
+    crashes (rc != 0), reddening this. The valid record is still counted."""
+    _seed_valid_plus_corrupt(monkeypatch, tmp_path)
+    rc = cli.main(["status", "--json", "--fast"])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["total_pending"] == 1
 
 
 def test_status_human_line_with_buckets(sandbox_home, capsys):

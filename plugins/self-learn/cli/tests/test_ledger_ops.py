@@ -2,6 +2,7 @@
 queue + eligibility. All on sandbox git repos under tmpdirs (02 §2–§3,
 08 §1 pins: Proposal lifecycle, Dedupe key, `--json` stubs; §7.1 step 2)."""
 
+import os
 from datetime import datetime, timezone
 
 import pytest
@@ -360,6 +361,60 @@ def test_queue_skips_unparseable_files_and_reports_them(tmp_path):
     bucket = _bucket(home)
     assert [e.record.id for e in queue(bucket)] == ["lrn-aa000001"]
     assert unparseable_pending(bucket) == [junk]
+
+
+# ---- 09 §5 FW-18: the widened skip set (I/O, decode, YAML — not just
+# RecordError). Each test seeds ONE failure class into pending/ and pins
+# that BOTH the queue excludes it AND unparseable_pending captures it
+# WITHOUT RAISING. Kill check: narrow the catch back to `except
+# RecordError:` and the decode/YAML/OSError cases propagate out of
+# _load_pending (queue and unparseable_pending both crash), reddening the
+# matching test. The junk-file test above still passes under the narrow
+# catch, so it alone would NOT protect the widening.
+
+
+def _valid_and_bucket(tmp_path):
+    home = make_home(tmp_path)
+    path = create_record(home, make_behavior(record_id="lrn-aa000001"))
+    return home, path.parent, _bucket(home)
+
+
+def test_load_pending_skips_yaml_parse_error(tmp_path):
+    """A record whose frontmatter block is present but not parseable YAML
+    (ruamel raises YAMLError, not a RecordError)."""
+    _home, pending_dir, bucket = _valid_and_bucket(tmp_path)
+    bad = pending_dir / "lrn-badya111.md"
+    bad.write_text("---\nfoo: [unclosed\n---\nbody text\n", encoding="utf-8")
+    assert [e.record.id for e in queue(bucket)] == ["lrn-aa000001"]
+    assert unparseable_pending(bucket) == [bad]
+
+
+def test_load_pending_skips_undecodable_bytes(tmp_path):
+    """A record file that is not valid UTF-8 (read_text raises
+    UnicodeDecodeError, a ValueError — never caught by `except OSError`)."""
+    _home, pending_dir, bucket = _valid_and_bucket(tmp_path)
+    bad = pending_dir / "lrn-badby222.md"
+    bad.write_bytes(b"---\nid: \xff\xfe not utf-8\n---\nbody\n")
+    assert [e.record.id for e in queue(bucket)] == ["lrn-aa000001"]
+    assert unparseable_pending(bucket) == [bad]
+
+
+@pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="chmod 000 does not deny read to root",
+)
+def test_load_pending_skips_unreadable_file_oserror(tmp_path):
+    """A record file present at glob time but unreadable (chmod 000 →
+    PermissionError, an OSError) — the 'vanished/permissions' class."""
+    _home, pending_dir, bucket = _valid_and_bucket(tmp_path)
+    bad = pending_dir / "lrn-badio333.md"
+    bad.write_text("---\nid: lrn-badio333\n---\nbody\n", encoding="utf-8")
+    bad.chmod(0o000)
+    try:
+        assert [e.record.id for e in queue(bucket)] == ["lrn-aa000001"]
+        assert unparseable_pending(bucket) == [bad]
+    finally:
+        bad.chmod(0o644)  # let tmp_path teardown remove it
 
 
 def test_resolved_records_never_in_queue(tmp_path):

@@ -313,6 +313,10 @@ class StatusStrip:
     open_followups: int
     sentinel_live: bool
     sentinel_label: str
+    #: 09 §5 unreadable-record row: total records that could not be read,
+    #: sourced from `status --json`'s top-level `total_unreadable` — never
+    #: a server-side ledger derivation. 0 renders no count line on Front.
+    total_unreadable: int = 0
 
 
 @dataclass(frozen=True)
@@ -577,6 +581,7 @@ def build_front_model(
         open_followups=open_followups,
         sentinel_live=sentinel_live,
         sentinel_label=sentinel_label,
+        total_unreadable=status_data.get("total_unreadable", 0),
     )
 
     report_data = report_read.data if report_read.ok else None
@@ -649,6 +654,11 @@ class BucketModel:
     host_add_command: str | None
     groups: tuple[DestinationGroup, ...]
     clusters: tuple[ClusterRow, ...]
+    #: 09 §5 unreadable-record row: this bucket's own count of records that
+    #: could not be read, sourced from `status --json`'s per-bucket
+    #: `unreadable` field — never a server-side ledger derivation. 0
+    #: renders no count line on the Bucket page.
+    unreadable: int = 0
 
 
 def _group_key_for(item: dict) -> str:
@@ -683,11 +693,14 @@ def build_bucket_model(
     *,
     host_registered: bool,
     host_add_command: str | None,
+    unreadable: int = 0,
     now: datetime | None = None,
 ) -> BucketModel:
     """09 §2.2: group precedence (P2-9), the Y-9 human-language-first row
     rule, deferred-dimmed-at-bottom ordering, cluster rows, and bulk
-    collapse for a homogeneous already-canon group."""
+    collapse for a homogeneous already-canon group. ``unreadable`` is this
+    bucket's `status --json` unreadable count (09 §5), passed through for
+    the skip-and-count line."""
     now = now if now is not None else datetime.now(timezone.utc)
     clustered_ids = {rid for c in clusters_raw for rid in (c.get("records") or [])}
 
@@ -757,6 +770,7 @@ def build_bucket_model(
         host_add_command=host_add_command,
         groups=tuple(groups),
         clusters=clusters,
+        unreadable=unreadable,
     )
 
 

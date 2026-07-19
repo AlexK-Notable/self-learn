@@ -50,6 +50,7 @@ def test_wrapper_runs_through_symlink(tmp_path):
     assert payload == {
         "buckets": [],
         "total_pending": 0,
+        "total_unreadable": 0,
         "open_followups": 0,
         "worker_last_run": None,
         # T19 blocks (zero-state: empty mix, null medians — never fake 0s)
