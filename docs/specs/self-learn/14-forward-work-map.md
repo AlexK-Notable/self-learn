@@ -152,13 +152,18 @@ while the pass itself is parked (O-9).
 
 ## 6a. Dated dispositions
 
-- *2026-07-18*: **FW-26 SHIPPED** (`15-orchestration-runbook.md`;
-  round-reviewer verification against repo reality owed at the
-  maintenance round's close). **FW-27 SHIPPED** (`records-index.md`,
-  agent-built, 21/11/18 rows). **FW-17 + FW-18 IN BUILD** — the
-  maintenance round is running (user-directed, Opus agents by
-  explicit per-round override of S-18): unreadable-record spec pair
-  gated SOUND (b9cacc5), two builders in worktrees.
+- *2026-07-18*: **FW-26 SHIPPED** (`15-orchestration-runbook.md`).
+  **FW-27 SHIPPED** (`records-index.md`, agent-built, 21/11/18 rows).
+- *2026-07-19*: **FW-17 SHIPPED** (22 js-marked Playwright tests, gate
+  CLEAN, merge 9c722e0) and **FW-18 SHIPPED** (unreadable-record
+  degradation per the gated 09 §5/08 §1 pair, SSE pane_block
+  root-cause fix, swapError NIT; gate CLEAN, merge 4358a9d) — record:
+  `reviews/2026-07-19-maintenance-round.md`. Master counts: CLI 976/3,
+  UI 758, pyright ui 0. **FW-30…FW-36 (minus FW-33's build) now have
+  GATED BUILD-GRADE SPECS** in `drafts/` — five drafts, all SOUND
+  (record: `reviews/2026-07-18-deep-specs.md`); doc-16 Stage C rides
+  its stated ratification gate; builds await the user's go + the §4
+  ruling queue.
 
 ## 6b. Dated additions log
 

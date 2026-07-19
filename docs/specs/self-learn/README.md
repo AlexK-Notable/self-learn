@@ -843,6 +843,26 @@ human routes it.
   trials: `fixtures/ui-trials.md`. Open DoD leg: episode briefs verified
   on the next real miner cycle.
 
+- **2026-07-18/19 — forward planning + maintenance round + deep
+  specs.** The forward work map (14, FW-1…FW-36 + `forward/` themes +
+  worker ecology) gated SOUND and committed; the maintenance round
+  shipped **FW-17** (the JS DOM harness — 22 Playwright tests pinning
+  the reload-defer predicate, focus management, and key dispatch;
+  first test coverage the JS layer has ever had) and **FW-18**
+  (unreadable-record degradation per a twice-folded spec pair,
+  the SSE pane_block duplication root-caused and fixed, the swapError
+  NIT) — both units blind-gated CLEAN with 12 mutations killed
+  between them; and **five build-grade spec drafts** (Y-22…Y-27 +
+  doc-16 candidate: analyst riders, fast lane, miner visibility,
+  settings surface, worker-ecology channels) all reached SOUND
+  through five blind gates and seven fold cycles. Records:
+  `reviews/2026-07-19-maintenance-round.md`,
+  `reviews/2026-07-18-deep-specs.md`,
+  `reviews/2026-07-18-forward-work-map.md`. Master counts: **CLI
+  976/3, UI 758 (incl. 22 js), pyright ui 0.** Runbook (15) + records
+  index shipped (FW-26/27). Opus ran everything this round by
+  explicit user override; S-18's split resumes.
+
 - **2026-07-18 — standing postures recorded** (register rows added same
   day, `03-decisions.md`): subagent model split (Opus reviews, Sonnet
   builds, the orchestrator model never spawns as a subagent — user cost

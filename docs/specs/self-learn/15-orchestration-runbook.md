@@ -132,6 +132,12 @@ tests silently run the wrong code.
   pre-existing — new code adds zero.
 - No sudo via the tool shell (no tty → pam_faillock locks the user
   account for 10 min).
+- `~/bin/self-learn` (the install.sh wrapper) resolves via
+  `readlink -f` to the ORIGINAL repo tree — in a worktree, tests that
+  shell `shutil.which("self-learn")` can silently run master's CLI
+  unless the worktree venv's bin is first on PATH. Same family as the
+  copied-.venv gotcha; put `.venv/bin` first when running suites in
+  worktrees (found by the B2 code gate, 2026-07-19).
 
 ## 8. Prompt skeletons (what every agent prompt must carry)
 
