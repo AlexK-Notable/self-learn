@@ -28,8 +28,10 @@ from fastapi import APIRouter, BackgroundTasks, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from starlette.responses import StreamingResponse
 
+from self_learn.chezmoi import CHEZMOI_DIRTY_MARKER
 from self_learn.hosts import is_repo_root
 from self_learn.records import Record
+from self_learn.verbs import GITOPS_DIRTY_MARKER
 
 from . import ledger, models, pane, proposals, rendering
 from .keymap import keymap_as_dicts, keymap_json
@@ -885,6 +887,11 @@ def _unarmed_context(
 ) -> dict[str, Any]:
     return {
         "armed": None,
+        # U20 §2.2: set only by action_confirm's failure leg (and the
+        # commit-drift arm/disarm/confirm routes themselves) — every
+        # OTHER caller of this helper (Front/Bucket/Detail GETs, ordinary
+        # disarm, cycle-destination) has no error to attach a button to.
+        "commit_drift": None,
         "kind": kind,
         "record_id": record_id,
         "dom_id": _dom_id(kind, record_id, target),
@@ -1109,7 +1116,22 @@ async def action_confirm(
         # through the scope rule, same as disarm.
         corrected = _scope_corrected_dest(request, record_id, dest)
         ctx = _unarmed_context(kind=kind, record_id=record_id, dest=corrected, event=event, target=target)
-        ctx["error"] = result.stderr or f"self-learn {' '.join(argv)} failed"
+        error_text = result.stderr or f"self-learn {' '.join(argv)} failed"
+        ctx["error"] = error_text
+        # U20 §2.2: the ONE dirty-target guided-commit button — eligible
+        # only for a failed `route` whose stderr carries a pinned dirty
+        # marker (never the drift refusal, gate M2).
+        if _commit_drift_eligible(verb, result.stderr):
+            ctx["commit_drift"] = _commit_drift_ctx(
+                record_id=record_id,
+                kind=kind,
+                error_text=error_text,
+                retry=_commit_drift_retry_ctx(
+                    dest=dest, collapse=collapse, note=note, until=until,
+                    event=event, tolerate=tolerate, target=target,
+                ),
+                armed=None,
+            )
         return _render(request, "partials/action_bar.html", ctx)
 
     _force_refresh(request, f"record:{record_id}")
@@ -1182,6 +1204,236 @@ def _contradicts_offer_response(
 def _bucket_name_for(home: Path, record_id: str) -> str | None:
     loc = ledger.locate_record(home, record_id)
     return loc.bucket_name if loc else None
+
+
+# ------------------------------------------------------ commit-drift (U20)
+#
+# f5-round-spec.md §2.2 (F5-5 guided commit-first): the dirty-target
+# refusal stays fully intact — this is the GUIDED path a human takes
+# instead of it. When a `route` confirm fails AND the stderr matches one
+# of the two pinned DIRTY-specific refusal clauses (never the shared
+# advice tail, never the drift clause — gate M2: the drift refusal
+# carries NEITHER marker by construction, so it never grows a button),
+# the error strip gains ONE action button: "Commit that repo's changes,
+# then retry." Armed, two-step, composing INSIDE the existing
+# error-strip/action-bar machinery (no new region, O-9) — never a
+# separate route triple's own template the way host-add needed one,
+# because this state lives INSIDE action_bar.html's existing `error`
+# leg, not a whole alternate `kind`.
+#
+# gate n12: the marker match imports the SAME constants the CLI raise
+# sites use (self_learn.chezmoi.CHEZMOI_DIRTY_MARKER /
+# self_learn.verbs.GITOPS_DIRTY_MARKER, imported at module top) — never
+# a hand-copied substring, so the marker and the message cannot drift
+# apart undetected.
+COMMIT_DRIFT_MARKERS = (GITOPS_DIRTY_MARKER, CHEZMOI_DIRTY_MARKER)
+
+
+def _commit_drift_eligible(verb: str, stderr: str | None) -> bool:
+    """§2.2: the button renders ONLY for a failed ``route`` whose stderr
+    carries one of the two pinned dirty markers — never for any other
+    verb (reject/defer/graduate/… never touch a compile target), and
+    never for the drift refusal, which carries neither (gate M2)."""
+    if verb != "route" or not stderr:
+        return False
+    return any(marker in stderr for marker in COMMIT_DRIFT_MARKERS)
+
+
+def _commit_drift_retry_ctx(
+    *,
+    dest: str | None,
+    collapse: str | None,
+    note: str | None,
+    until: str | None,
+    event: str | None,
+    tolerate: bool,
+    target: str | None,
+) -> dict[str, Any]:
+    """The original failed route confirm's own fields, carried through
+    every commit-drift leg so the eventual retry rebuilds the EXACT same
+    argv the human's Approve tap originally armed (displayed == armed ==
+    executed, the same discipline :func:`_armed_context` follows)."""
+    return {
+        "dest": dest,
+        "collapse": collapse,
+        "note": note,
+        "until": until,
+        "event": event,
+        "tolerate": tolerate,
+        "target": target,
+    }
+
+
+def _commit_drift_ctx(
+    *,
+    record_id: str,
+    kind: str,
+    error_text: str,
+    retry: dict[str, Any],
+    armed: dict[str, Any] | None,
+) -> dict[str, Any]:
+    return {
+        "record_id": record_id,
+        "kind": kind,
+        "error_text": error_text,
+        "retry": retry,
+        "armed": armed,
+    }
+
+
+@router.post("/record/{record_id}/action/commit-drift/arm", response_class=HTMLResponse)
+def commit_drift_arm(
+    request: Request,
+    record_id: str,
+    kind: str = Form("detail"),
+    error_text: str = Form(""),
+    dest: str | None = Form(None),
+    collapse: str | None = Form(None),
+    note: str | None = Form(None),
+    until: str | None = Form(None),
+    event: str | None = Form(None),
+    tolerate: bool = Form(False),
+    target: str | None = Form(None),
+) -> HTMLResponse:
+    """§2.2 armed two-step, tap 1: read the new verb's OWN ``--dry-run
+    --json`` (gate m6 — no other dirty-file-list source exists) and show
+    the repo + file list. Server derives the list; the human never types
+    a path. A race (the target went clean/drift since the refusal) fails
+    SAFE — back to the plain error, never an armed state built on stale
+    data."""
+    home = _home(request)
+    read = ledger.commit_drift_dry_run(home, record_id, dest=dest or None)
+    retry = _commit_drift_retry_ctx(
+        dest=dest, collapse=collapse, note=note, until=until,
+        event=event, tolerate=tolerate, target=target,
+    )
+    corrected = _scope_corrected_dest(request, record_id, dest)
+    ctx = _unarmed_context(kind=kind, record_id=record_id, dest=corrected, event=event, target=target)
+    if not read.ok:
+        ctx["error"] = read.error or "commit-drift dry-run failed"
+        ctx["commit_drift"] = None
+        return _render(request, "partials/action_bar.html", ctx)
+    data = read.data or {}
+    ctx["error"] = error_text or "route failed — dirty compile target"
+    ctx["commit_drift"] = _commit_drift_ctx(
+        record_id=record_id,
+        kind=kind,
+        error_text=error_text,
+        retry=retry,
+        armed={"repo": data.get("repo", ""), "files": data.get("files") or []},
+    )
+    return _render(request, "partials/action_bar.html", ctx)
+
+
+@router.post("/record/{record_id}/action/commit-drift/disarm", response_class=HTMLResponse)
+def commit_drift_disarm(
+    request: Request,
+    record_id: str,
+    kind: str = Form("detail"),
+    error_text: str = Form(""),
+    dest: str | None = Form(None),
+    collapse: str | None = Form(None),
+    note: str | None = Form(None),
+    until: str | None = Form(None),
+    event: str | None = Form(None),
+    tolerate: bool = Form(False),
+    target: str | None = Form(None),
+) -> HTMLResponse:
+    """Cancel: back to the SAME error-plus-button state — never a fresh
+    dry-run (that only runs when the human arms again)."""
+    retry = _commit_drift_retry_ctx(
+        dest=dest, collapse=collapse, note=note, until=until,
+        event=event, tolerate=tolerate, target=target,
+    )
+    corrected = _scope_corrected_dest(request, record_id, dest)
+    ctx = _unarmed_context(kind=kind, record_id=record_id, dest=corrected, event=event, target=target)
+    ctx["error"] = error_text or "commit-drift refused"
+    ctx["commit_drift"] = _commit_drift_ctx(
+        record_id=record_id, kind=kind, error_text=error_text, retry=retry, armed=None
+    )
+    return _render(request, "partials/action_bar.html", ctx)
+
+
+@router.post("/record/{record_id}/action/commit-drift/confirm", response_class=HTMLResponse)
+async def commit_drift_confirm(
+    request: Request,
+    record_id: str,
+    kind: str = Form("detail"),
+    dest: str | None = Form(None),
+    collapse: str | None = Form(None),
+    note: str | None = Form(None),
+    until: str | None = Form(None),
+    event: str | None = Form(None),
+    tolerate: bool = Form(False),
+    target: str | None = Form(None),
+) -> Response:
+    """Tap 2: run the guided commit for real, then — on success — re-fire
+    the ORIGINAL route confirm automatically, once, with the SAME argv
+    (§2.2). A second dirty refusal (or any other retry failure) renders
+    PLAINLY: no loop, and the commit-drift button never re-appears on
+    that leg — only a fresh `route` confirm failure can re-offer it."""
+    home = _home(request)
+    runner = request.app.state.runner
+
+    commit_argv = ["host", "commit-drift", record_id]
+    if dest:
+        commit_argv += ["--dest", dest]
+    commit_result = await runner.run(commit_argv)
+    if not commit_result.ok:
+        corrected = _scope_corrected_dest(request, record_id, dest)
+        ctx = _unarmed_context(kind=kind, record_id=record_id, dest=corrected, event=event, target=target)
+        ctx["error"] = commit_result.stderr or "self-learn host commit-drift failed"
+        return _render(request, "partials/action_bar.html", ctx)
+
+    # Commit landed — auto-retry the original route confirm, same argv,
+    # same interrupt-first / contradicts-capture discipline as a normal
+    # confirm (action_confirm's own sequence, mirrored here because this
+    # is a SECOND verb dispatch inside one request, not a client re-post).
+    contradicts_pre = _capture_contradicts(home, record_id)
+    manager = _pane_manager(request)
+    if manager is not None:
+        await manager.interrupt_active_session(record_id)
+    route_argv = build_argv(
+        "route",
+        record_id,
+        dest=dest or None,
+        collapse=collapse or None,
+        note=note or None,
+        until=until or None,
+        event=event or None,
+        tolerate=tolerate,
+        target=target or None,
+    )
+    await _publish_applying(request, "route", record_id, "start")
+    retry = await runner.run(route_argv)
+    await _publish_applying(request, "route", record_id, "done" if retry.ok else "error")
+
+    if not retry.ok:
+        _force_refresh(request, f"record:{record_id}")
+        corrected = _scope_corrected_dest(request, record_id, dest)
+        ctx = _unarmed_context(kind=kind, record_id=record_id, dest=corrected, event=event, target=target)
+        ctx["error"] = retry.stderr or f"self-learn {' '.join(route_argv)} failed"
+        return _render(request, "partials/action_bar.html", ctx)
+
+    _force_refresh(request, f"record:{record_id}")
+    slot = _proposal_slot(request)
+    if slot is not None:
+        slot.clear_for_record(record_id)
+    if collapse:
+        _sweep_stale_proposal(request)
+    if contradicts_pre:
+        return _contradicts_offer_response(request, record_id, contradicts_pre)
+
+    bucket_name = _bucket_name_for(home, record_id)
+    url = next_record_url(home, bucket_name, record_id) if bucket_name else f"/?notice={NOTICE_BUCKET_CLEAR}"
+    # 07 §4 contract 2 / 09 §3: verb stdout is never parsed for control or
+    # display (a real runner's stdout is human-formatted, not a data
+    # contract) — the commit's own sha is therefore not surfaced here;
+    # the redirect target's re-read state IS the ground truth, same as
+    # every other successful confirm.
+    resp = Response(content="Committed. Retrying…", status_code=200)
+    resp.headers["HX-Redirect"] = url
+    return resp
 
 
 # -------------------------------------------------------------- armed host-add

@@ -3,9 +3,64 @@
    `kind`; UNARMED rendering branches on `kind` because each context's
    trigger set differs (detail quad / holding t-c / followup done /
    contradicts offer). CSP: no inline style=, no inline <script>. #}
-<div id="{{ dom_id }}" class="action-bar" data-armed="{{ 'true' if armed else 'false' }}" data-key-context="{{ kind }}">
+{# U20 §2.2 gate: the commit-drift armed sub-state is [data-armed="true"]
+   TOO — app.js's Y-16 leg (c) (`.action-bar[data-armed="true"]`) already
+   defers a broadcast reload over ANY armed bar; reusing it (never new
+   JS) is what makes the file list survive a stray SSE refresh mid-tap. #}
+<div id="{{ dom_id }}" class="action-bar" data-armed="{{ 'true' if (armed or (commit_drift and commit_drift.armed)) else 'false' }}" data-key-context="{{ kind }}">
   {% if error %}
   <p class="error-strip" role="alert">{{ error }}</p>
+  {% if commit_drift %}
+  {# U20 §2.2: the ONE guided-commit action, composing inside this SAME
+     error leg (no new region, O-9) — eligible only for a failed `route`
+     whose stderr carried a pinned dirty marker (never drift, gate M2). #}
+  {% if commit_drift.armed %}
+  <form hx-post="/record/{{ commit_drift.record_id }}/action/commit-drift/confirm"
+        hx-target="#{{ dom_id }}" hx-swap="outerHTML">
+    <input type="hidden" name="kind" value="{{ commit_drift.kind }}">
+    {% if commit_drift.retry.dest %}<input type="hidden" name="dest" value="{{ commit_drift.retry.dest }}">{% endif %}
+    {% if commit_drift.retry.collapse %}<input type="hidden" name="collapse" value="{{ commit_drift.retry.collapse }}">{% endif %}
+    {% if commit_drift.retry.note %}<input type="hidden" name="note" value="{{ commit_drift.retry.note }}">{% endif %}
+    {% if commit_drift.retry.until %}<input type="hidden" name="until" value="{{ commit_drift.retry.until }}">{% endif %}
+    {% if commit_drift.retry.event %}<input type="hidden" name="event" value="{{ commit_drift.retry.event }}">{% endif %}
+    {% if commit_drift.retry.tolerate %}<input type="hidden" name="tolerate" value="true">{% endif %}
+    {% if commit_drift.retry.target %}<input type="hidden" name="target" value="{{ commit_drift.retry.target }}">{% endif %}
+    <p class="commit-drift-armed">
+      Commit <code>{{ commit_drift.armed.repo }}</code>
+      ({{ commit_drift.armed.files|length }} file(s)):
+      {{ commit_drift.armed.files|join(", ") }}
+    </p>
+    <button type="submit" data-key-action="commit_drift_confirm">Confirm</button>
+  </form>
+  <form hx-post="/record/{{ commit_drift.record_id }}/action/commit-drift/disarm"
+        hx-target="#{{ dom_id }}" hx-swap="outerHTML">
+    <input type="hidden" name="kind" value="{{ commit_drift.kind }}">
+    <input type="hidden" name="error_text" value="{{ commit_drift.error_text }}">
+    {% if commit_drift.retry.dest %}<input type="hidden" name="dest" value="{{ commit_drift.retry.dest }}">{% endif %}
+    {% if commit_drift.retry.collapse %}<input type="hidden" name="collapse" value="{{ commit_drift.retry.collapse }}">{% endif %}
+    {% if commit_drift.retry.note %}<input type="hidden" name="note" value="{{ commit_drift.retry.note }}">{% endif %}
+    {% if commit_drift.retry.until %}<input type="hidden" name="until" value="{{ commit_drift.retry.until }}">{% endif %}
+    {% if commit_drift.retry.event %}<input type="hidden" name="event" value="{{ commit_drift.retry.event }}">{% endif %}
+    {% if commit_drift.retry.tolerate %}<input type="hidden" name="tolerate" value="true">{% endif %}
+    {% if commit_drift.retry.target %}<input type="hidden" name="target" value="{{ commit_drift.retry.target }}">{% endif %}
+    <button type="submit" data-key-action="commit_drift_disarm">Cancel</button>
+  </form>
+  {% else %}
+  <form hx-post="/record/{{ commit_drift.record_id }}/action/commit-drift/arm"
+        hx-target="#{{ dom_id }}" hx-swap="outerHTML">
+    <input type="hidden" name="kind" value="{{ commit_drift.kind }}">
+    <input type="hidden" name="error_text" value="{{ commit_drift.error_text }}">
+    {% if commit_drift.retry.dest %}<input type="hidden" name="dest" value="{{ commit_drift.retry.dest }}">{% endif %}
+    {% if commit_drift.retry.collapse %}<input type="hidden" name="collapse" value="{{ commit_drift.retry.collapse }}">{% endif %}
+    {% if commit_drift.retry.note %}<input type="hidden" name="note" value="{{ commit_drift.retry.note }}">{% endif %}
+    {% if commit_drift.retry.until %}<input type="hidden" name="until" value="{{ commit_drift.retry.until }}">{% endif %}
+    {% if commit_drift.retry.event %}<input type="hidden" name="event" value="{{ commit_drift.retry.event }}">{% endif %}
+    {% if commit_drift.retry.tolerate %}<input type="hidden" name="tolerate" value="true">{% endif %}
+    {% if commit_drift.retry.target %}<input type="hidden" name="target" value="{{ commit_drift.retry.target }}">{% endif %}
+    <button type="submit" data-key-action="commit_drift_arm">Commit that repo's changes, then retry</button>
+  </form>
+  {% endif %}
+  {% endif %}
   {% endif %}
 
   {% if armed %}

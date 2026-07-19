@@ -60,6 +60,7 @@ __all__ = [
     "RefreshEvent",
     "RefreshHub",
     "SalvageRecord",
+    "commit_drift_dry_run",
     "discover_buckets",
     "list_items",
     "locate_record",
@@ -170,6 +171,27 @@ def report(home: Path, *, env: dict[str, str] | None = None) -> CliRead:
 
 def mine_status(home: Path, *, env: dict[str, str] | None = None) -> CliRead:
     return _invoke_json(["mine", "status", "--json"], home=home, env=env)
+
+
+def commit_drift_dry_run(
+    home: Path,
+    record_id: str,
+    *,
+    dest: str | None = None,
+    env: dict[str, str] | None = None,
+) -> CliRead:
+    """U20 (F5-5 guided commit-first): ``self-learn host commit-drift <id>
+    [--dest dest] --dry-run --json`` — ``{repo, files}`` for the would-be
+    guided commit, writing nothing. The commit-drift ARM route's only
+    data source (gate m6) — the same JSON-subprocess read path as every
+    other CLI ``--json`` call here, never re-derived. A refusal (clean
+    repo, drift, out-of-scope path) surfaces as an ordinary ``CliRead``
+    error, same as any other failed read."""
+    args = ["host", "commit-drift", record_id]
+    if dest:
+        args += ["--dest", dest]
+    args += ["--dry-run", "--json"]
+    return _invoke_json(args, home=home, env=env)
 
 
 # ------------------------------------------------------------ raw reads
