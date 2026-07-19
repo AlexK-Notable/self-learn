@@ -50,6 +50,9 @@
     {% if pane.result_cost_usd is not none %}<span class="pane-result-cost">${{ "%.4f"|format(pane.result_cost_usd) }}</span>{% endif %}
     {% if pane.result_turns is not none %}<span class="pane-result-turns">{{ pane.result_turns }} turns</span>{% endif %}
   </p>
+  {% if pane.turn_summary %}
+  <p class="pane-turn-summary">{{ pane.turn_summary }}</p>
+  {% endif %}
   {% endif %}
 
   {% if pane.validate_exit_code is not none and pane.validate_exit_code != 0 %}

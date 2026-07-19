@@ -31,7 +31,7 @@ from self_learn_ui.engine.base import (
     ToolUse,
 )
 from self_learn_ui.ledger import RefreshHub, locate_record, read_diff, read_proposal_raw, read_record
-from self_learn_ui.proposals import VerbProposal
+from self_learn_ui.proposals import PROPOSAL_TOOL_QUALIFIED_NAME, VerbProposal
 from self_learn_ui.runner import FakeRunner, RunResult
 from self_learn_ui.sse import AppEventHub
 
@@ -1341,3 +1341,268 @@ class TestPostResultValidateWindow:
         # the turn's drain entry.
         assert engine.interrupt_calls == calls_after_esc
         assert manager.snapshot(RECORD_ID).state == pane.STATE_AWAITING_INPUT
+
+
+# ------------------------------------------------ U21 post-iterate summary
+
+
+def _route_proposal(session_key: str = RECORD_ID, record_id: str = RECORD_ID, dest: str | None = "skill-md") -> VerbProposal:
+    return VerbProposal(
+        verb="route", record_id=record_id, bucket_scope="skill",
+        bucket_name="s", session_key=session_key, title="T",
+        dest=dest, note=None, until=None,
+    )
+
+
+class _MidGatedEngine(PaneEngine):
+    """Yields *before* events, waits on ``gate``, then yields *after*
+    events — lets a test inject a proposal-slot mutation BETWEEN a
+    propose_verb ToolUse and the turn's Result (U21 gate R5's
+    current-turn-attribution tests need to control what the slot looks
+    like at each of those two moments, which a plain FakeEngine's
+    unpaused event list cannot do)."""
+
+    def __init__(self, before, after) -> None:
+        self.gate = __import__("asyncio").Event()
+        self._before = list(before)
+        self._after = list(after)
+        self.interrupt_calls = 0
+        self.close_calls = 0
+
+    async def start(self, ctx: PaneContext):
+        for event in self._before:
+            yield event
+        await self.gate.wait()
+        for event in self._after:
+            yield event
+
+    async def send(self, text: str):
+        raise RuntimeError("never")
+        yield  # pragma: no cover
+
+    async def interrupt(self) -> None:
+        self.interrupt_calls += 1
+
+    async def close(self) -> None:
+        self.close_calls += 1
+
+
+class TestComposeFileFacts:
+    """Unit — the drain-accumulation classification (§3's own test list):
+    record file -> "the lesson text"; proposal sibling (yaml or diff) ->
+    "the proposal"; other path -> shortened; none -> "nothing". Pure
+    function, no engine/manager machinery."""
+
+    def test_record_file_classifies_as_the_lesson_text(self) -> None:
+        path = f"/x/bucket/pending/{RECORD_ID}.md"
+        assert pane._compose_file_facts(RECORD_ID, [path]) == "the lesson text"
+
+    def test_proposal_yaml_sibling_classifies_as_the_proposal(self) -> None:
+        path = f"/x/bucket/proposals/{RECORD_ID}.yaml"
+        assert pane._compose_file_facts(RECORD_ID, [path]) == "the proposal"
+
+    def test_proposal_diff_sibling_also_classifies_as_the_proposal(self) -> None:
+        path = f"/x/bucket/proposals/{RECORD_ID}.diff"
+        assert pane._compose_file_facts(RECORD_ID, [path]) == "the proposal"
+
+    def test_other_path_is_shown_shortened(self) -> None:
+        path = "/x/bucket/other/unrelated.md"
+        assert pane._compose_file_facts(RECORD_ID, [path]) == "other/unrelated.md"
+
+    def test_no_paths_is_nothing(self) -> None:
+        assert pane._compose_file_facts(RECORD_ID, []) == "nothing"
+
+    def test_dedups_repeated_paths_and_joins_distinct_facts(self) -> None:
+        lesson = f"/x/bucket/pending/{RECORD_ID}.md"
+        proposal = f"/x/bucket/proposals/{RECORD_ID}.yaml"
+        facts = pane._compose_file_facts(RECORD_ID, [proposal, lesson, proposal])
+        assert facts == "the proposal and the lesson text"
+
+    def test_bare_record_id_without_lrn_prefix_still_matches_the_stem(self) -> None:
+        # _record_stem mirrors engine/charter.py's own tolerant stem
+        # derivation — a bare id (no "lrn-" prefix) still classifies
+        # correctly against the lrn-prefixed on-disk filename.
+        bare = "aa000001"
+        path = "/x/bucket/pending/lrn-aa000001.md"
+        assert pane._compose_file_facts(bare, [path]) == "the lesson text"
+
+
+class TestProposalClauseGloss:
+    """Verb/destination glossed via ``models._GROUP_LABELS`` (F5-9's map,
+    reused — never a second map)."""
+
+    def test_route_with_dest_names_verb_and_glossed_destination(self) -> None:
+        proposal = _route_proposal(dest="skill-md")
+        assert pane._proposal_clause(proposal) == "route to Skill doc"
+
+    def test_parameterized_dest_glosses_by_its_base(self) -> None:
+        proposal = _route_proposal(dest="new-skill:foo")
+        assert pane._proposal_clause(proposal) == "route to New skill"
+
+    def test_verb_without_dest_names_the_bare_verb(self) -> None:
+        proposal = VerbProposal(
+            verb="reject", record_id=RECORD_ID, bucket_scope="skill",
+            bucket_name="s", session_key=RECORD_ID, title="T",
+        )
+        assert pane._proposal_clause(proposal) == "reject"
+
+    def test_single_source_no_second_label_map(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A source assertion (F5-9's own guard, mirrored): monkeypatching
+        # the SHARED map changes the render — proving there is no
+        # second, independent label table for this line.
+        from self_learn_ui import models
+
+        monkeypatch.setitem(models._GROUP_LABELS, "skill-md", "MONKEYPATCHED")
+        assert pane._proposal_clause(_route_proposal(dest="skill-md")) == "route to MONKEYPATCHED"
+
+
+class TestPostIterateSummaryIntegration:
+    """PaneManager-level: the footer line's full wiring — drain
+    accumulation -> Result-time composition -> snapshot persistence."""
+
+    async def test_footer_line_present_after_result_and_on_re_render(self) -> None:
+        # "present again on snapshot re-render (navigation-return
+        # regression)" — snapshot() is called twice, exactly like a
+        # panel GET followed by a later plain Detail reload would.
+        lesson_path = f"/x/bucket/pending/{RECORD_ID}.md"
+        engine = FakeEngine(turns=[[FileChanged(path=lesson_path), Result("success", 0.0, None)]])
+        manager, *_ = _manager(engines={RECORD_ID: engine})
+
+        await _start_and_join(manager, RECORD_ID)
+        first = manager.snapshot(RECORD_ID)
+        assert first.turn_summary == "This turn changed: the lesson text."
+
+        second = manager.snapshot(RECORD_ID)  # the re-render
+        assert second.turn_summary == first.turn_summary
+
+    async def test_no_file_changes_and_no_proposal_renders_nothing(self) -> None:
+        engine = FakeEngine(turns=[[Result("success", 0.0, None)]])
+        manager, *_ = _manager(engines={RECORD_ID: engine})
+        await _start_and_join(manager, RECORD_ID)
+        assert manager.snapshot(RECORD_ID).turn_summary == "This turn changed: nothing."
+
+    async def test_proposal_placed_this_turn_names_the_glossed_verb(self) -> None:
+        import asyncio
+
+        engine = _MidGatedEngine(
+            before=[ToolUse(name=PROPOSAL_TOOL_QUALIFIED_NAME, target=None)],
+            after=[Result("success", 0.0, None)],
+        )
+        manager, *_ = _manager(engines={RECORD_ID: engine})
+
+        await manager.start(RECORD_ID)
+        await asyncio.sleep(0)  # background drain runs up to the ToolUse + gate
+        # Simulate the propose_verb handler's effect: the slot was EMPTY
+        # when the ToolUse landed (nonce_before captured as None), and is
+        # now occupied by THIS turn's proposal.
+        manager.proposal_slot.occupy(_route_proposal(dest="skill-md"))
+        engine.gate.set()
+        await manager.wait_for_turn()
+
+        snap = manager.snapshot(RECORD_ID)
+        assert snap.turn_summary == "This turn changed: nothing, and proposed: route to Skill doc."
+
+    async def test_tooluse_without_a_placed_proposal_names_no_clause(self) -> None:
+        # Signal (a) present, (b) absent (the handler refused for a
+        # reason that never occupies the slot, e.g. an invalid verb) —
+        # either alone is insufficient.
+        import asyncio
+
+        engine = _MidGatedEngine(
+            before=[ToolUse(name=PROPOSAL_TOOL_QUALIFIED_NAME, target=None)],
+            after=[Result("success", 0.0, None)],
+        )
+        manager, *_ = _manager(engines={RECORD_ID: engine})
+        await manager.start(RECORD_ID)
+        await asyncio.sleep(0)
+        # slot stays empty — the handler's refusal never occupies it.
+        engine.gate.set()
+        await manager.wait_for_turn()
+        assert manager.snapshot(RECORD_ID).turn_summary == "This turn changed: nothing."
+
+    async def test_waiting_proposal_without_a_tooluse_names_no_clause(self) -> None:
+        # Signal (b) present, (a) absent — a proposal is waiting in the
+        # slot but THIS turn's drain never saw a propose_verb ToolUse at
+        # all (e.g. it was placed by an earlier session's turn and this
+        # turn did nothing proposal-related).
+        engine = FakeEngine(turns=[[Result("success", 0.0, None)]])
+        manager, *_ = _manager(engines={RECORD_ID: engine})
+        manager.proposal_slot.occupy(_route_proposal(dest="skill-md"))
+        await _start_and_join(manager, RECORD_ID)
+        assert manager.snapshot(RECORD_ID).turn_summary == "This turn changed: nothing."
+
+    async def test_r5_edge_prior_turn_waiting_proposal_never_misattributes(self) -> None:
+        # The R5 disaster case, pinned as a negative: a PRIOR turn's
+        # still-waiting proposal already occupies the slot when THIS
+        # turn's propose_verb ToolUse lands; the real handler would
+        # refuse it (refuse-not-replace, slot already occupied) and
+        # leave the slot UNCHANGED — simulated here by simply never
+        # touching the slot during the gated window.
+        import asyncio
+
+        prior = _route_proposal(dest="claude-md")
+        engine = _MidGatedEngine(
+            before=[ToolUse(name=PROPOSAL_TOOL_QUALIFIED_NAME, target=None)],
+            after=[Result("success", 0.0, None)],
+        )
+        manager, *_ = _manager(engines={RECORD_ID: engine})
+        manager.proposal_slot.occupy(prior)
+
+        await manager.start(RECORD_ID)
+        await asyncio.sleep(0)  # ToolUse processed; nonce_before captured == prior.nonce
+        # THIS turn's call was refused by slot-occupancy — nothing changes.
+        engine.gate.set()
+        await manager.wait_for_turn()
+
+        snap = manager.snapshot(RECORD_ID)
+        assert snap.turn_summary == "This turn changed: nothing."
+        assert "proposed" not in snap.turn_summary
+        # The prior proposal is still exactly where it was — untouched,
+        # never misattributed and never cleared by this turn's summary.
+        assert manager.proposal_slot.current is prior
+
+    async def test_armed_proposal_never_counts_as_waiting(self) -> None:
+        # (b) requires a WAITING (never armed) proposal — an armed one
+        # is mid human-confirm, not a fresh this-turn placement.
+        import asyncio
+
+        engine = _MidGatedEngine(
+            before=[ToolUse(name=PROPOSAL_TOOL_QUALIFIED_NAME, target=None)],
+            after=[Result("success", 0.0, None)],
+        )
+        manager, *_ = _manager(engines={RECORD_ID: engine})
+        await manager.start(RECORD_ID)
+        await asyncio.sleep(0)
+        manager.proposal_slot.occupy(_route_proposal(dest="skill-md"))
+        manager.proposal_slot.arm(RECORD_ID)
+        engine.gate.set()
+        await manager.wait_for_turn()
+        assert manager.snapshot(RECORD_ID).turn_summary == "This turn changed: nothing."
+
+    async def test_bucket_session_matches_by_session_key_not_record_id(self) -> None:
+        # A bucket session's live.record_id is the SYNTHETIC bucket key
+        # (pane.bucket_session_key), never a real record id — but its
+        # propose_verb call names a real PENDING RECORD elsewhere in the
+        # bucket. VerbProposal.session_key carries the bucket key
+        # (the same identity clear_for_session already matches on);
+        # VerbProposal.record_id carries the named record instead. The
+        # attribution match MUST use session_key, or a bucket session's
+        # own successful proposal would never be attributed to it.
+        import asyncio
+
+        key = pane.bucket_session_key("skill", "s")
+        engine = _MidGatedEngine(
+            before=[ToolUse(name=PROPOSAL_TOOL_QUALIFIED_NAME, target=None)],
+            after=[Result("success", 0.0, None)],
+        )
+        manager, *_ = _manager(engines={key: engine})
+        await manager.start(key)
+        await asyncio.sleep(0)
+        manager.proposal_slot.occupy(
+            _route_proposal(session_key=key, record_id="lrn-cc000003", dest="claude-md")
+        )
+        engine.gate.set()
+        await manager.wait_for_turn()
+
+        snap = manager.snapshot(key)
+        assert snap.turn_summary == "This turn changed: nothing, and proposed: route to Project instructions."
