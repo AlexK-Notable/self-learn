@@ -385,3 +385,41 @@ real ledger were never touched.
   ledger commit `self-learn: rehome lrn-d598b7f3 → projects/…projB…`,
   record pending in projB's queue, proposal slot cleared. The Y-15
   instant-split + live tool streaming behavior re-confirmed en route.
+
+## UX-round DoD trials — U16 + U17 + U18 (2026-07-18, sandboxed instance)
+
+Same sandbox posture as round 3 (redirected home/runtime/cache, port
+7457, server from the merged tree, real ledger untouched). Real
+browser via Playwright.
+
+- **U16 auto-focus + keyboard-live — PASS.** Front loaded with the
+  first bucket row already selected, focus parked on the content
+  landmark, and `s` moved the selection with NO prior click — the
+  keys-dead-until-click dead-end is gone. Selection moved 0→1 of 3.
+- **U16 worker Force-run — PASS.** The new Worker region rendered on
+  Front beside the miner's; one click detach-spawned
+  `worker run --coalesce` (observed as an independent process) and
+  the page returned instantly — no held request, Y-14 posture intact.
+- **U16 next-record prefetch — pass-by-tests + live walk.** The
+  warm-cache behavior is pinned by 10 unit tests including the
+  mutation-verified global-invalidation and never-stale assertions;
+  the live walk (defer → redirect → next page paints, no errors)
+  exercised the path. The DoD's "perceptible paint-stall reduction"
+  is subjective browser-feel — left to the user's own queue walk,
+  honestly recorded here.
+- **U17 budget display — PASS, including the F1 fix live.** A
+  project record's Why region rendered "this claude-md section
+  already holds 0 of its 10 entries" — the bare fill fact with NO
+  false nearness clause (the exact 0/10 case the code gate caught),
+  plus the pinned reference line ("reference files have no cap —
+  this is the overflow surface entries graduate into"). The armed
+  action bar carried no budget markup (pinned negative held).
+- **U18 brief display + key — PASS.** A record with an
+  `## Episode brief` section rendered it as a COLLAPSED disclosure
+  labeled "Episode brief (b)" below the decision content — nothing
+  leaked inline into the finding body — and the `b` key toggled it
+  open with the story visible. **Miner compose leg**: pinned by the
+  planted-secret-only-in-brief test and the prompt-pin test; the
+  full live miner-run trial rides the next real miner cycle on the
+  deployed code (observable in the next session's mined records —
+  check for briefs then).
