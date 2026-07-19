@@ -3,6 +3,21 @@
 *No code until the user ratifies this corpus. Build in this worktree,
 test-first, merge to master when green (repo convention).*
 
+> **Where we are (dated addendum, 2026-07-18).** Every milestone below
+> has executed: M1 shipped 2026-07-13, M2 2026-07-15, M3 complete +
+> v1.1 tagged 2026-07-17. Of §M4's gated futures, **G-3 fired and
+> shipped 2026-07-17** (the localhost web surface, live as
+> `self-learn-ui.service`) and has since grown seven extension units
+> (U12–U18, Y-13…Y-21 — planning authority for that track is 09/10,
+> not this file). The remaining gates (G-1/G-2/G-4/G-5/G-6) are
+> unfired. **The next major phase is packaging** — a slim standalone
+> distribution of the product repo (bundle-exclusion groundwork
+> verified: `research/2026-07-18-sdk-bundle-exclusion.md`; the Go port
+> is parked, O-8). Design round 4 (composition) is parked but its
+> principles govern new UI work (O-9). This file remains the method
+> record for the milestones and the acceptance fixture; it is not the
+> live status tracker (that is the README header + revision log).
+
 ## 0. Pre-build acceptance fixture (defines "worth it" before anything exists)
 
 > **Superseded in part, 2026-07-13/14 (Phase 0 outcome — see 08's
@@ -225,11 +240,14 @@ checkpoint).
 
 ## M4 — Gated futures
 
-Whatever `03-decisions.md` gates open: standalone UI (G-3/O-1), statistical
+Whatever `03-decisions.md` gates open: ~~standalone UI (G-3/O-1)~~
+*(fired + SHIPPED 2026-07-17 — see the addendum above)*, statistical
 layer (G-1 — evaluate SkillOpt-Sleep before building), portability
-extraction (G-2), forensic drain (G-4), znote backend (G-5), staleness
-revalidation (G-6). Each arrives with its own blind review (P10). The
-team-scale staging that would fire most of these is `06-horizon.md`.
+extraction (G-2 — its packaging groundwork is already done, see the
+G-2 row's dated note), forensic drain (G-4), znote backend (G-5),
+staleness revalidation (G-6). Each arrives with its own blind review
+(P10). The team-scale staging that would fire most of these is
+`06-horizon.md`.
 
 ## Success metrics (honest at n=1 — counted, not modeled)
 

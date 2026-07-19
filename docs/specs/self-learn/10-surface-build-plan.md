@@ -1156,3 +1156,26 @@ path more than adding tracks.
   not a second system). No code bugs found in `ui/`/`cli/` during this
   task — none of that surface was touched (out of scope; frozen and
   reviewed per the task charter).
+- **2026-07-18 · Extension rounds SHIPPED — terminal confirmation for
+  U12–U18.** Every post-ship unit in §3's extended DAG is built, merged
+  to master, and live: U12 chat panes (Y-13), U13 idle lifecycle
+  (Y-14), the round-2 items (Y-15 + scope-filtered destinations +
+  monitor placement), U14 registration flow (Y-16/Y-17, merge 498cced),
+  U15 rehome (Y-18, merge c329866), U16 queue-walk trio (Y-19, merge
+  2bd3c21), U17 budget indicator (Y-20, merge e133f07), U18 miner
+  episode briefs (Y-21, merge 8b39bef). Master @ d0efd44: **CLI 970
+  passed / 3 skipped, UI 722 passed; pyright ui src 0, cli src 56
+  pre-existing baseline.** Gate chains and mutation counts:
+  `reviews/2026-07-18-ui-feedback-r3.md`,
+  `reviews/2026-07-18-ux-round-1.md`; live-trial logs:
+  `fixtures/ui-trials.md` ("Round-3 DoD trials", "UX-round DoD trials"
+  — all PASS). One semantic merge obligation was executed by the
+  orchestrator at the U16/U17 join: the `--surface-fill --id` call site
+  landed INSIDE the cached detail bundle so the budget datum inherits
+  the generation gate's global invalidation. **Open DoD leg (U18):**
+  the live miner-run trial rides the next real miner cycle — check
+  freshly mined records for `## Episode brief` sections. Residual
+  backlog carried (none blocking): push-fail surfacing in-UI, SSE
+  pane_block dup (cosmetic), a JS DOM harness, the unreadable-record
+  500 on Detail (09 §5 degradation row), U14-F2 NIT (swapError in the
+  structural pin's asserted list).

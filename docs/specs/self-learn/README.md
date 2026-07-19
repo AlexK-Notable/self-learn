@@ -2,11 +2,14 @@
 
 *Single-authored 2026-07-12, replacing the gen-1 harness spec (archived at
 `../archive/gen1-self-learning-harness/` — its README explains why). Status:
-**RATIFIED 2026-07-12** · **M1 SHIPPED 2026-07-13** (v1.0 core loop live —
-CLI + slash commands deployed, backlog drained; see revision log) ·
-**11-telemetry RATIFIED 2026-07-15** (v2 after the four-agent audit;
-user-delegated, Q&A in the revision log) · **M1 EXITED 2026-07-15 — M2 is
-next**. Everything here was written together, as one system, with
+**RATIFIED 2026-07-12** · **M1 SHIPPED 2026-07-13** · **M2 SHIPPED +
+11-telemetry RATIFIED 2026-07-15** · **M3 COMPLETE, v1.1 tagged
+2026-07-17** · **G-3 adjudication surface SHIPPED 2026-07-17** (live:
+`self-learn-ui.service`, 127.0.0.1:7357) · **extension rounds U12–U18
+SHIPPED 2026-07-17/18** (chat panes → idle lifecycle → feedback rounds
+1–3 → UX round 1; revision log below) · **next phase: packaging**
+(`research/2026-07-18-sdk-bundle-exclusion.md`). Everything here was
+written together, as one system, with
 the full evidence of three review rounds and the repo's own usage history baked
 in from the start — not iterated into shape.*
 
@@ -30,10 +33,10 @@ human routes it.
 | `04-roadmap.md` | Build milestones, acceptance fixture, success metrics |
 | `05-evidence.md` | The empirical facts this design is built on, with sources |
 | `06-horizon.md` | The team-scale future (~5–6 users, shared artifact repo): invariants, the six team problems, staged path |
-| `07-review-ui.md` | The review-surface vision (recorded 2026-07-12 as a resident TUI; platform since re-decided — see 09): attend-at-convenience, embedded agent adjudication pane, the don't-subvert contracts on v1/M2 |
+| `07-review-ui.md` | The review-surface vision (recorded 2026-07-12 as a resident TUI; platform since re-decided — see 09): attend-at-convenience, embedded agent adjudication pane, the don't-subvert contracts — recorded against v1/M2, binding on every later surface (the shipped G-3 UI inherits them) |
 | `08-build-plan.md` | **Execution authority for the build**: pinned interface contracts, the Phase-0 fixture runbook, the M1 task DAG, judgment-call routing, eventuality playbooks — written so any orchestrator can run the build |
 | `09-surface-spec.md` | **Design authority for the G-3 adjudication surface** (web revision, 2026-07-12): interaction model, surfaces/routes, files-as-truth data flow, security middleware, the adjudication pane (Agent SDK engine default / CLI stream-json alternative, empirically probed), degradation table, stack selection |
-| `10-surface-build-plan.md` | **Execution authority for the G-3 build** (gated on G-3's trigger): surface-local pins + verify-at-build ledger, acceptance fixtures incl. live trials, task DAG U1–U11, judgment routing, playbooks — 09 wins on conflict; shared pins stay owned by 08 |
+| `10-surface-build-plan.md` | **Execution authority for the G-3 build** (gated on G-3's trigger): surface-local pins + verify-at-build ledger, acceptance fixtures incl. live trials, task DAG U1–U11 plus the post-ship extension units U12–U18, judgment routing, playbooks — 09 wins on conflict; shared pins stay owned by 08 |
 | `11-telemetry-and-lifecycle.md` | **RATIFIED 2026-07-15 (v2; user-delegated — Q&A in the revision log)** — the life of a lesson after routing: follow-ups, recurrence tracking (suspect→confirm), certainty-as-measured-events, the three-plane data model (record frontmatter / actor-scoped telemetry JSONL / disposable index+report), and the standing multi-machine posture principles |
 | `12-transcript-miner.md` | **RATIFIED 2026-07-15 (same-day; §8 records the round — resolves O-3)** — autonomous capture: the nightly transcript miner as a third producer ("continuous import"), structural-digest → rubric-driven reader → verb-gated landing with use-scaled caps, run-journal observability contract (feeds the future G-3 miner pane), 24h three-layer watchdog, staged-autonomy ladder for future review autonomy, fire observation folded in, and the §5 embeddings decision of record (declined transcript-side, pinned as the ledger-side scaling path). §9 is the build plan |
 | `13-hosting-and-separation.md` | **RATIFIED 2026-07-16 (user-directed; four calls answered live, §1)** — the product / ledger / host split: independent ledger home at `~/.self-learn` (git, own remote, hosts.yaml registry), per-project buckets (fixes cross-project mis-homing), ledger-first two-phase routing (revises 02 §2 — ledger is truth, canon is compiled output), producers commit their own writes (no watcher on the ledger), cache renamed + home-namespaced, history-preserving migration T-H1…T-H5, product-repo extraction as step 2 |
@@ -797,3 +800,53 @@ human routes it.
   (none blocking): Esc-interrupt uses the 5 s kill backstop on
   subscription auth; a push-failure on an otherwise-successful route is
   not surfaced in-UI; cross-record deep-links open a new window (09 §5).
+
+- **2026-07-17 — U12 chat panes + UI feedback round 1 SHIPPED.** The
+  pane rework (Y-13: server-owned `propose_verb` tool, waiting proposal
+  bar, human arm+confirm — proposer ≠ approver survives verbatim) plus
+  all 8 round-1 feedback items (visual polish + launcher, WASD keymap,
+  Y-11 armed `host add`, bucket pane). Two-gate reviewed throughout;
+  records: `reviews/2026-07-17-*`, `feedback/2026-07-17-ui-feedback-01.md`.
+
+- **2026-07-18 — idle lifecycle (Y-14/U13) + feedback round 2 SHIPPED.**
+  Resident-while-in-use (idle self-exit + launcher readiness wait +
+  Esc-ladder; the live trial caught a uvicorn SIGTERM-re-raise blocker
+  the suites could not), then round 2: scope-filtered destinations,
+  Y-15 non-blocking pane start (instant split + SSE fill), monitor
+  placement. Records: `reviews/2026-07-18-idle-lifecycle-*`,
+  `reviews/2026-07-18-ui-feedback-r2.md`.
+
+- **2026-07-18 — feedback round 3 SHIPPED: U14 (Y-16 + Y-17) + U15
+  (Y-18).** Registration flow — persistent plain-words error (the wipe
+  mechanism empirically pinned pre-fix) + `host add --init` with the
+  consent invariant (git-init only when the arm rendering disclosed it);
+  and record re-home — `rehome` verb, pane proposability, the
+  routing-doctrine ancestor-project clause. Both units spec-gated then
+  code-gated CLEAN with mutation verification. Records:
+  `reviews/2026-07-18-ui-feedback-r3.md`,
+  `feedback/2026-07-18-ui-feedback-03.md`.
+
+- **2026-07-18 — UX round 1 SHIPPED: U16 (Y-19) + U17 (Y-20) + U18
+  (Y-21).** From the Opus UX survey
+  (`research/2026-07-18-ux-enhancement-survey.md`): queue-walk trio
+  (next-record prefetch with global generation-gated invalidation,
+  worker Force-run, first-row auto-focus); loaded-surface budget
+  indicator in the Why region (reference excluded as the cap-free
+  overflow sink — a spec-gate BLOCKER); miner episode briefs (composed
+  before the secret scan — the security pin — compiler-excluded by
+  construction). Combined master: **CLI 970 passed / 3 skipped, UI 722
+  passed; pyright ui clean**. Record: `reviews/2026-07-18-ux-round-1.md`;
+  trials: `fixtures/ui-trials.md`. Open DoD leg: episode briefs verified
+  on the next real miner cycle.
+
+- **2026-07-18 — standing postures recorded** (register rows added same
+  day, `03-decisions.md`): subagent model split (Opus reviews, Sonnet
+  builds, the orchestrator model never spawns as a subagent — user cost
+  ruling); **Go port PARKED** (`research/2026-07-17-go-port-fleet-sketch.md`
+  stays a sketch; never reopened unprompted); **design round 4 PARKED
+  but governing** (`feedback/2026-07-18-ui-feedback-04-design.md` — its
+  four composition principles bind new UI work now, the full pass waits
+  for the user to unpark it); **packaging is the next major phase** —
+  SDK bundle exclusion verified live (PATH-claude fallback works,
+  `research/2026-07-18-sdk-bundle-exclusion.md`), making a slim
+  standalone distribution feasible.

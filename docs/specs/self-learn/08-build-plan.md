@@ -1,4 +1,4 @@
-# 08 — Build plan: durable, orchestrator-agnostic execution of M1 (+ staging for M2/M3)
+# 08 — Build plan: durable, orchestrator-agnostic execution of M1–M3 *(executed — M1 2026-07-13, M2 2026-07-15, M3/v1.1 2026-07-17; §1's pinned contracts remain live authority for the shipped substrate)*
 
 *Written 2026-07-12 after the implementability review
 (`reviews/2026-07-12-implementability-review.md` — withheld from blind
@@ -514,9 +514,11 @@ manually-registered PreToolUse hook through the explicit-approval flow —
 predicate (unguarded pass before routing — recorded in Phase 0 — guard
 denies after). [auto] T17/T18/T19 suites green. Then: v1.1 declared,
 metrics collection begins (04 §Success-metrics), O-3/O-7 revisit
-scheduled, README/memory/hub updated. TUI work (G-3) remains gated on
+scheduled, README/memory/hub updated. Surface work (G-3) remains gated on
 its own trigger and its own blind review — explicitly out of this plan's
-scope.
+scope. *(Dated note 2026-07-18: that gate fired and the surface shipped
+2026-07-17 under its own execution authority, `10-surface-build-plan.md`
+— still out of this plan's scope, no longer future.)*
 
 ## 9. Change control
 
@@ -527,7 +529,10 @@ scope.
   entry here (finding → disposition), so the next agent inherits answers,
   not archaeology.
 - This plan is complete when M1 exits; M2 execution planning extends this
-  file (same structure) rather than starting a new one.
+  file (same structure) rather than starting a new one. *(That is what
+  happened: §7/§8 extended it through M2 and M3, both exited by
+  2026-07-17. The file's remaining live role is §1's pinned contracts —
+  amended as recently as 2026-07-18 — and this appendix.)*
 
 ## Appendix — Build findings (dated; §9 discipline)
 

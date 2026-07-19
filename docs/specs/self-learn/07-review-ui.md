@@ -6,6 +6,13 @@ scaffolding) is built as a skin over substrate the surface will reuse,
 never as the place where mechanics live. Gated at G-3; prerequisite is M2
 (worker proposals are this UI's fuel). O-1 and S-2 point here.*
 
+*(Status note, 2026-07-18: G-3 fired and the surface SHIPPED 2026-07-17,
+then grew seven extension units (U12–U18, Y-13…Y-21). This document
+remains the recorded vision and the home of the §4 contracts — which the
+shipped surface honors and every future surface must — but feature-level
+truth now lives in 09 §11's Y-register and 10's task DAG; per-feature
+amendments are no longer folded back here.)*
+
 *(Platform amendment, 2026-07-12 — the post-correction problem-space
 cycle: this vision was recorded as a **resident TUI**; the platform was
 re-decided the same day to a **localhost server-rendered web app in a
@@ -75,14 +82,23 @@ different producers. Many producers, one adjudication surface.
   `resolution_note` (`02-schema.md` §2) and echoed in the resolving
   commit. Notes are also fuel: the M2 worker's rejected-proposal digest
   reads them, so a note on a denial teaches the analyst *why* that class
-  of proposal loses.
+  of proposal loses. *(Dated note 2026-07-18: the shipped surface's
+  action set grew beyond this list — armed `host add` on unregistered
+  buckets (Y-11/Y-17), agent-proposed `rehome` (Y-18), worker force-run
+  (Y-19) — and the Detail page gained the budget indicator (Y-20) and
+  the collapsed episode brief (Y-21). Authority: 09 §11.)*
 
 ## 3. The embedded adjudication agent (the in-window pane)
 
 “Iterate” opens an agent pane **inside the TUI** — no new Claude Code
 terminal per decision. The resident window is the point: notification →
 click → decide → leave it open as the standing window into the learning
-system. Design rules:
+system. *(Refined 2026-07-18, Y-14 idle lifecycle: "resident" means
+resident-while-in-use — the surface idles out cleanly when unattended
+and the launcher restores it instantly; ambient presence is carried by
+the notifications + instant attend, not by a process that never exits.
+The sentence above stands as intent, not as a process-lifetime claim.)*
+Design rules:
 
 - **Fresh session per adjudication, stable shared prefix.** Each Iterate
   spawns a small agent session seeded from the files (record + proposal
