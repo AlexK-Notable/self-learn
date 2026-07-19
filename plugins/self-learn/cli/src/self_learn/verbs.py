@@ -76,6 +76,7 @@ from .skill_scaffold import (
     skill_md_seed,
     validate_skill_name,
 )
+from . import chezmoi
 from .chezmoi import ChezmoiAbort, ChezmoiError, compile_user_scope, preflight_user_scope
 from .compilers import (
     BEGIN_MARKER,
@@ -120,8 +121,13 @@ from .scan import format_refusal
 from .scan import scan as secret_scan
 
 __all__ = [
+    "CHEZMOI_DRIFT_REFUSAL",
+    "COMMIT_DRIFT_SUBJECT",
     "DEFAULT_USER_CLAUDE_MD",
+    "GITOPS_DIRTY_MARKER",
+    "NOTHING_TO_COMMIT",
     "SURFACE_FILL_CAPPED_DESTINATIONS",
+    "CommitDriftResult",
     "DirtyTargetError",
     "NoProposalError",
     "PushReport",
@@ -131,6 +137,7 @@ __all__ = [
     "TargetSpec",
     "VerbError",
     "VerbResult",
+    "commit_drift",
     "confirm_held",
     "confirm_recurrence",
     "defer",
@@ -193,6 +200,14 @@ class SecretRefusal(VerbError):
     def __init__(self, message: str, hits: list) -> None:
         super().__init__(message)
         self.hits = hits
+
+
+#: U20 gate R1 (F5-5 guided commit-first): the pinned, stable substring of
+#: the gitops-side dirty-target refusal — extracted so the UI's marker
+#: match and the tests import the SAME constant this raise site uses
+#: (never a hand-copied substring; chezmoi.py carries the twin for the
+#: user-scope leg, ``chezmoi.CHEZMOI_DIRTY_MARKER``).
+GITOPS_DIRTY_MARKER = "has unrelated uncommitted changes"
 
 
 class DirtyTargetError(VerbError):
@@ -301,7 +316,7 @@ def _abort_if_dirty(repo: Path, target: Path) -> None:
     the target lives in a host now, so the dirty check must too)."""
     if gitops.paths_dirty(repo, target):
         raise DirtyTargetError(
-            f"compile target {target} has unrelated uncommitted changes — "
+            f"compile target {target} {GITOPS_DIRTY_MARKER} — "
             "commit/stash first, then re-run"
         )
 
@@ -2009,6 +2024,229 @@ def route_direct(
         )
     finally:
         hold.release()  # (g) release iff owned
+
+
+# --------------------------------------------------------- U20 commit-drift
+#
+# F5-5 guided commit-first (ruled 2026-07-19): the dirty-target refusal
+# (DirtyTargetError above / chezmoi.ChezmoiAbort's dirty leg) stays fully
+# intact — no override, no force, no bypass anywhere in this verb. This is
+# the GUIDED path a human takes instead: commit the TARGET repo's OWN
+# pending changes first (their commit, separate from ours, pinned subject
+# below), then the UI retries the original route once. It serves the
+# DIRTY case only — pre-existing chezmoi DRIFT (chezmoi.py:109-111 in the
+# module docstring's step numbering) is refused with the re-add/apply
+# explanation below; a commit cannot fix drift (gate M2).
+
+#: Pinned commit subject (§2.1) — never a push, never the ledger, never
+#: our own compile; the commit is theirs, in their repo, of their changes.
+COMMIT_DRIFT_SUBJECT = "chore: commit drift before self-learn route"
+
+#: gate M2: the drift explanation is deliberately NOT ``chezmoi.py``'s own
+#: ChezmoiAbort text (which the UI must never match a button onto) — a
+#: fresh, plain-words refusal that names the one thing a commit cannot do.
+CHEZMOI_DRIFT_REFUSAL = (
+    "the dotfiles file differs from what chezmoi manages — run chezmoi "
+    "re-add or apply first; a commit can't fix drift"
+)
+
+#: The clean-repo refusal (§2.1: "never an empty commit").
+NOTHING_TO_COMMIT = "nothing to commit — the target repo is clean"
+
+
+@dataclass(frozen=True)
+class CommitDriftResult:
+    """One ``commit_drift`` outcome. ``commit_sha`` is ``None`` only for
+    ``dry_run=True`` — nothing was written."""
+
+    repo: Path
+    files: list[str]
+    commit_sha: str | None
+    commit_message: str
+    dry_run: bool
+
+
+def _commit_drift_targets(spec: TargetSpec) -> list[Path]:
+    """Every file this verb's dirty check and scoped commit cover — the
+    SAME probe set ``_resolve_target``'s own dirty check used (never a
+    second definition of it). Two shapes need more than ``spec.target``:
+
+    - ``new-skill`` dirty-checks BOTH ``target`` (the scaffolded
+      SKILL.md) AND ``marketplace.json`` (verbs.py's new-skill branch,
+      ``for probe in (target, marketplace)``) — the SAME two paths,
+      recomputed the same way (``root / ".claude-plugin" /
+      "marketplace.json"``), so a marketplace-only dirt (the scaffold's
+      appended entry, uncommitted) is coverable, not a dead-end refusal.
+    - ``reference``'s ``TargetSpec.target`` is ``None`` for a default
+      (created-on-demand) reference — the same
+      :func:`compilers.reference_target_path` call ``_resolve_target``
+      itself used recomputes it (never a second implementation of that
+      mapping)."""
+    if spec.destination == "new-skill":
+        if spec.target is None or spec.host_repo is None:
+            raise VerbError("commit-drift: new-skill target unresolved")
+        marketplace = spec.host_repo / ".claude-plugin" / "marketplace.json"
+        return [spec.target, marketplace]
+    if spec.target is not None:
+        return [spec.target]
+    if spec.destination == "reference" and spec.refs_dir is not None:
+        return [reference_target_path(spec.refs_dir, spec.ref_name)]
+    raise VerbError(
+        f"commit-drift: {spec.destination!r} has no compile-target file(s) "
+        "to commit"
+    )
+
+
+def commit_drift(
+    home: Path | str,
+    record_id: str,
+    *,
+    dest: str | None = None,
+    user_claude_md: Path | str | None = None,
+    chezmoi_bin: str = "chezmoi",
+    dry_run: bool = False,
+) -> CommitDriftResult:
+    """``self-learn host commit-drift`` (§2.1): commit the compile
+    target's OWN pending changes — the SAME target-resolution a failed
+    ``route <record_id> [--dest dest]`` used (:func:`_resolve_target`,
+    ``check_dirty=False`` — the E-17 read-only mode; never a second
+    resolver), so this verb refuses any path outside a registered host /
+    the dotfiles source by construction.
+
+    Two legs (scope per the resolved target):
+
+    - **user scope** (``spec.host_repo is None``): the dotfiles repo,
+      commit-target-agnostic — ``chezmoi diff`` distinguishes drift
+      (refuse, :data:`CHEZMOI_DRIFT_REFUSAL`) from dirty (commit), and the
+      dirty check + the eventual ``add -A`` are BOTH repo-wide (matches
+      ``preflight_user_scope``'s own read path — gate m8's mirror image
+      for this leg).
+    - **host-repo scope** (skill-md / claude-md project·skill-root /
+      reference / new-skill): :func:`gitops.paths_dirty` is already
+      target-path scoped, so the commit is too — ``git commit --
+      <target(s)>`` (never ``add -A``, gate m8: a repo-wide add would
+      sweep unrelated pending work into the pinned-subject commit).
+      ``new-skill`` is the one COMPOUND target — ``_resolve_target``'s
+      own new-skill branch dirty-checks BOTH the scaffolded SKILL.md
+      AND ``marketplace.json`` (its ``for probe in (target,
+      marketplace)``), so this verb probes and commits the same two
+      paths, scoped to exactly whichever of them is actually dirty.
+
+    ``--dry-run`` (§2.1 gate R3) runs every precondition and refusal
+    (incl. the drift refusal) and writes nothing — the UI's armed display
+    has no other file-list source (gate m6). ``dry_run=True`` skips the
+    sentinel self-hold too (08 §1 Sentinel-scoping pin: a read that
+    writes nothing has no host autosync window to pause).
+
+    **No secret scan (P2-7) runs here, deliberately.** Every OTHER verb
+    scans because it is AUTHORING content this process composes (a
+    record body, a `--note`, a compiled managed section) before writing
+    it. This verb authors nothing — it commits bytes that ALREADY sit in
+    the human's own working tree, written by their own hand outside
+    self-learn entirely. The scan gate exists to catch OUR generated
+    text; it has no jurisdiction over content we never touched, and
+    running it here would be security theater over someone else's file,
+    not a guard on anything this process produced. **No push, ever**
+    (the commit is theirs, in their repo — publishing it is not this
+    verb's call to make), and **no override/force path anywhere** — the
+    dirty-target refusal this verb serves stays fully intact everywhere
+    else; this is the guided alternative to it, never a bypass of it."""
+    home = Path(home)
+    path = find_record_path(home, record_id, statuses=("pending",))
+    record = Record.from_path(path)
+    bucket_dir = path.parent.parent
+    destination, ref_name = _resolve_destination(bucket_dir, record_id, dest)
+    if destination == "hook":
+        raise VerbError(
+            "commit-drift: hook routes carry no dirty-target gate "
+            "(_resolve_hook_target never dirty-checks) — nothing to commit"
+        )
+    spec = _resolve_target(
+        home,
+        bucket_dir,
+        record.scope,
+        destination,
+        ref_name,
+        user_claude_md=user_claude_md,
+        chezmoi_bin=chezmoi_bin,
+        check_dirty=False,
+    )
+
+    hold = sentinel.hold() if not dry_run else None
+    if hold is not None:
+        sentinel.heartbeat()
+    try:
+        if spec.host_repo is None:
+            # user/chezmoi scope: repo-wide dirty check + repo-wide add,
+            # mirroring preflight_user_scope's own two-step read path.
+            target = (
+                user_claude_md if user_claude_md is not None else DEFAULT_USER_CLAUDE_MD
+            )
+            status = chezmoi.user_scope_dirty_status(target, chezmoi=chezmoi_bin)
+            if status.drift:
+                raise VerbError(CHEZMOI_DRIFT_REFUSAL)
+            if not status.dirty_files:
+                raise VerbError(NOTHING_TO_COMMIT)
+            repo = chezmoi.dotfiles_source_path(chezmoi=chezmoi_bin)
+            if dry_run:
+                return CommitDriftResult(
+                    repo=repo,
+                    files=status.dirty_files,
+                    commit_sha=None,
+                    commit_message=COMMIT_DRIFT_SUBJECT,
+                    dry_run=True,
+                )
+            sha = chezmoi.commit_all_user_scope(COMMIT_DRIFT_SUBJECT, chezmoi=chezmoi_bin)
+            return CommitDriftResult(
+                repo=repo,
+                files=status.dirty_files,
+                commit_sha=sha,
+                commit_message=COMMIT_DRIFT_SUBJECT,
+                dry_run=False,
+            )
+
+        # host-repo scope: target-path-scoped dirty check + scoped
+        # commit, under the host's OWN commit lock (mirrors _host_phase:
+        # the window between reading dirty state and committing it is
+        # exactly what a racing self-learn producer's `pull --rebase
+        # --autostash` could stash away mid-flight — doc 13 §4's
+        # rebase-autostash race). `targets` may be more than one path
+        # (new-skill: SKILL.md + marketplace.json, gate M2-fold-1) — the
+        # commit's pathspec is scoped to exactly the DIRTY subset, never
+        # the full candidate set (a clean sibling stays untouched).
+        targets = _commit_drift_targets(spec)
+        with gitops.commit_lock(spec.host_repo):
+            dirty_targets = [
+                t for t in targets if gitops.paths_dirty(spec.host_repo, t)
+            ]
+            if not dirty_targets:
+                raise VerbError(NOTHING_TO_COMMIT)
+            files = [
+                f
+                for t in dirty_targets
+                for f in gitops.dirty_paths(spec.host_repo, t)
+            ]
+            if dry_run:
+                return CommitDriftResult(
+                    repo=spec.host_repo,
+                    files=files,
+                    commit_sha=None,
+                    commit_message=COMMIT_DRIFT_SUBJECT,
+                    dry_run=True,
+                )
+            sha = gitops.commit(
+                spec.host_repo, COMMIT_DRIFT_SUBJECT, paths=dirty_targets
+            )
+        return CommitDriftResult(
+            repo=spec.host_repo,
+            files=files,
+            commit_sha=sha,
+            commit_message=COMMIT_DRIFT_SUBJECT,
+            dry_run=False,
+        )
+    finally:
+        if hold is not None:
+            hold.release()
 
 
 def reject(

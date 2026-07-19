@@ -96,6 +96,7 @@ __all__ = [
     "commit",
     "commit_lock",
     "commit_lock_path",
+    "dirty_paths",
     "has_remote",
     "known_paths",
     "paths_dirty",
@@ -544,6 +545,14 @@ def paths_dirty(repo: Path, target: Path | str) -> bool:
     untracked) — the dirty-compile-target abort predicate."""
     proc = _git_ok(repo, "status", "--porcelain", "--", str(target))
     return bool(proc.stdout.strip())
+
+
+def dirty_paths(repo: Path, target: Path | str) -> list[str]:
+    """The porcelain-reported paths under ``target`` — the file-list
+    companion to :func:`paths_dirty` (U20: the commit-drift verb's
+    ``--dry-run --json`` mode has no other data source, gate m6)."""
+    proc = _git_ok(repo, "status", "--porcelain", "--", str(target))
+    return [line[3:] for line in proc.stdout.splitlines() if line.strip()]
 
 
 @dataclass(frozen=True)

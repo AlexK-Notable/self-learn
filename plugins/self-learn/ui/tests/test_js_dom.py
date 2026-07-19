@@ -479,6 +479,42 @@ class TestReloadDeferLegC:
         _assert_reloaded(page)
 
 
+class TestCommitDriftArmedSurvivesRefresh:
+    """U20 §2.2 (F5-5 guided commit-first): the commit-drift armed
+    sub-state — a `.action-bar[data-armed="true"]` shape rendered INSIDE
+    the existing error strip (no new region, O-9) — reuses leg (c)
+    verbatim: no new JS, per the round spec's own pin. This drives the
+    EXACT markup ``action_bar.html`` renders once armed (rather than a
+    synthetic stand-in), closing the loop that the template's shape
+    really does carry the attribute app.js's selector reads."""
+
+    def test_armed_flow_survives_the_refresh_push(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        _open(page, server, "/")
+        page.evaluate(
+            "document.body.insertAdjacentHTML('beforeend', "
+            "'<div id=\"t-commit-drift\" class=\"action-bar\" data-armed=\"true\">"
+            "<p class=\"error-strip\" role=\"alert\">route failed</p>"
+            "<form><p class=\"commit-drift-armed\">Commit repo (1 file(s)): "
+            "SKILL.md</p><button data-key-action=\"commit_drift_confirm\">"
+            "Confirm</button></form></div>')"
+        )
+        _arm_reload_sentinel(page)
+
+        server.push_refresh("front")
+        _assert_deferred(page)  # leg (c) holds the armed guided-commit bar
+
+        # Confirm/second-refusal always re-renders the WHOLE #dom_id
+        # element unarmed (never a partial patch) — simulate that swap,
+        # then a settle re-checks the predicate and releases.
+        page.evaluate(
+            'document.getElementById("t-commit-drift").setAttribute("data-armed", "false")'
+        )
+        _dispatch_htmx(page, "htmx:afterSettle", "/record/x/action/commit-drift/confirm")
+        _assert_reloaded(page)
+
+
 class TestReloadDeferLegD:
     """Leg (d), U-C3 (09 §11 Y-8): a [data-contradicts-offer] element
     defers — the post-route contradicts offer renders every edge UNARMED
