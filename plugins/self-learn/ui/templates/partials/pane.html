@@ -37,6 +37,10 @@
     {% endif %}
   </div>
 
+  {% if pane.lifecycle_note %}
+  <p class="pane-lifecycle-note">{{ pane.lifecycle_note }}</p>
+  {% endif %}
+
   {% if pane.error_message %}
   <p class="error-strip" role="alert">
     {% if pane.cap_hit %}cap hit — r to continue in a fresh session{% else %}{{ pane.error_message }}{% endif %}
@@ -62,7 +66,7 @@
   <p class="error-strip" role="alert">{{ pane.validate_stderr }}</p>
   {% endif %}
 
-  {% if pane.state != "ended" %}
+  {% if not pane.view_only and pane.state != "ended" %}
   <form id="pane-input-form"
         hx-post="{{ pane_base | default('/record/' ~ record_id ~ '/pane') }}/send"
         hx-target="#pane-region-wrapper" hx-swap="outerHTML">
@@ -71,11 +75,22 @@
   </form>
   {% endif %}
 
-  {% if pane.state in ("starting", "streaming", "interrupting") %}
+  {% if not pane.view_only and pane.state in ("starting", "streaming", "interrupting") %}
   <button type="button" data-key-action="interrupt"
           hx-post="{{ pane_base | default('/record/' ~ record_id ~ '/pane') }}/interrupt"
           hx-target="#pane-region-wrapper" hx-swap="outerHTML">Interrupt (Esc)</button>
   {% endif %}
+  {% if pane.view_only %}
+  {# U22 (Y-28 §5): View is a read-only reconstruction — nothing to
+     discard, so "Back" is a non-destructive GET back to the idle
+     region's collapsed card, never the discard-shaped Close POST.
+     Reuses the EXISTING close_pane keymap action (keymap.py, "q",
+     context "pane") — no new binding needed. #}
+  <button type="button" data-key-action="close_pane"
+          hx-get="{{ pane_base | default('/record/' ~ record_id ~ '/pane') }}/panel"
+          hx-target="#pane-region-wrapper" hx-swap="outerHTML">Back (q)</button>
+  {% else %}
   <button type="button" data-key-action="close_pane"
           hx-post="{{ pane_base | default('/record/' ~ record_id ~ '/pane') }}/close">Close (q)</button>
+  {% endif %}
 </div>

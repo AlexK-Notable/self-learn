@@ -82,12 +82,17 @@ class Result:
     ``None`` on a clean result. ``turns`` is the engine-reported turn
     count (``ResultMessage.num_turns``) — ``None`` only when the engine
     genuinely reports none; the footer renders it verbatim (09 §4.2's
-    "cost footer … plus turn count", 10 §1 SSE ``turns`` pin)."""
+    "cost footer … plus turn count", 10 §1 SSE ``turns`` pin).
+    ``session_id`` (task U22, Y-28 §1) is the resolved SDK's
+    ``ResultMessage.session_id`` — present on every turn on the real
+    engine, ``None`` on :class:`FakeEngine` turns that don't set it. It
+    is the id ``pane.py`` persists for a later Tier-2 ``resume=``."""
 
     status: str
     cost_usd: float | None
     error: str | None
     turns: int | None = None
+    session_id: str | None = None
 
 
 #: The sum type both engines emit (10 §1). A plain ``Union`` — not a
@@ -114,6 +119,14 @@ class PaneContext:
     ``propose_verb`` handler (:func:`self_learn_ui.proposals.
     make_propose_handler`) — ``None`` disables the proposal tool
     entirely (no MCP server is configured at all in that case).
+
+    U22 addition (Y-28 §1 Tier 2): ``resume_session_id`` — when set, the
+    ``sdk`` engine constructs its ``ClaudeAgentOptions`` with
+    ``resume=resume_session_id`` and the cache-local session-store
+    adapter wired (dropping the ``no-session-persistence`` extra arg),
+    so the SDK materializes the persisted mirror before the subprocess
+    starts. ``None`` (the default) is an ordinary fresh session — every
+    pre-U22 caller is unaffected.
     """
 
     record_id: str
@@ -123,6 +136,7 @@ class PaneContext:
     first_message: str
     session_kind: str = "record"
     propose_handler: "Callable[[dict[str, Any]], Awaitable[str]] | None" = None
+    resume_session_id: str | None = None
 
 
 class PaneEngine(ABC):

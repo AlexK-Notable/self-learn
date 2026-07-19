@@ -16,13 +16,31 @@ refuses to run under any other mode — probes memo footgun A/C) with:
 - ``can_use_tool`` — the charter callback,
 - ``strict_mcp_config=True`` — confirmed-present field on 0.2.121; no MCP
   servers configured, so this is belt on top of "nothing to connect to",
-- session persistence off. **Verify-at-build finding (see the module's
-  bottom docstring and the U5 report): no ``ClaudeAgentOptions`` field
-  named anything like "session persistence" exists on the resolved SDK
-  (0.2.121, pin range ``>=0.2.116,<0.3``) — the X-7 contingency fires:
-  the CLI's own ``--no-session-persistence`` flag (confirmed present via
-  ``claude --help`` on the bundled 2.1.212 CLI) is passed through
-  ``extra_args={"no-session-persistence": None}``.**
+- **session persistence (corrected 2026-07-19, task U22 / Y-28).** The
+  U5-era claim above ("no field named anything like session persistence
+  exists") is STALE: 0.2.121 ships ``resume: str | None``,
+  ``session_id``, and a first-class ``session_store: SessionStore | None``
+  (a duck-typed Protocol — ``append``/``load`` only required). The X-7
+  privacy rationale for ``extra_args={"no-session-persistence": None}``
+  is retired: session materialization already lands in a temporary,
+  SDK-cleaned location, so the flag bought a privacy property the store
+  mechanism now provides natively — and the flag is actively
+  INCOMPATIBLE with resume (``claude --help`` verbatim: "sessions will
+  not be saved to disk and cannot be resumed"). **Live build-trial
+  (2026-07-19, subscription-auth streaming path, real model, both
+  probes against raw ``claude_agent_sdk`` before any wiring landed —
+  recorded in ``docs/specs/self-learn/fixtures/ui-trials.md``): (i)
+  with the flag DROPPED, ``session_store.append`` populated a
+  cache-local mirror file during a live streaming turn — PASS; (ii)
+  ``resume=<captured session_id>`` on a FRESH ``ClaudeSDKClient``
+  restored context — the resumed turn correctly quoted a phrase from the
+  torn-down turn it never saw — PASS.** Both passed, so Tier 2 ships as
+  SDK-resume: ``TIER2_SESSION_STORE_ENABLED = True`` below,
+  :func:`_build_options` drops the flag and wires
+  ``session_store=CacheSdkSessionStore(...)`` on EVERY session (so a
+  session_id is captured for a LATER resume, even on a first, non-resumed
+  Iterate) plus ``resume=ctx.resume_session_id`` when the caller (a Y-28
+  Resume) set one on :class:`~self_learn_ui.engine.base.PaneContext`.
 - ``cwd`` = the item's bucket root,
 - ``model``/``fallback_model``/``max_turns``/``max_budget_usd`` — all
   four confirmed-present fields (09 §4.1's table; re-verified here on
@@ -72,14 +90,23 @@ from claude_agent_sdk import (
 
 from .. import uilog
 from ..proposals import PROPOSAL_SERVER_NAME, PROPOSAL_TOOL_NAME, PROPOSAL_TOOL_QUALIFIED_NAME
+from ..store import CacheSdkSessionStore
 from .base import BlockStart, FileChanged, PaneContext, PaneEngine, PaneEvent, Result, TextDelta, ToolUse
 from .charter import build_can_use_tool
 
-__all__ = ["DEFAULT_FALLBACK_MODEL", "SdkPaneEngine"]
+__all__ = ["DEFAULT_FALLBACK_MODEL", "TIER2_SESSION_STORE_ENABLED", "SdkPaneEngine"]
 
 #: 09 §4.2's pinned default — not env-configurable (only the primary model
 #: has an env var; the fallback is a fixed pin).
 DEFAULT_FALLBACK_MODEL = "claude-haiku-4-5"
+
+#: Y-28 §1's build-trial gate outcome (module docstring above has the
+#: dated finding): both probes PASSED on 2026-07-19 against the resolved
+#: SDK on the subscription-auth streaming path, so Tier 2 ships as
+#: SDK-resume. Flipping this back to ``False`` alone reverts to the
+#: pre-U22 ``no-session-persistence`` posture (Tier 1 still works
+#: unaffected — it never depends on this flag).
+TIER2_SESSION_STORE_ENABLED = True
 
 #: 09 §4.2's interrupt ladder timings.
 #: Tuned 2026-07-18 (09 §4.2, T-E follow-up): the SDK fast-interrupt is
@@ -146,7 +173,9 @@ def _log_abandoned_disconnect(task: "asyncio.Task[None]") -> None:
 class SdkPaneEngine(PaneEngine):
     """The ``sdk`` engine. One instance is one pane session's worth of
     lifetime — a fresh :class:`SdkPaneEngine` per Iterate (09 §4.2: "fresh
-    session per Iterate. No resume across Iterates")."""
+    session per Iterate" — no *implicit* resume across Iterates; explicit
+    Resume is Y-28/U22, opt-in per session via
+    :attr:`~self_learn_ui.engine.base.PaneContext.resume_session_id`)."""
 
     def __init__(
         self,
@@ -159,6 +188,7 @@ class SdkPaneEngine(PaneEngine):
         canon_read_roots_fn: Callable[[], Iterable[Path | str]] | None = None,
         interrupt_grace_secs: float = DEFAULT_INTERRUPT_GRACE_SECS,
         interrupt_kill_secs: float = DEFAULT_INTERRUPT_KILL_SECS,
+        sdk_session_store_root: Path | None = None,
     ) -> None:
         _install_log_forwarding()
         self._model = model
@@ -169,6 +199,13 @@ class SdkPaneEngine(PaneEngine):
         self._canon_read_roots_fn = canon_read_roots_fn
         self._interrupt_grace_secs = interrupt_grace_secs
         self._interrupt_kill_secs = interrupt_kill_secs
+        #: Y-28 Tier 2: root dir for the cache-local SDK session mirror
+        #: (``cache_dir()/panes/sdk-sessions`` in production, wired by
+        #: ``build_pane_manager``). ``None`` disables Tier 2 for this
+        #: engine instance regardless of :data:`TIER2_SESSION_STORE_ENABLED`
+        #: (a safe default for any caller that doesn't pass it — existing
+        #: tests/constructions keep the pre-U22 behavior).
+        self._sdk_session_store_root = sdk_session_store_root
 
         self._client: ClaudeSDKClient | None = None
         self._session_active = False
@@ -339,10 +376,20 @@ class SdkPaneEngine(PaneEngine):
             extra_allowed_tools=extra_allowed,
             zero_write=ctx.session_kind == "bucket",
         )
-        # X-7 fallback (see module docstring): no ClaudeAgentOptions field
-        # matches "session persistence" on the resolved SDK — pass the
-        # CLI's own flag straight through extra_args.
-        extra_args: dict[str, str | None] = {"no-session-persistence": None}
+        # Y-28 §1 (MAJOR-1 corrected, live build-trial PASSED both probes
+        # 2026-07-19 — see module docstring): Tier 2 wires session_store +
+        # resume and DROPS the flag; the flag is INCOMPATIBLE with resume
+        # ("cannot be resumed"). Falls back to the old X-7 posture when
+        # either the module gate is off or this instance has no session
+        # store root wired (a safe default for callers that predate U22).
+        extra_args: dict[str, str | None] = {}
+        session_store = None
+        resume = None
+        if TIER2_SESSION_STORE_ENABLED and self._sdk_session_store_root is not None:
+            session_store = CacheSdkSessionStore(self._sdk_session_store_root)
+            resume = ctx.resume_session_id
+        else:
+            extra_args = {"no-session-persistence": None}
         return ClaudeAgentOptions(
             cwd=str(ctx.bucket_root),
             system_prompt=ctx.system_prompt,
@@ -359,6 +406,8 @@ class SdkPaneEngine(PaneEngine):
             max_budget_usd=self._max_budget_usd,
             cli_path=self._cli_path,
             extra_args=extra_args,
+            session_store=session_store,
+            resume=resume,
         )
 
     async def _drain(self) -> AsyncIterator[PaneEvent]:
@@ -444,9 +493,11 @@ class SdkPaneEngine(PaneEngine):
             else:
                 error = message.subtype
         turns = getattr(message, "num_turns", None)
+        session_id = getattr(message, "session_id", None)
         return Result(
             status=message.subtype,
             cost_usd=message.total_cost_usd,
             error=error,
             turns=turns if isinstance(turns, int) else None,
+            session_id=session_id if isinstance(session_id, str) else None,
         )
