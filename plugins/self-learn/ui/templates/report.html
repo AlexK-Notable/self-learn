@@ -63,7 +63,7 @@
     <thead><tr><th>id</th><th>bucket</th><th>action</th><th>unblocks_on</th><th>routed_at</th></tr></thead>
     <tbody>
       {% for f in report.open_followups %}
-      <tr><td>{{ f.id }}</td><td>{{ f.bucket }}</td><td>{{ f.action }}</td><td>{{ f.unblocks_on }}</td><td>{{ f.routed_at }}</td></tr>
+      <tr><td>{{ f.id }}</td><td>{{ f.bucket }}</td><td>{{ f.action }}</td><td>{{ (f.unblocks_on | humanize_ts) if f.unblocks_on else "" }}</td><td>{{ (f.routed_at | humanize_ts) if f.routed_at else "" }}</td></tr>
       {% endfor %}
     </tbody>
   </table>

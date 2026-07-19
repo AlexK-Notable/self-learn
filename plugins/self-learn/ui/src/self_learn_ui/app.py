@@ -18,7 +18,7 @@ from fastapi.templating import Jinja2Templates
 from jinja2 import Environment, FileSystemLoader
 from starlette.staticfiles import StaticFiles
 
-from . import ledger, pane, rendering
+from . import ledger, models, pane, rendering
 from .env import EnvConfig
 from .idle import ActivityTracker, IdleMonitor
 from .middleware import SecurityMiddleware
@@ -43,6 +43,20 @@ def _build_templates() -> Jinja2Templates:
     env.filters["pygments_diff"] = lambda text: markupsafe.Markup(rendering.render_diff(text))
     env.filters["pygments_yaml"] = lambda text: markupsafe.Markup(rendering.render_yaml(text))
     env.filters["pygments_bash"] = lambda text: markupsafe.Markup(rendering.render_bash(text))
+    env.filters["humanize_ts"] = lambda value: markupsafe.Markup(rendering.humanize_ts(value))
+    # F5-9 (feedback round 5, U19 §1.5): the ONE label map (models.py's
+    # _GROUP_LABELS, already Bucket's group-header source) — Detail's
+    # action bar + Why region gloss through this same filter, never a
+    # second map.
+    env.filters["destination_label"] = models.destination_label
+    # F5-1 (feedback round 5, U19 §1.2 gate M1): detail_degraded.html has
+    # no DetailModel/BucketModel to carry a pre-computed destination_cycle
+    # (a degraded record's frontmatter may not even parse) — the one
+    # other site threading `scope` straight into the cycle-length check
+    # this global exposes. Every other action_bar.html include threads a
+    # model-computed tuple instead (single source: models.py's own
+    # function, never a second one).
+    env.globals["destinations_for_scope"] = models.destinations_for_scope
     return Jinja2Templates(env=env)
 
 

@@ -92,7 +92,7 @@
   <h2>Open follow-ups</h2>
   {% for row in model.followups %}
   <div class="followup-row" data-row>
-    <p>{{ row.action or "(no action recorded)" }}{% if row.unblocks_on %} — unblocks on {{ row.unblocks_on }}{% endif %}</p>
+    <p>{{ row.action or "(no action recorded)" }}{% if row.unblocks_on %} — unblocks on {{ row.unblocks_on | humanize_ts }}{% endif %}</p>
     {% if row.note %}<p class="followup-note">{{ row.note }}</p>{% endif %}
     {% with kind="followup", armed=None, dom_id="action-bar-" ~ row.id, record_id=row.id, event=None, dest=None, target=None %}
       {% include "partials/action_bar.html" %}
@@ -118,12 +118,12 @@
   {# 09 §11 Y-24 one-liner: N sessions read / K landed / M near-misses,
      all drawn from the SAME latest ok/landed-uncommitted run; the
      canary suffix appears only once something has ever been planted. #}
-  <p>miner: {{ model.miner.latest_sessions_scanned or 0 }} sessions read, {{ model.miner.latest_landed or 0 }} landed, {{ model.miner.near_miss_count }} near-miss{{ "es" if model.miner.near_miss_count != 1 else "" }}{% if model.miner.canaries %} &middot; canaries {{ model.miner.canaries.caught }}/{{ model.miner.canaries.planted }} caught{% endif %} — last run: {{ model.miner.last_run or "never" }} — {{ model.miner.stale_label }}</p>
+  <p>miner: {{ model.miner.latest_sessions_scanned or 0 }} sessions read, {{ model.miner.latest_landed or 0 }} landed, {{ model.miner.near_miss_count }} near-miss{{ "es" if model.miner.near_miss_count != 1 else "" }}{% if model.miner.canaries %} &middot; canaries {{ model.miner.canaries.caught }}/{{ model.miner.canaries.planted }} caught{% endif %} — last run: {{ (model.miner.last_run | humanize_ts) if model.miner.last_run else "never" }} — {{ model.miner.stale_label }}</p>
   <details>
     <summary>runs</summary>
     <ul>
       {% for run in model.miner.runs %}
-      <li>{{ run.ts }} — {{ run.status_label }} ({{ run.trigger }}) — scanned {{ run.sessions_scanned }},
+      <li>{{ run.ts | humanize_ts }} — {{ run.status_label }} ({{ run.trigger }}) — scanned {{ run.sessions_scanned }},
         landed {{ run.landed }}, folded {{ run.folded }}, recurrences {{ run.recurrences }}</li>
       {% endfor %}
     </ul>

@@ -1150,6 +1150,224 @@ class TestOCycle:
         assert 'value="reference"' not in r.text
 
 
+class TestOCycleSingletonNoop:
+    """F5-1 (feedback round 5, U19 §1.2 gate M1): a record whose cycle has
+    exactly one element (user scope -> ("claude-md",)) renders the cycle
+    control WITHOUT data-key-action and WITH the action-keyed
+    data-noop-hint pair — the server-signaled no-op app.js reads."""
+
+    def test_user_scope_detail_renders_noop_hint_without_key_action(
+        self, tmp_path: Path
+    ) -> None:
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="user")
+        seed_record(sb.ledger, rec)
+        c, _runner = make_client(sb)
+        r = c.get(f"/record/{rec.id}")
+        assert r.status_code == 200
+        assert 'data-key-action="cycle_destination"' not in r.text
+        assert 'data-noop-hint="only one destination fits this lesson' in r.text
+        assert 'data-noop-action="cycle_destination"' in r.text
+
+    def test_skill_scope_detail_still_renders_normal_key_action(
+        self, tmp_path: Path
+    ) -> None:
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+        c, _runner = make_client(sb)
+        r = c.get(f"/record/{rec.id}")
+        assert r.status_code == 200
+        assert 'data-key-action="cycle_destination"' in r.text
+        assert "data-noop-hint" not in r.text
+
+    def test_user_scope_bucket_row_renders_noop_hint_too(self, tmp_path: Path) -> None:
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="user")
+        seed_record(sb.ledger, rec)
+        c, _runner = make_client(sb)
+        r = c.get("/bucket/user/user")
+        assert r.status_code == 200
+        assert 'data-key-action="cycle_destination"' not in r.text
+        assert 'data-noop-action="cycle_destination"' in r.text
+
+    def test_user_scope_disarm_round_trip_keeps_noop_hint(self, tmp_path: Path) -> None:
+        """The cycle button's no-op-ness must survive an arm/disarm round
+        trip, not just the initial GET. NOTE (blind-gate fold): a
+        user-scope record's cycle is ALSO the singleton this suite is
+        testing for — this test alone cannot tell "scope correctly
+        threaded to the POST handler" apart from "scope silently
+        defaulted to user everywhere" (`_unarmed_context`'s own default
+        is "user", the same value). See
+        TestOCycleScopeThreadingDiscriminator below for the SKILL-scope
+        (non-singleton) direction that actually discriminates."""
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="user")
+        seed_record(sb.ledger, rec)
+        c, _runner = make_client(sb)
+        r = c.post(
+            f"/record/{rec.id}/action/disarm",
+            data={"kind": "detail", "dest": "claude-md"},
+            headers={"HX-Request": "true"},
+        )
+        assert r.status_code == 200
+        assert 'data-key-action="cycle_destination"' not in r.text
+        assert 'data-noop-action="cycle_destination"' in r.text
+
+
+class TestOCycleScopeThreadingDiscriminator:
+    """Blind-gate fold (F5-1, U19 §1.2 gate M1): TestOCycleSingletonNoop's
+    round-trip test used a user-scope record, whose cycle is ALSO the
+    singleton — so it could not tell "scope correctly threaded to this
+    POST handler" apart from "scope silently defaulted to user"
+    (`_unarmed_context`'s own default). A SKILL-scope record's cycle has
+    THREE elements, so the same collapse is directionally detectable: if
+    any call site's `scope=_record_scope(...)` thread were dropped (and
+    the "user" default took over), these renders would wrongly show the
+    noop hint instead of the real, always-reachable cycle button. Every
+    POST route that renders the unarmed action bar is covered here, not
+    just disarm."""
+
+    def test_skill_scope_disarm_rerender_keeps_normal_key_action(
+        self, tmp_path: Path
+    ) -> None:
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+        c, _runner = make_client(sb)
+        r = c.post(
+            f"/record/{rec.id}/action/disarm",
+            data={"kind": "detail", "dest": "skill-md"},
+            headers={"HX-Request": "true"},
+        )
+        assert r.status_code == 200
+        assert 'data-key-action="cycle_destination"' in r.text
+        assert "data-noop-hint" not in r.text
+
+    def test_skill_scope_cycle_destination_rerender_keeps_normal_key_action(
+        self, tmp_path: Path
+    ) -> None:
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+        c, _runner = make_client(sb)
+        r = c.post(
+            f"/record/{rec.id}/action/cycle-destination",
+            data={"dest": "skill-md"},
+            headers={"HX-Request": "true"},
+        )
+        assert r.status_code == 200
+        assert 'data-key-action="cycle_destination"' in r.text
+        assert "data-noop-hint" not in r.text
+
+    def test_skill_scope_confirm_failure_rerender_keeps_normal_key_action(
+        self, tmp_path: Path
+    ) -> None:
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+        runner = FakeRunner()
+        runner.queue_result(RunResult(1, stderr="self-learn: refused"))
+        c, _runner = make_client(sb, runner=runner)
+        r = c.post(
+            f"/record/{rec.id}/action/confirm",
+            data={"verb": "route", "kind": "detail", "dest": "skill-md"},
+            headers={"HX-Request": "true"},
+        )
+        assert r.status_code == 200
+        assert "refused" in r.text  # stderr verbatim, sanity check
+        assert 'data-key-action="cycle_destination"' in r.text
+        assert "data-noop-hint" not in r.text
+
+
+class TestDestinationGlosses:
+    """F5-9 (feedback round 5, U19 §1.5): Detail's action bar + Why region
+    gloss every destination enum through models.py's single-source
+    _GROUP_LABELS — the SAME map Bucket group headers already use. The
+    raw enum stays in the title attribute and in every form/argv field."""
+
+    @pytest.mark.parametrize(
+        "enum_value,label",
+        [
+            ("skill-md", "Skill doc"),
+            ("claude-md", "Project instructions"),
+            ("reference", "Reference file"),
+        ],
+    )
+    def test_action_bar_cycle_button_shows_gloss_enum_in_title(
+        self, tmp_path: Path, enum_value: str, label: str
+    ) -> None:
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+        seed_proposal(sb.ledger, rec.id, destination=enum_value)
+        c, _runner = make_client(sb)
+        r = c.get(f"/record/{rec.id}")
+        assert f'title="{enum_value}">{label}</span> (o)' in r.text
+        # the hidden form field the confirm posts stays the raw enum
+        assert f'name="dest" value="{enum_value}"' in r.text
+
+    @pytest.mark.parametrize(
+        "enum_value,label",
+        [
+            ("skill-md", "Skill doc"),
+            ("claude-md", "Project instructions"),
+            ("reference", "Reference file"),
+            ("new-skill", "New skill"),
+            ("hook", "Guard hook"),
+        ],
+    )
+    def test_why_region_suggested_destination_shows_gloss(
+        self, tmp_path: Path, enum_value: str, label: str
+    ) -> None:
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+        if enum_value == "hook":
+            seed_proposal(
+                sb.ledger,
+                rec.id,
+                destination="hook",
+                script="#!/usr/bin/env bash\necho ok\n",
+                **hook_proposal_fields(),
+            )
+        else:
+            seed_proposal(sb.ledger, rec.id, destination=enum_value)
+        c, _runner = make_client(sb)
+        r = c.get(f"/record/{rec.id}")
+        assert f'Suggested destination: <span title="{enum_value}">{label}</span>' in r.text
+
+    def test_alternates_are_glossed_too(self, tmp_path: Path) -> None:
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+        seed_proposal(
+            sb.ledger, rec.id, destination="skill-md", alternates=["claude-md", "reference"]
+        )
+        c, _runner = make_client(sb)
+        r = c.get(f"/record/{rec.id}")
+        assert 'Alternates: <span title="claude-md">Project instructions</span>, <span title="reference">Reference file</span>' in r.text
+
+    def test_source_assertion_labels_render_from_group_labels(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No second label map (gate: a builder adding one breaks the
+        single-source rule) — monkeypatching models._GROUP_LABELS must
+        change the render."""
+        from self_learn_ui import models as models_module
+
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+        seed_proposal(sb.ledger, rec.id, destination="skill-md")
+        c, _runner = make_client(sb)
+
+        monkeypatch.setitem(models_module._GROUP_LABELS, "skill-md", "Totally different label")
+        r = c.get(f"/record/{rec.id}")
+        assert "Totally different label" in r.text
+        assert "Skill doc" not in r.text
+
+
 class TestDestinationCorrection:
     """Feedback round 2 item 3 — the live 2026-07-17 stranding: a project
     record whose analyst proposal said skill-md armed skill-md, and the
@@ -1604,6 +1822,80 @@ class TestReportPage:
         assert "open_followups" in r.text
 
 
+class TestHumanizeTsRenderSites:
+    """F5-6 (feedback round 5, U19 §1.4): one render test per site
+    asserting no bare `T…Z` ISO pattern remains in the VISIBLE text —
+    the `title` attribute, which intentionally carries the full instant,
+    is exempt (stripped before the scan)."""
+
+    _ISO_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}")
+
+    @classmethod
+    def _visible_text(cls, html: str) -> str:
+        return re.sub(r'title="[^"]*"', 'title=""', html)
+
+    def test_detail_finding_line_has_no_bare_iso(self, tmp_path: Path) -> None:
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s", created_at="2026-01-01T00:00:00Z")
+        seed_record(sb.ledger, rec)
+        c, _runner = make_client(sb)
+        r = c.get(f"/record/{rec.id}")
+        assert r.status_code == 200
+        assert not self._ISO_RE.search(self._visible_text(r.text))
+        assert 'title="2026-01-01T00:00:00Z"' in r.text  # still present, in title
+
+    def test_front_miner_block_has_no_bare_iso(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        sb = _sandboxed(tmp_path, monkeypatch)
+        _seed_miner_run()
+        c, _runner = make_client(sb)
+        r = c.get("/")
+        assert r.status_code == 200
+        assert "2026-07-19" in r.text  # the run landed, sanity check
+        assert not self._ISO_RE.search(self._visible_text(r.text))
+
+    def test_report_open_followups_has_no_bare_iso(self, tmp_path: Path) -> None:
+        sb = make_env(tmp_path)
+        c, _runner = make_client(sb)
+        app = c.app
+        template = app.state.templates.env.get_template("report.html")
+        html = template.render(
+            request=None,
+            keymap_json=keymap_json(),
+            keymap_entries=keymap_as_dicts(),
+            report={
+                "routed_ever": 0,
+                "superseded_after_routing": 0,
+                "supersede_rate": 0,
+                "graduated": 0,
+                "rejected": 0,
+                "routed_live": [],
+                "recurrence_suspects": [],
+                "open_followups": [
+                    {
+                        "id": "lrn-x0000001",
+                        "bucket": "s",
+                        "action": "check back on this",
+                        "unblocks_on": "2026-08-01T00:00:00Z",
+                        "routed_at": "2026-07-01T00:00:00Z",
+                    }
+                ],
+                "mined": {},
+                "telemetry": {},
+            },
+            report_error=None,
+            status_error=None,
+            metrics=None,
+            supply_mix=None,
+        )
+        # the raw-JSON dump at the bottom is EXEMPT (09 §11 Y-12: verbatim
+        # by design) — scope the scan to the followups table only.
+        table = html.split('aria-label="open follow-ups"', 1)[1].split("</table>", 1)[0]
+        assert not self._ISO_RE.search(self._visible_text(table))
+        assert "2026-08-01" in table  # still present, humanized
+
+
 # ---------------------------------------------------------------- XSS/escape
 
 
@@ -1640,6 +1932,61 @@ class TestRenderPathEscaping:
         c, _runner = make_client(sb)
         r = c.get(f"/record/{rec.id}")
         assert 'style="' not in r.text
+
+
+# --------------------------------------------- F5-4: proposal-yaml collapse
+
+
+class TestProposalYamlCollapse:
+    """F5-4 (feedback round 5, U19 §1.3): the Change region's raw-YAML
+    fallback (no `.diff` sibling — proposal-yaml duplicates in raw form
+    what the card sections above already render humanly) now renders
+    default-collapsed; diff/hook stay always-open; the preview-honesty
+    advisory line stays OUTSIDE the disclosure either way."""
+
+    def test_proposal_yaml_renders_collapsed_with_advisory_outside(
+        self, tmp_path: Path
+    ) -> None:
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+        seed_proposal(sb.ledger, rec.id, destination="skill-md")  # no .diff sibling
+        c, _runner = make_client(sb)
+        r = c.get(f"/record/{rec.id}")
+        assert r.status_code == 200
+        assert "<details" in r.text
+        assert "The full proposal, as stored (raw)" in r.text
+        # yaml-preview lives INSIDE the disclosure...
+        details_section = r.text.split("<details", 1)[1].split("</details>", 1)[0]
+        assert "yaml-preview" in details_section
+        # ...the advisory caption lives OUTSIDE it.
+        after_details = r.text.split("</details>", 1)[1]
+        assert "compilers regenerate from the record at apply time" in after_details
+
+    def test_diff_kind_still_renders_open_no_details(self, tmp_path: Path) -> None:
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+        seed_proposal(sb.ledger, rec.id, destination="skill-md")
+        diff_path = (sb.ledger / "skills" / "s") / "proposals" / f"{rec.id}.diff"
+        diff_path.write_text("--- a\n+++ b\n-old line\n+new line\n", encoding="utf-8")
+        c, _runner = make_client(sb)
+        r = c.get(f"/record/{rec.id}")
+        assert "diff-preview" in r.text
+        assert "<details" not in r.text  # regression: no new disclosure anywhere
+
+    def test_no_new_top_level_region(self, tmp_path: Path) -> None:
+        """The collapse composes INSIDE the existing Change section — no
+        new aria-label region."""
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+        seed_proposal(sb.ledger, rec.id, destination="skill-md")
+        c, _runner = make_client(sb)
+        r = c.get(f"/record/{rec.id}")
+        import re as _re4
+
+        assert len(_re4.findall(r'aria-label="change"', r.text)) == 1
 
 
 # ------------------------------------------------------ Y-19 item 2: worker

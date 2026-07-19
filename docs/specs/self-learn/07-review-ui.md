@@ -86,7 +86,11 @@ different producers. Many producers, one adjudication surface.
   action set grew beyond this list — armed `host add` on unregistered
   buckets (Y-11/Y-17), agent-proposed `rehome` (Y-18), worker force-run
   (Y-19) — and the Detail page gained the budget indicator (Y-20) and
-  the collapsed episode brief (Y-21). Authority: 09 §11.)*
+  the collapsed episode brief (Y-21). Authority: 09 §11.)* *(Dated note
+  2026-07-19 — F5-3, feedback round 5, U19 §1.1, keymap-contract: the
+  `?` help overlay is a layer, not a modal, but any key closes it and
+  does nothing else — no action key here is ever reachable while it is
+  open. Authority: 09 §1/§2.3.)*
 
 ## 3. The embedded adjudication agent (the in-window pane)
 

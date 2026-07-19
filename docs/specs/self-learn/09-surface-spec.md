@@ -95,8 +95,14 @@ ignoring costs nothing. This section pins the mechanics.
   Ctrl+W tab-close hazard is designed out by never training the hand
   toward chords. Install notes cover the Vimium-class-extension
   localhost exclusion (10 §1). A persistent footer shows the live
-  keymap; `?` overlays the full reference (a layer, not a modal — any
-  action key acts immediately from it). *(Amended 2026-07-18 — U16/§11
+  keymap; `?` overlays the full reference. *(Amended 2026-07-19 — F5-3,
+  feedback round 5, U19 §1.1: this line previously read "a layer, not a
+  modal — any action key acts immediately from it", which the shipped
+  overlay never honored — Escape fell through to the interrupt/up
+  binding and silently cancelled a running Iterate. Corrected doctrine:
+  **a layer, not a modal — any key dismisses it and does nothing else;
+  keys act on the page only while the overlay is closed.** `?` keeps its
+  toggle semantics as a special case of this rule.)* *(Amended 2026-07-18 — U16/§11
   Y-19 item 3, survey P1a: on EVERY list screen, the first actionable
   row carries the `.selected` cursor from load — not only after the
   first `w`/`s` press — and the content region is guaranteed
@@ -354,7 +360,9 @@ Three stacked regions (07 §2's finding / change / why), one scroll:
    `surface_fill[<destination>].over_cap` is already true, that flow
    owns the "route still applies but flags the section" story.
 
-Action bar at the bottom (armed states per §1). `o` (override
+Action bar at the bottom (armed states per §1 — keymap contract note,
+2026-07-19, F5-3: while the `?` help overlay is open, NO key reaches
+this bar at all — any key dismisses the overlay first, §1). `o` (override
 destination) cycles the destination the armed `route` will pass via
 `--dest` — **among the parameter-free values only** (`skill-md`,
 `claude-md`, `reference`). `new-skill:<name>` and `hook` need

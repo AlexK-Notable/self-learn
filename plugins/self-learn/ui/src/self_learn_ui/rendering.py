@@ -19,6 +19,10 @@ computation).
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+from typing import Any
+
+import markupsafe
 from markdown_it import MarkdownIt
 from pygments import highlight as _pygments_highlight
 from pygments.formatters import HtmlFormatter
@@ -27,6 +31,7 @@ from pygments.lexers import BashLexer, DiffLexer, YamlLexer
 __all__ = [
     "PYGMENTS_CSS_CLASS",
     "PREVIEW_HONESTY_CAPTION",
+    "humanize_ts",
     "pygments_stylesheet",
     "render_bash",
     "render_diff",
@@ -131,3 +136,83 @@ def pygments_stylesheet() -> str:
         f"{_theme_defs(_PYGMENTS_LIGHT_STYLE)}\n\n"
         f"@media (prefers-color-scheme: dark) {{\n{dark}\n}}\n"
     )
+
+
+# ------------------------------------------------------------ humanize_ts
+
+#: F5-6 (feedback round 5, U19 §1.4): the pinned bucket boundaries, in
+#: seconds/days — every raw ISO-8601 timestamp a human reads (Detail's
+#: finding line, Front's miner block, follow-ups, report.html) renders
+#: through this ONE filter. Server-rendered only: `now` defaults to the
+#: server's own clock at render time, never a client-side computation —
+#: a stale relative label simply refreshes with the next page load.
+_JUST_NOW_SECONDS = 90
+_SECONDS_PER_MINUTE = 60
+_SECONDS_PER_HOUR = 3600
+_SECONDS_PER_DAY = 86400
+_MONTH_CUTOFF_DAYS = 14
+
+
+def humanize_ts(value: Any, *, now: datetime | None = None) -> str:
+    """Relative plain words for a raw ISO-8601 string, with the exact
+    instant preserved in a ``title`` attribute (hover reveals it) —
+    registered as the Jinja filter of the same name (wrapped in
+    ``markupsafe.Markup`` at registration, :mod:`self_learn_ui.app`, the
+    same pattern as every other HTML-emitting filter here). Pinned
+    buckets: "just now" (<90s), "N minutes ago", "N hours ago",
+    "yesterday", "N days ago", "Mon DD" (>=14 days, current year),
+    "Mon DD, YYYY" (older). A FUTURE instant (``unblocks_on`` is
+    routinely one) skips the past-tense "ago"/"yesterday" wording
+    entirely — direction-neutral "Mon DD"/"Mon DD, YYYY" either way, so
+    it never claims a wrong direction. Anything that isn't a non-empty
+    string, or doesn't parse as ISO-8601, renders the ORIGINAL value
+    verbatim — never a crash, never a blank cell (the garbage-passthrough
+    pin)."""
+    if not value or not isinstance(value, str):
+        return ""
+    try:
+        parsed = _parse_iso(value)
+    except (ValueError, TypeError):
+        return _wrap(value, value)
+    reference = now if now is not None else datetime.now(timezone.utc)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    seconds = (reference - parsed).total_seconds()
+    if seconds < 0:
+        return _wrap(_absolute_date_words(parsed, reference), value)
+    return _wrap(_bucket_words(parsed, reference, seconds), value)
+
+
+def _parse_iso(value: str) -> datetime:
+    # A bare "Z" UTC suffix (every timestamp this codebase writes) isn't
+    # accepted by fromisoformat on the Python versions this project still
+    # supports — normalize it to the offset form, the same tolerant read
+    # every other ISO parse in this codebase does.
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def _bucket_words(parsed: datetime, reference: datetime, seconds: float) -> str:
+    if seconds < _JUST_NOW_SECONDS:
+        return "just now"
+    if seconds < _SECONDS_PER_HOUR:
+        minutes = int(seconds // _SECONDS_PER_MINUTE)
+        return f"{minutes} minute{'s' if minutes != 1 else ''} ago"
+    if seconds < _SECONDS_PER_DAY:
+        hours = int(seconds // _SECONDS_PER_HOUR)
+        return f"{hours} hour{'s' if hours != 1 else ''} ago"
+    days = int(seconds // _SECONDS_PER_DAY)
+    if days == 1:
+        return "yesterday"
+    if days < _MONTH_CUTOFF_DAYS:
+        return f"{days} days ago"
+    return _absolute_date_words(parsed, reference)
+
+
+def _absolute_date_words(parsed: datetime, reference: datetime) -> str:
+    if parsed.year == reference.year:
+        return parsed.strftime("%b %d")
+    return parsed.strftime("%b %d, %Y")
+
+
+def _wrap(words: str, iso: str) -> str:
+    return f'<span title="{markupsafe.escape(iso)}">{markupsafe.escape(words)}</span>'
