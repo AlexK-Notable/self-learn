@@ -327,8 +327,14 @@ class TestCliDispatch:
         ).stdout.strip() != ""
 
     def test_commit_drift_drift_exit_64(
-        self, env, chezmoi_shim, tmp_path, monkeypatch
+        self, env, chezmoi_shim, tmp_path, monkeypatch, capsys
     ):
+        """gate M2, strengthened: exit 64 alone is also what a CLEAN repo
+        produces — the load-bearing fact is that the DRIFT explanation
+        (never a plain "nothing to commit") is what's on stderr, so a
+        mutant that let drift fall through to a nothing-to-commit refusal
+        (i.e. committed anyway, or refused for the wrong reason) is
+        caught. Asserts the real constant, never a hand-copied string."""
         target = tmp_path / "dot-claude" / "CLAUDE.md"
         target.parent.mkdir()
         target.write_text("# user conduct\n", encoding="utf-8")
@@ -343,3 +349,128 @@ class TestCliDispatch:
         monkeypatch.setattr(verbs_mod, "DEFAULT_USER_CLAUDE_MD", target)
         rc = cli.main(["host", "commit-drift", RID])
         assert rc == 64
+        assert verbs.CHEZMOI_DRIFT_REFUSAL in capsys.readouterr().err
+        # never committed — chezmoi git add/commit must not have fired
+        calls = chezmoi_shim()
+        assert not any(c.startswith("git -- add") for c in calls)
+        assert not any(c.startswith("git -- commit") for c in calls)
+
+
+# ------------------------------------------------ new-skill compound target
+
+
+MARKETPLACE_SEED = {
+    "name": "sandbox-skills",
+    "plugins": [
+        {
+            "name": "s-plugin",
+            "source": "./plugins/s-plugin",
+            "description": "seeded plugin",
+            "version": "1.0.0",
+        }
+    ],
+}
+
+SKILL_NAME = "mouse-firmware"
+SEED_RID = "lrn-0000feed"
+
+
+class TestNewSkillCompoundTarget:
+    """Blind-gate fold 1: ``_resolve_target``'s new-skill branch
+    dirty-checks BOTH the scaffolded SKILL.md AND ``marketplace.json``
+    (``for probe in (target, marketplace)``, verbs.py) — so a route can
+    be refused on marketplace dirt alone. ``commit_drift`` must cover the
+    SAME compound target, never just the SKILL.md half (else
+    marketplace-only dirt dead-ends as a false NOTHING_TO_COMMIT)."""
+
+    def _scaffold(self, env) -> tuple:
+        marketplace = env.host / ".claude-plugin" / "marketplace.json"
+        marketplace.parent.mkdir(exist_ok=True)
+        marketplace.write_text(
+            json.dumps(MARKETPLACE_SEED, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        git(env.host, "add", "-A")
+        git(env.host, "commit", "-q", "-m", "marketplace seed")
+        seed_record = make_behavior(scope="skill:s", record_id=SEED_RID)
+        create_record(env.home, seed_record)
+        verbs.route(env.home, SEED_RID, dest=f"new-skill:{SKILL_NAME}")
+        skill_md = (
+            env.host / "plugins" / SKILL_NAME / "skills" / SKILL_NAME / "SKILL.md"
+        )
+        return marketplace, skill_md
+
+    def _seed_target_record(self, env, rid: str = RID) -> None:
+        record = make_behavior(
+            scope="skill:s", record_id=rid, trigger="About to re-flash firmware."
+        )
+        create_record(env.home, record)
+
+    def test_marketplace_only_dirt_listed_dry_run_committed_retry_proceeds(
+        self, env
+    ) -> None:
+        marketplace, skill_md = self._scaffold(env)
+        self._seed_target_record(env)
+        marketplace.write_text(
+            marketplace.read_text(encoding="utf-8").replace("1.0.0", "1.0.1"),
+            encoding="utf-8",
+        )
+
+        dry = verbs.commit_drift(
+            env.home, RID, dest=f"new-skill:{SKILL_NAME}", dry_run=True
+        )
+        assert any("marketplace.json" in f for f in dry.files)
+        assert not any("SKILL.md" in f for f in dry.files)
+        assert dry.commit_sha is None
+
+        result = verbs.commit_drift(env.home, RID, dest=f"new-skill:{SKILL_NAME}")
+        assert result.commit_sha is not None
+        committed = git(
+            env.host, "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"
+        ).stdout.split()
+        assert ".claude-plugin/marketplace.json" in committed
+        assert f"plugins/{SKILL_NAME}/skills/{SKILL_NAME}/SKILL.md" not in committed
+
+        # the dirty-target refusal is gone — the retry proceeds.
+        verbs.route(env.home, RID, dest=f"new-skill:{SKILL_NAME}")
+        assert f"*({RID})*" in skill_md.read_text(encoding="utf-8")
+
+    def test_both_dirty_both_committed(self, env) -> None:
+        marketplace, skill_md = self._scaffold(env)
+        self._seed_target_record(env)
+        marketplace.write_text(
+            marketplace.read_text(encoding="utf-8").replace("1.0.0", "2.0.0"),
+            encoding="utf-8",
+        )
+        skill_md.write_text(
+            skill_md.read_text(encoding="utf-8") + "\nstray edit\n", encoding="utf-8"
+        )
+
+        result = verbs.commit_drift(env.home, RID, dest=f"new-skill:{SKILL_NAME}")
+
+        committed = git(
+            env.host, "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"
+        ).stdout.split()
+        assert ".claude-plugin/marketplace.json" in committed
+        assert f"plugins/{SKILL_NAME}/skills/{SKILL_NAME}/SKILL.md" in committed
+        assert any("marketplace.json" in f for f in result.files)
+        assert any("SKILL.md" in f for f in result.files)
+
+    def test_unrelated_file_still_excluded_regression(self, env) -> None:
+        marketplace, skill_md = self._scaffold(env)
+        self._seed_target_record(env)
+        marketplace.write_text(
+            marketplace.read_text(encoding="utf-8").replace("1.0.0", "3.0.0"),
+            encoding="utf-8",
+        )
+        unrelated = env.host / "README.md"
+        unrelated.write_text("unrelated pending work\n", encoding="utf-8")
+
+        verbs.commit_drift(env.home, RID, dest=f"new-skill:{SKILL_NAME}")
+
+        committed = git(
+            env.host, "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"
+        ).stdout.split()
+        assert "README.md" not in committed
+        status = git(env.host, "status", "--porcelain").stdout
+        assert "README.md" in status  # still dirty, untouched

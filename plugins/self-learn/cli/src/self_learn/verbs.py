@@ -2066,20 +2066,34 @@ class CommitDriftResult:
     dry_run: bool
 
 
-def _commit_drift_target(spec: TargetSpec) -> Path:
-    """The single file this verb's dirty check and scoped add cover.
-    ``reference``'s ``TargetSpec.target`` is ``None`` for a default
-    (created-on-demand) reference — the same
-    :func:`compilers.reference_target_path` call
-    :func:`_resolve_target` itself used recomputes it (never a second
-    implementation of that mapping)."""
+def _commit_drift_targets(spec: TargetSpec) -> list[Path]:
+    """Every file this verb's dirty check and scoped commit cover — the
+    SAME probe set ``_resolve_target``'s own dirty check used (never a
+    second definition of it). Two shapes need more than ``spec.target``:
+
+    - ``new-skill`` dirty-checks BOTH ``target`` (the scaffolded
+      SKILL.md) AND ``marketplace.json`` (verbs.py's new-skill branch,
+      ``for probe in (target, marketplace)``) — the SAME two paths,
+      recomputed the same way (``root / ".claude-plugin" /
+      "marketplace.json"``), so a marketplace-only dirt (the scaffold's
+      appended entry, uncommitted) is coverable, not a dead-end refusal.
+    - ``reference``'s ``TargetSpec.target`` is ``None`` for a default
+      (created-on-demand) reference — the same
+      :func:`compilers.reference_target_path` call ``_resolve_target``
+      itself used recomputes it (never a second implementation of that
+      mapping)."""
+    if spec.destination == "new-skill":
+        if spec.target is None or spec.host_repo is None:
+            raise VerbError("commit-drift: new-skill target unresolved")
+        marketplace = spec.host_repo / ".claude-plugin" / "marketplace.json"
+        return [spec.target, marketplace]
     if spec.target is not None:
-        return spec.target
+        return [spec.target]
     if spec.destination == "reference" and spec.refs_dir is not None:
-        return reference_target_path(spec.refs_dir, spec.ref_name)
+        return [reference_target_path(spec.refs_dir, spec.ref_name)]
     raise VerbError(
-        f"commit-drift: {spec.destination!r} has no single compile-target "
-        "file to commit"
+        f"commit-drift: {spec.destination!r} has no compile-target file(s) "
+        "to commit"
     )
 
 
@@ -2108,10 +2122,15 @@ def commit_drift(
       ``preflight_user_scope``'s own read path — gate m8's mirror image
       for this leg).
     - **host-repo scope** (skill-md / claude-md project·skill-root /
-      reference): :func:`gitops.paths_dirty` is already target-path
-      scoped, so the add is too — ``git commit -- <target>`` (never
-      ``add -A``, gate m8: a repo-wide add would sweep unrelated pending
-      work into the pinned-subject commit).
+      reference / new-skill): :func:`gitops.paths_dirty` is already
+      target-path scoped, so the commit is too — ``git commit --
+      <target(s)>`` (never ``add -A``, gate m8: a repo-wide add would
+      sweep unrelated pending work into the pinned-subject commit).
+      ``new-skill`` is the one COMPOUND target — ``_resolve_target``'s
+      own new-skill branch dirty-checks BOTH the scaffolded SKILL.md
+      AND ``marketplace.json`` (its ``for probe in (target,
+      marketplace)``), so this verb probes and commits the same two
+      paths, scoped to exactly whichever of them is actually dirty.
 
     ``--dry-run`` (§2.1 gate R3) runs every precondition and refusal
     (incl. the drift refusal) and writes nothing — the UI's armed display
@@ -2191,12 +2210,22 @@ def commit_drift(
         # the window between reading dirty state and committing it is
         # exactly what a racing self-learn producer's `pull --rebase
         # --autostash` could stash away mid-flight — doc 13 §4's
-        # rebase-autostash race).
-        target = _commit_drift_target(spec)
+        # rebase-autostash race). `targets` may be more than one path
+        # (new-skill: SKILL.md + marketplace.json, gate M2-fold-1) — the
+        # commit's pathspec is scoped to exactly the DIRTY subset, never
+        # the full candidate set (a clean sibling stays untouched).
+        targets = _commit_drift_targets(spec)
         with gitops.commit_lock(spec.host_repo):
-            if not gitops.paths_dirty(spec.host_repo, target):
+            dirty_targets = [
+                t for t in targets if gitops.paths_dirty(spec.host_repo, t)
+            ]
+            if not dirty_targets:
                 raise VerbError(NOTHING_TO_COMMIT)
-            files = gitops.dirty_paths(spec.host_repo, target)
+            files = [
+                f
+                for t in dirty_targets
+                for f in gitops.dirty_paths(spec.host_repo, t)
+            ]
             if dry_run:
                 return CommitDriftResult(
                     repo=spec.host_repo,
@@ -2205,7 +2234,9 @@ def commit_drift(
                     commit_message=COMMIT_DRIFT_SUBJECT,
                     dry_run=True,
                 )
-            sha = gitops.commit(spec.host_repo, COMMIT_DRIFT_SUBJECT, paths=[target])
+            sha = gitops.commit(
+                spec.host_repo, COMMIT_DRIFT_SUBJECT, paths=dirty_targets
+            )
         return CommitDriftResult(
             repo=spec.host_repo,
             files=files,
