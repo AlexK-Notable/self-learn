@@ -35,6 +35,14 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
     "httpx>=0.27",
+    # FW-17 JS DOM harness (tests/test_js_dom.py): a real browser is the
+    # only engine that runs app.js + htmx + EventSource. Playwright's
+    # python package is a pip/uv dependency (its driver is bundled — this
+    # adds NO npm/node toolchain the developer manages); the matched
+    # Chromium build is fetched once via `uv run playwright install
+    # chromium`. The suite is marked `js` and auto-skips when the browser
+    # is absent, so the default `pytest` run never depends on it.
+    "playwright>=1.47",
 ]
 
 [tool.uv.sources]
@@ -48,3 +56,6 @@ self-learn-cli = { path = "../cli", editable = true }
 testpaths = ["tests"]
 addopts = "-ra"
 asyncio_mode = "auto"
+markers = [
+    "js: browser-driven DOM tests for static/app.js (FW-17). Slower than the unit suite; select with `-m js`, exclude with `-m 'not js'`. Auto-skipped when Playwright's Chromium is not installed.",
+]
