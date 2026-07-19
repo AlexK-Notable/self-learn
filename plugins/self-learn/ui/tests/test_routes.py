@@ -1193,8 +1193,14 @@ class TestOCycleSingletonNoop:
 
     def test_user_scope_disarm_round_trip_keeps_noop_hint(self, tmp_path: Path) -> None:
         """The cycle button's no-op-ness must survive an arm/disarm round
-        trip, not just the initial GET (gate M1's Python-side coverage of
-        every _unarmed_context call site)."""
+        trip, not just the initial GET. NOTE (blind-gate fold): a
+        user-scope record's cycle is ALSO the singleton this suite is
+        testing for — this test alone cannot tell "scope correctly
+        threaded to the POST handler" apart from "scope silently
+        defaulted to user everywhere" (`_unarmed_context`'s own default
+        is "user", the same value). See
+        TestOCycleScopeThreadingDiscriminator below for the SKILL-scope
+        (non-singleton) direction that actually discriminates."""
         sb = make_env(tmp_path)
         rec = make_behavior(scope="user")
         seed_record(sb.ledger, rec)
@@ -1207,6 +1213,71 @@ class TestOCycleSingletonNoop:
         assert r.status_code == 200
         assert 'data-key-action="cycle_destination"' not in r.text
         assert 'data-noop-action="cycle_destination"' in r.text
+
+
+class TestOCycleScopeThreadingDiscriminator:
+    """Blind-gate fold (F5-1, U19 §1.2 gate M1): TestOCycleSingletonNoop's
+    round-trip test used a user-scope record, whose cycle is ALSO the
+    singleton — so it could not tell "scope correctly threaded to this
+    POST handler" apart from "scope silently defaulted to user"
+    (`_unarmed_context`'s own default). A SKILL-scope record's cycle has
+    THREE elements, so the same collapse is directionally detectable: if
+    any call site's `scope=_record_scope(...)` thread were dropped (and
+    the "user" default took over), these renders would wrongly show the
+    noop hint instead of the real, always-reachable cycle button. Every
+    POST route that renders the unarmed action bar is covered here, not
+    just disarm."""
+
+    def test_skill_scope_disarm_rerender_keeps_normal_key_action(
+        self, tmp_path: Path
+    ) -> None:
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+        c, _runner = make_client(sb)
+        r = c.post(
+            f"/record/{rec.id}/action/disarm",
+            data={"kind": "detail", "dest": "skill-md"},
+            headers={"HX-Request": "true"},
+        )
+        assert r.status_code == 200
+        assert 'data-key-action="cycle_destination"' in r.text
+        assert "data-noop-hint" not in r.text
+
+    def test_skill_scope_cycle_destination_rerender_keeps_normal_key_action(
+        self, tmp_path: Path
+    ) -> None:
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+        c, _runner = make_client(sb)
+        r = c.post(
+            f"/record/{rec.id}/action/cycle-destination",
+            data={"dest": "skill-md"},
+            headers={"HX-Request": "true"},
+        )
+        assert r.status_code == 200
+        assert 'data-key-action="cycle_destination"' in r.text
+        assert "data-noop-hint" not in r.text
+
+    def test_skill_scope_confirm_failure_rerender_keeps_normal_key_action(
+        self, tmp_path: Path
+    ) -> None:
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+        runner = FakeRunner()
+        runner.queue_result(RunResult(1, stderr="self-learn: refused"))
+        c, _runner = make_client(sb, runner=runner)
+        r = c.post(
+            f"/record/{rec.id}/action/confirm",
+            data={"verb": "route", "kind": "detail", "dest": "skill-md"},
+            headers={"HX-Request": "true"},
+        )
+        assert r.status_code == 200
+        assert "refused" in r.text  # stderr verbatim, sanity check
+        assert 'data-key-action="cycle_destination"' in r.text
+        assert "data-noop-hint" not in r.text
 
 
 class TestDestinationGlosses:
