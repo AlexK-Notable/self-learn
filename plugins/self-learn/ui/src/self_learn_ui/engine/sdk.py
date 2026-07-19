@@ -386,7 +386,20 @@ class SdkPaneEngine(PaneEngine):
         session_store = None
         resume = None
         if TIER2_SESSION_STORE_ENABLED and self._sdk_session_store_root is not None:
-            session_store = CacheSdkSessionStore(self._sdk_session_store_root)
+            # pyright flags this as abstract-class instantiation because
+            # CacheSdkSessionStore deliberately leaves SessionStore's four
+            # OPTIONAL methods undefined (store.py's class docstring: this
+            # is load-bearing at RUNTIME — the SDK's own
+            # `_store_implements()` probe treats an inherited-unchanged
+            # method as "not implemented" by object identity, which is
+            # exactly what materialize_resume_session() needs to skip
+            # subkey enumeration on a store with no subagent transcripts).
+            # Python itself never treats a Protocol's own concrete
+            # (non-abstractmethod) bodies as abstract — this is a pyright
+            # Protocol-subclass heuristic, not a real runtime constraint.
+            session_store = CacheSdkSessionStore(  # pyright: ignore[reportAbstractUsage]
+                self._sdk_session_store_root
+            )
             resume = ctx.resume_session_id
         else:
             extra_args = {"no-session-persistence": None}

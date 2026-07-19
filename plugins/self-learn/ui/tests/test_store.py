@@ -353,3 +353,108 @@ async def test_sdk_session_store_project_key_sanitized_to_safe_path(tmp_path: Pa
     # Nothing escaped the root.
     for p in (tmp_path / "sdk-sessions").rglob("*.jsonl"):
         assert (tmp_path / "sdk-sessions") in p.resolve().parents
+
+
+# --------------------------------------------------------------------
+# U22-fix (live-DoD BLOCKER, 2026-07-19): materialize_resume_session()
+# ONLY calls SessionStore.list_subkeys() when the SDK's OWN
+# _store_implements() probe reports the store overrides it — and that
+# probe compares method objects by IDENTITY against SessionStore's own
+# default, NOT by calling the method. A store that defines its own
+# `list_subkeys` stub (even one that just `raise NotImplementedError`)
+# therefore reads as "implemented," and materialize_resume_session then
+# calls it and gets a genuine NotImplementedError — surfacing to the
+# human as exactly the live-trial failure text. These tests drive the
+# REAL SDK functions (imported as shipped, never reimplemented) against
+# CacheSdkSessionStore to pin the fix at the boundary that actually
+# broke, not just at a unit level.
+# --------------------------------------------------------------------
+
+
+def test_store_implements_reports_false_for_undefined_optional_methods() -> None:
+    """The root-cause pin: CacheSdkSessionStore must NOT override
+    list_sessions/list_session_summaries/delete/list_subkeys — inherited
+    unchanged from SessionStore, so the SDK's own identity-based
+    _store_implements() probe reads them as absent. append/load ARE
+    overridden and must read as present."""
+    from claude_agent_sdk._internal.session_store_validation import _store_implements
+
+    adapter = CacheSdkSessionStore(Path("/tmp/does-not-need-to-exist"))
+    assert _store_implements(adapter, "append") is True
+    assert _store_implements(adapter, "load") is True
+    assert _store_implements(adapter, "list_sessions") is False
+    assert _store_implements(adapter, "list_session_summaries") is False
+    assert _store_implements(adapter, "delete") is False
+    assert _store_implements(adapter, "list_subkeys") is False
+
+
+async def test_real_sdk_materialize_resume_session_succeeds_multi_turn(tmp_path: Path) -> None:
+    """Drives claude_agent_sdk's REAL materialize_resume_session() (the
+    exact function the live-trial Resume click ran into) against a
+    CacheSdkSessionStore mirroring a MULTI-TURN session (three append
+    batches, mimicking three turns' worth of transcript entries) —
+    reproduces the live failure shape when reverted (see the module
+    docstring above) and pins the fix: materialization must succeed and
+    write a resumable temp CLAUDE_CONFIG_DIR with the full merged
+    transcript.
+
+    KILL-VERIFY (manual, recorded in the U22-fix report): reintroducing
+    a `list_subkeys` stub that raises NotImplementedError on
+    CacheSdkSessionStore reddens this test with
+    'SessionStore.list_subkeys() for session <id> failed during resume
+    materialization:' — the exact live-trial alert text.
+    """
+    import uuid
+
+    from claude_agent_sdk import ClaudeAgentOptions
+    from claude_agent_sdk._internal.session_resume import materialize_resume_session
+    from claude_agent_sdk._internal.sessions import project_key_for_directory
+
+    store = CacheSdkSessionStore(tmp_path / "sdk-sessions")
+    session_id = str(uuid.uuid4())
+    cwd = tmp_path / "bucket"
+    cwd.mkdir()
+    project_key = project_key_for_directory(str(cwd))
+    key = {"project_key": project_key, "session_id": session_id}
+
+    # Three turns' worth of mirrored entries, appended in separate
+    # batches (matching the SDK's own ~100ms-cadence append() calls
+    # during a real streaming session — never one giant batch).
+    await store.append(key, [{"type": "user", "uuid": "turn1-u", "message": "hello"}])
+    await store.append(key, [{"type": "assistant", "uuid": "turn1-a", "message": "hi there"}])
+    await store.append(key, [{"type": "user", "uuid": "turn2-u", "message": "continue"}])
+    await store.append(key, [{"type": "assistant", "uuid": "turn2-a", "message": "continuing"}])
+    await store.append(key, [{"type": "user", "uuid": "turn3-u", "message": "one more"}])
+    await store.append(key, [{"type": "assistant", "uuid": "turn3-a", "message": "done"}])
+
+    options = ClaudeAgentOptions(cwd=str(cwd), session_store=store, resume=session_id)
+    result = await materialize_resume_session(options)  # must NOT raise RuntimeError
+
+    assert result is not None
+    assert result.resume_session_id == session_id
+    assert result.config_dir.is_dir()
+    materialized = list((result.config_dir / "projects").rglob(f"{session_id}.jsonl"))
+    assert len(materialized) == 1
+    lines = materialized[0].read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 6  # all three turns' worth of entries, in order
+    uuids = [json.loads(line)["uuid"] for line in lines]
+    assert uuids == ["turn1-u", "turn1-a", "turn2-u", "turn2-a", "turn3-u", "turn3-a"]
+
+    await result.cleanup()
+    assert not result.config_dir.exists()
+
+
+async def test_real_sdk_materialize_resume_session_none_for_never_appended_key(tmp_path: Path) -> None:
+    """An honest 'nothing to resume' — no entries for the id — falls
+    through to None (the SDK's own documented degrade), never raises."""
+    import uuid
+
+    from claude_agent_sdk import ClaudeAgentOptions
+    from claude_agent_sdk._internal.session_resume import materialize_resume_session
+
+    store = CacheSdkSessionStore(tmp_path / "sdk-sessions")
+    cwd = tmp_path / "bucket"
+    cwd.mkdir()
+    options = ClaudeAgentOptions(cwd=str(cwd), session_store=store, resume=str(uuid.uuid4()))
+    result = await materialize_resume_session(options)
+    assert result is None
