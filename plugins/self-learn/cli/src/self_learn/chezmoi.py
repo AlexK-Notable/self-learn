@@ -46,11 +46,16 @@ from .compilers import (
 from .records import Record
 
 __all__ = [
+    "CHEZMOI_DIRTY_MARKER",
     "ChezmoiAbort",
     "ChezmoiError",
+    "UserScopeDirtyStatus",
     "UserScopeResult",
+    "commit_all_user_scope",
     "compile_user_scope",
+    "dotfiles_source_path",
     "preflight_user_scope",
+    "user_scope_dirty_status",
 ]
 
 #: §5 playbook intent, verbatim tail on both abort paths.
@@ -58,6 +63,15 @@ _ABORT_ADVICE = (
     "fix drift / commit dotfiles first, or route to project scope; "
     "the record stays pending"
 )
+
+#: U20 gate R1 (F5-5 guided commit-first): the pinned, stable substring of
+#: the dirty-repo abort message (never the drift abort, which contains
+#: neither this string nor gitops's — the dirty-vs-drift boundary is
+#: string-detectable by construction). Extracted so the UI's marker match
+#: and the tests import the SAME constant this raise site uses — never a
+#: hand-copied substring (verbs.py carries the gitops-side twin,
+#: ``GITOPS_DIRTY_MARKER``).
+CHEZMOI_DIRTY_MARKER = "dotfiles repo has uncommitted changes"
 
 
 class ChezmoiError(Exception):
@@ -96,6 +110,53 @@ def _check(proc: subprocess.CompletedProcess) -> subprocess.CompletedProcess:
     return proc
 
 
+@dataclass(frozen=True)
+class UserScopeDirtyStatus:
+    """Read-only companion to :func:`preflight_user_scope` (U20:
+    ``commit_drift`` needs to tell drift and dirty APART — the preflight
+    only ever refuses on either, undifferentiated to its callers)."""
+
+    drift: bool
+    dirty_files: list[str]
+
+
+def user_scope_dirty_status(
+    target: Path | str, *, chezmoi: str = "chezmoi"
+) -> UserScopeDirtyStatus:
+    """The same two probes :func:`preflight_user_scope` runs (``chezmoi
+    diff`` then ``chezmoi git -- status --porcelain``), but reporting the
+    outcome instead of raising — writes nothing, same as its sibling
+    through step 2. ``dirty_files`` parses porcelain's ``XY <path>`` lines
+    (2-char status + one space, per ``git status --porcelain`` — chezmoi's
+    ``git`` passthrough is a real git, same format)."""
+    target = Path(target)
+    diff = _check(_run([chezmoi, "diff", str(target)]))
+    status = _check(_run([chezmoi, "git", "--", "status", "--porcelain"]))
+    files = [line[3:] for line in status.stdout.splitlines() if line.strip()]
+    return UserScopeDirtyStatus(drift=bool(diff.stdout.strip()), dirty_files=files)
+
+
+def dotfiles_source_path(*, chezmoi: str = "chezmoi") -> Path:
+    """``chezmoi source-path`` — the dotfiles repo's absolute path, i.e.
+    what ``chezmoi git`` operates inside (U20: the commit-drift verb's
+    ``repo`` field for the user-scope leg; never ``chezmoi cd``, which
+    spawns an interactive child shell — precedent in
+    tests/test_route_hook.py's hook deny_message)."""
+    return Path(_check(_run([chezmoi, "source-path"])).stdout.strip())
+
+
+def commit_all_user_scope(message: str, *, chezmoi: str = "chezmoi") -> str:
+    """``chezmoi git -- add -A`` + ``commit -m <message>`` — the user-scope
+    leg's own write step (U20 commit-drift: repo-wide, matching
+    :func:`preflight_user_scope`'s own repo-wide read path, gate m8's
+    mirror image for this leg — never target-path-scoped, unlike the
+    host-repo leg). Callers pre-flight (:func:`user_scope_dirty_status`);
+    this never checks drift/dirty itself. Returns the new commit's sha."""
+    _check(_run([chezmoi, "git", "--", "add", "-A"]))
+    _check(_run([chezmoi, "git", "--", "commit", "-m", message]))
+    return _check(_run([chezmoi, "git", "--", "rev-parse", "HEAD"])).stdout.strip()
+
+
 def preflight_user_scope(target: Path | str, *, chezmoi: str = "chezmoi") -> None:
     """Steps 1–2 of the guarded sequence, standalone (doc 13 §4: two-phase
     routes run every dirty-check in PRE-FLIGHT, before the ledger commit —
@@ -113,7 +174,7 @@ def preflight_user_scope(target: Path | str, *, chezmoi: str = "chezmoi") -> Non
     # 2. Dotfiles repo clean? A dirty repo would entangle our commit.
     status = _check(_run([chezmoi, "git", "--", "status", "--porcelain"]))
     if status.stdout.strip():
-        raise ChezmoiAbort(f"dotfiles repo has uncommitted changes: {_ABORT_ADVICE}")
+        raise ChezmoiAbort(f"{CHEZMOI_DIRTY_MARKER}: {_ABORT_ADVICE}")
 
 
 def compile_user_scope(

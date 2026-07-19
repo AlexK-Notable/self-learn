@@ -379,6 +379,27 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     hrm.add_argument("path", metavar="PATH")
     host_sub.add_parser("list", help="show the registered hosts")
+    hcd = host_sub.add_parser(
+        "commit-drift",
+        help="F5-5 guided commit-first: commit a dirty compile target's "
+        "OWN pending changes (never chezmoi drift — that refuses with the "
+        "re-add/apply explanation), then the caller retries its route",
+    )
+    hcd.add_argument("id", metavar="ID")
+    hcd.add_argument(
+        "--dest",
+        metavar="TARGET",
+        help="the same --dest the failed route used (omit to read the "
+        "record's proposal, same rule as route)",
+    )
+    hcd.add_argument(
+        "--dry-run",
+        action="store_true",
+        dest="dry_run",
+        help="report {repo, files} and write nothing — same preconditions "
+        "and refusals as the real run",
+    )
+    hcd.add_argument("--json", action="store_true", dest="as_json")
 
     recompile_p = sub.add_parser(
         "recompile",
@@ -1063,9 +1084,35 @@ def _cmd_host_inner(args: argparse.Namespace, home) -> int:
         else:
             print("projects: (none registered)")
         return EXIT_OK
+    if args.host_command == "commit-drift":
+        try:
+            result = verbs.commit_drift(
+                home, args.id, dest=args.dest, dry_run=args.dry_run
+            )
+        except (verbs.VerbError, LedgerOpsError, RecordError, ChezmoiError) as exc:
+            # gate 64: the commit-drift refusals (clean / drift / bad id /
+            # a resolution VerbError) are usage-shaped, like every other
+            # host-family refusal — never route's own exit-1 mapping
+            # (_cmd_verb), because this surface is dispatched through
+            # _cmd_host, not _cmd_verb.
+            print(f"self-learn host commit-drift: {exc}", file=sys.stderr)
+            return EXIT_USAGE
+        if args.as_json:
+            print(json.dumps({"repo": str(result.repo), "files": result.files}))
+        elif result.dry_run:
+            print(f"commit-drift (dry-run): {result.repo} ({len(result.files)} file(s))")
+            for f in result.files:
+                print(f"  {f}")
+        else:
+            print(
+                f"commit-drift: {result.repo} ({len(result.files)} file(s)) "
+                f"@ {(result.commit_sha or '')[:7]}"
+            )
+        return EXIT_OK
     print(
         "usage: self-learn host add <path> [--skills-root] | "
         "host rebind <slug-or-old-path> <new-path> | host remove <path> | "
+        "host commit-drift <id> [--dest TARGET] [--dry-run] [--json] | "
         "host list",
         file=sys.stderr,
     )
