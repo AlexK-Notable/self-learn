@@ -456,6 +456,82 @@ class TestReloadDeferLegD:
         _assert_reloaded(page)
 
 
+class TestReloadRaceLiveOrdering:
+    """fw32-offer-race (follow-up to U-C3): a LIVE DoD retrial still lost
+    the offer after the leg-(d) fix merged — browser landed on
+    ``/bucket/skill/ha-ops?notice=resolved-elsewhere`` (the Detail GET's
+    own 303 "resolved elsewhere" redirect, proving a real
+    ``window.location.reload()`` fired and re-requested ``/record/<id>``
+    after the record had already resolved).
+
+    Live-instrumented reproduction (console/SSE/htmx-lifecycle/Mutation-
+    Observer logging against a REAL uvicorn server + REAL ``self-learn``
+    CLI subprocess + real Chromium, both with and without the ledger
+    file-watcher, both single- and double-Enter) FALSIFIED the original
+    "applying-state swap" hypothesis — ``type: "applying"`` SSE frames
+    are inert client-side (app.js's ``default:`` case ignores them
+    entirely; verified by grep AND by the instrumented trace showing the
+    armed bar is removed only by the CONFIRM response's own htmx swap,
+    never by an "applying" frame). The REAL race, reproduced 100% of the
+    time (4/4 runs, no file-watcher even needed) by deleting JUST leg
+    (d) from app.js and 0/11 times with leg (d) present: the routine
+    post-route ``_force_refresh(f"record:{id}")`` push (routes.py) can
+    arrive and be RELEASED (leg (b)'s ``confirmInFlight`` clears at
+    ``htmx:afterSettle``) at effectively the SAME instant the offer's
+    own swap completes — leg (b) alone only defers a refresh that
+    arrives BEFORE settle; the human never gets a chance to arm a
+    single edge unless something ALSO holds AT and AFTER that exact
+    settle instant. This models that precise ordering: an armed bar is
+    live, `htmx:beforeRequest` fires (leg (b) engages), a refresh
+    arrives WHILE still in flight (deferred by leg (b) — the offer does
+    not exist yet, so leg (d) cannot help at this instant), THEN the
+    confirm's own swap replaces the armed bar with the unarmed
+    contradicts offer and `htmx:afterSettle` fires (clearing leg (b)
+    and triggering releaseReload()'s predicate re-check) — asserting
+    the page does NOT reload at that release point (leg (d) now holds),
+    then confirming defer-never-drop still eventually fires once the
+    offer is actually gone."""
+
+    def test_inflight_refresh_then_offer_settles_never_reloads(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        _open(page, server, "/")
+        # The pre-confirm armed bar (kind=detail, verb=route) — same
+        # shape action_bar.html renders while armed.
+        page.evaluate(
+            "document.body.insertAdjacentHTML('beforeend', "
+            "'<div class=\"action-bar\" data-armed=\"true\" id=\"t-bar\"></div>')"
+        )
+        _dispatch_htmx(page, "htmx:beforeRequest", "/record/x/action/confirm")
+        _arm_reload_sentinel(page)
+
+        # The refresh that races the response — pushed while the confirm
+        # is still in flight, exactly as RealRunner's own post-subprocess
+        # refresh_callback (and routes.py's explicit _force_refresh) do
+        # before the handler has even finished building the response.
+        server.push_refresh(f"record:{REC_BRIEF}")
+        _assert_deferred(page)  # leg (b) holds — offer doesn't exist yet
+
+        # The confirm response arrives and htmx swaps: the armed bar is
+        # replaced by the (unarmed) contradicts offer.
+        page.evaluate(
+            "document.getElementById('t-bar').outerHTML = "
+            "'<div class=\"contradicts-offer\" data-contradicts-offer=\"true\" id=\"t-offer\">"
+            "<div class=\"action-bar\" data-armed=\"false\"></div></div>'"
+        )
+        _dispatch_htmx(page, "htmx:afterSettle", "/record/x/action/confirm")
+        # THE ASSERTION: releaseReload()'s predicate re-check at the exact
+        # instant leg (b) lets go must find leg (d) already holding — the
+        # offer must still be showing, unreloaded.
+        _assert_deferred(page)
+
+        # Defer-never-drop, chained: once the offer is genuinely gone, a
+        # settle still releases the pending reload.
+        page.evaluate("document.getElementById('t-offer').remove()")
+        _dispatch_htmx(page, "htmx:afterSettle", "/record/x/action/arm")
+        _assert_reloaded(page)
+
+
 class TestReloadFiresWhenClear:
     """Control: with NO leg holding, a refresh reloads immediately — proves
     the defer tests above are detecting a real, otherwise-absent reload."""
