@@ -35,6 +35,8 @@ install.sh              idempotent live-symlink deploy (eight surfaces + units)
 ## Install (this machine's live-symlink model)
 
 ```bash
+# self-learn is a PRIVATE repo — cloning it needs an SSH key on file
+# with access to AlexK-Notable/self-learn (P-C1.4: private, by ruling)
 git clone git@github.com:AlexK-Notable/self-learn.git ~/repos/self-learn
 cd ~/repos/self-learn && ./install.sh
 # then (manual, load-bearing): register hooks in ~/.claude/settings.json
@@ -42,8 +44,10 @@ systemctl --user enable --now self-learn-miner.timer
 systemctl --user enable --now self-learn-ui.service   # G-3 surface, see below
 ```
 
-The ledger initializes on first use (`self-learn status`); register
-canon targets with `self-learn host add <path> [--skills-root]`.
+The ledger needs a git repo at `$SELF_LEARN_HOME` (default
+`~/.self-learn`) before anything else works — bootstrap one with
+`self-learn init`; then register canon targets with `self-learn host add
+<path> [--skills-root]`.
 
 ## G-3 surface — web adjudication UI
 

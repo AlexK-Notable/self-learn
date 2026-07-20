@@ -1,6 +1,6 @@
 """Autosync pause sentinel (T7).
 
-Contract (08 §1 Sentinel + Sentinel-scoping pins; 02 §3; doc 13 §4.4):
+Contract (08 §1 Sentinel + Sentinel-scoping pins; 02 §3; doc 13 §6):
 
 - Path: ``${XDG_CACHE_HOME:-~/.cache}/self-learn/autosync-pause`` —
   resolved from the environment at every call so tests can redirect it.
@@ -52,7 +52,7 @@ SENTINEL_TTL_SECONDS = 2 * 60 * 60
 
 def sentinel_path() -> Path:
     """The pinned sentinel location, XDG-resolved at call time. Global —
-    NOT home-namespaced (doc 13 §4.4: a cross-repo pause contract)."""
+    NOT home-namespaced (doc 13 §6: a cross-repo pause contract)."""
     cache = os.environ.get("XDG_CACHE_HOME")
     base = Path(cache).expanduser() if cache else Path("~/.cache").expanduser()
     return base / "self-learn" / "autosync-pause"

@@ -18,6 +18,9 @@ def _worker_test_defaults(monkeypatch, tmp_path):
     # the real ~/.cache worker.last-run once a real worker run existed on
     # the machine — the suite must never see real cache state). Tests that
     # redirect XDG themselves simply override this default.
+    # MINOR 4 (code gate): before `init` existed no verb could CREATE a
+    # home, so an unset SELF_LEARN_HOME was harmless. It no longer is.
+    monkeypatch.setenv("SELF_LEARN_HOME", str(tmp_path / "home-default"))
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg-cache-default"))
     # Miner defaults: no detached watchdog spawns, and the transcript root
     # NEVER defaults to the real ~/.claude/projects inside tests.

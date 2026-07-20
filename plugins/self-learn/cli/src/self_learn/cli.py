@@ -43,9 +43,11 @@ from .import_memory import import_memory, prune_memory
 from .gitops import EXIT_GIT_FAILED
 from .ledger import (
     EXIT_NO_HOME,
+    InitError,
     discover_buckets,
     home_state,
     home_state_message,
+    init_home,
     resolve_home,
 )
 from .ledger_ops import (
@@ -134,6 +136,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     add_teach_parser(sub)
+
+    sub.add_parser(
+        "init",
+        help="bootstrap $SELF_LEARN_HOME as a git repo with the ledger "
+        "layout (doc 13 §3; C1 §2.2)",
+    )
 
     def _verb(name: str, help_text: str) -> argparse.ArgumentParser:
         p = sub.add_parser(name, help=help_text)
@@ -451,6 +459,37 @@ def _build_parser() -> argparse.ArgumentParser:
     validate.add_argument("id", metavar="ID")
 
     return parser
+
+
+def _cmd_init() -> int:
+    """``self-learn init`` (C1 §2.2). Deliberately NOT home-gated: gating
+    on `home_state` would refuse the exact home this verb exists to
+    create. P-C1.10: the resolved path is echoed BEFORE anything is
+    created — a wrong/unset ``$SELF_LEARN_HOME`` must be visible
+    immediately, not discovered after a second ledger silently appeared
+    at a mistyped path."""
+    home = resolve_home()
+    print(f"self-learn init: {home}")
+    try:
+        result = init_home(home)
+    except InitError as exc:
+        print(f"self-learn init: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    if result.already_complete:
+        print(f"self-learn init: {result.path} already complete — nothing to do")
+    elif result.created_repo:
+        print(
+            f"self-learn init: created git repo + layout "
+            f"({', '.join(result.added_dirs)}) at {result.path}"
+        )
+    else:
+        parts = []
+        if result.added_dirs:
+            parts.append(f"added {', '.join(result.added_dirs)}")
+        if result.made_head:
+            parts.append("created HEAD (empty commit)")
+        print(f"self-learn init: topped up {result.path} — {'; '.join(parts)}")
+    return EXIT_OK
 
 
 def _home_gate(home) -> int | None:
@@ -1508,7 +1547,11 @@ def _main(argv: list[str] | None = None) -> int:
     # Doc 12 R1 layer 2: every CLI invocation is a watchdog tick — spawn a
     # detached mining run when the last one is >24 h old. Never blocks,
     # never fails the command; `mine` itself is excluded (no self-trigger).
-    if args.command != "mine":
+    # MINOR 3 (code gate): `init` is the one verb whose premise is that
+    # the home may not exist or may be unusable — ticking the miner
+    # watchdog first spawned a detached run against a home `init` was
+    # about to refuse.
+    if args.command not in ("mine", "init"):
         try:
             # no_push is passed EXPLICITLY (BLOCKER D): this tick runs
             # before dispatch for every command, so `reject --no-push` used
@@ -1528,6 +1571,9 @@ def _main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return EXIT_USAGE
+
+    if args.command == "init":
+        return _cmd_init()
 
     if args.command == "status":
         if args.fast:

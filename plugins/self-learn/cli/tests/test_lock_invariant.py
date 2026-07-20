@@ -567,6 +567,7 @@ _ARGV_FOR = {
     ],
     "_cmd_host_inner": None,  # driven through _cmd_host
     "_cmd_import": [["import", "--backlog", "{empty}"]],
+    "_cmd_init": [["init"]],
     "_cmd_link": [["link", "contradicts", "lrn-eeee0001", "lrn-eeee0002"]],
     "_cmd_list": [["list"]],
     "_cmd_mine": [["mine", "status"]],
@@ -690,6 +691,21 @@ class TestEveryCommandSurvivesAHeldLock:
             )
             for a in argv
         ]
+        if cmd == "_cmd_init":
+            # Delta code gate: `make_env`'s ledger is already COMPLETE, so
+            # `init_home` hit its `already_complete` early return and never
+            # reached the lock — the case passed while asserting nothing.
+            # (Proven by the reviewer: replacing the `with` body with a
+            # raise still passed.) Remove one layout dir so step 6 — the
+            # only init path that mutates a pre-existing repo — actually
+            # runs under the invariant.
+            import shutil
+
+            shutil.rmtree(home / "telemetry", ignore_errors=True)
+            # No commit here: an empty layout dir is untracked, so its
+            # removal leaves `git status` byte-identical and the earlier
+            # `clean_before` snapshot stays valid.
+
         holder, release = self._holder(tmp_path, home, monkeypatch)
         try:
             code = cli.main(argv)  # must not raise

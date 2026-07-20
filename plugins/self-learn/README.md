@@ -97,13 +97,12 @@ The miner is the third capture producer: it walks session transcripts,
 digests them structurally, runs one contained `claude -p` reader (same
 write-restriction posture as the worker, pointed at a cache spool), and
 lands `source: session` records in `pending/` — capped, secret-scanned,
-never routed. Register the nightly timer (R1 layer 1; `Persistent=true`
-covers a machine asleep at 03:30):
+never routed. `install.sh` already links the nightly timer's unit files
+into `~/.config/systemd/user/` (R1 layer 1; `Persistent=true` covers a
+machine asleep at 03:30); enabling it is the one step it deliberately
+leaves to you:
 
 ```bash
-ln -sf ~/repos/claude-skills/systemd/self-learn-miner.{service,timer} \
-    ~/.config/systemd/user/
-systemctl --user daemon-reload
 systemctl --user enable --now self-learn-miner.timer
 ```
 
@@ -123,9 +122,9 @@ skipped, folded, and clipped — the same data the future web UI reads).
 - **`PUSH FAILED — commit kept`** (exit 3): the resolution committed
   locally; run `self-learn push` (rebase-retry built in). A rebase
   conflict (exit 4) stops loudly — resolve by hand, never auto-resolved.
-- **Stale sentinel** (`~/.cache/claude-skills/self-learn/autosync-pause`
-  older than 2 h): ignorable — semantics ride the file's mtime, both sides
-  ignore a stale one and either may delete it.
+- **Stale sentinel** (`~/.cache/self-learn/autosync-pause` older than
+  2 h): ignorable — semantics ride the file's mtime, both sides ignore a
+  stale one and either may delete it.
 - **`--selftest` FAIL markers** naming a file: that target has ≥1 routed
   record but a missing/broken managed-section marker pair — restore the
   pair (or re-run `route` for a fresh target; the compiler bootstraps

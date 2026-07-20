@@ -1,8 +1,7 @@
 # self-learn transcript miner (doc 12) — one mining pass.
-# Registration (manual, like the autosync unit):
-#   ln -sf ~/repos/claude-skills/systemd/self-learn-miner.{service,timer} \
-#       ~/.config/systemd/user/
-#   systemctl --user daemon-reload
+# Installed by install.sh (which links this unit + its timer into
+# ~/.config/systemd/user/ and runs `systemctl --user daemon-reload`);
+# enabling the timer is the one step it deliberately leaves to you:
 #   systemctl --user enable --now self-learn-miner.timer
 [Unit]
 Description=self-learn transcript miner (nightly pass)
