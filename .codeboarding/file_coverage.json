@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "generated_at": "2026-07-21T08:13:48.700634+00:00",
+  "generated_at": "2026-07-21T09:21:05.588326+00:00",
   "analyzed_files": [
     "plugins/self-learn/cli/src/self_learn/__init__.py",
     "plugins/self-learn/cli/src/self_learn/analyst.py",

@@ -1,7 +1,7 @@
 {
   "repository_name": "self-learn",
-  "timestamp": "2026-07-21T07:55:27.717782+00:00",
-  "overall_score": 0.9313821557503869,
+  "timestamp": "2026-07-21T16:44:12.208616+00:00",
+  "overall_score": 0.931311306143521,
   "check_summaries": [
     {
       "check_name": "function_size",
@@ -54,26 +54,6 @@
     {
       "check_name": "god_class",
       "description": "Detects classes with too many methods, too much code, or too many outgoing dependencies",
-      "language": "javascript",
-      "check_type": "standard",
-      "total_entities_checked": 0,
-      "findings_count": 0,
-      "warning_count": 0,
-      "score": 1.0,
-      "finding_groups": []
-    },
-    {
-      "check_name": "circular_dependencies",
-      "description": "Detects circular dependencies between packages",
-      "language": "javascript",
-      "check_type": "circular_dependencies",
-      "cycles": [],
-      "packages_checked": 4,
-      "packages_in_cycles": 0
-    },
-    {
-      "check_name": "package_instability",
-      "description": "Computes Martin's instability metric (I = Ce / (Ca + Ce)) per package",
       "language": "javascript",
       "check_type": "standard",
       "total_entities_checked": 0,
@@ -764,28 +744,6 @@
           ]
         }
       ]
-    },
-    {
-      "check_name": "circular_dependencies",
-      "description": "Detects circular dependencies between packages",
-      "language": "python",
-      "check_type": "circular_dependencies",
-      "cycles": [
-        "plugins.self-learn.ui.src.self_learn_ui -> plugins.self-learn.ui.src.self_learn_ui.engine -> plugins.self-learn.ui.src.self_learn_ui"
-      ],
-      "packages_checked": 3,
-      "packages_in_cycles": 2
-    },
-    {
-      "check_name": "package_instability",
-      "description": "Computes Martin's instability metric (I = Ce / (Ca + Ce)) per package",
-      "language": "python",
-      "check_type": "standard",
-      "total_entities_checked": 2,
-      "findings_count": 0,
-      "warning_count": 0,
-      "score": 1.0,
-      "finding_groups": []
     },
     {
       "check_name": "unused_code_diagnostics",
