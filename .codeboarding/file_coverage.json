@@ -1,0 +1,1000 @@
+{
+  "version": 1,
+  "generated_at": "2026-07-21T08:13:48.700634+00:00",
+  "analyzed_files": [
+    "plugins/self-learn/cli/src/self_learn/__init__.py",
+    "plugins/self-learn/cli/src/self_learn/analyst.py",
+    "plugins/self-learn/cli/src/self_learn/chezmoi.py",
+    "plugins/self-learn/cli/src/self_learn/cli.py",
+    "plugins/self-learn/cli/src/self_learn/compilers.py",
+    "plugins/self-learn/cli/src/self_learn/config.py",
+    "plugins/self-learn/cli/src/self_learn/gitops.py",
+    "plugins/self-learn/cli/src/self_learn/hook_compiler.py",
+    "plugins/self-learn/cli/src/self_learn/hosts.py",
+    "plugins/self-learn/cli/src/self_learn/import_backlog.py",
+    "plugins/self-learn/cli/src/self_learn/import_common.py",
+    "plugins/self-learn/cli/src/self_learn/import_memory.py",
+    "plugins/self-learn/cli/src/self_learn/ledger.py",
+    "plugins/self-learn/cli/src/self_learn/ledger_ops.py",
+    "plugins/self-learn/cli/src/self_learn/miner.py",
+    "plugins/self-learn/cli/src/self_learn/normalize.py",
+    "plugins/self-learn/cli/src/self_learn/reconcile.py",
+    "plugins/self-learn/cli/src/self_learn/records.py",
+    "plugins/self-learn/cli/src/self_learn/report.py",
+    "plugins/self-learn/cli/src/self_learn/scan.py",
+    "plugins/self-learn/cli/src/self_learn/selfcheck.py",
+    "plugins/self-learn/cli/src/self_learn/sentinel.py",
+    "plugins/self-learn/cli/src/self_learn/skill_scaffold.py",
+    "plugins/self-learn/cli/src/self_learn/teach.py",
+    "plugins/self-learn/cli/src/self_learn/telemetry.py",
+    "plugins/self-learn/cli/src/self_learn/verbs.py",
+    "plugins/self-learn/cli/src/self_learn/worker.py",
+    "plugins/self-learn/ui/src/self_learn_ui/__init__.py",
+    "plugins/self-learn/ui/src/self_learn_ui/app.py",
+    "plugins/self-learn/ui/src/self_learn_ui/cli.py",
+    "plugins/self-learn/ui/src/self_learn_ui/doctrine.py",
+    "plugins/self-learn/ui/src/self_learn_ui/engine/__init__.py",
+    "plugins/self-learn/ui/src/self_learn_ui/engine/base.py",
+    "plugins/self-learn/ui/src/self_learn_ui/engine/charter.py",
+    "plugins/self-learn/ui/src/self_learn_ui/engine/sdk.py",
+    "plugins/self-learn/ui/src/self_learn_ui/env.py",
+    "plugins/self-learn/ui/src/self_learn_ui/idle.py",
+    "plugins/self-learn/ui/src/self_learn_ui/keymap.py",
+    "plugins/self-learn/ui/src/self_learn_ui/ledger.py",
+    "plugins/self-learn/ui/src/self_learn_ui/middleware.py",
+    "plugins/self-learn/ui/src/self_learn_ui/models.py",
+    "plugins/self-learn/ui/src/self_learn_ui/pane.py",
+    "plugins/self-learn/ui/src/self_learn_ui/prefetch.py",
+    "plugins/self-learn/ui/src/self_learn_ui/proposals.py",
+    "plugins/self-learn/ui/src/self_learn_ui/rendering.py",
+    "plugins/self-learn/ui/src/self_learn_ui/routes.py",
+    "plugins/self-learn/ui/src/self_learn_ui/runner.py",
+    "plugins/self-learn/ui/src/self_learn_ui/sse.py",
+    "plugins/self-learn/ui/src/self_learn_ui/store.py",
+    "plugins/self-learn/ui/src/self_learn_ui/uilog.py",
+    "plugins/self-learn/ui/static/app.js"
+  ],
+  "not_analyzed_files": [
+    {
+      "path": "README.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/00-vision.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/01-architecture.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/02-schema.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/03-decisions.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/04-roadmap.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/05-evidence.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/06-horizon.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/07-review-ui.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/08-build-plan.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/09-surface-spec.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/10-surface-build-plan.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/11-telemetry-and-lifecycle.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/12-transcript-miner.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/13-hosting-and-separation.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/14-forward-work-map.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/15-orchestration-runbook.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/README.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/drafts/16-ecology-spec.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/drafts/analyst-riders-spec.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/drafts/c1-portability-defects-spec.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/drafts/claude-md-parameterization-spec.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/drafts/f5-round-spec.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/drafts/fast-lane-spec.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/drafts/miner-visibility-spec.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/drafts/pane-transcript-persistence-spec.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/drafts/settings-surface-spec.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/feedback/2026-07-17-chat-panes-design-brief.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/feedback/2026-07-17-ui-feedback-01.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/feedback/2026-07-18-ui-feedback-02.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/feedback/2026-07-18-ui-feedback-03.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/feedback/2026-07-18-ui-feedback-04-design.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/feedback/2026-07-19-ui-feedback-05.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/fixtures/gen-fixture-b",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "docs/specs/self-learn/fixtures/m3-worklist/chezmoi-cd.proposal.yaml",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "docs/specs/self-learn/fixtures/m3-worklist/drain-runbook.md",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "docs/specs/self-learn/fixtures/m3-worklist/sudo-npm-global.proposal.yaml",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "docs/specs/self-learn/fixtures/m3-worklist/uv-venv-copy.proposal.yaml",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "docs/specs/self-learn/fixtures/trials.md",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "docs/specs/self-learn/fixtures/ui-trials.md",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "docs/specs/self-learn/forward/canon-lifecycle.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/forward/packaging.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/forward/platform-drift.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/forward/process-and-horizon.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/forward/supply-quality.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/forward/sync-and-fleet.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/forward/ui-ux.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/forward/worker-ecology.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/records-index.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/research/2026-07-12-adjudication-surface-problem-space.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/research/2026-07-12-agent-sdk-verification.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/research/2026-07-12-sdk-auth-empirical-test.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/research/2026-07-12-sdk-pane-probes.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/research/2026-07-12-sota-survey.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/research/2026-07-12-tui-environment-grounding.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/research/2026-07-12-tui-framework-trade-study.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/research/2026-07-12-tui-vs-web-dx-study.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/research/2026-07-17-go-port-fleet-sketch.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/research/2026-07-18-sdk-bundle-exclusion.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/research/2026-07-18-ux-enhancement-survey.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/reviews/2026-07-11-refinement-review.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/reviews/2026-07-12-blind-adjudication.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/reviews/2026-07-12-fixture-review.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/reviews/2026-07-12-implementability-review.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/reviews/2026-07-12-phased-gate-process.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/reviews/2026-07-12-surface-rederivation-gates.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/reviews/2026-07-12-tui-phased-gates.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/reviews/2026-07-16-session-post-mortem.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/reviews/2026-07-17-armed-host-add.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/reviews/2026-07-17-chat-panes-build.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/reviews/2026-07-17-chat-panes-spec.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/reviews/2026-07-17-keymap-wasd.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/reviews/2026-07-17-ui-feedback-r1.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/reviews/2026-07-17-ui-polish.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/reviews/2026-07-18-deep-specs.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/reviews/2026-07-18-forward-work-map.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/reviews/2026-07-18-idle-lifecycle-build.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/reviews/2026-07-18-idle-lifecycle-spec.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/reviews/2026-07-18-interrupt-ladder.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/reviews/2026-07-18-ui-feedback-r2.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/reviews/2026-07-18-ui-feedback-r3.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/reviews/2026-07-18-ux-round-1.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/reviews/2026-07-19-feedback-round-5.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/reviews/2026-07-19-maintenance-round.md",
+      "reason": "other"
+    },
+    {
+      "path": "docs/specs/self-learn/reviews/2026-07-19-rider-nearmiss-round.md",
+      "reason": "other"
+    },
+    {
+      "path": "install.sh",
+      "reason": "other"
+    },
+    {
+      "path": "plugins/self-learn/README.md",
+      "reason": "other"
+    },
+    {
+      "path": "plugins/self-learn/assets/self-learn-ui.desktop.in",
+      "reason": "other"
+    },
+    {
+      "path": "plugins/self-learn/assets/self-learn-ui.svg",
+      "reason": "other"
+    },
+    {
+      "path": "plugins/self-learn/cli/pyproject.toml",
+      "reason": "other"
+    },
+    {
+      "path": "plugins/self-learn/cli/tests/conftest.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/cli/tests/fixtures/golden/bootstrap-expected.md",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/cli/tests/fixtures/golden/bootstrap-pre.md",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/cli/tests/fixtures/golden/managed-expected.md",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/cli/tests/fixtures/golden/managed-pre.md",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/cli/tests/fixtures/gotchas-canon-excerpt.md",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/cli/tests/fixtures/gotchas-journal-excerpt.md",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/cli/tests/fixtures/memory/MEMORY.md",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/cli/tests/fixtures/memory/nova-host.md",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/cli/tests/fixtures/memory/research-archive.md",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/cli/tests/fixtures/memory/review-doctrine.md",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/cli/tests/fixtures/record-02s1-example.md",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/cli/tests/install-commands-test.sh",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/cli/tests/support.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/cli/tests/test_audit_fixes.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/cli/tests/test_batch_fixes.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/cli/tests/test_buckets.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/cli/tests/test_chezmoi.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/cli/tests/test_commit_drift.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/cli/tests/test_compilers.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/cli/tests/test_g3_substrate.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/cli/tests/test_gitops.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/cli/tests/test_home.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/cli/tests/test_hook_compiler.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/cli/tests/test_hook_proposal_schema.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/cli/tests/test_hosting.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/cli/tests/test_hosting_fixes.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/cli/tests/test_import_backlog.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/cli/tests/test_import_cli.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/cli/tests/test_import_memory.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/cli/tests/test_init.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/cli/tests/test_ledger_ops.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/cli/tests/test_lifecycle_cli.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/cli/tests/test_list_cli.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/cli/tests/test_lock_invariant.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/cli/tests/test_m2_verbs.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/cli/tests/test_miner.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/cli/tests/test_new_skill.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/cli/tests/test_normalize.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/cli/tests/test_one_motion_config.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/cli/tests/test_portability_docs.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/cli/tests/test_proposal_validate.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/cli/tests/test_records.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/cli/tests/test_records_lifecycle.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/cli/tests/test_regime_fixes.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/cli/tests/test_rehome.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/cli/tests/test_retirement_cleanup.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/cli/tests/test_round3_fixes.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/cli/tests/test_round7_fixes.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/cli/tests/test_route_cli.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/cli/tests/test_route_hook.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/cli/tests/test_scan.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/cli/tests/test_selftest.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/cli/tests/test_selftest_hooks.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/cli/tests/test_sentinel.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/cli/tests/test_status.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/cli/tests/test_supply_mix.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/cli/tests/test_surface_fill.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/cli/tests/test_teach.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/cli/tests/test_telemetry.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/cli/tests/test_verbs.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/cli/tests/test_worker.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/cli/tests/test_wrapper_symlink.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/commands/review.md",
+      "reason": "other"
+    },
+    {
+      "path": "plugins/self-learn/commands/teach.md",
+      "reason": "other"
+    },
+    {
+      "path": "plugins/self-learn/hooks/self-learn-pending.sh",
+      "reason": "other"
+    },
+    {
+      "path": "plugins/self-learn/scripts/self-learn",
+      "reason": "other"
+    },
+    {
+      "path": "plugins/self-learn/scripts/self-learn-notify",
+      "reason": "other"
+    },
+    {
+      "path": "plugins/self-learn/scripts/self-learn-ui",
+      "reason": "other"
+    },
+    {
+      "path": "plugins/self-learn/scripts/self-learn-ui-open",
+      "reason": "other"
+    },
+    {
+      "path": "plugins/self-learn/skills/self-learn/SKILL.md",
+      "reason": "other"
+    },
+    {
+      "path": "plugins/self-learn/skills/self-learn/references/card-sections.yaml",
+      "reason": "other"
+    },
+    {
+      "path": "plugins/self-learn/skills/self-learn/references/mining-rubric.md",
+      "reason": "other"
+    },
+    {
+      "path": "plugins/self-learn/skills/self-learn/references/pane-charter.md",
+      "reason": "other"
+    },
+    {
+      "path": "plugins/self-learn/skills/self-learn/references/pane-surface-model.md",
+      "reason": "other"
+    },
+    {
+      "path": "plugins/self-learn/skills/self-learn/references/routing-doctrine.md",
+      "reason": "other"
+    },
+    {
+      "path": "plugins/self-learn/ui/pyproject.toml",
+      "reason": "other"
+    },
+    {
+      "path": "plugins/self-learn/ui/static/htmx-2.0.9.min.js",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/ui/static/pygments.css",
+      "reason": "other"
+    },
+    {
+      "path": "plugins/self-learn/ui/static/style.css",
+      "reason": "other"
+    },
+    {
+      "path": "plugins/self-learn/ui/templates/base.html",
+      "reason": "other"
+    },
+    {
+      "path": "plugins/self-learn/ui/templates/bucket.html",
+      "reason": "other"
+    },
+    {
+      "path": "plugins/self-learn/ui/templates/detail.html",
+      "reason": "other"
+    },
+    {
+      "path": "plugins/self-learn/ui/templates/detail_degraded.html",
+      "reason": "other"
+    },
+    {
+      "path": "plugins/self-learn/ui/templates/index.html",
+      "reason": "other"
+    },
+    {
+      "path": "plugins/self-learn/ui/templates/partials/action_bar.html",
+      "reason": "other"
+    },
+    {
+      "path": "plugins/self-learn/ui/templates/partials/cluster_expanded.html",
+      "reason": "other"
+    },
+    {
+      "path": "plugins/self-learn/ui/templates/partials/contradicts_offer.html",
+      "reason": "other"
+    },
+    {
+      "path": "plugins/self-learn/ui/templates/partials/error_strip.html",
+      "reason": "other"
+    },
+    {
+      "path": "plugins/self-learn/ui/templates/partials/help_overlay.html",
+      "reason": "other"
+    },
+    {
+      "path": "plugins/self-learn/ui/templates/partials/host_add_bar.html",
+      "reason": "other"
+    },
+    {
+      "path": "plugins/self-learn/ui/templates/partials/keymap_footer.html",
+      "reason": "other"
+    },
+    {
+      "path": "plugins/self-learn/ui/templates/partials/pane.html",
+      "reason": "other"
+    },
+    {
+      "path": "plugins/self-learn/ui/templates/partials/pane_armed.html",
+      "reason": "other"
+    },
+    {
+      "path": "plugins/self-learn/ui/templates/partials/pane_idle.html",
+      "reason": "other"
+    },
+    {
+      "path": "plugins/self-learn/ui/templates/partials/proposal_bar.html",
+      "reason": "other"
+    },
+    {
+      "path": "plugins/self-learn/ui/templates/report.html",
+      "reason": "other"
+    },
+    {
+      "path": "plugins/self-learn/ui/tests/conftest.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/ui/tests/fixtures/fake_claude.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/ui/tests/fixtures/fake_self_learn.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/ui/tests/support.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/ui/tests/test_app.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/ui/tests/test_cache_path.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/ui/tests/test_charter_content.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/ui/tests/test_cli.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/ui/tests/test_commit_drift.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/ui/tests/test_degradation_walk.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/ui/tests/test_doctrine.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/ui/tests/test_engine_base.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/ui/tests/test_engine_charter.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/ui/tests/test_engine_sdk.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/ui/tests/test_env.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/ui/tests/test_idle.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/ui/tests/test_iterate_routes.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/ui/tests/test_js_dom.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/ui/tests/test_js_dom_pane_persistence.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/ui/tests/test_keymap.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/ui/tests/test_launcher.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/ui/tests/test_ledger_cli.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/ui/tests/test_ledger_raw.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/ui/tests/test_ledger_watch.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/ui/tests/test_middleware.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/ui/tests/test_models_bucket.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/ui/tests/test_models_detail.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/ui/tests/test_models_front.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/ui/tests/test_notify.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/ui/tests/test_pane.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/ui/tests/test_pane_resume.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/ui/tests/test_prefetch.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/ui/tests/test_proposals.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/ui/tests/test_registration_wipe.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/ui/tests/test_rendering.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/ui/tests/test_routes.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/ui/tests/test_runner.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/ui/tests/test_runner_real.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/ui/tests/test_serve.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/ui/tests/test_service_unit.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/ui/tests/test_sse.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/ui/tests/test_static_assets.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/ui/tests/test_store.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/ui/tests/test_templates.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/ui/tests/test_unreadable_record.py",
+      "reason": "codeboardingignore"
+    },
+    {
+      "path": "plugins/self-learn/ui/tests/test_wrapper.py",
+      "reason": "codeboardingignore"
+    }
+  ],
+  "summary": {
+    "total_files": 284,
+    "analyzed": 51,
+    "not_analyzed": 233,
+    "not_analyzed_by_reason": {
+      "other": 116,
+      "codeboardingignore": 117
+    }
+  }
+}

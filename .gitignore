@@ -1,2 +1,9 @@
 .playwright-mcp/
 .claude/worktrees/
+
+# CodeBoarding: keep the diagram/report artifacts, drop regenerable local cache
+.codeboarding/cache/
+.codeboarding/logs/
+.codeboarding/*.lock
+.codeboarding/static_analysis.pkl
+.codeboarding/static_analysis.sha

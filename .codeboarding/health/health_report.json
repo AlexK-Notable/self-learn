@@ -1,0 +1,1282 @@
+{
+  "repository_name": "self-learn",
+  "timestamp": "2026-07-21T07:55:27.717782+00:00",
+  "overall_score": 0.9313821557503869,
+  "check_summaries": [
+    {
+      "check_name": "function_size",
+      "description": "Checks that functions/methods do not exceed line count thresholds",
+      "language": "javascript",
+      "check_type": "standard",
+      "total_entities_checked": 0,
+      "findings_count": 0,
+      "warning_count": 0,
+      "score": 1.0,
+      "finding_groups": []
+    },
+    {
+      "check_name": "fan_out",
+      "description": "Checks efferent coupling: how many other functions each function calls",
+      "language": "javascript",
+      "check_type": "standard",
+      "total_entities_checked": 58,
+      "findings_count": 1,
+      "warning_count": 1,
+      "score": 0.9827586206896551,
+      "finding_groups": [
+        {
+          "severity": "warning",
+          "threshold": 10,
+          "description": "Functions calling more than 10.0 other functions",
+          "entities": [
+            {
+              "entity_name": "plugins.self-learn.ui.static.app.<function>.onKeyDown",
+              "file_path": "plugins/self-learn/ui/static/app.js",
+              "line_start": 189,
+              "line_end": 242,
+              "metric_value": 11
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "check_name": "fan_in",
+      "description": "Checks afferent coupling: how many other functions call each function",
+      "language": "javascript",
+      "check_type": "standard",
+      "total_entities_checked": 58,
+      "findings_count": 0,
+      "warning_count": 0,
+      "score": 1.0,
+      "finding_groups": []
+    },
+    {
+      "check_name": "god_class",
+      "description": "Detects classes with too many methods, too much code, or too many outgoing dependencies",
+      "language": "javascript",
+      "check_type": "standard",
+      "total_entities_checked": 0,
+      "findings_count": 0,
+      "warning_count": 0,
+      "score": 1.0,
+      "finding_groups": []
+    },
+    {
+      "check_name": "circular_dependencies",
+      "description": "Detects circular dependencies between packages",
+      "language": "javascript",
+      "check_type": "circular_dependencies",
+      "cycles": [],
+      "packages_checked": 4,
+      "packages_in_cycles": 0
+    },
+    {
+      "check_name": "package_instability",
+      "description": "Computes Martin's instability metric (I = Ce / (Ca + Ce)) per package",
+      "language": "javascript",
+      "check_type": "standard",
+      "total_entities_checked": 0,
+      "findings_count": 0,
+      "warning_count": 0,
+      "score": 1.0,
+      "finding_groups": []
+    },
+    {
+      "check_name": "unused_code_diagnostics",
+      "description": "Detects unused imports, variables, functions, and dead code via LSP diagnostics",
+      "language": "javascript",
+      "check_type": "standard",
+      "total_entities_checked": 1,
+      "findings_count": 1,
+      "warning_count": 0,
+      "score": 0.95,
+      "finding_groups": [
+        {
+          "severity": "info",
+          "threshold": 0,
+          "description": "Variables declared but never used",
+          "entities": [
+            {
+              "entity_name": "[unused_variable] 'scope' is declared but its value is never read.",
+              "file_path": "plugins/self-learn/ui/static/app.js",
+              "line_start": 71,
+              "line_end": 71,
+              "metric_value": 0.0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "check_name": "function_size",
+      "description": "Checks that functions/methods do not exceed line count thresholds",
+      "language": "python",
+      "check_type": "standard",
+      "total_entities_checked": 0,
+      "findings_count": 0,
+      "warning_count": 0,
+      "score": 1.0,
+      "finding_groups": []
+    },
+    {
+      "check_name": "fan_out",
+      "description": "Checks efferent coupling: how many other functions each function calls",
+      "language": "python",
+      "check_type": "standard",
+      "total_entities_checked": 876,
+      "findings_count": 47,
+      "warning_count": 47,
+      "score": 0.9463470319634704,
+      "finding_groups": [
+        {
+          "severity": "warning",
+          "threshold": 10,
+          "description": "Functions calling more than 10.0 other functions",
+          "entities": [
+            {
+              "entity_name": "plugins.self-learn.cli.src.self_learn.verbs.route_direct",
+              "file_path": "plugins/self-learn/cli/src/self_learn/verbs.py",
+              "line_start": 1771,
+              "line_end": 2026,
+              "metric_value": 38
+            },
+            {
+              "entity_name": "plugins.self-learn.cli.src.self_learn.verbs.route",
+              "file_path": "plugins/self-learn/cli/src/self_learn/verbs.py",
+              "line_start": 1508,
+              "line_end": 1768,
+              "metric_value": 31
+            },
+            {
+              "entity_name": "plugins.self-learn.cli.src.self_learn.teach.run_teach",
+              "file_path": "plugins/self-learn/cli/src/self_learn/teach.py",
+              "line_start": 350,
+              "line_end": 596,
+              "metric_value": 30
+            },
+            {
+              "entity_name": "plugins.self-learn.cli.src.self_learn.cli._main",
+              "file_path": "plugins/self-learn/cli/src/self_learn/cli.py",
+              "line_start": 1533,
+              "line_end": 1669,
+              "metric_value": 28
+            },
+            {
+              "entity_name": "plugins.self-learn.cli.src.self_learn.miner._run_locked",
+              "file_path": "plugins/self-learn/cli/src/self_learn/miner.py",
+              "line_start": 1636,
+              "line_end": 1830,
+              "metric_value": 27
+            },
+            {
+              "entity_name": "plugins.self-learn.cli.src.self_learn.verbs.recompile",
+              "file_path": "plugins/self-learn/cli/src/self_learn/verbs.py",
+              "line_start": 2936,
+              "line_end": 3264,
+              "metric_value": 26
+            },
+            {
+              "entity_name": "plugins.self-learn.cli.src.self_learn.worker.run",
+              "file_path": "plugins/self-learn/cli/src/self_learn/worker.py",
+              "line_start": 1280,
+              "line_end": 1450,
+              "metric_value": 25
+            },
+            {
+              "entity_name": "plugins.self-learn.cli.src.self_learn.miner._reconcile_and_land",
+              "file_path": "plugins/self-learn/cli/src/self_learn/miner.py",
+              "line_start": 1104,
+              "line_end": 1319,
+              "metric_value": 24
+            },
+            {
+              "entity_name": "plugins.self-learn.cli.src.self_learn.verbs.supersede",
+              "file_path": "plugins/self-learn/cli/src/self_learn/verbs.py",
+              "line_start": 2516,
+              "line_end": 2620,
+              "metric_value": 20
+            },
+            {
+              "entity_name": "plugins.self-learn.ui.src.self_learn_ui.routes.action_confirm",
+              "file_path": "plugins/self-learn/ui/src/self_learn_ui/routes.py",
+              "line_start": 1132,
+              "line_end": 1235,
+              "metric_value": 20
+            },
+            {
+              "entity_name": "plugins.self-learn.cli.src.self_learn.ledger_ops.list_items",
+              "file_path": "plugins/self-learn/cli/src/self_learn/ledger_ops.py",
+              "line_start": 1031,
+              "line_end": 1070,
+              "metric_value": 19
+            },
+            {
+              "entity_name": "plugins.self-learn.cli.src.self_learn.verbs.commit_drift",
+              "file_path": "plugins/self-learn/cli/src/self_learn/verbs.py",
+              "line_start": 2100,
+              "line_end": 2249,
+              "metric_value": 18
+            },
+            {
+              "entity_name": "plugins.self-learn.cli.src.self_learn.teach._route_now",
+              "file_path": "plugins/self-learn/cli/src/self_learn/teach.py",
+              "line_start": 644,
+              "line_end": 783,
+              "metric_value": 17
+            },
+            {
+              "entity_name": "plugins.self-learn.ui.src.self_learn_ui.routes.bucket_page",
+              "file_path": "plugins/self-learn/ui/src/self_learn_ui/routes.py",
+              "line_start": 409,
+              "line_end": 489,
+              "metric_value": 17
+            },
+            {
+              "entity_name": "plugins.self-learn.ui.src.self_learn_ui.routes.detail_page",
+              "file_path": "plugins/self-learn/ui/src/self_learn_ui/routes.py",
+              "line_start": 504,
+              "line_end": 615,
+              "metric_value": 17
+            },
+            {
+              "entity_name": "plugins.self-learn.ui.src.self_learn_ui.routes.commit_drift_confirm",
+              "file_path": "plugins/self-learn/ui/src/self_learn_ui/routes.py",
+              "line_start": 1436,
+              "line_end": 1514,
+              "metric_value": 17
+            },
+            {
+              "entity_name": "plugins.self-learn.ui.src.self_learn_ui.routes.proposal_confirm",
+              "file_path": "plugins/self-learn/ui/src/self_learn_ui/routes.py",
+              "line_start": 1835,
+              "line_end": 1926,
+              "metric_value": 17
+            },
+            {
+              "entity_name": "plugins.self-learn.cli.src.self_learn.verbs.confirm_recurrence",
+              "file_path": "plugins/self-learn/cli/src/self_learn/verbs.py",
+              "line_start": 2668,
+              "line_end": 2748,
+              "metric_value": 16
+            },
+            {
+              "entity_name": "plugins.self-learn.cli.src.self_learn.verbs.rehome",
+              "file_path": "plugins/self-learn/cli/src/self_learn/verbs.py",
+              "line_start": 2342,
+              "line_end": 2434,
+              "metric_value": 15
+            },
+            {
+              "entity_name": "plugins.self-learn.cli.src.self_learn.verbs.graduate",
+              "file_path": "plugins/self-learn/cli/src/self_learn/verbs.py",
+              "line_start": 2437,
+              "line_end": 2513,
+              "metric_value": 15
+            },
+            {
+              "entity_name": "plugins.self-learn.cli.src.self_learn.verbs.confirm_held",
+              "file_path": "plugins/self-learn/cli/src/self_learn/verbs.py",
+              "line_start": 2751,
+              "line_end": 2790,
+              "metric_value": 15
+            },
+            {
+              "entity_name": "plugins.self-learn.cli.src.self_learn.report.gather",
+              "file_path": "plugins/self-learn/cli/src/self_learn/report.py",
+              "line_start": 232,
+              "line_end": 376,
+              "metric_value": 14
+            },
+            {
+              "entity_name": "plugins.self-learn.cli.src.self_learn.verbs.followup_done",
+              "file_path": "plugins/self-learn/cli/src/self_learn/verbs.py",
+              "line_start": 2623,
+              "line_end": 2665,
+              "metric_value": 14
+            },
+            {
+              "entity_name": "plugins.self-learn.cli.src.self_learn.verbs.link_contradicts",
+              "file_path": "plugins/self-learn/cli/src/self_learn/verbs.py",
+              "line_start": 2793,
+              "line_end": 2839,
+              "metric_value": 14
+            },
+            {
+              "entity_name": "plugins.self-learn.cli.src.self_learn.cli._cmd_verb",
+              "file_path": "plugins/self-learn/cli/src/self_learn/cli.py",
+              "line_start": 902,
+              "line_end": 1023,
+              "metric_value": 13
+            },
+            {
+              "entity_name": "plugins.self-learn.cli.src.self_learn.verbs.defer",
+              "file_path": "plugins/self-learn/cli/src/self_learn/verbs.py",
+              "line_start": 2284,
+              "line_end": 2318,
+              "metric_value": 13
+            },
+            {
+              "entity_name": "plugins.self-learn.cli.src.self_learn.worker._validate_written",
+              "file_path": "plugins/self-learn/cli/src/self_learn/worker.py",
+              "line_start": 861,
+              "line_end": 923,
+              "metric_value": 13
+            },
+            {
+              "entity_name": "plugins.self-learn.cli.src.self_learn.hosts.host_rebind",
+              "file_path": "plugins/self-learn/cli/src/self_learn/hosts.py",
+              "line_start": 403,
+              "line_end": 496,
+              "metric_value": 12
+            },
+            {
+              "entity_name": "plugins.self-learn.cli.src.self_learn.import_backlog.import_backlog",
+              "file_path": "plugins/self-learn/cli/src/self_learn/import_backlog.py",
+              "line_start": 186,
+              "line_end": 232,
+              "metric_value": 12
+            },
+            {
+              "entity_name": "plugins.self-learn.cli.src.self_learn.ledger_ops.resolve_record",
+              "file_path": "plugins/self-learn/cli/src/self_learn/ledger_ops.py",
+              "line_start": 693,
+              "line_end": 793,
+              "metric_value": 12
+            },
+            {
+              "entity_name": "plugins.self-learn.cli.src.self_learn.verbs._prepare_one_motion_hook",
+              "file_path": "plugins/self-learn/cli/src/self_learn/verbs.py",
+              "line_start": 766,
+              "line_end": 837,
+              "metric_value": 12
+            },
+            {
+              "entity_name": "plugins.self-learn.cli.src.self_learn.verbs._prepare_hook_route",
+              "file_path": "plugins/self-learn/cli/src/self_learn/verbs.py",
+              "line_start": 840,
+              "line_end": 915,
+              "metric_value": 12
+            },
+            {
+              "entity_name": "plugins.self-learn.ui.src.self_learn_ui.routes._gather_detail_bundle",
+              "file_path": "plugins/self-learn/ui/src/self_learn_ui/routes.py",
+              "line_start": 254,
+              "line_end": 311,
+              "metric_value": 12
+            },
+            {
+              "entity_name": "plugins.self-learn.cli.src.self_learn.import_backlog._import_entries",
+              "file_path": "plugins/self-learn/cli/src/self_learn/import_backlog.py",
+              "line_start": 235,
+              "line_end": 293,
+              "metric_value": 11
+            },
+            {
+              "entity_name": "plugins.self-learn.cli.src.self_learn.miner.run",
+              "file_path": "plugins/self-learn/cli/src/self_learn/miner.py",
+              "line_start": 1571,
+              "line_end": 1633,
+              "metric_value": 11
+            },
+            {
+              "entity_name": "plugins.self-learn.cli.src.self_learn.selfcheck._check_drift",
+              "file_path": "plugins/self-learn/cli/src/self_learn/selfcheck.py",
+              "line_start": 261,
+              "line_end": 357,
+              "metric_value": 11
+            },
+            {
+              "entity_name": "plugins.self-learn.ui.src.self_learn_ui.models.build_bucket_model",
+              "file_path": "plugins/self-learn/ui/src/self_learn_ui/models.py",
+              "line_start": 846,
+              "line_end": 935,
+              "metric_value": 11
+            },
+            {
+              "entity_name": "plugins.self-learn.ui.src.self_learn_ui.routes.proposal_arm",
+              "file_path": "plugins/self-learn/ui/src/self_learn_ui/routes.py",
+              "line_start": 1761,
+              "line_end": 1799,
+              "metric_value": 11
+            },
+            {
+              "entity_name": "plugins.self-learn.cli.src.self_learn.analyst.analyze",
+              "file_path": "plugins/self-learn/cli/src/self_learn/analyst.py",
+              "line_start": 161,
+              "line_end": 204,
+              "metric_value": 10
+            },
+            {
+              "entity_name": "plugins.self-learn.cli.src.self_learn.import_memory._import_topics",
+              "file_path": "plugins/self-learn/cli/src/self_learn/import_memory.py",
+              "line_start": 138,
+              "line_end": 187,
+              "metric_value": 10
+            },
+            {
+              "entity_name": "plugins.self-learn.cli.src.self_learn.verbs._resolve_target",
+              "file_path": "plugins/self-learn/cli/src/self_learn/verbs.py",
+              "line_start": 543,
+              "line_end": 674,
+              "metric_value": 10
+            },
+            {
+              "entity_name": "plugins.self-learn.cli.src.self_learn.verbs.reject",
+              "file_path": "plugins/self-learn/cli/src/self_learn/verbs.py",
+              "line_start": 2252,
+              "line_end": 2281,
+              "metric_value": 10
+            },
+            {
+              "entity_name": "plugins.self-learn.ui.src.self_learn_ui.app.create_app",
+              "file_path": "plugins/self-learn/ui/src/self_learn_ui/app.py",
+              "line_start": 63,
+              "line_end": 163,
+              "metric_value": 10
+            },
+            {
+              "entity_name": "plugins.self-learn.ui.src.self_learn_ui.models.build_front_model",
+              "file_path": "plugins/self-learn/ui/src/self_learn_ui/models.py",
+              "line_start": 660,
+              "line_end": 751,
+              "metric_value": 10
+            },
+            {
+              "entity_name": "plugins.self-learn.ui.src.self_learn_ui.models.build_detail_model",
+              "file_path": "plugins/self-learn/ui/src/self_learn_ui/models.py",
+              "line_start": 1234,
+              "line_end": 1277,
+              "metric_value": 10
+            },
+            {
+              "entity_name": "plugins.self-learn.ui.src.self_learn_ui.pane.build_bucket_pane_context",
+              "file_path": "plugins/self-learn/ui/src/self_learn_ui/pane.py",
+              "line_start": 485,
+              "line_end": 535,
+              "metric_value": 10
+            },
+            {
+              "entity_name": "plugins.self-learn.ui.src.self_learn_ui.pane.PaneManager._handle_event",
+              "file_path": "plugins/self-learn/ui/src/self_learn_ui/pane.py",
+              "line_start": 1451,
+              "line_end": 1540,
+              "metric_value": 10
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "check_name": "fan_in",
+      "description": "Checks afferent coupling: how many other functions call each function",
+      "language": "python",
+      "check_type": "standard",
+      "total_entities_checked": 876,
+      "findings_count": 35,
+      "warning_count": 35,
+      "score": 0.9600456621004566,
+      "finding_groups": [
+        {
+          "severity": "warning",
+          "threshold": 10,
+          "description": "Functions called by more than 10.0 other functions",
+          "entities": [
+            {
+              "entity_name": "plugins.self-learn.cli.src.self_learn.records.Record.id",
+              "file_path": "plugins/self-learn/cli/src/self_learn/records.py",
+              "line_start": 230,
+              "line_end": 231,
+              "metric_value": 39
+            },
+            {
+              "entity_name": "plugins.self-learn.cli.src.self_learn.records.Record.from_path",
+              "file_path": "plugins/self-learn/cli/src/self_learn/records.py",
+              "line_start": 161,
+              "line_end": 162,
+              "metric_value": 35
+            },
+            {
+              "entity_name": "plugins.self-learn.ui.src.self_learn_ui.routes._render",
+              "file_path": "plugins/self-learn/ui/src/self_learn_ui/routes.py",
+              "line_start": 369,
+              "line_end": 371,
+              "metric_value": 34
+            },
+            {
+              "entity_name": "plugins.self-learn.cli.src.self_learn.ledger.discover_buckets",
+              "file_path": "plugins/self-learn/cli/src/self_learn/ledger.py",
+              "line_start": 126,
+              "line_end": 144,
+              "metric_value": 27
+            },
+            {
+              "entity_name": "plugins.self-learn.cli.src.self_learn.ledger.resolve_home",
+              "file_path": "plugins/self-learn/cli/src/self_learn/ledger.py",
+              "line_start": 44,
+              "line_end": 47,
+              "metric_value": 26
+            },
+            {
+              "entity_name": "plugins.self-learn.cli.src.self_learn.records.Record.status",
+              "file_path": "plugins/self-learn/cli/src/self_learn/records.py",
+              "line_start": 250,
+              "line_end": 251,
+              "metric_value": 24
+            },
+            {
+              "entity_name": "plugins.self-learn.ui.src.self_learn_ui.routes._pane_manager",
+              "file_path": "plugins/self-learn/ui/src/self_learn_ui/routes.py",
+              "line_start": 359,
+              "line_end": 366,
+              "metric_value": 23
+            },
+            {
+              "entity_name": "plugins.self-learn.cli.src.self_learn.gitops.commit_lock",
+              "file_path": "plugins/self-learn/cli/src/self_learn/gitops.py",
+              "line_start": 393,
+              "line_end": 459,
+              "metric_value": 21
+            },
+            {
+              "entity_name": "plugins.self-learn.cli.src.self_learn.hosts.load_hosts",
+              "file_path": "plugins/self-learn/cli/src/self_learn/hosts.py",
+              "line_start": 119,
+              "line_end": 155,
+              "metric_value": 20
+            },
+            {
+              "entity_name": "plugins.self-learn.cli.src.self_learn.ledger_ops.find_record_path",
+              "file_path": "plugins/self-learn/cli/src/self_learn/ledger_ops.py",
+              "line_start": 331,
+              "line_end": 342,
+              "metric_value": 20
+            },
+            {
+              "entity_name": "plugins.self-learn.cli.src.self_learn.records.Record.scope",
+              "file_path": "plugins/self-learn/cli/src/self_learn/records.py",
+              "line_start": 238,
+              "line_end": 239,
+              "metric_value": 20
+            },
+            {
+              "entity_name": "plugins.self-learn.cli.src.self_learn.sentinel.heartbeat",
+              "file_path": "plugins/self-learn/cli/src/self_learn/sentinel.py",
+              "line_start": 115,
+              "line_end": 123,
+              "metric_value": 18
+            },
+            {
+              "entity_name": "plugins.self-learn.cli.src.self_learn.records.Record.routing",
+              "file_path": "plugins/self-learn/cli/src/self_learn/records.py",
+              "line_start": 267,
+              "line_end": 269,
+              "metric_value": 17
+            },
+            {
+              "entity_name": "plugins.self-learn.cli.src.self_learn.sentinel.SentinelHold.release",
+              "file_path": "plugins/self-learn/cli/src/self_learn/sentinel.py",
+              "line_start": 87,
+              "line_end": 95,
+              "metric_value": 17
+            },
+            {
+              "entity_name": "plugins.self-learn.cli.src.self_learn.sentinel.hold",
+              "file_path": "plugins/self-learn/cli/src/self_learn/sentinel.py",
+              "line_start": 98,
+              "line_end": 112,
+              "metric_value": 17
+            },
+            {
+              "entity_name": "plugins.self-learn.ui.src.self_learn_ui.uilog.log",
+              "file_path": "plugins/self-learn/ui/src/self_learn_ui/uilog.py",
+              "line_start": 63,
+              "line_end": 77,
+              "metric_value": 17
+            },
+            {
+              "entity_name": "plugins.self-learn.cli.src.self_learn.gitops._git",
+              "file_path": "plugins/self-learn/cli/src/self_learn/gitops.py",
+              "line_start": 209,
+              "line_end": 225,
+              "metric_value": 16
+            },
+            {
+              "entity_name": "plugins.self-learn.ui.src.self_learn_ui.pane.PaneManager.snapshot",
+              "file_path": "plugins/self-learn/ui/src/self_learn_ui/pane.py",
+              "line_start": 842,
+              "line_end": 876,
+              "metric_value": 16
+            },
+            {
+              "entity_name": "plugins.self-learn.ui.src.self_learn_ui.routes._pane_not_wired",
+              "file_path": "plugins/self-learn/ui/src/self_learn_ui/routes.py",
+              "line_start": 628,
+              "line_end": 636,
+              "metric_value": 16
+            },
+            {
+              "entity_name": "plugins.self-learn.cli.src.self_learn.miner.miner_dir",
+              "file_path": "plugins/self-learn/cli/src/self_learn/miner.py",
+              "line_start": 136,
+              "line_end": 139,
+              "metric_value": 15
+            },
+            {
+              "entity_name": "plugins.self-learn.ui.src.self_learn_ui.routes._home",
+              "file_path": "plugins/self-learn/ui/src/self_learn_ui/routes.py",
+              "line_start": 355,
+              "line_end": 356,
+              "metric_value": 15
+            },
+            {
+              "entity_name": "plugins.self-learn.cli.src.self_learn.gitops.push_if_remote",
+              "file_path": "plugins/self-learn/cli/src/self_learn/gitops.py",
+              "line_start": 651,
+              "line_end": 659,
+              "metric_value": 14
+            },
+            {
+              "entity_name": "plugins.self-learn.cli.src.self_learn.gitops.commit",
+              "file_path": "plugins/self-learn/cli/src/self_learn/gitops.py",
+              "line_start": 490,
+              "line_end": 521,
+              "metric_value": 12
+            },
+            {
+              "entity_name": "plugins.self-learn.cli.src.self_learn.verbs._scan_or_refuse",
+              "file_path": "plugins/self-learn/cli/src/self_learn/verbs.py",
+              "line_start": 272,
+              "line_end": 292,
+              "metric_value": 12
+            },
+            {
+              "entity_name": "plugins.self-learn.cli.src.self_learn.ledger_ops.record_title",
+              "file_path": "plugins/self-learn/cli/src/self_learn/ledger_ops.py",
+              "line_start": 999,
+              "line_end": 1010,
+              "metric_value": 11
+            },
+            {
+              "entity_name": "plugins.self-learn.cli.src.self_learn.normalize.sha_anchor",
+              "file_path": "plugins/self-learn/cli/src/self_learn/normalize.py",
+              "line_start": 57,
+              "line_end": 60,
+              "metric_value": 11
+            },
+            {
+              "entity_name": "plugins.self-learn.cli.src.self_learn.records.Record.write",
+              "file_path": "plugins/self-learn/cli/src/self_learn/records.py",
+              "line_start": 224,
+              "line_end": 225,
+              "metric_value": 11
+            },
+            {
+              "entity_name": "plugins.self-learn.cli.src.self_learn.records.Record.body",
+              "file_path": "plugins/self-learn/cli/src/self_learn/records.py",
+              "line_start": 352,
+              "line_end": 353,
+              "metric_value": 11
+            },
+            {
+              "entity_name": "plugins.self-learn.cli.src.self_learn.verbs._ledger_write",
+              "file_path": "plugins/self-learn/cli/src/self_learn/verbs.py",
+              "line_start": 324,
+              "line_end": 347,
+              "metric_value": 11
+            },
+            {
+              "entity_name": "plugins.self-learn.cli.src.self_learn.worker._p",
+              "file_path": "plugins/self-learn/cli/src/self_learn/worker.py",
+              "line_start": 199,
+              "line_end": 200,
+              "metric_value": 11
+            },
+            {
+              "entity_name": "plugins.self-learn.ui.src.self_learn_ui.ledger.locate_record",
+              "file_path": "plugins/self-learn/ui/src/self_learn_ui/ledger.py",
+              "line_start": 216,
+              "line_end": 236,
+              "metric_value": 11
+            },
+            {
+              "entity_name": "plugins.self-learn.cli.src.self_learn.cli._home_gate",
+              "file_path": "plugins/self-learn/cli/src/self_learn/cli.py",
+              "line_start": 495,
+              "line_end": 508,
+              "metric_value": 10
+            },
+            {
+              "entity_name": "plugins.self-learn.cli.src.self_learn.gitops.stage",
+              "file_path": "plugins/self-learn/cli/src/self_learn/gitops.py",
+              "line_start": 289,
+              "line_end": 296,
+              "metric_value": 10
+            },
+            {
+              "entity_name": "plugins.self-learn.cli.src.self_learn.records.Record.type",
+              "file_path": "plugins/self-learn/cli/src/self_learn/records.py",
+              "line_start": 234,
+              "line_end": 235,
+              "metric_value": 10
+            },
+            {
+              "entity_name": "plugins.self-learn.ui.src.self_learn_ui.routes._bucket_pane_key",
+              "file_path": "plugins/self-learn/ui/src/self_learn_ui/routes.py",
+              "line_start": 1939,
+              "line_end": 1940,
+              "metric_value": 10
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "check_name": "god_class",
+      "description": "Detects classes with too many methods, too much code, or too many outgoing dependencies",
+      "language": "python",
+      "check_type": "standard",
+      "total_entities_checked": 21,
+      "findings_count": 3,
+      "warning_count": 3,
+      "score": 0.8571428571428571,
+      "finding_groups": [
+        {
+          "severity": "warning",
+          "threshold": 25,
+          "description": "Classes exceeding god class criteria (methods, LOC, or fan-out)",
+          "entities": [
+            {
+              "entity_name": "plugins.self-learn.ui.src.self_learn_ui.pane.PaneManager",
+              "file_path": "plugins/self-learn/ui/src/self_learn_ui/pane.py",
+              "metric_value": 802.0
+            },
+            {
+              "entity_name": "plugins.self-learn.cli.src.self_learn.records.Record",
+              "file_path": "plugins/self-learn/cli/src/self_learn/records.py",
+              "metric_value": 615.0
+            },
+            {
+              "entity_name": "plugins.self-learn.ui.src.self_learn_ui.store.PaneTranscriptStore",
+              "file_path": "plugins/self-learn/ui/src/self_learn_ui/store.py",
+              "metric_value": 52.0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "check_name": "circular_dependencies",
+      "description": "Detects circular dependencies between packages",
+      "language": "python",
+      "check_type": "circular_dependencies",
+      "cycles": [
+        "plugins.self-learn.ui.src.self_learn_ui -> plugins.self-learn.ui.src.self_learn_ui.engine -> plugins.self-learn.ui.src.self_learn_ui"
+      ],
+      "packages_checked": 3,
+      "packages_in_cycles": 2
+    },
+    {
+      "check_name": "package_instability",
+      "description": "Computes Martin's instability metric (I = Ce / (Ca + Ce)) per package",
+      "language": "python",
+      "check_type": "standard",
+      "total_entities_checked": 2,
+      "findings_count": 0,
+      "warning_count": 0,
+      "score": 1.0,
+      "finding_groups": []
+    },
+    {
+      "check_name": "unused_code_diagnostics",
+      "description": "Detects unused imports, variables, functions, and dead code via LSP diagnostics",
+      "language": "python",
+      "check_type": "standard",
+      "total_entities_checked": 47,
+      "findings_count": 47,
+      "warning_count": 4,
+      "score": 0.0,
+      "finding_groups": [
+        {
+          "severity": "info",
+          "threshold": 0,
+          "description": "Variables declared but never used",
+          "entities": [
+            {
+              "entity_name": "[unused_variable] \"home\" is not accessed",
+              "file_path": "plugins/self-learn/cli/src/self_learn/analyst.py",
+              "line_start": 161,
+              "line_end": 161,
+              "metric_value": 0.0
+            },
+            {
+              "entity_name": "[unused_variable] \"_bad\" is not accessed",
+              "file_path": "plugins/self-learn/cli/src/self_learn/ledger_ops.py",
+              "line_start": 944,
+              "line_end": 944,
+              "metric_value": 0.0
+            },
+            {
+              "entity_name": "[unused_variable] \"_mtime\" is not accessed",
+              "file_path": "plugins/self-learn/cli/src/self_learn/miner.py",
+              "line_start": 339,
+              "line_end": 339,
+              "metric_value": 0.0
+            },
+            {
+              "entity_name": "[unused_variable] \"_halt\" is not accessed",
+              "file_path": "plugins/self-learn/cli/src/self_learn/miner.py",
+              "line_start": 1782,
+              "line_end": 1782,
+              "metric_value": 0.0
+            },
+            {
+              "entity_name": "[unused_variable] \"_data\" is not accessed",
+              "file_path": "plugins/self-learn/cli/src/self_learn/records.py",
+              "line_start": 113,
+              "line_end": 113,
+              "metric_value": 0.0
+            },
+            {
+              "entity_name": "[unused_variable] \"_entries\" is not accessed",
+              "file_path": "plugins/self-learn/cli/src/self_learn/records.py",
+              "line_start": 615,
+              "line_end": 615,
+              "metric_value": 0.0
+            },
+            {
+              "entity_name": "[unused_variable] \"_index\" is not accessed",
+              "file_path": "plugins/self-learn/cli/src/self_learn/records.py",
+              "line_start": 618,
+              "line_end": 618,
+              "metric_value": 0.0
+            },
+            {
+              "entity_name": "[unused_variable] \"_index\" is not accessed",
+              "file_path": "plugins/self-learn/cli/src/self_learn/records.py",
+              "line_start": 621,
+              "line_end": 621,
+              "metric_value": 0.0
+            },
+            {
+              "entity_name": "[unused_variable] \"_fh\" is not accessed",
+              "file_path": "plugins/self-learn/cli/src/self_learn/telemetry.py",
+              "line_start": 270,
+              "line_end": 270,
+              "metric_value": 0.0
+            },
+            {
+              "entity_name": "[unused_variable] \"_path\" is not accessed",
+              "file_path": "plugins/self-learn/cli/src/self_learn/telemetry.py",
+              "line_start": 307,
+              "line_end": 307,
+              "metric_value": 0.0
+            },
+            {
+              "entity_name": "[unused_variable] \"home\" is not accessed",
+              "file_path": "plugins/self-learn/cli/src/self_learn/verbs.py",
+              "line_start": 971,
+              "line_end": 971,
+              "metric_value": 0.0
+            },
+            {
+              "entity_name": "[unused_variable] \"home\" is not accessed",
+              "file_path": "plugins/self-learn/cli/src/self_learn/verbs.py",
+              "line_start": 1482,
+              "line_end": 1482,
+              "metric_value": 0.0
+            },
+            {
+              "entity_name": "[unused_variable] \"_repo\" is not accessed",
+              "file_path": "plugins/self-learn/cli/src/self_learn/verbs.py",
+              "line_start": 2851,
+              "line_end": 2851,
+              "metric_value": 0.0
+            },
+            {
+              "entity_name": "[unused_variable] \"_repo\" is not accessed",
+              "file_path": "plugins/self-learn/cli/src/self_learn/verbs.py",
+              "line_start": 2855,
+              "line_end": 2855,
+              "metric_value": 0.0
+            },
+            {
+              "entity_name": "[unused_variable] \"_repo\" is not accessed",
+              "file_path": "plugins/self-learn/cli/src/self_learn/verbs.py",
+              "line_start": 2859,
+              "line_end": 2859,
+              "metric_value": 0.0
+            },
+            {
+              "entity_name": "[unused_variable] \"_commit_run\" is not accessed",
+              "file_path": "plugins/self-learn/cli/src/self_learn/worker.py",
+              "line_start": 706,
+              "line_end": 706,
+              "metric_value": 0.0
+            },
+            {
+              "entity_name": "[unused_variable] \"home\" is not accessed",
+              "file_path": "plugins/self-learn/cli/src/self_learn/worker.py",
+              "line_start": 311,
+              "line_end": 311,
+              "metric_value": 0.0
+            },
+            {
+              "entity_name": "[unused_variable] \"_ad\" is not accessed",
+              "file_path": "plugins/self-learn/cli/src/self_learn/worker.py",
+              "line_start": 513,
+              "line_end": 513,
+              "metric_value": 0.0
+            },
+            {
+              "entity_name": "[unused_variable] \"home\" is not accessed",
+              "file_path": "plugins/self-learn/cli/src/self_learn/worker.py",
+              "line_start": 677,
+              "line_end": 677,
+              "metric_value": 0.0
+            },
+            {
+              "entity_name": "[unused_variable] \"_token\" is not accessed",
+              "file_path": "plugins/self-learn/ui/src/self_learn_ui/cli.py",
+              "line_start": 115,
+              "line_end": 115,
+              "metric_value": 0.0
+            },
+            {
+              "entity_name": "[unused_variable] \"_change\" is not accessed",
+              "file_path": "plugins/self-learn/ui/src/self_learn_ui/ledger.py",
+              "line_start": 531,
+              "line_end": 531,
+              "metric_value": 0.0
+            },
+            {
+              "entity_name": "[unused_variable] \"_err\" is not accessed",
+              "file_path": "plugins/self-learn/ui/src/self_learn_ui/pane.py",
+              "line_start": 389,
+              "line_end": 389,
+              "metric_value": 0.0
+            },
+            {
+              "entity_name": "[unused_variable] \"rendering\" is not accessed",
+              "file_path": "plugins/self-learn/ui/src/self_learn_ui/routes.py",
+              "line_start": 36,
+              "line_end": 36,
+              "metric_value": 0.0
+            },
+            {
+              "entity_name": "[unused_variable] \"envelope_banner\" is not accessed",
+              "file_path": "plugins/self-learn/ui/src/self_learn_ui/routes.py",
+              "line_start": 39,
+              "line_end": 39,
+              "metric_value": 0.0
+            },
+            {
+              "entity_name": "[unused_variable] \"_err\" is not accessed",
+              "file_path": "plugins/self-learn/ui/src/self_learn_ui/routes.py",
+              "line_start": 293,
+              "line_end": 293,
+              "metric_value": 0.0
+            },
+            {
+              "entity_name": "[unused_variable] \"_err\" is not accessed",
+              "file_path": "plugins/self-learn/ui/src/self_learn_ui/routes.py",
+              "line_start": 423,
+              "line_end": 423,
+              "metric_value": 0.0
+            },
+            {
+              "entity_name": "[unused_variable] \"_note\" is not accessed",
+              "file_path": "plugins/self-learn/ui/src/self_learn_ui/routes.py",
+              "line_start": 1052,
+              "line_end": 1052,
+              "metric_value": 0.0
+            },
+            {
+              "entity_name": "[unused_variable] \"_err\" is not accessed",
+              "file_path": "plugins/self-learn/ui/src/self_learn_ui/routes.py",
+              "line_start": 1259,
+              "line_end": 1259,
+              "metric_value": 0.0
+            },
+            {
+              "entity_name": "[unused_variable] \"_bucket\" is not accessed",
+              "file_path": "plugins/self-learn/ui/src/self_learn_ui/routes.py",
+              "line_start": 1630,
+              "line_end": 1630,
+              "metric_value": 0.0
+            },
+            {
+              "entity_name": "[unused_variable] \"_bucket\" is not accessed",
+              "file_path": "plugins/self-learn/ui/src/self_learn_ui/routes.py",
+              "line_start": 1669,
+              "line_end": 1669,
+              "metric_value": 0.0
+            },
+            {
+              "entity_name": "[unused_variable] \"home\" is not accessed",
+              "file_path": "plugins/self-learn/ui/src/self_learn_ui/routes.py",
+              "line_start": 2101,
+              "line_end": 2101,
+              "metric_value": 0.0
+            },
+            {
+              "entity_name": "[unused_variable] \"field\" is not accessed",
+              "file_path": "plugins/self-learn/ui/src/self_learn_ui/runner.py",
+              "line_start": 38,
+              "line_end": 38,
+              "metric_value": 0.0
+            },
+            {
+              "entity_name": "[unused_variable] \"argv\" is not accessed",
+              "file_path": "plugins/self-learn/ui/src/self_learn_ui/runner.py",
+              "line_start": 98,
+              "line_end": 98,
+              "metric_value": 0.0
+            },
+            {
+              "entity_name": "[unused_variable] \"record_id\" is not accessed",
+              "file_path": "plugins/self-learn/ui/src/self_learn_ui/runner.py",
+              "line_start": 194,
+              "line_end": 194,
+              "metric_value": 0.0
+            },
+            {
+              "entity_name": "[unused_variable] \"_TERMINAL_STATUSES\" is not accessed",
+              "file_path": "plugins/self-learn/ui/src/self_learn_ui/store.py",
+              "line_start": 76,
+              "line_end": 76,
+              "metric_value": 0.0
+            },
+            {
+              "entity_name": "[unused_variable] \"context\" is not accessed",
+              "file_path": "plugins/self-learn/ui/src/self_learn_ui/engine/charter.py",
+              "line_start": 225,
+              "line_end": 225,
+              "metric_value": 0.0
+            }
+          ]
+        },
+        {
+          "severity": "info",
+          "threshold": 0,
+          "description": "Code that cannot be reached during execution",
+          "entities": [
+            {
+              "entity_name": "[unreachable_code] Type analysis indicates code is unreachable",
+              "file_path": "plugins/self-learn/cli/src/self_learn/ledger_ops.py",
+              "line_start": 521,
+              "line_end": 521,
+              "metric_value": 0.0
+            },
+            {
+              "entity_name": "[unreachable_code] Type analysis indicates code is unreachable",
+              "file_path": "plugins/self-learn/cli/src/self_learn/ledger_ops.py",
+              "line_start": 572,
+              "line_end": 572,
+              "metric_value": 0.0
+            },
+            {
+              "entity_name": "[unreachable_code] Type analysis indicates code is unreachable",
+              "file_path": "plugins/self-learn/cli/src/self_learn/records.py",
+              "line_start": 473,
+              "line_end": 473,
+              "metric_value": 0.0
+            },
+            {
+              "entity_name": "[unreachable_code] Type analysis indicates code is unreachable",
+              "file_path": "plugins/self-learn/cli/src/self_learn/records.py",
+              "line_start": 491,
+              "line_end": 491,
+              "metric_value": 0.0
+            },
+            {
+              "entity_name": "[unreachable_code] Type analysis indicates code is unreachable",
+              "file_path": "plugins/self-learn/ui/src/self_learn_ui/routes.py",
+              "line_start": 151,
+              "line_end": 151,
+              "metric_value": 0.0
+            },
+            {
+              "entity_name": "[unreachable_code] Code is unreachable",
+              "file_path": "plugins/self-learn/ui/src/self_learn_ui/engine/base.py",
+              "line_start": 149,
+              "line_end": 149,
+              "metric_value": 0.0
+            },
+            {
+              "entity_name": "[unreachable_code] Code is unreachable",
+              "file_path": "plugins/self-learn/ui/src/self_learn_ui/engine/base.py",
+              "line_start": 155,
+              "line_end": 155,
+              "metric_value": 0.0
+            }
+          ]
+        },
+        {
+          "severity": "warning",
+          "threshold": 0,
+          "description": "Functions/methods defined but never called",
+          "entities": [
+            {
+              "entity_name": "[unused_function] Function \"_commit_run\" is not accessed",
+              "file_path": "plugins/self-learn/cli/src/self_learn/worker.py",
+              "line_start": 706,
+              "line_end": 706,
+              "metric_value": 0.0
+            }
+          ]
+        },
+        {
+          "severity": "warning",
+          "threshold": 0,
+          "description": "Unused import statements that should be removed",
+          "entities": [
+            {
+              "entity_name": "[unused_import] Import \"rendering\" is not accessed",
+              "file_path": "plugins/self-learn/ui/src/self_learn_ui/routes.py",
+              "line_start": 36,
+              "line_end": 36,
+              "metric_value": 0.0
+            },
+            {
+              "entity_name": "[unused_import] Import \"envelope_banner\" is not accessed",
+              "file_path": "plugins/self-learn/ui/src/self_learn_ui/routes.py",
+              "line_start": 39,
+              "line_end": 39,
+              "metric_value": 0.0
+            },
+            {
+              "entity_name": "[unused_import] Import \"field\" is not accessed",
+              "file_path": "plugins/self-learn/ui/src/self_learn_ui/runner.py",
+              "line_start": 38,
+              "line_end": 38,
+              "metric_value": 0.0
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "file_summaries": [
+    {
+      "file_path": "plugins/self-learn/cli/src/self_learn/verbs.py",
+      "total_findings": 23,
+      "warning_findings": 18,
+      "composite_risk_score": 100.0
+    },
+    {
+      "file_path": "plugins/self-learn/ui/src/self_learn_ui/routes.py",
+      "total_findings": 24,
+      "warning_findings": 14,
+      "composite_risk_score": 100.0
+    },
+    {
+      "file_path": "plugins/self-learn/cli/src/self_learn/records.py",
+      "total_findings": 15,
+      "warning_findings": 9,
+      "composite_risk_score": 95.0
+    },
+    {
+      "file_path": "plugins/self-learn/cli/src/self_learn/gitops.py",
+      "total_findings": 5,
+      "warning_findings": 5,
+      "composite_risk_score": 75.0
+    },
+    {
+      "file_path": "plugins/self-learn/cli/src/self_learn/miner.py",
+      "total_findings": 6,
+      "warning_findings": 4,
+      "composite_risk_score": 70.0
+    },
+    {
+      "file_path": "plugins/self-learn/cli/src/self_learn/worker.py",
+      "total_findings": 8,
+      "warning_findings": 4,
+      "composite_risk_score": 70.0
+    },
+    {
+      "file_path": "plugins/self-learn/cli/src/self_learn/ledger_ops.py",
+      "total_findings": 7,
+      "warning_findings": 4,
+      "composite_risk_score": 70.0
+    },
+    {
+      "file_path": "plugins/self-learn/ui/src/self_learn_ui/pane.py",
+      "total_findings": 5,
+      "warning_findings": 4,
+      "composite_risk_score": 70.0
+    },
+    {
+      "file_path": "plugins/self-learn/cli/src/self_learn/cli.py",
+      "total_findings": 3,
+      "warning_findings": 3,
+      "composite_risk_score": 45.0
+    },
+    {
+      "file_path": "plugins/self-learn/ui/src/self_learn_ui/models.py",
+      "total_findings": 3,
+      "warning_findings": 3,
+      "composite_risk_score": 45.0
+    },
+    {
+      "file_path": "plugins/self-learn/cli/src/self_learn/sentinel.py",
+      "total_findings": 3,
+      "warning_findings": 3,
+      "composite_risk_score": 45.0
+    },
+    {
+      "file_path": "plugins/self-learn/ui/src/self_learn_ui/runner.py",
+      "total_findings": 4,
+      "warning_findings": 1,
+      "composite_risk_score": 45.0
+    },
+    {
+      "file_path": "plugins/self-learn/cli/src/self_learn/teach.py",
+      "total_findings": 2,
+      "warning_findings": 2,
+      "composite_risk_score": 30.0
+    },
+    {
+      "file_path": "plugins/self-learn/cli/src/self_learn/hosts.py",
+      "total_findings": 2,
+      "warning_findings": 2,
+      "composite_risk_score": 30.0
+    },
+    {
+      "file_path": "plugins/self-learn/cli/src/self_learn/import_backlog.py",
+      "total_findings": 2,
+      "warning_findings": 2,
+      "composite_risk_score": 30.0
+    },
+    {
+      "file_path": "plugins/self-learn/cli/src/self_learn/ledger.py",
+      "total_findings": 2,
+      "warning_findings": 2,
+      "composite_risk_score": 30.0
+    },
+    {
+      "file_path": "plugins/self-learn/ui/static/app.js",
+      "total_findings": 2,
+      "warning_findings": 1,
+      "composite_risk_score": 25.0
+    },
+    {
+      "file_path": "plugins/self-learn/cli/src/self_learn/analyst.py",
+      "total_findings": 2,
+      "warning_findings": 1,
+      "composite_risk_score": 25.0
+    },
+    {
+      "file_path": "plugins/self-learn/ui/src/self_learn_ui/ledger.py",
+      "total_findings": 2,
+      "warning_findings": 1,
+      "composite_risk_score": 25.0
+    },
+    {
+      "file_path": "plugins/self-learn/ui/src/self_learn_ui/store.py",
+      "total_findings": 2,
+      "warning_findings": 1,
+      "composite_risk_score": 25.0
+    }
+  ]
+}
