@@ -16,13 +16,15 @@ import pytest
 from self_learn import cli, gitops, telemetry, verbs, worker
 from self_learn.hosts import (
     HostsError,
+    _is_git_repo,
     host_add,
     host_rebind,
     host_remove,
+    is_repo_root,
     load_hosts,
     slug_for,
 )
-from self_learn.ledger import home_state
+from self_learn.ledger import home_state, home_state_message
 from self_learn.ledger_ops import (
     LedgerOpsError,
     bucket_dir_for_scope,
@@ -1087,3 +1089,129 @@ class TestHomeState:
         ]
         assert entries[-1]["status"] == "failed"
         assert "does not exist" in entries[-1]["reason"]
+
+
+# --------------------------- home-state-repo-root-spec.md (O-1/O-2/O-3)
+
+
+class TestHomeStateRepoRoot:
+    """A ledger home nested inside an UNRELATED parent repo's work tree
+    must not read as a repo at all (`git rev-parse --is-inside-work-tree`
+    answers TRUE for it, which is the coarse predicate's leak this spec
+    closes) — it must classify `not-a-repo`, same as no repo at all. The
+    bounded git probes (`is_repo_root`, `_is_git_repo`, and the
+    `home_state_message` nested-naming probe) must refuse, never hang or
+    raise, on a timeout."""
+
+    def test_t1_nested_unrooted_home_is_not_a_repo(self, tmp_path):
+        parent = tmp_path / "parent"
+        init_repo(parent)
+        (parent / "README.md").write_text("parent\n", encoding="utf-8")
+        commit_all(parent, "parent seed")
+        nested = parent / "ledger"
+        nested.mkdir()  # never its own `git init`
+
+        assert home_state(nested) == "not-a-repo"
+
+    def test_t2_nested_message_names_the_parent(self, tmp_path):
+        parent = tmp_path / "parent"
+        init_repo(parent)
+        (parent / "README.md").write_text("parent\n", encoding="utf-8")
+        commit_all(parent, "parent seed")
+        nested = parent / "ledger"
+        nested.mkdir()
+
+        msg = home_state_message("not-a-repo", nested)
+
+        # Assert on tokens UNIQUE to the O-2 nested branch — not the bare
+        # parent path, which is a prefix substring of the home path printed
+        # in every branch (a vacuous assertion the code gate's mutation
+        # verification caught: disabling the nested branch left this green).
+        assert "nested inside an unrelated git" in msg  # the O-2 branch fired
+        assert f"rooted at {parent.resolve()}" in msg   # parent named in the toplevel slot
+        assert "self-learn init" in msg
+
+    def test_t3_plain_not_a_repo_message_is_unchanged(self, tmp_path):
+        """No parent work tree at all (the probe fails outright) — the
+        message keeps its current, true "not a git repo" text."""
+        plain = tmp_path / "plain"
+        plain.mkdir()
+
+        msg = home_state_message("not-a-repo", plain)
+
+        assert "not a git repo" in msg
+        assert "self-learn init" in msg
+
+    def test_t4_timeout_refuses_never_raises(self, tmp_path, monkeypatch):
+        from self_learn import hosts
+
+        repo = tmp_path / "repo"
+        init_repo(repo)
+
+        def _timeout(*args, **kwargs):
+            cmd = args[0] if args else kwargs.get("args", "git")
+            raise subprocess.TimeoutExpired(
+                cmd=cmd, timeout=kwargs.get("timeout", gitops.GIT_LOCAL_TIMEOUT)
+            )
+
+        monkeypatch.setattr(hosts.subprocess, "run", _timeout)
+
+        # a REAL repo — the timeout, not repo-ness, must decide the answer
+        assert is_repo_root(repo) is False
+        assert _is_git_repo(repo) is False
+        # and home_state must never read a timed-out probe as "ok"
+        assert home_state(repo) == "not-a-repo"
+
+    def test_t5_initd_nested_home_stays_ok(self, tmp_path):
+        """Option-C guarantee: a properly-init'd nested home IS its own
+        repo root and must not be swept into `not-a-repo`."""
+        parent = tmp_path / "parent"
+        init_repo(parent)
+        (parent / "README.md").write_text("parent\n", encoding="utf-8")
+        commit_all(parent, "parent seed")
+        nested = parent / "ledger"
+        init_repo(nested)
+        for sub in ("skills", "projects", "user", "telemetry"):
+            (nested / sub).mkdir()
+
+        assert home_state(nested) == "ok"
+
+    def test_t5_zero_commit_nested_root_still_counts_as_a_root(self, tmp_path):
+        parent = tmp_path / "parent"
+        init_repo(parent)
+        (parent / "README.md").write_text("parent\n", encoding="utf-8")
+        commit_all(parent, "parent seed")
+        nested = parent / "ledger"
+        init_repo(nested)  # `git init`'d, but zero commits yet
+
+        assert is_repo_root(nested) is True
+        assert home_state(nested) == "uninitialized"
+
+    def test_t6_read_surface_never_leaks_into_the_parent_repo(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """The reproduced harm, locked out: a READ command against a
+        nested un-rooted home must refuse loudly and leave the parent
+        repo's index/HEAD completely untouched — no telemetry flush, no
+        stray commit."""
+        parent = tmp_path / "parent"
+        init_repo(parent)
+        (parent / "README.md").write_text("parent\n", encoding="utf-8")
+        commit_all(parent, "parent seed")
+        nested = parent / "ledger"
+        nested.mkdir()
+
+        before_head = git(parent, "rev-parse", "HEAD").stdout.strip()
+        monkeypatch.setenv("SELF_LEARN_HOME", str(nested))
+
+        rc = cli.main(["status", "--fast"])
+        out, err = capsys.readouterr()
+
+        assert rc == cli.EXIT_NO_HOME
+        payload = json.loads(out)  # the hook's contract: valid JSON always
+        assert payload["home_state"] == "not-a-repo"
+        assert "self-learn init" in err
+
+        after_head = git(parent, "rev-parse", "HEAD").stdout.strip()
+        assert after_head == before_head  # no new commit landed
+        assert git(parent, "status", "--porcelain").stdout.strip() == ""

@@ -176,11 +176,15 @@ def is_project_host(hosts: Hosts, path: Path | str) -> bool:
 
 
 def _is_git_repo(path: Path) -> bool:
-    proc = subprocess.run(
-        ["git", "-C", str(path), "rev-parse", "--is-inside-work-tree"],
-        capture_output=True,
-        text=True,
-    )
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(path), "rev-parse", "--is-inside-work-tree"],
+            capture_output=True,
+            text=True,
+            timeout=gitops.GIT_LOCAL_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        return False
     return proc.returncode == 0 and proc.stdout.strip() == "true"
 
 
@@ -206,11 +210,15 @@ def is_repo_root(path: Path | str) -> bool:
     if not target.is_dir():
         return False
     target = target.resolve()
-    proc = subprocess.run(
-        ["git", "-C", str(target), "rev-parse", "--show-toplevel"],
-        capture_output=True,
-        text=True,
-    )
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(target), "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            timeout=gitops.GIT_LOCAL_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        return False
     if proc.returncode != 0:
         return False
     toplevel = proc.stdout.strip()

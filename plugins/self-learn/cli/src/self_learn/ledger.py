@@ -67,12 +67,7 @@ def home_state(home: Path | str | None = None) -> str:
     home = Path(home) if home is not None else resolve_home()
     if not home.is_dir():
         return "missing"
-    proc = subprocess.run(
-        ["git", "-C", str(home), "rev-parse", "--is-inside-work-tree"],
-        capture_output=True,
-        text=True,
-    )
-    if proc.returncode != 0 or proc.stdout.strip() != "true":
+    if not is_repo_root(home):
         return "not-a-repo"
     if any((home / d).is_dir() for d in _LAYOUT) or (home / "hosts.yaml").is_file():
         return "ok"
@@ -90,6 +85,27 @@ def home_state_message(state: str, home: Path | str) -> str:
             "repo there)."
         )
     if state == "not-a-repo":
+        try:
+            proc = subprocess.run(
+                ["git", "-C", str(home), "rev-parse", "--show-toplevel"],
+                capture_output=True,
+                text=True,
+                timeout=gitops.GIT_LOCAL_TIMEOUT,
+            )
+        except subprocess.TimeoutExpired:
+            proc = None
+        if proc is not None and proc.returncode == 0:
+            toplevel = proc.stdout.strip()
+            if toplevel and Path(toplevel).resolve() != Path(home).expanduser().resolve():
+                return (
+                    f"ledger home {home} is nested inside an unrelated git "
+                    f"repo rooted at {toplevel} — the ledger is its own git "
+                    "repo (doc 13 §2) and every producer commits its own "
+                    "writes (H-5), so committing here would pollute that "
+                    "unrelated repo. Run `self-learn init` to bootstrap "
+                    f"{home} as its own repo (or clone the ledger repo "
+                    "there)."
+                )
         return (
             f"ledger home {home} is not a git repo — the ledger is a git "
             "repo (doc 13 §2) and every producer commits its own writes "
