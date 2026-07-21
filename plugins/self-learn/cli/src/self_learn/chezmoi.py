@@ -8,7 +8,14 @@ section. So the compiler must ``chezmoi re-add`` after writing AND commit+push
 the dotfiles repo. And it must never ``re-add`` over pre-existing drift, or it
 would silently canonize unrelated local edits.
 
-The pinned sequence (08 §3 T6 row / §5 playbook), all paths parameterized:
+C2 (chezmoi: HARD dependency -> DETECTED capability): chezmoi is optional,
+not a hard dependency. :func:`user_scope_capability` probes which of three
+states applies — absent, present-but-unmanaged, or managed — and only the
+managed state runs the guarded sync below; the other two silently degrade
+to a plain file write (§3 of the C2 spec).
+
+The pinned sequence (08 §3 T6 row / §5 playbook), all paths parameterized,
+runs in full ONLY when the target is chezmoi-managed:
 
 1. ``chezmoi diff <target>``          -> ABORT on any pre-existing drift
 2. ``chezmoi git -- status --porcelain`` -> ABORT if the dotfiles repo is dirty
@@ -17,22 +24,29 @@ The pinned sequence (08 §3 T6 row / §5 playbook), all paths parameterized:
 5. ``chezmoi git -- add -A`` ; ``chezmoi git -- commit -m <msg>`` ;
    ``chezmoi git -- push``
 
-Step-5 form (documented call): ``add -A`` inside the dotfiles repo is safe
-here *because* step 2 proved the repo clean before we touched anything — the
-only staged change can be step 4's re-add. Aborts raise
+Step 3 (the write) always runs, capability or not. Steps 1-2 and 4-5 are
+skipped entirely when chezmoi is absent or the target is unmanaged (§3 rows
+1-2, silent). When managed, steps 1-2 are unchanged: aborts raise
 :class:`ChezmoiAbort` with the §5 playbook message ("fix drift / commit
 dotfiles first, or route to project scope") and happen BEFORE any edit, so
-the target file is untouched and the record stays pending. A no-op compile
-(section already current) stops after step 3: there is nothing to re-add or
-commit.
+the target file is untouched and the record stays pending. If a step 4/5
+command fails on an otherwise-healthy managed target (a broken source or
+remote), the write already happened — that is caught and turned into a
+WARN, never a re-raise or rollback (§3 row 4). A no-op compile (section
+already current) stops after step 3: there is nothing to re-add or commit.
+
+Step-5 form (documented call): ``add -A`` inside the dotfiles repo is safe
+here *because* step 2 proved the repo clean before we touched anything — the
+only staged change can be step 4's re-add.
 
 ``chezmoi`` is invoked through PATH (parameterizable binary name), so tests
 drive the whole flow with a PATH-shimmed fake that records argv and
-simulates drift / dirty / clean.
+simulates drift / dirty / clean / unmanaged.
 """
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -49,14 +63,26 @@ __all__ = [
     "CHEZMOI_DIRTY_MARKER",
     "ChezmoiAbort",
     "ChezmoiError",
+    "USER_SCOPE_ABSENT",
+    "USER_SCOPE_MANAGED",
+    "USER_SCOPE_UNMANAGED",
     "UserScopeDirtyStatus",
     "UserScopeResult",
     "commit_all_user_scope",
     "compile_user_scope",
     "dotfiles_source_path",
     "preflight_user_scope",
+    "user_scope_capability",
     "user_scope_dirty_status",
 ]
+
+#: C2 §3 detection states for a user-scope compile target — see
+#: :func:`user_scope_capability`. Exported so callers/tests import the SAME
+#: literals this function returns (discipline already established for
+#: ``CHEZMOI_DIRTY_MARKER``).
+USER_SCOPE_ABSENT = "absent"
+USER_SCOPE_UNMANAGED = "unmanaged"
+USER_SCOPE_MANAGED = "managed"
 
 #: §5 playbook intent, verbatim tail on both abort paths.
 _ABORT_ADVICE = (
@@ -90,8 +116,10 @@ class UserScopeResult:
     """Outcome of one user-scope compile-and-sync."""
 
     section: SectionResult
-    committed: bool  # False = compile was a no-op; steps 4-5 skipped
+    committed: bool  # True only on a managed, fully-synced write (§3 row 3)
     commit_message: str | None
+    synced: bool = False  # True <=> full re-add+commit(+push) ran (row 3)
+    sync_warning: str | None = None  # row 4 only: the single WARN string
 
 
 def _run(argv: list[str]) -> subprocess.CompletedProcess:
@@ -157,13 +185,31 @@ def commit_all_user_scope(message: str, *, chezmoi: str = "chezmoi") -> str:
     return _check(_run([chezmoi, "git", "--", "rev-parse", "HEAD"])).stdout.strip()
 
 
-def preflight_user_scope(target: Path | str, *, chezmoi: str = "chezmoi") -> None:
-    """Steps 1–2 of the guarded sequence, standalone (doc 13 §4: two-phase
-    routes run every dirty-check in PRE-FLIGHT, before the ledger commit —
-    for the chezmoi-managed user file, these two checks ARE that check).
-    Raises :class:`ChezmoiAbort` on drift/dirty; nothing has been touched."""
-    target = Path(target)
+def user_scope_capability(target: Path | str, *, chezmoi: str = "chezmoi") -> str:
+    """Which of the three C2 §3 detection states applies to ``target``:
+    :data:`USER_SCOPE_ABSENT` (no ``chezmoi`` on PATH), or, when present,
+    :data:`USER_SCOPE_MANAGED` / :data:`USER_SCOPE_UNMANAGED` from
+    ``chezmoi source-path <target>`` (rc 0 = managed, nonzero = unmanaged —
+    "not managed" is the expected, non-error outcome for an unmanaged
+    target, empirically verified against chezmoi v2.71.0; ``chezmoi
+    managed <path>`` is NOT a discriminator, it returns rc 0 even for an
+    unmanaged path). Never raises on the unmanaged branch: uses :func:`_run`
+    (not :func:`_check`) because a nonzero ``source-path`` here is a
+    detection SIGNAL, not an invocation failure. (Row 4, a managed target
+    whose sync breaks, is a sync-time failure, not a state this probe can
+    see — decided in :func:`compile_user_scope`.)"""
+    if shutil.which(chezmoi) is None:
+        return USER_SCOPE_ABSENT
+    proc = _run([chezmoi, "source-path", str(target)])
+    return USER_SCOPE_MANAGED if proc.returncode == 0 else USER_SCOPE_UNMANAGED
 
+
+def _drift_dirty_guard(target: Path, *, chezmoi: str) -> None:
+    """Steps 1-2 body: pre-existing-drift + dirty-repo checks, assuming the
+    caller has already established :data:`USER_SCOPE_MANAGED`. Factored out
+    of :func:`preflight_user_scope` so :func:`compile_user_scope` — which
+    computes the capability itself to pick its branch — can run these two
+    checks without a second, redundant ``source-path`` probe."""
     # 1. Pre-existing drift on the target? Never re-add over drift (§5).
     diff = _check(_run([chezmoi, "diff", str(target)]))
     if diff.stdout.strip():
@@ -175,6 +221,22 @@ def preflight_user_scope(target: Path | str, *, chezmoi: str = "chezmoi") -> Non
     status = _check(_run([chezmoi, "git", "--", "status", "--porcelain"]))
     if status.stdout.strip():
         raise ChezmoiAbort(f"{CHEZMOI_DIRTY_MARKER}: {_ABORT_ADVICE}")
+
+
+def preflight_user_scope(target: Path | str, *, chezmoi: str = "chezmoi") -> None:
+    """Steps 1–2 of the guarded sequence, standalone (doc 13 §4: two-phase
+    routes run every dirty-check in PRE-FLIGHT, before the ledger commit —
+    for the chezmoi-managed user file, these two checks ARE that check).
+
+    C2: gated on capability first (§3 rows 1-2) — an absent or unmanaged
+    target has nothing to sync, so there is nothing to drift-check; this
+    returns cleanly, doing nothing. For a managed target the rest is
+    UNCHANGED: raises :class:`ChezmoiAbort` on drift/dirty; nothing has
+    been touched."""
+    target = Path(target)
+    if user_scope_capability(target, chezmoi=chezmoi) != USER_SCOPE_MANAGED:
+        return
+    _drift_dirty_guard(target, chezmoi=chezmoi)
 
 
 def compile_user_scope(
@@ -189,28 +251,70 @@ def compile_user_scope(
 ) -> UserScopeResult:
     """Run the full guarded sequence against ``target``. See module docstring.
 
-    Raises :class:`ChezmoiAbort` (target untouched) on drift or a dirty
-    dotfiles repo; :class:`ChezmoiError` on invocation failures.
+    C2: the WRITE (step 3) always runs. For an absent or unmanaged target
+    (§3 rows 1-2) that is ALL that runs — no preflight, no sync, silent.
+    For a managed target, steps 1-2 (drift/dirty) and, when the compile
+    changed anything, steps 4-5 (re-add + commit/push) run as before; a
+    genuine drift/dirty :class:`ChezmoiAbort` still propagates (target
+    untouched). If steps 4-5 raise :class:`ChezmoiError` on an otherwise
+    healthy managed target (row 4: a broken source or remote), the write
+    already happened — that failure is caught and turned into
+    ``sync_warning``, never re-raised, never rolled back (H-2).
     """
     target = Path(target)
+    cap = user_scope_capability(target, chezmoi=chezmoi)
 
-    preflight_user_scope(target, chezmoi=chezmoi)  # steps 1–2
+    if cap != USER_SCOPE_MANAGED:
+        # §3 rows 1-2: WRITE only, silent — no preflight, no sync.
+        section = compile_managed_file(
+            target, records, max_entries=max_entries, max_words=max_words
+        )
+        return UserScopeResult(
+            section=section, committed=False, commit_message=None,
+            synced=False, sync_warning=None,
+        )
+
+    _drift_dirty_guard(target, chezmoi=chezmoi)  # steps 1–2, unchanged
 
     # 3. Edit the real target file (managed-section compiler).
     section = compile_managed_file(
         target, records, max_entries=max_entries, max_words=max_words
     )
     if not section.changed:
-        return UserScopeResult(section=section, committed=False, commit_message=None)
+        return UserScopeResult(
+            section=section, committed=False, commit_message=None,
+            synced=False, sync_warning=None,
+        )
 
-    # 4. Fold the edit back into chezmoi's source state.
-    _check(_run([chezmoi, "re-add", str(target)]))
-
-    # 5. Commit + push the dotfiles repo — re-add alone is same-machine-only.
     message = commit_message or f"self-learn: update managed section in {target.name}"
-    _check(_run([chezmoi, "git", "--", "add", "-A"]))
-    _check(_run([chezmoi, "git", "--", "commit", "-m", message]))
-    if push:
-        _check(_run([chezmoi, "git", "--", "push"]))
+    try:
+        # 4. Fold the edit back into chezmoi's source state.
+        _check(_run([chezmoi, "re-add", str(target)]))
 
-    return UserScopeResult(section=section, committed=True, commit_message=message)
+        # 5. Commit + push — re-add alone is same-machine-only.
+        _check(_run([chezmoi, "git", "--", "add", "-A"]))
+        _check(_run([chezmoi, "git", "--", "commit", "-m", message]))
+        if push:
+            _check(_run([chezmoi, "git", "--", "push"]))
+    except ChezmoiError as exc:
+        # §3 row 4: broken source/remote. The write already landed; warn,
+        # don't re-raise, don't roll back (H-2). Accurate across a
+        # re-add/commit failure AND a push-only failure (where the commit
+        # already landed locally, so no false "clobber" claim there either
+        # — the wording below covers both without over-claiming).
+        warning = (
+            f"wrote {target} but chezmoi sync did not complete ({exc}) — "
+            "your edit is on disk but may not be captured in the dotfiles "
+            "source, so a later `chezmoi apply` elsewhere could clobber "
+            "it. Fix the dotfiles source/remote, then `self-learn "
+            "recompile`."
+        )
+        return UserScopeResult(
+            section=section, committed=False, commit_message=message,
+            synced=False, sync_warning=warning,
+        )
+
+    return UserScopeResult(
+        section=section, committed=True, commit_message=message,
+        synced=True, sync_warning=None,
+    )

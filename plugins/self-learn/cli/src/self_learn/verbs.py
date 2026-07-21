@@ -1464,6 +1464,16 @@ def _host_phase(
                         body=note,
                         paths=host_paths,
                     )
+        # C2 O-5: the ONE user-facing message for a managed-but-broken
+        # chezmoi sync (§3 row 4) — the write already succeeded, only the
+        # sync degraded. getattr guards the other result types (e.g.
+        # NewSkillApplyResult, SectionResult) that carry no such field;
+        # absent/unmanaged (rows 1-2) return sync_warning=None, so nothing
+        # prints there — silent, per the verbosity ruling.
+        sync_warning = getattr(compile_result, "sync_warning", None)
+        if sync_warning:
+            print(f"self-learn: {sync_warning}", file=sys.stderr)
+            warnings.append(sync_warning)
         return compile_result, host_sha
     except _HOST_PHASE_ERRORS as exc:
         warning = (

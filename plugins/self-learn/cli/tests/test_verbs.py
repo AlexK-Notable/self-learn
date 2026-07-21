@@ -39,8 +39,17 @@ SKILL_MD = "# s skill\n\nAuthored prose stays put.\n"
 CHEZMOI_SHIM = """#!/usr/bin/env bash
 printf '%s\\n' "$*" >> "$CHEZMOI_SHIM_LOG"
 case "$1" in
+  source-path)
+    printf '%s' "${2:-}"
+    exit "${CHEZMOI_SHIM_SOURCE_RC-0}"
+    ;;
   diff) printf '%s' "${CHEZMOI_SHIM_DIFF-}" ;;
   git) if [ "$3" = "status" ]; then printf '%s' "${CHEZMOI_SHIM_STATUS-}"; fi ;;
+  re-add)
+    if [ -n "${CHEZMOI_SHIM_READD_RC-}" ]; then
+      exit "$CHEZMOI_SHIM_READD_RC"
+    fi
+    ;;
 esac
 exit "${CHEZMOI_SHIM_EXIT-0}"
 """
@@ -422,6 +431,78 @@ class TestRouteUserScope:
         assert env.local_subject() == message
         assert (env.home / "user" / "resolved" / f"{OLD}.md").is_file()
         assert result.compile_result.committed
+
+
+class TestRouteUserScopeChezmoiAbsent:
+    """T-7 (C2): the §1.2 bug lock — an absent chezmoi must not divert a
+    user-scope route to pending/. O-2's PRE-ledger-commit preflight gate
+    (verbs.py 583) and O-5's silence for row 1 both run through here."""
+
+    def test_absent_chezmoi_still_routes_and_writes_silently(self, tmp_path, env):
+        target = tmp_path / "dot-claude" / "CLAUDE.md"
+        target.parent.mkdir()
+        target.write_text("# user conduct\n", encoding="utf-8")
+        record = make_behavior(scope="user", record_id=OLD)
+        create_record(env.home, record)
+
+        result = verbs.route(
+            env.home,
+            OLD,
+            dest="claude-md",
+            user_claude_md=target,
+            chezmoi_bin="chezmoi-definitely-absent",
+        )
+
+        # the record resolved, not pending — the primary bug close
+        assert (env.home / "user" / "resolved" / f"{OLD}.md").is_file()
+        assert not (env.home / "user" / "pending" / f"{OLD}.md").is_file()
+        # the file still got the managed section, degraded but not skipped
+        text = target.read_text(encoding="utf-8")
+        assert BEGIN_MARKER in text and OLD in text
+        # rows 1-2 are silent: no warnings, and no sync happened
+        assert result.warnings == []
+        assert result.compile_result.committed is False
+        assert result.compile_result.synced is False
+        assert result.compile_result.sync_warning is None
+
+
+class TestRouteUserScopeChezmoiBrokenSync:
+    """C2 gate finding: row 4 (managed target, broken sync) must be proven
+    end to end through `verbs.route` -> `_host_phase`, not just at the
+    `compile_user_scope` unit level — a neutered O-5 surfacing block
+    (verbs.py ~1473-1476) is otherwise invisible to the suite, because
+    TestRouteUserScopeChezmoiAbsent only drives row 1 (sync_warning is
+    already None there, so `result.warnings == []` holds either way)."""
+
+    def test_broken_readd_surfaces_warning_through_route(
+        self, tmp_path, env, chezmoi_shim, monkeypatch
+    ):
+        target = tmp_path / "dot-claude" / "CLAUDE.md"
+        target.parent.mkdir()
+        target.write_text("# user conduct\n", encoding="utf-8")
+        record = make_behavior(scope="user", record_id=OLD)
+        create_record(env.home, record)
+
+        # source-path rc 0 (managed) and diff/status clean by fixture
+        # default — preflight passes; re-add is the sync step that breaks.
+        monkeypatch.setenv("CHEZMOI_SHIM_READD_RC", "1")
+
+        result = verbs.route(env.home, OLD, dest="claude-md", user_claude_md=target)
+
+        # the write landed and the record resolved — a broken SYNC must
+        # never fail the route or revert the write (H-2)
+        assert (env.home / "user" / "resolved" / f"{OLD}.md").is_file()
+        assert not (env.home / "user" / "pending" / f"{OLD}.md").is_file()
+        text = target.read_text(encoding="utf-8")
+        assert BEGIN_MARKER in text and OLD in text
+        # row 4: not committed, not synced, but a sync_warning exists
+        assert result.compile_result.committed is False
+        assert result.compile_result.synced is False
+        assert result.compile_result.sync_warning is not None
+        # the teeth: the SAME warning must reach result.warnings via
+        # _host_phase's O-5 surfacing — this is what a neutered
+        # `if sync_warning:` block would fail to do
+        assert result.compile_result.sync_warning in result.warnings
 
 
 # ------------------------------------------------------- non-routing verbs
