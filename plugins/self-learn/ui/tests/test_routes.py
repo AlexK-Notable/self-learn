@@ -1318,7 +1318,12 @@ class TestDestinationGlosses:
         "enum_value,label",
         [
             ("skill-md", "Skill doc"),
-            ("claude-md", "Project instructions"),
+            # A1: the shared fixture below is skill-scoped
+            # (make_behavior(scope="skill:s")) — claude-md now glosses
+            # per-scope (destination_label("claude-md", "skill")), so
+            # this row's expected label is "Skills repo instructions",
+            # not the scope-blind "Project instructions".
+            ("claude-md", "Skills repo instructions"),
             ("reference", "Reference file"),
         ],
     )
@@ -1339,7 +1344,9 @@ class TestDestinationGlosses:
         "enum_value,label",
         [
             ("skill-md", "Skill doc"),
-            ("claude-md", "Project instructions"),
+            # A1: same skill-scoped fixture as above — "Skills repo
+            # instructions", not the scope-blind "Project instructions".
+            ("claude-md", "Skills repo instructions"),
             ("reference", "Reference file"),
             ("new-skill", "New skill"),
             ("hook", "Guard hook"),
@@ -1374,7 +1381,11 @@ class TestDestinationGlosses:
         )
         c, _runner = make_client(sb)
         r = c.get(f"/record/{rec.id}")
-        assert 'Alternates: <span title="claude-md">Project instructions</span>, <span title="reference">Reference file</span>' in r.text
+        # A1 (O-2 b): alternates are scope-aware too — this fixture is
+        # skill-scoped, so claude-md glosses to "Skills repo
+        # instructions" (no path — P-A12's path is bound to the
+        # record's OWN selected destination, never the alternates).
+        assert 'Alternates: <span title="claude-md">Skills repo instructions</span>, <span title="reference">Reference file</span>' in r.text
 
     def test_source_assertion_labels_render_from_group_labels(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1394,6 +1405,190 @@ class TestDestinationGlosses:
         r = c.get(f"/record/{rec.id}")
         assert "Totally different label" in r.text
         assert "Skill doc" not in r.text
+
+
+class TestScopeAwareClaudeMdLabels:
+    """A1 (spec: docs/specs/self-learn/drafts/a1-labels-spec.md) — the
+    F-1 fix at the render level: a user-scope claude-md record no longer
+    shows "Project instructions" on any surface, and the resolved path
+    (P-A12) renders alongside the label at the two identity/decision
+    surfaces (test obligations 3, 4, 5)."""
+
+    def test_user_scope_detail_suggested_destination_is_scope_aware_with_path(
+        self, tmp_path: Path
+    ) -> None:
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="user")
+        seed_record(sb.ledger, rec)
+        seed_proposal(sb.ledger, rec.id, destination="claude-md")
+        c, _runner = make_client(sb)
+        r = c.get(f"/record/{rec.id}")
+        assert r.status_code == 200
+        assert "Project instructions" not in r.text
+        assert (
+            'Suggested destination: <span title="claude-md">User instructions</span>'
+            in r.text
+        )
+        # P-A12: the resolved path, string-equal to the router's
+        # DEFAULT_USER_CLAUDE_MD, shown alongside — never a placeholder.
+        assert "~/.claude/CLAUDE.md" in r.text
+
+    def test_project_scope_detail_suggested_destination_shows_its_own_path(
+        self, tmp_path: Path
+    ) -> None:
+        sb = make_env(tmp_path)
+        rec = make_knowledge(scope="project")
+        seed_record(sb.ledger, rec, project_path=sb.host)
+        seed_proposal(sb.ledger, rec.id, destination="claude-md")
+        c, _runner = make_client(sb)
+        r = c.get(f"/record/{rec.id}")
+        assert r.status_code == 200
+        assert (
+            'Suggested destination: <span title="claude-md">Project instructions</span>'
+            in r.text
+        )
+        assert "&lt;repo&gt;/CLAUDE.md" in r.text
+
+    def test_user_scope_action_bar_cycle_button_is_scope_aware_with_path(
+        self, tmp_path: Path
+    ) -> None:
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="user")
+        seed_record(sb.ledger, rec)
+        seed_proposal(sb.ledger, rec.id, destination="claude-md")
+        c, _runner = make_client(sb)
+        r = c.get(f"/record/{rec.id}")
+        assert r.status_code == 200
+        assert 'title="claude-md">User instructions</span> (o)' in r.text
+        assert "~/.claude/CLAUDE.md" in r.text
+
+    def test_skill_scope_action_bar_cycle_button_shows_no_path_for_non_claude_md(
+        self, tmp_path: Path
+    ) -> None:
+        # The path is bound to a claude-md destination only (P-A12) — a
+        # cycle button currently showing skill-md never renders a path.
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+        seed_proposal(sb.ledger, rec.id, destination="skill-md")
+        c, _runner = make_client(sb)
+        r = c.get(f"/record/{rec.id}")
+        assert r.status_code == 200
+        assert 'title="skill-md">Skill doc</span> (o)' in r.text
+        assert "dest-path" not in r.text
+
+    def test_user_bucket_group_heading_is_user_instructions(self, tmp_path: Path) -> None:
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="user")
+        seed_record(sb.ledger, rec)
+        seed_proposal(sb.ledger, rec.id, destination="claude-md")
+        c, _runner = make_client(sb)
+        r = c.get("/bucket/user/user")
+        assert r.status_code == 200
+        assert "<h2>User instructions</h2>" in r.text
+        assert "<h2>Project instructions</h2>" not in r.text
+
+    def test_skill_bucket_group_heading_is_skills_repo_instructions(
+        self, tmp_path: Path
+    ) -> None:
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+        seed_proposal(sb.ledger, rec.id, destination="claude-md")
+        c, _runner = make_client(sb)
+        r = c.get("/bucket/skill/s")
+        assert r.status_code == 200
+        assert "<h2>Skills repo instructions</h2>" in r.text
+        assert "<h2>Project instructions</h2>" not in r.text
+
+    def test_project_bucket_group_heading_stays_project_instructions(
+        self, tmp_path: Path
+    ) -> None:
+        # Byte-identical to pre-A1 (spec §2/§4).
+        from self_learn_ui import ledger as ui_ledger
+
+        sb = make_env(tmp_path)
+        rec = make_knowledge(scope="project")
+        seed_record(sb.ledger, rec, project_path=sb.host)
+        seed_proposal(sb.ledger, rec.id, destination="claude-md")
+        loc = ui_ledger.locate_record(sb.ledger, rec.id)
+        assert loc is not None
+        c, _runner = make_client(sb)
+        r = c.get(f"/bucket/project/{loc.bucket_name}")
+        assert r.status_code == 200
+        assert "<h2>Project instructions</h2>" in r.text
+
+
+class TestScopeAwareClaudeMdLabelsOnPostRerenders:
+    """A1 fold: the action bar's UNARMED fragment also re-renders on the
+    POST paths (cycle-destination, disarm, a failed confirm) via
+    routes.py's own `_unarmed_context` — NOT through the two `{% with %}`
+    include sites O-2 c named (detail.html:168 / bucket.html:88).
+    `_unarmed_context` already resolved `scope` internally (to compute
+    `destination_cycle`) but never put it in the returned template
+    context, so `destination_label`/`destination_path` saw an Undefined
+    `scope` on every one of these re-renders and silently fell back to
+    the scope-blind gloss — F-1 surviving on this surface. Deliberately
+    SKILL scope, not user: `_unarmed_context`'s own `scope` default is
+    "user", so a user-scope assertion here couldn't tell "scope actually
+    threaded" apart from "scope silently defaulted" (the same masking
+    TestOCycleScopeThreadingDiscriminator guards against elsewhere)."""
+
+    def test_skill_scope_cycle_destination_post_shows_scope_aware_label(
+        self, tmp_path: Path
+    ) -> None:
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+        c, _runner = make_client(sb)
+        # skill-md -> claude-md is the cycle's next element (destinations_
+        # for_scope("skill") == ("skill-md", "claude-md", "reference")).
+        r = c.post(
+            f"/record/{rec.id}/action/cycle-destination",
+            data={"dest": "skill-md"},
+            headers={"HX-Request": "true"},
+        )
+        assert r.status_code == 200
+        assert 'name="dest" value="claude-md"' in r.text
+        assert "Skills repo instructions" in r.text
+        assert "Project instructions" not in r.text
+        assert "~/.claude/CLAUDE.md" not in r.text
+        assert "&lt;skills root&gt;/CLAUDE.md" in r.text
+
+    def test_skill_scope_disarm_post_shows_scope_aware_label(self, tmp_path: Path) -> None:
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+        c, _runner = make_client(sb)
+        r = c.post(
+            f"/record/{rec.id}/action/disarm",
+            data={"kind": "detail", "dest": "claude-md"},
+            headers={"HX-Request": "true"},
+        )
+        assert r.status_code == 200
+        assert 'name="dest" value="claude-md"' in r.text
+        assert "Skills repo instructions" in r.text
+        assert "Project instructions" not in r.text
+
+    def test_skill_scope_failed_confirm_rerender_shows_scope_aware_label(
+        self, tmp_path: Path
+    ) -> None:
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+        runner = FakeRunner()
+        runner.queue_result(RunResult(1, stderr="self-learn: refused"))
+        c, _runner = make_client(sb, runner=runner)
+        r = c.post(
+            f"/record/{rec.id}/action/confirm",
+            data={"verb": "route", "kind": "detail", "dest": "claude-md"},
+            headers={"HX-Request": "true"},
+        )
+        assert r.status_code == 200
+        assert "refused" in r.text
+        assert 'name="dest" value="claude-md"' in r.text
+        assert "Skills repo instructions" in r.text
+        assert "Project instructions" not in r.text
 
 
 class TestDestinationCorrection:

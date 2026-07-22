@@ -1346,9 +1346,14 @@ class TestPostResultValidateWindow:
 # ------------------------------------------------ U21 post-iterate summary
 
 
-def _route_proposal(session_key: str = RECORD_ID, record_id: str = RECORD_ID, dest: str | None = "skill-md") -> VerbProposal:
+def _route_proposal(
+    session_key: str = RECORD_ID,
+    record_id: str = RECORD_ID,
+    dest: str | None = "skill-md",
+    bucket_scope: str = "skill",
+) -> VerbProposal:
     return VerbProposal(
-        verb="route", record_id=record_id, bucket_scope="skill",
+        verb="route", record_id=record_id, bucket_scope=bucket_scope,
         bucket_name="s", session_key=session_key, title="T",
         dest=dest, note=None, until=None,
     )
@@ -1428,8 +1433,9 @@ class TestComposeFileFacts:
 
 
 class TestProposalClauseGloss:
-    """Verb/destination glossed via ``models._GROUP_LABELS`` (F5-9's map,
-    reused — never a second map)."""
+    """Verb/destination glossed via ``models.destination_label`` (F5-9's
+    single-source resolver over ``_GROUP_LABELS`` — reused, never a
+    second map)."""
 
     def test_route_with_dest_names_verb_and_glossed_destination(self) -> None:
         proposal = _route_proposal(dest="skill-md")
@@ -1454,6 +1460,26 @@ class TestProposalClauseGloss:
 
         monkeypatch.setitem(models._GROUP_LABELS, "skill-md", "MONKEYPATCHED")
         assert pane._proposal_clause(_route_proposal(dest="skill-md")) == "route to MONKEYPATCHED"
+
+    @pytest.mark.parametrize(
+        "bucket_scope,label",
+        [
+            ("user", "User instructions"),
+            ("project", "Project instructions"),
+            ("skill", "Skills repo instructions"),
+        ],
+    )
+    def test_claude_md_dest_glosses_by_the_proposals_own_bucket_scope(
+        self, bucket_scope: str, label: str
+    ) -> None:
+        # A1 (O-2 d): the F-1 fix at the pane one-liner — claude-md now
+        # threads proposal.bucket_scope through destination_label,
+        # instead of the scope-blind default "Project instructions".
+        # The exact-string equality (never just `in`) also proves no
+        # path is appended here (P-A12 is bound to Detail/action-bar
+        # only, never the terse pane clause).
+        proposal = _route_proposal(dest="claude-md", bucket_scope=bucket_scope)
+        assert pane._proposal_clause(proposal) == f"route to {label}"
 
 
 class TestPostIterateSummaryIntegration:
@@ -1605,4 +1631,7 @@ class TestPostIterateSummaryIntegration:
         await manager.wait_for_turn()
 
         snap = manager.snapshot(key)
-        assert snap.turn_summary == "This turn changed: nothing, and proposed: route to Project instructions."
+        # A1: _route_proposal hardcodes bucket_scope="skill" (below), so
+        # the claude-md gloss is the honest skill-scope label, not the
+        # scope-blind "Project instructions".
+        assert snap.turn_summary == "This turn changed: nothing, and proposed: route to Skills repo instructions."

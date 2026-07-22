@@ -78,7 +78,7 @@ from .engine.base import BlockStart, FileChanged, PaneContext, PaneEngine, PaneE
 from .engine.sdk import DEFAULT_FALLBACK_MODEL, SdkPaneEngine
 from .env import EnvConfig
 from .ledger import RefreshHub
-from .models import _GROUP_LABELS
+from .models import destination_label
 from .proposals import PROPOSAL_TOOL_QUALIFIED_NAME, ProposalSlot, SessionScope, VerbProposal, make_propose_handler
 from .rendering import render_markdown
 from .runner import VerbRunner
@@ -609,13 +609,16 @@ def _compose_file_facts(record_id: str, paths: list[str]) -> str:
 
 
 def _proposal_clause(proposal: VerbProposal) -> str:
-    """The verb, plus its destination glossed via ``models._GROUP_LABELS``
-    (F5-9's map, reused — never a second map) when the proposal carries
-    one (dest applies to ``route`` proposals only — proposals.py's own
-    validation)."""
+    """The verb, plus its destination glossed via ``models.destination_label``
+    (F5-9's single-source resolver, reused — never a second map) when the
+    proposal carries one (dest applies to ``route`` proposals only —
+    proposals.py's own validation). A1: threads ``proposal.bucket_scope``
+    through so a ``claude-md`` proposal glosses to the record's actual
+    scope-resolved label (e.g. "Skills repo instructions"), not the
+    scope-blind default."""
     if proposal.dest:
         dest_base = proposal.dest.partition(":")[0]
-        gloss = _GROUP_LABELS.get(dest_base, proposal.dest)
+        gloss = destination_label(dest_base, proposal.bucket_scope)
         return f"{proposal.verb} to {gloss}"
     return proposal.verb
 

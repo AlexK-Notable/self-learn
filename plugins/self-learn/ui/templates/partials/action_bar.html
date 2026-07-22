@@ -178,10 +178,21 @@
             hx-post="/record/{{ record_id }}/action/cycle-destination" hx-include="#form-{{ dom_id }}"
             hx-target="#{{ dom_id }}" hx-swap="outerHTML">
       {# F5-9 (feedback round 5, U19 §1.5): the plain-words gloss
-         (models.py's single-source _GROUP_LABELS), enum demoted to the
-         title attribute (hover shows the raw value) — forms/argv below
-         keep the raw enum regardless, this is display-only. #}
-      Destination: {% if dest %}<span title="{{ dest }}">{{ dest | destination_label }}</span>{% else %}(analyst suggestion){% endif %} (o)
+         (models.py's single-source destination_label resolver), enum
+         demoted to the title attribute (hover shows the raw value) —
+         forms/argv below keep the raw enum regardless, this is
+         display-only. A1 (O-2 c, O-3): threads the caller-supplied
+         `scope` so a claude-md dest glosses honestly and shows its
+         resolved path (rendered AFTER the "(o)" hint, not between the
+         label and it, so the label span's own closing tag stays
+         immediately followed by "(o)"); every OTHER include site of
+         this partial either never reaches this branch (kind !=
+         "detail") or never passes a claude-md dest, so an un-threaded
+         `scope` there is harmless (falls back to today's gloss, F5-9
+         pin). The genuinely-armed branch above (this file, `armed.dest`)
+         stays raw verbatim — out of scope, it never calls
+         destination_label. #}
+      Destination: {% if dest %}<span title="{{ dest }}">{{ dest | destination_label(scope) }}</span>{% else %}(analyst suggestion){% endif %} (o){% if dest == "claude-md" %} <span class="dest-path">&middot; {{ scope | destination_path }}</span>{% endif %}
       {% if dest %}<span class="hint">hook / new-skill need Iterate — not cycle-reachable</span>{% endif %}
     </button>
     {# The scope-correction note (09 §2.3 as amended 2026-07-18): plain

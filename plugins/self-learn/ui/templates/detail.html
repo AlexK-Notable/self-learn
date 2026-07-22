@@ -118,10 +118,16 @@
     <div class="rationale">{{ model.why.rationale | markdown }}</div>
     {% endif %}
     {# F5-9 (feedback round 5, U19 §1.5): same single-source gloss as the
-       action bar's cycle button — enum in the title attribute. #}
-    {% if model.why.destination %}<p>Suggested destination: <span title="{{ model.why.destination }}">{{ model.why.destination | destination_label }}</span></p>{% endif %}
+       action bar's cycle button — enum in the title attribute. A1 (O-2 a,
+       O-3): threads model.scope so a claude-md destination glosses to the
+       honest per-scope label, and appends the resolved path — bound to
+       this record's OWN destination only, never the alternates below
+       (P-A12's "always" is scoped to the selected destination). #}
+    {% if model.why.destination %}<p>Suggested destination: <span title="{{ model.why.destination }}">{{ model.why.destination | destination_label(model.scope) }}</span>{% if model.why.destination == "claude-md" %} <span class="dest-path">&middot; {{ model.scope | destination_path }}</span>{% endif %}</p>{% endif %}
     {% if model.why.alternates %}
-    <p>Alternates: {% for alt in model.why.alternates %}<span title="{{ alt }}">{{ alt | destination_label }}</span>{% if not loop.last %}, {% endif %}{% endfor %}</p>
+    {# A1 (O-2 b): scope-aware label, no path — alternates can be
+       reference/skill-md, whose path resolution is outside A1. #}
+    <p>Alternates: {% for alt in model.why.alternates %}<span title="{{ alt }}">{{ alt | destination_label(model.scope) }}</span>{% if not loop.last %}, {% endif %}{% endfor %}</p>
     {% endif %}
     {% if model.why.already_canon %}
     <p class="badge badge-already-canon">already canon{% if model.why.already_canon_reason %} — {{ model.why.already_canon_reason }}{% endif %}</p>
@@ -165,7 +171,10 @@
      amended 2026-07-18) — never the analyst's raw suggestion, so the
      value the hidden field arms is always one the route verb's scope
      rules can accept; dest_note explains a correction in plain words. #}
-  {% with kind="detail", armed=None, dom_id="action-bar-" ~ model.id, record_id=model.id, dest=model.destination_default, dest_note=model.destination_note, event=None, target=None, already_canon=model.why.already_canon, destination_cycle=model.destination_cycle %}
+  {# A1 (O-2 c): scope=model.scope threaded explicitly — never relied on
+     via Jinja context leakage — so action_bar.html's cycle button can
+     gloss a claude-md dest through the scope-aware resolver. #}
+  {% with kind="detail", armed=None, dom_id="action-bar-" ~ model.id, record_id=model.id, dest=model.destination_default, dest_note=model.destination_note, event=None, target=None, already_canon=model.why.already_canon, destination_cycle=model.destination_cycle, scope=model.scope %}
     {% include "partials/action_bar.html" %}
   {% endwith %}
   {% endif %}

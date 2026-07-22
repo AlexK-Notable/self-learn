@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from self_learn_ui.models import build_bucket_model, build_card_sections, leading_text
 
 NOW = datetime(2026, 7, 17, 12, 0, 0, tzinfo=timezone.utc)
@@ -409,3 +411,56 @@ class TestUnregisteredHost:
         )
         assert model.host_registered is False
         assert model.host_add_command == "self-learn host add /x"
+
+
+class TestGroupHeadingScopeAware:
+    """A1 (spec: docs/specs/self-learn/drafts/a1-labels-spec.md) O-2 e:
+    the claude-md group heading routes through the SAME widened resolver
+    as the per-record sites (models.py's destination_label(key, scope))
+    — a bucket page is one scope, so the heading resolves to exactly one
+    (scope, destination) pair, and the old scope-blind
+    `_GROUP_LABELS["claude-md"]` index rendered "Project instructions"
+    over user/skill buckets too (F-1 on the <h2>; test obligation 5)."""
+
+    def test_user_bucket_claude_md_heading_is_user_instructions(self):
+        items = [_item(scope="user", has_proposal=True, destination="claude-md")]
+        model = build_bucket_model(
+            "user", "user", items, {}, [], REGISTRY,
+            host_registered=True, host_add_command=None, now=NOW,
+        )
+        (group,) = model.groups
+        assert group.key == "claude-md"
+        assert group.label == "User instructions"
+
+    def test_skill_bucket_claude_md_heading_is_skills_repo_instructions(self):
+        items = [_item(has_proposal=True, destination="claude-md")]
+        model = build_bucket_model(
+            "s", "skill", items, {}, [], REGISTRY,
+            host_registered=True, host_add_command=None, now=NOW,
+        )
+        (group,) = model.groups
+        assert group.label == "Skills repo instructions"
+
+    def test_project_bucket_claude_md_heading_stays_project_instructions(self):
+        # Byte-identical to pre-A1: the project label string is
+        # unchanged (spec §2).
+        items = [_item(scope="project", has_proposal=True, destination="claude-md")]
+        model = build_bucket_model(
+            "p", "project", items, {}, [], REGISTRY,
+            host_registered=True, host_add_command=None, now=NOW,
+        )
+        (group,) = model.groups
+        assert group.label == "Project instructions"
+
+    @pytest.mark.parametrize("scope", ["user", "project", "skill"])
+    def test_non_claude_md_headings_unaffected_at_every_scope(self, scope):
+        # The resolver only specializes claude-md — every other group
+        # key's label is unchanged at every scope (O-2 e).
+        items = [_item(has_proposal=True, destination="skill-md")]
+        model = build_bucket_model(
+            "b", scope, items, {}, [], REGISTRY,
+            host_registered=True, host_add_command=None, now=NOW,
+        )
+        (group,) = model.groups
+        assert group.key == "skill-md"
+        assert group.label == "Skill doc"

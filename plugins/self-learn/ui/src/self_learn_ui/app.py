@@ -49,6 +49,11 @@ def _build_templates() -> Jinja2Templates:
     # action bar + Why region gloss through this same filter, never a
     # second map.
     env.filters["destination_label"] = models.destination_label
+    # A1 (labels-only claude-md spec, P-A12): the resolved-path
+    # counterpart to destination_label above — rendered alongside the
+    # label at the two identity/decision surfaces (detail.html,
+    # action_bar.html's cycle button).
+    env.filters["destination_path"] = models.destination_path
     # F5-1 (feedback round 5, U19 §1.2 gate M1): detail_degraded.html has
     # no DetailModel/BucketModel to carry a pre-computed destination_cycle
     # (a degraded record's frontmatter may not even parse) — the one

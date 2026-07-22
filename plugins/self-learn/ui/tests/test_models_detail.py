@@ -10,6 +10,8 @@ from typing import Any
 import pytest
 
 from self_learn.records import Record
+from self_learn.verbs import DEFAULT_USER_CLAUDE_MD
+from self_learn_ui import models as models_module
 from self_learn_ui.models import (
     HOOK_VERBATIM_CAPTION,
     NO_ANALYSIS_MESSAGE,
@@ -18,6 +20,8 @@ from self_learn_ui.models import (
     REFERENCE_NO_CAP_LINE,
     build_detail_model,
     correct_destination,
+    destination_label,
+    destination_path,
     destinations_for_scope,
 )
 
@@ -532,6 +536,98 @@ class TestDestinationDefault:
         )
         assert correct_destination("skill", "skill-md") == ("skill-md", None)
         assert correct_destination("user", None) == (None, None)
+
+
+class TestDestinationLabelScopeAware:
+    """A1 (spec: docs/specs/self-learn/drafts/a1-labels-spec.md) O-1: the
+    widened resolver — claude-md alone resolves to three different files
+    by scope (verbs.py's route verb), so the label must be scope-aware;
+    every other destination and every un-recognized/absent scope stays
+    byte-identical to the pre-A1 gloss (test obligations 1/2)."""
+
+    @pytest.mark.parametrize(
+        "scope,label",
+        [
+            ("user", "User instructions"),
+            ("project", "Project instructions"),
+            ("skill", "Skills repo instructions"),
+        ],
+    )
+    def test_claude_md_labels_by_scope(self, scope: str, label: str) -> None:
+        assert destination_label("claude-md", scope) == label
+
+    def test_fallback_preserved_for_no_scope_and_unknown_scope(self) -> None:
+        # scope=None (the default), and any unrecognized scope, degrade
+        # to today's gloss byte-for-byte — an un-updated caller never
+        # crashes.
+        assert destination_label("claude-md") == "Project instructions"
+        assert destination_label("claude-md", None) == "Project instructions"
+        assert destination_label("claude-md", "bogus-scope") == "Project instructions"
+
+    @pytest.mark.parametrize("scope", ["user", "project", "skill", None, "bogus"])
+    def test_non_claude_md_values_unaffected_by_scope(self, scope: str | None) -> None:
+        # The resolver only specializes claude-md — every other
+        # destination-enum value returns _GROUP_LABELS.get(value, value)
+        # at EVERY scope.
+        assert destination_label("skill-md", scope) == "Skill doc"
+        assert destination_label("reference", scope) == "Reference file"
+        assert destination_label("new-skill", scope) == "New skill"
+        assert destination_label("hook", scope) == "Guard hook"
+
+    def test_none_value_is_still_empty_string_regardless_of_scope(self) -> None:
+        assert destination_label(None) == ""
+        assert destination_label(None, "user") == ""
+
+
+class TestDestinationPath:
+    """A1 O-3 / P-A12: the resolved-path counterpart to
+    destination_label, exposed for the two identity/decision surfaces
+    (Detail Suggested-destination, the action-bar cycle button)."""
+
+    def test_user_path_is_string_equal_to_the_routers_default(self) -> None:
+        # F-1's own ground truth: the CLI's DEFAULT_USER_CLAUDE_MD
+        # (verbs.py:158) is the compile-time constant this string names.
+        assert destination_path("user") == str(DEFAULT_USER_CLAUDE_MD)
+        assert destination_path("user") == "~/.claude/CLAUDE.md"
+
+    def test_project_and_skill_are_the_schematic_tokens(self) -> None:
+        assert destination_path("project") == "<repo>/CLAUDE.md"
+        assert destination_path("skill") == "<skills root>/CLAUDE.md"
+
+    def test_none_or_unknown_scope_is_empty_not_a_placeholder(self) -> None:
+        assert destination_path(None) == ""
+        assert destination_path("bogus-scope") == ""
+
+
+class TestNoSecondLabelMap:
+    """P-A11 (grep-level, test obligation 6): _GROUP_LABELS must remain
+    the ONLY module-level dict keyed by destination-enum values. This
+    scans the live module namespace (stronger than a textual grep — it
+    survives reformatting) for any OTHER dict whose keys are (a superset
+    of) the seven destination-enum values; the A1 scope specialization
+    (_CLAUDE_MD_SCOPE_LABELS, keyed by user/project/skill) must NOT
+    collide with this set."""
+
+    _DESTINATION_ENUM_VALUES = frozenset(
+        {"skill-md", "claude-md", "reference", "new-skill", "hook", "malformed", "no-analysis"}
+    )
+
+    def test_exactly_one_destination_enum_keyed_dict_exists(self) -> None:
+        matches = [
+            name
+            for name, value in vars(models_module).items()
+            if isinstance(value, dict)
+            and self._DESTINATION_ENUM_VALUES.issubset(value.keys())
+        ]
+        assert matches == ["_GROUP_LABELS"]
+
+    def test_claude_md_scope_specialization_is_scope_keyed_not_enum_keyed(self) -> None:
+        # The sanctioned "extension" (spec §3 O-1): keys are scopes, not
+        # any destination-enum value.
+        assert set(models_module._CLAUDE_MD_SCOPE_LABELS) == {"user", "project", "skill"}
+        assert set(models_module._CLAUDE_MD_SCOPE_PATHS) == {"user", "project", "skill"}
+        assert self._DESTINATION_ENUM_VALUES.isdisjoint(models_module._CLAUDE_MD_SCOPE_LABELS)
+        assert self._DESTINATION_ENUM_VALUES.isdisjoint(models_module._CLAUDE_MD_SCOPE_PATHS)
 
 
 class TestBadges:

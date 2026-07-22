@@ -961,6 +961,18 @@ def _unarmed_context(
         # own unlocatable-record fallback uses (never a wider cycle than
         # the record's actual scope could ever produce).
         "destination_cycle": models.destinations_for_scope(scope),
+        # A1 (O-2 c / P-A12): every caller of this helper already resolves
+        # `scope` to compute destination_cycle above — action_bar.html's
+        # cycle button ALSO needs it in the template namespace itself
+        # (destination_label(dest, scope) / destination_path(scope)) so
+        # the claude-md gloss stays honest on the POST-rendered fragment
+        # paths (cycle-destination, disarm, failed-confirm, commit-drift
+        # arm/disarm), not just the two GET-page {% with %} include sites
+        # (detail.html/bucket.html) O-2 c named. Without this the label
+        # silently degrades to the scope-blind default (F5-9's own
+        # graceful-fallback pin) on every one of those re-renders — the
+        # exact F-1 mislabel this spec closes.
+        "scope": scope,
     }
 
 

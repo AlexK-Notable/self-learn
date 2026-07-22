@@ -74,6 +74,7 @@ __all__ = [
     "build_front_model",
     "correct_destination",
     "destination_label",
+    "destination_path",
     "destinations_for_scope",
     "host_add_command",
     "leading_text",
@@ -106,7 +107,38 @@ _DEST_CORRECTION_REASONS: dict[str, str] = {
 }
 
 
-def destination_label(value: str | None) -> str:
+#: A1 (labels-only claude-md spec, carved from the claude-md-
+#: parameterization spec's F-1): ``claude-md`` alone resolves to three
+#: different files by scope (verbs.py's route verb, claude-md branch,
+#: ``verbs.py:575-603``) — ``_GROUP_LABELS["claude-md"]`` is scope-blind
+#: and was rendering "Project instructions" over user/skill buckets
+#: too. Keyed by SCOPE (the bare ``user``/``project``/``skill`` tags
+#: ``_SCOPE_DESTINATIONS`` already uses), never by destination-enum
+#: value — this is a scope specialization of the one polymorphic
+#: destination, NOT a second enum->label map (P-A11): ``_GROUP_LABELS``
+#: remains the only dict keyed by destination-enum values.
+_CLAUDE_MD_SCOPE_LABELS: dict[str, str] = {
+    "user": "User instructions",
+    "project": "Project instructions",
+    "skill": "Skills repo instructions",
+}
+
+#: P-A12: the resolved claude-md target path shown alongside the label
+#: above, at the surfaces where a human commits to a file. Also
+#: scope-keyed (same P-A11 reasoning as ``_CLAUDE_MD_SCOPE_LABELS`` —
+#: not a second enum->label map). ``user``'s value is string-equal to
+#: the CLI's ``DEFAULT_USER_CLAUDE_MD`` (``verbs.py:158``); ``project``/
+#: ``skill`` are the schematic tokens verbs.py's own router resolves at
+#: apply time (``verbs.py:587``/``:600``) — A1 threads no concrete host
+#: path into the UI model.
+_CLAUDE_MD_SCOPE_PATHS: dict[str, str] = {
+    "user": "~/.claude/CLAUDE.md",
+    "project": "<repo>/CLAUDE.md",
+    "skill": "<skills root>/CLAUDE.md",
+}
+
+
+def destination_label(value: str | None, scope: str | None = None) -> str:
     """F5-9 (feedback round 5, U19 §1.5): Detail's action bar + Why
     region gloss every destination enum through this — the SAME
     ``_GROUP_LABELS`` map Bucket group headers already use (single
@@ -115,10 +147,32 @@ def destination_label(value: str | None) -> str:
     change to ``_GROUP_LABELS`` is reflected immediately, everywhere.
     ``None`` or an unrecognized value passes through unchanged (never a
     placeholder) — forms/argv keep the raw enum regardless; only the
-    template's DISPLAY text goes through this."""
+    template's DISPLAY text goes through this.
+
+    A1 widens this with an optional *scope*: ``claude-md`` alone
+    resolves to three different files by scope (module docstring above
+    ``_CLAUDE_MD_SCOPE_LABELS``), so a recognized scope substitutes the
+    honest per-scope label. ``scope=None`` (the default) or any
+    unrecognized scope — and every non-``claude-md`` value at ANY
+    scope — falls through to today's gloss unchanged, so an
+    un-updated caller degrades gracefully rather than crashing."""
     if value is None:
         return ""
+    if value == "claude-md" and scope in _CLAUDE_MD_SCOPE_LABELS:
+        return _CLAUDE_MD_SCOPE_LABELS[scope]
     return _GROUP_LABELS.get(value, value)
+
+
+def destination_path(scope: str | None) -> str:
+    """P-A12: the §2 resolved claude-md path for *scope* — a plain
+    static scope-keyed lookup (``_CLAUDE_MD_SCOPE_PATHS`` above),
+    exposed alongside :func:`destination_label` so templates render the
+    two together. ``None`` or an unrecognized scope returns ``""``
+    (never a placeholder) — callers only invoke this once they already
+    know the record's destination is ``claude-md``."""
+    if scope is None:
+        return ""
+    return _CLAUDE_MD_SCOPE_PATHS.get(scope, "")
 
 
 def destinations_for_scope(scope: str) -> tuple[str, ...]:
@@ -908,7 +962,14 @@ def build_bucket_model(
             rows = ()
         groups.append(
             DestinationGroup(
-                key=key, label=_GROUP_LABELS[key], rows=tuple(rows), bulk_collapse=bulk
+                # O-2 e (A1): route the group heading through the SAME
+                # widened resolver the per-record sites use — a bucket
+                # page is one scope (``scope`` above), so this resolves
+                # to exactly one (scope, destination) pair; only
+                # ``claude-md`` specializes, every other key is
+                # byte-identical to the old direct ``_GROUP_LABELS[key]``
+                # index at every scope.
+                key=key, label=destination_label(key, scope), rows=tuple(rows), bulk_collapse=bulk
             )
         )
 
