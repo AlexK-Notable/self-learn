@@ -1,6 +1,22 @@
 # Spec A — `claude-md` parameterization: rules, local, and honest labels
 
 Status: DRAFT — for blind gate.
+Rev: 2026-07-21 — **re-anchored against post-C2 HEAD 97726df**. C2
+(commits 027fc7f/97726df) converted chezmoi from a hard dependency into
+a *detected capability* for USER-scope routing (`user_scope_capability`
+→ ABSENT/UNMANAGED/MANAGED; `compile_user_scope` writes
+`~/.claude/CLAUDE.md` directly when absent/unmanaged, syncs only when
+managed). This pass: (1) every code anchor re-verified and corrected
+against current code; (2) the "user scope = the *chezmoi-managed*
+CLAUDE.md" premise reconciled to *capability-aware* in §2.1 / §4 / F-2
+(new rider P-A2b); (3) all pins P-A1..P-A13 re-checked — **none
+invalidated by C2**; P-A13's unguarded-else fallthrough re-confirmed at
+`verbs.py:600`. Build-sequencing recommendation (see re-scope report):
+split into **A1** — §8 rows 1-3 + P-A11/P-A12, scope-aware labels +
+always-show-path, which alone closes F-1 (the user's actual bug), fast
+and low-risk — and **A2** — the rules/local/glob machinery (§2-§7, §9).
+The label resolver's signature widens to *scope* in A1 and, additively,
+to *variant* in A2; nothing in A1 depends on A2.
 Origin: user feedback 2026-07-19, opening on a mislabeled destination
 ("i think we should have a user scope destination of some kind") and
 widening to a full destination audit ("let's enumerate ALL destinations
@@ -87,7 +103,7 @@ unconditionally.
 `_GROUP_LABELS["claude-md"] = "Project instructions"` (ui
 `models.py:182`) is scope-blind, but `claude-md` already resolves to
 three distinct targets by scope
-(`plugins/self-learn/cli/src/self_learn/verbs.py:576-602`):
+(`plugins/self-learn/cli/src/self_learn/verbs.py:575-603`):
 
 | scope | actual target |
 |---|---|
@@ -104,12 +120,16 @@ user-scope destination look absent.
 
 ```python
 # plugins/self-learn/ui/src/self_learn_ui/models.py:95-99
-_SCOPE_DESTINATIONS = {
-    "skill":   ("skill-md", "claude-md", "reference"),
+_SCOPE_DESTINATIONS: dict[str, tuple[str, ...]] = {
+    "skill":   PARAMETER_FREE_DESTINATIONS,   # = ("skill-md","claude-md","reference"), models.py:85
     "project": ("claude-md", "reference"),
     "user":    ("claude-md",),
 }
 ```
+
+*(Anchor note: the `skill` row is now the named constant
+`PARAMETER_FREE_DESTINATIONS` (`models.py:85`), not the inline literal
+the earlier draft quoted; the value is unchanged.)*
 
 **Attribution pin.** This dict is **UI code**, and by its own docstring
 it is the CLI's scope rules "projected onto the parameter-free set" — a
@@ -126,12 +146,20 @@ actually rests on is narrower and survives: user scope has exactly one
 **always-loaded instruction surface**. `new-skill` mints a
 load-on-invocation artifact, not an always-loaded one.
 
-`reference` is refused at user scope (`verbs.py:656-661` — "the user
+`reference` is refused at user scope (`verbs.py:657-662` — "the user
 host is the chezmoi-managed CLAUDE.md, it has no references dir"; note
 it is the `else` after the `skill:` and `project` branches, not an
 explicit user-scope check). So every universal lesson competes for one
 capped (`DEFAULT_MAX_ENTRIES = 10` / `DEFAULT_MAX_WORDS = 150`) section
 of one file that loads in every session of every project.
+
+**C2 reconciliation.** That refusal message's "chezmoi-managed
+CLAUDE.md" clause is now **stale wording in the source itself** — C2 did
+not update it. Post-C2 the user host is `~/.claude/CLAUDE.md`, which may
+or may not be chezmoi-managed (§2.1). The *refusal* still holds — the
+real reason is doc 13 §2: there is no user-scope references dir,
+independent of chezmoi — but a builder quoting this comment must not read
+it as a live claim that the user file is definitionally chezmoi-managed.
 
 Doctrine §3 makes "prefer the narrowest surface that still fires" the
 system's **one standing tiebreak** — and at user scope there is nothing
@@ -179,6 +207,34 @@ means "one of three files, depending on scope." Adding `rules` and
 | `rules:<topic>` | `skill:<n>` | **deferred** — see §9 | — |
 | `local` | `project` | `<host repo>/CLAUDE.local.md` | every session in repo, **you only** |
 | `local` | `user` / `skill:<n>` | **refused** — no such file exists | — |
+
+**Reconciliation (C2, 2026-07-21).** The user surface is still exactly
+`~/.claude/CLAUDE.md` — the same one file — but it is no longer
+*definitionally* "the chezmoi-managed CLAUDE.md". `compile_user_scope`
+(`chezmoi.py:242`) is now **capability-aware** via `user_scope_capability`
+(`chezmoi.py:188` → ABSENT / UNMANAGED / MANAGED): it writes the file
+DIRECTLY when chezmoi is absent or the target is unmanaged, and runs the
+re-add/commit/push sync tail (surfacing `UserScopeResult.sync_warning`
+on failure, threaded out through `verbs.py::_host_phase`) ONLY when the
+target is MANAGED. The file *identity* and the one-always-loaded-surface
+claim (F-2) are unchanged; only the sync mechanism became conditional.
+
+**Pin (P-A2b) — user-scope `rules` inherits the C2 capability path, and
+diverges from CLAUDE.md on a managed setup.** A user-scope `rules:<topic>`
+target is `~/.claude/rules/<topic>.md`, a NEW file in the same
+`~/.claude` tree. Routed through `compile_user_scope` with that target it
+gets capability-aware writing **for free** — the machinery already keys
+on the per-target capability, so no bespoke writer is needed, and the
+builder MUST reuse it rather than invent one. But `chezmoi source-path`
+on a freshly-minted file returns non-zero, so a new user rule reads
+**UNMANAGED even when `~/.claude/CLAUDE.md` itself is MANAGED** (chezmoi
+does not auto-track new files). Consequence: by default a user rule is
+written directly and does **not** propagate across machines until the
+human `chezmoi add`s it, whereas its sibling CLAUDE.md syncs. This is a
+real coherence gap, not a bug — it follows C2's "write directly when
+unmanaged, silently" doctrine (rows 1-2) — but the label/detail (§8) for
+an unmanaged user rule should read "loads every session (this machine)"
+rather than imply cross-machine reach it does not yet have.
 
 **Pin (P-A2).** `local` at project scope is the only personal
 per-project surface in the system. Today such a lesson has two bad
@@ -302,6 +358,15 @@ re-runs `proposal validate`.
 **Pin (P-A6).** `variant` absent ⇒ today's behavior, byte-identical.
 Every existing proposal on disk stays valid and routes exactly as
 before. This spec adds no migration.
+
+*(C2 rider, 2026-07-21.)* "Today's behavior" for a variant-absent
+**user** record is now the post-C2 capability-aware path
+(`compile_user_scope`: direct write when absent/unmanaged, re-add/commit/
+push when managed). Byte-identity is asserted against **that** post-C2
+baseline, not the pre-C2 always-chezmoi one — test obligation 1 (§11)
+must exercise the ABSENT/UNMANAGED/MANAGED branches. The variant-carrying
+user-scope rules route reuses the SAME write path (P-A2b): it adds a
+target, never a new write mechanism.
 
 ---
 
@@ -467,8 +532,11 @@ deferral rather than silently falling back.
 
 **The deferral needs an explicit guard, not an assumed one.** The
 `claude-md` third leg is an **unguarded `else` fallthrough**
-(`verbs.py:600`), not the `scope.startswith("skill:")` check its comment
-at :591-593 describes — any scope that is not `user` or `project` lands
+(`verbs.py:600` — re-verified post-C2 HEAD 97726df: line 600 is
+`target = root / "CLAUDE.md"`, still reached by fallthrough after the
+`user` and `project` returns), not the `scope.startswith("skill:")`
+check its comment at :591-593 describes — any scope that is not `user`
+or `project` lands
 in the skills-root leg. So a skill-scope `rules` route would silently
 resolve to `<skills root>/CLAUDE.md` instead of raising. The builder MUST
 add a positive scope check; inheriting the existing control flow produces
