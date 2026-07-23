@@ -56,6 +56,7 @@ non-zero exit on any FAIL:
 
 from __future__ import annotations
 
+import glob as glob_mod
 import json
 import os
 import sys
@@ -83,7 +84,7 @@ from .ledger_ops import (
     validate_proposal,
 )
 from .records import Record, RecordError
-from .verbs import DEFAULT_USER_CLAUDE_MD
+from .verbs import DEFAULT_USER_CLAUDE_MD, _project_rules_dir, _user_rules_dir
 
 __all__ = ["proposal_validate", "run_selftest"]
 
@@ -202,6 +203,25 @@ def _target_for(home: Path, bucket: Bucket, record: Record) -> Path | None:
             return None
         return root / "plugins" / name / "skills" / name / "SKILL.md"
     if destination == "claude-md":
+        # A2 §5.2/§2.1: variant-aware resolution — a rules/local target
+        # is NOT the plain claude-md file. Keyed off routing.get(
+        # "variant")/"rules_topic", the SAME stored-routing data the
+        # verbs' own retirement/recompile sites read (§4.4B).
+        routing = record.routing or {}
+        variant = routing.get("variant")
+        if variant == "local":
+            host = bucket_project_path(bucket.path)
+            return None if host is None else Path(host) / "CLAUDE.local.md"
+        if variant == "rules":
+            topic = routing.get("rules_topic")
+            if not topic:
+                return None
+            if record.scope == "user":
+                return _user_rules_dir(DEFAULT_USER_CLAUDE_MD.expanduser()) / f"{topic}.md"
+            if record.scope == "project":
+                host = bucket_project_path(bucket.path)
+                return None if host is None else _project_rules_dir(Path(host)) / f"{topic}.md"
+            return None  # skill-scope rules: deferred (§9), never routed
         if record.scope == "user":
             return DEFAULT_USER_CLAUDE_MD.expanduser()
         if record.scope == "project":
@@ -350,6 +370,33 @@ def _check_drift(home: Path) -> tuple[bool, str]:
                     f"{record.id}: entry marker missing from {target} — "
                     "run `self-learn recompile`"
                 )
+                continue
+            # A2 §5.2 item 3: for a PROJECT-scope pathed rule ONLY,
+            # re-assert every recorded glob still matches ≥1 file — the
+            # same drift class as a stale marker (files moved out from
+            # under the pattern since routing), the same repair
+            # (`recompile` surfaces it; the human retargets). User-scope
+            # pathed globs are NOT re-asserted here (no canonical tree,
+            # U-A2-glob-tree) — their presence-in-file check above still
+            # ran.
+            routing = record.routing or {}
+            if routing.get("variant") == "rules" and record.scope == "project":
+                paths = routing.get("rules_paths") or []
+                host = bucket_project_path(bucket.path)
+                if host is not None:
+                    stale = [
+                        p
+                        for p in paths
+                        if not glob_mod.glob(p, root_dir=host, recursive=True)
+                    ]
+                    if stale:
+                        listed = ", ".join(repr(p) for p in stale)
+                        failures.append(
+                            f"{record.id}: glob pattern(s) now match nothing "
+                            f"in {host}: {listed} — the rule has gone stale "
+                            "(files moved); no automated repair, the human "
+                            "retargets the pattern"
+                        )
     if failures:
         return False, "; ".join(failures)
     if not checked:

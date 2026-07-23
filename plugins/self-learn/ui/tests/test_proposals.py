@@ -168,6 +168,37 @@ class TestValidateProposal:
             )
             assert isinstance(result, str), dest
 
+    def test_a2_claude_md_variant_forms_parse(self, tmp_path: Path) -> None:
+        """A2 §4.2 site 3: the UI-side twin of the CLI's ``_parse_dest``
+        must accept the SAME new forms — obligation 19's "no split-brain"
+        (a proposal carrying ``claude-md:rules:<topic>`` must pass BOTH
+        UI validation and the CLI's own parse)."""
+        sb, (rec,) = _seed(tmp_path)
+        for dest in ("claude-md:local", "claude-md:rules:subagents", "claude-md:rules:a"):
+            result = validate_proposal(
+                sb.ledger, _record_scope(rec), {"verb": "route", "record_id": rec.id, "dest": dest}
+            )
+            assert isinstance(result, VerbProposal), dest
+        for dest in ("claude-md:rules:", "claude-md:bogus", "claude-md:rules:Not_Kebab!"):
+            result = validate_proposal(
+                sb.ledger, _record_scope(rec), {"verb": "route", "record_id": rec.id, "dest": dest}
+            )
+            assert isinstance(result, str), dest
+
+    def test_a2_refusal_message_enumerates_the_new_forms(self, tmp_path: Path) -> None:
+        """A2 §4.2 NIT 1 (obligation 19): a mistyped dest's refusal lists
+        BOTH new variant forms among the accepted ones — the message and
+        the regex move together, or a mistyped new-form dest gets a
+        refusal that omits exactly the forms A2 added."""
+        sb, (rec,) = _seed(tmp_path)
+        result = validate_proposal(
+            sb.ledger, _record_scope(rec),
+            {"verb": "route", "record_id": rec.id, "dest": "claude-md:bogus"},
+        )
+        assert isinstance(result, str)
+        assert "claude-md:rules:<topic>" in result
+        assert "claude-md:local" in result
+
     def test_skill_md_refused_for_a_project_record(self, tmp_path: Path) -> None:
         """09 §4.5 as amended 2026-07-18 (feedback round 2 item 3): dest
         is scope-checked at intake — the human never sees an
@@ -1306,3 +1337,29 @@ class TestBucketStalenessLeg:
             headers=HX,
         ).text
         self._assert_cleared_with_notice(manager, runner, out)
+
+
+class TestObligation13UISideSingleCommandString:
+    """A2 §13 item 13 (the UI half): the review UI's own package must
+    never independently reconstruct the chezmoi-adopt invocation string
+    — it can only ever come from ``self_learn.chezmoi.adopt_command``
+    (the CLI's single source, §10.5). This package has ``self_learn``
+    importable (proposals.py itself already imports from
+    ``self_learn.hosts``), so this check runs here rather than in the
+    CLI suite's own venv-isolated twin
+    (plugins/self-learn/cli/tests/test_a2_rules_local.py)."""
+
+    def test_ui_package_never_hardcodes_the_adopt_invocation(self) -> None:
+        import self_learn_ui
+        from self_learn import chezmoi
+
+        needle = chezmoi.ADOPT_COMMAND_PREFIX  # "self-learn chezmoi-adopt "
+        pkg_dir = Path(self_learn_ui.__file__).parent
+        for py in pkg_dir.rglob("*.py"):
+            assert needle not in py.read_text(encoding="utf-8"), py
+
+    def test_adopt_command_is_the_single_source(self) -> None:
+        from self_learn import chezmoi
+
+        target = Path("/tmp/example/rules/subagents.md")
+        assert chezmoi.adopt_command(target) == f"self-learn chezmoi-adopt {target}"

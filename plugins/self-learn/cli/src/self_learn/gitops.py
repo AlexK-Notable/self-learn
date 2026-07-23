@@ -93,6 +93,7 @@ __all__ = [
     "GitOpsError",
     "HalfWrittenError",
     "PushResult",
+    "check_ignore",
     "commit",
     "commit_lock",
     "commit_lock_path",
@@ -553,6 +554,22 @@ def dirty_paths(repo: Path, target: Path | str) -> list[str]:
     ``--dry-run --json`` mode has no other data source, gate m6)."""
     proc = _git_ok(repo, "status", "--porcelain", "--", str(target))
     return [line[3:] for line in proc.stdout.splitlines() if line.strip()]
+
+
+def check_ignore(repo: Path, target: Path | str) -> bool:
+    """True iff ``git`` reports ``target`` ignored in ``repo`` (A2 §6,
+    P-A3: the ``CLAUDE.local.md`` privacy guard). ``git check-ignore``
+    exits 0 when the path IS ignored, 1 when it is not (an ordinary,
+    non-error outcome — never raised), and >1 on a real usage error, which
+    DOES raise via :func:`_git_ok`. Deliberately not a substring scan of
+    ``.gitignore`` (P-A3 mechanism pin): this honors nested
+    ``.gitignore`` files, negations, and the user's global excludes."""
+    proc = _git(repo, "check-ignore", "-q", "--", str(target))
+    if proc.returncode in (0, 1):
+        return proc.returncode == 0
+    raise GitOpsError(
+        f"git check-ignore failed: {(proc.stderr or proc.stdout).strip()}"
+    )
 
 
 @dataclass(frozen=True)

@@ -138,6 +138,19 @@
           hx-vals='{{ ({"verb": "link-contradicts", "kind": "contradicts", "target": target}) | tojson }}'
           hx-target="#{{ dom_id }}" hx-swap="outerHTML">Link contradiction &rarr; {{ target }}</button>
 
+  {% elif kind == "adopt" %}
+  {# A2 §10.4(a): "yes" arms exactly like `contradicts`'s single button
+     (Confirm/Cancel then come from the SAME generic `armed` block above);
+     "no" carries no verb at all — it just wipes the whole offer div
+     (§10.2: no declined-state persists). #}
+  <button type="button" data-key-action="chezmoi_adopt"
+          hx-post="/record/{{ record_id }}/action/arm"
+          hx-vals='{{ ({"verb": "chezmoi-adopt", "kind": "adopt", "target": target}) | tojson }}'
+          hx-target="#{{ dom_id }}" hx-swap="outerHTML">Bring under chezmoi (sync across machines)</button>
+  <button type="button" data-key-action="chezmoi_adopt_decline"
+          hx-post="/record/{{ record_id }}/adopt-offer/dismiss"
+          hx-target="#adopt-offer-{{ record_id }}" hx-swap="outerHTML">Not now</button>
+
   {% else %}
   <form id="form-{{ dom_id }}">
     <input type="hidden" name="dest" value="{{ dest or '' }}">

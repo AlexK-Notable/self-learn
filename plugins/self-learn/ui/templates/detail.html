@@ -122,8 +122,14 @@
        O-3): threads model.scope so a claude-md destination glosses to the
        honest per-scope label, and appends the resolved path — bound to
        this record's OWN destination only, never the alternates below
-       (P-A12's "always" is scoped to the selected destination). #}
-    {% if model.why.destination %}<p>Suggested destination: <span title="{{ model.why.destination }}">{{ model.why.destination | destination_label(model.scope) }}</span>{% if model.why.destination == "claude-md" %} <span class="dest-path">&middot; {{ model.scope | destination_path }}</span>{% endif %}</p>{% endif %}
+       (P-A12's "always" is scoped to the selected destination). A2 §11
+       additively threads the proposal's own variant/rules_topic (both
+       `None` for a pre-A2 or non-rules proposal, reproducing A1 exactly)
+       and appends the plain-words firing condition — `adopted=True`
+       fixed here (§11's post-route "(this machine)" caveat does not
+       apply to a not-yet-routed suggestion; the offer itself, §10.4(a),
+       covers the post-route unadopted case). #}
+    {% if model.why.destination %}<p>Suggested destination: <span title="{{ model.why.destination }}">{{ model.why.destination | destination_label(model.scope, model.why.variant, model.why.rules_topic) }}</span>{% if model.why.destination == "claude-md" %} <span class="dest-path">&middot; {{ model.scope | destination_path(model.why.variant, model.why.rules_topic) }}</span>{% endif %}{% if model.why.variant %} <span class="dest-firing-note">({{ model.why.variant | rules_firing_note(model.scope, model.why.rules_paths) }})</span>{% endif %}</p>{% endif %}
     {% if model.why.alternates %}
     {# A1 (O-2 b): scope-aware label, no path — alternates can be
        reference/skill-md, whose path resolution is outside A1. #}

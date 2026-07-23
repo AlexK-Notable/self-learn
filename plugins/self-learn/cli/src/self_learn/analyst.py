@@ -91,6 +91,11 @@ Reply with ONLY a YAML mapping — no prose, no explanation outside it:
 destination: <one of skill-md | claude-md | reference | new-skill | hook>
 alternates: [<zero or more others from the same list>]
 rationale: <one sentence>
+# claude-md only, optional (A2 §3): a rules topic file, or a personal
+# per-project file — omit all three for plain claude-md.
+variant: <rules | local, omit for plain claude-md>
+rules_topic: <kebab-slug topic — required iff variant is rules>
+rules_paths: [<glob>, ...]  # optional; omit for an unpathed rule
 
 Record:
 
@@ -197,6 +202,13 @@ def analyze(home: Path | str, record: Record) -> dict:
         # CLI-stamped — never the model's (shared normalization fn, 08 §7.1).
         "record_sha": sha_anchor(record.body),
     }
+    # A2 §4.2 sync obligation (site 2): pass the analyst's variant fields
+    # through only when present, so a plain-claude-md (or non-claude-md)
+    # analysis stays byte-identical (P-A6) — validate_proposal enforces
+    # the §4.3 schema either way.
+    for key in ("variant", "rules_topic", "rules_paths"):
+        if parsed.get(key) is not None:
+            proposal[key] = parsed[key]
     try:
         validate_proposal(proposal)
     except ProposalError as exc:

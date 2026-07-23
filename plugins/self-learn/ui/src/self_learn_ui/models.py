@@ -76,6 +76,8 @@ __all__ = [
     "destination_label",
     "destination_path",
     "destinations_for_scope",
+    "parse_variant_qualifier",
+    "rules_firing_note",
     "host_add_command",
     "leading_text",
 ]
@@ -137,8 +139,36 @@ _CLAUDE_MD_SCOPE_PATHS: dict[str, str] = {
     "skill": "<skills root>/CLAUDE.md",
 }
 
+#: A2 §11 (widening A1, not forking it — same P-A11 reasoning as
+#: ``_CLAUDE_MD_SCOPE_LABELS`` above): the ``rules`` variant's label,
+#: keyed by scope. ``local`` has only one valid scope (project), so it
+#: gets a single constant rather than a one-entry dict (§11's table:
+#: local is project-only). Neither dict's keys are destination-enum
+#: values — see :class:`TestNoSecondLabelMap` in the A1 test suite,
+#: which this widening must keep passing.
+_RULES_SCOPE_LABELS: dict[str, str] = {
+    "user": "User rule",
+    "project": "Project rule",
+}
 
-def destination_label(value: str | None, scope: str | None = None) -> str:
+_LOCAL_LABEL = "Personal project notes"
+
+#: A2 §11: the path templates paired with the labels above. ``{topic}``
+#: is substituted by :func:`destination_path` when a topic is given.
+_RULES_SCOPE_PATHS: dict[str, str] = {
+    "user": "~/.claude/rules/{topic}.md",
+    "project": "<repo>/.claude/rules/{topic}.md",
+}
+
+_LOCAL_PATH = "<repo>/CLAUDE.local.md"
+
+
+def destination_label(
+    value: str | None,
+    scope: str | None = None,
+    variant: str | None = None,
+    rules_topic: str | None = None,
+) -> str:
     """F5-9 (feedback round 5, U19 §1.5): Detail's action bar + Why
     region gloss every destination enum through this — the SAME
     ``_GROUP_LABELS`` map Bucket group headers already use (single
@@ -155,24 +185,94 @@ def destination_label(value: str | None, scope: str | None = None) -> str:
     honest per-scope label. ``scope=None`` (the default) or any
     unrecognized scope — and every non-``claude-md`` value at ANY
     scope — falls through to today's gloss unchanged, so an
-    un-updated caller degrades gracefully rather than crashing."""
+    un-updated caller degrades gracefully rather than crashing.
+
+    A2 §11 ADDITIVELY widens this again with an optional *variant* (and
+    *rules_topic*, only meaningful when ``variant == "rules"``) —
+    ``variant=None`` (the default) reproduces A1's behavior exactly, so
+    every existing caller is unaffected (P-A6-style no-migration for the
+    label surface)."""
     if value is None:
         return ""
+    if value == "claude-md" and variant == "rules" and scope in _RULES_SCOPE_LABELS:
+        base = _RULES_SCOPE_LABELS[scope]
+        return f"{base} — {rules_topic}" if rules_topic else base
+    if value == "claude-md" and variant == "local" and scope == "project":
+        return _LOCAL_LABEL
     if value == "claude-md" and scope in _CLAUDE_MD_SCOPE_LABELS:
         return _CLAUDE_MD_SCOPE_LABELS[scope]
     return _GROUP_LABELS.get(value, value)
 
 
-def destination_path(scope: str | None) -> str:
+def destination_path(
+    scope: str | None, variant: str | None = None, rules_topic: str | None = None
+) -> str:
     """P-A12: the §2 resolved claude-md path for *scope* — a plain
     static scope-keyed lookup (``_CLAUDE_MD_SCOPE_PATHS`` above),
     exposed alongside :func:`destination_label` so templates render the
     two together. ``None`` or an unrecognized scope returns ``""``
     (never a placeholder) — callers only invoke this once they already
-    know the record's destination is ``claude-md``."""
+    know the record's destination is ``claude-md``.
+
+    A2 §11: *variant*/*rules_topic* additively widen this the same way
+    they widen :func:`destination_label` — ``variant=None`` (the
+    default) is byte-identical to A1's behavior."""
     if scope is None:
         return ""
+    if variant == "rules" and scope in _RULES_SCOPE_PATHS:
+        return _RULES_SCOPE_PATHS[scope].format(topic=rules_topic or "<topic>")
+    if variant == "local" and scope == "project":
+        return _LOCAL_PATH
     return _CLAUDE_MD_SCOPE_PATHS.get(scope, "")
+
+
+def parse_variant_qualifier(dest: str | None) -> tuple[str | None, str | None]:
+    """Decode a colon-qualified ``claude-md`` dest STRING (the pane
+    proposal's own form — ``proposals.py``'s ``_DEST_RE`` grammar:
+    ``claude-md:rules:<topic>`` / ``claude-md:local``) into the
+    ``(variant, rules_topic)`` pair :func:`destination_label` /
+    :func:`destination_path` take. This is the pane's ONLY variant
+    signal — unlike the analyst's proposal.yaml, a ``VerbProposal``
+    carries no separate ``variant``/``rules_topic`` fields (§4.1's
+    string-qualified grammar IS its schema). ``(None, None)`` for
+    ``None``, any unqualified dest, or any non-``claude-md`` dest
+    (P-A6: no-migration — an un-widened caller's gloss is unaffected)."""
+    if dest is None:
+        return None, None
+    base, sep, rest = dest.partition(":")
+    if base != "claude-md" or not sep:
+        return None, None
+    if rest == "local":
+        return "local", None
+    if rest.startswith("rules:"):
+        return "rules", rest.partition(":")[2] or None
+    return None, None
+
+
+def rules_firing_note(
+    variant: str | None,
+    scope: str | None,
+    rules_paths: list[str] | tuple[str, ...] | None = None,
+    *,
+    adopted: bool = True,
+) -> str:
+    """A2 §11: the plain-words firing condition beside a variant label —
+    P-A1's honest statement at the point of decision. A pathed rule
+    names its glob; an unpathed one says it loads every session; an
+    UNADOPTED user-scope rule (§10, P-A2b′) never implies cross-machine
+    reach it does not have. ``""`` for anything this note does not
+    apply to (plain claude-md, or a non-claude-md destination) — never a
+    placeholder."""
+    if variant == "local":
+        return "loads every session in this project (you only)"
+    if variant != "rules":
+        return ""
+    if rules_paths:
+        globs = ", ".join(f"`{p}`" for p in rules_paths)
+        return f"loads when you touch {globs}"
+    if scope == "user" and not adopted:
+        return "loads every session (this machine)"
+    return "loads every session"
 
 
 def destinations_for_scope(scope: str) -> tuple[str, ...]:
@@ -1071,6 +1171,14 @@ class WhyRegion:
     #: (:func:`destinations_for_scope`); a capped destination with no
     #: `surface_fill` key is simply absent from this tuple (F5).
     budgets: tuple[BudgetRow, ...]
+    #: A2 §11: the analyst proposal's own variant fields, additive and
+    #: `None`/`()` for every pre-A2 proposal (P-A6) — threaded through so
+    #: `detail.html` can gloss the SUGGESTED destination the same
+    #: variant-aware way a resolved record's own label would (§13 item 5,
+    #: §15 item 9).
+    variant: str | None = None
+    rules_topic: str | None = None
+    rules_paths: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1289,6 +1397,12 @@ def _build_why(item: dict, proposal: dict | None, scope: str) -> WhyRegion:
         freshness=freshness,
         freshness_label=label,
         budgets=_budget_rows(item, scope),
+        # A2 §11: read straight off the proposal (never `item`, which is
+        # the ledger's routing-agnostic summary) — `None`/`()` for every
+        # proposal that never set these (P-A6 no-migration).
+        variant=(proposal or {}).get("variant"),
+        rules_topic=(proposal or {}).get("rules_topic"),
+        rules_paths=tuple((proposal or {}).get("rules_paths") or ()),
     )
 
 

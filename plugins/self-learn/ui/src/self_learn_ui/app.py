@@ -54,6 +54,10 @@ def _build_templates() -> Jinja2Templates:
     # label at the two identity/decision surfaces (detail.html,
     # action_bar.html's cycle button).
     env.filters["destination_path"] = models.destination_path
+    # A2 §11: the plain-words firing-condition gloss beside a variant
+    # label (pathed rule vs. unpathed vs. local) — same single-source
+    # discipline as the two filters above.
+    env.filters["rules_firing_note"] = models.rules_firing_note
     # F5-1 (feedback round 5, U19 §1.2 gate M1): detail_degraded.html has
     # no DetailModel/BucketModel to carry a pre-computed destination_cycle
     # (a degraded record's frontmatter may not even parse) — the one

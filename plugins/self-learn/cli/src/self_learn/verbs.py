@@ -58,6 +58,7 @@ the skills root hosts its own CLAUDE.md canon).
 from __future__ import annotations
 
 import contextlib
+import glob as glob_mod
 import sys
 import tempfile
 from dataclasses import dataclass, field
@@ -137,6 +138,7 @@ __all__ = [
     "TargetSpec",
     "VerbError",
     "VerbResult",
+    "chezmoi_adopt",
     "commit_drift",
     "confirm_held",
     "confirm_recurrence",
@@ -404,8 +406,12 @@ def _push_ledger(home: Path, no_push: bool) -> gitops.PushResult | None:
 def _parse_dest(dest: str) -> tuple[str, str | None]:
     """Parse an explicit ``--dest`` value. Returns (destination,
     qualifier) — ``reference:<file>`` names an existing references file
-    (08 §1 References-compiler pin) and ``new-skill:<name>`` names the
-    skill to scaffold (08 §8.1 — the name slot is the human's call)."""
+    (08 §1 References-compiler pin), ``new-skill:<name>`` names the skill
+    to scaffold (08 §8.1 — the name slot is the human's call), and (A2
+    §4.1) ``claude-md:local`` / ``claude-md:rules:<topic>`` carry the
+    ``variant`` a bare ``--dest`` selects — ``"local"`` / ``"rules:
+    <topic>"`` in the qualifier slot, decoded at
+    :func:`_resolve_target`."""
     if dest.startswith("reference:"):
         name = dest.split(":", 1)[1]
         if not name:
@@ -417,21 +423,71 @@ def _parse_dest(dest: str) -> tuple[str, str | None]:
             return "new-skill", validate_skill_name(name)
         except SkillScaffoldError as exc:
             raise VerbError(str(exc)) from exc
+    if dest.startswith("claude-md:"):
+        qualifier = dest[len("claude-md:") :]
+        if qualifier == "local":
+            return "claude-md", "local"
+        if qualifier.startswith("rules:"):
+            topic = qualifier[len("rules:") :]
+            if not topic:
+                raise VerbError(
+                    "claude-md:rules:<topic> needs a topic — "
+                    "claude-md:rules:<topic-slug>"
+                )
+            try:
+                validate_skill_name(topic)
+            except SkillScaffoldError as exc:
+                # Y-9 (A2 §4.1 obligation): a rules topic slug error must
+                # name "rules topic", never validate_skill_name's own
+                # "new-skill name … must be kebab-case" — that misnames
+                # what the user got wrong (it names a rules file, not a
+                # skill).
+                raise VerbError(
+                    f"rules topic {topic!r} must be kebab-case "
+                    "([a-z0-9-], starting alphanumeric) — it names the "
+                    "rules file"
+                ) from exc
+            return "claude-md", f"rules:{topic}"
+        raise VerbError(
+            f"claude-md qualifier {qualifier!r} not recognized — use "
+            "claude-md:local or claude-md:rules:<topic>"
+        )
     if dest not in PROPOSAL_DESTINATIONS:
         raise VerbError(
             f"--dest must be one of {list(PROPOSAL_DESTINATIONS)} "
-            f"(or reference:<file> / new-skill:<name>), got {dest!r}"
+            f"(or reference:<file> / new-skill:<name> / claude-md:local / "
+            f"claude-md:rules:<topic>), got {dest!r}"
         )
     return dest, None
 
 
+@dataclass(frozen=True)
+class _Destination:
+    """A2 §4.4A — the route-time INPUT seam. What a route resolves to,
+    structured: ``ref_name`` is the pre-A2 qualifier slot (``reference:``
+    file name, ``new-skill:`` name, or an undecoded claude-md qualifier
+    string from a bare ``--dest``); ``variant``/``rules_topic``/
+    ``rules_paths`` are the A2 fields, sourced from a proposal's own
+    keys on the proposal branch. Both branches carry all fields — the
+    proposal branch used to return ``data["destination"], None``,
+    silently dropping variant/rules_topic/rules_paths (the misroute
+    hazard §4.4 names)."""
+
+    destination: str
+    ref_name: str | None = None
+    variant: str | None = None
+    rules_topic: str | None = None
+    rules_paths: list[str] | None = None
+
+
 def _resolve_destination(
     bucket_dir: Path, record_id: str, dest: str | None
-) -> tuple[str, str | None]:
+) -> _Destination:
     """Destination for a route: ``--dest`` overrides; else the proposal
     sibling; neither → error."""
     if dest is not None:
-        return _parse_dest(dest)
+        destination, qualifier = _parse_dest(dest)
+        return _Destination(destination, qualifier)
     proposal_path = bucket_dir / "proposals" / f"{record_id}.yaml"
     if not proposal_path.is_file():
         raise NoProposalError(
@@ -439,7 +495,13 @@ def _resolve_destination(
         )
     data = read_proposal(proposal_path)
     validate_proposal(data)
-    return data["destination"], None
+    return _Destination(
+        data["destination"],
+        None,
+        data.get("variant"),
+        data.get("rules_topic"),
+        data.get("rules_paths"),
+    )
 
 
 def _routed_to(
@@ -448,8 +510,21 @@ def _routed_to(
     *,
     scope_pred=None,
     exclude: frozenset[str] | set[str] = frozenset(),
+    variant: str | None = None,
+    rules_topic: str | None = None,
 ) -> list[Record]:
-    """Resolved records routed to ``destination`` — the compile set."""
+    """Resolved records routed to ``destination`` — the compile set.
+
+    A2 §4.5A: ``variant``/``rules_topic`` partition the set so a rules
+    topic file, a ``local`` file, and plain ``claude-md`` never
+    cross-contaminate — in EITHER direction. Because ``routing.destination``
+    stays ``"claude-md"`` for every rules/local record (R-2), the default
+    ``variant=None`` here means "no variant on the record" (a record
+    whose routing carries no ``variant`` key, i.e. every plain-claude-md
+    / skill-md / new-skill record already routed pre-A2) — the byte-
+    identical, P-A6 default. A caller resolving a specific topic passes
+    ``variant="rules", rules_topic=<topic>``; a ``local`` target passes
+    ``variant="local"``."""
     out: list[Record] = []
     for bdir in bucket_dirs:
         resolved = bdir / "resolved"
@@ -462,7 +537,12 @@ def _routed_to(
                 continue  # unparseable resolved file: never a compile input
             if record.id in exclude or record.status != "routed":
                 continue
-            if (record.routing or {}).get("destination") != destination:
+            routing = record.routing or {}
+            if routing.get("destination") != destination:
+                continue
+            if routing.get("variant") != variant:
+                continue
+            if variant == "rules" and routing.get("rules_topic") != rules_topic:
                 continue
             if scope_pred is not None and not scope_pred(record.scope):
                 continue
@@ -489,6 +569,16 @@ class TargetSpec:
     refs_dir: Path | None = None
     ref_name: str | None = None
     new_skill: str | None = None  # new-skill only: the human-named skill
+    #: A2 §2.1/§4.3: the claude-md scope parameterization — ``None`` (the
+    #: byte-identical P-A6 default), ``"rules"``, or ``"local"``. Only
+    #: ever set when ``destination == "claude-md"``.
+    variant: str | None = None
+    rules_topic: str | None = None  # variant == "rules" only
+    rules_paths: tuple[str, ...] | None = None  # variant == "rules" only
+    #: A2 §5.1: True iff a project-scope zero-match refusal was bypassed
+    #: via ``--allow-empty-glob`` (the routing-metadata bypass record,
+    #: test obligation §13 item 3).
+    glob_bypass: bool = False
 
 
 def _gate_host(home: Path, path: Path | str, kind: str) -> Path:
@@ -540,6 +630,167 @@ def _project_host_or_refuse(
     return _gate_host(home, host, "project")
 
 
+def _decode_claude_md_qualifier(qualifier: str) -> tuple[str, str | None]:
+    """A2 §4.4B: the ONE decode point for a bare ``--dest``'s claude-md
+    qualifier (``_parse_dest``'s ``"local"`` / ``"rules:<topic>"``
+    strings) into ``(variant, rules_topic)``. Both fresh-route paths —
+    ``route`` (via ``_resolve_destination``'s ``--dest`` branch, which
+    passes the qualifier through undecoded) and ``route_direct`` (which
+    calls ``_parse_dest`` directly) — funnel through here because it
+    lives INSIDE :func:`_resolve_target`'s claude-md branch, the single
+    site both callers reach. A naive build that skips this decode
+    silently resolves a bare ``--dest claude-md:rules:<topic>`` to plain
+    ``~/.claude/CLAUDE.md`` (the misroute hazard §4.4 names)."""
+    if qualifier == "local":
+        return "local", None
+    if qualifier.startswith("rules:"):
+        return "rules", qualifier[len("rules:") :]
+    raise VerbError(f"unrecognized claude-md qualifier {qualifier!r}")
+
+
+def _user_rules_dir(user_claude_md_target: Path) -> Path:
+    """§2.1: ``~/.claude/rules/`` sits beside ``~/.claude/CLAUDE.md`` —
+    resolved off the SAME (possibly test-overridden) user target every
+    other user-scope call site uses, never a second ``~/.claude`` guess."""
+    return user_claude_md_target.parent / "rules"
+
+
+def _project_rules_dir(host_repo: Path) -> Path:
+    """§2.1: ``<host repo>/.claude/rules/``."""
+    return host_repo / ".claude" / "rules"
+
+
+def _validate_project_globs(
+    host: Path, patterns: tuple[str, ...], allow_empty_glob: bool
+) -> bool:
+    """§5.1: project-scope per-pattern zero-match refusal — the one real
+    silent-failure guard the parameterization introduces. The matcher is
+    stdlib recursive glob over the host working tree (an approximation of
+    CC's own gitignore-style matcher, noted as a limitation, not a
+    blocker). A pattern with an unparseable bracket does not raise
+    (empirically, ``fnmatch.translate`` never raises on an unbalanced
+    ``[``) — it degrades to a non-matching literal, exactly like CC's own
+    documented partial failure, so "unparseable" folds into "zero-match"
+    with no separate parse step (§5.1 Grounding).
+
+    Returns True iff at least one pattern was dead AND the caller passed
+    ``allow_empty_glob`` (the bypass this function's caller records into
+    routing metadata, test obligation §13 item 3); returns False when
+    every pattern matched (nothing to record). Raises :class:`VerbError`
+    naming every dead pattern when the escape was not given (P-A7: a
+    rule-level "did any match?" would pass a partial failure — this
+    refuses per pattern)."""
+    dead = [
+        pattern
+        for pattern in patterns
+        if not glob_mod.glob(pattern, root_dir=host, recursive=True)
+    ]
+    if not dead:
+        return False
+    if not allow_empty_glob:
+        listed = ", ".join(repr(p) for p in dead)
+        raise VerbError(
+            f"rules_paths pattern(s) match nothing in {host}: {listed} — "
+            "a rule with a non-matching pattern never fires; fix the "
+            "pattern(s), or pass --allow-empty-glob to route unverified "
+            "(the write-the-rule-before-the-files case)"
+        )
+    return True
+
+
+def _resolve_local_target(
+    home: Path,
+    bucket_dir: Path,
+    scope: str,
+    project_path: Path | None,
+    *,
+    check_dirty: bool,
+) -> TargetSpec:
+    """A2 §6: ``CLAUDE.local.md`` — project scope ONLY, via a POSITIVE
+    guard (never the ``else``-fallthrough discipline §9 forbids), and
+    gitignore-verified (P-A3, the privacy guard) before it is ever routed
+    into."""
+    if scope != "project":
+        raise VerbError(
+            "CLAUDE.local.md exists only per project — route to project "
+            "scope, or use claude-md/rules"
+        )
+    host = _project_host_or_refuse(home, bucket_dir, project_path)
+    target = host / "CLAUDE.local.md"
+    if check_dirty:
+        if not gitops.check_ignore(host, target):
+            raise VerbError(
+                f"{target} is not gitignored in {host} — add "
+                "`CLAUDE.local.md` to .gitignore, then re-route (routing "
+                "a personal lesson into a tracked file publishes it to "
+                "the team)"
+            )
+        if target.is_file():
+            _abort_if_dirty(host, target)
+    return TargetSpec(
+        "claude-md", "project", bucket_dir, target, host, variant="local"
+    )
+
+
+def _resolve_rules_target(
+    home: Path,
+    bucket_dir: Path,
+    scope: str,
+    rules_topic: str | None,
+    rules_paths: list[str] | tuple[str, ...] | None,
+    *,
+    user_claude_md: Path | str | None,
+    chezmoi_bin: str,
+    project_path: Path | None,
+    check_dirty: bool,
+    allow_empty_glob: bool,
+) -> TargetSpec:
+    """A2 §2.1/§9: ``rules:<topic>`` — user or project scope only.
+    Skill scope is the P-A13 deferral, raised via a POSITIVE guard (the
+    same anti-fallthrough discipline as :func:`_resolve_local_target`) —
+    never the unguarded ``claude-md`` ``else`` this replaces for the
+    rules case."""
+    if rules_topic is None:
+        raise VerbError(
+            "a rules route needs a topic — claude-md:rules:<topic>"
+        )
+    if scope not in ("user", "project"):
+        raise VerbError(
+            f"claude-md:rules:{rules_topic} is not available for scope "
+            f"{scope!r} yet — plugin-shipped rules is an unresolved "
+            "documentation gap (P-A13); route to user or project scope"
+        )
+    paths_tuple = tuple(rules_paths) if rules_paths else None
+    if scope == "user":
+        base = Path(
+            user_claude_md if user_claude_md is not None else DEFAULT_USER_CLAUDE_MD
+        ).expanduser()
+        target = _user_rules_dir(base) / f"{rules_topic}.md"
+        if check_dirty:
+            # E-17 preflight, same as plain user claude-md: chezmoi
+            # drift/dirty aborts BEFORE the ledger commit. U-A2-glob-tree
+            # (§5.1): no canonical tree exists for a user-scope glob, so
+            # only the schema-shape check (already run at proposal
+            # validation, §4.3(4)) applies — no zero-match assertion here.
+            preflight_user_scope(target, chezmoi=chezmoi_bin)
+        return TargetSpec(
+            "claude-md", "user", bucket_dir, target, None,
+            variant="rules", rules_topic=rules_topic, rules_paths=paths_tuple,
+        )
+    host = _project_host_or_refuse(home, bucket_dir, project_path)
+    target = _project_rules_dir(host) / f"{rules_topic}.md"
+    bypassed = False
+    if check_dirty and paths_tuple:
+        bypassed = _validate_project_globs(host, paths_tuple, allow_empty_glob)
+    if check_dirty and target.is_file():
+        _abort_if_dirty(host, target)
+    return TargetSpec(
+        "claude-md", "project", bucket_dir, target, host,
+        variant="rules", rules_topic=rules_topic, rules_paths=paths_tuple,
+        glob_bypass=bypassed,
+    )
+
+
 def _resolve_target(
     home: Path,
     bucket_dir: Path,
@@ -551,10 +802,24 @@ def _resolve_target(
     chezmoi_bin: str = "chezmoi",
     project_path: Path | None = None,
     check_dirty: bool = True,
+    variant: str | None = None,
+    rules_topic: str | None = None,
+    rules_paths: list[str] | tuple[str, ...] | None = None,
+    allow_empty_glob: bool = False,
 ) -> TargetSpec:
     """PRE-FLIGHT target resolution (doc 13 §4 step c): registry gates
     (H-3) + dirty checks against the HOST repo, all raising BEFORE any
-    commit. Pure — writes nothing."""
+    commit. Pure — writes nothing.
+
+    A2 §4.4: ``variant``/``rules_topic``/``rules_paths`` are the
+    structured params a proposal-sourced route carries (threaded by
+    ``_resolve_destination``'s callers); when ``variant`` is left
+    ``None`` and ``ref_name`` carries a bare-``--dest`` claude-md
+    qualifier (``"local"`` / ``"rules:<topic>"``), it is decoded here via
+    :func:`_decode_claude_md_qualifier` — the single decode point both
+    fresh-route entrypoints reach. ``variant=None`` and a plain
+    ``ref_name`` (or none) reproduces today's three-scope claude-md
+    resolution byte-identically (P-A6)."""
     if destination == "skill-md":
         if not scope.startswith("skill:"):
             raise VerbError(
@@ -573,6 +838,22 @@ def _resolve_target(
         return TargetSpec("skill-md", "skill", bucket_dir, target, root)
 
     if destination == "claude-md":
+        eff_variant, eff_topic = variant, rules_topic
+        if eff_variant is None and ref_name is not None:
+            eff_variant, eff_topic = _decode_claude_md_qualifier(ref_name)
+        if eff_variant == "local":
+            return _resolve_local_target(
+                home, bucket_dir, scope, project_path, check_dirty=check_dirty
+            )
+        if eff_variant == "rules":
+            return _resolve_rules_target(
+                home, bucket_dir, scope, eff_topic, rules_paths,
+                user_claude_md=user_claude_md,
+                chezmoi_bin=chezmoi_bin,
+                project_path=project_path,
+                check_dirty=check_dirty,
+                allow_empty_glob=allow_empty_glob,
+            )
         if scope == "user":
             target = Path(
                 user_claude_md if user_claude_md is not None else DEFAULT_USER_CLAUDE_MD
@@ -1031,9 +1312,16 @@ def _compile_set(home: Path, spec: TargetSpec) -> list[Record]:
             for r in _routed_to(_all_bucket_dirs(home), "new-skill")
             if (r.routing or {}).get("new_skill") == spec.new_skill
         ]
+    # A2 §4.5A: partition on (variant, rules_topic) — a rules topic file,
+    # a `local` file, and plain claude-md must never cross-contaminate,
+    # in EITHER direction. `spec.variant`/`spec.rules_topic` compose with
+    # (never replace) the scope filtering below; a plain-claude-md spec
+    # carries variant=None, which _routed_to reads as "no variant on the
+    # record" — the byte-identical P-A6 default.
     if spec.scope_kind == "user":
         return _routed_to(
-            _all_bucket_dirs(home), "claude-md", scope_pred=lambda s: s == "user"
+            _all_bucket_dirs(home), "claude-md", scope_pred=lambda s: s == "user",
+            variant=spec.variant, rules_topic=spec.rules_topic,
         )
     # project / skill-root claude-md: ONE file can serve BOTH roles — a
     # repo registered as project host AND skills root (the shipped
@@ -1054,7 +1342,8 @@ def _compile_set(home: Path, spec: TargetSpec) -> list[Record]:
         if Path(project).resolve() != host:
             continue
         for r in _routed_to(
-            [bucket.path], "claude-md", scope_pred=lambda s: s == "project"
+            [bucket.path], "claude-md", scope_pred=lambda s: s == "project",
+            variant=spec.variant, rules_topic=spec.rules_topic,
         ):
             if r.id not in seen:
                 seen.add(r.id)
@@ -1069,7 +1358,8 @@ def _compile_set(home: Path, spec: TargetSpec) -> list[Record]:
             b.path for b in discover_buckets(home) if b.scope == "skill"
         ]
         for r in _routed_to(
-            skill_dirs, "claude-md", scope_pred=lambda s: s.startswith("skill:")
+            skill_dirs, "claude-md", scope_pred=lambda s: s.startswith("skill:"),
+            variant=spec.variant, rules_topic=spec.rules_topic,
         ):
             if r.id not in seen:
                 seen.add(r.id)
@@ -1155,13 +1445,40 @@ def surface_fill(
         except (VerbError, CompileError, OSError, UnicodeDecodeError):
             continue
         section = cache[key]
-        result[destination] = {
+        entry = {
             "entries": section.entry_count,
             "entries_cap": DEFAULT_MAX_ENTRIES,
             "words": section.word_count,
             "words_cap": DEFAULT_MAX_WORDS,
             "over_cap": section.over_cap,
         }
+        if destination == "claude-md":
+            # A2 §8/P-A9: the >5-topic-files churn signal — a NEW datum
+            # with no per-file home, attached only to the claude-md
+            # entry. `spec` here is the PLAIN (variant=None) claude-md
+            # target (this probe never threads a variant), so its rules
+            # dir is derived off that target's own parent (§2.1) — a
+            # missing directory counts 0 (no builder-side special case
+            # needed: a skill-root scope's rules dir never exists, since
+            # skill-scope rules are deferred, §9).
+            if scope == "user":
+                rules_dir = _user_rules_dir(target)
+            elif spec.host_repo is not None:
+                rules_dir = _project_rules_dir(spec.host_repo)
+            else:
+                rules_dir = None
+            count = (
+                len(list(rules_dir.glob("*.md")))
+                if rules_dir is not None and rules_dir.is_dir()
+                else 0
+            )
+            entry["rules_topic_count"] = count
+            if count > 5:
+                # OR-ed with, never replacing, the per-file over_cap above
+                # (§8 pin: both signals feed the SAME WARNING path).
+                entry["over_cap"] = True
+                entry["cap_reason"] = "rules-topics"
+        result[destination] = entry
     return result
 
 
@@ -1208,6 +1525,18 @@ def _retirement_preflight(
                 routing.get("new_skill") if destination == "new-skill" else None,
                 user_claude_md=user_claude_md,
                 chezmoi_bin=chezmoi_bin,
+                # A2 §4.4B note: this is a RETIREMENT read of the STORED
+                # routing block (not a fresh route), so only variant/
+                # rules_topic thread through — they are needed to resolve
+                # the correct target PATH. rules_paths is deliberately
+                # NOT threaded here: re-running the §5.1 zero-match
+                # refusal against an OLD record's globs at retirement
+                # time would risk blocking a legitimate supersede/
+                # graduate over an unrelated stale glob — that
+                # re-assertion is selfcheck's job (§5.2), not a
+                # retirement preflight's.
+                variant=routing.get("variant"),
+                rules_topic=routing.get("rules_topic"),
             )
         )
     if destination == "hook":
@@ -1294,15 +1623,38 @@ def _apply_target(
         )
         host_paths = [compile_result.path]
     elif spec.scope_kind == "user":
+        assert spec.target is not None  # user/rules/local always resolve a target
+        if spec.variant in ("rules", "local") and not spec.target.is_file():
+            # A2 §4.5B: compile_managed_file (called by compile_user_scope
+            # below) refuses a missing target — "the compiler never
+            # creates target files". A first route to a NEW rules topic
+            # needs its parent dir + an empty file bootstrapped first.
+            # Scoped to the NEW variants only: plain ~/.claude/CLAUDE.md
+            # keeps its pre-existing missing-is-error semantics (it is
+            # never created here).
+            spec.target.parent.mkdir(parents=True, exist_ok=True)
+            spec.target.write_text("", encoding="utf-8")
         compile_result = compile_user_scope(
             spec.target,
             _compile_set(home, spec),
             chezmoi=chezmoi_bin,
             commit_message=message,
             push=user_push,
+            # A2 §10.2/§10.5: the chezmoi-adopt offer fires ONLY for a
+            # rules variant (never plain CLAUDE.md — §10.1) — threaded,
+            # never guessed from the path.
+            offer_adopt=spec.variant == "rules",
         )
         host_paths = []
     else:
+        assert spec.target is not None  # skill-md/claude-md/new-skill always resolve one
+        if spec.variant in ("rules", "local") and not spec.target.is_file():
+            # A2 §4.5B: the host leg's bare write_text below also fails
+            # for a project rule/local file whose `.claude/rules/` (or
+            # the repo root, for local — always present) parent does not
+            # yet exist — mkdir the parent first, scoped to the new
+            # variants only.
+            spec.target.parent.mkdir(parents=True, exist_ok=True)
         if not spec.target.is_file():
             # Judgment call (T7 brief, carried over): first route to a host
             # with no CLAUDE.md creates it empty and lets the managed-
@@ -1310,7 +1662,13 @@ def _apply_target(
             # skill-md never reaches here — preflight refuses.
             spec.target.write_text("", encoding="utf-8")
         compile_result = compile_managed_file(spec.target, _compile_set(home, spec))
-        host_paths = [spec.target]
+        # A2 §6/P-A3: a `local` target is GITIGNORED BY DESIGN (the
+        # privacy guard already refused the route otherwise) — it must
+        # never be staged/committed to the host repo (git itself refuses
+        # `git add` on an ignored path, which is the point: the file
+        # stays written on disk, outside git, forever). Every other
+        # claude-md/skill-md/new-skill target stages as before.
+        host_paths = [] if spec.variant == "local" else [spec.target]
 
     # surface-budget event (11 §4.3: compilers, inside verb flow) — the
     # attention-tax ledger. Spooled here, flushed by the calling verb.
@@ -1474,6 +1832,15 @@ def _host_phase(
         if sync_warning:
             print(f"self-learn: {sync_warning}", file=sys.stderr)
             warnings.append(sync_warning)
+        # A2 §10.4(b): the bare-CLI chezmoi-adopt hint rides this SAME
+        # channel — one stderr line, never a blocking prompt. Absent for
+        # every result type that carries no such field (skill-md/
+        # reference/new-skill/hook, and a plain-CLAUDE.md UserScopeResult,
+        # which never sets it — §10.1).
+        adopt_hint = getattr(compile_result, "adopt_hint", None)
+        if adopt_hint:
+            print(f"self-learn: {adopt_hint}", file=sys.stderr)
+            warnings.append(adopt_hint)
         return compile_result, host_sha
     except _HOST_PHASE_ERRORS as exc:
         warning = (
@@ -1526,13 +1893,18 @@ def route(
     chezmoi_bin: str = "chezmoi",
     follow_up: dict | None = None,
     collapse: str | None = None,
+    allow_empty_glob: bool = False,
 ) -> VerbResult:
     """Route a pending record into canon. See the module docstring for the
     pinned sequence; commit message ``self-learn: route lrn-… → <target>``
     (+ `` (supersedes lrn-…)`` when the record completes a
     ``teach --supersedes`` capture — old record superseded in the SAME
     commit). ``follow_up`` (11 §2.1: {action, unblocks_on?, note?}) rides
-    the routing block — known-partial coverage, status stays terminal."""
+    the routing block — known-partial coverage, status stays terminal.
+    ``allow_empty_glob`` (A2 §5.1) is the sanctioned escape past a
+    project-scope rules route's zero-match glob refusal — the
+    write-the-rule-before-the-files case; the bypass is recorded in the
+    routing block (§13 item 3)."""
     home = Path(home)
     if follow_up is not None:
         try:
@@ -1567,7 +1939,9 @@ def route(
     sentinel.heartbeat()
     try:
         bucket_dir = path.parent.parent
-        destination, ref_name = _resolve_destination(bucket_dir, record_id, dest)
+        resolved_dest = _resolve_destination(bucket_dir, record_id, dest)
+        destination = resolved_dest.destination
+        ref_name = resolved_dest.ref_name
 
         # (c) PRE-FLIGHT: registry gates (H-3 / doc 13 Q2) + host-repo
         # dirty checks + chezmoi drift/dirty for user scope. Every refusal
@@ -1580,6 +1954,10 @@ def route(
             hook_route = _prepare_hook_route(home, bucket_dir, record)
             spec = hook_route.spec
         else:
+            # A2 §4.4A: the proposal's variant/rules_topic/rules_paths
+            # (or the bare --dest qualifier's decode) thread through here
+            # — never `None`-dropped between _resolve_destination and
+            # _resolve_target.
             spec = _resolve_target(
                 home,
                 bucket_dir,
@@ -1588,6 +1966,10 @@ def route(
                 ref_name,
                 user_claude_md=user_claude_md,
                 chezmoi_bin=chezmoi_bin,
+                variant=resolved_dest.variant,
+                rules_topic=resolved_dest.rules_topic,
+                rules_paths=resolved_dest.rules_paths,
+                allow_empty_glob=allow_empty_glob,
             )
 
         # teach --supersedes completion retires a possibly-ROUTED old
@@ -1667,6 +2049,18 @@ def route(
                 reference_file=ref_name if destination == "reference" else None,
                 hook=hook_route.meta if hook_route is not None else None,
                 new_skill=ref_name if destination == "new-skill" else None,
+                # A2 §4.3/§4.4: persisted FROM the RESOLVED spec, not the
+                # pre-decode resolved_dest — a bare --dest's qualifier is
+                # only decoded inside _resolve_target, so reading it back
+                # off `spec` is the one source that can never diverge from
+                # what was actually written (closes the gap a decode-
+                # inside-_resolve_target-only design would otherwise leave:
+                # a persisted routing block with no variant on a
+                # successfully-routed bare-dest rules file).
+                variant=spec.variant,
+                rules_topic=spec.rules_topic,
+                rules_paths=list(spec.rules_paths) if spec.rules_paths else None,
+                allow_empty_glob=spec.glob_bypass,
             )
             if old_id is not None:
                 # teach --supersedes completion-at-route: SAME commit (08 §1
@@ -1910,13 +2304,31 @@ def route_direct(
         )
         message = f"self-learn: route {record.id} → {message_target}{suffix}"
 
-        routing = {"routed_at": _now_iso(), "destination": destination, "by": "human"}
+        # dict[str, object]: mixes str/dict/list values below (hook is a
+        # dict, rules_paths is a list) — a narrower inferred type makes
+        # every one of those a pyright error.
+        routing: dict[str, object] = {
+            "routed_at": _now_iso(), "destination": destination, "by": "human"
+        }
         if destination == "reference" and ref_name is not None:
             routing["reference_file"] = ref_name  # BLOCKER 2: name the file
         if destination == "new-skill":
             routing["new_skill"] = ref_name
         if hook_route is not None:
             routing["hook"] = hook_route.meta
+        # A2 §4.4B (test obligation §13 item 16): read back off the
+        # RESOLVED spec, not `ref_name` — the qualifier is decoded inside
+        # _resolve_target, so `spec` is the one place that can never
+        # diverge from what was actually written. A bare
+        # `--dest claude-md:rules:<topic>` therefore persists its variant
+        # even though route_direct never threads rules_paths (P-A5: globs
+        # are proposal-only, and route_direct has no proposal to read).
+        if spec.variant is not None:
+            routing["variant"] = spec.variant
+            if spec.rules_topic is not None:
+                routing["rules_topic"] = spec.rules_topic
+            if spec.rules_paths:
+                routing["rules_paths"] = list(spec.rules_paths)
         record.set_routing(routing)
         record.set_status("routed")
         if note is not None:
@@ -2165,21 +2577,28 @@ def commit_drift(
     path = find_record_path(home, record_id, statuses=("pending",))
     record = Record.from_path(path)
     bucket_dir = path.parent.parent
-    destination, ref_name = _resolve_destination(bucket_dir, record_id, dest)
+    resolved_dest = _resolve_destination(bucket_dir, record_id, dest)
+    destination = resolved_dest.destination
     if destination == "hook":
         raise VerbError(
             "commit-drift: hook routes carry no dirty-target gate "
             "(_resolve_hook_target never dirty-checks) — nothing to commit"
         )
+    # A2 §4.4A: thread the resolved variant/rules_topic/rules_paths
+    # through the SAME as `route`'s caller does — commit-drift is the
+    # OTHER fresh-route-shaped `_resolve_destination` caller.
     spec = _resolve_target(
         home,
         bucket_dir,
         record.scope,
         destination,
-        ref_name,
+        resolved_dest.ref_name,
         user_claude_md=user_claude_md,
         chezmoi_bin=chezmoi_bin,
         check_dirty=False,
+        variant=resolved_dest.variant,
+        rules_topic=resolved_dest.rules_topic,
+        rules_paths=resolved_dest.rules_paths,
     )
 
     hold = sentinel.hold() if not dry_run else None
@@ -2189,9 +2608,12 @@ def commit_drift(
         if spec.host_repo is None:
             # user/chezmoi scope: repo-wide dirty check + repo-wide add,
             # mirroring preflight_user_scope's own two-step read path.
-            target = (
-                user_claude_md if user_claude_md is not None else DEFAULT_USER_CLAUDE_MD
-            )
+            # A2: `spec.target` (not a re-derived `user_claude_md`) so a
+            # user-scope RULES target's own drift is checked, not always
+            # plain CLAUDE.md — byte-identical to the pre-A2 computation
+            # for the variant-absent case.
+            assert spec.target is not None  # user scope always resolves one
+            target = spec.target
             status = chezmoi.user_scope_dirty_status(target, chezmoi=chezmoi_bin)
             if status.drift:
                 raise VerbError(CHEZMOI_DRIFT_REFUSAL)
@@ -2257,6 +2679,35 @@ def commit_drift(
     finally:
         if hold is not None:
             hold.release()
+
+
+def chezmoi_adopt(
+    home: Path | str,
+    path: Path | str,
+    *,
+    chezmoi_bin: str = "chezmoi",
+    no_push: bool = False,
+) -> chezmoi.AdoptResult:
+    """A2 §10.5's ENTRYPOINT — the accepted §10 offer (the "yes"). Thin
+    by design (P-A2b′-offer: the offer adds NO new write mechanism): this
+    touches ONLY the dotfiles repo, never the ledger, never a host repo —
+    there is no ledger/host mutation here for :func:`gitops.commit_lock`
+    to serialize against, so this verb takes none (:func:`_ledger_write`
+    guards ledger writes; this is not one). ``home`` is accepted, unused,
+    for the same reason every other verb takes it — CLI dispatch calls
+    every verb the same shape; adoption itself reads and writes no
+    ledger state.
+
+    The bare-CLI hint (:func:`_host_phase`) and the UI-interactive
+    "yes" both name THIS verb, via the single command string
+    :func:`chezmoi.adopt_command` builds — never a second, independently
+    typed command."""
+    del home  # unused — see docstring
+    target = Path(path).expanduser()
+    message = f"self-learn: adopt {target.name} into chezmoi"
+    return chezmoi.adopt_user_scope(
+        target, message=message, chezmoi=chezmoi_bin, push=not no_push
+    )
 
 
 def reject(
@@ -2567,6 +3018,10 @@ def supersede(
                     routing.get("new_skill") if destination == "new-skill" else None,
                     user_claude_md=user_claude_md,
                     chezmoi_bin=chezmoi_bin,
+                    # A2 §4.4B note: variant/rules_topic only — see the
+                    # matching comment in _retirement_preflight.
+                    variant=routing.get("variant"),
+                    rules_topic=routing.get("rules_topic"),
                 )
             elif destination == "hook":
                 removal = _hook_script_location(home, old_record, warnings)
@@ -3057,6 +3512,18 @@ def recompile(
                     user_claude_md=user_claude_md,
                     chezmoi_bin=chezmoi_bin,
                     check_dirty=False,
+                    # A2 §4.4B: variant/rules_topic off the STORED routing
+                    # block so a rules-routed record's target groups into
+                    # its OWN topic file (`specs` below keys on
+                    # (host_repo, target) — distinct topics must resolve
+                    # to distinct paths, or recompile would merge every
+                    # topic's records into one file). rules_paths is
+                    # withheld here for the same reason as the retirement
+                    # sites (no glob re-assertion outside selfcheck,
+                    # §5.2) — moot regardless, since check_dirty=False
+                    # already gates the glob check off.
+                    variant=(record.routing or {}).get("variant"),
+                    rules_topic=(record.routing or {}).get("rules_topic"),
                 )
             except VerbError as exc:
                 result.warnings.append(f"{record.id}: {exc}")

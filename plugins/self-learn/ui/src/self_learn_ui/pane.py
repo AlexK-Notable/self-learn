@@ -78,7 +78,7 @@ from .engine.base import BlockStart, FileChanged, PaneContext, PaneEngine, PaneE
 from .engine.sdk import DEFAULT_FALLBACK_MODEL, SdkPaneEngine
 from .env import EnvConfig
 from .ledger import RefreshHub
-from .models import destination_label
+from .models import destination_label, parse_variant_qualifier
 from .proposals import PROPOSAL_TOOL_QUALIFIED_NAME, ProposalSlot, SessionScope, VerbProposal, make_propose_handler
 from .rendering import render_markdown
 from .runner import VerbRunner
@@ -615,10 +615,16 @@ def _proposal_clause(proposal: VerbProposal) -> str:
     proposals.py's own validation). A1: threads ``proposal.bucket_scope``
     through so a ``claude-md`` proposal glosses to the record's actual
     scope-resolved label (e.g. "Skills repo instructions"), not the
-    scope-blind default."""
+    scope-blind default. A2 §11: ``proposal.dest`` is the pane's ONLY
+    variant signal (``claude-md:rules:<topic>`` / ``claude-md:local`` —
+    the same qualified string ``_DEST_RE`` validated at intake), decoded
+    via :func:`parse_variant_qualifier` so a pane-proposed rules route
+    glosses as "User rule — subagents", never the plain scope-only label
+    a variant-blind caller would show."""
     if proposal.dest:
         dest_base = proposal.dest.partition(":")[0]
-        gloss = destination_label(dest_base, proposal.bucket_scope)
+        variant, rules_topic = parse_variant_qualifier(proposal.dest)
+        gloss = destination_label(dest_base, proposal.bucket_scope, variant, rules_topic)
         return f"{proposal.verb} to {gloss}"
     return proposal.verb
 

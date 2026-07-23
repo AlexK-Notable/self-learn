@@ -187,6 +187,14 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="TEXT",
         help="with --follow-up: why the strong form matters",
     )
+    route.add_argument(
+        "--allow-empty-glob",
+        action="store_true",
+        dest="allow_empty_glob",
+        help="A2 §5.1: route a project-scope rules_paths glob that "
+        "matches nothing in the tree anyway (write-the-rule-before-the-"
+        "files); the bypass is recorded in the routing block",
+    )
 
     reject = _verb("reject", "reject a pending record")
     reject.add_argument("id", metavar="ID")
@@ -234,6 +242,20 @@ def _build_parser() -> argparse.ArgumentParser:
 
     ch = _verb("confirm-held", "record that a routed rule was seen working")
     ch.add_argument("id", metavar="ID")
+
+    adopt = sub.add_parser(
+        "chezmoi-adopt",
+        help="A2 §10: bring an unmanaged, self-learn-written user-scope "
+        "rules file under chezmoi management (add + commit + push) — the "
+        "accepted §10 offer",
+    )
+    adopt.add_argument("path", metavar="PATH", help="the rules file to adopt")
+    adopt.add_argument(
+        "--no-push",
+        action="store_true",
+        dest="no_push",
+        help="chezmoi add + commit, skip only the push",
+    )
 
     link = sub.add_parser("link", help="record graph edges (11 §2.4)")
     link_sub = link.add_subparsers(dest="link_command", metavar="<edge>")
@@ -934,6 +956,7 @@ def _cmd_verb(args: argparse.Namespace) -> int:
                 no_push=args.no_push,
                 follow_up=follow_up,
                 collapse=args.collapse,
+                allow_empty_glob=args.allow_empty_glob,
             )
             return _finish_verb(result, _routed_destination(result))
         if args.command == "reject":
@@ -1164,6 +1187,29 @@ def _host_line(home, path, kind: str) -> str:
         return "(none registered)"
     problem = hosts_mod.host_path_problem(home, path, kind)
     return str(path) if problem is None else f"{path}  ⚠ BROKEN — {problem}"
+
+
+def _cmd_chezmoi_adopt(args: argparse.Namespace) -> int:
+    """A2 §10.5's ENTRYPOINT (the accepted §10 offer): ``self-learn
+    chezmoi-adopt <path>``. No ledger home-gate (:func:`_home_gate`) —
+    unlike every OTHER verb, this one touches ONLY the dotfiles repo
+    (P-A2b′-offer), so an absent/unsound ledger home is not this
+    command's business."""
+    try:
+        result = verbs.chezmoi_adopt(
+            resolve_home(), args.path, no_push=args.no_push
+        )
+    except (ChezmoiAbort, ChezmoiError) as exc:
+        print(f"self-learn chezmoi-adopt: {exc}", file=sys.stderr)
+        return 1
+    if result.warning:
+        print(f"self-learn: {result.warning}", file=sys.stderr)
+    if result.synced:
+        sha = f" @ {result.commit_sha[:7]}" if result.commit_sha else ""
+        print(f"chezmoi-adopt {args.path} → tracked + synced{sha}")
+    else:
+        print(f"chezmoi-adopt {args.path} → tracked (sync degraded, see above)")
+    return EXIT_OK
 
 
 def _cmd_recompile(args: argparse.Namespace) -> int:
@@ -1639,6 +1685,9 @@ def _main(argv: list[str] | None = None) -> int:
     if args.command == "recompile":
         sentinel.heartbeat()  # mutating invocation class (08 §1)
         return _cmd_recompile(args)
+
+    if args.command == "chezmoi-adopt":
+        return _cmd_chezmoi_adopt(args)
 
     if args.command == "sentinel":
         return _cmd_sentinel(args.action)

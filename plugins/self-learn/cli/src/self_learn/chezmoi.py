@@ -60,14 +60,18 @@ from .compilers import (
 from .records import Record
 
 __all__ = [
+    "ADOPT_COMMAND_PREFIX",
     "CHEZMOI_DIRTY_MARKER",
     "ChezmoiAbort",
     "ChezmoiError",
     "USER_SCOPE_ABSENT",
     "USER_SCOPE_MANAGED",
     "USER_SCOPE_UNMANAGED",
+    "AdoptResult",
     "UserScopeDirtyStatus",
     "UserScopeResult",
+    "adopt_command",
+    "adopt_user_scope",
     "commit_all_user_scope",
     "compile_user_scope",
     "dotfiles_source_path",
@@ -120,6 +124,12 @@ class UserScopeResult:
     commit_message: str | None
     synced: bool = False  # True <=> full re-add+commit(+push) ran (row 3)
     sync_warning: str | None = None  # row 4 only: the single WARN string
+    #: A2 §10.5 (U-A2-2): the chezmoi-adopt offer's hint text, set ONLY on
+    #: USER_SCOPE_UNMANAGED when the caller opted in via ``offer_adopt``
+    #: (never ABSENT — nothing to adopt; never MANAGED — already syncs).
+    #: ``None`` everywhere else, including every pre-A2 caller (plain
+    #: ``~/.claude/CLAUDE.md`` never passes ``offer_adopt=True`` — §10.1).
+    adopt_hint: str | None = None
 
 
 def _run(argv: list[str]) -> subprocess.CompletedProcess:
@@ -239,6 +249,24 @@ def preflight_user_scope(target: Path | str, *, chezmoi: str = "chezmoi") -> Non
     _drift_dirty_guard(target, chezmoi=chezmoi)
 
 
+#: The invocation's fixed lead, factored out so a CONSUMER (the review
+#: UI, across the subprocess boundary) can locate + parse the hint's
+#: trailing command out of stderr text via the SAME literal
+#: :func:`adopt_command` builds from — never a hand-copied marker string
+#: that could drift from the generator (the gate-n12 discipline
+#: ``routes.py``'s ``COMMIT_DRIFT_MARKERS`` already uses for its own
+#: stderr-borne signals).
+ADOPT_COMMAND_PREFIX = "self-learn chezmoi-adopt "
+
+
+def adopt_command(target: Path | str) -> str:
+    """A2 §10.3/§10.5: the ONE user-facing command that adopts ``target``
+    into chezmoi management — the single source the bare-CLI hint and the
+    UI-interactive "yes" both name (§4.2-style sync discipline: never a
+    second command string to drift from this one)."""
+    return f"{ADOPT_COMMAND_PREFIX}{target}"
+
+
 def compile_user_scope(
     target: Path | str,
     records: list[Record],
@@ -248,6 +276,7 @@ def compile_user_scope(
     chezmoi: str = "chezmoi",
     commit_message: str | None = None,
     push: bool = True,
+    offer_adopt: bool = False,
 ) -> UserScopeResult:
     """Run the full guarded sequence against ``target``. See module docstring.
 
@@ -260,6 +289,17 @@ def compile_user_scope(
     healthy managed target (row 4: a broken source or remote), the write
     already happened — that failure is caught and turned into
     ``sync_warning``, never re-raised, never rolled back (H-2).
+
+    ``offer_adopt`` (A2 §10.2, U-A2-2): when True AND the target reads
+    UNMANAGED, the result carries an ``adopt_hint`` — self-learn just
+    wrote a NEW file whose whole point ("so it syncs") is defeated by
+    staying untracked, so it is worth offering to adopt (§10.1). Callers
+    thread this ONLY for a ``rules`` variant (never plain
+    ``~/.claude/CLAUDE.md`` — that file's unmanaged state is the user's
+    own prior choice, §10.1) — this function cannot infer variant from
+    the path robustly, so it is threaded, not guessed (§10.5). ABSENT
+    (nothing to adopt) and MANAGED (already syncs) never carry a hint,
+    regardless of ``offer_adopt``.
     """
     target = Path(target)
     cap = user_scope_capability(target, chezmoi=chezmoi)
@@ -269,9 +309,16 @@ def compile_user_scope(
         section = compile_managed_file(
             target, records, max_entries=max_entries, max_words=max_words
         )
+        adopt_hint = None
+        if offer_adopt and cap == USER_SCOPE_UNMANAGED:
+            adopt_hint = (
+                f"wrote {target} — not tracked by chezmoi, so it will not "
+                "sync to your other machines. To sync it: "
+                f"{adopt_command(target)}"
+            )
         return UserScopeResult(
             section=section, committed=False, commit_message=None,
-            synced=False, sync_warning=None,
+            synced=False, sync_warning=None, adopt_hint=adopt_hint,
         )
 
     _drift_dirty_guard(target, chezmoi=chezmoi)  # steps 1–2, unchanged
@@ -318,3 +365,74 @@ def compile_user_scope(
         section=section, committed=True, commit_message=message,
         synced=True, sync_warning=None,
     )
+
+
+@dataclass(frozen=True)
+class AdoptResult:
+    """Outcome of one chezmoi-adopt (A2 §10.3). ``tracked`` is True as
+    soon as ``chezmoi add`` succeeds — the file is under chezmoi
+    management from that instant, even if the sync tail below degrades
+    (H-2: never rolled back). ``synced`` is True only on a full
+    commit(+push)."""
+
+    tracked: bool
+    synced: bool
+    commit_sha: str | None = None
+    warning: str | None = None
+
+
+def adopt_user_scope(
+    target: Path | str,
+    *,
+    message: str,
+    chezmoi: str = "chezmoi",
+    push: bool = True,
+) -> AdoptResult:
+    """A2 §10.3: the accepted §10 offer — bring an UNMANAGED, self-learn-
+    written user-scope target under chezmoi management. Self-contained
+    (P-A2b′-offer: no new write mechanism, only a tracking follow-up),
+    and reuses this module's own machinery end to end (§10.3's "reinvents
+    nothing" pin):
+
+    1. **Porcelain-only dirty guard.** Abort if the dotfiles repo already
+       has uncommitted changes, so the ``add -A`` below sweeps in ONLY
+       this adopt's own new source file. Deliberately NOT
+       :func:`_drift_dirty_guard` (its ``chezmoi diff`` half errors on an
+       unmanaged target — empirically ``rc=1 "not managed"``, see the A2
+       spec's Grounding transcript) — only the porcelain half applies
+       pre-add.
+    2. **``chezmoi add <target>``** — the one genuinely new primitive.
+       Exit 0 folds the file into chezmoi's source state and flips the
+       target to MANAGED. Raises on failure: nothing was tracked yet, so
+       there is nothing to degrade.
+    3. **Commit + push** — :func:`commit_all_user_scope`, the SAME sync
+       tail :func:`compile_user_scope` runs on a managed write. A failure
+       HERE, after step 2 already tracked the file, degrades to
+       ``warning`` — never a rollback (H-2): the file is tracked on disk;
+       only the sync degraded.
+    """
+    target = Path(target)
+
+    status = _check(_run([chezmoi, "git", "--", "status", "--porcelain"]))
+    if status.stdout.strip():
+        raise ChezmoiAbort(
+            f"{CHEZMOI_DIRTY_MARKER}: commit or stash the dotfiles repo's "
+            "own changes first, then retry the adopt"
+        )
+
+    _check(_run([chezmoi, "add", str(target)]))
+
+    try:
+        sha = commit_all_user_scope(message, chezmoi=chezmoi)
+        if push:
+            _check(_run([chezmoi, "git", "--", "push"]))
+    except ChezmoiError as exc:
+        warning = (
+            f"{target} is now tracked by chezmoi, but the sync commit/push "
+            f"did not complete ({exc}) — fix the dotfiles source/remote, "
+            "then `self-learn recompile` (re-running the adopt is safe: "
+            "`chezmoi add` is idempotent)."
+        )
+        return AdoptResult(tracked=True, synced=False, warning=warning)
+
+    return AdoptResult(tracked=True, synced=True, commit_sha=sha)

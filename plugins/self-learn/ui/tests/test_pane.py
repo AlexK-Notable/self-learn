@@ -1481,6 +1481,19 @@ class TestProposalClauseGloss:
         proposal = _route_proposal(dest="claude-md", bucket_scope=bucket_scope)
         assert pane._proposal_clause(proposal) == f"route to {label}"
 
+    def test_rules_variant_dest_glosses_with_topic_never_the_plain_label(self) -> None:
+        # A2 §11: proposal.dest is the pane's ONLY variant signal
+        # (proposals.py's _DEST_RE qualified-string grammar) — the terse
+        # clause must show "User rule — subagents", not fall back to the
+        # variant-blind "User instructions" a partition(":")[0]-only read
+        # would produce.
+        proposal = _route_proposal(dest="claude-md:rules:subagents", bucket_scope="user")
+        assert pane._proposal_clause(proposal) == "route to User rule — subagents"
+
+    def test_local_variant_dest_glosses_as_personal_notes(self) -> None:
+        proposal = _route_proposal(dest="claude-md:local", bucket_scope="project")
+        assert pane._proposal_clause(proposal) == "route to Personal project notes"
+
 
 class TestPostIterateSummaryIntegration:
     """PaneManager-level: the footer line's full wiring — drain

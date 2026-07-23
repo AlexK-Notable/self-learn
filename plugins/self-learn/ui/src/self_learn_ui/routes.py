@@ -28,7 +28,7 @@ from fastapi import APIRouter, BackgroundTasks, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from starlette.responses import StreamingResponse
 
-from self_learn.chezmoi import CHEZMOI_DIRTY_MARKER
+from self_learn.chezmoi import ADOPT_COMMAND_PREFIX, CHEZMOI_DIRTY_MARKER
 from self_learn.hosts import is_repo_root
 from self_learn.records import Record
 from self_learn.verbs import GITOPS_DIRTY_MARKER
@@ -57,6 +57,11 @@ _VERB_LABELS = {
     "confirm-recurrence": "Confirm recurrence",
     "link-contradicts": "Link contradiction",
     "followup-done": "Mark follow-up done",
+    # A2 §10.4(a): the review UI's half of the accepted §10 offer — the
+    # SAME arm-then-confirm affordance as every verb above, never a
+    # bespoke widget. `target` (the generic field already threaded by
+    # `link-contradicts`) carries the rules-file path here.
+    "chezmoi-adopt": "Adopt into chezmoi",
 }
 
 #: Verbs the HUMAN action-bar routes accept. `rehome` is deliberately
@@ -122,6 +127,14 @@ def build_argv(
         argv = ["link", "contradicts", record_id, target or ""]
     elif verb == "followup-done":
         argv = ["followup", "done", record_id]
+    elif verb == "chezmoi-adopt":
+        # A2 §10.4(a)/§10.5: no `record_id` in the real CLI form (`self-
+        # learn chezmoi-adopt <path>`) — `record_id` only scopes the
+        # *route* this bar renders under, same as `build_host_add_argv`'s
+        # bucket-scoped verb takes no record_id either. `--note` (below)
+        # is not a `chezmoi-adopt` flag, but the offer's own form never
+        # supplies one, so that branch is inert here.
+        argv = ["chezmoi-adopt", target or ""]
     else:
         raise ValueError(f"unknown verb: {verb!r}")
     if note:
@@ -1240,6 +1253,15 @@ async def action_confirm(
     if verb == "route" and contradicts_pre:
         return _contradicts_offer_response(request, record_id, contradicts_pre)
 
+    # A2 §10.4(a): checked AFTER the contradicts offer (that offer wins
+    # if both fire on the same route — an edge case, never both rendered
+    # at once) and only for a route that actually succeeded (`result.ok`,
+    # already established by this point).
+    if verb == "route":
+        adopt_target = _extract_adopt_path(result.stderr)
+        if adopt_target:
+            return _adopt_offer_response(request, record_id, adopt_target)
+
     bucket_name = _bucket_name_for(home, record_id)
     url = next_record_url(home, bucket_name, record_id) if bucket_name else f"/?notice={NOTICE_BUCKET_CLEAR}"
     resp = Response(status_code=200)
@@ -1294,6 +1316,64 @@ def _contradicts_offer_response(
 def _bucket_name_for(home: Path, record_id: str) -> str | None:
     loc = ledger.locate_record(home, record_id)
     return loc.bucket_name if loc else None
+
+
+# ------------------------------------------------- A2 §10.4(a) adopt offer
+#
+# After a successful user-scope `rules` route whose compile leg read
+# UNMANAGED, `_host_phase` (CLI side) prints ONE stderr line built from
+# `chezmoi.adopt_command` (§10.5's "OUT" leg — the same field the bare-CLI
+# hint rides). The runner captures that stderr regardless of exit code
+# (10 §1), so this is the review UI's only channel to the same fact — no
+# new subprocess flag, no `--json` field, no second write mechanism
+# (P-A2b′-offer). Detection AND path-extraction both key off
+# `ADOPT_COMMAND_PREFIX`, imported from `self_learn.chezmoi` — never a
+# hand-copied marker (the same discipline `COMMIT_DRIFT_MARKERS` already
+# uses for its own stderr-borne signal).
+
+
+def _extract_adopt_path(stderr: str | None) -> str | None:
+    """The rules-file path from a route's stderr, if `_host_phase`
+    surfaced an adopt hint on this run — `None` otherwise (ABSENT/MANAGED
+    C2 states, a plain-CLAUDE.md record, or any non-rules destination
+    never print the marker, §10.2's firing gate)."""
+    if not stderr:
+        return None
+    idx = stderr.find(ADOPT_COMMAND_PREFIX)
+    if idx == -1:
+        return None
+    rest = stderr[idx + len(ADOPT_COMMAND_PREFIX):]
+    line = rest.splitlines()[0] if rest else ""
+    return line.strip() or None
+
+
+def _adopt_offer_response(request: Request, record_id: str, target: str) -> HTMLResponse:
+    """§10.4(a): render the interactive yes/no choice via the SAME
+    arm-then-confirm affordance every other verb here uses (never a
+    bespoke widget) — "consistent with its existing affordances", the
+    spec's own wording. `dom_id` reuses the primary detail bar's own id
+    (never `kind="contradicts"`'s per-edge scheme — there is exactly one
+    offer, and this response swaps into the SAME `#action-bar-*` slot the
+    routine post-verb refresh targets, same trick `_contradicts_offer_
+    response` already relies on)."""
+    dom_id = _dom_id("adopt", record_id, None)
+    return _render(
+        request,
+        "partials/adopt_offer.html",
+        {"record_id": record_id, "target": target, "dom_id": dom_id},
+    )
+
+
+@router.post("/record/{record_id}/adopt-offer/dismiss", response_class=HTMLResponse)
+def adopt_offer_dismiss(record_id: str) -> HTMLResponse:
+    """§10.4(a)'s "No" — declining is simply not arming; there is no
+    declined-state to persist (§10.2), so this just stops the offer from
+    rendering. A later recompile may re-emit the SAME hint (idempotent,
+    never a blocking modal, exactly like the bare-CLI hint's own
+    re-emission) — `record_id` is unused (the route is
+    record-scoped only because the offer that spawned it was)."""
+    del record_id
+    return HTMLResponse("")
 
 
 # ------------------------------------------------------ commit-drift (U20)
@@ -1513,6 +1593,13 @@ async def commit_drift_confirm(
         _sweep_stale_proposal(request)
     if contradicts_pre:
         return _contradicts_offer_response(request, record_id, contradicts_pre)
+    # A2 §10.4(a): this retry IS a `route`, so it can carry the same
+    # adopt signal the primary confirm checks (mirrored here, not
+    # factored out — this whole function already mirrors action_confirm's
+    # sequence for the same reason, per the comment above).
+    adopt_target = _extract_adopt_path(retry.stderr)
+    if adopt_target:
+        return _adopt_offer_response(request, record_id, adopt_target)
 
     bucket_name = _bucket_name_for(home, record_id)
     url = next_record_url(home, bucket_name, record_id) if bucket_name else f"/?notice={NOTICE_BUCKET_CLEAR}"
@@ -1927,6 +2014,13 @@ async def proposal_confirm(
 
     if prop.verb == "route" and contradicts_pre:
         return _contradicts_offer_response(request, record_id, contradicts_pre)
+    # A2 §10.4(a): the pane-agent's own `route` proposal can carry the
+    # same adopt signal a human-initiated route can (mirrored, same
+    # reason as the commit-drift retry above).
+    if prop.verb == "route":
+        adopt_target = _extract_adopt_path(result.stderr)
+        if adopt_target:
+            return _adopt_offer_response(request, record_id, adopt_target)
 
     if kind == "bucket":
         url = f"/bucket/{prop.bucket_scope}/{prop.bucket_name}"

@@ -23,6 +23,8 @@ from self_learn_ui.models import (
     destination_label,
     destination_path,
     destinations_for_scope,
+    parse_variant_qualifier,
+    rules_firing_note,
 )
 
 NOW = datetime(2026, 7, 17, 12, 0, 0, tzinfo=timezone.utc)
@@ -273,6 +275,45 @@ class TestWhyRegion:
         )
         assert model.why.already_canon is True
         assert model.why.already_canon_reason == "SKILL.md already covers this"
+
+    def test_no_variant_fields_default_to_none_and_empty_p_a6(self):
+        # P-A6-style no-migration: a pre-A2 (or non-rules) proposal never
+        # sets these — the Why region must not invent placeholder values.
+        proposal = {"destination": "skill-md", "rationale": "why"}
+        model = _build(
+            _item(has_proposal=True, destination="skill-md"), proposal=proposal
+        )
+        assert model.why.variant is None
+        assert model.why.rules_topic is None
+        assert model.why.rules_paths == ()
+
+    def test_rules_variant_fields_thread_through_from_the_proposal(self):
+        # A2 §11/§15 item 9: the SUGGESTED destination's own variant
+        # fields, read straight off the proposal dict — never `item`.
+        proposal = {
+            "destination": "claude-md",
+            "rationale": "why",
+            "variant": "rules",
+            "rules_topic": "subagents",
+            "rules_paths": ["src/**/*.ts"],
+        }
+        model = _build(
+            _item(has_proposal=True, destination="claude-md", scope="user"),
+            proposal=proposal, scope="user",
+        )
+        assert model.why.variant == "rules"
+        assert model.why.rules_topic == "subagents"
+        assert model.why.rules_paths == ("src/**/*.ts",)
+
+    def test_local_variant_field_threads_through_with_no_topic_or_paths(self):
+        proposal = {"destination": "claude-md", "rationale": "why", "variant": "local"}
+        model = _build(
+            _item(has_proposal=True, destination="claude-md", scope="project"),
+            proposal=proposal, scope="project",
+        )
+        assert model.why.variant == "local"
+        assert model.why.rules_topic is None
+        assert model.why.rules_paths == ()
 
 
 class TestSurfaceBudgets:
@@ -628,6 +669,141 @@ class TestNoSecondLabelMap:
         assert set(models_module._CLAUDE_MD_SCOPE_PATHS) == {"user", "project", "skill"}
         assert self._DESTINATION_ENUM_VALUES.isdisjoint(models_module._CLAUDE_MD_SCOPE_LABELS)
         assert self._DESTINATION_ENUM_VALUES.isdisjoint(models_module._CLAUDE_MD_SCOPE_PATHS)
+
+    def test_a2_rules_local_dicts_are_also_not_enum_keyed(self) -> None:
+        """A2 §11 widening: the NEW variant-scope dicts
+        (``_RULES_SCOPE_LABELS`` / ``_RULES_SCOPE_PATHS``) must be
+        exactly as safe as A1's — scope-keyed, never a second
+        destination-enum-keyed map."""
+        matches = [
+            name
+            for name, value in vars(models_module).items()
+            if isinstance(value, dict)
+            and self._DESTINATION_ENUM_VALUES.issubset(value.keys())
+        ]
+        assert matches == ["_GROUP_LABELS"]
+        assert set(models_module._RULES_SCOPE_LABELS) == {"user", "project"}
+        assert set(models_module._RULES_SCOPE_PATHS) == {"user", "project"}
+        assert self._DESTINATION_ENUM_VALUES.isdisjoint(models_module._RULES_SCOPE_LABELS)
+        assert self._DESTINATION_ENUM_VALUES.isdisjoint(models_module._RULES_SCOPE_PATHS)
+
+
+class TestObligation5And6VariantAwareLabels:
+    """A2 §11 test obligations 5/6: label resolution is scope-AND-variant
+    aware (P-A11: still off the single ``_GROUP_LABELS`` map — see
+    :class:`TestNoSecondLabelMap` above), and the resolved path renders
+    beside every variant label (P-A12)."""
+
+    def test_variant_none_is_byte_identical_to_a1(self) -> None:
+        # P-A6-style no-migration for the label surface: an un-updated
+        # caller (variant=None, the default) sees EXACTLY A1's behavior.
+        assert destination_label("claude-md", "user") == "User instructions"
+        assert destination_label("claude-md", "project") == "Project instructions"
+        assert destination_path("user") == "~/.claude/CLAUDE.md"
+
+    @pytest.mark.parametrize(
+        "scope,topic,label,path",
+        [
+            (
+                "user", "subagents", "User rule — subagents",
+                "~/.claude/rules/subagents.md",
+            ),
+            (
+                "project", "subagents", "Project rule — subagents",
+                "<repo>/.claude/rules/subagents.md",
+            ),
+        ],
+    )
+    def test_rules_variant_labels_and_paths(self, scope, topic, label, path) -> None:
+        assert (
+            destination_label("claude-md", scope, variant="rules", rules_topic=topic)
+            == label
+        )
+        assert destination_path(scope, variant="rules", rules_topic=topic) == path
+
+    def test_rules_variant_without_topic_omits_the_dash(self) -> None:
+        # A record with a proposal but no yet-known topic still renders a
+        # sane (if generic) label — never a placeholder-shaped string.
+        assert destination_label("claude-md", "user", variant="rules") == "User rule"
+
+    def test_local_variant_is_project_only(self) -> None:
+        assert (
+            destination_label("claude-md", "project", variant="local")
+            == "Personal project notes"
+        )
+        assert destination_path("project", variant="local") == "<repo>/CLAUDE.local.md"
+        # local at any other scope falls through to A1's plain gloss —
+        # never claims a personal-notes label for a scope it cannot have
+        # (§6: local is project-scope only).
+        assert (
+            destination_label("claude-md", "user", variant="local")
+            == "User instructions"
+        )
+
+    def test_path_always_renders_beside_the_label_p_a12(self) -> None:
+        for scope, topic in (("user", "keyboards"), ("project", "keyboards")):
+            label = destination_label(
+                "claude-md", scope, variant="rules", rules_topic=topic
+            )
+            path = destination_path(scope, variant="rules", rules_topic=topic)
+            assert label and path
+            assert topic in path
+
+
+class TestParseVariantQualifier:
+    """A2 §11: the pane's own decode of its ONE variant signal —
+    ``VerbProposal.dest``'s colon-qualified string (``proposals.py``'s
+    ``_DEST_RE`` grammar) — into the ``(variant, rules_topic)`` pair
+    :func:`destination_label`/:func:`destination_path` take."""
+
+    def test_rules_with_topic(self) -> None:
+        assert parse_variant_qualifier("claude-md:rules:subagents") == (
+            "rules", "subagents",
+        )
+
+    def test_local(self) -> None:
+        assert parse_variant_qualifier("claude-md:local") == ("local", None)
+
+    def test_plain_claude_md_is_none_none(self) -> None:
+        assert parse_variant_qualifier("claude-md") == (None, None)
+
+    def test_none_is_none_none(self) -> None:
+        assert parse_variant_qualifier(None) == (None, None)
+
+    def test_non_claude_md_qualified_dest_is_none_none(self) -> None:
+        # new-skill:<name> / reference:<file> are colon-qualified too,
+        # but never carry a rules/local variant — must not misparse.
+        assert parse_variant_qualifier("new-skill:foo") == (None, None)
+        assert parse_variant_qualifier("reference:notes.md") == (None, None)
+
+
+class TestRulesFiringNote:
+    """A2 §11 prose: the plain-words firing condition beside a variant
+    label — P-A1's honest statement at the point of decision."""
+
+    def test_pathed_names_the_globs(self) -> None:
+        note = rules_firing_note("rules", "project", ["src/**/*.ts"])
+        assert "src/**/*.ts" in note
+        assert "touch" in note
+
+    def test_unpathed_says_every_session(self) -> None:
+        assert rules_firing_note("rules", "project", None) == "loads every session"
+
+    def test_unadopted_user_scope_names_this_machine_only(self) -> None:
+        note = rules_firing_note("rules", "user", None, adopted=False)
+        assert note == "loads every session (this machine)"
+
+    def test_adopted_user_scope_drops_the_this_machine_caveat(self) -> None:
+        note = rules_firing_note("rules", "user", None, adopted=True)
+        assert note == "loads every session"
+
+    def test_local_names_project_and_personal(self) -> None:
+        note = rules_firing_note("local", "project", None)
+        assert "project" in note
+        assert "you only" in note
+
+    def test_plain_claude_md_yields_no_note(self) -> None:
+        assert rules_firing_note(None, "user", None) == ""
 
 
 class TestBadges:

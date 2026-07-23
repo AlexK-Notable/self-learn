@@ -17,7 +17,7 @@ Exactly five, the `destination` enum:
 | Destination | What it is | When it wins |
 |---|---|---|
 | `skill-md` | managed section in the owning skill's SKILL.md | behavioral rules and skill-scoped knowledge that must load at every activation of that skill — the default for `behavior` records with skill scope |
-| `claude-md` | managed section in the repo `CLAUDE.md` (project scope) or `~/.claude/CLAUDE.md` (user scope) | project/user conduct rules and knowledge that must apply outside any one skill |
+| `claude-md` | managed section in the repo `CLAUDE.md` (project scope) or `~/.claude/CLAUDE.md` (user scope) — or, via the `variant` field below, a rules-topic file (`rules/<topic>.md`) or a personal `CLAUDE.local.md` (project only) | project/user conduct rules and knowledge that must apply outside any one skill |
 | `reference` | append to the skill's `references/LEARNINGS.md` (or another **existing** references file, named explicitly) | bulk knowledge worth keeping but not worth loading at every activation — progressive disclosure |
 | `new-skill` | scaffold a new skill (M3 compiler) | a lesson cluster that wants to be its own skill — no existing surface fits |
 | `hook` | PreToolUse/etc. guard script (M3 compiler) | `kind: anti-pattern` lessons where advisory text is the weakest enforcement and a deterministic guard is the strongest |
@@ -38,6 +38,49 @@ Start from the record's `type`, `kind`, and `scope`:
   a wrong first move; otherwise `reference`.
 - **knowledge, project/user scope** → `claude-md` (or project docs).
 
+## 2a. `claude-md`'s `variant`: a rules topic, or a personal project file
+
+*(Added A2, 2026-07-22.)* `claude-md` carries an optional scope
+parameterization — `variant: rules` (with `rules_topic`, optionally
+`rules_paths`) or `variant: local` — never a new destination (the enum
+stays five). Decide with **one question**: **does the lesson have a
+file-path firing condition?**
+
+- **Yes** → `variant: rules` **with** `rules_paths` (a glob list). This
+  is the SAME signal §2's hook rule already uses ("mechanical and
+  tool-detectable — a file-path pattern, a command shape"): a trigger
+  that names paths selects a path-scoped rule. It is genuinely narrower
+  — the section loads only when Claude touches a matching file.
+- **No** → plain `claude-md` vs. an UNPATHED `variant: rules` is **not**
+  a cost decision (both cost the same tokens at every session); decide
+  on organization / cap relief only, never present the unpathed form as
+  "narrower" than plain `claude-md`.
+- A trigger that names a *moment*, not a path ("about to spawn a
+  subagent"), has no glob and stays plain `claude-md`.
+
+`variant: local` is the third, separate case: a lesson that is
+genuinely personal to THIS machine/checkout and must never reach a
+teammate (never route a team-shared lesson here) — project scope only.
+
+**Two cost/reliability caveats, pinned:** (1) an UNPATHED rules file
+costs exactly what the same text in `claude-md` costs — rules relieve
+the entry cap, never the context cost; never present `rules` as a
+cheaper surface than `claude-md` for a lesson with no path trigger. (2) a
+project-scope rule (like project `claude-md`) is skipped if the user
+excludes `project` from `--setting-sources` — a silent-non-firing vector
+this system cannot observe at route time; never promise a project rule
+fires unconditionally.
+
+Proposal-schema addition (rides the same YAML sibling, §5):
+
+```yaml
+destination: claude-md
+variant: rules            # optional: "rules" | "local" | (absent)
+rules_topic: subagents    # required iff variant == "rules"; kebab slug
+rules_paths:               # optional; absent ⇒ unpathed rule
+  - "src/**/*.ts"
+```
+
 ## 3. The narrowest-surface bias (the one standing tiebreak)
 
 **Prefer the narrowest surface that still fires.** `~/.claude/CLAUDE.md`
@@ -48,6 +91,12 @@ less often; when a skill-md section is getting fat, prefer `reference`.
 Loaded-surface budget is the scarce resource: managed sections cap at 10
 entries / ~150 words, and every routed token dilutes attention at every
 activation.
+
+**Ranking, with §2a's rules variant** *(A2)*: `pathed rules < unpathed
+rules ≈ CLAUDE.md`. The `≈` is deliberate — equal context cost, differing
+only in entry-cap pressure (which loaded surface's 10-entry budget the
+lesson competes for), never present an unpathed rule as narrower than
+plain `claude-md`.
 
 **The bias reads on the lesson's real firing range, not on where it was
 captured** *(added 2026-07-18 — feedback round 3 item 3; 09 §11 Y-18)*.
@@ -322,16 +371,43 @@ reject-worthy.
 ## 10. Destination-bounded contradiction check (Y-23)
 
 *(Added 2026-07-19 — FW-32; narrows the §5 `contradicts:` field's scope,
-which previously read "existing canon" with no bound stated here.)*
+which previously read "existing canon" with no bound stated here.
+Re-scoped 2026-07-22 — A2 §7/P-A10/P-A10b: the domain below replaces
+"same enum value/destination section" now that `claude-md` carries
+scope × variant. There is no runtime contradiction scanner — this is
+doctrine the analyst reasons from, not a detector; emission is already
+wired via the existing `contradicts` field / `link contradicts` verb.)*
 
-**Scope — bounded, not canon-wide.** Flag a suspected conflict **only**
-against the destination section's current entries — the `*(lrn-…)*`
-managed-section lines already shown to you in that record's candidate-
-target canon excerpt. **Do not scan canon-wide; canon-wide contradiction
-detection stays G-5-gated** (vector/retrieval infrastructure this system
-does not have). If the excerpt shows an entry that says the opposite of
-what this record would have Claude do, name it. If it doesn't, say
-nothing — silence, not a claim of "no contradictions found."
+**Scope — bounded by (scope, always-loaded), not canon-wide, and not
+"same enum value" either.** The right domain is every section that loads
+in the SAME session at the SAME scope — because those are the only
+sections that can actually be in the human's head, or Claude's context,
+at once:
+
+- At one scope, plain `claude-md`, every UNPATHED `variant: rules:*`,
+  and `variant: local` all load in the SAME session simultaneously (P-A1:
+  an unpathed rule costs and loads exactly like `claude-md` text) — this
+  is **one domain**. Flag a suspected conflict against the union of
+  their current entries — the `*(lrn-…)*` lines already shown to you in
+  the candidate-target canon excerpt(s).
+- A **pathed** rule is a **separate domain, per glob-set**: two pathed
+  rules whose globs never co-load cannot contradict IN PRACTICE (Claude
+  never has both loaded at once); two whose globs *overlap* share a
+  domain and must be checked against each other.
+- **User ↔ project is not arbitrary.** Docs pin *"User-level rules are
+  loaded before project rules, giving project rules higher priority."*
+  So when you flag a user↔project clash, **name the winner**: "your
+  project rule will override your user rule" is strictly better than
+  "these conflict" — and it is a *routing* signal too (narrowest-surface
+  bias on precedence): a user-scope rule a common project rule already
+  overrides will not fire where it matters. Same-scope conflicts remain
+  arbitrary (*"if two rules contradict each other, Claude may pick one
+  arbitrarily"*) — there, name both and let the human choose.
+- **Do not scan canon-wide; canon-wide contradiction detection stays
+  G-5-gated** (vector/retrieval infrastructure this system does not
+  have). If the excerpt shows an entry that says the opposite of what
+  this record would have Claude do, name it. If it doesn't, say
+  nothing — silence, not a claim of "no contradictions found."
 
 **Output.** The machine field is the existing `contradicts: [<id or
 anchor>, …]` list (§5 — unchanged, it is the `link contradicts` verb's

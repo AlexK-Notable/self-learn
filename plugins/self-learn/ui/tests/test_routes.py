@@ -106,6 +106,16 @@ class TestBuildArgv:
     def test_followup_done(self) -> None:
         assert build_argv("followup-done", "lrn-aa000001") == ["followup", "done", "lrn-aa000001"]
 
+    def test_chezmoi_adopt(self) -> None:
+        # A2 §10.4(a)/§10.5: no record_id in the real CLI form — the
+        # `target` field (already generic, per link-contradicts above)
+        # carries the rules-file path; `record_id` only scopes the route
+        # this bar renders under, never the argv.
+        argv = build_argv(
+            "chezmoi-adopt", "lrn-aa000001", target="/home/u/.claude/rules/subagents.md"
+        )
+        assert argv == ["chezmoi-adopt", "/home/u/.claude/rules/subagents.md"]
+
     def test_unknown_verb_raises(self) -> None:
         with pytest.raises(ValueError):
             build_argv("frobnicate", "lrn-aa000001")
@@ -1591,6 +1601,77 @@ class TestScopeAwareClaudeMdLabelsOnPostRerenders:
         assert "Project instructions" not in r.text
 
 
+class TestVariantAwareSuggestedDestination:
+    """A2 §11/§15 item 9: the "Suggested destination" line (detail.html)
+    glosses a rules/local PROPOSAL the same variant-aware way A1's
+    scope-aware gloss already does above — topic in the label, the
+    resolved rules-file path beside it (P-A12), and the plain-words
+    firing condition (§11's table)."""
+
+    def test_pathed_rules_proposal_shows_topic_label_path_and_glob(
+        self, tmp_path: Path
+    ) -> None:
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="user")
+        seed_record(sb.ledger, rec)
+        seed_proposal(
+            sb.ledger, rec.id, destination="claude-md", variant="rules",
+            rules_topic="subagents", rules_paths=["src/**/*.ts"],
+        )
+        c, _runner = make_client(sb)
+        r = c.get(f"/record/{rec.id}")
+        assert r.status_code == 200
+        assert "User rule — subagents" in r.text
+        assert "~/.claude/rules/subagents.md" in r.text
+        assert "src/**/*.ts" in r.text  # the firing-condition glob, in plain words
+        # Pin the firing NOTE independently of the raw-proposal YAML render:
+        # "loads when you touch" is produced only by the pathed-rules branch
+        # (models.rules_firing_note), so this fails if rules_paths is dropped
+        # from the filter arg — closing the redundant-assertion gap.
+        assert "loads when you touch" in r.text
+
+    def test_unpathed_rules_proposal_says_loads_every_session(
+        self, tmp_path: Path
+    ) -> None:
+        sb = make_env(tmp_path)
+        rec = make_knowledge(scope="project")
+        seed_record(sb.ledger, rec, project_path=sb.host)
+        seed_proposal(
+            sb.ledger, rec.id, destination="claude-md", variant="rules",
+            rules_topic="conventions",
+        )
+        c, _runner = make_client(sb)
+        r = c.get(f"/record/{rec.id}")
+        assert r.status_code == 200
+        assert "Project rule — conventions" in r.text
+        assert "loads every session" in r.text
+
+    def test_local_proposal_shows_personal_notes_label_and_path(
+        self, tmp_path: Path
+    ) -> None:
+        sb = make_env(tmp_path)
+        rec = make_knowledge(scope="project")
+        seed_record(sb.ledger, rec, project_path=sb.host)
+        seed_proposal(sb.ledger, rec.id, destination="claude-md", variant="local")
+        c, _runner = make_client(sb)
+        r = c.get(f"/record/{rec.id}")
+        assert r.status_code == 200
+        assert "Personal project notes" in r.text
+        assert "&lt;repo&gt;/CLAUDE.local.md" in r.text
+
+    def test_no_variant_proposal_is_byte_identical_to_a1(self, tmp_path: Path) -> None:
+        # P-A6: a plain claude-md proposal (no variant key at all) must
+        # never render a firing-condition span.
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="user")
+        seed_record(sb.ledger, rec)
+        seed_proposal(sb.ledger, rec.id, destination="claude-md")
+        c, _runner = make_client(sb)
+        r = c.get(f"/record/{rec.id}")
+        assert r.status_code == 200
+        assert "dest-firing-note" not in r.text
+
+
 class TestDestinationCorrection:
     """Feedback round 2 item 3 — the live 2026-07-17 stranding: a project
     record whose analyst proposal said skill-md armed skill-md, and the
@@ -2006,6 +2087,180 @@ class TestContradictsOffer:
             headers={"HX-Request": "true"},
         )
         assert r.headers.get("hx-redirect") == "/?notice=bucket-clear"
+
+
+class TestAdoptOffer:
+    """A2 §10.4(a): the review-UI half of the accepted §10 offer. The
+    hint rides `_host_phase`'s stderr line (built from
+    `self_learn.chezmoi.adopt_command`) — a FakeRunner queues that exact
+    shape, exercising the SAME `_extract_adopt_path` parse the real
+    runner's stderr would trigger, never a mocked-out shortcut."""
+
+    TARGET = "/home/u/.claude/rules/subagents.md"
+
+    @staticmethod
+    def _hint_stderr(target: str = TARGET) -> str:
+        from self_learn.chezmoi import adopt_command
+
+        return (
+            f"self-learn: wrote {target} — not tracked by chezmoi, so it "
+            f"will not sync to your other machines. To sync it: "
+            f"{adopt_command(target)}\n"
+        )
+
+    def test_post_route_offers_adopt_when_stderr_carries_the_hint(
+        self, tmp_path: Path
+    ) -> None:
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="user")
+        seed_record(sb.ledger, rec)
+        runner = FakeRunner()
+        runner.queue_result(RunResult(0, stderr=self._hint_stderr()))
+        c, _runner = make_client(sb, runner=runner)
+        r = c.post(
+            f"/record/{rec.id}/action/confirm",
+            data={"verb": "route", "kind": "detail", "dest": "claude-md"},
+            headers={"HX-Request": "true"},
+        )
+        assert r.status_code == 200
+        assert "hx-redirect" not in {k.lower() for k in r.headers}
+        assert "data-adopt-offer" in r.text  # app.js leg (e) marker
+        assert self.TARGET in r.text
+
+    def test_arm_then_confirm_runs_chezmoi_adopt(self, tmp_path: Path) -> None:
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="user")
+        seed_record(sb.ledger, rec)
+        runner = FakeRunner()
+        runner.queue_result(RunResult(0, stderr=self._hint_stderr()))
+        c, _runner = make_client(sb, runner=runner)
+        c.post(
+            f"/record/{rec.id}/action/confirm",
+            data={"verb": "route", "kind": "detail", "dest": "claude-md"},
+            headers={"HX-Request": "true"},
+        )
+
+        arm = c.post(
+            f"/record/{rec.id}/action/arm",
+            data={"verb": "chezmoi-adopt", "kind": "adopt", "target": self.TARGET},
+            headers={"HX-Request": "true"},
+        )
+        assert arm.status_code == 200
+        assert "Adopt into chezmoi" in arm.text
+        assert self.TARGET in arm.text
+
+        confirm = c.post(
+            f"/record/{rec.id}/action/confirm",
+            data={"verb": "chezmoi-adopt", "kind": "adopt", "target": self.TARGET},
+            headers={"HX-Request": "true"},
+        )
+        assert confirm.status_code == 200
+        assert runner.calls[-1] == ["chezmoi-adopt", self.TARGET]
+
+    def test_cancel_after_arm_reverts_to_the_unarmed_offer_never_runs_the_verb(
+        self, tmp_path: Path
+    ) -> None:
+        """The generic ``action/disarm`` route (shared with every other
+        ``kind``) only replaces the INNER action-bar div — the outer
+        `#adopt-offer-*` wrapper (lead text, `data-adopt-offer` marker)
+        is untouched, so Cancel must land back on the SAME yes/no offer,
+        never lose it, and never invoke the runner."""
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="user")
+        seed_record(sb.ledger, rec)
+        runner = FakeRunner()
+        runner.queue_result(RunResult(0, stderr=self._hint_stderr()))
+        c, _runner = make_client(sb, runner=runner)
+        c.post(
+            f"/record/{rec.id}/action/confirm",
+            data={"verb": "route", "kind": "detail", "dest": "claude-md"},
+            headers={"HX-Request": "true"},
+        )
+        c.post(
+            f"/record/{rec.id}/action/arm",
+            data={"verb": "chezmoi-adopt", "kind": "adopt", "target": self.TARGET},
+            headers={"HX-Request": "true"},
+        )
+
+        cancel = c.post(
+            f"/record/{rec.id}/action/disarm",
+            data={"kind": "adopt", "target": self.TARGET},
+            headers={"HX-Request": "true"},
+        )
+        assert cancel.status_code == 200
+        assert "Bring under chezmoi (sync across machines)" in cancel.text
+        assert "Not now" in cancel.text
+        # only the ORIGINAL route call happened — Cancel never runs chezmoi-adopt.
+        assert runner.calls == [["route", rec.id, "--dest", "claude-md"]]
+
+    def test_decline_wipes_the_offer(self, tmp_path: Path) -> None:
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="user")
+        seed_record(sb.ledger, rec)
+        c, _runner = make_client(sb)
+        dismiss = c.post(
+            f"/record/{rec.id}/adopt-offer/dismiss",
+            headers={"HX-Request": "true"},
+        )
+        assert dismiss.status_code == 200
+        assert dismiss.text == ""
+
+    def test_failed_route_shows_error_not_the_adopt_offer(
+        self, tmp_path: Path
+    ) -> None:
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="user")
+        seed_record(sb.ledger, rec)
+        runner = FakeRunner()
+        runner.queue_result(RunResult(1, stderr="refused: scan hit"))
+        c, _runner = make_client(sb, runner=runner)
+        r = c.post(
+            f"/record/{rec.id}/action/confirm",
+            data={"verb": "route", "kind": "detail", "dest": "claude-md"},
+            headers={"HX-Request": "true"},
+        )
+        assert "data-adopt-offer" not in r.text
+        assert "data-verb-error" in r.text
+
+    def test_ordinary_route_stderr_never_misfires_the_offer(
+        self, tmp_path: Path
+    ) -> None:
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+        seed_proposal(sb.ledger, rec.id, destination="skill-md")
+        c, _runner = make_client(sb)  # default FakeRunner: exit 0, no stderr
+        r = c.post(
+            f"/record/{rec.id}/action/confirm",
+            data={"verb": "route", "kind": "detail", "dest": "skill-md"},
+            headers={"HX-Request": "true"},
+        )
+        assert "data-adopt-offer" not in r.text
+        assert r.headers.get("hx-redirect") == "/?notice=bucket-clear"
+
+    def test_contradicts_offer_wins_when_both_would_fire(
+        self, tmp_path: Path
+    ) -> None:
+        """An edge case (both a contradicts edge AND the adopt hint on
+        the same route): the contradicts offer is checked first and
+        returns immediately — never both rendered at once."""
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+        seed_proposal(
+            sb.ledger, rec.id, destination="skill-md",
+            contradicts=["skills/other/SKILL.md"],
+        )
+        runner = FakeRunner()
+        runner.queue_result(RunResult(0, stderr=self._hint_stderr()))
+        c, _runner = make_client(sb, runner=runner)
+        r = c.post(
+            f"/record/{rec.id}/action/confirm",
+            data={"verb": "route", "kind": "detail", "dest": "skill-md"},
+            headers={"HX-Request": "true"},
+        )
+        assert "data-contradicts-offer" in r.text
+        assert "data-adopt-offer" not in r.text
 
 
 # ------------------------------------------------------------------- keymap

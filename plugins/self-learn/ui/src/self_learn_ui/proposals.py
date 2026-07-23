@@ -89,7 +89,15 @@ TOOL_ACCEPTED_MESSAGE = (
 #: ``\Z`` anchors, never ``$`` (code review F8: Python ``$`` matches
 #: before a trailing newline — a dest with an invisible trailing byte
 #: would validate and render indistinguishably from the clean form).
-_DEST_RE = re.compile(r"\A(skill-md|claude-md|reference(:.+)?|new-skill:.+|hook)\Z")
+#: A2 §4.2 (the UI-side twin of the CLI's ``_parse_dest``, ``verbs.py:
+#: 404``): ``claude-md:local`` / ``claude-md:rules:<topic>`` added
+#: alongside plain ``claude-md`` — these two parsers MUST move together
+#: (§4.2's sync obligation) or a proposal carrying the new forms fails
+#: UI validation while the CLI accepts the same string.
+_DEST_RE = re.compile(
+    r"\A(skill-md|claude-md(:local|:rules:[a-z0-9][a-z0-9-]*)?"
+    r"|reference(:.+)?|new-skill:.+|hook)\Z"
+)
 
 _RECORD_ID_RE = re.compile(r"\Alrn-[0-9a-f]{8}\Z")
 
@@ -295,7 +303,8 @@ def validate_proposal(
         if not isinstance(dest, str) or not _DEST_RE.match(dest):
             return _refuse(
                 f"dest {dest!r} does not parse — accepted forms: skill-md, "
-                "claude-md, reference, reference:<file>, new-skill:<name>, hook"
+                "claude-md, claude-md:local, claude-md:rules:<topic>, "
+                "reference, reference:<file>, new-skill:<name>, hook"
             )
         if len(dest) > DEST_MAX_CHARS:
             return _refuse(

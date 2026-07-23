@@ -254,6 +254,9 @@ class TestKeySet:
         assert result["claude-md"] == {
             "entries": 0, "entries_cap": 10, "words": 0, "words_cap": 150,
             "over_cap": False,
+            # A2 §8: the >5-topics churn signal, claude-md only — 0 here,
+            # no ~/.claude/rules/ dir under the tmp_path override.
+            "rules_topic_count": 0,
         }
 
 

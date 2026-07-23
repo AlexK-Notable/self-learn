@@ -39,6 +39,7 @@ from . import hosts as hosts_mod
 from .ledger import Bucket, discover_buckets, home_state, home_state_message
 from .normalize import sha_anchor
 from .records import RECORD_ID_RE, Record, RecordError
+from .skill_scaffold import SkillScaffoldError, validate_skill_name
 
 __all__ = [
     "DEFAULT_DEFER_DAYS",
@@ -562,8 +563,64 @@ def validate_proposal(data: dict) -> None:
                 "contradicts must be a non-empty list of record ids / "
                 "canon anchors (11 §2.4)"
             )
+    _validate_rules_fields(data)
     _validate_lint(data)
     _validate_card(data)
+
+
+def _validate_rules_fields(data: dict) -> None:
+    """A2 §4.3: the ``variant``/``rules_topic``/``rules_paths`` proposal
+    fields — optional, validated only when present (P-A6: a
+    variant-absent proposal validates unchanged). ``variant`` is
+    meaningful only on a ``claude-md`` destination (R-2: rules/local are
+    a SCOPE PARAMETERIZATION of claude-md, never a fifth destination)."""
+    variant = data.get("variant")
+    if variant is None:
+        return
+    if variant not in ("rules", "local"):
+        raise ProposalError(
+            f"variant must be 'rules' or 'local', got {variant!r}"
+        )
+    if data.get("destination") != "claude-md":
+        raise ProposalError(
+            "variant only applies to a claude-md destination (R-2: rules "
+            "is a scope parameterization of claude-md, not a new "
+            "destination)"
+        )
+    rules_topic = data.get("rules_topic")
+    rules_paths = data.get("rules_paths")
+    if variant == "rules":
+        if not isinstance(rules_topic, str) or not rules_topic:
+            raise ProposalError(
+                "variant: rules needs a non-empty rules_topic (kebab slug)"
+            )
+        try:
+            validate_skill_name(rules_topic)
+        except SkillScaffoldError as exc:
+            # Y-9 (A2 §4.1/§4.3): "rules topic", never "new-skill name" —
+            # the same wording discipline as _parse_dest's rules branch.
+            raise ProposalError(
+                f"rules topic {rules_topic!r} must be kebab-case "
+                "([a-z0-9-], starting alphanumeric) — it names the "
+                "rules file"
+            ) from exc
+    else:  # variant == "local"
+        if rules_topic is not None or rules_paths is not None:
+            raise ProposalError(
+                "variant: local takes no rules_topic and no rules_paths "
+                "— a personal project file has no topic and no globs"
+            )
+    if rules_paths is not None:
+        # Deep glob validation (zero-match, per pattern) is route-time
+        # only (§5) — the target tree is not known at `proposal
+        # validate`; this checks shape only.
+        if not isinstance(rules_paths, list) or not rules_paths or any(
+            not isinstance(p, str) or not p for p in rules_paths
+        ):
+            raise ProposalError(
+                "rules_paths must be a non-empty list of non-empty glob "
+                "strings"
+            )
 
 
 def validate_merge_proposal(data: dict) -> None:
@@ -704,6 +761,10 @@ def resolve_record(
     reference_file: str | None = None,
     hook: dict | None = None,
     new_skill: str | None = None,
+    variant: str | None = None,
+    rules_topic: str | None = None,
+    rules_paths: list[str] | None = None,
+    allow_empty_glob: bool = False,
 ) -> list[Path]:
     """File-op half of a resolution: update frontmatter via T2's mutation
     API, ``git mv`` pending→resolved (fs move when untracked), and remove
@@ -746,7 +807,10 @@ def resolve_record(
     path = find_record_path(home, record_id)
     record = Record.from_path(path)
     if new_status == "routed":
-        routing = {
+        # dict[str, object]: the block mixes str/dict/list values below
+        # (follow_up/hook are dicts, rules_paths is a list) — a narrower
+        # inferred type makes every one of those a pyright error.
+        routing: dict[str, object] = {
             "routed_at": routed_at if routed_at is not None else _now_iso(),
             "destination": destination,
             "by": by,
@@ -767,6 +831,19 @@ def resolve_record(
             routing["hook"] = dict(hook)
         if new_skill is not None:
             routing["new_skill"] = new_skill
+        if variant is not None:
+            # A2 §4.3: the claude-md scope parameterization. Absent ⇒
+            # today's routing block, byte-identical (P-A6).
+            routing["variant"] = variant
+            if rules_topic is not None:
+                routing["rules_topic"] = rules_topic
+            if rules_paths is not None:
+                routing["rules_paths"] = list(rules_paths)
+            if allow_empty_glob:
+                # A2 §5.1 test obligation §13 item 3: the --allow-empty-
+                # glob bypass, recorded so a later reader knows the rule
+                # was routed unverified.
+                routing["allow_empty_glob"] = True
         record.set_routing(routing)
     if superseded_by is not None:
         record.set_superseded_by(superseded_by)
