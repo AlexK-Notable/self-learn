@@ -1170,7 +1170,7 @@ class TestRehomeProposalRoutes:
             bucket_scope="project",
             bucket_name=slug_for(sb.host),
             session_key=rec.id,
-            title="The router reserves 192.168.1.232 for the Nova.",
+            title="The router reserves 192.0.2.232 for the Beacon.",
             to=str(host_b.resolve()),
             **kw,
         )

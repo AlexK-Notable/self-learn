@@ -3,7 +3,7 @@
 Fixture map (tests/fixtures/memory/): MEMORY.md index + 3 topic files —
 research-archive.md (metadata.type: project → scope project),
 review-doctrine.md (metadata.type: feedback → scope user),
-nova-host.md (no frontmatter → scope project).
+beacon-host.md (no frontmatter → scope project).
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from self_learn.records import Record
 from support import init_repo, make_env
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "memory"
-TOPIC_FILES = ("nova-host.md", "research-archive.md", "review-doctrine.md")
+TOPIC_FILES = ("beacon-host.md", "research-archive.md", "review-doctrine.md")
 ORIGIN_RE = re.compile(r"^memory/[a-z-]+\.md#sha256:[0-9a-f]{12}$")
 
 
@@ -96,7 +96,7 @@ def test_scope_mapping_and_source(tmp_path):
     report = _import(home, memory_dir, project)
     assert record_of(home, id_for(report, "review-doctrine.md")).scope == "user"
     assert record_of(home, id_for(report, "research-archive.md")).scope == "project"
-    assert record_of(home, id_for(report, "nova-host.md")).scope == "project"
+    assert record_of(home, id_for(report, "beacon-host.md")).scope == "project"
     for rid in report.created:
         record = record_of(home, rid)
         assert record.source == "auto-memory"
@@ -125,7 +125,7 @@ def test_idempotent_reimport_zero(tmp_path):
 def test_rejected_memory_never_resurrects(tmp_path):
     home, memory_dir, project = setup(tmp_path)
     report = _import(home, memory_dir, project)
-    rid = id_for(report, "nova-host.md")
+    rid = id_for(report, "beacon-host.md")
     resolve_record(home, rid, "rejected")
     again = _import(home, memory_dir, project)
     assert again.created == []
@@ -173,7 +173,7 @@ def test_prune_terminal_only_removes_file_and_index_line(tmp_path):
     refused_ids = {rid for rid, _, _ in prune.refused_in_flight}
     assert refused_ids == set(report.created) - {routed}
     assert (memory_dir / "review-doctrine.md").exists()
-    assert (memory_dir / "nova-host.md").exists()
+    assert (memory_dir / "beacon-host.md").exists()
     # visible confirmation names what it pruned
     assert "research-archive.md" in prune.summary()
 
@@ -181,14 +181,14 @@ def test_prune_terminal_only_removes_file_and_index_line(tmp_path):
 def test_prune_rejected_and_superseded_also_prune(tmp_path):
     home, memory_dir, project = setup(tmp_path)
     report = _import(home, memory_dir, project)
-    rejected = id_for(report, "nova-host.md")
+    rejected = id_for(report, "beacon-host.md")
     graduated = id_for(report, "review-doctrine.md")
     resolve_record(home, rejected, "rejected")
     resolve_record(home, graduated, "superseded", superseded_by="canon")
 
     prune = prune_memory(home, memory_dir)
-    assert {f for _, f, _ in prune.pruned} == {"nova-host.md", "review-doctrine.md"}
-    assert not (memory_dir / "nova-host.md").exists()
+    assert {f for _, f, _ in prune.pruned} == {"beacon-host.md", "review-doctrine.md"}
+    assert not (memory_dir / "beacon-host.md").exists()
     assert not (memory_dir / "review-doctrine.md").exists()
 
 
@@ -212,29 +212,29 @@ def test_prune_dry_run_touches_nothing(tmp_path):
 def test_prune_leaves_drifted_files_alone(tmp_path):
     home, memory_dir, project = setup(tmp_path)
     report = _import(home, memory_dir, project)
-    rid = id_for(report, "nova-host.md")
+    rid = id_for(report, "beacon-host.md")
     resolve_record(home, rid, "rejected")
-    target = memory_dir / "nova-host.md"
+    target = memory_dir / "beacon-host.md"
     target.write_text(
         target.read_text(encoding="utf-8") + "\nEdited after import.\n",
         encoding="utf-8",
     )
 
     prune = prune_memory(home, memory_dir)
-    assert [(r, f) for r, f, _ in prune.drifted] == [(rid, "nova-host.md")]
+    assert [(r, f) for r, f, _ in prune.drifted] == [(rid, "beacon-host.md")]
     assert prune.pruned == []
     assert target.exists()
     index = (memory_dir / "MEMORY.md").read_text(encoding="utf-8")
-    assert "nova-host.md" in index
+    assert "beacon-host.md" in index
 
 
 def test_prune_reports_already_missing_files(tmp_path):
     home, memory_dir, project = setup(tmp_path)
     report = _import(home, memory_dir, project)
-    rid = id_for(report, "nova-host.md")
+    rid = id_for(report, "beacon-host.md")
     resolve_record(home, rid, "rejected")
     first = prune_memory(home, memory_dir)
-    assert {f for _, f, _ in first.pruned} == {"nova-host.md"}
+    assert {f for _, f, _ in first.pruned} == {"beacon-host.md"}
     second = prune_memory(home, memory_dir)  # sweep is re-runnable
     assert second.pruned == []
-    assert [(r, f) for r, f, _ in second.missing] == [(rid, "nova-host.md")]
+    assert [(r, f) for r, f, _ in second.missing] == [(rid, "beacon-host.md")]

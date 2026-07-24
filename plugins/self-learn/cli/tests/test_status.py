@@ -154,14 +154,14 @@ def test_status_fast_does_not_crash_on_undecodable_bytes(
 def test_status_human_line_with_buckets(sandbox_home, capsys):
     # doc 13 §3: per-project bucket under projects/<slug>; scope renders as
     # plain "project" — the combined "project+user" scope is dead.
-    (sandbox_home / "projects" / "-home-komi-repos-x" / "pending").mkdir(
+    (sandbox_home / "projects" / "-home-user-repos-x" / "pending").mkdir(
         parents=True
     )
     rc = cli.main(["status"])
     assert rc == 0
     out = capsys.readouterr().out
     assert "self-learn: 0 pending across 1 bucket" in out
-    assert "-home-komi-repos-x (project)" in out
+    assert "-home-user-repos-x (project)" in out
 
 
 # (teach stub removed at T5; verbs/push/sentinel at T8; import/proposal at

@@ -5,7 +5,7 @@ Fixture map (tests/fixtures/gotchas-journal-excerpt.md, 7 entries):
 - e1 2026-06-02 "…must contain a hyphen…"   knowledge, date anchor (first of date)
 - e2 2026-06-02 "…don't hit on-disk…"       knowledge, sha anchor (dup date)
 - e3 2026-06-08 "Re-enabling a disabled…"   knowledge, IN canon → flagged
-- e4 2026-06-14 "Nova DHCP IP change…"      knowledge, not in canon
+- e4 2026-06-14 "Beacon DHCP IP change…"    knowledge, not in canon
 - e5 2026-06-15 "Never edit `.storage`…"    behavior (title-initial Never),
                                             IN canon but NEVER bulk-flagged
 - e6 (dateless) "Follow-up — tree floor…"   sha anchor

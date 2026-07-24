@@ -851,7 +851,7 @@ class TestExitCodesAreUnified:
         monkeypatch.setenv("SELF_LEARN_MINER_AUTOKICK", "0")
         teach_argv = [
             "teach", "--skill", "s", "--type", "knowledge",
-            "--fact", "The router reserves .232 for the Nova.",
+            "--fact", "The router reserves .232 for the Beacon.",
         ]
         assert cli.main(teach_argv) == cli.EXIT_NO_HOME == 5, (
             "teach still answers a missing home with its own code — the "

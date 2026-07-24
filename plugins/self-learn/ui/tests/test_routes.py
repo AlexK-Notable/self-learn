@@ -2672,7 +2672,7 @@ class TestNearMissPromote:
         run_id = _seed_miner_run(
             snippet={
                 "type": "knowledge",
-                "fact": "The router reserves .232 for the Nova",
+                "fact": "The router reserves .232 for the Beacon",
                 "context": "seen twice",
                 "scope": "user",
             }
@@ -2687,7 +2687,7 @@ class TestNearMissPromote:
                 "--type",
                 "knowledge",
                 "--fact",
-                "The router reserves .232 for the Nova",
+                "The router reserves .232 for the Beacon",
                 "--context",
                 "seen twice",
                 "--session",

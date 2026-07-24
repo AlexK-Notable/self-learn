@@ -1,3 +1,3 @@
 - [Research archive](research-archive.md) — where the generated skill's source transcripts are preserved
 - [Review doctrine](review-doctrine.md) — sourced≠true; verify decision-relevant claims before they ground decisions
-- [Nova host facts](nova-host.md) — LAN host details for the HA box
+- [Beacon host facts](beacon-host.md) — LAN host details for the HA box

@@ -1,9 +1,9 @@
 """T11: CLI wiring for the T9 importers — `import --backlog <skill>`,
-`import --memory [<dir>]`, `prune-memory [--dry-run] [<dir>]`.
+`import --memory DIR`, `prune-memory [--dry-run] DIR`.
 
 Module behavior is T9's suite (test_import_backlog / test_import_memory);
 these tests cover the CLI surface: flag parsing, the report .summary()
-printout, exit codes, and the memory-dir default resolution. The REAL
+printout, exit codes, and the memory-dir refusal. The REAL
 auto-memory directory is never resolved in tests — every invocation
 passes an explicit dir or the SELF_LEARN_MEMORY_DIR env override.
 """
@@ -16,6 +16,8 @@ from pathlib import Path
 import pytest
 
 from self_learn import cli
+from self_learn.import_memory import import_memory
+from self_learn.ledger_ops import resolve_record
 
 from support import make_env
 
@@ -108,12 +110,20 @@ def test_import_memory_env_override_supplies_default(home, tmp_path, capsys, mon
     assert capsys.readouterr().out.startswith("import --auto-memory: 3 created")
 
 
-def test_default_memory_dir_is_the_pinned_auto_memory_path(monkeypatch):
-    # Pure resolution — no filesystem access, the real dir is not read.
+def test_default_memory_dir_is_none_without_env(monkeypatch):
+    # No built-in default: the only derivable candidate would guess Claude
+    # Code's undocumented, many-to-one projects-dir slug scheme, and
+    # prune-memory deletes at this path — refusing is the safe answer.
     monkeypatch.delenv("SELF_LEARN_MEMORY_DIR", raising=False)
-    assert cli.default_memory_dir() == Path(
-        "~/.claude/projects/-home-komi-repos-claude-skills/memory"
-    ).expanduser()
+    assert cli.default_memory_dir() is None
+
+
+def test_import_memory_bare_without_env_is_usage_error(home, capsys):
+    rc = cli.main(["import", "--memory"])
+    assert rc == 64
+    err = capsys.readouterr().err
+    assert "--memory" in err
+    assert "SELF_LEARN_MEMORY_DIR" in err
 
 
 def test_import_memory_missing_dir_exits_1(home, tmp_path, capsys):
@@ -155,3 +165,26 @@ def test_prune_memory_live_run_on_untouched_ledger_prunes_nothing(home, tmp_path
     assert rc == 0
     assert capsys.readouterr().out.startswith("memory prune sweep (live):")
     assert sorted(p.name for p in mem.glob("*.md")) == before
+
+
+def test_prune_memory_bare_without_env_is_usage_error_and_mutates_nothing(
+    home, tmp_path, capsys
+):
+    # Seed a ledger with a TERMINAL auto-memory record whose origin file
+    # still exists in a real memory dir, so a wrongly-reached sweep WOULD
+    # have something to prune — the guard must stop it before that, not
+    # merely happen to leave nothing behind.
+    mem = memory_copy(tmp_path)
+    report = import_memory(home, mem)
+    rid = report.created[0]
+    resolve_record(home, rid, "rejected")
+    filename = report.origins[rid].split("/", 1)[1].split("#", 1)[0]
+    target = mem / filename
+    assert target.exists()  # precondition: the sweep would have work to do
+    before = (mem / "MEMORY.md").read_bytes()
+
+    rc = cli.main(["prune-memory"])
+    assert rc == 64
+    assert "SELF_LEARN_MEMORY_DIR" in capsys.readouterr().err
+    assert target.exists()
+    assert (mem / "MEMORY.md").read_bytes() == before

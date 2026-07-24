@@ -728,8 +728,8 @@ class TestHostsYamlTrust:
     def test_typod_skills_root_never_writes_canon_outside_a_repo(
         self, env, tmp_path
     ):
-        """`skills_root: /home/komi/repos` (a plain dir) used to CREATE
-        /home/komi/repos/CLAUDE.md and only then fail its git commit."""
+        """`skills_root: /home/user/repos` (a plain dir) used to CREATE
+        /home/user/repos/CLAUDE.md and only then fail its git commit."""
         record = make_behavior(scope="skill:s")
         create_record(env.ledger, record)
         commit_all(env.ledger, "seed record")
@@ -1032,7 +1032,7 @@ class TestHomeState:
         rc = cli.main(
             [
                 "teach", "--type", "knowledge",
-                "--fact", "The router reserves .232 for the Nova.",
+                "--fact", "The router reserves .232 for the Beacon.",
                 "--user",
             ]
         )
@@ -1051,7 +1051,7 @@ class TestHomeState:
         rc = cli.main(
             [
                 "teach", "--type", "knowledge",
-                "--fact", "The router reserves .232 for the Nova.",
+                "--fact", "The router reserves .232 for the Beacon.",
                 "--user",
             ]
         )

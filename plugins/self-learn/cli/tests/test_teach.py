@@ -101,7 +101,7 @@ def test_structured_knowledge_project_scope(home, proj, capsys):
             "--type",
             "knowledge",
             "--fact",
-            "The Nova reserves 192.168.1.232.",
+            "The Beacon reserves 192.0.2.232.",
             "--context",
             "Router DHCP reservation.",
         ]
@@ -114,7 +114,7 @@ def test_structured_knowledge_project_scope(home, proj, capsys):
 
 
 def test_user_scope_bare_text(home):
-    rc = run_cli(["teach", "The router UI lives at 192.168.1.254.", "--user"])
+    rc = run_cli(["teach", "The router UI lives at 192.0.2.254.", "--user"])
     assert rc == 0
     path, rec = sole_record(home)
     assert rec.scope == "user"
@@ -151,7 +151,7 @@ def test_infer_type_heuristic():
     assert infer_type("Never edit .storage while HA is running") == "behavior"
     assert infer_type("when routing, prefer the narrowest surface") == "behavior"
     assert infer_type("Don't run sudo from the Bash tool") == "behavior"
-    assert infer_type("The Nova reserves 192.168.1.232.") == "knowledge"
+    assert infer_type("The Beacon reserves 192.0.2.232.") == "knowledge"
     assert infer_type("HA caches .storage in memory.") == "knowledge"
 
 

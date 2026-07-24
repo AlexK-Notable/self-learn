@@ -79,7 +79,7 @@ Staleness fires iff ≥1 pending record lacks a valid proposal AND
 | `SELF_LEARN_HOME` | `~/.self-learn` | the ledger home (its own git repo); all buckets resolve under it |
 | `SELF_LEARN_ANALYST_MODEL` | `claude-sonnet-5` | model for the one-shot `teach --route` analyst |
 | `SELF_LEARN_ANALYST_TIMEOUT` | `120` | analyst timeout, seconds |
-| `SELF_LEARN_MEMORY_DIR` | `~/.claude/projects/-home-komi-repos-claude-skills/memory` | `import --memory` / `prune-memory` default dir |
+| `SELF_LEARN_MEMORY_DIR` | (unset — required) | `import --memory` / `prune-memory` target dir; no default, both verbs refuse without it |
 | `SELF_LEARN_WORKER_MODEL` | `claude-sonnet-5` | model for the background worker's analysis pass |
 | `SELF_LEARN_COALESCE_SECS` | `600` | worker kick coalescing window, seconds |
 | `SELF_LEARN_WORKER_AUTOKICK` | (unset) | set `0` to disable teach/import auto-kick (test suites) |

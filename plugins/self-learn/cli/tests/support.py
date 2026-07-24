@@ -216,7 +216,7 @@ def make_knowledge(
     scope: str = "project",
     record_id: str | None = None,
     created_at: str | None = None,
-    fact: str = "The router reserves 192.168.1.232 for the Nova.",
+    fact: str = "The router reserves 192.0.2.232 for the Beacon.",
 ) -> Record:
     return Record.create(
         type="knowledge",

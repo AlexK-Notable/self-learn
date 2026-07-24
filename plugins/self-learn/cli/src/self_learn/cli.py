@@ -75,16 +75,29 @@ EXIT_USAGE = 64
 #: EXIT_NO_HOME 5: the home is missing / not a git repo (BLOCKER 11).
 #: EXIT_GIT_FAILED 6: a GitOpsError reached dispatch (BLOCKER B).
 
-#: The auto-memory location for THIS repo (08 §3 T9/T11; MEMORY.md + topic
-#: files). Env-overridable; tests always override — the real dir is never
-#: resolved under pytest.
-DEFAULT_MEMORY_DIR = "~/.claude/projects/-home-komi-repos-claude-skills/memory"
+_MEMORY_DIR_TAIL = (
+    "or set SELF_LEARN_MEMORY_DIR. There is no default: the only "
+    "derivable candidate would guess Claude Code's projects-dir slug, "
+    "and prune-memory deletes at this path."
+)
+_IMPORT_MEMORY_DIR_REQUIRED = (
+    f"self-learn import: no memory directory — pass `--memory DIR` {_MEMORY_DIR_TAIL}"
+)
+_PRUNE_MEMORY_DIR_REQUIRED = (
+    f"self-learn prune-memory: no memory directory — pass `DIR` {_MEMORY_DIR_TAIL}"
+)
 
 
-def default_memory_dir() -> Path:
-    """`import --memory` / `prune-memory` dir default: env override first."""
+def default_memory_dir() -> Path | None:
+    """`import --memory` / `prune-memory` dir: env only, no default.
+
+    There is deliberately NO built-in default: the only derivable
+    candidate would be a guess at Claude Code's undocumented, many-to-one
+    ~/.claude/projects slug scheme, and `prune-memory` DELETES at this
+    path. Refusing is the safe answer; see the spec's §4.1.
+    """
     env = os.environ.get("SELF_LEARN_MEMORY_DIR")
-    return Path(env if env else DEFAULT_MEMORY_DIR).expanduser()
+    return Path(env).expanduser() if env else None
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -462,7 +475,7 @@ def _build_parser() -> argparse.ArgumentParser:
         nargs="?",
         const="",
         metavar="DIR",
-        help=f"import auto-memory topic files (default: {DEFAULT_MEMORY_DIR})",
+        help="import auto-memory topic files (DIR, or $SELF_LEARN_MEMORY_DIR; no default)",
     )
 
     prune = sub.add_parser(
@@ -1357,14 +1370,17 @@ def _cmd_sentinel(action: str) -> int:
 
 def _cmd_import(args: argparse.Namespace) -> int:
     home = resolve_home()
+    memory_dir: Path | None = None
+    if args.backlog is None:
+        memory_dir = Path(args.memory).expanduser() if args.memory else default_memory_dir()
+        if memory_dir is None:
+            print(_IMPORT_MEMORY_DIR_REQUIRED, file=sys.stderr)
+            return EXIT_USAGE
     try:
-        if args.backlog is not None:
-            report = import_backlog(home, args.backlog)
-        else:
-            memory_dir = (
-                Path(args.memory).expanduser() if args.memory else default_memory_dir()
-            )
+        if memory_dir is not None:            # NOT `args.backlog is not None`
             report = import_memory(home, memory_dir)
+        else:
+            report = import_backlog(home, args.backlog)
     except ImporterError as exc:  # missing journal / memory dir
         print(f"self-learn import: {exc}", file=sys.stderr)
         return 1
@@ -1403,6 +1419,9 @@ def _cmd_import(args: argparse.Namespace) -> int:
 def _cmd_prune_memory(args: argparse.Namespace) -> int:
     home = resolve_home()
     memory_dir = Path(args.dir).expanduser() if args.dir else default_memory_dir()
+    if memory_dir is None:
+        print(_PRUNE_MEMORY_DIR_REQUIRED, file=sys.stderr)
+        return EXIT_USAGE
     report = prune_memory(home, memory_dir, dry_run=args.dry_run)
     print(report.summary())
     return EXIT_OK

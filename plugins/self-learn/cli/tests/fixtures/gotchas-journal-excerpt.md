@@ -30,7 +30,7 @@ by hand, then leave the journal entry in place (provenance).
 - **Repro / verify:** `entry shows disabled_by=user in core.config_entries; integration absent until disabled_by cleared`
 - **Tags:** storage
 
-### 2026-06-14 — Nova DHCP IP change silently broke zeroconf-pinned Wyoming STT and wake entries; Piper on the Pi was unaffected
+### 2026-06-14 — Beacon DHCP IP change silently broke zeroconf-pinned Wyoming STT and wake entries; Piper on the Pi was unaffected
 - **Status:** verified
 - **HA version:** 2026.5.4
 - **Cause:** Wyoming config entries store the IP resolved at zeroconf discovery time; when the DHCP lease moved, the entries kept the stale host

@@ -47,8 +47,8 @@ prompt after.
 | `status --fast` | Pending-only frontmatter scan for the SessionStart hook (<500 ms; staleness + escalation flags) |
 | `push` | Retry unpushed resolution commits (rebase-retry, never auto-resolve) |
 | `sentinel hold\|heartbeat\|release` | Pause the repo's autosync during review batches (2 h mtime TTL) |
-| `import --backlog <skill>` \| `--memory [dir]` | One-shot ETL: GOTCHAS journal / auto-memory topic files → pending records (idempotent, origin-deduped) |
-| `prune-memory [--dry-run] [dir]` | S-13 sweep: delete memory files whose records reached a terminal status |
+| `import --backlog <skill>` \| `--memory DIR` | One-shot ETL: GOTCHAS journal / auto-memory topic files → pending records (idempotent, origin-deduped) (DIR or `$SELF_LEARN_MEMORY_DIR`; no default) |
+| `prune-memory [--dry-run] DIR` | S-13 sweep: delete memory files whose records reached a terminal status (DIR or `$SELF_LEARN_MEMORY_DIR`; no default) |
 | `proposal validate <id>` | Scan + schema-check + stamp a record's proposal sibling — REQUIRED after any direct edit of a pending record outside CLI verbs |
 | `--selftest` | Loud PASS/FAIL install checks (capture, compiler dry-run, 02 §4 markers, sentinel, hooks: script intact/executable/byte-matched, incomplete supersession, dangling settings.json registrations) |
 

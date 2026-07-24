@@ -32,14 +32,14 @@ def test_skill_bucket_named_after_its_dir(tmp_path):
 def test_project_and_user_buckets_are_separate_scopes(tmp_path):
     # doc 13 §3: the old "project+user" root bucket is dead — projects/<slug>
     # buckets carry scope "project", user/ carries scope "user".
-    proj = tmp_path / "projects" / "-home-komi-repos-x"
+    proj = tmp_path / "projects" / "-home-user-repos-x"
     proj.mkdir(parents=True)
     user = tmp_path / "user"
     user.mkdir()
     buckets = {b.scope: b for b in discover_buckets(tmp_path)}
     assert set(buckets) == {"project", "user"}
     assert buckets["project"].path == proj
-    assert buckets["project"].name == "-home-komi-repos-x"
+    assert buckets["project"].name == "-home-user-repos-x"
     assert buckets["user"].path == user
     assert buckets["user"].name == "user"
 

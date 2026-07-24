@@ -30,7 +30,7 @@ def home(tmp_path, monkeypatch):
     return h
 
 
-def seed_record(home: Path, fact: str = "The Nova serves Glances on :61208.") -> Record:
+def seed_record(home: Path, fact: str = "The Beacon serves Glances on :61208.") -> Record:
     # user scope: a single flat bucket needing no project_path (doc 13 §3),
     # keeping this suite focused on the validate verb, not bucket routing.
     record = make_knowledge(scope="user", fact=fact)

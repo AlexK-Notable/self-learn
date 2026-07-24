@@ -136,9 +136,9 @@ class TestDiscovery:
         # readable form alone is many-to-one, which cross-homed one
         # project's lessons into another's canon (audit 2026-07-16
         # BLOCKER 1). See TestSlugCollision in test_hosting_fixes.py.
-        slug = slug_for("/home/komi/repos/x")
-        assert slug.startswith("-home-komi-repos-x-")
-        assert len(slug) == len("-home-komi-repos-x-") + 8
+        slug = slug_for("/home/user/repos/x")
+        assert slug.startswith("-home-user-repos-x-")
+        assert len(slug) == len("-home-user-repos-x-") + 8
 
 
 class TestBucketDirForScope:

@@ -171,8 +171,8 @@ class TestExitSixNeverLiesAboutState:
         skill_refs = tmp_path / "host-repo" / "plugins" / "s-plugin" / "skills" / "s" / "references"
         skill_refs.mkdir(parents=True, exist_ok=True)
         (skill_refs / "GOTCHAS.journal.md").write_text(
-            "### 2026-07-16 — the Nova reserves its own DHCP lease\n\n"
-            "The router hands 192.168.1.232 to the Nova by MAC reservation.\n",
+            "### 2026-07-16 — the Beacon reserves its own DHCP lease\n\n"
+            "The router hands 192.0.2.232 to the Beacon by MAC reservation.\n",
             encoding="utf-8",
         )
         flag = failing_git_shim(tmp_path, monkeypatch)
@@ -210,7 +210,7 @@ class TestExitSixNeverLiesAboutState:
                     "--type",
                     "knowledge",
                     "--fact",
-                    "The Nova reserves 192.168.1.232.",
+                    "The Beacon reserves 192.0.2.232.",
                 ]
             )
         finally:

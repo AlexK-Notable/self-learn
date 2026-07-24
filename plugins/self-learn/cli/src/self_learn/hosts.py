@@ -6,9 +6,9 @@ from hosts.yaml only — capture is open, canon is registered; no autonomous
 process ever writes to an unregistered repo). One file to read to know
 where canon may land:
 
-    skills_root: /home/komi/repos/claude-skills   # plugins/*/skills/* live here
+    skills_root: /home/user/repos/claude-skills   # plugins/*/skills/* live here
     projects:
-      - path: /home/komi/repos/claude-skills      # CLAUDE.md targets
+      - path: /home/user/repos/claude-skills      # CLAUDE.md targets
 
 Registration is a CLI verb (``self-learn host add <path> [--skills-root]``,
 ``host rebind <slug-or-old-path> <new-path>``, ``host remove <path>``),
@@ -19,7 +19,7 @@ it in the ledger repo with the pinned subject
 
 Validation is at the GATE, not only at registration (audit 2026-07-16:
 ``load_hosts`` trusted a hand-edited hosts.yaml blindly, so a typo'd
-``skills_root: /home/komi/repos`` would CREATE ``/home/komi/repos/
+``skills_root: /home/user/repos`` would CREATE ``/home/user/repos/
 CLAUDE.md`` — canon written outside any repo — and only then fail its
 commit). :func:`validate_host_path` is the one gate predicate; every
 canon-writing path runs it (``verbs._resolve_target``), while
