@@ -842,13 +842,22 @@ A reviewer can check each of the following against the code:
    `args.backlog` — see §4.2); UI **1002 passed, 1 failed** with
    `test_service_unit.py::test_both_units_document_manual_registration_via_symlink`
    still the **only** failure.
-9. **The final gate:**
+9. **The final gate — RUN FROM THE REPO ROOT:**
 
    ```
    git grep -n -iE 'komi|192\.168\.1\.|\bNova\b' -- plugins/
    ```
 
    returns **ZERO** hits.
+
+   ⚠️ The `-- plugins/` pathspec is **cwd-relative**. Run from any
+   subdirectory (e.g. `plugins/self-learn/cli/`) and it matches nothing,
+   returning zero **vacuously** — a silent false pass. This fired for real
+   during this unit's code gate and again during the orchestrator's own
+   re-verification; both times it was caught only by printing `pwd`.
+   Confirm `pwd` is the repo root, and pair the run with a positive
+   control (criterion 10) that proves the command can still find matches
+   under that pathspec.
 
 10. **Supplementary gate** (the new name must not collide with anything
     pre-existing, which would make criterion 9 vacuous):
