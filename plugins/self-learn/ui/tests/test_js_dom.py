@@ -40,6 +40,7 @@ DOM events and their observable effects:
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import socket
 import threading
@@ -51,13 +52,22 @@ from typing import TYPE_CHECKING
 import pytest
 import uvicorn
 
+from self_learn.verbs import GITOPS_DIRTY_MARKER
+
 from self_learn_ui.app import create_app
 from self_learn_ui.env import EnvConfig
 from self_learn_ui.keymap import keymap_as_dicts
 from self_learn_ui.proposals import VerbProposal
-from self_learn_ui.runner import FakeRunner
+from self_learn_ui.runner import FakeRunner, RunResult
+from self_learn_ui.sse import envelope_applying, envelope_bulk_progress
 
-from support import make_env, make_behavior, seed_record
+from support import (
+    make_env,
+    make_behavior,
+    resolve_record_directly,
+    seed_proposal,
+    seed_record,
+)
 
 if TYPE_CHECKING:
     from playwright.sync_api import Browser, Page
@@ -75,6 +85,7 @@ os.environ.setdefault(
 # whole module skips cleanly when either is missing (keeps `pytest` green
 # on a machine that never ran `playwright install`).
 sync_api = pytest.importorskip("playwright.sync_api")
+expect = sync_api.expect
 
 pytestmark = pytest.mark.js
 
@@ -115,6 +126,36 @@ class ServerHandle:
     @property
     def _slot(self):
         return self._app.state.pane_manager.proposal_slot
+
+    @property
+    def _app_hub(self):
+        return self._app.state.app_hub
+
+    @property
+    def runner(self):
+        return self._app.state.runner
+
+    def push_applying(self, verb: str, record_id: str, state: str) -> None:
+        """§5.7 test seam: publish a real `applying` SSE frame — via
+        `publish_nowait` (§4.5: `AppEventHub.publish` is `async def`;
+        handing it straight to `call_soon_threadsafe` would hand over an
+        un-awaited coroutine and publish nothing, silently). Must hop
+        onto the server's own loop, same as push_refresh."""
+        self._loop.call_soon_threadsafe(
+            self._app_hub.publish_nowait, envelope_applying(verb, record_id, state)
+        )
+
+    def push_bulk_progress(
+        self, done: int, total: int, failed_id: str | None = None
+    ) -> None:
+        self._loop.call_soon_threadsafe(
+            self._app_hub.publish_nowait, envelope_bulk_progress(done, total, failed_id)
+        )
+
+    def push_envelope(self, envelope: dict) -> None:
+        """Raw seam for test 7's synthetic unknown envelope type — the
+        two typed helpers above only build the two pinned shapes."""
+        self._loop.call_soon_threadsafe(self._app_hub.publish_nowait, envelope)
 
     def push_refresh(self, scope: str = "front") -> None:
         """Emit one real ``refresh`` SSE frame to every connected client.
@@ -316,6 +357,123 @@ def noop_page(browser: "Browser", noop_server: ServerHandle) -> Iterator["Page"]
         noop_server.clear_proposal()
 
 
+# F3's `tolerate`/`confirm_recurrence` tests need a REAL "is it holding?"
+# row (09 §11 Y-4) — a routed record with an unconfirmed recurrence-
+# suspect telemetry event, which only the real `self-learn report --json`
+# CLI can compute (report.py's `recurrence_suspects()` reads the tracked
+# `<home>/telemetry/*.jsonl` plane). A dedicated ledger/server, same
+# reasoning as noop_server above: adding a holding row to the SHARED
+# ledger would perturb every other test's Front-page row-count/selection
+# assumptions in this file for no reason. Built the same way
+# `resolve_record_directly` already builds hard-to-reach ledger states —
+# bypassing the real `route`/miner machinery, writing the tracked files
+# directly — never a new mechanism.
+REC_HOLDING = "lrn-a0100001"
+
+
+def _seed_holding_ledger(tmp_path: Path) -> Path:
+    sb = make_env(tmp_path, skills=("s",))
+    rec = make_behavior(
+        scope="skill:s",
+        record_id=REC_HOLDING,
+        trigger="About to edit .storage while HA is running.",
+        instruction="Stop the container first.",
+    )
+    path = seed_record(sb.ledger, rec)
+    bucket_dir = path.parent.parent
+    resolve_record_directly(sb.ledger, bucket_dir, rec, status="routed")
+    tel_dir = sb.ledger / "telemetry"
+    tel_dir.mkdir(parents=True, exist_ok=True)
+    event = {
+        "kind": "recurrence-suspect",
+        "record": REC_HOLDING,
+        "nonce": "js-dom-holding-nonce",
+        "ts": "2026-07-20T00:00:00Z",
+    }
+    (tel_dir / "2026-07.js-dom-fixture.jsonl").write_text(
+        json.dumps(event) + "\n", encoding="utf-8"
+    )
+    return sb.ledger
+
+
+@pytest.fixture(scope="module")
+def holding_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[ServerHandle]:
+    tmp_path = tmp_path_factory.mktemp("js-dom-holding")
+    ledger = _seed_holding_ledger(tmp_path)
+    yield from _start_server(ledger, "js-dom-holding-uvicorn")
+
+
+@pytest.fixture
+def holding_page(browser: "Browser", holding_server: ServerHandle) -> Iterator["Page"]:
+    context = browser.new_context()
+    pg = context.new_page()
+    try:
+        yield pg
+    finally:
+        context.close()
+
+
+# F2's disabling tests need REAL failed-route/commit-drift and
+# already-canon-bulk states, plus control over exactly when the runner
+# responds (test 19's commit-drift setup) — a dedicated ledger/server +
+# FakeRunner, isolated from the shared server's tests above.
+REC_F2_PLAIN = "lrn-f2000001"  # pending — setup A (tests 14-18)
+REC_F2_DRIFT = "lrn-f2000002"  # pending — setup B (test 19, commit-drift)
+REC_F2_PROP = "lrn-f2000003"  # pending — setup C (test 20, proposal)
+REC_F2_BULK = "lrn-f2000004"  # already-canon proposal — setup D (test 21)
+
+
+def _seed_f2_ledger(tmp_path: Path) -> Path:
+    sb = make_env(tmp_path, skills=("s",))
+    for rid in (REC_F2_PLAIN, REC_F2_PROP):
+        seed_record(sb.ledger, make_behavior(scope="skill:s", record_id=rid))
+    drift_rec = make_behavior(scope="skill:s", record_id=REC_F2_DRIFT)
+    seed_record(sb.ledger, drift_rec)
+    # test 19's commit-drift ARM tap runs a REAL `self-learn host
+    # commit-drift --dry-run --json` subprocess (ledger.py's
+    # commit_drift_dry_run, never a FakeRunner seam — see
+    # test_commit_drift.py's own module docstring for why: the armed
+    # leg's file list has no other data source, gate m6). Deliberately
+    # NO seeded proposal here (unlike test_commit_drift.py's `_seed()`):
+    # a "skill-md"-destined proposal would land REC_F2_DRIFT in the SAME
+    # bucket group as REC_F2_BULK (models.py's `_group_key_for` groups by
+    # destination), breaking test 21's "all rows already_canon" group
+    # invariant that `bulk_collapse` requires (measured: it did, on a
+    # first attempt). No proposal keeps it in "no-analysis" — excluded
+    # from bulk_collapse consideration entirely — while dest resolves to
+    # None, so the dry-run runs with no --dest flag against the dirtied
+    # skill_md below.
+    bulk_rec = make_behavior(scope="skill:s", record_id=REC_F2_BULK)
+    seed_record(sb.ledger, bulk_rec)
+    seed_proposal(sb.ledger, bulk_rec.id, destination="skill-md", already_canon=True)
+    # Same technique as test_commit_drift.py's `_seed_dirty`: append an
+    # uncommitted edit to the REAL, sandboxed skill_md so the dry-run
+    # subprocess has actual git drift to report.
+    sb.skill_md.write_text(
+        sb.skill_md.read_text(encoding="utf-8") + "\nuncommitted edit\n",
+        encoding="utf-8",
+    )
+    return sb.ledger
+
+
+@pytest.fixture(scope="module")
+def f2_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[ServerHandle]:
+    tmp_path = tmp_path_factory.mktemp("js-dom-f2")
+    ledger = _seed_f2_ledger(tmp_path)
+    yield from _start_server(ledger, "js-dom-f2-uvicorn")
+
+
+@pytest.fixture
+def f2_page(browser: "Browser", f2_server: ServerHandle) -> Iterator["Page"]:
+    context = browser.new_context()
+    pg = context.new_page()
+    try:
+        yield pg
+    finally:
+        context.close()
+        f2_server.clear_proposal()
+
+
 # --------------------------------------------------------------- helpers
 
 
@@ -379,6 +537,135 @@ def _proposal(record_id: str, *, verb: str = "route", armed: bool = False) -> Ve
         title="Pull and rebase first.",
         dest="skill-md",
         armed=armed,
+    )
+
+
+def _applying_strip(page: "Page"):
+    return page.locator("#self-learn-ui-applying-strip")
+
+
+def _wrap_event_source(page: "Page") -> None:
+    """Test-side EventSource capture, installed via ``add_init_script`` so
+    it runs before app.js constructs its own EventSource (no production
+    change — R3-m1).
+
+    MEASURED (2026-07-25): spec §6 test 10's named seam,
+    ``BrowserContext.set_offline``, does NOT sever an already-open
+    EventSource connection in the installed Playwright/Chromium. Four
+    independent checks confirmed this: (1) the reconnect strip never
+    appears within 60s of ``set_offline(True)``; (2) plain ``fetch()``
+    DOES immediately fail while offline, proving the emulation itself is
+    active — it just never reaches an established streaming response;
+    (3) polling the EventSource's own ``readyState`` directly shows it
+    stays ``1`` (OPEN) throughout; (4) a direct CDP
+    ``Network.emulateNetworkConditions({offline: true, ...})`` call via
+    ``context.new_cdp_session()`` reproduces the same non-effect. This is
+    a spec defect in the named seam, not a harness bug — reported to the
+    orchestrator rather than silently worked around.
+
+    The substitute seam below captures the real EventSource instance and
+    lets the test dispatch a genuine ``error`` Event at it directly,
+    invoking app.js's actual ``source.onerror`` production handler (the
+    same technique this module already uses in ``_dispatch_htmx`` to
+    drive htmx's own lifecycle events)."""
+    page.add_init_script(
+        """
+        window.__esInstances = [];
+        const RealES = window.EventSource;
+        function WrappedES(...args) {
+            const es = new RealES(...args);
+            window.__esInstances.push(es);
+            return es;
+        }
+        WrappedES.prototype = RealES.prototype;
+        WrappedES.CONNECTING = RealES.CONNECTING;
+        WrappedES.OPEN = RealES.OPEN;
+        WrappedES.CLOSED = RealES.CLOSED;
+        window.EventSource = WrappedES;
+        """
+    )
+
+
+def _simulate_sse_error(page: "Page") -> None:
+    """Dispatch a real ``error`` Event at the captured EventSource
+    instance — drives app.js's production ``source.onerror`` handler
+    directly. See ``_wrap_event_source`` for why ``set_offline`` cannot
+    be used here."""
+    page.evaluate(
+        "window.__esInstances[window.__esInstances.length - 1]"
+        ".dispatchEvent(new Event('error'))"
+    )
+
+
+def _hold_post(page: "Page", suffix: str) -> dict:
+    """Intercept the next POST whose URL ends in *suffix*, capturing the
+    Route object for a LATER `.fulfill()` rather than resolving it now —
+    F2's "hold the request open" seam (§4.5: `page.route()` intercepts in
+    the browser, so a held POST never reaches the real handler). Also
+    used for `iterate`/`bucket_pane`/`retry` keymap tests: those verbs'
+    routes call `PaneManager.start()`/`.resume()` for real (a genuine SDK
+    engine call) — this file's `create_app()` wires the REAL engine
+    factory (no test override), so letting the request complete would
+    fire a real, uncontrolled network call. Intercepting still proves
+    "the control was activated" (the right request was dispatched) without
+    ever letting it run."""
+    held: dict = {}
+
+    def handler(route) -> None:
+        if route.request.method == "POST" and route.request.url.endswith(suffix):
+            held["route"] = route
+        else:
+            route.continue_()
+
+    page.route("**/*", handler)
+    return held
+
+
+def _wait_for_held(held: dict, timeout: float = 5.0) -> None:
+    deadline = time.monotonic() + timeout
+    while "route" not in held:
+        if time.monotonic() > deadline:
+            raise AssertionError("the expected POST was never intercepted")
+        time.sleep(0.02)
+
+
+def _wait_for_js_flag(page: "Page", expr: str, timeout: float = 5.0) -> None:
+    """Poll a page-global boolean from the Python side. Equivalent in
+    effect to Playwright's `wait_for_function` on the same expression;
+    either is correct here.
+
+    CORRECTION (code gate, 2026-07-25): an earlier version of this
+    docstring claimed, as MEASURED, that `wait_for_function` trips this
+    app's pinned CSP (`script-src 'self'`). **That claim was false.** The
+    gate probed it directly against a page served by this app and the
+    expression form returned OK with zero console CSP violations — and
+    this very file already uses `wait_for_function` successfully in the
+    end-to-end tests below. The rationale is corrected rather than the
+    code: this helper works, and rewriting working waits on a false
+    premise would be the larger risk. Recorded rather than deleted so the
+    false "MEASURED" claim cannot be resurrected from git history as
+    though it had been verified."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if page.evaluate(expr):
+            return
+        time.sleep(0.02)
+    raise AssertionError(f"{expr!r} never became true within {timeout}s")
+
+
+def _start_frame_recorder(page: "Page") -> None:
+    """A SECOND, in-page EventSource — app.js's own is closure-private,
+    so the only way to observe real server-published SSE frames from a
+    test is to open another subscriber and record what it sees (§4.5's
+    end-to-end tests: real submissions, no `page.route()`)."""
+    page.evaluate(
+        """() => {
+            window.__frames = [];
+            window.__frameSource = new EventSource('/events');
+            window.__frameSource.onmessage = function (e) {
+                window.__frames.push(JSON.parse(e.data));
+            };
+        }"""
     )
 
 
@@ -1072,3 +1359,640 @@ class TestNoopKeyHints:
         noop_page.keyboard.press("o")  # armed branch: disarms, never dispatches
         time.sleep(0.3)
         assert noop_page.query_selector("[data-noop-hint-active]") is None
+
+
+# ============================================================= item 7:
+# UI in-flight feedback spec — the applying/bulk-progress strip (§4.1-
+# §4.3/§5.1), F1's client-rendering half (13 tests: 1-10, 8b, 9b, 10b).
+# All driven against the SHARED `server`/`page` fixture via
+# `push_applying`/`push_bulk_progress` (§5.7, `publish_nowait` — see
+# ServerHandle above for why `publish` alone would silently publish
+# nothing from a foreign thread).
+
+
+class TestApplyingStripClientRendering:
+    def test_1_strip_not_visible_on_load(self, page: "Page", server: ServerHandle) -> None:
+        _open(page, server, "/")
+        expect(_applying_strip(page)).to_be_hidden()
+
+    def test_2_applying_start_renders_visible_with_badge_and_detail(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        _open(page, server, "/")
+        strip = _applying_strip(page)
+        before = page.locator("body").aria_snapshot()
+        server.push_applying("route", REC_BRIEF, "start")
+        expect(strip).to_be_visible()
+        assert page.locator("#self-learn-ui-applying-badge").text_content() == "applying"
+        assert (
+            page.locator("#self-learn-ui-applying-text").text_content()
+            == f"route → {REC_BRIEF}"
+        )
+        after = page.locator("body").aria_snapshot()
+        assert after != before
+
+    def test_3_applying_done_hides_strip(self, page: "Page", server: ServerHandle) -> None:
+        _open(page, server, "/")
+        strip = _applying_strip(page)
+        server.push_applying("route", REC_BRIEF, "start")
+        expect(strip).to_be_visible()
+        server.push_applying("route", REC_BRIEF, "done")
+        expect(strip).to_be_hidden()
+
+    def test_4_applying_error_hides_strip(self, page: "Page", server: ServerHandle) -> None:
+        _open(page, server, "/")
+        strip = _applying_strip(page)
+        server.push_applying("route", REC_BRIEF, "start")
+        expect(strip).to_be_visible()
+        server.push_applying("route", REC_BRIEF, "error")
+        expect(strip).to_be_hidden()
+
+    def test_5_bulk_progress_renders_done_plus_one_of_total(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        _open(page, server, "/")
+        strip = _applying_strip(page)
+        before = page.locator("body").aria_snapshot()
+        server.push_bulk_progress(0, 3)
+        expect(strip).to_be_visible()
+        assert page.locator("#self-learn-ui-applying-text").text_content() == "1 of 3"
+        assert page.locator("#self-learn-ui-applying-badge").text_content() == "graduating"
+        after = page.locator("body").aria_snapshot()
+        assert after != before
+
+    def test_6_bulk_terminal_hides_strip_after_showing_it_first(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        """R3-M3: a terminal on an empty Map is a no-op, so the strip
+        must be shown FIRST — a test that skips the show step would
+        assert "hidden" on a strip that was never visible."""
+        _open(page, server, "/")
+        strip = _applying_strip(page)
+        server.push_bulk_progress(0, 1)
+        expect(strip).to_be_visible()
+        server.push_bulk_progress(1, 1)  # terminal: done == total
+        expect(strip).to_be_hidden()
+
+    def test_7_unknown_envelope_ignored_and_no_pageerror(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        """A bare "nothing happened" assertion stays green when the
+        handler throws (the throw escapes to window.onerror, leaving the
+        DOM untouched) — pageerror is the assertion that actually catches
+        V-6 (a case that throws)."""
+        _open(page, server, "/")
+        errors: list = []
+        page.on("pageerror", lambda exc: errors.append(exc))
+        server.push_envelope({"type": "some-future-envelope-type", "junk": True})
+        # `page.wait_for_timeout`, NEVER `time.sleep`. time.sleep does not
+        # enter playwright-python's sync event dispatcher, so `errors` is
+        # empty at assert time regardless of how long it sleeps — which makes
+        # the pageerror assertion structurally dead and lets V-6 survive.
+        # Measured by the code gate (2026-07-25): under V-6 this test passed
+        # with time.sleep(0.3) AND with time.sleep(1.5) — so a longer sleep is
+        # NOT the fix — while wait_for_timeout(300) fails it correctly.
+        page.wait_for_timeout(300)
+        expect(_applying_strip(page)).to_be_hidden()
+        assert errors == [], f"unknown envelope type raised in the handler: {errors}"
+
+    def test_8_two_distinct_starts_one_matching_done_stays_visible(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        _open(page, server, "/")
+        strip = _applying_strip(page)
+        server.push_applying("route", REC_BRIEF, "start")
+        server.push_applying("reject", REC_PROP, "start")
+        expect(strip).to_be_visible()
+        server.push_applying("route", REC_BRIEF, "done")
+        expect(strip).to_be_visible()  # the OTHER entry still holds it
+        # A done for a verb never started is a no-op — must not hide a
+        # strip another entry owns.
+        server.push_applying("defer", "lrn-dead0000", "done")
+        expect(strip).to_be_visible()
+
+    def test_8b_unmatched_done_against_live_bulk_stays_visible(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        """R6-M1: an unmatched applying/done `delete`s a key that was
+        never present — a no-op on the Map, so a live "bulk" entry is
+        untouched and the strip keeps showing (and the bulk run keeps
+        rendering subsequent progress)."""
+        _open(page, server, "/")
+        strip = _applying_strip(page)
+        server.push_bulk_progress(0, 3)
+        expect(strip).to_be_visible()
+        server.push_applying("route", "lrn-dead0001", "done")  # never started
+        expect(strip).to_be_visible()
+        assert page.locator("#self-learn-ui-applying-badge").text_content() == "graduating"
+        server.push_bulk_progress(1, 3)
+        expect(strip).to_be_visible()
+        assert page.locator("#self-learn-ui-applying-text").text_content() == "2 of 3"
+
+    def test_9_bare_bulk_terminal_does_not_evict_applying_entry(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        """R3-B2/V-10: a bulk terminal with no "bulk" key present (the
+        empty-bulk case) must be a no-op, never touching an applying
+        entry that still owns the strip."""
+        _open(page, server, "/")
+        strip = _applying_strip(page)
+        server.push_applying("route", REC_BRIEF, "start")
+        expect(strip).to_be_visible()
+        server.push_bulk_progress(0, 0)  # terminal, no "bulk" key ever set
+        expect(strip).to_be_visible()
+        assert (
+            page.locator("#self-learn-ui-applying-text").text_content()
+            == f"route → {REC_BRIEF}"
+        )
+        server.push_applying("route", REC_BRIEF, "done")
+        expect(strip).to_be_hidden()
+
+    def test_9b_bulk_terminal_after_real_progress_reverts_to_applying(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        """R4-M1's class, retained under the Map as the direct regression
+        test: the bulk genuinely opens (unlike test 9's bare terminal),
+        and its terminal must revert the render to the applying label
+        (R5-m1) rather than hold "graduating 3 of 3" for finished work."""
+        _open(page, server, "/")
+        strip = _applying_strip(page)
+        server.push_applying("route", REC_BRIEF, "start")
+        expect(strip).to_be_visible()
+        server.push_bulk_progress(0, 3)
+        expect(strip).to_be_visible()
+        assert page.locator("#self-learn-ui-applying-badge").text_content() == "graduating"
+        server.push_bulk_progress(3, 3)  # terminal
+        expect(strip).to_be_visible()
+        assert page.locator("#self-learn-ui-applying-badge").text_content() == "applying"
+        assert (
+            page.locator("#self-learn-ui-applying-text").text_content()
+            == f"route → {REC_BRIEF}"
+        )
+        server.push_applying("route", REC_BRIEF, "done")
+        expect(strip).to_be_hidden()
+
+    def test_10_connection_loss_clears_map_and_hides_strip(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        """Seam note: spec §6 test 10 names ``BrowserContext.set_offline``
+        as the seam; empirically that call does not sever an
+        already-open EventSource in this environment (see
+        ``_wrap_event_source``'s docstring for the four measurements).
+        Substituted here with a direct ``error`` Event dispatched at the
+        captured EventSource instance, which drives the SAME production
+        ``source.onerror`` handler app.js registers — no production code
+        changed, and the assertions below are unchanged from the spec's
+        intent (strip hides, reconnect strip shows)."""
+        _wrap_event_source(page)
+        _open(page, server, "/")
+        strip = _applying_strip(page)
+        server.push_applying("route", REC_BRIEF, "start")
+        expect(strip).to_be_visible()
+        _simulate_sse_error(page)
+        expect(strip).to_be_hidden()
+        expect(page.locator("#self-learn-ui-reconnect-strip")).to_be_visible()
+
+    def test_10b_stale_entry_does_not_survive_reconnect(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        """R5-M1, retargeted R7: the observable consequence of a stale
+        entry under the Map is that it WINS the render over a later
+        applying entry (a fresh bulk's own progress frame would overwrite
+        a stale bulk entry by construction — immune by construction). Open
+        a bulk, simulate connection loss before its terminal, then push
+        an applying/start: the strip must render "applying", not a stale
+        "graduating".
+
+        Seam note: same substitution as test 10 (``_simulate_sse_error``
+        instead of ``set_offline`` — see that test's docstring and
+        ``_wrap_event_source``). One consequence: because the socket was
+        never actually severed at the network level (only ``onerror`` was
+        invoked directly), the client stays subscribed throughout — no
+        reconnect wait or resubscription dance is needed before the
+        follow-up push."""
+        _wrap_event_source(page)
+        _open(page, server, "/")
+        strip = _applying_strip(page)
+        server.push_bulk_progress(0, 3)
+        expect(strip).to_be_visible()
+        _simulate_sse_error(page)
+        expect(strip).to_be_hidden()  # cleared on the simulated loss
+        server.push_applying("route", REC_BRIEF, "start")
+        expect(strip).to_be_visible()
+        assert page.locator("#self-learn-ui-applying-badge").text_content() == "applying"
+        assert (
+            page.locator("#self-learn-ui-applying-text").text_content()
+            == f"route → {REC_BRIEF}"
+        )
+
+
+# F1's server-publish half (3, js): real submissions, no page.route() —
+# an in-page SSE frame recorder observes what the SERVER actually
+# publishes (§4.5: synthetic seams alone would let a build delete every
+# server publish and stay green).
+
+
+class TestApplyingStripServerPublish:
+    # MEASURED (2026-07-25): opening "/" (the Front page) for these tests
+    # is unsafe — `_force_refresh` after a real confirm/bulk publishes a
+    # "refresh" SSE frame that app.js's OWN (production) EventSource on
+    # that page receives; `inScope()` treats a page whose own scope is
+    # "front" as matching EVERY refresh scope (app.js: "the Front page
+    # matches every scope"), so `reload()` fires for real and
+    # `window.location.reload()` destroys the execution context —
+    # wiping `window.__frames` out from under the recorder before the
+    # assertion can run (confirmed via a standalone repro: the page
+    # navigates and a subsequent `page.evaluate` raises "Execution
+    # context was destroyed"). None of reload()'s five defer legs are
+    # held, because these are raw `page.request.post` calls, not
+    # htmx-driven submissions. Opening a detail page for an UNRELATED
+    # record (REC_PROP — different id, different bucket) instead keeps
+    # `currentScopes()` narrow (["record:<REC_PROP>"]), so the
+    # `record:<REC_BRIEF>`/`bucket:s` refresh scopes these tests trigger
+    # never match and no reload occurs — while the frame recorder's own,
+    # separate `/events` connection still observes every frame regardless
+    # of scope (scope filtering is client-side, in the production
+    # EventSource's "refresh" case only; the recorder is a second, raw
+    # subscriber with no such filter).
+    def test_11_real_confirm_emits_applying_frame(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        _open(page, server, f"/record/{REC_PROP}")
+        _start_frame_recorder(page)
+        server.wait_for_subscriber(2)
+        resp = page.request.post(
+            f"{server.base_url}/record/{REC_BRIEF}/action/confirm",
+            form={"verb": "route", "kind": "detail"},
+            headers={"HX-Request": "true"},
+        )
+        assert resp.ok
+        page.wait_for_function(
+            "id => window.__frames.some(f => f.type === 'applying' "
+            "&& f.verb === 'route' && f.id === id)",
+            arg=REC_BRIEF,
+        )
+
+    def test_12_real_bulk_emits_frame_for_item_one(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        _open(page, server, f"/record/{REC_PROP}")
+        _start_frame_recorder(page)
+        server.wait_for_subscriber(2)
+        resp = page.request.post(
+            f"{server.base_url}/bucket/skill/s/graduate-bulk",
+            form={"ids": REC_BRIEF},
+            headers={"HX-Request": "true"},
+        )
+        assert resp.ok
+        page.wait_for_function(
+            "() => window.__frames.some(f => f.type === 'bulk_progress' && f.done === 0)"
+        )
+
+    def test_13_real_bulk_failure_emits_terminal_with_failed_id(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        """The path F5 showed was unreachable before §5.6's fix."""
+        _open(page, server, f"/record/{REC_PROP}")
+        _start_frame_recorder(page)
+        server.wait_for_subscriber(2)
+        server.runner.queue_result(RunResult(1, stderr="boom"))
+        resp = page.request.post(
+            f"{server.base_url}/bucket/skill/s/graduate-bulk",
+            form={"ids": REC_BRIEF},
+            headers={"HX-Request": "true"},
+        )
+        assert resp.ok  # the failed-bulk response is still a 200 (error_strip)
+        page.wait_for_function(
+            "id => window.__frames.some(f => f.type === 'bulk_progress' "
+            "&& f.failed_id === id)",
+            arg=REC_BRIEF,
+        )
+
+
+# F2 — in-flight disabling (8, js). hx-disabled-elt="find button" (§5.4)
+# is the LOCAL cue (§4.2) — instant, per-tab, independent of the strip.
+# POST held open via page.route() (§4.5: page.route() intercepts in the
+# browser, so a held POST never reaches the handler — none of these
+# tests touch the server's SSE publish path).
+
+
+class TestInFlightDisabling:
+    def test_14_submitter_carries_disabled(
+        self, f2_page: "Page", f2_server: ServerHandle
+    ) -> None:
+        _open(f2_page, f2_server, f"/record/{REC_F2_PLAIN}")
+        f2_page.keyboard.press("e")
+        f2_page.wait_for_selector(f'#action-bar-{REC_F2_PLAIN}[data-armed="true"]')
+        held = _hold_post(f2_page, "/action/confirm")
+        f2_page.locator('[data-key-action="confirm"]').click()
+        _wait_for_held(held)
+        assert f2_page.locator('[data-key-action="confirm"]').get_attribute(
+            "disabled"
+        ) is not None
+        held["route"].fulfill(status=200, content_type="text/html", body="<div>ok</div>")
+
+    def test_15_aria_snapshot_differs_during_flight(
+        self, f2_page: "Page", f2_server: ServerHandle
+    ) -> None:
+        _open(f2_page, f2_server, f"/record/{REC_F2_PLAIN}")
+        f2_page.keyboard.press("e")
+        f2_page.wait_for_selector(f'#action-bar-{REC_F2_PLAIN}[data-armed="true"]')
+        before = f2_page.locator("body").aria_snapshot()
+        held = _hold_post(f2_page, "/action/confirm")
+        confirm = f2_page.locator('[data-key-action="confirm"]')
+        confirm.click()
+        _wait_for_held(held)
+        expect(confirm).to_be_visible()
+        after = f2_page.locator("body").aria_snapshot()
+        assert after != before
+        held["route"].fulfill(status=200, content_type="text/html", body="<div>ok</div>")
+
+    def test_16_disabled_element_is_the_submitter_not_a_sibling(
+        self, f2_page: "Page", f2_server: ServerHandle
+    ) -> None:
+        """The Disarm button is a DIFFERENT <form> in the same armed bar
+        — hx-disabled-elt is placed only on the Confirm form's own
+        `<form>`, so "find button" must never reach the Disarm button."""
+        _open(f2_page, f2_server, f"/record/{REC_F2_PLAIN}")
+        f2_page.keyboard.press("e")
+        f2_page.wait_for_selector(f'#action-bar-{REC_F2_PLAIN}[data-armed="true"]')
+        held = _hold_post(f2_page, "/action/confirm")
+        f2_page.locator('[data-key-action="confirm"]').click()
+        _wait_for_held(held)
+        assert f2_page.locator('[data-key-action="confirm"]').get_attribute(
+            "disabled"
+        ) is not None
+        assert f2_page.locator('[data-key-action="disarm"]').get_attribute(
+            "disabled"
+        ) is None
+        held["route"].fulfill(status=200, content_type="text/html", body="<div>ok</div>")
+
+    def test_17_disabled_style_matches_css_rule(
+        self, f2_page: "Page", f2_server: ServerHandle
+    ) -> None:
+        _open(f2_page, f2_server, f"/record/{REC_F2_PLAIN}")
+        f2_page.keyboard.press("e")
+        f2_page.wait_for_selector(f'#action-bar-{REC_F2_PLAIN}[data-armed="true"]')
+        held = _hold_post(f2_page, "/action/confirm")
+        confirm = f2_page.locator('[data-key-action="confirm"]')
+        confirm.click()
+        _wait_for_held(held)
+        expect(confirm).to_have_css("opacity", "0.45")
+        expect(confirm).to_have_css("cursor", "not-allowed")
+        held["route"].fulfill(status=200, content_type="text/html", body="<div>ok</div>")
+
+    def test_18_settle_action_bar_confirm_detaches(
+        self, f2_page: "Page", f2_server: ServerHandle
+    ) -> None:
+        _open(f2_page, f2_server, f"/record/{REC_F2_PLAIN}")
+        f2_page.keyboard.press("e")
+        f2_page.wait_for_selector(f'#action-bar-{REC_F2_PLAIN}[data-armed="true"]')
+        handle = f2_page.query_selector('[data-key-action="confirm"]')
+        held = _hold_post(f2_page, "/action/confirm")
+        f2_page.locator('[data-key-action="confirm"]').click()
+        _wait_for_held(held)
+        held["route"].fulfill(
+            status=200,
+            content_type="text/html",
+            body=f'<div id="action-bar-{REC_F2_PLAIN}" class="action-bar" data-armed="false"></div>',
+        )
+        # state="attached": the synthetic fulfill body is a contentless
+        # div with no CSS-given height, so it has an empty bounding box
+        # and never satisfies wait_for_selector's default "visible" wait
+        # — the assertion under test is DOM presence/detachment, not
+        # perceptibility, so "attached" is the correct wait here.
+        f2_page.wait_for_selector(
+            f'#action-bar-{REC_F2_PLAIN}[data-armed="false"]', state="attached"
+        )
+        assert f2_page.evaluate("el => !document.body.contains(el)", handle) is True
+
+    def test_19_settle_commit_drift_confirm_detaches(
+        self, f2_page: "Page", f2_server: ServerHandle
+    ) -> None:
+        _open(f2_page, f2_server, f"/record/{REC_F2_DRIFT}")
+        # MEASURED (2026-07-25, full-suite runs only): calling
+        # `page.evaluate` as the very FIRST action right after `_open()`
+        # (rather than a `keyboard.press`/`wait_for_selector` round trip
+        # first, as every sibling test in this class does) intermittently
+        # raises Playwright's "Cannot find context with specified id" —
+        # the page's own execution context is still settling immediately
+        # post-navigation. Waiting for the button "o" is about to target
+        # gives the same natural settle window the other tests get for
+        # free from their leading keypress + wait_for_selector.
+        f2_page.wait_for_selector(f'[data-key-action="cycle_destination"]')
+        # REC_F2_DRIFT carries no seeded proposal (see _seed_f2_ledger's
+        # comment) so `dest` starts empty; cycle it to "skill-md" first —
+        # the ARM tap's real dry-run subprocess needs an explicit --dest
+        # to find the dirtied skill_md (measured: without it, the dry
+        # run reports nothing and the armed state never renders).
+        # MEASURED: pressing "e" immediately after the cycle swap's DOM
+        # content lands is a real race — htmx's post-swap processing
+        # (which wires up the newly-swapped-in buttons' own hx-*
+        # listeners) can trail the content update by a beat, so a
+        # same-tick click finds the button but nothing listens yet (no
+        # request, no error). Rather than a fixed sleep — flake-prone
+        # under load, and this test's own arm step runs a REAL dry-run
+        # subprocess — arm a one-shot listener for htmx's own
+        # `htmx:afterSettle` BEFORE pressing "o", and wait on it: that
+        # event fires as the last step of htmx's swap pipeline, after
+        # processing (listener wiring) completes, so it is a
+        # deterministic signal rather than a guessed delay. (A first
+        # attempt used Playwright's `wait_for_function` for this poll;
+        # MEASURED it throws — this app's CSP forbids the in-page
+        # `Function()` construction `wait_for_function` compiles its
+        # predicate with. `_wait_for_js_flag` polls from the Python side
+        # instead, sidestepping that.)
+        f2_page.evaluate(
+            "window.__f2SettleO = false;"
+            "document.body.addEventListener('htmx:afterSettle',"
+            " () => { window.__f2SettleO = true; }, { once: true });"
+        )
+        f2_page.keyboard.press("o")
+        _wait_for_js_flag(f2_page, "window.__f2SettleO === true")
+        # Belt-and-braces: confirm the dest the arm tap actually needs is
+        # the one that landed (the settle signal proves htmx is done, not
+        # which dest string won the cycle).
+        f2_page.wait_for_selector(
+            f'#action-bar-{REC_F2_DRIFT} input[name="dest"][value="skill-md"]',
+            state="attached",
+        )
+        f2_page.keyboard.press("e")
+        f2_page.wait_for_selector(f'#action-bar-{REC_F2_DRIFT}[data-armed="true"]')
+        # A REAL failed route confirm carrying the pinned dirty marker —
+        # this round-trip is allowed to complete for real (the confirm
+        # route never touches the pane manager / a real engine).
+        f2_server.runner.queue_result(
+            RunResult(
+                1,
+                stderr=f"self-learn route: compile target X {GITOPS_DIRTY_MARKER} present",
+            )
+        )
+        f2_page.locator('[data-key-action="confirm"]').click()
+        f2_page.wait_for_selector('[data-key-action="commit_drift_arm"]')
+        f2_page.locator('[data-key-action="commit_drift_arm"]').click()
+        f2_page.wait_for_selector('[data-key-action="commit_drift_confirm"]')
+        handle = f2_page.query_selector('[data-key-action="commit_drift_confirm"]')
+        held = _hold_post(f2_page, "/action/commit-drift/confirm")
+        f2_page.locator('[data-key-action="commit_drift_confirm"]').click()
+        _wait_for_held(held)
+        # ROOT-CAUSED (2026-07-25): the earlier real "confirm" click above
+        # (line ~1817) fails for real, and `action_confirm`'s failure
+        # branch (routes.py ~1210) calls `_force_refresh(request,
+        # f"record:{REC_F2_DRIFT}")` — a real SSE broadcast scoped to
+        # THIS page's own record. app.js's reload chokepoint (Y-16, 09
+        # §11) defers that reload on leg (a): a `[data-verb-error]`
+        # element is in the document (the error-strip `partials/
+        # action_bar.html` renders whenever `ctx["error"]` is set, which
+        # both the route-confirm failure and commit-drift's own failure
+        # branches do). A first version of this synthetic fulfill body
+        # omitted that marker — the swap it drives removes the ONLY thing
+        # holding leg (a), so the deferred reload releases and fires a
+        # REAL `window.location.reload()` right as this test's own
+        # assertions run, racing them (MEASURED: intermittently threw
+        # Playwright's "Cannot find context with specified id" on the
+        # final evaluate, reproducing in ~1/2 full-suite runs). Carrying
+        # `data-verb-error` here is not a claim about what a real
+        # SUCCESSFUL commit-drift confirm response looks like (it
+        # wouldn't have this marker) — it exists solely to keep leg (a)
+        # held so the reload this test's OWN earlier forced failure left
+        # pending never fires mid-assertion.
+        held["route"].fulfill(
+            status=200,
+            content_type="text/html",
+            body=(
+                f'<div id="action-bar-{REC_F2_DRIFT}" class="action-bar" '
+                'data-armed="false" data-verb-error="true"></div>'
+            ),
+        )
+        # state="attached" — see test_18's comment on the same pattern.
+        f2_page.wait_for_selector(
+            f'#action-bar-{REC_F2_DRIFT}[data-armed="false"]', state="attached"
+        )
+        assert f2_page.evaluate("el => !document.body.contains(el)", handle) is True
+
+    def test_20_settle_proposal_confirm_detaches(
+        self, f2_page: "Page", f2_server: ServerHandle
+    ) -> None:
+        f2_server.occupy_proposal(_proposal(REC_F2_PROP, armed=True))
+        _open(f2_page, f2_server, f"/record/{REC_F2_PROP}")
+        f2_page.wait_for_selector('#proposal-bar[data-armed="true"]')
+        handle = f2_page.query_selector('#proposal-bar [data-key-action="confirm"]')
+        held = _hold_post(f2_page, "/proposal/confirm")
+        f2_page.locator('#proposal-bar [data-key-action="confirm"]').click()
+        _wait_for_held(held)
+        held["route"].fulfill(
+            status=200,
+            content_type="text/html",
+            body='<div id="proposal-bar" class="proposal-region-empty"></div>',
+        )
+        # state="attached" — see test_18's comment on the same pattern.
+        f2_page.wait_for_selector(
+            "#proposal-bar.proposal-region-empty", state="attached"
+        )
+        assert f2_page.evaluate("el => !document.body.contains(el)", handle) is True
+
+    def test_21_settle_bulk_graduate_reenables(
+        self, f2_page: "Page", f2_server: ServerHandle
+    ) -> None:
+        """hx-swap="none": the button is NEVER swapped out, so htmx's own
+        post-request re-enable (independent of swap) is what must fire —
+        re-enabled, not detached."""
+        _open(f2_page, f2_server, "/bucket/skill/s")
+        button = f2_page.locator(".bulk-collapse-row button[data-key-action='graduate']")
+        expect(button).to_be_visible()
+        held = _hold_post(f2_page, "/graduate-bulk")
+        button.click()
+        _wait_for_held(held)
+        assert button.get_attribute("disabled") is not None
+        held["route"].fulfill(status=200, content_type="text/html", body="")
+        expect(button).to_be_enabled()
+        assert f2_page.evaluate(
+            "el => document.body.contains(el)", button.element_handle()
+        ) is True
+
+
+# F3 — keymap binding (10, js; 8 of 10 here — retry/close_pane live in
+# test_js_dom_pane_persistence.py, which owns the pane server fixture).
+# Each presses the key in a context where the control renders and
+# asserts the control was ACTIVATED, never that the key was accepted.
+
+
+class TestNeverPressedKeymapActions:
+    def test_reject_arms_deny(self, page: "Page", server: ServerHandle) -> None:
+        _open(page, server, f"/record/{REC_BRIEF}")
+        with page.expect_request(
+            lambda r: r.url.endswith("/action/arm") and "verb=reject" in (r.post_data or "")
+        ):
+            page.keyboard.press("x")
+
+    def test_defer_arms_defer(self, page: "Page", server: ServerHandle) -> None:
+        _open(page, server, f"/record/{REC_PROP}")
+        with page.expect_request(
+            lambda r: r.url.endswith("/action/arm") and "verb=defer" in (r.post_data or "")
+        ):
+            page.keyboard.press("f")
+
+    def test_graduate_arms_graduate(self, page: "Page", server: ServerHandle) -> None:
+        _open(page, server, f"/record/{REC_BRIEF}")
+        with page.expect_request(
+            lambda r: r.url.endswith("/action/arm") and "verb=graduate" in (r.post_data or "")
+        ):
+            page.keyboard.press("g")
+
+    def test_note_focuses_note_input(self, page: "Page", server: ServerHandle) -> None:
+        _open(page, server, f"/record/{REC_BRIEF}")
+        page.keyboard.press("n")
+        assert page.evaluate("document.activeElement.getAttribute('name')") == "note"
+
+    def test_iterate_starts_pane(self, page: "Page", server: ServerHandle) -> None:
+        """Held via page.route() — PaneManager.start() is a real SDK
+        engine call in this harness (no test override); see _hold_post."""
+        _open(page, server, f"/record/{REC_PROP}")
+        held = _hold_post(page, "/pane/start")
+        page.keyboard.press("i")
+        _wait_for_held(held)
+        assert held["route"].request.url.endswith(f"/record/{REC_PROP}/pane/start")
+        held["route"].fulfill(status=200, content_type="text/html", body="<div>ok</div>")
+
+    def test_bucket_pane_starts_bucket_pane(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        _open(page, server, "/bucket/skill/t")
+        held = _hold_post(page, "/pane/start")
+        page.keyboard.press("p")
+        _wait_for_held(held)
+        assert held["route"].request.url.endswith("/bucket/skill/t/pane/start")
+        held["route"].fulfill(status=200, content_type="text/html", body="<div>ok</div>")
+
+    def test_tolerate_arms_with_tolerate_field(
+        self, holding_page: "Page", holding_server: ServerHandle
+    ) -> None:
+        _open(holding_page, holding_server, "/")
+        holding_page.wait_for_selector(".holding-row")
+        with holding_page.expect_request(
+            lambda r: r.url.endswith("/action/arm")
+            and "verb=confirm-recurrence" in (r.post_data or "")
+            and "tolerate=true" in (r.post_data or "")
+        ):
+            holding_page.keyboard.press("t")
+
+    def test_c_arms_confirm_recurrence_not_the_generic_confirm(
+        self, holding_page: "Page", holding_server: ServerHandle
+    ) -> None:
+        """F6's regression test (V-9). Vacuous-pass warning (spec):
+        driving this on an ARMED bar instead would pass via
+        Enter -> clickAction("confirm") and prove nothing — the Front
+        page has NOTHING armed here, and (control) carries no
+        [data-key-action="confirm"] element at all (host_add_bar.html,
+        the only other "confirm" site, is included by bucket.html/
+        detail.html, never index.html) — under V-9's reversion, `c`
+        would find no target and this request would never fire."""
+        _open(holding_page, holding_server, "/")
+        holding_page.wait_for_selector(".holding-row")
+        assert holding_page.query_selector('[data-key-action="confirm"]') is None
+        with holding_page.expect_request(
+            lambda r: r.url.endswith("/action/arm")
+            and "verb=confirm-recurrence" in (r.post_data or "")
+            and "tolerate" not in (r.post_data or "")
+        ):
+            holding_page.keyboard.press("c")

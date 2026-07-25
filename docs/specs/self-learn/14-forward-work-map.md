@@ -28,7 +28,7 @@ file gets a dated disposition note on the item.*
 | `forward/supply-quality.md` | **A — Supply quality**: the miner becomes the main character (FW-1…FW-5) |
 | `forward/canon-lifecycle.md` | **B — Canon lifecycle back-half**: first-firing readiness for graduation, staleness, recurrence, supersession (FW-6…FW-9) |
 | `forward/packaging.md` | **C — Packaging & distribution**: the next major phase, mapped (FW-10…FW-15) |
-| `forward/ui-ux.md` | **D — UI/UX**: round 4, the JS harness, backlog burn-down, composition pressure, settings surface (FW-16…FW-19, FW-30) |
+| `forward/ui-ux.md` | **D — UI/UX**: round 4, the JS harness, backlog burn-down, composition pressure, settings surface (FW-16…FW-19, FW-30, FW-37…FW-39) |
 | `forward/sync-and-fleet.md` | **E — Sync & multi-machine**: push-state visibility and the divergence playbook (FW-20…FW-22) |
 | `forward/platform-drift.md` | **F — Platform drift**: the risks we don't control, and the watch protocol for each (FW-23…FW-25) |
 | `forward/process-and-horizon.md` | **G — Process debt & horizon discipline**: orchestration runbook, records index, suite budget, team-scale guard rails (FW-26…FW-29) |
@@ -89,6 +89,9 @@ building early is the failure mode).
 | FW-34 | Miner near-miss visibility (+ canary recall checks) | BUILD | Upranked 2026-07-18; mostly rendering over the existing run journal |
 | FW-35 | Review fast lane, stakes-tiered by destination | BUILD | Upranked 2026-07-18; hooks/user-scope never qualify — invariant, not default |
 | FW-36 | Worker ecology channels: miner field reports + pane doctrine drafts | BUILD | The ecology's two new information products; constitution in `forward/worker-ecology.md` §4 |
+| FW-37 | Measure per-verb latency across the remaining 39 htmx verbs, then decide indicators on data | DRILL→BUILD | Unit 2's natural first job (R-1's deferral) |
+| FW-38 | In-flight state-resync envelope (`sse.py` + new route) — closes the post-reconnect silent window | BUILD | After FW-37; needs the same SSE plumbing exercised there |
+| FW-39 | Reusable, project-agnostic perceptual (ARIA-snapshot) test harness, own repo — self-learn as target #1 | BUILD | After FW-37/38 stabilize the pattern in-repo |
 
 ## 3. Sequencing: the recommended next three moves
 
@@ -207,6 +210,19 @@ while the pass itself is parked (O-9).
   `forward/worker-ecology.md`. Downranked in the same ruling:
   challenge verb (deferred), cold-read audit (superseded by FW-31 at
   entry level).
+- *2026-07-25*: FW-37…FW-39 added per `drafts/ui-inflight-feedback-
+  spec.md` §7.3/§9.2 (unit gated SOUND, builder-landed; corpus
+  amendments per its own §7). FW-37 (per-verb latency measurement)
+  is R-1's explicit deferral — indicators landed on the three confirm
+  routes + the bulk-graduate loop only, refusing to decide the other
+  39 htmx verbs' latency without data. FW-38 (the state-resync
+  envelope) closes the residual post-reconnect silent window the unit
+  measured and disclosed rather than fixed (§8 of that spec; R3-M2;
+  recorded standing in `03-decisions.md` S-20 per that spec's R4-m3).
+  FW-39 (the reusable perceptual harness) is that spec's Unit 2 —
+  explicitly out of scope for the unit that just shipped (R-5: no
+  harness generality there), factored out as its own future item
+  instead.
 
 ## 7. Change control
 

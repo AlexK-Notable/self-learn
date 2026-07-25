@@ -2212,21 +2212,40 @@ async def graduate_bulk(request: Request, scope: str, name: str, ids: str = Form
 
     failed_id: str | None = None
     done = 0
+    total = len(id_list)
     for record_id in id_list:
         # Same interrupt-first rule as action_confirm — "by keypress OR
         # by a bulk loop reaching it" (09 §3).
         if manager is not None:
             await manager.interrupt_active_session(record_id)
+        # §5.6/F5 fix: publish BEFORE the item runs, so item 1 is
+        # narrated rather than silent — this frame IS the open; no
+        # separate pre-loop frame (it would be byte-identical to item
+        # 1's and unclassifiable by the client, §4.3/R3-B1). `done` is
+        # items COMPLETED so far (0-indexed at the top of this
+        # iteration) — never the item's 1-indexed ordinal (R4-m1): the
+        # client reads `<done + 1>` as the item now running.
+        if hub is not None:
+            await hub.publish(envelope_bulk_progress(done, total))
         argv = build_argv("graduate", record_id, no_push=True)
         result = await runner.run(argv)
         if not result.ok:
             failed_id = record_id
+            # Terminal frame carrying failed_id, published before the
+            # break — the parameter was unreachable before this fix
+            # (F5): the publish used to sit AFTER the success check,
+            # so a failure never reached it.
+            if hub is not None:
+                await hub.publish(envelope_bulk_progress(done, total, failed_id))
             break
         done += 1
-        if hub is not None:
-            await hub.publish(envelope_bulk_progress(done, len(id_list), failed_id))
 
     await runner.run(["push"])
+    if failed_id is None and hub is not None:
+        # Success terminal (done == total): published AFTER the push
+        # and BEFORE the forced refresh — the push is part of what the
+        # user is waiting through, so the strip stays up for it (R2).
+        await hub.publish(envelope_bulk_progress(done, total))
     _force_refresh(request, f"bucket:{name}")
     _sweep_stale_proposal(request)  # review F3: bulk-graduated records
 

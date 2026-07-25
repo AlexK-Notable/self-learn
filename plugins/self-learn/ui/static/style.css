@@ -259,6 +259,27 @@ header {
   font-size: 0.85em;
 }
 
+/* §4.1/§5.3: mirrors .reconnect-strip above, but carries TWO children
+   (the badge + the detail text), which makes `display: flex` the
+   natural layout — and that beats the UA `[hidden]` rule, pinning the
+   strip permanently visible unless overridden. Same trap/fix as
+   .help-overlay[hidden] below. */
+.applying-strip {
+  background: var(--slu-warning-bg);
+  color: var(--slu-warning);
+  padding: 0.3rem 0.75rem;
+  text-align: center;
+  font-size: 0.85em;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+}
+
+.applying-strip[hidden] {
+  display: none;
+}
+
 /* ------------------------------------------------------------ footer --- */
 
 footer {
@@ -772,6 +793,21 @@ button {
 button:hover {
   border-color: var(--slu-accent);
   color: var(--slu-accent);
+}
+
+/* §4.2/§5.3: the in-flight local cue for hx-disabled-elt="find button"
+   (F2) — no :disabled rule existed before this (control: 18 :hover).
+   §4.4's measured blind spot: aria_snapshot()/is_visible() carry the
+   [disabled] ATTRIBUTE but are blind to opacity/cursor — this is what a
+   targeted to_have_css check asserts instead. Specificity (0,1,1)
+   cleanly beats the plain `button { cursor: pointer }` rule above
+   (0,0,1) regardless of source order. [disabled] covers htmx's own
+   setAttribute("disabled", "") form, which is not always the same
+   selector match as the :disabled pseudo-class across browsers. */
+button:disabled,
+[disabled] {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 /* Primary verbs: the arm/confirm pair, Approve, Iterate. */

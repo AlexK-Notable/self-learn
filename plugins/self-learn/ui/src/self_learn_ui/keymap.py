@@ -85,7 +85,22 @@ KEYMAP: tuple[KeymapEntry, ...] = (
         "Tolerate (confirm-recurrence --tolerate)",
         "holding",
     ),
-    KeymapEntry(("c",), "confirm", "Confirm recurrence", "holding"),
+    # F6 fix (2026-07-24, human-ratified R-6/§5.5): renamed from
+    # "confirm" — that name collided with the GENERIC arm-then-confirm
+    # `data-key-action="confirm"` button rendered at THREE other sites
+    # (action_bar.html's armed block, proposal_bar.html, host_add_bar.html)
+    # — host_add_bar.html is included by BOTH bucket.html and
+    # detail.html, so a holding Detail page with an unregistered host
+    # could co-render two identical targets, and clickAction's
+    # querySelector would resolve by document order (ambiguous). The `c`
+    # key was consequently dead against its own button
+    # (action_bar.html's holding block already carries
+    # data-key-action="confirm_recurrence" — the template side was never
+    # the bug). Renaming the KEYMAP action leaves every existing target
+    # unambiguous. Three tests in test_keymap.py pinned the old name and
+    # were updated under this same authority — see 03-decisions.md's
+    # S-row.
+    KeymapEntry(("c",), "confirm_recurrence", "Confirm recurrence", "holding"),
     KeymapEntry(("r",), "retry", "Retry pane", "pane"),
     KeymapEntry(("q",), "close_pane", "Close split (ends the session)", "pane"),
     # Y-13 (09 §1/§2.2/§4.5, 2026-07-17): both keys were unbound — the

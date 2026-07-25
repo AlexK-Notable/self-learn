@@ -133,7 +133,85 @@ the round-4 principles and this doc's §4 convention.
 spec→gate chain when scheduled. The exposure-tier split above is the
 user decision the spec must route first (queued in 14 §4).
 
-## 6. Standing constraints on all of it
+## 6. FW-37…FW-39 — in-flight/progress feedback, follow-on work (dated addition 2026-07-25)
+
+*Added per `../drafts/ui-inflight-feedback-spec.md` (gated SOUND, builder-
+landed 2026-07-25). That unit shipped in-flight disabling
+(`hx-disabled-elt`), an applying/bulk-progress strip driven by a keyed
+Map of in-flight work (§4.3 of that spec, recorded in `../03-
+decisions.md` S-20), ten never-pressed keymap fixes, and two banner
+tests — and, in doing the perceptual-oracle work for the first time,
+found the boundary between what CI can now assert and what still needs
+a human trial. These three items are what it deliberately left for
+later rather than folding in as unplanned scope (R-6 of that spec
+allows exactly three compelled expansions; a fourth was declined).*
+
+### FW-37 — Measure per-verb latency, then decide indicators on data
+
+**The gap**: in-flight indicators landed on the three confirm routes
+and the bulk-graduate loop only (R-1). The other 39 htmx verbs have no
+affordance, and the spec is explicit that this is *not* a claim they
+are fast — several launch agent-pane sessions, which are visibly slow
+in practice but never measured.
+**The work**: instrument (or manually time, if that is cheaper than
+building instrumentation) each remaining verb's real round-trip under
+normal use, then decide — per verb, on the numbers rather than a
+guess — whether it needs the same `hx-disabled-elt` treatment, a
+lighter htmx `hx-indicator`, or nothing.
+**Why this is first**: every later UI round touches verbs; deciding
+the indicator policy from data once is cheaper than re-litigating "does
+this one need a spinner" per round.
+
+### FW-38 — The in-flight state-resync envelope
+
+**The gap**, measured and disclosed rather than fixed by the unit that
+found it (spec §8; the finding is R3-M2, the requirement to record it
+here and in the decision register is R4-m3): `app.js`'s
+`source.onerror`/`source.onopen` pair does not distinguish a transient
+SSE reconnect from a genuine connection drop. A verb still running
+*across* a reconnect ends with **neither** feedback strip showing —
+the connection-loss handler clears the applying-strip Map (correctly,
+for a real drop), and `onopen` removes the reconnect strip on recovery
+(correctly, for the reconnect) — but nothing re-populates the applying
+strip for work that was genuinely still in flight when the blip
+happened. Bounded: observer tabs only (the submitting tab keeps its
+own `hx-disabled-elt` cue, which is local to its request and
+independent of SSE).
+**The work**: a server-side envelope that, on a fresh SSE
+subscription (or a reconnect), tells the client what — if anything —
+is still in flight for scopes it cares about, so the client can
+re-populate `inflight` instead of assuming quiet means idle. Touches
+`sse.py` and needs a new route; explicitly why the shipped unit didn't
+take it (a fourth R-6 expansion it declined).
+**Sequencing**: naturally follows FW-37 — both touch the same SSE
+plumbing, and FW-37's per-verb latency data will say which verbs are
+long-running enough for the reconnect window to matter in practice.
+
+### FW-39 — Unit 2: a reusable, project-agnostic perceptual harness
+
+**The gap**: the shipped unit's perceptual oracle
+(`page.locator("body").aria_snapshot()` inequality, plus targeted
+`to_have_css` checks for its measured blind spot) is real, working
+machinery — but it was built and wired by hand, once, inside this
+repo's Playwright suite (R-5: "no harness generality" was an explicit
+scope ruling for that unit, not an oversight).
+**The work**: factor the pattern — the aria-snapshot-inequality
+assertion helper, the `to_have_css` blind-spot workaround, the
+in-page `EventSource`-wrapping seam technique for driving production
+SSE error handlers under test (documented as a spec defect in that
+unit's own test comments: `BrowserContext.set_offline()` does not
+sever an already-open connection in this Playwright/Chromium install)
+— into its own repo, generic over any server-rendered app under test.
+**Why self-learn is target #1**: this repo already has the harness's
+first real consumer built (FW-17's JS DOM harness, now extended by the
+shipped unit) and a second, closely related need already known
+(FW-37/38 will want the same perceptual assertions against whatever
+they add) — proving the extraction against a live second use inside
+the same repo before publishing it wider.
+**Sequencing**: after FW-37/38 exercise the in-repo pattern further —
+extracting too early risks generalizing from one call site.
+
+## 7. Standing constraints on all of it
 
 Y-9 (jargon-free user-facing text) binds every new string; the round-4
 principles bind every layout choice now, parked or not; windows on

@@ -31,6 +31,7 @@ import uvicorn
 
 from self_learn_ui.app import create_app
 from self_learn_ui.env import EnvConfig
+from self_learn_ui.pane import STATE_ENDED, _Live
 from self_learn_ui.runner import FakeRunner
 from self_learn_ui.store import PaneTranscriptStore
 
@@ -55,6 +56,7 @@ TOKEN = "js-dom-pane-persistence-token"
 
 REC_RESUMABLE = "lrn-aa000001"  # pending, bucket_dir matches -> resumable
 REC_REHOMED = "lrn-bb000002"  # still pending, but bucket_dir moved -> NOT resumable (§4e)
+REC_RETRY = "lrn-cc000003"  # F3: retry/close_pane keymap targets (§6, this module's own fixture)
 
 
 def _free_port() -> int:
@@ -95,6 +97,14 @@ def server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[ServerHandle]:
     new_pending.parent.mkdir(parents=True, exist_ok=True)
     new_pending.write_bytes(rehomed_path.read_bytes())
     rehomed_path.unlink()
+
+    # F3's retry/close_pane targets (§6): a plain pending record — the
+    # live pane state itself is seeded per-test directly on
+    # PaneManager._live (below), never baked in here, since it is
+    # mutable CURRENT state (unlike the store's append-only history
+    # above) that each test sets up fresh immediately before opening
+    # the page.
+    seed_record(sandbox.ledger, make_behavior(scope="skill:s", record_id=REC_RETRY))
 
     port = _free_port()
     env = EnvConfig(
@@ -184,6 +194,53 @@ def _open(page: "Page", server: ServerHandle, path: str) -> None:
     page.goto(f"{server.base_url}{path}", wait_until="load")
 
 
+def _seed_errored_live(server: ServerHandle, record_id: str) -> None:
+    """F3's retry/close_pane targets need a LIVE (non-idle) pane session
+    with ``error_message`` set — ``pane.html`` gates the retry button on
+    that field and needs ``pane_split`` (``state != idle``) for either
+    button to render at all. White-box seeding of ``PaneManager._live``
+    directly, same posture as this file's own module docstring re:
+    seeding the persisted store — driving a real SDK session to an error
+    state has no place in this suite (10 §0 rule 7). ``engine=None``
+    (the dataclass default) keeps a subsequent real ``close()`` call
+    safe: no engine to tear down."""
+    server.pane_manager._live = _Live(
+        record_id=record_id,
+        state=STATE_ENDED,
+        error_message="the session hit an error",
+    )
+
+
+def _hold_post(page: "Page", suffix: str) -> dict:
+    """Intercept the next POST whose URL ends in *suffix*, capturing the
+    Route object for a LATER `.fulfill()` rather than resolving it now
+    (mirrors test_js_dom.py's helper of the same name — reimplemented
+    here rather than imported, per this module's own additive-only,
+    self-contained convention). Used for `retry`: `pane_retry` calls
+    `PaneManager.start()` for real (a genuine SDK engine call, no test
+    override at this file's `create_app()` level either) — interception
+    proves "the control was activated" without ever letting the request
+    reach the real handler."""
+    held: dict = {}
+
+    def handler(route) -> None:
+        if route.request.method == "POST" and route.request.url.endswith(suffix):
+            held["route"] = route
+        else:
+            route.continue_()
+
+    page.route("**/*", handler)
+    return held
+
+
+def _wait_for_held(held: dict, timeout: float = 5.0) -> None:
+    deadline = time.monotonic() + timeout
+    while "route" not in held:
+        if time.monotonic() > deadline:
+            raise AssertionError("the expected POST was never intercepted")
+        time.sleep(0.02)
+
+
 # ------------------------------------------------------------------ tests
 
 
@@ -240,3 +297,38 @@ def test_view_swaps_same_id_to_readonly_transcript_and_back(page: "Page", server
     page.locator("#pane-region-wrapper button", has_text="Back").click()
     page.wait_for_selector("#pane-region-wrapper .pane-prior-conversation")
     assert page.locator("#pane-region-wrapper").count() == 1
+
+
+# ---------------------------------------------------- F3: retry / close_pane
+# (10 §3, js; the other 8 of 10 never-pressed-keymap-action tests live in
+# test_js_dom.py — these two need pane state that file's shared fixture
+# cannot build: pane.html:48's `pane.error_message` gate for `r`,
+# `pane_split` for `q`. Each presses the key in a context where the
+# control renders and asserts the control was activated (spec §6's F3
+# rule) — never that the key was merely accepted.
+
+
+def test_retry_presses_r_and_posts_pane_retry(page: "Page", server: ServerHandle) -> None:
+    _seed_errored_live(server, REC_RETRY)
+    _open(page, server, f"/record/{REC_RETRY}")
+    page.wait_for_selector('[data-key-action="retry"]')
+    held = _hold_post(page, "/pane/retry")
+    page.keyboard.press("r")
+    _wait_for_held(held)
+    assert held["route"].request.url.endswith(f"/record/{REC_RETRY}/pane/retry")
+    held["route"].fulfill(status=200, content_type="text/html", body="<div>ok</div>")
+
+
+def test_close_pane_presses_q_and_ends_the_session(page: "Page", server: ServerHandle) -> None:
+    """Unlike `retry`, this is safe to let run for real: the seeded live
+    session carries no engine (`_Live`'s own default), so
+    `PaneManager.close` never touches an SDK engine — letting the real
+    request complete is a STRONGER proof the control was activated than
+    interception would be (the server-side effect, `_live` clearing plus
+    the redirect, is actually observed rather than merely dispatched)."""
+    _seed_errored_live(server, REC_RETRY)
+    _open(page, server, f"/record/{REC_RETRY}")
+    page.wait_for_selector('[data-key-action="close_pane"]')
+    page.keyboard.press("q")
+    page.wait_for_url(f"{server.base_url}/record/{REC_RETRY}")
+    assert server.pane_manager.active_record_id is None

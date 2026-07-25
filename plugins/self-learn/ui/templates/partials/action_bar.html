@@ -23,7 +23,7 @@
      whose stderr carried a pinned dirty marker (never drift, gate M2). #}
   {% if commit_drift.armed %}
   <form hx-post="/record/{{ commit_drift.record_id }}/action/commit-drift/confirm"
-        hx-target="#{{ dom_id }}" hx-swap="outerHTML">
+        hx-target="#{{ dom_id }}" hx-swap="outerHTML" hx-disabled-elt="find button">
     <input type="hidden" name="kind" value="{{ commit_drift.kind }}">
     {% if commit_drift.retry.dest %}<input type="hidden" name="dest" value="{{ commit_drift.retry.dest }}">{% endif %}
     {% if commit_drift.retry.collapse %}<input type="hidden" name="collapse" value="{{ commit_drift.retry.collapse }}">{% endif %}
@@ -72,7 +72,7 @@
 
   {% if armed %}
   <form hx-post="/record/{{ armed.record_id }}/action/confirm"
-        hx-target="#{{ dom_id }}" hx-swap="outerHTML">
+        hx-target="#{{ dom_id }}" hx-swap="outerHTML" hx-disabled-elt="find button">
     <input type="hidden" name="verb" value="{{ armed.verb }}">
     <input type="hidden" name="kind" value="{{ kind }}">
     {% if armed.dest %}<input type="hidden" name="dest" value="{{ armed.dest }}">{% endif %}

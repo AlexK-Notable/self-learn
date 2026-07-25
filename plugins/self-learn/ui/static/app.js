@@ -521,6 +521,45 @@
     if (strip) strip.hidden = !show;
   }
 
+  /**
+   * §4.3/§5.1: the applying/bulk-progress strip's backing state — a
+   * keyed Map of in-flight verb work, NOT a counter+flag (five
+   * consecutive spec-gate rounds each found a defect in that shape; see
+   * the spec's §4.3 table for why the Map dissolves all of them
+   * structurally). Three operations over ONE variable:
+   *   - `set(key, {badge, detail})` — idempotent, so a duplicate open
+   *     frame is a no-op by construction.
+   *   - `delete(key)` — a no-op on an absent key, so an unmatched
+   *     `done`/terminal frame can never disturb an entry it doesn't own.
+   *   - `clear()` — SSE connection loss; see connectEventSource's
+   *     onerror below.
+   * Re-rendered (renderInflight) after EVERY operation so the strip's
+   * text can never lag the Map's own contents (R4-m2).
+   */
+  var inflight = new Map();
+
+  /** Hide-or-render from the Map (§4.3): hidden when empty; otherwise
+   * the "bulk" entry if present (it always wins the render while a bulk
+   * run is genuinely open), else the first entry in insertion order
+   * (JS Map preserves insertion order, so this is deterministic). Toggles
+   * the `hidden` ATTRIBUTE (never inline style) — style.css's
+   * `.applying-strip[hidden] { display: none }` is what makes that
+   * effective against the two-child `display: flex` layout (§5.3). */
+  function renderInflight() {
+    const strip = document.getElementById("self-learn-ui-applying-strip");
+    if (!strip) return;
+    if (inflight.size === 0) {
+      strip.hidden = true;
+      return;
+    }
+    const entry = inflight.has("bulk") ? inflight.get("bulk") : inflight.values().next().value;
+    const badge = document.getElementById("self-learn-ui-applying-badge");
+    const text = document.getElementById("self-learn-ui-applying-text");
+    if (badge) badge.textContent = entry.badge;
+    if (text) text.textContent = entry.detail;
+    strip.hidden = false;
+  }
+
   function connectEventSource() {
     if (typeof EventSource === "undefined") return null;
     const source = new EventSource("/events");
@@ -543,6 +582,14 @@
     };
     source.onerror = function () {
       showReconnectStrip(true);
+      // §4.3/§5.1 (R5-M1): we have lost the channel that would report
+      // completion, so we stop ASSERTING work is running rather than
+      // guess with a timer — clear() needs no magic number and is
+      // testable through the SSE machinery this client already drives.
+      // A late frame arriving after reconnect re-populates the Map and
+      // the strip resumes, which is the correct recovery.
+      inflight.clear();
+      renderInflight();
       startPoll(); // browser auto-retries the SSE connection itself
     };
     source.onmessage = function (event) {
@@ -580,9 +627,40 @@
           // ride any POST response.
           schedulePaneCompletion();
           break;
+        case "applying":
+          // §4.3/§5.1's per-envelope contract, pinned here (R3-B1): the
+          // key is "applying:<verb>:<id>" so two concurrent verbs never
+          // collide (test 8) — `set` on "start" is idempotent, `delete`
+          // on "done"/"error" is a no-op if the key was never set.
+          if (envelope.state === "start") {
+            inflight.set("applying:" + envelope.verb + ":" + envelope.id, {
+              badge: "applying",
+              detail: envelope.verb + " → " + envelope.id,
+            });
+          } else {
+            inflight.delete("applying:" + envelope.verb + ":" + envelope.id);
+          }
+          renderInflight();
+          break;
+        case "bulk_progress":
+          // Terminal iff done==total or a failure was carried (§4.3);
+          // total because §5.6 publishes BEFORE each item, so every
+          // progress frame has done < total and the only (N,N) is the
+          // success terminal. `<done + 1>` for the same reason: a frame
+          // carrying done=0 means item 1 is now running.
+          if (envelope.failed_id !== null || envelope.done === envelope.total) {
+            inflight.delete("bulk");
+          } else {
+            inflight.set("bulk", {
+              badge: "graduating",
+              detail: (envelope.done + 1) + " of " + envelope.total,
+            });
+          }
+          renderInflight();
+          break;
         default:
-          // applying / bulk_progress — ignored here (10 §1: unknown
-          // types are ignored client-side).
+          // Unknown types (and anything future) are ignored client-side
+          // (10 §1) — never a throw.
           break;
       }
     };

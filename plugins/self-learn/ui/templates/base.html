@@ -48,6 +48,17 @@
       live updates reconnecting&hellip;
     </div>
 
+    {# §4.1/§5.2: the applying/bulk-progress strip, mirroring the
+       reconnect strip above — one global, SSE-driven region (app.js's
+       inflight Map + renderInflight()). Both spans EMPTY: badge-applying
+       names the IN-FLIGHT STYLE, not the verb — it renders "graduating"
+       on the bulk path (R2-m2), never a hardcoded "applying" that would
+       misname a bulk run or double up as "applying applying …". #}
+    <div id="self-learn-ui-applying-strip" class="applying-strip" hidden>
+      <span class="badge badge-applying" id="self-learn-ui-applying-badge"></span>
+      <span id="self-learn-ui-applying-text"></span>
+    </div>
+
     <header>
       {% block header %}
       {# Status strip slot (09 §2.1): worker last-run age, staleness

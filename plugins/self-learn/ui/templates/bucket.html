@@ -65,7 +65,7 @@
   {% if group.bulk_collapse %}
   <div class="bulk-collapse-row" data-row>
     <p>{{ group.bulk_collapse.text }}</p>
-    <form hx-post="/bucket/{{ model.scope }}/{{ model.bucket }}/graduate-bulk" hx-swap="none">
+    <form hx-post="/bucket/{{ model.scope }}/{{ model.bucket }}/graduate-bulk" hx-swap="none" hx-disabled-elt="find button">
       <input type="hidden" name="ids" value="{{ group.bulk_collapse.ids | join(',') }}">
       <button type="submit" data-key-action="graduate">Acknowledge all as canon</button>
     </form>

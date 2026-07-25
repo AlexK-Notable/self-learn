@@ -54,7 +54,7 @@
   {% endif %}
 
   {% if proposal.armed %}
-  <form hx-post="/proposal/confirm" hx-target="#proposal-bar" hx-swap="outerHTML">
+  <form hx-post="/proposal/confirm" hx-target="#proposal-bar" hx-swap="outerHTML" hx-disabled-elt="find button">
     <input type="hidden" name="record_id" value="{{ proposal.record_id }}">
     <input type="hidden" name="kind" value="{{ kind }}">
     <input type="hidden" name="nonce" value="{{ proposal.nonce }}">

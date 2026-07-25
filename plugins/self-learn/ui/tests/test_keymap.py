@@ -20,7 +20,9 @@ EXPECTED_ACTIONS = {
     "cycle_destination",
     "note",
     "tolerate",
-    "confirm",
+    # F6 fix (2026-07-24, human-ratified): renamed from "confirm" — see
+    # keymap.py's KEYMAP entry comment for why.
+    "confirm_recurrence",
     "retry",
     "close_pane",
     "bucket_pane",
@@ -74,7 +76,8 @@ def test_pinned_key_bindings() -> None:
     assert by_action["cycle_destination"] == ("o",)
     assert by_action["note"] == ("n",)
     assert by_action["tolerate"] == ("t",)
-    assert by_action["confirm"] == ("c",)
+    # F6 fix (2026-07-24, human-ratified): "confirm" -> "confirm_recurrence".
+    assert by_action["confirm_recurrence"] == ("c",)
     assert by_action["retry"] == ("r",)
     assert by_action["close_pane"] == ("q",)
     # Y-13 (dated 09 §1 amendment 2026-07-17): both previously unbound.
@@ -102,6 +105,8 @@ def test_every_key_is_globally_unique() -> None:
 
 
 def test_holding_row_keys_are_t_and_c() -> None:
-    """t/c live on the 'is it holding?' row context (09 §11 Y-4)."""
+    """t/c live on the 'is it holding?' row context (09 §11 Y-4).
+    F6 fix (2026-07-24, human-ratified): the `c` action is now named
+    "confirm_recurrence", not "confirm" — same key, corrected name."""
     holding = {entry.action for entry in KEYMAP if entry.context == "holding"}
-    assert holding == {"tolerate", "confirm"}
+    assert holding == {"tolerate", "confirm_recurrence"}

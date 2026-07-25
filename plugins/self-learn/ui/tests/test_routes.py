@@ -221,6 +221,17 @@ class TestFrontPage:
         r = c.get("/?notice=bucket-clear")
         assert "bucket clear" in r.text.lower()
 
+    def test_notice_not_found_renders_banner(self, tmp_path: Path) -> None:
+        """F4's third banner (index.html:24-25). Unlike the redirect target
+        assertion in TestDetailPage::test_unknown_id_redirects_to_front_with_
+        not_found_notice (which only checks the Location header), this
+        asserts the rendered banner text itself — the render path was
+        untested before this test."""
+        sb = make_env(tmp_path)
+        c, _runner = make_client(sb)
+        r = c.get("/?notice=not-found")
+        assert "could not be found" in r.text.lower()
+
 
 class TestFeedbackRound1Chrome:
     """Feedback round 1 (2026-07-17-ui-feedback-01) items 1/2/4/8: sortable

@@ -1312,6 +1312,30 @@ Detailed fixtures live in 10; the design constrains them:
   httpx/pure-function level. Visual polish trials are acceptance
   items, not CI items.
 
+*Amended 2026-07-25 (`drafts/ui-inflight-feedback-spec.md`, §7.1 —
+gated SOUND, builder-landed):* **perceptibility moves into CI; taste
+stays human.** The ratified split above held CI at the DOM/existence
+level and left "is this perceptible at all" to human acceptance
+trials — and that is exactly where a shipped defect class lived
+(disabled controls with no visible cue, a bulk-progress emitter that
+narrated nothing, ten keymap actions no test had ever pressed): no
+suite could have caught them because none asserted rendering.
+`page.locator("body").aria_snapshot()` inequality is now the CI
+oracle for "did the perceptible state change", used alongside
+targeted `to_have_css` checks where the oracle's own measured blind
+spot (opacity/colour/cursor) applies. **This is narrower than it
+sounds:** perceptibility is asserted in CI only for the feedback this
+one unit introduced (in-flight disabling, the applying/bulk-progress
+strip, the two never-tested banners) — roughly twenty pre-existing
+feedback sites (`drafts/ui-inflight-feedback-spec.md` §9.1) remain
+unasserted, and colour, opacity, contrast, geometry, occlusion, and
+`text-transform` casing stay outside the automated oracle entirely
+(measured: `aria_snapshot()` and `is_visible()` are both blind to
+`opacity: 0`). Visual polish
+proper — "does it look good" — is unchanged and stays a human
+acceptance item (`10 §4`). Full reasoning and the rejected
+computed-style-digest alternative: `03-decisions.md` S-20.
+
 ## 8. What is deliberately absent
 
 - **No approval bypass** through the pane (07 §5; P1). No
