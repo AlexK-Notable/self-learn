@@ -1,6 +1,5 @@
 {
   "name": "self-learn",
-  "version": "0.1.0",
   "description": "Capture, triage, and route session lessons into skills, CLAUDE.md, references, and hooks via a git-backed ledger — teach/review slash commands plus the self-learn CLI.",
   "author": {
     "name": "Alex Kechichian",
@@ -8,10 +7,7 @@
     "url": "https://github.com/AlexK-Notable"
   },
   "homepage": "https://github.com/AlexK-Notable/self-learn",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/AlexK-Notable/self-learn.git"
-  },
-  "license": "MIT",
+  "repository": "https://github.com/AlexK-Notable/self-learn.git",
+  "license": "FSL-1.1-MIT",
   "keywords": ["self-learning", "lessons", "ledger", "capture", "triage", "claude"]
 }

@@ -8,6 +8,10 @@ troubleshooting. Design corpus: `docs/specs/self-learn/`.
 
 ## Install
 
+The short route is the root README's `/plugin marketplace add
+AlexK-Notable/self-learn` path — it gets you the skill and commands. What
+follows here is the full/development install.
+
 From the repo root:
 
 ```bash
@@ -15,7 +19,8 @@ From the repo root:
 ```
 
 Idempotent; what it deploys for this plugin (live symlinks — edits in the
-repo are live next session, never `claude plugin install` on this machine):
+repo are live next session; this is the development deploy, not `/plugin
+install`):
 
 | Runtime path | → repo source | Purpose |
 |---|---|---|

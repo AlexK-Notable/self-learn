@@ -3,7 +3,7 @@ name = "self-learn-cli"
 version = "0.1.0"
 description = "self-learn ledger CLI — capture, triage, and route session lessons (M1)."
 requires-python = ">=3.11"
-license = { text = "MIT" }
+license = "FSL-1.1-MIT"
 authors = [
     { name = "Alex K", email = "alexkechichian1@gmail.com" },
 ]

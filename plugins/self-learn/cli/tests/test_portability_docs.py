@@ -68,7 +68,7 @@ def test_o7_plugin_readme_cache_path_matches_sentinel_function(monkeypatch):
 def test_o8_plugin_json_names_self_learn_repo():
     data = json.loads(_read(PLUGIN_DIR / ".claude-plugin" / "plugin.json"))
     assert data["homepage"] == "https://github.com/AlexK-Notable/self-learn"
-    assert data["repository"]["url"] == "https://github.com/AlexK-Notable/self-learn.git"
+    assert data["repository"] == "https://github.com/AlexK-Notable/self-learn.git"
     # P-C1.3: the author block is untouched — out of scope, never a target
     assert data["author"]["name"] == "Alex Kechichian"
     assert data["author"]["email"] == "alexkechichian1@gmail.com"
@@ -99,12 +99,10 @@ def test_o11_readme_states_git_repo_prerequisite_and_names_init():
     assert "git repo" in text
 
 
-def test_o11_readme_clone_block_discloses_private_repo():
+def test_o11_readme_clone_block_is_public_https():
     text = _read(REPO_ROOT / "README.md")
-    marker = "git clone git@github.com:AlexK-Notable/self-learn.git"
-    idx = text.index(marker)
-    window = text[max(0, idx - 200) : idx]
-    assert "private" in window.lower()
+    assert "https://github.com/AlexK-Notable/self-learn.git" in text
+    assert "git@github.com:AlexK-Notable/self-learn.git" not in text
 
 
 def test_o11_no_bogus_cross_reference_remains_anywhere_in_sentinel_py():
@@ -126,3 +124,50 @@ def test_home_state_error_messages_name_init():
     not_a_repo = home_state_message("not-a-repo", "/nonexistent/wherever")
     assert "self-learn init" in missing
     assert "self-learn init" in not_a_repo
+
+
+# ------------------------------------------------------- O-P1..O-P5 (public release)
+
+
+def test_license_file_exists_and_is_fsl_1_1_mit():
+    path = REPO_ROOT / "LICENSE"
+    assert path.is_file()
+    text = _read(path)
+    assert "Functional Source License, Version 1.1, MIT Future License" in text
+    assert "FSL-1.1-MIT" in text
+    assert "Copyright 2026 Alex Kechichian" in text
+    assert "offers the same or substantially similar functionality as the Software" in text
+    assert "${" not in text
+
+
+def test_plugin_manifest_declares_fsl_and_no_pinned_version():
+    data = json.loads(_read(PLUGIN_DIR / ".claude-plugin" / "plugin.json"))
+    assert data["license"] == "FSL-1.1-MIT"
+    assert "version" not in data
+
+
+def test_both_pyprojects_use_pep639_license_string():
+    for path in (
+        PLUGIN_DIR / "cli" / "pyproject.toml",
+        PLUGIN_DIR / "ui" / "pyproject.toml",
+    ):
+        text = _read(path)
+        assert 'license = "FSL-1.1-MIT"' in text, path
+        assert "license = { text =" not in text, path
+
+
+def test_root_marketplace_manifest_is_schema_valid():
+    data = json.loads(_read(REPO_ROOT / ".claude-plugin" / "marketplace.json"))
+    assert data["name"] == "self-learn"
+    assert isinstance(data["owner"]["name"], str) and data["owner"]["name"]
+    assert isinstance(data["plugins"], list) and len(data["plugins"]) >= 1
+    entry = next(p for p in data["plugins"] if p["name"] == "self-learn")
+    assert entry["source"] == "./plugins/self-learn"
+    assert "version" not in entry
+
+
+def test_readme_offers_the_marketplace_install_path():
+    text = _read(REPO_ROOT / "README.md")
+    assert "/plugin marketplace add AlexK-Notable/self-learn" in text
+    assert "/plugin install self-learn@self-learn" in text
+    assert "PRIVATE repo" not in text

@@ -13,6 +13,12 @@ written together, as one system, with
 the full evidence of three review rounds and the repo's own usage history baked
 in from the start — not iterated into shape.*
 
+*This corpus ships under the product repo's root `LICENSE`
+(FSL-1.1-MIT) like every other file in the repo — it is not separately
+licensed. Treat it as a historical and design record of the product,
+not as a specification of the shipped product's present behavior; where
+the two disagree, the code and its own tests are authoritative.*
+
 ## What self-learn is, in one sentence
 
 A **capture, triage, and routing system for lessons learned while using Claude
@@ -904,3 +910,21 @@ human routes it.
   server SIGKILL and the two-commit guided-commit shape. Record:
   `reviews/2026-07-19-feedback-round-5.md`; walk in
   `fixtures/ui-trials.md`.
+- **2026-07-24 — public-release unit SHIPPED: LICENSE, CLA, marketplace
+  manifest, public README.** The product repo is now licensed
+  FSL-1.1-MIT (root `LICENSE`; `plugin.json` + both `pyproject.toml`
+  declare the SPDX id in the PEP 639 string form) and installable via
+  the new root `.claude-plugin/marketplace.json`
+  (`/plugin marketplace add AlexK-Notable/self-learn`). `CONTRIBUTING.md`
+  + `CLA.md` require a broad relicensing grant from contributors (PR
+  sign-off line + commit `Signed-off-by:` trailer, checked by hand — no
+  bot at this contributor volume). `README.md`'s install section and
+  `plugins/self-learn/README.md` both rewritten for a public reader; the
+  private-repo SSH-clone disclosure is gone. Doc 13 §7.3 D2 amended in
+  place (original ratification kept, dated reversal appended): the
+  product repo is public; **the LEDGER (`self-learn-ledger` /
+  `~/.self-learn`) remains private** — the "same posture" coupling is
+  explicitly severed. `03-decisions.md` gains **S-19**. The GitHub
+  visibility flip itself is a separate, human, out-of-band action — not
+  part of this unit. See `drafts/public-release-spec.md` for the full
+  reasoning, the licence clause-map, and the CLA terms.

@@ -407,6 +407,15 @@ and every compiled canon target stay exactly where they are.*
 - **D2 — product repo identity.** **RATIFIED 2026-07-17:**
   `github.com/AlexK-Notable/self-learn`, private, same posture as
   `self-learn-ledger`.
+  *(Amended 2026-07-24 — user ruling, publication: the product repo is
+  **PUBLIC**, licensed FSL-1.1-MIT (see the root `LICENSE`; 03 S-19).
+  This reverses the `private` half of the ratification above and, with
+  it, the derived pin P-C1.4 in `drafts/c1-portability-defects-spec.md`
+  §1.3 — the `plugin.json` `homepage`/`repository` links that P-C1.4
+  accepted as knowingly unreachable are now publicly correct, exactly as
+  that pin anticipated. **The "same posture as `self-learn-ledger`"
+  clause no longer holds and is severed: the LEDGER remains private.**
+  D1 (product-boundary) and D3 (no autosync) are unaffected.)*
 - **D3 — product-repo autosync.** **RATIFIED 2026-07-17: NO watcher
   — manual pushes only** (recommendation to mirror was declined).
   Consistent with D1's boundary: the product repo changes only when

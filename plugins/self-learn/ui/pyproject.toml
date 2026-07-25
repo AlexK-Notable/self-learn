@@ -3,7 +3,7 @@ name = "self-learn-ui"
 version = "0.1.0"
 description = "self-learn adjudication surface — localhost web UI (G-3)."
 requires-python = ">=3.11"
-license = { text = "MIT" }
+license = "FSL-1.1-MIT"
 authors = [
     { name = "Alex K", email = "alexkechichian1@gmail.com" },
 ]

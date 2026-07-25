@@ -1,0 +1,23 @@
+{
+  "name": "self-learn",
+  "owner": {
+    "name": "Alex Kechichian",
+    "email": "alexkechichian1@gmail.com"
+  },
+  "description": "Capture, triage, and route Claude Code session lessons into canon via a git-backed ledger.",
+  "plugins": [
+    {
+      "name": "self-learn",
+      "source": "./plugins/self-learn",
+      "description": "Capture, triage, and route session lessons into skills, CLAUDE.md, references, and hooks via a git-backed ledger — teach/review slash commands plus the self-learn CLI.",
+      "author": {
+        "name": "Alex Kechichian",
+        "email": "alexkechichian1@gmail.com"
+      },
+      "homepage": "https://github.com/AlexK-Notable/self-learn",
+      "repository": "https://github.com/AlexK-Notable/self-learn",
+      "license": "FSL-1.1-MIT",
+      "keywords": ["self-learning", "lessons", "ledger", "capture", "triage", "claude"]
+    }
+  ]
+}

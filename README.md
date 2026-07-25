@@ -11,7 +11,10 @@ files, deterministic PreToolUse guard scripts, and new-skill scaffolds.
 spec corpus, and the nightly transcript-miner units. It is a tool unto
 itself: nothing is committed here except work specific to its own
 development. Your lessons live in your ledger; compiled output lands in
-your own registered host repos (doc 13 §7.3 D1).
+your own registered host repos (doc 13 §7.3 D1). Concretely: do not
+register this repo with `self-learn host add … --skills-root` — that
+would make the compiler write into the product repo, which is exactly
+what D1 forbids.
 
 ## Layout
 
@@ -32,17 +35,43 @@ systemd/                self-learn-miner.{service,timer} (nightly mine, 03:40)
 install.sh              idempotent live-symlink deploy (eight surfaces + units)
 ```
 
-## Install (this machine's live-symlink model)
+## Install
+
+### As a Claude Code plugin (the short path)
+
+```
+/plugin marketplace add AlexK-Notable/self-learn
+/plugin install self-learn@self-learn
+```
+
+That gives you the skill and the `/self-learn:*` slash commands.
+
+### Full install — everything the plugin mechanism cannot deliver
+
+The plugin install covers the skill and commands. It does **not** cover
+the parts that live outside a plugin's boundary:
+
+- the `~/bin` shims — `self-learn`, `self-learn-ui`, `self-learn-ui-open`,
+  `self-learn-notify`
+- the two `systemd --user` units (nightly miner timer; the G-3 UI service)
+- the desktop launcher + icon
+- the SessionStart pending-count hook symlink into `~/.claude/hooks/`
+  (registration in `settings.json` stays manual either way)
+- `uv sync` of the CLI project
+
+For those, clone and run `install.sh`:
 
 ```bash
-# self-learn is a PRIVATE repo — cloning it needs an SSH key on file
-# with access to AlexK-Notable/self-learn (P-C1.4: private, by ruling)
-git clone git@github.com:AlexK-Notable/self-learn.git ~/repos/self-learn
+git clone https://github.com/AlexK-Notable/self-learn.git ~/repos/self-learn
 cd ~/repos/self-learn && ./install.sh
-# then (manual, load-bearing): register hooks in ~/.claude/settings.json
+# then (manual, load-bearing): register the SessionStart hook in ~/.claude/settings.json
 systemctl --user enable --now self-learn-miner.timer
 systemctl --user enable --now self-learn-ui.service   # G-3 surface, see below
 ```
+
+`install.sh` is a **live-symlink** deploy: the repo working tree *is* the
+installed copy, so edits are live next session. The two routes are
+alternatives for the skill and commands, not a sequence — pick one.
 
 The ledger needs a git repo at `$SELF_LEARN_HOME` (default
 `~/.self-learn`) before anything else works — bootstrap one with
@@ -168,3 +197,26 @@ also relies on.
   entry there. History before 2026-07-17 was extracted from the
   claude-skills monorepo via git-filter-repo (H-6: full provenance
   preserved — `git log --follow` works across the move).
+
+## License
+
+self-learn is licensed under the **Functional Source License, Version
+1.1, MIT Future License** — SPDX identifier `FSL-1.1-MIT`. Full text at
+[`LICENSE`](./LICENSE).
+
+It is **source-available, not open source**: the License Grant is
+conditioned on using the Software for a Permitted Purpose, and Permitted
+Purposes specifically include your internal use and access — so you may
+use, copy, modify, create derivative works of, and redistribute the
+Software, including for internal and commercial purposes, subject to
+that condition. What the license bars is **Competing Use**: offering the
+Software, or something that substitutes for it or offers substantially
+similar functionality, to others as a commercial product or service.
+
+Each version of the Software converts to the plain MIT license,
+irrevocably, on the second anniversary of the date that version was made
+available — the conversion applies per version, not to the repository as
+a whole.
+
+This is a summary for orientation; the [`LICENSE`](./LICENSE) file is
+the actual grant and controls if the two ever disagree.

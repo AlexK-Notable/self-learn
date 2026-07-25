@@ -1,12 +1,12 @@
 """T18 — the new-skill compiler's pure half (08 §8.1 New-skill pin).
 
 Deterministic, CLI-owned templates: ``plugins/<name>/.claude-plugin/
-plugin.json`` (the key set the repo's real manifests share: name /
+plugin.json`` (the three-key scaffold set pinned by 08 §8.1: name /
 version / description), ``skills/<name>/SKILL.md`` (frontmatter + a
 managed section the ordinary compilers own from then on), and the
-marketplace entry (shaped like the repo's existing entries, appended
-exactly once). No dependency on the plugin-dev plugin — post-hoc
-enrichment is a normal session activity where plugin-dev *may* be used.
+marketplace entry (a ``name``/``source``-shaped entry, appended exactly
+once). No dependency on the plugin-dev plugin — post-hoc enrichment is a
+normal session activity where plugin-dev *may* be used.
 
 The verbs own placement, collision policy (M3-9) and commits; this
 module never touches git.
@@ -64,8 +64,8 @@ def scaffold_description(record: Record) -> str:
 
 
 def plugin_manifest_text(name: str, description: str) -> str:
-    """``plugin.json`` — exactly the key set the repo's real manifests
-    share (08 §8.1): name, version, description."""
+    """``plugin.json`` — exactly the three-key scaffold set pinned by
+    08 §8.1: name, version, description."""
     data = {
         "name": name,
         "version": SCAFFOLD_VERSION,
@@ -100,8 +100,8 @@ def marketplace_with_entry(
 ) -> tuple[str, bool]:
     """Append the marketplace entry for ``name`` exactly once. Returns
     (new_text, changed). The file is rewritten in the repo's own format
-    (2-space JSON + trailing newline — verified byte-stable against the
-    live marketplace.json); an existing entry makes this a no-op.
+    (2-space JSON + trailing newline); an existing entry makes this a
+    no-op.
 
     Only ``.plugins[].name`` and the entry shape matter to install.sh —
     no other validation is performed (the pin: don't invent checks it
