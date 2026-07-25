@@ -928,3 +928,10 @@ human routes it.
   visibility flip itself is a separate, human, out-of-band action — not
   part of this unit. See `drafts/public-release-spec.md` for the full
   reasoning, the licence clause-map, and the CLA terms.
+- **2026-07-24 — PUBLISHED.** The out-of-band step above was authorised
+  by the user and executed the same day: five commits pushed
+  (`b11d9aa..1fef1d5`) and `github.com/AlexK-Notable/self-learn` flipped
+  to **public**. The repo is live and installable. GitHub reports the
+  licence as "Other" — expected, and not a defect: its detector
+  recognises only OSI-approved and a few common licences, and FSL is
+  source-available by design. The ledger's private posture is unchanged.
