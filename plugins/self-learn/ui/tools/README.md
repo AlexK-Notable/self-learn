@@ -14,6 +14,13 @@ rests on mutation verification. So the loop is a **discovery instrument**
 whose deliverable is observations and, downstream, new deterministic
 tests — never a gate that can fail a build on a prose judgement.
 
+For the same reason this directory is **exempt from the two-gate
+spec/code review machinery** (user ruling, 2026-07-26). It is dev
+tooling: it ships no product behaviour, and a walk's output is triaged by
+a human before anything reaches the product. Changes here land on
+measurement — see the controls recorded throughout this file — not on a
+blind reviewer's verdict.
+
 ## The three pieces
 
 | File | Does |

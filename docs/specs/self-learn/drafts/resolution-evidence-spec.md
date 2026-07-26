@@ -117,10 +117,12 @@ second region. The user's requirements — filepaths, persistence,
 navigation buttons — are all satisfied by this, and only the visual idiom
 differs from a floating toast.
 
-> **Flagged for the user before build.** This is the one place where the
-> spec departs from the literal word "toast" in the ratified design. If a
-> floating toast is wanted specifically, say so and §5 changes; the
-> content and behaviour rulings below are unaffected either way.
+**Confirmed by the user 2026-07-26:** *"toast was more just a concept I
+was trying to convey, not a verbatim requirement."* So the binding
+requirements are the three above — evidence, persistence, chosen
+destination — and the rendering idiom is the builder's to fit to the
+existing machinery. Do not spend design effort making this look like a
+floating toast.
 
 ### 2.3 The refusal leg is in scope only as a regression guard
 
