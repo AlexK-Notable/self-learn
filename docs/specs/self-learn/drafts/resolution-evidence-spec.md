@@ -1,7 +1,9 @@
 # Spec — make a confirmed resolution say what it did
 
-**Status:** revision 4 — SPEC GATE PASSED (reviewer: "fix finding 1 and I have
-no reservations about the build starting"; finding 1 folded here).
+**Status:** SHIPPED — built and code-gate CLEAN, commit `29d1672`.
+Spec gate passed at revision 4 over four blind rounds; the code gate then
+took two more, and §10 records what it caught. Read §10 before extending
+this surface: every item there was invisible to a green suite.
 **Origin:** two independent source-blind walks (`fixtures/ui-walks.md`,
 W2-F2) plus a hand-driven session. Design ratified by the user
 2026-07-26.
@@ -701,3 +703,69 @@ error*:
   no test asserting the field set). But `_routed_destination` has a
   **second** caller — `rehome`, whose arrow carries a bucket, not a canon
   target — so the retirement is scoped to `route`.
+
+---
+
+## 10. What the code gate caught (two blind rounds, all mutation-verified)
+
+Recorded because **every item here was invisible to a green suite**, and
+because this is the list to read before extending this surface.
+
+1. **`canon_path` read `staged`** — the ledger paths. The surface would
+   have shown a ledger record path on every verb, including defer, where
+   §3.2 forbade it. The canon path is `target`.
+2. **A `reference` route rendered `None`.** Its `TargetSpec` carries no
+   target by construction, and only one of four template branches guarded
+   the field. The unit built to say what a resolution did would have said
+   `in <code>None</code>`.
+3. **"View what changed" navigated to the resolved-elsewhere banner** —
+   the exact inadequate acknowledgement §1 says this unit replaces. It
+   only worked for `defer`. Invisible because `FakeRunner` never changes
+   record status.
+4. **The no-op derivation had no coverage at any layer.**
+   `_reports_no_change` could be replaced with `return False` and the
+   whole CLI suite stayed green.
+5. **The contradicts offer rendered the evidence once per EDGE**,
+   duplicating keymap-bound actions and making §7.8's uniqueness
+   invariant false in a reachable shape.
+6. **A test comment claimed coverage it could not provide** — it cited
+   `action_bar.html:99/107` for the unarmed quad, but those lines are the
+   *armed* branch, and the count it asserted was 1 either way
+   (`lrn-ea833a5b`).
+7. **The defect §0 rule 6 predicted by name.** `style.css` gated the
+   whole success-key group on the STRIP being present while the links
+   inside are individually conditional, so a route confirm advertised `v`
+   and `j` with neither bound — the third instance of
+   advertised-key-bound-to-nothing here, arriving from a file §3.6 never
+   mentions.
+
+### 10.1 The check that closes item 7, and how it failed open twice
+
+`TestSuccessFooterNeverAdvertisesADeadKey` is the first thing in this
+repo that compares **what the page says** against **what the page can
+do** — the invariant whose absence produced `c`, `h`, and now `v`/`j`.
+It took three passes to become sound, and the two failures are the
+lesson:
+
+1. *"Every footer entry SHOWN has an element."* Fails open on a key with
+   no CSS rule: `.keymap-footer-entry` defaults to `display: none`, so a
+   missing rule is silence, and silence satisfies it. Measured — a fourth
+   key with no rule left the whole suite green.
+2. Adding *"every `success_*` element IS advertised"* closed that, but
+   both halves iterate sets that can be empty, so a leg with **zero**
+   links passes both vacuously. Measured by forcing one.
+3. An anchor asserting *something rendered at all* now runs first. It
+   names no key on purpose — pinning `success_bucket` would defend only
+   the keys that already have rules, which is the blind spot (1) was
+   rewritten to remove.
+
+No reachable state produces a linkless leg today (`bucket_url` comes from
+`locate_record`, which resolves out of `resolved/`; verified against the
+real CLI for all four verbs), so the anchor guards **fixture drift**, not
+a live defect. Keep it anyway: the shape it protects is one fixture
+change away, and `success_next` is already absent from that fixture.
+
+**The general rule this unit keeps re-teaching:** ask what a check
+reports when it cannot see its target at all. If that equals "pass", the
+check is worthless — and the more specific the check, the more likely
+its blind spot is the exact case it was written for.
