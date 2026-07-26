@@ -172,6 +172,56 @@ Recorded because they bound what any walk can claim.
 
 ---
 
+## World-state coverage
+
+Raised 2026-07-26: *"did you set up a lesson that's routed to a claude.md
+that has uncommitted changes?"* No. The seeded corpus varied what a
+**record** looks like — scope, type, episode brief, unicode, long bodies
+— against exactly **one world**: host repo committed clean, every
+destination present, every host registered, every record unanalysed. Both
+walks above reported coverage that could not have included anything else,
+and neither said so.
+
+The axis matters because most of this product's refusals live on it.
+`verbs._abort_if_dirty` fires at six call sites, and the UI has a whole
+affordance behind it: `routes._commit_drift_eligible` renders an armed
+**"Commit that repo's changes, then retry"** button inside the error
+strip when a route's stderr carries `GITOPS_DIRTY_MARKER`. It has unit
+tests. No walk had ever seen it.
+
+`sandbox_ui.py up --world <names>` now seeds selectable worlds (composable,
+comma-separated, `clean` by default so the normal path stays the normal
+path). Applied before the snapshot, so `reset` rewinds *to* the world.
+
+| World state | Product behaviour it reaches | Status |
+|---|---|---|
+| repo clean, dest present | the happy path | `clean` (default) |
+| route target dirty | `DirtyTargetError` + guided commit-first button | `dirty-target` ✅ reached 2026-07-26 |
+| destination absent | create-vs-append branch of the compiler | `missing-dest` |
+| record carries a proposal | Approve without cycling; post-analysis controls | `analysed` |
+| host not registered | `"host not registered — self-learn host add"` | **not seeded** |
+| destination unroutable | `"unroutable destination"` | **not seeded** |
+| secret in record body | `SecretRefusal` — nothing written, no bypass | **not seeded** |
+| ledger has a remote | real push / `EXIT_PUSH_FAILED` / rebase conflict | **not seeded** (no-remote is a divergence today) |
+| managed section over cap | `VerbResult.over_cap_note` warning | **not seeded** |
+| chezmoi source present | the user-scope leg, `CHEZMOI_DIRTY_MARKER` | **not seedable** — chezmoi is retired on this host |
+
+Two findings fell out of building it, both of which bound earlier walks:
+
+1. **World states are gated behind record states.** Dirtying the repo was
+   not enough to reach the dirty-target refusal: `route` raises
+   `NoProposalError` first, because every seeded record sat in "no
+   analysis yet". Reaching the refusal took the destination cycler, which
+   is not the path a human takes. Walk 2 hit the same wall from the other
+   side and reported `t`, `c`, `y` unreachable. The `analysed` world
+   removes the gate; the two now compose.
+2. **Composing worlds with `git add -A` silently un-did one of them.**
+   `missing-dest` committed with `commit_all`, which swept up
+   `dirty-target`'s uncommitted edit — so the sandbox came up clean while
+   printing that it was dirty. Caught by checking `git status` rather
+   than trusting the startup banner. Fixed with targeted staging, which
+   is the rule the product's own `gitops` module already pins.
+
 ## Change control
 
 New walks append a dated section. Findings graduate out of this file by

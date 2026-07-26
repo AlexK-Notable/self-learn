@@ -244,6 +244,17 @@ def commit_all(repo: Path, message: str) -> None:
     git(repo, "commit", "-q", "-m", message, "--allow-empty")
 
 
+def commit_paths(repo: Path, message: str, *paths: Path) -> None:
+    """Commit ONLY the named paths. Worlds must use this, never
+    :func:`commit_all`: composing `dirty-target,missing-dest` with an
+    `add -A` silently committed the first world's uncommitted edit, so the
+    sandbox came up clean while claiming to be dirty. (The product's own
+    gitops module pins the same rule for the same reason.)"""
+    rel = [str(p.relative_to(repo)) for p in paths]
+    git(repo, "add", "-A", "--", *rel)
+    git(repo, "commit", "-q", "-m", message, "--", *rel)
+
+
 SKILL_MD = """---
 name: {name}
 description: Sandbox skill {name} for UI surface walking.
@@ -430,6 +441,164 @@ def seed_corpus(ledger: Path, host: Path, count: int) -> list[str]:
 
     commit_all(ledger, f"seed {count} records")
     return written
+
+
+# ------------------------------------------------------------ world states
+#
+# The corpus above varies what a RECORD looks like. It says nothing about
+# what the WORLD the record resolves into looks like, and that axis is
+# where most of this product's refusals live: the host repo is always
+# committed clean, every destination already exists, every host is
+# registered. Two walks reported coverage that could not have included any
+# of it.
+#
+# Concretely: `verbs._abort_if_dirty` fires at six call sites, and the UI
+# has a whole affordance behind it — `routes._commit_drift_eligible`
+# renders an armed "Commit that repo's changes, then retry" button inside
+# the error strip when a route's stderr carries GITOPS_DIRTY_MARKER. It
+# has unit tests. Until now no walk could reach it, because nothing ever
+# dirtied the seeded repo.
+#
+# Worlds are applied AFTER seeding and BEFORE the snapshot, so `reset`
+# reproduces the world instead of washing it away. They are deliberately
+# NOT listed in KNOWN_DIVERGENCES: a divergence is a containment artifact
+# a walker must be told to ignore, whereas a dirty repo is a state a real
+# user is in all the time and should be allowed to discover.
+#
+# Each world leaves part of the corpus untouched on purpose, so a walk can
+# compare a refusal against a success rather than concluding the whole
+# verb is broken.
+
+WORLD_HELP = {
+    "clean": "as-installed: everything committed, every destination present",
+    "dirty-target": (
+        "the git-hygiene skill doc has uncommitted changes, so routing any "
+        "git-hygiene record hits the dirty-target refusal and the guided "
+        "commit-first button. Other skills stay clean."
+    ),
+    "missing-dest": (
+        "the shell-safety skill doc is deleted and committed, so routing "
+        "there must CREATE the destination instead of appending to it."
+    ),
+    "analysed": (
+        "every pending record carries an analyst proposal, so Approve works "
+        "without cycling the destination and the post-analysis controls stop "
+        "being dead ends. Compose with dirty-target to reach the refusal by "
+        "the path a human actually takes."
+    ),
+}
+DEFAULT_WORLD = "clean"
+
+
+def world_clean(host: Path, ledger: Path) -> list[str]:
+    return []
+
+
+def world_dirty_target(host: Path, ledger: Path) -> list[str]:
+    """Uncommitted edit to ONE skill's route target."""
+    doc = host / "plugins" / "git-hygiene-plugin" / "skills" / "git-hygiene" / "SKILL.md"
+    doc.write_text(
+        doc.read_text(encoding="utf-8")
+        + "\n<!-- uncommitted edit: sandbox world dirty-target -->\n",
+        encoding="utf-8",
+    )
+    return [
+        f"uncommitted edit in {doc.relative_to(host)}",
+        "routing a git-hygiene record should now refuse; other skills route normally",
+    ]
+
+
+def world_missing_dest(host: Path, ledger: Path) -> list[str]:
+    """Route target absent, committed so the repo stays clean — the
+    create-vs-append branch, which nothing else in the seed reaches."""
+    doc = host / "plugins" / "shell-safety-plugin" / "skills" / "shell-safety" / "SKILL.md"
+    doc.unlink()
+    commit_paths(host, "world missing-dest: remove shell-safety skill doc", doc)
+    return [
+        f"{doc.relative_to(host)} deleted (committed — repo is clean)",
+        "routing a shell-safety record must create the file rather than append",
+    ]
+
+
+def world_analysed(host: Path, ledger: Path) -> list[str]:
+    """Give every pending record a valid analyst proposal.
+
+    Without this the whole seed sits in "no analysis yet", which gates far
+    more than it looks: `route` refuses with NoProposalError before any
+    other check runs, so the dirty-target refusal below it was unreachable
+    even once the repo WAS dirty — reaching it needed the destination
+    cycler, which is not the path a human takes. Walk 2 hit the same wall
+    from the other side and reported `t`, `c`, `y` as unreachable.
+
+    Proposals are written through the product's own write/stamp functions,
+    never hand-rolled YAML: `stamp_proposal` computes `record_sha` from the
+    record's normalized body, and a proposal whose sha does not match its
+    record is rejected downstream."""
+    from self_learn.ledger_ops import stamp_proposal, write_proposal
+    from self_learn.records import Record
+
+    dest_for = {"skill": "skill-md", "project": "claude-md", "user": "claude-md"}
+    n = 0
+    for path in sorted(ledger.rglob("pending/lrn-*.md")):
+        record = Record.from_path(path)
+        family = record.scope.split(":", 1)[0]
+        write_proposal(
+            ledger,
+            record.id,
+            {
+                "destination": dest_for.get(family, "reference"),
+                "rationale": (
+                    "Sandbox proposal: this belongs in the scope's standing "
+                    "instructions — it is a durable rule, not a one-off."
+                ),
+                "model": "sandbox-seed",
+                "analyzed_at": days_ago(0),
+            },
+        )
+        stamp_proposal(ledger, record.id)
+        n += 1
+    commit_all(ledger, f"world analysed: {n} proposals")
+    return [
+        f"{n} pending records now carry an analyst proposal",
+        "Approve routes without cycling the destination first",
+    ]
+
+
+WORLDS = {
+    "clean": world_clean,
+    "dirty-target": world_dirty_target,
+    "missing-dest": world_missing_dest,
+    "analysed": world_analysed,
+}
+
+
+def apply_worlds(state: Path, host: Path, ledger: Path, names: list[str]) -> None:
+    marker = live_dir(state) / ".world"
+    notes: list[str] = []
+    for name in names:
+        notes.extend(f"[{name}] {line}" for line in WORLDS[name](host, ledger))
+    marker.write_text(",".join(names) + "\n", encoding="utf-8")
+    if notes:
+        print("\n  WORLD STATE (deliberate — not a containment artifact):")
+        for line in notes:
+            print(f"    - {line}")
+
+
+def _world_list(raw: str) -> list[str]:
+    names = [p.strip() for p in raw.split(",") if p.strip()]
+    unknown = [n for n in names if n not in WORLDS]
+    if unknown:
+        raise argparse.ArgumentTypeError(
+            f"unknown world(s) {', '.join(unknown)} — choices: {', '.join(WORLDS)}"
+        )
+    return names or [DEFAULT_WORLD]
+
+
+def current_world(state: Path) -> str:
+    marker = live_dir(state) / ".world"
+    if marker.is_file():
+        return marker.read_text(encoding="utf-8").strip()
+    return DEFAULT_WORLD
 
 
 # ------------------------------------------------------- snapshot/restore
@@ -654,6 +823,10 @@ def cmd_up(args: argparse.Namespace) -> int:
         host = build_host(state)
         ledger = build_ledger(state, host)
         ids = seed_corpus(ledger, host, args.records)
+        # Before the snapshot, so `reset` rewinds TO the world rather than
+        # out of it — a world applied afterwards evaporates on first reset
+        # and gets rediscovered as "restore is broken".
+        apply_worlds(state, host, ledger, args.world)
         snapshot(state)
         print(f"\n  seeded {len(ids)} records across {len(SKILLS)} skills "
               f"+ project + user scopes")
@@ -661,6 +834,11 @@ def cmd_up(args: argparse.Namespace) -> int:
     else:
         n = len(list((live / "ledger-home").rglob("lrn-*.md")))
         print(f"\n  reusing existing sandbox at {live} ({n} records)")
+        print(f"  world: {current_world(state)}")
+        if ",".join(args.world) != current_world(state):
+            print(f"  NOTE: --world {','.join(args.world)} IGNORED — the existing "
+                  "sandbox keeps the world it was seeded with. Use --fresh to "
+                  "change worlds.")
         print("  (--fresh to rebuild, `reset` to rewind to the seeded state)")
 
     return serve(args.port or free_port())
@@ -682,10 +860,25 @@ def main(argv: list[str] | None = None) -> int:
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    up = sub.add_parser("up", help="seed if needed, then serve")
+    up = sub.add_parser(
+        "up",
+        help="seed if needed, then serve",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="worlds:\n"
+        + "\n".join(f"  {k:<14} {v}" for k, v in WORLD_HELP.items()),
+    )
     up.add_argument("--records", type=int, default=24)
     up.add_argument("--port", type=int, default=0)
     up.add_argument("--fresh", action="store_true", help="discard and rebuild")
+    up.add_argument(
+        # argparse applies `type` only to values the caller actually
+        # passes, so the default must already be in parsed form.
+        "--world",
+        default=[DEFAULT_WORLD],
+        type=_world_list,
+        help=f"comma-separated world states (default: {DEFAULT_WORLD}); "
+        f"choices: {', '.join(WORLDS)}",
+    )
     up.set_defaults(func=cmd_up)
 
     sub.add_parser("verify", help="run the isolation gate only").set_defaults(

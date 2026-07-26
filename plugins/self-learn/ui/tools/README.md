@@ -29,7 +29,43 @@ cd plugins/self-learn/ui
 uv run --project . python tools/sandbox_ui.py selftest   # prove the gate gates
 uv run --project . python tools/sandbox_ui.py up         # seed + serve
 uv run --project . python tools/sandbox_ui.py reset      # rewind to seeded state
+uv run --project . python tools/sandbox_ui.py up --help  # list world states
 ```
+
+## World states
+
+The corpus varies what a **record** looks like. `--world` varies the
+**world it resolves into**, which is where most of this product's
+refusals live — and which was a constant until 2026-07-26.
+
+```bash
+up --world dirty-target            # route target has uncommitted changes
+up --world analysed,dirty-target   # ...and records carry proposals, so the
+                                   # refusal is reached the way a human does
+```
+
+Composable, comma-separated, `clean` by default so the normal path stays
+normal. Applied **after seeding and before the snapshot**, so `reset`
+rewinds *to* the world — a world applied afterwards evaporates on first
+reset and gets rediscovered as "restore is broken". An existing sandbox
+keeps the world it was seeded with; `--fresh` to change worlds.
+
+Worlds are deliberately **not** in `KNOWN_DIVERGENCES`. A divergence is a
+containment artifact a walker must be told to ignore; a dirty repo is a
+state real users are in constantly, and a walker should be allowed to
+discover it.
+
+Two things bit while building this, both worth knowing:
+
+- **World states are gated behind record states.** Dirtying the repo did
+  not reach the dirty-target refusal — `route` raises `NoProposalError`
+  first, because the seed leaves every record unanalysed. Hence
+  `analysed`, and hence composition.
+- **`commit_all` is `git add -A`.** Composing two worlds, the second
+  one's commit absorbed the first one's uncommitted edit and the sandbox
+  came up clean while announcing it was dirty. Worlds use `commit_paths`.
+  Verify a world with `git -C <state>/live/host-repo status`, not with
+  the startup banner.
 
 `up` prints a deep-link URL with a bearer token, and the **known sandbox
 divergences** — behaviours that differ from a real install by
