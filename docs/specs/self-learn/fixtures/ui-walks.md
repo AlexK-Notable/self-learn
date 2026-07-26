@@ -134,6 +134,174 @@ way". A genuine epistemic limit, not a tooling gap.
 
 ---
 
+## Walks 3–5 — 2026-07-26 · first parallel series, first non-clean world
+
+Three Opus walkers, `2560x1440` headless, world `analysed,dirty-target`.
+Walk 3 ran alone; walks 4 and 5 ran **concurrently in separate browsers
+against separate sandboxes** (`45312`/`45313`, own `TMPDIR`, own ledger),
+so no walker could see another's mutations. None was told what the others
+found, and none was told a refusal existed.
+
+The parallel arrangement is what makes the agreements below load-bearing:
+where three walkers who could not communicate report the same thing, the
+finding is not one walker's misreading.
+
+**Viewport caveat.** At 2560x1440 every `sweep()` reported
+`offscreen: 0` — nothing in this app falls below the fold at that size,
+including a 2889px report page. The below-the-fold pressure that produced
+blind spot 3 was absent, so these coverage counts are **not comparable**
+to walks 1–2. Future walks wanting that pressure should shrink the
+viewport deliberately.
+
+### W3-F1 · The guided commit-and-retry resolves in silence
+
+Route refuses on a dirty target, offers **"Commit that repo's changes,
+then retry"**, the user confirms twice — a file write and a git commit —
+and the app's entire response is to swap in an unrelated record. No
+receipt, no message, nothing naming the record just resolved. Walk 3
+learned it had worked by returning to the bucket and counting rows 7 → 6.
+
+> "The longest, most anxious path through the app is the only one that
+> ends in silence."
+
+**Walk 5 reached the same silence independently and then ran a control
+walk 3 did not**: approve from the bucket list (receipt ✔), approve from
+a record detail page on a *clean* repo (receipt ✔), and corrected its own
+first conclusion — the failure is the recovery path, not the page.
+
+Cause, confirmed in source after the walks: `commit_drift_confirm`
+mirrors `action_confirm` step for step — interrupt-first, contradicts
+capture, adopt offer — then stops mirroring at the last step and falls
+through to the pre-existing `HX-Redirect` (`routes.py:1781-1790`). It
+never calls `_evidence_ctx`.
+
+**The resolution-evidence spec §3.4 enumerated four redirect sites and
+this is a fifth.** Its own warning applies verbatim: *"Fixing only the
+third leaves the proposal-confirm path silently teleporting the user
+while the DoD passes."* The reasoning was right and the enumeration was
+short. What kept it short is still in the file — a comment at
+`routes.py:1783-1787` justifying the redirect because "the redirect
+target's re-read state IS the ground truth, same as every other
+successful confirm." True when written; falsified by the unit that
+shipped after it. A fossil rationale reads exactly like a live one.
+
+### W4-F1 · The selection ring does not govern the destructive keys
+
+Walk 4 pressed `e` with the ring on card 2 and watched Approve arm on
+card 1. Reproduced with DOM focus on `BODY`, so it is not focus either.
+
+`app.js:54-61` resolves every verb key with a **document-wide**
+`querySelector('[data-key-action=…]')` — first match in document order.
+The ring is a separate mechanism, `.selected`, read only at
+`app.js:96-98` to follow a row's link on Enter. On a bucket page listing
+N records, `e`/`x`/`f`/`g` always act on **record 1**.
+
+This is the only finding in five walks that can resolve the wrong
+record. The walker's own account of the consequence:
+
+> "With Approve/Deny/Graduate on the line, I stopped trusting the ring —
+> but there is nothing else to trust instead."
+
+### W4-F2 · `Enter` on a focused button navigates instead of pressing it
+
+`Tab` to a button, press `Enter`, and the global "Open" fires: you land
+on a page you did not ask for. `Space` is the only activation. Observed
+on two different buttons on two different pages. **Neither `Tab` nor
+`Space` appears in the footer or the `?` reference**, so the documented
+keyboard contract omits the only two keys that make focused controls
+work.
+
+### W4-F3 · `Escape` at the front page goes *down*
+
+Footer says "Back / up a level". At the root it is browser history-back:
+front → bucket → front → `Escape` → bucket. It oscillates, and you can
+never settle at the top with it. Three deliberate trials to establish.
+
+### W4-F4 · Dead and half-dead keys, settled
+
+| key | status |
+|---|---|
+| `h` | inert. Advertised **only** in the back-link tooltip; absent from `?` entirely. Fourth sighting (W1, W2-F1, W5, W4) |
+| `r` | inert as key *and* as focused button activated with `Space`. **This closes W2-F6**, which called `r` unknowable from outside — it is knowable, and it does nothing |
+| `v` | works only where its link rendered; dead after Deny and Graduate while `?` lists it unconditionally |
+| `b` | works where a brief exists; advertised identically on records without one. **Re-diagnoses W1's "b does not toggle"** as a different bug |
+
+`v` is the fourth instance of advertised-key-bound-to-nothing, and the
+first **inside the unit built to end them**. The 2026-07-26 fix gates the
+*footer* per key (`style.css:395-397`); the help overlay iterates the
+same static `keymap_entries` (`keymap.py:129-131` → `routes.py:376` →
+`help_overlay.html:13`) with no conditional. The test written alongside
+that fix is `TestSuccessFooterNeverAdvertisesADeadKey` — footer-named,
+footer-scoped, structurally unable to see the overlay. Same lesson as
+`lrn-ea833a5b`: **the more specific a check, the more likely its blind
+spot is the exact case it was written for.**
+
+### W4-F5 · `n` inside an arm strip cancels the arm
+
+The strip's first line reads "any other key cancels"; its second reads
+"n to say why". `n` cancels. Two lines of one box contradicting each
+other at the moment of commitment. Separately, `n` still types a literal
+`"n"` into the field it focuses (W1 found this; two walks now).
+
+### W4-F6 · A pane session runs invisibly
+
+Opened with `p`, navigated away, and nothing — not the header, not the
+front page — indicated a session was still live. It was discovered eight
+minutes later only by trying to start another and getting a conflict
+prompt whose buttons carry no keys.
+
+### W5-F1 · The app never defines its own vocabulary
+
+The cold-open walker listed terms it was never given a definition for:
+*canon* / *authored canon*, *superseded*, *graduate*, *routed*, *held*,
+*arm*, *holding*, *episode brief*, *blocks*, *landed*, *folded*,
+*near-misses*, *fresh*, *adjudicated*, *capture_rate_ceiling*,
+*honesty-labeled*. It reached the app's core purpose in about four
+minutes and the stakes only at the first Approve receipt, ~9 minutes in.
+
+Sharpest line of the series:
+
+> "It is also the ONLY place in the entire app that told me which file
+> 'Skill doc' means. I learned the destination by triggering a failure."
+
+One destination names its path only after being cycled *away* from the
+proposed one; the proposed one never does.
+
+### W5-F2 · The confirm strip names a destination three verbs do not use
+
+`Deny → skill-md`, `Defer → skill-md`, and `Graduate → skill-md` all
+appear on the arm strip, at the moment of commitment, for verbs that
+write nothing there. Graduate's receipt then names no path and no sha and
+mentions only the ledger. Its pre-action summary and its result disagree.
+Also three vocabularies for one destination: **Skill doc** (picker),
+**skill-md** (confirm), and a filesystem path (receipt).
+
+### Agreements across independent walkers
+
+Separate browsers, separate ledgers, no shared knowledge:
+
+| finding | walks |
+|---|---|
+| commit-and-retry resolves in silence | W3, W5 |
+| `Graduate` receipt carries no path | W3, W4, W5 |
+| `Deny`/`Defer` arm names `skill-md` | W3, W5 |
+| `/report` counts one graduate three ways (`graduated 1`, `superseded 1`, `supersede_rate 0.0`) | W3, W5 |
+| `h` advertised, inert | W4, W5 |
+| Worker "Force run" wholly unresponsive | W1, W2, W3 |
+| `v` absent after some verbs, advertised always | W3, W4, W5 |
+
+### Ruled a fixture artifact, not a defect
+
+W5 flagged seven records carrying three distinct texts, each claiming
+"1 sighting(s)", and read it as the app failing to group duplicates. The
+seeder cycles a template list to reach 24 records
+(`sandbox_ui.py:315-345`) — **the duplication is ours.** It does leave a
+real question for separate triage: `RECURRENCE SUSPECTS` stayed at 0
+against byte-identical triggers. Recorded so the artifact is not filed as
+product behaviour later.
+
+---
+
 ## Instrument blind spots the walks exposed
 
 Recorded because they bound what any walk can claim.
@@ -169,6 +337,33 @@ Recorded because they bound what any walk can claim.
 4. **Ambient noise is zero only within a relative-timestamp bucket.**
    Across a step that crosses a `humanize_ts` boundary it is nonzero,
    and was once the *only* thing reported for a real graduation.
+5. **Selection state is STILL invisible on the front page.** *Blind spot
+   2 is only half fixed.* Walk 4 moved the front-page ring and the digest
+   reported `changed_count: 0` while the screen visibly moved — the same
+   symptom 2 was closed on. The fix was written against the bucket page:
+   its code comment names `<div class="record-row selected">`
+   (`probe.js:530-539`), which is `bucket.html:76`. The front page uses
+   `<tr data-row>` (`index.html:62`).
+   **The mechanism is NOT yet diagnosed, and the obvious hypothesis is
+   already dead**: the CSS is symmetric — `style.css:763-768` gives
+   `.record-row[data-row].selected` and `tr[data-row].selected` the same
+   `outline: 2px solid` — so "table rows aren't styled like card rows"
+   is not the answer. Whoever fixes this should measure which elements
+   `capture()` enumerates before theorising, and should add a control at
+   *both* row types, since defending only the one in front of you is how
+   this got half fixed the first time.
+6. **`<details>` expansion is invisible.** Walk 4 pressed `b`, got
+   `changed_count: 0`, and was about to file the key as inert; the
+   screenshot showed the Episode brief plainly expanded. It retracted the
+   finding itself. Open toggles on a `<details>` change no captured
+   text, colour, border, outline or shadow, so the digest cannot see one
+   of this UI's commonest state changes.
+
+**Both 5 and 6 manufacture the same false finding — "I pressed it and
+nothing happened" — which is the single most common conclusion these
+walks draw.** Walk 4 caught both only because the protocol requires a
+screenshot per surface; a walk trusting the digest alone would have filed
+two phantom defects. Fix these before the next walk.
 
 ---
 
@@ -188,6 +383,13 @@ affordance behind it: `routes._commit_drift_eligible` renders an armed
 **"Commit that repo's changes, then retry"** button inside the error
 strip when a route's stderr carries `GITOPS_DIRTY_MARKER`. It has unit
 tests. No walk had ever seen it.
+
+**Walks 3–5 saw it, and it was worth the trouble.** Two independent
+walkers reached the refusal by the path a human takes, both called the
+error message the best in the app — *"says what, why, and offers the
+remedy"* — and both then fell into W3-F1: the remedy resolves in
+silence. A green suite had covered that button since it shipped. The
+first walk that ever pressed it found the hole in one attempt.
 
 `sandbox_ui.py up --world <names>` now seeds selectable worlds (composable,
 comma-separated, `clean` by default so the normal path stays the normal
