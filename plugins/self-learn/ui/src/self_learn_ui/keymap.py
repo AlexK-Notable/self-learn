@@ -32,7 +32,7 @@ from dataclasses import asdict, dataclass
 #: are live; the others gate on where focus/attention currently is.
 #: Context gates DISPLAY only (footer filtering, style.css) — dispatch is
 #: first-match with no context filter, which is why every key is unique.
-Context = str  # "global" | "list" | "detail" | "holding" | "pane" | "bucket" | "proposal"
+Context = str  # "global" | "list" | "detail" | "holding" | "pane" | "bucket" | "proposal" | "success"
 
 
 @dataclass(frozen=True)
@@ -112,6 +112,23 @@ KEYMAP: tuple[KeymapEntry, ...] = (
     # same consent path as every human-initiated action).
     KeymapEntry(("p",), "bucket_pane", "Open bucket chat pane", "bucket"),
     KeymapEntry(("y",), "arm_proposal", "Review agent proposal (arm)", "proposal"),
+    # Resolution-evidence unit (§3.4/§3.6, spec §4 "Success-leg
+    # bindings"): the three navigation links on the success leg
+    # (evidence.html) — genuinely new actions, genuinely new keys,
+    # never reusing `confirm`/`disarm` (keymap.py:88-102 above records
+    # exactly that reuse-a-generic-action class of defect: the `c`
+    # failure was a DUPLICATE `data-key-action`, not a missing entry).
+    # Picked from the free-key set named in the spec (`h j k l m u v
+    # z`) — `h` deliberately excluded: it is already printed on the
+    # header back-link and bound to nothing (ui-walks.md W2-F1), and
+    # claiming it here would encode that pre-existing defect into a
+    # uniqueness test rather than fixing it (out of scope for this
+    # unit — §2.4). The success leg is DOM-presence-scoped like every
+    # other leg here — no context filter (§3.6): it only exists in the
+    # document while a `[data-verb-success]` element is rendered.
+    KeymapEntry(("j",), "success_next", "Next pending record", "success"),
+    KeymapEntry(("u",), "success_bucket", "Back to the bucket", "success"),
+    KeymapEntry(("v",), "success_view", "View the record", "success"),
     KeymapEntry(("?",), "help", "Help overlay", "global"),
 )
 

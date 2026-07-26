@@ -35,8 +35,8 @@ from . import report as report_mod
 from . import hosts as hosts_mod
 from . import reconcile as reconcile_mod
 from . import gitops, miner, selfcheck, sentinel, telemetry, verbs, worker
-from .chezmoi import ChezmoiAbort, ChezmoiError
-from .compilers import CompileError
+from .chezmoi import ChezmoiAbort, ChezmoiError, UserScopeResult
+from .compilers import CompileError, ReferenceResult
 from .import_backlog import import_backlog
 from .import_common import ImporterError
 from .import_memory import import_memory, prune_memory
@@ -156,7 +156,9 @@ def _build_parser() -> argparse.ArgumentParser:
         "layout (doc 13 §3; C1 §2.2)",
     )
 
-    def _verb(name: str, help_text: str) -> argparse.ArgumentParser:
+    def _verb(
+        name: str, help_text: str, *, json_flag: bool = False
+    ) -> argparse.ArgumentParser:
         p = sub.add_parser(name, help=help_text)
         p.add_argument("--note", metavar="TEXT", help="resolution note → commit body")
         p.add_argument(
@@ -165,9 +167,24 @@ def _build_parser() -> argparse.ArgumentParser:
             dest="no_push",
             help="commit exactly as pinned, skip only the push",
         )
+        if json_flag:
+            # Resolution-evidence unit (§2.1/§3.1): a machine envelope on
+            # stdout, populated ONLY on a successful (exit 0) run — never
+            # a second outcome channel. Scoped to route/reject/defer/
+            # graduate (the resolution verbs the UI's evidence surface
+            # drives) — never rehome/supersede/confirm-recurrence/
+            # confirm-held, which stay text-only.
+            p.add_argument(
+                "--json",
+                action="store_true",
+                dest="as_json",
+                help="emit a machine-readable outcome envelope on stdout "
+                "and nothing else — success/failure is still the exit "
+                "status, never this JSON (07 §4 contract 2)",
+            )
         return p
 
-    route = _verb("route", "route a pending record into canon")
+    route = _verb("route", "route a pending record into canon", json_flag=True)
     route.add_argument("id", metavar="ID")
     route.add_argument(
         "--dest",
@@ -209,14 +226,18 @@ def _build_parser() -> argparse.ArgumentParser:
         "files); the bypass is recorded in the routing block",
     )
 
-    reject = _verb("reject", "reject a pending record")
+    reject = _verb("reject", "reject a pending record", json_flag=True)
     reject.add_argument("id", metavar="ID")
 
-    defer = _verb("defer", "defer a pending record (default +30 d)")
+    defer = _verb(
+        "defer", "defer a pending record (default +30 d)", json_flag=True
+    )
     defer.add_argument("id", metavar="ID")
     defer.add_argument("--until", metavar="YYYY-MM-DD", help="explicit defer date")
 
-    graduate = _verb("graduate", "mark a lesson graduated into authored canon")
+    graduate = _verb(
+        "graduate", "mark a lesson graduated into authored canon", json_flag=True
+    )
     graduate.add_argument("id", metavar="ID")
 
     rehome = _verb(
@@ -902,22 +923,195 @@ def _phase_note(push: gitops.PushResult | None) -> str:
     return "PUSH FAILED — commit kept; run `self-learn push`"
 
 
-def _finish_verb(result: verbs.VerbResult, target: str) -> int:
+# ------------------------------------------------ resolution-evidence (§2.1)
+#
+# The `--json` envelope for route/reject/defer/graduate. Built ENTIRELY
+# from typed `VerbResult` attributes — never by re-parsing `commit_message`
+# (that class of mistake is what `_routed_destination` / the `" until "`
+# split below still do, for the UNRELATED plain-text summary line only;
+# this envelope path never calls them). `outcome_state` is derived HERE,
+# CLI-side (§3.3): `compile_result` is a Python object that exists only in
+# this process, so the surface renders the value and evaluates no
+# predicate of its own.
+
+
+def _push_state(push: gitops.PushResult | None) -> str:
+    """One of the three states §2.1's `pushed`/`host_pushed` rows require
+    the envelope to tell apart — never a formatted sentence (§3.1: the
+    envelope carries machine structure, the surface does the wording)."""
+    if push is None:
+        return "not_requested"  # --no-push
+    if push.skipped:
+        return "no_remote"
+    return "pushed" if push.ok else "failed"
+
+
+def _created_flag(compile_result: object) -> bool | None:
+    """`SectionResult.bootstrapped` / `ReferenceResult.created` /
+    `NewSkillApplyResult.scaffolded` — whichever the result type carries.
+    `None` for a result type with none of the three (hook, user-scope):
+    those are not a "created vs appended" shape at all.
+
+    `bootstrapped=True` means the managed-section MARKERS were absent and
+    got appended — NOT that the file itself was created (compilers.py:118
+    docstring). A `claude-md` route DOES create a missing target file
+    first (verbs.py ~1663); `skill-md` never does (preflight refuses a
+    missing target). This function reports the per-type boolean
+    verbatim and nothing more — the surface must render it as "added a
+    section" wording, never "created this file", or it claims a file
+    creation this field was never able to prove."""
+    if compile_result is None:
+        return None
+    for attr in ("bootstrapped", "created", "scaffolded"):
+        if hasattr(compile_result, attr):
+            return bool(getattr(compile_result, attr))
+    return None
+
+
+def _reports_no_change(compile_result: object) -> bool:
+    """The §3.3 state-2 (`no_op`) per-type read — no field is shared
+    across every compile-result type, so each is read on its own terms:
+    ``SectionResult``/``HookApplyResult``/``NewSkillApplyResult`` share
+    ``.changed`` (duck-typed, read generically below); ``ReferenceResult``
+    has ``.applied`` instead; ``UserScopeResult`` has neither — read
+    ``.section.changed`` (chezmoi.py:119-132)."""
+    if isinstance(compile_result, UserScopeResult):
+        return not compile_result.section.changed
+    if isinstance(compile_result, ReferenceResult):
+        return not compile_result.applied
+    changed = getattr(compile_result, "changed", None)
+    if changed is not None:
+        return not changed
+    return False  # unrecognized result type: never silently claim no_op
+
+
+def _outcome_state(result: verbs.VerbResult) -> str:
+    """§3.3's four states plus `unknown`, derived CLI-side.
+
+    Verb-aware, and deliberately NOT one predicate applied uniformly:
+    the literal ``compile_result is None and host_commit_sha is None``
+    drift key only means "a host write was attempted and failed" for
+    `route`, where a real success always sets `compile_result` (so
+    `None` proves `_host_phase` caught one of `_HOST_PHASE_ERRORS`).
+
+    `reject`/`defer` never attempt a host write at all — the ledger
+    resolution IS the whole verb, so "landed" is the only honest label
+    (never `no_op`: §3.3 state 2's own text is "nothing changed **plus
+    the existing file**", which is false copy for a reject that just
+    moved the record to `resolved/`).
+
+    `graduate`'s retirement host phase discards its compile object even
+    on a genuine success (`_, host_sha = _host_phase(...)`,
+    verbs.py:1570 in `_retirement_host_phase`) — so `compile_result` is
+    ALWAYS `None` on a `VerbResult` from `graduate`, success or not.
+    Worse, `_retirement_preflight` (verbs.py:1514) returns an empty
+    `_Retirement()` — no host phase even attempted — whenever the
+    graduated record was never routed at all, which is graduate's own
+    documented second door: "a pending already-canon one (the
+    bulk-acknowledge door)" (verbs.py ~2907). Applying route's literal
+    predicate here would report EVERY bulk-acknowledge as "drift",
+    telling the user to `recompile` canon that never existed. A genuine
+    retirement failure still surfaces via `warnings` regardless (§3.7
+    renders it on the success leg unconditionally) — this function only
+    controls the summary label, never the repair text."""
+    if result.action in ("reject", "defer"):
+        return "landed"
+    if result.action == "graduate":
+        return "landed" if result.host_commit_sha is not None else "no_op"
+    # route: the full 4-state predicate.
+    if result.host_commit_sha is not None:
+        return "landed"
+    if result.compile_result is None:
+        return "drift"
+    if _reports_no_change(result.compile_result):
+        return "no_op"
+    if isinstance(result.compile_result, UserScopeResult) or result.variant == "local":
+        return "wrote_uncommitted"
+    return "unknown"
+
+
+def _canon_path(result: verbs.VerbResult) -> str | None:
+    """`target` is the canon path (§0's ruling: never `staged`) — but a
+    `reference` route's `TargetSpec.target` is `None` by construction
+    (verbs.py's reference branch of `_resolve_target`: the references
+    file is discovered per-record at COMPILE time, not known ahead of
+    it, so nothing is threaded into `TargetSpec.target`). That left
+    `canon_path` reading `None` even on a landed reference-route
+    success — code-gate finding 1 (BLOCKER): the render surface then
+    interpolated it unguarded, printing literal "in `None`". Fall back
+    to `ReferenceResult.path`, the one compile-result type that carries
+    its own path outside `target`; still `None` for graduate/defer
+    (nothing to fall back to) and for a genuine drift (no compile
+    result reached at all)."""
+    if result.target is not None:
+        return str(result.target)
+    if isinstance(result.compile_result, ReferenceResult):
+        return str(result.compile_result.path)
+    return None
+
+
+def _verb_envelope(result: verbs.VerbResult) -> dict:
+    """The §2.1 envelope, verb-shape-agnostic — every field is present
+    for every verb; verb-specific ones (`canon_path`, `destination`,
+    `variant`, `deferred_until`) are `None` where they do not apply. The
+    surface picks what to render per §3.2's per-verb content table."""
+    return {
+        "action": result.action,
+        "record_id": result.record_id,
+        # target — NEVER staged (the ledger's own resolved/ path). See
+        # §2.1: a toast sourcing "paths written" from `staged` would show
+        # a ledger record path on every verb, including defer. Falls
+        # back to ReferenceResult.path for the one destination whose
+        # TargetSpec.target is never set (see _canon_path).
+        "canon_path": _canon_path(result),
+        "host_commit_sha": result.host_commit_sha,
+        # reject's "moved to resolved/" content — the LEDGER paths.
+        "ledger_paths": [str(p) for p in result.staged],
+        "commit_message": result.commit_message,
+        "destination": result.destination,
+        "variant": result.variant,
+        "deferred_until": result.deferred_until,
+        "warnings": list(result.warnings),
+        "created": _created_flag(result.compile_result),
+        "outcome_state": _outcome_state(result),
+        "over_cap": result.over_cap_note(),
+        "pushed": _push_state(result.push),
+        # `None` when no host commit ever happened — "pushed" is moot,
+        # never rendered as "you chose not to" for a verb that had
+        # nothing to push in the first place.
+        "host_pushed": (
+            _push_state(result.host_push)
+            if result.host_commit_sha is not None
+            else None
+        ),
+    }
+
+
+def _finish_verb(result: verbs.VerbResult, target: str, *, as_json: bool = False) -> int:
     """One-line success summary: id, action, target, short sha, push state
     (ledger AND host). Exit 0, or the distinct push-failure code — a HOST
     push failure counts exactly like a ledger one (MAJOR 4).
 
     A hook route carries the ENTIRE generated script as ``diff`` (08 §8.1
     approval flow — never a summary) and the required manual steps as
-    ``post_notes`` (M3-11): both print here, script first."""
-    if result.diff:
-        print(result.diff)
-    print(
-        f"{result.action} {result.record_id} → {target} "
-        f"@ {result.commit_sha[:7]} ({push_note(result)})"
-    )
-    for note_line in result.post_notes:
-        print(note_line)
+    ``post_notes`` (M3-11): both print here, script first — UNLESS
+    ``as_json``, where §4 pins stdout as "the envelope and NOTHING else":
+    `diff` and `post_notes` are both stdout-bound prose (a hook's entire
+    generated script; multi-line manual-step text) that would otherwise
+    turn stdout into "JSON-then-prose". Exit status and stderr (warnings,
+    the over-cap note, the push-failure code) are UNCHANGED either way —
+    `--json` never moves the outcome, only how it is printed."""
+    if as_json:
+        print(json.dumps(_verb_envelope(result)))
+    else:
+        if result.diff:
+            print(result.diff)
+        print(
+            f"{result.action} {result.record_id} → {target} "
+            f"@ {result.commit_sha[:7]} ({push_note(result)})"
+        )
+        for note_line in result.post_notes:
+            print(note_line)
     for warning in result.warnings:
         print(warning, file=sys.stderr)
     if (note := result.over_cap_note()) is not None:
@@ -971,10 +1165,12 @@ def _cmd_verb(args: argparse.Namespace) -> int:
                 collapse=args.collapse,
                 allow_empty_glob=args.allow_empty_glob,
             )
-            return _finish_verb(result, _routed_destination(result))
+            return _finish_verb(
+                result, _routed_destination(result), as_json=args.as_json
+            )
         if args.command == "reject":
             result = verbs.reject(home, args.id, note=args.note, no_push=args.no_push)
-            return _finish_verb(result, "rejected")
+            return _finish_verb(result, "rejected", as_json=args.as_json)
         if args.command == "defer":
             until = None
             if args.until is not None:
@@ -992,12 +1188,14 @@ def _cmd_verb(args: argparse.Namespace) -> int:
             )
             # pinned subject: "self-learn: defer lrn-… until <date>"
             until_str = result.commit_message.rsplit(" until ", 1)[1]
-            return _finish_verb(result, f"deferred until {until_str}")
+            return _finish_verb(
+                result, f"deferred until {until_str}", as_json=args.as_json
+            )
         if args.command == "graduate":
             result = verbs.graduate(
                 home, args.id, note=args.note, no_push=args.no_push
             )
-            return _finish_verb(result, "canon")
+            return _finish_verb(result, "canon", as_json=args.as_json)
         if args.command == "rehome":
             result = verbs.rehome(
                 home, args.id, to=args.to, note=args.note, no_push=args.no_push

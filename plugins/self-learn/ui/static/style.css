@@ -366,6 +366,38 @@ body:has(.proposal-bar[data-proposal="waiting"]) .keymap-footer-entry[data-conte
   display: inline;
 }
 
+/* Resolution-evidence unit (§3.4/§3.6): the success leg's navigation
+   keys show only while a [data-verb-success] strip is rendered — same
+   DOM-presence pattern as holding/pane/proposal above, never a
+   context-filtered dispatcher (§3.6: dispatch stays global first-match;
+   this filters DISPLAY only).
+
+   Gated PER KEY, not per strip. Code-gate finding (MAJOR): the first
+   version keyed the whole `data-context="success"` group off the strip,
+   but the three links are INDIVIDUALLY conditional — `success_view`
+   renders only for `defer`, `success_next` only when the bucket has
+   another pending record. So a route confirm printed "View the record
+   (v)" and "Next pending record (j)" in the footer with no element for
+   either to dispatch to. That is this codebase's signature defect —
+   `c` shipped it, then `h`, and §0 rule 6 named §3.6 as the place this
+   unit would most likely make it three. It did.
+
+   Each key is now gated on ITS OWN element existing, so the footer
+   cannot advertise a key the page does not carry.
+
+   Adding a success key means adding its rule HERE. Forgetting is caught
+   by TestSuccessFooterNeverAdvertisesADeadKey's `unadvertised` half —
+   and only that half: the `dead` half fails open, because a missing rule
+   leaves the entry at its `display: none` default and "every entry shown
+   has an element" is trivially true of an entry nobody shows. That gap
+   was measured, not theorised — a 4th key with no rule left the whole
+   suite green until the second assertion existed. */
+body:has([data-key-action="success_next"]) .keymap-footer-entry[data-action="success_next"],
+body:has([data-key-action="success_bucket"]) .keymap-footer-entry[data-action="success_bucket"],
+body:has([data-key-action="success_view"]) .keymap-footer-entry[data-action="success_view"] {
+  display: inline;
+}
+
 /* Armed state is modal by design (Enter confirms, any key cancels) —
    the keyboard can never stack a second armed bar, but a MOUSE click
    on another bar's trigger could, leaving Enter aimed at whichever bar
@@ -495,6 +527,56 @@ kbd {
 
 .error-strip p {
   margin: 0;
+}
+
+/* Resolution-evidence unit (§2.2/§3.5): the success leg beside the
+   error strip above — "one surface, two legs", never a floating toast
+   (§2.2: "do not spend design effort making this look like a floating
+   toast"). PERSISTENT, no auto-dismiss (§3.5): no animation, no timed
+   opacity fade — this codebase has shipped an `opacity: 0` element that
+   test automation called visible (§5's own perceptual-test warning), so
+   this rule is deliberately plain and always fully opaque while
+   present. Released only by navigating away (app.js's Y-16 leg (f)). */
+.verb-success {
+  background: var(--slu-success-bg);
+  color: var(--slu-success);
+  border: 1px solid color-mix(in srgb, var(--slu-success) 30%, transparent);
+  padding: 0.55rem 0.9rem;
+  border-radius: var(--slu-radius-sm);
+  margin: 0.5rem 0;
+  font-size: 0.9rem;
+  opacity: 1;
+}
+
+.verb-success p {
+  margin: 0 0 0.35rem;
+}
+
+.verb-success p:last-child {
+  margin-bottom: 0;
+}
+
+.verb-success .evidence-drift {
+  font-weight: 600;
+}
+
+.verb-success .evidence-warning {
+  color: var(--slu-warning);
+  font-size: 0.85rem;
+}
+
+/* Code-gate finding 6: the push-state notes (no_remote / not_requested) —
+   informational, not a warning, so a plain demoted tone rather than
+   --slu-warning. */
+.verb-success .evidence-note {
+  opacity: 0.8;
+  font-size: 0.85rem;
+}
+
+.verb-success .evidence-nav {
+  display: flex;
+  gap: 0.9rem;
+  margin-top: 0.5rem;
 }
 
 /* Y-16 (U14): the persistent host-add error rendering — the plain-words

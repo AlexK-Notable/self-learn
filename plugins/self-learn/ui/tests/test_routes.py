@@ -1001,6 +1001,9 @@ class TestArmDisarmConfirm:
         assert "Approve (e)" in r.text
 
     def test_confirm_route_calls_runner_with_exact_argv(self, tmp_path: Path) -> None:
+        """Resolution-evidence unit (§2.1/§4): route/reject/defer/graduate
+        now carry `--json` on every confirm — the CLI envelope this unit
+        renders as the success leg."""
         sb, rec = self._seed(tmp_path)
         c, runner = make_client(sb)
         r = c.post(
@@ -1010,7 +1013,7 @@ class TestArmDisarmConfirm:
         )
         assert r.status_code == 200
         assert runner.calls == [
-            ["route", rec.id, "--dest", "skill-md", "--note", "good call"]
+            ["route", rec.id, "--dest", "skill-md", "--json", "--note", "good call"]
         ]
 
     def test_confirm_reject_argv(self, tmp_path: Path) -> None:
@@ -1021,7 +1024,7 @@ class TestArmDisarmConfirm:
             data={"verb": "reject", "kind": "detail", "note": "not worth it"},
             headers={"HX-Request": "true"},
         )
-        assert runner.calls == [["reject", rec.id, "--note", "not worth it"]]
+        assert runner.calls == [["reject", rec.id, "--json", "--note", "not worth it"]]
 
     def test_confirm_defer_argv(self, tmp_path: Path) -> None:
         sb, rec = self._seed(tmp_path)
@@ -1031,7 +1034,7 @@ class TestArmDisarmConfirm:
             data={"verb": "defer", "kind": "detail", "until": "2026-08-01"},
             headers={"HX-Request": "true"},
         )
-        assert runner.calls == [["defer", rec.id, "--until", "2026-08-01"]]
+        assert runner.calls == [["defer", rec.id, "--until", "2026-08-01", "--json"]]
 
     def test_confirm_graduate_argv(self, tmp_path: Path) -> None:
         sb, rec = self._seed(tmp_path)
@@ -1041,7 +1044,7 @@ class TestArmDisarmConfirm:
             data={"verb": "graduate", "kind": "detail"},
             headers={"HX-Request": "true"},
         )
-        assert runner.calls == [["graduate", rec.id]]
+        assert runner.calls == [["graduate", rec.id, "--json"]]
 
     def test_confirm_requires_cookie_and_hx_request(self, tmp_path: Path) -> None:
         sb, rec = self._seed(tmp_path)
@@ -1773,6 +1776,11 @@ class TestDestinationCorrection:
 
 class TestAdvanceAndBucketClear:
     def test_advance_to_next_record_in_same_bucket(self, tmp_path: Path) -> None:
+        """Resolution-evidence unit (§3.4/DoD #6): `reject` is one of the
+        four evidence-bearing verbs, so a successful confirm no longer
+        auto-navigates — the evidence leg's "next pending record" link
+        carries the SAME target the old auto-redirect used to jump to,
+        but the human chooses whether to follow it."""
         sb = make_env(tmp_path)
         older = make_behavior(scope="skill:s", created_at="2026-01-01T00:00:00Z")
         newer = make_behavior(scope="skill:s", created_at="2026-01-05T00:00:00Z")
@@ -1785,10 +1793,16 @@ class TestAdvanceAndBucketClear:
             headers={"HX-Request": "true"},
         )
         assert r.status_code == 200
-        redirect = r.headers.get("hx-redirect")
-        assert redirect == f"/record/{newer.id}"
+        assert r.headers.get("hx-redirect") is None
+        assert 'data-verb-success="true"' in r.text
+        assert f'href="/record/{newer.id}"' in r.text
+        assert 'data-key-action="success_next"' in r.text
 
-    def test_bucket_clear_redirects_front_with_notice(self, tmp_path: Path) -> None:
+    def test_bucket_clear_shows_no_next_record_link(self, tmp_path: Path) -> None:
+        """Same DoD #6 change: when the bucket is emptied, the evidence
+        leg has nothing to advance to — no `success_next` link — but
+        still offers "back to the bucket" (the bucket page itself still
+        exists, just with zero pending)."""
         sb = make_env(tmp_path)
         rec = make_behavior(scope="skill:s")
         seed_record(sb.ledger, rec)
@@ -1798,7 +1812,10 @@ class TestAdvanceAndBucketClear:
             data={"verb": "reject", "kind": "detail"},
             headers={"HX-Request": "true"},
         )
-        assert r.headers.get("hx-redirect") == "/?notice=bucket-clear"
+        assert r.headers.get("hx-redirect") is None
+        assert 'data-verb-success="true"' in r.text
+        assert 'data-key-action="success_next"' not in r.text
+        assert 'href="/bucket/skill/s"' in r.text
 
 
 class TestNextRecordUrlPure:
@@ -1898,7 +1915,9 @@ class TestClusterCollapse:
             headers={"HX-Request": "true"},
         )
         assert confirm.status_code == 200
-        assert runner.calls == [["route", rec1.id, "--collapse", "merge-deadbeef"]]
+        assert runner.calls == [
+            ["route", rec1.id, "--collapse", "merge-deadbeef", "--json"]
+        ]
 
 
 class TestHoldingRowTC:
@@ -2087,6 +2106,11 @@ class TestContradictsOffer:
         ).exists()
 
     def test_route_without_contradicts_advances_directly(self, tmp_path: Path) -> None:
+        """Resolution-evidence unit (§3.4/DoD #6): no contradicts, no
+        adopt hint — the plain success leg renders in place of the old
+        auto-redirect. `default FakeRunner` returns empty stdout, so the
+        envelope never parses and this degrades to the generic
+        acknowledgement — still `data-verb-success`, never silence."""
         sb = make_env(tmp_path)
         rec = make_behavior(scope="skill:s")
         seed_record(sb.ledger, rec)
@@ -2097,7 +2121,8 @@ class TestContradictsOffer:
             data={"verb": "route", "kind": "detail", "dest": "skill-md"},
             headers={"HX-Request": "true"},
         )
-        assert r.headers.get("hx-redirect") == "/?notice=bucket-clear"
+        assert r.headers.get("hx-redirect") is None
+        assert 'data-verb-success="true"' in r.text
 
 
 class TestAdoptOffer:
@@ -2201,8 +2226,10 @@ class TestAdoptOffer:
         assert cancel.status_code == 200
         assert "Bring under chezmoi (sync across machines)" in cancel.text
         assert "Not now" in cancel.text
-        # only the ORIGINAL route call happened — Cancel never runs chezmoi-adopt.
-        assert runner.calls == [["route", rec.id, "--dest", "claude-md"]]
+        # only the ORIGINAL route call happened — Cancel never runs
+        # chezmoi-adopt. Resolution-evidence unit: `route` now carries
+        # `--json` on every confirm.
+        assert runner.calls == [["route", rec.id, "--dest", "claude-md", "--json"]]
 
     def test_decline_wipes_the_offer(self, tmp_path: Path) -> None:
         sb = make_env(tmp_path)
@@ -2247,7 +2274,8 @@ class TestAdoptOffer:
             headers={"HX-Request": "true"},
         )
         assert "data-adopt-offer" not in r.text
-        assert r.headers.get("hx-redirect") == "/?notice=bucket-clear"
+        assert r.headers.get("hx-redirect") is None
+        assert 'data-verb-success="true"' in r.text
 
     def test_contradicts_offer_wins_when_both_would_fire(
         self, tmp_path: Path

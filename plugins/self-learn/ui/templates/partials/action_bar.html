@@ -8,6 +8,9 @@
    defers a broadcast reload over ANY armed bar; reusing it (never new
    JS) is what makes the file list survive a stray SSE refresh mid-tap. #}
 <div id="{{ dom_id }}" class="action-bar" data-armed="{{ 'true' if (armed or (commit_drift and commit_drift.armed)) else 'false' }}" data-key-context="{{ kind }}">
+  {% if evidence %}
+  {% include "partials/evidence.html" %}
+  {% endif %}
   {% if error %}
   {# live-trial defect fix (f5-errstrip): this strip predates app.js's
      Y-16 leg (a) ([data-verb-error] defers a broadcast reload) and never
@@ -152,6 +155,15 @@
           hx-target="#adopt-offer-{{ record_id }}" hx-swap="outerHTML">Not now</button>
 
   {% else %}
+  {# Resolution-evidence unit (§3.4/advisor guidance): the default quad
+     is guarded — never additive with the success leg above, or `e`
+     re-arms a route on a record that already resolved (§3.6: "the
+     buttons leave the DOM" would be false otherwise). The offer
+     branches above (contradicts/adopt) stay reachable regardless —
+     they compose WITH evidence by design (§3.4 ruling), so only this
+     bare unarmed quad — the one shape with nothing to compose with —
+     is suppressed. #}
+  {% if not evidence %}
   <form id="form-{{ dom_id }}">
     <input type="hidden" name="dest" value="{{ dest or '' }}">
     <label>Note <input type="text" name="note" placeholder="optional resolution note"></label>
@@ -213,5 +225,6 @@
        above is what the arm/confirm executes, this says why it changed. #}
     {% if dest_note %}<p class="dest-note">{{ dest_note }}</p>{% endif %}
   </form>
+  {% endif %}
   {% endif %}
 </div>

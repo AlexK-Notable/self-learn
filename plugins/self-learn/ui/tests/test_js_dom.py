@@ -960,6 +960,210 @@ class TestReloadDeferLegE:
         _assert_reloaded(page)
 
 
+class TestReloadDeferLegF:
+    """Leg (f), resolution-evidence unit (spec §3.5's app.js extension of
+    the Y-16 chokepoint): a [data-verb-success] element in the document
+    defers a broadcast reload — the success-leg analog of leg (a)'s
+    [data-verb-error]. Drives the REAL confirm route (FakeRunner-backed,
+    but a real uvicorn + real app.js + real SSE push), not a synthetic
+    stand-in — so the assertion also closes the loop that
+    ``action_bar.html``'s evidence include really does emit the marker
+    ``app.js``'s selector reads, the same "does the template actually
+    carry the attribute" concern ``TestCommitDriftArmedSurvivesRefresh``
+    raised for its own new sub-state above.
+
+    This is precisely the gap the spec's persistence test-plan bullet
+    names: ``action_bar.html``'s own comment records that "FakeRunner
+    tests never push the post-subprocess refresh, so this was invisible
+    to the suite" — the exact mechanism that shipped the U14 error-strip
+    wipe bug at this same file. The FakeRunner-driven TestClient tests in
+    ``test_resolution_evidence.py`` prove the marker renders; only a real
+    uvicorn + real app.js + a real pushed refresh can prove it survives
+    one."""
+
+    def test_verb_success_defers_then_fires_on_navigation(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        _open(page, server, f"/record/{REC_BRIEF}")
+        envelope = {
+            "action": "reject",
+            "record_id": REC_BRIEF,
+            "canon_path": None,
+            "host_commit_sha": None,
+            "ledger_paths": [f"skills/s/resolved/{REC_BRIEF}.md"],
+            "commit_message": f"self-learn: reject {REC_BRIEF}",
+            "destination": None,
+            "variant": None,
+            "deferred_until": None,
+            "warnings": [],
+            "created": None,
+            "outcome_state": "landed",
+            "over_cap": None,
+            "pushed": "pushed",
+            "host_pushed": None,
+        }
+        server.runner.queue_result(RunResult(0, stdout=json.dumps(envelope)))
+        _arm_reload_sentinel(page)
+
+        # The real "x" path (TestNeverPressedKeymapActions pins "x" arms
+        # reject on this exact record) to arm, then a Locator click to
+        # confirm — Locator.click() auto-waits for the swapped-in button
+        # to be attached/stable/actionable (F2's own established pattern,
+        # e.g. test_14_submitter_carries_disabled), unlike a raw
+        # `keyboard.press("Enter")` immediately after the arm swap, which
+        # measurably races htmx's post-swap processing under full-suite
+        # load and falls through to a native (non-htmx) form GET. Still a
+        # genuine confirm POST/response/swap cycle through the production
+        # route, not a synthetic stand-in.
+        page.keyboard.press("x")
+        page.wait_for_selector(f'#action-bar-{REC_BRIEF}[data-armed="true"]')
+        page.locator('[data-key-action="confirm"]').click()
+        page.wait_for_selector("[data-verb-success]")
+        assert f"skills/s/resolved/{REC_BRIEF}.md" in page.content()
+
+        # THE ASSERTION: a refresh pushed AFTER the success leg has
+        # already settled into the DOM — leg (b)'s in-flight hold
+        # released at that same settle, so it cannot be masking this —
+        # must still be deferred. Before this unit's app.js change,
+        # nothing held it, and this exact push would have reloaded the
+        # page, wiping the just-rendered evidence before a human could
+        # read it.
+        server.push_refresh(f"record:{REC_BRIEF}")
+        _assert_deferred(page)  # leg (f) holds
+
+        # Defer-never-drop: the leg's only pinned release is navigating
+        # away (§3.5 — no dismiss route exists for it). Simulate that,
+        # then a settle re-checks the predicate and releases.
+        page.evaluate('document.querySelector("[data-verb-success]").remove()')
+        _dispatch_htmx(page, "htmx:afterSettle", "/record/x/action/arm")
+        _assert_reloaded(page)
+
+
+class TestSuccessFooterNeverAdvertisesADeadKey:
+    """Code-gate finding (MAJOR): the footer must never print a key the
+    page has nothing to dispatch to.
+
+    ``app.js`` dispatches ``[data-key-action="<action>"]`` globally, so a
+    footer entry whose element is absent is a key a human is TOLD exists
+    and that does nothing. This codebase has shipped that defect twice —
+    ``c`` (three partials sharing one action, fixed 2026-07-25) and ``h``
+    (printed on the header back-link, still open) — and §0 rule 6 of the
+    spec named §3.6 as the place this unit would most likely make it
+    three. It did: ``style.css`` gated the whole ``data-context="success"``
+    group on the STRIP being present, while the three links inside it are
+    INDIVIDUALLY conditional (``success_view`` renders only for ``defer``;
+    ``success_next`` only when the bucket has another pending record). A
+    route confirm therefore advertised ``v`` and ``j`` with neither bound.
+
+    Asserted as the general invariant rather than per key, so a fourth
+    success key added later cannot reintroduce it by omission. Only a
+    real browser can decide this: it turns on COMPUTED display, which no
+    template-string assertion can see (``test_static_assets.py`` only
+    checks that the CSS selector text exists — which stayed true while
+    the bug was live)."""
+
+    def test_route_confirm_footer_advertises_only_keys_that_exist(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        _open(page, server, f"/record/{REC_BRIEF}")
+        envelope = {
+            "action": "route",
+            "record_id": REC_BRIEF,
+            "canon_path": "/host/plugins/s-plugin/skills/s/SKILL.md",
+            "host_commit_sha": "deadbeefcafe",
+            "ledger_paths": [f"skills/s/resolved/{REC_BRIEF}.md"],
+            "commit_message": f"self-learn: route {REC_BRIEF} → skill-md",
+            "destination": "skill-md",
+            "variant": None,
+            "deferred_until": None,
+            "warnings": [],
+            "created": False,
+            "outcome_state": "landed",
+            "over_cap": None,
+            "pushed": "pushed",
+            "host_pushed": "pushed",
+        }
+        server.runner.queue_result(RunResult(0, stdout=json.dumps(envelope)))
+
+        page.keyboard.press("e")
+        page.wait_for_selector(f'#action-bar-{REC_BRIEF}[data-armed="true"]')
+        page.locator('[data-key-action="confirm"]').click()
+        page.wait_for_selector("[data-verb-success]")
+
+        # ANCHOR, first: both assertions below iterate sets that can be
+        # empty, and both pass vacuously when they are. Measured: forcing
+        # a leg with zero links makes `dead == []` (nothing shown) AND
+        # `unadvertised == []` (nothing to iterate) — the whole class goes
+        # silently green together. No reachable state produces that today
+        # (`bucket_url` comes from `locate_record`, which resolves records
+        # out of `resolved/`; verified against the real CLI for all four
+        # verbs), so this guards against FIXTURE DRIFT rather than a live
+        # defect. Named no key on purpose: pinning `success_bucket` here
+        # would defend only the keys that already have rules, which is the
+        # blind spot this class was rewritten to remove.
+        bound = page.evaluate(
+            """() => Array.from(
+                document.querySelectorAll('[data-key-action^="success_"]')
+            ).map((e) => e.getAttribute("data-key-action"))"""
+        )
+        assert bound, (
+            "no success_* keys rendered at all — both assertions below are "
+            "vacuous; the fixture stopped producing the state this test "
+            "exists to check"
+        )
+
+        dead = page.evaluate(
+            """() => {
+                const out = [];
+                document
+                  .querySelectorAll('.keymap-footer-entry[data-context="success"]')
+                  .forEach((e) => {
+                    if (getComputedStyle(e).display === "none") return;
+                    const action = e.getAttribute("data-action");
+                    if (!document.querySelector('[data-key-action="' + action + '"]'))
+                      out.push(action);
+                  });
+                return out;
+            }"""
+        )
+        assert dead == [], (
+            f"footer advertises {dead} with no element to dispatch to — the "
+            "advertised-key-bound-to-nothing defect, third instance"
+        )
+
+        # The invariant above is HALF of the property, and on its own it
+        # fails open: `.keymap-footer-entry` defaults to `display: none`,
+        # so a key with no CSS rule is simply silent, and "every entry
+        # shown has an element" is trivially true of silence. A footer
+        # showing NOTHING passes it. So does a fourth success key added
+        # with no rule — measured: bound, dispatchable, advertised to
+        # nobody, full suite green.
+        #
+        # An earlier version pinned `success_bucket` by name here, which
+        # only defended the keys that already had rules — the omission it
+        # was supposed to catch was precisely the one it could not see.
+        # Derived from the DOM instead, so it covers keys that do not
+        # exist yet (lrn-ea833a5b: ask what the check reports when it
+        # cannot see its target at all; if that equals "pass", it is
+        # worthless).
+        unadvertised = page.evaluate(
+            """() => Array.from(
+                document.querySelectorAll('[data-key-action^="success_"]')
+            ).map((e) => e.getAttribute("data-key-action"))
+             .filter((action) => {
+                const entry = document.querySelector(
+                  '.keymap-footer-entry[data-action="' + action + '"]');
+                return !entry || getComputedStyle(entry).display === "none";
+             })"""
+        )
+        assert unadvertised == [], (
+            f"{unadvertised} are bound on this page but not advertised in the "
+            "footer — a key nobody is told about. Adding a success key means "
+            "adding its per-key rule to style.css; this is the check that "
+            "notices when you don't."
+        )
+
+
 class TestReloadRaceLiveOrdering:
     """fw32-offer-race (follow-up to U-C3): a LIVE DoD retrial still lost
     the offer after the leg-(d) fix merged — browser landed on

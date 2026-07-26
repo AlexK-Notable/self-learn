@@ -13,13 +13,29 @@
    offer out from under the human before they've armed anything. No
    auto-release is needed — the pinned resolution IS a full page
    navigation (arming+confirming an edge redirects; leaving the page
-   any other way loads a fresh document with no marker at all). #}
+   any other way loads a fresh document with no marker at all).
+
+   `evidence` (resolution-evidence unit, §3.4 ruling): the offer
+   composes WITH the evidence, never in place of it — but rendered
+   ONCE, above the edge list, never threaded into the per-edge
+   action_bar.html includes below. Code-gate finding 4 (MAJOR): an
+   earlier version threaded `evidence` into EVERY edge's include, so a
+   two-edge offer rendered the success leg (and its `success_bucket`/
+   `success_view`/`success_next` keys) twice — a reachable violation of
+   DoD #8's `data-key-action` uniqueness invariant that a single-edge
+   fixture cannot see. Each edge's own include gets `evidence=None`
+   (never omitted — action_bar.html's `{% if evidence %}` must see a
+   falsy value explicitly, not an undefined name) so only its
+   contradicts button renders there. #}
 <div class="contradicts-offer" data-contradicts-offer="true">
+  {% if evidence %}
+  {% include "partials/evidence.html" %}
+  {% endif %}
   <p>Routed. This proposal named conflicting canon:</p>
   {% for edge in edges %}
   <div class="contradicts-edge">
     <p>this conflicts with <code>{{ edge.target }}</code></p>
-    {% with kind="contradicts", armed=None, dom_id=edge.dom_id, target=edge.target, dest=None, event=None, record_id=record_id %}
+    {% with kind="contradicts", armed=None, dom_id=edge.dom_id, target=edge.target, dest=None, event=None, record_id=record_id, evidence=None %}
       {% include "partials/action_bar.html" %}
     {% endwith %}
   </div>

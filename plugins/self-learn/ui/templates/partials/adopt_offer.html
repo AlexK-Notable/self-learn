@@ -11,7 +11,10 @@
 <div id="adopt-offer-{{ record_id }}" class="adopt-offer" data-adopt-offer="true">
   <p>Routed. <code>{{ target }}</code> isn't tracked by chezmoi, so it
     won't sync to your other machines.</p>
-  {% with kind="adopt", armed=None, dom_id=dom_id, target=target, dest=None, event=None, record_id=record_id %}
+  {# `evidence` (resolution-evidence unit, §3.4 ruling): threaded so the
+     success leg renders alongside this offer's own yes/no buttons —
+     the offer composes with the evidence, never in place of it. #}
+  {% with kind="adopt", armed=None, dom_id=dom_id, target=target, dest=None, event=None, record_id=record_id, evidence=evidence %}
     {% include "partials/action_bar.html" %}
   {% endwith %}
 </div>

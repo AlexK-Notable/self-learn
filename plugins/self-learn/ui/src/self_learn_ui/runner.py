@@ -28,6 +28,7 @@ contract 2, restated at 09 §3).
 
 from __future__ import annotations
 
+import json
 import os
 import shlex
 import shutil
@@ -54,11 +55,37 @@ __all__ = [
 class RunResult:
     """A completed verb invocation's outcome — exit status + stderr,
     never parsed stdout (07 §4 contract 2, carried into 09 §3: "never by
-    parsing human-formatted stdout")."""
+    parsing human-formatted stdout"). ``ok`` reads ``exit_code`` alone,
+    always — that invariant is unchanged by ``evidence`` below.
+
+    ``evidence`` (resolution-evidence unit, §3.1): the parsed ``--json``
+    envelope route/reject/defer/graduate print on stdout, or ``None``.
+    This is NOT the exception §3.1's own doctrine forbids — a JSON
+    envelope is machine structure, not "human-formatted stdout", so no
+    carve-out is needed for it to coexist with the rule above. Populated
+    in ``__post_init__`` so both :class:`RealRunner` (a real subprocess's
+    stdout) and :class:`FakeRunner` (a test's scripted ``stdout=``) get
+    it for free from the SAME parse — a test may also pass ``evidence=``
+    directly (e.g. to inject a state with no real fixture behind it,
+    §5's render-layer drift test), which this leaves untouched. A
+    missing, truncated, or unparseable envelope — or a non-zero exit —
+    leaves ``evidence`` `None`: the action still succeeded or failed
+    exactly as ``exit_code`` says; only the DETAIL rendering degrades."""
 
     exit_code: int
     stdout: str = ""
     stderr: str = ""
+    evidence: dict | None = None
+
+    def __post_init__(self) -> None:
+        if self.evidence is not None or self.exit_code != 0:
+            return
+        try:
+            parsed = json.loads(self.stdout)
+        except (json.JSONDecodeError, ValueError):
+            return
+        if isinstance(parsed, dict):
+            object.__setattr__(self, "evidence", parsed)
 
     @property
     def ok(self) -> bool:
@@ -211,10 +238,17 @@ class RealRunner(VerbRunner):
     "applying…" state is visible to every connected tab.
 
     Outcome is ALWAYS the subprocess's exit status + stderr — never
-    parsed stdout (07 §4 contract 2). A forced ledger refresh fires after
-    every completed verb, scoped to the touched record when one is
-    identifiable (:func:`extract_record_id`), else ``front`` (``push``,
-    ``mine run``).
+    parsed HUMAN-FORMATTED stdout (07 §4 contract 2; 09 §3's own wording,
+    restored here — this docstring had dropped the qualifier, which
+    read as a blanket "stdout is never parsed" and would have forbidden
+    the resolution-evidence unit's ``--json`` envelope outright. A JSON
+    envelope is machine structure, not human-formatted text, so
+    :attr:`RunResult.evidence` parsing it is not a carve-out from this
+    rule — ``ok``/exit-status handling below is completely unchanged by
+    it). A forced ledger refresh fires after every completed verb,
+    scoped to the touched record when one is identifiable
+    (:func:`extract_record_id`), else ``front`` (``push``, ``mine
+    run``).
     """
 
     def __init__(

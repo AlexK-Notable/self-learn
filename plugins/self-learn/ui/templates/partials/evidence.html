@@ -1,0 +1,103 @@
+{# Resolution-evidence success leg (§2.2/§3.2/§3.3 of the resolution-
+   evidence spec). One surface, two legs (§2.2 ruling) — this is the
+   SUCCESS leg beside action_bar.html's `error` leg, included from
+   there (never rendered standalone). Also reached, via `evidence=`
+   threaded through contradicts_offer.html/adopt_offer.html's own
+   `{% with %}` blocks, composed alongside those offers — §3.4's
+   ruling: an offer is an ADDITIONAL decision about a resolution that
+   already happened, so suppressing the evidence would hide the thing
+   the offer is about.
+
+   `data-verb-success` joins app.js's Y-16 reload-defer chokepoint, the
+   SAME mechanism the `error` leg's `data-verb-error` marker already
+   uses (action_bar.html's own comment above records why: FakeRunner
+   tests never push a post-verb refresh, so a persistent strip with no
+   defer marker looks fine under test and gets wiped by the very next
+   broadcast SSE refresh in production). Persistent, no auto-dismiss
+   (style.css) — released only by navigating away: the three links
+   below, or leaving the page any other way.
+
+   `outcome_state` is RENDERED here, never recomputed — it was derived
+   CLI-side (§3.3) because the predicates it is built from read
+   `compile_result`, an object that exists only inside the CLI process
+   and never reaches this template. #}
+<div class="verb-success" data-verb-success="true" role="status">
+  {% if evidence.degraded %}
+  <p>{{ evidence.action }} succeeded for <code>{{ evidence.record_id }}</code> —
+    the outcome details could not be read (a malformed or missing
+    envelope); the action itself already succeeded.</p>
+  {% elif evidence.action == "route" %}
+    {% if evidence.outcome_state == "landed" %}
+    <p>Routed <code>{{ evidence.record_id }}</code> —
+      {% if evidence.created %}new section{% else %}appended{% endif %}
+      in {% if evidence.canon_path %}<code>{{ evidence.canon_path }}</code>{% else %}the target{% endif %}{% if evidence.host_commit_sha %}
+      @ <code>{{ evidence.host_commit_sha[:7] }}</code>{% endif %}.</p>
+    {% elif evidence.outcome_state == "no_op" %}
+    <p>Routed <code>{{ evidence.record_id }}</code> — nothing changed;
+      {% if evidence.canon_path %}<code>{{ evidence.canon_path }}</code>{% else %}the target{% endif %} already reflected this lesson.</p>
+    {% elif evidence.outcome_state == "wrote_uncommitted" %}
+    <p>Routed <code>{{ evidence.record_id }}</code> — wrote
+      {% if evidence.canon_path %}<code>{{ evidence.canon_path }}</code>{% else %}the target{% endif %}, not committed.
+      {% if evidence.variant == "local" %}
+      This is a private rules file (gitignored by design): the file
+      stays written on disk, outside git, forever — not committing it
+      is the feature, not a gap.
+      {% else %}
+      This user-scope file is not tracked by chezmoi, so it will not
+      sync to your other machines.
+      {% endif %}</p>
+    {% elif evidence.outcome_state == "drift" %}
+    <p class="evidence-drift">Routed <code>{{ evidence.record_id }}</code> —
+      the ledger committed, but canon did NOT land. Check
+      {% if evidence.canon_path %}<code>{{ evidence.canon_path }}</code>{% else %}the target{% endif %} (the file this run was
+      supposed to write, not confirmation that it did).</p>
+    {% else %}
+    <p>Routed <code>{{ evidence.record_id }}</code> — outcome unknown; check
+      {% if evidence.canon_path %}<code>{{ evidence.canon_path }}</code>{% else %}the target{% endif %}
+      by hand.</p>
+    {% endif %}
+  {% elif evidence.action == "graduate" %}
+  <p>Graduated <code>{{ evidence.record_id }}</code> into authored canon
+    — the entry is retired.{% if evidence.host_commit_sha %} Host commit
+    <code>{{ evidence.host_commit_sha[:7] }}</code>.{% endif %}</p>
+  {% elif evidence.action == "defer" %}
+  <p>Deferred <code>{{ evidence.record_id }}</code> until
+    {{ evidence.deferred_until }}.</p>
+  {% elif evidence.action == "reject" %}
+  <p>Denied <code>{{ evidence.record_id }}</code> — moved to
+    {% if evidence.ledger_paths %}<code>{{ evidence.ledger_paths[0] }}</code>{% else %}resolved/{% endif %}.</p>
+  {% endif %}
+  {% if evidence.over_cap %}<p class="evidence-warning">{{ evidence.over_cap }}</p>{% endif %}
+  {% for w in evidence.warnings %}
+  <p class="evidence-warning">{{ w }}</p>
+  {% endfor %}
+  {# Code-gate finding 6 (MINOR): §2.1's three push states ("pushed" /
+     "no_remote" / "not_requested" — "failed" never reaches this leg at
+     all, since a push failure moves the exit code and routes to the
+     error leg BEFORE evidence is ever built, routes.py's `if not
+     result.ok`) were derived and transported but never rendered, so
+     "nowhere to push" and `--no-push` read identically to "pushed".
+     Silent for the common "pushed" case (no behavior change there) —
+     only the two exceptional states get a line. #}
+  {% if evidence.pushed == "no_remote" %}
+  <p class="evidence-note">Committed to the ledger locally — no remote is configured, so nothing was pushed.</p>
+  {% elif evidence.pushed == "not_requested" %}
+  <p class="evidence-note">Committed to the ledger locally — not pushed (<code>--no-push</code>).</p>
+  {% endif %}
+  {% if evidence.host_pushed == "no_remote" %}
+  <p class="evidence-note">Committed to the host repo locally — no remote is configured, so canon was not pushed.</p>
+  {% elif evidence.host_pushed == "not_requested" %}
+  <p class="evidence-note">Committed to the host repo locally — canon not pushed (<code>--no-push</code>).</p>
+  {% endif %}
+  <p class="evidence-nav">
+    {% if evidence.next_url %}<a href="{{ evidence.next_url }}" data-key-action="success_next">Next pending record (j)</a>{% endif %}
+    {% if evidence.bucket_url %}<a href="{{ evidence.bucket_url }}" data-key-action="success_bucket">Back to the bucket (u)</a>{% endif %}
+    {# Code-gate finding 2 (MAJOR): route/reject/graduate all move the
+       record out of pending/deferred BEFORE this leg renders, so
+       `/record/{id}` 303-redirects to the bucket's resolved-elsewhere
+       banner for those three — never a diff. `record_url` is only set
+       (routes.py's `_evidence_ctx`) for `defer`, the one verb that
+       leaves the record genuinely viewable there. #}
+    {% if evidence.record_url %}<a href="{{ evidence.record_url }}" data-key-action="success_view">View the record (v)</a>{% endif %}
+  </p>
+</div>

@@ -256,6 +256,18 @@ class VerbResult:
     host_commit_sha: str | None = None
     host_push: gitops.PushResult | None = None
     target: Path | None = None  # the compiled canon file (host side)
+    # Resolution-evidence unit (§2.1): three genuinely new fields. All
+    # `route`-only (`None` on every other verb) EXCEPT `deferred_until`,
+    # which is `defer`-only — never derived by re-parsing `commit_message`
+    # (that is what `cli.py`'s `_routed_destination` / the `" until "`
+    # split used to do; those still exist for the plain-text summary
+    # line, which is unrelated and unchanged). `destination`/`variant`
+    # are `spec.destination`/`spec.variant` verbatim — `variant` is what
+    # lets a `claude-md:local` route be told apart from a managed
+    # `claude-md` route: nothing else on this dataclass does.
+    destination: str | None = None
+    variant: str | None = None
+    deferred_until: str | None = None
 
 
 # ------------------------------------------------------------------ helpers
@@ -2167,6 +2179,8 @@ def route(
             host_commit_sha=host_sha,
             host_push=host_push,
             target=spec.target,
+            destination=spec.destination,
+            variant=spec.variant,
         )
     finally:
         hold.release()  # (g) release iff owned
@@ -2774,6 +2788,7 @@ def defer(
             staged=staged,
             push=push,
             sentinel_owned=hold.owned,
+            deferred_until=deferred_until,
         )
     finally:
         hold.release()

@@ -533,7 +533,8 @@ class TestResolveUnderIterationInterruptsFirst:
         assert manager.active_record_id is None
         # The interrupt had ALREADY happened by the time the verb argv
         # was dispatched — ordering, not just eventual state.
-        reject_call_index = [c for c in runner.calls].index(["reject", rec.id])
+        # Resolution-evidence unit: `reject` carries `--json` now.
+        reject_call_index = [c for c in runner.calls].index(["reject", rec.id, "--json"])
         assert runner.interrupt_calls_at_dispatch[reject_call_index] == 1
 
     def test_bulk_graduate_interrupts_each_id_under_iteration_first(self, tmp_path: Path) -> None:

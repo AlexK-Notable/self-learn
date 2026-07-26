@@ -655,9 +655,16 @@ class TestProposalRoutes:
             data={"record_id": rec.id, "kind": "detail", "nonce": armed_prop.nonce},
             headers=HX,
         )
-        assert ["defer", rec.id, "--until", "2026-09-01", "--note", "agent thought"] in runner.calls
+        # Resolution-evidence unit: `defer` carries `--json` on every
+        # confirm now, and — being one of the four evidence-bearing
+        # verbs — no longer auto-redirects (§3.4's 4th site: the
+        # pane-proposal confirm path).
+        assert [
+            "defer", rec.id, "--until", "2026-09-01", "--json", "--note", "agent thought"
+        ] in runner.calls
         assert manager.proposal_slot.current is None
-        assert "HX-Redirect" in resp.headers
+        assert "HX-Redirect" not in resp.headers
+        assert 'data-verb-success="true"' in resp.text
 
     def test_confirm_on_waiting_bar_executes_nothing(self, tmp_path: Path) -> None:
         """Enter never acts on a waiting bar — and even a forged confirm
@@ -725,7 +732,7 @@ class TestProposalRoutes:
             data={"verb": "route", "kind": "detail", "dest": "skill-md"},
             headers=HX,
         )
-        assert ["route", rec.id, "--dest", "skill-md"] in runner.calls
+        assert ["route", rec.id, "--dest", "skill-md", "--json"] in runner.calls
         assert not any(call and call[0] == "reject" for call in runner.calls)
 
     def test_no_full_page_render_ever_has_two_armed_bars(self, tmp_path: Path) -> None:
@@ -908,6 +915,10 @@ class TestBucketPane:
         assert 'data-proposal="waiting"' in page
 
     def test_bucket_confirm_redirects_to_bucket_page(self, tmp_path: Path) -> None:
+        """Resolution-evidence unit (§3.4's 4th site): `graduate` is one
+        of the four evidence-bearing verbs, so this no longer redirects
+        — the evidence leg renders with a "back to the bucket" link
+        carrying the SAME target the old auto-redirect used to jump to."""
         sb, (rec,) = _seed(tmp_path)
         c, runner, manager = make_client(sb)
         prop = VerbProposal(
@@ -921,8 +932,10 @@ class TestBucketPane:
             data={"record_id": rec.id, "kind": "bucket", "nonce": prop.nonce},
             headers=HX,
         )
-        assert ["graduate", rec.id] in runner.calls
-        assert resp.headers.get("HX-Redirect") == "/bucket/skill/s"
+        assert ["graduate", rec.id, "--json"] in runner.calls
+        assert resp.headers.get("HX-Redirect") is None
+        assert 'data-verb-success="true"' in resp.text
+        assert 'href="/bucket/skill/s"' in resp.text
 
     def test_bucket_confirm_failure_error_strip_carries_reload_defer_marker(
         self, tmp_path: Path

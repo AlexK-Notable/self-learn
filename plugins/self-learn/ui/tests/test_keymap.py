@@ -29,6 +29,11 @@ EXPECTED_ACTIONS = {
     "arm_proposal",
     "help",
     "toggle_brief",
+    # Resolution-evidence unit (§3.4/§3.6): the success leg's three
+    # navigation links.
+    "success_next",
+    "success_bucket",
+    "success_view",
 }
 
 
@@ -89,6 +94,23 @@ def test_pinned_key_bindings() -> None:
     assert by_action["help"] == ("?",)
     # Y-21 (09 §2.3/§11, 2026-07-18): the episode-brief disclosure toggle.
     assert by_action["toggle_brief"] == ("b",)
+    # Resolution-evidence unit (§3.4/§3.6): picked from the spec's own
+    # free-key set (h j k l m u v z) — `h` deliberately excluded (see
+    # test_success_row_never_claims_h below).
+    assert by_action["success_next"] == ("j",)
+    assert by_action["success_bucket"] == ("u",)
+    assert by_action["success_view"] == ("v",)
+
+
+def test_success_row_never_claims_h() -> None:
+    """§3.6: "`h` is currently printed on the header back-link and bound
+    to nothing … Do not claim `h` without fixing that first, or the
+    uniqueness test will encode the existing bug." Fixing the header
+    back-link is out of scope for this unit (§2.4) — so `h` must stay
+    absent from the table entirely, not merely unused by the success
+    row specifically."""
+    all_keys = {key for entry in KEYMAP for key in entry.keys}
+    assert "h" not in all_keys
 
 
 def test_every_key_is_globally_unique() -> None:
@@ -110,3 +132,9 @@ def test_holding_row_keys_are_t_and_c() -> None:
     "confirm_recurrence", not "confirm" — same key, corrected name."""
     holding = {entry.action for entry in KEYMAP if entry.context == "holding"}
     assert holding == {"tolerate", "confirm_recurrence"}
+
+
+def test_success_row_actions() -> None:
+    """The resolution-evidence unit's success leg row (§3.4/§3.6)."""
+    success = {entry.action for entry in KEYMAP if entry.context == "success"}
+    assert success == {"success_next", "success_bucket", "success_view"}

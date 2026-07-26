@@ -444,15 +444,27 @@
    *       state, §10.2), which removes the marker and releases the hold
    *       immediately — arming-then-confirming still releases via
    *       navigation, same as (d).
+   *   (f) a [data-verb-success] element is in the document
+   *       (resolution-evidence unit, §3.5 ruling): the success leg is
+   *       the error leg's sibling (§2.2 "one surface, two legs") —
+   *       SAME hazard as leg (a), same fix. action_bar.html's own note
+   *       above records the mechanism this leg exists to close: a
+   *       FakeRunner test never pushes the post-subprocess refresh, so
+   *       a persistent strip with no defer marker looks fine under test
+   *       and gets reload-wiped by the very next broadcast SSE refresh
+   *       in production — this project's signature bug, landing again
+   *       at the exact file being extended. Release is navigation-only
+   *       (§3.5: "persistent, no auto-dismiss") — same shape as leg (d),
+   *       never an explicit dismiss like (a)/(e).
    * Deferred-not-dropped: the pending reload fires when no leg holds
    * (dismiss removes (a), completion/error/abort clears (b),
    * disarm-or-resolve removes (c), navigating away is (d)'s only
-   * release, navigating away OR "Not now" releases (e)); the release
-   * re-checks the whole predicate. Deliberate staleness (F9/F12): while
-   * any leg holds the page may go stale against the files — accepted;
-   * files stay truth and every hold has a user-reachable release. The
-   * server-side push is UNCHANGED — this defers only the client's
-   * render of it.
+   * release, navigating away OR "Not now" releases (e), navigating away
+   * is (f)'s only release); the release re-checks the whole predicate.
+   * Deliberate staleness (F9/F12): while any leg holds the page may go
+   * stale against the files — accepted; files stay truth and every hold
+   * has a user-reachable release. The server-side push is UNCHANGED —
+   * this defers only the client's render of it.
    */
   var reloadPending = false;
   var confirmInFlight = false;
@@ -463,6 +475,7 @@
     if (findArmedBar()) return true; // leg (c)
     if (document.querySelector("[data-contradicts-offer]")) return true; // leg (d)
     if (document.querySelector("[data-adopt-offer]")) return true; // leg (e)
+    if (document.querySelector("[data-verb-success]")) return true; // leg (f)
     return false;
   }
 

@@ -33,7 +33,7 @@ from self_learn.hosts import is_repo_root
 from self_learn.records import Record
 from self_learn.verbs import GITOPS_DIRTY_MARKER
 
-from . import ledger, models, pane, proposals, rendering
+from . import ledger, models, pane, proposals, rendering, runner
 from .keymap import keymap_as_dicts, keymap_json
 from .prefetch import DetailPrefetchCache
 from .sse import envelope_applying, envelope_banner, envelope_bulk_progress, event_stream
@@ -94,27 +94,43 @@ def build_argv(
     target: str | None = None,
     to: str | None = None,
     no_push: bool = False,
+    as_json: bool = False,
 ) -> list[str]:
     """The exact CLI argv one verb call maps to (matches
     ``plugins/self-learn/cli/src/self_learn/cli.py``'s parser verbatim —
     never re-derived elsewhere). Raises :class:`ValueError` on an unknown
     verb name (a programming error, not a user-reachable state — routes
     validate ``verb`` against :data:`_KNOWN_VERBS` before ever calling
-    this)."""
+    this).
+
+    ``as_json`` (resolution-evidence unit, §2.1): appends ``--json``
+    ONLY inside the four branches that support it (route/reject/defer/
+    graduate) — never at the shared ``--note``/``--no-push`` tail below,
+    which every OTHER verb branch also runs through and whose CLI
+    parsers carry no ``--json`` flag at all (``cli.py``'s ``_verb``
+    helper only adds it when ``json_flag=True``)."""
     if verb == "route":
         argv = ["route", record_id]
         if dest:
             argv += ["--dest", dest]
         if collapse:
             argv += ["--collapse", collapse]
+        if as_json:
+            argv.append("--json")
     elif verb == "reject":
         argv = ["reject", record_id]
+        if as_json:
+            argv.append("--json")
     elif verb == "defer":
         argv = ["defer", record_id]
         if until:
             argv += ["--until", until]
+        if as_json:
+            argv.append("--json")
     elif verb == "graduate":
         argv = ["graduate", record_id]
+        if as_json:
+            argv.append("--json")
     elif verb == "rehome":
         # Y-18: the confirm rebuilds this from the slot's RESOLVED
         # target (server truth) — `rehome <id> --to <resolved-path>`.
@@ -941,6 +957,7 @@ def _unarmed_context(
     target: str | None,
     already_canon: bool = False,
     scope: str = "user",
+    evidence: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "armed": None,
@@ -949,6 +966,11 @@ def _unarmed_context(
         # OTHER caller of this helper (Front/Bucket/Detail GETs, ordinary
         # disarm, cycle-destination) has no error to attach a button to.
         "commit_drift": None,
+        # Resolution-evidence unit (§2.2): set only by action_confirm's/
+        # proposal_confirm's success leg for route/reject/defer/graduate —
+        # every other caller leaves this `None`, which is what lets
+        # action_bar.html's final quad branch keep rendering for them.
+        "evidence": evidence,
         "kind": kind,
         "record_id": record_id,
         "dom_id": _dom_id(kind, record_id, target),
@@ -1005,6 +1027,9 @@ def _armed_context(
     return {
         "kind": kind,
         "dom_id": _dom_id(kind, record_id, target),
+        # An armed bar never carries evidence — set for template shape
+        # consistency (every action_bar.html render defines the key).
+        "evidence": None,
         "armed": {
             "record_id": record_id,
             "verb": verb,
@@ -1021,6 +1046,81 @@ def _armed_context(
         },
         "disarm_vals": {"kind": kind, "dest": dest, "event": event, "target": target},
     }
+
+
+# ------------------------------------------------ resolution evidence (§2)
+#
+# The evidence surface is scoped to exactly the four verbs the CLI's
+# `--json` envelope covers (§2.1) — never confirm-recurrence/link-
+# contradicts/followup-done/chezmoi-adopt, which stay on the pre-existing
+# HX-Redirect (unchanged, out of scope: they carry no envelope at all,
+# `RunResult.evidence` is always `None` for them by construction).
+_EVIDENCE_VERBS = frozenset({"route", "reject", "defer", "graduate"})
+
+#: The envelope keys (§2.1) copied verbatim into the render context —
+#: never renamed, never reshaped; action_bar.html/evidence.html do the
+#: human formatting (§3.1's own doctrine).
+_EVIDENCE_FIELDS = (
+    "canon_path",
+    "host_commit_sha",
+    "ledger_paths",
+    "destination",
+    "variant",
+    "deferred_until",
+    "warnings",
+    "created",
+    "outcome_state",
+    "over_cap",
+    "pushed",
+    "host_pushed",
+)
+
+
+def _evidence_ctx(
+    *,
+    verb: str,
+    record_id: str,
+    run_result: runner.RunResult,
+    next_url: str | None,
+    bucket_url: str | None,
+) -> dict[str, Any]:
+    """§2.2/§3.2's success-leg content. Degrades to a bare
+    acknowledgement (never silence, §3.1) when ``run_result.evidence`` is
+    ``None`` — a malformed/truncated envelope on an already-successful
+    exit status; the resolution still happened, only the DETAIL rendering
+    degrades. Every field not present on a degraded envelope reads
+    ``None``/``[]`` rather than raising, so the template branches
+    uniformly regardless of which case it is."""
+    envelope = run_result.evidence
+    ctx: dict[str, Any] = {
+        "action": verb,
+        "record_id": record_id,
+        "degraded": envelope is None,
+        "next_url": next_url,
+        "bucket_url": bucket_url,
+        # Code-gate finding 2 (MAJOR): `route`/`reject`/`graduate` all
+        # commit the LEDGER phase (record moves out of resolved/pending,
+        # `verbs.py`'s `_commit_ledger` runs before the host phase, on
+        # EVERY reachable outcome_state — even drift) before this leg
+        # ever renders, so `/record/{id}` no longer resolves to the
+        # record: `record_detail`'s GET redirects
+        # (`record.status not in ("pending", "deferred")`, routes.py's
+        # own resolved-elsewhere branch above) to the bucket's
+        # resolved-elsewhere banner, not a diff — the exact "inadequate
+        # acknowledgement" this unit exists to replace. `defer` is the
+        # one verb that leaves the record's status as "deferred" (still
+        # viewable), so only it gets a real link; the other three get
+        # none (§3.4's latitude: omit rather than promise a diff the UI
+        # cannot render).
+        "record_url": f"/record/{record_id}" if verb == "defer" else None,
+    }
+    for name in _EVIDENCE_FIELDS:
+        ctx[name] = envelope.get(name) if envelope is not None else None
+    if ctx["warnings"] is None:
+        ctx["warnings"] = []
+    if ctx["ledger_paths"] is None:
+        ctx["ledger_paths"] = []
+    return ctx
 
 
 @router.post("/record/{record_id}/action/arm", response_class=HTMLResponse)
@@ -1171,7 +1271,7 @@ async def action_confirm(
         return HTMLResponse("unknown verb", status_code=400)
 
     home = _home(request)
-    runner = request.app.state.runner
+    runner_seam = request.app.state.runner
 
     argv = build_argv(
         verb,
@@ -1183,6 +1283,7 @@ async def action_confirm(
         event=event or None,
         tolerate=tolerate,
         target=target or None,
+        as_json=verb in _EVIDENCE_VERBS,
     )
 
     # U-C3 fix: Y-8's contradicts offer is read from the PENDING record's
@@ -1203,7 +1304,7 @@ async def action_confirm(
         await manager.interrupt_active_session(record_id)
 
     await _publish_applying(request, verb, record_id, "start")
-    result = await runner.run(argv)
+    result = await runner_seam.run(argv)
     await _publish_applying(request, verb, record_id, "done" if result.ok else "error")
 
     if not result.ok:
@@ -1250,8 +1351,42 @@ async def action_confirm(
     if collapse:
         _sweep_stale_proposal(request)
 
+    # §3.4: the four verbs the evidence surface covers build their
+    # evidence context ONCE here — the offer branches below and the
+    # plain success leg both use it, so an offer COMPOSES with the
+    # evidence (§3.4 ruling) rather than hiding it.
+    location = ledger.locate_record(home, record_id)
+    bucket_name = location.bucket_name if location is not None else None
+    bucket_scope = location.scope if location is not None else None
+    # `next_record_url` always returns SOME string (a bucket-clear
+    # front-page URL when nothing remains — the OLD auto-redirect's own
+    # target in that case) — the evidence leg's "next pending record"
+    # link must stay ABSENT rather than point at that URL under a
+    # misleading label, so it is built from the raw id, not the URL
+    # helper.
+    _next_id = _next_pending_id(home, bucket_name, record_id) if bucket_name else None
+    next_url = f"/record/{_next_id}" if _next_id else None
+    bucket_url = (
+        f"/bucket/{bucket_scope}/{bucket_name}"
+        if bucket_name and bucket_scope
+        else None
+    )
+    evidence = (
+        _evidence_ctx(
+            verb=verb,
+            record_id=record_id,
+            run_result=result,
+            next_url=next_url,
+            bucket_url=bucket_url,
+        )
+        if verb in _EVIDENCE_VERBS
+        else None
+    )
+
     if verb == "route" and contradicts_pre:
-        return _contradicts_offer_response(request, record_id, contradicts_pre)
+        return _contradicts_offer_response(
+            request, record_id, contradicts_pre, evidence=evidence
+        )
 
     # A2 §10.4(a): checked AFTER the contradicts offer (that offer wins
     # if both fire on the same route — an edge case, never both rendered
@@ -1260,10 +1395,31 @@ async def action_confirm(
     if verb == "route":
         adopt_target = _extract_adopt_path(result.stderr)
         if adopt_target:
-            return _adopt_offer_response(request, record_id, adopt_target)
+            return _adopt_offer_response(
+                request, record_id, adopt_target, evidence=evidence
+            )
 
-    bucket_name = _bucket_name_for(home, record_id)
-    url = next_record_url(home, bucket_name, record_id) if bucket_name else f"/?notice={NOTICE_BUCKET_CLEAR}"
+    if evidence is not None:
+        ctx = _unarmed_context(
+            kind=kind,
+            record_id=record_id,
+            dest=None,
+            event=event,
+            target=target,
+            scope=_record_scope(request, record_id),
+            evidence=evidence,
+        )
+        return _render(request, "partials/action_bar.html", ctx)
+
+    # Non-evidence verbs (confirm-recurrence/link-contradicts/followup-
+    # done/chezmoi-adopt) keep the PRE-EXISTING auto-redirect byte-for-
+    # byte — `next_record_url`'s own bucket-clear fallback, not the
+    # evidence leg's absent-link convention above.
+    url = (
+        next_record_url(home, bucket_name, record_id)
+        if bucket_name
+        else f"/?notice={NOTICE_BUCKET_CLEAR}"
+    )
     resp = Response(status_code=200)
     resp.headers["HX-Redirect"] = url
     return resp
@@ -1297,11 +1453,23 @@ def _capture_contradicts(home: Path, record_id: str) -> tuple[str, ...]:
 
 
 def _contradicts_offer_response(
-    request: Request, record_id: str, contradicts: tuple[str, ...]
+    request: Request,
+    record_id: str,
+    contradicts: tuple[str, ...],
+    *,
+    evidence: dict[str, Any] | None = None,
 ) -> HTMLResponse:
     """Y-8's per-edge offer, rendered from an ALREADY-CAPTURED contradicts
     tuple (see :func:`_capture_contradicts`) — never a fresh read, which
-    would race the verb's own proposal-sibling deletion."""
+    would race the verb's own proposal-sibling deletion.
+
+    ``evidence`` (§3.4 ruling): "the offer composes with the evidence" —
+    an offer is an ADDITIONAL decision about a resolution that already
+    happened, so it renders ALONGSIDE the evidence, never in place of
+    it. ``None`` for every caller outside the four evidence-bearing
+    verbs (this offer only ever fires for a successful `route`, which
+    IS one of them, but the parameter stays optional rather than
+    assumed so a future non-route caller degrades safely)."""
     edges = [
         {"target": t, "dom_id": _dom_id("contradicts", record_id, t)}
         for t in contradicts
@@ -1309,7 +1477,7 @@ def _contradicts_offer_response(
     return _render(
         request,
         "partials/contradicts_offer.html",
-        {"record_id": record_id, "edges": edges},
+        {"record_id": record_id, "edges": edges, "evidence": evidence},
     )
 
 
@@ -1347,7 +1515,13 @@ def _extract_adopt_path(stderr: str | None) -> str | None:
     return line.strip() or None
 
 
-def _adopt_offer_response(request: Request, record_id: str, target: str) -> HTMLResponse:
+def _adopt_offer_response(
+    request: Request,
+    record_id: str,
+    target: str,
+    *,
+    evidence: dict[str, Any] | None = None,
+) -> HTMLResponse:
     """§10.4(a): render the interactive yes/no choice via the SAME
     arm-then-confirm affordance every other verb here uses (never a
     bespoke widget) — "consistent with its existing affordances", the
@@ -1355,12 +1529,15 @@ def _adopt_offer_response(request: Request, record_id: str, target: str) -> HTML
     (never `kind="contradicts"`'s per-edge scheme — there is exactly one
     offer, and this response swaps into the SAME `#action-bar-*` slot the
     routine post-verb refresh targets, same trick `_contradicts_offer_
-    response` already relies on)."""
+    response` already relies on).
+
+    ``evidence`` — see :func:`_contradicts_offer_response`'s docstring;
+    same §3.4 composition ruling."""
     dom_id = _dom_id("adopt", record_id, None)
     return _render(
         request,
         "partials/adopt_offer.html",
-        {"record_id": record_id, "target": target, "dom_id": dom_id},
+        {"record_id": record_id, "target": target, "dom_id": dom_id, "evidence": evidence},
     )
 
 
@@ -1981,6 +2158,7 @@ async def proposal_confirm(
         note=prop.note,
         until=prop.until,
         to=prop.to,
+        as_json=prop.verb in _EVIDENCE_VERBS,
     )
     # U-C3 fix: same pre-verb capture as action_confirm (see
     # _capture_contradicts) — `route`'s CLI success path deletes the
@@ -2012,21 +2190,64 @@ async def proposal_confirm(
             error=result.stderr or f"self-learn {' '.join(argv)} failed",
         )
 
+    # §3.4: the pane-proposal confirm path is its OWN site — fixing only
+    # action_confirm's redirects would leave THIS one silently
+    # teleporting the user while the DoD's other three sites pass.
+    bucket_name = None if kind == "bucket" else _bucket_name_for(home, record_id)
+    bucket_url = f"/bucket/{prop.bucket_scope}/{prop.bucket_name}"
+    # Same convention as action_confirm: the evidence leg's "next
+    # pending record" link is ABSENT (not pointed at a bucket-clear
+    # notice under a misleading label) when nothing remains.
+    _next_id = _next_pending_id(home, bucket_name, record_id) if bucket_name else None
+    evidence_next_url = f"/record/{_next_id}" if _next_id else None
+    evidence = (
+        _evidence_ctx(
+            verb=prop.verb,
+            record_id=record_id,
+            run_result=result,
+            next_url=evidence_next_url,
+            bucket_url=bucket_url,
+        )
+        if prop.verb in _EVIDENCE_VERBS
+        else None
+    )
+
     if prop.verb == "route" and contradicts_pre:
-        return _contradicts_offer_response(request, record_id, contradicts_pre)
+        return _contradicts_offer_response(
+            request, record_id, contradicts_pre, evidence=evidence
+        )
     # A2 §10.4(a): the pane-agent's own `route` proposal can carry the
     # same adopt signal a human-initiated route can (mirrored, same
     # reason as the commit-drift retry above).
     if prop.verb == "route":
         adopt_target = _extract_adopt_path(result.stderr)
         if adopt_target:
-            return _adopt_offer_response(request, record_id, adopt_target)
+            return _adopt_offer_response(
+                request, record_id, adopt_target, evidence=evidence
+            )
+
+    if evidence is not None:
+        ctx = _unarmed_context(
+            kind=kind,
+            record_id=record_id,
+            dest=None,
+            event=None,
+            target=None,
+            scope=_record_scope(request, record_id),
+            evidence=evidence,
+        )
+        return _render(request, "partials/action_bar.html", ctx)
 
     if kind == "bucket":
-        url = f"/bucket/{prop.bucket_scope}/{prop.bucket_name}"
+        url = bucket_url
     else:
-        bucket_name = _bucket_name_for(home, record_id)
-        url = next_record_url(home, bucket_name, record_id) if bucket_name else f"/?notice={NOTICE_BUCKET_CLEAR}"
+        # Non-evidence verbs keep the PRE-EXISTING auto-redirect
+        # byte-for-byte — `next_record_url`'s own bucket-clear fallback.
+        url = (
+            next_record_url(home, bucket_name, record_id)
+            if bucket_name
+            else f"/?notice={NOTICE_BUCKET_CLEAR}"
+        )
     resp = Response(status_code=200)
     resp.headers["HX-Redirect"] = url
     return resp
