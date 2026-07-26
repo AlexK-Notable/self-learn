@@ -1,7 +1,7 @@
 # Spec — make a confirmed resolution say what it did
 
-**Status:** revision 3, folded from two blind spec-gate rounds. Awaiting
-delta re-review.
+**Status:** revision 4 — SPEC GATE PASSED (reviewer: "fix finding 1 and I have
+no reservations about the build starting"; finding 1 folded here).
 **Origin:** two independent source-blind walks (`fixtures/ui-walks.md`,
 W2-F2) plus a hand-driven session. Design ratified by the user
 2026-07-26.
@@ -15,9 +15,9 @@ W2-F2) plus a hand-driven session. Design ratified by the user
    and why the pin permits it.
 2. **Prefer existing typed attributes.** Most of what the evidence
    surface needs already exists on `VerbResult` or a compile result.
-   **Three** fields do not and are added deliberately, under one reason
-   (§2.1); everything else you find yourself deriving is probably already
-   there under another name.
+   **Four** fields do not and are added deliberately (§2.1); everything
+   else you find yourself deriving is probably already there under
+   another name.
 3. **There are TWO commits in two repos.** This is the correction that
    revision 1 got wrong, and every other mistake in it followed from
    this one. See §2.1.
@@ -117,7 +117,7 @@ The envelope:
 | `deferred_until` | **NEW** — `str \| None` |
 | `warnings` | `VerbResult.warnings` — §3.7 |
 | `created` | `SectionResult.bootstrapped` / `ReferenceResult.created` / `NewSkillApplyResult.scaffolded`. **`bootstrapped` means the managed-section MARKERS were absent and got appended** (`compilers.py:118`) — not that the file was created. For `claude-md` the file genuinely is created first (`verbs.py:1663`); for `skill-md` it never is (preflight refuses). Distinguish the two, or the surface will claim it created a file it appended to |
-| `no_op` | per result type — §3.3 |
+| `outcome_state` | **NEW, and the field this unit turns on.** `"landed" \| "no_op" \| "wrote_uncommitted" \| "drift" \| "unknown"`, derived **CLI-side** per §3.3. Subsumes what would otherwise be a `no_op` boolean |
 | `over_cap` | `VerbResult.over_cap_note()`. Safe across result types via its `getattr`; `NewSkillApplyResult.over_cap` is a *property* delegating to `.section` (`verbs.py:1695-1697`), so a sixth result type without one quietly returns `False` |
 | `pushed` | Three distinct states the surface must tell apart: **pushed** / **you chose not to** (`VerbResult.push is None`, i.e. `--no-push`, `verbs.py:397-403`) / **nowhere to push** (`PushResult(skipped=True)` from `push_if_remote`). Same for `.host_push` |
 
@@ -129,12 +129,29 @@ doctrine: the envelope carries machine structure and the *surface* does
 the human formatting. A sentence the CLI wrote for a terminal should not
 be echoed into a web page.
 
-**Three fields are genuinely new — `destination`, `variant`,
-`deferred_until` — and they share one reason: stop parsing prose for UI
-facts.** The CLI currently recovers both by string-parsing its own commit
-subjects (`cli.py:931-934` `_routed_destination`, splitting on `→`;
-`cli.py:994` splitting on `" until "`). One ruling retires both parses.
-Revision 1's claim that *nothing* was new was wrong.
+**Four fields are genuinely new.** Three of them — `destination`,
+`variant`, `deferred_until` — share one reason: **stop parsing prose for
+UI facts.** The CLI currently recovers both by string-parsing its own
+commit subjects (`cli.py:931-934` `_routed_destination`, splitting on
+`→`; `cli.py:994` splitting on `" until "`). The fourth,
+`outcome_state`, exists because a predicate must be evaluated on the side
+of the process boundary that holds its inputs (§3.3). Revision 1's claim
+that *nothing* was new was wrong.
+
+**Scope the `_routed_destination` retirement to `route` only.** It has
+**two** call sites — `cli.py:974` (route) and `cli.py:1006`
+(**`rehome`**). `rehome`'s `VerbResult` sets neither `target` nor any
+destination (`verbs.py:2885-2892`), and the thing after the arrow in its
+subject is a **bucket** (`projects/<slug>`), not a canon target. `rehome`
+is not in the `--json` set; it keeps `_routed_destination`. Do not
+"finish the cleanup" — it would change rehome's output for no gain.
+
+**Adding the fields is safe** (checked, not assumed): all 11
+`VerbResult(...)` sites are keyword-form with `action=` first; nothing
+uses `dataclasses.asdict`/`fields()` over it; no CLI test references
+`VerbResult` by name; the UI never touches it, only the subprocess
+boundary; and it is a plain non-frozen dataclass whose every field after
+`staged` already has a default.
 
 ### 2.2 One outcome surface, not two
 
@@ -266,11 +283,33 @@ Revision 1 cited line 1617 as the managed-file branch. It is the **hook**
 branch. The managed-file branch is 1671 and is unconditional on
 `changed`.
 
-**Four states the surface must distinguish:**
+**Which side evaluates this — the whole point of `outcome_state`.**
 
-1. **Landed in canon** — `host_commit_sha is not None`. Show the path.
+Every predicate below reads `compile_result`, a Python object that exists
+**only inside the CLI process**. The UI receives an envelope, never that
+object. So:
 
-2. **No-op** — `host_commit_sha is None`, `compile_result is not None`,
+- **The CLI derives `outcome_state`** using the predicates below, because
+  it is the only side holding the inputs.
+- **The surface renders per `outcome_state`** and evaluates no predicate
+  of its own.
+
+Without this the UI cannot tell **drift** from **unknown** — both arrive
+as `host_commit_sha: null` with no compile result to inspect — and its
+only remaining signal would be substring-matching `"HOST PHASE FAILED"`
+out of `warnings`, which is the exact move §3.7 forbids one section
+later. Two builders would resolve that differently and the grep-based one
+would pass every test.
+
+This is the same gap class §6 names: *a predicate stated over an object
+one side of a boundary holds and the other does not.* It recurred here in
+the act of fixing it.
+
+**Four states, plus unknown:**
+
+1. **`landed`** — `host_commit_sha is not None`. Show the path.
+
+2. **`no_op`** — `host_commit_sha is None`, `compile_result is not None`,
    and the result reports no change. Show "nothing changed" **and the
    existing file**. The read is per result type, because they do not
    share a field:
@@ -281,7 +320,8 @@ branch. The managed-file branch is 1671 and is unconditional on
    - `UserScopeResult` has **no `changed` field** (`chezmoi.py:119-132`) —
      read `.section.changed` together with `.committed`
 
-3. **Wrote successfully; not committed, by design.** Key it explicitly —
+3. **`wrote_uncommitted`** — wrote successfully; not committed, by
+   design. Key it explicitly —
    **`isinstance(compile_result, UserScopeResult) or variant == "local"`**
    — not by inference. This is why `variant` is in the envelope: a
    `claude-md:local` route produces a plain `SectionResult` with
@@ -294,7 +334,7 @@ branch. The managed-file branch is 1671 and is unconditional on
    outside git, forever". A user shown "wrote it, no commit" about their
    private rules file must be told that not-committing *is the feature*.
 
-4. **Ledger committed, canon did NOT land — drift.** Key:
+4. **`drift`** — ledger committed, canon did NOT land. Key:
    **`compile_result is None and host_commit_sha is None`**. Every
    success path sets a compile result, so `None` means `_host_phase`
    caught one of `_HOST_PHASE_ERRORS` (`verbs.py:1761-1769`) and returned
@@ -307,8 +347,17 @@ branch. The managed-file branch is 1671 and is unconditional on
 
    So this is the one case where the path names a file the verb did not
    write, and §7.4 must not apply to it. **Suppress or qualify
-   `canon_path` here.** Rendering a confident path over a failed write is
-   the same defect this unit exists to fix, wearing the opposite face.
+   `canon_path` here** — either rendering satisfies the DoD, because §8's
+   row fails under both. Rendering a confident path over a failed write
+   is the same defect this unit exists to fix, wearing the opposite face.
+
+   **But whichever you choose, the drift state must still name the
+   target** — as the file to *check*, explicitly not as the file written.
+   The repair is target-scoped, and the warning text does not reliably
+   supply it: it interpolates `{exc}`, and only some of those name a path
+   (`compilers.py:276` "managed target does not exist: {path}" does;
+   `compilers.py:245-248` "expected exactly one begin/end pair" does not).
+   Suppressing outright would lose which file went stale.
 
    It is also the *most* known state in the system, not the least: it has
    a name, a documented repair, and the repair sentence is already in
@@ -316,9 +365,9 @@ branch. The managed-file branch is 1671 and is unconditional on
    canon is stale, never lost (H-2); run `self-learn recompile` to
    repair"*. Surface it verbatim.
 
-Anything else with `host_commit_sha is None` is **unknown outcome** and
-must say so explicitly. Silence standing in for success is the defect
-being fixed; do not reintroduce it one level down.
+Anything else with `host_commit_sha is None` is **`unknown`** and the
+surface must say so explicitly. Silence standing in for success is the
+defect being fixed; do not reintroduce it one level down.
 
 ### 3.7 Warnings are envelope fields, not stderr prose
 
@@ -441,10 +490,23 @@ on disk; assert **stdout parses as JSON and contains nothing else** for a
 hook route (which prints a script) and a new-skill route (which prints
 `post_notes`).
 
-**The drift state (§3.3 state 4).** Force `_apply_target` to raise, and
-assert: exit status 0, `host_commit_sha is None`, `compile_result is
-None`, the warning present, and the surface **not** presenting
-`canon_path` as written.
+**The drift state (§3.3 state 4) — two tests at two layers. Do not write
+one test spanning both**, or the weaker half is what gets asserted.
+
+*CLI layer, real fixture, no monkeypatching.* These tests run the real
+binary as a subprocess, so patching is impossible by construction — and
+unnecessary. `_HOST_PHASE_ERRORS` includes `CompileError`
+(`verbs.py:1761-1769`), and `compile_managed_file` raises it on broken
+markers (`compilers.py:237-248`). **Fixture: seed the skill-md target
+with an unbalanced marker pair, then route.** A real user reaches this by
+hand-editing inside the managed section. Assert exit status **0**,
+`outcome_state == "drift"`, `host_commit_sha` null, the warning present,
+and the target still named. (`OSError` via a read-only parent is a second
+trigger if a non-`CompileError` variant is wanted.)
+
+*Render layer.* Inject a drift envelope directly — no fixture needed —
+and assert the surface does not present `canon_path` as written while
+still naming it as the file to check.
 
 **stderr is byte-identical under `--json`.** Two live behaviours read it:
 `_extract_adopt_path(result.stderr)` gates the adopt offer on a
@@ -510,7 +572,9 @@ sitting. Findings are observations, not pass/fail.
    `target`, never `staged` — **when one was actually written**. In §3.3
    state 4 the path must not be presented as written.
 5. All **four** §3.3 states render distinctly, `claude-md:local` among
-   them; anything else renders unknown-outcome text, not silence.
+   them; anything else renders unknown-outcome text, not silence. The
+   state is carried by `outcome_state`, derived CLI-side — the surface
+   evaluates no predicate over objects it cannot see.
 6. Success no longer navigates away on its own, at **all four** sites.
 7. The success leg survives a post-verb SSE refresh, asserted by a test
    that actually pushes one.
@@ -538,7 +602,9 @@ at all; if that is identical to "pass", the check is worthless.
 | Invert one per-type no-op read | that type's no-op render test |
 | Make a user-scope success report no-op | the §3.3 state-3 test |
 | Make a `claude-md:local` success report no-op | the state-3 `local` test |
-| Make `_apply_target` raise | the §3.3 state-4 drift test |
+| Repair the fixture's broken markers | the §3.3 state-4 drift test |
+| Emit `outcome_state: "unknown"` for a drift result | the drift **render** test |
+| Emit `outcome_state: "no_op"` for a `wrote_uncommitted` result | the state-3 render test |
 | Present `canon_path` as written in the drift state | the drift test's path assertion |
 | Drop `warnings` from the envelope | the drift test's repair-instruction assertion |
 | Remove the `data-verb-success` marker | the post-refresh persistence test |
@@ -602,3 +668,36 @@ away:
   stdout, so the rule is now "the envelope and nothing else".
 - The `pushed` row regained the three-state distinction revision 2
   accidentally narrowed to two.
+
+**Revision 4** folds one MAJOR — and it is the most instructive of the
+four rounds, because the fix for finding 1 *committed finding 1's own
+error*:
+
+- Revision 3's four-state predicate keyed on `compile_result`, **an
+  object that exists only inside the CLI process**. The envelope never
+  carried it. So the UI could not tell `drift` from `unknown`, and its
+  only remaining signal would have been substring-matching
+  `"HOST PHASE FAILED"` out of `warnings` — the exact move §3.7 forbids
+  one section later. Fixed by `outcome_state`, derived CLI-side: the
+  predicate is evaluated on the side that holds its inputs, and the
+  surface renders a value rather than computing one.
+- §6 had already named this gap class in the abstract ("a predicate
+  stated over an object one side of a boundary holds and the other does
+  not") one revision before committing it. Recognising a failure mode is
+  not the same as being immune to it.
+- Q1's "suppress or qualify" latitude was kept — it is latitude over
+  wording inside one template leg, bounded by a §8 row that fails under
+  either choice, unlike `host_commit_message` which was latitude over an
+  interface. But the two options were not informationally equivalent, so
+  the drift state must now **name the target either way**, as the file to
+  check.
+- Q2: state 4 is reachable **without monkeypatching** — an unbalanced
+  marker pair raises `CompileError` through a real subprocess. §5's
+  wording was pushing a builder toward a patch that cannot work across a
+  process boundary, whose documented fallback is constructing the
+  `VerbResult` directly: the round-1 failure shape. The drift tests are
+  now split by layer.
+- Q3: the field addition is safe (11 keyword-form sites, no reflection,
+  no test asserting the field set). But `_routed_destination` has a
+  **second** caller — `rehome`, whose arrow carries a bucket, not a canon
+  target — so the retirement is scoped to `route`.
