@@ -73,7 +73,13 @@
   }
 
   /* Why an element is not perceptible — the interesting part when a
-   * click was supposed to reveal something and did not. */
+   * click was supposed to reveal something and did not.
+   *
+   * Order matters: "off-viewport" is only ever returned once display,
+   * visibility, size and opacity have all PASSED, so that string means
+   * "nothing is wrong with it except where the page is scrolled to".
+   * :func:`surfaces` relies on that to separate scroll-reachable
+   * surfaces from unreachable ones. */
   function invisibleBecause(el) {
     var cs = getComputedStyle(el);
     if (cs.display === "none") return "display:none";
@@ -84,6 +90,55 @@
     if (!inViewport(r)) return "off-viewport";
     if (occluded(el, r)) return "occluded";
     return null;
+  }
+
+  // --------------------------------------------------------- scroll sweep
+
+  /* perceptible() means "visible RIGHT NOW", and that is exactly the
+   * meaning the digest depends on — so the fix for below-the-fold blindness
+   * is NOT to loosen it. A sweep instead SCROLLS the page and re-measures,
+   * making "reachable by scrolling" a measured fact rather than a predicted
+   * one, and restores the scroll position exactly so the digest's comparison
+   * point is undisturbed.
+   *
+   * Why this exists: a walker believed it had covered a 7-record bucket
+   * having seen 3 of 7. surfaces() DID list the rest — tagged
+   * hidden_because:"off-viewport" — but that tag sat next to "display:none"
+   * and "occluded", which mean genuinely unreachable. The report had no way
+   * to say "scroll to me" as opposed to "you cannot have me", so a walk
+   * that exhausted the visible set called the page done. Measured on the
+   * git-hygiene bucket at 1268x1229: 59 actable elements, 9 of them
+   * off-screen, page 1452px tall. */
+  var VIEWPORT_OVERLAP = 80;
+
+  function scrollPositions() {
+    var max = Math.max(0, document.documentElement.scrollHeight - innerHeight);
+    var step = Math.max(1, innerHeight - VIEWPORT_OVERLAP);
+    var pos = [];
+    for (var y = 0; y < max; y += step) pos.push(y);
+    pos.push(max);
+    return pos;
+  }
+
+  /* The set of `els` that are perceptible at SOME scroll position.
+   * behavior:"instant" because a CSS `scroll-behavior: smooth` would make
+   * scrollTo asynchronous and every measurement would read the old
+   * position. */
+  function sweepReachable(els) {
+    var hit = new Set();
+    var x0 = scrollX;
+    var y0 = scrollY;
+    try {
+      scrollPositions().forEach(function (y) {
+        scrollTo({ left: x0, top: y, behavior: "instant" });
+        Array.prototype.forEach.call(els, function (el) {
+          if (!hit.has(el) && perceptible(el)) hit.add(el);
+        });
+      });
+    } finally {
+      scrollTo({ left: x0, top: y0, behavior: "instant" });
+    }
+    return hit;
   }
 
   // ------------------------------------------------------------ identity
@@ -274,12 +329,19 @@
     return keys;
   }
 
-  function surfaces() {
+  function surfaces(opts) {
+    opts = opts || {};
     var seen = Object.create(null);
     var out = [];
     var nodes = [];
 
-    Array.prototype.forEach.call(document.querySelectorAll(ACTABLE), function (el) {
+    var els = document.querySelectorAll(ACTABLE);
+    // Sweep FIRST, so every record below is written against a settled
+    // scroll position and the rects it reports are the ones a caller
+    // acting immediately afterwards will hit.
+    var reachable = opts.sweep ? sweepReachable(els) : null;
+
+    Array.prototype.forEach.call(els, function (el) {
       var r = el.getBoundingClientRect();
       var why = invisibleBecause(el);
       var lab = label(el);
@@ -291,6 +353,24 @@
       var id = [location.pathname, role(el), lab, keys.join("+")].join("|");
       if (seen[id]) {
         seen[id].count++;
+        // Prefer a PERCEPTIBLE representative. Because identity collapses
+        // instances into kinds, whichever instance the DOM happened to list
+        // first decided whether the whole kind looked reachable — so a kind
+        // with a visible instance on row 3 and an off-screen one on row 7
+        // could be reported as off-viewport. Upgrading on sight keeps the
+        // reachability claim true of the kind.
+        if (!seen[id].perceptible && why === null) {
+          seen[id].perceptible = true;
+          delete seen[id].hidden_because;
+          delete seen[id].scroll_reachable;
+          seen[id].selector = cssPath(el);
+          seen[id].rect = [
+            Math.round(r.left),
+            Math.round(r.top),
+            Math.round(r.width),
+            Math.round(r.height),
+          ];
+        }
         return;
       }
       var rec = {
@@ -304,6 +384,11 @@
         rect: [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)],
       };
       if (why) rec.hidden_because = why;
+      // Measured, not inferred: this element WAS perceptible at some scroll
+      // position during the sweep. Absent without {sweep:true} — the probe
+      // does not guess at reachability it has not observed.
+      if (reachable && why === "off-viewport" && reachable.has(el))
+        rec.scroll_reachable = true;
       if (keys.length) rec.keys = keys;
       if (el.hasAttribute("data-key-action"))
         rec.key_action = el.getAttribute("data-key-action");
@@ -356,10 +441,44 @@
       if (k && k.length <= 2 && !bound[k] && loose.indexOf(k) < 0) loose.push(k);
     });
 
+    // A single number for "did I see the whole page?". `count` alone could
+    // not answer it: it sums visible, scroll-away and genuinely-hidden
+    // surfaces into one figure, so a walk could exhaust everything it could
+    // see and read that as complete. `offscreen` is the shortfall, and it
+    // is stated even when the caller did not sweep — an unswept call knows
+    // that surfaces are out of view, just not whether scrolling reaches
+    // them.
+    var vis = 0;
+    var off = 0;
+    var hid = 0;
+    var reach = 0;
+    out.forEach(function (s) {
+      if (s.perceptible) vis++;
+      else if (s.hidden_because === "off-viewport") {
+        off++;
+        if (s.scroll_reachable) reach++;
+      } else hid++;
+    });
+    var coverage = {
+      total: out.length,
+      visible: vis,
+      offscreen: off,
+      hidden: hid,
+      swept: !!opts.sweep,
+    };
+    if (opts.sweep) coverage.scroll_reachable = reach;
+
+    var doc = document.documentElement;
     return {
       url: location.pathname + location.search,
       title: document.title,
       count: out.length,
+      coverage: coverage,
+      page: {
+        scroll_height: doc.scrollHeight,
+        viewport_height: innerHeight,
+        more_below: doc.scrollHeight > innerHeight + 1,
+      },
       surfaces: out,
       unbound_keys_on_page: loose,
     };
@@ -369,7 +488,19 @@
 
   /* One line per perceptible node that carries meaning: interactive, or
    * text-bearing. The VALUE encodes what a person would notice change. */
-  function capture() {
+  /* `counters`, when passed, receives the nodes that WOULD have been
+   * digested but could not be seen. The checks below are the same ones
+   * perceptible() makes, reordered so the "is this node meaningful?" test
+   * runs before the "can it be seen?" test — otherwise an off-screen node
+   * is discarded before we know whether it was worth counting. The set
+   * that lands in the map is unchanged.
+   *
+   * This matters more than the surfaces() shortfall: a change below the
+   * fold produced NO digest lines, so "I clicked it and nothing happened"
+   * was indistinguishable from "the feedback appeared off-screen". The
+   * first is a defect report the instrument would have INVENTED — the same
+   * failure as the phantom advertised keys. */
+  function capture(counters) {
     var map = Object.create(null);
     // dt/dd/pre were missing from the first version, which made two whole
     // surfaces invisible: the help overlay renders 19 shortcuts as dt/dd
@@ -381,7 +512,12 @@
         "h1,h2,h3,h4,p,li,td,th,dt,dd,pre,span,div,strong,em,code,label"
     );
     Array.prototype.forEach.call(nodes, function (el) {
-      if (!perceptible(el)) return;
+      var cs = getComputedStyle(el);
+      if (cs.display === "none" || cs.visibility === "hidden") return;
+      var r = el.getBoundingClientRect();
+      if (r.width === 0 || r.height === 0) return;
+      if (effectiveOpacity(el) < 0.05) return;
+
       // Only leaf-ish text: a wrapper repeats its children's text and
       // would make every diff cascade up the tree.
       var own = "";
@@ -390,9 +526,6 @@
       });
       own = normValue(own);
       var interactive = el.matches(ACTABLE);
-
-      var r = el.getBoundingClientRect();
-      var cs = getComputedStyle(el);
 
       // A bordered/outlined/shadowed container counts even with no text of
       // its own and no interactivity. This UI marks the SELECTED list row
@@ -405,6 +538,16 @@
         cs.boxShadow !== "none" ||
         (cs.borderWidth !== "0px" && cs.borderStyle !== "none");
       if (!own && !interactive && !chrome) return;
+
+      // Meaningful. Now — could a person actually see it?
+      if (!inViewport(r)) {
+        if (counters) counters.offscreen++;
+        return;
+      }
+      if (occluded(el, r)) {
+        if (counters) counters.occluded++;
+        return;
+      }
 
       var key = digestKey(el);
       map[key] = [
@@ -459,7 +602,8 @@
    * is the backstop for when the caller forgets. */
   function digest(opts) {
     opts = opts || {};
-    var now = capture();
+    var counters = { offscreen: 0, occluded: 0 };
+    var now = capture(counters);
     var stored = opts.baseline ? null : readPrev();
     var reason = opts.baseline ? "explicit" : null;
 
@@ -472,13 +616,25 @@
     var prev = reason ? null : stored.map;
     writePrev(opts.run || (stored && stored.run) || null, now);
 
+    // Emitted only when non-zero, so the delta digest keeps costing
+    // near-nothing on a quiet step — but present exactly when its absence
+    // would mislead. changed_count:0 with no `unseen` is "nothing changed";
+    // changed_count:0 WITH one is "nothing changed that I could see, and
+    // this many meaningful nodes were out of view". Version 3 is what makes
+    // the field's absence readable as zero rather than as an old probe.
+    function unseen(res) {
+      if (counters.offscreen) res.unseen_offscreen = counters.offscreen;
+      if (counters.occluded) res.unseen_occluded = counters.occluded;
+      return res;
+    }
+
     if (!prev) {
-      return {
+      return unseen({
         baseline: true,
         reason: reason,
         url: location.pathname + location.search,
         nodes: Object.keys(now).length,
-      };
+      });
     }
 
     var added = [];
@@ -493,13 +649,13 @@
       if (!(k in now)) removed.push(k + " => " + prev[k]);
     });
 
-    return {
+    return unseen({
       url: location.pathname + location.search,
       changed_count: added.length + removed.length + changed.length,
       added: added,
       removed: removed,
       changed: changed,
-    };
+    });
   }
 
   window.__uiProbe = {
@@ -512,7 +668,13 @@
     baseline: function (run) {
       return digest({ baseline: true, run: run });
     },
-    version: 2,
+    // Scroll the page, measure at each position, restore the scroll. Use it
+    // to answer "is there anything I have not seen on this page?" — the
+    // answer is coverage.offscreen minus coverage.scroll_reachable.
+    sweep: function () {
+      return surfaces({ sweep: true });
+    },
+    version: 3,
   };
 
   return window.__uiProbe.version;

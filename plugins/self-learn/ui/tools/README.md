@@ -82,9 +82,18 @@ navigation — one call, no per-page paste cost):
 
 - `surfaces()` — everything actable, each with a unique `selector`, plus
   `perceptible`, `container`, `keys`, `disabled`. Act on the leaf, not
-  the `container`: clicking a `<form>` wrapper is a silent no-op.
+  the `container`: clicking a `<form>` wrapper is a silent no-op. Also
+  returns `coverage` (`visible` / `offscreen` / `hidden`) and `page`
+  (scroll height vs viewport).
+- `sweep()` — `surfaces({sweep: true})`: scrolls the page, measures at
+  each position, restores the scroll exactly. Off-screen surfaces it
+  actually saw get `scroll_reachable: true`. Reachability is **measured,
+  never predicted** — without a sweep the field is simply absent.
 - `digest({run})` — the **delta** since the last call. Nothing changed →
   near-zero bytes, so cost tracks *interesting* surfaces, not surfaces.
+  Carries `unseen_offscreen` / `unseen_occluded` when meaningful nodes
+  were skipped because they could not be seen; both are omitted when
+  zero, which is what keeps a quiet step cheap.
 - `baseline(run)` — set a fresh comparison point.
 
 Always pass a `run` id that changes when the server's data does. Session
@@ -100,10 +109,18 @@ app's own applying-strip.
 
 ## Known limits
 
-- **Below-the-fold surfaces are invisible.** `perceptible()` requires
-  in-viewport, so `surfaces()` under-reports without saying so. A walker
-  once believed it had covered a 7-record bucket having seen 3. Scroll
-  deliberately; treat any coverage count as viewport-scoped. **Open.**
+- **Below-the-fold surfaces used to be silently absent.** `perceptible()`
+  requires in-viewport — correctly, since that is what a person can see —
+  so the shortfall was never stated and a walker believed it had covered
+  a 7-record bucket having seen 3. *Fixed* by reporting the shortfall
+  rather than loosening the predicate: `coverage.offscreen`,
+  `sweep()`, and `unseen_offscreen` on the digest. Verified against the
+  live sandbox: on `/` at 900x380 four surface kinds are off-screen and
+  a sweep reaches all four, among them the MINER **"Force run"** button
+  a walk had already filed a bug against; the bucket page yields
+  `Retry (r)` and `Close (q)`, the user bucket an entire
+  `Open bucket chat (p)`. Same page, viewport as the only variable:
+  1600px tall → no `unseen_offscreen`, 500px → 67.
 - Screenshots: passing `filename` **suppresses the inline image** and
   returns a path. That is the lever that keeps pixels out of context —
   and the reason a walker that names its files sees nothing. Omit

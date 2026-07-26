@@ -29,13 +29,37 @@ Then two calls are available:
 
 - `window.__uiProbe.surfaces()` — everything on this page a person could
   act on, each with a `selector` you can click, plus `perceptible`,
-  `container`, `keys`, and `disabled` flags.
+  `container`, `keys`, and `disabled` flags. Also a `coverage` summary and
+  a `page` block telling you whether the page continues below the fold.
+- `window.__uiProbe.sweep()` — the same thing, but it scrolls the page
+  first and measures at every position, then puts the scroll back. Use it
+  to find surfaces you cannot currently see.
 - `window.__uiProbe.digest({run: '<RUN_ID>'})` — what has *changed* since
   the previous digest call. Returns only the delta.
 - `window.__uiProbe.baseline('<RUN_ID>')` — start a fresh comparison
   point. Call this immediately before each action.
 
 Always pass the same `run` id for the whole walk.
+
+## The page is usually taller than the window
+
+Everything the probe reports is scoped to **what is on screen right
+now** — that is deliberate, because it is also what a person can see. The
+consequence is that you must scroll on purpose, and the probe tells you
+when to:
+
+- `coverage.offscreen` — surfaces that are fine in every respect except
+  that they are out of view. **A page is not covered until you have
+  scrolled to these.** A previous walk called a bucket done having seen
+  three of its seven records.
+- `sweep()` then marks each of them `scroll_reachable: true` once it has
+  actually seen it. Anything still off-screen after a sweep is genuinely
+  unreachable, and worth reporting as such.
+- `unseen_offscreen` on a digest — meaningful things that changed state
+  out of view. **If a digest says `changed_count: 0` and also carries
+  `unseen_offscreen`, you have not learned that the control does
+  nothing** — only that nothing happened where you were looking. Scroll
+  and take another digest before writing that finding down.
 
 ## Choosing what to touch
 
@@ -116,7 +140,10 @@ If you hit one, note that you hit it and move on.
 ## Deliverable
 
 1. A coverage line: how many surfaces existed, how many you exercised,
-   and which you could not reach and why.
+   and which you could not reach and why. Take the totals from
+   `coverage` after a `sweep()`, not from what you happened to see — a
+   count that silently omits everything below the fold is worse than no
+   count, because it reads as completeness.
 2. The per-surface blocks.
 3. A short list of the moments where you could not tell what had
    happened. Describe them as experiences, not diagnoses — "I clicked

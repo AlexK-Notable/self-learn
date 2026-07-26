@@ -151,12 +151,21 @@ Recorded because they bound what any walk can claim.
    moved. *Fixed*: bordered/outlined/shadowed containers are now captured
    even with no text; verified 2 changes for one keypress, ambient noise
    still 0, and a down-then-up round trip nets to 0.
-3. **Below-the-fold surfaces are silently absent.** `perceptible()`
-   requires in-viewport, so records 4–7 of a 7-record bucket never
-   appeared in `surfaces()`. **The walker believed it had covered the
-   bucket while seeing 3 of 7.** *Open.* This is the serious one: a
-   coverage count that under-reports without saying so is worse than no
-   coverage count.
+3. **Below-the-fold surfaces were silently absent.** **The walker
+   believed it had covered a bucket while seeing 3 of 7 records.** *Fixed
+   2026-07-26.* Measuring first corrected the diagnosis: `surfaces()` did
+   list off-screen elements, tagged `hidden_because:"off-viewport"` — but
+   that tag sat alongside `display:none` and `occluded`, which mean
+   genuinely unreachable, so nothing distinguished "scroll to me" from
+   "you cannot have me". The worse half was the digest, which dropped
+   off-screen nodes entirely: a change below the fold reported
+   `changed_count: 0`, making "I clicked it and nothing happened"
+   indistinguishable from "the feedback was off-screen" — a defect report
+   the instrument would have *invented*, the same failure as the phantom
+   advertised keys. Fixed by stating the shortfall rather than loosening
+   `perceptible()`: `coverage.offscreen`, a measured `sweep()`, and
+   `unseen_offscreen` on the digest. Control: same page, viewport the
+   only variable — 1600px tall reports none, 500px reports 67.
 4. **Ambient noise is zero only within a relative-timestamp bucket.**
    Across a step that crosses a `humanize_ts` boundary it is nonzero,
    and was once the *only* thing reported for a real graduation.
