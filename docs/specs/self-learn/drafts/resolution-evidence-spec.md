@@ -1,6 +1,6 @@
 # Spec — make a confirmed resolution say what it did
 
-**Status:** revision 2, folded from blind spec-gate findings. Awaiting
+**Status:** revision 3, folded from two blind spec-gate rounds. Awaiting
 delta re-review.
 **Origin:** two independent source-blind walks (`fixtures/ui-walks.md`,
 W2-F2) plus a hand-driven session. Design ratified by the user
@@ -14,9 +14,10 @@ W2-F2) plus a hand-driven session. Design ratified by the user
    from the exit status. §3.1 says exactly what stdout may be read for,
    and why the pin permits it.
 2. **Prefer existing typed attributes.** Most of what the evidence
-   surface needs already exists on `VerbResult` or a compile result. Two
-   fields do not and are added deliberately (§2.1); everything else you
-   find yourself deriving is probably already there under another name.
+   surface needs already exists on `VerbResult` or a compile result.
+   **Three** fields do not and are added deliberately, under one reason
+   (§2.1); everything else you find yourself deriving is probably already
+   there under another name.
 3. **There are TWO commits in two repos.** This is the correction that
    revision 1 got wrong, and every other mistake in it followed from
    this one. See §2.1.
@@ -107,19 +108,33 @@ The envelope:
 |---|---|
 | `action` | `VerbResult.action` — the **argv** verb (`route`/`reject`/`defer`/`graduate`) |
 | `record_id` | `VerbResult.record_id` |
-| `canon_path` | `VerbResult.target` — the compiled destination. `None` for graduate and defer |
-| `host_commit_sha` | `VerbResult.host_commit_sha` — `None` means nothing landed in canon (§3.3) |
+| `canon_path` | `VerbResult.target`. **Assigned unconditionally** (`verbs.py:2169`), so it is set even when the write failed — see §3.3 state 4. `None` for graduate and defer |
+| `host_commit_sha` | `VerbResult.host_commit_sha` — `None` has **four** possible meanings (§3.3) |
 | `ledger_paths` | `VerbResult.staged` — ledger records. Used **only** for reject's "moved to `resolved/`" |
-| `commit_message` | `VerbResult.commit_message` — the **ledger** subject. Note it differs from the host apply subject built at `verbs.py:1811-1816`; if the host subject is wanted, add `host_commit_message` and say so |
-| `created` | `SectionResult.bootstrapped` / `ReferenceResult.created` / `NewSkillApplyResult.scaffolded` |
+| `commit_message` | `VerbResult.commit_message` — the **ledger** subject |
+| `destination` | **NEW** — `spec.destination`. `None` on non-route verbs |
+| `variant` | **NEW** — `spec.variant` (`rules` / `local` / `None`). Required to key §3.3 state 3 |
+| `deferred_until` | **NEW** — `str \| None` |
+| `warnings` | `VerbResult.warnings` — §3.7 |
+| `created` | `SectionResult.bootstrapped` / `ReferenceResult.created` / `NewSkillApplyResult.scaffolded`. **`bootstrapped` means the managed-section MARKERS were absent and got appended** (`compilers.py:118`) — not that the file was created. For `claude-md` the file genuinely is created first (`verbs.py:1663`); for `skill-md` it never is (preflight refuses). Distinguish the two, or the surface will claim it created a file it appended to |
 | `no_op` | per result type — §3.3 |
-| `deferred_until` | **NEW field on `VerbResult`** — §3.2 |
-| `over_cap` | `VerbResult.over_cap_note()` |
-| `pushed` | `VerbResult.push` (`PushResult(skipped=True)` when there is no remote) and `.host_push` |
+| `over_cap` | `VerbResult.over_cap_note()`. Safe across result types via its `getattr`; `NewSkillApplyResult.over_cap` is a *property* delegating to `.section` (`verbs.py:1695-1697`), so a sixth result type without one quietly returns `False` |
+| `pushed` | Three distinct states the surface must tell apart: **pushed** / **you chose not to** (`VerbResult.push is None`, i.e. `--no-push`, `verbs.py:397-403`) / **nowhere to push** (`PushResult(skipped=True)` from `push_if_remote`). Same for `.host_push` |
 
-Two fields are genuinely new: `deferred_until`, and optionally
-`host_commit_message`. Everything else exists. Revision 1's claim that
-*nothing* was new was wrong.
+**No `host_commit_message`.** The host subject is
+`f"self-learn: apply {record_id} → {rel} ({spec.destination})"`
+(`verbs.py:1811-1816`) — every component is already in the envelope once
+`destination` is. Shipping the formatted string would invert §3.1's own
+doctrine: the envelope carries machine structure and the *surface* does
+the human formatting. A sentence the CLI wrote for a terminal should not
+be echoed into a web page.
+
+**Three fields are genuinely new — `destination`, `variant`,
+`deferred_until` — and they share one reason: stop parsing prose for UI
+facts.** The CLI currently recovers both by string-parsing its own commit
+subjects (`cli.py:931-934` `_routed_destination`, splitting on `→`;
+`cli.py:994` splitting on `" until "`). One ruling retires both parses.
+Revision 1's claim that *nothing* was new was wrong.
 
 ### 2.2 One outcome surface, not two
 
@@ -210,14 +225,16 @@ carry them.
 | **no-op** | "nothing changed", **plus the existing file** | §3.3 |
 
 `deferred_until` is computed at `verbs.py:2765` and used only to build
-the commit subject; it is not a `VerbResult` field. The CLI currently
-recovers it by string-parsing its own commit message
-(`cli.py:994`, `result.commit_message.rsplit(" until ", 1)[1]`).
-**Ruling: add `deferred_until: str | None` to `VerbResult`.** Parsing a
-commit subject to render a UI fact is the same class of mistake as
-parsing stdout for an outcome.
+the commit subject; it is not a `VerbResult` field. The CLI recovers it
+by string-parsing its own commit message (`cli.py:994`), exactly as
+`_routed_destination` recovers the destination (`cli.py:931-934`).
 
-### 3.3 Three success states, not two
+**Ruling: add `deferred_until`, `destination` and `variant` to
+`VerbResult`.** Parsing a commit subject to render a UI fact is the same
+class of mistake as parsing stdout for an outcome, and one ruling retires
+both existing parses rather than adding a field per symptom.
+
+### 3.3 Four success states, not two
 
 Revision 1 asserted the no-op signature was `staged == []`. That is
 wrong: `staged` is the ledger paths and is non-empty on every successful
@@ -249,25 +266,75 @@ Revision 1 cited line 1617 as the managed-file branch. It is the **hook**
 branch. The managed-file branch is 1671 and is unconditional on
 `changed`.
 
-**Three states the surface must distinguish:**
+**Four states the surface must distinguish:**
 
 1. **Landed in canon** — `host_commit_sha is not None`. Show the path.
-2. **No-op** — `host_commit_sha is None` **and** the compile result
-   reports no change. Show "nothing changed" and the existing file. The
-   read is per result type, because they do not share a field:
+
+2. **No-op** — `host_commit_sha is None`, `compile_result is not None`,
+   and the result reports no change. Show "nothing changed" **and the
+   existing file**. The read is per result type, because they do not
+   share a field:
    - `SectionResult.changed`
    - `ReferenceResult.applied`
    - `HookApplyResult.changed` (`verbs.py:962-968`)
    - `NewSkillApplyResult.changed` (`verbs.py:1685-1693`)
    - `UserScopeResult` has **no `changed` field** (`chezmoi.py:119-132`) —
      read `.section.changed` together with `.committed`
-3. **Wrote successfully, no host commit by design** — user-scope routes
-   and `claude-md:local`, which produce empty `host_paths` *on success*.
-   These must **not** render as no-op and must **not** render as unknown.
+
+3. **Wrote successfully; not committed, by design.** Key it explicitly —
+   **`isinstance(compile_result, UserScopeResult) or variant == "local"`**
+   — not by inference. This is why `variant` is in the envelope: a
+   `claude-md:local` route produces a plain `SectionResult` with
+   `changed=True`, and *nothing else on `VerbResult` separates it from a
+   managed claude-md route*.
+
+   **Say why, do not shrug.** For `local` the absence of a commit is a
+   **privacy guard**, not an implementation detail (`verbs.py:1665-1671`):
+   the target is gitignored by design, "the file stays written on disk,
+   outside git, forever". A user shown "wrote it, no commit" about their
+   private rules file must be told that not-committing *is the feature*.
+
+4. **Ledger committed, canon did NOT land — drift.** Key:
+   **`compile_result is None and host_commit_sha is None`**. Every
+   success path sets a compile result, so `None` means `_host_phase`
+   caught one of `_HOST_PHASE_ERRORS` (`verbs.py:1761-1769`) and returned
+   `(None, None)` at :1845-1852.
+
+   **This state exits 0.** `_finish_verb` only changes the exit code for
+   a *push* failure (`cli.py:925-928`), so the UI sees success. And
+   `canon_path` **is set anyway**, because `target=spec.target` is
+   assigned unconditionally (`verbs.py:2169`).
+
+   So this is the one case where the path names a file the verb did not
+   write, and §7.4 must not apply to it. **Suppress or qualify
+   `canon_path` here.** Rendering a confident path over a failed write is
+   the same defect this unit exists to fix, wearing the opposite face.
+
+   It is also the *most* known state in the system, not the least: it has
+   a name, a documented repair, and the repair sentence is already in
+   `VerbResult.warnings` — *"HOST PHASE FAILED after the ledger commit …
+   canon is stale, never lost (H-2); run `self-learn recompile` to
+   repair"*. Surface it verbatim.
 
 Anything else with `host_commit_sha is None` is **unknown outcome** and
 must say so explicitly. Silence standing in for success is the defect
 being fixed; do not reintroduce it one level down.
+
+### 3.7 Warnings are envelope fields, not stderr prose
+
+`VerbResult.warnings` is a typed `list[str]` carrying the drift repair
+instruction (`verbs.py:1851`), the orphaned-follow-up warning (:297-313),
+`sync_warning` and `adopt_hint` (:1826-1841).
+
+`_finish_verb` prints them to stderr **unprefixed** (`cli.py:921-922`),
+so recovering them from `RunResult.stderr` means substring-matching
+prose — the move §3.2 rules out for `deferred_until`, and which
+`_extract_adopt_path` already does elsewhere.
+
+**Ruling: `warnings` joins the envelope.** It is already a typed
+attribute, so this costs no derivation. The success leg renders them.
+They stay on stderr as well, unchanged, because §5's byte-identical rule
+requires it.
 
 The same surface also fixes "Force run gives no response" (walk 1).
 
@@ -353,8 +420,8 @@ duplicate exists** — it resolves, just to the wrong element.
 
 | Area | Change |
 |---|---|
-| `cli.py` | `--json` on `route`/`reject`/`defer`/`graduate`; emit the §2.1 envelope. Follow `host commit-drift --json` (`cli.py:1176`). **Suppress `result.diff`** — a hook route prints the entire generated script to stdout first (`cli.py:913-914`), which would make the envelope unparseable. **stderr must be byte-identical** (§5). |
-| `verbs.py` | Add `deferred_until` (and `host_commit_message` if §2.1 takes it). No behaviour change. |
+| `cli.py` | `--json` on `route`/`reject`/`defer`/`graduate`; emit the §2.1 envelope. Follow `host commit-drift --json` (`cli.py:1176`). **Under `--json`, stdout is the envelope and NOTHING else** — `_finish_verb` also prints `result.diff` (a hook route's entire generated script, :913-914) and `result.post_notes` (multi-line prose, :919-920; set by hook *and* new-skill routes, `verbs.py:2153-2158`). Suppressing only `diff` still yields JSON-then-prose. **stderr must be byte-identical** (§5). |
+| `verbs.py` | Add `deferred_until`, `destination`, `variant`. No behaviour change. |
 | `runner.py` | `RunResult.evidence: dict \| None`; parse only on success; never let a parse failure move the outcome. Restore 09 §3's "human-formatted" wording at :213. |
 | `routes.py` | Pass `--json`; carry evidence into context; stop redirecting at **all four** sites (§3.4). |
 | `action_bar.html` | Success leg beside the `error` leg, carrying `data-verb-success`. |
@@ -370,7 +437,14 @@ duplicate exists** — it resolves, just to the wrong element.
 reject, graduate — plus one per destination shape that differs
 (reference, user-scope, `claude-md:local`, hook, new-skill). Assert
 exact fields; assert `--json` changes neither exit status nor what lands
-on disk; assert a hook route's stdout parses.
+on disk; assert **stdout parses as JSON and contains nothing else** for a
+hook route (which prints a script) and a new-skill route (which prints
+`post_notes`).
+
+**The drift state (§3.3 state 4).** Force `_apply_target` to raise, and
+assert: exit status 0, `host_commit_sha is None`, `compile_result is
+None`, the warning present, and the surface **not** presenting
+`canon_path` as written.
 
 **stderr is byte-identical under `--json`.** Two live behaviours read it:
 `_extract_adopt_path(result.stderr)` gates the adopt offer on a
@@ -386,10 +460,11 @@ still reports success with `evidence = None`; stdout is never consulted
 for outcome (mutate the envelope to claim failure — the outcome must not
 move).
 
-**Routes.** Each verb renders its own shape; all three §3.3 states render
-distinctly; unknown-outcome renders explicitly; success no longer
-redirects **at each of the four sites**; the offer branches still render
-the evidence.
+**Routes.** Each verb renders its own shape; all **four** §3.3 states
+render distinctly — including `claude-md:local` as state 3 and not as
+no-op; unknown-outcome renders explicitly; success no longer redirects
+**at each of the four sites**; the offer branches still render the
+evidence.
 
 **Persistence.** A test that **pushes a post-verb refresh** — the thing
 `FakeRunner` tests never do — and asserts the success leg survives it.
@@ -414,9 +489,13 @@ sitting. Findings are observations, not pass/fail.
   the verb put it.
 - It does not address the other `ui-walks.md` findings.
 - The success leg is only as truthful as `target` / `host_commit_sha`.
+  §3.3 state 4 closes the one case where `target` actively lies; there
+  may be others.
 - The no-op branch is only as good as the per-type reads in §3.3; a
   sixth result type added later without a read defaults to unknown,
-  which is the safe direction but still a gap.
+  which is the safe direction but still a gap. State 4 *was* that gap,
+  already present rather than hypothetical — it was found by review, not
+  by the design.
 
 ---
 
@@ -428,9 +507,10 @@ sitting. Findings are observations, not pass/fail.
 3. `--json` leaves stderr byte-identical; the adopt offer still fires on
    a successful route.
 4. Confirming a resolution names the record and shows the canon path —
-   `target`, never `staged`.
-5. All three §3.3 states render distinctly; anything else renders
-   unknown-outcome text, not silence.
+   `target`, never `staged` — **when one was actually written**. In §3.3
+   state 4 the path must not be presented as written.
+5. All **four** §3.3 states render distinctly, `claude-md:local` among
+   them; anything else renders unknown-outcome text, not silence.
 6. Success no longer navigates away on its own, at **all four** sites.
 7. The success leg survives a post-verb SSE refresh, asserted by a test
    that actually pushes one.
@@ -453,10 +533,14 @@ at all; if that is identical to "pass", the check is worthless.
 | Point `canon_path` at `staged` instead of `target` | the "shows the canon path" test |
 | Make `RunResult.evidence` always `None` | the path/sha **content** assertion (not merely "a success leg rendered") |
 | Corrupt stdout JSON | evidence test fails, **outcome test still passes** |
-| Stop suppressing `result.diff` | hook-route envelope test |
+| Print anything else to stdout (`result.diff`, a `post_notes` line) | hook-route and new-skill envelope tests |
 | Remove the stderr `adopt_hint` print | adopt-offer route test |
 | Invert one per-type no-op read | that type's no-op render test |
 | Make a user-scope success report no-op | the §3.3 state-3 test |
+| Make a `claude-md:local` success report no-op | the state-3 `local` test |
+| Make `_apply_target` raise | the §3.3 state-4 drift test |
+| Present `canon_path` as written in the drift state | the drift test's path assertion |
+| Drop `warnings` from the envelope | the drift test's repair-instruction assertion |
 | Remove the `data-verb-success` marker | the post-refresh persistence test |
 | Duplicate a `data-key-action` target | the uniqueness test |
 | Revert redirect suppression, **one site at a time** | four separate tests |
@@ -494,3 +578,27 @@ away:
   `09-surface-spec.md:606-607` says "human-formatted stdout", and
   `runner.py:213` dropped the qualifier. The design needed a restoration,
   not a carve-out.
+
+**Revision 3** folds the delta round (2 MAJOR, 2 MINOR, no blockers):
+
+- **A fourth state exists and revision 2 sent it to "unknown".** When the
+  host phase raises, `_host_phase` returns `(None, None)`, the verb still
+  exits 0, and `canon_path` is set anyway because `target=spec.target` is
+  unconditional. So the surface would have confidently named a file that
+  was never written — the defect this unit exists to fix, inverted. It
+  is also the most *knowable* state in the system: the repair sentence is
+  already sitting in `VerbResult.warnings`. Now §3.3 state 4.
+- **State 3 was inference, and half of it was unkeyable.** `user-scope`
+  is identifiable by result type; `claude-md:local` is identifiable by
+  *nothing* on `VerbResult`. Hence `variant` in the envelope, and an
+  explicit key rather than prose.
+- **`host_commit_message` rejected**; `destination` + `variant` added
+  instead. Shipping a formatted git subject to a web page inverts §3.1's
+  own doctrine, and the fields retire two existing prose-parses
+  (`_routed_destination`, the `" until "` split) under one reason.
+- `warnings` given a channel (§3.7) rather than left to a builder to
+  substring-match back out of stderr.
+- Suppressing `result.diff` was insufficient — `post_notes` also goes to
+  stdout, so the rule is now "the envelope and nothing else".
+- The `pushed` row regained the three-state distinction revision 2
+  accidentally narrowed to two.
