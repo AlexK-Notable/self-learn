@@ -1,7 +1,11 @@
 # Spec — the guided commit-and-retry must say what it did
 
-Status: **DRAFT, ungated.**
+Status: **SHIPPED** — commit `3308d6a`, 2026-07-26. Spec gate 1 round
+(1 blocker + 7 folded substitutions), code gate 2 rounds.
 Motivating finding: `ui-walks.md` **W3-F1** (walks 3 and 5, 2026-07-26).
+
+**If you touch this surface, read §7 first** — what the two gates caught,
+all of it invisible to a green suite.
 
 **Read `resolution-evidence-spec.md` §10 before touching this surface** —
 seven things its code gate caught, every one invisible to a green suite.
@@ -236,3 +240,63 @@ report the collected/passed count — `test_js_dom.py:87` is an
 - W4-F1 ring targeting — its own spec, `ring-targeting-spec.md`.
 - The no-op hint surface split out of that spec.
 - The other `ui-walks.md` findings.
+
+---
+
+## 7. What the gates caught — none of it visible to a green suite
+
+1. **The retry argv never gained `--json`** (spec gate). The parent spec
+   listed three clauses; r1 carried two. Without the flag the CLI prints
+   no envelope, `evidence` is `None`, and production renders *"route
+   succeeded … the outcome details could not be read"* — the inadequate
+   acknowledgement this unit exists to replace, one layer over. It would
+   have shipped green: **`FakeRunner.run` ignores argv entirely**, so the
+   acceptance test written the ordinary way passes on the broken build.
+   The fix is that the test now asserts the argv.
+
+2. **A fail-open acceptance test, in this unit's own new code** (code
+   gate). `test_cleared_bucket_omits_next_pending_link` asserted only
+   absences, and stayed green with the whole evidence surface deleted
+   *and* with the success leg returning an empty body. Its own fixture
+   queued a canon path and a sha and asserted neither. Third instance of
+   `lrn-ea833a5b` on this surface.
+
+3. **The builder's one self-declared gap was wrong, and the coverage
+   already existed.** It argued that feeding `_evidence_ctx` from
+   `commit_result` instead of `retry` was indistinguishable in the
+   fixtures. The gate ran it: test 1 goes red, because `commit_result`
+   has no stdout, so evidence degrades and the envelope-sourced path
+   vanishes. Worth recording that the *reasoning* was wrong while the
+   *outcome* was fine — and that raising it is what made it checkable.
+
+4. **A guard written for finding 2 was theatre.** The first replacement
+   for `TestRedirectSuppressionFourSites` counted `_evidence_ctx` call
+   sites. The gate reproduced W3-F1 structurally — a new confirm route
+   that resolves a record and sets `HX-Redirect` without ever calling
+   `_evidence_ctx` — and **it stayed green**, because it counts sites
+   that *do* call the function while the defect was a site that did
+   *not*. Before this unit it would have read `== 2` and stayed green
+   through the whole defect window. Now paired with a guard on
+   `HX-Redirect` assignments, verified against that same reproduction:
+   call-site guard passes, redirect guard fails `9 == 8`.
+
+5. **A regex guard's false positive is not neutral.** Writing
+   `_evidence_ctx()` in a docstring — the ordinary way to name a function
+   in prose — turned the guard red with a message reading *"update this
+   count"*, training the exact reflex it exists to replace. Both guards
+   now walk the AST.
+
+6. **The enumeration was the hole, not the assertions.** The class
+   enumerated four sites and contained zero occurrences of
+   `commit_drift`. The stale count also survived in the section banner
+   and the module docstring — the same drift, twice more, inside the
+   commit that fixed it. No count now appears in any of the three.
+
+7. **Measurement hygiene.** A reviewing subagent manufactured CPU
+   saturation to reproduce a browser flake and left **56 orphaned busy
+   loops** running; load average hit 62 and every browser-test result
+   taken in that window was noise (4 failures, then 2, different each
+   run). On a settled machine: 1082 passed. Also: the `js` flake is not
+   one test — every member of `TestInFlightDisabling` shares a
+   `_hold_post` → click → `_wait_for_held` shape and load decides which
+   one loses. Root-caused in-repo before this unit; its own item.
