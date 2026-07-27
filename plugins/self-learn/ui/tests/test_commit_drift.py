@@ -14,10 +14,16 @@ against a REAL sandboxed dirty repo, same as every other read route
 here (ledger._invoke_json shells the real `self-learn` console script);
 the commit + auto-retry legs run against a FakeRunner so the argv
 sequence is asserted exactly.
+
+commit-drift-evidence-spec.md (§4): the commit-drift evidence tests
+below live in this module rather than a new one — this IS the
+commit-drift path — and import `envelope` from `test_resolution_evidence`
+rather than re-deriving the envelope shape.
 """
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from starlette.testclient import TestClient
@@ -31,6 +37,7 @@ from self_learn_ui.routes import COMMIT_DRIFT_MARKERS, _commit_drift_eligible
 from self_learn_ui.runner import FakeRunner, RunResult
 
 from support import make_behavior, make_env, seed_proposal, seed_record
+from test_resolution_evidence import envelope
 
 TOKEN = "test-token"
 RID = "lrn-0000c0de"
@@ -225,10 +232,30 @@ class TestCommitAndRetry:
     def test_confirm_runs_commit_then_auto_retries_the_original_route(
         self, tmp_path: Path
     ) -> None:
+        """commit-drift-evidence-spec.md §3 acceptance item 1 (the W3-F1
+        reproduction): the evidence leg renders on the retry's success —
+        carrying the queued envelope's `canon_path` and 7-char
+        `host_commit_sha` — in place of the pre-unit silent HX-Redirect
+        teleport. §2.3: this test USED to assert the defect as the
+        contract (`assert r.headers.get("hx-redirect")` and an argv
+        without `--json`); both are superseded here, not worked around.
+        The argv assertion matters on its own (§2.1): `FakeRunner.run`
+        ignores argv entirely and pops the queued `RunResult` regardless
+        of what was sent, so without this assertion the test would still
+        pass on a build that never sends `--json` — the exact gap the
+        blocker round caught."""
         sb, rec = _seed_dirty(tmp_path)
+        env_dict = envelope(
+            record_id=rec.id,
+            canon_path="/host/plugins/s-plugin/skills/s/SKILL.md",
+            host_commit_sha="deadbeefcafe",
+            destination="skill-md",
+            created=True,
+            outcome_state="landed",
+        )
         runner = FakeRunner()
         runner.queue_result(RunResult(0))  # host commit-drift
-        runner.queue_result(RunResult(0))  # route retry
+        runner.queue_result(RunResult(0, stdout=json.dumps(env_dict)))  # route retry
         c, _runner = make_client(sb, runner=runner)
         r = c.post(
             f"/record/{rec.id}/action/commit-drift/confirm",
@@ -238,9 +265,107 @@ class TestCommitAndRetry:
         assert r.status_code == 200
         assert runner.calls == [
             ["host", "commit-drift", rec.id, "--dest", "skill-md"],
-            ["route", rec.id, "--dest", "skill-md"],
+            ["route", rec.id, "--dest", "skill-md", "--json"],
         ]
-        assert r.headers.get("hx-redirect")
+        assert r.headers.get("hx-redirect") is None
+        assert 'data-verb-success="true"' in r.text
+        assert "/host/plugins/s-plugin/skills/s/SKILL.md" in r.text
+        assert "deadbee" in r.text  # host_commit_sha[:7]
+
+    def test_evidence_composes_with_contradicts_offer(self, tmp_path: Path) -> None:
+        """§3 acceptance item 2 — the offer COMPOSES with the evidence
+        (§3.4's ruling, carried by this spec) rather than suppressing
+        it. Mutation guard (§3.1): passing `evidence=None` to
+        `_contradicts_offer_response` must fail this."""
+        sb, rec = _seed_dirty(tmp_path)
+        seed_proposal(
+            sb.ledger,
+            rec.id,
+            destination="skill-md",
+            contradicts=["skills/other/SKILL.md"],
+        )
+        env_dict = envelope(record_id=rec.id, destination="skill-md", outcome_state="landed")
+        runner = FakeRunner()
+        runner.queue_result(RunResult(0))  # host commit-drift
+        runner.queue_result(RunResult(0, stdout=json.dumps(env_dict)))  # route retry
+        c, _runner = make_client(sb, runner=runner)
+        r = c.post(
+            f"/record/{rec.id}/action/commit-drift/confirm",
+            data={"kind": "detail", "dest": "skill-md"},
+            headers={"HX-Request": "true"},
+        )
+        assert r.status_code == 200
+        assert "data-contradicts-offer" in r.text
+        assert 'data-verb-success="true"' in r.text
+
+    def test_evidence_composes_with_adopt_offer(self, tmp_path: Path) -> None:
+        """§3 acceptance item 3 — likewise for the adopt offer. Mutation
+        guard (§3.1): passing `evidence=None` to `_adopt_offer_response`
+        must fail this."""
+        from self_learn.chezmoi import adopt_command
+
+        sb, rec = _seed_dirty(tmp_path)
+        target = "/home/u/.claude/rules/subagents.md"
+        hint_stderr = (
+            f"self-learn: wrote {target} — not tracked by chezmoi, so it "
+            f"will not sync to your other machines. To sync it: "
+            f"{adopt_command(target)}\n"
+        )
+        env_dict = envelope(record_id=rec.id, destination="skill-md", outcome_state="landed")
+        runner = FakeRunner()
+        runner.queue_result(RunResult(0))  # host commit-drift
+        runner.queue_result(
+            RunResult(0, stdout=json.dumps(env_dict), stderr=hint_stderr)
+        )  # route retry
+        c, _runner = make_client(sb, runner=runner)
+        r = c.post(
+            f"/record/{rec.id}/action/commit-drift/confirm",
+            data={"kind": "detail", "dest": "skill-md"},
+            headers={"HX-Request": "true"},
+        )
+        assert r.status_code == 200
+        assert "data-adopt-offer" in r.text
+        assert 'data-verb-success="true"' in r.text
+
+    def test_cleared_bucket_omits_next_pending_link(self, tmp_path: Path) -> None:
+        """§3 acceptance item 4 — a cleared bucket omits the "next
+        pending record" link rather than linking the front page under
+        that label. Mutation guard (§3.1): building `next_url` with
+        `next_record_url` instead of the raw next-pending id must fail
+        this — that helper always returns SOME string (a bucket-clear
+        front-page URL when nothing remains), which would render here
+        under the misleading "Next pending record" label."""
+        sb, rec = _seed_dirty(tmp_path)  # the only pending record in this bucket
+        env_dict = envelope(
+            record_id=rec.id,
+            canon_path="/host/plugins/s-plugin/skills/s/SKILL.md",
+            host_commit_sha="cafed00d00",
+            destination="skill-md",
+            outcome_state="landed",
+        )
+        runner = FakeRunner()
+        runner.queue_result(RunResult(0))  # host commit-drift
+        runner.queue_result(RunResult(0, stdout=json.dumps(env_dict)))  # route retry
+        c, _runner = make_client(sb, runner=runner)
+        r = c.post(
+            f"/record/{rec.id}/action/commit-drift/confirm",
+            data={"kind": "detail", "dest": "skill-md"},
+            headers={"HX-Request": "true"},
+        )
+        assert r.status_code == 200
+        # POSITIVE CONTROL FIRST (lrn-ea833a5b). The two negative
+        # assertions below are true of an empty response body, so on
+        # their own they cannot tell "the link is correctly absent" from
+        # "nothing rendered at all" — measured: this test stayed GREEN
+        # both with the whole evidence surface deleted and with the
+        # success leg returning `HTMLResponse("")`. These two assert the
+        # leg rendered AND that its content came from the queued
+        # envelope, so the absence below is an absence *within* a
+        # rendered evidence leg.
+        assert 'data-verb-success="true"' in r.text
+        assert "cafed00" in r.text
+        assert 'data-key-action="success_next"' not in r.text
+        assert "/?notice=" not in r.text
 
     def test_commit_verb_failure_renders_stderr_verbatim_no_retry(
         self, tmp_path: Path
@@ -282,3 +407,9 @@ class TestCommitAndRetry:
         assert len(runner.calls) == 2  # exactly one retry — never a loop
         assert "commit-drift/arm" not in r.text  # never re-offers the button
         assert GITOPS_DIRTY_MARKER in r.text  # rendered plainly
+        # commit-drift-evidence-spec.md §3.1: without this, "add evidence
+        # to the retry-failure leg" survives — `_evidence_ctx(run_result=
+        # retry)` with `retry.evidence is None` (non-zero exit) renders a
+        # DEGRADED "route succeeded…" block above the error strip while
+        # the two assertions above both stay true.
+        assert "data-verb-success" not in r.text

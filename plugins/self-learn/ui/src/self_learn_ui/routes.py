@@ -966,10 +966,17 @@ def _unarmed_context(
         # OTHER caller of this helper (Front/Bucket/Detail GETs, ordinary
         # disarm, cycle-destination) has no error to attach a button to.
         "commit_drift": None,
-        # Resolution-evidence unit (§2.2): set only by action_confirm's/
-        # proposal_confirm's success leg for route/reject/defer/graduate —
-        # every other caller leaves this `None`, which is what lets
-        # action_bar.html's final quad branch keep rendering for them.
+        # Resolution-evidence unit (§2.2): set by action_confirm's,
+        # proposal_confirm's AND commit_drift_confirm's success legs for
+        # route/reject/defer/graduate — every other caller leaves this
+        # `None`, which is what lets action_bar.html's final quad branch
+        # keep rendering for them.
+        #
+        # commit_drift_confirm joined 2026-07-26 (W3-F1, the fifth
+        # redirect site). This comment named two setters while three
+        # existed for the length of that gap; a comment that enumerates
+        # its callers drifts exactly like a test that enumerates its
+        # sites, which is what hid W3-F1 in the first place.
         "evidence": evidence,
         "kind": kind,
         "record_id": record_id,
@@ -1718,7 +1725,13 @@ async def commit_drift_confirm(
     the ORIGINAL route confirm automatically, once, with the SAME argv
     (§2.2). A second dirty refusal (or any other retry failure) renders
     PLAINLY: no loop, and the commit-drift button never re-appears on
-    that leg — only a fresh `route` confirm failure can re-offer it."""
+    that leg — only a fresh `route` confirm failure can re-offer it.
+
+    commit-drift-evidence-spec.md §2: the success leg mirrors
+    `action_confirm`'s evidence block instead of redirecting. Two
+    `RunResult`s exist in this handler — `_evidence_ctx` is fed by
+    `retry`, never `commit_result`, because the evidence describes the
+    route, not the guided commit."""
     home = _home(request)
     runner = request.app.state.runner
 
@@ -1740,8 +1753,18 @@ async def commit_drift_confirm(
     manager = _pane_manager(request)
     if manager is not None:
         await manager.interrupt_active_session(record_id)
+    # §2.1: the retry argv must carry `--json`, exactly like
+    # action_confirm's own `as_json=verb in _EVIDENCE_VERBS` (:1286) —
+    # without it `RunResult.evidence` is `None` and the surface degrades
+    # to the inadequate "outcome details could not be read" text, on a
+    # build that would still pass every FakeRunner test (FakeRunner
+    # ignores argv entirely). §4's statically-true guard: there is no
+    # `verb` variable in this handler otherwise — bind one so the mirror
+    # stays textually identical to action_confirm's and a future verb
+    # change here cannot silently produce `evidence=None`.
+    verb = "route"
     route_argv = build_argv(
-        "route",
+        verb,
         record_id,
         dest=dest or None,
         collapse=collapse or None,
@@ -1750,6 +1773,7 @@ async def commit_drift_confirm(
         event=event or None,
         tolerate=tolerate,
         target=target or None,
+        as_json=verb in _EVIDENCE_VERBS,
     )
     await _publish_applying(request, "route", record_id, "start")
     retry = await runner.run(route_argv)
@@ -1768,26 +1792,65 @@ async def commit_drift_confirm(
         slot.clear_for_record(record_id)
     if collapse:
         _sweep_stale_proposal(request)
+
+    # §2 (mirrors action_confirm's :1354-1384 evidence block): built
+    # ONCE here so the offer branches below and the plain success leg
+    # both use it — an offer COMPOSES with the evidence, never hiding
+    # it (§3.4 ruling, carried by this spec). `next_url` is built from
+    # the raw next-pending id, never `next_record_url` — that helper
+    # always returns SOME string (a bucket-clear front-page URL when
+    # nothing remains), and the evidence leg's "next pending record"
+    # link must stay ABSENT rather than point at that URL under a
+    # misleading label. The single `locate_record` call below replaces
+    # the old `_bucket_name_for` lookup — it already yields
+    # `bucket_scope` for `bucket_url`, so two lookups where the mirror
+    # needs one is how they would drift.
+    location = ledger.locate_record(home, record_id)
+    bucket_name = location.bucket_name if location is not None else None
+    bucket_scope = location.scope if location is not None else None
+    _next_id = _next_pending_id(home, bucket_name, record_id) if bucket_name else None
+    next_url = f"/record/{_next_id}" if _next_id else None
+    bucket_url = (
+        f"/bucket/{bucket_scope}/{bucket_name}"
+        if bucket_name and bucket_scope
+        else None
+    )
+    evidence = (
+        _evidence_ctx(
+            verb=verb,
+            record_id=record_id,
+            run_result=retry,
+            next_url=next_url,
+            bucket_url=bucket_url,
+        )
+        if verb in _EVIDENCE_VERBS
+        else None
+    )
+
     if contradicts_pre:
-        return _contradicts_offer_response(request, record_id, contradicts_pre)
+        return _contradicts_offer_response(
+            request, record_id, contradicts_pre, evidence=evidence
+        )
     # A2 §10.4(a): this retry IS a `route`, so it can carry the same
     # adopt signal the primary confirm checks (mirrored here, not
     # factored out — this whole function already mirrors action_confirm's
     # sequence for the same reason, per the comment above).
     adopt_target = _extract_adopt_path(retry.stderr)
     if adopt_target:
-        return _adopt_offer_response(request, record_id, adopt_target)
+        return _adopt_offer_response(
+            request, record_id, adopt_target, evidence=evidence
+        )
 
-    bucket_name = _bucket_name_for(home, record_id)
-    url = next_record_url(home, bucket_name, record_id) if bucket_name else f"/?notice={NOTICE_BUCKET_CLEAR}"
-    # 07 §4 contract 2 / 09 §3: verb stdout is never parsed for control or
-    # display (a real runner's stdout is human-formatted, not a data
-    # contract) — the commit's own sha is therefore not surfaced here;
-    # the redirect target's re-read state IS the ground truth, same as
-    # every other successful confirm.
-    resp = Response(content="Committed. Retrying…", status_code=200)
-    resp.headers["HX-Redirect"] = url
-    return resp
+    ctx = _unarmed_context(
+        kind=kind,
+        record_id=record_id,
+        dest=None,
+        event=event,
+        target=target,
+        scope=_record_scope(request, record_id),
+        evidence=evidence,
+    )
+    return _render(request, "partials/action_bar.html", ctx)
 
 
 # -------------------------------------------------------------- armed host-add

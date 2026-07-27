@@ -1,7 +1,7 @@
 """Resolution-evidence unit (docs/specs/self-learn/drafts/
 resolution-evidence-spec.md) — UI-side (§2.2/§3.2/§3.3/§3.4/§3.6):
-the success leg, its verb/outcome-state-shaped content, the four
-redirect sites, offer composition, and the keymap uniqueness
+the success leg, its verb/outcome-state-shaped content, redirect
+suppression at every site, offer composition, and the keymap uniqueness
 invariant with the leg up.
 
 FakeRunner-driven: every test queues a `RunResult` whose `stdout` is a
@@ -14,6 +14,7 @@ takes through :class:`RealRunner`.
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 from pathlib import Path
@@ -591,13 +592,96 @@ class TestDegradedEvidence:
 
 
 # ===================================================================== #
-# DoD #6/§3.4/§8 row 11: redirect suppression at all FOUR sites,
+# DoD #6/§3.4/§8 row 11: redirect suppression at EVERY site,
 # independently — "a single combined test would pass with three of them
-# still broken."
+# still broken." Counts deliberately omitted from this banner and from
+# the class name: the spec said four, a fifth existed, and the stale
+# number is what let W3-F1 hide.
 # ===================================================================== #
 
 
-class TestRedirectSuppressionFourSites:
+def _routes_src() -> str:
+    """Read `routes.py` through the module object, not a path guess."""
+    from self_learn_ui import routes as _routes
+
+    return Path(_routes.__file__).read_text()
+
+
+def _count_calls(src: str, name: str) -> int:
+    """Count real call sites of `name`, via AST — never a regex.
+
+    A text match counts prose: adding `_evidence_ctx()` to a docstring —
+    the most natural way to name a function in a comment — turned an
+    earlier version of this guard RED, with a message telling the reader
+    to bump the count, which is the reflex the guard exists to prevent.
+    `routes.py:1732` already mentions the name in prose today."""
+    return sum(
+        1
+        for node in ast.walk(ast.parse(src))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == name
+    )
+
+
+class TestRedirectSuppressionEverySite:
+    """Every site that builds evidence must suppress the redirect.
+
+    NAMED WITHOUT A COUNT ON PURPOSE. This class was
+    `TestRedirectSuppressionFourSites` and enumerated exactly the four
+    sites the resolution-evidence spec listed — then `commit_drift_confirm`
+    became a fifth, kept redirecting, and shipped the silent teleport that
+    two source-blind UI walks found (W3-F1, 2026-07-26). The class had
+    zero occurrences of `commit_drift` for that whole period. **The
+    enumeration was the hole, not the assertions.**
+
+    `test_every_evidence_call_site_is_covered` below is the guard: it
+    derives the number of sites from the source instead of trusting this
+    class to have kept up.
+    """
+
+    def test_evidence_call_site_count_is_pinned(self) -> None:
+        """Pins how many places build evidence, so ADDING one stops a human.
+
+        **What this does NOT cover, measured:** it is blind to the
+        direction that actually caused W3-F1. A first version of this
+        guard claimed to catch "the exact drift that hid W3-F1"; the code
+        gate reproduced that defect — a new confirm route that dispatches
+        `route` and sets `HX-Redirect` without ever calling
+        `_evidence_ctx` — and this assertion stayed GREEN. It counts
+        sites that DO call the function; the defect was a site that did
+        NOT. Had it existed before that unit it would have read `== 2`
+        and stayed green through the whole defect window.
+
+        `test_redirect_site_count_is_pinned` below covers the omission
+        direction. Keep both: this one catches "evidence was ripped out
+        or added"; that one catches "a new route teleports silently"."""
+        call_sites = _count_calls(_routes_src(), "_evidence_ctx")
+        assert call_sites == 3, (
+            f"routes.py has {call_sites} _evidence_ctx call sites; this guard "
+            "knows about 3 (action_confirm, commit_drift_confirm, "
+            "pane-proposal confirm). If you ADDED one, write its "
+            "redirect-suppression test before touching this number."
+        )
+
+    def test_redirect_site_count_is_pinned(self) -> None:
+        """Pins how many places still send `HX-Redirect`.
+
+        This is the guard that would have caught W3-F1: before that unit
+        `commit_drift_confirm` set an `HX-Redirect` on its SUCCESS leg,
+        and nothing anywhere objected. A new route that resolves a record
+        and teleports the user must add one of these, which turns this
+        red and forces the question.
+
+        If this fails because you added a redirect: confirm it is not on
+        a leg that just resolved a record. That is the W3-F1 shape."""
+        redirects = _routes_src().count('headers["HX-Redirect"]')
+        assert redirects == 8, (
+            f"routes.py assigns HX-Redirect in {redirects} places; this guard "
+            "knows about 8. A NEW one on a leg that just resolved a record is "
+            "W3-F1 — the user is teleported with no acknowledgement."
+        )
+
     def test_site_1_plain_confirm_no_offer(self, tmp_path: Path) -> None:
         """action_confirm's plain HX-Redirect (no contradicts, no
         adopt)."""
