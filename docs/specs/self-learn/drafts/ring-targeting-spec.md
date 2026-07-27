@@ -80,27 +80,33 @@ which §2.2 called document-scoped while §2.5 and test 7 required the
 opposite. A builder had to invent the resolution. Same self-contradiction
 shape as r1's B1.
 
-**Bucket A — row-scoped (7).** Target resolved inside the selected
+**Bucket A — row-scoped (6).** Target resolved inside the selected
 `.record-row`; no fallback.
 
 ```
-route · reject · defer · graduate · cycle_destination · toggle_brief · note
+route · reject · defer · graduate · cycle_destination · note
 ```
 
-**Bucket B — document-scoped (11).** Target resolved document-wide,
+**Bucket B — document-scoped (12).** Target resolved document-wide,
 behaviour byte-identical to today.
 
 ```
 up · iterate · bucket_pane · arm_proposal · retry · close_pane
-tolerate · confirm_recurrence · success_next · success_bucket · success_view
+tolerate · confirm_recurrence · toggle_brief
+success_next · success_bucket · success_view
 ```
 
-**Bucket C — no DOM target lookup (4).** Pure client behaviour, explicit
-`switch` cases at `app.js:220-238`, never reaches a lookup.
+**Bucket C — no DOM target lookup (4).**
 
 ```
 move_down · move_up · drill_in · help
 ```
+
+The criterion for C is **never performs a `[data-key-action]` lookup** —
+not "has an explicit `switch` case" (N16), since `up` and `note` have
+cases at the same site and both do reach a lookup. Verified: `rows()` and
+`drillIntoSelection` query `[data-row]`/`a[href]`, `toggleHelp` uses
+`getElementById`; none resolves a key target.
 
 **Invariant, tested (test 9):** the three buckets are pairwise disjoint
 and their union equals `{e.action for e in KEYMAP}` exactly. Not "each
@@ -119,12 +125,20 @@ the finding §5 parks as out of scope — and broken
 Escape-interrupts-a-streaming-pane, the sibling of the defect
 `app.js:169-183` exists to close.
 
-**`tolerate`/`confirm_recurrence` are in bucket B (N8).** Their targets
-render only on `.holding-row` (`index.html:80-85`), never on a
-`.record-row`, so rule 2 could never find them. Row-scoping them would
-change `t` on a bucket page from silent to hinted with wording that
-cannot be honest — the record is pending; the verb simply does not apply
-to record rows.
+**`tolerate`/`confirm_recurrence`/`toggle_brief` are in bucket B — the
+inert-target rule (N8, N12).** A verb whose target can never render on a
+`.record-row` gains nothing from rule 2 and would only convert a silent
+miss into a hint whose wording cannot be honest. `tolerate` and
+`confirm_recurrence` render only on `.holding-row`
+(`index.html:80-85`); `toggle_brief` renders only at `detail.html:68`,
+and a detail page has no `[data-row]` so rule 3 covers it anyway.
+
+r3 applied this rule to the first two and not the third, which was
+inconsistent rather than harmful. Stated once, as a rule, so the next
+action added is classified by it: **bucket A membership requires the
+target to be capable of rendering inside a `.record-row`.** Measured,
+that is exactly the six in A — all of them live in the single
+`<form id="form-{{ dom_id }}">` at `action_bar.html:167-227`.
 
 **`success_*` are in bucket B — B9, measured.** The gate measured a
 mouse arm-then-confirm cycle on a 3-record bucket: **the ring never moves
@@ -178,17 +192,47 @@ the quad (`action_bar.html:11-13`, guard at `:166`). Not deferred rows:
 `record-row-deferred` is `opacity: 0.6` and nothing else
 (`style.css:788-790`) and includes the same action bar.
 
-**The miss must be audible.** `dispatchOrHint` (`app.js:270-281`) emits
-only for a `[data-noop-hint][data-noop-action]` element — one render site,
-`action_bar.html:196-202` — or a `NOOP_MESSAGES` entry, and
-`NOOP_MESSAGES` (`app.js:266-268`) has **one** key. This unit adds
-entries for bucket A's `clickAction` verbs. Silence would ship a fifth
+**The miss must be audible**, or this ships a fifth
 advertised-key-bound-to-nothing (W4-F4), the class `keymap.py:118-128`
 exists to refuse.
 
-**Wording must name the actual cause**, not one template — "this record
-is already resolved" is right for a verb missing from an evidence-leg row
-and would be wrong elsewhere.
+**It is rendered server-side, and NO `NOOP_MESSAGES` entries are added —
+B12.** r3 said the opposite and was wrong three ways, all measured:
+
+1. It **reverses a ratified pin.** `app.js:259-264` records it verbatim:
+   a proposal-replaced bar "hits leg 2 with no `NOOP_MESSAGES` entry for
+   `cycle_destination` — **deliberately silent, no scope message (it
+   would be wrong there, gate M1's replaced-bar pin)**."
+2. It **turns a green test red.**
+   `test_o_on_proposal_replaced_bar_shows_no_hint`
+   (`test_js_dom.py:1528-1537`) presses `o` on that bar and asserts
+   `[data-noop-hint-active]` is `None`. r3 never mentioned it, while §3
+   test 6 demands existing tests stay green unmodified.
+3. It **cannot produce the wording r3 itself demanded.**
+   `NOOP_MESSAGES` is keyed by **action alone** (`app.js:266-268`), but
+   one bucket-A verb misses for at least three distinct causes: the
+   ringed row is an evidence leg; a proposal bar has replaced the action
+   bar; the verb does not apply to this row type. One static string per
+   action cannot name any of them correctly in all three.
+
+So: render `data-noop-hint` / `data-noop-action` on the **evidence leg**
+(`evidence.html`) for the bucket-A verbs. The server knows *why* the quad
+is absent, so wording is cause-accurate by construction. This is the
+growth path `app.js:263-264` already names — "the next gated key joins by
+adding a message here **or a data-noop-hint attribute server-side** —
+never a new mechanism." The M1 pin survives, `:1535` stays green
+unmodified, and no new mechanism is invented.
+
+**The hint lookup must be row-scoped too (N14).** `dispatchOrHint`
+resolves `[data-noop-hint][data-noop-action=…]` against the whole
+document (`app.js:272-274`). That is invisible today — one render site,
+one static string — but this ruling puts a hint inside every resolved
+row, so an unscoped lookup would source a hint from a row other than the
+ringed one, recreating the defect in the explanation of the defect. It
+takes the same rules 1/2/3 as `clickAction`.
+
+`focusNote`'s hint (§2.5, test 8) is unaffected by all of this —
+`showNoopHint` takes a literal string.
 
 **`n` needs its own mechanism — B10.** `focusNote` (`app.js:69-74`) ends
 `if (input) input.focus();` with no `else`, and `case "note"`
@@ -233,6 +277,17 @@ single-source doctrine both files open with (`app.js:1-8`,
 `test_served_keymap_blob_matches_source` (`test_js_dom.py:1331`) and
 `test_keymap_covers_every_pinned_action` valid and makes one edit change
 both sides.
+
+**The field is REQUIRED — no default (N15).** `KeymapEntry` is a frozen
+dataclass and `keymap_as_dicts()` spreads `asdict(entry)`
+(`keymap.py:136-140`), so a new field flows into the blob automatically
+and `loadKeymap` tolerates it (it reads only `.keys`/`.action`). All four
+blob consumers stay green — `test_js_dom.py:1341`, `test_keymap.py:43`,
+`:44-46`, `test_routes.py:2309-2320`. **But a field added *with* a
+default — the natural move when retrofitting 22 rows — silently
+classifies every future entry and makes §2.2's invariant trivially
+true.** The whole point is that adding an action without classifying it
+fails the build. Required, or the test is theatre.
 
 **Non-keymap `data-key-action` values** — `confirm`, `disarm`,
 `interrupt`, `pane_send`, `commit_drift_confirm`, `commit_drift_disarm` —
@@ -280,23 +335,48 @@ outside the invariant. Test 9 must not assert over them.
 | move an action out of its bucket | 9 |
 | move `success_*` into bucket A | 10 |
 
-**Test 4's discriminator — B8, measured.** From a bucket page,
-`history.length = 3` and `history.back()` lands on **exactly the URL the
-header `up` link navigates to** (`/`). So a test 4 that asserts "reaches
-the front page" — including an exact `wait_for_url(base + "/")` — **passes
-on the broken build**, because `goUp()` falls through to
-`window.history.back()` (`app.js:166`) and arrives at the same place.
+**Test 4's discriminator — B8, then B11. Both measured, and r3's
+replacement was worse than the defect it replaced.**
 
-Test 4 must therefore use a discriminator `history.back()` cannot fake.
-The suite already has the technique:
-`test_escape_first_rung_interrupts_pane_before_up`
-(`test_js_dom.py:1372-1394`) injects
-`<a data-key-action="up" href="#went-up">` and asserts `location.hash`.
-Use that, **and** assert `history.length` is unchanged.
+The original hazard: from a bucket page, `history.back()` lands on
+**exactly the URL the header `up` link navigates to** (`/`), because
+`goUp()` falls through to `window.history.back()` (`app.js:166`). So
+asserting "reaches the front page" passes on the broken build.
 
-This is the third time `lrn-ea833a5b` has bitten this unit, and the first
-time it bit a test written specifically to guard against a regression,
-in a document that cites the lesson twice. Note it in the fold.
+r3's two-part replacement **fails in both parts**:
+
+- **Injection cannot fire.** The cited technique
+  (`test_js_dom.py:1372-1394`) works because a `/record/` page has no
+  real `interrupt` target. A bucket page always has a real `up` target
+  and it is in `<header>` — before anything appended at body end.
+  Measured: `all_hrefs: ['/', '#went-up']`, `picks_injected: False`.
+  `clickAction` takes the first in document order, so the injected
+  anchor can never receive the click, and the hash never changes **on a
+  correct build**.
+- **The `history.length` assertion is inverted.** Measured A/B:
+  correct build (click the header link) `3 → 4`; broken build
+  (`history.back()`) `5 → 5`. Link navigation **pushes**; `back()` moves
+  the pointer. r3 said "assert unchanged" — which **passes on the broken
+  build and fails on the correct one.**
+
+**The ruling.** Assert `history.length` **increased**. If a hash
+discriminator is also wanted, **mutate the existing target in place**
+rather than injecting a rival:
+
+```js
+document.querySelector('[data-key-action="up"]').setAttribute('href', '#went-up')
+```
+
+A click then yields a hash change with no navigation; `history.back()`
+yields neither. Either half discriminates once corrected; r3's stated
+combination discriminated in neither.
+
+**Three rounds, one test.** `lrn-ea833a5b` has now bitten this unit
+three times, twice in a test written specifically to catch a regression,
+in a document that cites the lesson by name. The generalisation earned
+here is narrower and more useful than the original: **a guard test needs
+its own A/B — run it against the mutation before trusting it, because a
+discriminator derived by reading is a hypothesis, not a control.**
 
 **Positive control on test 1.** Assert row 2 armed **then** row 1 not
 armed, in that order — "row 1 did not arm" passes vacuously on a page
@@ -308,9 +388,25 @@ a red test and every mutation would leave the suite green.** Report the
 collected/passed count for `-m js`, not an exit status. Measured
 baseline, both gate rounds: **71 passed**.
 
-**Fixture pinning.** Mutation 2 only bites if the action exists elsewhere
-on the page; pin ≥2 rows where row A has the action and the ringed row B
-does not.
+**Fixture pinning, two mutations not one.**
+
+- *Mutation 2* only bites if the action exists elsewhere on the page: pin
+  ≥2 rows where row A has the action and the ringed row B does not.
+- *Mutation "move `success_*` into bucket A"* (test 10) only bites if the
+  default ring lands on a `.record-row`. **Measured, `f2_server` fails
+  this**: `/bucket/skill/s` has `[data-row]` index **0 =
+  `.bulk-collapse-row`** (the three `.record-row`s are 1–3), so rule 2
+  never engages and the mutation leaves test 10 **green**. Test 10's
+  premise is "the ring never moved", so it cannot repair this by
+  pressing `s`. **Test 10 needs a bucket with no bulk-collapse group.**
+
+**Test 10 asserts over what rendered, not a fixed triple.** Whether
+`success_view` appears on a bucket-page success leg is unconfirmed — the
+gate's envelope produced only `success_next` and `success_bucket`, and
+`evidence.html:101` gates `success_view` on `record_url`. So the
+assertion is: **every success link present in the DOM is reachable by its
+key** — which is the same shape as the footer fix and does not depend on
+knowing the triple in advance.
 
 ### 3.2 The suite could not have caught this
 
@@ -350,11 +446,29 @@ seeded bucket holds exactly one pending record"; that is true of the
   by reading. The rule this project already has: when a claim is
   decision-relevant and locally testable, test it before it grounds a
   decision.
-- **r3** — this document. All 22 keymap actions classified; `success_*`
-  and `tolerate`/`confirm_recurrence` moved to document scope; `note`
-  resolved as row-scoped in both places; the classification's home
-  decided; test 4 given a discriminator; `focusNote`'s miss given a
-  voice.
+- **r3** — **NOT SOUND**, 2 blockers, both in r2's repairs. Eight of ten
+  prior blockers verified closed. The new ones: a test-4 discriminator
+  that failed in **both** halves — an injected anchor that document order
+  guarantees can never be clicked, and a `history.length` assertion
+  inverted so it passed on the broken build and failed on the correct one
+  — and a `NOOP_MESSAGES` ruling that reversed a pin recorded verbatim in
+  the code, turned a green test red, and could not express the wording it
+  itself demanded.
+- **r4** — this document. Hints move server-side to the evidence leg, no
+  `NOOP_MESSAGES` entries added, hint lookup row-scoped; test 4 asserts
+  `history.length` **increased** and mutates the real target in place;
+  `toggle_brief` joins bucket B under a stated inert-target rule; the
+  `KeymapEntry` field is required, not defaulted; test 10 gets its own
+  fixture pin and asserts over what rendered.
+- **What three rounds actually taught, beyond the ten blockers.** Every
+  decisive finding came from *running something* — enumerating `KEYMAP`,
+  driving `history.back()`, injecting an anchor and reading document
+  order, walking an arm-confirm cycle. Every defect came from *reading*
+  and reasoning confidently. The specific lesson worth carrying: **a
+  guard test is itself a claim, and needs its own A/B against the
+  mutation before it can be trusted to guard anything.** Two rounds
+  running, the test written to catch the regression was the thing that
+  was broken.
 
 ## 5. Out of scope
 
