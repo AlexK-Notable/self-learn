@@ -1,6 +1,6 @@
 # Spec — the selection ring must govern the verb keys
 
-Status: **revision 5** — folds spec-gate rounds 1–4 (B1–B13, N7–N21).
+Status: **revision 6** — folds spec-gate rounds 1–5 (B1–B14, N7–N24).
 Motivating finding: `ui-walks.md` **W4-F1** (walk 4, 2026-07-26).
 
 ---
@@ -139,8 +139,14 @@ action added is classified by it. **Bucket A membership needs BOTH
 halves:**
 
 1. the target can render inside a `.record-row`, **and**
-2. the action is a **verb acting on that record** — not merely an
-   element located in its subtree. Equivalently: the ring tracks it.
+2. the action **acts on, or edits, that record's own state** — not
+   merely an element located in its subtree. Equivalently: the ring
+   tracks it.
+
+   The phrasing matters (N24). "A verb acting on that record" would
+   exclude **`note`**, which is not a verb — it focuses an input — while
+   `note`'s bucket-A membership is load-bearing (§2.5, test 7, and the
+   mutation "leave `focusNote` document-wide").
 
 **Half 2 is not decoration, and r4 omitted it (N17).** r4 asserted the
 first half alone selected "exactly the six in A" and labelled that
@@ -243,16 +249,57 @@ construction. This is the growth path `app.js:263-264` already names —
 attribute server-side** — never a new mechanism." The M1 pin survives,
 `:1535` stays green unmodified, and no new mechanism is invented.
 
-**Markup shape and wording, decided.** The existing site puts the pair on
-a visible button; the evidence leg has no analogous control, so these are
+**Markup shape, decided.** The existing site puts the pair on a visible
+button; the evidence leg has no analogous control, so these are
 **attribute-only carriers** — one per action, emitted by a loop over the
 five, e.g.
 `<span hidden data-noop-hint="…" data-noop-action="route"></span>`.
-**One shared string, not five**: the cause is uniform across all three
-include paths — under `evidence` the record is resolved, and the
-`contradicts`/`adopt` branches thread `evidence=` through, so the record
-is resolved there too and an *additional* decision is merely offered. A
-single "already resolved" wording is accurate in every path.
+
+**They go inside the `data-verb-success` div, and that placement is
+load-bearing.** `contradicts_offer.html` includes `evidence.html`
+**once**, above the edge list, and passes `evidence=None` into every
+per-edge `action_bar.html` include. Its own comment records why: an
+earlier version threaded `evidence` into every edge, so a two-edge offer
+rendered the success leg twice — "a reachable violation of DoD #8's
+`data-key-action` uniqueness invariant", caught as a code-gate MAJOR.
+Carriers living inside `evidence.html` inherit that singleton discipline
+for free. **Putting them in `action_bar.html` instead would re-open a
+closed MAJOR**, and would do it silently, since a one-edge offer looks
+identical.
+
+**Wording: the string must not vary by which key was pressed, but it
+MUST vary by outcome — B14.** r5 ruled one shared "already resolved"
+string, grounded on "under `evidence` the record is resolved". That
+grounding is false for one of the four values `evidence.action` takes
+(`evidence.html:29` route · `:59` graduate · `:63-65` **defer** · `:66`
+reject). **A deferred record is not resolved** — it is snoozed and
+returns (`index.html:57` "snoozed lessons that will resurface later";
+`bucket.html:76` carries a `record-row-deferred` variant for exactly
+those rows; `_evidence_ctx` sets `record_url` only for `defer` *because*
+it is the one verb that leaves the record viewable). Telling a user
+"already resolved" about a record that is pending again next week breaks
+§2.4's own cause-accuracy rule — the rule that decided B12 — and
+collides with the Y-9 honesty pin recorded in this very template
+(`evidence.html:19-21`: "a stopping session must never claim to be
+starting").
+
+The hint therefore interpolates the outcome the server already holds:
+
+> "this record was already **{routed | denied | deferred | graduated}**
+> — those actions are not offered here."
+
+That keeps "one string, not five" true in the sense that mattered — it
+does not vary by keymap action, so a builder is not authoring five
+verb-specific messages — while being true for all four outcomes.
+
+**The cause really is uniform across all three include paths**, which is
+the half of r5's claim that survived: `evidence` is built only after a
+successful verb (`_evidence_ctx`, `routes.py:1079`), and both offers lead
+with "Routed." and are reachable only from the post-confirm path. The
+quad is never absent for some *other* reason on these paths. There is
+also no path where a carrier renders without an `evidence` object — the
+proposal-replaced bar includes no `evidence.html` at all, so the M1 pin's
+silence survives and `test_js_dom.py:1528-1537` stays green.
 
 **The existing `NOOP_MESSAGES["toggle_brief"]` entry stays (N20).** "No
 entries are added" is not a licence to remove one. `toggle_brief` changed
@@ -276,10 +323,14 @@ row, so an unscoped lookup would source a hint from a row other than the
 ringed one, recreating the defect in the explanation of the defect. It
 takes the same rules 1/2/3 as `clickAction`.
 
-`focusNote`'s hint (§2.5, test 8) is unaffected by all of this —
-`showNoopHint` takes a literal string, and its cause is the same one:
-the ringed row is resolved, so there is no note field to focus. Use
-wording that says that, not a generic failure.
+`focusNote`'s hint (§2.5, test 8) uses `showNoopHint`, which takes a
+literal string — so it cannot interpolate the outcome the way the
+server-rendered carriers do. **Two constraints follow (N23).** It must
+not say "resolved" (B14's defer problem applies identically), and it
+must not be phrased in terms of "the ringed row" — on a detail page
+there is no ring at all, measured: zero `[data-row]`. An
+outcome-neutral literal that is true in every case, e.g. *"this record
+has already been acted on — there is no note to attach."*
 
 **`n` needs its own mechanism — B10.** `focusNote` (`app.js:69-74`) ends
 `if (input) input.focus();` with no `else`, and `case "note"`
@@ -367,9 +418,12 @@ outside the invariant. Test 9 must not assert over them.
 10. **`j`/`u`/`v` after a mouse arm-then-confirm, ring never moved** →
     all three still work. (§2.2, B9.)
 11. **Record detail page** → every verb key behaves exactly as before,
-    **with one deliberate exception**: on a *resolved* (evidence-leg)
-    record, the five suppressed bucket-A verbs now render the new hint
-    instead of falling silent. — B13, measured both sides: a detail page
+    **with one deliberate exception**: on a record showing an evidence
+    leg, **all six bucket-A actions** — the five `clickAction` verbs
+    **and `n`** — now render a hint instead of falling silent. `n` is the
+    sixth and r5 omitted it (N22); measured on a resolved detail page,
+    `note inputs present: 0`, `activeElement` unchanged, `hint: None`.
+    — B13, measured both sides: a detail page
     has zero `[data-row]`, so the hint lookup takes rule 3 and finds the
     attributes §2.4 adds; today `e`/`x`/`f`/`g`/`o` there are silent with
     `noop_hint_elements: 0`.
@@ -481,14 +535,27 @@ nowhere else — the gate measured a route confirm producing
 `success_links: ["success_bucket"]`, one link, not three. Asserting a
 triple would have been red on four of five verbs.
 
-**One fixture serves tests 1, 2, 7 and 10.** It needs **≥2
-`.record-row`s and no bulk-collapse group** — the second condition
-because a bulk row takes `[data-row]` index 0, the ring lands there, rule
-2 never engages, and test 10's mutation goes green. A single-record
-bucket also fails test 10: the ring would sit on the resolved row itself,
-which *does* hold the `success_*` links, so the mutation would not bite
-there either. Test 10 mouse-arms a row **other than** the ringed one,
-which is the state B9 was measured in.
+**One fixture serves tests 1, 2, 7 and 10.** A module-scoped
+ledger + server fixture in `test_js_dom.py`, named alongside the existing
+`f2_server`, seeding a bucket with **≥2 pending `.record-row`s and no
+bulk-collapse group** (i.e. no `already_canon` proposals, which is what
+produces the bulk row).
+
+Both exclusions are **measured, not reasoned**:
+
+- *`f2_server` fails*: `/bucket/skill/s` has `[data-row]` index 0 =
+  `.bulk-collapse-row`, so the ring never lands on a `.record-row` and
+  test 10's mutation goes green.
+- *A single-record bucket also fails*: measured on `/bucket/skill/t`,
+  mouse-arm → confirm gives `selected_index 0` and the success links at
+  **row 0** — the same row. Rule 2 would find them, so the mutation is
+  neutralised there too.
+
+Test 10 must therefore mouse-arm a row **other than** the ringed one,
+which is the state B9 was measured in. On a no-bulk fixture the
+`[data-row]` indices equal the `.record-row` indices, so test 1's "ring
+on row 2" is two `s` presses, and mutation 2 still bites because a
+second, unresolved row retains the `route` target.
 
 ### 3.2 The suite could not have caught this
 
@@ -556,7 +623,28 @@ seeded bucket holds exactly one pending record"; that is true of the
   in place without re-reading the criteria that section is checked
   against. Any future revision should diff its new ruling against §3
   before submitting.
-- **r5** — this document. Test 11 narrowed; the inert-target rule given
+- **r5** — **NOT SOUND**, 1 blocker, one word. B13 closed, all five
+  N-items landed, and all three attack targets came back clean except
+  the hint wording: "already resolved" is false on the **defer** leg,
+  and the grounding claim "under `evidence` the record is resolved" is
+  false for one of the four values `evidence.action` takes. It would
+  have broken §2.4's own cause-accuracy rule — the rule that decided
+  B12 — inside §2.4.
+- **The class survived the revision that documented it.** r5 added the
+  warning that every blocker so far has been a §2 ruling contradicting a
+  §2/§3 criterion, *and then committed another one*: test 11's exception
+  listed five bucket-A actions when there are six, omitting `n` (N22).
+  Naming a failure mode does not stop you committing it. The mechanical
+  guard — diff the ruling against §3 and against the bucket lists before
+  submitting — is the part that would have caught it, and it is now
+  stated as a step rather than an observation.
+- **r6** — this document. Test 11 covers all six bucket-A actions; the
+  hint interpolates the outcome instead of asserting resolution; the
+  carriers' placement inside `data-verb-success` is pinned with the
+  closed MAJOR it protects; `focusNote`'s wording constrained twice
+  over; half 2 rephrased so it does not exclude `note`; the fixture
+  named and its two exclusions recorded as measured.
+- **r5's own entry, for the record.** Test 11 narrowed; the inert-target rule given
   its missing second half (N17 — r4's "measured, exactly the six" was
   inferred and selects nine); hint markup, wording, and the `note`
   carve-out decided; test 4 told not to assert the URL; one fixture
