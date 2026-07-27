@@ -1,6 +1,6 @@
 # Spec — the selection ring must govern the verb keys
 
-Status: **revision 3** — folds spec-gate rounds 1 (B1–B5) and 2 (B6–B10).
+Status: **revision 5** — folds spec-gate rounds 1–4 (B1–B13, N7–N21).
 Motivating finding: `ui-walks.md` **W4-F1** (walk 4, 2026-07-26).
 
 ---
@@ -135,10 +135,27 @@ and a detail page has no `[data-row]` so rule 3 covers it anyway.
 
 r3 applied this rule to the first two and not the third, which was
 inconsistent rather than harmful. Stated once, as a rule, so the next
-action added is classified by it: **bucket A membership requires the
-target to be capable of rendering inside a `.record-row`.** Measured,
-that is exactly the six in A — all of them live in the single
-`<form id="form-{{ dom_id }}">` at `action_bar.html:167-227`.
+action added is classified by it. **Bucket A membership needs BOTH
+halves:**
+
+1. the target can render inside a `.record-row`, **and**
+2. the action is a **verb acting on that record** — not merely an
+   element located in its subtree. Equivalently: the ring tracks it.
+
+**Half 2 is not decoration, and r4 omitted it (N17).** r4 asserted the
+first half alone selected "exactly the six in A" and labelled that
+*measured*. It is not: `success_next`/`success_bucket`/`success_view`
+also render inside a `.record-row`, via `evidence.html` included at
+`action_bar.html:11-13` — the gate measured them at row index 2 on a
+bucket page. Half 1 alone selects **nine**, and would have classified
+the next navigation-shaped-but-row-located action into A, reintroducing
+**B9** three sections after B9 was resolved.
+
+Half 2 is what B9 actually established: `j`/`u`/`v` are navigation, the
+ring does not track them, and "next pending record" has no per-row
+meaning. With both halves the rule selects exactly the six — all of which
+live in the single `<form id="form-{{ dom_id }}">` at
+`action_bar.html:167-227`.
 
 **`success_*` are in bucket B — B9, measured.** The gate measured a
 mouse arm-then-confirm cycle on a 3-record bucket: **the ring never moves
@@ -216,12 +233,40 @@ B12.** r3 said the opposite and was wrong three ways, all measured:
    action cannot name any of them correctly in all three.
 
 So: render `data-noop-hint` / `data-noop-action` on the **evidence leg**
-(`evidence.html`) for the bucket-A verbs. The server knows *why* the quad
-is absent, so wording is cause-accurate by construction. This is the
-growth path `app.js:263-264` already names — "the next gated key joins by
-adding a message here **or a data-noop-hint attribute server-side** —
-never a new mechanism." The M1 pin survives, `:1535` stays green
-unmodified, and no new mechanism is invented.
+(`evidence.html`) for the **five bucket-A `clickAction` verbs** —
+`route`, `reject`, `defer`, `graduate`, `cycle_destination` (N19; `note`
+is bucket A but never reaches `dispatchOrHint`, and is handled by §2.5
+instead — do not look for a `data-noop-action="note"` element). The
+server knows *why* the quad is absent, so wording is cause-accurate by
+construction. This is the growth path `app.js:263-264` already names —
+"the next gated key joins by adding a message here **or a data-noop-hint
+attribute server-side** — never a new mechanism." The M1 pin survives,
+`:1535` stays green unmodified, and no new mechanism is invented.
+
+**Markup shape and wording, decided.** The existing site puts the pair on
+a visible button; the evidence leg has no analogous control, so these are
+**attribute-only carriers** — one per action, emitted by a loop over the
+five, e.g.
+`<span hidden data-noop-hint="…" data-noop-action="route"></span>`.
+**One shared string, not five**: the cause is uniform across all three
+include paths — under `evidence` the record is resolved, and the
+`contradicts`/`adopt` branches thread `evidence=` through, so the record
+is resolved there too and an *additional* decision is merely offered. A
+single "already resolved" wording is accurate in every path.
+
+**The existing `NOOP_MESSAGES["toggle_brief"]` entry stays (N20).** "No
+entries are added" is not a licence to remove one. `toggle_brief` changed
+buckets in r4, which is not a reason to drop its message —
+`test_b_on_briefless_record_shows_brief_hint` (`test_js_dom.py:1539`)
+asserts that exact string.
+
+**A second miss state exists and is already served.** §2.4 named only the
+evidence leg; the **singleton destination cycle** is the other state
+where a bucket-A verb misses on a ringed `.record-row` that is not
+resolved. It needs no new work — `action_bar.html:196-202` already puts
+the hint pair on that row's own button, and the row-scoped lookup makes
+it *more* correct (today's document-wide query can return a different
+row's hint). Recorded so the builder does not treat it as unhandled.
 
 **The hint lookup must be row-scoped too (N14).** `dispatchOrHint`
 resolves `[data-noop-hint][data-noop-action=…]` against the whole
@@ -232,7 +277,9 @@ ringed one, recreating the defect in the explanation of the defect. It
 takes the same rules 1/2/3 as `clickAction`.
 
 `focusNote`'s hint (§2.5, test 8) is unaffected by all of this —
-`showNoopHint` takes a literal string.
+`showNoopHint` takes a literal string, and its cause is the same one:
+the ringed row is resolved, so there is no note field to focus. Use
+wording that says that, not a generic failure.
 
 **`n` needs its own mechanism — B10.** `focusNote` (`app.js:69-74`) ends
 `if (input) input.focus();` with no `else`, and `case "note"`
@@ -319,7 +366,18 @@ outside the invariant. Test 9 must not assert over them.
 9. **Three-bucket invariant** — disjoint, union equals `KEYMAP`. (§2.2.)
 10. **`j`/`u`/`v` after a mouse arm-then-confirm, ring never moved** →
     all three still work. (§2.2, B9.)
-11. **Record detail page** → every verb key behaves exactly as before.
+11. **Record detail page** → every verb key behaves exactly as before,
+    **with one deliberate exception**: on a *resolved* (evidence-leg)
+    record, the five suppressed bucket-A verbs now render the new hint
+    instead of falling silent. — B13, measured both sides: a detail page
+    has zero `[data-row]`, so the hint lookup takes rule 3 and finds the
+    attributes §2.4 adds; today `e`/`x`/`f`/`g`/`o` there are silent with
+    `noop_hint_elements: 0`.
+
+    This is the good direction — silence becoming an honest explanation
+    is what §2.4 exists to produce — so the ruling stands and the test
+    narrows. Gating the attributes to bucket pages to preserve the letter
+    of "exactly as before" would be worse.
 
 ### 3.1 Mutation plan
 
@@ -371,6 +429,16 @@ A click then yields a hash change with no navigation; `history.back()`
 yields neither. Either half discriminates once corrected; r3's stated
 combination discriminated in neither.
 
+**Verified by the gate on the corrected form**, in-place mutation on
+`/bucket/skill/t`: `history 3 → 4`, `hash "#went-up"`,
+`still_on_bucket: true`. Against the broken build's `5 → 5`, navigates to
+`/`, no hash — both discriminators now fire in the direction written.
+
+**Do not also assert the URL became `/`.** With the href mutated, the
+correct build **stays on the bucket page**. That assertion holds for the
+un-mutated correct build and fails for the mutated one, which would make
+the test red on good code for the third round running.
+
 **Three rounds, one test.** `lrn-ea833a5b` has now bitten this unit
 three times, twice in a test written specifically to catch a regression,
 in a document that cites the lesson by name. The generalisation earned
@@ -400,13 +468,27 @@ baseline, both gate rounds: **71 passed**.
   premise is "the ring never moved", so it cannot repair this by
   pressing `s`. **Test 10 needs a bucket with no bulk-collapse group.**
 
-**Test 10 asserts over what rendered, not a fixed triple.** Whether
-`success_view` appears on a bucket-page success leg is unconfirmed — the
-gate's envelope produced only `success_next` and `success_bucket`, and
-`evidence.html:101` gates `success_view` on `record_url`. So the
-assertion is: **every success link present in the DOM is reachable by its
-key** — which is the same shape as the footer fix and does not depend on
-knowing the triple in advance.
+**Test 10 asserts over what rendered, not a fixed triple** — **every
+success link present in the DOM is reachable by its key**. Same shape as
+the footer fix.
+
+**Why a fixed triple would have been wrong (N21, now resolved).**
+`evidence.html`'s own comment settles it: `route`/`reject`/`graduate` all
+move the record out of `pending`/`deferred` *before* this leg renders, so
+`/record/{id}` 303-redirects and `_evidence_ctx` sets `record_url` **only
+for `defer`**. So `success_view` renders on a `defer` success leg and
+nowhere else — the gate measured a route confirm producing
+`success_links: ["success_bucket"]`, one link, not three. Asserting a
+triple would have been red on four of five verbs.
+
+**One fixture serves tests 1, 2, 7 and 10.** It needs **≥2
+`.record-row`s and no bulk-collapse group** — the second condition
+because a bulk row takes `[data-row]` index 0, the ring lands there, rule
+2 never engages, and test 10's mutation goes green. A single-record
+bucket also fails test 10: the ring would sit on the resolved row itself,
+which *does* hold the `success_*` links, so the mutation would not bite
+there either. Test 10 mouse-arms a row **other than** the ringed one,
+which is the state B9 was measured in.
 
 ### 3.2 The suite could not have caught this
 
@@ -454,13 +536,33 @@ seeded bucket holds exactly one pending record"; that is true of the
   — and a `NOOP_MESSAGES` ruling that reversed a pin recorded verbatim in
   the code, turned a green test red, and could not express the wording it
   itself demanded.
-- **r4** — this document. Hints move server-side to the evidence leg, no
-  `NOOP_MESSAGES` entries added, hint lookup row-scoped; test 4 asserts
-  `history.length` **increased** and mutates the real target in place;
-  `toggle_brief` joins bucket B under a stated inert-target rule; the
-  `KeymapEntry` field is required, not defaulted; test 10 gets its own
-  fixture pin and asserts over what rendered.
-- **What three rounds actually taught, beyond the ten blockers.** Every
+- **r4** — hints moved server-side to the evidence leg with no
+  `NOOP_MESSAGES` entries added and the hint lookup row-scoped; test 4
+  asserted `history.length` **increased** and mutated the real target in
+  place; `toggle_brief` joined bucket B; the `KeymapEntry` field made
+  required; test 10 given a fixture pin and an assert-over-what-rendered
+  form. **NOT SOUND**, 1 blocker. B11 and B12 verified closed by
+  measurement, all four N-items landed. The blocker: §2.4's server-side
+  hints also render on **record detail pages**, because `evidence.html`
+  is reached from three sites, two of which render standalone — so five
+  keys changed behaviour there while test 11 promised "exactly as
+  before".
+- **The class this document produces, named by the gate in round 4.**
+  Every round's blocker has been the same shape: **a §2 ruling
+  contradicting another §2 or §3 criterion, with the builder left to
+  pick.** r1 §2.3 vs §2.2 · r2 `note` in §2.2 vs §2.5 · r3 test 4's two
+  halves · r4 §2.4 vs test 11. Four instances is not four slips, it is a
+  property of how this spec was written: each round repaired a section
+  in place without re-reading the criteria that section is checked
+  against. Any future revision should diff its new ruling against §3
+  before submitting.
+- **r5** — this document. Test 11 narrowed; the inert-target rule given
+  its missing second half (N17 — r4's "measured, exactly the six" was
+  inferred and selects nine); hint markup, wording, and the `note`
+  carve-out decided; test 4 told not to assert the URL; one fixture
+  specified for tests 1/2/7/10; `success_view`'s render condition
+  resolved.
+- **What five rounds actually taught, beyond the thirteen blockers.** Every
   decisive finding came from *running something* — enumerating `KEYMAP`,
   driving `history.back()`, injecting an anchor and reading document
   order, walking an arm-confirm cycle. Every defect came from *reading*
