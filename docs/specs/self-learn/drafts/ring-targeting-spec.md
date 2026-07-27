@@ -623,7 +623,12 @@ seeded bucket holds exactly one pending record"; that is true of the
   in place without re-reading the criteria that section is checked
   against. Any future revision should diff its new ruling against §3
   before submitting.
-- **r5** — **NOT SOUND**, 1 blocker, one word. B13 closed, all five
+- **r5** — test 11 narrowed; the inert-target rule given its missing
+  second half (N17 — r4's "measured, exactly the six" was inferred and
+  selects nine); hint markup, wording and the `note` carve-out decided;
+  test 4 told not to assert the URL; one fixture specified for tests
+  1/2/7/10; `success_view`'s render condition resolved.
+  **NOT SOUND**, 1 blocker, one word. B13 closed, all five
   N-items landed, and all three attack targets came back clean except
   the hint wording: "already resolved" is false on the **defer** leg,
   and the grounding claim "under `evidence` the record is resolved" is
@@ -644,13 +649,7 @@ seeded bucket holds exactly one pending record"; that is true of the
   closed MAJOR it protects; `focusNote`'s wording constrained twice
   over; half 2 rephrased so it does not exclude `note`; the fixture
   named and its two exclusions recorded as measured.
-- **r5's own entry, for the record.** Test 11 narrowed; the inert-target rule given
-  its missing second half (N17 — r4's "measured, exactly the six" was
-  inferred and selects nine); hint markup, wording, and the `note`
-  carve-out decided; test 4 told not to assert the URL; one fixture
-  specified for tests 1/2/7/10; `success_view`'s render condition
-  resolved.
-- **What five rounds actually taught, beyond the thirteen blockers.** Every
+- **What six rounds actually taught, beyond the fifteen blockers.** Every
   decisive finding came from *running something* — enumerating `KEYMAP`,
   driving `history.back()`, injecting an anchor and reading document
   order, walking an arm-confirm cycle. Every defect came from *reading*
