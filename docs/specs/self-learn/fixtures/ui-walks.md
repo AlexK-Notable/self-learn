@@ -337,33 +337,49 @@ Recorded because they bound what any walk can claim.
 4. **Ambient noise is zero only within a relative-timestamp bucket.**
    Across a step that crosses a `humanize_ts` boundary it is nonzero,
    and was once the *only* thing reported for a real graduation.
-5. **Selection state is STILL invisible on the front page.** *Blind spot
-   2 is only half fixed.* Walk 4 moved the front-page ring and the digest
-   reported `changed_count: 0` while the screen visibly moved — the same
-   symptom 2 was closed on. The fix was written against the bucket page:
-   its code comment names `<div class="record-row selected">`
-   (`probe.js:530-539`), which is `bucket.html:76`. The front page uses
-   `<tr data-row>` (`index.html:62`).
-   **The mechanism is NOT yet diagnosed, and the obvious hypothesis is
-   already dead**: the CSS is symmetric — `style.css:763-768` gives
-   `.record-row[data-row].selected` and `tr[data-row].selected` the same
-   `outline: 2px solid` — so "table rows aren't styled like card rows"
-   is not the answer. Whoever fixes this should measure which elements
-   `capture()` enumerates before theorising, and should add a control at
-   *both* row types, since defending only the one in front of you is how
-   this got half fixed the first time.
-6. **`<details>` expansion is invisible.** Walk 4 pressed `b`, got
-   `changed_count: 0`, and was about to file the key as inert; the
-   screenshot showed the Episode brief plainly expanded. It retracted the
-   finding itself. Open toggles on a `<details>` change no captured
-   text, colour, border, outline or shadow, so the digest cannot see one
-   of this UI's commonest state changes.
+5. **Selection state was invisible on the front page.** *Blind spot 2 was
+   only half fixed.* Walk 4 moved the front-page ring and the digest
+   reported `changed_count: 0` while the screen visibly moved.
+   ***Diagnosed and fixed 2026-07-26.*** The cause was **not** the CSS —
+   `style.css:763-768` gives `.record-row[data-row].selected` and
+   `tr[data-row].selected` the same `outline: 2px solid`, and the walk
+   record's note that symmetry ruled styling out was correct. The
+   asymmetry was `capture()`'s enumeration list (`probe.js:510-513`),
+   which contains `td` and `th` but **not `tr`**. An outline on the `tr`
+   changes no computed property of its captured `td` children, so the
+   outlined element was simply never visited. Blind spot 2's fix — count
+   an outlined container even with no own text — was written against
+   `<div class="record-row selected">` (`bucket.html:76`) and could not
+   reach `<tr data-row>` (`index.html:62`).
+   **Measured both ways, front page**: ring move reported `0` before and
+   `2` after; a down-then-up round trip nets to `0`; idle reports `0`.
+   Probe `version: 4`.
+6. **`<details>` expansion — NOT REPRODUCED. Probably a
+   misattribution.** Walk 4 pressed `b`, got `changed_count: 0`, saw the
+   Episode brief expanded in the screenshot, and recorded the digest as
+   blind. Measured 2026-07-26 on a real record page: toggling a
+   `<details>` is **fully visible in both directions** — open `13`
+   changes, close `13`, reopen `13`, `unseen_offscreen: 0`.
+   The likely explanation is that the digest was **right**: walk 1 found
+   that `b` "turns the brief on and does nothing on a second press", and
+   walk 5 found a record whose brief was **already open on load**. A `b`
+   press against an already-open brief changes nothing, so
+   `changed_count: 0` alongside a screenshot of an expanded brief is the
+   correct report of a key that did nothing — which *strengthens* walk
+   1's finding instead of impeaching the instrument.
+   **Not yet settled**: the measurement above drives the `<details>` by
+   clicking its summary, not by pressing `b` through the app's own
+   handler, and the record used had no episode brief. Settling it needs
+   one run of `b` on a record that has one, in both open and closed
+   starting states.
 
-**Both 5 and 6 manufacture the same false finding — "I pressed it and
-nothing happened" — which is the single most common conclusion these
-walks draw.** Walk 4 caught both only because the protocol requires a
-screenshot per surface; a walk trusting the digest alone would have filed
-two phantom defects. Fix these before the next walk.
+**A blind spot that manufactures "I pressed it and nothing happened" is
+the most expensive kind, because that is the single most common
+conclusion these walks draw.** Note which way the ledger fell here: 5 was
+a real instrument defect that hid a real change; 6 looks like the
+instrument being blamed for correctly reporting a real no-op. **Both
+directions of that error are live**, so a walker's "the digest missed it"
+deserves the same measurement a walker's "the control is dead" does.
 
 ---
 

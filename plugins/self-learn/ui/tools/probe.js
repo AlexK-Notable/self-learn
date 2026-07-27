@@ -507,9 +507,20 @@
     // and the digest reported none of them, and /report's entire
     // quantitative content — 23 metric name/value pairs — was absent
     // while chrome like "← Front" came through. Both measured.
+    // `tr` was missing until walk 4 (2026-07-26), which made the FRONT
+    // PAGE's selection ring invisible while the bucket page's worked —
+    // the fix below for "outlined container with no own text" was written
+    // against <div class="record-row selected"> (bucket.html) and never
+    // reached <tr data-row> (index.html), because td/th are enumerated
+    // and their parent tr is not. An outline on the tr changes no
+    // computed property of its td children, so nothing was captured.
+    // Measured both ways: ring move reported changed_count 0 before,
+    // non-zero after, with a down-then-up round trip still netting to 0.
+    // The walk record's note that "the CSS is symmetric so styling is not
+    // the answer" was right — the asymmetry was this list.
     var nodes = document.querySelectorAll(
       "button,a,input,select,textarea,summary,[role]," +
-        "h1,h2,h3,h4,p,li,td,th,dt,dd,pre,span,div,strong,em,code,label"
+        "h1,h2,h3,h4,p,li,tr,td,th,dt,dd,pre,span,div,strong,em,code,label"
     );
     Array.prototype.forEach.call(nodes, function (el) {
       var cs = getComputedStyle(el);
@@ -674,7 +685,7 @@
     sweep: function () {
       return surfaces({ sweep: true });
     },
-    version: 3,
+    version: 4,
   };
 
   return window.__uiProbe.version;
