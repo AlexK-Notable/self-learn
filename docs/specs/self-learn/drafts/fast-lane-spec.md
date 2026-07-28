@@ -1,6 +1,13 @@
 # FW-35 — The review fast lane, stakes-tiered by destination
 
-**DRAFT · 2026-07-18 · spec-author task · owns register entry Y-25 only.**
+**Status: GATED SOUND + build-unblocked 2026-07-19 — but HELD, do not
+build.** Held pending FW-40's `reference` ruling: §4 tiers `reference`
+**FAST** on the grounds it is an "unloaded surface… affects zero
+activations", and the 2026-07-27 audit established that `reference`
+currently delivers nothing at all (14 of 28 routed records stranded).
+Building this first would industrialise that defect at throughput.
+*(Header corrected 2026-07-27: read "DRAFT", understating its
+buildability.)* · spec-author task · owns register entry Y-25 only.
 Proposed final home: **09 §11 entry Y-25** (surface register) + a
 **review-skill amendment** (`plugins/self-learn/commands/review.md` — a
 fast-lane clause beside the existing bulk-acknowledge block, since the

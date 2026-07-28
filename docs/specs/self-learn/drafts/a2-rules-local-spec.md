@@ -1,6 +1,9 @@
 # Spec A2 — `claude-md` rules, local, and glob validation
 
-Status: DRAFT — for blind Opus gate.
+Status: **SHIPPED** — commit `b11d9aa` (claude-md rules/local variants +
+glob validation + chezmoi-adopt).
+*(Header corrected 2026-07-27: read "DRAFT — for blind Opus gate" long
+after landing.)*
 Rev: 2026-07-22 — **carved from
 `docs/specs/self-learn/drafts/claude-md-parameterization-spec.md` (the
 re-scoped parent Spec A), A2 of the A1/A2 split, re-anchored against

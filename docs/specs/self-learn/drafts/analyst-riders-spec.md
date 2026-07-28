@@ -1,6 +1,10 @@
 # DRAFT — Analyst-pass riders: proposal-time lint (Y-22) + destination-bounded contradiction check (Y-23)
 
-**Status: DRAFT — 2026-07-18. Not gated, not built.** Owns **FW-31 (Y-22,
+**Status: SHIPPED** — gated SOUND `37c3d34`, built `9f9335e`, merged
+`da9e538` (blind code gate CLEAN, first pass). *(Header corrected
+2026-07-27: still read "Not gated, not built" eight days after merge —
+flagged by the pin audit as fossil rationale reading as live.)* Owns
+**FW-31 (Y-22,
 lint)** and **FW-32 (Y-23, contradiction)** only — the two per-record-judgment
 riders of the `(c)-ish` worker-domain boundary (`forward/worker-ecology.md`
 §5). FW-33/34/35/36 are out of scope here.

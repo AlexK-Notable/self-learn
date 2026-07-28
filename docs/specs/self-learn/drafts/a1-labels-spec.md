@@ -1,6 +1,8 @@
 # Spec A1 — honest scope-aware `claude-md` labels
 
-Status: DRAFT — for blind Opus spec gate.
+Status: **SHIPPED** — commit `4950929` (scope-aware claude-md labels).
+*(Header corrected 2026-07-27: read "DRAFT — for blind Opus spec gate"
+long after landing.)*
 Rev: 2026-07-21 — **carved from `claude-md-parameterization-spec.md`**
 (the parent Spec A, itself re-anchored to HEAD 97726df). This is **A1** of
 the A1/A2 split recommended in that spec's Rev header: the scope-aware

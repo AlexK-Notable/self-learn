@@ -92,8 +92,37 @@ building early is the failure mode).
 | FW-37 | Measure per-verb latency across the remaining 39 htmx verbs, then decide indicators on data | DRILL→BUILD | Unit 2's natural first job (R-1's deferral) |
 | FW-38 | In-flight state-resync envelope (`sse.py` + new route) — closes the post-reconnect silent window | BUILD | After FW-37; needs the same SSE plumbing exercised there |
 | FW-39 | Reusable, project-agnostic perceptual (ARIA-snapshot) test harness, own repo — self-learn as target #1 | BUILD | After FW-37/38 stabilize the pattern in-repo |
+| FW-40 | **`reference` routes but does not deliver** — decide what it should do, add a "target reachable from a loaded surface" selftest, re-deliver the stranded records | **DECIDE**→BUILD | **Now.** 14 of 28 routings affected; P2 unsatisfied for half the corpus. The DECIDE half is a user values call (§4). **Gates FW-35** |
+| FW-41 | `analyst.analyze()` can never return `hook` — its fixed key set drops the `hook:`/`examples:` the validator then demands | BUILD | **Now.** A bug against a *quoted* user ruling (S-10 scope ruling: the knob opens "fully… Considered and rejected: splitting the knob per authorship"). Fix, do not adjudicate |
+| FW-42 | User-scope destination availability — `_SCOPE_DESTINATIONS["user"]` is a one-element tuple, and `reference` is refused there by name | DECIDE→BUILD | After FW-40 (the answer depends on it). See S-22 |
+| FW-43 | Stale premises in the analyst's system prompt — the chezmoi ground (retired 2026-07-24) at `routing-doctrine.md:124` + `verbs.py:950-955` + `fast-lane-spec.md:39`, and the autosync claim at `:129` (contradicted by user-ratified D3) | BUILD | Now; cheap text, and it currently mis-teaches every user-scope call. **Keep the no-secrets rule** — restate it on its own merits |
+| FW-44 | Managed-section excerpt marker case mismatch — `worker.py` searches `SELF-LEARN:BEGIN`, `compilers.py` writes `self-learn:begin` | BUILD | Now. Live today for any target ≥200 lines (`~/.config/CLAUDE.md`, 703) — the analyst gets `lines[:60]` and the contradiction check is blind |
+| FW-45 | Resolution observability — no telemetry event kind exists for route/reject/defer/graduate, and `routing.by` is a hardcoded `"human"` constant | BUILD | Before any autonomy-ladder measurement (12 §L1–L3): the evidence substrate those gates read does not exist |
+| FW-46 | Implement S-21 — the analyst names the skill | BUILD | After the two S-21 sub-questions are answered (§4). Blocker is one positional at `verbs.py:512`; most of the path already exists |
+| FW-47 | Test-isolation residuals from the cache unit — `HOME`/hardcoded `~/.claude/CLAUDE.md` (F-4) and the module-scoped bring-up leak (F-5) | BUILD | Opportunistic. F-5's naive fix hides Chromium and silently skips 77 browser tests — pair with `PLAYWRIGHT_BROWSERS_PATH` |
 
 ## 3. Sequencing: the recommended next three moves
+
+> **DISPOSITION 2026-07-27 — this section predates the routing/pin audit and
+> should not be read as current.** It was written 2026-07-18. None of its
+> three moves touches routing, delivery, or the analyst, and
+> `research/2026-07-27-routing-monoculture-and-pin-audit.md` subsequently
+> established that all three are defective (FW-40…FW-45). An independent
+> review (`research/2026-07-27-status-review.md` §3.1) flagged the mismatch;
+> its argument on move 3 specifically: the repo is **already public**, so
+> packaging no longer "freezes first impressions" — what a new user meets
+> first is the routing layer, which is the broken part.
+>
+> **Two consequences pinned here, because they bind regardless of what the
+> next sequence turns out to be:**
+> - **FW-35 (fast lane) is HELD pending FW-40's ruling.** It is gated SOUND
+>   and build-unblocked, and it tiers `reference` FAST on the grounds that
+>   it is an "unloaded surface… affects zero activations" — true, and the
+>   reason the tiering is wrong until `reference` delivers. Building it
+>   first would industrialise the defect at throughput.
+> - The replacement sequence is **not yet decided** — §4's outstanding user
+>   rulings gate most of it. Do not treat the list below, or the review's
+>   proposed ordering, as authorised.
 
 1. **FW-17 + FW-18 (+ FW-26/27 riding along)** — small, protective,
    and every later UI round gets cheaper for it. No user decisions
@@ -117,6 +146,11 @@ moment they'll be asked.
 
 | Decision | Home | State |
 |---|---|---|
+| **What should `reference` DO?** Either `compile_reference` maintains a pointer from a loaded surface, or `reference` stops being described as a delivery destination. 14 stranded records today | FW-40 | **OPEN — blocking.** Gates FW-35 and FW-42 |
+| **Should user scope get a cheap surface at all** — a `reference` analog, or `variant: rules` promoted and prompted for? (`variant` was emitted 0 times in 38 probe runs and 0 of 12 claude-md routings) | FW-42 | **OPEN** — follows the `reference` ruling |
+| **S-21 (a): is the analyst's proposed skill name trusted like `rationale`, or CLI-regenerated** like hook `script` bytes at `ledger_ops.py:668-690`? | FW-46 | **OPEN — blocks build** |
+| **S-21 (b): "change the name" has no UI** — the action bar has a destination cycle key, not a text field. Add one, or narrow the ruling's third leg? | FW-46 | **OPEN — blocks build** |
+| Reverse either agent-authored narrowing of an explicit user request? (a pane agent that *acts* → may only propose, `09:1652`; *"potentially autonomous review, are goals"* → M-1 *"No exception, no flag"*) | `research/2026-07-27-…-pin-audit.md` §5 | **OPEN — surfaced, not recommended either way** |
 | Tighten terminal `host add` (no `--init`) against paths inside a parent work tree? | 03 G-3 dated note / Y-17 fold | **OPEN — awaiting yes/no** |
 | Widen the pane agent's canon read scope to whole host roots? | 03 G-3 row (user-ratifiable) | OPEN — default conservative, unexercised |
 | Distribution shape: binary vs `uv tool install` vs both | FW-10 | Foreseeable — opens packaging |

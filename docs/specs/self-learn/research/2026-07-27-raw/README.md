@@ -3,15 +3,22 @@
 **This directory is not corpus. Nothing in it is verified, ratified, or
 binding.**
 
-These are the verbatim final reports of eight subagents, preserved because
+These are the verbatim final reports of nine subagents, preserved because
 some of them contain measurements that cannot be reconstructed — in
 particular `analyst-probe-runs.jsonl`, the 38 raw live analyst outputs.
 
 ## How to use this directory
 
-Read
-[`../2026-07-27-routing-monoculture-and-pin-audit.md`](../2026-07-27-routing-monoculture-and-pin-audit.md)
-first. That document is the findings record: it carries the orchestrator's
+Two consolidated records sit above this directory, and each has a raw file
+here backing it:
+
+- [`../2026-07-27-routing-monoculture-and-pin-audit.md`](../2026-07-27-routing-monoculture-and-pin-audit.md)
+  — the investigation (backs everything except `status-review.md`).
+- [`../2026-07-27-status-review.md`](../2026-07-27-status-review.md) — the
+  evening status review (backs `status-review.md`).
+
+Read the relevant one **first**. Those documents are the findings records:
+each carries the orchestrator's
 independent re-verification, marks every claim **[V]** verified / **[R]**
 reported / **[U]** user ruling, and states what the investigation does *not*
 establish.
@@ -52,6 +59,7 @@ by being quoted from here.
 | `new-skill-mechanism.md` | Does new-skill creation work, and at what scope | Opus |
 | `pin-audit.md` | Pin provenance and consequence accounting | Opus |
 | `cache-detritus.md` | The 1.1 GB test-cache leak | Opus |
+| `status-review.md` | Independent status review (evening; neutrally prompted) | Fable |
 
 Models per `03` S-18. Every agent ran ledger-read-only, with no mutating
 verbs, and left both repo trees clean.

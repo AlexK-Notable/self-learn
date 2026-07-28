@@ -1,6 +1,8 @@
 # Spec — close the in-flight feedback gap on the G-3 surface, and put perceptual assertions underneath it
 
-**Status: SOUND** — blind spec gate cleared at round 8 (2026-07-24).
+**Status: SHIPPED** — spec gate SOUND at round 8 (2026-07-24); builder
+landed `f69d38e`, ratified as `03` S-20. *(Header corrected 2026-07-27:
+read "SOUND", i.e. gated-but-unbuilt, after shipping.)*
 Ready to build.
 
 **§4.3's mechanism was re-designed at R6** — a
