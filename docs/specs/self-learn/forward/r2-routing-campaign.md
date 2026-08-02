@@ -353,6 +353,31 @@ reports success when it cannot see its target at all.
 tail's status. Capture rc unpiped, use `PIPESTATUS`, or read the tool's
 own pass/fail line.
 
+**A spec that pins an ALGORITHM in prose has pinned an untested claim —
+added 2026-08-02, learned the expensive way.** One unit's spec resolved
+its blocker by pinning a hand-rolled string matcher, described step by
+step and labelled *"pinned so the builder does not re-derive it."* Three
+of the four findings in its delta round were defects in that recipe, and
+its own author named the cause afterwards: *"I measured to convict the
+blocker, then wrote a fix in prose and shipped the prose untested."* The
+literal reading of the pinned steps produced a matcher that failed the
+spec's own acceptance case — reproducing the exact symptom the blocker
+was about — and two more corners were wrong besides. Worse, the
+orchestrator's ruling on that blocker was **also** insufficient in the
+same way: it said "only `!` negates a character class", which is correct
+about the stdlib and still wrong as an instruction, because Python's
+`re` negates on `^` unaided, so a literal `^` must be actively escaped.
+Nobody catches that by reasoning; you catch it by running it.
+
+So: **if a spec pins an algorithm precisely enough that a builder is
+meant to transcribe it, the author must have EXECUTED it, and the spec
+must say what was executed and against what oracle.** State the oracle's
+own configuration too — the same unit's "0 mismatches over 13 patterns"
+turned out to hold only under two unstated preconditions, and 7 of the
+13 mismatched under the oracle's defaults. An equivalence claim without
+its preconditions is not a measurement, it is a coincidence someone
+wrote down.
+
 **The 51 resolved records are the table's regression fixtures.** The
 decision table, run over records whose routing a human already accepted,
 should mostly agree with them — and every disagreement is either a table
