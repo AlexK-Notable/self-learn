@@ -1,8 +1,10 @@
 # Spec — U-grad-ui: a resolved lesson must be reachable, and retirable, from the GUI
 
-Status: **DRAFT r2**, 2026-08-02. Not an r2-campaign unit — this comes
+Status: **DRAFT r3**, 2026-08-02. Not an r2-campaign unit — this comes
 from a user bug report filed the same day. r1 gated **NOT SOUND**
-(2 blockers + 14 folds); r2 is the folded document. See §9.
+(2 blockers + 14 folds); r2 cleared both blockers and gated with 2
+further folds, no blockers; r3 is the folded document and is the version
+to build. See §9.
 
 > "it's impossible to graduate an already approved lrn via the gui.
 > there's no surface for it because you can't see lrns you've already
@@ -308,7 +310,11 @@ absent passes against a blank page. Neither is worth anything alone.
    (a) **Y-9** — an archive row's link text is the record's leading
    text, not its id: a record whose Trigger reads *"About to edit
    .storage while HA is running."* renders that string, and the id is
-   not the anchor's text. Guarded by **M4**.
+   not the anchor's text. Assert this against the **anchor element
+   specifically**, not the row and not the page: the row deliberately
+   carries the id in its own `.record-row-id` span (§4), exactly as the
+   pending rows do, so a row-scoped or page-scoped "id absent"
+   assertion is wrong here. Guarded by **M4**.
    (b) **the slot clear, and its ordering** — `GET /record/<routed-id>`
    with a proposal slot held for that record returns `200`, the slot is
    cleared (the behaviour `routes.py:576-577` performed on the deleted
@@ -443,10 +449,10 @@ absent passes against a blank page. Neither is worth anything alone.
     section renders `<a href="/record/{first}">`. The contract that
     matters is *"the id vanishes from the bulk-collapse group"*. Anchor
     it on the group's own markup: extract the `.bulk-collapse-row`
-    form's `<input type="hidden" name="ids">` value (`bucket.html:68`)
+    form's `<input type="hidden" name="ids">` value (`bucket.html:69`)
     and assert `first` is not among the comma-separated ids, while
     `ids[1]` and `ids[2]` are. Note the pending rows already print raw
-    ids in `.record-row-id` (`bucket.html:81`), so a page-scoped absence
+    ids in `.record-row-id` (`bucket.html:82`), so a page-scoped absence
     assertion was always only true because the record had left
     `pending/`.
 
@@ -473,18 +479,30 @@ absent passes against a blank page. Neither is worth anything alone.
     criterion the heading can revert to `(untitled)` with the suite
     green. Guarded by **M16**.
 
-14. **The distinct `page_kind` is guarded.** The resolved template
-    declares its own `{% block page_kind %}`, and `style.css` shows `g`
-    there via
-    `body[data-page="<kind>"] .keymap-footer-entry[data-action="graduate"]`
-    (the shape `style.css:328/342/395-397` already uses). Assert the
-    rendered `<body data-page="…">` is **not** `detail` on a resolved
-    record's page, and that a footer entry for `graduate` is shown while
-    the entries for `route`/`reject`/`defer`/`cycle_destination`/
-    `iterate` are not. Without this, emitting `page_kind="detail"`
-    lights all five dead keys in the footer and every other criterion
-    stays green — the `h`-on-the-header defect (ui-walks W2-F1) that §5
-    says must not be reproduced. Guarded by **M17**.
+14. **The distinct `page_kind` is guarded, and `g` is advertised there.**
+    `.keymap-footer-entry` defaults to `display: none`
+    (`style.css:311-313`): every entry is in the markup on every page
+    and only CSS decides which are visible. So this criterion has one
+    markup leg and one stylesheet leg, both assertable in the fast
+    suite. **Neither goes in `test_js_dom.py`** — it is
+    `importorskip`-gated (`:87`) and skips wherever Playwright or
+    Chromium is absent, the fail-open shape criterion 12 warns about.
+    (a) **Markup.** A resolved record's page renders
+    `<body data-page="…">` with a value that is neither `detail` nor
+    empty. (Measured: a pending Detail page renders
+    `data-page="detail"`.) Guarded by **M17**.
+    (b) **Stylesheet.** `style.css` contains a
+    `body[data-page="<the new kind>"]` rule selecting
+    `.keymap-footer-entry[data-action="graduate"]`, **and contains no**
+    `body[data-page="<the new kind>"]` rule selecting
+    `.keymap-footer-entry[data-context="detail"]`. Assert both halves.
+    The first is necessary because `style.css:319-322` enumerates only
+    `front`/`bucket`/`detail` — a new kind matches nothing, so `g` would
+    be bound on the page and advertised nowhere (the dead-key defect).
+    The second is the W2-F1 half: one `data-context="detail"` rule
+    lights `e`/`x`/`f`/`o`/`i`. Criterion 6 already pins that those five
+    controls are absent from the page, so together the two criteria pin
+    *advertised iff present*. Guarded by **M20**.
 
 ### 3.1 Mutation plan
 
@@ -513,6 +531,7 @@ and is invited to invent more.
 | M17 | Emit `{% block page_kind %}detail{% endblock %}` in the resolved template | 14 |
 | M18 | Render the archive row's leading text as plain text — drop the `<a href>`, keep everything else | **1 only** |
 | M19 | Move the `slot.clear_for_record` call to *after* the render context is built | 4(b) |
+| M20 | Change the resolved page's `style.css` footer rule from `[data-action="graduate"]` to `[data-context="detail"]` | 14(b) |
 
 **M1 is a smoke check, not a discriminator.** It takes down five
 criteria at once, which tells you the guard is load-bearing and nothing
@@ -524,6 +543,11 @@ plan reproduces the defect being fixed: *text on screen with no path to
 it.* M4 changes the anchor's **text**; only M18 removes the **anchor**.
 This is the rules-variant / dead-destination shape from the r2 audit,
 and criterion 1 is the only thing that can see it.
+
+**M18 must redden criterion 1 and nothing else.** If the code gate sees
+M18 also reddening criterion 2 or 3, the archive row is missing its
+`.record-row-id` span (§4) and those criteria are keying off the
+anchor's `href` — fix the row, not the criteria.
 
 **M3 is the positive control for criterion 2.** A test asserting "the
 routed record is listed" passes against an index that lists every
@@ -554,10 +578,20 @@ default-collapsed `<details>`:
 ▸ Routed here (7)
 ```
 
-expanding to rows shaped like the page's existing record rows —
-`<a href="/record/{id}">{leading text}</a>` plus plain-words facts
-(routed N days ago → destination; recurrences if any) — but **without
-`data-row`** (criterion 4(c)).
+expanding to rows shaped like the page's existing record rows
+(`bucket.html:76-84`) — `<a href="/record/{id}">{leading text}</a>`, a
+`<span class="record-row-id">{id}</span>` exactly as the pending rows
+already carry (`bucket.html:82`), and plain-words facts (routed N days
+ago → destination; recurrences if any) — but **without `data-row`**
+(criterion 4(c)).
+
+**The id span is load-bearing, not decoration.** Criteria 2 and 3
+assert presence and absence *by id*. If the id lives only in the
+anchor's `href`, then M18 — which removes the anchor — also removes the
+id from the section, and M18 reddens criteria 1, 2 and 3 instead of
+criterion 1 alone. The id span makes 2 and 3 anchor-independent, so M18
+reduces to exactly what it claims to be: the lesson is on screen and
+there is no path to it.
 
 Why B1 was recommended and chosen:
 
@@ -701,7 +735,7 @@ plugins/self-learn/ui/src/self_learn_ui/ledger.py        (only if a helper is ad
 plugins/self-learn/ui/templates/bucket.html              (the B1 section)
 plugins/self-learn/ui/templates/detail_resolved.html     (new)
 plugins/self-learn/ui/templates/partials/action_bar.html
-plugins/self-learn/ui/static/style.css
+plugins/self-learn/ui/static/style.css                   (criterion 14(b) — a REQUIRED edit, not incidental)
 plugins/self-learn/ui/tests/test_resolved_surface.py     (new)
 plugins/self-learn/ui/tests/test_routes.py               (criterion 11 — two classes)
 plugins/self-learn/ui/tests/test_proposals.py            (criterion 11 / 4(b))
@@ -713,6 +747,13 @@ None of `worker.py`, `analyst.py`, `ledger_ops.py`, `selfcheck.py`,
 `telemetry.py`, `verbs.py`, `miner.py` is touched. No collision with the
 five concurrent CLI units. **`static/app.js` is deliberately absent** —
 criterion 4(c) exists so this stays true.
+
+**`static/style.css` is a required edit, not a cosmetic one.** Every
+keymap footer entry is `display: none` by default (`style.css:311-313`)
+and `:319-322` enumerates only `front`/`bucket`/`detail`, so a new
+`data-page` value matches no rule at all: without the stylesheet edge
+criterion 14(b) pins, `g` would be bound on the resolved page and
+advertised nowhere. The file is in this unit's set for that reason.
 
 **B1 adds a new subprocess read to the Bucket page.** Stated plainly
 because r1 implied otherwise: `bucket_page` today calls
@@ -803,3 +844,20 @@ against `~/.self-learn`; the only contact with the real ledger was
   routed record from none of them. Criteria grew 12 → 14, mutations
   12 → 19; M18 added as the only mutation that reproduces the defect
   the unit exists to fix.
+- **r3** — this document. Both r2 blockers confirmed resolved and every
+  r2 fold verified; two further folds, no blockers. **FOLD A:** under
+  r2's row shape the id appeared only in the anchor's `href`, so M18
+  would have reddened criteria 1, 2 and 3 — destroying the claim M18
+  exists for, since a code gate could then not tell whether criterion 1
+  is a real link-walk. §4 now requires the `.record-row-id` span the
+  pending rows already carry (`bucket.html:82`), making 2 and 3
+  anchor-independent. **FOLD B:** criterion 14's "is shown" half was not
+  assertable at all — every footer entry is `display: none` by default
+  (`style.css:311-313`) and only CSS decides visibility, so the only
+  mechanism was the `importorskip`-gated browser module criterion 12
+  itself warns about. Worse, `style.css:319-322` enumerates only
+  `front`/`bucket`/`detail`, so a new `page_kind` matches nothing and
+  `g` would be advertised **nowhere** — the dead-key defect, the
+  opposite of the W2-F1 defect r2 was guarding. Criterion 14 is now a
+  markup leg plus a stylesheet leg, both fast-suite assertable, pinning
+  both directions; **M20** added.
