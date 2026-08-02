@@ -1,6 +1,9 @@
 # Spec — U-pathed: `paths:` frontmatter emission, union semantics, drift
 
-Status: **DRAFT r1** — awaiting the blind spec gate.
+Status: **r2 — GATED, ready for build.** Blind spec gate returned
+**11 findings, all FOLD, no blockers**; all 11 are folded into this
+document (§9). Under the 2026-07-26 verdict repricing that costs no fresh
+spec round.
 Unit `U-pathed` of the r2 routing campaign
 (`forward/r2-routing-campaign.md` §2). Normative parent: **S-23**
 (`03-decisions.md`, ruled 2026-08-02) — PATHED is the primary cheap tier
@@ -200,7 +203,15 @@ def apply_paths_frontmatter(path: Path | str, records: Sequence[Record]) -> Path
 ```
 
 - **`expected_paths`** is §2's `U(T)` and the only place the three rules
-  live.
+  live. **It applies the compiler's own `_eligible()` filter
+  (`compilers.py:190-195`) to `records` before evaluating them**, exactly
+  as `compile_managed_text` does at `:213` — so §2's "the section and the
+  frontmatter are computed from the SAME `C(T)`" is guaranteed by
+  construction rather than by every caller remembering. In practice
+  `_compile_set` already returns only `status == "routed"` records, so the
+  filter is **defensive**: it exists so a future caller — or a drift check
+  handed a list built by hand — cannot make the frontmatter and the
+  section disagree about which records count.
 - **`read_paths_frontmatter`** returns the file's `paths:` as a tuple of
   strings; `()` when the file has no leading frontmatter, no `paths:`
   key, or a `paths:` value that is not a list of non-empty strings.
@@ -217,9 +228,20 @@ def apply_paths_frontmatter(path: Path | str, records: Sequence[Record]) -> Path
   > `ruamel.yaml` round-trip — the same round-trip discipline and for the
   > same reason `records.py:104-117` already uses (`typ="rt"`,
   > `preserve_quotes`, `width=4096`, `indent(mapping=2, sequence=4,
-  > offset=2)`). Deleting `paths:` from a block that then has no keys
-  > left removes the whole `---…---` block plus one immediately following
-  > blank line.
+  > offset=2)`).
+  >
+  > **Removal is narrower than "no keys left."** Deleting `paths:` removes
+  > the whole `---…---` block, plus one immediately following blank line,
+  > **only when the block has no keys AND no comments left**. A block that
+  > held a comment and nothing but `paths:` **keeps its block**, carrying
+  > the comment — otherwise the rule that exists to preserve comments
+  > would be the rule that deletes them.
+  >
+  > **And the emitter never writes ruamel's empty-mapping form.** Dumping
+  > a `CommentedMap` whose last key was deleted yields `"{}\n"` — or
+  > `"# comment\n{}\n"` — which is a frontmatter block *declaring an empty
+  > mapping*, not an absent one. Either remove the block or keep it with
+  > real content; `{}` is never written.
 
   **Refusals** (`CompileError`, never a guess — the same posture as a
   half-markered target, `compilers.py:244-248`): a missing file; a file
@@ -248,14 +270,26 @@ the emitted bytes with an *independent* loader.
 ### 3.3 Where it runs, and how it is surfaced
 
 `apply_paths_frontmatter` runs as a **pre-pass inside `_apply_target`**,
-in both rules-bearing branches, immediately after that branch's existing
-bootstrap and immediately before the section compile:
+**guarded in each branch by `if spec.variant == "rules":`**, immediately
+after that branch's existing bootstrap and immediately before the section
+compile:
 
 - **user branch** (`verbs.py:1637-1660`), after the
   `mkdir`/`write_text("")` bootstrap at `:1647-1648`, before
   `compile_user_scope`.
 - **project branch** (`verbs.py:1661-1683`), after the bootstrap at
   `:1669-1675`, before `compile_managed_file`.
+
+**The `variant == "rules"` guard is load-bearing, not tidiness.** Neither
+branch is rules-only: the user branch also serves plain
+`~/.claude/CLAUDE.md`, and the `else` branch serves `skill-md`, project
+and skill-root `CLAUDE.md`, `CLAUDE.local.md`, and new-skill targets. A
+`SKILL.md` **always** carries real frontmatter (`name:`,
+`description:`), so an ungated pre-pass would round-trip files this unit
+promises to leave byte-identical, and would raise `CompileError` on any
+leading `---` block that does not load as a mapping — a brand-new failure
+mode on targets that have nothing to do with rules. Criterion **A12** is
+extended to catch exactly this (M21).
 
 **The pre-pass is safe against the marker contract, verified this
 session:** `compile_managed_text` preserves everything before
@@ -323,6 +357,15 @@ returned `/etc/hosts` and friends. So `_validate_project_globs` today
 happily emit it. Refusal text names the pattern and says to make it
 relative.
 
+**The fail-open is conditional on the absolute path existing**, which
+makes it worse, not better: `glob.glob("/nonexistent-xyz/*",
+root_dir=<host>)` still returns `[]` (verified), so an absolute pattern
+naming a *missing* directory is refused — but with the zero-match
+message, which tells the human to fix a pattern that matches nothing
+rather than to stop writing absolute patterns. So today the check is
+silent on the dangerous case and misleading on the safe one. The §3.4(1)
+refusal, being shape-only, is uniform across both.
+
 `~`-leading patterns ride the same refusal on a *narrower* justification,
 stated so the two are not conflated: absolute is **measured** not to
 fire; `~/…` is refused because a relative glob matcher does not expand
@@ -342,9 +385,23 @@ chezmoi-MANAGED.** The pre-pass writes the target before
 read as pre-existing drift and `ChezmoiAbort` **after** the ledger commit
 — an unrecoverable loop, since `recompile` would hit the same thing. The
 refusal is pre-ledger, under the existing `check_dirty` guard, and fires
-**only** when `rules_paths` is non-empty. Unpathed user rules under
-chezmoi keep working exactly as today (criterion **A11**), because the
-pre-pass writes nothing when `U(T) == ()` and the file has no `paths:`.
+when **either** `rules_paths` is non-empty **or** the target already
+carries a top-level `paths:` key.
+
+**The second leg is not belt-and-braces — it closes two reachable
+routes.** The pre-pass writes whenever the file disagrees with `U(T)`,
+*including* in the `U(T) == ()` direction, so an empty `rules_paths` is
+not a proxy for "writes nothing":
+
+1. a **globless** record routed into an already-pathed user topic — §2
+   rule 2 empties the union, so the pre-pass **deletes** the existing
+   `paths:`; and
+2. a hand-added `paths:` repaired at the next recompile.
+
+`preflight_user_scope` runs at target resolution, *before* `_apply_target`
+writes, so it cannot see either. A rules file that has no `paths:` and an
+empty union still writes nothing, so genuinely unpathed user rules under
+chezmoi keep working exactly as today (criterion **A11**).
 
 Chezmoi is retired on this host (`user_scope_capability` returns
 ABSENT/UNMANAGED), so this refusal is unreachable in practice — but the
@@ -363,8 +420,17 @@ Four functions, no restructuring, nothing renamed or moved:
 | `_host_phase` (`:1784`) | one kwarg at the `_apply_target` call (`:1816`): `notes=warnings` |
 | `recompile` (`:3416`) | one kwarg at the `_apply_target` call (`:3609`): `notes=result.warnings` |
 
-Plus `from dataclasses import … replace` on the existing import line, and
-the new `compilers` imports.
+Plus, in the import block (`verbs.py:58-101`): `replace` added to the
+existing `dataclasses` import; the new `compilers` names; and
+**`USER_SCOPE_MANAGED` + `user_scope_capability` added to
+`verbs.py:81`**, which today imports only
+`ChezmoiAbort, ChezmoiError, compile_user_scope, preflight_user_scope` —
+§3.4(2)'s refusal needs both.
+
+**Sequencing note, `U-reach` shares this file.** Its `verbs.py` work (the
+`route` telemetry kind, the `routing.by` fix) shares **no hunk** with the
+four functions above. The one expected collision is the import block at
+`verbs.py:58-101`, and it is trivial. Nowhere else.
 
 **Nothing else in `verbs.py` is touched.** In particular
 `_validate_project_globs`, `_resolve_target`, `route`, `route_direct`,
@@ -395,10 +461,14 @@ the managed section below it.
 tier; it must be asserted independently of A1 because it takes a
 different write path (`compile_user_scope`).
 
-**A3 — the union is deduped and sorted.** Two records routed to one
-topic with `["b/**", "a/**"]` and `["a/**", "c/**"]` yield exactly
-`["a/**", "b/**", "c/**"]` on disk, and both record ids appear in the
-section.
+**A3 — the union is deduped and sorted, and the widening is reported.**
+Two records routed to one topic with `["b/**", "a/**"]` and
+`["a/**", "c/**"]` yield exactly `["a/**", "b/**", "c/**"]` on disk, and
+both record ids appear in the section. **And:** the second route's
+`PathsResult.widened is True`, and its `result.warnings` carries the
+widening note naming that topic file. Without this second leg, a build
+that never computes `widened` and never emits the note passes every other
+criterion (M17).
 
 **A4 — absorption, with its own fail-open control.** A third record with
 no `rules_paths` routed into that same topic leaves the file with **no
@@ -413,16 +483,44 @@ topic, supersede one; the surviving `paths:` is the survivor's globs
 alone. This is what proves emission reads `C(T)` and not
 `spec.rules_paths` (§3.1a).
 
-**A6 — `recompile` repairs a hand-edited `paths:` and commits it.**
-Hand-edit the emitted `paths:` to a different list, run `recompile`: the
-file's `paths:` is back to `U(T)`, the `RecompileEntry` reports
-`changed=True`, a commit sha is present, and the host repo's HEAD commit
-touches that file. The section is byte-identical across the edit, so this
-criterion fails without the §3.3 `changed` fold.
+**A6 — `recompile` repairs a hand-edited `paths:`, commits it, and says
+so.** Hand-edit the emitted `paths:` to a different list **and commit
+that edit in the host repo**, then run `recompile`: the file's `paths:`
+is back to `U(T)`, the `RecompileEntry` reports `changed=True`, a commit
+sha is present, and the host repo's HEAD commit touches that file.
+**And:** `PathsResult.drift` is not `None` and the recompile's
+`result.warnings` carries the drift-repaired note (M18). The section is
+byte-identical across the edit, so this criterion also fails without the
+§3.3 `changed` fold.
 
-**A7 — foreign frontmatter survives.** A leading block carrying a comment
-and a non-`paths` key, plus a stale `paths:`, is rewritten with `paths:`
-corrected and the comment and the other key preserved byte-for-byte.
+**Committing the hand-edit is not test hygiene — it is the only reachable
+form of this case.** `recompile` skips a **dirty** target before it ever
+reaches `_apply_target` (`verbs.py:3596-3603`), and a project rules file
+is tracked, so an *uncommitted* hand-edit makes the target dirty and
+recompile refuses with *"uncommitted changes — commit/stash, then
+re-run"*. The route leg refuses the same way, via `_abort_if_dirty`
+(`verbs.py:797`). **Both refusals are existing, correct behaviour and
+this unit must not change either.** A builder who finds this criterion
+failing commits the edit — never weakens the assertion, never touches the
+dirty guard.
+
+**A7 — foreign frontmatter survives, and there is exactly ONE block.** A
+leading block carrying a comment and a non-`paths` key, plus a stale
+`paths:`, is rewritten so that **the file's full leading block equals an
+expected literal** — comment and foreign key byte-for-byte, `paths:`
+corrected — **and the file contains exactly one `---`-delimited leading
+block**, asserted by fence position and count: the file's first line is
+`---`, the next `---` line closes it, and no further `---` fence opens a
+second block anywhere above `BEGIN_MARKER`.
+
+**Substring-presence assertions are not sufficient here, and this is the
+gate's invented mutation (M20).** An implementation that *prepends* a
+fresh correct block instead of rewriting the loaded one leaves the stale
+block below it: A1/A2/A3/A5 all still pass, because they parse the
+*leading* block, and a "the comment is still somewhere in the file" form
+of A7 passes too. The result is a rules file carrying a duplicate stale
+frontmatter block — silent corruption, invisible to every other
+criterion.
 
 **A8 — a corrupt leading block refuses.** A rules file starting with
 `---` and no terminator raises `CompileError`; at route time this becomes
@@ -441,30 +539,69 @@ glob is never indistinguishable from a live one in the record.
 as project scope. Positive control in the same test: the same route with
 the pattern made relative succeeds and emits.
 
-**A11 — chezmoi MANAGED.** With the PATH-shimmed fake chezmoi reporting
-MANAGED: a **pathed** user-scope route refuses pre-ledger with a message
-naming chezmoi; an **unpathed** user-scope rules route succeeds and its
-chezmoi call sequence is unchanged from today's.
+**A11 — chezmoi MANAGED, both legs of the refusal.** With the
+PATH-shimmed fake chezmoi reporting MANAGED:
 
-**A12 — every non-rules target is byte-identical.** Routing to plain user
-`CLAUDE.md`, project `CLAUDE.md`, `SKILL.md`, `CLAUDE.local.md` and a
-new-skill target emits no frontmatter and produces the same bytes as
-before this unit. **Positive control in the same test:** one rules route
-in the same fixture *does* carry frontmatter, so "no frontmatter
-anywhere" cannot pass.
+(a) a **pathed** user-scope route refuses pre-ledger with a message
+naming chezmoi;
+(b) a **globless** route into a topic file that already carries `paths:`
+refuses the same way — §3.4(2)'s second leg, which a `rules_paths`-only
+condition would let through into a post-ledger `ChezmoiAbort`;
+(c) an unpathed user-scope rules route into a file with **no** `paths:`
+succeeds, and its chezmoi call sequence is unchanged from today's.
+
+Each refusal is asserted as **pre-ledger** by the record's location
+(`pending/`, not `resolved/`).
+
+**A12 — every non-rules target is byte-identical, including its own
+frontmatter.** Routing to plain user `CLAUDE.md`, project `CLAUDE.md`,
+`SKILL.md`, `CLAUDE.local.md` and a new-skill target emits no `paths:`
+and produces the same bytes as before this unit. **Two additions that
+make M21 (dropping the `variant == "rules"` guard) fail here:** the
+`SKILL.md` leg asserts that file's own `name:`/`description:` frontmatter
+**byte-identical** after the route, and one fixture's leading block is
+deliberately **not** mapping-shaped (a `---` fence over a YAML list, or a
+bare scalar) and must route without raising. An ungated pre-pass
+round-trips the first and `CompileError`s on the second. **Positive
+control in the same test:** one rules route in the same fixture *does*
+carry frontmatter, so "no frontmatter anywhere" cannot pass.
 
 **A13 — idempotence.** A second `recompile` immediately after A6 writes
 nothing and commits nothing (`changed=False`, no new sha).
 
-**A14 — caps unchanged.** `SectionResult.word_count` and `over_cap` for a
-pathed rules file equal those for the byte-identical unpathed file:
-frontmatter is never counted as section content.
+**A14 — caps unchanged, on a file that provably HAS frontmatter.**
+`SectionResult.word_count` and `over_cap` for a pathed rules file equal
+those for the same file with no frontmatter: frontmatter is never counted
+as section content. **In the same test, assert the pathed file's `paths:`
+is on disk** — otherwise the criterion is satisfied by a build that emits
+nothing at all, which is the fail-open shape this unit exists to prevent.
 
-**A15 — the drift seam.** `paths_frontmatter_drift(text, records)`
-returns non-`None` for a hand-edited `paths:`, non-`None` when the
-frontmatter is **absent** while records carry globs (the positive control
-— an "absent" reader that always returns `()` must not read as clean),
-and `None` after the repair.
+**A15 — the agreement predicate, on its raw-value legs.**
+`paths_frontmatter_drift(text, records)` returns:
+
+- non-`None` for a hand-edited `paths:` list;
+- non-`None` when the frontmatter is **absent** while records carry globs
+  — the positive control: a reader that always returns `()` must not read
+  as clean;
+- non-`None` for `paths: "src/**"` (a **scalar**) when `U(T) == ()`, and
+  non-`None` for `paths: []` when `U(T) == ()`;
+- non-`None` for a list holding exactly the right globs in a **different
+  order** (§2 pins the sorted order as the agreement, not the set);
+- `None` after the repair, and `None` for an absent `paths:` when
+  `U(T) == ()`.
+
+**The scalar and `[]` legs are why §2's agreement is defined on the raw
+YAML value and not on the reader.** Measured: `paths: "src/**"` loads as
+a `str`, `paths: []` as an empty `list`, and **both come back `()`
+through `read_paths_frontmatter`** — so a build comparing the *reader's*
+output calls a stale scalar clean whenever `U(T) == ()`, and never
+converges on the emitted form.
+
+**And assert `read_paths_frontmatter` directly.** It is exported for
+consumers and tests, and because the drift path deliberately does not use
+it, nothing else pins it: `()` for absent frontmatter, `()` for an absent
+`paths:` key, `()` for the scalar and for `[]`, and the exact tuple for a
+well-formed list.
 
 **A16 — the emitted YAML is valid, checked by a different loader.** A
 glob beginning with `*` (`**/*.py`) round-trips through
@@ -472,18 +609,34 @@ glob beginning with `*` (`**/*.py`) round-trips through
 substring of the file text would pass on an unquoted, alias-broken
 emission.
 
+**A17 — a comment-only block survives the last key's removal.** A rules
+file whose leading block holds a comment plus `paths:`, whose topic then
+goes unpathed (§2 rule 2): the `paths:` key is gone, the comment is still
+present in a well-formed leading block, and the file **never** contains
+ruamel's empty-mapping form (a bare `{}` line). Contrast leg, same test:
+a block holding `paths:` and nothing else — no comment — is removed
+entirely, block plus one following blank line.
+
 ---
 
 ## 5. Mutation plan
 
 A blind reviewer will run these. Each is a **one-line** edit to
-production code that must make **exactly** the named test fail.
+production code, and the named criterion is that row's **owner** — the
+assertion written to catch that specific defect, and the one whose
+failure certifies the mutation.
+
+**"Owner" is not "only casualty."** Several of these are deliberately
+wide: M3 breaks nine criteria, M11 breaks four. A reviewer applying an
+"exactly one test fails" reading literally would mark a correct mutation
+as failed. **What must hold is that the owner fails.** A mutation whose
+owner stays green is a real finding.
 
 | # | Mutation | Test that must fail |
 |---|---|---|
 | M1 | `expected_paths`: delete the absorbing rule (§2 rule 2) and return the union anyway | A4 |
 | M2 | `expected_paths`: replace `tuple(sorted({…}))` with an unsorted, undeduped tuple | A3 |
-| M3 | `apply_paths_frontmatter`: return the result without the `path.write_text(...)` | A1 (**the "validated but never written" control**) |
+| M3 | `apply_paths_frontmatter`: return the result without the `path.write_text(...)` | **A1** — owner; deliberately wide (nine criteria fall). The **"validated but never written" control** |
 | M4 | `apply_paths_frontmatter`: skip the delete-the-key branch, leaving a stale `paths:` when `U(T) == ()` | A4 |
 | M5 | `apply_paths_frontmatter`: build the block from scratch instead of round-tripping the loaded mapping | A7 |
 | M6 | `apply_paths_frontmatter`: return `PathsResult(..., notes=())` | A4 (the warnings assertion) |
@@ -491,12 +644,17 @@ production code that must make **exactly** the named test fail.
 | M8 | `_apply_target`: delete the `dataclasses.replace(…, changed=True)` fold | A6 |
 | M9 | `_apply_target`: delete the pre-pass call from the **user** branch only | A2 |
 | M10 | `_apply_target`: delete the pre-pass call from the **project** branch only | A1 |
-| M11 | `_apply_target`: compute the pre-pass from `spec.rules_paths` instead of the compile set | A5 (and A6) |
+| M11 | `_apply_target`: compute the pre-pass from `spec.rules_paths` instead of the compile set | **A5** — owner; deliberately wide (four fall, A6 among them) |
 | M12 | `_resolve_rules_target`: delete the absolute/`~` refusal | A10 |
 | M13 | `_resolve_rules_target`: delete the chezmoi-MANAGED refusal | A11 |
-| M14 | `read_paths_frontmatter`: `return ()` unconditionally | A15 |
-| M15 | `paths_frontmatter_drift`: compare `read_paths_frontmatter(text) == expected` instead of the raw value (§2 *agreement*) | A15 (the `paths: []` / scalar leg) |
+| M14 | `read_paths_frontmatter`: `return ()` unconditionally | A15 — the **direct-reader** leg (it is off the drift path, so nothing else pins it) |
+| M15 | `paths_frontmatter_drift`: compare `read_paths_frontmatter(text) == expected` instead of the raw value (§2 *agreement*) | A15 — the **scalar** and **`paths: []`** legs |
 | M16 | `_host_phase`: drop `notes=warnings` at the `_apply_target` call | A4 (the warnings assertion) |
+| M17 | `apply_paths_frontmatter`: hardcode `widened=False` (or drop the widening note) | A3 |
+| M18 | `apply_paths_frontmatter`: hardcode `drift=None` (or drop the drift-repaired note) | A6 |
+| M19 | `apply_paths_frontmatter`: keep the block when no keys remain (emitting ruamel's `{}`) | A17 |
+| M20 | `apply_paths_frontmatter`: **prepend** a new block instead of rewriting the loaded one | A7 — the reviewer's invented mutation |
+| M21 | `_apply_target`: drop the `variant == "rules"` guard on the pre-pass | A12 |
 
 **M6 and M16 both map to A4's warnings assertion by design** — A4 asserts
 both the disk state and the note, so the note has an owner at each end of
@@ -516,15 +674,21 @@ adding it to `_retirement_preflight`. Both are inert under this design
 2. **A globless record makes the whole file unpathed.** §2 rule 2, §2.2.
    Kept from r2, surfaced loudly, never silently reversed.
 3. **The compiler owns only `paths:`**, not the whole frontmatter block.
-   Foreign keys and comments survive via a ruamel round-trip. Rationale:
+   Foreign keys and comments survive via a ruamel round-trip, and a block
+   reduced to comments alone is **kept, not deleted** (§3.2) — the
+   removal rule is "no keys *and* no comments left", never "no keys
+   left", or the rule that exists to preserve comments would be the rule
+   that deletes them. Rationale:
    the alternative — owning the whole block — silently deletes a human's
    edit, which is the defect class this campaign exists to stop, and
    `records.py:104-117` already made exactly this call once in this
    codebase.
 4. **A hand-edited `paths:` is drift, and the repair is the next compile
-   (route or `recompile`) — which now also commits it** (§3.3 fold).
-   `selftest`'s drift *report* is a named handoff, §7.3 — this unit does
-   not claim it.
+   of a CLEAN target** (route or `recompile`) — which now also commits it
+   (§3.3 fold). An *uncommitted* hand-edit is refused first and loudly by
+   the existing dirty guards (`verbs.py:797`, `:3596-3603`), which this
+   unit does not touch (A6). `selftest`'s drift *report* is a named
+   handoff, §7.3 — this unit does not claim it.
 5. **Emission derives from `C(T)`, never from `TargetSpec.rules_paths`.**
    §3.1. This is the decision that makes `recompile` and retirement
    correct with no change at either site.
@@ -534,6 +698,13 @@ adding it to `_retirement_preflight`. Both are inert under this design
    for every existing caller (A12).
 7. **Absolute / `~` globs are refused, at both scopes**, on the measured
    never-fires finding plus the `root_dir`-ignored fail-open. §3.4(1).
+   **Ratified as in-scope by the coordinator at the spec gate**, on the
+   argument that this unit *creates* the hazard: before it, an absolute
+   glob was validated and persisted but never written, and so was inert;
+   after it, the glob goes on disk where it looks like delivery and
+   measurably is not. Both existing guards are absent or broken for this
+   case, and user scope — where there is no guard at all — is S-23's
+   primary tier. **Do not re-litigate it at the code gate.**
 8. **A pathed user-scope route refuses on a chezmoi-MANAGED target.**
    §3.4(2). Unpathed user rules are untouched.
 9. **Surfacing rides `result.warnings`**, via a `notes` kwarg on
@@ -544,8 +715,9 @@ adding it to `_retirement_preflight`. Both are inert under this design
     obligation-numbered class layout already exist), with the pure
     `expected_paths` / `read_paths_frontmatter` /
     `paths_frontmatter_drift` unit tests in `tests/test_compilers.py`.
-    Continue the existing "Obligation N" class naming from where
-    `test_a2_rules_local.py` stops (19).
+    The last existing class there is
+    `TestObligation18TopicSlugErrorWording`, so this unit's classes
+    continue the "Obligation N" naming **at 19**.
 11. **`str` comparison of globs, no normalization.** Globs are stored and
     emitted verbatim; `"src/**"` and `"./src/**"` are two different globs
     in the union. Normalizing would be inventing a matcher semantics we
@@ -603,8 +775,12 @@ nothing.
 Mechanical guards that *do* apply, and are all this unit can offer:
 the proposal-schema shape check (`ledger_ops.py:613-623`) and §3.4(1)'s
 absolute/`~` refusal. Beyond that it is the human's read of the card.
-This is a *new* gap created by S-23's promotion, and it belongs in
-`03-decisions.md` as an accepted residual with this reasoning.
+This is a *new* gap created by S-23's promotion. **Writing it into
+`03-decisions.md` as an ACCEPTED residual, with this reasoning, is THIS
+unit's obligation and lands in the same commit as the build** — an
+undeclared residual is one a later agent re-opens as a bug, which is
+exactly what the campaign's disposition rule (playbook §1) exists to
+prevent. Same for §7.1's Grep/Glob hole: both rows, one commit.
 
 ### 7.3 Handoffs — named, with the change, not silently assumed
 
@@ -619,6 +795,15 @@ This is a *new* gap created by S-23's promotion, and it belongs in
   repaired at the next route/`recompile` (A6) but is **not reported by
   `self-learn selftest`** — state this plainly wherever the unit is
   recorded as BUILT.
+
+  **And every signal this unit emits is one-shot.** §3.3's absorption,
+  widening and drift notes fire at the route or recompile that causes the
+  condition, and nowhere else: there is no standing report that topic *X*
+  went unpathed until the drift check learns the frontmatter. Under S-23
+  that is the monoculture arriving through the back door carrying only an
+  ephemeral signal — which is an argument for this handoff landing soon
+  rather than eventually, and it is the strongest reason to give the row
+  an owner in the next wave.
 - **The absolute/`~` glob check's better home** is
   `ledger_ops._validate_rules_fields` (proposal-validation time, where
   the human sees the refusal before routing). That file is `U-schema`'s.
@@ -693,7 +878,11 @@ from its reference is how a fabricated pin gets made.
    when the pattern is absolute (verified this session —
    `glob.glob("/etc/host*", root_dir="/tmp/globtest")` returned `/etc`
    entries), so a pattern that the 2026-07-28 canary measured as *never
-   firing* passes the guard today. §3.4(1).
+   firing* passes the guard today. Independently reproduced at the gate,
+   with one refinement folded in: the fail-open is conditional on the
+   absolute path **existing** — `/nonexistent-xyz/*` is still refused,
+   but as a zero-match, with a message that misdirects the human toward
+   fixing the pattern rather than dropping the absolute form. §3.4(1).
 4. **r2 §8 item 4: "PATHED load semantics remain empirically
    unverified."** Closed 2026-07-28 — verified working at both scopes.
    The campaign playbook §7 already records this; r2's own §8 does not,
@@ -712,7 +901,33 @@ its two halves and from the measurements they rest on.
 
 ## 9. Revision history
 
-- **r1** — this document, 2026-08-02. Written against the code read this
+- **r2** — this document, 2026-08-02. **Blind spec gate: 11 findings, all
+  FOLD, no blockers**; folded under the 2026-07-26 verdict repricing
+  rather than costing a fresh spec round. What changed:
+  **F5** (the reviewer's *invented* mutation, and the most valuable
+  finding — a prepend-instead-of-rewrite build leaves a duplicate stale
+  block and passes A1/A2/A3/A5/A7-as-written) → A7 rewritten to a
+  full-block literal plus a fence count, M20 added.
+  **F6** — the pre-pass was ungated and would have reached `SKILL.md` →
+  `variant == "rules"` guard, A12 extended, M21.
+  **F1** — M14/M15 killed nothing → A15 rewritten across the raw-value
+  legs plus direct reader assertions.
+  **F2** — the widening and drift notes had no owner → A3/A6 extended,
+  M17/M18.
+  **F3** — A6 was unsatisfiable (a dirty target is skipped before
+  `_apply_target`) → commit the hand-edit first; the dirty guards are
+  named as untouchable.
+  **F4** — a comment-only block was deleted by the rule meant to preserve
+  comments → removal narrowed, `{}` prohibited, A17 + M19.
+  **F7** — the `chezmoi` import was missing from the declared footprint.
+  **F8** — the MANAGED refusal was under-inclusive in the `U(T) == ()`
+  direction → widened, A11 extended.
+  **F9** — "exactly the named test" overstated → owner semantics.
+  **F10** — `_eligible()` placement stated. **F11** — four corrections
+  (A14 fail-open, class numbering, residual-row ownership, one-shot
+  signals). The absolute/`~` glob refusal was **ratified as in-scope**,
+  and the §3.1 central design claim was **confirmed on both legs**.
+- **r1** — 2026-08-02. Written against the code read this
   session (`compilers.py` in full; `verbs.py` §§215-280, 477-620,
   645-970, 1313-1380, 1500-1700, 1774-1870, 1955-2115, 2310-2350,
   3416-3640; `selfcheck.py` §§180-470; `chezmoi.py` §§150-360;
