@@ -105,10 +105,14 @@ component:
 - **The origin must be the whole `transcript:<session>#L<line>`
   string.** Two violations are two sightings. Live proof, not a
   hypothetical: `lrn-5d0c592a` carries two `violated` fires from the
-  **same session** `e18d1662-…`, spooled in the **same mine run**
-  (`ts 2026-07-28T10:43:00Z`), differing only by line — `#L9826` and
-  `#L10073`. A key that drops the line, truncates to the session, or
-  buckets by day or by run swallows the second one. So does the
+  **same session** `e18d1662-…` with an **identical spool timestamp**
+  (`2026-07-28T10:43:00Z`), differing only by line — `#L9826` and
+  `#L10073`. (Telemetry lines carry no run id, so "same mine run" is a
+  strong inference from the shared `ts`, not a recorded fact; the
+  `lrn-ea833a5b` pair — 2026-07-26 and 2026-07-27 — proves the
+  cross-run case independently, and the two together cover both.) A key
+  that drops the line, truncates to the session, or buckets by day or by
+  run swallows the second one. So does the
   reflexive "one suspect per record per run" guard a builder adds to
   avoid perceived spam; that guard is AC3's mutation for exactly this
   reason.
@@ -166,6 +170,17 @@ suspects — two on `lrn-ea833a5b`, two on `lrn-5d0c592a` — and they
 appear as four rows in `report --json .recurrence_suspects`. That is the
 unit's live positive control.
 
+The same run also prints `recurrences=4` and four `recurrence-from-fire`
+outcome rows in `self-learn mine status` (`cli.py:686-708`) and shows
+`recurrences: 4` on that run's card in the UI
+(`ui/src/self_learn_ui/models.py:703`) — on a run that landed nothing.
+That is correct: the counters describe events *raised*, not candidates
+mined. **No index shifts:** every crossover/backfill outcome row appends
+*after* `_handle_near_misses`, so the near-miss row indices that
+`routes.py:870`'s promote endpoint reads back are unchanged (and a
+`recurrence-from-fire` row carries no `promotable`, so that endpoint
+refuses it at `:872` even if addressed directly).
+
 **Reachability, stated honestly:** THE BACKFILL lives in
 `_reconcile_and_land`, which runs only when the reader produced
 parseable output (`miner.py:1736-1760`). An `idle`, `held-gate`, or
@@ -179,11 +194,13 @@ on the next productive run instead; nothing is lost.
   name. AC5 pins that it wins on a shared origin.
 - **The `fire` event itself.** Every fire that is emitted today is still
   emitted, with the same payload. THE CROSSOVER is additive.
-- **`complied` fires.** They are the rule *working*. AC2 is the
-  discriminator; without it a fix that raises a suspect for every fire
-  passes AC1 just as well.
-- **The live path's `routed` guard** (`:1308-1310`) — unchanged, and THE
-  BACKFILL mirrors it (AC7).
+- **`complied` fires.** They are the rule *working*. AC2 and AC10 are
+  the discriminators — one per path (§3.1's coverage split); without
+  them a fix that raises a suspect for every fire passes AC1 just as
+  well.
+- **The live path's `routed` guard** (`:1308-1310`) — unchanged. THE
+  BACKFILL mirrors it in **both** halves, `found is None` and
+  `status != "routed"` (AC7).
 - **`telemetry.py`.** No new event kind, so no `SCHEMA_VERSION` bump
   (`telemetry.py:64`; 11 §4.3's bump rule governs the closed *kind* set,
   and `recurrence-suspect` is already in it at `:75`). `spool_event`
@@ -222,6 +239,13 @@ in an existing lesson"* and inflate the count. Use
 **`"recurrence-from-fire"`**, which is outside `_NEARMISS_DISPOSITION`
 and therefore passes through `_enrich_near_miss` unchanged (`:1088-1089`)
 and is skipped by `_build_near_miss_rows` (`models.py:749-750`).
+
+**Canon.** `12-transcript-miner.md:639` reads *"`landed`/`resurfaced`
+carry no disposition — they are not near-misses."* Amend that one line to
+*"`landed`/`resurfaced`/`recurrence-from-fire` carry no disposition"* as
+part of this unit; doc 12 is held by no unit this wave. **No row is
+added to the §12.1 fold table** — a fire-derived suspect is deliberately
+outside it, which is the whole point of the new name.
 
 **`result.recurrences` gates the flush.** `miner.py:1822` flushes the
 spool only `if result.landed or result.folded or result.recurrences or
@@ -298,8 +322,15 @@ Omit the append and the tracked plane stays empty — the precise shape of
 "the fix ran and nothing is visible".)*
 
 **AC7 — THE BACKFILL respects live routed coverage.** AC6's pre-seed,
-but `rid` is `superseded`. After the run: **zero**
-`recurrence-suspect` events. *(`confirm_recurrence` refuses a
+but `rid` is `superseded`; **and** a third pre-seeded `violated` fire
+whose `record` is a well-formed id present in **no** bucket (e.g.
+`lrn-00000000`). After the run: still **zero** `recurrence-suspect`
+events **and `result.status == "ok"`, not `"failed"`**. THE BACKFILL
+mirrors the live guard **including its `found is None` half**
+(`miner.py:1309`) — an unbounded pass over an append-only plane that
+raises on one unresolvable row wedges *every future nightly run*, since
+`run()`'s outer handler turns the crash into `status: failed` and the
+offending row never goes away. *(`confirm_recurrence` refuses a
 non-`routed` target at `verbs.py:3188-3192` and
 `report.recurrence_suspects` filters it out at `report.py:223-225`, so
 such an event is permanent litter in an append-only plane.)*
@@ -313,6 +344,40 @@ such an event is permanent litter in an append-only plane.)*
 **AC9 — the superseded existing test.** `test_miner.py:1052`'s
 `== 1` becomes `== 2` (§2.4). Its other assertions are unchanged.
 
+**AC10 — THE BACKFILL ignores `complied`.** AC6's fixture, but pre-seed
+**two** tracked fires on the same `routed` `rid`:
+`telemetry.spool_quiet("fire", record=rid,
+origin="transcript:sess-old#L5", outcome="complied")` and
+`…origin="transcript:sess-old#L6", outcome="violated"`, then
+`telemetry.flush(home)`. Run the miner over a **newly written
+transcript** with a payload carrying no candidates and no fires. After
+the run: exactly **one** `recurrence-suspect`, with
+`origin == "transcript:sess-old#L6"`. Assert the **origin**, not just
+the count — a build that backfills every fire produces two, and must not
+be able to pass on a count assertion alone.
+*(Why AC2 does not already cover this: `_event_seen` runs at
+`miner.py:1116`, **before** the fires loop, so a run's own `complied`
+fire is never in the tracked plane when THE BACKFILL executes — AC2
+discriminates THE CROSSOVER only and cannot see THE BACKFILL at all. A
+build that drops the outcome filter passes AC1–AC9 and raises **22**
+suspects on the live ledger instead of 4. Presence-paired by
+construction: the same fixture's `violated` row proves THE BACKFILL
+ran, so this is not a bare absence assertion.)*
+
+**AC11 — THE BACKFILL raises one suspect per sighting, not per record.**
+AC6's fixture, but pre-seed **two** `violated` fires on the same
+`routed` `rid`, same session, different lines —
+`transcript:sess-old#L5` and `transcript:sess-old#L6` — then
+`telemetry.flush(home)`. Run the miner over a newly written transcript
+with a payload carrying no candidates and no fires. After the run:
+exactly **two** `recurrence-suspect` events; their `origin` **set**
+equals `{"transcript:sess-old#L5", "transcript:sess-old#L6"}`; and
+`result.recurrences == [rid, rid]`. This is the live `lrn-5d0c592a` /
+`lrn-ea833a5b` shape and the direct test of §2.2's four-suspect claim.
+*(AC3 pins the same rule on the **live** path only; a builder who puts
+the "don't spam" instinct inside the backfill loop instead passes
+AC1–AC10 and delivers 2 suspects on the real ledger, not 4.)*
+
 ### 3.1 Mutation plan
 
 Each row is a one-line edit to production code (`miner.py`) that must
@@ -325,28 +390,44 @@ error from a build error.
 | M1 | delete THE CROSSOVER call from the `fires` loop | AC1 | AC3, AC8 |
 | M2 | change the `basis` literal `"fire-violated"` → `"miner-match"` | AC1 | AC6 |
 | M3 | broaden THE CROSSOVER's condition to `if outcome in ("complied", "violated")` | AC2 | — |
-| M4 | insert `if rid in result.recurrences: return` at the head of the crossover helper (**the naive "one per record per run" fix**) | AC3 | — |
+| M4 | insert `if rid in result.recurrences: return` at the head of the crossover helper (**the naive "one per record per run" fix**) | AC3 | AC11 |
 | M5 | delete the `if key in seen_events: return` guard from the crossover helper | AC4 | AC5 |
 | M6 | delete `seen_events.add(key)` at `miner.py:1184` (the candidate loop's suspect path) | AC5 | — |
 | M7 | delete THE BACKFILL call from the end of `_reconcile_and_land` | AC6 | — |
 | M8 | delete `result.recurrences.append(rid)` from the crossover helper | AC6 | — |
 | M9 | drop the `status == "routed"` check from THE BACKFILL | AC7 | — |
 | M10 | change the crossover's journal outcome name to `"recurrence"` | AC8 | — |
+| M11 | drop the `outcome == "violated"` filter from THE BACKFILL's source list (`_event_seen`'s `violated_fires`) | AC10 | — |
+| M12 | add a per-record guard inside THE BACKFILL loop (`seen = set()`; `if rid in seen: continue`) — the backfill-side twin of M4 | AC11 | — |
+| M13 | drop the `found is None` half of THE BACKFILL's guard (`_find_record(...)[0].status != "routed"`) | AC7 | — |
 
-**M1 is the whole-unit control**; M4 and M8 are the two shapes this fix
-is most likely to ship broken in, and each is caught by exactly one
-test.
+**M1 is the whole-unit control**; M4, M8, M11 and M12 are the four
+shapes this fix is most likely to ship broken in, and each is caught by
+exactly one test. M11 and M12 are the two that pass **every** criterion
+of this spec's first draft while being wrong on the live ledger by 18
+suspects and 2 suspects respectively — they are why AC10 and AC11 exist.
 
 **Fail-open audit — what each assertion prints when its target is
-absent.** AC1/AC3/AC6 assert a **positive count and specific field
+absent.** AC1/AC3/AC6/AC11 assert a **positive count and specific field
 values** on events that do not exist without the change: absent the
-feature they read `0 != 1`. AC2 and AC7 are the two absence assertions
-in the set, and neither stands alone: AC2's scenario is AC1's with one
-field changed (so AC1 proves the harness can see a suspect at all), and
-AC7's is AC6's with one status changed (so AC6 proves the same for THE
-BACKFILL). Each absence assertion therefore has a paired presence
-assertion over the identical fixture — the positive control campaign §5
-demands.
+feature they read `0 != 1`. AC2, AC7 and AC10 are the three absence
+assertions in the set, and none stands alone: AC2's scenario is AC1's
+with one field changed (so AC1 proves the harness can see a suspect at
+all); AC7's is AC6's with one status changed; and AC10's *own fixture*
+carries a `violated` row whose suspect must appear, so the same run
+proves THE BACKFILL executed. Each absence assertion therefore has a
+paired presence assertion over the identical fixture — the positive
+control campaign §5 demands.
+
+**Coverage split, stated once so it is not re-derived.** THE CROSSOVER
+and THE BACKFILL are separate code paths reached under mutually
+exclusive conditions — `_event_seen` snapshots the tracked plane at
+`miner.py:1116`, **before** the fires loop, so a fire reported by this
+run's reader is never in THE BACKFILL's source list, and a fire already
+in the tracked plane never reaches THE CROSSOVER. **No criterion
+covering one path covers the other.** Hence the deliberate pairing:
+AC2/AC10 (outcome filter), AC3/AC11 (per-sighting identity), AC1/AC6
+(emission). A future editor adding a rule to one path must add its twin.
 
 **The productive-run trap — every backfill test must clear it.**
 `miner.run` returns `idle` at `miner.py:1704-1711`, **before the reader
@@ -354,8 +435,9 @@ is invoked**, when no new transcript digests exist. A backfill test that
 does not `write_transcript(...)` a fresh session never reaches
 `_reconcile_and_land` at all — so THE BACKFILL never runs, the
 assertions read whatever the pre-seed left behind, and **the test passes
-on a build with no backfill in it**. AC6 and AC4's third phase each
-write a new transcript for exactly this reason. A reviewer should
+on a build with no backfill in it**. AC6, AC10, AC11 and AC4's third
+phase each write a new transcript for exactly this reason. A reviewer
+should
 confirm M7 (delete THE BACKFILL call) actually turns AC6 red; if it does
 not, the fixture fell into this trap.
 
@@ -368,7 +450,7 @@ red test.
 ## 4. Builder decisions, made here rather than left open
 
 1. **`basis = "fire-violated"`** — a literal, distinct from
-   `miner-match` (candidate path, `:1183`) and from the worker's
+   `miner-match` (candidate path, `:1182`) and from the worker's
    `origin-match` / `title-token-overlap` (`worker.py:1001-1006`). 11
    §4.3 glosses the field as a *"similarity basis label"*; `miner-match`
    already sets the precedent that it labels the **source of suspicion**
@@ -377,7 +459,17 @@ red test.
    `outcome` field. That matches 11 §4.3's documented
    `recurrence-suspect` payload, and the violation fact is recoverable
    by joining on `(record, origin)` to the `fire` event, which is always
-   present alongside it.
+   present alongside it. And the event's `ts` is the **spool time, not
+   the fire's**: THE BACKFILL calls `spool_quiet` without `now=`, so a
+   suspect recovered from a July fire carries the backfill run's
+   timestamp. That timestamp is what `report.recurrence_suspects` shows
+   as `seen_at` (`report.py:228`) and what `confirm_recurrence` copies
+   into the record's append-only `recurrences[].ts`
+   (`verbs.py:3204-3207`). Accepted, not overlooked: on this plane `ts`
+   means *when the event was observed*, and `origin` already carries the
+   sighting. **Do not pass `now=` to recover the fire's date** — a
+   back-stamped suspect also sorts backwards in `read_events`
+   (`telemetry.py:389`), which orders the whole plane.
 3. **The journal outcome name is `"recurrence-from-fire"`** (§2.4), with
    `record=` and the origin, so a later reader can answer "did the fix
    fire?" from the journal without diffing telemetry.
@@ -409,12 +501,25 @@ red test.
    surface belongs to `U-composer`.)
 8. **Tests go in `plugins/self-learn/cli/tests/test_miner.py`**, which
    no concurrent unit touches.
+9. **THE CROSSOVER is called at the END of the `fires` loop body — after
+   `seen_events.add(key)` (`miner.py:1318`) and `result.fires += 1`
+   (`:1319`)**, never before the dedupe `continue` at `:1313-1314`.
+   §2.1's "zero suspects forever" and §2.2's structural argument both
+   assume this placement. Note that decision 6's "a live crossover
+   pre-empts THE BACKFILL for the same key" is a statement of
+   **precedence only** — under this placement it is not a reachable
+   interaction, since a fire already in the tracked plane never reaches
+   THE CROSSOVER.
 
 ## 5. Out of scope
 
 - **`worker._recurrence_suspects` (`worker.py:969-1016`)** — the
-  *second* silent suspect producer (see §6, finding 4). `worker.py` is
-  `U-marker`'s file this wave. Report, do not fix.
+  *second* silent suspect producer, which has also emitted zero, for its
+  own reasons (it needs a NEW pending capture similar to a routed
+  record, and the miner folds or recurrence-handles matches before they
+  ever become pending). `worker.py` is `U-marker`'s file this wave.
+  Report, do not fix — but note that the suspect surface still
+  under-reports after U-recur lands.
 - **Anything that acts on a confirmed recurrence** — the
   revise/escalate/tolerate/retire flow is FW-8. This unit raises the
   suspect; the human still confirms it with `confirm-recurrence`, per
@@ -445,7 +550,9 @@ in a way that strengthens the diagnosis rather than softening it.
 The fire channel nearly tripled while the suspect channel stayed at
 zero. That *is* the channel split, measured rather than argued.
 
-The four `violated` fires (all others are `complied`):
+Of the 22 fires, **4 are `violated` and 18 are `complied`** — the split
+AC10's mutation (M11) would collapse, raising 22 suspects instead of 4.
+The four:
 
 | ts | record | origin |
 |---|---|---|
@@ -459,4 +566,25 @@ Both records are `scope: user`, `status: routed`,
 
 ## 7. Revision history
 
-- **r1** — this document.
+- **r1** — first draft. Gated blind: **7 findings, all FOLD, 0
+  blockers**; no fresh spec round under the 2026-07-26 verdict
+  repricing. The gate independently confirmed the structural claim that
+  forces THE BACKFILL — traced statically, then reproduced in a scratch
+  ledger (after spooling and flushing a `violated` fire, a *productive*
+  run whose reader re-reported the identical fire produced
+  `outcomes: []`) — and noted it is **stronger** than r1 stated: normal
+  operation never re-presents those lines either, because the cursor has
+  advanced past them, so even a pre-dedupe crossover could not reach
+  them without a deliberate `--since` replay.
+- **r1 + folds** — this document. Two of the seven were live-ledger
+  correctness holes rather than wording: **AC10/M11** (nothing proved
+  THE BACKFILL's `violated` filter — `_event_seen` snapshots before the
+  fires loop, so AC2 cannot see THE BACKFILL at all, and a build
+  dropping the filter passed every r1 criterion while raising 22
+  suspects instead of 4) and **AC11/M12** (nothing made THE BACKFILL
+  raise two suspects on one record — the backfill-side twin of M4 passed
+  r1 and delivered 2 of the 4). The other five: the suspect's `ts`
+  semantics pinned (§4.2), the `found is None` crash-wedge guarded
+  (AC7/M13), the two run-counter consumers named (§2.2), the doc 12
+  canon line amended (§2.4), THE CROSSOVER's call placement pinned
+  (§4.9), and `:1183` → `:1182`.

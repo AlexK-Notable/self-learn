@@ -5,7 +5,7 @@ Status: **DRAFT, not gated.** Unit `U-analyst` of the r2 routing campaign
 Design reference: `misc/routing-procedure-r2.md` §4(d) items 1–2 (B2/B3).
 
 **File this unit may change: `plugins/self-learn/cli/src/self_learn/analyst.py`**
-(plus its tests). Five other units are building concurrently in
+(plus its tests). Four other units are building concurrently in
 `worker.py`, `ledger_ops.py`, `selfcheck.py`, `telemetry.py`, `verbs.py`,
 `miner.py`. Nothing here needs any of them — see §5.
 
@@ -67,8 +67,9 @@ fields to the doctrine, and they would vanish on arrival.
 - **r2 §4(d).2, strip "only what the CLI owns (`record_sha`)" — incomplete.**
   `script` is the one key this codebase refuses from a model on every
   other path (`ledger_ops.py:428-430`, `:673-680`; `verbs.py:1088-1089`)
-  and the doctrine explicitly permits the model to emit one
-  (`routing-doctrine.md:195`). Register R strips it.
+  and the doctrine anticipates the model emitting one anyway — *"you never
+  write executable bytes; any `script:` you emit is overwritten at
+  stamping"* (`routing-doctrine.md:195-196`). Register R strips it.
 
 ---
 
@@ -83,7 +84,7 @@ Replace the rebuild with a copy-then-stamp.
 | Keys | Owner | What `analyze()` does |
 |---|---|---|
 | `model`, `analyzed_at`, `record_sha` | CLI | assigned **after** the copy, unconditionally overwriting whatever the model emitted |
-| `script` | CLI (refused from the model) | removed from the copy |
+| `script` | CLI (refused from the model) | removed from the copy — **unconditionally, and before `validate_proposal`** (A4(b)) |
 | everything else | the model | carried verbatim into the returned dict |
 
 **R is complete because it does not enumerate the proposal's legitimate
@@ -144,6 +145,13 @@ So `analyze()` gains a pre-spawn guard: `home` must be an existing
 directory, else `AnalystError` naming it. Same posture and placement as
 the doctrine guard already at `:171-175`.
 
+`is_dir()` alone does not close the class: a home that exists and *is* a
+directory but is not searchable (mode without `x`) makes `subprocess.run`
+raise `PermissionError` — measured — which, like `NotADirectoryError`, is
+caught by nothing and escapes `analyze()`. The guard therefore requires a
+directory the process can **enter**: `Path(home).is_dir() and
+os.access(home, os.X_OK)`, else the same `AnalystError` naming the path.
+
 ---
 
 ## 3. Acceptance
@@ -175,11 +183,19 @@ proposal; `support.hook_proposal_fields()` supplies the block and examples.
 control — with matching values the assertions could not tell a stamped
 field from a carried one.
 
-**A4 — `script` is refused, not carried.** The shim emits a hook proposal
-that *also* carries `script: "#!/usr/bin/env bash\necho pwned\n"` and a
-`probe_key`. Assert `"script" not in proposal` **and** `proposal["probe_key"]
-== …`. The second assertion is what stops the first passing vacuously: an
-absence assertion alone stays green on a build that carries nothing at all.
+**A4 — `script` is refused, not carried. Parametrized over two
+destinations.** (a) the shim emits a hook proposal that *also* carries
+`script: "#!/usr/bin/env bash\necho pwned\n"` and a `probe_key`; (b) the
+shim emits A1's `skill-md` mapping plus the same `script` and `probe_key`.
+In both cases `analyze()` returns without raising; assert `"script" not in
+proposal` **and** `proposal["probe_key"] == …`. The second assertion is
+what stops the first passing vacuously: an absence assertion alone stays
+green on a build that carries nothing at all. **Case (b) is what makes the
+strip unconditional and pre-validation** — `validate_proposal` refuses
+`script` on a non-hook destination (`ledger_ops.py:434-440`), so a build
+that pops `script` only when `destination == "hook"`, or that pops it
+below `validate_proposal`, turns a routable proposal into an
+`AnalystError`; case (a) alone cannot see either.
 
 **A5 — the analyst runs in the ledger home.** The test `monkeypatch.chdir()`s
 to a directory outside the ledger home, then invokes; the shim records
@@ -187,9 +203,11 @@ to a directory outside the ledger home, then invokes; the shim records
 chdir is the control** — without it the assertion could pass on an
 unpinned build whenever pytest's own cwd happened to match.
 
-**A6 — a home that is not a directory refuses pre-spawn.** Parametrized
-over a missing path and an existing *file*. Assert `AnalystError` **whose
-message contains the offending path**.
+**A6 — a home that is not an enterable directory refuses pre-spawn.**
+Parametrized over a missing path, an existing *file*, and an existing
+directory with mode `0o000` (skip that case when `os.geteuid() == 0` —
+root ignores the search bit). Assert `AnalystError` **whose message
+contains the offending path**.
 
 > Two assertions that must NOT be used here, both fail-open:
 > "assert `AnalystError` was raised" — the unguarded build raises it too,
@@ -204,12 +222,15 @@ Each row is a one-line edit to `analyst.py`. A blind reviewer will run them.
 | # | Mutation | Test that must fail |
 |---|---|---|
 | M1a | restore the rebuild: `proposal = {k: parsed.get(k) for k in ("destination", "alternates", "rationale")}` | **A1** (also A2, A4 — this mutation *is* the shipped defect) |
-| M1b | widen instead of remove: the same rebuild over `("destination", "alternates", "rationale", "hook", "examples")` | **A1 only — A2 stays green.** The mutation the positive-control rule exists for |
-| M2 | add `proposal.pop("hook", None)` after the copy | A2 |
+| M1b | widen instead of remove: the same rebuild over `("destination", "alternates", "rationale", "hook", "examples")` | **A1 and A4 (both lose `probe_key`) — A2 stays green.** The mutation the positive-control rule exists for |
+| M2 | add `proposal.pop("hook", None)` after the copy | A2 **and A4** — both emit a hook proposal, so both raise |
 | M3 | delete `proposal["record_sha"] = sha_anchor(record.body)` | A3 |
 | M4 | delete `proposal.pop("script", None)` | A4 |
+| M4b | strip conditionally: `if proposal.get("destination") == "hook": proposal.pop("script", None)` | **A4(b) only — A4(a) stays green** |
+| M4c | move `proposal.pop("script", None)` below `validate_proposal(proposal)` | **A4(b) only** |
 | M5 | delete `cwd=str(home)` from the `subprocess.run` call | A5 |
 | M6 | delete the home-is-a-directory guard | A6 |
+| M6b | weaken the guard to `Path(home).is_dir()` alone | A6, the mode-`0o000` case only |
 
 **M1b is the load-bearing one.** A reviewer who runs it and finds A2 still
 green has directly verified that this unit fixed the enumeration rather
@@ -235,11 +256,15 @@ than its membership.
 - **Strip `script`, do not overwrite it.** The analyst is not the
   generator: `_prepare_one_motion_hook` assigns `data["script"]` itself
   (`verbs.py:1093`) and `stamp_proposal` does the same for on-disk
-  proposals (`ledger_ops.py:688-689`). Stripping means no model-authored
-  executable bytes exist in the returned dict at any instant.
+  proposals (`ledger_ops.py:688-689`). The strip is **unconditional and
+  above `validate_proposal`** (A4(b)), so no model-authored `script`
+  reaches the validator, the return, or any caller — the copy holds it for
+  the one statement between, which a filtered copy would avoid and which
+  is observably equivalent; either shape satisfies R.
 - **Guard placement:** beside the doctrine guard at `:171-175`, before
   `read_text` — same pre-spawn posture. `Path(home)` first; the signature
-  admits `str`.
+  admits `str`. `os` is already imported (`:48`), so `os.access` needs no
+  new import.
 - **Keep the three CLI-owned assignments literal and after the copy**, so
   the overwrite is textually obvious. No `setdefault`, no dict-merge
   cleverness — `setdefault` would silently invert R's first row.
@@ -265,6 +290,13 @@ than its membership.
   (`verbs.py:2222-2236`) instead of a misleading "analyst proposal
   invalid". FW-41's claim — *"can never return `hook`"* — closes; whether
   that proposal then routes is config, not code.
+- **`verbs.py` — not edited, but reached.** On a `hook` destination
+  `teach.py:694` hands the whole returned dict to `route_direct` as
+  `hook_input`, and `_prepare_one_motion_hook` secret-scans every byte of
+  it (`verbs.py:1107`). Widening the carried key set widens that scan —
+  the fail-closed direction, no code change — but note a hit exits
+  `SecretRefusal` → `EXIT_SCAN` (`teach.py:707-709`), not the never-lost
+  pending capture.
 - **`worker.py` — verified not affected.** The nightly worker's model
   writes proposal files directly and the CLI validates and stamps them in
   place (`_validate_written`, `worker.py:861-923`; `stamp_proposal`,

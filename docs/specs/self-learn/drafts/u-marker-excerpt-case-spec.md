@@ -6,8 +6,11 @@ Status: **DRAFT r1**. Unit `U-marker` of the r2 routing campaign (playbook
 **Where prose and the acceptance criteria conflict, the criteria win.** The
 two marker spellings are printed ONCE each, in §1, and referred to below by
 name (*the compiler pair* / *the legacy needle*). A second spelling of either
-anywhere in this document — or anywhere in the build outside the one fixture
-§3B names — is a defect.
+anywhere in this document — or anywhere in **this unit's diff** — is a defect.
+(The compilers golden fixtures carry the compiler pair by design; they are not
+in scope. §3.1 necessarily quotes the wrong needles it instructs the reviewer
+to type, and the near-miss literals it warns the gate to reject — the only
+exemption in this document.)
 
 ## 1. The defect — re-verified 2026-08-02, not inherited
 
@@ -53,15 +56,21 @@ matching the legacy needle would reinstate the defect as a feature, framing a
 section `compile_managed_text` will not regenerate (it matches byte-exact,
 `compilers.py:224-241`).
 
+This adds `worker.py`'s first import from `compilers.py`. No cycle results
+(`compilers` imports only `.records`), and both names are in its `__all__`.
+`compilers.py` is contended by `U-pointer`/`U-pathed`; neither touches the
+marker constants, but a rename there breaks this import.
+
 ## 3. Acceptance criteria
 
 Both criteria **must fail against unmodified `worker.py`**. Running them
 pre-fix and recording the two failures IS this unit's positive control
 (campaign §5): a check that has never failed has not been shown to work.
 
-**A — a fat target's compiled section reaches the excerpt.** Fixture:
-`env = make_env(tmp_path)`; a routed record `R` (`make_behavior` +
-`set_routing`/`set_status("routed")`, as `test_compilers.py:31-34`); the host
+**A — a fat target's compiled section reaches the excerpt.** Fixture: the
+file's own `env` fixture (`env.home` = ledger, `env.host` = host repo); a
+routed record `R` (`make_behavior` + `set_routing({routed_at, destination,
+by})`/`set_status("routed")`, as `test_compilers.py:31-34`); the host
 `CLAUDE.md` = 250 padding lines → `compile_managed_text(padding, [R]).text` →
 30 more padding lines; a project-scope pending record via
 `create_record(..., project_path=env.host)`; `entry` from `queue(bucket)`.
@@ -76,14 +85,18 @@ Markers here come from the compiler, never typed.
   equality against the fixture's own indices (measured: `lines[231:274]`, 43
   lines, first `authored line 231`, last `trailing line 19`).
 
-**B — the search misses a marker the compiler never wrote.** Fixture: 300
-lines `line 0 … line 299`, indices 150 and 160 replaced by the legacy needle.
-**This is the only place in the build where the legacy needle may be typed,
-and the test must carry a comment saying so.**
+**B — a case-variant of the compiler's own marker does not match.** Fixture:
+300 lines `line 0 … line 299`; index 150 replaced by `BEGIN_MARKER.upper()`,
+index 160 by `END_MARKER.upper()` — the compiler pair uppercased, a marker the
+compiler never wrote. **Both needles are derived from the imported constants:
+no marker spelling is typed in the build at all.** The fixture is red pre-fix
+*because* an uppercased begin marker contains the legacy needle as a
+substring — the test must carry a comment saying so, or a later editor will
+quietly retire the positive control.
 
 - **B1** `excerpt.splitlines() == [f"line {i}" for i in range(60)] + ["… (truncated)"]`,
   exact. Pre-fix this returns the window around line 150, so B is red on
-  today's build — and red on any case-folded fix.
+  today's build — and red on **both** case-folded shapes in the table (M3, M5).
 
 ### 3.1 Mutation plan
 
@@ -91,15 +104,22 @@ and the test must carry a comment saying so.**
 |---|---|---|
 | M1 | restore the legacy needle on the **begin** line only | A |
 | M2 | restore the legacy needle on the **end** line only | A |
-| M3 | replace **both** needles with a case-folded token (`if "self-learn:begin" in ln.lower()`, same for end) | B |
+| M3 | replace both needles with a case-folded **short token** (`if "self-learn:begin" in ln.lower()`, same for end) | B |
 | M4 | when both markers are found, `return "\n".join(lines)` instead of the window | A |
+| M5 | case-fold the **imported constants** on both sides (`if BEGIN_MARKER.lower() in ln.lower()`, same for end) — the plausible "defensive" fix | B |
 
-M1/M2 are the two halves of the shipped bug, M3 the plausible wrong fix, M4
-the fail-open one (section present, prompt budget blown); M3 applied to a
-single needle flips nothing, which is worth seeing. **What the criteria cannot
-see:** neither A nor B distinguishes an imported `BEGIN_MARKER` from a
-byte-identical re-spelled literal — §2's import rule is verified by reading
-the diff at the code gate, since a source-scanning assertion would be theatre.
+M1/M2 are the two halves of the shipped bug; M3 and M5 are the two plausible
+wrong fixes (short-token and whole-marker case folding), and only the
+case-swapped fixture in §3B catches M5; M4 the fail-open one (section present,
+prompt budget blown); M3 applied to a single needle flips nothing, which is
+worth seeing.
+
+**What the criteria cannot see:** no criterion distinguishes an imported
+`BEGIN_MARKER` from **any** hand-typed literal that matches the same lines —
+byte-identical, a prefix of it (`"<!-- self-learn:begin"`), or the bare token.
+All of them pass A and B. §2's import rule is verified by reading the diff at
+the code gate: *any* marker literal in `worker.py` fails it, since a
+source-scanning assertion would be theatre.
 
 ## 4. Builder decisions, made here rather than left open
 
@@ -118,6 +138,10 @@ the diff at the code gate, since a source-scanning assertion would be theatre.
 - **`ui/src/self_learn_ui/pane.py:266-267` carries the same wrong needle** in
   the review pane's copy of this function, and `ui/tests/test_pane.py:696-713`
   hand-writes the legacy needle into its fixture, so it is green on the broken
-  behaviour. Different package, claimed by no unit, named in no design source.
+  behaviour. Different package, and already claimed: campaign unit
+  **`U-marker-ui`** (`forward/r2-routing-campaign.md:83`, register row
+  **FW-48**), sequenced after `U-grad-ui`. Report only — this unit must not
+  touch it. Until it lands, the excerpt the **human** reads in the review pane
+  stays head-of-file truncated.
 - The `200` / `±20` / `60` constants, target resolution, `analyst.py`
   (U-analyst), the shared-composer factoring (U-composer).
