@@ -83,7 +83,7 @@ under two names.
 | **U-analyst** | Stop rebuilding proposals from a fixed key set; pin `cwd=home` | `analyst.py` | FW-41 | — |
 | **U-schema** | The decision-trace schema, its validator, quote containment, the closed flag set | `ledger_ops.py` | new | — |
 | **U-table** | The decision table as a pure module; wire the recompute-and-refuse check | new `gates.py`, `ledger_ops.py` | new | U-schema |
-| **U-demand-user** | Open the on-demand shelf at user scope; delete the dead chezmoi refusal; widen the UI destination menu | `verbs.py`, `ui/models.py` | FW-40, FW-42 | ROUTED decision |
+| **U-demand-user** | ~~Open the on-demand shelf at user scope~~ **RE-SCOPED 2026-08-02 by S-23:** give user scope a cheap surface, and it is **PATHED**, not DEMAND. Still in scope: delete the dead chezmoi refusal; widen the UI destination menu. Its spec must settle the boundary with `U-pathed` — `U-pathed` builds the emission machinery (`paths:` frontmatter, union semantics, drift-check), this unit opens the *scope* and the *menu* | `verbs.py`, `ui/models.py` | FW-40, FW-42 | ~~ROUTED decision~~ **unblocked**; sequence after `U-pathed` |
 | **U-composer** | Shared prompt composer (skill roster, cluster candidates, path roster) + the doctrine rewrite | `worker.py`, `analyst.py`, `routing-doctrine.md` | FW-43 | U-marker, U-analyst, U-schema, U-table |
 | **U-pointer** | Pointer emission, cap-exempt; reference-route triggers an ALWAYS recompile | `compilers.py`, `verbs.py` | FW-40 | U-demand-user |
 | **U-reach** | Reachability selftest + the `route` telemetry kind + fix `routing.by` | `selfcheck.py`, `telemetry.py`, `verbs.py` | FW-40, FW-45 | ships **before or with** U-pointer |
@@ -365,13 +365,41 @@ moving.
 
 Already open in `14 §4`, and blocking:
 
-1. **What should the on-demand shelf do?** Maintain a pointer from a
-   loaded surface, or stop being described as a delivery destination.
-   Blocks the most: `U-demand-user`, `U-pointer`, and the held fast-lane
-   work.
-2. **Should user scope get a cheap surface at all?**
-3. **Is the analyst's proposed skill name trusted, or CLI-regenerated?**
-4. **Does "change the name" get a text field in the review surface?**
+> **AMENDMENT 2026-08-02 — questions 1–4 were put to the user as one
+> batch, per this section's own rule, and all four are ANSWERED.** The
+> rulings are recorded normatively as **S-23** (questions 1+2, one tier
+> model) and as an amendment to **S-21** (questions 3+4) in
+> `03-decisions.md` — that register, not this playbook, is where they
+> bind. Summarised below in place so this section is not read as still
+> open. `U-pointer`, `U-demand-user` and `U-name` all unblock.
+
+1. ~~**What should the on-demand shelf do?**~~ **ANSWERED — pointer, and
+   demote DEMAND (S-23 half 1).** `reference` survives and gets its
+   pointer, so the 14 already-routed records become reachable; but
+   `paths:`-scoped rules become the **primary** cheap tier and DEMAND
+   shrinks to lessons that are genuinely not file-scoped. Retiring
+   `reference` was rejected (it orphans 14 records); keeping DEMAND as
+   the general cheap tier was rejected because its core assumption — a
+   session opens the file at the right moment — is unmeasured and r2 §8
+   calls it the design's soft spot, whereas pathed injection is automatic
+   and was verified working on this host 2026-07-28.
+2. ~~**Should user scope get a cheap surface at all?**~~ **ANSWERED —
+   yes, pathed rules only (S-23 half 2).** Explicitly NOT a user-level
+   reference file, which would inherit the unreachability problem with no
+   `SKILL.md` to hang a pointer off. **This re-scopes `U-demand-user`:**
+   §2's description of it as "open the on-demand shelf at user scope" is
+   superseded — the user-scope cheap surface is PATHED. User-level globs
+   resolve relative to the session's working directory and absolute globs
+   never match, so user-scope pathed rules serve **cross-project
+   file-type conventions**, never project-specific guidance (which
+   belongs at project scope anyway).
+3. ~~**Is the analyst's proposed skill name trusted, or
+   CLI-regenerated?**~~ **ANSWERED — neither: the analyst proposes, the
+   CLI validates, the human confirms** (S-21 amendment). Never silently
+   rewritten; a rejected name returns with its reason.
+4. ~~**Does "change the name" get a text field in the review surface?**~~
+   **ANSWERED — yes** (S-21 amendment), costed at ruling time as genuine
+   UI work, not a one-liner.
 
 Added by this campaign:
 
