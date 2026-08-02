@@ -80,6 +80,7 @@ under two names.
 | Unit | What it is | Primary files | FW row | Depends on |
 |---|---|---|---|---|
 | **U-marker** | Excerpt marker case fix — search the lowercase marker the compiler actually writes | `worker.py` | FW-44 | — |
+| **U-marker-ui** | **Added 2026-08-02** — the SAME defect, cloned. `ui/pane.py` re-declares the wrong marker in a hand-copied `_canon_excerpt`, and `ui/tests/test_pane.py` hand-writes that wrong marker into its fixture and passes: **a green test asserting the defect as the contract.** This is the excerpt the HUMAN sees in the review pane, so fixing `worker.py` alone leaves the reviewer reading a head-of-file truncation. Split from `U-marker` per §9 rather than absorbed: different suite, different builder, and the UI is contended | `ui/pane.py`, `ui/tests/test_pane.py` | new | sequence after `U-grad-ui`'s file set is known |
 | **U-analyst** | Stop rebuilding proposals from a fixed key set; pin `cwd=home` | `analyst.py` | FW-41 | — |
 | **U-schema** | The decision-trace schema, its validator, quote containment, the closed flag set | `ledger_ops.py` | new | — |
 | **U-table** | The decision table as a pure module; wire the recompute-and-refuse check | new `gates.py`, `ledger_ops.py` | new | U-schema |
@@ -315,12 +316,19 @@ uv run --project plugins/self-learn/ui pytest plugins/self-learn/ui/tests
 # or: cd plugins/self-learn/ui && uv run pytest
 ```
 
-Verified baseline 2026-07-28: **1010 passed, 77 skipped, 1 failed** —
-the failure being the known pre-existing
-`test_service_unit.py::test_both_units_document_manual_registration_via_symlink`,
-which does not block. Any *other* failure does. Always export
-`XDG_CACHE_HOME` to a scratch dir first; the 77 skips are an artifact of
-that redirect moving Playwright's browser path, not a missing Chromium.
+**AMENDED 2026-08-02 — the two suites have DIFFERENT baselines, and the
+original text gave only one without saying which.** Every CLI-unit agent
+read the UI's numbers as its own, including the tolerated failure. There
+is no tolerated failure in the CLI suite.
+
+| Suite | Command | Baseline | Tolerated failure |
+|---|---|---|---|
+| **UI** | `cd plugins/self-learn/ui && uv run pytest -q` | 1010 passed, 77 skipped, **1 failed** (2026-07-28) | `test_service_unit.py::test_both_units_document_manual_registration_via_symlink` — does not block |
+| **CLI** | `cd plugins/self-learn/cli && ./.venv/bin/python -m pytest -q` | **1133 passed, 5 skipped, 0 failed** (2026-08-02, rc captured unpiped) | **none — any red is new** |
+
+Any failure beyond the one UI row above blocks. Always export
+`XDG_CACHE_HOME` to a scratch dir first; the UI's 77 skips are an artifact
+of that redirect moving Playwright's browser path, not a missing Chromium.
 
 **`ledger_ops.py` is Wave 1's shared dependency.** The files are
 disjoint, but `worker.py`, `analyst.py`, `selfcheck.py` and `miner.py`
