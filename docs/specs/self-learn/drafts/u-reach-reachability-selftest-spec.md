@@ -1,6 +1,7 @@
 # Spec — U-reach: the reachability selftest, a `route` telemetry kind, and `routing.by`
 
-Status: **DRAFT r1** — not gated. Campaign unit `U-reach`
+Status: **r2 — SPEC GATE PASSED**, 9 findings folded, 0 blockers.
+Cleared for build. Campaign unit `U-reach`
 (`forward/r2-routing-campaign.md` §2, Wave 1). Register rows **FW-40**
 (the reachability selftest half) and **FW-45**. Implementation reference:
 `misc/routing-procedure-r2.md` **B9**. Evidence base:
@@ -127,9 +128,14 @@ Three parts, one unit. **Files: `selfcheck.py`, `telemetry.py`,
 
 Three new module-private functions plus one row in `run_selftest`.
 
-**RR (the check's domain)** — every record under `<home>/*/*/resolved/`
-with `status == "routed"`, `superseded_by is None`, and
-`routing.destination == "reference"`. Today RR == R14.
+**RR (the check's domain)** — for every bucket returned by
+`ledger.discover_buckets(home)` (the same enumeration `_check_drift`
+uses: `skills/*`, `projects/*`, **and the single one-level `user/`
+bucket** — a `<home>/*/*/resolved/` glob would silently miss
+`user/resolved/`, which exists on the live ledger), every record in
+`<bucket>/resolved/lrn-*.md` with `status == "routed"`,
+`superseded_by is None`, and `routing.destination == "reference"`.
+Today RR == R14.
 
 **LS(bucket, record) (the loaded-surface set)** — the files a session
 loads for a record's scope, resolved exactly as the verbs resolve them:
@@ -148,13 +154,24 @@ why it is a list and what is deliberately excluded from it.
 predicate, pure text + path arithmetic, no globbing:
 
 1. `surface` not a file ⇒ `False`.
-2. Find every maximal run of characters that are neither whitespace nor
-   any of `( ) [ ] < > " ' `` ` and that ends in `target.name`.
+2. **Left-maximal, anchored on the basename.** For every occurrence of
+   `target.name` in the text, extend the token **leftward only**, over
+   characters that are neither whitespace nor any of
+   `( ) [ ] < > " ' `` `. The token **ends at the basename**; nothing to
+   its right is ever consumed. Equivalently: `re.finditer(r"[^\s()\[\]<>\"'`]*"
+   + re.escape(target.name), text)`.
 3. For each token: `expanduser()`; absolute ⇒ itself, else
    `surface.parent / token`.
 4. `True` iff any candidate's `.resolve()` equals `target.resolve()`.
 
-Step 3-4 is the half that matters: a bare basename match would pass on
+**Step 2's direction is normative, and the two readings differ.** A
+both-directions-maximal reading rejects `see references/LEARNINGS.md.` —
+a sentence-final period, the commonest hand-written pointer shape — while
+the anchored reading accepts it. Criterion 6 discriminates them. The
+anchored reading adds no false positives: `myLEARNINGS.md` still yields a
+token that fails step 4.
+
+Steps 3-4 are the half that matters: a bare basename match would pass on
 *some other* `LEARNINGS.md`. The whole file is searched, not just the
 managed section — the whole file is loaded, and a hand-written pointer is
 a real path (that is what the seven passing controls in §1.1 are).
@@ -300,7 +317,11 @@ Numbered; the mutation plan (§5) references these numbers.
 1. **Reachable fixture PASSES.** A skill-scope record routed to
    `reference`, its `LEARNINGS.md` written, and the host `SKILL.md`
    containing `[Learnings](references/LEARNINGS.md)` ⇒ `_check_reach`
-   returns `(True, …)` and `cli.main(["--selftest"]) == 0`.
+   returns `(True, …)` **whose message contains `1 reference-routed
+   record(s) reachable`**, and `cli.main(["--selftest"]) == 0`.
+   **The count in the PASS message is asserted, not just the boolean: a
+   `(True, …)` produced because RR was EMPTY is precisely the failure
+   this half of the gate exists to exclude.**
 2. **Unreachable fixture FAILS.** The same fixture with the `SKILL.md`
    line removed ⇒ `(False, …)`, the message contains the record id and
    the surface path, and `cli.main(["--selftest"]) == 1`.
@@ -313,21 +334,42 @@ Numbered; the mutation plan (§5) references these numbers.
    names `../other/LEARNINGS.md` (a real file, wrong directory) ⇒ FAIL.
 5. **A different file in the right directory does not satisfy it.** The
    `SKILL.md` names `references/GOTCHAS.md` only ⇒ FAIL.
-6. **The token must RESOLVE, not merely appear.** One test, both
-   directions, same fixture:
+6. **The token must RESOLVE, not merely appear — and it is
+   right-anchored.** One test, four directions, same fixture:
    - `SKILL.md` containing `read LEARNINGS.md for prior lessons` ⇒
      **FAIL** — that token resolves to `<skill>/LEARNINGS.md`, which is
      not the target under `references/`.
    - `SKILL.md` containing `read references/LEARNINGS.md` ⇒ **PASS**.
+   - `SKILL.md` containing `see references/LEARNINGS.md.` — **trailing
+     sentence period** ⇒ **PASS**. This leg is the §2.1-step-2
+     discriminator; a both-directions-maximal tokenizer fails it and
+     nothing else in this suite would notice.
    - `SKILL.md` containing the target's **absolute** path ⇒ **PASS**.
 7. **An unresolvable reference target FAILS, never skips** — a
    skill-scope record whose skill is not under the registered skills root
    ⇒ FAIL naming the record.
 8. **An empty LS FAILS, never skips** — a project-scope reference record
    whose bucket has no registered project host ⇒ FAIL naming the record.
+8a. **A present-but-missing LS member FAILS** — a skill-scope reference
+    record whose host `SKILL.md` **does not exist** ⇒ FAIL naming the
+    record. LS is non-empty here, so criterion 8 does not cover it;
+    without this fixture `if not surface.is_file(): return True` turns
+    nothing red (reviewer's INV-5).
+8b. **The target-side `.resolve()` is load-bearing** — a fixture whose
+    registered skills root is reached through a **symlink**, so the
+    surface resolves via the link and the target via the real path.
+    Dropping `target.resolve()` must turn this red; on Linux without a
+    symlink in the fixture it turns nothing red (reviewer's INV-3).
 9. **Only live records count** — a `superseded_by`-set reference record
    and a `status: pending` one are both excluded from RR (fixture:
    both present, `reach` reports `0` and PASSes).
+9a. **The `user/` bucket is in the domain.** A direct unit test of the LS
+    helper for `record.scope == "user"` returns
+    `[DEFAULT_USER_CLAUDE_MD.expanduser()]`, not `[]`. The `user` row is
+    deliberately dead end-to-end until `U-demand-user`
+    (`_reference_target_for` returns `None` for user scope before LS is
+    ever consulted), so the helper is tested directly — the alternative
+    is a scope silently outside RR, which is F1.
 10. **Zero reference records PASSes** with a message containing `no
     reference-routed records`.
 11. **`hosts.yaml` absent** ⇒ PASS whose message contains `not checked`;
@@ -361,6 +403,15 @@ Numbered; the mutation plan (§5) references these numbers.
     literal `"routed"`; every such function must also contain a
     `spool_quiet("route"` call. AST, not regex — a docstring naming
     `set_routing()` must not turn this red.
+    **Plus the collector's own positive control, in the same test:** the
+    derived set must be **non-empty** and must contain **at least**
+    `route` and `route_direct`. "Every collected function spools" is
+    vacuously true when the collector matches nothing — hoisting
+    `"routed"` into a module constant, or renaming `set_routing`, empties
+    the set and the guard stays green through a deleted spool call
+    (reviewer's INV-1). The floor is a floor, **never a whitelist**: a
+    third route site must be *added to* the derived set by the collector,
+    not enumerated here.
 
 **Part C — `routing.by`**
 
@@ -377,6 +428,15 @@ Numbered; the mutation plan (§5) references these numbers.
     literal, may have an `ast.Constant` string value. The `route_direct`
     **signature default** is the one exemption, named in the test with
     §6's reason.
+    **Two must-stay-green controls in the same test, both against
+    UNMUTATED code:**
+    - `verbs.py:2954` passes `superseded_by="canon"` — a keyword match
+      written as `arg.endswith("by")` goes red on clean source, which
+      trains "relax the guard" (reviewer's INV-4). Match the keyword
+      name **exactly**, and assert this stays green.
+    - A docstring containing `by="human"` must not turn it red — the
+      AST-not-regex requirement, and the reason
+      `commit-drift-evidence-spec.md` §7.5 exists.
 
 **Run evidence.** The builder reports the CLI suite's own pass/fail line
 (baseline measured 2026-08-02: **1133 passed, 5 skipped, 0 failed**), the
@@ -387,34 +447,43 @@ is not a green test.
 
 ## 5. Mutation plan
 
-A blind reviewer will run these. Each is one line of production code and
-must turn **exactly** the named criteria red.
+A blind reviewer will run these. Each is one line of production code.
+**A cell listing several criteria is a blast radius, not a defect in the
+tests** — see M1. Where a criterion is meant to be *isolated* by exactly
+one mutation, the cell says so.
 
 | # | One-line mutation | Criteria that must fail |
 |---|---|---|
-| M1 | `_check_reach`: change the destination literal `"reference"` → `"skill-md"` | 3 (the count collapses to 0 and the check vacuously passes — **this is the fail-open mutation; if nothing goes red, criterion 3 is not doing its job**) |
+| M1 | `_check_reach`: change the destination literal `"reference"` → `"skill-md"` | 2, 3, 4, 5, 6, 7, 8 — RR collapses to empty on **every** reference-only fixture, so all seven negative criteria go red at once. **M1 is a blast-radius check, NOT the count's isolator.** Do not "fix" the breadth by weakening the negative criteria until M1 isolates 3 — that destroys the negative half of the gate, which is the whole instrument. The count is isolated by **M9** (FAIL side) and **M21** (PASS side). |
 | M2 | delete the `("reach", *_check_reach(home))` row from `run_selftest`'s `results` | 2, 12 |
 | M3 | `_surface_names_target`: `return True` as the first statement | 2, 4, 5, 6 |
 | M4 | `_surface_names_target`: `return False` as the first statement | 1, 6 |
 | M5 | `_surface_names_target`: replace the resolve-and-compare with `return target.name in text` | 4, 6 |
+| M5a | `_surface_names_target`: make step 2 both-directions-maximal (require the whole non-delimiter run to end at the basename) | 6 (the trailing-period leg **only** — this is F6's discriminator) |
+| M5b | `_surface_names_target`: drop `target.resolve()`, compare against the unresolved target | 8b (**needs the symlinked-skills-root fixture; without it this turns nothing red on Linux**) |
 | M6 | `_check_reach`: `continue` instead of appending a failure when the target is unresolvable | 7 |
 | M7 | `_check_reach`: `continue` instead of appending a failure when LS is empty | 8 |
+| M7a | `_surface_names_target`: `if not surface.is_file(): return True` | 8a (LS non-empty, member absent — criterion 8 does **not** cover this) |
 | M8 | `_check_reach`: drop the `status == "routed" and superseded_by is None` filter | 9 |
+| M8a | `_check_reach`: iterate `home.glob("*/*/resolved/lrn-*.md")` instead of `discover_buckets(home)` | 9a (**F1's mutation.** Turns nothing else red — the `user/` bucket has no reference records today, which is exactly why the narrowing was invisible) |
 | M9 | `_check_reach`: replace the leading `f"{len(failures)} of {checked}"` with a constant | 3 |
-| M10 | `telemetry.py`: remove `"route"` from `EVENT_KINDS` | 14 (**and only 14** — 16/17 must ALSO fail; if they stay green, they are asserting the verb's exit code instead of the event, which is the §2.2 trap) |
+| M21 | `_check_reach`: drop the count from the **all-reachable** return (`"reference-routed records reachable"` with no number) | 1 — **the PASS-side fail-open probe.** Without it, a countless PASS ships and §9.5's `14 → 0` comparison has nothing to compare |
+| M10 | `telemetry.py`: remove `"route"` from `EVENT_KINDS` | 14, 16, 17, 18, 24 — `spool_quiet` swallows the `TelemetryError`, so the verbs still succeed and only the event vanishes. **If 16/17 stay green they are asserting the verb's exit code instead of the event — the §2.2 trap, and a finding in its own right.** |
 | M11 | `telemetry.py`: add `"route"` to `NOTE_KINDS` | 14 |
 | M12 | `telemetry.py`: `SCHEMA_VERSION = 1` | 15 |
-| M13 | delete the `spool_quiet("route", …)` call in `route()` | 16, 18, 20 |
+| M13 | delete the `spool_quiet("route", …)` call in `route()` | 16, 18, 20, 24 |
 | M14 | delete the `spool_quiet("route", …)` call in `route_direct()` | 17, 20 |
 | M15 | drop `destination=` from the `route()` event payload | 16 |
 | M16 | move `route()`'s spool call from after the `_ledger_write` block to after `_host_phase` | 19 |
 | M17 | `route()`: pass `by="human"` unconditionally to `resolve_record` | 21, 24, 25 |
 | M18 | `route()`: invert the branch (`"analyst"` when `dest is not None`) | 21, 22 |
 | M19 | `route_direct()`: restore the `"by": "human"` dict literal at `:2325` | 23, 25 |
-| M20 | spool a constant `by="human"` in the `route()` event while leaving the record correct | 24 |
+| M20 | spool a constant `by="human"` in the `route()` event while leaving the record correct | 24, 25 |
+| M22 | the ROUTE-SITES collector: hoist `"routed"` into a module constant so the `resolve_record` matcher stops matching | 20 (**the collector's positive control** — the "every collected function spools" assertion is vacuous with an empty set) |
 
 **Reviewer-invented mutations are explicitly invited** — the campaign's
-most valuable finding last cycle came from one. Two worth trying:
+most valuable finding last cycle came from one, and three of the five
+invented against r1 became F2, F3 and F8(b) above. Two more worth trying:
 
 - **Add a new function to `verbs.py` that calls `set_routing(...)` and
   does not spool.** Criterion 20 must go red. This is the commit-drift
@@ -460,6 +529,16 @@ most valuable finding last cycle came from one. Two worth trying:
   records become routable and this check will FAIL them until
   `_reference_target_for` and LS learn the user branch. **That is a
   deliberate loud handoff, not a bug — see §8.**
+- **The `user` LS row is therefore dead code end-to-end until
+  `U-demand-user`, and is unit-tested directly** (criterion 9a).
+  `_reference_target_for` returns `None` before LS is ever consulted, so
+  no end-to-end fixture can reach that row. The row still exists, and RR
+  still enumerates the `user/` bucket, because the alternative is a scope
+  silently outside the domain — which is F1, the exact silent narrowing
+  criterion 13 forbids. **`user/` is one level deep** (`ledger.py:157-159`),
+  unlike two-level `skills/*` and `projects/*`; `discover_buckets` is the
+  only enumeration that gets this right, and it is the one
+  `_check_drift` already uses.
 - **Tests live in:** `cli/tests/test_selftest.py` for Part A (its `env` /
   `seed_routed_skill_target` fixtures already build the ledger+host pair);
   a **new** `cli/tests/test_route_observability.py` for Parts B and C
@@ -484,6 +563,15 @@ most valuable finding last cycle came from one. Two worth trying:
   once `route` lands and are a good follow-on unit; they are excluded here
   only because they widen the `verbs.py` footprint while five units build
   concurrently.
+- **FW-40 has three clauses — decide / selftest / re-deliver — and this
+  unit closes only the middle one.** Record U-reach against FW-40's
+  **selftest clause** and **leave the row's state unchanged.** Its DECIDE
+  clause is settled by **S-23** (the on-demand shelf keeps its pointer;
+  PATHED becomes the primary cheap tier), and its **re-delivery clause is
+  still `U-pointer`'s** — 14 records remain stranded until that lands. A
+  bookkeeping sweep marking FW-40 done on the strength of this unit would
+  erase a clause that is genuinely open, on the row that gates FW-35 and
+  FW-42.
 - **`teach.py:698-706` — one line, and it completes Part C.** The bare
   `teach --route` path must pass `by="analyst" if args.dest is None else
   "human"` into `verbs.route_direct`. Without it, that path keeps writing
@@ -545,6 +633,19 @@ Recorded here because a later reader will otherwise inherit them.
 8. **`route` is `verbs.py`'s only routed-write pair.** Verified by AST
    walk, against the possibility that `rehome` or `graduate` also route:
    they do not. Criterion 20 keeps that true.
+9. **The bare-basename FAIL is a live shape on the instrumented host —
+   expect a SECOND `reach` failure once `U-pointer` lands, and do not
+   misread it as the check being broken.** `SKILL.md:129` names
+   `` `GOTCHAS.revisions.md` `` with no directory component, so that
+   token resolves to `<skill>/GOTCHAS.revisions.md` and the predicate
+   calls it unreachable. Measured 2026-08-02 over the 9 files in that
+   `references/` dir: **True for 7, False for `LEARNINGS.md` and
+   `GOTCHAS.revisions.md`.** It costs nothing today (no record is routed
+   to `GOTCHAS.revisions.md`), and it is the predicate behaving exactly as
+   §2.1 step 3 specifies. **If it ever bites, the repair is to write a
+   resolving path into the surface — never to loosen the predicate.**
+   A basename-only match would make `LEARNINGS.md` "reachable" tomorrow
+   with no pointer written at all.
 
 ---
 
@@ -581,9 +682,13 @@ cd plugins/self-learn/cli   # from the repo root
 SCRATCH=$(mktemp -d)
 
 # (i) provenance control FIRST — a measurement taken against master's
-# CLI is worthless, and it looks identical to a good one.
-.venv/bin/python -c 'import self_learn; print(self_learn.__file__)'
-# MUST print a path under this worktree's cli/src/self_learn/
+# CLI is worthless, and it looks identical to a good one. MACHINE-CHECKED,
+# not eyeballed: `cli/.venv` is an EDITABLE install pinned to an absolute
+# path in the main checkout, so a builder in a worktree running the main
+# venv gets a path with the same `cli/src/self_learn/` suffix while
+# measuring master's unmodified CLI — and prints the success string.
+.venv/bin/python -c 'import self_learn, os, sys; p=os.path.realpath(self_learn.__file__); r=os.path.realpath("src/self_learn/__init__.py"); print(p); sys.exit(0 if p == r else 1)'
+prov=$?; echo "provenance rc=$prov"      # MUST be 0, captured UNPIPED
 
 # (ii) the run. rc captured UNPIPED.
 SELF_LEARN_HOME="$HOME/.self-learn" \
@@ -608,7 +713,9 @@ git -C "$HOME/.self-learn" log --oneline -1       # must still be f97e27c
 
 All four, or the control did not pass:
 
-1. `self_learn.__file__` is under the worktree.
+1. **`provenance rc=0`** — the machine-checked identity, not a path that
+   merely *looks* right. An eyeballed suffix match passes on master's
+   CLI run from a worktree.
 2. `rc=1` — where the same command returned `0` in §9.1.
 3. The `reach` line reads
    `selftest: FAIL reach — 14 of 14 reference-routed record(s) unreachable: …`
@@ -660,6 +767,22 @@ claim under test is `14 → 0`:
 
 ## 11. Revision history
 
-- **r1** — this document. Every line number and field name in it was
-  re-verified against current source 2026-08-02; §8 records where r2, the
-  audit, and the playbook were found wrong.
+- **r1** — first draft. Every line number and field name re-verified
+  against current source 2026-08-02; §8 recorded where r2, the audit, and
+  the playbook were found wrong. Gated: **9 findings, all FOLD, no
+  blockers.**
+- **r2** — this document. Folded under the 2026-07-26 verdict repricing
+  (bounded substitutions verify at the code gate, not in a fresh spec
+  round). Two of the nine were the unit's own defect class occurring
+  inside the unit: **F1**, an RR glob that silently dropped the one-level
+  `user/` bucket — the exact silent narrowing criterion 13 forbids; and
+  **F2**, a PASS-half criterion that went green with zero records
+  checked. Also folded: the ROUTE-SITES collector had no positive control
+  (F3); M1's blast radius invited a builder to weaken the negative half of
+  the gate (F4); M10/M13/M20 under-listed their radius (F5); the
+  tokenizer had two readings and no criterion discriminating them (F6);
+  the provenance control was eyeball-only against an editable install
+  (F7); two missing controls (F8); and FW-40's three clauses needed
+  separating (F9). New criteria 8a, 8b, 9a; new mutations M5a, M5b, M7a,
+  M8a, M21, M22.
+  Three of the reviewer's five invented mutations found real holes.
