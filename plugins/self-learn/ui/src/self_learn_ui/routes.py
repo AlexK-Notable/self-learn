@@ -236,30 +236,58 @@ def cycle_destination(current: str | None, scope: str) -> str:
     return cycle[(idx + 1) % len(cycle)]
 
 
-def _next_pending_id(home: Path, bucket_name: str, exclude_id: str) -> str | None:
-    """The next pending record in the SAME bucket (any destination group,
-    oldest-first per the CLI's own list order), excluding *exclude_id*
-    itself, or ``None`` when nothing remains. The ONE shared computation
-    (P2-4) behind both :func:`next_record_url` (the queue-walk's actual
-    hop target) and the Y-19 item 1 prefetch trigger in
+def _next_pending_id(
+    home: Path, scope: str, bucket_name: str, exclude_id: str
+) -> str | None:
+    """The next pending record in the SAME ``(scope, bucket_name)`` bucket
+    (any destination group, oldest-first per the CLI's own list order),
+    excluding *exclude_id* itself, or ``None`` when nothing remains. The
+    ONE shared computation (P2-4) behind both :func:`next_record_url` (the
+    queue-walk's actual hop target) and the Y-19 item 1 prefetch trigger in
     :func:`detail_page` — the prefetch warms exactly the record the walk
-    would land on next, never a second guess at what "next" means."""
+    would land on next, never a second guess at what "next" means.
+
+    Fourth instance of tonight's (scope, name) defect family — and the
+    worst: a bucket is identified by ``(scope, name)``, never by name
+    alone (a skill and the user bucket can both be called ``user``), and
+    this function used to filter on ``bucket_name`` alone. A same-named
+    bucket in another scope could hijack the queue-walk's ACTUAL hop
+    target mid-review — the human silently moved into a different
+    queue — and the prefetch would warm that same wrong record.
+
+    Name first (cheap — already sitting in ``item["bucket"]``), then
+    confirm ``(scope, bucket_name)`` via :func:`_belongs_to_bucket`'s
+    ``locate_record`` ground truth — the same two-step the Bucket page's
+    pending/archive lists use, and for the same reason: asking where a
+    record LIVES sidesteps the vocabulary mismatch between a bucket's
+    bare scope and a record's own (``skill:<name>``-qualified) one, so
+    there is no second scope-comparison rule to get wrong here."""
     read = ledger.list_items(home, include_deferred=False)
     if not read.ok or not read.data:
         return None
     for item in read.data:
-        if item.get("bucket") == bucket_name and item.get("id") != exclude_id:
-            return item["id"]
+        item_id = item.get("id")
+        if (
+            item.get("bucket") == bucket_name
+            and item_id != exclude_id
+            and _belongs_to_bucket(home, item_id, scope, bucket_name)
+        ):
+            return item_id
     return None
 
 
-def next_record_url(home: Path, bucket_name: str, resolved_id: str) -> str:
+def next_record_url(home: Path, scope: str, bucket_name: str, resolved_id: str) -> str:
     """09 §2 / P3-9's "flow after resolution": the next pending record in
-    the SAME bucket, excluding *resolved_id* itself. ``/?notice=bucket-
-    clear`` when nothing remains — Front, not the now-empty bucket page
-    (09 §1: "if the bucket empties, return to Front with a one-line
-    bucket-clear banner")."""
-    next_id = _next_pending_id(home, bucket_name, resolved_id)
+    the SAME ``(scope, bucket_name)`` bucket, excluding *resolved_id*
+    itself. ``/?notice=bucket-clear`` when nothing remains — Front, not
+    the now-empty bucket page (09 §1: "if the bucket empties, return to
+    Front with a one-line bucket-clear banner").
+
+    ``scope`` is required, not optional: this is the queue-walk's ACTUAL
+    hop target (see :func:`_next_pending_id`'s docstring) — a name-only
+    lookup could hop the human into a different scope's same-named
+    bucket with no indication."""
+    next_id = _next_pending_id(home, scope, bucket_name, resolved_id)
     if next_id is None:
         return f"/?notice={NOTICE_BUCKET_CLEAR}"
     return f"/record/{next_id}"
@@ -812,7 +840,7 @@ def detail_page(request: Request, record_id: str, background_tasks: BackgroundTa
     # since this route returns a Response object directly (FastAPI only
     # auto-attaches BackgroundTasks when it builds the Response itself).
     if cache is not None and hub is not None:
-        next_id = _next_pending_id(home, location.bucket_name, record_id)
+        next_id = _next_pending_id(home, location.scope, location.bucket_name, record_id)
         if next_id is not None:
             background_tasks.add_task(_warm_detail_prefetch, cache, hub, home, next_id)
             response.background = background_tasks
@@ -1547,8 +1575,15 @@ async def action_confirm(
     # target in that case) — the evidence leg's "next pending record"
     # link must stay ABSENT rather than point at that URL under a
     # misleading label, so it is built from the raw id, not the URL
-    # helper.
-    _next_id = _next_pending_id(home, bucket_name, record_id) if bucket_name else None
+    # helper. Both halves of the pair are required — bucket_name alone
+    # cannot identify a bucket (fourth instance of tonight's (scope,
+    # name) defect family: a same-named bucket in another scope could
+    # otherwise hijack this hop).
+    _next_id = (
+        _next_pending_id(home, bucket_scope, bucket_name, record_id)
+        if bucket_name and bucket_scope
+        else None
+    )
     next_url = f"/record/{_next_id}" if _next_id else None
     bucket_url = (
         f"/bucket/{bucket_scope}/{bucket_name}"
@@ -1600,8 +1635,8 @@ async def action_confirm(
     # byte — `next_record_url`'s own bucket-clear fallback, not the
     # evidence leg's absent-link convention above.
     url = (
-        next_record_url(home, bucket_name, record_id)
-        if bucket_name
+        next_record_url(home, bucket_scope, bucket_name, record_id)
+        if bucket_name and bucket_scope
         else f"/?notice={NOTICE_BUCKET_CLEAR}"
     )
     resp = Response(status_code=200)
@@ -1663,11 +1698,6 @@ def _contradicts_offer_response(
         "partials/contradicts_offer.html",
         {"record_id": record_id, "edges": edges, "evidence": evidence},
     )
-
-
-def _bucket_name_for(home: Path, record_id: str) -> str | None:
-    loc = ledger.locate_record(home, record_id)
-    return loc.bucket_name if loc else None
 
 
 # ------------------------------------------------- A2 §10.4(a) adopt offer
@@ -1985,7 +2015,13 @@ async def commit_drift_confirm(
     location = ledger.locate_record(home, record_id)
     bucket_name = location.bucket_name if location is not None else None
     bucket_scope = location.scope if location is not None else None
-    _next_id = _next_pending_id(home, bucket_name, record_id) if bucket_name else None
+    # Both halves of the pair are required — see action_confirm's mirror
+    # of this block for why bucket_name alone cannot identify a bucket.
+    _next_id = (
+        _next_pending_id(home, bucket_scope, bucket_name, record_id)
+        if bucket_name and bucket_scope
+        else None
+    )
     next_url = f"/record/{_next_id}" if _next_id else None
     bucket_url = (
         f"/bucket/{bucket_scope}/{bucket_name}"
@@ -2432,13 +2468,25 @@ async def proposal_confirm(
 
     # §3.4: the pane-proposal confirm path is its OWN site — fixing only
     # action_confirm's redirects would leave THIS one silently
-    # teleporting the user while the DoD's other three sites pass.
-    bucket_name = None if kind == "bucket" else _bucket_name_for(home, record_id)
+    # teleporting the user while the DoD's other three sites pass. A
+    # FRESH locate_record (not `prop.bucket_scope`/`prop.bucket_name`,
+    # captured before the verb ran) — a route can rehome the record
+    # into a different bucket, and this must reflect where it landed.
+    next_location = None if kind == "bucket" else ledger.locate_record(home, record_id)
+    bucket_name = next_location.bucket_name if next_location is not None else None
+    bucket_scope = next_location.scope if next_location is not None else None
     bucket_url = f"/bucket/{prop.bucket_scope}/{prop.bucket_name}"
     # Same convention as action_confirm: the evidence leg's "next
     # pending record" link is ABSENT (not pointed at a bucket-clear
-    # notice under a misleading label) when nothing remains.
-    _next_id = _next_pending_id(home, bucket_name, record_id) if bucket_name else None
+    # notice under a misleading label) when nothing remains. Both
+    # halves of the pair are required — bucket_name alone cannot
+    # identify a bucket (fourth instance of tonight's (scope, name)
+    # defect family).
+    _next_id = (
+        _next_pending_id(home, bucket_scope, bucket_name, record_id)
+        if bucket_name and bucket_scope
+        else None
+    )
     evidence_next_url = f"/record/{_next_id}" if _next_id else None
     evidence = (
         _evidence_ctx(
@@ -2484,8 +2532,8 @@ async def proposal_confirm(
         # Non-evidence verbs keep the PRE-EXISTING auto-redirect
         # byte-for-byte — `next_record_url`'s own bucket-clear fallback.
         url = (
-            next_record_url(home, bucket_name, record_id)
-            if bucket_name
+            next_record_url(home, bucket_scope, bucket_name, record_id)
+            if bucket_name and bucket_scope
             else f"/?notice={NOTICE_BUCKET_CLEAR}"
         )
     resp = Response(status_code=200)
