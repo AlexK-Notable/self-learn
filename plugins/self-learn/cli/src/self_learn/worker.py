@@ -77,6 +77,7 @@ __all__ = [
     "batch_cap",
     "build_argv",
     "cache_dir",
+    "canon_excerpt",
     "kick",
     "package_skill_refs",
     "run",
@@ -542,13 +543,21 @@ def _digest(home: Path, limit: int = 20) -> str:
     return "\n".join(lines)
 
 
-def _canon_excerpt(home: Path, entry) -> str:
+def canon_excerpt(home: Path, record: Record, bucket_dir: Path) -> str:
     """The candidate target's managed section ± 20 lines, or the whole
     file when < 200 lines (pinned prompt ingredient). Targets resolve
     through the hosts registry now (doc 13): skill scope → the skills
     root's SKILL.md; project scope → the bucket's meta-recorded host
-    CLAUDE.md; user scope → the real user CLAUDE.md."""
-    scope = entry.record.scope
+    CLAUDE.md; user scope → the real user CLAUDE.md.
+
+    The ONE implementation of this rule (FW-48/U-marker-ui, 2026-08-02):
+    the review pane (``ui/src/self_learn_ui/pane.py``'s
+    ``target_canon_excerpt``) imports and delegates to this function
+    rather than re-declaring it. A hand-copied second implementation is
+    exactly how the pane drifted onto a marker literal the compiler
+    never wrote — see
+    ``docs/specs/self-learn/drafts/u-marker-excerpt-case-spec.md`` §5."""
+    scope = record.scope
     target: Path | None = None
     if scope.startswith("skill:"):
         try:
@@ -558,7 +567,7 @@ def _canon_excerpt(home: Path, entry) -> str:
         except HostsError:
             return "(skill target unresolvable — no registered skills root)"
     elif scope == "project":
-        host = bucket_project_path(entry.bucket_dir)
+        host = bucket_project_path(bucket_dir)
         if host is None:
             return "(project target unresolvable — bucket has no meta.yaml)"
         target = Path(host) / "CLAUDE.md"
@@ -577,6 +586,15 @@ def _canon_excerpt(home: Path, entry) -> str:
         return "\n".join(lines[:60]) + "\n… (truncated)"
     lo, hi = max(0, begin - 20), min(len(lines), end + 21)
     return "\n".join(lines[lo:hi])
+
+
+def _canon_excerpt(home: Path, entry) -> str:
+    """``_compose_prompt``'s own call shape: a ``queue()``-yielded
+    ``QueueEntry`` (``.record``/``.bucket_dir``), not a bare
+    :class:`~self_learn.records.Record`. Thin wrapper around the shared
+    :func:`canon_excerpt` — kept so this module's existing call site and
+    test suite (``test_worker.py``) need no signature change."""
+    return canon_excerpt(home, entry.record, entry.bucket_dir)
 
 
 _PROMPT_TEMPLATE = """You are the self-learn routing analyst worker. For EACH pending record
