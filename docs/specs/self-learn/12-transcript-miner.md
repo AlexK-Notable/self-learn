@@ -636,7 +636,7 @@ Every near-miss `outcome` is folded to exactly one of five human-facing
 | `scan-blocked` | `scan-refused`, `fold-quote-scan-refused` | no | never (rule only) | no |
 | `other` | `dropped-invalid`, `dropped-land-failed`, `match-claim-invalid`, `quote-dropped-overlength` | no | no | no |
 
-`landed`/`resurfaced` carry no disposition — they are not near-misses.
+`landed`/`resurfaced`/`recurrence-from-fire` carry no disposition — they are not near-misses.
 
 **The `rejected` double-absence** (a data pin, not merely a UI one): the
 `dropped-rejected` outcome (`miner.py`'s `_reconcile_and_land`, the
