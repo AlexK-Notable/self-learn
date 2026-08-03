@@ -450,6 +450,37 @@ def _find_bucket(home: Path, scope: str, name: str) -> ledger.Bucket | None:
     return None
 
 
+def _belongs_to_bucket(home: Path, record_id: object, scope: str, name: str) -> bool:
+    """Does ``record_id`` actually live in the ``(scope, name)`` bucket?
+
+    Bucket NAME alone does not identify a bucket: a skill and a project can
+    share one (the shape that matters is a skill bucket literally named
+    ``user``). This is the O(k) collision guard the archive section has
+    always applied; it lives here so the Bucket page's two lists —
+    pending and archive — cannot answer the question differently.
+
+    They did. The pending list filtered on ``item["bucket"] == name`` with
+    no scope test at all, so a same-named bucket in another scope had its
+    records rendered on this page — while the unreadable-count block a few
+    lines below it, and the archive section above, both matched on
+    ``(scope, name)``. Reproduced before fixing: two buckets named ``foo``,
+    one project and one skill, put BOTH records on the project page.
+
+    Note the two scope vocabularies, which is why the obvious one-line fix
+    is wrong: ``Bucket.scope`` (and this route's ``scope`` argument) is
+    bare — ``skill``/``project``/``user`` — while a record's own
+    ``scope`` field qualifies skills as ``skill:<name>``. Comparing
+    ``item["scope"] == scope`` therefore drops every record in every skill
+    bucket. Asking where the record LIVES sidesteps the mismatch, and is
+    the right question anyway: page membership is a fact about location,
+    not about what a record's frontmatter claims.
+    """
+    if not isinstance(record_id, str):
+        return False
+    location = ledger.locate_record(home, record_id)
+    return location is not None and (location.scope, location.bucket_name) == (scope, name)
+
+
 def _gather_archive_entries(
     home: Path, scope: str, name: str
 ) -> tuple[list[dict], str | None]:
@@ -509,10 +540,10 @@ def _gather_archive_entries(
         if row.get("bucket") != name:
             continue
         record_id = row.get("id")
-        if not isinstance(record_id, str):
+        if not _belongs_to_bucket(home, record_id, scope, name):
             continue
         location = ledger.locate_record(home, record_id)
-        if location is None or (location.scope, location.bucket_name) != (scope, name):
+        if location is None:  # pragma: no cover - _belongs_to_bucket proved it
             continue
         record = ledger.read_record(location.path)
         if record is None:
@@ -538,7 +569,13 @@ def bucket_page(request: Request, scope: str, name: str, notice: str | None = No
 
     list_read = ledger.list_items(home, include_deferred=True)
     items = [
-        item for item in (list_read.data or []) if item.get("bucket") == name
+        item
+        for item in (list_read.data or [])
+        # Name first (cheap), then confirm the scope — see
+        # `_belongs_to_bucket`. Filtering on name alone rendered another
+        # scope's records on this page.
+        if item.get("bucket") == name
+        and _belongs_to_bucket(home, item.get("id"), scope, name)
     ] if list_read.ok else []
 
     proposals_by_id: dict[str, dict | None] = {}

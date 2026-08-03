@@ -3040,3 +3040,88 @@ class TestFocusTarget:
             r = c.get(path)
             assert 'id="self-learn-ui-content"' in r.text
             assert 'tabindex="-1"' in r.text
+
+
+class TestBucketPageScopeIsolation:
+    """A bucket is identified by (scope, name), not by name alone — a skill
+    and the user bucket can both be called `user`.
+
+    The Bucket page answered that question two different ways in one
+    function. The archive section confirmed `(scope, name)` via
+    locate_record, and the unreadable-count block matched on both fields —
+    but the PENDING list filtered on `item["bucket"] == name` and nothing
+    else, so a same-named bucket in another scope had its records rendered
+    here. Reproduced before fixing: two buckets named `foo`, one project
+    and one skill, put BOTH records on the project page.
+
+    Do not "simplify" this to `item["scope"] == scope`. The two scope
+    vocabularies differ — `Bucket.scope` and this route's argument are bare
+    (`skill`/`project`/`user`), while a record's own `scope` field
+    qualifies skills as `skill:<name>` — so that comparison silently drops
+    every record in every skill bucket. Membership is a fact about where
+    the record LIVES, which is what locate_record answers.
+    """
+
+    def test_user_bucket_excludes_a_skill_bucket_of_the_same_name(
+        self, tmp_path: Path
+    ) -> None:
+        sb = make_env(tmp_path, skills=("user",))
+        skill_rec = make_behavior(
+            scope="skill:user", trigger="About to collide with the user bucket."
+        )
+        user_rec = make_behavior(
+            scope="user", trigger="About to do something at user scope."
+        )
+        seed_record(sb.ledger, skill_rec)
+        seed_record(sb.ledger, user_rec)
+        c, _runner = make_client(sb)
+
+        r = c.get("/bucket/user/user")
+        assert r.status_code == 200
+        assert user_rec.id in r.text
+        assert skill_rec.id not in r.text, (
+            "the skill bucket named 'user' leaked its record onto the "
+            "user-scope bucket page"
+        )
+
+    def test_skill_bucket_excludes_the_user_bucket_of_the_same_name(
+        self, tmp_path: Path
+    ) -> None:
+        sb = make_env(tmp_path, skills=("user",))
+        skill_rec = make_behavior(
+            scope="skill:user", trigger="About to collide with the user bucket."
+        )
+        user_rec = make_behavior(
+            scope="user", trigger="About to do something at user scope."
+        )
+        seed_record(sb.ledger, skill_rec)
+        seed_record(sb.ledger, user_rec)
+        c, _runner = make_client(sb)
+
+        r = c.get("/bucket/skill/user")
+        assert r.status_code == 200
+        assert skill_rec.id in r.text
+        assert user_rec.id not in r.text, (
+            "the user bucket leaked its record onto the skill bucket "
+            "named 'user'"
+        )
+
+    def test_a_skill_bucket_still_shows_its_own_records(self, tmp_path: Path) -> None:
+        """Positive control against an over-strict guard — the failure mode
+        `item["scope"] == scope` would produce, emptying every skill bucket.
+
+        Measured, so the claim is not decorative: mutating the guard to
+        always-False reddens all three tests in this class, because the two
+        above each assert their OWN record is present as well as the
+        other's absence. Mutating it to always-True reddens exactly those
+        two and leaves this one green. So the class discriminates in both
+        directions, and this test is the unambiguous signal for the strict
+        one."""
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+        c, _runner = make_client(sb)
+
+        r = c.get("/bucket/skill/s")
+        assert r.status_code == 200
+        assert rec.id in r.text
