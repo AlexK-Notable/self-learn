@@ -38,7 +38,7 @@ import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TextIO
+from typing import BinaryIO
 
 from .scan import format_refusal
 from .scan import scan as secret_scan
@@ -262,17 +262,36 @@ def flush(home: Path | str, *, push: bool = True) -> FlushReport:
     if not sdir.is_dir():
         return report
 
-    opened: list[tuple[Path, TextIO, list[str]]] = []
+    opened: list[tuple[Path, BinaryIO, list[str]]] = []
     try:
         # Phase 1: lock every spool file and scan every line. Nothing is
         # written until every line of every file has passed.
         for spool_path in sorted(sdir.glob("*.jsonl")):
             try:
-                fh = open(spool_path, "r+", encoding="utf-8")
+                fh = open(spool_path, "r+b")
             except (FileNotFoundError, OSError):
                 continue  # vanished between glob and open (cache cleaner)
             fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
-            lines = [ln for ln in fh.read().splitlines() if ln.strip()]
+            # FW-53: opened and decoded per LINE (binary read + per-line
+            # decode), matching read_events' own fix — a spool file is
+            # THIS-machine cache state (module docstring: "Losing spool
+            # contents... degrades analytics, never the ledger"), so one
+            # torn/corrupt line is dropped, never propagated into the
+            # tracked plane, and never allowed to crash the flush of
+            # every OTHER spool file's good events (the previous
+            # ``open(..., encoding="utf-8")`` + ``fh.read()`` shape raised
+            # UnicodeDecodeError on the FIRST bad byte, uncaught by the
+            # `except telemetry.TelemetryError` guard around this call in
+            # miner.py — turning even a run that landed candidates into
+            # `status: failed`).
+            lines: list[str] = []
+            for raw_line in fh.read().split(b"\n"):
+                try:
+                    ln = raw_line.decode("utf-8")
+                except UnicodeDecodeError:
+                    continue
+                if ln.strip():
+                    lines.append(ln)
             opened.append((spool_path, fh, lines))
         for spool_path, _fh, lines in opened:
             for i, line in enumerate(lines, 1):
@@ -375,15 +394,32 @@ def read_events(home: Path | str) -> list[dict]:
     Lenient by design — telemetry is cheap truth, never fatal: non-JSON
     lines, non-mapping lines, and lines without a string ``kind`` are
     skipped; byte-identical duplicate lines (the crash-between-append-
-    and-truncate re-flush window) are counted once."""
+    and-truncate re-flush window) are counted once.
+
+    FW-53: decoded per LINE, not per file — a single line that is not
+    valid UTF-8 (a torn write, a corrupted byte) is skipped exactly like
+    a non-JSON line already was, and never takes its file's other,
+    perfectly good lines down with it. Reading the whole file as one
+    ``str`` first (the previous shape) meant one bad byte ANYWHERE raised
+    before the per-line loop even started — for a caller on the miner's
+    path (`_event_seen`, called at the top of every `_reconcile_and_land`)
+    that was `run()`'s outer handler turning the whole nightly run into
+    `status: failed` over one torn telemetry line."""
     tdir = telemetry_dir(home)
     events: list[dict] = []
     seen: set[str] = set()
     if not tdir.is_dir():
         return events
     for path in sorted(tdir.glob("*.jsonl")):
-        for line in path.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
+        try:
+            raw = path.read_bytes()
+        except OSError:
+            continue
+        for raw_line in raw.split(b"\n"):
+            try:
+                line = raw_line.decode("utf-8").strip()
+            except UnicodeDecodeError:
+                continue
             if not line or line in seen:
                 continue
             try:

@@ -156,3 +156,42 @@ def test_read_events_ts_ordered_and_lenient(home):
 
 def test_read_events_missing_dir(home):
     assert telemetry.read_events(home) == []
+
+
+# ---------------------------------------------- FW-53: decode safety
+#
+# `read_events` and `flush` sit on the miner's `_reconcile_and_land` path
+# (`_event_seen` calls `read_events` first thing; `flush` runs at the end
+# of every productive run). A single byte that is not valid UTF-8 —
+# anywhere in a tracked or spooled file — must never take down every
+# OTHER event in that file, and must never escape as an uncaught
+# `UnicodeDecodeError` (the miner's outer handler turns that into
+# `status: failed` for the whole run).
+
+
+def test_read_events_skips_undecodable_line_keeps_good_lines_same_file(home):
+    tdir = telemetry.telemetry_dir(home)
+    tdir.mkdir(parents=True, exist_ok=True)
+    path = tdir / "2026-07.other.jsonl"
+    path.write_bytes(
+        b'{"ts":"2026-07-15T11:00:00Z","kind":"offer-made"}\n'
+        b"\xff\xfe not decodable\n"
+        b'{"ts":"2026-07-15T13:00:00Z","kind":"capture"}\n'
+    )
+    events = telemetry.read_events(home)
+    assert [e["kind"] for e in events] == ["offer-made", "capture"]
+
+
+def test_flush_skips_undecodable_spool_line_keeps_good_lines(home):
+    telemetry.spool_event("offer-made", now=NOW)
+    spool = telemetry.spool_dir() / "2026-07.testhost.jsonl"
+    with open(spool, "ab") as fh:
+        fh.write(b"\xff\xfe not decodable\n")
+    telemetry.spool_event("capture", now=NOW, source="teach")
+
+    report = telemetry.flush(home)  # must not raise UnicodeDecodeError
+
+    assert report.events == 2
+    tracked = telemetry.telemetry_dir(home) / "2026-07.testhost.jsonl"
+    kinds = [json.loads(ln)["kind"] for ln in tracked.read_text().splitlines()]
+    assert kinds == ["offer-made", "capture"]

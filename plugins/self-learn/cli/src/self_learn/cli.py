@@ -697,6 +697,12 @@ def _cmd_mine(args: argparse.Namespace) -> int:
                 line += f"  pending={e.get('pending')} ≥ gate={e.get('gate')}"
             elif e.get("status") == "failed":
                 line += f"  reason: {e.get('reason', '?')}"
+            # FW-53: a run degrades (skip, count, still land) rather than
+            # wedging on one undecodable ledger file — surfaced here so a
+            # skip is never silent even in the human-readable one-liner.
+            corrupt = e.get("corrupt_records") or []
+            if corrupt:
+                line += f"  ⚠ {len(corrupt)} ledger file(s) not UTF-8, skipped"
             print(line)
             for o in e.get("outcomes", []) or []:
                 extra = {

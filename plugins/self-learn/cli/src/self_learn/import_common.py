@@ -146,7 +146,21 @@ _ORIGIN_RE = re.compile(r"""origin:\s*(?:"([^"]+)"|'([^']+)'|([^,}\s][^,}\n]*))"
 
 def existing_origins(home: Path) -> set[str]:
     """Every ``evidence.origin`` present in any record, any status, any
-    bucket under *home* — THE dedupe index (01 §3.2)."""
+    bucket under *home* — THE dedupe index (01 §3.2).
+
+    FW-53: bytes that are not valid UTF-8 get the SAME raw-text regex
+    fallback as a `RecordError` (malformed frontmatter) already does —
+    the module docstring's own "degrades soft, never blind" contract
+    applies just as much to a bad byte as to bad YAML, and this sweep
+    runs at the very top of the miner's `_reconcile_and_land` (every
+    producer that calls this — teach, both importers, the miner — would
+    otherwise crash the whole run/import on one corrupt file). The
+    fallback read uses ``errors="replace"`` so it can never itself raise
+    on the same bytes that just failed strict decoding; the regex only
+    needs to find `origin: "..."` spans, so a replaced byte inside an
+    unrelated part of the file costs nothing, and one inside the origin
+    value itself is no worse than the dedupe key already being
+    best-effort for any other schema-broken record."""
     origins: set[str] = set()
     for bucket in discover_buckets(home):
         for sub in ("pending", "resolved"):
@@ -156,9 +170,9 @@ def existing_origins(home: Path) -> set[str]:
             for path in sorted(directory.glob("*.md")):
                 try:
                     record = Record.from_path(path)
-                except RecordError:
+                except (RecordError, UnicodeDecodeError):
                     try:
-                        text = path.read_text(encoding="utf-8")
+                        text = path.read_text(encoding="utf-8", errors="replace")
                     except OSError:
                         continue
                     for m in _ORIGIN_RE.finditer(text):
