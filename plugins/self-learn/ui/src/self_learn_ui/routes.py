@@ -44,6 +44,15 @@ router = APIRouter()
 #: rendered via a query-string flag — deliberately NOT a session/cookie
 #: mechanism (09 §3: "no state that isn't a file", and a flash banner is
 #: emphemeral UI chrome, not ledger state).
+#: U-grad-ui §2.1 (code-gate MINOR 5): this constant has NO emitter as of
+#: this unit — `detail_page`'s GET used to redirect here (P1-9c) and now
+#: renders the resolved view directly instead. Deliberately NOT deleted,
+#: nor is `bucket.html`'s `notice == "resolved-elsewhere"` banner branch:
+#: a stale bookmark/tab can still carry `?notice=resolved-elsewhere` from
+#: before this unit shipped, and that link must keep resolving to a
+#: banner, not a 500/blank param. Retained ONLY for externally-carried
+#: URLs — never re-wire a NEW emitter to it without re-reading why the
+#: old one was removed.
 NOTICE_RESOLVED_ELSEWHERE = "resolved-elsewhere"
 NOTICE_BUCKET_CLEAR = "bucket-clear"
 NOTICE_NOT_FOUND = "not-found"
@@ -307,6 +316,13 @@ def _gather_detail_bundle(home: Path, record_id: str) -> DetailReadBundle | None
     if item is None:
         # Resolved records fall out of `list --json` (pending-only) —
         # synthesize the minimal shape Detail needs from the record itself.
+        # U-grad-ui criterion 13: the title comes from a raw read of the
+        # record's OWN Trigger/Fact section (ledger.record_title) — never
+        # the `leading_text(None, [], "")` shortcut, which always
+        # collapses to "(untitled)" regardless of what the record says
+        # (M16's regression target). `record_title` itself returns "" for
+        # a record with no Trigger/Fact section; `_build_finding`'s own
+        # `title or "(untitled)"` supplies the fallback for that leg.
         item = {
             "id": record.id,
             "has_proposal": False,
@@ -317,7 +333,7 @@ def _gather_detail_bundle(home: Path, record_id: str) -> DetailReadBundle | None
             "source": record.source,
             "bucket": location.bucket_name,
             "host_registered": True,
-            "title": models.leading_text(None, [], ""),
+            "title": ledger.record_title(record),
         }
     proposal, _err = ledger.read_proposal_raw(location.bucket_dir, record_id)
     diff_text = ledger.read_diff(location.bucket_dir, record_id)
@@ -434,6 +450,85 @@ def _find_bucket(home: Path, scope: str, name: str) -> ledger.Bucket | None:
     return None
 
 
+def _gather_archive_entries(
+    home: Path, scope: str, name: str
+) -> tuple[list[dict], str | None]:
+    """B1 (U-grad-ui §4/§7): the Bucket page's routed-record archive
+    section, INDEX-SET (§2.2) — `report --json`'s `routed_live`, taken
+    verbatim for the SET (never re-derived), scope-confirmed and
+    text-hydrated here (§5's raw-read text rule) before
+    :func:`models.build_archive_rows` formats it.
+
+    Filter by NAME first (cheap, over-broad — `routed_live` rows carry no
+    scope), then confirm each survivor's `(scope, bucket_name)` via
+    :func:`ledger.locate_record` (§5's O(k) collision guard, criterion
+    3(b)) — the skill-bucket-literally-named-`user` collision is the one
+    shape this matters for; every other bucket name is unique across
+    scopes. A record that fails to locate or read (corruption, a race
+    with an external resolution) is silently skipped — the "corruption
+    never blocks the rest" posture :func:`ledger.read_clusters` already
+    uses, not a new one.
+
+    Returns ``(entries, error)`` — code-gate finding 6 / user ruling
+    2026-08-02: a genuine CLI read failure is NOT the same state as "this
+    bucket has no routed records" and must not degrade to the same
+    silent-empty render. The bug this whole unit exists to fix was
+    exactly "a thing I needed was invisible with no indication it
+    existed" — a section that vanishes on a failed read reproduces that
+    one layer up. ``error`` is ``None`` on a successful read (whatever
+    its `routed_live` count, including zero); set to `report --json`'s
+    own error string when the read itself failed. `bucket.html` renders
+    a distinct "Routed here (unavailable)" header for the error case
+    instead of omitting the section — never the same as an empty-but-ok
+    result.
+
+    Delta-gate MINOR: `ok=True` with the WRONG JSON shape (CLI version
+    skew) is a fifth failure mode none of :class:`~self_learn_ui.models.
+    CliRead`'s four cover (spawn error, timeout, non-zero exit, decode
+    error all set ``ok=False``; a shape mismatch does not). Unguarded,
+    `report_read.data` being a non-dict — a bare list, say — reaches
+    ``.get("routed_live")`` and raises ``AttributeError``, 500ing the
+    whole Bucket page over a read this page did not even used to
+    perform. Guarded below for any non-dict, non-``None`` payload,
+    surfaced through the same ``error`` leg the genuine-failure case
+    uses (so `bucket.html` needs no second branch). A bare ``null``
+    payload is deliberately left in the pre-existing "degrades to empty,
+    no error line" posture — `models.build_front_model` already treats a
+    `None` `.data` this way, and this fix does not widen the disagreement
+    between the two call sites beyond what already existed."""
+    report_read = ledger.report(home)
+    if not report_read.ok:
+        return [], report_read.error
+    data = report_read.data
+    if data is not None and not isinstance(data, dict):
+        return [], (
+            f"self-learn report --json returned {type(data).__name__}, expected an object"
+        )
+    entries: list[dict] = []
+    for row in (data or {}).get("routed_live") or []:
+        if row.get("bucket") != name:
+            continue
+        record_id = row.get("id")
+        if not isinstance(record_id, str):
+            continue
+        location = ledger.locate_record(home, record_id)
+        if location is None or (location.scope, location.bucket_name) != (scope, name):
+            continue
+        record = ledger.read_record(location.path)
+        if record is None:
+            continue
+        entries.append(
+            {
+                "id": record_id,
+                "title": ledger.record_title(record),
+                "routed_days_ago": row.get("routed_days_ago"),
+                "destination": (record.routing or {}).get("destination"),
+                "recurrences": row.get("recurrences") or 0,
+            }
+        )
+    return entries, None
+
+
 @router.get("/bucket/{scope}/{name}", response_class=HTMLResponse)
 def bucket_page(request: Request, scope: str, name: str, notice: str | None = None) -> Response:
     home = _home(request)
@@ -456,6 +551,7 @@ def bucket_page(request: Request, scope: str, name: str, notice: str | None = No
     registry = ledger.read_registry()
     host_registered = items[0].get("host_registered", True) if items else True
     host_add_command = models.host_add_command(scope, ledger.project_path_for(bucket.path))
+    archive_entries, archive_error = _gather_archive_entries(home, scope, name)
 
     # 09 §5 unreadable-record row: the skip-and-count line's number comes
     # from `status --json`'s per-bucket `unreadable` field — never a
@@ -479,6 +575,8 @@ def bucket_page(request: Request, scope: str, name: str, notice: str | None = No
         host_registered=host_registered,
         host_add_command=host_add_command,
         unreadable=unreadable,
+        archive_entries=archive_entries,
+        archive_error=archive_error,
     )
 
     # Y-13: the bucket pane split (09 §2.2) + any pending proposal on a
@@ -568,15 +666,56 @@ def detail_page(request: Request, record_id: str, background_tasks: BackgroundTa
     location, record, item = bundle.location, bundle.record, bundle.item
 
     if record.status not in ("pending", "deferred"):
-        # 09 §11 P1-9c: land on the Bucket page with a banner; Front if
-        # the bucket can't be derived. Y-13 clear-set: the record left
-        # pending — a proposal on it must not survive (the banner path
-        # clears the slot, 09 §4.5).
+        # U-grad-ui §2.1 VIEWABLE: a resolved record renders — the old
+        # 303-to-the-bucket-with-a-banner redirect (P1-9c) is deleted, not
+        # widened, per the spec's own ruling: the thing that must be
+        # gated is the ACTION (RESOLVED-VERBS, §2.3 — enforced by
+        # `detail_resolved.html`'s own action bar (door 2) and by
+        # action_bar.html's `{% if not evidence %}` guard (door 3)).
+        # Code-gate MAJOR 1: the arm/confirm POST routes carry NO status
+        # check of their own (§1.3 — measured: `action_arm`/`action_
+        # confirm` validate only `verb not in _KNOWN_VERBS`). A
+        # hand-crafted POST still dispatches `graduate` against a
+        # graduated or rejected record — FW-51's territory, not closed
+        # here. Never claim a third gate exists; there are two here.
+        # (Spec §2.4 numbers three doors project-wide — this comment
+        # is scoped to the two that are action gates in THIS code path,
+        # not a claim that only two doors exist anywhere in the spec.)
+        #
+        # Y-13 clear-set (09 §4.5) still applies unchanged: the record
+        # left pending, so any proposal slot held for it must not
+        # survive. Criterion 4(b)'s ordering pin: this clear MUST run
+        # BEFORE `record_proposal` is read below — a proposal captured
+        # from a not-yet-cleared slot would still render as "waiting" on
+        # a record that has already resolved (M19's regression target).
         slot = _proposal_slot(request)
         if slot is not None:
             slot.clear_for_record(record_id)
-        target = f"/bucket/{location.scope}/{location.bucket_name}?notice={NOTICE_RESOLVED_ELSEWHERE}"
-        return RedirectResponse(url=target, status_code=303)
+        record_proposal = None
+        if slot is not None and slot.current is not None and slot.current.record_id == record_id:
+            record_proposal = slot.current
+        resolved_model = models.build_resolved_detail_model(
+            record,
+            title=item.get("title", ""),
+            bucket=location.bucket_name,
+            scope=location.scope,
+            host_registered=bundle.host_registered,
+            host_add_command=bundle.host_add_command,
+        )
+        return _render(
+            request,
+            "detail_resolved.html",
+            {
+                "model": resolved_model,
+                "record_id": record_id,
+                "record_proposal": record_proposal,
+                "proposal_verb_label": (
+                    _VERB_LABELS.get(record_proposal.verb, record_proposal.verb)
+                    if record_proposal is not None
+                    else None
+                ),
+            },
+        )
 
     model = models.build_detail_model(
         item,
@@ -1105,20 +1244,17 @@ def _evidence_ctx(
         "degraded": envelope is None,
         "next_url": next_url,
         "bucket_url": bucket_url,
-        # Code-gate finding 2 (MAJOR): `route`/`reject`/`graduate` all
-        # commit the LEDGER phase (record moves out of resolved/pending,
-        # `verbs.py`'s `_commit_ledger` runs before the host phase, on
-        # EVERY reachable outcome_state — even drift) before this leg
-        # ever renders, so `/record/{id}` no longer resolves to the
-        # record: `record_detail`'s GET redirects
-        # (`record.status not in ("pending", "deferred")`, routes.py's
-        # own resolved-elsewhere branch above) to the bucket's
-        # resolved-elsewhere banner, not a diff — the exact "inadequate
-        # acknowledgement" this unit exists to replace. `defer` is the
-        # one verb that leaves the record's status as "deferred" (still
-        # viewable), so only it gets a real link; the other three get
-        # none (§3.4's latitude: omit rather than promise a diff the UI
-        # cannot render).
+        # U-grad-ui §6.2 (superseding the old Code-gate finding 2
+        # rationale, now FALSE): `/record/{id}` no longer redirects for a
+        # resolved record — `detail_page`'s GET renders the VIEWABLE
+        # resolved template instead (§2.1). So `route`/`reject`/`graduate`
+        # COULD now honestly offer "View the record" here. This link
+        # stays omitted for them anyway — deliberately, not by omission:
+        # wiring it is a behaviour change to a success-leg surface shipped
+        # six days before this unit, and §6.2 scopes this unit to
+        # correcting the comment, not the behaviour. `defer` is unaffected
+        # either way — it never redirected (the record stays "deferred",
+        # still viewable) and keeps its real link exactly as before.
         "record_url": f"/record/{record_id}" if verb == "defer" else None,
     }
     for name in _EVIDENCE_FIELDS:
@@ -1223,8 +1359,12 @@ def action_cycle_destination(
     # can never offer a destination the CLI would refuse on scope.
     # Located-but-RESOLVED is accepted-risk under the stateless-bar
     # posture (review 2026-07-18 F3): the cycle still renders, and a
-    # later confirm takes the CLI's own refusal path while the SSE
-    # refresh lands the resolved-elsewhere banner (09 §3).
+    # later confirm takes the CLI's own refusal path. U-grad-ui §2.1
+    # correction: the SSE-triggered reload no longer lands a
+    # "resolved-elsewhere" banner (that redirect is deleted) — it
+    # re-renders `/record/{id}` as the record's own resolved view
+    # (`detail_resolved.html`), replacing this stale pending action bar
+    # outright.
     scope = _record_scope(request, record_id)
     new_dest = cycle_destination(dest or None, scope)
     ctx = _unarmed_context(

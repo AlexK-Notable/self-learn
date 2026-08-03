@@ -210,6 +210,16 @@ class TestFrontPage:
         assert "status-strip" in r.text
 
     def test_notice_resolved_elsewhere_renders_banner(self, tmp_path: Path) -> None:
+        """Code-gate MINOR 5, adjudicated: as of U-grad-ui, NOTHING emits
+        `?notice=resolved-elsewhere` anymore (`detail_page`'s old 303
+        redirect — the one and only emitter — is deleted, §2.1); this
+        test manufactures the query param by hand, a condition no
+        server-side code path can currently produce. The banner branch
+        (here and in `bucket.html`) is kept anyway, deliberately: a
+        stale bookmark/tab minted before this unit shipped can still
+        carry the param, and it must keep resolving to a banner rather
+        than a raw/ignored query string. See `routes.py`'s own comment
+        on `NOTICE_RESOLVED_ELSEWHERE` for the same ruling."""
         sb = make_env(tmp_path)
         c, _runner = make_client(sb)
         r = c.get("/?notice=resolved-elsewhere")
@@ -758,18 +768,27 @@ class TestDetailPage:
         assert rec.id in r.text
         assert f'data-record-id="{rec.id}"' in r.text
 
-    def test_resolved_elsewhere_redirects_to_bucket_with_banner(self, tmp_path: Path) -> None:
+    def test_resolved_record_renders_the_resolved_view_at_its_own_id(
+        self, tmp_path: Path
+    ) -> None:
+        """U-grad-ui §2.1 (VIEWABLE): the old 303-to-the-bucket-with-a-
+        banner redirect is deleted, not widened — a routed record's own
+        Detail page renders directly, 200, carrying the record's own
+        Trigger text and the resolved page's own `page_kind`, never the
+        bucket banner. Renamed from
+        `test_resolved_elsewhere_redirects_to_bucket_with_banner` (spec
+        criterion 11) to say so."""
         sb = make_env(tmp_path)
         rec = make_behavior(scope="skill:s")
         seed_record(sb.ledger, rec)
         resolve_record_directly(sb.ledger, sb.ledger / "skills" / "s", rec)
         c, _runner = make_client(sb)
         r = c.get(f"/record/{rec.id}", follow_redirects=False)
-        assert r.status_code == 303
-        assert "/bucket/skill/s" in r.headers["location"]
-        assert "resolved-elsewhere" in r.headers["location"]
-        r2 = c.get(r.headers["location"])
-        assert "resolved elsewhere" in r2.text.lower()
+        assert r.status_code == 200
+        # make_behavior()'s default trigger (support.py) — the record's
+        # own Trigger text, not merely `200` on an empty page.
+        assert "About to edit .storage while HA is running." in r.text
+        assert 'data-page="resolved"' in r.text
 
     def test_unknown_id_redirects_to_front_with_not_found_notice(self, tmp_path: Path) -> None:
         sb = make_env(tmp_path)
@@ -2961,8 +2980,17 @@ class TestNextRecordPrefetch:
         warmed while still pending, then resolved externally (as a
         concurrent CLI session would), then the refresh the watcher
         would have published lands. The next GET must show the record's
-        CURRENT (resolved) state — the resolved-elsewhere redirect —
-        never the stale pending bundle a naive cache would still hold."""
+        CURRENT (resolved) state — never the stale pending bundle a
+        naive cache would still hold.
+
+        U-grad-ui spec criterion 11 (updated in place — the 303 was this
+        test's only observable for a genuinely orthogonal contract, and
+        it must not be weakened to bare `200`, which a stale pending
+        render would ALSO produce): the replacement observable is the
+        RENDERED STATE itself — `route` absent (the pending quad is
+        gone), `graduate` present (the resolved quad's one control). A
+        stale bundle would hold the record as it was while pending,
+        which renders `route` — this bites exactly where the 303 did."""
         sb = make_env(tmp_path)
         older = make_behavior(scope="skill:s", created_at="2026-01-01T00:00:00Z")
         newer = make_behavior(scope="skill:s", created_at="2026-01-05T00:00:00Z")
@@ -2977,8 +3005,9 @@ class TestNextRecordPrefetch:
         c.app.state.refresh_hub.force_refresh(f"record:{newer.id}")
 
         r = c.get(f"/record/{newer.id}", follow_redirects=False)
-        assert r.status_code == 303
-        assert "resolved-elsewhere" in r.headers["location"]
+        assert r.status_code == 200
+        assert 'data-key-action="route"' not in r.text
+        assert 'data-key-action="graduate"' in r.text
 
     def test_bucket_clear_next_id_none_schedules_no_prefetch(self, tmp_path: Path) -> None:
         """The last pending record in a bucket has no "next" — nothing
