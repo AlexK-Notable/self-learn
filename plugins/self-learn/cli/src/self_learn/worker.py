@@ -49,6 +49,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import sentinel, telemetry
+from .compilers import BEGIN_MARKER, END_MARKER
 from .hosts import HostsError, load_hosts, skill_dir_for
 from .ledger import discover_buckets, resolve_home
 from .ledger_ops import bucket_project_path
@@ -569,9 +570,9 @@ def _canon_excerpt(home: Path, entry) -> str:
     if len(lines) < 200:
         return "\n".join(lines)
     begin = next(
-        (i for i, ln in enumerate(lines) if "SELF-LEARN:BEGIN" in ln), None
+        (i for i, ln in enumerate(lines) if BEGIN_MARKER in ln), None
     )
-    end = next((i for i, ln in enumerate(lines) if "SELF-LEARN:END" in ln), None)
+    end = next((i for i, ln in enumerate(lines) if END_MARKER in ln), None)
     if begin is None or end is None:
         return "\n".join(lines[:60]) + "\n… (truncated)"
     lo, hi = max(0, begin - 20), min(len(lines), end + 21)
