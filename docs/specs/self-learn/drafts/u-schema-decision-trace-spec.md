@@ -418,6 +418,45 @@ hand-rolled translator, ~20 lines, in `ledger_ops.py`, using `re` only:
   `?` → `[^/]`, `[...]` → a passed-through character class, an
   **unbalanced `[` → an escaped literal, never an exception**; everything
   else `re.escape`d;
+- **the class BODY is not a bare pass-through — it is sanitized first —
+  and this bullet was not true of the shipped code even when r3 was
+  signed off.** *(Not an r1/r2/r3 fold: found and fixed at the code gate
+  that followed r3, §9, and never folded back into this recipe until this
+  edit — the exact "pinned an untested claim" failure the campaign
+  playbook §5 names, with this spec as its worked example.)* Two
+  substitutions run over the class body, in order, before it is wrapped
+  in `[...]`: a literal backslash is doubled (`\` → `\\`) first, then
+  `&`, `~` and `|` are each escaped (`&` → `\&`, etc.). Neither is
+  optional:
+  - **The backslash doubling closes an `re.error` escape (code gate F1,
+    MAJOR).** A *balanced* glob class whose body ends in one — `[a\].py`
+    — passed through unescaped, emits the `re` class `[a\]` — where `\]`
+    escapes the closing bracket instead of ending the class — and
+    `re.compile` raises `re.error`, not a `ProposalError`: a traceback out
+    of `self-learn list` on somebody else's malformed trace, verbatim the
+    symptom S6 exists to prevent. Doubled, `[a\\]` closes correctly.
+    Measured: `_glob_match("src/a.py", "src/[a\\].py")` is `True`.
+  - **The same doubling also closes a false-refusal divergence from the
+    oracle (code gate F2, MODERATE) — the direction this section's closing
+    claim, below, says cannot happen.** Without it, `re` reads a raw `\d`
+    inside the class as its own digit-class shorthand, while `glob` and
+    `fnmatch` read `\` and `d` as two literal members — so `_glob_match`
+    would refuse a file literally named `d` and wrongly accept one named
+    with any digit. Doubled, `\d` becomes the literal two-character
+    sequence `\` then `d`. Measured: `_glob_match("src/d.py",
+    "src/[\\d].py")` is `True`; `_glob_match("src/9.py", "src/[\\d].py")`
+    is `False`.
+  - **`&`/`~`/`|` are escaped for forward compatibility, not because they
+    change matching today.** CPython's `re` has reserved repeated forms of
+    these (`&&`, `~~`, `||`) for future set-operator meaning inside a
+    class (`re.compile("[a&&b]")` already emits `FutureWarning: Possible
+    set intersection`), while `glob`/`fnmatch` always read a lone `&`,
+    `~` or `|` as a plain literal member. Measured on the current
+    interpreter, `[a&b]` and `[a\&b]` compile to equivalent matchers — so
+    this substitution has no test asserting a behavioural difference
+    today, unlike the two above; it exists so that whenever `re` does
+    start giving these characters set-operator meaning, `_glob_match`
+    does not silently reintroduce F2's false-refusal shape on that day.
 - **only a leading `!` negates a character class. A leading `^` is a
   literal member of the class** — and because Python's `re` uses `^` for
   negation, **a leading `^` must be actively escaped to `\^`; leaving it
@@ -433,7 +472,17 @@ hand-rolled translator, ~20 lines, in `ledger_ops.py`, using `re` only:
   measured, `src/[^a]*.py` still mismatched `glob` after that partial fix.
   The escape is the actual requirement.)*
 - join the pieces with `/` **only between segments that do not already
-  supply one** (see the `**` bullet), wrap as `(?s:…)\Z`, `re.compile`.
+  supply one** (see the `**` bullet), wrap as `(?s:…)\Z`, `re.compile` —
+  and **that `re.compile` is wrapped in `try`/`except re.error`, re-raising
+  `ProposalError`** (code gate N-1; also not in r1/r2/r3, also folded back
+  here only now). The class-body sanitizing two bullets up closes the one
+  escape measured so far, but S6 must hold for any *future* defect in this
+  translator, not only the one found today — a malformed pattern on
+  somebody else's record must never traceback `self-learn list` with
+  anything other than `ProposalError`. Measured against a corner the
+  sanitizer does not touch: a reversed range, `src/[z-a]*.py`, still
+  raises `re.error` (`bad character range z-a`) internally; the backstop
+  turns it into `ProposalError` before it escapes `_compile_glob_pattern`.
 
 **Do NOT use `glob.translate()` or `PurePath.full_match()`.** Both produce
 correct semantics and both are **Python 3.13 additions**, while
@@ -477,13 +526,58 @@ dotfiles (`src/.secret.py`, `.claude/rules.md`), a `[`-bearing name
    which `_glob_match("src", "src/**")` refuses. `match_path` names a
    file, so the files-only comparison is the meaningful one.
 
-**The divergence direction is `false accept`, never `false refusal`**, in
-both cases: `_glob_match` accepts a superset of what default-`glob`
-accepts. That is the safe direction here — X1 is a positive control on the
+**The divergence direction is `false accept`, never `false refusal`, for
+both preconditions above** — `_glob_match` accepts a superset of what
+default-`glob` accepts on `include_hidden` and on directories-vs-files.
+That is the safe direction here — X1 is a positive control on the
 analyst's own claim, and `verbs.py`'s route-time zero-match refusal
 remains the stricter gate that actually touches the host tree. **Chosen
 out loud rather than inherited**: a false *refusal* is the failure this
-whole section exists to prevent.
+whole section exists to prevent. **This claim also depends on the
+class-body sanitizing above (code gate F2): without doubling a literal
+backslash in a class body, `_glob_match` would refuse a file `glob`
+accepts (a raw `\d` reads to `re` as a digit class, not the literal `\`
+and `d` members `glob`/`fnmatch` see) — the false-refusal direction this
+paragraph says cannot happen. It cannot happen BECAUSE of the escaping,
+not independently of it.**
+
+*(Narrowed 2026-08-02, FW-60/FW-55: this sentence was written, and is read
+elsewhere in this spec and in `ledger_ops.py`'s own comments, as the
+section's general thesis — every `_glob_match` divergence from the named
+oracle is a false accept. Two more divergences, measured after r3 by a
+6000-pattern × 60-path fuzz against `glob.translate` (the pattern-level
+oracle; Python 3.13), say the thesis needs an exception:*
+
+1. *`_glob_match("", "*")` is `True` where the oracle is `False` — a
+   false accept, consistent with this thesis. 564 of 6000 × 60
+   comparisons mismatched, all this one shape, zero others. Unreachable
+   against a real tree — no file has an empty name — which is the
+   precondition the `_glob_match` docstring's "0 mismatches on a real
+   tree" was already quietly resting on.*
+2. *`_glob_match("/src/a.py", "**/*.py")` is `False` where the oracle is
+   `True` — a **false refusal**, the direction this thesis says cannot
+   happen. Cause: a non-final `**` compiles to `(?:[^/]+/)*`, which
+   requires a run of non-`/` characters before each `/`; a path's leading
+   `/` satisfies no such run, so the group matches zero times and nothing
+   left in the pattern can consume that embedded `/`. `glob.translate`'s
+   equivalent, `(?:.+/)?`, lets `.` match `/` too, so it absorbs a leading
+   `/` as part of the wildcard instead of refusing it. This is a
+   **different mechanism** from the `root_dir`-ignored-for-absolute-
+   **patterns** bug §8-O6 discusses below — it fires on an absolute
+   **path** against a relative pattern, not an absolute pattern against a
+   relative root — and it is not proven unreachable: nothing in Schema-1
+   forbids a proposed `match_path` from starting with `/`.*
+
+   *The corrected claim: `_glob_match` never accepts what the oracle
+   refuses, and never refuses what the oracle accepts **except when the
+   path carries a leading `/` matched against a pattern whose relevant
+   segment is `**`**. That exception is still the safer of the two
+   failure directions in practice — an over-eager refusal on an input
+   shape this schema's records do not produce, not a routing silently
+   accepted — but it is a stated exception, not covered by "never," and a
+   future change to the translator must not silently widen it. Disposed
+   as BUILD/Low in the forward-work map (FW-60): reconcile the prose, do
+   not change the behaviour.)*
 
 Also measured, and relevant to §8-N1: both `glob` and `fnmatch` degrade an
 unbalanced `[` to a **matching** literal (`glob.glob('src/unbal[.py')`
@@ -501,6 +595,21 @@ because `glob` **ignores `root_dir` for absolute patterns** — a
 sibling unit. `_glob_match` cannot have that bug, having no root concept.
 **If these two are ever reconciled, the direction is to fix `verbs.py`,
 never to teach the validator to ignore its input.** (§8-O6.)
+
+**§8-O6's "cannot have that bug" is scoped to this one mechanism — it is
+not a claim that `_glob_match` treats absolute input correctly in
+general.** It does not: the equivalence claim two paragraphs up now
+carries a stated exception for an absolute *path* matched against a `**`
+pattern (`_glob_match("/src/a.py", "**/*.py")` is `False` against the
+oracle's `True` — a false refusal, FW-60). That is a pure string-
+translation gap in how a leading `/` interacts with `**`; this paragraph's
+subject is `glob` ignoring `root_dir` for an absolute *pattern*, which
+needs a filesystem and `_glob_match` has none. The two look alike because
+both involve the word "absolute," and both were found by audit rather
+than by a production incident, but they are different bugs with different
+fixes, and closing one does not touch the other. A future reader
+reconciling `_glob_match` and `_validate_project_globs` must not assume
+otherwise.
 
 ### 3.5 Where the validator runs — three call sites, all inside `ledger_ops.py`
 
@@ -638,21 +747,58 @@ is a defect to be found at the gate.**
 8. **`e1.post_demand_recurrence: true` is not cross-checked against
    `recurrences[]`.** Needs record history plus prior-routing analysis; and
    per r2 §8 item 5 it is `false` on every record in the corpus today.
-9. **Containment does not bite on the worker or route call sites — the
-   enforcement surface is narrower than "the validator checks quotes"
-   suggests.** *(FOLD-11.)* `worker.py:908` (`_validate_written`) and
-   `verbs.py:509` (`_resolve_destination`) both call
-   `validate_proposal(data)` with one positional argument and will keep
-   doing so, because S2 forbids touching those files. **Concretely: a
-   worker-authored proposal carrying a fabricated quote is written to disk
-   and kept, and a human can route it by hand.** What it will *not* do is
-   read as analyzed — `proposal_info` re-validates with the record text
-   (§3.5), so the record stays in the unanalyzed queue and gets
-   re-proposed. So the fabrication is *contained and re-worked*, not
-   *rejected at the door*, on the campaign's primary execution path.
-   Closing it is a one-line change at each site, owned by whichever unit
-   next holds those files (§8-O7). **This is stated here because the rest
-   of this spec claims a standard of disclosure it would otherwise fail.**
+9. **Containment is OFF at any call site that invokes `validate_proposal`
+   positionally, in any module — and most sites do.** *(FOLD-11; narrowed
+   2026-08-02, FW-67: this item, as it stood, named only two of the seven
+   sites the shipped call graph has. That is the drifted-duplicate-
+   enumeration failure §0 forbids, inverted — not two lists disagreeing
+   with each other, but this one silently undercounting what §2's S2
+   already listed correctly all along.)*
+
+   **The rule, stated so this paragraph cannot go stale the way it just
+   did:** containment runs **iff `record_text=` is supplied** (§3.5); a
+   bare `validate_proposal(data)` has it off, regardless of which module
+   the call lives in or what role that call plays. **§2's S2 is the
+   authoritative, current census of these sites — read it for the list;
+   this paragraph describes what being on it means, not a second count.**
+   Re-enumerating the sites here, with their own line numbers, is exactly
+   what drifted last time.
+
+   **Verified against shipped code while writing this correction, not
+   carried forward from a prior draft:** every S2 site is still
+   positional today, and they are not uniform in role. Two are the
+   worker/route pair §8-O7 already assigns (`worker.py`'s
+   `_validate_written`, `verbs.py`'s `_resolve_destination`). Three more
+   are easy to miss under a literal reading of "the worker and route call
+   sites": `worker.py`'s `fast_status` (a second, read-side worker site)
+   and two further `verbs.py` hook-routing sites
+   (`_prepare_one_motion_hook`, `_prepare_hook_route`). **Two are not
+   covered by any reading of that phrase, and are what this correction
+   exists for:** `analyst.py`'s `analyze` — **the producer**, where a
+   fabricated quote first arrives from the model, before any other site
+   ever sees it — and `selfcheck.py`'s `proposal_validate`, the
+   `proposal validate` verb a human runs by hand expecting exactly the
+   check this section is about (tracked separately as FW-62, whose fix is
+   a one-line `record_text=` add already scoped at that call site).
+   **If FW-62 lands, `selfcheck.py`'s site drops off this list and S2
+   shrinks to six — that is this rule working as designed, not a reason
+   to distrust it. Re-read S2; do not edit this paragraph's prose to
+   match.**
+
+   **Concretely, for every site still on the list:** a proposal carrying a
+   fabricated quote passes `validate_proposal` there and is written, read,
+   or acted on as valid at that site. What it will *not* do is read as
+   **analyzed** — `proposal_info` re-validates with the record text
+   (§3.5) on the eligibility hot path, so the record stays in the
+   unanalyzed queue and gets re-proposed regardless of which site touched
+   it first. So the fabrication is *contained and re-worked*, not
+   *rejected at the door*, everywhere except `ledger_ops.py`'s own two
+   callers (`write_proposal`, `proposal_info`; §3.5). Closing any one site
+   is a one-line `record_text=` add, owned by whichever unit next holds
+   that file — §8-O7 for the worker/route pair, FW-62 for
+   `selfcheck.py`, unassigned for `analyst.py`. **This is stated here
+   because the rest of this spec claims a standard of disclosure it would
+   otherwise fail.**
 
 ---
 
@@ -1260,7 +1406,12 @@ fixed-key rebuild (F4), `worker.py:1330`'s `cwd=str(home)`.
   `_validate_project_globs` are ever unified, **`_glob_match` is the
   correct semantics and `verbs.py` is the side that moves** — a pure
   string matcher cannot acquire a `root_dir` bug, and teaching it to
-  ignore its input to "match" the verb would import the defect.
+  ignore its input to "match" the verb would import the defect. (This is
+  scoped to N2's `root_dir`-for-absolute-**pattern** bug specifically —
+  not a claim that `_glob_match` is unconditionally correct on absolute
+  **paths**. It is not: §3.4a records a separate, measured false-refusal
+  exception for a leading `/` in the *path* against a `**` pattern.
+  FW-60.)
 - **O7 → whoever next holds `worker.py` / `verbs.py`:** wire the two
   remaining `validate_proposal` call sites (`worker.py:908`,
   `verbs.py:509`) to pass `record_text=`, which turns §3.7 item 9's
@@ -1317,3 +1468,33 @@ fixed-key rebuild (F4), `worker.py:1330`'s `cwd=str(home)`.
   `src/[\^a][^/]*\.py`. Final measurement, 13 patterns including
   `src/[^a]*.py`, over a tree with dotfiles and `[`/`^`-bearing names:
   **0 mismatches**.
+- **Code gate** (post-build; not numbered with r1-r3 above because it
+  gates the BUILD, not this document — added here only now, 2026-08-02,
+  because it changed claims THIS document makes and was never folded back
+  until this edit; see FW-55). Merge commit `176eee6`, "code gate CLEAN":
+  *"41 spec mutations + 37 invented at the first gate; delta re-verified
+  all six folds by mutation, confirmed M15a-d still fire after the
+  sanitizer restructuring, and fuzzed 24k patterns with zero escapes. One
+  live gap (untested `re.error` backstop) folded and re-verified before
+  merge."* The campaign playbook's own §5 lesson — *"a spec that pins an
+  ALGORITHM in prose has pinned an untested claim"* — is about this
+  exact recipe: its worked-examples list (`r2-routing-campaign.md` §3)
+  names a code-gate finding sent back for a delta re-check as *"a
+  hand-written glob sanitiser, into a function that had already had three
+  wrong corners found across three rounds"* — this function, whose three
+  wrong corners are FOLD-A/B/C above.
+
+  **Two changes shipped that this recipe, as pinned above, does not
+  describe** — both now folded into §3.4a's mechanism bullets and its
+  false-accept/false-refusal claim, both verified against shipped code
+  while writing this entry, neither previously mentioned anywhere in this
+  document: (1) `_translate_glob_segment`'s class BODY is sanitized —
+  backslash doubled, `&`/`~`/`|` escaped — closing an `re.error`-not-
+  `ProposalError` escape (F1, MAJOR) and a false-refusal divergence from
+  the oracle (F2, MODERATE); (2) `_compile_glob_pattern`'s `re.compile` is
+  wrapped in `try`/`except re.error`, re-raising `ProposalError` (N-1) —
+  the "one live gap" the merge message names, since removing it left the
+  whole suite green.
+
+  **The shipped code was gated; the description of it was not.** This is
+  a documentation-only correction — no code changed to write this entry.
