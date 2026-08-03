@@ -17,7 +17,7 @@ exactly once, here, and referenced by name afterwards:
   where `<origin>` is the full `transcript:<session>#L<line>` string,
   byte-identical to the `origin` on the `fire` event it crosses over
   from. This is the tuple shape `_event_seen` already builds
-  (`miner.py:934-943`); it is not extended, narrowed, or replaced.
+  (`miner.py::_event_seen`, lines 943-975); it is not extended, narrowed, or replaced.
 - **THE BACKFILL** — a pass over `fire` events already in the tracked
   telemetry plane with `outcome == "violated"`, raising THE SUSPECT for
   any whose THE SUSPECT KEY is not already present.
@@ -28,9 +28,9 @@ exactly once, here, and referenced by name afterwards:
 
 `recurrence-suspect` is the only signal that says *a routed rule is not
 holding*. It is the input to `confirm-recurrence`
-(`verbs.py:3148-3228`), the sole caller of `Record.append_recurrence`,
+(`verbs.py::confirm_recurrence`, lines 3301-3381), the sole caller of `Record.append_recurrence`,
 and it is surfaced by `report.recurrence_suspects`
-(`report.py:193-229`) and `report.html:49`. **Zero have ever been
+(`report.py::recurrence_suspects`, lines 193-247) and `report.html:49`. **Zero have ever been
 emitted.**
 
 Measured against the live ledger, **2026-08-02** (§6 has the raw rows):
@@ -48,10 +48,10 @@ the miner prompt (`_PROMPT_TEMPLATE`, `miner.py:634-692`), which offers
 two ways to report the same phenomenon:
 
 - a `candidates[]` entry carrying `match: {record, status: "routed"}`,
-  which reaches `miner.py:1175-1190` and spools a `recurrence-suspect`
+  which reaches `miner.py:1236-1251` and spools a `recurrence-suspect`
   with `basis="miner-match"`;
 - the separate `fires[]` array with `outcome: complied | violated`,
-  which reaches `miner.py:1294-1319` and spools a `fire`.
+  which reaches `miner.py:1357-1380` and spools a `fire`.
 
 The model uses `fires`. That channel is purpose-built for routed rules
 (*"=== ROUTED RULES (observe fires against these) ==="*, `:687`),
@@ -60,9 +60,9 @@ is a duplicate — which the rubric's *"when in doubt, do not emit"*
 (`:640`) actively discourages. Five weeks of data agree: 22 fires, 0
 suspects.
 
-The fire handler already validates the ref (`:1301`), already confirms
-`status == "routed"` (`:1309`), already has the origin (`:1311`), and
-already dedupes on `("fire", rid, origin)` (`:1312`). **It simply never
+The fire handler already validates the ref (`:1362`), already confirms
+`status == "routed"` (`:1370`), already has the origin (`:1372`), and
+already dedupes on `("fire", rid, origin)` (`:1373`). **It simply never
 crosses over.** The safety net was never missing; it was wired to the
 wrong terminal.
 
@@ -80,7 +80,7 @@ all, which is why raising the suspect comes first.
 
 ## 2. The change
 
-`_reconcile_and_land` (`miner.py:1104`) gains THE CROSSOVER and THE
+`_reconcile_and_land` (`miner.py:1165`) gains THE CROSSOVER and THE
 BACKFILL. Nothing else in the file changes.
 
 ### 2.1 THE SUSPECT KEY — the part a naive fix gets wrong
@@ -97,10 +97,10 @@ component:
 - **The kind must stay in the key.** `("fire", rid, origin)` and
   `("recurrence-suspect", rid, origin)` are distinct entries of the same
   `_event_seen` set. Reusing the `key` variable already in scope at
-  `:1312` produces **zero suspects forever**: it is added to
-  `seen_events` at `:1318` in the same iteration, so any later
+  `:1373` produces **zero suspects forever**: it is added to
+  `seen_events` at `:1379` in the same iteration, so any later
   `if key not in seen_events` is dead, and on the next run the
-  early-`continue` at `:1313-1314` returns before any suspect logic is
+  early-`continue` at `:1374-1375` returns before any suspect logic is
   reached.
 - **The origin must be the whole `transcript:<session>#L<line>`
   string.** Two violations are two sightings. Live proof, not a
@@ -117,16 +117,16 @@ component:
   avoid perceived spam; that guard is AC3's mutation for exactly this
   reason.
 - **The nonce and the `ts` must stay out.** The nonce is fresh per
-  event (`telemetry.py:164`), so including it makes the key never match
+  event (`telemetry.py:171`), so including it makes the key never match
   and re-raises the same sighting on every run, unbounded.
 
 **One set, shared across both channels.** THE CROSSOVER reads and writes
 the same `seen_events` object the candidate loop uses. A candidate-match
-suspect at origin O (`:1176-1184`) and a `violated` fire at the same
+suspect at origin O (`:1236-1247`) and a `violated` fire at the same
 origin O on the same record are **one sighting**, and must produce
 **one** suspect — double-listing overstates recurrence pressure, which
 is the exact thing `confirm_recurrence` refuses at
-`verbs.py:3193-3198`. The candidate loop runs first and wins;
+`verbs.py:3346-3351`. The candidate loop runs first and wins;
 `basis` stays `miner-match` in that case.
 
 ### 2.2 Retroactive, not forward-only — and why that is forced, not preferred
@@ -136,7 +136,7 @@ idempotent — not a one-shot migration and not time-windowed.**
 
 This is not a taste call. THE CROSSOVER **structurally cannot** reach
 the four `violated` fires already in the ledger: `_event_seen` sees
-their `("fire", rid, origin)` keys, so `:1313-1314` `continue`s out of
+their `("fire", rid, origin)` keys, so `:1374-1375` `continue`s out of
 the loop body before any crossover code runs. A forward-only fix ships,
 passes its suite, and leaves `recurrence-suspect` at **zero** on the
 real ledger until the next violation happens to occur — an unfalsifiable
@@ -149,7 +149,7 @@ Three further reasons it is the right shape:
    `telemetry.read_events(home)` once per run. THE BACKFILL reuses that
    same pass (§4, decision 4) — no second read, no new I/O.
 2. **It self-heals.** `telemetry.spool_quiet` swallows failures by
-   design (`telemetry.py:189-197`). Without THE BACKFILL, a swallowed
+   design (`telemetry.py:196-204`). Without THE BACKFILL, a swallowed
    spool failure loses that suspect permanently, because the live path
    can never revisit it (same early-`continue`). With it, the next run
    repairs it.
@@ -173,23 +173,25 @@ unit's live positive control.
 The same run also prints `recurrences=4` and four `recurrence-from-fire`
 outcome rows in `self-learn mine status` (`cli.py:686-708`) and shows
 `recurrences: 4` on that run's card in the UI
-(`ui/src/self_learn_ui/models.py:703`) — on a run that landed nothing.
+(`ui/src/self_learn_ui/models.py:758`, in `_build_miner_runs`) — on a run that landed nothing.
 That is correct: the counters describe events *raised*, not candidates
 mined. **No index shifts:** every crossover/backfill outcome row appends
 *after* `_handle_near_misses`, so the near-miss row indices that
-`routes.py:870`'s promote endpoint reads back are unchanged (and a
+`routes.py:1047`'s promote endpoint reads back are unchanged (and a
 `recurrence-from-fire` row carries no `promotable`, so that endpoint
-refuses it at `:872` even if addressed directly).
+refuses it at `:1048` even if addressed directly).
 
 **Reachability, stated honestly:** THE BACKFILL lives in
 `_reconcile_and_land`, which runs only when the reader produced
-parseable output (`miner.py:1736-1760`). An `idle`, `held-gate`, or
+parseable output (`miner.py::_run_locked`, the reader-invocation +
+parse-gate at lines 1815-1836, before `_reconcile_and_land` is called
+at `:1849`). An `idle`, `held-gate`, or
 `failed` run does not reconcile and therefore does not backfill. It runs
 on the next productive run instead; nothing is lost.
 
 ### 2.3 What must not change
 
-- **The candidate-match path, `miner.py:1175-1190`**, including its
+- **The candidate-match path, `miner.py:1236-1251`**, including its
   `basis="miner-match"` literal and its `_outcome(..., "recurrence", …)`
   name. AC5 pins that it wins on a shared origin.
 - **The `fire` event itself.** Every fire that is emitted today is still
@@ -198,19 +200,20 @@ on the next productive run instead; nothing is lost.
   the discriminators — one per path (§3.1's coverage split); without
   them a fix that raises a suspect for every fire passes AC1 just as
   well.
-- **The live path's `routed` guard** (`:1308-1310`) — unchanged. THE
+- **The live path's `routed` guard** (`:1369-1371`) — unchanged. THE
   BACKFILL mirrors it in **both** halves, `found is None` and
   `status != "routed"` (AC7).
 - **`telemetry.py`.** No new event kind, so no `SCHEMA_VERSION` bump
-  (`telemetry.py:64`; 11 §4.3's bump rule governs the closed *kind* set,
-  and `recurrence-suspect` is already in it at `:75`). `spool_event`
-  accepts any scalar payload field (`:166-174`) — there is no field
+  (`telemetry.py:68`; 11 §4.3's bump rule governs the closed *kind* set,
+  and `recurrence-suspect` is already in it at `:81`, in the
+  `EVENT_KINDS` frozenset). `spool_event`
+  accepts any scalar payload field (`:173-181`) — there is no field
   allowlist to extend. **`telemetry.py` belongs to U-reach this wave and
   must not be touched.**
 
 ### 2.4 What must change that the diagnosis did not name
 
-**`test_miner.py:1027-1052` asserts the current count as the contract.**
+**`test_miner.py::test_fire_and_recurrence_replays_deduped` (lines 1027-1069) asserts the current count as the contract.**
 `test_fire_and_recurrence_replays_deduped` feeds a payload carrying a
 candidate-match at `#L7` *and* a `violated` fire at `#L9` on one routed
 record — two distinct origins — and ends with
@@ -227,18 +230,24 @@ spec was written.)
 
 **The journal outcome name is load-bearing and must be new.**
 `_NEARMISS_DISPOSITION` maps `"recurrence"` → `already-canon`
-(`miner.py:959`), `_enrich_near_miss` stamps a `disposition` +
-human-facing `reason` on any mapped name (`:1082-1092`),
-`near_miss_count` counts every row that gained one (`:1799`), and the UI
-renders those rows as near-miss cards
-(`ui/src/self_learn_ui/models.py:739-763`). A fire-derived suspect is
+(`miner.py:1019`), `_enrich_near_miss` stamps a `disposition` +
+human-facing `reason` on any mapped name (`miner.py::_enrich_near_miss`,
+lines 1135-1162), `near_miss_count` counts every row that gained one
+(`:1888`), and the UI renders those rows as near-miss cards
+(`ui/src/self_learn_ui/models.py::_build_near_miss_rows`, lines 794-820
+— corrected 2026-08-03: the old `:739-763` now resolves to
+`_build_followup_rows`/`_build_miner_runs`, unrelated code inserted at
+that location by other same-day units; the near-miss card builder is
+`_build_near_miss_rows`). A fire-derived suspect is
 **not** a near-miss: nothing was dropped and there was no candidate.
 Emitting `_outcome(..., "recurrence", …)` from THE CROSSOVER would
 render it in the miner-visibility surface as *"this is already reflected
 in an existing lesson"* and inflate the count. Use
 **`"recurrence-from-fire"`**, which is outside `_NEARMISS_DISPOSITION`
-and therefore passes through `_enrich_near_miss` unchanged (`:1088-1089`)
-and is skipped by `_build_near_miss_rows` (`models.py:749-750`).
+and therefore passes through `_enrich_near_miss` unchanged (`:1149-1150`)
+and is skipped by `_build_near_miss_rows` (`models.py:804-806`
+— corrected 2026-08-03: the old `:749-750` now resolves to
+`_build_miner_runs`'s `MinerRun(...)` construction, unrelated).
 
 **Canon.** `12-transcript-miner.md:639` reads *"`landed`/`resurfaced`
 carry no disposition — they are not near-misses."* Amend that one line to
@@ -247,10 +256,10 @@ part of this unit; doc 12 is held by no unit this wave. **No row is
 added to the §12.1 fold table** — a fire-derived suspect is deliberately
 outside it, which is the whole point of the new name.
 
-**`result.recurrences` gates the flush.** `miner.py:1822` flushes the
+**`result.recurrences` gates the flush.** `miner.py:1911` flushes the
 spool only `if result.landed or result.folded or result.recurrences or
 result.fires`, and `telemetry.read_events` reads the **tracked plane
-only** (`telemetry.py:364-390`) — an unflushed suspect is invisible to
+only** (`telemetry.py::read_events`, lines 371-397) — an unflushed suspect is invisible to
 `report`, to the UI, and to the next run's `_event_seen`. A
 backfill-only run has no landings, no folds and **no fires**, so
 `result.recurrences.append(rid)` is the only thing that opens that gate.
@@ -317,7 +326,7 @@ Then, **without any explicit flush in the test**,
 with `record == rid`, `origin == "transcript:sess-old#L5"`,
 `basis == "fire-violated"`; and `result.recurrences == [rid]`.
 *(The no-explicit-flush clause is the control: with `landed`, `folded`
-and `fires` all empty, only `result.recurrences` opens `miner.py:1822`.
+and `fires` all empty, only `result.recurrences` opens `miner.py:1911`.
 Omit the append and the tracked plane stays empty — the precise shape of
 "the fix ran and nothing is visible".)*
 
@@ -327,11 +336,11 @@ whose `record` is a well-formed id present in **no** bucket (e.g.
 `lrn-00000000`). After the run: still **zero** `recurrence-suspect`
 events **and `result.status == "ok"`, not `"failed"`**. THE BACKFILL
 mirrors the live guard **including its `found is None` half**
-(`miner.py:1309`) — an unbounded pass over an append-only plane that
+(`miner.py:1370`) — an unbounded pass over an append-only plane that
 raises on one unresolvable row wedges *every future nightly run*, since
 `run()`'s outer handler turns the crash into `status: failed` and the
 offending row never goes away. *(`confirm_recurrence` refuses a
-non-`routed` target at `verbs.py:3188-3192` and
+non-`routed` target at `verbs.py:3341-3345` and
 `report.recurrence_suspects` filters it out at `report.py:223-225`, so
 such an event is permanent litter in an append-only plane.)*
 
@@ -341,7 +350,7 @@ such an event is permanent litter in an append-only plane.)*
 `origin`; that row has **no** `disposition` key; and that run's
 `near_miss_count == 0`.
 
-**AC9 — the superseded existing test.** `test_miner.py:1052`'s
+**AC9 — the superseded existing test.** `test_miner.py:1069`'s
 `== 1` becomes `== 2` (§2.4). Its other assertions are unchanged.
 
 **AC10 — THE BACKFILL ignores `complied`.** AC6's fixture, but pre-seed
@@ -356,7 +365,7 @@ the run: exactly **one** `recurrence-suspect`, with
 the count — a build that backfills every fire produces two, and must not
 be able to pass on a count assertion alone.
 *(Why AC2 does not already cover this: `_event_seen` runs at
-`miner.py:1116`, **before** the fires loop, so a run's own `complied`
+`miner.py:1177`, **before** the fires loop, so a run's own `complied`
 fire is never in the tracked plane when THE BACKFILL executes — AC2
 discriminates THE CROSSOVER only and cannot see THE BACKFILL at all. A
 build that drops the outcome filter passes AC1–AC9 and raises **22**
@@ -392,7 +401,7 @@ error from a build error.
 | M3 | broaden THE CROSSOVER's condition to `if outcome in ("complied", "violated")` | AC2 | — |
 | M4 | insert `if rid in result.recurrences: return` at the head of the crossover helper (**the naive "one per record per run" fix**) | AC3 | AC11 |
 | M5 | delete the `if key in seen_events: return` guard from the crossover helper | AC4 | AC5 |
-| M6 | delete `seen_events.add(key)` at `miner.py:1184` (the candidate loop's suspect path) | AC5 | — |
+| M6 | delete `seen_events.add(key)` at `miner.py:1245` (the candidate loop's suspect path) | AC5 | — |
 | M7 | delete THE BACKFILL call from the end of `_reconcile_and_land` | AC6 | — |
 | M8 | delete `result.recurrences.append(rid)` from the crossover helper | AC6 | — |
 | M9 | drop the `status == "routed"` check from THE BACKFILL | AC7 | — |
@@ -422,7 +431,7 @@ control campaign §5 demands.
 **Coverage split, stated once so it is not re-derived.** THE CROSSOVER
 and THE BACKFILL are separate code paths reached under mutually
 exclusive conditions — `_event_seen` snapshots the tracked plane at
-`miner.py:1116`, **before** the fires loop, so a fire reported by this
+`miner.py:1177`, **before** the fires loop, so a fire reported by this
 run's reader is never in THE BACKFILL's source list, and a fire already
 in the tracked plane never reaches THE CROSSOVER. **No criterion
 covering one path covers the other.** Hence the deliberate pairing:
@@ -430,7 +439,7 @@ AC2/AC10 (outcome filter), AC3/AC11 (per-sighting identity), AC1/AC6
 (emission). A future editor adding a rule to one path must add its twin.
 
 **The productive-run trap — every backfill test must clear it.**
-`miner.run` returns `idle` at `miner.py:1704-1711`, **before the reader
+`miner.run` returns `idle` at `miner.py:1793-1800`, **before the reader
 is invoked**, when no new transcript digests exist. A backfill test that
 does not `write_transcript(...)` a fresh session never reaches
 `_reconcile_and_land` at all — so THE BACKFILL never runs, the
@@ -450,8 +459,17 @@ red test.
 ## 4. Builder decisions, made here rather than left open
 
 1. **`basis = "fire-violated"`** — a literal, distinct from
-   `miner-match` (candidate path, `:1182`) and from the worker's
-   `origin-match` / `title-token-overlap` (`worker.py:1001-1006`). 11
+   `miner-match` (candidate path, `:1243`) and from the worker's
+   `title-token-overlap` (`worker.py::_recurrence_suspects`, basis
+   literal at `:1059`). *(Correction, 2026-08-03: at spec-writing time
+   the worker also emitted a second basis, `origin-match`, cited here at
+   `worker.py:1001-1006`. The FW-49 fix (commit `fcffbf8`, 2026-08-02)
+   removed that branch as PROVABLY, PERMANENTLY unreachable —
+   `existing_origins()` enforces global evidence-origin uniqueness
+   before any candidate can land, and `teach`-authored pending records
+   never populate an `origin` key at all — so `title-token-overlap` is
+   now the worker's sole live basis. This spec's own three-basis framing
+   is superseded by that fix, not by anything in this unit.)* 11
    §4.3 glosses the field as a *"similarity basis label"*; `miner-match`
    already sets the precedent that it labels the **source of suspicion**
    rather than a similarity metric, so no canon edit is needed.
@@ -463,19 +481,19 @@ red test.
    the fire's**: THE BACKFILL calls `spool_quiet` without `now=`, so a
    suspect recovered from a July fire carries the backfill run's
    timestamp. That timestamp is what `report.recurrence_suspects` shows
-   as `seen_at` (`report.py:228`) and what `confirm_recurrence` copies
+   as `seen_at` (`report.py:243`) and what `confirm_recurrence` copies
    into the record's append-only `recurrences[].ts`
-   (`verbs.py:3204-3207`). Accepted, not overlooked: on this plane `ts`
+   (`verbs.py:3355-3363`). Accepted, not overlooked: on this plane `ts`
    means *when the event was observed*, and `origin` already carries the
    sighting. **Do not pass `now=` to recover the fire's date** — a
    back-stamped suspect also sorts backwards in `read_events`
-   (`telemetry.py:389`), which orders the whole plane.
+   (`telemetry.py:396`), which orders the whole plane.
 3. **The journal outcome name is `"recurrence-from-fire"`** (§2.4), with
    `record=` and the origin, so a later reader can answer "did the fix
    fire?" from the journal without diffing telemetry.
-4. **`_event_seen` (`miner.py:934-943`) returns
+4. **`_event_seen` (`miner.py::_event_seen`, lines 943-975) returns
    `(seen, violated_fires)`** — one `read_events` pass, one call site
-   (`:1116`). `violated_fires` is the list of `(record, origin)` pairs
+   (`:1177`). `violated_fires` is the list of `(record, origin)` pairs
    from `fire` events with `outcome == "violated"`, in `read_events`
    order (ts-ordered), so THE BACKFILL's output order is deterministic.
    Telemetry lines are untrusted input (11 §4.2): skip any row whose
@@ -502,8 +520,8 @@ red test.
 8. **Tests go in `plugins/self-learn/cli/tests/test_miner.py`**, which
    no concurrent unit touches.
 9. **THE CROSSOVER is called at the END of the `fires` loop body — after
-   `seen_events.add(key)` (`miner.py:1318`) and `result.fires += 1`
-   (`:1319`)**, never before the dedupe `continue` at `:1313-1314`.
+   `seen_events.add(key)` (`miner.py:1379`) and `result.fires += 1`
+   (`:1380`)**, never before the dedupe `continue` at `:1374-1375`.
    §2.1's "zero suspects forever" and §2.2's structural argument both
    assume this placement. Note that decision 6's "a live crossover
    pre-empts THE BACKFILL for the same key" is a statement of
@@ -513,13 +531,22 @@ red test.
 
 ## 5. Out of scope
 
-- **`worker._recurrence_suspects` (`worker.py:969-1016`)** — the
+- **`worker._recurrence_suspects` (`worker.py::_recurrence_suspects`,
+  lines 988-1062)** — the
   *second* silent suspect producer, which has also emitted zero, for its
   own reasons (it needs a NEW pending capture similar to a routed
   record, and the miner folds or recurrence-handles matches before they
   ever become pending). `worker.py` is `U-marker`'s file this wave.
   Report, do not fix — but note that the suspect surface still
-  under-reports after U-recur lands.
+  under-reports after U-recur lands. *(Correction, 2026-08-03: this
+  paragraph's "for its own reasons" undersold the finding. The FW-49 fix
+  (commit `fcffbf8`, 2026-08-02) verified by execution, not assumption,
+  that the producer's two bases were NOT equally dead: `origin-match`
+  was PROVABLY, PERMANENTLY unreachable and was removed, while
+  `title-token-overlap` is live — proven by its own unit test — but
+  starved, exactly this section's diagnosis, now confirmed from the
+  worker side. FW-49 added zero suspects on top of this unit's four; the
+  surface still under-reports as predicted here.)*
 - **Anything that acts on a confirmed recurrence** — the
   revise/escalate/tolerate/retire flow is FW-8. This unit raises the
   suspect; the human still confirms it with `confirm-recurrence`, per

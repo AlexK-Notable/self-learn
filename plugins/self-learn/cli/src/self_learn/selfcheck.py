@@ -290,13 +290,18 @@ def _loaded_surface(home: Path, bucket: Bucket, record: Record) -> list[Path]:
     treat that as a FAILURE, never a skip (criterion 8): an unresolvable
     host is exactly the state the R14 defect lived in.
 
-    The ``user`` row is dead code end-to-end until ``U-demand-user``:
-    ``_reference_target_for`` returns ``None`` for user scope BEFORE this
-    function is ever consulted (``reference`` is refused at user scope
-    today), so no end-to-end fixture can reach it — it is unit-tested
-    directly instead (criterion 9a). The row stays regardless: dropping it
-    would put ``user/`` silently outside RR's domain, which is F1, the
-    exact silent narrowing criterion 13 forbids."""
+    The ``user`` row is dead code end-to-end **permanently, per S-23 (2)**
+    (`03-decisions.md`) — not pending on ``U-demand-user``. At write time
+    this said "until ``U-demand-user``", as if the refusal were temporary;
+    S-23 (2026-08-02) instead ruled that user scope's cheap surface is
+    PATHED rules only, explicitly NOT a user-level reference file, and
+    re-scoped ``U-demand-user`` away from ever opening it. ``_reference_
+    target_for`` returns ``None`` for user scope BEFORE this function is
+    ever consulted (``reference`` is refused at user scope by design, not
+    by omission), so no end-to-end fixture can reach it — it is
+    unit-tested directly instead (criterion 9a). The row stays regardless:
+    dropping it would put ``user/`` silently outside RR's domain, which is
+    F1, the exact silent narrowing criterion 13 forbids."""
     if bucket.scope == "skill":
         try:
             return [skill_dir_for(load_hosts(home), bucket.name) / "SKILL.md"]

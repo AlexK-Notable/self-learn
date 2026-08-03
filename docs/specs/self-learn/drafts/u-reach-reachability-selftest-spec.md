@@ -67,7 +67,7 @@ selftest: all 6 checks green
 rc=0
 ```
 
-`_check_drift` (`selfcheck.py:281-404`) verified that each of R14's ids
+`_check_drift` (`selfcheck.py::_check_drift`, currently `:490-636`) verified that each of R14's ids
 **is inside `LEARNINGS.md`** and called that success. It answers "did the
 write land?", which was never the question. Nothing in the system asks
 "can anything get to it?" — so `--selftest` returns 0 on a host where
@@ -80,9 +80,21 @@ its target at all.**
 Two write sites, both literal:
 
 - `verbs.py:2325` — `route_direct` builds `{"routed_at": …,
-  "destination": destination, "by": "human"}`.
-- `ledger_ops.py:756` — `resolve_record(by: str = "human")`; `route()`
-  (`verbs.py:2053-2076`) never passes `by`, so it takes the default.
+  "destination": destination, "by": "human"}`. **This unit's own build
+  already changed the shape of this site** (currently `verbs.py:2463-2464`):
+  `by` is no longer a literal in the dict, it is `route_direct`'s own
+  `by: str = "human"` keyword (signature now `verbs.py:2320`), threaded
+  through. The code there now says so directly: *"`by` is the caller's
+  `by` keyword (defaulted 'human', never a literal here) — the bare-analyst
+  `teach --route` path threads its own value in (§6/§7: that call site is
+  teach.py, outside this unit's files)."* The observable defect is
+  unchanged — see §7's still-open `teach.py:698-706` line below — only its
+  location moved from "hardcoded in `route_direct`" to "the one caller
+  that should override the default doesn't."
+- `ledger_ops.py:756` — `resolve_record(by: str = "human")`, currently
+  `ledger_ops.py:1510`, unchanged; `route()`
+  (currently `verbs.py:1994`, its `_resolve_target` call `:2070-2082`)
+  never passes `by`, so it takes the default.
 
 It reads `human` on all 28 routed records. Three consequences:
 
@@ -102,15 +114,16 @@ It reads `human` on all 28 routed records. Three consequences:
 3. **The one discrimination the field could carry is free.** The review
    UI builds `["route", <id>]` with **no** `--dest` when the human
    approves a proposal as-proposed, and appends `--dest <x>` only on an
-   override (`ui/src/self_learn_ui/routes.py:112-118`). `route()`'s
-   `_resolve_destination` (`verbs.py:495-516`) already branches on
+   override (`ui/src/self_learn_ui/routes.py::build_argv`, the
+   no-`--dest` branch currently `:121-124`). `route()`'s
+   `_resolve_destination` (currently `verbs.py:508-531`) already branches on
    exactly that. The accept-vs-override signal that 12 §A2/§T-M5 needs
    for any autonomy-ladder calibration is sitting unrecorded at the seam
    both paths already cross.
 
 ### 1.4 No telemetry kind represents a routing
 
-`EVENT_KINDS` (`telemetry.py:67-79`) has nine members; `route` is not one.
+`EVENT_KINDS` (currently `telemetry.py:73-86`) has nine members; `route` is not one.
 Live tracked plane, 2026-08-02: **capture 54, surface-budget 29, fire 22,
 offer-declined 1 — 106 events, zero of every other kind.** (The campaign
 playbook's 2026-07-28 figures were 30/26/8/1; the counts moved, the shape
@@ -184,7 +197,7 @@ posture exactly, so the two checks read the same:
 - `hosts.yaml` absent ⇒ `(True, "hosts.yaml absent — reachability not
   checked")`.
 - For each record in RR: resolve the target via the **existing**
-  `_reference_target_for` (`selfcheck.py:235-256`); resolve LS. A record
+  `_reference_target_for` (currently `selfcheck.py:253-279`); resolve LS. A record
   **FAILS** when the target is unresolvable, when LS is empty, or when no
   member of LS names the target. Never skipped, never softened.
 - RR empty ⇒ `(True, "no reference-routed records — nothing to reach")`.
@@ -240,7 +253,7 @@ nothing. **A check that cannot change the exit code is decoration.**
   campaign's "destination × scope × flags" shorthand is served by
   destination × scope × by; flags is a later additive field.
 - No new flush plumbing: `route` is in `cli.VERB_COMMANDS`
-  (`cli.py:1727`), which already flushes the spool at verb end.
+  (currently `cli.py:1728`), which already flushes the spool at verb end.
 
 ### 2.3 Part C — `routing.by` (`verbs.py`)
 
@@ -300,8 +313,11 @@ and there isn't one here.
   check becomes a one-fact check).
 - `compile_reference` and everything else in `compilers.py`. **No pointer
   is emitted by this unit.**
-- The `reference`-at-user-scope refusal (`verbs.py:950-955`). That is
-  `U-demand-user`'s B7.
+- The `reference`-at-user-scope refusal (`verbs.py::_resolve_target`'s
+  `destination == "reference"` branch, currently `verbs.py:1009-1021`; not
+  `U-demand-user`'s B7 as this line originally said — **S-23 (2) closed
+  that permanently** and re-scoped `U-demand-user` to pathed rules only,
+  so no unit now owns "opening" this refusal).
 - `resolve_record`'s `by: str = "human"` default in `ledger_ops.py` —
   that file is `U-schema`'s. `verbs.py` stops *relying* on the default by
   passing explicitly; the default itself is untouched.
@@ -366,7 +382,11 @@ Numbered; the mutation plan (§5) references these numbers.
 9a. **The `user/` bucket is in the domain.** A direct unit test of the LS
     helper for `record.scope == "user"` returns
     `[DEFAULT_USER_CLAUDE_MD.expanduser()]`, not `[]`. The `user` row is
-    deliberately dead end-to-end until `U-demand-user`
+    deliberately dead end-to-end **permanently, per S-23 (2)** — not
+    "until `U-demand-user`" as first written here: S-23 (2026-08-02) ruled
+    user scope's cheap surface is PATHED rules only, explicitly not a
+    user-level reference file, and re-scoped `U-demand-user` away from
+    ever opening it
     (`_reference_target_for` returns `None` for user scope before LS is
     ever consulted), so the helper is tested directly — the alternative
     is a scope silently outside RR, which is F1.
@@ -376,7 +396,8 @@ Numbered; the mutation plan (§5) references these numbers.
     **a missing / not-a-repo home** ⇒ FAIL (mirrors `_check_drift`).
 12. **`run_selftest` reports 7 checks** and its all-green line reads
     `all 7 checks green`.
-13. **No existing selftest test changes.** `test_hosting.py:716`,
+13. **No existing selftest test changes.** `test_hosting.py::test_selftest_green_on_fresh_env`
+    (currently `:718`),
     `test_selftest.py`, `test_new_skill.py:227` keep asserting `== 0`
     unmodified. If any goes red, the fix is to add a pointer to that
     fixture's `SKILL.md` — **never** to exempt a scope or narrow RR.
@@ -430,7 +451,7 @@ Numbered; the mutation plan (§5) references these numbers.
     §6's reason.
     **Two must-stay-green controls in the same test, both against
     UNMUTATED code:**
-    - `verbs.py:2954` passes `superseded_by="canon"` — a keyword match
+    - `verbs.py:3107` passes `superseded_by="canon"` — a keyword match
       written as `arg.endswith("by")` goes red on clean source, which
       trains "relax the guard" (reviewer's INV-4). Match the keyword
       name **exactly**, and assert this stays green.
@@ -525,12 +546,20 @@ invented against r1 became F2, F3 and F8(b) above. Two more worth trying:
   so. Nothing automated consumes `--selftest`.
 - **User scope FAILs loudly rather than skipping.**
   `_reference_target_for` returns `None` for user scope today (`reference`
-  is refused there). When `U-demand-user` opens B7, user-scope reference
-  records become routable and this check will FAIL them until
-  `_reference_target_for` and LS learn the user branch. **That is a
-  deliberate loud handoff, not a bug — see §8.**
-- **The `user` LS row is therefore dead code end-to-end until
-  `U-demand-user`, and is unit-tested directly** (criterion 9a).
+  is refused there). At write time this passage predicted that when
+  `U-demand-user` opened B7, user-scope reference records would become
+  routable and this check would FAIL them until `_reference_target_for`
+  and LS learned the user branch, calling that "a deliberate loud handoff,
+  not a bug." **That handoff will not happen: S-23 (2) closed the
+  user-scope `reference` refusal permanently** and re-scoped
+  `U-demand-user` to PATHED rules only, so B7 is retired, not deferred —
+  see §8. The loud-FAIL-over-skip posture stays correct defensive design
+  regardless (it still guards against a *different* future ruling
+  reopening this path), but there is no longer a known unit expected to
+  trigger it.
+- **The `user` LS row is therefore dead code end-to-end permanently, per
+  S-23 (2) — not "until `U-demand-user`" as first written here — and is
+  unit-tested directly** (criterion 9a).
   `_reference_target_for` returns `None` before LS is ever consulted, so
   no end-to-end fixture can reach that row. The row still exists, and RR
   still enumerates the `user/` bucket, because the alternative is a scope
@@ -556,7 +585,10 @@ invented against r1 became F2, F3 and F8(b) above. Two more worth trying:
 - **The cure.** Pointer emission, `compile_reference` changes, the
   reference-route ALWAYS recompile: `U-pointer` (r2 B8), later wave,
   human-blocked.
-- **`reference` at user scope** (r2 B7): `U-demand-user`.
+- **`reference` at user scope** (r2 B7): originally deferred to
+  `U-demand-user`; **S-23 (2) instead closed it permanently** and
+  re-scoped `U-demand-user` to PATHED rules only, so B7 is retired rather
+  than owned by any unit.
 - **`reject` / `defer` / `graduate` telemetry kinds.** FW-45 names all
   four; this unit closes only `route`. **FW-45 is partially closed and
   must not be marked done.** The other three are mechanically identical
@@ -620,16 +652,24 @@ Recorded here because a later reader will otherwise inherit them.
    not stable and should be re-run, not quoted.
 6. **`--selftest` is not read-only against the real ledger.**
    `_check_capture` creates and deletes a scratch directory *under*
-   `SELF_LEARN_HOME` (`selfcheck.py:410`). It self-cleans and commits
+   `SELF_LEARN_HOME` (`selfcheck.py::_check_capture`, currently `:637-656`,
+   the scratch dir at `:640`). It self-cleans and commits
    nothing (verified: `git status --porcelain` empty, HEAD unmoved after
    the §9 run), but "read-only" is the wrong word for it, and the §9
    procedure verifies cleanliness because of it.
-7. **`U-demand-user` opens a seam into this unit's file.** B7 makes
-   user-scope `reference` routable in `verbs.py`, while the resolver that
-   must learn about it (`_reference_target_for`) lives in `selfcheck.py`.
-   The two units do not share a file, so the wave plan reads them as
-   disjoint, and they are not. §6 makes the failure loud rather than
-   silent; the orchestrator should still name the seam in both prompts.
+7. **SUPERSEDED by S-23 (2026-08-02).** This finding originally predicted
+   that `U-demand-user` would open a seam into this unit's file: B7 would
+   make user-scope `reference` routable in `verbs.py`, while the resolver
+   that would need to learn about it (`_reference_target_for`) lives in
+   `selfcheck.py` — two units sharing no file, so the wave plan would read
+   them as disjoint when they were not. **That seam no longer opens**:
+   S-23 (2) closed user-scope `reference` permanently and re-scoped
+   `U-demand-user` to PATHED rules only, which never touches
+   `_reference_target_for`. Recorded rather than deleted, per this
+   corpus's convention that a superseded finding is itself a lesson (don't
+   re-derive "is there a seam here" from scratch — the answer used to be
+   yes, and the reason it is now no is S-23, not that the question was
+   ever wrong to ask).
 8. **`route` is `verbs.py`'s only routed-write pair.** Verified by AST
    walk, against the possibility that `rehome` or `graduate` also route:
    they do not. Criterion 20 keeps that true.
