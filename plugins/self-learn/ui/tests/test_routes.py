@@ -3295,3 +3295,59 @@ class TestFrontPageDeferredCountIsScoped:
         assert {(b.scope, b.name): b.deferred for b in model.buckets} == {
             ("skill", "solo"): 1
         }
+
+
+class TestMinerRunRowNeverPrintsNone:
+    """A run that only initialized records no counts, so these fields come
+    back None — and the template printed the literal string "None" at the
+    operator: "scanned None, landed None, folded None, recurrences None".
+    Found in a source-blind UI walk.
+
+    Em-dash rather than 0, deliberately: "not recorded" and "measured
+    zero" are different facts. Conflating them is the same error this
+    product exists to avoid elsewhere — a reachability check reporting
+    `0 of 0` is not a passing check.
+    """
+
+    def test_a_run_with_no_counts_renders_dashes_not_the_word_None(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Note the read is patched, not scripted through FakeRunner: the
+        front page's four reads do NOT go through the verb runner (that
+        carries mutations), so a queued RunResult never reaches them. An
+        earlier version of this test queued results, controlled nothing,
+        and passed vacuously — every "None" assertion held because the run
+        row never rendered at all."""
+        from self_learn_ui import ledger
+        from self_learn_ui.models import CliRead
+
+        monkeypatch.setattr(
+            ledger,
+            "mine_status",
+            lambda home, **kw: CliRead(
+                data={
+                    "runs": [
+                        {
+                            "ts": "2026-08-02T12:00:00Z",
+                            "status": "ok",
+                            "trigger": "kick",
+                            "sessions_scanned": None,
+                            "landed": None,
+                            "folded": None,
+                            "recurrences": None,
+                        }
+                    ]
+                }
+            ),
+        )
+        sb = make_env(tmp_path)
+        c, _r = make_client(sb)
+        r = c.get("/")
+        assert r.status_code == 200
+        # Positive control FIRST, and on a string unique to this row.
+        # "kick" was the original choice and was worthless — the worker's
+        # own Force-run button posts to /worker/kick, so it appears on the
+        # page whether or not the run row rendered.
+        assert "scanned" in r.text, "the run row did not render at all"
+        for field in ("scanned", "landed", "folded", "recurrences"):
+            assert f"{field} None" not in r.text, f"literal None rendered for {field}"

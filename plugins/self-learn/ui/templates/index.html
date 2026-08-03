@@ -128,8 +128,18 @@
     <summary>runs</summary>
     <ul>
       {% for run in model.miner.runs %}
-      <li>{{ run.ts | humanize_ts }} — {{ run.status_label }} ({{ run.trigger }}) — scanned {{ run.sessions_scanned }},
-        landed {{ run.landed }}, folded {{ run.folded }}, recurrences {{ run.recurrences }}</li>
+      {# A run that only initialized records no counts at all, and these
+         fields come back None. They used to render the literal string
+         "None" to the operator ("scanned None, landed None, folded None")
+         — found in a UI walk. The summary line above already guards with
+         `or 0`; this one, five lines below it, did not.
+
+         An em-dash rather than 0, deliberately: "not recorded" and
+         "measured zero" are different facts, and conflating them is the
+         exact error this product exists to avoid elsewhere (a reach check
+         reporting 0 of 0 is not a passing check). #}
+      <li>{{ run.ts | humanize_ts }} — {{ run.status_label }} ({{ run.trigger }}) — scanned {{ run.sessions_scanned if run.sessions_scanned is not none else "—" }},
+        landed {{ run.landed if run.landed is not none else "—" }}, folded {{ run.folded if run.folded is not none else "—" }}, recurrences {{ run.recurrences if run.recurrences is not none else "—" }}</li>
       {% endfor %}
     </ul>
   </details>
