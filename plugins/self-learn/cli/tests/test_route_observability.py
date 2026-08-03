@@ -11,11 +11,28 @@ a host-phase failure must not undercount exactly the interesting case.
 
 Part C (U-reach §2.3): `routing.by` stops being a hardcoded "human" and
 starts naming the actor that CHOSE THE DESTINATION — "human" when an
-explicit `--dest` carried the choice, "analyst" when the proposal (the
-review UI's approve-as-proposed argv, or a bare `route <id>`) did.
+explicit `--dest` carried the choice, "analyst" when the proposal (a
+bare `route <id>`) did.
 
 Both AST guards (criteria 20, 25) live here too — one file keeps this
 unit's footprint off the shared modules while five siblings build (§6).
+
+**FW-64 correction (below, "Part D"):** the line above about "the review
+UI's approve-as-proposed argv" was this spec's own premise, and it was
+FALSE — driven end to end, the review UI always sends an explicit
+`--dest` (the analyst's own scope-corrected proposal), even when the
+human never touched it, so `verbs.route`'s dest-is-not-None heuristic
+alone read "human" on every UI approval. FW-64 gave `verbs.route` and
+`verbs.route_direct` an explicit, caller-supplied `by` override
+(`ROUTING_BY_VALUES = {"human", "analyst", "agent"}`) so a caller that
+knows better than the heuristic — the review UI's own CLI subprocess
+call, via a new `--by` flag — never has to be guessed at. `route_direct`
+gained the SAME plumbing already anticipated by this spec's own §6/§7
+follow-up note: `teach.py`'s bare-analyst path now threads `by="analyst"`
+explicitly. The UI-level tests (approve-as-proposed vs. a human
+`o`-cycle override vs. the SDK pane's own `propose_verb` choice) live in
+the `self_learn_ui` package's own test suite, not here — this file pins
+only the CLI/verb-layer half of the fix.
 """
 
 from __future__ import annotations
@@ -271,6 +288,103 @@ def test_route_event_by_matches_record_routing_by_both_directions(env):
         assert events[record_id]["by"] == routed.routing["by"]
     assert events[proposal_record.id]["by"] == "analyst"
     assert events[dest_record.id]["by"] == "human"
+
+
+# ------------------------------------------ Part D (FW-64): the `by` override
+
+
+def test_route_by_override_wins_over_the_dest_given_heuristic(env):
+    """FW-64's core fix: an explicit `by=` beats the dest-is-not-None
+    heuristic entirely — this is what lets the review UI's subprocess
+    call say "analyst" for an unmodified approve-as-proposed even though
+    its argv always carries an explicit `--dest`. Before the fix,
+    `verbs.route` had no `by` parameter at all and this call would have
+    been impossible to make truthfully."""
+    record = seed_pending(env)
+
+    verbs.route(env.ledger, record.id, dest="skill-md", by="analyst")
+
+    routed = Record.from_path(resolved_path(env, record.id))
+    assert routed.routing["by"] == "analyst"
+    route_events = _spooled_events("route")
+    assert route_events[0]["by"] == "analyst"
+
+
+def test_route_by_agent_value_persists(env):
+    """FW-64: the third chooser (the SDK pane's own `propose_verb` route
+    proposals) is a real, spoolable/persistable value — not silently
+    coerced into "human" or "analyst" by anything downstream."""
+    record = seed_pending(env)
+
+    verbs.route(env.ledger, record.id, dest="skill-md", by="agent")
+
+    routed = Record.from_path(resolved_path(env, record.id))
+    assert routed.routing["by"] == "agent"
+    route_events = _spooled_events("route")
+    assert route_events[0]["by"] == "agent"
+
+
+def test_route_none_by_keeps_the_unchanged_heuristic(env):
+    """Regression guard: `by=None` (the default — every existing terminal
+    caller) must reproduce criteria 21/22 byte-for-byte. This is the
+    "don't break the CLI's own correct behaviour while fixing the UI's"
+    half of FW-64's design."""
+    proposal_record = seed_pending(env, record_id="lrn-0000a1a1")
+    verbs.route(env.ledger, proposal_record.id)
+    assert (
+        Record.from_path(resolved_path(env, proposal_record.id)).routing["by"]
+        == "analyst"
+    )
+
+    dest_record = seed_pending(env, record_id="lrn-0000b2b2")
+    verbs.route(env.ledger, dest_record.id, dest="skill-md")
+    assert (
+        Record.from_path(resolved_path(env, dest_record.id)).routing["by"]
+        == "human"
+    )
+
+
+def test_route_invalid_by_refuses(env):
+    """FW-64: `ROUTING_BY_VALUES` is a real closed enum, not decoration —
+    a programmer mistake at a call site (a typo'd `by=`) must refuse
+    loudly rather than silently writing garbage into the ledger."""
+    record = seed_pending(env)
+    with pytest.raises(verbs.VerbError):
+        verbs.route(env.ledger, record.id, dest="skill-md", by="bogus")
+    # nothing written — the refusal is pre-flight
+    assert resolved_path(env, record.id).exists() is False
+
+
+def test_route_direct_invalid_by_refuses(env):
+    record = make_behavior(record_id="lrn-0000c3c3")
+    with pytest.raises(verbs.VerbError):
+        verbs.route_direct(env.ledger, record, dest="skill-md", by="bogus")
+
+
+def test_cli_route_by_flag_threads_through(env):
+    """The review UI's own subprocess call, reproduced exactly: `self-learn
+    route <id> --dest X --by analyst` — the CLI's `--by` flag (cli.py) must
+    reach `verbs.route` and land in the record, not just exist as inert
+    argparse decoration."""
+    record = seed_pending(env)
+
+    rc = cli.main(["route", record.id, "--dest", "skill-md", "--by", "analyst"])
+
+    assert rc == 0
+    routed = Record.from_path(resolved_path(env, record.id))
+    assert routed.routing["by"] == "analyst"
+
+
+def test_cli_route_by_flag_rejects_unknown_value(env):
+    """argparse's own `choices=` refusal (test_status.py's own pin:
+    argparse-level failures come back as 2, never an escaping
+    SystemExit) — proves the CLI surface cannot silently accept a typo'd
+    `--by` value that `verbs.route`'s own VerbError guard would also
+    catch, but earlier and with a clearer message."""
+    record = seed_pending(env)
+    rc = cli.main(["route", record.id, "--dest", "skill-md", "--by", "robot"])
+    assert rc == 2
+    assert not resolved_path(env, record.id).exists()
 
 
 def test_no_by_string_literal_at_a_call_site():

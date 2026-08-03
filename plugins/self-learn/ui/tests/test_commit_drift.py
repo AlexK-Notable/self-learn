@@ -24,6 +24,7 @@ rather than re-deriving the envelope shape.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from starlette.testclient import TestClient
@@ -67,6 +68,18 @@ def _seed_dirty(tmp_path: Path):
         encoding="utf-8",
     )
     return sb, rec
+
+
+def _scrape_hidden_fields(html: str, form_marker: str) -> dict[str, str]:
+    """Isolate ONE of the commit-drift arm/disarm/confirm forms (they
+    coexist in the same rendered partial) by its distinguishing
+    ``hx-post`` substring, then scrape that form's own hidden
+    ``<input>`` fields. FW-64/UM8: this is what closes the gap a
+    hand-crafted POST body cannot — it proves `_commit_drift_retry_ctx`'s
+    `dest_touched` field actually reaches the rendered form a real
+    browser would re-submit, not just the handler's own Form param."""
+    section = html.split(form_marker)[1].split("</form>")[0]
+    return dict(re.findall(r'<input[^>]*name="([^"]+)"[^>]*value="([^"]*)"', section))
 
 
 # --------------------------------------------------------- marker/eligibility
@@ -263,14 +276,104 @@ class TestCommitAndRetry:
             headers={"HX-Request": "true"},
         )
         assert r.status_code == 200
+        # FW-64: no `dest_touched` on this POST (the ORIGINAL failed
+        # confirm never cycled the destination either), so the retry's
+        # `by` reads "analyst", same as the original confirm would have
+        # sent had it succeeded outright.
         assert runner.calls == [
             ["host", "commit-drift", rec.id, "--dest", "skill-md"],
-            ["route", rec.id, "--dest", "skill-md", "--json"],
+            ["route", rec.id, "--dest", "skill-md", "--by", "analyst", "--json"],
         ]
         assert r.headers.get("hx-redirect") is None
         assert 'data-verb-success="true"' in r.text
         assert "/host/plugins/s-plugin/skills/s/SKILL.md" in r.text
         assert "deadbee" in r.text  # host_commit_sha[:7]
+
+    def test_confirm_carries_dest_touched_into_the_retry_as_by_human(
+        self, tmp_path: Path
+    ) -> None:
+        """FW-64: `dest_touched` rides the commit-drift retry fields
+        exactly like `dest`/`collapse`/`note` already do (§2.2's own
+        discipline, extended) — a route the human overrode via the (o)
+        cycle control, that THEN hit a dirty-target refusal, must retry
+        with `--by human`, never silently fall back to "analyst" because
+        this leg forgot to carry the flag."""
+        sb, rec = _seed_dirty(tmp_path)
+        env_dict = envelope(record_id=rec.id, destination="skill-md", outcome_state="landed")
+        runner = FakeRunner()
+        runner.queue_result(RunResult(0))  # host commit-drift
+        runner.queue_result(RunResult(0, stdout=json.dumps(env_dict)))  # route retry
+        c, _runner = make_client(sb, runner=runner)
+        r = c.post(
+            f"/record/{rec.id}/action/commit-drift/confirm",
+            data={"kind": "detail", "dest": "skill-md", "dest_touched": "true"},
+            headers={"HX-Request": "true"},
+        )
+        assert r.status_code == 200
+        assert runner.calls == [
+            ["host", "commit-drift", rec.id, "--dest", "skill-md"],
+            ["route", rec.id, "--dest", "skill-md", "--by", "human", "--json"],
+        ]
+
+    def test_dest_touched_survives_arm_then_confirm_via_rendered_forms(
+        self, tmp_path: Path
+    ) -> None:
+        """FW-64/UM8: the test above pins `commit_drift_confirm`'s OWN
+        `dest_touched` Form param, but `_commit_drift_retry_ctx` is a
+        SEPARATE thing — it must also carry `dest_touched` into the
+        rendered arm/confirm forms so a human who arms (or disarms) the
+        guided commit before confirming still gets `--by human` on the
+        eventual retry. Drive the REAL rendered arm form, then the REAL
+        rendered confirm form it produces — a hand-crafted POST body
+        standing in for either would hide a regression in the ctx dict
+        itself (confirmed empirically: hardcoding
+        `_commit_drift_retry_ctx`'s own `dest_touched` field to `False`
+        leaves every other commit-drift test green)."""
+        sb, rec = _seed_dirty(tmp_path)
+        runner = FakeRunner()
+        runner.queue_result(
+            RunResult(
+                1,
+                stderr=f"self-learn route: compile target X {GITOPS_DIRTY_MARKER} "
+                "— commit/stash first, then re-run",
+            )
+        )
+        c, _runner = make_client(sb, runner=runner)
+        r = c.post(
+            f"/record/{rec.id}/action/confirm",
+            data={
+                "verb": "route",
+                "kind": "detail",
+                "dest": "skill-md",
+                "dest_touched": "true",
+            },
+            headers={"HX-Request": "true"},
+        )
+        assert "Commit that repo" in r.text
+        arm_fields = _scrape_hidden_fields(r.text, 'commit-drift/arm"')
+        assert arm_fields.get("dest_touched") == "true"
+
+        r2 = c.post(
+            f"/record/{rec.id}/action/commit-drift/arm",
+            data=arm_fields,
+            headers={"HX-Request": "true"},
+        )
+        assert 'data-armed="true"' in r2.text
+        confirm_fields = _scrape_hidden_fields(r2.text, 'commit-drift/confirm"')
+        assert confirm_fields.get("dest_touched") == "true"
+
+        env_dict = envelope(record_id=rec.id, destination="skill-md", outcome_state="landed")
+        runner.queue_result(RunResult(0))  # host commit-drift
+        runner.queue_result(RunResult(0, stdout=json.dumps(env_dict)))  # route retry
+        r3 = c.post(
+            f"/record/{rec.id}/action/commit-drift/confirm",
+            data=confirm_fields,
+            headers={"HX-Request": "true"},
+        )
+        assert r3.status_code == 200
+        assert runner.calls[-1] == [
+            "route", rec.id, "--dest", "skill-md", "--by", "human", "--json"
+        ]
 
     def test_evidence_composes_with_contradicts_offer(self, tmp_path: Path) -> None:
         """§3 acceptance item 2 — the offer COMPOSES with the evidence

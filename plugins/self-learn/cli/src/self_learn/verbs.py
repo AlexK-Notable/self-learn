@@ -137,6 +137,7 @@ __all__ = [
     "DEFAULT_USER_CLAUDE_MD",
     "GITOPS_DIRTY_MARKER",
     "NOTHING_TO_COMMIT",
+    "ROUTING_BY_VALUES",
     "SURFACE_FILL_CAPPED_DESTINATIONS",
     "CommitDriftResult",
     "DirtyTargetError",
@@ -192,6 +193,25 @@ ONE_MOTION_UNROUTABLE = frozenset({"new-skill", "hook"})
 #: branch exists for it) and carries no "fill against a cap" to report;
 #: no builder may invent a reference probe (blind-review F1).
 SURFACE_FILL_CAPPED_DESTINATIONS: tuple[str, ...] = ("skill-md", "claude-md")
+
+#: FW-64: the closed value set for ``routing.by`` — the actor that CHOSE
+#: THE DESTINATION. U-reach shipped v1 as an unenumerated two-value
+#: convention (``"human"`` | ``"analyst"``); FW-64 found it wrong on
+#: every live write site (the review UI always sends ``--dest``, so
+#: `route()`'s own dest-is-not-None heuristic read "human" even on an
+#: unmodified approve-as-proposed) and added a genuine third chooser:
+#: the SDK pane's own `propose_verb` route proposals are neither the
+#: deterministic `analyst.analyze()` heuristic nor a human's own
+#: decision — a real LLM choosing a destination in a chat turn, distinct
+#: from both. Enumerated here (previously nothing validated the value at
+#: all) so a future call site cannot silently mistype it. This is a
+#: value-set addition inside the EXISTING `route` telemetry kind, never a
+#: new `EVENT_KINDS` member — SCHEMA_VERSION's own contract ("extending
+#: the CLOSED KIND SET is a version bump", telemetry.py) does not cover
+#: it, and 16-ecology-spec.md §10 (FW-65) already warns that constant is
+#: double-booked for an unrelated future bump; this change does not
+#: touch it.
+ROUTING_BY_VALUES = frozenset({"human", "analyst", "agent"})
 
 
 def one_motion_allowed(home: Path | str, destination: str) -> bool:
@@ -1996,6 +2016,7 @@ def route(
     record_id: str,
     *,
     dest: str | None = None,
+    by: str | None = None,
     note: str | None = None,
     no_push: bool = False,
     user_claude_md: Path | str | None = None,
@@ -2013,8 +2034,22 @@ def route(
     ``allow_empty_glob`` (A2 §5.1) is the sanctioned escape past a
     project-scope rules route's zero-match glob refusal — the
     write-the-rule-before-the-files case; the bypass is recorded in the
-    routing block (§13 item 3)."""
+    routing block (§13 item 3).
+
+    ``by`` (FW-64, defaulted ``None``): names the actor that CHOSE THE
+    DESTINATION, when the CALLER already knows and the ``dest``-is-not-
+    None heuristic below would guess wrong — the review UI's own subprocess
+    call is the one live case (it always sends an explicit ``--dest``, even
+    on an unmodified approve-as-proposed, so the heuristic alone cannot
+    distinguish "the analyst's proposal, displayed and accepted" from "the
+    human cycled to a different one"). Terminal/bare-CLI callers leave this
+    ``None`` and get the unchanged heuristic (an explicit ``--dest`` typed
+    at a terminal IS the human's own choice)."""
     home = Path(home)
+    if by is not None and by not in ROUTING_BY_VALUES:
+        raise VerbError(
+            f"by must be one of {sorted(ROUTING_BY_VALUES)}, got {by!r}"
+        )
     if follow_up is not None:
         try:
             _validate_follow_up(follow_up)
@@ -2145,14 +2180,23 @@ def route(
         # The lock opens HERE — at the first mutation, not at the commit —
         # and closes at the commit; see :func:`_ledger_write`.
         #
-        # §2.3: `routing.by` names the actor that CHOSE THE DESTINATION,
-        # derived here rather than hardcoded — the review UI's
-        # approve-as-proposed argv omits --dest entirely (the proposal,
-        # analyst-written, chose it); an explicit --dest is always the
-        # human's flag, whether typed at the terminal or appended by the
-        # UI's override. Read back below for the `route` telemetry event
-        # so the two can never diverge (11 §4.3 / U-reach criterion 24).
-        by = "human" if dest is not None else "analyst"
+        # §2.3, corrected by FW-64: `routing.by` names the actor that CHOSE
+        # THE DESTINATION. The premise this comment used to state — "the
+        # review UI's approve-as-proposed argv omits --dest entirely" —
+        # was FALSE: driven end to end, the review UI's action bar always
+        # carries an explicit `dest` hidden field (`destination_default`,
+        # scope-corrected), so the old dest-is-not-None heuristic alone
+        # read "human" on EVERY UI approval, including an unmodified
+        # accept of the analyst's own proposal. The heuristic below is
+        # still correct for a caller that genuinely has no better
+        # knowledge (a bare terminal `route <id>` vs. `route <id> --dest
+        # X` — an explicit --dest typed at a shell IS the human's own
+        # choice); what changed is that a caller who DOES know better (the
+        # review UI's own subprocess call, via `--by`) may now say so
+        # explicitly instead of being guessed at. Read back below for the
+        # `route` telemetry event so the two can never diverge (11 §4.3 /
+        # U-reach criterion 24).
+        by = by if by is not None else ("human" if dest is not None else "analyst")
         with _ledger_write(home):
             if merged is not None:
                 merged.write(path)
@@ -2341,11 +2385,17 @@ def route_direct(
 
     ``by`` (§2.3, defaulted "human" — not required, so ``teach.py:698``'s
     existing call keeps working unmodified): names the actor that CHOSE
-    THE DESTINATION. The bare-analyst ``teach --route`` path (destination
-    from ``analyst.analyze()``) should thread ``by="analyst"`` — that call
-    site is outside this unit's files (§6/§7); the plumbing here is what
-    it needs."""
+    THE DESTINATION. FW-64 completed the follow-up §6/§7 flagged: the
+    bare-analyst ``teach --route`` path (destination from
+    ``analyst.analyze()``) now threads ``by="analyst"`` explicitly at its
+    call site (``teach.py``) — this default only still covers
+    ``teach --route --dest X``, where an explicit --dest typed at the
+    terminal genuinely is the human's own choice."""
     home = Path(home)
+    if by not in ROUTING_BY_VALUES:
+        raise VerbError(
+            f"by must be one of {sorted(ROUTING_BY_VALUES)}, got {by!r}"
+        )
     # BLOCKER 11 (audit 2026-07-16): this path writes a record straight
     # into resolved/ — gate the home BEFORE anything lands on disk.
     try:

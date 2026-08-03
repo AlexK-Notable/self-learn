@@ -652,6 +652,13 @@ def _route_now(
     if (code := _home_gate(home)) is not None:
         return code
     dest = args.dest
+    # FW-64: captured BEFORE the bare-`--route` branch below overwrites
+    # `dest` with the analyst's own proposal — `by` must record who chose
+    # the destination, and that is decided entirely by whether the human
+    # typed --dest, not by whatever `dest` holds by the time route_direct
+    # is called. An explicit --dest is always the human's flag, whether
+    # typed at the terminal or (T8/CLI-only path) supplied programmatically.
+    by = "human" if args.dest is not None else "analyst"
 
     hook_input = None
     if args.hook_input is not None:
@@ -699,6 +706,7 @@ def _route_now(
             home,
             record,
             dest=dest,
+            by=by,
             note=args.note,
             no_push=args.no_push,
             project_path=project_path,
