@@ -14,20 +14,22 @@ exemption in this document.)
 
 ## 1. The defect — re-verified 2026-08-02, not inherited
 
-`compilers.py:84-85` is the **sole writer** of a managed section; its pair is
-normative per `02-schema.md:479`:
+`compilers.py`'s `BEGIN_MARKER`/`END_MARKER` module constants (currently
+`compilers.py:123-124`) are the **sole writer** of a managed section; its pair
+is normative per `02-schema.md:479`:
 
 ```
 BEGIN_MARKER = "<!-- self-learn:begin (do not hand-edit inside; managed by self-learn) -->"
 END_MARKER   = "<!-- self-learn:end -->"
 ```
 
-`worker._canon_excerpt` (`worker.py:544-578`) searches, at `:571-574`,
+`worker._canon_excerpt` (its logic now lives in `worker.py::canon_excerpt`,
+currently `worker.py:546-588`) searches, at `:581-584`,
 `"SELF-LEARN:BEGIN"` and `"SELF-LEARN:END"` — *the legacy needle*: uppercase,
 no comment syntax, no parenthetical. It cannot match. Under 200 lines the file
-is returned whole (`:569-570`), so the miss stays invisible until a target
+is returned whole (`:579-580`), so the miss stays invisible until a target
 grows; at ≥200 lines the function falls to `lines[:60] + "\n… (truncated)"`
-(`:576`) and the analyst is shown the top of the file instead of the canon it
+(`:586`) and the analyst is shown the top of the file instead of the canon it
 is being asked to compare against — blinding the already-canon gate and the
 bounded contradiction check.
 
@@ -53,8 +55,9 @@ untouched. **Import, do not re-spell** — re-spelling is how this drifted: two
 readers retyped the needle independently and both got it wrong, while the
 writer's constant never moved. **No backward-compatibility clause:** also
 matching the legacy needle would reinstate the defect as a feature, framing a
-section `compile_managed_text` will not regenerate (it matches byte-exact,
-`compilers.py:224-241`).
+section `compile_managed_text` will not regenerate (it matches byte-exact via
+`.index(BEGIN_MARKER)`/`.index(END_MARKER)`, `compilers.py::compile_managed_text`,
+currently `compilers.py:240-297`, byte-exact match at `:273-274`).
 
 This adds `worker.py`'s first import from `compilers.py`. No cycle results
 (`compilers` imports only `.records`), and both names are in its `__all__`.
@@ -70,7 +73,8 @@ pre-fix and recording the two failures IS this unit's positive control
 **A — a fat target's compiled section reaches the excerpt.** Fixture: the
 file's own `env` fixture (`env.home` = ledger, `env.host` = host repo); a
 routed record `R` (`make_behavior` + `set_routing({routed_at, destination,
-by})`/`set_status("routed")`, as `test_compilers.py:31-34`); the host
+by})`/`set_status("routed")`, as `test_compilers.py`'s `routed()` helper,
+currently `test_compilers.py:36-39`); the host
 `CLAUDE.md` = 250 padding lines → `compile_managed_text(padding, [R]).text` →
 30 more padding lines; a project-scope pending record via
 `create_record(..., project_path=env.host)`; `entry` from `queue(bucket)`.
@@ -135,13 +139,22 @@ source-scanning assertion would be theatre.
 
 ## 5. Out of scope — report, do not fix
 
-- **`ui/src/self_learn_ui/pane.py:266-267` carries the same wrong needle** in
-  the review pane's copy of this function, and `ui/tests/test_pane.py:696-713`
-  hand-writes the legacy needle into its fixture, so it is green on the broken
-  behaviour. Different package, and already claimed: campaign unit
-  **`U-marker-ui`** (`forward/r2-routing-campaign.md:83`, register row
-  **FW-48**), sequenced after `U-grad-ui`. Report only — this unit must not
-  touch it. Until it lands, the excerpt the **human** reads in the review pane
-  stays head-of-file truncated.
+- **At spec time, `ui/src/self_learn_ui/pane.py` carried the same wrong
+  needle** in the review pane's own copy of this function, and
+  `ui/tests/test_pane.py` hand-wrote the legacy needle into its fixture, so it
+  was green on the broken behaviour. That was true when this spec was
+  written; it is no longer true. Different package, and already claimed:
+  campaign unit **`U-marker-ui`** (`forward/r2-routing-campaign.md:83`,
+  register row **FW-48**), sequenced after `U-grad-ui` — originally "report
+  only, this unit must not touch it." **Shipped same day** (commit
+  `f8d8433`): `pane.py` no longer
+  hand-copies the search — `target_canon_excerpt` (`pane.py::target_canon_excerpt`,
+  currently `pane.py:272`) now imports and delegates to the shared
+  `worker.py::canon_excerpt`, and `ui/tests/test_pane.py`'s fixtures
+  (`test_over_threshold_excerpts_around_markers` and siblings, currently
+  `test_pane.py:696-816`) were rewritten to derive both needles from the
+  imported `compilers.BEGIN_MARKER`/`END_MARKER` constants rather than typing
+  them. The excerpt the **human** reads in the review pane no longer stays
+  head-of-file truncated.
 - The `200` / `±20` / `60` constants, target resolution, `analyst.py`
   (U-analyst), the shared-composer factoring (U-composer).

@@ -90,15 +90,20 @@ most expensive orchestration error.
 
 ### 1.3 What already works, and must not be rebuilt
 
-- **The CLI verb.** `verbs.graduate` (`verbs.py:2913`) resolves its path
-  with `find_record_path(home, record_id)  # pending OR resolved` and
-  runs a host-cleanup phase written specifically for the routed case.
-  Verified live in a sandbox, not read off the docstring.
+- **The CLI verb.** `verbs.graduate` (`verbs.py::graduate`, currently
+  `verbs.py:3066` — sibling CLI units have since moved this well off the
+  `:2913` this spec was drafted against; that line now falls inside
+  `defer`'s signature) resolves its path with `find_record_path(home,
+  record_id)  # pending OR resolved` and runs a host-cleanup phase
+  written specifically for the routed case. Verified live in a sandbox,
+  not read off the docstring.
 - **The UI's own I/O layer.** `ledger.locate_record` already finds
   resolved records and already reports `RecordLocation.resolved`
-  (`ledger.py:216-236`). `routes._gather_detail_bundle` already carries
-  a branch for records that "fall out of `list --json` (pending-only)"
-  (`routes.py:306-322`) and builds a complete `DetailReadBundle` for a
+  (`ledger.py::locate_record`, `ledger.py:228-249`; the `RecordLocation`
+  dataclass itself is `ledger.py:218-225`). `routes._gather_detail_bundle`
+  already carries a branch for records that "fall out of `list --json`
+  (pending-only)" (`routes.py::_gather_detail_bundle`, that branch now at
+  `routes.py:316-337`) and builds a complete `DetailReadBundle` for a
   routed record. `models.build_detail_model` consumes it without raising.
 - **The execution half.** POSTing `verb=graduate` to
   `/record/<routed-id>/action/arm` then `…/action/confirm` returns
@@ -109,7 +114,14 @@ most expensive orchestration error.
 ### 1.4 The blocking line
 
 ```python
-# routes.py:570-579, inside detail_page
+# routes.py:570-579, inside detail_page — PRE-FIX BASELINE (parent commit
+# 176eee6, the revision this spec was drafted against). This exact block
+# no longer exists: it is the code this unit's own build replaced. The
+# equivalent guard survives at routes.py:705 (`if record.status not in
+# ("pending", "deferred"):`), but its consequence is now the opposite —
+# it renders `detail_resolved.html` (§2.1) instead of redirecting. Quoted
+# here verbatim, dated, as the evidence for the defect being fixed — not
+# as a citation into the current file.
     if record.status not in ("pending", "deferred"):
         slot = _proposal_slot(request)
         if slot is not None:
@@ -136,7 +148,11 @@ how a hand-maintained list drifts from the set that exists.)
 > **`VIEWABLE` = every record `ledger.locate_record` finds and
 > `ledger.read_record` parses, whatever its `status`.**
 
-The status test at `routes.py:570` is **deleted**, not widened. A record
+The status test — `if record.status not in ("pending", "deferred")`,
+`routes.py:705` inside `detail_page` (was `:570` against the pre-fix
+baseline cited in §1.4) — is **deleted** as a viewability gate, not
+widened: the boolean survives, repurposed to select which template
+renders, and no longer denies a view on any status. A record
 is viewable iff the ledger can produce it.
 
 Rationale. A status allow-list is the drift shape this corpus keeps
@@ -167,18 +183,21 @@ Excluded, each with its reason:
 
 - **`superseded` (includes graduated).** Terminal. `report --json`
   exposes graduated records as an integer (`graduated`), never as ids
-  (`report.py:348-357`), so listing them would need a new CLI read
-  surface (§7). And a graduated record leaves `INDEX-SET` the moment it
-  is graduated — this unit's structural answer to "do not offer the
-  action twice" (§2.4).
+  (`report.py::gather`, the `graduated`/`rejected` return fields at
+  `report.py:372-373`, fed by the counters at `report.py:259-260` and
+  `:314-318`), so listing them would need a new CLI read surface (§7).
+  And a graduated record leaves `INDEX-SET` the moment it is graduated —
+  this unit's structural answer to "do not offer the action twice"
+  (§2.4).
 - **`rejected`.** Also count-only in `report --json`. And the verb is
   wrong for it: measured, `graduate` on a rejected record **succeeds**
   and silently rewrites a denied lesson to `superseded_by: canon`.
   Logged as **FW-51**; see §6.5. Listing rejected records here would put
   that one keystroke away.
 - **`deferred`.** Already reachable — Front and Bucket both read
-  `list --json --include-deferred` (`routes.py:409, 444`) and
-  `/record/<deferred-id>` already returns 200 (pinned today by
+  `list --json --include-deferred` (`routes.py::front`, `routes.py:425`;
+  `routes.py::bucket_page`, `routes.py:570`) and `/record/<deferred-id>`
+  already returns 200 (pinned today by
   `test_resolution_evidence.py::…::test_a_deferred_record_still_resolves_at_record_id`).
 - **`pending`.** The queue. That is the rest of the app.
 
@@ -197,8 +216,9 @@ Everything else is refused, each for a stated reason:
   or corrupt.
 - `cycle destination` — there is no proposal to re-aim.
 - `iterate` (the agent pane) — a resolved record is substance-frozen
-  (`Record.substance_frozen`, `records.py:355-361`), so the pane agent's
-  edits would be refused. Rendering the control offers a failure.
+  (`Record.substance_frozen`, `records.py:355-361` — unmoved), so the
+  pane agent's edits would be refused. Rendering the control offers a
+  failure.
 - `confirm-recurrence` / `tolerate` — already have a surface (§1.2).
   Their being dark is `U-recur`'s defect, not this unit's.
 - `followup done`, `link contradicts` — already have surfaces.
@@ -227,14 +247,17 @@ guards, because there are three doors:
    without the index (bookmark, stale tab, a link from elsewhere).
 3. **Post-confirm (the response body).** `action_confirm`'s success leg
    re-renders `action_bar.html` through `_unarmed_context`, which
-   **carries no record status at all** (`routes.py:951-1010`), so a new
+   **carries no record status at all** (`routes.py::_unarmed_context`,
+   now `routes.py:1127-1194`, was `:951-1010`), so a new
    `{% elif kind == "resolved" %}` branch in the unarmed chain would
    render unconditionally on that round-trip — re-offering Graduate on
    the record that was just graduated, one click from the
    `HalfWrittenError`. The pending quad is immune only because of
-   `{% if not evidence %}` at `action_bar.html:166`. **The resolved
-   branch carries the same guard.** Doors 1 and 2 are both GET-side and
-   neither closes this one.
+   `{% if not evidence %}` at `action_bar.html:203` (was `:166` — this
+   unit's own new `kind == "resolved"` branch, inserted above it, pushed
+   it down). **The resolved branch carries the same guard, at its own
+   `{% if not evidence %}`, `action_bar.html:174`.** Doors 1 and 2 are
+   both GET-side and neither closes this one.
 
 ---
 
@@ -242,12 +265,13 @@ guards, because there are three doors:
 
 ### 3.0 Fixture preamble — which state each criterion needs, and how it is minted
 
-`support.resolve_record_directly` (`support.py:176-205`) writes `status`
-and, for `routed`, a routing block. **It never writes `superseded_by`**,
-so it cannot mint a graduated record: a `superseded` record with
-`superseded_by: None` is a record replaced by a successor, not one
-graduated into canon, and `report.gather` counts the two differently
-(`report.py:352-357`). Criteria 2 and 7 both need `superseded_by:
+`support.resolve_record_directly` (`plugins/self-learn/ui/tests/support.py:176-205`
+— unmoved) writes `status` and, for `routed`, a routing block. **It
+never writes `superseded_by`**, so it cannot mint a graduated record: a
+`superseded` record with `superseded_by: None` is a record replaced by a
+successor, not one graduated into canon, and `report.gather` counts the
+two differently (`report.py::gather`, the `superseded`/`canon` branch
+now at `report.py:314-318`, was `:352-357`). Criteria 2 and 7 both need `superseded_by:
 canon` specifically; against a `None` record criterion 7 would be
 vacuous and §2.2's `INDEX-SET` rationale would not be the thing under
 test.
@@ -317,8 +341,11 @@ absent passes against a blank page. Neither is worth anything alone.
    assertion is wrong here. Guarded by **M4**.
    (b) **the slot clear, and its ordering** — `GET /record/<routed-id>`
    with a proposal slot held for that record returns `200`, the slot is
-   cleared (the behaviour `routes.py:576-577` performed on the deleted
-   redirect path), **and no proposal bar appears in the rendered body**.
+   cleared (the behaviour at `routes.py:728-730` inside `detail_page`,
+   was `:576-577` against the pre-fix baseline — the two-line clear
+   itself is unchanged, only now sitting on the render path rather than
+   the deleted redirect path), **and no proposal bar appears in the
+   rendered body**.
    The clear must run *before* the render context reads `slot.current`,
    or a waiting proposal bar renders on a resolved record. Guarded by
    **M9** (clear deleted) and **M19** (clear moved after the context
@@ -326,7 +353,7 @@ absent passes against a blank page. Neither is worth anything alone.
    `test_proposals.py::TestProposalRoutes::test_resolved_elsewhere_clears_slot_on_detail_render`
    updated in place (criterion 11) — not a new test.*
    (c) **no `data-row` on archive rows.** `app.js`'s `rows()`
-   (`static/app.js:80-82`) is an unfiltered
+   (`static/app.js:83-84`, was `:80-82`) is an unfiltered
    `querySelectorAll("#self-learn-ui-content [data-row]")` with no
    visibility check, and a closed `<details>`'s children are still in
    the DOM — so a `data-row` archive row would let `s` walk the
@@ -380,7 +407,8 @@ absent passes against a blank page. Neither is worth anything alone.
    evidence leg carrying the `canon_path` and 7-char `host_commit_sha`
    **from the queued envelope**. *Envelope-sourced, not URL-sourced:*
    `_evidence_ctx` sets `record_id` from the URL path parameter
-   (`routes.py:1104`), so "the evidence names this record's id" is true
+   (`routes.py::_evidence_ctx`, `routes.py:1280`, was `:1104`), so "the
+   evidence names this record's id" is true
    on every reachable build including broken ones (`lrn-ea833a5b`).
    Guarded by **M10**.
    (c) **no re-offer** (§2.4 door 3). The same confirm response contains
@@ -389,28 +417,31 @@ absent passes against a blank page. Neither is worth anything alone.
    passing against an empty body. Guarded by **M13**.
 
 9. **The fossil comment is corrected.** `_evidence_ctx`'s comment at
-   `routes.py:1108-1121` (the block immediately above `record_url` at
-   `:1122`) justifies `record_url = None` for `route`/`reject`/
-   `graduate` on the grounds that *"`record_detail`'s GET redirects
-   (`record.status not in ("pending", "deferred")`)"*. After this unit
-   that sentence is **false**. The behaviour is unchanged (§6.2) and the
-   comment must be rewritten to state the surviving reason. Asserted as
-   a source-text check: the redirect rationale no longer appears.
-   *(`commit-drift-evidence-spec.md` §1: "a fossil rationale reads
-   exactly like a live one.")* Guarded by **M11**.
+   `routes.py:1284-1294` (was `:1108-1121`; the block immediately above
+   `record_url` at `routes.py:1295`, was `:1122`) justifies
+   `record_url = None` for `route`/`reject`/`graduate` on the grounds
+   that *"`record_detail`'s GET redirects (`record.status not in
+   ("pending", "deferred")`)"*. After this unit that sentence is
+   **false**. The behaviour is unchanged (§6.2) and the comment must be
+   rewritten to state the surviving reason. Asserted as a source-text
+   check: the redirect rationale no longer appears. *(`commit-drift-
+   evidence-spec.md` §1: "a fossil rationale reads exactly like a live
+   one.")* Guarded by **M11**.
 
 10. **Both proposal-slot staleness guards survive — one leg each.**
-    `routes.py:1253` and `routes.py:2117` carry the *same textual
-    predicate* `record.status not in ("pending", "deferred")`, and a
-    builder deleting the `:570` predicate by search-and-replace would
-    take them too. They live in different functions and need different
-    scenarios:
-    (a) **`:1253`, `_sweep_stale_proposal`** — reached after a verb this
-    server executed. Hold a slot on record X, execute a bulk/collapse
-    verb that resolves X, assert the slot is cleared.
-    (b) **`:2117`, `proposal_arm`** — *not* `proposal_confirm`, which
-    has **no status predicate at all** (r1 named the wrong function, so
-    its scenario never exercised `:2117`). Hold a slot on record X,
+    `routes.py:1430` (`_sweep_stale_proposal`, was `:1253`) and
+    `routes.py:2294` (`proposal_arm`, was `:2117`) carry the *same
+    textual predicate* `record.status not in ("pending", "deferred")`,
+    and a builder deleting the `detail_page` predicate (`routes.py:705`,
+    was `:570`) by search-and-replace would take them too. They live in
+    different functions and need different scenarios:
+    (a) **`routes.py:1430`, `_sweep_stale_proposal`** — reached after a
+    verb this server executed. Hold a slot on record X, execute a
+    bulk/collapse verb that resolves X, assert the slot is cleared.
+    (b) **`routes.py:2294`, `proposal_arm`** — *not* `proposal_confirm`,
+    which has **no status predicate at all** (r1 named the wrong
+    function, so its scenario never exercised this predicate). Hold a
+    slot on record X,
     resolve X by direct ledger mutation (no verb), POST `/proposal/arm`,
     assert the `proposal_gone` response and a cleared slot. This is the
     shape `test_proposals.py::test_stale_arm_after_external_resolution_renders_gone`
@@ -424,11 +455,11 @@ absent passes against a blank page. Neither is worth anything alone.
 
     | Test | New contract |
     |---|---|
-    | `test_routes.py::TestDetailPage::test_resolved_elsewhere_redirects_to_bucket_with_banner` (`:761`) | `200`, the resolved-state render; renamed to say so. No 303, no banner. |
-    | `test_routes.py::TestNextRecordPrefetch::test_never_stale_an_externally_resolved_record_is_never_served_from_cache` (`:2958`) | see below — replacement observable |
-    | `test_proposals.py::TestProposalRoutes::test_resolved_elsewhere_clears_slot_on_detail_render` (`:749`) | **this is criterion 4(b)'s exact behaviour** — update the incumbent to `200` + slot cleared + no proposal bar |
-    | `test_degradation_walk.py::TestBulkGraduateResumeIdempotency::test_already_resolved_id_vanishes_from_the_bulk_collapse_group` (`:310`) | see below — group-scoped |
-    | `test_resolution_evidence.py::TestResolvedRecordRedirectsAwayFromItsOwnDetailPage::test_a_routed_record_no_longer_resolves_at_record_id` (class `:391`, test `:396-404`) | `200` + the resolved render. The class name and the block comment at `:375-389` both describe the redirect as the reason the `v` button is suppressed; that reason changes and the prose must change with it. **The `v`-button behaviour itself does not change** (§6.2). |
+    | `test_routes.py::TestDetailPage::test_resolved_elsewhere_redirects_to_bucket_with_banner` (`:761`; class `TestDetailPage` now `:760`, test renamed to `test_resolved_record_renders_the_resolved_view_at_its_own_id`, `:771`) | `200`, the resolved-state render; renamed to say so. No 303, no banner. |
+    | `test_routes.py::TestNextRecordPrefetch::test_never_stale_an_externally_resolved_record_is_never_served_from_cache` (`:2976`, was `:2958`) | see below — replacement observable |
+    | `test_proposals.py::TestProposalRoutes::test_resolved_elsewhere_clears_slot_on_detail_render` (`:749` — unmoved) | **this is criterion 4(b)'s exact behaviour** — update the incumbent to `200` + slot cleared + no proposal bar |
+    | `test_degradation_walk.py::TestBulkGraduateResumeIdempotency::test_already_resolved_id_vanishes_from_the_bulk_collapse_group` (`:288`, was `:310`) | see below — group-scoped |
+    | `test_resolution_evidence.py::TestResolvedRecordRedirectsAwayFromItsOwnDetailPage::test_a_routed_record_no_longer_resolves_at_record_id` (class `:391` — unmoved, test `:403-408`, was `:396-404`) | `200` + the resolved render. The class name and the block comment (`:375-388`, was `:375-389`) both describe the redirect as the reason the `v` button is suppressed; that reason changes and the prose must change with it. **The `v`-button behaviour itself does not change** (§6.2). *(The class identifier itself was not renamed — its docstring documents the discrepancy in place instead.)* |
 
     **The cache-staleness test needs a replacement observable, and it
     must not be weakened to "returns 200".** The 303 was that test's
@@ -465,10 +496,13 @@ absent passes against a blank page. Neither is worth anything alone.
     module, **report the collected/passed count** — `test_js_dom.py:87`
     is an `importorskip` and a skipped module is not a red test.
 
-13. **The title fix is guarded.** `routes.py:320` hardcodes
+13. **The title fix is guarded.** `routes.py:320` (pre-fix baseline;
+    this line is now something else entirely — see note below) hardcoded
     `"title": models.leading_text(None, [], "")` → `"(untitled)"` for
     exactly the records this unit makes viewable, and that flows into
-    `FindingRegion.title` (`models.py:1442` → `_build_finding`). Set it
+    `FindingRegion.title` (`models.py::FindingRegion.title`, the field at
+    `models.py:1259`, flowing through `models.py::_build_finding`,
+    `models.py:1386-1395` — was cited as `:1442`). Set it
     from `ledger_ops.record_title(record)`; the resolved template
     renders `model.finding.title` as its heading. Assert the heading
     carries the record's Trigger text. **State the empty case:**
@@ -478,6 +512,13 @@ absent passes against a blank page. Neither is worth anything alone.
     with a record whose Trigger section is missing. Without this
     criterion the heading can revert to `(untitled)` with the suite
     green. Guarded by **M16**.
+    *(Citation note, dated: `routes.py:320` was the hardcode's line
+    against the pre-fix baseline this spec was drafted from — that line
+    now falls inside this unit's OWN new comment explaining why
+    `record_title` replaced `leading_text` (`routes.py:319-325`), which
+    reads as plausibly relevant but is not the assignment itself. The
+    fix landed at `routes.py:336`, inside `_gather_detail_bundle`
+    (`routes.py:292`): `"title": ledger.record_title(record),`.)*
 
 14. **The distinct `page_kind` is guarded, and `g` is advertised there.**
     `.keymap-footer-entry` defaults to `display: none`
@@ -521,12 +562,12 @@ and is invited to invent more.
 | M7 | In the resolved template, restore the `detail-right` pane column include | 6 (the `iterate` half) |
 | M8 | Change the resolved Graduate control's `hx-vals` verb from `graduate` to `reject` | 8(a) |
 | M9 | Delete the `slot.clear_for_record(record_id)` call on the resolved-render path | 4(b) |
-| M10 | In `_evidence_ctx`, replace `envelope = run_result.evidence` with `envelope = None` (`routes.py:1101`) | 8(b) |
-| M11 | Restore the old comment text at `routes.py:1108-1121` | 9 |
-| M12 | Change `record.status not in ("pending","deferred")` at `routes.py:1253` to `record is None` | 10(a) |
+| M10 | In `_evidence_ctx`, replace `envelope = run_result.evidence` with `envelope = None` (`routes.py:1277`, was `:1101`) | 8(b) |
+| M11 | Restore the old comment text at `routes.py:1284-1294` (was `:1108-1121`) | 9 |
+| M12 | Change `record.status not in ("pending","deferred")` at `routes.py:1430` (was `:1253`) to `record is None` | 10(a) |
 | M13 | Drop the `{% if not evidence %}` guard from the `kind == "resolved"` branch in `action_bar.html` | 8(c) |
 | M14 | Add `data-row` to the archive row element | 4(c) |
-| M15 | Change `record.status not in ("pending","deferred")` at `routes.py:2117` to `record is None` | 10(b) |
+| M15 | Change `record.status not in ("pending","deferred")` at `routes.py:2294` (was `:2117`) to `record is None` | 10(b) |
 | M16 | In `_gather_detail_bundle`, restore `"title": models.leading_text(None, [], "")` | 13 |
 | M17 | Emit `{% block page_kind %}detail{% endblock %}` in the resolved template | 14 |
 | M18 | Render the archive row's leading text as plain text — drop the `<a href>`, keep everything else | **1 only** |
@@ -631,7 +672,7 @@ the user's actual sentence untouched.
 - **The action lives on the Detail page, never on index rows.**
   `app.js`'s `clickAction` is
   `document.querySelector('[data-key-action="' + action + '"]')`
-  (`static/app.js:54-55`) — **first match in document order, with no
+  (`static/app.js:56-57`, was `:54-55`) — **first match in document order, with no
   awareness of which row is selected.** N rows each carrying a Graduate
   button would make `g` always fire row 1, silently retiring the wrong
   lesson. The Detail page renders exactly one record, so `g` is
@@ -662,8 +703,9 @@ the user's actual sentence untouched.
 
 - **No new POST route.** `action_arm`/`action_confirm` already accept
   `verb=graduate` against a resolved record and already dispatch
-  `--json` (`as_json=verb in _EVIDENCE_VERBS`, `routes.py:1293`).
-  Measured working. Adding a route would fork the evidence surface.
+  `--json` (`as_json=verb in _EVIDENCE_VERBS`, `routes.py:1470`, was
+  `:1293`). Measured working. Adding a route would fork the evidence
+  surface.
 
 - **The index's set comes from the CLI; its text comes from a raw read.**
   Ids and routing facts: `report --json`'s `routed_live`, verbatim, so
@@ -676,7 +718,8 @@ the user's actual sentence untouched.
 
 - **Filter by name, then confirm scope.** Necessary, not defensive —
   measured. `routed_live` rows carry `bucket` (name) and no scope
-  (`report.py:279-289`). The collision space is exactly one shape: a
+  (`report.py::gather`, the `routed_live.append({...})` dict, now
+  `report.py:297-311`, was `:279-289`). The collision space is exactly one shape: a
   skill directory named `user` versus the user bucket, which
   `discover_buckets` names by the literal constant `"user"`. A project
   bucket cannot collide (`slug_for` = path-with-dashes + sha8, always
@@ -706,7 +749,9 @@ the user's actual sentence untouched.
    `rows()`'s lack of a visibility filter. Both are real, pre-existing
    defects in `static/app.js`. Neither is created nor fixed here; both
    are worked *around* (§5, criterion 4(c)).
-4. **`watch_paths` does not watch `resolved/`** (`ledger.py:422-431`).
+4. **`watch_paths` does not watch `resolved/`** (`ledger.py::watch_paths`,
+   the UI's `plugins/self-learn/ui/src/self_learn_ui/ledger.py:434-443`,
+   was `:422-431`).
    An in-app graduate refreshes the index (`_force_refresh` runs after
    every verb); a graduate by an external CLI session does not push a
    refresh, and the 10 s client poll catches it. Watching `resolved/`
@@ -757,9 +802,10 @@ advertised nowhere. The file is in this unit's set for that reason.
 
 **B1 adds a new subprocess read to the Bucket page.** Stated plainly
 because r1 implied otherwise: `bucket_page` today calls
-`ledger.list_items` (`:444`) and `ledger.status` (`:464`) and **does
-not** call `ledger.report` — the only `report --json` call sites are
-`front()` (`:411`) and `report_page()` (`:891`). B1 adds a third
+`ledger.list_items` (`routes.py:570`, was `:444`) and `ledger.status`
+(`routes.py:597`, was `:464`) and **does not** call `ledger.report` —
+the only `report --json` call sites are `front()` (`routes.py:427`, was
+`:411`) and `report_page()` (`routes.py:1067`, was `:891`). B1 adds a third
 subprocess per bucket-page load. Accepted: it matches the front page's
 existing four-subprocess budget, and `report.gather` walks 89 record
 files on the real ledger.
@@ -769,9 +815,9 @@ needed:**
 
 | Existing CLI read | Enumerates resolved records? |
 |---|---|
-| `list --json` (`ledger_ops.list_items:1108`) | **No** — iterates `queue(bucket, …)`, pending only. `--include-deferred` widens to deferred, which still lives in `pending/`. `--id` filters the same pending set. |
+| `list --json` (`ledger_ops.list_items`, `ledger_ops.py:1870`, was `:1108`) | **No** — iterates `queue(bucket, …)`, pending only. `--include-deferred` widens to deferred, which still lives in `pending/`. `--id` filters the same pending set. |
 | `status --json` (`status_infos`) | **No** — per-bucket pending counts only. |
-| `report --json` (`report.gather:230`) | **Yes, partly.** `routed_live[]` = every `status: routed` record with `{id, bucket, routed_days_ago, last_confirmed, recurrences}`. `open_followups[]` and `recurrence_suspects[]` also carry resolved ids. `graduated`/`rejected` are **integers only** — no ids. `buckets[].counts` gives per-status counts per bucket. |
+| `report --json` (`report.gather`, `report.py:250`, was `:230`) | **Yes, partly.** `routed_live[]` = every `status: routed` record with `{id, bucket, routed_days_ago, last_confirmed, recurrences}`. `open_followups[]` and `recurrence_suspects[]` also carry resolved ids. `graduated`/`rejected` are **integers only** — no ids. `buckets[].counts` gives per-status counts per bucket. |
 | `mine status --json` | No. |
 
 `routed_live` is sufficient for `INDEX-SET` and is why `INDEX-SET` is

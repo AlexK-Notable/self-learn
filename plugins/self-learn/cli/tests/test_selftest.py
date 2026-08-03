@@ -510,11 +510,14 @@ def test_loaded_surface_user_scope_returns_default_claude_md_criterion_9a(
 ):
     """A direct unit test of the LS helper: `record.scope == "user"`
     returns `[DEFAULT_USER_CLAUDE_MD.expanduser()]`, never `[]`. The `user`
-    row is dead code end-to-end via any REAL routing flow until
-    `U-demand-user` (`reference` is refused at user scope today, §6) —
-    `_reference_target_for` returns `None` before LS is ever consulted —
-    so the helper is tested directly; the alternative is a scope silently
-    outside RR (F1)."""
+    row is dead code end-to-end via any REAL routing flow — permanently,
+    per S-23 (2) (`03-decisions.md`), not "until `U-demand-user`" as this
+    docstring said at write time: S-23 ruled user scope's cheap surface is
+    PATHED rules only, explicitly not a user-level reference file, and
+    re-scoped `U-demand-user` away from ever opening it. `reference` is
+    refused at user scope by design (§6) — `_reference_target_for` returns
+    `None` before LS is ever consulted — so the helper is tested directly;
+    the alternative is a scope silently outside RR (F1)."""
     monkeypatch.setenv("HOME", str(tmp_path))
     home = tmp_path / "ledger"
     home.mkdir()

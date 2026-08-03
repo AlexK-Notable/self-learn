@@ -60,7 +60,7 @@ or disagree with the answer. Two measured consequences:
   that still fires"*
   (`research/2026-07-27-routing-monoculture-and-pin-audit.md` §2) — a
   superlative asserted over a set of one, because
-  `ui/src/self_learn_ui/models.py:101` makes the user-scope destination set
+  `ui/src/self_learn_ui/models.py:106` makes the user-scope destination set
   the one-element tuple `("claude-md",)`. Nothing in the proposal file
   records which alternatives were weighed, so the uniformity reads as
   agreement rather than as a stuck gate.
@@ -82,7 +82,7 @@ or disagree with the answer. Two measured consequences:
   audit that produced this campaign.
 
 Today's validator has no defence against either. `validate_proposal`
-(`ledger_ops.py:518-568`) checks `destination`, `rationale`, `model`,
+(`ledger_ops.py:1252-1309`) checks `destination`, `rationale`, `model`,
 `analyzed_at`, `alternates`, `already_canon`, `record_sha`, `contradicts`,
 plus the `rules`/`lint`/`card`/`hook` blocks — every one of them a shape
 check over the proposal's own bytes. **No field in the proposal is ever
@@ -108,11 +108,11 @@ writing:
 
 | Importer | What it imports from `ledger_ops` |
 |---|---|
-| `worker.py:54`, `:61-65` | `bucket_project_path`, `read_proposal`, `stamp_proposal`, `validate_proposal`, … |
+| `worker.py:55`, `:57-67` | `bucket_project_path`, `read_proposal`, `stamp_proposal`, `validate_proposal`, … |
 | `analyst.py:57` | `ProposalError`, `validate_proposal` |
-| `selfcheck.py:78-84` | `read_proposal`, `stamp_proposal`, `validate_proposal`, … |
+| `selfcheck.py:87-94` | `read_proposal`, `stamp_proposal`, `validate_proposal`, … |
 | `miner.py:53` | `LedgerOpsError`, `create_record`, `record_title` — **none of them touched by this unit** |
-| `verbs.py:102-118` | `read_proposal`, `validate_proposal`, … |
+| `verbs.py:112-129` | `read_proposal`, `validate_proposal`, … |
 | `import_backlog.py:66` | `stamp_proposal`, `write_proposal`, … |
 
 **The seam, stated as five obligations the builder builds toward and the
@@ -123,15 +123,24 @@ code gate tests:**
   observable (`validate_proposal` outcome, `proposal_info` dict,
   `is_unanalyzed`, `write_proposal`, `stamp_proposal`, `list --json`).**
   This is the absent-is-valid posture, mirroring `card:`
-  (`ledger_ops.py:359-373`) and `lint:` (`:382-408`), and it is what makes
+  (`ledger_ops.py:415-429`) and `lint:` (`:438-464`), and it is what makes
   the 13 pending pre-contract proposals stay routable through the
   transition (r2 §7).
 - **S2 — No call site outside `ledger_ops.py` changes.** Every new
   parameter is **keyword-only with a default**, so `validate_proposal(data)`
-  keeps working verbatim at `analyst.py:213`, `worker.py:908`, `:1236`,
-  `selfcheck.py:145`, `verbs.py:509`, `:1098`, `:1152`. A builder who finds
+  keeps working verbatim at `analyst.py:244`, `worker.py:927`, `:1282`,
+  `verbs.py:522`, `:1164`, `:1218`. A builder who finds
   themselves editing another module has left this unit's scope and must
   stop and report instead.
+  *(Line numbers re-verified 2026-08-03 — all six shifted from r3's
+  numbering because concurrent same-day sibling units touched these
+  shared files; the calls themselves are still bare and positional.
+  **`selfcheck.py:145` is dropped from this list, not merely
+  renumbered**: FW-62 (commit `81cb694`, 2026-08-02) rewired
+  `selfcheck.py`'s `proposal_validate` to pass `record_text=` — the very
+  wiring §3.7 item 9 names as advisory-only — so that call site no
+  longer demonstrates "keeps working verbatim [with one positional
+  arg]" at all. See §3.7 item 9 for the corrected census.)*
 - **S3 — No new module-level import is added to `ledger_ops.py`, so no
   import cycle with the four concurrent modules is possible.** Measured:
   the whole change is expressible with `re` (already imported at
@@ -144,8 +153,13 @@ code gate tests:**
   a body naming `fnmatch` as a new one. The blocker's resolution removed
   the need for either, so headline and body now agree.)
 - **S4 — `validate_proposal` stays free of filesystem I/O.** It is on the
-  eligibility hot path: `proposal_info` (`:1055-1058`) → `is_unanalyzed`
-  (`:1063-1070`) → `list` / `status` / the worker's queue computation. Any
+  eligibility hot path: `proposal_info` (`ledger_ops.py::proposal_info`) →
+  `is_unanalyzed` (`ledger_ops.py::is_unanalyzed`) → `list` / `status` /
+  the worker's queue computation. *(Line-pinned cites here were retired
+  2026-08-03: `:1055-1058`/`:1063-1070` had drifted onto unrelated code —
+  the X3 roster-honesty check inside `_validate_gates` — the exact
+  resolves-to-something-plausible-but-wrong failure this unit's own §1
+  warns about. Symbol names don't rot the same way.)* Any
   I/O there is paid per queue item per render, and — worse — any file that
   can change under the validator turns an unrelated edit into a silent
   `proposal_fresh: False` and a silent re-analysis. `proposal_info`
@@ -154,7 +168,7 @@ code gate tests:**
   reads the record from memory and why §3.7 refuses to read target files at
   all in this unit.
 - **S5 — `stamp_proposal` gains no new failure mode.** It is called inside
-  `selfcheck.proposal_validate`'s lock block (`selfcheck.py:166-176`),
+  `selfcheck.proposal_validate`'s lock block (`selfcheck.py:184-194`),
   whose `except` catches only `gitops.GitOpsError`, so a `ProposalError`
   raised there escapes the verb. **It does not become an uncaught
   traceback** — `ProposalError` subclasses `LedgerOpsError`, and
@@ -163,11 +177,13 @@ code gate tests:**
   differently-shaped and arguably worse: a **schema** failure would be
   reported to the user as a **usage** error, breaking `proposal validate`'s
   pinned exit trio (`EXIT_VALID=0` / `EXIT_SCHEMA_INVALID=1` /
-  `EXIT_SCAN_HIT=2`, `selfcheck.py:91-93`) — a wrong-category exit code is
+  `EXIT_SCAN_HIT=2`, `selfcheck.py:100-102`) — a wrong-category exit code is
   exactly the kind of failure that trains a human to distrust a gate.
   **This escape route is pre-existing, not created by this unit**
-  (`stamp_proposal` already raises `ProposalError` at `:685`, reachable
-  today via a `destination: hook` proposal on a `knowledge` record).
+  (`stamp_proposal` already raises `ProposalError` via
+  `_generate_hook_script` (`ledger_ops.py::_generate_hook_script`),
+  reachable today via a `destination: hook` proposal on a `knowledge`
+  record).
   **The conclusion is unchanged: the trace validator never runs from
   `stamp_proposal`.** Tested by A9.
   *(FOLD-4: r1 said "uncaught traceback". Wrong — verified at
@@ -177,8 +193,8 @@ code gate tests:**
 - **S6 (FOLD-2) — `_validate_gates` raises `ProposalError` and nothing else, on
   every input, including malformed ones.** This is the seam's most likely
   real-world failure and it is not hypothetical: `proposal_info`
-  (`:1055-1058`) catches **only** `ProposalError`, and `is_unanalyzed` and
-  `queue()` catch nothing at all. A `TypeError` from indexing
+  (`ledger_ops.py::proposal_info`) catches **only** `ProposalError`, and
+  `is_unanalyzed` and `queue()` catch nothing at all. A `TypeError` from indexing
   `gates: {g0: "oops"}` would surface as a traceback out of
   `self-learn list` — a trace-less user's `list` broken by a *malformed
   trace on somebody else's record in the same bucket*. **Every level must
@@ -204,13 +220,13 @@ All three are **optional as a whole**; each is shape-checked strictly when
 present.
 
 `validate_proposal` does **not** reject unknown top-level keys today
-(verified: `:518-568` inspects named keys only), so a proposal carrying
+(verified: `:1252-1309` inspects named keys only), so a proposal carrying
 these keys already parses under the current CLI. This unit turns them from
 *ignored* into *checked*.
 
 **`gates` is a mapping whose key set is exactly `TRACE_GATE_KEYS` —
 closed.** Unknown keys are refused (the `_validate_hook_extension`
-precedent, `:449-454`); missing keys are refused.
+precedent, `ledger_ops.py::_validate_hook_extension`); missing keys are refused.
 
 `TRACE_GATE_KEYS = ("g0", "t1", "t2", "t3", "t3a", "t4", "tn", "e1", "outcome")`
 
@@ -269,7 +285,7 @@ file; they are part of Schema-1's meaning, not a separate feature):
 - **X2 — `tn.proposed_name` well-formedness.** Reuse
   `validate_skill_name` (already imported at `ledger_ops.py:42`), and
   re-raise its `SkillScaffoldError` as a `ProposalError` naming the field —
-  the `_validate_rules_fields` precedent at `:597-606`.
+  the `_validate_rules_fields` precedent at `:1338-1347`.
 - **X3 — roster honesty.** When `gates.t3.roster_sha == "unavailable"`,
   then `gates.t3.answer` must be `"no"` **and** `flags` must contain
   `evidence-gap`. This is r2 §2's T3 degradation rule made mechanical: the
@@ -386,7 +402,7 @@ more** directory levels, so `fnmatch.fnmatch('src/app.py', 'src/**/*.py')`
 is `False` — while `glob.glob('src/**/*.py', root_dir=…, recursive=True)`
 returns `['src/a/b/deep.py', 'src/app.py']`. `**/` in `glob` matches **zero
 or more** levels. r1's X1 was therefore *stricter* than the route-time
-check at `verbs.py:695-699`, which uses `glob(..., recursive=True)`.
+check at `verbs.py:708-712`, which uses `glob(..., recursive=True)`.
 
 **Why the looser rule is right, not merely convenient.** A validator that
 refuses honest evidence the route verb accepts is the same failure §3.4
@@ -591,7 +607,7 @@ a bool out, no filesystem, no `root_dir`, no cwd. It matches `glob` on
 `glob`'s absolute-path behaviour, where
 `glob.glob("/etc/host*", root_dir=<elsewhere>)` returns `/etc/hosts`
 because `glob` **ignores `root_dir` for absolute patterns** — a
-**fail-open in the route-time check at `verbs.py:675-710`**, found by a
+**fail-open in the route-time check at `verbs.py:688-723`**, found by a
 sibling unit. `_glob_match` cannot have that bug, having no root concept.
 **If these two are ever reconciled, the direction is to fix `verbs.py`,
 never to teach the validator to ignore its input.** (§8-O6.)
@@ -615,7 +631,7 @@ otherwise.
 
 The trace validator is a private `_validate_gates(data, *, record_text=None)`
 called from `validate_proposal`, in the same position `_validate_lint` and
-`_validate_card` occupy (`:566-568`). Containment runs **iff `record_text`
+`_validate_card` occupy (`:1307-1309`). Containment runs **iff `record_text`
 is supplied**; shape, enums, required-ness and the closed sets always run.
 
 That immediately raises the question this project keeps getting wrong: *if
@@ -627,9 +643,9 @@ behaviour — the `--json`-argv lesson from `commit-drift-evidence-spec.md`
 
 | Call site | Line today | Change | Why it is the right site |
 |---|---|---|---|
-| `validate_proposal` | `:518` | gains `*, record_text: str \| None = None`; passes it to `_validate_gates` | keyword-only default keeps S2 |
-| `write_proposal` | `:658-665` | resolve `find_record_path` **before** validating; when `data.get("gates") is not None`, pass `record_text=Record.from_path(record_path).to_text()` | already has `home` + `record_id`; the producer path used by `import_backlog.py:267` and the sandbox tooling |
-| `proposal_info` | `:1055-1058` | when `data.get("gates") is not None`, pass `record_text=entry.record.to_text()` | `entry.record` is **already in memory** (`queue()` loaded it) — no new I/O, satisfying S4. This is the site that makes containment unavoidable: a fabricated quote makes the proposal schema-invalid → `proposal_fresh: False` → `is_unanalyzed: True` → the worker re-analyzes it. |
+| `validate_proposal` | `:1252` | gains `*, record_text: str \| None = None`; passes it to `_validate_gates` | keyword-only default keeps S2 |
+| `write_proposal` | `:1409-1415` | resolve `find_record_path` **before** validating; when `data.get("gates") is not None`, pass `record_text=Record.from_path(record_path).to_text()` | already has `home` + `record_id`; the producer path used by `import_backlog.py:267` and the sandbox tooling |
+| `proposal_info` | `:1815-1818` | when `data.get("gates") is not None`, pass `record_text=entry.record.to_text()` | `entry.record` is **already in memory** (`queue()` loaded it) — no new I/O, satisfying S4. This is the site that makes containment unavoidable: a fabricated quote makes the proposal schema-invalid → `proposal_fresh: False` → `is_unanalyzed: True` → the worker re-analyzes it. |
 
 **The `data.get("gates") is not None` guard is load-bearing for cost, not
 for correctness**: it keeps `to_text()` (a ruamel re-dump) off the path for
@@ -639,7 +655,7 @@ exactly that.
 
 **Consequence worth stating:** containment failure is a *subset* of
 staleness in practice, because a record edited after analysis already fails
-the `record_sha` check at `:1059`. The only proposals this newly marks
+the `record_sha` check at `:1821`. The only proposals this newly marks
 unfresh are ones whose quotes were never in the record — which is the
 intended effect.
 
@@ -785,6 +801,20 @@ is a defect to be found at the gate.**
    to distrust it. Re-read S2; do not edit this paragraph's prose to
    match.**
 
+   **FW-62 landed 2026-08-02, commit `81cb694`, the day after this
+   correction was written — updated 2026-08-03, exactly as this
+   paragraph anticipated:** `selfcheck.py`'s `proposal_validate` now
+   calls `validate_proposal(read_proposal(yaml_sibling),
+   record_text=record.to_text())` (`selfcheck.py:163`) instead of the
+   bare positional call this paragraph measured. **`selfcheck.py`'s site
+   is dropped from the list above; six sites remain**: `worker.py`'s
+   `_validate_written` and `fast_status`, `verbs.py`'s
+   `_resolve_destination`, `_prepare_one_motion_hook` and
+   `_prepare_hook_route`, and `analyst.py`'s `analyze`. Per this
+   paragraph's own instruction, §2's S2 is the list that was re-read and
+   corrected (S2 no longer names `selfcheck.py` among the still-bare call
+   sites) — this paragraph's prose otherwise stands unedited, as directed.
+
    **Concretely, for every site still on the list:** a proposal carrying a
    fabricated quote passes `validate_proposal` there and is written, read,
    or acted on as valid at that site. What it will *not* do is read as
@@ -795,10 +825,13 @@ is a defect to be found at the gate.**
    *rejected at the door*, everywhere except `ledger_ops.py`'s own two
    callers (`write_proposal`, `proposal_info`; §3.5). Closing any one site
    is a one-line `record_text=` add, owned by whichever unit next holds
-   that file — §8-O7 for the worker/route pair, FW-62 for
-   `selfcheck.py`, unassigned for `analyst.py`. **This is stated here
-   because the rest of this spec claims a standard of disclosure it would
-   otherwise fail.**
+   that file — §8-O7 for the worker/route pair, unassigned for
+   `analyst.py`. **`selfcheck.py` is no longer on this list — FW-62
+   closed it 2026-08-02 (see above); it is left out of the "owned by"
+   enumeration here rather than marked done, because as of this same
+   correction (2026-08-03) it is simply gone, not a pending item with an
+   owner.** This is stated here because the rest of this spec claims a
+   standard of disclosure it would otherwise fail.
 
 ---
 
@@ -1075,13 +1108,25 @@ is still required.
   | `pyright src/self_learn` | 64 errors, rc=1 | **3** | `:35`, `:36` — `reportMissingImports` on `ruamel.yaml` / `ruamel.yaml.error` (**artefacts of resolving against the wrong interpreter**, not real); `:322` — `Argument of type "Path \| None" … "project_path"` |
   | `pyright --pythonpath ./.venv/bin/python src` | 50 errors, rc=1 | **1** | `:322` only — the two ruamel errors vanish, confirming they were resolution artefacts |
 
+  *(Re-measured 2026-08-03, same two invocations, rc read unpiped both
+  times: `pyright src/self_learn` now reports **66** errors, rc=1;
+  `pyright --pythonpath ./.venv/bin/python src` still reports **50**,
+  rc=1. The totals moved because concurrent sibling units touched other
+  files under `src/self_learn` the same day — not because of anything in
+  `ledger_ops.py`. The `ledger_ops.py`-local diagnostic counts are
+  unchanged (**3** and **1** respectively), but the single non-artefact
+  diagnostic itself has moved: it is the call into `ensure_project_meta`
+  passing a `project_path: Path | None`, now at `ledger_ops.py:378` in
+  both invocations, not `:322`. The bar below still holds against the
+  new line.)*
+
   **The bar:** run the **same invocation** before and after — record which
   one — and require the `ledger_ops.py` count not to increase. Under the
   venv-resolved invocation that count is **1**, and it is the better
   baseline because it does not carry two false diagnostics. Identify the
   pre-existing ones **by rule and line**, not by count alone, so a new
   error that displaces an old one cannot hide in an unchanged total.
-  Do not fix `:322` — scope creep into a shared file (§7).
+  Do not fix `:378` (formerly `:322`) — scope creep into a shared file (§7).
   `15-orchestration-runbook.md:131-132` states this rule as an absolute
   number that has since drifted, so **measure, do not quote** — and a
   count measured with a different invocation than the "before" is not a
@@ -1307,7 +1352,7 @@ thing it checks is absent?** Applied, with the answers:
   campaign §6 question 8. This unit ships them optional, permanently as far
   as it is concerned.
 - **`write_proposal` does not secret-scan.** Pre-existing; the worker
-  (`worker.py:887-891`), `proposal validate` (`selfcheck.py:118-132`) and
+  (`worker.py:906-909`), `proposal validate` (`selfcheck.py:123-141`) and
   the route verbs all scan the proposal file. Not this unit's to change.
 
 ---
@@ -1323,8 +1368,8 @@ verified against current source:**
 - **C2 — `validate_proposal` does not load the record.** §1.4 item 2 says
   quote containment is cheap because *"the validator already loads the
   record to stamp `record_sha`"*. It does not: `validate_proposal`
-  (`:518-568`) receives only the proposal mapping. `stamp_proposal`
-  (`:668-691`) is the function that loads the record, and it is a
+  (`:1252-1309`) receives only the proposal mapping. `stamp_proposal`
+  (`:1422-1445`) is the function that loads the record, and it is a
   *different* function called *later* — and it cannot host the check
   (S5: it runs inside `selfcheck.proposal_validate`'s lock block, whose
   `except` catches only `GitOpsError`, so a `ProposalError` raised there
@@ -1356,7 +1401,7 @@ verified against current source:**
 builder rule):**
 
 - **N1 — `_validate_project_globs`' docstring is factually wrong.**
-  `verbs.py:683-687` states that a pattern with an unbalanced bracket
+  `verbs.py:695-699` states that a pattern with an unbalanced bracket
   *"degrades to a non-matching literal … so 'unparseable' folds into
   'zero-match'"*. **Measured: it degrades to a *matching* literal.**
   `fnmatch.translate('unbal[.py')` → `(?s:unbal\[\.py)\Z`, and
@@ -1375,11 +1420,23 @@ builder rule):**
   fixing `verbs.py`, never loosening `_glob_match`.
 
 **Non-contradictions, verified so a reviewer need not re-check:** r2's
-line-number claims that bear on this unit are accurate —
-`_validate_lint`/`_validate_card` posture at `:359-408`,
-`_validate_hook_extension` at `:426-515`, `stamp_proposal` at `:668-691`,
-`_validate_project_globs` at `verbs.py:675-710`, `analyst.py:196-204`'s
-fixed-key rebuild (F4), `worker.py:1330`'s `cwd=str(home)`.
+line-number claims that bear on this unit are accurate, *as measured at
+the time this section was written* —
+`_validate_lint`/`_validate_card` posture at `:415-464`,
+`_validate_hook_extension` at `:482-582`, `stamp_proposal` at `:1422-1445`,
+`_validate_project_globs` at `verbs.py:688-723`,
+`worker.py:1376`'s `cwd=str(home)`.
+**`analyst.py:196-204`'s "fixed-key rebuild (F4)" no longer resolves and
+is dropped from this list, not merely renumbered — corrected 2026-08-03:**
+that bug (FW-41) was fixed the same day as this unit's own build, by the
+sibling unit `U-analyst` (commit `eef0707`, merge `9c95e9e`, both
+2026-08-02). `analyze()` no longer rebuilds the proposal from an
+enumerated key set; it copies the parsed mapping wholesale and stamps the
+three CLI-owned fields over it — `analyst.py::analyze`'s own docstring
+now documents the old defect and the fix in the same breath. The old line
+range falls inside unrelated code today (the pre-spawn `home` directory
+guard). This was a correct verification of r2 at the time it was made;
+it is not a correct description of shipped code today.
 
 **Obligations handed to other units — record them, do not build them here:**
 
@@ -1413,11 +1470,11 @@ fixed-key rebuild (F4), `worker.py:1330`'s `cwd=str(home)`.
   exception for a leading `/` in the *path* against a `**` pattern.
   FW-60.)
 - **O7 → whoever next holds `worker.py` / `verbs.py`:** wire the two
-  remaining `validate_proposal` call sites (`worker.py:908`,
-  `verbs.py:509`) to pass `record_text=`, which turns §3.7 item 9's
+  remaining `validate_proposal` call sites (`worker.py:927`,
+  `verbs.py:522`) to pass `record_text=`, which turns §3.7 item 9's
   advisory reach into enforcement on the campaign's primary execution
   path. One line at each site; both already have the record or can load
-  it (`worker.py:909-911` computes `rpath` two lines below its call).
+  it (`worker.py:928-930` computes `rpath` two lines below its call).
   **Until then, do not describe this unit as "quote containment is
   enforced" without the qualifier** — §1 and §3.7 item 9 carry the honest
   wording.

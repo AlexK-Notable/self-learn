@@ -26,15 +26,19 @@ functions touched here are named in §3.5 and nothing is restructured.
 **A "pathed" rules file is an unpathed rules file.** Everything upstream
 of emission exists and is tested; the last step was never built.
 
-- A proposal may carry `rules_paths` (`ledger_ops.py:613-623` shape-checks
-  it), the route threads it (`verbs.py:1983`), project scope validates it
-  against the host tree (`_validate_project_globs`, `verbs.py:675-710`),
-  it is persisted into `routing.rules_paths` (`ledger_ops.py:840-841`,
-  `verbs.py:2344-2345`), and `selfcheck` re-asserts it for project scope
-  (`selfcheck.py:382-399`).
-- Then `_apply_target` (`verbs.py:1602`) calls
-  `compile_managed_file(spec.target, _compile_set(home, spec))`
-  (`verbs.py:1676`) — whose signature (`compilers.py:261-267`) has no
+- A proposal may carry `rules_paths` (`ledger_ops.py::_validate_rules_fields`,
+  now `ledger_ops.py:1354-1364`, shape-checks it), the route threads it
+  (`verbs.py::route`, the `_resolve_target` call now at `verbs.py:2070-2082`),
+  project scope validates it against the host tree
+  (`_validate_project_globs`, now `verbs.py:688-723`), it is persisted into
+  `routing.rules_paths` (`ledger_ops.py::resolve_record`, now
+  `ledger_ops.py:1594-1595`; `verbs.py::route`, now `verbs.py:2181`), and
+  `selfcheck` re-asserts it for project scope (`selfcheck.py::_check_drift`,
+  now `selfcheck.py:599-624`).
+- Then `_apply_target` (now `verbs.py:1668`) calls
+  `compile_managed_file(spec.target, _compile_set(home, spec))` (the two
+  calls now split across `verbs.py:1757` and `:1764`) — whose signature
+  (`compilers.py::compile_managed_file`, now `compilers.py:300-306`) has no
   paths parameter and whose output contains no frontmatter at all.
 
 So the globs are validated, persisted, drift-checked, and **never
@@ -89,11 +93,11 @@ For a rules target file **T**, resolved by
 `(scope, variant="rules", rules_topic)`:
 
 - **C(T) — the compile set.** Exactly `_compile_set(home, spec)`
-  (`verbs.py:1313-1379`), which for a rules spec is
-  `_routed_to(…, variant="rules", rules_topic=<topic>)`
-  (`verbs.py:519-562`), further filtered by the compiler's own
-  `_eligible()` (`compilers.py:190-195`: `status == "routed"` and
-  `superseded_by is None`).
+  (`verbs.py::_compile_set`, now `verbs.py:1379-1445`), which for a rules
+  spec is `_routed_to(…, variant="rules", rules_topic=<topic>)`
+  (`verbs.py::_routed_to`, now `verbs.py:532-575`), further filtered by the
+  compiler's own `_eligible()` (`compilers.py::_eligible`, now
+  `compilers.py:229-234`: `status == "routed"` and `superseded_by is None`).
   **The section and the frontmatter are computed from the SAME C(T).**
   There is no second set and no second query.
 - **G(r)** for `r ∈ C(T)` = `tuple(r.routing.get("rules_paths") or ())`.
@@ -127,8 +131,9 @@ and any drift check use (§3.2).
 
 Splitting a topic whose records disagree would mean minting a new topic
 file — which changes the `(variant, rules_topic) → path` identity that
-`_compile_set`, `_target_for` (`selfcheck.py:215-224`) and `recompile`
-(`verbs.py:3540-3541`) all key on, and would silently move a human's
+`_compile_set`, `_target_for` (`selfcheck.py::_target_for`, now
+`selfcheck.py:202-250`) and `recompile` (`verbs.py::recompile`, now
+`verbs.py:3569`) all key on, and would silently move a human's
 routed record to a file they did not choose. **One topic is one file.**
 The union widens; the widening is reported (§3.3); which topic a lesson
 belongs to stays the analyst's proposal and the human's decision.
@@ -156,8 +161,10 @@ bearing.**
 
 **(a) It would strip the frontmatter on every `recompile`.** `recompile`
 deliberately withholds `rules_paths` from `_resolve_target`
-(`verbs.py:3535-3539`), and so does `_retirement_preflight`
-(`verbs.py:1543-1549`) — both for stated, correct reasons (no glob
+(`verbs.py::recompile`, the withholding `_resolve_target` call now at
+`verbs.py:3674-3695`), and so does `_retirement_preflight`
+(`verbs.py::_retirement_preflight`, its `_resolve_target` call now at
+`verbs.py:1598-1618`) — both for stated, correct reasons (no glob
 re-assertion outside selfcheck). A `spec.rules_paths`-driven emitter
 therefore sees `None` at both sites and would rewrite every rules file as
 unpathed. A pathed rule would silently become an always-loaded one on the
@@ -204,8 +211,9 @@ def apply_paths_frontmatter(path: Path | str, records: Sequence[Record]) -> Path
 
 - **`expected_paths`** is §2's `U(T)` and the only place the three rules
   live. **It applies the compiler's own `_eligible()` filter
-  (`compilers.py:190-195`) to `records` before evaluating them**, exactly
-  as `compile_managed_text` does at `:213` — so §2's "the section and the
+  (`compilers.py::_eligible`, now `compilers.py:229-234`) to `records`
+  before evaluating them**, exactly as `compile_managed_text` does (now at
+  `compilers.py:252`) — so §2's "the section and the
   frontmatter are computed from the SAME `C(T)`" is guaranteed by
   construction rather than by every caller remembering. In practice
   `_compile_set` already returns only `status == "routed"` records, so the
@@ -270,11 +278,13 @@ def apply_paths_frontmatter(path: Path | str, records: Sequence[Record]) -> Path
   > real content; `{}` is never written.
 
   **Refusals** (`CompileError`, never a guess — the same posture as a
-  half-markered target, `compilers.py:244-248`): a missing file; a file
+  half-markered target, `compilers.py::compile_managed_text`'s marker-count
+  refusal, now `compilers.py:283-287`): a missing file; a file
   whose first line is `---` with no terminating `---`/`...`; a leading
   block that does not load as a YAML mapping. `CompileError` is already
-  in `_HOST_PHASE_ERRORS` (`verbs.py:1774-1781`) and is already caught by
-  `recompile` (`verbs.py:3610`), so a corrupt rules file degrades to the
+  in `_HOST_PHASE_ERRORS` (`verbs.py::_HOST_PHASE_ERRORS`, now
+  `verbs.py:1870-1877`) and is already caught by
+  `recompile` (now `verbs.py:3765`), so a corrupt rules file degrades to the
   existing loud "run `self-learn recompile`" path with the ledger intact.
 
 **Emitted form**, verified this session against the pinned ruamel config:
@@ -300,11 +310,12 @@ the emitted bytes with an *independent* loader.
 after that branch's existing bootstrap and immediately before the section
 compile:
 
-- **user branch** (`verbs.py:1637-1660`), after the
-  `mkdir`/`write_text("")` bootstrap at `:1647-1648`, before
-  `compile_user_scope`.
-- **project branch** (`verbs.py:1661-1683`), after the bootstrap at
-  `:1669-1675`, before `compile_managed_file`.
+- **user branch** (`verbs.py::_apply_target`'s `scope_kind == "user"`
+  branch, now `verbs.py:1713-1741`), after the `mkdir`/`write_text("")`
+  bootstrap (now `:1723-1724`), before `compile_user_scope`.
+- **project branch** (`verbs.py::_apply_target`'s final `else` branch, now
+  `verbs.py:1742-1779`), after the bootstrap (now `:1751-1756`), before
+  `compile_managed_file`.
 
 **The `variant == "rules"` guard is load-bearing, not tidiness.** Neither
 branch is rules-only: the user branch also serves plain
@@ -331,9 +342,10 @@ twice and diverge.
 **Two consequences that must be built, not assumed:**
 
 1. **The `changed` fold.** `_host_phase` stages and commits only when
-   `compile_result.changed is not False` (`verbs.py:1826-1836`), and
-   `recompile` skips on `not compile_result.changed`
-   (`verbs.py:3616-3620`). If only the frontmatter changed — a hand edit
+   `compile_result.changed is not False` (`verbs.py::_host_phase`, now
+   `verbs.py:1922-1933`), and `recompile` skips on
+   `not compile_result.changed` (now `verbs.py:3771-3775`). If only the
+   frontmatter changed — a hand edit
    repaired, or a record's globs edited in the ledger — the section is
    byte-identical and the repair would be **written but never
    committed**, which is drift created by the drift repair. On the
@@ -370,7 +382,7 @@ twice and diverge.
 
 ### 3.4 Two route-time refusals, both pre-ledger
 
-Both live in `_resolve_rules_target` (`verbs.py:747-803`), which already
+Both live in `_resolve_rules_target` (now `verbs.py:760-869`), which already
 owns every other rules preflight.
 
 **(1) An absolute or `~`-leading glob is refused, at both scopes.**
@@ -441,22 +453,23 @@ Four functions, no restructuring, nothing renamed or moved:
 
 | Function | Change |
 |---|---|
-| `_resolve_rules_target` (`:747`) | the two refusals of §3.4 |
-| `_apply_target` (`:1602`) | `notes` kwarg; bind `_compile_set` once per branch; the pre-pass call in each of the two rules-bearing branches; the `changed` fold on the project branch; append `PathsResult.notes` |
-| `_host_phase` (`:1784`) | one kwarg at the `_apply_target` call (`:1816`): `notes=warnings` |
-| `recompile` (`:3416`) | one kwarg at the `_apply_target` call (`:3609`): `notes=result.warnings` |
+| `_resolve_rules_target` (now `:760`) | the two refusals of §3.4 |
+| `_apply_target` (now `:1668`) | `notes` kwarg; bind `_compile_set` once per branch; the pre-pass call in each of the two rules-bearing branches; the `changed` fold on the project branch; append `PathsResult.notes` |
+| `_host_phase` (now `:1880`) | one kwarg at the `_apply_target` call (now `:1919`): `notes=warnings` |
+| `recompile` (now `:3569`) | one kwarg at the `_apply_target` call (now `:3763`): `notes=result.warnings` |
 
-Plus, in the import block (`verbs.py:58-101`): `replace` added to the
+Plus, in the import block (now `verbs.py:58-132`): `replace` added to the
 existing `dataclasses` import; the new `compilers` names; and
-**`USER_SCOPE_MANAGED` + `user_scope_capability` added to
-`verbs.py:81`**, which today imports only
+**`USER_SCOPE_MANAGED` + `user_scope_capability` added to the
+`from .chezmoi import (...)` block (now `verbs.py:81-88`)**, which at
+spec-writing time imported only
 `ChezmoiAbort, ChezmoiError, compile_user_scope, preflight_user_scope` —
-§3.4(2)'s refusal needs both.
+§3.4(2)'s refusal needs both, and both are now present in that import.
 
 **Sequencing note, `U-reach` shares this file.** Its `verbs.py` work (the
 `route` telemetry kind, the `routing.by` fix) shares **no hunk** with the
-four functions above. The one expected collision is the import block at
-`verbs.py:58-101`, and it is trivial. Nowhere else.
+four functions above. The one expected collision is the import block (now
+`verbs.py:58-132`), and it is trivial. Nowhere else.
 
 **Nothing else in `verbs.py` is touched.** In particular
 `_validate_project_globs`, `_resolve_target`, `route`, `route_direct`,
@@ -521,11 +534,12 @@ byte-identical across the edit, so this criterion also fails without the
 
 **Committing the hand-edit is not test hygiene — it is the only reachable
 form of this case.** `recompile` skips a **dirty** target before it ever
-reaches `_apply_target` (`verbs.py:3596-3603`), and a project rules file
+reaches `_apply_target` (now `verbs.py:3749-3756`), and a project rules file
 is tracked, so an *uncommitted* hand-edit makes the target dirty and
 recompile refuses with *"uncommitted changes — commit/stash, then
 re-run"*. The route leg refuses the same way, via `_abort_if_dirty`
-(`verbs.py:797`). **Both refusals are existing, correct behaviour and
+(the call site inside `_resolve_rules_target`'s project branch, now
+`verbs.py:864`). **Both refusals are existing, correct behaviour and
 this unit must not change either.** A builder who finds this criterion
 failing commits the edit — never weakens the assertion, never touches the
 dirty guard.
@@ -732,7 +746,7 @@ adding it to `_retirement_preflight`. Both are inert under this design
 4. **A hand-edited `paths:` is drift, and the repair is the next compile
    of a CLEAN target** (route or `recompile`) — which now also commits it
    (§3.3 fold). An *uncommitted* hand-edit is refused first and loudly by
-   the existing dirty guards (`verbs.py:797`, `:3596-3603`), which this
+   the existing dirty guards (now `verbs.py:864` and `:3749-3756`), which this
    unit does not touch (A6). `selftest`'s drift *report* is a named
    handoff, §7.3 — this unit does not claim it.
 5. **Emission derives from `C(T)`, never from `TargetSpec.rules_paths`.**
@@ -811,7 +825,8 @@ Two things follow, and both are named rather than built:
 ### 7.2 ACCEPTED residual — user-scope globs have no dead-glob guard
 
 Project scope refuses a zero-match glob at route time and re-asserts it
-in `selfcheck` (`selfcheck.py:374-399`). User scope has **no canonical
+in `selfcheck` (`selfcheck.py::_check_drift`, the project-scope pathed-glob
+reassertion now at `selfcheck.py:599-624`). User scope has **no canonical
 tree** to check against (measurement 1.2: the glob resolves against
 whatever repo the session runs in), so `_resolve_rules_target` runs only
 the shape check — and S-23 has just made user scope a primary PATHED
@@ -819,7 +834,8 @@ tier. A misspelt user-scope glob therefore fires nowhere and reports
 nothing.
 
 Mechanical guards that *do* apply, and are all this unit can offer:
-the proposal-schema shape check (`ledger_ops.py:613-623`) and §3.4(1)'s
+the proposal-schema shape check (`ledger_ops.py::_validate_rules_fields`,
+now `ledger_ops.py:1312-1364`) and §3.4(1)'s
 absolute/`~` refusal. Beyond that it is the human's read of the card.
 This is a *new* gap created by S-23's promotion. **Writing it into
 `03-decisions.md` as an ACCEPTED residual, with this reasoning, is THIS
@@ -833,7 +849,7 @@ prevent. Same for §7.1's Grep/Glob hole: both rows, one commit.
 - **`selfcheck._check_drift` must learn the frontmatter.** The seam is
   built and tested here (`paths_frontmatter_drift`, criterion A15); the
   wiring is three lines inside the existing
-  `if routing.get("variant") == "rules"` block at `selfcheck.py:383`:
+  `if routing.get("variant") == "rules"` block (now `selfcheck.py:608`):
   read the target text, call `paths_frontmatter_drift(text, C(T))`,
   append the message to `failures`. It is **not** built here because
   `selfcheck.py` is outside this unit's file set and `U-reach` is already
@@ -862,8 +878,10 @@ prevent. Same for §7.1's Grep/Glob hole: both rows, one commit.
   S-23's at-or-after-first-contact rider and §7.1's search-only rider.
   This unit builds the mechanism only.
 - **The user-scope destination menu**, `ui/models.py` — `U-demand-user`.
-  Note for whoever builds it: the `reference` refusal at `verbs.py:950-955`
-  **stays**. Only its stated reason is dead (chezmoi); its effect is what
+  Note for whoever builds it: the `reference` refusal at
+  `verbs.py::_resolve_target` (the `destination == "reference"` branch's
+  user-scope `else`, now `verbs.py:1016-1021`) **stays**. Only its stated
+  reason is dead (chezmoi); its effect is what
   S-23 (2) mandates, so the fix is to rewrite the message to cite S-23,
   never to delete the refusal.
 - **Pointer emission and the cap-exempt `pointer_line`** — `U-pointer`
@@ -884,13 +902,14 @@ and that surface is PATHED — the same tier this unit builds. The line:
   surfacing, and the drift seam. In files: all of `compilers.py`'s
   additions, plus the four `verbs.py` functions in §3.5.
 - **`U-demand-user` owns everything that decides what a human can *pick*:**
-  the destination menu (`_SCOPE_DESTINATIONS`, `ui/models.py:98-102`,
+  the destination menu (`_SCOPE_DESTINATIONS`, now `ui/models.py:103-107`,
   where `"user"` is the one-element `("claude-md",)`), the dead
-  `reference`-at-user-scope refusal (`verbs.py:950-955`), and any
+  `reference`-at-user-scope refusal (now `verbs.py:1016-1021`), and any
   proposal/card surface that offers user-scope cheap destinations.
 - **There is no dependency from this unit to that one.** Verified: a
   user-scope rules route already resolves and lands today —
-  `_resolve_rules_target`'s user branch (`verbs.py:776-791`) is complete,
+  `_resolve_rules_target`'s user branch (`if scope == "user":`, now
+  `verbs.py:808-857`) is complete,
   and two existing tests route user-scope rules end to end
   (`test_a2_rules_local.py::TestObligation15FirstRouteBootstrap::
   test_user_leg_creates_dir_and_file` and
@@ -899,13 +918,14 @@ and that surface is PATHED — the same tier this unit builds. The line:
   U-demand-user after U-pathed".
 - **The one thing that must agree.** `U-demand-user` must not introduce a
   second definition of the user rules path. `_user_rules_dir`
-  (`verbs.py:663-667`) resolves off the same possibly-test-overridden
+  (now `verbs.py:676-680`) resolves off the same possibly-test-overridden
   `user_claude_md` target every other user-scope call site uses; any new
   menu entry must reach the file through `_resolve_rules_target`, never
-  by constructing `~/.claude/rules/…` a second time. `selfcheck.py:220`
-  already hardcodes `DEFAULT_USER_CLAUDE_MD.expanduser()` for this
-  resolution — a pre-existing second path that is correct only because
-  the default is correct; neither unit should add a third.
+  by constructing `~/.claude/rules/…` a second time.
+  `selfcheck.py::_target_for` (now `selfcheck.py:238`) already hardcodes
+  `DEFAULT_USER_CLAUDE_MD.expanduser()` for this resolution — a
+  pre-existing second path that is correct only because the default is
+  correct; neither unit should add a third.
 
 ---
 
@@ -917,7 +937,8 @@ from its reference is how a fabricated pin gets made.
 
 1. **r2 B10: "`compile_managed_file` gains `rules_paths: tuple[str, ...] |
    None`."** Rejected. It strips the frontmatter on every `recompile`
-   (`verbs.py:3535-3539`) and on retirement (`verbs.py:1543-1549`), and
+   (its withholding `_resolve_target` call now at `verbs.py:3674-3695`) and
+   on retirement (`_retirement_preflight`'s call now at `verbs.py:1598-1618`), and
    it cannot reach user scope without editing `chezmoi.py`. §3.1.
 2. **r2 B10: "the compiler flags this on the route result."** There is no
    such channel — `_apply_target` has no warnings list. Built here as a
