@@ -1844,15 +1844,129 @@ class TestNextRecordUrlPure:
         b = make_behavior(scope="skill:s")
         seed_record(sb.ledger, a)
         seed_record(sb.ledger, b)
-        url = next_record_url(sb.ledger, "s", a.id)
+        url = next_record_url(sb.ledger, "skill", "s", a.id)
         assert url == f"/record/{b.id}"
 
     def test_next_record_url_bucket_clear_when_nothing_remains(self, tmp_path: Path) -> None:
         sb = make_env(tmp_path)
         a = make_behavior(scope="skill:s")
         seed_record(sb.ledger, a)
-        url = next_record_url(sb.ledger, "s", a.id)
+        url = next_record_url(sb.ledger, "skill", "s", a.id)
         assert url == "/?notice=bucket-clear"
+
+
+class TestNextHopIsScopedNotJustNamed:
+    """A bucket is identified by ``(scope, name)``, never by name alone —
+    a skill and the user bucket can both be called ``user``. Fourth
+    instance of tonight's defect family, and the worst one: unlike the
+    Bucket page's lists or the front page's count, this is the queue-
+    WALK's actual hop target — ``_next_pending_id`` is the ONE shared
+    computation behind both ``next_record_url`` (the auto-redirect after
+    a non-evidence verb) and the evidence leg's "next pending record"
+    link, plus the Y-19 prefetch trigger. It filtered on bucket NAME
+    alone, so a same-named bucket in another scope could hop the human
+    mid-review into a DIFFERENT queue with no indication, and the
+    prefetch would warm that same wrong record.
+
+    Reproduced before fixing: a skill literally named ``user`` (the
+    shape the codebase's own comments call out elsewhere) collides with
+    the actual user bucket. Resolving the oldest record in the skill
+    bucket returned the (older) ``user``-scope record as "next" — the
+    wrong queue — instead of the newer record still pending in the SAME
+    skill bucket.
+
+    As with the sibling fixes, the obvious ``item["scope"] == scope``
+    fix is wrong: a record's own ``scope`` field qualifies skills as
+    ``skill:<name>`` while a bucket's scope is bare, so that comparison
+    would silently empty every skill bucket's next-hop instead of
+    leaking across scopes — trading one bug for a worse one.
+    """
+
+    def test_cross_scope_next_hop_does_not_leak(self, tmp_path: Path) -> None:
+        sb = make_env(tmp_path, skills=("user",))
+        skill_older = make_behavior(
+            scope="skill:user",
+            created_at="2026-01-01T00:00:00Z",
+            trigger="Skill-scope trigger, oldest.",
+        )
+        user_wrong = make_behavior(
+            scope="user",
+            created_at="2026-01-03T00:00:00Z",
+            trigger="User-scope trigger, would-be wrong hop.",
+        )
+        skill_newer = make_behavior(
+            scope="skill:user",
+            created_at="2026-01-05T00:00:00Z",
+            trigger="Skill-scope trigger, newest.",
+        )
+        seed_record(sb.ledger, skill_older)
+        seed_record(sb.ledger, user_wrong)
+        seed_record(sb.ledger, skill_newer)
+
+        url = next_record_url(sb.ledger, "skill", "user", skill_older.id)
+        assert url == f"/record/{skill_newer.id}", (
+            "the queue-walk hopped into the user-scope bucket's record "
+            "instead of staying in the skill bucket named 'user'"
+        )
+
+    def test_same_scope_hop_still_works(self, tmp_path: Path) -> None:
+        """Positive control against an over-strict guard. Comparing a
+        record's own (possibly ``skill:<name>``-qualified) scope field
+        directly against the bucket's bare scope would silently drop
+        every skill-bucket next-hop — the same trap the sibling fixes
+        hit. A skill bucket is used here specifically because that trap
+        is invisible for project/user buckets, whose record scope is
+        already bare and would pass a naive equality check by accident."""
+        sb = make_env(tmp_path, skills=("user",))
+        older = make_behavior(
+            scope="skill:user",
+            created_at="2026-01-01T00:00:00Z",
+            trigger="Skill-scope trigger, oldest.",
+        )
+        newer = make_behavior(
+            scope="skill:user",
+            created_at="2026-01-05T00:00:00Z",
+            trigger="Skill-scope trigger, newest.",
+        )
+        seed_record(sb.ledger, older)
+        seed_record(sb.ledger, newer)
+
+        url = next_record_url(sb.ledger, "skill", "user", older.id)
+        assert url == f"/record/{newer.id}"
+
+    def test_cross_scope_evidence_next_link_does_not_leak(self, tmp_path: Path) -> None:
+        """End-to-end (not just the pure helper): the evidence leg's
+        `success_next` href is built from the SAME `_next_pending_id` —
+        a real `reject` through the HTTP route must not link the human
+        into the other scope's same-named bucket either."""
+        sb = make_env(tmp_path, skills=("user",))
+        skill_older = make_behavior(
+            scope="skill:user",
+            created_at="2026-01-01T00:00:00Z",
+            trigger="Skill-scope trigger, oldest.",
+        )
+        user_wrong = make_behavior(
+            scope="user",
+            created_at="2026-01-03T00:00:00Z",
+            trigger="User-scope trigger, would-be wrong hop.",
+        )
+        skill_newer = make_behavior(
+            scope="skill:user",
+            created_at="2026-01-05T00:00:00Z",
+            trigger="Skill-scope trigger, newest.",
+        )
+        seed_record(sb.ledger, skill_older)
+        seed_record(sb.ledger, user_wrong)
+        seed_record(sb.ledger, skill_newer)
+        c, _runner = make_client(sb)
+        r = c.post(
+            f"/record/{skill_older.id}/action/confirm",
+            data={"verb": "reject", "kind": "detail"},
+            headers={"HX-Request": "true"},
+        )
+        assert r.status_code == 200
+        assert f'href="/record/{skill_newer.id}"' in r.text
+        assert f'href="/record/{user_wrong.id}"' not in r.text
 
 
 class TestBulkGraduate:
