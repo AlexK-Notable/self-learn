@@ -101,6 +101,25 @@ class TestValidate:
         with pytest.raises(ProposalError, match="matcher"):
             validate_proposal(data)
 
+    def test_unknown_hook_keys_of_incomparable_types_rejected_not_typeerror(self):
+        """FW-63's pre-existing clone: `_validate_hook_extension` sorts
+        unknown hook keys the same way `_validate_gates` sorts unknown
+        gate keys (`sorted(set(hook) - set(_HOOK_KEYS))`), so it shares
+        the same defect — a `hook:` block with 2+ unknown keys of
+        mutually incomparable types (an `int` key plus a `str` key) made
+        bare `sorted()` raise `TypeError`, escaping every caller's
+        `except ProposalError`. Fixing only `_validate_gates` and leaving
+        this clone would be fixing the instance, not the class.
+
+        A single unknown key does not discriminate this — `sorted()` on a
+        1-element set never compares anything — so this needs two."""
+        hook = hook_payload()
+        hook[1] = "x"
+        hook["matcher"] = "y"
+        data = hook_proposal(hook=hook)
+        with pytest.raises(ProposalError):
+            validate_proposal(data)
+
     def test_bad_tools_rejected(self):
         data = hook_proposal(hook=hook_payload(tools=["Task"]))
         with pytest.raises(ProposalError, match="tools"):
