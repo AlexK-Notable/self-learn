@@ -517,7 +517,8 @@ def test_reader_prompt_pins_episode_brief_instruction(home):
     """Live model output cannot be asserted in a unit test — pin the
     prompt TEXT instead (100-200 words, plain-words retell-never-quote
     register, optional-and-omittable framing)."""
-    prompt = miner._compose_prompt(home, ["(digest)"], Path("/tmp/out.json"))
+    prompt, corrupt = miner._compose_prompt(home, ["(digest)"], Path("/tmp/out.json"))
+    assert corrupt == []
     assert '"episode_brief"' in prompt
     assert "100-200 words" in prompt
     assert "RETELL, never quote" in prompt
@@ -1999,3 +2000,186 @@ def test_mine_status_json_carries_canaries_and_near_miss_count(
     outcome = next(o for o in last_run["outcomes"] if o["outcome"] == "dropped-cap")
     assert outcome["disposition"] == "cap-refused"
     assert outcome["promotable"] is True
+
+
+# ============================================== FW-53: ledger decode safety
+#
+# A record file that is not valid UTF-8 (a torn write, a bad merge, a
+# hand edit) must never wedge a whole `mine run`. Confirmed pre-existing:
+# `_compose_prompt` -> `_ledger_index` -> `Record.from_path` -> `read_text`
+# ran BEFORE `_reconcile_and_land`, so `run()`'s outer handler turned the
+# ENTIRE run into `status: failed` on one bad byte, before the reader was
+# ever invoked. Decision: skip the corrupt file, count it, land everything
+# else (the nightly producer degrades, it does not stop) — but the skip
+# is REPORTED, never silent: `result.corrupt_records`, every journal entry
+# from the point of detection onward, `miner.log`, and the human-readable
+# `mine status` one-liner all carry it.
+
+
+def _write_bad_bytes(path: Path, prefix: str = "") -> None:
+    """`prefix` (valid UTF-8) + bytes that are not valid UTF-8 anywhere —
+    guaranteed to raise `UnicodeDecodeError` on decode (mirrors
+    selfcheck.py's own FW-66 helper of the same name/shape)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(prefix.encode("utf-8") + b"\xff\xfe garbage")
+
+
+def test_ledger_index_skips_undecodable_record_and_reports_it(home):
+    good = make_behavior(record_id="lrn-00009999")
+    pending = home / "skills/s/pending"
+    pending.mkdir(parents=True, exist_ok=True)
+    good.write(pending / f"{good.id}.md")
+    bad_path = pending / "lrn-0badbeef.md"
+    _write_bad_bytes(bad_path, "---\ntype: behavior\nid: lrn-0badbeef\n---\n")
+
+    corrupt: list[Path] = []
+    index = miner._ledger_index(home, corrupt)
+
+    assert good.id in index
+    assert "lrn-0badbeef" not in index
+    assert corrupt == [bad_path]
+
+
+def test_canon_index_skips_undecodable_record_and_reports_it(home):
+    routed = make_behavior(record_id="lrn-00009999")
+    _resolve(home, routed, "routed")
+    bad_path = home / "skills/s/resolved" / "lrn-0badbeef.md"
+    _write_bad_bytes(
+        bad_path, "---\ntype: behavior\nid: lrn-0badbeef\nstatus: routed\n---\n"
+    )
+
+    corrupt: list[Path] = []
+    index = miner._canon_index(home, corrupt)
+
+    assert routed.id in index
+    assert "lrn-0badbeef" not in index
+    assert corrupt == [bad_path]
+
+
+def test_compose_prompt_surfaces_corrupt_records_without_crashing(home):
+    _write_bad_bytes(
+        home / "skills/s/pending" / "lrn-0badbeef.md",
+        "---\ntype: behavior\nid: lrn-0badbeef\n---\n",
+    )
+
+    prompt, corrupt = miner._compose_prompt(home, ["(digest)"], Path("/tmp/out.json"))
+
+    assert len(corrupt) == 1
+    assert corrupt[0].name == "lrn-0badbeef.md"
+    assert "(digest)" in prompt  # composition still completed
+
+
+def test_find_record_returns_none_for_undecodable_file_never_raises(home):
+    _write_bad_bytes(
+        home / "skills/s/pending" / "lrn-0badbeef.md",
+        "---\ntype: behavior\nid: lrn-0badbeef\n---\n",
+    )
+
+    assert miner._find_record(home, "lrn-0badbeef") is None
+
+
+def test_run_survives_corrupt_pending_record_lands_the_rest(
+    home, transcripts, monkeypatch
+):
+    """The end-to-end proof: a corrupt pending record sits in the ledger
+    while a normal, healthy session comes through — the run must still
+    land the healthy candidate (skip-and-continue, not skip-and-stop),
+    and the corruption must be visible in BOTH the result and the
+    journal, not swallowed."""
+    bad_path = home / "skills/s/pending" / "lrn-0badbeef.md"
+    _write_bad_bytes(bad_path, "---\ntype: behavior\nid: lrn-0badbeef\n---\n")
+    write_transcript(transcripts, "sess-e2e", [u("work"), a("found the cause")])
+    shim_reader(monkeypatch, {"candidates": [candidate()], "fires": []})
+
+    result = miner.run(home)
+
+    assert result.status == "ok"
+    assert len(result.landed) == 1  # the healthy candidate still landed
+    assert result.corrupt_records == [str(bad_path)]
+    entry = miner.read_journal()[-1]
+    assert entry["status"] == "ok"
+    assert entry["corrupt_records"] == [str(bad_path)]
+    # the corrupt file itself is untouched — never rewritten or deleted
+    assert bad_path.is_file()
+
+
+def test_match_claim_to_undecodable_record_demotes_to_landing(
+    home, transcripts, monkeypatch
+):
+    """Mirrors `test_invalid_match_claim_demotes_to_landing`: a `match`
+    claim naming a record id that resolves to a FILE ON DISK, but one
+    that fails to decode, must be treated exactly like a claim naming a
+    record that does not exist at all — demoted to landing, never a
+    crash."""
+    _write_bad_bytes(
+        home / "skills/s/pending" / "lrn-0badbeef.md",
+        "---\ntype: behavior\nid: lrn-0badbeef\n---\n",
+    )
+    write_transcript(transcripts, "sess-claim2", [u("work")])
+    shim_reader(
+        monkeypatch,
+        {
+            "candidates": [
+                candidate(
+                    session="sess-claim2",
+                    match={"record": "lrn-0badbeef", "status": "pending"},
+                )
+            ],
+            "fires": [],
+        },
+    )
+    result = miner.run(home)
+    assert result.status == "ok"
+    assert len(result.landed) == 1
+    outcomes = miner.read_journal()[-1]["outcomes"]
+    assert outcomes[0]["outcome"] == "match-claim-invalid"
+    assert outcomes[1]["outcome"] == "landed"
+
+
+def test_backfill_skips_undecodable_matched_record(home, transcripts, monkeypatch):
+    """AC7's own twin, for decode failure rather than absence: THE
+    BACKFILL must skip a `violated` fire whose record id resolves to a
+    FILE that fails to decode — silently, like any other unresolvable
+    row — never a crash that would wedge every future nightly run."""
+    _write_bad_bytes(
+        home / "skills/s/resolved" / "lrn-0badbeef.md",
+        "---\ntype: behavior\nid: lrn-0badbeef\nstatus: routed\n---\n",
+    )
+    telemetry.spool_quiet(
+        "fire", record="lrn-0badbeef", origin="transcript:sess-old#L5",
+        outcome="violated",
+    )
+    telemetry.flush(home)
+    write_transcript(transcripts, "sess-new3", [u("unrelated work")])
+    shim_reader(monkeypatch, {"candidates": [], "fires": []})
+
+    result = miner.run(home)
+
+    assert result.status == "ok"
+    assert result.recurrences == []
+    suspects = [
+        e for e in telemetry.read_events(home)
+        if e.get("kind") == "recurrence-suspect"
+    ]
+    assert suspects == []
+
+
+def test_mine_status_reports_corrupt_records_in_human_output(
+    home, transcripts, monkeypatch, capsys
+):
+    """The human-readable `mine status` one-liner (not just `--json`) must
+    surface a corrupt-record skip — never silent even in the terse path a
+    person actually reads."""
+    _write_bad_bytes(
+        home / "skills/s/pending" / "lrn-0badbeef.md",
+        "---\ntype: behavior\nid: lrn-0badbeef\n---\n",
+    )
+    write_transcript(transcripts, "sess-status2", [u("work")])
+    shim_reader(monkeypatch, {"candidates": [], "fires": []})
+    miner.run(home)
+
+    rc = cli.main(["mine", "status"])
+
+    assert rc == cli.EXIT_OK
+    out = capsys.readouterr().out
+    assert "1 ledger file(s) not UTF-8, skipped" in out

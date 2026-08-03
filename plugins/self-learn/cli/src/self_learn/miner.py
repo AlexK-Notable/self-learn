@@ -594,9 +594,20 @@ def _rubric() -> tuple[str, str]:
     return text, (m.group(1) if m else "unversioned")
 
 
-def _ledger_index(home: Path) -> str:
+def _ledger_index(home: Path, corrupt: list[Path] | None = None) -> str:
     """Compact all-status index the reader reconciles against (doc 12 §5:
-    in-context comparison beats a vector index at this ledger size)."""
+    in-context comparison beats a vector index at this ledger size).
+
+    FW-53: a ledger file that fails to even decode as UTF-8 is skipped
+    exactly like a ``RecordError`` (malformed frontmatter) already was —
+    its status/scope can't be read either way, so this sweep cannot place
+    it, and this is the FIRST thing every productive run does (`run()`'s
+    outer handler previously turned one bad byte anywhere in the ledger
+    into `status: failed` for the whole run, before the reader ever saw a
+    prompt). Unlike the pre-existing RecordError skip, the caller wants to
+    know about THIS failure mode — appended to `corrupt` when given, so
+    `_compose_prompt`/`_run_locked` can surface a non-silent count in the
+    run journal (skip-and-report, not skip-and-forget)."""
     rows: list[str] = []
     for bucket in discover_buckets(home):
         for sub in ("pending", "resolved"):
@@ -608,14 +619,22 @@ def _ledger_index(home: Path) -> str:
                     r = Record.from_path(path)
                 except RecordError:
                     continue
+                except UnicodeDecodeError:
+                    if corrupt is not None:
+                        corrupt.append(path)
+                    continue
                 rows.append(
                     f"- {r.id} [{r.status}] ({r.scope}): {record_title(r)}"
                 )
     return "\n".join(rows) if rows else "(ledger is empty)"
 
 
-def _canon_index(home: Path) -> str:
-    """Routed rules for fire observation: id + title."""
+def _canon_index(home: Path, corrupt: list[Path] | None = None) -> str:
+    """Routed rules for fire observation: id + title.
+
+    FW-53: same decode-safety treatment as :func:`_ledger_index` (same
+    sweep, same crash-before-the-reader risk, same skip-and-report
+    contract)."""
     rows: list[str] = []
     for bucket in discover_buckets(home):
         d = bucket.path / "resolved"
@@ -625,6 +644,10 @@ def _canon_index(home: Path) -> str:
             try:
                 r = Record.from_path(path)
             except RecordError:
+                continue
+            except UnicodeDecodeError:
+                if corrupt is not None:
+                    corrupt.append(path)
                 continue
             if r.status == "routed":
                 rows.append(f"- {r.id} ({r.scope}): {record_title(r)}")
@@ -692,14 +715,24 @@ never a quotation; leave it out rather than pad it to reach the floor.
 """
 
 
-def _compose_prompt(home: Path, digests: list[str], output_path: Path) -> str:
-    return _PROMPT_TEMPLATE.format(
+def _compose_prompt(
+    home: Path, digests: list[str], output_path: Path
+) -> tuple[str, list[Path]]:
+    """Returns ``(prompt, corrupt)`` — ``corrupt`` is every ledger file the
+    index sweeps (:func:`_ledger_index`, :func:`_canon_index`) skipped for
+    failing to decode as UTF-8 (FW-53), so the caller can journal it
+    instead of losing the fact silently."""
+    corrupt: list[Path] = []
+    ledger = _ledger_index(home, corrupt)
+    canon = _canon_index(home, corrupt)
+    prompt = _PROMPT_TEMPLATE.format(
         output_path=output_path,
         rubric=_rubric()[0],
-        ledger=_ledger_index(home),
-        canon=_canon_index(home),
+        ledger=ledger,
+        canon=canon,
         digests="\n\n".join(digests),
     )
+    return prompt, corrupt
 
 
 def _invoke_reader(home: Path, prompt: str) -> Path | None:
@@ -767,6 +800,11 @@ class MineResult:
     #: True iff the landing commit failed — the records are on disk and
     #: untracked. Drives ``status`` (and thus `mine status` + the CLI exit).
     landing_uncommitted: bool = False
+    #: FW-53: ledger files skipped by the reconciliation index because
+    #: they failed to decode as UTF-8 — degrade (skip, count, land the
+    #: rest), never wedge the whole run, but never silently either;
+    #: journaled every time it is non-empty.
+    corrupt_records: list[str] = field(default_factory=list)
 
 
 def _outcome(result: MineResult, origin: str, outcome: str, **extra) -> None:
@@ -774,7 +812,16 @@ def _outcome(result: MineResult, origin: str, outcome: str, **extra) -> None:
 
 
 def _find_record(home: Path, rid: str) -> tuple[Record, str] | None:
-    """(record, status-dir) across all buckets, or None."""
+    """(record, status-dir) across all buckets, or None.
+
+    FW-53: a file that fails to decode as UTF-8 is treated the same as a
+    `RecordError` (malformed frontmatter) already was — `None`, i.e. "not
+    usable", not a crash. Every call site already treats a `None` return
+    the same way it treats "no such record" (a demoted match-claim, a
+    skipped fire/backfill row) — see the `_reconcile_and_land` backfill
+    loop's own comment: an unbounded pass over telemetry must never raise
+    on one unresolvable row, or `run()`'s outer handler wedges every
+    future nightly run on that one row forever."""
     if not rid or not RECORD_ID_RE.match(rid):
         return None
     for bucket in discover_buckets(home):
@@ -783,7 +830,7 @@ def _find_record(home: Path, rid: str) -> tuple[Record, str] | None:
             if path.is_file():
                 try:
                     return Record.from_path(path), sub
-                except RecordError:
+                except (RecordError, UnicodeDecodeError):
                     return None
     return None
 
@@ -1813,13 +1860,23 @@ def _run_locked(
         return result
 
     out_path = spool_dir() / OUTPUT_BASENAME
-    prompt = _compose_prompt(home, digests, out_path)
+    prompt, corrupt = _compose_prompt(home, digests, out_path)
+    if corrupt:
+        # FW-53: degrade, don't wedge — the rest of the ledger still
+        # reconciles and this run still lands candidates; the corruption
+        # is reported (miner.log + every journal entry from here on),
+        # never swallowed.
+        result.corrupt_records = sorted({str(p) for p in corrupt})
+        for p in result.corrupt_records:
+            log(f"run {run_id}: ledger record {p} not readable as UTF-8 — "
+                "excluded from the reconciliation index")
     artifact = _invoke_reader(home, prompt)
     if artifact is None:
         result.status = "failed"
         _journal({**base, "status": "failed",
                   "reason": "reader produced no output",
                   "sessions_scanned": len(digests),
+                  "corrupt_records": result.corrupt_records,
                   "duration_secs": round(time.time() - t0, 1)})
         return result
     try:
@@ -1831,6 +1888,7 @@ def _run_locked(
         _journal({**base, "status": "failed",
                   "reason": f"unparseable reader output: {exc}",
                   "sessions_scanned": len(digests),
+                  "corrupt_records": result.corrupt_records,
                   "duration_secs": round(time.time() - t0, 1)})
         return result
 
@@ -1898,6 +1956,7 @@ def _run_locked(
               "fires": result.fires,
               "outcomes": enriched_outcomes,
               "near_miss_count": near_miss_count,
+              "corrupt_records": result.corrupt_records,
               "duration_secs": round(time.time() - t0, 1)})
     log(
         f"run {run_id}: {result.status} — {len(result.landed)} landed, "
