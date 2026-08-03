@@ -371,7 +371,16 @@ def _dump_mapping(mapping: object) -> str:
 def _standalone_comments(text: str) -> list[str]:
     """Whole-line YAML comments, verbatim (indentation included), in source
     order. An INLINE trailer (``- a/** # why``) is deliberately not one:
-    it annotates the item it rides on, so it lives and dies with it."""
+    it annotates the item it rides on, so it lives and dies with it.
+
+    This is a LINE SCAN, not a YAML parse, and the boundary is worth
+    naming: a line beginning with ``#`` *inside a block scalar* is data,
+    not a comment, and this reads it as one. Reaching that needs a
+    hand-written ``paths: |`` block scalar — already malformed for this
+    compiler, which reads a non-sequence ``paths:`` as ``()`` — and the
+    residue is cosmetic (the key was being deleted anyway, nothing is
+    lost, and the result still parses). A YAML-aware scan would cost a
+    second round-trip to fix a shape the compiler already rejects."""
     return [ln for ln in text.splitlines() if ln.strip().startswith("#")]
 
 
@@ -385,9 +394,15 @@ def _readd_dropped_comments(inner: str, dumped: str) -> str:
     that a NARROW pops attaches to the ``CommentedSeq`` and is discarded
     with it. That made the compiler destroy human text it does not own.
 
-    Comparison is on the STRIPPED line so re-indentation by the dumper does
-    not read as a loss, and it is multiplicity-aware so a file that
-    legitimately repeats a comment keeps both copies. Recovered lines are
+    Comparison is on the STRIPPED line and is multiplicity-aware, so a file
+    that legitimately repeats a comment keeps both copies. On the stripping:
+    it is defensive, not a fix for an observed bug — against the pinned
+    ruamel config a surviving comment is re-indented in 0 of 48 measured
+    configurations, so the hazard it guards (a dumper that re-indents,
+    making a survivor look like a loss and get appended a second time) is
+    NOT reproducible here. It is kept because it is strictly safer and
+    cannot wrongly suppress a genuine loss — the Counter handles
+    same-text-different-indent correctly either way. Recovered lines are
     appended at the end of the block: their anchor is gone, so there is no
     non-arbitrary place to restore them to, and preserving the text where a
     human can see it beats preserving nothing. Idempotent — on the next
