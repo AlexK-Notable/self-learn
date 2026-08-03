@@ -172,8 +172,11 @@ DEFAULT_USER_CLAUDE_MD = Path("~/.claude/CLAUDE.md")
 #: Destinations the one-motion path (``teach --route`` /
 #: :func:`route_direct`) refuses BY DEFAULT: a ``hook`` route applies
 #: human-approved executable bytes (M3-2 — a one-motion capture has no
-#: proposal to review), and ``new-skill``'s name slot is a route-time
-#: human call (08 §8.1). *S-10 amendment 2026-07-16 (user ruling): the
+#: proposal to review), and a ``new-skill`` route creates a plugin
+#: directory. (Its NAME is the analyst's proposal, validated by the CLI
+#: and confirmed by the human — S-21, ratified 2026-07-27; what the
+#: default refusal guards here is the scaffold, not the naming.)
+#: *S-10 amendment 2026-07-16 (user ruling): the
 #: refusal is a DEFAULT, not a hard-code — a committed
 #: ``<home>/config.yaml`` ``one_motion_route: {hook: true, …}`` opts a
 #: destination in per :func:`one_motion_allowed`; parsing is fail-closed,
@@ -590,7 +593,7 @@ class TargetSpec:
     host_repo: Path | None
     refs_dir: Path | None = None
     ref_name: str | None = None
-    new_skill: str | None = None  # new-skill only: the human-named skill
+    new_skill: str | None = None  # new-skill only: analyst-proposed, CLI-validated, human-confirmed (S-21)
     #: A2 §2.1/§4.3: the claude-md scope parameterization — ``None`` (the
     #: byte-identical P-A6 default), ``"rules"``, or ``"local"``. Only
     #: ever set when ``destination == "claude-md"``.

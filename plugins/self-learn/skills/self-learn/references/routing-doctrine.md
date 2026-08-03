@@ -259,8 +259,20 @@ edits, help rewrite) a record:
 - **`new-skill` and `hook` compile at M3, with extra human steps.** A
   `hook` proposal must carry the §5.1 compile input; the human approves
   the exact generated script at route time, and registration stays
-  manual. A `new-skill` proposal never names the skill — the name is the
-  human's call at route time (`route --dest new-skill:<name>`). For both,
+  manual. **A `new-skill` proposal NAMES the skill** (S-21, user-ratified
+  2026-07-27): you propose a name, the CLI validates it mechanically
+  (kebab-case, collision against existing plugins, marketplace entry), and
+  the human then keeps it, retypes it, or routes the lesson elsewhere.
+  Propose the name as `new-skill:<name>`; a bare `new-skill` is not a
+  valid destination and fails validation. Name it as well as you can and
+  let the human correct you — a rejected name comes back with its reason,
+  never silently rewritten. *(This REVERSES the prior pin, "a `new-skill`
+  proposal never names the skill — the name is the human's call at route
+  time," which was agent-authored and never ratified. It justified itself
+  as "the confirmed §4 human call" and §4 contains no such row. Its
+  measured cost: combined with a review grammar that requires a name, a
+  doctrine-compliant `new-skill` proposal was structurally un-approvable,
+  and `new-skill` was used 0 times in 28 routings.)* For both,
   **always** include a routable alternate (`skill-md` or `claude-md`) in
   `alternates` so the human can choose the cheaper surface.
   *(S-10 amendment 2026-07-16: one-motion `teach --route` to these two
