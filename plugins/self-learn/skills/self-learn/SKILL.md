@@ -50,7 +50,7 @@ prompt after.
 | `import --backlog <skill>` \| `--memory DIR` | One-shot ETL: GOTCHAS journal / auto-memory topic files → pending records (idempotent, origin-deduped) (DIR or `$SELF_LEARN_MEMORY_DIR`; no default) |
 | `prune-memory [--dry-run] DIR` | S-13 sweep: delete memory files whose records reached a terminal status (DIR or `$SELF_LEARN_MEMORY_DIR`; no default) |
 | `proposal validate <id>` | Scan + schema-check + stamp a record's proposal sibling — REQUIRED after any direct edit of a pending record outside CLI verbs |
-| `--selftest` | Loud PASS/FAIL install checks (capture, compiler dry-run, 02 §4 markers, sentinel, hooks: script intact/executable/byte-matched, incomplete supersession, dangling settings.json registrations) |
+| `--selftest` | Loud PASS/FAIL install checks — **seven rows, in this order**: `capture`, `compiler` (dry-run), `markers` (02 §4), `drift` (a compiler-owned target hand-edited since its last compile), `reach` (every `reference`-routed record is reachable from a loaded surface — 14 of 14 currently FAIL on this host, which is the detector working, not a broken check), `hooks` (script intact/executable/byte-matched, incomplete supersession, dangling settings.json registrations), `sentinel` |
 
 All record-body writes pass the secret scan: default **refuse** (span +
 rule printed), `--redact` opt-in on capture surfaces, no bypass flag.

@@ -1005,8 +1005,8 @@ def _raise_recurrence_suspect(
 # ---------------------------------------- FW-34 §1: near-miss visibility
 
 #: §1.1's 5-way fold table: internal `outcome` → human-facing
-#: `disposition`. The journal's shipped outcome vocabulary is UNCHANGED
-#: (12 A1) — this is a read-time-independent, deterministic translation
+#: `disposition`. This fold itself does not change the outcome vocabulary
+#: (12 A1) — it is a read-time-independent, deterministic translation
 #: applied once at journal-write (never re-derived in the UI, the
 #: no-derivation rule). `landed`/`resurfaced`/`recurrence-from-fire` are
 #: absent on purpose: they are not near-misses, so they carry no

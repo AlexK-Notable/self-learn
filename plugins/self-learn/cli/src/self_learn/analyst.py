@@ -165,9 +165,18 @@ def _parse_yaml_map(text: str) -> dict:
 
 def analyze(home: Path | str, record: Record) -> dict:
     """Run the one-shot analyst for ``record``; return a validated proposal
-    dict (destination/alternates/rationale + CLI-stamped ``record_sha``,
-    model, analyzed_at). Raises :class:`AnalystError` on ANY failure —
-    exactly one parse attempt, no reprompt."""
+    dict: **every field the model emitted**, plus the CLI-stamped
+    ``record_sha``, ``model`` and ``analyzed_at``. Raises
+    :class:`AnalystError` on ANY failure — exactly one parse attempt, no
+    reprompt.
+
+    This docstring used to enumerate a fixed key set
+    (destination/alternates/rationale), which was the shipped defect
+    (FW-41): the function rebuilt the proposal from that enumeration and
+    silently dropped anything not on it, so a `hook` proposal could never
+    survive its own validator. The fix copies the parsed mapping wholesale,
+    so **do not re-introduce an enumeration here** — a list of fields in
+    this docstring is what a future reader would restore the bug from."""
     doctrine = doctrine_path()
     if not doctrine.is_file():
         # Callers check first for the pinned exit-2 message; this guard is

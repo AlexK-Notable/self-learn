@@ -246,6 +246,39 @@ suggest. The most valuable finding of the last cycle came from an
 unsuggested one — a guard that used a string-prefix check where a path
 containment check was needed, which passed for a sibling directory.
 
+**Before running ANY mutation sweep, disable bytecode caching:**
+
+```sh
+export PYTHONDONTWRITEBYTECODE=1
+find . -name __pycache__ -type d -prune -exec rm -rf {} +
+```
+
+Measured 2026-08-02 (FW-61): Python reused a stale `__pycache__` when a
+source file was rewritten **inside the same second**, so an entire
+mutation table came back as "survived" for mutations that never
+executed. That is the worst possible failure of this instrument — it
+reports the code as UNGUARDED when it is guarded, and it reports it
+*silently*, because a survived mutation looks exactly like a real
+coverage gap. Every gate in this campaign leans on mutation
+verification; a sweep run without this is not evidence.
+
+**Two more ways a mutation sweep lies, both hit live this campaign:**
+
+- **Wrong tree.** A run using relative paths (`./.venv/bin/python`,
+  `tests/…`) from a worktree cwd can execute *unmutated* code in a
+  different checkout. This yields false SURVIVALS specifically — a stale
+  or wrong tree cannot manufacture a failure, so a mutation that
+  *reddens* something is trustworthy while one that *survives* is not.
+  Use absolute paths, and machine-check
+  `realpath(self_learn.__file__)` before believing a survival.
+- **Editable install.** A worktree's `.venv` can resolve back to the
+  ORIGINAL source tree, so a "sandboxed" measurement silently measures
+  master. Same check, same reason.
+
+An auditor withdrew a confirmed finding of its own on the first ground
+this cycle, unprompted. Expect to have to do the same, and prefer
+re-running to defending.
+
 ---
 
 ## 4. The Fable purpose-check
