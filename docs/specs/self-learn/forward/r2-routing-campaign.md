@@ -84,7 +84,7 @@ under two names.
 | **U-analyst** | Stop rebuilding proposals from a fixed key set; pin `cwd=home` | `analyst.py` | FW-41 | — |
 | **U-schema** | The decision-trace schema, its validator, quote containment, the closed flag set | `ledger_ops.py` | new | — |
 | **U-table** | The decision table as a pure module; wire the recompute-and-refuse check | new `gates.py`, `ledger_ops.py` | new | U-schema |
-| **U-demand-user** | ~~Open the on-demand shelf at user scope~~ **RE-SCOPED 2026-08-02 by S-23:** give user scope a cheap surface, and it is **PATHED**, not DEMAND. Still in scope: delete the dead chezmoi refusal; widen the UI destination menu. Its spec must settle the boundary with `U-pathed` — `U-pathed` builds the emission machinery (`paths:` frontmatter, union semantics, drift-check), this unit opens the *scope* and the *menu* | `verbs.py`, `ui/models.py` | FW-40, FW-42 | ~~ROUTED decision~~ **unblocked**; sequence after `U-pathed` |
+| **U-demand-user** | ~~Open the on-demand shelf at user scope~~ **RE-SCOPED 2026-08-02 by S-23:** give user scope a cheap surface, and it is **PATHED**, not DEMAND. Still in scope: widen the UI destination menu. **NOT in scope any more — do NOT delete the `reference` refusal at `verbs.py:950-955`.** Only its stated *reason* is dead (chezmoi, retired 2026-07-24); its *effect* — no `reference` destination at user scope — is exactly what S-23 (2) now mandates. Rewrite the message to cite S-23; deleting it would build the user-level reference file S-23 rejected, and S-23's rejection reason (it inherits the unreachability problem with no `SKILL.md` to hang a pointer off) means the result would be unreachable canon — the defect this campaign exists to fix. Its spec must settle the boundary with `U-pathed` — `U-pathed` builds the emission machinery (`paths:` frontmatter, union semantics, drift-check), this unit opens the *scope* and the *menu* | `verbs.py`, `ui/models.py` | FW-40, FW-42 | ~~ROUTED decision~~ **unblocked**; sequence after `U-pathed` |
 | **U-composer** | Shared prompt composer (skill roster, cluster candidates, path roster) + the doctrine rewrite | `worker.py`, `analyst.py`, `routing-doctrine.md` | FW-43 | U-marker, U-analyst, U-schema, U-table |
 | **U-pointer** | Pointer emission, cap-exempt; reference-route triggers an ALWAYS recompile | `compilers.py`, `verbs.py` | FW-40 | U-demand-user |
 | **U-reach** | Reachability selftest + the `route` telemetry kind + fix `routing.by` | `selfcheck.py`, `telemetry.py`, `verbs.py` | FW-40, FW-45 | ships **before or with** U-pointer |
@@ -354,12 +354,39 @@ is no tolerated failure in the CLI suite.
 
 | Suite | Command | Baseline | Tolerated failure |
 |---|---|---|---|
-| **UI** | `cd plugins/self-learn/ui && uv run pytest -q` | 1010 passed, 77 skipped, **1 failed** (2026-07-28) | `test_service_unit.py::test_both_units_document_manual_registration_via_symlink` — does not block |
-| **CLI** | `cd plugins/self-learn/cli && ./.venv/bin/python -m pytest -q` | **1133 passed, 5 skipped, 0 failed** (2026-08-02, rc captured unpiped) | **none — any red is new** |
+| **UI** | `cd plugins/self-learn/ui && uv run pytest -q` | **1107 passed, 1 failed, 0 skipped** (2026-08-02, re-measured) | `test_service_unit.py::test_both_units_document_manual_registration_via_symlink` — does not block |
+| **CLI** | `cd plugins/self-learn/cli && ./.venv/bin/python -m pytest -q` | **1266 passed, 5 skipped, 0 failed** (2026-08-02, rc captured unpiped) | **none — any red is new** |
 
-Any failure beyond the one UI row above blocks. Always export
-`XDG_CACHE_HOME` to a scratch dir first; the UI's 77 skips are an artifact
-of that redirect moving Playwright's browser path, not a missing Chromium.
+Any failure beyond the one UI row above blocks.
+
+**Staging the UI suite — the earlier instruction here was FAIL-OPEN, and
+it was believed for a full wave.** It said to export `XDG_CACHE_HOME` to a
+scratch dir and that the 77 skips were "an artifact of that redirect, not
+a missing Chromium." The second half was backwards: the redirect is what
+*causes* Chromium to be unreachable, because
+`ui/tests/test_js_dom_pane_persistence.py:44-45` derives
+`PLAYWRIGHT_BROWSERS_PATH` from `XDG_CACHE_HOME`. Export **both**:
+
+```sh
+export XDG_CACHE_HOME=<scratch>
+export PLAYWRIGHT_BROWSERS_PATH="$HOME/.cache/ms-playwright"
+```
+
+Measured positive control, same tree, same file: cache redirect alone →
+`6 skipped` plus Playwright's "run `playwright install`" banner; with both
+→ `6 passed`. **With the correct env there are ZERO skips in this suite**,
+which is why the baseline above no longer carries a 77-skip figure.
+
+**Why this one mattered more than a stale number.** A run that cannot see
+Chromium reports skips, not failures, so it is indistinguishable from a
+clean run by exit code or by a bare pass count — the project's signature
+defect, written into the playbook as an instruction. It reached a build:
+`U-grad-ui`'s acceptance criterion 12 pinned the cache-only redirect and
+mitigated with "report the collected/passed count", which cannot separate
+"77 skipped, browsers unreachable" from "0 skipped, all ran" — on the one
+unit this wave that shipped templates, CSS and JS-adjacent behaviour.
+**A suite count is not a gate on this suite. Read the FAILED lines, and
+check the skip count is zero.**
 
 **`ledger_ops.py` is Wave 1's shared dependency.** The files are
 disjoint, but `worker.py`, `analyst.py`, `selfcheck.py` and `miner.py`
