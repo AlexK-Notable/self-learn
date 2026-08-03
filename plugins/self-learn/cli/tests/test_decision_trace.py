@@ -13,6 +13,7 @@ from __future__ import annotations
 import glob as glob_mod
 import inspect
 import os
+import time
 from pathlib import Path
 
 import pytest
@@ -27,6 +28,8 @@ from self_learn.ledger_ops import (
     TRACE_RECOMMENDATIONS,
     ProposalError,
     _QUOTE_MIN_CHARS,
+    _compile_glob_pattern,
+    _compile_glob_pattern_cached,
     _dump_yaml,
     _flatten_quote,
     _glob_match,
@@ -429,6 +432,27 @@ def test_unknown_gate_key_refused():
     g["bogus"] = {}
     with pytest.raises(ProposalError, match="bogus"):
         validate_proposal(proposal_dict(gates=g))
+
+
+def test_unknown_gate_keys_of_incomparable_types_do_not_raise_typeerror():
+    """FW-63, the S6 test for this specific defect. YAML permits
+    non-string mapping keys — a `gates:` mapping with 2+ unknown keys of
+    MUTUALLY INCOMPARABLE TYPES (`{1: x, zzz: y}`) used to make the
+    unknown-key `sorted()` raise a bare `TypeError` ("'<' not supported
+    between instances of 'str' and 'int'"), verified end to end via
+    `cli.main(["list"])`. `TypeError` is neither `ProposalError` nor
+    `LedgerOpsError`, so it escaped every caller's `except ProposalError`
+    (`proposal_info`, `queue`, `list_items`) and tracebacked `self-learn
+    list` for EVERY record, not just the malformed one — the exact
+    failure S6 (this module's docstring, `_validate_gates`) commits to
+    never happening.
+
+    A single unknown key would not discriminate this: `sorted()` on a
+    1-element set never calls the comparator, so a same-type-only
+    regression (e.g. a `key=` typo that still handles all-`str` sets)
+    would slip past a weaker test."""
+    with pytest.raises(ProposalError):
+        validate_proposal(proposal_dict(gates={1: "x", "zzz": "y"}))
 
 
 def test_missing_gate_key_refused():
@@ -1006,6 +1030,75 @@ def test_untranslatable_glob_raises_proposal_error():
     re-broke ranges would otherwise ship silently."""
     with pytest.raises(ProposalError):
         _glob_match("src/app.py", "src/[z-a]*.py")
+
+
+def test_consecutive_double_star_segments_collapse_before_translation():
+    """FW-57. §3.4a emits a separate `(?:[^/]+/)*` group per `**`
+    segment; left uncollapsed, adjacent groups are semantically redundant
+    (Kleene-star idempotence: `(?:X)*(?:X)*` matches exactly what `(?:X)*`
+    matches) but NOT backtracking-cost-redundant — `re` explores every
+    way of splitting a span across N adjacent groups before concluding a
+    non-match, exponential in N. The oracle the module's own docstring
+    names, `glob.translate`, collapses consecutive `**` into a single
+    `(?:.+/)?` before translating; this pins the same collapse here.
+
+    Asserting the TRANSLATED SHAPE, not timing, is the primary oracle: a
+    timing assertion is flaky under CI/host load, but the shape is the
+    actual mechanism of the blowup, so pinning it is strictly stronger
+    and can't flake. (See the bounded-time test below for a second,
+    coarser regression guard.)"""
+    single = _compile_glob_pattern("a/**/b")
+    doubled = _compile_glob_pattern("a/**/**/b")
+    tripled = _compile_glob_pattern("a/**/**/**/b")
+    assert single.pattern == doubled.pattern == tripled.pattern
+    # a trailing run of `**` collapses too — the final segment still gets
+    # `.*` (zero-or-more directory levels *or* nothing at all), not the
+    # non-final `(?:[^/]+/)*` form.
+    trailing_single = _compile_glob_pattern("a/**")
+    trailing_tripled = _compile_glob_pattern("a/**/**/**")
+    assert trailing_single.pattern == trailing_tripled.pattern
+
+
+def test_many_consecutive_double_stars_do_not_hang():
+    """FW-57: a bounded-time backstop against reintroducing the
+    exponential blowup, paired with (not a replacement for) the shape
+    test above — the shape test proves the mechanism is gone; this proves
+    it stays gone even if some future change reaches the same regex via a
+    different code path the shape assertion does not cover.
+
+    Pre-fix on this machine: 12 consecutive `**` segments against this
+    24-segment non-matching path measured ~40s (8 -> 0.35s, 10 -> 4.2s —
+    each +2 roughly 12x'd the runtime). Post-fix it is microseconds. 5s
+    is generous enough not to flake under host load while still failing
+    hard on any regression — the blowup is multiplicative per additional
+    `**`, so a partial reintroduction would still blow well past it."""
+    path = "/".join(f"seg{i}" for i in range(24)) + "/x.txt"
+    pattern = "/".join(["**"] * 12) + "/x.py"
+    t0 = time.perf_counter()
+    result = _glob_match(path, pattern)
+    dt = time.perf_counter() - t0
+    assert result is False
+    assert dt < 5.0
+
+
+def test_untranslatable_glob_pattern_error_is_memoized():
+    """Adjacent to the FW-57 fix, code gate N-1 territory: `lru_cache`
+    never caches an exception — a bare `raise` inside an `lru_cache`d
+    function reruns the function body on every call. Measured pre-fix:
+    `cache_info()` after 5 identical failing calls read `hits=0,
+    misses=5, currsize=0` — a broken `rules_paths` pattern on one record
+    was re-translated on every `list`, for every record, every time.
+    Fixed by caching `(compiled, error)` tuples inside
+    `_compile_glob_pattern_cached` instead of raising there — the raise
+    now lives only in the thin, un-memoized `_compile_glob_pattern`
+    wrapper."""
+    _compile_glob_pattern_cached.cache_clear()
+    for _ in range(5):
+        with pytest.raises(ProposalError):
+            _glob_match("src/app.py", "src/[z-a]*.py")
+    info = _compile_glob_pattern_cached.cache_info()
+    assert info.misses == 1
+    assert info.hits == 4
 
 
 def test_glob_matcher_treats_backslash_as_literal_not_regex_escape():

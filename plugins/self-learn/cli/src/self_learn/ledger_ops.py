@@ -502,10 +502,21 @@ def _validate_hook_extension(data: dict) -> None:
             "a hook proposal carries the structured compile input — "
             "hook: {tools, path_regex, deny_message} (02 §1 hook extension)"
         )
-    unknown = sorted(set(hook) - set(_HOOK_KEYS))
+    # key=repr (S6): YAML mapping keys need not be strings — a `hook:`
+    # block with 2+ unknown keys of mutually incomparable types (e.g.
+    # `{1: x, zzz: y}`) makes bare `sorted()` raise `TypeError`, which is
+    # neither `ProposalError` nor `LedgerOpsError` and escapes every
+    # caller's `except ProposalError` (FW-63). `repr()` is total on any
+    # object and stable enough for a deterministic error message; the
+    # sort order itself carries no semantic meaning here.
+    unknown = sorted(set(hook) - set(_HOOK_KEYS), key=repr)
     if unknown:
         raise ProposalError(f"unknown hook key(s) {unknown} — allowed: {list(_HOOK_KEYS)}")
-    missing = sorted(set(_HOOK_KEYS) - set(hook))
+    # Paired with `unknown` above: currently safe (both operands are
+    # `str`-only, drawn from `_HOOK_KEYS`), but the pairing invites the
+    # same bug if this ever sorts a set with a non-`str` operand — same
+    # `key=repr` fix applied defensively.
+    missing = sorted(set(_HOOK_KEYS) - set(hook), key=repr)
     if missing:
         raise ProposalError(f"hook block missing {missing}")
     tools = hook.get("tools")
@@ -641,22 +652,57 @@ def _translate_glob_segment(seg: str) -> str:
 
 
 @lru_cache(maxsize=256)
-def _compile_glob_pattern(pattern: str):
+def _compile_glob_pattern_cached(pattern: str) -> tuple[re.Pattern[str] | None, str | None]:
     """§3.4a's hand-rolled `**`-aware translator — `re` only, never
     `fnmatch`/`glob` (S3/S4/D10/D11; both stdlib alternatives that would
     get this right, `glob.translate`/`PurePath.full_match`, are Python
     3.13-only and this project's floor is 3.11). A `**` segment becomes
     `(?:[^/]+/)*` (zero or more levels) when non-final — which already
     supplies its own trailing separator, so none is emitted after it — and
-    `.*` when final. Memoized: this runs on the eligibility hot path (S4).
+    `.*` when final.
 
-    `re.error` is caught and re-raised as :class:`ProposalError` (code
-    gate F1, r3 delta) — not because `_translate_glob_segment`'s own
-    sanitizing is known to still be incomplete, but because S6 must hold
-    for ANY future defect in this translator, not just the one measured
-    today: a malformed trace on somebody else's record must never
-    traceback `self-learn list` with something other than ProposalError."""
+    Consecutive `**` segments are collapsed to one BEFORE translation, the
+    way the oracle (`glob.translate`) does it. This is language-preserving
+    — `(?:X)*(?:X)*` matches exactly what `(?:X)*` matches (Kleene-star
+    idempotence) — but not backtracking-cost-preserving: left uncollapsed,
+    `re` explores every way of splitting a span across N adjacent
+    `(?:[^/]+/)*` groups before concluding a non-match, which is
+    exponential in N. Measured (FW-57): 12 consecutive `**` segments
+    against a 24-segment non-matching path took ~40s uncollapsed vs. ~2µs
+    through `glob.translate`; collapsed here, the same call is
+    microseconds. Scoped narrowly to the inter-segment case — the
+    analogous intra-segment blowup (`*a*a*a…*` against a long non-matching
+    string) is NOT touched, because `glob.translate` is equally slow on
+    that pattern shape (measured, not assumed): it is not a divergence
+    from the oracle, so it is not this function's bug to fix.
+
+    Memoized, including the failure case (both returned, never raised —
+    see `_compile_glob_pattern` below): the `re.Pattern` CONSTRUCTION runs
+    on the eligibility hot path (S4) and is what this caches. It does
+    NOT make `_glob_match` itself fast on repeat calls: `.match()` runs
+    fresh every time regardless of the cache, so a pattern whose match is
+    itself slow (the intra-segment blowup this docstring declines to fix,
+    above) stays exactly as slow on every call — measured, three
+    identical `_glob_match` calls against such a pattern: 0.516s / 0.495s
+    / 0.491s, not the ~0s a reader could assume "memoized" promises.
+    Before this fix, an `lru_cache`d function that raises was not
+    memoized even on the COMPILE side of the raising path —
+    `cache_info()` after N identical failing calls previously read
+    `hits=0, misses=N, currsize=0`, so a broken pattern on one record was
+    re-translated on every `list` for every record, every time. `re.error`
+    is caught here (code gate F1, r3 delta) — not because
+    `_translate_glob_segment`'s own sanitizing is known to still be
+    incomplete, but because S6 must hold for ANY future defect in this
+    translator, not just the one measured today: a malformed trace on
+    somebody else's record must never traceback `self-learn list` with
+    something other than ProposalError."""
     segments = pattern.split("/")
+    collapsed: list[str] = []
+    for seg in segments:
+        if seg == "**" and collapsed and collapsed[-1] == "**":
+            continue
+        collapsed.append(seg)
+    segments = collapsed
     n = len(segments)
     pieces: list[tuple[str, bool]] = []  # (regex, already_supplies_sep)
     for idx, seg in enumerate(segments):
@@ -673,11 +719,26 @@ def _compile_glob_pattern(pattern: str):
             parts.append("/")
         parts.append(piece)
     try:
-        return re.compile(f"(?s:{''.join(parts)})\\Z")
+        return re.compile(f"(?s:{''.join(parts)})\\Z"), None
     except re.error as exc:
-        raise ProposalError(
-            f"rules_paths pattern {pattern!r} is not translatable: {exc}"
-        ) from exc
+        return None, str(exc)
+
+
+def _compile_glob_pattern(pattern: str) -> re.Pattern[str]:
+    """Thin raising wrapper over :func:`_compile_glob_pattern_cached` (see
+    its docstring for the translation rules and the `**`-collapsing fix).
+    Kept as a separate, un-memoized function so the `raise` — needed for
+    the public `ProposalError`-only contract (S6) — never sits inside the
+    `lru_cache`d call and defeats memoization on the failure path."""
+    compiled, error = _compile_glob_pattern_cached(pattern)
+    if error is not None:
+        raise ProposalError(f"rules_paths pattern {pattern!r} is not translatable: {error}")
+    # `_compile_glob_pattern_cached` always pairs a non-None `compiled`
+    # with a None `error` — the type checker can't see that correlation
+    # through the tuple return, so this is the narrowing, not a runtime
+    # possibility.
+    assert compiled is not None
+    return compiled
 
 
 def _glob_match(path: str, pattern: str) -> bool:
@@ -795,12 +856,24 @@ def _validate_gates(data: dict, *, record_text: str | None = None) -> None:
     if not isinstance(gates, dict):
         raise ProposalError(f"gates must be a mapping, got {gates!r}")
     gate_keys = set(gates)
-    unknown = sorted(gate_keys - set(TRACE_GATE_KEYS))
+    # key=repr (S6): YAML mapping keys need not be strings — a `gates:`
+    # block with 2+ unknown keys of mutually incomparable types (e.g.
+    # `{1: x, zzz: y}`) makes bare `sorted()` raise `TypeError`, which is
+    # neither `ProposalError` nor `LedgerOpsError` and escapes every
+    # caller's `except ProposalError` (FW-63: `self-learn list` tracebacks
+    # for every record, not just the malformed one). `repr()` is total on
+    # any object and stable enough for a deterministic error message; the
+    # sort order itself carries no semantic meaning here.
+    unknown = sorted(gate_keys - set(TRACE_GATE_KEYS), key=repr)
     if unknown:
         raise ProposalError(
             f"gates has unknown key(s) {unknown} — allowed: {list(TRACE_GATE_KEYS)}"
         )
-    missing = sorted(set(TRACE_GATE_KEYS) - gate_keys)
+    # Paired with `unknown` above: currently safe (both operands are
+    # `str`-only, drawn from `TRACE_GATE_KEYS`), but the pairing invites
+    # the same bug if this ever sorts a set with a non-`str` operand —
+    # same `key=repr` fix applied defensively.
+    missing = sorted(set(TRACE_GATE_KEYS) - gate_keys, key=repr)
     if missing:
         raise ProposalError(
             f"gates is missing key(s) {missing} — required: {list(TRACE_GATE_KEYS)}"
