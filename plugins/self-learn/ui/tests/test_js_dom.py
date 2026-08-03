@@ -1880,6 +1880,52 @@ class TestApplyingStripServerPublish:
 # tests touch the server's SSE publish path).
 
 
+class TestNoteKeyOnAnArmedBar:
+    """The armed strip advertises "n to say why" one line under "any other
+    key cancels", and app.js honoured only the second: pressing the key
+    the UI offered threw the pending action away, with no note and no
+    message. Found in a UI walk — the walker followed the on-screen hint
+    and lost the denial it was mid-way through, twice.
+
+    `n` still disarms: the note input exists only on the unarmed bar, so
+    there is nothing to focus while the confirm strip is up. What it must
+    now do is leave the caret in that field once the plain bar swaps back,
+    which is what the hint promises."""
+
+    def test_n_does_not_destroy_the_pending_action(
+        self, f2_page: "Page", f2_server: ServerHandle
+    ) -> None:
+        _open(f2_page, f2_server, f"/record/{REC_F2_PLAIN}")
+        f2_page.keyboard.press("e")
+        f2_page.wait_for_selector(f'#action-bar-{REC_F2_PLAIN}[data-armed="true"]')
+        f2_page.keyboard.press("n")
+        # The armed bar must SURVIVE — losing a half-made decision to the
+        # key the UI itself offered is the defect. A no-op hint explains
+        # the state instead.
+        f2_page.wait_for_selector('[data-noop-hint-active="true"]')
+        assert (
+            f2_page.get_attribute(f"#action-bar-{REC_F2_PLAIN}", "data-armed") == "true"
+        )
+
+    def test_a_non_note_key_still_just_disarms(
+        self, f2_page: "Page", f2_server: ServerHandle
+    ) -> None:
+        """Control: the fix must not turn EVERY cancel into a note focus.
+        `z` disarms and leaves focus alone."""
+        _open(f2_page, f2_server, f"/record/{REC_F2_PLAIN}")
+        f2_page.keyboard.press("e")
+        f2_page.wait_for_selector(f'#action-bar-{REC_F2_PLAIN}[data-armed="true"]')
+        f2_page.keyboard.press("z")
+        f2_page.wait_for_selector(f'#action-bar-{REC_F2_PLAIN}[data-armed="false"]')
+        f2_page.wait_for_selector('.action-bar input[name="note"]')
+        focused_note = f2_page.evaluate(
+            "() => { const n = document.querySelector("
+            "'.action-bar input[name=\"note\"]'); "
+            "return n !== null && document.activeElement === n; }"
+        )
+        assert focused_note is False
+
+
 class TestInFlightDisabling:
     def test_14_submitter_carries_disabled(
         self, f2_page: "Page", f2_server: ServerHandle

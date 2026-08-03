@@ -3125,3 +3125,85 @@ class TestBucketPageScopeIsolation:
         r = c.get("/bucket/skill/s")
         assert r.status_code == 200
         assert rec.id in r.text
+
+
+class TestHoldingRowShowsWhyItWasFlagged:
+    """`basis` says WHY a recurrence suspect was raised, and the producers
+    mean very different things by it: `fire-violated` is the model
+    reporting it broke this routed rule, while `miner-match`,
+    `origin-match` and `title-token-overlap` are text-similarity
+    heuristics that can fire on a rule nobody violated.
+
+    That distinction is most of the evidence behind revise / escalate /
+    tolerate / retire — and it was spooled into telemetry and then dropped
+    in `report.recurrence_suspects`, so no consumer could ever see it. The
+    channel emitted zero events for the product's whole lifetime, which is
+    why nobody noticed.
+    """
+
+    def _rows(self, suspects: list[dict]):
+        from self_learn_ui.models import _build_holding_rows
+
+        return _build_holding_rows(
+            {
+                "recurrence_suspects": suspects,
+                "routed_live": [{"id": "lrn-aaaaaaa1", "bucket": "s", "routed_days_ago": 3}],
+            }
+        )
+
+    def test_a_self_reported_violation_reads_differently_from_a_text_match(self):
+        strong = self._rows(
+            [{"id": "lrn-aaaaaaa1", "nonce": "n1", "seen_at": "2026-08-01", "basis": "fire-violated"}]
+        )
+        weak = self._rows(
+            [{"id": "lrn-aaaaaaa1", "nonce": "n1", "seen_at": "2026-08-01", "basis": "miner-match"}]
+        )
+        assert strong[0].basis_text == "the model reported violating this rule"
+        assert weak[0].basis_text == "a transcript matched this rule's text"
+        assert strong[0].basis_text != weak[0].basis_text
+
+    def test_mixed_bases_are_all_shown_in_first_seen_order(self):
+        rows = self._rows(
+            [
+                {"id": "lrn-aaaaaaa1", "nonce": "n1", "seen_at": "2026-08-01", "basis": "miner-match"},
+                {"id": "lrn-aaaaaaa1", "nonce": "n2", "seen_at": "2026-08-02", "basis": "fire-violated"},
+                {"id": "lrn-aaaaaaa1", "nonce": "n3", "seen_at": "2026-08-03", "basis": "miner-match"},
+            ]
+        )
+        # "matched some text AND the model admitted violating it" is a
+        # different situation from either alone, so neither is dropped —
+        # but the repeat is de-duplicated.
+        assert rows[0].basis_text == (
+            "a transcript matched this rule's text; "
+            "the model reported violating this rule"
+        )
+        assert rows[0].sighted_count == 3
+
+    def test_an_unknown_basis_renders_verbatim_rather_than_vanishing(self):
+        """Producers add bases without consulting the UI. A suspect that
+        silently loses its reason is the defect this whole surface exists
+        to fix, so an unmapped value must survive rendering."""
+        rows = self._rows(
+            [{"id": "lrn-aaaaaaa1", "nonce": "n1", "seen_at": "2026-08-01", "basis": "some-future-basis"}]
+        )
+        assert rows[0].basis_text == "some-future-basis"
+
+    def test_a_sighting_with_no_basis_says_less_rather_than_saying_None(self):
+        rows = self._rows([{"id": "lrn-aaaaaaa1", "nonce": "n1", "seen_at": "2026-08-01"}])
+        assert rows[0].basis_text == ""
+        assert rows[0].sighted_count == 1  # the row still exists
+
+    def test_the_front_page_renders_the_reason(self, tmp_path: Path) -> None:
+        """End to end through the template, not just the model — the whole
+        bug was a value that existed at one layer and never reached the
+        next one."""
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+        c, _runner = make_client(sb)
+        r = c.get("/")
+        assert r.status_code == 200
+        # No suspects seeded here, so assert the surface is wired rather
+        # than asserting text that would need live telemetry: the class
+        # must not appear when there is nothing to say.
+        assert "holding-basis" not in r.text

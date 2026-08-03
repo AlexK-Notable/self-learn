@@ -93,8 +93,14 @@
       <span class="note-presence">{{ "note attached" if armed.note_present else "no note" }}</span>
       <span class="confirm-hint"><kbd>Enter</kbd> to confirm &middot; any other key cancels</span>
     </p>
+    {# This read "n to say why", one line under "any other key cancels",
+       and the two contradicted each other: pressing n silently threw away
+       the action it was offering to annotate. The note input exists only
+       on the UNARMED bar, so n cannot add one from here at all. n is now
+       a no-op with an explanatory hint (app.js), and the wording says the
+       ordering out loud. #}
     {% if armed.show_note_hint %}
-    <p class="note-hint"><kbd>n</kbd> to say why</p>
+    <p class="note-hint">Cancel first, then <kbd>n</kbd> to say why</p>
     {% endif %}
     <button type="submit" data-key-action="confirm">Confirm</button>
   </form>

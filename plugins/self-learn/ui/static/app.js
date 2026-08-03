@@ -19,7 +19,9 @@
  *   - Esc is context-sensitive: an armed bar treats it (like any other
  *     key) as "disarm"; otherwise it is "up a level" (same as a).
  *   - `n` focuses the note input rather than dispatching a server call
- *     (09 §1: "an inline single-line input in the action bar").
+ *     (09 §1: "an inline single-line input in the action bar"). On an
+ *     ARMED bar there is no note input to focus, so `n` is a no-op with
+ *     a hint — never a cancel, which used to destroy the pending action.
  */
 
 (function () {
@@ -67,8 +69,9 @@
   }
 
   function focusNote() {
-    const armed = findArmedBar();
-    const scope = armed ? document : document; // note input lives in the unarmed bar
+    // The note input lives in the unarmed bar only — there is nothing to
+    // focus while a confirm strip is up, which is why the armed branch
+    // no-ops `n` with a hint instead of calling this.
     const input = document.querySelector('.action-bar input[name="note"]');
     if (input) input.focus();
   }
@@ -209,6 +212,23 @@
       if (event.key === "Enter") {
         clickAction("confirm");
       } else {
+        // The armed strip advertises "n to say why" one line below "any
+        // other key cancels", and this branch honoured only the second:
+        // pressing the key the UI offered silently threw the pending
+        // action away, with no note and no message. Found in a UI walk —
+        // the walker followed the on-screen hint and lost the denial it
+        // was in the middle of.
+        //
+        // `n` is now IGNORED here rather than cancelling. The note input
+        // exists only on the unarmed bar, so `n` cannot do what the hint
+        // implies from this state — but destroying a half-made decision
+        // is the worst of the three options. It no-ops and says why,
+        // using the same hint channel every other dead key uses, and the
+        // strip's own wording now tells you to cancel first.
+        if (event.key === "n") {
+          showNoopHint("Cancel first (Esc), then n to add a note.");
+          return;
+        }
         clickAction("disarm");
       }
       return;

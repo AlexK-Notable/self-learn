@@ -193,7 +193,7 @@ def ledger_metrics(home: Path | str, *, today: date | None = None) -> dict:
 def recurrence_suspects(home: Path | str) -> list[dict]:
     """09 §11 Y-4 (10 U0 substrate): unconfirmed recurrence-suspect
     telemetry against currently-``routed`` records — rows ``{id, nonce,
-    seen_at}``, ts-ordered (``read_events`` order).
+    seen_at, basis}``, ts-ordered (``read_events`` order).
 
     This EXPOSES the M2 deterministic detection
     (``worker._recurrence_suspects``, which spools the events in the first
@@ -225,7 +225,25 @@ def recurrence_suspects(home: Path | str) -> list[dict]:
             continue
         if any(r.get("ref") == nonce for r in record.recurrences):
             continue  # already confirmed
-        rows.append({"id": record.id, "nonce": nonce, "seen_at": event.get("ts")})
+        # `basis` says WHY this suspect was raised, and the four producers
+        # mean very different things by it: `fire-violated` is the model
+        # reporting that it broke this routed rule, while `miner-match`,
+        # `origin-match` and `title-token-overlap` are text-similarity
+        # heuristics. That distinction is most of the evidence a human has
+        # when choosing revise / escalate / tolerate / retire, and it was
+        # spooled into telemetry and then dropped right here — the
+        # producer recorded its reason and no consumer could ever see it.
+        # Passed through verbatim, never interpreted: this function
+        # exposes the detection, it does not re-derive it, so a basis
+        # value added by a future producer arrives without changes here.
+        rows.append(
+            {
+                "id": record.id,
+                "nonce": nonce,
+                "seen_at": event.get("ts"),
+                "basis": event.get("basis"),
+            }
+        )
     return rows
 
 

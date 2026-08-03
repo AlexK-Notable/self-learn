@@ -519,6 +519,11 @@ class HoldingRow:
     sighted_count: int
     newest_nonce: str
     text: str
+    #: Human-readable "why this was flagged", already joined for display.
+    #: Empty string when no sighting carried a basis (pre-existing
+    #: telemetry, or a producer that omits it) — the row still renders,
+    #: it just says less.
+    basis_text: str = ""
 
 
 @dataclass(frozen=True)
@@ -637,6 +642,36 @@ def _sentinel_live(mtime: float | None, now: datetime) -> bool:
     return (now.timestamp() - mtime) < sl_sentinel.SENTINEL_TTL_SECONDS
 
 
+#: Plain-English readings of the `basis` a recurrence-suspect carries.
+#: The strength ordering is the point, not the wording: `fire-violated`
+#: is the model itself reporting that it broke this routed rule, while
+#: the other three are text-similarity heuristics that can fire on a
+#: lesson nobody actually violated. A human choosing revise / escalate /
+#: tolerate / retire is weighing exactly that difference.
+#:
+#: Deliberately NOT a closed set — an unrecognised basis renders verbatim
+#: (see :func:`_basis_text`). Producers add bases without consulting this
+#: layer, and a suspect that silently loses its reason is the defect this
+#: mapping exists to fix.
+_BASIS_LABELS = {
+    "fire-violated": "the model reported violating this rule",
+    "miner-match": "a transcript matched this rule's text",
+    "origin-match": "a new lesson names the same origin",
+    "title-token-overlap": "a new lesson's title overlaps this one",
+}
+
+
+def _basis_text(bases: list[str]) -> str:
+    """Join the distinct bases behind a holding row into one clause.
+
+    Empty in, empty out — a row whose sightings carry no basis (older
+    telemetry, or a producer that omits it) simply says less, rather than
+    rendering an empty parenthetical or the word "None"."""
+    if not bases:
+        return ""
+    return "; ".join(_BASIS_LABELS.get(b, b) for b in bases)
+
+
 def _build_holding_rows(report_data: dict | None) -> tuple[HoldingRow, ...]:
     if not report_data:
         return ()
@@ -652,6 +687,20 @@ def _build_holding_rows(report_data: dict | None) -> tuple[HoldingRow, ...]:
     for record_id, events in grouped.items():
         events_sorted = sorted(events, key=lambda e: e.get("seen_at") or "")
         newest = events_sorted[-1]
+        # WHY each sighting was raised, which is most of the evidence
+        # behind revise / escalate / tolerate / retire. `fire-violated`
+        # means the model reported breaking this rule; the others are
+        # text-similarity heuristics and are much weaker. Distinct values
+        # in first-seen order — a record can carry both, and "it matched
+        # some text AND the model admitted violating it" is a different
+        # situation from either alone. An unrecognised value renders
+        # verbatim rather than being dropped: producers add bases without
+        # asking this layer.
+        seen_bases: list[str] = []
+        for event in events_sorted:
+            basis = event.get("basis")
+            if isinstance(basis, str) and basis and basis not in seen_bases:
+                seen_bases.append(basis)
         live = routed_live.get(record_id)
         bucket = live["bucket"] if live else ""
         routed_days_ago = live.get("routed_days_ago") if live else None
@@ -671,6 +720,7 @@ def _build_holding_rows(report_data: dict | None) -> tuple[HoldingRow, ...]:
                 sighted_count=count,
                 newest_nonce=str(newest.get("nonce", "")),
                 text=text,
+                basis_text=_basis_text(seen_bases),
             )
         )
     return tuple(sorted(rows, key=lambda r: r.id))

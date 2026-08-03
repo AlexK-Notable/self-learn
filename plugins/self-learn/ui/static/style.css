@@ -846,6 +846,14 @@ tr[data-row].selected {
   margin: 0.25rem 0 0;
 }
 
+/* Why a holding row was flagged. Muted like .followup-note: it is
+   supporting evidence under the sighting count, not a second headline. */
+.holding-basis {
+  color: var(--slu-fg-muted);
+  font-size: 0.88em;
+  margin: 0.25rem 0 0;
+}
+
 /* 09 §11 Y-24 — the near-miss drill's rows. */
 .near-miss-row {
   background: var(--slu-bg-raised);

@@ -79,6 +79,11 @@
   {% for row in model.holding %}
   <div class="holding-row" data-row>
     <p>{{ row.text }}</p>
+    {# Why it was flagged. `fire-violated` means the model reported
+       breaking this rule; the rest are text heuristics — the difference
+       is most of what separates "revise" from "tolerate", and it used to
+       be spooled into telemetry and then dropped before reaching here. #}
+    {% if row.basis_text %}<p class="holding-basis">Flagged because {{ row.basis_text }}.</p>{% endif %}
     {% with kind="holding", armed=None, dom_id="action-bar-" ~ row.id, record_id=row.id, event=row.newest_nonce, dest=None, target=None %}
       {% include "partials/action_bar.html" %}
     {% endwith %}

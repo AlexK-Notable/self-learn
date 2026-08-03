@@ -6,8 +6,10 @@ Genuinely NEW pieces only (``mine status --json`` and ``report --json
 
 - ``list --json`` items gain ``bucket`` / ``host_registered`` / ``source``.
 - ``report --json`` gains ``recurrence_suspects`` (rows ``{id, nonce,
-  seen_at}``) — exposes the existing M2 deterministic suspect detection
-  (``worker._recurrence_suspects``), never reimplements it.
+  seen_at, basis}``) — exposes the existing M2 deterministic suspect
+  detection (``worker._recurrence_suspects``), never reimplements it.
+  ``basis`` was added 2026-08-02: it was being spooled into telemetry and
+  dropped here, so no consumer could see WHY a suspect was raised.
 - ``hosts.canon_read_roots()`` — the pane read-scope helper (Y-2).
 - ``host add`` prints a one-line consent note (Y-2 companion).
 
@@ -149,8 +151,36 @@ class TestReportRecurrenceSuspects:
         nonce, ts = _spool_suspect(env, rid)
         facts = gather(env.ledger)
         assert facts["recurrence_suspects"] == [
-            {"id": rid, "nonce": nonce, "seen_at": ts}
+            {"id": rid, "nonce": nonce, "seen_at": ts, "basis": "origin-match"}
         ]
+
+    def test_basis_distinguishes_a_self_report_from_a_text_match(self, env):
+        """`basis` is WHY the suspect was raised, and the producers mean
+        very different things by it: `fire-violated` is the model
+        reporting that it broke this routed rule, while `miner-match` /
+        `origin-match` / `title-token-overlap` are text-similarity
+        heuristics. That is most of the evidence behind revise vs
+        tolerate, and it was spooled into telemetry and then dropped
+        here, so no consumer could ever see it."""
+        rid = _route(env)
+        telemetry.spool_event(
+            "recurrence-suspect", record=rid, origin="lrn-0000eeee",
+            basis="fire-violated",
+        )
+        telemetry.flush(env.ledger)
+        facts = gather(env.ledger)
+        assert [r["basis"] for r in facts["recurrence_suspects"]] == ["fire-violated"]
+
+    def test_a_suspect_with_no_basis_still_surfaces(self, env):
+        """Older telemetry predates the field, and a producer may omit it.
+        The row must still reach the operator — degrading to None is fine,
+        disappearing is not."""
+        rid = _route(env)
+        telemetry.spool_event("recurrence-suspect", record=rid, origin="lrn-0000eeee")
+        telemetry.flush(env.ledger)
+        facts = gather(env.ledger)
+        assert len(facts["recurrence_suspects"]) == 1
+        assert facts["recurrence_suspects"][0]["basis"] is None
 
     def test_confirmed_suspect_drops_off(self, env):
         rid = _route(env)
@@ -174,7 +204,7 @@ class TestReportRecurrenceSuspects:
         assert rc == 0
         payload = json.loads(capsys.readouterr().out)
         assert payload["recurrence_suspects"] == [
-            {"id": rid, "nonce": nonce, "seen_at": ts}
+            {"id": rid, "nonce": nonce, "seen_at": ts, "basis": "origin-match"}
         ]
 
     def test_malformed_telemetry_line_is_skipped_not_crashed(self, env):
@@ -202,7 +232,12 @@ class TestReportRecurrenceSuspects:
         )
         facts = gather(env.ledger)  # must not raise
         assert facts["recurrence_suspects"] == [
-            {"id": rid, "nonce": good_nonce, "seen_at": good_ts}
+            {
+                "id": rid,
+                "nonce": good_nonce,
+                "seen_at": good_ts,
+                "basis": "origin-match",
+            }
         ]
 
 
