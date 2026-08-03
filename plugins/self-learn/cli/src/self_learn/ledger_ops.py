@@ -47,6 +47,10 @@ __all__ = [
     "ProposalError",
     "PROPOSAL_DESTINATIONS",
     "QueueEntry",
+    "TRACE_FLAGS",
+    "TRACE_FS_VERDICTS",
+    "TRACE_OUTCOMES",
+    "TRACE_RECOMMENDATIONS",
     "bucket_dir_for_scope",
     "bucket_project_path",
     "create_record",
@@ -80,6 +84,58 @@ DEFAULT_DEFER_DAYS = 30  # 02 §2: defer default +30 days
 
 MERGE_ID_RE = re.compile(r"^merge-[0-9a-f]{8}$")
 SHA_ANCHOR_RE = re.compile(r"^sha256:[0-9a-f]{12}$")
+
+#: u-schema-decision-trace §3.1 Schema-1: the `gates` mapping's closed key
+#: set — every key required, no others admitted (D1). Not exported: it is
+#: Schema-1's structural spine, not one of the four Set-F/R/O/V constants
+#: (§3.3, §6-D2).
+TRACE_GATE_KEYS = ("g0", "t1", "t2", "t3", "t3a", "t4", "tn", "e1", "outcome")
+
+#: Set-F (§3.2): the closed decision-trace flag set. Eight values;
+#: `pathed-unbuilt` is required by r2 §1.6's PATHED transition rule even
+#: though r2 §1.2 omits it — resolved in favour of the rule that has to
+#: run (§8-C1). Tests iterate this tuple; they never hardcode a copy.
+TRACE_FLAGS = (
+    "near-cluster",
+    "cluster-indeterminate",
+    "evidence-gap",
+    "rehome-suggested",
+    "no-cheap-surface",
+    "scope-mismatch",
+    "consider-local",
+    "pathed-unbuilt",
+)
+
+#: Set-R (§3.3): the `recommendation` enum.
+TRACE_RECOMMENDATIONS = ("route", "reject", "defer", "graduate")
+
+#: Set-O (§3.3): the `gates.outcome` enum. Defined HERE, not in the future
+#: `gates.py` (U-table) — the validator needs the set before that module
+#: exists; U-table imports TRACE_OUTCOMES rather than redefining `CLS`
+#: (§8-O1).
+TRACE_OUTCOMES = (
+    "HOOK",
+    "ALWAYS",
+    "PATHED",
+    "SKILL",
+    "DEMAND",
+    "NEW_SKILL",
+    "REJECT",
+    "DEFER",
+    "GRADUATE",
+)
+
+#: Set-V (§3.3): the `*.fs.verdict` enum.
+TRACE_FS_VERDICTS = ("SILENT", "COSTLY", "LOUD_CHEAP", "INDETERMINATE")
+
+#: §3.4: the quote-containment floor, measured on the FLATTENED quote (not
+#: raw length — E5's whitespace twin pins this). Calibrated on `"no error"`
+#: (8 chars), the shortest marker in r2 §3's silence lexicon (§6-D6).
+_QUOTE_MIN_CHARS = 8
+
+#: X3 / C4 (§3.1a, §3.4a): the literal `roster_sha` value the T3
+#: degradation path writes when no roster composer exists yet.
+ROSTER_UNAVAILABLE = "unavailable"
 
 _SECONDS_PER_DAY = 86400
 _TITLE_SECTION = {"behavior": "Trigger", "knowledge": "Fact"}
@@ -515,9 +571,620 @@ def _validate_hook_extension(data: dict) -> None:
         )
 
 
-def validate_proposal(data: dict) -> None:
+# --------------------------------------------------- decision trace (§3)
+
+
+def _flatten_quote(text: str) -> str:
+    """§3.4's COMPARISON normalization (never `normalize.normalize_body`,
+    which HASHES and is line-based by design): collapse every run of
+    whitespace, including newlines, to a single space, then strip. A quote
+    copied out of a wrapped record body and re-wrapped by the model must
+    still be found — a validator that refuses honest evidence is worse
+    than none. Local to this module; not exported (§6-D4)."""
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _translate_glob_segment(seg: str) -> str:
+    """One `/`-delimited, non-`**` segment → its regex piece. `*` → any run
+    of non-separator chars, `?` → one non-separator char, `[...]` → a
+    passed-through character class (only a leading `!` negates; a leading
+    `^` is a literal member and is actively escaped to `\\^`, because
+    Python's `re` negates on `^` unaided — §3.4a), an unbalanced `[` → an
+    escaped literal, never an exception; everything else `re.escape`d.
+
+    The class BODY is also sanitized before being passed through (code
+    gate F1/F2, r3 delta): a literal backslash is escaped so a body
+    ending in `\\` cannot leave the class unterminated (a *balanced*
+    glob class whose body ends in `\\` — `[a\\]` — would otherwise emit
+    an unterminated `re` class and `re.compile` would raise something
+    that is not a :class:`ProposalError`, which is exactly the escape S6
+    forbids), and `&`/`~`/`|` are escaped because `re` has announced
+    those will gain set-operation meaning inside a class — both are
+    plain literal members to `glob`/`fnmatch`, so leaving them unescaped
+    is the false-refusal direction (F2) this section exists to avoid."""
+    out: list[str] = []
+    i, n = 0, len(seg)
+    while i < n:
+        c = seg[i]
+        if c == "*":
+            out.append("[^/]*")
+            i += 1
+        elif c == "?":
+            out.append("[^/]")
+            i += 1
+        elif c == "[":
+            j = i + 1
+            if j < n and seg[j] == "!":
+                j += 1
+            if j < n and seg[j] == "]":
+                j += 1
+            while j < n and seg[j] != "]":
+                j += 1
+            if j >= n:
+                # Unbalanced `[` — an escaped literal, never an exception.
+                out.append(re.escape("["))
+                i += 1
+                continue
+            stuff = seg[i + 1 : j]
+            stuff = stuff.replace("\\", "\\\\")
+            stuff = re.sub(r"([&~|])", r"\\\1", stuff)
+            if stuff.startswith("!"):
+                stuff = "^" + stuff[1:]
+            elif stuff.startswith("^") or stuff.startswith("["):
+                stuff = "\\" + stuff
+            out.append(f"[{stuff}]")
+            i = j + 1
+        else:
+            out.append(re.escape(c))
+            i += 1
+    return "".join(out)
+
+
+@lru_cache(maxsize=256)
+def _compile_glob_pattern(pattern: str):
+    """§3.4a's hand-rolled `**`-aware translator — `re` only, never
+    `fnmatch`/`glob` (S3/S4/D10/D11; both stdlib alternatives that would
+    get this right, `glob.translate`/`PurePath.full_match`, are Python
+    3.13-only and this project's floor is 3.11). A `**` segment becomes
+    `(?:[^/]+/)*` (zero or more levels) when non-final — which already
+    supplies its own trailing separator, so none is emitted after it — and
+    `.*` when final. Memoized: this runs on the eligibility hot path (S4).
+
+    `re.error` is caught and re-raised as :class:`ProposalError` (code
+    gate F1, r3 delta) — not because `_translate_glob_segment`'s own
+    sanitizing is known to still be incomplete, but because S6 must hold
+    for ANY future defect in this translator, not just the one measured
+    today: a malformed trace on somebody else's record must never
+    traceback `self-learn list` with something other than ProposalError."""
+    segments = pattern.split("/")
+    n = len(segments)
+    pieces: list[tuple[str, bool]] = []  # (regex, already_supplies_sep)
+    for idx, seg in enumerate(segments):
+        if seg == "**":
+            if idx == n - 1:
+                pieces.append((".*", False))
+            else:
+                pieces.append(("(?:[^/]+/)*", True))
+        else:
+            pieces.append((_translate_glob_segment(seg), False))
+    parts: list[str] = []
+    for idx, (piece, _supplies) in enumerate(pieces):
+        if idx > 0 and not pieces[idx - 1][1]:
+            parts.append("/")
+        parts.append(piece)
+    try:
+        return re.compile(f"(?s:{''.join(parts)})\\Z")
+    except re.error as exc:
+        raise ProposalError(
+            f"rules_paths pattern {pattern!r} is not translatable: {exc}"
+        ) from exc
+
+
+def _glob_match(path: str, pattern: str) -> bool:
+    """§3.4a: a PURE string relation — no filesystem, no `root_dir`, no cwd
+    — measured equivalent to `glob.glob(pattern, root_dir=…,
+    recursive=True, include_hidden=True)` over files (not directories)
+    across 13 patterns, 0 mismatches (F1b). Deliberately does NOT inherit
+    `glob`'s absolute-path `root_dir`-ignoring fail-open (§8-O6)."""
+    return _compile_glob_pattern(pattern).match(path) is not None
+
+
+def _check_evidence(
+    evidence,
+    path: str,
+    *,
+    required: bool,
+    quote_source: str,
+    record_text: str | None,
+) -> None:
+    """One `evidence` leaf (§3.1 Schema-1a): null/absent iff not required;
+    otherwise a non-empty string whose flattened form is at least
+    `_QUOTE_MIN_CHARS` long (measured on both required and optional
+    fields — the floor is a shape rule, not a required-ness rule). `""` is
+    never valid — only `None` encodes "absent" (§3.4). RECORD-sourced
+    quotes are containment-checked against `record_text` when supplied;
+    TARGET-sourced quotes are shape-only in this unit (§3.7 item 1)."""
+    if evidence is None:
+        if required:
+            raise ProposalError(f"{path} is required here and is missing")
+        return
+    if not isinstance(evidence, str) or not evidence:
+        raise ProposalError(f"{path} must be non-empty text or null, got {evidence!r}")
+    flattened = _flatten_quote(evidence)
+    if len(flattened) < _QUOTE_MIN_CHARS:
+        raise ProposalError(
+            f"{path} is shorter than the _QUOTE_MIN_CHARS ({_QUOTE_MIN_CHARS}) "
+            f"floor once flattened: {evidence!r}"
+        )
+    if quote_source == "RECORD" and record_text is not None:
+        if flattened not in _flatten_quote(record_text):
+            raise ProposalError(
+                f"{path} is not contained in the record it claims to quote: "
+                f"{evidence!r}"
+            )
+
+
+def _mapping(value, path: str) -> dict:
+    """Type-check-before-index (S6): every level of the trace is verified
+    a mapping before anything is read out of it, so a malformed shape
+    raises :class:`ProposalError` and never a bare `TypeError`/`KeyError`
+    (A7) — `proposal_info` catches only `ProposalError` and `queue()`
+    catches nothing at all."""
+    if not isinstance(value, dict):
+        raise ProposalError(f"{path} must be a mapping, got {value!r}")
+    return value
+
+
+def _check_fs_verdict(
+    fs: dict, path: str, record_text: str | None
+) -> None:
+    """Shared by `t3a.fs` and `t4.fs`: verdict in the closed Set-V, evidence
+    required unless the verdict is `INDETERMINATE` (D3)."""
+    verdict = fs.get("verdict")
+    if verdict not in TRACE_FS_VERDICTS:
+        raise ProposalError(
+            f"{path}.verdict must be one of {list(TRACE_FS_VERDICTS)}, "
+            f"got {verdict!r}"
+        )
+    _check_evidence(
+        fs.get("evidence"),
+        f"{path}.evidence",
+        required=(verdict != "INDETERMINATE"),
+        quote_source="RECORD",
+        record_text=record_text,
+    )
+
+
+def _validate_gates(data: dict, *, record_text: str | None = None) -> None:
+    """u-schema-decision-trace §3: the decision trace — `gates`, `flags`,
+    `recommendation` — validated together (D3: X3 couples the flag set to
+    a gate answer, so splitting them invites a caller that runs one and
+    not the others). Absent-is-valid throughout (S1): every one of the
+    three top-level keys may be omitted, independently or together.
+
+    Containment (§3.4) runs iff `record_text` is supplied — this function
+    performs NO filesystem I/O itself (S4); callers decide whether/what to
+    load. Raises only :class:`ProposalError`, on every input including
+    malformed ones (S6) — never mutates `data` (C3)."""
+
+    # ---- flags (Set-F, §3.2) -------------------------------------------
+    flags = data.get("flags")
+    if flags is not None:
+        if not isinstance(flags, list):
+            raise ProposalError(f"flags must be a list, got {flags!r}")
+        for flag in flags:
+            if not isinstance(flag, str) or flag not in TRACE_FLAGS:
+                raise ProposalError(
+                    f"flag {flag!r} is outside the closed set {list(TRACE_FLAGS)}"
+                )
+        if len(set(flags)) != len(flags):
+            raise ProposalError(f"flags must not contain duplicates: {flags!r}")
+
+    # ---- recommendation (Set-R, §3.3) ----------------------------------
+    recommendation = data.get("recommendation")
+    if recommendation is not None and recommendation not in TRACE_RECOMMENDATIONS:
+        raise ProposalError(
+            f"recommendation must be one of {list(TRACE_RECOMMENDATIONS)}, "
+            f"got {recommendation!r}"
+        )
+
+    # ---- gates (Schema-1, §3.1) -----------------------------------------
+    gates = data.get("gates")
+    if gates is None:
+        return
+    if not isinstance(gates, dict):
+        raise ProposalError(f"gates must be a mapping, got {gates!r}")
+    gate_keys = set(gates)
+    unknown = sorted(gate_keys - set(TRACE_GATE_KEYS))
+    if unknown:
+        raise ProposalError(
+            f"gates has unknown key(s) {unknown} — allowed: {list(TRACE_GATE_KEYS)}"
+        )
+    missing = sorted(set(TRACE_GATE_KEYS) - gate_keys)
+    if missing:
+        raise ProposalError(
+            f"gates is missing key(s) {missing} — required: {list(TRACE_GATE_KEYS)}"
+        )
+
+    # -- g0 ---------------------------------------------------------------
+    g0 = _mapping(gates["g0"], "gates.g0")
+    for leg in ("reject", "defer"):
+        leg_path = f"gates.g0.{leg}"
+        node = _mapping(g0.get(leg), leg_path)
+        answer = node.get("answer")
+        if answer not in ("yes", "no"):
+            raise ProposalError(
+                f"{leg_path}.answer must be 'yes' or 'no', got {answer!r}"
+            )
+        _check_evidence(
+            node.get("evidence"),
+            f"{leg_path}.evidence",
+            required=(answer == "yes"),
+            quote_source="RECORD",
+            record_text=record_text,
+        )
+    canon_path = "gates.g0.canon"
+    canon = _mapping(g0.get("canon"), canon_path)
+    canon_answer = canon.get("answer")
+    if canon_answer not in ("yes", "no"):
+        raise ProposalError(
+            f"{canon_path}.answer must be 'yes' or 'no', got {canon_answer!r}"
+        )
+    _check_evidence(
+        canon.get("evidence"),
+        f"{canon_path}.evidence",
+        required=(canon_answer == "yes"),
+        quote_source="TARGET",
+        record_text=record_text,
+    )
+    canon_target = canon.get("target")
+    if canon_answer == "yes" and (
+        not isinstance(canon_target, str) or not canon_target
+    ):
+        raise ProposalError(
+            f"{canon_path}.target must be non-empty text when answer is yes"
+        )
+
+    # -- t1 -----------------------------------------------------------
+    t1 = _mapping(gates["t1"], "gates.t1")
+    attempted = t1.get("attempted")
+    if not isinstance(attempted, bool):
+        raise ProposalError(
+            f"gates.t1.attempted must be a bool, got {attempted!r}"
+        )
+
+    fs_shaped_path = "gates.t1.field_shaped"
+    field_shaped = _mapping(t1.get("field_shaped"), fs_shaped_path)
+    fs_answer = field_shaped.get("answer")
+    if fs_answer not in ("yes", "no"):
+        raise ProposalError(
+            f"{fs_shaped_path}.answer must be 'yes' or 'no', got {fs_answer!r}"
+        )
+    _check_evidence(
+        field_shaped.get("evidence"),
+        f"{fs_shaped_path}.evidence",
+        required=True,  # required BOTH ways (§3.1 Schema-1a)
+        quote_source="RECORD",
+        record_text=record_text,
+    )
+
+    sep_path = "gates.t1.separable"
+    separable = _mapping(t1.get("separable"), sep_path)
+    sep_answer = separable.get("answer")
+    if sep_answer not in ("yes", "no", None):
+        raise ProposalError(
+            f"{sep_path}.answer must be 'yes', 'no' or null, got {sep_answer!r}"
+        )
+    _check_evidence(
+        separable.get("evidence"),
+        f"{sep_path}.evidence",
+        required=False,
+        quote_source="RECORD",
+        record_text=record_text,
+    )
+
+    cb_path = "gates.t1.cost_bearing"
+    cost_bearing = _mapping(t1.get("cost_bearing"), cb_path)
+    cb_answer = cost_bearing.get("answer")
+    if cb_answer not in ("yes", "no", None):
+        raise ProposalError(
+            f"{cb_path}.answer must be 'yes', 'no' or null, got {cb_answer!r}"
+        )
+    _check_evidence(
+        cost_bearing.get("evidence"),
+        f"{cb_path}.evidence",
+        required=(cb_answer == "yes"),
+        quote_source="RECORD",
+        record_text=record_text,
+    )
+
+    # -- t2 -----------------------------------------------------------
+    t2_path = "gates.t2"
+    t2 = _mapping(gates["t2"], t2_path)
+    t2_answer = t2.get("answer")
+    if t2_answer not in ("yes", "no"):
+        raise ProposalError(
+            f"{t2_path}.answer must be 'yes' or 'no', got {t2_answer!r}"
+        )
+    _check_evidence(
+        t2.get("evidence"),
+        f"{t2_path}.evidence",
+        required=True,  # required BOTH ways (§3.1 Schema-1a)
+        quote_source="RECORD",
+        record_text=record_text,
+    )
+    match_path_value = t2.get("match_path")
+    if t2_answer == "yes":
+        if not isinstance(match_path_value, str) or not match_path_value:
+            raise ProposalError(
+                f"{t2_path}.match_path must be non-empty text when answer is yes"
+            )
+        # X1: the t2 positive control — match_path's whole semantic
+        # content is "a path the proposed globs actually match", so
+        # requiring rules_paths is a shape requirement of the trace
+        # (§3.1, X1), and the check must never pass vacuously (F2).
+        rules_paths = data.get("rules_paths")
+        if (
+            not isinstance(rules_paths, list)
+            or not rules_paths
+            or any(not isinstance(p, str) or not p for p in rules_paths)
+        ):
+            raise ProposalError(
+                f"{t2_path}.answer is 'yes' but rules_paths is missing/empty "
+                "— match_path cannot be checked against zero globs (X1)"
+            )
+        if not any(_glob_match(match_path_value, p) for p in rules_paths):
+            raise ProposalError(
+                f"{t2_path}.match_path {match_path_value!r} matches none of "
+                f"rules_paths {rules_paths!r} (X1)"
+            )
+
+    # -- t3 -----------------------------------------------------------
+    t3_path = "gates.t3"
+    t3 = _mapping(gates["t3"], t3_path)
+    t3_answer = t3.get("answer")
+    if t3_answer not in ("yes", "no"):
+        raise ProposalError(
+            f"{t3_path}.answer must be 'yes' or 'no', got {t3_answer!r}"
+        )
+    owner = t3.get("owner")
+    if t3_answer == "yes":
+        if not isinstance(owner, str) or not owner:
+            raise ProposalError(
+                f"{t3_path}.owner must be non-empty text when answer is yes"
+            )
+    elif owner is not None:
+        raise ProposalError(f"{t3_path}.owner must be null when answer is no")
+    scan_terms = t3.get("scan_terms")
+    if t3_answer == "no":
+        if (
+            not isinstance(scan_terms, list)
+            or not scan_terms
+            or any(not isinstance(s, str) or not s for s in scan_terms)
+        ):
+            raise ProposalError(
+                f"{t3_path}.scan_terms must be a non-empty list of "
+                "non-empty text when answer is no"
+            )
+    elif scan_terms is not None:
+        raise ProposalError(
+            f"{t3_path}.scan_terms must be null when answer is yes"
+        )
+    roster_sha = t3.get("roster_sha")
+    if roster_sha != ROSTER_UNAVAILABLE and not (
+        isinstance(roster_sha, str) and SHA_ANCHOR_RE.match(roster_sha)
+    ):
+        raise ProposalError(
+            f"{t3_path}.roster_sha must match sha256:<12hex> or be "
+            f"{ROSTER_UNAVAILABLE!r}, got {roster_sha!r}"
+        )
+    if roster_sha == ROSTER_UNAVAILABLE:
+        # X3 — roster honesty: a missing roster cannot support a "yes"
+        # judgment, and the admission must be visible on the card.
+        if t3_answer != "no":
+            raise ProposalError(
+                f"{t3_path}.roster_sha is {ROSTER_UNAVAILABLE!r} but answer "
+                f"is {t3_answer!r} — a missing roster cannot support a "
+                "'yes' judgment (X3)"
+            )
+        if not flags or "evidence-gap" not in flags:
+            raise ProposalError(
+                f"{t3_path}.roster_sha is {ROSTER_UNAVAILABLE!r} — flags "
+                "must include 'evidence-gap' to admit the degraded roster "
+                "(X3)"
+            )
+
+    # -- t3a ------------------------------------------------------------
+    t3a_path = "gates.t3a"
+    t3a_raw = gates["t3a"]
+    if t3_answer == "yes":
+        if t3a_raw is None:
+            raise ProposalError(
+                f"{t3a_path} must be non-null when gates.t3.answer is 'yes'"
+            )
+    elif t3a_raw is not None:
+        raise ProposalError(
+            f"{t3a_path} must be null when gates.t3.answer is 'no'"
+        )
+    if t3a_raw is not None:
+        t3a = _mapping(t3a_raw, t3a_path)
+        dbr_path = f"{t3a_path}.depth_behind_rule"
+        dbr = _mapping(t3a.get("depth_behind_rule"), dbr_path)
+        dbr_answer = dbr.get("answer")
+        if dbr_answer not in ("yes", "no"):
+            raise ProposalError(
+                f"{dbr_path}.answer must be 'yes' or 'no', got {dbr_answer!r}"
+            )
+        _check_evidence(
+            dbr.get("evidence"),
+            f"{dbr_path}.evidence",
+            required=(dbr_answer == "yes"),
+            quote_source="TARGET",
+            record_text=record_text,
+        )
+        dbr_target = dbr.get("target")
+        if dbr_answer == "yes" and (
+            not isinstance(dbr_target, str) or not dbr_target
+        ):
+            raise ProposalError(
+                f"{dbr_path}.target must be non-empty text when answer is yes"
+            )
+        _check_fs_verdict(
+            _mapping(t3a.get("fs"), f"{t3a_path}.fs"),
+            f"{t3a_path}.fs",
+            record_text,
+        )
+
+    # -- tn (validated before t4: t4's presence rule reads tn.answer) ---
+    tn_path = "gates.tn"
+    tn = _mapping(gates["tn"], tn_path)
+    tn_answer = tn.get("answer")
+    if tn_answer not in ("yes", "no", "indeterminate"):
+        raise ProposalError(
+            f"{tn_path}.answer must be 'yes', 'no' or 'indeterminate', "
+            f"got {tn_answer!r}"
+        )
+    terms = tn.get("terms")
+    if not isinstance(terms, list) or any(
+        not isinstance(t, str) or not t for t in terms
+    ):
+        raise ProposalError(
+            f"{tn_path}.terms must be a list of non-empty text (may be empty)"
+        )
+    members = tn.get("members")
+    if not isinstance(members, list) or any(
+        not isinstance(m, str) or not RECORD_ID_RE.match(m) for m in members
+    ):
+        raise ProposalError(
+            f"{tn_path}.members must be a list of record ids matching "
+            f"{RECORD_ID_RE.pattern}"
+        )
+    n_members = len(members)
+    if tn_answer == "yes" and n_members < 2:
+        raise ProposalError(
+            f"{tn_path}.members must have ≥2 entries when answer is "
+            f"'yes', got {n_members}"
+        )
+    if tn_answer == "no" and n_members > 1:
+        raise ProposalError(
+            f"{tn_path}.members must have ≤1 entry when answer is "
+            f"'no', got {n_members}"
+        )
+    proposed_name = tn.get("proposed_name")
+    if tn_answer == "yes":
+        if not isinstance(proposed_name, str) or not proposed_name:
+            raise ProposalError(
+                f"{tn_path}.proposed_name is required when answer is yes"
+            )
+        try:
+            validate_skill_name(proposed_name)
+        except SkillScaffoldError as exc:
+            raise ProposalError(
+                f"{tn_path}.proposed_name {proposed_name!r}: {exc}"
+            ) from exc
+    elif proposed_name is not None:
+        raise ProposalError(
+            f"{tn_path}.proposed_name must be null unless answer is 'yes'"
+        )
+
+    # -- t4 -----------------------------------------------------------
+    t4_path = "gates.t4"
+    t4_raw = gates["t4"]
+    tn_is_yes = tn_answer == "yes"
+    if t2_answer == "yes" or tn_is_yes:
+        if t4_raw is not None:
+            raise ProposalError(
+                f"{t4_path} must be null when t2.answer is 'yes' or "
+                "tn.answer is 'yes'"
+            )
+    elif t2_answer == "no" and t3_answer == "no" and not tn_is_yes:
+        if t4_raw is None:
+            raise ProposalError(
+                f"{t4_path} must be non-null when t2 and t3 both answered "
+                "'no' and tn did not answer 'yes'"
+            )
+    # else: t3.answer == "yes" (t2 == "no", tn != "yes") — scope-free
+    # residual (§6-D5): t4 is free either way, the scope this validator
+    # does not have decides which table row actually applies.
+    if t4_raw is not None:
+        t4 = _mapping(t4_raw, t4_path)
+        dbr_path = f"{t4_path}.depth_behind_rule"
+        dbr = _mapping(t4.get("depth_behind_rule"), dbr_path)
+        dbr_answer = dbr.get("answer")
+        if dbr_answer not in ("yes", "no"):
+            raise ProposalError(
+                f"{dbr_path}.answer must be 'yes' or 'no', got {dbr_answer!r}"
+            )
+        _check_evidence(
+            dbr.get("evidence"),
+            f"{dbr_path}.evidence",
+            required=(dbr_answer == "yes"),
+            quote_source="TARGET",
+            record_text=record_text,
+        )
+        dbr_target = dbr.get("target")
+        if dbr_answer == "yes" and (
+            not isinstance(dbr_target, str) or not dbr_target
+        ):
+            raise ProposalError(
+                f"{dbr_path}.target must be non-empty text when answer is yes"
+            )
+
+        cm_path = f"{t4_path}.conduct_mode"
+        cm = _mapping(t4.get("conduct_mode"), cm_path)
+        cm_answer = cm.get("answer")
+        if cm_answer not in ("yes", "no"):
+            raise ProposalError(
+                f"{cm_path}.answer must be 'yes' or 'no', got {cm_answer!r}"
+            )
+        _check_evidence(
+            cm.get("evidence"),
+            f"{cm_path}.evidence",
+            required=(cm_answer == "yes"),
+            quote_source="RECORD",
+            record_text=record_text,
+        )
+        _check_fs_verdict(
+            _mapping(t4.get("fs"), f"{t4_path}.fs"),
+            f"{t4_path}.fs",
+            record_text,
+        )
+
+    # -- e1 -----------------------------------------------------------
+    e1_path = "gates.e1"
+    e1 = _mapping(gates["e1"], e1_path)
+    sightings = e1.get("sightings")
+    if (
+        not isinstance(sightings, int)
+        or isinstance(sightings, bool)
+        or sightings < 1
+    ):
+        raise ProposalError(
+            f"{e1_path}.sightings must be an int ≥ 1, got {sightings!r}"
+        )
+    post_demand = e1.get("post_demand_recurrence")
+    if not isinstance(post_demand, bool):
+        raise ProposalError(
+            f"{e1_path}.post_demand_recurrence must be a bool, got {post_demand!r}"
+        )
+
+    # -- outcome --------------------------------------------------------
+    outcome = gates.get("outcome")
+    if outcome not in TRACE_OUTCOMES:
+        raise ProposalError(
+            f"gates.outcome must be one of {list(TRACE_OUTCOMES)}, got {outcome!r}"
+        )
+
+
+def validate_proposal(data: dict, *, record_text: str | None = None) -> None:
     """02 §1 single-record proposal schema (incl. the M3 hook-destination
-    extension). Raises :class:`ProposalError`."""
+    extension), plus the optional u-schema-decision-trace (§3): `gates`,
+    `flags`, `recommendation`. ``record_text`` is keyword-only with a
+    ``None`` default (S2 — every existing positional call site,
+    ``validate_proposal(data)``, keeps working verbatim) and is used ONLY
+    to containment-check RECORD-sourced trace quotes (§3.4); when omitted,
+    trace shape/enums/required-ness still validate but containment does
+    not run (§3.5). Raises :class:`ProposalError`."""
     if not isinstance(data, dict):
         raise ProposalError("proposal is not a mapping")
     dest = data.get("destination")
@@ -566,6 +1233,7 @@ def validate_proposal(data: dict) -> None:
     _validate_rules_fields(data)
     _validate_lint(data)
     _validate_card(data)
+    _validate_gates(data, record_text=record_text)
 
 
 def _validate_rules_fields(data: dict) -> None:
@@ -656,9 +1324,22 @@ def validate_merge_proposal(data: dict) -> None:
 
 
 def write_proposal(home: Path, record_id: str, data: dict) -> Path:
-    """Validate + write ``proposals/lrn-<id>.yaml`` beside the record."""
-    validate_proposal(data)
+    """Validate + write ``proposals/lrn-<id>.yaml`` beside the record.
+
+    §3.5: the record is resolved BEFORE validating, so a trace carrying
+    ``gates:`` gets its RECORD-sourced quotes containment-checked against
+    ``Record.from_path(record_path).to_text()`` (frontmatter + body, not
+    just body — E4). The ``data.get("gates") is not None`` guard is
+    load-bearing for cost, not correctness: it keeps the ruamel re-dump
+    off the path for every trace-less proposal, which today is all of
+    them (M2/M3 are the mutations that catch a weakened guard)."""
     record_path = find_record_path(home, record_id)
+    record_text = (
+        Record.from_path(record_path).to_text()
+        if data.get("gates") is not None
+        else None
+    )
+    validate_proposal(data, record_text=record_text)
     path = _proposal_path(record_path.parent.parent, record_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     _dump_yaml(data, path)
@@ -1053,7 +1734,15 @@ def proposal_info(entry: QueueEntry) -> dict:
     info["destination"] = dest if dest in PROPOSAL_DESTINATIONS else None
     info["already_canon"] = data.get("already_canon") is True
     try:
-        validate_proposal(data)
+        # §3.5: entry.record is already in memory (queue() loaded it) — no
+        # new I/O (S4). This is the site that makes containment
+        # unavoidable: a fabricated quote makes the proposal
+        # schema-invalid → proposal_fresh: False → is_unanalyzed: True →
+        # the worker re-analyzes it (E7).
+        record_text = (
+            entry.record.to_text() if data.get("gates") is not None else None
+        )
+        validate_proposal(data, record_text=record_text)
     except ProposalError:
         return info  # schema-invalid: never fresh (08 §7.1 step 2)
     info["proposal_fresh"] = data.get("record_sha") == sha_anchor(entry.record.body)
