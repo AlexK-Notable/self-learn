@@ -986,10 +986,47 @@ def _tokens(text: str) -> set[str]:
 
 
 def _recurrence_suspects(home: Path, batch: list) -> int:
-    """Deterministic detection: a NEW pending capture that matches an
-    already-ROUTED lesson (token overlap on the title line, or a shared
-    evidence origin). Suspects are telemetry events — the machine never
-    writes the record; `confirm-recurrence` is the human's."""
+    """Deterministic detection: a NEW pending capture whose title overlaps
+    an already-ROUTED lesson's (``title-token-overlap``, Jaccard ≥
+    :data:`SUSPECT_JACCARD`). Suspects are telemetry events — the machine
+    never writes the record; `confirm-recurrence` is the human's.
+
+    FW-49 (2026-08-02): this used to also compute an ``origin-match``
+    basis (``pending.evidence`` origins intersecting ``routed.evidence``
+    origins) — removed because it is PROVABLY, PERMANENTLY unreachable,
+    not merely rare, for two independent reasons: (1) every mined
+    candidate is checked against :func:`import_common.existing_origins`
+    — the GLOBAL set of every ``evidence.origin`` across every record,
+    every status, every bucket — before it is allowed to land or fold
+    (`miner.py` `_reconcile_and_land`), so a freshly-landed pending
+    record's origins are by construction always disjoint from every
+    other record's; (2) independently, `teach`-authored pending records
+    never populate an ``origin`` key on their evidence entries at all
+    (they carry ``session``/``quote``, not ``origin`` — see `teach.py`),
+    so ``p_origins`` was unconditionally empty for that whole source
+    class regardless of (1). Confirmed by running this function against
+    a full copy of the live ledger (35 pending × 31 routed, same-bucket
+    pairs only): 0 hits, with or without the origin branch. Kept
+    ``title-token-overlap`` as the sole live basis rather than widening
+    it — tried full-section-body tokens as a broader signal and measured
+    it *lower* the one near-miss pair's Jaccard (0.571 title → 0.33
+    body; longer text dilutes overlap), and that near-miss
+    (`lrn-4323466d` vs `lrn-5d0c592a`) is a deliberate `--supersedes`
+    refinement, not a recurrence, so it is correctly silent, not a false
+    negative to chase.
+
+    Dedupe key is ``(record, origin)`` — the SAME shape the miner's
+    crossover/backfill use (`miner.py` `_raise_recurrence_suspect`,
+    `_event_seen`), deliberately: this producer's ``origin`` is always a
+    pending record id (``lrn-…``) and the miner's is always a transcript
+    ref (``transcript:<session>#L<line>``), disjoint value spaces by
+    construction — so the two producers can never emit a byte-identical
+    duplicate row for the two of them to collide on, and that is
+    intentional, not an oversight: a title-overlap suspect's evidence
+    IS the new pending record, a fire-violated suspect's evidence IS the
+    transcript line, and those are two different, independently
+    confirmable observations even when they concern the same underlying
+    incident."""
     already = {
         (e.get("record"), e.get("origin"))
         for e in telemetry.read_events(home)
@@ -999,9 +1036,6 @@ def _recurrence_suspects(home: Path, batch: list) -> int:
     for entry in batch:
         pending = entry.record
         p_tokens = _tokens(record_title(pending))
-        p_origins = {
-            ev.get("origin") for ev in pending.evidence if ev.get("origin")
-        }
         resolved_dir = entry.bucket_dir / "resolved"
         if not resolved_dir.is_dir():
             continue
@@ -1012,24 +1046,17 @@ def _recurrence_suspects(home: Path, batch: list) -> int:
                 continue
             if routed.status != "routed":
                 continue
-            basis = None
-            r_origins = {
-                ev.get("origin") for ev in routed.evidence if ev.get("origin")
-            }
-            if p_origins & r_origins:
-                basis = "origin-match"
-            else:
-                r_tokens = _tokens(record_title(routed))
-                union = p_tokens | r_tokens
-                if union and len(p_tokens & r_tokens) / len(union) >= SUSPECT_JACCARD:
-                    basis = "title-token-overlap"
-            if basis is None or (routed.id, pending.id) in already:
+            r_tokens = _tokens(record_title(routed))
+            union = p_tokens | r_tokens
+            if not union or len(p_tokens & r_tokens) / len(union) < SUSPECT_JACCARD:
+                continue
+            if (routed.id, pending.id) in already:
                 continue
             telemetry.spool_quiet(
                 "recurrence-suspect",
                 record=routed.id,
                 origin=pending.id,
-                basis=basis,
+                basis="title-token-overlap",
             )
             count += 1
     return count
