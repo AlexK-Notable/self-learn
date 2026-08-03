@@ -173,6 +173,20 @@ def analyze(home: Path | str, record: Record) -> dict:
         # Callers check first for the pinned exit-2 message; this guard is
         # defense in depth for library use.
         raise AnalystError(f"routing doctrine not installed — T10 ({doctrine})")
+    home = Path(home)
+    # Pre-spawn guard, same posture as the doctrine check above: without
+    # it, subprocess.run(cwd=...) raises FileNotFoundError (mislabeled
+    # "claude CLI not found on PATH" by the handler below) for a missing
+    # home, and NotADirectoryError / PermissionError — caught by
+    # nothing — for a file or an unenterable directory, escaping this
+    # function's AnalystError-only contract. `is_dir()` alone is not
+    # enough: a directory without the search bit still raises
+    # PermissionError on chdir, so the guard requires one the process can
+    # actually enter.
+    if not (home.is_dir() and os.access(home, os.X_OK)):
+        raise AnalystError(
+            f"analyst home is not a directory this process can enter ({home})"
+        )
     doctrine_text = doctrine.read_text(encoding="utf-8")
     model = _model()
     prompt = _PROMPT_TEMPLATE.format(record_text=record.to_text())
@@ -180,7 +194,7 @@ def analyze(home: Path | str, record: Record) -> dict:
     argv = build_argv(prompt, doctrine_text, model)
     try:
         proc = subprocess.run(
-            argv, capture_output=True, text=True, timeout=_timeout()
+            argv, capture_output=True, text=True, timeout=_timeout(), cwd=str(home)
         )
     except FileNotFoundError as exc:
         raise AnalystError("claude CLI not found on PATH") from exc
@@ -193,22 +207,30 @@ def analyze(home: Path | str, record: Record) -> dict:
         raise AnalystError(f"analyst exited {proc.returncode}: {detail}")
 
     parsed = _parse_yaml_map(proc.stdout)
-    proposal = {
-        "destination": parsed.get("destination"),
-        "alternates": parsed.get("alternates"),
-        "rationale": parsed.get("rationale"),
-        "model": model,
-        "analyzed_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        # CLI-stamped — never the model's (shared normalization fn, 08 §7.1).
-        "record_sha": sha_anchor(record.body),
-    }
-    # A2 §4.2 sync obligation (site 2): pass the analyst's variant fields
-    # through only when present, so a plain-claude-md (or non-claude-md)
-    # analysis stays byte-identical (P-A6) — validate_proposal enforces
-    # the §4.3 schema either way.
-    for key in ("variant", "rules_topic", "rules_paths"):
-        if parsed.get(key) is not None:
-            proposal[key] = parsed[key]
+    # Register R (U-analyst spec §2.1) — copy-then-stamp, not a rebuild
+    # from an enumerated key set: any field the analyst doesn't know
+    # about (a future doctrine addition, r2's `recommendation:`/`gates:`,
+    # today's `hook`/`examples`) survives verbatim instead of silently
+    # vanishing between the parse and validate_proposal below. That
+    # schema has exactly one authority — validate_proposal itself —
+    # restating it here would reintroduce the defect in a new location.
+    proposal = dict(parsed)
+    # `script` is CLI-owned and refused from the model on every other
+    # path (stamp_proposal, _prepare_one_motion_hook) — strip it here
+    # UNCONDITIONALLY and BEFORE validate_proposal. Conditioning the strip
+    # on destination == "hook", or moving it below validate_proposal,
+    # would let a non-hook proposal carrying `script` reach the
+    # validator, which refuses `script` outright outside a hook
+    # destination — turning an otherwise-routable proposal into an
+    # AnalystError.
+    proposal.pop("script", None)
+    # CLI-stamped fields — assigned after the copy, unconditionally
+    # overwriting whatever the model emitted (Register R). Kept literal
+    # rather than setdefault, which would silently invert this row.
+    proposal["model"] = model
+    proposal["analyzed_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    # CLI-stamped — never the model's (shared normalization fn, 08 §7.1).
+    proposal["record_sha"] = sha_anchor(record.body)
     try:
         validate_proposal(proposal)
     except ProposalError as exc:

@@ -10,17 +10,20 @@ import os
 import stat
 import subprocess
 import time
+from pathlib import Path
 
 import pytest
 
 from self_learn import analyst, cli, sentinel
 from self_learn.analyst import ANALYST_ALLOWED_TOOLS, DEFAULT_ANALYST_MODEL
 from self_learn.ledger_ops import create_record, write_proposal
+from self_learn.normalize import sha_anchor
 from self_learn.records import Record
 from support import (
     SKILL_MD_SEED,
     commit_all,
     git,
+    hook_proposal_fields,
     last_verb_sha,
     make_behavior,
     make_env,
@@ -37,8 +40,13 @@ SKILL_MD = SKILL_MD_SEED.format(name="s")
 DOCTRINE_TEXT = analyst.doctrine_path().read_text(encoding="utf-8")
 
 # argv NUL-separated: args (the doctrine text, the prompt) are multi-line.
+# `pwd -P > "$CLAUDE_SHIM_CWD"` (U-analyst A5): `-P` matters — bash seeds
+# $PWD from the inherited environment, so the plain builtin can report the
+# parent's directory instead of the subprocess's actual one. Inert for
+# every test that doesn't read CLAUDE_SHIM_CWD.
 CLAUDE_SHIM = """#!/usr/bin/env bash
 printf '%s\\0' "$@" > "$CLAUDE_SHIM_LOG"
+pwd -P > "$CLAUDE_SHIM_CWD"
 cat "$CLAUDE_SHIM_OUT"
 exit "${CLAUDE_SHIM_EXIT-0}"
 """
@@ -149,19 +157,22 @@ def env(tmp_path, monkeypatch):
 @pytest.fixture
 def claude_shim(tmp_path, monkeypatch):
     """PATH-shimmed fake `claude`: records argv (one arg per line) to
-    CLAUDE_SHIM_LOG, emits CLAUDE_SHIM_OUT on stdout."""
+    CLAUDE_SHIM_LOG, its resolved cwd (`pwd -P`) to CLAUDE_SHIM_CWD, and
+    emits CLAUDE_SHIM_OUT on stdout."""
     shim_dir = tmp_path / "shim-bin"
     shim_dir.mkdir()
     shim = shim_dir / "claude"
     shim.write_text(CLAUDE_SHIM, encoding="utf-8")
     shim.chmod(shim.stat().st_mode | stat.S_IXUSR)
     log = tmp_path / "claude-shim-argv.log"
+    cwd_log = tmp_path / "claude-shim-cwd.log"
     out = tmp_path / "claude-shim-stdout.txt"
     out.write_text("", encoding="utf-8")
     monkeypatch.setenv("PATH", f"{shim_dir}{os.pathsep}{os.environ['PATH']}")
     monkeypatch.setenv("CLAUDE_SHIM_LOG", str(log))
+    monkeypatch.setenv("CLAUDE_SHIM_CWD", str(cwd_log))
     monkeypatch.setenv("CLAUDE_SHIM_OUT", str(out))
-    return {"log": log, "out": out}
+    return {"log": log, "out": out, "cwd": cwd_log}
 
 
 def seed_pending(env, rid="lrn-0000aaaa", **kwargs):
@@ -346,6 +357,183 @@ def test_teach_route_missing_doctrine_exits_2_pre_spawn(
     assert "routing doctrine not installed — T10" in err
     assert not claude_shim["log"].exists()  # pre-spawn
     assert env.pending_files() == [] and env.resolved_files() == []
+
+
+# ---------------------------- analyst.analyze() proposal fidelity + cwd --
+# U-analyst (FW-41, docs/specs/self-learn/drafts/
+# u-analyst-proposal-fidelity-spec.md): the enumerated-rebuild defect and
+# the missing cwd=home pin. All six call analyst.analyze(env.home, record)
+# directly, per the spec's §4 builder decision — the CLI path additionally
+# needs the one_motion_route config opt-in before a hook proposal is
+# observable at all, and that gate is out of this unit's scope.
+
+
+def _yaml_dump(data: dict) -> str:
+    """Serialize a dict to YAML text for a shim's canned stdout (mirrors
+    test_one_motion_config.py's io.StringIO + ruamel pattern)."""
+    import io
+
+    from ruamel.yaml import YAML
+
+    buf = io.StringIO()
+    YAML(typ="safe").dump(data, buf)
+    return buf.getvalue()
+
+
+def test_analyst_analyze_round_trips_unknown_fields(env, claude_shim):
+    """A1 — campaign §5 positive control. r2's incoming `recommendation:`
+    key and a synthetic `probe_key`, both nowhere in analyst.py and
+    nowhere in validate_proposal, must round-trip with their emitted
+    values. A test that only round-trips fields the analyst already knows
+    about would pass just as happily on the broken (M1b) code — that is
+    the reason this assertion exists."""
+    claude_shim["out"].write_text(
+        "destination: skill-md\n"
+        "alternates: [claude-md]\n"
+        "rationale: deterministic guard beats advisory text\n"
+        "recommendation: defer\n"
+        "probe_key: probe-value\n",
+        encoding="utf-8",
+    )
+    proposal = analyst.analyze(env.home, make_behavior())
+    assert proposal["recommendation"] == "defer"
+    assert proposal["probe_key"] == "probe-value"
+
+
+def test_analyst_analyze_hook_round_trips(env, claude_shim):
+    """A2 (FW-41) — a doctrine-conformant hook proposal must return
+    without raising, with the returned hook/examples equal to what the
+    model emitted. Today the enumerated rebuild drops both keys before
+    validate_proposal ever sees them, so this raises AnalystError."""
+    hook_fields = hook_proposal_fields()
+    body = (
+        "destination: hook\n"
+        "alternates: [skill-md]\n"
+        "rationale: deterministic guard beats advisory text\n"
+    ) + _yaml_dump(hook_fields)
+    claude_shim["out"].write_text(body, encoding="utf-8")
+    proposal = analyst.analyze(env.home, make_behavior())
+    assert proposal["hook"] == hook_fields["hook"]
+    assert proposal["examples"] == hook_fields["examples"]
+
+
+def test_analyst_analyze_cli_owned_fields_win(env, claude_shim):
+    """A3 — model-emitted model/analyzed_at/record_sha (valid shape,
+    deliberately wrong value — the control) must be overwritten by the
+    CLI's own stamp, never carried through. Matching values could not
+    tell a stamped field from a carried one."""
+    claude_shim["out"].write_text(
+        "destination: skill-md\n"
+        "alternates: [claude-md]\n"
+        "rationale: deterministic guard beats advisory text\n"
+        "model: pwned-model\n"
+        "analyzed_at: 1999-01-01T00:00:00Z\n"
+        "record_sha: sha256:deadbeefdead\n",
+        encoding="utf-8",
+    )
+    record = make_behavior()
+    proposal = analyst.analyze(env.home, record)
+    assert proposal["model"] == DEFAULT_ANALYST_MODEL
+    assert proposal["record_sha"] == sha_anchor(record.body)
+    assert proposal["analyzed_at"] != "1999-01-01T00:00:00Z"
+
+
+def _script_probe_body(destination: str) -> str:
+    """A4 shim body: an otherwise-valid `destination` proposal that also
+    carries a forbidden `script` and a `probe_key`."""
+    lines = [
+        f"destination: {destination}\n",
+        "rationale: deterministic guard beats advisory text\n",
+        'script: "#!/usr/bin/env bash\\necho pwned\\n"\n',
+        "probe_key: probe-value\n",
+    ]
+    if destination == "hook":
+        lines.append("alternates: [skill-md]\n")
+        lines.append(_yaml_dump(hook_proposal_fields()))
+    else:
+        lines.append("alternates: [claude-md]\n")
+    return "".join(lines)
+
+
+@pytest.mark.parametrize("destination", ["hook", "skill-md"])
+def test_analyst_analyze_strips_script_unconditionally(env, claude_shim, destination):
+    """A4 — `script` is the one key this codebase refuses from a model on
+    every other path; it must never survive into the returned proposal,
+    regardless of destination. The skill-md case is what makes the strip
+    unconditional-and-pre-validation load-bearing: validate_proposal
+    refuses a `script` key outright on any non-hook destination, so a
+    strip that only fires for destination == "hook", or that runs after
+    validate_proposal, turns THIS routable non-hook proposal into an
+    AnalystError instead of a clean return — the hook case alone cannot
+    see that failure mode. The probe_key assertion is the presence check
+    that stops the absence assertion ("script" not in proposal) passing
+    vacuously on a build that carries nothing at all."""
+    claude_shim["out"].write_text(
+        _script_probe_body(destination), encoding="utf-8"
+    )
+    proposal = analyst.analyze(env.home, make_behavior())
+    assert "script" not in proposal
+    assert proposal["probe_key"] == "probe-value"
+
+
+def test_analyst_analyze_runs_in_ledger_home(env, claude_shim, monkeypatch, tmp_path):
+    """A5 — the analyst subprocess's cwd is pinned to `home`, never
+    inherited from the caller. The chdir to an unrelated directory is the
+    control: without it, an unpinned build could pass whenever pytest's
+    own cwd happened to match `home`."""
+    claude_shim["out"].write_text(
+        "destination: skill-md\n"
+        "alternates: [claude-md]\n"
+        "rationale: deterministic guard beats advisory text\n",
+        encoding="utf-8",
+    )
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+
+    analyst.analyze(env.home, make_behavior())
+    recorded = claude_shim["cwd"].read_text(encoding="utf-8").strip()
+    assert recorded == str(Path(env.home).resolve())
+
+
+@pytest.mark.parametrize("kind", ["missing", "file", "unenterable"])
+def test_analyst_analyze_bad_home_refuses_pre_spawn(claude_shim, tmp_path, kind):
+    """A6 — a home that is not an ENTERABLE directory refuses pre-spawn,
+    naming the offending path in the message. `is_dir()` alone does not
+    close the class: an existing directory without the search bit still
+    reaches `subprocess.run(cwd=...)`, which raises PermissionError —
+    caught by nothing, escaping analyze()'s AnalystError-only contract.
+    Neither "AnalystError was raised" (the unguarded build raises one too,
+    mislabeled "claude CLI not found on PATH" once cwd=home is wired) nor
+    "the shim never ran" (absent pre-spawn on both builds either way) can
+    tell a guarded build from an unguarded one — only the message content
+    can, hence the substring assertion below."""
+    if kind == "unenterable" and os.geteuid() == 0:
+        pytest.skip("root ignores the directory search bit")
+    if kind == "missing":
+        bad_home = tmp_path / "does-not-exist"
+    elif kind == "file":
+        bad_home = tmp_path / "a-file"
+        bad_home.write_text("not a directory", encoding="utf-8")
+        # EXECUTABLE on purpose. A 0644 file fails os.access(X_OK) for the
+        # wrong reason, which lets a guard reduced to os.access(X_OK) alone
+        # — is_dir() deleted — pass this case. Measured: with that guard an
+        # executable regular file reaches subprocess.run(cwd=...) and raises
+        # NotADirectoryError, which escapes analyze()'s AnalystError-only
+        # contract and loses the captured lesson. 0o755 pins the is_dir()
+        # half so only the real guard passes.
+        bad_home.chmod(0o755)
+    else:
+        bad_home = tmp_path / "unenterable"
+        bad_home.mkdir()
+        bad_home.chmod(0o000)
+    try:
+        with pytest.raises(analyst.AnalystError) as exc_info:
+            analyst.analyze(bad_home, make_behavior())
+        assert str(bad_home) in str(exc_info.value)
+    finally:
+        if kind == "unenterable":
+            bad_home.chmod(0o755)  # let tmp_path cleanup rmtree it
 
 
 # ----------------------------------------------------------- verb wiring
