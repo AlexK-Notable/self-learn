@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from self_learn import cli
-from self_learn.ledger_ops import create_record, read_proposal, write_proposal
+from self_learn.ledger_ops import _dump_yaml, create_record, read_proposal, write_proposal
 from self_learn.normalize import sha_anchor
 from self_learn.records import Record
 
@@ -183,3 +183,108 @@ def test_unknown_record_id_is_a_usage_error(home, capsys):
 def test_proposal_without_verb_is_usage_error(home, capsys):
     rc = cli.main(["proposal"])
     assert rc == 64
+
+
+# ---------------------------------------------- FW-62: containment parity
+#
+# `proposal validate` is the SKILL.md-documented honesty verb — "REQUIRED
+# after any direct edit of a pending record outside CLI verbs" — so its
+# schema check must apply the SAME `gates.*.evidence` quote-containment
+# `write_proposal`/`proposal_info` (ledger_ops.py) already enforce on the
+# machine paths. Fixtures below write the proposal sibling straight to
+# disk via `_dump_yaml` (bypassing `write_proposal`'s own validation) —
+# exactly the "outside CLI verbs" scenario the verb exists to catch.
+#
+# `_base_gates` is a minimal Schema-1-valid decision trace (duplicated
+# from test_decision_trace.py's own `_base_gates`, not imported — fixtures
+# stay LOCAL to each module here, per that file's own §6-D1 convention).
+
+TRUE_QUOTE = "The Beacon serves Glances on :61208."  # seed_record's default fact
+FABRICATED_QUOTE = "the compiler writes uppercase markers"
+
+
+def _base_gates(quote: str) -> dict:
+    return {
+        "g0": {
+            "reject": {"answer": "no", "evidence": None},
+            "defer": {"answer": "no", "evidence": None},
+            "canon": {"answer": "no", "evidence": None, "target": None},
+        },
+        "t1": {
+            "attempted": True,
+            "field_shaped": {"answer": "no", "evidence": quote},
+            "separable": {"answer": None, "evidence": None},
+            "cost_bearing": {"answer": None, "evidence": None},
+        },
+        "t2": {"answer": "no", "evidence": quote, "match_path": None},
+        "t3": {
+            "answer": "no",
+            "owner": None,
+            "scan_terms": ["guard", "invariant"],
+            "roster_sha": "sha256:0a1b2c3d4e5f",
+        },
+        "t3a": None,
+        "t4": {
+            "depth_behind_rule": {"answer": "no", "evidence": None, "target": None},
+            "conduct_mode": {"answer": "no", "evidence": quote},
+            "fs": {"verdict": "INDETERMINATE", "evidence": None},
+        },
+        "tn": {"answer": "no", "terms": [], "members": [], "proposed_name": None},
+        "e1": {"sightings": 1, "post_demand_recurrence": False},
+        "outcome": "DEMAND",
+    }
+
+
+def write_raw_proposal(home: Path, rid: str, data: dict) -> Path:
+    """Write a proposal sibling straight to disk, bypassing
+    `write_proposal`'s own containment check — the "hand-edited /
+    model-authored, never CLI-validated" shape `proposal validate` exists
+    to catch."""
+    path = proposal_path(home, rid)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _dump_yaml(data, path)
+    return path
+
+
+def test_fabricated_record_quote_refused_the_discriminator(home, capsys):
+    """FW-62 discriminator: a proposal whose gates.t1.field_shaped.evidence
+    quotes text the record does NOT contain must be REFUSED by `proposal
+    validate` — the exact defect measured live: this verb used to say
+    "valid" and stamp record_sha while `write_proposal` on identical bytes
+    already refused. Now both surfaces must agree."""
+    record = seed_record(home, fact=TRUE_QUOTE)
+    path = write_raw_proposal(
+        home, record.id, proposal_dict(gates=_base_gates(FABRICATED_QUOTE))
+    )
+    before = path.read_bytes()
+
+    rc = cli.main(["proposal", "validate", record.id])
+
+    assert rc == 1  # EXIT_SCHEMA_INVALID — never rc=0
+    err = capsys.readouterr().err
+    assert "gates.t1.field_shaped" in err  # names the gate leg
+    assert FABRICATED_QUOTE in err  # echoes the quote — actionable
+    assert "not contained in the record" in err
+    # REPORT-never-delete (P2-8): the file stays byte-intact, and the
+    # fabricated proposal is never stamped as valid.
+    assert path.read_bytes() == before
+    data = read_proposal(path)
+    assert data["record_sha"] == "sha256:000000000000"  # untouched model value
+
+
+def test_true_record_quote_accepted_the_positive_control(home, capsys):
+    """The mandated positive control: a trace whose RECORD-sourced quotes
+    are ALL genuinely contained in the record still validates and stamps
+    — proving the fix does not over-tighten into refusing honest traces."""
+    record = seed_record(home, fact=TRUE_QUOTE)
+    write_raw_proposal(
+        home, record.id, proposal_dict(gates=_base_gates(TRUE_QUOTE))
+    )
+
+    rc = cli.main(["proposal", "validate", record.id])
+
+    assert rc == 0
+    data = read_proposal(proposal_path(home, record.id))
+    assert data["record_sha"] == sha_anchor(record.body)
+    out = capsys.readouterr().out
+    assert record.id in out and "stamped" in out

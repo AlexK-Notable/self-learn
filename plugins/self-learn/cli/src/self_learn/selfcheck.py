@@ -150,8 +150,17 @@ def proposal_validate(home: Path, record_id: str) -> int:
         )
         return EXIT_SCHEMA_INVALID
     try:
-        Record.from_path(record_path)  # an unparseable record cannot be stamped
-        validate_proposal(read_proposal(yaml_sibling))
+        # FW-62: record_text= must be supplied so RECORD-sourced trace
+        # quotes (gates.*.evidence) get the SAME containment check
+        # write_proposal/proposal_info run (ledger_ops.py) — omitting it
+        # here silently skipped containment on this verb alone (08 §7.1's
+        # honesty surface), while the machine paths stayed strict. The
+        # record is already parsed on the line above for the
+        # unparseable-record check, so this is free; .to_text() matches
+        # the text form (frontmatter + body, not just body — E4) both
+        # other call sites pass.
+        record = Record.from_path(record_path)  # an unparseable record cannot be stamped
+        validate_proposal(read_proposal(yaml_sibling), record_text=record.to_text())
     except (ProposalError, RecordError) as exc:
         print(
             f"proposal validate: {record_id} schema-invalid — {exc} "
@@ -366,7 +375,20 @@ def _check_reach(home: Path) -> tuple[bool, str]:
     (criteria 7, 8). The failing count LEADS the message (criterion 3) so
     Checkpoint B's number is greppable from one line; the PASS message
     carries its count too (criterion 1) — a countless PASS is exactly the
-    fail-open shape this half of the gate exists to exclude."""
+    fail-open shape this half of the gate exists to exclude.
+
+    FW-66: a resolved record file that fails to even PARSE — malformed
+    YAML/frontmatter (``RecordError``) or bytes that are not valid UTF-8
+    (``UnicodeDecodeError``) — is skipped exactly like any other
+    unparseable resolved file (T3's problem, not this check's — the
+    record's routing/destination/scope are unknown, so it cannot be
+    placed in or out of RR). A LOADED SURFACE that fails to decode is
+    different: by the time it is read the record is already confirmed
+    in-scope (live, reference-routed), so an undecodable surface is a
+    DISTINCT un-checkable condition, reported and counted as a FAILURE —
+    never a silent skip, which would pass while seeing nothing (the
+    surface is a file self-learn does not own and cannot constrain:
+    SKILL.md / CLAUDE.md / the user CLAUDE.md)."""
     state = home_state(home)
     if state in ("missing", "not-a-repo"):
         return False, home_state_message(state, home)
@@ -381,7 +403,7 @@ def _check_reach(home: Path) -> tuple[bool, str]:
         for path in sorted(resolved.glob("lrn-*.md")):
             try:
                 record = Record.from_path(path)
-            except RecordError:
+            except (RecordError, UnicodeDecodeError):
                 continue
             if record.status != "routed" or record.superseded_by is not None:
                 continue
@@ -403,12 +425,28 @@ def _check_reach(home: Path) -> tuple[bool, str]:
                     f"{record.scope!r} — nothing to reach it from"
                 )
                 continue
-            if not any(_surface_names_target(s, target) for s in surfaces):
-                named = ", ".join(str(s) for s in surfaces)
+            found = False
+            unreadable: list[str] = []
+            for surface in surfaces:
+                try:
+                    if _surface_names_target(surface, target):
+                        found = True
+                        break
+                except UnicodeDecodeError as exc:
+                    unreadable.append(f"{surface} ({exc})")
+            if found:
+                continue
+            if unreadable:
                 failures.append(
-                    f"{record.id}: not named by its loaded surface "
-                    f"({named}) — write a resolving pointer to {target}"
+                    f"{record.id}: loaded surface not readable as UTF-8, "
+                    "reachability cannot be verified: " + "; ".join(unreadable)
                 )
+                continue
+            named = ", ".join(str(s) for s in surfaces)
+            failures.append(
+                f"{record.id}: not named by its loaded surface "
+                f"({named}) — write a resolving pointer to {target}"
+            )
     if failures:
         return False, (
             f"{len(failures)} of {checked} reference-routed record(s) "
@@ -436,7 +474,7 @@ def _section_targets(home: Path) -> dict[Path, list[Record]]:
         for path in sorted(resolved.glob("lrn-*.md")):
             try:
                 record = Record.from_path(path)
-            except RecordError:
+            except (RecordError, UnicodeDecodeError):
                 continue  # unparseable resolved files are T3's problem, not (c)'s
             target = _target_for(home, bucket, record)
             if target is not None:
@@ -483,7 +521,7 @@ def _check_drift(home: Path) -> tuple[bool, str]:
         for path in sorted(resolved.glob("lrn-*.md")):
             try:
                 record = Record.from_path(path)
-            except RecordError:
+            except (RecordError, UnicodeDecodeError):
                 continue
             if record.status != "routed" or record.superseded_by is not None:
                 continue
@@ -507,11 +545,25 @@ def _check_drift(home: Path) -> tuple[bool, str]:
                         f"{record.id}: references file {ref_target} missing "
                         "— run `self-learn recompile`"
                     )
-                elif record.id not in ref_target.read_text(encoding="utf-8"):
-                    failures.append(
-                        f"{record.id}: entry missing from {ref_target} — run "
-                        "`self-learn recompile`"
-                    )
+                else:
+                    try:
+                        ref_text = ref_target.read_text(encoding="utf-8")
+                    except UnicodeDecodeError as exc:
+                        # FW-66 (same treatment as reach): a compiler-owned
+                        # target that fails to decode cannot be searched for
+                        # the entry — FAIL naming the file, never a silent
+                        # skip that reads as "present."
+                        failures.append(
+                            f"{record.id}: references file {ref_target} not "
+                            f"readable as UTF-8 ({exc}) — presence cannot be "
+                            "verified"
+                        )
+                    else:
+                        if record.id not in ref_text:
+                            failures.append(
+                                f"{record.id}: entry missing from {ref_target} "
+                                "— run `self-learn recompile`"
+                            )
                 continue
 
             target = _target_for(home, bucket, record)
@@ -527,7 +579,14 @@ def _check_drift(home: Path) -> tuple[bool, str]:
                     "`self-learn recompile`"
                 )
                 continue
-            text = target.read_text(encoding="utf-8")
+            try:
+                text = target.read_text(encoding="utf-8")
+            except UnicodeDecodeError as exc:
+                failures.append(
+                    f"{record.id}: target {target} not readable as UTF-8 "
+                    f"({exc}) — entry marker cannot be verified"
+                )
+                continue
             begin = text.find(BEGIN_MARKER)
             end = text.find(END_MARKER)
             section = text[begin:end] if 0 <= begin < end else ""
@@ -594,11 +653,19 @@ def _check_capture(home: Path) -> tuple[bool, str]:
 
 
 def _check_compiler(targets: dict[Path, list[Record]]) -> tuple[bool, str]:
-    """(b) In-memory regeneration for every routed-to target; no writes."""
+    """(b) In-memory regeneration for every routed-to target; no writes.
+
+    FW-66: the same class of gap as reach/drift — a target that exists
+    but is not valid UTF-8 (hand edit, bad merge) must FAIL naming the
+    file, never traceback (this check runs FIRST among the seven, so an
+    unguarded read here crashed `--selftest` before any row printed)."""
     if not targets:
         return True, "no routed records — nothing to compile"
     for target, records in targets.items():
-        text = target.read_text(encoding="utf-8") if target.is_file() else ""
+        try:
+            text = target.read_text(encoding="utf-8") if target.is_file() else ""
+        except UnicodeDecodeError as exc:
+            return False, f"{target}: not readable as UTF-8 ({exc})"
         try:
             compile_managed_text(text, records)
         except CompileError as exc:
@@ -609,7 +676,10 @@ def _check_compiler(targets: dict[Path, list[Record]]) -> tuple[bool, str]:
 
 def _check_markers(targets: dict[Path, list[Record]]) -> tuple[bool, str]:
     """(c) 02 §4: flag ONLY targets that should have a section but have a
-    missing/broken marker pair."""
+    missing/broken marker pair.
+
+    FW-66: an undecodable target FAILs naming the file (same treatment as
+    the missing-file branch just above it), never a raw traceback."""
     failures: list[str] = []
     for target, records in sorted(targets.items()):
         n = len(records)
@@ -617,7 +687,11 @@ def _check_markers(targets: dict[Path, list[Record]]) -> tuple[bool, str]:
         if not target.is_file():
             failures.append(f"{target} ({why}): file missing")
             continue
-        text = target.read_text(encoding="utf-8")
+        try:
+            text = target.read_text(encoding="utf-8")
+        except UnicodeDecodeError as exc:
+            failures.append(f"{target} ({why}): not readable as UTF-8 ({exc})")
+            continue
         begins, ends = text.count(BEGIN_MARKER), text.count(END_MARKER)
         if begins == 0 and ends == 0:
             failures.append(f"{target} ({why}): marker pair missing")
@@ -703,7 +777,7 @@ def _check_hooks(home: Path, claude_dir: Path) -> tuple[bool, str]:
         for path in sorted(resolved.glob("lrn-*.md")):
             try:
                 record = Record.from_path(path)
-            except RecordError:
+            except (RecordError, UnicodeDecodeError):
                 continue
             routing = record.routing or {}
             if routing.get("destination") != "hook":
