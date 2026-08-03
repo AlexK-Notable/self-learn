@@ -1026,7 +1026,24 @@ def test_resurface_not_killed_by_cap(home, transcripts, monkeypatch):
 
 def test_fire_and_recurrence_replays_deduped(home, transcripts, monkeypatch):
     """Audit M2: --since replays and crash-replays must not duplicate
-    fire / recurrence-suspect telemetry."""
+    fire / recurrence-suspect telemetry.
+
+    AC9: the candidate-match (origin L7) and the violated fire (origin
+    L9) are TWO distinct sightings on the same routed record — under
+    U-recur that is legitimately two recurrence-suspect events, not one.
+    This is a contract update, not a test bent to fit (spec §2.4): the
+    replay half below (result.recurrences == [], exactly one fresh
+    `fire`) is untouched — it is the pre-existing proof that cross-run
+    dedupe still works.
+
+    Disclosed collateral (code-gate review): this test's payload carries
+    a live crossover, so M4 (the naive per-record guard in the shared
+    helper) and M5 (deleting that helper's key guard) also turn this
+    test red — M4 because the candidate-match's own `result.recurrences`
+    append blocks the crossover's later call for the same record id; M5
+    because THE BACKFILL's replay-run call to the same shared helper then
+    re-raises and re-appends without the key check, breaking
+    `result.recurrences == []` on the replay leg."""
     routed = make_behavior()
     _resolve(home, routed, "routed")
     write_transcript(transcripts, "sess-replay", [u("work")])
@@ -1049,7 +1066,393 @@ def test_fire_and_recurrence_replays_deduped(home, transcripts, monkeypatch):
     assert result.recurrences == [] and result.fires == 0
     events = telemetry.read_events(home)
     assert len([e for e in events if e.get("kind") == "fire"]) == 1
+    assert len([e for e in events if e.get("kind") == "recurrence-suspect"]) == 2
+
+
+# --------------------------------------------------- U-recur: fire crossover
+
+
+def test_violated_fire_raises_recurrence_suspect(home, transcripts, monkeypatch):
+    """AC1 — THE CROSSOVER fires: a `violated` fire against a routed
+    record also raises exactly one recurrence-suspect, sharing the
+    fire's origin byte-for-byte. Absent THE CROSSOVER this reads zero
+    suspects and fails outright — not vacuous."""
+    routed = make_behavior()
+    _resolve(home, routed, "routed")
+    write_transcript(transcripts, "sess-cross", [u("work")])
+    shim_reader(
+        monkeypatch,
+        {
+            "candidates": [],
+            "fires": [
+                {"record": routed.id, "session": "sess-cross", "line": 5,
+                 "outcome": "violated"}
+            ],
+        },
+    )
+    result = miner.run(home)
+    assert result.status == "ok"
+    events = telemetry.read_events(home)
+    fires = [e for e in events if e.get("kind") == "fire"]
+    suspects = [e for e in events if e.get("kind") == "recurrence-suspect"]
+    assert len(fires) == 1
+    assert len(suspects) == 1
+    assert suspects[0]["record"] == routed.id
+    assert suspects[0]["basis"] == "fire-violated"
+    assert suspects[0]["origin"] == "transcript:sess-cross#L5"
+    assert suspects[0]["origin"] == fires[0]["origin"]
+
+
+def test_complied_fire_raises_no_suspect(home, transcripts, monkeypatch):
+    """AC2 — the discriminator: a `complied` fire is the rule WORKING and
+    must never cross over. Without this, a fix that raises a suspect for
+    every fire would pass AC1 just as well."""
+    routed = make_behavior()
+    _resolve(home, routed, "routed")
+    write_transcript(transcripts, "sess-comply", [u("work")])
+    shim_reader(
+        monkeypatch,
+        {
+            "candidates": [],
+            "fires": [
+                {"record": routed.id, "session": "sess-comply", "line": 5,
+                 "outcome": "complied"}
+            ],
+        },
+    )
+    miner.run(home)
+    events = telemetry.read_events(home)
+    assert [e for e in events if e.get("kind") == "recurrence-suspect"] == []
+    assert len([e for e in events if e.get("kind") == "fire"]) == 1
+
+
+def test_two_violated_sightings_one_run_raise_two_suspects(home, transcripts, monkeypatch):
+    """AC3 — two distinct sightings in one run are two suspects: the live
+    `lrn-5d0c592a` shape (same record, same session, different lines,
+    both violated, one run). A "one suspect per record per run" guard
+    (M4) swallows the second; assert the origin SET, not just the
+    count."""
+    routed = make_behavior()
+    _resolve(home, routed, "routed")
+    write_transcript(transcripts, "sess-two", [u("work")])
+    shim_reader(
+        monkeypatch,
+        {
+            "candidates": [],
+            "fires": [
+                {"record": routed.id, "session": "sess-two", "line": 9,
+                 "outcome": "violated"},
+                {"record": routed.id, "session": "sess-two", "line": 11,
+                 "outcome": "violated"},
+            ],
+        },
+    )
+    miner.run(home)
+    suspects = [
+        e for e in telemetry.read_events(home)
+        if e.get("kind") == "recurrence-suspect"
+    ]
+    assert len(suspects) == 2
+    assert {s["origin"] for s in suspects} == {
+        "transcript:sess-two#L9", "transcript:sess-two#L11",
+    }
+
+
+def test_recurrence_suspect_idempotent_across_replay_and_backfill(
+    home, transcripts, monkeypatch
+):
+    """AC4 — idempotence across runs: a replay of the identical payload
+    (the crash / --since replay shape) must not re-raise, and neither
+    must a THIRD, genuinely productive run (fresh transcript, no
+    candidates/fires) whose only live code path is THE BACKFILL —
+    it must not re-raise what it already raised."""
+    routed = make_behavior()
+    _resolve(home, routed, "routed")
+    write_transcript(transcripts, "sess-idem", [u("work")])
+    payload = {
+        "candidates": [],
+        "fires": [
+            {"record": routed.id, "session": "sess-idem", "line": 4,
+             "outcome": "violated"}
+        ],
+    }
+    shim_reader(monkeypatch, payload)
+    assert miner.run(home).status == "ok"
+    telemetry.flush(home)
+    shim_reader(monkeypatch, payload)
+    result = miner.run(home, since="2020-01-01")
+    assert result.recurrences == [] and result.fires == 0
+    events = telemetry.read_events(home)
+    assert len([e for e in events if e.get("kind") == "fire"]) == 1
     assert len([e for e in events if e.get("kind") == "recurrence-suspect"]) == 1
+    # third run: a fresh transcript so it clears the idle-before-reader
+    # trap, no candidates and no fires of its own — only THE BACKFILL runs.
+    write_transcript(transcripts, "sess-idem2", [u("more work")])
+    shim_reader(monkeypatch, {"candidates": [], "fires": []})
+    result3 = miner.run(home)
+    assert result3.status == "ok"
+    assert result3.recurrences == []
+    events = telemetry.read_events(home)
+    assert len([e for e in events if e.get("kind") == "recurrence-suspect"]) == 1
+
+
+def test_cross_channel_same_origin_one_suspect_miner_match_wins(
+    home, transcripts, monkeypatch
+):
+    """AC5 — cross-channel, one origin, one suspect: a candidate-match AND
+    a violated fire at the SAME origin are one sighting. The candidate
+    loop runs first and wins; basis stays miner-match."""
+    routed = make_behavior()
+    _resolve(home, routed, "routed")
+    write_transcript(transcripts, "sess-x", [u("work")])
+    shim_reader(
+        monkeypatch,
+        {
+            "candidates": [
+                candidate(session="sess-x", line=7,
+                          match={"record": routed.id, "status": "routed"})
+            ],
+            "fires": [
+                {"record": routed.id, "session": "sess-x", "line": 7,
+                 "outcome": "violated"}
+            ],
+        },
+    )
+    miner.run(home)
+    suspects = [
+        e for e in telemetry.read_events(home)
+        if e.get("kind") == "recurrence-suspect"
+    ]
+    assert len(suspects) == 1
+    assert suspects[0]["basis"] == "miner-match"
+    assert suspects[0]["origin"] == "transcript:sess-x#L7"
+
+
+def test_backfill_raises_suspect_for_ledgered_violation(home, transcripts, monkeypatch):
+    """AC6 — THE BACKFILL, and the flush gate: a `violated` fire already
+    in the TRACKED plane (no live crossover involved — pre-seeded, then
+    flushed) still raises a suspect on the next productive run. NO
+    explicit flush is called in this test after `miner.run`: with
+    `landed`/`folded`/`fires` all empty, only `result.recurrences`
+    opens the flush gate for a backfill-only run — the precise shape of
+    "the fix ran and nothing is visible" if that append is missing."""
+    routed = make_behavior()
+    _resolve(home, routed, "routed")
+    telemetry.spool_quiet(
+        "fire", record=routed.id, origin="transcript:sess-old#L5",
+        outcome="violated",
+    )
+    telemetry.flush(home)
+    assert [
+        e for e in telemetry.read_events(home)
+        if e.get("kind") == "recurrence-suspect"
+    ] == []
+    # a fresh transcript makes this run PRODUCTIVE (the idle-before-reader
+    # trap) — the payload itself carries no candidates and no fires.
+    write_transcript(transcripts, "sess-new", [u("unrelated work")])
+    shim_reader(monkeypatch, {"candidates": [], "fires": []})
+    result = miner.run(home)
+    assert result.status == "ok"
+    assert result.recurrences == [routed.id]
+    suspects = [
+        e for e in telemetry.read_events(home)
+        if e.get("kind") == "recurrence-suspect"
+    ]
+    assert len(suspects) == 1
+    assert suspects[0]["record"] == routed.id
+    assert suspects[0]["origin"] == "transcript:sess-old#L5"
+    assert suspects[0]["basis"] == "fire-violated"
+
+
+def test_backfill_skips_non_routed_and_unresolvable_records(
+    home, transcripts, monkeypatch
+):
+    """AC7 — THE BACKFILL respects live routed coverage, mirroring the
+    live crossover's `routed` guard EXACTLY including its `found is
+    None` half: a superseded record's stale violation and a violation
+    against an id that resolves to no record on disk must both be
+    skipped, silently — never raised as a permanent-litter suspect, and
+    never a crash that would wedge every future nightly run (run()'s
+    outer handler turns an escaping exception into status: failed, and
+    the offending telemetry row never goes away)."""
+    superseded = make_behavior()
+    _resolve(home, superseded, "superseded")
+    telemetry.spool_quiet(
+        "fire", record=superseded.id, origin="transcript:sess-old#L5",
+        outcome="violated",
+    )
+    telemetry.spool_quiet(
+        "fire", record="lrn-00000000", origin="transcript:sess-old#L6",
+        outcome="violated",
+    )
+    telemetry.flush(home)
+    write_transcript(transcripts, "sess-new2", [u("unrelated work")])
+    shim_reader(monkeypatch, {"candidates": [], "fires": []})
+    result = miner.run(home)
+    assert result.status == "ok"
+    assert result.recurrences == []
+    suspects = [
+        e for e in telemetry.read_events(home)
+        if e.get("kind") == "recurrence-suspect"
+    ]
+    assert suspects == []
+
+
+def test_crossover_journal_row_is_not_a_near_miss(home, transcripts, monkeypatch):
+    """AC8 — the journal row is not a near-miss: THE CROSSOVER journals
+    `recurrence-from-fire`, which carries no `disposition` key (nothing
+    was dropped, there was no candidate) and must not inflate
+    `near_miss_count`."""
+    routed = make_behavior()
+    _resolve(home, routed, "routed")
+    write_transcript(transcripts, "sess-journal", [u("work")])
+    shim_reader(
+        monkeypatch,
+        {
+            "candidates": [],
+            "fires": [
+                {"record": routed.id, "session": "sess-journal", "line": 5,
+                 "outcome": "violated"}
+            ],
+        },
+    )
+    miner.run(home)
+    entry = miner.read_journal()[-1]
+    assert entry["near_miss_count"] == 0
+    rows = [o for o in entry["outcomes"] if o["outcome"] == "recurrence-from-fire"]
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["record"] == routed.id
+    assert row["origin"] == "transcript:sess-journal#L5"
+    assert "disposition" not in row
+
+
+def test_backfill_ignores_complied_fires(home, transcripts, monkeypatch):
+    """AC10 — THE BACKFILL ignores `complied`: `_event_seen` runs BEFORE
+    the fires loop, so AC2 (a `complied` fire raised THIS run) can never
+    see THE BACKFILL at all — a build that drops the outcome filter
+    passes AC1-AC9 and would raise 22 suspects on the live ledger instead
+    of 4. Assert the ORIGIN, not just the count: a build that backfills
+    every tracked fire produces two suspects here too."""
+    routed = make_behavior()
+    _resolve(home, routed, "routed")
+    telemetry.spool_quiet(
+        "fire", record=routed.id, origin="transcript:sess-old#L5",
+        outcome="complied",
+    )
+    telemetry.spool_quiet(
+        "fire", record=routed.id, origin="transcript:sess-old#L6",
+        outcome="violated",
+    )
+    telemetry.flush(home)
+    write_transcript(transcripts, "sess-new3", [u("unrelated work")])
+    shim_reader(monkeypatch, {"candidates": [], "fires": []})
+    miner.run(home)
+    suspects = [
+        e for e in telemetry.read_events(home)
+        if e.get("kind") == "recurrence-suspect"
+    ]
+    assert len(suspects) == 1
+    assert suspects[0]["origin"] == "transcript:sess-old#L6"
+
+
+def test_backfill_raises_one_suspect_per_sighting_not_per_record(
+    home, transcripts, monkeypatch
+):
+    """AC11 — THE BACKFILL raises one suspect per sighting, not per
+    record: the backfill-side twin of AC3/M4 (M12) — a "don't spam, one
+    per record" guard placed INSIDE the backfill loop passes every other
+    criterion in this spec while silently halving the live ledger's
+    4-suspect recovery to 2. This is the direct test of the §2.2
+    four-suspect claim."""
+    routed = make_behavior()
+    _resolve(home, routed, "routed")
+    telemetry.spool_quiet(
+        "fire", record=routed.id, origin="transcript:sess-old#L5",
+        outcome="violated",
+    )
+    telemetry.spool_quiet(
+        "fire", record=routed.id, origin="transcript:sess-old#L6",
+        outcome="violated",
+    )
+    telemetry.flush(home)
+    write_transcript(transcripts, "sess-new4", [u("unrelated work")])
+    shim_reader(monkeypatch, {"candidates": [], "fires": []})
+    result = miner.run(home)
+    suspects = [
+        e for e in telemetry.read_events(home)
+        if e.get("kind") == "recurrence-suspect"
+    ]
+    assert len(suspects) == 2
+    assert {s["origin"] for s in suspects} == {
+        "transcript:sess-old#L5", "transcript:sess-old#L6",
+    }
+    assert result.recurrences == [routed.id, routed.id]
+
+
+def test_live_crossover_skips_non_routed_record(home, transcripts, monkeypatch):
+    """Code-gate F1 — THE CROSSOVER's `routed` guard has no criterion on
+    the LIVE path (AC7/M9/M13 pin the routed guard on THE BACKFILL only;
+    the live path's twin was unpinned). A `violated` fire naming a
+    `superseded` record must raise no `fire` and no `recurrence-suspect`
+    at all — the routed guard sits ABOVE the crossover call in the fires
+    loop, so a build that hoists the crossover call above that guard
+    would emit permanent litter here: a suspect `confirm_recurrence`
+    refuses and `report.recurrence_suspects` filters out forever."""
+    superseded = make_behavior()
+    _resolve(home, superseded, "superseded")
+    write_transcript(transcripts, "sess-nonrouted", [u("work")])
+    shim_reader(
+        monkeypatch,
+        {
+            "candidates": [],
+            "fires": [
+                {"record": superseded.id, "session": "sess-nonrouted",
+                 "line": 5, "outcome": "violated"}
+            ],
+        },
+    )
+    result = miner.run(home)
+    assert result.fires == 0
+    assert result.recurrences == []
+    events = telemetry.read_events(home)
+    assert [e for e in events if e.get("kind") == "fire"] == []
+    assert [e for e in events if e.get("kind") == "recurrence-suspect"] == []
+
+
+def test_backfill_survives_non_string_record_row(home, transcripts, monkeypatch):
+    """Code-gate F2 — THE BACKFILL's untrusted-input validation on
+    `violated_fires` (spec §4 decision 4: "never a crash, never a guessed
+    id") is unpinned by AC7 alone: AC7's `lrn-00000000` is
+    well-formed-but-absent, so it never reaches `RECORD_ID_RE.match` with
+    a non-string argument. One malformed tracked row — `record` landed
+    as an int, which telemetry's scalar-payload check happily accepts —
+    must not raise `TypeError` and wedge the run into `status: failed`
+    (the same permanent-wedge shape AC7/M13 exists to prevent, through a
+    different door). A GOOD row in the same run must still backfill
+    correctly — presence-paired by construction, per the spec's own
+    fail-open rule."""
+    routed = make_behavior()
+    _resolve(home, routed, "routed")
+    telemetry.spool_quiet(
+        "fire", record=12345, origin="transcript:sess-bad#L1",
+        outcome="violated",
+    )
+    telemetry.spool_quiet(
+        "fire", record=routed.id, origin="transcript:sess-old#L5",
+        outcome="violated",
+    )
+    telemetry.flush(home)
+    write_transcript(transcripts, "sess-new5", [u("unrelated work")])
+    shim_reader(monkeypatch, {"candidates": [], "fires": []})
+    result = miner.run(home)
+    assert result.status == "ok"
+    suspects = [
+        e for e in telemetry.read_events(home)
+        if e.get("kind") == "recurrence-suspect"
+    ]
+    assert len(suspects) == 1
+    assert suspects[0]["origin"] == "transcript:sess-old#L5"
 
 
 def test_bad_session_ref_and_oversize_fields_dropped(home, transcripts, monkeypatch):

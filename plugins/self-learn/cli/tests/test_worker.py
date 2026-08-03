@@ -899,6 +899,97 @@ def test_canon_excerpt_unresolvable_skill_target_never_raises(tmp_path):
     assert "unresolvable" in prompt
 
 
+def test_canon_excerpt_finds_the_compiler_written_markers_in_a_fat_target(env):
+    """U-marker (u-marker-excerpt-case-spec.md §3 criterion A): a fat
+    project-scope target's compiled section must reach the excerpt. The
+    section here is written by the REAL compiler (`compile_managed_text`)
+    — the marker text is never typed in this test, only the imported
+    compiler constants are used to assert on it (spec §2's import rule:
+    `worker._canon_excerpt` must search for the markers the compiler
+    actually writes, not a hand-typed legacy spelling)."""
+    from self_learn.compilers import (
+        BEGIN_MARKER,
+        END_MARKER,
+        compile_managed_text,
+        entry_line,
+    )
+    from self_learn.ledger import discover_buckets
+    from self_learn.ledger_ops import queue as _queue
+
+    routed_record = make_behavior(record_id="lrn-0000c0de")
+    routed_record.set_routing(
+        {"routed_at": "2026-07-13T18:02:00Z", "destination": "claude-md", "by": "human"}
+    )
+    routed_record.set_status("routed")
+
+    leading = "\n".join(f"authored line {i}" for i in range(250))
+    trailing = "\n".join(f"trailing line {i}" for i in range(30))
+    compiled = compile_managed_text(leading, [routed_record])
+    full_text = compiled.text + trailing + "\n"
+    (env.host / "CLAUDE.md").write_text(full_text, encoding="utf-8")
+
+    lines = full_text.splitlines()
+    begin_idx = next(i for i, ln in enumerate(lines) if BEGIN_MARKER in ln)
+    end_idx = next(i for i, ln in enumerate(lines) if END_MARKER in ln)
+    # A0 — fixture guard: without this, A would pass pre-fix whenever the
+    # section happened to land inside the head-of-file truncation window.
+    assert len(lines) >= 200
+    assert begin_idx > 60
+
+    pending = make_behavior(scope="project", record_id="lrn-0000feed")
+    create_record(env.home, pending, project_path=env.host)
+    (bucket,) = [b for b in discover_buckets(env.home) if b.scope == "project"]
+    (entry,) = _queue(bucket)
+
+    excerpt = worker._canon_excerpt(env.home, entry)
+    excerpt_lines = excerpt.splitlines()
+
+    assert BEGIN_MARKER in excerpt  # A1
+    assert END_MARKER in excerpt  # A1
+    assert entry_line(routed_record) in excerpt_lines  # A2 — payload, not frame
+    lo, hi = max(0, begin_idx - 20), min(len(lines), end_idx + 21)
+    assert excerpt_lines == lines[lo:hi]  # A3 — exact list equality
+    # Measured shape (spec §3A): 43 lines, first "authored line 231",
+    # last "trailing line 19".
+    assert excerpt_lines == lines[231:274]
+
+
+def test_canon_excerpt_case_variant_of_compiler_marker_does_not_match(env):
+    """U-marker (u-marker-excerpt-case-spec.md §3 criterion B): a
+    case-variant of the compiler's own marker must NOT match. Both
+    needles are derived from the imported constants (case-swapped) — no
+    marker spelling is typed in this build at all.
+
+    This fixture is red pre-fix BECAUSE an uppercased begin marker
+    contains the legacy needle (spec §1) as a substring, and likewise
+    the uppercased end marker contains its counterpart, so
+    unfixed code wrongly finds a window around line 150 instead of
+    falling through to the head-of-file truncation. Do not case-fold
+    this fixture away — it is the positive control that catches a
+    case-folded "defensive" fix (`BEGIN_MARKER.lower() in ln.lower()`),
+    which would match this fixture exactly the way the legacy needle
+    did."""
+    from self_learn.compilers import BEGIN_MARKER, END_MARKER
+    from self_learn.ledger import discover_buckets
+    from self_learn.ledger_ops import queue as _queue
+
+    lines = [f"line {i}" for i in range(300)]
+    lines[150] = BEGIN_MARKER.upper()
+    lines[160] = END_MARKER.upper()
+    (env.host / "CLAUDE.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    pending = make_behavior(scope="project", record_id="lrn-0000face")
+    create_record(env.home, pending, project_path=env.host)
+    (bucket,) = [b for b in discover_buckets(env.home) if b.scope == "project"]
+    (entry,) = _queue(bucket)
+
+    excerpt = worker._canon_excerpt(env.home, entry)
+    # B1 — exact list equality against the head-of-file truncation.
+    assert excerpt.splitlines() == [f"line {i}" for i in range(60)] + [
+        "… (truncated)"
+    ]
+
+
 def test_worker_prompt_assembly_carries_the_real_doctrine_lint_schema(
     env, claude_shim, monkeypatch
 ):

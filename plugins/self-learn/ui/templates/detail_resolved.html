@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% block title %}self-learn — {{ model.id }}{% endblock %}
+{# U-grad-ui §2.1/criterion 14: a distinct `page_kind`, deliberately
+   NOT "detail" — style.css's footer filter keys off this value to
+   advertise exactly the ONE control this page offers (`g`, criterion
+   14(b)), never the pending quad's e/x/f/o/i. #}
+{% block page_kind %}resolved{% endblock %}
+{% block body_attrs %} data-bucket="{{ model.bucket }}"{% endblock %}
+
+{% block status_strip %}
+<div class="status-strip">
+  <span class="brand">self-learn</span>
+  <a data-key-action="up" href="/bucket/{{ model.scope }}/{{ model.bucket }}" title="Back to this record's bucket (Esc or h)">&larr; {{ model.bucket }}</a>
+  <span class="status-item" title="This lesson's record id in the ledger">{{ model.id }}</span>
+</div>
+{% endblock %}
+
+{% block content %}
+{# §2.1 VIEWABLE / §5: a resolved record's own view — no proposal
+   cards, no Change region, no destination cycle, no pane column (M7's
+   regression target restores that column — never do it here), and the
+   RESOLVED-VERBS action bar below (§2.3), not the pending quad. #}
+<article data-record-id="{{ model.id }}" class="detail-left detail-resolved">
+
+  {% if not model.host_registered %}
+    {% with armed=False, scope=model.scope, name=model.bucket, record_id=model.id, can_arm=(model.host_add_command is not none), path=None, error=None %}
+      {% include "partials/host_add_bar.html" %}
+    {% endwith %}
+  {% endif %}
+
+  <section aria-label="finding">
+    {# Criterion 13: the heading is the record's OWN Trigger/Fact text
+       (raw read, §5) — never the fossil "(untitled)" default M16
+       restores. #}
+    <h2>{{ model.finding.title }}</h2>
+    <p class="badge badge-{{ model.status }}">{{ model.status }}</p>
+    <p class="provenance">{{ model.finding.provenance_text }}{% if model.finding.created_at %} &middot; created {{ model.finding.created_at | humanize_ts }}{% endif %}</p>
+    <div class="record-body">{{ model.finding.body | markdown }}</div>
+    {% if model.finding.evidence %}
+    <ul class="evidence">
+      {% for e in model.finding.evidence %}
+      <li>{{ e.get("quote", "") }} <span class="evidence-origin">({{ e.get("origin", "") }})</span></li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+  </section>
+
+  <section aria-label="routing">
+    <h2>Routing</h2>
+    {% if model.routing.destination %}
+    <p>Routed{% if model.routing.routed_at %} {{ model.routing.routed_at | humanize_ts }}{% endif %}
+      <span class="arrow">&rarr;</span>
+      <span title="{{ model.routing.destination }}">{{ model.routing.destination_label_text }}</span></p>
+    {% endif %}
+    {% if model.routing.last_confirmed %}
+    <p>Last confirmed {{ model.routing.last_confirmed | humanize_ts }}.</p>
+    {% endif %}
+    {% if model.routing.recurrences %}
+    <p>{{ model.routing.recurrences | length }} recurrence{{ "s" if (model.routing.recurrences | length) != 1 else "" }} sighted since routing.</p>
+    {% endif %}
+    {% if model.routing.follow_up %}
+    <p class="follow-up">Open follow-up: {{ model.routing.follow_up.get("action", "") }}</p>
+    {% endif %}
+    {% if model.routing.resolution_note %}
+    <p class="resolution-note">{{ model.routing.resolution_note }}</p>
+    {% endif %}
+  </section>
+
+  {# Criterion 4(b) / §2.4 door 3's ordering pin: `record_proposal` is
+     read from a slot the caller already cleared for a just-resolved
+     record (routes.py's ordering comment) — under the correct order
+     this is always None here, so the ELIF leg below (the resolved
+     action bar) is what actually renders; the IF leg exists so a caller
+     regression (M19: clearing the slot too late) is observable at this
+     render, exactly like detail.html's own record_proposal branch.
+
+     §2.3/§2.4 door 2 (RESOLVED-VERBS, offered iff status == "routed"):
+     `model.status` is `record.status` at render time (build_resolved_
+     detail_model), so this IS the "Detail render independently
+     re-checks record.status == 'routed'" guard §2.4 names — a
+     graduated or rejected record's page includes NO action bar at all
+     (criterion 7), never a resolved quad with nothing left to arm. #}
+  {% if record_proposal %}
+    {% with proposal=record_proposal, kind="detail", verb_label=proposal_verb_label, error=None %}
+      {% include "partials/proposal_bar.html" %}
+    {% endwith %}
+  {% elif model.status == "routed" %}
+    {% with kind="resolved", armed=None, dom_id="action-bar-" ~ model.id, record_id=model.id, dest=None, dest_note=None, event=None, target=None, already_canon=False, destination_cycle=(), scope=model.scope, evidence=None %}
+      {% include "partials/action_bar.html" %}
+    {% endwith %}
+  {% endif %}
+
+</article>
+{% endblock %}

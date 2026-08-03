@@ -92,12 +92,17 @@
   <p class="evidence-nav">
     {% if evidence.next_url %}<a href="{{ evidence.next_url }}" data-key-action="success_next">Next pending record (j)</a>{% endif %}
     {% if evidence.bucket_url %}<a href="{{ evidence.bucket_url }}" data-key-action="success_bucket">Back to the bucket (u)</a>{% endif %}
-    {# Code-gate finding 2 (MAJOR): route/reject/graduate all move the
-       record out of pending/deferred BEFORE this leg renders, so
-       `/record/{id}` 303-redirects to the bucket's resolved-elsewhere
-       banner for those three — never a diff. `record_url` is only set
-       (routes.py's `_evidence_ctx`) for `defer`, the one verb that
-       leaves the record genuinely viewable there. #}
+    {# Code-gate finding 2 (MAJOR), corrected post U-grad-ui: route/
+       reject/graduate all move the record out of pending/deferred
+       BEFORE this leg renders. `/record/{id}` no longer redirects for
+       that (§2.1 VIEWABLE — the record now renders its own resolved
+       view there), but this link stays omitted for those three anyway
+       — a deliberate, not incidental, omission: wiring it is a
+       behaviour change to a success-leg surface shipped six days before
+       U-grad-ui, out of scope for that unit (§6.2). `record_url` is
+       only set (routes.py's `_evidence_ctx`) for `defer`, the one verb
+       that leaves the record genuinely viewable there — unaffected
+       either way, since `defer` never redirected. #}
     {% if evidence.record_url %}<a href="{{ evidence.record_url }}" data-key-action="success_view">View the record (v)</a>{% endif %}
   </p>
 </div>

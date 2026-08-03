@@ -94,6 +94,48 @@
   {% endfor %}
 </section>
 {% endfor %}
+
+{# B1 (U-grad-ui §4, user-ratified 2026-08-02): the routed-record
+   archive — the read surface this unit exists to add. Default-collapsed
+   so it never competes with the pending queue for the fold; rows are
+   shaped exactly like the pending rows above (`<a href>` + a SEPARATE
+   `.record-row-id` span, §4's load-bearing pin — the id must not live
+   only in the anchor's href, or M18 stripping the anchor also blinds
+   the id-scoped exclusion assertions in criteria 2/3, not just
+   criterion 1) but deliberately carry NO `data-row` (criterion 4(c)):
+   `app.js`'s `rows()` is an unfiltered querySelectorAll with no
+   visibility check, and this section starts closed, so a `data-row`
+   archive row would let the `s`/`d` walk select and open a row the
+   human cannot see. The archive stays reachable by mouse and Tab
+   (`<summary>` is natively focusable) — the keyboard walk simply stops
+   at the last pending row, exactly as it does today. #}
+{# Code-gate finding 6 / user ruling 2026-08-02: a FAILED read is not
+   the same state as "nothing routed" and must not degrade to the same
+   silent omission — the bug report behind this whole unit was exactly
+   "a thing I needed was invisible with no indication it existed"; a
+   section that vanishes on a failed read reproduces that one layer up.
+   `model.archive_error` is set ONLY on a genuine CLI read failure
+   (models.py's own pin) — this branch renders a distinct failure
+   header instead of the row list, never both, never neither. #}
+{% if model.archive_error %}
+<details class="archive-section archive-section-error">
+  <summary>Routed here (unavailable)</summary>
+  <p class="archive-error-note" role="alert">{{ model.archive_error }}</p>
+</details>
+{% elif model.archive %}
+<details class="archive-section">
+  <summary>Routed here ({{ model.archive | length }})</summary>
+  {% for row in model.archive %}
+  <div class="record-row archive-row">
+    <a href="/record/{{ row.id }}" class="record-row-lead">{{ row.leading_text }}</a>
+    <span class="record-row-meta">
+      <span class="record-row-id">{{ row.id }}</span>
+    </span>
+    <p class="archive-row-facts">{{ row.fact_text }}</p>
+  </div>
+  {% endfor %}
+</details>
+{% endif %}
 </div>
 
 <div class="bucket-right">

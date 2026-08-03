@@ -747,13 +747,22 @@ class TestProposalRoutes:
         assert page.count('data-armed="true"') <= 1
 
     def test_resolved_elsewhere_clears_slot_on_detail_render(self, tmp_path: Path) -> None:
+        """U-grad-ui spec criterion 4(b) (this test IS that criterion's
+        exact behaviour — updated in place, not superseded by a new
+        test): the record's own Detail page now renders (200) instead of
+        redirecting, but the clear-set behaviour `routes.py` performed on
+        the deleted redirect path survives unchanged — the slot is still
+        cleared, and (the paired absence half, so this isn't just "a page
+        rendered") no proposal bar appears in the resolved body."""
         sb, (rec,) = _seed(tmp_path)
         c, runner, manager = make_client(sb)
         _occupy(manager, rec)
         resolve_record_directly(sb.ledger, _bucket_dir(sb), rec)
         resp = c.get(f"/record/{rec.id}", follow_redirects=False)
-        assert resp.status_code == 303
+        assert resp.status_code == 200
         assert manager.proposal_slot.current is None
+        assert "Agent proposes:" not in resp.text
+        assert 'data-proposal="waiting"' not in resp.text
 
     def test_stale_arm_after_external_resolution_renders_gone(self, tmp_path: Path) -> None:
         sb, (rec,) = _seed(tmp_path)

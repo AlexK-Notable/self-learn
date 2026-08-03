@@ -323,6 +323,21 @@ body[data-page="detail"] .keymap-footer-entry[data-context="detail"] {
   display: inline;
 }
 
+/* U-grad-ui criterion 14(b): the resolved Detail page (`data-page=
+   "resolved"`) carries exactly ONE live key — `g` (Graduate) —
+   RESOLVED-VERBS = {graduate}, never the pending quad's e/x/f/o/i
+   (criterion 6 already pins those five absent from the page). A
+   `[data-context="detail"]` rule here (M20's regression target) would
+   light all five — the W2-F1 "advertised but absent" shape, inverted:
+   this page's markup never carries those five controls at all, so
+   advertising them would be dead keys with visible footer text. Scoped
+   per-action (like the success-leg rules below), not per-context, so
+   adding a second resolved-page action later means adding its own rule
+   here, not widening this one. */
+body[data-page="resolved"] .keymap-footer-entry[data-action="graduate"] {
+  display: inline;
+}
+
 /* Bucket rows take the resolution quad but have no Iterate pane — that
    one detail key stays hidden there. */
 body[data-page="bucket"] .keymap-footer-entry[data-action="iterate"] {

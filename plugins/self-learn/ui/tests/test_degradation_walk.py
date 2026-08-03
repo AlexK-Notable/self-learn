@@ -48,6 +48,7 @@ redirects throughout (10 §0 rules 7/8).
 from __future__ import annotations
 
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -287,6 +288,15 @@ class TestBulkGraduateResumeIdempotency:
     def test_already_resolved_id_vanishes_from_the_bulk_collapse_group(
         self, tmp_path: Path
     ) -> None:
+        """U-grad-ui spec criterion 11 (updated in place, group-scoped
+        not page-scoped): B1 makes the OLD page-scoped `first not in
+        r.text` assertion false by design — a routed record now has its
+        own archive-section row on this very page (`<a href="/record/
+        {first}">`), so the id legitimately reappears on the page. The
+        contract that actually matters is "the id vanishes from the
+        BULK-COLLAPSE GROUP" — anchored on that group's own markup: the
+        `.bulk-collapse-row` form's hidden `ids` field, which is the
+        exact value a re-run of the bulk loop would submit."""
         sb = make_env(tmp_path)
         ids = []
         for _ in range(3):
@@ -307,9 +317,15 @@ class TestBulkGraduateResumeIdempotency:
         r = c.get("/bucket/skill/s")
         assert r.status_code == 200
         assert "2 already-canon records" in r.text.lower()
-        assert first not in r.text
-        assert ids[1] in r.text
-        assert ids[2] in r.text
+
+        match = re.search(
+            r'class="bulk-collapse-row".*?name="ids" value="([^"]*)"', r.text, re.S
+        )
+        assert match, "no bulk-collapse-row ids field found"
+        group_ids = match.group(1).split(",")
+        assert first not in group_ids
+        assert ids[1] in group_ids
+        assert ids[2] in group_ids
 
     def test_rerunning_the_bulk_row_with_only_the_remaining_ids_succeeds(
         self, tmp_path: Path

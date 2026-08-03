@@ -1,7 +1,18 @@
 # Spec — U-schema: the decision trace, its validator, quote containment, and the closed flag set
 
-Status: **DRAFT, awaiting spec gate.** Unit `U-schema` of the r2 routing
-campaign (`forward/r2-routing-campaign.md` §2, Wave 1).
+Status: **r3 — DRAFT, cleared for build** pending the coordinator's sign-off
+(r1: NOT SOUND, 1 blocker + 15 folds; r2 delta: 0 blockers + 4 folds; all
+20 folded — see §9). Unit `U-schema` of the r2 routing campaign
+(`forward/r2-routing-campaign.md` §2, Wave 1).
+
+**Builder's fast path:** the one section to read twice is **§3.4a** — the
+`**`-aware glob matcher. It carries three corners that were each measured
+wrong before being fixed (the `**` double-separator join, `^` as a literal
+class member requiring an *escape*, and the two oracle preconditions), and
+a literal reading of any earlier draft reproduces the original blocker.
+Its criteria are **F1/F1a/F1b**; its mutations **M15/M15a–d**; its
+rationale **§6-D10/D11**. Every folded finding is tagged inline as
+`FOLD-n` (r1 round) or `FOLD-A/B/C/D` (delta round).
 
 **File this unit may change: `plugins/self-learn/cli/src/self_learn/ledger_ops.py`
 and one new test module.** Nothing else. `worker.py`, `analyst.py`,
@@ -163,7 +174,7 @@ code gate tests:**
   `cli.py:1721-1725`. The conclusion survived the correction; the reasoning
   did not, and a spec that argues from a false mechanism is one folded
   premise away from arguing the opposite.)*
-- **S6 — `_validate_gates` raises `ProposalError` and nothing else, on
+- **S6 (FOLD-2) — `_validate_gates` raises `ProposalError` and nothing else, on
   every input, including malformed ones.** This is the seam's most likely
   real-world failure and it is not hypothetical: `proposal_info`
   (`:1055-1058`) catches **only** `ProposalError`, and `is_unanalyzed` and
@@ -391,12 +402,38 @@ hand-rolled translator, ~20 lines, in `ledger_ops.py`, using `re` only:
 
 - split the pattern on `/`;
 - a `**` segment becomes `(?:[^/]+/)*` when non-final (**zero** or more
-  levels) and `.*` when final;
+  levels) and `.*` when final. **The non-final form already carries its own
+  trailing separator, so no `/` is emitted after it when segments are
+  joined** — emitting one yields `src/(?:[^/]+/)*/[^/]*\.py`, which demands
+  a literal `/` a zero-level path does not have and **reproduces the exact
+  `fnmatch` defect this section exists to fix**. Measured under the
+  double-separator join: `_glob_match("src/app.py", "src/**/*.py")` is
+  `False` — and so is `_glob_match("src/a/b/deep.py", "src/**/*.py")`, so
+  the mis-join breaks the multi-level case too; *(FOLD-A — r1's recipe
+  said "join with `/`" immediately after a form that already ends in `/`,
+  so a builder following it literally reproduced the blocker. F1a catches
+  it, but "pinned so the builder does not re-derive it" was not true as
+  written.)*
 - any other segment is translated character-by-character — `*` → `[^/]*`,
-  `?` → `[^/]`, `[...]` → a passed-through character class (`!` or `^`
-  prefix → negated), an **unbalanced `[` → an escaped literal, never an
-  exception**; everything else `re.escape`d;
-- join with `/`, wrap as `(?s:…)\Z`, `re.compile`.
+  `?` → `[^/]`, `[...]` → a passed-through character class, an
+  **unbalanced `[` → an escaped literal, never an exception**; everything
+  else `re.escape`d;
+- **only a leading `!` negates a character class. A leading `^` is a
+  literal member of the class** — and because Python's `re` uses `^` for
+  negation, **a leading `^` must be actively escaped to `\^`; leaving it
+  un-rewritten is not enough.** Measured: `fnmatch.translate("[^a]bc")` →
+  `(?s:[\^a]bc)\Z` versus `fnmatch.translate("[!a]bc")` → `(?s:[^a]bc)\Z`,
+  and `fnmatch("abc", "[^a]bc")` is `True`. So `src/[^a]*.py` must compile
+  to `src/[\^a][^/]*\.py` and match `src/app.py`, `src/a.b.py` and
+  `src/^caret.py`. Translating `^` as negation makes `_glob_match`
+  **refuse** paths `glob` accepts — the blocker's false-refusal failure,
+  reintroduced by its own fix; *(FOLD-B. **Refinement beyond the ruling,
+  found by implementing it:** simply "not rewriting `!`→`^`" still leaves
+  the literal `^` in the class body, which `re` then reads as a negation —
+  measured, `src/[^a]*.py` still mismatched `glob` after that partial fix.
+  The escape is the actual requirement.)*
+- join the pieces with `/` **only between segments that do not already
+  supply one** (see the `**` bullet), wrap as `(?s:…)\Z`, `re.compile`.
 
 **Do NOT use `glob.translate()` or `PurePath.full_match()`.** Both produce
 correct semantics and both are **Python 3.13 additions**, while
@@ -411,15 +448,47 @@ stdlib addition is available. It is not.)
 **Do NOT use `fnmatch` or `glob` at all**, which is also what keeps S3's
 "no new import" true: `re` is already imported at `ledger_ops.py:28`.
 
-**Verified equivalence, measured this session.** The translator above was
-run against real `glob.glob(..., root_dir=…, recursive=True)` over a
-scratch tree, on **13 patterns** — `src/**/*.py`, `**/*.py`, `src/*.py`,
-`docs/**/*.md`, `*.py`, `src/**`, `**`, `src/a?b.py`, `src/[ab]*.py`,
-`src/[!a]*.py`, `src/[weird].py`, `src/unbal[.py`, and the zero-level case
-— with **0 mismatches**, including the negated class, the class that
-shadows a literal filename, and the unbalanced bracket (which both `glob`
-and `fnmatch` degrade to a **matching** literal — measured; see §8-N1,
-where `verbs.py`'s own docstring says the opposite).
+**Verified equivalence — and its two preconditions, which are part of the
+claim.** *(FOLD-C: r1 reported "0 mismatches over 13 patterns" with both
+preconditions unstated. Re-measured under the **default** oracle
+(`include_hidden=False`, files **and** directories), **7 of 13 patterns
+mismatch**. The number was true only of an oracle r1 never named.)*
+
+The translator was run against real
+`glob.glob(pat, root_dir=…, recursive=True, include_hidden=True)` over a
+scratch tree, compared on the tree's **files only**, across **13
+patterns** — `src/**/*.py`, `**/*.py`, `src/*.py`, `docs/**/*.md`, `*.py`,
+`src/**`, `**`, `src/a?b.py`, `src/[ab]*.py`, `src/[!a]*.py`,
+`src/[^a]*.py`, `src/[weird].py`, `src/unbal[.py` — over a tree containing
+dotfiles (`src/.secret.py`, `.claude/rules.md`), a `[`-bearing name
+(`src/unbal[.py`) and a `^`-bearing name (`src/^caret.py`):
+**0 mismatches**. Both preconditions are load-bearing:
+
+1. **`include_hidden=True`.** `glob`'s default refuses to let a wildcard
+   segment match a leading-`.` name. `_glob_match` implements the
+   `include_hidden=True` semantics deliberately: **a pure string relation
+   has no business hiding dotfiles**, and this project's subject matter is
+   `~/.claude/`, `.storage/`, `.config/` — a matcher that silently skipped
+   them would be wrong in the one domain it is used in. §6-D11 already
+   named `include_hidden=True` as the 3.13-equivalent, so r1's §3.4a and
+   D11 were **contradicting each other**; they now agree.
+2. **Files, not directories.** `glob.glob("src/**", recursive=True)` also
+   returns `src/`, `src/a`, `src/a/b` — the directories themselves —
+   which `_glob_match("src", "src/**")` refuses. `match_path` names a
+   file, so the files-only comparison is the meaningful one.
+
+**The divergence direction is `false accept`, never `false refusal`**, in
+both cases: `_glob_match` accepts a superset of what default-`glob`
+accepts. That is the safe direction here — X1 is a positive control on the
+analyst's own claim, and `verbs.py`'s route-time zero-match refusal
+remains the stricter gate that actually touches the host tree. **Chosen
+out loud rather than inherited**: a false *refusal* is the failure this
+whole section exists to prevent.
+
+Also measured, and relevant to §8-N1: both `glob` and `fnmatch` degrade an
+unbalanced `[` to a **matching** literal (`glob.glob('src/unbal[.py')`
+returns the file), so an "unparseable" pattern folds into **match**, not
+zero-match — the opposite of what `verbs.py`'s own docstring claims.
 
 **The boundary — state it so nobody "aligns" the two in the wrong
 direction.** `_glob_match` is a **pure string relation**: two strings in,
@@ -694,10 +763,15 @@ is still required.
 - **D2** `test_outcome_outside_enum_refused` + twin iterating
   `TRACE_OUTCOMES`.
 - **D3** `test_fs_verdict_enum_and_evidence_rule` — a verdict outside
-  `TRACE_FS_VERDICTS` refused; `SILENT`/`COSTLY`/`LOUD_CHEAP` with
-  `evidence: null` refused; `INDETERMINATE` with `evidence: null` accepted;
-  `INDETERMINATE` with a true quote accepted. Covers both `t3a.fs` and
-  `t4.fs`.
+  `TRACE_FS_VERDICTS` refused; **every member of `TRACE_FS_VERDICTS` other
+  than `"INDETERMINATE"`, obtained by iterating the tuple**, refused with
+  `evidence: null` and accepted with a true quote; `INDETERMINATE` accepted
+  both with `evidence: null` and with a true quote. Covers both `t3a.fs`
+  and `t4.fs`. *(FOLD-15: r1 listed `SILENT`/`COSTLY`/`LOUD_CHEAP`
+  inline — a partial re-enumeration of Set-V that would silently stop
+  covering a fourth non-indeterminate verdict if one were ever added.
+  Iterate the tuple and subtract the one exception; the exception is the
+  rule's content, the members are not.)*
 - **D4** `test_field_shaped_requires_evidence_both_ways` — `answer: "no"`
   with no evidence refused (this is the leg r2 singles out as required in
   *both* directions), `answer: "yes"` with no evidence refused, both
@@ -721,7 +795,15 @@ is still required.
   `"link-checker"` accepted; `answer: "no"` with a non-null
   `proposed_name` refused.
 - **D9** `test_e1_shape` — `sightings` non-int refused, `0` refused, `1`
-  accepted; `post_demand_recurrence` non-bool refused.
+  accepted; **`sightings: true` refused**; `post_demand_recurrence`
+  non-bool refused, and `post_demand_recurrence: 1` refused.
+  *(FOLD-14: `isinstance(True, int)` is `True` in Python — `bool`
+  subclasses `int` — so a naive `isinstance(sightings, int)` accepts
+  `true`, and `true >= 1` is also `True`, so even the range check passes.
+  The guard must be `isinstance(v, int) and not isinstance(v, bool)`. The
+  mirror case is a `post_demand_recurrence: 1` that a naive truthiness
+  check would accept. Both directions are tested because the type
+  confusion runs both ways.)*
 - **D10** `test_t1_attempted_must_be_bool` — the string `"true"` refused,
   `True` accepted. (`t1.attempted` is the one genuinely boolean answer in
   the trace; a string here would silently read as truthy in any consumer.)
@@ -744,10 +826,19 @@ is still required.
 - **E4** `test_quote_from_frontmatter_accepted` — a `COSTLY` verdict
   quoting the record's `incident_cost` frontmatter value validates. Proves
   the source is `to_text()`, not `body`.
-- **E5** `test_quote_below_minimum_length_refused` — a 3-character
-  "quote" that *is* a substring of the record is still refused, and the
-  message names `_QUOTE_MIN_CHARS`. This is the guard against containment
-  passing for the wrong reason on trivially-short input.
+- **E5** `test_quote_below_minimum_length_refused` — two fixtures, both
+  required:
+  (a) a 3-character quote that *is* a substring of the record — refused;
+  (b) **the whitespace twin `"   the   "`** — raw length 9, flattened
+  length 3, and a genuine substring of the record — **also refused**, and
+  a legitimate 8-character quote accepted.
+  The message names `_QUOTE_MIN_CHARS`.
+  *(FOLD-7, the reviewer's unsuggested mutation: with (a) alone the test
+  cannot tell whether the floor is measured on the raw or the flattened
+  quote — the 3-char fixture is refused under either. (b) is the only
+  fixture that discriminates, and §3.4 specifies the flattened
+  measurement. A test that passes under both readings of the rule it
+  guards has not pinned the rule.)*
 - **E6** `test_write_proposal_supplies_record_text` — the **caller-wiring**
   test on the producer path: `write_proposal(home, rid, <trace with a
   fabricated quote>)` raises `ProposalError`, and the same proposal with a
@@ -768,15 +859,48 @@ is still required.
 ### F. Intra-trace cross-checks
 
 - **F1** `test_t2_match_path_must_match_a_proposed_glob` —
-  `t2.answer: "yes"` with `match_path: "src/app.py"` and
-  `rules_paths: ["docs/**/*.md"]` refused; with
-  `rules_paths: ["src/**/*.py"]` accepted.
+  `match_path: "src/app.py"` with `rules_paths: ["docs/**/*.md"]` refused;
+  with `rules_paths: ["src/**/*.py"]` **accepted**; with
+  `["docs/**/*.md", "src/**/*.py"]` accepted (any one glob suffices).
+- **F1a** `test_double_star_matches_zero_directory_levels` — **the case
+  the blocker turns on.** `_glob_match("src/app.py", "src/**/*.py")` is
+  `True`, and so is `_glob_match("src/a/b/deep.py", "src/**/*.py")`; a
+  full-trace validation with that pair is accepted. Under r1's
+  `fnmatch.fnmatch` this is `False` and F1's acceptance half was red on
+  arrival. Pair it with `_glob_match("docs/x.md", "src/**/*.py") is False`
+  so the test cannot pass by matching everything.
+- **F1b** `test_glob_matcher_agrees_with_stdlib_glob` — the equivalence
+  control. Build a scratch tree that **deliberately includes dotfiles**
+  (`src/.secret.py`, `.claude/rules.md`), a `[`-bearing name
+  (`src/unbal[.py`) and a `^`-bearing name (`src/^caret.py`). For each of
+  §3.4a's 13 patterns assert `_glob_match` agrees with
+  `glob.glob(pat, root_dir=<tmp>, recursive=True, **include_hidden=True**)`
+  over the tree's **files, not its directories** — **both are required by
+  §3.4a and the test is wrong without them** (under the default oracle 7 of
+  13 mismatch, so a test written the obvious way is red on arrival). The
+  pattern set **must include `src/[^a]*.py`**, whose `^` is a literal class
+  member rather than a negation. **`glob` is imported in the test module
+  only, never in `ledger_ops.py`** (S3/S4). This is what stops a later
+  "simplification" back to `fnmatch` from passing.
 - **F2** `test_t2_yes_requires_rules_paths` — `t2.answer: "yes"` with
-  `rules_paths` absent refused (the check must never be vacuous).
-- **F3** `test_roster_unavailable_forces_t3_no_and_evidence_gap` —
-  `roster_sha: "unavailable"` with `t3.answer: "yes"` refused;
-  with `t3.answer: "no"` but no `evidence-gap` flag refused; with both
-  accepted.
+  `rules_paths` absent refused, and with `rules_paths: []` refused (the
+  check must never be vacuous).
+- **F3** `test_roster_unavailable_forces_t3_no_and_evidence_gap` — four
+  cases, the last two being FOLD-8:
+  (a) `roster_sha: "unavailable"` with `t3.answer: "yes"` — refused;
+  (b) `"unavailable"` + `t3.answer: "no"` + `flags: ["evidence-gap"]` —
+  accepted;
+  (c) `"unavailable"` + `t3.answer: "no"` + `flags: ["near-cluster"]`
+  (present, but without `evidence-gap`) — refused;
+  (d) `"unavailable"` + `t3.answer: "no"` + **`flags` absent entirely** —
+  **refused**.
+  *(FOLD-8: (c) and (d) are distinct failures and a naive `if not flags:`
+  guard passes (c) while catching only (d) — or, written the other way,
+  passes (d) while catching only (c). Absent-is-valid is the posture for a
+  **trace-less** proposal; it is not a licence for a **trace** to claim a
+  roster judgment it has just admitted it could not make. A trace that
+  says "I had no roster" and carries no `evidence-gap` flag is exactly the
+  invisible evidence gap X3 exists to surface.)*
 - **F4** `test_roster_sha_form` — a `roster_sha` that is neither
   `SHA_ANCHOR_RE`-shaped nor `"unavailable"` refused; a well-formed
   `sha256:<12hex>` accepted; `"unavailable"` (with F3's conditions met)
@@ -790,8 +914,32 @@ is still required.
   rc=0 read unpiped.** Any new failure blocks. Report the collected count,
   not just "green" — a suite that collected fewer tests than the baseline
   is not a pass.
-- **G2** `pyright` clean on `ledger_ops.py` at the project's configured
-  level.
+- **G2** `pyright` adds **zero new errors for `ledger_ops.py`**.
+  *(FOLD-3: r1 demanded "`pyright` clean on `ledger_ops.py`", unmeetable.
+  FOLD-D: r1 then pinned a **count without its invocation**, which is only
+  half a baseline.)*
+
+  **Pin the invocation, not just the number.** Both figures below were
+  measured on master this session, rc read **unpiped**; both are
+  self-consistent and they disagree because they resolve imports against
+  different interpreters:
+
+  | Invocation (from `plugins/self-learn/cli`) | Total | `ledger_ops.py` | Pre-existing diagnostics there |
+  |---|---|---|---|
+  | `pyright src/self_learn` | 64 errors, rc=1 | **3** | `:35`, `:36` — `reportMissingImports` on `ruamel.yaml` / `ruamel.yaml.error` (**artefacts of resolving against the wrong interpreter**, not real); `:322` — `Argument of type "Path \| None" … "project_path"` |
+  | `pyright --pythonpath ./.venv/bin/python src` | 50 errors, rc=1 | **1** | `:322` only — the two ruamel errors vanish, confirming they were resolution artefacts |
+
+  **The bar:** run the **same invocation** before and after — record which
+  one — and require the `ledger_ops.py` count not to increase. Under the
+  venv-resolved invocation that count is **1**, and it is the better
+  baseline because it does not carry two false diagnostics. Identify the
+  pre-existing ones **by rule and line**, not by count alone, so a new
+  error that displaces an old one cannot hide in an unchanged total.
+  Do not fix `:322` — scope creep into a shared file (§7).
+  `15-orchestration-runbook.md:131-132` states this rule as an absolute
+  number that has since drifted, so **measure, do not quote** — and a
+  count measured with a different invocation than the "before" is not a
+  measurement, it is a coincidence.
 - **G3** The UI suite is **not** required to change and must not need to:
   `cd plugins/self-learn/ui && uv run pytest` still passes with only the
   known pre-existing
@@ -806,32 +954,69 @@ is still required.
 ## 5. Mutation plan
 
 The code gate **will** run these. Each is a one-line edit to production
-code in `ledger_ops.py` that must make **exactly the named test** fail.
-Revert by inverse `Edit`, never `git checkout` — the tree under review is
-uncommitted and is the only copy.
+code in `ledger_ops.py`. Revert by inverse `Edit`, never `git checkout` —
+the tree under review is uncommitted and is the only copy.
 
-| # | One-line production edit | Exactly this test must fail |
+**Read the third column literally.** Most rows must make **exactly** the
+named test fail; the four rows marked **BLUNT** are deliberate
+wide-radius controls and name the test that must be *among* the failures.
+*(FOLD-5: r1's preamble said "exactly the named test" of every row, while
+M1 and M20 could not possibly satisfy it — M1 breaks every test that
+routes through containment, M20 breaks every trace-less test in the suite.
+A mutation table that misstates its own blast radius trains the reviewer
+to treat an over-broad failure as expected, which is how a real
+over-broad regression gets waved through.)*
+
+| # | One-line production edit | Test(s) that must fail |
 |---|---|---|
-| M1 | in `_validate_gates`' containment check, replace the `raise` with `pass` | **E2** `test_fabricated_record_quote_refused` |
+| M1 | in `_validate_gates`' containment check, replace the `raise` with `pass` | **BLUNT** — **E2**, **E6** and **E7** all go red (all three route through containment). E2 must be among them. |
 | M2 | in `proposal_info`, drop the conditional and pass `record_text=None` | **E7** `test_fabricated_quote_makes_proposal_unfresh` |
 | M3 | in `write_proposal`, pass `record_text=None` | **E6** `test_write_proposal_supplies_record_text` |
 | M4 | in `_flatten_quote`, `return text` (drop the whitespace collapse) | **E3** `test_quote_matches_across_a_line_wrap` |
 | M5 | `_QUOTE_MIN_CHARS = 0` | **E5** `test_quote_below_minimum_length_refused` |
 | M6 | in `write_proposal`/`_validate_gates`, source the quote from `record.body` instead of `record.to_text()` | **E4** `test_quote_from_frontmatter_accepted` |
 | M7 | in the flag check, replace `if flag not in TRACE_FLAGS:` with `if False:` | **B1** `test_flag_outside_closed_set_refused` |
-| M8 | remove `"pathed-unbuilt"` from `TRACE_FLAGS` | **B2** `test_every_flag_in_the_closed_set_is_accepted` |
+| M8 | remove `"pathed-unbuilt"` from `TRACE_FLAGS` | **B2** — via its `"pathed-unbuilt" in TRACE_FLAGS` assertion (part (c)). *Under r1's B2 this mutation survived: an iterating test iterates whatever is left. FOLD-1.* |
 | M9 | in the recommendation check, drop the membership test | **C1** `test_recommendation_outside_enum_refused` |
 | M10 | in the gate-key check, drop the unknown-key branch | **D1** `test_unknown_gate_key_refused` |
 | M11 | in the `fs` check, allow `evidence: null` for every verdict | **D3** `test_fs_verdict_enum_and_evidence_rule` |
 | M12 | in the `g0.canon` check, stop requiring `target` | **D5** `test_canon_yes_requires_target_and_evidence` |
 | M13 | in the `t3a` presence check, allow `t3a: null` when `t3.answer == "yes"` | **D6** `test_t3a_presence_follows_t3_answer` |
 | M14 | in the `t4` presence check, allow a populated `t4` when `t2.answer == "yes"` | **D7** `test_t4_presence_rules` |
-| M15 | in X1, replace the `fnmatch` result with `True` | **F1** `test_t2_match_path_must_match_a_proposed_glob` |
+| M15 | in X1, replace the `_glob_match` result with `True` | **F1** `test_t2_match_path_must_match_a_proposed_glob` |
+| M15a | in `_glob_match`, translate a non-final `**` segment as `(?:[^/]+/)+` (one-or-more, i.e. r1's `fnmatch` semantics) | **F1a** `test_double_star_matches_zero_directory_levels` — **the blocker's regression guard**; **F1b** also goes red |
+| M15b | in `_glob_match`, translate `*` as `.*` instead of `[^/]*` (let a single star cross directory boundaries) | **F1b** `test_glob_matcher_agrees_with_stdlib_glob` (via `src/*.py`) |
+| M15c | in `_glob_match`, treat a leading `^` in a character class as a negation as well as `!` (or merely leave it un-escaped, which `re` reads as a negation) | **F1b** — via `src/[^a]*.py`, where `glob` matches `src/app.py`/`src/a.b.py`/`src/^caret.py` and a `^`-negating matcher refuses all three |
+| M15d | in `_glob_match`, emit a `/` after a non-final `**` segment | **F1a** `test_double_star_matches_zero_directory_levels` — the double-separator join; **F1b** also goes red |
 | M16 | in X1, skip the check when `rules_paths` is absent instead of refusing | **F2** `test_t2_yes_requires_rules_paths` |
 | M17 | in X3, drop the `evidence-gap` flag requirement | **F3** `test_roster_unavailable_forces_t3_no_and_evidence_gap` |
-| M18 | in `_validate_gates`, `return` immediately when `data.get("gates")` is a mapping | **D2** `test_outcome_outside_enum_refused` *(and many others — M18 is the blunt control that proves the validator is reached at all; it is the one entry permitted to fail more than one test)* |
+| M17a | in X3, guard with `if not flags:` (treating absent and present-without-the-flag alike) | **F3** — specifically case (c); FOLD-8's whole point |
+| M18 | in `_validate_gates`, `return` immediately when `data.get("gates")` is a mapping | **BLUNT** — the control that proves the validator is reached at all. **D2** must be among the failures; most of §4-D/E/F go red with it. |
 | M19 | make the new `validate_proposal` parameter positional instead of keyword-only | **A4** `test_validate_proposal_signature_is_backward_compatible` |
-| M20 | in `_validate_gates`, refuse when `data.get("gates") is None` | **A1** `test_traceless_proposal_validates_unchanged` |
+| M20 | in `_validate_gates`, refuse when `data.get("gates") is None` | **BLUNT** — every trace-less test in the suite goes red. Run scoped (`pytest tests/test_decision_trace.py`) and require **A1** among the failures. |
+| M21 | in the quote-length check, measure `len(quote)` (raw) instead of the flattened length | **E5** — specifically the whitespace twin `"   the   "` |
+| M22 | in `_validate_gates`, index one level without a type check (e.g. `data["gates"]["g0"]["reject"]` on unverified types) | **A7** `test_malformed_trace_shapes_raise_only_proposal_error` — it raises `TypeError`, not `ProposalError` |
+| M23 | in `_validate_gates`, read the record from disk (`Path(...).read_text()`) instead of using the passed `record_text` | **A8** `test_validate_proposal_performs_no_filesystem_io` |
+| M24 | add a `_validate_gates(..., record_text=record.to_text())` call to `stamp_proposal` | **A9** `test_stamp_proposal_does_not_validate_the_trace` |
+| M25 | in the `sightings` check, use a bare `isinstance(v, int)` (dropping the `not isinstance(v, bool)` clause) | **D9** `test_e1_shape` — via `sightings: true` |
+| M26 | delete one member from `TRACE_FLAGS` | **B2** — via its `len(TRACE_FLAGS) == 8` assertion (FOLD-1: the iterating assertion alone stays green) |
+| M27 | in the `flags` check, drop the `isinstance(flags, list)` guard | **B3** `test_flags_shape` (a bare string `"near-cluster"` is iterable and would validate character by character) |
+| M28 | in the `recommendation` check, insert a default (`data.setdefault("recommendation", "route")`) | **C3** `test_recommendation_absent_is_not_defaulted` — the validator must not mutate its input |
+| M29 | in `t1.field_shaped`, require `evidence` only when `answer == "yes"` | **D4** `test_field_shaped_requires_evidence_both_ways` |
+| M30 | in `tn`, drop the ≥2-members rule for `answer == "yes"` | **D8** `test_tn_member_and_name_rules` |
+| M31 | in `t1.attempted`, accept any truthy value instead of requiring `bool` | **D10** `test_t1_attempted_must_be_bool` |
+| M32 | in the `roster_sha` check, accept any non-empty string | **F4** `test_roster_sha_form` |
+| M33 | `raise ProposalError(...)` unconditionally at the top of `_validate_gates` | **BLUNT — the refuses-everything control.** Every *accepting* twin must go red: **E1**, **C2**, **B2**(a), **D2**'s twin, **F1**, **A1**. This is the single mutation that proves the twins are load-bearing rather than decorative, and it is the one the §5 audit's "a validator that refuses everything passes a refusal-only suite" argument rests on. |
+
+**Exactly seven criteria carry no mutation row, and each is deliberate:**
+**G1, G2, G3** are suite/tooling gates, not behaviours — nothing in
+`ledger_ops.py` can be edited to fail them in the one-line sense.
+**A2, A3, A5, A6** are absent-is-valid variants, collectively guarded by
+the blunt **M20**. Every other criterion — including the accepting twins
+**E1** and **C2**, which **M33** covers — is named by at least one row
+above. *(Stated so the gap reads as a decision rather than an oversight: a
+reviewer cross-checking rows against criteria will find seven unmatched
+and should not have to guess which are deliberate.)*
 
 **The fail-open audit — for every assertion, what does it print when the
 thing it checks is absent?** Applied, with the answers:
@@ -852,6 +1037,23 @@ thing it checks is absent?** Applied, with the answers:
 - **A1/A5's "it validates" is a weak assertion by construction** — an
   empty `_validate_gates` passes it. It is paired with M20, which proves
   the trace-less path is a *decision* in the code and not an accident.
+- **A8 would pass on a build where containment never runs** — "no I/O
+  happened" is trivially true of a validator that does nothing. Hence its
+  mandated in-test second half: a fabricated quote must still raise under
+  the same monkeypatch. The I/O assertion and the discrimination assertion
+  have to be in the *same* test or each covers for the other's absence.
+- **B2's iterating half would pass on a shrunken `TRACE_FLAGS`** — an
+  iterating test iterates whatever survives. The count and membership
+  assertions (M8, M26) are what make the set closed rather than merely
+  enumerated. This was r1's blind spot and the reviewer's FOLD-1.
+- **E5's short-quote fixture passes under either length rule** — raw or
+  flattened. Only the whitespace twin (M21) distinguishes them, and §3.4
+  specifies flattened.
+- **A7 is the criterion most likely to be quietly skipped**, because every
+  case looks like "malformed input, obviously refused". It is not about
+  refusal — it is about the *exception type*. `pytest.raises(ProposalError)`
+  is the whole assertion; a `TypeError` fails it, and `except Exception`
+  anywhere in the test destroys it.
 
 ---
 
@@ -860,10 +1062,17 @@ thing it checks is absent?** Applied, with the answers:
 - **D1 — Tests live in a new module,
   `plugins/self-learn/cli/tests/test_decision_trace.py`, with its fixtures
   defined inside it.** Do **not** add helpers to `cli/tests/support.py`:
-  that file is shared with the other four Wave-1 units and with the UI
-  suite (`ui/tests/support.py` imports `write_proposal` from it), and a
-  concurrent edit there is a merge conflict for someone else. Import
-  `proposal_dict` / `hook_proposal_fields` from `support` read-only.
+  that file is imported by most of the CLI suite and is in reach of the
+  other four Wave-1 units, so a concurrent edit there is a merge conflict
+  for someone else, and a changed shared fixture silently re-shapes tests
+  this unit never read. Import `proposal_dict` / `hook_proposal_fields`
+  from `support` read-only.
+  *(FOLD-12: r1 justified this with "`ui/tests/support.py` imports
+  `write_proposal` from it" — false. `ui/tests/support.py:27` imports
+  `write_proposal` from `self_learn.ledger_ops`, the production module,
+  not from the CLI's test-support file. The decision is unchanged and the
+  contention argument stands on its own; the false coupling claim is
+  withdrawn.)*
 - **D2 — Names are fixed, so nobody invents a second spelling:**
   `TRACE_GATE_KEYS`, `TRACE_FLAGS`, `TRACE_RECOMMENDATIONS`,
   `TRACE_OUTCOMES`, `TRACE_FS_VERDICTS`, `_QUOTE_MIN_CHARS`,
@@ -887,9 +1096,17 @@ thing it checks is absent?** Applied, with the answers:
   answered yes, non-null iff `t2`/`t3` both no and `tn != "yes"`, and
   **free** in the one case that genuinely needs the scope (`t3.answer ==
   "yes"` but the scope may not match, so the table may or may not fall
-  through to t4). The residual — refusing a null `t4` in the actual
-  fall-through case — is handed to `U-table`, which has the scope at
-  derivation time (§8-O3).
+  through to t4). **The residual runs in both directions, and r1 named
+  only one of them** *(FOLD-13)*:
+  - **under**-requiring `t4` — a scope-mismatched `t3.answer: "yes"` record
+    really does fall through to t4, and this validator will accept
+    `t4: null` there;
+  - **over**-requiring `t3a` — that same record must still fill in `t3a`,
+    a block the table will never read for it. That is a real cost paid by
+    the analyst (extra judgment, extra quote) for a scope-free rule.
+  Both are handed to `U-table`, which has the scope at derivation time
+  (§8-O3). Stating only the under-requirement would have made the trade
+  look free, and it is not.
 - **D6 — `_QUOTE_MIN_CHARS = 8`**, calibrated on `"no error"`, the shortest
   marker in r2 §3's silence lexicon. One constant; retuning it is a
   one-line human decision, not a redesign.
@@ -906,8 +1123,24 @@ thing it checks is absent?** Applied, with the answers:
 - **D9 — Empty `flags: []` is valid.** It is the honest encoding of "no
   flags", distinct from "the analyst did not consider flags" (key absent).
   Both validate; consumers treat them alike.
-- **D10 — No new dependency.** `fnmatch` is stdlib; everything else is
-  already imported at `ledger_ops.py:25-42`.
+- **D10 — No new import at all, not merely no new dependency.** The glob
+  matcher is hand-rolled on `re`, already imported at `ledger_ops.py:28`;
+  everything else it needs is already imported at `:25-42`. **Neither
+  `fnmatch` nor `glob` is imported into `ledger_ops.py`** — `fnmatch` has
+  the wrong `**` semantics (§3.4a) and `glob` would breach S4 by touching
+  the filesystem. `glob` appears in the **test** module only, as F1b's
+  equivalence oracle.
+- **D11 — The matcher is hand-rolled rather than delegated to
+  `glob.translate()` / `PurePath.full_match()`, and this is a portability
+  decision, not a preference.** Both stdlib helpers are Python **3.13**
+  additions; `cli/pyproject.toml:5` declares `requires-python = ">=3.11"`.
+  The dev venv is 3.13.11, so either would be green here and broken on a
+  3.11 or 3.12 install — a portability defect wearing a green suite, which
+  is this project's signature failure. ~20 lines of `re` translation is
+  the cost of honouring the declared floor. **If the floor is ever raised
+  to 3.13, `glob.translate(pat, recursive=True, include_hidden=True)` is
+  the correct one-line replacement** — recorded so the simplification is
+  available the moment it becomes safe, and not before.
 
 ---
 
@@ -948,9 +1181,13 @@ verified against current source:**
   (`:668-691`) is the function that loads the record, and it is a
   *different* function called *later* — and it cannot host the check
   (S5: it runs inside `selfcheck.proposal_validate`'s lock block, whose
-  `except` catches only `GitOpsError`, so a new `ProposalError` there
-  becomes an uncaught traceback in a file this unit may not edit). The
-  correction is §3.5's three-site design.
+  `except` catches only `GitOpsError`, so a `ProposalError` raised there
+  escapes the verb and is caught by `cli._cmd_proposal`
+  (`cli.py:1721-1725`) as **rc=64 `EXIT_USAGE`** — a schema failure
+  reported as a usage error, breaking the pinned exit trio, in a file this
+  unit may not edit). The correction is §3.5's three-site design.
+  *(This parenthetical said "uncaught traceback" in r1 — wrong; see
+  §2-S5, FOLD-4.)*
 - **C3 — the TARGET-sourced legs have nowhere to record their target.**
   §1.3 makes `t3a.depth_behind_rule` and `t4.depth_behind_rule` quote the
   *candidate target file*, but §1.2's schema puts a `target:` field only on
@@ -968,6 +1205,28 @@ verified against current source:**
   that must stay pure.** Items 6 (ledger probes), 7 (record history) and 8
   (cache-dir roster artifact) all require I/O on the eligibility hot path
   (S4). Excluded here (§3.7), with reasons.
+
+**Observations in contended files — reported, NOT fixed (campaign §3's
+builder rule):**
+
+- **N1 — `_validate_project_globs`' docstring is factually wrong.**
+  `verbs.py:683-687` states that a pattern with an unbalanced bracket
+  *"degrades to a non-matching literal … so 'unparseable' folds into
+  'zero-match'"*. **Measured: it degrades to a *matching* literal.**
+  `fnmatch.translate('unbal[.py')` → `(?s:unbal\[\.py)\Z`, and
+  `glob.glob('src/unbal[.py', root_dir=…)` **returns** the file when it
+  exists. The behaviour is fine (it is what `_glob_match` reproduces); the
+  comment describing it inverts it, and a comment that inverts its code is
+  the fossil-rationale pattern `commit-drift-evidence-spec.md` §1 warns
+  about. One-line doc fix, `verbs.py`, not this unit's.
+- **N2 — the route-time glob check fails open on absolute patterns.**
+  `glob.glob("/etc/host*", root_dir=<elsewhere>)` returns `/etc/hosts` —
+  `glob` ignores `root_dir` for absolute patterns, so
+  `_validate_project_globs`' zero-match refusal cannot fire for an
+  absolute glob no matter what the host tree contains. Found by a sibling
+  unit, confirmed here, and **relevant to this spec only as a direction
+  constraint**: §3.4a states that reconciling the two matchers means
+  fixing `verbs.py`, never loosening `_glob_match`.
 
 **Non-contradictions, verified so a reviewer need not re-check:** r2's
 line-number claims that bear on this unit are accurate —
@@ -996,9 +1255,65 @@ fixed-key rebuild (F4), `worker.py:1330`'s `cwd=str(home)`.
   `_QUOTE_MIN_CHARS` floor, the closed flag set, and X3's rule that a
   missing roster forces `t3.answer: no` + `evidence-gap`. A validator the
   doctrine never mentions produces refusals the model cannot act on.
+- **O6 → whoever next holds `verbs.py`:** N1's inverted docstring and
+  N2's absolute-glob fail-open. If `_glob_match` and
+  `_validate_project_globs` are ever unified, **`_glob_match` is the
+  correct semantics and `verbs.py` is the side that moves** — a pure
+  string matcher cannot acquire a `root_dir` bug, and teaching it to
+  ignore its input to "match" the verb would import the defect.
+- **O7 → whoever next holds `worker.py` / `verbs.py`:** wire the two
+  remaining `validate_proposal` call sites (`worker.py:908`,
+  `verbs.py:509`) to pass `record_text=`, which turns §3.7 item 9's
+  advisory reach into enforcement on the campaign's primary execution
+  path. One line at each site; both already have the record or can load
+  it (`worker.py:909-911` computes `rpath` two lines below its call).
+  **Until then, do not describe this unit as "quote containment is
+  enforced" without the qualifier** — §1 and §3.7 item 9 carry the honest
+  wording.
 
 ---
 
 ## 9. Revision history
 
-- **r1** — this document.
+- **r1** — **NOT SOUND**: 1 blocker + 15 folds. The blocker: X1 specified
+  `fnmatch.fnmatch` for glob matching, whose `**/` compiles to `(?>.*?/)` —
+  **one or more** directory levels — so criterion F1's acceptance half was
+  **red on arrival** and the validator was *stricter* than the route-time
+  check it is supposed to agree with. Resolved in §3.4a with a pure,
+  3.11-safe, `re`-only matcher measured equivalent to
+  `glob.glob(..., recursive=True, include_hidden=True)` across 13
+  patterns, files-only.
+  Three folds corrected claims r1 asserted without measuring — the
+  "uncaught traceback" consequence (FOLD-4, actually rc=64 `EXIT_USAGE`),
+  the "12 of 14" monoculture count (FOLD-9, unsourced), and the
+  `ui/tests/support.py` coupling (FOLD-12, false) — each within two pages
+  of this spec's own argument that a citation must be checkable against
+  its source. They are folded as corrections **with the error left
+  visible**, because a spec about fabricated citations that silently
+  rewrites its own is worth less than one that shows the correction.
+- **r2** — folded all 15 under the 2026-07-26 verdict repricing, and
+  resolved the blocker with the `_glob_match` design (§3.4a, §6-D10/D11).
+- **r3** — this document. Delta round: **0 blockers, 4 folds.** All 15 r1
+  folds were verified applied; the reviewer independently confirmed the
+  `validate_proposal`-does-not-load-the-record correction, the
+  absent-is-valid seam against all four importers, and the portability
+  finding — testing real 3.11.14 and 3.12.12 interpreters to show
+  `glob.translate` and `PurePath.full_match` are absent on both and
+  present only on 3.13.11.
+
+  **The four delta folds were all in `_glob_match`'s own specification,
+  and three were found by implementing r2's recipe literally** — which is
+  the lesson worth carrying: a "pinned so the builder does not re-derive
+  it" recipe is a claim about *executability*, and r2's had never been
+  executed. It emitted a double separator after `**` (reproducing the very
+  blocker it fixed), treated `^` as a class negation (reintroducing the
+  blocker's false-refusal failure), and rested on two unstated oracle
+  preconditions without which the equivalence claim was 7-of-13 wrong.
+  **A fourth error surfaced only while folding**: the ruling's own
+  phrasing — "only `!` negates" — is the correct semantics but an
+  insufficient instruction, because Python's `re` negates on `^`, so a
+  literal `^` must be actively **escaped** rather than merely left
+  un-rewritten. Verified: `src/[^a]*.py` must compile to
+  `src/[\^a][^/]*\.py`. Final measurement, 13 patterns including
+  `src/[^a]*.py`, over a tree with dotfiles and `[`/`^`-bearing names:
+  **0 mismatches**.

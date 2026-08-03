@@ -931,16 +931,75 @@ def _valid_ref(cand: dict) -> tuple[str, int] | None:
     return session_id, line
 
 
-def _event_seen(home: Path) -> set[tuple[str, str, str]]:
+#: U-recur spec §4 decision 1: a literal distinct from the candidate
+#: path's "miner-match" (:1183) and from the worker's origin-match /
+#: title-token-overlap (worker.py:1001-1006) — it labels the SOURCE of
+#: suspicion, not a similarity metric. One constant, not a literal typed
+#: twice: THE CROSSOVER and THE BACKFILL share it, so they can never
+#: drift apart on the label.
+_FIRE_VIOLATED_BASIS = "fire-violated"
+
+
+def _event_seen(
+    home: Path,
+) -> tuple[set[tuple[str, str, str]], list[tuple[str, str]]]:
     """(kind, record, origin) for fire/recurrence-suspect events —
     replay dedup (audit: crash-replay and the DOCUMENTED --since replay
-    duplicated both classes; nonces make byte-dedup useless)."""
+    duplicated both classes; nonces make byte-dedup useless).
+
+    Also returns ``violated_fires`` — ``(record, origin)`` pairs drawn
+    from tracked ``fire`` events with ``outcome == "violated"``, in
+    ``read_events`` (ts-ordered) order. This is THE BACKFILL's source
+    list (U-recur spec §4 decision 4): one ``read_events`` pass serves
+    both purposes, no second read. Telemetry lines are untrusted input
+    (11 §4.2): a row whose ``record``/``origin`` is not a string is
+    skipped, and ``record`` is re-validated against :data:`RECORD_ID_RE`
+    — never a crash, never a guessed id."""
     seen: set[tuple[str, str, str]] = set()
+    violated_fires: list[tuple[str, str]] = []
     for e in telemetry.read_events(home):
         kind = e.get("kind")
-        if kind in ("fire", "recurrence-suspect"):
-            seen.add((kind, str(e.get("record")), str(e.get("origin"))))
-    return seen
+        if kind not in ("fire", "recurrence-suspect"):
+            continue
+        record = e.get("record")
+        origin = e.get("origin")
+        seen.add((kind, str(record), str(origin)))
+        if (
+            kind == "fire"
+            and e.get("outcome") == "violated"
+            and isinstance(record, str)
+            and isinstance(origin, str)
+            and RECORD_ID_RE.match(record)
+        ):
+            violated_fires.append((record, origin))
+    return seen, violated_fires
+
+
+def _raise_recurrence_suspect(
+    result: MineResult,
+    seen_events: set[tuple[str, str, str]],
+    rid: str,
+    origin: str,
+    basis: str,
+) -> None:
+    """U-recur spec §4 decision 5's ONE emission point: spools the
+    suspect, checks/updates THE SUSPECT KEY
+    (``("recurrence-suspect", rid, origin)``) against ``seen_events``,
+    appends to ``result.recurrences``, and writes the
+    ``recurrence-from-fire`` journal row. THE CROSSOVER (in the fires
+    loop) and THE BACKFILL (below) both call this — two copies of this
+    dedupe logic is how the two rules drift apart. A no-op when the key
+    is already present; that is the whole dedupe contract, live or
+    backfilled."""
+    key = ("recurrence-suspect", rid, origin)
+    if key in seen_events:
+        return
+    telemetry.spool_quiet(
+        "recurrence-suspect", record=rid, origin=origin, basis=basis
+    )
+    seen_events.add(key)
+    result.recurrences.append(rid)
+    _outcome(result, origin, "recurrence-from-fire", record=rid)
 
 
 # ---------------------------------------- FW-34 §1: near-miss visibility
@@ -949,8 +1008,9 @@ def _event_seen(home: Path) -> set[tuple[str, str, str]]:
 #: `disposition`. The journal's shipped outcome vocabulary is UNCHANGED
 #: (12 A1) — this is a read-time-independent, deterministic translation
 #: applied once at journal-write (never re-derived in the UI, the
-#: no-derivation rule). `landed`/`resurfaced` are absent on purpose: they
-#: are not near-misses, so they carry no disposition at all.
+#: no-derivation rule). `landed`/`resurfaced`/`recurrence-from-fire` are
+#: absent on purpose: they are not near-misses, so they carry no
+#: disposition at all (12 §12.1, canon amended by U-recur).
 _NEARMISS_DISPOSITION: dict[str, str] = {
     "dropped-cap": "cap-refused",
     "rubric-dropped": "rubric-dropped",
@@ -1077,8 +1137,9 @@ def _enrich_near_miss(outcome_entry: dict) -> dict:
     `disposition` + one plain-words `reason`, and compute the ONE
     `promotable` rule (F5): true iff a real content snippet exists — a
     populated `{type,…}` dict, never `{scan_refused_rule}`/`{overlength}`/
-    absent. Non-near-miss outcomes (`landed`, `resurfaced`) pass through
-    unchanged — they gain no disposition at all."""
+    absent. Non-near-miss outcomes (`landed`, `resurfaced`,
+    `recurrence-from-fire`) pass through unchanged — they gain no
+    disposition at all."""
     outcome_name = outcome_entry.get("outcome")
     disposition = (
         _NEARMISS_DISPOSITION.get(outcome_name)
@@ -1113,7 +1174,7 @@ def _reconcile_and_land(
     §3) — no cwd on file → dropped-invalid, never a guessed bucket."""
     cwds = cwds or {}
     origins = existing_origins(home)
-    seen_events = _event_seen(home)
+    seen_events, violated_fires = _event_seen(home)
     candidates = parsed.get("candidates") or []
     if not isinstance(candidates, list):
         candidates = []
@@ -1317,6 +1378,34 @@ def _reconcile_and_land(
             )
             seen_events.add(key)
             result.fires += 1
+            # THE CROSSOVER (U-recur spec §2 / §4 decision 9): placement
+            # is load-bearing — AFTER the fire's own dedupe key is added
+            # and the counter incremented, never before the dedupe
+            # `continue` above. That placement is exactly what makes THE
+            # BACKFILL below structurally necessary (spec §2.2): a fire
+            # already in the tracked plane never reaches this line again.
+            if outcome == "violated":
+                _raise_recurrence_suspect(
+                    result, seen_events, rid, origin, _FIRE_VIOLATED_BASIS
+                )
+
+    # THE BACKFILL (U-recur spec §2.2): structurally forced, not a
+    # nicety. THE CROSSOVER above can only ever reach a `violated` fire
+    # reported by THIS run's reader — a fire already sitting in the
+    # tracked plane is deduped out by the `key in seen_events` check
+    # before reaching the crossover, so a forward-only build ships
+    # green and leaves `recurrence-suspect` at zero on the real ledger
+    # forever. This mirrors the live crossover's `routed` guard EXACTLY,
+    # including its `found is None` half (AC7): an unbounded pass over
+    # an append-only telemetry plane must never raise on one
+    # unresolvable row — run()'s outer handler would turn that into
+    # `status: failed` and the offending row would never go away,
+    # wedging every future nightly run.
+    for rid, origin in violated_fires:
+        found = _find_record(home, rid)
+        if found is None or found[0].status != "routed":
+            continue
+        _raise_recurrence_suspect(result, seen_events, rid, origin, _FIRE_VIOLATED_BASIS)
 
 
 # ------------------------------------------------------------ the journal

@@ -41,6 +41,14 @@ non-zero exit on any FAIL:
         hosts.yaml, the same logic the verbs use); missing target, marker,
         or entry FAILs naming ``self-learn recompile``; skipped cleanly
         when hosts.yaml is absent;
+    (d2) reach check (U-reach §2.1) — every LIVE ``reference``-routed
+        record must be REACHABLE from its scope's loaded surface (SKILL.md
+        / CLAUDE.md / the user CLAUDE.md), never merely present in its
+        target file — drift answers "did the write land?"; reach answers
+        "can anything get to it?", the question nothing else asks. FAILs
+        name the record; skipped cleanly when hosts.yaml is absent. An
+        independent row from (d): one check masking the other's failure
+        would turn a two-fact check back into one;
     (e) hook check (M3 — 08 §8.1 Hook-selftest pin): every currently-
         routed hook record's script exists, is executable, and matches
         the approved bytes; superseded records with a surviving script
@@ -59,6 +67,7 @@ from __future__ import annotations
 import glob as glob_mod
 import json
 import os
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -254,6 +263,163 @@ def _reference_target_for(home: Path, bucket: Bucket, record: Record) -> Path | 
     except HostsError:
         return None
     return reference_target_path(refs, routing.get("reference_file"))
+
+
+# ------------------------------------------------------------- U-reach §2.1
+
+
+def _loaded_surface(home: Path, bucket: Bucket, record: Record) -> list[Path]:
+    """LS(bucket, record) — the files a session LOADS for a record's
+    scope, resolved exactly as the verbs resolve them (§2.1's table). A
+    list from day one, one member per scope in v1: ``CLAUDE.local.md`` and
+    ``.claude/rules/*.md`` are deliberately NOT members (§6 — a pointer
+    must be at least as durable as the thing it points at, and ``local``
+    is git-excluded by design). The list shape exists so a future Model B
+    remap adds a member instead of editing a predicate.
+
+    Empty ``[]`` means "nothing loaded for this record" — the caller must
+    treat that as a FAILURE, never a skip (criterion 8): an unresolvable
+    host is exactly the state the R14 defect lived in.
+
+    The ``user`` row is dead code end-to-end until ``U-demand-user``:
+    ``_reference_target_for`` returns ``None`` for user scope BEFORE this
+    function is ever consulted (``reference`` is refused at user scope
+    today), so no end-to-end fixture can reach it — it is unit-tested
+    directly instead (criterion 9a). The row stays regardless: dropping it
+    would put ``user/`` silently outside RR's domain, which is F1, the
+    exact silent narrowing criterion 13 forbids."""
+    if bucket.scope == "skill":
+        try:
+            return [skill_dir_for(load_hosts(home), bucket.name) / "SKILL.md"]
+        except HostsError:
+            return []
+    if record.scope == "project":
+        host = bucket_project_path(bucket.path)
+        return [] if host is None else [Path(host) / "CLAUDE.md"]
+    if record.scope == "user":
+        return [DEFAULT_USER_CLAUDE_MD.expanduser()]
+    return []
+
+
+#: §2.1 step 2: a token is delimited by whitespace or by any of these
+#: bracket/quote characters — never consumed into the match.
+_TOKEN_DELIMS = r"\s()\[\]<>\"'`"
+
+
+def _surface_names_target(surface: Path, target: Path) -> bool:
+    """The reachability predicate (§2.1): does ``surface`` contain a path
+    TOKEN that RESOLVES to ``target``? Pure text + path arithmetic, no
+    globbing — the whole file is searched, not just a managed section (the
+    home-assistant ``SKILL.md`` this unit exists for has no managed
+    section at all).
+
+    Step 2 is LEFT-MAXIMAL and anchored on the basename: for every
+    occurrence of ``target.name`` in the text, the token extends
+    LEFTWARD ONLY over non-delimiter characters and ENDS at the basename —
+    nothing to its right is ever consumed. This is normative, and the two
+    readings differ: a both-directions-maximal tokenizer rejects
+    ``see references/LEARNINGS.md.`` (a sentence-final period, the
+    commonest hand-written pointer shape); the anchored reading here
+    accepts it, and adds no false positives (``myLEARNINGS.md`` still
+    yields a token that fails the resolve-and-compare below).
+
+    Steps 3-4 are the half that matters: a bare basename match would pass
+    on some OTHER same-named file. Each candidate token is expanduser'd;
+    an absolute token is used as-is, else resolved against
+    ``surface.parent`` (the token is read as the AUTHOR meant it — a
+    relative pointer written in the surface file, relative to that file);
+    a match requires the resolved candidate to equal ``target.resolve()``
+    exactly (criterion 8b: comparing against an UNRESOLVED target breaks
+    the moment the registered skills root is reached through a symlink)."""
+    if not surface.is_file():
+        return False
+    text = surface.read_text(encoding="utf-8")
+    pattern = re.compile(f"[^{_TOKEN_DELIMS}]*" + re.escape(target.name))
+    resolved_target = target.resolve()
+    for match in pattern.finditer(text):
+        token = Path(match.group(0)).expanduser()
+        candidate = token if token.is_absolute() else surface.parent / token
+        if candidate.resolve() == resolved_target:
+            return True
+    return False
+
+
+def _check_reach(home: Path) -> tuple[bool, str]:
+    """U-reach §2.1: every LIVE reference-routed record must be reachable
+    from its scope's loaded surface — mirrors :func:`_check_drift`'s
+    posture exactly, so the two checks read the same, but stays an
+    INDEPENDENT row with an independent loop (§3: folding it into drift
+    would let one check mask the other's failure — a two-fact check
+    collapsing back into one).
+
+    RR (the domain): every bucket :func:`~self_learn.ledger.discover_buckets`
+    returns — ``skills/*``, ``projects/*``, AND the single one-level
+    ``user/`` bucket — never a ``<home>/*/*/resolved/`` glob, which would
+    silently miss ``user/resolved/`` while reporting success (criterion
+    9a; the exact failure class this unit exists to detect). Every record
+    in ``<bucket>/resolved/lrn-*.md`` with ``status == "routed"``,
+    ``superseded_by is None``, and ``routing.destination == "reference"``.
+
+    A record FAILS when its reference target is unresolvable via
+    hosts.yaml, when its loaded surface is empty, or when no member of
+    that surface names the target — never skipped, never softened
+    (criteria 7, 8). The failing count LEADS the message (criterion 3) so
+    Checkpoint B's number is greppable from one line; the PASS message
+    carries its count too (criterion 1) — a countless PASS is exactly the
+    fail-open shape this half of the gate exists to exclude."""
+    state = home_state(home)
+    if state in ("missing", "not-a-repo"):
+        return False, home_state_message(state, home)
+    if not hosts_path(home).is_file():
+        return True, "hosts.yaml absent — reachability not checked"
+    failures: list[str] = []
+    checked = 0
+    for bucket in discover_buckets(home):
+        resolved = bucket.path / "resolved"
+        if not resolved.is_dir():
+            continue
+        for path in sorted(resolved.glob("lrn-*.md")):
+            try:
+                record = Record.from_path(path)
+            except RecordError:
+                continue
+            if record.status != "routed" or record.superseded_by is not None:
+                continue
+            if (record.routing or {}).get("destination") != "reference":
+                continue
+            checked += 1
+            target = _reference_target_for(home, bucket, record)
+            if target is None:
+                failures.append(
+                    f"{record.id}: reference target unresolvable via "
+                    "hosts.yaml — register the host, then "
+                    "`self-learn recompile`"
+                )
+                continue
+            surfaces = _loaded_surface(home, bucket, record)
+            if not surfaces:
+                failures.append(
+                    f"{record.id}: no loaded surface for scope "
+                    f"{record.scope!r} — nothing to reach it from"
+                )
+                continue
+            if not any(_surface_names_target(s, target) for s in surfaces):
+                named = ", ".join(str(s) for s in surfaces)
+                failures.append(
+                    f"{record.id}: not named by its loaded surface "
+                    f"({named}) — write a resolving pointer to {target}"
+                )
+    if failures:
+        return False, (
+            f"{len(failures)} of {checked} reference-routed record(s) "
+            "unreachable: " + "; ".join(failures)
+        )
+    if not checked:
+        return True, "no reference-routed records — nothing to reach"
+    return True, (
+        f"{checked} reference-routed record(s) reachable from their "
+        "scope's loaded surface"
+    )
 
 
 def _section_targets(home: Path) -> dict[Path, list[Record]]:
@@ -647,6 +813,7 @@ def run_selftest(home: Path) -> int:
         ("compiler", *_check_compiler(targets)),
         ("markers", *_check_markers(targets)),
         ("drift", *_check_drift(home)),
+        ("reach", *_check_reach(home)),
         ("hooks", *_check_hooks(home, claude_runtime_dir())),
         ("sentinel", *_check_sentinel()),
     ]

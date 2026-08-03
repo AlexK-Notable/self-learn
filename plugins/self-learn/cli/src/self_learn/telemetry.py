@@ -61,9 +61,15 @@ __all__ = [
 ]
 
 #: Extending the closed event-kind set is a schema version bump (11 §4.3).
-SCHEMA_VERSION = 1
+#: v1 → v2 (U-reach §2.2): `route` joins the set. No consumer filters on
+#: this number (`read_events`, `report.gather`, `worker._recurrence_
+#: suspects` all key on `kind` alone — verified), so the bump is honest
+#: bookkeeping, not a migration.
+SCHEMA_VERSION = 2
 
-#: The v1 closed set (11 §4.3).
+#: The v2 closed set (11 §4.3) — `route` is code-emitted only (never via
+#: `telemetry note`; see NOTE_KINDS below), the resolution-plane counterpart
+#: to `capture`/`surface-budget` on the observation plane.
 EVENT_KINDS = frozenset(
     {
         "offer-made",
@@ -75,6 +81,7 @@ EVENT_KINDS = frozenset(
         "recurrence-suspect",
         "staleness-flag",
         "surface-budget",
+        "route",
     }
 )
 
@@ -140,7 +147,7 @@ def spool_event(kind: str, *, now: datetime | None = None, **payload) -> Path:
     """
     if kind not in EVENT_KINDS:
         raise TelemetryError(
-            f"unknown event kind {kind!r} — v1 kinds: {sorted(EVENT_KINDS)}"
+            f"unknown event kind {kind!r} — v2 kinds: {sorted(EVENT_KINDS)}"
         )
     reason = payload.get("reason")
     if reason is not None:
