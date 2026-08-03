@@ -2047,6 +2047,15 @@ def route(
         # is the source of truth; canon is compiled from it afterwards).
         # The lock opens HERE — at the first mutation, not at the commit —
         # and closes at the commit; see :func:`_ledger_write`.
+        #
+        # §2.3: `routing.by` names the actor that CHOSE THE DESTINATION,
+        # derived here rather than hardcoded — the review UI's
+        # approve-as-proposed argv omits --dest entirely (the proposal,
+        # analyst-written, chose it); an explicit --dest is always the
+        # human's flag, whether typed at the terminal or appended by the
+        # UI's override. Read back below for the `route` telemetry event
+        # so the two can never diverge (11 §4.3 / U-reach criterion 24).
+        by = "human" if dest is not None else "analyst"
         with _ledger_write(home):
             if merged is not None:
                 merged.write(path)
@@ -2055,6 +2064,7 @@ def route(
                 record_id,
                 "routed",
                 destination=destination,
+                by=by,
                 routed_at=routed_at,
                 note=note,
                 follow_up=follow_up,
@@ -2094,6 +2104,25 @@ def route(
             # gone from the worktree (so `stage` drops it) but MUST ride
             # the pathspec or the rename commits in half.
             staged, sha = _commit_ledger(home, touched, message, note)
+
+        # `route` telemetry (11 §4.3, U-reach §2.2): the resolution plane
+        # was previously unobserved — nothing recorded that a routing
+        # happened, where it went, or who chose it. Placement is pinned
+        # immediately after the ledger commit closes above, NOT at the end
+        # of the function: the ledger commit IS the routing (doc 13 §4.1),
+        # so a host-phase failure below must still leave this event
+        # spooled — undercounting exactly the interesting case would make
+        # the instrument worse than silence. `spool_quiet`, never
+        # `spool_event`: telemetry must never break a verb (module
+        # docstring), so a spool refusal is a stderr warning, nothing more.
+        telemetry.spool_quiet(
+            "route",
+            record=record_id,
+            destination=destination,
+            scope=record.scope,
+            by=by,
+            variant=spec.variant,
+        )
 
         # (e) HOST phase: compile from the committed ledger state + host
         # commit (pinned apply subject), still under the sentinel hold.
@@ -2191,6 +2220,7 @@ def route_direct(
     record: Record,
     *,
     dest: str,
+    by: str = "human",
     note: str | None = None,
     no_push: bool = False,
     user_claude_md: Path | str | None = None,
@@ -2210,7 +2240,14 @@ def route_direct(
     one-shot analyst) supplies it; there is no proposal sibling to read.
     ``VerbResult.diff`` carries the staged pre-commit diff (``git diff
     --cached`` of the touched paths) for T8 to print — invocation is the
-    approval, so the diff is informational, never a prompt."""
+    approval, so the diff is informational, never a prompt.
+
+    ``by`` (§2.3, defaulted "human" — not required, so ``teach.py:698``'s
+    existing call keeps working unmodified): names the actor that CHOSE
+    THE DESTINATION. The bare-analyst ``teach --route`` path (destination
+    from ``analyst.analyze()``) should thread ``by="analyst"`` — that call
+    site is outside this unit's files (§6/§7); the plumbing here is what
+    it needs."""
     home = Path(home)
     # BLOCKER 11 (audit 2026-07-16): this path writes a record straight
     # into resolved/ — gate the home BEFORE anything lands on disk.
@@ -2321,8 +2358,13 @@ def route_direct(
         # dict[str, object]: mixes str/dict/list values below (hook is a
         # dict, rules_paths is a list) — a narrower inferred type makes
         # every one of those a pyright error.
+        #
+        # §2.3: `by` is the caller's `by` keyword (defaulted "human", never
+        # a literal here) — `teach --route --dest X` is the human's flag;
+        # the bare-analyst `teach --route` path threads its own value in
+        # (§6/§7: that call site is teach.py, outside this unit's files).
         routing: dict[str, object] = {
-            "routed_at": _now_iso(), "destination": destination, "by": "human"
+            "routed_at": _now_iso(), "destination": destination, "by": by
         }
         if destination == "reference" and ref_name is not None:
             routing["reference_file"] = ref_name  # BLOCKER 2: name the file
@@ -2369,6 +2411,20 @@ def route_direct(
                     home, message, touched, exc
                 ) from exc
             _, sha = _commit_ledger(home, touched, message, note)
+
+        # `route` telemetry (11 §4.3, U-reach §2.2) — same placement pin as
+        # `route`'s: immediately after the ledger commit closes above, so a
+        # host-phase failure below still leaves this event spooled (the
+        # ledger commit IS the routing, doc 13 §4.1). `spool_quiet`: a
+        # spool refusal must never break this verb.
+        telemetry.spool_quiet(
+            "route",
+            record=record.id,
+            destination=destination,
+            scope=record.scope,
+            by=by,
+            variant=spec.variant,
+        )
 
         # (e) HOST phase. Hook routes log the settings snippet in the host
         # commit body (M3-11), same as the review-gated path.
