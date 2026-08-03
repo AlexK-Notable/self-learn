@@ -6,7 +6,7 @@ ordering (the verb-dispatch hook), post-session validate per exit code
 0/1/2, engine-start failure -> error + retry-ready state, cap-hit
 messaging, no-text_delta per-block activity-indicator fallback, XSS
 escaping at the SSE frame level, and first_message/excerpt composition
-(mirroring self_learn.worker's excerpt rule) across skill/project/user
+(delegating to self_learn.worker.canon_excerpt) across skill/project/user
 scope and the <200-line / marker-bounded branches.
 
 No network, no real model anywhere in this file (10 §0 rule 7) — every
@@ -696,11 +696,23 @@ class TestTargetCanonExcerpt:
     def test_over_threshold_excerpts_around_markers(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """FW-48/U-marker-ui: the two needles come from the imported
+        compiler constants — no marker spelling is typed in this test.
+        (Prior to the fix this fixture hand-wrote the legacy
+        ``SELF-LEARN:BEGIN``/``END`` needle, a string no compiler has
+        ever emitted, so the test passed BECAUSE the code was broken;
+        see u-marker-excerpt-case-spec.md §5 / the CLI sibling fix's
+        own positive control in test_worker.py.) This test's own
+        claim is the ±20-line WINDOW MATH given arbitrary marker
+        placement — see ``test_over_threshold_finds_the_compiler_
+        written_section`` below for the compiler-realistic shape."""
+        from self_learn.compilers import BEGIN_MARKER, END_MARKER
+
         fake_home = tmp_path / "fake-home"
         (fake_home / ".claude").mkdir(parents=True)
         lines = [f"line {i}" for i in range(300)]
-        lines[150] = "<!-- SELF-LEARN:BEGIN -->"
-        lines[160] = "<!-- SELF-LEARN:END -->"
+        lines[150] = BEGIN_MARKER
+        lines[160] = END_MARKER
         (fake_home / ".claude" / "CLAUDE.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
         monkeypatch.setenv("HOME", str(fake_home))
         record = make_behavior(scope="user", record_id="lrn-aa00000f")
@@ -711,6 +723,80 @@ class TestTargetCanonExcerpt:
         assert "line 180" in excerpt
         assert "line 129" not in excerpt
         assert "line 181" not in excerpt
+        assert BEGIN_MARKER in excerpt
+        assert END_MARKER in excerpt
+
+    def test_over_threshold_finds_the_compiler_written_section(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """FW-48/U-marker-ui's positive control, mirrored from the CLI
+        sibling fix (test_worker.py::test_canon_excerpt_finds_the_
+        compiler_written_markers_in_a_fat_target): the excerpt must
+        reach a section the REAL compiler wrote
+        (``compile_managed_text``), not a hand-placed sentinel. Red
+        pre-fix — the unfixed pane hand-copy searched for a needle
+        (``SELF-LEARN:BEGIN``) the compiler has never written, so it
+        fell through to the head-of-file truncation regardless of
+        where the real section landed."""
+        from self_learn.compilers import BEGIN_MARKER, END_MARKER, compile_managed_text, entry_line
+
+        fake_home = tmp_path / "fake-home"
+        (fake_home / ".claude").mkdir(parents=True)
+        routed_record = make_behavior(record_id="lrn-aa000014")
+        routed_record.set_routing(
+            {"routed_at": "2026-07-13T18:02:00Z", "destination": "claude-md", "by": "human"}
+        )
+        routed_record.set_status("routed")
+
+        leading = "\n".join(f"authored line {i}" for i in range(250))
+        trailing = "\n".join(f"trailing line {i}" for i in range(30))
+        compiled = compile_managed_text(leading, [routed_record])
+        full_text = compiled.text + trailing + "\n"
+        (fake_home / ".claude" / "CLAUDE.md").write_text(full_text, encoding="utf-8")
+        monkeypatch.setenv("HOME", str(fake_home))
+
+        lines = full_text.splitlines()
+        begin_idx = next(i for i, ln in enumerate(lines) if BEGIN_MARKER in ln)
+        end_idx = next(i for i, ln in enumerate(lines) if END_MARKER in ln)
+        # Fixture guard: without this, the test would pass pre-fix
+        # whenever the section happened to land inside the first 60
+        # lines — same rationale as the CLI sibling's A0.
+        assert len(lines) >= 200
+        assert begin_idx > 60
+
+        record = make_behavior(scope="user", record_id="lrn-aa000015")
+        excerpt = pane.target_canon_excerpt(tmp_path, record, tmp_path / "bucket")
+        excerpt_lines = excerpt.splitlines()
+
+        assert BEGIN_MARKER in excerpt
+        assert END_MARKER in excerpt
+        assert entry_line(routed_record) in excerpt_lines  # the payload, not just the frame
+        lo, hi = max(0, begin_idx - 20), min(len(lines), end_idx + 21)
+        assert excerpt_lines == lines[lo:hi]
+
+    def test_over_threshold_case_variant_of_compiler_marker_does_not_match(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """FW-48/U-marker-ui's negative control, mirrored from the CLI
+        sibling fix (test_worker.py::test_canon_excerpt_case_variant_
+        of_compiler_marker_does_not_match): a case-variant of the
+        compiler's own marker must NOT match — catches a "defensive"
+        case-folded fix (``BEGIN_MARKER.lower() in ln.lower()``) that
+        would silently reinstate the legacy needle's failure mode by a
+        different route. Both needles are derived from the imported
+        constants; no marker spelling is typed in this build."""
+        from self_learn.compilers import BEGIN_MARKER, END_MARKER
+
+        fake_home = tmp_path / "fake-home"
+        (fake_home / ".claude").mkdir(parents=True)
+        lines = [f"line {i}" for i in range(300)]
+        lines[150] = BEGIN_MARKER.upper()
+        lines[160] = END_MARKER.upper()
+        (fake_home / ".claude" / "CLAUDE.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        monkeypatch.setenv("HOME", str(fake_home))
+        record = make_behavior(scope="user", record_id="lrn-aa000016")
+        excerpt = pane.target_canon_excerpt(tmp_path, record, tmp_path / "bucket")
+        assert excerpt.splitlines() == [f"line {i}" for i in range(60)] + ["… (truncated)"]
 
     def test_over_threshold_no_markers_truncates_first_60(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

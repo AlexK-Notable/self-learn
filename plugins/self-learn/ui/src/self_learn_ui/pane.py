@@ -5,8 +5,8 @@
 - the lifecycle state machine (idle -> starting -> streaming ->
   awaiting-input -> [interrupting] -> ended),
 - the first-user-message composition (record body + proposal/diff if
-  present + target canon excerpt, mirroring ``self_learn.worker``'s own
-  excerpt rule — see :func:`target_canon_excerpt`),
+  present + target canon excerpt, delegating to ``self_learn.worker``'s
+  own excerpt rule — see :func:`target_canon_excerpt`),
 - publishing the four ``pane_*`` SSE envelope types through the existing
   :class:`~self_learn_ui.sse.AppEventHub` (plain dicts — zero ``sse.py``
   changes, per that module's own docstring: "a future U6 publishing
@@ -68,9 +68,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from self_learn.hosts import HostsError, load_hosts, skill_dir_for
 from self_learn.records import Record
-from self_learn.worker import cache_dir
+from self_learn.worker import cache_dir, canon_excerpt
 
 from . import ledger
 from .doctrine import read_doctrine
@@ -251,62 +250,31 @@ def _terminal_status_words(terminal_status: str | None) -> str | None:
 
 # ------------------------------------------------- target canon excerpt
 #
-# Mirrors self_learn.worker._canon_excerpt EXACTLY (08 §7 / 09 §4.2's
-# pin: "target canon excerpt (the same excerpt rule as the worker prompt
-# pin)"). That function is private to the cli package and worker-batch
-# shaped (it takes a WorkItem-like `entry`, not a bare Record); this
-# module cannot import it, so the rule — resolution-by-scope, <200-line
-# whole-file passthrough, else ±20 lines around the SELF-LEARN markers —
-# is reproduced here against the same three public building blocks the
-# worker itself uses (self_learn.hosts.load_hosts/skill_dir_for,
-# ledger.project_path_for).
-
-_EXCERPT_LINE_THRESHOLD = 200
-_EXCERPT_CONTEXT_LINES = 20
-_BEGIN_MARKER = "SELF-LEARN:BEGIN"
-_END_MARKER = "SELF-LEARN:END"
-
-
-def _resolve_canon_target(home: Path, record: Record, bucket_dir: Path) -> tuple[Path | None, str | None]:
-    """Returns ``(target_path, None)`` or ``(None, message)`` — the same
-    three-way branch (skill / project / user) as the worker's own
-    resolution, verbatim."""
-    scope = record.scope
-    if scope.startswith("skill:"):
-        try:
-            return skill_dir_for(load_hosts(home), scope.partition(":")[2]) / "SKILL.md", None
-        except HostsError:
-            return None, "(skill target unresolvable — no registered skills root)"
-    if scope == "project":
-        host = ledger.project_path_for(bucket_dir)
-        if host is None:
-            return None, "(project target unresolvable — bucket has no meta.yaml)"
-        return Path(host) / "CLAUDE.md", None
-    # user scope — Y-2: excerpt-only, never a pane READ target; reading it
-    # here is server-side prompt composition, not the model's own tool
-    # access, and is exactly what the worker's own prompt builder does.
-    return Path("~/.claude/CLAUDE.md").expanduser(), None
+# FW-48/U-marker-ui (2026-08-02): this module used to hand-copy
+# self_learn.worker._canon_excerpt's body (resolution-by-scope,
+# <200-line whole-file passthrough, else ±20 lines around the compiler's
+# managed-section markers) on the stated belief that the worker function
+# was private and worker-batch shaped, so this package "cannot import
+# it". That was never true of the RULE — only of the one function's
+# QueueEntry-shaped signature — and the hand-copy independently
+# retyped the marker literal wrong (uppercase, no comment syntax; the
+# compiler has only ever written the lowercase HTML-comment pair,
+# self_learn.compilers.BEGIN_MARKER/END_MARKER). A second reader
+# retyping the same needle and getting it wrong the same way is the
+# CLI-side worker fix's own diagnosis of how it drifted there (see
+# docs/specs/self-learn/drafts/u-marker-excerpt-case-spec.md §2) — the
+# duplication was the defect, not just the string. The worker now
+# exposes the rule as a public, record/bucket_dir-shaped function
+# (self_learn.worker.canon_excerpt); this module imports and delegates
+# to it instead of maintaining a second copy.
 
 
 def target_canon_excerpt(home: Path, record: Record, bucket_dir: Path) -> str:
     """The candidate target's managed section ± 20 lines, or the whole
-    file when under 200 lines (the worker's pinned prompt ingredient,
-    mirrored — see module section docstring above)."""
-    target, message = _resolve_canon_target(home, record, bucket_dir)
-    if message is not None:
-        return message
-    assert target is not None
-    if not target.is_file():
-        return f"(target {target.name} does not exist yet)"
-    lines = target.read_text(encoding="utf-8").splitlines()
-    if len(lines) < _EXCERPT_LINE_THRESHOLD:
-        return "\n".join(lines)
-    begin = next((i for i, ln in enumerate(lines) if _BEGIN_MARKER in ln), None)
-    end = next((i for i, ln in enumerate(lines) if _END_MARKER in ln), None)
-    if begin is None or end is None:
-        return "\n".join(lines[:60]) + "\n… (truncated)"
-    lo, hi = max(0, begin - _EXCERPT_CONTEXT_LINES), min(len(lines), end + _EXCERPT_CONTEXT_LINES + 1)
-    return "\n".join(lines[lo:hi])
+    file when under 200 lines — the SAME function the worker's own
+    routing-analyst prompt uses (see module section docstring above);
+    this is a direct delegation, not a second implementation."""
+    return canon_excerpt(home, record, bucket_dir)
 
 
 def compose_first_message(
