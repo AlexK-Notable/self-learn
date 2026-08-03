@@ -141,6 +141,37 @@
           hx-vals='{{ ({"verb": "link-contradicts", "kind": "contradicts", "target": target}) | tojson }}'
           hx-target="#{{ dom_id }}" hx-swap="outerHTML">Link contradiction &rarr; {{ target }}</button>
 
+  {% elif kind == "resolved" %}
+  {# U-grad-ui §2.3/§2.4 door 3: RESOLVED-VERBS = {graduate}, offered iff
+     the record's status == "routed" — door 2's guard (`detail_resolved.
+     html`'s own GET render only ever includes this partial with
+     kind="resolved" when `model.status == "routed"`; a graduated/
+     rejected record's GET page includes no action bar at all, criterion
+     7's GET-side guard).
+
+     Code-gate MAJOR 1: this branch is NOT unreachable for a non-routed
+     resolved record in general — `kind` arrives from a client form
+     field on the arm/disarm/confirm POST routes (action_arm/action_
+     disarm/action_confirm), none of which re-check the record's actual
+     status (§1.3). A hand-crafted POST with kind="resolved" against a
+     graduated or rejected record still renders this branch and still
+     dispatches `graduate` — FW-51's territory, not closed here. Door 2
+     is a GET-render guard, not a POST-side one.
+
+     Guarded here by the SAME `{% if not evidence %}` as the pending
+     quad below — door 3: the post-confirm re-render carries evidence
+     and must NOT re-offer Graduate on the record that was just
+     graduated (M13's regression target: dropping this guard reddens
+     criterion 8(c), one click from the HalfWrittenError, §2.4). No
+     dest, no note, no cycle — a resolved record has nothing left to arm
+     but the one verb. #}
+  {% if not evidence %}
+  <button type="button" data-key-action="graduate"
+          hx-post="/record/{{ record_id }}/action/arm"
+          hx-vals='{"verb":"graduate","kind":"resolved"}'
+          hx-target="#{{ dom_id }}" hx-swap="outerHTML">Graduate (g)</button>
+  {% endif %}
+
   {% elif kind == "adopt" %}
   {# A2 §10.4(a): "yes" arms exactly like `contradicts`'s single button
      (Confirm/Cancel then come from the SAME generic `armed` block above);

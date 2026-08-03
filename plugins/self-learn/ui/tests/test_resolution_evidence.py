@@ -389,19 +389,31 @@ class TestOtherVerbsEvidenceRendering:
 
 
 class TestResolvedRecordRedirectsAwayFromItsOwnDetailPage:
-    """The root cause, pinned directly with a REAL status change
-    (`resolve_record_directly`/`defer_record` — no FakeRunner
-    involved)."""
+    """U-grad-ui spec criterion 11: the class name and this docstring
+    both described the redirect as the reason the `v` button is
+    suppressed — that reason changed (§2.1 VIEWABLE deletes the
+    redirect; §6.2's own comment fix, criterion 9, states the surviving
+    one), so the prose changes with it. The `v`-button behaviour ITSELF
+    does not change (§6.2) — `_evidence_ctx`'s `record_url` still omits
+    a link for route/reject/graduate; see
+    `TestViewLinkNeverTargetsARecordItWouldRedirectAway` below, untouched.
+    Pinned directly with a REAL status change (`resolve_record_directly`/
+    `defer_record` — no FakeRunner involved)."""
 
     def test_a_routed_record_no_longer_resolves_at_record_id(
         self, tmp_path: Path
     ) -> None:
+        """New contract (was: 303 to the bucket's resolved-elsewhere
+        banner): the record's OWN Detail page renders it directly, 200,
+        carrying its Trigger text — the resolved view §2.1 adds."""
         sb, rec = _seed(tmp_path)
         resolve_record_directly(sb.ledger, sb.ledger / "skills" / "s", rec)
         c, _runner = make_client(sb)
         r = c.get(f"/record/{rec.id}", follow_redirects=False)
-        assert r.status_code == 303
-        assert r.headers["location"] == "/bucket/skill/s?notice=resolved-elsewhere"
+        assert r.status_code == 200
+        # `_seed`'s make_behavior() default trigger (support.py) — the
+        # record's own Trigger text, not merely `200` on an empty page.
+        assert "About to edit .storage while HA is running." in r.text
 
     def test_a_deferred_record_still_resolves_at_record_id(
         self, tmp_path: Path

@@ -46,6 +46,7 @@ from self_learn.ledger_ops import (
     bucket_project_path,
     find_record_path,
     read_proposal as _read_proposal_dict,
+    record_title as _record_title,
     validate_merge_proposal,
 )
 from ruamel.yaml.error import YAMLError
@@ -71,6 +72,7 @@ __all__ = [
     "read_proposal_raw",
     "read_proposal_text",
     "read_record",
+    "record_title",
     "salvage_record",
     "read_registry",
     "report",
@@ -200,6 +202,16 @@ def commit_drift_dry_run(
 def discover_buckets(home: Path) -> list[Bucket]:
     """Re-exported, never reimplemented (P2-4)."""
     return _discover_buckets(home)
+
+
+def record_title(record: Record) -> str:
+    """Re-exported, never reimplemented (P2-4) — U-grad-ui §5: "the same
+    raw-read path Detail already uses, never a second title definition."
+    A pure string function on an already-loaded :class:`Record` (no I/O
+    of its own), re-exported here rather than imported directly by
+    routes.py so every CLI-package touch point still funnels through
+    this one module (module docstring pin)."""
+    return _record_title(record)
 
 
 @dataclass(frozen=True)

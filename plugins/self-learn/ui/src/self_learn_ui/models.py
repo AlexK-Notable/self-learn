@@ -46,6 +46,7 @@ __all__ = [
     "PARAMETER_FREE_DESTINATIONS",
     "PREVIEW_HONESTY_CAPTION",
     "REFERENCE_NO_CAP_LINE",
+    "ArchiveRow",
     "Badge",
     "BudgetRow",
     "BucketModel",
@@ -66,12 +67,16 @@ __all__ = [
     "MinerRun",
     "NearMissRow",
     "RecordRow",
+    "ResolvedDetailModel",
+    "ResolvedRoutingFacts",
     "StatusStrip",
     "WhyRegion",
+    "build_archive_rows",
     "build_bucket_model",
     "build_card_sections",
     "build_detail_model",
     "build_front_model",
+    "build_resolved_detail_model",
     "correct_destination",
     "destination_label",
     "destination_path",
@@ -955,6 +960,73 @@ class ClusterRow:
 
 
 @dataclass(frozen=True)
+class ArchiveRow:
+    """B1 (U-grad-ui spec §4) / M4's target: one row of the Bucket page's
+    collapsed "Routed here" archive section — INDEX-SET (§2.2), already
+    scope-confirmed and raw-read-hydrated by the caller (routes.py's
+    ``_gather_archive_entries``).
+
+    Y-9: ``leading_text`` is the record's OWN title (raw read, never a
+    second title definition — :func:`build_archive_rows`'s docstring),
+    NEVER the raw id (M4's exact regression: "return `record.id` instead
+    of the record's leading text"). ``id`` is carried as its own field so
+    the template can render it in a dedicated ``.record-row-id`` span —
+    §4's load-bearing pin: if the id lived only in the anchor's ``href``,
+    M18 (stripping the anchor) would blind criteria 2/3's id-scoped
+    exclusion assertions too, not just criterion 1."""
+
+    id: str
+    leading_text: str
+    fact_text: str
+
+
+def _archive_fact_text(entry: dict, scope: str) -> str:
+    """The archive row's plain-words routing fact line (§4: "routed N
+    days ago → destination; recurrences if any") — never a raw enum, per
+    Y-9. ``destination`` is glossed through the SAME single-source
+    resolver every other destination display in this module uses."""
+    routed_days_ago = entry.get("routed_days_ago")
+    when = (
+        f"routed {routed_days_ago}d ago"
+        if routed_days_ago is not None
+        else "routed — date unknown"
+    )
+    destination = entry.get("destination")
+    dest_part = f" → {destination_label(destination, scope)}" if destination else ""
+    recurrences = entry.get("recurrences") or 0
+    recur_part = ""
+    if recurrences:
+        plural = "time" if recurrences == 1 else "times"
+        recur_part = f" · sighted {recurrences} {plural} since"
+    return f"{when}{dest_part}{recur_part}"
+
+
+def build_archive_rows(entries: list[dict], scope: str) -> tuple[ArchiveRow, ...]:
+    """B1 (§4): format the Bucket page's routed-record archive section.
+    ``entries`` is caller-hydrated (``routes._gather_archive_entries``) —
+    each dict already carries ``id``, ``title`` (a raw
+    ``ledger.record_title()`` read — the same raw-read path Detail
+    already uses, never a second title definition, §5), ``routed_days_ago``,
+    ``destination`` (from the record's own ``routing`` block — the CLI's
+    ``routed_live`` carries no destination field), and ``recurrences``.
+    This function does no I/O and does not re-derive the SET — it only
+    formats what the caller already assembled (09 §3's screen-state-
+    derivation pin). Order is preserved from the caller (which preserves
+    `report --json`'s own ``routed_live`` order — never re-sorted here)."""
+    rows = []
+    for e in entries:
+        title = e.get("title") or ""
+        rows.append(
+            ArchiveRow(
+                id=e["id"],
+                leading_text=title or "(untitled)",
+                fact_text=_archive_fact_text(e, scope),
+            )
+        )
+    return tuple(rows)
+
+
+@dataclass(frozen=True)
 class BucketModel:
     bucket: str
     scope: str
@@ -973,6 +1045,21 @@ class BucketModel:
     #: server-signaled no-op the `o` key hint reads (a singleton cycle
     #: renders without `data-key-action`, per action_bar.html).
     destination_cycle: tuple[str, ...] = ()
+    #: B1 (U-grad-ui §4): the routed-record archive section's rows —
+    #: INDEX-SET (§2.2), empty by default so every existing caller of
+    #: :func:`build_bucket_model` (this module's own tests included)
+    #: degrades to "no archive section" rather than breaking.
+    archive: tuple[ArchiveRow, ...] = ()
+    #: Code-gate finding 6 / user ruling 2026-08-02: set (to `report
+    #: --json`'s own error string) ONLY when the underlying CLI read
+    #: itself failed — never for "read succeeded, zero routed records".
+    #: `None` (the overwhelmingly common case, and every pre-existing
+    #: caller's default) renders the ordinary empty-or-populated archive;
+    #: a non-`None` value renders a distinct "Routed here (unavailable)"
+    #: header instead of silently omitting the section — the bug this
+    #: unit exists to fix, one layer up, is exactly a thing the user
+    #: needed being invisible with no indication it existed.
+    archive_error: str | None = None
 
 
 def _group_key_for(item: dict) -> str:
@@ -1008,13 +1095,21 @@ def build_bucket_model(
     host_registered: bool,
     host_add_command: str | None,
     unreadable: int = 0,
+    archive_entries: list[dict] | None = None,
+    archive_error: str | None = None,
     now: datetime | None = None,
 ) -> BucketModel:
     """09 §2.2: group precedence (P2-9), the Y-9 human-language-first row
     rule, deferred-dimmed-at-bottom ordering, cluster rows, and bulk
     collapse for a homogeneous already-canon group. ``unreadable`` is this
     bucket's `status --json` unreadable count (09 §5), passed through for
-    the skip-and-count line."""
+    the skip-and-count line. ``archive_entries`` (B1, U-grad-ui §4) is the
+    caller-hydrated routed-record archive section — ``None``/``[]``
+    renders no archive section, same "absent renders nothing" posture as
+    every other optional region in this module. ``archive_error``
+    (code-gate finding 6) is the DISTINCT "the read itself failed" state
+    — never conflated with "read succeeded, nothing routed": passing it
+    renders "Routed here (unavailable)" instead of omitting the section."""
     now = now if now is not None else datetime.now(timezone.utc)
     clustered_ids = {rid for c in clusters_raw for rid in (c.get("records") or [])}
 
@@ -1093,6 +1188,8 @@ def build_bucket_model(
         clusters=clusters,
         unreadable=unreadable,
         destination_cycle=destinations_for_scope(scope),
+        archive=build_archive_rows(archive_entries or [], scope),
+        archive_error=archive_error,
     )
 
 
@@ -1447,6 +1544,97 @@ def build_detail_model(
         destination_default=dest_default,
         destination_note=dest_note,
         badges=tuple(badges),
+        host_registered=host_registered,
+        host_add_command=host_add_command,
+    )
+
+
+# ------------------------------------------------ resolved Detail model
+#
+# U-grad-ui §2.1/§5: VIEWABLE renders every status a resolved record can
+# carry (routed/rejected/superseded). `detail_resolved.html`'s own model
+# — deliberately NOT `DetailModel` reused, because `WhyRegion`/`ChangeRegion`
+# are shaped around a PENDING record's proposal (has_proposal/destination
+# suggestion/budgets), none of which exist once a record has resolved; a
+# resolved record's routing facts live on the record itself
+# (`record.routing`/`recurrences`/`last_confirmed`/`resolution_note`/
+# `follow_up`), never on `item` (the ledger's pending-shaped summary,
+# synthesized as a near-empty stand-in for a resolved record —
+# `_gather_detail_bundle`'s docstring).
+
+
+@dataclass(frozen=True)
+class ResolvedRoutingFacts:
+    """§5's routing facts, read straight off the record — never `item`.
+    ``destination``/``destination_label_text`` are ``None``/``""`` for a
+    `rejected`/`superseded`-with-no-routing record (routing is `None`
+    once a record never routed, or after a corrective supersession that
+    cleared it) — the template renders nothing for an absent fact,
+    no-backfill, same posture as :class:`FindingRegion`'s
+    ``episode_brief``."""
+
+    destination: str | None
+    destination_label_text: str
+    routed_at: str | None
+    routed_by: str | None
+    last_confirmed: str | None
+    resolution_note: str | None
+    recurrences: tuple[dict, ...]
+    follow_up: dict | None
+
+
+@dataclass(frozen=True)
+class ResolvedDetailModel:
+    id: str
+    bucket: str
+    scope: str
+    status: str
+    finding: FindingRegion
+    routing: ResolvedRoutingFacts
+    host_registered: bool
+    host_add_command: str | None
+
+
+def build_resolved_detail_model(
+    record: Record,
+    *,
+    title: str,
+    bucket: str,
+    scope: str,
+    host_registered: bool,
+    host_add_command: str | None,
+) -> ResolvedDetailModel:
+    """§2.1 VIEWABLE / §5: the resolved Detail page's model — the record's
+    OWN Trigger/Fact section (``title``, criterion 13 — a raw
+    ``ledger.record_title()`` read the caller already made, never
+    re-derived here) plus its routing facts, read off ``record`` itself.
+    No proposal, no change region, no destination cycle, no budgets — a
+    resolved record structurally has none of them (§5's builder
+    decision)."""
+    routing = record.routing or {}
+    destination = routing.get("destination")
+    return ResolvedDetailModel(
+        id=record.id,
+        bucket=bucket,
+        scope=scope,
+        status=record.status,
+        finding=_build_finding(record, title),
+        routing=ResolvedRoutingFacts(
+            destination=destination,
+            destination_label_text=(
+                destination_label(
+                    destination, scope, routing.get("variant"), routing.get("rules_topic")
+                )
+                if destination
+                else ""
+            ),
+            routed_at=routing.get("routed_at"),
+            routed_by=routing.get("by"),
+            last_confirmed=str(record.last_confirmed) if record.last_confirmed else None,
+            resolution_note=record.resolution_note,
+            recurrences=tuple(dict(r) for r in record.recurrences),
+            follow_up=dict(record.follow_up) if record.follow_up else None,
+        ),
         host_registered=host_registered,
         host_add_command=host_add_command,
     )
