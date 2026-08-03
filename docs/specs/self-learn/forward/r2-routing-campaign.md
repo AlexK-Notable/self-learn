@@ -155,6 +155,37 @@ not run a spec to six rounds over wording again.
 intact. A fresh reviewer re-litigates instead of verifying folds, and
 costs a full re-read.
 
+**Which code-gate folds need a delta, and which merge — added 2026-08-02
+after this question came up on all seven units in one wave.** The
+verdict-repricing rule above governs the SPEC gate. The code gate needs
+its own, because "fold the findings" covers two very different things:
+
+> **A fold that closes a COVERAGE gap merges after re-verification.** The
+> shipped code was already correct; only the tests could not see it. The
+> orchestrator confirms the new test goes red against the surviving
+> mutation, and the unit lands.
+>
+> **A fold that changes PRODUCTION CODE goes back to the same reviewer.**
+> The gate never reviewed that code, so merging on the builder's own
+> verification means the changed lines shipped ungated — which is exactly
+> the hole the code gate exists to close.
+
+Worked examples from this wave. Merged after coverage folds: a marker
+fix whose docstring re-spelled a forbidden literal; an analyst fixture
+whose file-mode let a weakened guard pass; a miner whose two *wrong*
+implementations passed all 77 tests; a selftest whose derived collector
+was vacuously green. In every case the production code was already
+right. Sent back: a hand-written glob sanitiser (into a function that
+had already had three wrong corners found across three rounds), a new
+error path on the resolved-record surface, and four fixes to frontmatter
+round-tripping. **The asymmetry is not bureaucracy** — a builder
+verifying its own production fix is the same agent that wrote the defect,
+and this project's failure mode is a check that passes for the wrong
+reason. Note also that a builder's fold can introduce NEW defects a
+gate would catch: one fold here fixed a walk and silently added two type
+errors, caught only because the orchestrator re-ran the type checker
+rather than trusting the suite.
+
 ### The builder prompt
 
 Every Sonnet builder prompt carries all of this. A prompt missing any
