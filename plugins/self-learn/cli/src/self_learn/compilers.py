@@ -51,15 +51,48 @@ References compiler (01 §3.5, 08 §1 References-compiler pin)
   (references are the bulk/progressive-disclosure surface; no tightening).
 - Idempotent per record: the file is scanned for the record id and an
   already-present id makes the append a no-op.
+
+Paths frontmatter (U-pathed, `paths:` emission for rules targets)
+-------------------------------------------------------------------
+- The ONE normative register for what a rules target's `paths:` key should
+  say lives here, not at any call site: :func:`expected_paths` — `U(T)`,
+  the spec's §2 union — derives ENTIRELY from the routed records
+  (``_eligible`` filtered, same as the managed section), never from a
+  value threaded in by a caller. Two call sites (`recompile`'s
+  `_resolve_target`, retirement's own resolve) deliberately withhold a
+  `rules_paths` value for correct, stated reasons — an emitter keyed on
+  that value would silently strip pathed frontmatter back to
+  always-loaded on the very first repair run.
+- The compiler owns EXACTLY the `paths:` key of the leading
+  ``---``/``---`` (or ``...``) frontmatter block — never the rest of it.
+  Foreign keys, their order, and comments round-trip byte-for-byte via
+  ruamel (the same `typ="rt"` discipline `records.py` already uses for
+  record frontmatter). A block reduced to comments-and-nothing-else is
+  KEPT, never collapsed to ruamel's bare `{}` empty-mapping form; a block
+  reduced to nothing at all (no keys, no comments) is removed, plus one
+  immediately following blank line.
+- :func:`apply_paths_frontmatter` writes only when
+  :func:`paths_frontmatter_drift` — the one *agreement* predicate, defined
+  on the RAW loaded YAML value, never through the lossy
+  :func:`read_paths_frontmatter` reader — says the file disagrees.
+- A missing target, an unterminated leading block, or a leading block that
+  does not load as a YAML mapping all refuse via :class:`CompileError`
+  (already caught by the host-phase drift-warning path, same as a
+  half-markered managed section).
 """
 
 from __future__ import annotations
 
+import io
 import re
+from collections import Counter
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 from typing import Iterable, Sequence
+
+from ruamel.yaml import YAML
+from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
 from .records import Record
 
@@ -73,11 +106,17 @@ __all__ = [
     "CompileError",
     "SectionResult",
     "ReferenceResult",
+    "PathsResult",
     "entry_line",
     "compile_managed_text",
     "compile_managed_file",
     "compile_reference",
     "reference_target_path",
+    "expected_paths",
+    "read_paths_frontmatter",
+    "has_paths_key",
+    "paths_frontmatter_drift",
+    "apply_paths_frontmatter",
 ]
 
 #: Marker pair, exactly per 02 §4.
@@ -286,6 +325,455 @@ def compile_managed_file(
     if result.changed:
         path.write_text(result.text, encoding="utf-8")
     return result
+
+
+# ----------------------------------------------------- paths frontmatter (U-pathed)
+
+
+@dataclass(frozen=True)
+class PathsResult:
+    """Outcome of one `paths:` frontmatter compile (§3.2)."""
+
+    path: Path
+    paths: tuple[str, ...]  # U(T); () = unpathed (no `paths:` key)
+    changed: bool  # the frontmatter region was rewritten
+    unpathed_by: tuple[str, ...]  # §2 derived value
+    widened: bool  # §2 derived value
+    drift: str | None  # the disagreement this rewrite replaced
+    notes: tuple[str, ...]  # human-readable, for the verb warnings channel
+
+
+#: Sentinel distinguishing "no `paths:` key present" from any other raw
+#: loaded value (including a legitimate ``None``/``null``) — §2's
+#: agreement predicate needs this distinction, `dict.get` alone conflates
+#: "absent" with "present and null".
+_MISSING = object()
+
+
+def _paths_yaml() -> YAML:
+    """Round-trip YAML for the rules-file frontmatter block — the SAME
+    pinned config `records.py`'s own `_make_yaml()` uses (`typ="rt"`,
+    preserve_quotes, width=4096, `indent(mapping=2, sequence=4, offset=2)`)
+    so both frontmatter surfaces this codebase owns emit identically."""
+    yaml = YAML(typ="rt")
+    yaml.preserve_quotes = True
+    yaml.width = 4096
+    yaml.indent(mapping=2, sequence=4, offset=2)
+    return yaml
+
+
+def _dump_mapping(mapping: object) -> str:
+    buf = io.StringIO()
+    _paths_yaml().dump(mapping, buf)
+    return buf.getvalue()
+
+
+def _standalone_comments(text: str) -> list[str]:
+    """Whole-line YAML comments, verbatim (indentation included), in source
+    order. An INLINE trailer (``- a/** # why``) is deliberately not one:
+    it annotates the item it rides on, so it lives and dies with it.
+
+    This is a LINE SCAN, not a YAML parse, and the boundary is worth
+    naming: a line beginning with ``#`` *inside a block scalar* is data,
+    not a comment, and this reads it as one. Reaching that needs a
+    hand-written ``paths: |`` block scalar — already malformed for this
+    compiler, which reads a non-sequence ``paths:`` as ``()`` — and the
+    residue is cosmetic (the key was being deleted anyway, nothing is
+    lost, and the result still parses). A YAML-aware scan would cost a
+    second round-trip to fix a shape the compiler already rejects."""
+    return [ln for ln in text.splitlines() if ln.strip().startswith("#")]
+
+
+def _readd_dropped_comments(inner: str, dumped: str) -> str:
+    """Re-emit standalone comments that the round-trip discarded (F5).
+
+    §3.2 promises the compiler owns ``paths:`` and nothing else in the
+    block — but a comment's survival through ruamel depends on which node
+    it happens to be keyed to. One ABOVE ``paths:`` attaches to the mapping
+    and survives; one below the list, between its globs, or keyed to a glob
+    that a NARROW pops attaches to the ``CommentedSeq`` and is discarded
+    with it. That made the compiler destroy human text it does not own.
+
+    Comparison is on the STRIPPED line and is multiplicity-aware, so a file
+    that legitimately repeats a comment keeps both copies. On the stripping:
+    it is defensive, not a fix for an observed bug — against the pinned
+    ruamel config a surviving comment is re-indented in 0 of 48 measured
+    configurations, so the hazard it guards (a dumper that re-indents,
+    making a survivor look like a loss and get appended a second time) is
+    NOT reproducible here. It is kept because it is strictly safer and
+    cannot wrongly suppress a genuine loss — the Counter handles
+    same-text-different-indent correctly either way. Recovered lines are
+    appended at the end of the block: their anchor is gone, so there is no
+    non-arbitrary place to restore them to, and preserving the text where a
+    human can see it beats preserving nothing. Idempotent — on the next
+    compile the recovered line is itself a standalone comment in the
+    source, so it matches and is not appended twice."""
+    have = Counter(ln.strip() for ln in _standalone_comments(dumped))
+    missing: list[str] = []
+    for line in _standalone_comments(inner):
+        key = line.strip()
+        if have[key]:
+            have[key] -= 1
+        else:
+            missing.append(line)
+    if not missing:
+        return dumped
+    return dumped + "".join(f"{ln}\n" for ln in missing)
+
+
+def _find_leading_block(text: str) -> tuple[str, int] | None:
+    """Locate the file's leading ``---``-delimited block. Returns
+    ``(inner_text, end)`` where ``end`` is the character offset of the
+    first byte after the closing delimiter line (so ``text[end:]`` is
+    everything that follows the block) — ``None`` when the file's first
+    line is not exactly ``---`` (no leading block at all).
+
+    Raises :class:`CompileError` when the first line IS ``---`` but no
+    ``---``/``...`` line ever closes it (A8's corrupt-block refusal) —
+    the ONE place that detection lives; :func:`read_paths_frontmatter`
+    (which must never raise) catches it and reads as absent.
+
+    Fence lines are matched with ``rstrip()`` (trailing whitespace only —
+    a fence with a trailing space is still a fence), never ``strip()``
+    (leading whitespace must still DISQUALIFY a fence: an indented
+    ``  ---`` is not a document delimiter). ``rstrip("\\r\\n")`` alone was
+    the F2 bug: it left a trailing space on the OPENING line unstripped,
+    so ``"--- \\n"`` was read as "no leading block", and the emitter then
+    PREPENDED a fresh one on top of the real block — two ``paths:``
+    blocks on disk, route reported success."""
+    lines = text.splitlines(keepends=True)
+    if not lines or lines[0].rstrip() != "---":
+        return None
+    consumed = len(lines[0])
+    inner_lines: list[str] = []
+    for line in lines[1:]:
+        consumed += len(line)
+        if line.rstrip() in ("---", "..."):
+            return "".join(inner_lines), consumed
+        inner_lines.append(line)
+    raise CompileError(
+        "leading frontmatter block starts with '---' but has no "
+        "terminating '---' or '...' line"
+    )
+
+
+def _eligible_globsets(records: Sequence[Record]) -> list[tuple[str, ...]]:
+    return [
+        tuple((r.routing or {}).get("rules_paths") or ()) for r in _eligible(records)
+    ]
+
+
+def expected_paths(records: Sequence[Record]) -> tuple[str, ...]:
+    """``U(T)`` — the emitted paths (§2), pure. Applies the compiler's own
+    :func:`_eligible` filter to ``records`` FIRST, so the frontmatter and
+    the managed section are always computed from the same C(T) — never a
+    second query a future caller could let drift apart.
+
+    1. ``C(T)`` empty -> ``()``.
+    2. ANY record in ``C(T)`` with no ``rules_paths`` -> ``()`` — the
+       absorbing rule: union with "always" is "always" (§2.2).
+    3. Otherwise -> the deduped, sorted union of every record's globs —
+       deduped/sorted so re-runs are byte-stable (§2 rule 3).
+    """
+    globsets = _eligible_globsets(records)
+    if not globsets:
+        return ()
+    if any(g == () for g in globsets):
+        return ()
+    return tuple(sorted({glob for g in globsets for glob in g}))
+
+
+def _unpathed_by(records: Sequence[Record]) -> tuple[str, ...]:
+    """``unpathed_by(T)`` (§2): sorted ids of records in ``C(T)`` with no
+    ``rules_paths``, when ``C(T)`` is non-empty."""
+    eligible = _eligible(records)
+    if not eligible:
+        return ()
+    return tuple(
+        sorted(r.id for r in eligible if not (r.routing or {}).get("rules_paths"))
+    )
+
+
+def _widened(records: Sequence[Record], u: tuple[str, ...]) -> bool:
+    """``widened(T)`` (§2): ``U(T) != ()`` and some record's own globs
+    differ from the emitted union — its rule now also fires on files it
+    did not name.
+
+    F4: compared as SETS, not as the raw stored tuples. §2's letter reads
+    ``G(r) != U(T)`` as a tuple inequality, but a single record whose own
+    proposal lists its globs unsorted (nobody hand-sorts a proposal) is
+    NOT widened — its rule fires on exactly the files it named, in a
+    different order. A tuple comparison called that "the union of 1
+    routed lesson... fires on files it did not name" — both halves false,
+    and it degrades the channel that carries A4's absorption alarm on a
+    large share of first routes at S-23's primary tier. Order-only
+    differences are unpinned by any criterion; §2's own gloss and §3.3's
+    note text are set-based, which is what a human reads."""
+    if not u:
+        return False
+    u_set = set(u)
+    return any(set(g) != u_set for g in _eligible_globsets(records))
+
+
+def _safe_load_leading_mapping(text: str) -> dict | None:
+    """Lenient, never-raising: the leading block's ``typ="safe"``-loaded
+    mapping, or ``None`` for absent / unterminated / unparseable / non-
+    mapping — the shared basis for :func:`read_paths_frontmatter` and
+    :func:`has_paths_key`, so the two never disagree about whether a
+    block is even readable."""
+    try:
+        block = _find_leading_block(text)
+    except CompileError:
+        return None
+    if block is None:
+        return None
+    inner, _end = block
+    try:
+        loaded = YAML(typ="safe").load(inner)
+    except Exception:
+        return None
+    if loaded is None:
+        loaded = {}
+    if not isinstance(loaded, dict):
+        return None
+    return loaded
+
+
+def read_paths_frontmatter(text: str) -> tuple[str, ...]:
+    """The file's ``paths:`` frontmatter as a tuple of strings — a reader,
+    pure, and NEVER raises (drift detection is a separate, stricter path;
+    this is the lenient, broadly-reusable primitive). ``()`` for: no
+    leading frontmatter block, an unterminated/unparseable block, no
+    ``paths:`` key, or a ``paths:`` value that is not a list of non-empty
+    strings — a scalar and ``[]`` both collapse to ``()`` here, which is
+    exactly why §2's agreement predicate (:func:`paths_frontmatter_drift`)
+    is defined on the RAW value instead (M15's target), and exactly why a
+    "does it carry a paths: key AT ALL" question must use
+    :func:`has_paths_key` instead, never this reader (F1)."""
+    loaded = _safe_load_leading_mapping(text)
+    if loaded is None:
+        return ()
+    value = loaded.get("paths")
+    if not isinstance(value, list) or not value:
+        return ()
+    if not all(isinstance(v, str) and v for v in value):
+        return ()
+    return tuple(value)
+
+
+def has_paths_key(text: str) -> bool:
+    """Lenient, never-raising: ``True`` iff the leading block loads as a
+    YAML mapping containing a ``paths`` key AT ALL — regardless of
+    whether its value is well-formed. This is the narrower question
+    §3.4(2)'s chezmoi-MANAGED refusal needs, and it is NOT the same
+    question :func:`read_paths_frontmatter` answers: the reader
+    normalizes a scalar / ``[]`` / ``null`` / a list of non-strings all
+    down to the SAME falsy ``()`` as "no key at all", but
+    :func:`paths_frontmatter_drift` (the agreement predicate, defined on
+    the RAW value) treats every one of those as disagreement — a rewrite
+    the pre-pass WILL perform. A refusal keyed on the reader therefore
+    misses exactly the values the pre-pass is about to touch (found live,
+    F1): a target with ``paths: []`` slips past the MANAGED refusal, the
+    pre-pass then writes it, and chezmoi's own drift check reads that
+    write as pre-existing drift — an unrecoverable post-ledger abort,
+    with the record already sitting in ``resolved/``."""
+    loaded = _safe_load_leading_mapping(text)
+    return loaded is not None and "paths" in loaded
+
+
+def paths_frontmatter_drift(text: str, records: Sequence[Record]) -> str | None:
+    """§2's *agreement* predicate: ``None`` when the file's RAW ``paths:``
+    value already equals ``list(U(T))`` (a missing key counting as
+    agreement iff ``U(T) == ()``); otherwise a one-line message naming
+    what was found and what is expected. Compares the raw loaded value —
+    never through :func:`read_paths_frontmatter`, whose normalization of a
+    scalar / ``[]`` / absent key down to a uniform ``()`` is exactly what
+    would call a stale scalar "clean" (M15).
+
+    Unlike the reader, this DOES raise :class:`CompileError` on an
+    unterminated or non-mapping leading block — propagated from
+    :func:`_find_leading_block` / this function's own mapping check, and
+    the one detection point :func:`apply_paths_frontmatter` relies on for
+    A8's refusal."""
+    expected = list(expected_paths(records))
+    block = _find_leading_block(text)
+    if block is None:
+        raw: object = _MISSING
+    else:
+        inner, _end = block
+        try:
+            loaded = YAML(typ="safe").load(inner)
+        except Exception as exc:
+            raise CompileError(
+                f"leading frontmatter block does not load as YAML: {exc}"
+            ) from exc
+        if loaded is None:
+            loaded = {}
+        if not isinstance(loaded, dict):
+            raise CompileError(
+                "leading frontmatter block does not load as a YAML mapping"
+            )
+        raw = loaded.get("paths", _MISSING)
+    if raw is _MISSING:
+        return None if not expected else f"no `paths:` key present; expected {expected!r}"
+    if isinstance(raw, list) and not raw:
+        # §2: an explicit `paths: []` is NEVER agreement, even when
+        # `U(T) == ()` — only a MISSING key represents "unpathed"; the
+        # compiler itself never writes an empty list (it deletes the key
+        # instead), so a `[]` on disk is always a hand edit to normalize.
+        return f"`paths:` is []; expected {expected!r}"
+    if raw == expected:
+        return None
+    return f"`paths:` is {raw!r}; expected {expected!r}"
+
+
+def _rewrite_paths_block(
+    text: str, existing_block: tuple[str, int] | None, u: tuple[str, ...]
+) -> str:
+    """The write side of §3.2's ownership rule: rewrite the LOADED leading
+    block in place (never prepend a fresh one — M20/A7), touching only the
+    ``paths:`` key. ``existing_block`` is ``None`` only when there was no
+    leading block at all (a brand-new one is created; ``u`` is guaranteed
+    non-empty here, since an empty union with no pre-existing block is
+    *agreement* — :func:`apply_paths_frontmatter` never reaches this
+    function for that case)."""
+    if existing_block is None:
+        mapping = CommentedMap()
+        mapping["paths"] = list(u)
+        return f"---\n{_dump_mapping(mapping)}---\n{text}"
+
+    inner, end = existing_block
+    post = text[end:]
+    mapping = _paths_yaml().load(inner)
+    if mapping is None:
+        mapping = CommentedMap()
+
+    if u:
+        # F3: update an EXISTING CommentedSeq in place (pop to shrink,
+        # index-assign up to its old length, append past it) rather than
+        # replacing it with a plain list. `mapping["paths"] = list(u)`
+        # measurably drops comments attached to the sequence itself — a
+        # comment below the last list item (whether or not a key
+        # follows), or an inline comment on a list item — because the
+        # comment lives on the CommentedSeq node this would discard, not
+        # on the mapping. Measured against the pinned ruamel config: this
+        # form preserves all three placements IN PLACE whenever the list
+        # widens or stays the same size (21 of 21 configurations), where a
+        # plain reassignment preserves none of them.
+        #
+        # It is not sufficient on its own for a NARROW: a comment keyed to
+        # one of the popped items goes with it (4 of 8 measured
+        # configurations). `_readd_dropped_comments` below is what closes
+        # that — the text survives, appended to the block, since its anchor
+        # no longer exists. In-place mutation is still what keeps the other
+        # 4 exactly where the human put them, so both halves are load-bearing.
+        old = mapping.get("paths")
+        if isinstance(old, CommentedSeq):
+            while len(old) > len(u):
+                old.pop()
+            for i, glob in enumerate(u):
+                if i < len(old):
+                    old[i] = glob
+                else:
+                    old.append(glob)
+        else:
+            mapping["paths"] = list(u)
+        body = _readd_dropped_comments(inner, _dump_mapping(mapping))
+        return f"---\n{body}---\n{post}"
+
+    if "paths" in mapping:
+        del mapping["paths"]
+    if len(mapping) > 0:
+        body = _readd_dropped_comments(inner, _dump_mapping(mapping))
+        return f"---\n{body}---\n{post}"
+
+    # No keys left. §3.2's removal rule is "no keys AND no comments left",
+    # so the surviving comments are recovered from the SOURCE block, not
+    # from ruamel's dump of the now-empty mapping.
+    #
+    # F5: the dump cannot be trusted here. What it retains depends on where
+    # the comment sat — one ABOVE `paths:` attaches to the mapping and
+    # survives the `del`, but one below the list or between its items
+    # attaches to the CommentedSeq that `del` just discarded, so it is gone.
+    # Trusting the dump therefore made the rule that exists to preserve
+    # comments the rule that DELETED them: a block holding `paths:` plus a
+    # comment below it was removed entirely, comment included. Reading the
+    # source keeps every standalone comment line byte-for-byte, whatever
+    # its placement, and makes ruamel's `{}` form (which §3.2 prohibits)
+    # unreachable rather than string-surgeried away after the fact.
+    #
+    # Comment text that is NOT a standalone line — an inline trailer on
+    # `paths:` or on one of its globs — is deliberately not recovered: it
+    # annotates the key being deleted, so it leaves with it (§3.2).
+    survivors = _standalone_comments(inner)
+    if not survivors:
+        if post.startswith("\n"):
+            post = post[1:]
+        return post
+    return "---\n" + "".join(f"{ln}\n" for ln in survivors) + f"---\n{post}"
+
+
+def apply_paths_frontmatter(path: Path | str, records: Sequence[Record]) -> PathsResult:
+    """Read ``path``, write back ONLY when :func:`paths_frontmatter_drift`
+    says the leading block disagrees with ``U(T)`` (§2), and report the
+    §3.3 notes (absorption / widening / drift-repaired) either way — they
+    are re-derived from ``records`` on every call, not gated on a write
+    happening this specific time (there is no standing report yet; §7.3).
+
+    Refusals (:class:`CompileError`, never a guess): a missing ``path``;
+    an unterminated leading block; a leading block that does not load as
+    a YAML mapping — both propagated from :func:`paths_frontmatter_drift`.
+    """
+    path = Path(path)
+    if not path.is_file():
+        raise CompileError(
+            f"rules target does not exist: {path} — the frontmatter compiler "
+            "never creates target files, only rewrites the leading block of "
+            "an existing one"
+        )
+    text = path.read_text(encoding="utf-8")
+    u = expected_paths(records)
+    drift = paths_frontmatter_drift(text, records)
+    unpathed = _unpathed_by(records)
+    wide = _widened(records, u)
+    eligible = _eligible(records)
+
+    notes: list[str] = []
+    if unpathed and any((r.routing or {}).get("rules_paths") for r in eligible):
+        notes.append(
+            f"{path}: rules file is UNPATHED (loads at launch) because "
+            f"{', '.join(unpathed)} carry no rules_paths — the pathed "
+            "lessons in this topic now cost full always-loaded attention; "
+            "route a globless lesson to its own topic"
+        )
+    if wide:
+        notes.append(
+            f"{path}: paths: is the union of {len(eligible)} routed lessons "
+            "— each lesson's rule now also fires on files it did not name"
+        )
+
+    if drift is None:
+        return PathsResult(
+            path=path, paths=u, changed=False, unpathed_by=unpathed,
+            widened=wide, drift=None, notes=tuple(notes),
+        )
+
+    existing_block = _find_leading_block(text)
+    if existing_block is not None:
+        notes.append(
+            f"{path}: rewrote the compiler-owned paths: frontmatter ({drift}) "
+            "— it regenerates from the routed records' rules_paths; hand "
+            "edits do not survive a route or a recompile"
+        )
+
+    new_text = _rewrite_paths_block(text, existing_block, u)
+    changed = new_text != text
+    if changed:
+        path.write_text(new_text, encoding="utf-8")
+    return PathsResult(
+        path=path, paths=u, changed=changed, unpathed_by=unpathed,
+        widened=wide, drift=drift, notes=tuple(notes),
+    )
 
 
 # ----------------------------------------------------------------- references

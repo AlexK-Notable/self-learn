@@ -61,7 +61,7 @@ import contextlib
 import glob as glob_mod
 import sys
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -78,16 +78,26 @@ from .skill_scaffold import (
     validate_skill_name,
 )
 from . import chezmoi
-from .chezmoi import ChezmoiAbort, ChezmoiError, compile_user_scope, preflight_user_scope
+from .chezmoi import (
+    USER_SCOPE_MANAGED,
+    ChezmoiAbort,
+    ChezmoiError,
+    compile_user_scope,
+    preflight_user_scope,
+    user_scope_capability,
+)
 from .compilers import (
     BEGIN_MARKER,
     DEFAULT_MAX_ENTRIES,
     DEFAULT_MAX_WORDS,
     CompileError,
+    PathsResult,
     SectionResult,
+    apply_paths_frontmatter,
     compile_managed_file,
     compile_managed_text,
     compile_reference,
+    has_paths_key,
     reference_target_path,
 )
 from .hosts import (
@@ -773,12 +783,65 @@ def _resolve_rules_target(
             "documentation gap (P-A13); route to user or project scope"
         )
     paths_tuple = tuple(rules_paths) if rules_paths else None
+    # U-pathed §3.4(1): an absolute or ``~``-leading glob never fires
+    # against a project/user tree (canary measurement 1.2) — and it is a
+    # live fail-open in shipped code: ``glob.glob(pattern, root_dir=host)``
+    # IGNORES ``root_dir`` for an absolute pattern, so
+    # ``_validate_project_globs`` today happily passes (and would emit) a
+    # pattern that provably can never match. Shape-only — no filesystem, no
+    # ``check_dirty`` gate — so it is deterministic and covers user scope
+    # too, which ``_validate_project_globs`` never sees.
+    if paths_tuple:
+        _bad_globs = [
+            p for p in paths_tuple if p.startswith("~") or Path(p).is_absolute()
+        ]
+        if _bad_globs:
+            _listed = ", ".join(repr(p) for p in _bad_globs)
+            raise VerbError(
+                f"rules_paths pattern(s) are absolute or home-relative, "
+                f"which never fire as a glob against a project/user tree: "
+                f"{_listed} — make the pattern(s) relative"
+            )
     if scope == "user":
         base = Path(
             user_claude_md if user_claude_md is not None else DEFAULT_USER_CLAUDE_MD
         ).expanduser()
         target = _user_rules_dir(base) / f"{rules_topic}.md"
         if check_dirty:
+            # U-pathed §3.4(2): the pre-pass writes the target BEFORE
+            # compile_user_scope's own _drift_dirty_guard runs — on a
+            # MANAGED target, our own write would be read as pre-existing
+            # drift and abort AFTER the ledger commit (unrecoverable: a
+            # recompile repair hits the identical abort). Refuse here
+            # instead, pre-ledger, under the same check_dirty guard as the
+            # preflight below. Fires when EITHER this route is pathed OR
+            # the target already carries paths: (deleting it is also a
+            # pre-pass write, in the U(T) == () direction — an empty
+            # rules_paths is not a proxy for "writes nothing"). F1:
+            # deliberately `has_paths_key`, NOT `read_paths_frontmatter`
+            # — the reader normalizes a scalar / `[]` / `null` / a
+            # non-string list all down to the same falsy `()` as "no key
+            # at all", but the pre-pass's own agreement predicate
+            # (`paths_frontmatter_drift`, on the RAW value) treats every
+            # one of those as disagreement and rewrites it. A refusal
+            # keyed on the reader would miss exactly those values —
+            # `paths: []` slips this check, the pre-pass then writes it,
+            # and chezmoi's OWN drift check reads that write as
+            # pre-existing drift: an unrecoverable post-ledger abort with
+            # the record already in `resolved/`.
+            _carries_paths = target.is_file() and has_paths_key(
+                target.read_text(encoding="utf-8")
+            )
+            if (
+                paths_tuple or _carries_paths
+            ) and user_scope_capability(target, chezmoi=chezmoi_bin) == USER_SCOPE_MANAGED:
+                raise VerbError(
+                    f"{target} is chezmoi-managed — a pathed rules write "
+                    "would land before chezmoi's own drift check and be "
+                    "read as pre-existing drift, aborting AFTER the ledger "
+                    "commit; route to project scope, or drop rules_paths "
+                    "so this stays an unpathed rule"
+                )
             # E-17 preflight, same as plain user claude-md: chezmoi
             # drift/dirty aborts BEFORE the ledger commit. U-A2-glob-tree
             # (§5.1): no canonical tree exists for a user-scope glob, so
@@ -1607,10 +1670,20 @@ def _apply_target(
     chezmoi_bin: str = "chezmoi",
     message: str | None = None,
     user_push: bool = True,
+    notes: list[str] | None = None,
 ) -> tuple[object, list[Path]]:
     """HOST-phase compile (doc 13 §4 step e): write the target from the
     committed ledger state. Returns (compile_result, host paths to stage —
-    empty for the chezmoi user flow, which commits its own repo)."""
+    empty for the chezmoi user flow, which commits its own repo).
+
+    U-pathed: for a ``rules`` variant, a ``paths:`` frontmatter pre-pass
+    (:func:`compilers.apply_paths_frontmatter`) runs immediately before
+    the section compile, over the SAME compile set (`_compile_set` bound
+    once per branch — the register is read once, never twice). Its notes
+    (absorption / widening / drift-repaired) append to ``notes`` when the
+    caller passes a list; its `changed` flag folds into the returned
+    result on the project branch only (user scope commits via
+    ``UserScopeResult.committed``, which never gates on `changed`)."""
     if spec.destination == "new-skill":
         compile_result, host_paths = _apply_new_skill(home, spec)
     elif spec.destination == "hook":
@@ -1646,9 +1719,14 @@ def _apply_target(
             # never created here).
             spec.target.parent.mkdir(parents=True, exist_ok=True)
             spec.target.write_text("", encoding="utf-8")
+        records = _compile_set(home, spec)
+        if spec.variant == "rules":
+            paths_result: PathsResult = apply_paths_frontmatter(spec.target, records)
+            if notes is not None:
+                notes.extend(paths_result.notes)
         compile_result = compile_user_scope(
             spec.target,
-            _compile_set(home, spec),
+            records,
             chezmoi=chezmoi_bin,
             commit_message=message,
             push=user_push,
@@ -1673,7 +1751,22 @@ def _apply_target(
             # section bootstrap (08 §1 pin) append the marker pair.
             # skill-md never reaches here — preflight refuses.
             spec.target.write_text("", encoding="utf-8")
-        compile_result = compile_managed_file(spec.target, _compile_set(home, spec))
+        records = _compile_set(home, spec)
+        paths_changed = False
+        if spec.variant == "rules":
+            paths_result = apply_paths_frontmatter(spec.target, records)
+            if notes is not None:
+                notes.extend(paths_result.notes)
+            paths_changed = paths_result.changed
+        compile_result = compile_managed_file(spec.target, records)
+        if paths_changed and not compile_result.changed:
+            # §3.3's "changed fold": the pre-pass wrote the frontmatter
+            # but the managed section is byte-identical — without this,
+            # the write happens but the caller's `changed is not False`
+            # commit-gate never fires, so the repair sits UNCOMMITTED —
+            # drift created by the drift repair. SectionResult is frozen;
+            # this is one expression, no new field.
+            compile_result = replace(compile_result, changed=True)
         # A2 §6/P-A3: a `local` target is GITIGNORED BY DESIGN (the
         # privacy guard already refused the route otherwise) — it must
         # never be staged/committed to the host repo (git itself refuses
@@ -1820,6 +1913,7 @@ def _host_phase(
                 chezmoi_bin=chezmoi_bin,
                 message=message,
                 user_push=user_push,
+                notes=warnings,
             )
             host_sha = None
             if spec.host_repo is not None and host_paths:
@@ -3662,7 +3756,9 @@ def recompile(
             # a racing autostash there would stash it away mid-flight).
             with gitops.commit_lock(host_repo):
                 try:
-                    compile_result, host_paths = _apply_target(home, spec, None)
+                    compile_result, host_paths = _apply_target(
+                        home, spec, None, notes=result.warnings
+                    )
                 except (CompileError, OSError) as exc:
                     result.entries.append(
                         RecompileEntry(target=target, changed=False, skipped=str(exc))

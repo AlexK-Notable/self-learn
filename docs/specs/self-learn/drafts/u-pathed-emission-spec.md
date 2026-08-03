@@ -230,6 +230,32 @@ def apply_paths_frontmatter(path: Path | str, records: Sequence[Record]) -> Path
   > `preserve_quotes`, `width=4096`, `indent(mapping=2, sequence=4,
   > offset=2)`).
   >
+  > **The round-trip alone does not deliver that, and the gap is not
+  > uniform — which is what made it survive review.** A comment's fate
+  > depends on which node ruamel keyed it to. One sitting ABOVE `paths:`
+  > attaches to the *mapping* and survives anything done to the key. One
+  > below the list, between its globs, or keyed to a glob that a narrow
+  > pops attaches to the *`CommentedSeq`* — which `del mapping["paths"]`
+  > discards, and which `pop()` shortens. So the compiler destroyed human
+  > text it does not own, in exactly the placements a test written from
+  > the happy path would not try.
+  >
+  > **Therefore: every standalone (whole-line) comment in the block
+  > survives, at every placement.** Comments the round-trip keeps stay
+  > exactly where the human put them. Any the round-trip drops are
+  > recovered from the source block and re-emitted, byte-for-byte,
+  > appended to the block — their anchor no longer exists, so there is no
+  > non-arbitrary position to restore them to, and preserving the text
+  > where a human can see it beats preserving nothing. Recovery is
+  > multiplicity-aware and **idempotent**: a recovered line is itself a
+  > standalone comment on the next read, so it matches rather than
+  > doubling. A repeated compile must not grow the block.
+  >
+  > **One deliberate exception**, pinned by a test rather than left to
+  > chance: an INLINE trailer (`- a/** # why`, `paths: # why`) is not a
+  > standalone comment. It annotates the item it rides on, so it leaves
+  > with that item. Only whole-line comments are recovered.
+  >
   > **Removal is narrower than "no keys left."** Deleting `paths:` removes
   > the whole `---…---` block, plus one immediately following blank line,
   > **only when the block has no keys AND no comments left**. A block that
@@ -609,13 +635,30 @@ glob beginning with `*` (`**/*.py`) round-trips through
 substring of the file text would pass on an unquoted, alias-broken
 emission.
 
-**A17 — a comment-only block survives the last key's removal.** A rules
-file whose leading block holds a comment plus `paths:`, whose topic then
-goes unpathed (§2 rule 2): the `paths:` key is gone, the comment is still
-present in a well-formed leading block, and the file **never** contains
-ruamel's empty-mapping form (a bare `{}` line). Contrast leg, same test:
-a block holding `paths:` and nothing else — no comment — is removed
-entirely, block plus one following blank line.
+**A17 — a comment-only block survives the last key's removal, AT EVERY
+PLACEMENT.** A rules file whose leading block holds a comment plus
+`paths:`, whose topic then goes unpathed (§2 rule 2): the `paths:` key is
+gone, the comment is still present in a well-formed leading block, and
+the file **never** contains ruamel's empty-mapping form (a bare `{}`
+line). Contrast leg, same test: a block holding `paths:` and nothing
+else — no comment — is removed entirely, block plus one following blank
+line.
+
+**The placement sweep is the criterion, not a nicety.** A17 must run its
+assertion with the comment ABOVE `paths:`, BELOW the list (both flush and
+indented), and BETWEEN two globs. Testing only the `above` placement is
+what let the defect ship: that is the one case ruamel keeps for free, so
+the assertion passed while the other three destroyed the comment along
+with the whole block — `'---\npaths:\n  - a/**\n# do not hand-edit\n---\nBODY\n'`
+compiled to `'BODY\n'`. **A criterion that can only be exercised at its
+easiest placement is not a criterion.** Three further legs carry the rest
+of the rule: `paths:` removed while another key keeps the block alive
+(the likelier shape in a real rules file, and a different branch); a
+comment keyed to a glob that a NARROW pops; and a repeated
+narrow→widen→narrow that must not accumulate duplicate lines. That last
+one must drive real drift on every call — applying twice with the same
+records finds no drift on the second, returns without writing, and passes
+without the recovery path running at all.
 
 ---
 
@@ -674,9 +717,12 @@ adding it to `_retirement_preflight`. Both are inert under this design
 2. **A globless record makes the whole file unpathed.** §2 rule 2, §2.2.
    Kept from r2, surfaced loudly, never silently reversed.
 3. **The compiler owns only `paths:`**, not the whole frontmatter block.
-   Foreign keys and comments survive via a ruamel round-trip, and a block
-   reduced to comments alone is **kept, not deleted** (§3.2) — the
-   removal rule is "no keys *and* no comments left", never "no keys
+   Foreign keys survive via a ruamel round-trip; standalone comments
+   survive the round-trip **plus a source-recovery pass** for the
+   placements the round-trip drops (§3.2 — the round-trip alone keeps
+   only the ones keyed to the mapping, not the ones keyed to the
+   sequence). A block reduced to comments alone is **kept, not deleted**
+   — the removal rule is "no keys *and* no comments left", never "no keys
    left", or the rule that exists to preserve comments would be the rule
    that deletes them. Rationale:
    the alternative — owning the whole block — silently deletes a human's
@@ -815,8 +861,11 @@ prevent. Same for §7.1's Grep/Glob hole: both rows, one commit.
 - **When to choose PATHED.** `U-composer`'s doctrine rewrite, including
   S-23's at-or-after-first-contact rider and §7.1's search-only rider.
   This unit builds the mechanism only.
-- **The user-scope destination menu**, `ui/models.py`, and deleting the
-  dead chezmoi `reference` refusal at `verbs.py:950-955` — `U-demand-user`.
+- **The user-scope destination menu**, `ui/models.py` — `U-demand-user`.
+  Note for whoever builds it: the `reference` refusal at `verbs.py:950-955`
+  **stays**. Only its stated reason is dead (chezmoi); its effect is what
+  S-23 (2) mandates, so the fix is to rewrite the message to cite S-23,
+  never to delete the refusal.
 - **Pointer emission and the cap-exempt `pointer_line`** — `U-pointer`
   (`compilers.py` again; sequence, do not overlap).
 - **The reachability selftest, the `route` telemetry kind, `routing.by`**

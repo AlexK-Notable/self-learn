@@ -13,10 +13,12 @@ source) — the same pattern ``chezmoi.py``'s own module docstring and
 
 from __future__ import annotations
 
+import json
 import os
 import stat
 
 import pytest
+from ruamel.yaml import YAML
 
 from self_learn import chezmoi, cli, selfcheck, verbs
 from self_learn.compilers import BEGIN_MARKER
@@ -28,7 +30,7 @@ from self_learn.ledger_ops import (
 )
 from self_learn.records import Record
 
-from support import make_behavior, make_env, proposal_dict
+from support import commit_all, git, make_behavior, make_env, proposal_dict, verb_files
 
 OLD = "lrn-0000aaaa"
 
@@ -133,6 +135,19 @@ def seed_skill_record(env, record_id=OLD, **kw):
     record = make_behavior(scope="skill:s", record_id=record_id, **kw)
     create_record(env.home, record)
     return record
+
+
+def read_frontmatter(text):
+    """U-pathed A1/A2: re-parse a rules file's leading `---` block with
+    `ruamel.yaml.YAML(typ="safe")` — hand-split, never through
+    `self_learn.compilers`'s own reader, so this is a genuinely separate
+    parse of the emitted bytes (the whole point of A1/A16: bytes on disk,
+    checked by a loader that isn't the one that wrote them)."""
+    lines = text.split("\n")
+    assert lines[0] == "---", f"no leading '---' fence in: {text!r}"
+    close = lines[1:].index("---") + 1
+    inner = "\n".join(lines[1:close])
+    return YAML(typ="safe").load(inner)
 
 
 # =====================================================================
@@ -837,3 +852,697 @@ class TestObligation18TopicSlugErrorWording:
         msg = str(exc.value)
         assert "rules topic" in msg
         assert "new-skill name" not in msg
+
+
+# =====================================================================
+# U-pathed (r2) — `paths:` frontmatter emission, drift, refusals
+# (docs/specs/self-learn/drafts/u-pathed-emission-spec.md). Obligations
+# 19+ continue this file's numbering; the pure compiler primitives
+# (expected_paths / read_paths_frontmatter / paths_frontmatter_drift) are
+# tested directly in test_compilers.py instead.
+# =====================================================================
+
+
+# =====================================================================
+# Obligation 19 — A1/A2: project- and user-scope pathed routes emit
+# `paths:` to disk, independently (the user leg takes a different write
+# path — compile_user_scope, not compile_managed_file).
+# =====================================================================
+
+
+class TestObligation19PathsEmitToDisk:
+    def test_project_scope_emits_paths_frontmatter_A1(self, env):
+        src = env.host / "src"
+        src.mkdir()
+        (src / "foo.ts").write_text("x", encoding="utf-8")
+        seed_project_record(env)
+        write_proposal(
+            env.home, OLD,
+            proposal_dict(
+                destination="claude-md", variant="rules", rules_topic="ts-rules",
+                rules_paths=["src/**/*.ts"],
+            ),
+        )
+        result = verbs.route(env.home, OLD)
+        assert result.commit_sha
+        target = env.host / ".claude" / "rules" / "ts-rules.md"
+        assert target.is_file()
+        text = target.read_text(encoding="utf-8")
+        assert read_frontmatter(text) == {"paths": ["src/**/*.ts"]}
+        assert OLD in text
+        assert BEGIN_MARKER in text
+        assert text.index("paths:") < text.index(BEGIN_MARKER)  # marker is IN the section, below
+
+    def test_user_scope_emits_paths_frontmatter_A2(self, tmp_path, env):
+        target = tmp_path / "dot-claude" / "CLAUDE.md"
+        target.parent.mkdir()
+        target.write_text("# user conduct\n", encoding="utf-8")
+        seed_user_record(env)
+        write_proposal(
+            env.home, OLD,
+            proposal_dict(
+                destination="claude-md", variant="rules", rules_topic="ts-rules",
+                rules_paths=["src/**/*.ts"],
+            ),
+        )
+        result = verbs.route(
+            env.home, OLD, user_claude_md=target, chezmoi_bin="chezmoi-definitely-absent",
+        )
+        assert result.commit_sha
+        rules_target = target.parent / "rules" / "ts-rules.md"
+        assert rules_target.is_file()
+        text = rules_target.read_text(encoding="utf-8")
+        assert read_frontmatter(text) == {"paths": ["src/**/*.ts"]}
+        assert OLD in text
+        assert text.index("paths:") < text.index(BEGIN_MARKER)
+
+
+# =====================================================================
+# Obligation 20 — A3: the union is deduped and sorted, and widening is
+# reported on the second record's own route.
+# =====================================================================
+
+
+class TestObligation20UnionDedupedSortedWidened:
+    def test_union_and_widening_reported_A3(self, env):
+        for d in ("a", "b", "c"):
+            (env.host / d).mkdir()
+            (env.host / d / "f.txt").write_text("x", encoding="utf-8")
+        seed_project_record(env, record_id="lrn-1a1a1a1a")
+        write_proposal(
+            env.home, "lrn-1a1a1a1a",
+            proposal_dict(
+                destination="claude-md", variant="rules", rules_topic="shared",
+                rules_paths=["b/**", "a/**"],
+            ),
+        )
+        verbs.route(env.home, "lrn-1a1a1a1a")
+
+        seed_project_record(env, record_id="lrn-2b2b2b2b")
+        write_proposal(
+            env.home, "lrn-2b2b2b2b",
+            proposal_dict(
+                destination="claude-md", variant="rules", rules_topic="shared",
+                rules_paths=["a/**", "c/**"],
+            ),
+        )
+        result2 = verbs.route(env.home, "lrn-2b2b2b2b")
+
+        target = env.host / ".claude" / "rules" / "shared.md"
+        text = target.read_text(encoding="utf-8")
+        assert read_frontmatter(text) == {"paths": ["a/**", "b/**", "c/**"]}
+        assert "lrn-1a1a1a1a" in text and "lrn-2b2b2b2b" in text
+
+        assert any(
+            "union of 2 routed lessons" in w for w in result2.warnings
+        ), result2.warnings
+
+
+# =====================================================================
+# Obligation 21 — A4: absorption deletes the paths: key and warns naming
+# the globless record, with a same-test fail-open control: a SECOND topic
+# that kept its globs still carries its own paths: on disk.
+# =====================================================================
+
+
+class TestObligation21AbsorptionAndFailOpenControl:
+    def test_absorption_with_second_topic_control_A4(self, env):
+        (env.host / "a").mkdir()
+        (env.host / "a" / "f.txt").write_text("x", encoding="utf-8")
+
+        # topic "kept": stays pathed throughout — the fail-open control.
+        seed_project_record(env, record_id="lrn-1a1a1a1a")
+        write_proposal(
+            env.home, "lrn-1a1a1a1a",
+            proposal_dict(
+                destination="claude-md", variant="rules", rules_topic="kept",
+                rules_paths=["a/**"],
+            ),
+        )
+        verbs.route(env.home, "lrn-1a1a1a1a")
+
+        # topic "absorbed": a pathed record, then a globless one.
+        seed_project_record(env, record_id="lrn-2b2b2b2b")
+        write_proposal(
+            env.home, "lrn-2b2b2b2b",
+            proposal_dict(
+                destination="claude-md", variant="rules", rules_topic="absorbed",
+                rules_paths=["a/**"],
+            ),
+        )
+        verbs.route(env.home, "lrn-2b2b2b2b")
+
+        seed_project_record(env, record_id="lrn-3c3c3c3c")
+        write_proposal(
+            env.home, "lrn-3c3c3c3c",
+            proposal_dict(destination="claude-md", variant="rules", rules_topic="absorbed"),
+        )
+        result = verbs.route(env.home, "lrn-3c3c3c3c")
+
+        absorbed = (env.host / ".claude" / "rules" / "absorbed.md").read_text(encoding="utf-8")
+        assert "paths:" not in absorbed
+        assert "lrn-2b2b2b2b" in absorbed and "lrn-3c3c3c3c" in absorbed
+
+        kept = (env.host / ".claude" / "rules" / "kept.md").read_text(encoding="utf-8")
+        assert read_frontmatter(kept) == {"paths": ["a/**"]}
+
+        assert any(
+            "UNPATHED" in w and "lrn-3c3c3c3c" in w for w in result.warnings
+        ), result.warnings
+
+
+# =====================================================================
+# Obligation 22 — A5: retirement (supersede) narrows the union to the
+# survivor's own globs — proves emission reads C(T), not
+# TargetSpec.rules_paths.
+# =====================================================================
+
+
+class TestObligation22RetirementNarrowsUnion:
+    def test_supersede_narrows_paths_to_survivor_A5(self, env):
+        for d in ("a", "b"):
+            (env.host / d).mkdir()
+            (env.host / d / "f.txt").write_text("x", encoding="utf-8")
+        seed_project_record(env, record_id="lrn-1a1a1a1a")
+        write_proposal(
+            env.home, "lrn-1a1a1a1a",
+            proposal_dict(
+                destination="claude-md", variant="rules", rules_topic="topic",
+                rules_paths=["a/**"],
+            ),
+        )
+        verbs.route(env.home, "lrn-1a1a1a1a")
+
+        seed_project_record(env, record_id="lrn-2b2b2b2b")
+        write_proposal(
+            env.home, "lrn-2b2b2b2b",
+            proposal_dict(
+                destination="claude-md", variant="rules", rules_topic="topic",
+                rules_paths=["b/**"],
+            ),
+        )
+        verbs.route(env.home, "lrn-2b2b2b2b")
+
+        target = env.host / ".claude" / "rules" / "topic.md"
+        assert read_frontmatter(target.read_text(encoding="utf-8")) == {
+            "paths": ["a/**", "b/**"]
+        }
+
+        verbs.supersede(env.home, "lrn-1a1a1a1a", "lrn-2b2b2b2b")
+        text = target.read_text(encoding="utf-8")
+        assert read_frontmatter(text) == {"paths": ["b/**"]}
+        assert "lrn-1a1a1a1a" not in text
+        assert "lrn-2b2b2b2b" in text
+
+
+# =====================================================================
+# Obligation 23 — A6/A13: recompile repairs a COMMITTED hand-edited
+# paths:, commits the repair, and reports the drift-repaired note; a
+# second recompile is a no-op.
+# =====================================================================
+
+
+class TestObligation23RecompileRepairsHandEdit:
+    def _route_pathed(self, env):
+        (env.host / "a").mkdir()
+        (env.host / "a" / "f.txt").write_text("x", encoding="utf-8")
+        seed_project_record(env)
+        write_proposal(
+            env.home, OLD,
+            proposal_dict(
+                destination="claude-md", variant="rules", rules_topic="topic",
+                rules_paths=["a/**"],
+            ),
+        )
+        verbs.route(env.home, OLD)
+        target = env.host / ".claude" / "rules" / "topic.md"
+        text = target.read_text(encoding="utf-8")
+        target.write_text(text.replace("a/**", "z/**"), encoding="utf-8")
+        # A6: the edit must be COMMITTED — an uncommitted edit makes the
+        # target dirty and `recompile` refuses it before ever reaching
+        # `_apply_target` (this is the ONLY reachable form of this case).
+        commit_all(env.host, "hand edit paths")
+        return target
+
+    def test_recompile_repairs_committed_hand_edit_A6(self, env):
+        target = self._route_pathed(env)
+        result = verbs.recompile(env.home)
+        text2 = target.read_text(encoding="utf-8")
+        assert read_frontmatter(text2) == {"paths": ["a/**"]}
+
+        entry = next(e for e in result.entries if e.target.name == "topic.md")
+        assert entry.changed is True
+        assert entry.commit_sha is not None
+        assert any(f.endswith("topic.md") for f in verb_files(env.host))
+        assert any(
+            "rewrote the compiler-owned" in w for w in result.warnings
+        ), result.warnings
+
+    def test_second_recompile_is_a_noop_A13(self, env):
+        target = self._route_pathed(env)
+        verbs.recompile(env.home)
+        before = target.read_text(encoding="utf-8")
+
+        result2 = verbs.recompile(env.home)
+        entry2 = next(e for e in result2.entries if e.target.name == "topic.md")
+        assert entry2.changed is False
+        assert entry2.commit_sha is None
+        assert target.read_text(encoding="utf-8") == before
+
+    def test_route_into_corrupt_leading_block_surfaces_host_phase_failure_A8(
+        self, env
+    ):
+        """A8's route-time clause: an already-committed, corrupt leading
+        block (unterminated ``---``) makes the compile step raise
+        CompileError. `_host_phase` catches it (H-2: the ledger stays
+        truth, never rolled back) and surfaces a HOST PHASE FAILED
+        warning naming `recompile` — the record still moves to
+        resolved/, exactly like the skill-md host-phase-failure case
+        (test_hosting.py::test_host_phase_failure_warns_then_recompile_repairs)."""
+        (env.host / "a").mkdir()
+        (env.host / "a" / "f.txt").write_text("x", encoding="utf-8")
+        target = env.host / ".claude" / "rules" / "topic.md"
+        target.parent.mkdir(parents=True)
+        target.write_text("---\nno terminator\n", encoding="utf-8")
+        commit_all(env.host, "corrupt leading block")
+        seed_project_record(env)
+        write_proposal(
+            env.home, OLD,
+            proposal_dict(
+                destination="claude-md", variant="rules", rules_topic="topic",
+                rules_paths=["a/**"],
+            ),
+        )
+        result = verbs.route(env.home, OLD)
+        assert any("HOST PHASE FAILED" in w for w in result.warnings), result.warnings
+        assert any("recompile" in w for w in result.warnings)
+        assert (project_bucket_dir(env) / "resolved" / f"{OLD}.md").is_file()
+        assert not (project_bucket_dir(env) / "pending" / f"{OLD}.md").is_file()
+
+
+# =====================================================================
+# Obligation 24 — A9: the dead-glob positive control — refuses (nothing
+# created) without the flag; with it, the dead glob lands on disk in
+# paths: verbatim and routing.allow_empty_glob is recorded True.
+# =====================================================================
+
+
+class TestObligation24DeadGlobPositiveControl:
+    def test_refuses_and_creates_nothing_without_flag_A9(self, env):
+        seed_project_record(env)
+        write_proposal(
+            env.home, OLD,
+            proposal_dict(
+                destination="claude-md", variant="rules", rules_topic="dead-topic",
+                rules_paths=["nope/**"],
+            ),
+        )
+        with pytest.raises(verbs.VerbError):
+            verbs.route(env.home, OLD)
+        assert (project_bucket_dir(env) / "pending" / f"{OLD}.md").is_file()
+        assert not (env.host / ".claude" / "rules" / "dead-topic.md").exists()
+
+    def test_flag_lands_dead_glob_verbatim_on_disk_A9(self, env):
+        seed_project_record(env)
+        write_proposal(
+            env.home, OLD,
+            proposal_dict(
+                destination="claude-md", variant="rules", rules_topic="dead-topic",
+                rules_paths=["nope/**"],
+            ),
+        )
+        result = verbs.route(env.home, OLD, allow_empty_glob=True)
+        assert result.commit_sha
+        target = env.host / ".claude" / "rules" / "dead-topic.md"
+        text = target.read_text(encoding="utf-8")
+        assert read_frontmatter(text) == {"paths": ["nope/**"]}
+        routed = Record.from_path(project_bucket_dir(env) / "resolved" / f"{OLD}.md")
+        assert routed.routing["allow_empty_glob"] is True
+
+
+# =====================================================================
+# Obligation 25 — A10: absolute and `~` globs refuse pre-ledger at both
+# scopes; the same pattern made relative succeeds and emits.
+# =====================================================================
+
+
+class TestObligation25AbsoluteAndHomeGlobRefusal:
+    def test_absolute_glob_refused_project_scope_A10(self, env):
+        seed_project_record(env)
+        write_proposal(
+            env.home, OLD,
+            proposal_dict(
+                destination="claude-md", variant="rules", rules_topic="abs-topic",
+                rules_paths=["/etc/hosts"],
+            ),
+        )
+        with pytest.raises(verbs.VerbError, match="absolute"):
+            verbs.route(env.home, OLD)
+        assert (project_bucket_dir(env) / "pending" / f"{OLD}.md").is_file()
+
+    def test_home_glob_refused_user_scope_A10(self, tmp_path, env):
+        target = tmp_path / "dot-claude" / "CLAUDE.md"
+        target.parent.mkdir()
+        target.write_text("# user conduct\n", encoding="utf-8")
+        seed_user_record(env)
+        write_proposal(
+            env.home, OLD,
+            proposal_dict(
+                destination="claude-md", variant="rules", rules_topic="home-topic",
+                rules_paths=["~/foo/**"],
+            ),
+        )
+        with pytest.raises(verbs.VerbError):
+            verbs.route(
+                env.home, OLD, user_claude_md=target, chezmoi_bin="chezmoi-definitely-absent",
+            )
+        assert (env.home / "user" / "pending" / f"{OLD}.md").is_file()
+
+    def test_positive_control_relative_pattern_succeeds_A10(self, env):
+        (env.host / "etc-like").mkdir()
+        (env.host / "etc-like" / "hosts").write_text("x", encoding="utf-8")
+        seed_project_record(env)
+        write_proposal(
+            env.home, OLD,
+            proposal_dict(
+                destination="claude-md", variant="rules", rules_topic="abs-topic",
+                rules_paths=["etc-like/hosts"],
+            ),
+        )
+        result = verbs.route(env.home, OLD)
+        assert result.commit_sha
+        target = env.host / ".claude" / "rules" / "abs-topic.md"
+        assert read_frontmatter(target.read_text(encoding="utf-8")) == {
+            "paths": ["etc-like/hosts"]
+        }
+
+
+# =====================================================================
+# Obligation 26 — A11: chezmoi MANAGED, both legs of the refusal, plus
+# the unpathed-into-unpathed success leg with an unchanged call count.
+# =====================================================================
+
+
+class TestObligation26ChezmoiManagedRefusal:
+    def test_pathed_route_refuses_pre_ledger_on_managed_A11a(self, tmp_path, env, chezmoi_shim):
+        target = tmp_path / "dot-claude" / "CLAUDE.md"
+        target.parent.mkdir()
+        target.write_text("# user conduct\n", encoding="utf-8")
+        seed_user_record(env)
+        write_proposal(
+            env.home, OLD,
+            proposal_dict(
+                destination="claude-md", variant="rules", rules_topic="managed-topic",
+                rules_paths=["a/**"],
+            ),
+        )
+        with pytest.raises(verbs.VerbError, match="chezmoi"):
+            verbs.route(env.home, OLD, user_claude_md=target)
+        assert (env.home / "user" / "pending" / f"{OLD}.md").is_file()
+
+    def test_globless_into_already_pathed_topic_refuses_on_managed_A11b(
+        self, tmp_path, env, chezmoi_shim
+    ):
+        target = tmp_path / "dot-claude" / "CLAUDE.md"
+        target.parent.mkdir()
+        target.write_text("# user conduct\n", encoding="utf-8")
+        rules_dir = target.parent / "rules"
+        rules_dir.mkdir()
+        (rules_dir / "already-pathed.md").write_text(
+            "---\npaths:\n  - a/**\n---\n", encoding="utf-8"
+        )
+        seed_user_record(env)
+        write_proposal(
+            env.home, OLD,
+            proposal_dict(
+                destination="claude-md", variant="rules", rules_topic="already-pathed",
+            ),
+        )
+        with pytest.raises(verbs.VerbError, match="chezmoi"):
+            verbs.route(env.home, OLD, user_claude_md=target)
+        assert (env.home / "user" / "pending" / f"{OLD}.md").is_file()
+
+    def test_globless_into_topic_with_empty_list_paths_refuses_on_managed_A11b_F1(
+        self, tmp_path, env, chezmoi_shim
+    ):
+        """F1: `paths: []` is EXACTLY the value `read_paths_frontmatter`
+        would normalize down to `()` (same as "no key at all"), but the
+        pre-pass's own agreement predicate treats it as disagreement and
+        rewrites it — so a refusal keyed on the reader would silently let
+        this one through, defeating the exact guard §3.4(2)/F8 exists to
+        provide. Reproduces F1's own table: without the fix this route
+        does NOT raise here; it lands in resolved/, and the pre-pass's
+        later write is read by chezmoi's OWN drift check as pre-existing
+        drift — an unrecoverable post-ledger abort."""
+        target = tmp_path / "dot-claude" / "CLAUDE.md"
+        target.parent.mkdir()
+        target.write_text("# user conduct\n", encoding="utf-8")
+        rules_dir = target.parent / "rules"
+        rules_dir.mkdir()
+        (rules_dir / "empty-list-topic.md").write_text(
+            "---\npaths: []\n---\n", encoding="utf-8"
+        )
+        seed_user_record(env)
+        write_proposal(
+            env.home, OLD,
+            proposal_dict(
+                destination="claude-md", variant="rules", rules_topic="empty-list-topic",
+            ),
+        )
+        with pytest.raises(verbs.VerbError, match="chezmoi"):
+            verbs.route(env.home, OLD, user_claude_md=target)
+        assert (env.home / "user" / "pending" / f"{OLD}.md").is_file()
+        assert not (env.home / "user" / "resolved" / f"{OLD}.md").is_file()
+
+    def test_globless_into_topic_with_scalar_paths_refuses_on_managed_A11b_F1(
+        self, tmp_path, env, chezmoi_shim
+    ):
+        """F1's third table row: a scalar `paths: src/**` is the OTHER
+        value the reader normalizes away but the agreement predicate
+        rewrites — same reproduction, different malformed shape."""
+        target = tmp_path / "dot-claude" / "CLAUDE.md"
+        target.parent.mkdir()
+        target.write_text("# user conduct\n", encoding="utf-8")
+        rules_dir = target.parent / "rules"
+        rules_dir.mkdir()
+        (rules_dir / "scalar-topic.md").write_text(
+            "---\npaths: src/**\n---\n", encoding="utf-8"
+        )
+        seed_user_record(env)
+        write_proposal(
+            env.home, OLD,
+            proposal_dict(
+                destination="claude-md", variant="rules", rules_topic="scalar-topic",
+            ),
+        )
+        with pytest.raises(verbs.VerbError, match="chezmoi"):
+            verbs.route(env.home, OLD, user_claude_md=target)
+        assert (env.home / "user" / "pending" / f"{OLD}.md").is_file()
+        assert not (env.home / "user" / "resolved" / f"{OLD}.md").is_file()
+
+    def test_unpathed_route_into_unpathed_file_succeeds_unchanged_calls_A11c(
+        self, tmp_path, env, chezmoi_shim
+    ):
+        target = tmp_path / "dot-claude" / "CLAUDE.md"
+        target.parent.mkdir()
+        target.write_text("# user conduct\n", encoding="utf-8")
+        seed_user_record(env)
+        write_proposal(
+            env.home, OLD,
+            proposal_dict(
+                destination="claude-md", variant="rules", rules_topic="fresh-topic",
+            ),
+        )
+        result = verbs.route(env.home, OLD, user_claude_md=target)
+        assert result.commit_sha
+        rules_target = target.parent / "rules" / "fresh-topic.md"
+        assert OLD in rules_target.read_text(encoding="utf-8")
+        calls = chezmoi_shim()
+        # unchanged call sequence: `preflight_user_scope` probes capability
+        # once, `compile_user_scope` re-derives it once more on its own
+        # (pre-existing, unrelated to this unit) — TWO `source-path` calls
+        # total. The new §3.4(2) check short-circuits BEFORE ever calling
+        # `user_scope_capability` a THIRD time when neither leg of its own
+        # condition holds — proving it added no extra chezmoi traffic here.
+        assert len([c for c in calls if c.startswith("source-path")]) == 2
+
+
+# =====================================================================
+# Obligation 27 — A14: caps (word_count/over_cap) are unaffected by
+# frontmatter, on a file that provably HAS it.
+# =====================================================================
+
+
+class TestObligation27CapsUnaffectedByFrontmatter:
+    def test_word_count_and_over_cap_equal_with_and_without_frontmatter_A14(self, env):
+        (env.host / "a").mkdir()
+        (env.host / "a" / "f.txt").write_text("x", encoding="utf-8")
+
+        seed_project_record(env, record_id="lrn-1a1a1a1a")
+        write_proposal(
+            env.home, "lrn-1a1a1a1a",
+            proposal_dict(
+                destination="claude-md", variant="rules", rules_topic="pathed-topic",
+                rules_paths=["a/**"],
+            ),
+        )
+        pathed_result = verbs.route(env.home, "lrn-1a1a1a1a")
+
+        seed_project_record(env, record_id="lrn-2b2b2b2b")
+        write_proposal(
+            env.home, "lrn-2b2b2b2b",
+            proposal_dict(
+                destination="claude-md", variant="rules", rules_topic="unpathed-topic",
+            ),
+        )
+        unpathed_result = verbs.route(env.home, "lrn-2b2b2b2b")
+
+        pathed_section = pathed_result.compile_result
+        unpathed_section = unpathed_result.compile_result
+        assert pathed_section.word_count == unpathed_section.word_count
+        assert pathed_section.over_cap == unpathed_section.over_cap
+
+        # And: the pathed file's paths: really IS on disk — otherwise this
+        # criterion is satisfied by a build that emits nothing at all.
+        pathed_target = env.host / ".claude" / "rules" / "pathed-topic.md"
+        assert read_frontmatter(pathed_target.read_text(encoding="utf-8")) == {
+            "paths": ["a/**"]
+        }
+
+
+# =====================================================================
+# Obligation 28 — A12: every non-rules target is byte-identical,
+# INCLUDING its own frontmatter — the `variant == "rules"` guard (M21) is
+# load-bearing. SKILL.md's own name:/description: frontmatter survives a
+# skill-md route byte-for-byte; a second SKILL.md whose leading block is
+# NOT mapping-shaped routes WITHOUT raising (an ungated pre-pass would
+# round-trip the first and CompileError on the second). A rules route in
+# the SAME fixture is the positive control: "no frontmatter anywhere"
+# cannot pass.
+# =====================================================================
+
+
+_OBLIGATION28_MARKETPLACE = {
+    "name": "sandbox-skills",
+    "plugins": [
+        {
+            "name": "s-plugin",
+            "source": "./plugins/s-plugin",
+            "description": "seeded plugin",
+            "version": "1.0.0",
+        }
+    ],
+}
+
+
+class TestObligation28NonRulesTargetsByteIdentical:
+    def test_non_rules_targets_untouched_M21(self, tmp_path):
+        sandbox = make_env(tmp_path, skills=("s", "t"))
+        home, host = sandbox.ledger, sandbox.host
+
+        # --- fixture: SKILL.md WITH real name:/description: frontmatter ---
+        skill_s = host / "plugins" / "s-plugin" / "skills" / "s" / "SKILL.md"
+        skill_s_frontmatter = "---\nname: s\ndescription: A skill about s things.\n---\n\n"
+        skill_s.write_text(
+            skill_s_frontmatter + "# s skill\n\nAuthored prose stays put.\n",
+            encoding="utf-8",
+        )
+
+        # --- fixture: SKILL.md whose leading block is NOT mapping-shaped ---
+        skill_t = host / "plugins" / "t-plugin" / "skills" / "t" / "SKILL.md"
+        skill_t_block = "---\n- a\n- b\n---\n\n"
+        skill_t.write_text(
+            skill_t_block + "# t skill\n\nAuthored prose stays put.\n",
+            encoding="utf-8",
+        )
+
+        # --- fixture: marketplace.json for the new-skill leg ---
+        marketplace = host / ".claude-plugin" / "marketplace.json"
+        marketplace.parent.mkdir()
+        marketplace.write_text(
+            json.dumps(_OBLIGATION28_MARKETPLACE, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+
+        # --- fixture: .gitignore for the CLAUDE.local.md leg ---
+        (host / ".gitignore").write_text("CLAUDE.local.md\n", encoding="utf-8")
+
+        git(host, "add", "-A")
+        git(host, "commit", "-q", "-m", "obligation-28 fixtures")
+
+        def seed(scope, record_id):
+            record = make_behavior(scope=scope, record_id=record_id)
+            create_record(
+                home, record, project_path=host if scope == "project" else None
+            )
+            return record
+
+        # 1. plain user CLAUDE.md — no paths: anywhere.
+        user_target = tmp_path / "dot-claude" / "CLAUDE.md"
+        user_target.parent.mkdir()
+        user_target.write_text("# user conduct\n", encoding="utf-8")
+        seed("user", "lrn-00000001")
+        r1 = verbs.route(
+            home, "lrn-00000001", dest="claude-md", user_claude_md=user_target,
+            chezmoi_bin="chezmoi-definitely-absent",
+        )
+        assert r1.commit_sha
+        assert "paths:" not in user_target.read_text(encoding="utf-8")
+
+        # 2. plain project CLAUDE.md — no paths: anywhere.
+        seed("project", "lrn-00000002")
+        r2 = verbs.route(home, "lrn-00000002", dest="claude-md")
+        assert r2.commit_sha
+        assert "paths:" not in (host / "CLAUDE.md").read_text(encoding="utf-8")
+
+        # 3. SKILL.md with real frontmatter — byte-identical after the route.
+        seed("skill:s", "lrn-00000003")
+        r3 = verbs.route(home, "lrn-00000003", dest="skill-md")
+        assert r3.commit_sha
+        text3 = skill_s.read_text(encoding="utf-8")
+        assert text3.startswith(skill_s_frontmatter)  # untouched, byte-for-byte
+        assert "paths:" not in text3
+        assert "lrn-00000003" in text3
+
+        # 4. SKILL.md whose leading block is NOT mapping-shaped — routes
+        #    WITHOUT raising, and the bogus fence survives untouched. An
+        #    ungated pre-pass CompileError's here (M21's own target).
+        seed("skill:t", "lrn-00000004")
+        r4 = verbs.route(home, "lrn-00000004", dest="skill-md")
+        assert r4.commit_sha
+        text4 = skill_t.read_text(encoding="utf-8")
+        assert text4.startswith(skill_t_block)
+        assert "lrn-00000004" in text4
+
+        # 5. CLAUDE.local.md — no paths: anywhere.
+        seed("project", "lrn-00000005")
+        r5 = verbs.route(home, "lrn-00000005", dest="claude-md:local")
+        assert r5.commit_sha
+        local_target = host / "CLAUDE.local.md"
+        assert "paths:" not in local_target.read_text(encoding="utf-8")
+
+        # 6. new-skill — no paths: anywhere, in the new SKILL.md.
+        seed("skill:s", "lrn-00000006")
+        r6 = verbs.route(home, "lrn-00000006", dest="new-skill:mouse-firmware")
+        assert r6.commit_sha
+        new_skill_md = (
+            host / "plugins" / "mouse-firmware" / "skills" / "mouse-firmware" / "SKILL.md"
+        )
+        assert "paths:" not in new_skill_md.read_text(encoding="utf-8")
+
+        # 7. Positive control, in the SAME fixture: a rules route DOES
+        #    carry frontmatter — "no frontmatter anywhere" cannot pass.
+        (host / "z").mkdir()
+        (host / "z" / "f.txt").write_text("x", encoding="utf-8")
+        seed("project", "lrn-00000007")
+        write_proposal(
+            home, "lrn-00000007",
+            proposal_dict(
+                destination="claude-md", variant="rules", rules_topic="control-topic",
+                rules_paths=["z/**"],
+            ),
+        )
+        r7 = verbs.route(home, "lrn-00000007")
+        assert r7.commit_sha
+        control_target = host / ".claude" / "rules" / "control-topic.md"
+        assert "paths:" in control_target.read_text(encoding="utf-8")
