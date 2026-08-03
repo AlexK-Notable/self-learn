@@ -968,7 +968,16 @@ def test_canon_excerpt_case_variant_of_compiler_marker_does_not_match(env):
     this fixture away — it is the positive control that catches a
     case-folded "defensive" fix (`BEGIN_MARKER.lower() in ln.lower()`),
     which would match this fixture exactly the way the legacy needle
-    did."""
+    did.
+
+    FW-52 (2026-08-02): uppercasing BOTH markers means a build that
+    case-folds only ONE needle (begin or end) survives this test too —
+    it finds the folded one, misses the untouched one, and lands on the
+    exact same truncation this test asserts. Closed by the two
+    single-needle variants immediately below, added ALONGSIDE this one
+    — this stays the only fixture red against the ORIGINAL (pre-U-marker)
+    legacy-needle bug, so it remains the required positive control and
+    must not be removed."""
     from self_learn.compilers import BEGIN_MARKER, END_MARKER
     from self_learn.ledger import discover_buckets
     from self_learn.ledger_ops import queue as _queue
@@ -985,6 +994,81 @@ def test_canon_excerpt_case_variant_of_compiler_marker_does_not_match(env):
 
     excerpt = worker._canon_excerpt(env.home, entry)
     # B1 — exact list equality against the head-of-file truncation.
+    assert excerpt.splitlines() == [f"line {i}" for i in range(60)] + [
+        "… (truncated)"
+    ]
+
+
+def test_canon_excerpt_begin_only_case_variant_does_not_match(env):
+    """FW-52: the shipped criterion B above uppercases BOTH markers, so it
+    cannot tell a fully case-sensitive extractor (correct) from one that
+    case-folds only the BEGIN needle (`BEGIN_MARKER.lower() in
+    ln.lower()` on begin, plain `END_MARKER in ln` on end) — that
+    half-blind build finds begin via the fold, finds end normally (it is
+    untouched, genuinely lowercase), and produces a real window instead
+    of falling through `begin is None or end is None` to the truncation
+    both fixtures assert. This fixture isolates the BEGIN needle: only
+    line 150 is uppercased, line 160 keeps the real, untyped
+    `END_MARKER`. Shipped (fully case-sensitive) code still finds `end`
+    but not `begin`, so `begin is None` alone is enough to trip the same
+    truncation branch — added ALONGSIDE the both-uppercased fixture, not
+    instead of it (see that test's docstring: it is the only fixture red
+    against the pre-U-marker legacy-needle bug, since an
+    all-uppercase-vs-all-uppercase substring match is exactly what the
+    legacy `"SELF-LEARN:BEGIN"`/`"SELF-LEARN:END"` needles would have hit
+    on both lines here; a single uppercased needle plus one real,
+    lowercase needle does NOT reproduce that failure, so this fixture is
+    NOT red pre-fix — it targets only the half-case-fold class, a defect
+    that postdates the original fix and that the shipped both-uppercased
+    fixture cannot see)."""
+    from self_learn.compilers import BEGIN_MARKER, END_MARKER
+    from self_learn.ledger import discover_buckets
+    from self_learn.ledger_ops import queue as _queue
+
+    lines = [f"line {i}" for i in range(300)]
+    lines[150] = BEGIN_MARKER.upper()
+    lines[160] = END_MARKER  # real marker, untouched — the control leg
+    (env.host / "CLAUDE.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    pending = make_behavior(scope="project", record_id="lrn-0000beef")
+    create_record(env.home, pending, project_path=env.host)
+    (bucket,) = [b for b in discover_buckets(env.home) if b.scope == "project"]
+    (entry,) = _queue(bucket)
+
+    excerpt = worker._canon_excerpt(env.home, entry)
+    assert excerpt.splitlines() == [f"line {i}" for i in range(60)] + [
+        "… (truncated)"
+    ]
+
+
+def test_canon_excerpt_end_only_case_variant_does_not_match(env):
+    """FW-52, the END-needle twin of the test above: line 150 keeps the
+    real, untyped `BEGIN_MARKER`; only line 160 (the END needle) is
+    uppercased. A build that case-folds only the END check (plain
+    `BEGIN_MARKER in ln` on begin, `END_MARKER.lower() in ln.lower()` on
+    end) finds begin normally and end via the fold, and — like the
+    begin-only variant above — produces a real window where shipped
+    (fully case-sensitive) code correctly finds `end is None` and falls
+    through to the same head-of-file truncation. Added alongside, never
+    replacing, the both-uppercased fixture; not red pre-fix for the same
+    reason as the begin-only variant (one real, lowercase needle here
+    breaks the legacy all-uppercase substring match the original bug
+    needed)."""
+    from self_learn.compilers import BEGIN_MARKER, END_MARKER
+    from self_learn.ledger import discover_buckets
+    from self_learn.ledger_ops import queue as _queue
+
+    lines = [f"line {i}" for i in range(300)]
+    lines[150] = BEGIN_MARKER  # real marker, untouched — the control leg
+    lines[160] = END_MARKER.upper()
+    (env.host / "CLAUDE.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    pending = make_behavior(scope="project", record_id="lrn-0000e0e0")
+    create_record(env.home, pending, project_path=env.host)
+    (bucket,) = [b for b in discover_buckets(env.home) if b.scope == "project"]
+    (entry,) = _queue(bucket)
+
+    excerpt = worker._canon_excerpt(env.home, entry)
     assert excerpt.splitlines() == [f"line {i}" for i in range(60)] + [
         "… (truncated)"
     ]
