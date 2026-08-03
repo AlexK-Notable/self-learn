@@ -666,6 +666,48 @@ class TestProposalRoutes:
         assert "HX-Redirect" not in resp.headers
         assert 'data-verb-success="true"' in resp.text
 
+    def test_route_proposal_with_dest_records_by_agent(self, tmp_path: Path) -> None:
+        """FW-64: the SDK pane is a THIRD chooser, previously
+        misrepresented as one of the other two — when the agent's own
+        `propose_verb` tool call names a `dest` itself (its own choice,
+        not the deterministic analyst heuristic and not a human's own
+        pick), the dispatched argv must say `--by agent`. Before this
+        fix, `verbs.route`'s dest-is-not-None heuristic alone would have
+        read "human" here (an explicit `--dest` present) — exactly the
+        second wrong branch the FW-64 brief names."""
+        sb, (rec,) = _seed(tmp_path)
+        c, runner, manager = make_client(sb)
+        _occupy(manager, rec, verb="route", dest="skill-md")
+        armed_prop = manager.proposal_slot.arm(rec.id)
+        assert armed_prop is not None
+        c.post(
+            "/proposal/confirm",
+            data={"record_id": rec.id, "kind": "detail", "nonce": armed_prop.nonce},
+            headers=HX,
+        )
+        assert ["route", rec.id, "--dest", "skill-md", "--by", "agent", "--json"] in runner.calls
+
+    def test_route_proposal_without_dest_records_by_analyst(self, tmp_path: Path) -> None:
+        """The twin: a bare `route` proposal (the agent deferring to
+        whatever the analyst's own stored proposal already names) omits
+        `--dest` — exactly like a bare CLI `route <id>` — and the
+        dispatched argv says `--by analyst`, never "agent" (the agent
+        chose to ROUTE, but did not choose the DESTINATION) and never
+        the old "analyst when dest omitted" GUESS this call site used to
+        rely on implicitly."""
+        sb, (rec,) = _seed(tmp_path)
+        seed_proposal(sb.ledger, rec.id, destination="skill-md")
+        c, runner, manager = make_client(sb)
+        _occupy(manager, rec, verb="route")
+        armed_prop = manager.proposal_slot.arm(rec.id)
+        assert armed_prop is not None
+        c.post(
+            "/proposal/confirm",
+            data={"record_id": rec.id, "kind": "detail", "nonce": armed_prop.nonce},
+            headers=HX,
+        )
+        assert ["route", rec.id, "--by", "analyst", "--json"] in runner.calls
+
     def test_confirm_on_waiting_bar_executes_nothing(self, tmp_path: Path) -> None:
         """Enter never acts on a waiting bar — and even a forged confirm
         POST against an un-armed slot is a no-op."""
@@ -732,7 +774,10 @@ class TestProposalRoutes:
             data={"verb": "route", "kind": "detail", "dest": "skill-md"},
             headers=HX,
         )
-        assert ["route", rec.id, "--dest", "skill-md", "--json"] in runner.calls
+        # FW-64: the human's confirm never cycled the destination (their
+        # POST carries `dest` alone, no `dest_touched`), so this is an
+        # unmodified approve-as-proposed — `by` reads "analyst".
+        assert ["route", rec.id, "--dest", "skill-md", "--by", "analyst", "--json"] in runner.calls
         assert not any(call and call[0] == "reject" for call in runner.calls)
 
     def test_no_full_page_render_ever_has_two_armed_bars(self, tmp_path: Path) -> None:

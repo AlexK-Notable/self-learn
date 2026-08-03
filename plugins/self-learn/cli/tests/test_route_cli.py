@@ -312,6 +312,30 @@ def test_teach_route_analyst_routes_to_shim_destination(env, claude_shim, capsys
     assert "About to edit .storage while HA is running." in prompt
 
 
+def test_teach_route_bare_analyst_path_records_by_analyst(env, claude_shim, capsys):
+    """FW-64: the bare `teach --route` path's destination comes from
+    `analyst.analyze()`, not the human at the terminal — `routing.by`
+    must say "analyst", never the old hardcoded/defaulted "human" this
+    exact call site used to write (teach.py:698 passed no `by=` at all,
+    so `route_direct`'s `by: str = "human"` default silently applied).
+    The paired `--dest` path (`test_teach_route_dest_end_to_end`) is
+    unaffected — this test's twin is
+    `test_route_observability.py::test_route_direct_emits_via_teach_route_dest`,
+    which already pins `by == "human"` for that path."""
+    claude_shim["out"].write_text(
+        "```yaml\n"
+        "destination: skill-md\n"
+        "alternates: [claude-md]\n"
+        "rationale: deterministic guard beats advisory text\n"
+        "```\n",
+        encoding="utf-8",
+    )
+    rc = cli.main(TEACH_ARGS + ["--route"])
+    assert rc == 0
+    record = Record.from_path(sole(env.resolved_files()))
+    assert record.routing["by"] == "analyst"
+
+
 @pytest.mark.parametrize(
     "sabotage",
     [

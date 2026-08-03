@@ -180,7 +180,7 @@
   {# A1 (O-2 c): scope=model.scope threaded explicitly — never relied on
      via Jinja context leakage — so action_bar.html's cycle button can
      gloss a claude-md dest through the scope-aware resolver. #}
-  {% with kind="detail", armed=None, dom_id="action-bar-" ~ model.id, record_id=model.id, dest=model.destination_default, dest_note=model.destination_note, event=None, target=None, already_canon=model.why.already_canon, destination_cycle=model.destination_cycle, scope=model.scope %}
+  {% with kind="detail", armed=None, dom_id="action-bar-" ~ model.id, record_id=model.id, dest=model.destination_default, dest_note=model.destination_note, event=None, target=None, already_canon=model.why.already_canon, destination_cycle=model.destination_cycle, scope=model.scope, dest_touched=False %}
     {% include "partials/action_bar.html" %}
   {% endwith %}
   {% endif %}

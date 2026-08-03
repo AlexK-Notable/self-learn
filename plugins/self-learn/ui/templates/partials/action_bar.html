@@ -35,6 +35,7 @@
     {% if commit_drift.retry.event %}<input type="hidden" name="event" value="{{ commit_drift.retry.event }}">{% endif %}
     {% if commit_drift.retry.tolerate %}<input type="hidden" name="tolerate" value="true">{% endif %}
     {% if commit_drift.retry.target %}<input type="hidden" name="target" value="{{ commit_drift.retry.target }}">{% endif %}
+    {% if commit_drift.retry.dest_touched %}<input type="hidden" name="dest_touched" value="true">{% endif %}
     <p class="commit-drift-armed">
       Commit <code>{{ commit_drift.armed.repo }}</code>
       ({{ commit_drift.armed.files|length }} file(s)):
@@ -53,6 +54,7 @@
     {% if commit_drift.retry.event %}<input type="hidden" name="event" value="{{ commit_drift.retry.event }}">{% endif %}
     {% if commit_drift.retry.tolerate %}<input type="hidden" name="tolerate" value="true">{% endif %}
     {% if commit_drift.retry.target %}<input type="hidden" name="target" value="{{ commit_drift.retry.target }}">{% endif %}
+    {% if commit_drift.retry.dest_touched %}<input type="hidden" name="dest_touched" value="true">{% endif %}
     <button type="submit" data-key-action="commit_drift_disarm">Cancel</button>
   </form>
   {% else %}
@@ -67,6 +69,7 @@
     {% if commit_drift.retry.event %}<input type="hidden" name="event" value="{{ commit_drift.retry.event }}">{% endif %}
     {% if commit_drift.retry.tolerate %}<input type="hidden" name="tolerate" value="true">{% endif %}
     {% if commit_drift.retry.target %}<input type="hidden" name="target" value="{{ commit_drift.retry.target }}">{% endif %}
+    {% if commit_drift.retry.dest_touched %}<input type="hidden" name="dest_touched" value="true">{% endif %}
     <button type="submit" data-key-action="commit_drift_arm">Commit that repo's changes, then retry</button>
   </form>
   {% endif %}
@@ -85,6 +88,7 @@
     {% if armed.event %}<input type="hidden" name="event" value="{{ armed.event }}">{% endif %}
     {% if armed.tolerate %}<input type="hidden" name="tolerate" value="true">{% endif %}
     {% if armed.target %}<input type="hidden" name="target" value="{{ armed.target }}">{% endif %}
+    {% if armed.dest_touched %}<input type="hidden" name="dest_touched" value="true">{% endif %}
     <p class="action-bar-armed">
       <strong>{{ armed.verb_label }}</strong>
       <code>{{ armed.record_id }}</code>
@@ -104,6 +108,7 @@
     {% if disarm_vals.dest %}<input type="hidden" name="dest" value="{{ disarm_vals.dest }}">{% endif %}
     {% if disarm_vals.event %}<input type="hidden" name="event" value="{{ disarm_vals.event }}">{% endif %}
     {% if disarm_vals.target %}<input type="hidden" name="target" value="{{ disarm_vals.target }}">{% endif %}
+    {% if disarm_vals.dest_touched %}<input type="hidden" name="dest_touched" value="true">{% endif %}
     <button type="submit" data-key-action="disarm">Cancel</button>
   </form>
 
@@ -197,6 +202,12 @@
   {% if not evidence %}
   <form id="form-{{ dom_id }}">
     <input type="hidden" name="dest" value="{{ dest or '' }}">
+    {# FW-64: sticky once true (see routes.py's `_unarmed_context` docstring
+       on `dest_touched`) — starts absent on a fresh page render (the
+       analyst's own proposal, unmodified) and is carried forward by every
+       later render of this SAME bar (cycle/arm/disarm/a failed confirm's
+       retry) once the human uses the (o) cycle control below. #}
+    {% if dest_touched %}<input type="hidden" name="dest_touched" value="true">{% endif %}
     <label>Note <input type="text" name="note" placeholder="optional resolution note"></label>
     <button type="button" data-key-action="route"
             hx-post="/record/{{ record_id }}/action/arm" hx-include="#form-{{ dom_id }}"

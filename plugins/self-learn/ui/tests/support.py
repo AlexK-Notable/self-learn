@@ -180,6 +180,7 @@ def resolve_record_directly(
     *,
     destination: str | None = None,
     status: str = "routed",
+    by: str = "human",
 ) -> None:
     """Move a pending record's file straight to resolved/, bypassing the
     real verb (no git commit needed) — enough to exercise the
@@ -190,13 +191,20 @@ def resolve_record_directly(
     group"). The default destination derives from the record's scope
     (skill-md for skill:*, else claude-md — the CLI's own scope rules)
     so fixtures never mint routing states the route verb could not have
-    produced (review 2026-07-18 flag)."""
+    produced (review 2026-07-18 flag).
+
+    ``by`` (FW-64, defaulted "human" for byte-identical behaviour on
+    every pre-existing caller): the hardcoded "human" literal this
+    fixture used to bake in unconditionally is exactly why the UI's
+    `routing.by` defect survived as long as it did — no test could even
+    ASSERT a different value without editing this helper. A test that
+    cares about `by` now passes it explicitly."""
     if destination is None:
         destination = "skill-md" if record.scope.startswith("skill:") else "claude-md"
     record.set_status(status)
     if status == "routed":
         record.set_routing(
-            {"routed_at": "2026-07-01T00:00:00Z", "destination": destination, "by": "human"}
+            {"routed_at": "2026-07-01T00:00:00Z", "destination": destination, "by": by}
         )
     dest_path = bucket_dir / "resolved" / f"{record.id}.md"
     dest_path.parent.mkdir(parents=True, exist_ok=True)

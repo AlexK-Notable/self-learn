@@ -225,6 +225,18 @@ def _build_parser() -> argparse.ArgumentParser:
         "matches nothing in the tree anyway (write-the-rule-before-the-"
         "files); the bypass is recorded in the routing block",
     )
+    route.add_argument(
+        "--by",
+        choices=sorted(verbs.ROUTING_BY_VALUES),
+        help="FW-64: names the actor that chose the destination, for a "
+        "caller (the review UI's own subprocess call) that knows better "
+        "than the --dest-given heuristic — an unmodified approve-as-"
+        "proposed still carries an explicit --dest, so without this the "
+        "record would read 'human' for an analyst- or agent-chosen "
+        "route. Programmatic callers only; omit at a terminal and the "
+        "usual rule applies (an explicit --dest you typed IS your own "
+        "choice).",
+    )
 
     reject = _verb("reject", "reject a pending record", json_flag=True)
     reject.add_argument("id", metavar="ID")
@@ -1159,6 +1171,7 @@ def _cmd_verb(args: argparse.Namespace) -> int:
                 home,
                 args.id,
                 dest=args.dest,
+                by=args.by,
                 note=args.note,
                 no_push=args.no_push,
                 follow_up=follow_up,

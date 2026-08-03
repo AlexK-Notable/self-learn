@@ -26,7 +26,13 @@ evidence:                 # pointers, never transcripts
 routing:                  # written on routing; null before
   routed_at: 2026-07-13T18:02:00Z
   destination: hook
-  by: human               # always human in v1
+  by: human               # FW-64: the actor that chose the destination —
+                          #   human | analyst | agent (this line was
+                          #   stale even before FW-64: U-reach's §2.3
+                          #   already introduced `analyst` and never
+                          #   updated this comment; `agent` names the
+                          #   SDK pane's own `propose_verb` route
+                          #   proposals — verbs.py's `ROUTING_BY_VALUES`)
   reference_file: null    # 2026-07-16 (doc 13 audit): `reference`
                           #   destination ONLY — WHICH references file got
                           #   the entry (`--dest reference:<file>`); absent

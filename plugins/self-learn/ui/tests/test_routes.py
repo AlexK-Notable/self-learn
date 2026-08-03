@@ -1022,7 +1022,13 @@ class TestArmDisarmConfirm:
     def test_confirm_route_calls_runner_with_exact_argv(self, tmp_path: Path) -> None:
         """Resolution-evidence unit (§2.1/§4): route/reject/defer/graduate
         now carry `--json` on every confirm — the CLI envelope this unit
-        renders as the success leg."""
+        renders as the success leg.
+
+        FW-64: this POST never carries `dest_touched` (no cycle-destination
+        round trip happened), so it is an unmodified approve-as-proposed —
+        `--by analyst`, even though `dest` itself is explicit. Before the
+        fix this argv carried no `--by` at all and the CLI's own
+        dest-is-not-None heuristic would have read "human"."""
         sb, rec = self._seed(tmp_path)
         c, runner = make_client(sb)
         r = c.post(
@@ -1032,7 +1038,30 @@ class TestArmDisarmConfirm:
         )
         assert r.status_code == 200
         assert runner.calls == [
-            ["route", rec.id, "--dest", "skill-md", "--json", "--note", "good call"]
+            ["route", rec.id, "--dest", "skill-md", "--by", "analyst", "--json", "--note", "good call"]
+        ]
+
+    def test_confirm_route_with_dest_touched_calls_runner_with_by_human(
+        self, tmp_path: Path
+    ) -> None:
+        """FW-64: the twin of the test above — a POST that DOES carry
+        `dest_touched` (the human used the (o) cycle control) gets
+        `--by human`, proving the distinction the review UI could not
+        draw before this fix (every approval, cycled or not, sent the
+        same argv shape)."""
+        sb, rec = self._seed(tmp_path)
+        c, runner = make_client(sb)
+        r = c.post(
+            f"/record/{rec.id}/action/confirm",
+            data={
+                "verb": "route", "kind": "detail", "dest": "skill-md",
+                "dest_touched": "true", "note": "good call",
+            },
+            headers={"HX-Request": "true"},
+        )
+        assert r.status_code == 200
+        assert runner.calls == [
+            ["route", rec.id, "--dest", "skill-md", "--by", "human", "--json", "--note", "good call"]
         ]
 
     def test_confirm_reject_argv(self, tmp_path: Path) -> None:
@@ -1349,6 +1378,233 @@ class TestOCycleScopeThreadingDiscriminator:
         assert "refused" in r.text  # stderr verbatim, sanity check
         assert 'data-key-action="cycle_destination"' in r.text
         assert "data-noop-hint" not in r.text
+
+
+class TestRoutingByFW64:
+    """FW-64: pins the chooser the review UI records at `/action/confirm`
+    for a `route`. Reproduces the defect's own repro method (drive the
+    ACTUAL rendered form fields, never hand-crafted POST bodies that
+    mirror the handler) — the exact discipline TestOCycle's `_form_fields`
+    established for the identical field-name-mismatch hazard (review
+    2026-07-18 F1). Before this unit, no UI test asserted on `by` at all;
+    the fixture default in support.py's `resolve_record_directly`
+    (hardcoded "human") is part of why the defect survived undetected."""
+
+    @staticmethod
+    def _form_fields(html: str, record_id: str) -> dict[str, str]:
+        section = html.split(f'id="form-action-bar-{record_id}"')[1].split("</form>")[0]
+        return dict(
+            re.findall(r'<input[^>]*name="([^"]+)"[^>]*value="([^"]*)"', section)
+        )
+
+    @staticmethod
+    def _confirm_form_fields(armed_html: str) -> dict[str, str]:
+        """The ARMED bar's OWN confirm form — what a real browser's
+        Enter-key confirm actually posts. This is a DIFFERENT `<form>`
+        from the unarmed quad `_form_fields` reads (it carries no `id=`
+        at all — matched by its `hx-post=".../action/confirm"` instead),
+        and reusing the pre-arm request's own data in its place (as an
+        earlier draft of these tests did) would silently skip verifying
+        that `armed.dest_touched` ever reaches the template at all."""
+        section = armed_html.split('action/confirm"')[1].split("</form>")[0]
+        return dict(
+            re.findall(r'<input[^>]*name="([^"]+)"[^>]*value="([^"]*)"', section)
+        )
+
+    def test_approve_as_proposed_end_to_end_records_by_analyst(
+        self, tmp_path: Path
+    ) -> None:
+        """The exact live-app repro the FW-64 brief drove by hand: GET the
+        detail page, arm+confirm using ONLY the rendered form's own
+        fields (never cycling), and assert the dispatched argv says
+        `--by analyst` — the analyst's own proposal, unmodified. Before
+        the fix this argv carried `--dest skill-md` with no `--by` at
+        all, and `verbs.route`'s own heuristic read "human" for it."""
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+        seed_proposal(sb.ledger, rec.id, destination="skill-md")
+        c, runner = make_client(sb)
+
+        fields = self._form_fields(c.get(f"/record/{rec.id}").text, rec.id)
+        assert fields.get("dest") == "skill-md"  # the analyst's proposal
+        assert "dest_touched" not in fields  # never cycled
+
+        arm_data = dict(fields, verb="route", kind="detail")
+        armed_html = c.post(
+            f"/record/{rec.id}/action/arm", data=arm_data, headers={"HX-Request": "true"}
+        ).text
+        confirm_data = self._confirm_form_fields(armed_html)
+        assert "dest_touched" not in confirm_data  # armed form echoes nothing new
+
+        c.post(
+            f"/record/{rec.id}/action/confirm", data=confirm_data, headers={"HX-Request": "true"}
+        )
+        assert runner.calls == [["route", rec.id, "--dest", "skill-md", "--by", "analyst", "--json"]]
+
+    def test_human_override_end_to_end_records_by_human(self, tmp_path: Path) -> None:
+        """The twin: cycling to a DIFFERENT destination before arming
+        carries `dest_touched` through cycle -> arm -> confirm — via the
+        ARMED form's own hidden fields, exactly what a browser's Enter
+        key actually posts — and the dispatched argv says `--by human`."""
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+        seed_proposal(sb.ledger, rec.id, destination="skill-md")
+        c, runner = make_client(sb)
+
+        fields = self._form_fields(c.get(f"/record/{rec.id}").text, rec.id)
+        cycled_html = c.post(
+            f"/record/{rec.id}/action/cycle-destination", data=fields, headers={"HX-Request": "true"}
+        ).text
+        fields = self._form_fields(cycled_html, rec.id)
+        assert fields["dest"] != "skill-md"  # actually advanced
+        assert fields.get("dest_touched") == "true"  # the human just acted
+
+        arm_data = dict(fields, verb="route", kind="detail")
+        armed_html = c.post(
+            f"/record/{rec.id}/action/arm", data=arm_data, headers={"HX-Request": "true"}
+        ).text
+        confirm_data = self._confirm_form_fields(armed_html)
+        assert confirm_data.get("dest_touched") == "true"  # carried into the armed form
+
+        c.post(
+            f"/record/{rec.id}/action/confirm", data=confirm_data, headers={"HX-Request": "true"}
+        )
+        assert runner.calls == [
+            ["route", rec.id, "--dest", fields["dest"], "--by", "human", "--json"]
+        ]
+
+    def test_cycling_back_to_the_original_value_still_records_by_human(
+        self, tmp_path: Path
+    ) -> None:
+        """FW-64's own design note: `dest_touched` is a fact about the
+        human's ACTION (did they use the cycle control), never a
+        value-comparison against the proposal — cycling all the way
+        around back to the analyst's own suggestion is still a human
+        choice, and a value-comparison design would misclassify it as
+        untouched. skill scope's cycle has three elements (skill-md,
+        claude-md, reference — `PARAMETER_FREE_DESTINATIONS`), so three
+        cycles wrap all the way back to skill-md."""
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+        seed_proposal(sb.ledger, rec.id, destination="skill-md")
+        c, runner = make_client(sb)
+
+        fields = self._form_fields(c.get(f"/record/{rec.id}").text, rec.id)
+        for _ in range(3):  # skill-md -> claude-md -> reference -> skill-md
+            html = c.post(
+                f"/record/{rec.id}/action/cycle-destination", data=fields, headers={"HX-Request": "true"}
+            ).text
+            fields = self._form_fields(html, rec.id)
+        assert fields["dest"] == "skill-md"  # back where it started
+        assert fields.get("dest_touched") == "true"  # but a human chose it
+
+        arm_data = dict(fields, verb="route", kind="detail")
+        armed_html = c.post(
+            f"/record/{rec.id}/action/arm", data=arm_data, headers={"HX-Request": "true"}
+        ).text
+        confirm_data = self._confirm_form_fields(armed_html)
+        c.post(
+            f"/record/{rec.id}/action/confirm", data=confirm_data, headers={"HX-Request": "true"}
+        )
+        assert runner.calls == [["route", rec.id, "--dest", "skill-md", "--by", "human", "--json"]]
+
+    def test_disarm_then_rearm_preserves_dest_touched(self, tmp_path: Path) -> None:
+        """A Cancel after cycling must not silently drop the human's own
+        choice back to "analyst" on the next arm/confirm. The disarm POST
+        itself uses the ARMED bar's own disarm-button fields (not the
+        pre-arm cycle data) — the same "post what the browser would
+        actually post" discipline as `_confirm_form_fields`."""
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+        seed_proposal(sb.ledger, rec.id, destination="skill-md")
+        c, runner = make_client(sb)
+
+        fields = self._form_fields(c.get(f"/record/{rec.id}").text, rec.id)
+        cycled = self._form_fields(
+            c.post(
+                f"/record/{rec.id}/action/cycle-destination", data=fields, headers={"HX-Request": "true"}
+            ).text,
+            rec.id,
+        )
+        arm_data = dict(cycled, verb="route", kind="detail")
+        armed_html = c.post(
+            f"/record/{rec.id}/action/arm", data=arm_data, headers={"HX-Request": "true"}
+        ).text
+        # The disarm (Cancel) button's own hidden fields — a section
+        # distinct from the confirm form, matched by its own POST target.
+        disarm_section = armed_html.split('action/disarm"')[1].split("</form>")[0]
+        disarm_data = dict(
+            re.findall(r'<input[^>]*name="([^"]+)"[^>]*value="([^"]*)"', disarm_section)
+        )
+        assert disarm_data.get("dest_touched") == "true"
+
+        disarmed_html = c.post(
+            f"/record/{rec.id}/action/disarm", data=disarm_data, headers={"HX-Request": "true"}
+        ).text
+        redisarmed_fields = self._form_fields(disarmed_html, rec.id)
+        assert redisarmed_fields.get("dest_touched") == "true"
+
+        rearm_data = dict(redisarmed_fields, verb="route", kind="detail")
+        rearmed_html = c.post(
+            f"/record/{rec.id}/action/arm", data=rearm_data, headers={"HX-Request": "true"}
+        ).text
+        confirm_data = self._confirm_form_fields(rearmed_html)
+        c.post(
+            f"/record/{rec.id}/action/confirm", data=confirm_data, headers={"HX-Request": "true"}
+        )
+        assert runner.calls[-1] == [
+            "route", rec.id, "--dest", redisarmed_fields["dest"], "--by", "human", "--json"
+        ]
+
+    def test_a_failed_confirms_retry_preserves_dest_touched(self, tmp_path: Path) -> None:
+        """A failed confirm re-renders armable (F2) — the human's Enter
+        on the SAME bar (no new cycle) must retry with the SAME `by`, not
+        regress to "analyst" because the re-render forgot the flag."""
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+        seed_proposal(sb.ledger, rec.id, destination="skill-md")
+        runner = FakeRunner()
+        runner.queue_result(RunResult(1, stderr="self-learn: refused"))
+        c, _runner = make_client(sb, runner=runner)
+
+        fields = self._form_fields(c.get(f"/record/{rec.id}").text, rec.id)
+        cycled = self._form_fields(
+            c.post(
+                f"/record/{rec.id}/action/cycle-destination", data=fields, headers={"HX-Request": "true"}
+            ).text,
+            rec.id,
+        )
+        confirm_data = dict(cycled, verb="route", kind="detail")
+        failed_html = c.post(
+            f"/record/{rec.id}/action/confirm", data=confirm_data, headers={"HX-Request": "true"}
+        ).text
+        assert "refused" in failed_html
+        retry_fields = self._form_fields(failed_html, rec.id)
+        assert retry_fields.get("dest_touched") == "true"
+
+        retry_data = dict(retry_fields, verb="route", kind="detail")
+        c.post(
+            f"/record/{rec.id}/action/confirm", data=retry_data, headers={"HX-Request": "true"}
+        )
+        assert runner.calls[-1] == [
+            "route", rec.id, "--dest", retry_fields["dest"], "--by", "human", "--json"
+        ]
+
+    def test_invalid_by_value_is_never_reachable_from_a_correct_ui(self) -> None:
+        """The CLI's own closed enum (verbs.ROUTING_BY_VALUES) — asserted
+        here as documentation of the contract build_argv relies on: this
+        app only ever computes "human"/"agent"/"analyst", never anything
+        else, so a `--by` CLI usage refusal should never be reachable
+        through this UI. Guards the value set itself, independent of any
+        one call site's derivation logic."""
+        from self_learn.verbs import ROUTING_BY_VALUES
+
+        assert ROUTING_BY_VALUES == {"human", "analyst", "agent"}
 
 
 class TestDestinationGlosses:
@@ -1934,8 +2190,10 @@ class TestClusterCollapse:
             headers={"HX-Request": "true"},
         )
         assert confirm.status_code == 200
+        # FW-64: no `dest` at all here (a survivor route with no override),
+        # still an unmodified approve — `--by analyst`.
         assert runner.calls == [
-            ["route", rec1.id, "--collapse", "merge-deadbeef", "--json"]
+            ["route", rec1.id, "--collapse", "merge-deadbeef", "--by", "analyst", "--json"]
         ]
 
 
@@ -2247,8 +2505,9 @@ class TestAdoptOffer:
         assert "Not now" in cancel.text
         # only the ORIGINAL route call happened — Cancel never runs
         # chezmoi-adopt. Resolution-evidence unit: `route` now carries
-        # `--json` on every confirm.
-        assert runner.calls == [["route", rec.id, "--dest", "claude-md", "--json"]]
+        # `--json` on every confirm. FW-64: unmodified approve — `--by
+        # analyst`.
+        assert runner.calls == [["route", rec.id, "--dest", "claude-md", "--by", "analyst", "--json"]]
 
     def test_decline_wipes_the_offer(self, tmp_path: Path) -> None:
         sb = make_env(tmp_path)

@@ -95,6 +95,7 @@ def build_argv(
     record_id: str,
     *,
     dest: str | None = None,
+    by: str | None = None,
     collapse: str | None = None,
     note: str | None = None,
     until: str | None = None,
@@ -117,13 +118,23 @@ def build_argv(
     graduate) — never at the shared ``--note``/``--no-push`` tail below,
     which every OTHER verb branch also runs through and whose CLI
     parsers carry no ``--json`` flag at all (``cli.py``'s ``_verb``
-    helper only adds it when ``json_flag=True``)."""
+    helper only adds it when ``json_flag=True``).
+
+    ``by`` (FW-64, ``route`` only): who chose the destination — the CLI's
+    own ``--by``. This app's ``route`` argv always carries an explicit
+    ``dest`` (the detail bar's hidden field starts at the analyst's own
+    scope-corrected proposal and never goes empty once one exists), so
+    the CLI's dest-is-not-None heuristic alone cannot tell an unmodified
+    approve-as-proposed from a human override — every caller that builds
+    a ``route`` argv here must say so explicitly instead."""
     if verb == "route":
         argv = ["route", record_id]
         if dest:
             argv += ["--dest", dest]
         if collapse:
             argv += ["--collapse", collapse]
+        if by:
+            argv += ["--by", by]
         if as_json:
             argv.append("--json")
     elif verb == "reject":
@@ -1097,6 +1108,7 @@ def _unarmed_context(
     already_canon: bool = False,
     scope: str = "user",
     evidence: dict[str, Any] | None = None,
+    dest_touched: bool = False,
 ) -> dict[str, Any]:
     return {
         "armed": None,
@@ -1126,6 +1138,18 @@ def _unarmed_context(
         # — a round-trip drops the explanation, never the correction:
         # `dest` itself is always a scope-valid value on every path.
         "dest_note": None,
+        # FW-64: has the human EVER deliberately picked a destination on
+        # this bar (the `o`-cycle control), as opposed to `dest` merely
+        # holding the analyst's own (possibly scope-corrected) proposal?
+        # False at initial page render and reset to False by nothing —
+        # it flips true exactly once, in `action_cycle_destination`, and
+        # stays true through disarm/re-arm/a failed confirm's re-render
+        # so a retry can never silently lose the human's own choice. This
+        # is a POSITIVE fact tracked at the point of action, never a
+        # `dest`-value comparison against the (possibly stale, per the
+        # spec's own warning) proposal sibling — cycling back to the
+        # same value the analyst proposed is still a human choice.
+        "dest_touched": dest_touched,
         "event": event,
         "target": target,
         # P1-9b: `g` is always available, highlighted (affordance, not
@@ -1169,6 +1193,7 @@ def _armed_context(
     event: str | None,
     tolerate: bool,
     target: str | None,
+    dest_touched: bool = False,
 ) -> dict[str, Any]:
     return {
         "kind": kind,
@@ -1189,8 +1214,19 @@ def _armed_context(
             "tolerate": tolerate,
             "target": target,
             "show_note_hint": verb == "reject" and not note,
+            # FW-64: carried through to the confirm form as a hidden
+            # field, same discipline as every other armed.* value here
+            # (displayed == armed == executed) — see _unarmed_context's
+            # `dest_touched` for what it means.
+            "dest_touched": dest_touched,
         },
-        "disarm_vals": {"kind": kind, "dest": dest, "event": event, "target": target},
+        "disarm_vals": {
+            "kind": kind,
+            "dest": dest,
+            "event": event,
+            "target": target,
+            "dest_touched": dest_touched,
+        },
     }
 
 
@@ -1279,6 +1315,7 @@ def action_arm(
     event: str | None = Form(None),
     tolerate: bool = Form(False),
     target: str | None = Form(None),
+    dest_touched: bool = Form(False),
 ) -> HTMLResponse:
     if verb not in _KNOWN_VERBS:
         return HTMLResponse("unknown verb", status_code=400)
@@ -1293,6 +1330,7 @@ def action_arm(
         event=event or None,
         tolerate=tolerate,
         target=target or None,
+        dest_touched=dest_touched,
     )
     return _render(request, "partials/action_bar.html", ctx)
 
@@ -1329,6 +1367,7 @@ def action_disarm(
     dest: str | None = Form(None),
     event: str | None = Form(None),
     target: str | None = Form(None),
+    dest_touched: bool = Form(False),
 ) -> HTMLResponse:
     dest = _scope_corrected_dest(request, record_id, dest)
     ctx = _unarmed_context(
@@ -1338,6 +1377,7 @@ def action_disarm(
         event=event,
         target=target,
         scope=_record_scope(request, record_id),
+        dest_touched=dest_touched,
     )
     return _render(request, "partials/action_bar.html", ctx)
 
@@ -1365,10 +1405,22 @@ def action_cycle_destination(
     # re-renders `/record/{id}` as the record's own resolved view
     # (`detail_resolved.html`), replacing this stale pending action bar
     # outright.
+    #
+    # FW-64: this IS the human deliberately choosing a destination — the
+    # one and only place `dest_touched` turns True, unconditionally,
+    # regardless of which value the cycle lands on (even the analyst's
+    # own original suggestion, reached by cycling all the way around: an
+    # explicit pick is a human choice even when it echoes the proposal).
     scope = _record_scope(request, record_id)
     new_dest = cycle_destination(dest or None, scope)
     ctx = _unarmed_context(
-        kind="detail", record_id=record_id, dest=new_dest, event=None, target=None, scope=scope
+        kind="detail",
+        record_id=record_id,
+        dest=new_dest,
+        event=None,
+        target=None,
+        scope=scope,
+        dest_touched=True,
     )
     return _render(request, "partials/action_bar.html", ctx)
 
@@ -1413,6 +1465,7 @@ async def action_confirm(
     event: str | None = Form(None),
     tolerate: bool = Form(False),
     target: str | None = Form(None),
+    dest_touched: bool = Form(False),
 ) -> Response:
     if verb not in _KNOWN_VERBS:
         return HTMLResponse("unknown verb", status_code=400)
@@ -1420,10 +1473,21 @@ async def action_confirm(
     home = _home(request)
     runner_seam = request.app.state.runner
 
+    # FW-64: this app's `route` argv always carries an explicit `dest`
+    # (never omitted the way a bare terminal `route <id>` would be), so
+    # the CLI's own dest-is-not-None heuristic would read "human" on
+    # every approval — say who chose it explicitly instead. `dest_touched`
+    # is the human's OWN cycle-destination action (see _unarmed_context),
+    # never a comparison against the proposal's value (unsound if the
+    # proposal went stale between render and confirm — FW-64's own
+    # design note). Inert for every non-route verb (`build_argv` only
+    # reads `by` inside its `route` branch).
+    by = "human" if dest_touched else "analyst"
     argv = build_argv(
         verb,
         record_id,
         dest=dest or None,
+        by=by,
         collapse=collapse or None,
         note=note or None,
         until=until or None,
@@ -1466,6 +1530,7 @@ async def action_confirm(
             event=event,
             target=target,
             scope=_record_scope(request, record_id),
+            dest_touched=dest_touched,
         )
         error_text = result.stderr or f"self-learn {' '.join(argv)} failed"
         ctx["error"] = error_text
@@ -1480,6 +1545,7 @@ async def action_confirm(
                 retry=_commit_drift_retry_ctx(
                     dest=dest, collapse=collapse, note=note, until=until,
                     event=event, tolerate=tolerate, target=target,
+                    dest_touched=dest_touched,
                 ),
                 armed=None,
             )
@@ -1742,11 +1808,17 @@ def _commit_drift_retry_ctx(
     event: str | None,
     tolerate: bool,
     target: str | None,
+    dest_touched: bool = False,
 ) -> dict[str, Any]:
     """The original failed route confirm's own fields, carried through
     every commit-drift leg so the eventual retry rebuilds the EXACT same
     argv the human's Approve tap originally armed (displayed == armed ==
-    executed, the same discipline :func:`_armed_context` follows)."""
+    executed, the same discipline :func:`_armed_context` follows).
+
+    ``dest_touched`` (FW-64) rides along for the same reason: the
+    eventual retry's `by` must match what the ORIGINAL failed confirm
+    would have sent, not silently fall back to "analyst" because this
+    leg forgot to carry it."""
     return {
         "dest": dest,
         "collapse": collapse,
@@ -1755,6 +1827,7 @@ def _commit_drift_retry_ctx(
         "event": event,
         "tolerate": tolerate,
         "target": target,
+        "dest_touched": dest_touched,
     }
 
 
@@ -1788,6 +1861,7 @@ def commit_drift_arm(
     event: str | None = Form(None),
     tolerate: bool = Form(False),
     target: str | None = Form(None),
+    dest_touched: bool = Form(False),
 ) -> HTMLResponse:
     """§2.2 armed two-step, tap 1: read the new verb's OWN ``--dry-run
     --json`` (gate m6 — no other dirty-file-list source exists) and show
@@ -1800,9 +1874,10 @@ def commit_drift_arm(
     retry = _commit_drift_retry_ctx(
         dest=dest, collapse=collapse, note=note, until=until,
         event=event, tolerate=tolerate, target=target,
+        dest_touched=dest_touched,
     )
     corrected = _scope_corrected_dest(request, record_id, dest)
-    ctx = _unarmed_context(kind=kind, record_id=record_id, dest=corrected, event=event, target=target, scope=_record_scope(request, record_id))
+    ctx = _unarmed_context(kind=kind, record_id=record_id, dest=corrected, event=event, target=target, scope=_record_scope(request, record_id), dest_touched=dest_touched)
     if not read.ok:
         ctx["error"] = read.error or "commit-drift dry-run failed"
         ctx["commit_drift"] = None
@@ -1832,15 +1907,17 @@ def commit_drift_disarm(
     event: str | None = Form(None),
     tolerate: bool = Form(False),
     target: str | None = Form(None),
+    dest_touched: bool = Form(False),
 ) -> HTMLResponse:
     """Cancel: back to the SAME error-plus-button state — never a fresh
     dry-run (that only runs when the human arms again)."""
     retry = _commit_drift_retry_ctx(
         dest=dest, collapse=collapse, note=note, until=until,
         event=event, tolerate=tolerate, target=target,
+        dest_touched=dest_touched,
     )
     corrected = _scope_corrected_dest(request, record_id, dest)
-    ctx = _unarmed_context(kind=kind, record_id=record_id, dest=corrected, event=event, target=target, scope=_record_scope(request, record_id))
+    ctx = _unarmed_context(kind=kind, record_id=record_id, dest=corrected, event=event, target=target, scope=_record_scope(request, record_id), dest_touched=dest_touched)
     ctx["error"] = error_text or "commit-drift refused"
     ctx["commit_drift"] = _commit_drift_ctx(
         record_id=record_id, kind=kind, error_text=error_text, retry=retry, armed=None
@@ -1860,6 +1937,7 @@ async def commit_drift_confirm(
     event: str | None = Form(None),
     tolerate: bool = Form(False),
     target: str | None = Form(None),
+    dest_touched: bool = Form(False),
 ) -> Response:
     """Tap 2: run the guided commit for real, then — on success — re-fire
     the ORIGINAL route confirm automatically, once, with the SAME argv
@@ -1881,7 +1959,7 @@ async def commit_drift_confirm(
     commit_result = await runner.run(commit_argv)
     if not commit_result.ok:
         corrected = _scope_corrected_dest(request, record_id, dest)
-        ctx = _unarmed_context(kind=kind, record_id=record_id, dest=corrected, event=event, target=target, scope=_record_scope(request, record_id))
+        ctx = _unarmed_context(kind=kind, record_id=record_id, dest=corrected, event=event, target=target, scope=_record_scope(request, record_id), dest_touched=dest_touched)
         ctx["error"] = commit_result.stderr or "self-learn host commit-drift failed"
         return _render(request, "partials/action_bar.html", ctx)
 
@@ -1902,11 +1980,18 @@ async def commit_drift_confirm(
     # `verb` variable in this handler otherwise — bind one so the mirror
     # stays textually identical to action_confirm's and a future verb
     # change here cannot silently produce `evidence=None`.
+    #
+    # FW-64: `by` must match what the ORIGINAL failed `action_confirm`
+    # call would have sent — `dest_touched` rode here through the
+    # commit-drift retry fields (:func:`_commit_drift_retry_ctx`), same
+    # discipline as `action_confirm`'s own derivation.
     verb = "route"
+    by = "human" if dest_touched else "analyst"
     route_argv = build_argv(
         verb,
         record_id,
         dest=dest or None,
+        by=by,
         collapse=collapse or None,
         note=note or None,
         until=until or None,
@@ -1922,7 +2007,7 @@ async def commit_drift_confirm(
     if not retry.ok:
         _force_refresh(request, f"record:{record_id}")
         corrected = _scope_corrected_dest(request, record_id, dest)
-        ctx = _unarmed_context(kind=kind, record_id=record_id, dest=corrected, event=event, target=target, scope=_record_scope(request, record_id))
+        ctx = _unarmed_context(kind=kind, record_id=record_id, dest=corrected, event=event, target=target, scope=_record_scope(request, record_id), dest_touched=dest_touched)
         ctx["error"] = retry.stderr or f"self-learn {' '.join(route_argv)} failed"
         return _render(request, "partials/action_bar.html", ctx)
 
@@ -2354,10 +2439,23 @@ async def proposal_confirm(
     # Capture argv from the SLOT before anything can clear it (the
     # interrupt below tears down the proposing session, whose teardown
     # clears the slot by session key).
+    #
+    # FW-64: for a `route` proposal, the CHOOSER is the pane agent —
+    # neither the deterministic `analyst.analyze()` heuristic nor the
+    # human (who only confirms what the agent already proposed), so the
+    # verb's own dest-is-not-None heuristic would misattribute both of
+    # its branches. `prop.dest is not None` means the agent's tool call
+    # named a destination itself (its own choice — "agent"); `None`
+    # means the agent proposed a bare route, deferring to whatever the
+    # stored proposal sibling already names (the analyst's choice,
+    # exactly like a bare CLI `route <id>` — "analyst"). Inert for every
+    # other proposable verb (`build_argv` only reads `by` for `route`).
+    by = ("agent" if prop.dest is not None else "analyst") if prop.verb == "route" else None
     argv = build_argv(
         prop.verb,
         prop.record_id,
         dest=prop.dest,
+        by=by,
         note=prop.note,
         until=prop.until,
         to=prop.to,
