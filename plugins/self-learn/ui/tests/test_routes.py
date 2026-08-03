@@ -1149,6 +1149,104 @@ class TestArmDisarmConfirm:
         )
 
 
+class TestNoProposalErrorHumanized:
+    """Companion defect on the same walk: a `route` confirm with no
+    `--dest` and no analyst proposal on file surfaced the CLI's own
+    argparse-flavored refusal verbatim — `self-learn route: no proposal
+    for <id> — pass --dest or run review`. `--dest` is CLI syntax nobody
+    driving this from the browser typed or would know to type; the fix
+    on this record is the Destination (o) control already on screen."""
+
+    def _seed(self, tmp_path: Path):
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+        return sb, rec
+
+    def test_no_proposal_stderr_is_rewritten_to_plain_words(self, tmp_path: Path) -> None:
+        sb, rec = self._seed(tmp_path)
+        runner = FakeRunner()
+        runner.queue_result(
+            RunResult(
+                1,
+                stderr=f"self-learn route: no proposal for {rec.id} — pass --dest or run review",
+            )
+        )
+        c, _runner = make_client(sb, runner=runner)
+        r = c.post(
+            f"/record/{rec.id}/action/confirm",
+            data={"verb": "route", "kind": "detail", "dest": ""},
+            headers={"HX-Request": "true"},
+        )
+        assert r.status_code == 200
+        assert "pass --dest" not in r.text
+        assert "no proposal for" not in r.text
+        assert "Destination" in r.text  # points at the on-screen control, not a CLI flag
+        assert 'data-verb-error="true"' in r.text  # still the same error-strip leg (F5-errstrip)
+
+    def test_unrelated_route_failure_still_renders_verbatim(self, tmp_path: Path) -> None:
+        """Negative control: the rewrite is scoped to the ONE pinned
+        marker (self_learn.verbs.NO_PROPOSAL_MARKER) — any other `route`
+        failure keeps rendering verbatim, same as
+        test_confirm_nonzero_exit_renders_error_strip_verbatim already
+        pins for a non-route verb."""
+        sb, rec = self._seed(tmp_path)
+        runner = FakeRunner()
+        runner.queue_result(RunResult(1, stderr="self-learn route: refused: scan hit"))
+        c, _runner = make_client(sb, runner=runner)
+        r = c.post(
+            f"/record/{rec.id}/action/confirm",
+            data={"verb": "route", "kind": "detail", "dest": "skill-md"},
+            headers={"HX-Request": "true"},
+        )
+        assert r.status_code == 200
+        assert "refused: scan hit" in r.text
+
+
+class TestDetailPendingDestQueryParam:
+    """detail_page's GET-side half of the pane-close destination-
+    persistence fix, exercised directly (no pane machinery needed) —
+    pane_close is just ONE caller of this query param (see
+    test_iterate_routes.py::TestPaneCloseDestinationPersistence for the
+    full close-triggered round trip); these pin the param's own contract
+    in isolation."""
+
+    def test_dest_query_param_overrides_the_analyst_default(self, tmp_path: Path) -> None:
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+        c, _runner = make_client(sb)
+        r = c.get(f"/record/{rec.id}?dest=skill-md")
+        assert 'name="dest" value="skill-md"' in r.text
+
+    def test_absent_dest_query_param_keeps_todays_default(self, tmp_path: Path) -> None:
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+        c, _runner = make_client(sb)
+        r = c.get(f"/record/{rec.id}")
+        assert 'name="dest" value=""' in r.text
+
+    def test_scope_invalid_dest_query_param_is_corrected_with_an_honest_note(
+        self, tmp_path: Path
+    ) -> None:
+        """The rare edge (e.g. a rehome mid-Iterate changed the record's
+        scope): _scope_corrected_dest re-validates rather than trusting
+        the echo, same as every other echoed-dest re-entry point (F2).
+        The explanatory note is written in the human's OWN words — never
+        "the analyst suggested ...", correct_destination's own phrasing,
+        which would misattribute a restored human choice to the
+        analyst."""
+        sb = make_env(tmp_path)
+        rec = make_knowledge(scope="project")
+        seed_record(sb.ledger, rec, project_path=sb.host)
+        c, _runner = make_client(sb)
+        r = c.get(f"/record/{rec.id}?dest=skill-md")  # skill-md is invalid for "project"
+        assert 'name="dest" value="claude-md"' in r.text  # destinations_for_scope("project")[0]
+        assert "the analyst suggested" not in r.text
+        assert "no longer fits this scope" in r.text
+
+
 class TestOCycle:
     # The endpoint reads the `dest` field because that is what the
     # rendered form sends (hx-include posts the hidden input named

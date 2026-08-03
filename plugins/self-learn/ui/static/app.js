@@ -22,6 +22,18 @@
  *     (09 §1: "an inline single-line input in the action bar"). On an
  *     ARMED bar there is no note input to focus, so `n` is a no-op with
  *     a hint — never a cancel, which used to destroy the pending action.
+ *   - Keys are inert while focus is in a text input (above) — ONE
+ *     exception to "inert", never a second: `?` while focused in a text
+ *     input still shows a plain-words hint (never preventDefault, never
+ *     stealing the keystroke — the character still reaches the field
+ *     exactly as typed). `?` is a UI walk defect fix: it was silently
+ *     swallowed with zero feedback, read as a broken shortcut rather
+ *     than a field doing its job. No OTHER bound key gets this — every
+ *     other one is an ordinary English letter (e/s/w/d/o/…) that
+ *     appears constantly in prose, and hinting on each occurrence would
+ *     be far noisier than today's silence; `?` is the one bound key
+ *     that is both rare in prose and the shortcut a user reaches for
+ *     out of habit when unsure what to press.
  */
 
 (function () {
@@ -190,7 +202,20 @@
   }
 
   function onKeyDown(event) {
-    if (focusIsTextInput()) return;
+    if (focusIsTextInput()) {
+      // UI-walk defect: `?` was silently swallowed here like every other
+      // key while focus is in a text input (that rule is correct and
+      // stays, per this file's header contract) — but with NO feedback
+      // that it happened, a documented global shortcut just looked
+      // broken. NEVER preventDefault and never an early return that
+      // skips typing it: the character must still land in the field
+      // exactly as if this branch didn't exist. Scoped to `?` alone —
+      // see the header contract for why no other bound key gets this.
+      if (event.key === "?") {
+        showNoopHint("? types into this field — click away, then ? for Help.");
+      }
+      return;
+    }
     if (event.ctrlKey || event.altKey || event.metaKey) return; // no chords, ever
 
     if (helpOverlayVisible()) {

@@ -136,6 +136,7 @@ __all__ = [
     "COMMIT_DRIFT_SUBJECT",
     "DEFAULT_USER_CLAUDE_MD",
     "GITOPS_DIRTY_MARKER",
+    "NO_PROPOSAL_MARKER",
     "NOTHING_TO_COMMIT",
     "ROUTING_BY_VALUES",
     "SURFACE_FILL_CAPPED_DESTINATIONS",
@@ -247,6 +248,14 @@ GITOPS_DIRTY_MARKER = "has unrelated uncommitted changes"
 
 class DirtyTargetError(VerbError):
     """The compile target has unrelated uncommitted changes."""
+
+
+#: The stable substring self-learn-ui's action_confirm matches on to
+#: rewrite this CLI-voice message into plain words for the human surface
+#: (self_learn_ui.routes) — a pinned marker, mirroring GITOPS_DIRTY_MARKER
+#: above, so the UI's match and this message can never drift apart
+#: silently the way a hand-copied substring could.
+NO_PROPOSAL_MARKER = "no proposal for"
 
 
 class NoProposalError(VerbError):
@@ -536,7 +545,7 @@ def _resolve_destination(
     proposal_path = bucket_dir / "proposals" / f"{record_id}.yaml"
     if not proposal_path.is_file():
         raise NoProposalError(
-            f"no proposal for {record_id} — pass --dest or run review"
+            f"{NO_PROPOSAL_MARKER} {record_id} — pass --dest or run review"
         )
     data = read_proposal(proposal_path)
     validate_proposal(data)

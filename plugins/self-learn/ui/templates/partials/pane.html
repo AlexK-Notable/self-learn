@@ -90,7 +90,17 @@
           hx-get="{{ pane_base | default('/record/' ~ record_id ~ '/pane') }}/panel"
           hx-target="#pane-region-wrapper" hx-swap="outerHTML">Back (q)</button>
   {% else %}
+  {# UI-walk defect fix: this POST triggers a full-page redirect
+     (routes.py's pane_close), which re-renders the standing action bar
+     (a SEPARATE region, .detail-left, untouched by this partial) from
+     the record's own default — silently reverting a cycled-but-unarmed
+     destination that lives only in that bar's own hidden field. Include
+     it here (a no-op when that form isn't in the DOM — armed, a pane
+     proposal showing instead, or the bucket-level chat, whose
+     record_id is a synthetic key no such form ever carries) so
+     pane_close can carry it forward on the redirect's query string. #}
   <button type="button" data-key-action="close_pane"
-          hx-post="{{ pane_base | default('/record/' ~ record_id ~ '/pane') }}/close">Close (q)</button>
+          hx-post="{{ pane_base | default('/record/' ~ record_id ~ '/pane') }}/close"
+          hx-include="#form-action-bar-{{ record_id }}">Close (q)</button>
   {% endif %}
 </div>
