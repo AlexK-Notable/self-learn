@@ -586,3 +586,128 @@ def test_selftest_reports_seven_checks_criterion_12(env, capsys):
     assert rc == 0
     assert "PASS reach" in out
     assert "all 7 checks green" in out
+
+
+# --------------------------------------------------- FW-66: decode safety
+#
+# `--selftest` must FAIL loud (or skip a record the same way a malformed
+# one already does) on non-UTF-8 bytes, never traceback — measured live: a
+# corrupt loaded surface or resolved record file killed `_check_reach`
+# outright with a raw `UnicodeDecodeError`, and a corrupt resolved record
+# file killed `run_selftest` even earlier (`_section_targets`, called
+# before any of the seven checks run), before a single PASS/FAIL row
+# printed.
+
+
+def _write_bad_bytes(path, prefix: str = "") -> None:
+    """`prefix` (valid UTF-8) + a byte that is not a valid UTF-8 lead byte
+    anywhere — guaranteed to raise ``UnicodeDecodeError`` on decode."""
+    path.write_bytes(prefix.encode("utf-8") + b"\xff\xfe garbage")
+
+
+def test_reach_undecodable_surface_fails_naming_the_record(env, capsys):
+    """The loaded surface is a file self-learn does not own and cannot
+    constrain — an undecodable SKILL.md must FAIL the record (never
+    crash, never a silent pass), with a message DISTINCT from "not named
+    by its loaded surface" (the real problem is the encoding, not a
+    missing pointer — criterion: an un-checkable condition reports as
+    itself, not as a different claim)."""
+    record = seed_reference_record(env)
+    target = env.skill_dir / "references" / "LEARNINGS.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(f"lesson from {record.id}\n", encoding="utf-8")
+    _write_bad_bytes(
+        env.skill_md, SKILL_MD + "\n[Learnings](references/LEARNINGS.md)\n"
+    )
+
+    ok, reason = selfcheck._check_reach(env.ledger)
+
+    assert not ok
+    assert record.id in reason
+    assert "not readable as UTF-8" in reason
+    assert "not named by its loaded surface" not in reason
+
+    assert cli.main(["--selftest"]) == 1
+    out = capsys.readouterr().out
+    assert "FAIL reach" in out
+    assert "not readable as UTF-8" in out
+
+
+def test_reach_undecodable_resolved_record_skipped_not_crashed(env):
+    """A resolved record file with bad bytes is skipped exactly like a
+    RecordError (malformed YAML) resolved file already was (T3's problem,
+    not this check's — its routing/destination/scope cannot even be
+    read). Never a traceback, and never lets the corrupt file block a
+    REAL, reachable record's own row."""
+    good = seed_reference_record(env, record_id="lrn-00009999")
+    target = env.skill_dir / "references" / "LEARNINGS.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(f"lesson from {good.id}\n", encoding="utf-8")
+    env.skill_md.write_text(
+        SKILL_MD + "\n[Learnings](references/LEARNINGS.md)\n", encoding="utf-8"
+    )
+    resolved = env.ledger / "skills" / "s" / "resolved"
+    _write_bad_bytes(resolved / "lrn-0badbeef.md", "---\ntype: knowledge\n---\n")
+
+    ok, reason = selfcheck._check_reach(env.ledger)
+
+    assert ok  # the corrupt file never counted; the good one is reachable
+    assert "1 reference-routed record(s) reachable" in reason
+
+
+def test_selftest_survives_corrupt_resolved_record_prints_all_seven_rows(env, capsys):
+    """The end-to-end proof: `_section_targets` (feeding checks (b)/(c),
+    called BEFORE the seven-check loop even runs) shares the identical
+    from_path/RecordError gap — left unfixed, a corrupt resolved record
+    file killed `--selftest` before it printed a single row, not just the
+    reach/drift ones. Exercised through the full `cli.main(["--selftest"])`
+    a user actually runs, not the `_check_reach` unit alone."""
+    resolved = env.ledger / "skills" / "s" / "resolved"
+    resolved.mkdir(parents=True, exist_ok=True)
+    _write_bad_bytes(resolved / "lrn-0badbeef.md", "---\ntype: knowledge\n---\n")
+
+    rc = cli.main(["--selftest"])
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "all 7 checks green" in out
+    for check in (
+        "capture", "compiler", "markers", "drift", "reach", "hooks", "sentinel",
+    ):
+        assert f"PASS {check}" in out
+
+
+def test_drift_undecodable_target_fails_naming_the_file(env, capsys):
+    """FW-66's twin fix in `_check_drift`: the compiled managed-section
+    target self-learn writes CAN still carry non-UTF-8 bytes (a hand edit,
+    a bad merge) — must FAIL naming the file, never crash."""
+    skill_md = seed_routed_skill_target(env)
+    text = skill_md.read_text(encoding="utf-8")
+    _write_bad_bytes(skill_md, text)
+
+    ok, reason = selfcheck._check_drift(env.ledger)
+
+    assert not ok
+    assert "not readable as UTF-8" in reason
+    assert str(skill_md) in reason
+
+    assert cli.main(["--selftest"]) == 1
+    out = capsys.readouterr().out
+    assert "FAIL drift" in out
+
+
+def test_drift_undecodable_references_file_fails_naming_the_record(env):
+    """The reference-destination twin of the above: an undecodable
+    references file must FAIL, never crash, and distinctly from "entry
+    missing" (the real problem is the encoding, not an absent entry)."""
+    record = seed_reference_record(env)
+    target = env.skill_dir / "references" / "LEARNINGS.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    _write_bad_bytes(target, f"lesson from {record.id}\n")
+
+    ok, reason = selfcheck._check_drift(env.ledger)
+
+    assert not ok
+    assert record.id in reason
+    assert "not readable as UTF-8" in reason
+    assert "entry missing" not in reason
