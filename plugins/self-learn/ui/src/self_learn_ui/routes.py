@@ -20,9 +20,10 @@ needed for T-A (09 §7 / 10 §2 T-A).
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace as dataclass_replace
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from fastapi import APIRouter, BackgroundTasks, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
@@ -31,7 +32,7 @@ from starlette.responses import StreamingResponse
 from self_learn.chezmoi import ADOPT_COMMAND_PREFIX, CHEZMOI_DIRTY_MARKER
 from self_learn.hosts import is_repo_root
 from self_learn.records import Record
-from self_learn.verbs import GITOPS_DIRTY_MARKER
+from self_learn.verbs import GITOPS_DIRTY_MARKER, NO_PROPOSAL_MARKER
 
 from . import ledger, models, pane, proposals, rendering, runner
 from .keymap import keymap_as_dicts, keymap_json
@@ -665,7 +666,14 @@ def _refresh_hub(request: Request) -> "ledger.RefreshHub | None":
 
 
 @router.get("/record/{record_id}", response_class=HTMLResponse)
-def detail_page(request: Request, record_id: str, background_tasks: BackgroundTasks) -> Response:
+def detail_page(
+    request: Request, record_id: str, background_tasks: BackgroundTasks, dest: str | None = None
+) -> Response:
+    """``dest`` (query, optional): see :func:`_pending_dest_override` —
+    pane_close's redirect carries a cycled-but-unarmed destination
+    forward through it; absent on every other entry to this route (a
+    fresh navigation, a bookmark, the poll/SSE reload chokepoint), which
+    is exactly when it must fall back to the record's own default."""
     home = _home(request)
     hub = _refresh_hub(request)
     generation = hub.generation if hub is not None else 0
@@ -766,6 +774,16 @@ def detail_page(request: Request, record_id: str, background_tasks: BackgroundTa
         host_registered=bundle.host_registered,
         host_add_command=bundle.host_add_command,
     )
+
+    # See _pending_dest_override's docstring: restores a cycled-but-
+    # unarmed destination pane_close's redirect carried forward, in
+    # place of the record's own analyst-suggested default. A no-op
+    # (`pending_dest is None`) on every ordinary render.
+    pending_dest, pending_dest_note = _pending_dest_override(request, record_id, dest)
+    if pending_dest is not None:
+        model = dataclass_replace(
+            model, destination_default=pending_dest, destination_note=pending_dest_note
+        )
 
     # 09 §2.4: Detail renders the iterate split whenever a pane session
     # (live OR just-ended) exists for THIS record; otherwise the plain
@@ -931,17 +949,29 @@ async def pane_retry(request: Request, record_id: str) -> HTMLResponse:
 
 
 @router.post("/record/{record_id}/pane/close", response_class=HTMLResponse)
-async def pane_close(request: Request, record_id: str) -> Response:
+async def pane_close(request: Request, record_id: str, dest: str | None = Form(None)) -> Response:
     """``q`` (09 §2.4). U22 (Y-28 §4c) reworked this from a hard discard
     to a park-to-disk: the live session tears down and returns to full
     (non-split) Detail exactly as before, but the transcript now
     survives on disk — the next Iterate open shows the collapsed
-    prior-conversation card (§5) instead of a bare prompt."""
+    prior-conversation card (§5) instead of a bare prompt.
+
+    ``dest`` (Form, optional): a UI-walk defect fix — this full-page
+    redirect re-renders the standing action bar from the record's own
+    default, silently reverting a cycled-but-unarmed destination that
+    lived only in that bar's hidden field (pane.html's close button now
+    `hx-include`s it). Threaded onto the redirect's OWN query string
+    (never a session — see _pending_dest_override, detail_page's
+    GET-side half of this fix) so it survives the navigation the same
+    way this module's other ephemeral, non-ledger notices do."""
     manager = _pane_manager(request)
     if manager is not None:
         await manager.close(record_id)
     resp = Response(status_code=200)
-    resp.headers["HX-Redirect"] = f"/record/{record_id}"
+    redirect = f"/record/{record_id}"
+    if dest:
+        redirect += f"?dest={quote(dest, safe='')}"
+    resp.headers["HX-Redirect"] = redirect
     return resp
 
 
@@ -1358,6 +1388,45 @@ def _scope_corrected_dest(request: Request, record_id: str, dest: str | None) ->
     return corrected
 
 
+def _pending_dest_override(
+    request: Request, record_id: str, dest: str | None
+) -> tuple[str | None, str | None]:
+    """Live-walker defect: the unarmed bar's cycled-but-unarmed
+    destination lives ONLY in that bar's hidden field (action_bar.html's
+    ``<input type="hidden" name="dest">``) — no ledger file, no server
+    session, nothing 09 §3's "no state that isn't a file" would call
+    state. `pane_close`'s full-page ``HX-Redirect`` (unlike every other
+    pane route, which targets ``#pane-region-wrapper`` alone) re-renders
+    the WHOLE Detail page, including that bar, from the record's own
+    analyst-suggested default — silently reverting a cycle the human
+    made before ever touching Iterate, with no warning it happened.
+
+    The fix carries the pending value the SAME way this module already
+    carries ephemeral, non-ledger UI chrome across a redirect — a
+    query-string flag (see NOTICE_* above) — never a session/cookie.
+    `pane_close` threads the bar's own echoed `dest` onto its redirect's
+    query string; this is `detail_page`'s GET-side half, reusing
+    :func:`_scope_corrected_dest`'s exact re-validation (never trusting
+    the echo — a concurrent rehome mid-Iterate could have changed the
+    record's scope under it) rather than `correct_destination` directly,
+    because that function's own note text says "the analyst suggested
+    ...", which would misattribute a human's own restored choice to the
+    analyst. A scope-corrected restore returns no note (matches an
+    ordinary cycle's silence); an actually-corrected one explains why in
+    the human's own words, never the analyst's."""
+    if not dest:
+        return None, None
+    corrected = _scope_corrected_dest(request, record_id, dest)
+    if corrected is None:
+        return None, None
+    if corrected == dest:
+        return corrected, None
+    return corrected, (
+        f"your selection ({dest}) no longer fits this scope "
+        f"— corrected to {corrected}"
+    )
+
+
 @router.post("/record/{record_id}/action/disarm", response_class=HTMLResponse)
 def action_disarm(
     request: Request,
@@ -1437,6 +1506,27 @@ def _force_refresh(request: Request, scope: str = "front") -> None:
         hub.force_refresh(scope)
 
 
+#: Companion defect to the destination-cycle loss above: a `route`
+#: confirm with no `--dest` and no analyst proposal on file surfaces the
+#: CLI's own argparse-flavored refusal verbatim — `self-learn route: no
+#: proposal for <id> — pass --dest or run review`. `--dest` is CLI
+#: syntax nobody driving this from a browser typed or would know to
+#: type; the fix on this record is the Destination (o) control already
+#: on screen. Matched on the SAME pinned marker `self_learn.verbs`
+#: exports for its own raise site (NO_PROPOSAL_MARKER) — never a
+#: hand-copied substring (_commit_drift_eligible below sets the
+#: precedent: GITOPS_DIRTY_MARKER, same reasoning).
+def _humanize_verb_error(verb: str, stderr: str | None) -> str | None:
+    """``None`` when *stderr* doesn't match — caller falls back to the
+    verbatim text, unchanged, for every OTHER failure (the existing
+    `test_confirm_nonzero_exit_renders_error_strip_verbatim` pin).
+    Scoped to ``verb == "route"``: :func:`self_learn.verbs._resolve_
+    destination` — the only raise site — runs only inside that verb."""
+    if verb != "route" or not stderr or NO_PROPOSAL_MARKER not in stderr:
+        return None
+    return "this lesson has no analyst-suggested destination — cycle Destination (o) to pick one, then Approve again."
+
+
 @router.post("/record/{record_id}/action/confirm", response_class=HTMLResponse)
 async def action_confirm(
     request: Request,
@@ -1504,7 +1594,11 @@ async def action_confirm(
             target=target,
             scope=_record_scope(request, record_id),
         )
-        error_text = result.stderr or f"self-learn {' '.join(argv)} failed"
+        error_text = (
+            _humanize_verb_error(verb, result.stderr)
+            or result.stderr
+            or f"self-learn {' '.join(argv)} failed"
+        )
         ctx["error"] = error_text
         # U20 §2.2: the ONE dirty-target guided-commit button — eligible
         # only for a failed `route` whose stderr carries a pinned dirty

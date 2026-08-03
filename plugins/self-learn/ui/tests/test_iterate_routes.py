@@ -224,6 +224,154 @@ class TestPaneStartSendInterruptClose:
         assert "pane-block" not in detail.text
 
 
+# ------------------------------------ pane-close destination persistence
+#
+# UI-walk defect: a walker cycled a record's Destination to a non-default
+# value, opened Iterate (hit the sandbox's "Not logged in" divergence),
+# closed it, then Approved -> Confirmed — and got a raw CLI error
+# (`self-learn route: no proposal for <id> — pass --dest or run review`)
+# with the Destination control silently reverted to "(analyst
+# suggestion)". Root cause: the cycled value lives ONLY in the unarmed
+# action bar's own hidden field (a DOM-only, 09 §3-compliant "no state
+# that isn't a file" choice) — `pane_close`'s HX-Redirect is the one pane
+# route that does a FULL page navigation rather than a targeted
+# `#pane-region-wrapper` swap, so it alone regenerates that bar from the
+# record's own default, discarding the human's still-pending choice with
+# no warning. Repeating cycle-then-approve WITHOUT the Iterate detour
+# (TestArmDisarmConfirm.test_confirm_route_calls_runner_with_exact_argv,
+# TestOCycle in test_routes.py) already pins the positive control: a
+# normal cycle-then-approve works today and must keep working.
+
+
+class TestPaneCloseDestinationPersistence:
+    def test_close_button_wires_the_action_bars_dest_field(self, tmp_path: Path) -> None:
+        """The template half of the fix, alone: without this hx-include,
+        the server-side carry-through below has nothing to carry — the
+        close POST would never see the pending destination at all. The
+        close button only renders once a session is live/ended
+        (partials/pane.html, `pane_split`) — pane_idle.html (no session
+        yet) has no Close button at all, so this must start ONE first."""
+        sb, rec = _seed(tmp_path)
+        engine = FakeEngine(turns=[[Result("success", 0.0, None)]])
+        c, runner, manager = make_client_with_pane(sb, engines={rec.id: engine})
+        runner.queue_result(RunResult(0))
+        start = c.post(f"/record/{rec.id}/pane/start", headers=HX)
+        join_pane_turn(c, manager)
+        assert 'data-key-action="close_pane"' in start.text  # sanity: the right button
+        assert f'hx-include="#form-action-bar-{rec.id}"' in start.text
+
+    def test_close_redirect_carries_the_posted_destination_on_its_query_string(
+        self, tmp_path: Path
+    ) -> None:
+        """The route half, in isolation from the template wiring above —
+        exactly what a browser's hx-include-driven POST would send."""
+        sb, rec = _seed(tmp_path)
+        engine = FakeEngine(turns=[[Result("success", 0.0, None)]])
+        c, runner, manager = make_client_with_pane(sb, engines={rec.id: engine})
+        runner.queue_result(RunResult(0))
+        c.post(f"/record/{rec.id}/pane/start", headers=HX)
+        join_pane_turn(c, manager)
+
+        r = c.post(f"/record/{rec.id}/pane/close", data={"dest": "skill-md"}, headers=HX)
+        assert r.status_code == 200
+        assert r.headers.get("hx-redirect") == f"/record/{rec.id}?dest=skill-md"
+
+    def test_close_with_no_pending_destination_redirects_exactly_as_before(
+        self, tmp_path: Path
+    ) -> None:
+        """Negative control for the leg above: an UNCYCLED close (dest
+        empty, today's overwhelmingly common case) must not grow a
+        `?dest=` it has nothing to carry — same bare redirect
+        TestPaneStartSendInterruptClose already pins."""
+        sb, rec = _seed(tmp_path)
+        engine = FakeEngine(turns=[[Result("success", 0.0, None)]])
+        c, runner, manager = make_client_with_pane(sb, engines={rec.id: engine})
+        runner.queue_result(RunResult(0))
+        c.post(f"/record/{rec.id}/pane/start", headers=HX)
+        join_pane_turn(c, manager)
+
+        r = c.post(f"/record/{rec.id}/pane/close", data={"dest": ""}, headers=HX)
+        assert r.headers.get("hx-redirect") == f"/record/{rec.id}"
+
+    def test_destination_survives_the_full_cycle_iterate_close_approve_confirm_repro(
+        self, tmp_path: Path
+    ) -> None:
+        """The walker's exact repro, end to end: cycle -> Iterate open ->
+        close -> the redirected GET -> Approve -> Confirm must reach the
+        CLI with the CYCLED destination — never the bare `no proposal`
+        failure, never a silent revert to the analyst default."""
+        sb, rec = _seed(tmp_path)
+        engine = FakeEngine(turns=[[Result("success", 0.0, None)]])
+        c, runner, manager = make_client_with_pane(sb, engines={rec.id: engine})
+        runner.queue_result(RunResult(0))  # the pane's post-session validate call
+
+        before = c.get(f"/record/{rec.id}")
+        assert 'name="dest" value=""' in before.text  # starts at "(analyst suggestion)"
+
+        cycled = c.post(
+            f"/record/{rec.id}/action/cycle-destination", data={"dest": ""}, headers=HX
+        )
+        assert 'name="dest" value="skill-md"' in cycled.text
+
+        c.post(f"/record/{rec.id}/pane/start", headers=HX)
+        join_pane_turn(c, manager)
+
+        close = c.post(f"/record/{rec.id}/pane/close", data={"dest": "skill-md"}, headers=HX)
+        redirect = close.headers["hx-redirect"]
+        assert redirect == f"/record/{rec.id}?dest=skill-md"
+
+        detail = c.get(redirect)
+        # SURVIVED the round trip — not reverted to "(analyst suggestion)".
+        assert 'name="dest" value="skill-md"' in detail.text
+        assert "(analyst suggestion)" not in detail.text
+
+        arm = c.post(
+            f"/record/{rec.id}/action/arm",
+            data={"verb": "route", "kind": "detail", "dest": "skill-md"},
+            headers=HX,
+        )
+        assert 'data-armed="true"' in arm.text
+
+        confirm = c.post(
+            f"/record/{rec.id}/action/confirm",
+            data={"verb": "route", "kind": "detail", "dest": "skill-md"},
+            headers=HX,
+        )
+        assert confirm.status_code == 200
+        assert "no proposal for" not in confirm.text
+        assert runner.calls[-1] == ["route", rec.id, "--dest", "skill-md", "--json"]
+
+    def test_a_second_records_cycle_then_approve_without_iterate_still_works(
+        self, tmp_path: Path
+    ) -> None:
+        """Positive control (method step 2): the walker's own report notes
+        the identical cycle-then-approve worked cleanly on a record that
+        never took the Iterate detour — pinned here so this fix cannot be
+        satisfied by breaking the ordinary path instead."""
+        sb, rec = _seed(tmp_path)
+        c, runner, _manager = make_client_with_pane(sb)
+        cycled = c.post(
+            f"/record/{rec.id}/action/cycle-destination", data={"dest": ""}, headers=HX
+        )
+        assert 'name="dest" value="skill-md"' in cycled.text
+
+        arm = c.post(
+            f"/record/{rec.id}/action/arm",
+            data={"verb": "route", "kind": "detail", "dest": "skill-md"},
+            headers=HX,
+        )
+        assert 'data-armed="true"' in arm.text
+
+        confirm = c.post(
+            f"/record/{rec.id}/action/confirm",
+            data={"verb": "route", "kind": "detail", "dest": "skill-md"},
+            headers=HX,
+        )
+        assert confirm.status_code == 200
+        assert "no proposal for" not in confirm.text
+        assert runner.calls[-1] == ["route", rec.id, "--dest", "skill-md", "--json"]
+
+
 # --------------------------------------------------- U21 post-iterate summary
 
 

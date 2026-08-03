@@ -1926,6 +1926,43 @@ class TestNoteKeyOnAnArmedBar:
         assert focused_note is False
 
 
+class TestQuestionMarkSwallowedByTextInputShowsHint:
+    """`?` was silently swallowed by a focused text input — the SAME
+    inert-while-typing rule the header contract documents (and keeps:
+    ordinary typing must never trigger a global shortcut), but with zero
+    feedback that the on-screen "?" for Help never fired. A UI walk hit
+    this pressing `?` in the Note field, expecting the help overlay."""
+
+    def test_question_mark_still_types_and_shows_a_hint(
+        self, f2_page: "Page", f2_server: ServerHandle
+    ) -> None:
+        _open(f2_page, f2_server, f"/record/{REC_F2_PLAIN}")
+        note = f2_page.locator('.action-bar input[name="note"]')
+        note.click()
+        f2_page.keyboard.press("?")
+        # The character landed in the field exactly as typed — this
+        # branch must NEVER preventDefault or otherwise steal it; that
+        # would trade one silent defect for a worse one.
+        assert note.input_value() == "?"
+        # ...but the human is now told why Help didn't also open.
+        f2_page.wait_for_selector('[data-noop-hint-active="true"]')
+        assert f2_page.is_hidden("#self-learn-ui-help")
+
+    def test_ordinary_note_typing_stays_silent(
+        self, f2_page: "Page", f2_server: ServerHandle
+    ) -> None:
+        """Control (the method's own guardrail): the fix must not make
+        ordinary note-taking noisy. Every letter typed here is ALSO a
+        keymap-bound global shortcut (e/s/a/t/...) that stays silent —
+        only `?` gets the hint, never the rest."""
+        _open(f2_page, f2_server, f"/record/{REC_F2_PLAIN}")
+        note = f2_page.locator('.action-bar input[name="note"]')
+        note.click()
+        f2_page.keyboard.type("because it matters")
+        assert note.input_value() == "because it matters"
+        assert f2_page.query_selector('[data-noop-hint-active="true"]') is None
+
+
 class TestInFlightDisabling:
     def test_14_submitter_carries_disabled(
         self, f2_page: "Page", f2_server: ServerHandle
