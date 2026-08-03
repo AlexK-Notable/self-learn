@@ -756,12 +756,32 @@ claim under test is `14 → 0`:
 
 ## 10. Measured baseline
 
-> **EMPTY BY DESIGN. Filled once, at merge, by whoever runs §9.2.** The
-> §9.1 BEFORE run is already recorded above; this section holds the AFTER
-> run and is Checkpoint B's comparison basis. Required contents: the date,
-> the ledger HEAD sha, `rc`, the verbatim `reach` line, and the 14 ids.
-> An empty §10 at Checkpoint B means the positive control was never taken,
-> and the check is unproven regardless of what the suite says.
+**TAKEN 2026-08-02.** Ledger HEAD `f97e27c`, unchanged afterward
+(`git status --porcelain` empty — the check does not mutate what it
+measures). Provenance `rc=0` against the building worktree.
+
+```
+rc=1
+selftest: FAIL reach — 14 of 14 reference-routed record(s) unreachable:
+  lrn-01865691, lrn-10b03b00, lrn-2692005a, lrn-40da742d, lrn-4c961d32,
+  lrn-60fc4560, lrn-6b53a403, lrn-889241d9, lrn-926390e9, lrn-a103d52a,
+  lrn-ce37b7ee, lrn-d1723a48, lrn-e2e4026b, lrn-ffcca33d
+  (all: not named by <skills-root>/plugins/home-assistant/skills/
+   home-assistant/SKILL.md)
+selftest: 1 of 7 checks FAILED
+```
+
+The other six checks PASS, so the failure is the new row and not a
+broken environment. **14 of 14 — the predicted count exactly.**
+
+This is the number Checkpoint B compares against, and it must reach
+**0** only because `U-pointer` made those records reachable. A `0 of 0`
+result is NOT success: it means the domain went empty and the check can
+no longer see its target, which is the M1 mutation happening in
+production. Compare the **count**, never the boolean.
+
+*(The absolute skills-root path is elided above — this is a public
+repo. The run itself printed it in full.)*
 
 ---
 
