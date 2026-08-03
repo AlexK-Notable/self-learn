@@ -457,12 +457,25 @@ def test_unknown_gate_keys_of_incomparable_types_do_not_raise_typeerror():
 
 def test_missing_gate_key_refused():
     """D1: TRACE_GATE_KEYS closed in the missing direction — iterated,
-    never a hardcoded copy."""
+    never a hardcoded copy.
+
+    FW-59: `match=key` alone is VACUOUS here — every message this check
+    can ever raise echoes the FULL `list(TRACE_GATE_KEYS)` in its
+    "required:" clause, so `key` is a substring of every message
+    regardless of which key the `missing` computation actually names.
+    Mutation-verified: hardcoding the reported `missing` list to always
+    read `["g0"]` (i.e. reporting the wrong key for 8 of the 9 iterations)
+    left the OLD bare `match=key` form green for every key. Pinned
+    instead to the "missing key(s) [...]" clause specifically, split off
+    from the "required:" clause before the exact key list is compared —
+    so a `missing` computation that names the wrong key is caught."""
     for key in TRACE_GATE_KEYS:
         g = _base_gates()
         del g[key]
-        with pytest.raises(ProposalError, match=key):
+        with pytest.raises(ProposalError) as excinfo:
             validate_proposal(proposal_dict(gates=g))
+        reported, _, _required_clause = str(excinfo.value).partition(" — required:")
+        assert reported == f"gates is missing key(s) {[key]}"
 
 
 def test_outcome_outside_enum_refused():
@@ -1186,13 +1199,24 @@ def test_glob_matcher_agrees_with_stdlib_glob(tmp_path):
 
 
 def test_t2_yes_requires_rules_paths():
-    """F2: the check must never be vacuous."""
+    """F2: the check must never be vacuous.
+
+    FW-59: a bare `pytest.raises(ProposalError)` on the `rules_paths=[]`
+    leg was vacuous — `_glob_match`'s downstream "match_path matches none
+    of rules_paths" check ALSO raises `ProposalError` whenever
+    `rules_paths` is empty (`any()` over an empty iterable is always
+    `False`), so deleting this check's own `or not rules_paths` clause
+    left that leg green too, just via the OTHER check silently
+    backstopping it (mutation-verified). Pinned to this check's own
+    message ("...rules_paths is missing/empty...") on BOTH legs — the
+    fallback's message ("...matches none of rules_paths...") does not
+    contain that text, so the fallback firing instead is now visible."""
     g = _base_gates()
     g["t2"] = {"answer": "yes", "evidence": TRUE_QUOTE, "match_path": "src/app.py"}
     g["t4"] = None
-    with pytest.raises(ProposalError):
+    with pytest.raises(ProposalError, match="rules_paths is missing/empty"):
         validate_proposal(proposal_dict(gates=g))  # rules_paths absent
-    with pytest.raises(ProposalError):
+    with pytest.raises(ProposalError, match="rules_paths is missing/empty"):
         validate_proposal(proposal_dict(gates=g, rules_paths=[]))  # empty
 
 
@@ -1271,3 +1295,124 @@ def test_t2_match_path_required_when_answer_is_yes():
     g["t4"] = None
     with pytest.raises(ProposalError):
         validate_proposal(proposal_dict(gates=g, rules_paths=["src/**/*.py"]))
+
+
+# =========================================================================
+# Supplementary — FW-58: a follow-up audit found five of the "eight
+# production checks no test could see" (the F6 sweep above) were still
+# uncovered after that merge. Each test below was mutation-verified
+# uncovered on this file's HEAD (full suite: 1354 passed, 5 skipped, 0
+# failed, byte-identical with and without the check) before being
+# written, including the one below whose surrounding function FW-57/
+# FW-63 rewrote the same day — that rewrite never reached this specific
+# line.
+# =========================================================================
+
+
+def test_g0_reject_defer_answer_enum():
+    """FW-58: `gates.g0.reject`/`gates.g0.defer`.answer's yes/no enum
+    check had no test — no fixture in this module ever set either leg's
+    answer outside {"yes", "no"} (`_base_gates` ships both at "no"; the
+    only other touch, the YAML round-trip test, reads the value back
+    without ever writing something else). Mutation-verified: neutering
+    the check (`if False:` in place of the enum test) left the full suite
+    green — with it gone, `answer="bogus"` reaches `_check_evidence` with
+    `required=False` (`"bogus" != "yes"`), and nothing downstream
+    objects."""
+    for leg in ("reject", "defer"):
+        g = _base_gates()
+        g["g0"][leg] = {"answer": "bogus", "evidence": None}
+        with pytest.raises(ProposalError):
+            validate_proposal(proposal_dict(gates=g))
+
+
+def test_g0_reject_defer_evidence_required_when_yes():
+    """FW-58: `gates.g0.reject`/`gates.g0.defer`.evidence — required iff
+    the leg's own answer is "yes". No fixture in this module ever set
+    either leg's answer to "yes" (`_base_gates` ships both at "no", and
+    that's the only value this evidence leaf is ever exercised at).
+    Mutation-verified: forcing `required=False` at this call site left
+    the full suite green."""
+    for leg in ("reject", "defer"):
+        g = _base_gates()
+        g["g0"][leg] = {"answer": "yes", "evidence": None}
+        with pytest.raises(ProposalError):
+            validate_proposal(proposal_dict(gates=g))
+
+        g2 = _base_gates()
+        g2["g0"][leg] = {"answer": "yes", "evidence": TRUE_QUOTE}
+        validate_proposal(proposal_dict(gates=g2))
+
+
+def test_cost_bearing_evidence_required_when_yes():
+    """FW-58: `gates.t1.cost_bearing`.evidence — required iff answer is
+    "yes". `_base_gates` ships `cost_bearing.answer: None`, and the only
+    other place this leg is touched
+    (`test_every_mapping_node_type_checked_before_indexed`'s
+    "t1.cost_bearing" case) swaps the whole node for a scalar, which
+    raises inside `_mapping` before this line is ever reached —
+    `answer == "yes"` was never exercised. Mutation-verified: forcing
+    `required=False` at this call site left the full suite green."""
+    g = _base_gates()
+    g["t1"]["cost_bearing"] = {"answer": "yes", "evidence": None}
+    with pytest.raises(ProposalError):
+        validate_proposal(proposal_dict(gates=g))
+
+    g2 = _base_gates()
+    g2["t1"]["cost_bearing"] = {"answer": "yes", "evidence": TRUE_QUOTE}
+    validate_proposal(proposal_dict(gates=g2))
+
+
+def test_t2_evidence_required_both_ways():
+    """FW-58: `gates.t2`.evidence — required BOTH ways (Schema-1a), the
+    same rule `t1.field_shaped` gets (D4). Every fixture in this module
+    that reaches `_validate_gates` supplies a non-null `t2.evidence`
+    (`_base_gates`'s default `quote` parameter on the "no" leg, or an
+    explicit `TRUE_QUOTE` on every "yes" fixture elsewhere in this file)
+    — `evidence: None` on EITHER answer was never exercised. Mutation-
+    verified: forcing `required=False` at this call site left the full
+    suite green."""
+    for answer in ("no", "yes"):
+        g = _base_gates()
+        g["t2"] = {"answer": answer, "evidence": None, "match_path": None}
+        with pytest.raises(ProposalError):
+            validate_proposal(proposal_dict(gates=g))
+
+        g2 = _base_gates()
+        if answer == "yes":
+            g2["t2"] = {
+                "answer": "yes",
+                "evidence": TRUE_QUOTE,
+                "match_path": "src/app.py",
+            }
+            g2["t4"] = None
+            validate_proposal(proposal_dict(gates=g2, rules_paths=["src/**/*.py"]))
+        else:
+            g2["t2"] = {"answer": "no", "evidence": TRUE_QUOTE, "match_path": None}
+            validate_proposal(proposal_dict(gates=g2))
+
+
+def test_glob_class_body_escapes_ampersand_tilde_pipe():
+    """FW-58: the class-BODY sanitizer escapes `&`/`~`/`|` (§3.4a) because
+    `re` has signalled those will gain set-operation meaning inside a
+    class — plain literal members to `glob`/`fnmatch` today, so leaving
+    them unescaped would be the false-refusal direction (F2) this
+    sanitizer exists to avoid. No test pinned the escaping: under CURRENT
+    `re` semantics `[&~|]` and `[\\&\\~\\|]` compile and match
+    identically (measured — no warning is raised either, on this
+    interpreter), so a behavioural assertion through `_glob_match` alone
+    cannot discriminate the substitution; only the translated pattern
+    SHAPE can — the same strategy
+    `test_consecutive_double_star_segments_collapse_before_translation`
+    uses for its own forward-looking mechanism. Mutation-verified:
+    dropping the substitution left the full suite green — including
+    today, in the very function (`_compile_glob_pattern`) FW-57/FW-63
+    rewrote, because that rewrite never touched this specific line."""
+    pattern = _compile_glob_pattern("src/[&~|]x.py")
+    assert "\\&" in pattern.pattern
+    assert "\\~" in pattern.pattern
+    assert "\\|" in pattern.pattern
+    # And the escaping doesn't change what the class matches (F2: still
+    # plain literal members to the oracle) — the behavioural control.
+    assert _glob_match("src/&x.py", "src/[&~|]x.py") is True
+    assert _glob_match("src/zx.py", "src/[&~|]x.py") is False
