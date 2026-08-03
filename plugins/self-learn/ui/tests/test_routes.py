@@ -3207,3 +3207,91 @@ class TestHoldingRowShowsWhyItWasFlagged:
         # than asserting text that would need live telemetry: the class
         # must not appear when there is nothing to say.
         assert "holding-basis" not in r.text
+
+
+class TestFrontPageDeferredCountIsScoped:
+    """The front page's deferred count was keyed by bucket NAME alone, so
+    two same-named buckets in different scopes each showed the other's
+    deferrals added to their own.
+
+    It was deferred in 2026-07 with the reason "`list --json` items carry
+    no scope field ... fixing it properly is an 08 §1 substrate edit
+    (+scope on list items), not a UI-side derivation." That substrate edit
+    has since landed — `list_items` emits `scope` — so the stated blocker
+    was gone and the comment was keeping a known bug open on a premise
+    that had stopped being true.
+    """
+
+    def _rows(self, items):
+        from self_learn_ui.models import CliRead, build_front_model
+
+        ok = lambda data: CliRead(data=data)  # noqa: E731
+        status = ok(
+            {
+                "buckets": [
+                    {"bucket": "user", "scope": "user", "pending": 0,
+                     "unanalyzed": 0, "oldest_days": None},
+                    {"bucket": "user", "scope": "skill", "pending": 0,
+                     "unanalyzed": 0, "oldest_days": None},
+                ],
+                "total_pending": 0,
+            }
+        )
+        model = build_front_model(ok(items), status, ok({}), ok({}), sentinel_mtime=None)
+        return {(b.scope, b.name): b.deferred for b in model.buckets}
+
+    def test_two_same_named_buckets_do_not_share_a_deferred_count(self):
+        far = "2099-01-01T00:00:00Z"
+        rows = self._rows(
+            [
+                {"id": "lrn-aaaaaaa1", "bucket": "user", "scope": "user",
+                 "deferred_until": far},
+                {"id": "lrn-bbbbbbb2", "bucket": "user", "scope": "skill:user",
+                 "deferred_until": far},
+                {"id": "lrn-ccccccc3", "bucket": "user", "scope": "skill:user",
+                 "deferred_until": far},
+            ]
+        )
+        assert rows[("user", "user")] == 1
+        assert rows[("skill", "user")] == 2
+
+    def test_a_skill_bucket_still_counts_its_own_deferrals(self):
+        """The trap this fix has to avoid. A record's scope is
+        `skill:<name>` while the bucket's is bare `skill`, so keying on
+        the raw record scope would match nothing and silently report zero
+        — trading a merged count for a missing one. This is the leg that
+        catches that."""
+        rows = self._rows(
+            [
+                {"id": "lrn-bbbbbbb2", "bucket": "user", "scope": "skill:user",
+                 "deferred_until": "2099-01-01T00:00:00Z"},
+            ]
+        )
+        assert rows[("skill", "user")] == 1
+
+    def test_a_scopeless_item_is_attributed_when_the_name_is_unambiguous(self):
+        """A record whose `scope` is missing (malformed frontmatter — the
+        Record accessor is a plain lookup and can return None — or an
+        older CLI) must not silently vanish from the count. Silently
+        dropping it is the fail-open shape: a number that looks fine while
+        omitting real work."""
+        from self_learn_ui.models import CliRead, build_front_model
+
+        ok = lambda data: CliRead(data=data)  # noqa: E731
+        status = ok(
+            {
+                "buckets": [
+                    {"bucket": "solo", "scope": "skill", "pending": 0,
+                     "unanalyzed": 0, "oldest_days": None},
+                ],
+                "total_pending": 0,
+            }
+        )
+        model = build_front_model(
+            ok([{"id": "lrn-aaaaaaa1", "bucket": "solo",
+                 "deferred_until": "2099-01-01T00:00:00Z"}]),
+            status, ok({}), ok({}), sentinel_mtime=None,
+        )
+        assert {(b.scope, b.name): b.deferred for b in model.buckets} == {
+            ("skill", "solo"): 1
+        }

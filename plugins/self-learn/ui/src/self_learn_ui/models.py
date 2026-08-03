@@ -413,6 +413,21 @@ def _parse_dt(value: str | None) -> datetime | None:
     return dt
 
 
+def _bare_scope(scope: object) -> str:
+    """Reduce a RECORD's scope to a BUCKET's scope vocabulary.
+
+    They are not the same alphabet, and the mismatch is a live trap: a
+    bucket's scope is bare (``skill`` / ``project`` / ``user``), while a
+    record's own ``scope`` field qualifies skills as ``skill:<name>``.
+    Comparing the two directly looks obviously correct and silently drops
+    every record in every skill bucket.
+
+    Only the segment before the first colon is meaningful here, because
+    the bucket NAME already carries the skill's identity — pairing this
+    with the name is what makes ``(scope, name)`` a real bucket key."""
+    return str(scope or "").split(":", 1)[0]
+
+
 def _is_deferred(deferred_until: str | None, now: datetime) -> bool:
     """Deferred membership per 02 §2: ``deferred_until`` is in the FUTURE
     relative to ``now`` (a past date means deferral has lapsed — the
@@ -888,18 +903,49 @@ def build_front_model(
 
     status_data = status_read.data if status_read.ok and status_read.data else {}
     buckets_raw = status_data.get("buckets") or []
-    # Keyed by bucket NAME only — `list --json` items carry no scope
-    # field, so two same-named buckets in different scopes would each
-    # show the combined count (review 2026-07-17 round-1, MINOR-2). The
-    # whole app assumes bucket-name uniqueness (next_record_url and the
-    # Bucket page filter the same way); fixing it properly is an 08 §1
-    # substrate edit (+scope on list items), not a UI-side derivation.
-    deferred_by_bucket: dict[str, int] = {}
+    # Keyed by (scope, bucket) — a bucket is not identified by name alone,
+    # and two same-named buckets in different scopes used to show each
+    # other's combined deferred count (review 2026-07-17 round-1, MINOR-2).
+    #
+    # That was deferred at the time with the reason "`list --json` items
+    # carry no scope field ... fixing it properly is an 08 §1 substrate
+    # edit (+scope on list items), not a UI-side derivation." **The
+    # substrate edit has since landed** — `ledger_ops.list_items` emits
+    # `"scope": record.scope` — so the blocker is gone and this IS a
+    # UI-side derivation now. The stale deferral was keeping a known bug
+    # open on a premise that had stopped being true.
+    #
+    # The two vocabularies still differ, which is the trap: a bucket's
+    # scope is bare (`skill`), a record's own scope qualifies skills
+    # (`skill:<name>`). `_bare_scope` reduces the record form to the
+    # bucket form so the two can be compared at all — a plain equality
+    # test would drop every skill bucket's count to zero.
+    # An item with no usable `scope` (a malformed record — `Record.scope`
+    # is a plain frontmatter lookup and can come back None — or an older
+    # CLI) must not silently vanish from the count. When its bucket NAME
+    # is unambiguous it is attributed there, which is both correct and
+    # what the name-only keying did for every non-colliding bucket. Only a
+    # genuinely ambiguous name (same name in two scopes AND no scope on
+    # the item) is undecidable, and that is the one case it is dropped —
+    # rather than guessing, or inflating both.
+    scopes_by_name: dict[str, set[str]] = {}
+    for b in buckets_raw:
+        scopes_by_name.setdefault(b["bucket"], set()).add(b["scope"])
+
+    deferred_by_bucket: dict[tuple[str, str], int] = {}
     if list_read.ok:
         for item in list_read.data or []:
-            if _is_deferred(item.get("deferred_until"), now):
-                bucket_name = item.get("bucket") or ""
-                deferred_by_bucket[bucket_name] = deferred_by_bucket.get(bucket_name, 0) + 1
+            if not _is_deferred(item.get("deferred_until"), now):
+                continue
+            name = item.get("bucket") or ""
+            scope = _bare_scope(item.get("scope"))
+            if not scope:
+                candidates = scopes_by_name.get(name) or set()
+                if len(candidates) != 1:
+                    continue  # undecidable: ambiguous name, no scope
+                scope = next(iter(candidates))
+            key = (scope, name)
+            deferred_by_bucket[key] = deferred_by_bucket.get(key, 0) + 1
     buckets = tuple(
         sorted(
             (
@@ -909,7 +955,7 @@ def build_front_model(
                     pending=b["pending"],
                     oldest_days=b.get("oldest_days"),
                     unanalyzed=b["unanalyzed"],
-                    deferred=deferred_by_bucket.get(b["bucket"], 0),
+                    deferred=deferred_by_bucket.get((b["scope"], b["bucket"]), 0),
                 )
                 for b in buckets_raw
             ),
