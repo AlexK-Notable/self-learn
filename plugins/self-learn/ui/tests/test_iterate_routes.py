@@ -11,6 +11,7 @@ httpx against the ASGI app, in-process, exactly T-A's established pattern
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from starlette.testclient import TestClient
@@ -80,6 +81,24 @@ def _seed(tmp_path: Path):
 
 
 # ------------------------------------------------------- pane manager absent
+
+
+
+def _unarmed_bar_fields(html: str) -> dict[str, str]:
+    """Exactly the hidden fields the RENDERED unarmed action bar carries —
+    what a browser sends when the human clicks a verb. Never a hand-built
+    dict: one built by hand cannot notice a field the template stopped (or
+    started) emitting, which is exactly how `dest_touched` went missing
+    across the pane round trip and made the UI credit the analyst for a
+    destination the human chose."""
+    section = html.split('class="action-bar"')[1]
+    return dict(re.findall(r'<input[^>]*name="([^"]+)"[^>]*value="([^"]*)"', section))
+
+
+def _armed_bar_fields(html: str) -> dict[str, str]:
+    """The same, for the armed confirm form the arm response renders."""
+    section = html.split('action/confirm"')[1].split("</form>")[0]
+    return dict(re.findall(r'<input[^>]*name="([^"]+)"[^>]*value="([^"]*)"', section))
 
 
 class TestPaneManagerNotWired:
@@ -327,19 +346,25 @@ class TestPaneCloseDestinationPersistence:
 
         arm = c.post(
             f"/record/{rec.id}/action/arm",
-            data={"verb": "route", "kind": "detail", "dest": "skill-md"},
+            data={**_unarmed_bar_fields(detail.text), "verb": "route", "kind": "detail"},
             headers=HX,
         )
         assert 'data-armed="true"' in arm.text
 
         confirm = c.post(
             f"/record/{rec.id}/action/confirm",
-            data={"verb": "route", "kind": "detail", "dest": "skill-md"},
+            data={**_armed_bar_fields(arm.text), "kind": "detail"},
             headers=HX,
         )
         assert confirm.status_code == 200
         assert "no proposal for" not in confirm.text
-        assert runner.calls[-1] == ["route", rec.id, "--dest", "skill-md", "--json"]
+        # `--by human` is load-bearing, not incidental: the human worked the
+        # (o) cycle before opening Iterate, so carrying the destination back
+        # without carrying THAT would record the analyst as the chooser —
+        # FW-64's exact dishonesty, reintroduced through the pane door.
+        assert runner.calls[-1] == [
+            "route", rec.id, "--dest", "skill-md", "--by", "human", "--json"
+        ]
 
     def test_a_second_records_cycle_then_approve_without_iterate_still_works(
         self, tmp_path: Path
@@ -357,19 +382,25 @@ class TestPaneCloseDestinationPersistence:
 
         arm = c.post(
             f"/record/{rec.id}/action/arm",
-            data={"verb": "route", "kind": "detail", "dest": "skill-md"},
+            data={**_unarmed_bar_fields(cycled.text), "verb": "route", "kind": "detail"},
             headers=HX,
         )
         assert 'data-armed="true"' in arm.text
 
         confirm = c.post(
             f"/record/{rec.id}/action/confirm",
-            data={"verb": "route", "kind": "detail", "dest": "skill-md"},
+            data={**_armed_bar_fields(arm.text), "kind": "detail"},
             headers=HX,
         )
         assert confirm.status_code == 200
         assert "no proposal for" not in confirm.text
-        assert runner.calls[-1] == ["route", rec.id, "--dest", "skill-md", "--json"]
+        # `--by human` is load-bearing, not incidental: the human worked the
+        # (o) cycle before opening Iterate, so carrying the destination back
+        # without carrying THAT would record the analyst as the chooser —
+        # FW-64's exact dishonesty, reintroduced through the pane door.
+        assert runner.calls[-1] == [
+            "route", rec.id, "--dest", "skill-md", "--by", "human", "--json"
+        ]
 
 
 # --------------------------------------------------- U21 post-iterate summary

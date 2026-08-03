@@ -849,6 +849,17 @@ def detail_page(
             "model": model,
             "armed": None,
             "record_id": record_id,
+            # FW-64 × the pane_close carry-forward. `?dest=` can ONLY be on
+            # this URL because the human worked the (o) cycle control before
+            # opening Iterate — pane_close is the sole producer and it only
+            # sets it from the action bar's own field. So carrying the
+            # destination back without carrying this fact recorded
+            # `routing.by: analyst` for a destination the human personally
+            # chose, which is precisely the dishonesty FW-64 existed to fix,
+            # reintroduced through a different door. Two independently
+            # correct changes, wrong in combination; caught by re-running the
+            # suite after an auto-merge that had no textual conflict.
+            "dest_touched": pending_dest is not None,
             "pane": pane_snapshot,
             "pane_split": pane_split,
             "pane_base": f"/record/{record_id}/pane",
