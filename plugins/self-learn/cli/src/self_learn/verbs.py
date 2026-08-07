@@ -538,10 +538,42 @@ def _resolve_destination(
     bucket_dir: Path, record_id: str, dest: str | None
 ) -> _Destination:
     """Destination for a route: ``--dest`` overrides; else the proposal
-    sibling; neither → error."""
+    sibling; neither → error.
+
+    U-demand-user §3.2: an explicit ``--dest claude-md:rules:<topic>``
+    inherits the proposal sibling's ``rules_paths`` — but ONLY when the
+    sibling is schema-valid and names the SAME destination/variant/topic
+    (a bare ``claude-md`` never inherits; a different topic never
+    inherits). This is the review UI's only entrypoint (every route it
+    issues carries an explicit ``--dest``), and closes D2: an explicit
+    rules route silently dropping the human-reviewed globs. A missing,
+    unparseable, or schema-invalid sibling never raises here — the read
+    is guarded, not trusted (A6); it degrades to no inheritance, exactly
+    like today's ``--dest`` branch with no sibling at all."""
     if dest is not None:
         destination, qualifier = _parse_dest(dest)
-        return _Destination(destination, qualifier)
+        rules_paths: list[str] | None = None
+        if (
+            destination == "claude-md"
+            and qualifier is not None
+            and qualifier.startswith("rules:")
+        ):
+            topic = qualifier[len("rules:") :]
+            sibling_path = bucket_dir / "proposals" / f"{record_id}.yaml"
+            if sibling_path.is_file():
+                try:
+                    sibling = read_proposal(sibling_path)
+                    validate_proposal(sibling)
+                except ProposalError:
+                    sibling = None
+                if (
+                    sibling is not None
+                    and sibling.get("destination") == "claude-md"
+                    and sibling.get("variant") == "rules"
+                    and sibling.get("rules_topic") == topic
+                ):
+                    rules_paths = sibling.get("rules_paths")
+        return _Destination(destination, qualifier, rules_paths=rules_paths)
     proposal_path = bucket_dir / "proposals" / f"{record_id}.yaml"
     if not proposal_path.is_file():
         raise NoProposalError(
@@ -1043,10 +1075,23 @@ def _resolve_target(
             host = _project_host_or_refuse(home, bucket_dir, project_path)
             refs_dir, kind = host / "references", "project"
         else:
+            # S-23 (2), §3.1: chezmoi was retired 2026-07-24 — that ground
+            # is dead. The condition below stays byte-identical (the
+            # refusal's EFFECT is what S-23 mandates); only the reason
+            # changed. Item 3 is deliberately conditional (F6, cross-unit
+            # with U-composer's D4): naming a rules topic unconditionally
+            # would steer a non-file-scoped lesson to an UNPATHED rules
+            # file — ALWAYS-tier cost under a different filename, the
+            # silent upgrade D4 forbids.
             raise VerbError(
-                "reference destination needs skill:<name> or project scope — "
-                "the user host is the chezmoi-managed CLAUDE.md, it has no "
-                "references dir (doc 13 §2)"
+                "reference destination needs skill:<name> or project "
+                "scope — user scope has no references dir. S-23 (2): a "
+                "user-level reference file would have no SKILL.md to "
+                "hang a pointer off, so it would be unreachable canon, "
+                "exactly the failure mode S-23 exists to close. If this "
+                "lesson is file-scoped, route it to a pathed rules topic "
+                "instead (claude-md:rules:<topic>); if it is not, route "
+                "it to project scope, or defer"
             )
         # The compiler owns this mapping — "the one place that mapping
         # lives" (compilers.reference_target_path's docstring). This site
