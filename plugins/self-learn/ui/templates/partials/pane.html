@@ -95,12 +95,27 @@
      (a SEPARATE region, .detail-left, untouched by this partial) from
      the record's own default — silently reverting a cycled-but-unarmed
      destination that lives only in that bar's own hidden field. Include
-     it here (a no-op when that form isn't in the DOM — armed, a pane
-     proposal showing instead, or the bucket-level chat, whose
-     record_id is a synthetic key no such form ever carries) so
-     pane_close can carry it forward on the redirect's query string. #}
+     it here (a no-op when that form isn't in the DOM — armed, or a pane
+     proposal showing instead) so pane_close can carry it forward on the
+     redirect's query string.
+
+     `not bucket_pane` guards the attribute OFF entirely for the
+     bucket-level chat pane — a second UI-walk defect fix, found while
+     verifying this comment's own "no-op" claim: bucket_pane_ctx sets
+     `record_id` to the bucket's synthetic session key
+     (`pane.bucket_session_key`, format "bucket:<scope>/<name>"), and a
+     colon is not valid inside a CSS id selector. `hx-include` parses its
+     value as a selector via `querySelectorAll`, which THROWS a
+     SyntaxError for "#form-action-bar-bucket:skill/t" rather than
+     matching nothing — the previous claim of a harmless no-op was
+     unverified and wrong. The thrown error aborted htmx's request
+     handling before the POST ever left the browser, so "Close (q)" did
+     nothing at all (key or click) for the entire lifetime of a live
+     bucket pane. A bucket-level chat has no per-record action bar to
+     carry a destination forward from in the first place, so the fix is
+     to never attempt the include there, not to escape the selector. #}
   <button type="button" data-key-action="close_pane"
           hx-post="{{ pane_base | default('/record/' ~ record_id ~ '/pane') }}/close"
-          hx-include="#form-action-bar-{{ record_id }}">Close (q)</button>
+          {% if not bucket_pane %}hx-include="#form-action-bar-{{ record_id }}"{% endif %}>Close (q)</button>
   {% endif %}
 </div>

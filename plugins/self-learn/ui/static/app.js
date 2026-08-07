@@ -65,10 +65,31 @@
     return document.querySelector('.action-bar[data-armed="true"]');
   }
 
+  /**
+   * UI-walk defect fix: keyboard `b` (toggle_brief) "did nothing
+   * visible" — measured, not assumed. On a Detail page long enough to
+   * scroll, the episode-brief `<details>` this action toggles can sit
+   * well above the human's current scroll position (Finding, near the
+   * top, while they're reading Why/the action bar further down); the
+   * DOM toggle was always real (the `<details>` element's own `.open`
+   * genuinely flips), but with nothing on screen changing, "the key
+   * does nothing" is exactly what it reads as. Confirmed with a
+   * scrolled-to-bottom repro: identical before/after screenshots, the
+   * toggled element's own `getBoundingClientRect()` landing entirely
+   * negative (off-screen above the viewport). `scrollIntoView({block:
+   * "nearest"})` is a no-op when the target is already visible (the
+   * SAME convention `moveSelection` below already uses for row
+   * selection), so this costs nothing for the common case where the
+   * dispatched action's target was in view already — it only matters
+   * for the off-screen case this defect is about. Applies to every
+   * action dispatched through here, not just `b` — the same "the human
+   * pressed a key while scrolled away from its target" gap applies
+   * to any of them on a long enough page. */
   function clickAction(action) {
     const el = document.querySelector('[data-key-action="' + action + '"]');
     if (el) {
       el.click();
+      el.scrollIntoView({ block: "nearest" });
       return true;
     }
     return false;
@@ -331,6 +352,16 @@
    * whichever comes first. A NEW element (gate m5), never the
    * persistent showBanner register (no auto-clear there, and a banner
    * is meant to survive/stack — this is a single, self-clearing line).
+   *
+   * UI-walk defect fix (same root cause as clickAction's own comment
+   * above): this always PREPENDS to `#self-learn-ui-content`, so on a
+   * page long enough to scroll, a human who is not already at the very
+   * top never sees it — measured with a scrolled-to-bottom repro
+   * (`b` on a record with no episode brief): the inserted hint's own
+   * `getBoundingClientRect()` landed entirely negative, off-screen
+   * above the viewport, for the full 3s it takes to auto-clear. Same
+   * `scrollIntoView({block: "nearest"})` fix, same no-op-when-already-
+   * visible property.
    */
   const NOOP_HINT_MS = 3000;
   var noopHintTimer = null;
@@ -344,6 +375,7 @@
     p.setAttribute("data-noop-hint-active", "true");
     p.textContent = text;
     main.prepend(p);
+    p.scrollIntoView({ block: "nearest" });
     noopHintTimer = window.setTimeout(hideNoopHint, NOOP_HINT_MS);
   }
 

@@ -23,6 +23,7 @@ from self_learn_ui.env import load_env
 from self_learn_ui.keymap import keymap_as_dicts, keymap_json
 from self_learn_ui.routes import build_argv, cycle_destination, next_record_url
 from self_learn_ui.runner import FakeRunner, RunResult
+from self_learn_ui.sse import AppEventHub
 
 from support import (
     RouteSideEffectRunner,
@@ -895,6 +896,187 @@ class TestDetailPage:
         r = c.get(f"/record/{rec.id}")
         assert 'data-key-action="toggle_brief"' not in r.text
         assert "Episode brief" not in r.text
+
+
+# ------------------------------ UI-walk defect fix: terminology for a
+# cold user
+#
+# "arm" was user-facing exactly once (the help overlay's "(arm)"
+# parenthetical) and never defined; "canon" was never defined outside a
+# post-resolution success banner. Both now carry a short, plain-words
+# gloss at the FIRST place a cold user can meet them — the help overlay
+# for "arm" (its only appearance), and title= tooltips on the
+# already-canon badge/button everywhere it renders (Detail's own
+# model.badges loop, its Why section, the action bar's Graduate button,
+# Bucket's row.badges loop, and the bulk "Acknowledge all as canon"
+# button) for "canon". A handful of other undefined jargon terms found
+# in the same sweep (sighting(s), episode brief, "Is it holding?",
+# near-miss, mined) get the same title= treatment — see the report for
+# the full list of what was covered and what was deliberately left.
+#
+# Every test below has a positive control: it asserts the marker text
+# is PRESENT before checking for the definition, so a future rename of
+# the marker text reddens the control rather than silently passing on
+# a definition that no longer attaches to anything.
+
+
+class TestTerminologyDefinitions:
+    def test_arm_is_defined_in_the_help_overlay(self, tmp_path: Path) -> None:
+        sb = make_env(tmp_path)
+        c, _runner = make_client(sb)
+        r = c.get("/")
+        assert r.status_code == 200
+        # positive control: the ONE user-facing appearance of the word
+        # still exists (the (arm) parenthetical on the arm_proposal row)
+        assert "(arm)" in r.text
+        assert 'class="help-intro"' in r.text
+        assert "<strong>arm</strong>" in r.text
+
+    def test_already_canon_badge_defines_canon_on_detail(self, tmp_path: Path) -> None:
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+        seed_proposal(sb.ledger, rec.id, already_canon=True, already_canon_reason="covered")
+        c, _runner = make_client(sb)
+        r = c.get(f"/record/{rec.id}")
+        assert "already canon" in r.text.lower()  # positive control
+        # THREE independent render sites carry this gloss for an
+        # already-canon pending record: the top-of-page model.badges
+        # loop, the Why section's own paragraph, and the action bar's
+        # Graduate button badge — exact count so a regression in any ONE
+        # of the three (not just all three at once) reddens this.
+        assert r.text.count("canon = the guidance file") == 3
+
+    def test_graduate_button_defines_canon_on_detail(self, tmp_path: Path) -> None:
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+        seed_proposal(sb.ledger, rec.id, already_canon=False)
+        c, _runner = make_client(sb)
+        r = c.get(f"/record/{rec.id}")
+        assert 'data-key-action="graduate"' in r.text  # positive control
+        assert "Retire this lesson" in r.text
+
+    def test_already_canon_badge_defines_canon_on_bucket_row(self, tmp_path: Path) -> None:
+        """A HETEROGENEOUS group — one already-canon, one not — so the
+        row renders individually with its own badge (models.py's own
+        bulk-collapse rule only fires for a HOMOGENEOUS already-canon
+        group; a single already-canon record on its own collapses into
+        the bulk row instead, which carries no per-row badge at all —
+        see test_bulk_acknowledge_button_defines_canon for that shape).
+
+        Code-gate FOLD 1: a bare `in r.text` check here is VACUOUS — the
+        already-canon row's action bar (kind="detail", included per row
+        at bucket.html's own include site) ALSO renders a Graduate badge
+        carrying this identical gloss (action_bar.html), so deleting
+        bucket.html's OWN row.badges title still leaves the string on
+        the page via that sibling site. Exact count, mirroring the
+        Detail-page test's own == 3 pattern: bucket.html's row.badges
+        loop contributes exactly ONE occurrence (the canon row only —
+        the plain row has no already-canon badge), and action_bar.html's
+        Graduate button contributes the other — regressing EITHER site
+        independently drops the count and reddens this."""
+        sb = make_env(tmp_path)
+        rec_canon = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec_canon)
+        seed_proposal(sb.ledger, rec_canon.id, destination="skill-md", already_canon=True)
+        rec_plain = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec_plain)
+        seed_proposal(sb.ledger, rec_plain.id, destination="skill-md", already_canon=False)
+        c, _runner = make_client(sb)
+        r = c.get("/bucket/skill/s")
+        assert "already canon" in r.text.lower()  # positive control
+        assert r.text.count("canon = the guidance file") == 2
+
+    def test_mined_badge_is_defined_on_bucket_row(self, tmp_path: Path) -> None:
+        """Code-gate FOLD 1: bucket.html's row.badges loop carries its
+        OWN `mined` gloss (a separate `{% elif %}` branch from
+        already-canon's), and it had NO test at all — the existing
+        `test_mined_badge_is_defined` only ever reads /record/{id},
+        never a Bucket page. Unlike already-canon, "mined" has no
+        sibling render site on this page, so a bare `in r.text` check is
+        sound here (nothing else on a Bucket page renders that string)."""
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s", source="session")
+        seed_record(sb.ledger, rec)
+        c, _runner = make_client(sb)
+        r = c.get("/bucket/skill/s")
+        assert 'class="badge badge-mined"' in r.text  # positive control
+        assert "found automatically by scanning past sessions" in r.text
+
+    def test_bulk_acknowledge_button_defines_canon(self, tmp_path: Path) -> None:
+        sb = make_env(tmp_path)
+        for _ in range(2):
+            rec = make_behavior(scope="skill:s")
+            seed_record(sb.ledger, rec)
+            seed_proposal(sb.ledger, rec.id, destination="skill-md", already_canon=True)
+        c, _runner = make_client(sb)
+        r = c.get("/bucket/skill/s")
+        assert "acknowledge all as canon" in r.text.lower()  # positive control
+        assert "Retire all of these" in r.text
+
+    def test_mined_badge_is_defined(self, tmp_path: Path) -> None:
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s", source="session")
+        seed_record(sb.ledger, rec)
+        c, _runner = make_client(sb)
+        r = c.get(f"/record/{rec.id}")
+        assert 'class="badge badge-mined"' in r.text  # positive control
+        assert "found automatically by scanning past sessions" in r.text
+
+    def test_sightings_line_is_defined(self, tmp_path: Path) -> None:
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+        c, _runner = make_client(sb)
+        r = c.get(f"/record/{rec.id}")
+        assert 'class="provenance"' in r.text  # positive control
+        assert "Sightings: how many times" in r.text
+
+    def test_episode_brief_summary_is_defined(self, tmp_path: Path) -> None:
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s", source="session")
+        rec.set_body(rec.body.rstrip("\n") + "\n\n## Episode brief\nRecap text.\n")
+        seed_record(sb.ledger, rec)
+        c, _runner = make_client(sb)
+        r = c.get(f"/record/{rec.id}")
+        assert "Episode brief (b)" in r.text  # positive control
+        assert "auto-drafted by the miner" in r.text
+
+    def test_holding_section_heading_is_defined(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Monkeypatches `ledger.report` directly (per this repo's own
+        FakeRunner trap: a queued verb result controls nothing for a page
+        READ) rather than routing a fake result through the runner."""
+        from self_learn_ui import ledger as ledger_mod
+        from self_learn_ui.models import CliRead
+
+        sb = make_env(tmp_path)
+        report_data = {
+            "recurrence_suspects": [
+                {
+                    "id": "lrn-aaaaaaa1",
+                    "nonce": "n1",
+                    "seen_at": "2026-08-01T00:00:00Z",
+                    "basis": "fire-violated",
+                }
+            ],
+            "routed_live": [{"id": "lrn-aaaaaaa1", "bucket": "s", "routed_days_ago": 3}],
+        }
+        monkeypatch.setattr(ledger_mod, "report", lambda home, **kw: CliRead(data=report_data))
+        c, _runner = make_client(sb)
+        r = c.get("/")
+        assert "Is it holding?" in r.text  # positive control
+        assert "Rules already written into canon" in r.text
+
+    def test_near_miss_summary_is_defined(self, tmp_path: Path, monkeypatch) -> None:
+        sb = _sandboxed(tmp_path, monkeypatch)
+        _seed_miner_run()
+        c, _runner = make_client(sb)
+        r = c.get("/")
+        assert re.search(r"<summary[^>]*>near-misses \(\d+\)</summary>", r.text)  # positive control
+        assert "Candidates the miner considered but did not capture" in r.text
 
 
 class TestSurfaceFillWhyRegion:
@@ -3066,6 +3248,90 @@ class TestWorkerKick:
         assert "Force run" in r.text
 
 
+# ------------------------------ UI-walk defect fix: "Force run" feedback
+#
+# Both Force-run buttons (worker kick, miner run) posted, redirected, and
+# gave a human nothing perceptible in between — found in the 2026-08-03
+# cold-open walk. The fix EXTENDS the S-20 `applying` in-flight machinery
+# (03-decisions.md's S-20 row: a keyed Map, never a counter+flag — five
+# gate rounds each found a defect in the counter shape) rather than
+# inventing a second mechanism: both routes now call the SAME
+# `_publish_applying` helper the three verb-confirm routes already call,
+# publishing the SAME "start" -> "done"/"error" envelope pair on the SAME
+# `app_hub`. These are server-side unit tests (mirrors
+# `TestWorkerKick.test_forces_a_front_scope_refresh`'s own pattern of a
+# manually-wired hub + synchronous TestClient — `AppEventHub.publish` is
+# awaited to completion inside the route before `TestClient.post`
+# returns, so the queue is fully populated by the time the assertion
+# runs); the client-side rendering half (aria_snapshot inequality, the
+# oracle's own blind spot re: opacity) is covered by the browser-driven
+# tests in test_js_dom.py's TestApplyingStripClientRendering, which this
+# unit does not need to duplicate — app.js's Map/render code path is
+# unchanged, only what publishes into it is new.
+
+
+def _make_client_with_app_hub(
+    sb, *, runner: FakeRunner | None = None, port: int = 7357
+) -> tuple[TestClient, FakeRunner, AppEventHub]:
+    runner = runner if runner is not None else FakeRunner()
+    env = load_env(sb.env)
+    app_hub = AppEventHub()
+    app = create_app(env=env, token=TOKEN, runner=runner, app_hub=app_hub, start_watcher=False)
+    c = TestClient(app, base_url=f"http://127.0.0.1:{port}")
+    c.cookies.set("slu_token", TOKEN)
+    return c, runner, app_hub
+
+
+class TestForceRunApplyingFeedback:
+    def test_worker_kick_emits_start_then_done(self, tmp_path: Path) -> None:
+        sb = make_env(tmp_path)
+        c, _runner, app_hub = _make_client_with_app_hub(sb)
+        q = app_hub.subscribe()
+        r = c.post("/worker/kick", headers={"HX-Request": "true"})
+        assert r.status_code == 200
+        start = q.get_nowait()
+        done = q.get_nowait()
+        assert start == {"type": "applying", "verb": "worker", "id": "kick", "state": "start"}
+        assert done == {"type": "applying", "verb": "worker", "id": "kick", "state": "done"}
+        assert q.empty()
+
+    def test_worker_kick_emits_error_state_on_nonzero_exit(self, tmp_path: Path) -> None:
+        sb = make_env(tmp_path)
+        runner = FakeRunner()
+        runner.queue_result(RunResult(1, stderr="boom"))
+        c, _runner, app_hub = _make_client_with_app_hub(sb, runner=runner)
+        q = app_hub.subscribe()
+        r = c.post("/worker/kick", headers={"HX-Request": "true"})
+        assert r.status_code == 200  # worker kick has no arm-then-confirm error leg
+        q.get_nowait()  # start
+        done = q.get_nowait()
+        assert done["state"] == "error"
+
+    def test_mine_run_emits_start_then_done(self, tmp_path: Path) -> None:
+        sb = make_env(tmp_path)
+        c, _runner, app_hub = _make_client_with_app_hub(sb)
+        q = app_hub.subscribe()
+        r = c.post("/mine/run", headers={"HX-Request": "true"})
+        assert r.status_code == 200
+        start = q.get_nowait()
+        done = q.get_nowait()
+        assert start == {"type": "applying", "verb": "mine", "id": "run", "state": "start"}
+        assert done == {"type": "applying", "verb": "mine", "id": "run", "state": "done"}
+        assert q.empty()
+
+    def test_mine_run_emits_error_state_on_nonzero_exit(self, tmp_path: Path) -> None:
+        sb = make_env(tmp_path)
+        runner = FakeRunner()
+        runner.queue_result(RunResult(1, stderr="boom"))
+        c, _runner, app_hub = _make_client_with_app_hub(sb, runner=runner)
+        q = app_hub.subscribe()
+        r = c.post("/mine/run", headers={"HX-Request": "true"})
+        assert r.status_code == 200
+        q.get_nowait()  # start
+        done = q.get_nowait()
+        assert done["state"] == "error"
+
+
 # --------------------------------------------------- Y-24: near-miss promote
 
 
@@ -3265,7 +3531,7 @@ class TestNearMissDrillRendering:
         _seed_miner_run()
         c, _runner = make_client(sb)
         html = c.get("/").text
-        m = re.search(r"<details>\s*<summary>near-misses \(\d+\)</summary>", html)
+        m = re.search(r"<details>\s*<summary[^>]*>near-misses \(\d+\)</summary>", html)
         assert m is not None
         # the <details> tag itself carries no `open` attribute
         details_tag = html[: m.start()].rsplit("<details", 1)[-1]

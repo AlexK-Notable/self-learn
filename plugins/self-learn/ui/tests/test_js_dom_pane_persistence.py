@@ -332,3 +332,57 @@ def test_close_pane_presses_q_and_ends_the_session(page: "Page", server: ServerH
     page.keyboard.press("q")
     page.wait_for_url(f"{server.base_url}/record/{REC_RETRY}")
     assert server.pane_manager.active_record_id is None
+
+
+def test_close_pane_click_on_bucket_pane_actually_closes(page: "Page", server: ServerHandle) -> None:
+    """UI-walk defect fix: `bucket_pane_ctx` sets `record_id` to the
+    bucket's synthetic session key (`bucket:<scope>/<name>` —
+    `pane.bucket_session_key`'s own format), and `pane.html`'s Close (q)
+    button used to carry `hx-include="#form-action-bar-{{ record_id }}"`
+    unconditionally. A colon is not valid inside a CSS id selector, and
+    htmx parses `hx-include` as one via `querySelectorAll` — which
+    THROWS for "#form-action-bar-bucket:skill/t" instead of matching
+    nothing, aborting the click's request before the POST ever left the
+    browser. Positive control FIRST (gate M1's own discipline): the
+    button must actually be present and its `hx-include` value must be
+    the exact string that used to explode, so a future refactor that
+    changes the synthetic key format can't make this test pass for the
+    wrong reason. Reproduces on a page LOAD with an already-live bucket
+    pane (bucket.html's own `{% if pane_split %}` branch), not just
+    after an htmx swap — the bug was present at both entry points."""
+    from self_learn_ui.pane import STATE_STREAMING, bucket_session_key
+
+    key = bucket_session_key("skill", "t")
+    server.pane_manager._live = _Live(record_id=key, state=STATE_STREAMING)
+    errors: list[str] = []
+    page.on("pageerror", lambda exc: errors.append(str(exc)))
+    _open(page, server, "/bucket/skill/t")
+    button = page.locator('[data-key-action="close_pane"]')
+    button.wait_for()
+    assert button.inner_text() == "Close (q)"  # positive control: the right button
+    assert "form-action-bar-bucket" not in (button.get_attribute("hx-include") or "")
+
+    button.click()
+    page.wait_for_url(f"{server.base_url}/bucket/skill/t", timeout=5000)
+    assert errors == []
+    assert server.pane_manager.active_record_id is None
+
+
+def test_close_pane_presses_q_on_bucket_pane_actually_closes(page: "Page", server: ServerHandle) -> None:
+    """Same defect, the keyboard leg: `q` dispatches through
+    `clickAction`, which synthesizes a `.click()` on the same element —
+    covered separately since the task description explicitly asks
+    whether the key, the click, or both are dead."""
+    from self_learn_ui.pane import STATE_STREAMING, bucket_session_key
+
+    key = bucket_session_key("skill", "t")
+    server.pane_manager._live = _Live(record_id=key, state=STATE_STREAMING)
+    errors: list[str] = []
+    page.on("pageerror", lambda exc: errors.append(str(exc)))
+    _open(page, server, "/bucket/skill/t")
+    page.wait_for_selector('[data-key-action="close_pane"]')
+
+    page.keyboard.press("q")
+    page.wait_for_url(f"{server.base_url}/bucket/skill/t", timeout=5000)
+    assert errors == []
+    assert server.pane_manager.active_record_id is None
