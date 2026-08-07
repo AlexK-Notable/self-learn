@@ -139,13 +139,23 @@
 </div>
 
 <div class="bucket-right">
-  {% with record_id=bucket_pane_key %}
+  {# `bucket_pane=True` distinguishes this synthetic bucket-level session
+     from a record's own pane on BOTH branches — not just the idle one.
+     UI-walk defect fix: `pane.html`'s Close (q) button used to render
+     unconditionally with `hx-include="#form-action-bar-{{ record_id }}"`,
+     which on this branch resolves to the bucket's synthetic session key
+     (`bucket:<scope>/<name>` — pane.bucket_session_key's own format, a
+     colon included). As a CSS id selector that colon is a syntax error
+     ("not a valid selector"), so htmx threw before ever issuing the POST
+     — Close (q) silently did nothing, by key or by click, the whole time
+     a bucket pane was live. `bucket_pane` now gates that attribute off
+     entirely (pane.html) since a bucket-level chat has no per-record
+     action bar to carry a destination forward from in the first place. #}
+  {% with record_id=bucket_pane_key, bucket_pane=True %}
     {% if pane_split %}
       {% include "partials/pane.html" %}
     {% else %}
-      {% with bucket_pane=True %}
-        {% include "partials/pane_idle.html" %}
-      {% endwith %}
+      {% include "partials/pane_idle.html" %}
     {% endif %}
   {% endwith %}
 </div>

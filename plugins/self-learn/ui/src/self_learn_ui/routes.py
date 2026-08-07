@@ -2761,6 +2761,7 @@ def _bucket_pane_key(scope: str, name: str) -> str:
 def _bucket_pane_ctx(scope: str, name: str, snapshot: Any) -> dict[str, Any]:
     return {
         "record_id": _bucket_pane_key(scope, name),
+        "bucket_pane": True,
         "pane": snapshot,
         "pane_base": f"/bucket/{scope}/{name}/pane",
         "pane_close_url": f"/bucket/{scope}/{name}",
@@ -2814,9 +2815,7 @@ async def bucket_pane_resume(
         )
     if outcome == "not-resumable":
         snapshot = manager.snapshot(key)
-        return _render(
-            request, "partials/pane_idle.html", {**_bucket_pane_ctx(scope, name, snapshot), "bucket_pane": True}
-        )
+        return _render(request, "partials/pane_idle.html", _bucket_pane_ctx(scope, name, snapshot))
     snapshot = manager.snapshot(key)
     return _render(request, "partials/pane.html", _bucket_pane_ctx(scope, name, snapshot))
 
@@ -2831,9 +2830,7 @@ def bucket_pane_view(request: Request, scope: str, name: str) -> HTMLResponse:
     view = manager.view_snapshot(key)
     if view is None:
         snapshot = manager.snapshot(key)
-        return _render(
-            request, "partials/pane_idle.html", {**_bucket_pane_ctx(scope, name, snapshot), "bucket_pane": True}
-        )
+        return _render(request, "partials/pane_idle.html", _bucket_pane_ctx(scope, name, snapshot))
     return _render(request, "partials/pane.html", _bucket_pane_ctx(scope, name, view))
 
 
@@ -2886,11 +2883,7 @@ def bucket_pane_panel(request: Request, scope: str, name: str) -> HTMLResponse:
     snapshot = manager.snapshot(key) if manager is not None else None
     if snapshot is not None and snapshot.state != pane.STATE_IDLE:
         return _render(request, "partials/pane.html", _bucket_pane_ctx(scope, name, snapshot))
-    return _render(
-        request,
-        "partials/pane_idle.html",
-        {**_bucket_pane_ctx(scope, name, snapshot), "bucket_pane": True},
-    )
+    return _render(request, "partials/pane_idle.html", _bucket_pane_ctx(scope, name, snapshot))
 
 
 # -------------------------------------------------------------------- SSE
