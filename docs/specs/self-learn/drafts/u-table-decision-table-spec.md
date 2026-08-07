@@ -1,10 +1,11 @@
 # Spec — U-table: the decision table as a pure module, and the recompute-and-refuse check
 
-Status: **r2 — GATED SOUND, cleared for build.** Blind spec gate (r1,
+Status: **r3 — GATED SOUND, CLEARED FOR BUILD.** Blind spec gate (r1,
 2026-08-06) returned **SOUND — buildable after folds: 1 BLOCKER, 6 FOLD,
-6 NOTE**; all are folded into this document and §10 records each. The
-gate independently reproduced this spec's central enumeration to the
-digit. Unit `U-table` of the r2 routing campaign
+6 NOTE**; all were folded at r2 and the **delta round returned SOUND,
+cleared for build**, with two figure substitutions landed at r3. §10
+records each. The gate independently reproduced this spec's central
+enumeration to the digit. Unit `U-table` of the r2 routing campaign
 (`forward/r2-routing-campaign.md` §2, Wave 2). Dependency `U-schema` is
 **MERGED** (`176eee6`); this spec is written against the code that shipped
 and its post-merge fixes (FW-57/62/63/66/67, `05f8a5b`, `81cb694`,
@@ -662,9 +663,10 @@ every record in the bucket.
 **A legal scope value never refuses on shape alone — this counter-leg is
 mandatory and is what the r1 gate's BLOCKER was about.** `records.py`'s
 `_validate_scope` (`:806-811`) admits exactly `project`, `user` and
-`skill:<name>`; **`project` and `user` have no `skill:` prefix and are the
-two commonest scopes on the hot path** (of the 35 live pending records, 9
-are `user` and 6 are `project`). So C2 must, in the same test, assert that
+`skill:<name>`; **`project` and `user` have no `skill:` prefix and are all
+but one of the live hot path** — of the 35 pending records, **31 are
+`user` (89%), 3 are `project`, and 1 is `skill:*`**. So C2 must, in the
+same test, assert that
 a **coherent** trace validates cleanly at all three of `"project"`,
 `"user"` and `"skill:s"`. Only the trace's own content may refuse it.
 Without this leg, a build that refuses every scope satisfies C2 while
@@ -1281,19 +1283,15 @@ and the split is explained — deleting `L2c` falls through to `L3` for the
 reads `t4`, which §3.2 has just forced to `null` when the t3 route is
 taken → raises).
 
-**One disagreement with the gate, reported rather than absorbed.** The gate
-scored `L2c` as `306 / 0 / 100% surviving` — "no single-line deletion can
-redden it". This measurement says `306 / 102 differ / 204 raise`, i.e. 0%
-surviving. The two model different edits: the gate appears to model `L2c`
-as returning what the fall-through would return anyway, while this run
-models the literal deletion of the `return "DEMAND"` line, which lets
-control leave the `L2` block. The literal deletion is what M24b specifies,
-and its consequences are derivable (above). **The gate's instruction is
-adopted regardless and unchanged**, because it is right either way and is
-strictly the safer reading: `L2c`'s fixture must come from the DIFFERS set,
-and its mutation must be scored for exceptions as well as values. Recorded
-so the code gate, which will re-run this, is not surprised by a third
-number.
+**`L2c` is `306 / 102 differ / 204 raise` — 0% surviving. That is the sole
+correct figure and there is no competing one.** The r1 gate reported
+`306 / 0 / 100% surviving` ("no single-line deletion can redden it"); at
+the delta round it established that its own harness had **no edit branch
+for that row**, so the run measured no edit at all and the 100% was an
+artefact, not a finding. The figures above are the author's line-deletion
+measurement, reproduced by the gate. **`L2c` IS mutatable** (M24b), and
+two thirds of its detections are exceptions rather than differing values,
+which is the only thing about it a sweep must handle specially.
 
 **X1d — §3.2's window clause, measured against its own misreading**
 *(gate F4)*. Same enumeration, two readings of the scoped `t4` rule:
@@ -1414,7 +1412,7 @@ default is the first place to look.
   | F5 | A3 swept `expected_outcome`, but the reachable crash surface is `load_class`'s — 8.5× larger | A3b, X1e |
   | F6 | cross-unit: `U-composer` r1 assumed the doctrine branch §6-BD10 rejects; its r2 adopts R-SCOPE | §8 |
   | F7 | cross-unit: H1 was taken only half; `U-composer`'s r2 takes it in full | §8-H1, §7.4 |
-  | N1 | **§9-X1c's load-class counts were 2× too high — my harness double-counted the `g0`-all-no slice.** Gate right, r1 wrong; re-derived, with three first-principles consistency checks. One disagreement on `L2c` reported with its reproducible count | X1c |
+  | N1 | **§9-X1c's load-class counts were 2× too high — my harness double-counted the `g0`-all-no slice.** Gate right, r1 wrong; re-derived, with three first-principles consistency checks. `L2c` was reported as a disagreement at r2 and **resolved at the delta round in this spec's favour** — see r3 below | X1c |
   | N2 | four preconditions the enumeration is only legal with were unstated | §9 |
   | N3 | §6-BD3 named `write_proposal` where the producer is the **analyst** | §6-BD3 |
   | N4 | the `ImportError` quote is order-specific; both messages tabulated | §3.6, X2 |
@@ -1428,3 +1426,23 @@ default is the first place to look.
   distinguishability is `U-demand-user`'s). The §7.1 `sightings` decline
   was accepted with its reason **narrowed** — the honest ground is that
   `e1.sightings` is a transcription, not a judgment.
+
+- **r3 (2026-08-06)** — **delta round: SOUND, CLEARED FOR BUILD.** The gate
+  confirmed the blocker closed, verified every fold, and audited the four
+  unrequested r2 changes (the `D-`→`BD-` rename, M30, M31, the build-order
+  tripwire) as sound. Two figure substitutions land here, both measured
+  read-only against the live ledger before editing:
+
+  1. **§4-C2's counter-leg carried the wrong population.** r2 said "of the
+     35 live pending records, 9 are `user` and 6 are `project`" — those are
+     the *resolved*-by-destination tallies from §9-X6 (8+1 user, 5+1
+     project) transposed onto the pending set. Re-measured: **31 `user`,
+     3 `project`, 1 `skill:*` of 35 — 89% user.** The correction
+     strengthens C2's own argument rather than weakening it.
+  2. **§9-X1c's `L2c` disagreement is resolved in this spec's favour and
+     the two-models framing is gone.** The gate established that its r1
+     harness had **no edit branch for `L2c`**, so its `306 / 0 / 100%
+     surviving` measured no edit at all. `306 / 102 differ / 204 raise`
+     (0% surviving) is the sole correct figure. The old "two different edit
+     models" wording is removed because it could have licensed a code gate
+     to score `L2c` as unmutatable and reproduce the artefact.
