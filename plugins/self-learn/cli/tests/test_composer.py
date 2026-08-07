@@ -296,9 +296,22 @@ def a6_env(tmp_path):
     e_high = _pending_behavior(env, "lrn-99999999", "zzztie")
     f_low = _routed_behavior(env, "lrn-00000005", "zzztie")
 
+    # (v) a below-floor pair: `faint` shares exactly one token with
+    # `target` ("zzzfaint"), diluted by 20 unique filler tokens so its
+    # sum_idf swamps the shared term's idf (measured 2026-08-06: score
+    # 0.1886 < the 0.20 floor). This is NOT the same case as (iii) —
+    # `shared` is non-empty here, so the pair reaches the floor
+    # comparison itself, rather than being skipped earlier by the
+    # empty-intersection `continue`. Removing the floor check (M6)
+    # includes it; the empty-intersection fixture (iii) cannot see that
+    # mutation at all.
+    target = _pending_behavior(env, "lrn-60000000", "zzzfaint")
+    filler = " ".join(f"pfiller{i}xyz" for i in range(20))
+    faint = _pending_behavior(env, "lrn-60000001", "zzzfaint " + filler)
+
     return env, dict(
         a=a, sib=sib, hub=hub, hub_siblings=hub_siblings, isolated=isolated,
-        d=d, e_high=e_high, f_low=f_low,
+        d=d, e_high=e_high, f_low=f_low, target=target, faint=faint,
     )
 
 
@@ -341,6 +354,13 @@ def test_a6_ranking_floor_and_cap(a6_env, monkeypatch):
     # (iii) — the literal no-candidates line.
     rendered = worker._render_candidates(result[r["isolated"].id])
     assert rendered == "(no cluster candidates above the 0.20 floor)"
+
+    # (v) — a genuinely below-floor, non-empty-intersection candidate is
+    # excluded (M6's own target: removing the floor check while keeping
+    # the cap survives (iii), which has no shared tokens at all to filter).
+    target_batch = _entries_for(env.ledger, [r["target"]])
+    target_result = worker.cluster_candidates(env.ledger, target_batch)
+    assert target_result[r["target"].id] == []
 
 
 def test_a7_determinism_and_tie_ordering(a6_env):
@@ -497,6 +517,7 @@ def test_a12_worker_prompt_ingredients_and_to_text_containment(tmp_path):
     assert "§9" in prompt
     assert "§10" in prompt
     assert "headline" in prompt  # card registry
+    assert "(no rejected proposals yet)" in prompt  # digest, empty leg
 
     # roster sha line + candidate block + path roster.
     assert "roster sha:" in prompt
@@ -1321,6 +1342,16 @@ def test_a24_containment_and_derivation_at_owned_sites(tmp_path, monkeypatch):
     # `write_proposal` helper, which would itself refuse a fabricated
     # quote before this leg ever reaches `fast_status`'s OWN containment
     # check — the exact site this criterion targets, worker.py:1282).
+    # Baselined BEFORE this leg's own record exists: the bucket already
+    # carries an unanalyzed record from leg (a) (its proposal was
+    # deleted outright), so an absolute ">= 1" would pass even with
+    # containment silently off at THIS site — the delta is what isolates
+    # leg (c)'s own contribution (M27's own target).
+    status_baseline = worker.fast_status(env.ledger)
+    baseline_row = next(b for b in status_baseline["buckets"] if b["bucket"] == "s")
+    unanalyzed_before = baseline_row["unanalyzed"]
+    pending_before = baseline_row["pending"]
+
     record_c = make_behavior(scope="skill:s", record_id="lrn-48000004")
     create_record(env.ledger, record_c)
     commit_all(env.ledger, "pending lrn-48000004")
@@ -1333,9 +1364,8 @@ def test_a24_containment_and_derivation_at_owned_sites(tmp_path, monkeypatch):
     )
     status = worker.fast_status(env.ledger)
     bucket_row = next(b for b in status["buckets"] if b["bucket"] == "s")
-    assert bucket_row["unanalyzed"] >= 1, status
-    unanalyzed_before = bucket_row["unanalyzed"]
-    pending_before = bucket_row["pending"]
+    assert bucket_row["pending"] == pending_before + 1, status
+    assert bucket_row["unanalyzed"] == unanalyzed_before + 1, status
 
     # positive control (c): a true-quote, fresh proposal reads fresh —
     # pending grows by one, `unanalyzed` does NOT (delta, not an absolute
@@ -1352,8 +1382,8 @@ def test_a24_containment_and_derivation_at_owned_sites(tmp_path, monkeypatch):
     )
     status2 = worker.fast_status(env.ledger)
     bucket_row2 = next(b for b in status2["buckets"] if b["bucket"] == "s")
-    assert bucket_row2["pending"] == pending_before + 1, status2
-    assert bucket_row2["unanalyzed"] == unanalyzed_before, status2
+    assert bucket_row2["pending"] == bucket_row["pending"] + 1, status2
+    assert bucket_row2["unanalyzed"] == bucket_row["unanalyzed"], status2
 
     # ---- (d) worker: containment-clean trace, but outcome does not
     # follow from its own answers -> deleted at landing (U-table H1).
