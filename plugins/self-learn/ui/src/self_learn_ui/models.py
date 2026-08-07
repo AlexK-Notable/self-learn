@@ -311,13 +311,26 @@ def rules_firing_note(
     UNADOPTED user-scope rule (§10, P-A2b′) never implies cross-machine
     reach it does not have. ``""`` for anything this note does not
     apply to (plain claude-md, or a non-claude-md destination) — never a
-    placeholder."""
+    placeholder.
+
+    U-demand-user §3.3(e) item 3 / A10: the pathed leg gains S-23's rider
+    at USER scope only (project scope is byte-identical to before this
+    unit) — a user-level glob resolves relative to the session's own
+    working directory, never a repo, so it fires wherever a matching
+    relative path exists, in ANY project. Stated plainly, and worded to
+    invite no repo-targeting (no "this repo", no path-prefix suggestion,
+    nothing implying the glob can be aimed)."""
     if variant == "local":
         return "loads every session in this project (you only)"
     if variant != "rules":
         return ""
     if rules_paths:
         globs = ", ".join(f"`{p}`" for p in rules_paths)
+        if scope == "user":
+            return (
+                f"loads when you touch {globs} — matches relative to "
+                "wherever the session is running, in any project"
+            )
         return f"loads when you touch {globs}"
     if scope == "user" and not adopted:
         return "loads every session (this machine)"
@@ -420,6 +433,36 @@ def _proposal_rules_topic(proposal: dict | None) -> str | None:
     return topic if isinstance(topic, str) and topic else None
 
 
+def _defer_note(scope: str, item_destination: str | None) -> str:
+    """§8A.2(3), blind code-gate FOLD (round 1): the note must not lie
+    about why nothing arms. The first cut delegated straight to
+    :func:`correct_destination`, whose note always ends "— corrected to
+    <X>" — but a `defer` recommendation corrects NOTHING (the bar arms
+    NOTHING, not `<X>`), so that tail was a false claim every time this
+    leg fired. This composes its own note instead: when the analyst's
+    destination is scope-invalid, it reuses the SAME single-source
+    reason text :func:`correct_destination` keys on
+    (:data:`_DEST_CORRECTION_REASONS`) — informative context, never a
+    correction claim; a generic, honest sentence otherwise (a
+    scope-valid destination, or hook/new-skill/no-analysis, where
+    nothing is wrong with the destination itself — only the
+    recommendation blocks it)."""
+    cycle = destinations_for_scope(scope)
+    if (
+        item_destination is not None
+        and item_destination in PARAMETER_FREE_DESTINATIONS
+        and item_destination not in cycle
+    ):
+        reason = _DEST_CORRECTION_REASONS.get(
+            item_destination, "which this lesson's home cannot hold"
+        )
+        return (
+            f"the analyst suggested {item_destination}, {reason} "
+            "— deferred, no destination armed"
+        )
+    return "the analyst recommends deferring this lesson — no destination armed"
+
+
 def proposed_destination(
     scope: str, item_destination: str | None, proposal: dict | None
 ) -> tuple[str | None, str | None]:
@@ -435,15 +478,19 @@ def proposed_destination(
 
     (1) **H5 (§8A.2), load-bearing.** When the proposal's own
     ``recommendation`` is ``"defer"``, nothing arms — ``(None, note)``,
-    where *note* is whatever :func:`correct_destination` would already
-    have said (the S-23 tier-fact wording for ``reference`` at user
-    scope after §8A.2(3)'s reason change; ``None`` when the analyst's
-    destination happened to be scope-valid, e.g. ``claude-md`` at
-    project scope). This is checked FIRST — a defer recommendation
-    means "no cheap surface fits this lesson here", which must win over
-    any other leg. The `o` cycle can still reach a destination from an
-    empty arm (an explicit human override, `dest_touched=True` → `by:
-    human` — FW-64's own distinction, not the silent default H5 kills).
+    where *note* is composed by :func:`_defer_note` (blind code-gate
+    FOLD, round 1: this used to reuse :func:`correct_destination`'s own
+    note, whose trailing "— corrected to <X>" clause LIED here — nothing
+    is ever corrected on this leg, the bar arms nothing at all).
+    ``_defer_note`` states the S-23 tier-fact reason when the analyst's
+    destination is scope-invalid (``reference`` at user scope), and a
+    generic honest sentence otherwise (e.g. ``claude-md`` at project
+    scope, which was already scope-valid). This is checked FIRST — a
+    defer recommendation means "no cheap surface fits this lesson
+    here", which must win over any other leg. The `o` cycle can still
+    reach a destination from an empty arm (an explicit human override,
+    `dest_touched=True` → `by: human` — FW-64's own distinction, not the
+    silent default H5 kills).
 
     (2) When *item_destination* is ``claude-md`` and the proposal names
     ``variant: rules`` with a topic :func:`rules_dest` accepts for
@@ -458,8 +505,7 @@ def proposed_destination(
     non-defer proposal."""
     proposal = proposal or {}
     if proposal.get("recommendation") == "defer":
-        _dest, note = correct_destination(scope, item_destination)
-        return None, note
+        return None, _defer_note(scope, item_destination)
     if item_destination == "claude-md":
         dest = rules_dest(scope, _proposal_rules_topic(proposal))
         if dest is not None:
