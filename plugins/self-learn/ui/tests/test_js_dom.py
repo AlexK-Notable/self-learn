@@ -1369,6 +1369,42 @@ class TestKeyDispatch:
         page.keyboard.press("b")  # toggle_brief -> clicks <summary data-key-action=toggle_brief>
         assert page.evaluate("document.querySelector('details.episode-brief').open") is True
 
+    def test_b_scrolls_the_toggled_brief_into_view(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        """UI-walk defect fix: `b` toggled real DOM state (the test
+        above) but gave a scrolled-away human nothing ON SCREEN — a
+        cold-open walker reported it as a dead key. Reproduced with a
+        short viewport scrolled to the page bottom: the toggled
+        `<details>` landed with a fully negative `top` (entirely above
+        the viewport) and an identical before/after screenshot.
+        `clickAction` now scrolls its target into view (`block:
+        "nearest"`) after clicking — positive control first: start
+        scrolled away with the target confirmed off-screen, so the
+        assertion below can't pass by accident (the element already
+        being in view)."""
+        _open(page, server, f"/record/{REC_BRIEF}")
+        page.set_viewport_size({"width": 1280, "height": 300})
+        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        before = page.evaluate(
+            "document.querySelector('details.episode-brief').getBoundingClientRect().top"
+        )
+        assert before < 0  # positive control: confirmed off-screen before the fix applies
+
+        page.keyboard.press("b")
+
+        rect = page.evaluate(
+            "JSON.stringify(document.querySelector('details.episode-brief').getBoundingClientRect())"
+        )
+        import json as _json
+
+        r = _json.loads(rect)
+        viewport_height = page.evaluate("window.innerHeight")
+        # "in view" per scrollIntoView's own "nearest" contract: some part
+        # of the element's box intersects [0, viewport_height].
+        assert r["bottom"] > 0
+        assert r["top"] < viewport_height
+
     def test_escape_first_rung_interrupts_pane_before_up(
         self, page: "Page", server: ServerHandle
     ) -> None:
@@ -1554,6 +1590,32 @@ class TestNoopKeyHints:
         noop_page.keyboard.press("w")  # any unrelated key
         assert noop_page.query_selector("[data-noop-hint-active]") is None
 
+    def test_b_hint_scrolls_into_view_when_scrolled_away(
+        self, noop_page: "Page", noop_server: ServerHandle
+    ) -> None:
+        """UI-walk defect fix, same root cause as the toggle case above:
+        `showNoopHint` always PREPENDS to `#self-learn-ui-content`, so a
+        human scrolled away from the top never saw it — this is the
+        MORE common of the two `b` repros, since most records carry no
+        episode brief at all. Reproduced with a short viewport scrolled
+        to the bottom: the inserted hint's `getBoundingClientRect().top`
+        landed negative. Positive control first."""
+        _open(noop_page, noop_server, f"/record/{REC_NOOP_MULTI}")
+        noop_page.set_viewport_size({"width": 1280, "height": 300})
+        noop_page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        scroll_y_before = noop_page.evaluate("window.scrollY")
+        assert scroll_y_before > 0  # positive control: genuinely scrolled away
+
+        noop_page.keyboard.press("b")
+
+        hint = noop_page.wait_for_selector("[data-noop-hint-active]")
+        assert hint.text_content() == "no episode brief on this record"
+        rect = hint.bounding_box()
+        viewport_height = noop_page.evaluate("window.innerHeight")
+        assert rect is not None
+        assert rect["y"] + rect["height"] > 0
+        assert rect["y"] < viewport_height
+
     def test_no_hint_when_a_bar_is_armed_and_o_is_pressed(
         self, noop_page: "Page", noop_server: ServerHandle
     ) -> None:
@@ -1594,6 +1656,28 @@ class TestApplyingStripClientRendering:
         )
         after = page.locator("body").aria_snapshot()
         assert after != before
+
+    def test_2b_force_run_applying_renders_visible_with_badge_and_detail(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        """UI-walk defect fix: "Force run" (worker kick / miner run) now
+        publishes through this SAME mechanism (routes.py's worker_kick /
+        mine_run, `_publish_applying`) — this is the client-rendering
+        half of that fix, same oracle as test_2 above (aria_snapshot
+        inequality; text_content is blind to opacity, which is why the
+        inequality check rides alongside it here too, per S-20's own
+        measured blind spot)."""
+        _open(page, server, "/")
+        strip = _applying_strip(page)
+        before = page.locator("body").aria_snapshot()
+        server.push_applying("worker", "kick", "start")
+        expect(strip).to_be_visible()
+        assert page.locator("#self-learn-ui-applying-badge").text_content() == "applying"
+        assert page.locator("#self-learn-ui-applying-text").text_content() == "worker → kick"
+        after = page.locator("body").aria_snapshot()
+        assert after != before
+        server.push_applying("worker", "kick", "done")
+        expect(strip).to_be_hidden()
 
     def test_3_applying_done_hides_strip(self, page: "Page", server: ServerHandle) -> None:
         _open(page, server, "/")

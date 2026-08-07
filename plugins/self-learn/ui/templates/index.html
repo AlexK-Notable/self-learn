@@ -75,7 +75,11 @@
 
 {% if model.holding %}
 <section aria-label="is it holding">
-  <h2>Is it holding?</h2>
+  {# UI-walk defect fix (terminology): "holding" is opaque on its own —
+     these are already-routed rules that got sighted again (possibly
+     violated), asking whether the existing guidance is still holding up
+     or needs revising. #}
+  <h2 title="Rules already written into canon that were sighted again since — is the existing guidance holding up, or does it need revising?">Is it holding?</h2>
   {% for row in model.holding %}
   <div class="holding-row" data-row>
     <p>{{ row.text }}</p>
@@ -147,7 +151,10 @@
      pass, never an accumulating multi-run list. No dismiss/snooze/seen
      control anywhere: Promote is the only exit (§2.4). #}
   <details>
-    <summary>near-misses ({{ model.miner.near_miss_count }})</summary>
+    {# UI-walk defect fix (terminology): a near-miss is a candidate the
+       miner considered and DIDN'T capture (fell short of its bar) —
+       shown so a human can promote one it was wrong to skip. #}
+    <summary title="Candidates the miner considered but did not capture — fell short of its bar. Promote one here if it should have.">near-misses ({{ model.miner.near_miss_count }})</summary>
     {% if not model.miner.near_miss_rows %}
     <p>Nothing near-missed in the latest run.</p>
     {% else %}
@@ -174,8 +181,12 @@
   <p class="error-strip" role="alert">{{ model.miner.error }}</p>
   {% endif %}
   <form>
+    {# UI-walk defect fix (terminology consistency): the worker's own
+       Force run button (above) explains itself on hover; this one,
+       doing the equivalent for the miner, didn't. #}
     <button type="submit" formmethod="post" formaction="/mine/run"
-            hx-post="/mine/run" hx-swap="none">Force run</button>
+            hx-post="/mine/run" hx-swap="none"
+            title="Force the miner to scan recent sessions for lessons worth keeping now, instead of waiting for its next scheduled pass.">Force run</button>
   </form>
 </section>
 {% endblock %}

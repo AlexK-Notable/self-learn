@@ -133,7 +133,8 @@
     <button type="button" data-key-action="graduate"
             hx-post="/record/{{ record_id }}/action/arm" hx-include="#form-{{ dom_id }}"
             hx-vals='{"verb":"graduate","kind":"holding"}'
-            hx-target="#{{ dom_id }}" hx-swap="outerHTML">Graduate (g)</button>
+            hx-target="#{{ dom_id }}" hx-swap="outerHTML"
+            title="Retire this lesson — canon (the guidance file it calls for) already covers it, so there's nothing left to write">Graduate (g)</button>
   </form>
   <p class="session-note">Revise / Escalate: capture with <code>teach --supersedes</code> (session work).</p>
 
@@ -180,7 +181,8 @@
   <button type="button" data-key-action="graduate"
           hx-post="/record/{{ record_id }}/action/arm"
           hx-vals='{"verb":"graduate","kind":"resolved"}'
-          hx-target="#{{ dom_id }}" hx-swap="outerHTML">Graduate (g)</button>
+          hx-target="#{{ dom_id }}" hx-swap="outerHTML"
+          title="Retire this lesson — canon (the guidance file it calls for) already covers it, so there's nothing left to write">Graduate (g)</button>
   {% endif %}
 
   {% elif kind == "adopt" %}
@@ -230,8 +232,9 @@
     <button type="button" data-key-action="graduate"
             hx-post="/record/{{ record_id }}/action/arm" hx-include="#form-{{ dom_id }}"
             hx-vals='{"verb":"graduate","kind":"detail"}'
-            hx-target="#{{ dom_id }}" hx-swap="outerHTML">
-      Graduate (g){% if already_canon %} <span class="badge badge-already-canon">already canon</span>{% endif %}
+            hx-target="#{{ dom_id }}" hx-swap="outerHTML"
+            title="Retire this lesson — canon (the guidance file it calls for) already covers it, so there's nothing left to write">
+      Graduate (g){% if already_canon %} <span class="badge badge-already-canon" title="canon = the guidance file(s) this lesson would write into — already there, so there's nothing new to write">already canon</span>{% endif %}
     </button>
     {# F5-1 (feedback round 5, U19 §1.2 gate M1): the cycle button ALWAYS
        rendered, even when the record's own cycle has nowhere to go

@@ -469,6 +469,15 @@ kbd {
   margin-top: 0;
 }
 
+/* UI-walk defect fix: the one-line arm-then-confirm gloss ahead of the
+   keymap list — same rhythm as .pane-hint/.session-note (muted, small,
+   no margin-bottom of its own; the dl below supplies the gap). */
+.help-intro {
+  color: var(--slu-fg-muted);
+  font-size: 0.85rem;
+  margin: 0.5rem 0 0;
+}
+
 .help-overlay-panel dl {
   display: grid;
   grid-template-columns: auto 1fr;
