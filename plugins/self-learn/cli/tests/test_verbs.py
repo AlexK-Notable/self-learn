@@ -281,6 +281,72 @@ class TestRouteDestination:
         assert result.host_commit_sha is not None
 
 
+class TestReferenceUserScopeRefusal:
+    """A9 / S-23 (2), U-demand-user §3.1: the `reference` refusal keeps
+    its EFFECT at user scope (the condition stays byte-identical — only
+    the message changed) and drops its dead chezmoi reason. Measured
+    baseline (the spec's §1.2): before this unit NO test asserted this
+    refusal at all — a grep for its message across cli/tests/ returned
+    nothing, and the only guard was incidental scaffolding in
+    test_batch_fixes.py that names nothing about reference, user scope,
+    or S-23.
+
+    Blind code-gate FOLD (round 1): the first cut of this test omitted
+    ``user_claude_md=`` (the ONLY other new-CLI-test to do so) — with no
+    HOME redirect in conftest, the only thing between a mutated refusal
+    and the REAL ``~/.claude/CLAUDE.md`` was the refusal itself. Now
+    sandboxed like ``TestRouteUserScope``/``TestRouteUserScopeChezmoi
+    Absent`` above. The negative assertion also moved: it used to check
+    ``env.home/"user"/"references"`` — a path under the LEDGER tree that
+    no implementation, buggy or not, would ever create (reference files
+    live beside the resolved ``CLAUDE.md`` TARGET, never inside the
+    ledger) — to the sandboxed target's own parent, the directory a
+    reference route would actually write into."""
+
+    def test_user_scope_refuses_naming_s23_never_chezmoi(self, tmp_path, env):
+        target = tmp_path / "dot-claude" / "CLAUDE.md"
+        target.parent.mkdir()
+        target.write_text("# user conduct\n", encoding="utf-8")
+        record = make_behavior(scope="user", record_id=OLD)
+        create_record(env.home, record)
+
+        with pytest.raises(verbs.VerbError) as exc_info:
+            verbs.route(
+                env.home, OLD, dest="reference",
+                user_claude_md=target,
+                chezmoi_bin="chezmoi-definitely-absent",
+            )
+        message = str(exc_info.value)
+        assert "S-23" in message
+        assert "chezmoi" not in message
+        # the record stays pending — nothing committed, nothing built
+        assert (env.home / "user" / "pending" / f"{OLD}.md").is_file()
+        assert not (env.home / "user" / "resolved" / f"{OLD}.md").exists()
+        # the sandboxed user target's own parent — where a reference
+        # route would actually write, had the refusal not fired first.
+        assert not (target.parent / "references").exists()
+        # A18's "the user CLAUDE.md gains no managed entry" leg: this
+        # test is its CLI-side carrier (a `reference` route never
+        # touches CLAUDE.md at all, so the target's bytes stay exactly
+        # what they were before the refused call).
+        assert target.read_text(encoding="utf-8") == "# user conduct\n"
+
+        # Positive control, in the SAME test: skill scope and project
+        # scope both still succeed and write their files — a build that
+        # refused `reference` at every scope would pass the assertions
+        # above for the wrong reason.
+        seed(env, rid=NEW)  # default scope="skill:s"
+        result = verbs.route(env.home, NEW, dest="reference")
+        assert result.commit_sha
+        assert (env.skill_dir / "references" / "LEARNINGS.md").is_file()
+
+        project_record = make_behavior(scope="project", record_id="lrn-0000cccc")
+        create_record(env.home, project_record, project_path=env.host)
+        project_result = verbs.route(env.home, "lrn-0000cccc", dest="reference")
+        assert project_result.commit_sha
+        assert (env.host / "references" / "LEARNINGS.md").is_file()
+
+
 class TestRouteGuards:
     def test_dirty_target_abort(self, env):
         seed(env)

@@ -92,7 +92,7 @@
     <p class="action-bar-armed">
       <strong>{{ armed.verb_label }}</strong>
       <code>{{ armed.record_id }}</code>
-      {% if armed.dest %}<span class="arrow">&rarr;</span> <span class="dest">{{ armed.dest }}</span>{% endif %}
+      {% if armed.dest %}<span class="arrow">&rarr;</span> <span class="dest">{{ armed.dest | destination_label(scope) }}</span>{% endif %}
       {% if armed.target %}<span class="arrow">&rarr;</span> <span class="dest">{{ armed.target }}</span>{% endif %}
       <span class="note-presence">{{ "note attached" if armed.note_present else "no note" }}</span>
       <span class="confirm-hint"><kbd>Enter</kbd> to confirm &middot; any other key cancels</span>
@@ -265,10 +265,25 @@
          this partial either never reaches this branch (kind !=
          "detail") or never passes a claude-md dest, so an un-threaded
          `scope` there is harmless (falls back to today's gloss, F5-9
-         pin). The genuinely-armed branch above (this file, `armed.dest`)
-         stays raw verbatim — out of scope, it never calls
-         destination_label. #}
-      Destination: {% if dest %}<span title="{{ dest }}">{{ dest | destination_label(scope) }}</span>{% else %}(analyst suggestion){% endif %} (o){% if dest == "claude-md" %} <span class="dest-path">&middot; {{ scope | destination_path }}</span>{% endif %}
+         pin). U-demand-user §3.3(e) item 2 (D3) is a narrow, STATED
+         exception to the old F5-9 pin here — the genuinely-armed
+         branch above (this file, `armed.dest`) no longer stays raw
+         verbatim; it glosses through the SAME destination_label this
+         block already uses, because raw-vs-glossed is now a TIER
+         difference (plain claude-md vs. a pathed rule) rather than a
+         formatting one. #}
+      {# U-demand-user §3.3(e) item 1 (F5): the resolved-path span used
+         to guard on the bare `dest == "claude-md"` — which goes false
+         for a qualified rules dest and made the new primary cheap tier
+         render LESS honestly than the tier it replaces. Widened to
+         "claude-md, or a qualified claude-md:rules:<topic>", decoding
+         the topic inline (no new machinery — destination_path already
+         accepts variant/rules_topic, models.py's `parse_variant_
+         qualifier` is what does this same decode for `destination_
+         label` above; only the RULES qualifier is reachable on this
+         bar — a `claude-md:local` dest never arrives here, §3.3(e)). #}
+      {% set _rules_topic = dest.split("claude-md:rules:", 1)[1] if (dest and dest.startswith("claude-md:rules:")) else none %}
+      Destination: {% if dest %}<span title="{{ dest }}">{{ dest | destination_label(scope) }}</span>{% else %}(analyst suggestion){% endif %} (o){% if dest == "claude-md" or _rules_topic %} <span class="dest-path">&middot; {{ scope | destination_path(("rules" if _rules_topic else none), _rules_topic) }}</span>{% endif %}
       {% if dest %}<span class="hint">hook / new-skill need Iterate — not cycle-reachable</span>{% endif %}
     </button>
     {# The scope-correction note (09 §2.3 as amended 2026-07-18): plain

@@ -1546,3 +1546,268 @@ class TestObligation28NonRulesTargetsByteIdentical:
         assert r7.commit_sha
         control_target = host / ".claude" / "rules" / "control-topic.md"
         assert "paths:" in control_target.read_text(encoding="utf-8")
+
+
+# =====================================================================
+# U-demand-user §3.2 / A1-A3/A6/A14 — an explicit `--dest
+# claude-md:rules:<topic>` inherits the proposal sibling's rules_paths,
+# scoped to an EXACT destination/variant/topic match; guarded, never
+# trusted, and never widened to a bare claude-md dest. Obligations
+# start at 29 (builder decision 3 — the last existing class is
+# TestObligation28NonRulesTargetsByteIdentical). The reference-refusal
+# criterion (A9) lives in test_verbs.py beside TestRouteDestination.
+# =====================================================================
+
+
+class TestObligation29TwoRoadsProduceIdenticalBytes:
+    """A1 — the headline criterion. Two independent sandboxes, the SAME
+    rules proposal; sandbox 1 routes bare (`route <id>`), sandbox 2
+    routes with the review UI's own shape (`--dest
+    claude-md:rules:<topic> --by analyst`). Both must write
+    byte-identical rules files, byte-identical frontmatter (re-parsed
+    with an INDEPENDENT ruamel loader, never compilers.py's own reader),
+    and equal routing blocks."""
+
+    def test_bare_and_explicit_dest_produce_identical_output(self, tmp_path):
+        sandbox1 = make_env(tmp_path / "s1")
+        sandbox2 = make_env(tmp_path / "s2")
+        rid = "lrn-00000001"
+        for sandbox in (sandbox1, sandbox2):
+            record = make_behavior(scope="user", record_id=rid)
+            create_record(sandbox.ledger, record)
+            write_proposal(
+                sandbox.ledger, rid,
+                proposal_dict(
+                    destination="claude-md", variant="rules", rules_topic="t",
+                    rules_paths=["**/*.py"],
+                ),
+            )
+        target1 = tmp_path / "s1-dot-claude" / "CLAUDE.md"
+        target1.parent.mkdir()
+        target1.write_text("# user conduct\n", encoding="utf-8")
+        target2 = tmp_path / "s2-dot-claude" / "CLAUDE.md"
+        target2.parent.mkdir()
+        target2.write_text("# user conduct\n", encoding="utf-8")
+
+        r1 = verbs.route(
+            sandbox1.ledger, rid,
+            user_claude_md=target1, chezmoi_bin="chezmoi-definitely-absent",
+        )
+        r2 = verbs.route(
+            sandbox2.ledger, rid, dest="claude-md:rules:t", by="analyst",
+            user_claude_md=target2, chezmoi_bin="chezmoi-definitely-absent",
+        )
+        assert r1.commit_sha and r2.commit_sha
+
+        file1 = target1.parent / "rules" / "t.md"
+        file2 = target2.parent / "rules" / "t.md"
+        text1 = file1.read_text(encoding="utf-8")
+        text2 = file2.read_text(encoding="utf-8")
+        assert text1 == text2
+
+        assert read_frontmatter(text1) == {"paths": ["**/*.py"]}
+        assert read_frontmatter(text2) == {"paths": ["**/*.py"]}
+
+        routed1 = Record.from_path(sandbox1.ledger / "user" / "resolved" / f"{rid}.md")
+        routed2 = Record.from_path(sandbox2.ledger / "user" / "resolved" / f"{rid}.md")
+        for key in ("variant", "rules_topic", "rules_paths"):
+            assert routed1.routing.get(key) == routed2.routing.get(key)
+        assert routed1.routing["by"] == "analyst"
+        assert routed2.routing["by"] == "analyst"
+
+
+class TestObligation30BareClaudeMdNeverInherits:
+    """A2 — a bare `--dest claude-md` still routes to the always-loaded
+    file, even when the proposal IS a rules proposal (M2's target: an
+    over-widened predicate that adopts variant/rules_topic/rules_paths
+    wholesale on ANY claude-md dest)."""
+
+    def test_bare_claude_md_ignores_rules_proposal(self, tmp_path, env):
+        target = tmp_path / "dot-claude" / "CLAUDE.md"
+        target.parent.mkdir()
+        target.write_text("# user conduct\n", encoding="utf-8")
+        seed_user_record(env)
+        write_proposal(
+            env.home, OLD,
+            proposal_dict(
+                destination="claude-md", variant="rules", rules_topic="t",
+                rules_paths=["**/*.py"],
+            ),
+        )
+        result = verbs.route(
+            env.home, OLD, dest="claude-md",
+            user_claude_md=target, chezmoi_bin="chezmoi-definitely-absent",
+        )
+        assert result.commit_sha
+        assert OLD in target.read_text(encoding="utf-8")
+        assert not (target.parent / "rules" / "t.md").exists()
+        routed = Record.from_path(env.home / "user" / "resolved" / f"{OLD}.md")
+        assert "variant" not in routed.routing
+        assert "rules_topic" not in routed.routing
+        assert "rules_paths" not in routed.routing
+
+
+class TestObligation31MismatchedTopicNeverInherits:
+    """A3 — a proposal naming topic `t` with globs never leaks them onto
+    a DIFFERENT topic the human explicitly named via --dest (M3's
+    target: dropping the topic comparison)."""
+
+    def test_different_topic_gets_no_paths(self, tmp_path, env):
+        target = tmp_path / "dot-claude" / "CLAUDE.md"
+        target.parent.mkdir()
+        target.write_text("# user conduct\n", encoding="utf-8")
+        seed_user_record(env)
+        write_proposal(
+            env.home, OLD,
+            proposal_dict(
+                destination="claude-md", variant="rules", rules_topic="t",
+                rules_paths=["**/*.py"],
+            ),
+        )
+        result = verbs.route(
+            env.home, OLD, dest="claude-md:rules:other",
+            user_claude_md=target, chezmoi_bin="chezmoi-definitely-absent",
+        )
+        assert result.commit_sha
+        other_file = target.parent / "rules" / "other.md"
+        assert other_file.is_file()
+        assert "paths:" not in other_file.read_text(encoding="utf-8")
+        routed = Record.from_path(env.home / "user" / "resolved" / f"{OLD}.md")
+        assert routed.routing["rules_topic"] == "other"
+        assert "rules_paths" not in routed.routing
+
+
+class TestObligation32InheritanceNeverRaises:
+    """A6 — a --dest claude-md:rules:<topic> route succeeds (unpathed)
+    whether the sibling is (a) absent, (b) unparseable YAML, or (c)
+    schema-invalid — the sibling read is guarded, never trusted; none
+    of the three turns a working route into a refusal."""
+
+    def _assert_unpathed_route_succeeds(self, env, target):
+        result = verbs.route(
+            env.home, OLD, dest="claude-md:rules:t",
+            user_claude_md=target, chezmoi_bin="chezmoi-definitely-absent",
+        )
+        assert result.commit_sha
+        topic_file = target.parent / "rules" / "t.md"
+        assert topic_file.is_file()
+        assert OLD in topic_file.read_text(encoding="utf-8")
+        assert "paths:" not in topic_file.read_text(encoding="utf-8")
+
+    def test_no_sibling_still_routes_unpathed(self, tmp_path, env):
+        target = tmp_path / "dot-claude" / "CLAUDE.md"
+        target.parent.mkdir()
+        target.write_text("# user conduct\n", encoding="utf-8")
+        seed_user_record(env)
+        self._assert_unpathed_route_succeeds(env, target)
+
+    def test_unparseable_yaml_sibling_still_routes_unpathed(self, tmp_path, env):
+        target = tmp_path / "dot-claude" / "CLAUDE.md"
+        target.parent.mkdir()
+        target.write_text("# user conduct\n", encoding="utf-8")
+        seed_user_record(env)
+        sibling = env.home / "user" / "proposals" / f"{OLD}.yaml"
+        sibling.parent.mkdir(parents=True, exist_ok=True)
+        sibling.write_text("{ this is not valid yaml\n", encoding="utf-8")
+        self._assert_unpathed_route_succeeds(env, target)
+
+    def test_schema_invalid_sibling_still_routes_unpathed(self, tmp_path, env):
+        target = tmp_path / "dot-claude" / "CLAUDE.md"
+        target.parent.mkdir()
+        target.write_text("# user conduct\n", encoding="utf-8")
+        seed_user_record(env)
+        sibling = env.home / "user" / "proposals" / f"{OLD}.yaml"
+        sibling.parent.mkdir(parents=True, exist_ok=True)
+        # variant: rules with NO rules_topic — _validate_rules_fields
+        # refuses this (schema-invalid), never a parse error.
+        sibling.write_text(
+            "destination: claude-md\n"
+            "variant: rules\n"
+            "rationale: x\n"
+            "model: claude\n"
+            "analyzed_at: '2026-07-13T00:00:00Z'\n",
+            encoding="utf-8",
+        )
+        self._assert_unpathed_route_succeeds(env, target)
+
+
+class TestObligation33NonRulesDestByteIdentical:
+    """A14 — routing to a NON-rules destination via an explicit --dest
+    is unaffected by §3.2's inheritance (M1-M4 over-reaching would show
+    up here first — the blast-radius net for this unit's own change).
+    Positive control in the SAME fixture: one rules route DOES pick up
+    frontmatter — "nothing changed anywhere" cannot pass this test."""
+
+    def test_every_non_rules_dest_byte_identical_plus_rules_control(self, tmp_path, env):
+        marketplace = env.host / ".claude-plugin" / "marketplace.json"
+        marketplace.parent.mkdir(parents=True, exist_ok=True)
+        marketplace.write_text(
+            json.dumps(_OBLIGATION28_MARKETPLACE, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        (env.host / ".gitignore").write_text("CLAUDE.local.md\n", encoding="utf-8")
+        git(env.host, "add", "-A")
+        git(env.host, "commit", "-q", "-m", "obligation-33 marketplace fixture")
+
+        target = tmp_path / "dot-claude" / "CLAUDE.md"
+        target.parent.mkdir()
+        target.write_text("# user conduct\n", encoding="utf-8")
+
+        # 1. plain user CLAUDE.md — no paths:, no variant.
+        seed_user_record(env, record_id="lrn-00000001")
+        r1 = verbs.route(
+            env.home, "lrn-00000001", dest="claude-md",
+            user_claude_md=target, chezmoi_bin="chezmoi-definitely-absent",
+        )
+        assert r1.commit_sha
+        assert "paths:" not in target.read_text(encoding="utf-8")
+
+        # 2. plain project CLAUDE.md.
+        seed_project_record(env, record_id="lrn-00000002")
+        r2 = verbs.route(env.home, "lrn-00000002", dest="claude-md")
+        assert r2.commit_sha
+        assert "paths:" not in (env.host / "CLAUDE.md").read_text(encoding="utf-8")
+
+        # 3. SKILL.md.
+        seed_skill_record(env, record_id="lrn-00000003")
+        r3 = verbs.route(env.home, "lrn-00000003", dest="skill-md")
+        assert r3.commit_sha
+        assert "lrn-00000003" in env.skill_md.read_text(encoding="utf-8")
+
+        # 4. CLAUDE.local.md.
+        seed_project_record(env, record_id="lrn-00000004")
+        r4 = verbs.route(env.home, "lrn-00000004", dest="claude-md:local")
+        assert r4.commit_sha
+        assert "lrn-00000004" in (env.host / "CLAUDE.local.md").read_text(encoding="utf-8")
+
+        # 5. reference, skill scope.
+        seed_skill_record(env, record_id="lrn-00000005")
+        r5 = verbs.route(env.home, "lrn-00000005", dest="reference")
+        assert r5.commit_sha
+        learnings = env.skill_dir / "references" / "LEARNINGS.md"
+        assert "lrn-00000005" in learnings.read_text(encoding="utf-8")
+
+        # 6. new-skill.
+        seed_skill_record(env, record_id="lrn-00000006")
+        r6 = verbs.route(env.home, "lrn-00000006", dest="new-skill:mouse-firmware")
+        assert r6.commit_sha
+        new_skill_md = (
+            env.host / "plugins" / "mouse-firmware" / "skills" / "mouse-firmware" / "SKILL.md"
+        )
+        assert "lrn-00000006" in new_skill_md.read_text(encoding="utf-8")
+
+        # 7. Positive control — a rules route in the SAME fixture DOES
+        #    produce a pathed file.
+        (env.host / "control.py").write_text("x = 1\n", encoding="utf-8")
+        seed_project_record(env, record_id="lrn-00000007")
+        write_proposal(
+            env.home, "lrn-00000007",
+            proposal_dict(
+                destination="claude-md", variant="rules", rules_topic="control",
+                rules_paths=["*.py"],
+            ),
+        )
+        r7 = verbs.route(env.home, "lrn-00000007", dest="claude-md:rules:control")
+        assert r7.commit_sha
+        control_file = env.host / ".claude" / "rules" / "control.md"
+        assert "paths:" in control_file.read_text(encoding="utf-8")

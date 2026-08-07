@@ -145,6 +145,18 @@
        apply to a not-yet-routed suggestion; the offer itself, §10.4(a),
        covers the post-route unadopted case). #}
     {% if model.why.destination %}<p>Suggested destination: <span title="{{ model.why.destination }}">{{ model.why.destination | destination_label(model.scope, model.why.variant, model.why.rules_topic) }}</span>{% if model.why.destination == "claude-md" %} <span class="dest-path">&middot; {{ model.scope | destination_path(model.why.variant, model.why.rules_topic) }}</span>{% endif %}{% if model.why.variant %} <span class="dest-firing-note">({{ model.why.variant | rules_firing_note(model.scope, model.why.rules_paths) }})</span>{% endif %}</p>{% endif %}
+    {# H5 (U-demand-user §8A, U-schema decision-trace fields, U-table's
+       assignment): additive P-A6 posture, same as variant/rules_topic
+       above — `None`/`()` for every pre-U-composer proposal, so this
+       renders NOTHING until the analyst flip (S-26) starts populating
+       it (A16's own absent-renders-nothing leg — a codebase that has
+       shipped a literal "None" at the operator before, ee005f8). Flags
+       are DISPLAY-ONLY (§8A.3) — they render and change no behaviour;
+       only `recommendation == "defer"` is behavioural, in
+       proposed_destination (§8A.2). #}
+    {% if model.why.recommendation %}
+    <p class="why-recommendation">Analyst recommendation: {{ model.why.recommendation }}{% if model.why.flags %} <span class="why-flags">({{ model.why.flags | join(", ") }})</span>{% endif %}</p>
+    {% endif %}
     {% if model.why.alternates %}
     {# A1 (O-2 b): scope-aware label, no path — alternates can be
        reference/skill-md, whose path resolution is outside A1. #}

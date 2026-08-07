@@ -578,6 +578,16 @@ class TestDestinationDefault:
         assert correct_destination("skill", "skill-md") == ("skill-md", None)
         assert correct_destination("user", None) == (None, None)
 
+    def test_qualified_rules_suggestion_outside_rules_scopes_falls_through(self):
+        # Blind code-gate NOTE 6 (round 1): the qualified-passthrough leg
+        # is gated on `scope in RULES_SCOPES` — skill scope is outside
+        # it (P-A13, rules are unavailable there), so an already-qualified
+        # suggestion must fall through to the unrecognized-value path
+        # exactly as it did before that leg existed, never survive as a
+        # skill-scope destination. Dropping the guard entirely would
+        # otherwise survive this whole suite unnoticed.
+        assert correct_destination("skill", "claude-md:rules:t") == (None, None)
+
 
 class TestDestinationLabelScopeAware:
     """A1 (spec: docs/specs/self-learn/drafts/a1-labels-spec.md) O-1: the
@@ -850,3 +860,265 @@ class TestBadges:
         )
         assert len(model.badges) >= 4
         assert all(b.text.strip() for b in model.badges)
+
+
+# =====================================================================
+# U-demand-user — the pathed tier becomes pickable at user scope (S-23
+# (2)): RULES_SCOPES / rules_dest / destination_cycle_for (§3.3(c)),
+# proposed_destination (§3.3(d), §8A.2 H5), the user-scope firing note
+# (§3.3(e)), and _DEST_CORRECTION_REASONS' honest reference wording
+# (§8A.2(3)).
+# =====================================================================
+
+
+class TestA12RulesScopesAgreesWithTheCli:
+    """A12 — models.RULES_SCOPES mirrors verbs.py::_resolve_rules_target's
+    own guard (`if scope not in ("user", "project")`) — a NAMED
+    agreement so a future widening of the CLI's guard has a place to
+    fail. An equality-to-a-literal test cannot detect CLI drift on its
+    own (stated honestly, not dressed up) — what it provides is a named
+    tripwire the CLI-side change collides with."""
+
+    def test_rules_scopes_is_exactly_user_and_project(self):
+        # Source of truth: cli/src/self_learn/verbs.py::_resolve_rules_target
+        # — "if scope not in ("user", "project"): raise VerbError(...)".
+        # Skill scope is the P-A13 rules deferral.
+        assert models_module.RULES_SCOPES == frozenset({"user", "project"})
+
+
+class TestA7DestinationCycleForFunction:
+    """A7 (function legs) — the pathed tier reaches the cycle and comes
+    back; the no-topic leg is the anti-regression control."""
+
+    def test_user_scope_with_topic_is_two_element_cycle(self):
+        assert models_module.destination_cycle_for("user", "t") == (
+            "claude-md", "claude-md:rules:t",
+        )
+
+    def test_user_scope_no_topic_is_unchanged_singleton(self):
+        # Positive control: without a topic the cycle is byte-identical
+        # to destinations_for_scope("user") — a build that appends
+        # unconditionally fails THIS leg.
+        assert models_module.destination_cycle_for("user", None) == ("claude-md",)
+
+    def test_repeated_cycle_destination_walks_and_returns(self):
+        from self_learn_ui.routes import cycle_destination
+
+        current = None
+        seen = []
+        for _ in range(4):
+            current = cycle_destination(current, "user", "t")
+            seen.append(current)
+        assert seen[:3] == ["claude-md", "claude-md:rules:t", "claude-md"]
+
+
+class TestA8ProjectAndSkillScopeCycles:
+    """A8 — the cycle is offered at project scope too, without disturbing
+    cycle[0] or the existing order; skill scope never offers what the
+    CLI refuses (P-A13)."""
+
+    def test_project_scope_appends_after_the_existing_order(self):
+        assert models_module.destination_cycle_for("project", "t") == (
+            "claude-md", "reference", "claude-md:rules:t",
+        )
+
+    def test_skill_scope_never_offers_rules_even_with_a_topic(self):
+        # A build that ignores RULES_SCOPES would offer the CLI-refused
+        # skill-scope rules dest here.
+        assert models_module.destination_cycle_for("skill", "t") == (
+            PARAMETER_FREE_DESTINATIONS
+        )
+
+
+class TestA10UserScopeFiringNote:
+    """A10 — the user-scope firing note states the cwd-relative truth
+    (S-23's measurement 2) and invites no repo-targeting; project scope
+    is the no-regression control.
+
+    Blind code-gate BLOCKER (round 1): the first cut of this test only
+    asserted the glob's presence plus the absence of a few banned
+    substrings — every one of those assertions was ALREADY satisfied by
+    the byte-identical, untouched pre-unit code (M14, "return today's
+    project wording at user scope", was a semantic no-op that survived).
+    This version asserts the EXACT string, both scopes, so a build that
+    never adds the rider fails on equality, not on a substring gap."""
+
+    def test_user_scope_note_states_the_rider_exactly(self):
+        assert rules_firing_note("rules", "user", ("**/*.py",)) == (
+            "loads when you touch `**/*.py` — matches relative to "
+            "wherever the session is running, in any project"
+        )
+
+    def test_project_scope_note_is_unchanged(self):
+        # The control: without it, a build that added the rider at
+        # EVERY scope (not just user) would still pass the leg above.
+        assert rules_firing_note("rules", "project", ("src/**",)) == (
+            "loads when you touch `src/**`"
+        )
+
+
+class TestA19ReferenceCorrectionNoteIsScopeSpecific:
+    """A19 — the user-scope `reference` correction note states the tier
+    fact and does not read as a routine scope correction; project and
+    skill scope are UNCHANGED — the control without which a build that
+    rewrote the reason for every scope would still pass."""
+
+    def test_user_scope_names_the_tier_fact(self):
+        dest, note = correct_destination("user", "reference")
+        assert dest == "claude-md"
+        assert note is not None
+        assert "S-23" in note or "cheap" in note
+        # Must not read as a routine "wrong scope, use X instead" note —
+        # the CLI-side wording (verbs.py's refusal) is the same distinct
+        # register.
+        assert "no cheap surface" in note or "cheap tier" in note
+
+    def test_project_and_skill_scope_are_byte_identical_to_before(self):
+        assert correct_destination("project", "reference") == ("reference", None)
+        assert correct_destination("skill", "reference") == ("reference", None)
+
+
+class TestA4ProposedDestinationModelLegs:
+    """A4 — the UI arms the qualified dest for a rules proposal, and the
+    plain one otherwise, against build_detail_model (build_bucket_model's
+    own leg lives in test_models_bucket.py — separate call site)."""
+
+    def test_rules_proposal_arms_the_qualified_dest_no_note(self):
+        proposal = {
+            "destination": "claude-md", "rationale": "x",
+            "variant": "rules", "rules_topic": "py-conventions",
+        }
+        model = _build(
+            _item(has_proposal=True, destination="claude-md", scope="user"),
+            proposal=proposal, scope="user",
+        )
+        assert model.destination_default == "claude-md:rules:py-conventions"
+        assert model.destination_note is None
+
+    def test_same_item_no_variant_is_byte_identical_to_before(self):
+        # Positive control — the OTHER leg. Without it a build that
+        # qualifies EVERY claude-md dest (turning every plain lesson
+        # into a rules route to a nonexistent topic) would still pass
+        # the leg above alone.
+        proposal = {"destination": "claude-md", "rationale": "x"}
+        model = _build(
+            _item(has_proposal=True, destination="claude-md", scope="user"),
+            proposal=proposal, scope="user",
+        )
+        assert model.destination_default == "claude-md"
+        assert model.destination_note is None
+
+
+class TestH5A16RecommendationAndFlagsReachTheCard:
+    """A16 — recommendation/flags reach WhyRegion, and their ABSENCE
+    renders nothing (this is the model half; the rendered-page half —
+    including the "no stray punctuation" leg — lives in test_routes.py,
+    since a model-only assertion cannot see the template)."""
+
+    def test_recommendation_and_flags_present_on_the_proposal(self):
+        proposal = {
+            "destination": "reference", "rationale": "x",
+            "recommendation": "defer", "flags": ["no-cheap-surface"],
+        }
+        model = _build(
+            _item(has_proposal=True, destination="reference", scope="user"),
+            proposal=proposal, scope="user",
+        )
+        assert model.why.recommendation == "defer"
+        assert model.why.flags == ("no-cheap-surface",)
+
+    def test_absent_recommendation_and_flags_default_none_and_empty(self):
+        # P-A6 no-migration: every pre-U-composer proposal never sets
+        # these — the model must not invent placeholder values.
+        proposal = {"destination": "reference", "rationale": "x"}
+        model = _build(
+            _item(has_proposal=True, destination="reference", scope="user"),
+            proposal=proposal, scope="user",
+        )
+        assert model.why.recommendation is None
+        assert model.why.flags == ()
+
+
+class TestH5A17DeferRecommendationArmsNothing:
+    """A17 — a `defer` recommendation arms NO destination, at every
+    scope — the rule is about the recommendation, not about the scope
+    that happens to expose it (user-scope reference vs. project-scope
+    claude-md, which is otherwise perfectly scope-valid).
+
+    Blind code-gate round 1 findings folded in:
+    - FOLD (production) §8A.2(3): the note used to reuse
+      correct_destination's own note, which always claims "— corrected
+      to <X>" — a lie here, since a defer leg corrects nothing. Both
+      legs below now assert the EXACT note text from the new
+      _defer_note composer.
+    - FOLD (test), gate-invented G4: swapping proposed_destination's two
+      legs (checking the rules leg before the defer leg) passed the
+      whole suite, because no test covered a proposal that is BOTH a
+      rules proposal AND recommendation: defer. §8A.2(2) pins defer
+      checked FIRST — test_rules_proposal_with_defer_still_arms_nothing
+      below is that leg."""
+
+    def test_user_scope_reference_defer_arms_nothing(self):
+        proposal = {
+            "destination": "reference", "rationale": "x",
+            "recommendation": "defer", "flags": ["no-cheap-surface"],
+        }
+        dest, note = models_module.proposed_destination("user", "reference", proposal)
+        assert dest is None
+        assert note == (
+            "the analyst suggested reference, which has no cheap surface "
+            "at user scope — S-23's cheap tier here is pathed rules, not "
+            "a reference file — deferred, no destination armed"
+        )
+
+    def test_project_scope_defer_arms_nothing_even_for_a_valid_destination(self):
+        # M27's target: firing the defer leg on destination=="reference"
+        # instead of on the recommendation. claude-md is scope-VALID at
+        # project scope — only the recommendation should block it.
+        proposal = {
+            "destination": "claude-md", "rationale": "x",
+            "recommendation": "defer",
+        }
+        dest, note = models_module.proposed_destination("project", "claude-md", proposal)
+        assert dest is None
+        assert note == "the analyst recommends deferring this lesson — no destination armed"
+
+    def test_rules_proposal_with_defer_still_arms_nothing(self):
+        # Gate-invented G4 (round 1): a proposal that is BOTH a rules
+        # proposal (variant: rules, rules_topic: t) AND
+        # recommendation: defer. §8A.2(2) pins the check order — defer
+        # wins, unconditionally. A build that checks the rules leg
+        # FIRST would instead arm "claude-md:rules:t" here.
+        proposal = {
+            "destination": "claude-md", "rationale": "x",
+            "variant": "rules", "rules_topic": "t",
+            "recommendation": "defer",
+        }
+        dest, note = models_module.proposed_destination("user", "claude-md", proposal)
+        assert dest is None
+        assert note == "the analyst recommends deferring this lesson — no destination armed"
+
+    def test_build_argv_omits_dest_when_none(self):
+        from self_learn_ui.routes import build_argv
+
+        argv = build_argv("route", "lrn-aa000001", dest=None, by="analyst")
+        assert "--dest" not in argv
+
+
+class TestH5A18DeferredRecommendationEndToEnd:
+    """A18 lives in test_routes.py (it needs the CLI's own refusal, end
+    to end through the real ASGI app) — this is the model-level sibling
+    check that a defer-armed record's hidden dest input is empty via
+    build_detail_model, the piece a route-level test cannot isolate
+    from the surrounding HTTP machinery."""
+
+    def test_defer_armed_detail_model_hidden_dest_is_empty(self):
+        proposal = {
+            "destination": "reference", "rationale": "x",
+            "recommendation": "defer", "flags": ["no-cheap-surface"],
+        }
+        model = _build(
+            _item(has_proposal=True, destination="reference", scope="user"),
+            proposal=proposal, scope="user",
+        )
+        assert model.destination_default is None

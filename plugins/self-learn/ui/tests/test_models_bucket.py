@@ -175,23 +175,33 @@ class TestRowDestinationDefault:
 
 
 class TestBucketDestinationCycle:
-    """F5-1 (feedback round 5, U19 §1.2 gate M1): one bucket = one scope,
-    so the cycle is computed once and shared by every row's action bar —
-    the server-signaled no-op the `o` key hint reads."""
+    """F5-1 (feedback round 5, U19 §1.2 gate M1) / U-demand-user §3.5A:
+    the cycle used to be computed once per bucket and shared by every
+    row; it now lives PER-ROW (BucketModel.destination_cycle dropped —
+    bucket.html:96's fix left it with zero readers), so a rules-topic
+    proposal on one record does not silently widen every other row's
+    cycle. These two assertions are RETARGETED, not deleted (§3.5A):
+    same expected values, now read off a row for a record with no rules
+    proposal — the scope predicate still reaches the bucket surface,
+    it just moved from the model to the row."""
 
     def test_skill_bucket_full_parameter_free_cycle(self):
+        items = [_item(has_proposal=True, destination="skill-md")]
         model = build_bucket_model(
-            "s", "skill", [], {}, [], REGISTRY,
+            "s", "skill", items, {}, [], REGISTRY,
             host_registered=True, host_add_command=None, now=NOW,
         )
-        assert model.destination_cycle == ("skill-md", "claude-md", "reference")
+        (group,) = model.groups
+        assert group.rows[0].destination_cycle == ("skill-md", "claude-md", "reference")
 
     def test_user_bucket_is_the_singleton_cycle(self):
+        items = [_item(has_proposal=True, destination="claude-md")]
         model = build_bucket_model(
-            "u", "user", [], {}, [], REGISTRY,
+            "u", "user", items, {}, [], REGISTRY,
             host_registered=True, host_add_command=None, now=NOW,
         )
-        assert model.destination_cycle == ("claude-md",)
+        (group,) = model.groups
+        assert group.rows[0].destination_cycle == ("claude-md",)
 
 
 class TestGroupPrecedence:
@@ -464,3 +474,43 @@ class TestGroupHeadingScopeAware:
         (group,) = model.groups
         assert group.key == "skill-md"
         assert group.label == "Skill doc"
+
+
+class TestA4ProposedDestinationBucketRow:
+    """A4 (build_bucket_model's own leg — a SEPARATE call site from
+    build_detail_model's, models.py:1221 vs :1627 pre-merge numbering):
+    the row arms the qualified rules dest for a rules proposal, and the
+    plain one otherwise (byte-identical pre-existing behaviour)."""
+
+    def test_rules_proposal_row_arms_the_qualified_dest_no_note(self):
+        items = [_item(scope="user", has_proposal=True, destination="claude-md")]
+        proposals = {
+            "lrn-aa000001": {
+                "destination": "claude-md", "variant": "rules",
+                "rules_topic": "py-conventions",
+            }
+        }
+        model = build_bucket_model(
+            "u", "user", items, proposals, [], REGISTRY,
+            host_registered=True, host_add_command=None, now=NOW,
+        )
+        (group,) = model.groups
+        row = group.rows[0]
+        assert row.destination_default == "claude-md:rules:py-conventions"
+        assert row.destination_note is None
+        # the row's own cycle reaches the pathed option too — the
+        # blocker (§3.4) this unit's own fix creates if missed.
+        assert row.destination_cycle == ("claude-md", "claude-md:rules:py-conventions")
+
+    def test_same_item_no_variant_is_byte_identical_row(self):
+        items = [_item(scope="user", has_proposal=True, destination="claude-md")]
+        proposals = {"lrn-aa000001": {"destination": "claude-md"}}
+        model = build_bucket_model(
+            "u", "user", items, proposals, [], REGISTRY,
+            host_registered=True, host_add_command=None, now=NOW,
+        )
+        (group,) = model.groups
+        row = group.rows[0]
+        assert row.destination_default == "claude-md"
+        assert row.destination_note is None
+        assert row.destination_cycle == ("claude-md",)
