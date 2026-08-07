@@ -963,7 +963,19 @@ class TestTerminologyDefinitions:
         bulk-collapse rule only fires for a HOMOGENEOUS already-canon
         group; a single already-canon record on its own collapses into
         the bulk row instead, which carries no per-row badge at all —
-        see test_bulk_acknowledge_button_defines_canon for that shape)."""
+        see test_bulk_acknowledge_button_defines_canon for that shape).
+
+        Code-gate FOLD 1: a bare `in r.text` check here is VACUOUS — the
+        already-canon row's action bar (kind="detail", included per row
+        at bucket.html's own include site) ALSO renders a Graduate badge
+        carrying this identical gloss (action_bar.html), so deleting
+        bucket.html's OWN row.badges title still leaves the string on
+        the page via that sibling site. Exact count, mirroring the
+        Detail-page test's own == 3 pattern: bucket.html's row.badges
+        loop contributes exactly ONE occurrence (the canon row only —
+        the plain row has no already-canon badge), and action_bar.html's
+        Graduate button contributes the other — regressing EITHER site
+        independently drops the count and reddens this."""
         sb = make_env(tmp_path)
         rec_canon = make_behavior(scope="skill:s")
         seed_record(sb.ledger, rec_canon)
@@ -974,7 +986,23 @@ class TestTerminologyDefinitions:
         c, _runner = make_client(sb)
         r = c.get("/bucket/skill/s")
         assert "already canon" in r.text.lower()  # positive control
-        assert "canon = the guidance file" in r.text
+        assert r.text.count("canon = the guidance file") == 2
+
+    def test_mined_badge_is_defined_on_bucket_row(self, tmp_path: Path) -> None:
+        """Code-gate FOLD 1: bucket.html's row.badges loop carries its
+        OWN `mined` gloss (a separate `{% elif %}` branch from
+        already-canon's), and it had NO test at all — the existing
+        `test_mined_badge_is_defined` only ever reads /record/{id},
+        never a Bucket page. Unlike already-canon, "mined" has no
+        sibling render site on this page, so a bare `in r.text` check is
+        sound here (nothing else on a Bucket page renders that string)."""
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s", source="session")
+        seed_record(sb.ledger, rec)
+        c, _runner = make_client(sb)
+        r = c.get("/bucket/skill/s")
+        assert 'class="badge badge-mined"' in r.text  # positive control
+        assert "found automatically by scanning past sessions" in r.text
 
     def test_bulk_acknowledge_button_defines_canon(self, tmp_path: Path) -> None:
         sb = make_env(tmp_path)
