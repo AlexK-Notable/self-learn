@@ -1050,6 +1050,24 @@ def test_c5_human_path_wired_by_exit_code(tmp_path, monkeypatch):
 # =========================================================================
 
 
+def test_d0_render_destinations_pinned_by_literal():
+    """D0 (code gate FOLD 2): pins _RENDER_DESTINATIONS to Render-1's six
+    pairs with LITERALS, not derived values. D5/D7/D7a below compute
+    their expected destination from this same map (`_RENDER_DESTINATIONS[
+    load_class]`), so corrupting a map entry moves both the production
+    code and the test's expectation together — the map itself was
+    untested. Without this literal pin, mutating any one of the six
+    entries (e.g. DEMAND -> "claude-md") survives the whole suite."""
+    assert _RENDER_DESTINATIONS == {
+        "HOOK": "hook",
+        "ALWAYS": "claude-md",
+        "PATHED": "claude-md",
+        "SKILL": "skill-md",
+        "DEMAND": "reference",
+        "NEW_SKILL": "new-skill",
+    }
+
+
 def test_d1_r_demand():
     """D1 — R-DEMAND: DEMAND + destination: claude-md refused; +
     reference accepted."""
@@ -1318,7 +1336,20 @@ def test_d10_recommendation_absent_reads_as_route():
     recommendation is explicitly present, never absent) — the twin that
     actually separates the two readings needs recommendation ABSENT
     together with a WRONG destination: "skip the check" would let it
-    through, "route" would still catch the destination mismatch."""
+    through, "route" would still catch the destination mismatch.
+
+    *Broken differently (code gate FOLD 1):* the gate's own mutation
+    doesn't drop the check, it replaces `data.get("recommendation") or
+    "route"` with a sentinel that compares equal to whatever it's checked
+    against — the wrong-destination leg above still reddens under THAT
+    mutation too (its failure comes from the destination check, which the
+    sentinel never touches), so the full suite stayed green while five
+    R-FALL/R-SCOPE shapes silently flipped REFUSED->ACCEPTED. Isolating
+    the recommendation comparison itself needs a leg with a CORRECT
+    destination and an outcome that requires recommendation != "route":
+    DEMAND at scope="user" (R-SCOPE) with the right destination and flag
+    already in place — absent must still refuse, because absent reads as
+    "route", and "route" != "defer"."""
     scope = "project"
     trace, rp = _outcome_trace("DEMAND", scope)
 
@@ -1336,6 +1367,16 @@ def test_d10_recommendation_absent_reads_as_route():
     assert "recommendation" not in bad_absent_wrong_dest
     with pytest.raises(ProposalError):
         validate_proposal(bad_absent_wrong_dest, scope=scope)
+
+    scope_user = "user"
+    trace_user, rp_user = _outcome_trace("DEMAND", scope_user)
+    bad_absent_scope_row = proposal_dict(
+        gates=trace_user, rules_paths=rp_user, destination="reference",
+        flags=["no-cheap-surface"],
+    )
+    assert "recommendation" not in bad_absent_scope_row
+    with pytest.raises(ProposalError):
+        validate_proposal(bad_absent_scope_row, scope=scope_user)
 
 
 # =========================================================================
