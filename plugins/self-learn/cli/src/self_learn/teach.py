@@ -680,7 +680,7 @@ def _route_now(
         if not doctrine.is_file():
             return _fail(f"routing doctrine not installed — T10 ({doctrine})")
         try:
-            proposal = analyst.analyze(home, record)
+            proposal = analyst.analyze(home, record, project_path=project_path)
         except analyst.AnalystError as exc:
             return _capture_to_pending(
                 home,

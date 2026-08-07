@@ -150,7 +150,9 @@ def _parse_yaml_map(text: str) -> dict:
     return data
 
 
-def analyze(home: Path | str, record: Record) -> dict:
+def analyze(
+    home: Path | str, record: Record, *, project_path: Path | None = None
+) -> dict:
     """Run the one-shot analyst for ``record``; return a validated proposal
     dict: **every field the model emitted**, plus the CLI-stamped
     ``record_sha``, ``model`` and ``analyzed_at``. Raises
@@ -163,7 +165,26 @@ def analyze(home: Path | str, record: Record) -> dict:
     silently dropped anything not on it, so a `hook` proposal could never
     survive its own validator. The fix copies the parsed mapping wholesale,
     so **do not re-introduce an enumeration here** — a list of fields in
-    this docstring is what a future reader would restore the bug from."""
+    this docstring is what a future reader would restore the bug from.
+
+    ``project_path`` (gate FOLD 5, keyword-only, default ``None`` for
+    backward compatibility with any caller re-analyzing a record already
+    on disk — see the WOULD-BE-path comment below, where it's only ever
+    consulted on the not-yet-persisted branch): the COMMON case for
+    ``teach --route`` at project scope is a record that is NOT yet on
+    disk, so :func:`bucket_dir_for_scope` needs the project's path to
+    resolve a real bucket at all (doc 13 §3: project buckets are
+    per-project, keyed by the path). Before this parameter existed, every
+    project-scope one-shot call degraded straight to the
+    ``_unresolved-scope`` sentinel — never the record's REAL bucket —
+    which made ALWAYS/PATHED/DEMAND all render "(unresolvable — project
+    bucket has no meta.yaml)" in the prompt, a FALSE reason (there was no
+    bucket to check for a meta.yaml at all; the caller simply never
+    supplied the path it had in hand). ``teach.py``'s own call site
+    (``_route_now``, ~:683) now threads its own ``project_path`` through;
+    a caller that still omits it gets `worker.path_roster`'s newer,
+    honest sentinel instead of the old misleading one (see that
+    function's own docstring)."""
     doctrine = doctrine_path()
     if not doctrine.is_file():
         # Callers check first for the pinned exit-2 message; this guard is
@@ -196,7 +217,12 @@ def analyze(home: Path | str, record: Record) -> dict:
     # WOULD-BE path (the same arithmetic create_record uses) rather than
     # fail: this is purely informational (the "record file:" line and the
     # bucket-derived path-roster rows), never a file this function reads
-    # or writes.
+    # or writes. `project_path` (above) is what makes that WOULD-BE path
+    # a REAL bucket at project scope instead of always the
+    # `_unresolved-scope` sentinel (gate FOLD 5) — `bucket_dir_for_scope`
+    # only still raises here when project scope's `project_path` is
+    # genuinely absent (a caller other than `teach.py` that didn't supply
+    # it) or a skill scope names a skill no host registers.
     from .ledger_ops import QueueEntry
     from .worker import compose_single_prompt
 
@@ -204,7 +230,9 @@ def analyze(home: Path | str, record: Record) -> dict:
         record_path = find_record_path(home, record.id)
     except LedgerOpsError:
         try:
-            bucket_dir = bucket_dir_for_scope(home, record.scope, project_path=None)
+            bucket_dir = bucket_dir_for_scope(
+                home, record.scope, project_path=project_path
+            )
         except LedgerOpsError:
             bucket_dir = home / "_unresolved-scope"
         record_path = bucket_dir / "pending" / f"{record.id}.md"

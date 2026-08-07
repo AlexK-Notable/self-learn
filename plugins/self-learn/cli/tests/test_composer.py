@@ -90,6 +90,15 @@ def test_a1_roster_composed_from_both_sources_deduped_by_realpath(tmp_path, monk
     assert len(beta_rows) == 1, roster.text
     assert roster.routable == 1
     assert roster.visible_only == 1
+    # Gate follow-up: the counts above can hold while the RENDERED marker
+    # text lies about which row is which (e.g. every row stamped
+    # "[routable]" regardless of is_routable) — the counts are computed
+    # independently of the string that's actually written into the row.
+    # Pin the marker string itself, on both rows, in both directions.
+    assert "[routable]" in alpha_rows[0]
+    assert "[visible only" in beta_rows[0]
+    assert "[routable]" not in beta_rows[0]
+    assert "[visible only" not in alpha_rows[0]
 
 
 def test_a2_block_scalar_description_survives(tmp_path):
@@ -237,6 +246,45 @@ def test_a5_sha_covers_the_rendered_text(tmp_path):
     assert roster2.sha != roster1.sha
     assert roster2.sha == sha_anchor(roster2.text)
 
+
+def test_note7_duplicate_frontmatter_name_sorts_by_full_line_not_insertion_order(
+    tmp_path,
+):
+    """Gate NOTE 7 — two ROUTABLE skills sharing the same frontmatter
+    `name:` (two skill dirs, same registered name — a real, if unusual,
+    corpus shape) used to tie-break by insertion order, which
+    `routable_paths`'s SET iteration makes hash-seed-dependent (measured:
+    2 different roster shas for the identical on-disk roster across
+    PYTHONHASHSEED 1..6). Sorting on the full (name, rendered_line) pair
+    makes the tie deterministic regardless of iteration order: the row
+    whose rendered line sorts first BY CONTENT always comes first.
+    Absent/broken: a name-only sort ties here and the resulting order
+    (and roster text/sha) is whichever the set handed it that run — this
+    test cannot force a hash-seed flip directly, but it DOES pin that the
+    tie is broken by line content, the only property capable of being
+    stable across seeds."""
+    env = make_env(tmp_path, skills=("alpha", "zzz"))
+    # give BOTH skills the identical frontmatter name — a genuine tie for
+    # the sort key's first element.
+    alpha_md = env.host / "plugins" / "alpha-plugin" / "skills" / "alpha" / "SKILL.md"
+    zzz_md = env.host / "plugins" / "zzz-plugin" / "skills" / "zzz" / "SKILL.md"
+    alpha_md.write_text(
+        "---\nname: dup\ndescription: AAA comes first alphabetically.\n---\n\n# alpha\n",
+        encoding="utf-8",
+    )
+    zzz_md.write_text(
+        "---\nname: dup\ndescription: ZZZ comes last alphabetically.\n---\n\n# zzz\n",
+        encoding="utf-8",
+    )
+    roster = worker.skill_roster(env.ledger)
+    dup_rows = [ln for ln in roster.text.splitlines() if ln.startswith("- dup ")]
+    assert len(dup_rows) == 2
+    # (name, rendered_line) order: "AAA..." sorts before "ZZZ..." by
+    # content — deterministic regardless of which dir the underlying set
+    # iterated first.
+    assert "AAA comes first" in dup_rows[0]
+    assert "ZZZ comes last" in dup_rows[1]
+
 # =====================================================================
 # B. Cluster candidates
 # =====================================================================
@@ -361,6 +409,45 @@ def test_a6_ranking_floor_and_cap(a6_env, monkeypatch):
     target_batch = _entries_for(env.ledger, [r["target"]])
     target_result = worker.cluster_candidates(env.ledger, target_batch)
     assert target_result[r["target"].id] == []
+
+
+def test_a6b_floor_applies_per_candidate_not_to_the_sum():
+    """A6 gate follow-up — the floor in `cluster_candidates` is applied to
+    EACH candidate's own score, never to the SUM of a record's candidate
+    scores. A6's own below-floor leg (v) runs `target` alone against a
+    single companion (`faint`), where one candidate's score IS the sum —
+    a sum-based floor and a per-candidate floor are indistinguishable on
+    that fixture. This fixture gives `target` TWO real candidates: one
+    single-token twin (score 1.0, comfortably above the 0.20 floor) and
+    one heavily diluted companion (score ~0.173, below it) — their SUM
+    (~1.17) clears the floor even though the diluted one alone does not.
+    Absent/broken: a build that floors the total (keeping every scored
+    candidate whenever the sum clears 0.20) returns both; the per-
+    candidate floor must return exactly the strong one."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as td:
+        tmp_path = Path(td)
+        env = make_env(tmp_path, skills=("s",))
+        target = _pending_behavior(env, "lrn-72000000", "vvvshare")
+        strong = _pending_behavior(env, "lrn-72000001", "vvvshare")
+        filler = " ".join(f"vvvfiller{i}xyz" for i in range(20))
+        weak = _pending_behavior(env, "lrn-72000002", "vvvshare " + filler)
+        # Noise records: inflate the pool size N so idf("vvvshare") stays
+        # well clear of zero (doc_freq=3 out of N=18, not 3 out of 3 —
+        # the degenerate case where every record shares the token and its
+        # idf collapses to ln(1) == 0, which would zero every score).
+        for n in range(15):
+            _pending_behavior(env, f"lrn-7100000{n:x}", f"vvvnoise{n}tokenxyz")
+
+        batch = _entries_for(env.ledger, [target])
+        result = worker.cluster_candidates(env.ledger, batch)
+        candidates = result[target.id]
+        ids = [c.record_id for c in candidates]
+        assert ids == [strong.id], (
+            f"expected exactly the above-floor candidate to survive, got {candidates}"
+        )
+        assert candidates[0].score >= worker.CANDIDATE_SCORE_FLOOR
 
 
 def test_a7_determinism_and_tie_ordering(a6_env):
@@ -723,6 +810,21 @@ def test_a14_gate_sequence_present_and_ordered():
         positions.append(m.start())
     assert positions == sorted(positions), (
         f"gate labels out of order: {list(zip(labels, positions))}"
+    )
+
+    # Gate follow-up (M28 escaped A14): every label above ALSO occurs
+    # early in §2's one preamble sentence, in the correct order — so a
+    # doctrine with the T2/T3 SECTION HEADINGS physically transposed
+    # still passes the word-occurrence leg above (both `\bT2\b` and
+    # `\bT3\b` first match inside that untouched preamble, within ~80
+    # bytes of each other, regardless of where the real "**T2 —" /
+    # "**T3 —" sections later land). Pin the section-HEADING order
+    # directly, the same way A15 already locates them.
+    t2_heading = text.index("**T2 —")
+    t3_heading = text.index("**T3 —")
+    assert t2_heading < t3_heading, (
+        "T2's section heading must precede T3's — "
+        f"T2 at {t2_heading}, T3 at {t3_heading}"
     )
 
 
@@ -1416,3 +1518,157 @@ def test_a24_containment_and_derivation_at_owned_sites(tmp_path, monkeypatch):
     worker.run(env.ledger)
     assert path_d_ctrl.is_file()
     assert _is_unanalyzed(_entry_for(env.ledger, record_d_ctrl)) is False
+
+
+# =====================================================================
+# F. Gate follow-up (FOLD 5): the analyst's project-scope path roster
+# =====================================================================
+#
+# `analyst.analyze`'s one-shot path composes a prompt for a record that
+# is NOT yet on disk (the common case for bare `teach --route`) — before
+# the FOLD 5 fix, project scope always degraded to the
+# `_unresolved-scope` sentinel here regardless of whether the caller
+# (teach.py) actually had the project's path in hand, so the composed
+# prompt's ALWAYS/PATHED/DEMAND target lines always read "(unresolvable
+# — project bucket has no meta.yaml)" — a false reason when there was no
+# bucket to check at all. These three tests capture the actual prompt
+# `analyst.analyze` composes (by intercepting the `claude -p <prompt>`
+# argv it builds, never the shim's stdin) and pin all three shapes:
+# resolvable when `project_path` is threaded and the bucket already
+# exists; the OLD honest reason when the bucket resolves but genuinely
+# has no meta.yaml yet; the NEW honest reason when `project_path` itself
+# was never supplied.
+
+
+def _capture_analyst_prompt(monkeypatch, accepted_yaml: str) -> list[str]:
+    """Monkeypatch `analyst.subprocess.run` to capture the composed
+    prompt (argv[2] of the literal `claude -p <prompt> …` invocation,
+    `analyst.build_argv`) without spawning any process or touching PATH,
+    and return an ACCEPTED proposal so `analyst.analyze` completes
+    normally. Returns the list this test appends captured prompts to."""
+    import subprocess as _subprocess
+    from self_learn import analyst as _analyst
+
+    captured: list[str] = []
+
+    class _Completed:
+        def __init__(self, stdout):
+            self.returncode = 0
+            self.stdout = stdout
+            self.stderr = ""
+
+    def _fake_run(argv, **kwargs):
+        assert argv[0] == "claude" and argv[1] == "-p"
+        captured.append(argv[2])
+        return _Completed(f"```yaml\n{accepted_yaml}```\n")
+
+    monkeypatch.setattr(_analyst.subprocess, "run", _fake_run)
+    return captured
+
+
+def test_fold5_project_scope_one_shot_resolves_real_targets_when_bucket_exists(
+    tmp_path, monkeypatch
+):
+    """FOLD 5, leg 1 — a project-scope one-shot call that threads
+    `project_path` AND whose project bucket already exists (the common
+    case: this project has been taught before) gets REAL, resolvable
+    ALWAYS/PATHED/DEMAND targets under the actual host repo path — never
+    the sentinel. Absent/broken: a build that still ignores
+    `project_path` (or never merges it into `bucket_dir_for_scope`)
+    renders the sentinel here too, and this test's `in`-on-a-real-path
+    assertion fails."""
+    from self_learn.ledger_ops import bucket_dir_for_scope, ensure_project_meta
+    from self_learn import analyst as _analyst
+    from self_learn.worker import skill_roster as _skill_roster
+
+    env = _shim_env(tmp_path, monkeypatch)
+    # Pre-seed the project bucket exactly like an EARLIER `teach --route`
+    # for this same project would have (ensure_project_meta is what
+    # route_direct/create_record call — never hand-write meta.yaml).
+    bucket_dir = bucket_dir_for_scope(env.ledger, "project", project_path=env.host)
+    ensure_project_meta(bucket_dir, env.host)
+
+    roster_sha = _skill_roster(env.ledger).sha
+    record = make_behavior(scope="project", record_id="lrn-49000000")
+    captured = _capture_analyst_prompt(
+        monkeypatch, _demand_proposal_yaml(roster_sha, flags_evidence_gap=False)
+    )
+    _analyst.analyze(env.ledger, record, project_path=env.host)
+
+    assert len(captured) == 1
+    prompt = captured[0]
+    host_str = str(env.host)
+    assert f"ALWAYS target      : {host_str}/CLAUDE.md" in prompt
+    assert f"PATHED rules dir   : {host_str}/.claude/rules" in prompt
+    assert f"DEMAND target      : {host_str}/references/LEARNINGS.md" in prompt
+    assert "unresolvable" not in prompt
+
+
+def test_fold5_project_scope_bucket_exists_but_genuinely_has_no_meta(
+    tmp_path, monkeypatch
+):
+    """FOLD 5, leg 2 (positive control, gate M1 discipline) — a project
+    bucket that RESOLVES (project_path threaded correctly) but that
+    genuinely has no meta.yaml yet (this project's very first record)
+    keeps the OLD, still-honest reason — "project bucket has no
+    meta.yaml" is TRUE here, unlike leg 3 below. Distinguishes "bucket
+    resolved, empty" from "bucket never resolved" — the two failure
+    modes FOLD 5 found conflated into one message."""
+    from self_learn import analyst as _analyst
+    from self_learn.worker import skill_roster as _skill_roster
+
+    env = _shim_env(tmp_path, monkeypatch)
+    # Deliberately NOT seeding meta.yaml — this project's bucket dir may
+    # not even exist on disk yet, which is fine: bucket_dir_for_scope is
+    # pure path arithmetic, it never touches the filesystem.
+
+    roster_sha = _skill_roster(env.ledger).sha
+    record = make_behavior(scope="project", record_id="lrn-49000001")
+    captured = _capture_analyst_prompt(
+        monkeypatch, _demand_proposal_yaml(roster_sha, flags_evidence_gap=False)
+    )
+    _analyst.analyze(env.ledger, record, project_path=env.host)
+
+    assert len(captured) == 1
+    prompt = captured[0]
+    assert "(unresolvable — project bucket has no meta.yaml)" in prompt
+    assert "record not yet persisted" not in prompt
+
+
+def test_fold5_honest_sentinel_when_project_path_truly_not_supplied(
+    tmp_path, monkeypatch
+):
+    """FOLD 5, leg 3 — the actual bug: `project_path` genuinely absent
+    (a caller other than teach.py's own call site, or teach.py's fix
+    regressing) gets the NEW, honest reason — never the old, false
+    "project bucket has no meta.yaml" (there was no bucket to check at
+    all). Absent/broken: a build that reintroduces the FOLD 5 defect (or
+    one that always renders the new message regardless of cause,
+    collapsing leg 2 above into this one) fails either this test or
+    leg 2's positive control."""
+    from self_learn.ledger_ops import bucket_dir_for_scope, ensure_project_meta
+    from self_learn import analyst as _analyst
+    from self_learn.worker import skill_roster as _skill_roster
+
+    env = _shim_env(tmp_path, monkeypatch)
+    # Bucket genuinely DOES exist with real meta.yaml this time — proving
+    # the sentinel is keyed off whether project_path reached
+    # bucket_dir_for_scope AT ALL, never off whether a real bucket with
+    # real meta.yaml happens to exist somewhere the caller didn't name.
+    bucket_dir = bucket_dir_for_scope(env.ledger, "project", project_path=env.host)
+    ensure_project_meta(bucket_dir, env.host)
+
+    roster_sha = _skill_roster(env.ledger).sha
+    record = make_behavior(scope="project", record_id="lrn-49000002")
+    captured = _capture_analyst_prompt(
+        monkeypatch, _demand_proposal_yaml(roster_sha, flags_evidence_gap=False)
+    )
+    _analyst.analyze(env.ledger, record)  # no project_path — the bug's shape
+
+    assert len(captured) == 1
+    prompt = captured[0]
+    assert (
+        "(unresolvable — record not yet persisted; project path not supplied)"
+        in prompt
+    )
+    assert "project bucket has no meta.yaml" not in prompt

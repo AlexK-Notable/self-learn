@@ -313,7 +313,14 @@ def skill_roster(home: Path) -> Roster:
         )
         return Roster(text=text, sha=ROSTER_UNAVAILABLE, routable=0, visible_only=0)
 
-    rows.sort(key=lambda pair: pair[0])
+    # Gate NOTE 7: name-only sort left ties (two routable skills
+    # sharing a frontmatter `name:`) broken by insertion order, which
+    # `routable_paths`'s SET iteration makes hash-seed-dependent —
+    # measured 2 different roster shas across PYTHONHASHSEED 1..6 for
+    # the same on-disk roster. `rendered_line` is real content, never
+    # order-dependent — sorting on the full (name, rendered_line) pair
+    # makes tie-breaking deterministic regardless of iteration order.
+    rows.sort(key=lambda pair: (pair[0], pair[1]))
     text = "\n".join(line for _, line in rows)
     return Roster(
         text=text,
@@ -417,7 +424,16 @@ def path_roster(home: Path, entry) -> str:
     arithmetic, never :func:`verbs._resolve_target` (that resolver runs
     registry gates and dirty checks and would make prompt assembly fail
     on a dirty host repo — A10). Every unresolvable slot renders an
-    explicit sentinel naming the reason; no slot is ever omitted."""
+    explicit sentinel naming the reason; no slot is ever omitted.
+
+    Project scope's sentinel (gate FOLD 5) names ONE of two genuinely
+    different reasons, keyed off ``entry.bucket_dir`` itself: a real
+    per-project bucket whose ``meta.yaml`` is actually missing renders
+    "(… project bucket has no meta.yaml)"; `analyst.analyze`'s own
+    ``_unresolved-scope`` degrade path (no ``project_path`` reached
+    :func:`bucket_dir_for_scope` at all — there was no bucket to check)
+    renders "(… record not yet persisted; project path not supplied)"
+    instead — never the first message for the second cause."""
     home = Path(home)
     record = entry.record
     scope = record.scope
@@ -431,10 +447,24 @@ def path_roster(home: Path, entry) -> str:
 
     host_repo: Path | None = None
     host_repo_sentinel = "(no host repo at this scope)"
+    # Gate FOLD 5: two DIFFERENT failure modes used to share one message.
+    # A bucket whose meta.yaml is genuinely missing (a real per-project
+    # bucket dir exists, e.g. mid-repair or first-ever write racing this
+    # read) and a bucket that was never resolved AT ALL (the analyst's
+    # one-shot path degraded to `analyst.py`'s `_unresolved-scope`
+    # sentinel because no `project_path` reached `bucket_dir_for_scope`)
+    # are not the same fact, and only the first one is actually "the
+    # bucket has no meta.yaml" — the second has no bucket to check.
+    project_unresolved_reason = "project bucket has no meta.yaml"
     if scope == "project":
-        host_repo = bucket_project_path(bucket_dir)
+        if bucket_dir.name == "_unresolved-scope":
+            project_unresolved_reason = (
+                "record not yet persisted; project path not supplied"
+            )
+        else:
+            host_repo = bucket_project_path(bucket_dir)
         if host_repo is None:
-            host_repo_sentinel = "(project bucket has no meta.yaml)"
+            host_repo_sentinel = f"({project_unresolved_reason})"
     elif scope == "user":
         host_repo_sentinel = "(user scope has no host repo)"
     else:  # skill:<name>
@@ -472,7 +502,7 @@ def path_roster(home: Path, entry) -> str:
             lines.append(f"ALWAYS target      : {host_repo / 'CLAUDE.md'}")
         else:
             lines.append(
-                "ALWAYS target      : (unresolvable — project bucket has no meta.yaml)"
+                f"ALWAYS target      : (unresolvable — {project_unresolved_reason})"
             )
     else:
         lines.append(
@@ -488,7 +518,7 @@ def path_roster(home: Path, entry) -> str:
             lines.append(f"PATHED rules dir   : {host_repo / '.claude' / 'rules'}")
         else:
             lines.append(
-                "PATHED rules dir   : (unresolvable — project bucket has no meta.yaml)"
+                f"PATHED rules dir   : (unresolvable — {project_unresolved_reason})"
             )
     else:
         user_claude_md = Path("~/.claude/CLAUDE.md").expanduser()
@@ -521,7 +551,7 @@ def path_roster(home: Path, entry) -> str:
             )
         else:
             lines.append(
-                "DEMAND target      : (unresolvable — project bucket has no meta.yaml)"
+                f"DEMAND target      : (unresolvable — {project_unresolved_reason})"
             )
     else:
         lines.append("DEMAND target      : (unavailable at user scope — S-23)")
