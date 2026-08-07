@@ -325,8 +325,10 @@ class TestTelemetryCommits:
         assert head(env.ledger) == before
 
 
-#: A shim-written, schema-valid proposal (same idiom as test_worker.py).
-PROPOSAL_YAML = """destination: skill-md
+#: A shim-written, schema-valid proposal (same idiom as test_worker.py,
+#: including its S-26 trace — `{roster_sha}` is filled in from the REAL
+#: roster the test's own env composes, `_proposal_yaml` below).
+PROPOSAL_YAML_TEMPLATE = """destination: skill-md
 alternates: [reference]
 rationale: "shim-written proposal"
 already_canon: false
@@ -336,7 +338,46 @@ card:
   headline: "A test headline."
   impact: "Next time Claude does X it will Y."
   discuss: "Nothing contentious."
+gates:
+  g0:
+    reject: {{answer: "no"}}
+    defer: {{answer: "no"}}
+    canon: {{answer: "no"}}
+  t1:
+    attempted: false
+    field_shaped:
+      answer: "no"
+      evidence: "About to edit .storage while HA is running."
+    separable: {{answer: null}}
+    cost_bearing: {{answer: null}}
+  t2:
+    answer: "no"
+    evidence: "About to edit .storage while HA is running."
+    match_path: null
+  t3:
+    answer: "yes"
+    owner: "s"
+    scan_terms: null
+    roster_sha: "{roster_sha}"
+  t3a:
+    depth_behind_rule: {{answer: "no", evidence: null}}
+    fs: {{verdict: "SILENT", evidence: "About to edit .storage while HA is running."}}
+  tn: {{answer: "no", terms: [], members: [], proposed_name: null}}
+  t4: null
+  e1: {{sightings: 1, post_demand_recurrence: false}}
+  outcome: SKILL
+flags: []
+recommendation: route
 """
+
+
+def _proposal_yaml(env) -> str:
+    """The canned shim proposal text, its roster sha filled in from the
+    REAL roster this test's own env composes (see the template's own
+    docstring above)."""
+    from self_learn.worker import skill_roster
+
+    return PROPOSAL_YAML_TEMPLATE.format(roster_sha=skill_roster(env.ledger).sha)
 
 
 @pytest.fixture
@@ -372,7 +413,7 @@ class TestWorkerCommits:
         path = proposals / f"{rid}.yaml"
         monkeypatch.setenv(
             "CLAUDE_SHIM_SCRIPT",
-            f"mkdir -p {proposals} && cat > {path} <<'YAML'\n{PROPOSAL_YAML}YAML",
+            f"mkdir -p {proposals} && cat > {path} <<'YAML'\n{_proposal_yaml(env)}YAML",
         )
         return path
 
@@ -415,7 +456,7 @@ class TestWorkerCommits:
         proposals = env.ledger / "skills" / "s" / "proposals"
         proposals.mkdir(parents=True, exist_ok=True)
         orphan = proposals / "lrn-0000dead.yaml"
-        orphan.write_text(PROPOSAL_YAML, encoding="utf-8")
+        orphan.write_text(_proposal_yaml(env), encoding="utf-8")
         commit_all(env.ledger, "seed orphan proposal")
         assert "lrn-0000dead.yaml" in git(env.ledger, "ls-files").stdout
 

@@ -23,7 +23,14 @@ from support import commit_all, git, make_behavior, make_env, make_home, proposa
 
 SKILL_MD = "# s skill\n\nAuthored prose stays put.\n"
 
-PROPOSAL_YAML = """destination: skill-md
+# S-26: every proposal now needs the mandatory decision trace. This is a
+# fixed, self-consistent SKILL-outcome trace for scope skill:s (the ONLY
+# scope this file's shim-written proposals ever target — `seed_pending`
+# always uses `make_behavior()`'s defaults). `{roster_sha}` is filled in
+# by `_proposal_yaml` from the REAL `worker.skill_roster(env.home)` for
+# the calling test's own env — a literal sha would drift the instant the
+# roster's rendering format or this file's `make_env` skill seed changes.
+PROPOSAL_YAML_TEMPLATE = """destination: skill-md
 alternates: [reference]
 rationale: "shim-written proposal"
 already_canon: false
@@ -33,7 +40,46 @@ card:
   headline: "A test headline."
   impact: "Next time Claude does X it will Y."
   discuss: "Nothing contentious."
+gates:
+  g0:
+    reject: {{answer: "no"}}
+    defer: {{answer: "no"}}
+    canon: {{answer: "no"}}
+  t1:
+    attempted: false
+    field_shaped:
+      answer: "no"
+      evidence: "About to edit .storage while HA is running."
+    separable: {{answer: null}}
+    cost_bearing: {{answer: null}}
+  t2:
+    answer: "no"
+    evidence: "About to edit .storage while HA is running."
+    match_path: null
+  t3:
+    answer: "yes"
+    owner: "s"
+    scan_terms: null
+    roster_sha: "{roster_sha}"
+  t3a:
+    depth_behind_rule: {{answer: "no", evidence: null}}
+    fs: {{verdict: "SILENT", evidence: "About to edit .storage while HA is running."}}
+  tn: {{answer: "no", terms: [], members: [], proposed_name: null}}
+  t4: null
+  e1: {{sightings: 1, post_demand_recurrence: false}}
+  outcome: SKILL
+flags: []
+recommendation: route
 """
+
+
+def _proposal_yaml(env) -> str:
+    """The canned shim proposal text, its roster sha filled in from the
+    REAL roster this test's own env composes (see the template's own
+    docstring above)."""
+    from self_learn.worker import skill_roster
+
+    return PROPOSAL_YAML_TEMPLATE.format(roster_sha=skill_roster(env.home).sha)
 
 
 @pytest.fixture(autouse=True)
@@ -150,7 +196,7 @@ def seed_pending(env, rid="lrn-0000aaaa", created_at=None):
 def shim_writes(env, rid) -> str:
     path = env.proposals / f"{rid}.yaml"
     return (
-        f"mkdir -p {env.proposals} && cat > {path} <<'YAML'\n{PROPOSAL_YAML}YAML"
+        f"mkdir -p {env.proposals} && cat > {path} <<'YAML'\n{_proposal_yaml(env)}YAML"
     )
 
 
@@ -367,7 +413,7 @@ def test_orphan_proposal_swept(env, claude_shim, monkeypatch):
     # step-5's sweep owns it — step-4 validation only sees run-written files
     orphan = env.proposals / "lrn-99999999.yaml"
     orphan.parent.mkdir(parents=True, exist_ok=True)
-    orphan.write_text(PROPOSAL_YAML, encoding="utf-8")
+    orphan.write_text(_proposal_yaml(env), encoding="utf-8")
     monkeypatch.setenv("CLAUDE_SHIM_SCRIPT", shim_writes(env, rid))
     result = worker.run(env.home)
     assert result.status == "ok"
@@ -740,7 +786,7 @@ def test_unexpected_artifacts_deleted_never_published(env, claude_shim, monkeypa
 
 def test_secret_bearing_proposal_deleted(env, claude_shim, monkeypatch):
     rid = seed_pending(env)
-    bad = PROPOSAL_YAML.replace(
+    bad = _proposal_yaml(env).replace(
         'rationale: "shim-written proposal"',
         'rationale: "use password = hunter2secret9 for this"',
     )
@@ -877,7 +923,7 @@ def test_canon_excerpt_unresolvable_skill_target_never_raises(tmp_path):
     unresolvable target reads as a sentinel string, never an exception —
     the analyst then has no section to check and (per doctrine) omits
     both `contradicts` and the `conflict` card, never guesses a target.
-    `_compose_prompt` must still assemble around the sentinel without
+    `compose_batch_prompt` must still assemble around the sentinel without
     crashing the run."""
     from self_learn.ledger import discover_buckets
 
@@ -895,7 +941,7 @@ def test_canon_excerpt_unresolvable_skill_target_never_raises(tmp_path):
     excerpt = worker._canon_excerpt(home, entry)
     assert "unresolvable" in excerpt
 
-    prompt = worker._compose_prompt(home, [entry])
+    prompt, _roster = worker.compose_batch_prompt(home, [entry])
     assert "unresolvable" in prompt
 
 
@@ -1079,7 +1125,7 @@ def test_worker_prompt_assembly_carries_the_real_doctrine_lint_schema(
 ):
     """One-schema fixture (spec §8): the M2 worker's ACTUAL assembled
     prompt — built from the real shipped routing-doctrine.md via
-    `_compose_prompt`, not a mock — carries the same `lint:` field names
+    `compose_batch_prompt`, not a mock — carries the same `lint:` field names
     the doctrine teaches every producer (M1 inline included: it loads the
     identical file per `commands/review.md` step 2). No fork between
     what the doctrine teaches and what a producer's prompt actually

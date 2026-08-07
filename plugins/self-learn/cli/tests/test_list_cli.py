@@ -105,7 +105,11 @@ def test_list_json_no_proposal_defaults(home, capsys):
 
 def test_list_json_stale_proposal_not_fresh(home, capsys):
     create_record(home, make_behavior(scope="skill:home-assistant", record_id="lrn-aa000001"))
-    write_proposal(home, "lrn-aa000001", proposal_dict(record_sha="sha256:000000000000"))
+    write_proposal(
+        home,
+        "lrn-aa000001",
+        proposal_dict(scope="skill:home-assistant", record_sha="sha256:000000000000"),
+    )
     (item,) = _list_json(capsys)
     assert item["has_proposal"] is True
     assert item["proposal_fresh"] is False
@@ -171,7 +175,7 @@ def test_status_json_pinned_shape_with_unanalyzed(home, capsys):
             scope="skill:home-assistant", record_id="lrn-aa000001", created_at=days_ago(5)
         ),
     )
-    write_proposal(home, "lrn-aa000001", proposal_dict())
+    write_proposal(home, "lrn-aa000001", proposal_dict(scope="skill:home-assistant"))
     stamp_proposal(home, "lrn-aa000001")
     create_record(
         home,

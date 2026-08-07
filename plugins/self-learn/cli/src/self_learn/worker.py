@@ -39,6 +39,7 @@ from __future__ import annotations
 import fcntl
 import hashlib
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -50,11 +51,12 @@ from pathlib import Path
 
 from . import sentinel, telemetry
 from .compilers import BEGIN_MARKER, END_MARKER
-from .hosts import HostsError, load_hosts, skill_dir_for
+from .hosts import Hosts, HostsError, load_hosts, skill_dir_for
 from .ledger import discover_buckets, resolve_home
 from .ledger_ops import bucket_project_path
 from .scan import scan as secret_scan
 from .ledger_ops import (
+    ROSTER_UNAVAILABLE,
     ProposalError,
     _dump_yaml,
     is_unanalyzed,
@@ -70,17 +72,27 @@ from .records import Record, RecordError
 
 __all__ = [
     "ALLOWED_TOOLS",
+    "CANDIDATE_CAP",
+    "CANDIDATE_SCORE_FLOOR",
+    "Candidate",
     "DEFAULT_COALESCE_SECS",
     "DEFAULT_WORKER_MODEL",
     "DISALLOWED_TOOLS",
+    "Roster",
     "RunResult",
     "batch_cap",
     "build_argv",
     "cache_dir",
     "canon_excerpt",
+    "cluster_candidates",
+    "compose_batch_prompt",
+    "compose_record_block",
+    "compose_single_prompt",
     "kick",
     "package_skill_refs",
+    "path_roster",
     "run",
+    "skill_roster",
     "write_permission_rules",
     "write_settings_file",
 ]
@@ -101,6 +113,18 @@ ESCALATE_DEBOUNCE_SECS = 24 * 60 * 60
 #: Recurrence-suspect similarity threshold (11 §2.2 rider; deterministic).
 SUSPECT_JACCARD = 0.6
 
+#: U-composer §3.3 — cluster-candidate floor and rank cap, both measured
+#: 2026-08-06 against a copy of the live ledger (35 pending × 31
+#: routed-resolved). Floor 0.20: 6/35 pending records keep a candidate (8
+#: rows total), all six top-1 pairs human-verified genuine subject
+#: matches. Cap 5: the largest observed candidate list at the floor was
+#: well under the cap on that corpus; A6 pins the cap as independently
+#: load-bearing (a fixture with ≥6 qualifying candidates must still cut
+#: at exactly 5). A bare literal in the comparison below would not carry
+#: this provenance for a later reader — campaign §5's own rule.
+CANDIDATE_SCORE_FLOOR = 0.20
+CANDIDATE_CAP = 5
+
 
 def package_skill_refs() -> Path:
     """The skill's references dir, resolved relative to THIS package
@@ -109,6 +133,422 @@ def package_skill_refs() -> Path:
     product-repo extraction). src/self_learn/worker.py → parents[3] is
     ``plugins/self-learn``."""
     return Path(__file__).resolve().parents[3] / "skills" / "self-learn" / "references"
+
+
+# --------------------------------------------------- U-composer: the shared
+# ----------------------------------------------------- prompt composer (§3)
+#
+# Five ingredients, one module, two prompt forms (spec §3.1): the skill
+# roster (T3, §3.2), cluster candidates (T-N, §3.3), the absolute-path
+# roster (§3.4), the record text, and the candidate-target canon excerpt
+# (already shipped as :func:`canon_excerpt`). ``analyst.py`` imports the
+# public names below rather than re-deriving them (§3.1 — the single-
+# definition rule this project pays to keep).
+
+
+@dataclass(frozen=True)
+class Roster:
+    """The T3 skill roster composed for one worker/analyst run (§3.2).
+    ``sha`` is what the model is told to echo back (X3/§3.6); it covers
+    the rendered TEXT, never paths or mtimes (§3.2's own rule)."""
+
+    text: str  # the rendered block the model sees, verbatim
+    sha: str  # sha_anchor(text) — or ledger_ops.ROSTER_UNAVAILABLE
+    routable: int  # entries under the registered skills root
+    visible_only: int  # entries visible but not routable (§3.2)
+
+
+@dataclass(frozen=True)
+class Candidate:
+    """One T-N cluster candidate (§3.3): a pending or routed-resolved
+    record whose trigger-title IDF-cosine score against the record being
+    analyzed clears :data:`CANDIDATE_SCORE_FLOOR`."""
+
+    record_id: str
+    status: str  # "pending" | "routed"
+    score: float
+    title: str
+
+
+def _flatten_ws(text: str) -> str:
+    """Collapse every run of whitespace (including newlines) to one
+    space, then strip — the same normalization
+    :func:`ledger_ops._flatten_quote` performs for containment, kept
+    local here because it is not exported from that module (§6-D4 there
+    pins it non-exported; the roster/candidate renderers need the same
+    shape for their own, unrelated reason — one-line descriptions and
+    titles — so it is redefined here rather than reaching into another
+    module's private helper)."""
+    return " ".join(text.split())
+
+
+def _truncate(text: str, cap: int) -> str:
+    """Flatten to one line, then cap at ``cap`` characters with a
+    trailing ``…`` when the flattened text is longer (§3.2/§3.3)."""
+    flat = _flatten_ws(text)
+    if len(flat) > cap:
+        return flat[:cap].rstrip() + "…"
+    return flat
+
+
+def _parse_skill_frontmatter(text: str) -> tuple[str | None, str | None, bool]:
+    """Parse a ``SKILL.md``'s leading ``---``-delimited frontmatter block
+    with the SAFE ruamel loader (§3.2 — never a line-based grab: 11 of 43
+    live descriptions are YAML block scalars, and a line grab returns the
+    literal ``"|"`` for every one of them). Returns
+    ``(name, description, parsed_ok)`` — ``name``/``description`` are
+    ``None`` when absent or non-string; ``parsed_ok`` is ``False`` on ANY
+    parse failure (A3: the caller must still render a row, never drop
+    one)."""
+    from ruamel.yaml import YAML
+
+    lines = text.split("\n")
+    if not lines or lines[0].strip() != "---":
+        return None, None, False
+    try:
+        close = lines[1:].index("---") + 1
+    except ValueError:
+        return None, None, False
+    fm_text = "\n".join(lines[1:close])
+    try:
+        data = YAML(typ="safe").load(fm_text)
+    except Exception:  # noqa: BLE001 — S6: never crash a roster build on any parser defect
+        return None, None, False
+    if not isinstance(data, dict):
+        return None, None, False
+    name = data.get("name")
+    name = name if isinstance(name, str) and name.strip() else None
+    desc = data.get("description")
+    desc = desc if isinstance(desc, str) else None
+    return name, desc, True
+
+
+def skill_roster(home: Path) -> Roster:
+    """Ingredient 1 — the T3 skill roster (§3.2).
+
+    Sources, in order: (a) ``hosts.skills_root/plugins/*/skills/*/SKILL.md``
+    (the same shape :func:`hosts.skill_dir_for` resolves one skill
+    against); (b) ``<claude_dir>/skills/*/SKILL.md``, where ``claude_dir``
+    is :func:`selfcheck.claude_runtime_dir` — imported LAZILY, matching
+    the precedent at this module's own :func:`canon_excerpt` (``selfcheck``
+    imports ``verbs``; this module must never gain a module-scope edge to
+    either).
+
+    Deduped by :meth:`Path.resolve` (realpath) — never a naive union
+    (measured 2026-08-06: naive 53, realpath union 43 on this host, every
+    root skill double-listed through a ``~/.claude/skills`` symlink).
+    Routability is part of each entry, not a footnote: an entry is
+    ``[routable]`` iff its realpath is reachable through source (a);
+    otherwise ``[visible only — not under the registered skills root]`` —
+    a route to it would raise ``HostsError`` at route time
+    (``hosts.py:551-566``). An entry whose frontmatter will not parse is
+    STILL rendered — ``(frontmatter unparseable)`` — never dropped: a
+    dropped skill is an invisible hole in the roster T3 is judged
+    against, and this fires on ~5% of this host's roster on day one
+    (two live ``ScannerError``s on an unquoted ``: `` inside a plain
+    scalar)."""
+    from .selfcheck import claude_runtime_dir
+
+    home = Path(home)
+    try:
+        hosts = load_hosts(home)
+    except HostsError:
+        hosts = Hosts()
+
+    routable_paths: set[Path] = set()
+    if hosts.skills_root is not None:
+        for candidate in hosts.skills_root.glob("plugins/*/skills/*/SKILL.md"):
+            if candidate.is_file():
+                try:
+                    routable_paths.add(candidate.resolve())
+                except OSError:
+                    continue
+
+    claude_dir = claude_runtime_dir()
+    try:
+        visible_candidates = list(claude_dir.glob("skills/*/SKILL.md"))
+    except OSError:
+        visible_candidates = []
+
+    all_resolved: dict[Path, None] = {}  # dict as an order-preserving set
+    for candidate in [*routable_paths, *visible_candidates]:
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            continue
+        all_resolved.setdefault(resolved, None)
+
+    rows: list[tuple[str, str]] = []  # (sort_key, rendered_line)
+    routable_count = 0
+    visible_only_count = 0
+    for resolved in all_resolved:
+        is_routable = resolved in routable_paths
+        marker = (
+            "[routable]"
+            if is_routable
+            else "[visible only — not under the registered skills root]"
+        )
+        try:
+            text = resolved.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            name = resolved.parent.name
+            rows.append((name, f"- {name} {marker} (frontmatter unparseable)"))
+        else:
+            name, desc, ok = _parse_skill_frontmatter(text)
+            if name is None:
+                name = resolved.parent.name
+            if ok:
+                rows.append((name, f"- {name} {marker}: {_truncate(desc or '', 200)}"))
+            else:
+                rows.append((name, f"- {name} {marker} (frontmatter unparseable)"))
+        if is_routable:
+            routable_count += 1
+        else:
+            visible_only_count += 1
+
+    if not rows:
+        text = (
+            "(skill roster unavailable — no registered skills root and no "
+            "readable user skills dir)"
+        )
+        return Roster(text=text, sha=ROSTER_UNAVAILABLE, routable=0, visible_only=0)
+
+    rows.sort(key=lambda pair: pair[0])
+    text = "\n".join(line for _, line in rows)
+    return Roster(
+        text=text,
+        sha=sha_anchor(text),
+        routable=routable_count,
+        visible_only=visible_only_count,
+    )
+
+
+def _render_candidates(candidates: list) -> str:
+    if not candidates:
+        return "(no cluster candidates above the 0.20 floor)"
+    return "\n".join(
+        f"- {c.record_id} [{c.status}] ({c.score:.2f}): {_truncate(c.title, 120)}"
+        for c in candidates
+    )
+
+
+def cluster_candidates(home: Path, batch: list) -> dict:
+    """Ingredient 2 — T-N cluster candidates (§3.3): IDF-cosine over
+    trigger-title tokens, pinned algorithm (r2's suggested extension of
+    ``_recurrence_suspects`` was measured and rejected — Jaccard ≥
+    :data:`SUSPECT_JACCARD` is always-empty on the live corpus; a raw
+    shared-token count is a queue dump; see the spec's §3.3 table).
+
+    Pool = every pending record in every bucket (including deferred —
+    T-N is a ranking, not a queue-eligibility computation) plus every
+    resolved record with ``status == "routed"``. Returns
+    ``{record_id: [Candidate, ...]}`` for every record in ``batch``,
+    ranked desc by score, ties broken by record id ascending (A7),
+    floored at :data:`CANDIDATE_SCORE_FLOOR` and capped at
+    :data:`CANDIDATE_CAP` (A6). Deliberately does NOT touch
+    ``_recurrence_suspects`` (§3.3, builder decision 6): a second,
+    read-only consumer of the shared :func:`_tokens`, never a shared
+    threshold — the two calibrations are unrelated."""
+    home = Path(home)
+    pool: list[tuple[str, str, str, set]] = []  # (id, status, title, tokens)
+    for bucket in discover_buckets(home):
+        for entry in queue(bucket, include_deferred=True):
+            title = record_title(entry.record)
+            pool.append((entry.record.id, "pending", title, _tokens(title)))
+        resolved_dir = bucket.path / "resolved"
+        if not resolved_dir.is_dir():
+            continue
+        for path in sorted(resolved_dir.glob("lrn-*.md")):
+            try:
+                routed = Record.from_path(path)
+            except RecordError:
+                continue
+            if routed.status != "routed":
+                continue
+            title = record_title(routed)
+            pool.append((routed.id, "routed", title, _tokens(title)))
+
+    n = len(pool)
+    doc_freq: dict[str, int] = {}
+    for _id, _status, _title, toks in pool:
+        for t in toks:
+            doc_freq[t] = doc_freq.get(t, 0) + 1
+
+    def idf(term: str) -> float:
+        d = doc_freq.get(term, 0)
+        if d <= 0 or n <= 0:
+            return 0.0
+        return math.log(n / d)
+
+    def sum_idf(toks: set) -> float:
+        return sum(idf(t) for t in toks)
+
+    result: dict[str, list] = {}
+    for entry in batch:
+        rid = entry.record.id
+        a_title = record_title(entry.record)
+        a_toks = _tokens(a_title)
+        a_sum = sum_idf(a_toks)
+        scored: list[tuple[float, str, str, str]] = []
+        for other_id, other_status, other_title, b_toks in pool:
+            if other_id == rid:
+                continue
+            shared = a_toks & b_toks
+            if not shared:
+                continue
+            b_sum = sum_idf(b_toks)
+            denom = math.sqrt(a_sum * b_sum) if a_sum > 0 and b_sum > 0 else 0.0
+            if denom <= 0:
+                continue
+            score = sum(idf(t) for t in shared) / denom
+            if score >= CANDIDATE_SCORE_FLOOR:
+                scored.append((score, other_id, other_status, other_title))
+        scored.sort(key=lambda row: (-row[0], row[1]))
+        top = scored[:CANDIDATE_CAP]
+        result[rid] = [
+            Candidate(record_id=oid, status=ostatus, score=sc, title=otitle)
+            for sc, oid, ostatus, otitle in top
+        ]
+    return result
+
+
+def path_roster(home: Path, entry) -> str:
+    """Ingredient 3 — the absolute-path roster (§3.4): pure path
+    arithmetic, never :func:`verbs._resolve_target` (that resolver runs
+    registry gates and dirty checks and would make prompt assembly fail
+    on a dirty host repo — A10). Every unresolvable slot renders an
+    explicit sentinel naming the reason; no slot is ever omitted."""
+    home = Path(home)
+    record = entry.record
+    scope = record.scope
+    bucket_dir = entry.bucket_dir
+
+    try:
+        hosts = load_hosts(home)
+    except HostsError:
+        hosts = Hosts()
+    skills_root = hosts.skills_root
+
+    host_repo: Path | None = None
+    host_repo_sentinel = "(no host repo at this scope)"
+    if scope == "project":
+        host_repo = bucket_project_path(bucket_dir)
+        if host_repo is None:
+            host_repo_sentinel = "(project bucket has no meta.yaml)"
+    elif scope == "user":
+        host_repo_sentinel = "(user scope has no host repo)"
+    else:  # skill:<name>
+        host_repo_sentinel = "(skill scope has no host repo — see skills root)"
+
+    lines = [
+        f"ledger home        : {home}",
+        f"bucket             : {bucket_dir}",
+        f"record file        : {entry.path}",
+        f"proposals dir      : {bucket_dir / 'proposals'}",
+        (
+            f"skills root        : {skills_root}"
+            if skills_root is not None
+            else "skills root        : (none registered)"
+        ),
+        (
+            f"host repo          : {host_repo}"
+            if host_repo is not None
+            else f"host repo          : {host_repo_sentinel}"
+        ),
+    ]
+
+    # ALWAYS target (D1's table: skill-root CLAUDE.md | host CLAUDE.md |
+    # ~/.claude/CLAUDE.md — the SAME literal :func:`canon_excerpt` already
+    # uses for the user-scope leg, not re-derived from verbs.py).
+    if scope.startswith("skill:"):
+        if skills_root is not None:
+            lines.append(f"ALWAYS target      : {skills_root / 'CLAUDE.md'}")
+        else:
+            lines.append(
+                "ALWAYS target      : (unresolvable — no registered skills root)"
+            )
+    elif scope == "project":
+        if host_repo is not None:
+            lines.append(f"ALWAYS target      : {host_repo / 'CLAUDE.md'}")
+        else:
+            lines.append(
+                "ALWAYS target      : (unresolvable — project bucket has no meta.yaml)"
+            )
+    else:
+        lines.append(
+            f"ALWAYS target      : {Path('~/.claude/CLAUDE.md').expanduser()}"
+        )
+
+    # PATHED rules dir — skill scope has NO routable surface (P-A13,
+    # R-SCOPE); the sentinel names that explicitly, matching D1's table.
+    if scope.startswith("skill:"):
+        lines.append("PATHED rules dir   : (unavailable at skill scope — P-A13)")
+    elif scope == "project":
+        if host_repo is not None:
+            lines.append(f"PATHED rules dir   : {host_repo / '.claude' / 'rules'}")
+        else:
+            lines.append(
+                "PATHED rules dir   : (unresolvable — project bucket has no meta.yaml)"
+            )
+    else:
+        user_claude_md = Path("~/.claude/CLAUDE.md").expanduser()
+        lines.append(f"PATHED rules dir   : {user_claude_md.parent / 'rules'}")
+
+    # DEMAND target — user scope has NO routable surface (S-23), the
+    # standing rule, not a transitional one.
+    if scope.startswith("skill:"):
+        name = scope.partition(":")[2]
+        if skills_root is None:
+            lines.append(
+                "DEMAND target      : (unresolvable — no registered skills root)"
+            )
+        else:
+            try:
+                skill_dir = skill_dir_for(hosts, name)
+            except HostsError:
+                lines.append(
+                    f"DEMAND target      : (unresolvable — no skill named {name!r} "
+                    "under skills root)"
+                )
+            else:
+                lines.append(
+                    f"DEMAND target      : {skill_dir / 'references' / 'LEARNINGS.md'}"
+                )
+    elif scope == "project":
+        if host_repo is not None:
+            lines.append(
+                f"DEMAND target      : {host_repo / 'references' / 'LEARNINGS.md'}"
+            )
+        else:
+            lines.append(
+                "DEMAND target      : (unresolvable — project bucket has no meta.yaml)"
+            )
+    else:
+        lines.append("DEMAND target      : (unavailable at user scope — S-23)")
+
+    return "\n".join(lines)
+
+
+def compose_record_block(home: Path, entry, *, roster: Roster, candidates: list) -> str:
+    """The ONE per-record block, shared verbatim by both prompt forms
+    (§3.1/A11): record text (``Record.to_text()``, never
+    ``entry.path.read_text()`` — §3.5, the two differ whenever ruamel
+    re-renders frontmatter, and containment checks the FORMER), the T-N
+    candidate block, the absolute-path roster, and the existing
+    candidate-target canon excerpt."""
+    home = Path(home)
+    return (
+        f"--- record {entry.record.id} ---\n"
+        f"bucket: {entry.bucket_dir}\n"
+        f"record file: {entry.path}\n"
+        f"{entry.record.to_text()}\n"
+        f"--- cluster candidates (T-N) ---\n"
+        f"{_render_candidates(candidates)}\n"
+        f"--- path roster ---\n"
+        f"{path_roster(home, entry)}\n"
+        f"--- candidate target canon excerpt ---\n"
+        f"{_canon_excerpt(home, entry)}\n"
+    )
 
 
 def cache_dir() -> Path:
@@ -589,7 +1029,7 @@ def canon_excerpt(home: Path, record: Record, bucket_dir: Path) -> str:
 
 
 def _canon_excerpt(home: Path, entry) -> str:
-    """``_compose_prompt``'s own call shape: a ``queue()``-yielded
+    """``compose_record_block``'s own call shape: a ``queue()``-yielded
     ``QueueEntry`` (``.record``/``.bucket_dir``), not a bare
     :class:`~self_learn.records.Record`. Thin wrapper around the shared
     :func:`canon_excerpt` — kept so this module's existing call site and
@@ -608,6 +1048,12 @@ check). You may also propose an optional `contradicts:` list (record ids
 or canon anchors) when a lesson conflicts with an entry in the
 destination section shown in the candidate-target excerpt below.
 
+Every proposal MUST also carry the decision trace (§5, S-26 — mandatory,
+not optional): write `gates:`, `flags:`, and `recommendation:` on EVERY
+proposal, exactly as §5's schema and worked example show. `flags: []` is
+written explicitly when there are none — never omitted. A proposal
+missing any of the three is deleted unread; nothing is landed without it.
+
 After the per-record pass: if two or more of THESE pending records in the
 SAME bucket are the same lesson, additionally write ONE merge proposal at
 <bucket>/proposals/merge-<8 lowercase hex>.yaml with keys:
@@ -618,6 +1064,10 @@ cluster_id MUST equal the merge-<8 hex> token of the filename itself
 descriptive slug: the validator deletes ids that don't match the
 merge-<8 hex> pattern, and a pattern-valid id that differs from the
 filename token is dead on arrival at route --collapse.
+
+=== SKILL ROSTER (T3) ===
+roster sha: {roster_sha}
+{roster_text}
 
 Never re-propose the classes below (recently rejected):
 {digest}
@@ -632,8 +1082,37 @@ Never re-propose the classes below (recently rejected):
 {records}
 """
 
+#: The analyst's one-record form (§3.5) — the doctrine rides
+#: ``--append-system-prompt`` there, so this prompt never interpolates it
+#: a second time. Still states the gate-output contract (§3.5/A12 fourth
+#: leg's own tokens) and the roster once, inline.
+_SINGLE_PROMPT_TEMPLATE = """Choose the routing destination for the lesson record below, following the
+routing doctrine in your system prompt (narrowest-surface bias). Reply
+with ONLY a YAML mapping — no prose, no explanation outside it — and
+follow §5's full output contract, INCLUDING the mandatory decision trace:
+write `gates:`, `flags:`, and `recommendation:` on this proposal, exactly
+as §5's worked example shows. `flags: []` when there are none.
 
-def _compose_prompt(home: Path, batch: list) -> str:
+destination: <one of skill-md | claude-md | reference | new-skill | hook>
+alternates: [<zero or more others from the same list>]
+rationale: <one sentence>
+# claude-md only, optional (A2 §3): a rules topic file, or a personal
+# per-project file — omit all three for plain claude-md.
+variant: <rules | local, omit for plain claude-md>
+rules_topic: <kebab-slug topic — required iff variant is rules>
+rules_paths: [<glob>, ...]  # optional; omit for an unpathed rule
+gates: <the full decision trace — §5>
+flags: []
+recommendation: <route | reject | defer | graduate>
+
+=== SKILL ROSTER (T3) ===
+roster sha: {roster_sha}
+{roster_text}
+
+{record_block}"""
+
+
+def _doctrine_and_registry_text() -> tuple[str, str]:
     # PACKAGE-relative (doc 13 T-H3): doctrine + registry ship with the
     # product beside the skill — never resolved through any home.
     doctrine_path = package_skill_refs() / "routing-doctrine.md"
@@ -648,22 +1127,56 @@ def _compose_prompt(home: Path, batch: list) -> str:
         if registry_path.is_file()
         else "(registry missing — headline/impact/discuss)"
     )
-    blocks = []
-    for entry in batch:
-        blocks.append(
-            f"--- record {entry.record.id} ---\n"
-            f"bucket: {entry.bucket_dir}\n"
-            f"record file: {entry.path}\n"
-            f"{entry.path.read_text(encoding='utf-8')}\n"
-            f"--- candidate target canon excerpt ---\n"
-            f"{_canon_excerpt(home, entry)}\n"
+    return doctrine, registry
+
+
+def compose_batch_prompt(home: Path, batch: list) -> tuple[str, Roster]:
+    """The M2 worker's prompt (replaces the old ``_compose_prompt``):
+    everything it composed before — the rejected-proposal digest, the
+    doctrine and the card registry, and per-record text/bucket/record
+    path/canon excerpt — plus the roster once per prompt (its sha stated
+    verbatim, §3.6) and, per record, the T-N candidate block and the
+    absolute-path roster (§3.5). Returns the composed prompt AND the
+    :class:`Roster` used, so the caller that later validates model output
+    can compare ``gates.t3.roster_sha`` against the roster actually
+    composed for THIS run."""
+    home = Path(home)
+    doctrine, registry = _doctrine_and_registry_text()
+    roster = skill_roster(home)
+    candidates_by_id = cluster_candidates(home, batch)
+    blocks = [
+        compose_record_block(
+            home, entry, roster=roster, candidates=candidates_by_id.get(entry.record.id, [])
         )
-    return _PROMPT_TEMPLATE.format(
+        for entry in batch
+    ]
+    prompt = _PROMPT_TEMPLATE.format(
         digest=_digest(home),
         doctrine=doctrine,
         registry=registry,
+        roster_sha=roster.sha,
+        roster_text=roster.text,
         records="\n".join(blocks),
     )
+    return prompt, roster
+
+
+def compose_single_prompt(home: Path, entry) -> tuple[str, Roster]:
+    """The analyst's one-record prompt form (§3.5): the same
+    :func:`compose_record_block` block A11 requires byte-identical to the
+    worker's, with the roster inline (the analyst never sees the digest,
+    the doctrine, or the card registry here — those ride
+    ``--append-system-prompt`` and the doctrine's own §8 pointer)."""
+    home = Path(home)
+    roster = skill_roster(home)
+    candidates = cluster_candidates(home, [entry]).get(entry.record.id, [])
+    block = compose_record_block(home, entry, roster=roster, candidates=candidates)
+    prompt = _SINGLE_PROMPT_TEMPLATE.format(
+        roster_sha=roster.sha,
+        roster_text=roster.text,
+        record_block=block,
+    )
+    return prompt, roster
 
 
 def _proposal_snapshot(home: Path) -> dict[Path, str]:
@@ -844,7 +1357,7 @@ def _cache_clear(name: str) -> None:
     _p(name).unlink(missing_ok=True)
 
 
-def _harvest(home: Path, written: list[Path]) -> RunResult:
+def _harvest(home: Path, written: list[Path], roster: Roster | None = None) -> RunResult:
     """Validate + sweep + commit, as ONE locked section (audit 2026-07-16
     round 7 — the invariant: no ledger mutation may precede its lock).
 
@@ -853,12 +1366,17 @@ def _harvest(home: Path, written: list[Path]) -> RunResult:
     a dead run (BLOCKER B), for a condition — "another producer is
     committing right now" — that is not an error. Because the lock is taken
     BEFORE the first mutation, refusing here costs nothing: the model's
-    output stays on disk untouched and the next run validates it."""
+    output stays on disk untouched and the next run validates it.
+
+    ``roster`` (U-composer §3.6) is the :class:`Roster` composed for THIS
+    run's prompt — threaded through so :func:`_validate_written` can check
+    the roster-sha honesty legs against the roster the model actually saw,
+    not a freshly recomposed one."""
     from . import gitops
 
     try:
         with gitops.commit_lock(home):
-            result = _validate_written(home, written)
+            result = _validate_written(home, written, roster)
             _still_pending(home, result)
             result.committed = _commit_locked(home, result)
             return result
@@ -877,7 +1395,48 @@ def _bucket_name(home: Path, path: Path) -> str | None:
     return None
 
 
-def _validate_written(home: Path, written: list[Path]) -> RunResult:
+def _roster_sha_dishonest(data: dict, roster: Roster) -> str | None:
+    """§3.6's two legs, shared by the worker and (in spirit — the analyst
+    runs its own copy against ``AnalystError``) the one-shot analyst.
+    Returns a refusal message, or ``None`` when the claimed
+    ``gates.t3.roster_sha`` is honest against ``roster`` — the Roster
+    actually composed for THIS run. Never raises: `gates`/`t3` may be
+    absent or malformed on a proposal that will be refused for other
+    reasons first; this function degrades to "nothing to check" rather
+    than crashing the caller's loop (S6's discipline, applied here even
+    though this is not `_validate_gates` itself)."""
+    gates = data.get("gates")
+    if not isinstance(gates, dict):
+        return None
+    t3 = gates.get("t3")
+    if not isinstance(t3, dict):
+        return None
+    claimed = t3.get("roster_sha")
+    if claimed == ROSTER_UNAVAILABLE:
+        # Leg B — no false degradation: `unavailable` is legal only when
+        # the composer ITSELF returned ROSTER_UNAVAILABLE for this run.
+        if roster.sha != ROSTER_UNAVAILABLE:
+            return (
+                f"gates.t3.roster_sha claims {ROSTER_UNAVAILABLE!r} but this "
+                f"run's roster WAS composed (real sha {roster.sha!r}) — a "
+                "model that never reads a good roster cannot claim it was "
+                "unavailable (X3 Leg B)"
+            )
+        return None
+    if isinstance(claimed, str) and claimed != roster.sha:
+        # Leg A — no fabricated sha: a well-shaped sha that is not THIS
+        # run's roster sha is refused, whether or not it happens to look
+        # legitimate.
+        return (
+            f"gates.t3.roster_sha {claimed!r} does not match this run's "
+            f"composed roster sha {roster.sha!r} (X3 Leg A)"
+        )
+    return None
+
+
+def _validate_written(
+    home: Path, written: list[Path], roster: Roster | None = None
+) -> RunResult:
     """Run-sequence step 4: schema-invalid worker output is DELETED and
     logged (unattended policy — the attended `proposal validate` verb
     reports-never-deletes); valid proposals get record_sha stamped by the
@@ -889,7 +1448,17 @@ def _validate_written(home: Path, written: list[Path]) -> RunResult:
     autosync would publish unscanned) — a hit deletes, same unattended
     policy; (3) anything under proposals/ that is not a top-level
     lrn-*.yaml / merge-*.yaml is model litter: deleted + logged, never
-    silently published."""
+    silently published.
+
+    U-composer §3.7/F1 (u-table §8-H1): ``rpath`` is now resolved BEFORE
+    ``validate_proposal`` (the two-line swap `U-table` N1 named) so the
+    record it reads can supply BOTH ``record_text=`` (containment) and
+    ``scope=`` (Table-1/Render-1 derivation) on the same call — the
+    producer of quotes and the check on quotes close in the same commit.
+    ``roster`` (§3.6) is compared against ``gates.t3.roster_sha`` once
+    schema validation has passed; either honesty leg failing is one more
+    ``ProposalError`` inside this function's existing unattended-delete
+    path — no new policy."""
     result = RunResult(status="failed")
     for path in written:
         name = path.stem
@@ -924,10 +1493,22 @@ def _validate_written(home: Path, written: list[Path]) -> RunResult:
                 result.merge_proposed.append(data["cluster_id"])
                 result.touched.append(path)
             else:
-                validate_proposal(data)
+                # F1/N1 (§3.7): rpath resolves FIRST — the swap — so the
+                # record it names can supply record_text= AND scope= to
+                # the SAME validate_proposal call below.
                 rpath = path.parent.parent / "pending" / f"{name}.md"
                 if not rpath.is_file():
                     raise ProposalError(f"no pending record for {name}")
+                pending_record = Record.from_path(rpath)
+                validate_proposal(
+                    data,
+                    record_text=pending_record.to_text(),
+                    scope=pending_record.scope,
+                )
+                if roster is not None:
+                    dishonest = _roster_sha_dishonest(data, roster)
+                    if dishonest is not None:
+                        raise ProposalError(dishonest)
                 stamp_proposal(home, name)
                 result.proposed.append(name)
                 result.touched.append(path)
@@ -1279,7 +1860,7 @@ def fast_status(home: Path | str) -> dict:
                         isinstance(pdata, dict)
                         and pdata.get("record_sha") == sha_anchor(body)
                     ):
-                        validate_proposal(dict(pdata))
+                        validate_proposal(dict(pdata), record_text=text)
                         fresh = True
                 except Exception:  # noqa: BLE001
                     fresh = False
@@ -1367,7 +1948,7 @@ def run(
                 log(f"run: idle (0 eligible, {total_pending} pending)")
                 result = RunResult(status="idle", eligible=0, suspects=suspects)
             else:
-                prompt = _compose_prompt(home, batch)
+                prompt, roster = compose_batch_prompt(home, batch)
                 snap = _proposal_snapshot(home)
                 argv = build_argv(home, write_settings_file(home))
                 try:
@@ -1417,7 +1998,7 @@ def run(
                 # so the section is CONTINUOUS; `_commit_run` takes it
                 # again re-entrantly, which is why it can still be called
                 # on its own (the miner's and the tests' path).
-                result = _harvest(home, written)
+                result = _harvest(home, written, roster)
                 result.eligible = len(batch)
                 result.leftovers = leftovers
                 result.suspects = suspects

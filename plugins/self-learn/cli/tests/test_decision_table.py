@@ -44,7 +44,38 @@ from self_learn.ledger_ops import (
     write_proposal,
 )
 
-from support import hook_proposal_fields, make_behavior, make_home, proposal_dict
+from support import hook_proposal_fields, make_behavior, make_home, proposal_dict as _support_proposal_dict
+from self_learn import ledger_ops as ledger_ops_mod
+
+#: This module tests `_validate_gates`'s SHAPE/derivation logic — including
+#: the trace's OWN absence — which predates S-26's mandatory flip
+#: (U-composer). `support.proposal_dict()`'s default now auto-attaches a
+#: Table-1-consistent trace for every OTHER test file in this suite; that
+#: default would silently defeat this module's entire premise, so every
+#: call here goes through `auto_trace=False` instead, via this thin
+#: module-local shadow (never edited at each of this module's own call
+#: sites).
+def proposal_dict(**kwargs):
+    return _support_proposal_dict(auto_trace=False, **kwargs)
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _trace_optional():
+    """S-26's flip is a module GLOBAL read at call time (builder decision
+    14) — this module exercises `_validate_gates`'s pre-flip, absent-is-
+    valid behavior throughout (including via `_kept_pairs`'s huge direct
+    `_validate_gates` sweep below, which never sets top-level `flags`/
+    `recommendation` at all), which is still a real code path (A21(d)'s
+    own positive control patches the identical flag). MODULE-scoped and a
+    manual save/restore, never `monkeypatch` (function-scoped — a
+    module-scoped `_kept_pairs` would set up before a function-scoped
+    patch ever ran, leaving its huge sweep measuring the MANDATORY
+    posture regardless): every trace/pair `_kept_pairs` builds must see
+    the flag off from its very first call."""
+    original = ledger_ops_mod.TRACE_REQUIRED
+    ledger_ops_mod.TRACE_REQUIRED = False
+    yield
+    ledger_ops_mod.TRACE_REQUIRED = original
 
 # =========================================================================
 # Fixture builders — local to this module (§6-D1). Two layers: the raw
@@ -330,8 +361,11 @@ def _iter_trace_shapes():
 
 
 @pytest.fixture(scope="module")
-def _kept_pairs():
+def _kept_pairs(_trace_optional):
     """Runs §9's full sweep exactly once, shared by A3/A3b/A4/A6.
+    Depends on `_trace_optional` explicitly — an EXPLICIT dependency,
+    not scope-ordering alone, guarantees TRACE_REQUIRED is already off
+    before this fixture's own `_validate_gates` sweep begins.
     Measured on this tree: 195,840 trace shapes -> 608,256 kept /
     175,104 refused pairs, ~10s — matching the spec's own §9-X1b/§3.2
     figures to the digit."""

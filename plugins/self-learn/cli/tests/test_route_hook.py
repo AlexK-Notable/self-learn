@@ -75,8 +75,17 @@ def env(tmp_path):
 TRIGGER = "About to edit `.storage/*.json` while HA is running."
 
 
-def hook_proposal(**overrides) -> dict:
+def hook_proposal(*, scope: str = "skill:s", **overrides) -> dict:
+    # `scope` threads into `proposal_dict`'s own trace synthesis (support.py
+    # `_hook_trace`) so the derived load_class matches whatever scope the
+    # caller will ACTUALLY validate/route against — a hardcoded default
+    # scope here silently diverged from a caller-supplied non-default
+    # record scope (e.g. "project"), producing a t3.owner that could never
+    # match at validation time. `alternates` stays an explicit override
+    # (not scope-derived): callers past the default skill scope must name
+    # the alternate their scope's load class actually renders to.
     data = proposal_dict(
+        scope=scope,
         destination="hook",
         alternates=["skill-md"],
         hook={
@@ -102,7 +111,7 @@ def hook_proposal(**overrides) -> dict:
 def seed_hook(env, rid=RID, scope="skill:s", stamp=True, **proposal_overrides):
     record = make_behavior(scope=scope, record_id=rid, trigger=TRIGGER)
     create_record(env.home, record)
-    write_proposal(env.home, rid, hook_proposal(**proposal_overrides))
+    write_proposal(env.home, rid, hook_proposal(scope=scope, **proposal_overrides))
     if stamp:
         stamp_proposal(env.home, rid)  # CLI-generates the script bytes
     return record
@@ -173,7 +182,11 @@ class TestRouteHook:
         rid = "lrn-0000cccc"
         record = make_behavior(scope="project", record_id=rid, trigger=TRIGGER)
         create_record(env.home, record, project_path=env.host)
-        write_proposal(env.home, rid, hook_proposal())
+        # Project scope can never take the t3 SKILL route (owner requires
+        # scope "skill:X") — R-HOOK's load class here is ALWAYS, so the
+        # alternate it requires is "claude-md", not the skill-scope
+        # default "skill-md".
+        write_proposal(env.home, rid, hook_proposal(scope="project", alternates=["claude-md"]))
         stamp_proposal(env.home, rid)
         verbs.route(env.home, rid)
         rel = f"hooks/self-learn/{script_name(rid, TRIGGER)}"

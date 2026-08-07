@@ -200,7 +200,7 @@ class TestObligation2And3ProjectGlobValidation:
         seed_project_record(env)
         write_proposal(
             env.home, OLD,
-            proposal_dict(
+            proposal_dict(scope='project', 
                 destination="claude-md", variant="rules", rules_topic="ts-rules",
                 rules_paths=["src/**/*.ts"],
             ),
@@ -218,7 +218,7 @@ class TestObligation2And3ProjectGlobValidation:
         seed_project_record(env)
         write_proposal(
             env.home, OLD,
-            proposal_dict(
+            proposal_dict(scope='project', 
                 destination="claude-md", variant="rules", rules_topic="ts-rules",
                 rules_paths=["src/*.ts", "lib/*.ts", "dead/*.ts"],
             ),
@@ -234,7 +234,7 @@ class TestObligation2And3ProjectGlobValidation:
         seed_project_record(env)
         write_proposal(
             env.home, OLD,
-            proposal_dict(
+            proposal_dict(scope='project', 
                 destination="claude-md", variant="rules", rules_topic="ts-rules",
                 rules_paths=["src/**/*.ts"],
             ),
@@ -257,7 +257,7 @@ class TestObligation2And3ProjectGlobValidation:
         seed_project_record(env)
         write_proposal(
             env.home, OLD,
-            proposal_dict(
+            proposal_dict(scope='project', 
                 destination="claude-md", variant="rules", rules_topic="ts-rules",
                 rules_paths=["src/**/*.ts"],
             ),
@@ -283,7 +283,7 @@ class TestObligation2And3ProjectGlobValidation:
         seed_user_record(env)
         write_proposal(
             env.home, OLD,
-            proposal_dict(
+            proposal_dict(scope='user', 
                 destination="claude-md", variant="rules", rules_topic="ts-rules",
                 rules_paths=["this/matches/nothing/**/*.ts"],
             ),
@@ -412,7 +412,7 @@ class TestObligation10SelfcheckGlobDrift:
         seed_project_record(env)
         write_proposal(
             env.home, OLD,
-            proposal_dict(
+            proposal_dict(scope='project', 
                 destination="claude-md", variant="rules", rules_topic="ts-rules",
                 rules_paths=["src/foo.ts"],
             ),
@@ -440,7 +440,7 @@ class TestObligation10SelfcheckGlobDrift:
         seed_user_record(env)
         write_proposal(
             env.home, OLD,
-            proposal_dict(
+            proposal_dict(scope='user', 
                 destination="claude-md", variant="rules", rules_topic="ts-rules",
                 rules_paths=["never/matches/anything/**"],
             ),
@@ -806,7 +806,7 @@ class TestObligation17ProposalVariantSurvivesInputSeam:
         seed_project_record(env)
         write_proposal(
             env.home, OLD,
-            proposal_dict(
+            proposal_dict(scope='project', 
                 destination="claude-md", variant="rules", rules_topic="ts-rules",
                 rules_paths=["definitely/dead/**"],
             ),
@@ -844,7 +844,7 @@ class TestObligation18TopicSlugErrorWording:
         with pytest.raises(ProposalError) as exc:
             write_proposal(
                 env.home, OLD,
-                proposal_dict(
+                proposal_dict(scope='project', 
                     destination="claude-md", variant="rules",
                     rules_topic="Not_Kebab!",
                 ),
@@ -878,7 +878,7 @@ class TestObligation19PathsEmitToDisk:
         seed_project_record(env)
         write_proposal(
             env.home, OLD,
-            proposal_dict(
+            proposal_dict(scope='project', 
                 destination="claude-md", variant="rules", rules_topic="ts-rules",
                 rules_paths=["src/**/*.ts"],
             ),
@@ -900,7 +900,7 @@ class TestObligation19PathsEmitToDisk:
         seed_user_record(env)
         write_proposal(
             env.home, OLD,
-            proposal_dict(
+            proposal_dict(scope='user', 
                 destination="claude-md", variant="rules", rules_topic="ts-rules",
                 rules_paths=["src/**/*.ts"],
             ),
@@ -931,7 +931,7 @@ class TestObligation20UnionDedupedSortedWidened:
         seed_project_record(env, record_id="lrn-1a1a1a1a")
         write_proposal(
             env.home, "lrn-1a1a1a1a",
-            proposal_dict(
+            proposal_dict(scope='project', 
                 destination="claude-md", variant="rules", rules_topic="shared",
                 rules_paths=["b/**", "a/**"],
             ),
@@ -941,7 +941,7 @@ class TestObligation20UnionDedupedSortedWidened:
         seed_project_record(env, record_id="lrn-2b2b2b2b")
         write_proposal(
             env.home, "lrn-2b2b2b2b",
-            proposal_dict(
+            proposal_dict(scope='project', 
                 destination="claude-md", variant="rules", rules_topic="shared",
                 rules_paths=["a/**", "c/**"],
             ),
@@ -974,7 +974,7 @@ class TestObligation21AbsorptionAndFailOpenControl:
         seed_project_record(env, record_id="lrn-1a1a1a1a")
         write_proposal(
             env.home, "lrn-1a1a1a1a",
-            proposal_dict(
+            proposal_dict(scope='project', 
                 destination="claude-md", variant="rules", rules_topic="kept",
                 rules_paths=["a/**"],
             ),
@@ -985,7 +985,7 @@ class TestObligation21AbsorptionAndFailOpenControl:
         seed_project_record(env, record_id="lrn-2b2b2b2b")
         write_proposal(
             env.home, "lrn-2b2b2b2b",
-            proposal_dict(
+            proposal_dict(scope='project', 
                 destination="claude-md", variant="rules", rules_topic="absorbed",
                 rules_paths=["a/**"],
             ),
@@ -995,7 +995,7 @@ class TestObligation21AbsorptionAndFailOpenControl:
         seed_project_record(env, record_id="lrn-3c3c3c3c")
         write_proposal(
             env.home, "lrn-3c3c3c3c",
-            proposal_dict(destination="claude-md", variant="rules", rules_topic="absorbed"),
+            proposal_dict(scope='project', destination="claude-md", variant="rules", rules_topic="absorbed"),
         )
         result = verbs.route(env.home, "lrn-3c3c3c3c")
 
@@ -1026,7 +1026,7 @@ class TestObligation22RetirementNarrowsUnion:
         seed_project_record(env, record_id="lrn-1a1a1a1a")
         write_proposal(
             env.home, "lrn-1a1a1a1a",
-            proposal_dict(
+            proposal_dict(scope='project', 
                 destination="claude-md", variant="rules", rules_topic="topic",
                 rules_paths=["a/**"],
             ),
@@ -1036,7 +1036,7 @@ class TestObligation22RetirementNarrowsUnion:
         seed_project_record(env, record_id="lrn-2b2b2b2b")
         write_proposal(
             env.home, "lrn-2b2b2b2b",
-            proposal_dict(
+            proposal_dict(scope='project', 
                 destination="claude-md", variant="rules", rules_topic="topic",
                 rules_paths=["b/**"],
             ),
@@ -1069,7 +1069,7 @@ class TestObligation23RecompileRepairsHandEdit:
         seed_project_record(env)
         write_proposal(
             env.home, OLD,
-            proposal_dict(
+            proposal_dict(scope='project', 
                 destination="claude-md", variant="rules", rules_topic="topic",
                 rules_paths=["a/**"],
             ),
@@ -1128,7 +1128,7 @@ class TestObligation23RecompileRepairsHandEdit:
         seed_project_record(env)
         write_proposal(
             env.home, OLD,
-            proposal_dict(
+            proposal_dict(scope='project', 
                 destination="claude-md", variant="rules", rules_topic="topic",
                 rules_paths=["a/**"],
             ),
@@ -1152,7 +1152,7 @@ class TestObligation24DeadGlobPositiveControl:
         seed_project_record(env)
         write_proposal(
             env.home, OLD,
-            proposal_dict(
+            proposal_dict(scope='project', 
                 destination="claude-md", variant="rules", rules_topic="dead-topic",
                 rules_paths=["nope/**"],
             ),
@@ -1166,7 +1166,7 @@ class TestObligation24DeadGlobPositiveControl:
         seed_project_record(env)
         write_proposal(
             env.home, OLD,
-            proposal_dict(
+            proposal_dict(scope='project', 
                 destination="claude-md", variant="rules", rules_topic="dead-topic",
                 rules_paths=["nope/**"],
             ),
@@ -1191,7 +1191,7 @@ class TestObligation25AbsoluteAndHomeGlobRefusal:
         seed_project_record(env)
         write_proposal(
             env.home, OLD,
-            proposal_dict(
+            proposal_dict(scope='project', 
                 destination="claude-md", variant="rules", rules_topic="abs-topic",
                 rules_paths=["/etc/hosts"],
             ),
@@ -1207,7 +1207,7 @@ class TestObligation25AbsoluteAndHomeGlobRefusal:
         seed_user_record(env)
         write_proposal(
             env.home, OLD,
-            proposal_dict(
+            proposal_dict(scope='user', 
                 destination="claude-md", variant="rules", rules_topic="home-topic",
                 rules_paths=["~/foo/**"],
             ),
@@ -1224,7 +1224,7 @@ class TestObligation25AbsoluteAndHomeGlobRefusal:
         seed_project_record(env)
         write_proposal(
             env.home, OLD,
-            proposal_dict(
+            proposal_dict(scope='project', 
                 destination="claude-md", variant="rules", rules_topic="abs-topic",
                 rules_paths=["etc-like/hosts"],
             ),
@@ -1251,7 +1251,7 @@ class TestObligation26ChezmoiManagedRefusal:
         seed_user_record(env)
         write_proposal(
             env.home, OLD,
-            proposal_dict(
+            proposal_dict(scope='user', 
                 destination="claude-md", variant="rules", rules_topic="managed-topic",
                 rules_paths=["a/**"],
             ),
@@ -1274,7 +1274,7 @@ class TestObligation26ChezmoiManagedRefusal:
         seed_user_record(env)
         write_proposal(
             env.home, OLD,
-            proposal_dict(
+            proposal_dict(scope='user', 
                 destination="claude-md", variant="rules", rules_topic="already-pathed",
             ),
         )
@@ -1305,7 +1305,7 @@ class TestObligation26ChezmoiManagedRefusal:
         seed_user_record(env)
         write_proposal(
             env.home, OLD,
-            proposal_dict(
+            proposal_dict(scope='user', 
                 destination="claude-md", variant="rules", rules_topic="empty-list-topic",
             ),
         )
@@ -1331,7 +1331,7 @@ class TestObligation26ChezmoiManagedRefusal:
         seed_user_record(env)
         write_proposal(
             env.home, OLD,
-            proposal_dict(
+            proposal_dict(scope='user', 
                 destination="claude-md", variant="rules", rules_topic="scalar-topic",
             ),
         )
@@ -1349,7 +1349,7 @@ class TestObligation26ChezmoiManagedRefusal:
         seed_user_record(env)
         write_proposal(
             env.home, OLD,
-            proposal_dict(
+            proposal_dict(scope='user', 
                 destination="claude-md", variant="rules", rules_topic="fresh-topic",
             ),
         )
@@ -1381,7 +1381,7 @@ class TestObligation27CapsUnaffectedByFrontmatter:
         seed_project_record(env, record_id="lrn-1a1a1a1a")
         write_proposal(
             env.home, "lrn-1a1a1a1a",
-            proposal_dict(
+            proposal_dict(scope='project', 
                 destination="claude-md", variant="rules", rules_topic="pathed-topic",
                 rules_paths=["a/**"],
             ),
@@ -1391,7 +1391,7 @@ class TestObligation27CapsUnaffectedByFrontmatter:
         seed_project_record(env, record_id="lrn-2b2b2b2b")
         write_proposal(
             env.home, "lrn-2b2b2b2b",
-            proposal_dict(
+            proposal_dict(scope='project', 
                 destination="claude-md", variant="rules", rules_topic="unpathed-topic",
             ),
         )
@@ -1537,7 +1537,7 @@ class TestObligation28NonRulesTargetsByteIdentical:
         seed("project", "lrn-00000007")
         write_proposal(
             home, "lrn-00000007",
-            proposal_dict(
+            proposal_dict(scope='project', 
                 destination="claude-md", variant="rules", rules_topic="control-topic",
                 rules_paths=["z/**"],
             ),

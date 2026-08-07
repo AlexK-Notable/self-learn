@@ -51,7 +51,11 @@ def commit_count(home: Path) -> int:
 
 def test_valid_clean_exits_0_and_stamps_over_model_sha(home, capsys):
     record = seed_record(home)
-    write_proposal(home, record.id, proposal_dict(record_sha="sha256:000000000000"))
+    write_proposal(
+        home,
+        record.id,
+        proposal_dict(scope="user", destination="claude-md", record_sha="sha256:000000000000"),
+    )
     commit_all(home, "seed")
     before = commit_count(home)
 
@@ -105,7 +109,11 @@ def test_missing_proposal_sibling_exits_1(home, capsys):
 
 def test_scan_hit_in_record_body_exits_2_with_span_report(home, capsys):
     record = seed_record(home, fact=f"Leaked {GHP_TOKEN} in the build log.")
-    write_proposal(home, record.id, proposal_dict(record_sha="sha256:000000000000"))
+    write_proposal(
+        home,
+        record.id,
+        proposal_dict(scope="user", destination="claude-md", record_sha="sha256:000000000000"),
+    )
     ppath = proposal_path(home, record.id)
     before = ppath.read_bytes()
 
@@ -126,7 +134,11 @@ def test_scan_hit_in_proposal_free_text_exits_2(home, capsys):
     write_proposal(
         home,
         record.id,
-        proposal_dict(rationale=f"model pasted {GHP_TOKEN} into its rationale"),
+        proposal_dict(
+            scope="user",
+            destination="claude-md",
+            rationale=f"model pasted {GHP_TOKEN} into its rationale",
+        ),
     )
     rc = cli.main(["proposal", "validate", record.id])
     assert rc == 2
@@ -143,7 +155,11 @@ def test_scan_hit_in_edited_episode_brief_exits_2(home, capsys):
     edit path (not the miner's own compose-before-scan write) is caught
     at the next `proposal validate` re-scan."""
     record = seed_record(home)
-    write_proposal(home, record.id, proposal_dict(record_sha="sha256:000000000000"))
+    write_proposal(
+        home,
+        record.id,
+        proposal_dict(scope="user", destination="claude-md", record_sha="sha256:000000000000"),
+    )
     record_path = home / "user" / "pending" / f"{record.id}.md"
     fresh = Record.from_path(record_path)
     fresh.set_body(
@@ -254,7 +270,17 @@ def test_fabricated_record_quote_refused_the_discriminator(home, capsys):
     already refused. Now both surfaces must agree."""
     record = seed_record(home, fact=TRUE_QUOTE)
     path = write_raw_proposal(
-        home, record.id, proposal_dict(gates=_base_gates(FABRICATED_QUOTE))
+        home,
+        record.id,
+        # S-26: `flags`/`recommendation` must be non-null to clear the
+        # mandatory-trace presence check before `_validate_gates` ever
+        # reaches `gates.t1.field_shaped` — their VALUES don't need to be
+        # Table-1-consistent with `_base_gates`, since the fabricated-quote
+        # containment check (inside `_validate_gates`) raises before
+        # `_validate_derivation` (the consistency check) ever runs.
+        proposal_dict(
+            gates=_base_gates(FABRICATED_QUOTE), flags=[], recommendation="route"
+        ),
     )
     before = path.read_bytes()
 

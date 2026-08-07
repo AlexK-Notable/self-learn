@@ -51,6 +51,7 @@ __all__ = [
     "TRACE_FS_VERDICTS",
     "TRACE_OUTCOMES",
     "TRACE_RECOMMENDATIONS",
+    "TRACE_REQUIRED",
     "bucket_dir_for_scope",
     "bucket_project_path",
     "create_record",
@@ -136,6 +137,19 @@ _QUOTE_MIN_CHARS = 8
 #: X3 / C4 (§3.1a, §3.4a): the literal `roster_sha` value the T3
 #: degradation path writes when no roster composer exists yet.
 ROSTER_UNAVAILABLE = "unavailable"
+
+#: S-26 (03-decisions.md): the decision trace is MANDATORY. Flipped WITH
+#: U-composer, the unit that makes the analyst emit traces by
+#: construction (both the worker's model pass and the one-shot analyst
+#: now compose the roster/candidate/path-roster ingredients and instruct
+#: the producer to emit `gates:`/`flags:`/`recommendation:` on every
+#: proposal) — flipping before a producer existed would have refused
+#: every proposal and wedged the pipeline (S-26's own "binding constraint
+#: is the producer"). Read as a module global AT CALL TIME inside
+#: `_validate_gates`, never bound at import — a test's positive control
+#: (monkeypatch this to False) must be able to move the outcome (§6
+#: builder decision 14).
+TRACE_REQUIRED = True
 
 _SECONDS_PER_DAY = 86400
 _TITLE_SECTION = {"behavior": "Trigger", "knowledge": "Fact"}
@@ -822,8 +836,10 @@ def _validate_gates(
     """u-schema-decision-trace §3: the decision trace — `gates`, `flags`,
     `recommendation` — validated together (D3: X3 couples the flag set to
     a gate answer, so splitting them invites a caller that runs one and
-    not the others). Absent-is-valid throughout (S1): every one of the
-    three top-level keys may be omitted, independently or together.
+    not the others). Absent-is-valid was U-schema's shipped posture (S1);
+    U-composer's S-26 flip (`TRACE_REQUIRED`, below) supersedes it: all
+    three top-level keys are now REQUIRED — U-schema's own shape/enum
+    rules still govern each key once present.
 
     Containment (§3.4) runs iff `record_text` is supplied — this function
     performs NO filesystem I/O itself (S4); callers decide whether/what to
@@ -833,6 +849,20 @@ def _validate_gates(
     (the ACCEPTED §7.2 residual). Raises only :class:`ProposalError`, on
     every input including malformed ones (S6) — never mutates `data`
     (C3)."""
+
+    # ---- S-26: the decision trace is MANDATORY (first statement — a
+    # trace-less proposal never reaches the absent-is-valid rules below
+    # at all) -------------------------------------------------------------
+    if TRACE_REQUIRED:
+        for key in ("gates", "flags", "recommendation"):
+            if data.get(key) is None:
+                raise ProposalError(
+                    f"proposal is missing the required decision-trace key "
+                    f"{key!r} — this proposal predates the decision trace "
+                    "(S-26). The next worker run re-analyzes it; "
+                    "`self-learn worker kick` starts one. To route it as "
+                    "it stands, pass --dest. A trace is never hand-written."
+                )
 
     # ---- flags (Set-F, §3.2) -------------------------------------------
     flags = data.get("flags")

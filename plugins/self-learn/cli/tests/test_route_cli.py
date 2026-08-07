@@ -283,7 +283,8 @@ def test_teach_route_analyst_routes_to_shim_destination(env, claude_shim, capsys
         "destination: skill-md\n"
         "alternates: [claude-md]\n"
         "rationale: deterministic guard beats advisory text\n"
-        "```\n",
+        + _skill_gates_yaml(env)
+        + "```\n",
         encoding="utf-8",
     )
     rc = cli.main(TEACH_ARGS + ["--route"])
@@ -327,7 +328,8 @@ def test_teach_route_bare_analyst_path_records_by_analyst(env, claude_shim, caps
         "destination: skill-md\n"
         "alternates: [claude-md]\n"
         "rationale: deterministic guard beats advisory text\n"
-        "```\n",
+        + _skill_gates_yaml(env)
+        + "```\n",
         encoding="utf-8",
     )
     rc = cli.main(TEACH_ARGS + ["--route"])
@@ -404,6 +406,142 @@ def _yaml_dump(data: dict) -> str:
     return buf.getvalue()
 
 
+# S-26 (ledger_ops.TRACE_REQUIRED): every proposal the fake analyst shim
+# emits now needs a decision trace, containment-checked against the REAL
+# record it rides (`make_behavior()`'s default trigger, "About to edit
+# .storage while HA is running.") and, for `gates.t3.roster_sha`,
+# X3-honesty-checked against the REAL roster `env.home`'s skill "s"
+# composes (`worker.skill_roster` -- same idiom as test_worker.py's own
+# `_proposal_yaml`). These trace bodies are appended after a shim's own
+# `destination`/`alternates`/... lines, exactly like `_yaml_dump` already
+# is for the hook-fields case above.
+
+_TRIGGER_QUOTE = "About to edit .storage while HA is running."
+
+
+def _roster_sha(env) -> str:
+    from self_learn.worker import skill_roster
+
+    return skill_roster(env.home).sha
+
+
+def _skill_gates_yaml(env) -> str:
+    """A SKILL-outcome trace at scope skill:s -- `make_behavior()`'s
+    default scope -- always routable (recommendation: route)."""
+    return f"""gates:
+  g0:
+    reject: {{answer: "no"}}
+    defer: {{answer: "no"}}
+    canon: {{answer: "no"}}
+  t1:
+    attempted: false
+    field_shaped:
+      answer: "no"
+      evidence: "{_TRIGGER_QUOTE}"
+    separable: {{answer: null}}
+    cost_bearing: {{answer: null}}
+  t2:
+    answer: "no"
+    evidence: "{_TRIGGER_QUOTE}"
+    match_path: null
+  t3:
+    answer: "yes"
+    owner: "s"
+    scan_terms: null
+    roster_sha: "{_roster_sha(env)}"
+  t3a:
+    depth_behind_rule: {{answer: "no", evidence: null}}
+    fs: {{verdict: "SILENT", evidence: "{_TRIGGER_QUOTE}"}}
+  tn: {{answer: "no", terms: [], members: [], proposed_name: null}}
+  t4: null
+  e1: {{sightings: 1, post_demand_recurrence: false}}
+  outcome: SKILL
+flags: []
+recommendation: route
+"""
+
+
+def _hook_gates_yaml(env) -> str:
+    """A HOOK-outcome trace (T1's H row) whose load class is SKILL,
+    matching the `alternates: [skill-md]` every hook fixture in this file
+    already declares (R-HOOK needs the load class's own destination
+    inside `alternates`)."""
+    return f"""gates:
+  g0:
+    reject: {{answer: "no"}}
+    defer: {{answer: "no"}}
+    canon: {{answer: "no"}}
+  t1:
+    attempted: true
+    field_shaped:
+      answer: "yes"
+      evidence: "{_TRIGGER_QUOTE}"
+    separable:
+      answer: "yes"
+      evidence: "{_TRIGGER_QUOTE}"
+    cost_bearing:
+      answer: "yes"
+      evidence: "{_TRIGGER_QUOTE}"
+  t2:
+    answer: "no"
+    evidence: "{_TRIGGER_QUOTE}"
+    match_path: null
+  t3:
+    answer: "yes"
+    owner: "s"
+    scan_terms: null
+    roster_sha: "{_roster_sha(env)}"
+  t3a:
+    depth_behind_rule: {{answer: "no", evidence: null}}
+    fs: {{verdict: "SILENT", evidence: "{_TRIGGER_QUOTE}"}}
+  tn: {{answer: "no", terms: [], members: [], proposed_name: null}}
+  t4: null
+  e1: {{sightings: 1, post_demand_recurrence: false}}
+  outcome: HOOK
+flags: []
+recommendation: route
+"""
+
+
+def _defer_gates_yaml(env) -> str:
+    """A DEFER-outcome trace (G2's g0.defer leg) -- destination must be
+    the load class's own render (DEMAND -> "reference" here, since every
+    downstream gate is the "not reached" skeleton), never the outcome's."""
+    return f"""gates:
+  g0:
+    reject: {{answer: "no"}}
+    defer:
+      answer: "yes"
+      evidence: "{_TRIGGER_QUOTE}"
+    canon: {{answer: "no"}}
+  t1:
+    attempted: false
+    field_shaped:
+      answer: "no"
+      evidence: "{_TRIGGER_QUOTE}"
+    separable: {{answer: null}}
+    cost_bearing: {{answer: null}}
+  t2:
+    answer: "no"
+    evidence: "{_TRIGGER_QUOTE}"
+    match_path: null
+  t3:
+    answer: "no"
+    owner: null
+    scan_terms: ["probe", "terms"]
+    roster_sha: "{_roster_sha(env)}"
+  t3a: null
+  tn: {{answer: "no", terms: [], members: [], proposed_name: null}}
+  t4:
+    depth_behind_rule: {{answer: "no", evidence: null}}
+    conduct_mode: {{answer: "no", evidence: null}}
+    fs: {{verdict: "INDETERMINATE", evidence: null}}
+  e1: {{sightings: 1, post_demand_recurrence: false}}
+  outcome: DEFER
+flags: []
+"""
+
+
 def test_analyst_analyze_round_trips_unknown_fields(env, claude_shim):
     """A1 — campaign §5 positive control. r2's incoming `recommendation:`
     key and a synthetic `probe_key`, both nowhere in analyst.py and
@@ -412,10 +550,11 @@ def test_analyst_analyze_round_trips_unknown_fields(env, claude_shim):
     about would pass just as happily on the broken (M1b) code — that is
     the reason this assertion exists."""
     claude_shim["out"].write_text(
-        "destination: skill-md\n"
+        "destination: reference\n"
         "alternates: [claude-md]\n"
         "rationale: deterministic guard beats advisory text\n"
-        "recommendation: defer\n"
+        + _defer_gates_yaml(env)
+        + "recommendation: defer\n"
         "probe_key: probe-value\n",
         encoding="utf-8",
     )
@@ -434,6 +573,7 @@ def test_analyst_analyze_hook_round_trips(env, claude_shim):
         "destination: hook\n"
         "alternates: [skill-md]\n"
         "rationale: deterministic guard beats advisory text\n"
+        + _hook_gates_yaml(env)
     ) + _yaml_dump(hook_fields)
     claude_shim["out"].write_text(body, encoding="utf-8")
     proposal = analyst.analyze(env.home, make_behavior())
@@ -452,7 +592,8 @@ def test_analyst_analyze_cli_owned_fields_win(env, claude_shim):
         "rationale: deterministic guard beats advisory text\n"
         "model: pwned-model\n"
         "analyzed_at: 1999-01-01T00:00:00Z\n"
-        "record_sha: sha256:deadbeefdead\n",
+        "record_sha: sha256:deadbeefdead\n"
+        + _skill_gates_yaml(env),
         encoding="utf-8",
     )
     record = make_behavior()
@@ -462,7 +603,7 @@ def test_analyst_analyze_cli_owned_fields_win(env, claude_shim):
     assert proposal["analyzed_at"] != "1999-01-01T00:00:00Z"
 
 
-def _script_probe_body(destination: str) -> str:
+def _script_probe_body(env, destination: str) -> str:
     """A4 shim body: an otherwise-valid `destination` proposal that also
     carries a forbidden `script` and a `probe_key`."""
     lines = [
@@ -473,9 +614,11 @@ def _script_probe_body(destination: str) -> str:
     ]
     if destination == "hook":
         lines.append("alternates: [skill-md]\n")
+        lines.append(_hook_gates_yaml(env))
         lines.append(_yaml_dump(hook_proposal_fields()))
     else:
         lines.append("alternates: [claude-md]\n")
+        lines.append(_skill_gates_yaml(env))
     return "".join(lines)
 
 
@@ -493,7 +636,7 @@ def test_analyst_analyze_strips_script_unconditionally(env, claude_shim, destina
     that stops the absence assertion ("script" not in proposal) passing
     vacuously on a build that carries nothing at all."""
     claude_shim["out"].write_text(
-        _script_probe_body(destination), encoding="utf-8"
+        _script_probe_body(env, destination), encoding="utf-8"
     )
     proposal = analyst.analyze(env.home, make_behavior())
     assert "script" not in proposal
@@ -508,7 +651,8 @@ def test_analyst_analyze_runs_in_ledger_home(env, claude_shim, monkeypatch, tmp_
     claude_shim["out"].write_text(
         "destination: skill-md\n"
         "alternates: [claude-md]\n"
-        "rationale: deterministic guard beats advisory text\n",
+        "rationale: deterministic guard beats advisory text\n"
+        + _skill_gates_yaml(env),
         encoding="utf-8",
     )
     elsewhere = tmp_path / "elsewhere"

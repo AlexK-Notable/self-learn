@@ -54,7 +54,14 @@ from pathlib import Path
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
-from .ledger_ops import ProposalError, validate_proposal
+from .ledger_ops import (
+    ROSTER_UNAVAILABLE,
+    LedgerOpsError,
+    ProposalError,
+    bucket_dir_for_scope,
+    find_record_path,
+    validate_proposal,
+)
 from .normalize import sha_anchor
 from .records import Record
 
@@ -81,26 +88,6 @@ DEFAULT_ANALYST_MODEL = "claude-sonnet-5"
 DEFAULT_ANALYST_TIMEOUT = 120  # seconds
 
 _FENCE_RE = re.compile(r"```(?:yaml|yml)?\s*\n(.*?)\n\s*```", re.DOTALL)
-
-_PROMPT_TEMPLATE = """\
-Choose the routing destination for the lesson record below, following the
-routing doctrine in your system prompt (narrowest-surface bias).
-
-Reply with ONLY a YAML mapping — no prose, no explanation outside it:
-
-destination: <one of skill-md | claude-md | reference | new-skill | hook>
-alternates: [<zero or more others from the same list>]
-rationale: <one sentence>
-# claude-md only, optional (A2 §3): a rules topic file, or a personal
-# per-project file — omit all three for plain claude-md.
-variant: <rules | local, omit for plain claude-md>
-rules_topic: <kebab-slug topic — required iff variant is rules>
-rules_paths: [<glob>, ...]  # optional; omit for an unpathed rule
-
-Record:
-
-{record_text}"""
-
 
 class AnalystError(Exception):
     """The one-shot analyst failed — the caller falls back to a normal
@@ -198,7 +185,31 @@ def analyze(home: Path | str, record: Record) -> dict:
         )
     doctrine_text = doctrine.read_text(encoding="utf-8")
     model = _model()
-    prompt = _PROMPT_TEMPLATE.format(record_text=record.to_text())
+    # U-composer §3.5: the analyst's prompt is composed by the SAME
+    # function the worker uses for its per-record block (A11). The
+    # QueueEntry's path is derived via find_record_path when the record
+    # is ALREADY on disk (a re-analysis of a real pending record) — but
+    # the bare-terminal `teach --route` path (teach.py:683) calls
+    # analyze() on an in-memory record that is not yet persisted (it
+    # writes to pending/ only on the AnalystError fallback), so
+    # find_record_path would raise for the common case. Degrade to the
+    # WOULD-BE path (the same arithmetic create_record uses) rather than
+    # fail: this is purely informational (the "record file:" line and the
+    # bucket-derived path-roster rows), never a file this function reads
+    # or writes.
+    from .ledger_ops import QueueEntry
+    from .worker import compose_single_prompt
+
+    try:
+        record_path = find_record_path(home, record.id)
+    except LedgerOpsError:
+        try:
+            bucket_dir = bucket_dir_for_scope(home, record.scope, project_path=None)
+        except LedgerOpsError:
+            bucket_dir = home / "_unresolved-scope"
+        record_path = bucket_dir / "pending" / f"{record.id}.md"
+    entry = QueueEntry(path=record_path, record=record)
+    prompt, roster = compose_single_prompt(home, entry)
 
     argv = build_argv(prompt, doctrine_text, model)
     try:
@@ -240,8 +251,36 @@ def analyze(home: Path | str, record: Record) -> dict:
     proposal["analyzed_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     # CLI-stamped — never the model's (shared normalization fn, 08 §7.1).
     proposal["record_sha"] = sha_anchor(record.body)
+
+    # U-composer §3.6 — roster-sha honesty, both legs, BEFORE
+    # validate_proposal: a well-shaped-but-wrong sha or a false
+    # "unavailable" claim would otherwise reach the validator looking
+    # legitimate (X3 only proves shape, never the value).
+    gates = proposal.get("gates")
+    if isinstance(gates, dict):
+        t3 = gates.get("t3")
+        if isinstance(t3, dict):
+            claimed = t3.get("roster_sha")
+            if claimed == ROSTER_UNAVAILABLE:
+                if roster.sha != ROSTER_UNAVAILABLE:
+                    raise AnalystError(
+                        f"analyst proposal claims gates.t3.roster_sha "
+                        f"{ROSTER_UNAVAILABLE!r} but this run's roster WAS "
+                        f"composed (real sha {roster.sha!r}) — X3 Leg B"
+                    )
+            elif isinstance(claimed, str) and claimed != roster.sha:
+                raise AnalystError(
+                    f"analyst proposal's gates.t3.roster_sha {claimed!r} "
+                    f"does not match this run's composed roster sha "
+                    f"{roster.sha!r} — X3 Leg A"
+                )
+
+    # U-composer §3.7/F1 — analyst.analyze is the PRODUCER: "where a
+    # fabricated quote first arrives from the model, before any other
+    # site ever sees it." record_text= closes containment here; scope=
+    # closes Table-1/Render-1 derivation (u-table §3.5) on the same call.
     try:
-        validate_proposal(proposal)
+        validate_proposal(proposal, record_text=record.to_text(), scope=record.scope)
     except ProposalError as exc:
         raise AnalystError(f"analyst proposal invalid: {exc}") from exc
     return proposal

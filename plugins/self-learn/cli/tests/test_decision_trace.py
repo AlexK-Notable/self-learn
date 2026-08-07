@@ -47,7 +47,35 @@ from self_learn.ledger_ops import (
 )
 from self_learn.normalize import sha_anchor
 
-from support import hook_proposal_fields, make_behavior, make_home, proposal_dict
+from support import hook_proposal_fields, make_behavior, make_home, proposal_dict as _support_proposal_dict
+from self_learn import ledger_ops as ledger_ops_mod
+
+#: This module tests `_validate_gates`'s SHAPE/derivation logic — including
+#: the trace's OWN absence — which predates S-26's mandatory flip
+#: (U-composer). `support.proposal_dict()`'s default now auto-attaches a
+#: Table-1-consistent trace for every OTHER test file in this suite; that
+#: default would silently defeat this module's entire premise, so every
+#: call here goes through `auto_trace=False` instead, via this thin
+#: module-local shadow (never edited at each of this module's own call
+#: sites).
+def proposal_dict(**kwargs):
+    return _support_proposal_dict(auto_trace=False, **kwargs)
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _trace_optional():
+    """S-26's flip is a module GLOBAL read at call time (builder decision
+    14) — this module exercises `_validate_gates`'s pre-flip, absent-is-
+    valid behavior throughout, which is still a real code path (A21(d)'s
+    own positive control patches the identical flag). MODULE-scoped and a
+    manual save/restore (never `monkeypatch`, which is function-scoped
+    and cannot back a module-scoped fixture) so it is in effect before
+    ANY test in this module runs, and restored once for the whole module
+    at teardown."""
+    original = ledger_ops_mod.TRACE_REQUIRED
+    ledger_ops_mod.TRACE_REQUIRED = False
+    yield
+    ledger_ops_mod.TRACE_REQUIRED = original
 
 #: The default `make_behavior()` trigger (support.py) — a genuine RECORD
 #: quote source for every test below that does not need a custom body.

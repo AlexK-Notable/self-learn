@@ -63,7 +63,13 @@ from pathlib import Path
 from . import gitops
 from . import scan as scan_mod
 from .import_common import ImporterError, ImportReport, commit_import, existing_origins
-from .ledger_ops import bucket_dir_for_scope, create_record, stamp_proposal, write_proposal
+from .ledger_ops import (
+    ROSTER_UNAVAILABLE,
+    bucket_dir_for_scope,
+    create_record,
+    stamp_proposal,
+    write_proposal,
+)
 from .normalize import sha_anchor
 from .records import Record
 
@@ -183,6 +189,68 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+#: Every record this importer creates is freshly minted (`Record.create`,
+#: above) and lands in `pending/` with `status: pending` in its frontmatter
+#: (`records.py` stamps this unconditionally) — a genuine, always-present
+#: RECORD-sourced quote, never a fabricated one, for the trace fields below
+#: that require containment but have nothing real to point at (the gate
+#: they document was never reached).
+_RECORD_QUOTE = "status: pending"
+
+
+def _graduate_gates(canon_evidence: str) -> dict:
+    """A GRADUATE decision trace (u-schema-decision-trace §3, u-table's
+    Table-1 G3 row) for this importer's pinned canon-match heuristic —
+    S-26 (`ledger_ops.TRACE_REQUIRED`) made the trace mandatory on every
+    proposal, and this bulk-acknowledge write is a real producer, not a
+    test fixture, so it must state a trace that is both schema-valid and
+    honest about what actually happened: ``g0.canon`` fires on the
+    heuristic string match (never on Table-1 gate-by-gate reasoning), and
+    every downstream gate answers the "not reached" skeleton — t1-tn all
+    "no"/null, t4 present (required whenever t2 and t3 both answer "no"
+    and tn does not answer "yes") and itself all "no", which is exactly
+    the shape `gates.load_class` needs to fall through to `DEMAND` — so
+    `_validate_derivation`'s destination check (`_RENDER_DESTINATIONS`)
+    lands on "reference", matching what this importer has always written.
+    `t3.roster_sha` is `ROSTER_UNAVAILABLE`: no roster was ever composed
+    here, and claiming a fabricated sha would be exactly the dishonesty
+    X3 exists to catch — the required 'evidence-gap' flag (set by the
+    caller) admits the degradation instead of hiding it."""
+    return {
+        "g0": {
+            "reject": {"answer": "no"},
+            "defer": {"answer": "no"},
+            "canon": {
+                "answer": "yes",
+                "evidence": canon_evidence,
+                "target": CANON_BASENAME,
+            },
+        },
+        "t1": {
+            "attempted": False,
+            "field_shaped": {"answer": "no", "evidence": _RECORD_QUOTE},
+            "separable": {"answer": None},
+            "cost_bearing": {"answer": None},
+        },
+        "t2": {"answer": "no", "evidence": _RECORD_QUOTE, "match_path": None},
+        "t3": {
+            "answer": "no",
+            "owner": None,
+            "scan_terms": ["backlog-import", "no-roster-composed"],
+            "roster_sha": ROSTER_UNAVAILABLE,
+        },
+        "t3a": None,
+        "tn": {"answer": "no", "terms": [], "members": [], "proposed_name": None},
+        "t4": {
+            "depth_behind_rule": {"answer": "no", "evidence": None},
+            "conduct_mode": {"answer": "no", "evidence": None},
+            "fs": {"verdict": "INDETERMINATE", "evidence": None},
+        },
+        "e1": {"sightings": 1, "post_demand_recurrence": False},
+        "outcome": "GRADUATE",
+    }
+
+
 def import_backlog(
     home: Path, skill_name: str, journal_path: Path | None = None
 ) -> ImportReport:
@@ -281,6 +349,25 @@ def _import_entries(
                     ),
                     "model": "import-backlog/pinned-criterion",
                     "analyzed_at": _now_iso(),
+                    # U-composer's S-26 flip (ledger_ops.TRACE_REQUIRED) made
+                    # the decision trace mandatory on EVERY proposal, this
+                    # importer's bulk-acknowledge write included — a gap the
+                    # composer spec didn't anticipate (its own producer is
+                    # the worker/analyst, not this heuristic importer).
+                    # `_graduate_gates` states plainly what actually
+                    # happened: G3 (g0.canon) fired on a pinned string-match
+                    # heuristic, never on Table-1 gate-by-gate reasoning —
+                    # every downstream gate is the honest "not reached"
+                    # skeleton, and t3's roster_sha is ROSTER_UNAVAILABLE
+                    # (X3: no roster was ever composed here) with the
+                    # required 'evidence-gap' flag admitting it, rather than
+                    # a fabricated sha claiming a roster that was never
+                    # loaded.
+                    "gates": _graduate_gates(
+                        f"normalized title matches {CANON_BASENAME} content"
+                    ),
+                    "flags": ["evidence-gap"],
+                    "recommendation": "graduate",
                 },
             )
             stamp_proposal(home, record.id)  # CLI stamps record_sha (08 §7.1)
