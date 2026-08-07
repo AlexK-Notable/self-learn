@@ -1,10 +1,11 @@
 # Spec — U-demand-user: user scope's cheap surface is PATHED, and the menu says so
 
-Status: **r2 — GATED SOUND, buildable.** Blind spec gate round 1 returned
-**1 BLOCKER, 5 FOLD, 7 NOTE**; all are folded into this document (§11), and
-the gate's rulings on r1's four open questions are written in as decisions
-(§9). Under the 2026-07-26 verdict repricing the folds cost no fresh spec
-round. Unit `U-demand-user` of the r2 routing campaign
+Status: **r3 — GATED SOUND, cleared for build.** Blind spec gate round 1
+returned **1 BLOCKER, 5 FOLD, 7 NOTE** (all folded, §11); the delta gate
+returned **NOT SOUND on four items** (all closed, §11) and cleared this unit
+for build concurrently with `U-table`. The gate's rulings on r1's four open
+questions are written in as decisions (§9). Under the 2026-07-26 verdict
+repricing neither round cost a fresh spec round. Unit `U-demand-user` of the r2 routing campaign
 (`forward/r2-routing-campaign.md` §2, Wave 2; sequenced after `U-pathed`,
 which is **merged** — `63f5962`). Register rows **FW-40**, **FW-42**;
 this round also takes ownership of **H5** from `U-table`'s §8 (§8A).
@@ -471,9 +472,14 @@ the third — would be a new drift surface for no gain.
 - `destination_label` (`models.py:171-209`) learns to gloss a **qualified**
   value: decode via `parse_variant_qualifier`, then take the existing
   `variant == "rules"` leg (`:202-204`) → *"User rule — py-conventions"*.
-  This keeps `partials/action_bar.html:268` unchanged; that template
-  already pipes the armed dest through this one resolver, and
-  `_GROUP_LABELS` remains the only enum-keyed label map (P-A11).
+  **The LABEL PIPE at `partials/action_bar.html:268` is unchanged** —
+  that template already pipes the displayed dest through this one
+  resolver, so a qualified value glosses correctly with no template edit,
+  and `_GROUP_LABELS` remains the only enum-keyed label map (P-A11).
+  **The PATH-SPAN GUARD on that same line is not unchanged** — F5 item 1
+  below widens it. Naming both halves of `:268` separately matters,
+  because r2 claimed the whole line was untouched one paragraph above the
+  fix that changes it.
 - `rules_firing_note` (`models.py:257-280`) gains **S-23's rider** at user
   scope. Today the pathed leg (`:275-277`) returns
   `"loads when you touch <globs>"`, which at user scope implies a repo it
@@ -519,13 +525,33 @@ have stopped holding for the tier this unit promotes.
    added to the armed bar — the Why region carries it two inches above
    (`detail.html:132`), and duplicating it at confirm time is noise.
 
+   **This gloss is NOT buildable as r2 specified it, and the missing piece
+   is mandatory (delta-gate D3).** `destination_label` needs a *scope*, and
+   **the armed bar has none**: `_armed_context` (`routes.py:1290-1336`)
+   returns exactly `kind`, `dom_id`, `evidence`, `armed`, `disarm_vals`,
+   and `_base_ctx` (`:428`) adds none either. Glossing with `scope`
+   undefined does not degrade to the raw token — it falls through
+   `destination_label`'s scope legs to `_GROUP_LABELS["claude-md"]`
+   (`models.py:341`) and renders **"Project instructions" on a USER-scope
+   record**: a confidently wrong scope at the moment of commitment, which
+   is strictly worse than the raw string it replaces.
+
+   **Fully determined fix:** `action_arm` (`routes.py:1412`) computes
+   `scope = _record_scope(request, record_id)` — the same ledger-truth
+   lookup every unarmed site already uses — and `_armed_context` gains a
+   `scope` key. Pinned by **A4**'s armed leg, which asserts the **exact**
+   gloss string, and by **M29**.
+
 **(f) The per-record cycle reaches the rows.** `RecordRow`
 (`models.py:1012-1027`) gains a `destination_cycle` field;
 `build_bucket_model` (`:1183-1289`) fills it per row via
 `destination_cycle_for`, and `build_detail_model`'s
 `destination_cycle=destinations_for_scope(scope)` (`:1639`) becomes the
-per-record form. `BucketModel.destination_cycle` (`:1143`) stays as the
-scope-level default for sites with no row context.
+per-record form. **`BucketModel.destination_cycle` (`:1143`) is DROPPED —
+see §3.5A**, which states why (after §3.5 it has zero readers) and how its
+two existing assertions are retargeted rather than deleted. r1 said it
+"stays as the scope-level default"; that sentence survived the r2
+reconstruction by mistake and contradicted §3.5A and §11.
 
 **(g) `_budget_rows` is unchanged**, still iterating
 `destinations_for_scope(scope)` (`models.py:1553`). Stated so its absence
@@ -568,11 +594,27 @@ all eleven thread `scope`.** Measured with
 `scope=_record_scope(request, record_id)`; `:1561` passes a local `scope`
 already derived from it. The gate's rule — *"every caller that threads scope
 from `_record_scope` threads `_record_rules_topic` beside it"* — therefore
-selects **all eleven**, not the six it listed. The five it missed
-(`:1692`, `:1793`, `:2247`, `:2482`, `:2721`) render with `dest=corrected`
-or `dest=None`; a `dest=None` bar still renders the cycle control, so a
-partial fix would leave five paths on the singleton — the same funnel through
-a different door. **Thread all eleven.**
+selects **all eleven**, not the six it listed. **The gate accepted the
+enumeration and corrected my reasoning for it — r2's supporting sentence was
+wrong about three of the five.** Of the five r1/r2 missed:
+
+- **Two are correctness-critical:** `:1692` and `:2482` render an unarmed
+  bar the human can still cycle, so leaving them on the singleton reproduces
+  the blocker through a different door.
+- **Three are no-ops by construction, not by luck.** `:1793` and `:2721` sit
+  inside `if evidence is not None:`, and the cycle control lives in
+  `action_bar.html`'s `{% if not evidence %}` branch (`:208-276`), so it is
+  not rendered there at all. `:2247` is the post-**successful**-route retry
+  in `commit_drift_confirm`, where the proposal sibling has already been
+  deleted by the resolving route — so `_record_rules_topic` returns `None`
+  by construction.
+
+**So the correctness-critical set is eight** (`:1518`, `:1561`, `:1692`,
+`:2052`, `:2092`, `:2134`, `:2182`, `:2482`) and three are inert. **The
+instruction is unchanged: thread all eleven.** A uniform rule cannot drift;
+a rule that says "thread the eight where it currently matters" becomes wrong
+the first time an evidence guard moves or a retry path stops deleting the
+sibling, and the inert three cost one `None` each.
 
 | Function | Change |
 |---|---|
@@ -581,6 +623,8 @@ a different door. **Thread all eleven.**
 | `_scope_corrected_dest` (`:1456-1465`) | **changed** (F3): after correction, a qualified value is kept only when its topic equals `_record_rules_topic(request, record_id)`; otherwise it falls back to `cycle[0]`. See §3.3(d′) |
 | `cycle_destination` (`:235-248`) | cycles over `models.destination_cycle_for(scope, rules_topic)`; gains `rules_topic: str \| None = None`, defaulted so every existing caller and test is unaffected |
 | `action_cycle_destination` (`:1531-1570`) | supplies `rules_topic=_record_rules_topic(...)` beside the existing `scope = _record_scope(...)` at `:1559-1560`. `dest_touched=True` stays unconditional — the FW-64 rule, untouched |
+| **`_armed_context`** (`:1290-1336`) | **D3.** Gains a `scope` key. It has none today, and F5 item 2's gloss is unbuildable without it — see §3.3(e) item 2 for what glossing with an undefined scope actually renders |
+| **`action_arm`** (`:1412`) | **D3.** Computes `scope = _record_scope(request, record_id)` and passes it to `_armed_context` — the same ledger-truth lookup every unarmed site already performs |
 
 Plus the mechanical kwarg at the **eleven** `_unarmed_context` call sites
 listed above.
@@ -646,9 +690,10 @@ keeps the same expected values.** Deleting them would be.
 The campaign row names two *primary* files. The five additions are each
 forced, not chosen:
 
-- **`routes.py`** (one new function, three changed, one kwarg at eleven
+- **`routes.py`** (one new function, five changed, one kwarg at eleven
   call sites) — the `o` cycle's set is computed there (`:1560`) from `scope`
-  alone, and the shared bar context at `:1274` likewise (the blocker, §3.4).
+  alone, and the shared bar context at `:1274` likewise (the blocker, §3.4);
+  the armed context needs a scope it does not have (D3, §3.3e item 2).
   A per-record topic cannot reach either without a ledger read in that
   module. Putting the read in `models.py` instead would mean a model
   function performing I/O, which nothing in that module does.
@@ -757,8 +802,15 @@ for that record's bucket:
   `~/.claude/CLAUDE.md`, and not absent. Positive control in the same
   assertion: a plain-`claude-md` row still renders `~/.claude/CLAUDE.md`, so
   "the span is there" cannot pass on a build that shows the wrong file;
-- **(F5)** after arming that row, the ARMED bar's destination text is the
-  same gloss, not the raw token.
+- **(F5 + D3)** after arming that row, the ARMED bar's destination text is
+  **exactly** `User rule — py-conventions`. **Assert the exact string, not
+  "not the raw token".** The trap this criterion exists to catch is
+  `Project instructions` — what an un-scoped `_armed_context` renders for a
+  user-scope record (§3.3e item 2), which a loose "the raw token is absent"
+  assertion passes while the surface names the wrong tier and the wrong
+  scope. Positive control in the same assertion: the same armed bar for a
+  **project**-scope pathed record reads `Project rule — py-conventions`, so
+  a build that hardcodes the user string fails.
 
 *Absent/broken:* the second model leg is the positive control — without it
 a build that qualifies **every** claude-md dest (turning every plain user
@@ -986,6 +1038,7 @@ Reviewers are invited to invent mutations not listed here.
 | M21 | `_scope_corrected_dest`: drop the topic check, keeping only the scope check | **A5** leg 3 |
 | M22 | `action_bar.html:268`: restore the bare `dest == "claude-md"` guard on the path span | **A4**, rendered leg (F5 path) |
 | M23 | `action_bar.html:95`: restore the raw `{{ armed.dest }}` | **A4**, rendered leg (F5 armed) |
+| M29 | `_armed_context`: drop the `scope` key (leaving the gloss to resolve against an undefined scope) | **A4**, armed leg — renders `Project instructions` for a user record, which only the exact-string assertion catches |
 
 **M18 and M19 map to the same assertion by design** — the row-level cycle
 can be broken at either end of the model→template hand-off, so the
@@ -1347,6 +1400,19 @@ template branch; the refusal path is already built, already tested, and
 already worded correctly after F6. The note in part (3) makes it predictable
 rather than an ambush.
 
+**The `o` cycle still reaches `claude-md` in one press on such a record, and
+that is CORRECT — stated here so the code gate does not re-derive it as a
+hole.** With `dest` empty, `cycle_destination(None, scope)` returns
+`cycle[0]` (`routes.py:245-246`), i.e. `claude-md`. That is not the silent
+default H5 kills; it is an **explicit human override**, and the surface
+records it as one: `action_cycle_destination` sets `dest_touched=True`
+unconditionally (`routes.py:1568`), so the route is attributed
+`by: human` (`routes.py:1651`) rather than `by: analyst`. **That is exactly
+the distinction FW-64 built `dest_touched` to preserve** — a positive fact
+about what the human did, never a comparison against the proposal. H5
+removes the ALWAYS tier as the *unattended default*; it does not, and must
+not, remove it as a *choice*.
+
 **(3) The note must not lie about why.** `_DEST_CORRECTION_REASONS`
 (`models.py:111-114`) currently explains `reference` as *"which needs a
 skill or project to keep the file in"* — mechanically true, wrong frame at
@@ -1368,9 +1434,10 @@ vocabulary**, and this unit knows only `no-cheap-surface` by name. So
 **`flags` are display-only here**: they render, and they change no
 behaviour. An unknown flag therefore renders and does nothing — the
 fail-safe direction, and it needs no coordination. **If a flag ever needs to
-change behaviour, that is a new coupling with no owner** — carried as
-**FW-72** (§9.5) with an explicit trigger: the first flag whose meaning is
-behavioural.
+change behaviour, that is a new coupling with no owner** — carried as the
+**`card-flags-are-display-only`** forward-work row (§9.5, numbered by the
+builder at landing) with an explicit trigger: the first flag whose meaning
+is behavioural.
 
 ### 8A.4 Criteria
 
@@ -1505,13 +1572,27 @@ headings.
 
 Three rows, written into `14-forward-work-map.md` **in the same commit as
 the build** (the campaign's disposition rule: an undeclared residual is one
-a later agent re-opens as a bug). Highest existing row is **FW-69**, so:
+a later agent re-opens as a bug).
 
-| Proposed | Row |
+**They are named by SLUG, not by number, and the builder allocates the
+next free `FW-` numbers at landing time.** r2 pinned them as FW-70/71/72 on
+the belief that FW-69 was the highest row. That was wrong on r2's own base
+— `83c1d5d` already carries **FW-70** (`14-forward-work-map.md:110`, the
+`telemetry.flush()` torn-line residual) — and master has since moved to
+**FW-75** (`07d8c08`). All three numbers collide, and **FW-72 collided
+twice**, since §8A.3 also cited it by number. A spec that hardcodes a
+register number is asserting a fact about a file it does not own and that
+several units are appending to concurrently; a slug cannot rot that way.
+
+| Slug | Row |
 |---|---|
-| **FW-70** | **S-22 funnel — a plainly-proposed user lesson cannot reach the pathed tier from the surface.** With no `rules_topic` on the proposal the `o` cycle is a singleton and nothing on the bar says Iterate can supply one. `partials/action_bar.html:269` is the natural site; the edit is scope-conditional, not a one-string change (rules are unavailable at skill scope, P-A13). Wording is `U-composer`'s doctrine question. Source: `U-demand-user` §7.2 / §9.3 |
-| **FW-71** | **Bucket-page grouping files a pathed rule under the plain claude-md heading.** `_group_key_for` (`models.py:1161-1167`) keys on the bare destination enum; `_GROUP_LABELS`/`_GROUP_ORDER` (`:339-356`) are enum-keyed by P-A11. A rules topic is a parameterization, not a sixth destination (R-2, `ledger_ops.py:1325-1329`). Needs a group-key vocabulary no unit currently owns. Source: `U-demand-user` §7.3 / §9.4 |
-| **FW-72** | **The card's `flags` vocabulary is display-only and unvalidated.** `U-demand-user` §8A renders `recommendation`/`flags` and keys behaviour on `recommendation == "defer"` alone, treating every flag as display text. If `U-table` or `U-composer` later needs a flag to *change* behaviour, that coupling has no owner and no agreed vocabulary. Trigger: the first flag whose meaning is behavioural. Source: `U-demand-user` §8A.3 |
+| **`pathed-tier-unreachable-from-surface`** | **S-22 funnel — a plainly-proposed user lesson cannot reach the pathed tier from the surface.** With no `rules_topic` on the proposal the `o` cycle is a singleton and nothing on the bar says Iterate can supply one. `partials/action_bar.html:269` is the natural site; the edit is scope-conditional, not a one-string change (rules are unavailable at skill scope, P-A13). Wording is `U-composer`'s doctrine question. Source: `U-demand-user` §7.2 / §9.3 |
+| **`bucket-grouping-hides-the-tier`** | **Bucket-page grouping files a pathed rule under the plain claude-md heading.** `_group_key_for` (`models.py:1161-1167`) keys on the bare destination enum; `_GROUP_LABELS`/`_GROUP_ORDER` (`:339-356`) are enum-keyed by P-A11. A rules topic is a parameterization, not a sixth destination (R-2, `ledger_ops.py:1325-1329`). Needs a group-key vocabulary no unit currently owns. Source: `U-demand-user` §7.3 / §9.4 |
+| **`card-flags-are-display-only`** | **The card's `flags` vocabulary is display-only and unvalidated.** `U-demand-user` §8A renders `recommendation`/`flags` and keys behaviour on `recommendation == "defer"` alone, treating every flag as display text. If `U-table` or `U-composer` later needs a flag to *change* behaviour, that coupling has no owner and no agreed vocabulary. Trigger: the first flag whose meaning is behavioural. Source: `U-demand-user` §8A.3 |
+
+**Landing instruction for the builder:** read the current highest `FW-`
+number in `14-forward-work-map.md` at the moment you land the build, and
+allocate upward from there. Do not reuse a number from this document.
 
 ## 10. What this spec corrects
 
@@ -1643,8 +1724,57 @@ document.**
   re-measured in-process that `correct_destination("user", "reference")` arms
   `claude-md` today and that the UI reads neither `recommendation` nor
   `flags`. Four criteria (A16-A19), five mutations (M24-M28), one declared
-  dependency (the flag vocabulary → FW-72). Three forward-work rows
-  specified (§9.5).
+  dependency (the flag vocabulary). Three forward-work rows specified by
+  slug (§9.5).
+
+- **r3** — 2026-08-06. **Delta gate: NOT SOUND on exactly four items**, all
+  closed here; the gate stated these were the only issues, ruled r2's
+  eleven-caller pushback **RIGHT** (conceding its own round-1 six was an
+  undercount), and verified the H5 design sound end to end.
+
+  **D1** — the r2 reconstruction lost one edit: §3.3(f) still carried r1's
+  "`BucketModel.destination_cycle` stays as the scope-level default" while
+  §3.5A and §11 both said it is dropped. Replaced with a pointer to §3.5A.
+
+  **D2** — §3.3(e) claimed `action_bar.html:268` was "unchanged" one
+  paragraph above F5 item 1, which changes it. Split: the **label pipe** is
+  unchanged, the **path-span guard** is not.
+
+  **D3 — F5 item 2 was not buildable as written.** The armed bar has no
+  scope: `_armed_context` (`routes.py:1290-1336`) returns only `kind`,
+  `dom_id`, `evidence`, `armed`, `disarm_vals`, and `_base_ctx` adds none.
+  Glossing `armed.dest` with an undefined scope does not fall back to the
+  raw token — it renders **"Project instructions" on a user-scope record**,
+  a confidently wrong tier *and* scope at the moment of commitment, worse
+  than what it replaced. Fixed as specified: `action_arm` computes the
+  scope, `_armed_context` gains the key, §3.4 gains two rows, §3.6's count
+  goes to five changed, **M29** added, and A4's armed leg now asserts the
+  **exact** gloss string with `Project instructions` named as the trap so no
+  builder writes a loose "not the raw token" assertion.
+
+  **D4** — §9.5's "highest existing row is FW-69" was wrong on this unit's
+  own base (`83c1d5d` already carries FW-70) and master has since reached
+  FW-75, so all three proposed rows collided — FW-72 twice, since §8A.3
+  cited it by number too. All three are now named **by slug**, with the
+  builder allocating the next free number at landing.
+
+  **Also folded:** the gate's correction to r2's pushback text. r2 claimed
+  all five previously-missed `_unarmed_context` sites "still render the
+  cycle control"; verified false for three — `:1793` and `:2721` sit inside
+  `if evidence is not None:` and the cycle control lives in
+  `action_bar.html`'s `{% if not evidence %}` branch (`:208-276`), and
+  `:2247` is the post-successful-route retry where the proposal sibling is
+  already deleted, so the topic is `None` by construction. Correct sets:
+  **eight correctness-critical, three inert**. The thread-all-eleven
+  instruction **stands** — a uniform rule cannot drift, and the inert three
+  cost one `None` each.
+
+  **And one line the gate asked for in §8A.2:** on a defer-armed record the
+  `o` cycle still reaches `claude-md` in one press
+  (`cycle_destination(None, scope)` returns `cycle[0]`). That is **correct**
+  — an explicit human override recorded as `dest_touched=True` → `by:
+  human`, the exact FW-64 distinction — and not the silent default H5 kills.
+  Stated so the code gate does not re-derive it as a hole.
 
 - **r1** — 2026-08-06. Written against this worktree at `83c1d5d`, from a
   full read of `verbs.py` §§440-560, 600-720, 780-1065, 2023-2160,
