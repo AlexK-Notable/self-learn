@@ -1197,21 +1197,54 @@ def _replay_hook_examples(script: str, examples: dict) -> None:
         )
 
 
+#: Genuine RECORD-sourced quote for the one-motion hook trace's t1/t2
+#: evidence (`import_backlog.py`'s `_RECORD_QUOTE` sibling pattern — gate
+#: FOLD 4 caught the PREVIOUS version of this trace pointing at a
+#: fabricated string, "a human supplied --hook-input: this is a hook
+#: route by construction", that appears nowhere in any record and would
+#: be REFUSED the instant a caller supplied `record_text=`). The record
+#: this trace accompanies is composed in memory by `Record.create`
+#: (`records.py:203` stamps `status: pending` unconditionally) and is
+#: not re-stamped `routed` until `route_direct`'s own
+#: `record.set_status("routed")` — well after `_prepare_one_motion_hook`
+#: returns (`verbs.py` around the `hook_route = _prepare_one_motion_hook`
+#: call, itself before the `set_status` call) — so "status: pending" is
+#: always, genuinely contained in `record.to_text()` at the point this
+#: trace is built. It carries no reasoning of its own (t1's actual
+#: judgment — a human explicitly chose --hook-input, which this pre-
+#: flight treats as field-shaped/separable/cost-bearing by construction —
+#: lives in the CLI's control flow, not in the record's bytes; there is
+#: no genuinely record-sourced quote that would ALSO read as an argument
+#: for "yes", so this one is honest about being a placeholder rather than
+#: fabricating one that reads as more than it is).
+_ONE_MOTION_HOOK_QUOTE = "status: pending"
+
+
 #: A schema-valid decision trace for the one-motion hook path (S-26:
 #: `ledger_ops.TRACE_REQUIRED` made the trace mandatory here too — this
-#: call site is a real producer, not a test fixture, and
-#: `validate_proposal(data)` below is called WITHOUT `record_text=`/
-#: `scope=` (this pre-flight never resolved either before S-26 and still
-#: doesn't), so neither containment nor Table-1/Render-1 derivation ever
-#: runs against it — `_validate_gates`'s SHAPE/enum rules are the only
-#: thing this trace must satisfy. It states the honest, self-consistent
-#: story anyway (t1's H row: field_shaped/separable/cost_bearing all
-#: "yes" — a human explicitly chose --hook-input, which IS the field-
-#: shaped/separable/cost-bearing judgment; downstream t2/t3/tn/t4 are the
-#: "not reached" skeleton), so a future caller that starts threading scope
-#: through would find it already consistent rather than newly broken.
+#: call site is a real producer, not a test fixture). `validate_proposal`
+#: is currently called (below, in `_prepare_one_motion_hook`) WITHOUT
+#: `record_text=`/`scope=`, so today neither containment nor Table-1/
+#: Render-1 derivation runs against it in production — but this trace no
+#: longer merely ASSUMES it would survive both if a future caller started
+#: threading them through:
+#: `tests/test_one_motion_config.py::TestOneMotionHookGatesSurviveContainmentAndDerivation`
+#: calls `validate_proposal` on this exact skeleton with `record_text=`,
+#: `scope=`, and both together, and asserts each is ACCEPTED — closing
+#: the gap between the claim and the proof. Concretely: t1's H row
+#: (field_shaped/separable/cost_bearing all "yes") points at a genuine
+#: record-contained quote (`_ONE_MOTION_HOOK_QUOTE`, never fabricated
+#: prose); t2/t3/tn all answer "no" and t4's own legs are "no"/
+#: INDETERMINATE, which is `gates.load_class`'s "otherwise" branch —
+#: DEMAND — whose Render-1 destination is "reference"; R-HOOK requires
+#: the proposal's `alternates` contain that destination, which
+#: `_prepare_one_motion_hook` now MERGES in alongside this trace (never
+#: silently overwriting a caller-supplied `alternates`, and never
+#: silently leaving one short) — that same test class's
+#: `test_production_call_site_actually_merges_reference_in` proves the
+#: real call site does this, not a hand-mirrored copy.
 def _one_motion_hook_gates() -> dict:
-    evidence = "a human supplied --hook-input: this is a hook route by construction"
+    evidence = _ONE_MOTION_HOOK_QUOTE
     return {
         "g0": {
             "reject": {"answer": "no"},
@@ -1278,6 +1311,21 @@ def _prepare_one_motion_hook(
     data.setdefault("gates", _one_motion_hook_gates())
     data.setdefault("flags", ["evidence-gap"])
     data.setdefault("recommendation", "route")
+    # u-table §3.3 R-HOOK: alternates must name the FALLBACK load class's
+    # own Render-1 destination. `_one_motion_hook_gates`'s t2/t3/tn/t4
+    # answers all fall through to `gates.load_class`'s final "otherwise"
+    # branch — DEMAND — whose destination is "reference"
+    # (`ledger_ops._RENDER_DESTINATIONS["DEMAND"]`). MERGED in, never
+    # merely defaulted (`setdefault` would leave a caller-supplied list —
+    # e.g. `--hook-input`'s own `alternates: [skill-md]` — silently
+    # inconsistent with what the trace it ships alongside actually
+    # derives): "reference" is a property of the TRACE's own math, not
+    # something a human authoring the compile input should have to know
+    # to name. Order-preserving, duplicate-free.
+    alternates = list(dict.fromkeys(data.get("alternates") or []))
+    if "reference" not in alternates:
+        alternates.append("reference")
+    data["alternates"] = alternates
     # CLI-generated bytes, exactly like stamp_proposal (M2-21 for
     # executables): anything the caller wrote in `script` is overwritten.
     from .ledger_ops import _generate_hook_script  # same module family

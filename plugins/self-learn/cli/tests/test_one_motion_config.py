@@ -16,6 +16,7 @@ import pytest
 from self_learn import cli, verbs
 from self_learn.config import one_motion_enabled
 from self_learn.hook_compiler import script_name
+from self_learn.ledger_ops import validate_proposal
 from self_learn.records import Record
 from support import git, make_behavior, make_env
 
@@ -300,3 +301,99 @@ class TestEnabledNewSkill:
             verbs.VerbError, match="cannot be routed in one motion"
         ):
             verbs.route_direct(env.home, record_for(env), dest="new-skill:x")
+
+
+# --------------------------------------------------- gate FOLD 4 follow-up
+
+
+class TestOneMotionHookGatesSurviveContainmentAndDerivation:
+    """Gate FOLD 4: `_one_motion_hook_gates`'s trace used to point t1/t2's
+    evidence at a fabricated string ("a human supplied --hook-input: this
+    is a hook route by construction") that appears in no record, and its
+    proposal never named "reference" in `alternates` even though the
+    trace's own t2/t3/tn/t4 answers derive DEMAND as the fallback load
+    class (u-table §3.3 R-HOOK). Both survived every existing test only
+    because `_prepare_one_motion_hook` calls `validate_proposal(data)`
+    bare — no `record_text=`, no `scope=` — so neither containment nor
+    Table-1/Render-1 derivation ever ran against it. This pins that a
+    caller who DOES supply both gets an honest ACCEPT, not a refusal that
+    was merely dormant."""
+
+    def _full_proposal(self, record: Record) -> dict:
+        # The exact shape `_prepare_one_motion_hook` builds, assembled
+        # directly here so this test exercises `_one_motion_hook_gates`'s
+        # trace and the verb's real `alternates` MERGE logic without also
+        # exercising script generation/replay (a different concern,
+        # already covered end-to-end elsewhere in this file). Uses this
+        # module's own `hook_input()` default, which names its OWN
+        # `alternates: [skill-md]` — deliberately NOT "reference" — so
+        # this exercises the merge path (a caller-supplied list gets
+        # "reference" ADDED, never silently replaced or left short).
+        data = hook_input()
+        data["destination"] = "hook"
+        data["model"] = "one-motion-cli"
+        data["analyzed_at"] = "2026-08-07T00:00:00Z"
+        data["gates"] = verbs._one_motion_hook_gates()
+        data["flags"] = ["evidence-gap"]
+        data["recommendation"] = "route"
+        # Mirrors `_prepare_one_motion_hook`'s own merge exactly (verbs.py):
+        # order-preserving, duplicate-free, "reference" always present.
+        alternates = list(dict.fromkeys(data.get("alternates") or []))
+        if "reference" not in alternates:
+            alternates.append("reference")
+        data["alternates"] = alternates
+        assert data["alternates"] == ["skill-md", "reference"], data["alternates"]
+        return data
+
+    def test_accepts_under_record_text(self):
+        record = make_behavior(scope="skill:s")
+        data = self._full_proposal(record)
+        # ACCEPT: raises nothing.
+        validate_proposal(data, record_text=record.to_text())
+
+    def test_accepts_under_scope(self):
+        record = make_behavior(scope="skill:s")
+        data = self._full_proposal(record)
+        # ACCEPT: raises nothing.
+        validate_proposal(data, scope=record.scope)
+
+    def test_accepts_under_both_together(self):
+        record = make_behavior(scope="skill:s")
+        data = self._full_proposal(record)
+        # ACCEPT under both simultaneously — the actual future-caller shape.
+        validate_proposal(data, record_text=record.to_text(), scope=record.scope)
+
+    def test_quote_is_genuinely_contained_not_fabricated(self):
+        # Positive control (gate M1 discipline): pin the OLD fabricated
+        # string is gone and the new quote is a real substring of the
+        # record it accompanies — a future edit that reintroduces a
+        # fabricated quote fails THIS assertion even if containment
+        # somehow still passed for an unrelated reason.
+        record = make_behavior(scope="skill:s")
+        gates = verbs._one_motion_hook_gates()
+        evidence = gates["t1"]["field_shaped"]["evidence"]
+        assert evidence in record.to_text()
+        assert "a human supplied --hook-input" not in evidence
+
+    def test_production_call_site_actually_merges_reference_in(self, env, monkeypatch):
+        # The `_full_proposal` tests above mirror `_prepare_one_motion_
+        # hook`'s merge logic by hand — this test proves the REAL verb
+        # does it, not a hand copy that could silently drift from
+        # production. Intercepts the exact `data` dict the real
+        # `_prepare_one_motion_hook` builds and passes to
+        # `validate_proposal`, via the full `route_direct(dest="hook")`
+        # pipeline (env.enable("hook"), a real compile input carrying its
+        # own `alternates: [skill-md]`), then still calls through so the
+        # route completes normally.
+        captured: list[dict] = []
+        real_validate = verbs.validate_proposal
+
+        def spy(data, **kwargs):
+            captured.append(dict(data))
+            return real_validate(data, **kwargs)
+
+        monkeypatch.setattr(verbs, "validate_proposal", spy)
+        env.enable("hook")
+        verbs.route_direct(env.home, record_for(env), dest="hook", hook_input=hook_input())
+        assert captured, "validate_proposal was never called"
+        assert captured[0]["alternates"] == ["skill-md", "reference"]
