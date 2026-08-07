@@ -158,9 +158,15 @@ def proposal_validate(home: Path, record_id: str) -> int:
         # record is already parsed on the line above for the
         # unparseable-record check, so this is free; .to_text() matches
         # the text form (frontmatter + body, not just body — E4) both
-        # other call sites pass.
+        # other call sites pass. `scope=record.scope` is the same
+        # obligation one field over (u-table §3.5, §6-BD8): this is the
+        # human's hand-edit path, and leaving it unscoped would rebuild
+        # FW-62's exact shape — a validator whose machine path is strict
+        # and whose human path is lenient.
         record = Record.from_path(record_path)  # an unparseable record cannot be stamped
-        validate_proposal(read_proposal(yaml_sibling), record_text=record.to_text())
+        validate_proposal(
+            read_proposal(yaml_sibling), record_text=record.to_text(), scope=record.scope
+        )
     except (ProposalError, RecordError) as exc:
         print(
             f"proposal validate: {record_id} schema-invalid — {exc} "
