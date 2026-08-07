@@ -1595,6 +1595,28 @@ class TestApplyingStripClientRendering:
         after = page.locator("body").aria_snapshot()
         assert after != before
 
+    def test_2b_force_run_applying_renders_visible_with_badge_and_detail(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        """UI-walk defect fix: "Force run" (worker kick / miner run) now
+        publishes through this SAME mechanism (routes.py's worker_kick /
+        mine_run, `_publish_applying`) — this is the client-rendering
+        half of that fix, same oracle as test_2 above (aria_snapshot
+        inequality; text_content is blind to opacity, which is why the
+        inequality check rides alongside it here too, per S-20's own
+        measured blind spot)."""
+        _open(page, server, "/")
+        strip = _applying_strip(page)
+        before = page.locator("body").aria_snapshot()
+        server.push_applying("worker", "kick", "start")
+        expect(strip).to_be_visible()
+        assert page.locator("#self-learn-ui-applying-badge").text_content() == "applying"
+        assert page.locator("#self-learn-ui-applying-text").text_content() == "worker → kick"
+        after = page.locator("body").aria_snapshot()
+        assert after != before
+        server.push_applying("worker", "kick", "done")
+        expect(strip).to_be_hidden()
+
     def test_3_applying_done_hides_strip(self, page: "Page", server: ServerHandle) -> None:
         _open(page, server, "/")
         strip = _applying_strip(page)

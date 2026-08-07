@@ -23,6 +23,7 @@ from self_learn_ui.env import load_env
 from self_learn_ui.keymap import keymap_as_dicts, keymap_json
 from self_learn_ui.routes import build_argv, cycle_destination, next_record_url
 from self_learn_ui.runner import FakeRunner, RunResult
+from self_learn_ui.sse import AppEventHub
 
 from support import (
     RouteSideEffectRunner,
@@ -3064,6 +3065,90 @@ class TestWorkerKick:
         r = c.get("/")
         assert '/worker/kick' in r.text
         assert "Force run" in r.text
+
+
+# ------------------------------ UI-walk defect fix: "Force run" feedback
+#
+# Both Force-run buttons (worker kick, miner run) posted, redirected, and
+# gave a human nothing perceptible in between — found in the 2026-08-03
+# cold-open walk. The fix EXTENDS the S-20 `applying` in-flight machinery
+# (03-decisions.md's S-20 row: a keyed Map, never a counter+flag — five
+# gate rounds each found a defect in the counter shape) rather than
+# inventing a second mechanism: both routes now call the SAME
+# `_publish_applying` helper the three verb-confirm routes already call,
+# publishing the SAME "start" -> "done"/"error" envelope pair on the SAME
+# `app_hub`. These are server-side unit tests (mirrors
+# `TestWorkerKick.test_forces_a_front_scope_refresh`'s own pattern of a
+# manually-wired hub + synchronous TestClient — `AppEventHub.publish` is
+# awaited to completion inside the route before `TestClient.post`
+# returns, so the queue is fully populated by the time the assertion
+# runs); the client-side rendering half (aria_snapshot inequality, the
+# oracle's own blind spot re: opacity) is covered by the browser-driven
+# tests in test_js_dom.py's TestApplyingStripClientRendering, which this
+# unit does not need to duplicate — app.js's Map/render code path is
+# unchanged, only what publishes into it is new.
+
+
+def _make_client_with_app_hub(
+    sb, *, runner: FakeRunner | None = None, port: int = 7357
+) -> tuple[TestClient, FakeRunner, AppEventHub]:
+    runner = runner if runner is not None else FakeRunner()
+    env = load_env(sb.env)
+    app_hub = AppEventHub()
+    app = create_app(env=env, token=TOKEN, runner=runner, app_hub=app_hub, start_watcher=False)
+    c = TestClient(app, base_url=f"http://127.0.0.1:{port}")
+    c.cookies.set("slu_token", TOKEN)
+    return c, runner, app_hub
+
+
+class TestForceRunApplyingFeedback:
+    def test_worker_kick_emits_start_then_done(self, tmp_path: Path) -> None:
+        sb = make_env(tmp_path)
+        c, _runner, app_hub = _make_client_with_app_hub(sb)
+        q = app_hub.subscribe()
+        r = c.post("/worker/kick", headers={"HX-Request": "true"})
+        assert r.status_code == 200
+        start = q.get_nowait()
+        done = q.get_nowait()
+        assert start == {"type": "applying", "verb": "worker", "id": "kick", "state": "start"}
+        assert done == {"type": "applying", "verb": "worker", "id": "kick", "state": "done"}
+        assert q.empty()
+
+    def test_worker_kick_emits_error_state_on_nonzero_exit(self, tmp_path: Path) -> None:
+        sb = make_env(tmp_path)
+        runner = FakeRunner()
+        runner.queue_result(RunResult(1, stderr="boom"))
+        c, _runner, app_hub = _make_client_with_app_hub(sb, runner=runner)
+        q = app_hub.subscribe()
+        r = c.post("/worker/kick", headers={"HX-Request": "true"})
+        assert r.status_code == 200  # worker kick has no arm-then-confirm error leg
+        q.get_nowait()  # start
+        done = q.get_nowait()
+        assert done["state"] == "error"
+
+    def test_mine_run_emits_start_then_done(self, tmp_path: Path) -> None:
+        sb = make_env(tmp_path)
+        c, _runner, app_hub = _make_client_with_app_hub(sb)
+        q = app_hub.subscribe()
+        r = c.post("/mine/run", headers={"HX-Request": "true"})
+        assert r.status_code == 200
+        start = q.get_nowait()
+        done = q.get_nowait()
+        assert start == {"type": "applying", "verb": "mine", "id": "run", "state": "start"}
+        assert done == {"type": "applying", "verb": "mine", "id": "run", "state": "done"}
+        assert q.empty()
+
+    def test_mine_run_emits_error_state_on_nonzero_exit(self, tmp_path: Path) -> None:
+        sb = make_env(tmp_path)
+        runner = FakeRunner()
+        runner.queue_result(RunResult(1, stderr="boom"))
+        c, _runner, app_hub = _make_client_with_app_hub(sb, runner=runner)
+        q = app_hub.subscribe()
+        r = c.post("/mine/run", headers={"HX-Request": "true"})
+        assert r.status_code == 200
+        q.get_nowait()  # start
+        done = q.get_nowait()
+        assert done["state"] == "error"
 
 
 # --------------------------------------------------- Y-24: near-miss promote
