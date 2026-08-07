@@ -285,6 +285,57 @@ def test_note7_duplicate_frontmatter_name_sorts_by_full_line_not_insertion_order
     assert "AAA comes first" in dup_rows[0]
     assert "ZZZ comes last" in dup_rows[1]
 
+
+def test_note7_sort_is_hash_seed_independent_deterministic(tmp_path):
+    """Gate NOTE 7 (deterministic form) — the in-process test above is
+    probabilistic pre-fix: a name-only sort's tie-break falls through to
+    whatever order the underlying SET happened to iterate, which is a
+    function of pytest's own ambient PYTHONHASHSEED for that run (gate
+    measured 8/12 seeds reddening the old code, the other 4 got lucky).
+    This test pins several EXPLICIT, reproducible seeds instead of
+    relying on whichever one pytest happens to start with: runs the REAL
+    `worker.skill_roster` in separate subprocesses under different
+    `PYTHONHASHSEED` values against the SAME on-disk duplicate-name
+    fixture, and asserts every one produces byte-identical roster text.
+    Absent/broken: a name-only sort makes at least one of these fixed
+    seeds diverge from the others — deterministically, not by chance,
+    since the seeds themselves are pinned."""
+    import subprocess
+    import sys
+
+    env = make_env(tmp_path, skills=("alpha", "zzz"))
+    alpha_md = env.host / "plugins" / "alpha-plugin" / "skills" / "alpha" / "SKILL.md"
+    zzz_md = env.host / "plugins" / "zzz-plugin" / "skills" / "zzz" / "SKILL.md"
+    alpha_md.write_text(
+        "---\nname: dup\ndescription: AAA comes first alphabetically.\n---\n\n# alpha\n",
+        encoding="utf-8",
+    )
+    zzz_md.write_text(
+        "---\nname: dup\ndescription: ZZZ comes last alphabetically.\n---\n\n# zzz\n",
+        encoding="utf-8",
+    )
+
+    probe = (
+        "from self_learn import worker; "
+        "print(worker.skill_roster(%r).text)"
+    ) % str(env.ledger)
+    outputs = []
+    for seed in ("0", "1", "2", "3", "4", "5"):
+        proc = subprocess.run(
+            [sys.executable, "-c", probe],  # same interpreter pytest itself runs
+            cwd=Path(__file__).resolve().parent.parent,
+            env={**__import__("os").environ, "PYTHONHASHSEED": seed},
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        outputs.append(proc.stdout)
+    assert len(set(outputs)) == 1, (
+        "roster text differs across PYTHONHASHSEED values — sort is not "
+        f"content-deterministic: {outputs}"
+    )
+
+
 # =====================================================================
 # B. Cluster candidates
 # =====================================================================

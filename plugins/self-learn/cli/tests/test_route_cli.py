@@ -385,6 +385,60 @@ def test_teach_route_missing_doctrine_exits_2_pre_spawn(
     assert env.pending_files() == [] and env.resolved_files() == []
 
 
+def test_teach_route_bare_analyst_threads_project_path_at_project_scope(
+    env, monkeypatch
+):
+    """Gate FOLD 6 — teach.py's OWN call site (`_route_now`, ~:683) must
+    actually PASS `project_path=` to `analyst.analyze`, not merely have a
+    callee that accepts it when supplied (FOLD 5's three tests all drive
+    `analyst.analyze` directly — none of them exercise `_route_now`
+    itself). Same callee-tested/caller-untested class FOLD 4 closed for
+    `_prepare_one_motion_hook`'s `alternates` merge via a
+    `validate_proposal` spy on the REAL call site
+    (`test_production_call_site_actually_merges_reference_in`) — this
+    mirrors that pattern for `analyst.analyze`. Absent/broken: deleting
+    `project_path=project_path` from teach.py's call (the one line that
+    makes FOLD 5's fix reach the common case) leaves `analyze()`'s new
+    parameter perfectly valid and every other test green, since nothing
+    else asserts what THIS call site passes it.
+
+    Raises `AnalystError` from the patched `analyze` immediately after
+    recording its arguments — cheaper than a full shim/proposal round
+    trip, and `_route_now`'s AnalystError branch (`_capture_to_pending`)
+    is already covered elsewhere
+    (`test_teach_route_analyst_failure_captures_to_pending`); this test's
+    OWN job is only the one kwarg."""
+    from self_learn import gitops
+
+    expected_project_path = gitops.toplevel(env.host)
+    assert expected_project_path is not None  # env.host IS a git repo
+
+    captured: dict = {}
+
+    def fake_analyze(home, record, *, project_path=None):
+        captured["project_path"] = project_path
+        raise analyst.AnalystError("FOLD 6 probe — captured, not routed")
+
+    monkeypatch.setattr(analyst, "analyze", fake_analyze)
+    monkeypatch.chdir(env.host)  # binds project scope to the registered host
+
+    project_args = [
+        "teach",
+        "About to edit .storage while HA is running.",
+        "--type",
+        "behavior",
+        "--trigger",
+        "About to edit .storage while HA is running.",
+        "--instruction",
+        "Stop the container first.",
+        "--route",
+    ]
+    rc = cli.main(project_args)
+    assert rc == 4  # EXIT_ANALYST — the probe's AnalystError, captured to pending
+    assert "project_path" in captured
+    assert captured["project_path"] == expected_project_path
+
+
 # ---------------------------- analyst.analyze() proposal fidelity + cwd --
 # U-analyst (FW-41, docs/specs/self-learn/drafts/
 # u-analyst-proposal-fidelity-spec.md): the enumerated-rebuild defect and
