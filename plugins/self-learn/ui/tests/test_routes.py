@@ -4523,17 +4523,29 @@ class TestA17DeferredProposalRendersEmptyHiddenDest:
 
 class TestA18DeferredRecordApproveRefusesEndToEnd:
     """A18 — a `defer`-armed record's Approve does not write always-loaded
-    canon. End to end through the real ASGI app (the model-level sibling
-    lives in test_models_detail.py::TestH5A18...): confirm a defer-armed
-    user-scope reference record. The FakeRunner is queued with the CLI's
-    OWN verbatim refusal shape (`self-learn route: ` + verbs.py's S-23
-    VerbError text) — this is the criterion that makes the whole H5
-    section worth building: today the confirm SUCCEEDS and the entry
-    lands."""
+    canon. The model-level sibling lives in
+    test_models_detail.py::TestH5A18...
 
-    def test_confirm_with_no_dest_surfaces_the_cli_s23_refusal(
+    Blind code-gate FOLD (round 1): the first cut only proved the argv
+    half — the "S-23" string it found was one this test itself
+    hand-copied into FakeRunner (a second, driftable copy of CLI prose),
+    and the pending/no-managed-entry legs were vacuous under FakeRunner
+    (which never touches a file regardless of what it's told to say).
+    Split honestly now: the CLI-side half (refused, pending, CLAUDE.md
+    byte-unchanged) is A9's job
+    (cli/tests/test_verbs.py::TestReferenceUserScopeRefusal) — this test
+    SOURCES that same refusal from a real, direct `verbs.route()` call
+    against a throwaway sandbox (never hand-copied), verifies the CLI's
+    real side effects itself too (belt-and-suspenders with A9), and THEN
+    proves the UI's own job: build_argv omits `--dest` for a defer-armed
+    confirm, and the confirm route surfaces whatever the CLI actually
+    said, verbatim."""
+
+    def test_confirm_with_no_dest_surfaces_the_real_cli_refusal(
         self, tmp_path: Path
     ) -> None:
+        from self_learn import verbs as cli_verbs
+
         sb = make_env(tmp_path)
         rec = make_behavior(scope="user")
         seed_record(sb.ledger, rec)
@@ -4541,23 +4553,43 @@ class TestA18DeferredRecordApproveRefusesEndToEnd:
             sb.ledger, rec.id, destination="reference",
             recommendation="defer", flags=["no-cheap-surface"],
         )
-        # Sanity: the rendered bar's hidden dest is empty (H5's own
-        # enforcement — the human COULD still try to Approve anyway).
+
+        # Source the refusal from the REAL CLI: a bare route (no --dest,
+        # matching what an empty-armed confirm's argv actually sends —
+        # asserted below), same ledger, a throwaway user-scope target.
+        # This is the gate's own probe shape: refused, pending, CLAUDE.md
+        # byte-unchanged.
+        user_claude_md = tmp_path / "dot-claude" / "CLAUDE.md"
+        user_claude_md.parent.mkdir()
+        user_claude_md.write_text("# user conduct\n", encoding="utf-8")
+        with pytest.raises(cli_verbs.VerbError) as exc_info:
+            cli_verbs.route(
+                sb.ledger, rec.id, user_claude_md=user_claude_md,
+                chezmoi_bin="chezmoi-definitely-absent",
+            )
+        refusal = str(exc_info.value)
+        assert "S-23" in refusal
+        assert "chezmoi" not in refusal
+
+        from self_learn_ui import ledger as ui_ledger
+
+        loc = ui_ledger.locate_record(sb.ledger, rec.id)
+        assert loc is not None
+        record = ui_ledger.read_record(loc.path)
+        assert record is not None
+        assert record.status == "pending"
+        # No managed entry — the real target's bytes never moved.
+        assert user_claude_md.read_text(encoding="utf-8") == "# user conduct\n"
+
+        # The UI half: the rendered bar's hidden dest is empty (H5's own
+        # enforcement — the human COULD still try to Approve anyway),
+        # and confirming surfaces the SOURCED refusal verbatim, never a
+        # second hand-typed copy of it.
         c, runner = make_client(sb)
         detail = c.get(f"/record/{rec.id}")
         assert 'name="dest" value=""' in detail.text
 
-        refusal = (
-            "self-learn route: reference destination needs skill:<name> or "
-            "project scope — user scope has no references dir. S-23 (2): a "
-            "user-level reference file would have no SKILL.md to hang a "
-            "pointer off, so it would be unreachable canon, exactly the "
-            "failure mode S-23 exists to close. If this lesson is "
-            "file-scoped, route it to a pathed rules topic instead "
-            "(claude-md:rules:<topic>); if it is not, route it to project "
-            "scope, or defer"
-        )
-        runner.queue_result(RunResult(1, stderr=refusal))
+        runner.queue_result(RunResult(1, stderr=f"self-learn route: {refusal}"))
         r = c.post(
             f"/record/{rec.id}/action/confirm",
             data={"verb": "route", "kind": "detail", "dest": ""},
@@ -4569,13 +4601,3 @@ class TestA18DeferredRecordApproveRefusesEndToEnd:
         # reference's structural refusal.
         assert runner.calls == [["route", rec.id, "--by", "analyst", "--json"]]
         assert "S-23" in r.text
-        # The record stays pending — no file was ever touched by the
-        # (fake) failed subprocess.
-        from self_learn_ui import ledger as ui_ledger
-
-        loc = ui_ledger.locate_record(sb.ledger, rec.id)
-        assert loc is not None
-        record = ui_ledger.read_record(loc.path)
-        assert record is not None
-        assert record.status == "pending"
-
