@@ -396,8 +396,9 @@ class TestNoPushBindsSpawnedWorker:
 
         before = remote_log(remote)
 
-        # user scope + reference dest is an unroutable pair (doc 13 §2) →
-        # route fails → record captured to pending → exit 4 → worker kick.
+        # user scope + reference dest is an unroutable pair (S-23 (2):
+        # user scope has no reference shelf) → route fails → record
+        # captured to pending → exit 4 → worker kick.
         code = cli.main(
             [
                 "teach",
