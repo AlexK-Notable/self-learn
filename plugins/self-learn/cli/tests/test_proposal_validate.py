@@ -275,10 +275,23 @@ def test_fabricated_record_quote_refused_the_discriminator(home, capsys):
 def test_true_record_quote_accepted_the_positive_control(home, capsys):
     """The mandated positive control: a trace whose RECORD-sourced quotes
     are ALL genuinely contained in the record still validates and stamps
-    — proving the fix does not over-tighten into refusing honest traces."""
+    — proving the fix does not over-tighten into refusing honest traces.
+
+    u-table: `_base_gates()` derives DEMAND, and `seed_record` uses
+    `scope="user"` (:33-38) — DEMAND has no routable surface at user
+    scope (§3.4), so R-SCOPE applies: destination stays the honest
+    target (`reference`), but recommendation degrades to `defer` with
+    the `no-cheap-surface` flag."""
     record = seed_record(home, fact=TRUE_QUOTE)
     write_raw_proposal(
-        home, record.id, proposal_dict(gates=_base_gates(TRUE_QUOTE))
+        home,
+        record.id,
+        proposal_dict(
+            gates=_base_gates(TRUE_QUOTE),
+            destination="reference",
+            recommendation="defer",
+            flags=["no-cheap-surface"],
+        ),
     )
 
     rc = cli.main(["proposal", "validate", record.id])
