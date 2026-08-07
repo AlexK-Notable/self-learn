@@ -1578,6 +1578,7 @@ class TestObligation29TwoRoadsProduceIdenticalBytes:
             write_proposal(
                 sandbox.ledger, rid,
                 proposal_dict(
+                    scope="user",
                     destination="claude-md", variant="rules", rules_topic="t",
                     rules_paths=["**/*.py"],
                 ),
@@ -1630,6 +1631,7 @@ class TestObligation30BareClaudeMdNeverInherits:
         write_proposal(
             env.home, OLD,
             proposal_dict(
+                scope="user",
                 destination="claude-md", variant="rules", rules_topic="t",
                 rules_paths=["**/*.py"],
             ),
@@ -1660,6 +1662,7 @@ class TestObligation31MismatchedTopicNeverInherits:
         write_proposal(
             env.home, OLD,
             proposal_dict(
+                scope="user",
                 destination="claude-md", variant="rules", rules_topic="t",
                 rules_paths=["**/*.py"],
             ),
@@ -1803,6 +1806,7 @@ class TestObligation33NonRulesDestByteIdentical:
         write_proposal(
             env.home, "lrn-00000007",
             proposal_dict(
+                scope="project",
                 destination="claude-md", variant="rules", rules_topic="control",
                 rules_paths=["*.py"],
             ),
