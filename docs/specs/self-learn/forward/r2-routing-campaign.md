@@ -579,12 +579,21 @@ Added by this campaign:
    it is already there. When a lesson at the ALWAYS tier keeps recurring,
    the escalation is **a guard, not more prose.** Text that has failed at
    maximum prominence is not fixed by more prominence.
-7. **The CLAUDE.md-to-rules-file restructure** — still unratified. The
-   campaign is built to be indifferent to it, so it is not urgent, but it
-   should not stay open forever.
-8. **When do the new trace fields become mandatory?** They start
-   optional so nothing in the current queue breaks. Flipping them to
-   required is one flag; when to flip is policy.
+7. ~~**The CLAUDE.md-to-rules-file restructure** — still unratified.~~
+   **DEFERRED WITH A TRIGGER 2026-08-06** — the user ruled: revisit at
+   **Checkpoint A**, with its routing measurements in hand, not before.
+   Recorded as **O-10** in `03-decisions.md`, which is where it binds.
+   `U-modelb` stays blocked until the trigger fires; the campaign remains
+   indifferent to the outcome, as designed.
+8. ~~**When do the new trace fields become mandatory?**~~ **ANSWERED
+   2026-08-06 — at the earliest convenient moment, riding `U-composer`;
+   progress outranks capturing the pending backlog (S-23-style provenance
+   note: the user answered in their own words, quoted in full at S-26).**
+   The flip does NOT wait for the queue to drain; pending pre-schema
+   records get conformed by a user-sanctioned multi-agent migration
+   workflow instead. `U-composer`'s spec owns the flip and the migration
+   mechanism — see **S-26** in `03-decisions.md` for the two constraints
+   the migration inherits (CLI-verbs-only mutation; no fabricated traces).
 
 ---
 
