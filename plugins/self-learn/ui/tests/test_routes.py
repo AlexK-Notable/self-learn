@@ -35,8 +35,10 @@ from support import (
     make_env,
     make_knowledge,
     merge_proposal_text,
+    proposal_dict,
     resolve_record_directly,
     seed_proposal,
+    seed_raw_proposal,
     seed_record,
 )
 
@@ -2184,7 +2186,7 @@ class TestVariantAwareSuggestedDestination:
         rec = make_behavior(scope="user")
         seed_record(sb.ledger, rec)
         seed_proposal(
-            sb.ledger, rec.id, destination="claude-md", variant="rules",
+            sb.ledger, rec.id, scope="user", destination="claude-md", variant="rules",
             rules_topic="subagents", rules_paths=["src/**/*.ts"],
         )
         c, _runner = make_client(sb)
@@ -2254,7 +2256,16 @@ class TestDestinationCorrection:
         sb = make_env(tmp_path)
         rec = make_knowledge(scope="project")
         seed_record(sb.ledger, rec, project_path=sb.host)
-        seed_proposal(sb.ledger, rec.id, destination="skill-md")
+        # S-26/U-table: destination: skill-md can never be Table-1-valid
+        # at project scope (SKILL is only derivable at skill:<name>
+        # scope), so the real CLI pipeline can no longer WRITE this
+        # proposal — but the UI must still render defensively for
+        # stale/legacy data already on disk. seed_raw_proposal bypasses
+        # write_proposal's validation on purpose; this is the fixture
+        # this correction feature exists to cover.
+        seed_raw_proposal(
+            sb.ledger, rec.id, proposal_dict(auto_trace=False, destination="skill-md")
+        )
         c, _runner = make_client(sb)
         r = c.get(f"/record/{rec.id}")
         assert r.status_code == 200
@@ -2318,7 +2329,10 @@ class TestDestinationCorrection:
         sb = make_env(tmp_path)
         rec = make_knowledge(scope="project")
         seed_record(sb.ledger, rec, project_path=sb.host)
-        seed_proposal(sb.ledger, rec.id, destination="skill-md")
+        # same rationale as test_project_detail_corrects_skill_md_default_with_note.
+        seed_raw_proposal(
+            sb.ledger, rec.id, proposal_dict(auto_trace=False, destination="skill-md")
+        )
         loc = ui_ledger.locate_record(sb.ledger, rec.id)
         assert loc is not None
         c, _runner = make_client(sb)
@@ -4457,7 +4471,7 @@ class TestA16RecommendationAndFlagsRenderedOnDetailPage:
         rec = make_behavior(scope="user")
         seed_record(sb.ledger, rec)
         seed_proposal(
-            sb.ledger, rec.id, destination="reference",
+            sb.ledger, rec.id, scope="user", destination="reference",
             recommendation="defer", flags=["no-cheap-surface"],
         )
         c, _runner = make_client(sb)
@@ -4473,7 +4487,15 @@ class TestA16RecommendationAndFlagsRenderedOnDetailPage:
         sb = make_env(tmp_path)
         rec = make_behavior(scope="user")
         seed_record(sb.ledger, rec)
-        seed_proposal(sb.ledger, rec.id, destination="claude-md")
+        # S-26/TRACE_REQUIRED: recommendation is now mandatory on every
+        # proposal write_proposal accepts, so a genuinely absent
+        # recommendation can only exist as legacy/malformed data already
+        # on disk (the exact case this defensive render exists for) —
+        # seed_raw_proposal bypasses validation on purpose, matching
+        # TestDestinationCorrection's rationale above.
+        seed_raw_proposal(
+            sb.ledger, rec.id, proposal_dict(auto_trace=False, destination="claude-md")
+        )
         c, _runner = make_client(sb)
         r = c.get(f"/record/{rec.id}")
         assert r.status_code == 200
@@ -4495,7 +4517,7 @@ class TestA17DeferredProposalRendersEmptyHiddenDest:
         rec = make_behavior(scope="user")
         seed_record(sb.ledger, rec)
         seed_proposal(
-            sb.ledger, rec.id, destination="reference",
+            sb.ledger, rec.id, scope="user", destination="reference",
             recommendation="defer", flags=["no-cheap-surface"],
         )
         c, _runner = make_client(sb)
@@ -4512,8 +4534,16 @@ class TestA17DeferredProposalRendersEmptyHiddenDest:
         sb = make_env(tmp_path)
         rec = make_knowledge(scope="project")
         seed_record(sb.ledger, rec, project_path=sb.host)
-        seed_proposal(
-            sb.ledger, rec.id, destination="claude-md", recommendation="defer",
+        # ALWAYS is routable at every scope (no R-SCOPE corner) — no
+        # Table-1-valid trace can carry recommendation: defer for a
+        # claude-md/ALWAYS proposal. seed_raw_proposal bypasses
+        # validation on purpose: the whole point of this fixture is an
+        # artificial defer at a normally-routable destination, to catch
+        # a wrong implementation that keys off destination=="reference"
+        # instead of the recommendation field itself (see class docstring).
+        seed_raw_proposal(
+            sb.ledger, rec.id,
+            proposal_dict(auto_trace=False, destination="claude-md", recommendation="defer"),
         )
         c, _runner = make_client(sb)
         r = c.get(f"/record/{rec.id}")
@@ -4550,7 +4580,7 @@ class TestA18DeferredRecordApproveRefusesEndToEnd:
         rec = make_behavior(scope="user")
         seed_record(sb.ledger, rec)
         seed_proposal(
-            sb.ledger, rec.id, destination="reference",
+            sb.ledger, rec.id, scope="user", destination="reference",
             recommendation="defer", flags=["no-cheap-surface"],
         )
 
