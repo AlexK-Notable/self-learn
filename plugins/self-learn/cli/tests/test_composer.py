@@ -858,3 +858,531 @@ def test_a20_deletions_with_positive_controls():
     assert "no secrets" in text.lower()
     assert "S-23" in text
     assert "PATHED" in text
+
+
+# =====================================================================
+# E. The flip and the trace producers (A21-A24)
+# =====================================================================
+
+
+def _shim_env(tmp_path, monkeypatch):
+    """A hermetic ledger (skill `s` registered) with a bare remote and a
+    PATH-shimmed `claude` that runs whatever bash snippet the test hands
+    it via $CLAUDE_SHIM_SCRIPT — the raw-text env-var idiom
+    test_worker.py's own `claude_shim` fixture uses (proven safe against
+    the repr()-embedding bug measured while drafting A12b: embedding a
+    heredoc-bearing script through a second layer of Python repr()
+    mangles both its newlines and its own quoting)."""
+    import os
+    import stat as _stat
+    import subprocess as _sp
+
+    from support import git as _git
+
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg-cache"))
+    monkeypatch.setenv("SELF_LEARN_ACTOR", "testhost")
+    env = make_env(tmp_path, skills=("s",))
+    monkeypatch.setenv("SELF_LEARN_HOME", str(env.ledger))
+    bare = tmp_path / "remote.git"
+    _sp.run(["git", "init", "-q", "--bare", "-b", "main", str(bare)], check=True)
+    _git(env.ledger, "remote", "add", "origin", str(bare))
+    _git(env.ledger, "push", "-q", "-u", "origin", "main")
+
+    shims = tmp_path / "shims"
+    shims.mkdir()
+    shim = shims / "claude"
+    shim.write_text(
+        "#!/usr/bin/env bash\n"
+        "cat > /dev/null || true\n"
+        'if [ -n "${CLAUDE_SHIM_SCRIPT-}" ]; then bash -c "$CLAUDE_SHIM_SCRIPT"; fi\n'
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    shim.chmod(shim.stat().st_mode | _stat.S_IEXEC)
+    monkeypatch.setenv("PATH", f"{shims}{os.pathsep}{os.environ['PATH']}")
+    return env
+
+
+def _skill_gates_yaml(roster_sha: str) -> str:
+    """A complete SKILL-outcome trace at scope skill:s (t3 fires, owns
+    `s`) — the shape A12b/A21 already exercise, parameterized only by
+    the claimed roster sha."""
+    return (
+        "gates:\n"
+        "  g0:\n"
+        '    reject: {answer: "no"}\n'
+        '    defer: {answer: "no"}\n'
+        '    canon: {answer: "no"}\n'
+        "  t1:\n"
+        "    attempted: false\n"
+        "    field_shaped:\n"
+        '      answer: "no"\n'
+        '      evidence: "About to edit .storage while HA is running."\n'
+        "    separable: {answer: null}\n"
+        "    cost_bearing: {answer: null}\n"
+        "  t2:\n"
+        '    answer: "no"\n'
+        '    evidence: "About to edit .storage while HA is running."\n'
+        "    match_path: null\n"
+        "  t3:\n"
+        '    answer: "yes"\n'
+        '    owner: "s"\n'
+        "    scan_terms: null\n"
+        f'    roster_sha: "{roster_sha}"\n'
+        "  t3a:\n"
+        '    depth_behind_rule: {answer: "no", evidence: null}\n'
+        '    fs: {verdict: "SILENT", evidence: "About to edit .storage while HA is running."}\n'
+        '  tn: {answer: "no", terms: [], members: [], proposed_name: null}\n'
+        "  t4: null\n"
+        "  e1: {sightings: 1, post_demand_recurrence: false}\n"
+        "  outcome: SKILL\n"
+    )
+
+
+def _skill_proposal_yaml(roster_sha: str) -> str:
+    return (
+        "destination: skill-md\n"
+        "alternates: [claude-md]\n"
+        "rationale: deterministic guard beats advisory text\n"
+        "model: claude-sonnet-5\n"
+        "analyzed_at: '2026-08-06T00:00:00Z'\n"
+        + _skill_gates_yaml(roster_sha)
+        + "flags: []\n"
+        "recommendation: route\n"
+    )
+
+
+def _demand_gates_yaml(roster_sha: str, *, flags_evidence_gap: bool) -> str:
+    """A complete DEMAND-outcome trace at scope skill:s (t3 does NOT
+    fire — no roster ownership claimed), parameterized by the claimed
+    roster sha and whether `evidence-gap` rides the flag set (X3
+    requires it whenever `roster_sha` is the `unavailable` sentinel)."""
+    return (
+        "gates:\n"
+        "  g0:\n"
+        '    reject: {answer: "no"}\n'
+        '    defer: {answer: "no"}\n'
+        '    canon: {answer: "no"}\n'
+        "  t1:\n"
+        "    attempted: false\n"
+        "    field_shaped:\n"
+        '      answer: "no"\n'
+        '      evidence: "About to edit .storage while HA is running."\n'
+        "    separable: {answer: null}\n"
+        "    cost_bearing: {answer: null}\n"
+        "  t2:\n"
+        '    answer: "no"\n'
+        '    evidence: "About to edit .storage while HA is running."\n'
+        "    match_path: null\n"
+        "  t3:\n"
+        '    answer: "no"\n'
+        "    owner: null\n"
+        "    scan_terms: [ha-storage, container]\n"
+        f'    roster_sha: "{roster_sha}"\n'
+        "  t3a: null\n"
+        "  t4:\n"
+        '    depth_behind_rule: {answer: "yes", evidence: "About to edit .storage while HA is running.", target: "self-learn skill reference"}\n'
+        '    conduct_mode: {answer: "no", evidence: null}\n'
+        '    fs: {verdict: "INDETERMINATE", evidence: null}\n'
+        '  tn: {answer: "no", terms: [], members: [], proposed_name: null}\n'
+        "  e1: {sightings: 1, post_demand_recurrence: false}\n"
+        "  outcome: DEMAND\n"
+    ) + ("flags: [evidence-gap]\n" if flags_evidence_gap else "flags: []\n")
+
+
+def _demand_proposal_yaml(roster_sha: str, *, flags_evidence_gap: bool) -> str:
+    return (
+        "destination: reference\n"
+        "alternates: [claude-md]\n"
+        "rationale: not file-scoped, no skill roster entry owns this\n"
+        "model: claude-sonnet-5\n"
+        "analyzed_at: '2026-08-06T00:00:00Z'\n"
+        + _demand_gates_yaml(roster_sha, flags_evidence_gap=flags_evidence_gap)
+        + "recommendation: route\n"
+    )
+
+
+
+
+def test_a21_flip_refuses_traceless_key_by_key(tmp_path, monkeypatch):
+    """A21 — the flip refuses a trace-less proposal, key by key, and the
+    flag is what does it. Four legs, because the guard names three keys
+    and a one-key test cannot see the other two (F6): (a) no gates/
+    flags/recommendation at all; (b) valid gates + recommendation, flags
+    ABSENT; (c) valid gates + flags, recommendation ABSENT — all three
+    refused, and `is_unanalyzed` for each record stays True; (d)
+    positive control: with TRACE_REQUIRED monkeypatched to False, the
+    (a)-shaped proposal is accepted and `is_unanalyzed` is False.
+    Absent/broken: without (b) and (c), a build that only requires
+    `gates` present (and ignores flags/recommendation) survives.
+    Without (d), any unrelated schema error would satisfy the refusal
+    legs."""
+    from self_learn import ledger_ops
+    from self_learn.ledger_ops import is_unanalyzed as _is_unanalyzed
+    from self_learn.worker import skill_roster as _skill_roster
+
+    env = _shim_env(tmp_path, monkeypatch)
+    proposals_dir = env.ledger / "skills" / "s" / "proposals"
+    roster_sha = _skill_roster(env.ledger).sha
+
+    def _base_yaml(*, with_gates, with_flags, with_recommendation):
+        parts = [
+            "destination: skill-md\n",
+            "alternates: [claude-md]\n",
+            "rationale: deterministic guard beats advisory text\n",
+            "model: claude-sonnet-5\n",
+            "analyzed_at: '2026-08-06T00:00:00Z'\n",
+        ]
+        if with_gates:
+            parts.append(_skill_gates_yaml(roster_sha))
+        if with_flags:
+            parts.append("flags: []\n")
+        if with_recommendation:
+            parts.append("recommendation: route\n")
+        return "".join(parts)
+
+    def _run_leg(rid, yaml_body):
+        record = make_behavior(scope="skill:s", record_id=rid)
+        create_record(env.ledger, record)
+        commit_all(env.ledger, f"pending {rid}")
+        path = proposals_dir / f"{rid}.yaml"
+        monkeypatch.setenv(
+            "CLAUDE_SHIM_SCRIPT",
+            f"mkdir -p {proposals_dir} && cat > {path} <<'YAML'\n{yaml_body}YAML",
+        )
+        worker.run(env.ledger)
+        return path, _entry_for(env.ledger, record)
+
+    # (a) nothing at all.
+    path_a, entry_a = _run_leg(
+        "lrn-46000000",
+        _base_yaml(with_gates=False, with_flags=False, with_recommendation=False),
+    )
+    assert not path_a.exists()
+    assert _is_unanalyzed(entry_a) is True
+
+    # (b) gates + recommendation, flags ABSENT.
+    path_b, entry_b = _run_leg(
+        "lrn-46000001",
+        _base_yaml(with_gates=True, with_flags=False, with_recommendation=True),
+    )
+    assert not path_b.exists()
+    assert _is_unanalyzed(entry_b) is True
+
+    # (c) gates + flags, recommendation ABSENT.
+    path_c, entry_c = _run_leg(
+        "lrn-46000002",
+        _base_yaml(with_gates=True, with_flags=True, with_recommendation=False),
+    )
+    assert not path_c.exists()
+    assert _is_unanalyzed(entry_c) is True
+
+    # (d) positive control: TRACE_REQUIRED False -> the (a) shape lands.
+    monkeypatch.setattr(ledger_ops, "TRACE_REQUIRED", False)
+    path_d, entry_d = _run_leg(
+        "lrn-46000003",
+        _base_yaml(with_gates=False, with_flags=False, with_recommendation=False),
+    )
+    assert path_d.is_file()
+    assert _is_unanalyzed(entry_d) is False
+
+
+def test_a22_no_verb_accepts_gate_values():
+    """A22 — no verb accepts gate values. A search of the CLI argument
+    surface finds no `--gates`, `--set-gate`, `--outcome` or `--flag`
+    option. Positive control: the same search finds `--dest` and
+    `--note`, which do exist. This criterion is vacuously true today
+    (N1): none of those options exists, so it cannot fail for this
+    build. It is here as the standing guard on §3.10's MUST NOT for when
+    a later unit adds verbs to this surface."""
+    import self_learn.cli as cli_module
+
+    text = Path(cli_module.__file__).read_text(encoding="utf-8")
+    for opt in ('"--gates"', '"--set-gate"', '"--outcome"', '"--flag"'):
+        assert opt not in text, f"{opt} must not be a CLI option"
+    assert '"--dest"' in text
+    assert '"--note"' in text
+
+
+def test_a23_roster_sha_honesty_both_legs_both_paths(tmp_path, monkeypatch):
+    """A23 — roster-sha honesty, both legs, both paths. Leg A (fabricated
+    sha): (a) worker — a model-written proposal whose `gates.t3.
+    roster_sha` is well-shaped but is not the run's roster sha is
+    deleted and logged, the record stays pending; (b) analyst — the same
+    mismatch raises AnalystError. Leg B (false degradation, F8): with a
+    non-empty roster composed for the run, a proposal claiming
+    `roster_sha: "unavailable"` + `t3.answer: no` + `flags:
+    [evidence-gap]` — a trace the shipped X3 accepts — is (c) deleted by
+    the worker and (d) raises AnalystError. Positive control for both
+    legs: the same proposals carrying the run's real sha survive; and
+    with the composer genuinely returning ROSTER_UNAVAILABLE (no skills
+    root, empty claude dir), the `unavailable` trace IS accepted.
+    Absent/broken: a build with only Leg A passes (a)/(b) and fails
+    (c)/(d) — and a build with neither passes every X3-shaped assertion
+    while letting a model that never reads the roster satisfy the whole
+    system, which is the Checkpoint-C failure this unit is supposed to
+    make impossible."""
+    from self_learn import analyst
+    from self_learn.analyst import AnalystError
+    from self_learn.ledger_ops import is_unanalyzed as _is_unanalyzed
+    from self_learn.worker import skill_roster as _skill_roster
+
+    env = _shim_env(tmp_path, monkeypatch)
+    proposals_dir = env.ledger / "skills" / "s" / "proposals"
+    real_sha = _skill_roster(env.ledger).sha
+    assert real_sha != ROSTER_UNAVAILABLE
+    fabricated_sha = "sha256:aaaaaaaaaaaa"
+    assert fabricated_sha != real_sha
+
+    def _run_worker_leg(rid, yaml_body):
+        record = make_behavior(scope="skill:s", record_id=rid)
+        create_record(env.ledger, record)
+        commit_all(env.ledger, f"pending {rid}")
+        path = proposals_dir / f"{rid}.yaml"
+        monkeypatch.setenv(
+            "CLAUDE_SHIM_SCRIPT",
+            f"mkdir -p {proposals_dir} && cat > {path} <<'YAMLPROP'\n{yaml_body}YAMLPROP",
+        )
+        worker.run(env.ledger)
+        return path, _entry_for(env.ledger, record)
+
+    def _run_analyst_leg(rid, yaml_body):
+        record = make_behavior(scope="skill:s", record_id=rid)
+        monkeypatch.setenv(
+            "CLAUDE_SHIM_SCRIPT",
+            f"cat <<'SHIMOUT'\n```yaml\n{yaml_body}```\nSHIMOUT",
+        )
+        return analyst.analyze(env.ledger, record)
+
+    # ---- Leg A (a): worker, fabricated-but-well-shaped sha -> deleted.
+    path_a, entry_a = _run_worker_leg(
+        "lrn-47000000", _skill_proposal_yaml(fabricated_sha)
+    )
+    assert not path_a.exists()
+    assert _is_unanalyzed(entry_a) is True
+
+    # ---- Leg A (b): analyst, same mismatch -> AnalystError.
+    with pytest.raises(AnalystError, match="X3 Leg A"):
+        _run_analyst_leg("lrn-47000001", _skill_proposal_yaml(fabricated_sha))
+
+    # ---- Leg B (c): worker, false "unavailable" claim -> deleted.
+    path_c, entry_c = _run_worker_leg(
+        "lrn-47000002",
+        _demand_proposal_yaml(ROSTER_UNAVAILABLE, flags_evidence_gap=True),
+    )
+    assert not path_c.exists()
+    assert _is_unanalyzed(entry_c) is True
+
+    # ---- Leg B (d): analyst, same false claim -> AnalystError.
+    with pytest.raises(AnalystError, match="X3 Leg B"):
+        _run_analyst_leg(
+            "lrn-47000003",
+            _demand_proposal_yaml(ROSTER_UNAVAILABLE, flags_evidence_gap=True),
+        )
+
+    # ---- positive control (worker path, Leg A's shape): real sha lands.
+    path_ctrl_w, entry_ctrl_w = _run_worker_leg(
+        "lrn-47000004", _skill_proposal_yaml(real_sha)
+    )
+    assert path_ctrl_w.is_file()
+    assert _is_unanalyzed(entry_ctrl_w) is False
+
+    # ---- positive control (analyst path, Leg B's shape): real sha, no
+    # evidence-gap needed -> accepted without error.
+    proposal_ctrl_a = _run_analyst_leg(
+        "lrn-47000005", _demand_proposal_yaml(real_sha, flags_evidence_gap=False)
+    )
+    assert proposal_ctrl_a["gates"]["t3"]["roster_sha"] == real_sha
+
+    # ---- positive control: composer GENUINELY returns ROSTER_UNAVAILABLE
+    # (no registered skills root, empty claude dir) -> the "unavailable"
+    # trace IS accepted (analyst path; project scope has a DEMAND
+    # surface, so no R-SCOPE degradation muddies this leg).
+    bare_home = tmp_path / "bare-ledger"
+    for sub in ("skills", "projects", "user", "telemetry"):
+        (bare_home / sub).mkdir(parents=True)
+    (bare_home / "hosts.yaml").write_text("projects: []\n", encoding="utf-8")
+    import subprocess as _sp
+
+    _sp.run(["git", "init", "-q", "-b", "main", str(bare_home)], check=True)
+    _sp.run(
+        ["git", "-C", str(bare_home), "commit", "--allow-empty", "-q", "-m", "init"],
+        check=True,
+    )
+    monkeypatch.setenv("SELF_LEARN_CLAUDE_DIR", str(tmp_path / "no-claude-dir"))
+    assert _skill_roster(bare_home).sha == ROSTER_UNAVAILABLE
+
+    unavailable_proposal = (
+        "destination: reference\n"
+        "alternates: [claude-md]\n"
+        "rationale: no skills root visible at all\n"
+        "model: claude-sonnet-5\n"
+        "analyzed_at: '2026-08-06T00:00:00Z'\n"
+        + _demand_gates_yaml(ROSTER_UNAVAILABLE, flags_evidence_gap=True)
+        + "recommendation: route\n"
+    )
+    project_record = make_behavior(scope="project", record_id="lrn-47000006")
+    monkeypatch.setenv(
+        "CLAUDE_SHIM_SCRIPT",
+        f"cat <<'SHIMOUT'\n```yaml\n{unavailable_proposal}```\nSHIMOUT",
+    )
+    accepted = analyst.analyze(bare_home, project_record)
+    assert accepted["gates"]["t3"]["roster_sha"] == ROSTER_UNAVAILABLE
+
+
+def test_a24_containment_and_derivation_at_owned_sites(tmp_path, monkeypatch):
+    """A24 — containment AND derivation are on at the sites this unit
+    owns. A proposal carrying a fabricated RECORD quote is (a) deleted
+    by `_validate_written` rather than landed, (b) raises AnalystError
+    from `analyst.analyze`, and (c) makes `worker.fast_status` report
+    the record as NOT fresh — the third site (`worker.py:1282`), which
+    nothing else asserts. And (d): a proposal whose `gates.outcome` does
+    not follow from its answers is deleted at landing — the `scope=`
+    half of U-table's H1, asserted with a trace that is
+    containment-clean so only the derivation can be refusing it.
+    Positive control for each: the same proposal with a true quote and a
+    coherent outcome survives. Absent/broken: with containment off, the
+    fabricated proposal lands and only fails later, invisibly, as a
+    permanently-unanalyzed record. Without (c), removing `record_text=`
+    from `fast_status` survives every other criterion. Without (d),
+    U-table's derivation loop stays open while looking closed."""
+    from self_learn import analyst
+    from self_learn.analyst import AnalystError
+    from self_learn.ledger_ops import is_unanalyzed as _is_unanalyzed
+    from self_learn.worker import skill_roster as _skill_roster
+
+    env = _shim_env(tmp_path, monkeypatch)
+    proposals_dir = env.ledger / "skills" / "s" / "proposals"
+    roster_sha = _skill_roster(env.ledger).sha
+
+    _t2_anchor = (
+        '    evidence: "About to edit .storage while HA is running."\n'
+        "    match_path: null\n"
+    )
+
+    def _with_t2_evidence(evidence: str) -> str:
+        base = _skill_proposal_yaml(roster_sha)
+        assert base.count(_t2_anchor) == 1
+        return base.replace(
+            _t2_anchor, f'    evidence: "{evidence}"\n    match_path: null\n', 1
+        )
+
+    fabricated_evidence = "About to summarize the container's status output"
+    true_evidence = "About to edit .storage while HA is running."
+
+    # ---- (a) worker: fabricated RECORD quote -> deleted at landing.
+    record_a = make_behavior(scope="skill:s", record_id="lrn-48000000")
+    create_record(env.ledger, record_a)
+    commit_all(env.ledger, "pending lrn-48000000")
+    path_a = proposals_dir / "lrn-48000000.yaml"
+    monkeypatch.setenv(
+        "CLAUDE_SHIM_SCRIPT",
+        f"mkdir -p {proposals_dir} && cat > {path_a} <<'YAMLPROP'\n"
+        f"{_with_t2_evidence(fabricated_evidence)}YAMLPROP",
+    )
+    worker.run(env.ledger)
+    assert not path_a.exists()
+    assert _is_unanalyzed(_entry_for(env.ledger, record_a)) is True
+
+    # positive control (a): the same shape, TRUE quote -> lands.
+    record_a_ctrl = make_behavior(scope="skill:s", record_id="lrn-48000001")
+    create_record(env.ledger, record_a_ctrl)
+    commit_all(env.ledger, "pending lrn-48000001")
+    path_a_ctrl = proposals_dir / "lrn-48000001.yaml"
+    monkeypatch.setenv(
+        "CLAUDE_SHIM_SCRIPT",
+        f"mkdir -p {proposals_dir} && cat > {path_a_ctrl} <<'YAMLPROP'\n"
+        f"{_with_t2_evidence(true_evidence)}YAMLPROP",
+    )
+    worker.run(env.ledger)
+    assert path_a_ctrl.is_file()
+    assert _is_unanalyzed(_entry_for(env.ledger, record_a_ctrl)) is False
+
+    # ---- (b) analyst: same fabricated quote -> AnalystError.
+    record_b = make_behavior(scope="skill:s", record_id="lrn-48000002")
+    monkeypatch.setenv(
+        "CLAUDE_SHIM_SCRIPT",
+        f"cat <<'SHIMOUT'\n```yaml\n{_with_t2_evidence(fabricated_evidence)}```\nSHIMOUT",
+    )
+    with pytest.raises(AnalystError):
+        analyst.analyze(env.ledger, record_b)
+
+    # positive control (b): true quote -> accepted.
+    record_b_ctrl = make_behavior(scope="skill:s", record_id="lrn-48000003")
+    monkeypatch.setenv(
+        "CLAUDE_SHIM_SCRIPT",
+        f"cat <<'SHIMOUT'\n```yaml\n{_with_t2_evidence(true_evidence)}```\nSHIMOUT",
+    )
+    accepted_b = analyst.analyze(env.ledger, record_b_ctrl)
+    assert accepted_b["gates"]["t2"]["evidence"] == true_evidence
+
+    # ---- (c) fast_status: the fabricated-quote proposal reads NOT fresh.
+    # Written directly to disk (never through the validating
+    # `write_proposal` helper, which would itself refuse a fabricated
+    # quote before this leg ever reaches `fast_status`'s OWN containment
+    # check — the exact site this criterion targets, worker.py:1282).
+    record_c = make_behavior(scope="skill:s", record_id="lrn-48000004")
+    create_record(env.ledger, record_c)
+    commit_all(env.ledger, "pending lrn-48000004")
+    path_c = proposals_dir / "lrn-48000004.yaml"
+    path_c.parent.mkdir(parents=True, exist_ok=True)
+    path_c.write_text(
+        _with_t2_evidence(fabricated_evidence)
+        + f"record_sha: {sha_anchor(record_c.body)}\n",
+        encoding="utf-8",
+    )
+    status = worker.fast_status(env.ledger)
+    bucket_row = next(b for b in status["buckets"] if b["bucket"] == "s")
+    assert bucket_row["unanalyzed"] >= 1, status
+    unanalyzed_before = bucket_row["unanalyzed"]
+    pending_before = bucket_row["pending"]
+
+    # positive control (c): a true-quote, fresh proposal reads fresh —
+    # pending grows by one, `unanalyzed` does NOT (delta, not an absolute
+    # count: earlier legs in this same bucket already left other
+    # unanalyzed records behind, e.g. (a)'s deleted-proposal record).
+    record_c_ctrl = make_behavior(scope="skill:s", record_id="lrn-48000005")
+    create_record(env.ledger, record_c_ctrl)
+    commit_all(env.ledger, "pending lrn-48000005")
+    path_c_ctrl = proposals_dir / "lrn-48000005.yaml"
+    path_c_ctrl.write_text(
+        _with_t2_evidence(true_evidence)
+        + f"record_sha: {sha_anchor(record_c_ctrl.body)}\n",
+        encoding="utf-8",
+    )
+    status2 = worker.fast_status(env.ledger)
+    bucket_row2 = next(b for b in status2["buckets"] if b["bucket"] == "s")
+    assert bucket_row2["pending"] == pending_before + 1, status2
+    assert bucket_row2["unanalyzed"] == unanalyzed_before, status2
+
+    # ---- (d) worker: containment-clean trace, but outcome does not
+    # follow from its own answers -> deleted at landing (U-table H1).
+    record_d = make_behavior(scope="skill:s", record_id="lrn-48000006")
+    create_record(env.ledger, record_d)
+    commit_all(env.ledger, "pending lrn-48000006")
+    incoherent = _skill_proposal_yaml(roster_sha).replace(
+        "outcome: SKILL\n", "outcome: DEMAND\n", 1
+    )
+    path_d = proposals_dir / "lrn-48000006.yaml"
+    monkeypatch.setenv(
+        "CLAUDE_SHIM_SCRIPT",
+        f"mkdir -p {proposals_dir} && cat > {path_d} <<'YAMLPROP'\n{incoherent}YAMLPROP",
+    )
+    worker.run(env.ledger)
+    assert not path_d.exists()
+    assert _is_unanalyzed(_entry_for(env.ledger, record_d)) is True
+
+    # positive control (d): the same trace with its stated outcome
+    # matching its own answers (SKILL, per t3.answer: yes) -> lands.
+    record_d_ctrl = make_behavior(scope="skill:s", record_id="lrn-48000007")
+    create_record(env.ledger, record_d_ctrl)
+    commit_all(env.ledger, "pending lrn-48000007")
+    path_d_ctrl = proposals_dir / "lrn-48000007.yaml"
+    monkeypatch.setenv(
+        "CLAUDE_SHIM_SCRIPT",
+        f"mkdir -p {proposals_dir} && cat > {path_d_ctrl} <<'YAMLPROP'\n"
+        f"{_skill_proposal_yaml(roster_sha)}YAMLPROP",
+    )
+    worker.run(env.ledger)
+    assert path_d_ctrl.is_file()
+    assert _is_unanalyzed(_entry_for(env.ledger, record_d_ctrl)) is False
