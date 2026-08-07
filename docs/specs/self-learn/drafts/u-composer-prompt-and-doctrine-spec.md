@@ -11,10 +11,21 @@ immediately after it.*
 `plugins/self-learn/cli/src/self_learn/worker.py`,
 `plugins/self-learn/cli/src/self_learn/analyst.py`,
 `plugins/self-learn/skills/self-learn/references/routing-doctrine.md`,
+`plugins/self-learn/skills/self-learn/references/card-sections.yaml`
+(**one existing entry's `instruction` text**, §3.8-D10 — no new key),
 `plugins/self-learn/cli/src/self_learn/ledger_ops.py` (**the S-26 flip
 only** — one constant and one guard, §3.9), and the CLI test suite.
 Anything else is out of scope and is reported, not edited (campaign §3
 builder prompt).*
+
+*The `card-sections.yaml` entry is an r2 addition, declared rather than
+slipped in: D10's card obligation has to live in the registry, because the
+registry is where the section's generation prompt lives and §0.4 forbids a
+second copy in the doctrine. The file is **uncontended** — no in-flight
+unit lists it (`U-table`: `gates.py`/`ledger_ops.py`/`selfcheck.py`;
+`U-demand-user`: `verbs.py`/`ui/models.py`; `U-pointer`:
+`compilers.py`/`verbs.py`; `U-refresh`: `verbs.py`/`cli.py`) — and it
+ships beside the doctrine, loaded by the same three consumers.*
 
 ---
 
@@ -35,6 +46,13 @@ builder prompt).*
    list (U-schema's Schema-1 field table; U-pathed's §2 register), this
    spec points at it and does not restate it. A second copy of a list is
    how ~208 citations went stale here.
+5. **`U-table` is cited by section and rule id, never by line number.**
+   Its draft is *in flight* — measured mid-fold: line numbers this spec
+   recorded from it in the morning pointed at different content hours
+   later, because its author was editing it. Shipped code gets `file:line`
+   (it is frozen at a commit); a live sibling draft gets `§3.3 R-SCOPE`,
+   which survives its next revision. This is the same defect class as the
+   ~208 stale citations, met one step earlier.
 
 ---
 
@@ -114,31 +132,46 @@ equivalence claim actually needs (campaign §5).
    (`ledger_ops.py:753-785`) containment-checks every RECORD-sourced
    quote. Measured against the shipped validator with a real record:
 
+   Re-measured 2026-08-06 (r2 of this spec) against **D8's example
+   record**, so the spec has one example record and not two:
+
    | `t2.evidence` | result |
    |---|---|
    | `"record names no paths"` (r2's phrase) | **REFUSED** — *"is not contained in the record it claims to quote"* |
-   | `"About to spawn a subagent in a multi-agent workflow."` (a real quote) | ACCEPTED |
-   | `"subagen"` (a true 7-char quote) | REFUSED — under the `_QUOTE_MIN_CHARS` (8) floor |
-   | r2's phrase again, with `record_text=None` | ACCEPTED — **positive control: the refusal is containment, not something else** |
+   | the record's own Trigger line, verbatim (D8) | ACCEPTED |
+   | a near-miss paraphrase of that line (`…for the human` for `…for the user`) | **REFUSED** — same message |
+   | `"subagen"` (a true 7-char quote of another record) | REFUSED — under the `_QUOTE_MIN_CHARS` (8) floor |
+   | r2's phrase again, with `record_text=None` | ACCEPTED — **positive control: the refusal is containment, not shape** |
+   | the near-miss paraphrase, with `record_text=None` | ACCEPTED — same control, second leg |
 
    A doctrine that repeats r2's phrasing would make the worker emit
    proposals that `proposal_info` (`ledger_ops.py:1809-1820`) rejects on
    the eligibility hot path, so every such record would be re-analyzed on
    every run, forever, with no visible error. **The doctrine must instruct
-   verbatim quotes on `no` answers too.**
+   verbatim quotes on `no` answers too** — and its own exemplar must obey
+   that instruction, which r1's did not (§11, gate BLOCKER 1).
 
-2. **PATHED is not available at skill scope**, so S-23's "at every scope"
-   cannot be transcribed as a rule. `_resolve_rules_target` refuses any
-   scope outside `{user, project}` (`verbs.py:811-816`, the P-A13
-   deferral). At skill scope the cheap tier is DEMAND
-   (`references/LEARNINGS.md`), which is exactly where the 14 stranded
-   records live and which `U-pointer` makes reachable. §3.8's tier table
-   states availability per scope instead of repeating the slogan.
+2. **PATHED has no routable surface at skill scope**, so S-23's "at every
+   scope" cannot be transcribed as a rule. `_resolve_rules_target` refuses
+   any scope outside `{user, project}` (`verbs.py:811-816`, the P-A13
+   deferral). **This does not mean T2 goes unasked there** — that was r1's
+   answer and it is wrong. `U-table`'s **R-SCOPE** rule (its §3.3, with
+   the two-hole analysis at §3.4 and the r2 contradiction at §8-C5) makes a
+   skill-scope `t2.answer: yes` derive `PATHED` and render
+   `recommendation: defer` + `flags: [no-cheap-surface]` — the same honest
+   degradation the user-scope DEMAND corner already gets. U-table's §8-Q1
+   rejects the doctrine-side branch in one sentence this spec adopts
+   verbatim as its reason: *"a doctrine that stops asking a question is how
+   the monoculture was built the first time."* §3.8-D2/D3/D4 carry it.
 
 3. **r2's two "transition rules" (§1.6) are half-dead.** The
-   PATHED-before-B10 rule is dead — `U-pathed` merged (`63f5962`), so the
-   `pathed-unbuilt` flag must never be emitted again (it stays in the
-   closed set `ledger_ops.py:98-107`; the doctrine forbids its use). The
+   PATHED-before-B10 rule is dead — `U-pathed` merged (`63f5962`), and
+   `U-table`'s R-PATHED now renders `recommendation: route`, so a doctrine
+   still teaching "defer + `pathed-unbuilt`" would make **every** PATHED
+   proposal refuse (its §8-C2). The flag stays valid in the closed set
+   (`ledger_ops.py:98-107`) and simply goes unmentioned in the doctrine —
+   D7/D11 state the positive rule rather than naming a flag a system
+   prompt would then be able to reach for. The
    DEMAND-at-user-scope rule is *no longer transitional*: S-23 (2) made
    "no user-scope reference file" permanent, so what r2 wrote as a
    stopgap is now the standing rule. §3.8-D4 states it as such, and §10
@@ -163,7 +196,7 @@ whichever unit next holds that file"*).
 | `proposal refresh` / `proposal audit` verbs | `U-refresh` | Campaign §2 assigns `proposal refresh`; `cli.py`/`verbs.py` are contended with `U-demand-user`/`U-pointer`. **Their contract is pinned here** (§3.10) because S-26 makes this spec own the migration surface — defining is not building |
 | The pointer line + reference-route recompile | `U-pointer` | Campaign §2 |
 | The UI destination menu | `U-demand-user` | Campaign §2 as re-scoped by S-23 |
-| A new `card-sections.yaml` section for the trace | nobody — deliberately | §7-R7: the human-facing render rides the EXISTING required `discuss` section (§3.8-D10). A new registry key is a new surface with its own test obligations, and campaign §9 names "a unit absorbing an adjacent feature" as a way this loop fails |
+| A new `card-sections.yaml` **section key** for the trace | nobody — deliberately | §7-R7: the human-facing render rides the EXISTING required `discuss` section, whose `instruction` this unit edits (§3.8-D10). A new *key* is a new surface with its own test obligations, and campaign §9 names "a unit absorbing an adjacent feature" as a way this loop fails |
 | The discriminant-pair harness | `U-pairs` | Campaign §2; it is the falsifier for every judgment this unit's doctrine bounds |
 
 ---
@@ -240,8 +273,31 @@ line-based `description:` grab returns the literal `"|"` for all eleven.
 `"|"` is non-empty, so a "did we get a description?" check passes while
 the entry carries nothing — this project's signature defect shape. Parse
 the leading `---`-delimited block with `ruamel.yaml.YAML(typ="safe")`
-(already a dependency, `ledger_ops.py:156-161`): 43/43 yield a usable
+(ruamel is already a dependency — `ledger_ops.py:156-161` constructs a
+`YAML(typ="rt")` for the ledger's round-tripping needs; the roster wants
+the **safe** loader, which is a different constructor in the same
+library, not the one that citation shows): **41 of 43** yield a usable
 description that way, 32/43 by line grab.
+
+**The other two are the reason A3 exists, and they are live today** (F14).
+`YAML(typ="safe")` raises `ScannerError: mapping values are not allowed
+here` on two shipped skills — an unquoted `: ` inside a plain scalar in
+`<skills-root>/plugins/home-network/skills/home-network/SKILL.md`
+and `~/.claude/skills/firecrawl-build/SKILL.md`. So the render-never-drop
+rule (A3) is not a defensive hypothetical: **it fires on ~5% of this
+host's roster on day one**, and a build that `continue`s past a parse
+error ships a roster that silently omits two installed skills — including
+one whose subject (`home-network`) is exactly the kind of thing T3 exists
+to find.
+
+**r1 claimed 43/43 here, and the claim came from a fail-open in the
+probe itself.** The r1 measurement's parse helper returned the *exception
+message* as the description on `YAMLError`, and its "is the description
+usable?" test was a truthiness check — so a non-empty error string counted
+as a usable description. That is the same defect shape this section is
+about, committed inside the measurement that documents it. Recorded rather
+than quietly corrected: a probe needs its own positive control (assert on
+a file known to fail), and this one had none.
 
 **Routability is part of the entry, not a footnote.** 33 of the 43
 rostered skills on this host are NOT under the registered skills root
@@ -267,8 +323,19 @@ directory name); description flattened to one line and capped at **200
 characters** with a trailing `…`; an entry whose frontmatter will not
 parse is rendered as `- <dir name> [routable] (frontmatter unparseable)`
 — **never dropped**, because a dropped skill is an invisible hole in the
-roster T3 is judged against. Measured sizes for the 43-entry roster:
-19,399 B uncapped, 12,612 B at 300, **9,376 B at 200**.
+roster T3 is judged against.
+
+**Roster size, and why the figure is format-dependent** (N3). Measured for
+the 43-entry roster under *this spec's* row format — `- <name>: <desc>`,
+no routability marker: 19,399 B uncapped, 12,612 B at 300, **9,376 B at
+200**. The gate re-measured under the marker-carrying format this section
+actually pins (`- <name> [routable]: <desc>`) and got 21,348 / 14,599 /
+11,385 B — a ~2 KB offset that is entirely the markers. Both are correct;
+the oracle is the row format, and the builder should expect the
+marker-carrying figures. Campaign §5's rule applies to spec authors too:
+state the oracle's own configuration, or the number is a coincidence
+someone wrote down. Neither figure changes any decision here — §3.5's
+64 KiB ceiling has ~2.5× headroom over the larger one.
 
 **The unavailable path.** Iff zero entries render, `Roster.text` is the
 single line `(skill roster unavailable — no registered skills root and no
@@ -406,7 +473,10 @@ candidate block and the path roster. The instruction header gains the
 gate-output contract: write `gates:`, `flags:`, `recommendation:` on every
 proposal, and the §-references it already carries (§5, §8, §9, §10 —
 `worker.py:603-609`) stay, because two tests assert them
-(`cli/tests/test_worker.py:1077-1095`, `:845-847`).
+(`cli/tests/test_worker.py:1077-1094`, which asserts the `§9`/`§10`
+references on the assembled prompt; `:845-847` pins template *tokens* —
+`destination section`, `contradicts`, and the absence of `existing canon`
+— not the §-references, N2).
 
 **Single (analyst).** `compose_single_prompt` produces the same per-record
 block for one record, with the roster inline; the doctrine continues to
@@ -445,15 +515,36 @@ the cap, so growth is caught before it truncates.
 X3 today proves only that the model wrote *a* well-shaped sha or admitted
 `unavailable` (`ledger_ops.py:1046-1068`); a fabricated
 `sha256:aaaaaaaaaaaa` passes. Both producers hold the real value in
-memory, so both close it:
+memory, so both close it.
+
+**The check has two legs, not one, and r1 specified only the first**
+(F8). X3 accepts `roster_sha: "unavailable"` whenever `t3.answer: no` and
+`flags` contains `evidence-gap` — with **no reference to whether a roster
+existed**. So a model that never reads a perfectly good roster can write
+the three tokens `unavailable` / `no` / `evidence-gap` and satisfy every
+check in the system, on every record, forever. That is not a hypothetical
+laziness mode: it is the cheapest possible output, it lands everything on
+the cheap shelf with an evidence-gap flag, and it is **verbatim the
+failure Checkpoint C is instructed to press hardest on** (campaign §4:
+*"did we build a new monoculture at the other end?"* — r2's own honest
+failure mode). So:
+
+> **Leg A — no fabricated sha.** A trace whose `t3.roster_sha` is a
+> well-shaped sha that is not the run's roster sha is refused.
+> **Leg B — no false degradation.** A trace claiming `unavailable` when
+> the run's roster WAS available is refused, with a message naming the
+> real sha. `unavailable` is legal only when the composer itself returned
+> `ROSTER_UNAVAILABLE`.
+
+Leg B is what makes the roster ingredient load-bearing rather than
+optional. Both legs live at the same two sites:
 
 - **Worker.** `run()` threads the `Roster` from `compose_batch_prompt`
   (`worker.py:1370`) through `_harvest` (`worker.py:1420`) into
-  `_validate_written` (`worker.py:880-942`). A proposal whose
-  `gates.t3.roster_sha` is neither the run's roster sha nor
-  `ROSTER_UNAVAILABLE`-with-X3-satisfied is **deleted and logged** under
-  the existing unattended policy (`worker.py:937-940`) — no new policy,
-  one more `ProposalError` raised inside the existing `try`.
+  `_validate_written` (`worker.py:880-942`). A proposal failing either leg
+  is **deleted and logged** under the existing unattended policy
+  (`worker.py:937-940`) — no new policy, one more `ProposalError` raised
+  inside the existing `try`.
 - **Analyst.** `analyze()` compares the parsed proposal's
   `gates.t3.roster_sha` against the `Roster` it composed and raises
   `AnalystError` on mismatch — the caller then captures the record as a
@@ -464,19 +555,41 @@ filesystem or run-context I/O by design (U-schema S4,
 `ledger_ops.py:826-829`), and the roster is run-scoped state a validator
 reading a file on disk months later cannot have.
 
-### 3.7 Containment at the three sites (in two files) this unit now owns
+### 3.7 Containment — and derivation — at the three sites (in two files) this unit now owns
 
 U-schema names six call sites where `validate_proposal` is invoked
 positionally, so containment is off, and assigns each to "whichever unit
 next holds that file" (`u-schema-decision-trace-spec.md:810-834`). This
 unit holds `worker.py` and `analyst.py`; it closes the three sites in
-those two files and touches none of the three in `verbs.py`:
+those two files and touches none of the three in `verbs.py`.
+
+**`U-table` hands the same landing site a second keyword** (F1). Its
+§8-H1 (`u-table §8-H1`) asks this unit to wire
+`worker.py:927` with **`scope=` as well as `record_text=`**, because
+`_validate_derivation` runs iff `scope` is supplied
+(`u-table §3.5`). Without it, the worker lands
+its own output unchecked against the table, and `U-table` §7.4's disclosed
+re-analysis loop stays open in exactly the shape it disclosed: a trace
+`worker.py:927` accepts and `proposal_info` then refuses makes the record
+permanently unanalyzed, silently, forever. Discharging half the handoff
+would leave the loop and look like closure — so `scope=` is not optional
+here.
 
 | site | today | after |
 |---|---|---|
-| `worker._validate_written` (`worker.py:927`) | `validate_proposal(data)` | `record_text=Record.from_path(rpath).to_text()` — the record is already located two lines below (`:928-930`) |
-| `worker.fast_status` (`worker.py:1282`) | `validate_proposal(dict(pdata))` | `record_text=text` — the whole record file it already read at `worker.py:1232` (measured equivalent to `to_text()` on all 35 live records, §3.5) |
-| `analyst.analyze` (`analyst.py:244`) | positional | `record_text=record.to_text()` — the record is the function's own argument |
+| `worker._validate_written` (`worker.py:927`) | `validate_proposal(data)` | `validate_proposal(data, record_text=Record.from_path(rpath).to_text(), scope=<record>.scope)` |
+| `worker.fast_status` (`worker.py:1282`) | `validate_proposal(dict(pdata))` | `record_text=text` — the whole record file it already read at `worker.py:1232` (measured equivalent to `to_text()` on all 35 live records, §3.5). **No `scope=`**: this path never parses a `Record`, and reading `scope` out of its hand-rolled frontmatter map would be a second scope derivation |
+| `analyst.analyze` (`analyst.py:244`) | positional | `record_text=record.to_text()`, `scope=record.scope` — the record is the function's own argument |
+
+**The two-line swap `U-table` N1 reports is part of this change**
+(`u-table §8-N1`): at `worker.py:927-930` the
+validation runs *before* `rpath` is computed, so the record the new
+keywords need does not exist yet at the call. Move the `rpath` resolution
+(and its `is_file()` refusal) **above** the `validate_proposal` call, then
+pass both keywords. A builder who adds the keywords without the swap gets
+a `NameError`, which is the good failure; a builder who "fixes" it by
+re-reading the record file separately has created a second read of the
+same bytes and a second place for them to diverge.
 
 **Why this is closure and not creep:** `analyst.analyze` is *the
 producer* — "where a fabricated quote first arrives from the model, before
@@ -493,8 +606,10 @@ on every worker run, with nothing printed anywhere.
 
 **Numbering is load-bearing and does not change.** `worker._PROMPT_TEMPLATE`
 addresses the doctrine by section number (`worker.py:603-609`) and two
-tests assert doctrine content and prompt section numbers
-(`cli/tests/test_worker.py:850-862`, `:864-873`, `:1077-1095`). §§5, 5.1,
+tests assert doctrine content and prompt section numbers — **three of
+them**, not two (N2): `cli/tests/test_worker.py:850-862` (lint tokens),
+`:864-873` (contradiction-check tokens), `:1077-1094` (the assembled
+prompt, including the literal `§9`/`§10`). §§5, 5.1,
 6, 7, 8, 9, 10 keep their numbers and their subject. §§1–4 are rewritten
 in place; §2a is folded into §2's T2 except for its `variant: local`
 case, which survives as §2a.
@@ -511,10 +626,18 @@ tier exists and where it lands:
 | tier | skill:X | project | user |
 |---|---|---|---|
 | HOOK | plugin `hooks/` | `<skills-root>/hooks/self-learn/` | same |
-| PATHED | **not available** (`verbs.py:811-816`) | `<host>/.claude/rules/<topic>.md` | `<user>/.claude/rules/<topic>.md` |
+| PATHED | **no routable surface** (`verbs.py:811-816`) → R-SCOPE | `<host>/.claude/rules/<topic>.md` | `<user>/.claude/rules/<topic>.md` |
 | SKILL | `SKILL.md` (`verbs.py:930-945`) | — | — |
-| DEMAND | `references/LEARNINGS.md` (`verbs.py:1039-1041`) | `<host>/references/…` (`:1042-1044`) | **refused** (`:1045-1050`, S-23) |
+| DEMAND | `references/LEARNINGS.md` (`verbs.py:1039-1041`) | `<host>/references/…` (`:1042-1044`) | **no routable surface** (`:1045-1050`, S-23) → R-SCOPE |
 | ALWAYS | skills-root `CLAUDE.md` (`verbs.py:979-991`) | `<host>/CLAUDE.md` (`:973-978`) | `~/.claude/CLAUDE.md` (`:964-972`) |
+
+**"No routable surface" is a rendering instruction, not a silence
+instruction.** Both corners are the same rule — `U-table`'s **R-SCOPE**
+(`u-table §3.3 R-SCOPE`): the gate is still asked, the
+outcome is still derived honestly, and the *rendering* degrades to
+`recommendation: defer` + `flags: [no-cheap-surface]` with the honest
+destination left recorded. The table above must carry that sentence, or a
+reader takes "no routable surface" as licence to answer the gate `no`.
 
 **D2 — §2 is replaced by the gate procedure.** Ordered G0 → T1 → T2 → T3
 (→T3a) → T-N → T4 → E1 → outcome, one subsection each, and each
@@ -523,7 +646,7 @@ answers it*, *what evidence the answer requires and from which source*,
 and *what to answer when the ingredient is unavailable*. The gate names,
 answer domains and required-ness are U-schema's Schema-1
 (`u-schema-decision-trace-spec.md:216-296`) — **cited, not restated**, so
-the two cannot drift. Three rules the doctrine must add on top:
+the two cannot drift. Six rules the doctrine must add on top:
 
 - **Every `evidence:` value is a verbatim quote from its named source —
   on `no` answers too.** Paraphrase is refused (§1.3 item 1, measured),
@@ -535,6 +658,25 @@ the two cannot drift. Three rules the doctrine must add on top:
   an empty list means `no` with empty members, and the analyst may add a
   member it found itself (the validator checks id shape either way,
   `ledger_ops.py:1127-1134`).
+- **Every gate is answered on its merits at every scope — including where
+  the winning tier has no routable surface** (B2/R-SCOPE, §3.8-D1). The
+  analyst never answers a gate `no` because routing it would fail; that
+  failure is the *rendering's* job to express, and hiding it in a gate
+  answer is how the monoculture was built the first time
+  (`u-table §8-Q1`, §8-Q1).
+- **`recommendation` is DERIVED, not chosen** (F5; `U-table` §3.3, *"a
+  pure function of (outcome, scope)"*,
+  `u-table §3.3`). The analyst writes the value
+  the table implies; it does not express a preference there. **The one
+  channel for "hold this" is `g0.defer.answer: yes`** — which derives
+  `DEFER` and therefore `recommendation: defer` through R-FALL. After
+  `U-table` merges, any other analyst-chosen `defer` is a refusal.
+- **A `hook` proposal names its fallback in `alternates`** (F3; R-HOOK,
+  `u-table §3.3 R-HOOK`): `alternates` must contain the
+  destination the load class would have rendered, so the human can take
+  the cheaper surface without a re-analysis. This is also the existing §7
+  rule ("always include a routable alternate") given a machine-checkable
+  form.
 
 **D3 — T2 carries both sharpenings, each as a question the analyst must
 answer before answering T2 `yes`.**
@@ -552,21 +694,41 @@ answer before answering T2 `yes`.**
    and assigns this doctrine question as its only mitigation. A lesson
    about grepping conventions is the case PATHED cannot serve.
 
+**Both sharpenings are about the LESSON, never about the scope.** At
+skill scope, where PATHED has no routable surface, T2 is asked and
+answered exactly as it is anywhere else; a `yes` there derives `PATHED`
+and renders `defer` + `no-cheap-surface` (D1, R-SCOPE). The doctrine must
+say this in the T2 section itself, because that is where an analyst
+looking for permission to skip the question will be reading. Two things
+follow that the prose must make explicit: the skill-scope `defer` is the
+system reporting a **capability gap** (P-A13 is open, not closed), and it
+is therefore not the same event as a lesson the analyst judged unripe.
+
 **D4 — §3 becomes the tier model; the narrowest-surface bias survives as
 the within-tier tiebreak only.** Content, with authority:
 
-- PATHED is the primary cheap tier **where it exists** (S-23 (1) and (2));
-  at skill scope the cheap tier is DEMAND (D1's table).
+- PATHED is the primary cheap tier **where it has a surface** (S-23 (1)
+  and (2)); at skill scope the tier with a surface is DEMAND (D1's table),
+  and a PATHED verdict there degrades rather than disappears (R-SCOPE).
+- **PATHED renders `recommendation: route`** (F2; `U-table` R-PATHED,
+  `u-table §3.3 R-PATHED`, and its §8-C2: r2 §1.6's
+  "defer + `pathed-unbuilt`" rule died when `U-pathed` merged at
+  `63f5962`). The doctrine must state the positive rule, not merely omit
+  the dead one — absence of the wrong instruction is not presence of the
+  right one, and PATHED is the tier S-23 promoted to primary.
 - DEMAND shrinks to lessons that are genuinely not file-scoped (S-23 (1)).
 - ALWAYS is the expensive tier and is reached only when the record's own
   evidence argues for it (r2 §3's default: no silence marker, no cost
   statement, no caught-immediately statement ⇒ `INDETERMINATE` ⇒ the cheap
   branch).
-- **DEMAND at user scope has no surface.** The rendering is
+- **Two corners have no routable surface, and they take ONE rule.** DEMAND
+  at user scope and PATHED at skill scope both render
   `recommendation: defer` + flag `no-cheap-surface`, with the honest
   destination recorded — and **never a silent upgrade to ALWAYS**, which
-  is the monoculture rebuilt (r2 §1.6's transition rule, promoted to a
-  standing rule by S-23 (2)). Before deferring, the analyst asks whether
+  is the monoculture rebuilt (r2 §1.6's transition rule for the first
+  corner, promoted to a standing rule by S-23 (2); generalised to both by
+  `U-table`'s R-SCOPE, which names the second corner r2 never did).
+  Before deferring, the analyst asks whether
   the trigger's artifacts live in one repo; if so it flags
   `rehome-suggested` and says so in the card, because at project scope
   the same lesson has a cheap surface (doctrine §3's existing
@@ -585,6 +747,19 @@ named: `lrn-ea833a5b` is routed to user `CLAUDE.md`, the most expensive
 tier there is, and was violated twice (2026-07-26, 2026-07-27 — campaign
 §7's recurrence row). Operationally: a record whose `e1` shows recurrence
 against an ALWAYS routing re-enters at **T1**, not at T4.
+
+**Say plainly where that re-entry bites, or it is prose that cannot move
+an outcome — which is campaign §6 item 6's own failure mode** (N9). There
+is no Table-1 row for "recurred at ALWAYS": the table reads `e1` only
+through `_e1_promote`, which promotes *toward* the loaded tier. The
+re-entry therefore acts **entirely through the analyst's `t1` answers** —
+it instructs the analyst to attempt the guard construction again, with the
+recurrence as new evidence of `cost_bearing`, rather than to re-run T4 and
+land on the same shelf. If that attempt succeeds the outcome changes to
+`HOOK` by the ordinary table; if it fails, nothing changes and the record
+stays where it was. The doctrine must state that mechanism, because a
+reader who takes "re-enters at T1" as a table rule will look for a row
+that does not exist.
 
 **D6 — §4's two stale premises are replaced** (FW-43, the row this unit
 carries):
@@ -617,17 +792,65 @@ quotes are not checked at all today**
 (`u-schema-decision-trace-spec.md:719-744`). Say the second half out loud:
 the analyst must write TARGET quotes as honestly as if they were checked,
 because the only reader who can catch a false one is the human on the
-card.
+card. §5 must also carry the three derived-field rules D2 and D4 state —
+`recommendation` is derived (F5), `PATHED` renders `route` (F2), a `hook`
+proposal's `alternates` names its load-class fallback (F3) — because §5 is
+the section an analyst re-reads while writing the YAML, and a rule that
+lives only in the procedure section is a rule the writer has already
+scrolled past.
 
-**D8 — §5's worked example is an EXECUTED trace, not a hand-written one.**
-The example trace in the doctrine must be one that validates against the
-shipped `_validate_gates`. The one below was run through it on 2026-08-06
-(§9 probe 4) and accepted; the builder may substitute another only by
-executing it the same way.
+**D8 — §5 ships a worked example that is a RECORD AND A TRACE, both
+executed.** *(This is gate BLOCKER 1. r1 shipped the trace alone, and its
+exemplar quote was a paraphrase of a real record — the shipped containment
+check refuses it. A system prompt's exemplar is its strongest instruction,
+so r1's doctrine would have taught, by example, exactly what §1.3 item 1,
+D2 bullet 1 and A18 forbid.)*
+
+Three requirements, all load-bearing:
+
+1. **The doctrine ships the example record beside the trace.** Without a
+   record, the exemplar's quotes cannot be verbatim *from* anything, and
+   A19 has no `record_text=` to pass.
+2. **The example record is SYNTHETIC** — invented for the doctrine, with
+   no ledger provenance. `routing-doctrine.md` ships in a **public** repo
+   (S-19) and the ledger is deliberately severed from it; quoting a real
+   lesson into the doctrine would publish ledger content through the back
+   door. `lrn-00000000` is used as its id so no real record id can
+   collide.
+3. **Every quote in the trace is verbatim from that record**, and the pair
+   was executed against the shipped `_validate_gates` before landing here
+   (§9 probe 5, 2026-08-06). A builder substituting a different pair must
+   execute it the same way and say so.
+
+The pair below is the executed one. The record:
+
+```markdown
+---
+id: lrn-00000000
+type: behavior
+kind: surface-rule
+scope: user
+source: teach
+status: pending
+created_at: '2026-08-06T00:00:00Z'
+sightings: 1
+---
+
+## Trigger
+About to summarise a long command's output for the user instead of showing the tail
+
+## Instruction
+Show the last lines verbatim before summarising, because a summary of an
+error message drops the one token the user needs to search for.
+```
+
+and its trace — **note the R-SCOPE rendering**: the record is user scope
+and the outcome is `DEMAND`, which has no routable surface there, so the
+rendering is `defer` + `no-cheap-surface` rather than `route`:
 
 ```yaml
-recommendation: route
-flags: []
+recommendation: defer
+flags: [no-cheap-surface]
 gates:
   g0:
     reject: {answer: no}
@@ -635,11 +858,16 @@ gates:
     canon:  {answer: no}
   t1:
     attempted: true
-    field_shaped: {answer: no, evidence: "About to spawn a subagent in a multi-agent workflow."}
+    field_shaped:
+      answer: no
+      evidence: "About to summarise a long command's output for the user instead of showing the tail"
     separable:    {answer: null}
     cost_bearing: {answer: null}
-  t2: {answer: no, evidence: "About to spawn a subagent in a multi-agent workflow.", match_path: null}
-  t3: {answer: no, owner: null, scan_terms: [subagent, model], roster_sha: "sha256:0123456789ab"}
+  t2:
+    answer: no
+    evidence: "About to summarise a long command's output for the user instead of showing the tail"
+    match_path: null
+  t3: {answer: no, owner: null, scan_terms: [summarise, output], roster_sha: "sha256:0123456789ab"}
   t3a: null
   t4:
     depth_behind_rule: {answer: no, evidence: null}
@@ -649,6 +877,11 @@ gates:
   e1: {sightings: 1, post_demand_recurrence: false}
   outcome: DEMAND
 ```
+
+**The doctrine must add one sentence beside it** so the exemplar does not
+teach that DEMAND always defers: *at project or skill scope the same
+outcome renders `recommendation: route` with `flags: []`; this example
+defers because `reference` has no user-scope surface (S-23).*
 
 **D9 — §7 (boundaries) gains four MUST NOTs**, each phrased as an
 instruction to the analyst: never claim a scan you did not perform (the
@@ -660,14 +893,27 @@ record whose gates were never evaluated has **no proposal**, not an
 invented one (S-26's honesty constraint, §3.10).
 
 **D10 — §8 (the card contract) gains one sentence**: the `discuss`
-section must carry, in plain words, which shelf the trace chose and the
-verbatim quote that unlocked it. This is the standing UI obligation from
-campaign §7's quote-relevance row and U-schema's §3.4 boundary
-(*"the review card must surface the quote verbatim, or the human's check
-has nothing to look at"*), discharged through a section the registry
-already requires for routing proposals
-(`card-sections.yaml`, `discuss`, `required: routing`) rather than a new
-registry key (§2, §7-R7).
+section must carry, in plain words, (a) which shelf the trace chose,
+(b) the verbatim quote that unlocked it, and (c) **when the recommendation
+is `defer`, whether the surface was missing or the analyst judged the
+lesson unripe.** (a) and (b) are campaign §7's quote-relevance row plus
+U-schema's §3.4 boundary (*"the review card must surface the quote
+verbatim, or the human's check has nothing to look at"*); (c) is
+`U-table`'s H5 (`u-table §8-H5`): a proposal
+deferred by R-SCOPE *looks identical on a destination-only card* to one
+the analyst chose to defer, and those call for opposite human moves.
+All three ride a section the registry already requires for routing
+proposals (`card-sections.yaml`, `discuss`, `required: routing`) rather
+than a new registry key (§2, §7-R7).
+
+**Which enumeration wins, stated because §0.4 forbids two** (N10):
+`card-sections.yaml`'s `discuss.instruction` is **the** generation prompt
+for that section; this D10 sentence is an *addition to* that instruction,
+and the builder lands it by editing the registry entry — not by writing a
+competing instruction into the doctrine. The doctrine's §8 keeps its
+existing role: it says the registry is authoritative and must be loaded
+(`routing-doctrine.md:303-312`). If the two ever disagree, the registry
+wins, because it is what the surfaces render from.
 
 **D11 — what must be gone, and gone means unmentioned.** After the
 rewrite the file must not contain the word `chezmoi`, the word `autosync`,
@@ -700,8 +946,10 @@ if TRACE_REQUIRED:
         if data.get(key) is None:
             raise ProposalError(
                 f"proposal is missing the required decision-trace key {key!r} "
-                "(S-26) — re-analyze the record (`self-learn proposal refresh "
-                "<id>`); a trace is never hand-written"
+                "— this proposal predates the decision trace (S-26). The next "
+                "worker run re-analyzes it; `self-learn worker kick` starts "
+                "one. To route it as it stands, pass --dest. A trace is never "
+                "hand-written."
             )
 ```
 
@@ -727,7 +975,7 @@ FW-62 measured on all 20 live pending proposals):
 | `proposal_info` | `proposal_fresh: True` | `proposal_fresh: False`; `destination` still surfaced |
 | `is_unanalyzed` | `False` | **`True`** → the next worker run re-analyzes it |
 | `route` with no `--dest` (`verbs.py:537-558`) | resolves | refuses with the message |
-| `route --dest <d>` — **the review UI's only form** | resolves | **still resolves** (the proposal is never read) |
+| `route --dest <d>` — **the form the UI sends whenever a proposal exists** | resolves | **still resolves** (the proposal is never read) |
 
 Three things follow, and the spec states them rather than leaving them to
 be discovered:
@@ -736,11 +984,40 @@ be discovered:
    `is_unanalyzed: True`, so the next worker run re-proposes it *with* a
    trace, and the model — not a migration script — produces the gate
    answers. Nothing is fabricated because nothing is conformed in place.
-2. **The human's review flow is not wedged.** The UI always sends an
-   explicit `--dest` and says so in its own code
-   (`ui/.../routes.py:124-130`: *"This app's `route` argv always carries
-   an explicit `dest`"*, emitted at `:131-134`). Approving a legacy card
-   still works; it is exactly as (un)checked as it was yesterday.
+2. **The human's review flow is not wedged — stated as the conditional it
+   actually is** (F15). `routes.py:124-130`'s docstring says *"This app's
+   `route` argv always carries an explicit `dest`"*, but the code it
+   documents is conditional: `argv = ["route", record_id]` then
+   `if dest: argv += ["--dest", dest]` (`routes.py:131-134`). The honest
+   invariant is **"whenever a proposal exists"** — the hidden field starts
+   at the analyst's own scope-corrected destination and never goes empty
+   *once there is one*. That covers every legacy card, which is the case
+   this section is about, so the conclusion holds: approving a pre-schema
+   card still works, exactly as (un)checked as yesterday. **But the
+   uncovered branch is not empty**, and r1 wrote it as if it were.
+
+   **What happens in the uncovered branch, measured.** With no `dest`, the
+   flip turns the CLI's response from a resolved destination into a
+   `ProposalError`. The UI's `_humanize_verb_error` rewrites exactly one
+   failure — `verb == "route"` **and** `NO_PROPOSAL_MARKER in stderr`
+   (`routes.py:1610-1618`) — and a `ProposalError` carries no such marker,
+   so the humanizer returns `None` and the **raw validator text lands in
+   the error strip**. That makes the message's wording a UI string, which
+   changes what it may say:
+
+   > **The remedy named in the refusal must exist at merge time.** r1's
+   > message said *"re-analyze the record (`self-learn proposal refresh
+   > <id>`)"* — a verb that **does not exist until Wave 4's `U-refresh`**
+   > (`cli.py:521-525` registers `proposal validate` and nothing else;
+   > `:1737-1739` prints the usage line for any other subcommand). Telling
+   > a human to run a command that argparse rejects is worse than telling
+   > them nothing. The message this unit ships names what exists **today**:
+   > *"this proposal predates the decision trace (S-26) — the next worker
+   > run re-analyzes it; `self-learn worker kick` starts one. To route it
+   > as it stands, pass `--dest`."* `worker kick` and `worker run` are both
+   > registered (`cli.py:365-368`). When `U-refresh` lands, it may add its
+   > verb to this message; the message must never be the only place the
+   > verb is assumed to exist.
 3. **The producer side is enforced by deletion, not by hope.** A model
    proposal missing the trace fails `_validate_written` and is deleted and
    logged under the existing unattended policy (`worker.py:937-940`).
@@ -832,13 +1109,25 @@ because nothing rendered.
 *Absent/broken: a line-grab implementation renders `- alpha [routable]: |`
 and fails both legs. Measured motivation: 11 of 43 live skills.*
 
-**A3 — an unparseable frontmatter is rendered, never dropped.** A
-`SKILL.md` with a corrupt leading block renders a row carrying the
+**A3 — an unparseable frontmatter is rendered, never dropped, and the
+fixture is shaped like the real failure.** A `SKILL.md` whose frontmatter
+carries an **unquoted `: ` inside a plain scalar** — e.g.
+`description: Use when: the user asks` — renders a row carrying the
 directory name and an explicit marker, and `routable + visible_only`
-counts it.
+counts it. Positive control in the same test: a well-formed sibling skill
+renders its description normally.
 *Absent/broken: a build that `continue`s past the parse error renders one
 fewer row and the count assertion fails — which is the point, because a
 silently missing skill is an invisible hole in T3's evidence.*
+
+**Use that shape, not "a corrupt leading block"** (F14): the unquoted-`: `
+scalar is what `YAML(typ="safe")` actually chokes on across this host's
+roster — `ScannerError: mapping values are not allowed here` on
+`plugins/home-network/skills/home-network/SKILL.md` and
+`~/.claude/skills/firecrawl-build/SKILL.md`. **A3 fires on ~5% of the live
+roster on day one**, so it is a live-behaviour criterion, not a defensive
+one, and a fixture built from an invented corruption might not reproduce
+the parser path the real files take.
 
 **A4 — the unavailable path is real and is coupled to X3.** With no
 registered skills root and an empty claude dir, `Roster.sha ==
@@ -847,7 +1136,13 @@ proposal carrying `t3.roster_sha: "unavailable"` with `t3.answer: yes` is
 refused by the shipped validator, while the same trace with `answer: no` +
 `flags: [evidence-gap]` is accepted.
 *Absent/broken: a build that returns an empty string with a real sha
-passes the first leg and fails the second — so both legs are required.*
+passes the first leg and fails the second — so both legs are required.
+**Leg 2 cannot fail for THIS build** — it exercises U-schema's shipped X3
+(`ledger_ops.py:1054-1068`), not anything this unit writes. It is kept as
+a regression guard on the coupling, and §9 does not count it among the
+criteria that would otherwise be fail-open (N1). The leg that can fail is
+leg 1, and A23's Leg B is where the honesty of `unavailable` is actually
+enforced.*
 
 **A5 — the sha covers the rendered text.** `Roster.sha ==
 sha_anchor(Roster.text)` for a non-empty roster, and mutating one
@@ -857,20 +1152,32 @@ description mutation and fails the second leg.*
 
 ### B. Cluster candidates
 
-**A6 — the ranking, the floor and the cap, on a fixture that discriminates.**
-A pool containing (i) two records whose titles share a distinctive rare
-term, (ii) six records sharing only common terms, and (iii) one record
-sharing nothing, yields: for (i) a list whose first row is the sibling with
-a score ≥ 0.20; for (ii) at most 5 rows and none below the floor; for (iii)
-the literal line `(no cluster candidates above the 0.20 floor)`.
-*Absent/broken: a build with no floor returns rows for (iii) and fails; a
-build with no cap returns 6 rows for (ii) and fails; a build that omits
-the block entirely for (iii) fails the literal-line assertion.*
+**A6 — the ranking, the floor and the cap, on a fixture that
+discriminates.** The pool must contain, by construction:
 
-**A7 — determinism.** Two calls on the same pool return byte-identical
-blocks, including under a shuffled input order.
-*Absent/broken: a set-ordered or dict-ordered implementation differs
-across runs and fails.*
+(i) two records whose titles share a distinctive rare term;
+(ii) a record with **at least six** other records scoring above the floor
+     against it;
+(iii) a record sharing no tokens with anything;
+(iv) **a deliberate score tie** — two candidates whose scores against the
+     same record are equal, with the *lower* record id ranked second by a
+     score-only sort.
+
+Assertions: for (i) the first row is the sibling, score ≥ 0.20; for (ii)
+**exactly 5 rows**, and the same pool with the cap removed yields **6 or
+more** — the count is asserted as an equality, not a bound; for (iii) the
+literal line `(no cluster candidates above the 0.20 floor)`.
+*Absent/broken: "at most 5 rows and none below the floor" — r1's wording —
+is satisfied by ZERO rows, so a build that returns nothing passes it and
+M7 (remove the cap) survives (F9). The equality plus the cap-removed
+control is what makes the cap load-bearing.*
+
+**A7 — determinism, exercised on the tie.** Two calls on the same pool
+return byte-identical blocks, including under a shuffled input order,
+**and the two tied candidates from A6 (iv) appear in record-id order**.
+*Absent/broken: `sorted()` is stable, so a score-only sort differs from a
+score-then-id sort ONLY on a tie — without A6 (iv) in the pool, M8 changes
+no output and this criterion cannot see it (F10).*
 
 **A8 — the score is rendered.** Every candidate row contains its score to
 two decimals.
@@ -897,52 +1204,95 @@ With the project host's `CLAUDE.md` modified and uncommitted,
 `VerbError` and the test errors — the exact failure this criterion
 exists to prevent.*
 
-**A11 — both execution paths compose the same per-record block.** The
-per-record block from `compose_batch_prompt` for a one-record batch and
-from `compose_single_prompt` for that record are byte-identical.
+**A11 — both execution paths compose the same per-record block.** Assert
+in two steps, because both prompt builders return whole prompts and an
+extraction step invented by the test would itself be untested (N8):
+(a) call `compose_record_block` directly for the record and hold the
+result; (b) assert that exact string is `in` the prompt from
+`compose_batch_prompt` for a one-record batch **and** `in` the prompt from
+`compose_single_prompt` for that record.
 *Absent/broken: two divergent implementations differ and fail — and the
 campaign's open question ("do the worker and the one-shot analyst behave
-the same?") would otherwise stay open by construction.*
+the same?") would otherwise stay open by construction. A test that
+re-derives the block by slicing the prompt would pass on a build whose two
+paths differ, because the slice would be taken from whichever prompt it
+was written against.*
 
-**A12 — the worker prompt still carries what it carried, and shows the
-text containment checks.** The assembled prompt contains the real
-doctrine's `trigger_recognizable`, `why_present`, `§9`, `§10`, the card
-registry, and the rejected-proposal digest, **and** now contains the
-roster sha line, a candidate block and a path roster. **And** for a record
-whose file bytes differ from `Record.to_text()` (a fixture with
-frontmatter ruamel re-renders — e.g. a quoted scalar), the block contains
-`to_text()`, not the raw bytes.
+**A12 — the worker prompt still carries what it carried, shows the text
+containment checks, and instructs the producer.** The assembled prompt
+contains the real doctrine's `trigger_recognizable`, `why_present`, `§9`,
+`§10`, the card registry, and the rejected-proposal digest, **and** now
+contains the roster sha line, a candidate block and a path roster. **And**
+for a record whose file bytes differ from `Record.to_text()` (a fixture
+with frontmatter ruamel re-renders — e.g. a quoted scalar), the block
+contains `to_text()`, not the raw bytes. **And** the prompt header carries
+the gate-output contract — matched on the three key names `gates`,
+`flags`, `recommendation` appearing in the instruction header, not merely
+inside the interpolated doctrine.
 *Absent/broken: a rewrite that drops the digest or the registry fails the
 first half; a composer that forgets an ingredient fails the second; a
 composer that interpolates `entry.path.read_text()` passes both halves on
 every record in the live corpus (measured 35/35 identical) and fails only
 the third leg — which is why that fixture must be constructed to differ,
-not sampled from the ledger.*
+not sampled from the ledger. The producer-instruction leg fails on a build
+that flips `TRACE_REQUIRED` without telling the model what to emit.*
+
+**Its first half cannot fail for this build** (N1): `test_worker.py:1077-1094`
+already asserts the doctrine tokens and `§9`/`§10` on the real assembled
+prompt. It is restated here as the regression guard for a rewrite that
+drops them, and §9 does not count it as a discriminating criterion.
+
+**A12b — a trace-less proposal is deleted at landing, and a trace-carrying
+one lands** (F7). End to end through `worker.run()` with the `claude`
+shim: (a) the shim writes a proposal with no `gates`/`flags`/
+`recommendation` → after the run the proposal file is **gone**, the run
+journal carries the "invalid worker output … deleted" line
+(`worker.py:938`), and the record is **still in `pending/`**; (b) control,
+same run shape, shim writes a complete trace → the proposal file **exists**
+and `is_unanalyzed` is `False`.
+*Absent/broken: without leg (b) the criterion passes on a build where the
+worker deletes EVERY proposal — which is precisely the wedge S-26 names
+(`TRACE_REQUIRED` on, producer not instructed, queue silently yields
+nothing forever). Leg (a) alone cannot tell "the flip works" from "the
+pipeline is dead".*
 
 **A13 — the argv-bound prompts stay under half the 128 KiB cap.** The
 doctrine text and the composed single-record prompt for a worst-case
 record (200-line record, 43-entry roster, 5 candidates) are each < 64 KiB.
 *Absent/broken: a doctrine that grows past the ceiling fails here rather
-than truncating an analyst invocation in production.*
+than truncating an analyst invocation in production. **This is an alarm,
+not a control** (N1): today's largest input is ~21 KB of roster against a
+64 KiB ceiling — ~2.5× headroom — so it cannot fail for this build. It is
+here to fire on a later doctrine that grows unattended, and §9 does not
+count it among the discriminating criteria.*
 
 ### D. The doctrine
 
 Assertions are made against the **real shipped file**
 (`worker.package_skill_refs() / "routing-doctrine.md"`), in the CLI suite,
-beside the two tests that already do this (`test_worker.py:850-873`).
+beside the **three** tests that already do this (`test_worker.py:850-862`,
+`:864-873`, `:1077-1094`).
 
 **A14 — the gate sequence is present and ordered.** The file contains the
 gate labels `G0`, `T1`, `T2`, `T3`, `T3a`, `T-N`, `T4`, `E1`, and their
-first occurrences appear in that order.
+first occurrences appear in that order. **Match on word boundaries**
+(`re.search(r"\bT3\b", …)`), not substrings: `T3` is a substring of `T3a`,
+so a naive `text.index("T3")` finds whichever comes first and an ordering
+leg built on it can pass while the sections are transposed (N4).
 *Absent/broken: a doctrine that mentions the gates in prose but out of
 order fails the ordering leg; one that omits a gate fails presence.*
 
-**A15 — the two T2 sharpenings are present, each with its authority.**
-The T2 section contains the timing question (matched on "first contact"
-and "Read") and the search-only question (matched on "Grep" and "Glob"),
-and the file cites `S-24`.
+**A15 — the two T2 sharpenings are present, each with its authority, and
+T2 is asked at every scope.** The T2 section contains the timing question
+(matched on the exact tokens `first contact` and `Read`) and the
+search-only question (`Grep`, `Glob`), the file cites `S-24`, **and** the
+T2 section states that a skill-scope `yes` renders `defer` +
+`no-cheap-surface` rather than going unasked (matched on
+`no-cheap-surface` within the T2 section's span).
 *Absent/broken: a doctrine carrying only the r1 question ("does it only
-matter for certain files?") fails both legs.*
+matter for certain files?") fails the first two legs; r1's own answer —
+"skill scope answers T2 no" — fails the third, which is what makes B2's
+fix visible to a test rather than only to a reader.*
 
 **A16 — the escalation rule is present with its evidence.** The file
 contains the guard-not-prose rule and names `lrn-ea833a5b`.
@@ -955,71 +1305,123 @@ refused at user scope, and cites S-23 for the second.
 *Absent/broken: a doctrine repeating "PATHED at every scope" fails the
 first leg — the case §1.3 item 2 measured.*
 
-**A18 — the trace is described as mandatory and the quote rule is
-unambiguous.** The file states that `gates`, `flags` and `recommendation`
-are required, that every `evidence` value is a verbatim quote **including
-on `no` answers**, and that TARGET-sourced quotes are not machine-checked.
+**A18 — the trace is described as mandatory, the quote rule is
+unambiguous, and the three derived-field rules are present.** Matched on
+exact tokens, the way A20 does (N5): the file contains `gates`, `flags`
+and `recommendation` in a required-ness sentence; the phrase
+`including on` + `no` answers (the verbatim-on-negatives rule); a
+statement that TARGET-sourced quotes are not machine-checked; **and** the
+three F2/F3/F5 rules — `recommendation` described as derived (token:
+`derived`), PATHED rendering `route`, and a `hook` proposal's
+`alternates` carrying its fallback.
 *Absent/broken: a doctrine that repeats r2's "record names no paths"
-phrasing fails; §4-A19 catches it a second way.*
+phrasing fails the quote leg (§4-A19 catches it a second way); one that
+lets the analyst choose `recommendation` fails the derived leg, and would
+otherwise ship a doctrine every `U-table` derivation check refuses.*
 
-**A19 — the doctrine's worked trace validates.** The YAML example in §5 is
-extracted from the shipped doctrine, parsed, and passed to
-`_validate_gates(..., record_text=<the doctrine's own example record>)`
-without error.
-*Absent/broken: an example that would be refused in production fails here
-— the failure mode that makes a doctrine teach an unroutable form.*
+**A19 — the doctrine's worked example validates, and the check can fail.**
+The example RECORD and the example TRACE are both extracted from the
+shipped doctrine (§3.8-D8 requires both). The record is written to a temp
+file and parsed with `Record.from_path`; the trace is parsed and passed to
+`_validate_gates(trace, record_text=<that record>.to_text())` without
+error. **Positive control in the same test**: the same call with one
+`evidence` value replaced by a near-miss paraphrase must raise
+`ProposalError`.
+*Absent/broken: r1's A19 could not fail — D8 shipped no record, so a
+builder passes `record_text=None`, containment does not run, and even
+r2's `"record names no paths"` is ACCEPTED (measured; that is what made
+M22 inert as well). The control is what proves `record_text=` was
+supplied at all: if it is `None`, the paraphrase leg passes and the test
+fails.*
 
 **A20 — the deletions, each with a positive control.** The file does not
-contain `chezmoi`, does not contain `autosync`, and does not contain
-`pathed-unbuilt`. Positive control in the same test: it *does* contain
-`no secrets`/secret-scan text, `S-23`, and `PATHED` — so an empty or
-truncated file cannot pass.
+contain `chezmoi`, does not contain `autosync`, does not contain
+`pathed-unbuilt`, **and does not contain the old routing map** — asserted
+on a §2-unique token, `behavior / anti-pattern`
+(`routing-doctrine.md:29`), because that is the deletion whose survival
+leaves two competing routing procedures in one system prompt (F12).
+Positive control in the same test: it *does* contain the secret-scan rule
+(match **case-insensitively**, or on the live capitalisation `No secrets`
+— `routing-doctrine.md:128`; a case-sensitive `no secrets` fails
+spuriously, N5), `S-23`, and `PATHED` — so an empty or truncated file
+cannot pass.
 *Absent/broken: a zero-byte doctrine passes every "does not contain"
 assertion and fails every positive control — which is precisely why the
 controls are in the same test.*
 
 ### E. The flip and the trace producers
 
-**A21 — the flip refuses a trace-less proposal, and the flag is what does
-it.** A pre-schema proposal (no `gates`/`flags`/`recommendation`) is
-refused by `validate_proposal`, and `is_unanalyzed` for its record becomes
-`True`. Positive control in the same test: with `TRACE_REQUIRED`
-monkeypatched to `False`, the identical proposal is accepted and
-`is_unanalyzed` is `False`.
-*Absent/broken: without the control, any unrelated schema error would
-satisfy the refusal leg; with it, only the flip can.*
+**A21 — the flip refuses a trace-less proposal, key by key, and the flag
+is what does it.** Four legs, because the guard names three keys and a
+one-key test cannot see the other two (F6):
+(a) no `gates`/`flags`/`recommendation` at all → refused, and
+`is_unanalyzed` for its record becomes `True`;
+(b) valid `gates` + `recommendation`, **`flags` absent** → refused;
+(c) valid `gates` + `flags`, **`recommendation` absent** → refused;
+(d) **positive control**: with `TRACE_REQUIRED` monkeypatched to `False`,
+the (a) proposal is accepted and `is_unanalyzed` is `False`.
+*Absent/broken: without (b) and (c), M15 ("require only `gates`") survives
+and builder decision 8 — all three keys, `flags: []` written explicitly —
+is pinned by nothing. Without (d), any unrelated schema error satisfies
+the refusal legs.*
 
 **A22 — no verb accepts gate values.** A search of the CLI argument
 surface (`cli.py`) finds no `--gates`, `--set-gate`, `--outcome` or
 `--flag` option. Positive control: the same search finds `--dest` and
 `--note`, which do exist.
 *Absent/broken: without the control the search passes on a typo'd path or
-an empty file — the fail-open class `lrn-ea833a5b` names.*
+an empty file — the fail-open class `lrn-ea833a5b` names. **This criterion
+is vacuously true today** (N1): none of those options exists, so it cannot
+fail for this build. It is here as the standing guard on §3.10's MUST NOT
+for when `U-refresh` adds verbs to this surface, and §9 does not count it
+among the discriminating criteria.*
 
-**A23 — roster-sha honesty, both paths.** (a) Worker: a model-written
-proposal whose `gates.t3.roster_sha` is well-shaped but is not the run's
-roster sha is deleted and logged, and the record stays pending. (b)
-Analyst: the same mismatch raises `AnalystError`. Positive control in each:
-the same proposal carrying the run's real sha survives.
-*Absent/broken: a build that only shape-checks passes the control legs and
-fails the mismatch legs.*
+**A23 — roster-sha honesty, both legs, both paths.** *Leg A (fabricated
+sha)*: (a) worker — a model-written proposal whose `gates.t3.roster_sha`
+is well-shaped but is not the run's roster sha is deleted and logged, and
+the record stays pending; (b) analyst — the same mismatch raises
+`AnalystError`. *Leg B (false degradation, F8)*: with a **non-empty**
+roster composed for the run, a proposal claiming
+`roster_sha: "unavailable"` + `t3.answer: no` + `flags: [evidence-gap]` —
+a trace the shipped X3 accepts — is (c) deleted by the worker and
+(d) raises `AnalystError`. Positive control for both legs: the same
+proposals carrying the run's real sha survive; and with the composer
+genuinely returning `ROSTER_UNAVAILABLE` (no skills root, empty claude
+dir), the `unavailable` trace **is** accepted.
+*Absent/broken: a build with only Leg A passes (a)/(b) and fails (c)/(d) —
+and a build with neither passes every X3-shaped assertion while letting a
+model that never reads the roster satisfy the whole system, which is the
+Checkpoint-C failure this unit is supposed to make impossible.*
 
-**A24 — containment is on at the three sites this unit owns.** A proposal
-carrying a fabricated RECORD quote is (a) deleted by `_validate_written`
-rather than landed, and (b) raises `AnalystError` from `analyst.analyze`.
-Positive control: the same proposal with a true quote survives both.
+**A24 — containment AND derivation are on at the sites this unit owns.**
+A proposal carrying a fabricated RECORD quote is (a) deleted by
+`_validate_written` rather than landed, (b) raises `AnalystError` from
+`analyst.analyze`, and (c) makes `worker.fast_status` report the record as
+NOT fresh — the third site (`worker.py:1282`), which nothing else asserts
+(F11). **And** (d): once `U-table` has merged, a proposal whose
+`gates.outcome` does not follow from its answers is deleted at landing —
+the `scope=` half of `U-table`'s H1 (§3.7), asserted with a trace that is
+containment-clean so only the derivation can be refusing it.
+Positive control for each: the same proposal with a true quote and a
+coherent outcome survives.
 *Absent/broken: with containment off, the fabricated proposal lands and
 only fails later, invisibly, as a permanently-unanalyzed record — so this
-criterion must assert at the producer, not on the next `list`.*
+criterion must assert at the producer, not on the next `list`. Without
+(c), removing `record_text=` from `fast_status` survives every other
+criterion. Without (d), §3.7 discharges half of H1 and `U-table` §7.4's
+loop stays open while looking closed.*
 
-**A25 — suite and types.** CLI suite green against its own baseline
-(**1266 passed, 5 skipped, 0 failed** — campaign §4a; *there is no
-tolerated failure in the CLI suite*), plus this unit's new tests. UI suite
-run too, because the doctrine is compiled into the pane
-(`ui/.../doctrine.py:79-126`): baseline **1107 passed, 1 failed
-(`test_service_unit.py::test_both_units_document_manual_registration_via_symlink`),
-0 skipped**, staged with **both** `XDG_CACHE_HOME` and
-`PLAYWRIGHT_BROWSERS_PATH` exported (campaign §4a). `pyright` clean.
+**A25 — suite and types.** Baselines **re-measured 2026-08-06 on master
+`07d8c08`** (code-identical to this branch's base; the campaign §4a table
+predates six merges and its numbers are stale — F13). CLI: **1379 passed,
+5 skipped, 0 failed**, rc=0 captured unpiped; *there is no tolerated
+failure in the CLI suite*. UI, run because the doctrine is compiled into
+the pane (`ui/.../doctrine.py:79-126`): **1149 passed, 1 failed
+(`test_service_unit.py::test_both_units_document_manual_registration_via_symlink`
+— the one tolerated row), 0 skipped**, staged with **both**
+`XDG_CACHE_HOME` and `PLAYWRIGHT_BROWSERS_PATH` exported (campaign §4a).
+`pyright` clean. Both numbers were produced by this spec's author running
+both suites, not copied from the playbook.
 *Absent/broken: read the FAILED lines and confirm the UI skip count is
 zero — a suite that cannot see Chromium reports skips, not failures, and
 is indistinguishable from a clean run by exit code (campaign §4a).*
@@ -1049,8 +1451,8 @@ paths, after machine-checking `realpath(self_learn.__file__)` — campaign
 | M11 | Resolve ALWAYS/DEMAND targets via `_resolve_target` | A10 |
 | M12 | Give the analyst path its own per-record block builder | A11 |
 | M13 | Drop the digest (or the registry) from the batch prompt | A12 |
-| M14 | Set `TRACE_REQUIRED = False` | A21 |
-| M15 | Require only `gates`, not `flags`/`recommendation` | A21 (the flags leg) |
+| M14 | Set `TRACE_REQUIRED = False` | A21a |
+| M15 | Require only `gates`, not `flags`/`recommendation` | A21b + A21c |
 | M16 | Skip the roster-sha comparison in `_validate_written` | A23a |
 | M17 | Skip it in `analyst.analyze` | A23b |
 | M18 | Revert `record_text=` to a positional call at `worker.py:927` | A24a |
@@ -1059,6 +1461,24 @@ paths, after machine-checking `realpath(self_learn.__file__)` — campaign
 | M21 | Restore the word "chezmoi" to the doctrine | A20 |
 | M22 | Replace the doctrine's worked trace with r2's `"record names no paths"` t2 evidence | A19 |
 | M23 | Interpolate `entry.path.read_text()` instead of `Record.to_text()` in the record block | A12 (third leg only) |
+| M24 | Accept `ROSTER_UNAVAILABLE` unconditionally (drop Leg B) | A23c + A23d |
+| M25 | Drop the producer instruction from the prompt header | A12 (fourth leg) |
+| M26 | Drop `scope=` from the `worker.py:927` call, keeping `record_text=` | A24d |
+| M27 | Revert `record_text=` at `worker.py:1282` (`fast_status`) | A24c |
+| M28 | Reorder the doctrine so T3 precedes T2 (N6: r1 mutated only three doctrine criteria; A14/A16/A17/A18 had none) | A14 |
+| M29 | Delete `lrn-ea833a5b` from the doctrine's escalation paragraph | A16 |
+| M30 | Restore "PATHED at every scope" in place of the per-scope table | A17 |
+| M31 | Delete "including on `no` answers" from the doctrine's quote rule | A18 |
+| M32 | Delete the old `behavior / anti-pattern` routing map back into §2 | A20 |
+
+**M12's limit, stated rather than papered over** (N7): a builder who
+*copy-pastes* `compose_record_block`'s body into a second private function
+for the analyst path still passes A11, because the two blocks are
+byte-identical on the day they are written. A11 catches divergence, not
+duplication. The guard against duplication is review, plus the fact that
+§3.1 names one function and the campaign's own history (FW-48's
+hand-copied `_canon_excerpt`) is the argument: this exact shape has drifted
+in this exact file before. No criterion is invented to chase it.
 
 **Reviewers are invited to invent mutations this table does not list**
 (campaign §3). Two suggested starting points, both places where a wrong
@@ -1076,8 +1496,9 @@ candidate.
 2. **`claude_runtime_dir` is imported lazily from `selfcheck`** — §3.2;
    the value derivation is shared, the import edge is not wanted at module
    scope.
-3. **Description cap = 200 chars**; measured 9,376 B for the 43-entry
-   roster (12,612 at 300, 19,399 uncapped).
+3. **Description cap = 200 chars**; measured 11,385 B for the 43-entry
+   roster in the pinned marker-carrying row format (14,599 at 300, 21,348
+   uncapped) — see §3.2 on why the r1 figures were ~2 KB lower.
 4. **Candidate floor = 0.20, cap = 5**, both named module constants whose
    docstrings carry the measurement and its date — a bare `0.2` in a
    comparison is a number a later reader cannot audit.
@@ -1141,13 +1562,21 @@ verb is the instrument, and it does not exist until `U-refresh` lands.
 Accepted deliberately: S-26 ruled progress outranks capturing the
 backlog.
 
-**R6 — a visible-only skill can still be a record's scope.** A ledger
-bucket named `skills/<name>` for a skill outside the registered skills
-root will fail at route time (`hosts.py:551-566`), regardless of what the
-trace says. The roster's routability marker and D2's rule keep the
-*analyst* from proposing it; they cannot repair a bucket that already
-exists. Surfacing that is a `selfcheck` concern, not a composer one —
-recorded here, not built.
+**R6 — a visible-only skill can still be a record's scope, and the
+self-learn skill itself is one of them.** A ledger bucket named
+`skills/<name>` for a skill outside the registered skills root will fail
+at route time (`hosts.py:551-566`), regardless of what the trace says.
+**This is live on this host, not hypothetical** (N12): the roster's
+visible-only class includes **`self-learn`** —
+`~/.claude/skills/self-learn` symlinks into the **product repo's** own
+`plugins/self-learn/skills/self-learn`, which is not under the registered
+skills root. So a lesson captured at scope
+`skill:self-learn` — an entirely plausible thing for this project to
+teach itself — would produce a bucket whose `skill-md` routes cannot
+resolve. The roster's routability marker and D2's rule keep the *analyst*
+from proposing it; they cannot repair a bucket that already exists.
+Surfacing that is a `selfcheck` concern, not a composer one — recorded
+here, not built.
 
 **R7 — the trace has no dedicated card section.** Its human-facing render
 rides `discuss` (D10). If a later UI unit adds a `shelf` registry key, the
@@ -1170,87 +1599,127 @@ doctrine edit.
 
 ---
 
-## 8. Interface assumptions about `U-table` — FLAGGED FOR THE GATE
+## 8. Interface reconciliation with `U-table` — RESOLVED IN r2
 
-**`U-table`'s spec was in flight concurrently with this one and no draft
-existed in `docs/specs/self-learn/drafts/` when this was written
-(checked 2026-08-06, twice: at the start and immediately before commit).**
-Every assumption this spec makes about the decision table is listed here
-so the gate can verify each against the real `U-table` draft rather than
-discovering a mismatch at build time. **If any assumption is false, the
-correction lands in this spec's doctrine section (D2/D4) and its acceptance
-criteria — not in `gates.py`.**
+**r1 wrote this section blind**: `U-table`'s spec was in flight
+concurrently and no draft existed in `docs/specs/self-learn/drafts/`
+(checked twice, 2026-08-06). **r2 reconciles it against the real draft**,
+read at
+`.claude/worktrees/agent-af31e5da100a196ef/docs/specs/self-learn/drafts/u-table-decision-table-spec.md`
+for interface facts only. Each assumption below now carries its verdict.
+Where the draft differs from what r1 assumed, **the table wins and this
+spec changed** — the rule r1 stated for itself, applied.
 
-1. **`gates.py::expected_outcome(trace, scope) -> str` exists**, is pure,
-   and implements r2 §1.5's ordering (G0 exits, then HOOK, then the load
-   class). The doctrine describes that ordering in prose (D2); if the
-   table's order differs, **the table wins** and the doctrine is corrected.
-2. **The recompute-and-refuse check is wired inside `validate_proposal`
-   in `ledger_ops.py`** (r2 §1.4 item 3 / B5). This is the file this unit
-   also edits for the flip (§3.9), so **`U-table` must merge first** and
-   this unit rebases onto it. The flip is one constant plus one guard at
-   the top of `_validate_gates`, deliberately small so the rebase is
-   trivial.
-3. **The rendering map (r2 §1.6) is enforced by `U-table`, not here.**
-   This spec assumes `outcome: PATHED` ⇒ `destination: claude-md` +
-   `variant: rules` + non-empty `rules_paths`; `ALWAYS` ⇒ plain
-   `claude-md`; `SKILL` ⇒ `skill-md`; `DEMAND` ⇒ `reference`; `NEW_SKILL`
-   ⇒ `new-skill`; `HOOK` ⇒ `hook`.
-4. **`outcome: GRADUATE` couples to the existing `already_canon` field.**
-   This spec's doctrine tells the analyst to write `already_canon: true` +
-   `already_canon_reason` alongside `recommendation: graduate` when
-   `g0.canon.answer == yes`. **Unknown: whether `U-table` enforces that
-   coupling.** If it does not, the coupling is doctrine-only and a
-   proposal that omits `already_canon` still validates — say so at the
-   gate rather than assuming.
-5. **DEMAND at user scope renders `recommendation: defer` + flag
-   `no-cheap-surface`** (D4). If `U-table` renders something else, every
-   user-scope cheap proposal will fail the derivation check — **this is
-   the highest-consequence assumption in this list**, because 10 of the 12
-   pending records are user scope.
-6. **`pathed-unbuilt` is never emitted** (`U-pathed` shipped). The flag
-   remains in the closed set for schema stability; this spec assumes
-   `U-table` neither requires nor emits it.
-7. **PATHED at skill scope.** The table's T2 row returns `PATHED` from
-   `t2.answer == "yes"` without consulting scope (r2 §1.5). Since skill
-   scope has no pathed surface (§1.3 item 2), one of two things must be
-   true: either the doctrine keeps skill-scope T2 answering `no` (this
-   spec's assumption, D2/D3), or `U-table` special-cases scope. **If
-   `U-table` special-cases it, D2's instruction must change to match.**
-8. **`e1` cross-checks.** U-schema left `e1.sightings` unverified against
-   the record and named `U-table` as a possible owner
-   (`u-schema-decision-trace-spec.md:750-754`). Either way the composer
-   already supplies the record's frontmatter, so no composer change
-   follows; noted so the gate can confirm.
+1. **CONFIRMED — `gates.py` exposes the table as a pure module** and the
+   ordering is r2 §1.5's (G0 exits, then HOOK, then the load class):
+   Table-1, `u-table §3.1 Table-1`. The doctrine
+   describes that ordering in prose (D2); the table remains the referee.
+   *(One correction U-table found and this spec inherits: r2 §1.5's
+   published table CRASHES on traces the shipped validator accepts —
+   `TypeError`, 3,456 of 97,920 enumerated pairs, all `t2: no` / `t3: yes`
+   / `tn ≠ yes` / `t4: null` at a mismatched scope, §8-C1. The doctrine
+   must not reproduce r2's code listing as if it were the table.)*
+2. **CONFIRMED — the check is wired inside `validate_proposal` in
+   `ledger_ops.py`**, gated on a new keyword-only `scope=`
+   (`u-table §3.5`). `ledger_ops.py` is
+   therefore shared with this unit's flip (§3.9), so **`U-table` merges
+   first and this unit rebases onto it.** The flip stays one constant plus
+   one guard so the rebase is trivial.
+3. **CONFIRMED, and r1 was incomplete.** Render-1
+   (`u-table §3.3 Render-1`) matches r1's assumed map —
+   **plus two rules r1 omitted and D2/D4/D7 now carry**: R-HOOK requires
+   `alternates` to contain the load class's destination (F3), and
+   `recommendation` is a **derived** field, not a chosen one (F5).
+   *(Two more r2 corrections inherited: r2's "destination hook ⇔ t1 all
+   yes" is not an iff — a `g0` leg fires first (§8-C3); and r2's NEW_SKILL
+   `alternates` requirement is unsatisfiable because `tn.answer: yes`
+   forces `t4: null` (§8-C4). The doctrine must teach neither.)*
+4. **STILL OPEN, narrowed.** R-FALL requires `already_canon: true` for
+   `GRADUATE` (`u-table §3.3 R-FALL`), so the coupling **is**
+   enforced in that direction. What remains unstated is
+   `already_canon_reason`, which the doctrine asks for and no rule
+   requires. Doctrine-only; harmless; recorded so nobody reads the
+   doctrine's request as a validator guarantee.
+5. **CONFIRMED — R-SCOPE renders `defer` + `no-cheap-surface`**
+   (`u-table §3.3 R-SCOPE`), exactly as D4 states.
+   **This is the highest-consequence agreement in this list**: measured
+   2026-08-06, the live queue is **32 records with deferred hidden — 29
+   user, 3 project** (35 pending files: 31 user, 3 project, 1 skill). r1
+   said "10 of 12", a figure inherited from r2's 2026-07-27 snapshot and
+   stale by ~3× (F4). Nearly the whole queue is user scope, so a
+   disagreement here would have refused nearly every proposal the first
+   worker run wrote.
+6. **CONFIRMED — `pathed-unbuilt` is vestigial, and the positive rule
+   matters more than its absence** (F2). `U-table` §8-C2 states that r2's
+   PATHED transition rule is dead and that **PATHED now renders
+   `recommendation: route`**; a doctrine still teaching r2's "defer +
+   `pathed-unbuilt`" would make **every** PATHED proposal refuse — on the
+   tier S-23 promoted to primary. The flag stays valid in Set-F (U-schema
+   owns that set); D4 states the positive rule and D11 keeps the token out
+   of the file.
+7. **RESOLVED AGAINST r1 — this was gate BLOCKER 2.** r1 offered two
+   branches; `U-table` took the one r1 did not assume. R-SCOPE special-cases
+   scope (`u-table §3.4`, §8-C5): a skill-scope
+   `t2.answer: yes` derives `PATHED` and renders `defer` +
+   `no-cheap-surface`. Its §8-Q1 rejects the doctrine-side branch
+   explicitly (`:919-929`). **D2/D3/D4 and A15/A17 changed to match**;
+   r1's "keep skill-scope T2 answering `no`" is withdrawn. The underlying
+   question — close P-A13 or keep degrading — is `U-table`'s Q1 to route,
+   not this unit's to decide.
+8. **CONFIRMED as unowned.** `U-table` §7.1 leaves `e1` honesty to a
+   future unit and its H4 requires **both halves together**
+   (`u-table §8-H4`) — `sightings` against the
+   record *and* `post_demand_recurrence` against `recurrences[]`, because
+   splitting them "produces a check that reads as closure and is not." No
+   composer change either way: the record's frontmatter is already in the
+   prompt.
+
+**One handoff flows the other way and is discharged in §3.7**: `U-table`'s
+H1 asks this unit to wire `worker.py:927` with `record_text=` **and**
+`scope=`, after swapping the two lines at `:927-928` (its N1). §3.7 and
+A24(d) carry it; M26 mutates it.
 
 ---
 
 ## 9. Test obligations from campaign §5, and what was executed for this spec
 
 **Every gate-shaped check ships with a positive control.** Applied at
-A1–A24; the four that would otherwise be fail-open are A4 (unavailable
-roster), A20 (doctrine deletions), A21 (the flip), A22 (the verb-surface
-grep), and each carries its control in the same test.
+A1–A25. **Which of them can actually fail for THIS build is a separate
+question, and r1 answered it wrongly** (N1): the criteria that
+discriminate are **A20** (doctrine deletions — a truncated file fails the
+controls), **A21** (the flip — the `TRACE_REQUIRED=False` control is the
+only thing that can distinguish the flip from an unrelated schema error),
+**A19** (the worked example — with no `record_text=` it silently cannot
+fail, which is what r1 shipped), and **A23 Leg B** (false degradation —
+nothing else in the system refuses it). Three that are kept but are
+*regression guards*, not discriminators, and are labelled so in place:
+**A4 leg 2** (exercises U-schema's shipped X3 — r1 wrongly counted it),
+**A12's first half** (duplicates `test_worker.py:1077-1094`), **A22**
+(vacuously true until `U-refresh` adds verbs), and **A13** (an alarm with
+~2.5× headroom).
 
 **Never read an exit code downstream of a pipe.** Suite and pyright runs
 capture `rc` unpiped or read the tool's own pass/fail line (campaign §5;
-`lrn-ea833a5b`).
+`lrn-ea833a5b`). Both baselines in A25 were captured that way for r2.
 
 **Algorithms pinned in prose were executed** (campaign §5's rule, added
-after a spec shipped an untested matcher). Four probes, all read-only
-against copies, all with `SELF_LEARN_HOME`, `XDG_CACHE_HOME`,
-`XDG_RUNTIME_DIR`, `SELF_LEARN_CLAUDE_DIR` and
-`SELF_LEARN_TRANSCRIPTS_DIR` redirected to `/tmp/u-composer-scratch/`, and
-each asserting `realpath(self_learn.__file__)` is under this worktree
-before measuring:
+after a spec shipped an untested matcher). Probes are read-only against
+copies, with `SELF_LEARN_HOME`, `XDG_CACHE_HOME`, `XDG_RUNTIME_DIR`,
+`SELF_LEARN_CLAUDE_DIR` and `SELF_LEARN_TRANSCRIPTS_DIR` redirected to
+`/tmp/u-composer-scratch/`, each asserting
+`realpath(self_learn.__file__)` is under this worktree before measuring:
 
 | probe | what it established | oracle / preconditions |
 |---|---|---|
-| roster enumeration | 10 root + 43 user SKILL.md; realpath union 43 vs naive 53; sizes 19,399 / 12,612 / 9,376 B | the live host's skills root + `~/.claude/skills`, 2026-08-06 |
-| roster parsing | 11/43 descriptions are block scalars; line grab yields `"|"` for all 11, YAML parse yields 43/43 | `ruamel.yaml.YAML(typ="safe")` over the leading block as the oracle |
+| roster enumeration | 10 root + 43 user SKILL.md; realpath union 43 vs naive 53; 33 of 43 not under the registered root | the live host's skills root + `~/.claude/skills`, 2026-08-06 |
+| roster parsing | 11/43 descriptions are block scalars (line grab yields `"|"` for all 11); **41/43** parse under the safe loader, the other 2 raise `ScannerError` on an unquoted `: ` in a plain scalar | `ruamel.yaml.YAML(typ="safe")` over the leading block. **r1 reported 43/43 from a probe whose own error path returned the exception message as the description** — a truthy string that its usability check accepted (§3.2). Re-run in r2 with an explicit exception branch |
+| roster size | 21,348 B uncapped / 14,599 at 300 / **11,385 at 200** | **format-dependent**: measured on the pinned row format including the `[routable]` / `[visible only …]` marker. r1's 19,399 / 12,612 / 9,376 were the same 43 skills without markers (N3) |
 | candidate ranking | Jaccard 0.6 → 0/35; Jaccard 0.2 → 3/35; shared≥3 → 33/35 with a 12.4 KB block; IDF-cosine floor 0.20 → 6/35, 8 rows, all six top-1 pairs genuine | pool = 35 pending + 31 routed from a **copy** of the live ledger; oracle = human read of every surviving pair; `_tokens`/`record_title` as shipped |
-| the flip | the five-surface before/after table in §3.9; the doctrine's worked trace validates; r2's `"record names no paths"` is refused while a real quote is accepted, with containment-off as the control | shipped `_validate_gates`/`proposal_info`/`_resolve_destination` in this worktree |
-| prompt-vs-containment text | flattened raw file text == flattened `Record.to_text()` on 35/35 live pending records; 105 sampled 80-char raw windows all contained in `to_text()` (0 misses) — so §3.5's change is a no-op today and a guarantee tomorrow | `_flatten_quote` as shipped, over a **copy** of the live ledger |
+| the flip | the five-surface before/after table in §3.9 | shipped `_validate_gates`/`proposal_info`/`_resolve_destination` in this worktree |
+| prompt-vs-containment text | flattened raw file text == flattened `Record.to_text()` on 35/35 live pending records; 105 sampled 80-char raw windows all contained in `to_text()` (0 misses) | `_flatten_quote` as shipped, over a **copy** of the live ledger |
+| **D8's example pair** (new in r2) | the shipped record+trace validate together; a near-miss paraphrase of one quote is REFUSED; r2's `"record names no paths"` is REFUSED; both are ACCEPTED with `record_text=None` | shipped `_validate_gates` + `Record.from_path`. The `record_text=None` legs are the control that proves containment — not shape — is what refuses the first two |
+| **queue composition** (new in r2) | 35 pending files (31 user / 3 project / 1 skill); **live queue with deferred hidden: 32 — 29 user / 3 project** | shipped `discover_buckets` + `queue()` over a copy, so the "deferred hidden" rule is the product's, not the probe's (F4) |
+| **suite baselines** (new in r2) | CLI 1379 passed / 5 skipped / 0 failed, rc=0; UI 1149 passed / 1 failed / 0 skipped | run by this spec's author on master `07d8c08`, rc captured unpiped, UI staged with both `XDG_CACHE_HOME` and `PLAYWRIGHT_BROWSERS_PATH` (F13) |
 
 **The 51 resolved records are `U-table`'s regression fixtures**, not this
 unit's (campaign §5) — but note that the candidate ranking above was
@@ -1264,52 +1733,67 @@ this unit can make about path parity.
 
 ---
 
-## 10. Open questions for the gate
+## 10. Questions r1 raised, and their dispositions
 
-**Q1 (values — route to the user; do not guess).** S-23 (2) made "no
-user-scope on-demand shelf" permanent, and 10 of the 12 pending records
-are user scope. So a user-scope lesson that is not file-scoped, not
-hook-shaped, not owned by a skill, and whose record carries no
-silence/cost evidence has **no cheap surface at all**. This spec's
-doctrine (D4) keeps r2's rule — `recommendation: defer` + flag
-`no-cheap-surface`, never a silent upgrade to ALWAYS — because that is the
-move the human already made by hand (`lrn-547d8eb6`) and because the
-deferred pile is the evidence Checkpoint A needs. **But "defer forever" is
-itself a monoculture**, and Checkpoint C is explicitly instructed to look
-for exactly that ("did we build a new monoculture at the other end?").
-The question for the user: *when a user-scope lesson has no cheap surface,
-should the analyst defer it with the flag (recommended, status quo), route
-it ALWAYS with the flag, or push harder on re-homing it to project scope?*
-Recommendation: keep defer + flag through Checkpoint A, then decide with
-the measured distribution in hand — O-10 already sets that precedent for
-the Model-B question.
+*r1 raised five. **The gate ruled on all five**, so they are recorded here
+as decisions with their reasons — not as questions a builder could reopen.
+Only Q1 remains routable, and it is routed with a trigger (Checkpoint A).*
 
-**Q2 (interface).** All eight assumptions in §8, especially #5
-(DEMAND-at-user-scope rendering) and #7 (PATHED at skill scope). These
-need reconciling against the `U-table` draft before build.
+**Q1 — DECIDED: keep defer + `no-cheap-surface`; do not re-ask now; route
+at Checkpoint A.** S-23 (2) made "no user-scope on-demand shelf"
+permanent, and the live queue is **29 of 32 user scope** (F4; r1 said "10
+of 12", a figure inherited from r2's 2026-07-27 snapshot). So a user-scope
+lesson that is not file-scoped, not hook-shaped, not owned by a skill, and
+whose record carries no silence/cost evidence has **no cheap surface at
+all**. The doctrine keeps `recommendation: defer` + flag
+`no-cheap-surface`, never a silent upgrade to ALWAYS — the move the human
+already made by hand (`lrn-547d8eb6`), and the one that keeps the deferred
+pile visible as the evidence Checkpoint A needs. **"Defer forever" is
+itself a monoculture** and Checkpoint C is instructed to hunt exactly that
+("did we build a new monoculture at the other end?"), so this is a
+deferral with a trigger, not a settlement: the question goes to the user
+**at Checkpoint A, with the routing measurements in hand**, on the
+precedent O-10 set for the Model-B question.
 
-**Q3 (scope).** Is closing containment at `analyst.analyze` and
-`worker._validate_written` (§3.7) accepted as the handoff U-schema
-assigned, or should it be split into its own unit? This spec argues
-handoff — the producer of quotes and the checker of quotes shipping in one
-commit — but it is three lines in two files this unit already edits, and a
-gate may reasonably want it separated.
+**What changed about the cost of reversing it** (F16): with `U-table`
+merged, this is no longer a doctrine-only posture. R-SCOPE makes
+`defer` + `no-cheap-surface` **validator-enforced** for both no-surface
+corners, so a Checkpoint-A decision to route these ALWAYS instead would
+cost `gates.py` + `ledger_ops.py` + the doctrine, not a prompt edit.
+Nothing is foreclosed — the *price* changed, and the human should know
+that when the question is put.
 
-**Q4 (calibration).** `CANDIDATE_SCORE_FLOOR = 0.20` is calibrated on one
-66-record corpus. Is a named constant with its measurement in the
-docstring sufficient, or should the composer emit a telemetry note when a
-run produces zero candidates across the whole batch (which would be the
-first signal the calibration has drifted)? This spec chose the constant
-alone, to keep the unit at its declared size.
+**Q2 — CLOSED by reconciliation.** Seven of r1's eight assumptions
+survived contact with the real `U-table` draft; assumption 7 did not, and
+its correction is B2. See §8, which now carries a verdict per assumption
+instead of a hypothesis.
 
-**Q5 (doctrine size).** The rewrite grows a file that is injected into
-every worker prompt and every analyst invocation (25,390 B today; the gate
-procedure plausibly adds 40–60%). A13 pins a 64 KiB ceiling. Is a ceiling
-the right instrument, or should the doctrine be split into a core the
-prompt carries and an appendix the analyst may `Read` on demand? This spec
-chose the ceiling: a split doctrine is a forked doctrine waiting to
-happen, and the "one file, three loaders" pin (`analyst.py:20-24`) is
-load-bearing.
+**Q3 — DECIDED: the containment closure lands here.** It is U-schema's own
+handoff to whoever next holds the file
+(`u-schema-decision-trace-spec.md:826-834`), this unit holds both files,
+and `U-table`'s §3.5 census independently reaches the same place by
+listing `worker.py:927` / `:1282` / `analyst.py:244` as unchanged-and-
+handed-on. Shipping the fabrication surface and the fabrication
+opportunity in one commit is the point; splitting them would put the
+producer of quotes in one unit and the check on quotes in another.
+**Scope grew by one keyword** since r1: `scope=` rides the same call
+(F1/§3.7).
+
+**Q4 — DECIDED: constant + docstring; no telemetry.** The zero-candidate
+state is legible in-band — every affected record's block carries the
+literal `(no cluster candidates above the 0.20 floor)`, so a drifted
+calibration is visible in the prompt the run actually sent, which is a
+better record than a counter. Adding `telemetry.py` to the file set for a
+signal already present in the artifact is scope the unit does not need.
+
+**Q5 — DECIDED: keep the 64 KiB ceiling; do not split the doctrine.**
+"One file, three loaders" is load-bearing and verified, not aspirational:
+`analyst.doctrine_path()` resolves it through `worker.package_skill_refs()`
+(`analyst.py:110-116`) and `ui/.../doctrine.py:79-126` compiles the same
+file for the pane. A split doctrine is a forked doctrine waiting to
+happen. The ceiling is an **alarm** rather than a control (N1, A13):
+today's inputs sit at ~2.5× headroom, so it exists to fire on a later
+doctrine that grows unattended.
 
 ---
 
@@ -1321,3 +1805,50 @@ load-bearing.
   on disk (§8). Carries S-26's flip and migration surface, S-23's tier
   reordering, S-24's search-only sharpening, campaign §6 items 5 and 6,
   and FW-43's two stale-premise repairs.
+- **r2, 2026-08-06** — fold round after the blind gate returned **NOT
+  SOUND (2 BLOCKER / 16 FOLD / 12 NOTE)**. The gate re-executed nearly
+  every r1 measurement and reproduced it; three diverged and r2 carries
+  the corrections.
+
+  **Both blockers closed.** *B1* — r1's worked trace shipped **without a
+  record**, and its exemplar quote was a paraphrase of `lrn-5d0c592a` that
+  the shipped containment check refuses; A19 and M22 were therefore both
+  inert (with no `record_text=`, even r2's `"record names no paths"` was
+  accepted). D8 now ships a **synthetic** example record beside the trace
+  (synthetic because the doctrine is public and the ledger is severed from
+  it), every quote verbatim from it, executed with a fabricated-quote
+  control; A19 gains that control and M22 bites. *B2* — the real `U-table`
+  draft resolved r1's §8 assumption 7 **against** r1: R-SCOPE asks T2
+  honestly at skill scope and degrades the *rendering* to `defer` +
+  `no-cheap-surface`, and its §8-Q1 rejects the doctrine-side branch r1
+  chose. D2/D3/D4 and A15/A17 changed; §8 became a reconciliation with a
+  verdict per assumption.
+
+  **All sixteen folds landed.** Substance: F7 (producer-instruction
+  assertion + an end-to-end deletion-path criterion, A12b), F8 (the
+  roster-sha escape hatch — `unavailable` is now refused when a roster
+  *was* available, A23 Leg B), F15 (the UI `--dest` invariant restated as
+  the conditional it is, and the refusal message re-pointed at
+  `self-learn worker kick`, which exists, instead of `proposal refresh`,
+  which does not until Wave 4). Interface: F1 (`scope=` + the `:927/:928`
+  swap, discharging all of `U-table` H1), F2/F3/F5 (PATHED renders
+  `route`; HOOK names its fallback in `alternates`; `recommendation` is
+  derived, not chosen), F16. Measurement: F4 (queue is 29/32 user scope,
+  not 10/12), F13 (baselines re-measured by this author: CLI 1379/5/0, UI
+  1149 passed/1 tolerated failure/0 skipped), F14 (roster parses **41/43**,
+  not 43/43 — and r1's claim came from a fail-open in its own probe, whose
+  error path returned the exception message as a "description"; A3's
+  fixture is reshaped to the real failure). Criteria: F6, F9, F10, F11,
+  F12.
+
+  **Notes folded**: N1 (§9 now separates discriminating criteria from
+  regression guards), N2, N3 (roster bytes labelled format-dependent, with
+  both formats' figures), N4, N5, N6 (five doctrine mutations added,
+  M28–M32), N7, N8, N9, N10, N12. N11 was an endorsement and is kept.
+
+  **Two things r2 changed that the gate did not ask for**, both disclosed
+  rather than slipped in: `card-sections.yaml` joins the file list for one
+  `instruction` edit (N10 forced the choice — the card obligation has to
+  live in the registry, and §0.4 forbids a second copy), and every
+  citation into the in-flight `U-table` draft became a section/rule id
+  after its line numbers were measured moving mid-fold (§0.5).
