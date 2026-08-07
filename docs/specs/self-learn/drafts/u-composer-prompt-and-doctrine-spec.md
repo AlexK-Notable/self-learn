@@ -506,7 +506,8 @@ string the validator will check.
 single argv element caps at 128 KiB (`worker.py:313-317`). The analyst's
 prompt and doctrine ride **argv** (`analyst.py:135-145`), so each is
 subject to that cap. Measured inputs today: doctrine 25,390 B, card
-registry 4,599 B, roster 9,376 B. §4-A13 pins a test that the composed
+registry 4,599 B, roster **11,385 B** (the capped, marker-carrying figure
+the composer actually emits — §3.2). §4-A13 pins a test that the composed
 single-record prompt and the doctrine text each stay under 64 KiB — half
 the cap, so growth is caught before it truncates.
 
@@ -815,12 +816,17 @@ Three requirements, all load-bearing:
    no ledger provenance. `routing-doctrine.md` ships in a **public** repo
    (S-19) and the ledger is deliberately severed from it; quoting a real
    lesson into the doctrine would publish ledger content through the back
-   door. `lrn-00000000` is used as its id so no real record id can
-   collide.
-3. **Every quote in the trace is verbatim from that record**, and the pair
-   was executed against the shipped `_validate_gates` before landing here
-   (§9 probe 5, 2026-08-06). A builder substituting a different pair must
-   execute it the same way and say so.
+   door. `lrn-00000000` is its id by convention — an all-zero id is one no
+   generator has produced and no reader will mistake for a real lesson.
+   **It is a convention, not a guarantee**: `00000000` is a legal 8-hex id
+   and nothing refuses it at generation. Adding an exclusion to id
+   generation for the sake of an example would be a real rule bought with
+   a documentation problem, and is out of scope.
+3. **Every quote in the trace is verbatim from that record**, and the
+   **whole proposal** — not just the trace — was executed against the
+   shipped `validate_proposal` before landing here (§9, 2026-08-06). A
+   builder substituting a different pair must execute it the same way and
+   say so.
 
 The pair below is the executed one. The record:
 
@@ -844,11 +850,22 @@ Show the last lines verbatim before summarising, because a summary of an
 error message drops the one token the user needs to search for.
 ```
 
-and its trace — **note the R-SCOPE rendering**: the record is user scope
-and the outcome is `DEMAND`, which has no routable surface there, so the
-rendering is `defer` + `no-cheap-surface` rather than `route`:
+and its proposal — **note both halves of the R-SCOPE rendering**: the
+record is user scope and the outcome is `DEMAND`, so `destination` is the
+outcome's honest target `reference` **and** the recommendation degrades to
+`defer` + `no-cheap-surface`. The `destination` line is not decoration
+(r3 D4): the degraded corner is exactly where a model reasons "it can't go
+on the cheap shelf here" and writes `claude-md`, which is the monoculture
+rebuilt. Measured against the shipped validator: an exemplar with
+`destination` **removed** is refused loudly
+(*"destination must be one of …, got None"*), but one with `destination:
+claude-md` is **ACCEPTED today** — Render-1's derivation check is
+`U-table`'s and has not merged yet — so until then the exemplar is the
+only thing teaching the right answer:
 
 ```yaml
+destination: reference
+alternates: [claude-md]
 recommendation: defer
 flags: [no-cheap-surface]
 gates:
@@ -1261,8 +1278,11 @@ doctrine text and the composed single-record prompt for a worst-case
 record (200-line record, 43-entry roster, 5 candidates) are each < 64 KiB.
 *Absent/broken: a doctrine that grows past the ceiling fails here rather
 than truncating an analyst invocation in production. **This is an alarm,
-not a control** (N1): today's largest input is ~21 KB of roster against a
-64 KiB ceiling — ~2.5× headroom — so it cannot fail for this build. It is
+not a control** (N1): today's largest composed input is the **11,385 B**
+roster the composer emits — the 21,348 B figure is the *uncapped* roster,
+which no prompt ever carries — so a worst-case single-record prompt sits
+around 20 KB against a 64 KiB ceiling, and it cannot fail for this
+build. It is
 here to fire on a later doctrine that grows unattended, and §9 does not
 count it among the discriminating criteria.*
 
@@ -1294,16 +1314,27 @@ matter for certain files?") fails the first two legs; r1's own answer —
 "skill scope answers T2 no" — fails the third, which is what makes B2's
 fix visible to a test rather than only to a reader.*
 
-**A16 — the escalation rule is present with its evidence.** The file
-contains the guard-not-prose rule and names `lrn-ea833a5b`.
+**A16 — the escalation rule is present with its evidence.** Matched on
+exact tokens, the way A18 and A20 do (N5): the file contains **`guard`**
+and **`prominence`** within the escalation paragraph's span (D5's rule is
+"a GUARD, not more prose … not fixed by more prominence"), and the
+literal record id **`lrn-ea833a5b`**.
 *Absent/broken: a doctrine that says "escalate" without naming the guard,
-or without the corpus evidence, fails.*
+or without the corpus evidence, fails. Without pinned tokens the criterion
+is a reader's judgment call, which is not a test.*
 
-**A17 — the tier model is stated per scope, with both refusals.** The file
-states that PATHED is unavailable at skill scope and that DEMAND is
-refused at user scope, and cites S-23 for the second.
-*Absent/broken: a doctrine repeating "PATHED at every scope" fails the
-first leg — the case §1.3 item 2 measured.*
+**A17 — the tier model is stated per scope, and both no-surface corners
+carry the R-SCOPE rendering.** Matched on exact tokens (N5), and **on the
+phrasing D1 mandates, not on r1's**: the tier table's `PATHED` × skill
+row and its `DEMAND` × user row each contain **`no routable surface`**;
+the table or the sentence beneath it contains **`R-SCOPE`**; and the file
+cites **`S-23`** for the user-scope corner.
+*Absent/broken: a doctrine repeating "PATHED at every scope" carries
+neither token and fails — the case §1.3 item 2 measured. **The token
+matters more than it looks**: r1's A17 asserted the word "unavailable",
+which D1 no longer permits, so a doctrine written exactly to D1 would have
+failed this criterion spuriously and a builder would have "fixed" the
+doctrine back toward the wording B2 exists to remove.*
 
 **A18 — the trace is described as mandatory, the quote rule is
 unambiguous, and the three derived-field rules are present.** Matched on
@@ -1320,13 +1351,15 @@ lets the analyst choose `recommendation` fails the derived leg, and would
 otherwise ship a doctrine every `U-table` derivation check refuses.*
 
 **A19 — the doctrine's worked example validates, and the check can fail.**
-The example RECORD and the example TRACE are both extracted from the
+The example RECORD and the example PROPOSAL are both extracted from the
 shipped doctrine (§3.8-D8 requires both). The record is written to a temp
-file and parsed with `Record.from_path`; the trace is parsed and passed to
-`_validate_gates(trace, record_text=<that record>.to_text())` without
-error. **Positive control in the same test**: the same call with one
-`evidence` value replaced by a near-miss paraphrase must raise
-`ProposalError`.
+file and parsed with `Record.from_path`; the proposal is parsed and passed
+to **`validate_proposal(proposal, record_text=<that record>.to_text())`**
+— the whole proposal, not the `gates` block alone, so the `destination`
+and `alternates` D4 added are covered by the criterion that exists to
+protect the exemplar — without error. **Positive control in the same
+test**: the same call with one `evidence` value replaced by a near-miss
+paraphrase must raise `ProposalError`.
 *Absent/broken: r1's A19 could not fail — D8 shipped no record, so a
 builder passes `record_text=None`, containment does not run, and even
 r2's `"record names no paths"` is ACCEPTED (measured; that is what made
@@ -1661,9 +1694,12 @@ spec changed** — the rule r1 stated for itself, applied.
    branches; `U-table` took the one r1 did not assume. R-SCOPE special-cases
    scope (`u-table §3.4`, §8-C5): a skill-scope
    `t2.answer: yes` derives `PATHED` and renders `defer` +
-   `no-cheap-surface`. Its §8-Q1 rejects the doctrine-side branch
-   explicitly (`:919-929`). **D2/D3/D4 and A15/A17 changed to match**;
-   r1's "keep skill-scope T2 answering `no`" is withdrawn. The underlying
+   `no-cheap-surface`. It rejects the doctrine-side branch explicitly
+   (u-table §6-BD10). **D2/D3/D4 and A15 changed to match**, and A17's
+   match tokens were re-pinned to D1's `no routable surface` phrasing (r3
+   D2 — A16/A17 were byte-unchanged in r2, and A17's r1 wording would have
+   failed against a compliant doctrine); r1's "keep skill-scope T2
+   answering `no`" is withdrawn. The underlying
    question — close P-A13 or keep degrading — is `U-table`'s Q1 to route,
    not this unit's to decide.
 8. **CONFIRMED as unowned.** `U-table` §7.1 leaves `e1` honesty to a
@@ -1717,7 +1753,7 @@ copies, with `SELF_LEARN_HOME`, `XDG_CACHE_HOME`, `XDG_RUNTIME_DIR`,
 | candidate ranking | Jaccard 0.6 → 0/35; Jaccard 0.2 → 3/35; shared≥3 → 33/35 with a 12.4 KB block; IDF-cosine floor 0.20 → 6/35, 8 rows, all six top-1 pairs genuine | pool = 35 pending + 31 routed from a **copy** of the live ledger; oracle = human read of every surviving pair; `_tokens`/`record_title` as shipped |
 | the flip | the five-surface before/after table in §3.9 | shipped `_validate_gates`/`proposal_info`/`_resolve_destination` in this worktree |
 | prompt-vs-containment text | flattened raw file text == flattened `Record.to_text()` on 35/35 live pending records; 105 sampled 80-char raw windows all contained in `to_text()` (0 misses) | `_flatten_quote` as shipped, over a **copy** of the live ledger |
-| **D8's example pair** (new in r2) | the shipped record+trace validate together; a near-miss paraphrase of one quote is REFUSED; r2's `"record names no paths"` is REFUSED; both are ACCEPTED with `record_text=None` | shipped `_validate_gates` + `Record.from_path`. The `record_text=None` legs are the control that proves containment — not shape — is what refuses the first two |
+| **D8's example pair** (r2; extended in r3) | the shipped record+trace validate together; a near-miss paraphrase of one quote is REFUSED; r2's `"record names no paths"` is REFUSED; both are ACCEPTED with `record_text=None`. **r3**: the FULL proposal (with `destination: reference` + `alternates`) validates through `validate_proposal`; the same proposal with `destination` removed is REFUSED, with a bogus `alternates` REFUSED — and with `destination: claude-md` **ACCEPTED**, because Render-1's derivation check is `U-table`'s and has not merged | shipped `validate_proposal` / `_validate_gates` + `Record.from_path`. The `record_text=None` legs are the control that proves containment — not shape — is what refuses the paraphrases; the `claude-md` leg is what makes the exemplar's `destination` line load-bearing rather than decorative |
 | **queue composition** (new in r2) | 35 pending files (31 user / 3 project / 1 skill); **live queue with deferred hidden: 32 — 29 user / 3 project** | shipped `discover_buckets` + `queue()` over a copy, so the "deferred hidden" rule is the product's, not the probe's (F4) |
 | **suite baselines** (new in r2) | CLI 1379 passed / 5 skipped / 0 failed, rc=0; UI 1149 passed / 1 failed / 0 skipped | run by this spec's author on master `07d8c08`, rc captured unpiped, UI staged with both `XDG_CACHE_HOME` and `PLAYWRIGHT_BROWSERS_PATH` (F13) |
 
@@ -1821,7 +1857,7 @@ doctrine that grows unattended.
   draft resolved r1's §8 assumption 7 **against** r1: R-SCOPE asks T2
   honestly at skill scope and degrades the *rendering* to `defer` +
   `no-cheap-surface`, and its §8-Q1 rejects the doctrine-side branch r1
-  chose. D2/D3/D4 and A15/A17 changed; §8 became a reconciliation with a
+  chose. D2/D3/D4 and A15 changed; §8 became a reconciliation with a
   verdict per assumption.
 
   **All sixteen folds landed.** Substance: F7 (producer-instruction
@@ -1852,3 +1888,27 @@ doctrine that grows unattended.
   live in the registry, and §0.4 forbids a second copy), and every
   citation into the in-flight `U-table` draft became a section/rule id
   after its line numbers were measured moving mid-fold (§0.5).
+- **r3, 2026-08-06** — delta verdict **SOUND, cleared for build** (the
+  build still waits on `U-table`'s merge). Five bounded substitutions,
+  nothing else. **D1**: two stale copies of the N3 number corrected —
+  §3.5's size ceiling and A13's headroom sentence now both use the
+  **11,385 B** figure the composer actually emits, not the uncapped
+  21,348. **D2**: the "A15/A17 changed" claim corrected to "A15 changed"
+  in §8 and §11, and A16/A17 given pinned match tokens — A17's r1 wording
+  ("unavailable") would have failed *spuriously* against a doctrine
+  written exactly to D1's mandated "no routable surface … → R-SCOPE", i.e.
+  the criterion would have pushed a builder back toward the phrasing B2
+  exists to remove. **D3**: the last surviving line citation into the
+  in-flight `U-table` draft replaced with `u-table §6-BD10`, per this
+  spec's own §0.5. **D4**: the D8 exemplar gains `destination: reference`
+  + `alternates`, re-executed through the full `validate_proposal` — and
+  the probe found that a *wrong* destination (`claude-md`) is **accepted
+  today**, because Render-1's derivation check is `U-table`'s and has not
+  merged, which makes the exemplar the only thing teaching the right
+  answer in the degraded corner. **D5**: the `lrn-00000000` claim softened
+  from "no real record id can collide" to a stated convention, with the
+  honest note that `00000000` is a legal 8-hex id; no generation-side
+  exclusion was added (out of scope, and it would buy a real rule with a
+  documentation problem). A19 was re-pointed from `_validate_gates` to
+  `validate_proposal` so the fields D4 added are actually covered —
+  disclosed here as part of D4 rather than as a sixth change.
