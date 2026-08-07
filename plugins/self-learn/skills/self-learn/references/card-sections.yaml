@@ -68,6 +68,15 @@ discuss:
     to ask "what should I even ask?". If nothing is contentious, say
     "Nothing contentious" plus the one filing call being made; that
     answer licenses a fast, confident approval and is never filler.
+    Also state, in plain words: which shelf the decision trace chose
+    (the routing-doctrine §2 tier — HOOK, PATHED, SKILL, DEMAND, or
+    ALWAYS) and the verbatim quote from the record that unlocked it; and
+    when `recommendation` is `defer`, say plainly whether that is
+    because no cheap surface exists at this scope (routing-doctrine §1's
+    R-SCOPE — the destination is honest, just not routable here) or
+    because the analyst judged the lesson itself unripe (a `g0.defer`
+    hold) — the two call for opposite next moves from the reader and
+    must never look the same on the card.
 
 lint:
   label: "Would a fresh session catch this?"

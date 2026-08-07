@@ -10,129 +10,292 @@ it — the M1 inline analysis inside `/self-learn:review`, the M2
 pre-analysis worker, and the adjudication surface's agent pane — and they
 must never fork it. If routing judgment needs to change, change this file.
 
-## 1. The destinations
+## 1. The shelves
 
-Exactly five, the `destination` enum:
+Exactly five, the `destination` enum — unchanged by anything below:
 
-| Destination | What it is | When it wins |
-|---|---|---|
-| `skill-md` | managed section in the owning skill's SKILL.md | behavioral rules and skill-scoped knowledge that must load at every activation of that skill — the default for `behavior` records with skill scope |
-| `claude-md` | managed section in the repo `CLAUDE.md` (project scope) or `~/.claude/CLAUDE.md` (user scope) — or, via the `variant` field below, a rules-topic file (`rules/<topic>.md`) or a personal `CLAUDE.local.md` (project only) | project/user conduct rules and knowledge that must apply outside any one skill |
-| `reference` | append to the skill's `references/LEARNINGS.md` (or another **existing** references file, named explicitly) | bulk knowledge worth keeping but not worth loading at every activation — progressive disclosure |
-| `new-skill` | scaffold a new skill (M3 compiler) | a lesson cluster that wants to be its own skill — no existing surface fits |
-| `hook` | PreToolUse/etc. guard script (M3 compiler) | `kind: anti-pattern` lessons where advisory text is the weakest enforcement and a deterministic guard is the strongest |
+| Destination | What it is |
+|---|---|
+| `skill-md` | managed section in the owning skill's SKILL.md |
+| `claude-md` | managed section in the repo `CLAUDE.md` (project) or `~/.claude/CLAUDE.md` (user) — or, via `variant`, a rules-topic file (§2, T2) or a personal `CLAUDE.local.md` (§2a) |
+| `reference` | append to the skill's `references/LEARNINGS.md` (or another **existing** references file, named explicitly) |
+| `new-skill` | scaffold a new skill (M3 compiler) |
+| `hook` | PreToolUse/etc. guard script (M3 compiler) |
 
-## 2. The routing map
+You do not pick a destination directly. You answer the gate procedure
+(§2), it derives a **tier** (`HOOK` / `PATHED` / `SKILL` / `DEMAND` /
+`ALWAYS`), and the tier renders to a destination at the record's scope —
+per this table:
 
-Start from the record's `type`, `kind`, and `scope`:
+| tier | skill:X | project | user |
+|---|---|---|---|
+| HOOK | plugin `hooks/` | `<skills-root>/hooks/self-learn/` | same |
+| PATHED | **no routable surface** — R-SCOPE (see below) | `<host>/.claude/rules/<topic>.md` | `<user>/.claude/rules/<topic>.md` |
+| SKILL | `SKILL.md` | — | — |
+| DEMAND | `references/LEARNINGS.md` | `<host>/references/…` | **no routable surface** — R-SCOPE |
+| ALWAYS | skills-root `CLAUDE.md` | `<host>/CLAUDE.md` | `~/.claude/CLAUDE.md` |
 
-- **behavior / anti-pattern** → `hook` candidate or `skill-md` rule.
-  Prefer `hook` when the mistake is mechanical and tool-detectable (a
-  file-path pattern, a command shape); prefer `skill-md` when recognizing
-  the moment takes judgment.
-- **behavior / surface-rule** → `skill-md` rule.
-- **behavior / reasoning-pattern** → `skill-md` or `claude-md` prose —
-  `claude-md` only when the pattern genuinely applies beyond the skill.
-- **knowledge, skill scope** → `reference` or `skill-md` section.
-  `skill-md` only when the fact must be present at activation to prevent
-  a wrong first move; otherwise `reference`.
-- **knowledge, project/user scope** → `claude-md` (or project docs).
+**"No routable surface" is a rendering instruction, not a silence
+instruction.** Both corners follow the same rule — R-SCOPE: the gate is
+still asked, the outcome is still derived honestly, and the *rendering*
+degrades to `recommendation: defer` with flag `no-cheap-surface`, the
+honest destination left recorded (never blank, never silently swapped
+for a different tier). Read this table as "where each tier lands, and
+where it currently cannot" — not as permission to answer a gate `no`
+because its tier has nowhere to go at this scope. §3 says more about
+these two corners.
 
-## 2a. `claude-md`'s `variant`: a rules topic, or a personal project file
+## 2. The gate procedure
 
-*(Added A2, 2026-07-22.)* `claude-md` carries an optional scope
-parameterization — `variant: rules` (with `rules_topic`, optionally
-`rules_paths`) or `variant: local` — never a new destination (the enum
-stays five). Decide with **one question**: **does the lesson have a
-file-path firing condition?**
+Answer these gates **in order** — G0, then T1, then T2, then T3 (and
+T3a when T3 fires), then T-N, then T4, then E1 — and derive `outcome`
+from your own answers exactly as this procedure states it, first match
+wins. The exact field shapes, answer domains, and required-ness are the
+proposal schema's decision-trace fields (`gates`, `flags`,
+`recommendation` — §5.2); this section is the *reasoning* behind each
+question, not a restatement of its shape.
 
-- **Yes** → `variant: rules` **with** `rules_paths` (a glob list). This
-  is the SAME signal §2's hook rule already uses ("mechanical and
-  tool-detectable — a file-path pattern, a command shape"): a trigger
-  that names paths selects a path-scoped rule. It is genuinely narrower
-  — the section loads only when Claude touches a matching file.
-- **No** → plain `claude-md` vs. an UNPATHED `variant: rules` is **not**
-  a cost decision (both cost the same tokens at every session); decide
-  on organization / cap relief only, never present the unpathed form as
-  "narrower" than plain `claude-md`.
-- A trigger that names a *moment*, not a path ("about to spawn a
-  subagent"), has no glob and stays plain `claude-md`.
+**Six rules that apply to every gate below, stated once here:**
 
-`variant: local` is the third, separate case: a lesson that is
-genuinely personal to THIS machine/checkout and must never reach a
-teammate (never route a team-shared lesson here) — project scope only.
+1. **Every `evidence` value is a verbatim quote from its named source —
+   on `no` answers too**, wherever the schema requires evidence at all.
+   Paraphrase is refused, and a quote flattened to fewer than 8
+   characters is refused. Never write "the record implies…" as
+   evidence; copy the words.
+2. **T3 answers over the routable roster you were handed, never over
+   memory or a name you recall.** If the roster reads `unavailable`,
+   answer T3 `no` and add flag `evidence-gap` — you cannot claim
+   ownership of a roster you were never given.
+3. **T-N answers over the supplied candidate list.** An empty list
+   means `no` with no members; you may add one member you found
+   yourself if you have good reason, but the list you were handed is
+   where you start.
+4. **Answer every gate on its merits, at every scope — including where
+   the winning tier has no routable surface.** Never answer a gate `no`
+   because routing it would fail. That failure is the *rendering's*
+   job to express (§1's R-SCOPE), and folding it into a gate answer is
+   how a single destination ends up carrying every lesson regardless of
+   fit — the exact failure mode this procedure exists to prevent.
+5. **`recommendation` is DERIVED from your gate answers, never chosen.**
+   You do not write a preference there; you write what the procedure's
+   own outcome implies. The one channel for "hold this" is
+   `g0.defer.answer: yes` — which derives `DEFER`, which renders
+   `recommendation: defer`. Any other hand-picked `defer` is a
+   malformed proposal.
+6. **A `hook` proposal names its fallback in `alternates`.** Compute
+   what the record would have rendered to if T1 had never fired (the
+   tier T2/T3/T-N/T4 would have chosen), and put that tier's
+   destination in `alternates` — so the human can take the cheaper
+   surface without asking you to re-analyze.
 
-**Two cost/reliability caveats, pinned:** (1) an UNPATHED rules file
-costs exactly what the same text in `claude-md` costs — rules relieve
-the entry cap, never the context cost; never present `rules` as a
-cheaper surface than `claude-md` for a lesson with no path trigger. (2) a
-project-scope rule (like project `claude-md`) is skipped if the user
-excludes `project` from `--setting-sources` — a silent-non-firing vector
-this system cannot observe at route time; never promise a project rule
-fires unconditionally.
+**G0 — reject, defer, canon.** Three fallback legs, checked before
+anything else: is this lesson not worth keeping at all (`reject`)? does
+something external mean it should wait, not be judged now (`defer` —
+your only "hold this" channel, rule 5 above)? is it already fully
+present in canon that already loads (`canon` — cite the canon target by
+name, e.g. an existing SKILL.md rule or the curated doc this record was
+mined from)? The first of these three that answers `yes` ends the
+procedure: `reject` → `REJECT`, `defer` → `DEFER`, `canon` → `GRADUATE`.
+None of the three is the common case; most records answer `no` to all
+three and continue below.
 
-Proposal-schema addition (rides the same YAML sibling, §5):
+**T1 — is this hook-worthy?** Three sub-questions, and `HOOK` fires only
+when **all three** answer `yes`: is the mistake **field-shaped** (a
+tool call a guard can pattern-match — a path, a command shape)? is it
+**separable** (isolable into one deterministic check, not a judgment
+call)? is it **cost-bearing** (worth a hard block, not just advice)?
+`kind: anti-pattern` behavior records are the ones that can answer
+`yes` here; nothing else can. If any of the three is `no`, T1 does not
+fire and you continue to T2 — HOOK never wins by omission of the other
+gates, only by this row.
+
+**T2 — does the lesson have a file-path firing condition?** This is the
+same signal T1's field-shaped question uses, asked about a *softer*
+enforcement than a guard: a trigger that names paths (not a moment,
+not a command) selects a **pathed rule** — `variant: rules` with
+`rules_paths`, a glob list:
 
 ```yaml
 destination: claude-md
-variant: rules            # optional: "rules" | "local" | (absent)
-rules_topic: subagents    # required iff variant == "rules"; kebab slug
-rules_paths:               # optional; absent ⇒ unpathed rule
+variant: rules            # required when T2 answers "yes"
+rules_topic: subagents    # kebab slug
+rules_paths:
   - "src/**/*.ts"
 ```
 
-## 3. The narrowest-surface bias (the one standing tiebreak)
+Two sharpenings, both about the **lesson**, never about the scope —
+answer them the same way at every scope, including skill scope where
+PATHED currently has no routable surface (§1, §3):
 
-**Prefer the narrowest surface that still fires.** `~/.claude/CLAUDE.md`
-loads in every session of every project — user scope is the most
-expensive destination in the system. A lesson that can live with a skill
-or a repo should. When two destinations both work, pick the one loaded
-less often; when a skill-md section is getting fat, prefer `reference`.
-Loaded-surface budget is the scarce resource: managed sections cap at 10
-entries / ~150 words, and every routed token dilutes attention at every
-activation.
+1. **Timing.** A pathed rule fires on first **Read** of a matching
+   file. Ask whether the lesson's trigger fires **at or after** first
+   contact with those files — "before choosing a fixture strategy,
+   remember X" is file-shaped and still served badly, because the
+   decision happens before any matching file opens. If the trigger
+   fires strictly before file contact, T2 should not answer `yes` on
+   file-shape alone.
+2. **Search-only workflows.** Ask whether the work that trips this
+   lesson will actually **open** a matching file, or only `Grep`/`Glob`
+   it. A pathed rule never fires for a search-only workflow, and
+   nothing in this system can observe that from outside — this is a
+   known, accepted gap. A lesson about grepping conventions is the case
+   T2 cannot serve well; say so in `rationale` if you suspect it.
 
-**Ranking, with §2a's rules variant** *(A2)*: `pathed rules < unpathed
-rules ≈ CLAUDE.md`. The `≈` is deliberate — equal context cost, differing
-only in entry-cap pressure (which loaded surface's 10-entry budget the
-lesson competes for), never present an unpathed rule as narrower than
-plain `claude-md`.
+A `no` T2 answer at a scope where PATHED WOULD have had a surface is not
+a defeat — it just means the lesson continues to T3/T4 on its own
+merits, exactly like a `no` anywhere else.
+
+**T3 — does an existing skill roster entry already own this?** Read the
+routable roster you were given (rule 2, above) and ask whether one of
+its entries already covers this lesson closely enough that it is a
+same-skill edit, not a new destination. `yes` requires `owner` (the
+skill name) and only fires the T3 route when the record's own scope
+matches that skill; `no` requires `scan_terms` — the terms you searched
+the roster for and found nothing on. When the roster was
+`unavailable`, T3 must answer `no` with flag `evidence-gap` (rule 2).
+
+**T3a — only when T3 fires.** Two follow-up questions about the
+matched skill entry: is the lesson better served by a **deeper**
+reference than a section edit (`depth_behind_rule` — cite the target
+that already covers the shallow case) — if `yes`, the outcome is
+`DEMAND`. Otherwise ask the failure-signature question, `fs.verdict`:
+does the record's own evidence show this mistake failing **SILENT**ly
+(wrong output, no error surfaced) or **COSTLY** (a real incident — lost
+time, lost data, a support case), versus **LOUD_CHEAP** (an obvious,
+cheap-to-catch error) or **INDETERMINATE** (the record does not say)?
+`SILENT`/`COSTLY` — or two or more prior sightings with a recurrence
+after a cheaper fix (E1, below) — promote the outcome to `SKILL`;
+otherwise it stays `DEMAND`. `INDETERMINATE` is the honest default when
+the record gives you nothing to go on — never guess a verdict to force
+a promotion.
+
+**T-N — does this lesson cluster with others into a new skill?** Answer
+over the candidate list you were handed (rule 3): `yes` needs at least
+two member records and a proposed name (`kebab-case`, validated
+mechanically at route time — propose your best name and let the human
+correct it, never leave it blank); `no` needs at most one member;
+`indeterminate` is available when the clustering is genuinely unclear.
+`yes` fires `NEW_SKILL` and ends the procedure here.
+
+**T4 — only when T2 answered `no`, T3 answered `no`, and T-N did not
+answer `yes`.** The record has no path trigger, no owning skill, and no
+cluster — decide between the two remaining tiers. First: is the lesson
+better served by a **deeper** reference than something loaded every
+turn (`depth_behind_rule`, same question as T3a) — if `yes`, `DEMAND`.
+Otherwise: does this need to be **actively enforced** at every turn,
+not merely available (`conduct_mode`) — if `yes`, `ALWAYS`. Otherwise
+apply the same failure-signature question as T3a
+(`fs.verdict`/recurrence) — `SILENT`/`COSTLY`, or a recurrence, promotes
+to `ALWAYS`; anything else stays `DEMAND`. The default, absent any
+promoting evidence, is the **cheap** tier — `ALWAYS` is reached only
+when the record's own evidence argues for it, never by default.
+
+**E1 — recurrence.** Not a question you answer fresh; a count you carry
+forward (`sightings`, `post_demand_recurrence`) that T3a and T4 read
+when deciding whether a failure signature promotes the outcome. §3-D5
+describes the one case where recurrence changes *how* you answer a
+gate, not just what a gate reads.
+
+**Outcome.** Whichever of the above fires first — `REJECT` / `DEFER` /
+`GRADUATE` (G0), `HOOK` (T1), or the tier T2/T3(a)/T-N/T4 derive — is
+`gates.outcome`. Write it explicitly; it must match what your own
+answers imply, or the proposal is refused.
+
+## 2a. `variant: local` — a personal, machine-only file
+
+A lesson that is genuinely personal to THIS machine or checkout and
+must never reach a teammate (never route a team-shared lesson here) —
+project scope only, `destination: claude-md` with `variant: local`,
+landing in `CLAUDE.local.md` rather than the shared `CLAUDE.md`. This
+is a separate case from T2's pathed rules (§2): it is not about a
+file-path firing condition, it is about who the rule is even for.
+
+## 3. The tier model
+
+**PATHED is the primary cheap tier where it has a surface** (project
+and user scope). At skill scope the tier with a surface is DEMAND
+(§1's table) — a PATHED verdict there does not disappear, it degrades
+(below). **PATHED renders `recommendation: route`** — state the
+positive rule plainly: T2 firing `yes` at a scope where PATHED has a
+surface is a routable recommendation, full stop, never a soft defer
+pending some later build step.
+
+DEMAND is the tier for lessons that are genuinely not file-scoped —
+T2 answered `no` and the deeper-reference question (T3a/T4) answered
+`yes`, or the record reached T4 without triggering `ALWAYS`. ALWAYS is
+the expensive tier and is reached only when the record's own evidence
+argues for it (§2's T4: no silence/cost signal, no recurrence ⇒ the
+cheap tier by default).
+
+**Two corners have no routable surface today, and they take ONE rule.**
+DEMAND at user scope and PATHED at skill scope both render
+`recommendation: defer` with flag `no-cheap-surface`, the honest
+destination left recorded — and **never a silent upgrade to `ALWAYS`**,
+which is the single-destination failure this whole procedure exists to
+prevent. Before deferring either corner, ask whether the trigger's
+artifacts live inside one repo; if so, flag `rehome-suggested` and say
+so in the card — at project scope the same lesson may have a cheap
+surface the human can move it to.
+
+**The narrowest-surface bias is a tiebreak WITHIN a tier, after the
+gates have already chosen it — never a way to choose between tiers.**
+`~/.claude/CLAUDE.md` loads in every session of every project; when two
+surfaces inside the same tier both fire, prefer the one loaded less
+often. Ranking, with §2's rules variant: pathed rules < unpathed rules
+≈ plain `claude-md` (`≈` deliberate — equal context cost, differing
+only in entry-cap pressure; never present an unpathed rule as cheaper
+than plain `claude-md`).
 
 **The bias reads on the lesson's real firing range, not on where it was
-captured** *(added 2026-07-18 — feedback round 3 item 3; 09 §11 Y-18)*.
-A record's bucket is fixed at capture time from the session cwd, and
-cwd is sometimes the wrong answer: when the trigger's elements live
-outside the capture repo — the live case: a keyboard lesson captured in
-a zmk-config repo whose trigger spans Hyprland/keyd/xkb host configs —
-the capture repo is NOT a surface that still fires, because the lesson
-will never be loaded in the sessions where the mistake happens. In that
-case the **nearest registered ancestor project** (the umbrella repo
-that contains the trigger's surfaces) is the narrowest surface that
-still fires, honestly applied — the same bias, not an exception to it.
-When you see this, propose a **re-home** (the `rehome` verb — through
-your proposal tool where you have one, as prose in `rationale` where
-you don't), and **name the evidence: which trigger elements live
-outside the record's own repo**. A re-home proposal without that
-evidence is a hunch, not a judgment. Two guardrails: never leap to user
-scope just because the trigger spans two repos — check for the ancestor
-project first; and an unregistered ancestor is a fact you tell the
-human ("register ~/repos/keyboards and this lesson can move there"),
-never something you register or assume.
+captured.** A record's bucket is fixed at capture time from the session
+cwd, and cwd is sometimes the wrong answer: when the trigger's elements
+live outside the capture repo — a keyboard lesson captured in a
+zmk-config repo whose trigger spans Hyprland/keyd/xkb host configs is
+the live case — the capture repo is not a surface that still fires,
+because the lesson will never load in the sessions where the mistake
+happens. The **nearest registered ancestor project** (the umbrella repo
+containing the trigger's surfaces) is then the narrowest surface that
+still fires, honestly applied. Propose a re-home (the `rehome` verb
+where you have it, prose in `rationale` where you don't) and **name the
+evidence: which trigger elements live outside the record's own repo**
+— a re-home proposal without that evidence is a hunch. Never leap to
+user scope just because a trigger spans two repos; check for the
+ancestor project first. An unregistered ancestor is a fact you tell the
+human, never something you register yourself.
+
+**Escalation is a guard, not more prose.** When a lesson already at the
+`ALWAYS` tier keeps recurring, more prominent text is not the fix —
+`lrn-ea833a5b` was routed to user `CLAUDE.md`, the most expensive
+surface there is, and was violated twice after that routing. There is
+no table row for "recurred at ALWAYS" — E1 promotes *toward* a tier,
+it never demotes one that is already the ceiling. The escalation acts
+entirely through **T1**: a record whose `e1` shows recurrence against
+an `ALWAYS` routing re-enters this procedure at T1, not at T4, with the
+recurrence itself as new evidence for `cost_bearing` — attempt the
+guard construction again. If it succeeds, the outcome becomes `HOOK`
+by the ordinary procedure above; if it fails, nothing changes and the
+record stays on the shelf it already occupies. Do not look for a table
+row that lets recurrence alone change the outcome — the mechanism is
+you, re-answering T1 with better evidence, not the table.
 
 ## 4. Repo conventions that bear on routing
 
-- `~/.claude/CLAUDE.md` is **chezmoi-managed**. You never handle that:
-  the CLI's claude-md compiler does the `chezmoi re-add` + dotfiles
-  commit. It only raises the cost of user scope — one more reason for
-  the narrowest-surface bias.
-- **No secrets in any tracked file, ever.** Records, proposals, and canon
-  are autosynced to a remote within seconds. Keep rationale text and any
-  quoted material free of tokens, keys, and credentials; the CLI's secret
-  scan will refuse or flag what you miss, but do not rely on it.
-- **`reference` means the skill's `references/LEARNINGS.md`** (created on
-  first route). You may name another *existing* references file when the
-  lesson clearly belongs there — but **never `GOTCHAS.journal.md`**,
-  which is ha-note's accumulation surface, not a self-learn target.
+- **User scope is the most expensive destination in the system**
+  because `~/.claude/CLAUDE.md` loads in every session of every
+  project, not because of any sync mechanism — that is reason enough
+  for the narrowest-surface bias on its own.
+- **No secrets in any tracked file, ever.** A verb commits what it
+  writes immediately, and that commit enters git history — expensive
+  to purge, and the ledger syncs across machines (pushes are manual;
+  the human pushes, but the commit itself already happened). Keep
+  rationale text and any quoted material free of tokens, keys, and
+  credentials. The CLI's secret scan will refuse or flag what you
+  miss — do not rely on it as your only line of defense.
+- **`reference` means the skill's `references/LEARNINGS.md`** (created
+  on first route). You may name another *existing* references file
+  when the lesson clearly belongs there — but **never
+  `GOTCHAS.journal.md`**, which is ha-note's accumulation surface, not
+  a self-learn target.
 - Diffs are previews only: compilers regenerate managed sections from
   records at apply time. Never treat a stale preview as a problem you
   must fix.
@@ -230,6 +393,107 @@ Rules for the hook block:
   Make the allow examples REALISTIC near-misses, not strawmen: the
   closest legitimate calls you expect the guard to let through.
 
+### 5.2 The decision trace is mandatory (S-26)
+
+Every proposal now carries the trace your gate answers produced (§2):
+`gates`, `flags`, `recommendation` are **required**, not optional
+extras — a proposal without them is refused before it is ever read.
+Write `flags: []` explicitly when there are none; "no flags" is an
+assertion you make, never an omission the validator has to interpret.
+
+The trace's exact shapes and enums are the proposal schema's own —
+cited here, not restated, so the two never drift. Three rules worth
+saying in your own words, because you write this section from the YAML
+skeleton, not from the schema doc:
+
+- **The flag set you may write from is seven values** —
+  `near-cluster`, `cluster-indeterminate`, `evidence-gap`,
+  `rehome-suggested`, `no-cheap-surface`, `scope-mismatch`,
+  `consider-local`. Nothing else. A flag the validator would refuse
+  anyway is not a flag worth learning.
+- **RECORD quotes are containment-checked; TARGET quotes are not
+  checked at all today.** `g0.canon.evidence`, `t3a.depth_behind_rule`,
+  and `t4.depth_behind_rule` are TARGET-sourced — write them as
+  honestly as if they were checked, because the only reader who can
+  catch a false TARGET quote is the human glancing at the card.
+- **The three derived-field rules from §2 and §3 apply here too, at the
+  point you actually write them**: `recommendation` is derived from
+  your gate answers, never chosen (§2 rule 5); a `PATHED` outcome
+  renders `recommendation: route` where it has a surface (§3); a `hook`
+  proposal's `alternates` names the load class it would otherwise have
+  rendered (§2 rule 6).
+
+### 5.3 A worked example — a record AND its trace, both executed
+
+The record (synthetic — invented for this doctrine, no ledger
+provenance; `lrn-00000000` is a convention marking that, not a
+guarantee the id is otherwise reserved):
+
+```markdown
+---
+id: lrn-00000000
+type: behavior
+kind: surface-rule
+scope: user
+source: teach
+status: pending
+created_at: '2026-08-06T00:00:00Z'
+sightings: 1
+---
+
+## Trigger
+About to summarise a long command's output for the user instead of showing the tail
+
+## Instruction
+Show the last lines verbatim before summarising, because a summary of an
+error message drops the one token the user needs to search for.
+```
+
+Its proposal — note **both halves** of the R-SCOPE rendering: the
+record is user scope and the gate procedure derives `DEMAND`, so
+`destination` is `DEMAND`'s honest target, `reference`, **and** the
+recommendation degrades to `defer` with flag `no-cheap-surface`. The
+`destination` line is not decoration: writing `claude-md` here because
+"it can't go on the cheap shelf" is the single-destination failure this
+doctrine exists to prevent.
+
+```yaml
+destination: reference
+alternates: [claude-md]
+recommendation: defer
+flags: [no-cheap-surface]
+gates:
+  g0:
+    reject: {answer: no}
+    defer:  {answer: no}
+    canon:  {answer: no}
+  t1:
+    attempted: true
+    field_shaped:
+      answer: no
+      evidence: "About to summarise a long command's output for the user instead of showing the tail"
+    separable:    {answer: null}
+    cost_bearing: {answer: null}
+  t2:
+    answer: no
+    evidence: "About to summarise a long command's output for the user instead of showing the tail"
+    match_path: null
+  t3: {answer: no, owner: null, scan_terms: [summarise, output], roster_sha: "sha256:0123456789ab"}
+  t3a: null
+  t4:
+    depth_behind_rule: {answer: no, evidence: null}
+    conduct_mode:      {answer: no, evidence: null}
+    fs: {verdict: INDETERMINATE, evidence: null}
+  tn: {answer: no, terms: [], members: [], proposed_name: null}
+  e1: {sightings: 1, post_demand_recurrence: false}
+  outcome: DEMAND
+```
+
+**This example defers only because `reference` has no user-scope
+surface.** At project or skill scope the same `DEMAND` outcome renders
+`recommendation: route` with `flags: []` — do not read this exemplar as
+"DEMAND always defers."
+
 ## 6. Write triggers the compiler can use (trigger-first)
 
 Managed-section entries compile as **"When ⟨trigger⟩: ⟨instruction⟩"** —
@@ -286,6 +550,24 @@ edits, help rewrite) a record:
   rationale and recommend rejection — a queue that routes everything is
   as dead as one that routes nothing.
 
+**Four things you must never do**, each a way the trace or the prompt
+you were handed could otherwise be gamed:
+
+- **Never claim a scan you did not perform.** The roster in your prompt
+  is the only roster you have — do not answer T3 as if you had read a
+  skill's SKILL.md when all you were given was its roster entry.
+- **Never name a path you did not receive in the path roster or read at
+  an absolute path you were actually given.** An invented path is a
+  fabricated TARGET quote wearing a filename.
+- **Never write a quote you have not copied from the source named for
+  that leg.** RECORD-sourced fields are checked; TARGET-sourced fields
+  are not (§5.2) — that asymmetry makes this rule matter more for
+  TARGET fields, not less.
+- **Never hand-write a decision trace for a record you did not
+  analyze.** A record whose gates were never evaluated has **no
+  proposal** — not an invented one. If you did not run the procedure,
+  do not produce a trace that looks like you did.
+
 ## 8. The decision-support contract (write for the returning human)
 
 *Added 2026-07-14, after the first real review session: throughput was
@@ -310,6 +592,8 @@ registry order, so changing, adding, or retiring a section — or
 rewriting the prompt that produces one — is an edit to the registry
 file only. Never hardcode a section name into a surface, and never
 invent card keys the registry doesn't define.
+
+As of the decision trace (§5.2), the registry's `discuss` instruction also covers which shelf the trace chose, the verbatim quote that unlocked it, and — when `recommendation` is `defer` — whether that is a missing surface (R-SCOPE, §1/§3) or your own judgment that the lesson is unripe; the registry entry is the full instruction, this sentence only flags that it now exists.
 
 Register rules that apply across all sections:
 
