@@ -669,3 +669,192 @@ def test_a13_argv_bound_prompts_stay_under_half_the_cap(tmp_path):
     entry = _entry_for(env.ledger, record)
     prompt, _roster = worker.compose_single_prompt(env.ledger, entry)
     assert len(prompt.encode("utf-8")) < 64 * 1024
+
+
+# =====================================================================
+# D. The doctrine (A14-A20) — assertions against the REAL shipped file,
+# beside the three tests that already do this (test_worker.py:896-919).
+# =====================================================================
+
+
+def _doctrine_text() -> str:
+    return (worker.package_skill_refs() / "routing-doctrine.md").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_a14_gate_sequence_present_and_ordered():
+    """A14 — the gate labels are present and their first occurrences are
+    ordered G0, T1, T2, T3, T3a, T-N, T4, E1. Word-boundary matched (N4):
+    `T3` is a substring of `T3a`, so a naive `text.index("T3")` finds
+    whichever comes first and an ordering leg built on it can pass while
+    the sections are transposed. Absent/broken: a doctrine that mentions
+    the gates in prose but out of order fails the ordering leg; one that
+    omits a gate fails presence."""
+    import re
+
+    text = _doctrine_text()
+    labels = ["G0", "T1", "T2", "T3", "T3a", "T-N", "T4", "E1"]
+    positions = []
+    for label in labels:
+        m = re.search(rf"\b{re.escape(label)}\b", text)
+        assert m, f"gate label {label!r} not found"
+        positions.append(m.start())
+    assert positions == sorted(positions), (
+        f"gate labels out of order: {list(zip(labels, positions))}"
+    )
+
+
+def test_a15_t2_sharpenings_present_with_authority_and_asked_every_scope():
+    """A15 — the two T2 sharpenings are present, each with its authority,
+    and T2 is asked at every scope. Absent/broken: a doctrine carrying
+    only the r1 question ("does it only matter for certain files?") fails
+    the first two legs; r1's own answer — "skill scope answers T2 no" —
+    fails the third, which is what makes B2's fix visible to a test
+    rather than only to a reader."""
+    text = _doctrine_text()
+    t2_start = text.index("**T2 —")
+    t3_start = text.index("**T3 —")
+    span = text[t2_start:t3_start]
+
+    assert "first contact" in span
+    assert "Read" in span
+    assert "Grep" in span
+    assert "Glob" in span
+    assert "S-24" in span
+    # T2 asked (and honestly answered) even where PATHED has no surface.
+    assert "no-cheap-surface" in span
+
+
+def test_a16_escalation_rule_present_with_evidence():
+    """A16 — the escalation rule is present with its evidence. Matched on
+    exact tokens (N5): `guard` and `prominence` within the escalation
+    paragraph's span, and the literal record id `lrn-ea833a5b`.
+    Absent/broken: a doctrine that says "escalate" without naming the
+    guard, or without the corpus evidence, fails. Without pinned tokens
+    the criterion is a reader's judgment call, which is not a test."""
+    text = _doctrine_text()
+    esc_start = text.index("Escalation is a guard")
+    # the paragraph runs to the next "**"-headed paragraph/subsection.
+    esc_end = text.index("\n\n", esc_start + 400)
+    span = text[esc_start:esc_end]
+    assert "guard" in span
+    assert "prominence" in span
+    assert "lrn-ea833a5b" in span
+
+
+def test_a17_tier_model_per_scope_with_r_scope_rendering():
+    """A17 — the tier model is stated per scope, and both no-surface
+    corners carry the R-SCOPE rendering. Matched on exact tokens (N5),
+    and on the phrasing D1 mandates, not r1's ("unavailable"). Absent/
+    broken: a doctrine repeating "PATHED at every scope" carries neither
+    token and fails. r1's own A17 asserted "unavailable", which D1 no
+    longer permits — a doctrine written exactly to D1 would have failed
+    a criterion pinned to that word."""
+    text = _doctrine_text()
+    shelves_span = text.split("## 1. The shelves", 1)[1].split("## 2.", 1)[0]
+    assert "unavailable" not in shelves_span, (
+        "the tier table must render the no-surface corners as "
+        "'no routable surface', not 'unavailable' (D1, not r1's wording)"
+    )
+    table_start = text.index("| tier | skill:X | project | user |")
+    table_end = text.index("\n\n", table_start)
+    table = text[table_start:table_end]
+    # PATHED x skill and DEMAND x user both carry the rendering.
+    pathed_row = next(ln for ln in table.splitlines() if ln.startswith("| PATHED"))
+    demand_row = next(ln for ln in table.splitlines() if ln.startswith("| DEMAND"))
+    assert "no routable surface" in pathed_row
+    assert "no routable surface" in demand_row
+    assert "R-SCOPE" in table or "R-SCOPE" in text[table_end:table_end + 400]
+    assert "S-23" in demand_row
+
+
+def test_a18_trace_mandatory_quote_rule_and_derived_fields():
+    """A18 — the trace is described as mandatory, the quote rule is
+    unambiguous, and the three derived-field rules are present. Matched
+    on exact tokens (N5). Absent/broken: a doctrine repeating r2's
+    "record names no paths" phrasing fails the quote leg; one that lets
+    the analyst choose `recommendation` fails the derived leg, and would
+    ship a doctrine every U-table derivation check refuses."""
+    text = _doctrine_text()
+    trace_start = text.index("### 5.2")
+    trace_end = text.index("### 5.3")
+    span = text[trace_start:trace_end]
+
+    # required-ness sentence names all three keys together.
+    assert "gates" in span and "flags" in span and "recommendation" in span
+    assert "required" in span
+
+    # verbatim-on-negatives rule, and the TARGET-not-checked asymmetry.
+    gate_proc_start = text.index("## 2. The gate procedure")
+    gate_proc_span = text[gate_proc_start:trace_start]
+    assert "including on" in gate_proc_span
+    assert "not machine-checked" in span
+
+    # the three F2/F3/F5 derived-field rules.
+    assert "derived" in span
+    assert "route" in span
+    assert "alternates" in span
+
+
+def test_a19_worked_example_validates_and_the_check_can_fail():
+    """A19 — the doctrine's worked example validates, and the check can
+    fail. The example RECORD and PROPOSAL are both extracted from the
+    shipped doctrine (D8). Positive control in the same test: the same
+    call with one `evidence` value replaced by a near-miss paraphrase
+    must raise ProposalError. Absent/broken: r1's A19 could not fail —
+    D8 shipped no record, so a builder passes record_text=None,
+    containment does not run, and even a fabricated quote is accepted
+    (measured). The control is what proves record_text= was supplied at
+    all: if it is None, the paraphrase leg passes and the test fails."""
+    import re
+    import tempfile
+
+    from ruamel.yaml import YAML
+
+    text = _doctrine_text()
+    md_blocks = re.findall(r"```markdown\n(.*?)\n```", text, re.DOTALL)
+    yaml_blocks = re.findall(r"```yaml\n(.*?)\n```", text, re.DOTALL)
+    record_block = next(b for b in md_blocks if "lrn-00000000" in b)
+    proposal_block = next(
+        b for b in yaml_blocks if "destination: reference" in b and "outcome: DEMAND" in b
+    )
+
+    with tempfile.TemporaryDirectory() as d:
+        record_path = Path(d) / "lrn-00000000.md"
+        record_path.write_text(record_block, encoding="utf-8")
+        record = Record.from_path(record_path)
+
+        yaml_loader = YAML(typ="safe")
+        proposal = yaml_loader.load(proposal_block)
+
+        # must not raise.
+        validate_proposal(proposal, record_text=record.to_text())
+
+        # positive control: a near-miss paraphrase of a RECORD-sourced
+        # quote must be refused.
+        bad = dict(proposal)
+        bad["gates"] = dict(proposal["gates"])
+        bad["gates"]["t2"] = dict(proposal["gates"]["t2"])
+        bad["gates"]["t2"]["evidence"] = (
+            "About to summarize command output instead of showing the tail"
+        )
+        with pytest.raises(ProposalError):
+            validate_proposal(bad, record_text=record.to_text())
+
+
+def test_a20_deletions_with_positive_controls():
+    """A20 — the deletions, each with a positive control. Absent/broken:
+    a zero-byte doctrine passes every "does not contain" assertion and
+    fails every positive control — which is precisely why the controls
+    are in the same test."""
+    text = _doctrine_text()
+    assert "chezmoi" not in text
+    assert "autosync" not in text
+    assert "pathed-unbuilt" not in text
+    assert "behavior / anti-pattern" not in text
+
+    # positive controls: a truncated/empty file cannot pass these.
+    assert "no secrets" in text.lower()
+    assert "S-23" in text
+    assert "PATHED" in text

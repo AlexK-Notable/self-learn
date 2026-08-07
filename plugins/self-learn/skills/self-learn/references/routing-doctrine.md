@@ -17,7 +17,7 @@ Exactly five, the `destination` enum — unchanged by anything below:
 | Destination | What it is |
 |---|---|
 | `skill-md` | managed section in the owning skill's SKILL.md |
-| `claude-md` | managed section in the repo `CLAUDE.md` (project) or `~/.claude/CLAUDE.md` (user) — or, via `variant`, a rules-topic file (§2, T2) or a personal `CLAUDE.local.md` (§2a) |
+| `claude-md` | managed section in the repo `CLAUDE.md` (project) or `~/.claude/CLAUDE.md` (user) — or, via `variant`, a rules-topic file (§2's search-only gate) or a personal `CLAUDE.local.md` (§2a) |
 | `reference` | append to the skill's `references/LEARNINGS.md` (or another **existing** references file, named explicitly) |
 | `new-skill` | scaffold a new skill (M3 compiler) |
 | `hook` | PreToolUse/etc. guard script (M3 compiler) |
@@ -32,7 +32,7 @@ per this table:
 | HOOK | plugin `hooks/` | `<skills-root>/hooks/self-learn/` | same |
 | PATHED | **no routable surface** — R-SCOPE (see below) | `<host>/.claude/rules/<topic>.md` | `<user>/.claude/rules/<topic>.md` |
 | SKILL | `SKILL.md` | — | — |
-| DEMAND | `references/LEARNINGS.md` | `<host>/references/…` | **no routable surface** — R-SCOPE |
+| DEMAND | `references/LEARNINGS.md` | `<host>/references/…` | **no routable surface** — R-SCOPE (S-23) |
 | ALWAYS | skills-root `CLAUDE.md` | `<host>/CLAUDE.md` | `~/.claude/CLAUDE.md` |
 
 **"No routable surface" is a rendering instruction, not a silence
@@ -57,9 +57,9 @@ question, not a restatement of its shape.
 
 **Six rules that apply to every gate below, stated once here:**
 
-1. **Every `evidence` value is a verbatim quote from its named source —
-   on `no` answers too**, wherever the schema requires evidence at all.
-   Paraphrase is refused, and a quote flattened to fewer than 8
+1. **Every `evidence` value is a verbatim quote from its named source,
+   including on `no` answers**, wherever the schema requires evidence
+   at all. Paraphrase is refused, and a quote flattened to fewer than 8
    characters is refused. Never write "the record implies…" as
    evidence; copy the words.
 2. **T3 answers over the routable roster you were handed, never over
@@ -128,18 +128,28 @@ answer them the same way at every scope, including skill scope where
 PATHED currently has no routable surface (§1, §3):
 
 1. **Timing.** A pathed rule fires on first **Read** of a matching
-   file. Ask whether the lesson's trigger fires **at or after** first
+   file. Ask whether the lesson's trigger fires at or after first
    contact with those files — "before choosing a fixture strategy,
    remember X" is file-shaped and still served badly, because the
    decision happens before any matching file opens. If the trigger
-   fires strictly before file contact, T2 should not answer `yes` on
-   file-shape alone.
-2. **Search-only workflows.** Ask whether the work that trips this
-   lesson will actually **open** a matching file, or only `Grep`/`Glob`
-   it. A pathed rule never fires for a search-only workflow, and
-   nothing in this system can observe that from outside — this is a
-   known, accepted gap. A lesson about grepping conventions is the case
-   T2 cannot serve well; say so in `rationale` if you suspect it.
+   fires strictly before first contact, T2 should not answer `yes`
+   on file-shape alone.
+2. **Search-only workflows (S-24).** Ask whether the work that
+   trips this lesson will actually **open** a matching file, or
+   only `Grep`/`Glob` it. A pathed rule never fires for a
+   search-only workflow, and nothing in this system can observe
+   that from outside — S-24 accepts this as a residual gap and
+   assigns this question as its only mitigation. A lesson about
+   grepping conventions is the case T2 cannot serve well; say so
+   in `rationale` if you suspect it.
+
+**At skill scope specifically**, a `yes` answer here derives `PATHED`
+the same as anywhere else — and because PATHED has no routable
+surface at skill scope (§1, §3), that renders `recommendation: defer`
+with flag `no-cheap-surface`, never a silent T2 `no`. That `defer` is
+the system reporting a capability gap, not you judging the lesson
+unripe — do not let "there's nowhere for this to go yet" talk you
+into a dishonest T2 answer.
 
 A `no` T2 answer at a scope where PATHED WOULD have had a surface is not
 a defeat — it just means the lesson continues to T3/T4 on its own
@@ -263,8 +273,9 @@ user scope just because a trigger spans two repos; check for the
 ancestor project first. An unregistered ancestor is a fact you tell the
 human, never something you register yourself.
 
-**Escalation is a guard, not more prose.** When a lesson already at the
-`ALWAYS` tier keeps recurring, more prominent text is not the fix —
+**Escalation is a guard, not more prose or more prominence.** When a
+lesson already at the `ALWAYS` tier keeps recurring, more prominent text
+is not the fix —
 `lrn-ea833a5b` was routed to user `CLAUDE.md`, the most expensive
 surface there is, and was violated twice after that routing. There is
 no table row for "recurred at ALWAYS" — E1 promotes *toward* a tier,
@@ -411,11 +422,11 @@ skeleton, not from the schema doc:
   `rehome-suggested`, `no-cheap-surface`, `scope-mismatch`,
   `consider-local`. Nothing else. A flag the validator would refuse
   anyway is not a flag worth learning.
-- **RECORD quotes are containment-checked; TARGET quotes are not
-  checked at all today.** `g0.canon.evidence`, `t3a.depth_behind_rule`,
-  and `t4.depth_behind_rule` are TARGET-sourced — write them as
-  honestly as if they were checked, because the only reader who can
-  catch a false TARGET quote is the human glancing at the card.
+- **RECORD quotes are containment-checked; TARGET quotes are not machine-checked**,
+  at all, today. `g0.canon.evidence`, `t3a.depth_behind_rule`, and
+  `t4.depth_behind_rule` are TARGET-sourced — write them as honestly
+  as if they were checked, because the only reader who can catch a
+  false TARGET quote is the human glancing at the card.
 - **The three derived-field rules from §2 and §3 apply here too, at the
   point you actually write them**: `recommendation` is derived from
   your gate answers, never chosen (§2 rule 5); a `PATHED` outcome
@@ -462,6 +473,11 @@ destination: reference
 alternates: [claude-md]
 recommendation: defer
 flags: [no-cheap-surface]
+rationale: >
+  DEMAND per the gate procedure; reference has no user-scope surface,
+  so this defers rather than silently upgrading to ALWAYS.
+model: claude-sonnet-5
+analyzed_at: '2026-08-06T00:00:00Z'
 gates:
   g0:
     reject: {answer: no}
