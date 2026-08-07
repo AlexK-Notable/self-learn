@@ -4088,3 +4088,494 @@ class TestMinerRunRowNeverPrintsNone:
         assert "scanned" in r.text, "the run row did not render at all"
         for field in ("scanned", "landed", "folded", "recurrences"):
             assert f"{field} None" not in r.text, f"literal None rendered for {field}"
+
+
+# ============================================================ U-demand-user
+# HTTP-level acceptance criteria (A4, A5, A7, A13, A16, A17, A18) — the
+# pure-function/model-level legs of these already live in
+# test_models_bucket.py / test_models_detail.py; these classes cover ONLY
+# the render/HTTP legs a model-only assertion cannot see (§4's own
+# reasoning for why each of these has a rendered leg at all). A10/A11/A12/
+# A19 are fully covered elsewhere (A10's rendered leg by the pre-existing
+# TestVariantAwareSuggestedDestination.test_pathed_rules_proposal_shows_
+# topic_label_path_and_glob; A11 by the pre-existing CLI-side "rules
+# topic" obligation this unit's spec explicitly does not touch; A12/A19 at
+# the model level in test_models_detail.py).
+
+
+class TestA4RulesProposalRenderedLegs:
+    """A4 — the UI arms the qualified dest for a rules proposal, and the
+    plain one otherwise (§4). Model-level legs (destination_default /
+    destination_note against both build_detail_model and
+    build_bucket_model) live in test_models_detail.py /
+    test_models_bucket.py — these are the THREE rendered legs a
+    model-only assertion cannot see, plus F5's armed-bar leg."""
+
+    def test_bucket_row_cycle_button_is_two_element_not_singleton(
+        self, tmp_path: Path
+    ) -> None:
+        from self_learn_ui import ledger as ui_ledger
+
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="user")
+        seed_record(sb.ledger, rec)
+        seed_proposal(
+            sb.ledger, rec.id, destination="claude-md", variant="rules",
+            rules_topic="py-conventions",
+        )
+        loc = ui_ledger.locate_record(sb.ledger, rec.id)
+        assert loc is not None
+        c, _runner = make_client(sb)
+        r = c.get(f"/bucket/user/{loc.bucket_name}")
+        assert r.status_code == 200
+        assert 'data-key-action="cycle_destination"' in r.text
+        assert "data-noop-hint" not in r.text
+
+    def test_bucket_row_shows_rules_gloss_hidden_dest_and_resolved_path(
+        self, tmp_path: Path
+    ) -> None:
+        from self_learn_ui import ledger as ui_ledger
+
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="user")
+        seed_record(sb.ledger, rec)
+        seed_proposal(
+            sb.ledger, rec.id, destination="claude-md", variant="rules",
+            rules_topic="py-conventions",
+        )
+        loc = ui_ledger.locate_record(sb.ledger, rec.id)
+        assert loc is not None
+        c, _runner = make_client(sb)
+        r = c.get(f"/bucket/user/{loc.bucket_name}")
+        assert r.status_code == 200
+        # Displayed text is the rules gloss, not the raw qualified token.
+        assert "User rule — py-conventions" in r.text
+        assert "claude-md:rules:py-conventions</span>" not in r.text
+        # The hidden dest input carries the qualified token verbatim.
+        assert 'name="dest" value="claude-md:rules:py-conventions"' in r.text
+        # (F5) resolved-path span reads the rules file, not the plain one.
+        assert "~/.claude/rules/py-conventions.md" in r.text
+        assert "~/.claude/CLAUDE.md" not in r.text
+
+    def test_plain_claude_md_row_positive_control_still_shows_plain_path(
+        self, tmp_path: Path
+    ) -> None:
+        # Positive control for the resolved-path-span leg above: a
+        # plain-claude-md row must still render the PLAIN path — proves
+        # "the span is there" cannot pass on a build that shows the wrong
+        # file for every row regardless of variant.
+        from self_learn_ui import ledger as ui_ledger
+
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="user")
+        seed_record(sb.ledger, rec)
+        seed_proposal(sb.ledger, rec.id, destination="claude-md")
+        loc = ui_ledger.locate_record(sb.ledger, rec.id)
+        assert loc is not None
+        c, _runner = make_client(sb)
+        r = c.get(f"/bucket/user/{loc.bucket_name}")
+        assert r.status_code == 200
+        assert "~/.claude/CLAUDE.md" in r.text
+        assert "~/.claude/rules/" not in r.text
+        # M19's own owner (code-gate finding, folded in during the build's
+        # own mutation sweep): this row's TRUE cycle is the user-scope
+        # singleton, so it must show the noop-hint form. BucketModel.
+        # destination_cycle was DROPPED in this unit (§3.5A) — restoring
+        # `bucket.html`'s old `model.destination_cycle` reference resolves
+        # to Jinja's silent per-attribute Undefined (this app runs the
+        # default, non-strict Undefined), which the `is defined` guard in
+        # action_bar.html coerces to an EMPTY tuple, not a 1-tuple — so
+        # `(_cycle | length) == 1` is FALSE and the row wrongly renders
+        # the LIVE cycle button instead of the noop-hint. A 2-element
+        # (rules-topic) row cannot discriminate this mutation at all (an
+        # empty tuple and a 2-element tuple both fail the `== 1` check,
+        # so both render the SAME "live" branch) — only a genuinely
+        # singleton row like this one can catch it, which is why this
+        # assertion belongs on the plain-claude-md positive control, not
+        # the rules-topic leg above.
+        assert 'data-key-action="cycle_destination"' not in r.text
+        assert 'data-noop-action="cycle_destination"' in r.text
+
+    def test_armed_bar_reads_exactly_user_rule_dash_topic(self, tmp_path: Path) -> None:
+        # (F5 + D3) the trap this criterion exists to catch: an un-scoped
+        # _armed_context renders "Project instructions" for a USER-scope
+        # record. Assert the EXACT string, not merely "not the raw token".
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="user")
+        seed_record(sb.ledger, rec)
+        seed_proposal(
+            sb.ledger, rec.id, destination="claude-md", variant="rules",
+            rules_topic="py-conventions",
+        )
+        c, _runner = make_client(sb)
+        r = c.post(
+            f"/record/{rec.id}/action/arm",
+            data={
+                "verb": "route", "kind": "detail",
+                "dest": "claude-md:rules:py-conventions",
+            },
+            headers={"HX-Request": "true"},
+        )
+        assert r.status_code == 200
+        assert '<span class="dest">User rule — py-conventions</span>' in r.text
+        assert "Project instructions" not in r.text
+
+    def test_armed_bar_project_scope_positive_control(self, tmp_path: Path) -> None:
+        # Same armed bar, PROJECT scope: reads "Project rule — ..." — a
+        # build that hardcodes the user-scope string fails this leg.
+        sb = make_env(tmp_path)
+        rec = make_knowledge(scope="project")
+        seed_record(sb.ledger, rec, project_path=sb.host)
+        seed_proposal(
+            sb.ledger, rec.id, destination="claude-md", variant="rules",
+            rules_topic="py-conventions",
+        )
+        c, _runner = make_client(sb)
+        r = c.post(
+            f"/record/{rec.id}/action/arm",
+            data={
+                "verb": "route", "kind": "detail",
+                "dest": "claude-md:rules:py-conventions",
+            },
+            headers={"HX-Request": "true"},
+        )
+        assert r.status_code == 200
+        assert '<span class="dest">Project rule — py-conventions</span>' in r.text
+        assert "Project instructions" not in r.text
+
+
+class TestA5QualifiedDestSurvivesDisarmRerender:
+    """A5 — a qualified dest survives every re-render, and a plain one is
+    not upgraded. Through the HTTP surface (disarm), on a record whose
+    proposal is a rules proposal naming topic "t"."""
+
+    def _seed(self, tmp_path: Path):
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="user")
+        seed_record(sb.ledger, rec)
+        seed_proposal(
+            sb.ledger, rec.id, destination="claude-md", variant="rules",
+            rules_topic="t",
+        )
+        return sb, rec
+
+    def test_leg1_own_topic_survives_the_round_trip(self, tmp_path: Path) -> None:
+        sb, rec = self._seed(tmp_path)
+        c, _runner = make_client(sb)
+        r = c.post(
+            f"/record/{rec.id}/action/disarm",
+            data={"kind": "detail", "dest": "claude-md:rules:t"},
+            headers={"HX-Request": "true"},
+        )
+        assert r.status_code == 200
+        assert 'name="dest" value="claude-md:rules:t"' in r.text
+
+    def test_leg2_plain_claude_md_is_not_upgraded(self, tmp_path: Path) -> None:
+        # Anti-override control: a build that folded the upgrade into
+        # correct_destination would silently override a human's own
+        # demotion to plain claude-md. Must render bare "claude-md".
+        sb, rec = self._seed(tmp_path)
+        c, _runner = make_client(sb)
+        r = c.post(
+            f"/record/{rec.id}/action/disarm",
+            data={"kind": "detail", "dest": "claude-md"},
+            headers={"HX-Request": "true"},
+        )
+        assert r.status_code == 200
+        assert 'name="dest" value="claude-md"' in r.text
+        assert 'value="claude-md:rules:t"' not in r.text
+
+    def test_leg3_foreign_topic_is_rejected_not_the_echo(self, tmp_path: Path) -> None:
+        # (F3) M21's target: a hand-crafted POST naming a topic the
+        # record never proposed must fall back to the scope's cycle[0]
+        # ("claude-md" for user scope), never trust the echo.
+        sb, rec = self._seed(tmp_path)
+        c, _runner = make_client(sb)
+        r = c.post(
+            f"/record/{rec.id}/action/disarm",
+            data={"kind": "detail", "dest": "claude-md:rules:not-the-proposed-topic"},
+            headers={"HX-Request": "true"},
+        )
+        assert r.status_code == 200
+        assert 'name="dest" value="claude-md"' in r.text
+        assert "not-the-proposed-topic" not in r.text
+
+
+class TestA7CycleReachesPathedOptionHttp:
+    """A7 — the cycle reaches the pathed option and comes back, through
+    the HTTP surface, plus the POST-fragment leg (F1's own blocker
+    criterion, owner of M20 — the mutation that survived r1's entire
+    criterion set)."""
+
+    def _seed(self, tmp_path: Path):
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="user")
+        seed_record(sb.ledger, rec)
+        seed_proposal(
+            sb.ledger, rec.id, destination="claude-md", variant="rules",
+            rules_topic="t",
+        )
+        return sb, rec
+
+    def test_cycle_destination_post_advances_to_qualified_dest(
+        self, tmp_path: Path
+    ) -> None:
+        sb, rec = self._seed(tmp_path)
+        c, _runner = make_client(sb)
+        r = c.post(
+            f"/record/{rec.id}/action/cycle-destination",
+            data={"dest": "claude-md"},
+            headers={"HX-Request": "true"},
+        )
+        assert r.status_code == 200
+        assert 'name="dest" value="claude-md:rules:t"' in r.text
+        assert 'name="dest_touched" value="true"' in r.text
+
+    def test_cycle_destination_fragment_carries_live_two_element_cycle(
+        self, tmp_path: Path
+    ) -> None:
+        # The POST-FRAGMENT leg: that SAME response's own cycle control
+        # must offer a live cycle, not the singleton no-op form.
+        sb, rec = self._seed(tmp_path)
+        c, _runner = make_client(sb)
+        r = c.post(
+            f"/record/{rec.id}/action/cycle-destination",
+            data={"dest": "claude-md"},
+            headers={"HX-Request": "true"},
+        )
+        assert r.status_code == 200
+        assert 'data-key-action="cycle_destination"' in r.text
+        assert "data-noop-hint" not in r.text
+
+    def test_cycle_destination_fragment_positive_control_no_proposal(
+        self, tmp_path: Path
+    ) -> None:
+        # Positive control: the identical POST on a user record with NO
+        # rules proposal renders the singleton no-op form.
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="user")
+        seed_record(sb.ledger, rec)
+        c, _runner = make_client(sb)
+        r = c.post(
+            f"/record/{rec.id}/action/cycle-destination",
+            data={"dest": "claude-md"},
+            headers={"HX-Request": "true"},
+        )
+        assert r.status_code == 200
+        assert 'data-key-action="cycle_destination"' not in r.text
+        assert 'data-noop-action="cycle_destination"' in r.text
+
+    def test_disarm_fragment_also_carries_live_two_element_cycle(
+        self, tmp_path: Path
+    ) -> None:
+        # A second _unarmed_context caller (action_disarm) — without this
+        # the test pins one call site rather than the shared context.
+        sb, rec = self._seed(tmp_path)
+        c, _runner = make_client(sb)
+        r = c.post(
+            f"/record/{rec.id}/action/disarm",
+            data={"kind": "detail", "dest": "claude-md:rules:t"},
+            headers={"HX-Request": "true"},
+        )
+        assert r.status_code == 200
+        assert 'data-key-action="cycle_destination"' in r.text
+        assert "data-noop-hint" not in r.text
+
+    def test_disarm_fragment_positive_control_no_proposal(self, tmp_path: Path) -> None:
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="user")
+        seed_record(sb.ledger, rec)
+        c, _runner = make_client(sb)
+        r = c.post(
+            f"/record/{rec.id}/action/disarm",
+            data={"kind": "detail", "dest": "claude-md"},
+            headers={"HX-Request": "true"},
+        )
+        assert r.status_code == 200
+        assert 'data-key-action="cycle_destination"' not in r.text
+        assert 'data-noop-action="cycle_destination"' in r.text
+
+
+class TestA13ByAttributionForRulesProposal:
+    """A13 — `by` attribution survives for a RULES proposal specifically
+    (FW-64 shipped generically days before this unit; a regression here
+    on the qualified-dest path would be invisible to every other
+    criterion). The resolved record's own `routing.by == "analyst"` leg
+    for the qualified-dest path is covered at the CLI level by A1
+    (cli/tests/test_a2_rules_local.py::TestObligation29...); `by=="human"`
+    is pre-existing generic CLI plumbing this unit's diff never touches."""
+
+    def _seed(self, tmp_path: Path):
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="user")
+        seed_record(sb.ledger, rec)
+        seed_proposal(
+            sb.ledger, rec.id, destination="claude-md", variant="rules",
+            rules_topic="t",
+        )
+        return sb, rec
+
+    def test_untouched_approve_of_rules_proposal_is_by_analyst(
+        self, tmp_path: Path
+    ) -> None:
+        sb, rec = self._seed(tmp_path)
+        c, runner = make_client(sb)
+        r = c.post(
+            f"/record/{rec.id}/action/confirm",
+            data={"verb": "route", "kind": "detail", "dest": "claude-md:rules:t"},
+            headers={"HX-Request": "true"},
+        )
+        assert r.status_code == 200
+        assert runner.calls == [
+            ["route", rec.id, "--dest", "claude-md:rules:t", "--by", "analyst", "--json"]
+        ]
+
+    def test_cycled_destination_is_by_human(self, tmp_path: Path) -> None:
+        sb, rec = self._seed(tmp_path)
+        c, runner = make_client(sb)
+        r = c.post(
+            f"/record/{rec.id}/action/confirm",
+            data={
+                "verb": "route", "kind": "detail", "dest": "claude-md:rules:t",
+                "dest_touched": "true",
+            },
+            headers={"HX-Request": "true"},
+        )
+        assert r.status_code == 200
+        assert runner.calls == [
+            ["route", rec.id, "--dest", "claude-md:rules:t", "--by", "human", "--json"]
+        ]
+
+
+class TestA16RecommendationAndFlagsRenderedOnDetailPage:
+    """A16 — recommendation/flags reach the card, and their absence
+    renders nothing. The model-level legs live in test_models_detail.py
+    (TestH5A16...); this is the rendered-page half."""
+
+    def test_recommendation_and_flags_render_on_the_page(self, tmp_path: Path) -> None:
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="user")
+        seed_record(sb.ledger, rec)
+        seed_proposal(
+            sb.ledger, rec.id, destination="reference",
+            recommendation="defer", flags=["no-cheap-surface"],
+        )
+        c, _runner = make_client(sb)
+        r = c.get(f"/record/{rec.id}")
+        assert r.status_code == 200
+        assert "Analyst recommendation: defer" in r.text
+        assert "no-cheap-surface" in r.text
+
+    def test_absent_recommendation_and_flags_render_nothing(self, tmp_path: Path) -> None:
+        # Positive control: this codebase has shipped a literal "None" at
+        # the operator before (ee005f8) — a build that renders the fields
+        # unconditionally passes leg 1 and fails this one.
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="user")
+        seed_record(sb.ledger, rec)
+        seed_proposal(sb.ledger, rec.id, destination="claude-md")
+        c, _runner = make_client(sb)
+        r = c.get(f"/record/{rec.id}")
+        assert r.status_code == 200
+        assert "why-recommendation" not in r.text
+        assert "Analyst recommendation" not in r.text
+
+
+class TestA17DeferredProposalRendersEmptyHiddenDest:
+    """A17 — a `defer` recommendation arms no destination, at every
+    scope. Model-level legs (proposed_destination, build_argv) live in
+    test_models_detail.py (TestH5A17...); this is the rendered-bar leg —
+    the hidden `dest` input is empty, at BOTH scopes named in the
+    criterion."""
+
+    def test_user_scope_reference_defer_renders_empty_hidden_dest(
+        self, tmp_path: Path
+    ) -> None:
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="user")
+        seed_record(sb.ledger, rec)
+        seed_proposal(
+            sb.ledger, rec.id, destination="reference",
+            recommendation="defer", flags=["no-cheap-surface"],
+        )
+        c, _runner = make_client(sb)
+        r = c.get(f"/record/{rec.id}")
+        assert r.status_code == 200
+        assert 'name="dest" value=""' in r.text
+
+    def test_project_scope_defer_renders_empty_hidden_dest(self, tmp_path: Path) -> None:
+        # The rule is about the recommendation, not the scope that
+        # happens to expose it — M27's target fires the defer leg on
+        # destination=="reference" instead of on the recommendation,
+        # which this project/claude-md leg would catch (claude-md is
+        # otherwise perfectly scope-valid at project scope).
+        sb = make_env(tmp_path)
+        rec = make_knowledge(scope="project")
+        seed_record(sb.ledger, rec, project_path=sb.host)
+        seed_proposal(
+            sb.ledger, rec.id, destination="claude-md", recommendation="defer",
+        )
+        c, _runner = make_client(sb)
+        r = c.get(f"/record/{rec.id}")
+        assert r.status_code == 200
+        assert 'name="dest" value=""' in r.text
+
+
+class TestA18DeferredRecordApproveRefusesEndToEnd:
+    """A18 — a `defer`-armed record's Approve does not write always-loaded
+    canon. End to end through the real ASGI app (the model-level sibling
+    lives in test_models_detail.py::TestH5A18...): confirm a defer-armed
+    user-scope reference record. The FakeRunner is queued with the CLI's
+    OWN verbatim refusal shape (`self-learn route: ` + verbs.py's S-23
+    VerbError text) — this is the criterion that makes the whole H5
+    section worth building: today the confirm SUCCEEDS and the entry
+    lands."""
+
+    def test_confirm_with_no_dest_surfaces_the_cli_s23_refusal(
+        self, tmp_path: Path
+    ) -> None:
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="user")
+        seed_record(sb.ledger, rec)
+        seed_proposal(
+            sb.ledger, rec.id, destination="reference",
+            recommendation="defer", flags=["no-cheap-surface"],
+        )
+        # Sanity: the rendered bar's hidden dest is empty (H5's own
+        # enforcement — the human COULD still try to Approve anyway).
+        c, runner = make_client(sb)
+        detail = c.get(f"/record/{rec.id}")
+        assert 'name="dest" value=""' in detail.text
+
+        refusal = (
+            "self-learn route: reference destination needs skill:<name> or "
+            "project scope — user scope has no references dir. S-23 (2): a "
+            "user-level reference file would have no SKILL.md to hang a "
+            "pointer off, so it would be unreachable canon, exactly the "
+            "failure mode S-23 exists to close. If this lesson is "
+            "file-scoped, route it to a pathed rules topic instead "
+            "(claude-md:rules:<topic>); if it is not, route it to project "
+            "scope, or defer"
+        )
+        runner.queue_result(RunResult(1, stderr=refusal))
+        r = c.post(
+            f"/record/{rec.id}/action/confirm",
+            data={"verb": "route", "kind": "detail", "dest": ""},
+            headers={"HX-Request": "true"},
+        )
+        assert r.status_code == 200
+        # build_argv never carried --dest — nothing to route the CLI
+        # verb's own proposal-based resolution away from user-scope
+        # reference's structural refusal.
+        assert runner.calls == [["route", rec.id, "--by", "analyst", "--json"]]
+        assert "S-23" in r.text
+        # The record stays pending — no file was ever touched by the
+        # (fake) failed subprocess.
+        from self_learn_ui import ledger as ui_ledger
+
+        loc = ui_ledger.locate_record(sb.ledger, rec.id)
+        assert loc is not None
+        record = ui_ledger.read_record(loc.path)
+        assert record is not None
+        assert record.status == "pending"
+
