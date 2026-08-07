@@ -1,12 +1,16 @@
 # Spec — U-table: the decision table as a pure module, and the recompute-and-refuse check
 
-Status: **r1 — DRAFT, for the blind spec gate.** Unit `U-table` of the r2
-routing campaign (`forward/r2-routing-campaign.md` §2, Wave 2). Dependency
-`U-schema` is **MERGED** (`176eee6`); this spec is written against the code
-that shipped and its post-merge fixes (FW-57/62/63/66/67, `05f8a5b`,
-`81cb694`, `358c9c1`), not against U-schema's draft. Implementation
-reference: `misc/routing-procedure-r2.md` §1.4 item 3, §1.5, §1.6 — **which
-this spec corrects in five places, three of them measured; see §8.**
+Status: **r2 — GATED SOUND, cleared for build.** Blind spec gate (r1,
+2026-08-06) returned **SOUND — buildable after folds: 1 BLOCKER, 6 FOLD,
+6 NOTE**; all are folded into this document and §10 records each. The
+gate independently reproduced this spec's central enumeration to the
+digit. Unit `U-table` of the r2 routing campaign
+(`forward/r2-routing-campaign.md` §2, Wave 2). Dependency `U-schema` is
+**MERGED** (`176eee6`); this spec is written against the code that shipped
+and its post-merge fixes (FW-57/62/63/66/67, `05f8a5b`, `81cb694`,
+`358c9c1`), not against U-schema's draft. Implementation reference:
+`misc/routing-procedure-r2.md` §1.4 item 3, §1.5, §1.6 — **which this spec
+corrects in five places, three of them measured; see §8.**
 
 **Files this unit may touch:**
 
@@ -14,7 +18,7 @@ this spec corrects in five places, three of them measured; see §8.**
 |---|---|
 | `plugins/self-learn/cli/src/self_learn/gates.py` | **NEW.** The pure table. |
 | `plugins/self-learn/cli/src/self_learn/ledger_ops.py` | `_validate_gates` gains `scope`; new `_validate_derivation`; `validate_proposal` threads it; `write_proposal` + `proposal_info` supply it. |
-| `plugins/self-learn/cli/src/self_learn/selfcheck.py` | **One call site, one keyword argument** (`scope=record.scope` at `selfcheck.py:163`). Nothing else. See §3.5 and §6-D8. |
+| `plugins/self-learn/cli/src/self_learn/selfcheck.py` | **One call site, one keyword argument** (`scope=record.scope` at `selfcheck.py:163`). Nothing else. See §3.5 and §6-BD8. |
 | `plugins/self-learn/cli/tests/test_decision_table.py` | **NEW.** This unit's tests. |
 | `plugins/self-learn/cli/tests/test_decision_trace.py` | Four fixtures reconciled (§3.7). |
 | `plugins/self-learn/cli/tests/test_proposal_validate.py` | One fixture reconciled (§3.7). |
@@ -25,6 +29,28 @@ scope and must be reported, not edited.** `verbs.py` is live in
 `U-demand-user` this wave; `worker.py` and `analyst.py` are `U-composer`'s,
 and `U-composer` is being spec'd concurrently. §8 names what is handed to
 each.
+
+**`ledger_ops.py` is contended with `U-composer`, and the wave plan
+resolves it by ORDER, not by disjointness** *(N6)*. `U-composer` must
+re-edit `_validate_gates` for the **S-26** optional→mandatory flip, i.e.
+the same function this unit changes. The gate-confirmed sequencing is:
+
+1. **U-table merges first** — it creates `gates.py` and both `ledger_ops`
+   seams (the `scope=` parameter and `_validate_derivation`).
+2. **U-demand-user runs concurrently** with U-table (`verbs.py` + `ui/*`,
+   disjoint from this file set).
+3. **U-composer rebases onto merged U-table**, then makes the S-26 flip,
+   takes §8-H1 in full, and resolves its own assumption 7 via R-SCOPE.
+4. Checkpoint A.
+
+A builder who finds `_validate_gates` already carrying a mandatory-trace
+flip has the order backwards and must stop and report.
+
+**Base commit:** this spec was rebased onto master `07d8c08` before r2
+(*N6*). The three intervening commits (`f3f3f76`, `190e26d`, `07d8c08`)
+touch `docs/specs/self-learn/14-forward-work-map.md` **only** — verified
+with `git diff --name-only 83c1d5d 07d8c08` — so every code citation below
+is unaffected, and a merge from this branch cannot revert FW-71…FW-75.
 
 ---
 
@@ -116,7 +142,7 @@ Verified against `ledger_ops.py` on this tree, not against U-schema's draft.
 | U-schema | Obligation | Here |
 |---|---|---|
 | §8-O1 | `gates.py` imports `TRACE_OUTCOMES`; does not redefine `CLS` | **Built** — §3.1, A1. The import direction is measured (§3.6). |
-| §8-O3 | enforce the scope-conditional `t4` presence rule a scope-free validator cannot (§6-D5) | **Built** — §3.2. Not tidiness: it is what makes the table total (§9-X1). |
+| §8-O3 | enforce the scope-conditional `t4` presence rule a scope-free validator cannot (U-schema's own §6-D5) | **Built** — §3.2. Not tidiness: it is what makes the table total (§9-X1). |
 | §3.7 item 2 | outcome recomputation | **Built** — §3.3, C-criteria. |
 | §3.7 item 3 | the r2 §1.6 rendering map | **Built** — Render-1. |
 | §3.7 item 7 | `t1` ⇔ `_validate_hook_extension` consistency (r2 §1.4 item 5) | **Built, in corrected form** — r2 states it as an iff and it is not one (§8-C3). Render-1's `R-HOOK` row carries the correct rule. |
@@ -167,7 +193,7 @@ normative — the mutation plan and the criteria refer to them.
 
 `hook_ok(trace)` is true iff **all three** of `t1.field_shaped.answer`,
 `t1.separable.answer`, `t1.cost_bearing.answer` equal `"yes"`.
-`t1.attempted` is **not** read (§6-D2).
+`t1.attempted` is **not** read (§6-BD2).
 
 `load_class(trace, scope)`, same discipline:
 
@@ -198,7 +224,7 @@ normative — the mutation plan and the criteria refer to them.
 2. **`L2` is a scope-dependent branch and the only one.** Everything else
    in Table-1 reads the trace alone. That is why `scope` is the single new
    ingredient (§3.5) and why a scope-free caller gets no derivation at all
-   rather than a partial one (§6-D4).
+   rather than a partial one (§6-BD4).
 3. **`L3`'s removal reddens by *exception*, not by a different answer** —
    measured (§9-X4). Deleting `L3` falls through to `t4`, which is `null`
    whenever `tn.answer == "yes"` (`ledger_ops.py:1167-1172`). A mutation
@@ -210,18 +236,31 @@ normative — the mutation plan and the criteria refer to them.
 `_validate_gates` gains a keyword-only `scope: str | None = None`.
 
 The existing t4-presence block (`ledger_ops.py:1163-1181`) leaves one
-window open — `t3.answer == "yes"`, `t2.answer == "no"`,
-`tn.answer != "yes"` — because the scope-free validator cannot know
+window open — **`t3.answer == "yes"` AND `t2.answer == "no"` AND
+`tn.answer != "yes"`** — because the scope-free validator cannot know
 whether the t3 route is taken. **With `scope` in hand the window closes:**
 
 - `t3_route_taken(gates, scope)` → `t4` **must** be `null` (Table-1 never
   reads it; r2 §1.2's "else null").
 - otherwise → `t4` **must** be non-null (Table-1 falls through to `L4`).
 
-Both are **additions**: each refuses a trace the scope-free rule accepted;
-neither accepts one it refused. That direction is mandatory, not stylistic
-— see §6-D3 for the two-path contradiction that the other direction
-produces, and §7.2 for the residual it forces this unit to keep.
+**Both bullets apply INSIDE that window only. Outside it the shipped block
+at `ledger_ops.py:1163-1181` is unchanged and still governs.** *(r1 gate
+F4.)* This clause is load-bearing, not pedantry: read globally, bullet 2
+says "`t4` must be non-null whenever the t3 route is not taken", which
+contradicts the shipped rule that `t4` is `null` when `t2` or `tn`
+answered yes (`:1167-1172`) and **makes `NEW_SKILL` unreachable** — every
+`tn: yes` trace carries `t4: null` and would be refused. Measured
+(§9-X1d): window reading → 608,256 kept / 175,104 refused, no outcome
+unreachable; global misreading → 543,744 kept / 239,616 refused,
+`NEW_SKILL` **unreachable**. And note which criterion catches it: **only
+A4.** A3's two floors still pass under the misreading (543,744 ≥ 500,000
+and 239,616 > 100,000), which is exactly why A4 asserts set *equality*.
+
+Both bullets are **additions**: each refuses a trace the scope-free rule
+accepted; neither accepts one it refused. That direction is mandatory, not
+stylistic — see §6-BD3 for the two-path contradiction that the other
+direction produces, and §7.2 for the residual it forces this unit to keep.
 
 **This is a defect fix, not tidiness.** Enumerated exhaustively (§9-X1):
 of the 97,920 (trace, scope) pairs the shipped validator accepts, **3,456
@@ -259,6 +298,19 @@ the outcome itself otherwise.
 - `recommendation` must be `defer`, **and**
 - `flags` must contain `no-cheap-surface`.
 
+**R-SCOPE modifies the six `route` rows ONLY — R-HOOK, R-ALWAYS, R-PATHED,
+R-SKILL, R-DEMAND, R-NEW. It never modifies R-FALL.** *(r1 gate F3.)*
+Without that pin both readings pass §4 and they contradict each other:
+for outcome `REJECT` at user scope whose load class is `DEMAND`, R-FALL
+fixes `recommendation: reject` while an unpinned R-SCOPE would demand
+`defer`. **R-FALL wins, always** — and the reason is not precedence, it is
+meaning: `REJECT`/`DEFER`/`GRADUATE` are not routings at all, so "the
+cheap surface does not exist at this scope" is not a fact about them. Their
+`destination` is a schema-required placeholder (§6-BD7's note), and
+degrading a rejection to "defer because the shelf is missing" would say
+something false about a lesson nobody is shelving. **Criterion D7a is
+what pins it.**
+
 The destination stays the outcome's honest target. **It is never silently
 upgraded** — r2 §1.6 states this for `DEMAND` at user scope ("NEVER
 silently upgrade to ALWAYS — that is the monoculture rebuilt") and the
@@ -271,24 +323,38 @@ them:**
 - **`recommendation` is a pure function of (outcome, scope).** The analyst
   has no free choice left in that field — and loses nothing, because the
   channel for "I want this deferred" is `g0.defer.answer: yes`, which
-  produces `DEFER` and therefore `recommendation: defer` by R-FALL. §6-D6
+  produces `DEFER` and therefore `recommendation: defer` by R-FALL. §6-BD6
   records the S-22 funnel analysis in full.
 - **R-ALWAYS and R-PATHED are discriminated by the *load semantics*, not
   by a label.** A `variant: rules` file with no `rules_paths` is an
   always-loaded file (r2 §1.6's own parenthesis: "an unpathed rules file
   is a legal, always-loaded surface — same cost as CLAUDE.md"), so
-  R-ALWAYS admits it, and admits `variant: local` too. §6-D7 gives the
+  R-ALWAYS admits it, and admits `variant: local` too. §6-BD7 gives the
   reason this is not a loophole.
 
-### 3.4 The two scope holes — one of which r2 does not name
+### 3.4 Routability by scope — the definition `routable()` implements
 
-Measured by calling the shipped resolvers directly (§9-X3):
+**This table is normative for the `routable(outcome, scope)` helper**
+(the one M16 mutates), so it must cover **all six** of Render-1's route
+rows, not only the two holes *(r1 gate N5)*. Rows verified by calling the
+shipped resolvers directly (§9-X3) and by reading each branch:
 
-| rendering | `skill:<name>` | `project` | `user` |
-|---|---|---|---|
-| `reference` (R-DEMAND) | resolves | resolves | **REFUSED** — `verbs.py:1045-1050` |
-| `claude-md` + `variant: rules` (R-PATHED) | **REFUSED** — `verbs.py:811-816` | resolves | resolves |
-| `skill-md` (R-SKILL) | resolves | refused, unreachable by Table-1 | refused, unreachable by Table-1 |
+| rendering | `skill:<name>` | `project` | `user` | governing code |
+|---|---|---|---|---|
+| `hook` (R-HOOK) | routable | routable | routable | `verbs.py::_hooks_dir_for` `:1088-1116` — branches on scope but **resolves for all three** (skill → the owning plugin's `hooks/`; project/user → `hooks/self-learn/`) |
+| `claude-md`, unpathed (R-ALWAYS) | routable | routable | routable | `verbs.py:947-991` — one branch per scope (`user` `:964`, `project` `:973`, skill-root fall-through `:980-991`) |
+| `claude-md` + `variant: rules` (R-PATHED) | **NOT routable** | routable | routable | `verbs.py::_resolve_rules_target` `:811-816` — P-A13 |
+| `skill-md` (R-SKILL) | routable | refused, **unreachable by Table-1** | refused, **unreachable by Table-1** | `verbs.py:930-945` |
+| `reference` (R-DEMAND) | routable | routable | **NOT routable** | `verbs.py:1045-1050` |
+| `new-skill` (R-NEW) | routable | routable | routable | `verbs.py:993-1034` — **no scope test at all**; it gates on a registered skills root and a `marketplace.json`, never on scope |
+
+**So `routable()` returns `False` in exactly two cells**: `DEMAND` at
+`user`, and `PATHED` at `skill:*`. Every other cell is `True` — including
+the two `skill-md` cells, which are `True` *vacuously* because Table-1
+cannot reach them (see below). Stating the whole map matters because M16
+mutates `routable()` to return `True` unconditionally; a partial
+definition would leave a reviewer unable to tell an intended `True` from a
+missing row.
 
 - **`DEMAND` at user scope** is r2 §1.6's own transition rule. r2 framed it
   as "before B7 lands". **S-23 (2) makes it permanent**: user scope's cheap
@@ -301,9 +367,10 @@ Measured by calling the shipped resolvers directly (§9-X3):
   is not available for scope 'skill:s' yet — plugin-shipped rules is an
   unresolved documentation gap (P-A13)"*. Structurally identical hole,
   opposite corner of the table. R-SCOPE covers both with one rule rather
-  than two special cases. **§8-Q1 routes the underlying question (close
-  P-A13, or steer the doctrine away from T2 at skill scope) to the gate
-  and the human; this unit does not decide it and does not need to.**
+  than two special cases. **The underlying question — close P-A13, or
+  steer the doctrine away from T2 at skill scope — was routed to the r1
+  gate and is now RULED: degrade, and never the doctrine option (§6-BD10,
+  which also carries the distinct-Checkpoint-C-measurement condition).**
 
 **`R-SKILL` needs no scope rule**: `SKILL` is reachable only through `L2`,
 which requires `scope == "skill:" + t3.owner`, so the table cannot emit it
@@ -325,7 +392,7 @@ reason (S2: no call site outside this unit's file list changes).
 | `worker.py:927` (`_land_outputs`) | positional | **unchanged — handed to `U-composer`** (§8-H1) |
 | `worker.py:1282` (`fast_status`) | positional | unchanged |
 | `analyst.py:244` (`analyze`) | positional | unchanged |
-| `verbs.py:551`, `:1193`, `:1247` | positional | **unchanged, deliberately** — §6-D5 |
+| `verbs.py:551`, `:1193`, `:1247` | positional | **unchanged, deliberately** — §6-BD5 |
 
 **Why these three sites are sufficient coverage today, stated so the gate
 can attack it rather than guess at it:**
@@ -363,11 +430,20 @@ from `ledger_ops` (§8-O1). That is a cycle, and it is **not** the benign
 kind.
 
 **Measured (§9-X2), both import orders, fresh interpreter:** a
-module-level `from .gates import …` in `ledger_ops.py` fails with
-`ImportError: cannot import name 'TRACE_OUTCOMES' from partially
-initialized module 'self_learn.ledger_ops' (most likely due to a circular
-import)`. Not a warning, not order-dependent — **both** orders fail, so
-`self-learn` would not start at all.
+module-level `from .gates import …` in `ledger_ops.py` breaks **both**
+orders — not a warning, not order-dependent, so `self-learn` would not
+start at all. **The two orders fail with different messages, and r1 quoted
+only one of them** *(r1 gate N4)*:
+
+| first import | message |
+|---|---|
+| `import self_learn.ledger_ops` | `ImportError: cannot import name 'TRACE_OUTCOMES' from partially initialized module 'self_learn.ledger_ops' (most likely due to a circular import)` |
+| `import self_learn.gates` | `ImportError: cannot import name 'expected_outcome' from partially initialized module 'self_learn.gates' (most likely due to a circular import)` |
+
+Which name and which module appear depends on which side of the cycle the
+interpreter entered from. **A2 therefore asserts `returncode`, not message
+text** — it is unaffected by this, and a criterion that matched on the
+message would pass in one order and fail in the other.
 
 **Pinned:** `ledger_ops` imports from `gates` **inside the function that
 needs it** (`_validate_derivation`, and `_validate_gates` for
@@ -466,6 +542,22 @@ If the builder's enumeration legitimately differs from §9's, the test
 docstring must say how and the two floors must be restated against the
 new numbers — never dropped.
 
+**A3b — the same sweep must call `load_class` DIRECTLY, with its own
+floor.** *(r1 gate F5.)* Sweeping `expected_outcome` alone understates the
+crash surface by 8.5×, because `expected_outcome` returns early on `G1`,
+`G2`, `G3` and `H` and never reaches the table's fragile part. Measured
+without §3.2's rule (§9-X1e): `expected_outcome` raises on **3,264** pairs,
+`load_class` on **27,648**. That gap is not academic — **§3.1 note 1 and
+R-FALL/R-HOOK call `load_class` even when `H` fires or a `g0` leg
+short-circuits**, so the reachable surface in production is `load_class`'s,
+not `expected_outcome`'s. §5's own lead (b) predicted exactly this shape;
+this criterion is what closes it. Assert: over the A3 enumeration,
+`load_class(trace, scope)` raises nothing and returns a member of
+`TRACE_OUTCOMES` for every kept pair, with the same two vacuity floors.
+*Broken:* a builder who applies §3.2's rule but computes the load class
+somewhere it has not yet run — the second failure lead in §5 — reddens
+here and nowhere else.
+
 **A4 — onto: every outcome is reachable.** Over the same enumeration,
 assert `{expected_outcome(t, s) for every survivor} == set(TRACE_OUTCOMES)`
 — set **equality**, not containment, with the symmetric difference in the
@@ -478,14 +570,43 @@ that can never fire. **A4 is why A3's enumeration must vary `g0`** —
 `REJECT`, `DEFER` and `GRADUATE` are unreachable without it (measured:
 absent from the `g0`-all-no slice, present in the full sweep).
 
-**A5 — the golden rows.** One pinned (trace, scope) → outcome per Table-1
-row id (`G1`, `G2`, `G3`, `H`, `L1`, `L2a`, `L2b`, `L2c`, `L3`, `L4`,
-`L5`, `L6`), each asserted individually with the row id in the assertion
-message. Each pinned trace must be one `_validate_gates` accepts.
-*Broken:* a reordered or deleted row changes exactly the rows that depend
-on it; §5's M2–M8 name which. *Recorded so the gate does not misread its
-own sweep:* the `L3` mutation reddens by **exception**, not by a different
-value (§3.1 note 3, measured §9-X4).
+**A5 — the golden rows, each drawn from its row's DIFFERS set.** One
+pinned (trace, scope) → outcome per Table-1 row id (`G1`, `G2`, `G3`, `H`,
+`L1`, `L2a`, `L2b`, `L2c`, `L3`, `L4`, `L5`, `L6`), each asserted
+individually with the row id in the assertion message, and each pinned
+trace one that `_validate_gates` accepts.
+
+**A pinned fixture is only valid if deleting its own row changes what that
+fixture produces** — a different outcome, or an exception. *(r1 gate F2.)*
+This is not a formality: a naturally-chosen fixture frequently survives
+deletion of the row it is meant to pin, because the fall-through returns
+the same answer. Measured over the 608,256 kept pairs (§9-X1c), as
+*fires / differs / raises / **surviving-fixture fraction***:
+
+| row | fires | differs | raises | a naive fixture survives |
+|---|---|---|---|---|
+| `L5` | 15,232 | 5,712 | 0 | **62.5%** |
+| `L2a` | 816 | 510 | 0 | **37.5%** |
+| `L4` | 30,464 | 24,752 | 0 | **18.8%** |
+| `L2c` | 306 | 102 | 204 | 0% — but only 33% of detections are by *value* |
+| `L3` | 1,904 | 0 | 1,904 | 0% — **every** detection is by exception |
+| `G1`,`G2`,`G3`,`H`,`L1`,`L2b`,`L6` | — | — | — | 0% |
+
+`L5` is the worst case and its mechanism is instructive: a natural
+`t4.conduct_mode: yes` fixture that also carries `fs.verdict` `SILENT` or
+`COSTLY` falls through to `L6` and returns `ALWAYS` **either way**, so the
+test passes with `L5` deleted. The fixture must pair `conduct_mode: yes`
+with an `fs.verdict` of `LOUD_CHEAP` or `INDETERMINATE` and no `e1`
+promotion, so the fall-through would return `DEMAND`.
+
+**The builder must compute the DIFFERS set, not eyeball it** — the A3
+enumeration is already in the module, so this is a filter over data the
+test already has. *Broken:* a reordered or deleted row changes exactly the
+rows that depend on it; §5's M2–M8 and M24a–M24d name which. *Recorded so
+neither builder nor gate misreads its own sweep:* the `L3` and `L2c`
+mutations redden **by exception**, not by a different value (§3.1 note 3,
+measured §9-X1c) — a sweep that only diffs return values scores `L3` as
+survived when it in fact crashed on every fixture that reaches it.
 
 **A6 — `SKILL` is scope-safe by construction.** Over the A3 enumeration,
 assert that every (trace, scope) yielding `SKILL` has
@@ -516,7 +637,7 @@ accepted). Asserted against `validate_proposal(data)` called exactly as it
 is at `analyst.py:244`.
 *Broken:* if the builder makes the scoped rules unconditional, this
 criterion fails — and so would `worker.py`'s landing check on proposals
-`write_proposal` had just accepted (§6-D3).
+`write_proposal` had just accepted (§6-BD3).
 
 ### C. Recompute-and-refuse
 
@@ -525,14 +646,37 @@ criterion fails — and so would `worker.py`'s landing check on proposals
 **both** the stated and the derived outcome. The identical trace with the
 derived outcome → accepted.
 
-**C2 — S6 holds.** Parameterised over malformed shapes (`outcome` absent,
-`outcome` a non-string, `gates` legal but `scope` an empty string, a scope
-string with no `skill:` prefix): every call raises `ProposalError` and
-nothing else, asserted with `pytest.raises(ProposalError)` — never a bare
-`except Exception`.
-*Broken:* a `TypeError`/`KeyError` escaping here is the FW-63 shape;
-`proposal_info` catches only `ProposalError` and `queue()` catches
-nothing.
+**C2 — S6 holds: nothing but `ProposalError` ever escapes.** *(r1 gate
+BLOCKER, restated.)* Parameterised over genuinely **malformed** inputs:
+`outcome` absent; `outcome` a non-string; `scope` not a string at all
+(`123`, `["skill:s"]`); `scope` the empty string; and `scope` the
+empty-name form `"skill:"`. For each, the call **either returns normally
+or raises `ProposalError`** — assert by catching `Exception` and requiring
+`isinstance(exc, ProposalError)`, never a bare `except Exception` that
+swallows the distinction.
+*Broken:* a `TypeError`/`KeyError`/`AttributeError` escaping here is the
+FW-63 shape — `proposal_info` catches only `ProposalError` and `queue()`
+catches nothing, so one malformed trace tracebacks `self-learn list` for
+every record in the bucket.
+
+**A legal scope value never refuses on shape alone — this counter-leg is
+mandatory and is what the r1 gate's BLOCKER was about.** `records.py`'s
+`_validate_scope` (`:806-811`) admits exactly `project`, `user` and
+`skill:<name>`; **`project` and `user` have no `skill:` prefix and are the
+two commonest scopes on the hot path** (of the 35 live pending records, 9
+are `user` and 6 are `project`). So C2 must, in the same test, assert that
+a **coherent** trace validates cleanly at all three of `"project"`,
+`"user"` and `"skill:s"`. Only the trace's own content may refuse it.
+Without this leg, a build that refuses every scope satisfies C2 while
+`proposal_info` — which §3.5 puts on every pending record on every
+`list`/`status` — refuses the majority of the live ledger.
+
+*A property worth asserting while here, because it is what makes the
+empty-name case harmless:* `"skill:"` cannot take the t3 route, because
+`t3_route_taken` compares against `"skill:" + owner` and `_validate_gates`
+already refuses an empty `gates.t3.owner` when `t3.answer` is `yes`
+(`ledger_ops.py:1024-1028`). The malformed scope therefore degrades to
+"route not taken", which is a defined outcome, not a crash.
 
 **C3 — the eligibility path is really wired.** Through the real
 `queue()` → `proposal_info()` path (not a direct `validate_proposal`
@@ -569,7 +713,7 @@ A D-criterion without its twin is not satisfied.
 **D3 — R-ALWAYS**: `ALWAYS` + `variant: rules` + non-empty `rules_paths`
 refused; `ALWAYS` + `variant: null` accepted; **and** `ALWAYS` +
 `variant: local` accepted, **and** `ALWAYS` + `variant: rules` with no
-`rules_paths` accepted (the §6-D7 admissions — without these two legs a
+`rules_paths` accepted (the §6-BD7 admissions — without these two legs a
 build that simply refuses every variant on `ALWAYS` passes D3).
 **D4 — R-SKILL**: `SKILL` + `destination: claude-md` refused; +
 `skill-md` accepted.
@@ -584,6 +728,14 @@ proposal with `already_canon: false` refused, `true` accepted. **And**:
 the destination is asserted to equal the *load class's* destination, with
 a second fixture whose load class differs from the first — otherwise the
 rule passes for a build that hardcodes one destination.
+**D7a — R-FALL beats R-SCOPE, asserted where they collide.** *(r1 gate
+F3.)* A `REJECT` outcome at `scope="user"` whose load class is `DEMAND` —
+i.e. an unroutable rendering under an outcome that is not a routing —
+**keeps `recommendation: reject`, carries NO `no-cheap-surface` flag, and
+is accepted**; the same proposal with `recommendation: defer` is refused.
+Without D7a both readings of §3.3 pass §4 and the build picks one by
+accident. This is the only criterion that exercises a fallback outcome at
+an unroutable scope.
 **D8 — R-SCOPE at user scope.** `DEMAND` at `scope="user"` with
 `recommendation: route` refused (message names `no-cheap-surface` or the
 scope); with `recommendation: defer` **and** `flags: ["no-cheap-surface"]`
@@ -649,13 +801,13 @@ survival from the wrong tree is not evidence, while a mutation that
 | M3 | delete `G3` | A4 (`GRADUATE` unreachable), A5 |
 | M4 | `hook_ok`: require only `field_shaped` | A5 (`H`), D5 |
 | M5 | delete `L1` | A5 (`L1`), D2 |
-| M6 | delete `L3` | A5 (`L3`) — **by exception, not by value** (§3.1 note 3) |
+| M6 | delete `L3` | A5 (`L3`) — **by exception, not by value** (§3.1 note 3): all 1,904 detections raise, 0 differ |
 | M7 | `L6`: drop the `e1_promote` disjunct | A5 (`L6`) |
 | M8 | `e1_promote`: `>= 2` → `>= 1` | A5 (`L2b` or `L6`) |
 | M9 | `t3_route_taken`: compare `scope == t3["owner"]` (drop the `skill:` prefix) | A6, B1, B3 |
 | M10 | invert the two branches of §3.2's scoped `t4` rule | B1, B3 |
 | M11 | make §3.2's rule unconditional (ignore `scope is None`) | B4 |
-| M12 | `_validate_derivation`: drop the `scope is None` early return | E1, E2 |
+| M12 | `_validate_derivation`: drop the `scope is None` early return | **E1 only** — it reddens the trace-less-with-`scope=None` legs, because `expected_outcome(gates, None)` on an absent-or-partial trace raises. It does **not** redden E2, which asserts an `inspect.signature` property no runtime edit can move; r1's claim that it did was wrong *(gate N6)*. **The builder must state which of the two early returns `_validate_derivation` carries** — `gates is None` and `scope is None` are separate guards, and dropping only the second is what this mutation models |
 | M13 | R-DEMAND destination → `claude-md` | D1 |
 | M14 | R-ALWAYS: accept `variant: rules` with paths | D3 |
 | M15 | drop the `no-cheap-surface` flag requirement from R-SCOPE | D8, D9 |
@@ -670,38 +822,66 @@ survival from the wrong tree is not evidence, while a mutation that
 | M24 | R-SKILL destination → `claude-md` | D4 |
 | M25 | read an absent `recommendation` as "skip the check" instead of `route` | D10 |
 | M26 | re-declare a nine-member outcome tuple in `gates.py` and use it | A1 |
-| M27 | delete §3.2's scoped `t4` rule while keeping the derivation | B1, B3, **and C2** — derivation then raises `TypeError` on §9-X1's 3,456-pair shape, i.e. the S6 breach |
+| M27 | delete §3.2's scoped `t4` rule while keeping the derivation | B1, B3, **C2** (derivation then raises `TypeError` on §9-X1's shape, i.e. the S6 breach), **A3 and A3b** — and the asymmetry is the point: A3 reddens on 3,264 pairs, A3b on 27,648 (§9-X1e) |
+| **M30** | §3.2's rule refuses whenever the window is entered, both branches | **B2** — its positive control; without B2, M10/M27 pass on a build that refuses everything in the window |
+| **M31** | R-NEW: drop the `new_skill == gates.tn.proposed_name` comparison | D6 |
+| **M24a** | delete `L2a` | A5 (`L2a`) — 510 of 816 fixtures differ; **37.5% of naive fixtures survive**, so this mutation is only meaningful against a DIFFERS-set fixture |
+| **M24b** | delete `L2c` (the `otherwise` leg of the `L2` block) | A5 (`L2c`) — 102 differ, 204 raise. **Two thirds of the detections are exceptions**, and both must be counted or the row scores as survived |
+| **M24c** | delete `L4` | A5 (`L4`) — 24,752 of 30,464 differ; 18.8% survive |
+| **M24d** | delete `L5` | A5 (`L5`) — 5,712 of 15,232 differ; **62.5% survive**, the worst row in the table. See A5 for the fixture shape that does not |
+| **M28** | read §3.2's rule globally instead of inside its window | A4 (`NEW_SKILL` unreachable) — and **only** A4: A3's two floors still pass at 543,744 / 239,616 *(gate F4)* |
+| **M29** | apply R-SCOPE to R-FALL as well as the six route rows | D7a |
+
+*(M24a–M24d were absent from r1 — four table rows with no mutation at all,
+inside the mutation plan written to hunt exactly that. Gate F2.)*
+
+**Every criterion in §4 has at least one mutation above, except E3, E4 and
+E5 — deliberately, and stated so the omission is not read as the same
+gap.** Those three are process gates over the whole tree (suite green,
+pyright zero-new, the five fixtures corrected rather than skipped), not
+behaviours a one-line edit can toggle; the instrument that checks them is
+running them, not mutating them.
 
 **Reviewers are invited to invent mutations not listed here.** Two shapes
 this unit is most likely to be wrong in, named as leads rather than as
 findings: (a) a rendering rule that is checked only on the *routable*
 branch, so R-SCOPE silently disables it; (b) a `load_class` call in
 R-FALL/R-HOOK that is evaluated before §3.2's presence rule has run, which
-would reintroduce §9-X1's crash from a different direction.
+would reintroduce §9-X1's crash from a different direction. **Lead (b) was
+right and is now covered by A3b** — the crash surface reached through
+`load_class` is 8.5× the one reached through `expected_outcome` (§9-X1e),
+which is what r1 left untested.
 
 ---
 
 ## 6. Builder decisions, made here rather than left open
 
-- **D1 — `gates.py` is a new module, not a section of `ledger_ops.py`.**
+- **BD1 — `gates.py` is a new module, not a section of `ledger_ops.py`.**
   Campaign §2 names it; more importantly `ledger_ops.py` is 1,934 lines
   and the table is the one part of this subsystem that is genuinely pure
   and genuinely worth reading on its own. Keeping it separate is also what
   lets A3's exhaustive enumeration import the table without importing the
   validator's context.
-- **D2 — `t1.attempted` is not read by Table-1.** It records whether the
+- **BD2 — `t1.attempted` is not read by Table-1.** It records whether the
   analyst *attempted* T1, not the verdict; r2 §1.2 says the validator
   cannot referee its trigger condition ("literal command/flag/path
   token"), and r2 §8 item 2 keeps that as MEASURED-or-ACCEPTED work. A
   table that read it would make an unenforceable field load-bearing.
-- **D3 — scoped rules may only ADD refusals, never remove them.** The
+- **BD3 — scoped rules may only ADD refusals, never remove them.** The
   tempting move is to also *relax* U-schema's `t3a` over-requirement
-  (§7.2) once scope is known. It is wrong: `write_proposal` (scoped) would
-  then accept a proposal that `worker.py:927`'s positional
-  `validate_proposal(data)` refuses, and `_land_outputs` **deletes**
-  invalid worker output (`worker.py:937-940`). A producer whose output the
-  landing step deletes is a silent, total loss of the analysis.
-- **D4 — no partial derivation when `scope` is absent.** An
+  (§7.2) once scope is known. It is wrong: the scoped sites would then
+  accept a trace that `worker.py:927`'s positional `validate_proposal(data)`
+  refuses, and `_land_outputs` **deletes** invalid worker output
+  (`worker.py:937-940`). A producer whose output the landing step deletes
+  is a silent, total loss of the analysis.
+  *(r1 said "`write_proposal` (scoped) would then accept…". Wrong path, and
+  the correction is worth keeping visible — gate N3. `write_proposal` never
+  reaches `_land_outputs`; its only in-CLI caller is `import_backlog.py:267`.
+  The producer that actually meets the landing check is **the analyst**,
+  whose proposals the model writes directly into `proposals/` and which the
+  worker then validates positionally. The hazard is real and the ruling
+  unchanged; only the path was misnamed.)*
+- **BD4 — no partial derivation when `scope` is absent.** An
   "admissible-set" variant was designed and rejected: with `scope`
   unknown, `L2` may or may not fire, and when `t4` is null the
   fall-through is not computable at all, so the admissible set collapses
@@ -709,7 +889,7 @@ would reintroduce §9-X1's crash from a different direction.
   cannot fail, dressed as one that runs everywhere. The census (§3.5) is
   stated instead, and the one gap it leaves is handed to the unit that
   owns the file (§8-H1).
-- **D5 — the route verbs' positional call sites stay positional, on
+- **BD5 — the route verbs' positional call sites stay positional, on
   purpose.** `verbs.py:551` (`_resolve_destination`) reads the proposal at
   route time. Making it derivation-checked would let an internally
   inconsistent *analyst* trace **block a human's route**. The trace is the
@@ -717,30 +897,55 @@ would reintroduce §9-X1's crash from a different direction.
   the proposal's honesty, never the human's action. (It also cannot bite
   in practice: the UI's approve path passes `--dest` explicitly — FW-64 —
   so `_resolve_destination` returns before reading the proposal at all.)
-- **D6 — `recommendation` is fully derived, and this is not an S-22
+- **BD6 — `recommendation` is fully derived, and this is not an S-22
   funnel.** S-22 defines a funnel as a constraint that *silently removes an
   option the agent should have had*. Nothing is removed: every
   recommendation value remains reachable, through the gate that means it
   (`g0.defer.answer: yes` → `DEFER` → `defer`). What is removed is the
   ability to state a recommendation the reasoning does not support — which
   is the audit's original finding in miniature.
-- **D7 — R-ALWAYS admits `variant: local` and unpathed `variant: rules`.**
+- **BD7 — R-ALWAYS admits `variant: local` and unpathed `variant: rules`.**
   Table-1 has no cell for either; refusing them would foreclose
   `CLAUDE.local.md` and topic-file routing for every traced proposal —
   that *would* be a funnel. Both are always-loaded surfaces, so admitting
   them under `ALWAYS` is semantically exact. The cost is stated in §7.3:
   `alternates` cannot distinguish `ALWAYS` from `PATHED`, because both
   render `claude-md`.
-- **D8 — `selfcheck.py` is on the file list for exactly one keyword
-  argument.** It is not contended this wave (`U-reach` merged at
-  `17aa06c`; no in-flight unit names it). The alternative — hand it to a
-  later unit — recreates FW-62, whose own row calls a validator with a
-  strict machine path and a lenient human path "permissions inverted".
-  Flagged to the gate as a scope call (§8-Q2).
-- **D9 — error messages name the gate path, the two outcomes, and the
+- **BD8 — `selfcheck.py` is on the file list for exactly one keyword
+  argument. RULED IN SCOPE by the r1 gate (former §8-Q2); the question is
+  closed.** *Grounds, recorded because they generalise:* the campaign's
+  file-disjointness rule is about **concurrency, not ownership**, and
+  nothing is concurrent on `selfcheck.py` — `U-reach` merged at `17aa06c`
+  and neither in-flight sibling claims it. Against that, FW-62 was a
+  **live fail-open on this exact line, fixed four days ago**; omitting
+  `scope=` rebuilds the same inversion one field over, and **C5 is the
+  only criterion that exercises the human path end to end by exit code.**
+  A later unit taking it would leave the human's hand-edit path the
+  lenient one for the whole interval.
+- **BD9 — error messages name the gate path, the two outcomes, and the
   scope; never file contents.** Inherited from U-schema's D7 for the same
   reason: the fields echoed are already in the proposal and already
   secret-scanned on every producer path.
+- **BD10 — `PATHED` at skill scope DEGRADES rather than being designed
+  around. RULED by the r1 gate (former §8-Q1); the question is closed, with
+  one condition.** *Grounds:* degrading **forecloses nothing** — closing
+  P-A13 later flips one predicate (`routable`) and R-SCOPE simply stops
+  firing for that cell, with no change to the schema, Table-1, Render-1 or
+  the doctrine. The rejected alternative (b) — teach the doctrine not to
+  ask T2 at skill scope — is the one that forecloses, and it is S-22's
+  definition of a funnel verbatim: a constraint that silently removes an
+  option the agent should have had.
+  **The condition, and it is not cosmetic:** degrading routes *both* holes
+  — `DEMAND`-at-user and `PATHED`-at-skill — into the same
+  `defer` + `no-cheap-surface` bucket. One flag value for two structurally
+  different gaps is illegible in aggregate exactly where Checkpoint C
+  presses hardest ("did we build a new monoculture at the other end?").
+  **So the FW row this unit opens must record skill-scope `PATHED` as a
+  DISTINCT Checkpoint-C measurement**, counted separately from
+  user-scope `DEMAND`, not folded into a single `no-cheap-surface` total.
+  Card-side distinguishability — this spec's §8-H5 — is **owned by
+  `U-demand-user`**, assigned to its fold round by the orchestrator; this
+  unit supplies the flag, that unit makes the two cases readable apart.
 
 ---
 
@@ -749,15 +954,26 @@ would reintroduce §9-X1's crash from a different direction.
 ### 7.1 Not built, with reasons
 
 - **`e1.sightings` cross-check against the record** (U-schema §3.7 item 4,
-  offered to "`U-table` or a later unit"). **Deliberately not built, and
-  the reason is not cost.** `e1_promote` requires `sightings >= 2` **and**
-  `post_demand_recurrence`, and the second conjunct is *structurally*
-  uncheckable here (it needs `recurrences[]` history correlated with a
-  prior DEMAND routing — U-schema §3.7 item 8; r2 §8 item 5 records it as
-  `false` on every record in the corpus). Checking `sightings` alone
-  closes one of two doors on a promotion vector and leaves the other wide
-  open, while *reading* as though the vector were closed. Both halves are
-  handed as one obligation (§8-H4).
+  offered to "`U-table` or a later unit"). **Deliberately not built. The
+  decline is ACCEPTED by the r1 gate, with its stated reason NARROWED —
+  and the narrowing matters, because r1's reason was partly wrong.**
+
+  *What r1 argued and the gate corrected:* r1 said checking `sightings`
+  alone half-closes a promotion vector while reading as closure. That
+  overstates it. `post_demand_recurrence` is `false` corpus-wide (§9-X6
+  measured zero traces on the live ledger at all), so a sightings-only
+  check **cannot** produce a false promotion; and all three scoped call
+  sites already hold the `Record`, so S4 does not bite either. The
+  hazard r1 named is not live and the cost r1 implied is not real.
+
+  *The defensible ground, which is the one to keep:* **`e1.sightings` is a
+  TRANSCRIPTION of the record's own frontmatter, not a judgment.** This
+  unit exists to close *judgment* fabrication — a conclusion that does not
+  follow from its stated premises. A transcription check is a different
+  class of work with a different owner, and bundling it here would blur
+  what the unit is for. Stated explicitly so a later agent does not reopen
+  §8-H4 as cheap-and-obvious: it **is** cheap, and it is still not this
+  unit's.
 - **TARGET-sourced quote containment** (U-schema §3.7 item 1, §8-O2,
   FW-50). Needs I/O on the eligibility hot path (S4). Untouched.
 - **`tn.members` existence probes**, **`t3.roster_sha` against a composed
@@ -784,10 +1000,10 @@ quote) for a block nobody will read.
 **Accepted, not deferred.** Removing it would make the scoped path accept
 what the scope-free path refuses, and `worker.py`'s `_land_outputs`
 **deletes** proposals its positional `validate_proposal(data)` refuses
-(§6-D3) — trading a wasted paragraph for a destroyed analysis. It closes
+(§6-BD3) — trading a wasted paragraph for a destroyed analysis. It closes
 for free the day the last positional producer site is scoped, which is
 `U-composer`'s (§8-H1); until then it is the correct side of the trade.
-U-schema §6-D5 named this direction of its residual explicitly and handed
+U-schema's own §6-D5 named this direction of its residual explicitly and handed
 it here; this row is the disposition, so a later agent does not reopen it
 as a bug.
 
@@ -820,13 +1036,17 @@ A trace that `worker.py:927` lands and `proposal_info` then refuses makes
 the record permanently `is_unanalyzed: True`, so the next worker run
 re-analyzes it. If the analyst re-emits the same mismatch, that repeats.
 
-**This is the same loop U-schema accepted for quote containment**
-(its §3.7 item 1(b) and E7's test), bounded by the same things: the
-worker's run coalescing (S-5), and the fact that every cycle is recorded
-in the run journal. It is disclosed rather than accepted because the
-right fix is not here: it is `worker.py:927` refusing at landing time and
-**deleting** the bad output with a journal line, which is §8-H1 — the same
-one-line change, and the same owner.
+**This is the same loop U-schema accepted for quote containment** (its
+§3.7 item 1(b), and its own criterion E7 —
+`test_fabricated_quote_makes_proposal_unfresh`; note that is *U-schema's*
+E7, not this spec's §9-X rows), bounded by the same things: the worker's
+run coalescing (S-5), and the fact that every cycle is recorded in the run
+journal. It is disclosed rather than accepted because the right fix is not
+here: it is `worker.py:927` refusing at landing time and **deleting** the
+bad output with a journal line, which is §8-H1 — the same one-line change,
+and the same owner. **That handoff is now verified taken**: `U-composer`'s
+gate independently found the same gap and its r2 fold requires H1 in full
+(§8-H1), so this residual has a named closer and a scheduled one.
 
 ---
 
@@ -869,6 +1089,18 @@ one-line change, and the same owner.
   saying nothing about it. R-SCOPE replaces both special cases with one
   rule. Measured, §9-X3.
 
+**Cross-unit reconciliation with `U-composer`** *(gate F6)*. `U-composer`'s
+r1 §8 carried an assumption 7 — *"doctrine keeps skill-scope T2 answering
+no"* — which is the option §6-BD10 rejects as an S-22 funnel: a doctrine
+that stops asking a question, to work around a capability gap the table
+can state honestly. **Its own gate blocked on the same conflict, and its
+r2 adopts R-SCOPE** in its D2/D3, so the two specs now agree that the
+table answers T2 at every scope and degrades the rendering where the
+surface does not exist. **No change is required on this side** — this
+paragraph exists so a later reader who meets the r1 assumption in a diff
+does not treat it as live. *(Cited from the sibling's r2 fold instruction;
+confirm against `U-composer`'s r2 §8 when it lands.)*
+
 ### Observations in contended files — reported, NOT fixed
 
 - **N1 — `worker.py:928`'s `rpath` is computed *after* the validation it
@@ -891,6 +1123,13 @@ one-line change, and the same owner.
   one line plus a move. **It is not urgent before `U-composer` because no
   proposal carries a trace until `U-composer` ships** — the unit that
   creates the exposure is the unit that closes it.
+  **HANDOFF VERIFIED TAKEN** *(gate F7)*: `U-composer`'s r1 §3.7 accepted
+  only the `record_text=` half; its own blind gate independently found the
+  gap (its F1) and its fold round requires taking H1 **in full** —
+  `record_text=` **and** `scope=`, with the line swap. So §7.4's residual
+  now has a named closer rather than an open hope. *(Cited from the r2
+  fold instruction, not from a merged r2 hash; a reader checking this
+  should confirm against `U-composer`'s r2 §3.7 when it lands.)*
 - **H2 → `U-composer` (owns `routing-doctrine.md`):** the doctrine must
   teach the **current** rendering, not r2 §1.6's. Specifically: PATHED
   renders `route`, not `defer` + `pathed-unbuilt` (§8-C2); the
@@ -916,23 +1155,21 @@ one-line change, and the same owner.
   card that shows only `destination`, exactly like one the analyst chose
   to defer.
 
-### Questions this unit routes rather than answers
+### Questions this unit routed — both ANSWERED at the r1 gate
 
-- **Q1 — `PATHED` at skill scope: degrade, or close P-A13?** This spec
-  degrades (R-SCOPE), because that is the change that does not require a
-  ruling. The alternatives are (a) close P-A13 so skill-scope rules files
-  exist — real work in `verbs.py`/`compilers.py`, and a documentation
-  question about plugin-shipped rules; (b) teach the doctrine that T2 is
-  not asked at skill scope — cheap, but it hides a real capability gap
-  behind a prompt. **Recommendation: degrade now (this spec), open an FW
-  row for (a), and do not do (b)** — a doctrine that stops asking a
-  question is how the monoculture was built the first time.
+Kept as a record of what was asked and how it was settled; the rulings
+themselves are normative in §6, not here.
+
+- **Q1 — `PATHED` at skill scope: degrade, or close P-A13?** → **DEGRADE,
+  with a condition. §6-BD10.** The remaining work is (a) an FW row for
+  closing P-A13, which must record skill-scope `PATHED` as a **distinct**
+  Checkpoint-C measurement rather than folding it into a single
+  `no-cheap-surface` total. Option (b) — teach the doctrine not to ask T2
+  at skill scope — is **rejected**, and `U-composer`'s r1 had assumed it
+  (§8's cross-unit paragraph).
 - **Q2 — is one keyword argument in `selfcheck.py` inside this unit's
-  scope?** §6-D8 argues yes; the gate should rule. If the answer is no,
-  criterion C5 moves out with it and the human's hand-edit path stays
-  FW-62-shaped until someone else takes it — which the gate should weigh
-  against the campaign's file-disjointness rule, not just against the
-  file list.
+  scope?** → **YES. §6-BD8.** Disjointness governs concurrency, not
+  ownership; nothing is concurrent on that file; C5 stays.
 
 ---
 
@@ -961,10 +1198,27 @@ its preconditions is a coincidence someone wrote down):
   `tn.answer` ∈ {yes,no,indeterminate}; `t4` present/absent × its two
   answers × all four verdicts; `e1.sightings` ∈ {1,2};
   `e1.post_demand_recurrence` ∈ {false,true}.
-- Fixed: `t1.attempted = True` (not read, §6-D2); `t3.owner = "alpha"`;
+- Fixed: `t1.attempted = True` (not read, §6-BD2); `t3.owner = "alpha"`;
   `t3.roster_sha` a well-formed anchor; every evidence string a single
   fixed quote long enough to clear `_QUOTE_MIN_CHARS`; `tn.terms`,
   `tn.members`, `tn.proposed_name` at their minimum legal shapes.
+- **Four further values the enumeration is only LEGAL with, which r1
+  omitted** *(gate N2 — and the omission is not cosmetic: without any of
+  them the counts collapse and two outcomes become unreachable)*:
+  1. **`gates.g0.canon.target`** — a non-empty string whenever
+     `canon.answer` is `yes` (`ledger_ops.py:913-919`). Without it every
+     `canon: yes` trace is refused and **`GRADUATE` is unreachable**.
+  2. **`gates.t3a.depth_behind_rule.target` and
+     `gates.t4.depth_behind_rule.target`** — non-empty whenever their own
+     `answer` is `yes` (`:1098-1104`, `:1198-1204`).
+  3. **`gates.t2.match_path`** — non-empty whenever `t2.answer` is `yes`
+     (`:989-994`).
+  4. **A sibling `rules_paths` on the proposal dict** whenever `t2.answer`
+     is `yes` — U-schema's X1 positive control reads it off the
+     *proposal*, not the trace (`:995-1013`), and `match_path` must match
+     at least one of its globs. Without it every `t2: yes` trace is
+     refused and **`PATHED` is unreachable**. The enumeration used
+     `rules_paths: ["src/**/*.py"]` with `match_path: "src/a.py"`.
 - Scopes: `user`, `project`, `skill:alpha` (the owner), `skill:beta` (a
   non-owner). Four scopes is the minimum that separates the `L2` branch
   from its fall-through *and* keeps both non-skill scopes distinct for
@@ -986,19 +1240,93 @@ exactly: 3,456. All nine outcomes were reachable.
 result in `TRACE_OUTCOMES`. Over the full `g0` sweep (608,256 pairs):
 **0 crashes, and `unreachable overall: []`** — all nine outcomes produced.
 
-**X1c — every row is load-bearing.** Deleting each Table-1 row and
-re-running the full sweep: `G1` 304,128 differing results; `G2` 152,064;
-`G3` 76,032; `H` 8,448; `L1` 7,072 (+7,616 errors); `L2` 1,088 (+2,176);
-`L2a` 1,020; `L2b` 1,020; `L4` 49,504; `L5` 11,424; `L6` 19,040. **`L3`:
-0 differing results, 3,808 errors** — the finding recorded at §3.1 note 3
-and M6.
+**X1c — every row is load-bearing. CORRECTED in r2 after the gate found a
+harness bug; r1's load-class counts were exactly 2× too high** *(gate N1)*.
+
+*The bug, named because it is the point:* r1's sweep built its pair list by
+concatenating (a) the `g0`-all-no slice and (b) the full `g0` sweep — but
+(b) **already contains** (a), so every `g0`-all-no pair was scored twice.
+Rows `G1`/`G2`/`G3` differ only on traces where a `g0` leg fires, which are
+absent from the duplicated slice, so those three were unaffected — while
+`H` and `L1`–`L6` differ only on `g0`-all-no traces, i.e. exactly the
+duplicated set, and so doubled uniformly. That is precisely the signature
+the gate reported: three rows agreeing, seven at 2×. **The gate was right
+and r1 was wrong.** A3's two floors were computed by a different loop with
+no duplication, which is why they reproduced exactly on both sides.
+
+Re-run over the 608,256 kept pairs, **each pair scored once**:
+
+| row | fires | differs | raises |
+|---|---|---|---|
+| `G1` | 304,128 | 304,128 | 0 |
+| `G2` | 152,064 | 152,064 | 0 |
+| `G3` | 76,032 | 76,032 | 0 |
+| `H` | 4,224 | 4,224 | 0 |
+| `L1` | 7,344 | 3,536 | 3,808 |
+| `L2` (branch entry) | — | 544 | 1,088 |
+| `L2a` | 816 | 510 | 0 |
+| `L2b` | 510 | 510 | 0 |
+| `L2c` | 306 | 102 | 204 |
+| `L3` | 1,904 | 0 | 1,904 |
+| `L4` | 30,464 | 24,752 | 0 |
+| `L5` | 15,232 | 5,712 | 0 |
+| `L6` | 9,520 | 9,520 | 0 |
+
+Three internal consistency checks, each derivable without running
+anything, which is what makes these numbers trustworthy in a way r1's were
+not: `L1`'s 3,536 + 3,808 = **7,344**, its own fire count; `L3`'s 1,904
+raises = the `NEW_SKILL` population exactly; `L2c`'s 102 + 204 = **306**,
+and the split is explained — deleting `L2c` falls through to `L3` for the
+`tn: yes` subset (102, returns `NEW_SKILL`) and to `L4` for the rest (204,
+reads `t4`, which §3.2 has just forced to `null` when the t3 route is
+taken → raises).
+
+**One disagreement with the gate, reported rather than absorbed.** The gate
+scored `L2c` as `306 / 0 / 100% surviving` — "no single-line deletion can
+redden it". This measurement says `306 / 102 differ / 204 raise`, i.e. 0%
+surviving. The two model different edits: the gate appears to model `L2c`
+as returning what the fall-through would return anyway, while this run
+models the literal deletion of the `return "DEMAND"` line, which lets
+control leave the `L2` block. The literal deletion is what M24b specifies,
+and its consequences are derivable (above). **The gate's instruction is
+adopted regardless and unchanged**, because it is right either way and is
+strictly the safer reading: `L2c`'s fixture must come from the DIFFERS set,
+and its mutation must be scored for exceptions as well as values. Recorded
+so the code gate, which will re-run this, is not surprised by a third
+number.
+
+**X1d — §3.2's window clause, measured against its own misreading**
+*(gate F4)*. Same enumeration, two readings of the scoped `t4` rule:
+
+| reading | kept | refused | unreachable outcomes |
+|---|---|---|---|
+| **window** (§3.2 as pinned) | 608,256 | 175,104 | none |
+| **global** (rule applied to every trace) | 543,744 | 239,616 | **`NEW_SKILL`** |
+
+The misreading refuses every `tn: yes` trace, because those legally carry
+`t4: null`. **A3's two floors both still pass under it** (543,744 ≥ 500,000;
+239,616 > 100,000) — only A4's set equality catches it, which is why A4 is
+written as equality and not containment.
+
+**X1e — the crash surface is 8.5× larger through `load_class`** *(gate
+F5)*. Same enumeration, §3.2's rule **not** applied, counting pairs on
+which each entry point raises: `expected_outcome` **3,264**, `load_class`
+**27,648**. `expected_outcome` returns early on `G1`/`G2`/`G3`/`H` and so
+never reaches most of the fragile region; `load_class` is called directly
+by R-FALL and R-HOOK (§3.1 note 1), so the production-reachable surface is
+the larger one. A3b exists for this.
+*(The 3,264 here and X1's 3,456 are both correct and measure different
+things: X1 runs r2's **verbatim** table, which computes the load class
+eagerly **before** its hook test, so it also crashes on the 192 pairs
+where `hook_ok` fires. Table-1 returns at `H` first. The 192-pair gap is
+r2's eager evaluation, not a discrepancy.)*
 
 **X2 — the import cycle.** In a scratch copy of the package: a
 module-level `from .gates import …` in `ledger_ops.py` fails **both**
-import orders with `ImportError: cannot import name 'TRACE_OUTCOMES' from
-partially initialized module 'self_learn.ledger_ops' (most likely due to a
-circular import)`. The deferred (function-level) arrangement succeeds in
-both orders and the call path works.
+import orders — with **different messages**, tabulated in §3.6 *(gate
+N4)*: entering from `ledger_ops` names `TRACE_OUTCOMES`, entering from
+`gates` names `expected_outcome`. The deferred (function-level)
+arrangement succeeds in both orders and the call path works.
 
 **X3 — the scope holes**, by calling `verbs._resolve_target` and
 `verbs._resolve_rules_target` directly against a sandbox ledger: the
@@ -1036,15 +1364,18 @@ extends the 2026-07-27 audit's baseline.
 **X7 — what could NOT be executed, stated rather than skipped.** Campaign
 §5 names *"the 51 resolved records are the table's regression fixtures"*.
 That measurement **cannot run in this unit**: running Table-1 over a
-resolved record requires that record to have a trace, and E6 measures zero
+resolved record requires that record to have a trace, and X6 measures zero
 traces in the entire ledger. Hand-authoring traces for 54 resolved records
 to make the fixture set exist would be fabricating the very inputs the
 check exists to verify. **Disposition: the regression is a Checkpoint-A
-measurement**, run after `U-composer` lands and the 12 pending records are
-re-analyzed under the new doctrine — at which point it becomes a diff of
-derived outcomes against accepted routings, which is what it was always
-meant to be. What E6 establishes now is the *target distribution* that
-diff will be scored against, and one fact worth carrying to Checkpoint C:
+measurement**, run after `U-composer` lands and the pending queue is
+re-analyzed under the new doctrine — **35 pending records carrying 20
+proposals as measured today** *(gate N6: r1 said "12 pending", a figure
+inherited from the campaign playbook's 2026-07-27 text and stale by 23
+records)* — at which point it becomes a diff of derived outcomes against
+accepted routings, which is what it was always meant to be. What X6
+establishes now is the *target distribution* that diff will be scored
+against, and one fact worth carrying to Checkpoint C:
 **four of Table-1's six routable outcomes have live precedent
 (`ALWAYS`/`DEMAND`/`SKILL`/`HOOK`); `PATHED` and `NEW_SKILL` have never
 been produced, ever.**
@@ -1067,3 +1398,33 @@ default is the first place to look.
   against merged `U-schema` (`176eee6`) and merged `U-pathed` (`63f5962`),
   under **S-23**, **S-26**, and the S-21 amendment. Five r2 corrections
   (§8-C1…C5), three of them measured; the executed evidence is §9.
+
+- **r2 (2026-08-06)** — **blind spec gate: SOUND, buildable after folds.
+  1 BLOCKER, 6 FOLD, 6 NOTE — all folded here.** The gate reproduced §9-X1,
+  X1b, X1d, X1e, X2, X5 and X6 independently, from a clean sandbox with the
+  shipped validator as oracle. Rebased onto master `07d8c08` first
+  (docs-only delta; no citation moved).
+
+  | # | fold | where |
+  |---|---|---|
+  | **BLOCKER** | C2 parameterised over `scope` values that are **legal** (`project`/`user` have no `skill:` prefix), so as written it demanded refusal of the two commonest scopes on the hot path — contradicting criteria D8/D10. Replaced with genuinely malformed shapes; added the mandatory counter-leg that a legal scope never refuses on shape alone | C2 |
+  | F2 | golden fixtures could survive deletion of their own row (`L5` 62.5%, `L2a` 37.5%, `L4` 18.8%), and four rows had no mutation at all | A5, M24a–M24d |
+  | F3 | R-SCOPE × R-FALL was unpinned and both readings passed §4 | §3.3, D7a, M29 |
+  | F4 | §3.2's bullets lacked their window restriction; read globally they make `NEW_SKILL` unreachable and only A4 sees it | §3.2, X1d, M28 |
+  | F5 | A3 swept `expected_outcome`, but the reachable crash surface is `load_class`'s — 8.5× larger | A3b, X1e |
+  | F6 | cross-unit: `U-composer` r1 assumed the doctrine branch §6-BD10 rejects; its r2 adopts R-SCOPE | §8 |
+  | F7 | cross-unit: H1 was taken only half; `U-composer`'s r2 takes it in full | §8-H1, §7.4 |
+  | N1 | **§9-X1c's load-class counts were 2× too high — my harness double-counted the `g0`-all-no slice.** Gate right, r1 wrong; re-derived, with three first-principles consistency checks. One disagreement on `L2c` reported with its reproducible count | X1c |
+  | N2 | four preconditions the enumeration is only legal with were unstated | §9 |
+  | N3 | §6-BD3 named `write_proposal` where the producer is the **analyst** | §6-BD3 |
+  | N4 | the `ImportError` quote is order-specific; both messages tabulated | §3.6, X2 |
+  | N5 | §3.4 defined `routable()` over 3 of 6 destinations | §3.4 |
+  | N6 | M12's redden-claim (E2 → E1); "12 pending" stale → 35 pending / 20 proposals; `ledger_ops.py` contention + wave sequencing; rebase | §5, X7, preamble |
+
+  **Two open questions closed as rulings, written into §6 with their
+  grounds:** Q2 → **D8** (`selfcheck.py` in scope; disjointness governs
+  concurrency, not ownership), Q1 → **D10** (degrade, plus the condition
+  that skill-scope `PATHED` be a *distinct* Checkpoint-C measurement; card
+  distinguishability is `U-demand-user`'s). The §7.1 `sightings` decline
+  was accepted with its reason **narrowed** — the honest ground is that
+  `e1.sightings` is a transcription, not a judgment.
