@@ -816,7 +816,9 @@ def _check_fs_verdict(
     )
 
 
-def _validate_gates(data: dict, *, record_text: str | None = None) -> None:
+def _validate_gates(
+    data: dict, *, record_text: str | None = None, scope: str | None = None
+) -> None:
     """u-schema-decision-trace §3: the decision trace — `gates`, `flags`,
     `recommendation` — validated together (D3: X3 couples the flag set to
     a gate answer, so splitting them invites a caller that runs one and
@@ -825,8 +827,12 @@ def _validate_gates(data: dict, *, record_text: str | None = None) -> None:
 
     Containment (§3.4) runs iff `record_text` is supplied — this function
     performs NO filesystem I/O itself (S4); callers decide whether/what to
-    load. Raises only :class:`ProposalError`, on every input including
-    malformed ones (S6) — never mutates `data` (C3)."""
+    load. `scope` (u-table §3.2, §8-O3) closes the one presence window a
+    scope-free validator cannot resolve — see the `t4` block below; when
+    `scope` is None that window is left exactly as U-schema shipped it
+    (the ACCEPTED §7.2 residual). Raises only :class:`ProposalError`, on
+    every input including malformed ones (S6) — never mutates `data`
+    (C3)."""
 
     # ---- flags (Set-F, §3.2) -------------------------------------------
     flags = data.get("flags")
@@ -1176,9 +1182,30 @@ def _validate_gates(data: dict, *, record_text: str | None = None) -> None:
                 f"{t4_path} must be non-null when t2 and t3 both answered "
                 "'no' and tn did not answer 'yes'"
             )
-    # else: t3.answer == "yes" (t2 == "no", tn != "yes") — scope-free
-    # residual (§6-D5): t4 is free either way, the scope this validator
-    # does not have decides which table row actually applies.
+    elif scope is not None:
+        # u-table §3.2 — the window t3.answer == "yes" AND t2.answer ==
+        # "no" AND tn.answer != "yes" is the one case a scope-free
+        # validator cannot resolve (§6-D5's own residual): whether `t4`
+        # is read at all depends on whether the t3 route is taken, which
+        # needs `scope`. With `scope` in hand the window closes BOTH ways
+        # — additions only, never a relaxation (§3.2, BD3).
+        from .gates import t3_route_taken
+
+        if t3_route_taken(gates, scope):
+            if t4_raw is not None:
+                raise ProposalError(
+                    f"{t4_path} must be null when the t3 route is taken "
+                    f"(scope {scope!r} matches gates.t3.owner)"
+                )
+        elif t4_raw is None:
+            raise ProposalError(
+                f"{t4_path} must be non-null when the t3 route is not "
+                f"taken (scope {scope!r} does not match gates.t3.owner)"
+            )
+    # else: scope is None and t3.answer == "yes" (t2 == "no", tn != "yes")
+    # — scope-free residual (§6-D5, §7.2 ACCEPTED / S-27): t4 is free
+    # either way; the scope this validator does not have decides which
+    # table row actually applies.
     if t4_raw is not None:
         t4 = _mapping(t4_raw, t4_path)
         dbr_path = f"{t4_path}.depth_behind_rule"
@@ -1249,7 +1276,200 @@ def _validate_gates(data: dict, *, record_text: str | None = None) -> None:
         )
 
 
-def validate_proposal(data: dict, *, record_text: str | None = None) -> None:
+#: u-table Render-1 (§3.3): each of Table-1's six ROUTING renderings maps
+#: to exactly one schema destination (PATHED and ALWAYS share `claude-md`
+#: — they are discriminated by load semantics, not by destination, BD7).
+#: Never covers REJECT/DEFER/GRADUATE — those are not routings (R-FALL).
+_RENDER_DESTINATIONS = {
+    "HOOK": "hook",
+    "ALWAYS": "claude-md",
+    "PATHED": "claude-md",
+    "SKILL": "skill-md",
+    "DEMAND": "reference",
+    "NEW_SKILL": "new-skill",
+}
+
+#: u-table §3.3: outcome -> the R-FALL `recommendation` it renders.
+_FALLBACK_RECOMMENDATIONS = {
+    "REJECT": "reject",
+    "DEFER": "defer",
+    "GRADUATE": "graduate",
+}
+
+
+def _routable(rendered: str, scope) -> bool:
+    """u-table §3.4 — whether `rendered`'s Render-1 destination has a
+    resolvable target at `scope`. Normative for all six route rows (M16
+    mutates this to return True unconditionally). Only two cells are
+    False: DEMAND at `user` (r2 §1.6's transition rule, made permanent by
+    S-23 (2)) and PATHED at `skill:*` (`_resolve_rules_target`'s P-A13
+    gap, unnamed in r2). Every other cell — including both `skill-md`
+    cells, which Table-1 can never reach at a refusing scope (A6) — is
+    True.
+
+    `scope` is typed loosely on the same grounds as `gates.t3_route_taken`
+    (C2): a non-string scope must degrade, never crash `.startswith`."""
+    if rendered == "DEMAND":
+        return scope != "user"
+    if rendered == "PATHED":
+        return not (isinstance(scope, str) and scope.startswith("skill:"))
+    return True
+
+
+def _validate_derivation(data: dict, *, scope: str | None = None) -> None:
+    """u-table §3.3/§3.4 (Render-1): recompute Table-1 over
+    ``data["gates"]`` and refuse (C1) a stated ``gates.outcome`` that does
+    not follow from its own answers; then check the proposal's rendered
+    fields against Render-1's map (D1-D10, R-SCOPE, R-FALL).
+
+    Two independent early returns, deliberately not merged (§5 M12): a
+    no-op when ``gates`` is absent (nothing to derive) and a no-op when
+    ``scope`` is not supplied — the derivation runs iff `scope` IS
+    supplied (§3.5); a scope-free caller gets no derivation at all, never
+    a partial one (BD4)."""
+    gates = data.get("gates")
+    if gates is None:
+        return
+    if scope is None:
+        return
+
+    from . import gates as gates_mod
+
+    stated_outcome = gates.get("outcome")
+    derived_outcome = gates_mod.expected_outcome(gates, scope)
+    if stated_outcome != derived_outcome:
+        raise ProposalError(
+            f"gates.outcome is {stated_outcome!r} but Table-1 derives "
+            f"{derived_outcome!r} for scope {scope!r} — the stated "
+            "outcome does not follow from the trace's own answers"
+        )
+
+    # R-HOOK's `alternates` requirement and R-FALL's rendered destination
+    # both need the load class even when a g0 leg or H already decided
+    # the outcome (§3.1 note 1) — computed unconditionally, once.
+    load_class = gates_mod.load_class(gates, scope)
+
+    recommendation = data.get("recommendation") or "route"  # D10
+    flags = data.get("flags") or []
+    destination = data.get("destination")
+
+    if derived_outcome in _FALLBACK_RECOMMENDATIONS:
+        # R-FALL — never touched by R-SCOPE (D7a); the destination is the
+        # LOAD CLASS's, never the outcome's own (there isn't one — REJECT/
+        # DEFER/GRADUATE are not routings).
+        expected_recommendation = _FALLBACK_RECOMMENDATIONS[derived_outcome]
+        if recommendation != expected_recommendation:
+            raise ProposalError(
+                f"recommendation must be {expected_recommendation!r} for "
+                f"outcome {derived_outcome!r}, got {recommendation!r}"
+            )
+        expected_dest = _RENDER_DESTINATIONS[load_class]
+        if destination != expected_dest:
+            raise ProposalError(
+                f"destination must be {expected_dest!r} (the load "
+                f"class's destination, {load_class!r}) for outcome "
+                f"{derived_outcome!r}, got {destination!r}"
+            )
+        if derived_outcome == "GRADUATE" and data.get("already_canon") is not True:
+            raise ProposalError(
+                "a GRADUATE proposal must carry already_canon: true"
+            )
+        return
+
+    # The six route rows — R-HOOK, R-ALWAYS, R-PATHED, R-SKILL, R-DEMAND,
+    # R-NEW. `rendered` is the outcome itself (it IS a load-class value
+    # whenever no g0 leg and no H fired, and HOOK is handled by its own
+    # branch below).
+    rendered = derived_outcome
+    if _routable(rendered, scope):
+        if recommendation != "route":
+            raise ProposalError(
+                f"recommendation must be 'route' for outcome {rendered!r} "
+                f"at scope {scope!r} (a routable surface exists), got "
+                f"{recommendation!r}"
+            )
+    else:
+        # R-SCOPE — the honest-degradation row. The destination stays the
+        # outcome's honest target regardless (checked below, unmodified)
+        # — R-SCOPE only ever touches recommendation/flags.
+        if recommendation != "defer":
+            raise ProposalError(
+                f"outcome {rendered!r} has no routable surface at scope "
+                f"{scope!r} — recommendation must be 'defer', got "
+                f"{recommendation!r}"
+            )
+        if "no-cheap-surface" not in flags:
+            raise ProposalError(
+                f"outcome {rendered!r} has no routable surface at scope "
+                f"{scope!r} — flags must include 'no-cheap-surface'"
+            )
+
+    if rendered == "HOOK":
+        if destination != "hook":
+            raise ProposalError(
+                f"destination must be 'hook' for outcome HOOK, got "
+                f"{destination!r}"
+            )
+        alternates = data.get("alternates") or []
+        expected_alt = _RENDER_DESTINATIONS[load_class]
+        if expected_alt not in alternates:
+            raise ProposalError(
+                f"a HOOK proposal's alternates must contain {expected_alt!r} "
+                f"(the load class {load_class!r}'s destination), got "
+                f"{alternates!r}"
+            )
+    elif rendered == "ALWAYS":
+        if destination != "claude-md":
+            raise ProposalError(
+                f"destination must be 'claude-md' for outcome ALWAYS, got "
+                f"{destination!r}"
+            )
+        if data.get("variant") == "rules" and data.get("rules_paths"):
+            raise ProposalError(
+                "ALWAYS outcome must not carry variant: rules with "
+                "non-empty rules_paths — that shape renders PATHED"
+            )
+    elif rendered == "PATHED":
+        if destination != "claude-md":
+            raise ProposalError(
+                f"destination must be 'claude-md' for outcome PATHED, got "
+                f"{destination!r}"
+            )
+        if data.get("variant") != "rules" or not data.get("rules_paths"):
+            raise ProposalError(
+                "PATHED outcome requires variant: rules with non-empty "
+                "rules_paths"
+            )
+    elif rendered == "SKILL":
+        if destination != "skill-md":
+            raise ProposalError(
+                f"destination must be 'skill-md' for outcome SKILL, got "
+                f"{destination!r}"
+            )
+    elif rendered == "DEMAND":
+        if destination != "reference":
+            raise ProposalError(
+                f"destination must be 'reference' for outcome DEMAND, got "
+                f"{destination!r}"
+            )
+    else:  # rendered == "NEW_SKILL"
+        if destination != "new-skill":
+            raise ProposalError(
+                f"destination must be 'new-skill' for outcome NEW_SKILL, "
+                f"got {destination!r}"
+            )
+        proposed_name = gates["tn"]["proposed_name"]
+        new_skill = data.get("new_skill")
+        if new_skill != proposed_name:
+            raise ProposalError(
+                "new_skill must equal gates.tn.proposed_name "
+                f"({proposed_name!r}), got {new_skill!r}"
+            )
+
+
+def validate_proposal(
+    data: dict, *, record_text: str | None = None, scope: str | None = None
+) -> None:
     """02 §1 single-record proposal schema (incl. the M3 hook-destination
     extension), plus the optional u-schema-decision-trace (§3): `gates`,
     `flags`, `recommendation`. ``record_text`` is keyword-only with a
@@ -1257,7 +1477,12 @@ def validate_proposal(data: dict, *, record_text: str | None = None) -> None:
     ``validate_proposal(data)``, keeps working verbatim) and is used ONLY
     to containment-check RECORD-sourced trace quotes (§3.4); when omitted,
     trace shape/enums/required-ness still validate but containment does
-    not run (§3.5). Raises :class:`ProposalError`."""
+    not run (§3.5). ``scope`` is keyword-only with a ``None`` default too
+    (u-table §3.5/E2): when supplied, `gates.outcome` and the proposal's
+    rendered fields are recomputed against Table-1/Render-1 and refused
+    on mismatch (`_validate_derivation`); when omitted, no derivation
+    runs at all — never a partial one (BD4). Raises
+    :class:`ProposalError`."""
     if not isinstance(data, dict):
         raise ProposalError("proposal is not a mapping")
     dest = data.get("destination")
@@ -1306,7 +1531,8 @@ def validate_proposal(data: dict, *, record_text: str | None = None) -> None:
     _validate_rules_fields(data)
     _validate_lint(data)
     _validate_card(data)
-    _validate_gates(data, record_text=record_text)
+    _validate_gates(data, record_text=record_text, scope=scope)
+    _validate_derivation(data, scope=scope)
 
 
 def _validate_rules_fields(data: dict) -> None:
@@ -1402,17 +1628,19 @@ def write_proposal(home: Path, record_id: str, data: dict) -> Path:
     §3.5: the record is resolved BEFORE validating, so a trace carrying
     ``gates:`` gets its RECORD-sourced quotes containment-checked against
     ``Record.from_path(record_path).to_text()`` (frontmatter + body, not
-    just body — E4). The ``data.get("gates") is not None`` guard is
+    just body — E4), and the SAME ``Record`` supplies ``scope`` for
+    u-table's derivation check (§3.5 — one ``Record.from_path`` call now
+    serves both). The ``data.get("gates") is not None`` guard is
     load-bearing for cost, not correctness: it keeps the ruamel re-dump
     off the path for every trace-less proposal, which today is all of
     them (M2/M3 are the mutations that catch a weakened guard)."""
     record_path = find_record_path(home, record_id)
-    record_text = (
-        Record.from_path(record_path).to_text()
-        if data.get("gates") is not None
-        else None
+    record = (
+        Record.from_path(record_path) if data.get("gates") is not None else None
     )
-    validate_proposal(data, record_text=record_text)
+    record_text = record.to_text() if record is not None else None
+    scope = record.scope if record is not None else None
+    validate_proposal(data, record_text=record_text, scope=scope)
     path = _proposal_path(record_path.parent.parent, record_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     _dump_yaml(data, path)
@@ -1811,11 +2039,16 @@ def proposal_info(entry: QueueEntry) -> dict:
         # new I/O (S4). This is the site that makes containment
         # unavoidable: a fabricated quote makes the proposal
         # schema-invalid → proposal_fresh: False → is_unanalyzed: True →
-        # the worker re-analyzes it (E7).
+        # the worker re-analyzes it (E7). `scope` is threaded
+        # UNCONDITIONALLY below (u-table §3.5) — unlike `record_text`, it
+        # costs nothing (an attribute read on a Record already in
+        # memory), so it runs even on a trace-less proposal;
+        # `_validate_derivation` itself is what stays a no-op there
+        # (BD4).
         record_text = (
             entry.record.to_text() if data.get("gates") is not None else None
         )
-        validate_proposal(data, record_text=record_text)
+        validate_proposal(data, record_text=record_text, scope=entry.record.scope)
     except ProposalError:
         return info  # schema-invalid: never fresh (08 §7.1 step 2)
     info["proposal_fresh"] = data.get("record_sha") == sha_anchor(entry.record.body)

@@ -870,7 +870,10 @@ def test_quote_from_frontmatter_accepted(tmp_path):
         "verdict": "COSTLY",
         "evidence": "an evening of debugging session",
     }
-    write_proposal(home, "lrn-aa000001", proposal_dict(gates=g))
+    g["outcome"] = "ALWAYS"  # u-table §3.2: t4.fs COSTLY -> L6 -> ALWAYS
+    write_proposal(
+        home, "lrn-aa000001", proposal_dict(gates=g, destination="claude-md")
+    )
 
 
 def test_quote_from_frontmatter_accepted_via_proposal_info(tmp_path):
@@ -891,7 +894,10 @@ def test_quote_from_frontmatter_accepted_via_proposal_info(tmp_path):
         "verdict": "COSTLY",
         "evidence": "an evening of debugging session",
     }
-    write_proposal(home, "lrn-aa000001", proposal_dict(gates=g))
+    g["outcome"] = "ALWAYS"  # u-table §3.2: t4.fs COSTLY -> L6 -> ALWAYS
+    write_proposal(
+        home, "lrn-aa000001", proposal_dict(gates=g, destination="claude-md")
+    )
     stamp_proposal(home, "lrn-aa000001")
     (entry,) = queue(_bucket(home))
     assert proposal_info(entry)["proposal_fresh"] is True
@@ -926,9 +932,16 @@ def test_write_proposal_supplies_record_text(tmp_path):
         write_proposal(
             home,
             "lrn-aa000001",
-            proposal_dict(gates=_base_gates(quote="the compiler writes uppercase markers")),
+            proposal_dict(
+                gates=_base_gates(quote="the compiler writes uppercase markers"),
+                destination="reference",  # u-table: _base_gates() derives DEMAND
+            ),
         )
-    write_proposal(home, "lrn-aa000001", proposal_dict(gates=_base_gates(quote=TRUE_QUOTE)))
+    write_proposal(
+        home,
+        "lrn-aa000001",
+        proposal_dict(gates=_base_gates(quote=TRUE_QUOTE), destination="reference"),
+    )
 
 
 def test_fabricated_quote_makes_proposal_unfresh(tmp_path):
@@ -938,7 +951,11 @@ def test_fabricated_quote_makes_proposal_unfresh(tmp_path):
     "the file vanished"."""
     home = make_home(tmp_path)
     create_record(home, make_behavior(record_id="lrn-aa000001"))
-    write_proposal(home, "lrn-aa000001", proposal_dict(gates=_base_gates(quote=TRUE_QUOTE)))
+    write_proposal(
+        home,
+        "lrn-aa000001",
+        proposal_dict(gates=_base_gates(quote=TRUE_QUOTE), destination="reference"),
+    )
     stamp_proposal(home, "lrn-aa000001")
     bucket = _bucket(home)
     (entry,) = queue(bucket)
