@@ -1,0 +1,1099 @@
+# Spec — U-demand-user: user scope's cheap surface is PATHED, and the menu says so
+
+Status: **DRAFT r1 — ready for a blind spec gate.** Unit `U-demand-user`
+of the r2 routing campaign (`forward/r2-routing-campaign.md` §2, Wave 2;
+sequenced after `U-pathed`, which is **merged** — `63f5962`). Register
+rows **FW-40**, **FW-42**. Normative parents: **S-23 (2)**, **S-22**,
+**S-25**, **S-21** (`03-decisions.md`).
+
+**Where prose and the acceptance criteria conflict, the criteria (§4) and
+the mutation plan (§5) win.** The prose is rationale; the criteria are the
+contract.
+
+**Citations.** Every `file:line` below was re-read against this worktree at
+**`83c1d5d`** and is written as *anchor first, line second*
+(`verbs.py::_resolve_target`, currently `verbs.py:901`) — the campaign has
+a ~208-instance stale-citation defect class, and an anchor survives drift
+that a bare number does not. Two citations inherited from other documents
+are **already stale on this tree** and are corrected in §10.
+
+**Files this unit may touch.** The campaign row names `verbs.py` and
+`ui/models.py` as *primary*. The full set, with the reason each is
+unavoidable, is §3.6:
+
+| File | Why |
+|---|---|
+| `cli/src/self_learn/verbs.py` | the `reference` refusal's message; the explicit-`--dest` rules-paths inheritance |
+| `ui/src/self_learn_ui/models.py` | the destination menu, the armed default, the labels and the firing note |
+| `ui/src/self_learn_ui/routes.py` | one new function + two changed — the `o` cycle cannot see a per-record topic without them (§3.6) |
+| `ui/templates/bucket.html` | **one attribute** on line 90 (`model.destination_cycle` → `row.destination_cycle`) |
+| `cli/tests/`, `ui/tests/` | the tests |
+
+Anything else is out of scope and must be **reported, not edited** (§7.4).
+
+---
+
+## 1. What S-23 (2) requires, and the four things that block it
+
+S-23 (2), ratified 2026-08-02: **user scope gets a cheap surface, and it is
+pathed rules only** — explicitly NOT a user-level reference file. S-22 names
+the user-scope destination singleton as one of its three worked examples of
+a *funnel*: "a constraint that silently removes an option the agent should
+have had."
+
+Today the CLI can already route a user-scope pathed rule and `U-pathed`
+already emits its `paths:` frontmatter — **but only from a bare
+`route <id>` that reads the proposal sibling.** Every route the review
+surface issues carries an explicit `--dest`
+(`routes.py::build_argv`, currently `routes.py:131-140`; the docstring at
+`:124-130` states this as a standing fact), and that path loses the tier.
+
+### 1.1 Four measured findings
+
+Probes run this session in a sandbox (`make_env` pair, `XDG_CACHE_HOME`
+and the four `SELF_LEARN_*` vars redirected to a scratch tree, ledger
+untouched), against `83c1d5d`. **These are measurements. A builder must
+not re-derive them from reading; a reviewer should re-run them.**
+
+**D1 — approving a pathed proposal in the review UI routes it to the
+always-loaded file.** Seeded a user record whose proposal sibling carries
+`destination: claude-md`, `variant: rules`, `rules_topic: py-conventions`,
+`rules_paths: ["**/*.py"]`, then ran the exact argv the UI builds:
+
+| Route | Rules file written? | `routing` block |
+|---|---|---|
+| `route <id>` (bare) | **yes** — `<user>/rules/py-conventions.md`, frontmatter `paths: ['**/*.py']` | `variant: rules`, `rules_topic`, `rules_paths`, `by: analyst` |
+| `route <id> --dest claude-md` | **no** — entry landed in the plain `~/.claude/CLAUDE.md` | `destination: claude-md` only; **no variant, no topic, no paths** |
+
+The second row is what the surface does today. Verified end-to-end on the
+UI side in-process: for `list --json`'s item (`destination: "claude-md"` —
+`ledger_ops::proposal_info` surfaces the **bare enum**, currently
+`ledger_ops.py:1807`), `models.correct_destination("user", "claude-md")`
+returns `('claude-md', None)`, the bar's hidden field
+(`partials/action_bar.html:210`) carries `claude-md`, and
+`build_argv` yields
+`['route', '<id>', '--dest', 'claude-md', '--by', 'analyst']`.
+**So S-23's primary cheap tier is unreachable through the review surface,
+the demotion is silent, and the record then attributes the choice to
+`by: analyst`** — whose actual choice was the pathed rule.
+
+**D2 — a qualified `--dest` produces an unpathed "pathed" rule.**
+`route <id> --dest claude-md:rules:py-conventions` on the same record
+created the rules file but wrote **no `paths:` frontmatter**, and persisted
+`variant` + `rules_topic` with **no `rules_paths`**. Cause:
+`verbs.py::_resolve_destination`'s `--dest` branch (currently
+`verbs.py:542-544`) returns `_Destination(destination, qualifier)` with
+`variant`/`rules_topic`/`rules_paths` all left at their `None` defaults
+(`verbs.py:530-534`); the topic survives only because
+`_decode_claude_md_qualifier` (currently `verbs.py:687-702`) recovers it
+from the qualifier string. There is no CLI flag for globs at all
+(`cli.py` carries `--allow-empty-glob`, currently `cli.py:220-227`, and
+nothing else). This is `U-pathed` §1's own defect — *"a pathed rules file
+is an unpathed rules file"* — surviving on the `--dest` path, and it is
+also the path the **Iterate pane** uses (`proposals.py`'s `_DEST_RE`,
+currently `proposals.py:97-100`, admits `claude-md:rules:<topic>`).
+
+**D3 — a qualified dest cannot survive a re-render.**
+`models.correct_destination("user", "claude-md:rules:py-conventions")`
+returns `(None, None)`, because the guard at `models.py:305` rejects
+anything outside `PARAMETER_FREE_DESTINATIONS` (`models.py:93`).
+`routes.py::_scope_corrected_dest` (currently `routes.py:1456-1465`) runs
+that function on **every** unarmed re-render — disarm, a failed confirm,
+`_pending_dest_override`'s Iterate restore — so a qualified value would be
+blanked each time. This is the same defect class `6519c58` and `4f8817a`
+(FW-64) just closed for the plain case.
+
+**D4 — the cycle is a one-element tuple.**
+`_SCOPE_DESTINATIONS["user"] == ("claude-md",)`
+(`models.py:103-107`, the `"user"` row at `:106`), so
+`cycle_destination` (`routes.py:235-248`) returns `claude-md` forever and
+the bar renders the noop hint (`partials/action_bar.html:245-250`). FW-42.
+
+### 1.2 A fifth finding, about the guard on the `reference` refusal
+
+The campaign row's hard constraint is that
+`verbs.py::_resolve_target`'s `destination == "reference"` branch keeps
+refusing at user scope (currently the `else:` at `verbs.py:1045` and the
+`raise VerbError` at `:1046-1050`).
+
+**Measured: the suite can barely see that refusal.** A grep for its message
+across `cli/tests/` returns nothing. A mutation — replacing the refusal
+with code that resolves a user-level `references/` dir, i.e. building
+exactly the file S-23 (2) rejects — was applied, the full CLI suite run
+(`PYTHONDONTWRITEBYTECODE=1`, `__pycache__` purged first), and **exactly
+one test failed**:
+`test_batch_fixes.py::TestNoPushBindsSpawnedWorker::test_teach_no_push_kicked_worker_does_not_publish`,
+with `AssertionError: expected the pending fallback; got 0`
+(`test_batch_fixes.py:416`). That test is about `--no-push` propagating to
+a spawned worker; it uses the user-scope `reference` refusal only as
+**incidental scaffolding** to make a route fail (its comment at
+`test_batch_fixes.py:399-400` says so, and gives the dead chezmoi ground:
+*"unroutable pair (doc 13 §2)"*). The mutation was reverted by inverse
+Edit; `git diff --stat` is empty.
+
+So: **the refusal has one incidental guard and zero intentional ones**, and
+the one guard reports a failure that names nothing about `reference`,
+nothing about user scope, and nothing about S-23. A future agent reading
+FW-43 ("stale premises… the chezmoi ground") could delete the refusal as
+dead chezmoi text, see one confusing unrelated failure, adjust that test,
+and ship the user-level reference file S-23 rejected. This unit adds the
+intentional guard (criterion **A9**).
+
+---
+
+## 2. The boundary with `U-pathed` — settled explicitly
+
+`U-pathed` (merged, `63f5962`; spec `drafts/u-pathed-emission-spec.md`)
+stated this boundary from its own side in its §7.5. **This section
+restates it from this side, agrees with it, and adds the two things §7.5
+did not know about** (D1 and D2 were not visible from `compilers.py`).
+
+### 2.1 The line
+
+| Owned by `U-pathed` (built, do not rebuild) | Owned by this unit |
+|---|---|
+| What a rules file **contains and is**: `paths:` frontmatter, the union register (its §2), comment/foreign-key ownership, the emitted YAML form | What a human can **pick**: the destination menu, the armed default, the labels/copy, and the refusals that bound the menu |
+| `compilers.py`: `PathsResult`, `expected_paths`, `read_paths_frontmatter`, `paths_frontmatter_drift`, `apply_paths_frontmatter` | `ui/models.py`: `_SCOPE_DESTINATIONS` and everything derived from it |
+| `verbs.py::_resolve_rules_target`'s **two route-time refusals** (absolute/`~` globs; chezmoi-MANAGED) — currently `verbs.py:826-836` and `:867-876` | `verbs.py::_resolve_target`'s `reference` **user-scope refusal** (currently `:1045-1050`) — message only |
+| `verbs.py::_apply_target`'s pre-pass, the `changed` fold, the `notes` channel | `verbs.py::_resolve_destination`'s **input seam** — how `rules_paths` reaches a route at all |
+| The drift **seam** (`paths_frontmatter_drift`); `selfcheck` wiring is its named handoff (§7.3) | Nothing in `selfcheck.py` or `compilers.py` |
+
+**Nothing is built twice.** This unit adds no glob validation, no union
+logic, no frontmatter reader or writer, and touches neither
+`compilers.py` nor `selfcheck.py`. It calls `U-pathed`'s machinery by
+routing through the *same* `_resolve_rules_target` every existing
+user-scope rules route already uses.
+
+### 2.2 What falls between, and who catches it
+
+`U-pathed` §7.5 asserted **"there is no dependency from this unit to that
+one"**, and cited two existing tests that route user-scope rules end to
+end. **That assertion is correct; what it could not see is that the two
+tests between them never cover the case the review surface actually
+produces** — a `--dest` **and** a proposal carrying globs. Read on this
+tree:
+
+| Test | `--dest`? | Proposal? | Globs? |
+|---|---|---|---|
+| `test_a2_rules_local.py::TestObligation2And3ProjectGlobValidation::test_user_scope_glob_is_parse_only_never_zero_match` (`:279-299`) | **no** | yes | yes — but it asserts only that the file exists and holds the id, **never the frontmatter** |
+| `…::TestObligation15FirstRouteBootstrap::test_user_leg_creates_dir_and_file` (`:732-745`) | **yes** (`claude-md:rules:subagents`) | **no** | no |
+| `…::TestObligation16BareDestOneMotion` (`:764-795`) | yes | impossible (`route_direct`) | no — it **asserts** `"rules_paths" not in routed.routing` (`:783`) |
+
+The cell that is empty in every row is **`--dest` + a proposal with
+globs**. That is the review surface's only shape, and it is D2.
+
+This is the seam, stated so the gate can check it:
+
+> `U-pathed` guarantees that **if** a route arrives at
+> `_resolve_rules_target` carrying `rules_paths`, the globs land on disk.
+> **This unit owns getting them there**, for every entrypoint that is not
+> a bare `route <id>`. A build that widens the menu without closing D2
+> ships a menu entry whose execution silently under-delivers — the exact
+> defect class the campaign exists to fix.
+
+### 2.3 The one thing that must agree (`U-pathed` §7.5's own condition)
+
+> *"`U-demand-user` must not introduce a second definition of the user
+> rules path… any new menu entry must reach the file through
+> `_resolve_rules_target`, never by constructing `~/.claude/rules/…` a
+> second time."*
+
+**Honoured, and made checkable.** This unit constructs no path at all. The
+UI composes a *dest string* (`claude-md:rules:<topic>`), which the CLI
+resolves through `_parse_dest` → `_decode_claude_md_qualifier` →
+`_resolve_rules_target` → `_user_rules_dir` (currently `verbs.py:705-709`)
+— the same chain a bare route takes. Criterion **A1** asserts this by
+byte-comparing the two routes' output, which is a stronger check than
+"no second literal exists". `models.py`'s `_RULES_SCOPE_PATHS["user"]`
+(`models.py:163-166`) is display text only and already exists; this unit
+adds no path template.
+
+`U-pathed` §7.5 also flags a *pre-existing* second resolution —
+`selfcheck.py::_target_for`'s hardcoded `DEFAULT_USER_CLAUDE_MD.expanduser()`
+(currently `selfcheck.py:238`). This unit adds no third and does not
+touch the second.
+
+---
+
+## 3. The change
+
+### 3.1 `verbs.py` — the `reference` refusal keeps its effect and loses its dead reason
+
+`_resolve_target`'s `destination == "reference"` branch (currently
+`verbs.py:1038-1060`). The `else:` at `:1045` and its `raise VerbError` at
+`:1046-1050` **stay, with the condition byte-identical.** Only the message
+text changes. Today it reads:
+
+```
+reference destination needs skill:<name> or project scope — the user host
+is the chezmoi-managed CLAUDE.md, it has no references dir (doc 13 §2)
+```
+
+Chezmoi was retired 2026-07-24; that ground is dead. The **effect** is
+what S-23 (2) mandates. The replacement must carry three things and no
+more:
+
+1. the same scope condition, in plain words;
+2. **S-23's own reason** — a user-level reference file inherits the
+   unreachability problem with no `SKILL.md` to hang a pointer off, so it
+   would be unreachable canon;
+3. **the surface that replaced it** — a user rules topic
+   (`--dest claude-md:rules:<topic>`), which is the menu this unit opens.
+
+It must **not** say "chezmoi", and must not suggest the refusal is
+temporary or a capability gap. Pinned wording is a builder decision (§6.1),
+not fixed here; the criteria pin its properties, not its bytes.
+
+`test_batch_fixes.py:399-400`'s comment (the incidental scaffolding of
+§1.2) is updated in the same commit to cite S-23 rather than "doc 13 §2".
+Its assertions do not change.
+
+### 3.2 `verbs.py` — an explicit rules `--dest` inherits the proposal's globs
+
+`_resolve_destination` (currently `verbs.py:537-558`). Today its two
+branches are asymmetric: the proposal branch (`:545-558`) reads the
+sibling and carries `variant`/`rules_topic`/`rules_paths`; the `--dest`
+branch (`:542-544`) reads nothing.
+
+**The change:** on the `--dest` branch, when the parsed dest is exactly
+`("claude-md", "rules:<topic>")` **and** a schema-valid proposal sibling
+exists naming exactly `destination: claude-md`, `variant: rules`,
+`rules_topic: <topic>` — the same topic — carry that proposal's
+`rules_paths` into the returned `_Destination`. In every other case
+`rules_paths` stays `None`, unchanged from today.
+
+**The predicate is deliberately narrow, and each clause earns its place:**
+
+- **Same destination and same topic** ⇒ this is the human confirming the
+  analyst's proposal, not composing a new one. The globs are part of *that*
+  proposal, and the dest string has no slot for them.
+- **A bare `--dest claude-md` never inherits**, even when the proposal is
+  a rules proposal. That combination means "the human chose the
+  always-loaded file", and reading globs into it would silently override
+  a human's demotion — the FW-64 defect class in the other direction. D1
+  is closed on the UI side (§3.3), not by widening this predicate.
+- **A different topic never inherits.** A human who retypes a topic (via
+  Iterate) gets an *honestly unpathed* rule, not the previous topic's
+  globs aimed at a file they did not name.
+- **No sibling, or an unreadable/schema-invalid one** ⇒ no inheritance,
+  and no new failure mode: the route proceeds exactly as today. The
+  sibling read must not raise where today's `--dest` branch cannot raise
+  (criterion **A6**).
+
+**This does not violate P-A5, and the gate must check that claim, not take
+it.** The A2 spec (`drafts/a2-rules-local-spec.md`, gated and shipped)
+carries **Pin P-A5** at `:316-318`:
+
+> *"Globs do **not** ride in `--dest`. They contain `/`, `*`, `[`, `,`; a
+> `:`-delimited value cannot carry them unambiguously. Globs live in the
+> proposal YAML only (§4.3)."*
+
+**Nothing here puts a glob in a dest string.** The globs still come from
+the proposal YAML and nowhere else — P-A5's own §4.4B sentence,
+*"`rules_paths` is a structured param that arrives ONLY from a proposal"*
+(`a2-rules-local-spec.md:432-434`), is the rule this change implements on a
+branch that was not implementing it. P-A5's stated **safety property** —
+*"reaching a pathed rule requires a proposal a human read"* (`:322-323`) —
+is preserved exactly: no proposal, or a proposal naming a different target,
+means no globs.
+
+**What IS in tension is P-A5's *consequence* paragraph** (`:320-326`) and
+obligation 16 (`:976-981`), which state the outcome as
+*"Bare `--dest claude-md:rules:<topic>` **with no proposal** yields an
+unpathed rule"* and then contract it as *"bare `--dest
+claude-md:rules:<topic>` resolves to the unpathed rules target"* — the
+second sentence dropping the qualifier the first one carries. Under the
+**qualified** reading this change is inside the pin; under the **literal**
+reading it contradicts a gated contract. The existing tests do not settle
+it: `TestObligation16BareDestOneMotion` (`test_a2_rules_local.py:764-795`)
+exercises **`route_direct` only**, where no sibling can exist and §3.2 is
+inert by construction (§7.3). **Routed to the gate as §9.1, with a
+recommendation and the alternative that avoids the tension entirely.**
+Criterion **A15** pins that obligation 16's own behaviour is untouched
+either way.
+
+**Considered and rejected — a `--rules-paths` CLI flag.** It would put glob
+*authorship* on a keystroke surface — a direct P-A5 violation — and user
+scope has **no dead-glob guard and structurally cannot have one** (S-25,
+§7.1). A flag that mints unvalidated globs into the one tier with no
+zero-match check is a worse trade than an inheritance rule that can only
+ever restate globs a proposal already carried and a human already saw on
+the card.
+
+### 3.3 `ui/models.py` — the pathed tier becomes pickable and glosses honestly
+
+**(a) The stale reason, again.** `_SCOPE_DESTINATIONS`'s docstring
+(`models.py:95-102`) gives the same dead chezmoi ground for excluding
+`reference` at user scope — *"the user host is the chezmoi-managed
+CLAUDE.md, no references dir"* (`:98-99`). FW-48's row already flags this
+site by name. Rewritten to cite S-23 (2), matching §3.1's CLI-side text.
+
+**(b) `_SCOPE_DESTINATIONS["user"]` stays `("claude-md",)` — deliberately.**
+This looks like it contradicts FW-42 ("the menu gains the pathed-rules
+destination") and does not. The pathed tier is **not** a scope-constant
+enum value: it is `claude-md` parameterized by a *topic*, which is
+per-record (`ledger_ops::_validate_rules_fields`, currently
+`ledger_ops.py:1312-1364`, requires a non-empty kebab `rules_topic`; and
+R-2 — a rules variant is a scope parameterization of `claude-md`, never a
+fifth destination — is pinned at `ledger_ops.py:1325-1329`). A topic cannot
+be supplied by a keystroke, which is precisely why
+`PARAMETER_FREE_DESTINATIONS` (`models.py:93`) exists and why
+`new-skill`/`hook` are outside it. Keeping `_SCOPE_DESTINATIONS` as the
+**one scope predicate** is also what `_budget_rows` (`models.py:1540-1569`)
+and `destinations_for_scope` (`:283-288`) rely on; a second scope
+definition is the thing `U-pathed` §7.5 warned against.
+
+**(c) Three additions, all pure functions:**
+
+```python
+RULES_SCOPES: frozenset[str] = frozenset({"user", "project"})
+def rules_dest(scope: str | None, rules_topic: str | None) -> str | None
+def destination_cycle_for(scope: str, rules_topic: str | None) -> tuple[str, ...]
+```
+
+- `RULES_SCOPES` mirrors the CLI's own guard
+  (`_resolve_rules_target`'s `if scope not in ("user", "project")`,
+  currently `verbs.py:811-816`) — the UI must never offer what the verb
+  refuses. It is a **second declaration of a CLI rule**, which this
+  codebase tolerates only under a named agreement test (**A12**).
+- `rules_dest` is the **one and only** place `f"claude-md:rules:{topic}"`
+  is composed. `None` when the scope is outside `RULES_SCOPES` or the
+  topic is falsy.
+- `destination_cycle_for` = `destinations_for_scope(scope)` with
+  `rules_dest(...)` **appended** when it is not `None`. Appended, not
+  prepended: `cycle[0]` is both the cycle's fallback
+  (`routes.py:245-246`) and `correct_destination`'s correction target
+  (`models.py:309`), and this unit changes neither.
+
+**(d) The armed default gets its own function, separate from the echo
+re-validator.** This is the load-bearing design decision of the UI half.
+
+`correct_destination` (`models.py:291-312`) is called from **two kinds of
+site with opposite needs**:
+
+- the *initial* armed default, once per page build
+  (`build_bucket_model`, `models.py:1221`; `build_detail_model`, `:1627`),
+  where the analyst's rules proposal **should** produce the qualified dest;
+- the *echo re-validator*, `routes.py::_scope_corrected_dest`, run on
+  every later render, where an upgrade would be a **silent override of the
+  human's own choice** — a human who cycled to plain `claude-md` would be
+  pushed back onto the pathed rule by the next disarm or failed confirm.
+
+Folding both into one function with a `variant=` kwarg would make that
+override structural. So:
+
+- **`correct_destination` gains exactly one new leg**, before the
+  `PARAMETER_FREE_DESTINATIONS` guard at `:305`: a `suggested` that is
+  already a qualified rules dest passes through unchanged **iff** the
+  scope is in `RULES_SCOPES`; otherwise it corrects to `cycle[0]` with a
+  note, exactly like any other scope-invalid suggestion. It **never**
+  upgrades a bare enum. Signature unchanged.
+- **A new `proposed_destination(scope, item_destination, proposal)`**
+  returns the `(dest, note)` pair the two model builders arm. It is
+  `correct_destination` plus one leg: when `item_destination == "claude-md"`,
+  the proposal names `variant: rules` with a non-empty `rules_topic`, and
+  `rules_dest(...)` is not `None`, it returns that qualified dest with no
+  note (the analyst's own choice needs no correction note — see
+  `_pending_dest_override`'s reasoning at `routes.py:1489-1493` for the
+  same distinction). Otherwise it delegates unchanged.
+
+**Slug validation is not duplicated.** `models.py` decodes a qualified
+dest with the existing `parse_variant_qualifier` (`models.py:234-254`) and
+requires only a non-empty topic. The authoritative kebab check stays where
+it already is — `_parse_dest`'s rules branch (`verbs.py:491-503`), whose
+Y-9 wording names *"rules topic"*, and
+`ledger_ops::_validate_rules_fields`. A malformed topic that reaches a
+confirm takes the existing failed-confirm path and re-renders the bar with
+the CLI's own message (criterion **A11**). Adding a fourth copy of the
+slug rule — `proposals.py`'s `_DEST_RE` (`proposals.py:97-100`) is already
+the third — would be a new drift surface for no gain.
+
+**(e) The labels and the copy.**
+
+- `destination_label` (`models.py:171-209`) learns to gloss a **qualified**
+  value: decode via `parse_variant_qualifier`, then take the existing
+  `variant == "rules"` leg (`:202-204`) → *"User rule — py-conventions"*.
+  This keeps `partials/action_bar.html:268` unchanged; that template
+  already pipes the armed dest through this one resolver, and
+  `_GROUP_LABELS` remains the only enum-keyed label map (P-A11).
+- `rules_firing_note` (`models.py:257-280`) gains **S-23's rider** at user
+  scope. Today the pathed leg (`:275-277`) returns
+  `"loads when you touch <globs>"`, which at user scope implies a repo it
+  cannot mean. S-23 (2)'s measurement 2 is that a user-level glob resolves
+  **relative to the session's working directory** and that absolute globs
+  never match — so a user-scope pathed rule fires wherever a matching
+  *relative* path exists, **in any project**. The user-scope wording must
+  say that plainly and must **not invite repo-targeting**: no "in this
+  repo", no path-prefix suggestion, no wording that implies the glob can
+  be aimed. Project scope is unchanged.
+- The globs stay rendered **verbatim** on the surface the human decides
+  from (`detail.html:132` already does this through `rules_firing_note`).
+  Under S-25 that is the *only* guard user scope has, so it is pinned by a
+  criterion (**A10**) rather than left to survive by accident.
+
+**(f) The per-record cycle reaches the rows.** `RecordRow`
+(`models.py:1012-1027`) gains a `destination_cycle` field;
+`build_bucket_model` (`:1183-1289`) fills it per row via
+`destination_cycle_for`, and `build_detail_model`'s
+`destination_cycle=destinations_for_scope(scope)` (`:1639`) becomes the
+per-record form. `BucketModel.destination_cycle` (`:1143`) stays as the
+scope-level default for sites with no row context.
+
+**(g) `_budget_rows` is unchanged**, still iterating
+`destinations_for_scope(scope)` (`models.py:1553`). Stated so its absence
+is not read as an omission: the CLI emits `surface_fill` only for
+`SURFACE_FILL_CAPPED_DESTINATIONS` (`verbs.py:196` — `skill-md` and
+`claude-md`), there is no datum for a rules topic file, and F5's rule for
+that register is *"the register lists only what it can state a fact
+about."* A budget row for the pathed option would be a placeholder.
+
+### 3.4 `ui/routes.py` — the cycle and the re-validator learn the topic
+
+One new function, two changed, and one listed unchanged for the
+reviewer's sake. Nothing restructured, nothing renamed:
+
+| Function | Change |
+|---|---|
+| **new** `_record_rules_topic(request, record_id) -> str \| None` | sibling of `_record_scope` (`routes.py:1444-1453`), same "from the ledger, never a client field" posture: `ledger.locate_record` → `ledger.read_proposal_raw(bucket_dir, id)` (`ledger.py:321-332`) → the topic **iff** `destination == "claude-md"` and `variant == "rules"`; `None` on any miss, unreadable file, or unlocatable record |
+| `_scope_corrected_dest` (`:1456-1465`) | unchanged call, unchanged semantics — `correct_destination` now passes a qualified dest through on its own (§3.3d). Listed here because it is the site D3 breaks, and criterion **A5** is written against it |
+| `cycle_destination` (`:235-248`) | cycles over `models.destination_cycle_for(scope, rules_topic)`; gains `rules_topic: str \| None = None`, defaulted so every existing caller and test is unaffected |
+| `action_cycle_destination` (`:1531-1570`) | supplies `rules_topic=_record_rules_topic(...)` beside the existing `scope = _record_scope(...)` at `:1559-1560`. `dest_touched=True` stays unconditional — FW-64's rule, untouched |
+
+`routes.py:1274` (the degraded-Detail context, which has no proposal)
+keeps `models.destinations_for_scope(scope)`. Named rather than silently
+skipped: a salvaged record has no readable proposal, so there is no topic
+to offer, and the value is byte-identical to today's.
+
+### 3.5 `ui/templates/bucket.html` — one attribute
+
+Line 90 passes `destination_cycle=model.destination_cycle` (the
+scope-level tuple) into the per-row action bar. It becomes
+`row.destination_cycle`.
+
+**This is not tidying.** Without it, a bucket row whose armed dest is the
+qualified token renders against a one-element cycle, so
+`partials/action_bar.html:245-250` drops `data-key-action` and shows
+*"only one destination fits this lesson's scope"* — false, and the human
+would be unable to change a destination the page is showing them. That is
+a **new** funnel created by this unit's own fix, which S-22 forbids.
+`detail.html:183` needs no change (it already passes
+`model.destination_cycle`, whose value becomes per-record).
+
+The noop hint's own text is **deliberately not changed**: it renders only
+when the cycle is genuinely a singleton, which after this unit means
+"user scope, no rules topic proposed" — where it is true. §7.2 records the
+residual that sits behind it.
+
+### 3.6 Why the file set is five files and not two
+
+The campaign row names two *primary* files. The three additions are each
+forced, not chosen:
+
+- **`routes.py`** (one new function, two changed) — the `o` cycle's set is computed there
+  (`:1560`) from `scope` alone. A per-record topic cannot reach it without
+  a ledger read in that module. Putting the read in `models.py` instead
+  would mean a model function performing I/O, which nothing in that module
+  does.
+- **`bucket.html`** — one attribute, forced by §3.5.
+- **the two test suites** — the campaign's own bar.
+
+`compilers.py`, `selfcheck.py`, `ledger_ops.py`, `analyst.py`,
+`proposals.py`, `pane.py` and `cli.py` are **not** touched. If a build
+finds itself wanting any of them, stop and report it (§7.4).
+
+---
+
+## 4. Acceptance criteria
+
+**These are the contract.** Each asserts against bytes on disk or a
+rendered response, never against an intermediate the same change produced.
+For every criterion, the line in *italics* answers the campaign's required
+question: **what does this check report when its target is absent or
+broken?** Where that answer would be "pass", the criterion already names
+the pairing that fixes it.
+
+---
+
+**A1 — the two roads to a pathed user rule produce identical bytes.** The
+headline criterion. Seed one user record with a rules proposal
+(`variant: rules`, `rules_topic: t`, `rules_paths: ["**/*.py"]`) in each of
+two independent sandboxes. Route sandbox 1 with `verbs.route(home, id)`
+(bare) and sandbox 2 with
+`verbs.route(home, id, dest="claude-md:rules:t", by="analyst")`. Assert:
+
+- both `<user rules dir>/t.md` files exist and their **full text is equal**;
+- the leading frontmatter, re-parsed with an independent
+  `ruamel.yaml.YAML(typ="safe")` loader (the `read_frontmatter` helper at
+  `test_a2_rules_local.py:140-150`), is `{"paths": ["**/*.py"]}` in both;
+- both resolved records' `routing` blocks are equal on
+  `variant`, `rules_topic`, `rules_paths`, and both carry `by: "analyst"`.
+
+*Absent/broken:* today sandbox 2 writes a rules file with **no**
+frontmatter and a `routing` block with no `rules_paths` (measured, D2), so
+both the text equality and the frontmatter assertion fail with a concrete
+diff. A build that emits nothing anywhere fails the frontmatter assertion
+on sandbox 1 as well, so "no frontmatter" cannot pass.
+
+**A2 — a bare `--dest claude-md` still routes to the always-loaded file,
+even when the proposal is a rules proposal.** Same fixture; route with
+`dest="claude-md"`. Assert the plain user `CLAUDE.md` carries the entry,
+`<user rules dir>/t.md` does **not** exist, and the `routing` block has no
+`variant`, no `rules_topic`, no `rules_paths`.
+
+*Absent/broken:* a build that widened §3.2's predicate to "any claude-md
+dest inherits from the proposal" would write the rules file and fail all
+three. This is the negative control on §3.2 and it is the reason the
+predicate is narrow.
+
+**A3 — a mismatched topic does not inherit.** Proposal names topic `t`
+with globs; route with `dest="claude-md:rules:other"`. Assert
+`<user rules dir>/other.md` exists, carries **no** `paths:` key, and the
+`routing` block has `rules_topic: other` and no `rules_paths`.
+
+*Absent/broken:* an implementation that inherits on `destination` alone
+aims one lesson's globs at a file the human named instead — this fails on
+the `paths:` assertion. Without A3, that build passes A1 and A2.
+
+**A4 — the UI arms the qualified dest for a rules proposal, and the plain
+one otherwise.** Against `build_detail_model` **and** `build_bucket_model`
+(both, because they are separate call sites — `models.py:1627` and
+`:1221`), with a `list --json`-shaped item carrying the **bare** enum
+`destination: "claude-md"` (what `proposal_info` actually emits,
+`ledger_ops.py:1807`):
+
+- proposal with `variant: rules`, `rules_topic: py-conventions` →
+  `destination_default == "claude-md:rules:py-conventions"`,
+  `destination_note is None`;
+- **same item, proposal with no variant** → `destination_default ==
+  "claude-md"` (the byte-identical pre-existing behaviour).
+
+**And on the rendered page, not only the model** — a GET of the bucket page
+for that record's bucket:
+
+- the row's action bar carries `data-key-action="cycle_destination"` (a
+  two-element cycle), **not** the `data-noop-hint` singleton form;
+- the displayed destination text is the rules gloss
+  (*"User rule — py-conventions"*), **not** the raw
+  `claude-md:rules:py-conventions` token;
+- the hidden `dest` input carries the qualified token verbatim.
+
+*Absent/broken:* the second model leg is the positive control — without it
+a build that qualifies **every** claude-md dest (turning every plain user
+lesson into a rules route to a nonexistent topic) passes the first leg
+alone. The three rendered legs exist because a model-only assertion cannot
+see the template: they are the owners of M16 (the label decode), M18 (the
+row-level cycle) and M19 (`bucket.html`'s attribute), each of which a
+model-only A4 would let survive. Today all three fail — the row's cycle is
+the scope singleton and the armed dest is bare `claude-md`.
+
+**A5 — a qualified dest survives every re-render, and a plain one is not
+upgraded.** Through the HTTP surface, on a record whose proposal is a rules
+proposal:
+
+- POST the disarm route with `dest=claude-md:rules:t`; the re-rendered
+  bar's hidden `dest` input still carries `claude-md:rules:t`;
+- POST the same route with `dest=claude-md`; the re-rendered bar carries
+  **`claude-md`**, not the qualified form.
+
+*Absent/broken:* leg 1 fails today — `correct_destination` returns `None`
+for a qualified value (measured, D3) and the field renders empty. Leg 2 is
+the anti-override control: a build that folded the upgrade into
+`correct_destination` (the design §3.3d rejects) passes leg 1 and fails
+leg 2, silently overriding a human's own demotion.
+
+**A6 — the inheritance never introduces a new failure.** `route` with
+`dest="claude-md:rules:t"` succeeds when (a) there is **no** proposal
+sibling, (b) the sibling is unparseable YAML, and (c) the sibling is
+schema-invalid. In all three the rules file is created unpathed and the
+record resolves.
+
+*Absent/broken:* a naive `read_proposal(...)`/`validate_proposal(...)` in
+`_resolve_destination` raises `ProposalError`/`NoProposalError` on legs
+(a)–(c), turning three working routes into refusals. Today all three
+succeed, so this criterion is red the moment the read is unguarded.
+
+**A7 — the cycle reaches the pathed option and comes back.** With a rules
+proposal at user scope, `destination_cycle_for("user", "t")` is
+`("claude-md", "claude-md:rules:t")`, and repeated
+`cycle_destination(current, "user", "t")` walks
+`claude-md → claude-md:rules:t → claude-md`. **And in the same test**,
+`destination_cycle_for("user", None)` is `("claude-md",)` — unchanged.
+
+**And through the HTTP surface** — POST
+`/record/<id>/action/cycle-destination` with `dest=claude-md` on a record
+whose proposal names topic `t`: the re-rendered bar's hidden `dest` input
+carries `claude-md:rules:t`, and `dest_touched` is now set.
+
+*Absent/broken:* a build that appends unconditionally produces
+`("claude-md", None)` or a malformed token and fails the second leg; a
+build that never appends fails the first. Without the second leg,
+"the cycle grew" passes on a build that grew it for every record. The HTTP
+leg is the **owner of M17** — `_record_rules_topic` returning `None`
+unconditionally is invisible to the two function-level legs, because they
+pass the topic in directly. Today the HTTP leg returns `claude-md` (a
+singleton cycle rotating onto itself), so it can fail.
+
+**A8 — the cycle is offered at project scope too, without disturbing its
+order.** `destination_cycle_for("project", "t")` is
+`("claude-md", "reference", "claude-md:rules:t")` — `cycle[0]` and the
+existing order unchanged. `destination_cycle_for("skill", "t")` is
+`PARAMETER_FREE_DESTINATIONS`, **unchanged** (skill scope is the P-A13
+rules deferral, `verbs.py:811-816`).
+
+*Absent/broken:* a build that prepends changes `cycle[0]`, which silently
+changes what `correct_destination` corrects a scope-invalid suggestion to
+— this fails on tuple equality. A build that ignores `RULES_SCOPES` offers
+the CLI-refused skill-scope rules dest and fails the third leg.
+
+**A9 — the `reference` refusal still fires at user scope, and says why.**
+`verbs.route(home, <user record>, dest="reference")` raises `VerbError`;
+the record stays in `pending/`; **no** `references/` directory is created
+anywhere under the user target's parent. The message mentions **S-23** and
+does **not** contain the substring `chezmoi`. **In the same test**, a
+`skill:<name>`-scope and a project-scope `reference` route both still
+succeed and write their files.
+
+*Absent/broken:* today NO test asserts this refusal (measured, §1.2), so
+deleting it costs one confusing failure in an unrelated `--no-push` test.
+The positive control (the two scopes that must still work) is what stops
+this criterion being satisfied by a build that refuses `reference`
+everywhere.
+
+**A10 — the user-scope firing note states the cwd-relative truth and
+invites no repo-targeting.** `rules_firing_note("rules", "user",
+("**/*.py",))` contains the glob **verbatim**, and states that it matches
+relative to wherever the session is running / in any project.
+`rules_firing_note("rules", "project", ("src/**",))` is **unchanged from
+today's string**. And the rendered Detail page for a user-scope pathed
+proposal contains the glob text.
+
+*Absent/broken:* the project-scope leg is the no-regression control; the
+rendered-page leg is what makes the note a *surface* fact rather than a
+function fact. A build that changes the note but never renders it passes a
+function-only assertion. **The reviewer should also read the shipped string
+directly** — no assertion can prove copy does not invite repo-targeting;
+that is a human read, and it is named here so the gate performs it.
+
+**A11 — a malformed topic refuses at the verb, not silently.**
+`verbs.route(..., dest="claude-md:rules:Not_A_Slug")` raises `VerbError`
+whose message names *"rules topic"* (the Y-9 wording at `verbs.py:499-503`),
+and the record stays pending.
+
+*Absent/broken:* this is the criterion that makes §3.3's
+"no fourth copy of the slug rule" honest. If a build adds slug validation
+in `models.py` and the CLI's own check regressed, this still catches it.
+
+**A12 — `RULES_SCOPES` agrees with the CLI.** A test asserts
+`models.RULES_SCOPES == frozenset({"user", "project"})` **and** carries a
+comment naming `verbs.py::_resolve_rules_target`'s guard as its source of
+truth, so a future widening of that guard has a place to fail.
+
+*Absent/broken:* an equality-to-a-literal test cannot detect CLI drift on
+its own — stated plainly rather than dressed up. What it does provide is a
+named tripwire the CLI-side change will collide with. The alternative
+(importing the CLI package into the UI package) is rejected: the UI reaches
+the CLI by subprocess, not import, and inverting that for one constant
+would be a new coupling.
+
+**A13 — `by` attribution survives.** Untouched approve of a rules proposal
+→ argv contains `--by analyst` and the resolved record's
+`routing.by == "analyst"`. A cycled destination → `--by human` and
+`routing.by == "human"`.
+
+*Absent/broken:* FW-64 shipped `4f8817a` and `6519c58` days ago; a
+regression here would be invisible to every other criterion. Both legs are
+required — asserting only "analyst" passes on a build that hardcodes it.
+
+**A14 — non-rules routes are byte-identical.** Routing to plain user
+`CLAUDE.md`, project `CLAUDE.md`, `SKILL.md`, `CLAUDE.local.md`,
+`reference` (skill scope) and a `new-skill` target produces the same bytes
+and the same `routing` blocks as before this unit. **Positive control in
+the same test:** one rules route in the same fixture *does* produce a
+pathed file, so "nothing changed anywhere" cannot pass.
+
+*Absent/broken:* without the control, a build whose `_resolve_destination`
+change accidentally short-circuits every route passes A14 trivially.
+
+**A15 — P-A5's one-motion contract is untouched.** The two existing tests
+in `TestObligation16BareDestOneMotion` (`test_a2_rules_local.py:764-795`)
+still pass **unmodified**: `route_direct` with
+`dest="claude-md:rules:subagents"` still yields an **unpathed** rules file
+at both scopes, still leaves the plain `CLAUDE.md` markerless, and
+`:783`'s `assert "rules_paths" not in routed.routing` still holds.
+
+*Absent/broken:* this criterion has **no mutation of its own**, and that is
+stated rather than papered over. `route_direct` composes a record that is
+not yet on disk, so no proposal sibling can exist and §3.2's inheritance is
+unreachable there **by construction** — there is no one-line edit to §3.2
+that reaches it. It is a **regression guard on a gated contract**, and the
+build that reddens it is one that gives `route_direct` globs from some
+*other* source — a default, or the one-shot analyst's own dict (§7.3's
+named handoff, which is `U-composer`'s and must not be done here). A
+builder must not edit these two tests to make a build pass; if they go red,
+the change reached a seam this unit does not own.
+
+---
+
+## 5. Mutation plan
+
+A blind reviewer will run these. **Before any sweep:**
+`export PYTHONDONTWRITEBYTECODE=1` and
+`find . -name __pycache__ -type d -prune -exec rm -rf {} +` (campaign §3,
+FW-61). Revert by **inverse Edit, never `git checkout`**.
+
+Each row's named criterion is its **owner** — the assertion written to
+catch that defect. Several are deliberately wide; **what must hold is that
+the owner fails.** A mutation whose owner stays green is a real finding.
+Reviewers are invited to invent mutations not listed here.
+
+| # | One-line edit to production code | Test that must fail |
+|---|---|---|
+| M1 | `_resolve_destination`: delete the `rules_paths` inheritance, returning `_Destination(destination, qualifier)` as today | **A1** — owner; the "validated but never written" control for this unit |
+| M2 | `_resolve_destination`: inherit on `destination == "claude-md"` alone, dropping the variant/topic match | **A2** (the bare-dest leg), and A3 |
+| M3 | `_resolve_destination`: inherit when the topics differ (drop the topic comparison) | **A3** |
+| M4 | `_resolve_destination`: read the sibling without guarding a missing/invalid one | **A6** |
+| M5 | `_resolve_target`: delete the user-scope `reference` `raise`, falling through to a resolved user `references/` dir | **A9** |
+| M6 | `_resolve_target`: keep the refusal, restore the word `chezmoi` in its message | **A9** (the substring leg) |
+| M7 | `proposed_destination`: return `correct_destination(...)` unconditionally (never qualify) | **A4** (leg 1) |
+| M8 | `proposed_destination`: qualify **every** `claude-md` dest, ignoring the proposal's variant | **A4** (leg 2) |
+| M9 | `correct_destination`: drop the qualified-passthrough leg | **A5** (leg 1) |
+| M10 | `correct_destination`: add the upgrade leg — qualify a bare `claude-md` echo when the record has a rules proposal | **A5** (leg 2) — the design §3.3d exists to prevent |
+| M11 | `destination_cycle_for`: append `rules_dest` unconditionally (ignore `rules_topic is None`) | **A7** (leg 2) |
+| M12 | `destination_cycle_for`: prepend instead of append | **A8** |
+| M13 | `rules_dest`: drop the `RULES_SCOPES` check | **A8** (the skill-scope leg) |
+| M14 | `rules_firing_note`: return today's project wording at user scope | **A10** |
+| M15 | `rules_firing_note`: drop the globs from the string (keep the prose) | **A10** (the verbatim-glob leg) |
+| M16 | `destination_label`: drop the qualified-value decode | **A4**, rendered leg 2 (the displayed label is the raw token) |
+| M17 | `_record_rules_topic`: `return None` unconditionally | **A7**, the HTTP leg |
+| M18 | `build_bucket_model`: fill `RecordRow.destination_cycle` from `destinations_for_scope` instead of `destination_cycle_for` | **A4**, rendered leg 1 (the row falls back to the noop-hint form) |
+| M19 | `bucket.html:90`: restore `model.destination_cycle` | **A4**, rendered leg 1 — same symptom, different cause |
+
+**M18 and M19 map to the same assertion by design** — the row-level cycle
+can be broken at either end of the model→template hand-off, so the
+assertion has an owner at each. A builder splitting them into two tests
+must update this table in the same commit.
+
+**If any mutation's owner stays green, that is a coverage gap to close, not
+a mutation to withdraw** — add the missing assertion and record it here.
+
+**A15 has no row, deliberately.** It is a regression guard on a gated
+contract, not a guarded behaviour of this unit's own — §4 A15 states why,
+and a fabricated row here would be the theatre this campaign keeps
+catching. The reviewer's check for A15 is that
+`TestObligation16BareDestOneMotion` is green **and unedited** in the diff.
+
+**One mutation that must NOT be proposed** because it passes by design:
+adding a `--rules-paths` flag to `cli.py` and threading it. It is inert
+under this design and §3.2 rejects it on P-A5 and S-25 grounds.
+
+---
+
+## 6. Builder decisions, made here rather than left open
+
+1. **The refusal's replacement wording is the builder's**, within §3.1's
+   three required properties and its two prohibitions. Fixing exact bytes
+   here would put a prose string under the code gate for no gain; the
+   criteria pin what matters (S-23 named, `chezmoi` absent, effect
+   unchanged, and the replacement surface named).
+2. **`rules_dest` is the single composition site** for
+   `claude-md:rules:<topic>` in `models.py`. A second f-string of that
+   shape anywhere in this unit's diff is a defect.
+3. **Tests live where their subject already lives.**
+   CLI: `cli/tests/test_a2_rules_local.py`, continuing the
+   `TestObligation<N>` class naming — the last existing class is
+   `TestObligation28NonRulesTargetsByteIdentical` (`:1438`), so this unit
+   **starts at 29**. The `reference`-refusal criterion (**A9**) goes in
+   `cli/tests/test_verbs.py` beside `TestRouteDestination` (`:205`), which
+   is where every other destination-resolution refusal lives.
+   UI: `ui/tests/test_models_detail.py` and `test_models_bucket.py` for the
+   model functions; `ui/tests/test_routes.py` for the HTTP legs of A5 and
+   the argv leg of A13.
+4. **`str` comparison of topics, no normalization.** `"t"` and `"T"` are
+   different topics; the kebab rule already forbids the second. Consistent
+   with `U-pathed` builder decision 11 for globs.
+5. **No new I/O in `models.py`.** `_record_rules_topic` lives in
+   `routes.py` because that module already reads the ledger per render
+   (`_record_scope`, `:1444-1453`).
+6. **Suite baselines for this unit**, measured this session at `83c1d5d`
+   with a scratch `XDG_CACHE_HOME` and the four `SELF_LEARN_*` redirects,
+   rc read **unpiped**:
+
+   | Suite | Command (from the plugin dir) | Result | Tolerated |
+   |---|---|---|---|
+   | CLI | `./.venv/bin/python -m pytest -q` | **1379 passed, 5 skipped, 0 failed**, rc 0 | none — any red is this unit's |
+   | UI | `./.venv/bin/python -m pytest tests -q` | **1149 passed, 1 failed, 0 skipped**, rc 1 | `test_service_unit.py::test_both_units_document_manual_registration_via_symlink` only |
+
+   The UI run **must** export both `XDG_CACHE_HOME=<scratch>` and
+   `PLAYWRIGHT_BROWSERS_PATH="$HOME/.cache/ms-playwright"` (campaign §4a).
+   **Zero skips is part of the baseline**: a cache-only redirect hides
+   Chromium and reports skips, which a pass-count check cannot distinguish
+   from a clean run. Read the FAILED lines and check the skip count is 0.
+7. **A fresh worktree has no `.venv`.** Both were created with
+   `uv sync` and each was verified to resolve to *this* tree
+   (`os.path.realpath(self_learn.__file__)` /
+   `self_learn_ui.__file__` both under the worktree) before any measurement
+   — the campaign's editable-install and wrong-tree hazards.
+
+---
+
+## 7. Out of scope, and the residuals this unit accepts
+
+### 7.1 S-25's residual, restated honestly — this unit widens its exposure and closes nothing
+
+**S-25 (ACCEPTED, ratified): user-scope pathed globs have no dead-glob
+guard and structurally cannot have one.** This unit does not change that,
+and must not be read as having done so. The exact state after this unit:
+
+**Guards that DO apply to a user-scope pathed route:**
+
+1. **The proposal-schema shape check** —
+   `ledger_ops::_validate_rules_fields` (currently `ledger_ops.py:1312-1364`):
+   `rules_topic` must be a non-empty kebab slug; `rules_paths`, when
+   present, must be a **non-empty list of non-empty strings**. Shape only.
+2. **The absolute / `~`-leading refusal** — `U-pathed` §3.4(1), in
+   `_resolve_rules_target` (currently `verbs.py:826-836`). Shape only, no
+   filesystem, and it is the one guard that covers user scope at all.
+3. **The topic slug check** at `--dest` parse time (`verbs.py:491-503`).
+
+**Guards that do NOT apply, and cannot:**
+
+- **No zero-match check.** `_validate_project_globs` (currently
+  `verbs.py:717-752`) runs only on the project branch
+  (`verbs.py:890-891`). There is no canonical tree for a user-scope glob —
+  S-23's measurement 2: it resolves against whatever repo the session
+  happens to run in.
+- **No `selfcheck` reassertion.** `selfcheck::_check_drift`'s glob
+  reassertion is explicitly project-only
+  (`selfcheck.py:613`: `if routing.get("variant") == "rules" and
+  record.scope == "project"`), with the reason stated in its own comment at
+  `:609-610`.
+
+**So a misspelt user-scope glob fires nowhere and reports nothing, and
+after this unit that gap sits on a tier the review surface actively
+offers.** The only remaining check is the human's read of the card, which
+is why **A10** pins the globs being rendered verbatim. This unit claims
+nothing beyond that. S-25 is already written into `03-decisions.md`; no new
+decision row is needed, and this unit must not add one.
+
+**S-24's residual also rides along unchanged** (`03-decisions.md`): a
+PATHED destination looks like delivery and, for a Grep/Glob-only workflow,
+silently is not. Nothing here changes it; the doctrine consequence is
+`U-composer`'s.
+
+### 7.2 Declared residual — a plain proposal cannot be cycled to pathed
+
+If the analyst proposes plain `claude-md` at user scope with no
+`rules_topic`, the cycle stays a singleton and the pathed tier is
+unreachable by keystroke. **This is deliberate, not an oversight:** a topic
+is a *name*, and S-21's ratified shape is that a name is proposed by the
+analyst, validated by the CLI, and confirmed by the human — never minted by
+a keystroke. The escape hatch exists and is not new: **Iterate**, whose
+pane grammar already admits `claude-md:rules:<topic>`
+(`proposals.py:97-100`), and which this unit's §3.2 fix now makes deliver
+globs correctly for the first time.
+
+The residual is that the surface does not *say* the escape hatch exists.
+The action bar's existing hint —
+*"hook / new-skill need Iterate — not cycle-reachable"*
+(`partials/action_bar.html:269`) — is the natural place to name a rules
+topic too, and that is a one-string template change this unit **declines**,
+because it renders on every record at every scope and its wording is
+`U-composer`'s doctrine question (what *should* be offered), not this
+unit's menu question (what *can* be). **Recorded, not silently dropped**;
+carried to §9.3 as an open question for the gate.
+
+### 7.3 Named handoffs — the change, not a silent assumption
+
+- **`teach --route --dest claude-md:rules:<topic>` still cannot carry
+  globs.** `route_direct` calls `_parse_dest` directly (currently
+  `verbs.py:2414`) and has **no proposal sibling to read** — the docstring
+  says so — so §3.2's inheritance cannot apply there by construction. The
+  one-motion path therefore writes an unpathed rules file. Not fixed here:
+  the fix is either a `--rules-paths` flag (rejected, §3.2) or threading
+  the one-shot analyst's own proposal dict, which touches `teach.py` and
+  `analyst.py` — both `U-composer`'s. **State this plainly wherever this
+  unit is recorded as BUILT.**
+- **Bucket-page grouping still shows a pathed rule under the plain
+  claude-md heading.** `_group_key_for` (`models.py:1161-1167`) keys on the
+  bare destination enum, and `_GROUP_LABELS`/`_GROUP_ORDER`
+  (`models.py:339-356`) are enum-keyed by P-A11's single-map rule. A rules
+  topic is a parameterization, not a sixth destination (R-2,
+  `ledger_ops.py:1325-1329`), so splitting the group needs a group-key
+  vocabulary this unit does not own. Forward work; not a defect this unit
+  introduces.
+- **FW-43 overlaps this unit at exactly one site.** FW-43 lists three
+  stale-chezmoi grounds: `routing-doctrine.md:124`,
+  `verbs.py:950-955` and `fast-lane-spec.md:39` (**FW-43's own numbers;
+  the middle one is stale on this tree** — `verbs.py:950-955` is now inside
+  `_resolve_target`'s claude-md branch, and the refusal it means is
+  `:1045-1050`; see §10 item 1). The middle one is the
+  `reference` refusal — **this unit owns it** (§3.1) and adds
+  `models.py:98-99` (which FW-48's row already flags). The doctrine and
+  fast-lane-spec sites stay FW-43's. Named so neither is done twice nor
+  left for the other.
+
+### 7.4 Report, do not fix
+
+- Anything in `compilers.py`, `selfcheck.py`, `ledger_ops.py`,
+  `analyst.py`, `worker.py`, `pane.py`, `cli.py`, `teach.py`.
+- The `surface_fill` register and its capped-destination set.
+- `U-pointer`'s pointer emission — it shares `verbs.py` and
+  `compilers.py`; sequence, do not overlap.
+- When a lesson *should* be pathed (`U-composer`'s doctrine, including
+  S-23's at-or-after-first-contact rider and S-24's search-only rider).
+
+---
+
+## 8. Test obligations carried from the campaign
+
+Campaign §5, applied to this unit:
+
+1. **Every gate-shaped check ships with a positive control.** Eight, one
+   per criterion that could otherwise pass while blind: A1's sandbox-1
+   frontmatter assertion (against a build that emits nothing anywhere),
+   A4's no-variant leg, A5's leg 2 (anti-override), A7's
+   `destination_cycle_for("user", None)` leg, A8's skill-scope leg, A9's
+   still-works-at-skill-and-project leg, A10's unchanged-project-wording
+   leg, and A14's one-rules-route-in-the-same-fixture leg. Each is named in
+   §4 with what it prevents.
+2. **Never read an exit code downstream of a pipe.** Both baselines in
+   §6.6 were captured unpiped.
+3. **A spec that pins an ALGORITHM in prose has pinned an untested claim.**
+   This spec pins one predicate precisely enough to transcribe — §3.2's
+   inheritance condition. **It was executed, not reasoned:** the three-way
+   probe of §1.1 (bare / `--dest claude-md` / `--dest claude-md:rules:t`)
+   was run against the real `verbs.route` on this tree, and its measured
+   outputs are what A1/A2/A3 assert. The oracle is the CLI itself plus an
+   **independent** `ruamel.yaml.YAML(typ="safe")` re-parse of the emitted
+   frontmatter — never `compilers.read_paths_frontmatter`, which is the
+   writer's own reader. Sandbox configuration is stated in §1.1.
+4. **The 51 resolved records are the table's regression fixtures** —
+   `U-table`'s obligation, not this unit's. This unit adds no table.
+5. **The pair harness** — `U-pairs`. Not this unit's.
+
+---
+
+## 9. Open questions for the gate
+
+**9.1 — Which reading of P-A5 binds, and therefore which seam closes D2?**
+This is the one question that would force the builder to *choose*, so it is
+a spec-round question, not a fold.
+
+- **Option A — §3.2's inheritance** (this spec's design). A `--dest` naming
+  exactly the proposal's own rules target inherits that proposal's globs.
+  **Pro:** it fixes *every* caller of the qualified `--dest` form, including
+  the **Iterate pane**, whose `_DEST_RE` grammar already emits
+  `claude-md:rules:<topic>` (`proposals.py:97-100`) and whose confirm path
+  always sends `prop.dest` explicitly (`routes.py:2631-2643`). **Con:** it
+  contradicts the *literal* reading of A2 obligation 16's contract sentence
+  (§3.2), and a blind gate reading that sentence alone will flag it.
+- **Option B — the UI omits `--dest` on an untouched, uncorrected
+  approve.** Send no `--dest` when `dest_touched is False` **and** the
+  armed default was not scope-corrected (`destination_note is None`), so an
+  approve-as-proposed becomes byte-equal to a bare `route <id>` and takes
+  P-A5's intended proposal branch. **Pro:** zero tension with P-A5 under
+  either reading, and no CLI change at all. **Con:** it leaves the **pane
+  path still de-pathing** (the pane's dest is a deliberate explicit choice,
+  never "untouched"), so D2 survives on the surface S-22 exists to widen; it
+  needs a second sticky form field or a confirm-time proposal read; and the
+  *displayed == armed == executed* invariant (`routes.py:1461-1462`) has to
+  be re-argued rather than inherited — it does hold under the guard, since
+  the guard's own condition is "no correction happened", but that argument
+  is now load-bearing where today it is free.
+
+**Recommendation: Option A**, on the qualified reading of P-A5 — because
+P-A5's rationale is about *encoding* globs in a string (which A does not
+do) and its safety property is *"a proposal a human read"* (which A
+preserves), while Option B leaves a measured silent under-delivery live on
+the Iterate path. **If the gate rules for the literal reading**, Option B
+is the fallback, §3.2 is dropped, A1's second road becomes "the UI's
+untouched-approve argv" rather than an explicit qualified `--dest`, and
+A3/A6/M1–M4 are replaced by Option B's own criteria.
+
+**9.2 — Should the qualified dest appear at project scope in this unit, or
+only at user scope?** FW-42 is user-scope-specific; S-23 says PATHED is the
+primary cheap tier **at every scope**. §3.3 makes the mechanism
+scope-general (it falls out of `RULES_SCOPES` mirroring the CLI's own
+guard) and A8 pins project scope. The argument for general: D1 and D2 are
+scope-blind defects, and a user-only fix would leave project-scope pathed
+proposals still downgrading through the same surface. The argument for
+narrow: a smaller blast radius on a contended file. **Recommendation:
+scope-general** — a fix that leaves a measured silent misroute live at one
+scope is the campaign's own failure mode.
+
+**9.3 — Does the action bar's Iterate hint gain "rules topic"?** §7.2
+declines the one-string change to
+`partials/action_bar.html:269` because the wording is a doctrine question.
+If the gate rules it in, it is a bounded text substitution and folds at the
+code gate under the 2026-07-26 verdict repricing.
+
+**9.4 — Is `_group_key_for`'s bucket grouping (§7.3) acceptable as
+forward work?** After this unit, a user-scope pathed rule appears on the
+bucket page under the heading *"User instructions"*, which names the tier
+S-23 demoted. Fixing it needs a group-key vocabulary change; deferring it
+means the bucket page under-reports the tier split the campaign is
+measuring at Checkpoint C. **Recommendation: defer**, with a forward-work
+row, because Checkpoint C measures `routing` blocks and not page headings.
+
+---
+
+## 10. What this spec corrects
+
+Recorded because a spec that silently diverges from its sources is how a
+fabricated pin gets made.
+
+1. **The campaign row's citation for the `reference` refusal is stale.**
+   `forward/r2-routing-campaign.md:87` gives *"then `:950-955`, currently
+   `:1009-1021`"*. On this tree at `83c1d5d` the branch is
+   `verbs.py:1038-1060` and the refusal is `:1045-1050`; `:1009-1021` is
+   now the **new-skill** branch's marketplace and foreign-plugin refusals.
+   The row itself warned this might have drifted, and it had.
+2. **`U-pathed`'s spec carries the same stale number.** Its §7.4 and §7.5
+   both cite `verbs.py:1016-1021` for the refusal. Same correction. (Both
+   documents post-date the ~208-citation repair pass; `verbs.py` grew
+   afterwards via `4f8817a` and `5fa3fbb`.)
+3. **`U-pathed` §7.5's "there is no dependency from this unit to that one"
+   is true as stated and incomplete as read.** It verified the *bare*
+   route path. §2.2 above records why that verification could not see D1
+   or D2, and neither claim contradicts the other.
+4. **FW-42's phrasing — "the menu gains the pathed-rules destination" —
+   does not mean `_SCOPE_DESTINATIONS["user"]` grows.** §3.3(b) explains
+   why the pathed tier cannot be a scope-constant enum member. A builder
+   who reads the row literally and appends a string to that dict ships a
+   dest the CLI refuses for want of a topic.
+5. **A2's obligation 16 states its contract without the qualifier its own
+   rationale carries.** `a2-rules-local-spec.md:320-326` says *"Bare
+   `--dest claude-md:rules:<topic>` **with no proposal** yields an
+   **unpathed** rule"*; `:429-431` and obligation 16 (`:976-981`) then
+   restate it as *"the contract is that bare `--dest
+   claude-md:rules:<topic>` resolves to the unpathed rules target"*,
+   dropping *"with no proposal"*. The shipped tests only ever exercise the
+   qualifier-satisfying case (`route_direct`,
+   `test_a2_rules_local.py:764-795`), so the ambiguity has never had to
+   resolve. **This spec does not resolve it either** — §9.1 routes it to
+   the gate with a recommendation, because resolving a gated spec's
+   contract by assertion is how a fabricated pin gets made. A2 was written
+   before S-23 promoted PATHED to the primary cheap tier and before FW-64
+   documented that the review UI always sends an explicit `--dest`; neither
+   fact was available to it.
+
+Nothing here contradicts **S-23**, **S-24** or **S-25**. §3.1, §3.3 and
+§7.1 all follow from S-23 (2) and from the measurements it rests on. The
+one live tension with a gated document is item 5, and it is unresolved on
+purpose.
+
+---
+
+## 11. Revision history
+
+- **r1** — 2026-08-06. Written against this worktree at `83c1d5d`, from a
+  full read of `verbs.py` §§440-560, 600-720, 780-1065, 2023-2160,
+  2368-2420; `ui/models.py` §§70-360, 1006-1300, 1330-1660;
+  `ui/routes.py` §§94-180, 225-250, 1250-1290, 1410-1580, 1600-1680,
+  2100-2200, 2600-2660; `ui/ledger.py` §§216-340;
+  `ledger_ops.py` §§75-90, 1250-1370, 1780-1915; `analyst.py` §§60-120;
+  `selfcheck.py` glob sites; and the four templates named in §3.
+  **Empirical work run and reported inline:** the three-way route probe
+  (§1.1), the UI destination-chain probe (§1.1), the `reference`-refusal
+  deletion mutation against the full CLI suite (§1.2, reverted by inverse
+  Edit, `git diff --stat` empty), and both suite baselines (§6.6).
