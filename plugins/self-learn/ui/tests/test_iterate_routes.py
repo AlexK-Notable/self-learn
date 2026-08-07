@@ -918,6 +918,36 @@ class TestNonBlockingStartRoutes:
         assert "bucket chat reply" in panel.text
         assert runner.calls == []  # bucket sessions owe no validate
 
+    def test_bucket_pane_panel_close_button_carries_no_hx_include(self, tmp_path: Path) -> None:
+        """Code-gate FOLD 2: the page-LOAD path (bucket.html's own
+        `{% if pane_split %}` branch) isn't the only place a live bucket
+        pane renders — GET .../pane/panel is what app.js's
+        schedulePaneCompletion() re-fetches after EVERY pane_result (the
+        turn-completion swap, static/app.js). `_bucket_pane_ctx` sets
+        `bucket_pane=True` for this route too (routes.py's
+        `bucket_pane_panel`), which is what keeps Close (q) working past
+        the first turn — untested until now, so a regression there would
+        pass every existing test (bucket.html's own render, the
+        page-load browser tests) while breaking Close the moment a real
+        conversation completes and nothing notices.
+
+        White-box `_live` seeding (mirrors
+        test_js_dom_pane_persistence.py's own `_Live` pattern) — no real
+        turn needs to run to prove this route's OWN render is correct."""
+        sb, _rec = _seed(tmp_path)
+        c, _runner, manager = make_client_with_pane(sb)
+        key = pane.bucket_session_key("skill", "s")
+        manager._live = pane._Live(record_id=key, state=pane.STATE_STREAMING)
+
+        panel = c.get("/bucket/skill/s/pane/panel")
+        assert panel.status_code == 200
+        assert 'data-key-action="close_pane"' in panel.text  # positive control
+        close_button = re.search(
+            r'<button[^>]*data-key-action="close_pane"[^>]*>', panel.text
+        )
+        assert close_button is not None
+        assert "hx-include" not in close_button.group(0)
+
 
 class TestLifespanShutdown:
     def test_lifespan_shutdown_tears_down_the_live_pane(self, tmp_path: Path) -> None:

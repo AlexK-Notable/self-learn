@@ -21,8 +21,16 @@
 <div class="detail-grid">
 <article data-record-id="{{ model.id }}" class="detail-left">
 
+  {# UI-walk defect fix (terminology): "canon" was never defined outside
+     a post-resolution success banner — a cold user could meet the
+     "already canon" badge here, on their very first record, with no
+     explanation anywhere yet given. "mined" gets the same treatment
+     (undefined jargon found in the wider sweep); "deferred"/"stale"
+     already carry their explanation in the badge TEXT itself, so they
+     are left alone. Mirrors bucket.html's row.badges loop — both render
+     from the SAME server-side set (models.py's _record_badges). #}
   {% for badge in model.badges %}
-  <span class="badge badge-{{ badge.kind }}">{{ badge.text }}</span>
+  <span class="badge badge-{{ badge.kind }}"{% if badge.kind == "already-canon" %} title="canon = the guidance file(s) this lesson would write into (a project's CLAUDE.md, a skill's SKILL.md, a rules file) — already there, so there's nothing new to write"{% elif badge.kind == "mined" %} title="found automatically by scanning past sessions for recurring friction — not typed in by hand"{% endif %}>{{ badge.text }}</span>
   {% endfor %}
 
   {% if not model.host_registered %}
@@ -48,7 +56,11 @@
        stamp was baked into provenance_text, unreachable by any filter —
        models.py now drops it there and this renders the discrete
        `created_at` field as its own humanize_ts-filtered element. #}
-    <p class="provenance">{{ model.finding.provenance_text }}{% if model.finding.created_at %} &middot; created {{ model.finding.created_at | humanize_ts }}{% endif %}</p>
+    {# UI-walk defect fix (terminology): "sighting(s)" is domain jargon
+       (how many times this same trigger/instruction pair was captured)
+       with no explanation anywhere in the app — this line is the FIRST
+       place a cold user meets it, reading top to bottom on Detail. #}
+    <p class="provenance" title="Sightings: how many times this same trigger/instruction pair was captured, across every session that hit it">{{ model.finding.provenance_text }}{% if model.finding.created_at %} &middot; created {{ model.finding.created_at | humanize_ts }}{% endif %}</p>
     <div class="record-body">{{ model.finding.body | markdown }}</div>
     {% if model.finding.evidence %}
     <ul class="evidence">
@@ -65,7 +77,10 @@
        <details> with no extra JS needed. #}
     {% if model.finding.episode_brief %}
     <details class="episode-brief">
-      <summary data-key-action="toggle_brief">Episode brief (b)</summary>
+      {# UI-walk defect fix (terminology): undefined jargon found in the
+         wider sweep — a short narrative recap the miner drafts, distinct
+         from the raw Trigger/Instruction fields above it. #}
+      <summary data-key-action="toggle_brief" title="A short narrative recap of the situation, auto-drafted by the miner from the session it was found in">Episode brief (b)</summary>
       <div class="episode-brief-text">{{ model.finding.episode_brief | markdown }}</div>
     </details>
     {% endif %}
@@ -136,7 +151,7 @@
     <p>Alternates: {% for alt in model.why.alternates %}<span title="{{ alt }}">{{ alt | destination_label(model.scope) }}</span>{% if not loop.last %}, {% endif %}{% endfor %}</p>
     {% endif %}
     {% if model.why.already_canon %}
-    <p class="badge badge-already-canon">already canon{% if model.why.already_canon_reason %} — {{ model.why.already_canon_reason }}{% endif %}</p>
+    <p class="badge badge-already-canon" title="canon = the guidance file(s) this lesson would write into — already there, so there's nothing new to write">already canon{% if model.why.already_canon_reason %} — {{ model.why.already_canon_reason }}{% endif %}</p>
     {% endif %}
     <p class="badge badge-{{ model.why.freshness }}">{{ model.why.freshness_label }}</p>
     {# 09 §11 Y-20 / §2.3: the single budget surface — every scope-valid

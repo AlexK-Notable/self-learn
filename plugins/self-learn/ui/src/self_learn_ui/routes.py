@@ -1075,9 +1075,27 @@ async def worker_kick(request: Request) -> Response:
     documents the outcomes as ``spawned`` \\| ``absorbed-window`` \\|
     ``absorbed-race`` \\| ``disabled``; two rapid clicks can produce AT
     MOST one spawned worker, never two, by construction in the CLI layer
-    this route calls into unchanged."""
+    this route calls into unchanged.
+
+    UI-walk defect fix: "Force run" gave no perceptible feedback — the
+    button posted, the page redirected, and nothing in between told a
+    human anything happened. This EXTENDS the S-20 in-flight machinery
+    (the keyed `applying` Map app.js already carries for the three
+    verb-confirm routes) rather than inventing a second mechanism —
+    `_publish_applying` is the exact same helper those routes call, the
+    exact same envelope shape, the exact same client-side Map. There is
+    no per-record id for a worker kick, so "worker"/"kick" fill the
+    verb/id slots the same way a record's own verb/record_id would — the
+    applying strip renders "applying — worker → kick" for this request's
+    own in-flight window (per the docstring above, that window is the
+    kick subprocess only, milliseconds; the detached ``worker run
+    --coalesce`` it spawns is NOT covered, by design — S-20's R-1
+    posture stands: no claim about that longer-running work's own
+    latency)."""
     runner = request.app.state.runner
-    await runner.run(["worker", "kick"])
+    await _publish_applying(request, "worker", "kick", "start")
+    result = await runner.run(["worker", "kick"])
+    await _publish_applying(request, "worker", "kick", "done" if result.ok else "error")
     _force_refresh(request, "front")
     resp = Response(status_code=200)
     resp.headers["HX-Redirect"] = "/"
@@ -1092,9 +1110,19 @@ async def mine_run(request: Request) -> Response:
     """09 §11 Y-5's ONE miner action (R3's one-action pin): force a
     mining pass. No arm-then-confirm ceremony — the miner run is
     idempotent/non-destructive (unlike route/reject/defer/graduate,
-    which is why THOSE verbs get the arm dance and this doesn't)."""
+    which is why THOSE verbs get the arm dance and this doesn't).
+
+    UI-walk defect fix: same "Force run" perceptibility gap as
+    ``worker_kick`` above, same fix — EXTEND the S-20 `applying` Map
+    machinery rather than duplicate it. UNLIKE ``worker_kick``, this
+    await genuinely spans the whole mining pass (the docstring above:
+    "the miner run is ... force a mining pass", 12 §"R2"/08 §7.1 — "mine
+    run" executes immediately, in-process), so the in-flight window this
+    reports is the pass's real duration, not a detached kick's."""
     runner = request.app.state.runner
-    await runner.run(["mine", "run", "--trigger", "manual"])
+    await _publish_applying(request, "mine", "run", "start")
+    result = await runner.run(["mine", "run", "--trigger", "manual"])
+    await _publish_applying(request, "mine", "run", "done" if result.ok else "error")
     _force_refresh(request, "front")
     resp = Response(status_code=200)
     resp.headers["HX-Redirect"] = "/"
@@ -2761,6 +2789,7 @@ def _bucket_pane_key(scope: str, name: str) -> str:
 def _bucket_pane_ctx(scope: str, name: str, snapshot: Any) -> dict[str, Any]:
     return {
         "record_id": _bucket_pane_key(scope, name),
+        "bucket_pane": True,
         "pane": snapshot,
         "pane_base": f"/bucket/{scope}/{name}/pane",
         "pane_close_url": f"/bucket/{scope}/{name}",
@@ -2814,9 +2843,7 @@ async def bucket_pane_resume(
         )
     if outcome == "not-resumable":
         snapshot = manager.snapshot(key)
-        return _render(
-            request, "partials/pane_idle.html", {**_bucket_pane_ctx(scope, name, snapshot), "bucket_pane": True}
-        )
+        return _render(request, "partials/pane_idle.html", _bucket_pane_ctx(scope, name, snapshot))
     snapshot = manager.snapshot(key)
     return _render(request, "partials/pane.html", _bucket_pane_ctx(scope, name, snapshot))
 
@@ -2831,9 +2858,7 @@ def bucket_pane_view(request: Request, scope: str, name: str) -> HTMLResponse:
     view = manager.view_snapshot(key)
     if view is None:
         snapshot = manager.snapshot(key)
-        return _render(
-            request, "partials/pane_idle.html", {**_bucket_pane_ctx(scope, name, snapshot), "bucket_pane": True}
-        )
+        return _render(request, "partials/pane_idle.html", _bucket_pane_ctx(scope, name, snapshot))
     return _render(request, "partials/pane.html", _bucket_pane_ctx(scope, name, view))
 
 
@@ -2886,11 +2911,7 @@ def bucket_pane_panel(request: Request, scope: str, name: str) -> HTMLResponse:
     snapshot = manager.snapshot(key) if manager is not None else None
     if snapshot is not None and snapshot.state != pane.STATE_IDLE:
         return _render(request, "partials/pane.html", _bucket_pane_ctx(scope, name, snapshot))
-    return _render(
-        request,
-        "partials/pane_idle.html",
-        {**_bucket_pane_ctx(scope, name, snapshot), "bucket_pane": True},
-    )
+    return _render(request, "partials/pane_idle.html", _bucket_pane_ctx(scope, name, snapshot))
 
 
 # -------------------------------------------------------------------- SSE

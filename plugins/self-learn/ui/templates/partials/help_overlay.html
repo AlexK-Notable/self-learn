@@ -9,6 +9,15 @@
 <div id="self-learn-ui-help" class="help-overlay" hidden>
   <div class="help-overlay-panel">
     <h2>Keyboard reference</h2>
+    {# UI-walk defect fix (terminology, O-9 progressive disclosure): "arm"
+       is user-facing exactly once — the "(arm)" parenthetical on `y`
+       below — and was never defined anywhere. It names a pattern most
+       of the OTHER rows above and below it also use without saying so
+       (Approve/Deny/Defer/Graduate/Confirm recurrence all arm-then-
+       confirm the same way), so one line here, ahead of the list, gives
+       every one of those rows its missing context in a single place —
+       "one rhythm" rather than a tooltip repeated on each. #}
+    <p class="help-intro">Most actions below stage first, rather than firing immediately: press once to <strong>arm</strong> it, then <kbd>Enter</kbd> to confirm or any other key to cancel — nothing is applied until you confirm.</p>
     <dl>
       {% for entry in keymap_entries %}
       <dt>{{ entry["keys"] | join(" / ") }}</dt>
