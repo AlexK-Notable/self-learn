@@ -67,7 +67,7 @@
     <p>{{ group.bulk_collapse.text }}</p>
     <form hx-post="/bucket/{{ model.scope }}/{{ model.bucket }}/graduate-bulk" hx-swap="none" hx-disabled-elt="find button">
       <input type="hidden" name="ids" value="{{ group.bulk_collapse.ids | join(',') }}">
-      <button type="submit" data-key-action="graduate">Acknowledge all as canon</button>
+      <button type="submit" data-key-action="graduate" title="Retire all of these — canon (the guidance file each calls for) already covers them, so there's nothing left to write">Acknowledge all as canon</button>
     </form>
   </div>
   {% endif %}
@@ -76,8 +76,14 @@
   <div class="record-row {{ 'record-row-deferred' if row.deferred else '' }}" data-row>
     <a href="/record/{{ row.id }}" class="record-row-lead">{{ row.leading_text }}</a>
     <span class="record-row-meta">
+      {# UI-walk defect fix (terminology): same already-canon gloss as
+         detail.html's model.badges loop (both render from the SAME
+         server-side badge set, models.py's _record_badges) — a cold
+         user can meet this badge on a Bucket row before ever opening a
+         Detail page. "mined" gets its own gloss for the same reason:
+         jargon-free everywhere else in this app, undefined here. #}
       {% for badge in row.badges %}
-      <span class="badge badge-{{ badge.kind }}">{{ badge.text }}</span>
+      <span class="badge badge-{{ badge.kind }}"{% if badge.kind == "already-canon" %} title="canon = the guidance file(s) this lesson would write into (a project's CLAUDE.md, a skill's SKILL.md, a rules file) — already there, so there's nothing new to write"{% elif badge.kind == "mined" %} title="found automatically by scanning past sessions for recurring friction — not typed in by hand"{% endif %}>{{ badge.text }}</span>
       {% endfor %}
       <span class="record-row-id">{{ row.id }}</span>
       <span class="record-row-age">{{ row.age_days }}d</span>

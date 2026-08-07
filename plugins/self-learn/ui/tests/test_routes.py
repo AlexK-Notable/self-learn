@@ -898,6 +898,159 @@ class TestDetailPage:
         assert "Episode brief" not in r.text
 
 
+# ------------------------------ UI-walk defect fix: terminology for a
+# cold user
+#
+# "arm" was user-facing exactly once (the help overlay's "(arm)"
+# parenthetical) and never defined; "canon" was never defined outside a
+# post-resolution success banner. Both now carry a short, plain-words
+# gloss at the FIRST place a cold user can meet them — the help overlay
+# for "arm" (its only appearance), and title= tooltips on the
+# already-canon badge/button everywhere it renders (Detail's own
+# model.badges loop, its Why section, the action bar's Graduate button,
+# Bucket's row.badges loop, and the bulk "Acknowledge all as canon"
+# button) for "canon". A handful of other undefined jargon terms found
+# in the same sweep (sighting(s), episode brief, "Is it holding?",
+# near-miss, mined) get the same title= treatment — see the report for
+# the full list of what was covered and what was deliberately left.
+#
+# Every test below has a positive control: it asserts the marker text
+# is PRESENT before checking for the definition, so a future rename of
+# the marker text reddens the control rather than silently passing on
+# a definition that no longer attaches to anything.
+
+
+class TestTerminologyDefinitions:
+    def test_arm_is_defined_in_the_help_overlay(self, tmp_path: Path) -> None:
+        sb = make_env(tmp_path)
+        c, _runner = make_client(sb)
+        r = c.get("/")
+        assert r.status_code == 200
+        # positive control: the ONE user-facing appearance of the word
+        # still exists (the (arm) parenthetical on the arm_proposal row)
+        assert "(arm)" in r.text
+        assert 'class="help-intro"' in r.text
+        assert "<strong>arm</strong>" in r.text
+
+    def test_already_canon_badge_defines_canon_on_detail(self, tmp_path: Path) -> None:
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+        seed_proposal(sb.ledger, rec.id, already_canon=True, already_canon_reason="covered")
+        c, _runner = make_client(sb)
+        r = c.get(f"/record/{rec.id}")
+        assert "already canon" in r.text.lower()  # positive control
+        # THREE independent render sites carry this gloss for an
+        # already-canon pending record: the top-of-page model.badges
+        # loop, the Why section's own paragraph, and the action bar's
+        # Graduate button badge — exact count so a regression in any ONE
+        # of the three (not just all three at once) reddens this.
+        assert r.text.count("canon = the guidance file") == 3
+
+    def test_graduate_button_defines_canon_on_detail(self, tmp_path: Path) -> None:
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+        seed_proposal(sb.ledger, rec.id, already_canon=False)
+        c, _runner = make_client(sb)
+        r = c.get(f"/record/{rec.id}")
+        assert 'data-key-action="graduate"' in r.text  # positive control
+        assert "Retire this lesson" in r.text
+
+    def test_already_canon_badge_defines_canon_on_bucket_row(self, tmp_path: Path) -> None:
+        """A HETEROGENEOUS group — one already-canon, one not — so the
+        row renders individually with its own badge (models.py's own
+        bulk-collapse rule only fires for a HOMOGENEOUS already-canon
+        group; a single already-canon record on its own collapses into
+        the bulk row instead, which carries no per-row badge at all —
+        see test_bulk_acknowledge_button_defines_canon for that shape)."""
+        sb = make_env(tmp_path)
+        rec_canon = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec_canon)
+        seed_proposal(sb.ledger, rec_canon.id, destination="skill-md", already_canon=True)
+        rec_plain = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec_plain)
+        seed_proposal(sb.ledger, rec_plain.id, destination="skill-md", already_canon=False)
+        c, _runner = make_client(sb)
+        r = c.get("/bucket/skill/s")
+        assert "already canon" in r.text.lower()  # positive control
+        assert "canon = the guidance file" in r.text
+
+    def test_bulk_acknowledge_button_defines_canon(self, tmp_path: Path) -> None:
+        sb = make_env(tmp_path)
+        for _ in range(2):
+            rec = make_behavior(scope="skill:s")
+            seed_record(sb.ledger, rec)
+            seed_proposal(sb.ledger, rec.id, destination="skill-md", already_canon=True)
+        c, _runner = make_client(sb)
+        r = c.get("/bucket/skill/s")
+        assert "acknowledge all as canon" in r.text.lower()  # positive control
+        assert "Retire all of these" in r.text
+
+    def test_mined_badge_is_defined(self, tmp_path: Path) -> None:
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s", source="session")
+        seed_record(sb.ledger, rec)
+        c, _runner = make_client(sb)
+        r = c.get(f"/record/{rec.id}")
+        assert 'class="badge badge-mined"' in r.text  # positive control
+        assert "found automatically by scanning past sessions" in r.text
+
+    def test_sightings_line_is_defined(self, tmp_path: Path) -> None:
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+        c, _runner = make_client(sb)
+        r = c.get(f"/record/{rec.id}")
+        assert 'class="provenance"' in r.text  # positive control
+        assert "Sightings: how many times" in r.text
+
+    def test_episode_brief_summary_is_defined(self, tmp_path: Path) -> None:
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s", source="session")
+        rec.set_body(rec.body.rstrip("\n") + "\n\n## Episode brief\nRecap text.\n")
+        seed_record(sb.ledger, rec)
+        c, _runner = make_client(sb)
+        r = c.get(f"/record/{rec.id}")
+        assert "Episode brief (b)" in r.text  # positive control
+        assert "auto-drafted by the miner" in r.text
+
+    def test_holding_section_heading_is_defined(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Monkeypatches `ledger.report` directly (per this repo's own
+        FakeRunner trap: a queued verb result controls nothing for a page
+        READ) rather than routing a fake result through the runner."""
+        from self_learn_ui import ledger as ledger_mod
+        from self_learn_ui.models import CliRead
+
+        sb = make_env(tmp_path)
+        report_data = {
+            "recurrence_suspects": [
+                {
+                    "id": "lrn-aaaaaaa1",
+                    "nonce": "n1",
+                    "seen_at": "2026-08-01T00:00:00Z",
+                    "basis": "fire-violated",
+                }
+            ],
+            "routed_live": [{"id": "lrn-aaaaaaa1", "bucket": "s", "routed_days_ago": 3}],
+        }
+        monkeypatch.setattr(ledger_mod, "report", lambda home, **kw: CliRead(data=report_data))
+        c, _runner = make_client(sb)
+        r = c.get("/")
+        assert "Is it holding?" in r.text  # positive control
+        assert "Rules already written into canon" in r.text
+
+    def test_near_miss_summary_is_defined(self, tmp_path: Path, monkeypatch) -> None:
+        sb = _sandboxed(tmp_path, monkeypatch)
+        _seed_miner_run()
+        c, _runner = make_client(sb)
+        r = c.get("/")
+        assert re.search(r"<summary[^>]*>near-misses \(\d+\)</summary>", r.text)  # positive control
+        assert "Candidates the miner considered but did not capture" in r.text
+
+
 class TestSurfaceFillWhyRegion:
     """09 §11 Y-20 / 08 §1 `surface_fill`, end-to-end through the real
     CLI subprocess (ledger.list_items --surface-fill --id): Detail's Why
@@ -3350,7 +3503,7 @@ class TestNearMissDrillRendering:
         _seed_miner_run()
         c, _runner = make_client(sb)
         html = c.get("/").text
-        m = re.search(r"<details>\s*<summary>near-misses \(\d+\)</summary>", html)
+        m = re.search(r"<details>\s*<summary[^>]*>near-misses \(\d+\)</summary>", html)
         assert m is not None
         # the <details> tag itself carries no `open` attribute
         details_tag = html[: m.start()].rsplit("<details", 1)[-1]
