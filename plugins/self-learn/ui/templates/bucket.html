@@ -93,7 +93,7 @@
        grouping; the armable dest is always scope-valid. #}
     {# A1 (O-2 c): scope=model.scope threaded explicitly (one bucket page
        = one scope) — mirrors detail.html's include site. #}
-    {% with kind="detail", armed=None, dom_id="action-bar-" ~ row.id, record_id=row.id, dest=row.destination_default, dest_note=row.destination_note, event=None, target=None, already_canon=row.already_canon, destination_cycle=model.destination_cycle, scope=model.scope, dest_touched=False %}
+    {% with kind="detail", armed=None, dom_id="action-bar-" ~ row.id, record_id=row.id, dest=row.destination_default, dest_note=row.destination_note, event=None, target=None, already_canon=row.already_canon, destination_cycle=row.destination_cycle, scope=model.scope, dest_touched=False %}
       {% include "partials/action_bar.html" %}
     {% endwith %}
   </div>

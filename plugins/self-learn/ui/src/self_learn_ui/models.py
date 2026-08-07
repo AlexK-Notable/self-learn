@@ -46,6 +46,7 @@ __all__ = [
     "PARAMETER_FREE_DESTINATIONS",
     "PREVIEW_HONESTY_CAPTION",
     "REFERENCE_NO_CAP_LINE",
+    "RULES_SCOPES",
     "ArchiveRow",
     "Badge",
     "BudgetRow",
@@ -80,8 +81,11 @@ __all__ = [
     "correct_destination",
     "destination_label",
     "destination_path",
+    "destination_cycle_for",
     "destinations_for_scope",
     "parse_variant_qualifier",
+    "proposed_destination",
+    "rules_dest",
     "rules_firing_note",
     "host_add_command",
     "leading_text",
@@ -95,22 +99,41 @@ PARAMETER_FREE_DESTINATIONS: tuple[str, ...] = ("skill-md", "claude-md", "refere
 #: 09 §2.3 as amended 2026-07-18 (feedback round 2 item 3): the CLI's
 #: own scope rules (the route verb's ``_resolve_target``), projected
 #: onto the parameter-free set — skill-md needs ``skill:<name>`` scope;
-#: reference needs skill or project (the user host is the
-#: chezmoi-managed CLAUDE.md, no references dir); claude-md is valid
-#: for every scope. Keyed by :class:`~self_learn_ui.ledger.RecordLocation`
-#: scope tags; unknown scopes fall back to the everywhere-valid
-#: singleton so the surface can never offer an impossible destination.
+#: reference needs skill or project (S-23 (2): user scope has no
+#: references dir — it is a pathed-rules-only cheap surface, not a
+#: reference shelf); claude-md is valid for every scope. Keyed by
+#: :class:`~self_learn_ui.ledger.RecordLocation` scope tags; unknown
+#: scopes fall back to the everywhere-valid singleton so the surface
+#: can never offer an impossible destination.
 _SCOPE_DESTINATIONS: dict[str, tuple[str, ...]] = {
     "skill": PARAMETER_FREE_DESTINATIONS,
     "project": ("claude-md", "reference"),
     "user": ("claude-md",),
 }
 
+#: U-demand-user §3.3(c): scopes the CLI's own
+#: ``_resolve_rules_target`` guard (``verbs.py``'s
+#: ``if scope not in ("user", "project")``) admits for a rules route —
+#: mirrored here as a NAMED agreement (A12) so the UI never offers what
+#: the verb refuses. Skill scope is the P-A13 rules deferral.
+RULES_SCOPES: frozenset[str] = frozenset({"user", "project"})
+
 #: Y-9 wording for the corrected-default note: why the analyst's
 #: suggestion cannot land here, in human words (no scope slugs).
+#: U-demand-user §8A.2(3): ``reference``'s wording is keyed on the
+#: SITUATION (a correction only ever fires for ``reference`` at user
+#: scope — it is scope-valid everywhere else, so `correct_destination`
+#: never reaches this reason at project/skill scope). S-23 (2) promotes
+#: pathed rules to the cheap tier there, so the honest reason is that
+#: user scope has no cheap reference surface at all — not "pick
+#: claude-md instead", which reads as a routine scope correction and
+#: would be an ambush on Approve (§8A.2's own tradeoff).
 _DEST_CORRECTION_REASONS: dict[str, str] = {
     "skill-md": "which only exists for a skill's own lessons",
-    "reference": "which needs a skill or project to keep the file in",
+    "reference": (
+        "which has no cheap surface at user scope — S-23's cheap tier "
+        "here is pathed rules, not a reference file"
+    ),
 }
 
 
@@ -196,15 +219,36 @@ def destination_label(
     *rules_topic*, only meaningful when ``variant == "rules"``) —
     ``variant=None`` (the default) reproduces A1's behavior exactly, so
     every existing caller is unaffected (P-A6-style no-migration for the
-    label surface)."""
+    label surface).
+
+    U-demand-user §3.3(e): ADDITIVELY widens this a third time — when
+    *variant* is left ``None`` (the caller has no separately-decoded
+    variant, e.g. an action bar's ``dest`` field, which is the ONE
+    string a qualified rules dest ever arrives as), decode *value*
+    itself via :func:`parse_variant_qualifier`. A decode that yields a
+    real variant treats *value* as ``claude-md`` for the branches below
+    (so ``claude-md:rules:py-conventions`` glosses exactly like an
+    already-decoded ``("claude-md", variant="rules",
+    rules_topic="py-conventions")`` call would); a decode that yields
+    nothing (an unqualified value, or a caller that already supplied its
+    own *variant*) leaves *value*/*variant* untouched, so this widening
+    is P-A6 no-migration for every existing caller — the ``value ==
+    "claude-md"`` checks below still see a caller-supplied ``variant``
+    exactly as before."""
     if value is None:
         return ""
-    if value == "claude-md" and variant == "rules" and scope in _RULES_SCOPE_LABELS:
+    label_base = value
+    if variant is None:
+        decoded_variant, decoded_topic = parse_variant_qualifier(value)
+        if decoded_variant is not None:
+            variant, rules_topic = decoded_variant, decoded_topic
+            label_base = "claude-md"
+    if label_base == "claude-md" and variant == "rules" and scope in _RULES_SCOPE_LABELS:
         base = _RULES_SCOPE_LABELS[scope]
         return f"{base} — {rules_topic}" if rules_topic else base
-    if value == "claude-md" and variant == "local" and scope == "project":
+    if label_base == "claude-md" and variant == "local" and scope == "project":
         return _LOCAL_LABEL
-    if value == "claude-md" and scope in _CLAUDE_MD_SCOPE_LABELS:
+    if label_base == "claude-md" and scope in _CLAUDE_MD_SCOPE_LABELS:
         return _CLAUDE_MD_SCOPE_LABELS[scope]
     return _GROUP_LABELS.get(value, value)
 
@@ -267,13 +311,26 @@ def rules_firing_note(
     UNADOPTED user-scope rule (§10, P-A2b′) never implies cross-machine
     reach it does not have. ``""`` for anything this note does not
     apply to (plain claude-md, or a non-claude-md destination) — never a
-    placeholder."""
+    placeholder.
+
+    U-demand-user §3.3(e) item 3 / A10: the pathed leg gains S-23's rider
+    at USER scope only (project scope is byte-identical to before this
+    unit) — a user-level glob resolves relative to the session's own
+    working directory, never a repo, so it fires wherever a matching
+    relative path exists, in ANY project. Stated plainly, and worded to
+    invite no repo-targeting (no "this repo", no path-prefix suggestion,
+    nothing implying the glob can be aimed)."""
     if variant == "local":
         return "loads every session in this project (you only)"
     if variant != "rules":
         return ""
     if rules_paths:
         globs = ", ".join(f"`{p}`" for p in rules_paths)
+        if scope == "user":
+            return (
+                f"loads when you touch {globs} — matches relative to "
+                "wherever the session is running, in any project"
+            )
         return f"loads when you touch {globs}"
     if scope == "user" and not adopted:
         return "loads every session (this machine)"
@@ -288,6 +345,35 @@ def destinations_for_scope(scope: str) -> tuple[str, ...]:
     return _SCOPE_DESTINATIONS.get(scope, ("claude-md",))
 
 
+def rules_dest(scope: str | None, rules_topic: str | None) -> str | None:
+    """U-demand-user §3.3(c): the ONE composition site for
+    ``claude-md:rules:<topic>`` in this module (builder decision 2 — a
+    second f-string of this shape anywhere in this unit's diff is a
+    defect). ``None`` when *scope* is outside :data:`RULES_SCOPES` or
+    *rules_topic* is falsy — the pathed tier is a per-record
+    PARAMETERIZATION of ``claude-md``, never a scope-constant enum
+    member (§3.3(b)), so it can only ever be composed here, from an
+    actual topic, never minted by a keystroke."""
+    if scope not in RULES_SCOPES or not rules_topic:
+        return None
+    return f"claude-md:rules:{rules_topic}"
+
+
+def destination_cycle_for(scope: str, rules_topic: str | None) -> tuple[str, ...]:
+    """U-demand-user §3.3(c): the per-record `o`-cycle —
+    :func:`destinations_for_scope` with the pathed rules dest APPENDED
+    (never prepended: ``cycle[0]`` is both the cycle's fallback and
+    :func:`correct_destination`'s correction target, and this unit
+    changes neither) when the record's own proposal names a topic.
+    ``rules_topic=None`` reproduces :func:`destinations_for_scope`
+    exactly (A7's own no-regression leg)."""
+    base = destinations_for_scope(scope)
+    extra = rules_dest(scope, rules_topic)
+    if extra is None:
+        return base
+    return base + (extra,)
+
+
 def correct_destination(
     scope: str, suggested: str | None
 ) -> tuple[str | None, str | None]:
@@ -300,8 +386,26 @@ def correct_destination(
     IS the value the arm/confirm executes. ``hook``/``new-skill`` (and
     no-analysis) stay ``(None, None)``: the route verb reads the
     proposal's own destination and remains the enforcer of their
-    structural validity."""
+    structural validity.
+
+    U-demand-user §3.3(d): gains exactly ONE new leg, before the
+    ``PARAMETER_FREE_DESTINATIONS`` guard below — a *suggested* that is
+    ALREADY a qualified rules dest (``claude-md:rules:<topic>``) passes
+    through unchanged, with no note, IFF the scope is in
+    :data:`RULES_SCOPES` and the decoded topic is non-empty. This is the
+    ECHO re-validator's leg (:func:`~self_learn_ui.routes._scope_
+    corrected_dest` calls this on every unarmed re-render) — it never
+    upgrades a bare enum to a qualified one (that would silently
+    override a human's own demotion to plain ``claude-md`` — the
+    FW-68/FW-69 defect class in the other direction); it only lets an
+    ALREADY-qualified value survive the round trip. A scope outside
+    ``RULES_SCOPES`` falls through to the unrecognized-value path below
+    exactly as it did before this leg existed."""
     cycle = destinations_for_scope(scope)
+    if suggested is not None and scope in RULES_SCOPES:
+        suggested_variant, suggested_topic = parse_variant_qualifier(suggested)
+        if suggested_variant == "rules" and suggested_topic:
+            return suggested, None
     if suggested is None or suggested not in PARAMETER_FREE_DESTINATIONS:
         return None, None
     if suggested in cycle:
@@ -310,6 +414,103 @@ def correct_destination(
     reason = _DEST_CORRECTION_REASONS.get(suggested, "which this lesson's home cannot hold")
     note = f"the analyst suggested {suggested}, {reason} — corrected to {corrected}"
     return corrected, note
+
+
+def _proposal_rules_topic(proposal: dict | None) -> str | None:
+    """The ONE site that derives a record's own analyst-proposed rules
+    topic from its (already-loaded) proposal dict — used by both
+    :func:`proposed_destination`'s passthrough leg and the bucket-row
+    cycle in :func:`build_bucket_model`, so the two can never drift
+    apart. ``None`` unless the proposal names ``destination: claude-md``,
+    ``variant: rules``, and a non-empty ``rules_topic`` — mirrors
+    :func:`~self_learn_ui.routes._record_rules_topic`'s ledger-sourced
+    gate exactly, just from an already-loaded dict rather than a fresh
+    read."""
+    proposal = proposal or {}
+    if proposal.get("destination") != "claude-md" or proposal.get("variant") != "rules":
+        return None
+    topic = proposal.get("rules_topic")
+    return topic if isinstance(topic, str) and topic else None
+
+
+def _defer_note(scope: str, item_destination: str | None) -> str:
+    """§8A.2(3), blind code-gate FOLD (round 1): the note must not lie
+    about why nothing arms. The first cut delegated straight to
+    :func:`correct_destination`, whose note always ends "— corrected to
+    <X>" — but a `defer` recommendation corrects NOTHING (the bar arms
+    NOTHING, not `<X>`), so that tail was a false claim every time this
+    leg fired. This composes its own note instead: when the analyst's
+    destination is scope-invalid, it reuses the SAME single-source
+    reason text :func:`correct_destination` keys on
+    (:data:`_DEST_CORRECTION_REASONS`) — informative context, never a
+    correction claim; a generic, honest sentence otherwise (a
+    scope-valid destination, or hook/new-skill/no-analysis, where
+    nothing is wrong with the destination itself — only the
+    recommendation blocks it)."""
+    cycle = destinations_for_scope(scope)
+    if (
+        item_destination is not None
+        and item_destination in PARAMETER_FREE_DESTINATIONS
+        and item_destination not in cycle
+    ):
+        reason = _DEST_CORRECTION_REASONS.get(
+            item_destination, "which this lesson's home cannot hold"
+        )
+        return (
+            f"the analyst suggested {item_destination}, {reason} "
+            "— deferred, no destination armed"
+        )
+    return "the analyst recommends deferring this lesson — no destination armed"
+
+
+def proposed_destination(
+    scope: str, item_destination: str | None, proposal: dict | None
+) -> tuple[str | None, str | None]:
+    """U-demand-user §3.3(d)/§8A.2: the armed default for a NEW page
+    build (:func:`build_bucket_model`/:func:`build_detail_model`) — the
+    load-bearing counterpart to :func:`correct_destination`'s echo-
+    revalidator role (§3.3(d)'s own distinction: an INITIAL arm should
+    produce the qualified dest for a rules proposal; a later re-render
+    must never silently UPGRADE a human's own choice, which is why this
+    is a separate function rather than one with a ``variant=`` kwarg).
+
+    Two additive legs, checked in this order:
+
+    (1) **H5 (§8A.2), load-bearing.** When the proposal's own
+    ``recommendation`` is ``"defer"``, nothing arms — ``(None, note)``,
+    where *note* is composed by :func:`_defer_note` (blind code-gate
+    FOLD, round 1: this used to reuse :func:`correct_destination`'s own
+    note, whose trailing "— corrected to <X>" clause LIED here — nothing
+    is ever corrected on this leg, the bar arms nothing at all).
+    ``_defer_note`` states the S-23 tier-fact reason when the analyst's
+    destination is scope-invalid (``reference`` at user scope), and a
+    generic honest sentence otherwise (e.g. ``claude-md`` at project
+    scope, which was already scope-valid). This is checked FIRST — a
+    defer recommendation means "no cheap surface fits this lesson
+    here", which must win over any other leg. The `o` cycle can still
+    reach a destination from an empty arm (an explicit human override,
+    `dest_touched=True` → `by: human` — FW-64's own distinction, not the
+    silent default H5 kills).
+
+    (2) When *item_destination* is ``claude-md`` and the proposal names
+    ``variant: rules`` with a topic :func:`rules_dest` accepts for
+    *scope*, returns that qualified dest with NO note — the analyst's
+    own choice needs no correction note (mirrors
+    :func:`~self_learn_ui.routes._pending_dest_override`'s same
+    distinction). A bare ``claude-md`` proposal, or one whose topic
+    :func:`rules_dest` refuses (wrong scope), delegates unchanged.
+
+    Otherwise delegates to :func:`correct_destination` unchanged — the
+    byte-identical pre-existing behaviour for every non-rules,
+    non-defer proposal."""
+    proposal = proposal or {}
+    if proposal.get("recommendation") == "defer":
+        return None, _defer_note(scope, item_destination)
+    if item_destination == "claude-md":
+        dest = rules_dest(scope, _proposal_rules_topic(proposal))
+        if dest is not None:
+            return dest, None
+    return correct_destination(scope, item_destination)
 
 #: 02 §4's preview-honesty caption (standing, non-hook proposals/diffs).
 PREVIEW_HONESTY_CAPTION = (
@@ -1017,14 +1218,24 @@ class RecordRow:
     sightings: int
     destination: str | None
     #: What the row's action bar arms as ``--dest`` (09 §2.3 as amended
-    #: 2026-07-18): :func:`correct_destination` of ``destination`` —
-    #: never a value the record's scope makes impossible. ``destination``
-    #: above stays the analyst's raw suggestion (grouping/display).
+    #: 2026-07-18): :func:`proposed_destination` of ``destination`` and
+    #: this row's own proposal (U-demand-user §3.3(d)) — never a value
+    #: the record's scope makes impossible. ``destination`` above stays
+    #: the analyst's raw suggestion (grouping/display).
     destination_default: str | None
     destination_note: str | None
     deferred: bool
     already_canon: bool
     badges: tuple[Badge, ...]
+    #: U-demand-user §3.3(f)/§3.5: this row's OWN `o`-cycle
+    #: (:func:`destination_cycle_for`, per-record — REPLACES
+    #: ``BucketModel.destination_cycle``, dropped §3.5A after this
+    #: field gave it zero readers). Without a per-row cycle, a row whose
+    #: armed dest is the qualified rules token would render against the
+    #: scope-level singleton and the bar would lie that no other
+    #: destination fits — a NEW funnel this unit's own fix would create,
+    #: which S-22 forbids (§3.5).
+    destination_cycle: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -1135,12 +1346,6 @@ class BucketModel:
     #: `unreadable` field — never a server-side ledger derivation. 0
     #: renders no count line on the Bucket page.
     unreadable: int = 0
-    #: F5-1 (feedback round 5, U19 §1.2 gate M1): every row in a Bucket
-    #: page shares the SAME scope (one page = one bucket), so this is
-    #: computed once and threaded to every row's action bar — the
-    #: server-signaled no-op the `o` key hint reads (a singleton cycle
-    #: renders without `data-key-action`, per action_bar.html).
-    destination_cycle: tuple[str, ...] = ()
     #: B1 (U-grad-ui §4): the routed-record archive section's rows —
     #: INDEX-SET (§2.2), empty by default so every existing caller of
     #: :func:`build_bucket_model` (this module's own tests included)
@@ -1218,7 +1423,7 @@ def build_bucket_model(
         group_key = _group_key_for(item)
         deferred = _is_deferred(item.get("deferred_until"), now)
         stale = bool(item.get("has_proposal")) and not item.get("proposal_fresh", False)
-        dest_default, dest_note = correct_destination(scope, item.get("destination"))
+        dest_default, dest_note = proposed_destination(scope, item.get("destination"), proposal)
         row = RecordRow(
             id=rid,
             leading_text=leading_text(proposal, registry, item.get("title", "")),
@@ -1230,6 +1435,7 @@ def build_bucket_model(
             deferred=deferred,
             already_canon=bool(item.get("already_canon")),
             badges=_record_badges(item, deferred, stale),
+            destination_cycle=destination_cycle_for(scope, _proposal_rules_topic(proposal)),
         )
         groups_map[group_key].append(row)
 
@@ -1283,7 +1489,6 @@ def build_bucket_model(
         groups=tuple(groups),
         clusters=clusters,
         unreadable=unreadable,
-        destination_cycle=destinations_for_scope(scope),
         archive=build_archive_rows(archive_entries or [], scope),
         archive_error=archive_error,
     )
@@ -1372,6 +1577,15 @@ class WhyRegion:
     variant: str | None = None
     rules_topic: str | None = None
     rules_paths: tuple[str, ...] = ()
+    #: U-demand-user §8A.2(1)/H5: the analyst proposal's own decision-
+    #: trace fields (U-schema, S-26) — additive and `None`/`()` for
+    #: every proposal that never set them (P-A6, same posture as
+    #: variant/rules_topic/rules_paths above): no live proposal carries
+    #: them today, and none will until U-composer's flip. `flags` are
+    #: DISPLAY-ONLY here (§8A.3) — they render and change no behaviour;
+    #: only `recommendation == "defer"` is behavioural (§8A.2(2)).
+    recommendation: str | None = None
+    flags: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1596,6 +1810,11 @@ def _build_why(item: dict, proposal: dict | None, scope: str) -> WhyRegion:
         variant=(proposal or {}).get("variant"),
         rules_topic=(proposal or {}).get("rules_topic"),
         rules_paths=tuple((proposal or {}).get("rules_paths") or ()),
+        # H5 (§8A.2(1)): same additive P-A6 posture as the three lines
+        # above — read straight off the proposal, `None`/`()` for every
+        # proposal that never set them.
+        recommendation=(proposal or {}).get("recommendation"),
+        flags=tuple((proposal or {}).get("flags") or ()),
     )
 
 
@@ -1624,7 +1843,7 @@ def build_detail_model(
         badges.append(Badge("unregistered project", "unregistered-host"))
 
     contradicts = tuple((proposal or {}).get("contradicts") or ())
-    dest_default, dest_note = correct_destination(scope, item.get("destination"))
+    dest_default, dest_note = proposed_destination(scope, item.get("destination"), proposal)
 
     return DetailModel(
         id=record.id,
@@ -1636,7 +1855,9 @@ def build_detail_model(
         change=_build_change(proposal, diff_text, proposal_raw_text),
         why=_build_why(item, proposal, scope),
         contradicts=contradicts,
-        destination_cycle=destinations_for_scope(scope),
+        # U-demand-user §3.3(f): per-record now, not the scope-level
+        # default — a rules proposal's own topic reaches the `o` cycle.
+        destination_cycle=destination_cycle_for(scope, _proposal_rules_topic(proposal)),
         destination_default=dest_default,
         destination_note=dest_note,
         badges=tuple(badges),

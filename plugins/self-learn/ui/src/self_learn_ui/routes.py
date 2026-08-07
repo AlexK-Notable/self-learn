@@ -232,7 +232,9 @@ def near_miss_teach_argv(snippet: dict, origin: str | None) -> list[str] | None:
     return argv
 
 
-def cycle_destination(current: str | None, scope: str) -> str:
+def cycle_destination(
+    current: str | None, scope: str, rules_topic: str | None = None
+) -> str:
     """09 §2.3's `o` pin: cycle among the parameter-free destinations
     ONLY — ``new-skill``/``hook`` are structurally unreachable from this
     function, which is what "the cycle skips them" means in practice
@@ -240,8 +242,14 @@ def cycle_destination(current: str | None, scope: str) -> str:
     amended 2026-07-18 (feedback round 2 item 3) the set is additionally
     scope-filtered (:func:`models.destinations_for_scope`) — the CLI's
     own scope rules, honored BEFORE the human can arm anything: a
-    project/user record can never cycle onto skill-md."""
-    cycle = models.destinations_for_scope(scope)
+    project/user record can never cycle onto skill-md.
+
+    U-demand-user §3.4: cycles over :func:`models.destination_cycle_for`
+    — the SAME scope-filtered set, plus the record's own pathed rules
+    dest when *rules_topic* names one. ``rules_topic=None`` (the
+    default) reproduces the pre-existing set exactly, so every
+    un-threaded caller is unaffected."""
+    cycle = models.destination_cycle_for(scope, rules_topic)
     if current not in cycle:
         return cycle[0]
     idx = cycle.index(current)
@@ -1243,6 +1251,7 @@ def _unarmed_context(
     scope: str = "user",
     evidence: dict[str, Any] | None = None,
     dest_touched: bool = False,
+    rules_topic: str | None = None,
 ) -> dict[str, Any]:
     return {
         "armed": None,
@@ -1299,7 +1308,7 @@ def _unarmed_context(
         # un-threaded caller degrades to the same singleton the ledger's
         # own unlocatable-record fallback uses (never a wider cycle than
         # the record's actual scope could ever produce).
-        "destination_cycle": models.destinations_for_scope(scope),
+        "destination_cycle": models.destination_cycle_for(scope, rules_topic),
         # A1 (O-2 c / P-A12): every caller of this helper already resolves
         # `scope` to compute destination_cycle above — action_bar.html's
         # cycle button ALSO needs it in the template namespace itself
@@ -1328,6 +1337,7 @@ def _armed_context(
     tolerate: bool,
     target: str | None,
     dest_touched: bool = False,
+    scope: str | None = None,
 ) -> dict[str, Any]:
     return {
         "kind": kind,
@@ -1335,6 +1345,15 @@ def _armed_context(
         # An armed bar never carries evidence — set for template shape
         # consistency (every action_bar.html render defines the key).
         "evidence": None,
+        # U-demand-user §3.3(e) item 2 / D3: the armed bar's destination
+        # gloss (action_bar.html's ``armed.dest | destination_label``)
+        # needs a scope — without this key the gloss falls through to
+        # `_GROUP_LABELS["claude-md"]` and renders "Project instructions"
+        # on a USER-scope record: a confidently WRONG scope at the
+        # moment of commitment, strictly worse than the raw token it
+        # replaces. `action_arm` computes this the same ledger-truth way
+        # every unarmed site already does (:func:`_record_scope`).
+        "scope": scope,
         "armed": {
             "record_id": record_id,
             "verb": verb,
@@ -1453,6 +1472,9 @@ def action_arm(
 ) -> HTMLResponse:
     if verb not in _KNOWN_VERBS:
         return HTMLResponse("unknown verb", status_code=400)
+    # D3 (§3.3(e) item 2): the same ledger-truth lookup every unarmed
+    # site already performs — the armed bar's destination gloss cannot
+    # degrade safely without it (see _armed_context's own comment).
     ctx = _armed_context(
         kind=kind,
         record_id=record_id,
@@ -1465,6 +1487,7 @@ def action_arm(
         tolerate=tolerate,
         target=target or None,
         dest_touched=dest_touched,
+        scope=_record_scope(request, record_id),
     )
     return _render(request, "partials/action_bar.html", ctx)
 
@@ -1481,15 +1504,49 @@ def _record_scope(request: Request, record_id: str) -> str:
     return location.scope if location is not None else "user"
 
 
+def _record_rules_topic(request: Request, record_id: str) -> str | None:
+    """U-demand-user §3.4: sibling of :func:`_record_scope` — same "from
+    the ledger, never a client field" posture. The record's own
+    analyst-proposed rules topic, iff its proposal names
+    ``destination: claude-md`` and ``variant: rules``; ``None`` on any
+    miss, an unreadable/unparseable proposal, or an unlocatable record.
+    Used to thread the per-record `o`-cycle through every POST-rendered
+    unarmed action bar (§3.4's blocker fix) — without this the cycle
+    reverts to the scope-level set on every re-render, stranding a human
+    who cycled onto the pathed dest with the bar lying about why."""
+    home = _home(request)
+    location = ledger.locate_record(home, record_id)
+    if location is None:
+        return None
+    proposal, _error = ledger.read_proposal_raw(location.bucket_dir, record_id)
+    if proposal is None:
+        return None
+    if proposal.get("destination") != "claude-md" or proposal.get("variant") != "rules":
+        return None
+    topic = proposal.get("rules_topic")
+    return topic if isinstance(topic, str) and topic else None
+
+
 def _scope_corrected_dest(request: Request, record_id: str, dest: str | None) -> str | None:
     """Client-echoed dest values re-enter ARMABLE renders (disarm, a
     failed confirm's re-render) — re-derive validity server-side so
     every unarmed bar's hidden field is scope-valid by construction,
     never by trusting the echo (review 2026-07-18 F2). Scope from the
     ledger, never a client field; the corrected value is what renders
-    AND arms (displayed == armed == executed)."""
+    AND arms (displayed == armed == executed).
+
+    U-demand-user §3.3(d')/F3: after correction, a QUALIFIED value is
+    kept only when its topic equals the record's OWN proposed topic
+    (:func:`_record_rules_topic`) — never by trusting the echo. A
+    hand-crafted POST naming a topic the record never proposed falls
+    back to the scope's cycle[0], exactly like any other scope-invalid
+    suggestion, rather than reaching the route verb and creating a
+    topic file the record never proposed."""
     scope = _record_scope(request, record_id)
     corrected, _note = models.correct_destination(scope, dest or None)
+    variant, rules_topic = models.parse_variant_qualifier(corrected)
+    if variant == "rules" and rules_topic != _record_rules_topic(request, record_id):
+        return models.destinations_for_scope(scope)[0]
     return corrected
 
 
@@ -1550,6 +1607,7 @@ def action_disarm(
         event=event,
         target=target,
         scope=_record_scope(request, record_id),
+        rules_topic=_record_rules_topic(request, record_id),
         dest_touched=dest_touched,
     )
     return _render(request, "partials/action_bar.html", ctx)
@@ -1585,7 +1643,8 @@ def action_cycle_destination(
     # own original suggestion, reached by cycling all the way around: an
     # explicit pick is a human choice even when it echoes the proposal).
     scope = _record_scope(request, record_id)
-    new_dest = cycle_destination(dest or None, scope)
+    rules_topic = _record_rules_topic(request, record_id)
+    new_dest = cycle_destination(dest or None, scope, rules_topic)
     ctx = _unarmed_context(
         kind="detail",
         record_id=record_id,
@@ -1593,6 +1652,7 @@ def action_cycle_destination(
         event=None,
         target=None,
         scope=scope,
+        rules_topic=rules_topic,
         dest_touched=True,
     )
     return _render(request, "partials/action_bar.html", ctx)
@@ -1724,6 +1784,7 @@ async def action_confirm(
             event=event,
             target=target,
             scope=_record_scope(request, record_id),
+            rules_topic=_record_rules_topic(request, record_id),
             dest_touched=dest_touched,
         )
         error_text = (
@@ -1825,6 +1886,7 @@ async def action_confirm(
             event=event,
             target=target,
             scope=_record_scope(request, record_id),
+            rules_topic=_record_rules_topic(request, record_id),
             evidence=evidence,
         )
         return _render(request, "partials/action_bar.html", ctx)
@@ -2077,7 +2139,7 @@ def commit_drift_arm(
         dest_touched=dest_touched,
     )
     corrected = _scope_corrected_dest(request, record_id, dest)
-    ctx = _unarmed_context(kind=kind, record_id=record_id, dest=corrected, event=event, target=target, scope=_record_scope(request, record_id), dest_touched=dest_touched)
+    ctx = _unarmed_context(kind=kind, record_id=record_id, dest=corrected, event=event, target=target, scope=_record_scope(request, record_id), rules_topic=_record_rules_topic(request, record_id), dest_touched=dest_touched)
     if not read.ok:
         ctx["error"] = read.error or "commit-drift dry-run failed"
         ctx["commit_drift"] = None
@@ -2117,7 +2179,7 @@ def commit_drift_disarm(
         dest_touched=dest_touched,
     )
     corrected = _scope_corrected_dest(request, record_id, dest)
-    ctx = _unarmed_context(kind=kind, record_id=record_id, dest=corrected, event=event, target=target, scope=_record_scope(request, record_id), dest_touched=dest_touched)
+    ctx = _unarmed_context(kind=kind, record_id=record_id, dest=corrected, event=event, target=target, scope=_record_scope(request, record_id), rules_topic=_record_rules_topic(request, record_id), dest_touched=dest_touched)
     ctx["error"] = error_text or "commit-drift refused"
     ctx["commit_drift"] = _commit_drift_ctx(
         record_id=record_id, kind=kind, error_text=error_text, retry=retry, armed=None
@@ -2159,7 +2221,7 @@ async def commit_drift_confirm(
     commit_result = await runner.run(commit_argv)
     if not commit_result.ok:
         corrected = _scope_corrected_dest(request, record_id, dest)
-        ctx = _unarmed_context(kind=kind, record_id=record_id, dest=corrected, event=event, target=target, scope=_record_scope(request, record_id), dest_touched=dest_touched)
+        ctx = _unarmed_context(kind=kind, record_id=record_id, dest=corrected, event=event, target=target, scope=_record_scope(request, record_id), rules_topic=_record_rules_topic(request, record_id), dest_touched=dest_touched)
         ctx["error"] = commit_result.stderr or "self-learn host commit-drift failed"
         return _render(request, "partials/action_bar.html", ctx)
 
@@ -2207,7 +2269,7 @@ async def commit_drift_confirm(
     if not retry.ok:
         _force_refresh(request, f"record:{record_id}")
         corrected = _scope_corrected_dest(request, record_id, dest)
-        ctx = _unarmed_context(kind=kind, record_id=record_id, dest=corrected, event=event, target=target, scope=_record_scope(request, record_id), dest_touched=dest_touched)
+        ctx = _unarmed_context(kind=kind, record_id=record_id, dest=corrected, event=event, target=target, scope=_record_scope(request, record_id), rules_topic=_record_rules_topic(request, record_id), dest_touched=dest_touched)
         ctx["error"] = retry.stderr or f"self-learn {' '.join(route_argv)} failed"
         return _render(request, "partials/action_bar.html", ctx)
 
@@ -2279,6 +2341,7 @@ async def commit_drift_confirm(
         event=event,
         target=target,
         scope=_record_scope(request, record_id),
+        rules_topic=_record_rules_topic(request, record_id),
         evidence=evidence,
     )
     return _render(request, "partials/action_bar.html", ctx)
@@ -2514,6 +2577,7 @@ def _proposal_gone(request: Request, kind: str, record_id: str, *, error: str | 
             event=None,
             target=None,
             scope=_record_scope(request, record_id),
+            rules_topic=_record_rules_topic(request, record_id),
         )
         if error:
             ctx["error"] = error
@@ -2753,6 +2817,7 @@ async def proposal_confirm(
             event=None,
             target=None,
             scope=_record_scope(request, record_id),
+            rules_topic=_record_rules_topic(request, record_id),
             evidence=evidence,
         )
         return _render(request, "partials/action_bar.html", ctx)
