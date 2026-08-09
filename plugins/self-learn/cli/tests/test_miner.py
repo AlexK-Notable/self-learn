@@ -1025,6 +1025,596 @@ def test_resurface_not_killed_by_cap(home, transcripts, monkeypatch):
     )
 
 
+# ---------------------------------------- cursor hold (U-cursorhold, FW-73)
+#
+# Rule-H (spec §3.1): a cap-dropped candidate holds its originating
+# session's cursor UNLESS that slice is halted (M-5 wins) or unmatched
+# (the reader never actually saw that session's text this run).
+
+
+def test_A1_cap_drop_holds_cursor_clean_session_advances(home, transcripts, monkeypatch):
+    """A1: a cap-dropped candidate holds its session's cursor; a clean
+    session in the SAME run does not. Both env pins are required — cap_for
+    scales with len(digests), so a per-session cap of 1 over two sessions
+    is a cap of 2 without SELF_LEARN_MINE_CAP_MAX=1 too."""
+    monkeypatch.setenv("SELF_LEARN_MINE_CAP_PER_SESSION", "1")
+    monkeypatch.setenv("SELF_LEARN_MINE_CAP_MAX", "1")
+    write_transcript(transcripts, "sess-cap", [u("work")])
+    write_transcript(transcripts, "sess-clean", [u("other work")])
+    pre = miner.walk()
+    pre_cap_start = next(s.start_line for s in pre if s.session_id == "sess-cap")
+    shim_reader(
+        monkeypatch,
+        {
+            "candidates": [
+                candidate(session="sess-cap", line=1),
+                candidate(session="sess-cap", line=2,
+                          trigger="Second distinct trigger about rsync"),
+            ],
+            "fires": [],
+        },
+    )
+    result = miner.run(home)
+    assert len(result.landed) == 1 and result.dropped == 1
+    outcomes = miner.read_journal()[-1]["outcomes"]
+    cap_drop = next(o for o in outcomes if o["outcome"] == "dropped-cap")
+    assert cap_drop["cursor"] == "held"
+    after = miner.walk()
+    held = [s for s in after if s.session_id == "sess-cap"]
+    assert len(held) == 1 and held[0].start_line == pre_cap_start  # never written
+    assert not any(s.session_id == "sess-clean" for s in after)  # advanced
+
+
+def test_A2_scan_refused_and_invalid_drops_do_not_hold(home, transcripts, monkeypatch):
+    """A2: no over-hold. scan-refused and dropped-invalid are decisions
+    about the CANDIDATE, not the run — a re-read reproduces them
+    identically, so holding on them is an infinite loop with no possible
+    progress (§7.1). Neither session's cursor is held."""
+    write_transcript(transcripts, "sess-scan", [u("work")])
+    write_transcript(transcripts, "sess-inv", [u("more work")])
+    shim_reader(
+        monkeypatch,
+        {
+            "candidates": [
+                candidate(
+                    session="sess-scan",
+                    quote="token ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6Q7r8",
+                ),
+                candidate(session="sess-inv", line=1, kind="not-a-real-kind"),
+            ],
+            "fires": [],
+        },
+    )
+    result = miner.run(home)
+    outcomes = [o["outcome"] for o in miner.read_journal()[-1]["outcomes"]]
+    assert "scan-refused" in outcomes
+    assert "dropped-invalid" in outcomes
+    assert result.held_sessions == set()
+    assert miner.walk() == []  # both sessions advanced normally
+
+
+def test_A3_multi_candidate_session_held_once_replayed_without_double_landing(
+    home, transcripts, monkeypatch
+):
+    """A3: modelled on the measured run 28117725. One session, cap 1,
+    three distinct candidates: 1 lands, 2 dropped-cap, session held. Raise
+    the cap and replay the IDENTICAL payload: the landed origin dedups,
+    both previously-capped candidates land, and the ledger ends with
+    exactly three pending records with distinct ids."""
+    monkeypatch.setenv("SELF_LEARN_MINE_CAP_PER_SESSION", "1")
+    monkeypatch.setenv("SELF_LEARN_MINE_CAP_MAX", "1")
+    write_transcript(transcripts, "sess-multi", [u("work")])
+    payload = {
+        "candidates": [
+            candidate(session="sess-multi", line=1),
+            candidate(session="sess-multi", line=2,
+                      trigger="Second distinct trigger about rsync"),
+            candidate(session="sess-multi", line=3,
+                      trigger="Third distinct trigger about tar"),
+        ],
+        "fires": [],
+    }
+    shim_reader(monkeypatch, payload)
+    result = miner.run(home)
+    assert len(result.landed) == 1 and result.dropped == 2  # C3: held drops still count
+    outcomes = miner.read_journal()[-1]["outcomes"]
+    held_outcomes = [o for o in outcomes if o["outcome"] == "dropped-cap"]
+    assert len(held_outcomes) == 2
+    assert all(o["cursor"] == "held" for o in held_outcomes)
+    first_origin = next(o["origin"] for o in outcomes if o["outcome"] == "landed")
+
+    monkeypatch.setenv("SELF_LEARN_MINE_CAP_PER_SESSION", "5")
+    monkeypatch.setenv("SELF_LEARN_MINE_CAP_MAX", "10")
+    shim_reader(monkeypatch, payload)  # the IDENTICAL payload, replayed
+    miner.run(home)
+    outcomes2 = miner.read_journal()[-1]["outcomes"]
+    names2 = [o["outcome"] for o in outcomes2]
+    assert names2.count("skipped-known-origin") == 1
+    assert names2.count("landed") == 2
+    dedup = next(o for o in outcomes2 if o["outcome"] == "skipped-known-origin")
+    assert dedup["origin"] == first_origin
+
+    ids = pending_ids(home)
+    assert len(ids) == 3 and len(set(ids)) == 3
+    records = [
+        Record.from_path(p)
+        for p in list(home.glob("skills/*/pending/lrn-*.md"))
+        + list(home.glob("projects/*/pending/lrn-*.md"))
+        + list(home.glob("user/pending/lrn-*.md"))
+    ]
+    carriers = [r for r in records if any(e.get("origin") == first_origin for e in r.evidence)]
+    assert len(carriers) == 1
+
+
+def test_A4_hold_touches_advance_only_never_canary_scoring(home, transcripts, monkeypatch):
+    """A4: the H-3 filter touches `_advance_cursors` only. Canary scoring
+    (`:1926`) keeps the FULL `processed` set — a held session was still
+    mined this run, so its canary scores `missed`, not left `open`."""
+    monkeypatch.setenv("SELF_LEARN_MINE_CAP_PER_SESSION", "1")
+    monkeypatch.setenv("SELF_LEARN_MINE_CAP_MAX", "1")
+    monkeypatch.setenv("CLAUDE_SESSION_ID", "sess-canary-hold")
+    miner.plant_canary("prefer editing files over rewriting them whole")
+    write_transcript(transcripts, "sess-eater", [u("eater work")])
+    write_transcript(
+        transcripts, "sess-canary-hold", [u("unrelated content about pizza")]
+    )
+    captured = {}
+    real_score = miner._score_canaries
+
+    def spy(home_, record_ids, mined_session_ids):
+        captured["mined_session_ids"] = set(mined_session_ids)
+        return real_score(home_, record_ids, mined_session_ids)
+
+    monkeypatch.setattr(miner, "_score_canaries", spy)
+    shim_reader(
+        monkeypatch,
+        {
+            "candidates": [
+                candidate(session="sess-eater", line=1),
+                candidate(session="sess-canary-hold", line=1,
+                          trigger="Second distinct trigger about rsync"),
+            ],
+            "fires": [],
+        },
+    )
+    result = miner.run(home)
+    assert result.held_sessions == {"sess-canary-hold"}
+    assert "sess-canary-hold" in captured["mined_session_ids"]  # unfiltered `processed`
+    summary = miner.read_canaries_summary()
+    assert summary["missed"] == 1
+    assert summary["caught"] == 0
+
+
+def test_A5_halted_slice_advances_and_stays_halted(home, transcripts, monkeypatch):
+    """A5: M-5 wins. A cap-dropped candidate from an ALREADY-halted slice
+    advances with its halt persisted, unconditionally — the halted case is
+    a declared residual (§7.2-R2), journaled visibly as `advanced-halted`,
+    never silently deferred to a re-derivation this unit isn't entitled
+    to rely on."""
+    monkeypatch.setenv("SELF_LEARN_MINE_CAP_PER_SESSION", "1")
+    p = write_transcript(
+        transcripts, "sess-halt",
+        [
+            u("work turn one"),
+            u("work turn two"),
+            u("<command-name>/self-learn:review</command-name> go"),
+        ],
+    )
+    shim_reader(
+        monkeypatch,
+        {
+            "candidates": [
+                candidate(session="sess-halt", line=1),
+                candidate(session="sess-halt", line=2,
+                          trigger="Second distinct trigger about rsync"),
+            ],
+            "fires": [],
+        },
+    )
+    result = miner.run(home)
+    assert len(result.landed) == 1 and result.dropped == 1
+    outcomes = miner.read_journal()[-1]["outcomes"]
+    cap_drop = next(o for o in outcomes if o["outcome"] == "dropped-cap")
+    assert cap_drop["cursor"] == "advanced-halted"
+    assert result.held_sessions == set()
+    assert miner._load_cursors()[str(p)]["halt"] is True
+    assert miner.walk() == []  # the halted file is skipped, not re-offered
+
+
+def test_A6i_fabricated_session_holds_nothing(home, transcripts, monkeypatch):
+    """A6 leg (i): a cap-dropped candidate citing a session id no
+    transcript has holds nothing — there is nothing to hold."""
+    monkeypatch.setenv("SELF_LEARN_MINE_CAP_PER_SESSION", "1")
+    monkeypatch.setenv("SELF_LEARN_MINE_CAP_MAX", "1")
+    write_transcript(transcripts, "sess-real", [u("work")])
+    shim_reader(
+        monkeypatch,
+        {
+            "candidates": [
+                candidate(session="sess-real", line=1),
+                candidate(session="sess-ghost", line=1,
+                          trigger="Second distinct trigger about rsync"),
+            ],
+            "fires": [],
+        },
+    )
+    result = miner.run(home)
+    assert len(result.landed) == 1 and result.dropped == 1
+    outcomes = miner.read_journal()[-1]["outcomes"]
+    cap_drop = next(o for o in outcomes if o["outcome"] == "dropped-cap")
+    assert cap_drop["cursor"] == "advanced-unmatched"
+    assert result.held_sessions == set()
+
+
+def test_A6ii_excluded_session_holds_nothing_and_still_advances(
+    home, transcripts, monkeypatch
+):
+    """A6 leg (ii): a cap-dropped candidate citing a REAL transcript that
+    produced no digest (entered `processed` but never `digested`) also
+    holds nothing, and that transcript's cursor still advances to its
+    end. This is the leg M6 (building `digested` from all of `processed`)
+    reddens."""
+    monkeypatch.setenv("SELF_LEARN_MINE_CAP_PER_SESSION", "1")
+    monkeypatch.setenv("SELF_LEARN_MINE_CAP_MAX", "1")
+    write_transcript(transcripts, "sess-real", [u("work")])
+    p_tool = write_transcript(
+        transcripts, "sess-toolonly", [tool("Bash", "ls", "t1")]
+    )
+    assert miner.digest_transcript(slice_of(p_tool)) == (None, False)  # sanity
+    shim_reader(
+        monkeypatch,
+        {
+            "candidates": [
+                candidate(session="sess-real", line=1),
+                candidate(session="sess-toolonly", line=1,
+                          trigger="Second distinct trigger about rsync"),
+            ],
+            "fires": [],
+        },
+    )
+    result = miner.run(home)
+    assert len(result.landed) == 1 and result.dropped == 1
+    outcomes = miner.read_journal()[-1]["outcomes"]
+    cap_drop = next(o for o in outcomes if o["outcome"] == "dropped-cap")
+    assert cap_drop["cursor"] == "advanced-unmatched"
+    assert result.held_sessions == set()
+    assert miner.walk() == []  # both sessions' cursors advanced
+
+
+def test_A7_hold_writes_nothing_absent_and_present_cases(home, transcripts, monkeypatch):
+    """A7: a hold writes NOTHING for that transcript — the cursors file
+    entry is byte-identical to what it was before the run, whether that
+    entry was absent (first read) or present (a prior partial read),
+    while a second, non-held session in the same run IS written."""
+    monkeypatch.setenv("SELF_LEARN_MINE_CAP_PER_SESSION", "1")
+    monkeypatch.setenv("SELF_LEARN_MINE_CAP_MAX", "1")
+    p_pre = write_transcript(transcripts, "sess-cap-pre", [u("first turn")])
+    pre_slices = miner.walk()
+    miner._advance_cursors([(s, False) for s in pre_slices])
+    with open(p_pre, "a", encoding="utf-8") as fh:
+        fh.write(u("second turn") + "\n")
+    before = json.loads(miner._cursors_path().read_text(encoding="utf-8"))
+    assert str(p_pre) in before  # present case: a pre-existing entry
+
+    p_fresh = write_transcript(transcripts, "sess-cap-fresh", [u("fresh work")])
+    p_land = write_transcript(transcripts, "sess-land-a7", [u("landing work")])
+
+    shim_reader(
+        monkeypatch,
+        {
+            "candidates": [
+                candidate(session="sess-land-a7", line=1),
+                candidate(session="sess-cap-pre", line=2,
+                          trigger="Second distinct trigger about rsync"),
+                candidate(session="sess-cap-fresh", line=1,
+                          trigger="Third distinct trigger about tar"),
+            ],
+            "fires": [],
+        },
+    )
+    result = miner.run(home)
+    assert len(result.landed) == 1 and result.dropped == 2
+
+    after = json.loads(miner._cursors_path().read_text(encoding="utf-8"))
+    assert after[str(p_pre)] == before[str(p_pre)]  # present: byte-identical
+    assert str(p_fresh) not in after  # absent: stays absent
+    assert str(p_land) in after  # non-held: written
+
+
+def test_A8_no_model_authored_value_reaches_cursor(home, transcripts, monkeypatch):
+    """A8: a cap-dropped candidate's `line` is model-authored and must
+    never steer a cursor. A candidate carrying `line: 1` from a session
+    whose slice starts far beyond line 1 changes nothing: the held
+    entry stays exactly as it was, and the NEXT run's slice starts at the
+    same place — never 0, never `line - 1`."""
+    monkeypatch.setenv("SELF_LEARN_MINE_CAP_PER_SESSION", "1")
+    monkeypatch.setenv("SELF_LEARN_MINE_CAP_MAX", "1")
+    p = write_transcript(
+        transcripts, "sess-inject",
+        [u("turn one"), u("turn two"), u("turn three")],
+    )
+    first = miner.walk()
+    s0 = first[0]
+    s0.lines = s0.lines[:2]  # simulate a prior run that advanced 2 lines
+    miner._advance_cursors([(s0, False)])
+    assert miner._load_cursors()[str(p)]["lines"] == 2
+    with open(p, "a", encoding="utf-8") as fh:
+        fh.write(u("turn four") + "\n")
+    pre_run_slices = miner.walk()
+    pre_start = next(s.start_line for s in pre_run_slices if s.path == p)
+    assert pre_start == 2 and pre_start != 0
+
+    write_transcript(transcripts, "sess-inject-other", [u("other work")])
+    shim_reader(
+        monkeypatch,
+        {
+            "candidates": [
+                candidate(session="sess-inject-other", line=1),
+                candidate(session="sess-inject", line=1,  # model-authored, fabricated
+                          trigger="Second distinct trigger about rsync"),
+            ],
+            "fires": [],
+        },
+    )
+    result = miner.run(home)
+    assert len(result.landed) == 1 and result.dropped == 1
+    assert miner._load_cursors()[str(p)]["lines"] == 2  # unchanged (A7)
+    next_slice = next(s for s in miner.walk() if s.path == p)
+    assert next_slice.start_line == pre_start  # never 0, never line-1 (== 0 here too)
+
+
+def test_A9_aliasing_never_costs_a_halt(home, transcripts, monkeypatch):
+    """A9: the corner H-3's `and not halt` half exists for. Two
+    transcripts share a stem under different project directories; the
+    halted twin must sort EARLIER by mtime (pinned with os.utime) so
+    `digested["sess-dup"]` ends up False (the unhalted twin's flag,
+    last-writer-wins) and the drop classifies `held`. Even so, the
+    halted twin still advances and still persists its halt — M20
+    (session-id-only filtering) is the mutation this guards against."""
+    monkeypatch.setenv("SELF_LEARN_MINE_CAP_PER_SESSION", "1")
+    monkeypatch.setenv("SELF_LEARN_MINE_CAP_MAX", "1")
+    write_transcript(transcripts, "sess-plain", [u("plain work")])
+    p_halted = write_transcript(
+        transcripts, "sess-dup",
+        [u("proj work"), u("<command-name>/self-learn:review</command-name> go")],
+        project="-home-u-proj",
+    )
+    (transcripts / "-home-u-other").mkdir()  # write_transcript does not
+    p_unhalted = write_transcript(
+        transcripts, "sess-dup", [u("other project work")],
+        project="-home-u-other",
+    )
+    old = time.time() - 100
+    os.utime(p_halted, (old, old))  # vacuity guard: halted twin sorts first
+    shim_reader(
+        monkeypatch,
+        {
+            "candidates": [
+                candidate(session="sess-plain", line=1),
+                candidate(session="sess-dup", line=1,
+                          trigger="Second distinct trigger about rsync"),
+            ],
+            "fires": [],
+        },
+    )
+    result = miner.run(home)
+    assert len(result.landed) == 1 and result.dropped == 1
+    outcomes = miner.read_journal()[-1]["outcomes"]
+    cap_drop = next(o for o in outcomes if o["outcome"] == "dropped-cap")
+    assert cap_drop["cursor"] == "held"
+    cursors = miner._load_cursors()
+    assert cursors[str(p_halted)]["halt"] is True
+    remaining = {s.path for s in miner.walk()}
+    assert p_halted not in remaining
+    assert p_unhalted in remaining  # the aliasing cost: an unhalted re-read, never an exclusion
+
+
+_A10_OVERLENGTH_WHY_DURABLE = (
+    "This candidate exists to model the exact drained scenario measured "
+    "in the run journal, where a single session produced far more "
+    "distinct lessons than the per run landing cap could ever absorb in "
+    "one pass, and the fourth of those dropped candidates carried a "
+    "snippet so long that the near miss surface itself refused to keep "
+    "any content at all, leaving only a bare overlength marker behind "
+    "for a human reviewer to see, which is precisely why holding that "
+    "candidate cursor is the only path back to it, since the near miss "
+    "promote button had genuinely nothing else to offer this session."
+)
+
+
+def test_A10_measured_incident_drained_over_consecutive_runs(
+    home, transcripts, monkeypatch
+):
+    """A10: the run-28117725 shape, drained over three consecutive
+    capping runs at a cap that is never raised. The third candidate's
+    snippet sums past MAX_NEARMISS_SNIPPET_CHARS (scan-clean PROSE, never
+    repeated filler — the cap branch `continue`s before `_scan_candidate`,
+    so this candidate meets the scanner for the first time on the run
+    that lands it), scoring `promotable: false` — the one drop with no
+    other recovery path."""
+    monkeypatch.setenv("SELF_LEARN_MINE_CAP_PER_SESSION", "1")
+    monkeypatch.setenv("SELF_LEARN_MINE_CAP_MAX", "1")
+    write_transcript(transcripts, "sess-drain", [u("work")])
+    payload = {
+        "candidates": [
+            candidate(session="sess-drain", line=1),
+            candidate(session="sess-drain", line=2,
+                      trigger="Second distinct trigger about rsync"),
+            candidate(
+                session="sess-drain", line=3,
+                trigger="Third distinct trigger about a very long overlength snippet",
+                why_durable=_A10_OVERLENGTH_WHY_DURABLE,
+            ),
+        ],
+        "fires": [],
+    }
+
+    # --- run 1: one lands, two hold (including the non-promotable one)
+    shim_reader(monkeypatch, payload)
+    result = miner.run(home)
+    assert len(result.landed) == 1 and result.dropped == 2
+    entry = miner.read_journal()[-1]
+    assert entry["cursors_held"] == 1
+    cap_drops = [o for o in entry["outcomes"] if o["outcome"] == "dropped-cap"]
+    assert len(cap_drops) == 2
+    assert all(o["cursor"] == "held" for o in cap_drops)
+    overlength = next(o for o in cap_drops if o["snippet"] == {"overlength": True})
+    assert overlength["promotable"] is False
+
+    # --- run 2: the run-1 origin dedups (doesn't consume cap), the second
+    # candidate lands (a deduped candidate never consumes cap, §3.4), the
+    # overlength one drops again and the session is still held
+    shim_reader(monkeypatch, payload)
+    result2 = miner.run(home)
+    outcomes2 = miner.read_journal()[-1]["outcomes"]
+    names2 = [o["outcome"] for o in outcomes2]
+    assert names2.count("skipped-known-origin") == 1
+    assert names2.count("landed") == 1
+    cap_drop2 = next(o for o in outcomes2 if o["outcome"] == "dropped-cap")
+    assert cap_drop2["snippet"] == {"overlength": True}
+    assert cap_drop2["cursor"] == "held"
+    assert result2.held_sessions == {"sess-drain"}
+
+    # --- run 3: both earlier origins dedup, the overlength candidate
+    # finally lands, nothing drops, and the session's cursor advances
+    shim_reader(monkeypatch, payload)
+    result3 = miner.run(home)
+    outcomes3 = miner.read_journal()[-1]["outcomes"]
+    names3 = [o["outcome"] for o in outcomes3]
+    assert names3.count("skipped-known-origin") == 2
+    assert names3.count("landed") == 1
+    assert "dropped-cap" not in names3
+    assert result3.held_sessions == set()
+    assert miner.walk() == []
+
+
+def test_B1_cursor_present_complete_and_enumerated(home, transcripts, monkeypatch):
+    """B1: (i) every `dropped-cap` outcome carries `cursor`, (ii) its
+    value is always one of the three literals, (iii) no outcome of any
+    other name carries the key, (iv) all three values are observed in
+    ONE run — a single fixture, never a module-level accumulator that
+    degrades silently under `-k`/`-x`/a solo re-run (NOTE 2)."""
+    monkeypatch.setenv("SELF_LEARN_MINE_CAP_PER_SESSION", "1")
+    monkeypatch.setenv("SELF_LEARN_MINE_CAP_MAX", "1")
+    write_transcript(transcripts, "sess-land-b1", [u("land work")])
+    write_transcript(transcripts, "sess-hold-b1", [u("hold work")])
+    write_transcript(
+        transcripts, "sess-halt-b1",
+        [u("halt work"), u("<command-name>/self-learn:review</command-name> go")],
+    )
+    shim_reader(
+        monkeypatch,
+        {
+            "candidates": [
+                candidate(session="sess-land-b1", line=1),
+                candidate(session="sess-hold-b1", line=1,
+                          trigger="Second distinct trigger about rsync"),
+                candidate(session="sess-halt-b1", line=1,
+                          trigger="Third distinct trigger about tar"),
+                candidate(session="sess-ghost-b1", line=1,
+                          trigger="Fourth distinct trigger about zip"),
+            ],
+            "fires": [],
+        },
+    )
+    result = miner.run(home)
+    assert len(result.landed) == 1 and result.dropped == 3
+    entry = miner.read_journal()[-1]
+    assert entry["cursors_held"] == 1
+    outcomes = entry["outcomes"]
+    for o in outcomes:
+        if o["outcome"] == "dropped-cap":
+            assert o["cursor"] in {"held", "advanced-halted", "advanced-unmatched"}
+        else:
+            assert "cursor" not in o  # (iii): no other outcome carries the key
+    cap_outcomes = [o for o in outcomes if o["outcome"] == "dropped-cap"]
+    assert len(cap_outcomes) == 3
+    assert {o["cursor"] for o in cap_outcomes} == {
+        "held", "advanced-halted", "advanced-unmatched",
+    }  # (iv): all three, one run
+
+
+def test_B2_cursors_held_counts_distinct_sessions(home, transcripts, monkeypatch):
+    """B2: `cursors_held` counts distinct SESSIONS, not drops. The
+    asymmetric fixture (2 drops from one session, 1 from another) is
+    mandatory — with one drop per session the two numbers would agree
+    and the criterion would be vacuous."""
+    monkeypatch.setenv("SELF_LEARN_MINE_CAP_PER_SESSION", "1")
+    monkeypatch.setenv("SELF_LEARN_MINE_CAP_MAX", "1")
+    write_transcript(transcripts, "sess-eater-b2", [u("eater work")])
+    write_transcript(transcripts, "sess-two-drops-b2", [u("two drops work")])
+    write_transcript(transcripts, "sess-one-drop-b2", [u("one drop work")])
+    shim_reader(
+        monkeypatch,
+        {
+            "candidates": [
+                candidate(session="sess-eater-b2", line=1),
+                candidate(session="sess-two-drops-b2", line=1,
+                          trigger="Second distinct trigger about rsync"),
+                candidate(session="sess-two-drops-b2", line=2,
+                          trigger="Third distinct trigger about tar"),
+                candidate(session="sess-one-drop-b2", line=1,
+                          trigger="Fourth distinct trigger about zip"),
+            ],
+            "fires": [],
+        },
+    )
+    result = miner.run(home)
+    assert result.dropped == 3
+    entry = miner.read_journal()[-1]
+    assert entry["cursors_held"] == 2
+
+
+def test_B3i_cli_surface_byte_identical_with_cursor_present(
+    home, transcripts, monkeypatch
+):
+    """B3 leg (i): the CLI surface is byte-identical — outcome name,
+    disposition, reason and promotable are exactly what they were before
+    this unit; `cursor` is the ONE addition."""
+    monkeypatch.setenv("SELF_LEARN_MINE_CAP_PER_SESSION", "1")
+    write_transcript(transcripts, "sess-b3", [u("work")])
+    shim_reader(
+        monkeypatch,
+        {
+            "candidates": [
+                candidate(session="sess-b3", line=1),
+                candidate(session="sess-b3", line=2,
+                          trigger="Second distinct trigger about rsync"),
+            ],
+            "fires": [],
+        },
+    )
+    miner.run(home)
+    outcomes = miner.read_journal()[-1]["outcomes"]
+    cap_drop = next(o for o in outcomes if o["outcome"] == "dropped-cap")
+    assert cap_drop["outcome"] == "dropped-cap"
+    assert cap_drop["disposition"] == "cap-refused"
+    assert (
+        cap_drop["reason"]
+        == "a real lesson, but this run had already landed its cap"
+    )
+    assert cap_drop["promotable"] is True
+    assert cap_drop["cursor"] == "held"
+
+
+def test_B3iii_mine_status_one_liner_unchanged(home, transcripts, monkeypatch, capsys):
+    """B3 leg (iii): `mine status`'s one-liner is unchanged — it still
+    carries `cap=`/`near-misses=` and gains no held count (BD4: the
+    per-candidate `cursor` value already renders through the extras
+    dict on its own line, so the aggregate would be redundant)."""
+    write_transcript(transcripts, "sess-b3-cli", [u("work")])
+    shim_reader(monkeypatch, {"candidates": [candidate(session="sess-b3-cli")], "fires": []})
+    monkeypatch.setattr(miner.worker, "kick", lambda h, **kw: "disabled")
+    assert cli.main(["mine", "run"]) == 0
+    capsys.readouterr()
+    assert cli.main(["mine", "status"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    summary_line = next(ln for ln in lines if "cap=" in ln)
+    assert "near-misses=" in summary_line
+    assert "held=" not in summary_line
+    assert "cursors_held" not in summary_line
+
+
 def test_fire_and_recurrence_replays_deduped(home, transcripts, monkeypatch):
     """Audit M2: --since replays and crash-replays must not duplicate
     fire / recurrence-suspect telemetry.

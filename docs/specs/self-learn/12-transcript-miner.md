@@ -80,6 +80,12 @@ the transcript) — a review session *discusses* lessons, and mining the
 discussion re-captures them. Phase 3 dedup is the backstop for anything
 the exclusions miss.
 
+**Cap holds (amended by `U-cursorhold`, FW-73).** A candidate refused at
+Phase 4's per-run landing cap holds its originating session's cursor
+rather than advancing past it, so the refusal costs a re-read, never the
+candidate; a session already excluded under M-5 above always keeps that
+exclusion — the hold never overrides the halt.
+
 ### Phase 1 — structural digest (deterministic, no model, no embeddings)
 
 Reduce each transcript to an ordered, speaker-tagged skeleton:
@@ -159,7 +165,13 @@ a human ever sees it.
 total-pending gate — land nothing when `total_pending ≥ 10` (the
 escalation threshold is ≥5 pending; an uncapped miner would perma-trip
 it and train the user to ignore the alarm). Skipped candidates are
-logged in the run report, not silently dropped.
+logged in the run report, not silently dropped. **Amended by
+`U-cursorhold` (FW-73):** a candidate refused at the per-run cap holds
+its originating session's cursor instead of advancing past it — the same
+posture the total-pending gate above already takes — so the candidate is
+re-offered whole on a later run rather than lost; the M-5 halt still
+takes precedence, so an already-excluded session's cursor is never held
+on its account.
 
 ## 3. Scheduling and containment
 
@@ -410,7 +422,11 @@ a CLI verb that spawns its own contained `claude -p` internally.
   miner's cache dir (machine-local; nightly journal-only repo commits
   would be noise; G-3 runs on this machine and reads it directly).
   `self-learn mine status` renders the same journal in the terminal —
-  CLI parity precedes the UI.
+  CLI parity precedes the UI. **Amended by `U-cursorhold` (FW-73):**
+  every `dropped-cap` outcome additionally carries a `cursor` field —
+  `held` / `advanced-halted` / `advanced-unmatched` — and the `ok` /
+  `landed-uncommitted` journal entry gains `cursors_held: <int>`, the
+  count of distinct sessions this run withheld from the cursor advance.
 - **A2 · Staged-autonomy ladder (the "potentially autonomous review"
   path).** L0 (now): human routes everything. L1: auto-resolve
   duplicate-folds and already-canon graduations. L2: auto-route

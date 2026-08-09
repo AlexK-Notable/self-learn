@@ -805,6 +805,11 @@ class MineResult:
     #: rest), never wedge the whole run, but never silently either;
     #: journaled every time it is non-empty.
     corrupt_records: list[str] = field(default_factory=list)
+    #: U-cursorhold O-3: distinct session ids whose cursor this run HELD
+    #: (withheld from the advance) because a cap drop cited them and they
+    #: were not halted. Never serialised itself — the journal writes only
+    #: its length, under `cursors_held` (BD3).
+    held_sessions: set[str] = field(default_factory=set)
 
 
 def _outcome(result: MineResult, origin: str, outcome: str, **extra) -> None:
@@ -1215,11 +1220,19 @@ def _reconcile_and_land(
     result: MineResult,
     cap: int,
     cwds: dict[str, str] | None = None,
+    digested: dict[str, bool] | None = None,
 ) -> None:
     """``cwds`` maps session id → that session's transcript ``cwd``; a
     project-scoped candidate lands in the bucket for THAT path (doc 13
-    §3) — no cwd on file → dropped-invalid, never a guessed bucket."""
+    §3) — no cwd on file → dropped-invalid, never a guessed bucket.
+
+    ``digested`` (U-cursorhold H-1/H-2) maps session id → that slice's
+    halt flag, for EVERY session this run's reader actually saw text
+    from. It classifies a cap drop's cursor effect: ``None`` behaves as
+    ``{}`` (every cap drop then classifies ``advanced-unmatched``), so
+    the function stays callable from a test without it."""
     cwds = cwds or {}
+    digested = digested or {}
     origins = existing_origins(home)
     seen_events, violated_fires = _event_seen(home)
     candidates = parsed.get("candidates") or []
@@ -1334,11 +1347,26 @@ def _reconcile_and_land(
             # unconditionally (the cap decision is unaffected by scan
             # outcome — even a scan-refused snippet stays cap-refused).
             snippet_fields = _snippet_fields(cand)
-            extra = (
+            extra: dict[str, object] = (
                 {"snippet": _nearmiss_snippet(snippet_fields)}
                 if snippet_fields is not None
                 else {}
             )
+            # U-cursorhold H-2: classify this drop's cursor effect. A
+            # session absent from `digested` was never read by this run's
+            # reader — nothing to hold (`advanced-unmatched`). A session
+            # present and unhalted holds (`held`, and only then is it
+            # added to `result.held_sessions`); a session present and
+            # ALREADY halted advances with its halt persisted regardless —
+            # M-5 wins, unconditionally (`advanced-halted`, §3.2).
+            if session_id not in digested:
+                cursor = "advanced-unmatched"
+            elif digested[session_id]:
+                cursor = "advanced-halted"
+            else:
+                cursor = "held"
+                result.held_sessions.add(session_id)
+            extra["cursor"] = cursor
             _outcome(result, origin, "dropped-cap", **extra)
             continue
         try:
@@ -1814,6 +1842,12 @@ def _run_locked(
     digests: list[str] = []
     processed: list[tuple[SessionSlice, bool]] = []
     cwds: dict[str, str] = {}  # session id → transcript cwd (doc 13 §3)
+    #: U-cursorhold H-1: session id → that slice's halt flag, populated ONLY
+    #: in the branch below that appends a digest — never for a slice
+    #: excluded (nothing minable) or deferred (over budget). A session
+    #: absent from this map is a session whose text this run's reader
+    #: never saw, so a cap drop citing it cannot hold anything (H-2).
+    digested: dict[str, bool] = {}
     excluded = 0
     total_chars = 0
     deferred_files = 0
@@ -1829,6 +1863,7 @@ def _run_locked(
         total_chars += len(digest)
         digests.append(digest)
         processed.append((s, halt))
+        digested[s.session_id] = halt
         cwd = _slice_cwd(s)
         if cwd:
             cwds[s.session_id] = cwd
@@ -1904,7 +1939,7 @@ def _run_locked(
         # (untracked files survive an autostash); folding is not, and both
         # live in the same call.
         with gitops.commit_lock(home):
-            _reconcile_and_land(home, parsed, result, cap, cwds)
+            _reconcile_and_land(home, parsed, result, cap, cwds, digested)
             _commit_landing(home, result, run_id, no_push=no_push)
     except gitops.GitOpsError as exc:
         # BLOCKER B: every GitOpsError is caught — including a lock
@@ -1931,7 +1966,21 @@ def _run_locked(
     except Exception as exc:  # noqa: BLE001 — canary scoring never crashes a run
         log(f"run {run_id}: canary scoring skipped ({exc})")
 
-    _advance_cursors(processed)
+    # U-cursorhold H-3: withhold an entry of `processed` iff its slice's
+    # session id was HELD by this run's cap AND that slice's own halt
+    # flag is False. `processed` itself is not mutated or reassigned —
+    # this is a freshly built list at this one call site, and the halted
+    # half of the guard is load-bearing, not belt-and-braces: a same-stem
+    # unhalted twin can classify `held` (§3.1 H-5's aliasing), and
+    # filtering on session id alone would then withhold a HALTED slice's
+    # cursor too — the exact M-5 regression this unit refuses (§3.2).
+    _advance_cursors(
+        [
+            (s, halt)
+            for s, halt in processed
+            if s.session_id not in result.held_sessions or halt
+        ]
+    )
     (miner_dir() / "miner.last-run").touch()
     # A run whose landings never committed is NOT "ok" (BLOCKER B (c)):
     # `mine status` would otherwise report a clean nightly run over records
@@ -1957,6 +2006,13 @@ def _run_locked(
               "outcomes": enriched_outcomes,
               "near_miss_count": near_miss_count,
               "corrupt_records": result.corrupt_records,
+              # U-cursorhold O-2: distinct held sessions — covers `ok` and
+              # `landed-uncommitted` ONLY, by construction (this is the one
+              # journal write both statuses share). An absent key means
+              # "not a landing run", never "no cursors were held" — a
+              # `held-gate` run holds EVERY cursor and writes a different
+              # entry entirely, with no key of this name.
+              "cursors_held": len(result.held_sessions),
               "duration_secs": round(time.time() - t0, 1)})
     log(
         f"run {run_id}: {result.status} — {len(result.landed)} landed, "
