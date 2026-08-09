@@ -971,50 +971,125 @@ def test_a18_trace_mandatory_quote_rule_and_derived_fields():
     assert "alternates" in span
 
 
-def test_a19_worked_example_validates_and_the_check_can_fail():
-    """A19 — the doctrine's worked example validates, and the check can
-    fail. The example RECORD and PROPOSAL are both extracted from the
-    shipped doctrine (D8). Positive control in the same test: the same
-    call with one `evidence` value replaced by a near-miss paraphrase
-    must raise ProposalError. Absent/broken: r1's A19 could not fail —
-    D8 shipped no record, so a builder passes record_text=None,
-    containment does not run, and even a fabricated quote is accepted
-    (measured). The control is what proves record_text= was supplied at
-    all: if it is None, the paraphrase leg passes and the test fails."""
+def _pair_doctrine_examples(text: str) -> list[tuple[dict, Record]]:
+    """U-repair Pair-1 (§3.2 a, spec MAJOR 6): extract every ```yaml```
+    block that parses to a mapping carrying `gates:` (a proposal), and
+    every ```markdown``` block that opens with `---` and whose
+    frontmatter carries an `id: lrn-<8 hex>` (a record). Pair by the
+    `# record: lrn-<8 hex>` comment that must be the proposal block's
+    first in-fence line, against the record's own frontmatter id. The
+    pairing must be TOTAL (no unpaired block on either side) and
+    INJECTIVE (no record id claimed twice) — asserted here, not left to
+    the caller, because a silently-partial pairing is what let a builder
+    containment-check one example's quotes against another's record."""
     import re
-    import tempfile
 
     from ruamel.yaml import YAML
 
-    text = _doctrine_text()
+    yaml_loader = YAML(typ="safe")
     md_blocks = re.findall(r"```markdown\n(.*?)\n```", text, re.DOTALL)
     yaml_blocks = re.findall(r"```yaml\n(.*?)\n```", text, re.DOTALL)
-    record_block = next(b for b in md_blocks if "lrn-00000000" in b)
-    proposal_block = next(
-        b for b in yaml_blocks if "destination: reference" in b and "outcome: DEMAND" in b
-    )
 
-    with tempfile.TemporaryDirectory() as d:
-        record_path = Path(d) / "lrn-00000000.md"
-        record_path.write_text(record_block, encoding="utf-8")
-        record = Record.from_path(record_path)
-
-        yaml_loader = YAML(typ="safe")
-        proposal = yaml_loader.load(proposal_block)
-
-        # must not raise.
-        validate_proposal(proposal, record_text=record.to_text())
-
-        # positive control: a near-miss paraphrase of a RECORD-sourced
-        # quote must be refused.
-        bad = dict(proposal)
-        bad["gates"] = dict(proposal["gates"])
-        bad["gates"]["t2"] = dict(proposal["gates"]["t2"])
-        bad["gates"]["t2"]["evidence"] = (
-            "About to summarize command output instead of showing the tail"
+    records: dict[str, Record] = {}
+    for block in md_blocks:
+        if not block.startswith("---\n"):
+            continue
+        record = Record.from_text(block)
+        assert re.fullmatch(r"lrn-[0-9a-f]{8}", record.id), (
+            f"record-block selector matched a non-lrn id: {record.id!r}"
         )
-        with pytest.raises(ProposalError):
-            validate_proposal(bad, record_text=record.to_text())
+        assert record.id not in records, f"duplicate record id in doctrine: {record.id}"
+        records[record.id] = record
+
+    referenced: list[str] = []
+    pairs: list[tuple[dict, str]] = []
+    for block in yaml_blocks:
+        data = yaml_loader.load(block)
+        if not isinstance(data, dict) or "gates" not in data:
+            continue
+        first_line = block.split("\n", 1)[0]
+        m = re.fullmatch(r"#\s*record:\s*(lrn-[0-9a-f]{8})", first_line.strip())
+        assert m, (
+            "Pair-1: proposal block's first in-fence line must be "
+            f"'# record: lrn-<8 hex>', got {first_line!r}"
+        )
+        record_id = m.group(1)
+        referenced.append(record_id)
+        pairs.append((data, record_id))
+
+    assert len(referenced) == len(set(referenced)), (
+        f"Pair-1 not injective — a record id was claimed twice: {referenced}"
+    )
+    dangling = set(referenced) - set(records)
+    assert not dangling, f"Pair-1 not total — proposal references no record: {dangling}"
+    unclaimed = set(records) - set(referenced)
+    assert not unclaimed, f"Pair-1 not total — record claimed by no proposal: {unclaimed}"
+
+    return [(data, records[record_id]) for data, record_id in pairs]
+
+
+def test_a19_worked_example_validates_and_the_check_can_fail():
+    """A19 (U-repair A3) — every doctrine example validates, with
+    `scope=` supplied, paired with its own record through Pair-1 (never
+    positionally, never by content-matching — Pair-1's totality and
+    injectivity are this test's precondition, enforced inside
+    `_pair_doctrine_examples`). Two positive controls, both mandatory:
+    (i) a RECORD-sourced `evidence` replaced with a near-miss paraphrase
+    must raise — proves `record_text=` was supplied at all; (ii)
+    `gates.outcome` replaced with a different `TRACE_OUTCOMES` member
+    must raise — proves `scope=` was supplied at all. Absent/broken: r1's
+    A19 could not fail — D8 shipped no record, so a builder passes
+    record_text=None, containment does not run, and even a fabricated
+    quote is accepted (measured); r1 gate MAJOR 6 further found the
+    original selector was two independent content-matches with no link
+    between them at all, so `validate_proposal` was never called without
+    `scope=` on the shipped exemplar (§9-X6) and control (ii) could not
+    exist. A builder who drops either keyword argument fails the
+    matching control; a builder who reverts §5.3 to one example fails
+    the `>= 2` count."""
+    from self_learn.ledger_ops import TRACE_OUTCOMES
+
+    text = _doctrine_text()
+    pairs = _pair_doctrine_examples(text)
+    assert len(pairs) >= 2, "doctrine must ship at least two paired examples"
+
+    for proposal, record in pairs:
+        # must not raise: real record, real scope, real derivation.
+        validate_proposal(
+            proposal, record_text=record.to_text(), scope=record.scope
+        )
+
+    # positive control (i), against the original lrn-00000000 example:
+    # a near-miss paraphrase of a RECORD-sourced quote must be refused.
+    # This is what proves record_text= was supplied at all.
+    orig_proposal, orig_record = next(
+        (p, r) for p, r in pairs if r.id == "lrn-00000000"
+    )
+    bad_quote = dict(orig_proposal)
+    bad_quote["gates"] = dict(orig_proposal["gates"])
+    bad_quote["gates"]["t2"] = dict(orig_proposal["gates"]["t2"])
+    bad_quote["gates"]["t2"]["evidence"] = (
+        "About to summarize command output instead of showing the tail"
+    )
+    with pytest.raises(ProposalError):
+        validate_proposal(
+            bad_quote, record_text=orig_record.to_text(), scope=orig_record.scope
+        )
+
+    # positive control (ii): gates.outcome swapped for a different
+    # TRACE_OUTCOMES member must be refused. This is what proves scope=
+    # was supplied at all — without it no derivation runs and the swap
+    # passes silently.
+    bad_outcome = dict(orig_proposal)
+    bad_outcome["gates"] = dict(orig_proposal["gates"])
+    other_outcome = next(
+        o for o in TRACE_OUTCOMES if o != orig_proposal["gates"]["outcome"]
+    )
+    bad_outcome["gates"]["outcome"] = other_outcome
+    with pytest.raises(ProposalError):
+        validate_proposal(
+            bad_outcome, record_text=orig_record.to_text(), scope=orig_record.scope
+        )
 
 
 def test_a20_deletions_with_positive_controls():

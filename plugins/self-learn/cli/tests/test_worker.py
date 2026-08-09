@@ -121,25 +121,87 @@ def env(tmp_path, monkeypatch):
 
 @pytest.fixture()
 def claude_shim(tmp_path, monkeypatch, env):
-    """PATH shim: records argv NUL-separated; runs $CLAUDE_SHIM_SCRIPT
-    (a bash snippet, e.g. writing proposal files); exits $CLAUDE_SHIM_EXIT."""
+    """PATH shim, MULTI-INVOCATION-OBSERVABLE (U-repair F5, §9-X7 — the
+    pre-U-repair shim truncated with `>`, so a two-invocation run left
+    only the SECOND call observable; a repair-round test built against
+    it would silently exercise round 2 alone).
+
+    Five capabilities (F5), all keyed off a per-invocation counter
+    (``{tmp_path}/claude-invocation-count``, incremented once per call):
+
+    1. **per-invocation argv capture** — appended (never truncated) to
+       the legacy ``log`` path (the ~30 existing single-invocation tests
+       keep reading it unchanged: for exactly one call, append-to-empty
+       is byte-identical to truncate) AND to a per-call
+       ``claude-calls/argv.<n>`` file, read via ``claude_shim["argv"](n)``.
+    2. **per-invocation stdin capture** — same shape, legacy ``prompt``
+       path (appended) plus ``claude-calls/prompt.<n>``, read via
+       ``claude_shim["call_prompt"](n)``.
+    3. **a per-invocation counter** — ``claude_shim["count"]()``.
+    4. **per-invocation script** — ``CLAUDE_SHIM_SCRIPT_<n>``, falling
+       back to the unnumbered ``CLAUDE_SHIM_SCRIPT`` when the numbered
+       form is unset, so every existing single-invocation test (which
+       only ever sets the unnumbered var) keeps working unchanged.
+    5. **per-invocation exit code and sleep** — ``CLAUDE_SHIM_EXIT_<n>``
+       (falling back to unnumbered ``CLAUDE_SHIM_EXIT``, default ``0``)
+       and ``CLAUDE_SHIM_SLEEP_<n>`` (no unnumbered fallback — round 1
+       never needs to sleep just because round 2 does)."""
     shims = tmp_path / "shims"
     shims.mkdir(exist_ok=True)
+    counter = tmp_path / "claude-invocation-count"
     log = tmp_path / "claude-argv.log"
     prompt_log = tmp_path / "claude-prompt.log"
+    calls_dir = tmp_path / "claude-calls"
+    calls_dir.mkdir(exist_ok=True)
     shim = shims / "claude"
     shim.write_text(
         "#!/usr/bin/env bash\n"
-        f'printf \'%s\\0\' "$@" > "{log}"\n'
+        f'CTR="{counter}"\n'
+        'N=$(( $(cat "$CTR" 2>/dev/null || echo 0) + 1 ))\n'
+        'echo "$N" > "$CTR"\n'
+        f'printf \'%s\\0\' "$@" >> "{log}"\n'
+        f'printf \'%s\\0\' "$@" >> "{calls_dir}/argv.$N"\n'
         # the prompt rides STDIN (audit 2026-07-15: argv caps at 128 KiB)
-        f'cat > "{prompt_log}" || true\n'
-        'if [ -n "${CLAUDE_SHIM_SCRIPT-}" ]; then bash -c "$CLAUDE_SHIM_SCRIPT"; fi\n'
-        'exit "${CLAUDE_SHIM_EXIT-0}"\n',
+        f'cat > "{calls_dir}/prompt.$N" || true\n'
+        f'cat "{calls_dir}/prompt.$N" >> "{prompt_log}" || true\n'
+        'SCRIPT_VAR="CLAUDE_SHIM_SCRIPT_$N"\n'
+        'SCRIPT="${!SCRIPT_VAR-}"\n'
+        'if [ -z "$SCRIPT" ]; then SCRIPT="${CLAUDE_SHIM_SCRIPT-}"; fi\n'
+        'if [ -n "$SCRIPT" ]; then bash -c "$SCRIPT"; fi\n'
+        'SLEEP_VAR="CLAUDE_SHIM_SLEEP_$N"\n'
+        'SLEEP="${!SLEEP_VAR-}"\n'
+        'if [ -n "$SLEEP" ]; then sleep "$SLEEP"; fi\n'
+        'EXIT_VAR="CLAUDE_SHIM_EXIT_$N"\n'
+        'EXIT="${!EXIT_VAR-}"\n'
+        'if [ -z "$EXIT" ]; then EXIT="${CLAUDE_SHIM_EXIT-0}"; fi\n'
+        'exit "$EXIT"\n',
         encoding="utf-8",
     )
     shim.chmod(shim.stat().st_mode | stat.S_IEXEC)
     monkeypatch.setenv("PATH", f"{shims}:{os.environ['PATH']}")
-    return {"log": log, "prompt": prompt_log, "dir": shims}
+
+    def argv_for(n: int) -> list[str]:
+        p = calls_dir / f"argv.{n}"
+        return p.read_text(encoding="utf-8").split("\0")[:-1] if p.exists() else []
+
+    def prompt_for(n: int) -> str:
+        p = calls_dir / f"prompt.{n}"
+        return p.read_text(encoding="utf-8") if p.exists() else ""
+
+    def count() -> int:
+        try:
+            return int(counter.read_text(encoding="utf-8").strip())
+        except (FileNotFoundError, ValueError):
+            return 0
+
+    return {
+        "log": log,
+        "prompt": prompt_log,
+        "dir": shims,
+        "argv": argv_for,
+        "call_prompt": prompt_for,
+        "count": count,
+    }
 
 
 @pytest.fixture()
@@ -335,6 +397,13 @@ def test_run_argv_pins(env, claude_shim, monkeypatch):
     prompt = claude_shim["prompt"].read_text(encoding="utf-8")
     assert "About to edit .storage while HA is running." in prompt  # record body
     assert "Authored prose stays put." in prompt  # target-canon excerpt
+    # U-repair F1: --strict-mcp-config is on the argv, carries no value
+    # of its own (build_argv appends it LAST, nothing after it), and no
+    # --mcp-config accompanies it (the analyst needs no MCP server;
+    # §3.11).
+    assert "--strict-mcp-config" in argv
+    assert argv[-1] == "--strict-mcp-config"
+    assert "--mcp-config" not in argv
 
 
 def test_run_idle_when_nothing_eligible(env, claude_shim):

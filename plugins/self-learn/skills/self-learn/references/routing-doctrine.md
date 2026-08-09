@@ -434,6 +434,17 @@ skeleton, not from the schema doc:
   proposal's `alternates` names the load class it would otherwise have
   rendered (§2 rule 6).
 
+**Read this alongside the checklist you were actually handed.** Most of
+the fields above are **conditional** — required, legal, or forbidden
+depending on a sibling field's own answer — and the prompt that gave you
+this record also carries the full conditional checklist the validator
+enforces, harvested from the validator itself so the two can never
+silently drift. Treat that checklist as the authoritative list of which
+fields apply on which branch, and re-check your WHOLE file against it
+before you finish writing it: the validator reports only the FIRST
+problem it finds, so a file can carry three independent defects and be
+told about only one of them.
+
 ### 5.3 A worked example — a record AND its trace, both executed
 
 The record (synthetic — invented for this doctrine, no ledger
@@ -469,6 +480,7 @@ recommendation degrades to `defer` with flag `no-cheap-surface`. The
 doctrine exists to prevent.
 
 ```yaml
+# record: lrn-00000000
 destination: reference
 alternates: [claude-md]
 recommendation: defer
@@ -509,6 +521,147 @@ gates:
 surface.** At project or skill scope the same `DEMAND` outcome renders
 `recommendation: route` with `flags: []` — do not read this exemplar as
 "DEMAND always defers."
+
+### 5.4 Two more worked examples — the remaining conditional branches
+
+The examples above exercise `t2`'s `no` branch and a `t3`/`t3a`-absent
+path. The conditional checklist you were handed also covers branches
+neither example above reaches: a `t3.answer: yes` record whose owner is
+non-null, a `depth_behind_rule.answer: yes` carrying both `target` and
+`evidence`, a `conduct_mode.answer: yes` carrying `evidence`, and an
+`fs.verdict` other than `INDETERMINATE`. These two pairs cover them.
+
+**Example A** — `t3.answer: yes` (skill-scoped, owner-matched) with
+`t3a.depth_behind_rule.answer: yes`:
+
+```markdown
+---
+id: lrn-00000001
+type: behavior
+kind: surface-rule
+scope: skill:python-testing
+source: teach
+status: pending
+created_at: '2026-08-06T00:00:00Z'
+sightings: 1
+---
+
+## Trigger
+About to add a pytest fixture that spins up a real subprocess instead of reusing the skill's existing sandbox-process fixture
+
+## Instruction
+Reuse the sandbox-process fixture the skill already documents at length,
+because a second ad-hoc fixture drifts from the teardown discipline the
+first one earned the hard way.
+```
+
+```yaml
+# record: lrn-00000001
+destination: reference
+alternates: []
+recommendation: route
+flags: []
+rationale: >
+  DEMAND via t3a.depth_behind_rule — the skill's own reference already
+  covers this ground, and a second fixture would drift from it.
+model: claude-sonnet-5
+analyzed_at: '2026-08-06T00:00:00Z'
+gates:
+  g0:
+    reject: {answer: no}
+    defer:  {answer: no}
+    canon:  {answer: no}
+  t1:
+    attempted: true
+    field_shaped:
+      answer: no
+      evidence: "About to add a pytest fixture that spins up a real subprocess instead of reusing the skill's existing sandbox-process fixture"
+    separable:    {answer: null}
+    cost_bearing: {answer: null}
+  t2:
+    answer: no
+    evidence: "About to add a pytest fixture that spins up a real subprocess instead of reusing the skill's existing sandbox-process fixture"
+    match_path: null
+  t3: {answer: yes, owner: "python-testing", scan_terms: null, roster_sha: "sha256:0123456789ab"}
+  t3a:
+    depth_behind_rule:
+      answer: yes
+      evidence: "the reference doc already covers this teardown discipline at length"
+      target: "python-testing references/LEARNINGS.md, fixture teardown section"
+    fs:
+      verdict: COSTLY
+      evidence: "a second ad-hoc fixture drifts from the teardown discipline the first one earned the hard way"
+  t4: null
+  tn: {answer: no, terms: [], members: [], proposed_name: null}
+  e1: {sightings: 1, post_demand_recurrence: false}
+  outcome: DEMAND
+```
+
+**Example B** — `t4.conduct_mode.answer: yes` carrying evidence, with an
+`fs.verdict` of `INDETERMINATE` shown deliberately alongside a non-null
+`conduct_mode.evidence` (the two fields are independent; nothing about
+answering `conduct_mode` forces `fs` off `INDETERMINATE`):
+
+```markdown
+---
+id: lrn-00000002
+type: behavior
+kind: anti-pattern
+scope: project
+source: teach
+status: pending
+created_at: '2026-08-06T00:00:00Z'
+sightings: 2
+---
+
+## Trigger
+About to merge a migration that renames a column without a two-step deploy
+
+## Instruction
+Split the rename into an additive step and a drop step across two
+deploys, because a single-step rename breaks any pod still running the
+previous image during a rolling restart.
+```
+
+```yaml
+# record: lrn-00000002
+destination: claude-md
+alternates: []
+recommendation: route
+flags: []
+rationale: >
+  ALWAYS via t4.conduct_mode — a single-step rename breaks a live
+  rolling restart regardless of who is touching the migration.
+model: claude-sonnet-5
+analyzed_at: '2026-08-06T00:00:00Z'
+gates:
+  g0:
+    reject: {answer: no}
+    defer:  {answer: no}
+    canon:  {answer: no}
+  t1:
+    attempted: true
+    field_shaped:
+      answer: no
+      evidence: "About to merge a migration that renames a column without a two-step deploy"
+    separable:    {answer: null}
+    cost_bearing: {answer: null}
+  t2:
+    answer: no
+    evidence: "About to merge a migration that renames a column without a two-step deploy"
+    match_path: null
+  t3: {answer: no, owner: null, scan_terms: [migration, rename, deploy], roster_sha: "sha256:0123456789ab"}
+  t3a: null
+  t4:
+    depth_behind_rule: {answer: no, evidence: null}
+    conduct_mode:
+      answer: yes
+      evidence: "a single-step rename breaks any pod still running the previous image during a rolling restart"
+    fs: {verdict: INDETERMINATE, evidence: null}
+  tn: {answer: no, terms: [], members: [], proposed_name: null}
+  e1: {sightings: 2, post_demand_recurrence: false}
+  outcome: ALWAYS
+```
 
 ## 6. Write triggers the compiler can use (trigger-first)
 
