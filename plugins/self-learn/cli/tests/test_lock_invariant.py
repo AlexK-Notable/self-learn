@@ -119,8 +119,19 @@ NOT_REPO_TRUTH = {
     "worker._log_to": "XDG cache: worker.log",
     "worker.log": "XDG cache: worker.log",
     "worker.write_settings_file": "XDG cache: the worker's Claude settings",
+    # U-repair §3.7: the repair round's NARROWED settings file — same
+    # cache namespace and same shape as write_settings_file above, one
+    # exact-path Edit(...) rule per repair-eligible proposal.
+    "worker.write_repair_settings_file": "XDG cache: the repair round's Claude settings",
     "worker.append_event": "XDG cache: the worker's event spool",
     "worker._cache_clear": "XDG cache: the worker's flag files",
+    # U-repair §3.10: worker.failures — the consecutive-failed-run
+    # counter the follow-on backoff reads/resets. Same cache namespace as
+    # worker.dirty/worker.last-run (already implicitly untracked — those
+    # are read via _p()/_cache_clear, never staged/committed).
+    "worker._write_failure_count": "XDG cache: the follow-on backoff counter",
+    "worker._increment_failure_count": "XDG cache: the follow-on backoff counter",
+    "worker._reset_failure_count": "XDG cache: the follow-on backoff counter",
     # …/miner/ — cursors, journal, the model's spool. The reader is pointed
     # at the spool precisely so the model cannot touch the repo (M-5).
     "miner.miner_dir": "XDG cache: the miner cache dir itself",

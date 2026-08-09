@@ -57,6 +57,7 @@ from .ledger_ops import bucket_project_path
 from .scan import scan as secret_scan
 from .ledger_ops import (
     ROSTER_UNAVAILABLE,
+    TRACE_FS_VERDICTS,
     ProposalError,
     _dump_yaml,
     is_unanalyzed,
@@ -78,8 +79,11 @@ __all__ = [
     "DEFAULT_COALESCE_SECS",
     "DEFAULT_WORKER_MODEL",
     "DISALLOWED_TOOLS",
+    "FOLLOWON_FAILURE_CAP",
+    "REPAIR_TIMEOUT_SECS",
     "Roster",
     "RunResult",
+    "TRACE_CONDITIONALS",
     "batch_cap",
     "build_argv",
     "cache_dir",
@@ -88,19 +92,37 @@ __all__ = [
     "compose_batch_prompt",
     "compose_record_block",
     "compose_single_prompt",
+    "invoke_timeout_secs",
     "kick",
     "package_skill_refs",
     "path_roster",
+    "repair_timeout_secs",
     "run",
     "skill_roster",
     "write_permission_rules",
+    "write_repair_settings_file",
     "write_settings_file",
 ]
 
 DEFAULT_COALESCE_SECS = 600
 DEFAULT_WORKER_MODEL = "claude-sonnet-5"
 BATCH_CAP = 15
-INVOKE_TIMEOUT_SECS = 15 * 60
+#: U-repair §3.9 — 900s (the pre-U-repair default) is a coin flip against
+#: the measured maximum (857s live, 745s replayed, both at batch 15);
+#: 1800s is ~2.1x that measurement. Env-overridable via
+#: SELF_LEARN_INVOKE_TIMEOUT_SECS (:func:`invoke_timeout_secs`).
+INVOKE_TIMEOUT_SECS = 30 * 60
+#: U-repair §3.9 — the repair round's own timeout: a bounded mechanical
+#: edit over a SUBSET of the batch, with none of the doctrine/roster/
+#: candidate reading the first round does. Env-overridable via
+#: SELF_LEARN_REPAIR_TIMEOUT_SECS (:func:`repair_timeout_secs`).
+REPAIR_TIMEOUT_SECS = 10 * 60
+#: U-repair §3.10 — pinned (an edit, not config — the ESCALATE_* precedent
+#: below): two consecutive failed runs means FOUR model attempts (each run
+#: now carries a repair round) produced nothing; beyond that the chain is
+#: burning quota on a systemic defect and the staleness alarm is the
+#: correct surface, not more retries.
+FOLLOWON_FAILURE_CAP = 2
 EVENTS_CAP_BYTES = 1_000_000
 LOG_CAP_BYTES = 1_000_000
 
@@ -739,6 +761,37 @@ def batch_cap() -> int:
     return BATCH_CAP
 
 
+def _timeout_secs(env_var: str, default: float) -> float:
+    """Shared reader for the two env-overridable invocation timeouts
+    (§3.9). Differs from :func:`coalesce_secs` in ONE way, deliberately:
+    a value <= 0 or unparseable falls back to the default rather than
+    being clamped to 0 — a zero coalesce is meaningful, but a zero
+    ``subprocess.run(timeout=...)`` expires instantly and would kill
+    every run (E4)."""
+    raw = os.environ.get(env_var)
+    if not raw:
+        return float(default)
+    try:
+        value = float(raw)
+    except ValueError:
+        return float(default)
+    return value if value > 0 else float(default)
+
+
+def invoke_timeout_secs() -> float:
+    """The batch invocation's timeout (§3.9), default
+    :data:`INVOKE_TIMEOUT_SECS`, env-overridable via
+    ``SELF_LEARN_INVOKE_TIMEOUT_SECS``."""
+    return _timeout_secs("SELF_LEARN_INVOKE_TIMEOUT_SECS", INVOKE_TIMEOUT_SECS)
+
+
+def repair_timeout_secs() -> float:
+    """The repair round's timeout (§3.9), default
+    :data:`REPAIR_TIMEOUT_SECS`, env-overridable via
+    ``SELF_LEARN_REPAIR_TIMEOUT_SECS``."""
+    return _timeout_secs("SELF_LEARN_REPAIR_TIMEOUT_SECS", REPAIR_TIMEOUT_SECS)
+
+
 #: Read-only tool grant — Write is deliberately ABSENT here: path-scoped
 #: Write rules ride the settings file (write_permission_rules); the live
 #: CLI's --allowedTools cannot express path scopes (verified at T13 per
@@ -780,11 +833,52 @@ def write_settings_file(home: Path) -> Path:
     return path
 
 
+def write_repair_settings_file(home: Path, paths: list[Path]) -> Path:
+    """§3.7 — the repair round's NARROWED settings file: one EXACT-PATH
+    ``Edit(...)`` rule per member of the repair set ``E``, sorted — never
+    a glob. This is the structural half of "the repair round must not
+    enlarge the blast radius" (§2, FW-84): the CLI itself refuses writes
+    outside the assigned set.
+
+    Verified against the live CLI (2.1.226) as a builder obligation
+    (§3.7), not assumed: a scratch home, the worker's real argv shape
+    (``--allowedTools Read,Grep,Glob --disallowedTools
+    ...,Edit,...``, Edit granted ONLY via this settings file), one
+    exact-path rule for a target file — a sibling file in the SAME
+    directory, granted no rule of its own, was refused; the granted
+    target was editable. (This host's OWN interactive
+    ``~/.claude/settings.json`` sets ``permissions.defaultMode:
+    bypassPermissions``, which — same as it would for the ALREADY-shipped
+    batch-invocation globs — voids every settings-file scope; the probe
+    above set ``defaultMode: "default"`` in the probe's OWN ``--settings``
+    file to exercise real enforcement, since a CLI-supplied settings file
+    takes precedence over the user's global one. See the build report.)"""
+    home = Path(home)
+    path = _p("worker.repair.settings.json")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rules = [f"Edit(/{p})" for p in sorted(paths)]
+    path.write_text(
+        json.dumps({"permissions": {"allow": rules}}, indent=2),
+        encoding="utf-8",
+    )
+    return path
+
+
 def build_argv(home: Path, settings_path: Path) -> list[str]:
     """The prompt is deliberately NOT in argv (audit 2026-07-15, shared
     with the miner's B1): Linux caps one argv element at 128 KiB, and a
     full batch — 15 records × (record + canon excerpt) + doctrine +
-    registry — plausibly exceeds it. The prompt rides stdin instead."""
+    registry — plausibly exceeds it. The prompt rides stdin instead.
+
+    ``--strict-mcp-config`` (U-repair §3.11): the analyst needs no MCP
+    server, and without the flag it inherits the user's, paying startup
+    cost and side effects for tools ``--allowedTools`` will not let it
+    call anyway. Verified against the live CLI (2.1.226, §9-X1): accepted
+    with no ``--mcp-config`` present, rc 0, no diagnostic. ``--bare`` was
+    considered and refused (§3.11, §7.1) — its own help text states OAuth
+    and keychain are never read under it, and the unattended worker has
+    no ``ANTHROPIC_API_KEY``. Both invocations share this ONE builder
+    (F2) — they differ only at ``--settings``."""
     return [
         "claude",
         "-p",
@@ -796,6 +890,7 @@ def build_argv(home: Path, settings_path: Path) -> list[str]:
         DISALLOWED_TOOLS,
         "--settings",
         str(settings_path),
+        "--strict-mcp-config",
     ]
 
 
@@ -896,6 +991,11 @@ def kick(home: Path | str, *, no_push: bool = False) -> str:
     home = Path(home)
     cache_dir().mkdir(parents=True, exist_ok=True)
     _p("worker.dirty").touch()
+    # E7 (§3.10): an explicit kick — human, UI, teach/import, the miner —
+    # is a fresh mandate; it must never be refused by a stale backoff
+    # counter, and BEFORE _open_window so a suppressed follow-on's own
+    # counter state can never leak into this decision.
+    _reset_failure_count()
     return _open_window(home, no_push=no_push)
 
 
@@ -926,6 +1026,15 @@ class RunResult:
     #: the lock (round 7: the commit moved inside `_harvest`'s lock, the
     #: push must not follow it in).
     committed: bool = False
+    #: U-repair Obs-1 (§3.12) — additive only, no existing field changes
+    #: type or meaning beyond `invalid_deleted`'s widening (below).
+    repair_attempted: bool = False
+    repair_eligible: int = 0
+    repair_cleared: int = 0
+    #: Rule-F's leave-entirely-alone set (§3.8) — proposal NAMES, never
+    #: in `proposed`/`valid_landed`/`touched`, but counted toward
+    #: `status` (D7).
+    foreign_left: list[str] = field(default_factory=list)
 
 
 def _enumerate(home: Path) -> tuple[list, int, int, list[dict]]:
@@ -1067,6 +1176,64 @@ def _canon_excerpt(home: Path, entry) -> str:
     return canon_excerpt(home, entry.record, entry.bucket_dir)
 
 
+#: U-repair Set-C (§3.1) — the trace-writing contract, harvested from the
+#: shipped validator and rendered imperatively for a producer. A1 pins
+#: each Set-C member's token(s) on BOTH sides: this constant and the
+#: validator's own refusal message — a validator rewording and a
+#: checklist deletion each redden, in opposite directions. Interpolated
+#: into `b1` (`_PROMPT_TEMPLATE`), `b2` (`_REPAIR_PROMPT_TEMPLATE`) and
+#: `b3` (`_SINGLE_PROMPT_TEMPLATE`) — ONE definition, three producers
+#: (§3.2). `C4` is the trap: it is the only place a null answer is legal,
+#: and it is the one the shipped exemplar used to display.
+TRACE_CONDITIONALS = """the decision-trace conditional checklist — restated from the validator's
+own rules (Set-C), not a second validator. The validator's refusal
+reports only the FIRST problem it finds in a file; check EVERY line
+below against the WHOLE proposal before you finish writing it, not just
+the one line a refusal named.
+
+- gates.g0.reject.evidence and gates.g0.defer.evidence are each required
+  only when that same leg's own answer is "yes" — a RECORD-sourced quote.
+- gates.g0.canon.target must be non-empty text, and gates.g0.canon.evidence
+  a TARGET-sourced quote, both required only when gates.g0.canon.answer is
+  "yes".
+- gates.t1.field_shaped.answer is "yes" or "no" — NEVER null — and its
+  evidence is required on BOTH branches.
+- gates.t1.cost_bearing.answer (and gates.t1.separable.answer, the same
+  rule) may be "yes", "no", or null — THE ONLY gates where null is a legal
+  answer; cost_bearing's evidence is required only when its own answer is
+  "yes".
+- gates.t2.match_path must be non-empty text, required only when
+  gates.t2.answer is "yes"; on that branch rules_paths must be a non-empty
+  list of non-empty globs and match_path must match at least one of them.
+- gates.t3.scan_terms must be null when gates.t3.answer is "yes", and a
+  non-empty list of non-empty strings when it is "no" — mirror-image
+  required-ness, never both populated, never both empty.
+- gates.t3a.depth_behind_rule.target must be non-empty text, required only
+  when gates.t3a.depth_behind_rule.answer is "yes" (gates.t3a itself
+  exists only when gates.t3.answer is "yes" — null otherwise).
+- gates.t4.depth_behind_rule.target must be non-empty text, required only
+  when gates.t4.depth_behind_rule.answer is "yes".
+- gates.t4.conduct_mode.answer is "yes" or "no" — NEVER null — its
+  evidence required only when "yes".
+- gates.t4.fs.verdict (same rule at gates.t3a.fs.verdict) is one of
+  SILENT, COSTLY, LOUD_CHEAP, INDETERMINATE — NEVER null; INDETERMINATE
+  IS the "I did not determine this" value, so write it explicitly rather
+  than null. evidence is required unless the verdict is INDETERMINATE.
+- gates.tn.members must have >= 2 entries when gates.tn.answer is "yes"
+  and <= 1 when "no"; gates.tn.proposed_name is required only when "yes",
+  null otherwise.
+- gates.e1.sightings must be an int >= 1 (a bool is never accepted here).
+- gates.outcome must equal exactly what the gate procedure's own table
+  derives from your own answers above it — never hand-picked, and never
+  changed to make a conditional requirement go away.
+- every RECORD-sourced evidence quote must be a verbatim span actually
+  contained in the record — a paraphrase is refused, whether it reads
+  close or not.
+- gates, flags, and recommendation are each REQUIRED top-level keys on
+  every proposal — write flags: [] explicitly when there are none; never
+  omit any of the three.
+"""
+
 _PROMPT_TEMPLATE = """You are the self-learn routing analyst worker. For EACH pending record
 below, write one proposal file at
 <bucket>/proposals/lrn-<id>.yaml (the bucket path is given
@@ -1108,6 +1275,9 @@ Never re-propose the classes below (recently rejected):
 === CARD SECTION REGISTRY ===
 {registry}
 
+=== DECISION-TRACE CONDITIONAL CHECKLIST ===
+{trace_conditionals}
+
 === PENDING RECORDS ===
 {records}
 """
@@ -1139,7 +1309,43 @@ recommendation: <route | reject | defer | graduate>
 roster sha: {roster_sha}
 {roster_text}
 
+{trace_conditionals}
+
 {record_block}"""
+
+#: U-repair §3.6 — the repair prompt. Carries ONLY: the form-repair
+#: framing (Set-P/Set-Q, §3.5, stated in the model's own second person),
+#: `TRACE_CONDITIONALS` (`b2` — the SAME constant object `A1` pins), the
+#: explicit "only the FIRST problem" statement, and — per eligible file,
+#: interpolated by :func:`_compose_repair_prompt` — its absolute path,
+#: its current contents, its exact refusal line, and its record's
+#: `to_text()`. It carries NONE of the routing doctrine, the skill
+#: roster, the cluster candidates, the rejected-proposal digest, or the
+#: card-section registry (B13) — those are re-judgment materials a form
+#: repair must not see (BD2).
+_REPAIR_PROMPT_TEMPLATE = """You are the self-learn routing analyst worker's REPAIR pass. This is a
+FORM REPAIR, not a re-analysis: every file listed below already carries a
+judgment from the first pass. Do not change that judgment: do not change
+any gate answer, verdict, owner, proposed name, sightings count, or
+already_canon value that was already legal before this repair — above
+all, never flip an answer from "yes" to "no" (or the reverse) to make a
+conditional requirement go away. That is not a form fix; it silently
+rewrites a judgment you were not asked to re-make. You may only: add a
+conditionally-required field that is absent; replace a null or
+out-of-enum value with a legal member of its closed set; null a field the
+schema forbids at its sibling's current answer; replace a paraphrased
+RECORD quote with a verbatim span of the record shown below. Modify
+only the files listed below — no other path.
+
+The validator that refused each file below reports only the FIRST
+problem it finds in it — check EVERY line of the checklist below against
+the WHOLE file before you finish, not just the one line the refusal
+named.
+
+{trace_conditionals}
+
+{files}
+"""
 
 
 def _doctrine_and_registry_text() -> tuple[str, str]:
@@ -1186,6 +1392,7 @@ def compose_batch_prompt(home: Path, batch: list) -> tuple[str, Roster]:
         registry=registry,
         roster_sha=roster.sha,
         roster_text=roster.text,
+        trace_conditionals=TRACE_CONDITIONALS,
         records="\n".join(blocks),
     )
     return prompt, roster
@@ -1204,9 +1411,44 @@ def compose_single_prompt(home: Path, entry) -> tuple[str, Roster]:
     prompt = _SINGLE_PROMPT_TEMPLATE.format(
         roster_sha=roster.sha,
         roster_text=roster.text,
+        trace_conditionals=TRACE_CONDITIONALS,
         record_block=block,
     )
     return prompt, roster
+
+
+def _compose_repair_prompt(home: Path, eligible: dict[Path, str]) -> str:
+    """§3.6 — assembles the repair prompt from `_REPAIR_PROMPT_TEMPLATE`
+    and, per member of ``eligible`` (path -> its S4 refusal message,
+    byte-identical to what `S8` would log — B5), its absolute path,
+    current contents, refusal line, and record `to_text()`. Deliberately
+    does NOT call :func:`compose_record_block` or interpolate
+    `_PROMPT_TEMPLATE` (B13) — reusing either would smuggle the routing
+    materials a form repair must not see back in."""
+    home = Path(home)
+    blocks: list[str] = []
+    for path in sorted(eligible):
+        refusal = eligible[path]
+        contents = path.read_text(encoding="utf-8")
+        record_text = "(record unreadable)"
+        rpath = path.parent.parent / "pending" / f"{path.stem}.md"
+        if rpath.is_file():
+            try:
+                record_text = Record.from_path(rpath).to_text()
+            except RecordError:
+                pass
+        blocks.append(
+            f"--- file {path} ---\n"
+            f"refusal: {refusal}\n"
+            f"--- current contents ---\n"
+            f"{contents}\n"
+            f"--- record ---\n"
+            f"{record_text}\n"
+        )
+    return _REPAIR_PROMPT_TEMPLATE.format(
+        trace_conditionals=TRACE_CONDITIONALS,
+        files="\n".join(blocks),
+    )
 
 
 def _proposal_snapshot(home: Path) -> dict[Path, str]:
@@ -1234,6 +1476,143 @@ def _written_since(home: Path, snap: dict[Path, str]) -> list[Path]:
         if snap.get(path) != digest:
             out.append(path)
     return sorted(out)
+
+
+# ---------------------------------------------- U-repair: Set-E (§3.4)
+
+
+def _repairable(message: str) -> str:
+    """Set-E's refusal-TEXT rules (§3.4), `E-1`..`E-3`. Stays text-only
+    (NOTE E, delta-2 gate): the two PROVENANCE rules, `E-4` (batch
+    membership) and `E-5` (unstamped), are PATH predicates evaluated at
+    the `S5` call site alongside this function's result — there is
+    deliberately no composed ``_eligible(path)`` helper."""
+    if not message.startswith("gates."):
+        return "INELIGIBLE"
+    if "roster_sha" in message:
+        return "INELIGIBLE"
+    if "Table-1 derives" in message:
+        return "INELIGIBLE"
+    return "ELIGIBLE"
+
+
+# ---------------------------------------------- U-repair: Set-J (§3.5)
+
+#: Set-J (§3.5) — the pinned judgment fields, `id -> dotted json-path ->
+#: key path tuple`. `J1` is every `answer` under `gates`; `J2` is the two
+#: `fs.verdict` legs; `J3` is `t3.owner` / `tn.proposed_name` /
+#: `e1.sightings` / `e1.post_demand_recurrence`; `J4` is `already_canon`.
+_SETJ_FIELDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("gates.g0.reject.answer", ("gates", "g0", "reject", "answer")),
+    ("gates.g0.defer.answer", ("gates", "g0", "defer", "answer")),
+    ("gates.g0.canon.answer", ("gates", "g0", "canon", "answer")),
+    ("gates.t1.field_shaped.answer", ("gates", "t1", "field_shaped", "answer")),
+    ("gates.t1.separable.answer", ("gates", "t1", "separable", "answer")),
+    ("gates.t1.cost_bearing.answer", ("gates", "t1", "cost_bearing", "answer")),
+    ("gates.t2.answer", ("gates", "t2", "answer")),
+    ("gates.t3.answer", ("gates", "t3", "answer")),
+    (
+        "gates.t3a.depth_behind_rule.answer",
+        ("gates", "t3a", "depth_behind_rule", "answer"),
+    ),
+    (
+        "gates.t4.depth_behind_rule.answer",
+        ("gates", "t4", "depth_behind_rule", "answer"),
+    ),
+    ("gates.t4.conduct_mode.answer", ("gates", "t4", "conduct_mode", "answer")),
+    ("gates.tn.answer", ("gates", "tn", "answer")),
+    ("gates.t3a.fs.verdict", ("gates", "t3a", "fs", "verdict")),
+    ("gates.t4.fs.verdict", ("gates", "t4", "fs", "verdict")),
+    ("gates.t3.owner", ("gates", "t3", "owner")),
+    ("gates.tn.proposed_name", ("gates", "tn", "proposed_name")),
+    ("gates.e1.sightings", ("gates", "e1", "sightings")),
+    ("gates.e1.post_demand_recurrence", ("gates", "e1", "post_demand_recurrence")),
+    ("already_canon", ("already_canon",)),
+)
+
+_SETJ_YESNO_PATHS = frozenset(
+    p
+    for p, _ in _SETJ_FIELDS
+    if p
+    not in (
+        "gates.tn.answer",
+        "gates.t3a.fs.verdict",
+        "gates.t4.fs.verdict",
+        "gates.t3.owner",
+        "gates.tn.proposed_name",
+        "gates.e1.sightings",
+        "gates.e1.post_demand_recurrence",
+        "already_canon",
+    )
+)
+
+
+def _get_path(data: object, keys: tuple[str, ...]) -> object:
+    node = data
+    for key in keys:
+        if not isinstance(node, dict):
+            return None
+        node = node.get(key)
+    return node
+
+
+def _setj_already_legal(json_path: str, value: object) -> bool:
+    """§3.5 Set-J — was ``value`` already a LEGAL value for this field
+    BEFORE any repair touched it? "A field whose pre-repair value was
+    ABSENT, NULL, or OUT-OF-ENUM is not pinned" (§3.5) — those three are
+    treated uniformly here: ``None`` is never already-legal for ANY
+    Set-J field, even `t1.separable`/`t1.cost_bearing`, whose OWN schema
+    accepts null as a legal answer (`C4`) — the general Set-J rule calls
+    out "null" as its own excluded state, not a per-field lookup, so
+    supplying one of those two from null is `P1`/`P2` like everything
+    else, never a pinned judgment."""
+    if value is None:
+        return False
+    if json_path in _SETJ_YESNO_PATHS:
+        return value in ("yes", "no")
+    if json_path == "gates.tn.answer":
+        return value in ("yes", "no", "indeterminate")
+    if json_path in ("gates.t3a.fs.verdict", "gates.t4.fs.verdict"):
+        return value in TRACE_FS_VERDICTS
+    if json_path in ("gates.t3.owner", "gates.tn.proposed_name"):
+        return isinstance(value, str) and bool(value)
+    if json_path == "gates.e1.sightings":
+        return isinstance(value, int) and not isinstance(value, bool) and value >= 1
+    if json_path == "gates.e1.post_demand_recurrence":
+        return isinstance(value, bool)
+    if json_path == "already_canon":
+        return isinstance(value, bool)
+    return False
+
+
+def _setj_violation(pre_text: str, post_text: str) -> str | None:
+    """§3.5 Set-Q, structurally: compare a repaired file's Set-J fields
+    against its pre-repair bytes. Returns the ``refuse`` reason for the
+    FIRST field that moved off an already-legal value, or ``None``. An
+    unparseable pre/post text is never a Set-J finding of its own — S8's
+    ordinary validation already refuses an unparseable file (S6: this
+    function itself never raises)."""
+    from ruamel.yaml import YAML
+
+    loader = YAML(typ="safe")
+    try:
+        old_data = loader.load(pre_text)
+        new_data = loader.load(post_text)
+    except Exception:  # noqa: BLE001 — S6
+        return None
+    if not isinstance(old_data, dict) or not isinstance(new_data, dict):
+        return None
+    for json_path, keys in _SETJ_FIELDS:
+        old_value = _get_path(old_data, keys)
+        if not _setj_already_legal(json_path, old_value):
+            continue
+        new_value = _get_path(new_data, keys)
+        if new_value != old_value:
+            return (
+                f"repair changed a settled judgment ({json_path} "
+                f"{old_value!r} → {new_value!r})"
+            )
+    return None
 
 
 def _git_rm_or_unlink(home: Path, path: Path, result: "RunResult | None" = None) -> None:
@@ -1387,7 +1766,48 @@ def _cache_clear(name: str) -> None:
     _p(name).unlink(missing_ok=True)
 
 
-def _harvest(home: Path, written: list[Path], roster: Roster | None = None) -> RunResult:
+# ------------------------------------------- U-repair §3.10: the backoff
+
+
+def _read_failure_count() -> int:
+    """``cache_dir()/worker.failures`` — one decimal integer, the count
+    of CONSECUTIVE failed runs. Unreadable/garbage is read as 0 and
+    logged once; a cache file must never wedge the worker."""
+    try:
+        raw = _p("worker.failures").read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        return 0
+    try:
+        return int(raw)
+    except ValueError:
+        log(f"run: worker.failures is unreadable ({raw!r}) — treated as 0")
+        return 0
+
+
+def _write_failure_count(n: int) -> None:
+    path = _p("worker.failures")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(str(n), encoding="utf-8")
+
+
+def _increment_failure_count() -> None:
+    _write_failure_count(_read_failure_count() + 1)
+
+
+def _reset_failure_count() -> None:
+    """Delete the counter file — an `ok`/`idle` run's own reset, and
+    :func:`kick`'s (E7: an explicit human kick is a fresh mandate and
+    must never be refused by a backoff counter)."""
+    _p("worker.failures").unlink(missing_ok=True)
+
+
+def _harvest(
+    home: Path,
+    written: list[Path],
+    roster: Roster | None = None,
+    *,
+    refuse: dict[Path, str] | None = None,
+) -> RunResult:
     """Validate + sweep + commit, as ONE locked section (audit 2026-07-16
     round 7 — the invariant: no ledger mutation may precede its lock).
 
@@ -1401,12 +1821,15 @@ def _harvest(home: Path, written: list[Path], roster: Roster | None = None) -> R
     ``roster`` (U-composer §3.6) is the :class:`Roster` composed for THIS
     run's prompt — threaded through so :func:`_validate_written` can check
     the roster-sha honesty legs against the roster the model actually saw,
-    not a freshly recomposed one."""
+    not a freshly recomposed one. ``refuse`` (U-repair §3.5/S8) is S5's
+    forced-refusal map (Set-J pin violations, V-set rewrites) — a path in
+    it is refused UNCONDITIONALLY, even if its content would otherwise now
+    validate."""
     from . import gitops
 
     try:
         with gitops.commit_lock(home):
-            result = _validate_written(home, written, roster)
+            result = _validate_written(home, written, roster, refuse=refuse)
             _still_pending(home, result)
             result.committed = _commit_locked(home, result)
             return result
@@ -1464,88 +1887,206 @@ def _roster_sha_dishonest(data: dict, roster: Roster) -> str | None:
     return None
 
 
-def _validate_written(
-    home: Path, written: list[Path], roster: Roster | None = None
-) -> RunResult:
-    """Run-sequence step 4: schema-invalid worker output is DELETED and
-    logged (unattended policy — the attended `proposal validate` verb
-    reports-never-deletes); valid proposals get record_sha stamped by the
-    CLI, overwriting anything the model wrote. Audit 2026-07-15 riders:
-    (1) merge proposals are STAMPED BEFORE validation — the model is
-    correctly told never to emit record_shas, so validate-first deleted
-    every spec-compliant merge; (2) every surviving file is secret-
-    scanned (model-authored rationale is otherwise the one tracked write
-    autosync would publish unscanned) — a hit deletes, same unattended
-    policy; (3) anything under proposals/ that is not a top-level
-    lrn-*.yaml / merge-*.yaml is model litter: deleted + logged, never
-    silently published.
+@dataclass
+class _Verdict:
+    """One path's outcome from :func:`_check_proposal_file` — S4's dry
+    pass and S8's real pass both build these (B1: one definition)."""
 
-    U-composer §3.7/F1 (u-table §8-H1): ``rpath`` is now resolved BEFORE
-    ``validate_proposal`` (the two-line swap `U-table` N1 named) so the
-    record it reads can supply BOTH ``record_text=`` (containment) and
-    ``scope=`` (Table-1/Render-1 derivation) on the same call — the
-    producer of quotes and the check on quotes close in the same commit.
-    ``roster`` (§3.6) is compared against ``gates.t3.roster_sha`` once
-    schema validation has passed; either honesty leg failing is one more
-    ``ProposalError`` inside this function's existing unattended-delete
-    path — no new policy."""
+    error: str | None  # None iff valid; else the ProposalError message
+    phi: bool  # Rule-F's F-a AND F-b (§3.5's Φ) — REGARDLESS of hook
+    record_sha_matches: bool  # F-b alone (E-5 needs this on INVALID files too)
+    is_hook: bool
+    is_merge: bool
+    name: str
+    bucket: str | None
+    #: The prepared merge document (record_shas resolved in memory),
+    #: ready to write — populated ONLY for a schema-valid merge proposal;
+    #: `None` in every other case. A non-merge success needs nothing
+    #: carried forward: `stamp_proposal` re-reads the file itself.
+    merge_data: dict | None = None
+
+
+def _check_proposal_file(
+    home: Path,
+    path: Path,
+    roster: Roster | None,
+    refuse: dict[Path, str],
+) -> _Verdict:
+    """THE per-file check (§3.3, B1: one definition, not two) — S4's dry
+    pass and S8's real pass both call this SAME function. It is PURE: it
+    reads and validates, and NEVER writes, stamps, dumps or deletes
+    anything itself. That is not merely a convention here — it is what
+    makes the lock invariant provable by source (tests/
+    test_lock_invariant.py): this function is reachable from an UNLOCKED
+    caller (S4, before the model's repair invocation even runs) and a
+    LOCKED one (S8, via `_harvest`'s `commit_lock`), and a static analysis
+    cannot see that a runtime flag would have skipped a write on the
+    unlocked path — so the write must not exist in this function's body
+    AT ALL. Every actual mutation (`_dump_yaml`, `stamp_proposal`,
+    `_git_rm_or_unlink`) lives in :func:`_validate_written` instead, which
+    only `_harvest` ever calls.
+
+    Per-file order is normative (§3.8): naming-contract check -> secret
+    scan -> read_proposal -> refusal-map override (``refuse``, §3.5) ->
+    resolve the pending record -> validate_proposal (+ roster-sha honesty)
+    -> Rule-F. A path in ``refuse`` is refused UNCONDITIONALLY at that
+    point, even when its post-repair content would otherwise now
+    validate (§3.5's Set-Q enforcement — a forced refusal is a verdict,
+    not a hint to validate harder).
+
+    Rule-F (§3.8): ``phi`` is F-a (validation + roster-sha honesty
+    accepted it) AND F-b (``record_sha_matches``) — computed REGARDLESS
+    of destination, because Φ's S4/S5 partition membership (§3.5) must
+    include `destination: hook` proposals on the same terms as anything
+    else. The hook carve-out is applied by the CALLER's stamp-or-leave
+    branch, never here (`D6(iii)`)."""
+    name = path.stem
+    is_merge = name.startswith("merge-")
+    expected_shape = (
+        path.parent.name == "proposals"
+        and path.suffix == ".yaml"
+        and (name.startswith("lrn-") or is_merge)
+    )
+    error: str | None = None
+    phi = False
+    record_sha_matches = False
+    is_hook = False
+    merge_data: dict | None = None
+    bucket = _bucket_name(home, path)
+    try:
+        if not expected_shape:
+            raise ProposalError(
+                "unexpected artifact outside the proposal naming contract"
+            )
+        hits = secret_scan(path.read_text(encoding="utf-8"))
+        if hits:
+            raise ProposalError(
+                f"secret scan hit ({hits[0].rule}) — never published"
+            )
+        data = read_proposal(path)
+        if path in refuse:
+            raise ProposalError(refuse[path])
+        if is_merge:
+            # Members/record_shas are resolved IN MEMORY and
+            # validate_merge_proposal runs unconditionally (§3.3) — only
+            # the eventual `_dump_yaml` write (the caller's job) is a
+            # real mutation.
+            shas = {}
+            for rid in data.get("records") or []:
+                rpath = path.parent.parent / "pending" / f"{rid}.md"
+                if not rpath.is_file():
+                    raise ProposalError(f"merge member {rid} not pending")
+                shas[rid] = sha_anchor(Record.from_path(rpath).body)
+            data["record_shas"] = shas
+            validate_merge_proposal(data)
+            merge_data = data
+        else:
+            # F1/N1 (§3.7): rpath resolves FIRST — the swap — so the
+            # record it names can supply record_text= AND scope= to
+            # the SAME validate_proposal call below.
+            rpath = path.parent.parent / "pending" / f"{name}.md"
+            if not rpath.is_file():
+                raise ProposalError(f"no pending record for {name}")
+            pending_record = Record.from_path(rpath)
+            # F-b, computed BEFORE validate_proposal so E-5 can see it
+            # even on an INVALID file (the copy-the-line-you-found shape,
+            # §3.8 BLOCKER 1).
+            record_sha_matches = data.get("record_sha") == sha_anchor(
+                pending_record.body
+            )
+            is_hook = data.get("destination") == "hook"
+            validate_proposal(
+                data,
+                record_text=pending_record.to_text(),
+                scope=pending_record.scope,
+            )
+            if roster is not None:
+                dishonest = _roster_sha_dishonest(data, roster)
+                if dishonest is not None:
+                    raise ProposalError(dishonest)
+            # F-a is satisfied: we are past validation + roster-sha
+            # honesty without raising.
+            phi = record_sha_matches
+    except Exception as exc:  # noqa: BLE001 — unattended: caller deletes + logs (S6)
+        error = str(exc)
+    return _Verdict(
+        error=error,
+        phi=phi,
+        record_sha_matches=record_sha_matches,
+        is_hook=is_hook,
+        is_merge=is_merge,
+        name=name,
+        bucket=bucket,
+        merge_data=merge_data,
+    )
+
+
+def _dry_check_batch(
+    home: Path, written1: list[Path], roster: Roster | None
+) -> dict[Path, _Verdict]:
+    """Seq-1 S4 — classify every path in ``written1`` with the SAME
+    per-file check S8 performs, mutating NOTHING on disk (B1) — trivially
+    true here, since :func:`_check_proposal_file` never mutates at all."""
+    return {
+        path: _check_proposal_file(home, path, roster, {})
+        for path in written1
+    }
+
+
+def _validate_written(
+    home: Path,
+    written: list[Path],
+    roster: Roster | None = None,
+    *,
+    refuse: dict[Path, str] | None = None,
+) -> RunResult:
+    """Run-sequence step 8 (§3.3): validate + stamp + delete, for REAL —
+    schema-invalid worker output is DELETED and logged (unattended
+    policy — the attended `proposal validate` verb reports-never-deletes);
+    valid proposals get record_sha stamped by the CLI, overwriting
+    anything the model wrote. Classifies every path via
+    :func:`_check_proposal_file` — the SAME function :func:`_dry_check_batch`
+    (S4) calls (B1) — and is the ONLY place that turns a verdict into an
+    actual write, stamp, or delete; only :func:`_harvest` calls this
+    function, always under `commit_lock`.
+
+    ``refuse`` (§3.5, S5's output) forces a deletion regardless of what
+    S8's own re-validation would conclude — the Set-J pin and the V-set
+    rewrite rule are both expressed this way (§3.3: "every deletion this
+    unit adds is expressed as an entry in `refuse`")."""
+    refuse = refuse or {}
     result = RunResult(status="failed")
     for path in written:
-        name = path.stem
-        expected_shape = (
-            path.parent.name == "proposals"
-            and path.suffix == ".yaml"
-            and (name.startswith("lrn-") or name.startswith("merge-"))
-        )
+        verdict = _check_proposal_file(home, path, roster, refuse)
+        if verdict.error is not None:
+            log(f"run: invalid worker output {path.name} deleted ({verdict.error})")
+            result.invalid_deleted.append(path.name)
+            _git_rm_or_unlink(home, path, result)
+            continue
+        if verdict.phi and not verdict.is_hook:
+            # Rule-F: leave entirely alone (§3.8) — the hook carve-out
+            # (D9) is the one destination that never takes this branch,
+            # because `stamp_proposal` is the only guard against
+            # model-authored `script:` bytes (P9).
+            result.foreign_left.append(verdict.name)
+            log(
+                f"run: proposal {path.name} carries a matching "
+                "record_sha — another producer wrote it; left untouched"
+            )
+            continue
         try:
-            if not expected_shape:
-                raise ProposalError(
-                    "unexpected artifact outside the proposal naming contract"
-                )
-            hits = secret_scan(path.read_text(encoding="utf-8"))
-            if hits:
-                raise ProposalError(
-                    f"secret scan hit ({hits[0].rule}) — never published"
-                )
-            data = read_proposal(path)
-            if name.startswith("merge-"):
-                # STAMP FIRST (M2-21: models cannot compute hashes), then
-                # validate the completed document.
-                shas = {}
-                for rid in data.get("records") or []:
-                    rpath = path.parent.parent / "pending" / f"{rid}.md"
-                    if not rpath.is_file():
-                        raise ProposalError(f"merge member {rid} not pending")
-                    shas[rid] = sha_anchor(Record.from_path(rpath).body)
-                data["record_shas"] = shas
-                validate_merge_proposal(data)
-                _dump_yaml(data, path)  # same writer as stamping
-                result.merge_proposed.append(data["cluster_id"])
+            if verdict.is_merge:
+                assert verdict.merge_data is not None
+                _dump_yaml(verdict.merge_data, path)  # same writer as stamping
+                result.merge_proposed.append(verdict.merge_data["cluster_id"])
                 result.touched.append(path)
             else:
-                # F1/N1 (§3.7): rpath resolves FIRST — the swap — so the
-                # record it names can supply record_text= AND scope= to
-                # the SAME validate_proposal call below.
-                rpath = path.parent.parent / "pending" / f"{name}.md"
-                if not rpath.is_file():
-                    raise ProposalError(f"no pending record for {name}")
-                pending_record = Record.from_path(rpath)
-                validate_proposal(
-                    data,
-                    record_text=pending_record.to_text(),
-                    scope=pending_record.scope,
-                )
-                if roster is not None:
-                    dishonest = _roster_sha_dishonest(data, roster)
-                    if dishonest is not None:
-                        raise ProposalError(dishonest)
-                stamp_proposal(home, name)
-                result.proposed.append(name)
+                stamp_proposal(home, verdict.name)
+                result.proposed.append(verdict.name)
                 result.touched.append(path)
-            bucket = _bucket_name(home, path)
-            if bucket and bucket not in result.buckets:
-                result.buckets.append(bucket)
-        except Exception as exc:  # noqa: BLE001 — unattended: delete + log
+            if verdict.bucket and verdict.bucket not in result.buckets:
+                result.buckets.append(verdict.bucket)
+        except Exception as exc:  # noqa: BLE001 — unattended: delete + log (S6)
             log(f"run: invalid worker output {path.name} deleted ({exc})")
             result.invalid_deleted.append(path.name)
             _git_rm_or_unlink(home, path, result)
@@ -1934,6 +2475,37 @@ def fast_status(home: Path | str) -> dict:
 # --------------------------------------------------------------- the run
 
 
+def _invoke_claude(
+    argv: list[str], prompt: str, timeout: float, home: Path, *, label: str
+) -> None:
+    """One model invocation — round 1 (``label=""``) or the repair round
+    (``label="repair "``), same exception handling shape as this project
+    shipped before U-repair; the label prefix is what distinguishes their
+    log lines (§3.12). Never raises — an invocation failure is logged and
+    the run continues (round 1's valid output, if any, must still land;
+    B7)."""
+    try:
+        proc = subprocess.run(
+            argv,
+            cwd=str(home),
+            input=prompt,  # stdin — argv caps at 128 KiB (audit)
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        if proc.returncode != 0:
+            log(
+                f"run: {label}claude exited {proc.returncode}: "
+                f"{(proc.stderr or proc.stdout)[:400]}"
+            )
+    except FileNotFoundError:
+        log(f"run: {label}claude CLI not found on PATH")
+    except subprocess.TimeoutExpired:
+        log(f"run: {label}claude timed out after {timeout:g}s")
+    except OSError as exc:
+        log(f"run: {label}claude invocation failed ({exc})")
+
+
 def run(
     home: Path | str, *, coalesce: bool = False, no_push: bool | None = None
 ) -> RunResult:
@@ -1978,40 +2550,108 @@ def run(
                 log(f"run: idle (0 eligible, {total_pending} pending)")
                 result = RunResult(status="idle", eligible=0, suspects=suspects)
             else:
+                repairs_enabled = os.environ.get("SELF_LEARN_REPAIR") != "0"
                 prompt, roster = compose_batch_prompt(home, batch)
-                snap = _proposal_snapshot(home)
+                snap0 = _proposal_snapshot(home)  # S1
                 argv = build_argv(home, write_settings_file(home))
-                try:
-                    proc = subprocess.run(
-                        argv,
-                        cwd=str(home),
-                        input=prompt,  # stdin — argv caps at 128 KiB (audit)
-                        capture_output=True,
-                        text=True,
-                        timeout=INVOKE_TIMEOUT_SECS,
-                    )
-                    if proc.returncode != 0:
-                        log(
-                            f"run: claude exited {proc.returncode}: "
-                            f"{(proc.stderr or proc.stdout)[:400]}"
-                        )
-                except FileNotFoundError:
-                    log("run: claude CLI not found on PATH")
-                except subprocess.TimeoutExpired:
-                    log(f"run: claude timed out after {INVOKE_TIMEOUT_SECS}s")
-                except OSError as exc:
-                    log(f"run: claude invocation failed ({exc})")
-                # The invocation may have taken 15 min — and a CONCURRENT
-                # short holder (e.g. the miner's landing phase) may have
-                # created-then-RELEASED the sentinel we joined, deleting
-                # autosync cover mid-run (audit 2026-07-15: owner/joiner
-                # race). heartbeat() returns False on a missing file and
-                # never resurrects: re-assert the hold before validation.
+                _invoke_claude(argv, prompt, invoke_timeout_secs(), home, label="")  # S2
+                # S6 (moved here, §3.3): re-assert the sentinel hold after
+                # the invocation. A CONCURRENT short holder (e.g. the
+                # miner's landing phase) may have created-then-RELEASED
+                # the sentinel we joined, deleting autosync cover mid-run
+                # (audit 2026-07-15: owner/joiner race). heartbeat()
+                # returns False on a missing file and never resurrects:
+                # re-assert the hold before validation. Re-asserted AGAIN
+                # after the repair invocation below (G8) — strictly safer.
                 if not sentinel.heartbeat():
                     hold = sentinel.hold()
                     sentinel.heartbeat()
 
-                written = _written_since(home, snap)
+                written1 = _written_since(home, snap0)  # S3
+                batch_ids = {entry.record.id for entry in batch}
+                repair_attempted = False
+                repair_eligible_paths: dict[Path, str] = {}
+                refuse: dict[Path, str] = {}
+
+                if not repairs_enabled:
+                    log("run: repair round disabled (SELF_LEARN_REPAIR=0)")
+                else:
+                    verdicts = _dry_check_batch(home, written1, roster)  # S4
+                    n_refused = sum(1 for v in verdicts.values() if v.error is not None)
+                    # S5's E — Set-E's text rules (E-1..E-3) AND the two
+                    # provenance rules (E-4 batch membership, E-5 unstamped).
+                    repair_eligible_paths = {
+                        p: v.error
+                        for p, v in verdicts.items()
+                        if v.error is not None
+                        and _repairable(v.error) == "ELIGIBLE"
+                        and p.stem in batch_ids  # E-4
+                        and not v.record_sha_matches  # E-5
+                    }
+                    n_eligible = len(repair_eligible_paths)
+                    n_ineligible = n_refused - n_eligible
+                    log(
+                        f"run: repair round — {n_refused} refused, "
+                        f"{n_eligible} eligible, {n_ineligible} not repairable"
+                    )
+                    if not repair_eligible_paths:
+                        log("run: repair round skipped (no eligible refusals)")
+                    else:
+                        repair_attempted = True
+                        pre = {
+                            p: p.read_text(encoding="utf-8")
+                            for p in repair_eligible_paths
+                        }
+                        snap1 = _proposal_snapshot(home)
+                        repair_prompt = _compose_repair_prompt(
+                            home, repair_eligible_paths
+                        )
+                        repair_settings = write_repair_settings_file(
+                            home, list(repair_eligible_paths)
+                        )
+                        repair_argv = build_argv(home, repair_settings)
+                        _invoke_claude(
+                            repair_argv,
+                            repair_prompt,
+                            repair_timeout_secs(),
+                            home,
+                            label="repair ",
+                        )
+                        # G8: re-assert again after the LAST invocation.
+                        if not sentinel.heartbeat():
+                            hold = sentinel.hold()
+                            sentinel.heartbeat()
+
+                        touched2 = set(_written_since(home, snap1))
+                        written1_set = set(written1)
+                        phi_at_s4 = {p for p in written1_set if verdicts[p].phi}
+                        v_at_s4 = {
+                            p
+                            for p in written1_set
+                            if verdicts[p].error is None and p not in phi_at_s4
+                        }
+                        # A-set (= E): the Set-J pin.
+                        for p in repair_eligible_paths:
+                            if p not in touched2:
+                                continue
+                            violation = _setj_violation(
+                                pre[p], p.read_text(encoding="utf-8")
+                            )
+                            if violation is not None:
+                                refuse[p] = violation
+                        # V-set: valid-at-S4-and-not-foreign, rewritten
+                        # during the repair window.
+                        for p in v_at_s4:
+                            if p in touched2:
+                                refuse[p] = (
+                                    "repair rewrote a proposal that had "
+                                    "already validated"
+                                )
+                        # O-set (touched2 minus A/Φ/V) is intentionally
+                        # NOT refused here — Rule-F applies fresh at S8
+                        # (§3.5's own O-set rule; D4).
+
+                written = _written_since(home, snap0)  # S7 — both rounds
                 # [first mutation → commit] under ONE lock (audit
                 # 2026-07-16 round 7, THE invariant). `_validate_written`
                 # DELETES schema-invalid model output and sweeps orphaned
@@ -2020,24 +2660,41 @@ def run(
                 # --rebase --autostash` stashes and restores into a
                 # conflict. They used to run here, unlocked, and be
                 # committed by `_commit_run`'s separate lock later; the
-                # window between the two was the hazard. The model
-                # invocation above stays OUTSIDE the lock — it takes
-                # minutes and writes only its own new (untracked) files.
+                # window between the two was the hazard. Both model
+                # invocations stay OUTSIDE the lock — they take minutes
+                # and write only their own new (untracked) files.
                 #
                 # The lock is taken here rather than inside `_commit_run`
                 # so the section is CONTINUOUS; `_commit_run` takes it
                 # again re-entrantly, which is why it can still be called
                 # on its own (the miner's and the tests' path).
-                result = _harvest(home, written, roster)
+                result = _harvest(home, written, roster, refuse=refuse)  # S8
                 result.eligible = len(batch)
                 result.leftovers = leftovers
                 result.suspects = suspects
+                result.repair_attempted = repair_attempted
+                result.repair_eligible = len(repair_eligible_paths)
+                if repair_attempted:
+                    cleared = sum(
+                        1
+                        for p in repair_eligible_paths
+                        if p.stem in result.proposed
+                    )
+                    result.repair_cleared = cleared
+                    log(
+                        f"run: repair round: {cleared} of "
+                        f"{len(repair_eligible_paths)} refusals cleared"
+                    )
 
-                # Step 6 (audit fix): success is decided on what LANDED
-                # valid, not on what survived step-5's mid-run-resolution
-                # filter — a run whose every proposal got resolved by a
-                # racing human still did its job.
-                if result.valid_landed:
+                # Step 6 (audit fix), WIDENED (§3.12, D7): success is
+                # decided on what LANDED valid PLUS what Rule-F left
+                # foreign — a foreign file is fresh by the shipped
+                # predicate (the queue moved), so a run whose only
+                # outcome was a fresh valid proposal must not report
+                # failure. `foreign_left` members stay OUT of
+                # proposed/valid_landed/touched regardless — the worker
+                # never claims authorship of bytes it did not write.
+                if result.valid_landed + len(result.foreign_left):
                     result.status = "ok"
                     _p("worker.last-run").touch()
                     # Merge proposals COUNT as proposals for the event +
@@ -2095,13 +2752,31 @@ def run(
             hold.release()
             fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
 
+    # §3.10 — the backoff counter, updated at the run-end site (BD7: NOT
+    # inside `_open_window`, which `kick` shares — a human kick must
+    # never be refused by this counter).
+    if result.status == "failed":
+        _increment_failure_count()
+    elif result.status in ("ok", "idle"):
+        _reset_failure_count()
+
     # Follow-on OUTSIDE the run lock and through the spawn lock (audit
     # 2026-07-15: the old direct spawn bypassed kick's serialization and
     # could double-spawn against a mid-run kick).
     if _p("worker.dirty").is_file():
-        # The follow-on inherits THIS run's no-push policy (BLOCKER 3):
-        # otherwise the muzzled worker's own successor would push instead.
-        outcome = _open_window(home, no_push=no_push)
-        log(f"run: follow-on window: {outcome}")
-        result.followon = outcome == "spawned"
+        failures = _read_failure_count()
+        if failures < FOLLOWON_FAILURE_CAP:
+            # The follow-on inherits THIS run's no-push policy (BLOCKER
+            # 3): otherwise the muzzled worker's own successor would
+            # push instead.
+            outcome = _open_window(home, no_push=no_push)
+            log(f"run: follow-on window: {outcome}")
+            result.followon = outcome == "spawned"
+        else:
+            log(
+                "run: follow-on suppressed after "
+                f"{failures} consecutive failed runs — "
+                "`self-learn worker kick` retries"
+            )
+            result.followon = False
     return result

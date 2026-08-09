@@ -2279,3 +2279,44 @@ smuggles into a criterion.
   `E-4`/`E-5` evaluated at the `S5` call site and no composed helper.
   No renumbering: `D1`, `D7`, `D6`, §3.8, §7.3 rewritten in place;
   `Construction-1`, `D6(iii)` and `M53` are new.
+- **Post-build code gate (2026-08-09) — 0 BLOCKER / 3 MAJOR / 9 NOTE, all
+  folded test/docs-only; no production code changed.** Four corrections
+  to this spec's own claims, recorded here so the spec does not lie about
+  the build it shipped with:
+  1. **Mutation-table row `M20`** ("delete in `S5` instead of populating
+     `refuse`") is corrected: empirically, deleting directly in the `S5`
+     loop reddens `test_lock_invariant.py`'s round-7 no-mutation-before-
+     lock analyzer, **not** `G7`. `G7`'s own wording measures "zero calls
+     before the FINAL invocation returns" — an `S5` deletion happens
+     strictly *after* both invocations have already returned, so it
+     cannot violate that specific property; the lock invariant is the
+     real (and correct) detector.
+  2. **Mutation-table row `M38`** ("Set-J pin refuses ANY difference,
+     including absent/null/out-of-enum") is corrected: it reddens `G3`
+     only, not `G2`. `G2`'s own fixture repairs `t4.depth_behind_rule.
+     target` (a `P1` move, adding an absent field) — `target` is not a
+     Set-J-tracked field at all (`_SETJ_FIELDS` tracks `.answer`, `.fs.
+     verdict`, `.owner`, etc., never `.target`/`.evidence`), so `M38`
+     cannot touch `G2`'s property by construction.
+  3. **§3.3's `apply`-flag design for `_check_proposal_file`'s merge
+     branch is corrected to non-normative.** The code gate implemented
+     this spec's own described mechanism against the shipped tree and
+     measured that it **breaks `test_lock_invariant.py`**'s round-7
+     invariant (a flag threaded into a function reachable from both the
+     unlocked `S4` dry pass and the locked `S8` real pass reintroduces a
+     branch a static analysis cannot prove write-free on the unlocked
+     path). The shipped implementation's divergence — a fully PURE
+     `_check_proposal_file` that never writes, stamps, dumps or deletes,
+     with every mutation moved into `_validate_written`'s caller — was
+     therefore **required**, not a deviation to flag. This spec's `apply`
+     description in §3.3 is the defective party; the pure-function shape
+     is normative going forward. (`M45`'s mutation-table entry, which
+     assumes the `apply` flag exists, is inapplicable for the same
+     reason — there is no flag to wrap.)
+  4. **§2's `14-forward-work-map.md:139` citation for FW-84 was dangling
+     at this spec's base commit `e29eb9d`** — no FW-84 row existed there
+     at all; `U-repair`'s own build is what added it (§8's handoff
+     discharged into a new row, this same change). The orchestrator
+     reconciles this row against any FW-84 row added independently on
+     master in the interim, at merge.
+
