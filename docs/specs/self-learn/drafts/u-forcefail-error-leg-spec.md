@@ -1,14 +1,20 @@
 # Spec — U-forcefail: a failed Force run says so
 
-Status: **DRAFT r1**. Register row **FW-76**. Files in scope, and no others:
+Status: **DRAFT r2**. Register row **FW-76**. Files in scope, and no others:
 `ui/static/app.js` (the `applying` case + `renderInflight`),
 `ui/src/self_learn_ui/routes.py` (`worker_kick` and `mine_run`, their failure
-legs only), `ui/tests/test_js_dom.py`, `ui/tests/test_routes.py`.
+legs only), `ui/static/style.css` (**one** selector, §2.3),
+`ui/tests/test_js_dom.py`, `ui/tests/test_routes.py`.
 
 **Where prose and the acceptance criteria conflict, the criteria win.** This
 is a one-behaviour unit: *a Force run that failed must look different from one
-that succeeded, and must still look different a second later.* Everything
-below that does not serve that sentence is out of scope by construction (§5).
+that succeeded, must still look different a second later, and must be
+somewhere the human is looking.* Everything below that does not serve that
+sentence is out of scope by construction (§5).
+
+r2 folds a spec-gate round: the marker/role split (§2.1), the viewport leg
+(§2.1, criterion B4), a discriminating B2, criteria D3 and E's reddening
+mutation, and two residuals that were derivable but unstated (§5h, §5b).
 
 ## 1. The defect — two halves, both live today
 
@@ -83,20 +89,46 @@ notice** — without this a persisted failed entry sitting first in insertion
 order would mask a later in-flight verb, which is S-20's own founding defect
 class re-introduced.
 
-Two attributes, set on the strip element when **the Map holds at least one
-failed entry** (not merely when a failed entry is the one rendering) and
-removed otherwise:
+Two attributes on the strip element, **keyed differently on purpose** — the
+split is normative, and criteria B3/D3 pin both halves:
 
-- `data-verb-error="true"` — this is a deliberate reuse, not a new leg.
-  `reloadDeferred()` leg (a) (`:550`) already queries `[data-verb-error]`
-  document-wide, and its documented purpose (`:485-489`) is *"the persistent
-  error rendering a broadcast reload would erase"* — precisely this case. The
-  builder extends leg (a)'s comment to name the strip as a second producer.
-- `role="alert"` — parity with every other error surface in this app
-  (`action_bar.html:22`, `host_add_bar.html:23`).
+- `data-verb-error="true"` — set whenever **the Map holds at least one failed
+  entry**, even when live work is the entry currently rendering; removed
+  otherwise. This is a deliberate reuse, not a new leg: `reloadDeferred()`
+  leg (a) (`:550`) already queries `[data-verb-error]` document-wide, and its
+  documented purpose (`:485-489`) is *"the persistent error rendering a
+  broadcast reload would erase"* — precisely this case. The builder extends
+  leg (a)'s comment to name the strip as a second producer. Keying it on Map
+  contents rather than on what renders is what stops a failure that is
+  momentarily masked by live work from being reload-erased before the human
+  ever sees it (criterion D3; mutation M8 is the rendered-entry keying).
+- `role="alert"` — set only while **the rendered entry is failed**; removed
+  otherwise. Parity with every other error surface in this app
+  (`action_bar.html:22`, `host_add_bar.html:23`), but render-scoped rather
+  than Map-scoped: a Map-scoped alert role would make assistive tech announce
+  every `graduating N of M` bulk progress update as an alert. The marker
+  protects evidence; the role announces what is on screen.
 
-Keying the marker on Map contents rather than on what renders means a failure
-masked by live work still cannot be reload-erased before the human sees it.
+**The viewport leg.** When the marker transitions **absent→present**, and only
+then, the strip is scrolled into view with `scrollIntoView({block: "nearest"})`
+— the idiom this file already uses at `:92`, `:127` and `:378`. This is not
+polish; without it the fix is invisible for the same reason FW-71's keyboard
+`b` defect was. The strip is a static block at the top of `<body>`
+(`base.html:57`; `.applying-strip` at `style.css:267-281` sets no
+`position`), both Force-run buttons live in the **last two** sections of the
+front page (`index.html:114-121`, `:183-190`), and §2.2 deliberately removes
+the redirect that was the only thing repositioning the viewport. A human who
+scrolls down to click Force run and gets a failure rendered off-screen above
+them has been told nothing — `app.js:74-88` records this app's own measured
+instance of exactly that class (*"a scrolled-to-bottom repro: identical
+before/after screenshots, the toggled element's own `getBoundingClientRect()`
+landing entirely negative"*), fixed with this same call. `block: "nearest"` is
+a no-op when the strip is already in view, so the common case costs nothing.
+**Accepted cost, stated:** an observer tab that did not act is also scrolled,
+once per failure episode. The client cannot distinguish its own action from
+another tab's — the envelope carries no actor, and inventing an actor token is
+the second mechanism S-20 forbids. Showing a real failure is judged worth one
+minimal scroll.
 
 When a render **transitions the marker from present to absent**, and only
 then, `renderInflight` calls `releaseReload()`. This is the leg's release:
@@ -118,21 +150,33 @@ The success path is byte-for-byte unchanged: refresh, redirect, 200.
 
 The `applying` envelope keeps its four fields — no `text`/`stderr` field, no
 `sse.py` signature change, no `push_applying` fixture change. No dismiss
-control, no timer, no new `reloadDeferred` leg, no new CSS requirement
-(colour/contrast stay a human-taste item per S-20; a builder adding a
-`.applying-strip[data-verb-error]` rule must not disturb the
-`.applying-strip[hidden] { display: none }` override at `style.css:279`, which
-is what makes `hidden` beat `display: flex` at all).
+control, no timer, no new `reloadDeferred` leg.
+
+**`style.css` is in scope for exactly one selector** —
+`.applying-strip[data-verb-error]` — and nothing else in that file. It must be
+declared **after** `.applying-strip[hidden] { display: none }`
+(`style.css:279`), or must not set `display` at all: that override is the only
+thing making `hidden` beat the block's own `display: flex`, and a later
+same-specificity rule that reintroduces `display` pins the strip permanently
+visible. The colour itself is asserted by no criterion — per S-20, contrast and
+palette stay a human acceptance item. The rule is permitted rather than
+required: no criterion fails without it.
 
 ## 3. Acceptance criteria
 
-Every criterion below must **fail against the unmodified tree**; running them
-pre-build and recording the failures is this unit's positive control. Judged
+Every criterion below must **fail against the unmodified tree**, with two
+named exceptions: **A0 and C0 are positive controls and must PASS on master**
+— they assert behaviour this unit preserves (A0) or machinery the other
+criteria depend on (C0). A pre-build run that reddens A0 or C0 means the
+harness is broken, not that the unit is needed; the red-run record should read
+"A1–A3, B, C1–C2, D, E, F red; A0, C0 green". Judged
 under FW-81's standing rule — no NEW failures against the 14 environmental
 ones (`14-forward-work-map.md:136`). **No new browser test may use
 `.click()`**: every one of the 14 fails on `Locator.click` actionability on
 this host, and the SSE-push-driven tests in the same class pass. All client
-criteria drive `server.push_applying` / `server.push_refresh` only.
+criteria drive `server.push_applying` / `server.push_refresh` only — plus, for
+B4 alone, a scroll (`page.mouse.wheel` / `page.evaluate`), which is not a
+click and does not touch the actionability path the 14 fail on.
 
 **A — the server stops erasing the failure** (`test_routes.py`, extending
 `TestForceRunApplyingFeedback`; `FakeRunner.queue_result(RunResult(1,
@@ -157,17 +201,33 @@ snapshot, push `error`:
 
 - **B1** the strip is visible, `#self-learn-ui-applying-badge` reads `failed`,
   `#self-learn-ui-applying-text` reads `worker → kick`.
-- **B2** `page.locator("body").aria_snapshot()` differs from the snapshot taken
-  in the `applying` state — S-20's pinned oracle, not a source-text assertion.
-- **B3** the strip carries `data-verb-error` and `role="alert"`.
+- **B2 — a DISCRIMINATING snapshot comparison.** *Not* applying-vs-error:
+  measured at the spec gate, that pair already differs on **master** (the
+  strip merely disappearing changes the body snapshot), so it can never
+  redden. Compare instead the two **terminal** states at the same key from the
+  same start: `body.aria_snapshot()` after `error(worker,kick)` vs after
+  `done(worker,kick)`. On the fixed tree they differ (`- alert: failed …` vs
+  nothing); on master both terminals hide the strip and the snapshots are
+  identical, so B2 is red pre-fix. S-20's oracle is kept, and it is now
+  load-bearing rather than decorative.
+- **B3** the strip carries `data-verb-error` **and** `role="alert"` (both, here
+  — the rendered entry is the failed one, so the two keyings coincide; D3 is
+  where they must not).
+- **B4 — the failure is where the human is looking.** With the page scrolled
+  to the bottom (`page.mouse.wheel` or `window.scrollTo(0, document.body.
+  scrollHeight)` — never a `.click()`), push `start` then `error`, then assert
+  `expect(strip).to_be_in_viewport()`. Verified available in this venv's
+  Playwright build. `to_be_visible()` must NOT be used as the oracle here: a
+  non-empty box does not imply viewport intersection, which is precisely how
+  this defect class hides.
 
 **C — the failure survives a broadcast refresh.** After B's error frame:
 
 - **C0 — positive control:** on a freshly loaded page with an empty Map,
-  `_mark_nav(page)` then `server.push_refresh("front")` reloads
+  `_arm_reload_sentinel(page)` then `server.push_refresh("front")` reloads
   (`_assert_reloaded`). Without C0, C1 passes on a harness whose refresh never
   arrives.
-- **C1** with the failed entry present, `_mark_nav(page)` then
+- **C1** with the failed entry present, `_arm_reload_sentinel(page)` then
   `server.push_refresh("front")` does **not** reload (`_assert_deferred`), and
   the strip still reads `failed`.
 - **C2** pushing `done` for the failed key clears the entry, and the deferred
@@ -180,11 +240,28 @@ snapshot, push `error`:
   the failed one, while both are in the Map.
 - **D2** on `done` for the route key, the strip returns to rendering the failed
   entry — the failure was held, not dropped.
+- **D3 — the marker outlives the render it is not attached to.** This is the
+  criterion that makes §2.1's Map-vs-render keying testable; without it a
+  builder writing `if (rendered.failed) strip.setAttribute(...)` passes every
+  other criterion here (D asserts only what renders; C is scoped to a
+  pure-failure Map; B3's two keyings coincide). Push `error(worker,kick)` then
+  `start(route, REC_BRIEF)`; assert (i) the strip renders `applying` /
+  `route → …` **and** carries `data-verb-error`, and — per §2.1's split —
+  does **not** carry `role="alert"`; (ii) `_arm_reload_sentinel(page)` then
+  `server.push_refresh("front")` → `_assert_deferred`; (iii) `done(route, …)`
+  → the strip reads `failed`. The failure survived a broadcast refresh it was
+  not even rendering at the time.
 
-**E — unmatched-`error` hygiene.** An `error` frame for a key this page never
-saw start renders the failed strip (a real failure elsewhere is still a
-failure); an `error` arriving while a `bulk` entry is live does not displace
-the bulk render (D's precedence rule, bulk arm).
+**E — unmatched-`error` hygiene.** Two arms, each with its own reddening
+mutation (M7, M11):
+
+- **E1** an `error` frame for a key this page never saw start renders the
+  failed strip — a real failure elsewhere is still a failure.
+- **E2** an `error` arriving while a `bulk` entry is live does not displace the
+  bulk render. Note the fixture must set the bulk entry **first**: with bulk
+  inserted first, M6 (first-insertion-order-wins) still renders bulk and E2
+  would be vacuous, which is why E2's mutation is M11 (failed-wins-outright),
+  not M6.
 
 **F — the pinning test is rewritten.**
 `test_4_applying_error_hides_strip` becomes `test_4_applying_error_shows_failed_strip`
@@ -201,17 +278,22 @@ Each mutation is one edit to production code; the named criterion must go red.
 | M1 | restore the bare `else { inflight.delete(...) }` in the applying case | B |
 | M2 | keep the failed entry but leave `badge: "applying"` | B1 |
 | M3 | set the failed entry without the `data-verb-error` marker | B3, C1 |
-| M4 | re-add `_force_refresh` to the failure leg of one route | A2 (that route), C-in-production |
+| M4 | re-add `_force_refresh` to the failure leg of one route | A2 (that route) |
 | M5 | re-add the `HX-Redirect` header to the failure leg of one route | A1 (that route) |
 | M6 | drop the render precedence — first-insertion-order wins outright | D1 |
-| M7 | make `error` a no-op on an absent key (`if (map.has(key))`) | E |
-| M8 | key the marker on the *rendered* entry instead of Map contents | D-with-C: a refresh while live work masks the failure erases it |
+| M7 | make `error` a no-op on an absent key (`if (map.has(key))`) | E1 |
+| M8 | key the marker on the *rendered* entry instead of Map contents | **D3** |
 | M9 | drop the `releaseReload()` transition call | C2 |
-| M10 | publish `"done"` unconditionally from `worker_kick` (the fail-open shortcut) | A3, B |
+| M10 | publish `"done"` unconditionally from `worker_kick` (the fail-open shortcut) | A3 |
+| M11 | render precedence checks `failed` **before** the `"bulk"` key — the plausible "errors are important, show them first" edit | E2 |
+| M12 | drop the `scrollIntoView` call on the absent→present transition | B4 |
+| M13 | set `role="alert"` from Map contents instead of the rendered entry | D3(i) |
 
 M4/M5 are the two halves of §1.2 and are the mutations most likely to survive
-a client-only review; M8 is the subtle one — it passes B and C1 and only fails
-when a failure and live work coexist.
+a client-only review. M8 is the subtle one — it passes B, C and D1/D2, and
+only D3 sees it. M10 fails A3 alone: B is driven by `server.push_applying`
+directly (`test_js_dom.py:138`), so no route participates in it and no
+route-side mutation can redden it.
 
 ## 4. Builder decisions, made here rather than left open
 
@@ -254,7 +336,14 @@ the map.
 so `result.ok` is False and the strip will read `failed` for an outcome that
 wrote records but could not commit them. That is not a false statement — the
 run did fail — but the strip does not carry the recovery (`self-learn
-reconcile`), which the CLI prints to stderr. See (c).
+reconcile`), which the CLI prints to stderr. See (c). **And this is the one
+case where §2.2's dropped `_force_refresh` costs something real:** it is the
+only failure outcome in scope that *writes*, so no tab's bucket table or
+status strip updates until someone navigates. Largely self-cancelling — leg
+(a) would have deferred that broadcast anyway while the failure is on screen
+— but the refresh is genuinely not merely deferred here, it is never sent.
+Accepted: the alternative is erasing the only report of the failure to
+refresh a view of records the human has just been told are uncommitted.
 
 **(c) The strip names the failure, not its cause.** The envelope carries no
 text and this unit does not add one. Cause discovery stays with `worker.log` /
@@ -279,8 +368,41 @@ hold has a user-reachable release"*).
 submit already lands on a bodyless 200 today (a plain browser ignores
 `HX-Redirect`); removing that header on failure changes nothing there.
 
-**(g) Out of scope entirely:** the three verb-confirm routes' own error
-rendering (they already have a server-rendered bar and now additionally get a
-strip — deliberate, one Map, and asserted only by not breaking their existing
-tests), the bulk-graduate failure path, FW-38's reconnect window, FW-77's
-keyboard-unreachable glosses, and any change to `sse.py`.
+**(g) Out of scope entirely:** the bulk-graduate failure path, FW-38's
+reconnect window, FW-77's keyboard-unreachable glosses, and any change to
+`sse.py`.
+
+**(h) The blast radius is app-wide, deliberately, and here is its full
+shape.** `_publish_applying(..., "done"/"error")` has **five** call sites, not
+two: `routes.py:1106` (`worker_kick`), `:1133` (`mine_run`), `:1773`
+(`action_confirm`), `:2267` (the route retry) and `:2753` (the proposal-bar
+verb). The client leg keys on the envelope's `state`, never on which route
+sent it, so **every** failed verb-confirm now also renders a persistent failed
+strip in **every** connected tab, and every one of those tabs holds
+reload-defer leg (a) until it navigates. The acting tab's dismissal of its own
+server-rendered error bar does not clear the strip — nothing publishes a
+terminal for that key afterwards — so the hold outlives the bar that caused
+it. Three things bound the cost, and they are why this is accepted rather than
+scoped away: (i) **a failed verb wrote nothing**, so the deferred refresh is
+deferring a view of state that did not change — the sole exception is residual
+(b)'s `landed-uncommitted`; (ii) `routes.py:1776` still force-refreshes on
+that same leg, so the broadcast is deferred, never dropped, for the four
+non-Force routes; (iii) every hold has a user-reachable release (navigation).
+**The refused alternative, named:** scoping the failed render to
+`verb ∈ {worker, mine}` would make the Map's render depend on verb identity
+rather than frame state — a second mechanism keyed on a list that rots as
+routes are added, which is exactly what S-20 exists to prevent. Uniform is
+also the more honest posture: an observer tab currently learns nothing when a
+verb fails in another tab.
+
+## 6. Merge obligations
+
+- **Re-point FW-82's prerequisite.** Its row currently reads *"(4) FW-76 as a
+  prerequisite"* (`14-forward-work-map.md:137`). Per residual (a), landing
+  this unit does **not** satisfy what that clause needs — a machine-readable
+  success signal. At merge, that clause must be re-pointed at the new
+  exit-code row (a) recommends, or FW-82 will read as unblocked by a unit that
+  did not unblock it.
+- **FW-76's own row** takes the usual FIXED annotation, and should carry
+  residuals (a), (b) and (h) by name — (h) especially, since it changes
+  behaviour at three routes this unit's title does not mention.
