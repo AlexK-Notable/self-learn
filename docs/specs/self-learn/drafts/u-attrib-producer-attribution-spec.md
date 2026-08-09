@@ -1,18 +1,29 @@
 # Spec — U-attrib: producer attribution by exclusive namespace
 
-Status: **r3 — DELTA, awaiting the delta gate.** Two rounds, 24 findings,
-all folded (§10 maps each to its change). r1 blind gate: **UNSOUND — 3
-BLOCKER / 6 MAJOR / 6 NOTE**; r2 delta: **UNSOUND — 1 BLOCKER / 3 MAJOR /
-5 NOTE**, with 14 of r1's 15 folds verified closed at mechanism level.
-**The direction has now survived two adversarial rounds** (§1.2): the
+Status: **r4 — GATED, CLEARED FOR BUILD.** Three review rounds, 25
+findings, all folded (§10 maps each to its change). r1 blind gate:
+**UNSOUND — 3 BLOCKER / 6 MAJOR / 6 NOTE**; r2 delta: **UNSOUND — 1
+BLOCKER / 3 MAJOR / 5 NOTE**, with 14 of r1's 15 folds verified closed at
+mechanism level; r3 delta: **1 MAJOR at bounded-substitution grade**,
+with all nine r2 folds verified closed — `IN11`'s discrimination checked
+on both legs, the digest confirmed not model-satisfiable, the journal
+lifecycle grepped clean of any touch outside the lock, §3.5's census
+predicate **executed** by the gate with outputs matching this document's
+43/18 and both exception sets exactly, and the mutation mapping
+mechanically re-verified zero-orphan. The gate therefore closed at r4
+under the ratified verdict-repricing rule.
+**The direction has survived three adversarial rounds** (§1.2): the
 same-path premise was verified against the code, both refusals stand, and
 the stage was judged to genuinely invert `_written_since` rather than
 relocate the ambiguity. Both `Z1` legs were independently reproduced by
 the r1 gate under a cleaner construction. Every r1 finding was a **code
-site the spec had not yet owned**; every r2 finding was on the
-**recovery machinery r2 itself added** — so both rounds harden rather
-than redesign, and r3's one BLOCKER is the reminder that a mechanism
-introduced to fix a defect is the most likely place to re-introduce it.
+site the spec had not yet owned**; every finding after that landed on the
+**recovery machinery the previous round had just added** — r2's BLOCKER
+on r1's journal, r3's MAJOR on r2's digest. That is the lesson of rounds
+2 and 3, and it is why `AD8` was **reversed rather than patched**: a
+mechanism introduced to fix a defect is the likeliest place to
+re-introduce it, and the cure is to remove the state the mechanism cannot
+describe, not to widen the exception that hides it.
 Unit `U-attrib`, addressing **FW-84**
 (`docs/specs/self-learn/14-forward-work-map.md:139`). Evidence of record:
 the live incident that row states (ledger commit `efd5ebd`, 2026-08-08
@@ -476,9 +487,23 @@ the r2 gate's BLOCKER 1 and MAJOR 1)*. A file at
   reports `status == "failed"` and feeds the backoff
   (`worker.py:2758-2779`) until the follow-on is suppressed. `IJ` is
   what makes the two-step recoverable.
-- **And it covers the torn write**, since `write_text` is not atomic
-  (`M5`/`AD8`): a crash mid-copy leaves a truncated destination, which is
-  the same journaled state and the same recovery.
+- **The install is ATOMIC, and that is what makes the digest total**
+  *(r3 gate MAJOR)*. r3 claimed the journal "covers the torn write". It
+  does not, and could not: the digest is of the **complete intended
+  bytes**, so a destination torn by a non-atomic `write_text` hashes to
+  neither its old contents nor the journaled digest — `I-a` fails (it
+  exists), `I-b` fails (no `record_sha`, and it may not even parse),
+  `I-c` fails (digest mismatch) — and the stale rule then **drops the
+  entry on a false inference**: it concludes another producer took the
+  path over when in fact we tore it ourselves. That is the permanent
+  stall, re-entered through the very digest added to close r2's BLOCKER
+  1. With `AD8`'s temp-plus-`os.replace`, **there is no third state**:
+  either the replace has not happened (the destination holds its
+  pre-install bytes, `I-a`/`I-b` handle it normally, and dropping the
+  now-stale entry is *correct*) or it has (the destination is exactly
+  the journaled digest, and `I-c` completes the install). Atomicity does
+  not paper over the torn state — it removes the state the digest cannot
+  describe.
 - **On a `stamp_proposal` exception the staged file is dropped and the
   destination is LEFT IN PLACE, journaled** — never rolled back. Rolling
   back is not expressible: when the destination was an overwrite, the
@@ -544,15 +569,17 @@ staged file carrying a matching `record_sha` — `U-repair`'s `D6(i)`
 covers only the invalid one.
 
 **The copy primitive is pinned, not left to the builder** *(r1 gate MAJOR
-5)*. The install writes the destination with **`Path.write_text`** (and,
-for a merge, `_dump_yaml`, which is the same writer `U-repair` already
-uses). `shutil.copy*` is **forbidden**: `test_lock_invariant.py`'s
-analyser recognises `write_text`/`rename`/`unlink` plus `shutil.move` and
-`os.replace` (`:85`, `:223-229`) — a `shutil.copy` install would be
-**invisible** to the invariant that is this project's whole defence, and
-this unit's file table authorises `NOT_REPO_TRUTH` additions only, never
-an analyser extension. `AD8` records the atomicity trade this choice
-makes and `IJ` is what pays for it.
+5; made atomic in r4)*. The install writes
+`<destination dir>/.install-<id>.tmp` with **`Path.write_text`** (for a
+merge, via `_dump_yaml` — the same writer `U-repair` already uses) and
+then **`os.replace`s** it onto the destination (`AD8`). `shutil.copy*` is
+**forbidden**: `test_lock_invariant.py`'s analyser recognises
+`write_text`/`rename`/`unlink` plus `shutil.move` and `os.replace`
+(`:85`, `:223-229`) — a `shutil.copy` install would be **invisible** to
+the invariant that is this project's whole defence, and this unit's file
+table authorises `NOT_REPO_TRUTH` additions only, never an analyser
+extension. Both primitives this unit uses are already recognised, so no
+extension is needed.
 
 **The residual it creates, declared here and pinned by `IN5`:** a
 destination that is permanently an unstamped draft (a human abandoned a
@@ -986,7 +1013,7 @@ set) — the shape `U-repair`'s code gate proved a spec can ship and a
 static analyser cannot forgive.
 
 **IN8 — an interrupted install is recovered, not stalled forever.**
-Crash fixture, in four parts. (a) **Simulated crash:** monkeypatch
+Crash fixture, in five parts. (a) **Simulated crash:** monkeypatch
 `stamp_proposal` to raise on its first call; run; assert the destination
 exists, is unstamped, has an `IJ` entry whose digest equals the
 destination's bytes, the staged file is gone, the destination was **not**
@@ -1001,9 +1028,22 @@ between the journal write and the stamp — i.e. raise from
 `stamp_proposal` — then assert that a run which **fails inside the model
 window** (shim exits non-zero, nothing staged) leaves the entry intact,
 and that the run **after** that still recovers via `I-c`.
+(e) **Crash mid-copy** *(r3 gate MAJOR)*: monkeypatch `os.replace` to
+raise, leaving the temp written and the destination untouched. Assert the
+destination still holds its **pre-install** bytes (or is still absent),
+that no `.install-*.tmp` survives the **next** run's pass-1 cleanup, and
+— the load-bearing assertion — that the next run with a fresh staged
+proposal **completes the install** rather than declining forever. Second
+leg: assert no state exists in which the destination is neither its
+pre-install bytes nor the complete intended bytes.
 *Broken:* `MA36` (on a stamp exception, delete the destination as well as
 the staged file — leg (a) then finds no destination and no entry to
-recover from); `MA37` (drop `I-c`) — the destination is declined every
+recover from); `MA50` (install with a bare non-atomic `write_text`
+straight onto the destination, r3's shape) — leg (e) then finds a torn
+destination that matches **no** `Install-1` leg, and the stale rule drops
+its own journal entry on the false inference that another producer took
+the path over: a permanent stall created by the recovery machinery;
+`MA37` (drop `I-c`) — the destination is declined every
 window forever while the run reports `failed` and drives the backoff to
 the follow-on cap (`worker.py:2758-2779`); and `MA38` (read and truncate
 `IJ` at `S1`, r2's shape) — leg (d) goes red, because the licence is
@@ -1343,8 +1383,10 @@ the function that legitimately mutates the ledger.
 *Broken:* running it.
 
 **HY4 — the install is visible to the lock-invariant analyser.**
-Source-level: assert the install writes via `Path.write_text` (or
-`_dump_yaml` for a merge), that `worker.py` imports no `shutil` copy
+Source-level: assert the install writes its temp via `Path.write_text`
+(or `_dump_yaml` for a merge) **and** lands it via `os.replace` — both
+already recognised primitives, so no analyser extension is needed
+(`AD8`) — that `worker.py` imports no `shutil` copy
 helper, and — the falsifiable leg — that
 `test_lock_invariant.py`'s own **`_primitive`** classifier (`:218`)
 **returns a primitive** for the install's call node. The test imports and
@@ -1352,7 +1394,8 @@ calls that function by name *(r2 gate NOTE 3: r2 called it
 `_mutating_call`, which does not exist — an import-and-call criterion
 naming a non-existent symbol fails as an `ImportError`, not as the check
 it claims to be)*.
-*Broken:* `MA48` (install with `shutil.copy2`). The analyser recognises
+*Broken:* `MA48` (install with `shutil.copy2`, replacing both
+primitives). The analyser recognises
 `write_text`/`rename`/`unlink`, `shutil.move` and `os.replace`
 (`test_lock_invariant.py:85`, `:223-229`) — `copy2` is in none of them,
 so the whole install becomes invisible to the invariant and the suite
@@ -1409,6 +1452,7 @@ reports mutations as survived that never executed (FW-61). Confirm
 | **MA37** | drop `I-c` (no install journal) | **IN8(b)** — permanent stall + backoff to the follow-on cap |
 | **MA38** | read and truncate `IJ` at `S1`, before the model window (r2's shape) | **IN8(d)** — a kill in the 1800 s window discards the licence and recreates the stall |
 | **MA49** | journal the destination **only**, with `I-c` treating a journaled path exactly as `I-a` (r2's shape) | **IN11** — the FW-84 incident, re-entering through the recovery machinery |
+| **MA50** | install with a bare non-atomic `Path.write_text` straight onto the destination (r3's shape), dropping the temp + `os.replace` | **IN8(e)** — a torn destination matches no `Install-1` leg and the stale rule discards its own journal entry on a false inference: a permanent stall created by the recovery machinery |
 | **MA39** | keep `_validate_written`'s `verdict.phi and not verdict.is_hook` skip | **IN9** — the silent black hole |
 | MA40 | skip the secret scan on the foreign pass | IN10(b) |
 | **MA41** | populate `foreign_left` only from `Install-1` declines (r1's reading) | **RT7** — `U-repair`'s `D7` regression |
@@ -1506,13 +1550,33 @@ than findings:
   cost of that decision is a two-step install, and `IJ` (§3.4) is what
   pays for it** *(r1 gate MAJOR 1: r1 took the decision and did not pay
   the cost)*.
-- **AD8 — `Path.write_text`, accepting non-atomicity.** The install is
-  not atomic and is deliberately not made so: the atomic idiom
-  (`os.replace` of a temp file) is analyser-visible too, but it would put
-  a temp file inside a bucket's `proposals/` — a path both the orphan
-  sweep and `_proposal_snapshot`'s recursive `rglob` would then see. A
-  torn write leaves the same journaled state as a crashed stamp, so `IJ`
-  already covers it and one recovery mechanism is better than two.
+- **AD8 — the install is ATOMIC: write a temp beside the destination,
+  then `os.replace`** *(reversed in r4; r3 chose a bare `write_text` and
+  the r3 gate showed the choice was load-bearing, not cosmetic)*. The
+  temp is `<destination dir>/.install-<id>.tmp` — same directory, so
+  `os.replace` is a same-filesystem rename and therefore atomic — written
+  with `Path.write_text`, then `os.replace`d onto the destination. Any
+  `.install-*.tmp` found in a destination directory at the start of pass
+  1 is removed first, so a crashed run leaves no accumulating litter.
+  **r3's three reasons for rejecting this were each measured false:**
+  **(i)** `_still_pending` globs only `lrn-*.yaml` and `merge-*.yaml`
+  (`worker.py:2112`, `:2117`) — a dotted `.tmp` name matches neither, so
+  the orphan sweep cannot see it; **(ii)** `_proposal_snapshot`'s
+  recursive `rglob` runs only at `S1` (`worker.py:2555`), `snap1`
+  (`:2605`) and `S7`, **all outside `_harvest`'s lock**, while the temp
+  exists only between two statements **inside** it — the two intervals
+  are disjoint, so no snapshot can ever observe it; **(iii)** `os.replace`
+  is already an analyser-recognised primitive
+  (`test_lock_invariant.py:227-229`), so `HY4` and `M5`'s whole argument
+  survive unchanged. The design question `AD8` originally rested on
+  simply was not there.
+- **AD8a — the alternative patch is refused on record.** Widening `I-c`
+  with a "the destination does not parse, so we must have torn it" leg
+  would also unstick the stall, and it is **not** adopted: an attended
+  session's own interrupted write is equally unparseable, so that leg
+  would hand the worker a licence to overwrite a human's torn file —
+  reintroducing FW-84's harm in the one state where the human is least
+  able to notice. Fixing the mechanism beats widening the exception.
 - **AD10 — the merge order is part of the design** *(r2 gate NOTE 2)*.
   Hotfix `1251552` (`defaultMode` in both settings writers) merges to
   master **first**; this unit branches from a master that already
@@ -1798,3 +1862,36 @@ own cleaner construction.
   | N3 — `_mutating_call` does not exist | corrected to **`_primitive`** (`test_lock_invariant.py:218`); noted that a wrong symbol in an import-and-call criterion fails as `ImportError`, not as the check |
   | N4 — 48/48 bijection off by one | `MA36` is now named by `IN8(a)`'s Broken line |
   | N5 — pass 2's reach implied universal | §3.3 carries the roster bound: F-a's `_roster_sha_dishonest` is against **this run's** roster, so a cross-composition foreign proposal does not fire pass 2; `RT7` stands as the matching-roster criterion, and relaxing the honesty check to improve a status line is refused |
+- **r4 (2026-08-09)** — delta gate **1 MAJOR, bounded-substitution
+  grade**; all nine r3 folds verified closed, and the gate closes here.
+  The MAJOR: §3.4's torn-write bullet was **false**. The journaled digest
+  is of the complete intended bytes, so a destination torn by a
+  non-atomic `write_text` matches **no** `Install-1` leg — and the stale
+  rule then discards its own entry on the false inference that another
+  producer took the path over. A permanent stall, re-entered through the
+  digest added to close r2's BLOCKER 1, and robust to the other reading
+  too (digest computed after the copy → no usable entry at all).
+
+  **The fold is the ATOMIC route, taken deliberately and not a papering
+  of the bullet.** `AD8` is **reversed**: the install now writes
+  `<destination dir>/.install-<id>.tmp` and `os.replace`s it into place,
+  with pass-1 cleanup of any stale temp. The three objections `AD8`
+  originally rested on were each measured false and are recorded as such
+  in `AD8` — the orphan sweep's globs cannot match a dotted temp
+  (`worker.py:2112`, `:2117`), every `_proposal_snapshot` runs outside
+  `_harvest`'s lock while the temp exists only inside it (`:2555`,
+  `:2605`), and `os.replace` is already an analyser-recognised primitive
+  (`test_lock_invariant.py:227-229`), so `HY4` and `M5`'s argument
+  survive intact. Atomicity **removes the state the digest cannot
+  describe** rather than describing it better: after the fold there are
+  exactly two post-crash states, and `Install-1` already handles both.
+  The false bullet is deleted, `IN8` gains leg (e) (crash mid-copy → the
+  next run *completes* the install, plus a no-third-state leg), and
+  `MA50` is r3's bare `write_text` as the reddening mutation.
+
+  **The alternative patch was refused, on record (`AD8a`)**: widening
+  `I-c` with a "does not parse, so we tore it" leg would also unstick the
+  stall, and would hand the worker a licence to overwrite an attended
+  session's *own* torn write — equally unparseable, and the state in
+  which a human is least able to notice. Fixing the mechanism beats
+  widening the exception.
