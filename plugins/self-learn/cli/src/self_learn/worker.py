@@ -825,7 +825,12 @@ def write_settings_file(home: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(
-            {"permissions": {"allow": write_permission_rules(home)}},
+            {
+                "permissions": {
+                    "allow": write_permission_rules(home),
+                    "defaultMode": "default",
+                }
+            },
             indent=2,
         ),
         encoding="utf-8",
@@ -838,7 +843,9 @@ def write_repair_settings_file(home: Path, paths: list[Path]) -> Path:
     ``Edit(...)`` rule per member of the repair set ``E``, sorted — never
     a glob. This is the structural half of "the repair round must not
     enlarge the blast radius" (§2, FW-84): the CLI itself refuses writes
-    outside the assigned set.
+    outside the assigned set — true because this file pins
+    ``defaultMode: "default"`` below; without that key the scopes were
+    decorative (see the next paragraph).
 
     Verified against the live CLI (2.1.226) as a builder obligation
     (§3.7), not assumed: a scratch home, the worker's real argv shape
@@ -858,7 +865,10 @@ def write_repair_settings_file(home: Path, paths: list[Path]) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     rules = [f"Edit(/{p})" for p in sorted(paths)]
     path.write_text(
-        json.dumps({"permissions": {"allow": rules}}, indent=2),
+        json.dumps(
+            {"permissions": {"allow": rules, "defaultMode": "default"}},
+            indent=2,
+        ),
         encoding="utf-8",
     )
     return path

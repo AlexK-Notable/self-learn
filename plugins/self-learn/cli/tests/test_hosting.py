@@ -814,3 +814,7 @@ class TestWorkerContainment:
         assert data["permissions"]["allow"] == worker.write_permission_rules(
             env.ledger
         )
+        # security hotfix: without an explicit defaultMode, the session
+        # inherits the host's global permissions.defaultMode (which may be
+        # "bypassPermissions"), voiding every allow-rule above.
+        assert data["permissions"]["defaultMode"] == "default"
