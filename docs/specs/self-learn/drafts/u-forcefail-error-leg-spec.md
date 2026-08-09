@@ -1,6 +1,7 @@
 # Spec — U-forcefail: a failed Force run says so
 
-Status: **DRAFT r3**. Register row **FW-76**. Files in scope, and no others:
+Status: **DRAFT r4 — spec gate CLOSED, cleared for build**. Register row
+**FW-76**. Files in scope, and no others:
 `ui/static/app.js` (the `applying` case + `renderInflight`),
 `ui/src/self_learn_ui/routes.py` (`worker_kick` and `mine_run`, their failure
 legs only), `ui/static/style.css` (**one** selector, §2.3),
@@ -16,7 +17,17 @@ r2 folds a spec-gate round: the marker/role split (§2.1), the viewport leg
 (§2.1, criterion B4), a discriminating B2, criteria D3 and E's reddening
 mutation, and two residuals that were derivable but unstated (§5h, §5b). r3
 adds §1.2's third leg — the hub-merge ordering finding, read and confirmed at
-`sse.py:113-131` rather than inherited.
+`sse.py:113-131` rather than inherited, and since measured live at 195/200
+trials putting `refresh` first on the wire. r4 folds the final round: B4
+rebuilt on the house viewport precedent so it can actually redden M12, E2's
+terminal step (its opening assertion is green on master), a false bounding
+fact struck from §5h, and the role-announcement rationale demoted to a
+flagged hypothesis.
+
+**Every criterion here is red pre-fix by a stated mechanism, and every
+mechanism has been checked rather than assumed** — that check is what caught
+B4 and E2 asserting nothing. A builder who finds a criterion green on master
+should stop and report it, not adjust the criterion.
 
 ## 1. The defect — two halves, both live today
 
@@ -127,9 +138,17 @@ split is normative, and criteria B3/D3 pin both halves:
 - `role="alert"` — set only while **the rendered entry is failed**; removed
   otherwise. Parity with every other error surface in this app
   (`action_bar.html:22`, `host_add_bar.html:23`), but render-scoped rather
-  than Map-scoped: a Map-scoped alert role would make assistive tech announce
-  every `graduating N of M` bulk progress update as an alert. The marker
-  protects evidence; the role announces what is on screen.
+  than Map-scoped. The marker protects evidence; the role announces what is on
+  screen. **Rationale carrying an unverified claim, flagged as such:** the
+  concern motivating the split is that a Map-scoped alert role would leave the
+  role live across `graduating N of M` bulk-progress updates and have assistive
+  tech announce each one. That has **not** been measured on any screen reader,
+  and it is not obviously equivalent to the cited surfaces' shape — those
+  render role and content together at insertion, whereas here the role would
+  persist on an element whose text is being rewritten. The render-scoping
+  decision stands on its own (it keeps the role attached to what the strip
+  actually says); the announcement behaviour is a hypothesis, and no criterion
+  asserts it.
 
 **The viewport leg.** When the marker transitions **absent→present**, and only
 then, the strip is scrolled into view with `scrollIntoView({block: "nearest"})`
@@ -191,14 +210,19 @@ named exceptions: **A0 and C0 are positive controls and must PASS on master**
 — they assert behaviour this unit preserves (A0) or machinery the other
 criteria depend on (C0). A pre-build run that reddens A0 or C0 means the
 harness is broken, not that the unit is needed; the red-run record should read
-"A1–A3, B, C1–C2, D, E, F red; A0, C0 green". Judged
+"A1–A3, B1–B4, C1–C2, D1–D3, E1–E2, F red; A0, C0 green". Note when recording
+it that **E2 is red only at its final step** (its opening assertion holds on
+master by accident — see E2), so a fold that drops that step silently converts
+E2 into a green-on-master test. Judged
 under FW-81's standing rule — no NEW failures against the 14 environmental
 ones (`14-forward-work-map.md:136`). **No new browser test may use
 `.click()`**: every one of the 14 fails on `Locator.click` actionability on
 this host, and the SSE-push-driven tests in the same class pass. All client
 criteria drive `server.push_applying` / `server.push_refresh` only — plus, for
-B4 alone, a scroll (`page.mouse.wheel` / `page.evaluate`), which is not a
-click and does not touch the actionability path the 14 fail on.
+B4 alone, `page.set_viewport_size` and a `page.evaluate` scroll. Both are
+permitted: neither is a click, and neither touches the actionability path the
+14 fail on. The same pair is already used this way at `test_js_dom.py:1387`
+and `:1604`.
 
 **A — the server stops erasing the failure** (`test_routes.py`, extending
 `TestForceRunApplyingFeedback`; `FakeRunner.queue_result(RunResult(1,
@@ -218,8 +242,8 @@ For `/worker/kick` and `/mine/run` alike:
   reachable by not publishing at all.
 
 **B — the strip renders the failure** (`test_js_dom.py`, in
-`TestApplyingStripClientRendering`). Push `start` for `("worker","kick")`,
-snapshot, push `error`:
+`TestApplyingStripClientRendering`). Push `start` for `("worker","kick")`, then
+push `error`:
 
 - **B1** the strip is visible, `#self-learn-ui-applying-badge` reads `failed`,
   `#self-learn-ui-applying-text` reads `worker → kick`.
@@ -235,13 +259,32 @@ snapshot, push `error`:
 - **B3** the strip carries `data-verb-error` **and** `role="alert"` (both, here
   — the rendered entry is the failed one, so the two keyings coincide; D3 is
   where they must not).
-- **B4 — the failure is where the human is looking.** With the page scrolled
-  to the bottom (`page.mouse.wheel` or `window.scrollTo(0, document.body.
-  scrollHeight)` — never a `.click()`), push `start` then `error`, then assert
-  `expect(strip).to_be_in_viewport()`. Verified available in this venv's
-  Playwright build. `to_be_visible()` must NOT be used as the oracle here: a
-  non-empty box does not imply viewport intersection, which is precisely how
-  this defect class hides.
+- **B4 — the failure is where the human is looking.** Written to the house
+  precedent for this exact motivation, `test_js_dom.py:1372-1406` (the `b`-key
+  scroll fix), and it must copy that test's two structural moves or it does not
+  work:
+  1. **A short viewport, so the page genuinely scrolls:**
+     `page.set_viewport_size({"width": 1280, "height": 300})` — `:1387`'s own
+     values. Without this the seeded front page may not overflow the default
+     1280×720, `scrollTo` becomes a no-op, the top-of-body strip is already in
+     view, and M12 survives on an unstated page-height assumption.
+  2. **A positive control asserted BEFORE the fix can fire:** after
+     `window.scrollTo(0, document.body.scrollHeight)` and the `start` push,
+     assert `expect(strip).not_to_be_in_viewport()` — the analogue of `:1392`'s
+     `assert before < 0` and its stated reason (*"so the assertion below can't
+     pass by accident (the element already being in view)"*). This is sound
+     precisely because §2.1 fires `scrollIntoView` **only** on the marker's
+     absent→present transition: the `start` render does not scroll, so the
+     strip is legitimately off-screen at this point. It also makes a
+     too-short-page fixture fail loudly instead of silently voiding the test.
+
+  Then push `error` and assert `expect(strip).to_be_in_viewport()` (verified
+  available in this venv's Playwright build). `to_be_visible()` must NOT be the
+  oracle: a non-empty box does not imply viewport intersection, which is
+  exactly how this defect class hides. **Why the earlier form was wrong, on
+  record:** without step 1 it went red on master only by inheriting B1's
+  redness — a hidden element is never in the viewport, so it never tested the
+  viewport at all — and without step 2 M12 could survive on the fixed tree.
 
 **C — the failure survives a broadcast refresh.** After B's error frame:
 
@@ -280,10 +323,16 @@ mutation (M7, M11):
 - **E1** an `error` frame for a key this page never saw start renders the
   failed strip — a real failure elsewhere is still a failure.
 - **E2** an `error` arriving while a `bulk` entry is live does not displace the
-  bulk render. Note the fixture must set the bulk entry **first**: with bulk
-  inserted first, M6 (first-insertion-order-wins) still renders bulk and E2
-  would be vacuous, which is why E2's mutation is M11 (failed-wins-outright),
-  not M6.
+  bulk render — **then push the bulk terminal and assert the strip reverts to
+  reading `failed`.** The terminal step is not optional garnish: E2's first
+  assertion is **green on master** (master's `error` is a `delete` on an absent
+  key, a no-op, so bulk keeps rendering there too), and only the terminal step
+  reddens it — on master the Map is empty once bulk clears, so the strip hides
+  instead of reverting to `failed`. Under M11 (failed-wins-outright) the first
+  assertion is the one that fails. So E2 is red pre-fix **and** red under its
+  mutation, by two different steps. Note also that the fixture must set the
+  bulk entry first, which is why E2's mutation is M11 and not M6: with bulk
+  inserted first, first-insertion-order-wins still renders bulk.
 
 **F — the pinning test is rewritten.**
 `test_4_applying_error_hides_strip` becomes `test_4_applying_error_shows_failed_strip`
@@ -404,12 +453,23 @@ strip in **every** connected tab, and every one of those tabs holds
 reload-defer leg (a) until it navigates. The acting tab's dismissal of its own
 server-rendered error bar does not clear the strip — nothing publishes a
 terminal for that key afterwards — so the hold outlives the bar that caused
-it. Three things bound the cost, and they are why this is accepted rather than
-scoped away: (i) **a failed verb wrote nothing**, so the deferred refresh is
-deferring a view of state that did not change — the sole exception is residual
-(b)'s `landed-uncommitted`; (ii) `routes.py:1776` still force-refreshes on
-that same leg, so the broadcast is deferred, never dropped, for the four
-non-Force routes; (iii) every hold has a user-reachable release (navigation).
+it. Two things bound the cost, and they are why this is accepted rather than
+scoped away. **(i) is NOT one of them, and the tempting version of it is
+false:** "a failed verb wrote nothing" does not hold. Besides residual (b)'s
+`landed-uncommitted`, the resolution verbs have their own write-then-fail
+exit in the same family — `cli.py:1258-1265` catches
+`gitops.HalfWrittenError` *after* `resolve_record` has already moved the
+record and returns `_report_half_written` (`cli.py:1300-1313`), which prints
+*"The ledger IS mutated — this is NOT a clean refusal"* and exits
+`EXIT_HALF_WRITTEN`. A failed `route`/`reject`/`defer`/`graduate` can
+therefore have mutated the ledger, and the tabs holding leg (a) are stale
+against a real change. The accept-argument rests on the other two alone:
+**(i) the broadcast is deferred, never dropped** — all three non-Force
+terminal sites still force-refresh on their failure legs (`routes.py:1776`
+for `action_confirm`, `:2270` for the route retry, and `:2754` for the
+proposal-bar verb, whose refresh is *unconditional*, sitting ahead of its
+`if not result.ok:` entirely) — and **(ii) every hold has a user-reachable
+release** (navigation).
 **The refused alternative, named:** scoping the failed render to
 `verb ∈ {worker, mine}` would make the Map's render depend on verb identity
 rather than frame state — a second mechanism keyed on a list that rots as
