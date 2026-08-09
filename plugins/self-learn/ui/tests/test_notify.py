@@ -34,6 +34,7 @@ _REQUIRED_REAL_BINS = (
     "cut",
     "cat",
     "mkdir",
+    "timeout",
 )
 
 _EXEC_MODE = (
