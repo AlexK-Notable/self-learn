@@ -1548,12 +1548,17 @@ def test_d5_the_narrowed_repair_scope_is_real(env, claude_shim, monkeypatch):
     worker.run(env.home)
     settings_path = worker._p("worker.repair.settings.json")
     assert settings_path.exists()
-    rules = json.loads(settings_path.read_text(encoding="utf-8"))["permissions"]["allow"]
+    settings_data = json.loads(settings_path.read_text(encoding="utf-8"))
+    rules = settings_data["permissions"]["allow"]
     expected_paths = sorted([str(env.proposals / f"{ra}.yaml"), str(env.proposals / f"{rb}.yaml")])
     assert rules == [f"Edit(/{p})" for p in expected_paths]
     for rule in rules:
         assert rule.startswith("Edit(//")
         assert "*" not in rule
+    # security hotfix: without an explicit defaultMode, the session
+    # inherits the host's global permissions.defaultMode (which may be
+    # "bypassPermissions"), voiding every allow-rule above.
+    assert settings_data["permissions"]["defaultMode"] == "default"
 
 
 def test_d6i_f_a_is_enforced(env, claude_shim, monkeypatch):

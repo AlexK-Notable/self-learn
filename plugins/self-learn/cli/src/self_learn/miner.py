@@ -545,11 +545,20 @@ def spool_dir() -> Path:
 
 def write_reader_settings() -> Path:
     """Write scope = the CACHE spool only (Edit rule family — the
-    live-verified syntax; the repo is entirely out of reach)."""
+    live-verified syntax; the repo is entirely out of reach). Pins
+    ``defaultMode: "default"`` — without it, the session inherits the
+    host's global ``permissions.defaultMode`` (which may be
+    ``bypassPermissions``), voiding the scope above."""
     path = miner_dir() / "miner.settings.json"
     path.write_text(
         json.dumps(
-            {"permissions": {"allow": [f"Edit(/{spool_dir()}/**)"]}}, indent=2
+            {
+                "permissions": {
+                    "allow": [f"Edit(/{spool_dir()}/**)"],
+                    "defaultMode": "default",
+                }
+            },
+            indent=2,
         ),
         encoding="utf-8",
     )
