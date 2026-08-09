@@ -58,6 +58,7 @@ from support import commit_all, git, make_behavior, proposal_dict
 from test_worker import (  # noqa: F401 -- fixtures resolved by name
     PROPOSAL_YAML_TEMPLATE,
     Env,
+    _path_without_real_notify_helper,
     claude_shim,
     env,
     seed_pending,
@@ -1689,7 +1690,21 @@ def test_d8i_e4_batch_membership(env, claude_shim, monkeypatch):
     """D8(i) — E-4: an invalid, `gates.`-refused proposal exists for a
     record NOT in this run's batch (16 pending records over BATCH_CAP=15
     puts the newest one in the leftover set). Its path appears in NO
-    repair prompt and it is deleted with today's line."""
+    repair prompt and it is deleted with today's line.
+
+    2026-08-09 hardening (T2, real-spawn-site audit): the leftover batch
+    here ALSO keeps `worker.dirty` set, reaching the follow-on decision
+    unmocked before this incident's fix — `_spawn_window` is guarded so a
+    real spawn attempt fails the test loudly instead of leaking a
+    process."""
+    monkeypatch.setattr(
+        worker,
+        "_spawn_window",
+        lambda home, *, no_push=False: pytest.fail(
+            "must not reach a real spawn — AUTOKICK=0 must gate the "
+            "follow-on before this point"
+        ),
+    )
     for i in range(16):
         create_record(
             env.home,
@@ -1865,7 +1880,14 @@ def test_e5_the_backoff_suppresses_at_the_cap(env, claude_shim, monkeypatch):
     (shim writes nothing landable, leftovers > 0 so `worker.dirty` stays
     set). `_spawn_window` was called after run 1 and NOT after run 2, the
     suppression line logged, `result.followon is False`, `worker.dirty`
-    still exists."""
+    still exists.
+
+    AUTOKICK now gates the follow-on's non-suppressed branch too
+    (2026-08-09) — opt back in (mirroring `kick` tests' own convention)
+    so run 1's attempt reaches the mocked `_spawn_window`, never a real
+    process; run 2's cap suppression fires independent of AUTOKICK
+    either way."""
+    monkeypatch.delenv("SELF_LEARN_WORKER_AUTOKICK", raising=False)
     for i in range(16):
         create_record(
             env.home,
@@ -1903,7 +1925,13 @@ def test_e6_an_ok_run_resets_the_counter(env, claude_shim, monkeypatch):
     (15), so `worker.dirty` stays set for the third run too. With only
     16 seeded, the ok run's single resolution would drop the queue to
     exactly BATCH_CAP, clearing `worker.dirty` and making the third run's
-    non-spawn a `worker.dirty` artifact rather than a counter one."""
+    non-spawn a `worker.dirty` artifact rather than a counter one.
+
+    AUTOKICK now gates the follow-on's non-suppressed branch too
+    (2026-08-09) — opt back in (mirroring `kick` tests' own convention)
+    so the third run's spawn attempt reaches the mocked `_spawn_window`,
+    never a real process."""
+    monkeypatch.delenv("SELF_LEARN_WORKER_AUTOKICK", raising=False)
     for i in range(17):
         create_record(
             env.home,
@@ -1935,8 +1963,17 @@ def test_e6_an_ok_run_resets_the_counter(env, claude_shim, monkeypatch):
 def test_e7_kick_resets_the_counter_and_is_never_suppressed(env, monkeypatch):
     """E7 — `kick` resets the counter and is never suppressed. With the
     counter AT the cap, `worker.kick(home)` returns 'spawned' and clears
-    `worker.failures`."""
+    `worker.failures`.
+
+    `_spawn_window` mocked (2026-08-09 hardening — matches
+    `test_kick_spawns_one_window_and_second_is_absorbed`'s convention):
+    this test asserts on `kick`'s decision outcome, not on a real spawned
+    process, and previously left one real (if short-lived, no-pending-work)
+    detached child behind."""
     monkeypatch.delenv("SELF_LEARN_WORKER_AUTOKICK")
+    monkeypatch.setattr(
+        worker, "_spawn_window", lambda home, *, no_push=False: 4242
+    )
     worker._write_failure_count(worker.FOLLOWON_FAILURE_CAP)
     assert worker._read_failure_count() == worker.FOLLOWON_FAILURE_CAP
     outcome = worker.kick(env.home)
@@ -1947,7 +1984,13 @@ def test_e7_kick_resets_the_counter_and_is_never_suppressed(env, monkeypatch):
 def test_e8_a_corrupt_counter_is_read_as_zero(env, claude_shim, monkeypatch):
     """E8 — a corrupt counter is read as zero. Writing 'not-a-number'
     still lets the run proceed and spawn (an unguarded `int()` would
-    wedge the worker on a corrupt cache file)."""
+    wedge the worker on a corrupt cache file).
+
+    AUTOKICK now gates the follow-on's non-suppressed branch too
+    (2026-08-09) — opt back in (mirroring `kick` tests' own convention)
+    so the spawn attempt reaches the mocked `_spawn_window`, never a
+    real process."""
+    monkeypatch.delenv("SELF_LEARN_WORKER_AUTOKICK", raising=False)
     worker.cache_dir().mkdir(parents=True, exist_ok=True)
     worker._p("worker.failures").write_text("not-a-number", encoding="utf-8")
     assert worker._read_failure_count() == 0
@@ -1968,6 +2011,77 @@ def test_e8_a_corrupt_counter_is_read_as_zero(env, claude_shim, monkeypatch):
     )
     worker.run(env.home)
     assert spawned == [1]
+
+
+def test_d2_followon_requires_progress_on_the_eligible_set(env, claude_shim, monkeypatch):
+    """D2 (incident 2026-08-09) — an "ok" status alone is not proof of
+    progress: it only means a proposal FILE was written, never that a
+    record actually left the eligible set. A batch that keeps reporting
+    "ok" while landing NOTHING new (Rule-F: `_check_proposal_file` finds
+    a proposal whose `record_sha` already matches — "another producer
+    wrote it; left untouched" — `foreign_left`, not `valid_landed`) must
+    not chain forever, invisible to the failure cap (which only counts
+    `status == "failed"` runs).
+
+    POSITIVE-CONTROL HAZARD (a check that passes when the feature is
+    absent is worthless): this test observes the SPAWN DECISION itself
+    via a mocked `_spawn_window` in BOTH directions on the SAME 18-record
+    leftover batch — generation 1 (genuine landing, eligible 18 -> 17)
+    attempts a spawn; generation 2 (Rule-F re-write of the ALREADY-fresh
+    record, eligible stays 17) does not. If D2 were absent, or if it
+    always suppressed regardless of progress, this pairing would fail to
+    discriminate the two generations."""
+    monkeypatch.delenv("SELF_LEARN_WORKER_AUTOKICK", raising=False)
+    for i in range(18):
+        create_record(
+            env.home,
+            make_behavior(
+                record_id=f"lrn-300000{i:02x}",
+                created_at=f"2026-09-{1 + i:02d}T00:00:00Z",
+            ),
+        )
+    commit_all(env.home, "eighteen pending — 3 beyond BATCH_CAP=15")
+    oldest_rid = "lrn-30000000"  # sort-key oldest -> definitely batch member
+
+    spawned = []
+    monkeypatch.setattr(
+        worker, "_spawn_window", lambda home, *, no_push=False: spawned.append(1) or 4242
+    )
+
+    # Generation 1 — CONTROL: a genuine landing shrinks the eligible set
+    # (18 -> 17). D2 must NOT suppress; the follow-on reaches the mocked
+    # spawn.
+    monkeypatch.setenv("CLAUDE_SHIM_SCRIPT", shim_writes(env, oldest_rid))
+    result1 = worker.run(env.home)
+    assert result1.status == "ok"
+    assert result1.valid_landed == 1
+    assert result1.followon is True
+    assert spawned == [1], "control run: the follow-on must reach the mocked spawn"
+
+    # Generation 2 — the fixture under test: the SAME already-landed
+    # record's proposal is re-written carrying its CURRENT (unchanged)
+    # record_sha — Rule-F fires (`foreign_left`, not `valid_landed`),
+    # `result.status` is still "ok", but NOTHING new left the eligible
+    # set (still 17: the other 14 in-batch records and the 3 leftovers
+    # never received proposals from this narrowly-targeted shim).
+    spawned.clear()
+    script, _text, _path = _foreign_script(env, oldest_rid, _valid_trace(env))
+    monkeypatch.setenv("CLAUDE_SHIM_SCRIPT", script)
+    result2 = worker.run(env.home)
+    assert result2.status == "ok"
+    assert result2.valid_landed == 0
+    assert result2.foreign_left == [oldest_rid]
+    assert result2.followon is False
+    assert spawned == [], (
+        "no-progress run: the follow-on must NOT reach the mocked spawn "
+        "— D2 is the only gate that can catch this ('ok' status alone "
+        "would have let it through)"
+    )
+    log_text = (worker.cache_dir() / "worker.log").read_text(encoding="utf-8")
+    assert (
+        "run: follow-on suppressed — no progress on the eligible set "
+        "(17 still eligible after an 'ok' run)"
+    ) in log_text
 
 
 # ===================================================================== #
@@ -2067,8 +2181,23 @@ def test_f6_no_test_invokes_a_real_claude():
 
     # every OTHER real invocation in this file goes through the shim: the
     # fixture itself must put its own shim dir FIRST in PATH.
-    assert 'monkeypatch.setenv("PATH", f"{shims}' in inspect.getsource(claude_shim), (
-        "the claude_shim fixture no longer prepends its own shim dir to PATH"
+    #
+    # 2026-08-09 (T3, incident hardening): the fixture now ALSO strips
+    # any REAL self-learn-notify from the rest of the inherited PATH
+    # (`_path_without_real_notify_helper`) — belt-and-braces alongside
+    # worker.py's own SELF_LEARN_NO_NOTIFY=1 kill switch — but `shims`
+    # is still unconditionally the FIRST leading dir that helper builds,
+    # so the invariant this assertion pins is unchanged, only its
+    # literal source shape is.
+    claude_shim_src = inspect.getsource(claude_shim)
+    assert (
+        'monkeypatch.setenv("PATH", _path_without_real_notify_helper(shims))'
+        in claude_shim_src
+    ), "the claude_shim fixture no longer prepends its own shim dir to PATH"
+    helper_src = inspect.getsource(_path_without_real_notify_helper)
+    assert "parts = [str(d) for d in leading_dirs]" in helper_src, (
+        "_path_without_real_notify_helper no longer puts its leading_dirs "
+        "argument first in the PATH it builds"
     )
 
 
@@ -2136,6 +2265,24 @@ def test_h3_the_five_existing_log_lines_are_byte_stable(env, claude_shim, monkey
     log_text = (worker.cache_dir() / "worker.log").read_text(encoding="utf-8")
     assert "run: orphan proposal lrn-orphaned0.yaml swept" in log_text
 
+    # 2026-08-09 hardening (T2, incident): this phase seeds a leftover
+    # batch (16 > BATCH_CAP=15) and its shim keeps re-landing the SAME
+    # record every generation — the EXACT shape that spawned a real,
+    # self-respawning `worker run --coalesce` chain when this test ran
+    # unmocked (AUTOKICK=0 ambient from conftest gates the follow-on now
+    # — see `worker._autokick_disabled` — but `_spawn_window` is ALSO
+    # mocked here, belt-and-braces, matching the sibling
+    # `test_batch_cap_leftovers_keep_dirty_and_followon`-style tests: a
+    # `pytest.fail` guard proves the gate refuses BEFORE ever reaching a
+    # real spawn, not merely that a real spawn would have been harmless).
+    monkeypatch.setattr(
+        worker,
+        "_spawn_window",
+        lambda home, *, no_push=False: pytest.fail(
+            "must not reach a real spawn — AUTOKICK=0 must gate the "
+            "follow-on before this point"
+        ),
+    )
     for i in range(16):
         create_record(
             env.home,
@@ -2159,7 +2306,22 @@ def test_h4_every_new_line_in_obs1_is_produced_and_pinned(env, claude_shim, monk
     calls `worker.run()` on the SAME `env`/`claude_shim` — the shim's
     invocation counter is cumulative across the whole test function, so
     each phase's numbered `CLAUDE_SHIM_SCRIPT_<n>` vars are bound via
-    `_next_run_scripts`, never hardcoded from 1."""
+    `_next_run_scripts`, never hardcoded from 1.
+
+    2026-08-09 hardening (T2, real-spawn-site audit): the suppression
+    phase near the end seeds a leftover batch (16 > BATCH_CAP=15) and
+    drives two consecutive failed runs — reaching the follow-on decision
+    unmocked before this incident's fix. `_spawn_window` is guarded for
+    the WHOLE function so a real spawn attempt from ANY phase (present or
+    future) fails the test loudly instead of leaking a process."""
+    monkeypatch.setattr(
+        worker,
+        "_spawn_window",
+        lambda home, *, no_push=False: pytest.fail(
+            "must not reach a real spawn — AUTOKICK=0 must gate the "
+            "follow-on before this point"
+        ),
+    )
     # repair round — {n} refused, eligible, ineligible; and non-zero exit.
     rid = seed_pending(env)
     base = _next_run_scripts(
