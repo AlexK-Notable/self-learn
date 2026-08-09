@@ -1,8 +1,18 @@
 # Spec — U-pointer: reference-route pointer emission, the ALWAYS-surface write, and the R14 backfill
 
-Status: **r2 — one blind gate round folded, awaiting delta re-check.**
+Status: **r3 — GATED, CLEARED FOR BUILD.** Two review rounds, eighteen
+findings, all folded (§9): r1 blind gate **UNSOUND — 2 BLOCKER /
+5 MAJOR / 5 NOTE**; r2 delta **0 BLOCKER / 1 MAJOR / 5 NOTE** with all
+twelve r1 findings verified CLOSED at the mechanism level and the four
+re-run measurements reproduced exactly. Every r2 finding was expressible
+as a bounded substitution, so the spec gate closes at r3 under the
+ratified verdict-repricing rule, with the code gate's mutation sweep
+verifying the residue mechanically. **Both rounds left the design
+untouched and rebuilt the register** — every §3 decision survived both
+gates; all eighteen findings were in §4/§5.
+
 r1 gate verdict: **UNSOUND — 2 BLOCKER / 5 MAJOR / 5 NOTE**, all twelve
-folded here (§9). The gate verified ~35 `file:line` citations and
+folded (§9.1). The gate verified ~35 `file:line` citations and
 reproduced all eleven r1 measurements intact; **the design survived and
 the register did not**. Four of r1's twenty-six mutations did not do
 what r1 claimed, and the two BLOCKERs are both of one kind: **a
@@ -121,7 +131,7 @@ visits every stranded record and already declines to do anything.**
 
 ## 2. What binds this design from outside it
 
-**B1 — the interface clause, verbatim** (u-reach, §"on the contract"):
+**K1 — the interface clause, verbatim** (u-reach, §"on the contract"):
 
 > the pointer must contain a path token that resolves to the demand file.
 
@@ -131,29 +141,29 @@ shipped predicate — returns `True`. Not "the block was written", not
 "the text contains the basename". **The post-condition is the contract**
 (§3.3, criterion **A3**).
 
-**B2 — the detector is anchor-free by design.** u-reach refused to
+**K2 — the detector is anchor-free by design.** u-reach refused to
 require any heading, sentence or marker. Consequences the emitter must
 respect: (i) a hand-written pointer already in the file *satisfies the
 contract*, so the emitter must not add a second one (§3.5); (ii) the
 emitter may choose its own wording freely, because no wording is load-
 bearing for the check — the *token* is.
 
-**B3 — S-23.** `reference` survives at skill and project scope; user
+**K3 — S-23.** `reference` survives at skill and project scope; user
 scope refuses it. `paths:`-scoped rules, not this, are the primary cheap
 tier. This unit makes the surviving tier deliver; it does not promote it.
 
-**B4 — reference targets are append-only.** Stated three times in the
+**K4 — reference targets are append-only.** Stated three times in the
 code: `verbs.py:1882-1883` ("reference targets are append-only —
 nothing to apply"), `verbs.py:3869-3872` ("a retired entry stays; there
 is nothing to regenerate or repair"), and the `LEARNINGS.md` header
 itself (`compilers.py:134-140`). **The pointer inherits this**: it is
 inserted, never removed, never re-sorted (§6-D3).
 
-**B5 — the campaign row's two words.** *"cap-exempt"* → §3.8.
+**K5 — the campaign row's two words.** *"cap-exempt"* → §3.8.
 *"reference-route triggers an ALWAYS recompile"* → §3.4, which also
 records what that phrase must **not** be read as.
 
-**B6 — Checkpoint B.** The 14→0 transition is this unit's gate. The
+**K6 — Checkpoint B.** The 14→0 transition is this unit's gate. The
 second half of Checkpoint B — *does a session actually open that file at
 the right moment?* — is **out of scope and stays unmeasured**; the only
 lever this unit has on it is the block's preamble wording, which is
@@ -299,7 +309,7 @@ order that needs no knowledge of the lines already there.
    `CompileError` naming the surface, mirroring
    `compile_managed_file`'s refusal (`compilers.py:314-318`).
 2. `surface_names_target(surface, target)` is True → return
-   `changed=False`, `token=pointer_token(...)`, **no write at all** (B2).
+   `changed=False`, `token=pointer_token(...)`, **no write at all** (K2).
 3. Otherwise compute the token, build the line, `compile_pointer_text`,
    write, `changed=True`.
 4. **Post-condition, mandatory.** Re-read the file through
@@ -309,6 +319,22 @@ order that needs no knowledge of the lines already there.
    converted into "the contract holds", and this project's signature
    defect is a check that passes while seeing nothing. It costs one file
    read per changed route.
+
+   **r3 (NOTE 4) — the surface is RESTORED before the raise.** The
+   post-condition fires *after* the write, so `apply_pointer` must hold
+   the pre-write text and write it back before raising. Not a style
+   choice: leaving the bad text on disk would wedge the repair path this
+   spec depends on. The route reaches this inside `_host_phase`, whose
+   handler turns `CompileError` into "canon is stale — run
+   `self-learn recompile`" (`verbs.py:2129-2136`) — but a surface left
+   dirty then trips **L4** on every later route to that skill, and is
+   skipped by §3.7 step 1 at every later recompile. The advertised
+   repair would be blocked by the mess the failure made. Restoring
+   costs one held string and loses nothing: the raise is still loud, and
+   the pointer's absence is still caught by the `reach` selftest.
+   *Corollary for the builder:* the restore must not swallow the
+   original error, and a failure to restore must not mask it either
+   (re-raise the `CompileError`, not the restore's exception).
 
    **r2 (MAJOR 4): it needs its own test, because no other criterion
    reaches it.** The §5 invitation to break the post-condition and see
@@ -524,7 +550,7 @@ reference leg (`verbs.py:3994-4043`) changes as follows:
 
    **And on any commit, append `host_repo` to `touched_hosts` if absent**
    — the same two lines every other leg already carries (`:3989-3990`,
-   `:4042-4043`, `:4105-4106`). `touched_hosts` is what the push loop at
+   `:4042-4043`, `:4106-4107`). `touched_hosts` is what the push loop at
    `:4109-4113` iterates; a restructured leg that drops it leaves the
    **entire backfill committed locally and never pushed**, which looks
    exactly like success from `recompile`'s own output (r2, NOTE 9;
@@ -733,14 +759,23 @@ on a fixture whose surface does not yet name the target, and assert
 path, the target path and the bad token. *Absent:* this is the one
 criterion that distinguishes the post-condition from its own deletion —
 the gate verified that under M2/M3 the A-criteria fail on the token
-comparison first, so nothing else in §4 reaches it. → **M28**
+comparison first, so nothing else in §4 reaches it.
+
+**Second leg (r3, NOTE 4): the surface is byte-unchanged after the
+raise.** Capture the surface text before the call; after the
+`CompileError`, assert the file on disk equals it exactly. *Absent:* a
+build that leaves the bad pointer text on disk wedges every later route
+to that skill on L4 and every later recompile on §3.7 step 1 — the
+repair the error message recommends would be blocked by the failure
+itself. → **M28**, **M33**
 
 **A9 — the no-write path still reports a usable token (r2, NOTE 12).**
 On a surface that already names the target, assert `changed is False`
 **and** `PointerResult.token == pointer_token(surface, target)` (not
 `""`, not `None`). *Absent:* a builder returning an empty token on the
 early-return path leaves the caller's note text and any future consumer
-reading a blank. → **M4**
+reading a blank. → **M32** (r3, NOTE 3: r2 pointed this at M4, which
+exercises the *write* path — it could not redden the token leg) 
 
 ### B. Non-interference with the managed section
 
@@ -777,17 +812,6 @@ produced block unchanged, and `selfcheck._surface_names_target` is still
 collision, or an emitter writing inside the markers, is eaten here. →
 **M8**, **M9**
 
-**B5 — end-to-end: a route survives the NEXT managed-section route
-(r2, the criterion that catches the latent wipe).** Route a record to
-`reference` at project scope; assert `_check_reach` passes. Then route a
-second record to `claude-md` on the **same** host — a real
-`compile_managed_file` regeneration of the same surface — and assert
-`_check_reach` **still** passes. *Absent:* measured (§8-X12), an M8
-build passes the first assertion and **fails the second**, silently
-deleting the pointer and re-stranding the records with no error emitted
-anywhere. This is the only criterion in §4 that can see it, and without
-it an M8 build may redden **nothing at all**. → **M8**
-
 **B3 — marker counts are untouched.** On a surface carrying both blocks:
 `text.count(BEGIN_MARKER) == 1` and `text.count(END_MARKER) == 1`, and
 `selfcheck._check_markers({surface: [record]})` returns `ok=True`.
@@ -803,6 +827,25 @@ afterwards. This is the home-assistant shape, and it is the criterion
 that catches the wrong reading of "ALWAYS recompile" (§3.4). *Absent:* a
 build calling `compile_managed_file` bootstraps a marker pair and this
 goes from 0 to 1. → **M10**
+
+**B5 — end-to-end: a route survives the NEXT managed-section route
+(r2, the criterion that catches the latent wipe).** Route a record to
+`reference` at project scope; assert `_check_reach` passes. Then route a
+second record to `claude-md` on the **same** host — a real
+`compile_managed_file` regeneration of the same surface — and assert
+`_check_reach` **still** passes. *Absent:* measured (§8-X12), an M8
+build passes the first assertion and **fails the second**, silently
+deleting the pointer and re-stranding the records with no error emitted
+anywhere. This is the only criterion in §4 that can see it, and without
+it an M8 build may redden **nothing at all**.
+
+*Scope, declared (r3, NOTE 5):* this fixture is **project** scope, where
+a managed-section regeneration is routine; the R14 population is
+section-less `SKILL.md` at **skill** scope. The wipe mechanism is
+identical (`compile_managed_text` rebuilds from records regardless), so
+this is coverage shape, not a design hole — and §5 now carries a
+**mandatory** gate instruction to re-run the whole B group, and M8,
+against a section-less surface. → **M8**
 
 ### C. Threading and the route path
 
@@ -889,9 +932,9 @@ also listed is **struck**: it is structurally unreachable, because
 is pinned (r2, MAJOR 3: r1's behavioural legs were unreachable).** Two
 legs:
 
-- **(i) structural.** Assert `cli._reports_no_change`'s source is
-  byte-unchanged from base (`inspect.getsource` compared against the
-  literal in the test), and assert `_outcome_state` returns `"landed"`
+- **(i) structural.** Assert
+  `"pointer_changed" not in inspect.getsource(cli._reports_no_change)`,
+  and assert `_outcome_state` returns `"landed"`
   for **any** `VerbResult` carrying a non-`None` `host_commit_sha`
   **whose `compile_result` is a `ReferenceResult` with
   `applied=False`** — i.e. the short-circuit at `cli.py:1040-1041`
@@ -903,7 +946,17 @@ legs:
 redden for a `_reports_no_change` edit — every plausible edit evaluates
 identically on that fixture, which is exactly why leg (i) is
 structural. A criterion that names its own blind spot is worth more than
-one that pretends to cover it. → **M17**
+one that pretends to cover it.
+
+*r3 (NOTE 2) — why a substring probe and not a byte-comparison.* An
+earlier form compared `inspect.getsource` against a ~15-line literal
+pasted into the test. That is a **hand-copied duplicate of production
+text** — FW-44/FW-48's defect class exactly, where a copied constant
+drifts and the test then pins the copy instead of the original. It would
+also redden on reformatting, which is noise, not signal. The substring
+form reddens **identically** under M17 (any edit that teaches the
+function about `pointer_changed` must name it) and survives every change
+that is not the one being guarded against. → **M17**
 
 ### E. Recompile — the backfill mechanism
 
@@ -956,13 +1009,24 @@ pass. *Absent:* with the two-member except tuple this spec first pinned,
 the `UnicodeDecodeError` escapes `recompile()` entirely and every host
 after the first is silently unrepaired. → **M27**
 
-**E8 — the backfill is PUSHED, not just committed (r2, NOTE 9).** With a
-host repo that has a remote, assert the pointer commit reaches the
-remote — or, if the fixture stubs `gitops.push_if_remote`, assert it was
-called with that `host_repo`. *Absent:* a leg that commits without
-appending to `touched_hosts` (`verbs.py:4109-4113` iterates it) leaves
-the entire R14 backfill local, which is indistinguishable from success
-in `recompile`'s own output. → **M30**
+**E8 — the backfill is PUSHED, not just committed (r2, NOTE 9).**
+**On E1's fixture — entry already present, so the pointer commit is the
+only commit in the run** — and with a host repo that has a remote,
+assert the pointer commit reaches the remote (or, if the fixture stubs
+`gitops.push_if_remote`, that it was called with that `host_repo`).
+*Absent:* a leg that commits without appending to `touched_hosts`
+(`verbs.py:4109-4113` iterates it) leaves the entire R14 backfill local,
+which is indistinguishable from success in `recompile`'s own output.
+
+**The fixture shape is normative, and r2 left it unpinned (r3, MAJOR 1).**
+§3.7 step 3 mandates the `touched_hosts` append on **any** commit, so on
+a fixture where the entry append *also* commits, that append feeds the
+push loop and E8 passes **even under M30** — a push moves the branch
+ref, not individual commits, so both the "commit reached the remote" and
+the "`push_if_remote` was called" readings are defeated. M30 reddens
+**only** on an `applied=False` fixture. That is the R14 shape this
+criterion's own rationale invokes, and it must be the fixture, not an
+incidental property of one. → **M30**
 
 ### F. Scope invariants and refusals
 
@@ -1009,9 +1073,16 @@ which is the entire point. → **M29**
 **F8 — L5 at recompile, same shape.** As F7 with an undecodable surface
 instead of a missing one: the entry is appended and committed, a warning
 names the surface, no pointer is written. Distinct from **E7**, which
-tests the *except tuple*; this tests the *preflight gating*. Both are
-needed — the gate found each hides the other's defect on a one-host
-fixture. → **M27**, **M29**
+tests the *except tuple*; this tests the *preflight gating*.
+
+*Both are needed, stated precisely (r3, NOTE 6b — r2 overstated this as
+"each hides the other's defect").* F8 **does** catch M27 on its one-host
+fixture: the escaping `UnicodeDecodeError` fails the appended-entry
+assertion. What F8 cannot see is E7's actual subject — that hosts
+processed **after** the bad one still get repaired — because a one-host
+fixture has no "after". That is the whole value of E7's two-host shape,
+and it is why the batch-abort blast radius needs its own criterion
+rather than riding this one. → **M27**, **M29**
 
 ### G. Hygiene
 
@@ -1078,6 +1149,8 @@ which manufactures **false survivals** only.
 | **M29** | raise L2/L5 unconditionally instead of gating on `check_dirty` | **F7, F8** (append legs) — the silent "record appends stop happening" regression |
 | **M30** | commit the pointer without appending `host_repo` to `touched_hosts` | **E8** — backfill committed, never pushed |
 | **M31** | insert the new pointer line FIRST inside the block instead of last | **C7** (order leg) |
+| **M32** | return `token=""` on `apply_pointer`'s no-write (already-named) path | **A9** (token leg) — r3: M4 exercises the write path and cannot reach this |
+| **M33** | delete the restore-before-raise in the post-condition (leave the bad text on disk) | **A8** (surface-unchanged leg) |
 
 **Reviewers are invited to invent mutations not listed here, and the
 invitation has already paid.** r1 asked for exactly one probe — make
@@ -1090,10 +1163,20 @@ SURVIVED verdict on any of the four** — in three of the four, the naive
 observation is exactly the one that reports the mutation as survived
 when it is caught, or caught when it survives.
 
-The r2 probe most worth trying next: build a **section-less** surface
-(the home-assistant shape) and run every B-criterion against it. r1's
-reasoning about caps was correct and its criterion still could not see a
-wrong build; the same gap may exist elsewhere in the B group.
+**INSTRUCTION TO THE CODE GATE (r3, NOTE 5) — not a suggestion.** Build
+a **section-less** surface (a `SKILL.md` with no managed markers — the
+home-assistant shape, and the shape all fourteen stranded records
+actually live in) and re-run **every B-group criterion** against it,
+then re-run **M8** against it. This is mandatory because **B5's fixture
+is project scope**: a managed-section regeneration is routine there
+(`claude-md` routes to the same host), whereas reproducing it at skill
+scope needs a `skill-md` route to the same skill. The wipe **mechanism**
+is identical — `compile_managed_text` rebuilds the section from records
+either way — so this is a coverage gap, not a design gap, and it is
+closed by the gate exercising it rather than by a fixture this spec
+declines to over-specify. Report the result either way: a B-criterion
+that passes on a section-less surface *for the wrong reason* is the same
+defect r1 shipped, one surface over.
 
 ---
 
@@ -1109,14 +1192,14 @@ guess where the previous one ended. The block gives the exemption a
 structural home (§3.8) and gives idempotence a definition.
 
 **D2 — presence is decided by the whole-file predicate, not by parsing
-the block.** The contract is "the surface names the target" (B1), so a
+the block.** The contract is "the surface names the target" (K1), so a
 hand-written mention already satisfies it and must be left alone (C6).
 This also removes the only place a parse-back algorithm would have been
 needed — and §5 of the campaign playbook is explicit about what happens
 to algorithms pinned in prose and shipped untested.
 
 **D3 — insert-only; never remove, never re-sort.** Reference files are
-append-only (B4), so a pointer that was ever correct stays correct;
+append-only (K4), so a pointer that was ever correct stays correct;
 removing one would strand history that is still on disk. Re-sorting was
 rejected because it forces parsing existing lines back out of the block
 (see D2), buying only cross-machine byte-identity, which nothing needs.
@@ -1163,7 +1246,7 @@ do not quietly adjust it.
 - **A `route` telemetry event for the pointer.** Telemetry kinds are
   FW-45/U-reach's register.
 - **Instrumenting whether a session opens the file.** Checkpoint B's
-  question, explicitly out of scope (B6).
+  question, explicitly out of scope (K6).
 
 ### 7.2 DISCLOSED — the review surface still cannot name the file
 
@@ -1287,30 +1370,51 @@ are provably identical.
 
 ---
 
-## 9. Fold report — r1 gate, twelve findings
+## 9. Fold reports
+
+### 9.1 r1 blind gate — twelve findings
 
 One line per finding, naming the change and where it landed.
 
 | # | Finding | Fold |
 |---|---|---|
-| **B1** | B1 cannot fail; M8 survives; M8's damage is latent | B1 rewritten to assert what the emitter controls (marker presence + marker-count-unchanged); **B2's fixture must now be produced by `apply_pointer`**; new end-to-end **B5** (route → managed regeneration → re-assert `_check_reach`); §3.8 rewritten to state that the counts are blind to `target_text`; **M8**'s row now names B1(i)/B2/B5 and warns which assertion reddens; measurement **X12** added — reproduced independently (reach True→False across a regeneration) |
-| **B2** | recompile's except tuple cannot catch `UnicodeDecodeError`; whole-batch abort | §3.7 step 2 tuple → `(CompileError, OSError, UnicodeDecodeError)` with the MRO reason inline; §3.9 L5 cell amended; new **E7** (two-host fixture with a vacuity guard) and **M27**; `_HOST_PHASE_ERRORS`' identical gap recorded as out-of-footprint with its reachability condition; measurement **X13** |
-| **M3** | M17 cannot redden D3 either leg | D3 rewritten into a **structural** leg (source byte-unchanged + the `cli.py:1040-1041` short-circuit asserted directly) plus an honestly-scoped behavioural leg; §3.6 now says *why* behaviour cannot see it; **M17** re-scoped to "verified structurally or not at all" |
-| **M4** | the post-condition has zero coverage | New **A8** (monkeypatch `pointer_token` to a non-resolving token, assert the raise names surface/target/token) and **M28**; §3.3 step 4 records that r1's own invited probe found nothing reddening |
-| **M5** | G1's number stale by 254 tests | G1 → **1520 passed / 5 skipped / 0 failed**, re-measured independently (**X15**, unpiped rc 0) with the five skips named so a builder can tell pre-existing from introduced |
-| **M6** | M16 does not redden D2 as worded | D2 rewritten to three legs — no commit, `_outcome_state == "no_op"`, no host-phase-failure warning — with the `git commit` exit-1 → `GitOpsError` → `(None, None)` path explained; the unreachable `hook` leg **struck**; **M16**'s row warns that leg (a) survives |
-| **M7** | L2/L5's recompile column has no criterion and no stated mechanism | §3.9 gains a normative paragraph pinning the refusals as **`check_dirty`-gated** and tracing what an ungated build does (`:3879` → `:3901-3903` → `continue` past the whole entry, appends lost); new **F7**/**F8** and **M29**; §3.5's cross-reference added |
-| **N8** | prose said "two preflight refusals", register said three | §3.5 → three, enumerated (L2/L4/L5), with the r1 discrepancy noted in place |
-| **N9** | `touched_hosts` never mentioned; no criterion that the backfill is pushed | §3.7 step 3 now mandates the append with the three existing precedent sites cited; new **E8** and **M30** |
-| **N10** | commit-topology asymmetry unexplained | §3.7 states the rule both ways: one commit per *decision* at route (generic `_host_phase`, one human choice), one commit per *independent repair* at recompile (E5 requires independence) |
-| **N11** | the `~` fallback is machine-specific in a shared repo | New **§7.6** ACCEPTED residual separating the leak half (answered) from the portability half (not), with the named alternative if absolute `--dest` ever becomes common |
-| **N12** | four small register gaps | §3.3 names `compile_pointer_text`'s bool as `bootstrapped` (and why it is not `changed`) and pins **insertion order = last**; §3.2 deletes the dead `except ValueError` with measurement **X14**; **C7** gains an order leg + **M31**; new **A9** reads `PointerResult.token` on the no-write path |
+| **BL1** | B1 cannot fail; M8 survives; M8's damage is latent | B1 rewritten to assert what the emitter controls (marker presence + marker-count-unchanged); **B2's fixture must now be produced by `apply_pointer`**; new end-to-end **B5** (route → managed regeneration → re-assert `_check_reach`); §3.8 rewritten to state that the counts are blind to `target_text`; **M8**'s row now names B1(i)/B2/B5 and warns which assertion reddens; measurement **X12** added — reproduced independently (reach True→False across a regeneration) |
+| **BL2** | recompile's except tuple cannot catch `UnicodeDecodeError`; whole-batch abort | §3.7 step 2 tuple → `(CompileError, OSError, UnicodeDecodeError)` with the MRO reason inline; §3.9 L5 cell amended; new **E7** (two-host fixture with a vacuity guard) and **M27**; `_HOST_PHASE_ERRORS`' identical gap recorded as out-of-footprint with its reachability condition; measurement **X13** |
+| **MAJ-3** | M17 cannot redden D3 either leg | D3 rewritten into a **structural** leg (source byte-unchanged + the `cli.py:1040-1041` short-circuit asserted directly) plus an honestly-scoped behavioural leg; §3.6 now says *why* behaviour cannot see it; **M17** re-scoped to "verified structurally or not at all" |
+| **MAJ-4** | the post-condition has zero coverage | New **A8** (monkeypatch `pointer_token` to a non-resolving token, assert the raise names surface/target/token) and **M28**; §3.3 step 4 records that r1's own invited probe found nothing reddening |
+| **MAJ-5** | G1's number stale by 254 tests | G1 → **1520 passed / 5 skipped / 0 failed**, re-measured independently (**X15**, unpiped rc 0) with the five skips named so a builder can tell pre-existing from introduced |
+| **MAJ-6** | M16 does not redden D2 as worded | D2 rewritten to three legs — no commit, `_outcome_state == "no_op"`, no host-phase-failure warning — with the `git commit` exit-1 → `GitOpsError` → `(None, None)` path explained; the unreachable `hook` leg **struck**; **M16**'s row warns that leg (a) survives |
+| **MAJ-7** | L2/L5's recompile column has no criterion and no stated mechanism | §3.9 gains a normative paragraph pinning the refusals as **`check_dirty`-gated** and tracing what an ungated build does (`:3879` → `:3901-3903` → `continue` past the whole entry, appends lost); new **F7**/**F8** and **M29**; §3.5's cross-reference added |
+| **NOTE-8** | prose said "two preflight refusals", register said three | §3.5 → three, enumerated (L2/L4/L5), with the r1 discrepancy noted in place |
+| **NOTE-9** | `touched_hosts` never mentioned; no criterion that the backfill is pushed | §3.7 step 3 now mandates the append with the three existing precedent sites cited; new **E8** and **M30** |
+| **NOTE-10** | commit-topology asymmetry unexplained | §3.7 states the rule both ways: one commit per *decision* at route (generic `_host_phase`, one human choice), one commit per *independent repair* at recompile (E5 requires independence) |
+| **NOTE-11** | the `~` fallback is machine-specific in a shared repo | New **§7.6** ACCEPTED residual separating the leak half (answered) from the portability half (not), with the named alternative if absolute `--dest` ever becomes common |
+| **NOTE-12** | four small register gaps | §3.3 names `compile_pointer_text`'s bool as `bootstrapped` (and why it is not `changed`) and pins **insertion order = last**; §3.2 deletes the dead `except ValueError` with measurement **X14**; **C7** gains an order leg + **M31**; new **A9** reads `PointerResult.token` on the no-write path |
 
 **Nothing was folded by weakening a criterion.** Two criteria got
 *narrower* claims (D2's hook leg struck, D3's behavioural leg scoped) —
 in both cases because the r1 claim was unreachable, and a register that
 lists an unreachable assertion is how a gate comes to trust a check that
 never ran.
+
+### 9.2 r2 delta gate — one MAJOR, five NOTES (final fold)
+
+| # | Finding | Fold |
+|---|---|---|
+| **MAJ-1** | E8's fixture unpinned; M30 survives on the wrong one (a run whose entry append also commits pushes the branch anyway, defeating both readings) | **E8 now pins E1's fixture** — entry already present, so the pointer commit is the only commit in the run — with the "a push moves the branch ref, not individual commits" reasoning stated in the criterion so a later editor cannot relax it back |
+| **NOTE-2** | D3 leg (i)'s `getsource` byte-comparison is a drift-copy hazard (FW-44/48 class) | Replaced with `assert "pointer_changed" not in inspect.getsource(cli._reports_no_change)`; reddens identically under M17, survives reformatting; the copied-literal reasoning recorded in place |
+| **NOTE-3** | A9's token leg has no mutation (M4 exercises the write path) | New **M32** (`token=""` on the no-write path) and A9 re-pointed at it |
+| **NOTE-4** | the post-condition raises after writing; the surface's fate undeclared | §3.3 now pins **restore-then-raise**, with the second-order effect that decided it (a surface left dirty trips L4 on every later route and §3.7 step 1 on every later recompile — the repair the error recommends would be blocked by the failure); **A8 gains a surface-byte-unchanged leg** and new **M33** |
+| **NOTE-5** | B5 tests the wipe at project scope; the R14 population is section-less `SKILL.md` | B5 now **declares its scope** and why the mechanism is identical; §5's closing paragraph is converted from a suggestion into a **mandatory instruction to the code gate** (re-run the entire B group and M8 against a section-less surface, and report the result either way) |
+| **NOTE-6** | three slips | (a) `:4105-4106` → **`:4106-4107`**, verified against the file; (b) F8's "each hides the other's defect" replaced with the precise claim — F8 *does* catch M27 on one host; E7's subject is that hosts **after** the bad one still get repaired, which a one-host fixture cannot express; (c) **B5 re-filed after B4** |
+
+**Caught while folding, not raised by either gate:** §2's bindings were
+labelled `B1`-`B6` while §4's criteria group B is also `B1`-`B5`, and
+four cross-references in §3/§6/§7 were bare `(B1)`/`(B2)`/`(B4)`/`(B6)`
+pointing at the *bindings*. A builder told "criterion B4" could have
+read §2's "reference targets are append-only". The bindings are renamed
+**K1-K6** and all four references updated; every surviving bare `B<n>`
+now refers to a §4 criterion. Bounded substitution, no design change.
 
 ---
 
@@ -1336,7 +1440,20 @@ never ran.
   (**M8, M16, M17**) plus the post-condition probe promoted from a §5
   invitation to **M28**, and four measurements added (**X12-X15**, §8a) —
   X12, X13, X14 and X15 each re-run here before being pinned, rather
-  than transcribed from the gate. Three build choices that r1 left implicit are now normative:
+  than transcribed from the gate.
+- **r3 (2026-08-09)** — delta gate returned **0 BLOCKER / 1 MAJOR /
+  5 NOTE**, all six folded (§9.2); **spec gate CLOSED**. One fixture
+  shape made normative (E8 → E1's `applied=False` shape, without which
+  M30 passes on a push that moves the branch anyway), one build choice
+  settled that r2 left to the builder (**restore-then-raise** on the
+  post-condition, §3.3), one criterion form corrected away from a
+  hand-copied production literal (D3 leg (i)), two mutations added
+  (**M32**, **M33**), one criterion leg added (**A8** surface-unchanged),
+  **B5** re-filed and its scope declared, §5's closing probe promoted to
+  a **mandatory** gate instruction, and one citation corrected
+  (`:4106-4107`). Also renamed §2's bindings **B1-B6 → K1-K6** to remove
+  a label collision with §4's criteria group B — self-caught, bounded,
+  no design change. Three build choices that r1 left implicit are now normative:
   the `check_dirty` gating of L2/L5 (§3.9), the `touched_hosts` append
   (§3.7), and the insertion order (§3.3). One residual added (**§7.6**,
   the `~` token's portability half). G1's acceptance number corrected
