@@ -1,14 +1,18 @@
 # Spec — U-attrib: producer attribution by exclusive namespace
 
-Status: **r2 — DELTA, awaiting the delta gate.** r1 blind gate: **UNSOUND
-— 3 BLOCKER / 6 MAJOR / 6 NOTE**, all fifteen folded here (§10 maps each
-finding to its change). The gate independently reproduced `Z1`'s two
-legs under a cleaner methodology and **upheld the direction argument**
-(§1.2): the same-path premise was verified against the code, both
-refusals stand, and the stage was judged to genuinely invert
-`_written_since` rather than relocate the ambiguity. Every BLOCKER and
-MAJOR was a **code site this spec had not yet owned**, not a flaw in the
-direction — which is why r2 hardens rather than redesigns.
+Status: **r3 — DELTA, awaiting the delta gate.** Two rounds, 24 findings,
+all folded (§10 maps each to its change). r1 blind gate: **UNSOUND — 3
+BLOCKER / 6 MAJOR / 6 NOTE**; r2 delta: **UNSOUND — 1 BLOCKER / 3 MAJOR /
+5 NOTE**, with 14 of r1's 15 folds verified closed at mechanism level.
+**The direction has now survived two adversarial rounds** (§1.2): the
+same-path premise was verified against the code, both refusals stand, and
+the stage was judged to genuinely invert `_written_since` rather than
+relocate the ambiguity. Both `Z1` legs were independently reproduced by
+the r1 gate under a cleaner construction. Every r1 finding was a **code
+site the spec had not yet owned**; every r2 finding was on the
+**recovery machinery r2 itself added** — so both rounds harden rather
+than redesign, and r3's one BLOCKER is the reminder that a mechanism
+introduced to fix a defect is the most likely place to re-introduce it.
 Unit `U-attrib`, addressing **FW-84**
 (`docs/specs/self-learn/14-forward-work-map.md:139`). Evidence of record:
 the live incident that row states (ledger commit `efd5ebd`, 2026-08-08
@@ -29,8 +33,8 @@ is uncontended.
 |---|---|
 | `plugins/self-learn/cli/src/self_learn/worker.py` | The stage (`Stage-1`), the permission contract (`Grant-1`), the run sequence delta (`Seq-2`), the install predicate (`Install-1`), the batch prompt's write instruction, `Obs-2`'s lines and fields. |
 | `plugins/self-learn/cli/tests/test_attrib.py` | **NEW.** This unit's tests. |
-| `plugins/self-learn/cli/tests/test_repair.py` | **Fixture relocation at scale, plus three meaning changes.** Measured: **33 of its 55 tests** drive `worker.run()` with the shim writing into `<bucket>/proposals/` — including all eight `G` tests, `H3`/`H4`/`H5`, `E5`/`E6`/`E8`, `A5`, `F2`/`F5`. §3.5 is the per-criterion ruling; `CP1` is the gate. |
-| `plugins/self-learn/cli/tests/test_worker.py` | **Added in r2** *(r1 gate BLOCKER 3)*. Three edit classes, enumerated: **(i)** `shim_writes()` (`:258-262`) — THE shim helper every relocation depends on, imported by `test_repair.py` (`:64`) — gains a stage-targeted form; **(ii)** the **23** tests here that drive `worker.run()` relocate their fixtures, including the only shipped **merge happy path**, the secret-bearing deletion, `test_unexpected_artifacts`, partial success and the orphan sweep; **(iii)** `test_run_argv_pins` (`:364`) changes for `defaultMode` and the stage rule. |
+| `plugins/self-learn/cli/tests/test_repair.py` | **Fixture relocation at scale, plus the meaning changes.** Measured (predicate and table in §3.5): **43 of its 55 tests** drive a run with the shim writing into `<bucket>/proposals/` — including all eight `G` tests, `H1`–`H5`, `E5`/`E6`/`E8`, `A5`, `F2`/`F5`. §3.5 is the per-criterion ruling; `CP1` is the gate. |
+| `plugins/self-learn/cli/tests/test_worker.py` | **Added in r2** *(r1 gate BLOCKER 3)*. Three edit classes, enumerated: **(i)** `shim_writes()` (`:258-262`) — THE shim helper every relocation depends on, imported by `test_repair.py` (`:64`) — gains a stage-targeted form; **(ii)** the **18** run-driving tests here that stage output relocate their fixtures (23 drive a run; five stage nothing), including the only shipped **merge happy path**, the secret-bearing deletion, `test_unexpected_artifacts`, partial success and the orphan sweep; **(iii)** `test_run_argv_pins` (`:364`) is a **bucket 3** change — it asserts the three ledger globs `GR-b` replaces, not only `defaultMode`. |
 | `plugins/self-learn/cli/tests/test_hosting.py` | `TestWorkerContainment` — two tests whose subject changes (`CP8`). |
 | `plugins/self-learn/cli/tests/test_lock_invariant.py` | `NOT_REPO_TRUTH` gains the stage's entries, each with its why (`HY2`). |
 | `docs/specs/self-learn/03-decisions.md` | New rows `S-32`, `S-33` (§7.4), landing in the same commit as the build. |
@@ -261,7 +265,15 @@ Measured, not assumed. `Z1`–`Z3` are the measurements; this is the rule.
   the key present the identical write was refused with `is_error: true`
   and a `permission_denials` entry. This applies to **both**
   `write_settings_file` and `write_repair_settings_file`.
-  **STATUS — VERIFY, DO NOT BUILD.** `GR-a` is being landed ahead of this
+  **STATUS — VERIFY, DO NOT BUILD; and the order is an obligation, not a
+  hope** *(r2 gate NOTE 2)*. **Hotfix `1251552` must be merged to master
+  BEFORE this unit's build branches from it.** The two changes edit the
+  *same payload expressions* in `write_settings_file` and
+  `write_repair_settings_file`, so building this unit on a pre-hotfix
+  master produces a textual conflict at merge and, worse, invites
+  whichever side lands second to resolve it by dropping the other's
+  change. `AD10` carries this as a merge obligation.
+  `GR-a` is landed ahead of this
   unit as a minimal hotfix (both settings writers + content tests),
   because a void write scope is live production exposure and this unit
   will not merge in time for the next worker window. **The builder must
@@ -348,10 +360,24 @@ record's proposal inside the window. Under r1's reading there is no
 decline, so `foreign_left` is empty, `valid_landed` is 0, `status` is
 `failed`, `worker.last-run` is skipped, the staleness alarm fires and
 the failure counter increments toward the follow-on cap
-(`worker.py:2758-2779`) — on a run whose queue demonstrably advanced.
-That is exactly the false failure `U-repair`'s `D7` exists to prevent,
-and r1 would have re-introduced it while its own criterion asserted
-`status == "ok"`. `RT7` pins the world r1 had no criterion for.
+(`worker.py:2758-2779`) — on a run whose queue advanced. That is exactly
+the false failure `U-repair`'s `D7` exists to prevent, and r1 would have
+re-introduced it while its own criterion asserted `status == "ok"`.
+`RT7` pins the world r1 had no criterion for.
+
+**The bound on pass 2's real-world reach, stated rather than left as an
+implied universal** *(r2 gate NOTE 5)*. `Rule-F`'s F-a includes
+`_roster_sha_dishonest` against **this run's** composed roster
+(`worker.py:1428-1464`). A foreign proposal written against a *different*
+composition — a roster that changed between windows, which is exactly
+what happens when a skill is added or edited — carries a `roster_sha`
+that fails F-a, so pass 2 does not fire for it and the run reports
+`failed` despite the queue having advanced. So pass 2 closes the
+false-failure hole **for the matching-roster case**, which is the common
+one, and not universally; `RT7` is written as the matching-roster
+criterion and is valid as such. Widening it would mean relaxing an
+honesty check to improve a status line, which is the wrong trade and is
+not made here.
 
 **Pass 2 has exactly one carve-out, and it is a ratified ranking, not an
 exception this unit invents.** A `foreign` path whose **secret scan**
@@ -388,9 +414,11 @@ ledger.
 > **(I-b)** `d`'s current bytes are byte-identical to `snap0`'s digest
 > for `d` — nobody wrote it during the window — **and** `d` carries a
 > `record_sha` key; **or**
-> **(I-c)** `d` is named in the **install journal** (`IJ`) carried over
-> from a previous run — it is this worker's own interrupted install, and
-> is treated exactly as `I-a`.
+> **(I-c)** `d` has a live **install-journal** (`IJ`) entry from a
+> previous run **and** `d`'s current bytes still hash to that entry's
+> recorded digest (or `d` is absent) — it is this worker's own
+> interrupted install, untouched since. Otherwise `I-c` does **not**
+> fire and the path falls through to the ordinary decline.
 >
 > **All legs are evaluated at `S8`, on `d`'s state under the lock.** A
 > `d` that is **absent from `snap0` but exists now** was created during
@@ -405,17 +433,41 @@ ledger.
 > accounting is not decided here** — it is `Rule-Fp`'s, in `S8`'s pass 2
 > (§3.3).
 
-**`IJ` — the install journal (NORMATIVE)** *(r1 gate MAJOR 1)*. A file
-at `_p("worker.install-journal")` — in the cache, **outside** the stage,
-so `ST-c`'s clear does not remove it — holding one destination path per
-line.
+**`IJ` — the install journal (NORMATIVE)** *(r1 gate MAJOR 1; reshaped by
+the r2 gate's BLOCKER 1 and MAJOR 1)*. A file at
+`_p("worker.install-journal")` — in the cache, **outside** the stage, so
+`ST-c`'s clear does not remove it — holding one
+**`(destination, digest)`** pair per line, where `digest` is
+`sha_anchor` of the bytes **this worker wrote** to that destination.
 
-- Written **before** the copy, removed **after** the stamp succeeds,
-  per file.
-- Read **once at `S1`, before `stage_reset`**, into the carried-over set
-  `I-c` consults; the on-disk file is then truncated. A journal entry
-  therefore grants exactly one subsequent run permission to overwrite
-  that destination.
+- **The digest is the whole safety property, and r2 shipped without it**
+  *(r2 gate BLOCKER 1)*. A journal keyed on the path alone is an
+  unconditional overwrite licence: between an interrupted run and the
+  next window — minutes to hours — an attended session can legitimately
+  write that exact path, because it *is* a batch record's proposal, the
+  shared path §1.2 is entirely about. r2's `I-c` said "treated exactly as
+  `I-a`", which bypasses `I-b`'s byte-identity check, so the next run
+  would overwrite the human's bytes from the stage: **the FW-84 incident,
+  re-entering through the machinery added to recover from a crash.** With
+  the digest, `I-c` authorises overwriting **only the exact bytes this
+  worker left behind**, and the moment anyone else touches that path the
+  entry stops matching and the ordinary decline applies. `IN11` drives a
+  concurrent producer into that gap.
+- **Written before the copy; the entry is removed after the stamp
+  succeeds**, per file.
+- **Read, written and pruned only inside `S8`'s pass 1, under
+  `_harvest`'s lock — there is no bulk truncation and no read at `S1`**
+  *(r2 gate MAJOR 1)*. r2 read-then-truncated at `S1`, **before** the
+  model window — the documented kill zone (a 1800 s invocation; FW-83's
+  01:09Z window was killed by user decision on this host). A kill there
+  discarded the licence for a still-valid unstamped destination and
+  recreated the permanent stall `IJ` exists to prevent, one crash later.
+  Entries are instead removed **individually**: on a successful stamp,
+  or when found **stale** (the destination's digest no longer matches, so
+  another producer has taken it over — dropping the entry is the correct
+  reading of that). An unconsumed entry may persist across many windows
+  and is inert while it does, because the digest leg makes it
+  unusable against anything but the bytes it names.
 - **The failure it exists for, measured against the shipped code.**
   `AD7` stamps *after* the copy, so a kill, a timeout, or a
   `stamp_proposal` exception leaves a **valid, unstamped** destination
@@ -520,24 +572,56 @@ their fixtures, and contradicted its own `CP4`)*. **A `U-repair`
 criterion not named in any bucket below must survive whole.**
 
 **Bucket 1 — assertion, mechanism and fixture all intact.** These do not
-drive `worker.run()` with a shim-written proposal, so the namespace never
-reaches them: `U-repair` `A1`–`A4` (the checklist and the exemplar, read
-from constants and doctrine), `E1`–`E4` (constants and timeout readers),
-`E7` (the backoff gate's location), `F1`, `F3`, `F4`, `F6`, `H1`, `H2`
-(exit codes and the stdout summary).
+drive a run with a shim-written proposal, so the namespace never reaches
+them: `U-repair` `A1`–`A4` (the checklist and the exemplar, read from
+constants and doctrine), `E1`–`E4` (constants and timeout readers), `E7`
+(the backoff gate's location), `F3`, `F4`, `F6`.
+
+**`H1`, `H2` and `F1` were in bucket 1 in r2 and do not belong there**
+*(r2 gate MAJOR 2)*. The error had r1-BLOCKER-1's exact shape — membership
+computed by matching the literal `worker.run(`, which is blind to
+cli-mediated runs. Measured: `test_h1_the_exit_code_contract` and
+`test_h2_the_stdout_summary_is_byte_stable` drive via
+`cli.main(["worker", "run"])` **and** call `shim_writes` → **bucket 2**.
+`F1` (`test_worker.py::test_run_argv_pins`) drives `worker.run()`, stages
+output, **and** asserts `rules == [the three ledger globs]` — which
+`GR-b` replaces → **bucket 3**, beside `TestWorkerContainment`. Leaving
+`F1` in bucket 1 would have reproduced the §3.5-versus-criterion
+contradiction with §0 still naming §3.5 the arbiter.
 
 **Bucket 2 — assertion intact; fixture relocates to the stage.** The
 shim writes the model's output into `stage_dir()` instead of into
 `<bucket>/proposals/`; **nothing about what is asserted changes.** This
-is the large bucket and r1 understated it: measured by AST, **33 of
-`test_repair.py`'s 55 tests** drive `worker.run()` this way, plus **23 in
-`test_worker.py`**. Members: `U-repair` `A5`, `B1`–`B13`, **all eight
-`G` tests** (`G1`–`G8` — the Set-J pin, the `V`-rule, the four
-fabrication legs and the sentinel re-assert), `E5`, `E6`, `E8`, `F2`,
-`F5`, `H3`, `H4`, `H5`, `D2`, `D4`, `D5`, `D6(i)`, `D8(i)`.
-**`CP4` is the worked example of this bucket, not an exception to
-bucket 1** — r1 had `G1` in both, and `§0` makes this section the sole
+is the build's mechanical scope. Members: `U-repair` `A5`, `B1`–`B13`,
+**all eight `G` tests** (`G1`–`G8` — the Set-J pin, the `V`-rule, the
+four fabrication legs and the sentinel re-assert), `E5`, `E6`, `E8`,
+`F2`, `F5`, `H1`, `H2`, `H3`, `H4`, `H5`, `D2`, `D4`, `D5`, `D6(i)`,
+`D8(i)`. **`CP4` is the worked example of this bucket, not an exception
+to bucket 1** — r1 had `G1` in both, and `§0` makes this section the sole
 arbiter, so the contradiction resolved the wrong way.
+
+**The size, measured here with its predicate stated** *(r2 gate MAJOR 3:
+r2 quoted "33 of 55 / 23", which were an estimate adopted as a
+measurement — the failure this project keeps re-learning)*. Predicate,
+stated so the number is checkable rather than trusted: *a test **drives a
+run** if its body reaches `worker.run(`, `cli.main([… "worker", "run" …])`
+or `_cmd_worker`; it **relocates** if it also makes the shim write —
+`CLAUDE_SHIM_SCRIPT*`, `shim_writes`, or any `*_script(` helper.* Under
+that predicate:
+
+| file | tests | drive a run | **relocate** |
+|---|---|---|---|
+| `test_repair.py` | 55 | 44 | **43** |
+| `test_worker.py` | 45 | 23 | **18** |
+
+The single non-relocating driver in `test_repair.py` is
+`test_f6_no_test_invokes_a_real_claude`; the five in `test_worker.py` are
+the idle run, the deferred skip, the no-sync-script guard, escalation and
+the sentinel release. **The count is predicate-sensitive** — a narrower
+"stages a proposal literal" reading yields 30 and the r2 gate's own
+reading yielded 41 — so **the build's obligation is the predicate, not
+the integer**, and a builder should re-run it rather than trust any
+number in this table.
 
 **Bucket 3 — meaning changes.** The table below; each row names its
 replacement criterion here.
@@ -554,6 +638,7 @@ replacement criterion here.
 | `D7` | assertion **survives verbatim** (a foreign file makes `status` `ok`, touches `worker.last-run`, stays out of `proposed`/`valid_landed`/`touched`); the **mechanism** moves from Rule-F inside the model-output loop to `S8`'s independent pass 2, which is what makes it hold when the model wrote nothing for that record | `RT7`, §3.3 pass 2 |
 | `D3` | **the fixture inverts, and the ranking is preserved.** Today the concurrent producer's secret-bearing proposal is scanned-and-deleted because it is in `written1`; here the model's own output is scanned in the **stage** and never reaches the ledger at all — strictly stronger. For a **foreign** ledger path the scan still runs and still deletes, as the single named carve-out (§3.3 pass 2), because `U-repair` ratified scan-over-attribution and this unit does not get to re-rank it silently | `CP5`'s new secret-with-matching-`record_sha` leg, `IN10` |
 | `D9` | **fails outright as written, and is replaced.** Its assertion ("a hook proposal satisfying F-a ∧ F-b is nonetheless stamped and counted in `proposed`") is *unfalsifiable in the stage* — with the `Φ` skip removed (`IN9`), **no** staged file is ever left foreign, hook or not — and *false in the ledger*, where pass 2 never stamps or counts anything. What `D9` protects — no model-authored `script:` bytes ever reaching `route` — is preserved by a stronger property: **every** staged hook proposal is installed only through the stamp, which regenerates `script`. Its converse must also be stated: a **foreign** hook proposal in the ledger is now left entirely alone rather than stamped-and-committed, which is safe precisely because a ledger hook proposal the worker did not write is either a previous install (already stamped) or an attended `proposal validate` (also stamped) | `RT8` |
+| `F1` (`test_worker.py::test_run_argv_pins`) | *(r2 gate MAJOR 2)* it drives a run, stages output **and** asserts `rules == [the three ledger globs]` — an assertion `GR-b` replaces outright. Both its fixture and its expectation change | `GR2`, `SW1` |
 | `test_hosting.py::TestWorkerContainment` | both tests change subject: the batch allow list becomes `Grant-1`'s one stage rule, and the settings file gains `defaultMode` | `CP8`, `GR1`, `GR2` |
 
 **Explicitly NOT altered, with owners, so scope cannot creep:**
@@ -793,8 +878,13 @@ recursive-write hazard `_proposal_snapshot`'s own docstring exists for.
 **GR1 — the settings file enforces, rather than declares.** Assert
 `json.loads(write_settings_file(home))["permissions"]["defaultMode"] ==
 "default"`, and the same for `write_repair_settings_file`.
-*Broken:* `MA7`. This is the criterion that fails on today's shipped
-code, and `Z1` is why it is a criterion rather than a preference.
+*Broken:* `MA7` — which reddens `GR1` regardless of *which* change built
+the property, so `GR1` is a fully-mutated criterion like any other
+*(r2 gate NOTE 1: r2 described it three inconsistent ways at once)*.
+Past tense, now that the hotfix has landed: this criterion **did** fail
+on the shipped code before `GR-a`, and `Z1` is why it is a criterion
+rather than a preference. What it verifies here is that the property
+**survives this unit's relocation** of both settings files.
 
 **GR2 — the batch invocation is granted the stage and nothing else.**
 Assert the batch settings file's `permissions.allow` equals
@@ -896,21 +986,43 @@ set) — the shape `U-repair`'s code gate proved a spec can ship and a
 static analyser cannot forgive.
 
 **IN8 — an interrupted install is recovered, not stalled forever.**
-Crash fixture, in three parts. (a) **Simulated crash:** monkeypatch
+Crash fixture, in four parts. (a) **Simulated crash:** monkeypatch
 `stamp_proposal` to raise on its first call; run; assert the destination
-exists, is unstamped, is named in `IJ` on disk, the staged file is gone,
-the destination was **not** deleted, and the "installed but not stamped"
-line was logged. (b) **Recovery:** run again with a fresh staged proposal
-for the same record and a working stamp; assert `I-c` fired (the
-"resuming interrupted install" line), the install landed, the record is
-in `proposed`, and `IJ` is empty afterwards. (c) **The journal is
-single-use:** a third run whose destination is again
-unstamped-and-unchanged, with no journal entry, **declines**.
-*Broken:* `MA37` (drop `I-c`) — the destination is then declined every
+exists, is unstamped, has an `IJ` entry whose digest equals the
+destination's bytes, the staged file is gone, the destination was **not**
+deleted, and the "installed but not stamped" line was logged. (b)
+**Recovery:** run again with a fresh staged proposal for the same record
+and a working stamp; assert `I-c` fired (the "resuming interrupted
+install" line), the install landed, the record is in `proposed`, and the
+entry is gone from `IJ`. (c) **No entry, no licence:** a third run whose
+destination is unstamped-and-unchanged with **no** `IJ` entry
+**declines**. (d) **The kill-zone leg** *(r2 gate MAJOR 1)*: kill the run
+between the journal write and the stamp — i.e. raise from
+`stamp_proposal` — then assert that a run which **fails inside the model
+window** (shim exits non-zero, nothing staged) leaves the entry intact,
+and that the run **after** that still recovers via `I-c`.
+*Broken:* `MA36` (on a stamp exception, delete the destination as well as
+the staged file — leg (a) then finds no destination and no entry to
+recover from); `MA37` (drop `I-c`) — the destination is declined every
 window forever while the run reports `failed` and drives the backoff to
-the follow-on cap (`worker.py:2758-2779`); and `MA38` (never truncate
-`IJ`), which turns a one-shot recovery into a standing licence to
-overwrite that path.
+the follow-on cap (`worker.py:2758-2779`); and `MA38` (read and truncate
+`IJ` at `S1`, r2's shape) — leg (d) goes red, because the licence is
+discarded before the kill zone it exists to survive.
+
+**IN11 — the journal is not an overwrite licence.** *(r2 gate BLOCKER
+1.)* Stage the crash of `IN8(a)` to leave a journaled, unstamped
+destination. Then, **in the gap before the next run**, have the
+concurrent-producer shim rewrite that exact path with different valid
+bytes — the attended session legitimately picking up the record. Run.
+Assert: the destination's bytes are **the concurrent producer's**, the
+staged proposal did **not** land, the name is in `result.not_installed`,
+the destination was **not** deleted, and the stale `IJ` entry was
+dropped. Second leg — the positive control: the identical fixture
+**without** the concurrent write installs normally, so a build that
+simply disables `I-c` cannot pass both.
+*Broken:* `MA49` (journal the destination only, with `I-c` treating it as
+`I-a` — r2's shape). **This is the FW-84 incident re-entering through the
+recovery machinery**, and it is the mutation this criterion exists for.
 
 **IN9 — a staged file with a matching `record_sha` is installed like any
 other.** The shim writes a **valid** staged proposal for a batch record
@@ -1234,8 +1346,12 @@ the function that legitimately mutates the ledger.
 Source-level: assert the install writes via `Path.write_text` (or
 `_dump_yaml` for a merge), that `worker.py` imports no `shutil` copy
 helper, and — the falsifiable leg — that
-`test_lock_invariant.py`'s own `_mutating_call` classifier **returns a
-primitive** for the install's call node.
+`test_lock_invariant.py`'s own **`_primitive`** classifier (`:218`)
+**returns a primitive** for the install's call node. The test imports and
+calls that function by name *(r2 gate NOTE 3: r2 called it
+`_mutating_call`, which does not exist — an import-and-call criterion
+naming a non-existent symbol fails as an `ImportError`, not as the check
+it claims to be)*.
 *Broken:* `MA48` (install with `shutil.copy2`). The analyser recognises
 `write_text`/`rename`/`unlink`, `shutil.move` and `os.replace`
 (`test_lock_invariant.py:85`, `:223-229`) — `copy2` is in none of them,
@@ -1291,7 +1407,8 @@ reports mutations as survived that never executed (FW-61). Confirm
 | MA35 | drop the parent test from `expected_shape` entirely | NS6 |
 | MA36 | on a stamp exception, delete the destination as well as the staged file | IN8(a) |
 | **MA37** | drop `I-c` (no install journal) | **IN8(b)** — permanent stall + backoff to the follow-on cap |
-| MA38 | never truncate `IJ` after reading it at `S1` | IN8(c) |
+| **MA38** | read and truncate `IJ` at `S1`, before the model window (r2's shape) | **IN8(d)** — a kill in the 1800 s window discards the licence and recreates the stall |
+| **MA49** | journal the destination **only**, with `I-c` treating a journaled path exactly as `I-a` (r2's shape) | **IN11** — the FW-84 incident, re-entering through the recovery machinery |
 | **MA39** | keep `_validate_written`'s `verdict.phi and not verdict.is_hook` skip | **IN9** — the silent black hole |
 | MA40 | skip the secret scan on the foreign pass | IN10(b) |
 | **MA41** | populate `foreign_left` only from `Install-1` declines (r1's reading) | **RT7** — `U-repair`'s `D7` regression |
@@ -1303,15 +1420,16 @@ reports mutations as survived that never executed (FW-61). Confirm
 | MA47 | discard staged files through `_git_rm_or_unlink` | OB3's type leg |
 | **MA48** | install with `shutil.copy2` | **HY4** — the install becomes invisible to the lock invariant while the suite stays green |
 
-**Every criterion has at least one mutation above except `CP1`, `CP6`,
-`GR1` and `HY1`/`HY3` — deliberately, and stated so the omission is not
-read as the same gap.** `CP6` and `HY1` are reddened by `U-repair`'s own
-`M21`, `M36` and `M52`, which this unit must keep red; `CP1` and `HY3`
-are process gates over the whole tree, and the instrument that checks
-them is running them; `GR1` is a **verification** criterion over a
-property landed by the separate hotfix (§3.2 `GR-a`), and its reddening
-mutation lives in that change, not this one — a builder who cannot make
-`GR1` fail by editing this unit's diff has found the expected state.
+**Every criterion has at least one mutation above except `CP1`, `CP6`
+and `HY1`/`HY3` — deliberately, and stated so the omission is not read as
+the same gap.** `CP6` and `HY1` are reddened by `U-repair`'s own `M21`,
+`M36` and `M52`, which this unit must keep red; `CP1` and `HY3` are
+process gates over the whole tree, and the instrument that checks them is
+running them. **`GR1` is NOT in this list** *(r2 gate NOTE 1)*: it is
+verified-not-built in the sense that the hotfix supplies the property,
+but `MA7` reddens it here all the same — "who built it" and "can a
+one-line edit break it" are different questions, and only the second one
+decides whether a criterion needs a mutation.
 
 **`U-repair`'s mutation plan must still redden its own criteria**, with
 the four exceptions §3.5 names (`M46`, `M49a`, `M53` and the `D8(ii)`
@@ -1395,6 +1513,14 @@ than findings:
   sweep and `_proposal_snapshot`'s recursive `rglob` would then see. A
   torn write leaves the same journaled state as a crashed stamp, so `IJ`
   already covers it and one recovery mechanism is better than two.
+- **AD10 — the merge order is part of the design** *(r2 gate NOTE 2)*.
+  Hotfix `1251552` (`defaultMode` in both settings writers) merges to
+  master **first**; this unit branches from a master that already
+  contains it. Both changes edit the same payload expressions, so the
+  reverse order is a textual conflict whose most likely resolution is
+  someone dropping one of the two changes — and the one that looks
+  droppable is the security fix. The build report states which master
+  commit the build branched from.
 - **AD9 — the flag-day facts, stated rather than left safe-by-silence**
   *(r1 gate NOTE 6)*. Two properties make the stage's first appearance
   safe, and both are facts about the shipped code rather than hopes:
@@ -1655,3 +1781,20 @@ own cleaner construction.
   expedited hotfix baseline, and `Z1`'s two confounds audited in §9 —
   one excluded by the refusal mechanism, one only *observed* absent and
   reported as the weaker claim it is.
+- **r3 (2026-08-09)** — delta gate **UNSOUND: 1 BLOCKER / 3 MAJOR / 5
+  NOTE**, all folded; 14 of r2's 15 folds were confirmed closed at
+  mechanism level, and every new finding landed on the **recovery
+  machinery r2 itself added** — which is the honest shape of a fix that
+  introduced a new mechanism late. Map:
+
+  | finding | fold |
+  |---|---|
+  | B1 — `I-c` was an unconditional overwrite licence keyed on a path | `IJ` now records **`(destination, digest)`**; `I-c` fires only if `d` is absent or still hashes to the journaled digest, else the ordinary decline. New `IN11` (concurrent producer in the gap, with a positive control) + `MA49` |
+  | M1 — read-then-truncate at `S1` sat in the kill zone | journal is read, written and pruned **only inside `S8` pass 1, under the lock**; entries are removed individually on stamp or when stale; **no bulk truncation**. `IN8(d)` + `MA38` rewritten |
+  | M2 — three bucket-membership errors | `H1`/`H2` → bucket 2 (they drive via `cli.main(["worker","run"])` + `shim_writes`); `F1` → bucket 3 with its own row (it asserts the three globs `GR-b` replaces) |
+  | M3 — r2's counts were the gate's estimate adopted as measurement | re-measured here with the **predicate written out**: `test_repair.py` 55/44/**43**, `test_worker.py` 45/23/**18**, plus the named residuals and an explicit note that the count is predicate-sensitive (30 / 41 / 43 under three readings) so the obligation is the predicate |
+  | N1 — `GR1` described three inconsistent ways | reconciled: removed from §5's exemption list (`MA7` reddens it), §4 body moved to past tense, verify-not-build kept only as provenance |
+  | N2 — hotfix dependency asserted, not scheduled | `AD10`: hotfix `1251552` merges first; same payload expressions, and the droppable-looking side is the security fix |
+  | N3 — `_mutating_call` does not exist | corrected to **`_primitive`** (`test_lock_invariant.py:218`); noted that a wrong symbol in an import-and-call criterion fails as `ImportError`, not as the check |
+  | N4 — 48/48 bijection off by one | `MA36` is now named by `IN8(a)`'s Broken line |
+  | N5 — pass 2's reach implied universal | §3.3 carries the roster bound: F-a's `_roster_sha_dishonest` is against **this run's** roster, so a cross-composition foreign proposal does not fire pass 2; `RT7` stands as the matching-roster criterion, and relaxing the honesty check to improve a status line is refused |
