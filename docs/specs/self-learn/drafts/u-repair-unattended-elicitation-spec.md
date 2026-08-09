@@ -1,11 +1,14 @@
 # Spec — U-repair: the unattended elicitation contract, one bounded repair round, and the throttle
 
-Status: **r2 — folded, awaiting the delta gate.** The r1 blind spec gate
-returned **UNSOUND — 3 BLOCKER / 4 MAJOR / 5 NOTE**; all twelve are
-folded and §10 maps each to its change. The gate cite-checked all ~46
-`file:line` references, re-derived §9-X2's census independently and
-re-ran `X1`: **the evidence base survived intact and every defect was in
-the normative register**, which is why r2 hardens rather than redesigns.
+Status: **r3 — folded twice, awaiting the second delta gate.** The r1
+blind gate returned **UNSOUND — 3 BLOCKER / 4 MAJOR / 5 NOTE** and the
+r2 delta gate **UNSOUND — 1 BLOCKER / 3 MAJOR / 5 NOTE**, with all
+twelve r1 findings verified **CLOSED on the failures named**; every r2
+finding was new, introduced by the fold. §10 maps each of the 21 to its
+change. Both gates cite-checked the `file:line` references, re-derived
+§9-X2's census independently and re-ran `X1`: **the evidence base has
+survived both rounds intact and every defect has been in the normative
+register**, which is why r2 and r3 harden rather than redesign.
 Unit `U-repair`, addressing **FW-83**
 (`docs/specs/self-learn/14-forward-work-map.md:138`). Evidence of record:
 `docs/specs/self-learn/research/2026-08-08-worker-maiden-run-elicitation-failure.md`
@@ -83,7 +86,11 @@ G, D, E, F, H**, with the fabrication-containment group taking `G` rather
 than `C` (§4). Table-E's rows are `TE1`…`TE21` — **TE-prefixed because
 bare `T1`/`T3a`/`T4` are the doctrine's gate labels**, which this spec
 also cites. Set-E's rules are hyphenated (`E-1`, `E-INELIGIBLE-2`) and
-are never criteria group `E`. Seq-1's steps are `S1`…`S8`;
+are never criteria group `E`. **That adjacency is now live and worth
+reading slowly:** `E-4`/`E-5` are Set-E's two *provenance rules* (§3.4),
+while `E4`/`E5` are the timeout-fallback and backoff-suppression
+*criteria* (§4-E). The hyphen is the whole distinction; nothing else
+disambiguates them. Seq-1's steps are `S1`…`S8`;
 decision-register rows are always hyphenated (`S-26`). Rule-F (§3.8) is
 always written with its hyphen and is never criteria group `F`.
 `X1`…`X7` are this spec's own measurements (§9), never criteria. **`A13` and `A19` are `U-composer`'s
@@ -350,8 +357,19 @@ link is explicit:
 
 > **Pair-1.** Every example proposal block carries, as its **first line
 > inside the ` ```yaml ` fence**, the comment `# record: lrn-<8 hex>`.
-> Every example record block carries that same id in its frontmatter
-> `id:`. The pairing is the equality of those two ids.
+> Every example record block is a ` ```markdown ` fence **whose first
+> line is `---` and whose frontmatter carries `id: lrn-<8 hex>`** — that
+> conjunction is the record-block **selector**, and it is normative. The
+> pairing is the equality of the two ids.
+
+The selector is pinned because neither obvious alternative works *(delta
+gate NOTE 6)*: "every ` ```markdown ` fence" is true of the doctrine
+today (it has exactly one) but reddens `A2`'s totality leg the moment
+someone adds an unrelated markdown example, and "every fence containing
+`id: lrn-`" makes totality vacuous by *defining* the record set as
+whatever the proposals already point at. A frontmatter-shaped markdown
+fence is a structural property of a record and of nothing else in the
+doctrine.
 
 A YAML comment is invisible to `yaml.load` (so the proposal schema gains
 no key — the doctrine's own "never invent keys" rule holds) and trivially
@@ -402,7 +420,7 @@ current code and their current log lines.
 | `S2` | invoke `claude` #1, `timeout = invoke_timeout_secs()` *(unchanged but for the constant, §3.9)* | — |
 | `S3` | `written1 = _written_since(home, snap0)` *(unchanged)* | — |
 | `S4` | **dry check**: classify every path in `written1` with the *same* per-file check `_validate_written` performs, **mutating nothing on disk** — no `_dump_yaml`, no `stamp_proposal`, no deletion, no git. Yields `verdicts: dict[Path, ProposalError \| None]` **and** the `Φ` membership of each path (§3.5) | — |
-| `S5` | if repairs are enabled (§3.7) and `E = {p : verdicts[p] is a Set-E refusal}` is non-empty: `snap1 = _proposal_snapshot(home)`; `pre = {p: p.read_text() for p in E}`; compose the repair prompt (§3.6) and the narrowed settings file (§3.7); invoke `claude` #2, `timeout = repair_timeout_secs()`; `touched2 = _written_since(home, snap1)`; build the **refusal map** `refuse: dict[Path, str]` per §3.5 | — |
+| `S5` | if repairs are enabled (§3.7) and `E = {p : p satisfies ALL of Set-E's five rules — the two provenance rules `E-4`/`E-5` about the path, and the three text rules `E-1`…`E-3` about its `S4` refusal (§3.4)}` is non-empty: `snap1 = _proposal_snapshot(home)`; `pre = {p: p.read_text() for p in E}`; compose the repair prompt (§3.6) and the narrowed settings file (§3.7); invoke `claude` #2, `timeout = repair_timeout_secs()`; `touched2 = _written_since(home, snap1)`; build the **refusal map** `refuse: dict[Path, str]` per §3.5 | — |
 | `S6` | re-assert the sentinel hold — `if not sentinel.heartbeat(): hold = sentinel.hold(); sentinel.heartbeat()`. **At least one re-assert must occur after the LAST model invocation and before the first mutation** (`worker.py:2010-2012`, moved). Re-asserting after **both** invocations is explicitly permitted and is strictly safer; only re-asserting *solely* after the first is forbidden *(r1 gate NOTE 8)* | — |
 | `S7` | `written = _written_since(home, snap0)` — recomputed, so it covers both rounds *(same function, second call)* | — |
 | `S8` | `_harvest(home, written, roster, refuse=refuse)` — validates for real, applies Rule-F (§3.8), deletes what still fails, sweeps orphans, commits *(unchanged but for the `refuse` parameter and Rule-F)* | **commit lock** |
@@ -440,7 +458,27 @@ one so that shape reddens (`M45`).
 
 ### 3.4 Set-E — repair-eligible refusals (NORMATIVE)
 
-A refusal is **repair-eligible** iff **all three**:
+A **path** is repair-eligible iff its refusal satisfies `E-1`…`E-3`
+**and** the path itself satisfies `E-4`…`E-5`. r1 and r2 had only the
+refusal-text rules; the two provenance rules are r3's answer to the
+delta gate's BLOCKER 1 and are stated first because they decide *whose
+file this is*, which outranks *what is wrong with it*.
+
+**Provenance (about the path):**
+
+- `E-4` — **batch membership.** The path is `<bucket>/proposals/lrn-<id>.yaml`
+  for an `<id>` in **this run's batch**. The analyst was asked to write
+  exactly these; anything else in `written1` was written by someone the
+  worker never instructed.
+- `E-5` — **unstamped.** The file carries **no** `record_sha` matching
+  its record at `S4` (i.e. Rule-F's F-b is false, §3.8). Only the CLI
+  stamps, and it stamps only after a validation that passed
+  (`selfcheck.py:167-192` — `proposal validate` returns
+  `EXIT_SCHEMA_INVALID` and leaves the file **intact and unstamped**), so
+  a matching `record_sha` on an invalid file means a non-model producer
+  validated it at some earlier point and is working on it now.
+
+**Refusal text (about the defect):**
 
 - `E-1` its message begins with `gates.`, **and**
 - `E-2` its message does not contain `roster_sha`, **and**
@@ -534,6 +572,47 @@ returns the stated class.
 | `TE20` | `no pending record for` | INELIGIBLE | `E-1` + `E-INELIGIBLE-4` |
 | `TE21` | a `card:` refusal (`_validate_card`) | INELIGIBLE | `E-1` |
 
+**Why `E-4`/`E-5` exist, and what they do and do not close** *(delta gate
+BLOCKER 1)*. r2 defined `E` by refusal **text** alone, over `written1` —
+and `written1` is a diff of the world, not a record of what the model
+wrote. So an attended Discuss loop's in-flight proposal for a batch
+record, refused by `proposal validate` with a `gates.…` message and left
+on disk while the human works, entered `E`: its absolute path went into
+the repair prompt under an `Edit(/<abs path>)` grant, **a second model
+rewrote a human's in-flight analysis, and a successful repair LANDED AND
+COMMITTED it** — the human's next `validate` reads a file they did not
+write and the record may leave the queue. Today the same bytes are
+deleted: the record stays pending and visibly returns. Silent
+replacement-then-landing is strictly worse, and it violates §2's "same or
+narrower scope — never wider".
+
+`E-4` and `E-5` are both computed from data `S4` already holds, and they
+close two of the three sub-cases outright:
+
+| sub-case | closed by | outcome now |
+|---|---|---|
+| attended session working on a record **not** in this batch | `E-4` | never repairable; deleted as today |
+| attended proposal that **has** passed validation at some point (stamped), now being edited | `E-5` | never repairable; deleted as today. **This is the shape FW-84 actually measured** — its two destroyed files were "analyzed *and validated*" |
+| attended proposal for a **batch** record that has **never** passed validation | **neither** | still repairable — the genuine residual, §7.3 |
+
+**The remainder is not closable at this seam and this spec does not
+pretend otherwise.** A never-validated attended proposal and model output
+are byte-identical in every respect the worker can observe. §7.3 declares
+it, `D8` pins the behaviour so it is not rediscovered as a bug, and §8
+names the one fix that closes it — FW-84's per-file provenance.
+
+**One of the gate's two candidate guards is refused, with a reason:**
+"exclude any path whose pre-window bytes differ from what round 1's
+snapshot attributes to the model" is **not a discriminator**. Every path
+in `written1` differs from `snap0` by construction, and both producers
+create new files *and* overwrite existing ones (the model overwrites a
+stale proposal on the common eligibility path). Adopting it would empty
+`E` on the most common legitimate case while closing nothing.
+`E-5` — the gate's second candidate — is adopted verbatim, including its
+observation that routing a model-rewrite-that-preserved-a-sha to the
+delete path is safe and self-clearing: the successor written next window
+has no sha to preserve.
+
 **`TE18` is the row that proves `E-1` cannot simply be widened**: it is
 prefix-indistinguishable from `_validate_derivation`'s
 `recommendation must be {expected!r} for outcome …` (`:1392`) and from
@@ -593,7 +672,7 @@ machinery added to prevent it *(r1 gate MAJOR 7)*.
 
 | set | membership (decided at `S4`) | rule |
 |---|---|---|
-| `A` | `= E`, the assigned repair set — refused at `S4` with a Set-E-eligible refusal | Set-J pin as above |
+| `A` | `= E`, the assigned repair set — refused at `S4`, and satisfying all five Set-E rules (§3.4). `E-5` guarantees `A ∩ Φ = ∅` from the other side: a member of `A` is unstamped, a member of `Φ` is stamped | Set-J pin as above |
 | `Φ` | **FOREIGN at `S4`** — valid **and** `record_sha`-matching, i.e. Rule-F's F-a ∧ F-b (§3.8) | **never refused, never assigned, never counted.** Excluded from `V` by construction. Re-evaluated against current bytes at `S8`, because the file may have changed again during the repair window |
 | `V` | valid at `S4` **and not in `Φ`** | if changed during the repair window → `refuse[p] = "repair rewrote a proposal that had already validated"`. `Φ`'s exclusion is what makes this safe: every remaining member is round-1 **model** output, so refusing it destroys nothing foreign |
 | `O` | changed in the repair window, in none of `A`/`Φ`/`V` | **not refused.** Rule-F is applied at `S8`; if not foreign, the file falls through to normal `S8` handling exactly as round-1 output would. **This is an FW-84 concession and is deliberate:** a blanket out-of-scope refusal here would make the repair round a *new* destroyer of concurrent attended writes, which §2 forbids. Genuinely-new repair litter is still caught by the naming-contract check and by ordinary validation |
@@ -702,6 +781,38 @@ is normative and is stated once, here:
 >
 > A file satisfying **F-b but not F-a is NOT foreign**: it falls through
 > to today's delete path, unchanged.
+>
+> **Rule-F never applies to a `destination: hook` proposal** — such a
+> file always takes the stamp-or-delete path.
+>
+> A foreign file **counts as run progress**: `result.status` is `ok` and
+> `worker.last-run` is touched when `valid_landed + len(foreign_left) >
+> 0`, even though `foreign_left` members are in neither `proposed` nor
+> `valid_landed`.
+
+**The hook carve-out is a P9 hole this rule would otherwise open**
+*(found while folding delta MAJOR 3)*. `stamp_proposal` is not only the
+`record_sha` writer: for `destination: hook` it **generates `script`**
+from the structured compile input, overwriting anything the model wrote
+(`ledger_ops.py:1700-1701`, whose docstring's whole claim is "no path
+ships model-authored script text"). A hook proposal that skipped stamping
+would carry model-authored executable bytes, and `route` applies the
+stamped bytes verbatim (M3-2). Excluding hooks costs nothing: script
+generation is deterministic from the record and the `hook:` block, so
+re-stamping a genuinely foreign hook proposal is a content no-op unless a
+human hand-edited the script — which the doctrine forbids ("Hand-tuning a
+guard = edit the hook block, re-validate", §5.1). Pinned by `D9`/`M50`.
+
+**Why a foreign file counts as progress** *(delta gate MAJOR 3)*. A Φ
+file is, by F-a ∧ F-b, **fresh** by the shipped predicate: its record is
+no longer `is_unanalyzed`, so the queue moved. r2 counted it nowhere, so
+a run whose only outcome was a fresh valid proposal reported
+`status == "failed"`, skipped `worker.last-run`, fired the staleness
+alarm, spawned a follow-on and incremented the backoff — a false failure
+on a run that did its job. Counting Φ toward *status* while keeping it
+out of `proposed`/`valid_landed`/`touched` is the honest split: the queue
+advanced, and the worker does not claim authorship of bytes it did not
+write.
 
 `sha_anchor` is imported from **`normalize`** (`normalize.py:57`), not
 from `ledger_ops` — it is re-exported there by import (`:40`) but is not
@@ -721,7 +832,9 @@ S-26-invalid proposal makes its record **eligible**. Measured live by the
 gate, read-only: of 6 pending records carrying a proposal, all 6 have a
 matching `record_sha` and 4 are schema-invalid (`lrn-3e4c2df3`,
 `lrn-547d8eb6`, `lrn-792f43c8`, `lrn-f2053910`); `lrn-792f43c8` is
-eligible **today** with exactly that file on disk. Under r1's Rule-F the
+eligible **at the time of measurement** (re-checked by the delta gate at
+19:20 with identical figures; a live queue moves, so this is a snapshot,
+not a standing claim) with exactly that file on disk. Under r1's Rule-F the
 model's own output would have won total immunity — no containment, no
 derivation check, no roster-sha check, no deletion — and, being excluded
 from `result.touched`, would never even be staged by `_commit_locked`:
@@ -739,6 +852,16 @@ What Rule-F does and does not close:
 - **It closes the destructive half of FW-84's measured incident**: the
   two proposals the attended session had analyzed *and validated*, which
   `efd5ebd` deleted, satisfy F-a and F-b and would now be left untouched.
+- **The uncommitted-model-write case is accepted, not closed.** If the
+  model — not a human — produced the Φ file, nobody commits it: it sits
+  as an uncommitted (possibly tracked) modification. Accepted because the
+  alternative is worse: committing it means the worker publishing bytes
+  that may be a human's in-flight work, which is the harm this unit
+  exists to reduce, and the two are byte-indistinguishable (§3.4). The
+  resulting state — a valid, stamped, uncommitted proposal — is one the
+  ledger already reaches every time an attended session writes one and
+  has not yet run a verb, so it is a normal state, not a new corruption.
+  Named in §7.3 with the rest of the FW-84 family.
 - **It does not close** an attended proposal written but not yet
   validated (no `record_sha` — indistinguishable from model output), nor
   one **mid-edit after validation** (F-b holds, F-a fails, so it is
@@ -858,11 +981,19 @@ on them):
   `run: orphan proposal <name> swept` (`:1573`);
   `run: follow-on window: <outcome>` (`:2105`).
 
-**One existing count widens, and it is declared rather than smuggled:**
-`invalid_deleted` now also counts files deleted for a Set-J violation or
-for rewriting an already-valid proposal. The per-file line still names
-the reason, so the widening is legible in the log rather than only in the
-totals.
+**Two existing behaviours widen, both declared rather than smuggled:**
+
+- `invalid_deleted` now also counts files deleted for a Set-J violation
+  or for rewriting an already-valid proposal. The per-file line still
+  names the reason, so the widening is legible in the log rather than
+  only in the totals.
+- **the success test.** `result.status` becomes `ok` (and
+  `worker.last-run` is touched) when `valid_landed + len(foreign_left)`
+  is non-zero, not on `valid_landed` alone (`worker.py:2040`). A run
+  whose queue advanced only through a foreign-left file did its job;
+  reporting it failed would fire the staleness alarm and the backoff on a
+  successful run (§3.8, `D7`, `M48`). The `run: ok — …` line's own three
+  counts are unchanged and still exclude foreign files.
 
 **New lines** (their formats are load-bearing from this unit onward):
 
@@ -1097,8 +1228,20 @@ entirely invalid, assert **all five**:
    executable *(same finding)*: `status == "failed"`,
    `proposed == []`, `merge_proposed == []`,
    `invalid_deleted == [<every fixture file name>, sorted]`,
-   `touched == []`, `repair_attempted is False`, `repair_eligible == 0`,
+   **`touched == [<every fixture file PATH>]`** — deletions **are** in
+   `touched` by design: `_git_rm_or_unlink` ends with
+   `result.touched.append(path)` (`worker.py:1239-1255`) because
+   `touched` is the surgical staging set for the run-end commit and the
+   RunResult field's own docstring reads "Every ledger path this run
+   wrote **or deleted**" (`worker.py:919-921`, the 2026-07-16 MAJOR 3
+   fix) — `repair_attempted is False`, `repair_eligible == 0`,
    `repair_cleared == 0`, `foreign_left == []`.
+
+*(r2 asserted `touched == []` here — red on correct code, and worse:
+§0's criteria-win rule would have pushed a builder to "fix" the code by
+un-staging deletions, resurrecting the exact bug that fix records.
+Delta gate MAJOR 2, same class as r1's NOTE 10 and introduced by the leg
+that closed r1's M5.)*
 
 *Broken:* a kill switch that skips only `subprocess.run` leaves the
 settings file on disk and the composer counter at 1, and fails legs 3–4.
@@ -1142,14 +1285,28 @@ fabrication leg 4 rests on this exclusion, so it is a criterion, not
 prose. On the same captured stdin, assert **none** of these markers
 appears — each is a distinctive literal from the material it stands for:
 
-| material | marker |
-|---|---|
-| the routing doctrine | `## 2. The gate procedure` |
-| the skill roster | `roster sha:` |
-| cluster candidates | `cluster candidates (T-N)` |
-| the rejected-proposal digest | `Never re-propose the classes below` |
-| the card-section registry | `=== CARD SECTION REGISTRY ===` |
-| the canon excerpt | `=== PENDING RECORDS ===` (the batch prompt's own record-block header, which carries the excerpt) |
+Each marker must be a literal the **named material's own emitter**
+produces, not a neighbouring template line — r2 got two rows wrong and
+would have told the builder the canon excerpt was guarded when it was not
+*(delta gate NOTE 7)*:
+
+| material | marker | emitted by |
+|---|---|---|
+| the routing doctrine | `## 2. The gate procedure` | `routing-doctrine.md:48` |
+| the T3 skill roster | `=== SKILL ROSTER (T3) ===` | `_PROMPT_TEMPLATE` (`worker.py:1098`) |
+| the per-record path roster | `--- path roster ---` | `compose_record_block` (`worker.py:577`) |
+| cluster candidates | `--- cluster candidates (T-N) ---` | `compose_record_block` (`:575`) |
+| the rejected-proposal digest | `Never re-propose the classes below` | `_PROMPT_TEMPLATE` (`:1102`) |
+| the card-section registry | `=== CARD SECTION REGISTRY ===` | `_PROMPT_TEMPLATE` (`:1108`) |
+| **the canon excerpt** | `--- candidate target canon excerpt ---` | `compose_record_block` (`worker.py:579`) |
+
+*(r2 used `roster sha:` for the roster row — a `_PROMPT_TEMPLATE` line,
+not the roster's — and `=== PENDING RECORDS ===` for the canon excerpt,
+which is the batch prompt's records header and would still be absent from
+a repair prompt that interpolated `compose_record_block` verbatim. The
+named failure was still caught by the cluster-candidates row, so this is
+mislabelling rather than a hole — but a builder reading the old table
+would believe the excerpt was guarded.)*
 
 Also assert the composed repair prompt is **< 64 KiB** on a full
 `BATCH_CAP`-sized all-invalid fixture — an alarm, labelled as one, that
@@ -1301,6 +1458,58 @@ criterion, because they are the two halves of "who is Rule-F for".)*
   *Broken:* the `V` rule deletes it — FW-84's incident reproduced by the
   machinery added to prevent it, which is the regression `M46` models.
 
+**D7 — a foreign file counts as progress, and does not fake a failure.**
+*(delta gate MAJOR 3.)* Fixture: the batch's **only** outcome is one Φ
+file (the shim writes nothing else; the test stamps a valid proposal for
+the batch record before the run). Assert `result.status == "ok"`;
+`worker.last-run` **exists**; `result.proposed == []`;
+`result.valid_landed == 0`; `result.foreign_left` names the file;
+`result.touched == []`; the failure counter file **does not exist**; and
+**no follow-on was spawned** on account of failure.
+*Broken:* r2's accounting reports `status == "failed"` here — skipping
+`worker.last-run`, firing the staleness alarm, spawning a follow-on and
+incrementing the backoff on a run whose queue demonstrably advanced. This
+is the branch `D6(i)` does not reach: same population, valid instead of
+invalid. `M48`.
+
+**D8 — the repair set has a provenance filter, and its residual is
+pinned.** Three legs, one per row of §3.4's sub-case table:
+
+- **(i) `E-4`.** An invalid, `gates.`-refused proposal exists for a
+  record **not in this run's batch** (the shim writes it; the record is
+  pending in another bucket). Assert its path appears in **no** repair
+  prompt and it is deleted with today's line.
+- **(ii) `E-5`.** An invalid, `gates.`-refused proposal for a **batch**
+  record carries a **matching `record_sha`** (the test stamps a valid
+  version, then the shim overwrites it with an invalid body that keeps
+  the `record_sha:` line — the measured attended-edit shape). Assert its
+  path appears in **no** repair prompt and it is deleted with today's
+  line.
+- **(iii) the residual is the specified behaviour, not an accident.** An
+  invalid, `gates.`-refused, **unstamped** proposal for a **batch**
+  record **is** repairable — assert its path **does** appear in the
+  repair prompt. The test's docstring must name §7.3 and say in one line
+  that this path is indistinguishable from model output at this seam, so
+  a later reader meets the residual as a decision rather than as a bug.
+
+*Broken:* r2 had no provenance filter at all, so legs (i) and (ii) both
+put a non-model file into a second model's hands under a write grant, and
+a successful repair landed and committed it. `M49` reverts the filter and
+reddens both. Leg (iii) is the positive control: without it, `M49`'s
+counterpart — a filter so tight that `E` is always empty — passes (i) and
+(ii) while disabling the repair round entirely.
+
+**D9 — a hook proposal is never foreign.** A `destination: hook`
+proposal that satisfies F-a **and** F-b is nonetheless **stamped**
+(assert its `script` equals `_generate_hook_script`'s output for that
+record, i.e. any model-written `script:` was overwritten) and counted in
+`result.proposed`, not `foreign_left`.
+*Broken:* `M50`. Without the carve-out a model-authored `script:` that
+preserved a matching `record_sha` survives Rule-F unstamped, and `route`
+applies stamped bytes **verbatim** (M3-2) — model-authored executable
+bytes reaching a guard, which is P9's floor and `stamp_proposal`'s own
+stated guarantee (`ledger_ops.py:1685-1693`).
+
 ### E. Headroom, backoff and constants
 
 **E1 — the timeouts are read, not hardcoded.** Assert
@@ -1371,11 +1580,26 @@ does not block, any new failure does.
 
 **F4 — no new pyright diagnostics.**
 
-**F5 — the shim fixture can observe two invocations.** `claude_shim`
-appends rather than truncates and records a per-invocation counter and a
-per-invocation stdin capture. A dedicated test drives two invocations and
-asserts **both** argvs and **both** prompts were captured, and that the
-counter reads `2`.
+**F5 — the shim fixture can observe AND drive two invocations.** The
+criteria above consume five capabilities; r2 specified two *(delta gate
+NOTE 5)*. `claude_shim` must provide all five:
+
+1. **per-invocation argv capture** — append, never truncate (`>>`);
+2. **per-invocation stdin capture** — likewise, separable per call;
+3. **a per-invocation counter** readable by the test;
+4. **per-invocation script** — different file output on call #1 vs #2
+   (consumed by `B3`, `B4`, `G1`–`G6`, `D6`): e.g.
+   `CLAUDE_SHIM_SCRIPT_1` / `CLAUDE_SHIM_SCRIPT_2`, falling back to
+   `CLAUDE_SHIM_SCRIPT` when the numbered form is unset so the ~30
+   existing single-invocation tests keep working unchanged;
+5. **per-invocation exit code and sleep** — `CLAUDE_SHIM_EXIT_<n>`
+   (consumed by `H4`'s non-zero-exit leg, which r2 named without ever
+   introducing it) and a per-invocation sleep (consumed by `B7`'s repair
+   timeout).
+
+A dedicated test drives two invocations and asserts both argvs, both
+prompts, the counter reading `2`, a differing per-call script effect, and
+a non-zero second exit code observed by the caller.
 *Broken:* **the current fixture truncates (`>`), so a two-invocation test
 silently observes only the second call and every repair criterion above
 becomes a test of round 2 alone** (§9-X7). This criterion is listed under
@@ -1406,13 +1630,18 @@ three runs and assert each matches, exactly,
 with the values substituted (`cli.py:756-760`).
 *Broken:* any reformatting, any added field, any em-dash change.
 
-**H3 — the four existing log lines are byte-stable.** Over runs that
+**H3 — the FIVE existing log lines are byte-stable.** Over runs that
 produce each, assert verbatim (format string, then values):
 `run: ok — {p} proposal(s), {m} merge, {d} invalid deleted`
-(`worker.py:2061-2065`); `run: FAILED — {n} eligible, 0 valid proposals`
-(`:2068-2072`); `run: invalid worker output {name} deleted ({reason})`
-(`:1549`); `run: orphan proposal {name} swept` (`:1573`);
-`run: follow-on window: {outcome}` (`:2105`).
+(`worker.py:2061-2065`);
+`run: FAILED — {n} eligible, 0 valid proposals (last-run not touched; staleness alarm is the detector)`
+— **the parenthetical is part of the shipped string** (`:2068-2072`) and
+r2 quoted the line truncated, which is red on correct code as an equality
+and weaker than claimed as a substring *(delta gate MAJOR 4)*;
+`run: invalid worker output {name} deleted ({reason})` (`:1549`);
+`run: orphan proposal {name} swept` (`:1573`);
+`run: follow-on window: {outcome}` (`:2105`). *(r2's title said "four"
+and its body listed five — same finding.)*
 *Broken:* `M41`. This is the criterion `B6` leans on for its verbatim
 leg, and the one that makes "unchanged" in §3.12 mean something.
 
@@ -1465,7 +1694,7 @@ never executed (FW-61). Use absolute paths and confirm
 | M18 | delete the `V`-set rule | G6 |
 | M19 | skip `validate_proposal` for files the repair touched | G4, G5 |
 | M20 | delete in `S5` instead of populating `refuse` | G7, and `test_lock_invariant.py` |
-| M21 | leave the sentinel re-assert between the two invocations | G8 |
+| M21 | re-assert the sentinel **only** between #1 and #2 (i.e. leave it at `worker.py:2010` and add none after the repair) | G8 — *r2's wording ("leave the re-assert between the two invocations") stopped reddening the moment G8 was rewritten to permit between-**plus**-after; the mutation must remove the after-leg, which is the only one G8 requires (delta gate NOTE 8)* |
 | M22 | **delete Rule-F** | **D1** |
 | M23 | make Rule-F fire on *any* present `record_sha`, not a matching one | D2 (an unstamped model proposal that emitted a junk sha would be skipped) |
 | **M23a** | **drop Rule-F's F-a leg** (immunity on sha match alone — r1's shipped rule) | **D6(i)** — and only D6(i): D1–D5 all still pass, which is precisely why r1 shipped it |
@@ -1493,6 +1722,12 @@ never executed (FW-61). Use absolute paths and confirm
 | **M45** | wrap the **whole** merge branch in `if apply:` in the shared per-file check | B1 — the dry pass then refuses (or vacuously passes) every merge; §3.3's `apply` note is what this models |
 | **M46** | compute `Φ` at `S8` only, leaving `S5`'s partition three-way | **D6(ii)** — the foreign∩V cell; the file is deleted by the `V` rule |
 | **M47** | add the repair counts to `_cmd_worker`'s stdout summary (`cli.py:756-760`) | H2 — the tempting, harmless-looking edit that breaks a documented contract |
+| **M48** | decide `status` on `valid_landed` alone, ignoring `foreign_left` | **D7** |
+| **M49** | drop `E-4` and `E-5` (r2's text-only `E`) | **D8(i)** and **D8(ii)** |
+| **M49a** | make `E-5` reject every path (no path is ever unstamped-enough) | **D8(iii)** — the positive control; without it `M49`'s over-tightening twin passes |
+| **M50** | apply Rule-F to `destination: hook` proposals too | **D9** |
+| **M51** | assert `touched == []` in B9 leg 5, i.e. stop appending to `touched` in `_git_rm_or_unlink` | B9 — the code-side form of the bug r2's leg 5 would have induced; it also reddens the shipped `test_lock_invariant.py` and the run-end commit's staging |
+| **M52** | `claude_shim` honours only `CLAUDE_SHIM_SCRIPT`, ignoring the numbered per-invocation forms | F5, and every criterion needing different round-1/round-2 output (`B3`, `B4`, `G1`–`G6`, `D6`) |
 
 **Every criterion has at least one mutation above except the vacuity
 guards in `A1`/`A5`, and `F3`, `F4`, `F6` — deliberately, and stated so
@@ -1574,10 +1809,12 @@ than findings:
   The residual (suppression is log-only) is declared, not smuggled.
 - **BD9 — `_SINGLE_PROMPT_TEMPLATE` gets the checklist but not the repair
   round.** Same producer, same defect, one-line fix. The one-shot path has
-  its own 120 s budget (`analyst.py:31`), its own `AnalystError` contract
-  and exactly one parse attempt with no reprompt (`analyst.py:34-38` —
-  r1 cited `:31-35`, which straddles the two *(r1 gate NOTE 11)*);
-  giving it a repair round would be a
+  its own 120 s budget, its own `AnalystError` contract and exactly one
+  parse attempt with no reprompt — **`analyst.py:31-38`**, spanning the
+  timeout default at `:31` and the one-parse-attempt contract at
+  `:34-38`. *(r1 cited `:31-35`, which straddled the two; r2's fix to
+  `:34-38` then dropped the timeout line the same sentence cites — delta
+  gate NOTE 9.)* Giving it a repair round would be a
   second unit's worth of design for a path that already has a human in
   the loop.
 - **BD10 — two switches exist because the working tree is production.**
@@ -1682,11 +1919,38 @@ unconsulted.
   invalid output a permanent bypass of containment, derivation and
   deletion (`D6(i)`). The outcome for this file is **identical to
   today's**, so the fix is a non-regression, not a new loss;
+- an attended proposal for a **batch** record that has **never passed
+  validation** is unstamped and therefore repair-eligible: the repair
+  round may rewrite it, and a successful repair lands and commits it.
+  `E-4` and `E-5` (§3.4) close the other two sub-cases — a non-batch
+  record, and a proposal that has ever been validated (the shape FW-84
+  actually measured) — but this one has **no distinguishing signal at
+  this seam**, because `proposal validate` leaves a refused proposal
+  intact *and unstamped* (`selfcheck.py:167-192`), which is exactly what
+  the model's own output looks like. Pinned by `D8(iii)` so it is met as
+  a decision, not rediscovered as a bug;
+- if the **model** produced a Φ file, nobody commits it — it sits as an
+  uncommitted modification (§3.8). Accepted: committing it would mean
+  publishing what may be a human's in-flight bytes, and the state is one
+  the ledger reaches normally;
 - the analyst's Write tool can **overwrite** an attended proposal at the
   same path before landing runs at all — no landing-time rule can undo
   that;
 - backoff suppression is visible only in `worker.log`; `fast_status` and
   the UI do not report it.
+
+**All five have ONE root, and it already has an owner.** Every case above
+exists because `_written_since` (`worker.py:1231-1236`) **diffs the world
+instead of recording what the model wrote** — the same sentence FW-84's
+row names as the candidate mechanism. Given a real per-file provenance
+signal (FW-84's first listed fix direction: "track the paths the model
+actually wrote rather than diffing the world"), `E-4`/`E-5` become
+unnecessary, the never-validated residual disappears, Φ's
+model-vs-human ambiguity resolves, and the uncommitted-Φ case resolves
+with it. This unit ships the guards that are sound **without** that
+signal and does not simulate it; §8 records the collapse as a handoff so
+FW-84's author sees how much of U-repair's residual list their unit
+retires.
 
 **Choice made, and why (a) was not taken in full:** a complete attribution
 fix means real per-file provenance — parsing `--output-format stream-json`
@@ -1741,7 +2005,12 @@ changes.
 **Handed to other units:**
 
 - **FW-84** — full producer attribution (§7.3), plus the refused
-  batch-scope narrowing (§7.1) as one candidate direction.
+  batch-scope narrowing (§7.1) as one candidate direction. **Read §7.3's
+  closing paragraph before scoping it:** five of this unit's declared
+  residuals share the single root FW-84 already names (`_written_since`
+  diffs the world instead of recording the model's writes), and a real
+  provenance signal retires all five at once — including `E-4`/`E-5`,
+  which exist only because that signal does not.
 - **FW-50** — TARGET-quote containment remains the one fabrication leg
   neither round can machine-check (§7.1).
 - **FW-82** — the backoff's log-only visibility (§7.3) is an operability
@@ -1851,3 +2120,35 @@ smuggles into a criterion.
   from `normalize`, the token arithmetic); the single-sample caveat is
   carried into §1.2 and §7.2. No renumbering: `A5`, `B6`, `B9`, `G8` and
   `D1` were rewritten in place; everything added took a new id.
+- **r3 (2026-08-09)** — delta gate returned **UNSOUND — 1 BLOCKER /
+  3 MAJOR / 5 NOTE**, and verified **all twelve r1 findings CLOSED on the
+  failures named** (it re-checked F-a's ordering, all 21 Table-E rows
+  against the shipped refusal strings, all six B13 markers in source, and
+  that `Φ` genuinely removes the foreign∩V cell), plus re-ran the live
+  census with identical figures. Every new finding was introduced by the
+  r2 fold. **The one author decision — BLOCKER 1**: `E` was defined by
+  refusal *text* over a world-diff, so the repair round could hand an
+  attended in-flight proposal to a second model, which on success landed
+  and committed it. Answered with a **provenance filter, not a bare
+  residual**: `E-4` (batch membership) and `E-5` (unstamped) close two of
+  three sub-cases — including the one FW-84 measured — and the third,
+  which has no signal at this seam, is declared in §7.3 and pinned by
+  `D8(iii)`. The gate's other candidate guard is refused with a reason
+  (it is not a discriminator: everything in `written1` differs from
+  `snap0`). MAJOR 3 produced two changes: a foreign file now **counts as
+  progress** for `status`/`worker.last-run`/backoff (`D7`, `M48`), and —
+  found while folding it — **Rule-F is carved out for `destination:
+  hook`**, because skipping `stamp_proposal` would let model-authored
+  `script:` bytes survive to a verbatim-applying route (`D9`, `M50`, P9).
+  MAJOR 2: `B9` leg 5's `touched == []` corrected — deletions **are** in
+  `touched` by design, and the old leg would have induced the very bug
+  the 2026-07-16 fix records (`M51`). MAJOR 4: `H3` quotes the FAILED
+  line in full and says "five". NOTES: `F5` gains the three shim
+  capabilities the criteria already consumed (`M52`); Pair-1 gains a
+  normative record-block **selector**; two `B13` markers now come from
+  the material they name (canon excerpt especially); `M21` reworded so it
+  still reddens the rewritten `G8`; two drifts fixed (the "eligible
+  today" hedge, `analyst.py:31-38`). §7.3 additionally records that five
+  residuals share **one root** — `_written_since` diffs the world — and
+  §8 hands FW-84 the collapse. Again no renumbering: `B9`, `H3`, `F5`,
+  `B13`, `M21` rewritten in place; `D7`–`D9` and `M48`–`M52` are new.
