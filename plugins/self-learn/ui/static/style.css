@@ -280,6 +280,17 @@ header {
   display: none;
 }
 
+/* FW-76 §2.3: the one permitted (not required — no criterion fails
+   without it) selector in this file for this unit. Declared AFTER
+   [hidden] above and setting no `display` of its own, so it can never
+   override the rule that beats this block's own `display: flex`
+   (§2.3's own warning). Reuses the danger tokens `.error-strip` already
+   carries (`:542-545`) rather than inventing a third error palette. */
+.applying-strip[data-verb-error] {
+  background: var(--slu-danger-bg);
+  color: var(--slu-danger);
+}
+
 /* ------------------------------------------------------------ footer --- */
 
 footer {
