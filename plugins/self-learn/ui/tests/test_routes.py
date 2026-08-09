@@ -3296,6 +3296,33 @@ def _make_client_with_app_hub(
     return c, runner, app_hub
 
 
+def _make_client_with_hubs(
+    sb, *, runner: FakeRunner | None = None, port: int = 7357
+):
+    """FW-76 §3 criterion A: like ``_make_client_with_app_hub`` above,
+    but also hands back the REFRESH hub explicitly — A2 needs to
+    subscribe to it BEFORE the POST (the same hub ``_force_refresh``
+    publishes through), which the app_hub-only helper's implicit
+    default construction doesn't expose."""
+    from self_learn_ui import ledger as ledger_mod
+
+    runner = runner if runner is not None else FakeRunner()
+    env = load_env(sb.env)
+    refresh_hub = ledger_mod.RefreshHub()
+    app_hub = AppEventHub()
+    app = create_app(
+        env=env,
+        token=TOKEN,
+        runner=runner,
+        refresh_hub=refresh_hub,
+        app_hub=app_hub,
+        start_watcher=False,
+    )
+    c = TestClient(app, base_url=f"http://127.0.0.1:{port}")
+    c.cookies.set("slu_token", TOKEN)
+    return c, runner, refresh_hub, app_hub
+
+
 class TestForceRunApplyingFeedback:
     def test_worker_kick_emits_start_then_done(self, tmp_path: Path) -> None:
         sb = make_env(tmp_path)
@@ -3338,6 +3365,125 @@ class TestForceRunApplyingFeedback:
         runner = FakeRunner()
         runner.queue_result(RunResult(1, stderr="boom"))
         c, _runner, app_hub = _make_client_with_app_hub(sb, runner=runner)
+        q = app_hub.subscribe()
+        r = c.post("/mine/run", headers={"HX-Request": "true"})
+        assert r.status_code == 200
+        q.get_nowait()  # start
+        done = q.get_nowait()
+        assert done["state"] == "error"
+
+    # ------------------------------------------------------------ FW-76
+    # §2.2/§3 criterion A: the server stops erasing the failure. A0 is
+    # the positive control (must PASS on master — the success path is
+    # untouched); A1-A3 must fail on the unmodified tree. Both routes,
+    # named separately, per the spec's "For /worker/kick and /mine/run
+    # alike" framing.
+
+    def test_worker_kick_a0_success_still_redirects_and_refreshes(
+        self, tmp_path: Path
+    ) -> None:
+        """A0 — positive control. worker_kick's own redirect/refresh
+        halves already exist as TestWorkerKick.test_redirects_to_front /
+        .test_forces_a_front_scope_refresh; restated here, beside
+        A1-A3, so the whole A block reads together in one place."""
+        sb = make_env(tmp_path)
+        c, _runner, refresh_hub, _app_hub = _make_client_with_hubs(sb)
+        q = refresh_hub.subscribe()
+        r = c.post("/worker/kick", headers={"HX-Request": "true"})
+        assert r.status_code == 200
+        assert r.headers.get("hx-redirect") == "/"
+        event = q.get_nowait()
+        assert event.scope == "front"
+
+    def test_mine_run_a0_success_still_redirects_and_refreshes(
+        self, tmp_path: Path
+    ) -> None:
+        """A0 — mine_run's half: no pre-existing test names this (§3's
+        own note: "mine_run has no such test today — the control adds
+        it")."""
+        sb = make_env(tmp_path)
+        c, _runner, refresh_hub, _app_hub = _make_client_with_hubs(sb)
+        q = refresh_hub.subscribe()
+        r = c.post("/mine/run", headers={"HX-Request": "true"})
+        assert r.status_code == 200
+        assert r.headers.get("hx-redirect") == "/"
+        event = q.get_nowait()
+        assert event.scope == "front"
+
+    def test_worker_kick_a1_failure_carries_no_redirect(self, tmp_path: Path) -> None:
+        sb = make_env(tmp_path)
+        runner = FakeRunner()
+        runner.queue_result(RunResult(1, stderr="boom"))
+        c, _runner, _refresh_hub, _app_hub = _make_client_with_hubs(sb, runner=runner)
+        r = c.post("/worker/kick", headers={"HX-Request": "true"})
+        assert r.status_code == 200
+        assert "hx-redirect" not in r.headers
+
+    def test_mine_run_a1_failure_carries_no_redirect(self, tmp_path: Path) -> None:
+        sb = make_env(tmp_path)
+        runner = FakeRunner()
+        runner.queue_result(RunResult(1, stderr="boom"))
+        c, _runner, _refresh_hub, _app_hub = _make_client_with_hubs(sb, runner=runner)
+        r = c.post("/mine/run", headers={"HX-Request": "true"})
+        assert r.status_code == 200
+        assert "hx-redirect" not in r.headers
+
+    def test_worker_kick_a2_failure_publishes_no_refresh(self, tmp_path: Path) -> None:
+        sb = make_env(tmp_path)
+        runner = FakeRunner()
+        runner.queue_result(RunResult(1, stderr="boom"))
+        c, _runner, refresh_hub, _app_hub = _make_client_with_hubs(sb, runner=runner)
+        q = refresh_hub.subscribe()  # subscribe BEFORE the POST
+        r = c.post("/worker/kick", headers={"HX-Request": "true"})
+        assert r.status_code == 200
+        assert q.empty()
+
+    def test_mine_run_a2_failure_publishes_no_refresh(self, tmp_path: Path) -> None:
+        sb = make_env(tmp_path)
+        runner = FakeRunner()
+        runner.queue_result(RunResult(1, stderr="boom"))
+        c, _runner, refresh_hub, _app_hub = _make_client_with_hubs(sb, runner=runner)
+        q = refresh_hub.subscribe()  # subscribe BEFORE the POST
+        r = c.post("/mine/run", headers={"HX-Request": "true"})
+        assert r.status_code == 200
+        assert q.empty()
+
+    def test_worker_kick_a3_failure_still_publishes_error_frame(
+        self, tmp_path: Path
+    ) -> None:
+        """A3 — A1/A2 must not be reachable by not publishing at all.
+        FLAGGED (builder's reporting duty, spec's closing instruction):
+        this assertion reads GREEN on the unmodified tree —
+        ``_publish_applying(..., "done" if result.ok else "error")`` was
+        already unconditional pre-fix (§1.1: "the server side is
+        already correct"), and
+        ``test_worker_kick_emits_error_state_on_nonzero_exit`` above
+        already pins the same fact today. Kept as its own criterion
+        anyway: it is the guard against M10's fail-open shortcut (a
+        build that folds the whole tail into ``if result.ok:`` and
+        collapses "error" to "done"), which WOULD redden it."""
+        sb = make_env(tmp_path)
+        runner = FakeRunner()
+        runner.queue_result(RunResult(1, stderr="boom"))
+        c, _runner, _refresh_hub, app_hub = _make_client_with_hubs(sb, runner=runner)
+        q = app_hub.subscribe()
+        r = c.post("/worker/kick", headers={"HX-Request": "true"})
+        assert r.status_code == 200
+        q.get_nowait()  # start
+        done = q.get_nowait()
+        assert done["state"] == "error"
+
+    def test_mine_run_a3_failure_still_publishes_error_frame(
+        self, tmp_path: Path
+    ) -> None:
+        """A3 — mine_run's half; see the worker_kick sibling above for
+        the green-on-master flag, which applies identically here
+        (``test_mine_run_emits_error_state_on_nonzero_exit`` already
+        pins the same fact today)."""
+        sb = make_env(tmp_path)
+        runner = FakeRunner()
+        runner.queue_result(RunResult(1, stderr="boom"))
+        c, _runner, _refresh_hub, app_hub = _make_client_with_hubs(sb, runner=runner)
         q = app_hub.subscribe()
         r = c.post("/mine/run", headers={"HX-Request": "true"})
         assert r.status_code == 200

@@ -486,7 +486,10 @@
    *       persistent error rendering a broadcast reload would erase
    *       (the empirically pinned wipe: the runner's post-verb
    *       front-scope push, see tests/test_registration_wipe.py and
-   *       10's appendix U14 entry);
+   *       10's appendix U14 entry). FW-76 adds a SECOND producer of
+   *       this SAME marker: the applying/bulk-progress strip's own
+   *       renderInflight (§2.1, below) — a failed Force run holds
+   *       this leg exactly like a failed verb-confirm does;
    *   (b) a verb-confirm POST is in flight — flag set at submit,
    *       cleared at swap settle on success and on error/abort
    *       regardless (F4/F14: the runner queues the failure push
@@ -616,11 +619,21 @@
    * keyed Map of in-flight verb work, NOT a counter+flag (five
    * consecutive spec-gate rounds each found a defect in that shape; see
    * the spec's §4.3 table for why the Map dissolves all of them
-   * structurally). Three operations over ONE variable:
-   *   - `set(key, {badge, detail})` — idempotent, so a duplicate open
-   *     frame is a no-op by construction.
+   * structurally). Four operations over ONE variable (FW-76 §2.1 adds
+   * the fourth):
+   *   - `set(key, {badge, detail, failed: false})` — idempotent, so a
+   *     duplicate open frame is a no-op by construction.
    *   - `delete(key)` — a no-op on an absent key, so an unmatched
-   *     `done`/terminal frame can never disturb an entry it doesn't own.
+   *     `done` frame can never disturb an entry it doesn't own; also
+   *     what releases a failed entry (no producer publishes a terminal
+   *     twice for one key, so this can never erase an unseen failure).
+   *   - `set(key, {badge: "failed", detail, failed: true})` on `error`
+   *     — replaces an applying entry at the same key, or CREATES one
+   *     when the key is absent (an error for a key this page never saw
+   *     `start` is still a real failure, criterion E1). FW-76's whole
+   *     fix: before this, `error` and `done` were the SAME `delete`
+   *     branch, so a failed Force run rendered identically to a
+   *     succeeded one — strip appears, strip disappears either way.
    *   - `clear()` — SSE connection loss; see connectEventSource's
    *     onerror below.
    * Re-rendered (renderInflight) after EVERY operation so the strip's
@@ -628,26 +641,104 @@
    */
   var inflight = new Map();
 
-  /** Hide-or-render from the Map (§4.3): hidden when empty; otherwise
-   * the "bulk" entry if present (it always wins the render while a bulk
-   * run is genuinely open), else the first entry in insertion order
-   * (JS Map preserves insertion order, so this is deterministic). Toggles
-   * the `hidden` ATTRIBUTE (never inline style) — style.css's
-   * `.applying-strip[hidden] { display: none }` is what makes that
-   * effective against the two-child `display: flex` layout (§5.3). */
+  /** Hide-or-render from the Map (§4.3, extended FW-76 §2.1): hidden
+   * when empty; otherwise picks, in order, the "bulk" entry if present
+   * (it always wins the render while a bulk run is genuinely open —
+   * checked BEFORE any failed-entry logic, so a failure never displaces
+   * a live bulk run, criterion E2), else the first entry in insertion
+   * order that is not failed (live work outranks a failure notice —
+   * without this a persisted failed entry sitting first in insertion
+   * order would mask a later in-flight verb, S-20's founding defect
+   * class re-introduced), else the first entry (an all-failed Map still
+   * renders something). Toggles the `hidden` ATTRIBUTE (never inline
+   * style) — style.css's `.applying-strip[hidden] { display: none }` is
+   * what makes that effective against the two-child `display: flex`
+   * layout (§5.3).
+   *
+   * Two attributes, keyed DIFFERENTLY on purpose (§2.1 — the split is
+   * normative, criteria B3/D3 pin both halves):
+   *   - `data-verb-error` — Map-scoped: present whenever ANY entry is
+   *     failed, even one masked by live work currently rendering. This
+   *     is a deliberate reuse of `reloadDeferred()` leg (a) (`:550`,
+   *     `[data-verb-error]` document-wide) — keying it on Map contents
+   *     rather than on what renders is what stops a failure that is
+   *     momentarily masked by live work from being reload-erased before
+   *     a human ever sees it (D3; mutation M8 is the rendered-entry
+   *     keying).
+   *   - `role="alert"` — render-scoped: present only while the RENDERED
+   *     entry is the failed one. Parity with this app's other error
+   *     surfaces (`action_bar.html`, `host_add_bar.html`), but scoped to
+   *     what the strip currently says rather than to the Map (M13 is
+   *     the Map-scoped mutation).
+   * The marker's absent→present transition scrolls the strip into view
+   * (`scrollIntoView({block: "nearest"})`, the idiom this file already
+   * uses at `:92`/`:127`/`:378` — a no-op when already visible, so the
+   * common case costs nothing); its present→absent transition calls
+   * `releaseReload()` — the leg's release, so an unconditional call
+   * would give the pre-existing applying path a reload timing it does
+   * not have today. */
   function renderInflight() {
     const strip = document.getElementById("self-learn-ui-applying-strip");
     if (!strip) return;
+    // Transition detection is done ONCE, at the bottom, over whichever
+    // branch below ran — never duplicated per-branch. A Map going empty
+    // and a Map losing its last failed entry while still non-empty are
+    // the SAME "marker present -> absent" transition from this
+    // function's own contract (§2.1), and a builder edit that drops
+    // releaseReload() must drop it for BOTH, which a single call site
+    // guarantees structurally rather than by convention.
+    const hadMarker = strip.hasAttribute("data-verb-error");
+
     if (inflight.size === 0) {
       strip.hidden = true;
-      return;
+      strip.removeAttribute("data-verb-error");
+      strip.removeAttribute("role");
+    } else {
+      let entry;
+      if (inflight.has("bulk")) {
+        entry = inflight.get("bulk");
+      } else {
+        entry = undefined;
+        for (const candidate of inflight.values()) {
+          if (!candidate.failed) {
+            entry = candidate;
+            break;
+          }
+        }
+        if (entry === undefined) entry = inflight.values().next().value;
+      }
+      const badge = document.getElementById("self-learn-ui-applying-badge");
+      const text = document.getElementById("self-learn-ui-applying-text");
+      if (badge) badge.textContent = entry.badge;
+      if (text) text.textContent = entry.detail;
+      strip.hidden = false;
+
+      let anyFailed = false;
+      for (const candidate of inflight.values()) {
+        if (candidate.failed) {
+          anyFailed = true;
+          break;
+        }
+      }
+      if (anyFailed) {
+        strip.setAttribute("data-verb-error", "true");
+      } else {
+        strip.removeAttribute("data-verb-error");
+      }
+
+      if (entry.failed) {
+        strip.setAttribute("role", "alert");
+      } else {
+        strip.removeAttribute("role");
+      }
     }
-    const entry = inflight.has("bulk") ? inflight.get("bulk") : inflight.values().next().value;
-    const badge = document.getElementById("self-learn-ui-applying-badge");
-    const text = document.getElementById("self-learn-ui-applying-text");
-    if (badge) badge.textContent = entry.badge;
-    if (text) text.textContent = entry.detail;
-    strip.hidden = false;
+
+    const hasMarkerNow = strip.hasAttribute("data-verb-error");
+    if (!hadMarker && hasMarkerNow) {
+      strip.scrollIntoView({ block: "nearest" });
+    } else if (hadMarker && !hasMarkerNow) {
+      releaseReload();
+    }
   }
 
   function connectEventSource() {
@@ -721,14 +812,31 @@
           // §4.3/§5.1's per-envelope contract, pinned here (R3-B1): the
           // key is "applying:<verb>:<id>" so two concurrent verbs never
           // collide (test 8) — `set` on "start" is idempotent, `delete`
-          // on "done"/"error" is a no-op if the key was never set.
-          if (envelope.state === "start") {
-            inflight.set("applying:" + envelope.verb + ":" + envelope.id, {
-              badge: "applying",
-              detail: envelope.verb + " → " + envelope.id,
-            });
-          } else {
-            inflight.delete("applying:" + envelope.verb + ":" + envelope.id);
+          // on "done" is a no-op if the key was never set. FW-76 §2.1:
+          // `error` is a FOURTH rule, not folded into `done`'s bare
+          // delete — it SETS a failed entry (replacing an applying one
+          // at the same key, or creating one when the key is absent) so
+          // a failed Force run renders differently from a succeeded
+          // one, rather than both collapsing to the same
+          // strip-appears-then-disappears terminal (the defect this
+          // unit fixes — see the spec's §1.1).
+          {
+            const key = "applying:" + envelope.verb + ":" + envelope.id;
+            if (envelope.state === "start") {
+              inflight.set(key, {
+                badge: "applying",
+                detail: envelope.verb + " → " + envelope.id,
+                failed: false,
+              });
+            } else if (envelope.state === "error") {
+              inflight.set(key, {
+                badge: "failed",
+                detail: envelope.verb + " → " + envelope.id,
+                failed: true,
+              });
+            } else {
+              inflight.delete(key);
+            }
           }
           renderInflight();
           break;

@@ -1687,13 +1687,26 @@ class TestApplyingStripClientRendering:
         server.push_applying("route", REC_BRIEF, "done")
         expect(strip).to_be_hidden()
 
-    def test_4_applying_error_hides_strip(self, page: "Page", server: ServerHandle) -> None:
+    def test_4_applying_error_shows_failed_strip(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        """FW-76 §1.3/F: this test used to pin the DEFECT (a failed
+        Force run rendered identically to a succeeded one — strip
+        appears, strip disappears either way). It now pins the FIX:
+        `error` renders a distinct, persistent failed strip. Do not
+        "restore" the old hides-the-strip assertion — that is the bug
+        this unit exists to remove (spec §1.1)."""
         _open(page, server, "/")
         strip = _applying_strip(page)
         server.push_applying("route", REC_BRIEF, "start")
         expect(strip).to_be_visible()
         server.push_applying("route", REC_BRIEF, "error")
-        expect(strip).to_be_hidden()
+        expect(strip).to_be_visible()
+        assert page.locator("#self-learn-ui-applying-badge").text_content() == "failed"
+        assert (
+            page.locator("#self-learn-ui-applying-text").text_content()
+            == f"route → {REC_BRIEF}"
+        )
 
     def test_5_bulk_progress_renders_done_plus_one_of_total(
         self, page: "Page", server: ServerHandle
@@ -1872,6 +1885,243 @@ class TestApplyingStripClientRendering:
             page.locator("#self-learn-ui-applying-text").text_content()
             == f"route → {REC_BRIEF}"
         )
+
+    # ------------------------------------------------------------ FW-76
+    # §2.1/§3: a failed Force run must render differently from a
+    # succeeded one (B), must survive a broadcast refresh (C), must
+    # never be masked by live work without the marker outliving that
+    # render (D), unmatched-error hygiene (E). All criteria drive
+    # server.push_applying/server.push_refresh only, per §3's own rule
+    # (no `.click()` — the 14 environmental failures are all
+    # Locator.click actionability timeouts on this host); B4 alone also
+    # uses page.set_viewport_size + a page.evaluate scroll, the SAME
+    # pair test_b_scrolls_the_toggled_brief_into_view (:1372) already
+    # uses this way.
+
+    def test_b1_error_renders_failed_badge_and_detail(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        _open(page, server, "/")
+        strip = _applying_strip(page)
+        server.push_applying("worker", "kick", "start")
+        expect(strip).to_be_visible()
+        server.push_applying("worker", "kick", "error")
+        expect(strip).to_be_visible()
+        assert page.locator("#self-learn-ui-applying-badge").text_content() == "failed"
+        assert page.locator("#self-learn-ui-applying-text").text_content() == "worker → kick"
+
+    def test_b2_terminal_snapshots_differ_error_vs_done(
+        self, page: "Page", server: ServerHandle, browser: "Browser"
+    ) -> None:
+        """B2 — a DISCRIMINATING snapshot comparison. NOT
+        applying-vs-error (that pair already differs on master — the
+        strip merely disappearing changes the body snapshot). Compares
+        instead the two TERMINAL states at the SAME key from the SAME
+        start: two independent pages (so each terminal is reached from
+        an identical prior state, never a comparison against a page
+        whose Map was mutated by the other arm first) each push `start`
+        then diverge to `error`/`done`."""
+        _open(page, server, "/")
+        server.push_applying("worker", "kick", "start")
+        expect(_applying_strip(page)).to_be_visible()
+        server.push_applying("worker", "kick", "error")
+        error_snapshot = page.locator("body").aria_snapshot()
+
+        context2 = browser.new_context()
+        page2 = context2.new_page()
+        try:
+            _open(page2, server, "/")
+            # `_open`'s own wait_for_subscriber(1) is already satisfied by
+            # `page`'s still-open connection above, so it can return
+            # before page2's OWN /events stream is actually live — wait
+            # for the SECOND subscriber explicitly before pushing, or the
+            # frame below can race page2's EventSource connect.
+            server.wait_for_subscriber(2)
+            server.push_applying("worker", "kick", "start")
+            expect(_applying_strip(page2)).to_be_visible()
+            server.push_applying("worker", "kick", "done")
+            done_snapshot = page2.locator("body").aria_snapshot()
+        finally:
+            context2.close()
+
+        assert error_snapshot != done_snapshot
+
+    def test_b3_marker_and_role_both_present_on_the_failed_render(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        """B3 — here the rendered entry IS the failed one, so the two
+        keyings (data-verb-error Map-scoped, role=alert render-scoped)
+        coincide; D3 is where they must not."""
+        _open(page, server, "/")
+        strip = _applying_strip(page)
+        server.push_applying("worker", "kick", "start")
+        expect(strip).to_be_visible()
+        server.push_applying("worker", "kick", "error")
+        expect(strip).to_have_attribute("data-verb-error", "true")
+        expect(strip).to_have_attribute("role", "alert")
+
+    def test_b4_failure_is_scrolled_into_view(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        """B4 — the failure is where the human is looking. Copies
+        test_b_scrolls_the_toggled_brief_into_view's (:1372) two
+        structural moves: (1) a short viewport so the page genuinely
+        scrolls — without it the front page may not overflow the
+        default viewport, scrollTo is a no-op, and the top-of-body strip
+        is already in view; (2) a positive control asserted BEFORE the
+        fix can fire — `start` never sets [data-verb-error] (§2.1's
+        scrollIntoView fires only on the marker's absent->present
+        transition), so the strip is legitimately off-screen here, and
+        the assertion below can't pass by accident. to_be_visible() is
+        deliberately NOT the oracle for the second assertion: a
+        non-empty box does not imply viewport intersection, which is
+        exactly how this defect class hides."""
+        _open(page, server, f"/record/{REC_BRIEF}")
+        strip = _applying_strip(page)
+        page.set_viewport_size({"width": 1280, "height": 300})
+        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        server.push_applying("worker", "kick", "start")
+        expect(strip).to_be_visible()
+        expect(strip).not_to_be_in_viewport()  # positive control
+
+        server.push_applying("worker", "kick", "error")
+        expect(strip).to_be_in_viewport()
+
+    def test_c0_refresh_reloads_on_an_empty_map(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        """C0 — positive control: without it C1 could pass on a harness
+        whose refresh never arrives at all."""
+        _open(page, server, "/")
+        _arm_reload_sentinel(page)
+        server.push_refresh("front")
+        _assert_reloaded(page)
+
+    def test_c1_failed_entry_defers_a_broadcast_refresh(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        _open(page, server, "/")
+        strip = _applying_strip(page)
+        server.push_applying("worker", "kick", "start")
+        server.push_applying("worker", "kick", "error")
+        expect(strip).to_be_visible()
+        _arm_reload_sentinel(page)
+        server.push_refresh("front")
+        _assert_deferred(page)
+        assert page.locator("#self-learn-ui-applying-badge").text_content() == "failed"
+
+    def test_c2_done_for_the_failed_key_releases_the_deferred_reload(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        _open(page, server, "/")
+        strip = _applying_strip(page)
+        server.push_applying("worker", "kick", "start")
+        server.push_applying("worker", "kick", "error")
+        expect(strip).to_be_visible()
+        _arm_reload_sentinel(page)
+        server.push_refresh("front")
+        _assert_deferred(page)
+        server.push_applying("worker", "kick", "done")
+        expect(strip).to_be_hidden()
+        _assert_reloaded(page)
+
+    def test_d1_live_work_outranks_a_failure_notice(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        _open(page, server, "/")
+        strip = _applying_strip(page)
+        server.push_applying("worker", "kick", "error")  # unseen key: creates a failed entry
+        expect(strip).to_be_visible()
+        server.push_applying("route", REC_BRIEF, "start")
+        expect(strip).to_be_visible()
+        assert page.locator("#self-learn-ui-applying-badge").text_content() == "applying"
+        assert (
+            page.locator("#self-learn-ui-applying-text").text_content()
+            == f"route → {REC_BRIEF}"
+        )
+
+    def test_d2_failure_resumes_rendering_once_live_work_completes(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        """The failure was HELD, not dropped, while it was masked."""
+        _open(page, server, "/")
+        strip = _applying_strip(page)
+        server.push_applying("worker", "kick", "error")
+        server.push_applying("route", REC_BRIEF, "start")
+        expect(strip).to_be_visible()
+        server.push_applying("route", REC_BRIEF, "done")
+        expect(strip).to_be_visible()
+        assert page.locator("#self-learn-ui-applying-badge").text_content() == "failed"
+        assert page.locator("#self-learn-ui-applying-text").text_content() == "worker → kick"
+
+    def test_d3_marker_outlives_the_render_it_is_not_attached_to(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        """D3 — the criterion that makes §2.1's Map-vs-render keying
+        testable. A builder writing `if (rendered.failed)
+        setAttribute(...)` would pass B, C and D1/D2 (B3's two keyings
+        coincide there; C is scoped to a pure-failure Map) and only this
+        fails."""
+        _open(page, server, "/")
+        strip = _applying_strip(page)
+        server.push_applying("worker", "kick", "error")
+        server.push_applying("route", REC_BRIEF, "start")
+        expect(strip).to_be_visible()
+        assert page.locator("#self-learn-ui-applying-badge").text_content() == "applying"
+        assert (
+            page.locator("#self-learn-ui-applying-text").text_content()
+            == f"route → {REC_BRIEF}"
+        )
+        # (i) the marker is present even though the render is the LIVE
+        # entry, not the failed one — and the role does NOT follow it.
+        expect(strip).to_have_attribute("data-verb-error", "true")
+        expect(strip).not_to_have_attribute("role", "alert")
+
+        # (ii) it still defers a broadcast refresh while masked.
+        _arm_reload_sentinel(page)
+        server.push_refresh("front")
+        _assert_deferred(page)
+
+        # (iii) the failure survived, unmasked by the live work's own done.
+        server.push_applying("route", REC_BRIEF, "done")
+        expect(strip).to_be_visible()
+        assert page.locator("#self-learn-ui-applying-badge").text_content() == "failed"
+
+    def test_e1_error_for_a_key_never_started_still_renders_failed(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        """E1 — a real failure elsewhere is still a failure."""
+        _open(page, server, "/")
+        strip = _applying_strip(page)
+        server.push_applying("worker", "kick", "error")  # this page never saw "start"
+        expect(strip).to_be_visible()
+        assert page.locator("#self-learn-ui-applying-badge").text_content() == "failed"
+        assert page.locator("#self-learn-ui-applying-text").text_content() == "worker → kick"
+
+    def test_e2_error_does_not_displace_a_live_bulk_render_then_reverts(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        """E2 — two arms. The bulk entry MUST be seeded first (an
+        error-before-bulk fixture would let first-insertion-order-wins
+        alone pass this, which is M6's mutation, not M11's — see the
+        spec's own note on why this fixture order matters). The first
+        assertion here is green on master too (master's `error` is a
+        no-op `delete` on an absent key, so bulk keeps rendering there
+        as well) — it is the TERMINAL step below that reddens on master
+        (the Map goes empty once bulk clears there, hiding the strip
+        instead of reverting to "failed")."""
+        _open(page, server, "/")
+        strip = _applying_strip(page)
+        server.push_bulk_progress(0, 3)
+        expect(strip).to_be_visible()
+        assert page.locator("#self-learn-ui-applying-badge").text_content() == "graduating"
+        server.push_applying("worker", "kick", "error")
+        expect(strip).to_be_visible()
+        assert page.locator("#self-learn-ui-applying-badge").text_content() == "graduating"
+        server.push_bulk_progress(3, 3)  # bulk terminal
+        expect(strip).to_be_visible()
+        assert page.locator("#self-learn-ui-applying-badge").text_content() == "failed"
+        assert page.locator("#self-learn-ui-applying-text").text_content() == "worker → kick"
 
 
 # F1's server-publish half (3, js): real submissions, no page.route() —

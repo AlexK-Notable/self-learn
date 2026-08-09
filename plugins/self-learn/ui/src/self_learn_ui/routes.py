@@ -1104,6 +1104,13 @@ async def worker_kick(request: Request) -> Response:
     await _publish_applying(request, "worker", "kick", "start")
     result = await runner.run(["worker", "kick"])
     await _publish_applying(request, "worker", "kick", "done" if result.ok else "error")
+    # FW-76 §2.2: on failure, do NOT erase what was just published —
+    # no forced refresh, no redirect. Both buttons carry hx-swap="none"
+    # (index.html), so a body-less 200 swaps nothing and the human stays
+    # on the page they clicked from, with the applying strip's failed
+    # entry rendered. The success path below is byte-for-byte unchanged.
+    if not result.ok:
+        return Response(status_code=200)
     _force_refresh(request, "front")
     resp = Response(status_code=200)
     resp.headers["HX-Redirect"] = "/"
@@ -1131,6 +1138,10 @@ async def mine_run(request: Request) -> Response:
     await _publish_applying(request, "mine", "run", "start")
     result = await runner.run(["mine", "run", "--trigger", "manual"])
     await _publish_applying(request, "mine", "run", "done" if result.ok else "error")
+    # FW-76 §2.2: mirrors worker_kick's failure leg above — no forced
+    # refresh, no redirect, on `not result.ok`. See that comment.
+    if not result.ok:
+        return Response(status_code=200)
     _force_refresh(request, "front")
     resp = Response(status_code=200)
     resp.headers["HX-Redirect"] = "/"

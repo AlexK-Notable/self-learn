@@ -205,15 +205,19 @@ required: no criterion fails without it.
 
 ## 3. Acceptance criteria
 
-Every criterion below must **fail against the unmodified tree**, with two
-named exceptions: **A0 and C0 are positive controls and must PASS on master**
-— they assert behaviour this unit preserves (A0) or machinery the other
-criteria depend on (C0). A pre-build run that reddens A0 or C0 means the
-harness is broken, not that the unit is needed; the red-run record should read
-"A1–A3, B1–B4, C1–C2, D1–D3, E1–E2, F red; A0, C0 green". Note when recording
-it that **E2 is red only at its final step** (its opening assertion holds on
-master by accident — see E2), so a fold that drops that step silently converts
-E2 into a green-on-master test. Judged
+Every criterion below must **fail against the unmodified tree**, with three
+named exceptions: **A0, C0 and A3 are controls/pre-existing behavior that must
+PASS on master** — A0 asserts behaviour this unit preserves, C0 asserts
+machinery the other criteria depend on, and A3 asserts a fact §1.1 already
+states ("the server side is already correct"): the build gate empirically
+confirmed this by restoring `routes.py` alone to master and watching A3 pass
+pre-fix, so A3 is retained as a guard against M10's fail-open shortcut rather
+than as red-pre-fix evidence. A pre-build run that reddens A0, C0 or A3 means
+the harness is broken, not that the unit is needed; the red-run record should
+read "A1–A2, B1–B4, C1–C2, D1–D3, E1–E2, F red; A0, A3, C0 green". Note when
+recording it that **E2 is red only at its final step** (its opening assertion
+holds on master by accident — see E2), so a fold that drops that step silently
+converts E2 into a green-on-master test. Judged
 under FW-81's standing rule — no NEW failures against the 14 environmental
 ones (`14-forward-work-map.md:136`). **No new browser test may use
 `.click()`**: every one of the 14 fails on `Locator.click` actionability on
@@ -423,11 +427,21 @@ its miner line is built from `_latest_ok_run` (`models.py:981-988`), which
 skips every `failed` run — so a page reload genuinely shows nothing new, which
 is why §2.2 stops the reload rather than relying on it.
 
-**(d) SSE connection loss still clears the failure.** `source.onerror`'s
-`clear()` (`app.js:681`) drops failed entries with everything else. Unchanged
+**(d) SSE connection loss still clears the failure — and, new under this
+unit, now also releases any reload it was deferring.** `source.onerror`'s
+`clear()` (`app.js:681`) drops failed entries with everything else, unchanged
 on purpose — S-20's R5-M1 refused a timer here, and the recovery (a late frame
-re-populating the Map) does not apply to a terminal that already fired. Same
-family as FW-38's disclosed silent window.
+re-populating the Map) does not apply to a terminal that already fired. What
+is NOT unchanged: `clear()` still calls the SAME `renderInflight()` it always
+did, and a failed entry vanishing from the Map is a marker present→absent
+transition under §2.1's own rule — so a tab that was deferring a broadcast
+reload on leg (a) because of a failed Force run now has that hold released by
+the SAME connection loss that erased the failure notice. This is §2.1's
+existing transition rule firing at an existing call site, not a second
+mechanism, and is judged defensible (the failure notice and the hold it
+created leave together) — recorded here rather than left implicit, since
+"unchanged on purpose" above describes the clearing, not this consequence of
+it. Same family as FW-38's disclosed silent window.
 
 **(e) No explicit dismiss.** Releases are: a later run of the same verb, a
 `done` for that key, navigation, or SSE loss. While the marker holds, that tab
@@ -476,6 +490,22 @@ rather than frame state — a second mechanism keyed on a list that rots as
 routes are added, which is exactly what S-20 exists to prevent. Uniform is
 also the more honest posture: an observer tab currently learns nothing when a
 verb fails in another tab.
+
+**(i) `test_js_dom.py`'s `_assert_reloaded` does not actually "wait" under
+this app's CSP — it fails loudly instead, which is the correct but
+non-obvious shape.** The house helper polls via Playwright's
+`page.wait_for_function`; when the awaited condition never becomes true (a
+genuinely-deferred reload — exactly C2/M9's shape), that call's internal
+timeout-exhausted path evaluates a diagnostic string with `eval()`, which this
+app's own CSP (`script-src 'self'`, no `unsafe-eval`) rejects — so the test
+raises a Playwright CSP/`EvalError` rather than a plain `TimeoutError`. Both
+the builder (reproduced under M9) and the code gate (independent
+reproduction) confirmed this is fail-closed: the wait never silently reports
+success on a page that did not reload, it just fails with an unexpected
+exception shape. Pre-existing house helper, not introduced by this unit —
+recorded here so a future reader debugging a red `_assert_reloaded` call does
+not misdiagnose the CSP error as a harness bug rather than what it actually
+is, a legitimate mutation-catching failure with a confusing traceback.
 
 ## 6. Merge obligations
 
