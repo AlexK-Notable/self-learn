@@ -1,6 +1,15 @@
 # Spec — U-cursorhold: the per-run landing cap must hold the cursor it outran
 
-Status: **r1 — written blind, not yet gated.**
+Status: **r2 — one blind gate folded.** r1 returned **UNSOUND — 0
+BLOCKER / 2 MAJOR / 4 NOTE**, with every `file:line` cite-checked exact,
+both journal incidents re-verified read-only, the consumer survey re-run
+repo-wide and confirmed complete, and the code register found executable
+without choosing. **The design was not changed by the gate**; the fold
+is in the *test* register and in two disclosure gaps. §9 maps all six
+findings to their changes. The two MAJORs were: A1's fixture could not
+execute (measured — its "broken" signature was identical to a correct
+build's), and H-3's session-keyed filter under-wrote the M-5 halt in the
+aliasing corner. Both are closed here on their named mechanisms.
 Unit `U-cursorhold`, addressing **FW-73**
 (`docs/specs/self-learn/14-forward-work-map.md:128`).
 
@@ -77,7 +86,12 @@ is not given the slices.
 
 `_advance_cursors(processed)` then runs **unconditionally** on the
 success path (`:1934`) — including after a swallowed `GitOpsError`
-(`:1909-1918`). So the capped candidate's originating session is marked
+(`:1909-1918`), whose *landing-side* producer is a failed commit inside
+`_commit_landing`. (That same `except` has a second producer, the
+`commit_lock` acquisition timeout at `:1906`, where
+`_reconcile_and_land` never ran at all; it is a neighbouring loss of a
+different shape and §7.1 discloses it rather than folding it in.) So the
+capped candidate's originating session is marked
 read to its end, and `walk` (`:305-353`) will never offer those lines
 again: the next run skips the file outright when its size is unchanged
 (`:334-335`) and otherwise starts at the recorded line count (`:336`).
@@ -197,12 +211,27 @@ On `held` — and only then — the session id is added to
 
 **H-3 (the effect).** At `:1934` the advance becomes
 
-> advance every entry of `processed` **whose slice's `session_id` is not
-> in `result.held_sessions`**.
+> withhold an entry of `processed` iff its slice's `session_id` is in
+> `result.held_sessions` **and that slice's own `halt` flag is
+> `False`**; advance every other entry.
 
 `processed` itself is **not** mutated or reassigned; the filter is a
 freshly built list at that one call site. `_advance_cursors` is called
 with the same 2-tuple shape it takes today, and its body is unchanged.
+
+**The `and not halt` half is load-bearing, not belt-and-braces.**
+`held_sessions` is keyed by session id; `processed` is keyed by PATH.
+Those keys are not one-to-one: two transcripts under different project
+directories can share a stem (H-5), and `digested` then records only the
+*last* such slice's halt flag. If that last slice is unhalted, a cap
+drop on the stem classifies `held`, and a session-keyed filter would
+withhold **both** paths — including a halted twin, whose `halt` would
+then never be persisted. Today both advance and both persist. That
+would be this unit's own fix producing an M-5 regression, and it is
+exactly the "M-5 guarantee made conditional on a cap decision" that §3.2
+refuses on principle. Filtering on path-plus-halt makes H-3's key agree
+with H-2's decision: **no halted slice is ever withheld, under any
+`digested` build order.** A9 tests it; M20 reaches it.
 
 **H-4 (what a hold writes).** A hold writes **nothing** for that
 transcript. The cursors file's entry for the held path must be
@@ -213,11 +242,16 @@ sharpest trap in this unit: `walk` skips a file whose size matches the
 recorded size (`:334-335`), so a partial advance silently re-loses the
 candidate while looking like a hold.
 
-**H-5 (granularity).** The hold is **whole-slice and keyed by session
-id**. It is never derived from a candidate's `line`. Where two
-transcripts under different project directories share a stem, both are
-held — the same aliasing `cwds` already carries (`:1832-1834`), and it
-errs toward over-holding, which costs a re-read and loses nothing.
+**H-5 (granularity).** The hold is **whole-slice**, decided per session
+id and applied per path. It is never derived from a candidate's `line`.
+Two transcripts under different project directories can share a stem —
+the same aliasing `cwds` already carries (`:1832-1834`). Under H-3 the
+consequences are bounded on the safe side: the halted twin always
+advances and always persists its halt, and *which* unhalted twin gets
+held depends on `digested`'s last-writer (`walk` orders by mtime,
+`:339`), so the aliasing can over-hold or under-hold an **unhalted**
+slice. Both directions cost only a re-read or a run's recall; neither
+can cost an exclusion or a double-land. R5 records it.
 
 **H-6 (scope).** Only `dropped-cap` triggers a hold. `scan-refused`,
 `dropped-invalid`, `dropped-land-failed`, `dropped-rejected`,
@@ -250,6 +284,16 @@ tightened *because* the previous rule collapsed in practice —
 conditional on an unrelated cap decision. Recall loss is cheap;
 evidence corruption is not. The halted case is a declared residual
 (§7.2-R2), not a silent one: it journals `advanced-halted`.
+
+**Rejected — folding the halt flags in H-1** (`digested[sid] =
+digested.get(sid, False) or halt`, so a stem with any halted twin never
+classifies `held`). It would remove the aliasing order-dependence H-5
+records, but it makes H-3's `and not halt` guard unreachable — a dead
+mutation in §5, and a guard the gate cannot red-verify is a guard this
+project does not get to claim. The order-dependence it would remove is
+recall-only (R5); the guard it would blind is an M-5 guarantee. One
+mechanism, verifiable, at the point where the key mismatch actually
+lives.
 
 ### 3.3 Re-run behaviour: the idempotency story
 
@@ -303,6 +347,17 @@ cursors are frozen pending human review. A cap hold converges on the
 same state one session at a time; the release valve for both is the
 same person doing the same review.
 
+**A held slice also drains, it does not merely re-scan.** The
+already-landed candidates of a held slice are refused at
+`skipped-known-origin` (`:1238-1240`), which `continue`s **before** the
+cap check at `:1328` — a deduped candidate does not consume cap. So a
+re-read of a held slice spends the whole cap on candidates that have
+never landed: with a steady cap of `c` and a backlog of `n` capped
+candidates in one slice, the slice lands `c` more of them per run and
+releases its cursor after ⌈n/c⌉ runs, without the cap ever being
+raised. That is the difference between a re-scan loop and a drain, and
+A10 executes it end to end.
+
 The costs while held are bounded and already-priced: a held slice
 re-enters `digests`, so it re-consumes its share of
 `MAX_PROMPT_DIGESTS_CHARS` and of the reader's context — and the
@@ -325,7 +380,15 @@ declares it.
 - **O-2.** The run journal entry for `ok` / `landed-uncommitted`
   (`:1947-1960`) gains `"cursors_held": <int>` — the number of
   **distinct** held sessions, i.e. `len(result.held_sessions)`, not the
-  number of dropped candidates.
+  number of dropped candidates. **Its coverage is those two statuses
+  only, by construction**: `idle`, `failed`, `initialized` and
+  `held-gate` write different entries and never carry the key. This
+  matters for anyone counting holds over a journal — `held-gate` holds
+  *every* cursor in the run and journals nothing under this name, so an
+  absent key means "not a landing run", never "no cursors were held".
+  The field that says which is which is `status`, and a census must read
+  it. (The live journal's nine consecutive `held-gate` runs are exactly
+  the population that would be misread.)
 - **O-3.** `MineResult` gains `held_sessions: set[str]`.
 
 **Byte-stable, pinned by B3:** the outcome name `dropped-cap`; its
@@ -383,24 +446,43 @@ otherwise, and use the shipped fixtures (`home`, `transcripts`,
 
 ### A. The hold
 
-**A1 — a cap-dropped candidate holds its session's cursor, positive
-control first.** One session, `SELF_LEARN_MINE_CAP_PER_SESSION=1`, a
-reader payload of two distinct candidates from it.
+**A1 — a cap-dropped candidate holds its session's cursor; a clean
+session in the SAME run does not.** The control is a second session
+inside one run, not a second run.
 
-- **(i) control, run first:** with the cap set to 2 (nothing dropped),
-  after the run `miner.walk()` is `[]`.
-- **(ii) the hold:** with the cap at 1 — one `landed`, one
-  `dropped-cap` — and **without appending a byte to the transcript
-  between runs**, `miner.walk()` returns that file with `start_line`
-  equal to its pre-run value.
+Fixture: **both** `SELF_LEARN_MINE_CAP_PER_SESSION=1` and
+`SELF_LEARN_MINE_CAP_MAX=1` — the precedent is the shipped
+`test_resurface_not_killed_by_cap` (`test_miner.py:985-986`), and both
+are required, because `cap_for` scales with `len(digests)`
+(`:167-171`) and a per-session cap of 1 over two sessions is a cap of 2.
+Two transcripts, both digest-contributing: `sess-cap`, from which the
+payload reports two distinct candidates, and `sess-clean`, from which it
+reports none. One run:
 
-*Broken:* today, and under M1, leg (ii)'s `walk()` is empty. Under M14
-(the partial advance) leg (ii) is *also* empty — the recorded size
-matches, so `walk` skips the file at `:334-335` — which is why the
-"transcript unchanged between runs" condition is part of the criterion
-and not an incidental detail.
-*Vacuity guard:* leg (i) must run and pass in the same test; a fixture
-that never advances any cursor would pass leg (ii) for free.
+- exactly one `landed` and one `dropped-cap`, and that outcome carries
+  `cursor == "held"`;
+- `miner.walk()` **returns** `sess-cap`'s path with its pre-run
+  `start_line` — its cursor entry was never written;
+- `miner.walk()` **does not return** `sess-clean`, whose cursor advanced
+  in the same run.
+
+*Broken:* M1 advances `sess-cap` and empties leg 2. M14 (the partial
+advance) also empties it — `walk` skips a file whose recorded size
+matches (`:334-335`) even though `lines` never moved — which is why the
+assertion is on `walk()`'s output rather than on the `lines` value.
+*Vacuity guard, mandatory:* the `sess-clean` leg rides the same run. A
+build that stopped writing cursors altogether passes the `sess-cap` leg
+and fails this one; a build that advances everything does the reverse.
+No fixture can satisfy both without the hold being real and narrow.
+*Recorded so the gate does not re-derive it:* the obvious alternative —
+a sequential control, "run once at a cap that drops nothing, then again
+at a cap that does" — **cannot execute**. Measured: at a cap of 2 the
+first run lands both candidates and advances the cursor to EOF, so with
+no bytes appended the second run exits at `if not digests: … return`
+(`:1840-1847`) with `status: idle` and the reader never invoked. Its
+`walk()` is then empty on a **correct** build for a reason unrelated to
+the cap — the same observation the defect produces. A control whose
+failure signature equals the defect's is not a control.
 
 **A2 — no over-hold: other drop classes still advance.** A run whose
 only non-landing outcomes are `scan-refused` (a candidate whose quote
@@ -489,14 +571,81 @@ unchanged (per A7) and the **next** run's slice has the same
 *Broken:* M15 — rewinding to the dropped candidate's line — reddens
 this. This is the injection lever §3.2 refuses.
 
+**A9 — aliasing never costs a halt.** This is the corner H-3's `and not
+halt` half exists for, and A5 cannot reach it — A5's halted slice has no
+same-stem twin, so a session-keyed filter passes it. Three transcripts,
+cap pinned to 1 as in A1:
+
+- `sess-plain` — ordinary, supplies the candidate that lands;
+- `sess-dup` under `-home-u-proj` — content, then a
+  `<command-name>/self-learn:review</command-name>` tag, so it digests
+  **with `halt=True`**;
+- `sess-dup` under a second project directory the test creates
+  (`-home-u-other`) — ordinary, unhalted, same stem.
+
+The payload reports the landing candidate from `sess-plain` and a second
+candidate citing `session="sess-dup"`, which is cap-dropped. After the
+run:
+
+- the **halted** path has a cursor entry and it carries `halt: true`;
+- `miner.walk()` never returns the halted path again (`:332-333`).
+
+*Broken:* M20 — filtering H-3 on `session_id in held_sessions` alone —
+leaves the halted twin unwritten: its `halt` is never persisted and
+`walk()` re-offers it, a regression against today's behaviour introduced
+by this unit's own fix.
+*Vacuity guard, mandatory:* the halted twin must sort **earlier** by
+mtime — pin it with `os.utime`, since `walk` orders candidates by mtime
+(`:339`). Only then does `digested["sess-dup"]` end up `False`, the drop
+classify `held`, and M20 have anything to bite. With the other ordering
+the drop classifies `advanced-halted`, nothing is held, and the
+criterion passes against the mutant.
+
+**A10 — the measured incident's shape, drained over consecutive runs.**
+The run-`28117725` shape (§1.2), including the drop that has no other
+recovery path. One session, cap pinned to 1, payload of three
+candidates: one ordinary, one ordinary, and one whose fields sum past
+`MAX_NEARMISS_SNIPPET_CHARS` while each stays under `MAX_FIELD_CHARS`
+(e.g. a ~700-char `why_durable`; `_build_record` caps
+trigger/instruction only, `:897`) — so its snippet journals
+`{overlength: true}` and `_enrich_near_miss` scores it
+`promotable: false` (`:1202-1208`). Replaying the **identical** payload
+each run, with the cap never raised:
+
+- **run 1:** 1 landed, 2 `dropped-cap`; **both** drops carry
+  `cursor == "held"` — including the non-promotable one — and
+  `cursors_held == 1`;
+- **run 2:** the run-1 origin journals `skipped-known-origin`, the
+  second candidate **lands** (a deduped candidate does not consume cap,
+  §3.4), the overlength one drops and the session is still held;
+- **run 3:** the overlength candidate lands, nothing is dropped, and the
+  session's cursor finally advances — `miner.walk()` is `[]`.
+
+*Broken:* M21 (hold only drops whose snippet is promotable) reddens run
+1's second assertion and strands the one candidate the UI could never
+have recovered. M3 reddens run 2 (the session landed something, so it
+would not be held) and therefore run 3. M1 reddens run 2 outright.
+*Why this criterion earns its place:* it is the only one that executes
+§3.4's drain claim, and it is the only one covering a refused snippet —
+the measured incident's fourth drop was exactly that, and it is the one
+case where the hold is not a convenience but the sole recovery.
+
 ### B. Observability
 
-**B1 — `cursor` is present, complete, and enumerated.** Across the
-suite's fixtures assert (i) every `dropped-cap` outcome in the journal
-carries `cursor`, (ii) its value is always one of the three literals,
-(iii) no outcome of any other name carries the key, and (iv) **all
-three values are observed** by the tests in this file (A1 → `held`,
-A5 → `advanced-halted`, A6 → `advanced-unmatched`).
+**B1 — `cursor` is present, complete, and enumerated.** **Scope,
+stated because it is not free:** each test gets its own journal — the
+autouse `redirect` fixture repoints `XDG_CACHE_HOME` per test
+(`test_miner.py:25-28`) — so there is no suite-wide journal to sweep,
+and §8-5 forbids editing the shipped cap tests to opt them in. B1
+therefore ranges over **the runs this unit's own tests produce**, each
+test asserting over the journal it wrote. Assert (i) every
+`dropped-cap` outcome in that journal carries `cursor`, (ii) its value
+is always one of the three literals, (iii) no outcome of any other name
+carries the key, and (iv) **all three values are observed** across this
+unit's tests (A1/A10 → `held`, A5 → `advanced-halted`,
+A6 → `advanced-unmatched`) — leg (iv) is a checklist over the criteria,
+enforced by a test that names all three literals and fails if one is
+never produced.
 *Broken:* M7 (emit only in the held case) reddens (i) and (iv). The
 value literals are asserted against the enrichment output read back from
 the journal, which also proves `_enrich_near_miss`'s dict copy
@@ -568,9 +717,9 @@ reports mutations as survived that never executed. Confirm
 
 | # | one-line edit | reddens |
 |---|---|---|
-| M1 | pass `processed` unfiltered to `_advance_cursors` (`:1934`) | A1(ii), A3, A7 |
+| M1 | pass `processed` unfiltered to `_advance_cursors` (`:1934`) | A1 (leg 2), A3, A7, A10 (run 2) |
 | M2 | add `scan-refused` to the hold trigger beside `dropped-cap` | A2 |
-| M3 | hold only when the session landed nothing this run | A3 |
+| M3 | hold only when the session landed nothing this run | A3, A10 (runs 2-3) |
 | M4 | reassign `processed` to the filtered list before `_score_canaries` (`:1926`) | A4 — *and only A4: A1, A3 and A7 all stay green, which is why it must be red-verified rather than trusted* |
 | M5 | drop the halt branch from H-2 (hold halted slices too) | A5 |
 | M6 | build `digested` from every entry of `processed`, not the digest-contributing branch | A6(ii) |
@@ -581,12 +730,14 @@ reports mutations as survived that never executed. Confirm
 | M11 | move the flood-gate check below `_reconcile_and_land` | C1 |
 | M12 | `DEFAULT_CAP_MAX = 30` | C2 |
 | M13 | increment `result.dropped` only when the drop is not held | C3 |
-| M14 | on hold, write `{"lines": s.start_line, "size": s.stat_size}` (the "partial advance") | A7, A1(ii) — *the trap: `walk`'s size skip (`:334-335`) makes this look like a hold and behave like an advance* |
+| M14 | on hold, write `{"lines": s.start_line, "size": s.stat_size}` (the "partial advance") | A7, A1 (leg 2) — *the trap: `walk`'s size skip (`:334-335`) makes this look like a hold and behave like an advance* |
 | M15 | set a held file's cursor `lines` to the dropped candidate's `line - 1` | A8 |
 | M16 | ship without the doc-12 amendment / FW-73 disposition | C4 |
 | M17 | replace `existing_origins(home)` with `set()` at `:1223` | A3 (dedup leg) — proves A3 tests the replay guarantee rather than assuming it |
 | M18 | classify the unmatched case as a fourth value `"advanced"` | B1(ii), A6 |
 | M19 | set `cursor` on every outcome by defaulting it inside `_outcome` (`:810-811`) | B1(iii) |
+| **M20** | filter H-3 on `session_id in held_sessions` alone, dropping the `and not halt` half | **A9** — and only A9: A1, A3, A5, A7 and A10 all stay green, because none of them has an aliased twin. This is the r1 gate's MAJOR 2 in one line |
+| **M21** | classify (and hold) only drops whose snippet is promotable | **A10 (run 1)** — the plausible shortcut ("only hold what a human could promote"), which strands precisely the candidate that has no manual recovery |
 
 ---
 
@@ -634,6 +785,15 @@ reports mutations as survived that never executed. Confirm
   `rubric-dropped` are deliberately *not* candidates: re-reading
   reproduces each of those decisions identically, so a hold there is an
   infinite loop with no possible progress (A2 pins the boundary).
+- **The `commit_lock` acquisition timeout** (`:1906`, caught by the same
+  `except` at `:1909`). When the lock times out, `_reconcile_and_land`
+  never runs: `held_sessions` is empty, no candidate was ever assessed,
+  and `:1934` still marks **every scanned session read** while the whole
+  reader pass is discarded. Rule-H is *correct* there — there is
+  genuinely nothing to hold — but the run is a whole-pass loss of the
+  same family as FW-73, and it is not this unit's to fix: the answer is
+  a status/return decision at `:1909-1918`, not a cursor filter.
+  Disclosed here; recommended as a forward-work row at merge.
 - **`landed-uncommitted` cursor advance.** Already answered by the
   self-healing reconcile (`:1790-1800`); untouched.
 - **Any change to the cap, the gate, or their env overrides.**
@@ -643,17 +803,23 @@ reports mutations as survived that never executed. Confirm
 
 ### 7.2 ACCEPTED residuals
 
-- **R1 — `cap = 0` never advances.** With
-  `SELF_LEARN_MINE_CAP_PER_SESSION=0`, `cap_for` returns 0 (`:167-171`),
-  every candidate is cap-dropped, every digest-contributing session is
-  held, and the miner makes no forward progress until the value is
-  restored. This is **not a new behaviour class**: the sibling tunable
-  already does exactly this — `SELF_LEARN_MINE_PENDING_GATE=0` makes
-  `total_pending >= gate` true forever (`:1852`), wedging every run at
-  the flood gate with all cursors held. An operator who sets a landing
-  cap of zero has asked for "land nothing", and holding is the honest
-  reading of that. Not fixed here; recorded so a future reader does not
-  mistake it for an oversight.
+- **R1 — `cap = 0` never advances, and its cost grows.** Either of
+  `SELF_LEARN_MINE_CAP_PER_SESSION=0` **or** `SELF_LEARN_MINE_CAP_MAX=0`
+  makes `cap_for` return 0 (`:167-171`, a `min` of two operator
+  values): every candidate is cap-dropped, every digest-contributing
+  session is held, and the miner makes no forward progress until the
+  value is restored. §3.4's drain does not apply — it assumes `cap ≥ 1`.
+  The precedent is `SELF_LEARN_MINE_PENDING_GATE=0`, which makes
+  `total_pending >= gate` true forever (`:1852`) and wedges every run
+  with all cursors held; an operator who sets a landing cap of zero has
+  asked for "land nothing", and holding is the honest reading of that.
+  **The analogy is imperfect on cost, and the difference is this unit's
+  doing:** the flood gate returns *before* the reader (`:1860`), so a
+  wedged run is nearly free, whereas a cap-0 run post-change digests and
+  invokes the reader every night over a held set that only grows — the
+  per-run cost rises with the backlog until `MAX_PROMPT_DIGESTS_CHARS`
+  caps it (R4). Bounded, but not free. Not fixed here; recorded so a
+  future reader does not mistake either half for an oversight.
 - **R2 — a capped candidate from a halted slice is still lost.**
   §3.2 explains the trade; the loss is now *visible* rather than silent
   (`cursor: "advanced-halted"`), and the near-miss promote path remains
@@ -670,9 +836,16 @@ reports mutations as survived that never executed. Confirm
   next run, and at the extreme can push another slice into the existing
   `deferred_files` stay-behind (`:1826-1828`). That mechanism loses
   nothing either, so the worst case is latency, not loss.
-- **R5 — session-id aliasing.** Two transcripts sharing a stem under
-  different project directories are held together (§3.1 H-5). Same
-  aliasing `cwds` already has; over-holds, never under-holds.
+- **R5 — session-id aliasing is order-dependent for the unhalted twin.**
+  Two transcripts sharing a stem under different project directories
+  resolve to one `digested` entry, last-writer-wins by mtime (§3.1 H-5)
+  — the same aliasing `cwds` already has. So an unhalted twin may be
+  held when only its sibling was capped (a wasted re-read) or advance
+  when the drop belonged to it (one run's recall). What cannot happen is
+  the case that matters: under H-3 a **halted** slice is never withheld,
+  so no exclusion is deferred and no candidate double-lands. A9 pins the
+  guarantee; the order-dependence is accepted, not fixed — removing it
+  would cost the guard its mutation (§3.2).
 - **R6 — the stay-behind precedent is design-level, not
   production-exercised.** `deferred_files` is `0` in all 27 journaled
   runs, so the branch this unit mirrors has never fired on the live
@@ -713,6 +886,14 @@ reports mutations as survived that never executed. Confirm
    shimmed payload does not cite the held session — so **no shipped test
    is expected to need editing**. A builder who finds otherwise must
    report it rather than adjust the test.
+6. **r1's A1 fixture, executed (gate measurement, folded).** The r1
+   control — run at a cap of 2, then at a cap of 1 — was run against the
+   unmodified tree: leg (i) `status=ok landed=2`, `walk()` empty, cursors
+   advanced; leg (ii) `status=idle`, reader never invoked, nothing
+   capped, nothing held. The second run exits at `:1840-1847` before the
+   cap exists, so a **correct** build produces the same empty `walk()`
+   the defect does. A1 was rebuilt around an in-run control (§4-A1);
+   A3, verified executable as written, was left alone.
 
 ---
 
@@ -721,3 +902,15 @@ reports mutations as survived that never executed. Confirm
 - **r1** — first draft. Rule-H (hold, halt precedence, unmatched
   sessions), Obs-C, 15 acceptance criteria, 19 mutations, 6 declared
   residuals.
+- **r2** — folds the blind gate (0 BLOCKER / 2 MAJOR / 4 NOTE). Now 17
+  criteria, 21 mutations. The design is unchanged except where MAJOR 2
+  required it; nothing was redesigned to satisfy a finding.
+
+  | finding | landed in |
+  |---|---|
+  | **MAJOR 1** — A1's fixture cannot execute; its broken signature equals a correct build's (measured) | **A1** rebuilt around an in-run control (`sess-cap` held, `sess-clean` advanced, one run), with the `cursor == "held"` assertion stated in A1's own text, the double-env cap pin named, and the dead sequential control recorded so it is not re-proposed; the gate's probe added as §8-6. A3 left as written. |
+  | **MAJOR 2** — H-3's session-keyed filter under-writes the M-5 halt in the aliasing corner | **H-3** now filters on path-plus-halt (`and not halt`), with the key-mismatch argument stated; **A9** (new) tests the aliased halted twin with a mandatory mtime-ordering guard; **M20** (new) reaches it; §3.2 records why the H-1 halt-fold refinement was refused (it would blind M20); **H-5** and **R5** rewritten to state both aliasing directions honestly. |
+  | **NOTE 3** — undeclared neighbour: the `commit_lock` timeout shares the cited `except` | §1.1 now distinguishes the two producers of that `except`; **§7.1** discloses the timeout as a whole-pass loss of the same family, with the recommendation that it become a forward-work row at merge. |
+  | **NOTE 4** — B1 has no defined execution scope; no criterion produces a refused-snippet drop | **B1** states its scope (per-test journals, `redirect` at `test_miner.py:25-28`; shipped tests are off-limits per §8-5); **A10** (new) runs the measured incident's shape — land + clean cap + overlength cap — across three consecutive capping runs, pinning that the non-promotable drop is held too; **M21** (new) reaches it; §3.4 gains the drain argument A10 executes. |
+  | **NOTE 5** — R1 under-specified | **R1** names `SELF_LEARN_MINE_CAP_MAX=0` as the second path and corrects the flood-gate analogy: the gate is costless per run, cap-0 post-change pays a reader pass over a growing held set. |
+  | **NOTE 6** — `cursors_held` rides only two statuses | **Obs-C O-2** states the key's coverage and that an absent key means "not a landing run", never "no holds" — naming the nine `held-gate` runs as the population that would be misread. |
