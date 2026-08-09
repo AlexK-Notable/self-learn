@@ -64,7 +64,7 @@ blind, at ~15 Sonnet-minutes per ~25-minute cycle.
 
 | Validator refusal | replay | live |
 |---|---|---|
-| `t4.depth_behind_rule.target` must be non-empty when answer is yes | 7 | — |
+| `t4.depth_behind_rule.target` must be non-empty when answer is yes | 8 | — |
 | `t4.depth_behind_rule.evidence` required and missing | — | 3 |
 | `t4.fs.verdict` must be SILENT/COSTLY/LOUD_CHEAP/INDETERMINATE, got None | 3 | — |
 | `t1.field_shaped.answer` must be yes/no, got None | — | 4 |
