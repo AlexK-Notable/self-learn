@@ -1,6 +1,6 @@
 # Spec — U-forcefail: a failed Force run says so
 
-Status: **DRAFT r2**. Register row **FW-76**. Files in scope, and no others:
+Status: **DRAFT r3**. Register row **FW-76**. Files in scope, and no others:
 `ui/static/app.js` (the `applying` case + `renderInflight`),
 `ui/src/self_learn_ui/routes.py` (`worker_kick` and `mine_run`, their failure
 legs only), `ui/static/style.css` (**one** selector, §2.3),
@@ -14,7 +14,9 @@ sentence is out of scope by construction (§5).
 
 r2 folds a spec-gate round: the marker/role split (§2.1), the viewport leg
 (§2.1, criterion B4), a discriminating B2, criteria D3 and E's reddening
-mutation, and two residuals that were derivable but unstated (§5h, §5b).
+mutation, and two residuals that were derivable but unstated (§5h, §5b). r3
+adds §1.2's third leg — the hub-merge ordering finding, read and confirmed at
+`sse.py:113-131` rather than inherited.
 
 ## 1. The defect — two halves, both live today
 
@@ -49,6 +51,26 @@ the only thing that carries the failure:
 - `_force_refresh` broadcasts a `refresh` envelope to every connected tab;
   `app.js:694` routes it to `reload()`, which is `window.location.reload()`
   (`:559-565`).
+- **The two envelopes' arrival order at the client is not guaranteed**, so a
+  client-side defer marker cannot be relied on to save the failure even in the
+  no-redirect case. `sse.py`'s `event_stream` (`:113-131`) merges the hubs by
+  holding one `get()` task per hub in a `pending` set and awaiting
+  `asyncio.wait(pending, return_when=FIRST_COMPLETED)` (`:121-123`), then
+  iterating the returned **`done` set** (`:124`) — set iteration order is
+  arbitrary (these are `Task` objects, hashed by identity), not production
+  order. And in these handlers both envelopes are *always* ready at the same
+  wakeup: `_publish_applying` reaches `await q.put(...)` (`sse.py:88-90`) on an
+  **unbounded** queue (`asyncio.Queue()`, `sse.py:76` / `ledger.py:499`), whose
+  `put` skips its `while self.full()` wait entirely and returns
+  `put_nowait(item)` — it never suspends, so the loop is never yielded to
+  between the error publish and the `_force_refresh` that follows it
+  (`ledger.py:516-521`, also `put_nowait`). Both tasks are therefore complete
+  before the stream generator is resumed, and which envelope reaches the
+  browser first is decided by set ordering. If `refresh` wins, `reload()` fires
+  before the client has been told a failure happened — there is no marker to
+  defer on yet. This is why §2.2 removes the refresh at the source rather than
+  relying on leg (a) to hold it: a fix whose correctness depends on unspecified
+  set iteration order is not a fix.
 
 This matters because it is the same bug the codebase has already named. From
 `app.js`'s own leg (f) comment (`:529-533`): *"a FakeRunner test never pushes
