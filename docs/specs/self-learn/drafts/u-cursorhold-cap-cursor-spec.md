@@ -1,15 +1,19 @@
 # Spec — U-cursorhold: the per-run landing cap must hold the cursor it outran
 
-Status: **r2 — one blind gate folded.** r1 returned **UNSOUND — 0
-BLOCKER / 2 MAJOR / 4 NOTE**, with every `file:line` cite-checked exact,
-both journal incidents re-verified read-only, the consumer survey re-run
-repo-wide and confirmed complete, and the code register found executable
-without choosing. **The design was not changed by the gate**; the fold
-is in the *test* register and in two disclosure gaps. §9 maps all six
-findings to their changes. The two MAJORs were: A1's fixture could not
-execute (measured — its "broken" signature was identical to a correct
-build's), and H-3's session-keyed filter under-wrote the M-5 halt in the
-aliasing corner. Both are closed here on their named mechanisms.
+Status: **r3 — GATED, CLEARED FOR BUILD.** Two blind rounds, eight
+findings, all folded: r1 **UNSOUND — 0 BLOCKER / 2 MAJOR / 4 NOTE**;
+r2 delta **SOUND — 0 BLOCKER / 0 MAJOR / 2 NOTE**, with all six r1
+findings verified closed on the mechanisms named. Both rounds
+cite-checked every `file:line`, re-verified both journal incidents
+read-only, re-ran the consumer survey repo-wide, and found the code
+register (§3.1/§3.5) implementable in one pass with no decision left
+open. **The design survived adversarial review unchanged** — every
+fold is in the *test* register or in a disclosure. Two r2 deviations
+from the reviewer's suggested repairs were adjudicated correct on the
+merits: A1's in-run control (over a sequential one) and the refusal to
+fold halt flags into H-1 (which was implemented and shown to leave M20
+surviving — it protects the invariant at the data layer while the
+invariant lives at the use layer). §9 maps all eight findings.
 Unit `U-cursorhold`, addressing **FW-73**
 (`docs/specs/self-learn/14-forward-work-map.md:128`).
 
@@ -580,8 +584,13 @@ cap pinned to 1 as in A1:
 - `sess-dup` under `-home-u-proj` — content, then a
   `<command-name>/self-learn:review</command-name>` tag, so it digests
   **with `halt=True`**;
-- `sess-dup` under a second project directory the test creates
-  (`-home-u-other`) — ordinary, unhalted, same stem.
+- `sess-dup` under a second project directory (`-home-u-other`) —
+  ordinary, unhalted, same stem. **The test must `mkdir` that directory
+  itself**: the `transcripts` fixture creates only `-home-u-proj`
+  (`test_miner.py:41-43`), and the shipped `write_transcript`
+  (`:103-106`) writes straight into `root / project` without creating
+  it, so a missing `mkdir` fails as a `FileNotFoundError` at fixture
+  setup rather than as a criterion.
 
 The payload reports the landing candidate from `sess-plain` and a second
 candidate citing `session="sess-dup"`, which is cap-dropped. After the
@@ -609,8 +618,22 @@ candidates: one ordinary, one ordinary, and one whose fields sum past
 (e.g. a ~700-char `why_durable`; `_build_record` caps
 trigger/instruction only, `:897`) — so its snippet journals
 `{overlength: true}` and `_enrich_near_miss` scores it
-`promotable: false` (`:1202-1208`). Replaying the **identical** payload
-each run, with the cap never raised:
+`promotable: false` (`:1202-1208`).
+
+**The overlength filler must be scan-clean PROSE — repeated filler
+characters will not do**, and the reason is structural: the cap check
+(`:1328`) `continue`s **before** `_scan_candidate` (`:1344-1353`), so
+this candidate is never scanned on runs 1-2 and meets the scanner for
+the first time on run 3, the run that finally lands it. Measured:
+`secret_scan("X" * 700)` fires `high-entropy-base64`, so a
+repeated-character filler makes run 3 journal `scan-refused` with
+`landed == 0` and two pending records instead of three — while
+`walk()` is still `[]`, so the cursor assertion passes and only the
+landing assertion fails, which reads as a hold bug rather than a
+fixture bug. Measured clean for contrast: ~950 characters of ordinary
+sentences, zero hits.
+
+Replaying the **identical** payload each run, with the cap never raised:
 
 - **run 1:** 1 landed, 2 `dropped-cap`; **both** drops carry
   `cursor == "held"` — including the non-promotable one — and
@@ -641,11 +664,28 @@ therefore ranges over **the runs this unit's own tests produce**, each
 test asserting over the journal it wrote. Assert (i) every
 `dropped-cap` outcome in that journal carries `cursor`, (ii) its value
 is always one of the three literals, (iii) no outcome of any other name
-carries the key, and (iv) **all three values are observed** across this
-unit's tests (A1/A10 → `held`, A5 → `advanced-halted`,
-A6 → `advanced-unmatched`) — leg (iv) is a checklist over the criteria,
-enforced by a test that names all three literals and fails if one is
-never produced.
+carries the key, and (iv) **all three values are observed**.
+
+**Leg (iv)'s mechanization is pinned, because two designs satisfy the
+words and only one is safe.** It is **one fixture producing all three
+literals in a single run**: three transcripts under the A1 cap pins
+(`CAP_PER_SESSION=1` **and** `CAP_MAX=1`, so `cap_for(3)` is still 1) —
+`sess-land` supplying the one candidate that lands, `sess-hold`
+supplying a drop that classifies `held`, `sess-halt` (content, then a
+`<command-name>/self-learn:…` tag) supplying one that classifies
+`advanced-halted` — plus a fourth candidate citing a fabricated session
+id, classifying `advanced-unmatched`. Assert the **set** of `cursor`
+values over that run's `dropped-cap` outcomes equals the three literals
+exactly, and `cursors_held == 1`. The values also arise individually in
+A1/A10, A5 and A6; leg (iv) does not depend on them.
+
+**Forbidden mechanization:** a module-level accumulator that other
+tests append to, checked by a final test. It is order-dependent and
+degrades **silently** under `-k` filtering, `-x`, a single-test re-run
+or parallel execution — the collection is simply smaller and the
+assertion is written to pass on what it finds. That is a check that
+cannot fail when the thing it checks is absent, which is the exact
+fail-open class this project treats as its signature defect.
 *Broken:* M7 (emit only in the held case) reddens (i) and (iv). The
 value literals are asserted against the enrichment output read back from
 the journal, which also proves `_enrich_near_miss`'s dict copy
@@ -894,6 +934,13 @@ reports mutations as survived that never executed. Confirm
    cap exists, so a **correct** build produces the same empty `walk()`
    the defect does. A1 was rebuilt around an in-run control (§4-A1);
    A3, verified executable as written, was left alone.
+7. **A10's filler, scanned (this author, r3).** `secret_scan("X" * 700)`
+   → one hit, `high-entropy-base64`; ~950 characters of ordinary
+   sentences → zero hits. Run against the shipped `self_learn.scan`
+   module, which is the same scanner `_scan_candidate` calls at
+   `:1349`. This is why A10 pins scan-clean prose: the cap branch
+   `continue`s before the scan, so the fixture's third candidate is
+   first scanned on the run that lands it.
 
 ---
 
@@ -914,3 +961,12 @@ reports mutations as survived that never executed. Confirm
   | **NOTE 4** — B1 has no defined execution scope; no criterion produces a refused-snippet drop | **B1** states its scope (per-test journals, `redirect` at `test_miner.py:25-28`; shipped tests are off-limits per §8-5); **A10** (new) runs the measured incident's shape — land + clean cap + overlength cap — across three consecutive capping runs, pinning that the non-promotable drop is held too; **M21** (new) reaches it; §3.4 gains the drain argument A10 executes. |
   | **NOTE 5** — R1 under-specified | **R1** names `SELF_LEARN_MINE_CAP_MAX=0` as the second path and corrects the flood-gate analogy: the gate is costless per run, cap-0 post-change pays a reader pass over a growing held set. |
   | **NOTE 6** — `cursors_held` rides only two statuses | **Obs-C O-2** states the key's coverage and that an absent key means "not a landing run", never "no holds" — naming the nine `held-gate` runs as the population that would be misread. |
+- **r3** — folds the delta gate (0 BLOCKER / 0 MAJOR / 2 NOTE). Counts
+  unchanged: 17 criteria, 21 mutations, 6 residuals. Both notes are
+  fixture-mechanization pins; no criterion changed meaning.
+
+  | finding | landed in |
+  |---|---|
+  | **NOTE 1** — A10's overlength filler meets the scanner for the first time on the run that lands it, and the obvious filler is not scan-clean | **A10** now requires scan-clean **prose** and states the structural reason (the cap branch `continue`s at `:1328`, before `_scan_candidate` at `:1344-1353`), with the failure it prevents spelled out — run 3 journals `scan-refused`, two pending instead of three, while the cursor assertion still passes, so a fixture bug reads as a hold bug. Re-measured independently and recorded as §8-7. |
+  | **NOTE 2** — B1(iv)'s mechanization admits an order-dependent accumulator | **B1** pins the single-run fixture (`sess-land` + `sess-hold` + `sess-halt` + a fabricated citation, cap 1 via both env pins) asserting the `cursor` **set** equals the three literals, and explicitly forbids the module-level accumulator, naming why: it degrades silently under `-k`, `-x`, a single-test re-run or parallel execution — a check that cannot fail when its subject is absent. |
+  | reviewer's operational note | **A9** now states that the second project directory must be `mkdir`-ed by the test, citing the `transcripts` fixture (`test_miner.py:41-43`, which creates only `-home-u-proj`) and `write_transcript` (`:103-106`, which does not create it). |
