@@ -1,14 +1,18 @@
 # Spec — U-repair: the unattended elicitation contract, one bounded repair round, and the throttle
 
-Status: **r3 — folded twice, awaiting the second delta gate.** The r1
-blind gate returned **UNSOUND — 3 BLOCKER / 4 MAJOR / 5 NOTE** and the
-r2 delta gate **UNSOUND — 1 BLOCKER / 3 MAJOR / 5 NOTE**, with all
-twelve r1 findings verified **CLOSED on the failures named**; every r2
-finding was new, introduced by the fold. §10 maps each of the 21 to its
-change. Both gates cite-checked the `file:line` references, re-derived
-§9-X2's census independently and re-ran `X1`: **the evidence base has
-survived both rounds intact and every defect has been in the normative
-register**, which is why r2 and r3 harden rather than redesign.
+Status: **r4 — GATED, CLEARED FOR BUILD.** Three review rounds, 27
+findings, all folded: r1 blind gate **UNSOUND — 3 BLOCKER / 4 MAJOR /
+5 NOTE**; r2 delta **UNSOUND — 1 BLOCKER / 3 MAJOR / 5 NOTE** with all
+twelve r1 findings verified **CLOSED on the failures named**; r3 delta
+**0 BLOCKER / 3 MAJOR / 3 NOTE** with all nine r2 folds verified closed
+on their mechanisms, and every remaining finding expressible as a bounded
+substitution — so the spec gate **closed at r4** under the ratified
+verdict-repricing rule, with the code gate's mutation sweep verifying the
+residue mechanically. §10 maps all 27 findings to their changes. Every
+round cite-checked the `file:line` references, re-derived §9-X2's census
+independently and re-ran `X1`: **the evidence base survived all three
+rounds intact and every defect was in the normative register**, which is
+why r2–r4 harden rather than redesign.
 Unit `U-repair`, addressing **FW-83**
 (`docs/specs/self-learn/14-forward-work-map.md:138`). Evidence of record:
 `docs/specs/self-learn/research/2026-08-08-worker-maiden-run-elicitation-failure.md`
@@ -478,6 +482,16 @@ file this is*, which outranks *what is wrong with it*.
   a matching `record_sha` on an invalid file means a non-model producer
   validated it at some earlier point and is working on it now.
 
+**Where these live in code, so no shape is inferred from a set-builder
+expression** *(delta-2 gate NOTE E)*: `_repairable(message)` stays
+**text-only** — it implements `E-1`…`E-3` and nothing else, and `A5`
+pins it as such. The two provenance rules are **path** predicates over
+`S4`'s output and are evaluated at the `S5` call site alongside it; there
+is deliberately **no** composed `_eligible(path)` helper, because `E-4`
+needs the batch and `E-5` needs `S4`'s per-path verdict, neither of which
+a message-shaped function should reach for. `E` is a set comprehension at
+`S5`, not a function.
+
 **Refusal text (about the defect):**
 
 - `E-1` its message begins with `gates.`, **and**
@@ -682,6 +696,15 @@ machinery added to prevent it *(r1 gate MAJOR 7)*.
 are both in hand. A builder who computes `Φ` only at `S8` has left the
 `V` rule reading r1's partition and reintroduces MAJOR 7.
 
+**Hook proposals are in `Φ` on the same terms as anything else**
+*(delta-2 gate MAJOR B(a))*: a `destination: hook` path is in `Φ` when
+F-a ∧ F-b hold; §3.8's carve-out governs **`S8`'s stamp-or-delete, not
+`S5`'s partition**. The other reading — "Rule-F never applies to hooks,
+therefore hooks are never in Φ" — pushes a valid stamped hook proposal
+into `V`, where a further attended edit during the repair window deletes
+it: the FW-84 cell, reopened for exactly one destination. `D6(iii)` and
+`M53` close it.
+
 **Why fabrication is structurally prevented, stated as the four
 independent legs a reviewer should check separately:**
 
@@ -797,11 +820,27 @@ from the structured compile input, overwriting anything the model wrote
 (`ledger_ops.py:1700-1701`, whose docstring's whole claim is "no path
 ships model-authored script text"). A hook proposal that skipped stamping
 would carry model-authored executable bytes, and `route` applies the
-stamped bytes verbatim (M3-2). Excluding hooks costs nothing: script
-generation is deterministic from the record and the `hook:` block, so
-re-stamping a genuinely foreign hook proposal is a content no-op unless a
-human hand-edited the script — which the doctrine forbids ("Hand-tuning a
-guard = edit the hook block, re-validate", §5.1). Pinned by `D9`/`M50`.
+stamped bytes verbatim (M3-2). Nothing downstream catches it:
+`_validate_hook_extension` (`ledger_ops.py:589-595`) never checks
+`script` against the `hook:` block, so the carve-out is the only guard.
+Pinned by `D9`/`M50`.
+
+**The carve-out is a TRADE, and r3 understated it** *(delta-2 gate
+MAJOR B(b))*. r3 said it "costs nothing … a content no-op". That is true
+only of the `script` **bytes** — script generation is deterministic from
+the record and the `hook:` block, and the doctrine forbids hand-tuning it
+(§5.1). It is **not** true of the file's fate: a genuinely foreign hook
+proposal is now **stamped (rewritten via `_dump_yaml`), counted in
+`proposed`, added to `touched`, and COMMITTED by the worker** — the exact
+harm Φ's own rationale refuses two paragraphs above. Taken deliberately:
+model-authored executable bytes reaching a guard is a P9 floor, and an
+attribution wart on the rare foreign-hook-mid-window case is the cheaper
+side. Recorded as its own §7.3 bullet with its own root — **not** part of
+the `_written_since` family, because a provenance signal would not retire
+it. A cheap future alternative exists and is **not** adopted here (this
+is the closed round, and it is a new mechanism, not a substitution):
+regenerate the script in memory, compare, and treat byte-identical as
+foreign.
 
 **Why a foreign file counts as progress** *(delta gate MAJOR 3)*. A Φ
 file is, by F-a ∧ F-b, **fresh** by the shipped predicate: its record is
@@ -1386,11 +1425,29 @@ harvest's tracked deletions run with autosync live. That is the hazard
 
 ### D. Attribution (Rule-F)
 
+**Construction-1 — how every Rule-F fixture stages a foreign file, and
+why the obvious way does not work.** *(delta-2 gate MAJOR A.)* `snap0` is
+taken **inside** `run()` at `S1` (`worker.py:1982`), and `_written_since`
+returns only paths whose digest differs from it (`:1231-1236`). **A file
+written or stamped BEFORE `run()` is already in `snap0`, so it never
+enters `written1`, never reaches `_validate_written`, and Rule-F never
+sees it** — a fixture built that way goes red on a correct build, and the
+natural repair (dropping the `foreign_left` and log-line legs) guts the
+flagship attribution criterion.
+
+> Every foreign fixture below therefore stages its file **during the
+> model window, from the shim** — the same construction `D8(ii)` already
+> uses. To "stamp" without a nested CLI call, the test computes
+> `normalize.sha_anchor(record.body)` in Python and interpolates it into
+> the shim's heredoc, so the file the shim writes already carries the
+> correct `record_sha:`. That is byte-identical to what
+> `stamp_proposal` would write and needs no lock.
+
 **D1 — a foreign, validated proposal survives the landing.** Seed a
-record in the batch. The shim script, standing in for a concurrent
-attended session, writes a **complete, schema-valid** proposal for that
-record **and stamps it** (call `ledger_ops.stamp_proposal` from the test
-before the run, then have the shim write nothing for that record).
+record in the batch. Per **Construction-1**, the shim — standing in for a
+concurrent attended session — writes, *during the model window*, a
+**complete, schema-valid, correctly-stamped** proposal for that record,
+and writes nothing else for it.
 Assert after the run: the file **exists**, its bytes are **unchanged**,
 it is not in `result.proposed`, it is not in `result.invalid_deleted`, it
 is not in `result.touched`, and `result.foreign_left` names it; assert
@@ -1449,23 +1506,40 @@ criterion, because they are the two halves of "who is Rule-F for".)*
   `_commit_locked` either: uncommitted, invalid, re-batched forever,
   skipped every window. Red-verify by dropping F-a and watching the
   invalid file survive.
-- **(ii) `Φ` is excluded from `V`.** A **foreign, valid, stamped** file
-  exists at `S4` (so it would be in `V` under r1's three-way partition)
-  and is edited again during the repair window — the attended session
-  still working. Assert it is **not** deleted, **not** in
+- **(ii) `Φ` is excluded from `V`.** Per **Construction-1**, the round-1
+  shim writes a **foreign, valid, stamped** file *during the model
+  window* (so it is in `written1` and classifies Φ at `S4`; under r1's
+  three-way partition it would have been in `V`), and the round-2 shim
+  edits it again during the repair window — the attended session still
+  working. Assert it is **not** deleted, **not** in
   `result.invalid_deleted`, and **not** refused with
   `repair rewrote a proposal that had already validated`.
   *Broken:* the `V` rule deletes it — FW-84's incident reproduced by the
   machinery added to prevent it, which is the regression `M46` models.
+- **(iii) a `destination: hook` path takes the same Φ branch at `S5`.**
+  The identical fixture with a `destination: hook` proposal (valid,
+  stamped, carrying a `hook:` block). Assert the same three negatives as
+  (ii) — the hook carve-out governs `S8`'s stamp-or-delete, **not**
+  `S5`'s partition (§3.5), so the file must not fall into `V` and be
+  deleted on the repair-window edit. At `S8` it is then stamped and
+  counted per `D9`, not left foreign.
+  *Broken:* `M53` — reading §3.8's "never applies to hooks" as a Φ
+  exclusion reopens the foreign∩V cell for exactly one destination, with
+  no other criterion covering it *(delta-2 gate MAJOR B(a))*.
 
 **D7 — a foreign file counts as progress, and does not fake a failure.**
 *(delta gate MAJOR 3.)* Fixture: the batch's **only** outcome is one Φ
-file (the shim writes nothing else; the test stamps a valid proposal for
-the batch record before the run). Assert `result.status == "ok"`;
+file, staged per **Construction-1** (the shim writes that one
+correctly-stamped valid proposal during the model window and nothing
+else). **The fixture's batch is below `BATCH_CAP`, so `worker.dirty` is
+cleared** — without that clause the follow-on leg tests the wrong thing,
+since the spawn is a function of `worker.dirty`/leftovers, not of status
+(`worker.py:1966-1967`, `:2101`) *(delta-2 gate NOTE D)*.
+Assert `result.status == "ok"`;
 `worker.last-run` **exists**; `result.proposed == []`;
 `result.valid_landed == 0`; `result.foreign_left` names the file;
 `result.touched == []`; the failure counter file **does not exist**; and
-**no follow-on was spawned** on account of failure.
+**no follow-on was spawned**.
 *Broken:* r2's accounting reports `status == "failed"` here — skipping
 `worker.last-run`, firing the staleness alarm, spawning a follow-on and
 incrementing the backoff on a run whose queue demonstrably advanced. This
@@ -1728,6 +1802,7 @@ never executed (FW-61). Use absolute paths and confirm
 | **M50** | apply Rule-F to `destination: hook` proposals too | **D9** |
 | **M51** | assert `touched == []` in B9 leg 5, i.e. stop appending to `touched` in `_git_rm_or_unlink` | B9 — the code-side form of the bug r2's leg 5 would have induced; it also reddens the shipped `test_lock_invariant.py` and the run-end commit's staging |
 | **M52** | `claude_shim` honours only `CLAUDE_SHIM_SCRIPT`, ignoring the numbered per-invocation forms | F5, and every criterion needing different round-1/round-2 output (`B3`, `B4`, `G1`–`G6`, `D6`) |
+| **M53** | exclude `destination: hook` paths from `Φ` at `S4` (reading §3.8's carve-out as a partition rule rather than an `S8` rule) | **D6(iii)** — the hook file lands in `V` and the repair-window edit deletes it: the foreign∩V cell, reopened for one destination |
 
 **Every criterion has at least one mutation above except the vacuity
 guards in `A1`/`A5`, and `F3`, `F4`, `F6` — deliberately, and stated so
@@ -1936,21 +2011,37 @@ unconsulted.
 - the analyst's Write tool can **overwrite** an attended proposal at the
   same path before landing runs at all — no landing-time rule can undo
   that;
+- **a genuinely foreign `destination: hook` proposal is stamped,
+  counted, staged and COMMITTED by the worker**, because Rule-F is
+  carved out for hooks (§3.8). Its **root is different from every other
+  bullet here**: script generation is a *stamp-time side effect*
+  (`ledger_ops.py:1700-1701`), and `_validate_hook_extension`
+  (`:589-595`) never checks `script` against the `hook:` block, so the
+  stamp is the only guard. A provenance signal would **not** retire this
+  one — FW-84's author would neither fix it nor know to look. Owner:
+  this spec, with the un-adopted alternative named in §3.8 (regenerate
+  and compare);
 - backoff suppression is visible only in `worker.log`; `fast_status` and
-  the UI do not report it.
+  the UI do not report it. **Root: operability (§3.10/BD8). Owner:
+  FW-82**, not FW-84.
 
-**All five have ONE root, and it already has an owner.** Every case above
-exists because `_written_since` (`worker.py:1231-1236`) **diffs the world
-instead of recording what the model wrote** — the same sentence FW-84's
-row names as the candidate mechanism. Given a real per-file provenance
-signal (FW-84's first listed fix direction: "track the paths the model
-actually wrote rather than diffing the world"), `E-4`/`E-5` become
-unnecessary, the never-validated residual disappears, Φ's
-model-vs-human ambiguity resolves, and the uncommitted-Φ case resolves
-with it. This unit ships the guards that are sound **without** that
+**Seven bullets, three roots — count them before quoting them**
+*(delta-2 gate NOTE C; r3 said "all five have ONE root" over a list of
+six, and swept in a bullet FW-84 does not own)*:
+
+| bullets | root | owner |
+|---|---|---|
+| the four attribution cases — never-validated repair-eligibility, written-but-unvalidated at landing, edited-after-validation mid-edit, uncommitted model-Φ | **`_written_since` diffs the world instead of recording what the model wrote** (`worker.py:1231-1236`) — the sentence FW-84's row names as its candidate mechanism | **FW-84**, via its first fix direction ("track the paths the model actually wrote") |
+| the analyst overwriting an attended proposal before landing runs | the analyst's write grant is **path**-scoped, not producer-scoped | **FW-84**, but via a *different* direction — "create-only semantics for analyst writes". Provenance alone does not fix it: the bytes are already gone |
+| the foreign hook proposal being committed | **script generation as a stamp-time side effect** | this spec (§3.8) |
+| backoff visibility | operability (§3.10/BD8) | **FW-82** |
+
+So: a real provenance signal retires **four** of the seven outright and
+`E-4`/`E-5` with them; a fifth needs FW-84's other direction; two are not
+FW-84's at all. This unit ships the guards that are sound **without** that
 signal and does not simulate it; §8 records the collapse as a handoff so
-FW-84's author sees how much of U-repair's residual list their unit
-retires.
+FW-84's author sees which of U-repair's residuals their unit retires —
+**and which it does not.**
 
 **Choice made, and why (a) was not taken in full:** a complete attribution
 fix means real per-file provenance — parsing `--output-format stream-json`
@@ -2006,11 +2097,16 @@ changes.
 
 - **FW-84** — full producer attribution (§7.3), plus the refused
   batch-scope narrowing (§7.1) as one candidate direction. **Read §7.3's
-  closing paragraph before scoping it:** five of this unit's declared
-  residuals share the single root FW-84 already names (`_written_since`
-  diffs the world instead of recording the model's writes), and a real
-  provenance signal retires all five at once — including `E-4`/`E-5`,
-  which exist only because that signal does not.
+  closing table before scoping it:** of this unit's **seven** declared
+  residuals, **four** share the single root FW-84 already names
+  (`_written_since` diffs the world instead of recording the model's
+  writes) and are retired outright by a provenance signal — `E-4`/`E-5`
+  with them, since those exist only because that signal does not. A
+  **fifth** needs FW-84's *other* direction (create-only analyst writes).
+  **Two are not FW-84's at all**: the hook-commit trade (root: script
+  generation as a stamp-time side effect, §3.8) and backoff visibility
+  (owner FW-82). The table says which is which, so the scope is
+  over-claimed in neither direction.
 - **FW-50** — TARGET-quote containment remains the one fabrication leg
   neither round can machine-check (§7.1).
 - **FW-82** — the backoff's log-only visibility (§7.3) is an operability
@@ -2152,3 +2248,34 @@ smuggles into a criterion.
   residuals share **one root** — `_written_since` diffs the world — and
   §8 hands FW-84 the collapse. Again no renumbering: `B9`, `H3`, `F5`,
   `B13`, `M21` rewritten in place; `D7`–`D9` and `M48`–`M52` are new.
+- **r4 (2026-08-09) — GATE CLOSED.** Second delta gate returned **0
+  BLOCKER / 3 MAJOR / 3 NOTE** and verified **all nine r3 folds closed on
+  their mechanisms** (`E-4`/`E-5` conjunctive and sound; the refusal of
+  the snapshot-bytes candidate confirmed correct; the `E-5` starvation
+  question answered by the self-clearing argument, checked against
+  `_git_rm_or_unlink` at `S8`; the `D9` hook claim confirmed against
+  `ledger_ops.py:1700-1701` and `:589-595`, where
+  `_validate_hook_extension` never checks `script` against the `hook:`
+  block), plus B13's seven markers line-for-line. Every remaining finding
+  was a bounded substitution, so this is the last spec round. **MAJOR A —
+  the fixture bug that would have gutted the flagship criterion:** `snap0`
+  is taken *inside* `run()` at `S1`, so a pre-run stamp is already in the
+  snapshot and never enters `written1`; `D1`/`D6(ii)`/`D7` all staged
+  their foreign file that way and would have gone red on a correct build.
+  Fixed by hoisting `D8(ii)`'s construction into a named
+  **Construction-1** that every Rule-F fixture references, and by
+  resolving `D1`'s prose/parenthetical contradiction in favour of the
+  prose. **MAJOR B** — (a) Φ membership for hooks is now explicit ("the
+  carve-out governs `S8`'s stamp-or-delete, not `S5`'s partition"), with
+  `D6(iii)`/`M53` covering the cell it would otherwise reopen; (b) §3.8's
+  "costs nothing" is corrected — a foreign hook proposal really is
+  stamped, counted, staged and committed, which is a defensible trade but
+  a trade, now a §7.3 bullet with **its own root** and explicitly outside
+  the FW-84 family. **NOTE C** — §7.3's roots are recounted as a table:
+  seven bullets, three roots, four owners' worth of disposition, replacing
+  r3's "all five have ONE root" over a six-item list. **NOTE D** — `D7`'s
+  fixture pins `worker.dirty` cleared, since the spawn keys off leftovers,
+  not status. **NOTE E** — `_repairable` is stated to stay text-only, with
+  `E-4`/`E-5` evaluated at the `S5` call site and no composed helper.
+  No renumbering: `D1`, `D7`, `D6`, §3.8, §7.3 rewritten in place;
+  `Construction-1`, `D6(iii)` and `M53` are new.
