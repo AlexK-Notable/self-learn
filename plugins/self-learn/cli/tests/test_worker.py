@@ -9,6 +9,7 @@ All cache state is XDG-redirected; the ledger is a sandbox git repo.
 
 import json
 import os
+import shutil
 import stat
 import subprocess
 import time
@@ -178,7 +179,29 @@ def claude_shim(tmp_path, monkeypatch, env):
         encoding="utf-8",
     )
     shim.chmod(shim.stat().st_mode | stat.S_IEXEC)
-    monkeypatch.setenv("PATH", f"{shims}:{os.environ['PATH']}")
+    # 2026-08-09 hardening (T3): strip any REAL self-learn-notify from the
+    # inherited PATH by default — belt-and-braces alongside the
+    # SELF_LEARN_NO_NOTIFY=1 conftest default (worker.py's own kill
+    # switch). A test that deliberately wants the shimmed
+    # self-learn-notify still finds it: `notify_shim` writes its binary
+    # into THIS SAME `shims` dir, which stays first on PATH.
+    #
+    # gate MAJOR 2 (2026-08-09): a default INERT `notify-send` stub too —
+    # `_path_without_real_notify_helper` deliberately does NOT filter
+    # notify-send-containing directories out of the rest of PATH (that
+    # broke `git` — see its own docstring), so without this, ANY worker
+    # test whose run happens to cross `_maybe_escalate`'s thresholds
+    # (`_notify` -> `shutil.which("notify-send")`) finds and fires the
+    # REAL /usr/bin/notify-send. This stub — exit 0, no output, nothing
+    # recorded — pre-empts that via ordinary PATH precedence (`shims` is
+    # always the first PATH entry) for every test that doesn't care about
+    # notify-send at all. A test that DOES care overwrites this exact
+    # file path with its own recording shim (as several below do); that
+    # write simply replaces this default, no special-casing needed.
+    ns_default = shims / "notify-send"
+    ns_default.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    ns_default.chmod(ns_default.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setenv("PATH", _path_without_real_notify_helper(shims))
 
     def argv_for(n: int) -> list[str]:
         p = calls_dir / f"argv.{n}"
@@ -240,12 +263,58 @@ def _path_without_real_notify_helper(*leading_dirs: Path) -> str:
     with any directory that would resolve a REAL `self-learn-notify`
     filtered out — so a "helper absent" test stays true even on a
     machine (like this repo's own dev host) where self-learn-notify is
-    actually deployed to `~/bin` (repo CLAUDE.md deploy surface)."""
+    actually deployed to `~/bin` (repo CLAUDE.md deploy surface).
+
+    NOT extended to filter `notify-send` too (tried, reverted, 2026-08-09
+    — gate MAJOR 2): on this host `/usr/bin/notify-send` lives in the
+    SAME directory as `git`/`python3`/etc., so excluding any directory
+    that contains a real `notify-send` also removes access to every
+    OTHER tool in it — breaking `worker.run()` outright (measured:
+    `FileNotFoundError: 'git'`). `notify-send` is blocked a different
+    way instead: `claude_shim` writes a default INERT stub of that exact
+    name into its own leading shim dir (see below) — ordinary PATH
+    precedence (first match wins) then shadows any real `notify-send`
+    later in PATH without ever touching that later directory's other
+    entries. A test that wants its OWN `notify-send` behavior just
+    overwrites the same file path; nothing here conflicts with that."""
     parts = [str(d) for d in leading_dirs]
     for entry in os.environ.get("PATH", "").split(os.pathsep):
         if entry and not (Path(entry) / "self-learn-notify").exists():
             parts.append(entry)
     return os.pathsep.join(parts)
+
+
+def test_claude_shim_path_never_resolves_a_real_self_learn_notify(claude_shim):
+    """FOLD 4 (gate NOTE 2, cheap belt-and-braces) — behavioral companion
+    to `test_f6_no_test_invokes_a_real_claude`'s source-level literal
+    checks (unchanged, no churn): under `claude_shim`'s OWN PATH
+    construction, `shutil.which("self-learn-notify")` must never resolve
+    to a REAL deployed helper — only `None` (nothing shimmed it in THIS
+    test) or a path inside `claude_shim`'s own shims dir (a test that
+    explicitly added one, e.g. via the `notify_shim` fixture)."""
+    resolved = shutil.which("self-learn-notify")
+    if resolved is not None:
+        assert Path(resolved).resolve().parent == claude_shim["dir"].resolve(), (
+            f"self-learn-notify resolved OUTSIDE claude_shim's own shim "
+            f"dir: {resolved!r} — this would be a REAL deployed helper"
+        )
+
+
+def test_claude_shim_default_notify_send_stub_is_present(claude_shim):
+    """gate NOTE (cheap, code gate 2026-08-09) — the default INERT
+    `notify-send` stub `claude_shim` writes (gate MAJOR 2 hardening) had
+    no test of its own: removing it survives every existing assertion,
+    since most tests never look at `notify-send` at all. Discriminate
+    stub-removal directly, mirroring the FOLD 4 test above: under
+    `claude_shim`'s PATH, `shutil.which("notify-send")` must resolve
+    INSIDE `claude_shim`'s own shim dir — never `None`, never anywhere
+    else."""
+    resolved = shutil.which("notify-send")
+    assert resolved is not None, "claude_shim's default notify-send stub is missing"
+    assert Path(resolved).resolve().parent == claude_shim["dir"].resolve(), (
+        f"notify-send resolved OUTSIDE claude_shim's own shim dir: "
+        f"{resolved!r}"
+    )
 
 
 def seed_pending(env, rid="lrn-0000aaaa", created_at=None):
@@ -293,6 +362,69 @@ def test_dead_pid_window_reopens(env, monkeypatch):
 def test_autokick_disabled_is_noop(env):
     assert worker.kick(env.home) == "disabled"
     assert not (worker.cache_dir() / "worker.dirty").exists()
+
+
+def test_d3_depth_ceiling_refuses_a_real_spawn(env, monkeypatch):
+    """D3 (incident 2026-08-09) — belt-and-braces: `_spawn_window` itself
+    refuses to Popen once `SELF_LEARN_FOLLOWON_DEPTH` (the chain-depth
+    counter threaded through a spawned child's env) reaches the ceiling,
+    holding even if D2's progress reasoning is ever wrong. `Popen` is
+    mocked so a bug in the ceiling check cannot leak a real process from
+    THIS test either."""
+    popen_calls = []
+    monkeypatch.setattr(
+        worker.subprocess,
+        "Popen",
+        lambda *a, **kw: popen_calls.append(kw.get("env")) or type(
+            "P", (), {"pid": 4242}
+        )(),
+    )
+    worker.cache_dir().mkdir(parents=True, exist_ok=True)
+
+    # At the ceiling: refuses, returns a non-positive sentinel, Popen
+    # never called.
+    monkeypatch.setenv(
+        "SELF_LEARN_FOLLOWON_DEPTH", str(worker.FOLLOWON_DEPTH_CEILING)
+    )
+    pid = worker._spawn_window(env.home)
+    assert pid <= 0
+    assert popen_calls == []
+
+    # Below the ceiling: proceeds, and the CHILD's env carries the
+    # incremented depth (so a real chain's own successor sees it one
+    # higher, eventually reaching the ceiling itself).
+    monkeypatch.setenv(
+        "SELF_LEARN_FOLLOWON_DEPTH", str(worker.FOLLOWON_DEPTH_CEILING - 1)
+    )
+    pid = worker._spawn_window(env.home)
+    assert pid == 4242
+    assert len(popen_calls) == 1
+    assert popen_calls[0][worker.FOLLOWON_DEPTH_ENV] == str(
+        worker.FOLLOWON_DEPTH_CEILING
+    )
+
+    # No depth in the environment at all (an explicit human/teach/import
+    # kick's own fresh shell) — starts a NEW chain at depth 1, exactly
+    # E7's "an explicit kick is a fresh mandate" applied to D3 too.
+    monkeypatch.delenv("SELF_LEARN_FOLLOWON_DEPTH", raising=False)
+    popen_calls.clear()
+    pid = worker._spawn_window(env.home)
+    assert pid == 4242
+    assert popen_calls[0][worker.FOLLOWON_DEPTH_ENV] == "1"
+
+
+def test_open_window_reports_depth_limited_without_a_real_spawn(env, monkeypatch):
+    """D3 through `_open_window`/`kick`'s outcome vocabulary: a
+    ceiling-refused `_spawn_window` (returning <= 0) must not be reported
+    as "spawned" (which would write a bogus pid to `worker.window` and
+    mislead an absorption check) — `_open_window` reports
+    "depth-limited" instead, and never calls `worker.window.write_text`."""
+    monkeypatch.delenv("SELF_LEARN_WORKER_AUTOKICK", raising=False)
+    worker.cache_dir().mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(worker, "_spawn_window", lambda home, *, no_push=False: -1)
+    outcome = worker._open_window(env.home)
+    assert outcome == "depth-limited"
+    assert not (worker.cache_dir() / "worker.window").exists()
 
 
 def test_teach_kicks_import_kicks(env, monkeypatch, capsys):
@@ -491,6 +623,11 @@ def test_orphan_proposal_swept(env, claude_shim, monkeypatch):
 
 
 def test_kick_mid_run_triggers_followon(env, claude_shim, monkeypatch):
+    # AUTOKICK now gates the follow-on too (2026-08-09) — opt back in
+    # (mirroring `kick` tests' own convention) so this test exercises the
+    # follow-on's real DECISION logic against a mocked `_spawn_window`,
+    # never a real process.
+    monkeypatch.delenv("SELF_LEARN_WORKER_AUTOKICK", raising=False)
     rid = seed_pending(env)
     # the shim re-marks dirty mid-run, as a landing kick would
     dirty = worker.cache_dir() / "worker.dirty"
@@ -554,13 +691,97 @@ def test_notification_template_verbatim():
     )
 
 
+def test_notify_kill_switch_both_directions(
+    env, claude_shim, notify_shim, monkeypatch, tmp_path
+):
+    """Bug B (incident 2026-08-09), positive control in BOTH directions —
+    a check that passes when the feature is absent is worthless.
+    `_notify_with_ids`/`_notify` resolve their helper via PATH, which on
+    a dev machine finds the REAL deployed ~/bin scripts regardless of
+    sandboxing, so an un-suppressed worker test notified the operator's
+    REAL desktop (measured: fixture proposal lrn-10000000 notified
+    repeatedly from an agent worktree).
+
+    SAME landing shim, SAME `notify_shim`-shimmed helper on PATH, only
+    `SELF_LEARN_NO_NOTIFY` differs between the two runs:
+      - kill-switched (the suite's OWN default, "1", never overridden
+        here): zero invocations through EITHER shim — proves the switch
+        actually suppresses, not merely that nothing was ever wired up.
+      - live-shaped (explicitly cleared): exactly one invocation through
+        the notify_shim, pinned argv — proves the switch is not
+        permanently eating the feature; live mode still notifies.
+
+    gen2's record is deliberately dated 38 days old, which ALSO crosses
+    `_maybe_escalate`'s ESCALATE_OLDEST_DAYS threshold — a SEPARATE code
+    path (`_maybe_escalate` -> `_notify`, a raw `notify-send` call, never
+    the self-learn-notify helper). Gate MAJOR 2 (code gate 2026-08-09)
+    measured this test firing a REAL desktop notification through
+    EXACTLY that path — `notify_shim` only ever shimmed
+    `self-learn-notify`, never `notify-send` itself. `notify-send` is
+    now ALSO shimmed here, turning what was a live leak into a positive
+    control: the escalation call must land on the shim, never silently
+    vanish and never reach the real binary."""
+    notify_send_log = tmp_path / "notify-send.log"
+    ns_shim = claude_shim["dir"] / "notify-send"
+    ns_shim.write_text(
+        "#!/usr/bin/env bash\n"
+        f'printf \'%s\\0\' "$@" >> "{notify_send_log}"\n'
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    ns_shim.chmod(ns_shim.stat().st_mode | stat.S_IEXEC)
+
+    assert os.environ.get("SELF_LEARN_NO_NOTIFY") == "1", (
+        "test assumes the suite-wide conftest default is active"
+    )
+    rid = seed_pending(env)
+    monkeypatch.setenv("CLAUDE_SHIM_SCRIPT", shim_writes(env, rid))
+
+    result = worker.run(env.home)
+    assert result.status == "ok"
+    assert not notify_shim["log"].exists(), (
+        "kill-switched run: the notify shim must never be invoked"
+    )
+    assert not notify_send_log.exists(), (
+        "kill-switched run: no raw notify-send call (escalation incl.) either"
+    )
+
+    rid2 = seed_pending(env, "lrn-0000dddd", created_at="2026-07-02T00:00:00Z")
+    monkeypatch.setenv("CLAUDE_SHIM_SCRIPT", shim_writes(env, rid2))
+    monkeypatch.delenv("SELF_LEARN_NO_NOTIFY", raising=False)
+
+    result2 = worker.run(env.home)
+    assert result2.status == "ok"
+    assert result2.escalated is True, "test assumes gen2 crosses ESCALATE_OLDEST_DAYS"
+    _wait_for_file(notify_shim["log"])
+    argv = notify_shim["log"].read_text(encoding="utf-8").split("\0")[:-1]
+    assert argv == [
+        "--line",
+        # generation 1's record is still counted in total_pending — it
+        # landed a proposal but was never ROUTED (a separate action).
+        worker.render_notification(1, ["s"], 2, 1),
+        "--ids",
+        rid2,
+    ]
+    # the escalation call landed on the shim — never silent, never real.
+    _wait_for_file(notify_send_log)
+    ns_argv = notify_send_log.read_text(encoding="utf-8").split("\0")[:-1]
+    assert ns_argv[0] == "self-learn"
+    assert "self-learn: backlog needs attention — 2 pending" in ns_argv[1]
+
+
 def test_notify_uses_helper_with_pinned_argv_and_matching_ids(
     env, claude_shim, notify_shim, monkeypatch
 ):
     """10 U8: the proposals notification's transport swaps to a detached
     spawn of `self-learn-notify`, pinned argv (10 §1) — `--line` carries
     the byte-unchanged `render_notification` template, `--ids` carries
-    the SAME ids `append_event` already logged, comma-joined."""
+    the SAME ids `append_event` already logged, comma-joined.
+
+    Opts back out of the suite-wide SELF_LEARN_NO_NOTIFY=1 default
+    (2026-08-09, same convention as AUTOKICK) to exercise the SHIMMED
+    transport — never a real notify-send/self-learn-notify."""
+    monkeypatch.delenv("SELF_LEARN_NO_NOTIFY", raising=False)
     rid = seed_pending(env)
     monkeypatch.setenv("CLAUDE_SHIM_SCRIPT", shim_writes(env, rid))
     worker.run(env.home)
@@ -593,7 +814,11 @@ def test_notify_helper_absent_falls_back_to_direct_notify_send(
 ):
     """Graceful degradation (headless/partial-deploy safety, 09 §5):
     `self-learn-notify` missing from PATH → the old M2 direct
-    notify-send path is taken, no crash, logged one line."""
+    notify-send path is taken, no crash, logged one line.
+
+    Opts back out of the suite-wide SELF_LEARN_NO_NOTIFY=1 default
+    (2026-08-09) to exercise the SHIMMED `notify-send` fallback."""
+    monkeypatch.delenv("SELF_LEARN_NO_NOTIFY", raising=False)
     rid = seed_pending(env)
     monkeypatch.setenv("CLAUDE_SHIM_SCRIPT", shim_writes(env, rid))
 
@@ -620,13 +845,147 @@ def test_notify_helper_absent_falls_back_to_direct_notify_send(
     assert "self-learn-notify not on PATH" in log_text
 
 
+def test_notify_direct_fallback_kill_switch_both_directions(
+    env, claude_shim, monkeypatch, tmp_path
+):
+    """CORRECTED SCOPE (FOLD 1 redo, gate MAJOR 1, code gate 2026-08-09):
+    this test does NOT reach `_notify`'s own kill-switch check —
+    `_notify_with_ids` returns at ITS OWN suppression check (before ever
+    reaching its `_notify(message)` fallback line, present or absent
+    helper alike), so both legs below only re-exercise `_notify_with_
+    ids`'s check a second time. Kept (still real, non-vacuous coverage
+    of that check via the "helper absent" shape), but `_notify`'s own
+    check has exactly ONE independent entry point — `_maybe_escalate` —
+    covered by `test_notify_escalation_kill_switch_both_directions`
+    below; see ITS docstring for the gate's full finding (13/13 tests
+    green with the check pulled from `_notify` alone, PATH instrument
+    caught a real desktop notification through this exact gap in
+    `test_composer.py`).
+
+    Same both-directions shape as `test_notify_kill_switch_both_
+    directions`, but built on `test_notify_helper_absent_falls_back_to_
+    direct_notify_send`'s setup instead: self-learn-notify absent from
+    PATH, notify-send PATH-shimmed to a recording fake. Both records
+    stay fresh (no old `created_at`) so `_maybe_escalate` never fires —
+    this test is scoped to the ONE path under test, not a second."""
+    notify_send_log = tmp_path / "notify-send.log"
+    shim = claude_shim["dir"] / "notify-send"
+    shim.write_text(
+        "#!/usr/bin/env bash\n"
+        f'printf \'%s\\0\' "$@" >> "{notify_send_log}"\n'
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    shim.chmod(shim.stat().st_mode | stat.S_IEXEC)
+    # self-learn-notify deliberately NOT added to claude_shim["dir"];
+    # strip any other PATH entry that would resolve a real one too.
+    monkeypatch.setenv("PATH", _path_without_real_notify_helper(claude_shim["dir"]))
+
+    assert os.environ.get("SELF_LEARN_NO_NOTIFY") == "1", (
+        "test assumes the suite-wide conftest default is active"
+    )
+    rid = seed_pending(env)
+    monkeypatch.setenv("CLAUDE_SHIM_SCRIPT", shim_writes(env, rid))
+
+    result = worker.run(env.home)
+    assert result.status == "ok"
+    assert not notify_send_log.exists(), (
+        "kill-switched run: _notify's own notify-send fallback must never fire"
+    )
+
+    rid2 = seed_pending(env, "lrn-0000ffff")  # fresh created_at: no escalation
+    monkeypatch.setenv("CLAUDE_SHIM_SCRIPT", shim_writes(env, rid2))
+    monkeypatch.delenv("SELF_LEARN_NO_NOTIFY", raising=False)
+
+    result2 = worker.run(env.home)
+    assert result2.status == "ok"
+    assert result2.escalated is False, "test assumes gen2 stays under threshold"
+    argv = notify_send_log.read_text(encoding="utf-8").split("\0")[:-1]
+    assert argv == ["self-learn", worker.render_notification(1, ["s"], 2, 1)]
+
+
+def test_notify_escalation_kill_switch_both_directions(
+    env, claude_shim, monkeypatch, tmp_path
+):
+    """FOLD 1 REDO (gate MAJOR 1, code gate 2026-08-09) — `_notify`'s
+    OWN kill-switch check has exactly ONE independent entry point:
+    `_maybe_escalate`. `_notify_with_ids`'s fallback to `_notify` is
+    unreachable when suppressed (it returns at its OWN check first — see
+    its docstring), so no OTHER path can ever exercise `_notify`'s check
+    in isolation. The gate's mutation instrument confirmed this
+    precisely: removing the check from `_notify` alone left the FULL
+    suite green (1532/5/0), and its PATH instrument caught
+    `test_composer.py::test_a24_containment_and_derivation_at_owned_
+    sites` firing a REAL desktop notification through exactly this gap
+    (that test never uses `claude_shim`, so the default inert
+    notify-send stub can't shadow it either).
+
+    NON-VACUITY (required — a check that passes when the feature is
+    absent, or when the precondition never held, is worthless twice
+    over): `_maybe_escalate` returns `True` (and `run()` copies that into
+    `result.escalated`) UNCONDITIONALLY once its own threshold/debounce
+    checks pass — regardless of whether the `_notify` call INSIDE it was
+    suppressed. `result.escalated is True` is therefore direct proof the
+    escalation predicate genuinely fired on this fixture, independent of
+    whatever the shim did or didn't record.
+
+    Kept STRICTLY isolated to the escalation path: 5 pending records (=
+    ESCALATE_PENDING), no landing shim at all, so `ids` stays empty and
+    `_notify_with_ids`'s own "proposals" leg never fires — only
+    `_maybe_escalate` -> `_notify` is exercised, in EITHER direction."""
+    notify_send_log = tmp_path / "notify-send.log"
+    shim = claude_shim["dir"] / "notify-send"
+    shim.write_text(
+        "#!/usr/bin/env bash\n"
+        f'printf \'%s\\0\' "$@" >> "{notify_send_log}"\n'
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    shim.chmod(shim.stat().st_mode | stat.S_IEXEC)
+
+    for i in range(5):  # = ESCALATE_PENDING; no CLAUDE_SHIM_SCRIPT anywhere
+        seed_pending(env, f"lrn-500000{i:02x}")
+
+    assert os.environ.get("SELF_LEARN_NO_NOTIFY") == "1", (
+        "test assumes the suite-wide conftest default is active"
+    )
+    result = worker.run(env.home)
+    assert result.status == "failed"  # nothing landed — no shim script
+    assert result.escalated is True, (
+        "non-vacuity: the escalation predicate must genuinely fire on "
+        "this fixture (5 pending == ESCALATE_PENDING) — otherwise the "
+        "zero-hits assertion below would pass vacuously"
+    )
+    assert not notify_send_log.exists(), (
+        "kill-switched: _maybe_escalate's own _notify call must be "
+        "suppressed before ever touching notify-send"
+    )
+
+    # LIVE direction, paired positive control (same fixture, same 5
+    # records — total_pending is unchanged since nothing ever landed):
+    # clear the debounce marker so escalation can fire a SECOND time,
+    # clear the kill switch, and the shim records exactly one call.
+    (worker.cache_dir() / "worker.last-escalated").unlink(missing_ok=True)
+    monkeypatch.delenv("SELF_LEARN_NO_NOTIFY", raising=False)
+
+    result2 = worker.run(env.home)
+    assert result2.escalated is True
+    ns_argv = notify_send_log.read_text(encoding="utf-8").split("\0")[:-1]
+    assert ns_argv[0] == "self-learn"
+    assert "self-learn: backlog needs attention — 5 pending" in ns_argv[1]
+
+
 def test_notify_never_blocks_worker_on_detached_helper(
     env, claude_shim, notify_shim, monkeypatch
 ):
     """The helper is spawned DETACHED — the worker must never wait on
     its exit (self-learn-notify itself blocks on `notify-send --wait`
     until acted on or expired; that latency must never become the
-    worker's)."""
+    worker's).
+
+    Opts back out of the suite-wide SELF_LEARN_NO_NOTIFY=1 default
+    (2026-08-09) to exercise the SHIMMED detached spawn."""
+    monkeypatch.delenv("SELF_LEARN_NO_NOTIFY", raising=False)
     rid = seed_pending(env)
     monkeypatch.setenv("CLAUDE_SHIM_SCRIPT", shim_writes(env, rid))
     monkeypatch.setenv("NOTIFY_SHIM_SCRIPT", "sleep 5")
@@ -784,7 +1143,13 @@ analyzed_at: "2026-07-15T00:00:00Z"
 
 def test_batch_cap_leftovers_keep_dirty_and_followon(env, claude_shim, monkeypatch):
     """Pinned: leftovers keep worker.dirty set for a follow-on window.
-    16 eligible → batch 15, 1 leftover, dirty kept, follow-on opened."""
+    16 eligible → batch 15, 1 leftover, dirty kept, follow-on opened.
+
+    AUTOKICK now gates the follow-on too (2026-08-09) — opt back in
+    (mirroring `kick` tests' own convention) so this exercises the
+    follow-on's real DECISION against a mocked `_spawn_window`, never a
+    real process."""
+    monkeypatch.delenv("SELF_LEARN_WORKER_AUTOKICK", raising=False)
     for i in range(16):
         create_record(
             env.home,
@@ -805,6 +1170,46 @@ def test_batch_cap_leftovers_keep_dirty_and_followon(env, claude_shim, monkeypat
     assert (worker.cache_dir() / "worker.dirty").is_file()
     assert result.followon is True
     assert spawned == [1]
+
+
+def test_followon_sandboxed_default_leaves_dirty_but_spawns_nothing(
+    env, claude_shim, monkeypatch
+):
+    """Incident 2026-08-09, positive control (Bug D) paired with
+    `test_batch_cap_leftovers_keep_dirty_and_followon` above — SAME
+    16-record leftover batch, SAME genuine landing (real progress, so D2
+    would allow it too), but AUTOKICK is left at the suite's OWN default
+    ("0", never deleted here) instead of opted back in. `_spawn_window`
+    is guarded with `pytest.fail` (not just recorded) so this proves the
+    gate refuses BEFORE ever reaching a real spawn attempt — the exact
+    shape of the incident: a leftover-batch test that never opted out of
+    the sandbox default must be structurally unable to spawn a real
+    detached process, regardless of whether the test itself remembered
+    to mock `_spawn_window`."""
+    for i in range(16):
+        create_record(
+            env.home,
+            make_behavior(
+                record_id=f"lrn-400000{i:02x}",
+                created_at=f"2026-07-{1 + i:02d}T00:00:00Z",
+            ),
+        )
+    commit_all(env.home, "sixteen pending")
+    monkeypatch.setenv("CLAUDE_SHIM_SCRIPT", shim_writes(env, "lrn-40000000"))
+    monkeypatch.setattr(
+        worker,
+        "_spawn_window",
+        lambda home, *, no_push=False: pytest.fail(
+            "must not reach a real spawn under the sandbox default"
+        ),
+    )
+    result = worker.run(env.home)
+    assert result.eligible == 15  # cap
+    assert result.leftovers == 1
+    assert (worker.cache_dir() / "worker.dirty").is_file()
+    assert result.followon is False
+    log_text = (worker.cache_dir() / "worker.log").read_text(encoding="utf-8")
+    assert "run: follow-on window: disabled" in log_text
 
 
 def test_merge_output_without_shas_survives_and_is_stamped(env, claude_shim, monkeypatch):

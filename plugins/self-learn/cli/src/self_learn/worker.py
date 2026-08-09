@@ -31,7 +31,15 @@ record; confirmation is the human ``confirm-recurrence`` verb.
 Test hook: ``SELF_LEARN_WORKER_AUTOKICK=0`` makes :func:`kick` a logged
 no-op — the test suite sets it globally (conftest) so unrelated
 teach/import tests never spawn detached processes; worker tests opt back
-in or drive :func:`run` directly.
+in (``monkeypatch.delenv``) or drive :func:`run` directly. The SAME
+switch also gates the run-end follow-on window inside :func:`run` (see
+:func:`_autokick_disabled` — incident 2026-08-09: it did not, until a
+test's leftover batch drove a real, self-respawning detached chain).
+Tests exercising the follow-on's spawn DECISION (batch cap, backoff
+counter, mid-run-kick re-trigger) must both mock ``_spawn_window`` AND
+``monkeypatch.delenv("SELF_LEARN_WORKER_AUTOKICK")`` — same convention as
+:func:`kick` tests — so the mock is what's asserted on, never a real
+process.
 """
 
 from __future__ import annotations
@@ -79,6 +87,8 @@ __all__ = [
     "DEFAULT_COALESCE_SECS",
     "DEFAULT_WORKER_MODEL",
     "DISALLOWED_TOOLS",
+    "FOLLOWON_DEPTH_CEILING",
+    "FOLLOWON_DEPTH_ENV",
     "FOLLOWON_FAILURE_CAP",
     "REPAIR_TIMEOUT_SECS",
     "Roster",
@@ -933,20 +943,121 @@ def no_push_requested() -> bool:
     return os.environ.get(NO_PUSH_ENV) == "1"
 
 
+def _autokick_disabled() -> bool:
+    """True iff ``SELF_LEARN_WORKER_AUTOKICK=0`` — the shared kill-switch
+    for ANY code path that would auto-spawn a detached ``worker run
+    --coalesce`` window, not just an explicit :func:`kick`. Read fresh
+    (never cached) so a test's `monkeypatch.setenv`/`delenv` takes effect
+    immediately.
+
+    Incident 2026-08-09: before this helper existed, only :func:`kick`
+    checked the env var — the run-end follow-on (see :func:`run`) called
+    `_open_window` directly and was NOT gated by it at all. A suite test
+    exercising `worker.run()` with a leftover/backlog batch (AUTOKICK=0
+    ambient from the conftest default, `_spawn_window` never mocked)
+    spawned a REAL detached `worker run --coalesce` chain that respawned
+    generation after generation, each run's own follow-on re-triggering
+    the next — invisible to the AUTOKICK=0 the test believed had disabled
+    all auto-spawning. That orphaned chain (peak 4,617 notify-send +
+    6,508 wrapper shells, each a G-3 notifier riding the same leak) ran
+    39.3 hours and exhausted the user-scope dbus-broker's file
+    descriptors, killing the desktop session."""
+    return os.environ.get("SELF_LEARN_WORKER_AUTOKICK") == "0"
+
+
+def _followon_progress(home: Path, eligible_before: int) -> bool:
+    """D2 (incident 2026-08-09) — True iff a FRESH re-enumeration shows
+    the eligible set genuinely shrank since `eligible_before` was
+    captured at THIS run's own start. `status in ("ok", "idle")` alone is
+    NOT proof of progress: it only means a proposal file was written,
+    never that the record it names actually left the pending queue — a
+    batch that keeps re-reporting "ok" while the same records stay
+    un-landed (a pathological fixture, or a future bug) chains forever,
+    invisible to the failure cap (which only counts `status == "failed"`
+    runs).
+
+    Called ONLY from the run-end follow-on decision, itself outside the
+    run lock (see the comment there) — every commit this run made is
+    already applied by the time this re-scans, so the comparison is
+    against the ledger's true post-run state, not a stale snapshot.
+
+    CARDINALITY, NOT IDENTITY (code gate 2026-08-09, MAJOR 3, ratified
+    keep-as-built): this compares COUNTS (`eligible_after < eligible_
+    before`), never WHICH records those counts name. Supply that arrives
+    and leaves within the same run without changing the net count — a
+    record set going {A,B} -> {B,C} (A resolved, C newly landed mid-run),
+    or a mid-run kick landing during what started as an idle run with a
+    still-empty eligible set at both ends — reads as "no progress" and
+    the follow-on will NOT spawn. This is deliberate, not an oversight:
+    identity tracking would need to diff record ID SETS, not just their
+    sizes, adding real complexity to a safety-critical decision for a
+    case that only costs LATENCY, never correctness — the arrived work
+    is never lost, only left for the next independent kick (an explicit
+    kick is unaffected either way: it is never gated by this function at
+    all, and always covers it). Conservative is the right default in the
+    aftermath of a 39.3h incident caused by the opposite failure mode
+    (spawning too eagerly); revisit only on deliberate, ratified
+    request — see the routing note accompanying this comment."""
+    fresh_batch, fresh_leftovers, _total_pending, _per_bucket = _enumerate(home)
+    eligible_after = len(fresh_batch) + fresh_leftovers
+    return eligible_after < eligible_before
+
+
+#: D3 (incident 2026-08-09) — the follow-on chain's absolute depth
+#: ceiling: belt-and-braces that holds even if D2's progress reasoning
+#: above is ever wrong. 8 generations at BATCH_CAP=15/generation drains
+#: up to 120 backlogged records — comfortably above any plausible
+#: real backlog (measured live: 21 pending / 19 eligible drains in ~2
+#: generations) — while bounding worst case to a handful of processes,
+#: never an unbounded chain.
+FOLLOWON_DEPTH_CEILING = 8
+
+#: Threaded through a spawned child's env (2026-08-09): each real
+#: `_spawn_window` call increments this from the PARENT's own value (0 if
+#: absent — an explicit `kick()` from a human/teach/import/miner shell
+#: never carries one, so it always starts a fresh chain at depth 1,
+#: exactly right: E7's "an explicit kick is a fresh mandate" applies here
+#: too). Only a CHAIN of automatic follow-on spawns, each inheriting the
+#: previous one's incremented env, ever approaches the ceiling.
+FOLLOWON_DEPTH_ENV = "SELF_LEARN_FOLLOWON_DEPTH"
+
+
 def _spawn_window(home: Path, *, no_push: bool = False) -> int:
-    """setsid-spawn a coalescing run; returns the child pid. Split out so
-    tests can monkeypatch spawning without faking flocks.
+    """setsid-spawn a coalescing run; returns the child pid, or the
+    negative sentinel ``-1`` iff D3's chain-depth ceiling refuses to
+    spawn (see :data:`FOLLOWON_DEPTH_CEILING`). Split out so tests can
+    monkeypatch spawning without faking flocks.
 
     ``no_push`` rides the child's ENV (BLOCKER 3): the spawn is detached
     (``start_new_session=True``), so the parent's flag reaches it only as
     inherited environment — and without it, ``teach --no-push`` published
     the very record the user said keep local, via the worker teach itself
-    kicked (worker run-end ``git push`` publishes the WHOLE branch)."""
+    kicked (worker run-end ``git push`` publishes the WHOLE branch).
+
+    D3 (incident 2026-08-09): the child's own follow-on chain depth rides
+    the SAME env-copy mechanism — read from THIS process's own
+    environment (0 if absent) and written back incremented, so a CHAIN
+    of automatic follow-on spawns accumulates a visible depth the
+    ceiling can act on, while an explicit `kick()` (never carrying the
+    var in a fresh human/teach/import/miner shell) always starts a new
+    chain at depth 1."""
+    try:
+        depth = int(os.environ.get(FOLLOWON_DEPTH_ENV, "0"))
+    except ValueError:
+        depth = 0
+    if depth >= FOLLOWON_DEPTH_CEILING:
+        log(
+            f"run: follow-on chain-depth ceiling reached ({depth} >= "
+            f"{FOLLOWON_DEPTH_CEILING}) — refusing to spawn a successor; "
+            "`self-learn worker kick` retries"
+        )
+        return -1
     log_path = _p("worker.log")
     log_path.parent.mkdir(parents=True, exist_ok=True)
     env = dict(os.environ)
     if no_push:
         env[NO_PUSH_ENV] = "1"
+    env[FOLLOWON_DEPTH_ENV] = str(depth + 1)
     with open(log_path, "a", encoding="utf-8") as out:
         proc = subprocess.Popen(
             [sys.executable, "-m", "self_learn.cli", "worker", "run", "--coalesce"],
@@ -963,7 +1074,10 @@ def _open_window(home: Path, *, no_push: bool = False) -> str:
     """Lock-guarded window opener, shared by :func:`kick` and the
     run-end follow-on (audit 2026-07-15: the follow-on previously
     bypassed the spawn lock and could double-spawn against a mid-run
-    kick). Returns ``spawned`` | ``absorbed-window`` | ``absorbed-race``.
+    kick). Returns ``spawned`` | ``absorbed-window`` | ``absorbed-race``
+    | ``depth-limited`` (D3, 2026-08-09: `_spawn_window` refused under
+    the chain-depth ceiling — nothing was actually spawned, so no pid is
+    recorded to `worker.window`).
 
     ``no_push`` propagates to a spawned child (BLOCKER 3). An ABSORBED kick
     inherits the already-running window's policy — correct: absorption
@@ -984,6 +1098,8 @@ def _open_window(home: Path, *, no_push: bool = False) -> str:
                 if pid > 0 and _pid_alive(pid):
                     return "absorbed-window"
             pid = _spawn_window(home, no_push=no_push)
+            if pid <= 0:
+                return "depth-limited"  # already logged by _spawn_window
             window.write_text(str(pid), encoding="utf-8")
             log(f"window opened (pid {pid})")
             return "spawned"
@@ -993,11 +1109,14 @@ def _open_window(home: Path, *, no_push: bool = False) -> str:
 
 def kick(home: Path | str, *, no_push: bool = False) -> str:
     """The pinned kick. Returns the outcome (for logs/tests):
-    ``spawned`` | ``absorbed-window`` | ``absorbed-race`` | ``disabled``.
+    ``spawned`` | ``absorbed-window`` | ``absorbed-race`` | ``disabled``
+    | ``depth-limited`` (D3 — vanishingly unlikely for an explicit kick,
+    since a fresh human/teach/import/miner shell never carries a
+    follow-on depth; see :func:`_spawn_window`).
 
     ``no_push`` binds the spawned worker to the caller's ``--no-push``
     (BLOCKER 3) — see :func:`no_push_requested` for the exact semantics."""
-    if os.environ.get("SELF_LEARN_WORKER_AUTOKICK") == "0":
+    if _autokick_disabled():
         return "disabled"
     home = Path(home)
     cache_dir().mkdir(parents=True, exist_ok=True)
@@ -2255,10 +2374,42 @@ def render_notification(n: int, buckets: list[str], total: int, scopes: int) -> 
     )
 
 
+def _notifications_suppressed() -> bool:
+    """True iff ``SELF_LEARN_NO_NOTIFY=1`` — the EXPLICIT kill switch for
+    BOTH notify transports (:func:`_notify`, :func:`_notify_with_ids`).
+
+    Incident 2026-08-09: both functions resolve their helper via PATH,
+    which on a dev machine finds the REAL deployed ``~/bin`` scripts
+    regardless of whether the CALLING process is a sandboxed/dev/test
+    worker run — so any such run notified the operator's REAL desktop
+    (measured: fixture proposal lrn-10000000 notified repeatedly from an
+    agent worktree).
+
+    NOT keyed on ``SELF_LEARN_HOME`` (the tempting "dev/test redirects
+    it" signal) — verified against BOTH deployed production invocation
+    paths: ``systemd/self-learn-miner.service`` and
+    ``systemd/self-learn-ui.service`` each pin
+    ``Environment=SELF_LEARN_HOME=%h/.self-learn`` explicitly (systemd
+    does not inherit the shell's env, B-1 doc 13 §7.1). SELF_LEARN_HOME
+    is therefore ALWAYS set in real, live, production runs too — keying
+    on "set" would silently kill live notifications forever. The test
+    suite's conftest.py sets THIS explicit var globally (mirroring
+    ``SELF_LEARN_WORKER_AUTOKICK``'s own convention) so every test is
+    silent by default; a harness that wants the shimmed transport
+    exercised opts back out via ``monkeypatch.delenv``."""
+    return os.environ.get("SELF_LEARN_NO_NOTIFY") == "1"
+
+
 def _notify(message: str) -> None:
     """notify-send when available, stderr otherwise — failure never fails
     a run (headless/SSH has no DBus). No -A/action flags anywhere, so no
-    wait to bound (user CLAUDE.md swaync rule applies to -A only)."""
+    wait to bound (user CLAUDE.md swaync rule applies to -A only).
+
+    ``SELF_LEARN_NO_NOTIFY=1`` is a hard no-op (see
+    :func:`_notifications_suppressed`), checked before even probing
+    PATH."""
+    if _notifications_suppressed():
+        return
     try:
         if shutil.which("notify-send"):
             subprocess.run(
@@ -2294,7 +2445,14 @@ def _notify_with_ids(message: str, ids: list[str]) -> None:
     Helper absent (partial/headless deploy, or PATH resolution/spawn
     failure) degrades to the M2 direct-notify-send path (:func:`_notify`),
     logged once — the same graceful-degradation posture 09 §5 pins for
-    "swaync absent / action unsupported"."""
+    "swaync absent / action unsupported".
+
+    ``SELF_LEARN_NO_NOTIFY=1`` is a hard no-op (see
+    :func:`_notifications_suppressed`), checked FIRST — before even
+    probing PATH — so a suppressed call never spawns anything (real OR
+    shimmed) and never falls through to the (also-suppressed) fallback."""
+    if _notifications_suppressed():
+        return
     helper = shutil.which("self-learn-notify")
     if not helper:
         log("notify: self-learn-notify not on PATH — falling back to direct notify-send")
@@ -2774,20 +2932,61 @@ def run(
     # Follow-on OUTSIDE the run lock and through the spawn lock (audit
     # 2026-07-15: the old direct spawn bypassed kick's serialization and
     # could double-spawn against a mid-run kick).
+    #
+    # THREE independent gates, each alone sufficient to suppress (incident
+    # 2026-08-09: a real detached `worker run --coalesce` chain respawned
+    # for 39.3h, fd-exhausting the user-scope dbus-broker). Order is
+    # deliberate:
+    #
+    #   1. the failure-cap suppression (existing, U-repair §3.10) — its
+    #      own log line is a live-mode product signal that must fire
+    #      regardless of anything below, so it is checked first,
+    #      unconditionally;
+    #   2. D2 — PROGRESS (live AND sandboxed; NOT sandbox-specific): an
+    #      "ok"/"idle" status only proves a proposal FILE was written,
+    #      never that the ELIGIBLE SET shrank. A batch that keeps
+    #      reporting "ok" while leaving the same records un-landed (e.g.
+    #      a fixture — or a bug — that rewrites the same proposal every
+    #      invocation) chains forever, structurally invisible to the
+    #      failure cap above (which only counts "failed" runs). Skipped
+    #      for `status == "failed"`: that path is the failure cap's own
+    #      job, unchanged, and a failed run's eligible set is expected
+    #      not to shrink on its first (sub-cap) attempts;
+    #   3. `_autokick_disabled()` — the sandboxed/test kill switch,
+    #      checked LAST, only once progress and the cap both say a real
+    #      successor would be legitimate.
+    #
+    # `_spawn_window` carries its own belt-and-braces absolute
+    # chain-depth ceiling (`SELF_LEARN_FOLLOWON_DEPTH`) threaded through
+    # the child's env — a backstop that holds even if the reasoning above
+    # is ever wrong.
     if _p("worker.dirty").is_file():
         failures = _read_failure_count()
-        if failures < FOLLOWON_FAILURE_CAP:
-            # The follow-on inherits THIS run's no-push policy (BLOCKER
-            # 3): otherwise the muzzled worker's own successor would
-            # push instead.
-            outcome = _open_window(home, no_push=no_push)
-            log(f"run: follow-on window: {outcome}")
-            result.followon = outcome == "spawned"
-        else:
+        eligible_before = len(batch) + leftovers
+        if failures >= FOLLOWON_FAILURE_CAP:
             log(
                 "run: follow-on suppressed after "
                 f"{failures} consecutive failed runs — "
                 "`self-learn worker kick` retries"
             )
             result.followon = False
+        elif result.status != "failed" and not _followon_progress(
+            home, eligible_before
+        ):
+            log(
+                "run: follow-on suppressed — no progress on the eligible "
+                f"set ({eligible_before} still eligible after an "
+                f"'{result.status}' run); `self-learn worker kick` retries"
+            )
+            result.followon = False
+        elif _autokick_disabled():
+            log("run: follow-on window: disabled")
+            result.followon = False
+        else:
+            # The follow-on inherits THIS run's no-push policy (BLOCKER
+            # 3): otherwise the muzzled worker's own successor would
+            # push instead.
+            outcome = _open_window(home, no_push=no_push)
+            log(f"run: follow-on window: {outcome}")
+            result.followon = outcome == "spawned"
     return result

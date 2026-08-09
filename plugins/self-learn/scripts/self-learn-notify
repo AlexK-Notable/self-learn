@@ -4,14 +4,41 @@
 #
 #   self-learn-notify --line "<rendered human string>" --ids <csv-of-record-ids>
 #
-# notify-send -A open --wait, BOUNDED via --expire-time. This host's
-# swaync shelves an expired action-capable popup WITHOUT emitting
-# NotificationClosed when the wait is unbounded — an unbounded --wait
-# hangs forever (user CLAUDE.md pinned lesson, this host). Branch on the
-# ACTION OUTPUT (notify-send's stdout — the clicked action id), never on
-# the exit code alone, to tell "open" clicked apart from "dismissed/
-# timed out" (both exit 0; the CLAUDE.md lesson: expiry gives rc 0,
-# stderr "Wait timeout expired", EMPTY stdout).
+# notify-send -A open --wait. CORRECTED 2026-08-09 (incident): the
+# original design assumed a finite `--expire-time` alone bounds the
+# wait — this was EMPIRICALLY FALSIFIED. Processes carrying the pinned
+# argv `--expire-time 30000` were measured still running 39.3 HOURS
+# later (peak: 4,617 notify-send + 6,508 wrapper shells), fd-exhausting
+# the user-scope dbus-broker and killing the desktop session.
+# `--expire-time` only bounds a notification that was actually POSTED
+# and is now waiting to be dismissed/timed out by the daemon; a
+# daemon-down or bus-degraded state blocks the CLIENT before any
+# notification is ever posted, so no expiry timer ever starts. The exact
+# matrix of which daemon states do this is UNCONFIRMED, and this fix
+# does not depend on knowing it.
+#
+# THE BOUND IS NOW EXTERNAL: every notify-send invocation below runs
+# under `timeout --kill-after=5 40 notify-send ...` — a hard wall-clock
+# cap enforced by the KERNEL against the notify-send PROCESS itself,
+# independent of what the daemon does or does not do (SIGTERM at 40s;
+# SIGKILL 5s later if it does not respond). `--expire-time` is KEPT
+# (best-effort: lets a genuinely-posted popup expire on its own, well
+# inside the 40s bound, when the daemon IS healthy) but is NO LONGER
+# load-bearing for the "this script returns" guarantee — that guarantee
+# now belongs entirely to `timeout`.
+#
+# This host's swaync shelves an expired action-capable popup WITHOUT
+# emitting NotificationClosed when the wait is unbounded (user CLAUDE.md
+# pinned lesson, this host — ALSO corrected by this fix: the lesson as
+# originally recorded credited a finite `-t` with being a sufficient
+# bound; it is not — an external `timeout(1)` is required). Branch on
+# the ACTION OUTPUT (notify-send's stdout — the clicked action id),
+# never on the exit code alone, to tell "open" clicked apart from every
+# other outcome — dismissed, timed out by the daemon, OR killed by the
+# external `timeout` below all produce a non-"open" result (dismissed/
+# expired: rc 0, empty stdout; killed: rc 124 (SIGTERM) or 137 (SIGKILL
+# after --kill-after), stdout whatever was captured before the kill,
+# never the literal string "open").
 #
 # BUILD FINDING (verified against the installed notify-send 0.8.8
 # --help text): `-A, --action=[NAME=]Text` — the printed-on-click value
@@ -28,15 +55,18 @@
 # Degradation (09 §5 "swaync absent / action unsupported"):
 #   - `notify-send` missing entirely -> no daemon at all -> exit 0,
 #     silent (nothing to try).
-#   - `notify-send -A ... --wait` itself exits non-zero -> action
-#     registration failed (no action-capable daemon) -> fall back to a
-#     plain, non-action notify-send (M2's existing informative-only
-#     behavior) -> exit 0 either way (best-effort; its own outcome is
-#     never fatal to this script).
+#   - `notify-send -A ... --wait` itself exits non-zero (INCLUDING a
+#     124/137 from the external timeout bound above) -> action
+#     registration failed, or the client never returned in time ->
+#     fall back to a plain, non-action notify-send (M2's existing
+#     informative-only behavior), ITSELF hard-bounded the same way ->
+#     exit 0 either way (best-effort; its own outcome is never fatal to
+#     this script).
 #   - exits 0 with stdout "open" -> the pinned deep-link rule: the FIRST
 #     id in the csv -> exec self-learn-ui-open --record <id>.
-#   - exits 0 with any other stdout (typically empty: dismissed or
-#     expired) -> nothing more to do, exit 0.
+#   - exits 0 with any other stdout, OR a timeout-induced non-zero exit
+#     (typically empty stdout either way: dismissed, expired, or
+#     killed) -> nothing more to do, exit 0.
 #
 # readlink -f is LOAD-BEARING (P3-1): install.sh deploys ~/bin scripts as
 # symlinks, so the sibling self-learn-ui-open is resolved relative to
@@ -44,6 +74,12 @@
 set -euo pipefail
 
 EXPIRE_TIME_MS=30000
+# Bug A fix (incident 2026-08-09): the external wall-clock bound on
+# EVERY notify-send invocation. 40s comfortably covers the pinned
+# 30000ms expire-time plus daemon/process scheduling slack;
+# --kill-after=5 escalates to SIGKILL if a SIGTERM'd notify-send (or a
+# wedged child of it) does not exit within 5 more seconds.
+TIMEOUT_ARGS=(--kill-after=5 40)
 
 LINE=""
 IDS=""
@@ -87,16 +123,19 @@ UI_OPEN="${SCRIPT_DIR}/self-learn-ui-open"
 command -v notify-send >/dev/null 2>&1 || exit 0
 
 set +e
-ACTION="$(notify-send -A "open=Open" --wait --expire-time "$EXPIRE_TIME_MS" \
-  "self-learn" "$LINE" 2>/dev/null)"
+ACTION="$(timeout "${TIMEOUT_ARGS[@]}" notify-send -A "open=Open" --wait \
+  --expire-time "$EXPIRE_TIME_MS" "self-learn" "$LINE" 2>/dev/null)"
 RC=$?
 set -e
 
 if [[ $RC -ne 0 ]]; then
-  # No action-capable daemon (the -A/--wait invocation itself failed):
+  # No action-capable daemon (the -A/--wait invocation itself failed),
+  # OR the external timeout bound above fired (rc 124/137 — treated
+  # identically: "no action" is the only conclusion either way):
   # degrade to a plain, non-action notification — M2's existing
-  # informative-only behavior. Best-effort; never fatal to this script.
-  notify-send "self-learn" "$LINE" >/dev/null 2>&1 || true
+  # informative-only behavior. ALSO hard-bounded (Bug A) — best-effort;
+  # never fatal to this script.
+  timeout "${TIMEOUT_ARGS[@]}" notify-send "self-learn" "$LINE" >/dev/null 2>&1 || true
   exit 0
 fi
 
