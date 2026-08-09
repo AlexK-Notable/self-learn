@@ -855,8 +855,9 @@ def write_repair_settings_file(home: Path, paths: list[Path]) -> Path:
     directory, granted no rule of its own, was refused; the granted
     target was editable. (This host's OWN interactive
     ``~/.claude/settings.json`` sets ``permissions.defaultMode:
-    bypassPermissions``, which — same as it would for the ALREADY-shipped
-    batch-invocation globs — voids every settings-file scope; the probe
+    bypassPermissions``, which — same as it did for the batch-invocation
+    globs until ``defaultMode`` was pinned there too — voids any
+    settings-file scope that omits the key; the probe
     above set ``defaultMode: "default"`` in the probe's OWN ``--settings``
     file to exercise real enforcement, since a CLI-supplied settings file
     takes precedence over the user's global one. See the build report.)"""

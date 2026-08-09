@@ -746,10 +746,15 @@ def test_failed_reader_keeps_cursors(home, transcripts, monkeypatch):
 def test_reader_argv_and_settings(home, monkeypatch):
     monkeypatch.setenv("SELF_LEARN_MINER_MODEL", "claude-test-model")
     settings = miner.write_reader_settings()
-    rules = json.loads(settings.read_text())["permissions"]["allow"]
+    settings_data = json.loads(settings.read_text())["permissions"]
+    rules = settings_data["allow"]
     assert len(rules) == 1
     assert rules[0].startswith("Edit(/") and rules[0].endswith("/spool/**)")
     assert str(home) not in rules[0]  # repo entirely out of write reach
+    # security hotfix: without an explicit defaultMode, the session
+    # inherits the host's global permissions.defaultMode (which may be
+    # "bypassPermissions"), voiding the allow-rule above.
+    assert settings_data["defaultMode"] == "default"
     argv = miner.build_reader_argv(settings)
     # audit B1: the prompt is NEVER in argv (128 KiB kernel cap) — stdin.
     assert argv[:2] == ["claude", "-p"]
