@@ -313,8 +313,10 @@ you, re-answering T1 with better evidence, not the table.
 
 ## 5. What a good proposal looks like (the output contract)
 
-The proposal is a YAML sibling file, `proposals/lrn-<id>.yaml`, beside
-the record's bucket directories. The record itself is **never touched**.
+Write your proposal to the exact path your run instructions above name
+(U-attrib: the run's exclusive stage — never a bucket's `proposals/`
+directory directly; the CLI is what moves a validated proposal beside
+its record once it lands). The record itself is **never touched**.
 Schema (02-schema.md §1):
 
 ```yaml
@@ -326,8 +328,7 @@ already_canon: false      # true ⇒ the lesson is already fully present in
                           #   surfaces group and bulk-resolve on it; never
                           #   bury this judgment in rationale text.
 already_canon_reason: ""  # optional one-liner shown on the review card
-diff: proposals/lrn-<id>.diff   # optional PREVIEW ONLY — compilers
-                                # regenerate from the record at apply time
+diff: <optional preview path — compilers regenerate from the record at apply time>
 model: <the model producing this analysis>
 analyzed_at: <ISO-8601 UTC timestamp>
 card:                     # human-facing sections (§8). The section set,

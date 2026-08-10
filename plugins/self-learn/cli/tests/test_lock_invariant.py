@@ -123,6 +123,10 @@ NOT_REPO_TRUTH = {
     # cache namespace and same shape as write_settings_file above, one
     # exact-path Edit(...) rule per repair-eligible proposal.
     "worker.write_repair_settings_file": "XDG cache: the repair round's Claude settings",
+    # U-attrib §3.1/§3.4: the exclusive stage and its bookkeeping — never
+    # a ledger path (Stage-1's whole thesis).
+    "worker.stage_reset": "XDG cache: the worker's exclusive stage (Stage-1)",
+    "worker._stage_discard": "XDG cache: unlinking a staged (never-landed) proposal",
     "worker.append_event": "XDG cache: the worker's event spool",
     "worker._cache_clear": "XDG cache: the worker's flag files",
     # U-repair §3.10: worker.failures — the consecutive-failed-run

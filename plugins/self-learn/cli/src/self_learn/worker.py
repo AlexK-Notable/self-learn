@@ -60,6 +60,7 @@ from .ledger_ops import (
     TRACE_FS_VERDICTS,
     ProposalError,
     _dump_yaml,
+    find_record_path,
     is_unanalyzed,
     queue,
     read_proposal,
@@ -99,6 +100,10 @@ __all__ = [
     "repair_timeout_secs",
     "run",
     "skill_roster",
+    "stage_dir",
+    "stage_permission_rules",
+    "stage_reset",
+    "staged_paths",
     "write_permission_rules",
     "write_repair_settings_file",
     "write_settings_file",
@@ -809,7 +814,12 @@ def write_permission_rules(home: Path) -> list[str]:
     `//` = filesystem-absolute, gitignore ** semantics. The Edit TOOL
     itself stays in DISALLOWED_TOOLS. The scopes point at LEDGER
     proposals dirs ONLY — never at any host repo (H-3: no autonomous
-    process writes canon)."""
+    process writes canon).
+
+    U-attrib (GR-c): kept, unchanged and exported — used only by the
+    ``SELF_LEARN_STAGE=0`` fallback (§3.7). The batch invocation's own
+    grant is :func:`stage_permission_rules` now; this function is what
+    the fallback reverts to."""
     home = Path(home)
     return [
         f"Edit(/{home}/skills/**/proposals/**)",
@@ -818,21 +828,86 @@ def write_permission_rules(home: Path) -> list[str]:
     ]
 
 
+# ---------------------------------------------- U-attrib: Stage-1 (§3.1)
+#
+# The exclusive namespace: only the model writes it (via the batch/repair
+# invocations' Write grant), only the worker reads it. Flat, cleared at
+# the top of every run, per-ledger-home (it lives under cache_dir()).
+
+
+def stage_dir() -> Path:
+    """``ST-a`` — the stage: ``cache_dir()/worker.stage/``. Outside every
+    git repo, per-ledger-home, never committed, never read by any surface
+    but the worker."""
+    return _p("worker.stage")
+
+
+def stage_reset(home: Path) -> None:
+    """``ST-c`` — cleared at the top of every run: remove and recreate
+    empty. Nothing persists between runs; a crashed run's litter is
+    removed by the NEXT run's clear, not swept later. ``home`` is unused
+    directly (:func:`cache_dir` resolves the ledger home itself, doc 13
+    H-4) — kept as a parameter to match the spec's call shape and this
+    module's own convention (e.g. :func:`write_settings_file`)."""
+    del home
+    path = stage_dir()
+    shutil.rmtree(path, ignore_errors=True)
+    path.mkdir(parents=True, exist_ok=True)
+
+
+def staged_paths() -> list[Path]:
+    """``ST-b`` — the stage is flat: every file directly in it, sorted.
+    This is the model's output BY CONSTRUCTION — never a recursive walk
+    (a staged file in a subdirectory is litter, ``ST-f``)."""
+    stage = stage_dir()
+    if not stage.is_dir():
+        return []
+    return sorted(p for p in stage.iterdir() if p.is_file())
+
+
+def stage_permission_rules(home: Path) -> list[str]:
+    """``GR-b`` — the batch invocation's allow list is EXACTLY this one
+    rule. ``home`` is unused (same reasoning as :func:`stage_reset`) but
+    kept for signature symmetry with :func:`write_permission_rules`."""
+    del home
+    return [f"Edit(/{stage_dir()}/**)"]
+
+
+def _stage_enabled() -> bool:
+    """``SELF_LEARN_STAGE=0`` — the namespace switch (§3.7)."""
+    return os.environ.get("SELF_LEARN_STAGE") != "0"
+
+
+def _enforce_scope() -> bool:
+    """``SELF_LEARN_ENFORCE_SCOPE=0`` — the enforcement switch (§3.7):
+    omits ``defaultMode`` from both settings files, i.e. the exact shape
+    the shipped code wrote before ``GR-a``'s hotfix."""
+    return os.environ.get("SELF_LEARN_ENFORCE_SCOPE") != "0"
+
+
 def write_settings_file(home: Path) -> Path:
     """Per-run settings file carrying the Write scope (E-18: this file +
-    DISALLOWED_TOOLS IS the append-only guarantee)."""
+    DISALLOWED_TOOLS IS the append-only guarantee).
+
+    U-attrib (``Grant-1``): the batch invocation is granted the STAGE and
+    nothing else (``GR-b``) — ``SELF_LEARN_STAGE=0`` reverts to today's
+    three ledger globs (``GR-c``/§3.7). ``defaultMode`` is what makes
+    either grant ENFORCE rather than merely declare (``GR-a`` — this
+    host's own ``~/.claude/settings.json`` sets
+    ``permissions.defaultMode: bypassPermissions``, which voids a
+    settings-file scope that omits the key; measured, `Z1`); omitted only
+    under ``SELF_LEARN_ENFORCE_SCOPE=0`` (§3.7's enforcement switch, a
+    DELIBERATE asymmetry from the namespace switch above)."""
     path = _p("worker.settings.json")
     path.parent.mkdir(parents=True, exist_ok=True)
+    rules = (
+        stage_permission_rules(home) if _stage_enabled() else write_permission_rules(home)
+    )
+    permissions: dict[str, object] = {"allow": rules}
+    if _enforce_scope():
+        permissions["defaultMode"] = "default"
     path.write_text(
-        json.dumps(
-            {
-                "permissions": {
-                    "allow": write_permission_rules(home),
-                    "defaultMode": "default",
-                }
-            },
-            indent=2,
-        ),
+        json.dumps({"permissions": permissions}, indent=2),
         encoding="utf-8",
     )
     return path
@@ -844,8 +919,17 @@ def write_repair_settings_file(home: Path, paths: list[Path]) -> Path:
     a glob. This is the structural half of "the repair round must not
     enlarge the blast radius" (§2, FW-84): the CLI itself refuses writes
     outside the assigned set — true because this file pins
-    ``defaultMode: "default"`` below; without that key the scopes were
+    ``defaultMode: "default"`` below (omitted only under
+    ``SELF_LEARN_ENFORCE_SCOPE=0``); without that key the scopes were
     decorative (see the next paragraph).
+
+    U-attrib (``GR-d``): ``paths`` now names STAGED files — the caller
+    resolves ``E`` over the stage (or, under ``SELF_LEARN_STAGE=0``, over
+    ledger paths exactly as ``U-repair`` shipped); this function itself
+    is unchanged either way, it just names whatever it is given. The
+    exact-path-vs-glob-fallback branch ``U-repair`` §3.7 left open is
+    CLOSED (`Z2` settled it: an ``Edit(...)`` rule matches for both
+    create and modify, exact-path and glob alike — `GR3`).
 
     Verified against the live CLI (2.1.226) as a builder obligation
     (§3.7), not assumed: a scratch home, the worker's real argv shape
@@ -865,11 +949,11 @@ def write_repair_settings_file(home: Path, paths: list[Path]) -> Path:
     path = _p("worker.repair.settings.json")
     path.parent.mkdir(parents=True, exist_ok=True)
     rules = [f"Edit(/{p})" for p in sorted(paths)]
+    permissions: dict[str, object] = {"allow": rules}
+    if _enforce_scope():
+        permissions["defaultMode"] = "default"
     path.write_text(
-        json.dumps(
-            {"permissions": {"allow": rules, "defaultMode": "default"}},
-            indent=2,
-        ),
+        json.dumps({"permissions": permissions}, indent=2),
         encoding="utf-8",
     )
     return path
@@ -1046,6 +1130,15 @@ class RunResult:
     #: in `proposed`/`valid_landed`/`touched`, but counted toward
     #: `status` (D7).
     foreign_left: list[str] = field(default_factory=list)
+    #: U-attrib Obs-2 (§3.8) — additive only, no existing field changes
+    #: type or meaning (`touched`'s TYPE discipline is a structural fix,
+    #: `_stage_discard`, not a meaning change).
+    staged_written: int = 0  # size of S3's staged1 (round 1 alone)
+    #: Destination NAMES `Install-1` declined this run — never installed,
+    #: never stamped, never deleted, never counted toward
+    #: `proposed`/`valid_landed`/`touched`.
+    not_installed: list[str] = field(default_factory=list)
+    foreign_seen: int = 0  # size of S7's `foreign` set
 
 
 def _enumerate(home: Path) -> tuple[list, int, int, list[dict]]:
@@ -1247,8 +1340,7 @@ the one line a refusal named.
 
 _PROMPT_TEMPLATE = """You are the self-learn routing analyst worker. For EACH pending record
 below, write one proposal file at
-<bucket>/proposals/lrn-<id>.yaml (the bucket path is given
-per record). Follow the routing doctrine exactly — including §5 (the
+{stage_dir}/lrn-<id>.yaml. Follow the routing doctrine exactly — including §5 (the
 proposal schema; NEVER emit record_sha), §8 (write every card section
 the registry requires; the registry follows the doctrine below), §9
 (the proposal-time lint) and §10 (the destination-bounded contradiction
@@ -1264,7 +1356,7 @@ missing any of the three is deleted unread; nothing is landed without it.
 
 After the per-record pass: if two or more of THESE pending records in the
 SAME bucket are the same lesson, additionally write ONE merge proposal at
-<bucket>/proposals/merge-<8 lowercase hex>.yaml with keys:
+{stage_dir}/merge-<8 lowercase hex>.yaml with keys:
 cluster_id, records (the lrn ids), suggested_survivor, rationale, model,
 analyzed_at. Do not emit record_shas — the CLI stamps them.
 cluster_id MUST equal the merge-<8 hex> token of the filename itself
@@ -1405,6 +1497,7 @@ def compose_batch_prompt(home: Path, batch: list) -> tuple[str, Roster]:
         roster_text=roster.text,
         trace_conditionals=TRACE_CONDITIONALS,
         records="\n".join(blocks),
+        stage_dir=stage_dir(),
     )
     return prompt, roster
 
@@ -1442,8 +1535,16 @@ def _compose_repair_prompt(home: Path, eligible: dict[Path, str]) -> str:
         refusal = eligible[path]
         contents = path.read_text(encoding="utf-8")
         record_text = "(record unreadable)"
-        rpath = path.parent.parent / "pending" / f"{path.stem}.md"
-        if rpath.is_file():
+        # U-attrib: `path` is now a STAGED path (flat, ST-b) — its record
+        # is no longer findable via `path.parent.parent` (that trick only
+        # worked when the file lived inside `<bucket>/proposals/`).
+        # Resolved by record id instead, across every bucket, exactly as
+        # `stamp_proposal` resolves its own destination (AD7).
+        try:
+            rpath: Path | None = find_record_path(home, path.stem, statuses=("pending",))
+        except Exception:  # noqa: BLE001 — S6: never crash prompt assembly
+            rpath = None
+        if rpath is not None and rpath.is_file():
             try:
                 record_text = Record.from_path(rpath).to_text()
             except RecordError:
@@ -1814,13 +1915,18 @@ def _reset_failure_count() -> None:
 
 def _harvest(
     home: Path,
-    written: list[Path],
+    staged_or_written: list[Path],
+    batch: list,
     roster: Roster | None = None,
     *,
     refuse: dict[Path, str] | None = None,
+    foreign: list[Path] | None = None,
+    snap0: dict[Path, str] | None = None,
+    stage_on: bool = True,
 ) -> RunResult:
     """Validate + sweep + commit, as ONE locked section (audit 2026-07-16
     round 7 — the invariant: no ledger mutation may precede its lock).
+    Still the only locked section, still the only mutation site (§3.3 S8).
 
     A lock failure is LOGGED, never raised: this runs in a Popen-detached
     process where an escaping exception is a stack dump into worker.log and
@@ -1830,17 +1936,38 @@ def _harvest(
     output stays on disk untouched and the next run validates it.
 
     ``roster`` (U-composer §3.6) is the :class:`Roster` composed for THIS
-    run's prompt — threaded through so :func:`_validate_written` can check
-    the roster-sha honesty legs against the roster the model actually saw,
+    run's prompt — threaded through so validation can check the
+    roster-sha honesty legs against the roster the model actually saw,
     not a freshly recomposed one. ``refuse`` (U-repair §3.5/S8) is S5's
     forced-refusal map (Set-J pin violations, V-set rewrites) — a path in
     it is refused UNCONDITIONALLY, even if its content would otherwise now
-    validate."""
+    validate.
+
+    U-attrib: ``stage_on`` (§3.7) selects between :func:`_validate_written`
+    (the two-pass Install-1 shape — ``staged_or_written`` is `staged`,
+    ``foreign``/``snap0`` carry S7's exclusion set and Install-1's
+    baseline, ``batch`` resolves destinations) and
+    :func:`_validate_written_legacy` (``SELF_LEARN_STAGE=0`` — today's
+    single-pass shape, ``staged_or_written`` is `written`; `batch`,
+    `foreign`, `snap0` are unused there)."""
     from . import gitops
 
     try:
         with gitops.commit_lock(home):
-            result = _validate_written(home, written, roster, refuse=refuse)
+            if stage_on:
+                result = _validate_written(
+                    home,
+                    staged_or_written,
+                    batch,
+                    roster,
+                    refuse=refuse,
+                    foreign=foreign,
+                    snap0=snap0,
+                )
+            else:
+                result = _validate_written_legacy(
+                    home, staged_or_written, roster, refuse=refuse
+                )
             _still_pending(home, result)
             result.committed = _commit_locked(home, result)
             return result
@@ -1910,6 +2037,12 @@ class _Verdict:
     is_merge: bool
     name: str
     bucket: str | None
+    #: U-attrib (ST-e): the destination-resolved path this staged file
+    #: would land at, or ``None`` when it is litter (no batch entry names
+    #: it). ``None`` for a pass-2 (foreign) verdict is impossible — the
+    #: caller always passes the ledger path itself as `dest` there, since
+    #: a foreign file is already AT its destination.
+    dest: Path | None = None
     #: The prepared merge document (record_shas resolved in memory),
     #: ready to write — populated ONLY for a schema-valid merge proposal;
     #: `None` in every other case. A non-merge success needs nothing
@@ -1917,15 +2050,56 @@ class _Verdict:
     merge_data: dict | None = None
 
 
+def _resolve_destination(path: Path, batch_by_id: dict[str, Path]) -> Path | None:
+    """``ST-e`` — the destination resolver, run by the CALLER (§3.3) so
+    it can be threaded into :func:`_check_proposal_file` as ``dest``. For
+    a staged ``lrn-<id>.yaml`` the destination is the bucket of the batch
+    entry whose ``record.id == <id>``; for a staged ``merge-<hex>.yaml``
+    it is the bucket of its FIRST member record, read from the staged
+    file's ``records:`` list. Either shape returns ``None`` (no
+    destination — model litter) when the id/first-member is not a batch
+    entry, or the merge's ``records:`` is empty/unresolvable/unparseable.
+    Never raises (S6): an unparseable staged file simply has no resolved
+    destination here — :func:`_check_proposal_file`'s OWN `read_proposal`
+    call reports the real parse error first, since resolution always runs
+    after it in the per-file order."""
+    name = path.stem
+    if name.startswith("merge-"):
+        try:
+            data = read_proposal(path)
+        except Exception:  # noqa: BLE001 — S6
+            return None
+        records = data.get("records") if isinstance(data, dict) else None
+        if not isinstance(records, list) or not records:
+            return None
+        first = records[0]
+        if not isinstance(first, str):
+            return None
+        bucket_dir = batch_by_id.get(first)
+        if bucket_dir is None:
+            return None
+        return bucket_dir / "proposals" / path.name
+    bucket_dir = batch_by_id.get(name)
+    if bucket_dir is None:
+        return None
+    return bucket_dir / "proposals" / path.name
+
+
+def _batch_by_id(batch: list) -> dict[str, Path]:
+    """``ST-e``'s lookup table: batch record id -> its bucket dir."""
+    return {entry.record.id: entry.bucket_dir for entry in batch}
+
+
 def _check_proposal_file(
     home: Path,
     path: Path,
     roster: Roster | None,
     refuse: dict[Path, str],
+    dest: Path | None,
 ) -> _Verdict:
     """THE per-file check (§3.3, B1: one definition, not two) — S4's dry
-    pass and S8's real pass both call this SAME function. It is PURE: it
-    reads and validates, and NEVER writes, stamps, dumps or deletes
+    pass and both of S8's passes all call this SAME function. It is PURE:
+    it reads and validates, and NEVER writes, stamps, dumps or deletes
     anything itself. That is not merely a convention here — it is what
     makes the lock invariant provable by source (tests/
     test_lock_invariant.py): this function is reachable from an UNLOCKED
@@ -1933,28 +2107,35 @@ def _check_proposal_file(
     LOCKED one (S8, via `_harvest`'s `commit_lock`), and a static analysis
     cannot see that a runtime flag would have skipped a write on the
     unlocked path — so the write must not exist in this function's body
-    AT ALL. Every actual mutation (`_dump_yaml`, `stamp_proposal`,
-    `_git_rm_or_unlink`) lives in :func:`_validate_written` instead, which
-    only `_harvest` ever calls.
+    AT ALL. Every actual mutation lives in :func:`_validate_written` (or
+    its legacy twin) instead, which only `_harvest` ever calls.
+
+    ``dest`` (U-attrib, ST-e) is resolved by the CALLER — for a staged
+    path it is :func:`_resolve_destination`'s result (``None`` iff
+    litter); for a FOREIGN (already-in-the-ledger) path, or under
+    ``SELF_LEARN_STAGE=0``, the caller passes the path itself, since
+    those files are already at their destination and nothing relocates.
 
     Per-file order is normative (§3.8): naming-contract check -> secret
     scan -> read_proposal -> refusal-map override (``refuse``, §3.5) ->
-    resolve the pending record -> validate_proposal (+ roster-sha honesty)
-    -> Rule-F. A path in ``refuse`` is refused UNCONDITIONALLY at that
-    point, even when its post-repair content would otherwise now
+    destination check (``dest is None`` -> litter, ST-e) -> resolve the
+    pending record (via ``dest``) -> validate_proposal (+ roster-sha
+    honesty) -> Rule-F. A path in ``refuse`` is refused UNCONDITIONALLY
+    at that point, even when its post-repair content would otherwise now
     validate (§3.5's Set-Q enforcement — a forced refusal is a verdict,
     not a hint to validate harder).
 
     Rule-F (§3.8): ``phi`` is F-a (validation + roster-sha honesty
     accepted it) AND F-b (``record_sha_matches``) — computed REGARDLESS
-    of destination, because Φ's S4/S5 partition membership (§3.5) must
-    include `destination: hook` proposals on the same terms as anything
-    else. The hook carve-out is applied by the CALLER's stamp-or-leave
-    branch, never here (`D6(iii)`)."""
+    of destination (hook or not). Under U-attrib `phi` no longer governs
+    installation for a STAGED path at all (`IN9` — the shipped `Φ` skip
+    is removed from pass 1); it is read only by pass 2's `Rule-Fp`, and
+    the hook carve-out governs stamp-or-leave there too (`CP7`), never
+    here."""
     name = path.stem
     is_merge = name.startswith("merge-")
     expected_shape = (
-        path.parent.name == "proposals"
+        (path.parent == stage_dir() or path.parent.name == "proposals")
         and path.suffix == ".yaml"
         and (name.startswith("lrn-") or is_merge)
     )
@@ -1963,7 +2144,7 @@ def _check_proposal_file(
     record_sha_matches = False
     is_hook = False
     merge_data: dict | None = None
-    bucket = _bucket_name(home, path)
+    bucket = _bucket_name(home, dest) if dest is not None else None
     try:
         if not expected_shape:
             raise ProposalError(
@@ -1977,14 +2158,21 @@ def _check_proposal_file(
         data = read_proposal(path)
         if path in refuse:
             raise ProposalError(refuse[path])
+        if dest is None:
+            # ST-e: no batch entry names this id (lrn-) / first member
+            # (merge) — model litter, refused before any further
+            # resolution is attempted (RT5: E-4 survives as this litter
+            # rule, never a provenance rule).
+            raise ProposalError(f"no batch record for {name}")
         if is_merge:
             # Members/record_shas are resolved IN MEMORY and
             # validate_merge_proposal runs unconditionally (§3.3) — only
-            # the eventual `_dump_yaml` write (the caller's job) is a
-            # real mutation.
+            # the eventual install write (the caller's job) is a real
+            # mutation. Members resolve against `dest`'s bucket — the ONE
+            # bucket this merge lands in (ST-e).
             shas = {}
             for rid in data.get("records") or []:
-                rpath = path.parent.parent / "pending" / f"{rid}.md"
+                rpath = dest.parent.parent / "pending" / f"{rid}.md"
                 if not rpath.is_file():
                     raise ProposalError(f"merge member {rid} not pending")
                 shas[rid] = sha_anchor(Record.from_path(rpath).body)
@@ -1995,7 +2183,7 @@ def _check_proposal_file(
             # F1/N1 (§3.7): rpath resolves FIRST — the swap — so the
             # record it names can supply record_text= AND scope= to
             # the SAME validate_proposal call below.
-            rpath = path.parent.parent / "pending" / f"{name}.md"
+            rpath = dest.parent.parent / "pending" / f"{name}.md"
             if not rpath.is_file():
                 raise ProposalError(f"no pending record for {name}")
             pending_record = Record.from_path(rpath)
@@ -2028,47 +2216,313 @@ def _check_proposal_file(
         is_merge=is_merge,
         name=name,
         bucket=bucket,
+        dest=dest,
         merge_data=merge_data,
     )
 
 
 def _dry_check_batch(
-    home: Path, written1: list[Path], roster: Roster | None
+    home: Path,
+    staged1: list[Path],
+    roster: Roster | None,
+    dest_map: dict[Path, Path | None],
 ) -> dict[Path, _Verdict]:
-    """Seq-1 S4 — classify every path in ``written1`` with the SAME
+    """Seq-1 S4 — classify every path in ``staged1`` with the SAME
     per-file check S8 performs, mutating NOTHING on disk (B1) — trivially
-    true here, since :func:`_check_proposal_file` never mutates at all."""
+    true here, since :func:`_check_proposal_file` never mutates at all.
+    ``dest_map`` carries each path's ST-e-resolved destination (or, under
+    ``SELF_LEARN_STAGE=0``, the path itself — the caller builds it either
+    way; see :func:`run`)."""
     return {
-        path: _check_proposal_file(home, path, roster, {})
-        for path in written1
+        path: _check_proposal_file(home, path, roster, {}, dest_map.get(path))
+        for path in staged1
     }
 
 
+# -------------------------------------------------- U-attrib: Install-1
+#
+# When bytes may move into the ledger (§3.4). Applies inside
+# :func:`_validate_written`'s pass 1, per staged path, after that path's
+# verdict is `error is None`.
+
+
+class _InstallStampError(Exception):
+    """Raised by :func:`_install_staged` when the atomic copy landed but
+    `stamp_proposal` then raised (§3.4's two-step, AD7) — the install
+    journal entry stays (it was written BEFORE the copy) so the NEXT
+    run's `I-c` can resume it."""
+
+
+def _install_journal_path() -> Path:
+    return _p("worker.install-journal")
+
+
+def _read_install_journal() -> dict[Path, str]:
+    """`IJ` (§3.4) — one ``(destination, digest)`` pair per line. Read
+    ONLY here, inside S8's pass 1 (never at S1 — r2's BLOCKER 1, folded).
+    A corrupt line is skipped, never fatal (S6)."""
+    entries: dict[Path, str] = {}
+    try:
+        text = _install_journal_path().read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return entries
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+            entries[Path(row["dest"])] = row["digest"]
+        except Exception:  # noqa: BLE001 — S6: a corrupt line is never fatal
+            continue
+    return entries
+
+
+def _write_install_journal(entries: dict[Path, str]) -> None:
+    """Rewrites the whole journal from ``entries`` — called after EVERY
+    individual add/remove inside pass 1 (never batched, never truncated
+    in bulk — r2's MAJOR 1, folded): the file on disk is always the
+    caller's current in-memory state, so a kill between two per-file
+    steps leaves exactly the entries that were true at that instant."""
+    path = _install_journal_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [
+        json.dumps({"dest": str(dest), "digest": digest})
+        for dest, digest in entries.items()
+    ]
+    text = "\n".join(lines)
+    if text:
+        text += "\n"
+    path.write_text(text, encoding="utf-8")
+
+
+def _dest_state(dest: Path) -> tuple[str | None, bool]:
+    """Install-1's raw inputs for one destination, read fresh under the
+    lock: ``(current sha-anchor digest, or None if dest is absent;
+    whether dest carries a non-null record_sha key)``."""
+    try:
+        text = dest.read_text(encoding="utf-8")
+    except (FileNotFoundError, OSError):
+        return None, False
+    from ruamel.yaml import YAML
+
+    try:
+        data = YAML(typ="safe").load(text)
+    except Exception:  # noqa: BLE001 — S6
+        data = None
+    has_sha = isinstance(data, dict) and data.get("record_sha") is not None
+    return sha_anchor(text), has_sha
+
+
+def _clean_stale_install_temps(home: Path) -> None:
+    """AD8: any ``.install-*.tmp`` found in a destination directory at
+    the start of pass 1 is removed first, so a crashed run leaves no
+    accumulating litter. These are NEVER `_still_pending`'s orphan-sweep
+    globs (`lrn-*.yaml`/`merge-*.yaml`) and never git-tracked — a plain
+    unlink under the already-open lock is the whole of it."""
+    for bucket in discover_buckets(home):
+        pdir = bucket.path / "proposals"
+        if not pdir.is_dir():
+            continue
+        for tmp in pdir.glob(".install-*.tmp"):
+            tmp.unlink(missing_ok=True)
+
+
+def _install_staged(
+    home: Path, verdict: _Verdict, staged_path: Path, journal: dict[Path, str]
+) -> None:
+    """Install-1's ATOMIC copy (AD8, reversed-in-r4): a temp beside the
+    destination, then `os.replace` — then, for a plain proposal, the
+    CLI's own `stamp_proposal` (AD7's two-step). The journal entry is
+    WRITTEN BEFORE the copy and removed only after the stamp succeeds (or
+    immediately for a merge, which has no separate stamp step): the
+    digest is of the COMPLETE INTENDED bytes, so a crash at any point
+    between the write and the removal always leaves a state `I-c` can
+    recognize on the next run — there is no third state (§3.4)."""
+    dest = verdict.dest
+    assert dest is not None
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.parent / f".install-{verdict.name}.tmp"
+    if verdict.is_merge:
+        assert verdict.merge_data is not None
+        _dump_yaml(verdict.merge_data, tmp)  # same writer U-repair already uses
+    else:
+        tmp.write_text(staged_path.read_text(encoding="utf-8"), encoding="utf-8")
+    digest = sha_anchor(tmp.read_text(encoding="utf-8"))
+    journal[dest] = digest
+    _write_install_journal(journal)
+    os.replace(tmp, dest)  # same filesystem — atomic (AD8)
+    if not verdict.is_merge:
+        try:
+            stamp_proposal(home, verdict.name)
+        except Exception as exc:  # noqa: BLE001 — S6: journaled, never fatal
+            raise _InstallStampError(str(exc)) from exc
+    del journal[dest]
+    _write_install_journal(journal)
+
+
+def _stage_discard(path: Path) -> None:
+    """Unlink a staged (cache) file that never landed — a decline, a
+    litter file, or one already consumed by a successful install. NEVER
+    appended to `result.touched` (Obs-2's `OB3` type leg): a cache path
+    must never be staged into a ledger commit."""
+    path.unlink(missing_ok=True)
+
+
 def _validate_written(
+    home: Path,
+    staged: list[Path],
+    batch: list,
+    roster: Roster | None = None,
+    *,
+    refuse: dict[Path, str] | None = None,
+    foreign: list[Path] | None = None,
+    snap0: dict[Path, str] | None = None,
+) -> RunResult:
+    """Run-sequence step 8 (§3.3), U-attrib shape: TWO passes, in order.
+
+    Pass 1 — the model's output (``staged``): per file, `Install-1`
+    decides whether the validated staged proposal may move into the
+    ledger (`I-a`/`I-b`/`I-c`); a decline never deletes anything and is
+    counted in `result.not_installed`, never in `proposed`/`touched`.
+
+    Pass 2 — `Rule-Fp`, foreign progress (§3.3): for EVERY member of
+    ``foreign`` (paths some other producer wrote or changed in the ledger
+    during the window), compute the verdict READ-ONLY and, if Rule-F
+    holds, record it in `result.foreign_left` — independent of whether
+    pass 1 declined anything for the same record (`RT7`). Nothing in
+    pass 2 installs, stamps, counts toward `proposed`/`valid_landed`, or
+    appends to `touched` — its ONE carve-out is the secret scan, which
+    still deletes a foreign hit (`U-repair` `D3`'s ratified ranking).
+
+    Only :func:`_harvest` calls this function, always under
+    `commit_lock`."""
+    refuse = refuse or {}
+    foreign = foreign or []
+    snap0 = snap0 or {}
+    result = RunResult(status="failed")
+    result.staged_written = len(staged)
+    batch_by_id = _batch_by_id(batch)
+
+    _clean_stale_install_temps(home)
+    journal = _read_install_journal()
+
+    for path in staged:
+        dest = _resolve_destination(path, batch_by_id)
+        verdict = _check_proposal_file(home, path, roster, refuse, dest)
+        if verdict.error is not None:
+            log(f"run: invalid worker output {path.name} deleted ({verdict.error})")
+            result.invalid_deleted.append(path.name)
+            _stage_discard(path)
+            continue
+        dest = verdict.dest
+        assert dest is not None
+        current_digest, has_record_sha = _dest_state(dest)
+        present = current_digest is not None
+        i_a = not present
+        i_b = (
+            present
+            and dest in snap0
+            and snap0[dest] == current_digest
+            and has_record_sha
+        )
+        entry_digest = journal.get(dest)
+        i_c = entry_digest is not None and (not present or current_digest == entry_digest)
+        if i_a or i_b or i_c:
+            if entry_digest is not None:
+                # IN8(b): a live IJ entry for this destination means a
+                # PRIOR run's install was interrupted after the journal
+                # write but before the entry was cleared (§3.4) — this
+                # run is resuming it via I-c, not performing a fresh
+                # install. The line is distinct from the two failure
+                # lines below (which log an interruption THIS run hit).
+                log(f"run: resuming interrupted install of {verdict.name} (journal)")
+            try:
+                _install_staged(home, verdict, path, journal)
+            except _InstallStampError as exc:
+                log(
+                    f"run: {verdict.name} installed but not stamped "
+                    f"({exc}) — journaled for the next run"
+                )
+                _stage_discard(path)
+                continue
+            except OSError as exc:
+                log(
+                    f"run: {path.name} install interrupted ({exc}) — "
+                    "journaled for the next run"
+                )
+                _stage_discard(path)
+                continue
+            if verdict.is_merge:
+                assert verdict.merge_data is not None
+                result.merge_proposed.append(verdict.merge_data["cluster_id"])
+            else:
+                result.proposed.append(verdict.name)
+            result.touched.append(dest)
+            if verdict.bucket and verdict.bucket not in result.buckets:
+                result.buckets.append(verdict.bucket)
+            _stage_discard(path)
+        else:
+            if entry_digest is not None:
+                # stale (§3.4): another producer took this path over
+                # since our interrupted install — drop the orphaned entry.
+                del journal[dest]
+                _write_install_journal(journal)
+            if present and dest in snap0 and snap0[dest] == current_digest and not has_record_sha:
+                log(
+                    f"run: staged proposal {path.name} not installed — "
+                    "destination is an unstamped draft this run did not write"
+                )
+            else:
+                log(
+                    f"run: staged proposal {path.name} not installed — "
+                    "destination changed during the window"
+                )
+            result.not_installed.append(dest.name)
+            _stage_discard(path)
+
+    result.valid_landed = len(result.proposed) + len(result.merge_proposed)
+
+    seen_names = set(result.proposed) | set(result.merge_proposed)
+    for path in foreign:
+        verdict = _check_proposal_file(home, path, roster, refuse, path)
+        if verdict.error is not None:
+            if "secret scan hit" in verdict.error:
+                log(f"run: invalid worker output {path.name} deleted ({verdict.error})")
+                result.invalid_deleted.append(path.name)
+                _git_rm_or_unlink(home, path, result)
+            continue
+        if verdict.name in seen_names:
+            continue
+        if verdict.phi:
+            result.foreign_left.append(verdict.name)
+            seen_names.add(verdict.name)
+            log(
+                f"run: proposal {path.name} carries a matching "
+                "record_sha — another producer wrote it; left untouched"
+            )
+    result.foreign_seen = len(foreign)
+    return result
+
+
+def _validate_written_legacy(
     home: Path,
     written: list[Path],
     roster: Roster | None = None,
     *,
     refuse: dict[Path, str] | None = None,
 ) -> RunResult:
-    """Run-sequence step 8 (§3.3): validate + stamp + delete, for REAL —
-    schema-invalid worker output is DELETED and logged (unattended
-    policy — the attended `proposal validate` verb reports-never-deletes);
-    valid proposals get record_sha stamped by the CLI, overwriting
-    anything the model wrote. Classifies every path via
-    :func:`_check_proposal_file` — the SAME function :func:`_dry_check_batch`
-    (S4) calls (B1) — and is the ONLY place that turns a verdict into an
-    actual write, stamp, or delete; only :func:`_harvest` calls this
-    function, always under `commit_lock`.
-
-    ``refuse`` (§3.5, S5's output) forces a deletion regardless of what
-    S8's own re-validation would conclude — the Set-J pin and the V-set
-    rewrite rule are both expressed this way (§3.3: "every deletion this
-    unit adds is expressed as an entry in `refuse`")."""
+    """``SELF_LEARN_STAGE=0`` (§3.7): today's single-pass behaviour,
+    BYTE-IDENTICAL to the pre-U-attrib shape — every changed ledger
+    proposal is attributed to the model (`_written_since`'s pre-U-attrib
+    meaning), `dest` is the path itself (nothing relocates, `Install-1`
+    is never consulted), and Rule-F applies inline exactly as `U-repair`
+    shipped it. Only :func:`_harvest` calls this function, always under
+    `commit_lock`."""
     refuse = refuse or {}
     result = RunResult(status="failed")
     for path in written:
-        verdict = _check_proposal_file(home, path, roster, refuse)
+        verdict = _check_proposal_file(home, path, roster, refuse, path)
         if verdict.error is not None:
             log(f"run: invalid worker output {path.name} deleted ({verdict.error})")
             result.invalid_deleted.append(path.name)
@@ -2561,9 +3015,14 @@ def run(
                 log(f"run: idle (0 eligible, {total_pending} pending)")
                 result = RunResult(status="idle", eligible=0, suspects=suspects)
             else:
+                stage_on = _stage_enabled()  # §3.7
                 repairs_enabled = os.environ.get("SELF_LEARN_REPAIR") != "0"
+                if stage_on:
+                    stage_reset(home)  # S1 (ST-c) — before composing the prompt
+                else:
+                    log("run: stage disabled (SELF_LEARN_STAGE=0)")
                 prompt, roster = compose_batch_prompt(home, batch)
-                snap0 = _proposal_snapshot(home)  # S1
+                snap0 = _proposal_snapshot(home)  # S1 — Install-1's baseline now
                 argv = build_argv(home, write_settings_file(home))
                 _invoke_claude(argv, prompt, invoke_timeout_secs(), home, label="")  # S2
                 # S6 (moved here, §3.3): re-assert the sentinel hold after
@@ -2578,8 +3037,20 @@ def run(
                     hold = sentinel.hold()
                     sentinel.heartbeat()
 
-                written1 = _written_since(home, snap0)  # S3
-                batch_ids = {entry.record.id for entry in batch}
+                # S3 — replaced (§3.3): the model's round-1 output BY
+                # CONSTRUCTION is the stage's contents, not an inference
+                # over what changed in the ledger. Under the switch,
+                # today's `_written_since` reading survives verbatim.
+                batch_by_id = _batch_by_id(batch)
+                if stage_on:
+                    staged1 = staged_paths()
+                    log(f"run: stage — {len(staged1)} file(s) written by the model")
+                    dest_map1: dict[Path, Path | None] = {
+                        p: _resolve_destination(p, batch_by_id) for p in staged1
+                    }
+                else:
+                    staged1 = _written_since(home, snap0)
+                    dest_map1 = {p: p for p in staged1}
                 repair_attempted = False
                 repair_eligible_paths: dict[Path, str] = {}
                 refuse: dict[Path, str] = {}
@@ -2587,17 +3058,19 @@ def run(
                 if not repairs_enabled:
                     log("run: repair round disabled (SELF_LEARN_REPAIR=0)")
                 else:
-                    verdicts = _dry_check_batch(home, written1, roster)  # S4
+                    verdicts = _dry_check_batch(home, staged1, roster, dest_map1)  # S4
                     n_refused = sum(1 for v in verdicts.values() if v.error is not None)
-                    # S5's E — Set-E's text rules (E-1..E-3) AND the two
-                    # provenance rules (E-4 batch membership, E-5 unstamped).
+                    # S5's E — Set-E's text rules (E-1..E-3) ONLY (RT4/RT5:
+                    # the two old provenance rules — E-4 batch membership,
+                    # E-5 unstamped — are retired from this filter. E-4
+                    # survives as ST-e's litter rule, already reflected in
+                    # `verdicts` (a non-batch id's error does not start
+                    # with "gates." and so `_repairable` already excludes
+                    # it); E-5's insight re-sites into `Install-1`'s I-b.
                     repair_eligible_paths = {
                         p: v.error
                         for p, v in verdicts.items()
-                        if v.error is not None
-                        and _repairable(v.error) == "ELIGIBLE"
-                        and p.stem in batch_ids  # E-4
-                        and not v.record_sha_matches  # E-5
+                        if v.error is not None and _repairable(v.error) == "ELIGIBLE"
                     }
                     n_eligible = len(repair_eligible_paths)
                     n_ineligible = n_refused - n_eligible
@@ -2613,7 +3086,6 @@ def run(
                             p: p.read_text(encoding="utf-8")
                             for p in repair_eligible_paths
                         }
-                        snap1 = _proposal_snapshot(home)
                         repair_prompt = _compose_repair_prompt(
                             home, repair_eligible_paths
                         )
@@ -2621,6 +3093,30 @@ def run(
                             home, list(repair_eligible_paths)
                         )
                         repair_argv = build_argv(home, repair_settings)
+                        # Pre-declared (not just branch-assigned): the
+                        # two blocks below are gated by the SAME
+                        # `stage_on` value both times, so exactly one of
+                        # these is ever read — but pyright's flow
+                        # analysis cannot link two separate `if
+                        # stage_on:` checks, and flags the unread
+                        # variable as possibly-unbound without this.
+                        snap1_stage: dict[Path, str] = {}
+                        snap1: dict[Path, str] = {}
+                        if stage_on:
+                            # Snapshot the WHOLE stage's content, not only
+                            # E — GR-d's grant is exact-path, but this is
+                            # the defense-in-depth leg (G6): the V-set
+                            # rule must still catch a repair that reaches
+                            # a SIBLING staged file even if that grant
+                            # were ever loosened, so "what changed" cannot
+                            # be scoped to E alone.
+                            snap1_stage = {
+                                p: p.read_text(encoding="utf-8")
+                                for p in staged1
+                                if p.exists()
+                            }
+                        else:
+                            snap1 = _proposal_snapshot(home)
                         _invoke_claude(
                             repair_argv,
                             repair_prompt,
@@ -2633,14 +3129,42 @@ def run(
                             hold = sentinel.hold()
                             sentinel.heartbeat()
 
-                        touched2 = set(_written_since(home, snap1))
-                        written1_set = set(written1)
-                        phi_at_s4 = {p for p in written1_set if verdicts[p].phi}
-                        v_at_s4 = {
-                            p
-                            for p in written1_set
-                            if verdicts[p].error is None and p not in phi_at_s4
-                        }
+                        if stage_on:
+                            # GR-d grants ONE exact-path Edit rule per
+                            # member of E, over the STAGE — checked
+                            # directly against the pre-repair snapshot
+                            # rather than a ledger-wide scan (CP10, §5
+                            # lead (c)): a repair-deleted staged path
+                            # (in E) must not crash `run()`.
+                            touched2: set[Path] = set()
+                            for p in staged1:
+                                if not p.exists():
+                                    if p in repair_eligible_paths:
+                                        log(
+                                            f"run: repair round: {p.name} "
+                                            "disappeared during repair — "
+                                            "record stays pending"
+                                        )
+                                    continue
+                                if p not in snap1_stage or p.read_text(encoding="utf-8") != snap1_stage[p]:
+                                    touched2.add(p)
+                            staged1_set = set(staged1)
+                            # RT2: Φ leaves S5's partition entirely — every
+                            # member of staged1 is the model's own output
+                            # (nothing foreign can ever be in the stage),
+                            # so the V-set is simply every valid one.
+                            v_at_s4 = {
+                                p for p in staged1_set if verdicts[p].error is None
+                            }
+                        else:
+                            touched2 = set(_written_since(home, snap1))
+                            written1_set = set(staged1)
+                            phi_at_s4 = {p for p in written1_set if verdicts[p].phi}
+                            v_at_s4 = {
+                                p
+                                for p in written1_set
+                                if verdicts[p].error is None and p not in phi_at_s4
+                            }
                         # A-set (= E): the Set-J pin.
                         for p in repair_eligible_paths:
                             if p not in touched2:
@@ -2662,11 +3186,22 @@ def run(
                         # NOT refused here — Rule-F applies fresh at S8
                         # (§3.5's own O-set rule; D4).
 
-                written = _written_since(home, snap0)  # S7 — both rounds
+                # S7 — replaced (§3.3): TWO sets now, both rounds' output.
+                if stage_on:
+                    staged = staged_paths()
+                    foreign = _written_since(home, snap0)
+                    if foreign:
+                        log(
+                            f"run: {len(foreign)} ledger proposal(s) changed "
+                            "during the window — not this run's writes"
+                        )
+                else:
+                    staged = _written_since(home, snap0)  # "written" — both rounds
+                    foreign = []
                 # [first mutation → commit] under ONE lock (audit
-                # 2026-07-16 round 7, THE invariant). `_validate_written`
-                # DELETES schema-invalid model output and sweeps orphaned
-                # and invalidated-merge proposals — deletions of TRACKED
+                # 2026-07-16 round 7, THE invariant). Validation DELETES
+                # schema-invalid model output and sweeps orphaned and
+                # invalidated-merge proposals — deletions of TRACKED
                 # files, i.e. exactly the worktree mutation a racing `pull
                 # --rebase --autostash` stashes and restores into a
                 # conflict. They used to run here, unlocked, and be
@@ -2679,7 +3214,16 @@ def run(
                 # so the section is CONTINUOUS; `_commit_run` takes it
                 # again re-entrantly, which is why it can still be called
                 # on its own (the miner's and the tests' path).
-                result = _harvest(home, written, roster, refuse=refuse)  # S8
+                result = _harvest(  # S8
+                    home,
+                    staged,
+                    batch,
+                    roster,
+                    refuse=refuse,
+                    foreign=foreign,
+                    snap0=snap0,
+                    stage_on=stage_on,
+                )
                 result.eligible = len(batch)
                 result.leftovers = leftovers
                 result.suspects = suspects

@@ -738,12 +738,14 @@ def test_a12b_trace_less_deletion_and_pipeline_not_dead_control(tmp_path, monkey
         # NO gates / flags / recommendation — the wedge case.
     )
     path_a = proposals_dir / f"{rid_a}.yaml"
+    staged_a = worker.stage_dir() / f"{rid_a}.yaml"
     monkeypatch.setenv(
         "CLAUDE_SHIM_SCRIPT",
-        f"mkdir -p {proposals_dir} && cat > {path_a} <<'YAML'\n{trace_less_yaml}YAML",
+        f"mkdir -p {worker.stage_dir()} && cat > {staged_a} <<'YAML'\n{trace_less_yaml}YAML",
     )
 
     worker.run(env.ledger)
+    assert not staged_a.exists()
     assert not path_a.exists()
     assert (env.ledger / "skills" / "s" / "pending" / f"{rid_a}.md").is_file()
     entry_a = _entry_for(env.ledger, record_a)
@@ -798,9 +800,10 @@ def test_a12b_trace_less_deletion_and_pipeline_not_dead_control(tmp_path, monkey
         "recommendation: route\n"
     )
     path_b = proposals_dir / f"{rid_b}.yaml"
+    staged_b = worker.stage_dir() / f"{rid_b}.yaml"
     monkeypatch.setenv(
         "CLAUDE_SHIM_SCRIPT",
-        f"mkdir -p {proposals_dir} && cat > {path_b} <<'YAML'\n{full_trace_yaml}YAML",
+        f"mkdir -p {worker.stage_dir()} && cat > {staged_b} <<'YAML'\n{full_trace_yaml}YAML",
     )
 
     worker.run(env.ledger)
@@ -1295,11 +1298,13 @@ def test_a21_flip_refuses_traceless_key_by_key(tmp_path, monkeypatch):
         create_record(env.ledger, record)
         commit_all(env.ledger, f"pending {rid}")
         path = proposals_dir / f"{rid}.yaml"
+        staged_path = worker.stage_dir() / f"{rid}.yaml"
         monkeypatch.setenv(
             "CLAUDE_SHIM_SCRIPT",
-            f"mkdir -p {proposals_dir} && cat > {path} <<'YAML'\n{yaml_body}YAML",
+            f"mkdir -p {worker.stage_dir()} && cat > {staged_path} <<'YAML'\n{yaml_body}YAML",
         )
         worker.run(env.ledger)
+        assert not staged_path.exists()
         return path, _entry_for(env.ledger, record)
 
     # (a) nothing at all.
@@ -1388,11 +1393,13 @@ def test_a23_roster_sha_honesty_both_legs_both_paths(tmp_path, monkeypatch):
         create_record(env.ledger, record)
         commit_all(env.ledger, f"pending {rid}")
         path = proposals_dir / f"{rid}.yaml"
+        staged_path = worker.stage_dir() / f"{rid}.yaml"
         monkeypatch.setenv(
             "CLAUDE_SHIM_SCRIPT",
-            f"mkdir -p {proposals_dir} && cat > {path} <<'YAMLPROP'\n{yaml_body}YAMLPROP",
+            f"mkdir -p {worker.stage_dir()} && cat > {staged_path} <<'YAMLPROP'\n{yaml_body}YAMLPROP",
         )
         worker.run(env.ledger)
+        assert not staged_path.exists()
         return path, _entry_for(env.ledger, record)
 
     def _run_analyst_leg(rid, yaml_body):
@@ -1524,12 +1531,14 @@ def test_a24_containment_and_derivation_at_owned_sites(tmp_path, monkeypatch):
     create_record(env.ledger, record_a)
     commit_all(env.ledger, "pending lrn-48000000")
     path_a = proposals_dir / "lrn-48000000.yaml"
+    staged_a = worker.stage_dir() / "lrn-48000000.yaml"
     monkeypatch.setenv(
         "CLAUDE_SHIM_SCRIPT",
-        f"mkdir -p {proposals_dir} && cat > {path_a} <<'YAMLPROP'\n"
+        f"mkdir -p {worker.stage_dir()} && cat > {staged_a} <<'YAMLPROP'\n"
         f"{_with_t2_evidence(fabricated_evidence)}YAMLPROP",
     )
     worker.run(env.ledger)
+    assert not staged_a.exists()
     assert not path_a.exists()
     assert _is_unanalyzed(_entry_for(env.ledger, record_a)) is True
 
@@ -1538,9 +1547,10 @@ def test_a24_containment_and_derivation_at_owned_sites(tmp_path, monkeypatch):
     create_record(env.ledger, record_a_ctrl)
     commit_all(env.ledger, "pending lrn-48000001")
     path_a_ctrl = proposals_dir / "lrn-48000001.yaml"
+    staged_a_ctrl = worker.stage_dir() / "lrn-48000001.yaml"
     monkeypatch.setenv(
         "CLAUDE_SHIM_SCRIPT",
-        f"mkdir -p {proposals_dir} && cat > {path_a_ctrl} <<'YAMLPROP'\n"
+        f"mkdir -p {worker.stage_dir()} && cat > {staged_a_ctrl} <<'YAMLPROP'\n"
         f"{_with_t2_evidence(true_evidence)}YAMLPROP",
     )
     worker.run(env.ledger)
@@ -1622,11 +1632,13 @@ def test_a24_containment_and_derivation_at_owned_sites(tmp_path, monkeypatch):
         "outcome: SKILL\n", "outcome: DEMAND\n", 1
     )
     path_d = proposals_dir / "lrn-48000006.yaml"
+    staged_d = worker.stage_dir() / "lrn-48000006.yaml"
     monkeypatch.setenv(
         "CLAUDE_SHIM_SCRIPT",
-        f"mkdir -p {proposals_dir} && cat > {path_d} <<'YAMLPROP'\n{incoherent}YAMLPROP",
+        f"mkdir -p {worker.stage_dir()} && cat > {staged_d} <<'YAMLPROP'\n{incoherent}YAMLPROP",
     )
     worker.run(env.ledger)
+    assert not staged_d.exists()
     assert not path_d.exists()
     assert _is_unanalyzed(_entry_for(env.ledger, record_d)) is True
 
@@ -1636,9 +1648,10 @@ def test_a24_containment_and_derivation_at_owned_sites(tmp_path, monkeypatch):
     create_record(env.ledger, record_d_ctrl)
     commit_all(env.ledger, "pending lrn-48000007")
     path_d_ctrl = proposals_dir / "lrn-48000007.yaml"
+    staged_d_ctrl = worker.stage_dir() / "lrn-48000007.yaml"
     monkeypatch.setenv(
         "CLAUDE_SHIM_SCRIPT",
-        f"mkdir -p {proposals_dir} && cat > {path_d_ctrl} <<'YAMLPROP'\n"
+        f"mkdir -p {worker.stage_dir()} && cat > {staged_d_ctrl} <<'YAMLPROP'\n"
         f"{_skill_proposal_yaml(roster_sha)}YAMLPROP",
     )
     worker.run(env.ledger)
