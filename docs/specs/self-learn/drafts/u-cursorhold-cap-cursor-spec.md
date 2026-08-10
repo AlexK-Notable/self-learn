@@ -535,10 +535,13 @@ later turns contain `<command-name>/self-learn:review</command-name>`
 - `miner.walk() == []` (the halted file is skipped at `:332-333`);
 - the outcome journals `cursor: "advanced-halted"`.
 
-*Broken:* M5 (holding halted slices too) leaves no cursor entry for the
-path at all, so both the `halt` assertion and the `walk` assertion fail
-— the exclusion the 2026-07-15 audit installed would be silently
-deferred to a re-derivation this unit is not entitled to rely on.
+*Broken:* M5 (holding halted slices too) — corrected to the code
+gate's measurement (2026-08-09): under the shipped path-plus-halt H-3 a
+halted slice always advances (`or halt`), so "no cursor entry at all"
+cannot occur; A5 reddens instead on the `cursor == "advanced-halted"`
+classification and the `held_sessions == set()` assertion. The built
+test is stronger than this row originally assumed; the audit's
+exclusion is still what the criterion protects.
 
 **A6 — an unmatched session holds nothing.** Two legs, both with a
 cap-dropped candidate whose `session` is not in `digested`:
@@ -607,8 +610,11 @@ by this unit's own fix.
 mtime — pin it with `os.utime`, since `walk` orders candidates by mtime
 (`:339`). Only then does `digested["sess-dup"]` end up `False`, the drop
 classify `held`, and M20 have anything to bite. With the other ordering
-the drop classifies `advanced-halted`, nothing is held, and the
-criterion passes against the mutant.
+the drop classifies `advanced-halted` and nothing is held — corrected
+to the code gate's measurement (2026-08-09): the built test then fails
+CLOSED on its `cursor == "held"` precondition assertion (identically on
+the correct build and the mutant) rather than passing vacuously; the
+mtime ordering pin is what gives A9 its discriminating power.
 
 **A10 — the measured incident's shape, drained over consecutive runs.**
 The run-`28117725` shape (§1.2), including the drop that has no other
