@@ -57,7 +57,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import sentinel, telemetry
+from . import invocation, sentinel, telemetry
 from .compilers import BEGIN_MARKER, END_MARKER
 from .hosts import Hosts, HostsError, load_hosts, skill_dir_for
 from .ledger import discover_buckets, resolve_home
@@ -3099,34 +3099,40 @@ def fast_status(home: Path | str) -> dict:
 
 
 def _invoke_claude(
-    argv: list[str], prompt: str, timeout: float, home: Path, *, label: str
+    argv: list[str], prompt: str, timeout: float, home: Path, *,
+    label: str,
+    containment: invocation.Containment | None = None,
 ) -> None:
     """One model invocation — round 1 (``label=""``) or the repair round
     (``label="repair "``), same exception handling shape as this project
     shipped before U-repair; the label prefix is what distinguishes their
     log lines (§3.12). Never raises — an invocation failure is logged and
     the run continues (round 1's valid output, if any, must still land;
-    B7)."""
-    try:
-        proc = subprocess.run(
-            argv,
-            cwd=str(home),
-            input=prompt,  # stdin — argv caps at 128 KiB (audit)
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-        if proc.returncode != 0:
-            log(
-                f"run: {label}claude exited {proc.returncode}: "
-                f"{(proc.stderr or proc.stdout)[:400]}"
-            )
-    except FileNotFoundError:
-        log(f"run: {label}claude CLI not found on PATH")
-    except subprocess.TimeoutExpired:
-        log(f"run: {label}claude timed out after {timeout:g}s")
-    except OSError as exc:
-        log(f"run: {label}claude invocation failed ({exc})")
+    B7).
+
+    U-seam §3.9.1: the transport itself now lives behind the invocation
+    seam (``invocation.write_session``) — this function's job is to
+    describe THIS call as a ``SessionSpec`` and hand it over. ``argv`` is
+    already fully assembled by the caller (``B-4``: the settings file is
+    written and the argv built by ``run()`` before this function is
+    reached), so ``cli_argv_builder`` is a closure over the given
+    ``argv`` verbatim — byte-identical to what this function used to pass
+    straight to ``subprocess.run``. ``containment`` is data only (``HY4``
+    — it enforces nothing); when omitted (only `test_repair.py::test_e1`
+    does, per ``B-4``), :data:`invocation.DEGRADED_WORKER_CONTAINMENT`
+    stands in — ``run()`` itself always passes an explicit one (``W-a``)."""
+    spec = invocation.SessionSpec(
+        surface="worker-repair" if label == "repair " else "worker",
+        prompt=prompt,
+        cwd=home,
+        timeout=timeout,
+        containment=containment or invocation.DEGRADED_WORKER_CONTAINMENT,
+        log=log,
+        cli_argv_builder=lambda _settings: argv,
+        cli_settings_writer=None,
+        label=label,
+    )
+    invocation.write_session(spec)
 
 
 def run(
@@ -3182,7 +3188,18 @@ def run(
                 prompt, roster = compose_batch_prompt(home, batch)
                 snap0 = _proposal_snapshot(home)  # S1 — Install-1's baseline now
                 argv = build_argv(home, write_settings_file(home))
-                _invoke_claude(argv, prompt, invoke_timeout_secs(), home, label="")  # S2
+                _invoke_claude(
+                    argv, prompt, invoke_timeout_secs(), home, label="",
+                    containment=invocation.containment_for(
+                        "worker",
+                        allowed_tools=ALLOWED_TOOLS,
+                        disallowed_tools=DISALLOWED_TOOLS,
+                        home=home,
+                        stage_dir=stage_dir(),
+                        stage_on=stage_on,
+                        enforce=_enforce_scope(),
+                    ),
+                )  # S2
                 # S6 (moved here, §3.3): re-assert the sentinel hold after
                 # the invocation. A CONCURRENT short holder (e.g. the
                 # miner's landing phase) may have created-then-RELEASED
@@ -3281,6 +3298,15 @@ def run(
                             repair_timeout_secs(),
                             home,
                             label="repair ",
+                            containment=invocation.containment_for(
+                                "worker-repair",
+                                allowed_tools=ALLOWED_TOOLS,
+                                disallowed_tools=DISALLOWED_TOOLS,
+                                write_exact=tuple(
+                                    str(p) for p in repair_eligible_paths
+                                ),
+                                enforce=_enforce_scope(),
+                            ),
                         )
                         # G8: re-assert again after the LAST invocation.
                         if not sentinel.heartbeat():

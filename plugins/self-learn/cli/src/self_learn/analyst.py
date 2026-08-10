@@ -54,6 +54,7 @@ from pathlib import Path
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
+from . import invocation
 from .ledger_ops import (
     ROSTER_UNAVAILABLE,
     LedgerOpsError,
@@ -239,22 +240,44 @@ def analyze(
     entry = QueueEntry(path=record_path, record=record)
     prompt, roster = compose_single_prompt(home, entry)
 
-    argv = build_argv(prompt, doctrine_text, model)
-    try:
-        proc = subprocess.run(
-            argv, capture_output=True, text=True, timeout=_timeout(), cwd=str(home)
-        )
-    except FileNotFoundError as exc:
-        raise AnalystError("claude CLI not found on PATH") from exc
-    except subprocess.TimeoutExpired as exc:
+    timeout = _timeout()
+    spec = invocation.SessionSpec(
+        surface="analyst",
+        prompt=prompt,
+        cwd=home,
+        timeout=timeout,
+        containment=invocation.containment_for(
+            "analyst", allowed_tools=ANALYST_ALLOWED_TOOLS
+        ),
+        log=lambda _msg: None,
+        cli_argv_builder=lambda _settings: build_argv(prompt, doctrine_text, model),
+        cli_settings_writer=None,
+    )
+    outcome = invocation.text_session(spec)
+    # W-h: every AnalystError message on this path is rendered through
+    # LOG_TEMPLATES["analyst"] -- the analyst does not carry its own
+    # copies of these f-strings (see that criterion's docstring, WR6).
+    templates = invocation.LOG_TEMPLATES["analyst"]
+    if outcome.failure == "not-found":
+        assert templates.not_found is not None  # T-c: analyst never omits this leg
+        raise AnalystError(templates.not_found) from outcome.exc
+    if outcome.failure == "timeout":
+        assert templates.timed_out is not None  # T-c: analyst never omits this leg
         raise AnalystError(
-            f"analyst timed out after {_timeout():g}s"
-        ) from exc
-    if proc.returncode != 0:
-        detail = (proc.stderr or proc.stdout).strip()
-        raise AnalystError(f"analyst exited {proc.returncode}: {detail}")
+            templates.timed_out.format(timeout=timeout)
+        ) from outcome.exc
+    if outcome.failure == "exit":
+        detail = outcome.detail
+        if templates.detail_strip:
+            detail = detail.strip()
+        if templates.detail_cap is not None:
+            detail = detail[: templates.detail_cap]
+        assert templates.exited is not None  # T-c: analyst never omits this leg
+        raise AnalystError(templates.exited.format(rc=outcome.rc, detail=detail))
+    if outcome.failure == "unavailable":
+        raise AnalystError(templates.unavailable.format(exc=outcome.detail))
 
-    parsed = _parse_yaml_map(proc.stdout)
+    parsed = _parse_yaml_map(outcome.stdout)
     # Register R (U-analyst spec §2.1) — copy-then-stamp, not a rebuild
     # from an enumerated key set: any field the analyst doesn't know
     # about (a future doctrine addition, r2's `recommendation:`/`gates:`,
