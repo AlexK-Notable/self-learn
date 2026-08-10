@@ -405,7 +405,7 @@ def containment_permissions(c: Containment) -> dict:
 Three properties, all normative and all pinned by criteria:
 
 - The `/` in `Edit(/{p})` plus the leading `/` of an absolute `p` is what
-  produces the shipped **double slash**: `Edit(//home/komi/.cache/...)`.
+  produces the shipped **double slash**: `Edit(//home/<user>/.cache/...)`.
   There is exactly one occurrence of that construction in the package.
   Criterion `CN1`; mutation `M1`.
 - `write_exact` is **sorted at render time**, mirroring
