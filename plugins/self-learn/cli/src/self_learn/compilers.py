@@ -52,6 +52,32 @@ References compiler (01 §3.5, 08 §1 References-compiler pin)
 - Idempotent per record: the file is scanned for the record id and an
   already-present id makes the append a no-op.
 
+Pointer emission (U-pointer, the ALWAYS-surface write)
+--------------------------------------------------------
+- A `reference` route's canon lands in a references file nothing loaded
+  reads (02 §4's managed sections cover skill-md/claude-md, never
+  references). :func:`apply_pointer` closes that: it writes a small,
+  dedicated, cap-exempt block -- its own marker pair, distinct from
+  :data:`BEGIN_MARKER`/:data:`END_MARKER` -- into the surface a session
+  DOES load (SKILL.md / CLAUDE.md), naming the references file with a
+  path token.
+- The contract is behavioural, not textual: :func:`surface_names_target`
+  (moved here from `selfcheck.py`, the shipped u-reach detector) is BOTH
+  the idempotence check (a surface that already names the target is left
+  untouched -- a hand-written mention counts) and the mandatory post-
+  condition (`apply_pointer` re-reads the file it just wrote and raises
+  :class:`CompileError` if the detector still cannot find the target;
+  the pre-write text is restored first, so a failed write never wedges
+  the surface against a later route or repair).
+- Structurally cap-exempt: the pointer line lives outside
+  :data:`BEGIN_MARKER`/:data:`END_MARKER` entirely, so it never enters
+  :func:`compile_managed_text`'s entry/word counts and a managed-section
+  regeneration on the SAME surface leaves it untouched.
+- Insert-only: a new line is appended as the LAST line inside the
+  pointer block (reference targets are append-only), never sorted,
+  never re-derived from scratch on every call the way the managed
+  section is.
+
 Paths frontmatter (U-pathed, `paths:` emission for rules targets)
 -------------------------------------------------------------------
 - The ONE normative register for what a rules target's `paths:` key should
@@ -84,6 +110,7 @@ Paths frontmatter (U-pathed, `paths:` emission for rules targets)
 from __future__ import annotations
 
 import io
+import os
 import re
 from collections import Counter
 from dataclasses import dataclass
@@ -103,10 +130,13 @@ __all__ = [
     "DEFAULT_MAX_WORDS",
     "DEFAULT_REFERENCE_BASENAME",
     "FORBIDDEN_REFERENCE_BASENAME",
+    "POINTER_BEGIN_MARKER",
+    "POINTER_END_MARKER",
     "CompileError",
     "SectionResult",
     "ReferenceResult",
     "PathsResult",
+    "PointerResult",
     "entry_line",
     "compile_managed_text",
     "compile_managed_file",
@@ -117,11 +147,24 @@ __all__ = [
     "has_paths_key",
     "paths_frontmatter_drift",
     "apply_paths_frontmatter",
+    "surface_names_target",
+    "pointer_token",
+    "pointer_line",
+    "compile_pointer_text",
+    "apply_pointer",
 ]
 
 #: Marker pair, exactly per 02 §4.
 BEGIN_MARKER = "<!-- self-learn:begin (do not hand-edit inside; managed by self-learn) -->"
 END_MARKER = "<!-- self-learn:end -->"
+
+#: Pointer-block marker pair (U-pointer §3.1) -- distinct from
+#: BEGIN_MARKER/END_MARKER above so a surface can carry a managed section
+#: AND a pointer block without either arithmetic touching the other.
+POINTER_BEGIN_MARKER = (
+    "<!-- self-learn:pointers:begin (do not hand-edit inside; managed by self-learn) -->"
+)
+POINTER_END_MARKER = "<!-- self-learn:pointers:end -->"
 
 #: Overflow caps (02 §4); per-target overrides via function parameters.
 DEFAULT_MAX_ENTRIES = 10
@@ -170,6 +213,12 @@ class ReferenceResult:
     applied: bool  # False = record id already present (no-op)
     created: bool  # LEARNINGS.md was created fresh
     entry: str | None  # the appended block (None on no-op)
+    #: U-pointer §3.6: True iff this route ALSO wrote a pointer block into
+    #: the ALWAYS-loaded surface (SKILL.md/CLAUDE.md). Defaulted so the two
+    #: existing construction sites below never change; read by the commit
+    #: gate (verbs.py's `_host_phase`) so a no-op reference append with a
+    #: freshly-written pointer still commits.
+    pointer_changed: bool = False
 
 
 # ---------------------------------------------------------------- record view
@@ -773,6 +822,246 @@ def apply_paths_frontmatter(path: Path | str, records: Sequence[Record]) -> Path
     return PathsResult(
         path=path, paths=u, changed=changed, unpathed_by=unpathed,
         widened=wide, drift=drift, notes=tuple(notes),
+    )
+
+
+# ------------------------------------------------------------- pointer emission
+
+
+@dataclass(frozen=True)
+class PointerResult:
+    """Outcome of one pointer-block apply (U-pointer §3.3)."""
+
+    surface: Path
+    target: Path
+    token: str  # the token written, or the one already present
+    changed: bool  # the surface file was rewritten
+    created: bool  # the surface file did not exist and was created
+    bootstrapped: bool  # the pointer block was absent and got appended
+
+
+#: §2.1 step 2: a token is delimited by whitespace or by any of these
+#: bracket/quote characters -- never consumed into the match.
+_TOKEN_DELIMS = r"\s()\[\]<>\"'`"
+
+
+def surface_names_target(surface: Path, target: Path) -> bool:
+    """The reachability predicate (§2.1): does ``surface`` contain a path
+    TOKEN that RESOLVES to ``target``? Pure text + path arithmetic, no
+    globbing -- the whole file is searched, not just a managed section (the
+    home-assistant ``SKILL.md`` this unit exists for has no managed
+    section at all).
+
+    Step 2 is LEFT-MAXIMAL and anchored on the basename: for every
+    occurrence of ``target.name`` in the text, the token extends
+    LEFTWARD ONLY over non-delimiter characters and ENDS at the basename --
+    nothing to its right is ever consumed. This is normative, and the two
+    readings differ: a both-directions-maximal tokenizer rejects
+    ``see references/LEARNINGS.md.`` (a sentence-final period, the
+    commonest hand-written pointer shape); the anchored reading here
+    accepts it, and adds no false positives (``myLEARNINGS.md`` still
+    yields a token that fails the resolve-and-compare below).
+
+    Steps 3-4 are the half that matters: a bare basename match would pass
+    on some OTHER same-named file. Each candidate token is expanduser'd;
+    an absolute token is used as-is, else resolved against
+    ``surface.parent`` (the token is read as the AUTHOR meant it -- a
+    relative pointer written in the surface file, relative to that file);
+    a match requires the resolved candidate to equal ``target.resolve()``
+    exactly (criterion 8b: comparing against an UNRESOLVED target breaks
+    the moment the registered skills root is reached through a symlink)."""
+    if not surface.is_file():
+        return False
+    text = surface.read_text(encoding="utf-8")
+    pattern = re.compile(f"[^{_TOKEN_DELIMS}]*" + re.escape(target.name))
+    resolved_target = target.resolve()
+    for match in pattern.finditer(text):
+        token = Path(match.group(0)).expanduser()
+        candidate = token if token.is_absolute() else surface.parent / token
+        if candidate.resolve() == resolved_target:
+            return True
+    return False
+
+
+def pointer_token(surface: Path, target: Path) -> str:
+    """T-TOKEN (§3.2): the path token written into a pointer line.
+
+    Relative against ``surface.parent`` whenever that stays lexically
+    forward (no ``..``) -- the form the detector resolves against
+    (`surface_names_target`), and the only form that survives the surface
+    being committed, shared, and cloned onto another machine. A relative
+    form that would escape upward falls back to a ``~``-relative token
+    when the target is under ``$HOME`` (still no absolute personal-path
+    leak), else the bare absolute path."""
+    rel = os.path.relpath(target, surface.parent)
+    if not rel.startswith(".."):
+        return Path(rel).as_posix()
+    try:
+        return "~/" + Path(target).relative_to(Path.home()).as_posix()
+    except ValueError:  # target is not under $HOME
+        return str(target)
+
+
+def pointer_line(token: str, label: str) -> str:
+    """One pointer-block line (§3.1 grammar): ``- `<token>` -- <label>``.
+    Backticked deliberately -- `` ` `` is in the detector's
+    ``_TOKEN_DELIMS``, so it terminates the leftward token scan cleanly.
+    The em dash and the label are free text and are never parsed back."""
+    return f"- `{token}` — {label}"
+
+
+_POINTER_HEADING = "## Reference material (self-learn)"
+_POINTER_PREAMBLE = (
+    f"{_POINTER_HEADING}\n"
+    "\n"
+    "Captured lessons that are NOT loaded into this context. Read the file whose\n"
+    "subject matches what you are about to do, before you start.\n"
+    "\n"
+)
+
+
+def compile_pointer_text(surface_text: str, line: str) -> tuple[str, bool]:
+    """Pure block arithmetic (no I/O), like :func:`compile_managed_text`:
+    insert ``line`` into the pointer block, bootstrapping the block at EOF
+    -- exactly one blank line before it, a trailing newline -- when the
+    markers are absent (0/0). When present (1/1), ``line`` is inserted as
+    the LAST line inside the block, immediately before
+    :data:`POINTER_END_MARKER`, preserving whatever is already there
+    untouched -- never re-derived from scratch. Anything else (or an end
+    marker preceding a begin marker) raises :class:`CompileError` naming
+    the counts, mirroring `compile_managed_text`'s own refusal exactly.
+
+    Returns ``(new_text, bootstrapped)`` -- ``bootstrapped`` reports
+    whether the block was ABSENT and had to be appended at EOF (the same
+    thing :attr:`SectionResult.bootstrapped` reports). This is deliberately
+    NOT a ``changed`` flag: this function is only ever called when the
+    caller has already decided a write is owed, so ``changed`` would be a
+    constant ``True`` and therefore worthless."""
+    begins = surface_text.count(POINTER_BEGIN_MARKER)
+    ends = surface_text.count(POINTER_END_MARKER)
+
+    if begins == 0 and ends == 0:
+        block = (
+            f"{POINTER_BEGIN_MARKER}\n"
+            f"{_POINTER_PREAMBLE}"
+            f"{line}\n"
+            f"{POINTER_END_MARKER}"
+        )
+        stripped = surface_text.rstrip("\n")
+        new_text = f"{block}\n" if stripped == "" else f"{stripped}\n\n{block}\n"
+        return new_text, True
+
+    if begins == 1 and ends == 1:
+        begin_at = surface_text.index(POINTER_BEGIN_MARKER)
+        end_at = surface_text.index(POINTER_END_MARKER)
+        if end_at < begin_at:
+            raise CompileError(
+                "broken pointer-block markers: end marker precedes begin marker"
+            )
+        pre = surface_text[:end_at]
+        if not pre.endswith("\n"):
+            pre += "\n"
+        post = surface_text[end_at:]
+        return pre + line + "\n" + post, False
+
+    raise CompileError(
+        "broken pointer-block markers: expected exactly one begin/end pair, "
+        f"found {begins} begin / {ends} end"
+    )
+
+
+def apply_pointer(
+    surface: Path | str, target: Path | str, *, label: str, create: bool = False
+) -> PointerResult:
+    """Write (or confirm) a pointer from ``surface`` to ``target`` (§3.3).
+
+    In order:
+
+    1. ``surface`` is not a file: ``create=True`` makes it (empty,
+       parents created); ``create=False`` raises :class:`CompileError`
+       naming the surface, mirroring `compile_managed_file`'s refusal.
+    2. `surface_names_target` already ``True`` (a hand-written mention
+       counts): return ``changed=False`` with the resolvable token --
+       NO write at all. This is the idempotence leg (K2).
+    3. Otherwise compute the token, build the line, `compile_pointer_text`,
+       write it, ``changed=True``.
+    4. MANDATORY post-condition: re-read the file through
+       `surface_names_target`. If it is still ``False``, the pre-write
+       text is restored (never leave a wedged surface behind -- a dirty
+       surface would trip the L4 refusal on every later route to this
+       skill and be skipped by the recompile repair too) and
+       :class:`CompileError` is raised naming the surface, target and
+       token. This is the one place "we wrote something" is converted
+       into "the contract holds"."""
+    surface = Path(surface)
+    target = Path(target)
+    created = False
+
+    if not surface.is_file():
+        if not create:
+            raise CompileError(
+                f"pointer surface does not exist: {surface} — the pointer "
+                "compiler never creates target files, only appends the "
+                "block to an existing one"
+            )
+        surface.parent.mkdir(parents=True, exist_ok=True)
+        surface.write_text("", encoding="utf-8")
+        created = True
+
+    if surface_names_target(surface, target):
+        return PointerResult(
+            surface=surface,
+            target=target,
+            token=pointer_token(surface, target),
+            changed=False,
+            created=created,
+            bootstrapped=False,
+        )
+
+    token = pointer_token(surface, target)
+    line = pointer_line(token, label)
+    original_text = surface.read_text(encoding="utf-8")
+    new_text, bootstrapped = compile_pointer_text(original_text, line)
+    surface.write_text(new_text, encoding="utf-8")
+
+    if not surface_names_target(surface, target):
+        # r3 (NOTE 4): restore before raising -- the raise is still loud,
+        # and the pointer's absence is still caught by the `reach`
+        # selftest, but the surface itself must never be left dirty by a
+        # failed write (that would block the very repair the error
+        # recommends). Must not swallow the original error, and a failure
+        # to restore must not mask it either.
+        # FOLD MAJOR 1: a restore failure of its own (OSError/ENOSPC, a
+        # permissions flip mid-run, ...) must not escape and MASK the
+        # CompileError below -- an escaped OSError would leave the wedged
+        # surface on disk, which is itself refused by later routes/
+        # recompiles, blocking its own repair.
+        # FOLD NOTE 1: the message must tell the truth about which of
+        # these happened -- a "reverted" claim on a surface that is
+        # actually still dirty sends a human/repair straight past it.
+        restored = True
+        try:
+            surface.write_text(original_text, encoding="utf-8")
+        except Exception:
+            restored = False  # the CompileError below must still surface, not this
+        outcome = (
+            "the write was reverted" if restored
+            else "the write could NOT be reverted — the surface is left "
+            "dirty; restore it by hand"
+        )
+        raise CompileError(
+            f"pointer post-condition failed: after writing token {token!r} "
+            f"into {surface}, it still does not resolve to {target} — "
+            f"{outcome}"
+        )
+
+    return PointerResult(
+        surface=surface,
+        target=target,
+        token=token,
+        changed=True,
+        created=created,
+        bootstrapped=bootstrapped,
     )
 
 

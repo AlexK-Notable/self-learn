@@ -769,6 +769,17 @@ to that skill on L4 and every later recompile on §3.7 step 1 — the
 repair the error message recommends would be blocked by the failure
 itself. → **M28**, **M33**
 
+**Third leg (r4 fold, NOTE 5/MAJOR 1): a restore failure must not mask
+the `CompileError`.** `test_a8x_restore_failure_does_not_mask_compile_
+error` monkeypatches `Path.write_text` to fail only on the restore call
+(the write of `original_text`, alongside the same `pointer_token` mock
+as the first leg); assert `CompileError` (not the raw `OSError`) still
+raises, **and** that its message states the restore failed rather than
+falsely claiming it succeeded (r4 NOTE 1's honest-clause fix). *Absent:*
+an unguarded or re-raising restore write lets the `OSError` escape and
+mask the `CompileError`, leaving a wedged surface with no diagnostic
+naming it as such. → **M34**
+
 **A9 — the no-write path still reports a usable token (r2, NOTE 12).**
 On a surface that already names the target, assert `changed is False`
 **and** `PointerResult.token == pointer_token(surface, target)` (not
@@ -1030,9 +1041,17 @@ incidental property of one. → **M30**
 
 ### F. Scope invariants and refusals
 
-**F1 — the user-scope refusal is byte-identical.** Assert the raised
-message equals the string at `verbs.py:1087-1096` verbatim (compare
-against the literal in the test, and assert it contains `S-23 (2)`).
+**F1 — the user-scope refusal is key-phrase pinned.** *(r4 fold, USER
+RULING 2026-08-09: key-phrase pinning, not byte-exactness — a
+byte-identical assertion breaks on any wording polish that preserves
+the refusal's effect; this supersedes the "verbatim against
+`verbs.py:1087-1096`" wording below.)* Assert the raised message
+contains: the rule tag `S-23 (2)`; the reason clause `user scope has
+no references dir`; and the redirect guidance, both `claude-md:rules:`
+and `route it to project scope, or defer`. *(r4 fold, NOTE 2: a bare
+`project scope` is satisfied by the message's OPENING clause too, so
+it stays green even with the redirect guidance's second half deleted
+— pin a phrase unique to the guidance instead, gate's **F1b**.)*
 *Absent:* deleting or softening the refusal builds the user-level
 reference file S-23 rejected. → **M22**
 
@@ -1040,11 +1059,18 @@ reference file S-23 rejected. → **M22**
 commit.** Assert `VerbError` naming the missing path, **and** that the
 record is still `pending` (nothing resolved, nothing committed). *Absent:*
 a build that refuses *after* the ledger commit reddens the second leg. →
-**M23**
+~~M23~~ — MEASURED (r4 fold, NOTE 4): F2 cannot observe M23 — it goes
+through `route()`, which always intercepts at L2 before `_apply_target`
+is ever reached. See §5's M23 row: the actual catcher is the new direct
+`_apply_target` unit test.
 
 **F3 — L3: project scope, missing `CLAUDE.md`, is created and pointed.**
 Assert the file now exists, carries the pointer block, is staged in the
-route commit, and `_check_reach` passes. → **M23**
+route commit, and `_check_reach` passes. → ~~M23~~ — MEASURED (r4 fold,
+NOTE 4): F3 exercises project scope, where `create` is `spec.scope_kind
+== "project"` == `True` **in the correct code already** — M23's edit
+(`create=True` unconditionally) is behaviorally identical on this path,
+so F3 was never going to redden it regardless of L2. See §5's M23 row.
 
 **F4 — L4: dirty surface refuses the route before the ledger commit.**
 Assert `DirtyTargetError` (a `VerbError`), the record still pending, and
@@ -1120,9 +1146,9 @@ which manufactures **false survivals** only.
 |---|---|---|
 | M1 | copy `surface_names_target`'s body into `selfcheck.py` instead of importing it | A1 (identity leg **only** — the six behaviour assertions stay green, which is exactly why the identity leg exists) |
 | M2 | `pointer_token` returns `target.name` | A2, A3, C2 |
-| M3 | `pointer_token` uses `os.path.relpath(target, surface)` (the file, not its parent) | A2, A3, C2 |
-| M4 | `apply_pointer` skips the `surface_names_target` check and always writes | A3 (vacuity leg), C5, C6, E4 |
-| M5 | `compile_pointer_text` always appends a fresh block instead of inserting into an existing one | A5, C7 |
+| M3 | `pointer_token` uses `os.path.relpath(target, surface)` (the file, not its parent) | ~~A2, A3, C2~~ — MEASURED (r4 fold, NOTE 3 correction): A3/C2 are satisfied by the fallback token (the relpath starts with `..`, so the fallback fires and still resolves correctly) — blind to this mutation. The fallback taken is the **bare-absolute branch**, not the `~`-form: `Path(target).relative_to(Path.home())` raises `ValueError` for a `/tmp` test fixture (not under `$HOME`), so `pointer_token` falls through to `str(target)`. Actual catchers: **A2, A5, C7** |
+| M4 | `apply_pointer` skips the `surface_names_target` check and always writes | ~~A3 (vacuity leg), C5, C6, E4~~ — MEASURED (r4 fold): A3's vacuity leg asserts `surface_names_target(...) is False` *before* `apply_pointer` is ever called — structurally immune to this mutation. Actual catchers: **A9, C4, C5, C6, D3(ii), E4** |
+| M5 | `compile_pointer_text` always appends a fresh block instead of inserting into an existing one | ~~A5, C7~~ — MEASURED (r4 fold): A5's fixture is an EMPTY surface, so one call produces one block either way (bootstrap and "append a fresh block" are indistinguishable there) — A5 blind. Actual catchers: **A7, C7** |
 | M6 | delete the `..` branch — always return the lexical `relpath` | A6 |
 | M7 | `compile_pointer_text` tolerates 2 begin markers | A7 |
 | M8 | emit the pointer line **inside** `BEGIN_MARKER`/`END_MARKER` instead of the pointer block | **B1(i), B2, B5** — *r2: NOT the r1 count comparison, which is provably identical under this mutation (§8-X12). B5 is the only leg that sees the latent wipe; run it and confirm it reddens on the SECOND assertion, not the first* |
@@ -1133,14 +1159,14 @@ which manufactures **false survivals** only.
 | M13 | write the pointer but do not append the surface to `host_paths` | C3 |
 | M14 | append the note unconditionally, not only when `pointer.changed` | C4 (second leg) |
 | M15 | revert `_host_phase`'s gate to `changed is not False and applied is not False` | D1 — **and only D1**: `recompile` has its own gate (§3.7 step 3), so every E criterion stays green, which is precisely why D1 must be red-verified rather than assumed covered |
-| M16 | gate on `pointer_changed or True` | **D2 legs (b)+(c) only** — *r2: leg (a) ("no commit") survives, because the mutated gate reaches `git commit -- <unchanged path>`, which exits 1 → `GitOpsError` → caught → `(None, None)`. A reviewer checking only "was a commit made" will wrongly record this as SURVIVED* |
+| M16 | gate on `pointer_changed or True` | **D2 legs (b)+(c) only** — *r2: leg (a) ("no commit") survives, because the mutated gate reaches `git commit -- <unchanged path>`, which exits 1 → `GitOpsError` → caught → `(None, None)`. A reviewer checking only "was a commit made" will wrongly record this as SURVIVED* — MEASURED (r4 fold): the observed catch actually fires at an **undeclared pre-leg**: `compile_result.changed` raises `AttributeError` on `None` before either declared leg (b)/(c) is reached; note this rather than crediting it to leg (b) or (c) |
 | M17 | "fix" `cli._reports_no_change` to consult `pointer_changed` | **D3 leg (i) only** — *r2: leg (ii) cannot redden; every plausible edit evaluates identically on the both-present fixture, and leg (i)'s short-circuit assertion is unreachable behind `cli.py:1040-1041`. This mutation is verified STRUCTURALLY or not at all* |
-| M18 | leave `if not applied: continue` (`verbs.py:4028-4033`) unchanged | E1, E2 |
+| M18 | leave `if not applied: continue` (`verbs.py:4028-4033`) unchanged | ~~E1, E2~~ — MEASURED (r4 fold): `apply_pointer` runs *before* the `continue`, so the pointer is already on disk and `_check_reach` passes regardless — E1 blind. Actual catchers: **E2, E8** |
 | M19 | commit both files under one subject naming only the surface | E3 |
 | M20 | on a dirty surface, `continue` past the whole `ref_work` entry | E5 (append leg) |
 | M21 | let the `VerbError` from an unresolvable host escape `recompile` | E6 |
 | M22 | delete the user-scope refusal branch | F1 |
-| M23 | `create=True` for skill scope too (write an empty `SKILL.md`) | F2 |
+| M23 | `create=True` for skill scope too (write an empty `SKILL.md`) | ~~F2~~ — MEASURED (r4 fold): F2/F3 cannot observe this — both go through `route()`, which always intercepts at L2 (§3.9) before `_apply_target` is ever reached. Caught instead by the new direct-`_apply_target` unit test (`test_m23_...`, skill scope, missing `SKILL.md`), which bypasses `route()` the way test_f6 already does and asserts `CompileError` with no `SKILL.md` fabricated |
 | M24 | drop `_abort_if_dirty(host, surface)` from the preflight | F4 |
 | M25 | drop the preflight decode check | F5 |
 | M26 | delete the `routed_record is None` refusal | F6 |
@@ -1151,6 +1177,7 @@ which manufactures **false survivals** only.
 | **M31** | insert the new pointer line FIRST inside the block instead of last | **C7** (order leg) |
 | **M32** | return `token=""` on `apply_pointer`'s no-write (already-named) path | **A9** (token leg) — r3: M4 exercises the write path and cannot reach this |
 | **M33** | delete the restore-before-raise in the post-condition (leave the bad text on disk) | **A8** (surface-unchanged leg) |
+| **M34** | restore write fails (guard removed, or guard catches then re-raises) — `CompileError` no longer propagates on its own | **A8** (third leg, `test_a8x`) — redden a8x |
 
 **Reviewers are invited to invent mutations not listed here, and the
 invitation has already paid.** r1 asked for exactly one probe — make

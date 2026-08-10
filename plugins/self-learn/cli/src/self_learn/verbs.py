@@ -94,6 +94,7 @@ from .compilers import (
     PathsResult,
     SectionResult,
     apply_paths_frontmatter,
+    apply_pointer,
     compile_managed_file,
     compile_managed_text,
     compile_reference,
@@ -171,6 +172,15 @@ __all__ = [
 ]
 
 DEFAULT_USER_CLAUDE_MD = Path("~/.claude/CLAUDE.md")
+
+#: U-pointer §3.5: the pointer block's <label> free text, threaded from
+#: the caller and keyed by TargetSpec.scope_kind -- compilers.py has no
+#: notion of scope, so giving it one to write two words would be the
+#: wrong seam (§6-D5).
+POINTER_LABELS = {
+    "skill": "captured lessons for this skill",
+    "project": "captured lessons for this project",
+}
 
 #: Destinations the one-motion path (``teach --route`` /
 #: :func:`route_direct`) refuses BY DEFAULT: a ``hook`` route applies
@@ -666,6 +676,11 @@ class TargetSpec:
     #: via ``--allow-empty-glob`` (the routing-metadata bypass record,
     #: test obligation §13 item 3).
     glob_bypass: bool = False
+    #: U-pointer §3.4: the ALWAYS-loaded surface (SKILL.md / CLAUDE.md) a
+    #: `reference` route must ALSO write a pointer into -- set only in
+    #: `_resolve_target`'s reference branch; ``None`` for every other
+    #: destination.
+    pointer_surface: Path | None = None
 
 
 def _gate_host(home: Path, path: Path | str, kind: str) -> Path:
@@ -1072,9 +1087,11 @@ def _resolve_target(
         if scope.startswith("skill:"):
             root, skill_dir = _hosts_skill_dir(home, scope.partition(":")[2])
             host, refs_dir, kind = root, skill_dir / "references", "skill"
+            pointer_surface = skill_dir / "SKILL.md"
         elif scope == "project":
             host = _project_host_or_refuse(home, bucket_dir, project_path)
             refs_dir, kind = host / "references", "project"
+            pointer_surface = host / "CLAUDE.md"
         else:
             # S-23 (2), §3.1: chezmoi was retired 2026-07-24 — that ground
             # is dead. The condition below stays byte-identical (the
@@ -1101,8 +1118,42 @@ def _resolve_target(
         probe = reference_target_path(refs_dir, ref_name)
         if check_dirty and probe.is_file():
             _abort_if_dirty(host, probe)
+        # U-pointer §3.9: three preflight refusals over `pointer_surface`,
+        # all gated on `check_dirty` (the same parameter that already
+        # gates `_abort_if_dirty` above) — `recompile` calls this with
+        # `check_dirty=False` and reaches its own warn-and-skip handling
+        # instead (§3.7). Ungating these would make an unregistered/
+        # missing SKILL.md `continue` past the ENTIRE ref_work entry at
+        # recompile, losing the record appends too (r2 MAJOR 7).
+        if check_dirty:
+            if kind == "skill" and not pointer_surface.is_file():
+                # L2: a skill-scope reference route with no SKILL.md to
+                # hang a pointer off would write unreachable canon — the
+                # exact defect FW-40 exists to close. Refuse before the
+                # ledger commit rather than create it.
+                raise VerbError(
+                    f"no SKILL.md at {pointer_surface} — self-learn cannot "
+                    "write a reference route with nowhere to point a "
+                    "pointer at; run `self-learn host rebind` or repair "
+                    "the skill first"
+                )
+            if pointer_surface.is_file():
+                # L4: dirty pointer surface — same call already made for
+                # `probe` above.
+                _abort_if_dirty(host, pointer_surface)
+                # L5: an undecodable pointer surface can't be searched by
+                # the reachability predicate either — refuse here rather
+                # than committing the ledger and dying in the host phase.
+                try:
+                    pointer_surface.read_text(encoding="utf-8")
+                except UnicodeDecodeError as exc:
+                    raise VerbError(
+                        f"pointer surface {pointer_surface} is not valid "
+                        f"UTF-8 ({exc}) — refusing before the ledger commit"
+                    ) from exc
         return TargetSpec(
-            "reference", kind, bucket_dir, None, host, refs_dir=refs_dir, ref_name=ref_name
+            "reference", kind, bucket_dir, None, host, refs_dir=refs_dir,
+            ref_name=ref_name, pointer_surface=pointer_surface,
         )
 
     raise VerbError(f"unroutable destination {destination!r}")
@@ -1885,6 +1936,28 @@ def _apply_target(
             spec.refs_dir, routed_record, dest=spec.ref_name
         )
         host_paths = [compile_result.path]
+        if spec.pointer_surface is not None:
+            # U-pointer §3.4/§3.5: the ALWAYS-surface write. `create` is
+            # True only at project scope (an absent CLAUDE.md is already
+            # created empty by this same posture for claude-md routes,
+            # §6-D6); skill scope refuses missing SKILL.md at preflight
+            # instead (§3.9 L2), so `apply_pointer` never needs to create
+            # one. The pointer's target is `compile_result.path` — the
+            # file `compile_reference` ACTUALLY wrote — never a
+            # re-derived probe (§3.5).
+            pointer = apply_pointer(
+                spec.pointer_surface,
+                compile_result.path,
+                label=POINTER_LABELS[spec.scope_kind],
+                create=spec.scope_kind == "project",
+            )
+            if pointer.changed:
+                compile_result = replace(compile_result, pointer_changed=True)
+                host_paths.append(spec.pointer_surface)
+                if notes is not None:
+                    notes.append(
+                        f"reference pointer written to {spec.pointer_surface}"
+                    )
     elif spec.scope_kind == "user":
         assert spec.target is not None  # user/rules/local always resolve a target
         if spec.variant in ("rules", "local") and not spec.target.is_file():
@@ -2097,7 +2170,18 @@ def _host_phase(
             if spec.host_repo is not None and host_paths:
                 changed = getattr(compile_result, "changed", None)
                 applied = getattr(compile_result, "applied", None)
-                if changed is not False and applied is not False:
+                # U-pointer §3.6: a reference route whose append is a
+                # no-op (record id already present) but whose pointer was
+                # JUST written must still commit — the pointer would
+                # otherwise be written-but-uncommitted, the same "changed
+                # fold" hazard `verbs.py:1940-1947` already names one
+                # destination over. `pointer_changed` is False for every
+                # other destination's compile-result type, so this leaves
+                # every other gate byte-identical (criterion D2).
+                pointer_changed = bool(
+                    getattr(compile_result, "pointer_changed", False)
+                )
+                if pointer_changed or (changed is not False and applied is not False):
                     gitops.stage(spec.host_repo, host_paths)
                     rel = host_paths[0].relative_to(spec.host_repo)
                     host_sha = gitops.commit(
@@ -3990,7 +4074,12 @@ def recompile(
                 touched_hosts.append(host_repo)
 
         # Reference targets: re-append every routed record (idempotent per
-        # record id), commit the file ONCE if anything landed.
+        # record id), commit the file ONCE if anything landed; ALSO the
+        # backfill mechanism (U-pointer §3.7): every host visited here
+        # already resolved `spec.pointer_surface` for free, so the R14
+        # shape — every entry already appended, `applied` False, the OLD
+        # code `continue`d past the whole entry — is exactly where the
+        # pointer write now happens instead of being silently skipped.
         for (host_repo, probe), (spec, records) in sorted(
             ref_work.items(), key=lambda kv: str(kv[0][1])
         ):
@@ -4002,6 +4091,27 @@ def recompile(
                     f"{probe}: uncommitted changes — commit/stash, then re-run"
                 )
                 continue
+            # §3.7 step 1: a dirty pointer surface is skipped LOUDLY,
+            # BEFORE the lock, but the record appends below still
+            # proceed — the two repairs are independent, and a human's
+            # uncommitted SKILL.md edit is no reason to withhold canon
+            # from LEARNINGS.md.
+            skip_pointer = False
+            if (
+                spec.pointer_surface is not None
+                and spec.pointer_surface.is_file()
+                and gitops.paths_dirty(host_repo, spec.pointer_surface)
+            ):
+                result.entries.append(
+                    RecompileEntry(
+                        target=spec.pointer_surface, changed=False, skipped="dirty"
+                    )
+                )
+                result.warnings.append(
+                    f"{spec.pointer_surface}: uncommitted changes — "
+                    "commit/stash, then re-run"
+                )
+                skip_pointer = True
             # The lock ENCLOSES the compile loop (audit 2026-07-16 round 7
             # MAJOR 3): ``compile_reference`` APPENDS to the references
             # file, which is TRACKED in the host — the one shape a racing
@@ -4025,22 +4135,74 @@ def recompile(
                         failed = True
                         continue
                     applied = applied or ref_result.applied or ref_result.created
-                if not applied:
+
+                # §3.7 step 2: the pointer write — this IS the R14 backfill.
+                # `UnicodeDecodeError` is a `ValueError`, not an `OSError`
+                # (measured, §8-X13): omitting it here lets one undecodable
+                # SKILL.md propagate out of this loop, out of `recompile()`
+                # entirely, and abort the WHOLE nightly repair batch (r2
+                # BLOCKER 2) — every host after the bad one silently
+                # unrepaired. `create` is True only at project scope, same
+                # posture as the route path.
+                pointer_changed = False
+                if spec.pointer_surface is not None and not skip_pointer:
+                    try:
+                        pointer = apply_pointer(
+                            spec.pointer_surface,
+                            probe,
+                            label=POINTER_LABELS[spec.scope_kind],
+                            create=spec.scope_kind == "project",
+                        )
+                    except (CompileError, OSError, UnicodeDecodeError) as exc:
+                        result.warnings.append(f"{spec.pointer_surface}: {exc}")
+                    else:
+                        pointer_changed = pointer.changed
+
+                if not applied and not pointer_changed:
                     if not failed:
                         result.entries.append(
                             RecompileEntry(target=probe, changed=False)
                         )
                     continue
-                gitops.stage(host_repo, [probe])
-                rel = probe.relative_to(host_repo)
-                sha = gitops.commit(
-                    host_repo, f"self-learn: recompile {rel}", paths=[probe]
-                )
-            result.entries.append(
-                RecompileEntry(target=probe, changed=True, commit_sha=sha)
-            )
-            if host_repo not in touched_hosts:
-                touched_hosts.append(host_repo)
+
+                # §3.7 step 3: the two files get ONE commit each, both
+                # inside this same lock — the append commit is byte-for-
+                # byte what it was before this unit; the pointer commit is
+                # new. `touched_hosts` (the push loop's own iterable) gets
+                # `host_repo` on EITHER commit — a leg that skips this
+                # would leave the whole backfill committed and never
+                # pushed (r2 NOTE 9, criterion E8).
+                if applied:
+                    gitops.stage(host_repo, [probe])
+                    rel = probe.relative_to(host_repo)
+                    sha = gitops.commit(
+                        host_repo, f"self-learn: recompile {rel}", paths=[probe]
+                    )
+                    result.entries.append(
+                        RecompileEntry(target=probe, changed=True, commit_sha=sha)
+                    )
+                    if host_repo not in touched_hosts:
+                        touched_hosts.append(host_repo)
+
+                if pointer_changed:
+                    pointer_surface = spec.pointer_surface
+                    assert pointer_surface is not None
+                    gitops.stage(host_repo, [pointer_surface])
+                    prel = pointer_surface.relative_to(host_repo)
+                    psha = gitops.commit(
+                        host_repo,
+                        f"self-learn: pointer {prel}",
+                        paths=[pointer_surface],
+                    )
+                    result.entries.append(
+                        RecompileEntry(
+                            target=pointer_surface,
+                            changed=True,
+                            commit_sha=psha,
+                        )
+                    )
+                    if host_repo not in touched_hosts:
+                        touched_hosts.append(host_repo)
 
         # Hook scripts: re-apply the APPROVED bytes where missing, edited,
         # or stripped of the executable bit (a hook two-phase interruption
