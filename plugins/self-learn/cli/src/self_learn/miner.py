@@ -45,7 +45,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import gitops, sentinel, telemetry, worker
+from . import gitops, invocation, sentinel, telemetry, worker
 from . import reconcile as reconcile_mod
 from .hosts import load_hosts
 from .import_common import existing_origins
@@ -590,6 +590,19 @@ def build_reader_argv(settings_path: Path) -> list[str]:
     ]
 
 
+def _reader_cli_argv_builder(settings_path: Path | None) -> list[str]:
+    """Adapter satisfying `SessionSpec.cli_argv_builder`'s uniform
+    `Callable[[Path | None], list[str]]` shape (Sec 3.4): `_invoke_reader`
+    always supplies a real `cli_settings_writer`
+    (`write_reader_settings`), so `CliBackend`/`FakeBackend` never call
+    this with `None` in practice (AV3: settings written, then argv
+    built) -- the assert documents that runtime invariant for the type
+    checker rather than silently widening `build_reader_argv`'s own
+    signature."""
+    assert settings_path is not None
+    return build_reader_argv(settings_path)
+
+
 def _rubric() -> tuple[str, str]:
     """(text, version). Version comes from a `rubric-version:` marker.
     PACKAGE-relative (doc 13 T-H3): the rubric ships with the product
@@ -748,37 +761,33 @@ def _invoke_reader(home: Path, prompt: str) -> Path | None:
     """Run the contained reader (prompt on STDIN — audit B1); return the
     output file path if it exists. Split out so tests shim the model with
     a fake writer. On timeout the reader's whole process group is killed
-    (a hung node child must not outlive the 15-minute budget)."""
+    (a hung node child must not outlive the 15-minute budget).
+
+    U-seam §3.9.2: the transport lives behind the invocation seam
+    (``invocation.write_session``) — this is the ONE surface that wires a
+    REAL ``cli_settings_writer``/``cli_argv_builder`` pair (``SP-b``): the
+    other three surfaces are forced to close over an already-built argv
+    (``B-4``/no settings file at all), so this is the only construction
+    that exercises the writer-then-builder chain end to end (``AV3``)."""
     out_path = spool_dir() / OUTPUT_BASENAME
     out_path.unlink(missing_ok=True)
-    argv = build_reader_argv(write_reader_settings())
-    try:
-        proc = subprocess.Popen(
-            argv,
-            cwd=str(home),
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            start_new_session=True,
-        )
-        try:
-            output, _ = proc.communicate(prompt, timeout=INVOKE_TIMEOUT_SECS)
-        except subprocess.TimeoutExpired:
-            try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except (ProcessLookupError, PermissionError):
-                pass
-            proc.wait()
-            log(f"run: claude timed out after {INVOKE_TIMEOUT_SECS}s")
-            return None
-        if proc.returncode != 0:
-            log(f"run: claude exited {proc.returncode}: {(output or '')[:400]}")
-    except FileNotFoundError:
-        log("run: claude CLI not found on PATH")
-        return None
-    except OSError as exc:  # audit B1: E2BIG-class failures must journal,
-        log(f"run: reader invocation failed ({exc})")  # never crash the run
+    spec = invocation.SessionSpec(
+        surface="miner-reader",
+        prompt=prompt,
+        cwd=home,
+        timeout=INVOKE_TIMEOUT_SECS,
+        containment=invocation.containment_for(
+            "miner-reader",
+            disallowed_tools=READER_DISALLOWED_TOOLS,
+            spool_dir=spool_dir(),
+        ),
+        log=log,
+        cli_argv_builder=_reader_cli_argv_builder,
+        cli_settings_writer=write_reader_settings,
+        timeout_display=INVOKE_TIMEOUT_SECS,
+    )
+    outcome = invocation.write_session(spec)
+    if outcome.failure in {"timeout", "not-found", "os-error", "unavailable"}:
         return None
     # Artifact contract: exactly OUTPUT_BASENAME; strays are litter.
     for path in spool_dir().iterdir():

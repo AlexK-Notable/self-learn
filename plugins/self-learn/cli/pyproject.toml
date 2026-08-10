@@ -12,6 +12,9 @@ dependencies = [
     "ruamel.yaml>=0.18",
 ]
 
+[project.optional-dependencies]
+sdk = ["claude-agent-sdk>=0.2.116,<0.3"]
+
 [project.scripts]
 self-learn = "self_learn.cli:entrypoint"
 

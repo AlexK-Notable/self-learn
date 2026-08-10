@@ -48,7 +48,7 @@ from pathlib import Path
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
-__all__ = ["CONFIG_BASENAME", "config_path", "one_motion_enabled"]
+__all__ = ["CONFIG_BASENAME", "config_path", "invocation_backend", "one_motion_enabled"]
 
 CONFIG_BASENAME = "config.yaml"
 
@@ -62,6 +62,72 @@ def config_path(home: Path | str) -> Path:
 
 def _warn(message: str) -> None:
     print(f"self-learn: config.yaml ignored — {message}", file=sys.stderr)
+
+
+#: U-seam §3.7.1 — the two config-file rungs of the backend precedence
+#: chain, keyed by surface (finer) then by the flat general key.
+_INVOCATION_SECTION = "invocation"
+
+
+def invocation_backend(home: Path | str, surface: str) -> tuple[str, str] | None:
+    """U-seam §3.7.3 — the registry's rung-3/rung-4 config reader.
+    Returns ``(key, value)`` for the FIRST present key among
+    ``invocation.backend_<surface>`` (rung 3) and ``invocation.backend``
+    (rung 4) -- ``key`` names the exact key that matched, so a caller
+    building an operator-facing warning names the file the operator
+    actually wrote, never a per-surface key that was never present
+    (gate MAJOR-1: the registry used to hardcode ``backend_<surface>``
+    regardless of which rung answered). ``value`` may be ``""`` (`R-a`:
+    an empty string is a valid match -- "no answer", not an unknown
+    value -- the caller decides whether to fall through). ``None`` only
+    when neither key is present, or upstream discipline already fired.
+    Follows :func:`one_motion_enabled`'s discipline case for case:
+    missing file -> ``None`` silent; empty file (YAML loads to ``None``)
+    -> ``None`` silent; unparseable -> ``_warn`` + ``None``; non-mapping
+    top level -> ``_warn`` + ``None``; ``invocation`` section absent ->
+    ``None`` silent; ``invocation`` section present but not a mapping ->
+    ``_warn`` + ``None``; value present but not a ``str`` -> ``_warn`` +
+    ``None``. Does NOT validate the value against the known backend
+    names — that judgement, and its warning, belong to the registry
+    (`R-c`), so there is one place where "unknown means cli" is
+    decided."""
+    path = config_path(home)
+    if not path.is_file():
+        return None
+    try:
+        data = YAML(typ="safe").load(path.read_text(encoding="utf-8"))
+    except (YAMLError, OSError, UnicodeDecodeError) as exc:
+        _warn(f"unparseable ({exc}); invocation backend selection ignored")
+        return None
+    if data is None:
+        return None
+    if not isinstance(data, dict):
+        _warn(
+            f"top level must be a mapping, got {type(data).__name__}; "
+            "invocation backend selection ignored"
+        )
+        return None
+    section = data.get(_INVOCATION_SECTION)
+    if section is None:
+        return None
+    if not isinstance(section, dict):
+        _warn(
+            f"{_INVOCATION_SECTION} must be a mapping, got {section!r}; "
+            "invocation backend selection ignored"
+        )
+        return None
+    for key in (f"backend_{surface}", "backend"):
+        if key not in section:
+            continue
+        value = section[key]
+        if not isinstance(value, str):
+            _warn(
+                f"{_INVOCATION_SECTION}.{key} must be a string, got {value!r}; "
+                "invocation backend selection ignored"
+            )
+            return None
+        return (key, value)
+    return None
 
 
 def one_motion_enabled(home: Path | str, destination: str) -> bool:
