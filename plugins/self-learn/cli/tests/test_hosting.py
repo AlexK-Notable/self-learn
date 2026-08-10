@@ -789,7 +789,12 @@ class TestCacheAndSentinel:
 
 
 class TestWorkerContainment:
-    def test_write_permission_rules_new_layout_only(self, env):
+    def test_write_permission_rules_new_layout_only(self, env, monkeypatch):
+        """U-attrib (CP8, §3.5 bucket 3): subject changes from "the batch
+        grant" to "GR-c's preserved fallback" — `write_permission_rules`
+        no longer describes what the batch invocation is granted BY
+        DEFAULT (`stage_permission_rules` does, GR-b); it survives
+        verbatim as the `SELF_LEARN_STAGE=0` fallback target."""
         rules = worker.write_permission_rules(env.ledger)
         assert rules == [
             f"Edit(/{env.ledger}/skills/**/proposals/**)",
@@ -799,6 +804,13 @@ class TestWorkerContainment:
         # H-3: no rule may open any HOST path to the worker
         assert all(str(env.host) not in rule for rule in rules)
         assert all(".self-learn" not in rule for rule in rules)
+        # GR-c: SELF_LEARN_STAGE=0 makes write_settings_file emit exactly
+        # this fallback list.
+        monkeypatch.setenv("SELF_LEARN_STAGE", "0")
+        monkeypatch.setenv("XDG_CACHE_HOME", str(env.ledger.parent / "xdg-fallback"))
+        settings = worker.write_settings_file(env.ledger)
+        data = json.loads(settings.read_text(encoding="utf-8"))
+        assert data["permissions"]["allow"] == rules
 
     def test_package_skill_refs_resolves_to_shipped_references(self):
         refs = worker.package_skill_refs()
@@ -808,12 +820,21 @@ class TestWorkerContainment:
         assert (refs / "mining-rubric.md").is_file()
 
     def test_settings_file_carries_the_new_rules(self, env, monkeypatch, tmp_path):
+        """U-attrib (CP8, §3.5 bucket 3): the batch allow list becomes
+        Grant-1's ONE stage rule (GR-b) — the settings file still carries
+        `defaultMode` (GR-a, the security hotfix, surviving relocation)."""
         monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg2"))
         settings = worker.write_settings_file(env.ledger)
         data = json.loads(settings.read_text(encoding="utf-8"))
-        assert data["permissions"]["allow"] == worker.write_permission_rules(
+        assert data["permissions"]["allow"] == worker.stage_permission_rules(
             env.ledger
         )
+        assert len(data["permissions"]["allow"]) == 1
+        # no rule may name any ledger path, any host path, or .self-learn
+        for rule in data["permissions"]["allow"]:
+            assert str(env.ledger) not in rule
+            assert str(env.host) not in rule
+            assert ".self-learn" not in rule
         # security hotfix: without an explicit defaultMode, the session
         # inherits the host's global permissions.defaultMode (which may be
         # "bypassPermissions"), voiding every allow-rule above.

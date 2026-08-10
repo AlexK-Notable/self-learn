@@ -131,10 +131,13 @@ def _foreign_script(env, rid: str, data: dict, path: Path | None = None) -> tupl
 
 def _defect_script(env, rid: str, data: dict) -> str:
     """Round-1-shaped output: no record_sha at all (a model never emits
-    one)."""
+    one). U-attrib (Stage-1): this is the model's OWN output (round 1 AND
+    round 2's edit-in-place repair both target it) — it lands in the
+    EXCLUSIVE STAGE, at the SAME path both rounds see, matching GR-d's
+    exact-path repair grant."""
     data = dict(data)
     data.pop("record_sha", None)
-    path = env.proposals / f"{rid}.yaml"
+    path = worker.stage_dir() / f"{rid}.yaml"
     return _write_script(path, _dump(data))
 
 
@@ -642,7 +645,10 @@ def test_a5_setE_classifier_pinned_to_table_e(env, claude_shim):
     path = env.proposals / "lrn-ffffffff.yaml"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(_dump(copy.deepcopy(base)), encoding="utf-8")
-    verdict = worker._check_proposal_file(env.home, path, roster, {})
+    # dest=path: a self-referential (already-at-destination) check, so
+    # the "no pending record" leg fires rather than ST-e's "no batch
+    # record" litter check (a different code path this row is not about).
+    verdict = worker._check_proposal_file(env.home, path, roster, {}, path)
     assert verdict.error is not None
     add("TE20", "INELIGIBLE", "no pending record for", verdict.error)
 
@@ -718,7 +724,8 @@ def test_b1_dry_check_mutates_nothing(env):
     status_before = git(env.home, "status", "--porcelain").stdout
 
     roster = worker.skill_roster(env.home)
-    verdicts = worker._dry_check_batch(env.home, [valid_path, invalid_path], roster)
+    dest_map = {valid_path: valid_path, invalid_path: invalid_path}
+    verdicts = worker._dry_check_batch(env.home, [valid_path, invalid_path], roster, dest_map)
 
     assert valid_path.read_bytes() == before_valid
     assert invalid_path.read_bytes() == before_invalid
@@ -807,8 +814,10 @@ def test_b4_world_mixed_and_repair_prompt_scoped(env, claude_shim, monkeypatch):
     assert claude_shim["count"]() == 2
 
     prompt2 = claude_shim["call_prompt"](2)
-    assert str(env.proposals / f"{r_bad1}.yaml") in prompt2
-    assert str(env.proposals / f"{r_bad2}.yaml") in prompt2
+    # U-attrib (GR-d): the repair round's exact-path grants — and this
+    # prompt's per-file paths — now name STAGED files, not ledger ones.
+    assert str(worker.stage_dir() / f"{r_bad1}.yaml") in prompt2
+    assert str(worker.stage_dir() / f"{r_bad2}.yaml") in prompt2
     assert str(valid_path) not in prompt2
     record1 = _record_for(env, r_bad1)
     record2 = _record_for(env, r_bad2)
@@ -981,12 +990,15 @@ def test_b9_kill_switch_disables_composition(env, claude_shim, monkeypatch):
     assert not worker._p("worker.repair.settings.json").exists()
     assert composer_calls == []
 
-    path = env.proposals / f"{rid}.yaml"
     assert result.status == "failed"
     assert result.proposed == []
     assert result.merge_proposed == []
     assert result.invalid_deleted == [f"{rid}.yaml"]
-    assert result.touched == [path]
+    # U-attrib (Obs-2/OB3's type leg): a discarded STAGED file was never
+    # ledger truth — `_stage_discard` never appends to `touched` (unlike
+    # `_git_rm_or_unlink`'s old ledger-delete shape this line used to
+    # pin) — nothing landed, nothing to stage/commit.
+    assert result.touched == []
     assert result.repair_attempted is False
     assert result.repair_eligible == 0
     assert result.repair_cleared == 0
@@ -1076,7 +1088,7 @@ def test_b11_ineligible_refusals_never_reach_a_model(env, claude_shim, monkeypat
     e7 = seed_pending(env, "lrn-0000e007", created_at="2026-07-29T00:00:00Z")
     r7a = seed_pending(env, "lrn-0000ffff", created_at="2026-07-30T00:00:00Z")
     r7b = seed_pending(env, "lrn-00007777", created_at="2026-07-31T00:00:00Z")
-    merge_path = env.proposals / "merge-00000001.yaml"
+    merge_path = worker.stage_dir() / "merge-00000001.yaml"
     bad_merge = (
         f"cluster_id: merge-00000001\n"
         f"records: [{r7a}, {r7b}]\n"
@@ -1317,7 +1329,11 @@ def test_g6_repair_may_not_rewrite_an_already_valid_proposal(env, claude_shim, m
     # ever loosened).
     tampered = _valid_trace(env)
     tampered["rationale"] = "a rewritten rationale from the repair round"
-    round2 = _write_script(env.proposals / f"{r_valid}.yaml", _dump(tampered))
+    # U-attrib: `r_valid`'s round-1 output is still sitting in the STAGE
+    # at repair time (Install-1 does not run until S8, after the repair
+    # round) — the sibling this fixture tampers with is the staged copy,
+    # not (yet) a ledger path.
+    round2 = _write_script(worker.stage_dir() / f"{r_valid}.yaml", _dump(tampered))
     monkeypatch.setenv("CLAUDE_SHIM_SCRIPT_1", round1)
     monkeypatch.setenv("CLAUDE_SHIM_SCRIPT_2", round2)
     result = worker.run(env.home)
@@ -1471,7 +1487,7 @@ def test_d2_rule_f_positive_control(env, claude_shim, monkeypatch):
     junk["record_sha"] = "sha256:deadbeefdead"  # shape-valid (12 hex), wrong
     _next_run_scripts(
         claude_shim, monkeypatch,
-        _write_script(env.proposals / f"{rid2}.yaml", _dump(junk)),
+        _write_script(worker.stage_dir() / f"{rid2}.yaml", _dump(junk)),
     )
     result2 = worker.run(env.home)
     assert result2.proposed == [rid2]
@@ -1551,7 +1567,10 @@ def test_d5_the_narrowed_repair_scope_is_real(env, claude_shim, monkeypatch):
     assert settings_path.exists()
     settings_data = json.loads(settings_path.read_text(encoding="utf-8"))
     rules = settings_data["permissions"]["allow"]
-    expected_paths = sorted([str(env.proposals / f"{ra}.yaml"), str(env.proposals / f"{rb}.yaml")])
+    # U-attrib (GR-d): E's members are now STAGED paths, not ledger ones.
+    expected_paths = sorted(
+        [str(worker.stage_dir() / f"{ra}.yaml"), str(worker.stage_dir() / f"{rb}.yaml")]
+    )
     assert rules == [f"Edit(/{p})" for p in expected_paths]
     for rule in rules:
         assert rule.startswith("Edit(//")
@@ -1574,7 +1593,7 @@ def test_d6i_f_a_is_enforced(env, claude_shim, monkeypatch):
     bad = _t4_missing_target(env, rid)
     bad["record_sha"] = _stamp_sha(env, rid)  # F-b holds; F-a does not
     monkeypatch.setenv(
-        "CLAUDE_SHIM_SCRIPT_1", _write_script(env.proposals / f"{rid}.yaml", _dump(bad))
+        "CLAUDE_SHIM_SCRIPT_1", _write_script(worker.stage_dir() / f"{rid}.yaml", _dump(bad))
     )
     result = worker.run(env.home)
     assert not (env.proposals / f"{rid}.yaml").exists()
@@ -1729,54 +1748,67 @@ def test_d8i_e4_batch_membership(env, claude_shim, monkeypatch):
     result = worker.run(env.home)
 
     prompt2 = claude_shim["call_prompt"](2)
+    # U-attrib (RT5/ST-e): E-4's litter rule is the destination resolver
+    # now — the leftover id never resolves to a batch entry, so it never
+    # even reaches the repair round's eligibility filter, and the
+    # eligible sibling's path in the prompt is the STAGED one.
+    assert str(worker.stage_dir() / f"{leftover_rid}.yaml") not in prompt2
     assert str(env.proposals / f"{leftover_rid}.yaml") not in prompt2
-    assert str(env.proposals / f"{batch_rid}.yaml") in prompt2
+    assert str(worker.stage_dir() / f"{batch_rid}.yaml") in prompt2
     assert f"{leftover_rid}.yaml" in result.invalid_deleted
     assert not (env.proposals / f"{leftover_rid}.yaml").exists()
+    assert not (worker.stage_dir() / f"{leftover_rid}.yaml").exists()
 
 
-def test_d8ii_e5_unstamped(env, claude_shim, monkeypatch):
-    """D8(ii) — E-5: an invalid, `gates.`-refused proposal for a BATCH
-    record carries a MATCHING `record_sha` (the measured attended-edit
-    shape — a stamp survives, the body does not). Its path appears in NO
-    repair prompt and it is deleted with today's line."""
+def test_d8ii_e5_retired_a_matching_sha_is_now_repair_eligible(env, claude_shim, monkeypatch):
+    """D8(ii) — RETIRED, and INVERTED (U-attrib §3.5 bucket 3: replaced by
+    `RT4`/`IN3` in test_attrib.py). U-repair's E-5 excluded a staged file
+    carrying a MATCHING `record_sha` from repair eligibility, reading it
+    as "somebody's unstamped draft" (the copy-the-sha-you-found shape).
+    Under U-attrib no staged file can EVER be an attended draft — the
+    stage is the model's exclusive namespace — so that exclusion is not a
+    safety net here, it is a silent narrowing: a model that happens to
+    echo a correct `record_sha` into its own INVALID output would lose
+    its repair round for no reason (`RT4`). This test pins the INVERTED
+    behaviour so the retirement is verified, not a silently-surviving
+    no-op: the identical fixture is now repair-ELIGIBLE."""
     r_bad = seed_pending(env, "lrn-0000aaaa", created_at="2026-07-01T00:00:00Z")
-    r_stamped_invalid = seed_pending(env, "lrn-0000bbbb", created_at="2026-07-02T00:00:00Z")
-    stamped_invalid = _t4_missing_target(env, r_stamped_invalid)
-    stamped_invalid["record_sha"] = _stamp_sha(env, r_stamped_invalid)
+    r_matching_sha = seed_pending(env, "lrn-0000bbbb", created_at="2026-07-02T00:00:00Z")
+    matching_sha_invalid = _t4_missing_target(env, r_matching_sha)
+    matching_sha_invalid["record_sha"] = _stamp_sha(env, r_matching_sha)
     round1 = "\n".join([
         _defect_script(env, r_bad, _t4_missing_target(env, r_bad)),
-        _write_script(env.proposals / f"{r_stamped_invalid}.yaml", _dump(stamped_invalid)),
+        _write_script(worker.stage_dir() / f"{r_matching_sha}.yaml", _dump(matching_sha_invalid)),
     ])
     monkeypatch.setenv("CLAUDE_SHIM_SCRIPT_1", round1)
+    fixed = _t4_target_fixed(env, r_matching_sha)
     monkeypatch.setenv(
-        "CLAUDE_SHIM_SCRIPT_2", _defect_script(env, r_bad, _t4_target_fixed(env, r_bad))
+        "CLAUDE_SHIM_SCRIPT_2",
+        "\n".join([
+            _defect_script(env, r_bad, _t4_target_fixed(env, r_bad)),
+            _defect_script(env, r_matching_sha, fixed),
+        ]),
     )
     result = worker.run(env.home)
 
     prompt2 = claude_shim["call_prompt"](2)
-    assert str(env.proposals / f"{r_stamped_invalid}.yaml") not in prompt2
-    assert f"{r_stamped_invalid}.yaml" in result.invalid_deleted
-    assert not (env.proposals / f"{r_stamped_invalid}.yaml").exists()
+    assert str(worker.stage_dir() / f"{r_matching_sha}.yaml") in prompt2
+    assert r_matching_sha in result.proposed
 
 
-def test_d8iii_the_residual_is_specified_not_accidental(env, claude_shim, monkeypatch):
-    """D8(iii) — the positive control: an invalid, `gates.`-refused,
-    UNSTAMPED proposal for a batch record IS repairable — its path DOES
-    appear in the repair prompt. Indistinguishable from model output at
-    this seam (§7.3) — a decision, not a bug. Without this leg, a filter
-    tight enough to empty E always would pass D8(i)/(ii) while disabling
-    the repair round entirely."""
-    rid = seed_pending(env)
-    monkeypatch.setenv(
-        "CLAUDE_SHIM_SCRIPT_1", _defect_script(env, rid, _t4_missing_target(env, rid))
-    )
-    monkeypatch.setenv(
-        "CLAUDE_SHIM_SCRIPT_2", _defect_script(env, rid, _t4_target_fixed(env, rid))
-    )
-    worker.run(env.home)
-    prompt2 = claude_shim["call_prompt"](2)
-    assert str(env.proposals / f"{rid}.yaml") in prompt2
+# D8(iii) — RETIRED and INVERTED (U-attrib §3.5 bucket 3). U-repair's
+# pinned residual was "a never-validated ATTENDED proposal for a batch
+# record is repair-eligible" — indistinguishable from model output at
+# the shared-namespace seam, and a decision U-repair accepted rather than
+# fixed. Under Stage-1 the seam is gone: an attended write lives in the
+# LEDGER, never the stage, so it structurally cannot reach the repair
+# round at all. The OLD positive control here (an ordinary staged defect
+# IS repairable) is not a meaningful test of THIS retirement — it is now
+# just RT5/ordinary repair-round coverage, already exercised by B3/B4/B8
+# and friends. The retirement itself — the INVERTED claim, that a
+# never-validated ATTENDED proposal is now NEVER repair-eligible — is
+# `RT3` in test_attrib.py, with its own fixture (a concurrent-producer
+# write, never a shim_writes/_defect_script one).
 
 
 def test_d9_a_hook_proposal_is_never_foreign(env, claude_shim, monkeypatch):
@@ -1793,12 +1825,17 @@ def test_d9_a_hook_proposal_is_never_foreign(env, claude_shim, monkeypatch):
     hook_data.update(hook_proposal_fields())
     hook_data["record_sha"] = _stamp_sha(env, rid)
     hook_data["script"] = "#!/bin/sh\necho model-authored-script\n"
-    path = env.proposals / f"{rid}.yaml"
-    monkeypatch.setenv("CLAUDE_SHIM_SCRIPT_1", _write_script(path, _dump(hook_data)))
+    staged_path = worker.stage_dir() / f"{rid}.yaml"
+    monkeypatch.setenv("CLAUDE_SHIM_SCRIPT_1", _write_script(staged_path, _dump(hook_data)))
     result = worker.run(env.home)
 
     assert rid in result.proposed
     assert rid not in result.foreign_left
+    # the STAGED copy is consumed by the install (Install-1) — read the
+    # LANDED ledger copy (RT8(a): IN9's removal of the shipped `Φ` skip
+    # means this — a valid staged file — is installed and stamped like
+    # any other, hook or not).
+    path = env.proposals / f"{rid}.yaml"
     landed = YAML(typ="safe").load(path.read_text(encoding="utf-8"))
     from self_learn import ledger_ops as _ledger_ops
 
@@ -2216,8 +2253,10 @@ def test_h1_the_exit_code_contract(env, claude_shim, monkeypatch, capsys):
     assert cli.main(["worker", "run"]) == 0  # idle — nothing eligible
 
     rid2 = seed_pending(env, "lrn-0000bbbb", created_at="2026-07-02T00:00:00Z")
+    bad2 = worker.stage_dir() / f"{rid2}.yaml"
     monkeypatch.setenv(
-        "CLAUDE_SHIM_SCRIPT", "printf 'destination: bogus\\n' > " + str(env.proposals / f"{rid2}.yaml")
+        "CLAUDE_SHIM_SCRIPT",
+        f"mkdir -p {bad2.parent} && printf 'destination: bogus\\n' > {bad2}",
     )
     assert cli.main(["worker", "run"]) == 1  # failed
 
@@ -2244,8 +2283,10 @@ def test_h3_the_five_existing_log_lines_are_byte_stable(env, claude_shim, monkey
     assert "run: ok — 1 proposal(s), 0 merge, 0 invalid deleted" in log_text
 
     rid2 = seed_pending(env, "lrn-0000bbbb", created_at="2026-07-02T00:00:00Z")
+    bad2 = worker.stage_dir() / f"{rid2}.yaml"
     monkeypatch.setenv(
-        "CLAUDE_SHIM_SCRIPT", "printf 'destination: bogus\\n' > " + str(env.proposals / f"{rid2}.yaml")
+        "CLAUDE_SHIM_SCRIPT",
+        f"mkdir -p {bad2.parent} && printf 'destination: bogus\\n' > {bad2}",
     )
     worker.run(env.home)
     log_text = (worker.cache_dir() / "worker.log").read_text(encoding="utf-8")

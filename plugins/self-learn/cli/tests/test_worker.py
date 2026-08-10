@@ -325,9 +325,15 @@ def seed_pending(env, rid="lrn-0000aaaa", created_at=None):
 
 
 def shim_writes(env, rid) -> str:
-    path = env.proposals / f"{rid}.yaml"
+    """U-attrib (Stage-1): THE shim helper every bucket-2 relocation
+    depends on (spec §3.5's predicate) — the model's own output now
+    lands in the EXCLUSIVE STAGE, never directly in a bucket's
+    ``proposals/``. Callers that assert on the LANDED proposal still read
+    it from ``env.proposals`` (unchanged) — only where the shim WRITES
+    it moves."""
+    path = worker.stage_dir() / f"{rid}.yaml"
     return (
-        f"mkdir -p {env.proposals} && cat > {path} <<'YAML'\n{_proposal_yaml(env)}YAML"
+        f"mkdir -p {path.parent} && cat > {path} <<'YAML'\n{_proposal_yaml(env)}YAML"
     )
 
 
@@ -511,14 +517,13 @@ def test_run_argv_pins(env, claude_shim, monkeypatch):
     rules = json.loads(Path(settings_path).read_text(encoding="utf-8"))[
         "permissions"
     ]["allow"]
-    # live-verified rule family: Edit(...) governs Write; Write(...) rules
-    # match nothing on the live CLI (T13-start check, 2026-07-15).
-    # doc 13: three ledger-scoped proposals dirs, no host path reachable.
-    assert rules == [
-        f"Edit(/{env.home}/skills/**/proposals/**)",
-        f"Edit(/{env.home}/projects/**/proposals/**)",
-        f"Edit(/{env.home}/user/proposals/**)",
-    ]
+    # U-attrib Grant-1 (GR-b, §3.5 bucket 3 — F1's relocation): the batch
+    # invocation is granted the STAGE and nothing else. The three ledger
+    # globs this test used to assert are GONE; GR2 is the dedicated
+    # criterion (test_attrib.py) but F1 itself must not keep asserting a
+    # scope this build removed.
+    assert rules == worker.stage_permission_rules(env.home)
+    assert len(rules) == 1
     for rule in rules:  # // prefix = filesystem-absolute in rule syntax
         assert rule.startswith("Edit(//")
     assert argv[argv.index("--model") + 1] == "claude-sonnet-5"
@@ -547,14 +552,14 @@ def test_run_idle_when_nothing_eligible(env, claude_shim):
 
 def test_run_invalid_output_deleted_and_run_fails(env, claude_shim, monkeypatch):
     rid = seed_pending(env)
-    bad = env.proposals / f"{rid}.yaml"
+    bad = worker.stage_dir() / f"{rid}.yaml"
     monkeypatch.setenv(
         "CLAUDE_SHIM_SCRIPT",
-        f"mkdir -p {env.proposals} && printf 'destination: bogus\\n' > {bad}",
+        f"mkdir -p {bad.parent} && printf 'destination: bogus\\n' > {bad}",
     )
     result = worker.run(env.home)
     assert result.status == "failed"
-    assert not bad.exists()  # deleted (unattended policy)
+    assert not bad.exists()  # deleted from the stage (unattended policy)
     assert result.invalid_deleted == [f"{rid}.yaml"]
     assert not (worker.cache_dir() / "worker.last-run").exists()
 
@@ -563,7 +568,7 @@ def test_run_partial_success(env, claude_shim, monkeypatch):
     ra = seed_pending(env, "lrn-0000aaaa", created_at="2026-07-01T00:00:00Z")
     rb = seed_pending(env, "lrn-0000bbbb", created_at="2026-07-02T00:00:00Z")
     good = shim_writes(env, ra)
-    bad = f"printf 'destination: bogus\\n' > {env.proposals}/{rb}.yaml"
+    bad = f"printf 'destination: bogus\\n' > {worker.stage_dir()}/{rb}.yaml"
     monkeypatch.setenv("CLAUDE_SHIM_SCRIPT", f"{good}\n{bad}")
     result = worker.run(env.home)
     assert result.status == "ok"  # partial success succeeds (pinned)
@@ -1218,15 +1223,19 @@ def test_merge_output_without_shas_survives_and_is_stamped(env, claude_shim, mon
     spec-compliant merge proposal.)"""
     seed_pending(env, "lrn-0000aaaa", created_at="2026-07-01T00:00:00Z")
     seed_pending(env, "lrn-0000bbbb", created_at="2026-07-02T00:00:00Z")
-    merge_path = env.proposals / "merge-0000cccc.yaml"
+    staged_merge = worker.stage_dir() / "merge-0000cccc.yaml"
     script = (
         f"{shim_writes(env, 'lrn-0000aaaa')}\n"
-        f"cat > {merge_path} <<'YAML'\n{MERGE_NO_SHAS}YAML"
+        f"mkdir -p {staged_merge.parent} && cat > {staged_merge} <<'YAML'\n{MERGE_NO_SHAS}YAML"
     )
     monkeypatch.setenv("CLAUDE_SHIM_SCRIPT", script)
     result = worker.run(env.home)
     assert result.status == "ok"
     assert result.merge_proposed == ["merge-0000cccc"]
+    # the STAGED copy is consumed by the install (Install-1) — read the
+    # LANDED ledger copy instead (ST-e resolves it to env.proposals since
+    # its first member, lrn-0000aaaa, is in env.bucket).
+    merge_path = env.proposals / "merge-0000cccc.yaml"
     text = merge_path.read_text(encoding="utf-8")
     assert text.count("sha256:") == 2  # CLI-stamped, one per member
     # merges count as proposals in the event (deep-link target exists)
@@ -1242,8 +1251,8 @@ def test_merge_output_without_shas_survives_and_is_stamped(env, claude_shim, mon
 
 def test_unexpected_artifacts_deleted_never_published(env, claude_shim, monkeypatch):
     rid = seed_pending(env)
-    sub = env.proposals / "sub"
-    junk = env.proposals / "notes.txt"
+    sub = worker.stage_dir() / "sub"
+    junk = worker.stage_dir() / "notes.txt"
     script = (
         f"{shim_writes(env, rid)}\n"
         f"mkdir -p {sub} && printf 'x: 1\\n' > {sub}/sneaky.yaml\n"
@@ -1252,10 +1261,17 @@ def test_unexpected_artifacts_deleted_never_published(env, claude_shim, monkeypa
     monkeypatch.setenv("CLAUDE_SHIM_SCRIPT", script)
     result = worker.run(env.home)
     assert result.status == "ok"
-    assert not (sub / "sneaky.yaml").exists()
+    # the FLAT junk file is discoverable (ST-b) and refused/deleted from
+    # the stage exactly as before.
     assert not junk.exists()
-    assert "sneaky.yaml" in result.invalid_deleted
     assert "notes.txt" in result.invalid_deleted
+    # ST-b: the stage is FLAT — a subdirectory write is now structurally
+    # unreachable by `staged_paths()`'s discovery (never a recursive
+    # walk), so it never reaches any bucket's proposals/ — the property
+    # this test's own name asserts. It is inert litter, cleared by the
+    # NEXT run's `stage_reset`, not this one's `_check_proposal_file`.
+    assert not (env.proposals / "sneaky.yaml").exists()
+    assert "sneaky.yaml" not in result.proposed
 
 
 def test_secret_bearing_proposal_deleted(env, claude_shim, monkeypatch):
@@ -1264,14 +1280,15 @@ def test_secret_bearing_proposal_deleted(env, claude_shim, monkeypatch):
         'rationale: "shim-written proposal"',
         'rationale: "use password = hunter2secret9 for this"',
     )
-    path = env.proposals / f"{rid}.yaml"
+    path = worker.stage_dir() / f"{rid}.yaml"
     monkeypatch.setenv(
         "CLAUDE_SHIM_SCRIPT",
-        f"mkdir -p {env.proposals} && cat > {path} <<'YAML'\n{bad}YAML",
+        f"mkdir -p {path.parent} && cat > {path} <<'YAML'\n{bad}YAML",
     )
     result = worker.run(env.home)
     assert result.status == "failed"
-    assert not path.exists()  # never reaches autosync
+    assert not path.exists()  # deleted from the stage — never reaches autosync
+    assert not (env.proposals / f"{rid}.yaml").exists()  # never installed
 
 
 def test_run_releases_owned_sentinel_and_respects_other_holder(env, claude_shim):

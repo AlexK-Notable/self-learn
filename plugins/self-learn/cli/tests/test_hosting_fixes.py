@@ -411,9 +411,10 @@ class TestWorkerCommits:
     def _shim_writes_proposal(self, env, monkeypatch, rid):
         proposals = env.ledger / "skills" / "s" / "proposals"
         path = proposals / f"{rid}.yaml"
+        staged_path = worker.stage_dir() / f"{rid}.yaml"
         monkeypatch.setenv(
             "CLAUDE_SHIM_SCRIPT",
-            f"mkdir -p {proposals} && cat > {path} <<'YAML'\n{_proposal_yaml(env)}YAML",
+            f"mkdir -p {worker.stage_dir()} && cat > {staged_path} <<'YAML'\n{_proposal_yaml(env)}YAML",
         )
         return path
 
