@@ -1057,7 +1057,11 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "ruamel-yaml", specifier = ">=0.18" }]
+requires-dist = [
+    { name = "claude-agent-sdk", marker = "extra == 'sdk'", specifier = ">=0.2.116,<0.3" },
+    { name = "ruamel-yaml", specifier = ">=0.18" },
+]
+provides-extras = ["sdk"]
 
 [package.metadata.requires-dev]
 dev = [{ name = "pytest", specifier = ">=8.0" }]
