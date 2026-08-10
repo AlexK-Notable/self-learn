@@ -82,6 +82,7 @@ from .compilers import (
     compile_managed_text,
     reference_target_path,
 )
+from .compilers import surface_names_target as _surface_names_target
 from .hosts import HostsError, hosts_path, load_hosts, skill_dir_for
 from .ledger import Bucket, discover_buckets, home_state, home_state_message
 from .ledger_ops import (
@@ -319,49 +320,6 @@ def _loaded_surface(home: Path, bucket: Bucket, record: Record) -> list[Path]:
     if record.scope == "user":
         return [DEFAULT_USER_CLAUDE_MD.expanduser()]
     return []
-
-
-#: §2.1 step 2: a token is delimited by whitespace or by any of these
-#: bracket/quote characters — never consumed into the match.
-_TOKEN_DELIMS = r"\s()\[\]<>\"'`"
-
-
-def _surface_names_target(surface: Path, target: Path) -> bool:
-    """The reachability predicate (§2.1): does ``surface`` contain a path
-    TOKEN that RESOLVES to ``target``? Pure text + path arithmetic, no
-    globbing — the whole file is searched, not just a managed section (the
-    home-assistant ``SKILL.md`` this unit exists for has no managed
-    section at all).
-
-    Step 2 is LEFT-MAXIMAL and anchored on the basename: for every
-    occurrence of ``target.name`` in the text, the token extends
-    LEFTWARD ONLY over non-delimiter characters and ENDS at the basename —
-    nothing to its right is ever consumed. This is normative, and the two
-    readings differ: a both-directions-maximal tokenizer rejects
-    ``see references/LEARNINGS.md.`` (a sentence-final period, the
-    commonest hand-written pointer shape); the anchored reading here
-    accepts it, and adds no false positives (``myLEARNINGS.md`` still
-    yields a token that fails the resolve-and-compare below).
-
-    Steps 3-4 are the half that matters: a bare basename match would pass
-    on some OTHER same-named file. Each candidate token is expanduser'd;
-    an absolute token is used as-is, else resolved against
-    ``surface.parent`` (the token is read as the AUTHOR meant it — a
-    relative pointer written in the surface file, relative to that file);
-    a match requires the resolved candidate to equal ``target.resolve()``
-    exactly (criterion 8b: comparing against an UNRESOLVED target breaks
-    the moment the registered skills root is reached through a symlink)."""
-    if not surface.is_file():
-        return False
-    text = surface.read_text(encoding="utf-8")
-    pattern = re.compile(f"[^{_TOKEN_DELIMS}]*" + re.escape(target.name))
-    resolved_target = target.resolve()
-    for match in pattern.finditer(text):
-        token = Path(match.group(0)).expanduser()
-        candidate = token if token.is_absolute() else surface.parent / token
-        if candidate.resolve() == resolved_target:
-            return True
-    return False
 
 
 def _check_reach(home: Path) -> tuple[bool, str]:
