@@ -462,6 +462,43 @@ class TestNearMissDrill:
         assert row.promotable is False
         assert row.draft_line is None
 
+    def test_cursor_key_is_inert_to_the_drill_row(self):
+        """U-cursorhold B3 leg (ii): the miner's added `cursor` field
+        (O-1 — held/advanced-halted/advanced-unmatched) is invisible to
+        the UI. `_build_near_miss_rows` reads only disposition/
+        promotable/reason/snippet/record, so a cap-refused outcome
+        carrying `cursor` yields an identical NearMissRow to the same
+        entry without it."""
+        base_outcome = {
+            "origin": "transcript:sess-a#L10",
+            "outcome": "dropped-cap",
+            "disposition": "cap-refused",
+            "reason": "a real lesson, but this run had already landed its cap",
+            "promotable": True,
+            "snippet": {
+                "type": "behavior",
+                "trigger": "About to rm -rf the wrong dir",
+                "instruction": "Double check pwd first",
+            },
+        }
+        with_cursor = dict(base_outcome, cursor="held")
+        model_with = build_front_model(
+            EMPTY_LIST, _status(), _report(),
+            _mine(runs=[self._run(outcomes=[with_cursor])]),
+            sentinel_mtime=None, now=NOW,
+        )
+        model_without = build_front_model(
+            EMPTY_LIST, _status(), _report(),
+            _mine(runs=[self._run(outcomes=[base_outcome])]),
+            sentinel_mtime=None, now=NOW,
+        )
+        (row_with,) = model_with.miner.near_miss_rows
+        (row_without,) = model_without.miner.near_miss_rows
+        assert row_with == row_without
+        assert row_with.badge.kind == "cap-refused"
+        assert row_with.promotable is True
+        assert row_with.draft_line == "About to rm -rf the wrong dir — Double check pwd first"
+
     def test_canaries_absent_when_none_planted(self):
         model = build_front_model(
             EMPTY_LIST, _status(), _report(), _mine(), sentinel_mtime=None, now=NOW
