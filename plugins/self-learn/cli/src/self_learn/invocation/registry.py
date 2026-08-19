@@ -55,7 +55,11 @@ def _resolve(surface: str, value: str, *, source: str, is_config: bool) -> Backe
             )
         return _CLI_BACKEND
     if value == "sdk":
-        raise BackendUnavailable(_SDK_UNAVAILABLE_MESSAGE)
+        try:
+            from ..invocation_sdk import SdkBackend
+        except ImportError as exc:
+            raise BackendUnavailable(_SDK_UNAVAILABLE_MESSAGE) from exc
+        return SdkBackend()
     return _CLI_BACKEND
 
 
