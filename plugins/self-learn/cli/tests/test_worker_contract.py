@@ -1794,10 +1794,14 @@ def test_fr4_selector_mapping_does_not_cross_govern(tmp_path, monkeypatch):
 
     monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "sdk")
     assert type(invocation.backend_for("miner-reader", home=home)) is _IndependentCliBackend
-    # U-sdka flipped the analyst's product default to sdk; the scoping
-    # claim (the WORKER selector does not govern the analyst) is now
-    # witnessed by the analyst resolving its OWN default, not cli.
+    # U-sdka flipped the analyst's product default to sdk. The scoping
+    # claim (the WORKER selector does not govern the analyst) needs the
+    # foreign stimulus INVERTED to "cli": a leak would then flip the
+    # analyst to CliBackend and redden, while the correct behavior keeps
+    # its own sdk default. (Stimulus "sdk" would be tautological -- leak
+    # and no-leak both resolve SdkBackend; gate blessing-read catch.)
     from self_learn.invocation_sdk import SdkBackend as _IndependentSdkBackend
+    monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "cli")
     assert type(invocation.backend_for("analyst", home=home)) is _IndependentSdkBackend
 
 

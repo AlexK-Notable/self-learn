@@ -923,10 +923,14 @@ def test_fl3_selector_scoping_both_directions(monkeypatch):
     _clear_backend_env(monkeypatch)
     monkeypatch.setenv(BACKEND_VAR, "sdk")
     assert isinstance(invocation.backend_for("worker"), invocation.CliBackend)
-    # U-sdka flipped the analyst's product default to sdk; the scoping
-    # claim (the MINER selector does not govern the analyst) is now
-    # witnessed by the analyst resolving its OWN default, not cli.
+    # U-sdka flipped the analyst's product default to sdk. The scoping
+    # claim (the MINER selector does not govern the analyst) needs the
+    # foreign stimulus INVERTED to "cli": a leak would then flip the
+    # analyst to CliBackend and redden, while the correct behavior keeps
+    # its own sdk default. (Stimulus "sdk" would be tautological -- leak
+    # and no-leak both resolve SdkBackend; gate blessing-read catch.)
     from self_learn.invocation_sdk import SdkBackend as _SdkBackend
+    monkeypatch.setenv(BACKEND_VAR, "cli")
     assert isinstance(invocation.backend_for("analyst"), _SdkBackend)
 
 
