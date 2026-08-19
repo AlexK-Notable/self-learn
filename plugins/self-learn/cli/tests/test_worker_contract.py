@@ -63,11 +63,16 @@ from test_worker import (  # noqa: F401 -- fixtures resolved by name
 from test_repair import _defect_script, _t4_missing_target, _t4_target_fixed
 from test_invocation_sdk import FAKE_CLI, sdk_absent, sdk_cli_path  # noqa: F401
 
-# Re-anchored 89f8ef7 -> fd694de at the merge train (2026-08-19): the unit
-# built against pre-U-docs/U-sdkr master; both inter-base drifts were
-# verified as those units' gated landings (shims.py +43/0 additive,
-# test_invocation.py CN2 strict_mcp False->True) before moving this ref.
-BASE_COMMIT = "fd694de"
+# Re-anchored twice at merge trains (2026-08-19), each time after verifying
+# every inter-base drift was a sibling unit's gated landing:
+#   89f8ef7 -> fd694de (U-docs/U-sdkr beneath this unit: shims.py +43/0
+#   additive, test_invocation.py CN2 strict_mcp False->True), then
+#   fd694de -> c3b48e7 (U-sdka's flip landing: the conftest analyst pin
+#   9/0, test_invocation/test_invocation_sdk EDITED-8 functions,
+#   fake_claude's analyst scenarios). From c3b48e7 the armor guards
+# FUTURE edits; the historically-sanctioned deltas are verified in the
+# gate records (misc/gates/) and commits 29f5d67 / a0d94a1.
+BASE_COMMIT = "c3b48e7"
 
 # ===================================================================== #
 # Shared plumbing -- the Par-1 backend fixture, the M-c1 capture spy, and
@@ -569,11 +574,11 @@ def _apply_failure_env(kind: str, param: str, *, scratch: Path, monkeypatch) -> 
 # ===================================================================== #
 
 _ARMOR_SHAS = {
-    "plugins/self-learn/cli/tests/conftest.py": "49e0fd2f1c9232d5e9ed6e105e22388aa54bbd53493a7ec7ecc8305ee79224ea",
+    "plugins/self-learn/cli/tests/conftest.py": "7f9fce6fc3819f586e4b13232448316ea93569156916a2b2d0781024414231a7",
     "plugins/self-learn/cli/tests/shims.py": "c4647decf1838f31791100205217858e907c487974deab12d22cc6a535847548",
     "plugins/self-learn/cli/tests/backends.py": "a2ba2d74f117a230740d10e3c9fa67bd30f751ce80ec59667c9136557a906dde",
-    "plugins/self-learn/cli/tests/test_invocation.py": "31f90fa21ee3d7dccf9ec12b42a2f5ef8f970021ec9b4c3523681d3435b9fb54",
-    "plugins/self-learn/cli/tests/test_invocation_sdk.py": "9a3246318c86eec8b049e655e7ffeee5f370b828134cc9b62a1eef64ced8668a",
+    "plugins/self-learn/cli/tests/test_invocation.py": "66dec5d06f807193546535cad5d3bdaf67aa6660a52eb80684428291b00cd62c",
+    "plugins/self-learn/cli/tests/test_invocation_sdk.py": "dd9e046809abc13bcee74af175fb24c4cc068919cbe6cd77d584fec9abf2869e",
     "plugins/self-learn/cli/tests/test_u_fake.py": "72c5010db060a1179a75648ad17a343b8e0bc69e2923f885b3dbe97f3e636a7e",
     "plugins/self-learn/cli/tests/test_worker.py": "39cb1ca0dd6c2dd366c5455da86c875187d884bdee42ac952f558ba3cdbf882a",
     "plugins/self-learn/cli/tests/test_repair.py": "dd0accf9f1315109f93de18adc93d206bea56afc50168a7e1ac7f8d846f91c94",
@@ -665,17 +670,22 @@ def test_su4b_fake_claude_additive_only(tmp_path):
         live_src = inspect.getsource(fn)
         assert hashlib.sha256(live_src.encode("utf-8")).hexdigest() == base_shas[name], name
 
-    # leg 2: the new top-level NAME set is exactly the sanctioned pair.
+    # leg 2: no top-level names beyond base. (Originally asserted the
+    # delta was exactly this unit's sanctioned pair {_scenario_ok_write_real,
+    # _next_invocation}; BASE_COMMIT now includes that growth plus U-sdka's
+    # analyst scenarios, so from here any growth is unsanctioned until a
+    # gated unit re-anchors. The original verification lives at 29f5d67.)
     new_names = cur_func_names - base_func_names
-    assert new_names == {"_scenario_ok_write_real", "_next_invocation"}
+    assert new_names == set()
 
-    # leg 3: SCENARIOS' key set gained exactly one key; every base key
-    # survives bound to its ORIGINAL function (by __name__, not presence).
+    # leg 3: SCENARIOS' key set gained nothing beyond base (post-re-anchor
+    # form; originally "exactly ok_write_real" -- see leg 2's note); every
+    # base key survives bound to its ORIGINAL function (by __name__).
     base_scenarios = base_mod.SCENARIOS
     cur_scenarios = fake_claude_mod.SCENARIOS
     base_keys = set(base_scenarios.keys())
     cur_keys = set(cur_scenarios.keys())
-    assert cur_keys - base_keys == {"ok_write_real"}
+    assert cur_keys - base_keys == set()
     assert base_keys <= cur_keys
     for key in base_keys:
         assert base_scenarios[key].__name__ == cur_scenarios[key].__name__, key
@@ -721,7 +731,7 @@ def test_su4b_fake_claude_additive_only(tmp_path):
     assert set(base_pairs) <= set(cur_pairs)
     for k, v in base_pairs.items():
         assert cur_pairs[k] == v, "a pre-existing SCENARIOS entry changed"
-    assert len(set(cur_pairs) - set(base_pairs)) == 1
+    assert len(set(cur_pairs) - set(base_pairs)) == 0  # post-re-anchor: no growth (was == 1, see leg 2's note)
 
 
 # ===================================================================== #
@@ -1784,7 +1794,11 @@ def test_fr4_selector_mapping_does_not_cross_govern(tmp_path, monkeypatch):
 
     monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "sdk")
     assert type(invocation.backend_for("miner-reader", home=home)) is _IndependentCliBackend
-    assert type(invocation.backend_for("analyst", home=home)) is _IndependentCliBackend
+    # U-sdka flipped the analyst's product default to sdk; the scoping
+    # claim (the WORKER selector does not govern the analyst) is now
+    # witnessed by the analyst resolving its OWN default, not cli.
+    from self_learn.invocation_sdk import SdkBackend as _IndependentSdkBackend
+    assert type(invocation.backend_for("analyst", home=home)) is _IndependentSdkBackend
 
 
 # ===================================================================== #

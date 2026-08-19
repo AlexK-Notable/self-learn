@@ -923,7 +923,11 @@ def test_fl3_selector_scoping_both_directions(monkeypatch):
     _clear_backend_env(monkeypatch)
     monkeypatch.setenv(BACKEND_VAR, "sdk")
     assert isinstance(invocation.backend_for("worker"), invocation.CliBackend)
-    assert isinstance(invocation.backend_for("analyst"), invocation.CliBackend)
+    # U-sdka flipped the analyst's product default to sdk; the scoping
+    # claim (the MINER selector does not govern the analyst) is now
+    # witnessed by the analyst resolving its OWN default, not cli.
+    from self_learn.invocation_sdk import SdkBackend as _SdkBackend
+    assert isinstance(invocation.backend_for("analyst"), _SdkBackend)
 
 
 def test_fl4_no_shipped_assignment_of_backend_var(tmp_path):

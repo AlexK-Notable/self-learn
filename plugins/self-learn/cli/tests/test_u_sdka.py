@@ -63,7 +63,13 @@ _REPO_ROOT = Path(
 #: merged ancestor, never a moving ref (`HEAD` would equal the working
 #: tree once this unit's own edits are committed, which would make every
 #: byte-identity check below trivially, uselessly green).
-_BASE_SHA = "89f8ef7"
+# Re-anchored 89f8ef7 -> 442385d at the merge train (2026-08-19): the unit
+# built against pre-U-docs/U-sdkr/U-sdkw master; every inter-base drift was
+# verified as those units' gated landings (U-sdkr's CN2 strict_mcp witness +
+# reader shim/scenario, U-sdkw's worker contract file + fake scenarios)
+# before moving this ref. 442385d is the master this unit merged onto, so
+# every diff-vs-base below is exactly this unit's own sanctioned delta.
+_BASE_SHA = "442385d"
 
 FAKE_CLI = Path(__file__).parent / "fixtures" / "fake_claude.py"
 
@@ -1568,6 +1574,9 @@ def test_hy3_fake_claude_additions_are_additive():
 
     expected_keys = {name[len("_scenario_") :] for name in _HY3_SCENARIO_SHAS} | {
         "analyst_result", "analyst_blocks",
+        # sibling units' gated additions, merged the same day (U-sdkr's
+        # reader_write, U-sdkw's ok_write_real) -- sanctioned, not ours
+        "reader_write", "ok_write_real",
     }
     assert set(fake_mod.SCENARIOS) == expected_keys
 
