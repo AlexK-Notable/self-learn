@@ -43,6 +43,7 @@ from claude_agent_sdk import (
     PermissionResultDeny,
 )
 
+from self_learn import provider as provider_mod
 from self_learn import worker
 from self_learn.invocation.contract import (
     DEGRADED_WORKER_CONTAINMENT,
@@ -569,17 +570,38 @@ def test_op10_system_prompt_never_none_and_analyst_appends(tmp_path, sdk_cli_pat
     assert kwargs["system_prompt"] == {"type": "preset", "preset": "claude_code", "append": "DOCTRINE X"}
 
 
-def test_op11_model_read_from_argv_including_last_element_edge(tmp_path, sdk_cli_path):
+def test_op11_model_from_provider_not_argv_and_append_system_prompt_last_element_edge(
+    tmp_path, sdk_cli_path
+):
+    """`OP11`, restated by `U-bedrock`'s `IN3`/`Int-1`: `options.model` no
+    longer relays whatever `--model` argv carries -- `worker.build_argv`
+    et al. are not provider-aware and always emit the anthropic alias
+    (`B-1`/§1.1), so a bedrock resolution's model id could never reach
+    the SDK through that channel. `options.model` now equals
+    `provider.model_for(spec.surface, home=home)` UNCONDITIONALLY,
+    independent of argv -- demonstrated here with an argv `--model` value
+    that `options.model` must NOT end up as (the divergent case a
+    same-value comparison could not see). `_read_argv_flag`'s
+    last-argv-element-with-no-value-after-it edge case (`A-4`, never an
+    `IndexError`) still matters -- `--append-system-prompt` is the one
+    flag still read this way post-`U-bedrock` -- so it is re-homed here
+    rather than dropped."""
     home = tmp_path / "op11-home"
     home.mkdir()
-    kwargs = backend_mod.options_kwargs(_spec("worker", home=home, argv=_worker_argv(model="claude-opus-4-5")))
-    assert kwargs["model"] == "claude-opus-4-5"
+    kwargs = backend_mod.options_kwargs(
+        _spec("worker", home=home, argv=_worker_argv(model="claude-opus-4-5"))
+    )
+    assert kwargs["model"] == provider_mod.model_for("worker", home=home)
+    assert kwargs["model"] != "claude-opus-4-5"
 
+    # `A-4`'s edge case, re-homed onto the flag still read via `_read_argv_flag`.
     kwargs2 = backend_mod.options_kwargs(_spec("worker", home=home, argv=["claude", "-p"]))
-    assert kwargs2["model"] is None
+    assert kwargs2["system_prompt"] == {"type": "preset", "preset": "claude_code"}
 
-    kwargs3 = backend_mod.options_kwargs(_spec("worker", home=home, argv=["claude", "-p", "--model"]))
-    assert kwargs3["model"] is None
+    kwargs3 = backend_mod.options_kwargs(
+        _spec("worker", home=home, argv=["claude", "-p", "--append-system-prompt"])
+    )
+    assert kwargs3["system_prompt"] == {"type": "preset", "preset": "claude_code"}
 
 
 def test_op12_settings_writer_called_before_argv_builder(tmp_path, sdk_cli_path):
@@ -602,9 +624,13 @@ def test_op12_settings_writer_called_before_argv_builder(tmp_path, sdk_cli_path)
 
 
 def test_op13_argv_read_set_is_closed(tmp_path, sdk_cli_path):
+    """`OP13`, narrowed by `U-bedrock`'s `IN3`/`Int-1`: `--model` is no
+    longer read from `argv` (`options.model` now comes from
+    `provider.model_for`, see `test_op11_...`), so the closed read set
+    shrinks from two flags to the one still read this way."""
     src = inspect.getsource(backend_mod)
     literals = set(re.findall(r'"(--[A-Za-z0-9-]+)"', src))
-    assert literals == {"--model", "--append-system-prompt"}, literals
+    assert literals == {"--append-system-prompt"}, literals
 
 
 def test_op14_options_kwargs_matches_the_object_the_session_ran_on(tmp_path, sdk_cli_path, monkeypatch):

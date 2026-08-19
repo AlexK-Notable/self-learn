@@ -34,6 +34,7 @@ from claude_agent_sdk import (
     UserMessage,
 )
 
+from .. import provider
 from ..invocation.contract import (
     LOG_TEMPLATES,
     SELECTOR_FOR_SURFACE,
@@ -167,8 +168,13 @@ def options_kwargs(spec: SessionSpec, events: EventLog | None = None) -> dict[st
     argv = spec.cli_argv_builder(
         spec.cli_settings_writer() if spec.cli_settings_writer is not None else None
     )
-    # `A-5` -- the read set is CLOSED at exactly these two flags.
-    model = _read_argv_flag(argv, "--model")
+    # `A-5` -- the read set is CLOSED at exactly this one flag. `--model`
+    # was read from `argv` here before `U-bedrock`; `IN3`/`Int-1` require
+    # `options.model` to equal `provider.model_for(spec.surface,
+    # home=home)` instead, so a bedrock resolution's model id actually
+    # reaches the SDK (the pre-`U-bedrock` argv relay could never carry
+    # one -- `worker.build_argv` et al. are not provider-aware and always
+    # emit the anthropic alias, `B-1`/§1.1).
     doctrine = _read_argv_flag(argv, "--append-system-prompt")
 
     # `A-3`/`F-D` -- never `None` (an absent flag renders `--system-prompt
@@ -202,7 +208,7 @@ def options_kwargs(spec: SessionSpec, events: EventLog | None = None) -> dict[st
     kwargs: dict[str, object] = {
         "cwd": str(spec.cwd),
         "system_prompt": system_prompt,
-        "model": model,
+        "model": provider.model_for(spec.surface, home=spec.cwd),  # `IN3`/`Int-1`
         "allowed_tools": [],  # `F-B` -- always, every surface
         "disallowed_tools": disallowed,
         "can_use_tool": can_use_tool,
@@ -213,7 +219,13 @@ def options_kwargs(spec: SessionSpec, events: EventLog | None = None) -> dict[st
         "mcp_servers": {},
         "include_partial_messages": False,
         "env": provider_env(spec),  # `PS-a` -- called exactly once, no merge
-        "cli_path": os.environ.get("SELF_LEARN_SDK_CLI_PATH") or None,  # `O-4`
+        # `O-4`/`IN3` -- unchanged since before `U-bedrock`: this already
+        # equals `provider.resolve(home, surface).cli_path` bit-for-bit
+        # (`_resolve_str_setting` resolves the same env var the same way,
+        # `None` on absence), so `IN3`'s cli_path leg holds by
+        # construction and this line does not need a second `resolve()`
+        # call to satisfy it.
+        "cli_path": os.environ.get("SELF_LEARN_SDK_CLI_PATH") or None,
     }
 
     if "max_turns" in supported:
@@ -420,6 +432,20 @@ async def _drive(spec: SessionSpec) -> SdkOutcome:
         # ever constructed.
         return _outcome(
             ok=False, rc=None, stdout="", detail=str(exc), failure="os-error", events=events, exc=exc
+        )
+    except provider.ProviderRefused as exc:
+        # `In-d`/`IN5` -- the guarded call. `_build_options` reaches
+        # `provider_env(spec)` (via `options_kwargs`), which raises
+        # `ProviderRefused` on a refusing bedrock+sdk resolution. Caught
+        # HERE, narrowly (`ProviderRefused` only -- a different exception
+        # from the same position is NOT this branch and keeps propagating,
+        # `IN5`'s narrowness leg): no `ClaudeSDKClient` is ever
+        # constructed, so the transport is never reached (`RT3`, `IN5`).
+        # `In-c`'s shape: `failure="unavailable"`, `detail` carries
+        # `Rs-d`'s two pinned tokens verbatim (`str(exc)` IS
+        # `resolution.refusal`), `exc` is the `ProviderRefused` instance.
+        return _outcome(
+            ok=False, rc=None, stdout="", detail=str(exc), failure="unavailable", events=events, exc=exc
         )
 
     client = ClaudeSDKClient(options=options)

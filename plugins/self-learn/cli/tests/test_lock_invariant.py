@@ -577,6 +577,7 @@ _ARGV_FOR = {
     "_cmd_chezmoi_adopt": None,  # A2 §10.5: writes only the dotfiles repo
     # (its OWN git, chezmoi's), never the ledger — no _home_gate either,
     # same reasoning as _cmd_canary/_cmd_prune_memory.
+    "_cmd_doctor": [["doctor", "invocation"]],
     "_cmd_followup": [["followup", "done", "lrn-eeee0001"]],
     "_cmd_host": [
         ["host", "add", "{host}"],

@@ -48,12 +48,37 @@ from pathlib import Path
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
-__all__ = ["CONFIG_BASENAME", "config_path", "invocation_backend", "one_motion_enabled"]
+__all__ = [
+    "CONFIG_BASENAME",
+    "PROVIDER_KEYS",
+    "config_path",
+    "invocation_backend",
+    "one_motion_enabled",
+    "provider_setting",
+    "provider_unknown_keys",
+]
 
 CONFIG_BASENAME = "config.yaml"
 
 #: The section gating S-10's one-motion path for the M3 destinations.
 ONE_MOTION_SECTION = "one_motion_route"
+
+#: U-bedrock `Key-1` -- the closed, whitelisted provider config key set.
+#: Every value here is a NON-SECRET (`K-a`): a region name, a profile
+#: NAME, and model ids are all safe to commit. There is deliberately no
+#: key for an access key, a secret key, a session token, a bearer token,
+#: or any credential file's contents.
+PROVIDER_KEYS = (
+    "name",
+    "bedrock.region",
+    "bedrock.profile",
+    "bedrock.models.worker",
+    "bedrock.models.miner",
+    "bedrock.models.analyst",
+    "bedrock.models.small_fast",
+)
+
+_PROVIDER_SECTION = "provider"
 
 
 def config_path(home: Path | str) -> Path:
@@ -128,6 +153,95 @@ def invocation_backend(home: Path | str, surface: str) -> tuple[str, str] | None
             return None
         return (key, value)
     return None
+
+
+def provider_setting(home: Path | str, key: str) -> tuple[str, str] | None:
+    """U-bedrock `Key-1`/`K-b` -- one reader over the `provider:` section,
+    walking the dotted path of a `PROVIDER_KEYS` member. `key` outside
+    `PROVIDER_KEYS` is a PROGRAMMING error and raises `ValueError` (never
+    operator input). Follows :func:`invocation_backend`'s discipline case
+    for case; the returned first element is `key` itself, verbatim, so a
+    caller can build its own `"config:provider.{key}"` source string.
+    Does NOT validate the value against `PROVIDERS` or any model-id shape
+    -- those judgements belong to `provider.py` and the doctor."""
+    if key not in PROVIDER_KEYS:
+        raise ValueError(f"provider_setting: {key!r} is not in PROVIDER_KEYS")
+    path = config_path(home)
+    if not path.is_file():
+        return None
+    try:
+        data = YAML(typ="safe").load(path.read_text(encoding="utf-8"))
+    except (YAMLError, OSError, UnicodeDecodeError) as exc:
+        _warn(f"unparseable ({exc}); provider.{key} ignored")
+        return None
+    if data is None:
+        return None
+    if not isinstance(data, dict):
+        _warn(
+            f"top level must be a mapping, got {type(data).__name__}; "
+            f"provider.{key} ignored"
+        )
+        return None
+    section = data.get(_PROVIDER_SECTION)
+    if section is None:
+        return None
+
+    segments = key.split(".")
+    node: object = section
+    path_so_far = _PROVIDER_SECTION
+    for segment in segments[:-1]:
+        if not isinstance(node, dict):
+            _warn(f"{path_so_far} must be a mapping, got {node!r}; provider.{key} ignored")
+            return None
+        path_so_far = f"{path_so_far}.{segment}"
+        if segment not in node:
+            return None
+        node = node[segment]
+
+    if not isinstance(node, dict):
+        _warn(f"{path_so_far} must be a mapping, got {node!r}; provider.{key} ignored")
+        return None
+    leaf = segments[-1]
+    if leaf not in node:
+        return None
+    value = node[leaf]
+    if not isinstance(value, str):
+        _warn(f"provider.{key} must be a string, got {value!r}; ignored")
+        return None
+    return (key, value)
+
+
+def _collect_leaf_paths(node: object, prefix: str, out: set) -> None:
+    if isinstance(node, dict):
+        for k, v in node.items():
+            if not isinstance(k, str):
+                continue
+            child_prefix = f"{prefix}.{k}" if prefix else k
+            _collect_leaf_paths(v, child_prefix, out)
+    elif prefix:
+        out.add(prefix)
+
+
+def provider_unknown_keys(home: Path | str) -> list[str]:
+    """U-bedrock `K-c` -- the sorted dotted paths present under
+    `provider:` that are NOT in `PROVIDER_KEYS`, ignoring nothing. Never
+    warns by itself (`K-c`); the doctor renders one WARN row from this
+    list."""
+    path = config_path(home)
+    if not path.is_file():
+        return []
+    try:
+        data = YAML(typ="safe").load(path.read_text(encoding="utf-8"))
+    except (YAMLError, OSError, UnicodeDecodeError):
+        return []
+    if data is None or not isinstance(data, dict):
+        return []
+    section = data.get(_PROVIDER_SECTION)
+    if section is None or not isinstance(section, dict):
+        return []
+    found: set = set()
+    _collect_leaf_paths(section, "", found)
+    return sorted(p for p in found if p not in PROVIDER_KEYS)
 
 
 def one_motion_enabled(home: Path | str, destination: str) -> bool:

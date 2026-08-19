@@ -34,7 +34,7 @@ from pathlib import Path
 from . import report as report_mod
 from . import hosts as hosts_mod
 from . import reconcile as reconcile_mod
-from . import gitops, miner, selfcheck, sentinel, telemetry, verbs, worker
+from . import gitops, miner, provider, selfcheck, sentinel, telemetry, verbs, worker
 from .chezmoi import ChezmoiAbort, ChezmoiError, UserScopeResult
 from .compilers import CompileError, ReferenceResult
 from .import_backlog import import_backlog
@@ -410,6 +410,16 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("push", help="publish pending local commits (pinned retry)")
 
+    doctor_p = sub.add_parser(
+        "doctor",
+        help="read-only diagnostics: invocation (provider/backend config)",
+    )
+    doctor_sub = doctor_p.add_subparsers(dest="doctor_command", metavar="<verb>")
+    doctor_sub.add_parser(
+        "invocation",
+        help="provider/backend switches, model ids, and Bedrock env assembly (U-bedrock)",
+    )
+
     rec = sub.add_parser(
         "reconcile",
         help="commit ledger records/proposals a producer left uncommitted",
@@ -761,6 +771,29 @@ def _cmd_worker(args: argparse.Namespace) -> int:
         return EXIT_OK if result.status in ("ok", "idle") else 1
     print("usage: self-learn worker kick | worker run [--coalesce]", file=sys.stderr)
     return EXIT_USAGE
+
+
+def _cmd_doctor(args: argparse.Namespace) -> int:
+    """`Doc-0` -- a THIN PRINTER. Computes no verdict of its own and
+    calls no probe directly: every verdict comes from
+    :func:`provider.preflight`, the single source of truth. Never home-
+    gated (`_home_gate` guards WRITE surfaces against a missing/
+    uninitialized ledger; this command never writes and must work on a
+    pristine home with no `config.yaml` at all — `Doc-c`)."""
+    if args.doctor_command != "invocation":
+        print("usage: self-learn doctor invocation", file=sys.stderr)
+        return EXIT_USAGE
+    home = resolve_home()
+    rows = provider.preflight(home)
+    failed = False
+    for row in rows:
+        if row.verdict == "FAIL":
+            failed = True
+        print(f"doctor: {row.verdict} {row.name} — {row.detail}")
+    print("doctor: ---")
+    for field, value in provider._handoff_fields(home, rows):
+        print(f"doctor: handoff: {field} = {value}")
+    return 1 if failed else EXIT_OK
 
 
 def _kick_after_capture(*, no_push: bool = False) -> None:
@@ -1911,6 +1944,9 @@ def _main(argv: list[str] | None = None) -> int:
 
     if args.command == "push":
         return _cmd_push()
+
+    if args.command == "doctor":
+        return _cmd_doctor(args)
 
     if args.command == "reconcile":
         return _cmd_reconcile(args)
