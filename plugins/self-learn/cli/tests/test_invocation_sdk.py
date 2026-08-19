@@ -62,7 +62,7 @@ from self_learn.invocation_sdk import provider_env as provider_env_mod
 
 from test_worker import (  # noqa: F401 -- fixtures resolved by name
     Env,
-    claude_shim,
+    claude_cli_shim_worker,
     env,
     seed_pending,
 )
@@ -895,7 +895,7 @@ def test_ch9_every_deny_is_recorded_in_the_sessions_denials(tmp_path, sdk_cli_pa
     assert outcome2.denials == ()
 
 
-def test_ch10_hatch_open_driven_end_to_end_from_the_real_variable(env, claude_shim, monkeypatch, sdk_cli_path):
+def test_ch10_hatch_open_driven_end_to_end_from_the_real_variable(env, claude_cli_shim_worker, monkeypatch, sdk_cli_path):
     """`CH10`'s headline leg -- `MAJOR-2` rebuild. Driven from the REAL
     `SELF_LEARN_ENFORCE_SCOPE` variable through a shimmed `worker.run`,
     observing the charter's ACTUAL verdict (a spy on
@@ -939,7 +939,7 @@ def test_ch10_hatch_open_driven_end_to_end_from_the_real_variable(env, claude_sh
     outcomes.clear()
     result_open = worker.run(env.home)
     assert result_open is not None
-    assert claude_shim["count"]() == 0  # the PATH shim's claude never ran -- the SDK path did
+    assert claude_cli_shim_worker["count"]() == 0  # the PATH shim's claude never ran -- the SDK path did
     assert outcomes, "worker.run never reached the sdk backend"
     assert outcomes[-1].denials == ()  # `MAJOR-2`: the charter's verdict, observed
 
@@ -950,7 +950,7 @@ def test_ch10_hatch_open_driven_end_to_end_from_the_real_variable(env, claude_sh
     outcomes.clear()
     result_closed = worker.run(env.home)
     assert result_closed is not None
-    assert claude_shim["count"]() == 0
+    assert claude_cli_shim_worker["count"]() == 0
     assert outcomes, "worker.run never reached the sdk backend"
     assert len(outcomes[-1].denials) == 1
     assert outcomes[-1].denials[0]["tool"] == "Write"
@@ -1030,7 +1030,7 @@ def test_ch12_the_fence_hatch_changes_only_the_charter(tmp_path):
     assert on["disallowed_tools"] == off["disallowed_tools"]
 
 
-def test_ch13_silence_parity_on_both_hatch_paths(env, claude_shim, monkeypatch, sdk_cli_path):
+def test_ch13_silence_parity_on_both_hatch_paths(env, claude_cli_shim_worker, monkeypatch, sdk_cli_path):
     monkeypatch.setenv("SELF_LEARN_BACKEND", "sdk")
     monkeypatch.setenv("SELF_LEARN_STAGE", "0")
     monkeypatch.setenv("SELF_LEARN_REPAIR", "0")

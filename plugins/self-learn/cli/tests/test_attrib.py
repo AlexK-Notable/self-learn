@@ -48,7 +48,7 @@ from support import commit_all, git, hook_proposal_fields, make_behavior, make_e
 from test_worker import (  # noqa: F401 -- fixtures resolved by name
     PROPOSAL_YAML_TEMPLATE,
     Env,
-    claude_shim,
+    claude_cli_shim_worker,
     env,
     seed_pending,
     shim_writes,
@@ -119,7 +119,7 @@ class _HomeOnly:
 # ===================================================================== #
 
 
-def test_ns1_stage_cleared_at_s1_and_litter_never_lands(env, claude_shim, monkeypatch):
+def test_ns1_stage_cleared_at_s1_and_litter_never_lands(env, claude_cli_shim_worker, monkeypatch):
     """NS1 -- the stage is cleared at S1, and its litter never lands.
     Broken: MA1 (drop the S1 clear) -- a crashed previous run's stale
     proposal would land as if THIS run's model wrote it."""
@@ -180,7 +180,7 @@ def test_ns2_installs_at_resolved_destination_in_the_right_bucket(tmp_path, monk
     assert set(result.buckets) == {"s", "t"}
 
 
-def test_ns3_litter_is_not_output(env, claude_shim, monkeypatch):
+def test_ns3_litter_is_not_output(env, claude_cli_shim_worker, monkeypatch):
     """NS3 -- a staged file with no destination is litter, not output.
     Broken: MA3 (a resolver that falls back to "some bucket" -- a
     single-bucket, end-to-end fixture cannot distinguish that fallback
@@ -378,7 +378,7 @@ def test_gr4_write_permission_rules_preserved_for_the_fallback(env, monkeypatch)
 # ===================================================================== #
 
 
-def test_in1_ordinary_path_absent_destination(env, claude_shim, monkeypatch):
+def test_in1_ordinary_path_absent_destination(env, claude_cli_shim_worker, monkeypatch):
     """IN1 -- IN's positive control, RED-VERIFIED against MA11 (the
     over-tight twin that declines when the destination is absent, making
     every other IN criterion pass while landing nothing)."""
@@ -394,7 +394,7 @@ def test_in1_ordinary_path_absent_destination(env, claude_shim, monkeypatch):
     assert f"{rid}.yaml" in git(env.home, "ls-files").stdout
 
 
-def test_in2_concurrent_write_during_window_is_never_overwritten(env, claude_shim, monkeypatch):
+def test_in2_concurrent_write_during_window_is_never_overwritten(env, claude_cli_shim_worker, monkeypatch):
     """IN2 -- THE FW-84 incident, and MA12 reproduces it (drop I-b's
     byte-identity leg)."""
     rid = seed_pending(env)
@@ -428,7 +428,7 @@ def test_in2_concurrent_write_during_window_is_never_overwritten(env, claude_shi
     assert "carries a matching record_sha — another producer wrote it; left untouched" in log_text
 
 
-def test_in3_pre_window_unstamped_draft_is_not_overwritten(env, claude_shim, monkeypatch):
+def test_in3_pre_window_unstamped_draft_is_not_overwritten(env, claude_cli_shim_worker, monkeypatch):
     """IN3 -- Broken: MA13 (drop I-b's record_sha leg -- the install
     then overwrites an attended draft the worker never even sees)."""
     rid = seed_pending(env)
@@ -448,7 +448,7 @@ def test_in3_pre_window_unstamped_draft_is_not_overwritten(env, claude_shim, mon
     assert "destination is an unstamped draft this run did not write" in log_text
 
 
-def test_in4_stale_stamped_destination_is_overwritten(env, claude_shim, monkeypatch):
+def test_in4_stale_stamped_destination_is_overwritten(env, claude_cli_shim_worker, monkeypatch):
     """IN4 -- Broken: MA14 (require the destination's record_sha to
     MATCH -- declining the single most common eligibility path)."""
     rid = seed_pending(env)
@@ -466,7 +466,7 @@ def test_in4_stale_stamped_destination_is_overwritten(env, claude_shim, monkeypa
     assert read_proposal(dest)["record_sha"] == _stamp_sha(env, rid)
 
 
-def test_in5_a_decline_is_loud_counted_and_non_destructive(env, claude_shim, monkeypatch):
+def test_in5_a_decline_is_loud_counted_and_non_destructive(env, claude_cli_shim_worker, monkeypatch):
     """IN5 -- Broken: MA15 (delete the staged AND the destination on
     decline -- a 'clean up the conflict' edit that converts a refusal
     into the deletion this unit exists to prevent)."""
@@ -513,7 +513,7 @@ def test_in5_a_decline_is_loud_counted_and_non_destructive(env, claude_shim, mon
     assert dest_b not in called
 
 
-def test_in6_declines_do_not_fake_failure_or_success(env, claude_shim, monkeypatch):
+def test_in6_declines_do_not_fake_failure_or_success(env, claude_cli_shim_worker, monkeypatch):
     """IN6 -- Broken: MA16 (count every decline as progress -- a run
     whose only outcome is an abandoned draft blocking the queue then
     reports a successful status, hiding the IN3 residual behind green)."""
@@ -546,7 +546,7 @@ def test_in6_declines_do_not_fake_failure_or_success(env, claude_shim, monkeypat
     dest_b = env.proposals / f"{rid_b}.yaml"
     dest_b.write_text(_dump(_valid_trace(env)), encoding="utf-8")
     commit_all(env.home, "seed unstamped draft")
-    _next_run_scripts(claude_shim, monkeypatch, shim_writes(env, rid_b))
+    _next_run_scripts(claude_cli_shim_worker, monkeypatch, shim_writes(env, rid_b))
     result_b = worker.run(env.home)
 
     assert result_b.status == "failed"
@@ -568,7 +568,7 @@ def test_in7_every_install_happens_under_the_lock(env):
     assert "validate_proposal(" not in src_validate_written
 
 
-def test_in8_interrupted_install_is_recovered_not_stalled_forever(env, claude_shim, monkeypatch):
+def test_in8_interrupted_install_is_recovered_not_stalled_forever(env, claude_cli_shim_worker, monkeypatch):
     """IN8 -- five-part crash fixture. Broken: MA36 (delete the
     destination too on a stamp exception), MA37 (drop I-c), MA38 (read +
     truncate IJ at S1), MA50 (a bare non-atomic write_text onto the
@@ -600,7 +600,7 @@ def test_in8_interrupted_install_is_recovered_not_stalled_forever(env, claude_sh
     # (b) recovery: a fresh staged proposal + a working stamp resumes
     # via I-c.
     monkeypatch.setattr(worker, "stamp_proposal", real_stamp)
-    _next_run_scripts(claude_shim, monkeypatch, shim_writes(env, rid))
+    _next_run_scripts(claude_cli_shim_worker, monkeypatch, shim_writes(env, rid))
     result_b = worker.run(env.home)
 
     assert rid in result_b.proposed
@@ -614,7 +614,7 @@ def test_in8_interrupted_install_is_recovered_not_stalled_forever(env, claude_sh
     dest_c = env.proposals / f"{rid_c}.yaml"
     dest_c.write_text(_dump(_valid_trace(env)), encoding="utf-8")
     commit_all(env.home, "seed unstamped no-entry destination")
-    _next_run_scripts(claude_shim, monkeypatch, shim_writes(env, rid_c))
+    _next_run_scripts(claude_cli_shim_worker, monkeypatch, shim_writes(env, rid_c))
     result_c = worker.run(env.home)
     assert f"{rid_c}.yaml" in result_c.not_installed
     assert rid_c not in result_c.proposed
@@ -625,18 +625,18 @@ def test_in8_interrupted_install_is_recovered_not_stalled_forever(env, claude_sh
     rid_d = seed_pending(env, "lrn-0000dddd")
     dest_d = env.proposals / f"{rid_d}.yaml"
     monkeypatch.setattr(worker, "stamp_proposal", _boom)
-    _next_run_scripts(claude_shim, monkeypatch, shim_writes(env, rid_d))
+    _next_run_scripts(claude_cli_shim_worker, monkeypatch, shim_writes(env, rid_d))
     worker.run(env.home)
     monkeypatch.setattr(worker, "stamp_proposal", real_stamp)
     journal_d = worker._read_install_journal()
     assert dest_d in journal_d
 
-    _next_run_scripts(claude_shim, monkeypatch, None, exits={1: 1})
+    _next_run_scripts(claude_cli_shim_worker, monkeypatch, None, exits={1: 1})
     result_d_fail = worker.run(env.home)
     assert result_d_fail.status == "failed"
     assert dest_d in worker._read_install_journal()
 
-    _next_run_scripts(claude_shim, monkeypatch, shim_writes(env, rid_d))
+    _next_run_scripts(claude_cli_shim_worker, monkeypatch, shim_writes(env, rid_d))
     result_d_recover = worker.run(env.home)
     assert rid_d in result_d_recover.proposed
     assert dest_d not in worker._read_install_journal()
@@ -652,7 +652,7 @@ def test_in8_interrupted_install_is_recovered_not_stalled_forever(env, claude_sh
         raise OSError("simulated os.replace crash")
 
     monkeypatch.setattr(os, "replace", _boom_replace)
-    _next_run_scripts(claude_shim, monkeypatch, shim_writes(env, rid_e))
+    _next_run_scripts(claude_cli_shim_worker, monkeypatch, shim_writes(env, rid_e))
     worker.run(env.home)
 
     assert not dest_e.exists()  # still absent -- the pre-install state
@@ -660,7 +660,7 @@ def test_in8_interrupted_install_is_recovered_not_stalled_forever(env, claude_sh
     assert tmp_e.exists()
 
     monkeypatch.setattr(os, "replace", real_replace)
-    _next_run_scripts(claude_shim, monkeypatch, shim_writes(env, rid_e))
+    _next_run_scripts(claude_cli_shim_worker, monkeypatch, shim_writes(env, rid_e))
     result_e = worker.run(env.home)
 
     assert not tmp_e.exists()  # swept by the NEXT run's pass-1 cleanup
@@ -669,7 +669,7 @@ def test_in8_interrupted_install_is_recovered_not_stalled_forever(env, claude_sh
     assert read_proposal(dest_e).get("record_sha") == _stamp_sha(env, rid_e)
 
 
-def test_in9_matching_record_sha_installed_like_any_other(env, claude_shim, monkeypatch):
+def test_in9_matching_record_sha_installed_like_any_other(env, claude_cli_shim_worker, monkeypatch):
     """IN9 -- Broken: MA39 (keep the shipped `verdict.phi and not
     verdict.is_hook` skip -- the file then silently never lands, never
     stamps, never alarms, EVERY window; D6(i) cannot catch this)."""
@@ -690,7 +690,7 @@ def test_in9_matching_record_sha_installed_like_any_other(env, claude_shim, monk
     assert read_proposal(dest)["record_sha"] == _stamp_sha(env, rid)
 
 
-def test_in10_the_secret_carve_out_survives_on_both_sides(env, claude_shim, monkeypatch):
+def test_in10_the_secret_carve_out_survives_on_both_sides(env, claude_cli_shim_worker, monkeypatch):
     """IN10 -- Broken: MA40 (skip the scan on the foreign pass -- a scan
     hit then reaches the remote through autosync)."""
     rid_a = seed_pending(env, "lrn-0000aaaa")  # (a) staged secret hit.
@@ -722,7 +722,7 @@ def test_in10_the_secret_carve_out_survives_on_both_sides(env, claude_shim, monk
     assert log_text.count("secret scan hit") >= 2
 
 
-def test_in11_the_journal_is_not_an_overwrite_licence(env, claude_shim, monkeypatch):
+def test_in11_the_journal_is_not_an_overwrite_licence(env, claude_cli_shim_worker, monkeypatch):
     """IN11 -- r2 gate BLOCKER 1. Broken: MA49 (journal the destination
     only, with I-c treating it as I-a -- the FW-84 incident re-entering
     through the recovery machinery)."""
@@ -753,7 +753,7 @@ def test_in11_the_journal_is_not_an_overwrite_licence(env, claude_shim, monkeypa
     concurrent_data["record_sha"] = _stamp_sha(env, rid)
     concurrent_text = _dump(concurrent_data)
     script = "\n".join([shim_writes(env, rid), _write_script(dest, concurrent_text)])
-    _next_run_scripts(claude_shim, monkeypatch, script)
+    _next_run_scripts(claude_cli_shim_worker, monkeypatch, script)
     result = worker.run(env.home)
 
     assert dest.read_text(encoding="utf-8") == concurrent_text
@@ -768,12 +768,12 @@ def test_in11_the_journal_is_not_an_overwrite_licence(env, claude_shim, monkeypa
     rid2 = seed_pending(env, "lrn-0000cccc")
     dest2 = env.proposals / f"{rid2}.yaml"
     monkeypatch.setattr(worker, "stamp_proposal", _boom)
-    _next_run_scripts(claude_shim, monkeypatch, shim_writes(env, rid2))
+    _next_run_scripts(claude_cli_shim_worker, monkeypatch, shim_writes(env, rid2))
     worker.run(env.home)
     monkeypatch.setattr(worker, "stamp_proposal", real_stamp)
     assert dest2 in worker._read_install_journal()
 
-    _next_run_scripts(claude_shim, monkeypatch, shim_writes(env, rid2))
+    _next_run_scripts(claude_cli_shim_worker, monkeypatch, shim_writes(env, rid2))
     result2 = worker.run(env.home)
     assert rid2 in result2.proposed
     assert dest2 not in worker._read_install_journal()
@@ -784,7 +784,7 @@ def test_in11_the_journal_is_not_an_overwrite_licence(env, claude_shim, monkeypa
 # ===================================================================== #
 
 
-def test_rt1_written_but_not_yet_validated_during_the_window_is_retired(env, claude_shim, monkeypatch):
+def test_rt1_written_but_not_yet_validated_during_the_window_is_retired(env, claude_cli_shim_worker, monkeypatch):
     """RT1 -- replaces U-repair D1. Broken: MA18 (the candidate set takes
     the ledger's changes back), MA19 (the absent-from-snap0 comparison
     inverts)."""
@@ -823,7 +823,7 @@ def test_rt1_written_but_not_yet_validated_during_the_window_is_retired(env, cla
     attended2["record_sha"] = "sha256:deadbeefcafe"
     attended2_text = _dump(attended2)
     script2 = "\n".join([shim_writes(env, rid2), _write_script(dest2, attended2_text)])
-    _next_run_scripts(claude_shim, monkeypatch, script2)
+    _next_run_scripts(claude_cli_shim_worker, monkeypatch, script2)
     worker.run(env.home)
 
     assert dest2.read_text(encoding="utf-8") == attended2_text
@@ -848,14 +848,14 @@ def test_rt1_written_but_not_yet_validated_during_the_window_is_retired(env, cla
     attended3["record_sha"] = "sha256:deadbeefcafe"
     attended3_text = _dump(attended3)
     script3 = "\n".join([shim_writes(env, rid3), _write_script(dest3, attended3_text)])
-    _next_run_scripts(claude_shim, monkeypatch, script3)
+    _next_run_scripts(claude_cli_shim_worker, monkeypatch, script3)
     worker.run(env.home)
 
     assert dest3.read_text(encoding="utf-8") == attended3_text
     assert not (worker.stage_dir() / f"{rid3}.yaml").exists()
 
 
-def test_rt2_edited_after_validation_caught_mid_edit_is_retired(env, claude_shim, monkeypatch):
+def test_rt2_edited_after_validation_caught_mid_edit_is_retired(env, claude_cli_shim_worker, monkeypatch):
     """RT2 -- replaces U-repair D6(ii)/D6(iii). Broken: MA18 (widens S5's
     candidate set to include ledger paths again -- the mid-edit file is
     then deleted, U-repair's MAJOR 7 cell reopened). Run twice: a plain
@@ -879,7 +879,7 @@ def test_rt2_edited_after_validation_caught_mid_edit_is_retired(env, claude_shim
             shim_writes(env, rid_target),
             _defect_script(env, rid_repair, _t4_missing_target(env, rid_repair)),
         ])
-        base = claude_shim["count"]()
+        base = claude_cli_shim_worker["count"]()
         monkeypatch.setenv(f"CLAUDE_SHIM_SCRIPT_{base + 1}", round1)
         # round 2 (repair): edits the LEDGER destination directly --
         # never the staged path -- leaving it mid-edit and schema-invalid.
@@ -895,7 +895,7 @@ def test_rt2_edited_after_validation_caught_mid_edit_is_retired(env, claude_shim
         assert "repair rewrote a proposal that had already validated" not in log_text
 
 
-def test_rt3_a_never_validated_attended_proposal_is_repair_eligible(env, claude_shim, monkeypatch):
+def test_rt3_a_never_validated_attended_proposal_is_repair_eligible(env, claude_cli_shim_worker, monkeypatch):
     """RT3 -- replaces and INVERTS U-repair D8(iii). U-repair section 7.3
     pinned this file as a residual: handed to a second model under a
     write grant, a successful repair could land and commit it. That
@@ -917,13 +917,13 @@ def test_rt3_a_never_validated_attended_proposal_is_repair_eligible(env, claude_
     result = worker.run(env.home)
 
     assert target_dest.read_text(encoding="utf-8") == attended_text
-    prompt2 = claude_shim["call_prompt"](2)
+    prompt2 = claude_cli_shim_worker["call_prompt"](2)
     assert prompt2, "the repair round did not fire -- nothing to pin"
     assert str(target_dest) not in prompt2
     assert f"{rid_target}.yaml" not in result.invalid_deleted
 
 
-def test_rt4_e5_is_retired_and_nothing_regressed(env, claude_shim, monkeypatch):
+def test_rt4_e5_is_retired_and_nothing_regressed(env, claude_cli_shim_worker, monkeypatch):
     """RT4 -- Broken: MA21 (keep the E-5 clause -- a model that copies a
     record_sha into its own output loses its repair round for no
     reason)."""
@@ -942,7 +942,7 @@ def test_rt4_e5_is_retired_and_nothing_regressed(env, claude_shim, monkeypatch):
 
     result = worker.run(env.home)
 
-    prompt2 = claude_shim["call_prompt"](2)
+    prompt2 = claude_cli_shim_worker["call_prompt"](2)
     assert str(worker.stage_dir() / f"{rid}.yaml") in prompt2
     assert result.repair_eligible == 1
     assert rid in result.proposed
@@ -961,7 +961,7 @@ def test_rt5_e4_survives_as_a_litter_rule_not_a_provenance_rule(env):
     assert worker._repairable("gates.t3.roster_sha: dishonest") != "ELIGIBLE"
 
 
-def test_rt6_no_uncommitted_model_authored_foreign_file(env, claude_shim, monkeypatch):
+def test_rt6_no_uncommitted_model_authored_foreign_file(env, claude_cli_shim_worker, monkeypatch):
     """RT6 -- Broken: MA23 (append declined destinations to `touched` --
     committing bytes the worker did not write)."""
     rid1 = seed_pending(env, "lrn-0000aaaa")
@@ -993,7 +993,7 @@ def test_rt6_no_uncommitted_model_authored_foreign_file(env, claude_shim, monkey
         _write_script(dest2, _dump(concurrent2)),
         commit_script,
     ])
-    _next_run_scripts(claude_shim, monkeypatch, script2)
+    _next_run_scripts(claude_cli_shim_worker, monkeypatch, script2)
     result2 = worker.run(env.home)
 
     assert dest2 not in result2.touched
@@ -1001,7 +1001,7 @@ def test_rt6_no_uncommitted_model_authored_foreign_file(env, claude_shim, monkey
     assert git(env.home, "status", "--porcelain").stdout.strip() == ""
 
 
-def test_rt7_foreign_progress_without_any_staged_output_for_that_record(env, claude_shim, monkeypatch):
+def test_rt7_foreign_progress_without_any_staged_output_for_that_record(env, claude_cli_shim_worker, monkeypatch):
     """RT7 -- r1 gate BLOCKER 2, the world r1 had no criterion for.
     Broken: MA41 (populate foreign_left only from Install-1 declines --
     U-repair's D7 regression, re-introduced by the unit that claimed to
@@ -1030,7 +1030,7 @@ def test_rt7_foreign_progress_without_any_staged_output_for_that_record(env, cla
     assert result.followon is False
 
 
-def test_rt8_no_model_authored_script_reaches_route_foreign_hook_left_alone(env, claude_shim, monkeypatch):
+def test_rt8_no_model_authored_script_reaches_route_foreign_hook_left_alone(env, claude_cli_shim_worker, monkeypatch):
     """RT8 -- replaces U-repair D9. Broken: MA42 (skip the stamp when a
     staged hook proposal's record_sha already matches -- model-authored
     executable bytes then reach `route`, and `stamp_proposal`'s own
@@ -1083,7 +1083,7 @@ def test_rt8_no_model_authored_script_reaches_route_foreign_hook_left_alone(env,
 # ===================================================================== #
 
 
-def test_cp2_seq1_step_identities_and_log_lines_survive(env, claude_shim, monkeypatch):
+def test_cp2_seq1_step_identities_and_log_lines_survive(env, claude_cli_shim_worker, monkeypatch):
     """CP2 -- Broken: MA24 (reword the invalid-output line for staged
     files -- the plausible edit that breaks review.md's and the UI's
     contract)."""
@@ -1111,7 +1111,7 @@ def test_cp2_seq1_step_identities_and_log_lines_survive(env, claude_shim, monkey
     dest_fail.parent.mkdir(parents=True, exist_ok=True)
     dest_fail.write_text(_dump(_valid_trace(env)), encoding="utf-8")
     commit_all(env.home, "seed unstamped draft")
-    _next_run_scripts(claude_shim, monkeypatch, shim_writes(env, rid_fail))
+    _next_run_scripts(claude_cli_shim_worker, monkeypatch, shim_writes(env, rid_fail))
     worker.run(env.home)
     log_text2 = (worker.cache_dir() / "worker.log").read_text(encoding="utf-8")
     assert "run: FAILED — " in log_text2
@@ -1122,13 +1122,13 @@ def test_cp2_seq1_step_identities_and_log_lines_survive(env, claude_shim, monkey
     orphan.write_text(_dump(_valid_trace(env)), encoding="utf-8")
     commit_all(env.home, "seed a tracked orphan proposal")
     rid_last = seed_pending(env, "lrn-0000ffff")
-    _next_run_scripts(claude_shim, monkeypatch, shim_writes(env, rid_last))
+    _next_run_scripts(claude_cli_shim_worker, monkeypatch, shim_writes(env, rid_last))
     worker.run(env.home)
     log_text3 = (worker.cache_dir() / "worker.log").read_text(encoding="utf-8")
     assert "run: orphan proposal lrn-0000dead.yaml swept" in log_text3
 
 
-def test_cp3_repair_round_works_end_to_end_over_staged_paths(env, claude_shim, monkeypatch):
+def test_cp3_repair_round_works_end_to_end_over_staged_paths(env, claude_cli_shim_worker, monkeypatch):
     """CP3 -- Broken: MA25 (E computed over ledger paths -- the exact-
     path grants then name files the model cannot see, and the repair
     round silently repairs nothing while reporting a set)."""
@@ -1146,7 +1146,7 @@ def test_cp3_repair_round_works_end_to_end_over_staged_paths(env, claude_shim, m
     assert rid in result.proposed
 
 
-def test_cp4_the_setj_pin_still_binds(env, claude_shim, monkeypatch):
+def test_cp4_the_setj_pin_still_binds(env, claude_cli_shim_worker, monkeypatch):
     """CP4 -- U-repair G1's fixture, relocated to the stage. Broken:
     MA26 (skip the Set-J comparison for staged paths -- Set-J guards the
     FIRST pass's judgment against the SECOND, both the model's)."""
@@ -1172,7 +1172,7 @@ def test_cp4_the_setj_pin_still_binds(env, claude_shim, monkeypatch):
     assert "gates.t4.depth_behind_rule.answer" in line
 
 
-def test_cp5_containment_derivation_and_deletion_backstop_on_staged_files(env, claude_shim, monkeypatch):
+def test_cp5_containment_derivation_and_deletion_backstop_on_staged_files(env, claude_cli_shim_worker, monkeypatch):
     """CP5 -- four legs, the fourth newly reachable (r1 gate MAJOR 6).
     Broken: MA27 (install before validating, then delete on failure --
     unvalidated bytes briefly land in the ledger)."""
@@ -1216,7 +1216,7 @@ def test_cp5_containment_derivation_and_deletion_backstop_on_staged_files(env, c
     assert "secret scan hit" in line_d
 
 
-def test_cp6_sentinel_reassert_still_happens_g8_unchanged(env, claude_shim, monkeypatch):
+def test_cp6_sentinel_reassert_still_happens_g8_unchanged(env, claude_cli_shim_worker, monkeypatch):
     """CP6 -- U-repair G8, unchanged. Broken: U-repair's M21, which must
     still redden (fully verified by the shipped, bucket-1, unmodified
     `test_repair.py::test_g8_sentinel_reasserted_after_the_last_
@@ -1267,7 +1267,7 @@ def test_cp8_testworkercontainment_asserts_new_containment_and_h3(env):
     assert data["permissions"]["defaultMode"] == "default"
 
 
-def test_cp9_the_merge_happy_path_installs_with_its_record_shas(env, claude_shim, monkeypatch):
+def test_cp9_the_merge_happy_path_installs_with_its_record_shas(env, claude_cli_shim_worker, monkeypatch):
     """CP9 -- r1 gate NOTE 1. Broken: MA43 (install merges by copying
     the staged bytes, like an lrn-* -- record_shas is resolved IN MEMORY
     at S4 and exists nowhere in the staged file, so the byte copy lands
@@ -1297,7 +1297,7 @@ def test_cp9_the_merge_happy_path_installs_with_its_record_shas(env, claude_shim
     assert "merge-0000cccc" in result.merge_proposed
 
 
-def test_cp10_a_repair_that_deletes_its_staged_file_does_not_kill_the_run(env, claude_shim, monkeypatch):
+def test_cp10_a_repair_that_deletes_its_staged_file_does_not_kill_the_run(env, claude_cli_shim_worker, monkeypatch):
     """CP10 -- r1 gate NOTE 1, section 5's lead (c). Broken: MA44 (read
     the post-repair text unguarded -- the exception escapes a
     Popen-detached process: a stack dump, no commit, a dead run)."""
@@ -1319,7 +1319,7 @@ def test_cp10_a_repair_that_deletes_its_staged_file_does_not_kill_the_run(env, c
 # ===================================================================== #
 
 
-def test_sw1_self_learn_stage_0_reverts_the_namespace_end_to_end(env, claude_shim, monkeypatch):
+def test_sw1_self_learn_stage_0_reverts_the_namespace_end_to_end(env, claude_cli_shim_worker, monkeypatch):
     """SW1 -- a FULL run under the switch, not a file assertion. Broken:
     MA45 (the switch gates only the settings file, leaving S3 reading
     the stage -- zero proposals land, SILENTLY, the worst possible
@@ -1353,7 +1353,7 @@ def test_sw1_self_learn_stage_0_reverts_the_namespace_end_to_end(env, claude_shi
     stamped2 = dict(_valid_trace(env))
     stamped2["record_sha"] = _stamp_sha(env, rid2)
     stamped2_text = _dump(stamped2)
-    _next_run_scripts(claude_shim, monkeypatch, _write_script(dest2, stamped2_text))
+    _next_run_scripts(claude_cli_shim_worker, monkeypatch, _write_script(dest2, stamped2_text))
     result2 = worker.run(env.home)
     assert rid2 in result2.foreign_left
     assert dest2.read_text(encoding="utf-8") == stamped2_text
@@ -1373,7 +1373,7 @@ def test_sw1_self_learn_stage_0_reverts_the_namespace_end_to_end(env, claude_shi
     bad = _t4_missing_target(env, rid3)
     fixed = _t4_target_fixed(env, rid3)
     _next_run_scripts(
-        claude_shim,
+        claude_cli_shim_worker,
         monkeypatch,
         _write_script(legacy_defect, _dump(bad)),
         _write_script(legacy_defect, _dump(fixed)),
@@ -1386,7 +1386,7 @@ def test_sw1_self_learn_stage_0_reverts_the_namespace_end_to_end(env, claude_shi
     assert rid3 in result3.proposed
 
 
-def test_sw2_self_learn_enforce_scope_0_reverts_enforcement_and_only_that(env, claude_shim, monkeypatch):
+def test_sw2_self_learn_enforce_scope_0_reverts_enforcement_and_only_that(env, claude_cli_shim_worker, monkeypatch):
     """SW2 -- Broken: MA46 (make SELF_LEARN_STAGE=0 drop defaultMode too
     -- reverting a security-relevant change as an undocumented side
     effect of reverting an unrelated one; section 3.7's deliberate
@@ -1415,7 +1415,7 @@ def test_sw2_self_learn_enforce_scope_0_reverts_enforcement_and_only_that(env, c
 # ===================================================================== #
 
 
-def test_ob1_the_new_lines_exist_with_their_counts(env, claude_shim, monkeypatch):
+def test_ob1_the_new_lines_exist_with_their_counts(env, claude_cli_shim_worker, monkeypatch):
     """OB1 -- Broken: MA29 (emit the stage line with no count)."""
     rid_ok1 = seed_pending(env, "lrn-0000aaaa")
     rid_ok2 = seed_pending(env, "lrn-0000bbbb")
@@ -1465,7 +1465,7 @@ def test_ob1_the_new_lines_exist_with_their_counts(env, claude_shim, monkeypatch
     ) in log_text
 
 
-def test_ob2_the_new_fields_are_populated(env, claude_shim, monkeypatch):
+def test_ob2_the_new_fields_are_populated(env, claude_cli_shim_worker, monkeypatch):
     """OB2 -- Broken: MA30 (never assign foreign_seen, leaving it 0)."""
     rid_ok = seed_pending(env, "lrn-0000aaaa")
     rid_decline = seed_pending(env, "lrn-0000bbbb")
@@ -1492,7 +1492,7 @@ def test_ob2_the_new_fields_are_populated(env, claude_shim, monkeypatch):
     assert result.foreign_seen == 1
 
 
-def test_ob3_existing_fields_keep_their_meaning_touched_keeps_its_type(env, claude_shim, monkeypatch):
+def test_ob3_existing_fields_keep_their_meaning_touched_keeps_its_type(env, claude_cli_shim_worker, monkeypatch):
     """OB3 -- Broken: MA31 (count declines in invalid_deleted -- the one
     thing this field must never be able to say falsely), MA47 (discard
     staged files through _git_rm_or_unlink, which appends to touched)."""
@@ -1528,7 +1528,7 @@ def test_ob3_existing_fields_keep_their_meaning_touched_keeps_its_type(env, clau
         assert not path.is_relative_to(worker.stage_dir())
 
 
-def test_ob4_workers_internals_stay_out_of_operator_surfaces(env, claude_shim, monkeypatch, capsys):
+def test_ob4_workers_internals_stay_out_of_operator_surfaces(env, claude_cli_shim_worker, monkeypatch, capsys):
     """OB4 -- Broken: MA32 (add the counts to _cmd_worker's summary --
     the harmless-looking edit that annexes FW-82's scope in one line)."""
     rid = seed_pending(env)
@@ -1584,7 +1584,7 @@ def test_hy1_no_test_in_the_suite_invokes_a_real_claude(env):
     for fname, lineno, line in hits:
         assert "worker._invoke_claude(" in line, (fname, lineno, line)
 
-    from test_worker import claude_shim as _claude_shim_fixture
+    from test_worker import claude_cli_shim_worker as _claude_shim_fixture
 
     shim_src = inspect.getsource(_claude_shim_fixture)
     assert "claude-invocation-count" in shim_src

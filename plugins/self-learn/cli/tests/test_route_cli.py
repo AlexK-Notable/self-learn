@@ -7,7 +7,6 @@ analyst's `claude` is a PATH shim that records its argv.
 """
 
 import os
-import stat
 import subprocess
 import time
 from pathlib import Path
@@ -19,6 +18,7 @@ from self_learn.analyst import ANALYST_ALLOWED_TOOLS, DEFAULT_ANALYST_MODEL
 from self_learn.ledger_ops import create_record, write_proposal
 from self_learn.normalize import sha_anchor
 from self_learn.records import Record
+from shims import write_analyst_claude_shim
 from support import (
     SKILL_MD_SEED,
     commit_all,
@@ -38,18 +38,6 @@ SKILL_MD = SKILL_MD_SEED.format(name="s")
 # file, package-relative) — it is ALWAYS present, no longer installed into
 # any home. Tests read the shipped text rather than seeding their own.
 DOCTRINE_TEXT = analyst.doctrine_path().read_text(encoding="utf-8")
-
-# argv NUL-separated: args (the doctrine text, the prompt) are multi-line.
-# `pwd -P > "$CLAUDE_SHIM_CWD"` (U-analyst A5): `-P` matters — bash seeds
-# $PWD from the inherited environment, so the plain builtin can report the
-# parent's directory instead of the subprocess's actual one. Inert for
-# every test that doesn't read CLAUDE_SHIM_CWD.
-CLAUDE_SHIM = """#!/usr/bin/env bash
-printf '%s\\0' "$@" > "$CLAUDE_SHIM_LOG"
-pwd -P > "$CLAUDE_SHIM_CWD"
-cat "$CLAUDE_SHIM_OUT"
-exit "${CLAUDE_SHIM_EXIT-0}"
-"""
 
 TEACH_ARGS = [
     "teach",
@@ -155,15 +143,13 @@ def env(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def claude_shim(tmp_path, monkeypatch):
+def claude_cli_shim_analyst(tmp_path, monkeypatch):
     """PATH-shimmed fake `claude`: records argv (one arg per line) to
     CLAUDE_SHIM_LOG, its resolved cwd (`pwd -P`) to CLAUDE_SHIM_CWD, and
     emits CLAUDE_SHIM_OUT on stdout."""
     shim_dir = tmp_path / "shim-bin"
     shim_dir.mkdir()
-    shim = shim_dir / "claude"
-    shim.write_text(CLAUDE_SHIM, encoding="utf-8")
-    shim.chmod(shim.stat().st_mode | stat.S_IXUSR)
+    write_analyst_claude_shim(shim_dir)
     log = tmp_path / "claude-shim-argv.log"
     cwd_log = tmp_path / "claude-shim-cwd.log"
     out = tmp_path / "claude-shim-stdout.txt"
@@ -277,8 +263,8 @@ def test_teach_route_no_push_then_push(env, capsys):
 # --------------------------------------------- teach --route (analyst path)
 
 
-def test_teach_route_analyst_routes_to_shim_destination(env, claude_shim, capsys):
-    claude_shim["out"].write_text(
+def test_teach_route_analyst_routes_to_shim_destination(env, claude_cli_shim_analyst, capsys):
+    claude_cli_shim_analyst["out"].write_text(
         "```yaml\n"
         "destination: skill-md\n"
         "alternates: [claude-md]\n"
@@ -300,7 +286,7 @@ def test_teach_route_analyst_routes_to_shim_destination(env, claude_shim, capsys
 
     # The recorded invocation: doctrine as system prompt, restricted tools,
     # pinned default model, record content riding the prompt.
-    argv = claude_shim["log"].read_text(encoding="utf-8").split("\0")[:-1]
+    argv = claude_cli_shim_analyst["log"].read_text(encoding="utf-8").split("\0")[:-1]
     assert "-p" in argv
     assert argv[argv.index("--append-system-prompt") + 1] == DOCTRINE_TEXT
     assert argv[argv.index("--model") + 1] == DEFAULT_ANALYST_MODEL
@@ -313,7 +299,7 @@ def test_teach_route_analyst_routes_to_shim_destination(env, claude_shim, capsys
     assert "About to edit .storage while HA is running." in prompt
 
 
-def test_teach_route_bare_analyst_path_records_by_analyst(env, claude_shim, capsys):
+def test_teach_route_bare_analyst_path_records_by_analyst(env, claude_cli_shim_analyst, capsys):
     """FW-64: the bare `teach --route` path's destination comes from
     `analyst.analyze()`, not the human at the terminal — `routing.by`
     must say "analyst", never the old hardcoded/defaulted "human" this
@@ -323,7 +309,7 @@ def test_teach_route_bare_analyst_path_records_by_analyst(env, claude_shim, caps
     unaffected — this test's twin is
     `test_route_observability.py::test_route_direct_emits_via_teach_route_dest`,
     which already pins `by == "human"` for that path."""
-    claude_shim["out"].write_text(
+    claude_cli_shim_analyst["out"].write_text(
         "```yaml\n"
         "destination: skill-md\n"
         "alternates: [claude-md]\n"
@@ -348,9 +334,9 @@ def test_teach_route_bare_analyst_path_records_by_analyst(env, claude_shim, caps
     ],
 )
 def test_teach_route_analyst_failure_captures_to_pending(
-    env, claude_shim, capsys, monkeypatch, sabotage
+    env, claude_cli_shim_analyst, capsys, monkeypatch, sabotage
 ):
-    claude_shim["out"].write_text(sabotage["stdout"], encoding="utf-8")
+    claude_cli_shim_analyst["out"].write_text(sabotage["stdout"], encoding="utf-8")
     if "exit" in sabotage:
         monkeypatch.setenv("CLAUDE_SHIM_EXIT", sabotage["exit"])
     rc = cli.main(TEACH_ARGS + ["--route"])
@@ -367,7 +353,7 @@ def test_teach_route_analyst_failure_captures_to_pending(
 
 
 def test_teach_route_missing_doctrine_exits_2_pre_spawn(
-    env, claude_shim, capsys, monkeypatch, tmp_path
+    env, claude_cli_shim_analyst, capsys, monkeypatch, tmp_path
 ):
     # doc 13 T-H3: the doctrine ships package-relative and is normally
     # always present. Force the "not installed" branch by pointing the
@@ -381,7 +367,7 @@ def test_teach_route_missing_doctrine_exits_2_pre_spawn(
     err = capsys.readouterr().err
     assert rc == 2
     assert "routing doctrine not installed — T10" in err
-    assert not claude_shim["log"].exists()  # pre-spawn
+    assert not claude_cli_shim_analyst["log"].exists()  # pre-spawn
     assert env.pending_files() == [] and env.resolved_files() == []
 
 
@@ -596,14 +582,14 @@ flags: []
 """
 
 
-def test_analyst_analyze_round_trips_unknown_fields(env, claude_shim):
+def test_analyst_analyze_round_trips_unknown_fields(env, claude_cli_shim_analyst):
     """A1 — campaign §5 positive control. r2's incoming `recommendation:`
     key and a synthetic `probe_key`, both nowhere in analyst.py and
     nowhere in validate_proposal, must round-trip with their emitted
     values. A test that only round-trips fields the analyst already knows
     about would pass just as happily on the broken (M1b) code — that is
     the reason this assertion exists."""
-    claude_shim["out"].write_text(
+    claude_cli_shim_analyst["out"].write_text(
         "destination: reference\n"
         "alternates: [claude-md]\n"
         "rationale: deterministic guard beats advisory text\n"
@@ -617,7 +603,7 @@ def test_analyst_analyze_round_trips_unknown_fields(env, claude_shim):
     assert proposal["probe_key"] == "probe-value"
 
 
-def test_analyst_analyze_hook_round_trips(env, claude_shim):
+def test_analyst_analyze_hook_round_trips(env, claude_cli_shim_analyst):
     """A2 (FW-41) — a doctrine-conformant hook proposal must return
     without raising, with the returned hook/examples equal to what the
     model emitted. Today the enumerated rebuild drops both keys before
@@ -629,18 +615,18 @@ def test_analyst_analyze_hook_round_trips(env, claude_shim):
         "rationale: deterministic guard beats advisory text\n"
         + _hook_gates_yaml(env)
     ) + _yaml_dump(hook_fields)
-    claude_shim["out"].write_text(body, encoding="utf-8")
+    claude_cli_shim_analyst["out"].write_text(body, encoding="utf-8")
     proposal = analyst.analyze(env.home, make_behavior())
     assert proposal["hook"] == hook_fields["hook"]
     assert proposal["examples"] == hook_fields["examples"]
 
 
-def test_analyst_analyze_cli_owned_fields_win(env, claude_shim):
+def test_analyst_analyze_cli_owned_fields_win(env, claude_cli_shim_analyst):
     """A3 — model-emitted model/analyzed_at/record_sha (valid shape,
     deliberately wrong value — the control) must be overwritten by the
     CLI's own stamp, never carried through. Matching values could not
     tell a stamped field from a carried one."""
-    claude_shim["out"].write_text(
+    claude_cli_shim_analyst["out"].write_text(
         "destination: skill-md\n"
         "alternates: [claude-md]\n"
         "rationale: deterministic guard beats advisory text\n"
@@ -677,7 +663,7 @@ def _script_probe_body(env, destination: str) -> str:
 
 
 @pytest.mark.parametrize("destination", ["hook", "skill-md"])
-def test_analyst_analyze_strips_script_unconditionally(env, claude_shim, destination):
+def test_analyst_analyze_strips_script_unconditionally(env, claude_cli_shim_analyst, destination):
     """A4 — `script` is the one key this codebase refuses from a model on
     every other path; it must never survive into the returned proposal,
     regardless of destination. The skill-md case is what makes the strip
@@ -689,7 +675,7 @@ def test_analyst_analyze_strips_script_unconditionally(env, claude_shim, destina
     see that failure mode. The probe_key assertion is the presence check
     that stops the absence assertion ("script" not in proposal) passing
     vacuously on a build that carries nothing at all."""
-    claude_shim["out"].write_text(
+    claude_cli_shim_analyst["out"].write_text(
         _script_probe_body(env, destination), encoding="utf-8"
     )
     proposal = analyst.analyze(env.home, make_behavior())
@@ -697,12 +683,12 @@ def test_analyst_analyze_strips_script_unconditionally(env, claude_shim, destina
     assert proposal["probe_key"] == "probe-value"
 
 
-def test_analyst_analyze_runs_in_ledger_home(env, claude_shim, monkeypatch, tmp_path):
+def test_analyst_analyze_runs_in_ledger_home(env, claude_cli_shim_analyst, monkeypatch, tmp_path):
     """A5 — the analyst subprocess's cwd is pinned to `home`, never
     inherited from the caller. The chdir to an unrelated directory is the
     control: without it, an unpinned build could pass whenever pytest's
     own cwd happened to match `home`."""
-    claude_shim["out"].write_text(
+    claude_cli_shim_analyst["out"].write_text(
         "destination: skill-md\n"
         "alternates: [claude-md]\n"
         "rationale: deterministic guard beats advisory text\n"
@@ -714,12 +700,12 @@ def test_analyst_analyze_runs_in_ledger_home(env, claude_shim, monkeypatch, tmp_
     monkeypatch.chdir(elsewhere)
 
     analyst.analyze(env.home, make_behavior())
-    recorded = claude_shim["cwd"].read_text(encoding="utf-8").strip()
+    recorded = claude_cli_shim_analyst["cwd"].read_text(encoding="utf-8").strip()
     assert recorded == str(Path(env.home).resolve())
 
 
 @pytest.mark.parametrize("kind", ["missing", "file", "unenterable"])
-def test_analyst_analyze_bad_home_refuses_pre_spawn(claude_shim, tmp_path, kind):
+def test_analyst_analyze_bad_home_refuses_pre_spawn(claude_cli_shim_analyst, tmp_path, kind):
     """A6 — a home that is not an ENTERABLE directory refuses pre-spawn,
     naming the offending path in the message. `is_dir()` alone does not
     close the class: an existing directory without the search bit still

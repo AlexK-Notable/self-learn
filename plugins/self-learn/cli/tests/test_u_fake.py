@@ -1,0 +1,654 @@
+"""U-fake §3.9 `Home-1`/`BL-1` — home of ALL 17 of this unit's criterion
+tests. r1 homed its criterion tests in the modules they constrain, which
+put new node IDs into `GUARDED` modules and falsified the very criteria
+those tests existed to satisfy (§3.9's own account). None of the tests
+below may move into a `GUARDED` module for the same reason.
+
+`Sets-1` (§3.1), restated here as the literals this module's own tests
+read, per `RN-c`/`BL-1`.
+"""
+
+from __future__ import annotations
+
+import ast
+import hashlib
+import inspect
+import os
+import re
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from test_worker import claude_cli_shim_worker, env  # noqa: F401 -- fixtures resolved by name
+from test_route_cli import claude_cli_shim_analyst  # noqa: F401 -- fixture resolved by name
+
+TESTS_DIR = Path(__file__).parent
+
+GUARDED = (
+    "test_worker.py",
+    "test_repair.py",
+    "test_attrib.py",
+    "test_route_cli.py",
+    "test_composer.py",
+)
+ADDED = ("test_u_fake.py", "shims.py", "backends.py")
+FIXTURE_NAMES = ("claude_cli_shim_worker", "claude_cli_shim_analyst")
+LEGACY_NAME = "claude_shim"
+
+#: §3.1 `REWRITTEN` -- the SEVEN top-level functions this unit may
+#: rewrite, as a literal so widening it is a visible diff (`DS2`).
+REWRITTEN = (
+    ("test_worker.py", "claude_cli_shim_worker"),
+    ("test_worker.py", "notify_shim"),
+    ("test_route_cli.py", "claude_cli_shim_analyst"),
+    ("test_composer.py", "_capture_analyst_prompt"),
+    (
+        "test_composer.py",
+        "test_fold5_project_scope_one_shot_resolves_real_targets_when_bucket_exists",
+    ),
+    (
+        "test_composer.py",
+        "test_fold5_project_scope_bucket_exists_but_genuinely_has_no_meta",
+    ),
+    (
+        "test_composer.py",
+        "test_fold5_honest_sentinel_when_project_path_truly_not_supplied",
+    ),
+)
+
+MOVE1_TEST_NAMES = tuple(name for module, name in REWRITTEN if module == "test_composer.py" and name.startswith("test_"))
+
+#: `MV-c1`'s eight prompt assertions, enumerated from source at
+#: `c2669a9` -- three of the eight are negative controls (`not in`) --
+#: GROUPED BY LEG (gate NOTE 1): each leg's needles are checked against
+#: THAT test's own source span, never the union of all three, closing
+#: two gaps the union form had -- a needle satisfied by the WRONG leg
+#: (P6), and a mangled positive whose bare string constant survives
+#: even though the `assert ... in prompt` wrapping it was dropped or
+#: broken (P5). Needle #7 (leg 3's positive) is therefore the
+#: CONTIGUOUS text through `in prompt`, not the bare string alone.
+PROMPT_ASSERTIONS_BY_LEG = {
+    "test_fold5_project_scope_one_shot_resolves_real_targets_when_bucket_exists": (
+        'assert f"ALWAYS target      : {host_str}/CLAUDE.md" in prompt',
+        'assert f"PATHED rules dir   : {host_str}/.claude/rules" in prompt',
+        'assert f"DEMAND target      : {host_str}/references/LEARNINGS.md" in prompt',
+        'assert "unresolvable" not in prompt',
+    ),
+    "test_fold5_project_scope_bucket_exists_but_genuinely_has_no_meta": (
+        'assert "(unresolvable — project bucket has no meta.yaml)" in prompt',
+        'assert "record not yet persisted" not in prompt',
+    ),
+    "test_fold5_honest_sentinel_when_project_path_truly_not_supplied": (
+        '"(unresolvable — record not yet persisted; project path not supplied)"\n'
+        '        in prompt',
+        'assert "project bucket has no meta.yaml" not in prompt',
+    ),
+}
+
+
+# ===================================================================== #
+# Freeze-1 (§3.6) -- the extractor shared by DS1's count and sha legs
+# ===================================================================== #
+
+
+def _inverse_rename(name: str) -> str:
+    """`FZ-b` step 3."""
+    if name in ("claude_cli_shim_worker", "claude_cli_shim_analyst"):
+        return "claude_shim"
+    return name
+
+
+def _inverse_rename_text(text: str) -> str:
+    return text.replace("claude_cli_shim_worker", "claude_shim").replace(
+        "claude_cli_shim_analyst", "claude_shim"
+    )
+
+
+def _extract_guarded_functions(source: str, rewritten_names) -> list:
+    """`FZ-b`/`FZ-b1` -- every top-level `FunctionDef`/`AsyncFunctionDef`
+    whose INVERSE-RENAMED name is not in the inverse-renamed
+    `rewritten_names`, in source order, extracted DECORATOR-INCLUSIVE
+    (`B-9`: a bare `ast.get_source_segment` excludes decorators, hiding
+    a `@pytest.mark.skip` added above a T3 test, `M21`)."""
+    tree = ast.parse(source)
+    lines = source.splitlines(keepends=True)
+    line_start = [0]
+    for ln in lines:
+        line_start.append(line_start[-1] + len(ln))
+
+    excluded = {_inverse_rename(n) for n in rewritten_names}
+    segments = []
+    for node in tree.body:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if _inverse_rename(node.name) in excluded:
+            continue
+        start_lineno = min([node.lineno] + [d.lineno for d in node.decorator_list])
+        start = line_start[start_lineno - 1]
+        end = line_start[node.end_lineno - 1] + node.end_col_offset
+        segments.append(source[start:end])
+    return segments
+
+
+def _extract_named_function(source: str, name: str) -> str:
+    """Decorator-inclusive segment (`FZ-b` step 2) of the top-level
+    function `name` in `source` -- for a SINGLE named `REWRITTEN`
+    function whose license is narrower than "excluded wholesale" (gate
+    NOTE 3: `notify_shim`'s only licensed change is its parameter
+    rename; everything else in its body is unpoliced by
+    `_extract_guarded_functions`, which excludes it entirely)."""
+    tree = ast.parse(source)
+    lines = source.splitlines(keepends=True)
+    line_start = [0]
+    for ln in lines:
+        line_start.append(line_start[-1] + len(ln))
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
+            start_lineno = min([node.lineno] + [d.lineno for d in node.decorator_list])
+            start = line_start[start_lineno - 1]
+            end = line_start[node.end_lineno - 1] + node.end_col_offset
+            return source[start:end]
+    raise LookupError(f"{name} not found as a top-level function")
+
+
+#: `FZ-d`/`DS3` -- (count, sha256) per `GUARDED` module, generated by
+#: running `_extract_guarded_functions` (this exact function) over
+#: `git show c2669a9:plugins/self-learn/cli/tests/<module>` -- never
+#: over the working tree. The build report carries the transcript;
+#: `M18`'s row is why this must be true regenerated-from-git provenance
+#: and not merely "these numbers came from somewhere." An extractor
+#: that returns nothing (`M17`) cannot silently agree with these --
+#: they do not move merely because the extractor broke.
+_DS1_EXPECTED = {
+    "test_worker.py": (60, "94fd249602f7bb89f0545cb8f5ce69a584dfe9dd17d592e5ccfff3724da18c8b"),
+    "test_repair.py": (69, "4befaf7a56418b2f18f77d54ac97934e027a671fe45c385b37867dc5fa40da5a"),
+    "test_attrib.py": (48, "ec6c7077575d245c6a648c99799e2c2751cf744aa69951010d3fcf23baedab38"),
+    "test_route_cli.py": (40, "d1a8aff15216b675a730a9ac510aec819a5b789e0b578564fbdcadb049c0b03c"),
+    "test_composer.py": (42, "2e5aa591191dae307cfc03149ca8a00d03c3caf7094fc56b03e9f4c0b12c24a5"),
+}
+
+#: The base commit these literals -- and the LIVE `git show` comparison
+#: `DS1` also runs -- are anchored to (`Meas-1`: this unit's rebase base
+#: IS `c2669a9`; a builder rebasing onto a later `U-sdk`/`U-bedrock`
+#: must re-measure both, per `SQ-3`).
+BASE_REF = "c2669a9"
+
+
+def _git_show_base(module: str) -> str:
+    """Recover `module`'s bytes AT `BASE_REF` (`FZ-d`: never the working
+    tree)."""
+    result = subprocess.run(
+        ["git", "show", f"{BASE_REF}:plugins/self-learn/cli/tests/{module}"],
+        cwd=TESTS_DIR,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout
+
+
+# ===================================================================== #
+# FX -- fixture disambiguation
+# ===================================================================== #
+
+
+def test_fx1_no_claude_shim_def_statement_anywhere():
+    """FX1 -- no module defines `def claude_shim` anymore; `Compat-1`'s
+    alias (a module-level `Assign`, not a `def`) is legitimate and is
+    policed by `FX4` instead. Guarded by a positive control first: "no
+    function named X" is vacuously true of an empty or wrong module
+    scan."""
+    import test_worker
+    import test_route_cli
+
+    for module, name in (
+        (test_worker, "claude_cli_shim_worker"),
+        (test_route_cli, "claude_cli_shim_analyst"),
+    ):
+        fn = getattr(module, name)
+        assert hasattr(fn, "_fixture_function_marker"), (module.__name__, name)
+
+    for path in sorted(TESTS_DIR.glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                assert node.name != LEGACY_NAME, f"{path.name}:{node.lineno}"
+
+
+def test_fx2_worker_fixture_shape(claude_cli_shim_worker):
+    """FX2 -- `claude_cli_shim_worker`'s returned dict has exactly the
+    base key set; `dir`/`log`/`prompt` are `Path`s, `argv`/`call_prompt`/
+    `count` are callables. Driven by REQUESTING the fixture, not by
+    reading source."""
+    d = claude_cli_shim_worker
+    assert set(d.keys()) == {"log", "prompt", "dir", "argv", "call_prompt", "count"}
+    for key in ("dir", "log", "prompt"):
+        assert isinstance(d[key], Path), key
+    for key in ("argv", "call_prompt", "count"):
+        assert callable(d[key]), key
+
+
+def test_fx2_analyst_fixture_shape(claude_cli_shim_analyst):
+    """FX2 -- `claude_cli_shim_analyst`'s returned dict has exactly the
+    base key set, all three values `Path`s."""
+    d = claude_cli_shim_analyst
+    assert set(d.keys()) == {"log", "out", "cwd"}
+    for key in ("log", "out", "cwd"):
+        assert isinstance(d[key], Path), key
+
+
+def test_fx4_compat_alias_is_singular():
+    """FX4 -- `Compat-1`'s alias appears exactly once (an AST `Assign`
+    binding `claude_shim` to `claude_cli_shim_worker`, module-level, in
+    `test_repair.py`), and exactly one module (`test_invocation.py`)
+    imports the legacy name."""
+    alias_sites = []
+    importer_sites = []
+    for path in sorted(TESTS_DIR.glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in tree.body:
+            if (
+                isinstance(node, ast.Assign)
+                and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and node.targets[0].id == LEGACY_NAME
+                and isinstance(node.value, ast.Name)
+                and node.value.id == "claude_cli_shim_worker"
+            ):
+                alias_sites.append(path.name)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                for alias in node.names:
+                    if alias.name == LEGACY_NAME:
+                        importer_sites.append(path.name)
+
+    assert alias_sites == ["test_repair.py"], alias_sites
+    assert importer_sites == ["test_invocation.py"], importer_sites
+
+
+def test_fx5_renamed_fixture_did_not_rename_two_tests():
+    """FX5 -- the two node IDs of `RN-c` are present, spelled exactly as
+    at base. A blunt `sed` over `test_worker.py` renames these two TEST
+    FUNCTIONS as a side effect (they carry the fixture's old name in
+    their OWN names) while leaving the collected count and `DS1`
+    (inverse-rename-symmetric) both green -- `SU1`'s set leg is the
+    other guard that sees it; this is the "asserted by name" one
+    (`HM-a`'s cost: it lives here, not in `test_worker.py`)."""
+    import test_worker
+
+    for name in (
+        "test_claude_shim_path_never_resolves_a_real_self_learn_notify",
+        "test_claude_shim_default_notify_send_stub_is_present",
+    ):
+        fn = getattr(test_worker, name, None)
+        assert fn is not None, f"{name} missing from test_worker.py — RN-c renamed it"
+        assert inspect.isfunction(fn)
+
+
+# ===================================================================== #
+# SH -- shims.py
+# ===================================================================== #
+
+
+def test_sh1_emitted_shim_bytes_are_sha_pinned(tmp_path):
+    """SH1 -- for a FIXED set of input paths (`SH-a1`: the emitted bytes
+    are a function of them), each builder emits a file whose sha256
+    equals a hex literal generated by driving the BASE `claude_shim`
+    fixture at `c2669a9` with these exact literal paths (§9's provenance
+    recipe), never this unit's own builder. Neither builder's caller-
+    supplied write LOCATION (`shims_dir`/`shim_dir`) is among the
+    interpolated paths (`SH-d`), so a throwaway `tmp_path` is used for
+    the actual write."""
+    from shims import write_worker_claude_shim, write_analyst_claude_shim
+
+    counter = Path("/tmp/u-fake-sh1/claude-invocation-count")
+    log = Path("/tmp/u-fake-sh1/claude-argv.log")
+    prompt_log = Path("/tmp/u-fake-sh1/claude-prompt.log")
+    calls_dir = Path("/tmp/u-fake-sh1/claude-calls")
+
+    worker_shim = write_worker_claude_shim(
+        tmp_path, counter=counter, log=log, prompt_log=prompt_log, calls_dir=calls_dir
+    )
+    assert hashlib.sha256(worker_shim.read_bytes()).hexdigest() == (
+        "52fe3084b39ae2e37a1db5a0681cb4a70dde80b3c1409fde14e898f798ffb9e3"
+    )
+    assert os.access(worker_shim, os.X_OK)
+
+    shim_bin = tmp_path / "shim-bin"
+    shim_bin.mkdir()
+    analyst_shim = write_analyst_claude_shim(shim_bin)
+    assert hashlib.sha256(analyst_shim.read_bytes()).hexdigest() == (
+        "961e3f64946e8cf81db312f87249b27e0f2f2bb32f4e7d09f079f287603d53ef"
+    )
+    assert os.access(analyst_shim, os.X_OK)
+
+
+def test_sh2_fixture_retains_the_three_guarded_literals():
+    """SH2 -- `B-2`/`B-3`'s two path literals and the PATH-prepend line
+    stay IN the fixture, not in `shims.py`. The two path literals are
+    checked on the AST -- an `Assign` whose VALUE expression carries the
+    literal, i.e. the CODE computes that path -- never by a raw
+    source-text search: `claude_cli_shim_worker`'s own DOCSTRING also
+    mentions both words in prose, so a text search stays green even
+    after the computing `Assign` moves to `shims.py` (gate MAJOR 1,
+    `M6`; the shipped `test_attrib.py::test_hy1_...`'s B-2 legs share
+    this exact defect and are out of this unit's reach -- GUARDED,
+    frozen beyond the mechanical rename)."""
+    import test_worker
+
+    src = inspect.getsource(test_worker.claude_cli_shim_worker)
+    tree = ast.parse(src)
+    func_node = tree.body[0]
+    assert isinstance(func_node, (ast.FunctionDef, ast.AsyncFunctionDef))
+
+    computed_literals = set()
+    for stmt in func_node.body:
+        if isinstance(stmt, ast.Assign):
+            for sub in ast.walk(stmt.value):
+                if isinstance(sub, ast.Constant) and isinstance(sub.value, str):
+                    computed_literals.add(sub.value)
+
+    assert "claude-invocation-count" in computed_literals, (
+        "no Assign in claude_cli_shim_worker COMPUTES a path containing "
+        "'claude-invocation-count' — has the counter assignment moved to shims.py?"
+    )
+    assert "claude-calls" in computed_literals, (
+        "no Assign in claude_cli_shim_worker COMPUTES a path containing "
+        "'claude-calls' — has the calls_dir assignment moved to shims.py?"
+    )
+    assert (
+        'monkeypatch.setenv("PATH", _path_without_real_notify_helper(shims))' in src
+    )
+
+
+def test_sh3_new_modules_carry_no_bare_claude_argv():
+    """SH3 -- `B-1`'s guard reaches all three NEW files: none may
+    contain a bare one-element argv list holding only the word claude
+    (the shape a real spawn's argv[0] would take)."""
+    # a pattern that does not itself contain that shape as a contiguous
+    # substring, so this detection line can never match its own source
+    # (mirrors test_repair.py::test_f6's own care about this).
+    pattern = re.compile(r'\[\s*"claude"\s*\]')
+    for name in ADDED:
+        path = TESTS_DIR / name
+        for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+            assert not pattern.search(line), (name, i, line)
+
+
+def test_sh4_shims_public_surface_is_honest():
+    """SH4 -- `__all__` non-empty; every export has an in-suite call
+    site (`SH-c`); no export is fixture-marked (`D-8`); `shims.py`
+    imports nothing from `self_learn` or any `test_*` module (`SH-b`)."""
+    import shims
+
+    assert shims.__all__
+
+    other_src = "\n".join(
+        p.read_text(encoding="utf-8")
+        for p in sorted(TESTS_DIR.glob("*.py"))
+        if p.name != "shims.py"
+    )
+    for name in shims.__all__:
+        assert re.search(rf"\b{re.escape(name)}\s*\(", other_src), name
+        obj = getattr(shims, name)
+        assert not hasattr(obj, "_fixture_function_marker"), name
+
+    tree = ast.parse((TESTS_DIR / "shims.py").read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                assert not alias.name.startswith("self_learn"), alias.name
+                assert not alias.name.startswith("test_"), alias.name
+        elif isinstance(node, ast.ImportFrom):
+            mod = node.module or ""
+            assert not mod.startswith("self_learn"), mod
+            assert not mod.startswith("test_"), mod
+
+
+# ===================================================================== #
+# BK -- backends.py
+# ===================================================================== #
+
+
+def _minimal_session_spec(tmp_path, prompt="p"):
+    from self_learn.invocation import SessionSpec, containment_for
+
+    return SessionSpec(
+        surface="analyst",
+        prompt=prompt,
+        cwd=tmp_path,
+        timeout=5.0,
+        containment=containment_for("analyst"),
+        log=lambda _msg: None,
+        cli_argv_builder=lambda _settings: ["claude", "-p", prompt],
+    )
+
+
+def test_bk1_install_fake_patches_the_registry_binding(request, monkeypatch, tmp_path):
+    """BK1 -- `install_fake` patches
+    `self_learn.invocation.registry.backend_for`, asserted BEHAVIORALLY:
+    a `text_session` call with no `backend=` keyword reaches the fake.
+    PATH is sanitized first (`B-7a`) so a build that patched the
+    package-level re-export instead falls through to a `CliBackend` that
+    can find no executable -- deterministic, never a real spawn."""
+    from backends import install_fake, analyst_text
+    from self_learn import invocation
+
+    monkeypatch.setenv("PATH", str(tmp_path))
+    fake = install_fake(request, monkeypatch, [analyst_text("k: v\n")])
+
+    outcome = invocation.text_session(_minimal_session_spec(tmp_path))
+    assert outcome.ok
+    assert len(fake.specs) == 1
+
+
+def test_bk2_assert_fake_was_used_fires_on_an_unused_fake(request, monkeypatch, tmp_path):
+    """BK2 -- `assert_fake_was_used` raises, naming the missed-patch
+    fail-open, on a `FakeBackend` that recorded nothing, and does not
+    raise on one that recorded a call. A second leg spies on `request`
+    to confirm `install_fake` registered the finalizer through it
+    (`B-5a`: `MonkeyPatch` has no `addfinalizer`)."""
+    from backends import assert_fake_was_used, install_fake, analyst_text
+    from self_learn.invocation import FakeBackend
+    from self_learn import invocation
+
+    unused = FakeBackend([])
+    with pytest.raises(AssertionError, match="backend_for"):
+        assert_fake_was_used(unused)
+
+    monkeypatch.setenv("PATH", str(tmp_path))
+    used = install_fake(request, monkeypatch, [analyst_text("k: v\n")])
+    invocation.text_session(_minimal_session_spec(tmp_path))
+    assert_fake_was_used(used)  # must not raise
+
+    class _SpyRequest:
+        def __init__(self):
+            self.finalizers = []
+
+        def addfinalizer(self, fn):
+            self.finalizers.append(fn)
+
+    spy = _SpyRequest()
+    install_fake(spy, monkeypatch, [])
+    assert len(spy.finalizers) == 1
+
+
+def test_bk3_backends_public_surface_is_honest():
+    """BK3 -- as `SH4`'s first two legs, for `backends.py`: `__all__`
+    non-empty, every export consumed in-suite. The import legs do not
+    apply (`BK-d`: `backends.py` DOES import from `self_learn.invocation`,
+    which is required)."""
+    import backends
+
+    assert backends.__all__
+
+    other_src = "\n".join(
+        p.read_text(encoding="utf-8")
+        for p in sorted(TESTS_DIR.glob("*.py"))
+        if p.name != "backends.py"
+    )
+    for name in backends.__all__:
+        assert re.search(rf"\b{re.escape(name)}\s*\(", other_src), name
+
+
+# ===================================================================== #
+# T1 -- the three Move-1 conversions (source reads of test_composer.py)
+# ===================================================================== #
+
+
+def test_t1a_move1_tests_keep_all_eight_prompt_assertions():
+    """T1a -- each of the three `Move-1` tests, read from source, still
+    contains ITS OWN leg's prompt assertions of `MV-c1` verbatim -- each
+    needle checked against THAT test's own source span (gate NOTE 1),
+    not the union of all three: a needle satisfied by the wrong leg, or
+    a stray string no longer wired to an `assert`, is not evidence that
+    leg still contains it. "And all three pass" is `SU1`'s leg, not this
+    one -- this test reads source and never executes them."""
+    import test_composer
+
+    for name, needles in PROMPT_ASSERTIONS_BY_LEG.items():
+        src = inspect.getsource(getattr(test_composer, name))
+        for needle in needles:
+            assert needle in src, (name, needle)
+
+
+def test_t1b_move1_tests_assert_the_fake_was_reached():
+    """T1b -- each of the three contains `assert len(fake.argvs) == 1`,
+    so a fall-through to a real `CliBackend` cannot satisfy them
+    (`M33`, not `M9` -- `M9` mutates `backends.py`, which this source
+    read never looks at)."""
+    import test_composer
+
+    for name in MOVE1_TEST_NAMES:
+        src = inspect.getsource(getattr(test_composer, name))
+        assert "assert len(fake.argvs) == 1" in src, name
+
+
+def test_t1c_move1_tests_keep_the_argv_shape_assertions():
+    """T1c -- each of the three still asserts `fake.argvs[0][0] ==
+    "claude"` and `fake.argvs[0][1] == "-p"` and reads the prompt from
+    `fake.argvs[0][2]` -- the analyst's prompt-rides-argv property,
+    preserved across the swap (`MV-c`)."""
+    import test_composer
+
+    for name in MOVE1_TEST_NAMES:
+        src = inspect.getsource(getattr(test_composer, name))
+        assert 'fake.argvs[0][0] == "claude"' in src, name
+        assert 'fake.argvs[0][1] == "-p"' in src, name
+        assert "fake.argvs[0][2]" in src, name
+
+
+# ===================================================================== #
+# DS -- diff scope
+# ===================================================================== #
+
+
+def test_ds1_t3_function_bodies_survive_the_inverse_rename():
+    """DS1 -- `Freeze-1` holds for all five `GUARDED` modules, checked
+    two independent ways (`FZ-c1`: neither alone is sufficient).
+
+    Leg 1 -- LIVE base vs LIVE head, both through THIS SAME extractor,
+    `FZ-c`'s count equality asserted FIRST: this is what an asymmetric,
+    non-inverse-renamed filter (`M32`) actually breaks -- it gives
+    DIFFERENT counts on base (still `claude_shim`) vs head (already
+    renamed) only when both are freshly extracted; comparing head
+    against a fixed pin alone cannot see it, because the naive filter's
+    HEAD-side count happens to match the correct one anyway.
+
+    Leg 2 -- both sides checked against a per-module hex literal/count
+    PINNED at build time from `git show c2669a9:...` (`FZ-d`/`DS3`; the
+    build report carries the generation transcript). An extractor that
+    returns nothing (`M17`) cannot silently agree with this pin, because
+    the pin does not move merely because the extractor broke -- only a
+    builder who ALSO regenerates the pin from the working tree (`M18`)
+    makes that escape, and that is a provenance defect DS3 -- not this
+    test -- exists to catch.
+
+    Leg 3 (gate NOTE 3) -- `notify_shim` is `REWRITTEN`-excluded from
+    Legs 1/2 entirely (its parameter took the fixture rename), which
+    left its BODY beyond that one licensed rename completely unpoliced.
+    Checked separately here with the SAME inverse-rename technique,
+    narrowed to just this one function: its head source, inverse-
+    renamed, must equal its base source byte-for-byte."""
+    for module, (expected_count, expected_sha) in _DS1_EXPECTED.items():
+        names = tuple(n for m, n in REWRITTEN if m == module)
+        head_source = (TESTS_DIR / module).read_text(encoding="utf-8")
+        base_source = _git_show_base(module)
+
+        head_segments = _extract_guarded_functions(head_source, names)
+        base_segments = _extract_guarded_functions(base_source, names)
+
+        # Leg 1: live base vs live head.
+        assert len(head_segments) == len(base_segments), (
+            f"{module}: head extracted {len(head_segments)} T3 functions, "
+            f"base ({BASE_REF}) extracted {len(base_segments)} — run: "
+            f"git diff {BASE_REF}..HEAD -- plugins/self-learn/cli/tests/{module}"
+        )
+        head_concat = "".join(_inverse_rename_text(s) for s in head_segments)
+        base_concat = "".join(_inverse_rename_text(s) for s in base_segments)
+        head_sha = hashlib.sha256(head_concat.encode()).hexdigest()
+        base_sha = hashlib.sha256(base_concat.encode()).hexdigest()
+        assert head_sha == base_sha, (
+            f"{module}: T3 function bodies changed beyond the declared "
+            f"rename — run: git diff {BASE_REF}..HEAD -- "
+            f"plugins/self-learn/cli/tests/{module}"
+        )
+
+        # Leg 2: both sides pinned against a build-time literal.
+        assert len(head_segments) == expected_count, (
+            f"{module}: extracted {len(head_segments)} T3 functions, "
+            f"expected {expected_count} (pinned at {BASE_REF}) — run: git "
+            f"diff {BASE_REF}..HEAD -- plugins/self-learn/cli/tests/{module}"
+        )
+        assert head_sha == expected_sha, (
+            f"{module}: T3 function bodies' sha does not match the "
+            f"literal pinned at {BASE_REF} — run: git diff {BASE_REF}..HEAD "
+            f"-- plugins/self-learn/cli/tests/{module}"
+        )
+
+    # Leg 3: notify_shim's licensed change is ONLY its parameter rename.
+    notify_head_source = (TESTS_DIR / "test_worker.py").read_text(encoding="utf-8")
+    notify_base_source = _git_show_base("test_worker.py")
+    head_notify = _extract_named_function(notify_head_source, "notify_shim")
+    base_notify = _extract_named_function(notify_base_source, "notify_shim")
+    assert _inverse_rename_text(head_notify) == base_notify, (
+        "notify_shim changed beyond its licensed parameter rename "
+        "(claude_shim -> claude_cli_shim_worker) — run: git diff "
+        f"{BASE_REF}..HEAD -- plugins/self-learn/cli/tests/test_worker.py"
+    )
+
+
+def test_ds2_rewritten_set_is_exact_and_every_entry_is_live():
+    """DS2 -- `REWRITTEN` contains exactly the seven functions named in
+    §3.1's table (a stale OR an added entry is caught, not just a
+    missing one), and every entry names a function that exists in its
+    module."""
+    expected = {
+        ("test_worker.py", "claude_cli_shim_worker"),
+        ("test_worker.py", "notify_shim"),
+        ("test_route_cli.py", "claude_cli_shim_analyst"),
+        ("test_composer.py", "_capture_analyst_prompt"),
+        (
+            "test_composer.py",
+            "test_fold5_project_scope_one_shot_resolves_real_targets_when_bucket_exists",
+        ),
+        (
+            "test_composer.py",
+            "test_fold5_project_scope_bucket_exists_but_genuinely_has_no_meta",
+        ),
+        (
+            "test_composer.py",
+            "test_fold5_honest_sentinel_when_project_path_truly_not_supplied",
+        ),
+    }
+    assert len(REWRITTEN) == 7
+    assert set(REWRITTEN) == expected
+
+    for module, name in REWRITTEN:
+        source = (TESTS_DIR / module).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        names_in_module = {
+            n.name for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+        assert name in names_in_module, (module, name)
