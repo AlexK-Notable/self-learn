@@ -1679,34 +1679,22 @@ def test_a24_containment_and_derivation_at_owned_sites(tmp_path, monkeypatch):
 # was never supplied.
 
 
-def _capture_analyst_prompt(monkeypatch, accepted_yaml: str) -> list[str]:
-    """Monkeypatch `analyst.subprocess.run` to capture the composed
-    prompt (argv[2] of the literal `claude -p <prompt> …` invocation,
-    `analyst.build_argv`) without spawning any process or touching PATH,
-    and return an ACCEPTED proposal so `analyst.analyze` completes
-    normally. Returns the list this test appends captured prompts to."""
-    import subprocess as _subprocess
-    from self_learn import analyst as _analyst
+def _capture_analyst_prompt(request, monkeypatch, accepted_yaml: str):
+    """U-fake `Move-1` (`MV-a`): install a `FakeBackend` scripted with one
+    `analyst_text(accepted_yaml)` step so `analyst.analyze` completes
+    normally, and return it — the caller reads the composed prompt from
+    `fake.argvs[0][2]` (`analyst.build_argv`'s literal `claude -p
+    <prompt> …` argv, `MV-c`'s argv row) without spawning any process or
+    touching PATH. This used to patch `analyst.subprocess.run` directly,
+    one layer below the seam — a private re-implementation of exactly
+    what `FakeBackend` is."""
+    from backends import install_fake, analyst_text
 
-    captured: list[str] = []
-
-    class _Completed:
-        def __init__(self, stdout):
-            self.returncode = 0
-            self.stdout = stdout
-            self.stderr = ""
-
-    def _fake_run(argv, **kwargs):
-        assert argv[0] == "claude" and argv[1] == "-p"
-        captured.append(argv[2])
-        return _Completed(f"```yaml\n{accepted_yaml}```\n")
-
-    monkeypatch.setattr(_analyst.subprocess, "run", _fake_run)
-    return captured
+    return install_fake(request, monkeypatch, [analyst_text(accepted_yaml)])
 
 
 def test_fold5_project_scope_one_shot_resolves_real_targets_when_bucket_exists(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, request
 ):
     """FOLD 5, leg 1 — a project-scope one-shot call that threads
     `project_path` AND whose project bucket already exists (the common
@@ -1729,13 +1717,14 @@ def test_fold5_project_scope_one_shot_resolves_real_targets_when_bucket_exists(
 
     roster_sha = _skill_roster(env.ledger).sha
     record = make_behavior(scope="project", record_id="lrn-49000000")
-    captured = _capture_analyst_prompt(
-        monkeypatch, _demand_proposal_yaml(roster_sha, flags_evidence_gap=False)
+    fake = _capture_analyst_prompt(
+        request, monkeypatch, _demand_proposal_yaml(roster_sha, flags_evidence_gap=False)
     )
     _analyst.analyze(env.ledger, record, project_path=env.host)
 
-    assert len(captured) == 1
-    prompt = captured[0]
+    assert len(fake.argvs) == 1
+    assert fake.argvs[0][0] == "claude" and fake.argvs[0][1] == "-p"
+    prompt = fake.argvs[0][2]
     host_str = str(env.host)
     assert f"ALWAYS target      : {host_str}/CLAUDE.md" in prompt
     assert f"PATHED rules dir   : {host_str}/.claude/rules" in prompt
@@ -1744,7 +1733,7 @@ def test_fold5_project_scope_one_shot_resolves_real_targets_when_bucket_exists(
 
 
 def test_fold5_project_scope_bucket_exists_but_genuinely_has_no_meta(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, request
 ):
     """FOLD 5, leg 2 (positive control, gate M1 discipline) — a project
     bucket that RESOLVES (project_path threaded correctly) but that
@@ -1763,19 +1752,20 @@ def test_fold5_project_scope_bucket_exists_but_genuinely_has_no_meta(
 
     roster_sha = _skill_roster(env.ledger).sha
     record = make_behavior(scope="project", record_id="lrn-49000001")
-    captured = _capture_analyst_prompt(
-        monkeypatch, _demand_proposal_yaml(roster_sha, flags_evidence_gap=False)
+    fake = _capture_analyst_prompt(
+        request, monkeypatch, _demand_proposal_yaml(roster_sha, flags_evidence_gap=False)
     )
     _analyst.analyze(env.ledger, record, project_path=env.host)
 
-    assert len(captured) == 1
-    prompt = captured[0]
+    assert len(fake.argvs) == 1
+    assert fake.argvs[0][0] == "claude" and fake.argvs[0][1] == "-p"
+    prompt = fake.argvs[0][2]
     assert "(unresolvable — project bucket has no meta.yaml)" in prompt
     assert "record not yet persisted" not in prompt
 
 
 def test_fold5_honest_sentinel_when_project_path_truly_not_supplied(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, request
 ):
     """FOLD 5, leg 3 — the actual bug: `project_path` genuinely absent
     (a caller other than teach.py's own call site, or teach.py's fix
@@ -1799,13 +1789,14 @@ def test_fold5_honest_sentinel_when_project_path_truly_not_supplied(
 
     roster_sha = _skill_roster(env.ledger).sha
     record = make_behavior(scope="project", record_id="lrn-49000002")
-    captured = _capture_analyst_prompt(
-        monkeypatch, _demand_proposal_yaml(roster_sha, flags_evidence_gap=False)
+    fake = _capture_analyst_prompt(
+        request, monkeypatch, _demand_proposal_yaml(roster_sha, flags_evidence_gap=False)
     )
     _analyst.analyze(env.ledger, record)  # no project_path — the bug's shape
 
-    assert len(captured) == 1
-    prompt = captured[0]
+    assert len(fake.argvs) == 1
+    assert fake.argvs[0][0] == "claude" and fake.argvs[0][1] == "-p"
+    prompt = fake.argvs[0][2]
     assert (
         "(unresolvable — record not yet persisted; project path not supplied)"
         in prompt
