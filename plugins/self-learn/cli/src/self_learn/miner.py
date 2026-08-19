@@ -577,7 +577,11 @@ READER_DISALLOWED_TOOLS = worker.DISALLOWED_TOOLS + ",Read,Grep,Glob"
 def build_reader_argv(settings_path: Path) -> list[str]:
     """The prompt is deliberately NOT in argv: Linux caps one argv element
     at 128 KiB and a busy night's digests exceed it (audit B1, verified
-    E2BIG live) — the prompt goes to the reader on stdin."""
+    E2BIG live) — the prompt goes to the reader on stdin.
+
+    ``--strict-mcp-config`` (U-sdkr): see ``worker.build_argv``'s own
+    docstring for why — it applies here with equal, if not greater,
+    force, since the reader is allowed fewer tools than the worker."""
     return [
         "claude",
         "-p",
@@ -587,6 +591,7 @@ def build_reader_argv(settings_path: Path) -> list[str]:
         READER_DISALLOWED_TOOLS,
         "--settings",
         str(settings_path),
+        "--strict-mcp-config",
     ]
 
 

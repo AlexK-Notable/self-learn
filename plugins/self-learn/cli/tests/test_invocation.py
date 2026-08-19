@@ -624,7 +624,8 @@ def test_cn2_call_site_containment_matches_the_call_site_table(
     spec_miner = miner_capture["spec"]
     assert spec_miner.containment.allowed_tools is None
     assert spec_miner.containment.disallowed_tools == miner.READER_DISALLOWED_TOOLS
-    assert spec_miner.containment.strict_mcp is False
+    # U-sdkr: strict_mcp closed for the reader (Fix-1) -- do not "restore" this to False.
+    assert spec_miner.containment.strict_mcp is True
 
     spec_analyst = analyst_capture["spec"]
     assert spec_analyst.containment.allowed_tools == analyst.ANALYST_ALLOWED_TOOLS
