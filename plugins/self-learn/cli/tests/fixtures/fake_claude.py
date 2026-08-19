@@ -196,6 +196,76 @@ def _scenario_ok_write() -> None:
     emit(result_message(is_error=False, subtype="success", uuid="u3"))
 
 
+def _next_invocation() -> int:
+    """`FK3-b` (`V-2`) -- reads an invocation counter from the file named
+    by `FAKE_CLAUDE_CALLS`, increments it, and returns the new (1-based)
+    value. Each fake invocation is a fresh process with no surviving
+    in-memory state, so the counter has to live on disk -- the same
+    `CTR` / `CLAUDE_SHIM_SCRIPT_$N` shape `shims.py`'s bash worker shim
+    already uses. No counter file configured -> always `1`."""
+    path = os.environ.get("FAKE_CLAUDE_CALLS")
+    if not path:
+        return 1
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            n = int(fh.read().strip()) + 1
+    except (OSError, ValueError):
+        n = 1
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(str(n))
+    return n
+
+
+def _scenario_ok_write_real() -> None:
+    """`FK3-a`/`FK3-b`/`FK3-c` (`V-2`) -- like `_scenario_ok_write`, but
+    actually WRITES the target file, iff the charter's response
+    `behavior == "allow"`: writing unconditionally would make the file's
+    existence say nothing about the charter, which is exactly the
+    property `WS6` and `RP4` are built to observe. The body is selected
+    PER INVOCATION (`FK3-b`): `_next_invocation` reads a counter file
+    named by `FAKE_CLAUDE_CALLS`, and the body comes from
+    `FAKE_CLAUDE_WRITE_BODY_<n>`, falling back to `FAKE_CLAUDE_WRITE_BODY`
+    -- so a worker run that reaches a repair round (two fake spawns) can
+    script two DIFFERENT bodies, one per round. Target:
+    `FAKE_CLAUDE_WRITE_TARGET` (`FK3-c`) -- the same knob
+    `_scenario_ok_write` already reads; no new target knob."""
+    n = _next_invocation()
+    target = os.environ.get("FAKE_CLAUDE_WRITE_TARGET", "/tmp/example/pending/lrn-abc.md")
+    tool_name = os.environ.get("FAKE_CLAUDE_WRITE_TOOL", "Write")
+    tool_use_id = "toolu_1"
+    response = _request_permission(tool_name, {"file_path": target}, tool_use_id)
+    allowed = response.get("behavior") == "allow"
+    if allowed:
+        body = os.environ.get(f"FAKE_CLAUDE_WRITE_BODY_{n}") or os.environ.get(
+            "FAKE_CLAUDE_WRITE_BODY", ""
+        )
+        with open(target, "w", encoding="utf-8") as fh:
+            fh.write(body)
+    emit(
+        assistant_message(
+            "",
+            "u1",
+            content=[
+                {
+                    "type": "tool_use",
+                    "id": tool_use_id,
+                    "name": tool_name,
+                    "input": {"file_path": target},
+                }
+            ],
+        )
+    )
+    emit(
+        user_tool_result(
+            tool_use_id,
+            "u2",
+            content="ok" if allowed else response.get("message", "permission denied"),
+            is_error=not allowed,
+        )
+    )
+    emit(result_message(is_error=False, subtype="success", uuid="u3"))
+
+
 def _scenario_error_result() -> None:
     emit(assistant_message("trying...", "u1"))
     emit(result_message(is_error=True, subtype="error_during_execution", uuid="u2", errors=["boom"]))
@@ -259,6 +329,7 @@ SCENARIOS = {
     "ok_text": _scenario_ok_text,
     "ok_blocks_only": _scenario_ok_blocks_only,
     "ok_write": _scenario_ok_write,
+    "ok_write_real": _scenario_ok_write_real,
     "error_result": _scenario_error_result,
     "no_result": _scenario_no_result,
     "hard_exit": _scenario_hard_exit,
