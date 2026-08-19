@@ -588,7 +588,7 @@ def test_selftest_reports_seven_checks_criterion_12(env, capsys):
     out = capsys.readouterr().out
     assert rc == 0
     assert "PASS reach" in out
-    assert "all 7 checks green" in out
+    assert "all 8 checks green" in out
 
 
 # --------------------------------------------------- FW-66: decode safety
@@ -673,7 +673,7 @@ def test_selftest_survives_corrupt_resolved_record_prints_all_seven_rows(env, ca
 
     out = capsys.readouterr().out
     assert rc == 0
-    assert "all 7 checks green" in out
+    assert "all 8 checks green" in out
     for check in (
         "capture", "compiler", "markers", "drift", "reach", "hooks", "sentinel",
     ):

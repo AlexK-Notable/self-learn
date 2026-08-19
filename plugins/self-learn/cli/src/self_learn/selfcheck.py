@@ -73,6 +73,7 @@ import tempfile
 from pathlib import Path
 
 from . import gitops
+from . import provider
 from . import scan as scan_mod
 from . import sentinel
 from .compilers import (
@@ -840,6 +841,19 @@ def _check_sentinel() -> tuple[bool, str]:
         return False, f"cannot write sentinel at {path}: {exc}"
 
 
+def _check_invocation(home: Path) -> tuple[bool, str]:
+    """`Doc-0`/`DC11` -- computed PROGRAMMATICALLY from
+    :func:`provider.preflight`, never by parsing `doctor invocation`'s
+    printed text. `ok` is `False` iff the doctor produced at least one
+    FAIL row."""
+    rows = provider.preflight(home)
+    ok = not any(row.verdict == "FAIL" for row in rows)
+    if ok:
+        return True, "run `self-learn doctor invocation` for details"
+    failing = ", ".join(sorted({row.name for row in rows if row.verdict == "FAIL"}))
+    return False, f"FAIL row(s): {failing} — run `self-learn doctor invocation` for details"
+
+
 def run_selftest(home: Path) -> int:
     """All checks, each loud; non-zero on any FAIL."""
     if not home.is_dir():
@@ -859,6 +873,7 @@ def run_selftest(home: Path) -> int:
         ("reach", *_check_reach(home)),
         ("hooks", *_check_hooks(home, claude_runtime_dir())),
         ("sentinel", *_check_sentinel()),
+        ("invocation", *_check_invocation(home)),
     ]
 
     failed = 0

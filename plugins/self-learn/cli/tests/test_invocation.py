@@ -43,6 +43,10 @@ from test_repair import (  # noqa: F401 -- fixtures resolved by name
     _t4_target_fixed,
 )
 
+from test_invocation_sdk import (  # noqa: F401 -- fixture resolved by name
+    sdk_absent,
+)
+
 
 # analyst_env / analyst_shim are NOT imported from test_route_cli: that
 # module's own `env` fixture calls `make_env(tmp_path)` at the BARE
@@ -1452,7 +1456,7 @@ def test_tr7_transport_reached_through_the_subprocess_module_attribute(monkeypat
 # ===================================================================== #
 
 
-def test_rg1_five_rung_precedence_resolves_in_isolation(tmp_path, monkeypatch):
+def test_rg1_five_rung_precedence_resolves_in_isolation(tmp_path, monkeypatch, sdk_absent):
     home = tmp_path / "rg1-home"
     home.mkdir()
     for surface in invocation.SURFACES:
@@ -1483,7 +1487,7 @@ def test_rg1_five_rung_precedence_resolves_in_isolation(tmp_path, monkeypatch):
         assert isinstance(invocation.backend_for(surface, home=home), invocation.CliBackend)
 
 
-def test_rg2_each_rung_shadows_the_ones_below(tmp_path, monkeypatch):
+def test_rg2_each_rung_shadows_the_ones_below(tmp_path, monkeypatch, sdk_absent):
     home = tmp_path / "rg2-home"
     home.mkdir()
     surface, selector = "worker", "WORKER"
@@ -1570,7 +1574,7 @@ def test_rg3_unknown_value_falls_closed_with_byte_exact_warning(tmp_path, monkey
     assert isinstance(invocation.backend_for(surface, home=home), invocation.CliBackend)
 
 
-def test_rg4_sdk_raises_backend_unavailable_with_install_command(monkeypatch, tmp_path):
+def test_rg4_sdk_raises_backend_unavailable_with_install_command(monkeypatch, tmp_path, sdk_absent):
     _clear_backend_env(monkeypatch)
     monkeypatch.setenv("SELF_LEARN_BACKEND", "sdk")
     with pytest.raises(invocation.BackendUnavailable) as exc_info:
@@ -1578,7 +1582,7 @@ def test_rg4_sdk_raises_backend_unavailable_with_install_command(monkeypatch, tm
     assert "pip install 'self-learn-cli[sdk]'" in str(exc_info.value)
 
 
-def test_rg5_write_session_returns_unavailable_without_raising(monkeypatch, tmp_path):
+def test_rg5_write_session_returns_unavailable_without_raising(monkeypatch, tmp_path, sdk_absent):
     _clear_backend_env(monkeypatch)
     monkeypatch.setenv("SELF_LEARN_BACKEND", "sdk")
     logs = []
@@ -1591,7 +1595,7 @@ def test_rg5_write_session_returns_unavailable_without_raising(monkeypatch, tmp_
     assert "unavailable" in logs[0]
 
 
-def test_rg5_text_session_returns_unavailable_without_raising(monkeypatch, tmp_path):
+def test_rg5_text_session_returns_unavailable_without_raising(monkeypatch, tmp_path, sdk_absent):
     _clear_backend_env(monkeypatch)
     monkeypatch.setenv("SELF_LEARN_BACKEND", "sdk")
     logs = []
@@ -1601,7 +1605,7 @@ def test_rg5_text_session_returns_unavailable_without_raising(monkeypatch, tmp_p
     assert outcome.failure == "unavailable"
 
 
-def test_rg5_analyst_analyze_converts_unavailable_to_analyst_error(monkeypatch, analyst_env):
+def test_rg5_analyst_analyze_converts_unavailable_to_analyst_error(monkeypatch, analyst_env, sdk_absent):
     _clear_backend_env(monkeypatch)
     monkeypatch.setenv("SELF_LEARN_BACKEND", "sdk")
     with pytest.raises(analyst.AnalystError) as exc_info:
@@ -1610,7 +1614,7 @@ def test_rg5_analyst_analyze_converts_unavailable_to_analyst_error(monkeypatch, 
     assert "pip install 'self-learn-cli[sdk]'" in str(exc_info.value)
 
 
-def test_rg5_shimmed_worker_run_completes_under_sdk_selection(env, claude_shim, monkeypatch):
+def test_rg5_shimmed_worker_run_completes_under_sdk_selection(env, claude_shim, monkeypatch, sdk_absent):
     _clear_backend_env(monkeypatch)
     monkeypatch.setenv("SELF_LEARN_BACKEND", "sdk")
     seed_pending(env)
@@ -1809,7 +1813,7 @@ def test_wr1_invoke_claude_signature_and_never_raises(monkeypatch):
     assert worker._invoke_claude(["claude"], "p", 1.0, Path("/tmp"), label="") is None
 
 
-def test_wr2_miner_early_returns_precede_the_stray_sweep(monkeypatch, tmp_path):
+def test_wr2_miner_early_returns_precede_the_stray_sweep(monkeypatch, tmp_path, sdk_absent):
     monkeypatch.setenv("SELF_LEARN_HOME", str(tmp_path / "wr2-home"))
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "wr2-xdg"))
     home = tmp_path / "wr2-home"
@@ -1886,7 +1890,7 @@ def test_wr5_analyst_error_carries_cause_for_not_found_and_timeout(analyst_env, 
 
 
 def test_wr6_analyst_failure_mappings_are_byte_exact_and_rendered_through_log_templates(
-    analyst_env, monkeypatch
+    analyst_env, monkeypatch, sdk_absent
 ):
     # -- shipped, byte-identical to master
     monkeypatch.setattr(subprocess, "run", _run_raises(FileNotFoundError()))
