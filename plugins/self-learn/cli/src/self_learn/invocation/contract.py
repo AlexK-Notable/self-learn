@@ -18,6 +18,7 @@ from typing import Callable, Literal, Protocol
 __all__ = [
     "SURFACES",
     "SELECTOR_FOR_SURFACE",
+    "DEFAULT_BACKEND_FOR_SURFACE",
     "Surface",
     "Containment",
     "containment_rules",
@@ -49,6 +50,18 @@ SELECTOR_FOR_SURFACE: dict[str, str] = {
     "worker-repair": "WORKER",
     "miner-reader": "MINER",
     "analyst": "ANALYST",
+}
+
+#: `Flip-1` (U-sdka) -- rung 5 of the backend precedence chain, per
+#: surface. The analyst flips first (attended, lowest volume, and the
+#: flip IS the F3 containment fix); worker/worker-repair/miner-reader
+#: stay on the cli path until their own wave. Every value must be a
+#: member of `registry.KNOWN_BACKENDS`.
+DEFAULT_BACKEND_FOR_SURFACE: dict[str, str] = {
+    "worker": "cli",
+    "worker-repair": "cli",
+    "miner-reader": "cli",
+    "analyst": "sdk",
 }
 
 
@@ -251,7 +264,7 @@ _ANALYST_TEMPLATES = LogTemplates(
     exited="analyst exited {rc}: {detail}",
     timed_out="analyst timed out after {timeout:g}s",
     not_found="claude CLI not found on PATH",
-    os_error=None,  # T-c: no leg -- a bare OSError propagates instead (R-1)
+    os_error="analyst invocation failed ({exc})",  # Err-1 (U-sdka): FW-87, R-1 closed
     unavailable="invocation backend unavailable ({exc})",
     detail_cap=None,
     detail_strip=True,
@@ -279,7 +292,7 @@ class TransportSpec:
     backend is surface-aware."""
 
     kind: Literal["run", "popen"]
-    catches_os_error: bool  # False only on the analyst (`T-c`)
+    catches_os_error: bool  # True on every surface (Err-1, U-sdka: FW-87)
     kills_process_group: bool  # True only on the miner (`T-b`)
     prompt_via_argv: bool  # True only on the analyst -- prompt is already in argv
     result_stdout: Literal["empty", "captured", "merged"]  # `T-e`
@@ -309,7 +322,7 @@ TRANSPORT: dict[str, TransportSpec] = {
     ),
     "analyst": TransportSpec(
         kind="run",
-        catches_os_error=False,
+        catches_os_error=True,  # Err-1 (U-sdka): FW-87, R-1 closed
         kills_process_group=False,
         prompt_via_argv=True,
         result_stdout="captured",
