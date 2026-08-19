@@ -134,7 +134,7 @@ def containment_for(
             disallowed_tools=disallowed_tools,
             write_globs=(f"{spool_dir}/**",),
             write_exact=(),
-            strict_mcp=False,
+            strict_mcp=True,
             default_mode="default",
         )
     if surface == "analyst":

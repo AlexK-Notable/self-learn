@@ -196,6 +196,59 @@ def _scenario_ok_write() -> None:
     emit(result_message(is_error=False, subtype="success", uuid="u3"))
 
 
+def _scenario_reader_write() -> None:
+    """U-sdkr T2-c -- the reader's `sdk`-leg artifact producer. Unlike
+    `ok_write`, this ACTUALLY WRITES `FAKE_CLAUDE_WRITE_TARGET` to disk
+    when (and only when) the charter's response allows it -- `ok_write`
+    never writes, so a reader test built on it would assert
+    `_invoke_reader(...) is None` on every sdk leg and pass for the wrong
+    reason. `FAKE_CLAUDE_WRITE_BODY` defaults to a minimal valid reader
+    artifact; `FAKE_CLAUDE_RESULT_IS_ERROR`/`FAKE_CLAUDE_RESULT_TEXT`
+    (default a sentinel distinct from anything else this scenario emits,
+    `MAJOR-3`) drive the terminating `ResultMessage` independently of the
+    write outcome, so an `rc != 0` leg needs no second scenario."""
+    target = os.environ.get("FAKE_CLAUDE_WRITE_TARGET", "/tmp/example/spool/mine-output.json")
+    body = os.environ.get("FAKE_CLAUDE_WRITE_BODY", '{"candidates": [], "fires": []}')
+    tool_use_id = "toolu_reader_1"
+    response = _request_permission("Write", {"file_path": target}, tool_use_id)
+    allowed = response.get("behavior") == "allow"
+    if allowed:
+        with open(target, "w", encoding="utf-8") as f:
+            f.write(body)
+    emit(
+        assistant_message(
+            "",
+            "u1",
+            content=[
+                {
+                    "type": "tool_use",
+                    "id": tool_use_id,
+                    "name": "Write",
+                    "input": {"file_path": target},
+                }
+            ],
+        )
+    )
+    emit(
+        user_tool_result(
+            tool_use_id,
+            "u2",
+            content="ok" if allowed else response.get("message", "permission denied"),
+            is_error=not allowed,
+        )
+    )
+    is_error = os.environ.get("FAKE_CLAUDE_RESULT_IS_ERROR") == "1"
+    result_text = os.environ.get("FAKE_CLAUDE_RESULT_TEXT", "READER-SDK-RESULT-SENTINEL")
+    emit(
+        result_message(
+            is_error=is_error,
+            subtype="error_during_execution" if is_error else "success",
+            uuid="u3",
+            result=result_text,
+        )
+    )
+
+
 def _scenario_error_result() -> None:
     emit(assistant_message("trying...", "u1"))
     emit(result_message(is_error=True, subtype="error_during_execution", uuid="u2", errors=["boom"]))
@@ -266,6 +319,7 @@ SCENARIOS = {
     "hang_sigterm_ignored": _scenario_hang_sigterm_ignored,
     "malformed_line": _scenario_malformed_line,
     "unknown_message_type": _scenario_unknown_message_type,
+    "reader_write": _scenario_reader_write,
 }
 
 
