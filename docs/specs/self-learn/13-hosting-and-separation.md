@@ -354,7 +354,12 @@ fixture pre-registers the host); nine checker-evasion spellings exist
 imports) — the checker pins today's house style, not the rule itself.
 The model's own writes (the worker's `claude -p`, `cwd=home`) can never
 be lock-guarded and are unfixable by AST — `reconcile` is the answer
-there.
+there. *Amended 2026-08-19 (U-docs):* still true of the model's own
+writes on either backend — but since `U-attrib` (`S-32`) those writes
+land in an exclusive **stage**, and the **install** from stage into the
+ledger runs inside the worker under the commit lock. The unguardable
+window is now the stage, which no other producer reads, rather than the
+ledger itself; `reconcile` remains the answer for anything that escapes.
 
 ## 7.3 Step-2 runbook — product-repo extraction (drafted + ratified + **EXECUTED 2026-07-17**, user: "execute")
 

@@ -7,8 +7,14 @@
 2026-07-17** · **G-3 adjudication surface SHIPPED 2026-07-17** (live:
 `self-learn-ui.service`, 127.0.0.1:7357) · **extension rounds U12–U18
 SHIPPED 2026-07-17/18** (chat panes → idle lifecycle → feedback rounds
-1–3 → UX round 1; revision log below) · **next phase: packaging**
-(`research/2026-07-18-sdk-bundle-exclusion.md`). Everything here was
+1–3 → UX round 1; revision log below) · **Agent-SDK migration Waves 0–1
+SHIPPED 2026-08-09/19** (invocation seam → `SdkBackend` →
+provider/Bedrock contract + `doctor invocation` → test tiering;
+`S-34`–`S-44`, `17-invocation-runbook.md`) · **next: Wave 2 — the
+analyst flip (`U-sdka`) and the per-surface burn-ins**; packaging
+(`research/2026-07-18-sdk-bundle-exclusion.md`) is queued behind it
+*(corrected 2026-08-19, U-docs: the header named a phase that did not
+happen next and omitted the four units that did)*. Everything here was
 written together, as one system, with
 the full evidence of three review rounds and the repo's own usage history baked
 in from the start — not iterated into shape.*
@@ -49,6 +55,7 @@ human routes it.
 | `14-forward-work-map.md` | **The forward work register (FW-1…FW-29)**: potential required work mapped with triggers, types (BUILD/DRILL/DECIDE/WATCH), the consolidated user-decision queue, the first-firing trigger table, and sequencing — authored 2026-07-18; items graduate into specs via the normal gates |
 | `forward/` | Theme deep-dives behind 14: supply quality, canon lifecycle, packaging, UI/UX, sync & fleet, platform drift, process & horizon, worker ecology |
 | `15-orchestration-runbook.md` | **How the agent rounds actually run** (FW-26): round lifecycle, worktree/blindness/merge/sandbox discipline, the gotcha bank, prompt skeletons — written so a fresh orchestrator can run a round without violating a standing rule |
+| `17-invocation-runbook.md` | **The operator runbook for the two invocation switches** (`backend` per surface, `provider` install-wide): the doctor preflight ritual, the flip and rollback one-liners with their measured traps, the per-surface burn-in gates, and the instrument gaps those gates inherit — written so an operator can flip a surface, watch it, and put it back without reading a spec |
 | `records-index.md` | One-line index of every review record, research memo, and trial-log section (FW-27) — date, subject, outcome, what it pinned; maintained at round-close |
 | `research/` | External evidence memos (SOTA surveys etc.) — shareable with blind reviewers, unlike `reviews/` |
 | `fixtures/` | `gen-fixture-b` + `trials.md` (Phase 0 rounds 1–3: six candidates disqualified, B3 qualified + proven 3/3 post-routing — the system's primary behavioral evidence); `ui-trials.md` lands with the G-3 build |
@@ -935,3 +942,22 @@ human routes it.
   licence as "Other" — expected, and not a defect: its detector
   recognises only OSI-approved and a few common licences, and FSL is
   source-available by design. The ledger's private posture is unchanged.
+- **2026-08-19 — docs-truth sweep + the operator runbook (U-docs,
+  Wave 2).** The Agent-SDK migration's Waves 0–1 shipped four units
+  (`U-seam`, `U-sdk`, `U-bedrock`, `U-fake`) without a single numbered
+  doc recording them, against `forward/platform-drift.md` §4's standing
+  rule that an engine swap is never absorbed silently. This unit swept
+  the numbered corpus for every claim about model invocation — 42 sites
+  enumerated, 12 measured NOW FALSE, 11 stale, 14 still true, 5 missing —
+  corrected 11 of the 12 by bounded substitution (`I-26`, a scheduling
+  claim, was out of mandate and became `FW-96`), landed the eight
+  decision rows the migration owed (`S-34`/`S-35`, reserved by `U-seam`
+  §7.5 and never written; plus `S-39`–`S-44`, which give the 2026-08-09
+  user rulings their first in-repo record), and wrote
+  `17-invocation-runbook.md`. **Eight of the twelve falsehoods predate
+  the migration** — `U-repair`, `U-attrib` and the 2026-07-15
+  containment audit each moved the shipped mechanism without moving the
+  corpus, and one clause described an artifact filename the
+  implementation never adopted. Full inventory, per-site substitutions
+  and the gate's verification table:
+  `drafts/u-docs-truth-sweep-spec.md`.

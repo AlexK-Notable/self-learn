@@ -220,8 +220,14 @@ plane, fixes the mechanism.
   `.self-learn/telemetry/`** (not records; pinned here so the validator
   never trips on it).
 - The M2 worker's `claude -p` analysis pass **never writes telemetry**
-  — its `--allowedTools` write surface stays proposals-only (S-5/E-18
-  unchanged). It emits structured suspect/fire candidates as proposal-
+  — it holds no write path to the telemetry plane on either backend:
+  `--allowedTools` grants read tools only, and the write grant (settings
+  file on `cli`, charter on `sdk`) names the worker's exclusive stage and
+  nothing else (S-5/E-18 unchanged; `S-32`). *(corrected 2026-08-19,
+  U-docs: `--allowedTools` never carried the write surface, and the scope
+  is the stage, not `proposals/`. The bullet's claim — the analysis pass
+  never writes telemetry — is unaffected and is now enforced by two
+  mechanisms instead of one.)* It emits structured suspect/fire candidates as proposal-
   dir artifacts; **CLI harness code** validates them (run-sequence
   step-4 class) and spools the events. Only CLI code appends anywhere
   in this plane.

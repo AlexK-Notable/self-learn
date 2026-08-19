@@ -107,12 +107,22 @@ the "focusing" layer, and it is structural (§5 for why).
 
 ### Phase 2 — the reader (LLM, rubric-driven, contained)
 
-One `claude -p` per run over batched digests (batch cap by digest bytes;
-unread files stay behind the cursor for the next run). Containment is the
-M2 worker posture verbatim: `--allowedTools "Read,Grep,Glob"`, the same
-disallow list, and a settings file granting the `Edit(//…)` rule family
-over the miner spool directory only (the live-verified syntax, 08
-appendix 2026-07-15).
+One model invocation per run over batched digests (batch cap by digest
+bytes; unread files stay behind the cursor for the next run) — the
+`miner-reader` surface of the invocation seam, `claude -p` by default.
+Containment is the worker posture **tightened, not copied**: the reader
+gets **no filesystem read tools at all** — `build_reader_argv` emits no
+`--allowedTools` flag, and `READER_DISALLOWED_TOOLS` is the worker's deny
+list **plus `Read,Grep,Glob`** — because the reader's entire evidence base
+rides in the prompt and transcript digests are attacker-influenceable text
+(audit 2026-07-15, injection hardening). Write stays available only
+through the settings file's `Edit(//…)` rule family, scoped to the cache
+spool (the live-verified syntax, 08 appendix 2026-07-15). *(corrected
+2026-08-19, U-docs: "the M2 worker posture verbatim" was wrong in the
+direction that matters — the reader is stricter, not equal — and this
+file already said so at §12.2 ("reader containment (Read/Grep/Glob-less)
+is untouched"); the two statements contradicted each other and the code
+sides with §12.2.)*
 
 The prompt's judgment core is **`references/mining-rubric.md` — a
 versioned, curated file of lesson-shapes with exemplar phrasings**:
@@ -265,6 +275,12 @@ as z-notes creates a second source of truth beside the ledger; (2)
 ingesting transcript chunks into the zettelkasten pollutes a curated
 corpus; (3) widening the miner's tool surface beyond Read/Grep/Glob
 weakens the containment posture that was live-verified on 2026-07-15.
+*Amended 2026-08-19 (U-docs):* read "beyond Read/Grep/Glob" as "beyond
+the reader's tool surface, which is **empty**" — those three are in
+`READER_DISALLOWED_TOOLS`, not granted (see §2's Phase-2 paragraph as
+corrected, and `Sub-9`). The argument is unaffected and in fact stronger:
+granting the miner an MCP tool surface would not widen a narrow grant, it
+would **create** one where none exists.
 Legitimate marginal use: during *interactive review*, the session may
 consult `zk_search_notes` while discussing a card (is this gotcha
 already documented in a z-note?) — human-present enrichment, never a
@@ -385,6 +401,13 @@ Mechanism note: the schedule is a plain systemd user timer executing
 `self-learn mine run` — not literally a cron-claude job, because
 cron-claude schedules `claude -p` prompts and the miner's entrypoint is
 a CLI verb that spawns its own contained `claude -p` internally.
+*Amended 2026-08-19 (U-docs):* "its own contained `claude -p`" is now
+"its own contained model invocation through the seam's `miner-reader`
+surface"; `claude -p` is the default backend. Note for operators: because
+the miner runs from a **systemd user timer**, and the user manager does
+not inherit a login shell's environment, a `SELF_LEARN_BACKEND_MINER`
+exported in a terminal **does not reach the nightly run** —
+`17-invocation-runbook.md` §4.
 
 **User requirements added:**
 
@@ -458,12 +481,21 @@ the 2026-07-15 doctrine (this change activates real background behavior
   kept, tool-result bodies dropped to status+edges, error/retry
   annotations, self-learn command-span and worker/miner-header
   exclusions), per-file line cursors in cache, `--since` override.
-- **T-M2 · reader invocation** — worker-posture `claude -p` (allowed
-  Read/Grep/Glob; settings-file Edit rule family over the miner spool
-  only; timeout; `SELF_LEARN_MINER_MODEL` default claude-sonnet-5);
+- **T-M2 · reader invocation** — reader invocation through the seam's
+  `miner-reader` surface (**no** filesystem read tools — the worker deny
+  list plus `Read,Grep,Glob`; settings-file Edit rule family over the
+  miner spool only; timeout; `SELF_LEARN_MINER_MODEL` default
+  claude-sonnet-5) *(corrected 2026-08-19, U-docs — same defect as §2's
+  Phase-2 paragraph; see `Sub-9`)*;
   prompt = mining rubric (versioned reference file) + ledger index +
-  compiled canon list + digests; artifact contract: one
-  `mine-<runid>.json`, schema-validated, stray spool files deleted.
+  compiled canon list + digests; artifact contract: one file at a FIXED
+  name — `mine-output.json` (`miner.OUTPUT_BASENAME`) — schema-validated,
+  every other spool file deleted as litter *(corrected 2026-08-19,
+  U-docs: the run id is a `uuid4().hex[:8]` that appears only in log
+  lines and `MineResult`, never in a filename. The old text was not
+  merely stale — a file actually named `mine-<runid>.json` would be
+  **swept by the very sweep the same clause describes**, so following it
+  produced an artifact the miner deletes.)*
 - **T-M3 · reconciliation + landing** — CLI verifies every claimed
   match id/status (the model's claim is never trusted raw; a wrong claim
   demotes the candidate to `none` and is journaled); outcomes per §2
