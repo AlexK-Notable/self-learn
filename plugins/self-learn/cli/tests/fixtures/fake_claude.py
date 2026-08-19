@@ -27,6 +27,7 @@ import os
 import signal
 import sys
 import time
+from pathlib import Path
 
 SESSION_ID = "fake-session-1"
 
@@ -378,6 +379,28 @@ def _scenario_unknown_message_type() -> None:
     emit(result_message(is_error=False, subtype="success", uuid="u2", result="after the stream event"))
 
 
+def _fake_claude_out_text() -> str:
+    """`FK-c` -- `FAKE_CLAUDE_OUT` is the sdk leg's `CLAUDE_SHIM_OUT`."""
+    out_path = os.environ.get("FAKE_CLAUDE_OUT", "")
+    return Path(out_path).read_text(encoding="utf-8") if out_path else ""
+
+
+def _scenario_analyst_result() -> None:
+    """`FK-a` -- `E-7` branch 1 (`ResultMessage.result` wins)."""
+    emit(assistant_message("ANALYST-ASSISTANT-SENTINEL", "u1"))
+    emit(result_message(is_error=False, subtype="success", uuid="u2", result=_fake_claude_out_text()))
+
+
+def _scenario_analyst_blocks() -> None:
+    """`FK-b` -- `E-7` branch 2: split across two `TextBlock`s, no
+    `ResultMessage.result` -- makes the `"".join(...)` observable."""
+    text = _fake_claude_out_text()
+    mid = len(text) // 2
+    content = [{"type": "text", "text": text[:mid]}, {"type": "text", "text": text[mid:]}]
+    emit(assistant_message("", "u1", content=content))
+    emit(result_message(is_error=False, subtype="success", uuid="u2"))
+
+
 SCENARIOS = {
     "ok_text": _scenario_ok_text,
     "ok_blocks_only": _scenario_ok_blocks_only,
@@ -391,6 +414,8 @@ SCENARIOS = {
     "malformed_line": _scenario_malformed_line,
     "unknown_message_type": _scenario_unknown_message_type,
     "reader_write": _scenario_reader_write,
+    "analyst_result": _scenario_analyst_result,
+    "analyst_blocks": _scenario_analyst_blocks,
 }
 
 
@@ -404,6 +429,14 @@ def _respond_control_success(request_id: str, response: dict | None = None) -> N
 
 
 def main() -> int:
+    # `FK-d` -- when set, record OUR OWN argv, NUL-separated (same
+    # encoding as `write_analyst_claude_shim`'s `printf '%s\0' "$@"`).
+    # Inert when unset; runs BEFORE reading stdin.
+    argv_log = os.environ.get("FAKE_CLAUDE_ARGV_LOG")
+    if argv_log:
+        with open(argv_log, "w", encoding="utf-8", newline="") as f:
+            for arg in sys.argv[1:]:
+                f.write(arg + "\0")
     while True:
         raw_line = read_line()
         if raw_line is None:

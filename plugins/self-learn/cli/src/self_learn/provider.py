@@ -38,7 +38,7 @@ from pathlib import Path
 from typing import Any
 
 from . import config
-from .invocation.contract import SELECTOR_FOR_SURFACE, SURFACES
+from .invocation.contract import DEFAULT_BACKEND_FOR_SURFACE, SELECTOR_FOR_SURFACE, SURFACES
 from .invocation.registry import KNOWN_BACKENDS
 
 __all__ = [
@@ -141,7 +141,7 @@ def resolve_backend_name(home: Path | str, surface: str) -> tuple[str, str]:
         if cfg_value:
             return _fold_backend(cfg_value), f"config:{key}"
 
-    return "cli", "default"
+    return DEFAULT_BACKEND_FOR_SURFACE.get(surface, "cli"), "default"
 
 
 def _fold_backend(value: str) -> str:

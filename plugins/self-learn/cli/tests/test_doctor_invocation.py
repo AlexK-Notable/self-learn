@@ -120,8 +120,10 @@ def test_dc1_pristine_home_zero_fail_all_rows_once(capsys):
 def test_dc2_switches_names_all_surfaces_and_changes_with_rung(monkeypatch, capsys):
     rc, out = _run(["doctor", "invocation"], capsys)
     (line,) = _rows_by_name(out, "switches")
-    for surface in ("worker", "worker-repair", "miner-reader", "analyst"):
+    for surface in ("worker", "worker-repair", "miner-reader"):
         assert f"{surface}: backend=cli (default)" in line
+    # U-sdka: the analyst's default flipped to sdk (§9 E7).
+    assert "analyst: backend=sdk (default)" in line
 
     monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "sdk")
     rc, out = _run(["doctor", "invocation"], capsys)
@@ -137,7 +139,11 @@ def test_dc2_switches_names_all_surfaces_and_changes_with_rung(monkeypatch, caps
 
 
 def test_dc3_rollout_four_states(monkeypatch, capsys, _home):
-    # wholly-inert -> FAIL
+    # wholly-inert -> FAIL. U-sdka: the analyst's default flipped to sdk,
+    # so this state must now be CONSTRUCTED by pinning the analyst back to
+    # cli -- without the pin all four surfaces are no longer cli, and the
+    # rollout is no longer wholly inert (see DR3, test_u_sdka.py).
+    monkeypatch.setenv("SELF_LEARN_BACKEND_ANALYST", "cli")
     _write_provider_yaml(_home, name="bedrock")
     rc, out = _run(["doctor", "invocation"], capsys)
     (line,) = _rows_by_name(out, "rollout")

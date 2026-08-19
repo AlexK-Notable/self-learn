@@ -1501,6 +1501,8 @@ def test_ou1_every_row_of_the_map_1_table(tmp_path, sdk_cli_path, monkeypatch):
     assert o6.failure == "os-error"
 
     # bare OSError -- worker (caught) vs analyst (re-raised)
+    # U-sdka Err-1 (FW-87): the analyst leg is now caught too -- see the
+    # inverted sub-leg below.
     import claude_agent_sdk
 
     async def _os_err(self):
@@ -1513,8 +1515,9 @@ def test_ou1_every_row_of_the_map_1_table(tmp_path, sdk_cli_path, monkeypatch):
         assert (o7.ok, o7.rc, o7.stdout, o7.failure) == (False, None, "", "os-error")
         assert o7.detail == "transport blew up"
 
-        with pytest.raises(OSError, match="transport blew up"):
-            _run_text(_spec("analyst", home=home, prompt="ok_text"))
+        o7a = _run_text(_spec("analyst", home=home, prompt="ok_text"))
+        assert (o7a.ok, o7a.rc, o7a.stdout, o7a.failure) == (False, None, "", "os-error")
+        assert o7a.detail == "transport blew up"
     finally:
         monkeypatch.setattr(claude_agent_sdk.ClaudeSDKClient, "connect", original_connect)
 
@@ -1639,7 +1642,7 @@ def test_ou4_clean_session_silent_degradation_lines_only_when_forced(tmp_path, s
     assert any("could not resolve the child pid" in line for line in pid_logs)
 
 
-def test_ou5_bare_oserror_escapes_worker_miner_caught_analyst_reraised(tmp_path, sdk_cli_path, monkeypatch):
+def test_ou5_bare_oserror_caught_on_worker_miner_and_analyst(tmp_path, sdk_cli_path, monkeypatch):
     import claude_agent_sdk
 
     async def _os_err(self):
@@ -1655,11 +1658,12 @@ def test_ou5_bare_oserror_escapes_worker_miner_caught_analyst_reraised(tmp_path,
     o_miner = _run(_spec("miner-reader", home=home, prompt="ok_text"))
     assert o_miner.failure == "os-error"
 
-    # R-1: preserved defect -- a bare OSError escapes the analyst leg,
-    # `analyst.analyze` and `text_session`, exactly as it does on
-    # `CliBackend` (`U-seam` `T-c`).
-    with pytest.raises(OSError, match="boom-ou5"):
-        _run_text(_spec("analyst", home=home, prompt="ok_text"))
+    # U-sdka Err-1 (FW-87): the preserved defect (R-1/T-c) is retired --
+    # a bare OSError is now caught on the analyst leg too, `analyst.analyze`
+    # and `text_session` included.
+    o_analyst = _run_text(_spec("analyst", home=home, prompt="ok_text"))
+    assert o_analyst.failure == "os-error"
+    assert o_analyst.detail == "boom-ou5"
 
 
 def test_ou6_analyst_text_extraction_both_branches(tmp_path, sdk_cli_path):
@@ -1836,6 +1840,12 @@ def test_rs2_present_resolves_absent_raises_byte_identical_unavailable(tmp_path,
 
 
 def test_rs2_present_returns_sdkbackend_for_every_surface(tmp_path, monkeypatch):
+    # U-sdka `Pin-1`: conftest pins SELF_LEARN_BACKEND_ANALYST=cli at RUNG
+    # 1, which shadows this test's rung-2 SELF_LEARN_BACKEND=sdk for the
+    # analyst surface. This test is ABOUT rung 2 reaching every surface,
+    # so it clears rung 1 first. The pin's one and only rung-2 casualty
+    # (`E13`'s census).
+    monkeypatch.delenv("SELF_LEARN_BACKEND_ANALYST", raising=False)
     from self_learn import invocation
 
     monkeypatch.setenv("SELF_LEARN_BACKEND", "sdk")

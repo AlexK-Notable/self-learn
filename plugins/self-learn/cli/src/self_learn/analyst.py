@@ -276,6 +276,9 @@ def analyze(
         raise AnalystError(templates.exited.format(rc=outcome.rc, detail=detail))
     if outcome.failure == "unavailable":
         raise AnalystError(templates.unavailable.format(exc=outcome.detail))
+    if outcome.failure == "os-error":
+        assert templates.os_error is not None  # Err-1: the analyst now carries this leg
+        raise AnalystError(templates.os_error.format(exc=outcome.detail)) from outcome.exc
 
     parsed = _parse_yaml_map(outcome.stdout)
     # Register R (U-analyst spec §2.1) — copy-then-stamp, not a rebuild

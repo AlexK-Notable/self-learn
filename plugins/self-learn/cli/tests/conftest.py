@@ -95,3 +95,12 @@ def _worker_test_defaults(monkeypatch, tmp_path):
     monkeypatch.setenv(
         "SELF_LEARN_CLAUDE_DIR", str(tmp_path / "claude-dir-default")
     )
+    # U-sdka `Armor-1`: the analyst's SHIPPED default backend is now
+    # `sdk` (invocation/contract.py `DEFAULT_BACKEND_FOR_SURFACE`). Every
+    # pre-existing analyst test drives a bash PATH shim or a patched
+    # `subprocess.run`, i.e. the cli transport, and names no backend --
+    # same convention as SELF_LEARN_WORKER_AUTOKICK and
+    # SELF_LEARN_NO_NOTIFY above: the suite opts OUT of real machinery by
+    # default and a test that wants it opts back IN. `test_u_sdka.py`'s
+    # FL1 asserts the PRODUCT default directly, with this var cleared.
+    monkeypatch.setenv("SELF_LEARN_BACKEND_ANALYST", "cli")

@@ -1353,10 +1353,13 @@ def test_tr3_miner_timeout_killpg_and_wait(monkeypatch):
         assert popen2.waited is True
 
 
-def test_tr4_bare_os_error_escapes_analyst_but_not_worker_or_miner(monkeypatch):
+def test_tr4_bare_os_error_is_caught_on_analyst_worker_and_miner(monkeypatch):
+    # U-sdka Err-1 (FW-87): the preserved defect (R-1/T-c) is retired --
+    # a bare OSError is now converted to an "os-error" Outcome on every
+    # surface, the analyst included.
     monkeypatch.setattr(subprocess, "run", _run_raises(OSError("permission denied")))
-    with pytest.raises(OSError):  # R-1: preserved defect, not converted
-        invocation.CliBackend().text_session(_spec("analyst"))
+    outcome_analyst = invocation.CliBackend().text_session(_spec("analyst"))
+    assert outcome_analyst.failure == "os-error"
 
     outcome_worker = invocation.CliBackend().write_session(_spec("worker"))
     assert outcome_worker.failure == "os-error"
@@ -1485,7 +1488,14 @@ def test_rg1_five_rung_precedence_resolves_in_isolation(tmp_path, monkeypatch, s
             invocation.backend_for(surface, home=home)
         _clear_config(home)
 
-        assert isinstance(invocation.backend_for(surface, home=home), invocation.CliBackend)
+        # U-sdka `A-c`: the default rung is now surface-aware -- the
+        # analyst's default is `sdk` (BackendUnavailable, sdk_absent is
+        # active), every other surface's default is still `cli`.
+        if invocation.contract.DEFAULT_BACKEND_FOR_SURFACE[surface] == "cli":
+            assert isinstance(invocation.backend_for(surface, home=home), invocation.CliBackend)
+        else:
+            with pytest.raises(invocation.BackendUnavailable):
+                invocation.backend_for(surface, home=home)
 
 
 def test_rg2_each_rung_shadows_the_ones_below(tmp_path, monkeypatch, sdk_absent):
@@ -1924,6 +1934,12 @@ def test_wr6_analyst_failure_mappings_are_byte_exact_and_rendered_through_log_te
     monkeypatch.delenv("SELF_LEARN_BACKEND", raising=False)
 
     # -- every one of them is rendered through LOG_TEMPLATES["analyst"]
+    # U-sdka `Armor-1`/`A-d`: `_clear_backend_env` above deleted conftest's
+    # SELF_LEARN_BACKEND_ANALYST=cli pin, and the analyst's DEFAULT rung is
+    # now `sdk` (invocation/contract.py `DEFAULT_BACKEND_FOR_SURFACE`).
+    # Restore the pin: the `subprocess.run` patch below is meaningless on
+    # any backend but the cli one, so this leg is ABOUT that transport.
+    monkeypatch.setenv("SELF_LEARN_BACKEND_ANALYST", "cli")
     monkeypatch.setattr(subprocess, "run", _run_raises(FileNotFoundError()))
     original = invocation.LOG_TEMPLATES["analyst"]
     mutated = invocation.LogTemplates(

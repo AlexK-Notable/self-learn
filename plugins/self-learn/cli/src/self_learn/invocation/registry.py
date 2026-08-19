@@ -16,6 +16,7 @@ from pathlib import Path
 from .. import config
 from .cli import CliBackend
 from .contract import (
+    DEFAULT_BACKEND_FOR_SURFACE,
     LOG_TEMPLATES,
     SELECTOR_FOR_SURFACE,
     SURFACES,
@@ -88,7 +89,12 @@ def backend_for(surface: str, *, home: Path | str | None = None) -> Backend:
             if value:
                 return _resolve(surface, value, source=key, is_config=True)
 
-    return _CLI_BACKEND
+    return _resolve(
+        surface,
+        DEFAULT_BACKEND_FOR_SURFACE.get(surface, "cli"),
+        source="the built-in default",
+        is_config=False,
+    )
 
 
 def _dispatch(spec: SessionSpec, backend: Backend | None, method: str) -> Outcome:
