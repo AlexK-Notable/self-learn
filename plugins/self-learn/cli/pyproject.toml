@@ -28,6 +28,7 @@ packages = ["src/self_learn"]
 [dependency-groups]
 dev = [
     "pytest>=8.0",
+    "claude-agent-sdk",
 ]
 
 [tool.pytest.ini_options]

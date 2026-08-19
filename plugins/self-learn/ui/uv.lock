@@ -1064,7 +1064,10 @@ requires-dist = [
 provides-extras = ["sdk"]
 
 [package.metadata.requires-dev]
-dev = [{ name = "pytest", specifier = ">=8.0" }]
+dev = [
+    { name = "claude-agent-sdk" },
+    { name = "pytest", specifier = ">=8.0" },
+]
 
 [[package]]
 name = "self-learn-ui"
