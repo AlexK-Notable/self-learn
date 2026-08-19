@@ -63,7 +63,11 @@ from test_worker import (  # noqa: F401 -- fixtures resolved by name
 from test_repair import _defect_script, _t4_missing_target, _t4_target_fixed
 from test_invocation_sdk import FAKE_CLI, sdk_absent, sdk_cli_path  # noqa: F401
 
-BASE_COMMIT = "89f8ef7"
+# Re-anchored 89f8ef7 -> fd694de at the merge train (2026-08-19): the unit
+# built against pre-U-docs/U-sdkr master; both inter-base drifts were
+# verified as those units' gated landings (shims.py +43/0 additive,
+# test_invocation.py CN2 strict_mcp False->True) before moving this ref.
+BASE_COMMIT = "fd694de"
 
 # ===================================================================== #
 # Shared plumbing -- the Par-1 backend fixture, the M-c1 capture spy, and
@@ -566,9 +570,9 @@ def _apply_failure_env(kind: str, param: str, *, scratch: Path, monkeypatch) -> 
 
 _ARMOR_SHAS = {
     "plugins/self-learn/cli/tests/conftest.py": "49e0fd2f1c9232d5e9ed6e105e22388aa54bbd53493a7ec7ecc8305ee79224ea",
-    "plugins/self-learn/cli/tests/shims.py": "c8f348539263fb71a61026b48f9acac213aa5809b7421c1971ee85639a0f6dcb",
+    "plugins/self-learn/cli/tests/shims.py": "c4647decf1838f31791100205217858e907c487974deab12d22cc6a535847548",
     "plugins/self-learn/cli/tests/backends.py": "a2ba2d74f117a230740d10e3c9fa67bd30f751ce80ec59667c9136557a906dde",
-    "plugins/self-learn/cli/tests/test_invocation.py": "e9ee70356d65106848c5857530d43f3bd3ad7244de1a34a4e31aaa200a416c2b",
+    "plugins/self-learn/cli/tests/test_invocation.py": "31f90fa21ee3d7dccf9ec12b42a2f5ef8f970021ec9b4c3523681d3435b9fb54",
     "plugins/self-learn/cli/tests/test_invocation_sdk.py": "9a3246318c86eec8b049e655e7ffeee5f370b828134cc9b62a1eef64ced8668a",
     "plugins/self-learn/cli/tests/test_u_fake.py": "72c5010db060a1179a75648ad17a343b8e0bc69e2923f885b3dbe97f3e636a7e",
     "plugins/self-learn/cli/tests/test_worker.py": "39cb1ca0dd6c2dd366c5455da86c875187d884bdee42ac952f558ba3cdbf882a",
