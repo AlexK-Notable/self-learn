@@ -165,7 +165,15 @@ When a learning lands (teach without `--route`, or import), a **detached
 `claude -p` worker** (the proven home-net-capture pattern: `setsid`, flock,
 survives the session) analyzes it and writes the proposal — destination,
 rationale, draft diff, model, timestamp — to `proposals/lrn-<id>.yaml`, a
-**sibling file; the record itself is untouched** (`02-schema.md` §1). The
+**sibling file; the record itself is untouched** (`02-schema.md` §1).
+*Amended 2026-08-19 (U-docs, Waves 0–1 of the Agent-SDK migration):* the
+worker's model invocation now runs through the **invocation seam**
+(`self_learn/invocation/`), whose backend is selectable per surface —
+`cli` (a `claude -p` subprocess, the shipped default at every rung) or
+`sdk` (an in-process `claude_agent_sdk` session). The transport is a
+configuration choice; everything else in this section — detachment,
+`setsid`, flock, append-only, proposer≠approver — is backend-independent
+and unchanged. Operator procedure: `17-invocation-runbook.md`. The
 analyst prompt loads the routing doctrine (§3.5) and repo conventions.
 Proposer and approver stay distinct by construction — the approver is the
 human (gen-1's proposer≠verifier principle, collapsed to its useful core).
@@ -183,9 +191,23 @@ Two constraints keep the worker honest and race-free:
   machinery is needed: **any machine may run the worker**, because proposal
   writes are new files that never collide, and machine-local flock only has
   to serialize runs on its own host.
-- **Restricted permissions.** The worker runs `claude -p` with
-  `--allowedTools` limited to reading the repo and writing new files under
-  `.self-learn/**/proposals/`. It processes model-written (auto-memory) and
+- **Restricted permissions.** The worker's invocation grants **read tools
+  only** through `--allowedTools` (`Read,Grep,Glob` — `worker.ALLOWED_TOOLS`)
+  and denies `Bash,Edit,NotebookEdit,Task,WebFetch,WebSearch` outright
+  (`worker.DISALLOWED_TOOLS`); the **write** scope is a separate, narrower
+  grant carried by the per-run settings file (`worker.write_settings_file`),
+  and since `U-attrib` (`S-32`) that grant names an **exclusive stage** the
+  model alone writes and the worker alone reads — never the ledger's
+  `proposals/` directories, into which the worker itself installs validated
+  output under the commit lock. *(corrected 2026-08-19, U-docs: the live
+  CLI's `--allowedTools` cannot express a path scope at all — measured
+  2026-07-15, `08` revision log — so the old sentence named the wrong flag
+  for the write grant, and named a directory `S-32` had already moved away
+  from. The **property** the sentence was written to assert — no Bash, no
+  Edit tool, no write path to any record — is unchanged and now holds on
+  both backends, since the same `Containment` data drives the settings file
+  on the `cli` path and the `can_use_tool` charter on the `sdk` path.)*
+  It processes model-written (auto-memory) and
   journal-imported text, so a poisoned lesson can steer it no further than a
   bad proposal a human will read (P1/P9, defense in depth) — literally true,
   since the worker holds no write path to any record.

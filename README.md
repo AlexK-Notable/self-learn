@@ -73,6 +73,15 @@ systemctl --user enable --now self-learn-ui.service   # G-3 surface, see below
 installed copy, so edits are live next session. The two routes are
 alternatives for the skill and commands, not a sequence — pick one.
 
+**If you intend to run any surface on the `sdk` invocation backend**,
+install the CLI's optional extra as well — `install.sh` does not
+(`uv sync --project plugins/self-learn/cli` installs the base
+dependency set only), so a surface flipped to `sdk` without it refuses
+at invocation time with *the "sdk" invocation backend is not built yet*.
+`uv sync --project plugins/self-learn/cli --extra sdk`, or
+`pip install 'self-learn-cli[sdk]'`. See
+`docs/specs/self-learn/17-invocation-runbook.md`.
+
 The ledger needs a git repo at `$SELF_LEARN_HOME` (default
 `~/.self-learn`) before anything else works — bootstrap one with
 `self-learn init`; then register canon targets with `self-learn host add
@@ -155,6 +164,23 @@ denied with a reason. The `cli` engine value is reserved for a future
 subprocess-based engine satisfying the same event protocol; it is not
 built yet, so setting `SELF_LEARN_PANE_ENGINE=cli` is a deliberate,
 documented no-op-with-explanation, not a silent fallback.
+
+### Invocation backend (CLI surfaces)
+
+The three CLI surfaces that invoke a model — the pre-analysis worker
+(and its repair round), the transcript miner's reader, and the
+`teach --route` analyst — run behind one seam whose backend is
+selectable per surface: `cli` (a `claude -p` subprocess) or `sdk` (an
+in-process `claude_agent_sdk` session). **Every surface defaults to
+`cli`**; nothing is flipped by installing. A second, orthogonal,
+install-wide switch selects the `provider` (`anthropic` or `bedrock`).
+
+Check what is resolved on this machine with `self-learn doctor
+invocation`. The full procedure — flip and rollback one-liners, the
+measured traps, the per-surface burn-in gates — is
+`docs/specs/self-learn/17-invocation-runbook.md`. These switches are
+deliberately absent from the environment table above: that table is
+the UI's.
 
 ### Browser notes
 
