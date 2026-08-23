@@ -411,12 +411,15 @@ def test_bk1_agrees_with_registry_over_matrix(tmp_path, monkeypatch):
     assert _backend_for_expectation("worker", unk_home) == "cli"
     monkeypatch.delenv("SELF_LEARN_BACKEND")
 
-    # empty value
+    # empty value -- falls through to the default rung, which U-flip
+    # flipped to "sdk" for "worker". NOT comparable to the `bogus` case
+    # above: an unknown value folds to "cli" regardless of the default,
+    # but an empty value falls THROUGH to the default rung instead.
     empty_home = tmp_path / "bk-empty"
     empty_home.mkdir()
     monkeypatch.setenv("SELF_LEARN_BACKEND", "")
-    assert provider.resolve_backend_name(empty_home, "worker")[0] == "cli"
-    assert _backend_for_expectation("worker", empty_home) == "cli"
+    assert provider.resolve_backend_name(empty_home, "worker")[0] == "sdk"
+    assert _backend_for_expectation("worker", empty_home) == "sdk"
     monkeypatch.delenv("SELF_LEARN_BACKEND")
 
     # Rs-a1's two mandated cells, plus the positive control (E11)
@@ -429,13 +432,20 @@ def test_bk1_agrees_with_registry_over_matrix(tmp_path, monkeypatch):
     monkeypatch.delenv("SELF_LEARN_BACKEND_WORKER")
     monkeypatch.delenv("SELF_LEARN_BACKEND")
 
+    # U-flip inverted this cell's coarse "backend:" value to "cli" (was
+    # "sdk"): the default for "worker" is now "sdk" too, so leaving the
+    # coarse value at "sdk" would make "chain terminated at the empty
+    # per-surface key, fell to the default" and "chain leaked through to
+    # the coarser key" indistinguishable -- both would resolve "sdk".
+    # With "cli" here, a leak reads "cli" and the correct (terminated)
+    # behavior still reads "sdk" (the default).
     cfg_shadow_home = tmp_path / "bk-cfg-shadow"
     cfg_shadow_home.mkdir()
     (cfg_shadow_home / "config.yaml").write_text(
-        'invocation:\n  backend_worker: ""\n  backend: sdk\n', encoding="utf-8"
+        'invocation:\n  backend_worker: ""\n  backend: cli\n', encoding="utf-8"
     )
-    assert provider.resolve_backend_name(cfg_shadow_home, "worker")[0] == "cli"
-    assert _backend_for_expectation("worker", cfg_shadow_home) == "cli"
+    assert provider.resolve_backend_name(cfg_shadow_home, "worker")[0] == "sdk"
+    assert _backend_for_expectation("worker", cfg_shadow_home) == "sdk"
 
     positive_control_home = tmp_path / "bk-positive"
     positive_control_home.mkdir()
@@ -451,8 +461,12 @@ def test_bk2_selector_mapping_holds(tmp_path, monkeypatch):
     assert provider.resolve_backend_name(tmp_path, "worker-repair")[0] == "sdk"
     monkeypatch.delenv("SELF_LEARN_BACKEND_WORKER")
 
-    monkeypatch.setenv("SELF_LEARN_BACKEND_MINER", "sdk")
-    assert provider.resolve_backend_name(tmp_path, "worker-repair")[0] == "cli"
+    # U-flip: "worker-repair"'s own default is now "sdk", so a MINER-leak
+    # stimulus of "sdk" would be tautological with the correct (scoped)
+    # answer. Inverted to "cli" -- a leak would read "cli", the correct
+    # (non-leaked) answer is "worker-repair"'s own default, "sdk".
+    monkeypatch.setenv("SELF_LEARN_BACKEND_MINER", "cli")
+    assert provider.resolve_backend_name(tmp_path, "worker-repair")[0] == "sdk"
 
 
 def test_bk3_resolve_backend_name_never_warns(tmp_path, monkeypatch, capsys):
@@ -584,13 +598,16 @@ def test_md6_no_claude_literal_in_provider_module_and_no_real_id_in_tests():
 # ===================================================================== #
 
 
-def test_ev1_three_legs_disjoint_empty_and_populated(tmp_path):
+def test_ev1_three_legs_disjoint_empty_and_populated(tmp_path, monkeypatch):
     anthropic_res = provider.resolve(tmp_path, "worker")
     assert anthropic_res.provider == "anthropic"
     anthropic_env = provider.session_env(anthropic_res, home=tmp_path)
     assert set(anthropic_env) & set(provider.BEDROCK_ENV_KEYS) == set()
 
-    # bedrock + non-sdk: {} exactly, region None AND region set
+    # bedrock + non-sdk: {} exactly, region None AND region set. U-flip
+    # flipped "worker"'s default to sdk, so the "non-sdk" leg is now
+    # CONSTRUCTED by an explicit pin rather than relying on the default.
+    monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "cli")
     _write_provider_yaml(tmp_path, name="bedrock")
     cli_res_no_region = provider.resolve(tmp_path, "worker")
     assert cli_res_no_region.backend == "cli"
@@ -602,6 +619,7 @@ def test_ev1_three_legs_disjoint_empty_and_populated(tmp_path):
     assert cli_res_with_region.backend == "cli"
     assert cli_res_with_region.region == "us-east-1"
     assert provider.session_env(cli_res_with_region, home=tmp_path) == {}
+    monkeypatch.delenv("SELF_LEARN_BACKEND_WORKER")
 
     # bedrock + sdk: non-empty, the vacuity guard
     sdk_res = _sdk_resolution(tmp_path, "worker")
@@ -952,8 +970,14 @@ def test_rt1_gating_and_both_causes(tmp_path):
             if not model_is_alias:
                 bedrock_cfg["models"] = {"worker": BEDROCK_ID}
             _write_provider_yaml(home, name="bedrock", bedrock=bedrock_cfg or None)
-            # backend defaults to cli (no env, no config) -- mixed-rollout state
-            res_mixed = provider.resolve(home, "worker")
+            # U-flip flipped "worker"'s default to sdk; pin it back to
+            # cli explicitly to construct the mixed-rollout state this
+            # leg is about (no env, no config, used to be enough).
+            os.environ["SELF_LEARN_BACKEND_WORKER"] = "cli"
+            try:
+                res_mixed = provider.resolve(home, "worker")
+            finally:
+                del os.environ["SELF_LEARN_BACKEND_WORKER"]
             assert res_mixed.backend == "cli"
             assert res_mixed.refusal is None, (region_set, model_is_alias, res_mixed.refusal)
 

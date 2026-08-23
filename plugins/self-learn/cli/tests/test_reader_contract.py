@@ -38,7 +38,6 @@ from typing import Callable
 import pytest
 
 from self_learn import invocation, miner
-from self_learn.invocation import registry as registry_mod
 from self_learn.invocation_sdk import SdkBackend
 from self_learn.invocation_sdk import backend as backend_mod
 from self_learn.invocation_sdk import lifecycle as lifecycle_mod
@@ -830,7 +829,11 @@ def test_sw1_early_returns_precede_the_sweep_all_four_kinds(monkeypatch, tmp_pat
         assert out is None, kind
         assert stray.exists(), f"{kind}: stray sweep ran despite an early return"
 
+    # U-flip pins SELF_LEARN_BACKEND_MINER=cli at rung 1 (conftest's
+    # suite-wide default); clear it too, or it shadows this rung-2
+    # override and miner-reader never reaches "unavailable".
     stray.write_text("litter", encoding="utf-8")
+    monkeypatch.delenv("SELF_LEARN_BACKEND_MINER", raising=False)
     monkeypatch.setenv("SELF_LEARN_BACKEND", "sdk")
     out = miner._invoke_reader(home, "PROMPT")
     assert out is None, "unavailable"
@@ -902,35 +905,49 @@ def _clear_backend_env(monkeypatch):
         monkeypatch.delenv(var, raising=False)
 
 
-def test_fl1_backend_var_sdk_resolves_sdkbackend(monkeypatch):
+def test_fl1_backend_var_cli_resolves_clibackend(monkeypatch):
+    # code-gate MAJOR-1: this criterion was
+    # `test_fl1_backend_var_sdk_resolves_sdkbackend` -- miner-reader's
+    # own default is now sdk too, so an "sdk" stimulus would be
+    # tautological with the (unset) default. Inverted to "cli": only a
+    # MINER selector that genuinely reaches miner-reader can resolve it
+    # to `CliBackend`.
     _clear_backend_env(monkeypatch)
-    monkeypatch.setenv(BACKEND_VAR, "sdk")
-    assert isinstance(invocation.backend_for("miner-reader"), SdkBackend)
+    monkeypatch.setenv(BACKEND_VAR, "cli")
+    assert isinstance(invocation.backend_for("miner-reader"), invocation.CliBackend)
 
 
-def test_fl2_clean_env_resolves_the_shared_clibackend(monkeypatch):
+def test_fl2_clean_env_resolves_sdkbackend(monkeypatch):
+    # U-flip flipped miner-reader's product default from "cli" to "sdk"
+    # (same table rung the analyst flip, U-sdka, used). This criterion
+    # used to be "...resolves_the_shared_clibackend" -- a clean env now
+    # resolves a real `SdkBackend`, not the shared `CliBackend` singleton.
     _clear_backend_env(monkeypatch)
     backend = invocation.backend_for("miner-reader")
-    assert isinstance(backend, invocation.CliBackend)
-    assert backend is registry_mod._CLI_BACKEND
+    assert isinstance(backend, SdkBackend)
 
 
 def test_fl3_selector_scoping_both_directions(monkeypatch):
+    from self_learn.invocation_sdk import SdkBackend as _SdkBackend
+
+    # U-flip flipped miner-reader's and worker's own defaults to sdk
+    # (same table rung as the analyst's, U-sdka). The scoping claim (a
+    # FOREIGN selector does not govern this surface) needs the stimulus
+    # INVERTED to "cli": a leak would then flip the surface to
+    # CliBackend and redden, while the correct behavior keeps its own
+    # sdk default. (Stimulus "sdk" would be tautological -- leak and
+    # no-leak both resolve SdkBackend; gate blessing-read catch.)
     _clear_backend_env(monkeypatch)
-    monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "sdk")
-    assert isinstance(invocation.backend_for("miner-reader"), invocation.CliBackend)
+    monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "cli")
+    assert isinstance(invocation.backend_for("miner-reader"), _SdkBackend)
 
     _clear_backend_env(monkeypatch)
-    monkeypatch.setenv(BACKEND_VAR, "sdk")
-    assert isinstance(invocation.backend_for("worker"), invocation.CliBackend)
+    monkeypatch.setenv(BACKEND_VAR, "cli")
+    assert isinstance(invocation.backend_for("worker"), _SdkBackend)
     # U-sdka flipped the analyst's product default to sdk. The scoping
     # claim (the MINER selector does not govern the analyst) needs the
-    # foreign stimulus INVERTED to "cli": a leak would then flip the
-    # analyst to CliBackend and redden, while the correct behavior keeps
-    # its own sdk default. (Stimulus "sdk" would be tautological -- leak
-    # and no-leak both resolve SdkBackend; gate blessing-read catch.)
-    from self_learn.invocation_sdk import SdkBackend as _SdkBackend
-    monkeypatch.setenv(BACKEND_VAR, "cli")
+    # same inversion -- and it's already in place from the line above
+    # (BACKEND_VAR is still "cli").
     assert isinstance(invocation.backend_for("analyst"), _SdkBackend)
 
 

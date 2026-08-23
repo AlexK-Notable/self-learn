@@ -574,14 +574,31 @@ def _apply_failure_env(kind: str, param: str, *, scratch: Path, monkeypatch) -> 
 # ===================================================================== #
 
 _ARMOR_SHAS = {
-    "plugins/self-learn/cli/tests/conftest.py": "7f9fce6fc3819f586e4b13232448316ea93569156916a2b2d0781024414231a7",
+    "plugins/self-learn/cli/tests/conftest.py": "7f609529264dcaa7304fef36dccedaab2da5b01add5c3f71d4e1dc2b805777e9",
     "plugins/self-learn/cli/tests/shims.py": "c4647decf1838f31791100205217858e907c487974deab12d22cc6a535847548",
     "plugins/self-learn/cli/tests/backends.py": "a2ba2d74f117a230740d10e3c9fa67bd30f751ce80ec59667c9136557a906dde",
-    "plugins/self-learn/cli/tests/test_invocation.py": "66dec5d06f807193546535cad5d3bdaf67aa6660a52eb80684428291b00cd62c",
-    "plugins/self-learn/cli/tests/test_invocation_sdk.py": "dd9e046809abc13bcee74af175fb24c4cc068919cbe6cd77d584fec9abf2869e",
+    "plugins/self-learn/cli/tests/test_invocation.py": "af33cb437e6bce062bb2972a6ce4b11ae1cbae05bbdd40ac3774d4d267247a86",
+    "plugins/self-learn/cli/tests/test_invocation_sdk.py": "0921e24ff75e031aac5df207390e343b71a7a82d9fa409006f4151bb34904632",
     "plugins/self-learn/cli/tests/test_u_fake.py": "72c5010db060a1179a75648ad17a343b8e0bc69e2923f885b3dbe97f3e636a7e",
     "plugins/self-learn/cli/tests/test_worker.py": "39cb1ca0dd6c2dd366c5455da86c875187d884bdee42ac952f558ba3cdbf882a",
     "plugins/self-learn/cli/tests/test_repair.py": "dd0accf9f1315109f93de18adc93d206bea56afc50168a7e1ac7f8d846f91c94",
+}
+
+#: U-flip: three of the eight pins above (conftest.py, test_invocation.py,
+#: test_invocation_sdk.py) carry this unit's sanctioned delta (the
+#: worker/worker-repair/miner-reader backend flip and its test fallout)
+#: on top of the U-sdka base -- they are no longer byte-identical to
+#: `BASE_COMMIT` and are excluded from the diff-empty check below. Their
+#: hashes above ARE re-pinned to this unit's shipped content, so the
+#: hash check continues to guard them against any FURTHER, unrelated
+#: drift. A post-merge reconciliation pass (the `c0a49a9` precedent --
+#: "post-merge reconciliation of cross-unit armor and scoping controls")
+#: is expected to bump `BASE_COMMIT` itself once this unit lands, at
+#: which point these three rejoin the diff-empty set.
+_SU4B_DIFF_EXEMPT = {
+    "plugins/self-learn/cli/tests/conftest.py",
+    "plugins/self-learn/cli/tests/test_invocation.py",
+    "plugins/self-learn/cli/tests/test_invocation_sdk.py",
 }
 
 _FAKE_CLAUDE_RELPATH = "plugins/self-learn/cli/tests/fixtures/fake_claude.py"
@@ -602,7 +619,9 @@ def test_su4a_whole_file_armor_shas():
     `HEAD` never moves off the base commit while that holds -- so the
     two-ref form is vacuously empty regardless of what the working tree
     actually carries, and would defeat the very obligation `D-27`
-    exists for."""
+    exists for. U-flip: the diff-empty half is now scoped to the FIVE
+    files not exempted by `_SU4B_DIFF_EXEMPT` (see that constant) -- the
+    hash pins above still cover all eight, unconditionally."""
     for relpath, expected in _ARMOR_SHAS.items():
         working_tree_path = _repo_root() / relpath
         actual = hashlib.sha256(working_tree_path.read_bytes()).hexdigest()
@@ -610,8 +629,9 @@ def test_su4a_whole_file_armor_shas():
             "Shipped armor changed. If this was deliberate, U-sdkw is the "
             f"wrong unit for it -- see §7.5. ({relpath})"
         )
+    diff_checked = [p for p in _ARMOR_SHAS if p not in _SU4B_DIFF_EXEMPT]
     proc = subprocess.run(
-        ["git", "diff", "--stat", BASE_COMMIT, "--", *_ARMOR_SHAS],
+        ["git", "diff", "--stat", BASE_COMMIT, "--", *diff_checked],
         cwd=_repo_root(), capture_output=True, text=True, check=True,
     )
     assert proc.stdout.strip() == "", proc.stdout
@@ -1749,29 +1769,40 @@ def test_ev5_cli_leaves_no_events_file(env, claude_cli_shim_worker, monkeypatch)
 # ===================================================================== #
 
 
-def test_fr1_backend_worker_sdk_resolves_both_surfaces(tmp_path, monkeypatch, sdk_cli_path):
-    monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "sdk")
-    from self_learn.invocation_sdk import SdkBackend as _IndependentSdkBackend
+def test_fr1_backend_worker_cli_resolves_both_surfaces(tmp_path, monkeypatch, sdk_cli_path):
+    # code-gate MAJOR-1: this criterion was
+    # `test_fr1_backend_worker_sdk_resolves_both_surfaces` -- worker and
+    # worker-repair's own default is now sdk too, so an "sdk" stimulus
+    # would be tautological with the (unset) default. Inverted to "cli":
+    # only a WORKER selector that genuinely governs both surfaces can
+    # resolve both to `CliBackend`.
+    monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "cli")
+    from self_learn.invocation import CliBackend as _IndependentCliBackend
 
     home = tmp_path / "fr1-home"
     home.mkdir()
     b1 = invocation.backend_for("worker", home=home)
     b2 = invocation.backend_for("worker-repair", home=home)
-    assert type(b1) is _IndependentSdkBackend
-    assert type(b2) is _IndependentSdkBackend
+    assert type(b1) is _IndependentCliBackend
+    assert type(b2) is _IndependentCliBackend
 
 
-def test_fr3_default_stays_cli(tmp_path, monkeypatch):
+def test_fr3_default_is_now_sdk(tmp_path, monkeypatch, sdk_absent):
+    # U-flip: this criterion was `test_fr3_default_stays_cli` -- the
+    # worker/worker-repair default flipped from "cli" to "sdk" (same
+    # in-code table rung the analyst flip (U-sdka) used). `sdk_absent`
+    # forces the SDK import to fail so the resolved backend is asserted
+    # by the failure mode (`BackendUnavailable`), not by a real
+    # `SdkBackend` construction depending on the host's installed extra.
     for var in ("SELF_LEARN_BACKEND", "SELF_LEARN_BACKEND_WORKER", "SELF_LEARN_BACKEND_MINER", "SELF_LEARN_BACKEND_ANALYST"):
         monkeypatch.delenv(var, raising=False)
     home = tmp_path / "fr3-home"
     home.mkdir()
-    from self_learn.invocation import CliBackend as _IndependentCliBackend
 
-    b1 = invocation.backend_for("worker", home=home)
-    b2 = invocation.backend_for("worker-repair", home=home)
-    assert type(b1) is _IndependentCliBackend
-    assert type(b2) is _IndependentCliBackend
+    with pytest.raises(invocation.BackendUnavailable):
+        invocation.backend_for("worker", home=home)
+    with pytest.raises(invocation.BackendUnavailable):
+        invocation.backend_for("worker-repair", home=home)
     assert invocation.KNOWN_BACKENDS == ("cli", "sdk")
     # instrument half: `git diff 89f8ef7..HEAD -- .../registry.py` empty
     # -- recorded in the build report, not asserted here (`FL-b`).
@@ -1783,25 +1814,34 @@ def test_fr4_selector_mapping_does_not_cross_govern(tmp_path, monkeypatch):
     for var in ("SELF_LEARN_BACKEND", "SELF_LEARN_BACKEND_WORKER", "SELF_LEARN_BACKEND_MINER", "SELF_LEARN_BACKEND_ANALYST"):
         monkeypatch.delenv(var, raising=False)
 
-    from self_learn.invocation import CliBackend as _IndependentCliBackend
+    from self_learn.invocation_sdk import SdkBackend as _IndependentSdkBackend
 
-    monkeypatch.setenv("SELF_LEARN_BACKEND_MINER", "sdk")
-    monkeypatch.setenv("SELF_LEARN_BACKEND_ANALYST", "sdk")
-    assert type(invocation.backend_for("worker", home=home)) is _IndependentCliBackend
-    assert type(invocation.backend_for("worker-repair", home=home)) is _IndependentCliBackend
+    # U-flip flipped worker/worker-repair/miner-reader's product default
+    # to sdk (same table rung the analyst flip, U-sdka, used). The
+    # scoping claim (the MINER/ANALYST selectors do not govern WORKER)
+    # needs the foreign stimulus INVERTED to "cli": a leak would then
+    # flip worker to CliBackend and redden, while the correct behavior
+    # keeps its own sdk default. (Stimulus "sdk" would be tautological --
+    # leak and no-leak both resolve SdkBackend; gate blessing-read catch.)
+    monkeypatch.setenv("SELF_LEARN_BACKEND_MINER", "cli")
+    monkeypatch.setenv("SELF_LEARN_BACKEND_ANALYST", "cli")
+    assert type(invocation.backend_for("worker", home=home)) is _IndependentSdkBackend
+    assert type(invocation.backend_for("worker-repair", home=home)) is _IndependentSdkBackend
     monkeypatch.delenv("SELF_LEARN_BACKEND_MINER")
     monkeypatch.delenv("SELF_LEARN_BACKEND_ANALYST")
 
-    monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "sdk")
-    assert type(invocation.backend_for("miner-reader", home=home)) is _IndependentCliBackend
+    # Same inversion for the WORKER -> miner-reader leg: miner-reader's
+    # own default is now sdk too, so the foreign stimulus is "cli".
+    monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "cli")
+    assert type(invocation.backend_for("miner-reader", home=home)) is _IndependentSdkBackend
     # U-sdka flipped the analyst's product default to sdk. The scoping
     # claim (the WORKER selector does not govern the analyst) needs the
     # foreign stimulus INVERTED to "cli": a leak would then flip the
     # analyst to CliBackend and redden, while the correct behavior keeps
     # its own sdk default. (Stimulus "sdk" would be tautological -- leak
     # and no-leak both resolve SdkBackend; gate blessing-read catch.)
-    from self_learn.invocation_sdk import SdkBackend as _IndependentSdkBackend
-    monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "cli")
+    # `SELF_LEARN_BACKEND_WORKER` is already "cli" from the miner-reader
+    # leg above -- same foreign stimulus serves both legs.
     assert type(invocation.backend_for("analyst", home=home)) is _IndependentSdkBackend
 
 
