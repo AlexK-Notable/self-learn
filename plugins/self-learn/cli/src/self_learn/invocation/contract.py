@@ -52,15 +52,16 @@ SELECTOR_FOR_SURFACE: dict[str, str] = {
     "analyst": "ANALYST",
 }
 
-#: `Flip-1` (U-sdka) -- rung 5 of the backend precedence chain, per
-#: surface. The analyst flips first (attended, lowest volume, and the
-#: flip IS the F3 containment fix); worker/worker-repair/miner-reader
-#: stay on the cli path until their own wave. Every value must be a
-#: member of `registry.KNOWN_BACKENDS`.
+#: `Flip-1` (U-sdka, U-flip) -- rung 5 of the backend precedence chain,
+#: per surface. The analyst flipped first (attended, lowest volume, and
+#: the flip IS the F3 containment fix); worker/worker-repair/miner-reader
+#: flip together in this wave (user ruling 2026-08-23: burn-in cancelled,
+#: Lane B full steam). Every value must be a member of
+#: `registry.KNOWN_BACKENDS`.
 DEFAULT_BACKEND_FOR_SURFACE: dict[str, str] = {
-    "worker": "cli",
-    "worker-repair": "cli",
-    "miner-reader": "cli",
+    "worker": "sdk",
+    "worker-repair": "sdk",
+    "miner-reader": "sdk",
     "analyst": "sdk",
 }
 

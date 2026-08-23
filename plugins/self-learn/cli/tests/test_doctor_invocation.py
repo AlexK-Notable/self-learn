@@ -120,10 +120,11 @@ def test_dc1_pristine_home_zero_fail_all_rows_once(capsys):
 def test_dc2_switches_names_all_surfaces_and_changes_with_rung(monkeypatch, capsys):
     rc, out = _run(["doctor", "invocation"], capsys)
     (line,) = _rows_by_name(out, "switches")
-    for surface in ("worker", "worker-repair", "miner-reader"):
-        assert f"{surface}: backend=cli (default)" in line
-    # U-sdka: the analyst's default flipped to sdk (§9 E7).
-    assert "analyst: backend=sdk (default)" in line
+    # U-sdka flipped the analyst's default to sdk (§9 E7); U-flip flipped
+    # the remaining three (worker/worker-repair/miner-reader) the same
+    # way -- every surface now shows "sdk (default)".
+    for surface in ("worker", "worker-repair", "miner-reader", "analyst"):
+        assert f"{surface}: backend=sdk (default)" in line
 
     monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "sdk")
     rc, out = _run(["doctor", "invocation"], capsys)
@@ -139,27 +140,39 @@ def test_dc2_switches_names_all_surfaces_and_changes_with_rung(monkeypatch, caps
 
 
 def test_dc3_rollout_four_states(monkeypatch, capsys, _home):
-    # wholly-inert -> FAIL. U-sdka: the analyst's default flipped to sdk,
-    # so this state must now be CONSTRUCTED by pinning the analyst back to
-    # cli -- without the pin all four surfaces are no longer cli, and the
-    # rollout is no longer wholly inert (see DR3, test_u_sdka.py).
-    monkeypatch.setenv("SELF_LEARN_BACKEND_ANALYST", "cli")
+    # wholly-inert -> FAIL. U-sdka flipped the analyst's default to sdk;
+    # U-flip flipped the remaining three the same way, so every surface
+    # now defaults to sdk. This state must now be CONSTRUCTED by pinning
+    # ALL FOUR surfaces back to cli -- the general env rung does that in
+    # one shot (no more specific selector pin is set) -- without it no
+    # surface is cli by default, and the rollout is no longer wholly
+    # inert (see DR3, test_u_sdka.py).
+    monkeypatch.setenv("SELF_LEARN_BACKEND", "cli")
     _write_provider_yaml(_home, name="bedrock")
     rc, out = _run(["doctor", "invocation"], capsys)
     (line,) = _rows_by_name(out, "rollout")
     assert line.startswith("FAIL")
+    monkeypatch.delenv("SELF_LEARN_BACKEND")
 
-    # mixed -> no FAIL row anywhere, exit 0
+    # mixed -> no FAIL row anywhere, exit 0. worker/worker-repair/
+    # miner-reader are pinned back to cli (their sdk default would
+    # otherwise FAIL the "models" row -- their model is unset) so only
+    # the analyst resolves sdk, matching the bedrock config below (which
+    # names a model for "analyst" only).
     _write_provider_yaml(
         _home,
         name="bedrock",
         bedrock={"region": "us-east-1", "models": {"analyst": BEDROCK_ID}},
     )
+    monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "cli")
+    monkeypatch.setenv("SELF_LEARN_BACKEND_MINER", "cli")
     monkeypatch.setenv("SELF_LEARN_BACKEND_ANALYST", "sdk")
     rc, out = _run(["doctor", "invocation"], capsys)
     assert rc == 0
     body_lines = [ln for ln in out.splitlines() if ln.startswith("doctor: ") and "handoff" not in ln]
     assert not any(" FAIL " in ln for ln in body_lines)
+    monkeypatch.delenv("SELF_LEARN_BACKEND_WORKER")
+    monkeypatch.delenv("SELF_LEARN_BACKEND_MINER")
     monkeypatch.delenv("SELF_LEARN_BACKEND_ANALYST")
 
     # all-sdk -> PASS
@@ -237,9 +250,14 @@ def test_dc5_region_row(monkeypatch, capsys, _home):
 
 def test_dc6_id_shapes_and_doc_i_gating(monkeypatch, capsys, _home):
     # every model unset -> every surface's model_for() returns the alias
-    # (Mod-3/MD4); only `analyst` is flipped to backend=sdk, so it alone
-    # sees the FAIL and the three `cli` surfaces see the INFO gating.
+    # (Mod-3/MD4). U-flip flipped worker/worker-repair/miner-reader's
+    # default to sdk alongside the analyst's (U-sdka), so the three
+    # `cli`-surface legs below are now CONSTRUCTED by pinning them back
+    # to cli explicitly -- without the pin all four resolve sdk and all
+    # four FAIL instead of showing the INFO gating this test is about.
     _write_provider_yaml(_home, name="bedrock", bedrock={"region": "us-east-1"})
+    monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "cli")
+    monkeypatch.setenv("SELF_LEARN_BACKEND_MINER", "cli")
     monkeypatch.setenv("SELF_LEARN_BACKEND_ANALYST", "sdk")
     rc, out = _run(["doctor", "invocation"], capsys)
     assert rc == 1  # the sdk-surface alias FAILs the run
@@ -462,15 +480,22 @@ def test_dc11_selftest_row(monkeypatch, capsys, _home, tmp_path):
 
     # `M27`'s target: a healthy MID-ROLLOUT install (one surface flipped
     # to sdk with a real id, the rest still on cli with correct aliases)
-    # must stay green -- `Doc-i`'s gating is what keeps it so.
+    # must stay green -- `Doc-i`'s gating is what keeps it so. U-flip
+    # flipped worker/worker-repair/miner-reader's default to sdk too, so
+    # "the rest still on cli" is now CONSTRUCTED by an explicit pin --
+    # without it their unset models would FAIL under an sdk default.
     _write_provider_yaml(
         _home,
         name="bedrock",
         bedrock={"region": "us-east-1", "models": {"analyst": BEDROCK_ID}},
     )
+    monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "cli")
+    monkeypatch.setenv("SELF_LEARN_BACKEND_MINER", "cli")
     monkeypatch.setenv("SELF_LEARN_BACKEND_ANALYST", "sdk")
     ok3, reason3 = selfcheck._check_invocation(_home)
     assert ok3 is True, reason3
+    monkeypatch.delenv("SELF_LEARN_BACKEND_WORKER")
+    monkeypatch.delenv("SELF_LEARN_BACKEND_MINER")
     monkeypatch.delenv("SELF_LEARN_BACKEND_ANALYST")
     _write_provider_yaml(_home, name="anthropic")
 
@@ -494,6 +519,10 @@ def test_dc12_mixed_rollout_info_lines_per_surface(monkeypatch, _home):
             "models": {"analyst": BEDROCK_ID, "miner": BEDROCK_ID_2},
         },
     )
+    # U-flip flipped worker/worker-repair's default to sdk alongside
+    # miner-reader/analyst's; pin them back to cli explicitly to keep
+    # this "mixed" fixture's shape (two surfaces cli, two sdk).
+    monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "cli")
     monkeypatch.setenv("SELF_LEARN_BACKEND_ANALYST", "sdk")
     monkeypatch.setenv("SELF_LEARN_BACKEND_MINER", "sdk")
     rows = provider.preflight(_home)
@@ -556,6 +585,11 @@ def test_dc14_env_row_per_surface_and_catches_refusal(monkeypatch, capsys, _home
         name="bedrock",
         bedrock={"region": "us-east-1", "models": {"analyst": BEDROCK_ID}},
     )
+    # U-flip flipped worker/worker-repair/miner-reader's default to sdk;
+    # pin worker back to cli so its unset model does not refuse (and its
+    # "env" row stays SKIP, which is what this leg is about).
+    monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "cli")
+    monkeypatch.setenv("SELF_LEARN_BACKEND_MINER", "cli")
     monkeypatch.setenv("SELF_LEARN_BACKEND_ANALYST", "sdk")
     rows = provider.preflight(_home)
     env_rows = {r.surface: r for r in rows if r.name == "env"}
@@ -599,6 +633,10 @@ def test_dc16_credentials_warn_not_fail_and_dc3_coupling(monkeypatch, _home, tmp
         name="bedrock",
         bedrock={"region": "us-east-1", "models": {"analyst": BEDROCK_ID, "miner": BEDROCK_ID_2}},
     )
+    # U-flip flipped worker/worker-repair's default to sdk too; pin them
+    # back to cli so their unset model does not refuse -- this leg's
+    # "not any FAIL" assertion is about credentials, not models/env.
+    monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "cli")
     monkeypatch.setenv("SELF_LEARN_BACKEND_ANALYST", "sdk")
     monkeypatch.setenv("SELF_LEARN_BACKEND_MINER", "sdk")
 

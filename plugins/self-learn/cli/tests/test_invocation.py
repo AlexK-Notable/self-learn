@@ -1466,31 +1466,36 @@ def test_rg1_five_rung_precedence_resolves_in_isolation(tmp_path, monkeypatch, s
     for surface in invocation.SURFACES:
         selector = invocation.SELECTOR_FOR_SURFACE[surface]
 
+        # code-gate MAJOR-1: every surface's own default is now "sdk"
+        # (the U-flip table), so a "sdk" stimulus at rungs 1-4 would be
+        # tautological with the (unset) default -- indistinguishable from
+        # the rung never being read at all. Inverted to "cli", asserting
+        # `CliBackend`: only an override that genuinely reaches that rung
+        # can produce this result, since the default never would.
         _clear_backend_env(monkeypatch)
         _clear_config(home)
-        monkeypatch.setenv(f"SELF_LEARN_BACKEND_{selector}", "sdk")
-        with pytest.raises(invocation.BackendUnavailable):
-            invocation.backend_for(surface, home=home)
+        monkeypatch.setenv(f"SELF_LEARN_BACKEND_{selector}", "cli")
+        assert isinstance(invocation.backend_for(surface, home=home), invocation.CliBackend)
 
         _clear_backend_env(monkeypatch)
-        monkeypatch.setenv("SELF_LEARN_BACKEND", "sdk")
-        with pytest.raises(invocation.BackendUnavailable):
-            invocation.backend_for(surface, home=home)
+        monkeypatch.setenv("SELF_LEARN_BACKEND", "cli")
+        assert isinstance(invocation.backend_for(surface, home=home), invocation.CliBackend)
 
         _clear_backend_env(monkeypatch)
-        _write_config(home, {f"backend_{surface}": "sdk"})
-        with pytest.raises(invocation.BackendUnavailable):
-            invocation.backend_for(surface, home=home)
+        _write_config(home, {f"backend_{surface}": "cli"})
+        assert isinstance(invocation.backend_for(surface, home=home), invocation.CliBackend)
         _clear_config(home)
 
-        _write_config(home, {"backend": "sdk"})
-        with pytest.raises(invocation.BackendUnavailable):
-            invocation.backend_for(surface, home=home)
+        _write_config(home, {"backend": "cli"})
+        assert isinstance(invocation.backend_for(surface, home=home), invocation.CliBackend)
         _clear_config(home)
 
-        # U-sdka `A-c`: the default rung is now surface-aware -- the
-        # analyst's default is `sdk` (BackendUnavailable, sdk_absent is
-        # active), every other surface's default is still `cli`.
+        # U-sdka `A-c` / U-flip: the default rung is surface-aware, read
+        # directly off the table rather than hardcoded here -- U-sdka
+        # flipped the analyst alone, U-flip flipped the remaining three
+        # (worker/worker-repair/miner-reader), so every surface now takes
+        # the BackendUnavailable leg (sdk_absent is active); this branch
+        # stays live for whichever surfaces the table still names "cli".
         if invocation.contract.DEFAULT_BACKEND_FOR_SURFACE[surface] == "cli":
             assert isinstance(invocation.backend_for(surface, home=home), invocation.CliBackend)
         else:
@@ -1522,23 +1527,40 @@ def test_rg2_each_rung_shadows_the_ones_below(tmp_path, monkeypatch, sdk_absent)
     with pytest.raises(invocation.BackendUnavailable):
         invocation.backend_for(surface, home=home)
 
+    # code-gate MAJOR-1: "worker"'s own default is now sdk, so an
+    # isolated "sdk" stimulus here (nothing else set) is tautological
+    # with the default -- indistinguishable from rung 4 never being
+    # read at all. Inverted to "cli", asserting `CliBackend`.
     _clear_backend_env(monkeypatch)
-    _write_config(home, {"backend": "sdk"})
+    _write_config(home, {"backend": "cli"})
+    assert isinstance(invocation.backend_for(surface, home=home), invocation.CliBackend)
+
+    # U-flip flipped "worker"'s default to sdk (same table rung the
+    # analyst flip, U-sdka, used); `sdk_absent` is active, so the
+    # default rung now raises rather than returning `CliBackend`.
+    _clear_config(home)
     with pytest.raises(invocation.BackendUnavailable):
         invocation.backend_for(surface, home=home)
 
-    _clear_config(home)
-    assert isinstance(invocation.backend_for(surface, home=home), invocation.CliBackend)
-
     # surface -> selector: WORKER governs worker-repair, MINER does not.
+    # code-gate MAJOR-1: worker-repair's own default is now sdk too, so
+    # a "sdk" stimulus here would be tautological with the (unset)
+    # default. Inverted to "cli", asserting `CliBackend`: only a WORKER
+    # selector that genuinely governs worker-repair can produce this.
     _clear_backend_env(monkeypatch)
-    monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "sdk")
+    monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "cli")
+    assert isinstance(invocation.backend_for("worker-repair", home=home), invocation.CliBackend)
+
+    # U-flip flipped worker-repair's own default to sdk too, so a
+    # MINER-leak stimulus of "sdk" would be tautological with the
+    # correct (non-leaked) answer -- both raise BackendUnavailable.
+    # Inverted to "cli": a leak would resolve worker-repair to
+    # CliBackend (no exception); the correct, non-leaked answer still
+    # raises (worker-repair's own sdk default).
+    _clear_backend_env(monkeypatch)
+    monkeypatch.setenv("SELF_LEARN_BACKEND_MINER", "cli")
     with pytest.raises(invocation.BackendUnavailable):
         invocation.backend_for("worker-repair", home=home)
-
-    _clear_backend_env(monkeypatch)
-    monkeypatch.setenv("SELF_LEARN_BACKEND_MINER", "sdk")
-    assert isinstance(invocation.backend_for("worker-repair", home=home), invocation.CliBackend)
 
 
 def test_rg3_unknown_value_falls_closed_with_byte_exact_warning(tmp_path, monkeypatch, capsys):
@@ -1660,7 +1682,13 @@ def test_rg6_empty_string_falls_through_silently(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("SELF_LEARN_BACKEND", "")
     _write_config(home, {"backend_worker": "", "backend": ""})
     backend = invocation.backend_for("worker", home=home)
-    assert isinstance(backend, invocation.CliBackend)
+    # U-flip flipped "worker"'s default to sdk -- falling all the way
+    # through to the default rung now resolves a real `SdkBackend`, not
+    # `CliBackend`. The invariant under test (every empty value falls
+    # through SILENTLY) is the `err == ""` assertion below, not the
+    # resolved backend's type.
+    from self_learn.invocation_sdk import SdkBackend as _SdkBackend
+    assert isinstance(backend, _SdkBackend)
     assert capsys.readouterr().err == ""
 
 
@@ -1845,8 +1873,11 @@ def test_wr2_miner_early_returns_precede_the_stray_sweep(monkeypatch, tmp_path, 
         assert out is None, name
         assert stray.exists(), f"{name}: stray sweep ran despite an early return"
 
-    # unavailable leg
+    # unavailable leg -- U-flip pins SELF_LEARN_BACKEND_MINER=cli at rung
+    # 1 (conftest's suite-wide default); clear it too, or it shadows this
+    # rung-2 override and miner-reader never reaches "unavailable".
     stray.write_text("litter", encoding="utf-8")
+    monkeypatch.delenv("SELF_LEARN_BACKEND_MINER", raising=False)
     monkeypatch.setenv("SELF_LEARN_BACKEND", "sdk")
     out = miner._invoke_reader(home, "PROMPT")
     assert out is None

@@ -915,6 +915,10 @@ def test_ch10_hatch_open_driven_end_to_end_from_the_real_variable(env, claude_cl
     from self_learn import invocation as invocation_mod
 
     monkeypatch.delenv("SELF_LEARN_BACKEND", raising=False)
+    # U-flip pins SELF_LEARN_BACKEND_WORKER=cli at rung 1 (conftest's
+    # suite-wide default); clear it too, or it shadows this rung-2
+    # override and worker never reaches the sdk transport.
+    monkeypatch.delenv("SELF_LEARN_BACKEND_WORKER", raising=False)
     monkeypatch.setenv("SELF_LEARN_BACKEND", "sdk")
     monkeypatch.setenv("SELF_LEARN_STAGE", "0")  # write_permission_rules -- the ledger globs
     monkeypatch.setenv("SELF_LEARN_REPAIR", "0")  # keep this leg to the BATCH round only
@@ -1031,6 +1035,10 @@ def test_ch12_the_fence_hatch_changes_only_the_charter(tmp_path):
 
 
 def test_ch13_silence_parity_on_both_hatch_paths(env, claude_cli_shim_worker, monkeypatch, sdk_cli_path):
+    # U-flip pins SELF_LEARN_BACKEND_WORKER=cli at rung 1 (conftest's
+    # suite-wide default); clear it too, or it shadows this rung-2
+    # override and worker never reaches the sdk transport.
+    monkeypatch.delenv("SELF_LEARN_BACKEND_WORKER", raising=False)
     monkeypatch.setenv("SELF_LEARN_BACKEND", "sdk")
     monkeypatch.setenv("SELF_LEARN_STAGE", "0")
     monkeypatch.setenv("SELF_LEARN_REPAIR", "0")
@@ -1828,6 +1836,10 @@ def test_ev6_prune_never_touches_another_surfaces_files_or_the_logs(tmp_path, mo
 def test_rs2_present_resolves_absent_raises_byte_identical_unavailable(tmp_path, monkeypatch, sdk_absent):
     from self_learn import invocation
 
+    # U-flip pins SELF_LEARN_BACKEND_WORKER=cli at rung 1 (conftest's
+    # suite-wide default); clear it too, or it shadows this rung-2
+    # override.
+    monkeypatch.delenv("SELF_LEARN_BACKEND_WORKER", raising=False)
     monkeypatch.setenv("SELF_LEARN_BACKEND", "sdk")
     with pytest.raises(invocation.BackendUnavailable) as exc_info:
         invocation.backend_for("worker", home=tmp_path)
@@ -1844,8 +1856,10 @@ def test_rs2_present_returns_sdkbackend_for_every_surface(tmp_path, monkeypatch)
     # 1, which shadows this test's rung-2 SELF_LEARN_BACKEND=sdk for the
     # analyst surface. This test is ABOUT rung 2 reaching every surface,
     # so it clears rung 1 first. The pin's one and only rung-2 casualty
-    # (`E13`'s census).
-    monkeypatch.delenv("SELF_LEARN_BACKEND_ANALYST", raising=False)
+    # (`E13`'s census). U-flip added matching rung-1 pins for
+    # SELF_LEARN_BACKEND_WORKER/_MINER -- clear all three selectors.
+    for var in ("SELF_LEARN_BACKEND_WORKER", "SELF_LEARN_BACKEND_MINER", "SELF_LEARN_BACKEND_ANALYST"):
+        monkeypatch.delenv(var, raising=False)
     from self_learn import invocation
 
     monkeypatch.setenv("SELF_LEARN_BACKEND", "sdk")
@@ -1883,6 +1897,10 @@ def test_rs4_non_import_error_from_claude_agent_sdk_propagates(monkeypatch):
     finder = _Finder()
     monkeypatch.delitem(sys.modules, "claude_agent_sdk", raising=False)
     sys.meta_path.insert(0, finder)
+    # U-flip pins SELF_LEARN_BACKEND_WORKER=cli at rung 1 (conftest's
+    # suite-wide default); clear it too, or it shadows this rung-2
+    # override.
+    monkeypatch.delenv("SELF_LEARN_BACKEND_WORKER", raising=False)
     monkeypatch.setenv("SELF_LEARN_BACKEND", "sdk")
     try:
         with pytest.raises(RuntimeError, match="boom-not-an-import-error"):
@@ -1895,6 +1913,10 @@ def test_rs6_lazy_import_target_resolves_by_identity(tmp_path, monkeypatch):
     from self_learn import invocation
     import self_learn.invocation_sdk as real_pkg
 
+    # U-flip pins SELF_LEARN_BACKEND_WORKER=cli at rung 1 (conftest's
+    # suite-wide default); clear it too, or it shadows this rung-2
+    # override.
+    monkeypatch.delenv("SELF_LEARN_BACKEND_WORKER", raising=False)
     monkeypatch.setenv("SELF_LEARN_BACKEND", "sdk")
     backend = invocation.backend_for("worker", home=tmp_path)
     assert type(backend) is real_pkg.SdkBackend

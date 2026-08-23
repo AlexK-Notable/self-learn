@@ -194,9 +194,15 @@ def test_su4_armor_21_is_byte_identical_and_disjoint_from_edited():
 # ===================================================================== #
 
 
-def test_fl1_default_rung_resolves_sdk_for_analyst_cli_for_the_rest(tmp_path, monkeypatch, sdk_absent):
+def test_fl1_default_rung_resolves_sdk_for_every_surface(tmp_path, monkeypatch, sdk_absent):
     # `FL1` -- the PRODUCT default, env cleared entirely (no conftest pin
-    # survives a nested delenv), no config.yaml.
+    # survives a nested delenv), no config.yaml. U-flip: this criterion
+    # used to be "...resolves_sdk_for_analyst_cli_for_the_rest" -- U-flip
+    # flipped worker/worker-repair/miner-reader's default to sdk too, so
+    # every named surface now takes the BackendUnavailable leg
+    # (`sdk_absent` forces the import to fail). Only an UNKNOWN surface
+    # (not in the table) still resolves `CliBackend`, via the `.get(...,
+    # "cli")` fallback.
     for var in (
         "SELF_LEARN_BACKEND",
         "SELF_LEARN_BACKEND_WORKER",
@@ -209,10 +215,9 @@ def test_fl1_default_rung_resolves_sdk_for_analyst_cli_for_the_rest(tmp_path, mo
 
     assert set(DEFAULT_BACKEND_FOR_SURFACE) == set(SURFACES)
 
-    with pytest.raises(invocation.BackendUnavailable):
-        invocation.backend_for("analyst", home=home)
-    for surface in ("worker", "worker-repair", "miner-reader"):
-        assert isinstance(invocation.backend_for(surface, home=home), invocation.CliBackend)
+    for surface in SURFACES:
+        with pytest.raises(invocation.BackendUnavailable):
+            invocation.backend_for(surface, home=home)
 
     assert isinstance(invocation.backend_for("nope", home=home), invocation.CliBackend)
 
@@ -255,30 +260,30 @@ def test_fl2_each_rung_shadows_the_table_both_directions(tmp_path, monkeypatch, 
     assert isinstance(invocation.backend_for("analyst", home=home), invocation.CliBackend)
     _clear_config(home)
 
-    # the inverse, for the three cli-default surfaces: the table is not a
-    # ceiling.
+    # the inverse, for worker/worker-repair/miner-reader: since U-flip,
+    # these three ALSO default to sdk (the table is not a ceiling in
+    # either direction now -- every surface can be pinned to "cli").
+    # code-gate MAJOR-1: a "sdk" stimulus here would be tautological with
+    # each surface's own (now sdk) default -- inverted to "cli",
+    # asserting `CliBackend`.
     for surface in ("worker", "worker-repair", "miner-reader"):
         selector = invocation.SELECTOR_FOR_SURFACE[surface]
 
         _clear_backend_env(monkeypatch)
-        monkeypatch.setenv(f"SELF_LEARN_BACKEND_{selector}", "sdk")
-        with pytest.raises(invocation.BackendUnavailable):
-            invocation.backend_for(surface, home=home)
+        monkeypatch.setenv(f"SELF_LEARN_BACKEND_{selector}", "cli")
+        assert isinstance(invocation.backend_for(surface, home=home), invocation.CliBackend)
 
         _clear_backend_env(monkeypatch)
-        monkeypatch.setenv("SELF_LEARN_BACKEND", "sdk")
-        with pytest.raises(invocation.BackendUnavailable):
-            invocation.backend_for(surface, home=home)
+        monkeypatch.setenv("SELF_LEARN_BACKEND", "cli")
+        assert isinstance(invocation.backend_for(surface, home=home), invocation.CliBackend)
 
         _clear_backend_env(monkeypatch)
-        _write_config(home, {f"backend_{surface}": "sdk"})
-        with pytest.raises(invocation.BackendUnavailable):
-            invocation.backend_for(surface, home=home)
+        _write_config(home, {f"backend_{surface}": "cli"})
+        assert isinstance(invocation.backend_for(surface, home=home), invocation.CliBackend)
         _clear_config(home)
 
-        _write_config(home, {"backend": "sdk"})
-        with pytest.raises(invocation.BackendUnavailable):
-            invocation.backend_for(surface, home=home)
+        _write_config(home, {"backend": "cli"})
+        assert isinstance(invocation.backend_for(surface, home=home), invocation.CliBackend)
         _clear_config(home)
 
 
@@ -369,10 +374,18 @@ def test_fl5_the_two_transcriptions_agree_over_the_full_matrix(tmp_path, monkeyp
         home = tmp_path / f"fl5-{surface}"
         home.mkdir()
 
+        # code-gate MAJOR-1: `_expected` calls `backend_for` itself, so a
+        # "sdk" stimulus that happens to equal a surface's own default
+        # (every surface, post U-flip) lets a rung-1..4 mutant in
+        # `backend_for` move `derived` and `_expected` together --
+        # `resolve_backend_name` is the INDEPENDENT transcription that
+        # would actually diverge, but only if the stimulus differs from
+        # the default. Inverted to "cli" so a real rung bug in either
+        # transcription produces a genuine mismatch.
         for setup, teardown in (
-            (lambda: monkeypatch.setenv(f"SELF_LEARN_BACKEND_{selector}", "sdk"),
+            (lambda: monkeypatch.setenv(f"SELF_LEARN_BACKEND_{selector}", "cli"),
              lambda: monkeypatch.delenv(f"SELF_LEARN_BACKEND_{selector}")),
-            (lambda: monkeypatch.setenv("SELF_LEARN_BACKEND", "sdk"),
+            (lambda: monkeypatch.setenv("SELF_LEARN_BACKEND", "cli"),
              lambda: monkeypatch.delenv("SELF_LEARN_BACKEND")),
         ):
             _clear_backend_env(monkeypatch)
@@ -382,12 +395,12 @@ def test_fl5_the_two_transcriptions_agree_over_the_full_matrix(tmp_path, monkeyp
             teardown()
 
         _clear_backend_env(monkeypatch)
-        _write_config(home, {f"backend_{surface}": "sdk"})
+        _write_config(home, {f"backend_{surface}": "cli"})
         derived, _ = provider.resolve_backend_name(home, surface)
         assert derived == _expected(surface, home), (surface, "config-surface")
         _clear_config(home)
 
-        _write_config(home, {"backend": "sdk"})
+        _write_config(home, {"backend": "cli"})
         derived, _ = provider.resolve_backend_name(home, surface)
         assert derived == _expected(surface, home), (surface, "config-general")
         _clear_config(home)
@@ -1181,10 +1194,12 @@ _AR1_TRIPWIRE_SHA256 = "1b012978efe34788697a854bd40f28d0c1c45125cbca9d56fea36890
 #: hunk-header context git derives around an INTERIOR edit -- so an
 #: interior mutation (a body comment, or gutting `_tripped`'s raise so
 #: `_find_cli` is never patched) evades a name scan even once the diff
-#: leg is fixed to compare base-vs-WORKING-TREE. These are the exact nine
-#: `+` line bodies (leading `+` stripped) `Armor-1`'s pin is sanctioned
-#: to add to `conftest.py` -- any interior tripwire edit adds a tenth `+`
-#: line, or a `-` line, regardless of what text it contains.
+#: leg is fixed to compare base-vs-WORKING-TREE. These are the exact
+#: `+` line bodies (leading `+` stripped) `Armor-1`'s pin (U-sdka, the
+#: first nine) and U-flip's matching extension (the next nine, same
+#: mechanism for worker/worker-repair/miner-reader) are sanctioned to add
+#: to `conftest.py` -- any interior tripwire edit adds one more `+` line,
+#: or a `-` line, regardless of what text it contains.
 _AR1_SANCTIONED_PIN_LINES = [
     "    # U-sdka `Armor-1`: the analyst's SHIPPED default backend is now",
     "    # `sdk` (invocation/contract.py `DEFAULT_BACKEND_FOR_SURFACE`). Every",
@@ -1195,6 +1210,15 @@ _AR1_SANCTIONED_PIN_LINES = [
     "    # default and a test that wants it opts back IN. `test_u_sdka.py`'s",
     "    # FL1 asserts the PRODUCT default directly, with this var cleared.",
     '    monkeypatch.setenv("SELF_LEARN_BACKEND_ANALYST", "cli")',
+    "    # U-flip: worker/worker-repair/miner-reader's SHIPPED default backend",
+    "    # is now ALSO `sdk` (same table). Same reasoning as the analyst pin",
+    "    # above -- every pre-existing worker/miner test drives a bash PATH",
+    "    # shim, a patched `subprocess.run`, or the in-process fake, i.e. the",
+    "    # cli transport, and names no backend. `SELF_LEARN_BACKEND_WORKER`",
+    "    # covers both `worker` and `worker-repair` (one selector, per",
+    "    # `SELECTOR_FOR_SURFACE`).",
+    '    monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "cli")',
+    '    monkeypatch.setenv("SELF_LEARN_BACKEND_MINER", "cli")',
 ]
 
 
@@ -1236,6 +1260,24 @@ _AR3_REASONS = {
     ("test_invocation_sdk.py", "test_rs2_present_returns_sdkbackend_for_every_surface"): "Pin-1 casualty (A-e)",
     ("test_doctor_invocation.py", "test_dc2_switches_names_all_surfaces_and_changes_with_rung"): "flip (A-c)",
     ("test_doctor_invocation.py", "test_dc3_rollout_four_states"): "flip (A-c)",
+    # U-flip: worker/worker-repair/miner-reader's default flipped to sdk
+    # (same table rung the analyst flip, U-sdka, used) -- every entry
+    # below is a rollout-state pin or a Pin-1-shaped rung-1-shadows-
+    # rung-2 casualty caused by the matching conftest pins this unit
+    # added (see `_AR1_SANCTIONED_PIN_LINES`'s U-flip extension).
+    ("test_invocation.py", "test_wr2_miner_early_returns_precede_the_stray_sweep"): "flip (U-flip)",
+    ("test_invocation.py", "test_rg2_each_rung_shadows_the_ones_below"): "flip (U-flip)",
+    ("test_invocation.py", "test_rg6_empty_string_falls_through_silently"): "flip (U-flip)",
+    ("test_invocation_sdk.py", "test_ch10_hatch_open_driven_end_to_end_from_the_real_variable"): "Pin-1 casualty (U-flip)",
+    ("test_invocation_sdk.py", "test_ch13_silence_parity_on_both_hatch_paths"): "Pin-1 casualty (U-flip)",
+    ("test_invocation_sdk.py", "test_rs2_present_resolves_absent_raises_byte_identical_unavailable"): "Pin-1 casualty (U-flip)",
+    ("test_invocation_sdk.py", "test_rs4_non_import_error_from_claude_agent_sdk_propagates"): "Pin-1 casualty (U-flip)",
+    ("test_invocation_sdk.py", "test_rs6_lazy_import_target_resolves_by_identity"): "Pin-1 casualty (U-flip)",
+    ("test_doctor_invocation.py", "test_dc6_id_shapes_and_doc_i_gating"): "flip (U-flip)",
+    ("test_doctor_invocation.py", "test_dc11_selftest_row"): "flip (U-flip)",
+    ("test_doctor_invocation.py", "test_dc12_mixed_rollout_info_lines_per_surface"): "flip (U-flip)",
+    ("test_doctor_invocation.py", "test_dc14_env_row_per_surface_and_catches_refusal"): "flip (U-flip)",
+    ("test_doctor_invocation.py", "test_dc16_credentials_warn_not_fail_and_dc3_coupling"): "flip (U-flip)",
 }
 
 _AR3_RENAMED = {
@@ -1254,7 +1296,12 @@ _AR3_ONE_LINE_ONLY = {
 }
 
 
-def test_ar3_edited_is_exactly_eight_functions_with_reasons():
+def test_ar3_edited_is_exactly_21_functions_with_reasons():
+    # code-gate NIT: this criterion was
+    # `..._is_exactly_eight_functions_with_reasons` -- U-flip's Pin-1/
+    # rollout-state fallout in test_invocation.py, test_invocation_sdk.py,
+    # and test_doctor_invocation.py added 13 more tracked functions to
+    # `_AR3_REASONS` (8 U-sdka + 13 U-flip = 21).
     touched: set[tuple[str, str]] = set()
     for relpath in ("test_invocation.py", "test_invocation_sdk.py", "test_doctor_invocation.py"):
         full = f"plugins/self-learn/cli/tests/{relpath}"
@@ -1294,15 +1341,24 @@ def test_ar3_edited_is_exactly_eight_functions_with_reasons():
 
 def test_ar5_pin1_class_is_closed_by_census():
     """`Pin-1`'s casualty class, re-run as a census over the WHOLE suite:
-    every test setting `SELF_LEARN_BACKEND=sdk` (rung 2) that reaches the
-    analyst surface or iterates `SURFACES`, without first clearing
-    `SELF_LEARN_BACKEND_ANALYST` -- directly, or via an autouse fixture in
-    its module. This census recognizes exactly the two SYSTEMIC
-    protections Pin-1 itself names (`_clear_backend_env(`'s convention, or
-    an autouse module fixture) -- a same-function, one-off inline
-    `delenv` (`test_rs2`'s own `A-e` fix) is deliberately NOT credited: it
-    is what makes `test_rs2` the census's stable, tracked member rather
-    than a moving target that vanishes the moment it grows its own fix."""
+    every test setting `SELF_LEARN_BACKEND=sdk` (rung 2) that reaches a
+    surface conftest pins at rung 1 -- `analyst` (U-sdka's own pin) or
+    `worker`/`worker-repair`/`miner-reader` (U-flip's matching
+    `SELF_LEARN_BACKEND_WORKER`/`_MINER` pins) -- or iterates `SURFACES`,
+    without first clearing the relevant rung-1 var(s), directly or via an
+    autouse fixture in its module. This census recognizes exactly the two
+    SYSTEMIC protections Pin-1 itself names (`_clear_backend_env(`'s
+    convention, or an autouse module fixture) -- a same-function, one-off
+    inline `delenv` is deliberately NOT credited: it is what makes a test
+    a census STABLE, TRACKED member rather than a moving target that
+    vanishes the moment it grows its own fix. U-flip's generalization
+    (WORKER/MINER, not just ANALYST) surfaces three more members of
+    exactly this shape -- `test_rs2_present_resolves_absent_raises_
+    byte_identical_unavailable`, `test_rs4_non_import_error_from_
+    claude_agent_sdk_propagates`, `test_rs6_lazy_import_target_resolves_
+    by_identity` -- each fixed with a same-function, one-off inline
+    `delenv("SELF_LEARN_BACKEND_WORKER")` for the same reason `test_rs2`
+    itself was."""
     tests_dir = Path(__file__).parent
     immune_modules = {"test_doctor_invocation.py", "test_provider.py"}  # autouse _clear_provider_env
     casualties: set[str] = set()
@@ -1320,16 +1376,28 @@ def test_ar5_pin1_class_is_closed_by_census():
             src = ast.get_source_segment(text, node)
             if 'setenv("SELF_LEARN_BACKEND", "sdk")' not in src:
                 continue
-            reaches_analyst = (
-                '"analyst"' in src or "'analyst'" in src or "SURFACES" in src
+            reaches_pinned_surface = any(
+                literal in src
+                for literal in (
+                    '"analyst"', "'analyst'",
+                    '"worker"', "'worker'",
+                    '"worker-repair"', "'worker-repair'",
+                    '"miner-reader"', "'miner-reader'",
+                    "SURFACES",
+                )
             )
-            if not reaches_analyst:
+            if not reaches_pinned_surface:
                 continue
             if "_clear_backend_env(" in src:
                 continue
             casualties.add(node.name)
 
-    assert casualties == {"test_rs2_present_returns_sdkbackend_for_every_surface"}
+    assert casualties == {
+        "test_rs2_present_returns_sdkbackend_for_every_surface",
+        "test_rs2_present_resolves_absent_raises_byte_identical_unavailable",
+        "test_rs4_non_import_error_from_claude_agent_sdk_propagates",
+        "test_rs6_lazy_import_target_resolves_by_identity",
+    }
 
 
 def test_ar4_byte_identity_under_the_rollback(tmp_path, monkeypatch, sdk_absent):
@@ -1421,7 +1489,8 @@ def test_dr1_switches_row_and_only_that_row_changes(tmp_path, monkeypatch):
     rows_default = provider.preflight(home)
     switches = next(r for r in rows_default if r.name == "switches")
     assert "analyst: backend=sdk (default)" in switches.detail
-    assert "worker: backend=cli (default)" in switches.detail
+    # U-flip flipped worker's default to sdk too (same table).
+    assert "worker: backend=sdk (default)" in switches.detail
 
     monkeypatch.setenv("SELF_LEARN_BACKEND_ANALYST", "cli")
     rows_pinned = provider.preflight(home)
@@ -1441,6 +1510,13 @@ def test_dr2_bedrock_rollout_delta_full_row_set(tmp_path, monkeypatch):
         "SELF_LEARN_BACKEND_MINER", "SELF_LEARN_BACKEND_ANALYST",
     ):
         monkeypatch.delenv(var, raising=False)
+    # U-flip flipped worker/worker-repair/miner-reader's default to sdk
+    # alongside the analyst's; pin them back to cli so this fixture keeps
+    # its intended shape -- one surface (analyst) sdk, three cli -- which
+    # is what the "mixed" (four INFO rollout rows) and per-surface
+    # assertions below are about.
+    monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "cli")
+    monkeypatch.setenv("SELF_LEARN_BACKEND_MINER", "cli")
     home = tmp_path / "dr2-home"
     home.mkdir()
     (home / "config.yaml").write_text(
@@ -1480,7 +1556,12 @@ def test_dr2_bedrock_rollout_delta_full_row_set(tmp_path, monkeypatch):
         assert env_row.verdict in ("SKIP",)
 
 
-def test_dr3_wholly_inert_state_is_constructed_by_the_pin(tmp_path, monkeypatch):
+def test_dr3_wholly_inert_state_is_constructed_by_pinning_every_surface_to_cli(tmp_path, monkeypatch):
+    # U-flip: this criterion used to construct the wholly-inert state by
+    # pinning the analyst ALONE back to cli (worker/worker-repair/
+    # miner-reader were already cli by default). U-flip flipped their
+    # default to sdk too, so "the pin" is now the general rung, which
+    # forces every surface without a more specific override to cli.
     home = tmp_path / "dr3-home"
     home.mkdir()
     (home / "config.yaml").write_text("provider:\n  name: bedrock\n", encoding="utf-8")
@@ -1494,7 +1575,7 @@ def test_dr3_wholly_inert_state_is_constructed_by_the_pin(tmp_path, monkeypatch)
     rollout_unpinned = [r for r in rows_unpinned if r.name == "rollout"]
     assert not (len(rollout_unpinned) == 1 and rollout_unpinned[0].verdict == "FAIL")
 
-    monkeypatch.setenv("SELF_LEARN_BACKEND_ANALYST", "cli")
+    monkeypatch.setenv("SELF_LEARN_BACKEND", "cli")
     rows_pinned = provider.preflight(home)
     rollout_pinned = [r for r in rows_pinned if r.name == "rollout"]
     assert len(rollout_pinned) == 1

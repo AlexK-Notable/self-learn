@@ -104,3 +104,12 @@ def _worker_test_defaults(monkeypatch, tmp_path):
     # default and a test that wants it opts back IN. `test_u_sdka.py`'s
     # FL1 asserts the PRODUCT default directly, with this var cleared.
     monkeypatch.setenv("SELF_LEARN_BACKEND_ANALYST", "cli")
+    # U-flip: worker/worker-repair/miner-reader's SHIPPED default backend
+    # is now ALSO `sdk` (same table). Same reasoning as the analyst pin
+    # above -- every pre-existing worker/miner test drives a bash PATH
+    # shim, a patched `subprocess.run`, or the in-process fake, i.e. the
+    # cli transport, and names no backend. `SELF_LEARN_BACKEND_WORKER`
+    # covers both `worker` and `worker-repair` (one selector, per
+    # `SELECTOR_FOR_SURFACE`).
+    monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "cli")
+    monkeypatch.setenv("SELF_LEARN_BACKEND_MINER", "cli")
