@@ -1666,16 +1666,21 @@ def test_hy3_fake_claude_additions_are_additive():
 
 
 def test_hy5_numstat_bounds_hold():
+    # Bounds reconciled 2026-08-23 post U-flip merge (d22eedb): the three
+    # remaining surfaces' defaults flipped to sdk, growing the cumulative
+    # 442385d..HEAD envelope for contract.py and the four touched test
+    # files. Values are the exact measured numstat at reconciliation —
+    # tight on purpose (c0a49a9 precedent).
     bounds = {
-        "plugins/self-learn/cli/src/self_learn/invocation/contract.py": (16, 3),
+        "plugins/self-learn/cli/src/self_learn/invocation/contract.py": (17, 3),
         "plugins/self-learn/cli/src/self_learn/invocation/registry.py": (8, 1),
         "plugins/self-learn/cli/src/self_learn/provider.py": (3, 2),
         "plugins/self-learn/cli/src/self_learn/analyst.py": (8, 0),
-        "plugins/self-learn/cli/tests/conftest.py": (10, 0),
+        "plugins/self-learn/cli/tests/conftest.py": (18, 0),
         "plugins/self-learn/cli/tests/fixtures/fake_claude.py": (40, 0),
-        "plugins/self-learn/cli/tests/test_invocation.py": (22, 6),
-        "plugins/self-learn/cli/tests/test_invocation_sdk.py": (22, 8),
-        "plugins/self-learn/cli/tests/test_doctor_invocation.py": (10, 4),
+        "plugins/self-learn/cli/tests/test_invocation.py": (74, 27),
+        "plugins/self-learn/cli/tests/test_invocation_sdk.py": (40, 8),
+        "plugins/self-learn/cli/tests/test_doctor_invocation.py": (50, 6),
     }
     for relpath, (max_ins, max_del) in bounds.items():
         out = subprocess.run(
