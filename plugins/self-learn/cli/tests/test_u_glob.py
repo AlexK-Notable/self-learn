@@ -537,7 +537,14 @@ class TestT10SelfcheckUserScopeGlobDrift:
         target = tmp_path / "dot-claude" / "CLAUDE.md"
         target.parent.mkdir()
         target.write_text("# user conduct\n", encoding="utf-8")
+        # U-xscope: selfcheck._target_for now delegates to
+        # verbs.managed_target_for, which reads verbs' OWN
+        # DEFAULT_USER_CLAUDE_MD binding, not selfcheck's re-exported
+        # copy — patch both, or _check_drift's target resolution (used
+        # for presence/staleness) silently falls back to the real
+        # ~/.claude/CLAUDE.md while routing still goes through `target`.
         monkeypatch.setattr(selfcheck, "DEFAULT_USER_CLAUDE_MD", target)
+        monkeypatch.setattr(verbs, "DEFAULT_USER_CLAUDE_MD", target)
         if fixture:
             fixture_dir = tmp_path / "u-glob-t10-fixture"
             fixture_dir.mkdir()

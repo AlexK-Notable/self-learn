@@ -110,7 +110,7 @@ from .hosts import (
     slug_for,
     validate_host_path,
 )
-from .ledger import discover_buckets
+from .ledger import Bucket, discover_buckets
 from .ledger_ops import (
     PROPOSAL_DESTINATIONS,
     ROSTER_UNAVAILABLE,
@@ -166,6 +166,7 @@ __all__ = [
     "followup_done",
     "graduate",
     "link_contradicts",
+    "managed_target_for",
     "push_pending",
     "recompile",
     "rehome",
@@ -691,6 +692,14 @@ class TargetSpec:
     #: `_resolve_target`'s reference branch; ``None`` for every other
     #: destination.
     pointer_surface: Path | None = None
+    #: U-xscope §3.1(1): the SAME route-time/test override
+    #: :func:`_resolve_target` accepted for a user-scope claude-md target
+    #: (plain or ``rules``) -- carried on the spec so :func:`managed_target_for`
+    #: can be called with the override that produced THIS spec's target,
+    #: never re-derived from ``spec.target`` (a bare-target re-derivation
+    #: would desync the moment either side's resolution logic changes).
+    #: ``None`` for every non-user-scope spec.
+    user_claude_md: Path | str | None = None
 
 
 def _gate_host(home: Path, path: Path | str, kind: str) -> Path:
@@ -784,6 +793,100 @@ def _glob_probe_budget_display() -> str:
         except ValueError:
             pass
     return f"{DEFAULT_GLOB_PROBE_BUDGET_S:g}"
+
+
+def managed_target_for(
+    home: Path,
+    bucket: Bucket,
+    record: Record,
+    *,
+    user_claude_md: Path | str | None = None,
+) -> Path | None:
+    """U-xscope §3.1: the compiled canon file ONE record's routing
+    resolves to — the SAME resolution :func:`_resolve_target` applies at
+    route time, re-derived read-only from a resolved record's stored
+    ``routing`` block. Single implementation, two callers:
+    :func:`self_learn.selfcheck._target_for` delegates here for its
+    read-only enumeration, and :func:`_compile_set` calls it per candidate
+    record to detect a skill-md/new-skill target collision (below).
+
+    Every live plugin under a registered skills root lays out
+    ``plugins/<name>/skills/<name>/`` — so :func:`~self_learn.hosts.
+    skill_dir_for`'s glob (the skill-md leg) and the new-skill formula
+    ``<skills_root>/plugins/<name>/skills/<name>/SKILL.md`` (the new-skill
+    leg) resolve to the SAME file for every one of them. A skill-md route
+    and a new-skill route naming that skill therefore compile the SAME
+    physical target from two different ``routing.destination`` values —
+    comparing this function's output across both is how :func:`_compile_set`
+    tells they must union rather than overwrite each other.
+
+    ``user_claude_md`` threads the SAME test/route-time override
+    :func:`_resolve_target` accepts for a user-scope claude-md target
+    (plain or ``rules``) — never re-derived from anything on ``record`` or
+    ``bucket``, which carry no memory of it. Re-deriving the default here
+    would return ``~/.claude/CLAUDE.md`` for every override-based caller —
+    every sandboxed test, and the chezmoi flow — silently emptying every
+    user-scope compile set (and, read-only, aiming selfcheck's checks at
+    the operator's REAL file instead of the sandbox under test).
+
+    Normalizes via ``.resolve()`` exactly once, here, on the return value
+    — nothing downstream re-normalizes a value this function already
+    returned. A caller comparing against a target NOT produced by this
+    function (:func:`_compile_set`'s own ``spec.target``) must resolve it
+    the same way at the comparison site.
+
+    ``None`` = unresolvable (unregistered/missing host, or a scope this
+    destination never routes) or a destination with no marker-bearing
+    file at all (``reference``/``hook``)."""
+    destination = (record.routing or {}).get("destination")
+    if destination == "skill-md" and bucket.scope == "skill":
+        try:
+            return (skill_dir_for(load_hosts(home), bucket.name) / "SKILL.md").resolve()
+        except HostsError:
+            return None
+    if destination == "new-skill":
+        name = (record.routing or {}).get("new_skill")
+        try:
+            root = load_hosts(home).skills_root
+        except HostsError:
+            return None
+        if not name or root is None:
+            return None
+        return (root / "plugins" / name / "skills" / name / "SKILL.md").resolve()
+    if destination == "claude-md":
+        routing = record.routing or {}
+        variant = routing.get("variant")
+        if variant == "local":
+            host = bucket_project_path(bucket.path)
+            return None if host is None else (Path(host) / "CLAUDE.local.md").resolve()
+        if variant == "rules":
+            topic = routing.get("rules_topic")
+            if not topic:
+                return None
+            if record.scope == "user":
+                base = Path(
+                    user_claude_md if user_claude_md is not None else DEFAULT_USER_CLAUDE_MD
+                ).expanduser()
+                return (_user_rules_dir(base) / f"{topic}.md").resolve()
+            if record.scope == "project":
+                host = bucket_project_path(bucket.path)
+                return (
+                    None
+                    if host is None
+                    else (_project_rules_dir(Path(host)) / f"{topic}.md").resolve()
+                )
+            return None  # skill-scope rules: deferred (§9), never routed
+        if record.scope == "user":
+            target = Path(
+                user_claude_md if user_claude_md is not None else DEFAULT_USER_CLAUDE_MD
+            ).expanduser()
+            return target.resolve()
+        if record.scope == "project":
+            host = bucket_project_path(bucket.path)
+            return None if host is None else (Path(host) / "CLAUDE.md").resolve()
+        root = load_hosts(home).skills_root  # skill-scoped claude-md
+        return None if root is None else (root / "CLAUDE.md").resolve()
+    return None  # reference/hook: no managed markers
 
 
 def _user_reachability_roots(home: Path, user_claude_md_target: Path) -> tuple[Path, ...]:
@@ -1011,6 +1114,7 @@ def _resolve_rules_target(
             "claude-md", "user", bucket_dir, target, None,
             variant="rules", rules_topic=rules_topic, rules_paths=paths_tuple,
             glob_bypass=bool(bypassed_reason), glob_bypass_reason=bypassed_reason,
+            user_claude_md=user_claude_md,
         )
     host = _project_host_or_refuse(home, bucket_dir, project_path)
     target = _project_rules_dir(host) / f"{rules_topic}.md"
@@ -1097,7 +1201,10 @@ def _resolve_target(
                 # E-17 preflight: chezmoi drift/dirty aborts BEFORE the
                 # ledger commit — the record stays pending (§5 playbook).
                 preflight_user_scope(target, chezmoi=chezmoi_bin)
-            return TargetSpec("claude-md", "user", bucket_dir, target, None)
+            return TargetSpec(
+                "claude-md", "user", bucket_dir, target, None,
+                user_claude_md=user_claude_md,
+            )
         if scope == "project":
             host = _project_host_or_refuse(home, bucket_dir, project_path)
             target = host / "CLAUDE.md"
@@ -1682,30 +1789,87 @@ def _remove_hook_script(
         return None
 
 
+def _target_matched_records(
+    home: Path,
+    target: Path | None,
+    destinations: tuple[str, ...],
+    *,
+    user_claude_md: Path | str | None,
+) -> list[Record]:
+    """§3.2's C(T): every ROUTED record, across every bucket, whose
+    ``managed_target_for`` resolution equals ``target`` — restricted to
+    ``destinations`` (a candidate-pruning filter only; MEMBERSHIP itself
+    is decided by target equality alone, never by destination or bucket,
+    per §3.2 items 1-2). ``user_claude_md`` threads the caller's own
+    resolution context into every candidate's resolution (§3.1(1)) — the
+    SAME override that produced ``target`` in the first place, so a
+    user-scope union built through a sandboxed override sees exactly the
+    records that ALSO resolve through that override, never the operator's
+    real default."""
+    if target is None:
+        return []
+    records: list[Record] = []
+    seen: set[str] = set()
+    for bucket in discover_buckets(home):
+        resolved = bucket.path / "resolved"
+        if not resolved.is_dir():
+            continue
+        for path in sorted(resolved.glob("lrn-*.md")):
+            try:
+                record = Record.from_path(path)
+            except RecordError:
+                continue  # unparseable resolved file: never a compile input
+            if record.id in seen or record.status != "routed":
+                continue
+            if (record.routing or {}).get("destination") not in destinations:
+                continue
+            if (
+                managed_target_for(home, bucket, record, user_claude_md=user_claude_md)
+                != target
+            ):
+                continue
+            seen.add(record.id)
+            records.append(record)
+    return records
+
+
 def _compile_set(home: Path, spec: TargetSpec) -> list[Record]:
     """The compile set, read straight off disk (the ledger op commits
     FIRST now — no shadow copies; superseded old records already dropped
     out via the compiler's status filter)."""
-    if spec.destination == "skill-md":
-        return _routed_to([spec.bucket_dir], "skill-md")
-    if spec.destination == "new-skill":
-        # a scaffolded skill may collect lessons from ANY bucket — the
-        # name on the routing block is the grouping key.
-        return [
-            r
-            for r in _routed_to(_all_bucket_dirs(home), "new-skill")
-            if (r.routing or {}).get("new_skill") == spec.new_skill
-        ]
-    # A2 §4.5A: partition on (variant, rules_topic) — a rules topic file,
-    # a `local` file, and plain claude-md must never cross-contaminate,
-    # in EITHER direction. `spec.variant`/`spec.rules_topic` compose with
-    # (never replace) the scope filtering below; a plain-claude-md spec
-    # carries variant=None, which _routed_to reads as "no variant on the
-    # record" — the byte-identical P-A6 default.
+    if spec.destination in ("skill-md", "new-skill"):
+        # U-xscope: a skill-md route and a new-skill route can name the
+        # SAME physical SKILL.md (every live plugin lays out
+        # `plugins/<name>/skills/<name>/`, so skill_dir_for's glob and
+        # new-skill's `plugins/<name>/skills/<name>/SKILL.md` formula
+        # collide byte-for-byte) — filtering the compile set by
+        # `spec.destination`/`spec.bucket_dir`/`spec.new_skill` alone (the
+        # pre-fix shape) built DISJOINT sets for the two destinations, and
+        # `compile_managed_text` regenerates the WHOLE section, so each
+        # destination's compile DELETED the other's entries. The compile
+        # set here is the UNION of every ROUTED record, across EITHER
+        # destination and every bucket, whose `managed_target_for`
+        # resolution is THIS spec's target — a single-role skill
+        # degenerates to exactly the old per-destination set.
+        target = spec.target.resolve() if spec.target is not None else None
+        return _target_matched_records(
+            home, target, ("skill-md", "new-skill"),
+            user_claude_md=spec.user_claude_md,
+        )
     if spec.scope_kind == "user":
-        return _routed_to(
-            _all_bucket_dirs(home), "claude-md", scope_pred=lambda s: s == "user",
-            variant=spec.variant, rules_topic=spec.rules_topic,
+        # U-xscope MAJOR 5 fold: target-matching here too (not a
+        # `_routed_to` scope_pred filter), so `spec.user_claude_md` is
+        # genuinely load-bearing on this leg exactly like the union
+        # above — B1's blanking route ran through an un-threaded
+        # override, and this is the other place one could hide.
+        # `variant`/`rules_topic` need no separate filter: each
+        # candidate's OWN `managed_target_for` resolution already varies
+        # by its own variant/topic, so only records whose target equals
+        # THIS spec's target (already variant-specific) ever match —
+        # the partition survives for free, per §3.5.
+        target = spec.target.resolve() if spec.target is not None else None
+        return _target_matched_records(
+            home, target, ("claude-md",), user_claude_md=spec.user_claude_md,
         )
     # project / skill-root claude-md: ONE file can serve BOTH roles — a
     # repo registered as project host AND skills root (the shipped
@@ -2212,8 +2376,9 @@ def _apply_new_skill(home: Path, spec: TargetSpec) -> tuple[NewSkillApplyResult,
     records = _compile_set(home, spec)
     if not records:
         raise VerbError(
-            f"no routed records name new-skill:{spec.new_skill} — nothing "
-            "to compile"
+            f"no routed records resolve to {spec.target} — nothing to "
+            "compile (the union may be empty even though records once "
+            f"named new-skill:{spec.new_skill}, if every one retired)"
         )
     name = spec.new_skill
     root = spec.host_repo
@@ -2221,8 +2386,15 @@ def _apply_new_skill(home: Path, spec: TargetSpec) -> tuple[NewSkillApplyResult,
     plugin_dir = root / "plugins" / name
     manifest = plugin_dir / ".claude-plugin" / "plugin.json"
     marketplace = root / ".claude-plugin" / "marketplace.json"
-    # deterministic description: seeded from the FIRST routed lesson
-    # (the compile set is already in pinned (routed_at, id) order).
+    # deterministic description: seeded from the FIRST routed lesson.
+    # U-xscope §4.3/NIT 13: `records` is NOT sorted here -- `_eligible`
+    # (compilers.py) owns the (routed_at, id) order and is applied only
+    # inside `compile_managed_file` below; `_compile_set` returns
+    # bucket-walk/glob order, so `records[0]` is whichever candidate this
+    # target's union happened to enumerate first. Safe regardless: this
+    # value is read only when plugin.json/SKILL.md do not yet exist (the
+    # guarded block below), and `marketplace_with_entry` no-ops on an
+    # existing name (skill_scaffold.py:117-120) -- confirmed by T15.
     description = scaffold_description(records[0])
 
     changed = False

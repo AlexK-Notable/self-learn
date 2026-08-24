@@ -521,12 +521,20 @@ class TestObligation10SelfcheckGlobDrift:
         target = tmp_path / "dot-claude" / "CLAUDE.md"
         target.parent.mkdir()
         target.write_text("# user conduct\n", encoding="utf-8")
-        # selfcheck's own _target_for hardcodes DEFAULT_USER_CLAUDE_MD for
-        # user scope (pre-A2 behavior, unchanged) — monkeypatch the SAME
-        # binding _resolve_target uses via user_claude_md, so this test's
-        # route and its drift check agree on one target, never the real
-        # ~/.claude/CLAUDE.md.
+        # selfcheck's `_target_for` delegates to `verbs.managed_target_for`
+        # (U-xscope §3.1), which hardcodes DEFAULT_USER_CLAUDE_MD for user
+        # scope when no override is threaded (`_check_drift` never threads
+        # one — pre-A2 behavior, unchanged) — monkeypatch the binding
+        # `managed_target_for` actually reads (verbs', not selfcheck's own
+        # re-export). selfcheck ALSO re-imports the same name into its own
+        # module namespace and reads it directly (e.g. the widened
+        # rules-glob drift check, U-glob §6.6) — a `from X import Y` copies
+        # the binding, so patching `verbs` alone leaves `selfcheck`'s own
+        # copy pointed at the REAL ~/.claude/CLAUDE.md. Both must be
+        # patched or this test's route and its drift check silently
+        # disagree on the target.
         monkeypatch.setattr(selfcheck, "DEFAULT_USER_CLAUDE_MD", target)
+        monkeypatch.setattr(verbs, "DEFAULT_USER_CLAUDE_MD", target)
         # fixture-unique literal anchor (§9.0): a file the glob matches,
         # created before routing so the anchored probe (§4.3) reaches it.
         fixture_dir = tmp_path / "u-glob-fixture-case2"
@@ -563,7 +571,13 @@ class TestObligation10SelfcheckGlobDrift:
         target = tmp_path / "dot-claude" / "CLAUDE.md"
         target.parent.mkdir()
         target.write_text("# user conduct\n", encoding="utf-8")
+        # U-xscope moved the binding authority selfcheck resolves through
+        # to `verbs.managed_target_for`, but selfcheck also re-imports and
+        # reads DEFAULT_USER_CLAUDE_MD directly (its own copy of the
+        # binding) — patch both, or this drift check probes the real
+        # ~/.claude/CLAUDE.md.
         monkeypatch.setattr(selfcheck, "DEFAULT_USER_CLAUDE_MD", target)
+        monkeypatch.setattr(verbs, "DEFAULT_USER_CLAUDE_MD", target)
         seed_user_record(env)
         write_proposal(
             env.home, OLD,

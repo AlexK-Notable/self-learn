@@ -95,12 +95,7 @@ from .ledger_ops import (
     validate_proposal,
 )
 from .records import Record, RecordError
-from .verbs import (
-    DEFAULT_USER_CLAUDE_MD,
-    _project_rules_dir,
-    _user_reachability_roots,
-    _user_rules_dir,
-)
+from .verbs import DEFAULT_USER_CLAUDE_MD, _user_reachability_roots, managed_target_for
 
 __all__ = ["proposal_validate", "run_selftest"]
 
@@ -213,54 +208,16 @@ def proposal_validate(home: Path, record_id: str) -> int:
 
 
 def _target_for(home: Path, bucket: Bucket, record: Record) -> Path | None:
-    """The compiled canon file for one skill-md/claude-md record, resolved
-    through the hosts registry — the SAME resolution the verbs use
-    (doc 13 §4). None = unresolvable (unregistered/missing host)."""
-    destination = (record.routing or {}).get("destination")
-    if destination == "skill-md" and bucket.scope == "skill":
-        try:
-            return skill_dir_for(load_hosts(home), bucket.name) / "SKILL.md"
-        except HostsError:
-            return None
-    if destination == "new-skill":
-        # T18: the scaffolded skill's SKILL.md is an ordinary managed
-        # target from the first route on — routing.new_skill names it.
-        name = (record.routing or {}).get("new_skill")
-        try:
-            root = load_hosts(home).skills_root
-        except HostsError:
-            return None
-        if not name or root is None:
-            return None
-        return root / "plugins" / name / "skills" / name / "SKILL.md"
-    if destination == "claude-md":
-        # A2 §5.2/§2.1: variant-aware resolution — a rules/local target
-        # is NOT the plain claude-md file. Keyed off routing.get(
-        # "variant")/"rules_topic", the SAME stored-routing data the
-        # verbs' own retirement/recompile sites read (§4.4B).
-        routing = record.routing or {}
-        variant = routing.get("variant")
-        if variant == "local":
-            host = bucket_project_path(bucket.path)
-            return None if host is None else Path(host) / "CLAUDE.local.md"
-        if variant == "rules":
-            topic = routing.get("rules_topic")
-            if not topic:
-                return None
-            if record.scope == "user":
-                return _user_rules_dir(DEFAULT_USER_CLAUDE_MD.expanduser()) / f"{topic}.md"
-            if record.scope == "project":
-                host = bucket_project_path(bucket.path)
-                return None if host is None else _project_rules_dir(Path(host)) / f"{topic}.md"
-            return None  # skill-scope rules: deferred (§9), never routed
-        if record.scope == "user":
-            return DEFAULT_USER_CLAUDE_MD.expanduser()
-        if record.scope == "project":
-            host = bucket_project_path(bucket.path)
-            return None if host is None else Path(host) / "CLAUDE.md"
-        root = load_hosts(home).skills_root  # skill-scoped claude-md
-        return None if root is None else root / "CLAUDE.md"
-    return None  # reference/new-skill/hook: no managed markers
+    """The compiled canon file for one skill-md/claude-md/new-skill
+    record, resolved through the hosts registry — the SAME resolution the
+    verbs use (doc 13 §4). None = unresolvable (unregistered/missing
+    host). U-xscope §3.1: delegates to :func:`self_learn.verbs.
+    managed_target_for`, the single implementation this and
+    :func:`self_learn.verbs._compile_set` both consume — selfcheck never
+    threads a ``user_claude_md`` override, so this always resolves
+    against the operator's real ``~/.claude/CLAUDE.md`` (byte-identical
+    to the pre-delegation behavior)."""
+    return managed_target_for(home, bucket, record)
 
 
 def _reference_target_for(home: Path, bucket: Bucket, record: Record) -> Path | None:
