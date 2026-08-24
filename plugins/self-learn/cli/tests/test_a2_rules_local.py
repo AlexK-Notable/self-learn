@@ -431,12 +431,14 @@ class TestObligation10SelfcheckGlobDrift:
         target = tmp_path / "dot-claude" / "CLAUDE.md"
         target.parent.mkdir()
         target.write_text("# user conduct\n", encoding="utf-8")
-        # selfcheck's own _target_for hardcodes DEFAULT_USER_CLAUDE_MD for
-        # user scope (pre-A2 behavior, unchanged) — monkeypatch the SAME
-        # binding _resolve_target uses via user_claude_md, so this test's
-        # route and its drift check agree on one target, never the real
-        # ~/.claude/CLAUDE.md.
-        monkeypatch.setattr(selfcheck, "DEFAULT_USER_CLAUDE_MD", target)
+        # selfcheck's `_target_for` delegates to `verbs.managed_target_for`
+        # (U-xscope §3.1), which hardcodes DEFAULT_USER_CLAUDE_MD for user
+        # scope when no override is threaded (`_check_drift` never threads
+        # one — pre-A2 behavior, unchanged) — monkeypatch the binding
+        # `managed_target_for` actually reads (verbs', not selfcheck's own
+        # re-export) so this test's route and its drift check agree on one
+        # target, never the real ~/.claude/CLAUDE.md.
+        monkeypatch.setattr(verbs, "DEFAULT_USER_CLAUDE_MD", target)
         seed_user_record(env)
         write_proposal(
             env.home, OLD,
