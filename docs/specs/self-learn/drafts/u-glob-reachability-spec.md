@@ -492,9 +492,17 @@ letting a later reader assume otherwise.
 
 The `len(unpathed)` term encodes "a rule with no `paths:` key loads in
 every session, so it is present alongside whatever else fires". That
-premise is **measured, not assumed** — §8 leg 3. If leg 3 disconfirms it,
-the builder drops the `len(unpathed)` term, keeps the `unpathed` list as
-reported data, records the measurement, and reports the change (§12 Q2).
+premise is **measured and CONFIRMED** — §8 leg 3, executed 2026-08-23: an
+unpathed rule in a temp project's `.claude/rules/` was logged by the
+`InstructionsLoaded` hook with `load_reason: session_start`, in a session
+where a *pathed* rule with a non-matching glob was logged not at all
+(`misc/u-glob-loader-check/probe-full-2026-08-23/EVIDENCE.md`, log entry
+2). The term stands on that entry.
+
+The disconfirmation branch is therefore **unexercised by measurement, not
+by omission**. It is retained for the record: had leg 3 disconfirmed, the
+builder would drop the `len(unpathed)` term, keep the `unpathed` list as
+reported data, record the measurement, and report the change (§12 Q2).
 
 ### 5.4 The `cap_reason` replacement
 
@@ -788,210 +796,516 @@ shipped.
 
 ---
 
-## 8. Real-loader check — MANDATORY, and the builder RUNS it
+## 8. Real-loader check — MANDATORY, and the detector is the hook, not the transcript
+
+**Status: ALL THREE LEGS EXECUTED, verdict PASS (2026-08-23).** Legs 1,
+2 and 3 ran in a **single session** (`session_id
+5546710e-a206-4b13-b291-2285ef51e679`) and all three passed. Evidence, to
+§8.7's own recording bar:
+**`misc/u-glob-loader-check/probe-full-2026-08-23/EVIDENCE.md`**, with
+`il.log`, `settings.json` and `il-hook.sh` beside it. **The builder need
+not re-run this check** unless the spec-gate delta demands it.
+
+| Leg | Verdict | What the log shows |
+|---|---|---|
+| **1** — live rule | **PASS** | `session-transcripts.md` at `load_reason=path_glob_match`, `globs:["**/.claude/projects/**/*.jsonl"]` |
+| **2** — canary, both arms | **PASS** | matching canary loaded at `path_glob_match`; non-matching canary **absent** |
+| **3** — unpathed premise | **PASS** | unpathed canary loaded at `load_reason=session_start` — the `len(unpathed)` term of §5.3 is now **measured**, not assumed |
+
+Two earlier records are **history, not evidence**, and are kept only for
+§8.8's narrative: `misc/u-glob-loader-check/ORCHESTRATOR-PROBE.md` (a prose
+summary of the first, Leg-1-only run — it does not meet §8.7's bar, which
+is precisely why the §8.1A command line went unverified until the gate
+caught it), and its raw artifacts at
+`misc/u-glob-loader-check/probe-2026-08-23/`.
 
 Everything in §1–§7 rests on one premise: **that Claude Code actually loads
 `~/.claude/rules/<topic>.md` into a session when that session Reads a file
-matching the topic's `paths:` glob.** Nothing in this repository proves
-that. If it is false, this unit is elaborate machinery guarding a rule that
-never fires, and the right action is to stop, not to ship.
+matching the topic's `paths:` glob.** If it were false, this unit would be
+elaborate machinery guarding a rule that never fires, and the right action
+would be to stop, not to ship. It is not false — see §8.1A.
 
-So the builder **runs** the check below and **records the literal output**
-— every command's stdout/stderr verbatim, not a summary — into
-`misc/u-glob-loader-check/RESULTS.md`, and cites it in the build report.
-A build report that describes this check without literal recorded output
-is a failed build.
+Whenever this check *is* run, the runner **records the literal output** —
+every command's stdout/stderr verbatim, not a summary — into
+`misc/u-glob-loader-check/RESULTS.md`. A report that describes this check
+without literal recorded output is a failed report.
 
 `misc/` is deliberate: it is git-ignored but durable, and this measurement
-is the only evidence the premise was ever tested. It does not go in `/tmp`.
+is the only evidence the premise was ever tested. It does not go in `/tmp`,
+and it does not stay in a job's `tmp/` directory either — both preserved
+logs were copied out of one for exactly that reason.
 
 ### 8.0 One leg, one shell invocation — binding on all three legs
 
-**Each leg below MUST be a single Bash tool call** that writes its fixtures,
-runs its session(s), greps, and verifies cleanup — in that one call.
+**Each leg below MUST be a single Bash tool call** that writes its fixtures
+and temp settings, runs its session(s), reads the hook log, and verifies
+cleanup — in that one call. *(The recorded PASS went one better and ran all
+three legs in one call and one session; see §8.1A. One call per leg is the
+floor, not the target.)*
 
 Each Bash tool call is its own `bash -c`, and an `EXIT` trap fires when
-*that* call ends. A builder that writes the probe rule in one call and runs
+*that* call ends. A runner that writes the probe rule in one call and runs
 the arms in another gets one of two failures, both silent: the trap fires
-at the end of the writing call and the rule is gone before the session
-runs (measuring nothing, reading as FAIL), or no trap was installed and the
-file is left behind in the user's live configuration. "The builder verifies
-the file is gone afterwards" is not a guarantee when the guarding shell has
+at the end of the writing call and the rule is gone before the session runs
+(measuring nothing, reading as FAIL), or no trap was installed and the file
+is left behind in the user's live configuration. "The runner verifies the
+file is gone afterwards" is not a guarantee when the guarding shell has
 already exited.
 
-Two consequences, both mandatory:
+**The canary rules do NOT go in `~/.claude/rules/`.** They go in the temp
+**project's** own `<tmp>/.claude/rules/` directory, which is created and
+destroyed with the temp dir. This is how the recorded PASS was produced,
+and it is now normative: the log's `memory_type` field reports such a rule
+as `Project` and a real one as `User`, so a project-scope canary is fully
+distinguishable in the verdict while touching **no live configuration at
+all**. `~/.claude/rules/` is never written by this check.
+
+That removes the mutation the next two rules were written to contain. They
+are kept anyway, retargeted, because the reasoning survives the move:
 
 * **Stale-file assertion at the start of every leg.** Before writing
-  anything, `test ! -e ~/.claude/rules/selflearn-loader-probe.md` — abort
-  the leg if it exists, and report it. A leftover from a previous run makes
-  every arm of the current one meaningless.
-* **`trap` is belt, not braces.** `SIGKILL` bypasses `EXIT` traps entirely,
-  and this is the only mutation of the user's live configuration in the
-  whole unit. The start-of-run assertion is what catches the case the trap
-  could not.
+  anything, assert the canary paths do not already exist —
+  `test ! -e "$TMP/.claude/rules/canary-pathed-match.md"` and siblings — and
+  abort the leg if any does. Also assert the hook log is empty (`il.log` at
+  0 bytes; the recorded run printed this as **P-stale**). A leftover from a
+  previous run makes every arm of the current one meaningless, and a
+  non-empty log makes every entry ambiguous.
+* **`trap` is belt, not braces.** `SIGKILL` bypasses `EXIT` traps entirely.
+  With the canaries inside the temp dir the blast radius of a missed
+  cleanup is a stray temp directory rather than the user's configuration —
+  but a `trap` removing the temp tree still belongs in every leg, and the
+  start-of-run assertion is what catches the case the trap could not.
+
+The hook and its settings file are likewise not live-config mutations: they
+live in the leg's own temp directory and reach the session through
+`--settings`, never through `~/.claude/settings.json`.
 
 ### 8.1 Environment facts already established
 
 * `claude` is at `/home/komi/.local/bin/claude`, version **2.1.241**
   (`claude --version`, 2026-08-23).
 * Relevant flags exist and were read from `claude --help` on 2026-08-23:
-  `-p/--print`, `--output-format {text,json,stream-json}`,
-  `--session-id <uuid>`, `--allowedTools`, `--disallowedTools`,
-  `--permission-mode`, `--add-dir`, `--model`, `--no-session-persistence`.
-  There is **no** `--config-dir` flag.
+  `-p/--print`, `--settings <file-or-json>`, `--output-format
+  {text,json,stream-json}`, `--session-id <uuid>`, `--allowedTools`,
+  `--disallowedTools`, `--permission-mode`, `--add-dir`, `--model`,
+  `--no-session-persistence`. There is **no** `--config-dir` flag.
 * The live pathed user rules on this host are
   `~/.claude/rules/hooks.md` (`paths: ["**/.claude/hooks/*.sh"]`, carrying
   `lrn-899d4893`) and `~/.claude/rules/session-transcripts.md`
   (`paths: ["**/.claude/projects/**/*.jsonl"]`, carrying `lrn-2221cec9`).
   Both use the leading `**/` idiom.
+* **Rules and `CLAUDE.md` content is re-injected outside message history**
+  (Claude Code docs: `memory.md`, `context-window.md`). This is the fact
+  that makes a transcript grep structurally blind to rule loading — in
+  headless *and* interactive sessions alike. It is not a bug in the grep;
+  the content was never in the place being grepped.
+
+### 8.1A The detector — the `InstructionsLoaded` hook
+
+The documented and host-verified ground truth for "did this rule load, and
+why" is the **`InstructionsLoaded`** hook. It fires once per instruction
+file loaded, and its stdin JSON names the file, the reason, and — for a
+glob load — the pattern and the file that triggered it.
+
+**The harness, exactly as verified** (three files in the leg's temp dir):
+
+`il-hook.sh` — appends the hook's stdin to a side log, one JSON object per
+entry, blank-line separated:
+
+```sh
+#!/usr/bin/env bash
+cat >> "$IL_LOG"
+echo >> "$IL_LOG"
+```
+
+`settings.json` — registers the hook for this session only:
+
+```json
+{"hooks": {"InstructionsLoaded": [{"hooks": [{"type": "command",
+ "command": "IL_LOG=<tmp>/il.log <tmp>/il-hook.sh"}]}]}}
+```
+
+The session is then a plain headless run — **no `--bare`, no
+`--setting-sources`**, because the user's own settings and rules *must*
+still load for the thing under test to happen at all:
+
+```sh
+cd "$T" && timeout 150 claude -p "Use the Read tool to read \
+$T/x/.claude/projects/p/t.jsonl and then $T/canary-target.md then reply \
+with exactly: done" --settings "$T/settings.json" --allowedTools Read \
+--model claude-haiku-4-5 < /dev/null
+```
+
+That is the **verbatim** command of the recorded PASS (`EVIDENCE.md`), and
+its shape is normative for two measured reasons:
+
+* **The prompt must be the FIRST positional argument, before any variadic
+  flag.** `--allowedTools` is variadic, so `--allowedTools Read "<prompt>"`
+  swallows the prompt as a second tool name, leaving no positional prompt.
+  The run then dies with `Error: Input must be provided either through
+  stdin or as a prompt argument when using --print`, rc=1, empty stdout.
+  Every spec round before this one carried that broken shape.
+* **`< /dev/null`** closes stdin. Without it every session emits
+  `Warning: no stdin data received in 3s` on stderr and pays 3 s — noise
+  that §8.7 requires be recorded verbatim and that reads like a fault.
+
+**The failure direction is why the ordering is normative and not
+cosmetic.** When the invocation is malformed the hook still fires and still
+writes its `session_start` entries, so **P1 and P4 pass on a run where the
+session never executed at all**. Only **P5** (rc=0, non-empty stdout)
+catches it. And the standing remedy for INVALID — "re-run" — reproduces the
+identical failure forever, because the defect is in the command, not in the
+run. See §8.5's closing rule.
+
+**One session covers all three legs.** The recorded PASS put the Leg-1
+fixture, the Leg-2 matching and non-matching canaries, and the Leg-3
+unpathed canary in the same temp project and read two files in one prompt.
+`load_reason`, `file_path` and `memory_type` separate the legs in the log,
+so there is nothing to gain from three sessions. This is the canonical
+form; per-leg sessions remain acceptable.
+
+**The observed payload** — all four entries of the recorded run
+(`session_id 5546710e-…`, whitespace-reflowed for width; the raw file is
+`misc/u-glob-loader-check/probe-full-2026-08-23/il.log`):
+
+```json
+{"session_id":"5546710e-…","cwd":"<tmp>","hook_event_name":"InstructionsLoaded",
+ "file_path":"/home/komi/.claude/CLAUDE.md",
+ "memory_type":"User","load_reason":"session_start"}
+
+{"session_id":"5546710e-…","cwd":"<tmp>","hook_event_name":"InstructionsLoaded",
+ "file_path":"<tmp>/.claude/rules/canary-unpathed.md",
+ "memory_type":"Project","load_reason":"session_start"}
+
+{"session_id":"5546710e-…","cwd":"<tmp>","prompt_id":"82a61f92-…",
+ "hook_event_name":"InstructionsLoaded",
+ "file_path":"/home/komi/.claude/rules/session-transcripts.md",
+ "memory_type":"User","load_reason":"path_glob_match",
+ "globs":["**/.claude/projects/**/*.jsonl"],
+ "trigger_file_path":"<tmp>/x/.claude/projects/p/t.jsonl"}
+
+{"session_id":"5546710e-…","cwd":"<tmp>","prompt_id":"82a61f92-…",
+ "hook_event_name":"InstructionsLoaded",
+ "file_path":"<tmp>/.claude/rules/canary-pathed-match.md",
+ "memory_type":"Project","load_reason":"path_glob_match",
+ "globs":["**/canary-target.md"],
+ "trigger_file_path":"<tmp>/canary-target.md"}
+```
+
+Five fields carry the whole verdict, and they make this detector strictly
+stronger than the grep it replaces:
+
+| Field | What it settles |
+|---|---|
+| `file_path` | **which** rule loaded |
+| `load_reason` | **why** — `session_start` (always-on) vs `path_glob_match` (glob-gated) |
+| `globs` | **which pattern** matched — no inference from the rule file |
+| `trigger_file_path` | **which file** triggered it — the Read is confirmed from the loader's own side, not from the transcript |
+| `memory_type` | **whose** rule — `User` (`~/.claude/rules/`) vs `Project` (`<tmp>/.claude/rules/`), which is what lets the canaries live outside live config (§8.0) |
+
+`load_reason` alone does what §8.3's whole matching/non-matching arm pair
+was invented to do: it distinguishes "loaded because the glob matched" from
+"loaded regardless". The arms are kept anyway — a negative control is worth
+keeping when the alternative is trusting a single field's semantics.
+
+**Two negative controls fired inside the recorded run, without costing a
+session.** Neither is inferred; both are absences in the log above:
+
+1. **`~/.claude/rules/hooks.md` never appears.** It is a *second live
+   pathed rule* on this host (`paths: ["**/.claude/hooks/*.sh"]`, §8.1),
+   present in the same `~/.claude/rules/` directory, in the same session
+   where `session-transcripts.md` loaded at `path_glob_match`. Two live
+   pathed rules, one matching glob, **only the matching one loaded** — and
+   `hooks.md` is absent at `session_start` too, which is the part that
+   matters: a pathed rule is not loaded-then-filtered, it is not loaded at
+   all unless its glob matches. That is the exact proposition §6 guards.
+2. **`canary-pathed-nomatch.md` never appears** — the Leg-2 negative
+   control, in the same session as its matching twin, differing only in
+   glob.
+
+   **This control's subject is preserved, not merely asserted.** All three
+   canary files, globs intact, are at
+   `misc/u-glob-loader-check/probe-full-2026-08-23/canaries/` —
+   `canary-pathed-match.md` (`paths: ["**/canary-target.md"]`),
+   `canary-pathed-nomatch.md` (`paths: ["**/no-such-file-zzqx-*.xyz"]`,
+   which nothing in the temp tree satisfies), and `canary-unpathed.md`
+   (no frontmatter at all). That copy is load-bearing: **absence from a
+   log is indistinguishable from never-written**, so a negative control
+   whose subject is not preserved is the spec's own fail-open shape
+   (absent file reads as absent rule) turned on its own evidence.
 
 ### 8.2 Leg 1 — the live rule, no mutation
 
-Purpose: does the shipped, unmodified `session-transcripts.md` enter a
-session's context when that session Reads a matching file?
+Purpose: does the shipped, unmodified `session-transcripts.md` load when a
+session Reads a file matching its glob?
 
-1. Pick a real transcript: `TARGET=$(ls -S ~/.claude/projects/*/*.jsonl |
-   head -1)`. Assert it is non-empty and print its path and size.
-2. Generate `SID=$(uuidgen)`.
-3. Run, from a scratch directory:
-   ```sh
-   claude -p --session-id "$SID" --model sonnet \
-     --allowedTools Read --disallowedTools 'Bash' 'Grep' 'Glob' \
-     --add-dir "$HOME/.claude/projects" \
-     "Use the Read tool once on $TARGET with limit 5. Then reply with exactly: DONE"
-   ```
-4. Locate the transcript: `find ~/.claude/projects -name "$SID.jsonl"`.
-   Search **all** project directories, not the one matching the cwd —
-   `lrn-2221cec9`, the very lesson under test, says a session's transcript
-   can be filed under a directory other than its origin.
-5. **Leg-1 instrument positive control (P4b), run BEFORE the transcript is
-   grepped.** The probe substring is
+1. Build the temp dir, `il-hook.sh`, and `settings.json` of §8.1A.
+2. **Synthesize** the fixture rather than borrowing a real transcript:
+   `mkdir -p "$TMP/x/.claude/projects/p" && : > "$TMP/x/.claude/projects/p/t.jsonl"`.
+   This matches `**/.claude/projects/**/*.jsonl` via the leading `**/`,
+   needs no `--add-dir`, and touches nothing under the real
+   `~/.claude/projects/`.
+3. Run the headless session **exactly as §8.1A gives it** — §8.1A's
+   verbatim command is authoritative wherever this section and it could be
+   read differently. In particular it passes **no `--session-id`**: the
+   recorded PASS did not pass one, and its session id was generated by
+   Claude Code and read back out of the hook log's own `session_id` field.
+   The prompt is a single Read of the fixture from step 2.
+4. **Read the verdict from `il.log`, not from the transcript.** Required
+   for PASS: an entry whose `file_path` ends
+   `/.claude/rules/session-transcripts.md`, whose `load_reason` is
+   `path_glob_match`, whose `globs` contains
+   `**/.claude/projects/**/*.jsonl`, and whose `trigger_file_path` is the
+   fixture written in step 2.
 
-   ```
-   the session's cwd migrates mid-life
-   ```
+There is no substring to get wrong here, which is the point: §8.8's
+near-miss cannot recur, because the detector no longer depends on the
+runner guessing text out of the rule's body.
 
-   and `grep -c "the session's cwd migrates mid-life" ~/.claude/rules/session-transcripts.md`
-   must print **≥ 1**. If it prints `0`, the substring is wrong and the leg
-   is INVALID — the string is fixed, not the verdict.
-6. Only then, grep the transcript for that same substring.
-
-**Why this control exists, with the near-miss recorded.** r1 of this spec
-specified the substring as `a session's cwd migrates mid-life`. Measured:
-`grep -c "a session's cwd migrates mid-life" ~/.claude/rules/session-transcripts.md`
-prints `0`, `rc=1` — the live rule (line 7) reads *"…but if **the**
-session's cwd migrates mid-life…"*. A wrong substring makes Leg 1 return
-zero matches, and zero is byte-identical to "the rule did not load": the
-exact fail-open shape §8.5 was written to prevent, sitting inside §8
-itself. §8.5's P4 is a positive control for the *canary* grep only and
-would not have caught it.
+**Recorded outcome: PASS.** All four required fields matched
+(`EVIDENCE.md`, log entry 3) — and `~/.claude/rules/hooks.md`, the other
+live pathed rule, is absent from the same log, which is the §8.1A negative
+control arriving free.
 
 ### 8.3 Leg 2 — a canary rule, with a negative control
 
-Leg 1 alone cannot separate "the rule was injected because the glob
-matched" from "the rule was injected regardless". Leg 2 does.
+Leg 1 shows a live rule loading with `load_reason=path_glob_match`. Leg 2
+holds that reading to a rule whose glob the runner controls, and adds the
+negative control.
 
-1. `CANARY="SELFLEARN-LOADER-CANARY-$(uuidgen)"`.
-2. Write `~/.claude/rules/selflearn-loader-probe.md`:
+**The canaries are PROJECT rules in the temp dir, not user rules** (§8.0).
+`memory_type` reports them as `Project`, so they are fully distinguishable
+in the log while `~/.claude/rules/` is never written.
+
+1. Assert the canary paths do not exist and `il.log` is empty (§8.0's
+   stale checks — the recorded run printed this as **P-stale**), then
+   install the temp-tree `trap`.
+2. Write `<tmp>/.claude/rules/canary-pathed-match.md` with a glob the
+   runner controls and a fixture that satisfies it:
+
    ```
    ---
    paths:
-     - "**/selflearn-loader-canary/*.txt"
+     - "**/canary-target.md"
    ---
 
    <!-- self-learn:begin (do not hand-edit inside; managed by self-learn) -->
-   - Probe rule for the U-glob real-loader check. Canary: SELFLEARN-LOADER-CANARY-<uuid>
+   - Probe rule for the U-glob real-loader check (matching arm).
    <!-- self-learn:end -->
    ```
-   Ordering inside the leg's **single** shell invocation (§8.0), and this
-   ordering is normative:
 
-   ```sh
-   test ! -e ~/.claude/rules/selflearn-loader-probe.md || { echo "STALE PROBE FILE — abort"; exit 2; }
-   trap 'rm -f ~/.claude/rules/selflearn-loader-probe.md' EXIT INT TERM
-   # ...write the rule, run both arms, grep both transcripts...
-   ```
+   and `<tmp>/canary-target.md` as its trigger. The leading `**/` means the
+   relative *and* absolute path both match — the precedent idiom, exercised
+   for real.
+3. Write `<tmp>/.claude/rules/canary-pathed-nomatch.md`, **identical except
+   for its glob**, which nothing in the temp tree satisfies. Differing in
+   exactly one variable is what makes it a control rather than a second
+   sample.
+4. Run the session (§8.1A). Both canaries are installed; only one has a
+   matching file. The arms are therefore *within one run* — no second
+   session, and no cross-session variable to explain away.
+5. Read `il.log`. Required for PASS: an entry for
+   `canary-pathed-match.md` with `load_reason == "path_glob_match"` and
+   `globs == ["**/canary-target.md"]`, and **no entry at all** for
+   `canary-pathed-nomatch.md`.
 
-   The stale-file test comes **first**, the trap **second**, the write
-   **third**. This is the only mutation of the user's live configuration
-   this unit performs; it is additive, its glob matches nothing outside the
-   probe fixture, and it is removed on every exit path a trap can see. The
-   leg's last statement re-checks `ls ~/.claude/rules/` and records that
-   output.
-3. **Matching arm.** `mkdir -p "$TMP/selflearn-loader-canary"`, write
-   `probe.txt`, and run a `claude -p` session with `cwd = $TMP` and a fresh
-   `--session-id`, prompting a single Read of
-   `selflearn-loader-canary/probe.txt`. The relative path *and* the
-   absolute path both match the glob, because of the leading `**/` —
-   which is exactly why the precedent idiom uses it.
-4. **Non-matching arm (the negative control).** `mkdir -p
-   "$TMP/selflearn-loader-nomatch"`, write an identical `probe.txt`, run an
-   identical session with a fresh `--session-id` reading *that* file.
-5. Grep each arm's transcript for `$CANARY`.
+**Recorded outcome: PASS.** Log entry 4 is the matching canary at
+`path_glob_match`; `canary-pathed-nomatch.md` appears nowhere in the log
+(`EVIDENCE.md`). Both canaries are preserved with their globs at
+`misc/u-glob-loader-check/probe-full-2026-08-23/canaries/`, which is what
+makes the second half of that sentence a *measurement* rather than a
+claim.
 
 ### 8.4 Leg 3 — the unpathed premise (§5.3)
 
-Same harness — including §8.0's single-invocation rule and §8.3's
-stale-test / trap / write ordering — with one change: write the canary rule
-**without** a `paths:` key at all, and run only the non-matching arm. This
-measures whether a rule with no `paths:` key loads unconditionally, the
-premise behind the `len(unpathed)` term in `max_fanin`.
+Same harness, one addition: a third canary
+`<tmp>/.claude/rules/canary-unpathed.md` with **no `paths:` key at all**,
+installed alongside Leg 2's pair and nothing in the tree written to satisfy
+any glob of its own. The question is whether it appears in the log with
+`load_reason == "session_start"` — which is what "loads unconditionally"
+means in the detector's own vocabulary, and is the premise behind the
+`len(unpathed)` term in `max_fanin`.
+
+This must not be answered by analogy from `~/.claude/CLAUDE.md`'s
+`session_start` entry: a `CLAUDE.md` is not a rule, and §5.3's arithmetic
+rests on rules.
+
+**Recorded outcome: PASS — the premise is MEASURED.** Log entry 2:
+`canary-unpathed.md`, `memory_type: Project`, `load_reason:
+session_start`. An unpathed rule is a session-start load; it is present
+alongside whatever else fires. §5.3's `len(unpathed)` term stands on this
+entry, and §12 Q2's fallback branch is therefore unexercised **by
+measurement**, not by omission. The canary is preserved at
+`misc/u-glob-loader-check/probe-full-2026-08-23/canaries/canary-unpathed.md`
+— no `paths:` key, as claimed.
+
+**Name the inference, by this section's own standard.** The measurement is
+at `memory_type: Project`. §5.3's `len(unpathed)` governs whichever rules
+directory `surface_fill` resolves — `_user_rules_dir` **or**
+`_project_rules_dir` — so the **user-scope unpathed cell is inferred, not
+measured**. This section refuses the `CLAUDE.md`-at-`session_start`
+analogy two paragraphs above; the same standard applies here, and saying
+so is the point of stating it.
+
+The inference is well supported and its risk runs the safe way:
+* The same session shows **User+pathed** (entry 3) and **Project+pathed**
+  (entry 4) behaving identically, and **User+always-load** at
+  `session_start` (entry 1). Only User+unpathed-*rule* is unmeasured.
+* An over-counted `max_fanin` **over-warns**; it never under-warns. The
+  error direction is the same conservative one §5.2's over-approximation
+  takes.
+* On this host today `len(unpathed)` is **0** for user scope — both live
+  user rules are pathed — so the inferred cell currently contributes
+  nothing to any number the spec produces.
 
 ### 8.5 Preconditions — checked before any verdict is read
 
 Every one of these must hold, or the run is **INVALID** and is re-run; an
 invalid run is never recorded as a pass or a fail.
 
-* **P1** — the transcript file for the run's `--session-id` was found, and
-  `wc -l` on it is greater than zero. *(A grep against a file that does not
-  exist prints nothing, which is byte-identical to "the canary is absent" —
-  the fail-open shape this project has been burned by. Assert the file
-  exists and is non-empty before reading any grep result.)*
-* **P2** — the transcript contains a `Read` tool use whose input path is
-  the intended fixture. If the model answered without reading, nothing was
-  measured.
-* **P3** — the transcript contains **no** tool use touching
-  `~/.claude/rules/`. If the session read the rule file itself, the canary
-  in the transcript proves nothing about injection.
-* **P4a** — instrument positive control for the **canary** grep (legs 2
-  and 3): `grep -c "$CANARY" ~/.claude/rules/selflearn-loader-probe.md`
-  prints `1`.
-* **P4b** — instrument positive control for the **Leg 1** grep:
-  `grep -c "the session's cwd migrates mid-life" ~/.claude/rules/session-transcripts.md`
-  prints ≥ 1 (§8.2 step 5). **Every grep in this check needs its own
-  positive control.** P4a covers only the canary string; a Leg-1 substring
-  that does not exist in the live rule prints `0` and reads as "the rule
-  did not load". That is not hypothetical — r1 of this spec specified such
-  a substring, and it measured `0` / `rc=1`.
+**One standing exception to "re-run", and it is load-bearing: an INVALID
+verdict that reproduces identically on re-run is an invocation defect —
+fix the command, do not re-run it again.** The r3 command line failed this
+way (§8.1A): rc=1, empty stdout, P1 and P4 passing, and every re-run
+producing byte-identical output because the defect was in the argument
+order, not in the run.
+
+* **P1** — `il.log` for the run exists and `wc -l` on it is greater than
+  zero. *(Reading a log that does not exist yields nothing, which is
+  byte-identical to "the rule did not load" — the fail-open shape this
+  project has been burned by. Assert the file exists and is non-empty
+  before reading any verdict out of it.)*
+* **P2** — the log contains an entry whose `trigger_file_path` is the
+  intended fixture, **or** the session transcript shows the `Read` tool use.
+  If nothing read the fixture, nothing was measured.
+* **P3** — no session in the run read anything under `~/.claude/rules/` or
+  `<tmp>/.claude/rules/`. The hook reports *loading*, so a session that
+  merely *read* a rule file cannot confuse the verdict — but a read would
+  still mean the prompt drifted, and the run should be re-driven rather
+  than interpreted.
+* **P4 — instrument positive control: the hook fired at all.** The log must
+  contain at least one entry with `hook_event_name ==
+  "InstructionsLoaded"` and `load_reason == "session_start"`, **before any
+  glob verdict is read**. The `session_start` entry
+  (`~/.claude/CLAUDE.md` in the recorded run) is emitted regardless of
+  globs, so its presence proves the hook is registered, executing, and
+  writing to the log the runner is about to read. Its absence means the
+  instrument is broken, never that the rule failed to load.
+
+  **P4 controls the *instrument*, not the *run*.** It fires at session
+  start, so it passes even when the session went on to do no work at all.
+  Measured, not hypothesised: a malformed invocation exited rc=1 having
+  read nothing, and **P1 and P4 both still passed** on that run (§8.1A).
+  **P5** is what establishes that the session executed. Both are mandatory
+  and neither substitutes for the other.
 * **P5** — the `claude -p` process exited 0 and its stdout is non-empty.
-* **P6** — the leg's own start-of-run stale-file assertion (§8.0) passed:
-  no `~/.claude/rules/selflearn-loader-probe.md` existed before the leg
-  wrote one.
+  This is the only precondition that can catch a session that never ran.
+* **P6** — the leg's own start-of-run assertions (§8.0) passed: none of the
+  canary paths existed before the leg wrote them, and `il.log` was empty
+  (recorded as **P-stale** in `EVIDENCE.md`).
 
 ### 8.6 Pass / fail criteria
 
+All rows read the hook log (§8.1A), never a transcript grep.
+
 | Outcome | Condition | Consequence |
 |---|---|---|
-| **PASS** | Leg 1 finds the rule text; Leg 2 matching arm finds `$CANARY` **and** Leg 2 non-matching arm does **not** | The premise holds. Build proceeds. Record all four transcript greps verbatim. |
-| **FAIL — rules do not load** | Leg 2 matching arm does **not** contain `$CANARY` (with P1–P6 all satisfied) | **STOP.** Do not ship §6. Report to the orchestrator: pathed user rules do not fire on Read, and this unit's premise is void. |
-| **INCONCLUSIVE — not glob-gated** | `$CANARY` present in **both** Leg 2 arms | Rules load, but not because of the glob. Reachability validation is still coherent (a rule whose glob is dead is still a mistake) but the co-firing datum's meaning changes. Record it, ship §6, and route the finding to §12 Q3. |
-| **INVALID — instrument** | Leg 1 does **not** find the rule text while Leg 2's matching arm **does** | The premise is confirmed by Leg 2, so this is an *instrument* defect in Leg 1, not a premise failure. Almost always the Leg-1 substring (see P4b). **Re-run Leg 1 after fixing the instrument; never record it as FAIL.** If P4b passed and Leg 1 still finds nothing while Leg 2 passes, stop and report — the two legs disagree about the same mechanism and neither verdict can be trusted. |
-| **FAIL — premise** | Leg 1 does **not** find the rule text **and** Leg 2's matching arm does **not** contain `$CANARY` (P1–P6 all satisfied) | Same consequence as the FAIL row above: **STOP**, do not ship §6, report. |
+| **PASS** | Leg 1 logs `session-transcripts.md` with `load_reason=path_glob_match`, matching `globs`, and the fixture as `trigger_file_path`; Leg 2's matching canary logs `path_glob_match` **and** its non-matching twin logs no entry at all | The premise holds. §6 ships. Record every log entry verbatim. **This is the recorded 2026-08-23 outcome for Legs 1, 2 AND 3** (`probe-full-2026-08-23/EVIDENCE.md`). |
+| **FAIL — premise** | P1–P6 all pass, and **no** entry for the rule appears with `load_reason=path_glob_match` in the matching case | **STOP.** Do not ship §6. Report: pathed user rules do not fire on Read, and this unit's premise is void. |
+| **INCONCLUSIVE — not glob-gated** | The rule is logged in the non-matching arm too, or is logged with `load_reason != "path_glob_match"` in the matching arm | Rules load, but not because of the glob. Reachability validation stays coherent (a rule whose glob is dead is still a mistake) but the co-firing datum's meaning changes. Record it, ship §6, route to §12 Q3. |
+| **INVALID — instrument** | Legs disagree about the same mechanism (one logs `path_glob_match`, another logs nothing for an equivalent match) | An instrument defect, not a premise failure. Re-run the disagreeing leg; **never record it as FAIL**. If both re-runs still disagree, stop and report — neither verdict can be trusted. |
 | **INVALID** | any of P1–P6 fails | Re-run. Never recorded as pass or fail. |
 
-Leg 3 reads separately: `$CANARY` present in the unpathed non-matching arm
-confirms the `len(unpathed)` term; absent disconfirms it and triggers the
-§5.3 fallback.
+Leg 3 reads separately: an unpathed canary logged at `session_start`
+confirms the `len(unpathed)` term; no entry disconfirms it and triggers the
+§5.3 fallback. **Recorded: confirmed** (§8.4).
+
+**Row precedence.** INVALID is evaluated first, and within it the §8.5
+invocation-defect exception first of all — a run whose session never
+executed cannot corroborate or refute any other row, no matter which
+absences appear in its log.
 
 ### 8.7 What must appear in `RESULTS.md`
 
-The literal command line of every invocation; `claude --version`; each
-session id; the resolved transcript path and its `wc -l`; the literal
-output of every precondition check P1–P6 (P4b included); the literal
-`grep -c` output of
-every arm; the post-run `ls ~/.claude/rules/` proving the probe file was
-removed; and the date. No paraphrase, no "verified" without the output that
-verifies it.
+The literal command line of every invocation; `claude --version`; the
+literal contents of the temp `settings.json` and `il-hook.sh`; each session
+id; the resolved `il.log` path and its `wc -l`; the literal output of every
+precondition check P-stale and P1–P6; **every `il.log` entry verbatim**;
+**a listing of the canary rules directory and the literal contents of every
+canary file, proving each control's subject existed and what glob it
+carried** — an absent file and an absent-from-log rule are
+indistinguishable otherwise, and a negative control that cannot be shown to
+have existed is not a control; per-leg verdicts against §8.6; and the date. No paraphrase, no "verified"
+without the output that verifies it.
+
+**`probe-full-2026-08-23/EVIDENCE.md` meets this bar for P-stale, P1, P4
+and P5** — it carries the verbatim command, `claude --version` 2.1.241, the
+session id, the printed P-stale / P1 / P4 outputs, `rc 0` plus the stdout
+tail covering P5, the full log beside it, the canary files, and a per-leg
+verdict table. It is the file §8's banner cites.
+
+**Two preconditions are discharged differently, and the difference is
+stated rather than glossed.** **P2 and P3 are discharged by the log's own
+content**, not by a printed check — the `trigger_file_path` entries show
+which fixtures were read, and no rules-directory path appears among them.
+**P6's canary half is vacuous** for a temp directory the run itself
+created: nothing could have pre-existed there. Both are substantively fine,
+but "meets this bar" is exactly the class of claim this section exists to
+police — the r3 gate caught the same class of overstatement one level up,
+so it is written out here instead of rounded off.
+
+**`ORCHESTRATOR-PROBE.md` does not, and is not cited as evidence.** It is a
+prose summary of the first Leg-1-only run: no command line, no version, no
+session id, no precondition outputs. That gap had a direct cost — with no
+transcribed command line, §8.1A's invocation was reconstructed from memory
+rather than copied, and the reconstruction could not run (§8.1A, MAJOR-2).
+**A summary that omits the command line is how a broken command survives
+three spec rounds.** That is the whole reason this section exists.
+
+### 8.8 Method history — 2026-08-23, and why it is evidence
+
+r1 and r2 of this spec specified a **transcript-grep** detector: run the
+session, then grep the session's JSONL for a substring of the rule's body.
+That method was executed faithfully and returned **FAIL — premise**. The
+diagnosis was that the *instrument* was blind, not that the surface was
+dead: rules and `CLAUDE.md` content is re-injected outside message history
+(docs `memory.md`, `context-window.md`), so a transcript grep can never see
+it in headless or interactive sessions. Re-run against the documented
+detector — an `InstructionsLoaded` hook registered through a temp
+`--settings` file — the same live rule reported
+`load_reason=path_glob_match` on `~/.claude/rules/session-transcripts.md`
+with `globs: ["**/.claude/projects/**/*.jsonl"]`, i.e. **PASS**
+(`misc/u-glob-loader-check/ORCHESTRATOR-PROBE.md`, raw log preserved at
+`misc/u-glob-loader-check/probe-2026-08-23/il.log`).
+
+Two things are worth keeping from that, and neither is embarrassment. The
+fail-safe design worked exactly as written: §8 was built so that an
+unverifiable premise **stops the build** rather than being assumed, and it
+did stop the build — which is what created the pressure to find the real
+detector instead of shipping on a guess. And the failure mode was the one
+§8.5 already names in the abstract: an instrument that returns "absent"
+when it is structurally incapable of observing the thing. r2 had already
+hardened against a *wrong substring* — it added a control asserting the
+grep target really existed in the rule file — but not against a *blind
+channel*, where the substring is right and the place being searched simply
+never contains it. That is why the current P4 controls the **detector**
+rather than the search string: the hook must be shown firing, via its own
+`session_start` entry, before any glob verdict is read.
+
+**And then the same class recurred one level up, which is why §8.7 got
+teeth.** The first hook-method run was Leg 1 only, its record was a prose
+summary with no command line, and §8's banner nonetheless read
+"EXECUTED, verdict PASS" over a §8.6 definition of PASS that requires all
+three legs. Two consequences, both caught at the r3 gate rather than by
+this spec: `len(unpathed)` would have shipped behind a sentence claiming it
+was measured when Leg 3 had never run, and §8.1A's command line — never
+transcribed, so reconstructed from memory — could not execute at all. The
+fix was not an argument but a run: all three legs, one session, evidence to
+§8.7's bar (`probe-full-2026-08-23/EVIDENCE.md`). The rule that fell out of
+it is the one now in §8.7 — *a summary that omits the command line is how a
+broken command survives three spec rounds* — and the corollary in §8.5:
+an INVALID that reproduces identically is a defect in the command, not the
+run.
 
 ---
 
@@ -1312,11 +1626,16 @@ hatch and the budget refusal are the designed answer; the gate should say
 whether that is enough or whether a `hosts.yaml` key naming extra
 reachability roots belongs in this unit rather than a later one.
 
-**Q2 — does an unpathed rule load unconditionally?** §5.3's `len(unpathed)`
-term assumes yes. §8 leg 3 measures it. If leg 3 disconfirms, the builder
-applies the stated fallback (drop the term, keep the list). The gate should
-confirm that a measured disconfirmation is a build-time adjustment and not
-a fresh spec round.
+**Q2 — does an unpathed rule load unconditionally? ANSWERED: yes,
+measured.** §8 leg 3 ran on 2026-08-23 and an unpathed rule was logged at
+`load_reason: session_start`
+(`misc/u-glob-loader-check/probe-full-2026-08-23/EVIDENCE.md`, entry 2), so
+§5.3's `len(unpathed)` term rests on a measurement rather than an
+assumption and its fallback branch is unexercised. Nothing is left open
+here for the gate to rule on; the question is retained because §5.3 and
+§8.4 both cite it, and because the *shape* of the answer — a term in a
+formula backed by one log entry — is worth a reviewer's eye even when the
+entry says yes.
 
 **Q3 — what if rules load regardless of the glob?** §8.6's INCONCLUSIVE
 row ships §6 anyway, on the ground that a rule whose glob matches nothing
@@ -1335,6 +1654,16 @@ than let it ride in as a side effect of the rewrite.
 ---
 
 ## 13. What r2 changed — gate finding → fold
+
+> **Scope note.** This table records the **r1 → r2** fold. §8 was
+> subsequently replaced wholesale in r3 (transcript grep →
+> `InstructionsLoaded` hook) and discharged in r4; the **B-1** and **M-5**
+> rows below therefore describe machinery that no longer exists — B-1's
+> corrected grep substring, its "new step 5", and the P4a/P4b split, and
+> M-5's old `INVALID — instrument` condition ("Leg 1 fails while Leg 2
+> passes"), which r3 re-expressed as "legs disagree about the same
+> mechanism". They are kept as history. §8.8 carries the r2 → r3 → r4
+> method history, and §13a records the r3 and r4 folds.
 
 Round-1 verdict: **NOT SOUND, 3 BLOCKER / 6 MAJOR / 8 NIT.** All folded in
 place; nothing deferred.
@@ -1363,3 +1692,49 @@ place; nothing deferred.
 them): §2.1–§2.4's citations, §3's M1–M9, §4.1's root set, §5.1's
 symbolic-over-witness ruling, §5.3's datum shape, §10's scope boundaries,
 and Q1–Q4.
+
+---
+
+## 13a. What r3 and r4 changed — §8 only
+
+Both rounds touched **§8 alone**, except where a finding named §5.3, §12 Q2
+or §13 explicitly. §1–§7 and §9–§11 are untouched since `cf97571`.
+
+### r3 — the detector replacement (gate verdict: RATIFIED)
+
+| Change | Why |
+|---|---|
+| Transcript grep → **`InstructionsLoaded` hook** as the detector, throughout §8.2, §8.5 and §8.6 | The r2 method executed faithfully and returned FAIL — premise. Diagnosis: rules/`CLAUDE.md` content is re-injected **outside message history** (docs `memory.md`, `context-window.md`), so a transcript grep is structurally incapable of observing a loaded rule. The instrument was blind; the surface was live. |
+| New **§8.1A** — harness, payload, and the field table | The hook's stdin JSON names `file_path`, `load_reason`, `globs`, `trigger_file_path` (and `memory_type`, added in r4). Strictly stronger than the grep: it reports *why* a rule loaded and *which file* triggered it. |
+| **§8.5 P4** replaces r2's P4a/P4b | Those controlled the *search string*; the failure was a *blind channel*. P4 controls the detector — the hook must be shown firing before any glob verdict is read. |
+| Leg 1 **synthesizes** its fixture | No `--add-dir`, nothing under the real `~/.claude/projects/` touched, and the leading-`**/` idiom exercised for real. |
+| New **§8.8** method history | The r2 FAIL was correctly derived under r2's own rules. Recording that is evidence the fail-safe worked, not an apology. |
+
+### r4 — the evidence discharge (gate: 3 MAJOR + 2 NIT, all folded)
+
+| Finding | Fold |
+|---|---|
+| **MAJOR-1** — the banner claimed PASS while only Leg 1 had run, making §5.3's "measured" claim false | **Discharged by a run, not a rewording.** All three legs executed in one session (`5546710e-…`): Leg 1 live rule at `path_glob_match`; Leg 2 matching canary loaded and non-matching twin absent; Leg 3 unpathed canary at `session_start`. Banner now carries a per-leg verdict table; §5.3 and §12 Q2 point at the log entry that measures them. Canaries lived in the temp **project's** `.claude/rules/` — `~/.claude/rules/` was never written, and §8.0 is retargeted accordingly. |
+| **MAJOR-2** — §8.1A's command line could not run | `--allowedTools` is variadic and swallowed the prompt, so the run died with `Error: Input must be provided…`, rc=1. Replaced with the gate's verified form, which is also the evidence file's verbatim command: **prompt as the first positional argument**, `< /dev/null` to close stdin. §8.1A now states the failure *direction* — P1 and P4 pass on a run that never executed; only P5 catches it — and §8.5 gains the standing rule that an INVALID reproducing identically is an invocation defect, not something to re-run. |
+| **MAJOR-3** — the cited evidence did not meet §8.7's own bar | §8 now cites `probe-full-2026-08-23/EVIDENCE.md` (verbatim command, version 2.1.241, session id, P-stale/P1/P4 outputs, per-leg verdicts, full log beside it). `ORCHESTRATOR-PROBE.md` is demoted to history and labelled as such — with the cost of its omission named: no transcribed command line is *why* MAJOR-2 survived three rounds. |
+| **NIT-1** — §13's B-1 and M-5 rows are stale as description | Scope note added under §13's heading; this section (§13a) added. |
+| **NIT-2** — P4 oversold what it controls | P4 now states that it controls the **instrument, not the run**, with the measured demonstration (a malformed invocation passed P1 and P4 having read nothing) and P5 named as the precondition that catches it. |
+| **Gate bonus finding** — a within-run negative control existed and §8 did not claim it | §8.1A now claims it: `~/.claude/rules/hooks.md`, a *second live pathed rule* with a non-matching glob, is absent from the log — **including at `session_start`** — in the same session where `session-transcripts.md` loaded at `path_glob_match`. Two live pathed rules, one matching glob, only the matching one loaded. That is the proposition §6 guards, observed on live rules rather than canaries. |
+
+### r4 closing NITs — folded after the SOUND verdict (spec CLOSED)
+
+The r4 delta returned **SOUND**; these four were certified foldable without
+re-gating and are applied in place.
+
+| Finding | Fold |
+|---|---|
+| **NIT-A** — the Leg-2 negative control's subject existed only in a job temp dir, which §8 itself calls non-durable | All three canary files are preserved with globs intact at `misc/u-glob-loader-check/probe-full-2026-08-23/canaries/`, and cited at both places the control is described (§8.1A control #2, §8.3's recorded outcome). §8.7 now *requires* a canary-directory listing and the literal contents of every canary file — because **absence from a log is indistinguishable from never-written**, which is this spec's own fail-open shape pointed at its own evidence. |
+| **NIT-B** — Leg 3 measured `memory_type: Project`; the user-scope cell was inferred silently | §8.4 now names the inference by its own no-analogy standard, and bounds it: User+pathed and Project+pathed behave identically in the same session (entries 3, 4), User+always-load is entry 1, so only User+unpathed-rule is unmeasured; an over-counted `max_fanin` **over-warns**, never under-warns; and `len(unpathed)` is **0** for user scope on this host today, so the inferred cell contributes nothing to any number the spec currently produces. |
+| **NIT-C** — §8.7 claimed `EVIDENCE.md` "meets this bar" when it meets part of it | Softened to what is actually true: the bar is met for **P-stale, P1, P4 and P5** (the last via `rc 0` and the stdout tail); **P2 and P3 are discharged by the log's own content** rather than printed; **P6's canary half is vacuous** in a temp dir the run created. Written out rather than rounded off — the r3 gate caught this same class of overstatement one level up. |
+| **NIT-D** — §8.2 step 3 passed `--session-id "$(uuidgen)"`; §8.1A's normative command passes none | §8.1A is declared **authoritative** wherever the two could be read differently, and step 3 states that no `--session-id` is passed: the recorded run's session id was generated by Claude Code and read back out of the hook log's `session_id` field. |
+
+**Still outstanding, all outside §8 and unchanged:** R-2 (§9.0 case 4's bare
+`a/**` against its own fixture-unique-anchor rule), R-3 (§4.3's per-pattern
+30 s × N aggregate), R-4 (§6.5's unpinned call site `verbs.py:2465`), R-5
+(§12 Q1's warm-only 2.65 s). All remain NIT-level bounded substitutions,
+all carried to the code gate. R-1 was resolved by the r3 §8.6 rewrite.
