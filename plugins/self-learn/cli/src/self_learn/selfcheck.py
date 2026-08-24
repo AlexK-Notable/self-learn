@@ -55,6 +55,15 @@ non-zero exit on any FAIL:
         are flagged as incomplete supersessions; settings.json
         registrations naming a ``self-learn-*`` hook must resolve through
         ``~/.claude/hooks/`` (missing/dangling = the silent-no-op drift);
+    (e2) surface check (U-pointer, the reachability emitter) — every LIVE
+        ``skill-md``/``claude-md``/``new-skill``/``hook``-routed record's
+        compiled surface is REACHABLE, UNREACHABLE, or (a first-class,
+        never-conviction-by-default) UNMEASURABLE — the question neither
+        drift nor (d2)'s reach check asks for these four destinations
+        (``reference`` stays wholly owned by (d2)). A `settings.json` that
+        will not parse FAILs the row through the settings-dependent
+        records only, never blanket; an absent ``~/.claude`` PASSes with
+        an UNMEASURABLE count and a note line, never a silent skip;
     (f) sentinel writability — hold + release a probe at the real
         cache-path resolution; a pre-existing LIVE sentinel (another
         flow's hold) is heartbeated, never deleted;
@@ -94,6 +103,7 @@ from .ledger_ops import (
     stamp_proposal,
     validate_proposal,
 )
+from .reachability import reachability_rows
 from .records import Record, RecordError
 from .verbs import DEFAULT_USER_CLAUDE_MD, _user_reachability_roots, managed_target_for
 
@@ -807,6 +817,60 @@ def _check_hooks(home: Path, claude_dir: Path) -> tuple[bool, str]:
     )
 
 
+def _check_surface(home: Path, claude_dir: Path) -> tuple[bool, str]:
+    """U-pointer §4/§5: the reachability-emitter row. Read-only render of
+    :func:`reachability.reachability_rows` — every per-record verdict is
+    computed there; this function only counts and formats (§4.3's "one
+    predicate, two renderers" rule).
+
+    Refusal posture FIRST (r1 M-E), byte-identical in shape to
+    :func:`_check_reach`'s opening: a `missing`/`not-a-repo` home FAILs
+    loud rather than certifying a ledger nobody can see; an absent
+    `hosts.yaml` is a clean, unmeasured PASS (nothing is registered, so
+    nothing is compiled anywhere to check).
+
+    The row's message grammar is NORMATIVE (§4.4): the head is present on
+    every run, `; <U> UNMEASURABLE` / `; <X> UNREACHABLE` are present iff
+    their count is nonzero, and the parenthetical names the DISTINCT
+    unmeasurable reasons actually present — the resolved `claude_dir` is
+    appended to it only when `claude-dir-absent` or `settings-unparseable`
+    is among them (never unconditionally, r2 MAJOR 2)."""
+    state = home_state(home)
+    if state in ("missing", "not-a-repo"):
+        return False, home_state_message(state, home)
+    if not hosts_path(home).is_file():
+        return True, "hosts.yaml absent — reachability not checked"
+
+    rows = reachability_rows(home, claude_dir)
+    total = len(rows)
+    if not total:
+        return True, "no records in the reachability domain"
+
+    reachable = [r for r in rows if r.state == "reachable"]
+    unreachable = [r for r in rows if r.state == "unreachable"]
+    unmeasurable = [r for r in rows if r.state == "unmeasurable"]
+
+    # §4.4a: the one reason-specific override — `settings-unparseable`
+    # fails the row (the instrument is present and broken), everything
+    # else `unmeasurable` merely counts (the instrument is absent, not
+    # the canon broken).
+    fails_on_settings = any(r.reason == "settings-unparseable" for r in unmeasurable)
+    ok = not unreachable and not fails_on_settings
+
+    msg = f"{len(reachable)} of {total} verified reachable"
+    if unmeasurable:
+        msg += f"; {len(unmeasurable)} UNMEASURABLE"
+    if unreachable:
+        msg += f"; {len(unreachable)} UNREACHABLE"
+    if unmeasurable:
+        reasons = sorted({r.reason for r in unmeasurable})
+        note = ", ".join(reasons)
+        if "claude-dir-absent" in reasons or "settings-unparseable" in reasons:
+            note += f" — {claude_dir}"
+        msg += f" (unmeasurable: {note})"
+    return ok, msg
+
+
 def _check_sentinel() -> tuple[bool, str]:
     """(d) Hold + release a probe at the real cache-path resolution. A
     pre-existing LIVE sentinel belongs to another flow: heartbeat it as
@@ -855,6 +919,7 @@ def run_selftest(home: Path) -> int:
         ("drift", *_check_drift(home)),
         ("reach", *_check_reach(home)),
         ("hooks", *_check_hooks(home, claude_runtime_dir())),
+        ("surface", *_check_surface(home, claude_runtime_dir())),
         ("sentinel", *_check_sentinel()),
         ("invocation", *_check_invocation(home)),
     ]
