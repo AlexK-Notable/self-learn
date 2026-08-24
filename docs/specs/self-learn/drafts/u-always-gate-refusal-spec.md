@@ -241,7 +241,7 @@ The contract the rule actually depends on is an **ordering** one:
 `_validate_gates` runs first (`ledger_ops.py:1564-1565`) and refuses each of
 those shapes at the schema layer — measured messages `gates.t4 must be a
 mapping, got 123` (`ledger_ops.py:808-809`), `gates.t4.depth_behind_rule
-must be a mapping, got None`, and `gates.e1.sightings must be an int >= 1,
+must be a mapping, got None`, and `gates.e1.sightings must be an int ≥ 1,
 got 'two'`. So by the time R-ALWAYS-EV executes through
 `validate_proposal`, `t4` is either `None` or a fully shape-checked mapping
 and `e1.sightings` is an int.
@@ -389,7 +389,8 @@ The hits, qualitatively:
   analyst doing exactly the right thing); one observing "no path trigger
   and no owning skill in the roster".
 - 1 event, on a DEMAND proposal, describes "a different glob shape".
-- 2 are the doctrine-mandated R-SCOPE sentence on **DEMAND** proposals —
+- 2 events, on 1 **DEMAND** proposal (`lrn-a229a2b5`, in both `rationale`
+  and `card.discuss`), are the doctrine-mandated R-SCOPE sentence —
   "reference has no user-scope surface, so this defers rather than …" —
   which is the exact wording the doctrine asks for and must never be
   penalized.
@@ -400,7 +401,7 @@ hits and still leaves **2 false positives out of 12 ALWAYS proposals
 far too noisy for a refusal, and noisy enough as a warning to be trained
 out rather than read.
 
-A matcher narrow enough to clear those 3 would have to require a
+A matcher narrow enough to clear those hits would have to require a
 surface-absence phrase *and* a consequential connective *and* an
 always-on target token in the same sentence. On this corpus it scores
 zero false positives and **zero true positives** — it is unvalidated in
