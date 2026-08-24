@@ -410,6 +410,53 @@ standard safe rebase-halt (`01` §5) rather than being excluded outright.
   record-writing verb scans both and uniformity beats the
   micro-optimization)*, `commit_lock` before the first mutation,
   sentinel self-hold + heartbeat, targeted staging, push.
+- **`self-learn rescope <id> --to <scope>`** *(added 2026-08-23 — u-rescope,
+  the `rehome` sibling for the `user ↔ skill:<name>` pair; 09 §11 Y-25 is the
+  surface register entry)*: moves a **pending** (or `deferred`) record
+  between the `user` bucket and a `skills/<name>` bucket, rewriting
+  `scope:` in the SAME motion. `rehome` stays project↔project only and is
+  untouched beyond one line of its refusal string naming this verb;
+  `rescope` refuses `project` on either side (that is `rehome`'s
+  territory) and refuses `skill:<a> → skill:<b>` (dated future work — no
+  live motivating case, and the sharpest form of the proposal-sweep
+  hazard below). `--to` accepts `user` or `skill:<name>`, resolved
+  against the registered `skills_root` (a typo or an unregistered root
+  refuses, never silently creates a bucket). **Unlike `rehome`, the
+  record's bytes are NOT untouched**: the scope literal lives in
+  frontmatter and `bucket_dir_for_scope` maps `scope → bucket`, so a
+  record whose `scope:` disagrees with its bucket is exactly the
+  corruption this verb exists to repair — `rescope` rewrites `scope` to
+  match the destination in the same `git mv`-then-write motion
+  `resolve_record` uses (mv first, so a kill leaves a loudly-blocked
+  staged rename that `reconcile` refuses to auto-commit, never a
+  silently-committable modified file — the mv-first ordering is the
+  point). `status`, `sightings`, `evidence`, `deferral` metadata, and the
+  body all ride unchanged; a deferred record re-scopes and stays
+  deferred. **Proposal siblings are SWEPT, never carried** — the same
+  Y-18 decision `rehome` already made, re-affirmed on fresh evidence: a
+  scope-only edit does not change `record_sha` (scope is frontmatter,
+  not body), so a carried proposal would render an honest-looking stale
+  card reasoning from the wrong scope. **The sweep is DISCLOSED**, which
+  `rehome`'s is not: when the sweep removes at least one file, the
+  human-facing output gets one line naming the non-zero swept components
+  (`swept 1 proposal — lrn-… will be re-analyzed in skills/<name>`; a
+  component at zero is never named, and nothing swept means no line at
+  all), and the commit body records every swept path. One ledger commit,
+  pinned subject `self-learn: rescope lrn-… → skills/<name>` or `→ user`;
+  `--note` rides the commit body only (rescope is not a resolution).
+  Refusals, each checked on **status, never mere existence**, and — for
+  the source scope — on **the bucket, never the record's `scope:`
+  field** (a scope↔bucket disagreement is repaired by this verb, not
+  refused on the strength of the field the corruption lives in): unknown
+  id · not pending/deferred · source in a `projects/*` bucket (rehome's
+  territory) · `--to` unparseable or `project` · unknown/ambiguous skill
+  name or no skills root registered · target == source scope ·
+  `skill → skill` · id already present in the target bucket, `pending/`
+  OR `resolved/` (F4). No `meta.yaml` (`user`/`skill:` buckets carry no
+  project identity). No telemetry event — `EVENT_KINDS` is a closed set,
+  the sibling verb `rehome` emits nothing either, and git is already the
+  provenance record. Not agent-proposable in M1 — human-CLI-only, and
+  does not join the pane's closed proposable-verb list.
 - **`kind` drives routing, not decay.** Gen 1 gave `kind` decay clocks and
   injection priority; those needed the statistical layer. What remains is
   its routing value: anti-pattern → hook candidate · surface-rule → SKILL.md

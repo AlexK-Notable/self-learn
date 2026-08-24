@@ -266,6 +266,21 @@ def _build_parser() -> argparse.ArgumentParser:
         "in hosts.yaml — self-learn host add <path> registers it)",
     )
 
+    rescope = _verb(
+        "rescope",
+        "move a pending record between the user bucket and a skill bucket",
+    )
+    rescope.add_argument("id", metavar="ID")
+    rescope.add_argument(
+        "--to",
+        required=True,
+        metavar="SCOPE",
+        help="the scope to move it to — 'user' or 'skill:<name>' "
+        "(user<->skill:<name> only; the skill must already be under the "
+        "registered skills root — self-learn host add <path> "
+        "--skills-root registers one)",
+    )
+
     supersede = _verb("supersede", "mark OLD superseded by NEW (metadata only)")
     supersede.add_argument("old_id", metavar="OLD_ID")
     supersede.add_argument("new_id", metavar="NEW_ID")
@@ -1271,6 +1286,18 @@ def _cmd_verb(args: argparse.Namespace) -> int:
             )
             # pinned subject: "self-learn: rehome lrn-… → projects/<slug>"
             return _finish_verb(result, _routed_destination(result))
+        if args.command == "rescope":
+            result = verbs.rescope(
+                home, args.id, to=args.to, note=args.note, no_push=args.no_push
+            )
+            # Do NOT reuse `_routed_destination` — its split-on-"→" parse
+            # is accidental for a second target vocabulary (u-rescope
+            # §6.1). Pass the resolved target explicitly instead, via the
+            # SAME helper the verb itself uses to build the commit
+            # subject and the disclosure line (`args.to` is already a
+            # validated scope literal here — the verb call above raised
+            # before this point if it were not).
+            return _finish_verb(result, verbs._rescope_dest_label(args.to))
         if args.command == "supersede":
             result = verbs.supersede(
                 home,
@@ -1842,6 +1869,7 @@ VERB_COMMANDS = frozenset(
         "defer",
         "graduate",
         "rehome",
+        "rescope",
         "supersede",
         "confirm-recurrence",
         "confirm-held",

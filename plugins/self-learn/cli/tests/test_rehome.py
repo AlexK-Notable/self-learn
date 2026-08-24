@@ -236,9 +236,9 @@ class TestRehomeRefusals:
             verbs.rehome(env.home, rec.id, to=str(env.host_b))
         assert str(exc.value) == (
             f"record {rec.id} lives in a non-project bucket (s) — rehome "
-            "is project→project only (M1); user-scope targets and "
-            "skill/user-scope sources are dated future work, not silent "
-            "extensions"
+            "is project→project only (M1); self-learn rescope is the "
+            "repair for a user<->skill:<name> move — project↔user/skill "
+            "moves remain dated future work, not silent extensions"
         )
 
     def test_destination_collision_refuses_before_any_creation(self, env):

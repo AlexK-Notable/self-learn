@@ -1,5 +1,7 @@
 """Resolution verbs (T7): route / reject / defer / graduate / supersede —
-plus the non-resolution filing move `rehome` (02 §2, added 2026-07-18).
+plus the non-resolution filing moves `rehome` (02 §2, added 2026-07-18)
+and `rescope` (u-rescope, added 2026-08-23 — the `user <-> skill:<name>`
+sibling; `rehome` stays project<->project only).
 
 Function layer only — T8 wires these into the CLI. Public signatures:
 
@@ -10,6 +12,7 @@ Function layer only — T8 wires these into the CLI. Public signatures:
     graduate(home, record_id, *, note=None, no_push=False) -> VerbResult
     supersede(home, old_id, new_id, *, note=None, no_push=False) -> VerbResult
     rehome(home, record_id, *, to, note=None, no_push=False) -> VerbResult
+    rescope(home, record_id, *, to, note=None, no_push=False) -> VerbResult
     push_pending(home) -> PushReport                 # bare `self-learn push`
 
 Every verb runs the pinned sequence (08 §1 Resolution-verbs / Secret-scan /
@@ -126,6 +129,7 @@ from .ledger_ops import (
     glob_reaches,
     globs_may_intersect,
     rehome_record,
+    rescope_record,
     read_proposal,
     record_title,
     require_writable_home,
@@ -170,6 +174,7 @@ __all__ = [
     "push_pending",
     "recompile",
     "rehome",
+    "rescope",
     "reject",
     "route",
     "route_direct",
@@ -3622,8 +3627,9 @@ def rehome(
         raise VerbError(
             f"record {record_id} lives in a non-project bucket "
             f"({source_bucket.name}) — rehome is project→project only "
-            "(M1); user-scope targets and skill/user-scope sources are "
-            "dated future work, not silent extensions"
+            "(M1); self-learn rescope is the repair for a user<->"
+            "skill:<name> move — project↔user/skill moves remain dated "
+            "future work, not silent extensions"
         )
 
     target_path = _resolve_rehome_target(home, to)
@@ -3663,6 +3669,215 @@ def rehome(
             staged=staged,
             push=push,
             sentinel_owned=hold.owned,
+        )
+    finally:
+        hold.release()
+
+
+def _resolve_rescope_target(home: Path, to: str) -> tuple[str, Path]:
+    """``rescope --to`` accepts a SCOPE LITERAL — ``user`` or
+    ``skill:<name>`` — a different kind of thing from `rehome --to`'s
+    project path/slug (u-rescope §3 rationale 1: a different registry,
+    a different resolver, a different refusal string). Everything else
+    — ``project``, a bare ``skill``/``skill:``, a path, empty — refuses.
+
+    The skill-name validity gate calls :func:`hosts.skill_dir_for`
+    DIRECTLY rather than going through
+    :func:`ledger_ops.bucket_dir_for_scope` (whose ``skill:`` arm runs
+    the identical gate): every skill-name failure here must raise
+    ``VerbError`` (exit 1, §8's exit-1 row), and
+    ``bucket_dir_for_scope`` wraps the same check as
+    ``LedgerOpsError`` (exit 64) — the wrong code for a `rescope`
+    refusal."""
+    if to == "user":
+        return "user", home / "user"
+    if isinstance(to, str) and to.startswith("skill:") and len(to) > len("skill:"):
+        name = to[len("skill:") :]
+        try:
+            skill_dir_for(load_hosts(home), name)  # validity gate only
+        except HostsError as exc:
+            raise VerbError(str(exc)) from exc
+        return f"skill:{name}", home / "skills" / name
+    raise VerbError(
+        f"--to must be 'user' or 'skill:<name>', got {to!r} — rescope "
+        "supports only user<->skill:<name> (M1); a project target is "
+        "rehome's territory"
+    )
+
+
+def _rescope_dest_label(target_scope: str) -> str:
+    """The commit-subject/disclosure-line spelling of a target scope:
+    ``skills/<name>`` for ``skill:<name>``, ``user`` for ``user`` —
+    never the raw scope literal (matches `rehome`'s
+    ``projects/<slug>`` subject shape)."""
+    if target_scope.startswith("skill:"):
+        return f"skills/{target_scope[len('skill:') :]}"
+    return "user"
+
+
+def _rescope_sweep_note(record_id: str, swept: list[Path], dest_label: str) -> str:
+    """R-DISCLOSE-1 (u-rescope §5.5): one human-facing line naming the
+    count of each swept component and the fact of re-analysis, e.g.
+    ``swept 1 proposal + 2 merge clusters — lrn-… will be re-analyzed in
+    skills/bitwarden-cli``. Lists ONLY the non-zero components — a
+    merge-cluster-only sweep must not print "swept 0 proposal". Called
+    only when ``swept`` is non-empty (empty means no note at all — never
+    "swept 0")."""
+    has_proposal = any(
+        p.name in (f"{record_id}.yaml", f"{record_id}.diff") for p in swept
+    )
+    n_merge = sum(1 for p in swept if p.name.startswith("merge-"))
+    parts = []
+    if has_proposal:
+        parts.append("1 proposal")
+    if n_merge:
+        parts.append(f"{n_merge} merge cluster" + ("" if n_merge == 1 else "s"))
+    counts = " + ".join(parts)
+    return f"swept {counts} — {record_id} will be re-analyzed in {dest_label}"
+
+
+def _rescope_commit_body(note: str | None, swept: list[Path]) -> str | None:
+    """Compose the commit body: ``note`` (or nothing) followed, when
+    ``swept`` is non-empty, by one ``swept: <relpath>`` line per swept
+    file — R-DISCLOSE-2 (§5.5/§6.2 step 8). This is the ONLY body
+    channel: :func:`_commit_ledger` passes it straight through to
+    ``gitops.commit(..., body=note, ...)`` (`verbs.py:460`)."""
+    parts: list[str] = []
+    if note:
+        parts.append(note)
+    if swept:
+        parts.append("\n".join(f"swept: {p}" for p in swept))
+    return "\n\n".join(parts) if parts else None
+
+
+def rescope(
+    home: Path | str,
+    record_id: str,
+    *,
+    to: str,
+    note: str | None = None,
+    no_push: bool = False,
+) -> VerbResult:
+    """Move a PENDING (or ``deferred``) record between the ``user``
+    bucket and a ``skills/<name>`` bucket, rewriting ``scope:`` in the
+    same motion (u-rescope spec §6). **Unlike** `rehome`, the record's
+    bytes are NOT untouched — the scope literal lives in frontmatter and
+    :func:`ledger_ops.bucket_dir_for_scope` maps ``scope -> bucket``, so
+    a record whose frontmatter disagrees with its bucket is exactly the
+    corruption this verb exists to repair (§4.1). Ledger-only (one
+    commit, pinned subject ``self-learn: rescope lrn-… → skills/<name>``
+    or ``→ user``; ``--note`` rides the commit body only — rescope is
+    not a resolution, ``resolution_note`` stays untouched). A deferred
+    record re-scopes and stays deferred.
+
+    Proposal siblings are SWEPT, never carried (§5) — the analyst's
+    destination judgment is bucket-relative and ``record_sha`` staleness
+    cannot catch a scope-only edit (§5.2: scope is frontmatter, not
+    body). The sweep is DISCLOSED, which `rehome`'s sweep is not:
+    ``post_notes`` names the count (R-DISCLOSE-1) and the commit body
+    names the swept paths (R-DISCLOSE-2).
+
+    Refusals — each on STATUS, never mere existence (``find_record_path``
+    also sees ``resolved/``), all BEFORE any commit or dir creation:
+    unknown id · not pending/deferred · source lives in a ``projects/*``
+    bucket (rehome's territory) · ``--to`` unparseable or ``project`` ·
+    skill name not under the registered skills root, ambiguous, or no
+    skills root registered · target scope == source scope ·
+    ``skill -> skill`` (dated future work, §4) · id already present in
+    the target bucket, ``pending/`` OR ``resolved/`` (the create-record
+    collision precedent, F4). **The BUCKET is the single authority for
+    the source scope, never the record's ``scope:`` field** — a record
+    whose frontmatter disagrees with its bucket is repaired by this
+    verb (its rewrite sets ``scope`` to match the destination), never
+    refused on the strength of the field the corruption lives in."""
+    home = Path(home)
+    path = find_record_path(home, record_id)  # pending OR resolved
+
+    # scan BEFORE trusting the record's contents — plus the note (P2-7).
+    # Load-bearing here (unlike rehome): the file is genuinely rewritten
+    # (§4.1), so this is not a formality.
+    _scan_or_refuse([path], note)
+
+    record = Record.from_path(path)
+    if path.parent.name != "pending" or record.status not in (
+        "pending",
+        "deferred",
+    ):
+        raise VerbError(
+            f"record {record_id} is not pending (status "
+            f"{record.status!r}) — a resolved lesson does not move; "
+            "supersede is the correction machinery (02 §2)"
+        )
+
+    target_scope, target_bucket = _resolve_rescope_target(home, to)
+
+    # Source-scope refusals — the BUCKET is the single authority, never
+    # the record's `scope:` field (§6.2 step 5 / T18b).
+    source_bucket = path.parent.parent
+    if source_bucket.parent == home / "projects":
+        raise VerbError(
+            f"record {record_id} lives in a project bucket "
+            f"({source_bucket.name}) — rescope supports only "
+            "user<->skill:<name> (M1); rehome is project->project's "
+            "own verb"
+        )
+    source_scope = (
+        f"skill:{source_bucket.name}"
+        if source_bucket.parent == home / "skills"
+        else "user"
+    )
+    if source_scope == target_scope:
+        raise VerbError(
+            f"record {record_id} already lives in scope {target_scope!r} "
+            "— nothing to move"
+        )
+    if source_scope.startswith("skill:") and target_scope.startswith("skill:"):
+        raise VerbError(
+            f"record {record_id}: skill -> skill re-scope "
+            f"({source_scope} -> {target_scope}) is dated future work, "
+            "not a silent extension (u-rescope §4)"
+        )
+
+    # Destination collision (F4 — the create_record precedent), checked
+    # BEFORE any target-dir creation: a duplicated id is corruption to
+    # surface, never to merge into.
+    for sub in ("pending", "resolved"):
+        if (target_bucket / sub / f"{record_id}.md").exists():
+            raise VerbError(
+                f"record {record_id} already exists in {target_bucket} — "
+                "a duplicated id is corruption to surface, never to merge "
+                "into; inspect both files by hand"
+            )
+
+    dest_label = _rescope_dest_label(target_scope)
+
+    hold = sentinel.hold()
+    sentinel.heartbeat()
+    try:
+        message = f"self-learn: rescope {record_id} → {dest_label}"
+        with _ledger_write(home):
+            touched, swept = rescope_record(
+                home, record_id, target_scope, target_bucket
+            )
+            relswept = [
+                p.relative_to(home) if p.is_relative_to(home) else p for p in swept
+            ]
+            body = _rescope_commit_body(note, relswept)  # R-DISCLOSE-2
+            staged, sha = _commit_ledger(home, touched, message, body)
+        push = _push_ledger(home, no_push)
+        return VerbResult(
+            action="rescope",
+            record_id=record_id,
+            commit_message=message,
+            commit_sha=sha,
+            staged=staged,
+            push=push,
+            sentinel_owned=hold.owned,
+            post_notes=(
+                [_rescope_sweep_note(record_id, swept, dest_label)]
+                if swept
+                else []
+            ),
         )
     finally:
         hold.release()
