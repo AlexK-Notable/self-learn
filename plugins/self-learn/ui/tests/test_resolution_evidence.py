@@ -65,7 +65,7 @@ def envelope(
     warnings: list[str] | None = None,
     created: bool | None = None,
     outcome_state: str = "landed",
-    over_cap: str | None = None,
+    budget: str | None = None,
     pushed: str = "pushed",
     host_pushed: str | None = "pushed",
 ) -> dict:
@@ -84,7 +84,7 @@ def envelope(
         "warnings": warnings or [],
         "created": created,
         "outcome_state": outcome_state,
-        "over_cap": over_cap,
+        "budget": budget,
         "pushed": pushed,
         "host_pushed": host_pushed,
     }
@@ -307,6 +307,60 @@ class TestRouteEvidenceRendering:
             headers=HX,
         )
         assert "outcome unknown" in r.text
+
+
+class TestBudgetNoteRendering:
+    """N2 (u-cap code gate r1): no test asserted `evidence.html` (:70)
+    actually renders the CLI's `budget` note with class `evidence-note`
+    (a fact), never `evidence-warning` (T12.5). The template already
+    does this correctly (ruling (d) of the gate: `BudgetRow.flagged` is
+    a CSS cue, not a warning); this proves the ACTUAL markup, not just
+    that a string appears somewhere on the page."""
+
+    def test_budget_note_renders_as_evidence_note_not_warning(
+        self, tmp_path: Path
+    ) -> None:
+        sb, rec = _seed(tmp_path)
+        env_dict = envelope(
+            record_id=rec.id,
+            destination="skill-md",
+            outcome_state="landed",
+            budget="budget: skill-md section now holds 3 entries / 12 words",
+        )
+        runner = FakeRunner()
+        runner.queue_result(RunResult(0, stdout=json.dumps(env_dict)))
+        c, _runner = make_client(sb, runner=runner)
+        r = c.post(
+            f"/record/{rec.id}/action/confirm",
+            data={"verb": "route", "kind": "detail", "dest": "skill-md"},
+            headers=HX,
+        )
+        assert r.status_code == 200
+        match = re.search(
+            r'<p class="([^"]*)">budget: skill-md section now holds 3 '
+            r"entries / 12 words</p>",
+            r.text,
+        )
+        assert match is not None, "no <p> rendered for the budget note"
+        assert match.group(1) == "evidence-note"
+        assert "evidence-warning" not in r.text
+
+    def test_no_budget_note_renders_nothing(self, tmp_path: Path) -> None:
+        sb, rec = _seed(tmp_path)
+        env_dict = envelope(
+            record_id=rec.id, destination="skill-md",
+            outcome_state="landed", budget=None,
+        )
+        runner = FakeRunner()
+        runner.queue_result(RunResult(0, stdout=json.dumps(env_dict)))
+        c, _runner = make_client(sb, runner=runner)
+        r = c.post(
+            f"/record/{rec.id}/action/confirm",
+            data={"verb": "route", "kind": "detail", "dest": "skill-md"},
+            headers=HX,
+        )
+        assert r.status_code == 200
+        assert "evidence-note" not in r.text
 
 
 class TestOtherVerbsEvidenceRendering:

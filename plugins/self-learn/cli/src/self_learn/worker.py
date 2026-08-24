@@ -106,6 +106,7 @@ __all__ = [
     "invoke_timeout_secs",
     "kick",
     "package_skill_refs",
+    "pair_similarity",
     "path_roster",
     "repair_timeout_secs",
     "run",
@@ -376,6 +377,40 @@ def _render_candidates(candidates: list) -> str:
     )
 
 
+def pair_similarity(
+    tokens_a: set, tokens_b: set, doc_freq: dict[str, int], n_docs: int
+) -> float:
+    """IDF-cosine similarity between two token sets over a shared corpus
+    (§4.3.2, U-cap) — factored out of :func:`cluster_candidates`'s former
+    ``idf``/``sum_idf`` closures so there is exactly ONE IDF-cosine
+    definition in the codebase; the context-budget crowding signal
+    (``report.py``) calls this directly rather than reimplementing it.
+
+    ``doc_freq``/``n_docs`` describe the CORPUS the IDF weights are drawn
+    from — deliberately a parameter, never re-derived here, so a caller
+    can score a pair against a corpus wider than its own two members (a
+    2-document corpus makes every shared token's ``idf`` collapse to
+    ``log(1) == 0``, the degeneracy §4.3.2 documents). Returns ``0.0``
+    when the two sets share no tokens, or when either side's IDF mass is
+    zero (nothing in the corpus to weight by) — never a ``ZeroDivisionError``."""
+
+    def idf(term: str) -> float:
+        d = doc_freq.get(term, 0)
+        if d <= 0 or n_docs <= 0:
+            return 0.0
+        return math.log(n_docs / d)
+
+    shared = tokens_a & tokens_b
+    if not shared:
+        return 0.0
+    a_sum = sum(idf(t) for t in tokens_a)
+    b_sum = sum(idf(t) for t in tokens_b)
+    denom = math.sqrt(a_sum * b_sum) if a_sum > 0 and b_sum > 0 else 0.0
+    if denom <= 0:
+        return 0.0
+    return sum(idf(t) for t in shared) / denom
+
+
 def cluster_candidates(home: Path, batch: list) -> dict:
     """Ingredient 2 — T-N cluster candidates (§3.3): IDF-cosine over
     trigger-title tokens, pinned algorithm (r2's suggested extension of
@@ -418,33 +453,18 @@ def cluster_candidates(home: Path, batch: list) -> dict:
         for t in toks:
             doc_freq[t] = doc_freq.get(t, 0) + 1
 
-    def idf(term: str) -> float:
-        d = doc_freq.get(term, 0)
-        if d <= 0 or n <= 0:
-            return 0.0
-        return math.log(n / d)
-
-    def sum_idf(toks: set) -> float:
-        return sum(idf(t) for t in toks)
-
     result: dict[str, list] = {}
     for entry in batch:
         rid = entry.record.id
         a_title = record_title(entry.record)
         a_toks = _tokens(a_title)
-        a_sum = sum_idf(a_toks)
         scored: list[tuple[float, str, str, str]] = []
         for other_id, other_status, other_title, b_toks in pool:
             if other_id == rid:
                 continue
-            shared = a_toks & b_toks
-            if not shared:
+            if not (a_toks & b_toks):
                 continue
-            b_sum = sum_idf(b_toks)
-            denom = math.sqrt(a_sum * b_sum) if a_sum > 0 and b_sum > 0 else 0.0
-            if denom <= 0:
-                continue
-            score = sum(idf(t) for t in shared) / denom
+            score = pair_similarity(a_toks, b_toks, doc_freq, n)
             if score >= CANDIDATE_SCORE_FLOOR:
                 scored.append((score, other_id, other_status, other_title))
         scored.sort(key=lambda row: (-row[0], row[1]))

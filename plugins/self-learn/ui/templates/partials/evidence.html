@@ -67,7 +67,7 @@
   <p>Denied <code>{{ evidence.record_id }}</code> — moved to
     {% if evidence.ledger_paths %}<code>{{ evidence.ledger_paths[0] }}</code>{% else %}resolved/{% endif %}.</p>
   {% endif %}
-  {% if evidence.over_cap %}<p class="evidence-warning">{{ evidence.over_cap }}</p>{% endif %}
+  {% if evidence.budget %}<p class="evidence-note">{{ evidence.budget }}</p>{% endif %}
   {% for w in evidence.warnings %}
   <p class="evidence-warning">{{ w }}</p>
   {% endfor %}

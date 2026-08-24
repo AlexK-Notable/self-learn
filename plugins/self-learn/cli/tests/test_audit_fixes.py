@@ -219,4 +219,6 @@ def test_route_emits_surface_budget_event(env):
     budget = [e for e in events if e["kind"] == "surface-budget"]
     assert len(budget) == 1
     assert budget[0]["target"] == "skill-md"
-    assert budget[0]["overflow"] is False
+    # U-cap §6.1: the `overflow` payload key is DROPPED — there is
+    # nothing left to overflow (T10.4).
+    assert "overflow" not in budget[0]

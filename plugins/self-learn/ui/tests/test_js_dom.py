@@ -998,7 +998,7 @@ class TestReloadDeferLegF:
             "warnings": [],
             "created": None,
             "outcome_state": "landed",
-            "over_cap": None,
+            "budget": None,
             "pushed": "pushed",
             "host_pushed": None,
         }
@@ -1079,7 +1079,7 @@ class TestSuccessFooterNeverAdvertisesADeadKey:
             "warnings": [],
             "created": False,
             "outcome_state": "landed",
-            "over_cap": None,
+            "budget": None,
             "pushed": "pushed",
             "host_pushed": "pushed",
         }

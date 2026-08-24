@@ -133,11 +133,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "--surface-fill",
         action="store_true",
         dest="surface_fill",
-        help="add per-record surface_fill (09 §11 Y-20): current fill of "
-        "each scope-valid CAPPED destination (skill-md/claude-md — never "
-        "reference). Default OFF; the unflagged --json output is "
-        "byte-unchanged. Costly (a routed-record scan per distinct "
-        "target) — pass --id to scope it to one record (delta F9).",
+        help="add per-record surface_fill (09 §11 Y-20, U-cap §6.3): "
+        "current fill of each scope-valid PROBED destination "
+        "(skill-md/claude-md), plus a reference read-rate verdict. "
+        "Default OFF; the unflagged --json output is byte-unchanged. "
+        "Costly (a routed-record scan per distinct target) — pass --id "
+        "to scope it to one record (delta F9).",
     )
     list_p.add_argument(
         "--id",
@@ -1157,7 +1158,7 @@ def _verb_envelope(result: verbs.VerbResult) -> dict:
         "warnings": list(result.warnings),
         "created": _created_flag(result.compile_result),
         "outcome_state": _outcome_state(result),
-        "over_cap": result.over_cap_note(),
+        "budget": result.budget_note(),
         "pushed": _push_state(result.push),
         # `None` when no host commit ever happened — "pushed" is moot,
         # never rendered as "you chose not to" for a verb that had
@@ -1182,7 +1183,7 @@ def _finish_verb(result: verbs.VerbResult, target: str, *, as_json: bool = False
     `diff` and `post_notes` are both stdout-bound prose (a hook's entire
     generated script; multi-line manual-step text) that would otherwise
     turn stdout into "JSON-then-prose". Exit status and stderr (warnings,
-    the over-cap note, the push-failure code) are UNCHANGED either way —
+    the budget note, the push-failure code) are UNCHANGED either way —
     `--json` never moves the outcome, only how it is printed."""
     if as_json:
         print(json.dumps(_verb_envelope(result)))
@@ -1197,7 +1198,7 @@ def _finish_verb(result: verbs.VerbResult, target: str, *, as_json: bool = False
             print(note_line)
     for warning in result.warnings:
         print(warning, file=sys.stderr)
-    if (note := result.over_cap_note()) is not None:
+    if (note := result.budget_note()) is not None:
         print(note, file=sys.stderr)
     for push in (result.push, result.host_push):
         if push is not None and not push.ok:

@@ -753,8 +753,8 @@ def _route_now(
         f"routed {record.id} → {destination} @ {result.commit_sha[:7]} "
         f"({push_note(result)})"
     )
-    if (cap_note := result.over_cap_note()) is not None:
-        print(cap_note, file=sys.stderr)
+    if (budget_note := result.budget_note()) is not None:
+        print(budget_note, file=sys.stderr)
     print(f"  {record.type}{kind_part} · {record.scope} · {record_title(record)}")
     # M3-11 (one-motion hook/new-skill, config-enabled): the required
     # manual steps — the guard stays inert until settings.json is edited.

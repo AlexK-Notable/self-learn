@@ -135,7 +135,11 @@ class TestRouteEnvelope:
         assert envelope["warnings"] == []
         assert envelope["created"] is True
         assert envelope["outcome_state"] == "landed"
-        assert envelope["over_cap"] is None
+        # U-cap §6.2: the envelope key is renamed `over_cap` -> `budget`,
+        # carrying the post-route budget FACT (never null when there is a
+        # managed-section compile result to describe, as here).
+        assert envelope["budget"] is not None
+        assert envelope["budget"].startswith("budget: ")
         assert envelope["pushed"] == "pushed"
         assert envelope["host_pushed"] == "pushed"
 
@@ -193,6 +197,44 @@ class TestRouteEnvelope:
         rec_json = Record.from_path(resolved_json)
         assert rec_plain.routing.get("destination") == rec_json.routing.get("destination")
         assert rec_plain.status == rec_json.status == "routed"
+
+
+class TestBudgetEnvelopeKey:
+    def test_t11_1_envelope_carries_budget_never_over_cap(self, env, capsys):
+        """T11.1: `_verb_envelope` has the key `"budget"` and no key
+        `"over_cap"` at all (the retired name must not survive as a
+        second, redundant key)."""
+        seed_skill_record(env)
+        code, envelope = run_json(
+            ["route", RID, "--dest", "skill-md", "--json"], capsys
+        )
+        assert code == 0
+        assert "budget" in envelope
+        assert "over_cap" not in envelope
+
+    def test_t11_3_unreadable_whole_file_still_reports_entry_word_counts(
+        self, env
+    ):
+        """T11.3 (?): the SECTION already compiled successfully (the
+        route landed) but a subsequent whole-file read of the target
+        fails (permissions changed after the route) — `budget_note()`
+        degrades the file-size clause to "surface size unavailable"
+        while the entry/word counts, sourced from the already-computed
+        `SectionResult`, still render. Real fixture (chmod on the actual
+        target), never a hand-constructed `VerbResult`."""
+        seed_skill_record(env)
+        result = verbs.route(env.home, RID, dest="skill-md")
+        assert result.compile_result is not None
+
+        os.chmod(env.skill_md, 0o000)
+        try:
+            note = result.budget_note()
+        finally:
+            os.chmod(env.skill_md, 0o644)
+
+        assert note is not None
+        assert "surface size unavailable" in note
+        assert "entries" in note and "words" in note
 
     def test_hook_route_stdout_is_json_and_nothing_else(self, env, capsys):
         """§4: a hook route otherwise prints the ENTIRE generated script
@@ -272,7 +314,7 @@ class TestDeferEnvelope:
         assert envelope["deferred_until"]  # a YYYY-MM-DD string
         assert envelope["outcome_state"] == "landed"
         assert envelope["created"] is None
-        assert envelope["over_cap"] is None
+        assert envelope["budget"] is None
 
     def test_defer_until_explicit_date_rides_the_envelope(self, env, capsys):
         seed_skill_record(env)

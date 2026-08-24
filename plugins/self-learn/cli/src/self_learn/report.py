@@ -30,6 +30,7 @@ from pathlib import Path
 from ruamel.yaml.error import YAMLError
 
 from . import gitops
+from .compilers import _iso, compile_managed_text
 from .ledger import discover_buckets
 from .ledger_ops import open_followups
 from .records import Record, RecordError
@@ -37,9 +38,19 @@ from .refread import resolve_ref_target
 from .telemetry import read_events
 
 __all__ = [
+    "COMPOSITION_CAUTION_ADVISORY",
+    "COMPOSITION_GROWTH_PP_ADVISORY",
+    "COMPOSITION_SHARE_ADVISORY",
+    "DESCRIPTION_SOFT_MAX_WORDS",
+    "GROWTH_ALARM_WORDS_PER_30D",
+    "REFERENCE_READ_RATE_STATES",
+    "SESSION_BASELINE_WORDS_ADVISORY",
+    "TOKENS_PER_WORD_EST",
+    "context_budget",
     "gather",
     "ledger_metrics",
     "recurrence_suspects",
+    "reference_read_verdict",
     "render_json",
     "render_text",
     "supply_mix",
@@ -262,7 +273,7 @@ def recurrence_suspects(home: Path | str) -> list[dict]:
     return rows
 
 
-def _instrument_state(home: Path) -> str:
+def _instrument_state(_home: Path) -> str:
     """U-readref §6.3: ``ok`` | ``script-missing`` | ``not-registered`` |
     ``settings-unparseable``, derived from the same two inspectable facts
     ``selfcheck._check_hooks`` already reads for every ``self-learn-*``
@@ -271,7 +282,13 @@ def _instrument_state(home: Path) -> str:
     never re-derived. An unparseable settings.json is its OWN state
     (`selfcheck.py:690-692`'s rule: "a broken settings.json must FAIL
     loudly, not read as 'nothing registered'") — collapsing it into
-    ``not-registered`` would name the wrong remedy."""
+    ``not-registered`` would name the wrong remedy. ``_home`` is unused
+    (pyright/code-gate cleanup): `claude_runtime_dir()` resolves off
+    ``SELF_LEARN_CLAUDE_DIR``/HOME alone, never the ledger home -- kept,
+    underscore-prefixed, rather than dropped, since the one call site
+    below and a test helper (test_refread.py's `_instrument_state_for`)
+    both thread it positionally and dropping it would ripple beyond this
+    unit's diff for no behavior change."""
     from .selfcheck import _registered_hook_commands, claude_runtime_dir
 
     claude_dir = claude_runtime_dir()
@@ -430,8 +447,12 @@ def _reference_shelf(
         reads_30d = len(in_window)
         read_sessions_30d = len({e.get("session") for e in in_window})
         subagent_reads_30d = sum(1 for e in in_window if e.get("subagent") is True)
+        # pyright cleanup (code gate r1): narrow inside the comprehension
+        # via the walrus so `ts_values` types as `list[str]`, not
+        # `list[Unknown | None]` -- `max()` below is unsound on the
+        # latter (a `None` in the list has no total order against `str`).
         ts_values = [
-            e.get("ts") for e in target_events if isinstance(e.get("ts"), str)
+            ts for e in target_events if isinstance((ts := e.get("ts")), str)
         ]
         row.update(
             {
@@ -508,6 +529,995 @@ def _reference_shelf(
         "records_on_zero_read_targets": records_on_zero_read_targets,
         "reads_30d_total": reads_30d_total,
         "targets": ordered,
+    }
+
+
+# ------------------------------------------------------- U-cap: context budget
+#
+# The report-only context budget (spec: docs/specs/self-learn/drafts/
+# u-cap-context-budget-spec.md). Four signals — budget/crowding/composition/
+# growth — plus two conditional read-rate/arrival verdicts, landing under
+# ONE top-level `report --json` key, `context_budget`. §4.0's rules bind
+# every signal here: `severity` is ALWAYS the literal "informational";
+# nothing here ever refuses a route, changes an exit code, or sets a field
+# any caller reads as a refusal. Every block carries a measured/unmeasured
+# tally and an all-blind form — `*_measured == 0` => totals `null` AND
+# `flagged: null` (never `0` / never `false`).
+
+#: PLACEHOLDER, calibrated against the 2026-08-22 host measurement so the
+#: report's figures stay directly comparable to the research table (6,545 w
+#: -> ~8,700 tok). NOT a tokenizer: this unit adds no dependency (the CLI's
+#: only runtime dep is ruamel.yaml).
+TOKENS_PER_WORD_EST = 1.33
+
+#: PLACEHOLDER — the measured per-session BASELINE is ~6,454 w (user +
+#: skill descriptions), 2026-08-23, one host. Deliberately just above it, so
+#: a healthy baseline is quiet and real growth trips it. Compared against
+#: `session_baseline_words`, never against a sum of hosts no session loads.
+SESSION_BASELINE_WORDS_ADVISORY = 7000
+
+#: PLACEHOLDER. The user CLAUDE.md measured 77% managed on 2026-08-22 and
+#: trips this immediately — which is correct and is the point: it is
+#: report-only.
+COMPOSITION_SHARE_ADVISORY = 0.50
+
+#: PLACEHOLDER. 10 percentage points of today's file added inside one 30d
+#: window. No prior series exists to calibrate against; revisit once the
+#: first three windows of real data have run.
+COMPOSITION_GROWTH_PP_ADVISORY = 10.0
+
+#: PLACEHOLDER. The conservatism tax is directional evidence, not a
+#: measured magnitude for this shelf: an anti-hallucination instruction
+#: cost one model 89.0% -> 72.0% literal extraction (arXiv:2601.02023)
+#: while barely moving another. Nobody has measured what a shelf of N
+#: cautions compounds to, so this number flags a composition worth LOOKING
+#: at, never one worth refusing.
+COMPOSITION_CAUTION_ADVISORY = 0.75
+
+#: PLACEHOLDER — ~11.5%/30d against the 6,545 w measured baseline, i.e. a
+#: linear doubling in ~9 months. One host, one measurement, 2026-08-22.
+GROWTH_ALARM_WORDS_PER_30D = 750
+
+#: PLACEHOLDER. Live distribution, 45 skills in the session index,
+#: re-measured 2026-08-23: ~3,099 w total, mean ~69 w; the scaffold's own
+#: output ~76 w; long tail hypr-doctor 206, firecrawl-monitor 188,
+#: bitwarden-cli 161, home-network 129, firecrawl-build 104,
+#: agentic-engineering 98. 80 sits just above the scaffold and the mean, so
+#: it flags the tail, not the norm.
+DESCRIPTION_SOFT_MAX_WORDS = 80
+
+#: PLACEHOLDER — the retired over-cap OR-in's own number (`verbs.py`'s
+#: `_COFIRE_CROWDED_THRESHOLD`), carried forward as a report-only trip
+#: point.
+_COFIRE_MAX_FANIN_ADVISORY = 5
+
+#: U-cap §4.5: the closed read-rate state ladder, in evaluation order.
+_REFERENCE_WHY = {
+    "not-instrumented": (
+        "read rate UNKNOWN — the refread hook is not registered, so "
+        "routing here trades a measured cost for an unmeasured one."
+    ),
+    "none-enumerable": (
+        "read rate UNKNOWN — no reference targets are enumerable, so "
+        "routing here trades a measured cost for an unmeasured one."
+    ),
+    "no-reads-observed": (
+        "every known reference target has zero reads — this shelf may be "
+        "coverage that isn't."
+    ),
+    "partly-cold": (
+        "some reference targets have zero reads — part of this shelf may "
+        "be coverage that isn't."
+    ),
+    "ok": "every known reference target has been read at least once.",
+}
+#: Exported so a test can assert the mapping covers every state, and so a
+#: new state cannot silently ship with no sentence (T8.7).
+REFERENCE_READ_RATE_STATES = frozenset(_REFERENCE_WHY)
+
+
+def _words(text: str) -> int:
+    """The ONE word count in this unit — whitespace split, matching
+    ``compilers.compile_managed_text``'s ``len(e.split())`` exactly
+    (compilers.py:304) so a managed share is a ratio of like to like."""
+    return len(text.split())
+
+
+def _tokens_est(words: int) -> int:
+    return round(words * TOKENS_PER_WORD_EST)
+
+
+def _extract_skill_description(text: str) -> tuple[str | None, str | None]:
+    """U-cap §4.2: two-tier description extraction. Tier 1 is
+    ``compilers._safe_load_leading_mapping`` (the real YAML answer, the
+    same loader behind ``has_paths_key`` — no new frontmatter parser).
+    Tier 2 is a pinned LENIENT fallback for the 4 live skills whose
+    description contains ``": "`` and so cannot parse as a plain YAML
+    scalar (§2.11): from the leading ``---`` block, the ``description:``
+    line plus its indented continuation lines, whitespace-joined. Returns
+    ``(description, "strict"|"lenient")`` or ``(None, None)`` when neither
+    tier produces a description."""
+    from .compilers import _safe_load_leading_mapping
+
+    loaded = _safe_load_leading_mapping(text)
+    if loaded is not None:
+        desc = loaded.get("description")
+        if isinstance(desc, str) and desc.strip():
+            return desc, "strict"
+
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return None, None
+    end = None
+    for i, ln in enumerate(lines[1:], start=1):
+        if ln.strip() in ("---", "..."):
+            end = i
+            break
+    if end is None:
+        return None, None
+    desc_lines: list[str] = []
+    capturing = False
+    for ln in lines[1:end]:
+        if not capturing:
+            m = re.match(r"^description:\s*(.*)$", ln)
+            if m is None:
+                continue
+            capturing = True
+            first = m.group(1).strip()
+            if first:
+                desc_lines.append(first)
+            continue
+        if ln.startswith((" ", "\t")) and ln.strip():
+            desc_lines.append(ln.strip())
+        else:
+            break
+    if not desc_lines:
+        return None, None
+    return " ".join(desc_lines), "lenient"
+
+
+def _resolve_user_claude_md_row(home: Path) -> dict:
+    """The `user-claude-md` internal working row (shared by budget,
+    composition, crowding and rules_cofire): resolves EXACTLY as
+    `surface_fill` does, then reads + compiles, degrading to a named
+    `state` on any failure — never propagating (one broken surface must
+    not blank the whole report, §4.2's degradation rule).
+
+    u-cap code gate r1, MAJOR 1: threads `user_claude_md=` explicitly
+    (surface_fill's OWN param, unused by this call site before) rather
+    than falling through to `_resolve_target`'s raw
+    `verbs.DEFAULT_USER_CLAUDE_MD` (`~/.claude/CLAUDE.md`, HOME-driven,
+    unsandboxed). The value comes from `selfcheck.claude_runtime_dir()`
+    -- the SAME `SELF_LEARN_CLAUDE_DIR`-or-`~/.claude` resolution every
+    other `~/.claude`-rooted consumer in this codebase already uses, and
+    the CLI test suite's conftest.py ALREADY sets `SELF_LEARN_CLAUDE_DIR`
+    to a per-test tmp dir for every test (`cli/tests/conftest.py`'s
+    `_worker_test_defaults`, unmodified) -- so this makes the whole
+    session-skill-index/user-claude-md read path hermetic suite-wide
+    with NO new env var and NO conftest.py edit. (conftest.py carries a
+    SEPARATE unit's armor/tripwire pins -- U-sdka's `_AR1_SANCTIONED_
+    PIN_LINES` and U-sdkw's whole-file `_ARMOR_SHAS` -- that a new
+    global default there would trip; reusing the existing knob avoids
+    that file entirely.) Production behavior is unchanged: with
+    SELF_LEARN_CLAUDE_DIR unset, `claude_runtime_dir()` returns the real
+    `~/.claude`, byte-identical to today."""
+    from .compilers import CompileError
+    from .selfcheck import claude_runtime_dir
+    from .verbs import _resolve_target
+    from .verbs import VerbError
+
+    try:
+        spec = _resolve_target(
+            home, home, "user", "claude-md", None,
+            user_claude_md=claude_runtime_dir() / "CLAUDE.md",
+            check_dirty=False,
+        )
+    except VerbError:
+        return {
+            "state": "not-registered", "target": None, "text": None,
+            "records": None, "section": None, "spec": None,
+        }
+    target = spec.target
+    if not target.is_file():
+        return {
+            "state": "absent", "target": target, "text": None,
+            "records": None, "section": None, "spec": spec,
+        }
+    try:
+        text = target.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return {
+            "state": "unreadable", "target": target, "text": None,
+            "records": None, "section": None, "spec": spec,
+        }
+    from .verbs import _compile_set
+
+    records = _compile_set(home, spec)
+    try:
+        section = compile_managed_text(text, records)
+    except CompileError:
+        return {
+            "state": "corrupt-markers", "target": target, "text": text,
+            "records": records, "section": None, "spec": spec,
+        }
+    return {
+        "state": "ok", "target": target, "text": text, "records": records,
+        "section": section, "spec": spec,
+    }
+
+
+def _resolve_project_rows(home: Path) -> list[dict]:
+    """Internal working rows for every REGISTERED project host
+    (`hosts.load_hosts(home).projects`, §4.2.1's per-session view). An
+    entry whose path fails `hosts.host_path_problem` (moved, not a git
+    repo, or IS the ledger home) is a `not-registered` row with every
+    numeric field null — never omitted (T2.5): an omitted row is
+    indistinguishable from a clean one."""
+    from .compilers import CompileError
+    from .hosts import HostsError, host_path_problem, load_hosts, slug_for
+    from .verbs import TargetSpec, _compile_set
+
+    try:
+        hosts = load_hosts(home)
+    except HostsError:
+        return []
+
+    rows: list[dict] = []
+    for project in hosts.projects:
+        key = slug_for(project)[-8:]
+        problem = host_path_problem(home, project, "project")
+        if problem is not None:
+            rows.append({
+                "key": key, "state": "not-registered", "target": None,
+                "text": None, "records": None, "section": None, "spec": None,
+            })
+            continue
+        host_repo = Path(project).expanduser().resolve()
+        target = host_repo / "CLAUDE.md"
+        spec = TargetSpec("claude-md", "project", home, target, host_repo)
+        if not target.is_file():
+            rows.append({
+                "key": key, "state": "absent", "target": target,
+                "text": None, "records": None, "section": None, "spec": spec,
+            })
+            continue
+        try:
+            text = target.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            rows.append({
+                "key": key, "state": "unreadable", "target": target,
+                "text": None, "records": None, "section": None, "spec": spec,
+            })
+            continue
+        records = _compile_set(home, spec)
+        try:
+            section = compile_managed_text(text, records)
+        except CompileError:
+            rows.append({
+                "key": key, "state": "corrupt-markers", "target": target,
+                "text": text, "records": records, "section": None,
+                "spec": spec,
+            })
+            continue
+        rows.append({
+            "key": key, "state": "ok", "target": target, "text": text,
+            "records": records, "section": section, "spec": spec,
+        })
+    return rows
+
+
+#: The session skill index — `~/.claude/skills/*/SKILL.md` (§2.11); NEVER
+#: `skills_root` (the route-target repo, 12 of 45 entries on this host).
+#: Resolved via `selfcheck.claude_runtime_dir()` (code gate r1 MAJOR 1
+#: fold) -- `SELF_LEARN_CLAUDE_DIR` when set, else the real `~/.claude` --
+#: so tests sandbox it the same way every other `~/.claude`-rooted
+#: consumer in this codebase already is, off the SAME env var
+#: `cli/tests/conftest.py` already sets globally for every test.
+_SKILL_INDEX_KEY = "~/.claude/skills"
+
+
+def _skill_description_row(home: Path) -> dict:
+    """U-cap §4.2's `skill-descriptions` row: one row summing every
+    description's word count across the session skill index, resolved +
+    deduped on the resolved path (symlinks; §2.11). Two-tier extraction
+    per skill (`_extract_skill_description`); only a skill that fails
+    BOTH tiers is `skills_unreadable` (never a `skills` entry, and it sets
+    the block's `totals_are_lower_bound`, never the lenient count alone).
+
+    u-cap code gate r1, MAJOR 1: `index_dir` used to be a bare
+    `Path("~/.claude/skills").expanduser()` -- HOME-driven, unsandboxed
+    by any test fixture. Resolved off `selfcheck.claude_runtime_dir()`
+    now, same reasoning as `_resolve_user_claude_md_row` above (SEE that
+    docstring for why conftest.py itself is not the fix site)."""
+    from .selfcheck import claude_runtime_dir
+
+    index_dir = claude_runtime_dir() / "skills"
+    if not index_dir.is_dir():
+        return {
+            "surface": "skill-descriptions", "key": _SKILL_INDEX_KEY,
+            "load_class": "unconditional", "state": "absent",
+            "file_words": None, "file_tokens_est": None,
+            "managed_words": None, "managed_entries": None,
+            "managed_share": None, "flagged": False,
+            "skills": [], "skills_total": 0, "skills_strict": 0,
+            "skills_lenient": 0, "skills_unreadable": 0,
+        }
+
+    try:
+        entries = sorted(index_dir.iterdir())
+    except OSError:
+        # u-cap code gate r1, MAJOR 3: an unenumerable (e.g. chmod 000)
+        # index dir must NOT fall through to the "ok" return below with
+        # file_words summed over zero entries -- that reads as a measured
+        # 0-word surface (contributes 0 to session_baseline_words,
+        # `flagged` reads clean) when the true state is "we could not see
+        # this surface at all". Sec 4.0.4: unmeasurable is never zero.
+        # Mirrors the `not index_dir.is_dir()` branch above (state
+        # "absent"): this is the same shape for a different cause.
+        return {
+            "surface": "skill-descriptions", "key": _SKILL_INDEX_KEY,
+            "load_class": "unconditional", "state": "unreadable",
+            "file_words": None, "file_tokens_est": None,
+            "managed_words": None, "managed_entries": None,
+            "managed_share": None, "flagged": False,
+            "skills": [], "skills_total": 0, "skills_strict": 0,
+            "skills_lenient": 0, "skills_unreadable": 0,
+        }
+
+    seen: set[Path] = set()
+    skills: list[dict] = []
+    strict = lenient = unreadable = 0
+    for entry in entries:
+        skill_md = entry / "SKILL.md"
+        if not skill_md.is_file():
+            continue
+        try:
+            resolved = skill_md.resolve()
+        except OSError:
+            resolved = skill_md
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        try:
+            text = skill_md.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            unreadable += 1
+            continue
+        desc, tier = _extract_skill_description(text)
+        if desc is None:
+            unreadable += 1
+            continue
+        words = _words(desc)
+        if tier == "strict":
+            strict += 1
+        else:
+            lenient += 1
+        skills.append({
+            "name": entry.name,
+            "description_words": words,
+            "description_tokens_est": _tokens_est(words),
+            "over_soft_max": words > DESCRIPTION_SOFT_MAX_WORDS,
+            "extraction": tier,
+        })
+
+    skills.sort(key=lambda s: (-s["description_words"], s["name"]))
+    file_words = sum(s["description_words"] for s in skills)
+    return {
+        "surface": "skill-descriptions", "key": _SKILL_INDEX_KEY,
+        "load_class": "unconditional", "state": "ok",
+        "file_words": file_words, "file_tokens_est": _tokens_est(file_words),
+        "managed_words": None, "managed_entries": None, "managed_share": None,
+        "flagged": False,
+        "skills": skills, "skills_total": len(skills) + unreadable,
+        "skills_strict": strict, "skills_lenient": lenient,
+        "skills_unreadable": unreadable,
+    }
+
+
+def _one_unpathed_row(scope_label: str, stem: str, topic_file: Path) -> dict:
+    key = f"{scope_label}:{stem}"
+    # u-cap code gate r1, NIT N6: the row's `state` enum names "absent"
+    # (spec sec 4.2) distinctly from "unreadable" -- a topic file that has
+    # since been removed (the co-firing scan that names this stem raced a
+    # deletion) is a different fact than one that exists but cannot be
+    # read/decoded. Checked BEFORE the read, same convention as
+    # `_resolve_user_claude_md_row`/`_resolve_project_rows` above.
+    if not topic_file.is_file():
+        return {
+            "surface": "unpathed-rules", "key": key,
+            "load_class": "unconditional", "state": "absent",
+            "file_words": None, "file_tokens_est": None,
+            "managed_words": None, "managed_entries": None,
+            "managed_share": None, "flagged": False,
+        }
+    try:
+        text = topic_file.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return {
+            "surface": "unpathed-rules", "key": key,
+            "load_class": "unconditional", "state": "unreadable",
+            "file_words": None, "file_tokens_est": None,
+            "managed_words": None, "managed_entries": None,
+            "managed_share": None, "flagged": False,
+        }
+    words = _words(text)
+    return {
+        "surface": "unpathed-rules", "key": key,
+        "load_class": "unconditional", "state": "ok",
+        "file_words": words, "file_tokens_est": _tokens_est(words),
+        "managed_words": None, "managed_entries": None,
+        "managed_share": None, "flagged": False,
+    }
+
+
+def _unpathed_rules_rows(
+    user_row: dict, project_rows: list[dict]
+) -> list[dict]:
+    """U-cap §4.2's `unpathed-rules` rows — one per stem in
+    `_rules_cofire(rules_dir)["unpathed"]`, per resolvable rules dir."""
+    from .verbs import _project_rules_dir, _rules_cofire, _user_rules_dir
+
+    rows: list[dict] = []
+    user_target = user_row.get("target")
+    if user_target is not None:
+        rules_dir = _user_rules_dir(user_target)
+        cofire = _rules_cofire(rules_dir if rules_dir.is_dir() else None)
+        for stem in cofire["unpathed"]:
+            rows.append(_one_unpathed_row("user", stem, rules_dir / f"{stem}.md"))
+    for prow in project_rows:
+        spec = prow.get("spec")
+        if spec is None or spec.host_repo is None:
+            continue
+        rules_dir = _project_rules_dir(spec.host_repo)
+        cofire = _rules_cofire(rules_dir if rules_dir.is_dir() else None)
+        for stem in cofire["unpathed"]:
+            rows.append(
+                _one_unpathed_row(prow["key"], stem, rules_dir / f"{stem}.md")
+            )
+    return rows
+
+
+def _budget_signal(home: Path) -> tuple[dict, dict, list[dict]]:
+    """U-cap §4.2: the `budget` signal. Returns `(signal, user_row_internal,
+    project_rows_internal)` — the internal working rows are reused by
+    `composition`/`crowding`/`conditional.rules_cofire` so every signal
+    reads the SAME resolved target/compile set, never a second resolution
+    that could disagree (T4.9's word-count-parity rule, generalized)."""
+    user_internal = _resolve_user_claude_md_row(home)
+    project_internal = _resolve_project_rows(home)
+    skill_row = _skill_description_row(home)
+    unpathed_rows = _unpathed_rules_rows(user_internal, project_internal)
+
+    def _claude_md_row(surface_name: str, key: str, internal: dict) -> dict:
+        if internal["state"] != "ok":
+            return {
+                "surface": surface_name, "key": key,
+                "load_class": "unconditional", "state": internal["state"],
+                "file_words": None, "file_tokens_est": None,
+                "managed_words": None, "managed_entries": None,
+                "managed_share": None, "flagged": False,
+            }
+        section = internal["section"]
+        file_words = _words(internal["text"])
+        managed_share = (
+            round(section.word_count / file_words, 3) if file_words else None
+        )
+        return {
+            "surface": surface_name, "key": key,
+            "load_class": "unconditional", "state": "ok",
+            "file_words": file_words,
+            "file_tokens_est": _tokens_est(file_words),
+            "managed_words": section.word_count,
+            "managed_entries": section.entry_count,
+            "managed_share": managed_share, "flagged": False,
+        }
+
+    user_row = _claude_md_row("user-claude-md", "~/.claude/CLAUDE.md", user_internal)
+    project_rows = [
+        _claude_md_row("project-claude-md", p["key"], p) for p in project_internal
+    ]
+
+    surfaces = [user_row, *project_rows, skill_row, *unpathed_rows]
+    surfaces_total = len(surfaces)
+    surfaces_measured = sum(1 for r in surfaces if r["state"] == "ok")
+    surfaces_unmeasured = surfaces_total - surfaces_measured
+    totals_are_lower_bound = (
+        surfaces_unmeasured > 0 or skill_row.get("skills_unreadable", 0) > 0
+    )
+
+    baseline_ok = [
+        r for r in (user_row, skill_row, *unpathed_rows) if r["state"] == "ok"
+    ]
+    ok_project = [r for r in project_rows if r["state"] == "ok"]
+
+    if surfaces_measured == 0:
+        session_baseline_words = None
+        session_baseline_tokens_est = None
+        largest_project_words = None
+        largest_project_key = None
+        session_max_words = None
+        session_max_tokens_est = None
+        all_hosts_words = None
+        flagged: bool | None = None
+    else:
+        session_baseline_words = sum(r["file_words"] for r in baseline_ok)
+        session_baseline_tokens_est = _tokens_est(session_baseline_words)
+        if ok_project:
+            largest = max(ok_project, key=lambda r: r["file_words"])
+            largest_project_words = largest["file_words"]
+            largest_project_key = largest["key"]
+        else:
+            largest_project_words = None
+            largest_project_key = None
+        session_max_words = session_baseline_words + (largest_project_words or 0)
+        session_max_tokens_est = _tokens_est(session_max_words)
+        all_hosts_words = session_baseline_words + sum(
+            r["file_words"] for r in ok_project
+        )
+        flagged = session_baseline_words >= SESSION_BASELINE_WORDS_ADVISORY
+
+    if flagged:
+        candidates = [r for r in (user_row, skill_row, *unpathed_rows) if r["state"] == "ok"]
+        if candidates:
+            max(candidates, key=lambda r: r["file_words"])["flagged"] = True
+
+    signal = {
+        "severity": "informational",
+        "window_days": _REFERENCE_WINDOW_DAYS,
+        "surfaces": surfaces,
+        "session_baseline_words": session_baseline_words,
+        "session_baseline_tokens_est": session_baseline_tokens_est,
+        "largest_project_words": largest_project_words,
+        "largest_project_key": largest_project_key,
+        "session_max_words": session_max_words,
+        "session_max_tokens_est": session_max_tokens_est,
+        "project_rows_total": len(project_internal),
+        "all_hosts_words": all_hosts_words,
+        "surfaces_total": surfaces_total,
+        "surfaces_measured": surfaces_measured,
+        "surfaces_unmeasured": surfaces_unmeasured,
+        "totals_are_lower_bound": totals_are_lower_bound,
+        "flagged": flagged,
+    }
+    return signal, user_internal, project_internal
+
+
+def _composition_signal(
+    today: date, user_internal: dict, project_internal: list[dict]
+) -> dict:
+    """U-cap §4.4: the `composition` signal — managed-share drift,
+    reconstructed by recompiling the section from the SUBSET of the
+    compile set routed before `window_start` (the same pure
+    `compile_managed_text`, no second parser)."""
+    window_start_iso = str(today - timedelta(days=_REFERENCE_WINDOW_DAYS))
+
+    def _one(surface_name: str, key: str, internal: dict) -> dict:
+        if internal["state"] != "ok":
+            return {
+                "surface": surface_name, "key": key, "state": internal["state"],
+                "managed_share": None, "managed_words": None,
+                "managed_words_30d_ago": None, "managed_words_delta_30d": None,
+                "managed_share_growth_30d_pp": None,
+                "managed_share_30d_ago": None, "kind_mix": None,
+                "caution_share": None, "flagged": False, "flagged_by": [],
+            }
+        records = internal["records"]
+        section = internal["section"]
+        file_words = _words(internal["text"])
+        managed_words = section.word_count
+        managed_share = (
+            round(managed_words / file_words, 3) if file_words else None
+        )
+
+        past_set = [
+            r for r in records
+            if _iso((r.routing or {}).get("routed_at") or "") < window_start_iso
+        ]
+        managed_words_30d_ago = compile_managed_text("", past_set).word_count
+        managed_words_delta_30d = managed_words - managed_words_30d_ago
+        managed_share_growth_30d_pp = (
+            round(100 * managed_words_delta_30d / file_words, 1)
+            if file_words
+            else None
+        )
+
+        from .records import KINDS
+
+        kinds: Counter = Counter()
+        for r in records:
+            k = r.kind
+            kinds[k if k in KINDS else "unclassified"] += 1
+        kind_mix = {
+            "anti-pattern": kinds.get("anti-pattern", 0),
+            "surface-rule": kinds.get("surface-rule", 0),
+            "reasoning-pattern": kinds.get("reasoning-pattern", 0),
+            "unclassified": kinds.get("unclassified", 0),
+        }
+        behavior_total = (
+            kind_mix["anti-pattern"]
+            + kind_mix["surface-rule"]
+            + kind_mix["reasoning-pattern"]
+        )
+        caution_share = (
+            round(kind_mix["anti-pattern"] / behavior_total, 3)
+            if behavior_total
+            else None
+        )
+
+        flagged_by: list[str] = []
+        if managed_share is not None and managed_share >= COMPOSITION_SHARE_ADVISORY:
+            flagged_by.append("share")
+        if (
+            managed_share_growth_30d_pp is not None
+            and managed_share_growth_30d_pp >= COMPOSITION_GROWTH_PP_ADVISORY
+        ):
+            flagged_by.append("growth")
+        if caution_share is not None and caution_share >= COMPOSITION_CAUTION_ADVISORY:
+            flagged_by.append("caution")
+
+        return {
+            "surface": surface_name, "key": key, "state": "ok",
+            "managed_share": managed_share, "managed_words": managed_words,
+            "managed_words_30d_ago": managed_words_30d_ago,
+            "managed_words_delta_30d": managed_words_delta_30d,
+            "managed_share_growth_30d_pp": managed_share_growth_30d_pp,
+            "managed_share_30d_ago": None,
+            "kind_mix": kind_mix, "caution_share": caution_share,
+            "flagged": bool(flagged_by), "flagged_by": flagged_by,
+        }
+
+    surfaces = [_one("user-claude-md", "~/.claude/CLAUDE.md", user_internal)]
+    surfaces.extend(
+        _one("project-claude-md", p["key"], p) for p in project_internal
+    )
+
+    surfaces_total = len(surfaces)
+    surfaces_measured = sum(1 for r in surfaces if r["state"] == "ok")
+    surfaces_unmeasured = surfaces_total - surfaces_measured
+    flagged = None if surfaces_measured == 0 else any(r["flagged"] for r in surfaces)
+
+    return {
+        "severity": "informational",
+        "window_days": _REFERENCE_WINDOW_DAYS,
+        "window_start": window_start_iso,
+        "past_is_lower_bound": True,
+        "surfaces": surfaces,
+        "surfaces_total": surfaces_total,
+        "surfaces_measured": surfaces_measured,
+        "surfaces_unmeasured": surfaces_unmeasured,
+        "flagged": flagged,
+    }
+
+
+def _crowding_signal(
+    home: Path, user_internal: dict, project_internal: list[dict]
+) -> dict:
+    """U-cap §4.3: report-only near-duplicate pairs, scored by
+    `worker.pair_similarity` (deferred import: import-safe without the
+    optional SDK extra, the same posture worker.py's OWN deferred-import
+    callers already rely on) over doc frequencies drawn from the GLOBAL
+    pool `cluster_candidates` uses — never the compile set alone (B3's
+    degeneracy: a 2-doc corpus makes every shared token's idf collapse to
+    `log(1) == 0`)."""
+    from .ledger import discover_buckets
+    from .ledger_ops import queue
+    from .worker import CANDIDATE_SCORE_FLOOR, _tokens, pair_similarity
+
+    pool: list[tuple[str, set]] = []
+    for bucket in discover_buckets(home):
+        for entry in queue(bucket, include_deferred=True):
+            pool.append((entry.record.id, _tokens(record_title_safe(entry.record))))
+        resolved_dir = bucket.path / "resolved"
+        if not resolved_dir.is_dir():
+            continue
+        for path in sorted(resolved_dir.glob("lrn-*.md")):
+            try:
+                routed = Record.from_path(path)
+            except (RecordError, OSError, UnicodeDecodeError, YAMLError):
+                continue
+            if routed.status != "routed":
+                continue
+            pool.append((routed.id, _tokens(record_title_safe(routed))))
+
+    n_docs = len(pool)
+    doc_freq: dict[str, int] = {}
+    tokens_by_id: dict[str, set] = {}
+    for rid, toks in pool:
+        tokens_by_id[rid] = toks
+        for t in toks:
+            doc_freq[t] = doc_freq.get(t, 0) + 1
+
+    def _score(records: list) -> tuple[str, list, int | None, int]:
+        ids = [r.id for r in records]
+        if len(ids) < 2:
+            return "too-few-entries", [], None, len(ids)
+        pairs = []
+        for i, a in enumerate(ids):
+            for b in ids[i + 1 :]:
+                ta = tokens_by_id.get(a, set())
+                tb = tokens_by_id.get(b, set())
+                score = pair_similarity(ta, tb, doc_freq, n_docs)
+                if score >= CANDIDATE_SCORE_FLOOR:
+                    pairs.append({"a": a, "b": b, "score": round(score, 3)})
+        pairs.sort(key=lambda p: (-p["score"], p["a"], p["b"]))
+        return "ok", pairs[:5], len(pairs), len(ids)
+
+    surfaces: list[dict] = []
+
+    def _one(surface_name: str, key: str, internal: dict) -> None:
+        if internal["state"] != "ok" or internal.get("records") is None:
+            surfaces.append({
+                "surface": surface_name, "key": key, "state": internal["state"],
+                "entries_considered": None, "pairs": [], "pairs_total": None,
+                "flagged": False,
+            })
+            return
+        state, pairs, pairs_total, considered = _score(internal["records"])
+        surfaces.append({
+            "surface": surface_name, "key": key, "state": state,
+            "entries_considered": considered, "pairs": pairs,
+            "pairs_total": pairs_total,
+            "flagged": bool(pairs_total) if pairs_total is not None else False,
+        })
+
+    _one("user-claude-md", "~/.claude/CLAUDE.md", user_internal)
+    for prow in project_internal:
+        _one("project-claude-md", prow["key"], prow)
+
+    surfaces_total = len(surfaces)
+    surfaces_measured = sum(
+        1 for r in surfaces if r["state"] in ("ok", "too-few-entries")
+    )
+    surfaces_unmeasured = surfaces_total - surfaces_measured
+    flagged = None if surfaces_measured == 0 else any(r["flagged"] for r in surfaces)
+
+    return {
+        "severity": "informational",
+        "score_floor": CANDIDATE_SCORE_FLOOR,
+        "source": "worker.pair_similarity",
+        "corpus": "global-pool",
+        "corpus_docs": n_docs,
+        "surfaces": surfaces,
+        "surfaces_total": surfaces_total,
+        "surfaces_measured": surfaces_measured,
+        "surfaces_unmeasured": surfaces_unmeasured,
+        "flagged": flagged,
+    }
+
+
+def record_title_safe(record) -> str:
+    """`ledger_ops.record_title`, imported where the crowding signal needs
+    it — a tiny wrapper so the deferred-import block above stays a flat
+    list of names (record_title lives in `ledger_ops`, not `worker`)."""
+    from .ledger_ops import record_title
+
+    return record_title(record)
+
+
+def _current_skill_description_words(home: Path, name: str) -> int | None:
+    """The word count of skill `name`'s CURRENT description, or `None`
+    when the skill/its SKILL.md/its description is unresolvable — §5.2's
+    dedup rule reads THIS, never the description text captured at route
+    time (a route only ever names the skill; the description may have
+    been hand-edited since)."""
+    from .hosts import HostsError, load_hosts, skill_dir_for
+
+    try:
+        hosts = load_hosts(home)
+        skill_dir = skill_dir_for(hosts, name)
+    except HostsError:
+        return None
+    skill_md = skill_dir / "SKILL.md"
+    if not skill_md.is_file():
+        return None
+    try:
+        text = skill_md.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    desc, _tier = _extract_skill_description(text)
+    if desc is None:
+        return None
+    return _words(desc)
+
+
+def _growth_signal(home: Path, today: date, budget: dict, composition: dict) -> dict:
+    """U-cap §4.4.3: the growth-rate alarm — the SAME reconstruction
+    technique, aggregated across Class A, plus the `new-skill` charging
+    door (§5.2) the old cap treated as free. Only BASELINE surfaces
+    contribute (§4.2.1): a project host's growth is not a cost every
+    session pays."""
+    window_start_iso = str(today - timedelta(days=_REFERENCE_WINDOW_DAYS))
+
+    user_comp_row = next(
+        (r for r in composition["surfaces"] if r["surface"] == "user-claude-md"),
+        None,
+    )
+    if user_comp_row is not None and user_comp_row["state"] == "ok":
+        managed_words_added_30d = user_comp_row["managed_words_delta_30d"]
+        managed_measured = True
+    else:
+        managed_words_added_30d = None
+        managed_measured = False
+
+    new_skill_routes_30d = 0
+    distinct_skills: dict[str, bool] = {}
+    desc_words_sum = 0
+    any_skill_unreadable = False
+    for record in _walk_records(home):
+        if record.status != "routed" or record.superseded_by is not None:
+            continue
+        routing = record.routing or {}
+        if routing.get("destination") != "new-skill":
+            continue
+        if _iso(routing.get("routed_at") or "") < window_start_iso:
+            continue
+        new_skill_routes_30d += 1
+        name = routing.get("new_skill")
+        if not name or name in distinct_skills:
+            continue
+        distinct_skills[name] = True
+        words = _current_skill_description_words(home, name)
+        if words is None:
+            any_skill_unreadable = True
+        else:
+            desc_words_sum += words
+
+    new_skill_description_words_added_30d = desc_words_sum if distinct_skills else 0
+
+    if managed_measured:
+        always_on_words_added_30d = (
+            managed_words_added_30d + new_skill_description_words_added_30d
+        )
+    else:
+        always_on_words_added_30d = None
+
+    session_baseline_words = budget["session_baseline_words"]
+    if (
+        always_on_words_added_30d is not None
+        and always_on_words_added_30d > 0
+        and session_baseline_words is not None
+    ):
+        doubling_days_est = round(
+            30 * session_baseline_words / always_on_words_added_30d, 1
+        )
+    else:
+        doubling_days_est = None
+
+    flagged = (
+        always_on_words_added_30d is not None
+        and always_on_words_added_30d >= GROWTH_ALARM_WORDS_PER_30D
+    )
+
+    return {
+        "severity": "informational",
+        "window_days": _REFERENCE_WINDOW_DAYS,
+        "window_start": window_start_iso,
+        "past_is_lower_bound": True,
+        "managed_words_added_30d": managed_words_added_30d,
+        "new_skill_routes_30d": new_skill_routes_30d,
+        "new_skill_description_words_added_30d": new_skill_description_words_added_30d,
+        "always_on_words_added_30d": always_on_words_added_30d,
+        "session_baseline_words": session_baseline_words,
+        "doubling_days_est": doubling_days_est,
+        "threshold_words_per_30d": GROWTH_ALARM_WORDS_PER_30D,
+        "flagged": bool(flagged),
+        "totals_are_lower_bound": bool(any_skill_unreadable or not managed_measured),
+    }
+
+
+def reference_read_verdict(
+    home: Path | str, today: date, *, flush_state: str = "not-attempted"
+) -> dict:
+    """U-cap §4.5: one call to :func:`_reference_shelf`, reduced to the
+    verdict on whether `reference` is a safe overflow target RIGHT NOW.
+    Reads nothing else; derives no count of its own."""
+    shelf = _reference_shelf(home, today, flush_state=flush_state)
+    if not shelf["instrumented"]:
+        state, safe = "not-instrumented", None
+    elif shelf["enumeration_state"] == "none-enumerable":
+        state, safe = "none-enumerable", None
+    elif shelf["targets_zero_read"] == shelf["targets_total"]:
+        state, safe = "no-reads-observed", False
+    elif shelf["targets_zero_read"]:
+        state, safe = "partly-cold", False
+    else:
+        state, safe = "ok", True
+
+    return {
+        "source": "reference_shelf",
+        "read_rate_state": state,
+        "safe_overflow": safe,
+        "counts_are_lower_bound": shelf["flush_state"] != "ok",
+        "targets_total": shelf["targets_total"],
+        "targets_zero_read": shelf["targets_zero_read"],
+        "records_on_zero_read_targets": shelf["records_on_zero_read_targets"],
+        "reads_30d_total": shelf["reads_30d_total"],
+        "why": _REFERENCE_WHY[state],
+        "severity": "informational",
+    }
+
+
+def _rules_cofire_signal(
+    home: Path, user_internal: dict, project_internal: list[dict]
+) -> dict:
+    """U-cap §4.6: consumes `_rules_cofire` (U-glob, shipped) unchanged;
+    only the CONSEQUENCE changes — the retired escalation-into-the-old-
+    threshold OR-in becomes its own report-only `crowded` field per scope."""
+    from .verbs import _project_rules_dir, _rules_cofire, _user_rules_dir
+
+    scopes: list[dict] = []
+
+    def _one(scope_label: str, key: str, rules_dir: Path | None) -> None:
+        if rules_dir is None:
+            scopes.append({
+                "scope": scope_label, "key": key, "state": "absent",
+                "topics": [], "unpathed": [], "pairs": [], "max_fanin": 0,
+                "max_fanin_is_upper_bound": True, "crowded": False,
+            })
+            return
+        exists = rules_dir.is_dir()
+        cofire = _rules_cofire(rules_dir if exists else None)
+        scopes.append({
+            "scope": scope_label, "key": key,
+            "state": "ok" if exists else "absent",
+            "topics": cofire["topics"], "unpathed": cofire["unpathed"],
+            "pairs": cofire["pairs"], "max_fanin": cofire["max_fanin"],
+            "max_fanin_is_upper_bound": True,
+            "crowded": cofire["max_fanin"] > _COFIRE_MAX_FANIN_ADVISORY,
+        })
+
+    user_target = user_internal.get("target")
+    _one(
+        "user", "~/.claude/rules",
+        _user_rules_dir(user_target) if user_target is not None else None,
+    )
+    for prow in project_internal:
+        spec = prow.get("spec")
+        if spec is None or spec.host_repo is None:
+            continue
+        _one("project", prow["key"], _project_rules_dir(spec.host_repo))
+
+    scopes_total = len(scopes)
+    scopes_measured = sum(1 for s in scopes if s["state"] in ("ok", "absent"))
+    scopes_unmeasured = scopes_total - scopes_measured
+    flagged = None if scopes_measured == 0 else any(s["crowded"] for s in scopes)
+
+    return {
+        "severity": "informational",
+        "threshold_max_fanin": _COFIRE_MAX_FANIN_ADVISORY,
+        "scopes": scopes,
+        "scopes_total": scopes_total,
+        "scopes_measured": scopes_measured,
+        "scopes_unmeasured": scopes_unmeasured,
+        "flagged": flagged,
+    }
+
+
+def context_budget(
+    home: Path | str, today: date, *, flush_state: str = "not-attempted"
+) -> dict:
+    """U-cap §4: the report-only context budget. Four signals — `budget`,
+    `crowding`, `composition`, `growth` — plus `conditional.reference` /
+    `conditional.rules_cofire`. Every block's `severity` is the literal
+    `"informational"`; nothing here refuses, gates, or changes an exit
+    code (§4.0.1)."""
+    home = Path(home)
+    budget, user_internal, project_internal = _budget_signal(home)
+    composition = _composition_signal(today, user_internal, project_internal)
+    crowding = _crowding_signal(home, user_internal, project_internal)
+    growth = _growth_signal(home, today, budget, composition)
+
+    return {
+        "generated_for": str(today),
+        "tokens_per_word_est": TOKENS_PER_WORD_EST,
+        "budget": budget,
+        "crowding": crowding,
+        "composition": composition,
+        "growth": growth,
+        "conditional": {
+            "reference": reference_read_verdict(home, today, flush_state=flush_state),
+            "rules_cofire": _rules_cofire_signal(home, user_internal, project_internal),
+        },
     }
 
 
@@ -666,6 +1676,7 @@ def gather(
             "capture_rate_ceiling": capture_ceiling,
         },
         "reference_shelf": _reference_shelf(home, today, flush_state=flush_state),
+        "context_budget": context_budget(home, today, flush_state=flush_state),
     }
 
 
@@ -839,5 +1850,109 @@ def render_text(facts: dict) -> str:
             else:
                 reads = "reads: ABSENT (not instrumented)"
             lines.append(f"  {label}: {row['records']} record(s) — {reads}")
+
+    # u-cap code gate r1, MAJOR 4: `render_text` never consumed
+    # `context_budget` at all (a `self-learn report` without --json
+    # showed none of this unit). Sec 4.0.1 names a text-render line a
+    # PERMITTED effect of a signal; this block is that line, covering the
+    # obligations the gate named unimplemented: sec 4.0.5 (a total
+    # computed while surfaces_unmeasured > 0 is a lower bound, and the
+    # text must say so, not just the JSON), sec 4.2 (name the lenient
+    # skill-description extraction count when non-zero, so a reader knows
+    # which arithmetic produced the figure), sec 4.2.1 (`all_hosts_words`
+    # is a diagnostic ONLY and must be labelled "not a session cost", never
+    # presented as something compared against), sec 4.4.1
+    # (`past_is_lower_bound` is an emitted field, not a comment -- print it
+    # whenever a reconstructed delta is non-null, on both composition's
+    # and growth's halves of the SAME reconstruction technique).
+    cb = facts.get("context_budget")
+    if cb is not None:
+        lines.append("")
+        lines.append(f"Context budget ({cb['generated_for']}):")
+        budget = cb["budget"]
+        if budget["flagged"] is None:
+            # tri-state: null is NOT an all-clear (sec 4.0.3/4.2.2) --
+            # must read distinctly from both "flagged" and "not flagged".
+            lines.append(
+                "  budget: could not measure — no baseline surface was "
+                "readable this session"
+            )
+        else:
+            flag = " [flagged]" if budget["flagged"] else ""
+            lower = (
+                " (lower bound — some surfaces unmeasured)"
+                if budget["totals_are_lower_bound"]
+                else ""
+            )
+            lines.append(
+                f"  session baseline: {budget['session_baseline_words']} words "
+                f"(~{budget['session_baseline_tokens_est']} tokens est)"
+                f"{lower}{flag}"
+            )
+            if budget["largest_project_key"] is not None:
+                lines.append(
+                    f"  worst single session (baseline + largest project "
+                    f"{budget['largest_project_key']}): "
+                    f"{budget['session_max_words']} words "
+                    f"(~{budget['session_max_tokens_est']} tokens est)"
+                )
+            if budget["all_hosts_words"] is not None:
+                lines.append(
+                    f"  all registered project hosts summed: "
+                    f"{budget['all_hosts_words']} words "
+                    "(diagnostic — not a session cost)"
+                )
+            skill_row = next(
+                (r for r in budget["surfaces"] if r["surface"] == "skill-descriptions"),
+                None,
+            )
+            if skill_row is not None and skill_row.get("skills_lenient"):
+                lines.append(
+                    f"  skill-descriptions: {skill_row['skills_lenient']} of "
+                    f"{skill_row['skills_total']} description(s) extracted "
+                    "via the lenient fallback"
+                )
+
+        composition = cb["composition"]
+        comp_rows = [r for r in composition["surfaces"] if r["state"] == "ok"]
+        if comp_rows:
+            lines.append("  composition (managed share of always-on files):")
+            for row in comp_rows:
+                delta = row["managed_words_delta_30d"]
+                flag = " [flagged]" if row["flagged"] else ""
+                delta_part = ""
+                if delta is not None:
+                    lower = (
+                        " — lower bound (reconstructed past under-counts "
+                        "retired records)"
+                        if composition["past_is_lower_bound"]
+                        else ""
+                    )
+                    delta_part = f", +{delta} managed words/30d{lower}"
+                lines.append(
+                    f"    {row['key']}: {_pct(row['managed_share'])} managed"
+                    f"{delta_part}{flag}"
+                )
+
+        growth = cb["growth"]
+        if growth["always_on_words_added_30d"] is not None:
+            notes = []
+            if growth["past_is_lower_bound"]:
+                notes.append(
+                    "lower bound — reconstructed past under-counts retired records"
+                )
+            if growth["totals_are_lower_bound"]:
+                notes.append("some surfaces unmeasured")
+            note = f" ({'; '.join(notes)})" if notes else ""
+            doubling = (
+                f", doubling in ~{growth['doubling_days_est']}d"
+                if growth["doubling_days_est"] is not None
+                else ""
+            )
+            flag = " [flagged]" if growth["flagged"] else ""
+            lines.append(
+                f"  growth: +{growth['always_on_words_added_30d']} always-on "
+                f"words/30d{note}{doubling}{flag}"
+            )
 
     return "\n".join(lines)

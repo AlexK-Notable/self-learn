@@ -29,11 +29,13 @@ Managed sections (02 §4, 01 §3.5, 08 §1 bootstrap pin)
   the bare section). This necessarily normalizes the file's trailing
   newlines; byte-exact preservation applies to regeneration, where the
   markers already delimit ownership.
-- Overflow (02 §4, mechanical): cap = 10 entries or ~150 words inside the
-  section (per-target override via ``max_entries`` / ``max_words``). At the
-  cap the compiler STILL applies the new entry and returns a flagged
-  result (:attr:`SectionResult.over_cap` + :attr:`SectionResult.cap_reason`)
-  — callers surface it; nothing is dropped silently.
+- Counting, no threshold (U-cap): the compiler counts entries and words
+  inside the section (:attr:`SectionResult.entry_count` /
+  :attr:`SectionResult.word_count`) and applies every entry unconditionally
+  — nothing here is capped, so nothing is ever exceeded. The counts feed
+  the report-only context budget (``report --json .context_budget``,
+  U-cap); nothing is ever dropped, refused, or flagged by the compiler
+  itself.
 - A half-markered or multi-markered target is corrupt: :class:`CompileError`,
   never a guess.
 - A missing managed target file is refused (:class:`CompileError`) — the
@@ -126,8 +128,6 @@ from .records import Record
 __all__ = [
     "BEGIN_MARKER",
     "END_MARKER",
-    "DEFAULT_MAX_ENTRIES",
-    "DEFAULT_MAX_WORDS",
     "DEFAULT_REFERENCE_BASENAME",
     "FORBIDDEN_REFERENCE_BASENAME",
     "POINTER_BEGIN_MARKER",
@@ -166,10 +166,6 @@ POINTER_BEGIN_MARKER = (
 )
 POINTER_END_MARKER = "<!-- self-learn:pointers:end -->"
 
-#: Overflow caps (02 §4); per-target overrides via function parameters.
-DEFAULT_MAX_ENTRIES = 10
-DEFAULT_MAX_WORDS = 150
-
 #: References compiler pins (08 §1).
 DEFAULT_REFERENCE_BASENAME = "LEARNINGS.md"
 FORBIDDEN_REFERENCE_BASENAME = "GOTCHAS.journal.md"
@@ -201,8 +197,6 @@ class SectionResult:
     bootstrapped: bool  # markers were absent and got appended at EOF
     entry_count: int
     word_count: int  # words inside the section (entry lines only)
-    over_cap: bool  # section exceeds the cap — surface a graduation card
-    cap_reason: str | None  # "entries" | "words" | None
 
 
 @dataclass(frozen=True)
@@ -289,25 +283,17 @@ def _eligible(records: Iterable[Record]) -> list[Record]:
 def compile_managed_text(
     target_text: str,
     records: Sequence[Record],
-    *,
-    max_entries: int = DEFAULT_MAX_ENTRIES,
-    max_words: int = DEFAULT_MAX_WORDS,
 ) -> SectionResult:
     """Regenerate the managed section inside ``target_text`` from ``records``.
 
-    Returns the full new file content plus cap/bootstrap flags; performs no
-    I/O. See the module docstring for the contract.
+    Returns the full new file content plus entry/word counts and the
+    bootstrap flag; performs no I/O. See the module docstring for the
+    contract.
     """
     entries = [entry_line(r) for r in _eligible(records)]
     section = "\n".join([BEGIN_MARKER, *entries, END_MARKER])
 
     word_count = sum(len(e.split()) for e in entries)
-    if len(entries) > max_entries:
-        over_cap, cap_reason = True, "entries"
-    elif word_count > max_words:
-        over_cap, cap_reason = True, "words"
-    else:
-        over_cap, cap_reason = False, None
 
     begins = target_text.count(BEGIN_MARKER)
     ends = target_text.count(END_MARKER)
@@ -341,17 +327,12 @@ def compile_managed_text(
         bootstrapped=bootstrapped,
         entry_count=len(entries),
         word_count=word_count,
-        over_cap=over_cap,
-        cap_reason=cap_reason,
     )
 
 
 def compile_managed_file(
     path: Path | str,
     records: Sequence[Record],
-    *,
-    max_entries: int = DEFAULT_MAX_ENTRIES,
-    max_words: int = DEFAULT_MAX_WORDS,
 ) -> SectionResult:
     """File wrapper for :func:`compile_managed_text`: read the target,
     regenerate its section, write back only when changed.
@@ -368,8 +349,6 @@ def compile_managed_file(
     result = compile_managed_text(
         path.read_text(encoding="utf-8"),
         records,
-        max_entries=max_entries,
-        max_words=max_words,
     )
     if result.changed:
         path.write_text(result.text, encoding="utf-8")

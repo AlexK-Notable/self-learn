@@ -568,14 +568,27 @@ Each `<row>`:
 |---|---|
 | `user-claude-md` | the literal `"~/.claude/CLAUDE.md"` — the tilde form, never an expanded absolute path (this report is pasted into public issues) |
 | `project-claude-md` | the bucket slug's **8-hex sha256 digest alone** — the ruling U-readref §5.2.1 already made for exactly this reason on this host; the readable slug is a mangled `$HOME` path |
-| `skill-descriptions` | the literal `"<skills-root>"` |
+| `skill-descriptions` | the literal `"~/.claude/skills"` |
 | `unpathed-rules` | `"<scope>:<topic-stem>"`, e.g. `"user:hooks"` |
 
 **Computation, per surface:**
 
-- **`user-claude-md`** — resolve exactly as `surface_fill` does:
-  `_resolve_target(..., "claude-md", None, user_claude_md=…, check_dirty=False)`
-  at user scope. `file_words = _words(target.read_text())`.
+- **`user-claude-md`** — resolved via
+  `_resolve_target(..., "claude-md", None, user_claude_md=claude_runtime_dir()
+  / "CLAUDE.md", check_dirty=False)` at user scope, where
+  `claude_runtime_dir()` (`selfcheck.py`) honors `SELF_LEARN_CLAUDE_DIR`
+  when set, else resolves the real `~/.claude` — the same knob every other
+  `~/.claude`-rooted consumer in this codebase already reads, and the one
+  `cli/tests/conftest.py` already sets globally for every test (code gate
+  r1 MAJOR 1 fold), giving this row's read suite-wide hermeticity with no
+  new env var and no edit to conftest.py, which carries a DIFFERENT unit's
+  armor pins. This coincides byte-for-byte with `surface_fill`'s own
+  resolution (`DEFAULT_USER_CLAUDE_MD`, `verbs.py`) whenever
+  `SELF_LEARN_CLAUDE_DIR` is unset — i.e. in production, and in any test
+  that doesn't set it either. When the env var IS set, the two resolve to
+  DIFFERENT files by design: `surface_fill`'s own resolution is a
+  pre-existing, shipped code path and stays exactly as it is — changing it
+  is out of this unit's scope. `file_words = _words(target.read_text())`.
   `managed_words` / `managed_entries` from
   `compile_managed_text(text, _compile_set(home, spec))` — **the compiler is
   the count authority, never a second section parser** (the
@@ -1536,7 +1549,7 @@ Suite: `uv run --project plugins/self-learn/cli pytest` and
 
 **Fixture rule that makes these tests possible at all (B3).** Scores are IDF
 over the **global pool**. Shared tokens that are common in the pool score near
-zero — reproduced live: the r1 fixture's shared tokens (`the`, `own`, `shell`,
+zero — reproduced live: the r1 fixture's shared tokens (`own`, `shell`,
 `wrapper`, `matches`) scored **0.131** in a 42-doc pool, *below* the 0.20 floor,
 and **0.0** with the compile set as corpus. So every (+) fixture must give its
 two records shared tokens that are **rare in the seeded pool** (appearing in

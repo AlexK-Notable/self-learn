@@ -684,6 +684,25 @@ in brackets.
   The UI Detail call site (`ledger.list_items`) uses this variant;
   unflagged and non-`--id` behavior is unchanged (08 §1's matching
   dated edit).)*
+  *(2026-08-23 U-cap amendment — the mechanical cap this row describes is
+  retired; `entry_count`/`word_count` survive on `SectionResult` but
+  `over_cap`/`cap_reason` and the per-target "effective caps — today
+  always the defaults 10/~150" language (F6) are gone, with no
+  replacement threshold. `SURFACE_FILL_CAPPED_DESTINATIONS` is renamed
+  `SURFACE_FILL_PROBED_DESTINATIONS` (same two members). `reference`
+  stops being a cap-free, never-probed, template-static line: it now
+  carries a computed read-rate verdict as a real `surface_fill["reference"]`
+  key (U-cap §6.3/§6.6), still F5-omitted on failure. The "at/over cap
+  defers to the 02 §4 WARNING/graduation flow" sentence and the ui-suite's
+  "over-cap destination shows the fill fact and the 02 §4 WARNING" line no
+  longer apply — there is no WARNING and no escalation; the fill fact
+  alone is the whole indicator, `severity: "informational"` always, and
+  §6.4's budget card (review flow) is where the aggregate signals get
+  their fuller treatment. The cli-suite's at-cap/over-cap fixtures and
+  the `over_cap true`/`cap_reason` assertions are replaced by
+  unconditional-count fixtures (§8 of U-cap's spec carries the full
+  13-file test inventory); the memoization and F5-absent-key assertions
+  are unchanged in spirit, now also covering the new `reference` key.)*
 
 - **U18 · Miner episode brief — capture, exclusion, and collapsed
   display** [spans cli + ui] *(added 2026-07-18 — UX enhancement survey

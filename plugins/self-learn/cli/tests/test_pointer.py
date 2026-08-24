@@ -23,7 +23,6 @@ from self_learn import cli, selfcheck, verbs
 from self_learn import compilers as compilers_mod
 from self_learn.compilers import (
     BEGIN_MARKER,
-    DEFAULT_MAX_ENTRIES,
     END_MARKER,
     POINTER_BEGIN_MARKER,
     POINTER_END_MARKER,
@@ -321,17 +320,19 @@ class TestManagedSectionNonInterference:
         section = text[text.index(BEGIN_MARKER):text.index(END_MARKER)]
         assert pointer_token(surface, target) not in section
 
-    def test_b1_regression_guard_cap_at_default_max_entries(self, tmp_path):
+    def test_b1_regression_guard(self, tmp_path):
+        # U-cap: the old cap is retired, but the guarded invariant survives
+        # — the pointer block must not be counted as a managed entry.
+        # `entry_count` (kept, §6.1) is the assertion now.
+        records = [_routed_record(scope="skill:s", n=i + 1) for i in range(10)]
         surface, target = _skill_fixture(tmp_path)
-        records = [_routed_record(scope="skill:s", n=i + 1) for i in range(DEFAULT_MAX_ENTRIES)]
         managed = compile_managed_text(surface.read_text(encoding="utf-8"), records)
         surface.write_text(managed.text, encoding="utf-8")
 
         apply_pointer(surface, target, label=POINTER_LABELS["skill"])
         text = surface.read_text(encoding="utf-8")
         result = compile_managed_text(text, records)
-        assert result.over_cap is False
-        assert result.cap_reason is None
+        assert result.entry_count == 10
 
     def test_b2_pointer_survives_regeneration_byte_identical(self, tmp_path):
         surface, target = _skill_fixture(tmp_path)
