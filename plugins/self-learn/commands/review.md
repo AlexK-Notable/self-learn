@@ -113,6 +113,15 @@ limit; free-text "Other" is always there beyond them):
 - **Defer** — `self-learn defer <id>` (default +30 days) or
   `self-learn defer <id> --until YYYY-MM-DD` if they name a date.
 
+**Scope mismatch** — not a card option, but tell the user when you see it:
+if a pending record's firing range clearly belongs to a different scope
+than the bucket it's filed in (captured at user scope but really only
+fires inside one skill, or vice versa), `self-learn rescope <id> --to
+<scope>` (`user` or `skill:<name>`) is the repair. Say plainly that using
+it **discards the current proposal and re-analyzes the record in the new
+bucket** — the analyst's judgment is bucket-relative, so a carried
+proposal would render a stale card reasoning from the wrong scope.
+
 **Graduate** — when the proposal sets `already_canon: true` on a single
 card, the right resolution is graduation, not routing: replace Apply with
 **Graduate** (`self-learn graduate <id>`), showing

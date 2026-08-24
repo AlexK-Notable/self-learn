@@ -111,6 +111,24 @@ class TestValidateProposal:
             assert isinstance(result, str), verb
             assert "refused" in result
 
+    def test_rescope_is_not_in_the_pane_proposable_verb_list(
+        self, tmp_path: Path
+    ) -> None:
+        """u-rescope §3 rationale 2 / §9 out-of-scope item 4: `rescope`
+        does NOT join the closed proposable set — it starts human-only
+        (CLI-driven, §6.1), unlike `rehome` which is agent-proposable
+        (Y-13/Y-18). This is a guard against a later drive-by widening,
+        not a change this unit makes."""
+        assert "rescope" not in proposals.PROPOSABLE_VERBS
+        sb, (rec,) = _seed(tmp_path)
+        result = validate_proposal(
+            sb.ledger,
+            _record_scope(rec),
+            {"verb": "rescope", "record_id": rec.id, "to": "skill:s"},
+        )
+        assert isinstance(result, str)
+        assert "refused" in result
+
     def test_record_session_may_only_name_its_own_record(self, tmp_path: Path) -> None:
         sb, (rec, other) = _seed(tmp_path, n=2)
         result = validate_proposal(

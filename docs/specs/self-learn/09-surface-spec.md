@@ -2429,3 +2429,69 @@ wider posture; the narrow one is the conservative default).
   gains `disposition`/`reason`/`promotable`/`snippet`. No `list --json`
   change; no new keymap surface.
 
+- **Y-25 · Record re-scope (`user ↔ skill:<name>`) — verb, sweep
+  re-affirmed, disclosure added** *(added 2026-08-23 — u-rescope,
+  `docs/specs/self-learn/drafts/u-rescope-user-to-skill-spec.md`; the
+  card-6 gap: a review session's first-choice move — re-scoping a
+  pending record — had no verb, so the human split the record into two
+  instead, duplicating provenance)*. `rehome` (Y-18) is
+  project↔project only and its own refusal names the gap: "user-scope
+  targets and skill/user-scope sources are dated future work, not
+  silent extensions." This is that dated work, for exactly the
+  `user ↔ skill:<name>` pair — `project` on either side stays refused
+  (that is `rehome`'s territory; a project bucket carries a `meta.yaml`
+  identity invariant `user`/`skill:` buckets do not), and
+  `skill:<a> → skill:<b>` stays refused (no live motivating case, and
+  the sharpest form of the proposal-sweep hazard below — dated future
+  work, not a silent extension).
+  **Mechanism (the verb — normative pin at 02 §2):**
+  `self-learn rescope <id> --to <scope>` moves a PENDING or `deferred`
+  record between `user` and `skills/<name>`, resolving `--to` against
+  the registered `skills_root` (a different registry and resolver from
+  `rehome --to`'s project path/slug — §3 of the spec). **The record's
+  bytes are NOT untouched, unlike `rehome`**: `scope:` is frontmatter
+  and the bucket is derived from it, so `rescope` rewrites `scope` to
+  match the destination in the same motion as the `git mv` — ordered
+  mv-THEN-write (mirroring `resolve_record`'s tail, not `rehome_record`'s
+  move-only shape), so a kill leaves a loudly-`reconcile`-blocked staged
+  rename rather than a silently-committable scope↔bucket mismatch.
+  Refusals check **status never existence**, and for the source scope,
+  **the bucket never the record's `scope:` field** (a record whose
+  frontmatter disagrees with its bucket is REPAIRED by this verb, not
+  refused on the strength of the corrupted field — MAJOR-3's pin, tested
+  both legs).
+  **Judgment (re-affirmed, not re-litigated): proposal siblings are
+  swept, never carried.** The orchestration plan's work order demanded
+  the opposite — carry the proposal — citing a 2026-08-18 review-session
+  observation that the sweep "silently discards a worker analysis." The
+  spec traced that observation to a decision of record it did not cite
+  (Y-18, this same section, six weeks earlier) and re-tested the
+  rationale rather than assuming it: a scope-only edit leaves
+  `record_sha` unchanged (scope is frontmatter, not the hashed body), so
+  a carried `user → skill` proposal stays "fresh" under every mechanism
+  the system has while reasoning from the wrong scope — reproduced live
+  against three real proposals. The inverse leg (`skill → user`) was
+  also measured: a carried proposal there degrades to `is_unanalyzed:
+  true` (the SAME outcome as the sweep) while leaving a permanently-dead
+  file behind — carrying buys nothing on that leg, only litter. **What
+  the work order got right is named and fixed: the sweep was SILENT.**
+  `rescope` discloses it — when the sweep removes at least one file, the
+  human-facing output (`post_notes`, printed after the summary line)
+  names the non-zero swept components and the fact of re-analysis
+  (never "swept 0" — a component at zero is never named, and nothing
+  swept prints no line at all), and the commit body records every swept
+  path, recoverable from git exactly as the 2026-08-18 discard was.
+  **Surface decisions of record:** **(1)** `rescope` does **not** join
+  the §4.5 closed proposable list — a new verb starts outside it by
+  default (unlike `rehome`'s Y-13-era addition), and widening it is a
+  later, separate, dated decision; **(2)** no telemetry event — v3's
+  `EVENT_KINDS` is a closed set, `rehome` (the sibling filing move)
+  emits nothing either, and git's pinned commit subject is already the
+  provenance record (`git log --grep='rescope'` greps every move);
+  **(3)** no pane/review-card change beyond one line in
+  `plugins/self-learn/commands/review.md` naming the verb — a human runs
+  it from the CLI in M1. `rehome` itself is untouched beyond one line of
+  its own refusal string, which now names `rescope` as the repair for
+  the cross-scope case its own message used to call "dated future
+  work."
+

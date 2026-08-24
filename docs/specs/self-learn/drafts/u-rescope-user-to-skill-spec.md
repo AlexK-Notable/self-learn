@@ -301,7 +301,7 @@ lrn-74debc2c  dest=claude-md  user-> ALWAYS  skill-> ALWAYS  SAME: True
 lrn-9aab3bb1  dest=claude-md  user-> ALWAYS  skill-> ALWAYS  SAME: True
 ```
 
-Same derived outcome, so `_validate_derivation` (``ledger_ops.py:1576`) passes.
+Same derived outcome, so `_validate_derivation` (`ledger_ops.py:1576`) passes.
 Destination still `claude-md`. `record_sha` still matching (§5.2). **Every
 freshness mechanism the system has reports "fresh"** for a proposal that
 recommends compiling into the user's `CLAUDE.md` a record that now lives in a
@@ -377,9 +377,14 @@ That is a genuine gap, and this unit closes it for `rescope`:
 
 - **`R-DISCLOSE-1`** — when the sweep removes at least one file, the verb's
   human-facing output includes one line naming the count and the fact of
-  re-analysis, e.g.
-  `swept 1 proposal + 0 merge cluster(s) — lrn-… will be re-analyzed in skills/bitwarden-cli`.
-  When nothing was swept, the line is absent (never "swept 0").
+  re-analysis. The line lists **only the non-zero swept components** — a
+  proposal-only sweep prints `swept 1 proposal — lrn-… will be re-analyzed
+  in skills/bitwarden-cli`; a merge-cluster-only sweep prints `swept 1
+  merge cluster — lrn-… will be re-analyzed in skills/bitwarden-cli`; both
+  non-zero prints `swept 1 proposal + 2 merge clusters — …`. A component at
+  zero is never named (never "0 proposal", never "0 merge cluster(s)") —
+  a merge-cluster-only sweep must not print "swept 0 proposal". When
+  nothing was swept, the line is absent entirely (never "swept 0").
 - **`R-DISCLOSE-2`** — the commit body records the swept paths, so the
   discarded analysis is recoverable from git by anyone reading the commit,
   which is how it was recovered on 2026-08-18.
@@ -387,7 +392,7 @@ That is a genuine gap, and this unit closes it for `rescope`:
 Both requirements have a **pinned carrier**, specified in §6.2 step 8 and step
 10 and in `rescope_record`'s `(touched, swept)` return (§6.3): `swept` is what
 distinguishes a removed proposal from a rename half, `post_notes` (`verbs.py:309`,
-printed by `_finish_verb` at `cli.py:1183-1184`) carries R-DISCLOSE-1 to stdout,
+printed by `_finish_verb` at `cli.py:1181-1182`) carries R-DISCLOSE-1 to stdout,
 and the composed commit body carries R-DISCLOSE-2. Without that plumbing these
 would be untestable prose — T11 asserts against exactly those carriers.
 
@@ -515,20 +520,27 @@ directory creation.**
    body channel. **R-DISCLOSE-2 is implemented here or not at all.**
 9. `push = _push_ledger(home, no_push)` — **outside** the lock, behind the
    no-remote guard (`verbs._push_ledger`, `verbs.py:468-474`).
-10. Return:
+10. Return — note the THIRD argument to `_rescope_sweep_note`: it takes the
+    **display label** (`skills/bitwarden-cli` or `user` — the same shape
+    the commit subject uses, e.g. via a small `target_scope -> dest_label`
+    helper such as `_rescope_dest_label`), never the raw scope literal
+    (`skill:bitwarden-cli`) — passing `target_scope` here would print
+    "will be re-analyzed in skill:bitwarden-cli", contradicting §5.5's
+    own worked example (`skills/bitwarden-cli`):
 
     ```python
+    dest_label = _rescope_dest_label(target_scope)  # "skills/<name>" or "user"
     VerbResult(
         action="rescope", record_id=record_id, commit_message=message,
         commit_sha=sha, staged=staged, push=push, sentinel_owned=hold.owned,
-        post_notes=([_rescope_sweep_note(record_id, swept, target_scope)]
+        post_notes=([_rescope_sweep_note(record_id, swept, dest_label)]
                     if swept else []),
     )
     ```
 
     `post_notes` (`verbs.py:309`) is the carrier for **R-DISCLOSE-1**: it is a
     real `VerbResult` field that `_finish_verb` prints to stdout, one line each,
-    immediately after the summary line (`cli.py:1183-1184`). It is the only
+    immediately after the summary line (`cli.py:1181-1182`). It is the only
     stdout channel a ledger-only verb has beyond that summary. Empty list when
     nothing was swept — so the "never `swept 0`" rule in §5.5 falls out of the
     structure rather than needing a guard.
@@ -755,6 +767,7 @@ Commit between seeding and acting (`commit_all`), so `_is_tracked` takes the
 | T5 | `test_creates_target_bucket_dirs_when_absent` | `skills/t/` does not exist before; after, `pending/`, `resolved/`, `proposals/` all exist |
 | T6 | `test_no_meta_yaml_is_written_for_user_or_skill_targets` | `not (target_bucket / "meta.yaml").exists()` — guards against a builder copying `rehome_record`'s `ensure_project_meta` call |
 | T7 | `test_note_rides_the_commit_body_not_resolution_note` | `"umbrella" in commit body`; `Record.from_path(dest).resolution_note is None` |
+| T18b | `test_bucket_not_frontmatter_decides_the_source_scope` | MAJOR-3's pin. Hand-write a record with `scope: user` into `skills/s/pending/` (a scope↔bucket disagreement), then `rescope --to user`. The **bucket** is `skills/s`, so this is a legal `skill → user` move and it SUCCEEDS, landing the record in `user/pending/` with `scope: user`. **Positive control:** the same fixture with `--to skill:s` refuses with "already lives in" — proving the refusal read the bucket, not the frontmatter field (which said `user` and would have permitted it). Together the two legs pin which authority is consulted; a record-derived implementation gives the opposite answer on both |
 
 ### 10.2 The proposal sibling — the required test, in the shape §5 decides
 
@@ -763,7 +776,7 @@ Commit between seeding and acting (`commit_all`), so `_is_tracked` takes the
 | **T8** | **`test_proposal_is_swept_never_left_behind_and_never_carried`** | **The load-bearing test.** Seed a proposal AND a `.diff` in the source bucket, commit. **Positive control FIRST** — assert `(source_bucket/"proposals"/f"{rid}.yaml").is_file()` before acting, so a fixture that silently failed to write a proposal cannot make the test vacuous. Then rescope, then assert all three: (a) the proposal is **gone from the source bucket** — it is not left behind as litter; (b) it is **not present in the target bucket** — it was not carried; (c) `verb_files(home)` names the swept paths, proving the removal rode the same commit |
 | T9 | `test_merge_cluster_naming_the_record_is_swept_strangers_survive` | two `merge-*.yaml` in the source bucket, one naming the record and one not; after: the naming one is gone, the stranger survives. Positive control: assert both exist before |
 | T10 | `test_rescoped_record_reads_as_unanalyzed_in_the_new_bucket` | the recovery path §5.4 depends on. After the move, build a `QueueEntry` for the destination and assert `proposal_info(entry)["has_proposal"] is False` and `is_unanalyzed(entry) is True`. Positive control: assert `is_unanalyzed` was `False` in the source bucket before the move |
-| T11 | `test_sweep_is_disclosed_in_post_notes_and_commit_body` | `R-DISCLOSE-1`/`R-DISCLOSE-2` against the carriers §6.2 pins. With a proposal present: `result.post_notes` is non-empty and its line names the record and the destination bucket (R-DISCLOSE-1), and `git log -1 --format=%B` on the verb commit contains a `swept:` line naming the proposal path (R-DISCLOSE-2). Drive the CLI once too, asserting the `post_notes` line reaches **stdout** — `_finish_verb` prints it (`cli.py:1183-1184`). **Negative leg in the same test:** with no proposal present, `result.post_notes == []`, no `swept:` line in the body, and no "swept 0" anywhere |
+| T11 | `test_sweep_is_disclosed_in_post_notes_and_commit_body` | `R-DISCLOSE-1`/`R-DISCLOSE-2` against the carriers §6.2 pins. With a proposal present: `result.post_notes` is non-empty and its line names the record and the destination bucket (R-DISCLOSE-1), and `git log -1 --format=%B` on the verb commit contains a `swept:` line naming the proposal path (R-DISCLOSE-2). Drive the CLI once too, asserting the `post_notes` line reaches **stdout** — `_finish_verb` prints it (`cli.py:1181-1182`). **Negative leg in the same test:** with no proposal present, `result.post_notes == []`, no `swept:` line in the body, and no "swept 0" anywhere |
 
 *If the gate overrules §5, T8/T10/T11 are the tests that invert; T9's
 stranger-survives leg holds either way.*
@@ -784,7 +797,6 @@ Every refusal test asserts the refusal happened **and** that nothing moved
 | T16 | `test_refuses_bare_skill_without_name` | `--to skill` and `--to skill:` both refuse |
 | T17 | `test_refuses_same_scope` | `user` → `--to user` → `VerbError` "already lives in" |
 | T18 | `test_refuses_skill_to_skill` | `skill:s` → `--to skill:t` → `VerbError` naming it as dated future work |
-| T18b | `test_bucket_not_frontmatter_decides_the_source_scope` | MAJOR-3's pin. Hand-write a record with `scope: user` into `skills/s/pending/` (a scope↔bucket disagreement), then `rescope --to user`. The **bucket** is `skills/s`, so this is a legal `skill → user` move and it SUCCEEDS, landing the record in `user/pending/` with `scope: user`. **Positive control:** the same fixture with `--to skill:s` refuses with "already lives in" — proving the refusal read the bucket, not the frontmatter field (which said `user` and would have permitted it). Together the two legs pin which authority is consulted; a record-derived implementation gives the opposite answer on both |
 | T19 | `test_refuses_destination_collision_before_creating_anything` | same id already in `skills/t/pending/` (and a second case in `skills/t/resolved/`) → `VerbError` "duplicated id is corruption to surface"; assert the source record is untouched |
 | T20 | `test_secret_in_record_or_note_refuses_before_any_write` | two legs — a secret in the record body, and a secret in `--note`. Both refuse; record still in the source bucket, target bucket absent |
 | T21 | `test_unknown_id_exits_64` | `cli.main(["rescope", "lrn-00000000", "--to", "skill:s"])` → `64` |
@@ -807,6 +819,8 @@ Every refusal test asserts the refusal happened **and** that nothing moved
 | T28 | `test_half_written_exits_7` | use `support`'s git shim to fail `commit` while the flag file exists; assert exit `7`, and that the record is in the destination with the commit absent — the state 7 exists to describe |
 | T29 | `test_no_push_skips_the_push` | `--no-push` → `result.push is None`, exit 0. **Positive control:** without `--no-push`, the same remote-less fixture returns `result.push.skipped is True` — NOT `None` — because `push_if_remote` returns `PushResult(ok=True, skipped=True)` on a repo with no remote (`gitops.py:675`). Without that control, `push is None` could pass for the wrong reason |
 | T30 | `test_no_telemetry_event_is_spooled` | §7. Assert the `*.jsonl` lines under **`telemetry.spool_dir()`** are unchanged across the rescope. **Positive control:** a `route` in the same fixture DOES add a line there. **Do not point this test at `<home>/telemetry/`** — `spool_quiet`/`spool_event` write only to the XDG-cache spool (`telemetry.py:187`), while `<home>/telemetry/` is written by `flush` alone (`telemetry.py:225`); a test aimed there gets a *failing positive control* (the `route` leg spools nothing there either) and invites the builder to "fix" the wrong thing |
+| T31 | `test_kill_between_mv_and_write_leaves_a_blocked_staged_rename` | **Added at code gate (MAJOR-1, 2026-08-23):** §6.4's mv-first ordering had no test that would go red under a write-then-mv swap — the counterfactual crash probe silently commits a scope/bucket mismatch via `reconcile` while the rest of the suite stays green. Monkeypatch `Record.write` to raise, simulating a kill between `git mv` and the rewrite; call `rescope_record` directly. Assert the S1 state exactly: `git status --porcelain` starts with `R ` (a staged rename, no working-tree modification — the write never landed), the destination file exists and still carries the STALE source scope, and `reconcile(home)` reports it in `blocked` (never `committed`) |
+| T32 | `test_git_mv_runs_before_record_write_not_after` | **Added at code gate (MAJOR-1, 2026-08-23):** an ordering witness independent of T31's crash-simulation mechanism — a swap mutation might not always produce an observably-wrong porcelain state under every monkeypatch shape, so this test instruments both `ledger_ops._git_ok` (recording only its `"mv"` invocations) and `Record.write` to append to a shared order list, then asserts the observed order is `["mv", "write"]`. Reds directly on a write-then-mv swap, regardless of whether anything raises |
 
 **Suite command:** `uv run --project plugins/self-learn/cli pytest tests/test_rescope.py`
 plus the full CLI suite. The known pre-existing UI failure

@@ -2212,6 +2212,58 @@ def rehome_record(
     return touched
 
 
+def rescope_record(
+    home: Path, record_id: str, target_scope: str, target_bucket: Path
+) -> tuple[list[Path], list[Path]]:
+    """File-op half of ``rescope`` (u-rescope §6.3): a PENDING record's
+    scope literal is rewritten AND the record moves between buckets in
+    one motion — unlike :func:`rehome_record`, the bytes are NOT
+    untouched, because ``scope:`` lives in the frontmatter and
+    :func:`bucket_dir_for_scope` maps ``scope -> bucket``; a record whose
+    frontmatter disagrees with its bucket is corruption (§4.1).
+
+    Ordering is modelled on :func:`resolve_record`'s tail (``git mv`` THEN
+    ``record.write`` at the destination), not on :func:`rehome_record`'s
+    move-only ordering — a kill between the two calls leaves a STAGED
+    rename (`reconcile` blocks it, visibly stuck) rather than a merely
+    MODIFIED tracked file at the source (`reconcile` would silently
+    auto-commit a scope/bucket mismatch). See §6.4.
+
+    No ``meta.yaml``: ``user`` and ``skill:<name>`` buckets carry no
+    project identity (§4), so :func:`ensure_project_meta` is never called
+    here — unlike :func:`rehome_record`.
+
+    Returns ``(touched, swept)`` — a PAIR, not a flat list. ``touched`` is
+    the exact path list :func:`_commit_ledger` should stage (deletions
+    pre-staged by ``git mv``/``git rm``, or untracked); ``swept`` is the
+    subset :func:`remove_proposal_siblings` removed. Only from the pair
+    can the caller tell a swept proposal apart from a rename half — that
+    distinction is what makes R-DISCLOSE-1/R-DISCLOSE-2 (§5.5)
+    implementable; a flat ``touched`` cannot do it."""
+    path = find_record_path(home, record_id, statuses=("pending",))
+    source_bucket = path.parent.parent
+    for sub in ("pending", "resolved"):
+        if (target_bucket / sub / path.name).exists():
+            raise LedgerOpsError(
+                f"record {record_id} already exists in {target_bucket} — a "
+                "duplicated id is corruption to surface, never to merge "
+                "into; inspect both files by hand"
+            )
+    for sub in ("pending", "resolved", "proposals"):
+        (target_bucket / sub).mkdir(parents=True, exist_ok=True)
+    record = Record.from_path(path)
+    record.set_scope(target_scope)  # the one substance change
+    dest_path = target_bucket / "pending" / path.name
+    if _is_tracked(home, path):
+        _git_ok(home, "mv", str(path), str(dest_path))
+    else:
+        path.rename(dest_path)
+    record.write(dest_path)  # rewrite AT THE DESTINATION — mv-first (§6.4)
+    swept = remove_proposal_siblings(home, source_bucket, record_id)
+    touched: list[Path] = [path, dest_path, *swept]
+    return touched, swept
+
+
 def supersede_record(
     home: Path, old_id: str, superseded_by: str, *, note: str | None = None
 ) -> list[Path]:
