@@ -40,6 +40,7 @@ does not re-open it. It reuses the unit name because the TaskList row does.
 | `plugins/self-learn/cli/src/self_learn/report.py` | one new top-level facts key `surface_reach` in `gather` (beside `reference_shelf`, `:668`) and its text render (beside `:785`) |
 | `plugins/self-learn/cli/tests/test_reachability.py` | new; the unit's own tests |
 | `plugins/self-learn/cli/tests/test_selftest.py` | only where an existing assertion must absorb the new row's presence in `results` |
+| `plugins/self-learn/cli/tests/test_new_skill.py`, `plugins/self-learn/cli/tests/test_selftest_hooks.py` | **coordinator amendment (builder round 1 collateral, 2026-08-23), fixture-only.** `test_selftest_drift_covers_new_skill` and `test_selftest_cli_includes_hooks_line` assert `--selftest` returns rc 0 on a "healthy install" sandbox that (pre-amendment) had no personal-skill symlink / no hook registration — exactly the gap this unit's `surface` row exists to report, so the new row correctly flipped rc to 1. Their intent is the healthy-install premise, not the absence of a reachability check; the fix is fixture-only (add the symlink / settings.json registration the sandboxes were missing), never weakening the assertion or special-casing the `surface` row. |
 
 Anything else is out of scope and must be **reported, not edited**.
 
@@ -477,6 +478,18 @@ assert on **exact substrings** instead (§8, T-ROW-BLIND / T-ROW-MIXED):
 the head with its two numbers, the `UNMEASURABLE` token with its count,
 the resolved dir string, and the absence of the specific
 looked-and-found-fine phrasing `"44 record(s) reachable"`.
+
+**The dir string is asserted only in the `claude-dir-absent` /
+`settings-unparseable` cases (r3-d NIT, closing this section).** The
+previous paragraph's "the resolved dir string" is elliptical and must not
+be read as "every test asserts the dir string is present": T-ROW-BLIND
+(reason `claude-dir-absent`) asserts its **presence**; T-ROW-MIXED (reason
+`target-missing`, no `claude-dir-absent`/`settings-unparseable` among the
+distinct reasons) asserts its **absence** — that is the conditional half
+of §4.4's grammar (M29), and both directions are load-bearing. A test
+asserting the dir string unconditionally, in every fixture regardless of
+which unmeasurable reason is present, would be wrong against this spec's
+own grammar.
 
 The difference between `0 of 44 verified reachable; 44 UNMEASURABLE (…)`
 and `44 record(s) reachable` is the entire lesson of `lrn-ea833a5b`: an
@@ -1334,7 +1347,14 @@ prints (`lrn-ea833a5b`).
 - **T-SKILL-5d** an undecidable entry **in scope** by the name rule
   (`<plugin> == target.parent.name`), no symlink ⇒ `unmeasurable` /
   `plugin-route-undecidable`. The other side of §5.1A′, so the narrowing
-  cannot be mutated into "ignore undecidability entirely".
+  cannot be mutated into "ignore undecidability entirely". **Second leg**
+  *(r3-c NIT)*: an undecidable entry whose `<plugin>` name does **not**
+  match the skill name, but whose marketplace's `installLocation` **is an
+  ancestor of** `target`, no symlink ⇒ `unmeasurable` /
+  `plugin-route-undecidable`. §5.1A′ states two disjuncts (name-match OR
+  ancestor-installLocation) and leg 1 alone only exercises the first — a
+  formula that dropped the ancestor disjunct entirely would still pass leg
+  1. M6i is this leg's mutation.
 - **T-SKILL-6** `new-skill` record ⇒ same verdicts via the fixed
   `<root>/plugins/<n>/skills/<n>/SKILL.md` formula.
 - **T-SKILL-6b** `skill-md` record in a sandbox laid out as
@@ -1567,69 +1587,249 @@ T-HOOK-2 and T-SELFTEST-ROW had no paired mutation**, so M31–M36 below
 close them. A test nobody can break is the same defect as a criterion that
 cannot fail, seen from the other side.
 
-**Twelve tests remain unmutated, deliberately and not by omission:**
-`T-RULES-1/2/3/4`, `T-HOOK-1/5`, `T-CMD-4/5`, `T-SKILL-6`,
-`T-HOOK-BLIND`, `T-DOMAIN-SUPERSEDED`, `T-DOMAIN-UNPARSEABLE`. Each is a
-**positive-path or enumeration** assertion whose negative twin is already
-mutated — M5 pairs with T-RULES-2's sibling, M1 with every BLIND fixture,
-M13/M14 with the domain set — so a mutation aimed at them would be a
-restatement rather than a new hazard. The plan is not padded to reach
-one-mutation-per-test; a mutation that duplicates another's kill teaches
-the gate nothing.
+**Four tests remain unmutated, empirically confirmed** *(r2 fold, measured
+2026-08-24, T-NO-WRITES removed 2026-08-24 micro-fold — supersedes the
+"Nine tests" claim this paragraph used to make. Method: every mutation in
+the table below was applied to the current code, `test_reachability.py`
+run, the failing test-function set recorded, the mutation reverse-`Edit`ed,
+60-passed reconfirmed — see the Notes subsection after the table. This
+census is {all 60 test functions} minus {the union of every measured red
+list}. Six of the old paragraph's nine names turned out to be
+measured-covered once actually tested: `T-RULES-1`/`T-RULES-2` (M13,
+M27), `T-HOOK-1`/`T-HOOK-5` (M20), `T-SKILL-6` new-skill leg (M35), and
+`T-HOOK-BLIND` (M1, M20) — see notes [1], [6]/[8], [10], [12], [16], [17]
+for which mutation actually kills each. Only three of the nine survive
+measurement, joined at the r2 fold by two names not on the old list at
+all (T-NO-WRITES, and the leg-3 half of T-RENDER-NULL). T-NO-WRITES was
+then itself removed by the 2026-08-24 micro-fold (NIT-5): M30, restated
+as a paired write-introducing + weakened-snapshot mutation (note [21]),
+measurably falsifies it, so it is no longer census material — it has a
+live must-fail cell instead*: `T-CMD-5`, `T-DOMAIN-SUPERSEDED`,
+`T-DOMAIN-UNPARSEABLE`, `T-RENDER-NULL` (leg 3 only — legs 1 and 2 are
+covered by M17/M17b). These four remain **positive-path or enumeration**
+assertions with no dedicated mutation aimed at them — the same rationale
+the retired paragraph gave, now applied to the measured-correct set. The
+plan is not padded to reach one-mutation-per-test; a mutation that
+duplicates another's kill teaches the gate nothing.
 
 | # | Mutation | Must fail |
 |---|---|---|
-| M1 | `read_instrument` returns `claude_dir_usable=True` for `claude-dir-absent` | T-SKILL-BLIND, T-ROW-BLIND |
-| M2 | `unmeasurable` renders as the looked-and-found-fine phrasing | T-ROW-BLIND (assertion 5) |
-| M3 | drop the count from the PASS message | T-ROW-BLIND **and T-ROW-MIXED** |
-| M3b | emit the count only when `reachable == 0` | **T-ROW-MIXED only** |
+| **M1** | `read_instrument` returns `claude_dir_usable=True` for `claude-dir-absent` | **T-CMD-BLIND, T-HOOK-BLIND, T-INSTRUMENT, T-RENDER-NULL leg 1, T-ROW-BLIND, T-RULES-BLIND, T-SKILL-BLIND** [1] |
+| **M2** | `unmeasurable` renders as the looked-and-found-fine phrasing | **T-ROW-BLIND, T-ROW-MIXED** [2] |
+| **M3** | drop the count from the PASS message | **T-ONE-PREDICATE, T-ROW-BLIND, T-ROW-MIXED** [3] |
+| **M3b** | emit the count only when `reachable == 0` | **T-ONE-PREDICATE, T-ROW-MIXED** [4] |
 | M3c | print the literal `~/.claude` instead of the resolved dir | T-ROW-BLIND (assertion 3) |
-| M4 | RP-RULES reads `routing.rules_paths` instead of frontmatter | **T-RULES-DISK only** |
+| **M4** | RP-RULES reads `routing.rules_paths` instead of frontmatter | **T-RULES-4, T-RULES-DISK** [5] |
 | M5 | RP-RULES treats `"budget"` as `"none"` | T-RULES-7 |
-| M6 | RP-SKILL returns `not-indexed` for an undecidable route | T-SKILL-5 |
+| **M6** | RP-SKILL returns `not-indexed` for an undecidable route | **T-SKILL-5, T-SKILL-5d** [6] |
 | M6b | undecidability made global instead of per record | T-SKILL-5b |
 | M6c | plugin root hard-codes `plugins/<n>` instead of reading `source` | **T-SKILL-4b only** |
-| M6d | plugin roots read `extraKnownMarketplaces` instead of `known_marketplaces.json` | T-SKILL-4, T-SKILL-4b |
+| **M6d** | plugin roots read `extraKnownMarketplaces` instead of `known_marketplaces.json` | **T-HOOK-6, T-INSTRUMENT, T-SKILL-4, T-SKILL-4b, T-SKILL-5d leg 2, T-SKILL-8** [7] |
 | **M6e** | *(r2 BLOCKER)* row 9 quantifies over the WHOLE `enabledPlugins` map instead of in-scope entries only (§5.1A′) | **T-SKILL-5c only** |
-| M6f | §5.1A′ narrowed so far that row 9 never fires (undecidability ignored) | T-SKILL-5d |
-| M6g | plugin `source` string treated as `plugins/<name>` rather than marketplace-root-relative, breaking `./external_plugins/<n>` | T-SKILL-4b |
+| **M6f** | §5.1A′ narrowed so far that row 9 never fires (undecidability ignored) | **T-SKILL-5, T-SKILL-5d** [8] |
+| **M6g** | plugin `source` string treated as `plugins/<name>` rather than marketplace-root-relative, breaking `./external_plugins/<n>` | **T-SKILL-4, T-SKILL-4b, T-SKILL-8** [9] |
+| **M6h** | *(r3-a NIT)* the skill-md leg resolves via the new-skill FIXED FORMULA (`<skills_root>/plugins/<n>/skills/<n>/SKILL.md`) instead of `skill_dir_for`'s glob — i.e. `managed_target_for`'s two legs are collapsed into one | **T-FACET, T-RENDER-ORDER, T-SKILL-1, T-SKILL-2, T-SKILL-3, T-SKILL-6b, T-SKILL-BLIND** [10] |
+| **M6i** | *(r3-c NIT)* §5.1A′'s in-scope test drops the `installLocation`-is-ancestor disjunct, keeping only the plugin-name-equals-skill-name check | **T-SKILL-5d leg 2 only** |
 | M7 | RP-SKILL uses `os.path.lexists` (dangling reads as present) | T-SKILL-3 |
 | M8 | RP-SKILL checks `skillOverrides` after the discovery routes | T-SKILL-2 |
 | M8b | `skillOverrides` matches only the bare-name form | T-SKILL-8 |
 | M9 | RP-HOOK omits the matcher comparison | T-HOOK-3 |
 | M10 | RP-HOOK maps `re.error` to `matcher-mismatch` | T-HOOK-4 |
 | M11 | `settings-unparseable` stops failing the row | T-HOOK-BROKEN |
-| M11b | `settings-unparseable` blanks settings-independent records too | **T-FACET** |
+| **M11b** | `settings-unparseable` blanks settings-independent records too | **T-CMD-BLIND, T-FACET, T-ROW-BLIND** [11] |
 | M12 | `settings-absent` maps to `unmeasurable` | T-HOOK-6 |
-| M13 | domain glob becomes `*/*/resolved` | T-DOMAIN-USER |
+| **M13** | domain glob becomes `*/*/resolved` | **T-CMD-1, T-CMD-BLIND, T-DOMAIN-USER, T-FACET, T-RENDER-BYVARIANT, T-ROW-BLIND, T-ROW-MIXED, T-RULES-1, T-RULES-2, T-RULES-3, T-RULES-4, T-RULES-5, T-RULES-6, T-RULES-7, T-RULES-BLIND, T-RULES-BYPASS, T-RULES-DISK, T-RULES-ROOTS** [12] |
 | M14 | `reference` included in the domain | T-DOMAIN-EXCLUDE |
-| M15 | `target-missing` mapped to `unreachable` | T-SKILL-7 |
+| **M15** | `target-missing` mapped to `unreachable` | **T-ROW-MIXED, T-SKILL-7** [13] |
 | M16 | `_check_surface` recomputes its counts from the ledger | T-ONE-PREDICATE |
-| M17 | facts block emits `0` instead of `null` when a depended-on facet is unusable | T-RENDER-NULL legs 1 and 3 |
+| **M17** | facts block emits `0` instead of `null` when a depended-on facet is unusable | **T-RENDER-NULL leg 1, T-RENDER-NULL leg 2** [14] |
 | **M17b** | *(r2 MAJOR 1)* nulling collapsed to a single `instrument_usable` = `claude_dir_usable and settings_usable`, so a settings typo nulls the `claude-md*` counts | **T-RENDER-NULL leg 2 only** |
-| M18 | `rows` filtered to failures only | T-RENDER-ALL |
+| **M18** | `rows` filtered to failures only | **T-RENDER-ALL, T-RENDER-ORDER** [15] |
 | M19 | ordering changed to `record_id` only | T-RENDER-ORDER |
-| M20 | *(restated, r1 M-G)* `_surface_reach` **ignores** the passed `claude_dir` and calls `claude_runtime_dir()` itself, **or** resolves `Path("~/.claude")` directly | T-NO-REAL-HOME |
+| **M20** | *(restated, r1 M-G; re-targeted 2026-08-24 fold r2 — see note [16])* `reachability_rows` **ignores** the passed `claude_dir` and resolves `Path("~/.claude")` directly inside its own `read_instrument(claude_dir)` call | **T-CMD-BLIND, T-FACET, T-HOOK-1, T-HOOK-2, T-HOOK-3, T-HOOK-4, T-HOOK-5, T-HOOK-6, T-HOOK-BLIND, T-HOOK-BROKEN, T-NO-REAL-HOME, T-RENDER-NULL leg 1, T-RENDER-NULL leg 2, T-ROW-BLIND, T-RULES-BLIND, T-SKILL-2, T-SKILL-4, T-SKILL-4b, T-SKILL-5, T-SKILL-5d leg 1, T-SKILL-5d leg 2, T-SKILL-8, T-SKILL-BLIND** [16] |
 | ~~M21~~ | *(REMOVED — r1 B2; §5.2 rule 4 and T-CMD-2 are deleted)* | — |
 | M22 | the `project-root-memory-file` caveat text is dropped | T-CMD-3 |
+| **M22b** | *(r3-b NIT)* the `loads-unconditionally` `detail`'s `session_start` evidence text is dropped | **T-RULES-3 only** |
+| **M22c** | *(r3-b NIT)* the frontmatter-vs-ledger drift note (both `paths:` lists) is dropped from `detail` | **T-RULES-4 only** |
+| **M22d** | *(r3-b NIT)* the `CLAUDE.local.md` durability caveat text is dropped from `project-local-memory-file`'s `detail` | **T-CMD-4 only** |
 | M23 | any predicate opens `settings.json` directly | T-INSTRUMENT + T-ONE-PREDICATE |
 | **M24** | *(r1 M-E)* drop the `home_state` refusal from `_check_surface` | T-REFUSE (a) and (b) |
 | M24b | drop the `hosts.yaml`-absent skip | T-REFUSE (c) |
 | **M25** | *(r1 M-D)* drop the `zero-match` / legacy bypass branch | T-RULES-BYPASS legs 1–2 |
 | M25b | exempt a `"budget"` bypass as well | T-RULES-BYPASS leg 3 |
 | **M26** | *(r1 N7)* zero-domain PASS message changed to a bare `PASS` with no words | T-EMPTY-DOMAIN |
-| **M27** | *(r1 B1)* `reachability_rows` ignores `user_claude_md` and falls back to `DEFAULT_USER_CLAUDE_MD` | T-CMD-1, T-CMD-BLIND, T-RULES-BLIND |
-| M27b | `_user_reachability_roots` fed `DEFAULT_USER_CLAUDE_MD` | T-RULES-ROOTS |
+| **M27** | *(r1 B1)* `reachability_rows` ignores `user_claude_md` and falls back to `DEFAULT_USER_CLAUDE_MD` | **T-CMD-1, T-ROW-MIXED, T-RULES-1, T-RULES-2, T-RULES-3, T-RULES-DISK, T-RULES-4, T-RULES-5, T-RULES-6, T-RULES-7, T-RULES-BYPASS, T-RULES-ROOTS, T-RENDER-BYVARIANT, T-FACET** [17] |
+| **M27b** | `_user_reachability_roots` fed `DEFAULT_USER_CLAUDE_MD` | **T-FACET, T-RENDER-BYVARIANT, T-RULES-1, T-RULES-4, T-RULES-ROOTS** [18] |
 | **M28** | *(Q3)* `by_destination` keyed by `destination` alone, collapsing the three `claude-md` variants | T-RENDER-BYVARIANT |
 | **M29** | *(r2 MAJOR 2)* the note line appended unconditionally on `U > 0`, naming `claude_dir` for a `target-missing` unmeasurable | **T-ROW-MIXED assertion 4 only** |
 | M29b | the note line prints the raw `Instrument.state` instead of the distinct verdict reasons | T-ROW-MIXED assertion 3 |
-| **M30** | *(Q4)* `T-NO-WRITES` snapshot skips dotfiles, or compares only paths present in both snapshots | T-NO-WRITES (a created `.git/…` path or a deleted file no longer fails) |
-| **M31** | RP-HOOK drops the record→registration lookup entirely and returns `reachable` once the script is intact — i.e. reverts to what `_check_hooks` already does | **T-HOOK-UNREG** (both sides) |
+| **M30** | *(Q4; restated as a paired mutation, 2026-08-24 micro-fold — see note [21])* `T-NO-WRITES`'s own `_snapshot` helper skips dotfiles, PAIRED WITH a write-introducing mutation in `reachability_rows` (an unconditional dotfile touch under `claude_dir`) — the un-weakened snapshot alone already catches the write; only the pairing demonstrates the hazard | **T-NO-WRITES** [21] |
+| **M31** | RP-HOOK drops the record→registration lookup entirely and returns `reachable` once the script is intact — i.e. reverts to what `_check_hooks` already does | **T-HOOK-2, T-HOOK-3, T-HOOK-4, T-HOOK-UNREG** [19] |
 | **M32** | RP-HOOK matches a registration under any event, not only `PreToolUse` | T-HOOK-2 |
 | **M33** | RP-RULES skips the directory-identity check (§5.3 step 2) | T-RULES-5 |
 | **M34** | RP-RULES treats unreadable frontmatter as `loads-unconditionally` instead of `unmeasurable` | T-RULES-6 |
-| **M35** | RP-SKILL never consults `<claude_dir>/skills/<name>` (row 6 removed) | T-SKILL-1 |
+| **M35** | RP-SKILL never consults `<claude_dir>/skills/<name>` (row 6 removed) | **T-SKILL-1, T-SKILL-5b, T-SKILL-6, T-SKILL-6b** [20] |
 | **M36** | `run_selftest` computes the row but omits it from `results` | T-SELFTEST-ROW |
+
+### Notes (fold r2, measured 2026-08-24)
+
+Each mutation below was applied to the current code (one file, one
+unique-substring `Edit`), `test_reachability.py` run in full, the failing
+test-function set recorded, the mutation reverse-`Edit`ed, and a 60-passed
+run reconfirmed before moving to the next mutation — the same procedure
+r1-fold used for M27. Cell counts below are test **functions**, not spec
+test-ids; `T-SKILL-5d` and `T-RENDER-NULL` each span two/three functions
+(leg 1/leg 2[/leg 3]) — see §8.
+
+1. **M1** — 7 killed, not the claimed 2. `claude_dir_usable=True` under a
+   nonexistent dir feeds every predicate gated on that facet, plus
+   `test_instrument_four_states` (calls `read_instrument` directly) and
+   `test_render_null_three_legs` (nulls on `claude_dir_usable`).
+2. **M2** — 2 killed, not the claimed 1. T-ROW-MIXED also has 2
+   unmeasurable rows, so the same "N record(s) reachable" substitution
+   breaks its `"2 UNMEASURABLE" in msg` assertion too.
+3. **M3** — 3 killed, not the claimed 2. T-ONE-PREDICATE's stub asserts
+   `"1 of 2 verified reachable" in msg`; dropping the count breaks that
+   too.
+4. **M3b** — 2 killed, not the claimed 1. T-ONE-PREDICATE's stub has
+   `reachable=1 != 0`, so "emit count only when `reachable == 0`" drops
+   the count there as well.
+5. **M4** — 2 killed, not the claimed 1. T-RULES-4's fixture frontmatter
+   deliberately differs from `routing.rules_paths` (that is the drift
+   fixture); reading `ledger_paths` instead of the file changes its
+   glob-match outcome too.
+6. **M6** — 3 functions killed (T-SKILL-5, T-SKILL-5d both legs), not the
+   claimed 1. Disabling the `undecidable_in_scope` branch falls through
+   to `not-indexed` for every in-scope-undecidable fixture, not only
+   T-SKILL-5.
+7. **M6d** — 6 killed, not the claimed 2. Moving marketplace resolution
+   from `known_marketplaces.json` onto `data.get("extraKnownMarketplaces")`
+   changes `read_instrument`'s parse path (hits T-INSTRUMENT) and empties
+   `marketplaces` for every fixture built via `make_claude_dir(...,
+   marketplaces=...)` (T-SKILL-5d leg 2, T-HOOK-6, T-SKILL-8 all use it).
+8. **M6f** — same 3 functions as M6, not the claimed 1 (T-SKILL-5d alone).
+   Same code path.
+9. **M6g** — 3 killed, not the claimed 1. Resolving `source` under a
+   spurious `plugins/` prefix also breaks every fixture whose `source` is
+   already `./plugins/<p>` (T-SKILL-4, T-SKILL-8), not only the
+   `"source": "./"` shape (T-SKILL-4b).
+10. **M6h** — 7 killed, not the claimed 1. Collapsing the skill-md leg
+    onto the new-skill fixed formula changes `managed_target_for`'s
+    skill-md target for every fixture using `support.py`'s sandbox
+    layout — T-SKILL-1/2/3/BLIND (personal-symlink fixtures) plus
+    T-FACET/T-RENDER-ORDER (multi-record fixtures that route a skill-md
+    record among others), not only T-SKILL-6b.
+11. **M11b** — 3 killed, not the claimed 1. Gating `_rp_cmd` on
+    `settings_usable` also fires under `claude-dir-absent` fixtures,
+    whose `Instrument` carries `settings_usable=False` too (T-CMD-BLIND,
+    T-ROW-BLIND route a user claude-md record through the same branch).
+12. **M13** — 18 functions killed, not the claimed 1. Filtering buckets
+    to ≥2 path segments (emulating a `*/*/resolved` glob) drops the
+    single-level `user/` bucket outright, so every fixture routing a
+    user-scope record — cmd, rules, or mixed with skill/hook — loses that
+    record from the domain.
+13. **M15** — 2 killed, not the claimed 1. T-ROW-MIXED's two
+    "missing-target" records are skill-md fixtures with a missing
+    compiled file — the same `target-missing` leg T-SKILL-7 pins.
+14. **M17** — measured **T-RENDER-NULL leg 1, leg 2**, not the claimed
+    "legs 1 and 3". Leg 3 (`test_render_null_leg3_both_usable_nothing_null`)
+    only asserts nothing is `None` when both facets ARE usable; the
+    nulling-to-`0` mutation only fires when a facet is unusable, so leg 3
+    stays green under it. Leg 2 is newly measured because the `0`
+    substitution also lands on the `_SETTINGS_DEPENDENT_KEYS` nulling
+    path leg 2 exercises. Cell corrected to the measured set; the claimed
+    "leg 3" looks like a copy artifact from the neighboring M17b row.
+15. **M18** — 2 killed, not the claimed 1. T-RENDER-ORDER seeds one
+    reachable + one unreachable + one unmeasurable record and asserts
+    `len(rows) == 3`; filtering the reachable row out breaks that count.
+16. **M20** — measured 23 functions, not the claimed 1, against the
+    RE-TARGETED site: `reachability_rows`'s `read_instrument(claude_dir)`
+    call, mutated to `read_instrument(Path("~/.claude").expanduser())`.
+    The row's original text (r1 M-G) named `_surface_reach` instead and
+    offered two readings; §8's T-NO-REAL-HOME (the claimed victim) calls
+    `reachability_rows` directly and never touches `_surface_reach`, so
+    NEITHER `_surface_reach` reading can kill T-NO-REAL-HOME — confirmed
+    by re-testing both, 2026-08-24 micro-fold: (i) `_surface_reach`
+    ignoring `claude_dir` and calling `claude_runtime_dir()` itself is
+    INERT (0 fails) — `claude_runtime_dir()` reads `SELF_LEARN_CLAUDE_DIR`,
+    the same env var `conftest.py`'s `make_claude_dir`/`missing_claude_dir`
+    fixtures already set, so re-deriving it returns the identical
+    sandboxed path; (ii) `_surface_reach` resolving `Path("~/.claude")`
+    directly (bypassing the env var) kills 3 — `test_render_null_three_legs`,
+    `test_render_null_leg2_settings_broken_claude_md_survives`,
+    `test_render_byvariant` (T-RENDER-NULL leg 1, T-RENDER-NULL leg 2,
+    T-RENDER-BYVARIANT) — the only tests that call `_surface_reach`
+    directly. The row text now names the `reachability_rows` site as
+    primary so a literal application lands on the 23-item measurement;
+    the weaker `_surface_reach` / `Path("~/.claude")` variant (3 kills)
+    stays on record here rather than deleted, as a real but narrower
+    instance of the same hazard. Reading the real `~/.claude` at the
+    `reachability_rows` site also swaps in the operator's actual
+    `enabledPlugins` / `skillOverrides` / `hook_registrations` /
+    `marketplaces` for every fixture that reaches a predicate consulting
+    `Instrument` — hence that site's wider blast radius.
+17. **M27** *(rationale relocated out of the cell per NIT-3; content
+    unchanged from the r1-fold correction, 2026-08-24)* — the original
+    claimed list (T-CMD-1, T-CMD-BLIND, T-RULES-BLIND) was wrong on all
+    three counts. T-CMD-BLIND and T-RULES-BLIND are structurally immune:
+    both fixtures route through `missing_claude_dir`, and `_rp_cmd` /
+    `_rp_rules` check `instrument.claude_dir_usable` before ever touching
+    `target`. T-CMD-1 itself was fail-open before the MAJOR-1 test fix
+    (it asserted only `row.state`/`row.reason`) — the mutated target,
+    `DEFAULT_USER_CLAUDE_MD.expanduser()`, resolves to the operator's
+    real `~/.claude/CLAUDE.md`, which exists on this host, so
+    `state`/`reason` still matched. The corrected list is this
+    mutation's actual blast radius through the shared `user_claude_md`
+    threading: RP-RULES roots resolution (the ten `T-RULES-*` legs),
+    `by_destination` rules-variant bucketing (T-RENDER-BYVARIANT), and
+    the settings-broken facet control (T-FACET).
+18. **M27b** — 5 killed, not the claimed 1. Feeding `DEFAULT_USER_CLAUDE_MD`
+    only to `_user_reachability_roots` (not `_user_rules_dir`) still
+    relocates the probe roots off the sandbox for every user-scope rules
+    fixture whose glob match depends on `roots`, not only T-RULES-ROOTS.
+19. **M31** — 4 killed, not the claimed 1. Returning `reachable` once the
+    script is intact, without checking the registration at all, also
+    makes the wrong-event / matcher-mismatch / matcher-unparseable
+    fixtures report `reachable` instead of their expected verdict.
+20. **M35** — 4 killed, not the claimed 1. Removing row 6 entirely also
+    removes the "symlink wins over undecidable" precedence T-SKILL-5b
+    pins, and both `new-skill`/`skill-md` fixtures that resolve via a
+    personal symlink (T-SKILL-6, T-SKILL-6b) lose their only reachable
+    route.
+21. **M30** *(restated as a paired mutation, gate-guided, 2026-08-24
+    micro-fold — resolves NIT-5: T-NO-WRITES was simultaneously an
+    un-widened must-fail cell and census-exempt)* — two configurations
+    measured: (1) the write-introducing half ALONE (an unconditional
+    `(claude_dir / ".m30_probe").touch()` added to `reachability_rows`,
+    guarded `if claude_dir.is_dir()` so BLIND fixtures with no `claude_dir`
+    don't crash) — `test_no_writes` goes RED (1 fail), proving the
+    CURRENT, un-weakened `_snapshot` helper already catches a real write;
+    this is r1's falsifiability proof, reconfirmed. (2) the SAME write
+    PAIRED with the weakened snapshot (dotfiles skipped) — `test_no_writes`
+    goes GREEN (0 fails, rc=0) despite the write, reproducing M30's
+    original hazard: a snapshot that skips dotfiles is fail-open. Because
+    config (1) alone already falsifies T-NO-WRITES, the test is not
+    exemption material — M30's cell is restated to **T-NO-WRITES** and
+    the exemption census below drops it (was 5, now 4).
+
+Three mutations measured **zero** kills against the current suite and are
+left as-is (widening only applies to cells whose measured set EXCEEDS the
+claim; a zero-measurement is a different defect class, flagged for the
+coordinator, not corrected here): **M6b** (the "personal symlink still
+wins over undecidable" ordering M6b was meant to test is already
+guaranteed by row 6 running before rows 7–9, so the mutation as
+implemented — hoisting the undecidable-return above the symlink check —
+found no test that isolates JUST that ordering from T-SKILL-5c's
+in-scope-narrowing); **M7** (`os.path.lexists` treating a dangling
+personal symlink as reachable did not reproduce a T-SKILL-3 failure with
+the implementation attempted); **M23** (a redundant, unused direct
+`settings.json` read added to RP-HOOK is inert — it changes no return
+value any test observes). **M30** was in this group as of the r2 fold —
+mutating the TEST's own `_snapshot` helper alone cannot be caught by
+`test_reachability.py`, since nothing in the suite writes a dotfile for
+the weakened snapshot to miss — but the 2026-08-24 micro-fold restated it
+as a paired mutation (note [21]) and it now has a live, measured
+must-fail cell instead of sitting in this zero-kill group.
 
 ## 11. Questions — all RULED
 
@@ -1756,4 +1956,6 @@ the gate nothing.
     53 string / 233 dict source split and its 15 `external_plugins`
     entries, the §5.1A′ narrowing check) were run read-only against the
     live host on 2026-08-23.
-  - **Mutation plan:** 33 → 41 rows.
+  - **Mutation plan:** 33 → 41 rows. *(Builder's r3-a/r3-b/r3-c NIT fold:
+    41 → 46 rows — M6h, M6i, M22b, M22c, M22d added; census of tests
+    "unmutated, deliberately and not by omission" 12 → 9, per §10.)*

@@ -31,8 +31,10 @@ from ruamel.yaml.error import YAMLError
 
 from . import gitops
 from .compilers import _iso, compile_managed_text
+from .hosts import HostsError, load_hosts
 from .ledger import discover_buckets
 from .ledger_ops import open_followups
+from .reachability import reachability_rows
 from .records import Record, RecordError
 from .refread import resolve_ref_target
 from .telemetry import read_events
@@ -1521,8 +1523,149 @@ def context_budget(
     }
 
 
+#: §6 rule 5 (Q3 RULED): the `by_destination` keys, ALWAYS present
+#: (including zero-count ones) — the three `claude-md` shapes come from
+#: two different predicates (RP-CMD vs RP-RULES) with disjoint reason
+#: sets and disjoint remedies, so a merged `claude-md` count is the one
+#: number that cannot tell them apart.
+_SURFACE_REACH_KEYS = (
+    "skill-md",
+    "new-skill",
+    "claude-md",
+    "claude-md:local",
+    "claude-md:rules",
+    "hook",
+)
+
+#: §5.5: the destinations whose predicate reads the SETTINGS facet (RP-
+#: SKILL, RP-HOOK — both `skill-md`/`new-skill` share RP-SKILL). RP-CMD
+#: and RP-RULES read no settings collection at all (§4.4a, §5.5's table).
+_SETTINGS_DEPENDENT_KEYS = ("skill-md", "new-skill", "hook")
+
+_SURFACE_STATE_ORDER = {"unreachable": 0, "unmeasurable": 1, "reachable": 2}
+
+
+def _surface_variant_key(verdict) -> str:
+    """§6 rule 5: group `claude-md` by `Verdict.variant` — a group-by over
+    the list :func:`~self_learn.reachability.reachability_rows` already
+    returned, never a new computation (§4.3)."""
+    if verdict.destination == "claude-md":
+        if verdict.variant == "rules":
+            return "claude-md:rules"
+        if verdict.variant == "local":
+            return "claude-md:local"
+        return "claude-md"
+    return verdict.destination
+
+
+def _elide_surface_target(target: str | None, *, home: Path, skills_root) -> str | None:
+    """§6 rule 6: elide the skills root and the ledger home to
+    `<skills-root>` / `<home>` placeholders — this repo (and its reports)
+    are quotable and public; a display-string substitution, not a
+    reachability recomputation."""
+    if target is None:
+        return None
+    text = target
+    if skills_root is not None:
+        root_str = str(skills_root)
+        if text.startswith(root_str):
+            return "<skills-root>" + text[len(root_str) :]
+    home_str = str(home)
+    if text.startswith(home_str):
+        return "<home>" + text[len(home_str) :]
+    return text
+
+
+def _surface_reach(home: Path, claude_dir: Path) -> dict:
+    """U-pointer §6: the `surface_reach` facts block — the SAME verdict
+    list :func:`selfcheck._check_surface` renders as a PASS/FAIL row,
+    rendered here a second way. Per §4.3 this function may not re-derive,
+    re-probe, or recompute any field: it calls
+    :func:`~self_learn.reachability.reachability_rows` exactly once and
+    counts/groups/orders over what it returned (plus the domain facts
+    attached to that return — see `reachability.py`'s module docstring
+    for why those live there instead of a second read of `settings.json`
+    or a second `Record.from_path` walk here)."""
+    user_claude_md = claude_dir / "CLAUDE.md"
+    rows = reachability_rows(home, claude_dir, user_claude_md=user_claude_md)
+
+    claude_dir_usable = getattr(rows, "claude_dir_usable", True)
+    settings_usable = getattr(rows, "settings_usable", True)
+    instrument_state = getattr(rows, "instrument_state", "ok")
+    unparseable_records = getattr(rows, "unparseable_records", 0)
+
+    checked = len(rows)
+    reachable_n = sum(1 for r in rows if r.state == "reachable")
+    unreachable_n = sum(1 for r in rows if r.state == "unreachable")
+    unmeasurable_n = sum(1 for r in rows if r.state == "unmeasurable")
+
+    by_destination: dict[str, dict] = {
+        key: {"reachable": 0, "unreachable": 0, "unmeasurable": 0}
+        for key in _SURFACE_REACH_KEYS
+    }
+    for r in rows:
+        by_destination[_surface_variant_key(r)][r.state] += 1
+
+    # §6 rule 2: nulling is PER FACET, never blanket. `checked`,
+    # `unmeasurable`, `unparseable_records` and `rows` always render.
+    if not claude_dir_usable or not settings_usable:
+        for key in _SETTINGS_DEPENDENT_KEYS:
+            by_destination[key] = {"reachable": None, "unreachable": None, "unmeasurable": None}
+    if not claude_dir_usable:
+        for key in ("claude-md", "claude-md:local", "claude-md:rules"):
+            by_destination[key] = {"reachable": None, "unreachable": None, "unmeasurable": None}
+
+    top_reachable: int | None = reachable_n
+    top_unreachable: int | None = unreachable_n
+    if not claude_dir_usable or not settings_usable:
+        top_reachable = None
+        top_unreachable = None
+
+    try:
+        skills_root = load_hosts(home).skills_root
+    except HostsError:
+        skills_root = None
+
+    # §6 rule 1: unreachable first, then unmeasurable, then reachable;
+    # within a state, by destination then record_id.
+    ordered = sorted(
+        rows, key=lambda r: (_SURFACE_STATE_ORDER[r.state], r.destination, r.record_id)
+    )
+    rows_out = [
+        {
+            "record_id": r.record_id,
+            "bucket": r.bucket,
+            "scope": r.scope,
+            "destination": r.destination,
+            "variant": r.variant,
+            "target": _elide_surface_target(r.target, home=home, skills_root=skills_root),
+            "state": r.state,
+            "reason": r.reason,
+            "detail": r.detail,
+        }
+        for r in ordered
+    ]
+
+    return {
+        "instrument_state": instrument_state,
+        "claude_dir_usable": claude_dir_usable,
+        "settings_usable": settings_usable,
+        "checked": checked,
+        "reachable": top_reachable,
+        "unreachable": top_unreachable,
+        "unmeasurable": unmeasurable_n,
+        "unparseable_records": unparseable_records,
+        "by_destination": by_destination,
+        "rows": rows_out,
+    }
+
+
 def gather(
-    home: Path | str, *, today: date | None = None, flush_state: str = "not-attempted"
+    home: Path | str,
+    *,
+    today: date | None = None,
+    flush_state: str = "not-attempted",
+    claude_dir: Path | None = None,
 ) -> dict:
     """Walk every bucket + the tracked telemetry plane into one facts map.
 
@@ -1532,9 +1675,21 @@ def gather(
     a concurrent session appending between a real flush and this walk
     would make a perfectly healthy run look ``refused``. The default,
     ``"not-attempted"``, is deliberately not ``"ok"`` — every test that
-    calls ``gather()`` directly without flushing gets the honest value."""
+    calls ``gather()`` directly without flushing gets the honest value.
+
+    ``claude_dir`` (U-pointer §6 rule 7) is PASSED IN too, same reasoning
+    as ``flush_state``: it defaults to :func:`selfcheck.claude_runtime_dir`
+    (deferred import, same-module-family reuse convention as
+    ``_instrument_state`` above) but is never RE-derived inside
+    ``_surface_reach`` — a function that silently reached for the
+    operator's real ``~/.claude`` from inside a sandboxed test would aim
+    the check at the wrong machine."""
     home = Path(home)
     today = today if today is not None else datetime.now(timezone.utc).date()
+    if claude_dir is None:
+        from .selfcheck import claude_runtime_dir  # deferred: same-family reuse
+
+        claude_dir = claude_runtime_dir()
 
     buckets: list[dict] = []
     destinations: Counter = Counter()
@@ -1677,6 +1832,7 @@ def gather(
         },
         "reference_shelf": _reference_shelf(home, today, flush_state=flush_state),
         "context_budget": context_budget(home, today, flush_state=flush_state),
+        "surface_reach": _surface_reach(home, claude_dir),
     }
 
 
@@ -1953,6 +2109,45 @@ def render_text(facts: dict) -> str:
             lines.append(
                 f"  growth: +{growth['always_on_words_added_30d']} always-on "
                 f"words/30d{note}{doubling}{flag}"
+            )
+
+    sr = facts.get("surface_reach")
+    if sr is not None:
+        lines.append("")
+        lines.append(
+            f"Surface reach ({sr['checked']} record(s) checked, instrument: "
+            f"{sr['instrument_state']}):"
+        )
+        if sr["reachable"] is None or sr["unreachable"] is None:
+            lines.append(
+                "  NOT MEASURED (top-level reachable/unreachable) — a depended-on "
+                f"facet is unusable (claude_dir_usable={sr['claude_dir_usable']}, "
+                f"settings_usable={sr['settings_usable']})"
+            )
+        else:
+            lines.append(
+                f"  {sr['reachable']} reachable, {sr['unreachable']} unreachable, "
+                f"{sr['unmeasurable']} unmeasurable"
+            )
+        if sr["unparseable_records"]:
+            lines.append(
+                f"  {sr['unparseable_records']} resolved record(s) skipped — "
+                "unparseable"
+            )
+        for key, counts in sr["by_destination"].items():
+            if counts["reachable"] is None:
+                lines.append(f"  {key}: NOT MEASURED")
+            else:
+                lines.append(
+                    f"  {key}: {counts['reachable']} reachable, "
+                    f"{counts['unreachable']} unreachable, "
+                    f"{counts['unmeasurable']} unmeasurable"
+                )
+        for row in sr["rows"]:
+            lines.append(
+                f"  {row['record_id']} [{row['destination']}"
+                f"{':' + row['variant'] if row['variant'] else ''}]: "
+                f"{row['state']} ({row['reason']}) — {row['detail']}"
             )
 
     return "\n".join(lines)

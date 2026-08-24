@@ -224,6 +224,15 @@ def test_selftest_drift_covers_new_skill(env, tmp_path, monkeypatch, capsys):
 
     seed(env)
     verbs.route(env.home, RID, dest="new-skill:mouse-firmware")
+    # U-pointer's `surface` row (--selftest) checks whether the compiled
+    # skill is actually INDEXED, not merely present -- the healthy-install
+    # premise this test relies on needs a personal-skill symlink into the
+    # sandbox claude_dir's skills index, exactly as an operator registers
+    # a self-learn-hosted skill (§2.2/§5.1B row 6 of the reachability spec).
+    (claude / "skills").mkdir(parents=True)
+    (claude / "skills" / "mouse-firmware").symlink_to(
+        env.host / "plugins" / "mouse-firmware" / "skills" / "mouse-firmware"
+    )
     assert cli.main(["--selftest"]) == 0
     capsys.readouterr()
 

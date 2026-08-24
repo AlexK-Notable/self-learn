@@ -175,7 +175,31 @@ class TestSettingsSide:
 
 
 def test_selftest_cli_includes_hooks_line(env, capsys):
-    seed_hook_routed(env)
+    script = seed_hook_routed(env)
+    # U-pointer's `surface` row (--selftest) checks record->registration,
+    # not merely script-on-disk (§2.4/§5.4 of the reachability spec) --
+    # the healthy-install premise this test relies on needs a real
+    # settings.json PreToolUse registration plus its live claude_dir/
+    # hooks/ symlink, exactly as `TestSettingsSide.
+    # test_registration_with_live_symlink_passes` already builds.
+    (env.claude / "settings.json").write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "PreToolUse": [
+                        {
+                            "matcher": "Edit",
+                            "hooks": [
+                                {"type": "command", "command": f"$HOME/.claude/hooks/{NAME}"}
+                            ],
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (env.claude / "hooks" / NAME).symlink_to(script)
     rc = cli.main(["--selftest"])
     out = capsys.readouterr().out
     assert "PASS hooks" in out
