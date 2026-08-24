@@ -61,6 +61,7 @@ from .ledger_ops import (
 from .records import Record, RecordError
 from .teach import add_teach_parser, run_teach
 from .telemetry import DECLINE_REASONS
+from .verbs import DISMISS_REASONS
 
 EXIT_OK = 0
 # 64 = sysexits EX_USAGE — deliberately NOT 2, which P2-8 pins as the
@@ -305,6 +306,24 @@ def _build_parser() -> argparse.ArgumentParser:
 
     ch = _verb("confirm-held", "record that a routed rule was seen working")
     ch.add_argument("id", metavar="ID")
+
+    ds = _verb(
+        "dismiss-suspect",
+        "dismiss a recurrence suspect as a matcher false-positive (11 §2.2)",
+    )
+    ds.add_argument("id", metavar="ID")
+    ds.add_argument(
+        "--event",
+        required=True,
+        metavar="NONCE",
+        help="the recurrence-suspect telemetry event's nonce (see report --json)",
+    )
+    ds.add_argument(
+        "--why",
+        required=True,
+        choices=DISMISS_REASONS,
+        help="why the suspect is false — the analyst's x-axis",
+    )
 
     adopt = sub.add_parser(
         "chezmoi-adopt",
@@ -1323,6 +1342,16 @@ def _cmd_verb(args: argparse.Namespace) -> int:
                 home, args.id, note=args.note, no_push=args.no_push
             )
             return _finish_verb(result, "confirmed holding")
+        if args.command == "dismiss-suspect":
+            result = verbs.dismiss_suspect(
+                home,
+                args.id,
+                event_ref=args.event,
+                why=args.why,
+                note=args.note,
+                no_push=args.no_push,
+            )
+            return _finish_verb(result, "suspect dismissed")
     except verbs.VerbError as exc:  # incl. SecretRefusal
         print(f"self-learn {args.command}: {exc}", file=sys.stderr)
         return exc.exit_code
@@ -1874,6 +1903,7 @@ VERB_COMMANDS = frozenset(
         "supersede",
         "confirm-recurrence",
         "confirm-held",
+        "dismiss-suspect",
     }
 )
 

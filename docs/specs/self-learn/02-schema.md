@@ -261,6 +261,14 @@ standard safe rebase-halt (`01` §5) rather than being excluded outright.
 > status; the substance freeze below is untouched. The owning verbs and
 > their pinned commit subjects are 11 §2.5's table; tolerate-notes land in
 > `recurrences[].note`, never `resolution_note` (which stays write-once).
+>
+> **Amendment 2026-08-24 (U-dismiss, 11 §2.2/§2.5):** the frontmatter
+> also gains `dismissed_suspects` (append-only) — a human's ruling that a
+> `recurrence-suspect` telemetry claim was a matcher false-positive, not
+> a real recurrence. Same metadata class as `recurrences`, but its `ref`
+> is **REQUIRED and load-bearing**, unlike `recurrences[]`'s courtesy
+> pointer: a dismissal is a fact about one specific machine claim, and
+> without the nonce it clears nothing and means nothing.
 
 - **Substance freezes at routing** *(S-8/S-12 — settled 2026-07-12,
   blind-adjudicated ADOPT)*: while

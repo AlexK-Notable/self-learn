@@ -105,7 +105,16 @@ A new capture that matches an **already-routed** lesson is a
   (supersede toward a stronger surface) · **tolerate**
   (`confirm-recurrence --tolerate --note "<why the rule stays>"` — the
   note lands in `recurrences[].note`, NOT `resolution_note`, which
-  stays write-once per 02 §2) · **retire** (supersede with nothing).
+  stays write-once per 02 §2) · **retire** (supersede with nothing) ·
+  **dismiss** (`dismiss-suspect <id> --event <nonce> --why <reason>
+  [--note …]` — the sighting was never a recurrence: a matcher
+  false-positive, not evidence the rule is absent or weak; appends to
+  `dismissed_suspects:` (append-only, §3) and the telemetry event
+  itself is preserved untouched). Read the suspect's `basis` before
+  choosing tolerate vs dismiss: `fire-violated` is the model's own
+  report that it broke the rule, while `miner-match` and
+  `title-token-overlap` are text-similarity heuristics that can fire on
+  a lesson nobody actually violated.
 - `last_confirmed:` (date) is the flip side — written by the
   `confirm-held` verb (§2.5) whenever a human observes the rule
   working (typically from a "still good?" prompt on old rules in
@@ -140,6 +149,7 @@ of rationale prose; §8 declares this schema addition honestly).
 |---|---|---|
 | `confirm-recurrence <id> --event <ref> [--tolerate --note …]` | `recurrences[]` append (+ optional note) | `self-learn: recurrence confirmed on lrn-<id>` |
 | `confirm-held <id> [--note …]` | `last_confirmed` | `self-learn: confirmed holding lrn-<id>` |
+| `dismiss-suspect <id> --event <ref> --why <reason> [--note …]` | `dismissed_suspects[]` append | `self-learn: suspect dismissed on lrn-<id>` |
 | `link contradicts <id> <target>` | `links.contradicts` append | `self-learn: link lrn-<id> contradicts <target>` |
 | `followup done <id> [--note …]` | clears `routing.follow_up` (moves it to a dated `follow_up_done` block) | `self-learn: follow-up done on lrn-<id>` |
 | `telemetry note <kind> [flags]` | **spool only (§4.2) — no repo write, no commit** | — |
@@ -170,6 +180,11 @@ routing:
   follow_up: {action: …, unblocks_on: …, note: …}
 recurrences:
   - {ts: …, origin: …, note: …, ref: …}   # ref = courtesy pointer (§2.2)
+dismissed_suspects:
+  - {ref: …, ts: …, why: …, origin: …, basis: …, dismissed_at: …}
+    # ref REQUIRED here (§4.3 asymmetry with recurrences[]'s courtesy
+    # pointer) — a dismissal is a fact about one specific machine claim;
+    # without the nonce it clears nothing and means nothing
 last_confirmed: 2026-08-02
 links:
   contradicts: [lrn-889241d9]

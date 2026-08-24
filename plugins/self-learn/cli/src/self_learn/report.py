@@ -253,6 +253,8 @@ def recurrence_suspects(home: Path | str) -> list[dict]:
             continue
         if any(r.get("ref") == nonce for r in record.recurrences):
             continue  # already confirmed
+        if any(d.get("ref") == nonce for d in record.dismissed_suspects):
+            continue  # dismissed as a matcher false-positive (U-dismiss)
         # `basis` says WHY this suspect was raised, and the four producers
         # mean very different things by it: `fire-violated` is the model
         # reporting that it broke this routed rule, while `miner-match`,
@@ -1698,6 +1700,12 @@ def gather(
     graduated = 0
     rejected = 0
     routed_live = []  # currently-routed rules (the attention-tax payers)
+    # U-dismiss §7c: flat rows across EVERY record regardless of status —
+    # collected in the per-record loop below, immediately after
+    # `Record.from_path` and before any status branching, so a dismissal
+    # survives the target record later being superseded (§7c's load-
+    # bearing placement; see the comment at the collection site).
+    suspects_dismissed: list[dict] = []
     deferred: list[dict] = []
     # Doc 12 T-M5: mined supply (source: session) tracked per decision
     # class — the accept rate below is THE metric that decides the
@@ -1713,6 +1721,22 @@ def gather(
             for path in sorted(directory.glob("lrn-*.md")):
                 try:
                     record = Record.from_path(path)
+                    # U-dismiss §7c: BEFORE the status branching below —
+                    # the dismissal plane must outlive the rule it was
+                    # made against (superseded records keep their file
+                    # here; this is what makes T-DISMISSALS-SURVIVE-
+                    # SUPERSEDE hold).
+                    for entry in record.dismissed_suspects:
+                        suspects_dismissed.append(
+                            {
+                                "id": record.id,
+                                "ref": entry.get("ref"),
+                                "ts": entry.get("ts"),
+                                "dismissed_at": entry.get("dismissed_at"),
+                                "basis": entry.get("basis"),
+                                "why": entry.get("why"),
+                            }
+                        )
                 # 09 §5 FW-18: same widened skip set as _walk_records.
                 except (RecordError, OSError, UnicodeDecodeError, YAMLError):
                     continue
@@ -1746,6 +1770,7 @@ def gather(
                                 else None
                             ),
                             "recurrences": len(record.recurrences),
+                            "dismissed_suspects": len(record.dismissed_suspects),
                         }
                     )
                 elif record.status == "rejected":
@@ -1812,6 +1837,7 @@ def gather(
         "rejected": rejected,
         "open_followups": open_followups(home),
         "recurrence_suspects": recurrence_suspects(home),
+        "suspects_dismissed": suspects_dismissed,
         "deferred": deferred,
         "mined": {
             "pending": mined["pending"],

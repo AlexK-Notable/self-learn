@@ -144,6 +144,7 @@ __all__ = [
     "CHEZMOI_DRIFT_REFUSAL",
     "COMMIT_DRIFT_SUBJECT",
     "DEFAULT_USER_CLAUDE_MD",
+    "DISMISS_REASONS",
     "GITOPS_DIRTY_MARKER",
     "NO_PROPOSAL_MARKER",
     "NOTHING_TO_COMMIT",
@@ -164,6 +165,7 @@ __all__ = [
     "confirm_held",
     "confirm_recurrence",
     "defer",
+    "dismiss_suspect",
     "one_motion_allowed",
     "followup_done",
     "graduate",
@@ -4353,6 +4355,116 @@ def confirm_held(
         push = _push_ledger(home, no_push)
         return VerbResult(
             action="confirm-held",
+            record_id=record_id,
+            commit_message=message,
+            commit_sha=sha,
+            staged=staged,
+            push=push,
+            sentinel_owned=hold.owned,
+        )
+    finally:
+        hold.release()
+
+
+#: U-dismiss §5: the closed ``--why`` enum for ``dismiss-suspect`` — the
+#: analyst's x-axis (``basis × why`` contingency table, §2.4/§5 of the
+#: spec). argparse ``choices=`` enforces this at the CLI layer (exit 2,
+#: before anything is read); the record-layer validator
+#: (``records._validate_dismissal``) requires only that ``why`` be
+#: non-empty text, so a record written under an older/smaller enum never
+#: retroactively fails validation if this list grows (the ``_BASIS_LABELS``
+#: lesson, ``ui/models.py:858-863``, applied to the reason side).
+DISMISS_REASONS = (
+    "complied",
+    "different-lesson",
+    "duplicate-capture",
+    "wrong-record",
+    "other",
+)
+
+
+def dismiss_suspect(
+    home: Path | str,
+    record_id: str,
+    *,
+    event_ref: str,
+    why: str,
+    note: str | None = None,
+    no_push: bool = False,
+) -> VerbResult:
+    """The third door out of ``recurrence_suspects`` (11 §2.2, U-dismiss
+    §1): a human judged a recurrence-suspect telemetry claim to be a
+    matcher false-positive, not a recurrence. Append to the record's
+    append-only ``dismissed_suspects:`` list, copying the minimal facts
+    (ts, origin, basis) OUT of the telemetry event named by ``event_ref``
+    (the event's ``nonce``) — unlike ``recurrences[]``, ``ref`` is
+    REQUIRED here (§4.3): without the nonce the entry clears nothing and
+    means nothing. The suspect event itself is never touched — append-only
+    telemetry, preserved as analyst fuel. Commit:
+    ``self-learn: suspect dismissed on lrn-…``."""
+    home = Path(home)
+    event = next(
+        (
+            e
+            for e in telemetry.read_events(home)
+            if e.get("kind") == "recurrence-suspect"
+            and e.get("nonce") == event_ref
+        ),
+        None,
+    )
+    if event is None:
+        raise VerbError(
+            f"no recurrence-suspect event with nonce {event_ref!r} in the "
+            "tracked telemetry — flush first (`self-learn telemetry flush`) "
+            "or check `self-learn report`"
+        )
+    if event.get("record") != record_id:
+        raise VerbError(
+            f"event {event_ref} was raised against {event.get('record')!r}, "
+            f"not {record_id!r} — dismiss it against the record it names"
+        )
+    path = find_record_path(home, record_id)
+    _scan_or_refuse([path], note)
+    record = Record.from_path(path)
+    if record.status != "routed":
+        raise VerbError(
+            f"record {record_id} is {record.status!r} — suspects only exist "
+            "against LIVE routed coverage (11 §2.2)"
+        )
+    if any(r.get("ref") == event_ref for r in record.recurrences):
+        raise VerbError(
+            f"event {event_ref} is already confirmed on {record_id} — "
+            "cannot dismiss a suspect that was confirmed as a real "
+            "recurrence"
+        )
+    if any(d.get("ref") == event_ref for d in record.dismissed_suspects):
+        raise VerbError(
+            f"event {event_ref} is already dismissed on {record_id}"
+        )
+    hold = sentinel.hold()
+    sentinel.heartbeat()
+    try:
+        entry = {
+            "ref": event_ref,
+            "ts": event.get("ts"),
+            "why": why,
+            "origin": event.get("origin"),
+            "basis": event.get("basis"),
+            "dismissed_at": _now_iso()[:10],
+        }
+        if note is not None:
+            entry["note"] = note
+        try:
+            record.append_dismissed_suspect(entry)
+        except RecordError as exc:
+            raise VerbError(str(exc)) from exc
+        message = f"self-learn: suspect dismissed on {record_id}"
+        with _ledger_write(home):
+            record.write(path)
+            staged, sha = _stage_and_commit(home, [path], message, note)
+        push = _push_ledger(home, no_push)
+        return VerbResult(
+            action="dismiss-suspect",
             record_id=record_id,
             commit_message=message,
             commit_sha=sha,
