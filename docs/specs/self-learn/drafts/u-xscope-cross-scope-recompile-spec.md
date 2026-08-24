@@ -102,7 +102,7 @@ at `verbs.py:1062-1063`):
 ```
 
 **Every skill in the live skills root is laid out `plugins/<name>/skills/<name>/`**
-— verified by `ls -d /home/komi/repos/claude-skills/plugins/*/skills/*/`:
+— verified by `ls -d ~/repos/claude-skills/plugins/*/skills/*/`:
 12 of 12 plugin directories are named exactly for the skill they contain.
 So for **every** skill in the live host, the `skill-md` target and the
 `new-skill` target are **byte-identical paths**. The collision is not an
@@ -167,7 +167,7 @@ four `new-skill` records in the entire ledger, and `skills/testing-methodology/r
 holds exactly one file.
 
 Routing `lrn-0a76fae2` produced commit `ff45510` in
-`/home/komi/repos/claude-skills`:
+`~/repos/claude-skills`:
 
 ```
 self-learn: apply lrn-0a76fae2 → plugins/testing-methodology/skills/testing-methodology/SKILL.md (skill-md)
@@ -428,7 +428,7 @@ and lookups agree by construction. Concretely:
 NIT 7 correction — the requirement is **defensive, not observed**: comparing
 unresolved paths would silently split one target into two the moment the
 skills root is reached through a symlink. **No live target resolves
-differently today** — `readlink -f /home/komi/repos/claude-skills` returns
+differently today** — `readlink -f ~/repos/claude-skills` returns
 itself, and `resolve()` is identity for all 11 live targets (measured
 2026-08-23). The earlier claim that the skills root *is* symlinked was
 false; the requirement stands on its own.
@@ -647,8 +647,8 @@ no new verb.
 ### 5.1 Procedure
 
 1. **Before.** Record the current state of
-   `/home/komi/repos/claude-skills/plugins/testing-methodology/skills/testing-methodology/SKILL.md`:
-   `git -C /home/komi/repos/claude-skills rev-parse HEAD`, and the entry ids
+   `~/repos/claude-skills/plugins/testing-methodology/skills/testing-methodology/SKILL.md`:
+   `git -C ~/repos/claude-skills rev-parse HEAD`, and the entry ids
    inside the marker pair via the anchored regex of §2.7. Expected: exactly
    `['lrn-0a76fae2']`.
 2. **Verify the host is clean.** `recompile` skips dirty targets loudly
@@ -668,7 +668,7 @@ repair:
   `lrn-4f89e33a, lrn-fe16fceb, lrn-566216a6, lrn-0529f554, lrn-0a76fae2`.
   Five entries. Not "at least five", not "the four are somewhere in the
   file" — a prose mention is not an entry (§2.7).
-- **V2 — before/after diff.** `git -C /home/komi/repos/claude-skills diff`
+- **V2 — before/after diff.** `git -C ~/repos/claude-skills diff`
   (or the diff of the recompile commit) shows **+4 / -0** inside the marker
   pair, and **zero** changes outside it. The four restored lines must match
   the lines deleted by `ff45510`

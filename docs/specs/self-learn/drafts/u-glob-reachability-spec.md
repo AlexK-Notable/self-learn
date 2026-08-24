@@ -216,14 +216,14 @@ matcher call.
 
 ## 3. Measurements
 
-Every row was run on this host (`$HOME` = `/home/komi`) on 2026-08-23,
+Every row was run on this host (`$HOME` = the user home (redacted)) on 2026-08-23,
 warm page cache, under `uv run --project plugins/self-learn/cli python`.
 `$HOME` scale at the time of measurement: **676,026 directories,
 4,575,239 files** (`os.walk`, 5.0 s).
 
 | id | What was measured | Result |
 |---|---|---|
-| **M1** | `glob.glob("**/.claude/projects/**/*.jsonl", root_dir="/home/komi", recursive=True)` — i.e. `_validate_project_globs` naively pointed at `$HOME` | **TIMEOUT > 120 s** (also > 600 s in an earlier run) |
+| **M1** | `glob.glob("**/.claude/projects/**/*.jsonl", root_dir="~", recursive=True)` — i.e. `_validate_project_globs` naively pointed at `$HOME` | **TIMEOUT > 120 s** (also > 600 s in an earlier run) |
 | **M2** | same call, `"**/.claude/hooks/*.sh"` | **TIMEOUT > 120 s** |
 | **M3** | same call, `"**/nonexistent-xyzzy/*.md"` (a dead pattern) | **TIMEOUT > 120 s** |
 | **M4** | the same three patterns rooted at each *registered* host (`~/.self-learn/hosts.yaml`: `claude-skills`, `keyboards`, `keyboards/zmk-config-offsetkey`, `.config`, `nsys-marketplace`) and at `~/.claude` | `**/.claude/projects/**/*.jsonl` → **0 matches** at `~/.claude` (0.21 s), at `repos/self-learn` (0.00 s), at `repos/nsys-marketplace` (0.00 s) |
@@ -882,7 +882,7 @@ live in the leg's own temp directory and reach the session through
 
 ### 8.1 Environment facts already established
 
-* `claude` is at `/home/komi/.local/bin/claude`, version **2.1.241**
+* `claude` is at `~/.local/bin/claude`, version **2.1.241**
   (`claude --version`, 2026-08-23).
 * Relevant flags exist and were read from `claude --help` on 2026-08-23:
   `-p/--print`, `--settings <file-or-json>`, `--output-format
@@ -970,7 +970,7 @@ form; per-leg sessions remain acceptable.
 
 ```json
 {"session_id":"5546710e-…","cwd":"<tmp>","hook_event_name":"InstructionsLoaded",
- "file_path":"/home/komi/.claude/CLAUDE.md",
+ "file_path":"~/.claude/CLAUDE.md",
  "memory_type":"User","load_reason":"session_start"}
 
 {"session_id":"5546710e-…","cwd":"<tmp>","hook_event_name":"InstructionsLoaded",
@@ -979,7 +979,7 @@ form; per-leg sessions remain acceptable.
 
 {"session_id":"5546710e-…","cwd":"<tmp>","prompt_id":"82a61f92-…",
  "hook_event_name":"InstructionsLoaded",
- "file_path":"/home/komi/.claude/rules/session-transcripts.md",
+ "file_path":"~/.claude/rules/session-transcripts.md",
  "memory_type":"User","load_reason":"path_glob_match",
  "globs":["**/.claude/projects/**/*.jsonl"],
  "trigger_file_path":"<tmp>/x/.claude/projects/p/t.jsonl"}

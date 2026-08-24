@@ -473,11 +473,11 @@ would fork that mapping, which is the defect class
 **The path a model reads and the path `hosts.yaml` resolves are different
 strings for the same file.** `hosts.py::skill_dir_for` (currently
 `hosts.py:546-550`) globs `<skills_root>/plugins/*/skills/<name>`, and this
-host's `skills_root` is `/home/komi/repos/claude-skills` — so
+host's `skills_root` is `~/repos/claude-skills` — so
 `selfcheck.py:272` resolves `skill:home-assistant` to a path under
 `repos/claude-skills/…`. But `~/.claude/skills/home-assistant` is a
 **symlink** into that tree, so `tool_input.file_path` carries
-`/home/komi/.claude/skills/home-assistant/references/LEARNINGS.md`. Measured:
+`~/.claude/skills/home-assistant/references/LEARNINGS.md`. Measured:
 
 ```
 both paths exist:            True / True
@@ -695,15 +695,15 @@ Plus the five fields `spool_event` stamps itself (`telemetry.py:161-172`):
 directory names are mangled absolute home paths. All nine on this host:
 
 ```
--home-komi-.config-1323c4be
--home-komi-repos-claude-skills-3aaedd49
--home-komi-repos-keyboards-zmk-config-offsetkey-b93b4e47        (9 total)
+-home-USER-.config-1323c4be
+-home-USER-repos-claude-skills-3aaedd49
+-home-USER-repos-keyboards-zmk-config-offsetkey-b93b4e47        (9 total)
 ```
 
-Emitting `Bucket.name` would put `"-home-komi-.config-1323c4be"` into a
+Emitting `Bucket.name` would put `"-home-USER-.config-1323c4be"` into a
 **committed, cross-machine-syncing** plane, and **every existing guard misses
 it** — measured: T4.2's `/home/` check is `False`, and the repo's own
-outgoing-diff scan for `/home/komi` is `False`. `-home-komi-` is neither
+outgoing-diff scan for `~` is `False`. `-home-USER-` is neither
 string, and T2.7's "no absolute path" does not match a slug. It would pass
 every test and the pre-push scan. This is live, not hypothetical: two
 project-scope reference-routed records sit under that bucket
@@ -731,7 +731,7 @@ render `-w-a-b`, which once cross-homed one project's lessons into another's
 canon), and the digest is what makes the slug injective and stable per path.
 So the half being dropped is the **ambiguous** half; the half being kept is
 the **identity**. Verified with a positive control:
-`sha256("/home/komi/.config")[:8] == "1323c4be"`, and the full slug
+`sha256(str(Path("~/.config").expanduser().resolve()))[:8] == "1323c4be"`, and the full slug
 reproduces exactly.
 
 Against the two requirements that survive scrutiny: **stable** — a sha256 of
@@ -820,7 +820,7 @@ and §7-T4 is the test that proves it.
 |---|---|
 | `tool_response` / `.file.content` — **any** part | it is the entire file body. The hook never extracts it (§4.2-2), so it cannot reach the CLI at all |
 | `tool_input.file_path` (absolute) | a host path. The CLI resolves it to a relative key and **drops** it |
-| **any value DERIVED from a host path, in any encoding** | the governing rule, stated generally on purpose. The earlier wording — *"contains `$HOME`"* — was too narrow: it does not reach `Bucket.name`'s `-home-komi-.config-1323c4be`, which encodes the same path with `/` → `-` and defeats both the `/home/` test and the repo's `/home/komi` pre-push scan (§5.2.1). Read it as: **no field may carry the path, a transform of it, or a substring of it.** A digest of a path is permitted — it is not a transform one can read back |
+| **any value DERIVED from a host path, in any encoding** | the governing rule, stated generally on purpose. The earlier wording — *"contains `$HOME`"* — was too narrow: it does not reach `Bucket.name`'s `-home-USER-.config-1323c4be`, which encodes the same path with `/` → `-` and defeats both the `/home/` test and the repo's `~` pre-push scan (§5.2.1). Read it as: **no field may carry the path, a transform of it, or a substring of it.** A digest of a path is permitted — it is not a transform one can read back |
 | `agent_type` | an unbounded, human-authored agent-name vocabulary — free-text-shaped. The boolean `subagent` carries the fact that matters. *Deliberately rejected, not overlooked* |
 | `cwd`, `transcript_path` | absolute host paths |
 | `prompt_id`, `tool_use_id`, `duration_ms`, `effort`, `permission_mode` | no consumer; `effort`/`duration_ms` are undocumented fields (§9.3) and must not be depended on |
