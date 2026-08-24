@@ -128,11 +128,56 @@ as the label. Every selected record resolves via its own
 `self-learn graduate <id>` call; any the user de-selects gets an
 individual card in this batch.
 
-If any route in this session printed the over-cap WARNING (managed
-section at its entry/word cap), open the next batch with a graduation
-card for that section's oldest entries (02 §4).
+**Budget card (U-cap, 02 §4).** Run `self-learn report --json` and read
+`.context_budget`. If **any** signal carries `flagged: true`, open the
+batch with **one** budget card — never one card per signal. The card
+**states the flagged facts and offers**; it never demands, never blocks,
+and is dismissible with no action.
 
-**Merge cards (M2).** Before the per-record cards, list
+Offers, in this order, and only for signals that are actually flagged:
+
+- **`crowding` flagged** → **state the near-duplicate pairs and their
+  scores.** Do **not** offer `route --collapse`: those records are
+  routed, and the collapse path refuses anything not still pending
+  (`verbs.py:2559-2564`), so the offer would be an action that cannot
+  run. Describe the consolidation path in prose instead: capture one
+  rewritten record covering both lessons, linked to one predecessor with
+  `self-learn teach … --supersedes <lrn-id>` (**one id — the flag is
+  single-valued and the field is scalar; never repeat it**), route it,
+  then retire each remaining member individually with
+  `self-learn graduate <id>`. The human runs these; the card runs
+  nothing.
+- **`composition` flagged** → offer **Graduate**
+  (`self-learn graduate <id>`) for the named oldest entries, showing
+  `managed_share`, `managed_share_growth_30d_pp`, and `caution_share`.
+  State `past_is_lower_bound` when any delta is shown.
+- **`growth` flagged** → state the rate and `doubling_days_est`. **Offer
+  nothing.** There is no per-record action for a rate; it is a fact for
+  the human, and manufacturing an action for it would re-create the cap.
+- **`budget` flagged** → state `session_baseline_words` /
+  `session_baseline_tokens_est` and the largest **baseline** surface,
+  then `session_max_words` with `largest_project_key` named as the
+  project that would add it. **Never quote `all_hosts_words` as a
+  session cost** — if it is shown at all, label it "not a session cost".
+  If `totals_are_lower_bound`, say so.
+
+**Tri-state, before any of the above:** a signal whose `flagged` is
+`null` is **not** an all-clear. Say "could not measure" and name the
+states from `surfaces_unmeasured` / the row `state` values. A card that
+renders `null` as quiet is the exact fail-open the design forbids.
+
+**The constraint that rides on every offer:** read
+`.context_budget.conditional.reference.safe_overflow`. When it is
+`false` or `null`, the card **must not** suggest "route it to references
+instead" as the relief. Quote `.why`. Routing to an uninstrumented or
+cold shelf trades a measured cost for an unmeasured one, and that is the
+move this whole design exists to refuse.
+
+**A signal is never a reason to refuse a route.** If the human routes
+into a flagged surface after reading the card, that is a correct outcome
+and the verb behaves identically to an unflagged route.
+
+**Merge cards (M2).** After the budget card, before the per-record cards, list
 `<bucket>/proposals/merge-*.yaml`. A cluster whose members are ALL still
 pending gets ONE card (never per-member cards): show each member's
 leading card section (registry order), with the `suggested_survivor` pre-selected and overridable.

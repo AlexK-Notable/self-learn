@@ -2,8 +2,9 @@
 docs/specs/self-learn/drafts/u-glob-reachability-spec.md). Covers §9's
 T2-T13 (T0/T1 live as reversed/updated tests in test_a2_rules_local.py,
 per the spec's own instruction that T1 IS T0's case-1 rewrite; T9's
-cap_reason replacement and T12's full-suite criterion are likewise
-covered there / by the suite run itself).
+`cofire_crowded` replacement (U-cap §6.1 retired the `over_cap`/
+`cap_reason` OR-in this used to name) and T12's full-suite criterion are
+likewise covered there / by the suite run itself).
 
 DEVIATION NOTE (T8): §5.3 states TWICE, unambiguously, that membership
 of `unpathed` is decided by `compilers.has_paths_key(text)` returning

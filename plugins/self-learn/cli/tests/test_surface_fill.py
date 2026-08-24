@@ -1,13 +1,19 @@
 """`list --json --surface-fill` (09 §11 Y-20 / 08 §1 `surface_fill` field,
-10 §3 U17) — the loaded-surface budget indicator's read-only fill probe.
+10 §3 U17, amended by U-cap §6.3) — the loaded-surface budget indicator's
+read-only fill probe.
 
 Covers: flag-gating (unflagged byte-unchanged; --id record scoping, delta
-F9), key-set correctness (reference never a key; VerbError/CompileError
-legs — missing SKILL.md, unregistered host, scope-invalid, a corrupted
-managed-section marker pair — omit keys without crashing the whole `list`
-call), count correctness against the compiler's own numbers, the
-entries/words overflow cap, and memoization (N records sharing one target
-compile exactly once).
+F9), key-set correctness (`reference` IS now a key, sourced from a
+read-rate VERDICT never a compile probe — the compile-probe prohibition
+survives; VerbError/CompileError legs — missing SKILL.md, unregistered
+host, scope-invalid, a corrupted managed-section marker pair — omit keys
+without crashing the whole `list` call), count correctness against the
+compiler's own numbers, and memoization (N records sharing one target
+compile exactly once; the `reference` verdict computes exactly once too).
+The `SELF_LEARN_CLAUDE_DIR` sandbox (conftest.py, autouse) keeps the
+`reference` read-rate verdict deterministic (always "not-instrumented" —
+no refread hook script at that sandboxed path) without ever touching a
+real `~/.claude`.
 
 Hygiene trap (blind-review F5): ``verbs.surface_fill`` resolves a
 user-scope ``claude-md`` target to the REAL chezmoi-managed
@@ -34,6 +40,7 @@ from self_learn.ledger_ops import (
 from self_learn.records import Record
 
 from support import (
+    SKILL_MD_SEED,
     days_ago,
     init_repo,
     make_behavior,
@@ -80,6 +87,23 @@ def env(tmp_path, monkeypatch):
     e = make_env(tmp_path, skills=("s",))
     monkeypatch.setenv("SELF_LEARN_HOME", str(e.ledger))
     return e
+
+
+#: U-cap §6.3: every `surface_fill` call now carries a `reference` key —
+#: sourced from `report.reference_read_verdict`, never a compile probe.
+#: The suite-wide `SELF_LEARN_CLAUDE_DIR` sandbox (conftest.py, autouse)
+#: makes it deterministically "not-instrumented" (no refread hook script
+#: at that path) for every test in this file that doesn't say otherwise.
+_REFERENCE_KEYS = {
+    "read_rate_state", "safe_overflow", "why",
+    "targets_zero_read", "targets_total", "reads_30d_total",
+}
+
+
+def _assert_not_instrumented_reference(ref: dict) -> None:
+    assert set(ref.keys()) == _REFERENCE_KEYS
+    assert ref["read_rate_state"] == "not-instrumented"
+    assert ref["safe_overflow"] is None
 
 
 # --------------------------------------------------------------- flag gating
@@ -165,21 +189,26 @@ class TestFlagGating:
 
 
 class TestKeySet:
-    def test_reference_is_never_a_key(self, env, capsys):
+    def test_reference_is_now_a_key(self, env, capsys):
+        """U-cap §6.3: `reference` IS now a `surface_fill` key — sourced
+        from `report.reference_read_verdict`, never from a compile probe
+        (the probe prohibition survives, T9.3 below)."""
         rec = make_behavior(scope="skill:s", record_id="lrn-aa000001", created_at=days_ago(1))
         create_record(env.ledger, rec)
 
         (item,) = _list_json(capsys, "--surface-fill")
-        assert "reference" not in item["surface_fill"]
+        assert "reference" in item["surface_fill"]
+        _assert_not_instrumented_reference(item["surface_fill"]["reference"])
 
     def test_reference_probe_is_never_even_attempted(self, env, capsys, monkeypatch):
-        """F4: strengthen the above — a mutation that adds "reference" to
-        SURFACE_FILL_CAPPED_DESTINATIONS is otherwise absorbed by the
-        target-is-None guard inside surface_fill (the key never makes it
-        into the object, so the assertion above still passes), which
-        means that assertion alone does NOT kill the mutation. Spy on the
+        """F4 / U-cap T9.3: a mutation that adds "reference" to
+        SURFACE_FILL_PROBED_DESTINATIONS (the COMPILE probe set) is
+        otherwise absorbed by the target-is-None guard inside
+        surface_fill (the key never makes it into the object). Spy on the
         resolver itself and assert "reference" is never among the
-        destinations it was asked to resolve at all."""
+        destinations it was asked to COMPILE-resolve — the read-rate
+        VERDICT (checked above) is a SEPARATE, non-compile codepath and
+        does not go through `_resolve_target` at all."""
         rec = make_behavior(scope="skill:s", record_id="lrn-aa000001", created_at=days_ago(1))
         create_record(env.ledger, rec)
 
@@ -196,12 +225,12 @@ class TestKeySet:
         assert "reference" not in probed
         assert set(probed) == {"skill-md", "claude-md"}
 
-    def test_skill_scope_gets_both_capped_keys(self, env, capsys):
+    def test_skill_scope_gets_both_probed_keys_plus_reference(self, env, capsys):
         rec = make_behavior(scope="skill:s", record_id="lrn-aa000001", created_at=days_ago(1))
         create_record(env.ledger, rec)
 
         (item,) = _list_json(capsys, "--surface-fill")
-        assert set(item["surface_fill"].keys()) == {"skill-md", "claude-md"}
+        assert set(item["surface_fill"].keys()) == {"skill-md", "claude-md", "reference"}
 
     def test_project_scope_omits_skill_md(self, env, capsys):
         """Scope-invalid capped destination absent: skill-md never valid
@@ -231,16 +260,19 @@ class TestKeySet:
     def test_unregistered_project_host_omits_claude_md(self, env, tmp_path, capsys):
         """An unregistered project host is a VerbError from
         `_project_host_or_refuse` — the key is omitted (F5). skill-md was
-        never valid for this scope either, so surface_fill is empty."""
+        never valid for this scope either — U-cap: `reference` is the ONE
+        key that survives regardless of scope (it is not scope-gated;
+        §6.3), so surface_fill is `{"reference": {...}}`, not empty."""
         unregistered = tmp_path / "unregistered-proj"
         init_repo(unregistered)
         rec = make_knowledge(scope="project", record_id="lrn-aa000001", created_at=days_ago(1))
         create_record(env.ledger, rec, project_path=unregistered)
 
         (item,) = _list_json(capsys, "--surface-fill")
-        assert item["surface_fill"] == {}
+        assert set(item["surface_fill"].keys()) == {"reference"}
+        _assert_not_instrumented_reference(item["surface_fill"]["reference"])
 
-    def test_user_scope_gets_only_claude_md(self, env, tmp_path):
+    def test_user_scope_gets_claude_md_plus_reference(self, env, tmp_path):
         """Direct verbs.surface_fill call (never through the CLI, and
         with an explicit user_claude_md override) — a user-scope probe
         must NEVER touch the real ~/.claude/CLAUDE.md."""
@@ -250,18 +282,21 @@ class TestKeySet:
         result = verbs.surface_fill(
             env.ledger, env.ledger / "user", "user", user_claude_md=user_md
         )
-        assert set(result.keys()) == {"claude-md"}
+        assert set(result.keys()) == {"claude-md", "reference"}
+        _assert_not_instrumented_reference(result["reference"])
         assert result["claude-md"] == {
-            "entries": 0, "entries_cap": 10, "words": 0, "words_cap": 150,
-            "over_cap": False,
+            "entries": 0, "words": 0, "load_class": "unconditional",
+            "file_words": 3, "file_tokens_est": 4, "managed_share": 0.0,
             # A2 §8: the raw topic-file count, claude-md only — 0 here,
             # no ~/.claude/rules/ dir under the tmp_path override.
             "rules_topic_count": 0,
             # U-glob §5.3: the co-firing datum, empty for a missing
-            # rules dir — no trigger fires, no cap_reason key.
+            # rules dir. U-cap §4.6/§6.1: `cofire_crowded` replaces the
+            # retired `over_cap`/`cap_reason` OR-in.
             "rules_cofire": {
                 "topics": [], "unpathed": [], "pairs": [], "max_fanin": 0,
             },
+            "cofire_crowded": False,
         }
 
 
@@ -318,6 +353,27 @@ class TestDegradedLegs:
             assert "skill-md" not in item["surface_fill"]
             assert "claude-md" in item["surface_fill"]
 
+    def test_reference_verdict_failure_omits_only_that_key(
+        self, env, capsys, monkeypatch
+    ):
+        """T9.5: a failing `reference_read_verdict` omits the `reference`
+        key alone — the other destinations' keys still render, and the
+        whole `list --json` call must not fail."""
+        from self_learn import report as report_mod
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("verdict blew up")
+
+        monkeypatch.setattr(report_mod, "reference_read_verdict", boom)
+
+        rec = make_behavior(scope="skill:s", record_id="lrn-aa000001", created_at=days_ago(1))
+        create_record(env.ledger, rec)
+
+        (item,) = _list_json(capsys, "--surface-fill")  # asserts rc == 0
+        assert "reference" not in item["surface_fill"]
+        assert "skill-md" in item["surface_fill"]
+        assert "claude-md" in item["surface_fill"]
+
 
 # --------------------------------------------------------- count correctness
 
@@ -328,9 +384,12 @@ class TestCountCorrectness:
         create_record(env.ledger, rec)
 
         (item,) = _list_json(capsys, "--surface-fill")
+        seed_words = len(SKILL_MD_SEED.format(name="s").split())
         assert item["surface_fill"]["skill-md"] == {
-            "entries": 0, "entries_cap": 10, "words": 0, "words_cap": 150,
-            "over_cap": False,
+            "entries": 0, "words": 0, "load_class": "conditional",
+            "file_words": seed_words,
+            "file_tokens_est": round(seed_words * 1.33),
+            "managed_share": 0.0,
         }
 
     def test_partial_fill_matches_compiler_count(self, env, capsys):
@@ -346,7 +405,10 @@ class TestCountCorrectness:
         # each entry: "- <fact> *(<id>)*" -> 3 whitespace tokens
         assert fill["entries"] == 2
         assert fill["words"] == 6
-        assert fill["over_cap"] is False
+        assert fill["load_class"] == "conditional"
+        seed_words = len(SKILL_MD_SEED.format(name="s").split())
+        assert fill["file_words"] == seed_words
+        assert fill["managed_share"] == round(6 / seed_words, 3)
 
     def test_pending_record_itself_is_never_counted(self, env, capsys):
         """08 §1 F8: `list --json --surface-fill` for a still-pending
@@ -358,7 +420,9 @@ class TestCountCorrectness:
         (item,) = _list_json(capsys, "--surface-fill")
         assert item["surface_fill"]["skill-md"]["entries"] == 0
 
-    def test_over_cap_by_entry_count(self, env, capsys):
+    def test_eleven_entries_all_applied_and_counted(self, env, capsys):
+        """U-cap §6.1: the entry cap is retired — an 11th entry is
+        applied and counted exactly like the first ten, no threshold."""
         for i in range(11):
             routed = _routed_knowledge("skill:s", f"lrn-cc{i:06d}", f"fact{i}")
             _write_routed(env.ledger, routed)
@@ -369,9 +433,11 @@ class TestCountCorrectness:
         (item,) = _list_json(capsys, "--surface-fill")
         fill = item["surface_fill"]["skill-md"]
         assert fill["entries"] == 11
-        assert fill["over_cap"] is True
 
-    def test_over_cap_by_word_count(self, env, capsys):
+    def test_long_word_count_carries_no_threshold(self, env, capsys):
+        """U-cap §6.1: a section well past the old 150-word threshold is
+        just a bigger number now — no `over_cap`/`cap_reason` key exists
+        to trip."""
         long_fact = " ".join(["word"] * 200)
         routed = _routed_knowledge("skill:s", "lrn-dd000001", long_fact)
         _write_routed(env.ledger, routed)
@@ -381,18 +447,44 @@ class TestCountCorrectness:
 
         (item,) = _list_json(capsys, "--surface-fill")
         fill = item["surface_fill"]["skill-md"]
-        assert fill["entries"] == 1  # under the entries cap
+        assert fill["entries"] == 1
         assert fill["words"] > 150
-        assert fill["over_cap"] is True
+        assert "over_cap" not in fill
+        assert "cap_reason" not in fill
 
-    def test_effective_caps_are_the_compiler_defaults(self, env, capsys):
+    def test_no_cap_fields_anywhere_in_the_shape(self, env, capsys):
+        """T9.1: the shape carries `load_class`/`file_words`/
+        `file_tokens_est`/`managed_share`, and none of the retired cap
+        fields."""
         rec = make_behavior(scope="skill:s", record_id="lrn-aa000001", created_at=days_ago(1))
         create_record(env.ledger, rec)
 
         (item,) = _list_json(capsys, "--surface-fill")
         fill = item["surface_fill"]["skill-md"]
-        assert fill["entries_cap"] == 10
-        assert fill["words_cap"] == 150
+        for key in ("load_class", "file_words", "file_tokens_est", "managed_share"):
+            assert key in fill
+        for key in ("entries_cap", "words_cap", "over_cap", "cap_reason"):
+            assert key not in fill
+
+    def test_t9_2_load_class_mapping(self, env, capsys):
+        """T9.1's `load_class` field is `"unconditional"` for `claude-md`
+        (Class A) and `"conditional"` for `skill-md` (Class B) — U-cap
+        §3.1's two load classes."""
+        rec = make_behavior(scope="skill:s", record_id="lrn-aa000001", created_at=days_ago(1))
+        create_record(env.ledger, rec)
+
+        (item,) = _list_json(capsys, "--surface-fill")
+        assert item["surface_fill"]["claude-md"]["load_class"] == "unconditional"
+        assert item["surface_fill"]["skill-md"]["load_class"] == "conditional"
+
+    def test_t9_6_probed_destinations_constant_renamed(self):
+        """T9.6: `SURFACE_FILL_PROBED_DESTINATIONS` replaces the retired
+        `SURFACE_FILL_CAPPED_DESTINATIONS` name; the value (the two COMPILE-
+        probed destinations) is unchanged."""
+        assert verbs.SURFACE_FILL_PROBED_DESTINATIONS == ("skill-md", "claude-md")
+        assert not hasattr(verbs, "SURFACE_FILL_CAPPED_DESTINATIONS")
+        assert "SURFACE_FILL_PROBED_DESTINATIONS" in verbs.__all__
+        assert "SURFACE_FILL_CAPPED_DESTINATIONS" not in verbs.__all__
 
 
 # --------------------------------------------------------------- memoization
@@ -417,7 +509,38 @@ class TestMemoization:
 
         items = _list_json(capsys, "--surface-fill")
         assert len(items) == 3
-        # 3 pending records x 2 capped destinations, but skill-md and
+        # 3 pending records x 2 probed destinations, but skill-md and
         # claude-md both resolve to the SAME two targets across all three
         # (one skill bucket, one skills-root host) -> exactly 2 compiles.
         assert len(calls) == 2
+
+    def test_reference_verdict_computes_once_across_records(
+        self, env, capsys, monkeypatch
+    ):
+        """T9.4: the `reference` read-rate verdict is memoized in the SAME
+        cache dict, under a key that cannot collide with a target path —
+        N records sharing one home compute it exactly once, and the
+        cofire memo still works (both keys coexist without collision)."""
+        from self_learn import report as report_mod
+
+        calls = []
+        real_verdict = report_mod.reference_read_verdict
+
+        def counting(*args, **kwargs):
+            calls.append(1)
+            return real_verdict(*args, **kwargs)
+
+        monkeypatch.setattr(report_mod, "reference_read_verdict", counting)
+
+        for i in range(2):
+            rec = make_behavior(
+                scope="skill:s", record_id=f"lrn-ff00000{i}", created_at=days_ago(i)
+            )
+            create_record(env.ledger, rec)
+
+        items = _list_json(capsys, "--surface-fill")
+        assert len(items) == 2
+        assert len(calls) == 1
+        for item in items:
+            assert "reference" in item["surface_fill"]
+            assert "claude-md" in item["surface_fill"]

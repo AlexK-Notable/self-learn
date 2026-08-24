@@ -174,7 +174,7 @@
     {% if model.why.budgets %}
     <ul class="surface-budgets">
       {% for budget in model.why.budgets %}
-      <li class="surface-budget surface-budget-{{ budget.destination }}{% if budget.over_cap %} surface-budget-over-cap{% endif %}">{{ budget.text }}</li>
+      <li class="surface-budget surface-budget-{{ budget.destination }}{% if budget.flagged %} surface-budget-flagged{% endif %}">{{ budget.text }}</li>
       {% endfor %}
     </ul>
     {% endif %}

@@ -364,18 +364,19 @@ class TestObligation4LocalPrivacyAndScopeGuard:
 
 
 class TestObligation8RulesTopicCount:
-    """U-glob §9.0/§13 B-3, T9: `rules_topic_count` stays a raw datum
-    (still asserted, never a trigger); the old `count > 5` /
-    `cap_reason == "rules-topics"` escalation is REPLACED by the
-    co-firing datum (`rules_cofire`) / `cap_reason == "rules-cofire"`.
-    The two existing assertions here are updated, not deleted (§9's own
-    instruction), which is why this class keeps its Obligation-8 name."""
+    """U-glob §9.0/§13 B-3, T9, amended by U-cap §6.1/§4.6: `rules_topic_count`
+    stays a raw datum (still asserted, never a trigger); the old `count > 5` /
+    `cap_reason == "rules-topics"` escalation was already replaced by the
+    co-firing datum (`rules_cofire`); U-cap now retires the `over_cap`/
+    `cap_reason` OR-in entirely and replaces it with the report-only
+    `cofire_crowded` field (T7.4). The two existing assertions here are
+    updated, not deleted (§9's own instruction), which is why this class
+    keeps its Obligation-8 name."""
 
-    def test_six_disjoint_topics_do_not_set_over_cap(self, tmp_path, env):
+    def test_six_disjoint_topics_do_not_set_cofire_crowded(self, tmp_path, env):
         """U-glob T9 case 1: a COUNT is not co-firing — six topics whose
-        globs can never match the same file must NOT trip over_cap, even
-        though `rules_topic_count == 6`. This is the defect §1/§2.3
-        exist to fix: today's build reports over_cap here."""
+        globs can never match the same file must NOT trip `cofire_crowded`,
+        even though `rules_topic_count == 6`."""
         target = tmp_path / "dot-claude" / "CLAUDE.md"
         target.parent.mkdir()
         target.write_text("# user conduct\n", encoding="utf-8")
@@ -389,13 +390,13 @@ class TestObligation8RulesTopicCount:
         entry = result["claude-md"]
         assert entry["rules_topic_count"] == 6
         assert entry["rules_cofire"]["max_fanin"] == 1
-        assert entry["over_cap"] is False
-        assert entry.get("cap_reason") != "rules-topics"
+        assert entry["cofire_crowded"] is False
 
-    def test_six_intersecting_topics_set_over_cap_rules_cofire(self, tmp_path, env):
+    def test_six_intersecting_topics_set_cofire_crowded(self, tmp_path, env):
         """U-glob T9 case 2: six topics that ALL intersect (identical
         `**/*.md` globs — trivially "may co-fire" with each other) DOES
-        trip over_cap, with the new reason."""
+        trip `cofire_crowded` — and the retired `over_cap`/`cap_reason`
+        keys are gone entirely (T7.4)."""
         target = tmp_path / "dot-claude" / "CLAUDE.md"
         target.parent.mkdir()
         target.write_text("# user conduct\n", encoding="utf-8")
@@ -409,48 +410,11 @@ class TestObligation8RulesTopicCount:
         entry = result["claude-md"]
         assert entry["rules_topic_count"] == 6
         assert entry["rules_cofire"]["max_fanin"] == 6
-        assert entry["over_cap"] is True
-        assert entry["cap_reason"] == "rules-cofire"
-
-    def test_entry_cap_over_cap_survives_orred_with_cofire(self, tmp_path, env):
-        """U-glob T9 case 3: the `over_cap` OR-ing (`verbs.py`'s
-        entries/word-cap escalation) is unaffected by this unit — a
-        target already `over_cap` from routed-entry count keeps
-        `over_cap` True regardless of co-firing, and `cap_reason` is
-        ONLY set when the co-firing signal ALSO fires."""
-        target = tmp_path / "dot-claude" / "CLAUDE.md"
-        target.parent.mkdir()
-        target.write_text("# user conduct\n", encoding="utf-8")
-        # blow past DEFAULT_MAX_ENTRIES (10) on the PLAIN claude-md
-        # target — independent of any rules topic.
-        for i in range(11):
-            rid = f"lrn-e{i:07d}"
-            seed_user_record(env, record_id=rid)
-            verbs.route(
-                env.home, rid, dest="claude-md", user_claude_md=target,
-                chezmoi_bin="chezmoi-definitely-absent",
-            )
-        # no rules/ directory at all yet — over_cap must already be True
-        # from the entries cap alone, with no cap_reason.
-        result = verbs.surface_fill(env.home, env.home / "user", "user", user_claude_md=target)
-        entry = result["claude-md"]
-        assert entry["over_cap"] is True
+        assert entry["cofire_crowded"] is True
+        assert "over_cap" not in entry
         assert "cap_reason" not in entry
 
-        # now ALSO trip the co-firing signal — cap_reason appears,
-        # over_cap stays True (never flips back to False).
-        rules_dir = target.parent / "rules"
-        rules_dir.mkdir()
-        for i in range(6):
-            (rules_dir / f"topic{i}.md").write_text(
-                "---\npaths:\n  - '**/*.md'\n---\n", encoding="utf-8"
-            )
-        result2 = verbs.surface_fill(env.home, env.home / "user", "user", user_claude_md=target)
-        entry2 = result2["claude-md"]
-        assert entry2["over_cap"] is True
-        assert entry2["cap_reason"] == "rules-cofire"
-
-    def test_five_or_fewer_leaves_per_file_over_cap_untouched(self, tmp_path, env):
+    def test_five_or_fewer_leaves_cofire_crowded_untouched(self, tmp_path, env):
         target = tmp_path / "dot-claude" / "CLAUDE.md"
         target.parent.mkdir()
         target.write_text("# user conduct\n", encoding="utf-8")
@@ -460,7 +424,7 @@ class TestObligation8RulesTopicCount:
             (rules_dir / f"topic{i}.md").write_text("x", encoding="utf-8")
         result = verbs.surface_fill(env.home, env.home / "user", "user", user_claude_md=target)
         assert result["claude-md"]["rules_topic_count"] == 5
-        assert result["claude-md"]["over_cap"] is False
+        assert result["claude-md"]["cofire_crowded"] is False
 
 
 # =====================================================================
@@ -1544,13 +1508,14 @@ class TestObligation26ChezmoiManagedRefusal:
 
 
 # =====================================================================
-# Obligation 27 — A14: caps (word_count/over_cap) are unaffected by
-# frontmatter, on a file that provably HAS it.
+# Obligation 27 — A14: counts (word_count) are unaffected by frontmatter,
+# on a file that provably HAS it. (U-cap: `over_cap` retired — the parity
+# check now compares `word_count` alone.)
 # =====================================================================
 
 
 class TestObligation27CapsUnaffectedByFrontmatter:
-    def test_word_count_and_over_cap_equal_with_and_without_frontmatter_A14(self, env):
+    def test_word_count_equal_with_and_without_frontmatter_A14(self, env):
         (env.host / "a").mkdir()
         (env.host / "a" / "f.txt").write_text("x", encoding="utf-8")
 
@@ -1576,7 +1541,6 @@ class TestObligation27CapsUnaffectedByFrontmatter:
         pathed_section = pathed_result.compile_result
         unpathed_section = unpathed_result.compile_result
         assert pathed_section.word_count == unpathed_section.word_count
-        assert pathed_section.over_cap == unpathed_section.over_cap
 
         # And: the pathed file's paths: really IS on disk — otherwise this
         # criterion is satisfied by a build that emits nothing at all.

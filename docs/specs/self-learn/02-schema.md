@@ -501,26 +501,35 @@ to be compiled this way, and a rule that names its firing condition is one
 the model can recognize *in the moment* (Devin's trigger-description
 precedent, E-20; free discipline, enforced by the compiler).
 
-**Overflow rule (mechanical, not aspirational):** a managed section caps at
-**10 entries or ~150 words** (per-target override allowed). At the cap the
-compiler still applies the new entry but flags the section, and the next
-review session opens with a graduation card: move the oldest knowledge
-entries into `references/` or weave them into the authored prose.
-Loaded-surface budget is the scarce resource (E-6: ≥60% of preloaded skill
-content is attention dilution) — the cap is what keeps P2's native loading
-from quietly becoming the preloading it replaced.
-*(Cross-reference added 2026-07-18 — UX-survey item 4; 09 §11 Y-20 / 08 §1
-`surface_fill` / 10 §3 U17:)* this cap — and how close a candidate section
-already sits to it — is **surfaced at the routing decision** by the review
-surface, in plain words ("this section already holds 8 of its 10 entries"),
-computed at render from the compiler's own count via the opt-in
-`list --json --surface-fill` field (only the capped destinations
-`skill-md`/`claude-md` carry it; `reference`, being this overflow sink,
-is cap-free and shows a static "no cap" note instead). The over-cap WARNING and graduation-opener flow named above
-stay the authoritative enforcement (an over-cap route still applies + flags);
-Y-20 only makes the fill **visible before** that boundary so the
-narrowest-surface choice (routing-doctrine §3) is made with the cost in view
-rather than discovered at apply-time rejection.
+**Budget reporting (U-cap, retiring the old Overflow rule):** the compiler
+counts entries and words inside a managed section
+(`SectionResult.entry_count` / `.word_count`) and applies every entry
+**unconditionally** — there is no threshold, no cap, and nothing here is
+ever refused, dropped, or gated. Loaded-surface budget is still the scarce
+resource (E-6: ≥60% of preloaded skill content is attention dilution), but
+a mechanical cap converted a *measured* cost into an *unmeasured* one the
+moment it pushed content onto `reference` (risk transfer into the region
+where failure is silent) — so the counts feed a **report-only context
+budget** instead: `report --json .context_budget` carries four signals
+(`budget`, `crowding`, `composition`, `growth`) plus two conditional
+arrival verdicts (`conditional.reference`, `conditional.rules_cofire`),
+every one of them `severity: "informational"`. No signal refuses a route,
+blocks a verb, or changes an exit code. The review flow's response to a
+flagged signal is §6.4's **budget card** — never a graduation-opener
+forced by a cap.
+*(Cross-reference added 2026-07-18 — UX-survey item 4, amended by U-cap
+§6.3; 09 §11 Y-20 / 08 §1 `surface_fill` / 10 §3 U17:)* a candidate
+section's fill — entries, words, its load class, and (for `claude-md`)
+the whole file's word count and managed share — is **surfaced at the
+routing decision** by the review surface, computed at render from the
+compiler's own count via the opt-in `list --json --surface-fill` field
+(the probed destinations `skill-md`/`claude-md` carry it; `reference`
+carries a **read-rate verdict** instead — sourced from
+`report.reference_read_verdict`, never a compile probe — stating whether
+it is currently a *safe overflow target*, per §6.4's reference-safety
+constraint). Y-20 makes the fill **visible at the routing decision** so
+the narrowest-surface choice (routing-doctrine §3) is made with the cost
+in view, not to enforce anything — there is nothing left to enforce.
 Moving a lesson from the managed section into the authored prose is a human
 edit, recorded with **`self-learn graduate <id>`** (or the equivalent review
 card) — which marks the record `superseded_by: canon` and lets the compiler

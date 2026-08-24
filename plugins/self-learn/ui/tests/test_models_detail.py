@@ -17,7 +17,6 @@ from self_learn_ui.models import (
     NO_ANALYSIS_MESSAGE,
     PARAMETER_FREE_DESTINATIONS,
     PREVIEW_HONESTY_CAPTION,
-    REFERENCE_NO_CAP_LINE,
     build_detail_model,
     correct_destination,
     destination_label,
@@ -316,148 +315,171 @@ class TestWhyRegion:
         assert model.why.rules_paths == ()
 
 
+#: A no-op claude-md fill fragment (§6.3 shape) for tests that just need
+#: SOME valid claude-md datum and don't care about its numbers.
+_QUIET_CLAUDE_MD_FILL = {
+    "entries": 0, "words": 0, "load_class": "unconditional",
+    "file_words": None, "file_tokens_est": None, "managed_share": None,
+    "rules_topic_count": 0,
+    "rules_cofire": {"topics": [], "unpathed": [], "pairs": [], "max_fanin": 0},
+    "cofire_crowded": False,
+}
+
+_QUIET_REFERENCE_FILL = {
+    "read_rate_state": "not-instrumented", "safe_overflow": None,
+    "why": "read rate UNKNOWN.", "targets_zero_read": None,
+    "targets_total": 0, "reads_30d_total": None,
+}
+
+
 class TestSurfaceBudgets:
-    """09 §11 Y-20 / 08 §1 `surface_fill` -> `model.why.budgets`: the Why
-    region's single budget surface. Template-truth: the sentence is built
-    once in models.py off the CLI's datum, never re-derived per render."""
+    """09 §11 Y-20 / 08 §1 `surface_fill` -> `model.why.budgets`, rewritten
+    by U-cap §6.6: there is no cap, so every row is a CLI-datum row —
+    including `reference`, now sourced from the read-rate verdict rather
+    than a static line. Template-truth: the sentence is built once in
+    models.py off the CLI's datum, never re-derived per render."""
 
-    def test_no_surface_fill_key_yields_only_the_static_reference_line(self):
+    def test_t12_6_reference_no_cap_line_is_gone(self):
+        assert not hasattr(models_module, "REFERENCE_NO_CAP_LINE")
+
+    def test_no_surface_fill_key_yields_no_rows(self):
         # skill scope, no `surface_fill` in the item at all (as if the
-        # caller forgot --surface-fill, or the CLI omitted every capped
-        # key) -> skill-md/claude-md rows are simply absent; reference
-        # is unconditional for a scope where it's a valid candidate.
+        # caller forgot --surface-fill, or the CLI omitted every key) ->
+        # EVERY row is simply absent now — U-cap retires the static
+        # reference line, so there is nothing left to render unconditionally.
         model = _build(_item(), scope="skill")
-        assert [b.destination for b in model.why.budgets] == ["reference"]
-        assert model.why.budgets[0].text == REFERENCE_NO_CAP_LINE
+        assert model.why.budgets == ()
 
-    def test_both_capped_destinations_render_their_datum(self):
+    def test_all_scope_valid_destinations_render_their_datum(self):
         fill = {
             "skill-md": {
-                "entries": 8, "entries_cap": 10, "words": 10, "words_cap": 150,
-                "over_cap": False,
+                "entries": 8, "words": 40, "load_class": "conditional",
+                "file_words": None, "file_tokens_est": None,
+                "managed_share": None,
             },
             "claude-md": {
-                "entries": 0, "entries_cap": 10, "words": 0, "words_cap": 150,
-                "over_cap": False,
+                "entries": 0, "words": 0, "load_class": "unconditional",
+                "file_words": 200, "file_tokens_est": 266,
+                "managed_share": 0.0, "rules_topic_count": 0,
+                "rules_cofire": {
+                    "topics": [], "unpathed": [], "pairs": [], "max_fanin": 0,
+                },
+                "cofire_crowded": False,
+            },
+            "reference": {
+                "read_rate_state": "ok", "safe_overflow": True,
+                "why": "every known reference target has been read at "
+                "least once.",
+                "targets_zero_read": 0, "targets_total": 2,
+                "reads_30d_total": 5,
             },
         }
         model = _build(_item(surface_fill=fill), scope="skill")
         by_dest = {b.destination: b for b in model.why.budgets}
         assert set(by_dest) == {"skill-md", "claude-md", "reference"}
-        # the spec's own illustrative sentence, verbatim (09 §11 Y-20 / §2.3)
-        # — 8 of 10 is near the cap (2 entries of headroom), so it earns
-        # the nearness clause:
+        # skill-md is Class B (conditional) — no cap, so no file/share
+        # datum at all, and the on-invoke phrasing:
         assert by_dest["skill-md"].text == (
-            "this skill-md section already holds 8 of its 10 entries — a "
-            "route here lands near the cap"
+            "this skill-md section holds 8 entries / 40 words — on-invoke "
+            "content, not always-on"
         )
-        # 0 of 10 is the EMPTIEST possible surface — the best route
-        # target, not a "near the cap" one (blind-review F1: the clause
-        # must be gated on actual nearness, never appended
-        # unconditionally on the entries branch) — bare fill fact only:
+        # claude-md is Class A (unconditional) — the file/share datum is
+        # part of the sentence:
         assert by_dest["claude-md"].text == (
-            "this claude-md section already holds 0 of its 10 entries"
+            "this claude-md section holds 0 entries / 0 words — 0% of a "
+            "200-word always-on file"
         )
-        assert by_dest["reference"].text == REFERENCE_NO_CAP_LINE
+        assert by_dest["reference"].text == (
+            "every reference target has been read at least once "
+            "(5 reads/30d)."
+        )
+
+    def test_reference_missing_key_renders_no_row(self):
+        # T12.3: the `reference` key ABSENT (a verdict failure, F5) ->
+        # the row is simply omitted, never a placeholder.
+        fill = {"claude-md": dict(_QUIET_CLAUDE_MD_FILL)}
+        model = _build(_item(surface_fill=fill), scope="skill")
+        destinations = [b.destination for b in model.why.budgets]
+        assert "reference" not in destinations
 
     @pytest.mark.parametrize(
-        "entries, expect_clause",
+        "state, expect_word",
         [
-            (0, False),
-            (3, False),
-            (8, True),
-            (9, True),
-            (10, True),
+            ("not-instrumented", "UNKNOWN"),
+            ("none-enumerable", "UNKNOWN"),
+            ("no-reads-observed", "never"),
+            ("partly-cold", "never"),
         ],
     )
-    def test_nearness_clause_gated_on_actual_proximity(self, entries, expect_clause):
-        """Blind-review F1: an empty or lightly-loaded surface (0/10,
-        3/10 — 7+ entries of headroom) must render the bare fill fact
-        ALONE, never "lands near the cap" — that phrasing on an empty
-        surface is not just uninformative, it inverts the feature's
-        point (the emptiest surface is the BEST route target). Only
-        within _NEAR_ENTRIES_HEADROOM (8/10, 9/10, 10/10 here) does the
-        clause earn its place."""
+    def test_reference_row_text_by_state(self, state, expect_word):
         fill = {
-            "skill-md": {
-                "entries": entries, "entries_cap": 10, "words": 5,
-                "words_cap": 150, "over_cap": False,
+            "reference": {
+                "read_rate_state": state,
+                "safe_overflow": None if "instrument" in state or "enumerable" in state else False,
+                "why": "x", "targets_zero_read": 1, "targets_total": 2,
+                "reads_30d_total": 0,
             },
         }
         model = _build(_item(surface_fill=fill), scope="skill")
         by_dest = {b.destination: b for b in model.why.budgets}
-        text = by_dest["skill-md"].text
-        assert text.startswith(
-            f"this skill-md section already holds {entries} of its 10 entries"
-        )
-        if expect_clause:
-            assert "lands near the cap" in text
-        else:
-            assert text == (
-                f"this skill-md section already holds {entries} of its 10 entries"
-            )
-
-    def test_words_binding_constraint_gets_the_word_cap_phrasing(self):
-        fill = {
-            "skill-md": {
-                "entries": 2, "entries_cap": 10, "words": 140, "words_cap": 150,
-                "over_cap": False,
-            },
-        }
-        model = _build(_item(surface_fill=fill), scope="skill")
-        by_dest = {b.destination: b for b in model.why.budgets}
-        assert "near its word budget" in by_dest["skill-md"].text
-        assert "lands near the cap" not in by_dest["skill-md"].text
+        assert expect_word in by_dest["reference"].text
 
     def test_missing_key_renders_nothing_for_that_destination(self):
         # skill-md omitted (as a VerbError leg would leave it, F5) —
         # no row at all for it, never a zero, never a placeholder.
-        fill = {
-            "claude-md": {
-                "entries": 3, "entries_cap": 10, "words": 12, "words_cap": 150,
-                "over_cap": False,
-            },
-        }
+        fill = {"claude-md": dict(_QUIET_CLAUDE_MD_FILL)}
         model = _build(_item(surface_fill=fill), scope="skill")
         destinations = [b.destination for b in model.why.budgets]
         assert "skill-md" not in destinations
         assert "claude-md" in destinations
-        assert "reference" in destinations
+        assert "reference" not in destinations  # T12.3: absent key -> no row
 
-    def test_over_cap_flag_passes_through_without_extra_markup(self):
-        # 09 §11 Y-20(5): the fill fact only — the escalation itself is
-        # the EXISTING 02 §4 warning (surfaced elsewhere, at route time),
-        # never duplicated into this sentence.
+    def test_flagged_flag_passes_through_without_extra_markup(self):
+        # U-cap §6.6: `flagged` is a NEUTRAL EMPHASIS cue — there is no
+        # cap, so nothing here is a warning; the fill fact only, no
+        # escalation text is ever appended into the sentence.
         fill = {
-            "skill-md": {
-                "entries": 11, "entries_cap": 10, "words": 33, "words_cap": 150,
-                "over_cap": True,
+            "claude-md": {
+                "entries": 3, "words": 33, "load_class": "unconditional",
+                "file_words": None, "file_tokens_est": None,
+                "managed_share": None, "rules_topic_count": 6,
+                "rules_cofire": {
+                    "topics": ["a", "b", "c", "d", "e", "f"], "unpathed": [],
+                    "pairs": [["a", "b"]], "max_fanin": 6,
+                },
+                "cofire_crowded": True,
             },
         }
         model = _build(_item(surface_fill=fill), scope="skill")
         by_dest = {b.destination: b for b in model.why.budgets}
-        assert by_dest["skill-md"].over_cap is True
-        assert "holds 11 of its 10 entries" in by_dest["skill-md"].text
-        assert "WARNING" not in by_dest["skill-md"].text
+        assert by_dest["claude-md"].flagged is True
+        assert "holds 3 entries / 33 words" in by_dest["claude-md"].text
+        assert "WARNING" not in by_dest["claude-md"].text
+
+    def test_flagged_defaults_false(self):
+        fill = {"skill-md": {
+            "entries": 1, "words": 3, "load_class": "conditional",
+            "file_words": None, "file_tokens_est": None, "managed_share": None,
+        }}
+        model = _build(_item(surface_fill=fill), scope="skill")
+        by_dest = {b.destination: b for b in model.why.budgets}
+        assert by_dest["skill-md"].flagged is False
 
     def test_user_scope_never_offers_reference(self):
         # destinations_for_scope("user") == ("claude-md",) — reference is
-        # not a scope-valid candidate at all, so no static line either.
+        # not a scope-valid candidate at all, regardless of the key's
+        # presence in the fill.
         fill = {
-            "claude-md": {
-                "entries": 0, "entries_cap": 10, "words": 0, "words_cap": 150,
-                "over_cap": False,
-            },
+            "claude-md": dict(_QUIET_CLAUDE_MD_FILL),
+            "reference": dict(_QUIET_REFERENCE_FILL),
         }
         model = _build(_item(surface_fill=fill), scope="user")
         assert [b.destination for b in model.why.budgets] == ["claude-md"]
 
     def test_project_scope_never_offers_skill_md(self):
         fill = {
-            "claude-md": {
-                "entries": 1, "entries_cap": 10, "words": 4, "words_cap": 150,
-                "over_cap": False,
-            },
+            "claude-md": dict(_QUIET_CLAUDE_MD_FILL),
+            "reference": dict(_QUIET_REFERENCE_FILL),
         }
         model = _build(_item(surface_fill=fill), scope="project")
         destinations = [b.destination for b in model.why.budgets]

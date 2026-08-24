@@ -88,8 +88,6 @@ from .chezmoi import (
 )
 from .compilers import (
     BEGIN_MARKER,
-    DEFAULT_MAX_ENTRIES,
-    DEFAULT_MAX_WORDS,
     CompileError,
     PathsResult,
     SectionResult,
@@ -146,7 +144,7 @@ __all__ = [
     "NO_PROPOSAL_MARKER",
     "NOTHING_TO_COMMIT",
     "ROUTING_BY_VALUES",
-    "SURFACE_FILL_CAPPED_DESTINATIONS",
+    "SURFACE_FILL_PROBED_DESTINATIONS",
     "CommitDriftResult",
     "DirtyTargetError",
     "NoProposalError",
@@ -204,13 +202,16 @@ POINTER_LABELS = {
 #: either way — no guard fires without a human edit.*
 ONE_MOTION_UNROUTABLE = frozenset({"new-skill", "hook"})
 
-#: 09 §11 Y-20 / 08 §1 `surface_fill` field: the ONLY two destinations a
-#: managed-section fill probe ever covers. ``reference`` is never in this
-#: set — it is the cap-free overflow sink (``target=None``,
-#: ``compile_reference`` has no cap, no ``_compile_set`` managed-section
-#: branch exists for it) and carries no "fill against a cap" to report;
-#: no builder may invent a reference probe (blind-review F1).
-SURFACE_FILL_CAPPED_DESTINATIONS: tuple[str, ...] = ("skill-md", "claude-md")
+#: 09 §11 Y-20 / 08 §1 `surface_fill` field (renamed by U-cap §6.3 — the
+#: word "capped" is false after this unit; there is nothing to cap). The ONLY two
+#: destinations a managed-section COMPILE PROBE ever covers. ``reference``
+#: is never compile-probed — feeding ``LEARNINGS.md`` to
+#: ``compile_managed_text`` would bootstrap a marker pair that does not
+#: belong there (08 §1 F1; that prohibition survives verbatim). U-cap adds
+#: a `reference` KEY to the payload (§6.3) sourced from
+#: `report.reference_read_verdict`, never from a compile probe — no
+#: builder may invent a reference compile probe.
+SURFACE_FILL_PROBED_DESTINATIONS: tuple[str, ...] = ("skill-md", "claude-md")
 
 #: FW-64: the closed value set for ``routing.by`` — the actor that CHOSE
 #: THE DESTINATION. U-reach shipped v1 as an unenumerated two-value
@@ -291,17 +292,80 @@ class VerbResult:
     push: gitops.PushResult | None = None  # None = --no-push
     compile_result: object | None = None  # SectionResult | ReferenceResult | UserScopeResult
 
-    def over_cap_note(self) -> str | None:
-        """02 §4: the compiler flags-on-exceed; callers MUST surface it —
-        the next review session opens with a graduation card."""
+    def budget_note(self) -> str | None:
+        """U-cap §6.2: the post-route budget FACT — never imperative, never
+        the token 'WARNING'. `None` when there is no managed-section
+        compile result to describe (e.g. `defer`, `reject`, a `reference`
+        or `hook` route). Printed to stderr at the same two call sites the
+        predecessor of this method used (`cli.py`, `teach.py`)."""
         cr = self.compile_result
-        if cr is not None and getattr(cr, "over_cap", False):
-            return (
-                f"WARNING: managed section over cap ({getattr(cr, 'cap_reason', '?')})"
-                " — graduate the oldest entries; next review opens with a"
-                " graduation card (02 §4)"
-            )
-        return None
+        if cr is None:
+            return None
+        section = getattr(cr, "section", cr)  # UserScopeResult/NewSkillApplyResult wrap one
+        entry_count = getattr(section, "entry_count", None)
+        word_count = getattr(section, "word_count", None)
+        if entry_count is None or word_count is None:
+            return None
+
+        from .report import TOKENS_PER_WORD_EST
+
+        dest = self.destination or "target"
+        parts = [
+            f"budget: {dest} section now holds {entry_count} entries / "
+            f"{word_count} words"
+        ]
+        file_words: int | None = None
+        target_str: str | None = None
+        target = self.target
+        if target is not None:
+            try:
+                file_words = len(target.read_text(encoding="utf-8").split())
+            # NIT N5 (u-cap code gate r1): a whole-file read can fail
+            # either way -- an unreadable file (OSError) or one that
+            # exists but is not valid UTF-8 (UnicodeDecodeError). T11.3
+            # names this the same "degrades to the managed half alone"
+            # leg either way; the note must not raise on the second form.
+            except (OSError, UnicodeDecodeError):
+                file_words = None
+            # NIT N4: sec 6.2's own example prints the tilde form
+            # (`~/.claude/CLAUDE.md`), never the expanded absolute path
+            # (the note is pasted into public issues, same reasoning as
+            # the budget row `key` in report.py). Falls back to the
+            # absolute path for a project-scope target, which is never
+            # under $HOME. Computed inside the SAME `target is not None`
+            # guard as `file_words` above (pyright cleanup, code gate
+            # r1) -- `target_str` is only ever consulted below when
+            # `file_words is not None`, which can only be true when this
+            # branch ran.
+            try:
+                target_str = "~/" + str(target.relative_to(Path.home()))
+            except ValueError:
+                target_str = str(target)
+        if file_words is not None:
+            tokens_est = round(file_words * TOKENS_PER_WORD_EST)
+            parts.append(f"{target_str} is {file_words} words (~{tokens_est} tokens est)")
+            if file_words > 0:
+                share = round(100 * word_count / file_words)
+                parts.append(f"managed share {share}%")
+        else:
+            parts.append("surface size unavailable")
+
+        if self.destination == "new-skill":
+            scaffolded = bool(getattr(cr, "scaffolded", False))
+            desc_words = getattr(cr, "description_words", None)
+            if scaffolded and desc_words is not None:
+                desc_tokens = round(desc_words * TOKENS_PER_WORD_EST)
+                parts.append(
+                    f"new-skill scaffolded: +{desc_words} always-on description "
+                    f"words (~{desc_tokens} tokens est)"
+                )
+            else:
+                parts.append(
+                    "new-skill: +0 always-on words (existing description unchanged)"
+                )
+
+        return " · ".join(parts)
+
     sentinel_owned: bool = False
     diff: str | None = None  # route_direct: staged diff · hook route: the
     #   ENTIRE generated script (08 §8.1 approval flow — never a summary)
@@ -1977,11 +2041,12 @@ def surface_fill(
     cache: dict | None = None,
 ) -> dict[str, dict]:
     """09 §11 Y-20 / 08 §1 `surface_fill` field: a READ-ONLY loaded-surface
-    fill probe over the two CAPPED managed-section destinations
-    (:data:`SURFACE_FILL_CAPPED_DESTINATIONS`) — ``reference`` is never
-    probed (F1).
+    fill probe over the two PROBED managed-section destinations
+    (:data:`SURFACE_FILL_PROBED_DESTINATIONS`) — ``reference`` is never
+    COMPILE-probed (F1); U-cap §6.3 adds it as a separate read-rate KEY,
+    sourced from `report.reference_read_verdict`, never from a compile.
 
-    For each capped destination: resolve the target through the existing
+    For each probed destination: resolve the target through the existing
     :func:`_resolve_target` in E-17 read-only mode (``check_dirty=False``
     — no dirty-abort, no host-mutation preflight; the SAME scope rules the
     `o`-cycle honors, no second scope definition). ANY :class:`VerbError`
@@ -1998,8 +2063,8 @@ def surface_fill(
     to ``status == "routed"`` internally (``_eligible``), so a still-
     pending record — including the one this probe is being computed for
     — is never counted (no builder-side pending-exclusion filter needed,
-    F8). Caps are the compiler's effective defaults — there is no
-    per-target override mechanism yet (F6).
+    F8). Nothing here is capped, and there is no per-target override
+    mechanism (U-cap).
 
     ``user_claude_md`` overrides the user-scope target the same way
     :func:`route` accepts it (defaults to :data:`DEFAULT_USER_CLAUDE_MD`,
@@ -2007,15 +2072,21 @@ def surface_fill(
     report fill for; test callers override it, same idiom as every other
     ``_resolve_target`` call site).
 
-    ``cache`` memoizes one compiled :class:`~self_learn.compilers.SectionResult`
+    ``cache`` memoizes one ``(SectionResult, whole_file_word_count)`` pair
     per resolved target path — pass the SAME dict across every record in
     one CLI invocation so records sharing a target (e.g. every record in
     one skill bucket, or every user-scoped record) pay for the compile
-    exactly once (08 §1 (e))."""
+    exactly once (08 §1 (e)). The `reference` read-rate verdict (U-cap
+    §6.3) is memoized in the SAME dict under the key
+    ``("refread", home.resolve())`` — a shape that cannot collide with a
+    target path, mirroring the existing ``("cofire", rules_dir.resolve())``
+    key — so it too is computed once per CLI invocation."""
     if cache is None:
         cache = {}
+    from .report import TOKENS_PER_WORD_EST  # deferred: same-family reuse
+
     result: dict[str, dict] = {}
-    for destination in SURFACE_FILL_CAPPED_DESTINATIONS:
+    for destination in SURFACE_FILL_PROBED_DESTINATIONS:
         try:
             spec = _resolve_target(
                 home,
@@ -2042,16 +2113,24 @@ def surface_fill(
                 # that would blank the Detail page's entire proposal/why
                 # region for every OTHER record sharing that target too.
                 text = target.read_text(encoding="utf-8") if target.is_file() else ""
-                cache[key] = compile_managed_text(text, _compile_set(home, spec))
+                section = compile_managed_text(text, _compile_set(home, spec))
+                cache[key] = (section, len(text.split()))
         except (VerbError, CompileError, OSError, UnicodeDecodeError):
             continue
-        section = cache[key]
+        section, file_words = cache[key]
+        file_tokens_est = round(file_words * TOKENS_PER_WORD_EST)
+        managed_share = (
+            round(section.word_count / file_words, 3) if file_words else None
+        )
         entry = {
             "entries": section.entry_count,
-            "entries_cap": DEFAULT_MAX_ENTRIES,
             "words": section.word_count,
-            "words_cap": DEFAULT_MAX_WORDS,
-            "over_cap": section.over_cap,
+            "load_class": (
+                "unconditional" if destination == "claude-md" else "conditional"
+            ),
+            "file_words": file_words,
+            "file_tokens_est": file_tokens_est,
+            "managed_share": managed_share,
         }
         if destination == "claude-md":
             # A2 §8/P-A9 + U-glob §5.3/§5.4: `spec` here is the PLAIN
@@ -2084,12 +2163,47 @@ def surface_fill(
                 cache[cofire_key] = _rules_cofire(rules_dir)
             cofire = cache[cofire_key] if cofire_key is not None else _rules_cofire(None)
             entry["rules_cofire"] = cofire
-            if cofire["max_fanin"] > 5:
-                # OR-ed with, never replacing, the per-file over_cap above
-                # (§8 pin: both signals feed the SAME WARNING path).
-                entry["over_cap"] = True
-                entry["cap_reason"] = "rules-cofire"
+            # U-cap §4.6/§6.1: the escalation is now its own report-only
+            # field, never an OR-in onto a cap that no longer exists.
+            # NIT N3 (code gate r1): this used to be its OWN constant
+            # (`_COFIRE_CROWDED_THRESHOLD`), duplicating report.py's
+            # `_COFIRE_MAX_FANIN_ADVISORY` -- same number (5), two names,
+            # a drift risk if only one were ever tuned. Deferred import,
+            # same-family reuse convention as `reference_read_verdict`
+            # a few lines below.
+            from .report import _COFIRE_MAX_FANIN_ADVISORY
+
+            entry["cofire_crowded"] = cofire["max_fanin"] > _COFIRE_MAX_FANIN_ADVISORY
         result[destination] = entry
+
+    # U-cap §6.3: the `reference` key — the ONE place this probe widens,
+    # and deliberately NOT a compile probe (08 §1 F1 stands verbatim).
+    try:
+        from .report import reference_read_verdict  # deferred: same-family reuse
+
+        refread_key = ("refread", home.resolve())
+        if refread_key not in cache:
+            cache[refread_key] = reference_read_verdict(
+                home, datetime.now(timezone.utc).date()
+            )
+        verdict = cache[refread_key]
+        result["reference"] = {
+            "read_rate_state": verdict["read_rate_state"],
+            "safe_overflow": verdict["safe_overflow"],
+            "why": verdict["why"],
+            "targets_zero_read": verdict["targets_zero_read"],
+            "targets_total": verdict["targets_total"],
+            # additive (beyond §6.3's minimal field list): the UI's "ok"
+            # state phrasing (§6.6) needs the read count; sourced straight
+            # from the verdict, never recomputed.
+            "reads_30d_total": verdict["reads_30d_total"],
+        }
+    except Exception:
+        # F5 posture, generalized: ANY failure computing the verdict omits
+        # the `reference` key entirely — never a zero, never a guess, and
+        # never a crash of the whole `list --json` call.
+        pass
+
     return result
 
 
@@ -2335,11 +2449,14 @@ def _apply_target(
 
     # surface-budget event (11 §4.3: compilers, inside verb flow) — the
     # attention-tax ledger. Spooled here, flushed by the calling verb.
+    # U-cap §6.1: the `overflow` payload key is DROPPED — nothing here can
+    # overflow any more; `spool_quiet` already omits `None` values, so passing
+    # nothing is the whole change. Historical events retain `overflow`;
+    # nothing in this unit reads it back.
     telemetry.spool_quiet(
         "surface-budget",
         target=spec.destination,
         words=getattr(compile_result, "word_count", None),
-        overflow=bool(getattr(compile_result, "over_cap", False)),
     )
     return compile_result, host_paths
 
@@ -2354,14 +2471,10 @@ class NewSkillApplyResult:
     scaffolded: bool  # plugin.json/SKILL.md/marketplace entry created now
     section: object | None = None  # the inner SectionResult
     applied: bool = True
-
-    @property
-    def over_cap(self) -> bool:
-        return bool(getattr(self.section, "over_cap", False))
-
-    @property
-    def cap_reason(self):
-        return getattr(self.section, "cap_reason", None)
+    #: U-cap §5.2: the word count of the description JUST minted by THIS
+    #: scaffold — `None` on a route into an EXISTING skill (charges 0,
+    #: §5.2's dedup rule; the description is never rewritten there).
+    description_words: int | None = None
 
     @property
     def word_count(self):
@@ -2423,7 +2536,15 @@ def _apply_new_skill(home: Path, spec: TargetSpec) -> tuple[NewSkillApplyResult,
         changed = True
 
     result = NewSkillApplyResult(
-        path=target, changed=changed, scaffolded=scaffolded, section=section
+        path=target,
+        changed=changed,
+        scaffolded=scaffolded,
+        section=section,
+        # §5.2: charge the always-on budget ONLY on a scaffold (a fresh
+        # description was just minted) — 0 on a route into an existing
+        # skill, where the description is untouched and only the managed
+        # BODY (Class B) grew.
+        description_words=len(description.split()) if scaffolded else None,
     )
     # SKILL.md first: the pinned apply subject names host_paths[0].
     return result, [target, manifest, marketplace]

@@ -1082,11 +1082,13 @@ class TestTerminologyDefinitions:
 
 
 class TestSurfaceFillWhyRegion:
-    """09 §11 Y-20 / 08 §1 `surface_fill`, end-to-end through the real
-    CLI subprocess (ledger.list_items --surface-fill --id): Detail's Why
-    region renders each scope-valid candidate's budget in plain words;
-    `reference` is a static no-cap line; a missing key renders nothing;
-    the armed action bar carries none of it (negative assertion, F2)."""
+    """09 §11 Y-20 / 08 §1 `surface_fill`, amended by U-cap §6.3/§6.6, end-
+    to-end through the real CLI subprocess (ledger.list_items
+    --surface-fill --id): Detail's Why region renders each scope-valid
+    candidate's budget in plain words; `reference` is now a CLI-datum row
+    (the read-rate verdict), never a static line; a missing key renders
+    nothing; the armed action bar carries none of it (negative assertion,
+    F2)."""
 
     def test_why_region_shows_the_skill_md_fill_sentence(self, tmp_path: Path) -> None:
         sb = make_env(tmp_path)
@@ -1100,17 +1102,22 @@ class TestSurfaceFillWhyRegion:
         c, _runner = make_client(sb)
         r = c.get(f"/record/{pending.id}")
         assert r.status_code == 200
-        assert "this skill-md section already holds 8 of its 10 entries" in r.text
-        assert "lands near the cap" in r.text
+        # U-cap §6.6: no cap, no "of its N entries" framing — the plain
+        # entries/words fact, plus the on-invoke (never always-on) phrasing.
+        assert "this skill-md section holds 8 entries / 24 words" in r.text
+        assert "on-invoke content, not always-on" in r.text
+        assert "lands near the cap" not in r.text
 
-    def test_why_region_shows_the_static_reference_line(self, tmp_path: Path) -> None:
+    def test_why_region_shows_the_reference_read_rate_verdict(self, tmp_path: Path) -> None:
         sb = make_env(tmp_path)
         rec = make_behavior(scope="skill:s")
         seed_record(sb.ledger, rec)
         c, _runner = make_client(sb)
         r = c.get(f"/record/{rec.id}")
-        assert "reference files have no cap" in r.text
-        assert "overflow surface entries graduate into" in r.text
+        # No refread hook registered in this sandbox -> not-instrumented ->
+        # the UNKNOWN phrasing (T12.2), never the retired static line.
+        assert "reference files have no cap" not in r.text
+        assert "UNKNOWN" in r.text
 
     def test_missing_skill_md_renders_nothing_for_that_destination(self, tmp_path: Path) -> None:
         # a registered skill dir with no SKILL.md file inside -> the CLI
@@ -1122,9 +1129,9 @@ class TestSurfaceFillWhyRegion:
         c, _runner = make_client(sb)
         r = c.get(f"/record/{rec.id}")
         assert r.status_code == 200
-        assert "skill-md section already holds" not in r.text
+        assert "skill-md section holds" not in r.text
         # claude-md still resolves (the skills-root host's own CLAUDE.md)
-        assert "claude-md section already holds" in r.text
+        assert "claude-md section holds" in r.text
 
     def test_armed_action_bar_carries_no_budget_markup(self, tmp_path: Path) -> None:
         sb = make_env(tmp_path)
@@ -1140,7 +1147,7 @@ class TestSurfaceFillWhyRegion:
         # sanity: the Detail page's Why region DOES carry the fill text —
         # proves the negative assertion below isn't vacuous.
         detail = c.get(f"/record/{pending.id}")
-        assert "this skill-md section already holds 8 of its 10 entries" in detail.text
+        assert "this skill-md section holds 8 entries / 24 words" in detail.text
 
         armed = c.post(
             f"/record/{pending.id}/action/arm",
@@ -1151,7 +1158,61 @@ class TestSurfaceFillWhyRegion:
         assert 'data-armed="true"' in armed.text
         assert "entries" not in armed.text
         assert "surface-budget" not in armed.text
-        assert "already holds" not in armed.text
+        assert "section holds" not in armed.text
+
+    def test_t12_4_surface_budget_flagged_class_renders_when_flagged(
+        self, tmp_path: Path
+    ) -> None:
+        """N2 (u-cap code gate r1): no test asserted `detail.html`
+        (:177) actually emits the `surface-budget-flagged` CSS class
+        for a flagged row -- `TestSurfaceBudgets` in test_models_detail
+        only checked the MODEL's `.flagged` field, never the rendered
+        template. Six fully-intersecting rules topics under the
+        skills-root host's own project rules dir trip `cofire_crowded`
+        (T7 fixture recipe: `max_fanin == 6 > _COFIRE_MAX_FANIN_
+        ADVISORY(5)`), which is the claude-md row's `flagged` source."""
+        sb = make_env(tmp_path)
+        rules_dir = sb.host / ".claude" / "rules"
+        rules_dir.mkdir(parents=True)
+        for i in range(6):
+            (rules_dir / f"topic{i}.md").write_text(
+                "---\npaths:\n  - '**/*.md'\n---\n", encoding="utf-8"
+            )
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+        c, _runner = make_client(sb)
+        r = c.get(f"/record/{rec.id}")
+        assert r.status_code == 200
+        assert "surface-budget-flagged" in r.text
+
+    def test_t12_4_surface_budget_flagged_class_absent_when_quiet(
+        self, tmp_path: Path
+    ) -> None:
+        """The (-) counterpart of the test above: six DISJOINT rules
+        topics (never co-fire) must NOT carry the flagged class on the
+        claude-md row specifically. Scoped to that one `<li>` rather
+        than the whole page: this sandbox's `reference` row is ALSO
+        rendered `surface-budget-flagged` on its own, unrelated grounds
+        (no refread hook registered here -> not-instrumented -> flagged
+        neutral-emphasis), so a page-wide negative would be wrong, not
+        merely imprecise."""
+        sb = make_env(tmp_path)
+        rules_dir = sb.host / ".claude" / "rules"
+        rules_dir.mkdir(parents=True)
+        for ext in "abcdef":
+            (rules_dir / f"topic-{ext}.md").write_text(
+                f"---\npaths:\n  - '**/*.{ext}'\n---\n", encoding="utf-8"
+            )
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+        c, _runner = make_client(sb)
+        r = c.get(f"/record/{rec.id}")
+        assert r.status_code == 200
+        match = re.search(
+            r'<li class="[^"]*surface-budget-claude-md[^"]*">', r.text
+        )
+        assert match is not None, "no claude-md budget row found"
+        assert "surface-budget-flagged" not in match.group(0)
 
 
 # --------------------------------------------------- arm / disarm / confirm

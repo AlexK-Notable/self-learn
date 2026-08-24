@@ -52,8 +52,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .compilers import (
-    DEFAULT_MAX_ENTRIES,
-    DEFAULT_MAX_WORDS,
     SectionResult,
     compile_managed_file,
 )
@@ -271,8 +269,6 @@ def compile_user_scope(
     target: Path | str,
     records: list[Record],
     *,
-    max_entries: int = DEFAULT_MAX_ENTRIES,
-    max_words: int = DEFAULT_MAX_WORDS,
     chezmoi: str = "chezmoi",
     commit_message: str | None = None,
     push: bool = True,
@@ -306,9 +302,7 @@ def compile_user_scope(
 
     if cap != USER_SCOPE_MANAGED:
         # §3 rows 1-2: WRITE only, silent — no preflight, no sync.
-        section = compile_managed_file(
-            target, records, max_entries=max_entries, max_words=max_words
-        )
+        section = compile_managed_file(target, records)
         adopt_hint = None
         if offer_adopt and cap == USER_SCOPE_UNMANAGED:
             adopt_hint = (
@@ -324,9 +318,7 @@ def compile_user_scope(
     _drift_dirty_guard(target, chezmoi=chezmoi)  # steps 1–2, unchanged
 
     # 3. Edit the real target file (managed-section compiler).
-    section = compile_managed_file(
-        target, records, max_entries=max_entries, max_words=max_words
-    )
+    section = compile_managed_file(target, records)
     if not section.changed:
         return UserScopeResult(
             section=section, committed=False, commit_message=None,

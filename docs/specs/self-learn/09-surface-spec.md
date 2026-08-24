@@ -332,33 +332,39 @@ Three stacked regions (07 §2's finding / change / why), one scroll:
    region is the **single budget surface** (there is no armed-bar
    budget — see the action-bar note below). Beside the suggested
    destination **and each alternate**, render its **loaded-surface
-   budget** in plain words (Y-9). For the two **capped** destinations
-   (`skill-md`, `claude-md`) the fact comes from the CLI:
+   budget** in plain words (Y-9). *(Amended 2026-08-23, U-cap — the
+   mechanical cap is retired; this paragraph's "capped" language is
+   historical.)* For the two **probed** destinations (`skill-md`,
+   `claude-md`) the fact comes from the CLI:
    `list --json --surface-fill .surface_fill[<destination>]` (08 §1
    field — the Detail render is the one call-site that passes
-   `--surface-fill`) — e.g. "this skill-md section already holds 8 of
-   its 10 entries — a route here lands near the cap", and the
-   **word**-cap phrasing ("…and is near its word budget") when `words`
-   is the binding constraint. For **`reference`** the line is
-   **template-static, no CLI datum, no probe** (blind-review F1 —
-   `reference` is the cap-free overflow sink; it carries no
-   `surface_fill` key): a fixed plain-words note, "reference files have
-   no cap — this is the overflow surface entries graduate into." The
-   register is decision-support (routing-doctrine §8): it states the
-   fact the narrowest-surface bias (RD §3) turns on, so the human
-   *decides* with the cost visible rather than discovering it at
-   apply-time rejection. For the capped destinations the datum is the
-   CLI's counts and the **sentence is the template's** — the same
-   division of labor as `proposal_fresh` → "fresh"/"stale" (§5 rule: the
-   server renders what the CLI computes, never derives a threshold
-   judgment of its own). A capped destination **absent** from
-   `surface_fill` (any `VerbError` from the read-only resolver — 08 §1
-   F5) shows **no indicator** — never a zero, never a guess. At/over cap
-   the indicator states the fill fact only; the escalation is the
-   **existing** 02 §4 over-cap WARNING + graduation-opener flow
-   (referenced, not duplicated here) — when
-   `surface_fill[<destination>].over_cap` is already true, that flow
-   owns the "route still applies but flags the section" story.
+   `--surface-fill`) — e.g. "this claude-md section holds 23 entries /
+   2,597 words — 77% of a 3,355-word always-on file", carrying the
+   `load_class` and `managed_share` data the CLI reports; for
+   `skill-md` (Class B, conditional) the sentence states the fill fact
+   with no whole-file share, "…— on-invoke content, not always-on" (U-cap
+   §6.6) — there is no nearness clause, because there is nothing to be
+   near. For **`reference`** the line is **no longer template-static**:
+   it now carries the CLI's read-rate verdict
+   (`surface_fill["reference"]`, U-cap §6.3/§6.6) — "reference read rate
+   is UNKNOWN (not instrumented) — routing here trades a measured cost
+   for an unmeasured one", "N of M reference targets have never been
+   read — this shelf may be coverage that isn't", or "every reference
+   target has been read at least once (N reads/30d)." depending on
+   state. The register is decision-support (routing-doctrine §8): it
+   states the fact the narrowest-surface bias (RD §3) turns on, so the
+   human *decides* with the cost visible rather than discovering it at
+   apply-time rejection. For every destination the datum is the CLI's
+   counts and the **sentence is the template's** — the same division of
+   labor as `proposal_fresh` → "fresh"/"stale" (§5 rule: the server
+   renders what the CLI computes, never derives a threshold judgment of
+   its own). A destination **absent** from `surface_fill` (any
+   `VerbError` from the read-only resolver — 08 §1 F5, or a failed
+   `reference` verdict) shows **no indicator** — never a zero, never a
+   guess. There is no escalation: the indicator states the fill fact
+   only, `severity: "informational"` always (U-cap §6.4) — nothing here
+   ever refuses or gates a route; §6.4's budget card, surfaced in
+   review, is where the same four signals get their fuller treatment.
 
 Action bar at the bottom (armed states per §1 — keymap contract note,
 2026-07-19, F5-3: while the `?` help overlay is open, NO key reaches

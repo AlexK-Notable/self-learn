@@ -3,8 +3,10 @@
 Covers 02 §4's contract: golden-file regeneration, idempotency, trigger-first
 entry format with ids, deterministic ordering, EOF bootstrap with exactly one
 preceding blank line, byte-exact preservation outside markers, in-marker
-hand-edits overwritten, the mechanical overflow cap (entries + words), and
-the references compiler's append / create-if-absent / refusal / no-op rules.
+hand-edits overwritten, unconditional entry/word counting (U-cap retired
+the mechanical cap — see test_context_budget.py for the report-only
+signals built on these counts), and the references compiler's append /
+create-if-absent / refusal / no-op rules.
 """
 
 from pathlib import Path
@@ -121,7 +123,7 @@ class TestGoldenRegeneration:
         pre = (GOLDEN / "managed-pre.md").read_text(encoding="utf-8")
         result = compile_managed_text(pre, golden_records())
         assert result.text == (GOLDEN / "managed-expected.md").read_text(encoding="utf-8")
-        assert result.changed and not result.bootstrapped and not result.over_cap
+        assert result.changed and not result.bootstrapped
 
     def test_second_run_is_byte_stable(self):
         expected = (GOLDEN / "managed-expected.md").read_text(encoding="utf-8")
@@ -199,39 +201,132 @@ class TestBootstrap:
         assert again.text == once and not again.changed and not again.bootstrapped
 
 
-# ------------------------------------------------------------------- overflow
+# ------------------------------------------------------------------- counting
 
 
-class TestOverflowCap:
-    def test_eleventh_entry_still_applied_but_flagged(self):
+class TestSectionCounts:
+    """U-cap §6.1: the mechanical cap is retired — the compiler counts
+    entries/words unconditionally and applies every entry regardless of
+    count, with no threshold anywhere in this function."""
+
+    def test_eleven_entries_all_applied_and_counted(self):
         pre = f"{BEGIN_MARKER}\n{END_MARKER}\n"
         records = [knowledge(f"lrn-{i:08x}", f"Fact number {i}.") for i in range(11)]
         result = compile_managed_text(pre, records)
         assert result.entry_count == 11
         assert all(r.id in result.text for r in records)  # nothing dropped
-        assert result.over_cap and result.cap_reason == "entries"
 
-    def test_ten_entries_not_flagged(self):
-        pre = f"{BEGIN_MARKER}\n{END_MARKER}\n"
-        records = [knowledge(f"lrn-{i:08x}", f"Fact number {i}.") for i in range(10)]
-        result = compile_managed_text(pre, records)
-        assert result.entry_count == 10 and not result.over_cap
-
-    def test_word_cap_variant(self):
+    def test_word_count_matches_the_entry_lines(self):
         pre = f"{BEGIN_MARKER}\n{END_MARKER}\n"
         records = [
             knowledge(f"lrn-{i:08x}", "A fact that spends quite a few words saying it.")
             for i in range(3)
         ]
-        result = compile_managed_text(pre, records, max_words=20)
-        assert result.over_cap and result.cap_reason == "words"
-        assert all(r.id in result.text for r in records)  # applied anyway
+        result = compile_managed_text(pre, records)
+        entries = result.text.split(BEGIN_MARKER)[1].split(END_MARKER)[0].strip().splitlines()
+        assert result.word_count == sum(len(e.split()) for e in entries)
+        assert all(r.id in result.text for r in records)
 
-    def test_per_target_entry_override(self):
+    def test_section_result_has_no_cap_fields(self):
         pre = f"{BEGIN_MARKER}\n{END_MARKER}\n"
-        records = [knowledge(f"lrn-{i:08x}", f"Fact {i}.") for i in range(3)]
-        result = compile_managed_text(pre, records, max_entries=2)
-        assert result.over_cap and result.cap_reason == "entries"
+        result = compile_managed_text(pre, [knowledge("lrn-00000001", "Fact.")])
+        fields = set(result.__dataclass_fields__)
+        assert "over_cap" not in fields
+        assert "cap_reason" not in fields
+
+    def test_no_per_target_override_params_exist(self):
+        import inspect
+
+        params = inspect.signature(compile_managed_text).parameters
+        assert "max_entries" not in params
+        assert "max_words" not in params
+
+
+class TestCapRetirementIrreversible:
+    """U-cap §7 T1 -- the retirement is complete AND irreversible-by-
+    accident. T1.3 and half of T1.4 live above in TestSectionCounts;
+    this class is the rest of T1 (u-cap code gate r1, MAJOR 2): T1.1/
+    T1.2 (module-level absence), the remaining T1.4 legs
+    (`compile_managed_file` + the chezmoi wrapper), T1.5
+    (`verbs.VerbResult`), and T1.6 (the source-grep guard WITH its
+    positive control -- without the positive control, a mis-rooted path
+    search passes vacuously, `lrn-ca690038` / `lrn-ea833a5b`)."""
+
+    def test_t1_1_no_default_max_constants_on_compilers_module(self):
+        from self_learn import compilers as compilers_module
+
+        assert not hasattr(compilers_module, "DEFAULT_MAX_ENTRIES")
+        assert not hasattr(compilers_module, "DEFAULT_MAX_WORDS")
+
+    def test_t1_2_no_default_max_constants_in_dunder_all(self):
+        from self_learn import compilers as compilers_module
+
+        assert "DEFAULT_MAX_ENTRIES" not in compilers_module.__all__
+        assert "DEFAULT_MAX_WORDS" not in compilers_module.__all__
+
+    def test_t1_4_compile_managed_file_has_no_override_params(self):
+        import inspect
+
+        params = inspect.signature(compile_managed_file).parameters
+        assert "max_entries" not in params
+        assert "max_words" not in params
+
+    def test_t1_4_chezmoi_wrapper_has_no_override_params(self):
+        import inspect
+
+        from self_learn.chezmoi import compile_user_scope
+
+        params = inspect.signature(compile_user_scope).parameters
+        assert "max_entries" not in params
+        assert "max_words" not in params
+
+    def test_t1_5_verb_result_has_no_over_cap_note(self):
+        from self_learn import verbs
+
+        assert not hasattr(verbs.VerbResult, "over_cap_note")
+
+    def test_t1_6_source_grep_guard_with_positive_control(self, tmp_path):
+        forbidden = [
+            "over_cap", "cap_reason", "entries_cap", "words_cap",
+            "DEFAULT_MAX_ENTRIES", "DEFAULT_MAX_WORDS",
+            "REFERENCE_NO_CAP_LINE", "cap-free", "no cap",
+        ]
+
+        def _hits(root: Path, tokens: list[str]) -> list[tuple[Path, str]]:
+            found: list[tuple[Path, str]] = []
+            for path in sorted(root.rglob("*")):
+                if not path.is_file():
+                    continue
+                if "__pycache__" in path.parts:
+                    continue
+                try:
+                    text = path.read_text(encoding="utf-8")
+                except (OSError, UnicodeDecodeError):
+                    continue
+                for token in tokens:
+                    if token in text:
+                        found.append((path, token))
+            return found
+
+        cli_src = Path(__file__).resolve().parent.parent / "src"
+        ui_src = Path(__file__).resolve().parent.parent.parent / "ui" / "src"
+        assert cli_src.is_dir(), cli_src
+        assert ui_src.is_dir(), ui_src
+
+        hits = _hits(cli_src, forbidden) + _hits(ui_src, forbidden)
+        assert hits == [], f"retired cap tokens still present: {hits}"
+
+        # Positive control for the grep helper ITSELF: run it against a
+        # planted decoy that DOES contain a forbidden token. If this
+        # fails, the helper (or its path roots) is broken in a way that
+        # would make the assertion above pass vacuously.
+        decoy_root = tmp_path / "decoy"
+        decoy_root.mkdir()
+        (decoy_root / "still_capped.py").write_text(
+            "over_cap = True  # not actually retired\n", encoding="utf-8"
+        )
+        control_hits = _hits(decoy_root, forbidden)
+        assert control_hits, "grep helper failed to find a planted forbidden token"
 
 
 # --------------------------------------------------------------- broken input
