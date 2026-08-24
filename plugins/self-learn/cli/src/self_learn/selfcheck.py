@@ -64,7 +64,6 @@ non-zero exit on any FAIL:
 
 from __future__ import annotations
 
-import glob as glob_mod
 import json
 import os
 import re
@@ -90,12 +89,18 @@ from .ledger_ops import (
     ProposalError,
     bucket_project_path,
     find_record_path,
+    glob_reaches,
     read_proposal,
     stamp_proposal,
     validate_proposal,
 )
 from .records import Record, RecordError
-from .verbs import DEFAULT_USER_CLAUDE_MD, _project_rules_dir, _user_rules_dir
+from .verbs import (
+    DEFAULT_USER_CLAUDE_MD,
+    _project_rules_dir,
+    _user_reachability_roots,
+    _user_rules_dir,
+)
 
 __all__ = ["proposal_validate", "run_selftest"]
 
@@ -566,32 +571,53 @@ def _check_drift(home: Path) -> tuple[bool, str]:
                     "run `self-learn recompile`"
                 )
                 continue
-            # A2 §5.2 item 3: for a PROJECT-scope pathed rule ONLY,
-            # re-assert every recorded glob still matches ≥1 file — the
-            # same drift class as a stale marker (files moved out from
-            # under the pattern since routing), the same repair
-            # (`recompile` surfaces it; the human retargets). User-scope
-            # pathed globs are NOT re-asserted here (no canonical tree,
-            # U-A2-glob-tree) — their presence-in-file check above still
-            # ran.
+            # U-glob §6.6: for a pathed rule, EITHER scope, re-assert
+            # every recorded glob still matches ≥1 file via the same
+            # anchored probe route time uses (`glob_reaches`) — the same
+            # drift class as a stale marker (files moved out from under
+            # the pattern since routing), the same repair (`recompile`
+            # surfaces it; the human retargets). A record whose bypass
+            # was a deliberate "write-the-rule-first" zero-match (or a
+            # legacy record carrying no reason at all) is exempt; a
+            # "budget" bypass is NOT exempt — it is re-probed on every
+            # audit, because a transient timeout must never buy a
+            # permanent exemption (M10: 17.95s cold vs 3.7s warm — a
+            # single cold-cache run can produce one). A LIVE "budget"
+            # verdict during THIS audit is skipped silently, never
+            # reported as drift — only a positive "none" determination
+            # is (the gate refuses on "could not tell"; the audit does
+            # not, §6.6's asymmetry).
             routing = record.routing or {}
-            if routing.get("variant") == "rules" and record.scope == "project":
+            if routing.get("variant") == "rules":
                 paths = routing.get("rules_paths") or []
-                host = bucket_project_path(bucket.path)
-                if host is not None:
-                    stale = [
-                        p
-                        for p in paths
-                        if not glob_mod.glob(p, root_dir=host, recursive=True)
-                    ]
-                    if stale:
-                        listed = ", ".join(repr(p) for p in stale)
-                        failures.append(
-                            f"{record.id}: glob pattern(s) now match nothing "
-                            f"in {host}: {listed} — the rule has gone stale "
-                            "(files moved); no automated repair, the human "
-                            "retargets the pattern"
+                reason = routing.get("glob_bypass_reason")
+                legacy_bypass = (
+                    routing.get("allow_empty_glob") is True
+                    and "glob_bypass_reason" not in routing
+                )
+                exempt = reason == "zero-match" or legacy_bypass
+                if paths and not exempt:
+                    if record.scope == "project":
+                        host = bucket_project_path(bucket.path)
+                        roots = (host,) if host is not None else None
+                    else:
+                        roots = _user_reachability_roots(
+                            home, DEFAULT_USER_CLAUDE_MD.expanduser()
                         )
+                    if roots is not None:
+                        stale = [
+                            p for p in paths if glob_reaches(roots, p) == "none"
+                        ]
+                        if stale:
+                            listed = ", ".join(repr(p) for p in stale)
+                            roots_str = ", ".join(str(r) for r in roots)
+                            failures.append(
+                                f"{record.id}: glob pattern(s) now match "
+                                f"nothing under {roots_str}: {listed} — the "
+                                "rule has gone stale (files moved); no "
+                                "automated repair, the human retargets the "
+                                "pattern"
+                            )
     if failures:
         return False, "; ".join(failures)
     if not checked:

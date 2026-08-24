@@ -254,9 +254,14 @@ class TestKeySet:
         assert result["claude-md"] == {
             "entries": 0, "entries_cap": 10, "words": 0, "words_cap": 150,
             "over_cap": False,
-            # A2 §8: the >5-topics churn signal, claude-md only — 0 here,
+            # A2 §8: the raw topic-file count, claude-md only — 0 here,
             # no ~/.claude/rules/ dir under the tmp_path override.
             "rules_topic_count": 0,
+            # U-glob §5.3: the co-firing datum, empty for a missing
+            # rules dir — no trigger fires, no cap_reason key.
+            "rules_cofire": {
+                "topics": [], "unpathed": [], "pairs": [], "max_fanin": 0,
+            },
         }
 
 

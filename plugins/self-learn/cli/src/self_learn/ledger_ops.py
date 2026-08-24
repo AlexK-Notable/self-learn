@@ -24,9 +24,12 @@ worker-run-sequence step 2 / P2-4):
 
 from __future__ import annotations
 
+import glob as glob_mod
 import io
+import os
 import re
 import subprocess
+import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from functools import lru_cache
@@ -43,6 +46,8 @@ from .skill_scaffold import SkillScaffoldError, validate_skill_name
 
 __all__ = [
     "DEFAULT_DEFER_DAYS",
+    "DEFAULT_GLOB_PROBE_BUDGET_S",
+    "GLOB_PROBE_BUDGET_ENV",
     "LedgerOpsError",
     "ProposalError",
     "PROPOSAL_DESTINATIONS",
@@ -58,6 +63,8 @@ __all__ = [
     "ensure_project_meta",
     "defer_record",
     "find_record_path",
+    "glob_reaches",
+    "globs_may_intersect",
     "is_unanalyzed",
     "list_items",
     "proposal_info",
@@ -762,6 +769,226 @@ def _glob_match(path: str, pattern: str) -> bool:
     across 13 patterns, 0 mismatches (F1b). Deliberately does NOT inherit
     `glob`'s absolute-path `root_dir`-ignoring fail-open (§8-O6)."""
     return _compile_glob_pattern(pattern).match(path) is not None
+
+
+# --------------------------------------------------------- U-glob §4/§5
+
+#: U-glob §4.3/§6.1: the anchored-probe budget, per pattern (not per
+#: call — a rule with N patterns costs up to `budget_s * N` worst case,
+#: §4.3). Overridable so tests never wait on a real timeout.
+GLOB_PROBE_BUDGET_ENV = "SELF_LEARN_GLOB_PROBE_BUDGET_S"
+DEFAULT_GLOB_PROBE_BUDGET_S = 30.0
+
+
+def _glob_probe_budget_s() -> float:
+    """`GLOB_PROBE_BUDGET_ENV`, parsed as a float; absent or unparseable
+    falls back to `DEFAULT_GLOB_PROBE_BUDGET_S` without raising (§4.3)."""
+    raw = os.environ.get(GLOB_PROBE_BUDGET_ENV)
+    if raw is None:
+        return DEFAULT_GLOB_PROBE_BUDGET_S
+    try:
+        return float(raw)
+    except ValueError:
+        return DEFAULT_GLOB_PROBE_BUDGET_S
+
+
+def _first_hit(base: Path, rem: str) -> bool:
+    """§4.3 step 4: `base.exists()` when `rem` is empty, else the first
+    hit of `glob.iglob(rem, root_dir=base, recursive=True,
+    include_hidden=True)` — `include_hidden=True` is mandatory (it is
+    what `_glob_match` is measured equivalent to, §2.2). `OSError` reads
+    as no hit, never raises."""
+    if rem == "":
+        return base.exists()
+    try:
+        return (
+            next(
+                iter(
+                    glob_mod.iglob(
+                        rem, root_dir=base, recursive=True, include_hidden=True
+                    )
+                ),
+                None,
+            )
+            is not None
+        )
+    except OSError:
+        return False
+
+
+def glob_reaches(
+    roots: tuple[Path, ...], pattern: str, *, budget_s: float | None = None
+) -> str:
+    """U-glob §4.3: the anchored probe. Proves a `rules_paths` pattern
+    CAN match under at least one of `roots` WITHOUT ever pointing
+    `glob.glob`/`glob.iglob` at a root directly (which does not
+    terminate against a `$HOME`-scale tree — measured M1-M3). Returns
+    ``"match"``, ``"none"``, or ``"budget"`` (the probe could not decide
+    within `budget_s` seconds — a REFUSAL, never read as a pass, §7.2).
+
+    `budget_s=None` reads `GLOB_PROBE_BUDGET_ENV`
+    (`DEFAULT_GLOB_PROBE_BUDGET_S` on an absent/unparseable value)."""
+    if budget_s is None:
+        budget_s = _glob_probe_budget_s()
+    deadline = time.monotonic() + budget_s
+
+    segs = [s for s in pattern.split("/") if s]
+    floating = False
+    while segs and segs[0] == "**":
+        segs.pop(0)
+        floating = True
+    literal: list[str] = []
+    while segs and segs[0] != "**" and not any(c in segs[0] for c in "*?["):
+        literal.append(segs.pop(0))
+    rem = "/".join(segs)
+
+    for root in roots:
+        if time.monotonic() > deadline:
+            return "budget"
+        base = root.joinpath(*literal) if literal else root
+        if not floating:
+            if base.exists() and _first_hit(base, rem):
+                return "match"
+            continue
+        # Floating: the zero-directory expansion first, then a
+        # symlink-refusing DFS under this root (§4.3 step 5).
+        if base.exists() and _first_hit(base, rem):
+            return "match"
+        stack = [root]
+        while stack:
+            if time.monotonic() > deadline:
+                return "budget"
+            current = stack.pop()
+            try:
+                entries = list(os.scandir(current))
+            except OSError:
+                continue
+            for entry in entries:
+                try:
+                    is_dir = entry.is_dir(follow_symlinks=False)
+                except OSError:
+                    is_dir = False
+                if not is_dir:
+                    continue
+                entry_path = Path(entry.path)
+                if not literal:
+                    if _first_hit(entry_path, rem):
+                        return "match"
+                elif entry.name == literal[0]:
+                    cand = entry_path.joinpath(*literal[1:])
+                    if len(literal) == 1 or cand.is_dir():
+                        if _first_hit(cand, rem):
+                            return "match"
+                stack.append(entry_path)
+    return "none"
+
+
+def _class_extent(seg: str, i: int) -> int:
+    """§5.2: the index one past a bracket class's closing ``]``,
+    starting at ``seg[i] == "["`` — scanned EXACTLY as
+    `_translate_glob_segment` does (skip a leading ``!``, skip a leading
+    ``]``, then scan to the next ``]``). ``-1`` for an unbalanced class
+    (degrades to a literal ``[``, never raises)."""
+    n = len(seg)
+    j = i + 1
+    if j < n and seg[j] == "!":
+        j += 1
+    if j < n and seg[j] == "]":
+        j += 1
+    while j < n and seg[j] != "]":
+        j += 1
+    if j >= n:
+        return -1
+    return j + 1
+
+
+def _next_token(seg: str, i: int) -> tuple[str, int]:
+    """One token starting at ``seg[i]``: a bracket class (its full raw
+    source text), or a single character (``?`` or a literal)."""
+    c = seg[i]
+    if c == "[":
+        end = _class_extent(seg, i)
+        if end == -1:
+            return "[", i + 1
+        return seg[i:end], end
+    return c, i + 1
+
+
+def _tokens_may_share(a_tok: str, b_tok: str) -> bool:
+    """§5.2: `True` whenever either token is a bracket class or ``?``
+    (the over-approximating step) — otherwise literal equality.
+
+    A REAL class token is at least 2 chars (`_class_extent` only returns
+    a balanced extent when it spans from `[` to a matching `]`, minimum
+    `[x]` = 3, or `[]x]`-style leading-`]` member = 3+); the single-char
+    `"["` `_next_token` returns for an UNBALANCED class (gate NIT-1) is
+    the literal-`[` degradation §5.2 specifies — `len(...) > 1` is what
+    tells the two apart, so an unbalanced `[` compares as the literal
+    character it degrades to, not as "matches anything"."""
+    if (len(a_tok) > 1 and a_tok.startswith("[")) or (
+        len(b_tok) > 1 and b_tok.startswith("[")
+    ):
+        return True
+    if a_tok == "?" or b_tok == "?":
+        return True
+    return a_tok == b_tok
+
+
+@lru_cache(maxsize=4096)
+def _segment_may_intersect(a: str, i: int, b: str, j: int) -> bool:
+    """§5.2 segment level (no ``/``), positions `i`/`j` into `a`/`b`."""
+    if i == len(a) and j == len(b):
+        return True
+    if i < len(a) and a[i] == "*":
+        if _segment_may_intersect(a, i + 1, b, j):
+            return True
+        return j < len(b) and _segment_may_intersect(a, i, b, j + 1)
+    if j < len(b) and b[j] == "*":
+        if _segment_may_intersect(a, i, b, j + 1):
+            return True
+        return i < len(a) and _segment_may_intersect(a, i + 1, b, j)
+    if i == len(a) or j == len(b):
+        return False
+    a_tok, a_next = _next_token(a, i)
+    b_tok, b_next = _next_token(b, j)
+    if not _tokens_may_share(a_tok, b_tok):
+        return False
+    return _segment_may_intersect(a, a_next, b, b_next)
+
+
+@lru_cache(maxsize=4096)
+def _path_may_intersect(
+    a: tuple[str, ...], i: int, b: tuple[str, ...], j: int
+) -> bool:
+    """§5.2 path level, positions `i`/`j` into the `/`-split segment
+    lists `a`/`b`."""
+    if i == len(a) and j == len(b):
+        return True
+    if i < len(a) and a[i] == "**":
+        if _path_may_intersect(a, i + 1, b, j):
+            return True
+        return j < len(b) and _path_may_intersect(a, i, b, j + 1)
+    if j < len(b) and b[j] == "**":
+        if _path_may_intersect(a, i, b, j + 1):
+            return True
+        return i < len(a) and _path_may_intersect(a, i + 1, b, j)
+    if i == len(a) or j == len(b):
+        return False
+    return _segment_may_intersect(a[i], 0, b[j], 0) and _path_may_intersect(
+        a, i + 1, b, j + 1
+    )
+
+
+def globs_may_intersect(a: str, b: str) -> bool:
+    """U-glob §5.2: `True` iff some path could match BOTH `a` and `b` —
+    a symbolic, filesystem-free over-approximation. `False` is a
+    guarantee no path can match both; `True` means "may co-fire". Two
+    over-approximating steps, both directional and deliberate (never the
+    direction that hides a real collision): `?`/a bracket class is
+    treated as matching anything, and a trailing ``**`` may consume zero
+    segments (which the shipped matcher does not always agree with,
+    §5.2)."""
+    return _path_may_intersect(tuple(a.split("/")), 0, tuple(b.split("/")), 0)
 
 
 def _check_evidence(
@@ -1777,6 +2004,7 @@ def resolve_record(
     rules_topic: str | None = None,
     rules_paths: list[str] | None = None,
     allow_empty_glob: bool = False,
+    glob_bypass_reason: str | None = None,
 ) -> list[Path]:
     """File-op half of a resolution: update frontmatter via T2's mutation
     API, ``git mv`` pending→resolved (fs move when untracked), and remove
@@ -1856,6 +2084,13 @@ def resolve_record(
                 # glob bypass, recorded so a later reader knows the rule
                 # was routed unverified.
                 routing["allow_empty_glob"] = True
+            if glob_bypass_reason is not None:
+                # U-glob §6.5: WHAT was bypassed — "zero-match" (a
+                # positive determination of unreachability) vs "budget"
+                # (the probe could not decide). A bare boolean cannot
+                # tell those apart, and §6.6's drift exemption keys on
+                # this field, never on `allow_empty_glob` alone.
+                routing["glob_bypass_reason"] = glob_bypass_reason
         record.set_routing(routing)
     if superseded_by is not None:
         record.set_superseded_by(superseded_by)

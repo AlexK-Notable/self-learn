@@ -221,9 +221,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--allow-empty-glob",
         action="store_true",
         dest="allow_empty_glob",
-        help="A2 §5.1: route a project-scope rules_paths glob that "
-        "matches nothing in the tree anyway (write-the-rule-before-the-"
-        "files); the bypass is recorded in the routing block",
+        help="A2 §5.1 / U-glob: route a rules_paths glob (either scope) that "
+        "matches nothing, or that the reachability probe could not decide "
+        "within its budget; the bypass and its reason are recorded in the "
+        "routing block",
     )
     route.add_argument(
         "--by",
