@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # install.sh — self-learn product deploy (live symlinks; doc 13 §7.3).
 #
-# Deploys exactly eight surfaces + the miner units + the G-3 UI unit:
+# Deploys exactly nine surfaces + the miner units + the G-3 UI unit:
 #   - ~/.claude/skills/self-learn    -> plugins/self-learn/skills/self-learn
 #   - ~/.claude/commands/self-learn  -> plugins/self-learn/commands
 #   - ~/bin/self-learn               -> plugins/self-learn/scripts/self-learn
 #   - ~/.claude/hooks/self-learn-pending.sh -> plugins/self-learn/hooks/…
+#   - ~/.claude/hooks/self-learn-refread.sh -> plugins/self-learn/hooks/…
+#     (U-readref — PostToolUse/Read reference-shelf observable)
 #   - uv sync of the CLI project
 #   - ~/.config/systemd/user/self-learn-miner.{service,timer} -> systemd/…
 #   - ~/bin/self-learn-ui            -> plugins/self-learn/scripts/self-learn-ui
@@ -79,6 +81,10 @@ fi
 say "== SessionStart pending hook =="
 link "$P/hooks/self-learn-pending.sh" "$HOOKS_DIR/self-learn-pending.sh"
 say "  (register in ~/.claude/settings.json as a SessionStart hook — manual)"
+
+say "== PostToolUse reference-read hook (U-readref) =="
+link "$P/hooks/self-learn-refread.sh" "$HOOKS_DIR/self-learn-refread.sh"
+say "  (register in ~/.claude/settings.json as a PostToolUse/Read hook — manual)"
 
 say "== CLI (uv sync) =="
 if command -v uv >/dev/null; then

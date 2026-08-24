@@ -34,7 +34,7 @@ from pathlib import Path
 from . import report as report_mod
 from . import hosts as hosts_mod
 from . import reconcile as reconcile_mod
-from . import gitops, miner, provider, selfcheck, sentinel, telemetry, verbs, worker
+from . import gitops, miner, provider, refread, selfcheck, sentinel, telemetry, verbs, worker
 from .chezmoi import ChezmoiAbort, ChezmoiError, UserScopeResult
 from .compilers import CompileError, ReferenceResult
 from .import_backlog import import_backlog
@@ -352,6 +352,22 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     telemetry_sub.add_parser(
         "flush", help="spool → tracked telemetry files (scan-at-flush; no commit)"
+    )
+    tread = telemetry_sub.add_parser(
+        "read-observed",
+        help="U-readref §4: code-emitted reference-read observation "
+        "(hook-invoked; not a model-facing verb)",
+    )
+    tread.add_argument(
+        "--path", required=True, metavar="ABS", help="tool_input.file_path, absolute"
+    )
+    tread.add_argument(
+        "--session", default="", metavar="ID", help="the reading session's uuid"
+    )
+    tread.add_argument(
+        "--subagent",
+        action="store_true",
+        help="present iff the PostToolUse payload carried an agent_id key",
     )
 
     sub.add_parser(
@@ -1726,11 +1742,40 @@ def _cmd_telemetry(args: argparse.Namespace) -> int:
             return exc.exit_code
         print(flush_report.summary())
         return EXIT_OK
+    if args.telemetry_command == "read-observed":
+        return _cmd_telemetry_read_observed(args)
     print(
-        "usage: self-learn telemetry note <kind> [--reason WHY] | telemetry flush",
+        "usage: self-learn telemetry note <kind> [--reason WHY] | "
+        "telemetry flush | telemetry read-observed --path ABS [--session ID] [--subagent]",
         file=sys.stderr,
     )
     return EXIT_USAGE
+
+
+def _cmd_telemetry_read_observed(args: argparse.Namespace) -> int:
+    """U-readref §4.1/§4.2-6: the hook-invoked, code-emitted verb behind
+    the PostToolUse Read hook's rare (references-shaped-path) leg. Emits
+    one `reference-read` event iff `--path` resolves to a REGISTERED
+    references target (§4.1.2's `refread.resolve_ref_target`) — an
+    unresolvable path emits nothing and is not an error (T2.6).
+
+    Silent on stdout on EVERY path (§4.2-7) — this verb sits on the
+    critical path of every reference-shaped Read via the hook, and an
+    instrument that spoke into the session would perturb the very
+    behaviour it measures. Failure-tolerant by construction: nothing here
+    may raise past this function — `spool_quiet` (never `spool_event`,
+    §5.2) already absorbs a spool failure, and `resolve_ref_target` itself
+    never raises (read-only resolution, absorbs its own OS/parse errors)."""
+    try:
+        refread.emit_reference_read(
+            resolve_home(),
+            abs_path=args.path,
+            session=args.session or "",
+            subagent=bool(args.subagent),
+        )
+    except Exception as exc:  # never surfaces on stdout either way (§4.2-7)
+        print(f"self-learn telemetry read-observed: {exc}", file=sys.stderr)
+    return EXIT_OK
 
 
 def _cmd_report(as_json: bool) -> int:
@@ -1738,13 +1783,16 @@ def _cmd_report(as_json: bool) -> int:
     if (code := _home_gate(home)) is not None:
         return code
     # report is a flushing verb (11 §4.2) — its numbers include the spool.
-    _flush_spool_best_effort(home)
-    facts = report_mod.gather(home)
+    # U-readref §6.7/§10.2: the flush outcome is PASSED IN, never inferred
+    # from the spool at gather time — a concurrent session's spool write
+    # would misreport a healthy run as `refused`.
+    flush_state = _flush_spool_best_effort(home)
+    facts = report_mod.gather(home, flush_state=flush_state)
     print(report_mod.render_json(facts) if as_json else report_mod.render_text(facts))
     return EXIT_OK
 
 
-def _flush_spool_best_effort(home=None, *, no_push: bool = False) -> None:
+def _flush_spool_best_effort(home=None, *, no_push: bool = False) -> str:
     """11 §4.2: teach/import/resolution verbs flush the spool after their
     own work. Best-effort — a flush problem is loud but never changes the
     verb's outcome; a scan hit leaves the spool intact.
@@ -1752,18 +1800,27 @@ def _flush_spool_best_effort(home=None, *, no_push: bool = False) -> None:
     ``no_push`` carries the calling verb's ``--no-push`` through: the
     flush commits (H-5 — telemetry is a producer, audit 2026-07-16
     MAJOR 3) but must not PUSH, or it would publish the very commit the
-    verb was told to keep local."""
+    verb was told to keep local.
+
+    Returns the outcome — ``"ok"`` | ``"refused"`` | ``"failed"`` (U-readref
+    §6.7/§10.2) — the three cases this function already distinguishes
+    internally. `_cmd_report` is the one caller that consumes it (passed to
+    `report.gather` as `flush_state`); every other caller may still ignore
+    it, unchanged."""
     try:
         flush_report = telemetry.flush(
             home if home is not None else resolve_home(), push=not no_push
         )
     except telemetry.ScanRefusal as exc:
         print(f"self-learn: telemetry flush refused: {exc}", file=sys.stderr)
+        return "refused"
     except OSError as exc:
         print(f"self-learn: telemetry flush failed: {exc}", file=sys.stderr)
+        return "failed"
     else:
         if flush_report.events:
             print(flush_report.summary(), file=sys.stderr)
+        return "ok"
 
 
 def _cmd_proposal(args: argparse.Namespace) -> int:

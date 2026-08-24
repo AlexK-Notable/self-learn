@@ -600,6 +600,9 @@ _ARGV_FOR = {
     "_cmd_status": [["status"]],
     "_cmd_status_fast": [["status", "--fast"]],
     "_cmd_telemetry": [["telemetry", "flush"]],
+    "_cmd_telemetry_read_observed": None,  # U-readref: spools via
+    # `spool_quiet` (cache-only spool write), never touches the ledger's
+    # git repo or its commit lock — same reasoning as _cmd_canary.
     "_cmd_verb": [["reject", "lrn-eeee0001"]],
     "_cmd_worker": [["worker", "run"]],
 }
