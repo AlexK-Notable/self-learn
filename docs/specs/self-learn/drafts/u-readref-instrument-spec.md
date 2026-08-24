@@ -27,6 +27,21 @@ component of `bucket`/`ref_target` is the slug's **8-hex sha256 digest alone**,
 never the readable slug — which on this host is a mangled `$HOME` path that
 defeats every existing guard.
 
+**Three gate-certified bounded substitutions, applied before the build**
+(carried forward from the code-gate note on the r2 fold): **A** — T12.4
+drives the `flush_state == "failed"` `OSError` branch (`cli.py:1762`) and
+T12.5 asserts the observed `flush_state` set equals the documented enum.
+**B** — §6.4 now requires `render_text` to name the readable project slug
+*beside* the digest key for every project-scope row (report output is
+ephemeral — §5.2.1; identity stays digest-only in the emitted event), with
+T5.5 asserting it. **C** — §5.2.1's justification paragraph no longer argues
+confidentiality (the slug's readable half is already committed as directory
+structure in the ledger repo, so a digest buys none); the ruling now stands
+on content-class discipline (S-7 forbids a host-path transform in a durable,
+synced event stream on its own terms) and durability hygiene (append-only
+events must outlive a renamed/rebound/pruned bucket dir). Each is marked
+inline at its landing site.
+
 **Normative parents.** **S-23** (`03-decisions.md:37`) — this unit builds the
 measurement S-23 named as its own reopening condition. **S-7**
 (`03-decisions.md:18`) — the storage-class ruling whose content discipline
@@ -719,11 +734,39 @@ the **identity**. Verified with a positive control:
 `sha256("/home/komi/.config")[:8] == "1323c4be"`, and the full slug
 reproduces exactly.
 
-Against the three requirements: **stable** — a sha256 of the resolved path,
-deterministic and per-path by construction; **home-path-free** — a digest
-reveals nothing about the path; **joinable** — both sides obtain it from
-`resolve_ref_target` (§4.1.2), which derives it the same way from the same
-input.
+Against the two requirements that survive scrutiny: **stable** — a sha256 of
+the resolved path, deterministic and per-path by construction; **joinable**
+— both sides obtain it from `resolve_ref_target` (§4.1.2), which derives it
+the same way from the same input.
+
+**Amendment C (bounded substitution) — the ruling does NOT rest on
+confidentiality, and the earlier "a digest reveals nothing about the path"
+framing is withdrawn.** The slug's readable half is already committed as
+literal directory structure under `projects/` in the ledger repo
+(`ledger.py:154-156`; every `discover_buckets` walk lists it), and that
+repo syncs on every push — a digest in the telemetry stream hides nothing a
+plain `ls`/clone of the ledger does not already show. Keeping the digest out
+of confidentiality reasoning would not survive its own five minutes of
+scrutiny, so the ruling is restated on the two grounds that actually hold:
+
+- **Content-class discipline.** S-7 (`telemetry.py:16-19`) forbids a
+  host-path *transform* inside a durable, cross-machine-syncing event
+  stream on the stream's own terms — a rule about what class of content an
+  append-only plane may carry at all, independent of whether that same path
+  is visible somewhere else. `Bucket.name` is exactly such a transform
+  (`/` → `-`, plus the digest suffix), and S-7 excludes it from this plane
+  regardless of what the ledger's own directory listing separately reveals.
+- **Durability hygiene.** The telemetry plane is append-only and outlives
+  the ledger structure that produced any one event: a project bucket can be
+  renamed, rebound (`self-learn host rebind`), or pruned, while every
+  `reference-read` event that ever named it remains in the tracked plane
+  forever. A digest never claims to be a live pointer into current ledger
+  structure — it is a bare, content-derived identifier, stable for as long
+  as the resolved path itself is the same path, whether or not a
+  `projects/<slug>` bucket exists for it today. Embedding the full,
+  bucket-directory-shaped slug would tie a permanent record to filesystem
+  structure that is not permanent, so old events would silently outlive the
+  directory names they encode.
 
 **Skill scope keeps the plain skill name.** A skill name is a public plugin
 identifier (`home-assistant`, `testing-methodology`), not a path, so it
@@ -921,12 +964,27 @@ most visible thing in this block:
 - `targets_zero_read` and `records_on_zero_read_targets` are scalars a
   consumer can assert on without walking the list;
 - `render_text` **names each zero-read target and its record count** — never
-  a bare count, never an omission.
+  a bare count, never an omission;
+- for a **project-scope** row, `render_text` names the readable project
+  slug **beside** the opaque digest key — never in place of it. Identity
+  stays digest-only in the emitted **event** (§5.2.1's ruling is
+  unchanged: `bucket`/`ref_target` never carry the slug), but the
+  **report** is `report.py`'s own declared ephemeral surface ("derived,
+  regenerated on every run, and committed nowhere" — `report.py:5-7`), so
+  the operator-readable half may appear there without reopening §5.2.1.
+  This applies to every project-scope row the block renders, not only
+  zero-read ones; it is stated here because the zero-read row is the one
+  a builder is least likely to remember it for. T5.5 is the test.
 
 The rule, stated so a builder cannot optimise it away: **a target is omitted
 from `targets` only if it does not exist.** "No events" is never a reason to
 drop a row. Omitting empty rows is the `lrn-6d21607e` decoy shape — absence
 rendering as health.
+
+**Amendment B (bounded substitution).** This bullet and T5.5 make normative,
+inside §6.4, what §5.2.1 already stated as an accepted cost ("the report may
+render the readable slug alongside the digest") — the render is now
+required, not merely permitted, and is not confined to the zero-read case.
 
 ### 6.5 The consumer contract for unit #1
 
@@ -1140,6 +1198,7 @@ scan while still publishing the user's home path.
 | T5.2 | same | `render_text` output **names the target path** and its record count | a bare count with no name |
 | T5.3 | one zero-read target and one well-read target | the zero-read row is **first** | ordering that buries the signal (§6.2-5) |
 | T5.4 | 14 records on one zero-read target | `records_on_zero_read_targets == 14` | counting targets where records were meant |
+| T5.5 | a **project-scope** zero-read target | `render_text` names **both** the opaque digest `ref_target`/`bucket` key and the readable project slug beside it | a render that shows only the digest, leaving every project-scope row unidentifiable to the operator (§6.4 amendment B) |
 
 ### T6 — un-instrumented is distinguishable from unread
 
@@ -1212,6 +1271,13 @@ reference read, perturbing the behaviour it measures (§4.2-7).
 | T12.1 | events in the **spool** only, flush **refused** (`ScanRefusal`) | `flush_state == "refused"`; the text render says the counts are a **lower bound** | a silent swallow (`cli.py:1756-1763`) rendering `zero_read: true` on real reads |
 | T12.2 | `report.gather()` called directly, no flush | `flush_state == "not-attempted"` | defaulting to `ok`, which is what every direct-`gather` test would otherwise assert |
 | T12.3 | normal `report` verb path with a clean flush | `flush_state == "ok"` and spooled events are counted | reading the tracked plane without flushing |
+| T12.4 | `_flush_spool_best_effort` raises `OSError` (the branch at `cli.py:1762`) | `flush_state == "failed"`; the text render says the counts are a **lower bound**, same as `refused` | the `OSError` branch left undriven — `refused` and `failed` silently collapsing onto one another or onto `ok` |
+| T12.5 | drive all four `flush_state` values across fixtures (T12.1–T12.4 plus a clean flush with zero events) | the **observed set** of `flush_state` values equals the documented enum `{ok, refused, failed, not-attempted}` exactly | a dangling enum member no code path can produce — the same defect T6.7 catches for `instrument_state`, applied to `flush_state` |
+
+**Amendment A (bounded substitution).** T12.4 drives the `OSError` branch at
+`cli.py:1762` — the one `flush_state` leg T12.1–T12.3 leave undriven — and
+T12.5 closes the enum-equality gap the same way T6.7 already closes it for
+`instrument_state`.
 
 ### T13 — zero enumerable targets (MAJOR 7)
 

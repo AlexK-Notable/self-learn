@@ -115,9 +115,10 @@ def test_route_is_a_code_emitted_event_kind():
     assert "route" not in telemetry.NOTE_KINDS
 
 
-def test_schema_version_is_2():
-    """Criterion 15: extending the closed set is a version bump."""
-    assert telemetry.SCHEMA_VERSION == 2
+def test_schema_version_is_3():
+    """Criterion 15: extending the closed set is a version bump. v2 -> v3
+    (U-readref §5.1): `reference-read` joined `EVENT_KINDS`."""
+    assert telemetry.SCHEMA_VERSION == 3
 
 
 def test_route_emits_via_the_verb_directly(env):

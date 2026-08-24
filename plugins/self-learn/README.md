@@ -77,6 +77,37 @@ per the repo's per-plugin-hooks convention). Add under `"hooks"`:
 Staleness fires iff ≥1 pending record lacks a valid proposal AND
 `worker.last-run` is >3 days old or missing. Quiet queues never alarm.
 
+## PostToolUse reference-read hook (U-readref) — manual registration required
+
+`hooks/self-learn-refread.sh` observes "a `references/*.md` file was
+actually opened" — the on-demand tier's effectiveness was otherwise
+entirely unmeasured (S-23's reopening condition; see the design corpus).
+It never reads the file body: it extracts only the read path, the session
+id, and whether the read came from a subagent, then spools a code-emitted
+`reference-read` telemetry event (ids only — 11 §4.4) iff the path resolves
+to a REGISTERED references target. It never fails the Read it rides on and
+never writes to stdout, on every path including every error path.
+
+install.sh symlinks the script into `~/.claude/hooks/`; registration in
+`~/.claude/settings.json` is **manual** (settings.json is load-bearing —
+per the repo's per-plugin-hooks convention; U-readref §4.4 ruled against
+migrating to a plugin-provided hook: a hand-edit that breaks the file is
+detectable here and would not be, there). Add under `"hooks"`:
+
+```json
+"PostToolUse": [
+  {"matcher": "Read",
+   "hooks": [{"type": "command",
+              "command": "$HOME/.claude/hooks/self-learn-refread.sh",
+              "timeout": 5}]}
+]
+```
+
+`self-learn report` prints a `Reference shelf` block from what this hook
+observes; a zero-read target is never omitted, and an un-instrumented
+shelf (script missing, not registered, or an unparseable settings.json)
+renders every read count as ABSENT — never as a false zero.
+
 ## Environment
 
 | Variable | Default | Meaning |

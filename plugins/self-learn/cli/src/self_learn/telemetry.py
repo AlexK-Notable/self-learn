@@ -61,15 +61,17 @@ __all__ = [
 ]
 
 #: Extending the closed event-kind set is a schema version bump (11 §4.3).
-#: v1 → v2 (U-reach §2.2): `route` joins the set. No consumer filters on
-#: this number (`read_events`, `report.gather`, `worker._recurrence_
-#: suspects` all key on `kind` alone — verified), so the bump is honest
-#: bookkeeping, not a migration.
-SCHEMA_VERSION = 2
+#: v1 → v2 (U-reach §2.2): `route` joins the set. v2 → v3 (U-readref §5.1):
+#: `reference-read` joins the set. No consumer filters on this number
+#: (`read_events`, `report.gather`, `worker._recurrence_suspects` all key
+#: on `kind` alone — verified), so the bump is honest bookkeeping, not a
+#: migration.
+SCHEMA_VERSION = 3
 
-#: The v2 closed set (11 §4.3) — `route` is code-emitted only (never via
-#: `telemetry note`; see NOTE_KINDS below), the resolution-plane counterpart
-#: to `capture`/`surface-budget` on the observation plane.
+#: The v3 closed set (11 §4.3) — `route` and `reference-read` are
+#: code-emitted only (never via `telemetry note`; see NOTE_KINDS below).
+#: `reference-read` (U-readref §5.1) is the observation half of S-23's
+#: reopening condition — ids-only (§5.2/§5.3), never model-emittable.
 EVENT_KINDS = frozenset(
     {
         "offer-made",
@@ -82,6 +84,7 @@ EVENT_KINDS = frozenset(
         "staleness-flag",
         "surface-budget",
         "route",
+        "reference-read",
     }
 )
 

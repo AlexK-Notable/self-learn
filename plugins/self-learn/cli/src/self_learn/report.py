@@ -20,10 +20,11 @@ Honesty pins carried from 11 §4.3/§5:
 from __future__ import annotations
 
 import json
+import os
 import re
 import statistics
 from collections import Counter
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from ruamel.yaml.error import YAMLError
@@ -32,6 +33,7 @@ from . import gitops
 from .ledger import discover_buckets
 from .ledger_ops import open_followups
 from .records import Record, RecordError
+from .refread import resolve_ref_target
 from .telemetry import read_events
 
 __all__ = [
@@ -42,6 +44,19 @@ __all__ = [
     "render_text",
     "supply_mix",
 ]
+
+#: U-readref §6.2-1: 30d rolling, matching the unit already in this file
+#: (`ledger_metrics`'s `pending_over_30d_pct`).
+_REFERENCE_WINDOW_DAYS = 30
+
+#: NIT 4 (code gate r1): recovers a project-scope EVENT-ONLY row's
+#: readable slug from the ledger's own `projects/<slug>` bucket dir name
+#: — the digest is the last 8 hex chars of `slug_for`'s own construction
+#: (hosts.py:104-106), so a bucket dir ending `-<digest>` is a match, not
+#: a reversal. Genuinely unresolvable (the bucket dir has since been
+#: pruned/rebound) is a distinct, real case — render_text renders it as
+#: an explicit ABSENT marker, never a silent omission.
+_PROJECT_BUCKET_DIGEST_RE = re.compile(r"-([0-9a-f]{8})$")
 
 
 def _days_since(value, today: date) -> int | None:
@@ -247,8 +262,267 @@ def recurrence_suspects(home: Path | str) -> list[dict]:
     return rows
 
 
-def gather(home: Path | str, *, today: date | None = None) -> dict:
-    """Walk every bucket + the tracked telemetry plane into one facts map."""
+def _instrument_state(home: Path) -> str:
+    """U-readref §6.3: ``ok`` | ``script-missing`` | ``not-registered`` |
+    ``settings-unparseable``, derived from the same two inspectable facts
+    ``selfcheck._check_hooks`` already reads for every ``self-learn-*``
+    hook — reused here (deferred import: same-module-family reuse, the
+    convention ``worker.py`` already uses for ``claude_runtime_dir``),
+    never re-derived. An unparseable settings.json is its OWN state
+    (`selfcheck.py:690-692`'s rule: "a broken settings.json must FAIL
+    loudly, not read as 'nothing registered'") — collapsing it into
+    ``not-registered`` would name the wrong remedy."""
+    from .selfcheck import _registered_hook_commands, claude_runtime_dir
+
+    claude_dir = claude_runtime_dir()
+    script = claude_dir / "hooks" / "self-learn-refread.sh"
+    if not (script.is_file() and os.access(script, os.X_OK)):
+        return "script-missing"
+
+    commands, problem = _registered_hook_commands(claude_dir / "settings.json")
+    if problem is not None:
+        return "settings-unparseable"
+    for cmd in commands:
+        if Path(cmd).name == "self-learn-refread.sh":
+            return "ok"
+    return "not-registered"
+
+
+def _reference_shelf(
+    home: Path,
+    today: date,
+    *,
+    flush_state: str = "not-attempted",
+    window_days: int = _REFERENCE_WINDOW_DAYS,
+) -> dict:
+    """U-readref §6: the ``reference_shelf`` facts block.
+
+    Target enumeration is LEDGER-driven (every target of a live
+    reference-routed record), then union'd with any target that has a
+    ``reference-read`` event but no live record (§6.2-4) — the union is
+    what lets §6.4's rule hold: a target is omitted only if it does not
+    exist. ``instrumented``/``flush_state`` gate whether the READ-derived
+    fields are trustworthy (§6.3/§6.7) without ever hiding the shelf's
+    CONTENTS: ``targets``/``records``/``targets_total`` render regardless
+    of instrument health (§6.3's own rule)."""
+    from .selfcheck import _reference_target_for  # deferred: same-family reuse
+
+    instrument_state = _instrument_state(home)
+    instrumented = instrument_state == "ok"
+
+    events_by_target: dict[str, list[dict]] = {}
+    all_ts: list[str] = []
+    for event in read_events(home):
+        if event.get("kind") != "reference-read":
+            continue
+        ref_target = event.get("ref_target")
+        if not isinstance(ref_target, str):
+            continue  # malformed/hand-edited line (T3.6) — skipped, no crash
+        events_by_target.setdefault(ref_target, []).append(event)
+        ts = event.get("ts")
+        if isinstance(ts, str):
+            all_ts.append(ts)
+    # §6.2-7: the EARLIEST reference-read event in the whole tracked
+    # plane, or None — never `today`, never a proxy for the install date.
+    # Computed unconditionally (independent of current instrument health:
+    # historical events outlive a since-broken hook).
+    observation_start = min(all_ts) if all_ts else None
+
+    rows: dict[str, dict] = {}
+    unresolvable_records = 0
+    unresolvable_record_ids: list[str] = []
+    # NIT 4: digest -> readable project bucket dir name, built from the
+    # SAME `discover_buckets` walk below (no second pass) — covers every
+    # project bucket on disk, not only ones with a matching live record,
+    # so an event-only row (no live record) can still recover its slug.
+    project_slugs: dict[str, str] = {}
+
+    for bucket in discover_buckets(home):
+        if bucket.scope == "project":
+            m = _PROJECT_BUCKET_DIGEST_RE.search(bucket.name)
+            if m:
+                project_slugs[m.group(1)] = bucket.name
+        for sub in ("pending", "resolved"):
+            directory = bucket.path / sub
+            if not directory.is_dir():
+                continue
+            for path in sorted(directory.glob("lrn-*.md")):
+                try:
+                    record = Record.from_path(path)
+                except (RecordError, OSError, UnicodeDecodeError, YAMLError):
+                    continue
+                if record.status != "routed" or record.superseded_by is not None:
+                    continue  # §6.2-4: LIVE reference-routed records only
+                routing = record.routing or {}
+                if routing.get("destination") != "reference":
+                    continue
+                target_path = _reference_target_for(home, bucket, record)
+                target = (
+                    resolve_ref_target(home, target_path)
+                    if target_path is not None
+                    else None
+                )
+                if target is None:
+                    # unresolvable-via-hosts.yaml, or a user-scope record
+                    # (S-23 (2) — expected, live, never silently dropped)
+                    unresolvable_records += 1
+                    unresolvable_record_ids.append(record.id)
+                    continue
+                row = rows.get(target.key)
+                if row is None:
+                    row = {
+                        "ref_target": target.key,
+                        "scope": target.scope,
+                        "bucket": target.bucket,
+                        # Amendment B / §6.4: the readable project slug,
+                        # for render_text only — identity in the EVENT
+                        # stays digest-only (§5.2.1, unchanged). None for
+                        # skill scope, which is already readable (its
+                        # bucket IS the plain skill name).
+                        "bucket_readable": (
+                            bucket.name if target.scope == "project" else None
+                        ),
+                        "records": 0,
+                    }
+                    rows[target.key] = row
+                row["records"] += 1
+
+    for key, target_events in events_by_target.items():
+        if key in rows:
+            continue
+        # §4.1.2/§10.1's no-re-split rule: `scope`/`bucket` come from the
+        # EVENT's own fields (spooled verbatim off a real RefTarget at
+        # emit time — §5.2's payload table), never by re-parsing `key`.
+        # There is no abs_path here to hand back to `resolve_ref_target`
+        # (this target has no live record), so the event is the only
+        # other place those two components legitimately live.
+        sample = target_events[0]
+        sample_scope = sample.get("scope")
+        sample_bucket = sample.get("bucket")
+        scope_val = sample_scope if isinstance(sample_scope, str) else ""
+        bucket_val = sample_bucket if isinstance(sample_bucket, str) else ""
+        # NIT 4 (code gate r1): Amendment B binds EVERY project-scope
+        # row, not only ones reached through a live record. The digest
+        # (`bucket_val`) is recoverable from the ledger's OWN bucket dir
+        # name via `project_slugs` — a lookup, never a re-split of `key`
+        # and never a reversal of the digest itself. `None` here means
+        # genuinely unresolvable (the bucket dir has since been
+        # pruned/rebound) — render_text renders that as an explicit
+        # ABSENT marker, never a silent omission.
+        rows[key] = {
+            "ref_target": key,
+            "scope": scope_val,
+            "bucket": bucket_val,
+            "bucket_readable": (
+                project_slugs.get(bucket_val) if scope_val == "project" else None
+            ),
+            "records": 0,
+        }
+
+    for key, row in rows.items():
+        target_events = events_by_target.get(key, [])
+        reads_all_time = len(target_events)
+        in_window = []
+        for event in target_events:
+            age = _days_since(event.get("ts"), today)
+            if age is not None and 0 <= age <= window_days:
+                in_window.append(event)
+        reads_30d = len(in_window)
+        read_sessions_30d = len({e.get("session") for e in in_window})
+        subagent_reads_30d = sum(1 for e in in_window if e.get("subagent") is True)
+        ts_values = [
+            e.get("ts") for e in target_events if isinstance(e.get("ts"), str)
+        ]
+        row.update(
+            {
+                "reads_all_time": reads_all_time,
+                "reads_30d": reads_30d,
+                "read_sessions_30d": read_sessions_30d,
+                "subagent_reads_30d": subagent_reads_30d,
+                # §6.2-3: zero_read is computed on ALL-TIME, not the
+                # window — a file read once 60d ago is COLD, not unread.
+                "last_read": max(ts_values) if ts_values else None,
+                "zero_read": reads_all_time == 0,
+            }
+        )
+
+    # §6.2-5: zero-read first, then ascending read_sessions_30d, then
+    # ref_target — computed from the REAL values, before any nulling
+    # below (nulling only replaces what is SHOWN, never the order).
+    ordered = sorted(
+        rows.values(),
+        key=lambda r: (
+            0 if r["zero_read"] else 1,
+            r["read_sessions_30d"],
+            r["ref_target"],
+        ),
+    )
+
+    targets_total = len(ordered)
+    # §6.6: zero enumerable targets is its own condition, never a quiet
+    # all-clear — targets_zero_read/records_on_zero_read_targets go null.
+    enumeration_state = "ok" if targets_total else "none-enumerable"
+    targets_zero_read = sum(1 for r in ordered if r["zero_read"])
+    records_on_zero_read_targets = sum(
+        r["records"] for r in ordered if r["zero_read"]
+    )
+    reads_30d_total = sum(r["reads_30d"] for r in ordered)
+
+    if enumeration_state == "none-enumerable":
+        targets_zero_read = None
+        records_on_zero_read_targets = None
+
+    # §6.3: not-instrumented is a distinct state, NEVER zero — every
+    # read-derived field renders null, never 0. targets/records/
+    # targets_total are untouched: the shelf's CONTENTS are known
+    # regardless of whether reads are observable.
+    if not instrumented:
+        for row in ordered:
+            for field in (
+                "reads_all_time",
+                "reads_30d",
+                "read_sessions_30d",
+                "subagent_reads_30d",
+                "last_read",
+                "zero_read",
+            ):
+                row[field] = None
+        reads_30d_total = None
+        targets_zero_read = None
+        records_on_zero_read_targets = None
+
+    window_start = today - timedelta(days=window_days)
+
+    return {
+        "instrumented": instrumented,
+        "instrument_state": instrument_state,
+        "flush_state": flush_state,
+        "enumeration_state": enumeration_state,
+        "unresolvable_records": unresolvable_records,
+        "unresolvable_record_ids": unresolvable_record_ids,
+        "window_days": window_days,
+        "window_start": str(window_start),
+        "observation_start": observation_start,
+        "targets_total": targets_total,
+        "targets_zero_read": targets_zero_read,
+        "records_on_zero_read_targets": records_on_zero_read_targets,
+        "reads_30d_total": reads_30d_total,
+        "targets": ordered,
+    }
+
+
+def gather(
+    home: Path | str, *, today: date | None = None, flush_state: str = "not-attempted"
+) -> dict:
+    """Walk every bucket + the tracked telemetry plane into one facts map.
+
+    ``flush_state`` (U-readref §6.7/§10.2) is PASSED IN by the caller —
+    ``gather`` cannot observe whether ITS caller flushed the spool first,
+    and inferring the outcome by inspecting the spool here would be wrong:
+    a concurrent session appending between a real flush and this walk
+    would make a perfectly healthy run look ``refused``. The default,
+    ``"not-attempted"``, is deliberately not ``"ok"`` — every test that
+    calls ``gather()`` directly without flushing gets the honest value."""
     home = Path(home)
     today = today if today is not None else datetime.now(timezone.utc).date()
 
@@ -391,6 +665,7 @@ def gather(home: Path | str, *, today: date | None = None) -> dict:
             "declined_logged": declined,
             "capture_rate_ceiling": capture_ceiling,
         },
+        "reference_shelf": _reference_shelf(home, today, flush_state=flush_state),
     }
 
 
@@ -506,5 +781,63 @@ def render_text(facts: dict) -> str:
                 else ", never confirmed since"
             )
             lines.append(f"  {r['id']} [{r['bucket']}]: {age}{confirmed}")
+
+    rs = facts.get("reference_shelf")
+    if rs is not None:
+        lines.append("")
+        lines.append(
+            f"Reference shelf ({rs['window_days']}d window, "
+            f"{rs['targets_total']} target(s) known):"
+        )
+        if not rs["instrumented"]:
+            lines.append(
+                f"  NOT INSTRUMENTED ({rs['instrument_state']}) — every "
+                "read-derived count below is ABSENT, never zero (an "
+                "un-instrumented shelf must never look like an unread one)"
+            )
+        if rs["flush_state"] != "ok":
+            lines.append(
+                f"  flush_state: {rs['flush_state']} — the counts below "
+                "are a LOWER BOUND, not a full count"
+            )
+        if rs["enumeration_state"] == "none-enumerable":
+            lines.append(
+                "  NO ENUMERABLE TARGETS — targets_zero_read / "
+                "records_on_zero_read_targets: ABSENT (nothing was "
+                "enumerable, not a clean shelf)"
+            )
+        if rs["unresolvable_records"]:
+            lines.append(
+                f"  {rs['unresolvable_records']} reference-routed "
+                "record(s) unresolvable to any target: "
+                + ", ".join(rs["unresolvable_record_ids"])
+            )
+        for row in rs["targets"]:
+            label = row["ref_target"]
+            if row["scope"] == "project":
+                # Amendment B / §6.4: EVERY project-scope row, not only
+                # ones with a live record — the readable slug rendered
+                # BESIDE the digest key (report output is ephemeral,
+                # never committed/synced; identity in the EVENT stays
+                # digest-only, §5.2.1 unchanged). NIT 4: when the slug is
+                # genuinely unresolvable (the bucket dir has since been
+                # pruned/rebound), that is named explicitly — never a
+                # silent omission of the parenthetical.
+                if row.get("bucket_readable"):
+                    label = f"{label} ({row['bucket_readable']})"
+                else:
+                    label = f"{label} (slug: ABSENT)"
+            if rs["instrumented"]:
+                if row["zero_read"]:
+                    reads = "ZERO READS"
+                else:
+                    reads = (
+                        f"{row['reads_all_time']} read(s) all-time, "
+                        f"{row['read_sessions_30d']} session(s)/"
+                        f"{rs['window_days']}d"
+                    )
+            else:
+                reads = "reads: ABSENT (not instrumented)"
+            lines.append(f"  {label}: {row['records']} record(s) — {reads}")
 
     return "\n".join(lines)
