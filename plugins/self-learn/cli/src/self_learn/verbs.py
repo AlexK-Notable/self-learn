@@ -58,7 +58,7 @@ the skills root hosts its own CLAUDE.md canon).
 from __future__ import annotations
 
 import contextlib
-import glob as glob_mod
+import os
 import sys
 import tempfile
 from dataclasses import dataclass, field, replace
@@ -99,6 +99,7 @@ from .compilers import (
     compile_managed_text,
     compile_reference,
     has_paths_key,
+    read_paths_frontmatter,
     reference_target_path,
 )
 from .hosts import (
@@ -117,9 +118,13 @@ from .ledger_ops import (
     ProposalError,
     bucket_dir_for_scope,
     bucket_project_path,
+    DEFAULT_GLOB_PROBE_BUDGET_S,
+    GLOB_PROBE_BUDGET_ENV,
     defer_record,
     ensure_project_meta,
     find_record_path,
+    glob_reaches,
+    globs_may_intersect,
     rehome_record,
     read_proposal,
     record_title,
@@ -672,10 +677,15 @@ class TargetSpec:
     variant: str | None = None
     rules_topic: str | None = None  # variant == "rules" only
     rules_paths: tuple[str, ...] | None = None  # variant == "rules" only
-    #: A2 §5.1: True iff a project-scope zero-match refusal was bypassed
-    #: via ``--allow-empty-glob`` (the routing-metadata bypass record,
-    #: test obligation §13 item 3).
+    #: A2 §5.1: True iff a zero-match/budget refusal was bypassed via
+    #: ``--allow-empty-glob`` (the routing-metadata bypass record, test
+    #: obligation §13 item 3). Kept for byte-compatibility with existing
+    #: readers; U-glob §6.4's ``glob_bypass_reason`` is what the ledger
+    #: actually reasons from.
     glob_bypass: bool = False
+    #: U-glob §6.4: WHAT was bypassed — ``"zero-match"`` | ``"budget"`` |
+    #: ``None``. Set only when ``glob_bypass`` is True.
+    glob_bypass_reason: str | None = None
     #: U-pointer §3.4: the ALWAYS-loaded surface (SKILL.md / CLAUDE.md) a
     #: `reference` route must ALSO write a pointer into -- set only in
     #: `_resolve_target`'s reference branch; ``None`` for every other
@@ -762,42 +772,103 @@ def _project_rules_dir(host_repo: Path) -> Path:
     return host_repo / ".claude" / "rules"
 
 
-def _validate_project_globs(
-    host: Path, patterns: tuple[str, ...], allow_empty_glob: bool
-) -> bool:
-    """§5.1: project-scope per-pattern zero-match refusal — the one real
-    silent-failure guard the parameterization introduces. The matcher is
-    stdlib recursive glob over the host working tree (an approximation of
-    CC's own gitignore-style matcher, noted as a limitation, not a
-    blocker). A pattern with an unparseable bracket does not raise
-    (empirically, ``fnmatch.translate`` never raises on an unbalanced
-    ``[``) — it degrades to a non-matching literal, exactly like CC's own
-    documented partial failure, so "unparseable" folds into "zero-match"
-    with no separate parse step (§5.1 Grounding).
+def _glob_probe_budget_display() -> str:
+    """U-glob §7.4: the active reachability budget, formatted with
+    ``:g`` so ``30.0`` renders ``30`` — the same env var
+    :func:`ledger_ops.glob_reaches` itself reads, so the refusal text
+    never disagrees with the probe that produced it."""
+    raw = os.environ.get(GLOB_PROBE_BUDGET_ENV)
+    if raw is not None:
+        try:
+            return f"{float(raw):g}"
+        except ValueError:
+            pass
+    return f"{DEFAULT_GLOB_PROBE_BUDGET_S:g}"
 
-    Returns True iff at least one pattern was dead AND the caller passed
-    ``allow_empty_glob`` (the bypass this function's caller records into
-    routing metadata, test obligation §13 item 3); returns False when
-    every pattern matched (nothing to record). Raises :class:`VerbError`
-    naming every dead pattern when the escape was not given (P-A7: a
-    rule-level "did any match?" would pass a partial failure — this
-    refuses per pattern)."""
-    dead = [
-        pattern
-        for pattern in patterns
-        if not glob_mod.glob(pattern, root_dir=host, recursive=True)
-    ]
-    if not dead:
-        return False
-    if not allow_empty_glob:
+
+def _user_reachability_roots(home: Path, user_claude_md_target: Path) -> tuple[Path, ...]:
+    """U-glob §4.1: the anchored-probe root set for a USER-scope glob —
+    ``$HOME`` (derived from the already-overridable user CLAUDE.md
+    target's ``.parent.parent``, NEVER ``Path.home()``, so every
+    existing test that overrides ``user_claude_md`` also relocates the
+    root set with no second override handle invented) plus any
+    registered project host or ``skills_root`` that sits OUTSIDE
+    ``$HOME`` (M4: the registered hosts alone would refuse the only live
+    pathed user rule on this host). De-duplicated, ``$HOME`` first, the
+    remainder sorted. ``HostsError`` is not fatal here — it yields just
+    ``($HOME,)``, exactly like a missing ``hosts.yaml``."""
+    home_root = user_claude_md_target.parent.parent
+    try:
+        hosts = load_hosts(home)
+    except HostsError:
+        return (home_root,)
+    candidates = list(hosts.projects)
+    if hosts.skills_root is not None:
+        candidates.append(hosts.skills_root)
+    home_resolved = home_root.resolve()
+    extra: dict[str, Path] = {}
+    for candidate in candidates:
+        try:
+            candidate_resolved = candidate.resolve()
+        except OSError:
+            candidate_resolved = candidate
+        if candidate_resolved == home_resolved or home_resolved in candidate_resolved.parents:
+            continue
+        extra.setdefault(str(candidate_resolved), candidate_resolved)
+    remainder = sorted(extra.values(), key=str)
+    return (home_root, *remainder)
+
+
+def _validate_rules_globs(
+    roots: tuple[Path, ...], patterns: tuple[str, ...], allow_empty_glob: bool
+) -> str | None:
+    """U-glob §6.2: scope-general per-pattern reachability check — the
+    ANCHORED PROBE (:func:`ledger_ops.glob_reaches`) against `roots`,
+    never a bare ``glob.glob`` pointed at a root (which does not
+    terminate against a ``$HOME``-scale tree, measured M1-M3).
+
+    Returns ``None`` when every pattern reached (``"match"``); when at
+    least one pattern did NOT reach and ``allow_empty_glob`` was passed,
+    returns the bypass reason — ``"zero-match"`` (more actionable, and
+    wins when both kinds are present, §6.2/§7.5) or ``"budget"``.
+    Raises :class:`VerbError` naming every dead/undecided pattern
+    otherwise (P-A7: a rule-level "did any match?" would pass a partial
+    failure — this refuses per pattern, and both failure kinds are
+    collected before either raising or bypassing)."""
+    dead: list[str] = []
+    undecided: list[str] = []
+    for pattern in patterns:
+        verdict = glob_reaches(roots, pattern)
+        if verdict == "none":
+            dead.append(pattern)
+        elif verdict == "budget":
+            undecided.append(pattern)
+    if not dead and not undecided:
+        return None
+    if allow_empty_glob:
+        return "zero-match" if dead else "budget"
+    roots_str = ", ".join(str(r) for r in roots)
+    messages: list[str] = []
+    if dead:
         listed = ", ".join(repr(p) for p in dead)
-        raise VerbError(
-            f"rules_paths pattern(s) match nothing in {host}: {listed} — "
+        messages.append(
+            f"rules_paths pattern(s) match nothing under {roots_str}: {listed} — "
             "a rule with a non-matching pattern never fires; fix the "
             "pattern(s), or pass --allow-empty-glob to route unverified "
             "(the write-the-rule-before-the-files case)"
         )
-    return True
+    if undecided:
+        listed = ", ".join(repr(p) for p in undecided)
+        budget = _glob_probe_budget_display()
+        messages.append(
+            f"rules_paths pattern(s) could not be checked within the "
+            f"{budget}s reachability budget under {roots_str}: {listed} — "
+            "self-learn refuses rather than route a glob it could not "
+            "verify; anchor the pattern with a literal directory segment "
+            "(e.g. '**/<dir>/...'), raise SELF_LEARN_GLOB_PROBE_BUDGET_S, "
+            "or pass --allow-empty-glob to route unverified"
+        )
+    raise VerbError(" ... and ".join(messages))
 
 
 def _resolve_local_target(
@@ -867,10 +938,10 @@ def _resolve_rules_target(
     # against a project/user tree (canary measurement 1.2) — and it is a
     # live fail-open in shipped code: ``glob.glob(pattern, root_dir=host)``
     # IGNORES ``root_dir`` for an absolute pattern, so
-    # ``_validate_project_globs`` today happily passes (and would emit) a
+    # ``_validate_rules_globs`` today happily passes (and would emit) a
     # pattern that provably can never match. Shape-only — no filesystem, no
     # ``check_dirty`` gate — so it is deterministic and covers user scope
-    # too, which ``_validate_project_globs`` never sees.
+    # too.
     if paths_tuple:
         _bad_globs = [
             p for p in paths_tuple if p.startswith("~") or Path(p).is_absolute()
@@ -887,6 +958,17 @@ def _resolve_rules_target(
             user_claude_md if user_claude_md is not None else DEFAULT_USER_CLAUDE_MD
         ).expanduser()
         target = _user_rules_dir(base) / f"{rules_topic}.md"
+        bypassed_reason: str | None = None
+        if check_dirty and paths_tuple:
+            # U-glob §6.3: the glob check comes FIRST — before the
+            # chezmoi-managed refusal below and before
+            # `preflight_user_scope` — because it is the cheaper and
+            # more common refusal, and a chezmoi-managed target with a
+            # dead glob should name the dead glob (the thing the human
+            # can actually fix), not the management state.
+            bypassed_reason = _validate_rules_globs(
+                _user_reachability_roots(home, base), paths_tuple, allow_empty_glob
+            )
         if check_dirty:
             # U-pathed §3.4(2): the pre-pass writes the target BEFORE
             # compile_user_scope's own _drift_dirty_guard runs — on a
@@ -923,26 +1005,24 @@ def _resolve_rules_target(
                     "so this stays an unpathed rule"
                 )
             # E-17 preflight, same as plain user claude-md: chezmoi
-            # drift/dirty aborts BEFORE the ledger commit. U-A2-glob-tree
-            # (§5.1): no canonical tree exists for a user-scope glob, so
-            # only the schema-shape check (already run at proposal
-            # validation, §4.3(4)) applies — no zero-match assertion here.
+            # drift/dirty aborts BEFORE the ledger commit.
             preflight_user_scope(target, chezmoi=chezmoi_bin)
         return TargetSpec(
             "claude-md", "user", bucket_dir, target, None,
             variant="rules", rules_topic=rules_topic, rules_paths=paths_tuple,
+            glob_bypass=bool(bypassed_reason), glob_bypass_reason=bypassed_reason,
         )
     host = _project_host_or_refuse(home, bucket_dir, project_path)
     target = _project_rules_dir(host) / f"{rules_topic}.md"
-    bypassed = False
+    bypassed_reason = None
     if check_dirty and paths_tuple:
-        bypassed = _validate_project_globs(host, paths_tuple, allow_empty_glob)
+        bypassed_reason = _validate_rules_globs((host,), paths_tuple, allow_empty_glob)
     if check_dirty and target.is_file():
         _abort_if_dirty(host, target)
     return TargetSpec(
         "claude-md", "project", bucket_dir, target, host,
         variant="rules", rules_topic=rules_topic, rules_paths=paths_tuple,
-        glob_bypass=bypassed,
+        glob_bypass=bool(bypassed_reason), glob_bypass_reason=bypassed_reason,
     )
 
 
@@ -1671,13 +1751,66 @@ def _compile_set(home: Path, spec: TargetSpec) -> list[Record]:
     return records
 
 
+def _rules_cofire(rules_dir: Path | None) -> dict[str, object]:
+    """U-glob §5.3: the co-firing datum for one resolved rules directory
+    — which topic globs COULD match the same file, decided SYMBOLICALLY
+    (:func:`ledger_ops.globs_may_intersect`, §5.2), no filesystem access
+    beyond reading the topic files' own text. `max_fanin` is an UPPER
+    BOUND (pairwise intersection does not compose), not a guarantee some
+    single real file matches every counted topic.
+
+    Membership of ``unpathed`` is decided by ``has_paths_key`` returning
+    False — the RAW-KEY predicate, never :func:`read_paths_frontmatter`
+    (which normalizes ``paths: []`` / ``paths: null`` / a scalar all
+    down to the same falsy ``()`` as "no key at all") — so a topic that
+    DOES carry a (possibly malformed) ``paths:`` key lands in ``topics``
+    with an empty pattern set, never in ``unpathed`` (§5.3)."""
+    topics: dict[str, tuple[str, ...]] = {}
+    unpathed: list[str] = []
+    if rules_dir is not None and rules_dir.is_dir():
+        for topic_file in sorted(rules_dir.glob("*.md")):
+            try:
+                text = topic_file.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                # §6.7: an unreadable/undecodable topic file is skipped
+                # — its stem lands in neither list, the same degradation
+                # discipline surface_fill already applies elsewhere.
+                continue
+            stem = topic_file.stem
+            if has_paths_key(text):
+                topics[stem] = read_paths_frontmatter(text)
+            else:
+                unpathed.append(stem)
+    topic_names = sorted(topics)
+    pairs: list[list[str]] = []
+    fanin = dict.fromkeys(topic_names, 0)
+    for idx, a in enumerate(topic_names):
+        for b in topic_names[idx + 1 :]:
+            if any(
+                globs_may_intersect(p, q) for p in topics[a] for q in topics[b]
+            ):
+                pairs.append([a, b])
+                fanin[a] += 1
+                fanin[b] += 1
+    if topic_names:
+        max_fanin = len(unpathed) + max(1 + fanin[name] for name in topic_names)
+    else:
+        max_fanin = len(unpathed)
+    return {
+        "topics": topic_names,
+        "unpathed": sorted(unpathed),
+        "pairs": pairs,
+        "max_fanin": max_fanin,
+    }
+
+
 def surface_fill(
     home: Path,
     bucket_dir: Path,
     scope: str,
     *,
     user_claude_md: Path | str | None = None,
-    cache: dict[Path, SectionResult] | None = None,
+    cache: dict | None = None,
 ) -> dict[str, dict]:
     """09 §11 Y-20 / 08 §1 `surface_fill` field: a READ-ONLY loaded-surface
     fill probe over the two CAPPED managed-section destinations
@@ -1757,31 +1890,41 @@ def surface_fill(
             "over_cap": section.over_cap,
         }
         if destination == "claude-md":
-            # A2 §8/P-A9: the >5-topic-files churn signal — a NEW datum
-            # with no per-file home, attached only to the claude-md
-            # entry. `spec` here is the PLAIN (variant=None) claude-md
-            # target (this probe never threads a variant), so its rules
-            # dir is derived off that target's own parent (§2.1) — a
-            # missing directory counts 0 (no builder-side special case
-            # needed: a skill-root scope's rules dir never exists, since
-            # skill-scope rules are deferred, §9).
+            # A2 §8/P-A9 + U-glob §5.3/§5.4: `spec` here is the PLAIN
+            # (variant=None) claude-md target (this probe never threads
+            # a variant), so its rules dir is derived off that target's
+            # own parent (§2.1) — a missing directory counts 0 (no
+            # builder-side special case needed: a skill-root scope's
+            # rules dir never exists, since skill-scope rules are
+            # deferred, §9).
             if scope == "user":
                 rules_dir = _user_rules_dir(target)
             elif spec.host_repo is not None:
                 rules_dir = _project_rules_dir(spec.host_repo)
             else:
                 rules_dir = None
-            count = (
+            entry["rules_topic_count"] = (
                 len(list(rules_dir.glob("*.md")))
                 if rules_dir is not None and rules_dir.is_dir()
                 else 0
             )
-            entry["rules_topic_count"] = count
-            if count > 5:
+            # U-glob §6.7: memoized per RESOLVED rules directory in the
+            # same cache dict surface_fill already threads, under a key
+            # that cannot collide with a target path — otherwise
+            # `list --json` recomputes the whole co-firing graph once
+            # per record.
+            cofire_key = (
+                ("cofire", rules_dir.resolve()) if rules_dir is not None else None
+            )
+            if cofire_key is not None and cofire_key not in cache:
+                cache[cofire_key] = _rules_cofire(rules_dir)
+            cofire = cache[cofire_key] if cofire_key is not None else _rules_cofire(None)
+            entry["rules_cofire"] = cofire
+            if cofire["max_fanin"] > 5:
                 # OR-ed with, never replacing, the per-file over_cap above
                 # (§8 pin: both signals feed the SAME WARNING path).
                 entry["over_cap"] = True
-                entry["cap_reason"] = "rules-topics"
+                entry["cap_reason"] = "rules-cofire"
         result[destination] = entry
     return result
 
@@ -2270,10 +2413,10 @@ def route(
     ``teach --supersedes`` capture — old record superseded in the SAME
     commit). ``follow_up`` (11 §2.1: {action, unblocks_on?, note?}) rides
     the routing block — known-partial coverage, status stays terminal.
-    ``allow_empty_glob`` (A2 §5.1) is the sanctioned escape past a
-    project-scope rules route's zero-match glob refusal — the
-    write-the-rule-before-the-files case; the bypass is recorded in the
-    routing block (§13 item 3).
+    ``allow_empty_glob`` (A2 §5.1 / U-glob) is the sanctioned escape past
+    a rules route's zero-match or budget-exhausted glob refusal, EITHER
+    scope — the write-the-rule-before-the-files case; the bypass and its
+    reason are recorded in the routing block (§13 item 3, U-glob §6.5).
 
     ``by`` (FW-64, defaulted ``None``): names the actor that CHOSE THE
     DESTINATION, when the CALLER already knows and the ``dest``-is-not-
@@ -2463,6 +2606,7 @@ def route(
                 rules_topic=spec.rules_topic,
                 rules_paths=list(spec.rules_paths) if spec.rules_paths else None,
                 allow_empty_glob=spec.glob_bypass,
+                glob_bypass_reason=spec.glob_bypass_reason,
             )
             if old_id is not None:
                 # teach --supersedes completion-at-route: SAME commit (08 §1

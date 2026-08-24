@@ -276,27 +276,39 @@ class TestObligation2And3ProjectGlobValidation:
         )
         assert routed.routing["allow_empty_glob"] is True
 
-    def test_user_scope_glob_is_parse_only_never_zero_match(self, tmp_path, env):
+    def test_user_scope_zero_match_glob_is_refused(self, tmp_path, env):
+        """U-glob §9.0 T0 case 1 (= T1): the user-scope zero-match
+        fail-open this whole unit exists to close. This test's NAME and
+        its old comment (*"this must NOT raise"*) WERE the fail-open —
+        the anchored probe (§4.3) now refuses a user-scope glob that
+        matches nothing anywhere under $HOME + registered hosts."""
         target = tmp_path / "dot-claude" / "CLAUDE.md"
         target.parent.mkdir()
         target.write_text("# user conduct\n", encoding="utf-8")
         seed_user_record(env)
         write_proposal(
             env.home, OLD,
-            proposal_dict(scope='user', 
+            proposal_dict(scope='user',
                 destination="claude-md", variant="rules", rules_topic="ts-rules",
                 rules_paths=["this/matches/nothing/**/*.ts"],
             ),
         )
-        # No canonical tree for a user-scope glob (U-A2-glob-tree) — this
-        # must NOT raise, unlike the project-scope case above.
-        result = verbs.route(
-            env.home, OLD, user_claude_md=target, chezmoi_bin="chezmoi-definitely-absent",
-        )
-        assert result.commit_sha
+        with pytest.raises(verbs.VerbError, match="match nothing under") as excinfo:
+            verbs.route(
+                env.home, OLD, user_claude_md=target, chezmoi_bin="chezmoi-definitely-absent",
+            )
+        # gate NIT-2: §7.3's "under {roots}" half was unpinned — the
+        # message must name the fixture's actual root (target's
+        # `$HOME`, i.e. `tmp_path`; the paired host-repo nests under it,
+        # per `_user_reachability_roots`, so it never joins `roots`) AND
+        # the repr'd pattern, not just the "match nothing under" prefix.
+        message = str(excinfo.value)
+        assert str(tmp_path) in message
+        assert repr("this/matches/nothing/**/*.ts") in message
+        # a refusal that fires after the ledger commit is not a refusal
+        assert (env.home / "user" / "pending" / f"{OLD}.md").is_file()
         target_rules = target.parent / "rules" / "ts-rules.md"
-        assert target_rules.is_file()
-        assert OLD in target_rules.read_text(encoding="utf-8")
+        assert not target_rules.exists()
 
 
 # =====================================================================
@@ -352,18 +364,91 @@ class TestObligation4LocalPrivacyAndScopeGuard:
 
 
 class TestObligation8RulesTopicCount:
-    def test_over_five_topics_sets_over_cap(self, tmp_path, env):
+    """U-glob §9.0/§13 B-3, T9: `rules_topic_count` stays a raw datum
+    (still asserted, never a trigger); the old `count > 5` /
+    `cap_reason == "rules-topics"` escalation is REPLACED by the
+    co-firing datum (`rules_cofire`) / `cap_reason == "rules-cofire"`.
+    The two existing assertions here are updated, not deleted (§9's own
+    instruction), which is why this class keeps its Obligation-8 name."""
+
+    def test_six_disjoint_topics_do_not_set_over_cap(self, tmp_path, env):
+        """U-glob T9 case 1: a COUNT is not co-firing — six topics whose
+        globs can never match the same file must NOT trip over_cap, even
+        though `rules_topic_count == 6`. This is the defect §1/§2.3
+        exist to fix: today's build reports over_cap here."""
+        target = tmp_path / "dot-claude" / "CLAUDE.md"
+        target.parent.mkdir()
+        target.write_text("# user conduct\n", encoding="utf-8")
+        rules_dir = target.parent / "rules"
+        rules_dir.mkdir()
+        for ext in "abcdef":
+            (rules_dir / f"topic-{ext}.md").write_text(
+                f"---\npaths:\n  - '**/*.{ext}'\n---\n", encoding="utf-8"
+            )
+        result = verbs.surface_fill(env.home, env.home / "user", "user", user_claude_md=target)
+        entry = result["claude-md"]
+        assert entry["rules_topic_count"] == 6
+        assert entry["rules_cofire"]["max_fanin"] == 1
+        assert entry["over_cap"] is False
+        assert entry.get("cap_reason") != "rules-topics"
+
+    def test_six_intersecting_topics_set_over_cap_rules_cofire(self, tmp_path, env):
+        """U-glob T9 case 2: six topics that ALL intersect (identical
+        `**/*.md` globs — trivially "may co-fire" with each other) DOES
+        trip over_cap, with the new reason."""
         target = tmp_path / "dot-claude" / "CLAUDE.md"
         target.parent.mkdir()
         target.write_text("# user conduct\n", encoding="utf-8")
         rules_dir = target.parent / "rules"
         rules_dir.mkdir()
         for i in range(6):
-            (rules_dir / f"topic{i}.md").write_text("x", encoding="utf-8")
+            (rules_dir / f"topic{i}.md").write_text(
+                "---\npaths:\n  - '**/*.md'\n---\n", encoding="utf-8"
+            )
         result = verbs.surface_fill(env.home, env.home / "user", "user", user_claude_md=target)
-        assert result["claude-md"]["rules_topic_count"] == 6
-        assert result["claude-md"]["over_cap"] is True
-        assert result["claude-md"]["cap_reason"] == "rules-topics"
+        entry = result["claude-md"]
+        assert entry["rules_topic_count"] == 6
+        assert entry["rules_cofire"]["max_fanin"] == 6
+        assert entry["over_cap"] is True
+        assert entry["cap_reason"] == "rules-cofire"
+
+    def test_entry_cap_over_cap_survives_orred_with_cofire(self, tmp_path, env):
+        """U-glob T9 case 3: the `over_cap` OR-ing (`verbs.py`'s
+        entries/word-cap escalation) is unaffected by this unit — a
+        target already `over_cap` from routed-entry count keeps
+        `over_cap` True regardless of co-firing, and `cap_reason` is
+        ONLY set when the co-firing signal ALSO fires."""
+        target = tmp_path / "dot-claude" / "CLAUDE.md"
+        target.parent.mkdir()
+        target.write_text("# user conduct\n", encoding="utf-8")
+        # blow past DEFAULT_MAX_ENTRIES (10) on the PLAIN claude-md
+        # target — independent of any rules topic.
+        for i in range(11):
+            rid = f"lrn-e{i:07d}"
+            seed_user_record(env, record_id=rid)
+            verbs.route(
+                env.home, rid, dest="claude-md", user_claude_md=target,
+                chezmoi_bin="chezmoi-definitely-absent",
+            )
+        # no rules/ directory at all yet — over_cap must already be True
+        # from the entries cap alone, with no cap_reason.
+        result = verbs.surface_fill(env.home, env.home / "user", "user", user_claude_md=target)
+        entry = result["claude-md"]
+        assert entry["over_cap"] is True
+        assert "cap_reason" not in entry
+
+        # now ALSO trip the co-firing signal — cap_reason appears,
+        # over_cap stays True (never flips back to False).
+        rules_dir = target.parent / "rules"
+        rules_dir.mkdir()
+        for i in range(6):
+            (rules_dir / f"topic{i}.md").write_text(
+                "---\npaths:\n  - '**/*.md'\n---\n", encoding="utf-8"
+            )
+        result2 = verbs.surface_fill(env.home, env.home / "user", "user", user_claude_md=target)
+        entry2 = result2["claude-md"]
+        assert entry2["over_cap"] is True
+        assert entry2["cap_reason"] == "rules-cofire"
 
     def test_five_or_fewer_leaves_per_file_over_cap_untouched(self, tmp_path, env):
         target = tmp_path / "dot-claude" / "CLAUDE.md"
@@ -425,9 +510,14 @@ class TestObligation10SelfcheckGlobDrift:
         assert "src/foo.ts" in reason
         assert "stale" in reason
 
-    def test_user_scope_glob_not_reasserted_but_presence_still_checked(
+    def test_user_scope_stale_glob_now_fails_drift(
         self, tmp_path, env, monkeypatch
     ):
+        """U-glob §9.0 T0 case 2 (T10's primary case): §6.6 removes the
+        user-scope skip on the DRIFT side too — a user-scope pathed
+        glob that matched at route time and has since gone dead is now
+        reported, the same drift class §6.6 already applies to project
+        scope."""
         target = tmp_path / "dot-claude" / "CLAUDE.md"
         target.parent.mkdir()
         target.write_text("# user conduct\n", encoding="utf-8")
@@ -437,18 +527,53 @@ class TestObligation10SelfcheckGlobDrift:
         # route and its drift check agree on one target, never the real
         # ~/.claude/CLAUDE.md.
         monkeypatch.setattr(selfcheck, "DEFAULT_USER_CLAUDE_MD", target)
+        # fixture-unique literal anchor (§9.0): a file the glob matches,
+        # created before routing so the anchored probe (§4.3) reaches it.
+        fixture_dir = tmp_path / "u-glob-fixture-case2"
+        fixture_dir.mkdir()
+        (fixture_dir / "x.txt").write_text("x", encoding="utf-8")
         seed_user_record(env)
         write_proposal(
             env.home, OLD,
-            proposal_dict(scope='user', 
+            proposal_dict(scope='user',
                 destination="claude-md", variant="rules", rules_topic="ts-rules",
-                rules_paths=["never/matches/anything/**"],
+                rules_paths=["u-glob-fixture-case2/*.txt"],
             ),
         )
         verbs.route(
             env.home, OLD, user_claude_md=target, chezmoi_bin="chezmoi-definitely-absent",
         )
-        # drift is clean despite the eternally-dead glob — never re-asserted
+        # drift is clean while the file still exists
+        ok, reason = selfcheck._check_drift(env.home)
+        assert ok is True
+
+        # the file moved out from under the pattern — now stale
+        (fixture_dir / "x.txt").unlink()
+        ok2, reason2 = selfcheck._check_drift(env.home)
+        assert ok2 is False
+        assert "u-glob-fixture-case2/*.txt" in reason2
+        assert "stale" in reason2
+
+    def test_user_scope_presence_still_checked(
+        self, tmp_path, env, monkeypatch
+    ):
+        """The OTHER half of the old test this reversal replaced: an
+        unpathed user-scope route's PRESENCE (the entry marker) is still
+        checked by drift, independent of any glob re-assertion."""
+        target = tmp_path / "dot-claude" / "CLAUDE.md"
+        target.parent.mkdir()
+        target.write_text("# user conduct\n", encoding="utf-8")
+        monkeypatch.setattr(selfcheck, "DEFAULT_USER_CLAUDE_MD", target)
+        seed_user_record(env)
+        write_proposal(
+            env.home, OLD,
+            proposal_dict(scope='user',
+                destination="claude-md", variant="rules", rules_topic="ts-rules",
+            ),
+        )
+        verbs.route(
+            env.home, OLD, user_claude_md=target, chezmoi_bin="chezmoi-definitely-absent",
+        )
         ok, reason = selfcheck._check_drift(env.home)
         assert ok is True
 
@@ -897,10 +1022,16 @@ class TestObligation19PathsEmitToDisk:
         target = tmp_path / "dot-claude" / "CLAUDE.md"
         target.parent.mkdir()
         target.write_text("# user conduct\n", encoding="utf-8")
+        # U-glob §9.0 T0 case 3: fixture change ONLY — this test is about
+        # frontmatter emission, not reachability, and is grandfathered
+        # from the fixture-unique-literal-anchor rule (§9.0). The glob
+        # must now actually reach a file under the fixture $HOME.
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "x.ts").write_text("x", encoding="utf-8")
         seed_user_record(env)
         write_proposal(
             env.home, OLD,
-            proposal_dict(scope='user', 
+            proposal_dict(scope='user',
                 destination="claude-md", variant="rules", rules_topic="ts-rules",
                 rules_paths=["src/**/*.ts"],
             ),
@@ -1248,15 +1379,46 @@ class TestObligation26ChezmoiManagedRefusal:
         target = tmp_path / "dot-claude" / "CLAUDE.md"
         target.parent.mkdir()
         target.write_text("# user conduct\n", encoding="utf-8")
+        # U-glob §9.0 T0 case 4 / R-2: a fixture-unique literal anchor
+        # (its own rule) rather than the bare `a/**` — and the glob must
+        # actually REACH a file, so the chezmoi refusal (not the glob
+        # refusal) is what fires here; the glob-first ordering itself is
+        # pinned separately below.
+        (tmp_path / "u-glob-a11a-fixture").mkdir()
+        (tmp_path / "u-glob-a11a-fixture" / "x").write_text("x", encoding="utf-8")
         seed_user_record(env)
         write_proposal(
             env.home, OLD,
-            proposal_dict(scope='user', 
+            proposal_dict(scope='user',
                 destination="claude-md", variant="rules", rules_topic="managed-topic",
-                rules_paths=["a/**"],
+                rules_paths=["u-glob-a11a-fixture/**"],
             ),
         )
         with pytest.raises(verbs.VerbError, match="chezmoi"):
+            verbs.route(env.home, OLD, user_claude_md=target)
+        assert (env.home / "user" / "pending" / f"{OLD}.md").is_file()
+
+    def test_pathed_route_refuses_dead_glob_before_chezmoi_on_managed(
+        self, tmp_path, env, chezmoi_shim
+    ):
+        """U-glob §6.3/§9.0: the glob check runs BEFORE the chezmoi-
+        managed refusal — a chezmoi-managed target with a DEAD glob
+        names the dead glob (the thing the human can fix), never the
+        management state. Same managed fixture as A11a above, minus the
+        matching file, pinning the ordering that test would otherwise
+        leave untested."""
+        target = tmp_path / "dot-claude" / "CLAUDE.md"
+        target.parent.mkdir()
+        target.write_text("# user conduct\n", encoding="utf-8")
+        seed_user_record(env)
+        write_proposal(
+            env.home, OLD,
+            proposal_dict(scope='user',
+                destination="claude-md", variant="rules", rules_topic="managed-topic",
+                rules_paths=["u-glob-a11a-fixture/**"],
+            ),
+        )
+        with pytest.raises(verbs.VerbError, match="match nothing under"):
             verbs.route(env.home, OLD, user_claude_md=target)
         assert (env.home / "user" / "pending" / f"{OLD}.md").is_file()
 
@@ -1569,6 +1731,14 @@ class TestObligation29TwoRoadsProduceIdenticalBytes:
     and equal routing blocks."""
 
     def test_bare_and_explicit_dest_produce_identical_output(self, tmp_path):
+        # U-glob: this test's fixture $HOME is `tmp_path` (both targets'
+        # `.parent.parent`) — a fifth casualty the spec's own §9.0 impact
+        # analysis did not enumerate, found empirically: `**/*.py`
+        # matched nothing anywhere under either sandbox before this
+        # unit's user-scope zero-match refusal, so a file that satisfies
+        # it is now required (the same systemic rule §9.0 states for
+        # every other user-scope pathed fixture).
+        (tmp_path / "sentinel.py").write_text("x", encoding="utf-8")
         sandbox1 = make_env(tmp_path / "s1")
         sandbox2 = make_env(tmp_path / "s2")
         rid = "lrn-00000001"
