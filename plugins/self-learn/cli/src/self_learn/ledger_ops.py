@@ -1367,6 +1367,45 @@ def _validate_derivation(data: dict, *, scope: str | None = None) -> None:
 
     stated_outcome = gates.get("outcome")
     derived_outcome = gates_mod.expected_outcome(gates, scope)
+
+    # R-ALWAYS-EV (u-always spec §4.2): an ALWAYS outcome — stated or
+    # derived — over a barren t4 (no promoting signal anywhere in its own
+    # trace) is refused, naming the missing evidence and the cheaper
+    # alternatives. Both disjuncts are load-bearing (§1.1 item 2):
+    # `stated_outcome` makes the rule reachable today, intercepting the
+    # case Table-1's own mismatch check already catches; `derived_outcome`
+    # keeps the rule independent of Table-1 — reachable even if L5, L6,
+    # or `_PROMOTING_FS_VERDICTS` is ever loosened so a barren trace
+    # starts deriving ALWAYS on its own (T5).
+    if stated_outcome == "ALWAYS" or derived_outcome == "ALWAYS":
+        t4 = gates.get("t4")
+        if isinstance(t4, dict):
+            fs = t4.get("fs") or {}
+            cm = t4.get("conduct_mode") or {}
+            cm_answer = cm.get("answer")
+            e1 = gates.get("e1") or {}
+            # `promoting_e1` MUST come from `e1_promote` itself (§4.1) —
+            # never a second inline copy of its >= 2 threshold.
+            barren = (
+                fs.get("verdict") == "INDETERMINATE"
+                and cm_answer != "yes"
+                and not gates_mod.e1_promote(gates)
+            )
+            if barren:
+                raise ProposalError(
+                    "gates.outcome ALWAYS has no promoting evidence in its own trace: "
+                    "gates.t4.fs.verdict is 'INDETERMINATE' (needs 'SILENT' or 'COSTLY'), "
+                    f"gates.t4.conduct_mode.answer is {cm_answer!r} (needs 'yes'), and gates.e1 shows "
+                    f"no recurrence (sightings={e1.get('sightings')!r}, "
+                    f"post_demand_recurrence={e1.get('post_demand_recurrence')!r}; needs "
+                    "sightings >= 2 AND post_demand_recurrence true). Any ONE of those three "
+                    f"promotes. Table-1 derives {derived_outcome!r} for scope {scope!r}. The always-on "
+                    "shelf is not the fallback for a missing cheap one — route PATHED "
+                    "(variant: rules with rules_paths) if the lesson has a path trigger, "
+                    "SKILL if an owning skill holds it, or defer with flag 'no-cheap-surface' "
+                    "if neither has a surface at this scope."
+                )
+
     if stated_outcome != derived_outcome:
         raise ProposalError(
             f"gates.outcome is {stated_outcome!r} but Table-1 derives "
@@ -1453,6 +1492,22 @@ def _validate_derivation(data: dict, *, scope: str | None = None) -> None:
             raise ProposalError(
                 f"destination must be 'claude-md' for outcome ALWAYS, got "
                 f"{destination!r}"
+            )
+        # R-ALWAYS-FLAG (u-always spec §4.4): ALWAYS is routable at every
+        # scope (`_routable`), so R-SCOPE can never legitimately attach
+        # `no-cheap-surface` to an ALWAYS proposal — mechanizes the
+        # doctrine's "never a silent upgrade to ALWAYS" sentence (§3).
+        # Coverage is ALWAYS-only by deliberate scoping (§4.4) — a HOOK
+        # proposal carrying the flag stays accepted, an accepted residual.
+        if "no-cheap-surface" in flags:
+            raise ProposalError(
+                "gates.outcome ALWAYS must not carry the 'no-cheap-surface' flag. ALWAYS "
+                "is routable at every scope, so the flag can only mean the always-on "
+                "shelf was chosen because a cheaper one was missing — and Table-1 derives "
+                "'ALWAYS' here on the trace's own answers. routing-doctrine §3: the two "
+                "no-surface corners (DEMAND at user scope, PATHED at skill scope) render "
+                "recommendation: defer with this flag; they never render ALWAYS. Drop the "
+                "flag if the ALWAYS evidence is real, or defer on the honest destination."
             )
         if data.get("variant") == "rules" and data.get("rules_paths"):
             raise ProposalError(

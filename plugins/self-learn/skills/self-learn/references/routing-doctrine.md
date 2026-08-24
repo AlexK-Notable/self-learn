@@ -198,7 +198,15 @@ apply the same failure-signature question as T3a
 (`fs.verdict`/recurrence) — `SILENT`/`COSTLY`, or a recurrence, promotes
 to `ALWAYS`; anything else stays `DEMAND`. The default, absent any
 promoting evidence, is the **cheap** tier — `ALWAYS` is reached only
-when the record's own evidence argues for it, never by default.
+when the record's own evidence argues for it, never by default. **The
+validator enforces this, not just this doctrine:** it refuses an
+`ALWAYS` outcome whose `t4.fs.verdict` is `INDETERMINATE` with no
+recurrence and whose `t4.conduct_mode.answer` is `no` — naming all
+three promoting signals by field path (`t4.fs.verdict`,
+`t4.conduct_mode.answer`, `e1.sightings`/`e1.post_demand_recurrence`;
+any ONE promotes) and the alternatives: route `PATHED` if the lesson
+has a path trigger, `SKILL` if an owning skill holds it, or defer with
+flag `no-cheap-surface` if neither has a surface at this scope.
 
 **E1 — recurrence.** Not a question you answer fresh; a count you carry
 forward (`sightings`, `post_demand_recurrence`) that T3a and T4 read
@@ -242,10 +250,14 @@ DEMAND at user scope and PATHED at skill scope both render
 `recommendation: defer` with flag `no-cheap-surface`, the honest
 destination left recorded — and **never a silent upgrade to `ALWAYS`**,
 which is the single-destination failure this whole procedure exists to
-prevent. Before deferring either corner, ask whether the trigger's
-artifacts live inside one repo; if so, flag `rehome-suggested` and say
-so in the card — at project scope the same lesson may have a cheap
-surface the human can move it to.
+prevent. This is now mechanized, not just prose: an `ALWAYS` proposal
+carrying flag `no-cheap-surface` is refused by the validator — the flag
+can only mean a cheaper shelf was missing, and `ALWAYS` is routable at
+every scope, so the two never legitimately co-occur. Before deferring
+either corner, ask whether the trigger's artifacts live inside one
+repo; if so, flag `rehome-suggested` and say so in the card — at
+project scope the same lesson may have a cheap surface the human can
+move it to.
 
 **The narrowest-surface bias is a tiebreak WITHIN a tier, after the
 gates have already chosen it — never a way to choose between tiers.**
