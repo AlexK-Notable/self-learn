@@ -712,7 +712,7 @@ the counter-example that says a guard without a dedicated test kills nothing.
 | **M9** | `_validate_dismissal` stops requiring `ref` | **T-VALIDATOR-REF** | *predicted* — this is the §4.3 asymmetry; nothing else in the codebase enforces it |
 | **M10** | write `dismissed_at` as the event's `ts` instead of today | **T-TWO-CLOCKS** | *predicted* |
 | **M11** | omit `basis` from the entry | **T-BASIS-COPIED** | *predicted* |
-| **M12** | append to `recurrences[]` instead of `dismissed_suspects[]` | **T-NOT-A-RECURRENCE, T-CLEARS** | *predicted* — the polarity mutation: it would also clear the row, so T-CLEARS alone cannot catch it |
+| **M12** | append to `recurrences[]` instead of `dismissed_suspects[]` | **T-NOT-A-RECURRENCE** | **measured** — killer: T-NOT-A-RECURRENCE (+8 collateral: T-ENTRY-SHAPE, T-BASIS-COPIED, T-TWO-CLOCKS, T-DOUBLE-DISMISS, T-DISMISSED-THEN-CONFIRM, T-ROUTED-LIVE-COUNT, T-DISMISSALS-SURVIVE-SUPERSEDE, T-REPORT-JSON). T-CLEARS green BY DESIGN, as originally predicted: the mutated write still lands in `recurrences[]`, which satisfies `report.py`’s pre-existing already-confirmed filter (§2.1 condition 4) — the row still empties, so T-CLEARS alone cannot distinguish this mutation from a correct dismissal |
 | **M13** | delete the telemetry event after a successful dismissal | **T-EVENT-PRESERVED** | *predicted* |
 | **M14** | commit subject changed to `self-learn: recurrence confirmed on …` | **T-SUBJECT** | *predicted* |
 | **M15** | drop `"dismissed_suspects"` from the `routed_live` row (§7b) | **T-ROUTED-LIVE-COUNT** | *predicted* |
@@ -736,7 +736,7 @@ as a criterion that cannot fail, seen from the other side — but the plan is
 not padded to one-mutation-per-test, and a mutation that duplicates another's
 kill teaches the gate nothing.
 
-**Covered (22):** T-CLEARS (M1, M2, M12, M20) · T-SECOND-SIGHTING-SURVIVES
+**Covered (22):** T-CLEARS (M1, M2, M20) · T-SECOND-SIGHTING-SURVIVES
 (M2) · T-ENTRY-SHAPE (M18) · T-BASIS-COPIED (M11) · T-TWO-CLOCKS (M10, M18) ·
 T-NOT-A-RECURRENCE (M12) · T-DOUBLE-DISMISS (M3) · T-CONFIRMED-THEN-DISMISS
 (M5) · T-NOT-ROUTED (M4) · T-UNKNOWN-EVENT (M19) · T-EVENT-BELONGS (M6, M19) ·

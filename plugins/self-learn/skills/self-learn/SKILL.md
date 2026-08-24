@@ -39,6 +39,7 @@ prompt after.
 | `supersede <old> <new>` | Mark a lesson corrected by a newer one (metadata + recompile) |
 | `route <survivor> --collapse <cluster-id>` | Collapse a worker-proposed duplicate cluster in ONE commit: evidence merged, sightings summed, losers superseded by the survivor |
 | `confirm-recurrence <id> --event <nonce> [--tolerate --note …]` | A routed rule was sighted failing again: append the dated recurrence (facts copied from the telemetry event). Tolerate = the rule stays, with the why |
+| `dismiss-suspect <id> --event <nonce> --why <reason> [--note …]` | A recurrence suspect was a matcher false-positive, not a real recurrence: append the dismissal (facts copied from the telemetry event, which is preserved untouched) |
 | `confirm-held <id>` | A routed rule was seen working: stamp `last_confirmed` (the staleness metric is age-since-confirmation) |
 | `link contradicts <id> <target>` | First-class contradiction edge to a record id or canon anchor |
 | `worker kick` / `worker run [--coalesce]` | Background pre-analysis: teach/import kick a coalescing window (flock + pidfile; no scheduler); the run writes proposals via a write-restricted `claude -p` (no Bash/Edit), validates + stamps them, emits events + notifications |

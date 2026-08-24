@@ -216,8 +216,16 @@ tolerate, or retire?"* The resolutions map to verbs:
 - **Retire** → discuss; retirement without a successor is
   `self-learn graduate <id>` (woven into canon) or a bare supersede —
   the user chooses, you never guess.
+- **Dismiss** → `self-learn dismiss-suspect <id> --event <nonce> --why
+  <reason> [--note "<why it's false>"]` — the sighting was a matcher
+  false-positive, not a recurrence at all; the telemetry event is
+  preserved, only the card clears.
 A plain confirmation (recurrence is real, fix comes later) is
-`confirm-recurrence` without `--tolerate`.
+`confirm-recurrence` without `--tolerate`. Read `basis` before choosing
+Tolerate vs Dismiss: `fire-violated` is the model's own report that it
+broke the rule, while `miner-match` and `title-token-overlap` are
+text-similarity heuristics that can fire on a lesson nobody actually
+violated.
 
 Read each verb's output line: it reports the commit and push state. Show
 the CLI's message verbatim on the card and never work around it with

@@ -312,6 +312,15 @@ class Record:
         return tuple(copy.deepcopy(dict(r)) for r in self._fm.get("recurrences") or [])
 
     @property
+    def dismissed_suspects(self) -> tuple:
+        """Read-only view of the append-only suspect-dismissal list
+        (11 §2.2, U-dismiss §4): a recurrence-suspect telemetry claim the
+        human judged to be a matcher false-positive, never a recurrence."""
+        return tuple(
+            copy.deepcopy(dict(d)) for d in self._fm.get("dismissed_suspects") or []
+        )
+
+    @property
     def last_confirmed(self):
         return self._fm.get("last_confirmed")
 
@@ -586,6 +595,17 @@ class Record:
             self._fm["recurrences"] = []
         self._fm["recurrences"].append(dict(entry))
 
+    def append_dismissed_suspect(self, entry: dict) -> None:
+        """Append one dismissed recurrence suspect (11 §2.2, U-dismiss §4)
+        — append-only, dated, carrying the minimal facts copied OUT of the
+        telemetry event; unlike :meth:`append_recurrence`, ``ref`` is
+        REQUIRED here (§4.3 asymmetry): without the nonce a dismissal
+        clears nothing and means nothing."""
+        _validate_dismissal(entry)
+        if self._fm.get("dismissed_suspects") is None:
+            self._fm["dismissed_suspects"] = []
+        self._fm["dismissed_suspects"].append(dict(entry))
+
     def append_contradicts(self, target: str) -> None:
         """Append one contradiction edge (11 §2.4): a record id or a canon
         anchor string."""
@@ -724,6 +744,12 @@ class Record:
                 raise ValidationError("recurrences must be a list")
             for entry in recurrences:
                 _validate_recurrence(entry)
+        dismissed_suspects = fm.get("dismissed_suspects")
+        if dismissed_suspects is not None:
+            if not isinstance(dismissed_suspects, list):
+                raise ValidationError("dismissed_suspects must be a list")
+            for entry in dismissed_suspects:
+                _validate_dismissal(entry)
         links = fm.get("links")
         if links is not None:
             _validate_links(links)
@@ -786,6 +812,23 @@ def _validate_recurrence(entry: object) -> None:
         value = entry.get(key)
         if value is None or (isinstance(value, str) and not value.strip()):
             raise ValidationError(f"recurrence needs {key} (11 §2.2), got {entry!r}")
+
+
+def _validate_dismissal(entry: object) -> None:
+    """One dismissed recurrence suspect (11 §2.2, U-dismiss §4.3): ``ref``
+    + ``ts`` + ``why`` are the minimal facts. Unlike
+    :func:`_validate_recurrence`, ``ref`` is REQUIRED — a dismissal is a
+    fact about one specific machine claim, and without the nonce it
+    clears nothing and means nothing. No enum check on ``why`` here
+    (U-dismiss §5): that lives at the CLI (argparse ``choices=``) so a
+    record written under an older, smaller enum never retroactively
+    fails validation."""
+    if not isinstance(entry, dict) or not entry:
+        raise ValidationError(f"dismissal must be a non-empty mapping, got {entry!r}")
+    for key in ("ref", "ts", "why"):
+        value = entry.get(key)
+        if value is None or (isinstance(value, str) and not value.strip()):
+            raise ValidationError(f"dismissal needs {key} (11 §2.2), got {entry!r}")
 
 
 def _validate_links(links: object) -> None:

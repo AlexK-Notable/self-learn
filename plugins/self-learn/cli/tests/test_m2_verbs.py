@@ -354,6 +354,26 @@ def test_confirm_held_refuses_non_routed(env):
     assert rc == 1
 
 
+def test_confirm_recurrence_refuses_non_routed(env, capsys):
+    """T-SHIPPED-NOT-ROUTED-GUARD (U-dismiss spec §10 A3/§11, ruled in
+    scope by §13 N1): the ``status != "routed"`` guard in the SHIPPED
+    ``verbs.confirm_recurrence`` (verbs.py:4282-4286) was measured to
+    kill ZERO tests across the whole CLI suite — this is its courtesy
+    killer. It tests only existing, unchanged behaviour and modifies no
+    shipped code (§9 item 6 fences the code, not tests over it); modelled
+    on the sibling ``test_confirm_held_refuses_non_routed`` above, same
+    shape for the same reason on the neighbouring verb."""
+    rid = seed_routed(env)
+    nonce = spool_suspect(env, rid)
+    assert cli.main(["graduate", rid, "--no-push"]) == 0
+    capsys.readouterr()
+    rc = cli.main(["confirm-recurrence", rid, "--event", nonce, "--no-push"])
+    assert rc == 1
+    assert "recurrences confirm" in capsys.readouterr().err
+    record = Record.from_path(env.ledger / "resolved" / f"{rid}.md")
+    assert record.recurrences == ()
+
+
 def test_link_contradicts_appends_edge(env):
     rid = seed_routed(env)
     rc = cli.main(
