@@ -34,6 +34,8 @@ from support import (
 
 SKILL_MD = SKILL_MD_SEED.format(name="s")
 
+FAKE_CLI = Path(__file__).parent / "fixtures" / "fake_claude.py"
+
 # doc 13 T-H3: the routing doctrine now ships with the CLI PACKAGE (one
 # file, package-relative) — it is ALWAYS present, no longer installed into
 # any home. Tests read the shipped text rather than seeding their own.
@@ -144,21 +146,31 @@ def env(tmp_path, monkeypatch):
 
 @pytest.fixture
 def claude_cli_shim_analyst(tmp_path, monkeypatch):
-    """PATH-shimmed fake `claude`: records argv (one arg per line) to
-    CLAUDE_SHIM_LOG, its resolved cwd (`pwd -P`) to CLAUDE_SHIM_CWD, and
-    emits CLAUDE_SHIM_OUT on stdout."""
-    shim_dir = tmp_path / "shim-bin"
-    shim_dir.mkdir()
-    write_analyst_claude_shim(shim_dir)
+    """U-cleanup-A migration: SDK-backed replacement for the bash PATH
+    shim, keeping the EXACT interface every dependent test already reads
+    (``["log"]``, ``["out"]``, ``["cwd"]``). Routes `analyst.analyze`'s
+    invocation through `SdkBackend` against `tests/fixtures/fake_claude.py`
+    with `FAKE_CLAUDE_FORCE_SCENARIO=analyst_result` -- the SAME
+    scenario/knob pair `test_u_sdka.py::leg`'s sdk branch already uses for
+    this surface (`FAKE_CLAUDE_OUT` is the wire-level counterpart of
+    `CLAUDE_SHIM_OUT`: the shim used to `cat` it to stdout, the SDK
+    scenario emits its text as the terminating `ResultMessage.result`,
+    E-7 branch 1). A caller that writes `["out"]` BEFORE `analyst.analyze`
+    runs needs no other change."""
     log = tmp_path / "claude-shim-argv.log"
     cwd_log = tmp_path / "claude-shim-cwd.log"
     out = tmp_path / "claude-shim-stdout.txt"
     out.write_text("", encoding="utf-8")
-    monkeypatch.setenv("PATH", f"{shim_dir}{os.pathsep}{os.environ['PATH']}")
-    monkeypatch.setenv("CLAUDE_SHIM_LOG", str(log))
-    monkeypatch.setenv("CLAUDE_SHIM_CWD", str(cwd_log))
-    monkeypatch.setenv("CLAUDE_SHIM_OUT", str(out))
-    return {"log": log, "out": out, "cwd": cwd_log}
+    monkeypatch.setenv("SELF_LEARN_BACKEND_ANALYST", "sdk")
+    monkeypatch.setenv("SELF_LEARN_SDK_CLI_PATH", str(FAKE_CLI))
+    monkeypatch.setenv("CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK", "1")
+    monkeypatch.setenv("FAKE_CLAUDE_FORCE_SCENARIO", "analyst_result")
+    monkeypatch.setenv("FAKE_CLAUDE_OUT", str(out))
+    monkeypatch.setenv("FAKE_CLAUDE_ARGV_LOG", str(log))
+    monkeypatch.setenv("FAKE_CLAUDE_CWD_LOG", str(cwd_log))
+    prompt_log = tmp_path / "claude-shim-prompt.log"
+    monkeypatch.setenv("FAKE_CLAUDE_PROMPT_LOG", str(prompt_log))
+    return {"log": log, "out": out, "cwd": cwd_log, "prompt": prompt_log}
 
 
 def seed_pending(env, rid="lrn-0000aaaa", **kwargs):
@@ -284,18 +296,19 @@ def test_teach_route_analyst_routes_to_shim_destination(env, claude_cli_shim_ana
     assert env.remote_subject() == f"self-learn: route {record.id} → skill-md"
     assert "analyst: destination skill-md" in out
 
-    # The recorded invocation: doctrine as system prompt, restricted tools,
-    # pinned default model, record content riding the prompt.
+    # The recorded invocation: doctrine as system prompt, pinned default
+    # model, record content riding the prompt. U-cleanup-A migration
+    # (§3.4's own measurement names THIS test the one genuine claude-argv
+    # test in test_route_cli.py): `-p <prompt>` and `--allowedTools` are
+    # CLI-transport-only — measured live, the sdk backend's real argv
+    # carries neither (the prompt rides the wire via `ClaudeSDKClient.
+    # query`, never argv; allowed-tool enforcement is the `can_use_tool`
+    # charter, `CH1`-`CH13`, not a CLI flag) — `--append-system-prompt`
+    # and `--model` DO still appear and are unchanged assertions.
     argv = claude_cli_shim_analyst["log"].read_text(encoding="utf-8").split("\0")[:-1]
-    assert "-p" in argv
     assert argv[argv.index("--append-system-prompt") + 1] == DOCTRINE_TEXT
     assert argv[argv.index("--model") + 1] == DEFAULT_ANALYST_MODEL
-    allowed = argv[argv.index("--allowedTools") + 1]
-    # The exact-string equality IS the no-write-tools assertion — a
-    # separate "Bash not in allowed" check could never fail (audit
-    # 2026-07-15: removed as a can't-fail assertion).
-    assert allowed == ANALYST_ALLOWED_TOOLS == "Read,Grep,Glob"
-    prompt = argv[argv.index("-p") + 1]
+    prompt = claude_cli_shim_analyst["prompt"].read_text(encoding="utf-8")
     assert "About to edit .storage while HA is running." in prompt
 
 

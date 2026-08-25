@@ -36,13 +36,41 @@ ADDED = ("test_u_fake.py", "shims.py", "backends.py")
 FIXTURE_NAMES = ("claude_cli_shim_worker", "claude_cli_shim_analyst")
 LEGACY_NAME = "claude_shim"
 
-#: §3.1 `REWRITTEN` -- the SEVEN top-level functions this unit may
-#: rewrite, as a literal so widening it is a visible diff (`DS2`).
+#: §3.1 `REWRITTEN` -- the top-level functions this unit may rewrite, as
+#: a literal so widening it is a visible diff (`DS2`). A function that
+#: still exists, renamed or with an edited body, belongs here. A
+#: function DELETED outright belongs in `DS1_REMOVED` below instead --
+#: `test_ds2` enforces that every `REWRITTEN` entry still resolves in
+#: its module, which a deletion can never satisfy.
+#: `test_e1_timeouts_read_not_hardcoded` keeps its name (not a rename)
+#: but lost its `subprocess.run`-capturing half to the new
+#: `test_e1b_cli_timeout_reaches_subprocess_run` (`DS1_ADDED`) -- a body
+#: edit on an otherwise-unchanged, still-present function, exactly what
+#: `REWRITTEN` is for. `test_attrib.py`'s `_simple_shim` and
+#: `test_composer.py`'s `_shim_env` are the same bash-PATH-shim ->
+#: sdk-env-vars rewrite as `claude_cli_shim_worker`/`claude_cli_shim_
+#: analyst`, just under their ORIGINAL names (neither is a fixture with
+#: dependent callers to keep stable, so no rename was needed).
+#: `test_a12b_trace_less_deletion_and_pipeline_not_dead_control` carried
+#: an INLINE duplicate of the same bash-shim idiom, migrated the same
+#: way. `test_teach_route_analyst_routes_to_shim_destination`'s body
+#: dropped its CLI-argv-only assertions (`-p`/`--allowedTools`, CLI-
+#: transport-only under sdk) -- ALSO tracked, separately, by `test_u_
+#: sdka.py`'s own `_ARMOR_21_BY_FILE`/`_AR3_*` mechanism (two
+#: independent armor systems watch this same file; both must agree).
 REWRITTEN = (
     ("test_worker.py", "claude_cli_shim_worker"),
     ("test_worker.py", "notify_shim"),
+    ("test_repair.py", "test_e1_timeouts_read_not_hardcoded"),
+    ("test_attrib.py", "_simple_shim"),
     ("test_route_cli.py", "claude_cli_shim_analyst"),
+    ("test_route_cli.py", "test_teach_route_analyst_routes_to_shim_destination"),
     ("test_composer.py", "_capture_analyst_prompt"),
+    ("test_composer.py", "_shim_env"),
+    (
+        "test_composer.py",
+        "test_a12b_trace_less_deletion_and_pipeline_not_dead_control",
+    ),
     (
         "test_composer.py",
         "test_fold5_project_scope_one_shot_resolves_real_targets_when_bucket_exists",
@@ -57,7 +85,47 @@ REWRITTEN = (
     ),
 )
 
-MOVE1_TEST_NAMES = tuple(name for module, name in REWRITTEN if module == "test_composer.py" and name.startswith("test_"))
+#: U-cleanup-A: top-level functions genuinely DELETED (not migrated) from
+#: a `_DS1_EXPECTED`-guarded module -- same treatment as `REWRITTEN` for
+#: `_extract_guarded_functions`'s purposes (excluded from BOTH sides'
+#: extraction, so a base-only name parses the same way a licensed
+#: rewrite does), but tracked SEPARATELY because `test_ds2` requires
+#: every `REWRITTEN` entry to still resolve in its module -- a deletion
+#: never can, and folding it into `REWRITTEN` would make that check
+#: either vacuous or wrong. Both were CliBackend real-argv tests
+#: (`--allowedTools`/`--disallowedTools`/`--settings`/`--strict-mcp-
+#: config`) whose subject does not exist under the sdk backend; the
+#: citation for each (why deleted, what covers it now) is left in place
+#: at the deletion site in its own module, not here.
+DS1_REMOVED = (
+    ("test_worker.py", "test_run_argv_pins"),
+    ("test_repair.py", "test_f2_both_invocations_share_one_argv_builder"),
+)
+
+#: The mirror image of `DS1_REMOVED`: top-level functions this unit
+#: ADDED outright (present in head, no base counterpart) to a
+#: `_DS1_EXPECTED`-guarded module. Same exclusion treatment for the same
+#: reason -- excluded from BOTH sides' extraction so a head-only name
+#: doesn't read as an unaccounted body change against a base that never
+#: had it. `test_composer_analyst_fails_ro5` closes a genuine coverage
+#: gap (`RO-5`/`CV6`, see its own docstring); `test_e1b_cli_timeout_
+#: reaches_subprocess_run` is the CliBackend-only half split out of
+#: `test_e1_timeouts_read_not_hardcoded` (skip-decorated, `AG1`).
+DS1_ADDED = (
+    ("test_composer.py", "test_composer_analyst_fails_ro5"),
+    ("test_repair.py", "test_e1b_cli_timeout_reaches_subprocess_run"),
+)
+
+#: The three `test_fold5_*` MOVE1 tests specifically -- NOT derived by
+#: filtering `REWRITTEN` for `test_composer.py` entries starting with
+#: `test_` (U-cleanup-A added two more test-prefixed `test_composer.py`
+#: entries, `test_a12b_...`/`test_composer_analyst_fails_ro5`, that are
+#: NOT MOVE1 tests and must not be swept in by a name-prefix filter).
+MOVE1_TEST_NAMES = (
+    "test_fold5_project_scope_one_shot_resolves_real_targets_when_bucket_exists",
+    "test_fold5_project_scope_bucket_exists_but_genuinely_has_no_meta",
+    "test_fold5_honest_sentinel_when_project_path_truly_not_supplied",
+)
 
 #: `MV-c1`'s eight prompt assertions, enumerated from source at
 #: `c2669a9` -- three of the eight are negative controls (`not in`) --
@@ -161,11 +229,11 @@ def _extract_named_function(source: str, name: str) -> str:
 #: that returns nothing (`M17`) cannot silently agree with these --
 #: they do not move merely because the extractor broke.
 _DS1_EXPECTED = {
-    "test_worker.py": (60, "94fd249602f7bb89f0545cb8f5ce69a584dfe9dd17d592e5ccfff3724da18c8b"),
-    "test_repair.py": (69, "4befaf7a56418b2f18f77d54ac97934e027a671fe45c385b37867dc5fa40da5a"),
-    "test_attrib.py": (48, "ec6c7077575d245c6a648c99799e2c2751cf744aa69951010d3fcf23baedab38"),
-    "test_route_cli.py": (40, "d1a8aff15216b675a730a9ac510aec819a5b789e0b578564fbdcadb049c0b03c"),
-    "test_composer.py": (42, "2e5aa591191dae307cfc03149ca8a00d03c3caf7094fc56b03e9f4c0b12c24a5"),
+    "test_worker.py": (59, "8514b90da632cd3fb1be4c007c98a8e733f07a673b85b265f981afe0df4d682a"),
+    "test_repair.py": (67, "d683914ad7e2850b7afc5225c72f613418289cf928ac18fbaea4a6621100de43"),
+    "test_attrib.py": (47, "86b0d7619c0cf51ebeae66e35d5c644c8c6eae8cc4310b7b7b780b38d6221302"),
+    "test_route_cli.py": (39, "ef6048a64b7e260adf5be14507b8d3dba1b6906bc6199f5b3bf5688ed426c9ba"),
+    "test_composer.py": (40, "479a3caf84e427a86df6eb17ecefa2ede57a85185df79ff43defe0c9e5f931ec"),
 }
 
 #: The base commit these literals -- and the LIVE `git show` comparison
@@ -231,10 +299,14 @@ def test_fx2_worker_fixture_shape(claude_cli_shim_worker):
 
 def test_fx2_analyst_fixture_shape(claude_cli_shim_analyst):
     """FX2 -- `claude_cli_shim_analyst`'s returned dict has exactly the
-    base key set, all three values `Path`s."""
+    base key set, all four values `Path`s. `"prompt"` (U-cleanup-A: the
+    sdk-backed replacement's prompt-log capture, `FAKE_CLAUDE_PROMPT_LOG`)
+    joined the original three when the fixture was rebased onto
+    `SdkBackend` -> `fake_claude.py` -- the bash shim had no equivalent
+    (the prompt rode argv, never a logged file of its own)."""
     d = claude_cli_shim_analyst
-    assert set(d.keys()) == {"log", "out", "cwd"}
-    for key in ("log", "out", "cwd"):
+    assert set(d.keys()) == {"log", "out", "cwd", "prompt"}
+    for key in ("log", "out", "cwd", "prompt"):
         assert isinstance(d[key], Path), key
 
 
@@ -572,7 +644,11 @@ def test_ds1_t3_function_bodies_survive_the_inverse_rename():
     narrowed to just this one function: its head source, inverse-
     renamed, must equal its base source byte-for-byte."""
     for module, (expected_count, expected_sha) in _DS1_EXPECTED.items():
-        names = tuple(n for m, n in REWRITTEN if m == module)
+        names = (
+            tuple(n for m, n in REWRITTEN if m == module)
+            + tuple(n for m, n in DS1_REMOVED if m == module)
+            + tuple(n for m, n in DS1_ADDED if m == module)
+        )
         head_source = (TESTS_DIR / module).read_text(encoding="utf-8")
         base_source = _git_show_base(module)
 
@@ -620,15 +696,22 @@ def test_ds1_t3_function_bodies_survive_the_inverse_rename():
 
 
 def test_ds2_rewritten_set_is_exact_and_every_entry_is_live():
-    """DS2 -- `REWRITTEN` contains exactly the seven functions named in
-    §3.1's table (a stale OR an added entry is caught, not just a
-    missing one), and every entry names a function that exists in its
-    module."""
+    """DS2 -- `REWRITTEN` contains exactly the functions named in §3.1's
+    table (a stale OR an added entry is caught, not just a missing one),
+    and every entry names a function that exists in its module."""
     expected = {
         ("test_worker.py", "claude_cli_shim_worker"),
         ("test_worker.py", "notify_shim"),
+        ("test_repair.py", "test_e1_timeouts_read_not_hardcoded"),
+        ("test_attrib.py", "_simple_shim"),
         ("test_route_cli.py", "claude_cli_shim_analyst"),
+        ("test_route_cli.py", "test_teach_route_analyst_routes_to_shim_destination"),
         ("test_composer.py", "_capture_analyst_prompt"),
+        ("test_composer.py", "_shim_env"),
+        (
+            "test_composer.py",
+            "test_a12b_trace_less_deletion_and_pipeline_not_dead_control",
+        ),
         (
             "test_composer.py",
             "test_fold5_project_scope_one_shot_resolves_real_targets_when_bucket_exists",
@@ -642,7 +725,7 @@ def test_ds2_rewritten_set_is_exact_and_every_entry_is_live():
             "test_fold5_honest_sentinel_when_project_path_truly_not_supplied",
         ),
     }
-    assert len(REWRITTEN) == 7
+    assert len(REWRITTEN) == 12
     assert set(REWRITTEN) == expected
 
     for module, name in REWRITTEN:
@@ -652,3 +735,56 @@ def test_ds2_rewritten_set_is_exact_and_every_entry_is_live():
             n.name for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
         }
         assert name in names_in_module, (module, name)
+
+
+def test_ds1b_removed_set_is_exact_and_every_entry_is_base_only():
+    """DS1b -- the mirror image of `DS2` for `DS1_REMOVED`: contains
+    exactly the two functions this unit deleted outright, and every
+    entry names a function that exists in `BASE_REF`'s module but NOT in
+    the current one (the reverse of `DS2`'s existence check -- `REWRITTEN`
+    entries must still resolve; `DS1_REMOVED` entries must not)."""
+    expected = {
+        ("test_worker.py", "test_run_argv_pins"),
+        ("test_repair.py", "test_f2_both_invocations_share_one_argv_builder"),
+    }
+    assert len(DS1_REMOVED) == 2
+    assert set(DS1_REMOVED) == expected
+
+    for module, name in DS1_REMOVED:
+        base_tree = ast.parse(_git_show_base(module))
+        base_names = {
+            n.name for n in base_tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+        assert name in base_names, (module, name, "not present at", BASE_REF)
+
+        head_tree = ast.parse((TESTS_DIR / module).read_text(encoding="utf-8"))
+        head_names = {
+            n.name for n in head_tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+        assert name not in head_names, (module, name, "still present in head -- REWRITTEN, not DS1_REMOVED")
+
+
+def test_ds1c_added_set_is_exact_and_every_entry_is_head_only():
+    """DS1c -- the mirror image of `DS1b` for `DS1_ADDED`: contains
+    exactly the two functions this unit added outright, and every entry
+    names a function that exists in the current module but NOT in
+    `BASE_REF`'s (the reverse of `DS1b`'s existence check)."""
+    expected = {
+        ("test_composer.py", "test_composer_analyst_fails_ro5"),
+        ("test_repair.py", "test_e1b_cli_timeout_reaches_subprocess_run"),
+    }
+    assert len(DS1_ADDED) == 2
+    assert set(DS1_ADDED) == expected
+
+    for module, name in DS1_ADDED:
+        head_tree = ast.parse((TESTS_DIR / module).read_text(encoding="utf-8"))
+        head_names = {
+            n.name for n in head_tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+        assert name in head_names, (module, name, "not present in head")
+
+        base_tree = ast.parse(_git_show_base(module))
+        base_names = {
+            n.name for n in base_tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+        assert name not in base_names, (module, name, "already present at", BASE_REF, "-- REWRITTEN, not DS1_ADDED")

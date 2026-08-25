@@ -40,7 +40,6 @@ from self_learn.ledger_ops import ROSTER_UNAVAILABLE
 from self_learn.normalize import sha_anchor
 from self_learn.records import Record
 
-from shims import write_analyst_claude_shim
 from support import git, make_behavior, make_env
 
 from test_invocation import _clear_backend_env, _clear_config, _write_config
@@ -123,22 +122,51 @@ def _assert_dumps(node: ast.AST) -> list[str]:
 #: `SHADOW_22` minus `test_wr6_...` (§3.3 `A-0`), re-derived at the base
 #: commit by §9 `E3`'s command (measured for this build: 18 FAILED + 4
 #: ERROR = 22, matching the spec's provenance exactly).
+#:
+#: U-cleanup-A reconciliation: `test_cn10_...`, `test_av1_...`, and
+#: `test_av4_...` are removed from `test_invocation.py`'s tuple below --
+#: `cn10`/`av1` were DELETED outright (CV2/CB-3's argv-witness machinery
+#: is CLI-only, see the `_run_argv_pins`-class disposition), and `av4`'s
+#: body was REWRITTEN (its "analyst prompt rides argv" leg is false
+#: under sdk; see `test_invocation.py::test_av4_prompt_membership_on_
+#: real_invocations`'s own docstring). `test_teach_route_analyst_routes_
+#: to_shim_destination` is removed from `test_route_cli.py`'s tuple for
+#: the same reason (`-p`/`--allowedTools` argv checks dropped, replaced
+#: with a wire-level prompt check). All four are tracked as EDITED, not
+#: armored, from here on -- see `_AR3_REASONS`/`_AR3_RENAMED` for the
+#: `test_invocation.py`/`test_invocation_sdk.py` pair (AR3's scan
+#: doesn't cover `test_route_cli.py`, so that one drops out of armor
+#: coverage with no replacement bookkeeping -- nothing else pins it).
 _ARMOR_21_BY_FILE: dict[str, tuple[str, ...]] = {
     "test_invocation.py": (
         "test_cn2_call_site_containment_matches_the_call_site_table",
-        "test_cn10_argv_is_the_third_witness_iff_both_directions",
-        "test_av1_argv_equals_surfaces_own_builder_output_recomputed",
-        "test_av4_prompt_membership_on_real_invocations",
-        "test_lg7_analyst_invocation_never_grows_worker_or_miner_log",
-        "test_wr5_analyst_error_carries_cause_for_not_found_and_timeout",
+        # `lg7`/`wr5` REMOVED (code gate r1 MAJOR-1 fold,
+        # 8uvjHmdKaUd6PI3tSyB-F): both were left `@pytest.mark.skip`ped
+        # with no A4/S10.1 disposition -- migrated onto sdk instead
+        # (`_AR3_REASONS` carries their entries now).
     ),
     "test_composer.py": (
         "test_a23_roster_sha_honesty_both_legs_both_paths",
         "test_a24_containment_and_derivation_at_owned_sites",
     ),
-    "test_regime_fixes.py": ("test_analyst_timeout_captures_to_pending",),
+    # `test_regime_fixes.py`'s `test_analyst_timeout_captures_to_pending`
+    # is REMOVED from this tuple (U-cleanup-A): under `AG3` the analyst
+    # resolves `sdk` by default with no `SELF_LEARN_SDK_CLI_PATH`
+    # configured, so the test as originally written tripped the
+    # PRE-EXISTING `_no_real_sdk_spawn_tripwire` (conftest.py) rather
+    # than exercising its own real subject (a wedged session timing out
+    # end to end through `teach --route`). Fixed with one added line --
+    # pointing `SELF_LEARN_SDK_CLI_PATH` at the test's own existing
+    # `sleep 30` PATH shim, so the SDK transport has a concrete,
+    # non-`None` `cli_path` and never reaches `_find_cli()` at all. The
+    # `asyncio.wait_for(..., timeout=spec.timeout)` wrapper in
+    # `invocation_sdk/backend.py::_run_session` is what actually fires
+    # (verified: source-read, not inferred) -- backend-agnostic, so this
+    # stays a genuine end-to-end regression test, not a CliBackend
+    # transport-mechanics test in the AG1-skip sense. `test_route_cli.py`
+    # (below) is the precedent for a file AR3's scan doesn't cover
+    # dropping out of armor with no replacement bookkeeping.
     "test_route_cli.py": (
-        "test_teach_route_analyst_routes_to_shim_destination",
         "test_teach_route_bare_analyst_path_records_by_analyst",
         "test_teach_route_analyst_failure_captures_to_pending",
         "test_analyst_analyze_round_trips_unknown_fields",
@@ -151,16 +179,30 @@ _ARMOR_21_BY_FILE: dict[str, tuple[str, ...]] = {
 
 #: `A-f` -- the eight `EDITED` functions, BY THEIR CURRENT (post-build)
 #: names, so `SU4`'s disjointness leg and `AR3`'s own scan share one list.
+#: U-cleanup-A adds its own `test_invocation.py`/`test_invocation_sdk.py`
+#: casualties (rebased onto sdk, or renamed off a CLI-comparison leg) so
+#: the disjointness check stays a true statement about what SU4 no
+#: longer treats as armored, not just a stale U-flip snapshot.
 _EDITED_CURRENT_NAMES = {
     "test_invocation.py": (
         "test_rg1_five_rung_precedence_resolves_in_isolation",
         "test_tr4_bare_os_error_is_caught_on_analyst_worker_and_miner",
         "test_wr6_analyst_failure_mappings_are_byte_exact_and_rendered_through_log_templates",
+        "test_av4_prompt_membership_on_real_invocations",
+        "test_fk2_each_fakestep_matches_sdkbackend_for_the_same_failure",
+        "test_lg1_twelve_byte_identical_log_lines",
+        "test_lg2_repair_label_appears_only_in_repair_lines",
+        "test_lg3a_worker_g_format",
+        "test_lg3b_miner_no_g_format",
+        "test_lg3c_timeout_display_is_actually_read",
+        "test_lg5_detail_rendering_per_surface",
+        "test_lg6_clean_invocation_logs_nothing",
     ),
     "test_invocation_sdk.py": (
         "test_ou1_every_row_of_the_map_1_table",
         "test_ou5_bare_oserror_caught_on_worker_miner_and_analyst",
         "test_rs2_present_returns_sdkbackend_for_every_surface",
+        "test_ou3_sdk_not_found_wording_and_template_table_authority",
     ),
     "test_doctor_invocation.py": (
         "test_dc2_switches_names_all_surfaces_and_changes_with_rung",
@@ -421,7 +463,19 @@ def test_fl6_worker_untouched(env, claude_cli_shim_worker, monkeypatch):
     # `repair_run` fixture, rebuilt HERE rather than imported -- it
     # requires a fixture literally named `claude_shim`, and U-fake's `FX4`
     # legacy-alias guard permits exactly one importer of that name,
-    # test_invocation.py) -- no backend env set at all.
+    # test_invocation.py) -- no backend env is set BY THIS TEST BODY.
+    #
+    # U-cleanup-A RE-BASELINE: originally "untouched" meant CLI, because
+    # the bash shim ran unconditionally regardless of which backend
+    # resolved (it just replaced whatever `claude` meant on PATH), so the
+    # suite-wide conftest `cli` pin (AG3) was the only thing setting
+    # `SELF_LEARN_BACKEND_WORKER`. The migrated `claude_cli_shim_worker`
+    # fixture instead routes through `SdkBackend` -> `fake_claude.py`, so
+    # IT is now the thing setting `SELF_LEARN_BACKEND_WORKER=sdk` for
+    # both surfaces. The assertion still checks something real -- that a
+    # worker.run() reaching BOTH the batch and repair rounds resolved the
+    # SAME (fixture-configured) backend for `worker` and `worker-repair`
+    # end to end -- just against the value the fixture now sets.
     from self_learn import worker
 
     rid = seed_pending(env)
@@ -430,7 +484,7 @@ def test_fl6_worker_untouched(env, claude_cli_shim_worker, monkeypatch):
     worker.run(env.home)
     assert claude_cli_shim_worker["count"]() == 2  # batch + repair round both spawned the shim
     for surface in ("worker", "worker-repair"):
-        assert provider.resolve_backend_name(env.home, surface)[0] == "cli"
+        assert provider.resolve_backend_name(env.home, surface)[0] == "sdk"
 
 
 def test_fl6b_miner_untouched(miner_capture):
@@ -439,8 +493,11 @@ def test_fl6b_miner_untouched(miner_capture):
     # `SELF_LEARN_HOME` via `monkeypatch.setenv` -- composed in one test,
     # `miner_capture`'s fixture setup (which also runs the miner reader
     # invocation) races the worker/repair setup for that ambient var.
+    # U-cleanup-A RE-BASELINE: see `test_fl6_worker_untouched` -- the
+    # migrated `miner_capture` fixture sets `SELF_LEARN_BACKEND_MINER=sdk`
+    # to route through `fake_claude.py`, so that is now the resolved value.
     assert miner_capture["argv"] != []
-    assert provider.resolve_backend_name(miner_capture["home"], "miner-reader")[0] == "cli"
+    assert provider.resolve_backend_name(miner_capture["home"], "miner-reader")[0] == "sdk"
 
 
 def test_fl7_missing_extra_never_loses_a_lesson(tmp_path, monkeypatch, sdk_absent, capsys):
@@ -682,9 +739,14 @@ class _Leg:
                 raise AssertionError(f"{kind!r}: installed by the caller directly (H-d/H-e)")
 
 
-@pytest.fixture(params=LEGS)
-def leg(request, tmp_path, monkeypatch):
-    name = request.param
+@pytest.fixture()
+def leg(tmp_path, monkeypatch):
+    """COLLAPSED (U-cleanup-A `CV2`/`CB-3`): formerly `params=LEGS`
+    (`LEGS = ("cli", "sdk")`) -- every criterion parametrized over this
+    fixture now runs the `sdk` leg ONLY, with no parametrization suffix
+    on its node id. The `cli` branch (`H-a`) is UNUSED from here on
+    (stays defined; U-cleanup-B deletes it, §8.3)."""
+    name = "sdk"
     sandbox_root = tmp_path / f"leg-{name}-sandbox"
     sandbox_root.mkdir()
     env = make_env(sandbox_root)
@@ -695,33 +757,14 @@ def leg(request, tmp_path, monkeypatch):
     out.write_text("", encoding="utf-8")
     argv_log = tmp_path / f"leg-{name}-argv.log"
 
-    if name == "cli":
-        # `H-a` -- calls `write_analyst_claude_shim` directly (a plain
-        # function, `U-fake` `D-8`/`SH4`): a `params=` fixture body
-        # cannot itself request another fixture.
-        monkeypatch.setenv("SELF_LEARN_BACKEND_ANALYST", "cli")
-        shim_dir = tmp_path / "leg-cli-shim-bin"
-        shim_dir.mkdir()
-        write_analyst_claude_shim(shim_dir)
-        cwd_log = tmp_path / "leg-cli-cwd.log"
-        monkeypatch.setenv("PATH", f"{shim_dir}{os.pathsep}{os.environ['PATH']}")
-        monkeypatch.setenv("CLAUDE_SHIM_LOG", str(argv_log))
-        monkeypatch.setenv("CLAUDE_SHIM_CWD", str(cwd_log))
-        monkeypatch.setenv("CLAUDE_SHIM_OUT", str(out))
-        handle = _Leg(
-            name, env, monkeypatch, tmp_path,
-            out_path=out, argv_path=argv_log, cwd_path=cwd_log, shim_dir=shim_dir,
-        )
-    else:
-        # `H-b`
-        monkeypatch.setenv("SELF_LEARN_BACKEND_ANALYST", "sdk")
-        monkeypatch.setenv("SELF_LEARN_SDK_CLI_PATH", str(FAKE_CLI))
-        monkeypatch.setenv("CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK", "1")
-        monkeypatch.setenv("FAKE_CLAUDE_OUT", str(out))
-        monkeypatch.setenv("FAKE_CLAUDE_ARGV_LOG", str(argv_log))
-        monkeypatch.setenv("FAKE_CLAUDE_FORCE_SCENARIO", "analyst_result")
-        handle = _Leg(name, env, monkeypatch, tmp_path, out_path=out, argv_path=argv_log)
-    return handle
+    # `H-b`
+    monkeypatch.setenv("SELF_LEARN_BACKEND_ANALYST", "sdk")
+    monkeypatch.setenv("SELF_LEARN_SDK_CLI_PATH", str(FAKE_CLI))
+    monkeypatch.setenv("CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK", "1")
+    monkeypatch.setenv("FAKE_CLAUDE_OUT", str(out))
+    monkeypatch.setenv("FAKE_CLAUDE_ARGV_LOG", str(argv_log))
+    monkeypatch.setenv("FAKE_CLAUDE_FORCE_SCENARIO", "analyst_result")
+    return _Leg(name, env, monkeypatch, tmp_path, out_path=out, argv_path=argv_log)
 
 
 # ===================================================================== #
@@ -1125,6 +1168,21 @@ def test_hd6_isolation_and_strict_mcp(tmp_path):
 
 
 def test_hd7_prompt_leaves_the_process_table(tmp_path, monkeypatch):
+    # U-cleanup-A RE-BASE (spec §8.4b: "re-base onto the SDK process
+    # table"): the ORIGINAL second half drove a REAL `CliBackend().
+    # text_session(spec)` as a negative control -- "the same assertion
+    # FAILS on the cli leg" -- to prove the sdk-side protection is real
+    # by contrast. `AG1`'s tripwire makes that reach fatal by design,
+    # and there is no longer a live cli leg to contrast against (every
+    # surface resolves sdk by default post-`AG3`). Rebased onto the sdk
+    # leg's OWN process table alone: `child_argv` below is not read from
+    # a log file the fake CHOSE to write -- it is `sys.argv[1:]` as
+    # `fake_claude.py`'s `main()` (RO-1's `_capture_argv_per_call`)
+    # captured it from INSIDE the real, separately-`exec`'d child
+    # process, i.e. byte-for-byte what `/proc/<pid>/cmdline` would have
+    # shown for that live process. Never seeing the prompt there is the
+    # process-table claim itself, checked directly and unconditionally,
+    # not via contrast with a transport this build retires.
     from self_learn.invocation.contract import SessionSpec
 
     home = tmp_path / "hd7-home"
@@ -1153,25 +1211,8 @@ def test_hd7_prompt_leaves_the_process_table(tmp_path, monkeypatch):
     monkeypatch.setenv("FAKE_CLAUDE_FORCE_SCENARIO", "analyst_result")
     SdkBackend().text_session(spec)
     child_argv = argv_log.read_text(encoding="utf-8").split("\0")[:-1]
+    assert child_argv, "the real child never recorded its own argv"
     assert not any(prompt in a for a in child_argv)
-
-    # the negative control: on the cli leg the SAME assertion FAILS.
-    shim_dir = tmp_path / "hd7-cli-shim"
-    shim_dir.mkdir()
-    write_analyst_claude_shim(shim_dir)
-    cli_out = tmp_path / "hd7-cli-out.txt"
-    cli_out.write_text("ok", encoding="utf-8")
-    cli_argv_log = tmp_path / "hd7-cli-argv.log"
-    cli_cwd_log = tmp_path / "hd7-cli-cwd.log"
-    monkeypatch.setenv("PATH", f"{shim_dir}{os.pathsep}{os.environ['PATH']}")
-    monkeypatch.setenv("CLAUDE_SHIM_LOG", str(cli_argv_log))
-    monkeypatch.setenv("CLAUDE_SHIM_CWD", str(cli_cwd_log))
-    monkeypatch.setenv("CLAUDE_SHIM_OUT", str(cli_out))
-    from self_learn.invocation.cli import CliBackend
-
-    CliBackend().text_session(spec)
-    cli_child_argv = cli_argv_log.read_text(encoding="utf-8").split("\0")[:-1]
-    assert any(prompt in a for a in cli_child_argv)  # AV4's shipped positive statement, restated
 
 
 def test_hd8_flip_does_not_change_the_model(tmp_path, monkeypatch):
@@ -1195,30 +1236,96 @@ _AR1_TRIPWIRE_SHA256 = "1b012978efe34788697a854bd40f28d0c1c45125cbca9d56fea36890
 #: interior mutation (a body comment, or gutting `_tripped`'s raise so
 #: `_find_cli` is never patched) evades a name scan even once the diff
 #: leg is fixed to compare base-vs-WORKING-TREE. These are the exact
-#: `+` line bodies (leading `+` stripped) `Armor-1`'s pin (U-sdka, the
-#: first nine) and U-flip's matching extension (the next nine, same
-#: mechanism for worker/worker-repair/miner-reader) are sanctioned to add
-#: to `conftest.py` -- any interior tripwire edit adds one more `+` line,
+#: `+` line bodies (leading `+` stripped) sanctioned to add to
+#: `conftest.py` -- any interior tripwire edit adds one more `+` line,
 #: or a `-` line, regardless of what text it contains.
+#:
+#: U-cleanup-A RE-ANCHOR (`AG3`/`AG1`): `Armor-1`'s analyst pin (U-sdka)
+#: and U-flip's worker/miner extension were COMMITTED to `HEAD` between
+#: `_BASE_SHA` (442385d) and this build's own base -- `git diff
+#: 442385d..HEAD -- conftest.py` shows the 18 lines those two units
+#: added (this WAS `test_hy5_numstat_bounds_hold`'s pre-BLOCKER-1-fold
+#: `(18, 0)` bound, code gate r1 `8uvjHmdKaUd6PI3tSyB-F`: hy5 used to
+#: run the TWO-ref form `442385d..HEAD` first and only fall back to the
+#: single-ref form when that was empty, so it measured this same
+#: 18-line pre-build state and never saw this build's own uncommitted
+#: 63/0 -- hy5 is now single-ref-only, like this test, and its bound is
+#: reconciled to `(63, 0)`). `AG3` REMOVES those 18 committed lines and
+#: replaces them with a new explanatory comment (no `monkeypatch.setenv`
+#: left at all) -- against `_BASE_SHA` specifically (a SINGLE-ref diff,
+#: base-vs-WORKING-TREE, never `..HEAD`, `D-27` -- THIS test's own
+#: mechanism, unaffected by the hy5 fix), the removal and the 18-line
+#: addition net to ZERO change for that region (this build's working
+#: tree reads identically to 442385d plus only the NEW comment). `AG1`
+#: then ADDS the `_cli_backend_unreached_tripwire` fixture itself, a
+#: genuine new addition with no base-commit counterpart to cancel
+#: against -- so `removed` stays `[]` and `added` is re-anchored to
+#: exactly this build's new fixture PLUS its new comment, not the
+#: superseded 18-line whitelist.
 _AR1_SANCTIONED_PIN_LINES = [
-    "    # U-sdka `Armor-1`: the analyst's SHIPPED default backend is now",
-    "    # `sdk` (invocation/contract.py `DEFAULT_BACKEND_FOR_SURFACE`). Every",
-    "    # pre-existing analyst test drives a bash PATH shim or a patched",
-    "    # `subprocess.run`, i.e. the cli transport, and names no backend --",
-    "    # same convention as SELF_LEARN_WORKER_AUTOKICK and",
-    "    # SELF_LEARN_NO_NOTIFY above: the suite opts OUT of real machinery by",
-    "    # default and a test that wants it opts back IN. `test_u_sdka.py`'s",
-    "    # FL1 asserts the PRODUCT default directly, with this var cleared.",
-    '    monkeypatch.setenv("SELF_LEARN_BACKEND_ANALYST", "cli")',
-    "    # U-flip: worker/worker-repair/miner-reader's SHIPPED default backend",
-    "    # is now ALSO `sdk` (same table). Same reasoning as the analyst pin",
-    "    # above -- every pre-existing worker/miner test drives a bash PATH",
-    "    # shim, a patched `subprocess.run`, or the in-process fake, i.e. the",
-    "    # cli transport, and names no backend. `SELF_LEARN_BACKEND_WORKER`",
-    "    # covers both `worker` and `worker-repair` (one selector, per",
-    "    # `SELECTOR_FOR_SURFACE`).",
-    '    monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "cli")',
-    '    monkeypatch.setenv("SELF_LEARN_BACKEND_MINER", "cli")',
+    '@pytest.fixture(scope="session", autouse=True)',
+    'def _cli_backend_unreached_tripwire():',
+    '    """U-cleanup-A `AG1`. The CLI path still SHIPS in A; nothing may',
+    '    REACH it. Symmetric with `_no_real_sdk_spawn_tripwire` above (same',
+    '    scope, same autouse, same hard-fail-on-entry shape, same "patch a',
+    '    bound method for the whole session, restore in `finally`" mechanism)',
+    "    -- that one guards the SDK's OWN real-spawn fallback; this one",
+    "    guards the CLI transport's OWN entry point, `CliBackend._run`. `AG3`",
+    "    (the conftest `cli` pins' removal) is what makes this tripwire",
+    '    meaningful: with no suite-wide pin left, every surface resolves',
+    '    `sdk` by default, so `CliBackend._run` firing at all means either a',
+    '    test still explicitly selects `cli` for real (a migration this build',
+    '    was supposed to complete) or a resolution bug routed a default-sdk',
+    '    surface onto `cli` regardless.',
+    '',
+    '    NOT scoped down to registry-resolved dispatch -- patching the class',
+    '    method directly (not e.g. wrapping `registry._dispatch`) means a',
+    '    test that hands `write_session(spec, backend=CliBackend())` an',
+    '    explicit instance is caught too (orchestrator ruling, 2026-08-24):',
+    '    narrowing the reach would make this criterion green while the CLI',
+    '    transport is still exercised through a side door, the opposite of',
+    '    what `AG1` is for.',
+    '',
+    '    Exemption (`R2-N4`): exactly one test may reach the patched `_run` --',
+    "    `AG2`'s negative control (`test_ag2_tripwire_fires_on_direct_",
+    '    clibackend_call` in `test_u_sdka.py`), which exists to observe the',
+    '    tripwire fire and wraps its own call in `pytest.raises`. No other',
+    '    exemption exists; a second one reaching this function is a',
+    '    migration that was not done. Deleted in U-cleanup-B along with',
+    '    `CliBackend` itself."""',
+    '    from self_learn.invocation.cli import CliBackend',
+    '',
+    '    def _tripped(self, spec):',
+    '        raise AssertionError(',
+    '            "CliBackend._run was reached during the test suite. U-cleanup-A\'s "',
+    '            "completion criterion is that every surface resolves and drives "',
+    '            "the SDK backend; a test that still reaches the subprocess "',
+    '            "transport has not been migrated."',
+    '        )',
+    '',
+    '    original = CliBackend._run',
+    '    CliBackend._run = _tripped',
+    '    try:',
+    '        yield',
+    '    finally:',
+    '        CliBackend._run = original',
+    '',
+    '',
+    '    # U-cleanup-A `AG3`: the three suite-wide `cli` pins that used to sit',
+    "    # here (U-sdka `Armor-1`'s analyst pin, U-flip's worker/miner pins)",
+    '    # are REMOVED, not merely edited. Their premise was "every',
+    '    # pre-existing test drives a bash PATH shim or a patched',
+    '    # `subprocess.run`, i.e. the cli transport, and names no backend" --',
+    "    # CV2/CB-3's migration has made that premise false: the ~109",
+    '    # behaviour tests now drive `SdkBackend` -> `fake_claude.py`',
+    '    # end to end (`claude_cli_shim_worker`/`claude_cli_shim_analyst`,',
+    '    # `reader_leg`, `backend`), and every remaining test that still',
+    '    # needs `cli` for real names it explicitly via its own',
+    '    # `monkeypatch.setenv`. With no pin left here, EVERY surface now',
+    '    # resolves through `DEFAULT_BACKEND_FOR_SURFACE` (all `sdk` since',
+    '    # U-flip) unless a test overrides it -- the suite-wide default this',
+    "    # unit's own `AG1` tripwire on `CliBackend._run` is meant to prove",
+    '    # unreached in practice, not merely in theory.',
 ]
 
 
@@ -1241,20 +1348,64 @@ def test_ar1_tripwire_byte_unchanged():
     assert added == _AR1_SANCTIONED_PIN_LINES
 
 
-def test_ar2_suite_wide_pin_is_a_default_not_the_thing_under_test():
-    src = inspect.getsource(sys.modules["conftest"]._worker_test_defaults)
-    assert 'monkeypatch.setenv("SELF_LEARN_BACKEND_ANALYST", "cli")' in src
+# U-cleanup-A DELETE (`AG3`): `test_ar2_suite_wide_pin_is_a_default_not_
+# the_thing_under_test`'s whole subject -- proving the suite-wide
+# `SELF_LEARN_BACKEND_ANALYST=cli` pin in `_worker_test_defaults` was a
+# mere DEFAULT rather than load-bearing test coverage (clearing it still
+# resolved a real `SdkBackend`) -- ceases to exist the moment `AG3`
+# removes that pin from `conftest.py` outright. There is no pin left to
+# distinguish from "the thing under test"; the property it guarded
+# (a clean env resolves `SdkBackend` for `analyst`) is already covered
+# directly by `test_fl1b_default_rung_returns_a_real_sdkbackend_when_
+# installed` above.
 
-    with pytest.MonkeyPatch.context() as mp:
-        mp.delenv("SELF_LEARN_BACKEND_ANALYST", raising=False)
-        backend = invocation.backend_for("analyst", home=Path("/nonexistent-ar2-home"))
-        assert type(backend) is SdkBackend
+
+def test_ag2_tripwire_fires_on_direct_clibackend_call():
+    """`AG2` -- `AG1`'s own negative control (`R2-N4`'s named exemption,
+    the ONE test permitted to reach the patched `CliBackend._run`).
+    Without this, a tripwire that silently failed to install (a typo in
+    the fixture name, an import that raises and gets swallowed, a
+    `finally` that runs too early) reads IDENTICAL to a suite that never
+    touches the CLI path at all -- green either way, for two entirely
+    different reasons. This test drives `CliBackend().write_session(...)`
+    directly (never through `registry.backend_for`/`invocation.
+    write_session`, which would default to `sdk` post-`AG3` and never
+    reach `CliBackend` at all) and asserts the tripwire's own
+    `AssertionError`, by message, actually fires."""
+    from self_learn.invocation.cli import CliBackend
+    from self_learn.invocation.contract import SessionSpec, containment_for
+
+    spec = SessionSpec(
+        surface="analyst",
+        prompt="ag2 probe",
+        cwd=Path("/tmp"),
+        timeout=5.0,
+        containment=containment_for("analyst", allowed_tools="Read"),
+        log=lambda _msg: None,
+        cli_argv_builder=lambda _settings: ["claude", "-p", "ag2 probe"],
+    )
+    with pytest.raises(AssertionError, match=r"CliBackend\._run was reached during the test suite"):
+        CliBackend().write_session(spec)
 
 
 _AR3_REASONS = {
     ("test_invocation.py", "test_rg1_five_rung_precedence_resolves_in_isolation"): "flip (A-c)",
     ("test_invocation.py", "test_tr4_bare_os_error_is_caught_on_analyst_worker_and_miner"): "FW-87 (E-f)",
-    ("test_invocation.py", "test_wr6_analyst_failure_mappings_are_byte_exact_and_rendered_through_log_templates"): "pin casualty (A-d)",
+    ("test_invocation.py", "test_wr6_analyst_failure_mappings_are_byte_exact_and_rendered_through_log_templates"): "pin casualty (A-d); U-cleanup-A MAJOR-1 fold: un-skipped, sdk rebase",
+    # U-cleanup-A MAJOR-1 fold (code gate r1, 8uvjHmdKaUd6PI3tSyB-F): four
+    # behaviour tests were left `@pytest.mark.skip`ped with no A4/§10.1
+    # disposition -- migrated onto the sdk transport instead.
+    ("test_invocation.py", "test_lg7_analyst_invocation_never_grows_worker_or_miner_log"): "U-cleanup-A (MAJOR-1 fold, sdk rebase)",
+    ("test_invocation.py", "test_wr1_invoke_claude_signature_and_never_raises"): "U-cleanup-A (MAJOR-1 fold, sdk rebase)",
+    ("test_invocation.py", "test_wr5_analyst_error_carries_cause_for_not_found_and_timeout"): "U-cleanup-A (MAJOR-1 fold, sdk rebase)",
+    # Full-suite re-run (same fold round) surfaced a second-order casualty:
+    # dropping `wr6` from `_SIM_2_NINE` (see that constant's own comment,
+    # test_invocation_sdk.py) touched SU6's docstring (the "nine" -> "eight"
+    # correction) -- an edit to an EXISTING function's body, not a rename/
+    # add/remove, so it needs its own reason here rather than an
+    # `_AR3_RENAMED`/`_AR3_REMOVED`/`_AR3_ADDED` entry. 22 tracked functions
+    # now, not 21; the test's own name is historical, like `_SIM_2_NINE`'s.
+    ("test_invocation_sdk.py", "test_su6_the_nine_request_the_fixture_and_it_is_singly_defined_and_scoped"): "U-cleanup-A (fold round, SU6 set edit)",
     ("test_invocation_sdk.py", "test_ou1_every_row_of_the_map_1_table"): "FW-87 (E-f)",
     ("test_invocation_sdk.py", "test_ou5_bare_oserror_caught_on_worker_miner_and_analyst"): "FW-87 (E-f)",
     ("test_invocation_sdk.py", "test_rs2_present_returns_sdkbackend_for_every_surface"): "Pin-1 casualty (A-e)",
@@ -1278,22 +1429,79 @@ _AR3_REASONS = {
     ("test_doctor_invocation.py", "test_dc12_mixed_rollout_info_lines_per_surface"): "flip (U-flip)",
     ("test_doctor_invocation.py", "test_dc14_env_row_per_surface_and_catches_refusal"): "flip (U-flip)",
     ("test_doctor_invocation.py", "test_dc16_credentials_warn_not_fail_and_dc3_coupling"): "flip (U-flip)",
+    # U-cleanup-A: sdk-only rebase of the twin-witness/log-line/argv-
+    # membership tests (CV2/CB-3's 43-leg collapse fallout in
+    # test_invocation.py; the CliBackend leg is gone, bodies rebased
+    # onto `_run_sdk`/`SdkBackend` or a wire-level check).
+    ("test_invocation.py", "test_av4_prompt_membership_on_real_invocations"): "U-cleanup-A (sdk rebase)",
+    ("test_invocation.py", "test_fk2_each_fakestep_matches_sdkbackend_for_the_same_failure"): "U-cleanup-A (rename, sdk rebase)",
+    ("test_invocation.py", "test_lg1_twelve_byte_identical_log_lines"): "U-cleanup-A (sdk rebase)",
+    ("test_invocation.py", "test_lg2_repair_label_appears_only_in_repair_lines"): "U-cleanup-A (sdk rebase)",
+    ("test_invocation.py", "test_lg3a_worker_g_format"): "U-cleanup-A (sdk rebase)",
+    ("test_invocation.py", "test_lg3b_miner_no_g_format"): "U-cleanup-A (sdk rebase)",
+    ("test_invocation.py", "test_lg3c_timeout_display_is_actually_read"): "U-cleanup-A (sdk rebase)",
+    ("test_invocation.py", "test_lg5_detail_rendering_per_surface"): "U-cleanup-A (sdk rebase, dropped stdout/stderr-invert leg)",
+    ("test_invocation.py", "test_lg6_clean_invocation_logs_nothing"): "U-cleanup-A (sdk rebase)",
+    ("test_invocation.py", "analyst_capture"): "U-cleanup-A (fixture, adds prompt_wire key)",
+    ("test_invocation.py", "analyst_shim"): "U-cleanup-A (fixture, sdk-backed + prompt log)",
+    ("test_invocation.py", "miner_capture"): "U-cleanup-A (fixture, sdk-backed)",
+    ("test_invocation_sdk.py", "test_ou3_sdk_not_found_wording_and_template_table_authority"): "U-cleanup-A (rename, RO-6)",
 }
 
 _AR3_RENAMED = {
     "test_invocation.py": {
         "test_tr4_bare_os_error_escapes_analyst_but_not_worker_or_miner": "test_tr4_bare_os_error_is_caught_on_analyst_worker_and_miner",
+        "test_fk2_each_fakestep_matches_clibackend_for_the_same_failure": "test_fk2_each_fakestep_matches_sdkbackend_for_the_same_failure",
     },
     "test_invocation_sdk.py": {
         "test_ou5_bare_oserror_escapes_worker_miner_caught_analyst_reraised": "test_ou5_bare_oserror_caught_on_worker_miner_and_analyst",
+        "test_ou3_failure_legs_render_byte_identical_to_clibackend_and_respect_the_template_table": "test_ou3_sdk_not_found_wording_and_template_table_authority",
     },
     "test_doctor_invocation.py": {},
 }
 
+#: U-cleanup-A: functions DELETED outright (CLI-only argv/transport
+#: machinery with no sdk equivalent -- CV2's own §3.4 measurement and
+#: replacement-coverage disposition) and functions ADDED outright (new
+#: sdk-side helpers/tests with no base-commit counterpart). Neither
+#: shape existed in this bookkeeping before U-cleanup-A; `_AR3_RENAMED`
+#: only covers the old-name/new-name pairs, so a pure add or a pure
+#: delete needs its own declared set or `base_only`/`now_only` would
+#: silently stop matching and mask an unauthorized change instead of
+#: catching one.
+_AR3_REMOVED: dict[str, frozenset[str]] = {
+    "test_invocation.py": frozenset(
+        {
+            "_assert_argv_matches_containment_iff",
+            "test_av1_argv_equals_surfaces_own_builder_output_recomputed",
+            "test_av2_worker_argv_shape",
+            "test_cn10_argv_is_the_third_witness_iff_both_directions",
+            "test_cn8_twin_witnesses_agree_at_runtime_on_a_repair_producing_run",
+        }
+    ),
+}
+
+_AR3_ADDED: dict[str, frozenset[str]] = {
+    "test_invocation.py": frozenset({"_run_sdk", "_sdk_env", "_analyst_fail_sdk"}),
+    "test_invocation_sdk.py": frozenset(
+        {
+            "test_fake_argv_per_call_ro1",
+            "test_fake_multi_write_ro3",
+            "test_fake_per_call_error_ro4",
+            "test_fake_prompt_log_ro2",
+            "test_templates_byte_pinned_ro6",
+        }
+    ),
+}
+
 _AR3_ONE_LINE_ONLY = {
-    "test_wr6_analyst_failure_mappings_are_byte_exact_and_rendered_through_log_templates",
     "test_rs2_present_returns_sdkbackend_for_every_surface",
 }
+#: `test_wr6_...` LEFT `_AR3_ONE_LINE_ONLY` in the code gate r1 MAJOR-1
+#: fold (8uvjHmdKaUd6PI3tSyB-F): it was a one-line pin casualty (`A-d`)
+#: before this build un-skipped and fully rebased it onto sdk (new legs,
+#: not a single added line) -- the narrower one-line-only shape no
+#: longer describes it.
 
 
 def test_ar3_edited_is_exactly_21_functions_with_reasons():
@@ -1301,7 +1509,12 @@ def test_ar3_edited_is_exactly_21_functions_with_reasons():
     # `..._is_exactly_eight_functions_with_reasons` -- U-flip's Pin-1/
     # rollout-state fallout in test_invocation.py, test_invocation_sdk.py,
     # and test_doctor_invocation.py added 13 more tracked functions to
-    # `_AR3_REASONS` (8 U-sdka + 13 U-flip = 21).
+    # `_AR3_REASONS` (8 U-sdka + 13 U-flip = 21). U-cleanup-A adds its
+    # own casualties on top via `_AR3_REMOVED`/`_AR3_ADDED` (pure
+    # deletes/adds, tracked but NOT counted in `_AR3_REASONS` -- a
+    # function with no base-commit body to diff against has no "edit"
+    # to reason about) plus 14 more `_AR3_REASONS` entries for bodies
+    # that changed name-for-name or were rebased onto `SdkBackend`.
     touched: set[tuple[str, str]] = set()
     for relpath in ("test_invocation.py", "test_invocation_sdk.py", "test_doctor_invocation.py"):
         full = f"plugins/self-learn/cli/tests/{relpath}"
@@ -1311,10 +1524,12 @@ def test_ar3_edited_is_exactly_21_functions_with_reasons():
         now_funcs = _top_level_funcs(now_text)
 
         renamed = _AR3_RENAMED[relpath]
+        removed = _AR3_REMOVED.get(relpath, frozenset())
+        added = _AR3_ADDED.get(relpath, frozenset())
         base_only = set(base_funcs) - set(now_funcs)
         now_only = set(now_funcs) - set(base_funcs)
-        assert base_only == set(renamed), (relpath, "removed", base_only)
-        assert now_only == set(renamed.values()), (relpath, "added", now_only)
+        assert base_only == set(renamed) | removed, (relpath, "removed", base_only)
+        assert now_only == set(renamed.values()) | added, (relpath, "added", now_only)
 
         shared = set(base_funcs) & set(now_funcs)
         for name in shared:
@@ -1400,77 +1615,17 @@ def test_ar5_pin1_class_is_closed_by_census():
     }
 
 
-def test_ar4_byte_identity_under_the_rollback(tmp_path, monkeypatch, sdk_absent):
-    monkeypatch.setenv("SELF_LEARN_BACKEND_ANALYST", "cli")
-    env = make_env(tmp_path / "ar4-sandbox")
-    shim_dir = tmp_path / "ar4-shim"
-    shim_dir.mkdir()
-    write_analyst_claude_shim(shim_dir)
-    out = tmp_path / "ar4-out.txt"
-    argv_log = tmp_path / "ar4-argv.log"
-    cwd_log = tmp_path / "ar4-cwd.log"
-    monkeypatch.setenv("PATH", f"{shim_dir}{os.pathsep}{os.environ['PATH']}")
-    monkeypatch.setenv("CLAUDE_SHIM_LOG", str(argv_log))
-    monkeypatch.setenv("CLAUDE_SHIM_CWD", str(cwd_log))
-    monkeypatch.setenv("CLAUDE_SHIM_OUT", str(out))
-
-    out.write_text(_skill_proposal_text(env.ledger), encoding="utf-8")
-    analyst.analyze(env.ledger, make_behavior())
-    argv = argv_log.read_text(encoding="utf-8").split("\0")[:-1]
-    # `build_argv` RECOMPUTED here, element for element -- `doctrine_text`
-    # read independently (not extracted from argv), the one non-trivial
-    # value this check can actually falsify.
-    prompt = argv[argv.index("-p") + 1]
-    model = argv[argv.index("--model") + 1]
-    doctrine_text = analyst.doctrine_path().read_text(encoding="utf-8")
-    # `build_argv` returns the FULL argv (leading "claude"); the bash shim
-    # only records "$@" -- its OWN positional args, i.e. everything AFTER
-    # the program name -- so the recorded log starts at "-p".
-    expected = analyst.build_argv(prompt, doctrine_text, model)
-    assert argv == expected[1:]
-    assert argv[argv.index("--append-system-prompt") + 1] == doctrine_text
-    assert model == analyst.DEFAULT_ANALYST_MODEL
-    assert cwd_log.read_text(encoding="utf-8").strip() == str(Path(env.ledger).resolve())
-    assert analyst._timeout() == analyst.DEFAULT_ANALYST_TIMEOUT
-
-    # `AnalystError` messages, byte-identical to base -- not-found /
-    # timeout / exit / unavailable. `os-error` is EXCLUDED (FW-87 is
-    # this unit's one sanctioned cli-leg behavior change).
-    def _raise_notfound(*_a, **_kw):
-        raise FileNotFoundError()
-
-    monkeypatch.setattr(subprocess, "run", _raise_notfound)
-    with pytest.raises(analyst.AnalystError) as e1:
-        analyst.analyze(env.ledger, make_behavior())
-    assert str(e1.value) == "claude CLI not found on PATH"
-
-    def _raise_timeout(*_a, **_kw):
-        raise subprocess.TimeoutExpired(cmd=["claude", "x"], timeout=120)
-
-    monkeypatch.setattr(subprocess, "run", _raise_timeout)
-    with pytest.raises(analyst.AnalystError) as e2:
-        analyst.analyze(env.ledger, make_behavior())
-    assert str(e2.value) == "analyst timed out after 120s"
-
-    class _ExitProc:
-        returncode = 7
-        stdout = "OUT"
-        stderr = "  ERR TEXT  "
-
-    monkeypatch.setattr(subprocess, "run", lambda *_a, **_kw: _ExitProc())
-    with pytest.raises(analyst.AnalystError) as e3:
-        analyst.analyze(env.ledger, make_behavior())
-    assert str(e3.value) == "analyst exited 7: ERR TEXT"
-
-    _clear_backend_env(monkeypatch)
-    monkeypatch.setenv("SELF_LEARN_BACKEND", "sdk")
-    with pytest.raises(analyst.AnalystError) as e4:
-        analyst.analyze(env.ledger, make_behavior())
-    assert str(e4.value) == (
-        'invocation backend unavailable (the "sdk" invocation backend is not '
-        "built yet — install it with:\n"
-        "    pip install 'self-learn-cli[sdk]')"
-    )
+# U-cleanup-A DELETE (spec §8.4b's own disposition: "ar4 delete (its
+# subject, the env-var rollback, ceases to exist -- §5)"): `test_ar4_
+# byte_identity_under_the_rollback` explicitly set `SELF_LEARN_BACKEND_
+# ANALYST=cli` and drove `analyst.analyze()` through a REAL bash-shimmed
+# `CliBackend` -- exactly the "env-var rollback to cli" escape hatch §5
+# retires. It also reaches `CliBackend._run` for real, which `AG1`'s
+# tripwire now makes fatal by design. The `AnalystError` message-mapping
+# coverage it carried (not-found/timeout/exit/unavailable, byte-exact)
+# has its sdk-side counterpart in `test_ou1_every_row_of_the_map_1_
+# table`/`test_ou5_bare_oserror_caught_on_worker_miner_and_analyst`
+# (`test_invocation_sdk.py`).
 
 
 # ===================================================================== #
@@ -1626,12 +1781,16 @@ def test_hy2_no_network_no_real_model_at_most_one_leg_name_branch():
 
 
 #: `HY3` -- the ten pre-existing `fake_claude.py` scenarios, sha-pinned
-#: to their base-commit bytes.
+#: to their base-commit bytes. U-cleanup-A repins `_scenario_error_result`
+#: alone: its body gained an optional `FAKE_CLAUDE_ERROR_TEXT` override
+#: (default `"boom"` unchanged, see the function's own comment) needed by
+#: `test_lg5`'s sdk-rebased detail-rendering leg. Every other entry below
+#: is still the literal base-commit byte pin.
 _HY3_SCENARIO_SHAS = {
     "_scenario_ok_text": "62c5de5ba8d4870df7ad9c657bb78e6aeb41215f2dfa67357b3654fa2399bd7c",
     "_scenario_ok_blocks_only": "55a2ab044a4892756072a85141c5eed59f59fedf0daae6ceeb2243a4f2cd1050",
     "_scenario_ok_write": "1adacd1464e3556f1e55ee735c06fc8b1bef8096843e377d70a239b7f3c3c6c2",
-    "_scenario_error_result": "c4dba03081c5521d7d2dad8ec1c50c738a7831a78f9cf650815d080f74d9cddb",
+    "_scenario_error_result": "43fee6fd00ec92a447e1e36edee8c6210cf6ce227badb8f2e8416434ad34e0d9",
     "_scenario_no_result": "102fd9240ce702f26bd8bbc0b906135bbe37405738d0615619a943516bccc6ac",
     "_scenario_hard_exit": "ddf6d99171ba9b50cfa07c24fa188692329c839a9c32a57b5308aea1a17fa84d",
     "_scenario_hang": "0750312cb7e5bd7b4abe4a7130809987b5717e02a13a7cb2dfd4c8f66b87da7f",
@@ -1658,6 +1817,11 @@ def test_hy3_fake_claude_additions_are_additive():
         # sibling units' gated additions, merged the same day (U-sdkr's
         # reader_write, U-sdkw's ok_write_real) -- sanctioned, not ours
         "reader_write", "ok_write_real",
+        # U-cleanup-A's own addition: the bash-shim-script interpreter
+        # (`_scenario_shim_script`) backing the migrated
+        # `claude_cli_shim_worker`/`claude_cli_shim_analyst` fixtures --
+        # not sha-pinned above since it has no base-commit body to pin.
+        "shim_script",
     }
     assert set(fake_mod.SCENARIOS) == expected_keys
 
@@ -1666,32 +1830,41 @@ def test_hy3_fake_claude_additions_are_additive():
 
 
 def test_hy5_numstat_bounds_hold():
-    # Bounds reconciled 2026-08-23 post U-flip merge (d22eedb): the three
-    # remaining surfaces' defaults flipped to sdk, growing the cumulative
-    # 442385d..HEAD envelope for contract.py and the four touched test
-    # files. Values are the exact measured numstat at reconciliation —
-    # tight on purpose (c0a49a9 precedent).
+    # Bounds reconciled 2026-08-25 for U-cleanup-A's BLOCKER-1 fold (code
+    # gate r1, 8uvjHmdKaUd6PI3tSyB-F): this test used to run the TWO-ref
+    # form (`{_BASE_SHA}..HEAD`) FIRST and only fall back to the
+    # single-ref (base-vs-WORKING-TREE) form when that output was empty
+    # -- which it never was, for any file any unit had ever touched, so
+    # the fallback never fired and the armor was blind to every
+    # uncommitted build in this unit's own history, going red only once
+    # a build committed. `test_ar1`'s sibling armor (`D-27`) already uses
+    # the single-ref form EXCLUSIVELY for exactly this reason -- base vs
+    # WORKING TREE, never `..HEAD` -- and it is strictly more correct: a
+    # clean working tree measures identically to `..HEAD` (HEAD's blob
+    # IS the working tree's blob), so there is no case the two-ref form
+    # caught that the single-ref form misses. Reconciled to this unit's
+    # OWN measured single-ref numstat for the four files it actually
+    # touches (conftest.py, fake_claude.py, test_invocation.py,
+    # test_invocation_sdk.py) -- tight on purpose (c0a49a9 precedent).
+    # The other five rows are untouched by this unit; their existing
+    # (looser) bounds still hold under the single-ref form and are left
+    # as-is.
     bounds = {
         "plugins/self-learn/cli/src/self_learn/invocation/contract.py": (17, 3),
         "plugins/self-learn/cli/src/self_learn/invocation/registry.py": (8, 1),
         "plugins/self-learn/cli/src/self_learn/provider.py": (3, 2),
         "plugins/self-learn/cli/src/self_learn/analyst.py": (8, 0),
-        "plugins/self-learn/cli/tests/conftest.py": (18, 0),
-        "plugins/self-learn/cli/tests/fixtures/fake_claude.py": (40, 0),
-        "plugins/self-learn/cli/tests/test_invocation.py": (74, 27),
-        "plugins/self-learn/cli/tests/test_invocation_sdk.py": (40, 8),
+        "plugins/self-learn/cli/tests/conftest.py": (63, 0),
+        "plugins/self-learn/cli/tests/fixtures/fake_claude.py": (388, 1),
+        "plugins/self-learn/cli/tests/test_invocation.py": (522, 311),
+        "plugins/self-learn/cli/tests/test_invocation_sdk.py": (237, 35),
         "plugins/self-learn/cli/tests/test_doctor_invocation.py": (50, 6),
     }
     for relpath, (max_ins, max_del) in bounds.items():
         out = subprocess.run(
-            ["git", "diff", "--numstat", f"{_BASE_SHA}..HEAD", "--", relpath],
+            ["git", "diff", "--numstat", f"{_BASE_SHA}", "--", relpath],
             cwd=_REPO_ROOT, capture_output=True, text=True,
         ).stdout.strip()
-        if not out:
-            out = subprocess.run(
-                ["git", "diff", "--numstat", f"{_BASE_SHA}", "--", relpath],
-                cwd=_REPO_ROOT, capture_output=True, text=True,
-            ).stdout.strip()
         if not out:
             continue
         ins_s, del_s, _ = out.split("\t")

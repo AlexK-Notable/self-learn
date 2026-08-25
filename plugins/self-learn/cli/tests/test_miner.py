@@ -768,6 +768,15 @@ def test_reader_argv_and_settings(home, monkeypatch):
         assert tool in argv[j + 1]
 
 
+@pytest.mark.skip(
+    reason="U-cleanup-A: E2BIG-via-argv is a CliBackend transport-mechanics "
+    "concern that cannot recur under SdkBackend (the prompt never touches "
+    "argv/exec at all, sdk or cli-legacy alike) -- the >128KiB-prompt/"
+    "on-stdin-never-argv property this test protects is now covered "
+    "against the real sdk transport by "
+    "test_reader_contract.py::test_rc7_prompt_reaches_the_model_on_stdin_"
+    "never_argv (200KiB, spies the real wire + the real child's argv log)."
+)
 def test_reader_survives_oversize_prompt(home, tmp_path, monkeypatch):
     """Audit B1 regression: a >128 KiB prompt must reach the reader (via
     stdin) instead of crashing exec with E2BIG — exercised through the
@@ -791,18 +800,24 @@ def test_reader_survives_oversize_prompt(home, tmp_path, monkeypatch):
 
 
 def test_artifact_contract_sweeps_strays(home, tmp_path, monkeypatch):
-    shims = tmp_path / "shims"
-    shims.mkdir()
     spool = miner.spool_dir()
-    shim = shims / "claude"
-    shim.write_text(
-        "#!/usr/bin/env bash\n"
-        "cat > /dev/null\n"  # consume the stdin prompt
-        f'echo stray > "{spool}/litter.txt"\n'
-        f'echo \'{{"candidates": [], "fires": []}}\' > "{spool}/{miner.OUTPUT_BASENAME}"\n'
+    # U-cleanup-A: sdk-backed replacement for the bash `claude` PATH shim
+    # -- `fake_claude.py`'s `shim_script` scenario interprets these SAME
+    # `echo CONTENT > path` lines via its `_ECHO_RE` idiom (bare,
+    # unquoted paths -- no spaces in a pytest tmp_path, matching every
+    # other write idiom this interpreter already supports).
+    monkeypatch.setenv("SELF_LEARN_BACKEND_MINER", "sdk")
+    monkeypatch.setenv(
+        "SELF_LEARN_SDK_CLI_PATH",
+        str(Path(__file__).parent / "fixtures" / "fake_claude.py"),
     )
-    shim.chmod(0o755)
-    monkeypatch.setenv("PATH", f"{shims}:{Path('/usr/bin')}")
+    monkeypatch.setenv("CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK", "1")
+    monkeypatch.setenv("FAKE_CLAUDE_FORCE_SCENARIO", "shim_script")
+    monkeypatch.setenv(
+        "CLAUDE_SHIM_SCRIPT",
+        f"echo stray > {spool}/litter.txt\n"
+        f'echo \'{{"candidates": [], "fires": []}}\' > {spool}/{miner.OUTPUT_BASENAME}\n',
+    )
     out = miner._invoke_reader(home, "PROMPT")
     assert out is not None and out.is_file()
     assert not (spool / "litter.txt").exists()

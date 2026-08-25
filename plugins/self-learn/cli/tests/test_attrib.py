@@ -29,7 +29,6 @@ import inspect
 import json
 import os
 import re
-import stat
 from pathlib import Path
 
 import pytest
@@ -68,23 +67,22 @@ from test_repair import (  # noqa: F401 -- fixtures/helpers resolved by name
 )
 
 
+_FAKE_CLI = Path(__file__).parent / "fixtures" / "fake_claude.py"
+
+
 def _simple_shim(tmp_path, monkeypatch) -> None:
-    """A minimal single-invocation PATH shim (test_composer.py's own
-    idiom) for the handful of criteria below that need a bespoke
-    multi-bucket sandbox `claude_shim` cannot build (it is wired to the
-    single-skill `env` fixture)."""
-    shims = tmp_path / "shims"
-    shims.mkdir(exist_ok=True)
-    shim = shims / "claude"
-    shim.write_text(
-        "#!/usr/bin/env bash\n"
-        "cat > /dev/null || true\n"
-        'if [ -n "${CLAUDE_SHIM_SCRIPT-}" ]; then bash -c "$CLAUDE_SHIM_SCRIPT"; fi\n'
-        "exit 0\n",
-        encoding="utf-8",
-    )
-    shim.chmod(shim.stat().st_mode | stat.S_IEXEC)
-    monkeypatch.setenv("PATH", f"{shims}{os.pathsep}{os.environ['PATH']}")
+    """A minimal single-invocation driver (U-cleanup-A migration: was a
+    bash PATH shim, `test_composer.py`'s own idiom before ITS migration)
+    for the handful of criteria below that need a bespoke multi-bucket
+    sandbox `claude_shim` cannot build (it is wired to the single-skill
+    `env` fixture). Routes `worker.run()` through `SdkBackend` -> `tests/
+    fixtures/fake_claude.py`'s `shim_script` scenario, which interprets
+    the SAME `$CLAUDE_SHIM_SCRIPT` raw-text env-var idiom the bash shim
+    used to run directly."""
+    monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "sdk")
+    monkeypatch.setenv("SELF_LEARN_SDK_CLI_PATH", str(_FAKE_CLI))
+    monkeypatch.setenv("CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK", "1")
+    monkeypatch.setenv("FAKE_CLAUDE_FORCE_SCENARIO", "shim_script")
 
 
 #: A schema-valid but NON-matching record_sha for seeding a PRE-EXISTING

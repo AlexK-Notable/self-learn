@@ -49,6 +49,7 @@ from self_learn.invocation.contract import (
     DEGRADED_WORKER_CONTAINMENT,
     LOG_TEMPLATES,
     Containment,
+    LogTemplates,
     Outcome,
     SessionSpec,
     containment_for,
@@ -224,6 +225,22 @@ def _test_invocation_py_source() -> str:
     return (Path(__file__).parent / "test_invocation.py").read_text(encoding="utf-8")
 
 
+#: U-cleanup-A (fold round, code gate r1 `8uvjHmdKaUd6PI3tSyB-F`, full-suite
+#: re-run): `test_wr6_analyst_failure_mappings_are_byte_exact_and_rendered_
+#: through_log_templates` DROPPED from this set. MAJOR-1's un-skip rebuilt
+#: `wr6` as a multi-leg test that needs REAL `claude_agent_sdk` imports for
+#: legs 1-3/5 (not-found/timeout/exit/mutated-templates) and an ABSENT sdk
+#: for leg 4 (unavailable) -- in the SAME test function. Requesting the
+#: shared `sdk_absent` fixture poisons `sys.modules["claude_agent_sdk"]`
+#: for the WHOLE test (function-scoped monkeypatch, undone only at test
+#: teardown), which broke every other leg when tried. `wr6`'s leg 4 instead
+#: reimplements `sdk_absent`'s OWN safe mechanism inline -- a nested
+#: `pytest.MonkeyPatch()` instance scoped to just that leg, with an explicit
+#: `.undo()` in a `finally` block -- which is exactly what this test's own
+#: leg (iii)/docstring cares about (restored via monkeypatch, never a raw
+#: unrestored `del sys.modules[...]`); it just does not route through the
+#: named fixture to get there. `wr2` stays in the set (single-leg, sdk_absent
+#: for its whole body, no conflict).
 _SIM_2_NINE = {
     "test_rg1_five_rung_precedence_resolves_in_isolation",
     "test_rg2_each_rung_shadows_the_ones_below",
@@ -233,12 +250,13 @@ _SIM_2_NINE = {
     "test_rg5_analyst_analyze_converts_unavailable_to_analyst_error",
     "test_rg5_shimmed_worker_run_completes_under_sdk_selection",
     "test_wr2_miner_early_returns_precede_the_stray_sweep",
-    "test_wr6_analyst_failure_mappings_are_byte_exact_and_rendered_through_log_templates",
 }
 
 
 def test_su6_the_nine_request_the_fixture_and_it_is_singly_defined_and_scoped(monkeypatch):
-    """`SU6` -- four legs. (i) each of the nine names `sdk_absent` in its
+    """`SU6` -- four legs. (i) each of the (now eight -- U-cleanup-A fold
+    round dropped `wr6`, see `_SIM_2_NINE`'s own comment) names `sdk_absent`
+    in its
     parameter list. (ii) the fixture is defined exactly once, in this
     file. (iii) it blocks `claude_agent_sdk` and no other module. (iv)
     this file defines no `autouse` fixture (`Sim-1a`).
@@ -943,7 +961,18 @@ def test_ch10_hatch_open_driven_end_to_end_from_the_real_variable(env, claude_cl
     outcomes.clear()
     result_open = worker.run(env.home)
     assert result_open is not None
-    assert claude_cli_shim_worker["count"]() == 0  # the PATH shim's claude never ran -- the SDK path did
+    # U-cleanup-A: `claude_cli_shim_worker["count"]() == 0` used to prove
+    # "the PATH shim's claude never ran -- the SDK path did" against a
+    # BASH-backed fixture, where the count came from a wholly separate
+    # counter than whatever the SDK path used. The migrated fixture is
+    # itself sdk-backed now, sharing `fake_claude.py`'s own
+    # `FAKE_CLAUDE_CALLS` counter with THIS test's own real worker.run()
+    # call -- so the count is now legitimately >=1 the moment ANY sdk
+    # invocation happens, this test's own included, and no longer
+    # distinguishes "CLI ran" from "SDK ran". The positive proof that
+    # this leg reached the sdk backend for real is `outcomes` itself
+    # (below) -- a spy on `invocation.write_session` capturing a genuine
+    # `SdkOutcome`, stronger evidence than the old CLI-shim-count proxy.
     assert outcomes, "worker.run never reached the sdk backend"
     assert outcomes[-1].denials == ()  # `MAJOR-2`: the charter's verdict, observed
 
@@ -954,7 +983,7 @@ def test_ch10_hatch_open_driven_end_to_end_from_the_real_variable(env, claude_cl
     outcomes.clear()
     result_closed = worker.run(env.home)
     assert result_closed is not None
-    assert claude_cli_shim_worker["count"]() == 0
+    # See leg (1a)'s comment above -- same rebase, same reason.
     assert outcomes, "worker.run never reached the sdk backend"
     assert len(outcomes[-1].denials) == 1
     assert outcomes[-1].denials[0]["tool"] == "Write"
@@ -1466,6 +1495,150 @@ def test_sy5_thread_is_non_daemon_and_joined_without_a_timeout():
 
 
 # ===================================================================== #
+# RO-6 -- U-cleanup-A's LOG_TEMPLATES byte-pin (T-TEMPLATES-BYTE-PINNED)
+# ===================================================================== #
+
+
+def test_templates_byte_pinned_ro6():
+    """U-cleanup-A `CV3`/`RO-6` (`T-TEMPLATES-BYTE-PINNED`). Byte-pins
+    every row of all three `LOG_TEMPLATES` sets (`worker` ==
+    `worker-repair`, `miner-reader`, `analyst`) to the values captured at
+    self-learn master `ed1882f` (2026-08-24) via a direct import of
+    `LOG_TEMPLATES` -- WHILE `CliBackend` still existed and was still
+    verified against by `test_worker_contract.py::
+    test_fl2_byte_identity_and_provenance[sdk]`'s now-deleted
+    `cli_line == sdk_line` comparison (spec `docs/specs/self-learn/drafts/
+    u-cleanup-cli-path-removal-spec.md` S3.4.1/S3.4). This test IS that
+    comparison's replacement: broader (every row of all three tables, not
+    the three kinds `fl2[sdk]` covered on one table), and independent of a
+    second transport existing to compare against. It ALSO replaces
+    `test_ou3`'s dying `worker.not_found`-only byte-pin (S3.4's table).
+    `M-9` (mutate one character of any template) must redden this test --
+    it is the ONLY detector: `test_ou3`'s surviving `setitem` leg mutates
+    the table itself at runtime, so a mutated SHIPPED table still "changes
+    the emitted line" there and stays green regardless."""
+    assert LOG_TEMPLATES["worker"] == LogTemplates(
+        exited="run: {label}claude exited {rc}: {detail}",
+        timed_out="run: {label}claude timed out after {timeout:g}s",
+        not_found="run: {label}claude CLI not found on PATH",
+        os_error="run: {label}claude invocation failed ({exc})",
+        unavailable="run: {label}invocation backend unavailable ({exc})",
+        detail_cap=400,
+        detail_strip=False,
+    )
+    # worker-repair shares the worker table object (contract.py `L-a`) --
+    # pinning identity, not just equality, catches a future split too.
+    assert LOG_TEMPLATES["worker-repair"] is LOG_TEMPLATES["worker"]
+    assert LOG_TEMPLATES["miner-reader"] == LogTemplates(
+        exited="run: claude exited {rc}: {detail}",
+        timed_out="run: claude timed out after {timeout}s",
+        not_found="run: claude CLI not found on PATH",
+        os_error="run: reader invocation failed ({exc})",
+        unavailable="run: invocation backend unavailable ({exc})",
+        detail_cap=400,
+        detail_strip=False,
+    )
+    assert LOG_TEMPLATES["analyst"] == LogTemplates(
+        exited="analyst exited {rc}: {detail}",
+        timed_out="analyst timed out after {timeout:g}s",
+        not_found="claude CLI not found on PATH",
+        os_error="analyst invocation failed ({exc})",
+        unavailable="invocation backend unavailable ({exc})",
+        detail_cap=None,
+        detail_strip=True,
+    )
+
+
+# ===================================================================== #
+# RO-1..RO-4 -- fake_claude.py's per-invocation capture and the
+# bash-shim-script interpreter (U-cleanup-A CV5)
+# ===================================================================== #
+
+
+def test_fake_argv_per_call_ro1(tmp_path, sdk_cli_path, monkeypatch):
+    """RO-1/CV5 (`T-FAKE-ARGV-PER-CALL`): two invocations, two argv
+    records. `FAKE_CLAUDE_CALLS_DIR/argv.<n>` is PER-CALL -- unlike the
+    legacy `FAKE_CLAUDE_ARGV_LOG` (opens `"w"`, truncates every call and
+    therefore only ever represents the LAST invocation), a second
+    invocation's file does not erase the first's."""
+    home = tmp_path / "ro1-home"
+    home.mkdir()
+    calls_dir = tmp_path / "calls"
+    monkeypatch.setenv("FAKE_CLAUDE_CALLS_DIR", str(calls_dir))
+    monkeypatch.setenv("FAKE_CLAUDE_CALLS", str(tmp_path / "ro1-counter"))
+    _run(_spec("worker", home=home, prompt="ok_text"))
+    _run(_spec("worker", home=home, prompt="ok_text"))
+    argv1_path, argv2_path = calls_dir / "argv.1", calls_dir / "argv.2"
+    assert argv1_path.exists() and argv2_path.exists()
+    argv1 = argv1_path.read_text(encoding="utf-8").split("\0")[:-1]
+    argv2 = argv2_path.read_text(encoding="utf-8").split("\0")[:-1]
+    assert argv1 and argv2  # both real, non-empty argv records, captured independently
+
+
+def test_fake_prompt_log_ro2(tmp_path, sdk_cli_path, monkeypatch):
+    """RO-2/CV5 (`T-FAKE-PROMPT-LOG`): per-invocation prompt capture --
+    the exact wire-level `content` string each invocation received,
+    distinguishable call to call (the bash shim's `prompt.$N`
+    counterpart; T1's `FakeBackend.prompts` covers the seam but not the
+    wire)."""
+    home = tmp_path / "ro2-home"
+    home.mkdir()
+    calls_dir = tmp_path / "calls"
+    monkeypatch.setenv("FAKE_CLAUDE_CALLS_DIR", str(calls_dir))
+    monkeypatch.setenv("FAKE_CLAUDE_CALLS", str(tmp_path / "ro2-counter"))
+    monkeypatch.setenv("FAKE_CLAUDE_FORCE_SCENARIO", "ok_text")
+    _run(_spec("worker", home=home, prompt="PROMPT-ONE"))
+    _run(_spec("worker", home=home, prompt="PROMPT-TWO"))
+    assert (calls_dir / "prompt.1").read_text(encoding="utf-8") == "PROMPT-ONE"
+    assert (calls_dir / "prompt.2").read_text(encoding="utf-8") == "PROMPT-TWO"
+
+
+def test_fake_multi_write_ro3(tmp_path, sdk_cli_path, monkeypatch):
+    """RO-3/CV5 (`T-FAKE-MULTI-WRITE`): a `shim_script` scenario staging
+    TWO heredoc writes (`CLAUDE_SHIM_SCRIPT`, the same bash idiom
+    `test_worker.shim_writes`/`test_repair._write_script` emit,
+    concatenated by `\\n` -- the shape `f"{good}\\n{bad}"`-style call
+    sites actually build) lands BOTH target files in one invocation --
+    `CLAUDE_SHIM_SCRIPT` is used at ~180 sites across 9 files and its
+    dominant use is writing several proposal files in one turn."""
+    home = tmp_path / "ro3-home"
+    home.mkdir()
+    target_a = home / "skills" / "s" / "proposals" / "a.yaml"
+    target_b = home / "skills" / "s" / "proposals" / "b.yaml"
+    script = (
+        f"mkdir -p {target_a.parent} && cat > {target_a} <<'YAML'\ncontent-a\nYAML\n"
+        f"mkdir -p {target_b.parent} && cat > {target_b} <<'YAML'\ncontent-b\nYAML"
+    )
+    monkeypatch.setenv("CLAUDE_SHIM_SCRIPT", script)
+    monkeypatch.setenv("FAKE_CLAUDE_FORCE_SCENARIO", "shim_script")
+    c = _containment("worker", home=home)
+    outcome = _run(_spec("worker", home=home, prompt="shim_script", containment=c))
+    assert outcome.ok is True, outcome
+    assert target_a.read_text(encoding="utf-8") == "content-a\n"
+    assert target_b.read_text(encoding="utf-8") == "content-b\n"
+
+
+def test_fake_per_call_error_ro4(tmp_path, sdk_cli_path, monkeypatch):
+    """RO-4/CV5 (`T-FAKE-PER-CALL-ERROR`): round 1 clean, round 2 error --
+    the `CLAUDE_SHIM_EXIT_<n>` selector (falling back to the unnumbered
+    `CLAUDE_SHIM_EXIT`, default 0) drives the round-2-fails-round-1-
+    succeeds shape `test_repair.py`'s repair tests need, with the SAME
+    per-invocation counter `RO-1`/`RO-3` share."""
+    home = tmp_path / "ro4-home"
+    home.mkdir()
+    monkeypatch.setenv("FAKE_CLAUDE_CALLS", str(tmp_path / "ro4-counter"))
+    monkeypatch.setenv("FAKE_CLAUDE_FORCE_SCENARIO", "shim_script")
+    monkeypatch.delenv("CLAUDE_SHIM_SCRIPT", raising=False)
+    monkeypatch.setenv("CLAUDE_SHIM_EXIT_2", "1")
+    c = _containment("worker", home=home)
+    outcome1 = _run(_spec("worker", home=home, prompt="shim_script", containment=c))
+    assert outcome1.ok is True, outcome1
+    outcome2 = _run(_spec("worker", home=home, prompt="shim_script", containment=c))
+    assert outcome2.ok is False
+    assert outcome2.failure == "exit"
+
+
+# ===================================================================== #
 # OU -- the outcome mapping
 # ===================================================================== #
 
@@ -1557,32 +1730,29 @@ def test_ou2_rc_synthetic_one_and_none_by_failure_kind(tmp_path, sdk_cli_path):
         assert o2.rc is None
 
 
-def test_ou3_failure_legs_render_byte_identical_to_clibackend_and_respect_the_template_table(tmp_path, sdk_cli_path):
+def test_ou3_sdk_not_found_wording_and_template_table_authority(tmp_path, sdk_cli_path, monkeypatch):
+    """U-cleanup-A `CV3` (`T-SDK-NOT-FOUND-WORDING`). Formerly
+    `test_ou3_failure_legs_render_byte_identical_to_clibackend_and_respect_the_template_table`:
+    its first leg drove a REAL `CliBackend` (`CliBackend().write_session`)
+    to pin `LOG_TEMPLATES["worker"].not_found`'s wording through the CLI
+    transport -- that leg is DELETED here because it reaches
+    `CliBackend._run`, which `AG1`'s tripwire forbids for the whole
+    suite. The wording it pinned is re-asserted below through the SDK's
+    OWN not-found leg (`CLINotFoundError` -> `invocation_sdk/backend.py`
+    `:465-467`, which renders the SAME `LOG_TEMPLATES[surface].not_found`
+    template `spec.log()`-side) -- `not-found` stays reachable under sdk
+    (`test_ou1`'s `o4`, `:1491-1494` above) and this test extends that
+    existing SHAPE assertion to a WORDING assertion. The table-authority
+    leg below (the `setitem` mutation) is UNCHANGED from the original
+    `test_ou3` -- it does not touch `CliBackend` and needed no rewrite."""
     home = tmp_path / "ou3-home"
     home.mkdir()
 
-    from self_learn.invocation.cli import CliBackend
-
-    sdk_logs, cli_logs = [], []
-    sdk_spec = _spec("worker", home=home, prompt="error_result", log=sdk_logs.append)
-    _run(sdk_spec)
-
-    def _cli_fail_run(*a, **kw):
-        raise FileNotFoundError()
-
-    import subprocess as _sp
-
-    orig = _sp.run
-    _sp.run = _cli_fail_run
-    try:
-        cli_spec = SessionSpec(
-            surface="worker", prompt="x", cwd=home, timeout=5.0, containment=_containment("worker", home=home),
-            log=cli_logs.append, cli_argv_builder=lambda _s: ["claude", "-p"], cli_settings_writer=None,
-        )
-        CliBackend().write_session(cli_spec)
-    finally:
-        _sp.run = orig
-    assert cli_logs and cli_logs[0] == "run: claude CLI not found on PATH"
+    sdk_logs = []
+    monkeypatch.setenv("SELF_LEARN_SDK_CLI_PATH", "/nonexistent/claude-fake")
+    _run(_spec("worker", home=home, prompt="ok_text", log=sdk_logs.append))
+    monkeypatch.setenv("SELF_LEARN_SDK_CLI_PATH", str(FAKE_CLI))
+    assert sdk_logs and sdk_logs[0] == "run: claude CLI not found on PATH"
 
     # setitem on LOG_TEMPLATES must change the emitted line -- OU3's
     # second leg (own literals would NOT change here).

@@ -302,52 +302,31 @@ class _ReaderLeg:
             self._monkeypatch.setenv("FAKE_CLAUDE_FORCE_SCENARIO", "hang")
 
 
-@pytest.fixture(params=LEGS)
-def reader_leg(request, tmp_path, monkeypatch):
-    """`T2-a` (NORMATIVE) -- the single fixture the `[both]` criteria
-    parametrize over. Branches on `request.param`, calls plain functions,
-    requests no leg-specific fixture (`B-8`)."""
-    leg = request.param
+@pytest.fixture()
+def reader_leg(tmp_path, monkeypatch):
+    """`T2-a`, COLLAPSED (U-cleanup-A `CV2`/`CB-3`): formerly
+    `params=LEGS` (`LEGS = ("cli", "sdk")`) -- every `[both]` criterion
+    parametrized over this fixture now runs the `sdk` leg ONLY, with no
+    parametrization suffix on its node id. The `cli` branch is UNUSED
+    from here on (stays defined; U-cleanup-B deletes it, §8.3). PATH is
+    still shadowed (`T2-f`/U-fake `B-7a`, `MAJOR-3`/`NOTE-1`
+    shadow-not-subtract): this leg should never reach `CliBackend`, but a
+    mutation or bug that breaks `BACKEND_VAR` routing must fail closed
+    onto an inert decoy, never fall through to a real, PATH-resolvable
+    `claude` -- measured live during U-sdkr's `M32` self-check, before
+    this line existed."""
     home = tmp_path / "reader-home"
     home.mkdir(exist_ok=True)
     monkeypatch.setenv("SELF_LEARN_HOME", str(home))
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "reader-xdg-cache"))
     out_path = miner.spool_dir() / miner.OUTPUT_BASENAME
-    if leg == "cli":
-        shims_dir = tmp_path / "reader-shims"
-        argv_log = tmp_path / "reader-argv.log"
-        prompt_log = tmp_path / "reader-prompt.log"
-        # `MAJOR-3` (gate fold): a decoy `claude` is written into
-        # `shims_dir` HERE, at fixture setup, before any `.drive()` --
-        # the gate found `TO2`/`TO3` (which call `.arm_timeout()` +
-        # `.invoke()`, never `.drive()`) guarded ONLY by the
-        # `subprocess.Popen` monkeypatch, with `shims_dir` still empty
-        # and PATH falling through to a real, ambient `claude` if that
-        # patch ever failed to take effect -- "one refactor from a
-        # repeat" of the `M32` incident. `.drive()` still OVERWRITES
-        # this file with the real test-specific shim; the decoy is a
-        # baseline, not a replacement for it.
-        _shadow_claude(shims_dir, tmp_path, "leg")
-        monkeypatch.setenv("PATH", f"{shims_dir}{os.pathsep}{os.environ['PATH']}")
-        yield _ReaderLeg(
-            "cli", home, out_path, monkeypatch,
-            shim_dir=shims_dir, shims_dir=shims_dir, argv_log=argv_log, prompt_log=prompt_log,
-        )
-    else:
-        # PATH shadowed here too (`T2-f`/U-fake `B-7a`, `MAJOR-3`/
-        # `NOTE-1` shadow-not-subtract): this leg should never reach
-        # `CliBackend`, but a mutation or bug that breaks `BACKEND_VAR`
-        # routing must fail closed onto an inert decoy, never fall
-        # through to a real, PATH-resolvable `claude` -- measured live
-        # during this build's `M32` self-check, before this line
-        # existed (build report, "Deviations").
-        shadow_dir = home / "_decoy_path"
-        _shadow_claude(shadow_dir, tmp_path, "leg-sdk")
-        monkeypatch.setenv("PATH", f"{shadow_dir}{os.pathsep}{os.environ['PATH']}")
-        monkeypatch.setenv("SELF_LEARN_SDK_CLI_PATH", str(FAKE_CLI))
-        monkeypatch.setenv("CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK", "1")
-        monkeypatch.setenv(BACKEND_VAR, "sdk")
-        yield _ReaderLeg("sdk", home, out_path, monkeypatch, shim_dir=shadow_dir)
+    shadow_dir = home / "_decoy_path"
+    _shadow_claude(shadow_dir, tmp_path, "leg-sdk")
+    monkeypatch.setenv("PATH", f"{shadow_dir}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("SELF_LEARN_SDK_CLI_PATH", str(FAKE_CLI))
+    monkeypatch.setenv("CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK", "1")
+    monkeypatch.setenv(BACKEND_VAR, "sdk")
+    yield _ReaderLeg("sdk", home, out_path, monkeypatch, shim_dir=shadow_dir)
 
 
 class _FakePopenTO:
@@ -468,12 +447,27 @@ def test_mc2b_allowed_tools_is_forced_not_caller_supplied():
 
 
 def test_mc3_pair_consistent_at_the_real_call_site(monkeypatch, tmp_path):
-    home = _cli_reader_home(tmp_path, monkeypatch)
-    _out, spec, _outcome = _capture_invoke_reader(home, "PROMPT")
-    assert spec.containment.strict_mcp is True
-    assert spec.cli_settings_writer is not None
-    argv = spec.cli_argv_builder(spec.cli_settings_writer())
-    assert "--strict-mcp-config" in argv
+    """U-cleanup-A REWRITE, reduced per spec §8.4b's own row (code gate
+    r1 DIVERGENCE-2 fold, 8uvjHmdKaUd6PI3tSyB-F: "do not delete
+    silently" -- this was outright deleted in an earlier pass, with a
+    citation to `test_ct1`/`test_ct2` in its place; restored as an
+    actual reduced test body instead, per the row's own words).
+
+    Originally drove `_invoke_reader` through `_cli_reader_home`
+    (empty-PATH, no explicit backend override) to recompute
+    `--strict-mcp-config`'s argv position from `spec.cli_argv_builder
+    (spec.cli_settings_writer())` -- relying on conftest's `cli` pin
+    (AG3) to reach a real `CliBackend`, a path AG1's tripwire now makes
+    fatal. §8.4b's own disposition: "the sdk analogue is `options_
+    kwargs["strict_mcp_config"] is True`, already asserted by
+    `test_op6`. Reduce to the `CT2` options-table assertion" -- driven
+    independently here (not by calling `test_ct2` itself) through the
+    same real sdk call site (`_drive_reader_sdk`), so this test stays a
+    standalone tripwire for the property MC3 names even if `test_ct2`'s
+    own, broader assertion set is later narrowed."""
+    result = _drive_reader_sdk(monkeypatch, tmp_path)
+    spec = result["spec"]
+    assert backend_mod.options_kwargs(spec)["strict_mcp_config"] is True
 
 
 def test_mc4_flag_added_nothing_else_in_the_argv_moves():
@@ -655,18 +649,45 @@ def test_rc6_stale_artifact_preseeded_run_writes_nothing_returns_none(reader_leg
     assert not reader_leg.out_path.exists()
 
 
-def test_rc7_prompt_reaches_the_model_on_stdin_never_argv(reader_leg):
+def test_rc7_prompt_reaches_the_model_on_stdin_never_argv(monkeypatch, tmp_path):
+    # `RO-7`/`CV8` REWRITE (§8.4b, `T-READER-PROMPT-ON-THE-WIRE`): the
+    # `[cli]` leg's `run.argv`/`run.prompt_seen` witnesses are gone with
+    # the bash shim; the `[sdk]` leg's own body (`run.spec.prompt ==
+    # big_prompt` plus a `cli_argv_builder`/`cli_settings_writer` recompute
+    # off the SPEC object) collapses to a tautology about the spec once
+    # the `[cli]` leg is stripped away (CV2 clause 3) -- it never
+    # observed the real wire OR the real child's argv. Modelled on the
+    # genuine wire test `test_bg3_sdk_prompt_delivered_intact`
+    # (`test_worker_contract.py`): spy `ClaudeSDKClient.query` for
+    # witness (i) -- the prompt arrives on the wire -- and
+    # `FAKE_CLAUDE_ARGV_LOG` (the real child process's OWN recorded
+    # argv, RO-1) for witness (ii) -- it appears in none of it. Both
+    # halves of "on stdin, never argv" hold against the surviving
+    # transport.
+    from claude_agent_sdk import ClaudeSDKClient
+
     big_prompt = "X" * (200 * 1024)  # > 128 KiB argv element cap
-    run = reader_leg.drive(prompt=big_prompt)
-    if reader_leg.name == "cli":
-        assert run.argv is not None
-        assert big_prompt not in run.argv
-        assert run.prompt_seen == big_prompt
-    else:
-        assert run.spec.prompt == big_prompt
-        assert run.spec.cli_settings_writer is not None
-        built_argv = run.spec.cli_argv_builder(run.spec.cli_settings_writer())
-        assert all(big_prompt not in element for element in built_argv)
+    argv_log = tmp_path / "rc7-argv.log"
+    monkeypatch.setenv("FAKE_CLAUDE_ARGV_LOG", str(argv_log))
+
+    recorded_prompts: list[str] = []
+    real_query = ClaudeSDKClient.query
+
+    async def spy_query(self, prompt, *a, **kw):
+        recorded_prompts.append(prompt)
+        return await real_query(self, prompt, *a, **kw)
+
+    monkeypatch.setattr(ClaudeSDKClient, "query", spy_query)
+
+    result = _drive_reader_sdk(monkeypatch, tmp_path, prompt=big_prompt)
+
+    assert recorded_prompts and recorded_prompts[0] == big_prompt  # witness (i): on the wire
+    assert result["spec"].prompt == big_prompt
+
+    raw = argv_log.read_bytes() if argv_log.exists() else b""
+    argv = [a.decode("utf-8") for a in raw.split(b"\0")[:-1]] if raw else []
+    assert argv, "the real child never recorded its own argv"
+    assert all(big_prompt not in element for element in argv)  # witness (ii): never argv
 
 
 # ===================================================================== #
@@ -705,41 +726,20 @@ def test_to3_timeout_log_line_byte_identical_across_backends(reader_leg, monkeyp
     assert any(line.endswith(expected) for line in added), added
 
 
-def test_to4_cli_kill_path_killpg_then_wait(monkeypatch, tmp_path):
-    home = _cli_reader_home(tmp_path, monkeypatch)
-    monkeypatch.setattr(miner, "INVOKE_TIMEOUT_SECS", TIMEOUT_PATCH)
-    order: list[tuple] = []
-    fake = _FakePopenTO(
-        raise_on_communicate=subprocess.TimeoutExpired(cmd=["claude", "x"], timeout=TIMEOUT_PATCH),
-        wait_hook=lambda: order.append(("wait",)),
-    )
-    monkeypatch.setattr(subprocess, "Popen", fake)
-
-    import self_learn.invocation.cli as cli_mod
-
-    monkeypatch.setattr(cli_mod.os, "killpg", lambda pid, sig: order.append(("killpg", pid, sig)))
-    _out, _spec, outcome = _capture_invoke_reader(home, "PROMPT")
-    assert order == [("killpg", fake.pid, signal.SIGKILL), ("wait",)]
-    assert outcome.failure == "timeout"
-
-
-def test_to5_swallows_processlookuperror_and_permissionerror_separately(monkeypatch, tmp_path):
-    import self_learn.invocation.cli as cli_mod
-
-    for exc_cls in (ProcessLookupError, PermissionError):
-        home = _cli_reader_home(tmp_path, monkeypatch)
-        monkeypatch.setattr(miner, "INVOKE_TIMEOUT_SECS", TIMEOUT_PATCH)
-        fake = _FakePopenTO(
-            raise_on_communicate=subprocess.TimeoutExpired(cmd=["claude", "x"], timeout=TIMEOUT_PATCH)
-        )
-        monkeypatch.setattr(subprocess, "Popen", fake)
-
-        def _raise(pid, sig, _cls=exc_cls):
-            raise _cls()
-
-        monkeypatch.setattr(cli_mod.os, "killpg", _raise)
-        _out, _spec, outcome = _capture_invoke_reader(home, "PROMPT")
-        assert outcome.failure == "timeout", exc_cls
+# U-cleanup-A DELETE (§8.4 table, "killpg on miner timeout" row): both
+# `test_to4_cli_kill_path_killpg_then_wait` and `test_to5_swallows_
+# processlookuperror_and_permissionerror_separately` drove `subprocess.
+# Popen`/`os.killpg` directly against `_cli_reader_home` (an empty-PATH
+# sanitized home with NO explicit backend override), relying on
+# conftest's autouse `SELF_LEARN_BACKEND_MINER=cli` pin (AG3) to resolve
+# `miner-reader` to a REAL `CliBackend`. Both are moot -- the spec calls
+# them out by name as replaced by the sdk kill ladder (`test_to6_kill_
+# ladder_three_rungs_and_pgid_discrimination`, `test_to7_pid_sidecar_
+# present_during_absent_after` below, plus `KL1`-`KL8` in
+# `test_invocation_sdk.py`) -- and both would otherwise start exercising
+# `CliBackend._run` for real the moment AG3 removes the conftest pin
+# (their driving sets no explicit `SELF_LEARN_BACKEND_MINER` itself), a
+# path AG1's tripwire then makes fatal.
 
 
 def test_to6_kill_ladder_three_rungs_and_pgid_discrimination(monkeypatch):
@@ -905,16 +905,14 @@ def _clear_backend_env(monkeypatch):
         monkeypatch.delenv(var, raising=False)
 
 
-def test_fl1_backend_var_cli_resolves_clibackend(monkeypatch):
-    # code-gate MAJOR-1: this criterion was
-    # `test_fl1_backend_var_sdk_resolves_sdkbackend` -- miner-reader's
-    # own default is now sdk too, so an "sdk" stimulus would be
-    # tautological with the (unset) default. Inverted to "cli": only a
-    # MINER selector that genuinely reaches miner-reader can resolve it
-    # to `CliBackend`.
-    _clear_backend_env(monkeypatch)
-    monkeypatch.setenv(BACKEND_VAR, "cli")
-    assert isinstance(invocation.backend_for("miner-reader"), invocation.CliBackend)
+# U-cleanup-A DELETE (§8.4b): `test_fl1_backend_var_cli_resolves_
+# clibackend` asserted that an explicit `cli` selector reaches a real
+# `CliBackend` -- an outcome CV2/CB-3 no longer treats as a legitimate,
+# expected resolution to assert as PASSING behaviour (a `cli` selector
+# should be *refused*, not honoured). Replaced by `T-CLI-REFUSED-*`
+# (`SEL1`-`SEL4`) -- [B] scope, out of this Phase A build. `backend_for`
+# itself is untouched product code (Phase A deletes zero product code),
+# so this is a test-only removal, not a behavioural regression.
 
 
 def test_fl2_clean_env_resolves_sdkbackend(monkeypatch):
