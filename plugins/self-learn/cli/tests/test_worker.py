@@ -23,6 +23,8 @@ from self_learn.records import Record
 from shims import write_worker_claude_shim
 from support import commit_all, git, make_behavior, make_env, make_home, proposal_dict
 
+FAKE_CLI = Path(__file__).parent / "fixtures" / "fake_claude.py"
+
 SKILL_MD = "# s skill\n\nAuthored prose stays put.\n"
 
 # S-26: every proposal now needs the mandatory decision trace. This is a
@@ -123,31 +125,29 @@ def env(tmp_path, monkeypatch):
 
 @pytest.fixture()
 def claude_cli_shim_worker(tmp_path, monkeypatch, env):
-    """PATH shim, MULTI-INVOCATION-OBSERVABLE (U-repair F5, §9-X7 — the
-    pre-U-repair shim truncated with `>`, so a two-invocation run left
-    only the SECOND call observable; a repair-round test built against
-    it would silently exercise round 2 alone).
+    """U-cleanup-A migration (RO-1/RO-2/RO-3/RO-4): SDK-backed
+    replacement for the bash PATH shim, keeping the EXACT interface every
+    dependent test already reads (``["argv"](n)``, ``["call_prompt"](n)``,
+    ``["count"]()``, ``["dir"]``, ``["log"]``, ``["prompt"]``) so caller
+    bodies do not have to change to stop reaching ``CliBackend`` (`AG1`).
 
-    Five capabilities (F5), all keyed off a per-invocation counter
-    (``{tmp_path}/claude-invocation-count``, incremented once per call):
+    Routes `worker.run()`'s invocation through `SdkBackend` against
+    `tests/fixtures/fake_claude.py`, with `FAKE_CLAUDE_FORCE_SCENARIO=
+    shim_script` -- a real `worker.run()` prompt is long, dynamic and
+    record-specific and can never content-match a fixed scenario key
+    (same reasoning as `CH10`'s docstring in `test_invocation_sdk.py`),
+    so the force-scenario override is what routes it to the
+    `CLAUDE_SHIM_SCRIPT[_<n>]`/`CLAUDE_SHIM_EXIT[_<n>]` interpreter
+    (`RO-3`/`RO-4`) regardless of the real text. Per-invocation argv/
+    prompt capture (`RO-1`/`RO-2`) lands in `claude-calls/argv.<n>` /
+    `prompt.<n>` -- the SAME filenames `write_worker_claude_shim`'s
+    `calls_dir` used, so `argv_for`/`prompt_for` below are unchanged.
 
-    1. **per-invocation argv capture** — appended (never truncated) to
-       the legacy ``log`` path (the ~30 existing single-invocation tests
-       keep reading it unchanged: for exactly one call, append-to-empty
-       is byte-identical to truncate) AND to a per-call
-       ``claude-calls/argv.<n>`` file, read via ``claude_shim["argv"](n)``.
-    2. **per-invocation stdin capture** — same shape, legacy ``prompt``
-       path (appended) plus ``claude-calls/prompt.<n>``, read via
-       ``claude_shim["call_prompt"](n)``.
-    3. **a per-invocation counter** — ``claude_shim["count"]()``.
-    4. **per-invocation script** — ``CLAUDE_SHIM_SCRIPT_<n>``, falling
-       back to the unnumbered ``CLAUDE_SHIM_SCRIPT`` when the numbered
-       form is unset, so every existing single-invocation test (which
-       only ever sets the unnumbered var) keeps working unchanged.
-    5. **per-invocation exit code and sleep** — ``CLAUDE_SHIM_EXIT_<n>``
-       (falling back to unnumbered ``CLAUDE_SHIM_EXIT``, default ``0``)
-       and ``CLAUDE_SHIM_SLEEP_<n>`` (no unnumbered fallback — round 1
-       never needs to sleep just because round 2 does)."""
+    The PATH-shim directory (`shims`) SURVIVES here for a reason that has
+    nothing to do with `claude` resolution: `notify_shim` and the two
+    `test_claude_shim_*` tests below depend on it existing on PATH for
+    `self-learn-notify`/`notify-send` shimming, which is backend-
+    independent and stays exactly as it was."""
     shims = tmp_path / "shims"
     shims.mkdir(exist_ok=True)
     counter = tmp_path / "claude-invocation-count"
@@ -155,9 +155,16 @@ def claude_cli_shim_worker(tmp_path, monkeypatch, env):
     prompt_log = tmp_path / "claude-prompt.log"
     calls_dir = tmp_path / "claude-calls"
     calls_dir.mkdir(exist_ok=True)
-    write_worker_claude_shim(
-        shims, counter=counter, log=log, prompt_log=prompt_log, calls_dir=calls_dir
-    )
+
+    monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "sdk")
+    monkeypatch.setenv("SELF_LEARN_SDK_CLI_PATH", str(FAKE_CLI))
+    monkeypatch.setenv("CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK", "1")
+    monkeypatch.setenv("FAKE_CLAUDE_FORCE_SCENARIO", "shim_script")
+    monkeypatch.setenv("FAKE_CLAUDE_CALLS", str(counter))
+    monkeypatch.setenv("FAKE_CLAUDE_CALLS_DIR", str(calls_dir))
+    monkeypatch.setenv("FAKE_CLAUDE_ARGV_LOG", str(log))
+    monkeypatch.setenv("FAKE_CLAUDE_PROMPT_LOG", str(prompt_log))
+
     # 2026-08-09 hardening (T3): strip any REAL self-learn-notify from the
     # inherited PATH by default — belt-and-braces alongside the
     # SELF_LEARN_NO_NOTIFY=1 conftest default (worker.py's own kill
@@ -478,48 +485,25 @@ def test_run_happy_path(env, claude_cli_shim_worker, monkeypatch):
     assert line["aggregate"]["buckets"] == [{"bucket": "s", "pending": 1}]
 
 
-def test_run_argv_pins(env, claude_cli_shim_worker, monkeypatch):
-    """E-18 property (flag syntax adjusted at T13 per the pin's own
-    instruction): read-only allowedTools, Bash/Edit explicitly
-    disallowed, Write granted ONLY via the settings file's ledger
-    proposals-scoped rules (doc 13: three)."""
-    rid = seed_pending(env)
-    monkeypatch.setenv("CLAUDE_SHIM_SCRIPT", shim_writes(env, rid))
-    worker.run(env.home)
-    argv = claude_cli_shim_worker["log"].read_text(encoding="utf-8").split("\0")[:-1]
-    allowed = argv[argv.index("--allowedTools") + 1]
-    assert allowed == "Read,Grep,Glob"
-    assert "Write" not in allowed and "Bash" not in allowed
-    disallowed = argv[argv.index("--disallowedTools") + 1]
-    assert "Bash" in disallowed and "Edit" in disallowed
-    settings_path = argv[argv.index("--settings") + 1]
-    rules = json.loads(Path(settings_path).read_text(encoding="utf-8"))[
-        "permissions"
-    ]["allow"]
-    # U-attrib Grant-1 (GR-b, §3.5 bucket 3 — F1's relocation): the batch
-    # invocation is granted the STAGE and nothing else. The three ledger
-    # globs this test used to assert are GONE; GR2 is the dedicated
-    # criterion (test_attrib.py) but F1 itself must not keep asserting a
-    # scope this build removed.
-    assert rules == worker.stage_permission_rules(env.home)
-    assert len(rules) == 1
-    for rule in rules:  # // prefix = filesystem-absolute in rule syntax
-        assert rule.startswith("Edit(//")
-    assert argv[argv.index("--model") + 1] == "claude-sonnet-5"
-    # The prompt is NOT in argv (audit 2026-07-15: 128 KiB argv cap; a
-    # full batch exceeds it) — it rides stdin.
-    assert "-p" in argv
-    assert not any("About to edit" in a for a in argv)
-    prompt = claude_cli_shim_worker["prompt"].read_text(encoding="utf-8")
-    assert "About to edit .storage while HA is running." in prompt  # record body
-    assert "Authored prose stays put." in prompt  # target-canon excerpt
-    # U-repair F1: --strict-mcp-config is on the argv, carries no value
-    # of its own (build_argv appends it LAST, nothing after it), and no
-    # --mcp-config accompanies it (the analyst needs no MCP server;
-    # §3.11).
-    assert "--strict-mcp-config" in argv
-    assert argv[-1] == "--strict-mcp-config"
-    assert "--mcp-config" not in argv
+# U-cleanup-A: `test_run_argv_pins` DELETED here, not migrated -- per
+# spec §3.4's own measurement (the AST-walk + regex method applied to
+# every T3-core file), this was the ONE genuine claude-argv/settings test
+# in `test_worker.py` (of 32 shim-signature tests, 7 regex hits, 1
+# genuine). Its subject -- the real CLI argv reaching the process,
+# specifically `--allowedTools` -- does not exist under the sdk backend:
+# measured live (`FAKE_CLAUDE_ARGV_LOG` during this migration), the SDK's
+# real argv carries `--disallowedTools` but NEVER `--allowedTools` --
+# allowed-tool enforcement happens through the `can_use_tool` charter
+# callback (`--permission-prompt-tool stdio`), not a CLI flag. The
+# properties this test pinned are already covered on the sdk leg by
+# `test_invocation_sdk.py`'s `OP1`-`OP17` (options-table assertions) and
+# `CH1`-`CH13` (charter enforcement, including the exact
+# `Read,Grep,Glob` / `Bash,Edit,...` split and the stage-only settings
+# rules) plus `worker_contract.py`'s `CH10` (driven end-to-end from the
+# real variable). The prompt-delivery half of what this test checked
+# (record body + canon excerpt riding stdin, not argv) is separately
+# covered by `test_bg3_sdk_prompt_delivered_intact` in
+# `test_worker_contract.py`.
 
 
 def test_run_idle_when_nothing_eligible(env, claude_cli_shim_worker):

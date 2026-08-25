@@ -247,19 +247,21 @@ class _Backend:
         return None
 
 
-@pytest.fixture(params=["cli", "sdk"])
-def backend(request, tmp_path, monkeypatch):
-    """`Par-1` -- the `["cli", "sdk"]` fixture every `(T2 + T3)` criterion
-    is parametrized over."""
-    if request.param == "cli":
-        monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "cli")
-        shim = _build_cli_shim(tmp_path, monkeypatch)
-        return _Backend(param="cli", shim=shim, fake_cli=None)
-    # STEP 0 / MAJOR-4 backstop: even on the `sdk` param, re-assert the
-    # decoy shadow explicitly here (the autouse fixture already installed
-    # it, this call is idempotent) -- the gate's finding was exactly
-    # "sdk falls to CliBackend with inherited PATH"; this is the row that
-    # makes that fall-through land on the decoy, never the real binary.
+@pytest.fixture()
+def backend(tmp_path, monkeypatch):
+    """`Par-1`, COLLAPSED (U-cleanup-A `CV2`/`CB-3`): formerly
+    `params=["cli", "sdk"]` -- every `(T2 + T3)` criterion parametrized
+    over this fixture now runs the `sdk` leg ONLY and with NO
+    parametrization suffix on its node id (`CB-3`: "the 43 `[sdk]` T2 legs
+    survive... as unparametrized tests"). The `cli` branch and
+    `_build_cli_shim` are UNUSED by this fixture from here on -- they stay
+    defined (U-cleanup-B deletes them, §8.3) so any straggler direct
+    caller is a clear NameError rather than a silent behavior change.
+    STEP 0 / MAJOR-4 backstop: re-assert the decoy shadow explicitly here
+    (the autouse fixture already installed it, this call is idempotent)
+    -- the gate's finding was exactly "sdk falls to CliBackend with
+    inherited PATH"; this is the row that makes that fall-through land on
+    the decoy, never the real binary."""
     _install_decoy_shadow(tmp_path, monkeypatch)
     monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "sdk")
     _build_sdk_env(monkeypatch)
@@ -267,12 +269,12 @@ def backend(request, tmp_path, monkeypatch):
     return _Backend(param="sdk", shim=None, fake_cli=FAKE_CLI)
 
 
-#: `MAJOR-3`: a module-level alias captured immediately after the fixture
-#: is defined, distinct from the `backend` PARAMETER name every test
-#: using the fixture shadows it with -- `PB1` needs the fixture FUNCTION
-#: object itself (to read its declared `params` off the pytest marker),
-#: which the parameter name can no longer reach once it is bound.
-_BACKEND_FIXTURE = backend
+# U-cleanup-A: `MAJOR-3`'s `_BACKEND_FIXTURE = backend` module-level alias
+# (captured so `test_pb1_...` could read the fixture's declared `params`
+# off its pytest marker) is removed -- the `backend` fixture no longer
+# carries a `params` marker at all post-collapse (see its own
+# docstring), so nothing needs the function object anymore; `test_pb1_...`
+# now checks `backend.param` directly instead.
 
 
 @dataclass
@@ -574,14 +576,14 @@ def _apply_failure_env(kind: str, param: str, *, scratch: Path, monkeypatch) -> 
 # ===================================================================== #
 
 _ARMOR_SHAS = {
-    "plugins/self-learn/cli/tests/conftest.py": "7f609529264dcaa7304fef36dccedaab2da5b01add5c3f71d4e1dc2b805777e9",
+    "plugins/self-learn/cli/tests/conftest.py": "567916b3d86f0d89b099ac4577c276cedb300297587ebfa451ec593e46b5e4c6",
     "plugins/self-learn/cli/tests/shims.py": "c4647decf1838f31791100205217858e907c487974deab12d22cc6a535847548",
     "plugins/self-learn/cli/tests/backends.py": "a2ba2d74f117a230740d10e3c9fa67bd30f751ce80ec59667c9136557a906dde",
-    "plugins/self-learn/cli/tests/test_invocation.py": "af33cb437e6bce062bb2972a6ce4b11ae1cbae05bbdd40ac3774d4d267247a86",
-    "plugins/self-learn/cli/tests/test_invocation_sdk.py": "0921e24ff75e031aac5df207390e343b71a7a82d9fa409006f4151bb34904632",
-    "plugins/self-learn/cli/tests/test_u_fake.py": "72c5010db060a1179a75648ad17a343b8e0bc69e2923f885b3dbe97f3e636a7e",
-    "plugins/self-learn/cli/tests/test_worker.py": "39cb1ca0dd6c2dd366c5455da86c875187d884bdee42ac952f558ba3cdbf882a",
-    "plugins/self-learn/cli/tests/test_repair.py": "dd0accf9f1315109f93de18adc93d206bea56afc50168a7e1ac7f8d846f91c94",
+    "plugins/self-learn/cli/tests/test_invocation.py": "5885523bd03aa9d2c37fe0576d500e4996e53379cdc4eb9c3912f298c9cc93b3",
+    "plugins/self-learn/cli/tests/test_invocation_sdk.py": "733f280fde327a50673e1a29cb27efcf9b426553e5cb094442e139ef5898d751",
+    "plugins/self-learn/cli/tests/test_u_fake.py": "455f764f72d85db69ae644cb562a734722699d72f158da97478c1a201081a0e1",
+    "plugins/self-learn/cli/tests/test_worker.py": "c3392208c7f172b2a897a6e4f49d876156b53e4d7f66dfa2efb6884d42d93984",
+    "plugins/self-learn/cli/tests/test_repair.py": "6d036ab73dbc6d8443a47c603322905afd9c3423e50b585edced2e9d69114994",
 }
 
 #: U-flip: three of the eight pins above (conftest.py, test_invocation.py,
@@ -595,10 +597,55 @@ _ARMOR_SHAS = {
 #: "post-merge reconciliation of cross-unit armor and scoping controls")
 #: is expected to bump `BASE_COMMIT` itself once this unit lands, at
 #: which point these three rejoin the diff-empty set.
+#:
+#: U-cleanup-A (this build) re-pins `test_invocation.py` and
+#: `test_invocation_sdk.py` AGAIN, on top of the U-flip content already
+#: reflected above -- the CV2/CB-3 sdk-migration fallout in those two
+#: files (43-leg parametrization collapse, RO-6 byte-pin, ou3 rewrite,
+#: cn10/av1 deletion, av4/lg1-lg6/fk2 rebase). It also adds
+#: `test_worker.py` and `test_repair.py` to BOTH the hash pins (re-pinned
+#: to this build's content) and the exempt set below -- `claude_cli_shim_
+#: worker`'s fixture was rebuilt onto the sdk-backed `fake_claude.py`
+#: shim-script scenario (§3.4/§8.4b), and one CLI-argv-only test was
+#: deleted from each per the same disposition as `_run_argv_pins`.
+#: `test_invocation.py`'s pin is re-pinned a THIRD time by this same
+#: build's own fold round (code gate r1, `8uvjHmdKaUd6PI3tSyB-F`,
+#: MAJOR-1/NIT-6): `test_lg7`/`test_wr1`/`test_wr5`/`test_wr6` un-skipped
+#: and rebased onto the new `_analyst_fail_sdk` helper (also added,
+#: `import sys` too), and two other tests' skip reasons were reworded
+#: (NIT-6, skip-to-B disposition) -- still the same file, still this
+#: unit's own authorized delta, so only the hash below moves; the
+#: exempt-set membership above needs no change.
+#: A second full-suite run (same fold round) surfaced one more: MAJOR-1's
+#: `wr6` rewrite dropped the shared `sdk_absent` fixture from its params
+#: (see that file's own comment on the fix), which broke `test_invocation_
+#: sdk.py::test_su6_...`'s structural nine-name check -- fixed there by
+#: removing `wr6` from `_SIM_2_NINE` (documented in place, same file), not
+#: by reverting the runtime fix. That edit moves `test_invocation_sdk.py`'s
+#: own hash pin above a third time; it was already in the exempt set.
+#: `conftest.py` is NOT yet in this build's own delta (AG3's pin removal
+#: lands separately, in-tree, later in this same build) -- when it does,
+#: `conftest.py`'s hash above needs re-pinning too; it is already in the
+#: exempt set below from U-flip so no further `_SU4B_DIFF_EXEMPT` edit
+#: will be needed at that point, only a new hash.
+#: U-cleanup-A also adds `test_u_fake.py`: its own internal `DS1`/`DS2`
+#: armor (function-level, not this whole-file mechanism) had two gaps
+#: this build's first FULL-suite run surfaced -- `test_fx2_analyst_
+#: fixture_shape` still expected the pre-existing `"prompt"` key to be
+#: absent, and `test_worker.py`/`test_repair.py`'s CLI-argv-only test
+#: deletions (already reflected in THIS file's own hash pins/exempt set,
+#: above) were never taught to `REWRITTEN`/the new `DS1_REMOVED`, so
+#: `test_ds1`'s live base-vs-head function count silently drifted by one
+#: per file. Both are `test_u_fake.py`-internal corrections, not scope
+#: creep -- hash re-pinned to this build's content, same as the other
+#: four.
 _SU4B_DIFF_EXEMPT = {
     "plugins/self-learn/cli/tests/conftest.py",
     "plugins/self-learn/cli/tests/test_invocation.py",
     "plugins/self-learn/cli/tests/test_invocation_sdk.py",
+    "plugins/self-learn/cli/tests/test_worker.py",
+    "plugins/self-learn/cli/tests/test_repair.py",
+    "plugins/self-learn/cli/tests/test_u_fake.py",
 }
 
 _FAKE_CLAUDE_RELPATH = "plugins/self-learn/cli/tests/fixtures/fake_claude.py"
@@ -650,6 +697,79 @@ def _load_fake_claude_module():
     return _load_module_from_path(path, "_fake_claude_under_test")
 
 
+#: U-cleanup-A's sanctioned delta to `fake_claude.py`, layered on top of
+#: `BASE_COMMIT`'s already-re-anchored content (analyst scenarios, prior
+#: units' growth). Following the SAME "re-anchor" pattern legs 2-4's own
+#: comments describe for earlier units (29f5d67, the U-sdka/U-flip
+#: growth folded into `BASE_COMMIT` itself): rather than bumping
+#: `BASE_COMMIT` again mid-build, this build's specific additions/edits
+#: are named explicitly so leg 1's byte-identity check, leg 2's name-set
+#: check, leg 3's key-set check, and leg 4's statement-sequence check
+#: each stay strict against anything ELSE while tolerating exactly this.
+#:
+#: `main` and `_scenario_error_result` are EDITED (leg 1 exemption, not
+#: additions) -- `main` gains per-call argv/prompt capture and
+#: `_CURRENT_INVOCATION` bookkeeping; `_scenario_error_result` gains an
+#: optional `FAKE_CLAUDE_ERROR_TEXT` override with the "boom" default
+#: preserved (see the function's own comment, and `test_u_sdka.py`'s
+#: `_HY3_SCENARIO_SHAS` re-pin of the same function). The five new
+#: functions back the bash-shim-script interpreter that lets the
+#: migrated `claude_cli_shim_worker`/`claude_cli_shim_analyst` fixtures
+#: route the ~109 behaviour tests' existing `CLAUDE_SHIM_SCRIPT_<n>`
+#: content through the sdk-backed fake instead of a real bash process.
+#: `_peek_invocation` is a non-destructive counterpart to the pre-
+#: existing `_next_invocation` (armored, unedited) -- added after `main`
+#: was found double-incrementing `_scenario_ok_write_real`'s own on-disk
+#: counter (see `_peek_invocation`'s own docstring).
+_SU4B_SANCTIONED_EDITED_FUNCS = {"main", "_scenario_error_result"}
+_SU4B_SANCTIONED_NEW_FUNCS = {
+    "_capture_argv_per_call",
+    "_capture_prompt_per_call",
+    "_parse_shim_script",
+    "_scenario_shim_script",
+    "_peek_invocation",
+}
+_SU4B_SANCTIONED_NEW_SCENARIO_KEYS = {"shim_script"}
+#: leg 4's sanctioned new top-level, non-`FunctionDef` statements, keyed
+#: by `_stmt_key` so an insertion can be recognised and skipped without
+#: caring WHERE it lands -- `import re` (regex-based shim-script
+#: parsing), the `_CURRENT_INVOCATION` counter, the `_ShimScriptError`
+#: exception class, and eight precompiled `re.Pattern` constants the
+#: parser matches shim-script ops against (`_PRINT_HEREDOC_RE` added
+#: after `test_composer.py::_shim_env`'s migration needed a no-target-
+#: heredoc "print to the wire" op alongside the file-write ops;
+#: `_ECHO_RE` added after `test_miner.py::test_artifact_contract_
+#: sweeps_strays`'s migration needed a third single-line write idiom,
+#: `echo CONTENT > path`, alongside heredoc and `printf`).
+_SU4B_SANCTIONED_NEW_STMT_KEYS = {
+    ("import", ("re",)),
+    ("assign", "_CURRENT_INVOCATION"),
+    ("class", "_ShimScriptError"),
+    ("assign", "_HEREDOC_RE"),
+    ("assign", "_PRINT_HEREDOC_RE"),
+    ("assign", "_PRINTF_RE"),
+    ("assign", "_ECHO_RE"),
+    ("assign", "_RM_RE"),
+    ("assign", "_TOUCH_RE"),
+    ("assign", "_MV_RE"),
+    ("assign", "_INERT_RESIDUE_RE"),
+}
+
+
+def _stmt_key(node: ast.AST) -> tuple:
+    if isinstance(node, ast.Import):
+        return ("import", tuple(sorted(a.name for a in node.names)))
+    if isinstance(node, ast.ImportFrom):
+        return ("importfrom", node.module, tuple(sorted(a.name for a in node.names)))
+    if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+        return ("assign", node.target.id)
+    if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+        return ("assign", node.targets[0].id)
+    if isinstance(node, ast.ClassDef):
+        return ("class", node.name)
+    return ("other", ast.dump(node))
+
+
 def test_su4b_fake_claude_additive_only(tmp_path):
     """`SU4` clause (b) -- the ONE file `V-2` lets grow, pinned per
     function (`FK3-d`), four legs, all against `git show 89f8ef7:...`
@@ -683,39 +803,52 @@ def test_su4b_fake_claude_additive_only(tmp_path):
     # -- resolved through the imported MODULE, never an ast-first-match
     # (the gate's shadowing-redefinition evasion hashed the ORIGINAL def
     # under a first-match reading and would have passed; the runtime
-    # binding hashes the shadow and reddens -- keep this form).
+    # binding hashes the shadow and reddens -- keep this form). Names in
+    # `_SU4B_SANCTIONED_EDITED_FUNCS` are exempted from byte-identity
+    # (U-cleanup-A's own edits, see that constant's comment) but must
+    # still exist and still be functions.
     for name in base_func_names:
         assert name in cur_func_names, f"{name} missing from the current file"
+        if name in _SU4B_SANCTIONED_EDITED_FUNCS:
+            continue
         fn = getattr(fake_claude_mod, name)
         live_src = inspect.getsource(fn)
         assert hashlib.sha256(live_src.encode("utf-8")).hexdigest() == base_shas[name], name
 
-    # leg 2: no top-level names beyond base. (Originally asserted the
-    # delta was exactly this unit's sanctioned pair {_scenario_ok_write_real,
-    # _next_invocation}; BASE_COMMIT now includes that growth plus U-sdka's
-    # analyst scenarios, so from here any growth is unsanctioned until a
-    # gated unit re-anchors. The original verification lives at 29f5d67.)
+    # leg 2: no top-level names beyond base and this unit's sanctioned
+    # four. (Originally asserted the delta was exactly this unit's
+    # sanctioned pair {_scenario_ok_write_real, _next_invocation};
+    # BASE_COMMIT now includes that growth plus U-sdka's analyst
+    # scenarios, so from here any growth beyond `_SU4B_SANCTIONED_NEW_
+    # FUNCS` is unsanctioned until a gated unit re-anchors. The original
+    # verification lives at 29f5d67.)
     new_names = cur_func_names - base_func_names
-    assert new_names == set()
+    assert new_names == _SU4B_SANCTIONED_NEW_FUNCS, (new_names, _SU4B_SANCTIONED_NEW_FUNCS)
 
-    # leg 3: SCENARIOS' key set gained nothing beyond base (post-re-anchor
-    # form; originally "exactly ok_write_real" -- see leg 2's note); every
-    # base key survives bound to its ORIGINAL function (by __name__).
+    # leg 3: SCENARIOS' key set gained nothing beyond base and this
+    # unit's sanctioned "shim_script" (post-re-anchor form; originally
+    # "exactly ok_write_real" -- see leg 2's note); every base key
+    # survives bound to its ORIGINAL function (by __name__).
     base_scenarios = base_mod.SCENARIOS
     cur_scenarios = fake_claude_mod.SCENARIOS
     base_keys = set(base_scenarios.keys())
     cur_keys = set(cur_scenarios.keys())
-    assert cur_keys - base_keys == set()
+    assert cur_keys - base_keys == _SU4B_SANCTIONED_NEW_SCENARIO_KEYS, (
+        cur_keys - base_keys, _SU4B_SANCTIONED_NEW_SCENARIO_KEYS
+    )
     assert base_keys <= cur_keys
     for key in base_keys:
         assert base_scenarios[key].__name__ == cur_scenarios[key].__name__, key
 
     # leg 4: the file's top-level non-FunctionDef statements are exactly
-    # base's, save for the SCENARIOS dict literal gaining ONE key --
-    # compared as a normalized ast.dump of the statement list (catches
-    # the gate's own evasion: an appended module-level rebinding of a
-    # pre-existing global, which passes legs 1-3 and the additive
-    # numstat).
+    # base's, in the SAME order, plus `_SU4B_SANCTIONED_NEW_STMT_KEYS`'s
+    # entries inserted anywhere -- compared as a normalized ast.dump of
+    # the statement list with the sanctioned insertions filtered out
+    # first (catches the gate's own evasion: an appended module-level
+    # rebinding of a pre-existing global, which passes legs 1-3 and the
+    # additive numstat; also catches a REORDERED or EDITED pre-existing
+    # statement, since the filtered sequence must still dump-match base
+    # position for position).
     def _find_scenarios_assign(tree: ast.Module) -> ast.Assign:
         for node in tree.body:
             if (
@@ -736,12 +869,21 @@ def test_su4b_fake_claude_additive_only(tmp_path):
     cur_other = [
         n for n in cur_tree.body if not isinstance(n, ast.FunctionDef) and n is not cur_scen_node
     ]
-    assert len(base_other) == len(cur_other), (
-        "top-level non-FunctionDef statement count changed -- an appended "
-        "module-level statement (e.g. a rebound global) is not a "
-        "sanctioned SCENARIOS-only delta"
+
+    cur_other_keys = [_stmt_key(n) for n in cur_other]
+    sanctioned_idx = [i for i, k in enumerate(cur_other_keys) if k in _SU4B_SANCTIONED_NEW_STMT_KEYS]
+    assert {cur_other_keys[i] for i in sanctioned_idx} == _SU4B_SANCTIONED_NEW_STMT_KEYS, (
+        "sanctioned-new-statement set mismatch -- either an expected addition is "
+        "missing, or an unsanctioned statement's shape collided with a sanctioned key",
+        {cur_other_keys[i] for i in sanctioned_idx},
     )
-    for b, c in zip(base_other, cur_other):
+    filtered_cur_other = [n for i, n in enumerate(cur_other) if i not in sanctioned_idx]
+    assert len(base_other) == len(filtered_cur_other), (
+        "top-level non-FunctionDef statement count changed beyond the sanctioned "
+        "insertions -- an appended module-level statement (e.g. a rebound global) "
+        "is not a sanctioned delta"
+    )
+    for b, c in zip(base_other, filtered_cur_other):
         assert ast.dump(b) == ast.dump(c)
 
     base_dict, cur_dict = base_scen_node.value, cur_scen_node.value
@@ -751,7 +893,9 @@ def test_su4b_fake_claude_additive_only(tmp_path):
     assert set(base_pairs) <= set(cur_pairs)
     for k, v in base_pairs.items():
         assert cur_pairs[k] == v, "a pre-existing SCENARIOS entry changed"
-    assert len(set(cur_pairs) - set(base_pairs)) == 0  # post-re-anchor: no growth (was == 1, see leg 2's note)
+    # post-re-anchor: growth is exactly this unit's sanctioned "shim_script" key
+    # (was == 1 pre-re-anchor, == 0 post-U-flip-re-anchor; see leg 2's note)
+    assert len(set(cur_pairs) - set(base_pairs)) == len(_SU4B_SANCTIONED_NEW_SCENARIO_KEYS)
 
 
 # ===================================================================== #
@@ -760,23 +904,25 @@ def test_su4b_fake_claude_additive_only(tmp_path):
 
 
 def test_pb1_backend_identity_per_param(backend, tmp_path):
-    from self_learn.invocation import CliBackend as _IndependentCliBackend
     from self_learn.invocation_sdk import SdkBackend as _IndependentSdkBackend
 
-    # MAJOR-3 (code-gate fold): PB1's first clause -- the `backend`
-    # fixture's OWN declared params, read off its pytest marker, are
-    # exactly ("cli", "sdk"). Previously only checked by `FR2` (an
-    # instrument criterion that counts collected node ids and does not
-    # read assertions, `R-6`) -- a criterion that DIRECTLY reads the
-    # fixture's declaration is required so `M2` (params narrowed to
-    # `["cli"]` only) reddens `PB1` itself, not only the instrument.
-    assert _BACKEND_FIXTURE._fixture_function_marker.params == ("cli", "sdk")
+    # U-cleanup-A COLLAPSE + RE-BASELINE (§8.4b): MAJOR-3's original
+    # first clause read the `backend` fixture's `params=("cli", "sdk")`
+    # marker off `_fixture_function_marker` -- CV2/CB-3 collapsed the
+    # fixture to unparametrized-sdk-only (see `backend`'s own
+    # docstring), so there is no `params` marker left to read; a plain
+    # `@pytest.fixture()` carries no `_fixture_function_marker` at all,
+    # so the old clause would now raise `AttributeError`, not just fail
+    # an assertion. Rebaselined to the surviving half of PB1's intent --
+    # that the fixture yields exactly one identity, sdk, no other pole
+    # reachable through it -- checked directly against `backend.param`
+    # rather than against marker metadata that no longer exists.
+    assert backend.param == "sdk"
 
     home = tmp_path / "pb1-home"
     home.mkdir()
-    expected = _IndependentCliBackend if backend.param == "cli" else _IndependentSdkBackend
-    assert type(invocation.backend_for("worker", home=home)) is expected
-    assert type(invocation.backend_for("worker-repair", home=home)) is expected
+    assert type(invocation.backend_for("worker", home=home)) is _IndependentSdkBackend
+    assert type(invocation.backend_for("worker-repair", home=home)) is _IndependentSdkBackend
 
 
 def test_pb2_driven_outcome_backend_asymmetry(backend, tmp_path, monkeypatch):
@@ -796,13 +942,13 @@ def test_pb3_sdk_param_always_uses_the_shipped_fake(backend):
     assert os.environ.get("SELF_LEARN_SDK_CLI_PATH") == str(FAKE_CLI)
 
 
-def test_pb4_cli_param_shim_actually_reached(backend, env, monkeypatch):
-    if backend.param != "cli":
-        pytest.skip("cli-param-only criterion")
-    monkeypatch.setenv("SELF_LEARN_REPAIR", "0")
-    seed_pending(env, rid="lrn-000000b4")
-    worker.run(env.home)
-    assert backend.shim["count"]() >= 1
+# `test_pb4_cli_param_shim_actually_reached` DELETED (code gate r1
+# MAJOR-2 fold, 8uvjHmdKaUd6PI3tSyB-F): post-collapse the `backend`
+# fixture always yields `param == "sdk"`, so `if backend.param != "cli":
+# pytest.skip(...)` fired on 100% of invocations -- a permanently-
+# skipped, zero-assertion node that still counted toward AG4. Deleted
+# per §8.4's own explicit disposition for `pb4_cli_param_shim_actually_
+# reached` (delete class).
 
 
 # ===================================================================== #
@@ -1320,28 +1466,42 @@ def test_fl1_failure_legs_never_raise(tmp_path, backend):
     assert driven == set(invocation.FAILURE_KINDS)  # F-b -- the fail-closed enumeration, per backend
 
 
-def _drive_fl2_lines(param: str, tmp_path: Path, marker_templates) -> dict[str, list[str]]:
-    """One param's worth of `F-c` table cells, log lines captured under
-    the marker-tagged templates. Factored out so `FL2` can drive a SECOND
-    param from inside a single-param test body (below) without duplicating
-    the drive loop -- the cross-backend byte-identity clause needs both
-    sides' lines in the same assertion."""
+def _drive_fl2_lines(tmp_path: Path, marker_templates) -> dict[str, list[str]]:
+    """U-cleanup-A COLLAPSE + RE-BASELINE (§8.4b, `test_fl2_byte_
+    identity_and_provenance[sdk]`, "the single most important test
+    disposition"): the `param` argument is gone -- this always drove the
+    `sdk` leg for real ANYWAY (`FL-c`'s byte-identity clause explicitly
+    "rides the sdk param leg"), and the `cli` leg it used to ALSO drive
+    (to compare against) reached a real `CliBackend`, a path `AG1`'s
+    tripwire now makes fatal.
+
+    DIVERGENCE-1 fold (code gate r1, 8uvjHmdKaUd6PI3tSyB-F): the
+    `worker.build_argv` call is ALSO gone now, not just the deleted
+    second (`cli`-param) call. `_invoke_claude`'s signature still takes
+    a positional `argv` (`worker.py:3121`), which it closes over as
+    `cli_argv_builder=lambda _settings: argv` -- structurally required,
+    but its VALUE is inert under sdk (the sdk transport never calls
+    `cli_argv_builder` at all; only the CliBackend leg this test no
+    longer drives would have). Calling `worker.build_argv` just to
+    satisfy that unused parameter kept a real dependency on CL9's own
+    deletion target alive in an sdk-only test path -- replaced by the
+    same trivial literal the real sdk-only call sites already use
+    (`test_hd4_seam_is_total_on_the_analyst_surface`'s `cli_argv_
+    builder=lambda _s: ["claude", "-p", "p"]`, `test_u_sdka.py`)."""
     results: dict[str, list[str]] = {}
     for kind in invocation.FAILURE_KINDS:
         mp = pytest.MonkeyPatch()
         try:
-            home = tmp_path / f"fl2-{param}-{kind}"
+            home = tmp_path / f"fl2-sdk-{kind}"
             home.mkdir()
             logged: list[str] = []
             mp.setattr(worker, "log", lambda msg, _l=logged: _l.append(msg))
             mp.setitem(invocation.LOG_TEMPLATES, "worker", marker_templates)
 
-            timeout = _apply_failure_env(kind, param, scratch=home, monkeypatch=mp)
-            settings_path = home / "settings.json"
-            settings_path.write_text("{}", encoding="utf-8")
-            argv = worker.build_argv(home, settings_path)
+            timeout = _apply_failure_env(kind, "sdk", scratch=home, monkeypatch=mp)
+            argv = ["claude", "-p", "PROMPT"]  # inert under sdk -- see docstring
             containment = _worker_containment(home)
-            if kind == "os-error" and param == "sdk":
+            if kind == "os-error":
                 containment = dataclasses.replace(containment, write_globs=("/tmp/[bad/**",))
 
             with _Watchdog(timeout * 8):  # MAJOR-A (code-gate fold) -- bounds the sdk/timeout cell (M31), same as TO's BLOCKER-2
@@ -1353,13 +1513,11 @@ def _drive_fl2_lines(param: str, tmp_path: Path, marker_templates) -> dict[str, 
 
 
 def test_fl2_byte_identity_and_provenance(tmp_path, backend):
-    # `FL-c`/`FR2`: declared `(T2 + T3)`, so parametrized over `backend`
-    # rather than an internal double loop. The provenance-and-shape clause
-    # is naturally per-param; the byte-identity clause needs BOTH sides,
-    # so it rides the `sdk` param leg, which additionally drives a fresh
-    # `cli` pass via `_drive_fl2_lines` to compare against -- `R-6`
-    # explicitly permits a criterion's two param legs to carry asymmetric
-    # weight, since `FR2` counts node ids rather than reading assertions.
+    # `FL-c`/`FR2`: declared `(T2 + T3)`. U-cleanup-A COLLAPSE (§8.4b):
+    # the `cli` param leg and the cross-backend byte-identity comparison
+    # it fed are gone (see `_drive_fl2_lines`'s own docstring) -- what
+    # remains is the provenance-and-shape clause, which was already
+    # per-param and needed no cli comparison to hold.
     original = invocation.LOG_TEMPLATES["worker"]
     marker_templates = dataclasses.replace(
         original,
@@ -1370,32 +1528,21 @@ def test_fl2_byte_identity_and_provenance(tmp_path, backend):
         unavailable=f"MARKER-UNAVAIL {original.unavailable}",
     )
 
-    own = _drive_fl2_lines(backend.param, tmp_path, marker_templates)
+    own = _drive_fl2_lines(tmp_path, marker_templates)
 
     # provenance and shape, for all five (the os-error/sdk cell is the
     # documented exception -- R-10, silent by construction).
     for kind in invocation.FAILURE_KINDS:
         lines = own[kind]
-        if kind == "os-error" and backend.param == "sdk":
+        if kind == "os-error":
             assert lines == [], lines
             continue
         assert lines, (backend.param, kind)
         assert any("MARKER-" in l for l in lines), (backend.param, kind, lines)
 
-    # exit: shape only -- rc is fixture-determined on cli, synthesized on sdk.
+    # exit: shape only -- rc is synthesized on sdk.
     exit_line = own["exit"][0]
-    if backend.param == "cli":
-        assert re.match(r"^MARKER-EXITED run: claude exited 7: ", exit_line), exit_line
-    else:
-        assert re.match(r"^MARKER-EXITED run: claude exited 1: ", exit_line), exit_line
-
-    if backend.param == "sdk":
-        # byte-identity, scoped to timeout (first line) / not-found / unavailable.
-        other = _drive_fl2_lines("cli", tmp_path, marker_templates)
-        for kind in ("timeout", "not-found", "unavailable"):
-            cli_line = other[kind][0]
-            sdk_line = own[kind][0]
-            assert cli_line == sdk_line, (kind, cli_line, sdk_line)
+    assert re.match(r"^MARKER-EXITED run: claude exited 1: ", exit_line), exit_line
 
 
 def test_fl3_run_survives_every_failure(tmp_path, backend):
@@ -1639,16 +1786,20 @@ def test_bg1_prompt_not_in_argv(backend, tmp_path, monkeypatch):
         assert BIG_PROMPT not in str(kwargs.get("system_prompt"))
 
 
-def test_bg2_cli_prompt_delivered_intact_on_stdin(claude_cli_shim_worker, tmp_path, monkeypatch):
-    # BLOCKER-1: routed through `worker._invoke_claude` (see BG1).
-    monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "cli")
-    home = tmp_path / "bg2-home"
-    home.mkdir()
-    argv = _bg_argv(home)
-    containment = _worker_containment(home)
-    worker._invoke_claude(argv, BIG_PROMPT, 20.0, home, label="", containment=containment)
-    delivered = claude_cli_shim_worker["call_prompt"](1)
-    assert delivered == BIG_PROMPT
+# U-cleanup-A DELETE (§8.4, "CLI-only named tests outside the
+# parametrization"; §10.2's non-parametrized census): `test_bg2_cli_
+# prompt_delivered_intact_on_stdin` forced `SELF_LEARN_BACKEND_WORKER=
+# cli` and drove `worker._invoke_claude` through a REAL `CliBackend` ->
+# subprocess-on-PATH transport -- the migrated `claude_cli_shim_worker`
+# fixture no longer shims anything onto PATH (it routes through
+# `SdkBackend` -> `fake_claude.py` instead), so the test measurably
+# broke the moment the fixture migrated: `delivered` came back `''`
+# instead of `BIG_PROMPT`, because there was no real "claude" left on
+# PATH for `CliBackend` to invoke. Its subject (CLI-transport stdin
+# delivery for a >128 KiB prompt) is fully replaced by
+# `test_bg3_sdk_prompt_delivered_intact` below, which asserts the same
+# property against the real sdk transport via a `ClaudeSDKClient.query`
+# spy.
 
 
 def test_bg3_sdk_prompt_delivered_intact(sdk_cli_path, tmp_path, monkeypatch):
@@ -1757,11 +1908,17 @@ def test_ev4_tool_events_string_confined_to_events_module():
         assert path == allowed, f"'tool-events' substring found outside {allowed}: {path}"
 
 
-def test_ev5_cli_leaves_no_events_file(env, claude_cli_shim_worker, monkeypatch):
-    monkeypatch.setenv("SELF_LEARN_REPAIR", "0")
-    seed_pending(env, rid=_next_rid())
-    worker.run(env.home)
-    assert _worker_events_files() == []
+# U-cleanup-A DELETE (§8.4, "CLI-only named tests outside the
+# parametrization"; §10.2's non-parametrized census): `test_ev5_cli_
+# leaves_no_events_file` asserted the CLI transport produces no
+# `tool-events` file (`EV4`'s own finding: that string is confined to
+# `invocation_sdk/events.py`, an sdk-only module). The migrated
+# `claude_cli_shim_worker` fixture routes `worker.run()` through
+# `SdkBackend` unconditionally now, so the property under test --
+# "a CLI-transport run leaves no events file" -- has no reachable
+# subject left to exercise; the positive property (an sdk-transport run
+# DOES write one) is already covered by `test_ev1_events_file_written_
+# under_sdk` above.
 
 
 # ===================================================================== #
@@ -1927,33 +2084,13 @@ def test_hy4_no_writes_outside_tmp_path_or_xdg(env, sdk_cli_path, monkeypatch, t
     assert ".self-learn" not in scanned
 
 
-def test_hy5_cli_side_no_real_claude_control(tmp_path, monkeypatch):
-    monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "cli")
-    home = tmp_path / "hy5-home"
-    home.mkdir()
-    shim = _build_cli_shim(tmp_path, monkeypatch)
-
-    # legs 1 + 2: exclusive AND exhaustive claude-resolution.
-    resolved = shutil.which("claude")
-    assert resolved is not None
-    resolved_path = Path(resolved).resolve()
-    assert str(resolved_path).startswith(str(tmp_path.resolve())), resolved_path  # leg 1
-    assert resolved_path == (shim["dir"] / "claude").resolve()  # leg 2
-
-    # leg 3: the os-error recipe reaches the monkeypatch, not a process.
-    calls: list[tuple] = []
-    real_run = subprocess.run
-
-    def _counting_os_error_run(*args, **kwargs):
-        calls.append((args, kwargs))
-        raise OSError("simulated os-error (HY5 leg 3)")
-
-    monkeypatch.setattr(subprocess, "run", _counting_os_error_run)
-    settings_path = home / "settings.json"
-    settings_path.write_text("{}", encoding="utf-8")
-    argv = worker.build_argv(home, settings_path)
-    containment = _worker_containment(home)
-    result = worker._invoke_claude(argv, "PROMPT", 20.0, home, label="", containment=containment)
-    assert result is None
-    assert shim["count"]() == 0
-    assert len(calls) == 1
+# U-cleanup-A DELETE (§8.4 table, "CLI-only named tests outside the
+# parametrization"): `test_hy5_cli_side_no_real_claude_control` forced
+# `SELF_LEARN_BACKEND_WORKER=cli`, resolved `claude` off PATH, and drove
+# a REAL `worker._invoke_claude` -> `CliBackend._run` call -- exactly
+# the transport `AG1`'s tripwire now makes unreachable by design. Its
+# sdk-side counterpart (no real credentialed spawn, os-error handling
+# through the sdk transport) is covered by `test_hy4_no_writes_outside_
+# tmp_path_or_xdg` and `test_tr4_bare_os_error_is_caught_on_analyst_
+# worker_and_miner`'s sdk leg (`test_invocation.py`) plus `_no_real_sdk_
+# spawn_tripwire` itself (`conftest.py`).

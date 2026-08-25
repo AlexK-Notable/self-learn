@@ -1858,8 +1858,12 @@ def test_d9_a_hook_proposal_is_never_foreign(env, claude_cli_shim_worker, monkey
 
 def test_e1_timeouts_read_not_hardcoded(monkeypatch):
     """E1 — the timeouts are read, not hardcoded. Defaults 1800/600; each
-    honours its env var; the value actually reaches `subprocess.run` by
-    capturing the `timeout=` kwarg."""
+    honours its env var. (U-cleanup-A: the second half of this
+    criterion -- the value actually reaching `subprocess.run`'s
+    `timeout=` kwarg through a REAL `CliBackend._run` call -- moved to
+    `test_e1b_cli_timeout_reaches_subprocess_run` below, split out so
+    THIS half's genuinely backend-independent env-var-reading coverage
+    keeps running instead of being skipped along with it.)"""
     monkeypatch.delenv("SELF_LEARN_INVOKE_TIMEOUT_SECS", raising=False)
     monkeypatch.delenv("SELF_LEARN_REPAIR_TIMEOUT_SECS", raising=False)
     assert worker.invoke_timeout_secs() == 1800
@@ -1869,6 +1873,10 @@ def test_e1_timeouts_read_not_hardcoded(monkeypatch):
     assert worker.invoke_timeout_secs() == 42
     assert worker.repair_timeout_secs() == 99
 
+
+@pytest.mark.skip(reason="U-cleanup-A: CliBackend transport-mechanics test; unreached pending U-cleanup-B deletion (AG1)")
+def test_e1b_cli_timeout_reaches_subprocess_run(monkeypatch):
+    monkeypatch.setenv("SELF_LEARN_INVOKE_TIMEOUT_SECS", "42")
     captured = {}
 
     def fake_run(argv, **kwargs):
@@ -2134,31 +2142,17 @@ def test_d2_followon_requires_progress_on_the_eligible_set(env, claude_cli_shim_
 # ===================================================================== #
 
 
-def test_f2_both_invocations_share_one_argv_builder(env, claude_cli_shim_worker, monkeypatch):
-    """F2 — both invocations share one argv builder: the two captured
-    argvs are equal except at the `--settings` value. A hand-rolled
-    second argv for the repair round would drift from `build_argv` the
-    first time either changes."""
-    rid = seed_pending(env)
-    monkeypatch.setenv(
-        "CLAUDE_SHIM_SCRIPT_1", _defect_script(env, rid, _t4_missing_target(env, rid))
-    )
-    monkeypatch.setenv(
-        "CLAUDE_SHIM_SCRIPT_2", _defect_script(env, rid, _t4_target_fixed(env, rid))
-    )
-    worker.run(env.home)
-    argv1 = claude_cli_shim_worker["argv"](1)
-    argv2 = claude_cli_shim_worker["argv"](2)
-    assert argv1 != argv2  # they DO differ (at --settings)
-    diffs = [(a, b) for a, b in zip(argv1, argv2) if a != b]
-    settings_idx = argv1.index("--settings")
-    assert argv1[settings_idx + 1] != argv2[settings_idx + 1]
-    stripped1 = list(argv1)
-    stripped2 = list(argv2)
-    stripped1[settings_idx + 1] = "SETTINGS"
-    stripped2[settings_idx + 1] = "SETTINGS"
-    assert stripped1 == stripped2
-    assert len(argv1) == len(argv2)
+# U-cleanup-A: `test_f2_both_invocations_share_one_argv_builder` DELETED
+# here, not migrated -- per spec §3.4's own measurement, this is one of
+# the 3 genuine claude-argv/settings tests in `test_repair.py` (of 45
+# shim-signature tests, 3 regex hits, 3 genuine: d5, f2, f5). Its subject
+# -- comparing two invocations' `--settings <path>` argv element -- does
+# not exist under the sdk backend: measured live, the SDK's real argv
+# carries no `--settings` flag at all (settings=None under sdk, `A-2`;
+# the charter is the sole authority, `CH1`-`CH13`). `f5` (two invocations
+# observed and driven) and `d5` (the narrowed repair scope) are the OTHER
+# two genuine tests this file has and both survive unchanged -- neither
+# reads `--settings`.
 
 
 def test_f5_shim_observes_and_drives_two_invocations(env, claude_cli_shim_worker, monkeypatch):

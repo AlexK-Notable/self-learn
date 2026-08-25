@@ -26,11 +26,13 @@ import re
 import signal
 import stat
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 from self_learn import analyst, config, invocation, miner, worker
+from self_learn.invocation_sdk import SdkBackend
 from support import make_behavior, make_env
 
 from test_repair import (  # noqa: F401 -- fixtures resolved by name
@@ -81,20 +83,24 @@ exit "${CLAUDE_SHIM_EXIT-0}"
 
 @pytest.fixture()
 def analyst_shim(tmp_path, monkeypatch):
-    shim_dir = tmp_path / "analyst-shim-bin"
-    shim_dir.mkdir()
-    shim = shim_dir / "claude"
-    shim.write_text(_ANALYST_CLAUDE_SHIM, encoding="utf-8")
-    shim.chmod(shim.stat().st_mode | stat.S_IXUSR)
+    """U-cleanup-A migration: SDK-backed replacement, same interface
+    (`["log"]`, `["out"]`, `["cwd"]`) as the bash PATH shim -- see
+    `test_route_cli.py::claude_cli_shim_analyst`'s docstring for the same
+    pattern (`FAKE_CLAUDE_FORCE_SCENARIO=analyst_result`,
+    `FAKE_CLAUDE_OUT` is the wire-level `CLAUDE_SHIM_OUT`)."""
     log = tmp_path / "analyst-shim-argv.log"
     cwd_log = tmp_path / "analyst-shim-cwd.log"
     out = tmp_path / "analyst-shim-stdout.txt"
     out.write_text("", encoding="utf-8")
-    monkeypatch.setenv("PATH", f"{shim_dir}{os.pathsep}{os.environ['PATH']}")
-    monkeypatch.setenv("CLAUDE_SHIM_LOG", str(log))
-    monkeypatch.setenv("CLAUDE_SHIM_CWD", str(cwd_log))
-    monkeypatch.setenv("CLAUDE_SHIM_OUT", str(out))
-    return {"log": log, "out": out, "cwd": cwd_log}
+    _sdk_env(monkeypatch)
+    monkeypatch.setenv("SELF_LEARN_BACKEND_ANALYST", "sdk")
+    monkeypatch.setenv("FAKE_CLAUDE_FORCE_SCENARIO", "analyst_result")
+    monkeypatch.setenv("FAKE_CLAUDE_OUT", str(out))
+    monkeypatch.setenv("FAKE_CLAUDE_ARGV_LOG", str(log))
+    monkeypatch.setenv("FAKE_CLAUDE_CWD_LOG", str(cwd_log))
+    prompt_log = tmp_path / "analyst-shim-prompt.log"
+    monkeypatch.setenv("FAKE_CLAUDE_PROMPT_LOG", str(prompt_log))
+    return {"log": log, "out": out, "cwd": cwd_log, "prompt": prompt_log}
 
 
 # ===================================================================== #
@@ -305,27 +311,24 @@ def repair_run(env, claude_shim, monkeypatch):
 
 @pytest.fixture()
 def miner_capture(monkeypatch, tmp_path):
-    """Drives a REAL `miner._invoke_reader(home, prompt)` through a
-    PATH-shimmed `claude` that succeeds trivially, capturing the spec and
-    the real argv the shim observed."""
+    """U-cleanup-A migration: drives a REAL `miner._invoke_reader(home,
+    prompt)` through `SdkBackend` against `tests/fixtures/fake_claude.py`
+    (the `reader_write` scenario, real transport, `SELF_LEARN_SDK_CLI_PATH`),
+    capturing the spec and the real argv the fake observed
+    (`FAKE_CLAUDE_ARGV_LOG`) -- the SAME interface (`["spec"]`, `["argv"]`,
+    `["out_path"]`, `["home"]`) the bash-shimmed fixture returned."""
     monkeypatch.setenv("SELF_LEARN_HOME", str(tmp_path / "miner-home"))
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "miner-xdg-cache"))
     home = tmp_path / "miner-home"
     home.mkdir()
-    shims = tmp_path / "miner-shims"
-    shims.mkdir()
     spool = miner.spool_dir()
     argv_log = tmp_path / "miner-argv.log"
-    shim = shims / "claude"
-    shim.write_text(
-        "#!/usr/bin/env bash\n"
-        "cat > /dev/null\n"
-        f"printf '%s\\0' \"$@\" > \"{argv_log}\"\n"
-        f"echo '{{\"candidates\": [], \"fires\": []}}' > \"{spool}/{miner.OUTPUT_BASENAME}\"\n",
-        encoding="utf-8",
-    )
-    shim.chmod(0o755)
-    monkeypatch.setenv("PATH", f"{shims}{os.pathsep}{os.environ['PATH']}")
+    _sdk_env(monkeypatch)
+    monkeypatch.setenv("SELF_LEARN_BACKEND_MINER", "sdk")
+    monkeypatch.setenv("FAKE_CLAUDE_FORCE_SCENARIO", "reader_write")
+    monkeypatch.setenv("FAKE_CLAUDE_ARGV_LOG", str(argv_log))
+    monkeypatch.setenv("FAKE_CLAUDE_WRITE_TARGET", str(spool / miner.OUTPUT_BASENAME))
+    monkeypatch.setenv("FAKE_CLAUDE_WRITE_BODY", '{"candidates": [], "fires": []}')
 
     captured: list[invocation.SessionSpec] = []
     real_write_session = invocation.write_session
@@ -371,7 +374,8 @@ def analyst_capture(analyst_env, analyst_shim, monkeypatch):
     finally:
         mp.undo()
     argv = analyst_shim["log"].read_text(encoding="utf-8").split("\0")[:-1]
-    return {"spec": captured[0], "argv": argv, "proposal": proposal}
+    prompt_wire = analyst_shim["prompt"].read_text(encoding="utf-8") if analyst_shim["prompt"].exists() else ""
+    return {"spec": captured[0], "argv": argv, "proposal": proposal, "prompt_wire": prompt_wire}
 
 
 def _skill_gates_yaml_for(env) -> str:
@@ -784,17 +788,17 @@ def test_cn7_repair_leg_over_both_enforce_values(enforce_env, monkeypatch):
     assert invocation.containment_permissions(c) == witness_perms
 
 
-def test_cn8_twin_witnesses_agree_at_runtime_on_a_repair_producing_run(repair_run, claude_shim):
-    """CN8 -- runtime agreement on a REAL repair-producing run, both
-    invocations checked independently against THEIR OWN captured
-    `--settings` value (not each other's)."""
-    assert len(repair_run) == 2
-    assert [s.surface for s in repair_run] == ["worker", "worker-repair"]
-    for n, spec in enumerate(repair_run, start=1):
-        argv = claude_shim["argv"](n)
-        settings_path = Path(argv[argv.index("--settings") + 1])
-        permissions = json.loads(settings_path.read_text(encoding="utf-8"))["permissions"]
-        assert invocation.containment_permissions(spec.containment) == permissions
+# U-cleanup-A: `test_cn8_twin_witnesses_agree_at_runtime_on_a_repair_producing_run`
+# DELETED here, not migrated -- per spec §3.4's own measurement (the T3
+# AST-walk + regex method), CN8 is one of the 5 genuine claude-argv tests
+# in test_invocation.py (cn8, cn10, av1, av2, av4). Its subject -- the
+# real `--settings <path>` argv element -- does not exist under the sdk
+# backend (settings=None under sdk, `A-2`; measured live, the SDK's real
+# argv carries no `--settings` flag). The runtime-agreement property CN8
+# guarded (containment == the settings file's rendered permissions) is
+# now the charter's job end to end, covered by `CH1`-`CH13`
+# (`test_invocation_sdk.py`) and `CH10` (`test_worker_contract.py`,
+# driven end to end from the real variable, same as CN8 was).
 
 
 # ---------------------------------------------------- CN9's AST machinery
@@ -867,31 +871,21 @@ def test_cn9_direction_guard_one_hop_local_taint():
     assert all_violations == [], all_violations
 
 
-def _assert_argv_matches_containment_iff(containment: invocation.Containment, argv: list[str]):
-    if containment.allowed_tools is None:
-        assert "--allowedTools" not in argv
-    else:
-        assert "--allowedTools" in argv
-        assert argv[argv.index("--allowedTools") + 1] == containment.allowed_tools
-    if containment.disallowed_tools is None:
-        assert "--disallowedTools" not in argv
-    else:
-        assert "--disallowedTools" in argv
-        assert argv[argv.index("--disallowedTools") + 1] == containment.disallowed_tools
-    if containment.strict_mcp:
-        assert "--strict-mcp-config" in argv
-    else:
-        assert "--strict-mcp-config" not in argv
+# U-cleanup-A: `_assert_argv_matches_containment_iff` (the shared helper
+# `test_cn10`'s deleted body was its only caller) removed alongside it --
+# dead code otherwise.
 
 
-def test_cn10_argv_is_the_third_witness_iff_both_directions(
-    repair_run, miner_capture, analyst_capture, claude_shim
-):
-    spec_worker, spec_repair = repair_run
-    _assert_argv_matches_containment_iff(spec_worker.containment, claude_shim["argv"](1))
-    _assert_argv_matches_containment_iff(spec_repair.containment, claude_shim["argv"](2))
-    _assert_argv_matches_containment_iff(miner_capture["spec"].containment, miner_capture["argv"])
-    _assert_argv_matches_containment_iff(analyst_capture["spec"].containment, analyst_capture["argv"])
+# U-cleanup-A: `test_cn10_argv_is_the_third_witness_iff_both_directions`
+# DELETED here, not migrated -- CN10, per §3.4's measurement (5 genuine
+# claude-argv tests: cn8, cn10, av1, av2, av4). Its subject
+# (`--allowedTools`/`--disallowedTools`/`--strict-mcp-config` reaching
+# the REAL argv, "the argv is a third witness besides the settings file
+# and the spec") is moot: measured live, the sdk backend's real argv
+# carries `--disallowedTools` but NEVER `--allowedTools`, and permission
+# enforcement happens through the `can_use_tool` charter callback, not a
+# flag set. `CH1`-`CH13` are the sdk-side charter-enforcement suite this
+# property is now covered by.
 
 
 # ===================================================================== #
@@ -899,44 +893,33 @@ def test_cn10_argv_is_the_third_witness_iff_both_directions(
 # ===================================================================== #
 
 
-def test_av1_argv_equals_surfaces_own_builder_output_recomputed(
-    repair_run, miner_capture, analyst_capture, claude_shim
-):
-    """AV1 -- the PATH shims record `"$@"`, which is argv WITHOUT the
-    invoked program's own name (`$0`) -- every builder's own output
-    (`worker.build_argv`, etc.) leads with `"claude"`, so the captured
-    argv is compared against the builder's output with `"claude"`
-    prepended, never reused from a closure."""
-    spec_worker, spec_repair = repair_run
-    argv_worker = claude_shim["argv"](1)
-    argv_repair = claude_shim["argv"](2)
-
-    settings_worker = Path(argv_worker[argv_worker.index("--settings") + 1])
-    assert ["claude", *argv_worker] == worker.build_argv(spec_worker.cwd, settings_worker)
-
-    settings_repair = Path(argv_repair[argv_repair.index("--settings") + 1])
-    assert ["claude", *argv_repair] == worker.build_argv(spec_repair.cwd, settings_repair)
-
-    argv_miner = miner_capture["argv"]
-    settings_miner = Path(argv_miner[argv_miner.index("--settings") + 1])
-    assert ["claude", *argv_miner] == miner.build_reader_argv(settings_miner)
-
-    spec_analyst = analyst_capture["spec"]
-    doctrine_text = analyst.doctrine_path().read_text(encoding="utf-8")
-    assert ["claude", *analyst_capture["argv"]] == analyst.build_argv(
-        spec_analyst.prompt, doctrine_text, analyst.DEFAULT_ANALYST_MODEL
-    )
+# U-cleanup-A: `test_av1_argv_equals_surfaces_own_builder_output_recomputed`
+# and `test_av2_worker_argv_shape` DELETED here, not migrated -- AV1/AV2,
+# per §3.4's measurement. AV1's subject (the captured argv equals
+# `worker.build_argv`/`miner.build_reader_argv`/`analyst.build_argv`'s
+# own recomputed output) and AV2's (`--strict-mcp-config` trailing,
+# prompt absent from argv) are both moot: there is no CLI argv under sdk
+# to compare against a builder's output, and `options_kwargs`
+# (`invocation_sdk/backend.py`) is what replaces `build_argv` for the
+# surviving backend, covered by `OP1`-`OP17`. AV2's "prompt not in argv"
+# half survives as `test_bg3_sdk_prompt_delivered_intact`
+# (`test_worker_contract.py`) and `T-READER-PROMPT-ON-THE-WIRE`
+# (`test_reader_contract.py`, `RO-7`/`CV8`) -- both drive the real wire,
+# not a PATH-shimmed argv.
 
 
-def test_av2_worker_argv_shape(repair_run, claude_shim):
-    for n in (1, 2):
-        argv = claude_shim["argv"](n)
-        assert argv[-1] == "--strict-mcp-config"
-        assert "--mcp-config" not in argv
-        prompt = claude_shim["call_prompt"](n)
-        assert prompt not in argv
-
-
+#: U-cleanup-A AG1: `test_av3_settings_writer_called_before_argv_builder`
+#: and `test_av4_transport_kwargs_input_presence` are transport-mechanics
+#: tests of `CliBackend._run`'s OWN internal call order/kwargs shape --
+#: their subject is deleted in U-cleanup-B (§10.1 disposition: "delete in
+#: B, unreached in A"). SKIPPED here, not deleted or rewritten: the
+#: property (settings-writer-before-argv-builder order; input= kwarg vs
+#: argv membership) is intrinsic to the subprocess transport and has no
+#: sdk-side analogue -- `options_kwargs` in `invocation_sdk/backend.py`
+#: is the sdk equivalent and is covered by `OP1`-`OP17`
+#: (`test_invocation_sdk.py`), including `test_op12`/`test_op13`'s own
+#: settings-writer-before-argv-builder order assertion.
+@pytest.mark.skip(reason="U-cleanup-A: CliBackend transport-mechanics test; unreached pending U-cleanup-B deletion (AG1)")
 def test_av3_settings_writer_called_before_argv_builder(monkeypatch):
     """AV3 -- asserted on the miner surface (the one that supplies both)
     with an order-recording pair of closures, driven through the REAL
@@ -960,6 +943,7 @@ def test_av3_settings_writer_called_before_argv_builder(monkeypatch):
     assert outcome.ok
 
 
+@pytest.mark.skip(reason="U-cleanup-A: CliBackend transport-mechanics test; unreached pending U-cleanup-B deletion (AG1)")
 def test_av4_transport_kwargs_input_presence(monkeypatch):
     """AV4 -- the analyst's prompt is in ARGV, not stdin: `input` is
     absent from the transport call's kwargs and the prompt is present in
@@ -1011,7 +995,21 @@ def test_av4_transport_kwargs_input_presence(monkeypatch):
 def test_av4_prompt_membership_on_real_invocations(
     repair_run, miner_capture, analyst_capture, claude_shim
 ):
-    assert analyst_capture["spec"].prompt in analyst_capture["argv"]
+    """AV4, U-cleanup-A rebase (armor-reconciled -- see
+    `test_u_sdka.py::_ARMOR_21_BY_FILE`). Originally: the analyst's
+    `prompt_via_argv=True` transport property put its prompt literally in
+    argv, the CLI inverse of worker/repair/miner's stdin delivery.
+    Measured live: under the sdk backend NO surface's prompt rides argv
+    -- every surface's prompt travels the wire via `ClaudeSDKClient.
+    query()` (a real `{"type": "user"}` control-protocol message), so the
+    analyst's own distinguishing CLI-argv property is gone. Rebased to
+    the sdk-side distinction that DOES survive: the analyst's prompt
+    reaches the wire (`analyst_shim`'s `FAKE_CLAUDE_PROMPT_LOG`, captured
+    by `analyst_capture["prompt_wire"]`) and is absent from EVERY
+    surface's real argv, analyst included -- `AV4`'s "never argv" half
+    now holds universally rather than per-surface."""
+    assert analyst_capture["spec"].prompt == analyst_capture["prompt_wire"]
+    assert analyst_capture["spec"].prompt not in analyst_capture["argv"]
     spec_worker, spec_repair = repair_run
     assert spec_worker.prompt not in claude_shim["argv"](1)
     assert spec_repair.prompt not in claude_shim["argv"](2)
@@ -1022,125 +1020,166 @@ def test_av4_prompt_membership_on_real_invocations(
 # LG -- log bytes
 # ===================================================================== #
 
+FAKE_CLI = Path(__file__).parent / "fixtures" / "fake_claude.py"
+
+
+def _sdk_env(monkeypatch, *, cli_path: Path | str | None = None) -> None:
+    monkeypatch.setenv("SELF_LEARN_SDK_CLI_PATH", str(cli_path if cli_path is not None else FAKE_CLI))
+    monkeypatch.setenv("CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK", "1")
+
+
+#: U-cleanup-A MAJOR-1 fold (code gate r1, 8uvjHmdKaUd6PI3tSyB-F): the sdk
+#: leg of `test_u_sdka.py::_Leg.fail`'s kind table, extracted so LG7/WR1/
+#: WR5/WR6 can drive the same four failure shapes without importing a
+#: fixture cross-file. Mirrors `_Leg.fail`'s sdk branch exactly (same
+#: env vars, same "os-error" nonexec-file trick) -- kept in sync by hand
+#: since the two files don't share fixtures.
+def _analyst_fail_sdk(monkeypatch, tmp_path, kind: str) -> None:
+    _sdk_env(monkeypatch)
+    monkeypatch.setenv("SELF_LEARN_BACKEND_ANALYST", "sdk")
+    if kind == "exit":
+        monkeypatch.setenv("FAKE_CLAUDE_FORCE_SCENARIO", "error_result")
+    elif kind == "timeout":
+        monkeypatch.setenv("FAKE_CLAUDE_FORCE_SCENARIO", "hang")
+        monkeypatch.setenv("SELF_LEARN_ANALYST_TIMEOUT", "0.5")
+    elif kind == "not-found":
+        monkeypatch.setenv("SELF_LEARN_SDK_CLI_PATH", "/nonexistent/claude-fake")
+    elif kind == "os-error":
+        bad = tmp_path / "analyst-fail-nonexec"
+        bad.write_text("", encoding="utf-8")
+        bad.chmod(0o644)
+        monkeypatch.setenv("SELF_LEARN_SDK_CLI_PATH", str(bad))
+    else:
+        raise AssertionError(f"{kind!r}: not a recognised _analyst_fail_sdk kind")
+
+
+def _run_sdk(
+    surface: str,
+    monkeypatch,
+    *,
+    prompt: str = "ok_text",
+    timeout: float = 5.0,
+    timeout_display=None,
+    label: str = "",
+    log=None,
+    cli_path: Path | str | None = None,
+) -> invocation.Outcome:
+    """U-cleanup-A LG-group rebase: drives `SdkBackend` (real subprocess,
+    `tests/fixtures/fake_claude.py`) directly, the same shape
+    `test_invocation_sdk.py::_run` uses. `text_session` for `analyst`,
+    `write_session` otherwise (`S-a`). `cli_path` overrides the default
+    fake -- e.g. a nonexistent path, for the `not-found` leg."""
+    _sdk_env(monkeypatch, cli_path=cli_path)
+    spec = _spec(surface, prompt=prompt, timeout=timeout, timeout_display=timeout_display, label=label, log=log)
+    method = SdkBackend().text_session if surface == "analyst" else SdkBackend().write_session
+    return method(spec)
+
 
 def test_lg1_twelve_byte_identical_log_lines(monkeypatch):
-    # -- exited: worker / repair / miner
-    monkeypatch.setattr(subprocess, "run", _run_returns(7, stdout="boom", stderr=""))
-    logs = []
-    invocation.CliBackend().write_session(_spec("worker", log=logs.append, label=""))
-    assert logs == ["run: claude exited 7: boom"]
+    """U-cleanup-A RO-6/CV3 host, rebased onto `SdkBackend`
+    (§10.1 disposition: "LG* rows... re-base onto the SDK backend in A").
+    `rc` is SYNTHETIC under sdk (`test_ou2`) -- always `1` on the `exit`
+    leg, never the CLI's real exit code -- so this rebase asserts the
+    template SHAPE (`f"...exited 1: "` prefix) rather than the CLI's
+    literal `exited 7`. The full byte-pin over every `LOG_TEMPLATES` row
+    is `test_templates_byte_pinned_ro6` (`test_invocation_sdk.py`); this
+    test keeps exercising the SAME 12 real-transport legs (4 kinds x 3
+    surfaces) `LG1` always did, now against the surviving backend."""
+    # -- exited: worker / repair / miner (rc synthetic = 1 under sdk)
+    for surface, label in (("worker", ""), ("worker-repair", "repair "), ("miner-reader", "")):
+        logs = []
+        outcome = _run_sdk(surface, monkeypatch, prompt="hard_exit", timeout=5.0, label=label, log=logs.append)
+        assert outcome.failure == "exit"
+        assert logs and logs[0].startswith(f"run: {label}claude exited 1: "), (surface, logs)
 
-    logs = []
-    invocation.CliBackend().write_session(_spec("worker-repair", log=logs.append, label="repair "))
-    assert logs == ["run: repair claude exited 7: boom"]
-
-    monkeypatch.setattr(subprocess, "Popen", _FakePopen(returncode=7, output="boom"))
-    logs = []
-    invocation.CliBackend().write_session(_spec("miner-reader", log=logs.append))
-    assert logs == ["run: claude exited 7: boom"]
-
-    # -- timed out: worker (1800.0) / repair (600.0) / miner (900)
-    monkeypatch.setattr(
-        subprocess, "run", _run_raises(subprocess.TimeoutExpired(cmd=["claude", "x"], timeout=1800.0))
-    )
-    logs = []
-    invocation.CliBackend().write_session(
-        _spec("worker", log=logs.append, label="", timeout=1800.0)
-    )
-    assert logs == ["run: claude timed out after 1800s"]
-
-    monkeypatch.setattr(
-        subprocess, "run", _run_raises(subprocess.TimeoutExpired(cmd=["claude", "x"], timeout=600.0))
-    )
-    logs = []
-    invocation.CliBackend().write_session(
-        _spec("worker-repair", log=logs.append, label="repair ", timeout=600.0)
-    )
-    assert logs == ["run: repair claude timed out after 600s"]
-
-    monkeypatch.setattr(
-        subprocess, "Popen", _FakePopen(raise_on_communicate=subprocess.TimeoutExpired(cmd=["claude", "x"], timeout=900))
-    )
-    logs = []
-    invocation.CliBackend().write_session(_spec("miner-reader", log=logs.append, timeout=900))
-    assert logs == ["run: claude timed out after 900s"]
+    # -- timed out: real wait stays short (0.3s); timeout_display renders
+    # the ORIGINAL CLI-era wall-clock values (1800/600/900) -- exactly
+    # what `timeout_display` exists for (`LG3B`/`LG3C`).
+    for surface, label, display in (
+        ("worker", "", 1800.0), ("worker-repair", "repair ", 600.0), ("miner-reader", "", 900),
+    ):
+        logs = []
+        outcome = _run_sdk(
+            surface, monkeypatch, prompt="hang", timeout=0.3, timeout_display=display, label=label, log=logs.append
+        )
+        assert outcome.failure == "timeout"
+        expected = f"run: {label}claude timed out after {display:g}s" if isinstance(display, float) else f"run: {label}claude timed out after {display}s"
+        # logs[0] only -- the sdk kill ladder may emit further diagnostic
+        # lines after the primary timeout line (`disconnect()` escalation).
+        assert logs and logs[0] == expected, (surface, logs, expected)
 
     # -- not found: worker / repair / miner
-    monkeypatch.setattr(subprocess, "run", _run_raises(FileNotFoundError()))
-    logs = []
-    invocation.CliBackend().write_session(_spec("worker", log=logs.append, label=""))
-    assert logs == ["run: claude CLI not found on PATH"]
+    for surface, label in (("worker", ""), ("worker-repair", "repair "), ("miner-reader", "")):
+        logs = []
+        outcome = _run_sdk(
+            surface, monkeypatch, prompt="ok_text", timeout=5.0, label=label, log=logs.append,
+            cli_path="/nonexistent/claude-fake",
+        )
+        assert outcome.failure == "not-found"
+        assert logs == [f"run: {label}claude CLI not found on PATH"]
 
-    logs = []
-    invocation.CliBackend().write_session(_spec("worker-repair", log=logs.append, label="repair "))
-    assert logs == ["run: repair claude CLI not found on PATH"]
+    # -- os_error: worker / repair / miner (ClaudeSDKClient.connect raises)
+    import claude_agent_sdk
 
-    monkeypatch.setattr(subprocess, "Popen", _PopenRaises(FileNotFoundError()))
-    logs = []
-    invocation.CliBackend().write_session(_spec("miner-reader", log=logs.append))
-    assert logs == ["run: claude CLI not found on PATH"]
+    async def _os_err(self):
+        raise OSError("nope")
 
-    # -- os_error: worker / repair / miner
-    monkeypatch.setattr(subprocess, "run", _run_raises(OSError("nope")))
-    logs = []
-    invocation.CliBackend().write_session(_spec("worker", log=logs.append, label=""))
-    assert logs == ["run: claude invocation failed (nope)"]
-
-    logs = []
-    invocation.CliBackend().write_session(_spec("worker-repair", log=logs.append, label="repair "))
-    assert logs == ["run: repair claude invocation failed (nope)"]
-
-    monkeypatch.setattr(subprocess, "Popen", _PopenRaises(OSError("nope")))
-    logs = []
-    invocation.CliBackend().write_session(_spec("miner-reader", log=logs.append))
-    assert logs == ["run: reader invocation failed (nope)"]
+    original_connect = claude_agent_sdk.ClaudeSDKClient.connect
+    monkeypatch.setattr(claude_agent_sdk.ClaudeSDKClient, "connect", _os_err)
+    try:
+        for surface, label, template_prefix in (
+            ("worker", "", "run: claude invocation failed (nope)"),
+            ("worker-repair", "repair ", "run: repair claude invocation failed (nope)"),
+            ("miner-reader", "", "run: reader invocation failed (nope)"),
+        ):
+            logs = []
+            outcome = _run_sdk(surface, monkeypatch, prompt="ok_text", timeout=5.0, label=label, log=logs.append)
+            assert outcome.failure == "os-error"
+            assert logs == [template_prefix]
+    finally:
+        monkeypatch.setattr(claude_agent_sdk.ClaudeSDKClient, "connect", original_connect)
 
 
 def test_lg2_repair_label_appears_only_in_repair_lines(monkeypatch):
-    monkeypatch.setattr(subprocess, "run", _run_returns(1, stdout="", stderr="x"))
     logs_batch = []
-    invocation.CliBackend().write_session(_spec("worker", log=logs_batch.append, label=""))
+    _run_sdk("worker", monkeypatch, prompt="hard_exit", timeout=5.0, label="", log=logs_batch.append)
     logs_repair = []
-    invocation.CliBackend().write_session(
-        _spec("worker-repair", log=logs_repair.append, label="repair ")
-    )
+    _run_sdk("worker-repair", monkeypatch, prompt="hard_exit", timeout=5.0, label="repair ", log=logs_repair.append)
     assert not any("repair" in line for line in logs_batch)
     assert logs_repair and all("repair " in line for line in logs_repair)
 
 
 def test_lg3a_worker_g_format(monkeypatch):
-    monkeypatch.setattr(
-        subprocess, "run", _run_raises(subprocess.TimeoutExpired(cmd=["claude", "x"], timeout=1800.0))
-    )
     logs = []
-    invocation.CliBackend().write_session(
-        _spec("worker", log=logs.append, label="", timeout=1800.0, timeout_display=None)
+    outcome = _run_sdk(
+        "worker", monkeypatch, prompt="hang", timeout=0.3, label="", timeout_display=1800.0, log=logs.append
     )
-    assert logs == ["run: claude timed out after 1800s"]
+    assert outcome.failure == "timeout"
+    assert logs[0] == "run: claude timed out after 1800s"  # `:g` format drops the trailing .0
 
 
 def test_lg3b_miner_no_g_format(monkeypatch):
-    monkeypatch.setattr(
-        subprocess, "Popen", _FakePopen(raise_on_communicate=subprocess.TimeoutExpired(cmd=["claude", "x"], timeout=900))
-    )
     logs = []
-    invocation.CliBackend().write_session(
-        _spec("miner-reader", log=logs.append, timeout=900, timeout_display=900.0)
+    outcome = _run_sdk(
+        "miner-reader", monkeypatch, prompt="hang", timeout=0.3, timeout_display=900.0, log=logs.append
     )
-    assert logs == ["run: claude timed out after 900.0s"]
+    assert outcome.failure == "timeout"
+    assert logs[0] == "run: claude timed out after 900.0s"  # miner's template has no `:g` -- keeps the .0
 
 
 def test_lg3c_timeout_display_is_actually_read(monkeypatch):
-    monkeypatch.setattr(
-        subprocess, "Popen", _FakePopen(raise_on_communicate=subprocess.TimeoutExpired(cmd=["claude", "x"], timeout=900.0))
-    )
     logs = []
-    invocation.CliBackend().write_session(
-        _spec("miner-reader", log=logs.append, timeout=900.0, timeout_display=900)
+    outcome = _run_sdk(
+        "miner-reader", monkeypatch, prompt="hang", timeout=0.3, timeout_display=900, log=logs.append
     )
-    assert logs == ["run: claude timed out after 900s"]
+    assert outcome.failure == "timeout"
+    assert logs[0] == "run: claude timed out after 900s"
 
 
+@pytest.mark.skip(reason="U-cleanup-A NIT-6 fold (code gate r1, 8uvjHmdKaUd6PI3tSyB-F): CliBackend "
+    "transport-mechanics test; live sdk analogue is "
+    "test_reader_contract.py::test_to1_transport_timeout_is_the_patched_value -- disposition is "
+    "skip-to-B (delete alongside CliBackend, U-cleanup-B), not migrate.")
 def test_lg4_miner_timeout_read_at_call_time(monkeypatch, tmp_path):
     monkeypatch.setenv("SELF_LEARN_HOME", str(tmp_path / "lg4-home"))
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "lg4-xdg"))
@@ -1172,82 +1211,88 @@ def test_lg4_miner_timeout_read_at_call_time(monkeypatch, tmp_path):
 
 
 def test_lg5_detail_rendering_per_surface(monkeypatch):
-    # invert stdout/stderr: worker+analyst render stderr when present, else stdout
-    monkeypatch.setattr(subprocess, "run", _run_returns(1, stdout="OUT", stderr="ERR"))
-    logs = []
-    invocation.CliBackend().write_session(_spec("worker", log=logs.append, label=""))
-    assert "ERR" in logs[0] and "OUT" not in logs[0]
-
-    monkeypatch.setattr(subprocess, "run", _run_returns(1, stdout="OUT", stderr=""))
-    logs = []
-    invocation.CliBackend().write_session(_spec("worker", log=logs.append, label=""))
-    assert "OUT" in logs[0]
-
-    monkeypatch.setattr(subprocess, "run", _run_returns(1, stdout="OUT", stderr="ERR"))
-    logs = []
-    invocation.CliBackend().text_session(_spec("analyst", log=logs.append))
-    assert "ERR" in logs[0] and "OUT" not in logs[0]
-
+    """U-cleanup-A LG-group rebase. The original's "invert stdout/stderr"
+    leg is DROPPED, not migrated: the sdk backend's exit-detail comes from
+    the SDK's own `ResultMessage`/`ProcessError` text (`backend.py:
+    _extract_text`/`str(exc)`), not a captured child stdout/stderr pair --
+    there is no second channel to invert. `detail_cap`/`detail_strip`
+    SURVIVE (`_render_exit_detail`, table-driven, identical function on
+    both backends) and are driven here via the `error_result` scenario's
+    `FAKE_CLAUDE_ERROR_TEXT` knob, which lands in `result_message.errors`
+    -> `detail` on the `is_error` ResultMessage leg (`backend.py:337`)."""
     # cap: worker/miner carry 400 chars; analyst carries all 600
     long_detail = "X" * 600
-    monkeypatch.setattr(subprocess, "run", _run_returns(1, stdout="", stderr=long_detail))
+    monkeypatch.setenv("FAKE_CLAUDE_ERROR_TEXT", long_detail)
     logs = []
-    invocation.CliBackend().write_session(_spec("worker", log=logs.append, label=""))
+    _run_sdk("worker", monkeypatch, prompt="error_result", label="", log=logs.append)
     assert logs[0].count("X") == 400
 
-    monkeypatch.setattr(subprocess, "Popen", _FakePopen(returncode=1, output=long_detail))
     logs = []
-    invocation.CliBackend().write_session(_spec("miner-reader", log=logs.append))
+    _run_sdk("miner-reader", monkeypatch, prompt="error_result", log=logs.append)
     assert logs[0].count("X") == 400
 
-    monkeypatch.setattr(subprocess, "run", _run_returns(1, stdout="", stderr=long_detail))
     logs = []
-    invocation.CliBackend().text_session(_spec("analyst", log=logs.append))
+    _run_sdk("analyst", monkeypatch, prompt="error_result", log=logs.append)
     assert logs[0].count("X") == 600
 
     # strip: analyst strips; worker/miner don't
     padded = "  padded text  "
-    monkeypatch.setattr(subprocess, "run", _run_returns(1, stdout="", stderr=padded))
+    monkeypatch.setenv("FAKE_CLAUDE_ERROR_TEXT", padded)
     logs = []
-    invocation.CliBackend().write_session(_spec("worker", log=logs.append, label=""))
+    _run_sdk("worker", monkeypatch, prompt="error_result", label="", log=logs.append)
     assert padded in logs[0]
 
     logs = []
-    invocation.CliBackend().text_session(_spec("analyst", log=logs.append))
+    _run_sdk("analyst", monkeypatch, prompt="error_result", log=logs.append)
     assert padded.strip() in logs[0]
     assert padded not in logs[0]
+    monkeypatch.delenv("FAKE_CLAUDE_ERROR_TEXT", raising=False)
 
 
 def test_lg6_clean_invocation_logs_nothing(monkeypatch):
-    monkeypatch.setattr(subprocess, "run", _run_returns(0, stdout="", stderr=""))
     for surface in ("worker", "worker-repair"):
         logs = []
-        invocation.CliBackend().write_session(_spec(surface, log=logs.append))
+        outcome = _run_sdk(surface, monkeypatch, prompt="ok_text", log=logs.append)
+        assert outcome.ok
         assert logs == []
     logs = []
-    invocation.CliBackend().text_session(_spec("analyst", log=logs.append))
+    outcome = _run_sdk("analyst", monkeypatch, prompt="ok_text", log=logs.append)
+    assert outcome.ok
     assert logs == []
-    monkeypatch.setattr(subprocess, "Popen", _FakePopen(returncode=0, output=""))
     logs = []
-    invocation.CliBackend().write_session(_spec("miner-reader", log=logs.append))
+    outcome = _run_sdk("miner-reader", monkeypatch, prompt="ok_text", log=logs.append)
+    assert outcome.ok
     assert logs == []
 
 
-def test_lg7_analyst_invocation_never_grows_worker_or_miner_log(analyst_env, monkeypatch):
+def test_lg7_analyst_invocation_never_grows_worker_or_miner_log(analyst_env, tmp_path, monkeypatch):
+    """U-cleanup-A MAJOR-1 fold (code gate r1, 8uvjHmdKaUd6PI3tSyB-F):
+    rebased onto the sdk transport -- the property (analyst logging never
+    reaches `worker.log`/`miner.log`, i.e. log-channel isolation across
+    surfaces) is backend-independent, so the four `subprocess.run` arms
+    become the same four `_analyst_fail_sdk` kinds `test_u_sdka.py::
+    _Leg.fail` already uses, plus one real success leg driven through
+    `FAKE_CLAUDE_OUT`/`analyst_result` (the sdk analogue of the old
+    rc=0-with-YAML-stdout arm)."""
     worker_log_calls = []
     miner_log_calls = []
     monkeypatch.setattr(worker, "log", worker_log_calls.append)
     monkeypatch.setattr(miner, "log", miner_log_calls.append)
 
+    out_path = tmp_path / "lg7-analyst-out.txt"
+
+    def _arm_ok():
+        _sdk_env(monkeypatch)
+        monkeypatch.setenv("SELF_LEARN_BACKEND_ANALYST", "sdk")
+        monkeypatch.setenv("FAKE_CLAUDE_FORCE_SCENARIO", "analyst_result")
+        out_path.write_text("destination: skill-md\nrationale: x\n", encoding="utf-8")
+        monkeypatch.setenv("FAKE_CLAUDE_OUT", str(out_path))
+
     arms = [
-        lambda: monkeypatch.setattr(
-            subprocess, "run", _run_returns(0, stdout="destination: skill-md\nrationale: x\n", stderr="")
-        ),
-        lambda: monkeypatch.setattr(subprocess, "run", _run_raises(FileNotFoundError())),
-        lambda: monkeypatch.setattr(
-            subprocess, "run", _run_raises(subprocess.TimeoutExpired(cmd=["claude", "x"], timeout=120))
-        ),
-        lambda: monkeypatch.setattr(subprocess, "run", _run_returns(1, stdout="", stderr="x")),
+        _arm_ok,
+        lambda: _analyst_fail_sdk(monkeypatch, tmp_path, "not-found"),
+        lambda: _analyst_fail_sdk(monkeypatch, tmp_path, "timeout"),
+        lambda: _analyst_fail_sdk(monkeypatch, tmp_path, "exit"),
     ]
     for arm in arms:
         arm()
@@ -1264,6 +1309,7 @@ def test_lg7_analyst_invocation_never_grows_worker_or_miner_log(analyst_env, mon
 # ===================================================================== #
 
 
+@pytest.mark.skip(reason="U-cleanup-A: CliBackend transport-mechanics test; unreached pending U-cleanup-B deletion (AG1)")
 def test_tr1_surfaces_reach_the_right_transport(monkeypatch):
     run_calls = []
 
@@ -1286,6 +1332,7 @@ def test_tr1_surfaces_reach_the_right_transport(monkeypatch):
     assert len(popen.calls) == 1
 
 
+@pytest.mark.skip(reason="U-cleanup-A: CliBackend transport-mechanics test; unreached pending U-cleanup-B deletion (AG1)")
 def test_tr2_miner_popen_kwargs(monkeypatch):
     captured_kwargs = {}
 
@@ -1311,6 +1358,7 @@ def test_tr2_miner_popen_kwargs(monkeypatch):
     assert captured_kwargs["text"] is True
 
 
+@pytest.mark.skip(reason="U-cleanup-A: CliBackend transport-mechanics test; unreached pending U-cleanup-B deletion (AG1)")
 def test_tr3_miner_timeout_killpg_and_wait(monkeypatch):
     class _TimeoutOnce:
         def __init__(self):
@@ -1353,6 +1401,7 @@ def test_tr3_miner_timeout_killpg_and_wait(monkeypatch):
         assert popen2.waited is True
 
 
+@pytest.mark.skip(reason="U-cleanup-A: CliBackend transport-mechanics test; unreached pending U-cleanup-B deletion (AG1)")
 def test_tr4_bare_os_error_is_caught_on_analyst_worker_and_miner(monkeypatch):
     # U-sdka Err-1 (FW-87): the preserved defect (R-1/T-c) is retired --
     # a bare OSError is now converted to an "os-error" Outcome on every
@@ -1369,6 +1418,7 @@ def test_tr4_bare_os_error_is_caught_on_analyst_worker_and_miner(monkeypatch):
     assert outcome_miner.failure == "os-error"
 
 
+@pytest.mark.skip(reason="U-cleanup-A: CliBackend transport-mechanics test; unreached pending U-cleanup-B deletion (AG1)")
 def test_tr5_cwd_passed_for_every_surface(monkeypatch, tmp_path):
     captured = {}
 
@@ -1400,6 +1450,7 @@ def test_tr5_cwd_passed_for_every_surface(monkeypatch, tmp_path):
     assert captured["popen_cwd"] == str(tmp_path)
 
 
+@pytest.mark.skip(reason="U-cleanup-A: CliBackend transport-mechanics test; unreached pending U-cleanup-B deletion (AG1)")
 def test_tr6_argv_positional_timeout_keyword(monkeypatch):
     """F2 (gate NOTE-1): a positive control on EACH transport, exactly
     as TR7's -- without it, a transport that's never reached leaves
@@ -1439,6 +1490,7 @@ def test_tr6_argv_positional_timeout_keyword(monkeypatch):
     assert called_popen == [1]
 
 
+@pytest.mark.skip(reason="U-cleanup-A: CliBackend transport-mechanics test; unreached pending U-cleanup-B deletion (AG1)")
 def test_tr7_transport_reached_through_the_subprocess_module_attribute(monkeypatch):
     """B-3/TR7: `cli.py` reaches the transport as `subprocess.run(...)`
     through the MODULE object -- patching `subprocess.run` AFTER import
@@ -1771,42 +1823,65 @@ def test_fk1_fakebackend_records_specs_prompts_and_argvs():
     assert backend.argvs == [["claude", "-p", "P1"], ["claude", "-p", "x", "--settings", "s"]]
 
 
-def test_fk2_each_fakestep_matches_clibackend_for_the_same_failure(monkeypatch):
-    scenarios = [
-        (
-            "exit",
-            invocation.Exits(rc=7, detail="boom"),
-            lambda: monkeypatch.setattr(subprocess, "run", _run_returns(7, stdout="", stderr="boom")),
-        ),
-        (
-            "timeout",
-            invocation.TimesOut(),
-            lambda: monkeypatch.setattr(
-                subprocess, "run", _run_raises(subprocess.TimeoutExpired(cmd=["claude", "x"], timeout=30.0))
-            ),
-        ),
-        (
-            "not-found",
-            invocation.NotFound(),
-            lambda: monkeypatch.setattr(subprocess, "run", _run_raises(FileNotFoundError())),
-        ),
-        (
-            "os-error",
-            invocation.Fails(exc=OSError("boom-os")),
-            lambda: monkeypatch.setattr(subprocess, "run", _run_raises(OSError("boom-os"))),
-        ),
-    ]
-    for failure_kind, step, arm in scenarios:
-        fake_logs = []
-        fake_backend = invocation.FakeBackend([step])
-        fake_outcome = fake_backend.write_session(_spec("worker", log=fake_logs.append, label=""))
+def test_fk2_each_fakestep_matches_sdkbackend_for_the_same_failure(monkeypatch):
+    """U-cleanup-A §10.1: "fk2 compares FakeBackend against CliBackend per
+    failure kind -> re-base onto FakeBackend vs SdkBackend." Each
+    `FakeStep` is scripted to produce the SAME rendered log line as the
+    matching real `SdkBackend` failure -- `rc=1` on the exit leg (sdk's
+    rc is always synthetic, `test_ou2`), `timeout_display` aligned to the
+    real transport's `timeout`, an identical exception message on the
+    os-error leg."""
+    real_logs = []
+    _run_sdk("worker", monkeypatch, prompt="hard_exit", timeout=5.0, label="", log=real_logs.append)
+    exit_detail = real_logs[0][len("run: claude exited 1: ") :]
+    fake_logs = []
+    fake_outcome = invocation.FakeBackend([invocation.Exits(rc=1, detail=exit_detail)]).write_session(
+        _spec("worker", log=fake_logs.append, label="")
+    )
+    assert fake_outcome.failure == "exit"
+    assert fake_logs == real_logs, ("exit", fake_logs, real_logs)
 
+    real_logs = []
+    real_outcome = _run_sdk(
+        "worker", monkeypatch, prompt="hang", timeout=0.3, timeout_display=30.0, label="", log=real_logs.append
+    )
+    fake_logs = []
+    fake_outcome = invocation.FakeBackend([invocation.TimesOut()]).write_session(
+        _spec("worker", log=fake_logs.append, label="", timeout=30.0)
+    )
+    assert real_outcome.failure == fake_outcome.failure == "timeout"
+    assert fake_logs == [real_logs[0]], ("timeout", fake_logs, real_logs)
+
+    real_logs = []
+    real_outcome = _run_sdk(
+        "worker", monkeypatch, prompt="ok_text", timeout=5.0, label="", log=real_logs.append,
+        cli_path="/nonexistent/claude-fake",
+    )
+    fake_logs = []
+    fake_outcome = invocation.FakeBackend([invocation.NotFound()]).write_session(
+        _spec("worker", log=fake_logs.append, label="")
+    )
+    assert real_outcome.failure == fake_outcome.failure == "not-found"
+    assert fake_logs == real_logs, ("not-found", fake_logs, real_logs)
+
+    import claude_agent_sdk
+
+    async def _os_err(self):
+        raise OSError("boom-os")
+
+    original_connect = claude_agent_sdk.ClaudeSDKClient.connect
+    monkeypatch.setattr(claude_agent_sdk.ClaudeSDKClient, "connect", _os_err)
+    try:
         real_logs = []
-        arm()
-        real_outcome = invocation.CliBackend().write_session(_spec("worker", log=real_logs.append, label=""))
-
-        assert fake_outcome.failure == real_outcome.failure == failure_kind
-        assert fake_logs == real_logs, (failure_kind, fake_logs, real_logs)
+        real_outcome = _run_sdk("worker", monkeypatch, prompt="ok_text", timeout=5.0, label="", log=real_logs.append)
+    finally:
+        monkeypatch.setattr(claude_agent_sdk.ClaudeSDKClient, "connect", original_connect)
+    fake_logs = []
+    fake_outcome = invocation.FakeBackend([invocation.Fails(exc=OSError("boom-os"))]).write_session(
+        _spec("worker", log=fake_logs.append, label="")
+    )
+    assert real_outcome.failure == fake_outcome.failure == "os-error"
+    assert fake_logs == real_logs, ("os-error", fake_logs, real_logs)
 
 
 def test_fk3_fake_is_not_reachable_from_backend_for(monkeypatch, tmp_path, capsys):
@@ -1833,7 +1908,21 @@ def test_fk4_writes_step_creates_files(tmp_path):
 # ===================================================================== #
 
 
-def test_wr1_invoke_claude_signature_and_never_raises(monkeypatch):
+def test_wr1_invoke_claude_signature_and_never_raises(tmp_path, monkeypatch):
+    """U-cleanup-A MAJOR-1 fold (code gate r1, 8uvjHmdKaUd6PI3tSyB-F): the
+    signature clause is unchanged -- `worker._invoke_claude` is real,
+    still-shipped product code (it now calls `invocation.write_session`
+    internally, `worker.py:3121-3155`), and its positional/keyword-only
+    shape is a property independent of which backend a call resolves to.
+    The never-raises legs are rebased onto sdk: `_invoke_claude` always
+    returns `None` (no `return` statement at all -- `-> None`, the
+    result of `write_session` is discarded), so `is None` was always
+    trivially true; the REAL property under test, then and now, is that
+    calling it never lets an exception escape regardless of how the
+    session fails -- exactly `test_hd4_seam_is_total_on_the_analyst_
+    surface`'s (`test_u_sdka.py`) shape, but driven for the WORKER
+    surface (no analogous worker-surface seam-is-total test existed
+    before this migration)."""
     sig = inspect.signature(worker._invoke_claude)
     params = list(sig.parameters.values())
     positional = [
@@ -1844,12 +1933,25 @@ def test_wr1_invoke_claude_signature_and_never_raises(monkeypatch):
     assert [p.name for p in positional] == ["argv", "prompt", "timeout", "home"]
     assert sig.parameters["label"].kind == inspect.Parameter.KEYWORD_ONLY
 
-    for exc in (FileNotFoundError(), subprocess.TimeoutExpired(cmd=["claude", "x"], timeout=1), OSError("x")):
-        monkeypatch.setattr(subprocess, "run", _run_raises(exc))
-        assert worker._invoke_claude(["claude"], "p", 1.0, Path("/tmp"), label="") is None
+    _sdk_env(monkeypatch)
+    monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "sdk")
 
-    monkeypatch.setattr(subprocess, "run", _run_returns(7, stdout="", stderr="x"))
-    assert worker._invoke_claude(["claude"], "p", 1.0, Path("/tmp"), label="") is None
+    monkeypatch.setenv("SELF_LEARN_SDK_CLI_PATH", "/nonexistent/claude-fake")
+    assert worker._invoke_claude(["claude"], "p", 5.0, tmp_path, label="") is None
+
+    _sdk_env(monkeypatch)
+    monkeypatch.setenv("FAKE_CLAUDE_FORCE_SCENARIO", "hang")
+    assert worker._invoke_claude(["claude"], "p", 0.3, tmp_path, label="") is None  # timeout: real, short
+
+    bad = tmp_path / "wr1-nonexec"
+    bad.write_text("", encoding="utf-8")
+    bad.chmod(0o644)
+    monkeypatch.setenv("SELF_LEARN_SDK_CLI_PATH", str(bad))
+    assert worker._invoke_claude(["claude"], "p", 5.0, tmp_path, label="") is None  # os-error
+
+    _sdk_env(monkeypatch)
+    monkeypatch.setenv("FAKE_CLAUDE_FORCE_SCENARIO", "error_result")
+    assert worker._invoke_claude(["claude"], "p", 5.0, tmp_path, label="") is None  # exit
 
 
 def test_wr2_miner_early_returns_precede_the_stray_sweep(monkeypatch, tmp_path, sdk_absent):
@@ -1885,6 +1987,10 @@ def test_wr2_miner_early_returns_precede_the_stray_sweep(monkeypatch, tmp_path, 
     monkeypatch.delenv("SELF_LEARN_BACKEND", raising=False)
 
 
+@pytest.mark.skip(reason="U-cleanup-A NIT-6 fold (code gate r1, 8uvjHmdKaUd6PI3tSyB-F): CliBackend "
+    "transport-mechanics test; live sdk analogue is "
+    "test_reader_contract.py::test_sw2_rc_nonzero_does_not_short_circuit -- disposition is "
+    "skip-to-B (delete alongside CliBackend, U-cleanup-B), not migrate.")
 def test_wr3_miner_rc_nonzero_does_not_short_circuit(monkeypatch, tmp_path):
     monkeypatch.setenv("SELF_LEARN_HOME", str(tmp_path / "wr3-home"))
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "wr3-xdg"))
@@ -1907,6 +2013,7 @@ def test_wr3_miner_rc_nonzero_does_not_short_circuit(monkeypatch, tmp_path):
     assert out.is_file()
 
 
+@pytest.mark.skip(reason="U-cleanup-A: CliBackend transport-mechanics test; unreached pending U-cleanup-B deletion (AG1)")
 def test_wr4_outcome_stdout_per_surface(monkeypatch):
     monkeypatch.setattr(subprocess, "run", _run_returns(0, stdout="STDOUT-TEXT", stderr=""))
     assert invocation.CliBackend().write_session(_spec("worker")).stdout == ""
@@ -1917,46 +2024,92 @@ def test_wr4_outcome_stdout_per_surface(monkeypatch):
     assert invocation.CliBackend().write_session(_spec("miner-reader")).stdout == "MERGED-OUT"
 
 
-def test_wr5_analyst_error_carries_cause_for_not_found_and_timeout(analyst_env, monkeypatch):
-    monkeypatch.setattr(subprocess, "run", _run_raises(FileNotFoundError()))
+def test_wr5_analyst_error_carries_cause_for_not_found_and_timeout(analyst_env, tmp_path, monkeypatch):
+    """U-cleanup-A MAJOR-1 fold (code gate r1, 8uvjHmdKaUd6PI3tSyB-F):
+    rebased onto sdk -- these were the ONLY live `__cause__` assertions
+    for the not-found/timeout legs in the suite; skipping this test
+    silently dropped both. Not-found's chained exception has an sdk
+    analogue -- `claude_agent_sdk.CLINotFoundError`, NOT `FileNotFoundError`
+    (measured: `invocation_sdk/backend.py:465` catches `CLINotFoundError`
+    and threads it through as `exc=exc`; `analyst.py:263` re-raises `from
+    outcome.exc`). Timeout does NOT have a chained-exception analogue --
+    measured: `invocation_sdk/backend.py:460` catches `asyncio.
+    TimeoutError` with no `as` binding at all, so nothing is threaded
+    through and `outcome.exc` stays its `None` default (`analyst.py:264-
+    268` still does `raise ... from outcome.exc`, i.e. `from None`). That
+    is a genuine, verified transport difference, not a migration
+    shortcut -- asserting `__cause__ is None` here is what the sdk leg
+    actually does, not a tautology (a mistakenly-threaded exception would
+    fail it)."""
+    from claude_agent_sdk import CLINotFoundError
+
+    _analyst_fail_sdk(monkeypatch, tmp_path, "not-found")
     with pytest.raises(analyst.AnalystError) as exc_info:
         analyst.analyze(analyst_env.home, make_behavior())
-    assert isinstance(exc_info.value.__cause__, FileNotFoundError)
+    assert isinstance(exc_info.value.__cause__, CLINotFoundError)
 
-    monkeypatch.setattr(
-        subprocess, "run", _run_raises(subprocess.TimeoutExpired(cmd=["claude", "x"], timeout=1))
-    )
+    _analyst_fail_sdk(monkeypatch, tmp_path, "timeout")
     with pytest.raises(analyst.AnalystError) as exc_info2:
         analyst.analyze(analyst_env.home, make_behavior())
-    assert isinstance(exc_info2.value.__cause__, subprocess.TimeoutExpired)
+    assert exc_info2.value.__cause__ is None
 
 
 def test_wr6_analyst_failure_mappings_are_byte_exact_and_rendered_through_log_templates(
-    analyst_env, monkeypatch, sdk_absent
+    analyst_env, tmp_path, monkeypatch
 ):
-    # -- shipped, byte-identical to master
-    monkeypatch.setattr(subprocess, "run", _run_raises(FileNotFoundError()))
+    """U-cleanup-A MAJOR-1 fold (code gate r1, 8uvjHmdKaUd6PI3tSyB-F):
+    legs 1-3 and 5 rebased onto the sdk transport via `_analyst_fail_sdk`
+    -- the not-found wording is IDENTICAL on both transports (RO-6's own
+    byte-pin: `not_found="claude CLI not found on PATH"` for every
+    surface), so that assertion is unchanged. The exit leg's `rc` is
+    inherently CLI-specific (a real subprocess exit code): sdk sessions
+    have no such code and `invocation_sdk/backend.py` synthesizes
+    `rc=1` for every `is_error=True` result (`:343-345`) -- `rc=7` has
+    no sdk analogue, so the byte-exact literal becomes `exited 1`, with
+    the detail text still controlled via `FAKE_CLAUDE_ERROR_TEXT`. Leg 5
+    (rendered THROUGH `LOG_TEMPLATES`) now covers BOTH the not-found AND
+    the timed-out legs under sdk -- the gate's own measurement (`M-9`
+    against the analyst `timed_out` template) found nothing else in the
+    suite catches "rendered through the template" for that leg once this
+    test stopped reaching it.
+
+    `sdk_absent` is no longer a whole-test fixture parameter: legs 1-3
+    and 5 now need `claude_agent_sdk` to import for real, so the old
+    "sdk absent for the whole test" shape (harmless when only leg 4
+    touched sdk) would break every other leg. The poisoning is now
+    scoped to leg 4 alone via a nested `pytest.MonkeyPatch()`, undone
+    immediately after."""
+    _analyst_fail_sdk(monkeypatch, tmp_path, "not-found")
     with pytest.raises(analyst.AnalystError) as e1:
         analyst.analyze(analyst_env.home, make_behavior())
     assert str(e1.value) == "claude CLI not found on PATH"
 
-    monkeypatch.setattr(
-        subprocess, "run", _run_raises(subprocess.TimeoutExpired(cmd=["claude", "x"], timeout=120))
-    )
+    _analyst_fail_sdk(monkeypatch, tmp_path, "timeout")
     with pytest.raises(analyst.AnalystError) as e2:
         analyst.analyze(analyst_env.home, make_behavior())
-    assert str(e2.value) == "analyst timed out after 120s"
+    assert str(e2.value) == "analyst timed out after 0.5s"
 
-    monkeypatch.setattr(subprocess, "run", _run_returns(7, stdout="OUT", stderr="  ERR TEXT  "))
+    _analyst_fail_sdk(monkeypatch, tmp_path, "exit")
+    monkeypatch.setenv("FAKE_CLAUDE_ERROR_TEXT", "ERR TEXT")
     with pytest.raises(analyst.AnalystError) as e3:
         analyst.analyze(analyst_env.home, make_behavior())
-    assert str(e3.value) == "analyst exited 7: ERR TEXT"
+    assert str(e3.value) == "analyst exited 1: ERR TEXT"
 
-    # -- new: unavailable, byte literal per W-i
+    # -- new: unavailable, byte literal per W-i. sdk-absence poisoning
+    # scoped to just this leg (see the docstring) -- undone before leg 5
+    # needs a real sdk import again.
     _clear_backend_env(monkeypatch)
     monkeypatch.setenv("SELF_LEARN_BACKEND", "sdk")
-    with pytest.raises(analyst.AnalystError) as e4:
-        analyst.analyze(analyst_env.home, make_behavior())
+    absent_mp = pytest.MonkeyPatch()
+    for name in list(sys.modules):
+        if name == "self_learn.invocation_sdk" or name.startswith("self_learn.invocation_sdk."):
+            absent_mp.delitem(sys.modules, name, raising=False)
+    absent_mp.setitem(sys.modules, "claude_agent_sdk", None)
+    try:
+        with pytest.raises(analyst.AnalystError) as e4:
+            analyst.analyze(analyst_env.home, make_behavior())
+    finally:
+        absent_mp.undo()
     assert str(e4.value) == (
         'invocation backend unavailable (the "sdk" invocation backend is not '
         "built yet — install it with:\n"
@@ -1965,13 +2118,8 @@ def test_wr6_analyst_failure_mappings_are_byte_exact_and_rendered_through_log_te
     monkeypatch.delenv("SELF_LEARN_BACKEND", raising=False)
 
     # -- every one of them is rendered through LOG_TEMPLATES["analyst"]
-    # U-sdka `Armor-1`/`A-d`: `_clear_backend_env` above deleted conftest's
-    # SELF_LEARN_BACKEND_ANALYST=cli pin, and the analyst's DEFAULT rung is
-    # now `sdk` (invocation/contract.py `DEFAULT_BACKEND_FOR_SURFACE`).
-    # Restore the pin: the `subprocess.run` patch below is meaningless on
-    # any backend but the cli one, so this leg is ABOUT that transport.
-    monkeypatch.setenv("SELF_LEARN_BACKEND_ANALYST", "cli")
-    monkeypatch.setattr(subprocess, "run", _run_raises(FileNotFoundError()))
+    # (not-found AND timed-out, both under sdk).
+    _analyst_fail_sdk(monkeypatch, tmp_path, "not-found")
     original = invocation.LOG_TEMPLATES["analyst"]
     mutated = invocation.LogTemplates(
         exited=original.exited,
@@ -1986,6 +2134,22 @@ def test_wr6_analyst_failure_mappings_are_byte_exact_and_rendered_through_log_te
     with pytest.raises(analyst.AnalystError) as e5:
         analyst.analyze(analyst_env.home, make_behavior())
     assert str(e5.value) == "MUTATED NOT FOUND TEXT"
+    monkeypatch.setitem(invocation.LOG_TEMPLATES, "analyst", original)
+
+    _analyst_fail_sdk(monkeypatch, tmp_path, "timeout")
+    mutated_timeout = invocation.LogTemplates(
+        exited=original.exited,
+        timed_out="MUTATED TIMED OUT TEXT",
+        not_found=original.not_found,
+        os_error=original.os_error,
+        unavailable=original.unavailable,
+        detail_cap=original.detail_cap,
+        detail_strip=original.detail_strip,
+    )
+    monkeypatch.setitem(invocation.LOG_TEMPLATES, "analyst", mutated_timeout)
+    with pytest.raises(analyst.AnalystError) as e6:
+        analyst.analyze(analyst_env.home, make_behavior())
+    assert str(e6.value) == "MUTATED TIMED OUT TEXT"
 
 
 def test_wr7_seam_is_only_called_from_the_three_call_sites():

@@ -40,6 +40,9 @@ from support import (
 
 CLI_SRC = str(Path(__file__).resolve().parents[1] / "src")
 REAL_GIT = "/usr/bin/git"
+#: U-cleanup-A: sdk-backed replacement `claude` target for the
+#: bash PATH shim below.
+FAKE_CLI = Path(__file__).parent / "fixtures" / "fake_claude.py"
 
 
 # --------------------------------------------------------------- helpers
@@ -736,20 +739,20 @@ class TestNothingReportsSuccessOverUncommittedWork:
         miner._save_cursors({"__initialized__": "test-fixture"})
         write_transcript(transcripts, "sess-e2e", [u("work"), a("the cause")])
 
-        # the model, shimmed at the REAL exec boundary (not in Python)
-        shims = tmp_path / "reader-shim"
-        shims.mkdir()
-        shim = shims / "claude"
-        shim.write_text(
-            "#!/usr/bin/env bash\n"
-            "cat > /dev/null\n"
-            f"cat > '{miner.spool_dir()}/{miner.OUTPUT_BASENAME}' <<'JSON'\n"
+        # the model, shimmed via SdkBackend -> fake_claude.py's
+        # shim_script scenario (U-cleanup-A) -- same heredoc-write idiom
+        # the bash shim used, now interpreted by the fake CLI instead of
+        # a real subprocess-cli PATH shim.
+        monkeypatch.setenv("SELF_LEARN_BACKEND_MINER", "sdk")
+        monkeypatch.setenv("SELF_LEARN_SDK_CLI_PATH", str(FAKE_CLI))
+        monkeypatch.setenv("CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK", "1")
+        monkeypatch.setenv("FAKE_CLAUDE_FORCE_SCENARIO", "shim_script")
+        monkeypatch.setenv(
+            "CLAUDE_SHIM_SCRIPT",
+            f"cat > {miner.spool_dir()}/{miner.OUTPUT_BASENAME} <<'JSON'\n"
             + json.dumps({"candidates": [candidate()], "fires": []})
             + "\nJSON\n",
-            encoding="utf-8",
         )
-        shim.chmod(0o755)
-        monkeypatch.setenv("PATH", f"{shims}:{os.environ['PATH']}")
 
         # ...and a real git whose `commit` fails, so the landing commit
         # genuinely cannot happen. (Round 7: a HELD LOCK no longer produces

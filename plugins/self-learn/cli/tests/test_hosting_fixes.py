@@ -7,9 +7,8 @@ with the real ~/.self-learn, ~/repos/claude-skills, or ~/.claude.
 """
 
 import json
-import os
-import stat
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -380,24 +379,27 @@ def _proposal_yaml(env) -> str:
     return PROPOSAL_YAML_TEMPLATE.format(roster_sha=skill_roster(env.ledger).sha)
 
 
+#: U-cleanup-A: the sdk-backed replacement CLI target for `worker_env`
+#: below (was a bash `claude` PATH shim running `bash -c
+#: "$CLAUDE_SHIM_SCRIPT"`; `fake_claude.py`'s `shim_script` scenario
+#: reads that SAME `CLAUDE_SHIM_SCRIPT` env var, interpreting the exact
+#: bounded bash-idiom subset `_shim_writes_proposal` below already
+#: emits, so callers of `worker_env` are unchanged).
+FAKE_CLI = Path(__file__).parent / "fixtures" / "fake_claude.py"
+
+
 @pytest.fixture
 def worker_env(env, tmp_path, monkeypatch):
-    """A ledger whose `claude` is a PATH shim running $CLAUDE_SHIM_SCRIPT."""
+    """A ledger whose worker session drives `SdkBackend` -> `fake_claude.py`,
+    running `$CLAUDE_SHIM_SCRIPT` via the `shim_script` scenario
+    (U-cleanup-A; `AG1`/`AG3`)."""
     monkeypatch.setenv("SELF_LEARN_HOME", str(env.ledger))
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg"))
     monkeypatch.setenv("SELF_LEARN_ACTOR", "testhost")
-    bindir = tmp_path / "shim-bin"
-    bindir.mkdir()
-    shim = bindir / "claude"
-    shim.write_text(
-        "#!/usr/bin/env bash\n"
-        "cat > /dev/null || true\n"
-        'if [ -n "${CLAUDE_SHIM_SCRIPT-}" ]; then bash -c "$CLAUDE_SHIM_SCRIPT"; fi\n'
-        "exit 0\n",
-        encoding="utf-8",
-    )
-    shim.chmod(shim.stat().st_mode | stat.S_IXUSR)
-    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "sdk")
+    monkeypatch.setenv("SELF_LEARN_SDK_CLI_PATH", str(FAKE_CLI))
+    monkeypatch.setenv("CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK", "1")
+    monkeypatch.setenv("FAKE_CLAUDE_FORCE_SCENARIO", "shim_script")
     return env
 
 

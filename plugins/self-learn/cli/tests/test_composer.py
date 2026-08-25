@@ -30,6 +30,8 @@ from self_learn.records import Record
 
 from support import commit_all, make_behavior, make_env
 
+_FAKE_CLI = Path(__file__).parent / "fixtures" / "fake_claude.py"
+
 
 @pytest.fixture(autouse=True)
 def redirect(tmp_path, monkeypatch):
@@ -680,8 +682,6 @@ def test_a12b_trace_less_deletion_and_pipeline_not_dead_control(tmp_path, monkey
     the wedge S-26 names (TRACE_REQUIRED on, producer not instructed,
     queue silently yields nothing forever). Leg (a) alone cannot tell
     "the flip works" from "the pipeline is dead"."""
-    import os
-    import stat as _stat
     import subprocess as _sp
 
     from support import git as _git
@@ -697,25 +697,16 @@ def test_a12b_trace_less_deletion_and_pipeline_not_dead_control(tmp_path, monkey
     _git(env.ledger, "remote", "add", "origin", str(bare))
     _git(env.ledger, "push", "-q", "-u", "origin", "main")
 
-    # A REAL shim, argv/stdin-neutral: it runs whatever bash snippet the
-    # test hands it via $CLAUDE_SHIM_SCRIPT — the same idiom
-    # test_worker.py's own `claude_shim` fixture uses, which avoids
-    # embedding heredoc-bearing script text through a second layer of
-    # shell quoting (repr()-embedding a multi-line heredoc into a
-    # generated shim file mangles both the embedded newlines and the
-    # heredoc's own quoting — measured while drafting this fixture).
-    shims = tmp_path / "shims"
-    shims.mkdir()
-    shim = shims / "claude"
-    shim.write_text(
-        "#!/usr/bin/env bash\n"
-        "cat > /dev/null || true\n"
-        'if [ -n "${CLAUDE_SHIM_SCRIPT-}" ]; then bash -c "$CLAUDE_SHIM_SCRIPT"; fi\n'
-        "exit 0\n",
-        encoding="utf-8",
-    )
-    shim.chmod(shim.stat().st_mode | _stat.S_IEXEC)
-    monkeypatch.setenv("PATH", f"{shims}{os.pathsep}{os.environ['PATH']}")
+    # U-cleanup-A migration: `worker.run()` routed through `SdkBackend`
+    # -> `tests/fixtures/fake_claude.py`'s `shim_script` scenario, which
+    # interprets the SAME `$CLAUDE_SHIM_SCRIPT` raw-text env-var idiom a
+    # bash PATH shim used to run directly (see `_shim_env`'s own
+    # docstring above -- this test predates that shared helper and
+    # inlines its own copy of the same setup, migrated the same way).
+    monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "sdk")
+    monkeypatch.setenv("SELF_LEARN_SDK_CLI_PATH", str(_FAKE_CLI))
+    monkeypatch.setenv("CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK", "1")
+    monkeypatch.setenv("FAKE_CLAUDE_FORCE_SCENARIO", "shim_script")
 
     proposals_dir = env.ledger / "skills" / "s" / "proposals"
 
@@ -1118,15 +1109,19 @@ def test_a20_deletions_with_positive_controls():
 
 
 def _shim_env(tmp_path, monkeypatch):
-    """A hermetic ledger (skill `s` registered) with a bare remote and a
-    PATH-shimmed `claude` that runs whatever bash snippet the test hands
-    it via $CLAUDE_SHIM_SCRIPT — the raw-text env-var idiom
-    test_worker.py's own `claude_shim` fixture uses (proven safe against
-    the repr()-embedding bug measured while drafting A12b: embedding a
+    """A hermetic ledger (skill `s` registered) with a bare remote, and
+    `worker.run()` routed through `SdkBackend` -> `tests/fixtures/
+    fake_claude.py`'s `shim_script` scenario (U-cleanup-A migration) --
+    it interprets the SAME `$CLAUDE_SHIM_SCRIPT` raw-text env-var idiom
+    a bash PATH shim used to run directly (proven safe against the
+    repr()-embedding bug measured while drafting A12b: embedding a
     heredoc-bearing script through a second layer of Python repr()
-    mangles both its newlines and its own quoting)."""
-    import os
-    import stat as _stat
+    mangles both its newlines and its own quoting -- the interpreter
+    reads the SAME unmangled env var, so that property still holds).
+    `A21`/`A23`/`A24` below are armored (`test_u_sdka.py::_ARMOR_21_BY_
+    FILE`) and drive this helper with no explicit backend override of
+    their own, so the routing lives entirely here rather than in their
+    bodies."""
     import subprocess as _sp
 
     from support import git as _git
@@ -1140,18 +1135,10 @@ def _shim_env(tmp_path, monkeypatch):
     _git(env.ledger, "remote", "add", "origin", str(bare))
     _git(env.ledger, "push", "-q", "-u", "origin", "main")
 
-    shims = tmp_path / "shims"
-    shims.mkdir()
-    shim = shims / "claude"
-    shim.write_text(
-        "#!/usr/bin/env bash\n"
-        "cat > /dev/null || true\n"
-        'if [ -n "${CLAUDE_SHIM_SCRIPT-}" ]; then bash -c "$CLAUDE_SHIM_SCRIPT"; fi\n'
-        "exit 0\n",
-        encoding="utf-8",
-    )
-    shim.chmod(shim.stat().st_mode | _stat.S_IEXEC)
-    monkeypatch.setenv("PATH", f"{shims}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "sdk")
+    monkeypatch.setenv("SELF_LEARN_SDK_CLI_PATH", str(_FAKE_CLI))
+    monkeypatch.setenv("CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK", "1")
+    monkeypatch.setenv("FAKE_CLAUDE_FORCE_SCENARIO", "shim_script")
     return env
 
 
@@ -1691,6 +1678,32 @@ def _capture_analyst_prompt(request, monkeypatch, accepted_yaml: str):
     from backends import install_fake, analyst_text
 
     return install_fake(request, monkeypatch, [analyst_text(accepted_yaml)])
+
+
+def test_composer_analyst_fails_ro5(tmp_path, monkeypatch, request):
+    """U-cleanup-A `RO-5`/`CV6` (`T-COMPOSER-ANALYST-FAILS`, closes U-fake
+    `R-5`): no test in this file previously drove an analyst FAILURE leg
+    through the seam's dispatch and log rendering -- every existing
+    composer-side analyst test here scripts a success
+    (`_capture_analyst_prompt`'s `analyst_text`). This scripts
+    `Exits(rc=1, detail="boom")` on `FakeBackend` (`T1`, backend-agnostic
+    per U-cleanup-A §13.1 -- no bash shim, no `CliBackend`) and asserts
+    `analyst.analyze` raises `AnalystError` carrying the analyst's own
+    `LOG_TEMPLATES["analyst"].exited` wording (`"analyst exited {rc}:
+    {detail}"`, `detail_strip=True` -- `contract.py`)."""
+    from self_learn import analyst as _analyst
+    from self_learn.analyst import AnalystError
+    from self_learn.invocation import Exits
+
+    from backends import install_fake
+
+    env = make_env(tmp_path, skills=("s",))
+    monkeypatch.setenv("SELF_LEARN_HOME", str(env.ledger))
+    record = make_behavior(record_id="lrn-a1fa11ed")
+    fake = install_fake(request, monkeypatch, [Exits(rc=1, detail="boom")])
+    with pytest.raises(AnalystError, match=r"analyst exited 1: boom"):
+        _analyst.analyze(env.ledger, record)
+    assert fake.specs and fake.specs[0].surface == "analyst"
 
 
 def test_fold5_project_scope_one_shot_resolves_real_targets_when_bucket_exists(

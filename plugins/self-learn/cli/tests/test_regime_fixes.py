@@ -225,6 +225,13 @@ def test_analyst_timeout_captures_to_pending(env, tmp_path, monkeypatch, capsys)
     shim.write_text("#!/usr/bin/env bash\nsleep 30\n", encoding="utf-8")
     shim.chmod(shim.stat().st_mode | stat.S_IEXEC)
     monkeypatch.setenv("PATH", f"{shims}:{os.environ['PATH']}")
+    # U-cleanup-A: point the sdk transport straight at this test's own
+    # `sleep 30` shim so `cli_path` is never `None` -- otherwise the
+    # analyst (sdk by default post-AG3) would hit `_find_cli()`'s
+    # real-binary fallback and trip `_no_real_sdk_spawn_tripwire`
+    # instead of exercising the real subject under test.
+    monkeypatch.setenv("SELF_LEARN_SDK_CLI_PATH", str(shim))
+    monkeypatch.setenv("CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK", "1")
     monkeypatch.setenv("SELF_LEARN_ANALYST_TIMEOUT", "0.3")
 
     rc = cli.main(TEACH_ROUTE_ARGS)

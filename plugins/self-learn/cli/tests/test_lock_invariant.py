@@ -781,18 +781,26 @@ class TestEveryCommandSurvivesAHeldLock:
 
 
 def _no_model_on_path(tmp_path: Path, monkeypatch) -> None:
-    """A `claude` shim that writes nothing and exits 0.
+    """A `claude` that writes nothing and exits 0 (U-cleanup-A: routed
+    through `SdkBackend` -> `fake_claude.py`'s `shim_script` scenario with
+    no `CLAUDE_SHIM_SCRIPT` set, which is exactly "no ops, exit 0" per
+    that scenario's own default -- see `_scenario_shim_script`'s
+    docstring in `fixtures/fake_claude.py`).
 
-    Without it `worker run` finds the REAL Claude CLI on this machine's
-    PATH and drives a live model from the test suite. Tests never touch
-    the real anything (conftest holds that line for the home, the cache
-    and the transcripts) — the model is the same rule."""
-    shims = tmp_path / "no-model"
-    shims.mkdir(exist_ok=True)
-    shim = shims / "claude"
-    shim.write_text("#!/usr/bin/env bash\ncat > /dev/null\nexit 0\n")
-    shim.chmod(0o755)
-    monkeypatch.setenv("PATH", f"{shims}:{__import__('os').environ['PATH']}")
+    Without it `worker run` (sdk by default post-`AG3`) has no
+    `SELF_LEARN_SDK_CLI_PATH` and falls through to `_find_cli()`'s real,
+    credentialed-binary resolution, which `_no_real_sdk_spawn_tripwire`
+    hard-blocks — tests never touch the real anything (conftest holds
+    that line for the home, the cache and the transcripts) — the model
+    is the same rule, just enforced by a different tripwire than before
+    this migration."""
+    monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "sdk")
+    monkeypatch.setenv(
+        "SELF_LEARN_SDK_CLI_PATH",
+        str(Path(__file__).parent / "fixtures" / "fake_claude.py"),
+    )
+    monkeypatch.setenv("CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK", "1")
+    monkeypatch.setenv("FAKE_CLAUDE_FORCE_SCENARIO", "shim_script")
 
 
 def _project_record(rid: str):

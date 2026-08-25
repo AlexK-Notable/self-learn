@@ -39,6 +39,9 @@ from support import commit_all, git, init_repo, make_behavior, make_env
 PLUGINS_ROOT = Path(__file__).resolve().parents[3]
 HOOK = PLUGINS_ROOT / "self-learn" / "hooks" / "self-learn-pending.sh"
 CLI_SRC = PLUGINS_ROOT / "self-learn" / "cli" / "src"
+#: U-cleanup-A: sdk-backed `claude` target, used by tests that used to
+#: write their own bash `claude` PATH shim.
+FAKE_CLI = Path(__file__).parent / "fixtures" / "fake_claude.py"
 
 
 # ------------------------------------------------------------------ helpers
@@ -346,8 +349,8 @@ class TestNoPushBindsSpawnedWorker:
         The kicked worker then commits its proposal and `git push`es the
         WHOLE branch — publishing the record the user said keep local.
 
-        `claude` is a PATH shim (never the real model): the detached child
-        inherits PATH via the env we hand Popen.
+        `claude` resolves to `SdkBackend` -> `fake_claude.py` (U-cleanup-A);
+        the detached child inherits the env we hand Popen either way.
         """
         env = make_env(tmp_path)
         home = env.ledger
@@ -362,20 +365,30 @@ class TestNoPushBindsSpawnedWorker:
         monkeypatch.setenv("SELF_LEARN_MINER_AUTOKICK", "0")
         monkeypatch.delenv(worker.NO_PUSH_ENV, raising=False)
 
-        # A `claude` shim that writes a valid proposal for whatever landed
-        # in user/pending — giving the worker real work to commit + push.
-        shims = tmp_path / "shims"
-        shims.mkdir()
+        # U-cleanup-A: the original bash shim discovered the pending
+        # record's id at RUN TIME (`for f in .../lrn-*.md`) because
+        # `records.generate_id()` mints a random id (`secrets.token_hex`,
+        # not content-derived) that isn't known until `cli.main()` below
+        # actually runs -- but the detached child's env is a snapshot
+        # taken AT KICK TIME (inside that same `cli.main()` call), so
+        # whatever we hand `fake_claude.py` has to be fixed BEFORE the
+        # call, not discovered after. Pinning `generate_id` sidesteps the
+        # dynamic-glob idiom entirely (`_parse_shim_script` supports a
+        # bounded, STATIC op subset by design -- see its own docstring --
+        # a real glob would be a new idiom for exactly one test) while
+        # changing nothing about what's under test: the record's id was
+        # never the subject here, its proposal's fate (committed, then
+        # NOT pushed) is.
+        monkeypatch.setattr("self_learn.records.generate_id", lambda: "lrn-deadbeef")
         proposals = home / "user" / "proposals"
-        shim = shims / "claude"
-        shim.write_text(
-            "#!/usr/bin/env bash\n"
-            "cat > /dev/null || true\n"
-            f"mkdir -p '{proposals}'\n"
-            f"for f in '{home}'/user/pending/lrn-*.md; do\n"
-            '  [ -e "$f" ] || continue\n'
-            '  rid=$(basename "$f" .md)\n'
-            f"  cat > '{proposals}'/\"$rid\".yaml <<'YAML'\n"
+        target = proposals / "lrn-deadbeef.yaml"
+        monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "sdk")
+        monkeypatch.setenv("SELF_LEARN_SDK_CLI_PATH", str(FAKE_CLI))
+        monkeypatch.setenv("CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK", "1")
+        monkeypatch.setenv("FAKE_CLAUDE_FORCE_SCENARIO", "shim_script")
+        monkeypatch.setenv(
+            "CLAUDE_SHIM_SCRIPT",
+            f"mkdir -p {proposals} && cat > {target} <<'YAML'\n"
             "destination: claude-md\n"
             "alternates: [reference]\n"
             'rationale: "shim-written proposal"\n'
@@ -386,13 +399,8 @@ class TestNoPushBindsSpawnedWorker:
             '  headline: "A test headline."\n'
             '  impact: "Next time Claude does X it will Y."\n'
             '  discuss: "Nothing contentious."\n'
-            "YAML\n"
-            "done\n"
-            "exit 0\n",
-            encoding="utf-8",
+            "YAML\n",
         )
-        shim.chmod(0o755)
-        monkeypatch.setenv("PATH", f"{shims}:{os.environ['PATH']}")
 
         before = remote_log(remote)
 
