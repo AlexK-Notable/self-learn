@@ -7,12 +7,13 @@ B1-B13 (the repair round), G1-G8 (fabrication containment), D1-D9
 F1 extends `test_worker.py::test_run_argv_pins` in place, per spec),
 H1-H5 (Obs-1, the observable surface).
 
-Fixtures reused from test_worker.py (`env`, `claude_shim`, `seed_pending`,
-`shim_writes`, `PROPOSAL_YAML_TEMPLATE`, `_proposal_yaml`) — imported by
-NAME, not redefined: pytest resolves a fixture by the name bound in the
-requesting module's namespace regardless of which module defines the
-function, so `from test_worker import claude_shim, env` makes both
-available here unchanged, including F5's multi-invocation shim.
+Fixtures reused from test_worker.py (`env`, `sdk_fake_worker`,
+`seed_pending`, `shim_writes`, `PROPOSAL_YAML_TEMPLATE`, `_proposal_yaml`)
+— imported by NAME, not redefined: pytest resolves a fixture by the name
+bound in the requesting module's namespace regardless of which module
+defines the function, so `from test_worker import sdk_fake_worker,
+env` makes both available here unchanged, including F5's multi-invocation
+shim.
 
 Construction-1 (spec §4, D-group preamble): `snap0` is taken INSIDE
 `worker.run()` at S1, and `_written_since` returns only paths whose
@@ -33,7 +34,6 @@ import inspect
 import io
 import json
 import os
-import re
 import time
 from pathlib import Path
 
@@ -59,18 +59,17 @@ from test_worker import (  # noqa: F401 -- fixtures resolved by name
     PROPOSAL_YAML_TEMPLATE,
     Env,
     _path_without_real_notify_helper,
-    claude_cli_shim_worker,
+    sdk_fake_worker,
     env,
     seed_pending,
     shim_writes,
 )
 
-#: U-fake COMPAT — the ONLY surviving binding of the old fixture name.
-#: test_invocation.py is U-seam's and frozen (B-4); it imports
-#: `claude_shim` from this module. Delete this line and rename that
-#: module's 19 occurrences in U-cleanup (R-1, V-1). Nothing else may
-#: request this name — SU3's per-name census is what proves it.
-claude_shim = claude_cli_shim_worker
+# U-cleanup-B DELETE (§8.3, `R-1` closes here): the `claude_shim =
+# sdk_fake_worker` U-fake COMPAT alias is gone. Its sole consumer,
+# `test_invocation.py`, now imports and uses `sdk_fake_worker`
+# directly (8 occurrences renamed, not the stale "19" this comment used
+# to claim — re-measured at this deletion, per V-1).
 
 
 # ===================================================================== #
@@ -190,7 +189,7 @@ def _validate_proposal_raises(data: dict, record: Record, scope: str | None = No
     return str(exc_info.value)
 
 
-def _next_run_scripts(claude_cli_shim_worker, monkeypatch, *scripts, exits=None, sleeps=None):
+def _next_run_scripts(sdk_fake_worker, monkeypatch, *scripts, exits=None, sleeps=None):
     """Bind `scripts[i]` (1-indexed) to `CLAUDE_SHIM_SCRIPT_<base+i>` for
     the NEXT `worker.run()` call, where `base` is the shim's CURRENT
     cumulative invocation count. The shim's counter is shared across
@@ -202,11 +201,11 @@ def _next_run_scripts(claude_cli_shim_worker, monkeypatch, *scripts, exits=None,
     `CLAUDE_SHIM_SCRIPT`/`CLAUDE_SHIM_EXIT` fallback so a PRIOR phase's
     script can never leak into an invocation THIS phase did not
     explicitly script. Returns `base` so a caller needing the absolute
-    invocation index (e.g. for `claude_shim['call_prompt'](n)`) can
-    compute `base + i`."""
+    invocation index (e.g. for
+    `sdk_fake_worker['call_prompt'](n)`) can compute `base + i`."""
     monkeypatch.delenv("CLAUDE_SHIM_SCRIPT", raising=False)
     monkeypatch.delenv("CLAUDE_SHIM_EXIT", raising=False)
-    base = claude_cli_shim_worker["count"]()
+    base = sdk_fake_worker["count"]()
     for i, script in enumerate(scripts, start=1):
         if script is not None:
             monkeypatch.setenv(f"CLAUDE_SHIM_SCRIPT_{base + i}", script)
@@ -222,7 +221,7 @@ def _next_run_scripts(claude_cli_shim_worker, monkeypatch, *scripts, exits=None,
 # ===================================================================== #
 
 
-def test_a1_setc_tokens_pinned_both_legs(env, claude_cli_shim_worker):
+def test_a1_setc_tokens_pinned_both_legs(env, sdk_fake_worker):
     """A1 — for each member of Set-C and each token in its `token(s)`
     column, two legs: (i) the validator still raises, with the token
     verbatim in the message; (ii) `worker.TRACE_CONDITIONALS` still
@@ -488,7 +487,7 @@ def test_a4_checklist_sits_where_attention_is(env):
     assert worker.TRACE_CONDITIONALS in single_prompt
 
 
-def test_a5_setE_classifier_pinned_to_table_e(env, claude_cli_shim_worker):
+def test_a5_setE_classifier_pinned_to_table_e(env, sdk_fake_worker):
     """A5 — Set-E's classifier (`_repairable`) is pinned to Table-E
     (TE1-TE21), quantifying over Table-E and NOT over Set-C (r1 gate
     BLOCKER 2: `C14`'s refusals never begin with `gates.` and `C12` has
@@ -742,14 +741,14 @@ def test_b1_dry_check_mutates_nothing(env):
     assert verdicts[invalid_path].error is not None
 
 
-def test_b2_world_all_valid_output(env, claude_cli_shim_worker, monkeypatch):
+def test_b2_world_all_valid_output(env, sdk_fake_worker, monkeypatch):
     """B2 — world: all-valid output. `claude` invoked exactly once,
     `result.repair_attempted is False`, the log carries
     `repair round skipped`, every proposal landed stamped."""
     rid = seed_pending(env)
     monkeypatch.setenv("CLAUDE_SHIM_SCRIPT", shim_writes(env, rid))
     result = worker.run(env.home)
-    assert claude_cli_shim_worker["count"]() == 1
+    assert sdk_fake_worker["count"]() == 1
     assert result.repair_attempted is False
     log_text = (worker.cache_dir() / "worker.log").read_text(encoding="utf-8")
     assert "repair round skipped" in log_text
@@ -758,7 +757,7 @@ def test_b2_world_all_valid_output(env, claude_cli_shim_worker, monkeypatch):
     assert "record_sha: sha256:" in text
 
 
-def test_b3_world_all_invalid_output_cleared(env, claude_cli_shim_worker, monkeypatch):
+def test_b3_world_all_invalid_output_cleared(env, sdk_fake_worker, monkeypatch):
     """B3 — world: all-invalid output, cleared. Call #1 writes traces
     missing `t4.depth_behind_rule.target`; call #2 writes the same files
     with the target added. Two invocations; `repair round: N of N
@@ -777,7 +776,7 @@ def test_b3_world_all_invalid_output_cleared(env, claude_cli_shim_worker, monkey
     monkeypatch.setenv("CLAUDE_SHIM_SCRIPT_1", round1)
     monkeypatch.setenv("CLAUDE_SHIM_SCRIPT_2", round2)
     result = worker.run(env.home)
-    assert claude_cli_shim_worker["count"]() == 2
+    assert sdk_fake_worker["count"]() == 2
     log_text = (worker.cache_dir() / "worker.log").read_text(encoding="utf-8")
     assert "repair round: 2 of 2 refusals cleared" in log_text
     assert sorted(result.proposed) == [ra, rb]
@@ -787,7 +786,7 @@ def test_b3_world_all_invalid_output_cleared(env, claude_cli_shim_worker, monkey
     assert result.status == "ok"
 
 
-def test_b4_world_mixed_and_repair_prompt_scoped(env, claude_cli_shim_worker, monkeypatch):
+def test_b4_world_mixed_and_repair_prompt_scoped(env, sdk_fake_worker, monkeypatch):
     """B4 — world: mixed, and the repair prompt is scoped. One valid
     file, two invalid. The repair prompt contains the two invalid paths
     and their record texts, and does NOT contain the valid path; the
@@ -818,9 +817,9 @@ def test_b4_world_mixed_and_repair_prompt_scoped(env, claude_cli_shim_worker, mo
     # nothing in this run's control flow could have rewritten its BODY),
     # and it lands with a real stamp below.
     result = worker.run(env.home)
-    assert claude_cli_shim_worker["count"]() == 2
+    assert sdk_fake_worker["count"]() == 2
 
-    prompt2 = claude_cli_shim_worker["call_prompt"](2)
+    prompt2 = sdk_fake_worker["call_prompt"](2)
     # U-attrib (GR-d): the repair round's exact-path grants — and this
     # prompt's per-file paths — now name STAGED files, not ledger ones.
     assert str(worker.stage_dir() / f"{r_bad1}.yaml") in prompt2
@@ -850,7 +849,7 @@ def _long_containment_defect(env) -> dict:
     return data
 
 
-def test_b5_refusal_line_matches_delete_line(env, claude_cli_shim_worker, monkeypatch):
+def test_b5_refusal_line_matches_delete_line(env, sdk_fake_worker, monkeypatch):
     """B5 — the refusal line handed to the model is the one the log would
     print. Run once with SELF_LEARN_REPAIR=0 and capture the
     `run: invalid worker output X deleted (<reason>)` line; run again
@@ -875,16 +874,16 @@ def test_b5_refusal_line_matches_delete_line(env, claude_cli_shim_worker, monkey
     monkeypatch.delenv("SELF_LEARN_REPAIR")
     rid_enabled = seed_pending(env, "lrn-0000bbbb")
     base = _next_run_scripts(
-        claude_cli_shim_worker, monkeypatch,
+        sdk_fake_worker, monkeypatch,
         _defect_script(env, rid_enabled, _long_containment_defect(env)),
     )
     worker.run(env.home)
-    prompt2 = claude_cli_shim_worker["call_prompt"](claude_cli_shim_worker["count"]())
-    assert claude_cli_shim_worker["count"]() == base + 2  # batch, then repair
+    prompt2 = sdk_fake_worker["call_prompt"](sdk_fake_worker["count"]())
+    assert sdk_fake_worker["count"]() == base + 2  # batch, then repair
     assert f"refusal: {reason}" in prompt2
 
 
-def test_b6_orphaned_record_mid_run(env, claude_cli_shim_worker, monkeypatch):
+def test_b6_orphaned_record_mid_run(env, sdk_fake_worker, monkeypatch):
     """B6 — world: orphaned record mid-run. The shim writes a proposal and
     then resolves its record (moves pending/lrn-X.md away). The
     `no pending record` refusal is classified ineligible, does not appear
@@ -912,7 +911,7 @@ def test_b6_orphaned_record_mid_run(env, claude_cli_shim_worker, monkeypatch):
     monkeypatch.setenv("CLAUDE_SHIM_SCRIPT_2", round2)
     result = worker.run(env.home)
 
-    prompt2 = claude_cli_shim_worker["call_prompt"](2)
+    prompt2 = sdk_fake_worker["call_prompt"](2)
     assert str(env.proposals / f"{rid}.yaml") not in prompt2
     assert f"{rid}.yaml" in result.invalid_deleted
     log_text = (worker.cache_dir() / "worker.log").read_text(encoding="utf-8")
@@ -920,7 +919,7 @@ def test_b6_orphaned_record_mid_run(env, claude_cli_shim_worker, monkeypatch):
     assert f"run: orphan proposal {rid}.yaml swept" not in log_text
 
 
-def test_b7_repair_round_times_out(env, claude_cli_shim_worker, monkeypatch):
+def test_b7_repair_round_times_out(env, sdk_fake_worker, monkeypatch):
     """B7 — world: the repair round itself times out. Shim call #2 sleeps
     past `SELF_LEARN_REPAIR_TIMEOUT_SECS` (~1s). The run completes;
     round-1's valid files still land; still-invalid files are deleted
@@ -944,7 +943,7 @@ def test_b7_repair_round_times_out(env, claude_cli_shim_worker, monkeypatch):
     assert result.status == "ok"
 
 
-def test_b8_world_repair_output_still_invalid(env, claude_cli_shim_worker, monkeypatch):
+def test_b8_world_repair_output_still_invalid(env, sdk_fake_worker, monkeypatch):
     """B8 — world: repair output is still invalid. Call #2 writes a
     DIFFERENT-BYTES defect back — same missing-target defect, different
     `rationale` — not a byte-identical resend (gate MAJOR 1: a
@@ -968,7 +967,7 @@ def test_b8_world_repair_output_still_invalid(env, claude_cli_shim_worker, monke
     assert worker._read_failure_count() == 1
 
 
-def test_b9_kill_switch_disables_composition(env, claude_cli_shim_worker, monkeypatch):
+def test_b9_kill_switch_disables_composition(env, sdk_fake_worker, monkeypatch):
     """B9 — the kill switch is exact, and switches off COMPOSITION, not
     just the call. With SELF_LEARN_REPAIR=0 on an entirely-invalid
     fixture, all five: one invocation; the disabled log line and no
@@ -990,7 +989,7 @@ def test_b9_kill_switch_disables_composition(env, claude_cli_shim_worker, monkey
     )
     result = worker.run(env.home)
 
-    assert claude_cli_shim_worker["count"]() == 1
+    assert sdk_fake_worker["count"]() == 1
     log_text = (worker.cache_dir() / "worker.log").read_text(encoding="utf-8")
     assert "run: repair round disabled (SELF_LEARN_REPAIR=0)" in log_text
     assert "run: repair round —" not in log_text
@@ -1012,7 +1011,7 @@ def test_b9_kill_switch_disables_composition(env, claude_cli_shim_worker, monkey
     assert result.foreign_left == []
 
 
-def test_b10_exactly_one_repair_round_never_recursive(env, claude_cli_shim_worker, monkeypatch):
+def test_b10_exactly_one_repair_round_never_recursive(env, sdk_fake_worker, monkeypatch):
     """B10 — exactly one round, never recursive. A fixture where call #2's
     output is invalid must produce exactly TWO invocations, never three."""
     rid = seed_pending(env)
@@ -1020,10 +1019,10 @@ def test_b10_exactly_one_repair_round_never_recursive(env, claude_cli_shim_worke
     monkeypatch.setenv("CLAUDE_SHIM_SCRIPT_1", _defect_script(env, rid, defect))
     monkeypatch.setenv("CLAUDE_SHIM_SCRIPT_2", _defect_script(env, rid, defect))
     worker.run(env.home)
-    assert claude_cli_shim_worker["count"]() == 2
+    assert sdk_fake_worker["count"]() == 2
 
 
-def test_b11_ineligible_refusals_never_reach_a_model(env, claude_cli_shim_worker, monkeypatch):
+def test_b11_ineligible_refusals_never_reach_a_model(env, sdk_fake_worker, monkeypatch):
     """B11 — ineligible refusals never reach a model, end-to-end through
     `run` (A5 pins the classifier in isolation; this pins that the
     classification is actually consulted). One sub-case each for
@@ -1045,10 +1044,10 @@ def test_b11_ineligible_refusals_never_reach_a_model(env, claude_cli_shim_worker
             bad_script,
         ])
         round2 = _defect_script(env, eligible_rid, _t4_target_fixed(env, eligible_rid))
-        base = _next_run_scripts(claude_cli_shim_worker, monkeypatch, round1, round2)
+        base = _next_run_scripts(sdk_fake_worker, monkeypatch, round1, round2)
         result = worker.run(env.home)
-        assert claude_cli_shim_worker["count"]() == base + 2, label
-        prompt2 = claude_cli_shim_worker["call_prompt"](base + 2)
+        assert sdk_fake_worker["count"]() == base + 2, label
+        prompt2 = sdk_fake_worker["call_prompt"](base + 2)
         return result, prompt2
 
     # E-INELIGIBLE-1: roster-sha refusal.
@@ -1110,7 +1109,7 @@ def test_b11_ineligible_refusals_never_reach_a_model(env, claude_cli_shim_worker
     assert "merge-00000001.yaml" in result.invalid_deleted
 
 
-def test_b12_repair_prompt_carries_checklist_and_rules(env, claude_cli_shim_worker, monkeypatch):
+def test_b12_repair_prompt_carries_checklist_and_rules(env, sdk_fake_worker, monkeypatch):
     """B12 (r1 gate BLOCKER 3) — the repair prompt carries the two things
     that make it work: `worker.TRACE_CONDITIONALS` appears verbatim and
     exactly once; the first-problem-only statement (`only the FIRST
@@ -1125,7 +1124,7 @@ def test_b12_repair_prompt_carries_checklist_and_rules(env, claude_cli_shim_work
         "CLAUDE_SHIM_SCRIPT_2", _defect_script(env, rid, _t4_target_fixed(env, rid))
     )
     worker.run(env.home)
-    prompt2 = claude_cli_shim_worker["call_prompt"](2)
+    prompt2 = sdk_fake_worker["call_prompt"](2)
     assert prompt2.count(worker.TRACE_CONDITIONALS) == 1
     # Leg 2 (gate MAJOR 3): TRACE_CONDITIONALS' OWN text independently
     # contains "only the FIRST problem" (its own first-problem-only
@@ -1147,7 +1146,7 @@ def test_b12_repair_prompt_carries_checklist_and_rules(env, claude_cli_shim_work
     assert "only the files listed" in prompt2
 
 
-def test_b13_repair_prompt_excludes_rejudgment_materials(env, claude_cli_shim_worker, monkeypatch):
+def test_b13_repair_prompt_excludes_rejudgment_materials(env, sdk_fake_worker, monkeypatch):
     """B13 — the repair prompt EXCLUDES the re-judgment materials: none of
     the doctrine/roster/cluster-candidates/rejected-digest/card-registry/
     canon-excerpt markers appear on the captured round-2 stdin (each
@@ -1163,7 +1162,7 @@ def test_b13_repair_prompt_excludes_rejudgment_materials(env, claude_cli_shim_wo
         "CLAUDE_SHIM_SCRIPT_2", _defect_script(env, rid, _t4_target_fixed(env, rid))
     )
     worker.run(env.home)
-    prompt2 = claude_cli_shim_worker["call_prompt"](2)
+    prompt2 = sdk_fake_worker["call_prompt"](2)
     forbidden = {
         "the routing doctrine": "## 2. The gate procedure",
         "the T3 skill roster": "=== SKILL ROSTER (T3) ===",
@@ -1184,9 +1183,9 @@ def test_b13_repair_prompt_excludes_rejudgment_materials(env, claude_cli_shim_wo
     round1 = "\n".join(
         _defect_script(env, r, _t4_missing_target(env, r)) for r in rids
     )
-    _next_run_scripts(claude_cli_shim_worker, monkeypatch, round1)
+    _next_run_scripts(sdk_fake_worker, monkeypatch, round1)
     worker.run(env.home)
-    prompt2_full = claude_cli_shim_worker["call_prompt"](claude_cli_shim_worker["count"]())
+    prompt2_full = sdk_fake_worker["call_prompt"](sdk_fake_worker["count"]())
     assert len(prompt2_full.encode("utf-8")) < 64 * 1024
 
 
@@ -1195,7 +1194,7 @@ def test_b13_repair_prompt_excludes_rejudgment_materials(env, claude_cli_shim_wo
 # ===================================================================== #
 
 
-def test_g1_setj_pin_refuses_flipped_answer(env, claude_cli_shim_worker, monkeypatch):
+def test_g1_setj_pin_refuses_flipped_answer(env, sdk_fake_worker, monkeypatch):
     """G1 — the Set-J pin refuses a flipped answer. Call #1 writes
     `t4.depth_behind_rule: {answer: yes, evidence: <verbatim>}` (no
     target); call #2 writes the same file with `answer: no` and no
@@ -1225,7 +1224,7 @@ def test_g1_setj_pin_refuses_flipped_answer(env, claude_cli_shim_worker, monkeyp
     assert (env.bucket / "pending" / f"{rid}.md").exists()
 
 
-def test_g2_setj_pins_positive_control(env, claude_cli_shim_worker, monkeypatch):
+def test_g2_setj_pins_positive_control(env, sdk_fake_worker, monkeypatch):
     """G2 — the pin's positive control: the same fixture where call #2
     ADDS the target and changes nothing else -> the file lands. Without
     G2, G1 would pass on a build that refuses every repaired file."""
@@ -1239,7 +1238,7 @@ def test_g2_setj_pins_positive_control(env, claude_cli_shim_worker, monkeypatch)
     assert "record_sha: sha256:" in (env.proposals / f"{rid}.yaml").read_text(encoding="utf-8")
 
 
-def test_g3_supplied_field_is_not_a_changed_field(env, claude_cli_shim_worker, monkeypatch):
+def test_g3_supplied_field_is_not_a_changed_field(env, sdk_fake_worker, monkeypatch):
     """G3 — a supplied field is not a changed field. Call #1 writes
     `fs: {verdict: null}` (a C9 defect, on the doctrine's own
     depth_behind_rule=no/conduct_mode=no fallback shape — the ONLY shape
@@ -1278,7 +1277,7 @@ def test_g3_supplied_field_is_not_a_changed_field(env, claude_cli_shim_worker, m
     assert result.proposed == [rid]
 
 
-def test_g4_containment_still_runs_on_repaired_output(env, claude_cli_shim_worker, monkeypatch):
+def test_g4_containment_still_runs_on_repaired_output(env, sdk_fake_worker, monkeypatch):
     """G4 — containment still runs on repaired output. Call #2 replaces a
     RECORD-sourced `evidence` with a plausible paraphrase. Deletion, with
     the containment refusal in the line."""
@@ -1298,7 +1297,7 @@ def test_g4_containment_still_runs_on_repaired_output(env, claude_cli_shim_worke
     assert "not contained in the record" in line
 
 
-def test_g5_derivation_still_runs_on_repaired_output(env, claude_cli_shim_worker, monkeypatch):
+def test_g5_derivation_still_runs_on_repaired_output(env, sdk_fake_worker, monkeypatch):
     """G5 — the derivation still runs on repaired output. Call #2 writes a
     `gates.outcome` that does not follow from its own answers. Deletion
     with the `Table-1 derives` refusal."""
@@ -1316,7 +1315,7 @@ def test_g5_derivation_still_runs_on_repaired_output(env, claude_cli_shim_worker
     assert "Table-1 derives" in line
 
 
-def test_g6_repair_may_not_rewrite_an_already_valid_proposal(env, claude_cli_shim_worker, monkeypatch):
+def test_g6_repair_may_not_rewrite_an_already_valid_proposal(env, sdk_fake_worker, monkeypatch):
     """G6 — the repair may not rewrite a proposal that already validated.
     Call #2 modifies a file that was VALID in the dry pass. Deleted with
     `repair rewrote a proposal that had already validated`, and its
@@ -1355,7 +1354,7 @@ def test_g6_repair_may_not_rewrite_an_already_valid_proposal(env, claude_cli_shi
     assert (env.bucket / "pending" / f"{r_valid}.md").exists()
 
 
-def test_g7_no_ledger_mutation_between_the_invocations(env, claude_cli_shim_worker, monkeypatch):
+def test_g7_no_ledger_mutation_between_the_invocations(env, sdk_fake_worker, monkeypatch):
     """G7 — no ledger mutation between the invocations. Monkeypatch
     `worker._git_rm_or_unlink` and `worker.stamp_proposal` (the NAME
     `_validate_written` actually calls — `worker.py` imports
@@ -1371,11 +1370,11 @@ def test_g7_no_ledger_mutation_between_the_invocations(env, claude_cli_shim_work
     orig_stamp = worker.stamp_proposal
 
     def spy_unlink(home, path, result=None):
-        calls.append(("unlink", claude_cli_shim_worker["count"]()))
+        calls.append(("unlink", sdk_fake_worker["count"]()))
         return orig_unlink(home, path, result)
 
     def spy_stamp(home, record_id):
-        calls.append(("stamp", claude_cli_shim_worker["count"]()))
+        calls.append(("stamp", sdk_fake_worker["count"]()))
         return orig_stamp(home, record_id)
 
     monkeypatch.setattr(worker, "_git_rm_or_unlink", spy_unlink)
@@ -1389,14 +1388,14 @@ def test_g7_no_ledger_mutation_between_the_invocations(env, claude_cli_shim_work
     )
     worker.run(env.home)
 
-    final_count = claude_cli_shim_worker["count"]()
+    final_count = sdk_fake_worker["count"]()
     assert final_count == 2
     assert calls, "neither stamp nor unlink fired at all — fixture did not exercise S8"
     for kind, n in calls:
         assert n >= final_count, f"{kind} fired at invocation index {n}, before the final invocation ({final_count})"
 
 
-def test_g8_sentinel_reasserted_after_the_last_invocation(env, claude_cli_shim_worker, monkeypatch):
+def test_g8_sentinel_reasserted_after_the_last_invocation(env, sdk_fake_worker, monkeypatch):
     """G8 — the sentinel is re-asserted after the LAST invocation. At
     least one re-assertion occurs after invocation #2 and before the
     first mutation. Do NOT assert exactly one, and do NOT assert none
@@ -1409,7 +1408,7 @@ def test_g8_sentinel_reasserted_after_the_last_invocation(env, claude_cli_shim_w
     orig_hold = sentinel_mod.hold
 
     def spy_hold():
-        reassert_calls.append(claude_cli_shim_worker["count"]())
+        reassert_calls.append(sdk_fake_worker["count"]())
         return orig_hold()
 
     monkeypatch.setattr(sentinel_mod, "hold", spy_hold)
@@ -1430,7 +1429,7 @@ def test_g8_sentinel_reasserted_after_the_last_invocation(env, claude_cli_shim_w
     )
     worker.run(env.home)
 
-    final_count = claude_cli_shim_worker["count"]()
+    final_count = sdk_fake_worker["count"]()
     assert final_count == 2
     assert any(n >= final_count for n in reassert_calls), reassert_calls
 
@@ -1440,7 +1439,7 @@ def test_g8_sentinel_reasserted_after_the_last_invocation(env, claude_cli_shim_w
 # ===================================================================== #
 
 
-def test_d1_foreign_validated_proposal_survives_the_landing(env, claude_cli_shim_worker, monkeypatch):
+def test_d1_foreign_validated_proposal_survives_the_landing(env, sdk_fake_worker, monkeypatch):
     """D1 — a foreign, validated proposal survives the landing. Per
     Construction-1, the shim (standing in for a concurrent attended
     session) writes, DURING the model window, a complete, schema-valid,
@@ -1469,7 +1468,7 @@ def test_d1_foreign_validated_proposal_survives_the_landing(env, claude_cli_shim
     ) in log_text
 
 
-def test_d2_rule_f_positive_control(env, claude_cli_shim_worker, monkeypatch):
+def test_d2_rule_f_positive_control(env, sdk_fake_worker, monkeypatch):
     """D2 — Rule-F's positive control: the same fixture where the shim
     writes a VALID but UNSTAMPED proposal -> it is validated, stamped
     and landed as today. Without D2, D1 would pass on a build that skips
@@ -1493,7 +1492,7 @@ def test_d2_rule_f_positive_control(env, claude_cli_shim_worker, monkeypatch):
     junk = _valid_trace(env)
     junk["record_sha"] = "sha256:deadbeefdead"  # shape-valid (12 hex), wrong
     _next_run_scripts(
-        claude_cli_shim_worker, monkeypatch,
+        sdk_fake_worker, monkeypatch,
         _write_script(worker.stage_dir() / f"{rid2}.yaml", _dump(junk)),
     )
     result2 = worker.run(env.home)
@@ -1504,7 +1503,7 @@ def test_d2_rule_f_positive_control(env, claude_cli_shim_worker, monkeypatch):
     assert "deadbeefdead" not in text2  # re-stamped with the REAL sha
 
 
-def test_d3_rule_f_does_not_rescue_a_scan_hit(env, claude_cli_shim_worker, monkeypatch):
+def test_d3_rule_f_does_not_rescue_a_scan_hit(env, sdk_fake_worker, monkeypatch):
     """D3 — Rule-F does not rescue a scan hit: a file carrying a matching
     record_sha AND a secret-scan hit is deleted, with today's line."""
     rid = seed_pending(env)
@@ -1518,7 +1517,7 @@ def test_d3_rule_f_does_not_rescue_a_scan_hit(env, claude_cli_shim_worker, monke
     assert result.foreign_left == []
 
 
-def test_d4_repair_round_does_not_enlarge_the_blast_radius(env, claude_cli_shim_worker, monkeypatch):
+def test_d4_repair_round_does_not_enlarge_the_blast_radius(env, sdk_fake_worker, monkeypatch):
     """D4 — the repair round does not enlarge the blast radius. During
     the repair window the shim writes a FOREIGN STAMPED proposal for a
     record that is IN the batch but NOT in the repair set (an O-set
@@ -1548,7 +1547,7 @@ def test_d4_repair_round_does_not_enlarge_the_blast_radius(env, claude_cli_shim_
     assert r_other in result.foreign_left
 
 
-def test_d5_the_narrowed_repair_scope_is_real(env, claude_cli_shim_worker, monkeypatch):
+def test_d5_the_narrowed_repair_scope_is_real(env, sdk_fake_worker, monkeypatch):
     """D5 — the narrowed repair scope is real: the repair settings file
     has exactly one entry per member of E, every entry an absolute
     Edit(/<path>) rule naming a member of E, no entry a glob (this
@@ -1588,7 +1587,7 @@ def test_d5_the_narrowed_repair_scope_is_real(env, claude_cli_shim_worker, monke
     assert settings_data["permissions"]["defaultMode"] == "default"
 
 
-def test_d6i_f_a_is_enforced(env, claude_cli_shim_worker, monkeypatch):
+def test_d6i_f_a_is_enforced(env, sdk_fake_worker, monkeypatch):
     """D6(i) — F-a is enforced: the shim writes, as the analyst's own
     output, a proposal that is SCHEMA-INVALID (a Set-C violation) AND
     carries a `record_sha` matching the record (the
@@ -1609,7 +1608,7 @@ def test_d6i_f_a_is_enforced(env, claude_cli_shim_worker, monkeypatch):
     assert (env.bucket / "pending" / f"{rid}.md").exists()
 
 
-def test_d6ii_phi_excluded_from_v(env, claude_cli_shim_worker, monkeypatch):
+def test_d6ii_phi_excluded_from_v(env, sdk_fake_worker, monkeypatch):
     """D6(ii) — Phi is excluded from V. Per Construction-1, round-1's shim
     writes a FOREIGN, VALID, STAMPED file (so it classifies Phi at S4 —
     under r1's three-way partition it would have been in V); round-2's
@@ -1647,7 +1646,7 @@ def test_d6ii_phi_excluded_from_v(env, claude_cli_shim_worker, monkeypatch):
     assert r_phi in result.foreign_left
 
 
-def test_d6iii_hook_takes_the_same_phi_branch_at_s5(env, claude_cli_shim_worker, monkeypatch):
+def test_d6iii_hook_takes_the_same_phi_branch_at_s5(env, sdk_fake_worker, monkeypatch):
     """D6(iii) — a `destination: hook` path takes the same Phi branch at
     S5. The identical fixture with a valid, stamped `destination: hook`
     proposal: it must not fall into V and be deleted on the repair-window
@@ -1683,7 +1682,7 @@ def test_d6iii_hook_takes_the_same_phi_branch_at_s5(env, claude_cli_shim_worker,
     assert hook_path.exists()
 
 
-def test_d7_a_foreign_file_counts_as_progress(env, claude_cli_shim_worker, monkeypatch):
+def test_d7_a_foreign_file_counts_as_progress(env, sdk_fake_worker, monkeypatch):
     """D7 — a foreign file counts as progress, and does not fake a
     failure. The batch's ONLY outcome is one Phi file, staged per
     Construction-1, with the batch below BATCH_CAP (so `worker.dirty` is
@@ -1712,7 +1711,7 @@ def test_d7_a_foreign_file_counts_as_progress(env, claude_cli_shim_worker, monke
     assert result.followon is False
 
 
-def test_d8i_e4_batch_membership(env, claude_cli_shim_worker, monkeypatch):
+def test_d8i_e4_batch_membership(env, sdk_fake_worker, monkeypatch):
     """D8(i) — E-4: an invalid, `gates.`-refused proposal exists for a
     record NOT in this run's batch (16 pending records over BATCH_CAP=15
     puts the newest one in the leftover set). Its path appears in NO
@@ -1754,7 +1753,7 @@ def test_d8i_e4_batch_membership(env, claude_cli_shim_worker, monkeypatch):
     )
     result = worker.run(env.home)
 
-    prompt2 = claude_cli_shim_worker["call_prompt"](2)
+    prompt2 = sdk_fake_worker["call_prompt"](2)
     # U-attrib (RT5/ST-e): E-4's litter rule is the destination resolver
     # now — the leftover id never resolves to a batch entry, so it never
     # even reaches the repair round's eligibility filter, and the
@@ -1767,7 +1766,7 @@ def test_d8i_e4_batch_membership(env, claude_cli_shim_worker, monkeypatch):
     assert not (worker.stage_dir() / f"{leftover_rid}.yaml").exists()
 
 
-def test_d8ii_e5_retired_a_matching_sha_is_now_repair_eligible(env, claude_cli_shim_worker, monkeypatch):
+def test_d8ii_e5_retired_a_matching_sha_is_now_repair_eligible(env, sdk_fake_worker, monkeypatch):
     """D8(ii) — RETIRED, and INVERTED (U-attrib §3.5 bucket 3: replaced by
     `RT4`/`IN3` in test_attrib.py). U-repair's E-5 excluded a staged file
     carrying a MATCHING `record_sha` from repair eligibility, reading it
@@ -1798,7 +1797,7 @@ def test_d8ii_e5_retired_a_matching_sha_is_now_repair_eligible(env, claude_cli_s
     )
     result = worker.run(env.home)
 
-    prompt2 = claude_cli_shim_worker["call_prompt"](2)
+    prompt2 = sdk_fake_worker["call_prompt"](2)
     assert str(worker.stage_dir() / f"{r_matching_sha}.yaml") in prompt2
     assert r_matching_sha in result.proposed
 
@@ -1818,7 +1817,7 @@ def test_d8ii_e5_retired_a_matching_sha_is_now_repair_eligible(env, claude_cli_s
 # write, never a shim_writes/_defect_script one).
 
 
-def test_d9_a_hook_proposal_is_never_foreign(env, claude_cli_shim_worker, monkeypatch):
+def test_d9_a_hook_proposal_is_never_foreign(env, sdk_fake_worker, monkeypatch):
     """D9 — a hook proposal is never foreign. A `destination: hook`
     proposal satisfying F-a and F-b is nonetheless STAMPED (its `script`
     equals `_generate_hook_script`'s output for the record — any
@@ -1874,29 +1873,14 @@ def test_e1_timeouts_read_not_hardcoded(monkeypatch):
     assert worker.repair_timeout_secs() == 99
 
 
-@pytest.mark.skip(reason="U-cleanup-A: CliBackend transport-mechanics test; unreached pending U-cleanup-B deletion (AG1)")
-def test_e1b_cli_timeout_reaches_subprocess_run(monkeypatch):
-    monkeypatch.setenv("SELF_LEARN_INVOKE_TIMEOUT_SECS", "42")
-    captured = {}
-
-    def fake_run(argv, **kwargs):
-        captured["timeout"] = kwargs.get("timeout")
-
-        class R:
-            returncode = 0
-            stdout = ""
-            stderr = ""
-
-        return R()
-
-    import subprocess as subprocess_mod
-
-    monkeypatch.setattr(worker, "subprocess", subprocess_mod)
-    monkeypatch.setattr(subprocess_mod, "run", fake_run)
-    worker._invoke_claude(["claude"], "prompt", worker.invoke_timeout_secs(), Path("/tmp"), label="")
-    assert captured["timeout"] == 42
-    worker._invoke_claude(["claude"], "prompt", worker.repair_timeout_secs(), Path("/tmp"), label="repair ")
-    assert captured["timeout"] == 99
+# U-cleanup-B DELETE (§8.4b/AG1): `test_e1b_cli_timeout_reaches_
+# subprocess_run` drove `worker._invoke_claude` through a monkeypatched
+# `subprocess.run` -- the whole CliBackend transport this test exercised
+# is gone, and the OLD `_invoke_claude(argv, prompt, timeout, home,
+# label=...)` signature it called no longer exists (`_invoke_claude`
+# dropped its leading `argv` positional, §8.1). `test_e1_timeouts_read_
+# not_hardcoded` (this module, `REWRITTEN`-tracked in `test_u_fake.py`)
+# keeps the timeout-selection half this split off from.
 
 
 def test_e2_batch_cap_unchanged():
@@ -1927,7 +1911,7 @@ def test_e4_zero_or_garbage_timeout_falls_back(monkeypatch):
         assert worker.invoke_timeout_secs() == worker.INVOKE_TIMEOUT_SECS, raw
 
 
-def test_e5_the_backoff_suppresses_at_the_cap(env, claude_cli_shim_worker, monkeypatch):
+def test_e5_the_backoff_suppresses_at_the_cap(env, sdk_fake_worker, monkeypatch):
     """E5 — the backoff suppresses at the cap. Two consecutive failed runs
     (shim writes nothing landable, leftovers > 0 so `worker.dirty` stays
     set). `_spawn_window` was called after run 1 and NOT after run 2, the
@@ -1969,7 +1953,7 @@ def test_e5_the_backoff_suppresses_at_the_cap(env, claude_cli_shim_worker, monke
     assert worker._p("worker.dirty").exists()
 
 
-def test_e6_an_ok_run_resets_the_counter(env, claude_cli_shim_worker, monkeypatch):
+def test_e6_an_ok_run_resets_the_counter(env, sdk_fake_worker, monkeypatch):
     """E6 — an ok run resets the counter: fail -> ok -> fail. The THIRD
     run DOES spawn a follow-on (the cap did not accumulate across the
     intervening success). Seeds 17 (not 16) pending records: after the
@@ -2033,7 +2017,7 @@ def test_e7_kick_resets_the_counter_and_is_never_suppressed(env, monkeypatch):
     assert not worker._p("worker.failures").exists()
 
 
-def test_e8_a_corrupt_counter_is_read_as_zero(env, claude_cli_shim_worker, monkeypatch):
+def test_e8_a_corrupt_counter_is_read_as_zero(env, sdk_fake_worker, monkeypatch):
     """E8 — a corrupt counter is read as zero. Writing 'not-a-number'
     still lets the run proceed and spawn (an unguarded `int()` would
     wedge the worker on a corrupt cache file).
@@ -2065,7 +2049,7 @@ def test_e8_a_corrupt_counter_is_read_as_zero(env, claude_cli_shim_worker, monke
     assert spawned == [1]
 
 
-def test_d2_followon_requires_progress_on_the_eligible_set(env, claude_cli_shim_worker, monkeypatch):
+def test_d2_followon_requires_progress_on_the_eligible_set(env, sdk_fake_worker, monkeypatch):
     """D2 (incident 2026-08-09) — an "ok" status alone is not proof of
     progress: it only means a proposal FILE was written, never that a
     record actually left the eligible set. A batch that keeps reporting
@@ -2155,7 +2139,7 @@ def test_d2_followon_requires_progress_on_the_eligible_set(env, claude_cli_shim_
 # reads `--settings`.
 
 
-def test_f5_shim_observes_and_drives_two_invocations(env, claude_cli_shim_worker, monkeypatch):
+def test_f5_shim_observes_and_drives_two_invocations(env, sdk_fake_worker, monkeypatch):
     """F5 — the shim fixture can observe AND drive two invocations: both
     argvs, both prompts, the counter reading 2, a differing per-call
     script effect, and a non-zero second exit code observed by the
@@ -2171,55 +2155,36 @@ def test_f5_shim_observes_and_drives_two_invocations(env, claude_cli_shim_worker
     monkeypatch.setenv("CLAUDE_SHIM_EXIT_2", "7")
     worker.run(env.home)
 
-    assert claude_cli_shim_worker["count"]() == 2
-    argv1 = claude_cli_shim_worker["argv"](1)
-    argv2 = claude_cli_shim_worker["argv"](2)
+    assert sdk_fake_worker["count"]() == 2
+    argv1 = sdk_fake_worker["argv"](1)
+    argv2 = sdk_fake_worker["argv"](2)
     assert argv1 and argv2
-    prompt1 = claude_cli_shim_worker["call_prompt"](1)
-    prompt2 = claude_cli_shim_worker["call_prompt"](2)
+    prompt1 = sdk_fake_worker["call_prompt"](1)
+    prompt2 = sdk_fake_worker["call_prompt"](2)
     assert prompt1 and prompt2 and prompt1 != prompt2
     log_text = (worker.cache_dir() / "worker.log").read_text(encoding="utf-8")
     assert "run: repair claude exited 7:" in log_text
 
 
 def test_f6_no_test_invokes_a_real_claude():
-    """F6 — no test invokes a real `claude`, by source read of THIS file:
-    every occurrence of a `claude` argv[0] literal is passed to
-    `worker._invoke_claude` (never straight to `subprocess.*`), and every
-    such call site sits inside a test that monkeypatches `subprocess.run`
-    itself BEFORE the call (so no real process is ever spawned); every
-    OTHER `worker.run`/`cli.main(["worker","run"])` call in this file
-    routes through the `claude_shim` fixture, whose PATH construction
-    puts its own shim dir FIRST, ahead of the inherited PATH."""
-    this_file = Path(__file__)
-    src = this_file.read_text(encoding="utf-8")
-    # search for the ARGV LITERAL SHAPE itself (a one-element list
-    # containing the bare word claude) via a pattern that does not
-    # itself CONTAIN that shape as a contiguous substring — so this
-    # detection line can never match its own source.
-    pattern = re.compile(r'\[\s*"claude"\s*\]')
-    lines = src.splitlines()
-    claude_argv_lines = [
-        (i, ln) for i, ln in enumerate(lines, start=1) if pattern.search(ln)
-    ]
-    # the two legitimate sites (E1) call worker._invoke_claude, which
-    # itself calls subprocess.run — and THAT is what E1 monkeypatches
-    # first, so no real process ever spawns from either site.
-    assert claude_argv_lines, "no claude-argv literal found — F6 has nothing to pin"
-    for lineno, line in claude_argv_lines:
-        assert "worker._invoke_claude(" in line, (
-            f"{this_file}:{lineno}: a claude-argv literal NOT routed through "
-            f"worker._invoke_claude — possible direct subprocess call: {line!r}"
-        )
-    assert "subprocess_mod.run" in src or "subprocess.run" in src
-    assert 'monkeypatch.setattr(subprocess_mod, "run", fake_run)' in src, (
-        "the direct-argv test no longer monkeypatches subprocess.run before calling "
-        "worker._invoke_claude with a claude argv literal"
-    )
+    """F6 — no test invokes a real `claude`.
 
-    # every OTHER real invocation in this file goes through the shim: the
-    # fixture itself must put its own shim dir FIRST in PATH.
-    #
+    U-cleanup-B REWRITE (§8.1 follow-on, discovered running this test
+    after `test_e1b_cli_timeout_reaches_subprocess_run`'s deletion):
+    F6's first half used to source-scan THIS file for a bare
+    single-element `claude` argv literal and require it route through a
+    `subprocess.run`-monkeypatched `worker._invoke_claude(argv, ...)`
+    call -- exactly the two sites inside the now-deleted
+    `test_e1b_...`. `_invoke_claude` dropped its leading `argv`
+    positional entirely (§8.1): no call anywhere can construct that
+    single-element `claude` argv literal to pass it any more, so the
+    scan's own premise (find at least one, verify its escort) is now
+    structurally unsatisfiable rather than a real invariant -- there is
+    nothing left to require non-empty. What SURVIVES, unweakened, is the
+    other half of the original claim: every `worker.run`/`cli.main(["worker",
+    "run"])` call in this file routes through the `claude_cli_shim_
+    worker` fixture, whose PATH construction puts its own shim dir
+    FIRST, ahead of the inherited PATH."""
     # 2026-08-09 (T3, incident hardening): the fixture now ALSO strips
     # any REAL self-learn-notify from the rest of the inherited PATH
     # (`_path_without_real_notify_helper`) — belt-and-braces alongside
@@ -2227,11 +2192,11 @@ def test_f6_no_test_invokes_a_real_claude():
     # is still unconditionally the FIRST leading dir that helper builds,
     # so the invariant this assertion pins is unchanged, only its
     # literal source shape is.
-    claude_shim_src = inspect.getsource(claude_cli_shim_worker)
+    claude_shim_src = inspect.getsource(sdk_fake_worker)
     assert (
         'monkeypatch.setenv("PATH", _path_without_real_notify_helper(shims))'
         in claude_shim_src
-    ), "the claude_shim fixture no longer prepends its own shim dir to PATH"
+    ), "the sdk_fake_worker fixture no longer prepends its own shim dir to PATH"
     helper_src = inspect.getsource(_path_without_real_notify_helper)
     assert "parts = [str(d) for d in leading_dirs]" in helper_src, (
         "_path_without_real_notify_helper no longer puts its leading_dirs "
@@ -2244,7 +2209,7 @@ def test_f6_no_test_invokes_a_real_claude():
 # ===================================================================== #
 
 
-def test_h1_the_exit_code_contract(env, claude_cli_shim_worker, monkeypatch, capsys):
+def test_h1_the_exit_code_contract(env, sdk_fake_worker, monkeypatch, capsys):
     """H1 — the exit-code contract: `cli.main(["worker","run"])` returns 0
     on an ok run, 0 on an idle run, 1 on a failed run (`cli.py:761`)."""
     rid = seed_pending(env)
@@ -2262,7 +2227,7 @@ def test_h1_the_exit_code_contract(env, claude_cli_shim_worker, monkeypatch, cap
     assert cli.main(["worker", "run"]) == 1  # failed
 
 
-def test_h2_the_stdout_summary_is_byte_stable(env, claude_cli_shim_worker, monkeypatch, capsys):
+def test_h2_the_stdout_summary_is_byte_stable(env, sdk_fake_worker, monkeypatch, capsys):
     """H2 — the stdout summary is byte-stable:
     `worker run: {status} — {n} proposal(s), {merge} merge, {eligible}
     eligible, {suspects} recurrence suspect(s)` with values substituted."""
@@ -2273,7 +2238,7 @@ def test_h2_the_stdout_summary_is_byte_stable(env, claude_cli_shim_worker, monke
     assert out.strip() == "worker run: ok — 1 proposal(s), 0 merge, 1 eligible, 0 recurrence suspect(s)"
 
 
-def test_h3_the_five_existing_log_lines_are_byte_stable(env, claude_cli_shim_worker, monkeypatch):
+def test_h3_the_five_existing_log_lines_are_byte_stable(env, sdk_fake_worker, monkeypatch):
     """H3 — the FIVE existing log lines are byte-stable, verbatim (format
     string, then values): the ok/FAILED summaries, the invalid-delete
     line, the orphan-swept line, the follow-on-window line."""
@@ -2340,13 +2305,13 @@ def test_h3_the_five_existing_log_lines_are_byte_stable(env, claude_cli_shim_wor
     assert "run: follow-on window: " in log_text
 
 
-def test_h4_every_new_line_in_obs1_is_produced_and_pinned(env, claude_cli_shim_worker, monkeypatch):
+def test_h4_every_new_line_in_obs1_is_produced_and_pinned(env, sdk_fake_worker, monkeypatch):
     """H4 — every NEW line in §3.12 is produced and pinned, including the
     two r1 left entirely unexercised: the repair-round summary line and
     `run: repair claude exited {rc}: {...}`. Also: skipped, disabled,
     timeout, cleared, Rule-F and suppression lines. Every phase below
-    calls `worker.run()` on the SAME `env`/`claude_shim` — the shim's
-    invocation counter is cumulative across the whole test function, so
+    calls `worker.run()` on the SAME `env`/`sdk_fake_worker` — the
+    shim's invocation counter is cumulative across the whole test function, so
     each phase's numbered `CLAUDE_SHIM_SCRIPT_<n>` vars are bound via
     `_next_run_scripts`, never hardcoded from 1.
 
@@ -2367,7 +2332,7 @@ def test_h4_every_new_line_in_obs1_is_produced_and_pinned(env, claude_cli_shim_w
     # repair round — {n} refused, eligible, ineligible; and non-zero exit.
     rid = seed_pending(env)
     base = _next_run_scripts(
-        claude_cli_shim_worker, monkeypatch,
+        sdk_fake_worker, monkeypatch,
         _defect_script(env, rid, _t4_missing_target(env, rid)),
         _defect_script(env, rid, _t4_target_fixed(env, rid)),
         exits={2: 9},
@@ -2403,7 +2368,7 @@ def test_h4_every_new_line_in_obs1_is_produced_and_pinned(env, claude_cli_shim_w
     rid4 = seed_pending(env, "lrn-0000dddd", created_at="2026-07-04T00:00:00Z")
     monkeypatch.setenv("SELF_LEARN_REPAIR_TIMEOUT_SECS", "0.2")
     _next_run_scripts(
-        claude_cli_shim_worker, monkeypatch,
+        sdk_fake_worker, monkeypatch,
         _defect_script(env, rid4, _t4_missing_target(env, rid4)),
         sleeps={2: 1},
     )
@@ -2446,7 +2411,7 @@ def test_h4_every_new_line_in_obs1_is_produced_and_pinned(env, claude_cli_shim_w
     assert "run: follow-on suppressed after 2 consecutive failed runs" in log_text
 
 
-def test_h5_the_new_runresult_fields_are_asserted_as_fields(env, claude_cli_shim_worker, monkeypatch):
+def test_h5_the_new_runresult_fields_are_asserted_as_fields(env, sdk_fake_worker, monkeypatch):
     """H5 — the new RunResult fields are asserted as fields (not by
     parsing log text): `repair_attempted`, `repair_eligible`,
     `repair_cleared`, `foreign_left` directly on the returned

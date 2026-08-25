@@ -63,7 +63,7 @@ from self_learn.invocation_sdk import provider_env as provider_env_mod
 
 from test_worker import (  # noqa: F401 -- fixtures resolved by name
     Env,
-    claude_cli_shim_worker,
+    sdk_fake_worker,
     env,
     seed_pending,
 )
@@ -118,31 +118,10 @@ _MINER_DISALLOWED = _WORKER_DISALLOWED + ",Read,Grep,Glob"
 _ANALYST_ALLOWED = "Read,Grep,Glob"
 
 
-def _worker_argv(model: str = "claude-sonnet-5") -> list[str]:
-    return [
-        "claude", "-p", "--model", model,
-        "--allowedTools", _WORKER_ALLOWED,
-        "--disallowedTools", _WORKER_DISALLOWED,
-        "--settings", "/tmp/worker.settings.json",
-        "--strict-mcp-config",
-    ]
-
-
-def _miner_argv(model: str = "claude-haiku-4-5") -> list[str]:
-    return [
-        "claude", "-p", "--model", model,
-        "--disallowedTools", _MINER_DISALLOWED,
-        "--settings", "/tmp/miner.settings.json",
-    ]
-
-
-def _analyst_argv(prompt: str = "PROMPT", doctrine: str = "DOCTRINE TEXT", model: str = "claude-sonnet-5") -> list[str]:
-    return [
-        "claude", "-p", prompt,
-        "--append-system-prompt", doctrine,
-        "--model", model,
-        "--allowedTools", _ANALYST_ALLOWED,
-    ]
+# U-cleanup §7: `_worker_argv`/`_miner_argv`/`_analyst_argv` DELETED --
+# they built the CLI-flavoured argv `_spec`'s deleted `cli_argv_builder`
+# closed over. `_spec` now takes `doctrine` directly, matching
+# `SessionSpec`'s first-class field.
 
 
 def _containment(surface: str, *, home: Path, enforce: bool = True, write_exact: tuple[str, ...] = ()) -> Containment:
@@ -174,22 +153,12 @@ def _spec(
     timeout: float = 20.0,
     containment: Containment | None = None,
     log=None,
-    argv: list[str] | None = None,
-    argv_builder=None,
-    settings_writer=None,
     label: str = "",
     timeout_display=None,
+    doctrine: str | None = None,
 ) -> SessionSpec:
     if containment is None:
         containment = _containment(surface, home=home)
-    if argv_builder is None:
-        if argv is None:
-            argv = {
-                "worker": _worker_argv(), "worker-repair": _worker_argv(),
-                "miner-reader": _miner_argv(), "analyst": _analyst_argv(prompt=prompt),
-            }[surface]
-        fixed_argv = argv
-        argv_builder = lambda _settings, _a=fixed_argv: _a  # noqa: E731
     return SessionSpec(
         surface=surface,
         prompt=prompt,
@@ -197,10 +166,9 @@ def _spec(
         timeout=timeout,
         containment=containment,
         log=log or (lambda _msg: None),
-        cli_argv_builder=argv_builder,
-        cli_settings_writer=settings_writer,
         label=label,
         timeout_display=timeout_display,
+        doctrine=doctrine,
     )
 
 
@@ -464,26 +432,18 @@ def test_op3_setting_sources_explicit_empty_list(tmp_path, sdk_cli_path):
         assert kwargs["setting_sources"] is not None
 
 
-def test_op4_settings_none_but_writer_still_called(tmp_path, sdk_cli_path):
+def test_op4_settings_always_none(tmp_path, sdk_cli_path):
+    """U-cleanup §7: `settings` is ALWAYS `None` (`A-2` -- the charter is
+    the only authority) for every surface, unconditionally -- there is no
+    settings writer left to call before it (§8.1: `write_reader_settings`
+    deleted; nothing under the sdk backend ever wrote or read a settings
+    file for any surface, including before this unit closed miner-
+    reader's live residual, §2.3)."""
     home = tmp_path / "op4-home"
     home.mkdir()
-    settings_path = home / "miner.settings.json"
-    calls = []
-
-    def writer():
-        calls.append(1)
-        settings_path.write_text("{}", encoding="utf-8")
-        return settings_path
-
-    spec = _spec(
-        "miner-reader", home=home,
-        argv_builder=lambda s: _miner_argv(),
-        settings_writer=writer,
-    )
-    kwargs = backend_mod.options_kwargs(spec)
-    assert kwargs["settings"] is None
-    assert calls == [1]
-    assert settings_path.is_file()
+    for surface in ("worker", "worker-repair", "miner-reader", "analyst"):
+        kwargs = backend_mod.options_kwargs(_spec(surface, home=home))
+        assert kwargs["settings"] is None, surface
 
 
 def test_op5_permission_mode_always_default(tmp_path, sdk_cli_path, monkeypatch):
@@ -583,72 +543,50 @@ def test_op10_system_prompt_never_none_and_analyst_appends(tmp_path, sdk_cli_pat
         kwargs = backend_mod.options_kwargs(_spec(surface, home=home))
         assert kwargs["system_prompt"] is not None
         assert kwargs["system_prompt"] == {"type": "preset", "preset": "claude_code"}
-    kwargs = backend_mod.options_kwargs(_spec("analyst", home=home, argv=_analyst_argv(doctrine="DOCTRINE X")))
+    kwargs = backend_mod.options_kwargs(_spec("analyst", home=home, doctrine="DOCTRINE X"))
     assert kwargs["system_prompt"] is not None
     assert kwargs["system_prompt"] == {"type": "preset", "preset": "claude_code", "append": "DOCTRINE X"}
 
 
-def test_op11_model_from_provider_not_argv_and_append_system_prompt_last_element_edge(
-    tmp_path, sdk_cli_path
-):
-    """`OP11`, restated by `U-bedrock`'s `IN3`/`Int-1`: `options.model` no
-    longer relays whatever `--model` argv carries -- `worker.build_argv`
-    et al. are not provider-aware and always emit the anthropic alias
-    (`B-1`/§1.1), so a bedrock resolution's model id could never reach
-    the SDK through that channel. `options.model` now equals
-    `provider.model_for(spec.surface, home=home)` UNCONDITIONALLY,
-    independent of argv -- demonstrated here with an argv `--model` value
-    that `options.model` must NOT end up as (the divergent case a
-    same-value comparison could not see). `_read_argv_flag`'s
-    last-argv-element-with-no-value-after-it edge case (`A-4`, never an
-    `IndexError`) still matters -- `--append-system-prompt` is the one
-    flag still read this way post-`U-bedrock` -- so it is re-homed here
-    rather than dropped."""
+def test_op11_model_from_provider_unconditionally(tmp_path, sdk_cli_path):
+    """`OP11`, restated by `U-bedrock`'s `IN3`/`Int-1`, then again by
+    U-cleanup §7: `options.model` was never a relay of a `--model` argv
+    element to begin with (`worker.build_argv` et al. were never
+    provider-aware, `B-1`/§1.1) -- it is `provider.model_for(spec.surface,
+    home=home)`, period, and after this unit there is no argv left to
+    have carried a different value in the first place.
+
+    U-cleanup §7 ALSO removes the second half this test used to carry:
+    `_read_argv_flag`'s last-argv-element-with-no-value-after-it edge
+    case (`A-4`, never an `IndexError`). That function is deleted --
+    `options_kwargs` reads `spec.doctrine` directly now, so there is no
+    argv shape left for an edge case to be about. `test_op13` is the
+    surviving structural guard on the (now-empty) argv-literal read set."""
     home = tmp_path / "op11-home"
     home.mkdir()
-    kwargs = backend_mod.options_kwargs(
-        _spec("worker", home=home, argv=_worker_argv(model="claude-opus-4-5"))
-    )
+    kwargs = backend_mod.options_kwargs(_spec("worker", home=home))
     assert kwargs["model"] == provider_mod.model_for("worker", home=home)
-    assert kwargs["model"] != "claude-opus-4-5"
-
-    # `A-4`'s edge case, re-homed onto the flag still read via `_read_argv_flag`.
-    kwargs2 = backend_mod.options_kwargs(_spec("worker", home=home, argv=["claude", "-p"]))
-    assert kwargs2["system_prompt"] == {"type": "preset", "preset": "claude_code"}
-
-    kwargs3 = backend_mod.options_kwargs(
-        _spec("worker", home=home, argv=["claude", "-p", "--append-system-prompt"])
-    )
-    assert kwargs3["system_prompt"] == {"type": "preset", "preset": "claude_code"}
 
 
-def test_op12_settings_writer_called_before_argv_builder(tmp_path, sdk_cli_path):
-    home = tmp_path / "op12-home"
-    home.mkdir()
-    order = []
-
-    def writer():
-        order.append("writer")
-        return home / "miner.settings.json"
-
-    def builder(settings_path):
-        order.append(("builder", settings_path))
-        return _miner_argv()
-
-    spec = _spec("miner-reader", home=home, argv_builder=builder, settings_writer=writer)
-    backend_mod.options_kwargs(spec)
-    assert order[0] == "writer"
-    assert order[1] == ("builder", home / "miner.settings.json")
+# U-cleanup-B DELETE: `test_op12_settings_writer_called_before_argv_
+# builder` -- its subject (`cli_settings_writer`/`cli_argv_builder`'s
+# ordering, `A-1`) no longer exists. `SessionSpec` carries neither field
+# (§7); `options_kwargs` reads `spec.doctrine` directly, with no writer
+# to call and no argv to build first.
 
 
 def test_op13_argv_read_set_is_closed(tmp_path, sdk_cli_path):
-    """`OP13`, narrowed by `U-bedrock`'s `IN3`/`Int-1`: `--model` is no
-    longer read from `argv` (`options.model` now comes from
-    `provider.model_for`, see `test_op11_...`), so the closed read set
-    shrinks from two flags to the one still read this way."""
+    """`OP13`, re-baselined per §8.4b (a §7 consequence no earlier spec
+    round named): `--append-system-prompt` was the LAST `--`-flag literal
+    `options_kwargs` read out of an argv it built for exactly that
+    purpose (`_read_argv_flag`, deleted, §7/`test_op11`). With the argv
+    relay gone, this module contains no `--`-flag literal at all -- the
+    closed read set is now the EMPTY set, and staying closed means
+    `options_kwargs` reads `spec.doctrine` (a first-class field) and
+    nothing argv-derived, ever again."""
     src = inspect.getsource(backend_mod)
     literals = set(re.findall(r'"(--[A-Za-z0-9-]+)"', src))
-    assert literals == {"--append-system-prompt"}, literals
+    assert literals == set(), literals
 
 
 def test_op14_options_kwargs_matches_the_object_the_session_ran_on(tmp_path, sdk_cli_path, monkeypatch):
@@ -913,7 +851,7 @@ def test_ch9_every_deny_is_recorded_in_the_sessions_denials(tmp_path, sdk_cli_pa
     assert outcome2.denials == ()
 
 
-def test_ch10_hatch_open_driven_end_to_end_from_the_real_variable(env, claude_cli_shim_worker, monkeypatch, sdk_cli_path):
+def test_ch10_hatch_open_driven_end_to_end_from_the_real_variable(env, sdk_fake_worker, monkeypatch, sdk_cli_path):
     """`CH10`'s headline leg -- `MAJOR-2` rebuild. Driven from the REAL
     `SELF_LEARN_ENFORCE_SCOPE` variable through a shimmed `worker.run`,
     observing the charter's ACTUAL verdict (a spy on
@@ -961,7 +899,7 @@ def test_ch10_hatch_open_driven_end_to_end_from_the_real_variable(env, claude_cl
     outcomes.clear()
     result_open = worker.run(env.home)
     assert result_open is not None
-    # U-cleanup-A: `claude_cli_shim_worker["count"]() == 0` used to prove
+    # U-cleanup-A: `sdk_fake_worker["count"]() == 0` used to prove
     # "the PATH shim's claude never ran -- the SDK path did" against a
     # BASH-backed fixture, where the count came from a wholly separate
     # counter than whatever the SDK path used. The migrated fixture is
@@ -1063,7 +1001,7 @@ def test_ch12_the_fence_hatch_changes_only_the_charter(tmp_path):
     assert on["disallowed_tools"] == off["disallowed_tools"]
 
 
-def test_ch13_silence_parity_on_both_hatch_paths(env, claude_cli_shim_worker, monkeypatch, sdk_cli_path):
+def test_ch13_silence_parity_on_both_hatch_paths(env, sdk_fake_worker, monkeypatch, sdk_cli_path):
     # U-flip pins SELF_LEARN_BACKEND_WORKER=cli at rung 1 (conftest's
     # suite-wide default); clear it too, or it shadows this rung-2
     # override and worker never reaches the sdk transport.
@@ -2092,13 +2030,22 @@ def test_rs6_lazy_import_target_resolves_by_identity(tmp_path, monkeypatch):
     assert type(backend) is real_pkg.SdkBackend
 
 
-def test_rs7_project_dependencies_unchanged_and_sdk_in_dev_and_extra_only():
+def test_rs7_project_dependencies_include_sdk_and_extra_is_empty_alias():
+    """`DEP1`/`DEP2`/`DEP3` -- INVERTED (§6): `claude-agent-sdk` moved
+    from the `[sdk]` extra into `dependencies` -- a machine can no longer
+    stay on `backend=cli` (that condition is what `S-43` rested on, and
+    U-cleanup is the unit that retires it). The `[sdk]` extra survives as
+    an EMPTY alias (ruled, `Q-3`) so `pip install 'self-learn-cli[sdk]'`
+    keeps resolving."""
     cli_pyproject = Path(worker.__file__).resolve().parents[2] / "pyproject.toml"
     text = cli_pyproject.read_text(encoding="utf-8")
     dep_block = text.split("[project.optional-dependencies]")[0]
     deps_section = dep_block.split("dependencies = [", 1)[1].split("]", 1)[0]
-    assert "claude-agent-sdk" not in deps_section
-    assert "claude-agent-sdk" in text  # present somewhere (dev group + extra)
+    assert "claude-agent-sdk" in deps_section
+
+    extra_block = text.split("[project.optional-dependencies]", 1)[1]
+    extra_section = extra_block.split("sdk = [", 1)[1].split("]", 1)[0]
+    assert "claude-agent-sdk" not in extra_section
 
 
 def test_rs8_lockfiles_no_package_added_or_removed_no_version_changed():

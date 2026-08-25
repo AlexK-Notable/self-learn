@@ -12,23 +12,43 @@ week against written gates, and put it back — from this document alone.*
 the practice, not the policy. Where it disagrees with the code, the code
 wins and this file is the defect — report it.*
 
-## 1. The two switches
+## 1. The one switch that is left
 
-Self-learn invokes a model on **four surfaces**. Two switches decide how.
+*Rewritten 2026-08-25 (U-cleanup, `03-decisions.md` `S-49`). This
+section used to describe TWO switches — `backend` (per surface, `cli`
+or `sdk`) and `provider` (install-wide, `anthropic` or `bedrock`). The
+`cli` invocation backend is now RETIRED: `CliBackend`,
+`invocation/cli.py`, the argv builders and settings writers are
+deleted, `KNOWN_BACKENDS == ("sdk",)`, and every surface runs on the
+Agent SDK unconditionally. There is nothing left to flip a surface
+BETWEEN — `backend` is no longer a real switch, it is a single-valued
+constant with a refusal wired to its old alternative.*
+
+Self-learn invokes a model on **four surfaces**, all of them on the
+Agent SDK. One switch remains live:
 
 | Switch | Scope | Values | Default |
 |---|---|---|---|
-| `backend` | **per surface** | `cli` (a `claude -p` subprocess) · `sdk` (an in-process `claude_agent_sdk` session) | `cli`, at every rung, on every surface |
 | `provider` | **install-wide** | `anthropic` · `bedrock` | `anthropic` |
 
-They are orthogonal. `backend=sdk` with `provider=anthropic` is a normal,
-supported configuration — it is the one every flip in this migration
-produces. `provider=bedrock` **requires** `backend=sdk` to do anything at
-all: under `backend=cli` a Bedrock configuration is silently inert **by
-design** (`S-36`), because a staged rollout means some surfaces are still
-on `cli` while others are not. That is not a bug and the software will
-not warn you about it per-invocation; the doctor's `rollout` row is what
-catches a configuration that is inert *everywhere*.
+`backend` still exists as an env selector / `config.yaml` key **for one
+purpose only: naming the refusal.** Setting `SELF_LEARN_BACKEND[_<SELECTOR>]`
+or `invocation.backend[_<surface>]` to `cli` does not select a second
+transport — there is none — it makes that surface refuse to run at all,
+loudly, through `BackendUnavailable`. The doctor's `switches` row
+renders this as `backend=REFUSED (cli retired) (<source>)`, never as an
+accepted `backend=cli`. Setting it to anything else unknown (a typo, a
+stray capital) folds silently to `sdk`, same as it always has for an
+unrecognized value (`SEL5`). **The only working values now are `sdk` and
+unset**, and both produce the same behavior — there is no live
+distinction left between "pinned to sdk" and "on the default" beyond
+what the doctor's `source` column reports for provenance.
+
+`provider=bedrock` no longer has a `backend=cli` staged-rollout carve-out
+to worry about (`S-36`'s "silently inert under `cli`" caveat no longer
+applies — every surface's own default is already `sdk`); the doctor's
+`rollout` row still catches the one way a Bedrock configuration can go
+fully inert today — every surface explicitly refused (§3).
 
 The four surfaces, and the three selector names that address them:
 
@@ -39,35 +59,32 @@ The four surfaces, and the three selector names that address them:
 | `miner-reader` | the nightly transcript miner's reader | `MINER` (**not `MINER_READER`**) | `backend_miner-reader` |
 | `analyst` | the one-shot `teach --route` analyst | `ANALYST` | `backend_analyst` |
 
-## 2. Before you flip anything: install the extra
+## 2. The `[sdk]` extra is no longer optional
 
-The `sdk` backend needs an optional dependency that a normal install does
-**not** bring in. `install.sh` runs `uv sync --project
-plugins/self-learn/cli` with no extras.
+*Rewritten 2026-08-25 (U-cleanup, `S-49`, which amends `S-43`).
+`claude_agent_sdk` used to be an optional dependency a `cli`-only
+machine paid nothing for. There is no `cli`-only machine left to protect
+— every surface runs on the SDK — so `claude-agent-sdk` is now a hard
+dependency of `self-learn-cli`, and a normal `install.sh` run (or `uv
+sync --project plugins/self-learn/cli`, no extra flags) brings it in.
+The `[sdk]` extra is **retained as an empty alias** so an existing
+`pip install 'self-learn-cli[sdk]'` in a script or a runbook keeps
+working; it installs nothing beyond what the bare package now installs
+unconditionally.*
 
-```
-uv sync --project plugins/self-learn/cli --extra sdk
-# or, for a pip-installed copy:
-pip install 'self-learn-cli[sdk]'
-```
+There is nothing to install before you flip a surface, because there is
+no longer a surface to flip between two transports. If `self-learn
+doctor invocation`'s `sdk` row ever reports the SDK package as
+unimportable on a normal install, that is a broken install, not a
+missing optional extra — reinstall rather than reaching for `--extra sdk`.
 
-Without it, a surface flipped to `sdk` refuses at invocation time with:
-
-```
-the "sdk" invocation backend is not built yet — install it with:
-    pip install 'self-learn-cli[sdk]'
-```
-
-That refusal is a clean failure, not a crash — the surface reports
-`unavailable` and the run ends — but it is a wasted run. Install first.
-
-**Side effect of installing the extra, so it is not a surprise:** once
-`claude_agent_sdk` is importable, `self-learn --selftest` spawns one real
-`claude --version` child process **on every run**, because the selftest's
-`invocation` check runs the same preflight the doctor does. This is
-sanctioned and bounded (`timeout=10`, one process, three exception
-classes skip it), and it is the documented behavior of `FW-94`. Installs
-without the extra spawn nothing.
+**One side effect survives unchanged, so it is not a surprise:** now
+that `claude_agent_sdk` is importable on every install, `self-learn
+--selftest` spawns one real `claude --version` child process **on every
+run**, because the selftest's `invocation` check runs the same preflight
+the doctor does. This is sanctioned and bounded (`timeout=10`, one
+process, three exception classes skip it), and it is the documented
+behavior of `FW-94`. There is no install path left that spawns nothing.
 
 ## 3. The preflight ritual — run this before and after every change
 
@@ -94,16 +111,18 @@ The rows, in the order they print:
 | `provider` | Resolved provider and its source. |
 | `config` | Whether `config.yaml`'s `provider:` section contains keys the software does not know. |
 | `sdk` | Whether `claude_agent_sdk` is importable, its version, and the bundled vs host `claude` CLI versions. WARN when they diverge. |
-| `rollout` | SKIP under `anthropic`. Under `bedrock`: FAIL if *every* surface is still `cli` (the configuration does nothing at all), PASS if all four are `sdk`, per-surface INFO for the normal mixed state. |
-| `consistency` | Emitted **only** when something is wrong: a `bedrock`+`sdk` surface with no region, or one whose model id is an Anthropic alias. No row means no problem. |
+| `rollout` | SKIP under `anthropic`. Under `bedrock`: FAIL only if **every surface has been explicitly pinned to `cli` and is therefore refused** (`backend=REFUSED (cli retired)`) — the Bedrock configuration then does nothing, because there is no un-refused surface left for it to reach. PASS if no surface is refused, per-surface INFO for the normal mixed state. *(2026-08-25: this state is now RARE rather than the default — every surface's own default is already `sdk`, so hitting it requires actively refusing every one of the four, not simply "not having flipped anything yet.")* |
+| `consistency` | Emitted **only** when something is wrong: a `bedrock` surface with no region, or one whose model id is an Anthropic alias. No row means no problem. |
 | `region` / `credentials` / `models` / `env` | Bedrock-side checks; SKIP wholesale under `anthropic`. `credentials` is **presence-only** and reports WARN, never FAIL, when it finds nothing — it cannot see an EC2 instance role (`FW-90`). |
 | `orphans` | Today always SKIP. It is a reserved extension point, **not** an orphan census — see §5.3. |
 
-A healthy all-defaults machine looks like this (real output, an
-`anthropic` install with the `[sdk]` extra present):
+A healthy all-defaults machine looks like this (*re-captured 2026-08-25,
+post-U-cleanup, `anthropic` install — the `switches` row is the part
+that changed; every surface now resolves `sdk` because there is nothing
+else left to resolve*):
 
 ```
-doctor: INFO switches — worker: backend=cli (default); worker-repair: backend=cli (default); miner-reader: backend=cli (default); analyst: backend=cli (default)
+doctor: INFO switches — worker: backend=sdk (default); worker-repair: backend=sdk (default); miner-reader: backend=sdk (default); analyst: backend=sdk (default)
 doctor: INFO provider — provider=anthropic (default)
 doctor: PASS config — no unknown provider config keys
 doctor: WARN sdk — sdk=0.2.134 bundled-cli=2.1.226 host-cli=2.1.235 — versions differ
@@ -112,97 +131,46 @@ doctor: SKIP rollout — provider=anthropic — rollout state not applicable
 doctor: SKIP orphans — no orphan report hook exported by the sdk backend
 ```
 
-That `WARN sdk` is normal on a machine that updates its Claude Code
-install independently of the SDK's bundled copy. It is worth knowing
-about — a large gap is the first thing to suspect when an `sdk` session
-behaves differently from a `cli` one — but it does not block a flip.
+That `WARN sdk` row example (bundled-vs-host `claude` CLI version drift)
+predates this rewrite and is kept because the shape is still accurate —
+it is normal on a machine that updates its Claude Code install
+independently of the SDK's bundled copy, and does not block anything.
+There is no `cli` session left to compare a divergent one against; a
+large gap is worth investigating on its own terms now.
 
 **Reading the `switches` row is a skill; here is the whole of it.** Each
-surface prints `backend=<value> (<source>)`. The source is the rung that
-answered: `env:SELF_LEARN_BACKEND_ANALYST`, `config:backend_worker`,
-`default`, and so on.
+surface prints `backend=<value> (<source>)`, where `<value>` is `sdk` or
+`REFUSED (cli retired)` — nothing else is possible post-U-cleanup. The
+source is the rung that answered: `env:SELF_LEARN_BACKEND_ANALYST`,
+`config:backend_worker`, `default`, and so on.
 
-> **The tell for a rejected value: a source that names an env var or a
-> config key, next to a value of `cli`.** An unknown backend value
-> (`SDK`, `Sdk`, `agent-sdk`, a typo) is folded to `cli`. The doctor does
-> **not** warn about this — deliberately, because the real invocation
-> path already warns and a second copy would double-print — so the
-> mismatch between "you clearly set something" and "the answer is the
-> default value" is your only signal here. Values are lowercase `cli` or
-> `sdk`, exactly.
+> **The tell for a rejected UNKNOWN value: a source that names an env
+> var or a config key, next to a value of `sdk` you did not ask for.**
+> An unknown backend value (`SDK`, `Sdk`, `agent-sdk`, a typo) folds
+> silently to `sdk` (`SEL5`) — the only working value, so this is now
+> harmless rather than a downgrade, but the doctor still does **not**
+> warn about it. **The tell for a NAMED refusal is louder and different:**
+> `backend=REFUSED (cli retired) (<source>)` — that is not silent, and it
+> is not a value the doctor folds away; it means the surface will not
+> run at all until you remove whatever set it. Values are lowercase
+> `sdk`, exactly, or the literal string `cli` if you want the refusal.
 
 An **empty** value is different again: it means "no answer" and falls
 through to the next rung, silently and legitimately. With one trap, in
 §7.
 
-## 4. Flipping a surface
+## 4. The provider switch, if you are going to Bedrock
 
-### 4.1 Read this before you type an export
-
-**A `systemd --user` unit does not inherit your login shell's
-environment.** Both shipped units say so in their own comments and both
-pin `SELF_LEARN_HOME` and nothing else. The consequence is not subtle:
-
-> **For the miner and the worker, an environment variable exported in
-> your terminal will not reach the run that matters.** The nightly miner
-> is started by `self-learn-miner.timer`. A worker kicked from the web UI
-> is started by `self-learn-ui.service`. Neither sees your shell.
-> **For those two surfaces, `config.yaml` is the only flip that reaches
-> every launch path.**
-
-Environment variables are the right tool for the **analyst** (which runs
-in the shell where you typed `teach --route`) and for a **worker you run
-by hand** in that same shell. They are the wrong tool for anything on a
-timer.
-
-### 4.2 Environment flips — one shell, one surface
-
-```sh
-# analyst — the Wave-2 flip target, and the one an env var suits
-SELF_LEARN_BACKEND_ANALYST=sdk self-learn teach --route ...
-
-# for a whole shell session
-export SELF_LEARN_BACKEND_ANALYST=sdk
-
-# miner reader — note the selector is MINER, not MINER_READER
-export SELF_LEARN_BACKEND_MINER=sdk
-
-# worker — moves the batch invocation AND its repair round together
-export SELF_LEARN_BACKEND_WORKER=sdk
-
-# everything at once (the coarse rung; per-surface vars still win over it)
-export SELF_LEARN_BACKEND=sdk
-```
-
-Verify every one of these with `self-learn doctor invocation` in the same
-shell. If the `switches` row does not name the variable you just set as
-the source, it did not take.
-
-### 4.3 Config flips — the durable kind
-
-Edit `<ledger-home>/config.yaml` — the same committed file `S-10`'s
-`one_motion_route:` lives in. It is a git repository the operator commits
-and pushes; putting the transport decision there means it is versioned,
-synced and revocable by commit.
-
-```yaml
-invocation:
-  backend_analyst: sdk          # one surface
-  backend_miner-reader: sdk     # note the hyphen — the key is the surface name
-  backend_worker: sdk
-  backend_worker-repair: sdk    # settable here even though the env var cannot split it
-  backend: sdk                  # coarse fallback for any surface without its own key
-```
-
-Commit it. Then run the doctor and confirm each `switches` entry reads
-`(config:backend_<surface>)` or `(config:backend)`.
-
-**Never put a credential in this file.** Not an access key, not a secret,
-not a session token, not a path to one expecting it to be read. `S-37`
-makes this absolute: every credential check this software performs is
-presence-only, and the file is committed to a git repository.
-
-### 4.4 The provider switch, if you are going to Bedrock
+*§§4.1–4.3 retired 2026-08-25 (U-cleanup, `S-49`).* This section used to
+walk through flipping a surface's `backend` between `cli` and `sdk` —
+which shell an env var reaches (§4.1), the env-var form (§4.2), and the
+`config.yaml` form (§4.3). None of that has a live target left: there is
+one backend, every surface already runs on it, and a `backend`/
+`backend_<surface>` setting now only ever does one of two things —
+select `sdk` (a no-op, since that is already every surface's only
+possible value) or select `cli` (a refusal, §1). If you are debugging why
+a surface behaves the way it does, the `provider` switch below is the
+only one left with two live values to reason about.
 
 ```yaml
 provider:
@@ -219,17 +187,21 @@ provider:
 or by environment: `SELF_LEARN_PROVIDER`, `SELF_LEARN_BEDROCK_REGION`,
 `SELF_LEARN_BEDROCK_PROFILE`.
 
-Two things to know before you do this:
+One thing to know before you do this — reduced from two 2026-08-25
+(U-cleanup): the model-vs-backend pairing trap it used to name required
+a `cli` surface to exist. It no longer can, so `provider.bedrock.models.*`
+is read by every surface unconditionally, and the three model variables
+below are only ever a fallback when `provider=anthropic`:
 
-1. **The `provider.bedrock.models.*` entries are read only by the `sdk`
-   backend.** A surface still on `cli` emits whatever its own model
-   variable says — an Anthropic alias — regardless of what you put here.
-   The three variables, spelled out because guessing a fourth is exactly
-   trap 1: **`SELF_LEARN_WORKER_MODEL`** (which also governs the repair
-   round — there is no separate repair variable),
-   **`SELF_LEARN_MINER_MODEL`**, **`SELF_LEARN_ANALYST_MODEL`**; all
-   default to `claude-sonnet-5`. Flip the surface and set the model
-   together, or the model setting does nothing.
+1. **The `provider.bedrock.models.*` entries need a `provider=bedrock`
+   AND a model entry for the surface you want them to govern** — an
+   entry-less surface under `provider=bedrock` falls back to its own
+   model variable, an Anthropic alias, which the `consistency` row below
+   will FAIL on. The three variables, spelled out because guessing a
+   fourth is exactly what used to be trap 1: **`SELF_LEARN_WORKER_MODEL`**
+   (which also governs the repair round — there is no separate repair
+   variable), **`SELF_LEARN_MINER_MODEL`**, **`SELF_LEARN_ANALYST_MODEL`**;
+   all default to `claude-sonnet-5`.
 2. **Run the doctor.** Under `provider=bedrock`, the `consistency` row
    will FAIL loudly on the two mistakes that matter (no region; an
    Anthropic alias where a Bedrock id belongs), and `rollout` will FAIL
@@ -390,41 +362,52 @@ should make runs CHEAPER — if not, settings loaded and isolation is fake
   burn-in closes**, because a ratio argued about after the fact is a
   ratio nobody trusts.
 
-### 5.6 The end of the road — what deleting the `cli` path requires
+### 5.6 The end of the road — what deleting the `cli` path required (past tense — it happened)
 
-A burn-in that passes does not retire the subprocess path. The plan
-reserves that for a final unit (`U-cleanup`) and gates it on five
-conditions, verbatim: *"U-cleanup preconditions: 14 consecutive all-sdk
-days, criteria met, Tier-3 caught nothing, config.yaml committed,
-decision row dated."*
+*Rewritten to past tense 2026-08-25 (U-cleanup, `S-49`). §5.6 used to be
+a forward-looking checklist; the deletion it described has landed.*
 
-Read as an operator checklist:
+A burn-in passing does not by itself retire the subprocess path — the
+plan reserved that for a final unit (`U-cleanup`) and originally gated it
+on five conditions, verbatim: *"U-cleanup preconditions: 14 consecutive
+all-sdk days, criteria met, Tier-3 caught nothing, config.yaml
+committed, decision row dated."* **The precondition changed under the
+decision, and the change is recorded rather than hidden:** on 2026-08-24
+the user waived the 14-day soak — *"as long as we have decent test
+coverage, then skip the soak; 2 weeks is crazy-town"* — and replaced it
+with a measured coverage census (`S-49`, spec §3). What the census found
+and what it cost, for anyone auditing the retirement later:
 
-1. **14 consecutive all-sdk days.** Not fourteen days since the first
-   flip — fourteen with *every* surface on `sdk` and none rolled back.
+1. **The soak was waived, not completed.** There is no 14-consecutive-day
+   production record behind this deletion; there is one production
+   datapoint (the first SDK miner run, 2026-08-24 19:20–19:24 PDT, "ok —
+   7 landed", 4 m 07 s, 586 MB peak, 0 orphans) and a test-coverage
+   argument instead.
 2. **Criteria met** — every per-surface gate in §5.1–§5.4, plus the
-   cross-cutting pair.
-3. **Tier-3 caught nothing.** Per the tier table (`U-fake` `Tiers-1`),
-   **T3 is the existing bash-shim suite, frozen — byte-identity
-   regression armor for the `cli` path**, kept unchanged precisely until
-   the cleanup unit deletes that path. "T3 caught nothing" therefore
-   means: over the 14 days, no T3 test went red, i.e. the `cli` path
-   never regressed while nobody was using it. It is a check that the
-   thing you are about to delete was still healthy when you deleted it.
-   **T3 is not the cross-backend contract suite** — that is **T2**
-   (parametrized over `["cli", "sdk"]`) — and **no tier invokes a real
-   `claude`**: T2 runs the bash shim against the SDK fake CLI, T1 runs
-   the in-process `FakeBackend`. Nothing in the tier stack is evidence
-   about live behavior; the burn-in gates above are.
-4. **`config.yaml` committed** — the flip is in the ledger's git history,
-   not living in somebody's shell profile. This is the condition most
-   likely to be quietly false; check it with `git log` in the ledger, not
-   from memory.
-5. **A dated decision row** in `03-decisions.md` recording the retirement.
+   cross-cutting pair, as they stood before the waiver.
+3. **The T3 armor was migrated, not merely "caught nothing."** The
+   original condition assumed T3 (the bash-shim suite) would stay frozen
+   and green until deletion. Measured instead: T3 was **142** tests, not
+   the plan's 88, and ≈90% of them are worker/repair/attribution
+   behaviour tests rather than transport tests — so U-cleanup-A migrated
+   them onto the SDK fake CLI rather than freezing and then discarding
+   them, and U-cleanup-B deleted only what had no SDK-side counterpart.
+   The one real, priced loss: `test_worker_contract.py::
+   test_fl2_byte_identity_and_provenance[sdk]`'s cross-backend log-line
+   comparison (the differential the two backends' rendering had to
+   match on timeout/not-found/unavailable) — replaced by a byte-pin over
+   every row of all three template sets, captured while `CliBackend`
+   still existed.
+4. **`config.yaml` committed** — unchanged as a condition; still the
+   right check before trusting a flip's provenance in old history.
+5. **The dated decision row** is `S-49` (`03-decisions.md`).
 
-Until all five hold, the `cli` path stays, and `S-39` keeps its first
-consequence: **the default at every rung stays `cli` until a surface
-passes its burn-in.**
+All five are now history, not a checklist to satisfy — `CliBackend`,
+`invocation/cli.py`, the three argv builders and the two settings
+writers are deleted, `KNOWN_BACKENDS == ("sdk",)`, and `S-39`'s first
+consequence (*"the default at every rung stays `cli` until a surface
+passes its burn-in"*) is structurally impossible now: there is no `cli`
+default left for anything to stay at.
 
 ### 5.7 Where results go
 
@@ -436,79 +419,103 @@ skipped.
 
 ## 6. Rollback
 
-**Rollback is an environment variable, and it takes effect on the next
-invocation.** There is no code change, no reinstall, no migration, no
-state to unwind. Every rung's default is `cli`, so removing your setting
-is itself the rollback.
+*Rewritten 2026-08-25 (U-cleanup, `S-49`). Everything below this line
+used to be true and no longer is — kept, struck through in spirit but
+not in fact, so an operator who remembers the old procedure does not
+try it and get confused by the result.*
 
-```sh
-# the surgical form — put one surface back
-export SELF_LEARN_BACKEND_ANALYST=cli
+**Rollback is no longer an environment variable. It is a revert.** There
+is no `cli` backend left to set `SELF_LEARN_BACKEND[_<SELECTOR>]` back
+to — `CliBackend`, `invocation/cli.py`, the argv builders and settings
+writers are deleted from the package you have installed. Setting
+`SELF_LEARN_BACKEND_ANALYST=cli` (or any selector) today does not roll
+anything back: it makes that surface **refuse to run**, reported through
+the doctor's `switches` row as `backend=REFUSED (cli retired) (<source>)`
+and through the surface's own log as `Outcome(failure="unavailable")`.
+That is a new failure mode, not the old rollback — do not reach for it
+expecting the pre-U-cleanup behavior back.
 
-# the blunt form — put everything back, overriding any config.yaml
-export SELF_LEARN_BACKEND=cli
-```
+**The actual rollback path, if the Agent SDK transport is broken for
+you:**
 
-For a config-driven flip, delete or flip the key in
-`<ledger-home>/config.yaml` and commit. Remember §4.1: for the miner and
-the worker, the config file is what the timer reads, so **an env-var
-rollback in your shell does not roll back the nightly run.** If you need
-the nightly run stopped *now*, the env var will not do it — edit the
-config, or disable the timer (`systemctl --user stop
-self-learn-miner.timer`).
+1. **Identify the last commit before `U-cleanup-B` landed** (the decision
+   row `S-49` names the build; `git log --oneline -- plugins/self-learn/cli`
+   in the *product* repository, not the ledger, finds it) and reinstall
+   that revision — `git checkout <sha> -- plugins/self-learn/cli && uv sync
+   --project plugins/self-learn/cli` (or the equivalent for a pip
+   install), then restart every running surface (the systemd units, any
+   shell session with `teach --route` in flight).
+2. **This is a real revert, not a flag flip.** It changes which code
+   runs, not which value an existing switch reads. Test it before relying
+   on it in an incident — the same way you would test reverting any other
+   dependency.
+3. **`provider` is unaffected.** Rolling back the invocation backend does
+   not touch `provider=bedrock`/`anthropic`; that switch still works
+   exactly as §4 describes on either side of the revert.
 
-Confirm with the doctor. Then the next invocation of that surface uses
-`cli`; an invocation already in flight is not affected either way.
-
-**One rollback caveat that is not a rollback.** If you opened the
-incident hatch `SELF_LEARN_ENFORCE_SCOPE=0` while on `sdk`, close it
-too — see §7.
+**One caveat that survives the rewrite unchanged.** If you opened the
+incident hatch `SELF_LEARN_ENFORCE_SCOPE=0`, close it — see §7. That
+hatch's sdk-vs-host-settings semantics are unrelated to which backend is
+installed.
 
 ## 7. Traps, all measured
 
 Each of these was reproduced on a real install while this document was
-written. None of them produces an error message.
+written. *Re-verified against U-cleanup's collapsed `KNOWN_BACKENDS ==
+("sdk",)` 2026-08-25 — three of the original seven were DEFUSED by the
+same collapse that retired `cli` (noted where it happened, not silently
+dropped: a trap that stops mattering is still worth one line saying so).*
 
 1. **`SELF_LEARN_BACKEND_MINER_READER` is not a variable.** The surface
    is named `miner-reader`; the selector is `MINER`. Setting
    `SELF_LEARN_BACKEND_MINER_READER=sdk` does **nothing at all** — no
-   warning, exit 0, all four surfaces still `cli`. Use
-   `SELF_LEARN_BACKEND_MINER`.
+   warning, exit 0, the surface resolves via its own default (`sdk`),
+   exactly as if you had set nothing. Use `SELF_LEARN_BACKEND_MINER`.
 2. **`worker-repair` cannot be split by environment, only by config.**
    `SELF_LEARN_BACKEND_WORKER` moves the batch invocation and the repair
    round together. `config.yaml`'s `backend_worker-repair` moves the
-   repair round alone. If you want them different, use the config file.
-3. **A mis-cased value is silently downgraded.** `SELF_LEARN_BACKEND=SDK`
-   resolves to `cli`, and the doctor prints no warning (§3's tell is your
-   only signal). Lowercase, always.
-4. **An empty per-surface config key does not fall through to the
-   general one — it pins that surface to `cli`.** Given
-   `backend_analyst: ""` alongside `backend: sdk`, the other three
-   surfaces get `sdk` and the analyst gets `cli`, reported as source
-   `default`. There is no way to see from the doctor's output that the
-   empty key caused it. Delete keys you do not want; do not blank them.
-5. **A `provider.bedrock.models.*` entry is inert on a `cli` surface.**
-   Set the model and flip the surface in the same change, or the model
-   setting silently does nothing.
-6. **`SELF_LEARN_ENFORCE_SCOPE=0` is wider on `sdk` than on `cli` — and
-   wider than "writes" even there.** The hatch exists for an incident: it
-   drops the enforcement key from the worker's permission scope. On the
-   `cli` path, what happens next is decided by the **host's own** Claude
-   settings. On the `sdk` path there are no host settings in play at all
-   (that is the isolation), so the charter takes the open hatch as
+   repair round alone. With only one working value left, this now
+   matters for **refusal scope**, not backend choice: pinning
+   `SELF_LEARN_BACKEND_WORKER=cli` refuses the repair round too; only
+   `config.yaml`'s `backend_worker-repair` key can refuse one without the
+   other.
+3. **DEFUSED (was live under two backends):** a mis-cased value used to
+   silently downgrade you to `cli`. `SELF_LEARN_BACKEND=SDK` now folds
+   to the only working value, `sdk`, the same as every other unknown
+   string (`SEL5`) — harmless, though still worth lowercasing on
+   principle, since a `cli` value (correctly cased) is a refusal, not a
+   downgrade.
+4. **NEUTERED (was live under two backends):** an empty per-surface
+   config key still does not fall through to the general one — that part
+   of the mechanism is unchanged — but it no longer pins the surface to
+   anything dangerous. Given `backend_analyst: ""` alongside `backend:
+   sdk`, the analyst resolves to `sdk` via its own per-surface default
+   (source `default`), same value as the other three surfaces (source
+   `config:backend`) — a provenance difference in the doctor's `source`
+   column, not a behavior difference. Still delete keys you do not want
+   rather than blank them; the doctor cannot tell you which one you did.
+5. **RETIRED — see §4.** A `provider.bedrock.models.*` entry used to be
+   inert on a surface still resolved to `cli`; there is no such surface
+   left, so this entry is now read unconditionally by every surface once
+   `provider=bedrock` is set.
+6. **`SELF_LEARN_ENFORCE_SCOPE=0` grants more than "writes."** The hatch
+   exists for an incident: it drops the enforcement key from the
+   worker's permission scope. Because every surface is now the SDK
+   transport, there are no host-level Claude settings in play at all
+   (that is the isolation) — the charter takes the open hatch as
    **unconditional approval for every tool that is not on the deny
    list** — the allow returns at rung 2 of the callback, *before* the
-   write-family path check ever runs, so it is not scoped to writes.
-   The deny list still holds (`Bash`, `Edit`, `Task`, `WebFetch`,
+   write-family path check ever runs, so it is not scoped to writes. The
+   deny list still holds (`Bash`, `Edit`, `Task`, `WebFetch`,
    `WebSearch`, `NotebookEdit` stay denied); everything else is waved
-   through. Two mitigations worth knowing: the hatch only opens for a
+   through. One mitigation worth knowing: the hatch only opens for a
    containment that actually has a write scope, so the **analyst surface
    and the degraded worker containment can never open it** (both have
-   empty write sets); and on a host whose global settings are strict, the
-   `sdk` hatch is **wider than the `cli` hatch would have been**
-   (`FW-88`). Treat this variable as sdk-semantics-only: open it
-   deliberately, for a bounded incident window, and close it in the same
-   session.
+   empty write sets). *(Retired comparison: this used to be phrased
+   "wider on `sdk` than on `cli`," `FW-88` — there is no `cli` left to be
+   narrower, so the comparison is gone but the underlying breadth is
+   not.)* Open it deliberately, for a bounded incident window, and close
+   it in the same session.
 7. **Pointing `SELF_LEARN_HOME` at a fresh directory can kick off a
    miner catch-up run.** The 24-hour watchdog fires opportunistically on
    any verb except `mine` and `init` when the last run is stale, and a brand-new home has no last
@@ -518,15 +525,18 @@ written. None of them produces an error message.
 
 ## 8. When something is wrong
 
+*Rows touching the retired `backend` switch updated 2026-08-25
+(U-cleanup, `S-49`).*
+
 | Symptom | First read | Likely cause |
 |---|---|---|
-| A surface you flipped still says `cli` | `switches` row's **source** column | source names your variable → the value was rejected (case? typo?). Source says `default` → your variable is not in this process's environment (systemd? a different shell? an empty config key?) |
-| `the "sdk" invocation backend is not built yet` | §2 | the `[sdk]` extra is not installed in the environment that ran the surface |
-| `doctor` exits 1 | the `FAIL` rows | `rollout` FAIL = Bedrock configured, nothing flipped. `consistency` FAIL = a `bedrock`+`sdk` surface missing a region or carrying an Anthropic alias. `region` FAIL = no region resolved |
-| `WARN sdk … versions differ` | §3 | normal on a host that updates Claude Code independently; investigate only if `sdk` and `cli` runs behave differently |
+| A surface reports `REFUSED` / `Outcome(failure="unavailable")` instead of running | `switches` row's **source** column | `backend=REFUSED (cli retired) (<source>)` — something set that surface's selector (or the coarse `SELF_LEARN_BACKEND`, or a `config.yaml` key) to `cli`. Unset it; §1. There is no partial state to debug further — a `cli` selection is refused everywhere, identically |
+| `the "sdk" invocation backend is not built yet` | §2 | `claude_agent_sdk` is not importable in the environment that ran the surface — a genuinely broken/stale install (it is a hard dependency now, so this should not happen on a normal install). Reinstall rather than reaching for an extra flag |
+| `doctor` exits 1 | the `FAIL` rows | `rollout` FAIL = Bedrock configured but every surface is refused (§3's `rollout` row). `consistency` FAIL = a `bedrock` surface missing a region or carrying an Anthropic alias. `region` FAIL = no region resolved |
+| `WARN sdk … versions differ` | §3 | normal on a host that updates Claude Code independently |
 | `WARN credentials — no mechanism found` | `FW-90` | the credential probe is presence-only and never probes IMDS, so an EC2 instance role reads as "nothing found". WARN by design, never FAIL |
-| The nightly miner did not flip | §4.1 | you exported an env var; the timer does not see it. Use `config.yaml` |
-| A leaked `claude` process after an `sdk` run | §5.3 | an orphan. Log line + `pgrep`; it counts against the miner/worker burn-in |
+| A `config.yaml` edit did not reach the nightly miner or a UI-kicked worker | §4.1 *(retired numbering — the fact survives: `systemd --user` units do not inherit your login shell's environment; both shipped units pin `SELF_LEARN_HOME` and nothing else)* | you exported an env var instead of editing `config.yaml`; the timer/service does not see your shell |
+| A leaked `claude` process after a run | §5.3 | an orphan. Log line + `pgrep`; it counts against the miner/worker burn-in gates recorded in §5 |
 
 ## 9. Change control
 
@@ -538,3 +548,15 @@ once for a migration that shipped without its documentation
 (`drafts/u-docs-truth-sweep-spec.md` §3.1 counts the cost: 42 sites
 swept, 12 measured false); this file exists so the flips do not repeat
 it.
+
+**2026-08-25 (U-cleanup-B, `03-decisions.md` `S-49`):** the `cli`
+invocation backend is retired — `CliBackend`, `invocation/cli.py`, the
+argv builders, the settings writers and the `SessionSpec` cli closures
+are deleted from the package; `KNOWN_BACKENDS == ("sdk",)`. This is an
+engine-removal, not a default move — there was no "other" default left
+to move to. Sections §1, §2, §4 (former §§4.1–4.3), §5.6, §6, and §7
+traps 1/3/4/5/6 are updated in this same commit to describe the
+one-backend world; §5.1–§5.5, §5.7, and §7 traps 2/7 are unchanged
+because their subject (per-surface burn-in gates, the systemd-env fact,
+the miner catch-up watchdog) never depended on a second transport
+existing.

@@ -32,7 +32,6 @@ __all__ = [
     "BackendUnavailable",
     "LogTemplates",
     "LOG_TEMPLATES",
-    "TransportSpec",
     "TRANSPORT",
 ]
 
@@ -189,10 +188,9 @@ class SessionSpec:
     timeout: float
     containment: Containment
     log: Callable[[str], None]
-    cli_argv_builder: Callable[[Path | None], list[str]]
-    cli_settings_writer: Callable[[], Path] | None = None
     label: str = ""
     timeout_display: object | None = None
+    doctrine: str | None = None  # appended to the claude_code system-prompt preset (§7)
 
 
 FAILURE_KINDS = ("exit", "timeout", "not-found", "os-error", "unavailable")
@@ -285,47 +283,19 @@ LOG_TEMPLATES: dict[str, LogTemplates] = {
 
 # ------------------------------------------------------------ Trans-1 (Sec 3.5)
 
-
-@dataclass(frozen=True)
-class TransportSpec:
-    """One row of the transport table (Sec 3.5). `CliBackend` branches on
-    `spec.surface` through this table alone -- nothing else in the
-    backend is surface-aware."""
-
-    kind: Literal["run", "popen"]
-    catches_os_error: bool  # True on every surface (Err-1, U-sdka: FW-87)
-    kills_process_group: bool  # True only on the miner (`T-b`)
-    prompt_via_argv: bool  # True only on the analyst -- prompt is already in argv
-    result_stdout: Literal["empty", "captured", "merged"]  # `T-e`
-
-
-TRANSPORT: dict[str, TransportSpec] = {
-    "worker": TransportSpec(
-        kind="run",
-        catches_os_error=True,
-        kills_process_group=False,
-        prompt_via_argv=False,
-        result_stdout="empty",
-    ),
-    "worker-repair": TransportSpec(
-        kind="run",
-        catches_os_error=True,
-        kills_process_group=False,
-        prompt_via_argv=False,
-        result_stdout="empty",
-    ),
-    "miner-reader": TransportSpec(
-        kind="popen",
-        catches_os_error=True,
-        kills_process_group=True,
-        prompt_via_argv=False,
-        result_stdout="merged",
-    ),
-    "analyst": TransportSpec(
-        kind="run",
-        catches_os_error=True,  # Err-1 (U-sdka): FW-87, R-1 closed
-        kills_process_group=False,
-        prompt_via_argv=True,
-        result_stdout="captured",
-    ),
+#: U-cleanup §8.2 (`BLOCKER-1`) -- the transport-table dataclass and the
+#: CLI-only fields it described (`kind`, `kills_process_group`,
+#: `prompt_via_argv`, `result_stdout`) are DELETED with the CLI backend,
+#: the only reader that branched on them. `TRANSPORT` itself is NOT deleted:
+#: `invocation_sdk/backend.py` folds it into `_CATCHES_OS_ERROR`, which is
+#: the table-level mutation point `03-decisions.md`'s `S-48`/`M11`
+#: evidence depends on -- the analyst-vs-worker/miner OSError/
+#: ClaudeSDKError split. Trimmed to a plain `dict[str, bool]` rather than
+#: a one-field dataclass, so the table stays a mutable, table-level fact
+#: (`S-48` note, `03-decisions.md`).
+TRANSPORT: dict[str, bool] = {
+    "worker": True,
+    "worker-repair": True,
+    "miner-reader": True,
+    "analyst": True,  # Err-1 (U-sdka): FW-87, R-1 closed
 }

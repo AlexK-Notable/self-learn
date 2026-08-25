@@ -39,7 +39,7 @@ from typing import Any
 
 from . import config
 from .invocation.contract import DEFAULT_BACKEND_FOR_SURFACE, SELECTOR_FOR_SURFACE, SURFACES
-from .invocation.registry import KNOWN_BACKENDS
+from .invocation.registry import KNOWN_BACKENDS, _CLI_RETIRED_MESSAGE
 
 __all__ = [
     "PROVIDERS",
@@ -103,13 +103,15 @@ def _resolve_provider(home: Path | str) -> tuple[str, str]:
 # ===================================================================== #
 
 
-def resolve_backend_name(home: Path | str, surface: str) -> tuple[str, str]:
+def resolve_backend_name(home: Path | str, surface: str) -> tuple[str, str, str | None]:
     """`Rs-a` -- a SECOND, INDEPENDENT transcription of U-seam's five-rung
     backend precedence chain (env selector, env general, config per-
-    surface, config general, default `"cli"`). Re-derived rather than
+    surface, config general, default `"sdk"`). Re-derived rather than
     read from `registry.backend_for` because that function returns a
-    `Backend` OBJECT and RAISES for `"sdk"` (`B-3`) -- it cannot report a
-    name -- and `registry.py` is outside this unit's file surface.
+    `Backend` OBJECT and RAISES `BackendUnavailable` for both the
+    not-yet-built-`sdk` case and the retired-`cli` case (`B-3`) -- it
+    cannot report a name -- and `registry.py` is outside this unit's file
+    surface.
 
     `Rs-b` -- SILENT: never prints, for any input. `registry.py` already
     warns on the same inputs at the same moment; a second copy would
@@ -123,29 +125,45 @@ def resolve_backend_name(home: Path | str, surface: str) -> tuple[str, str]:
     before the coarser `backend` key is ever consulted. This function
     inherits that asymmetry by construction, by calling
     `config.invocation_backend` exactly once and trusting its answer.
-    """
+
+    U-cleanup `MAJOR-5` -- the THIRD return element is `None`, or the
+    retirement message when the raw value AT THE RUNG THAT ANSWERED was
+    literally `"cli"`. Without this, `registry._resolve` refuses a `cli`
+    selection while this independent transcription folded it into an
+    accepted `"sdk"` -- a retired selection reported as honoured, which is
+    exactly the defect `SEL6`/`SEL7` exist to catch. A source string is
+    for provenance and is not overloaded to carry this (ruled, §8.2): the
+    refusal gets its own element so `SEL6`'s doctor row and `SEL7`'s
+    registry/provider agreement can both read it directly."""
     selector = SELECTOR_FOR_SURFACE.get(surface, surface)
 
     selector_var = f"SELF_LEARN_BACKEND_{selector}"
     value = os.environ.get(selector_var)
     if value:
-        return _fold_backend(value), f"env:{selector_var}"
+        return _fold_backend(value), f"env:{selector_var}", _refused_backend(value)
 
     value = os.environ.get("SELF_LEARN_BACKEND")
     if value:
-        return _fold_backend(value), "env:SELF_LEARN_BACKEND"
+        return _fold_backend(value), "env:SELF_LEARN_BACKEND", _refused_backend(value)
 
     result = config.invocation_backend(home, surface)
     if result is not None:
         key, cfg_value = result
         if cfg_value:
-            return _fold_backend(cfg_value), f"config:{key}"
+            return _fold_backend(cfg_value), f"config:{key}", _refused_backend(cfg_value)
 
-    return DEFAULT_BACKEND_FOR_SURFACE.get(surface, "cli"), "default"
+    return DEFAULT_BACKEND_FOR_SURFACE.get(surface, "sdk"), "default", None
 
 
 def _fold_backend(value: str) -> str:
-    return value if value in KNOWN_BACKENDS else "cli"
+    return value if value in KNOWN_BACKENDS else "sdk"
+
+
+def _refused_backend(value: str) -> str | None:
+    """U-cleanup `MAJOR-5` -- `"cli"` is a NAMED refusal, never an unknown
+    value (`SEL5`'s discriminator: `"banana"` is unknown and folds to
+    `"sdk"` silently; `"cli"` is retired and refuses, loudly, everywhere)."""
+    return _CLI_RETIRED_MESSAGE if value == "cli" else None
 
 
 @dataclass(frozen=True)
@@ -155,6 +173,7 @@ class ProviderResolution:
     provider_source: str  # "env:SELF_LEARN_PROVIDER" | "config:provider.name" | "default"
     backend: str  # a member of registry.KNOWN_BACKENDS
     backend_source: str
+    backend_refused: str | None  # U-cleanup MAJOR-5 -- non-None => a "cli" selection was refused
     region: str | None
     region_source: str | None
     profile: str | None
@@ -222,9 +241,16 @@ def resolve(home: Path | str, surface: str) -> ProviderResolution:
     are evaluated ONLY when `provider == "bedrock"` and `backend ==
     "sdk"` — under every other combination `refusal` is unconditionally
     `None`. `resolve` carries the FIRST applicable cause; `preflight`
-    reports all that fire."""
+    reports all that fire.
+
+    U-cleanup `MAJOR-5`: also gated on `backend_refused is None`. A
+    `cli` pin folds `backend` to `"sdk"` byte-for-byte (`KNOWN_BACKENDS`
+    has one member now), so without this a REFUSED surface would still
+    get its Bedrock model/region checked for consistency and could set
+    `refusal` from a model/region mismatch it will never actually reach
+    -- the wrong cause reported for the right (refused) row."""
     provider, provider_source = _resolve_provider(home)
-    backend, backend_source = resolve_backend_name(home, surface)
+    backend, backend_source, backend_refused = resolve_backend_name(home, surface)
     region, region_source = _resolve_str_setting(home, "SELF_LEARN_BEDROCK_REGION", "bedrock.region")
     profile, profile_source = _resolve_str_setting(
         home, "SELF_LEARN_BEDROCK_PROFILE", "bedrock.profile"
@@ -232,7 +258,7 @@ def resolve(home: Path | str, surface: str) -> ProviderResolution:
     cli_path, cli_path_source = _resolve_str_setting(home, "SELF_LEARN_SDK_CLI_PATH", None)
 
     refusal: str | None = None
-    if provider == "bedrock" and backend == "sdk":
+    if provider == "bedrock" and backend == "sdk" and backend_refused is None:
         model = model_for(surface, home=home)
         causes = _causes_for(region, model, surface)
         if causes:
@@ -244,6 +270,7 @@ def resolve(home: Path | str, surface: str) -> ProviderResolution:
         provider_source=provider_source,
         backend=backend,
         backend_source=backend_source,
+        backend_refused=backend_refused,
         region=region,
         region_source=region_source,
         profile=profile,
@@ -346,16 +373,20 @@ def session_env(resolution: ProviderResolution, *, home: Path | str) -> dict[str
     """`A-0` -- the total rule, in this order:
 
     1. `provider != "bedrock"` -> `{}` exactly.
-    2. `backend != "sdk"` -> `{}` exactly (provider vars do not apply to
-       the CLI transport — this is what makes the function total; before
-       this row a `region=None` resolution reached the assembly branch
-       below and produced a non-`str` value in a `dict[str, str]`).
+    2. `backend != "sdk"` (or the backend selection was REFUSED,
+       U-cleanup `MAJOR-5`: a `cli` pin now folds `backend` to `"sdk"`
+       byte-for-byte, so `backend_refused is not None` is what actually
+       distinguishes it) -> `{}` exactly (provider vars do not apply to
+       a surface that will never reach a live sdk session — this is what
+       makes the function total; before this row a `region=None`
+       resolution reached the assembly branch below and produced a
+       non-`str` value in a `dict[str, str]`).
     3. `refusal is not None` -> raises `ProviderRefused`.
     4. otherwise, the assembled dict.
     """
     if resolution.provider != "bedrock":
         return {}
-    if resolution.backend != "sdk":
+    if resolution.backend != "sdk" or resolution.backend_refused is not None:
         return {}
     if resolution.refusal is not None:
         raise ProviderRefused(resolution.refusal)
@@ -618,9 +649,13 @@ def preflight(home: Path | str) -> list[Row]:
 
     rows: list[Row] = []
 
-    # switches
+    # switches — U-cleanup SEL6: a "cli" selection is reported as REFUSED,
+    # never folded into an accepted "sdk" the way an unknown value is.
     switches_detail = "; ".join(
-        f"{s}: backend={resolutions[s].backend} ({resolutions[s].backend_source})" for s in SURFACES
+        f"{s}: backend=REFUSED (cli retired) ({resolutions[s].backend_source})"
+        if resolutions[s].backend_refused is not None
+        else f"{s}: backend={resolutions[s].backend} ({resolutions[s].backend_source})"
+        for s in SURFACES
     )
     rows.append(Row(name="switches", verdict="INFO", detail=switches_detail))
 
@@ -652,7 +687,7 @@ def preflight(home: Path | str) -> list[Row]:
     # consistency (per-cause, sdk surfaces only)
     for surface in SURFACES:
         res = resolutions[surface]
-        if res.provider != "bedrock" or res.backend != "sdk":
+        if res.provider != "bedrock" or res.backend != "sdk" or res.backend_refused is not None:
             continue
         model = model_for(surface, home=home)
         for cause_name, message in _causes_for(res.region, model, surface):
@@ -700,23 +735,39 @@ def preflight(home: Path | str) -> list[Row]:
 def _rollout_rows(resolutions: dict[str, ProviderResolution], home: Path | str) -> list[Row]:
     """`Doc-f`. FAILs only the wholly-inert config; every mixed state
     renders per-surface INFO naming that surface's own check verdicts
-    (`DC12`); the all-sdk state PASSes; `provider=anthropic` SKIPs."""
+    (`DC12`); the all-sdk state PASSes; `provider=anthropic` SKIPs.
+
+    U-cleanup `MAJOR-5`: `backends[s]` is now `"sdk"` unconditionally
+    (`_fold_backend` folds every non-`"sdk"` value, `KNOWN_BACKENDS`
+    having shrunk to one member) -- a `cli` pin no longer shows up as a
+    distinct backend NAME, only as `backend_refused is not None`. The
+    four-state bucketing below is keyed on that field, not on
+    `backends[s] == "sdk"` alone, so a refused surface still counts as
+    "not really sdk" here exactly as it did before the retirement."""
     provider = resolutions[SURFACES[0]].provider
     if provider != "bedrock":
         return [
             Row(name="rollout", verdict="SKIP", detail="provider=anthropic — rollout state not applicable")
         ]
     backends = {s: resolutions[s].backend for s in SURFACES}
-    sdk_surfaces = [s for s in SURFACES if backends[s] == "sdk"]
+    sdk_surfaces = [
+        s for s in SURFACES if backends[s] == "sdk" and resolutions[s].backend_refused is None
+    ]
     if not sdk_surfaces:
         return [
             Row(
                 name="rollout",
                 verdict="FAIL",
                 detail=(
-                    "provider=bedrock but every surface resolves backend=cli — the provider "
-                    "configuration does nothing. Flip at least one surface to backend=sdk, or "
-                    "set provider=anthropic."
+                    # U-cleanup-B (§8.1, extending MAJOR-5's fix to a call
+                    # site the original fix missed): `backends[s]` is now
+                    # unconditionally "sdk" (KNOWN_BACKENDS collapse) --
+                    # "every surface resolves backend=cli" can no longer
+                    # be literally true. The correct SEL6-pattern spelling
+                    # (matching the switches row) is REFUSED, not cli.
+                    "provider=bedrock but every surface is REFUSED (cli retired) — the "
+                    "provider configuration does nothing. Remove the cli pin from at "
+                    "least one surface, or set provider=anthropic."
                 ),
             )
         ]
@@ -730,9 +781,15 @@ def _rollout_rows(resolutions: dict[str, ProviderResolution], home: Path | str) 
         ]
     rows: list[Row] = []
     for s in SURFACES:
-        if backends[s] != "sdk":
+        if s not in sdk_surfaces:
+            # U-cleanup-B (§8.1, same MAJOR-5 extension as above): a
+            # non-sdk_surfaces membership here means `backend_refused is
+            # not None` (refused), never a literal `backend == "cli"`.
             rows.append(
-                Row(name="rollout", verdict="INFO", detail=f"{s}: backend=cli — provider does not apply", surface=s)
+                Row(
+                    name="rollout", verdict="INFO",
+                    detail=f"{s}: backend=REFUSED (cli retired) — provider does not apply", surface=s,
+                )
             )
             continue
         res = resolutions[s]
@@ -763,7 +820,12 @@ def _credentials_row(
 ) -> Row:
     if provider != "bedrock":
         return Row(name="credentials", verdict="SKIP", detail="provider=anthropic — credentials not applicable")
-    sdk_surfaces = [s for s in SURFACES if resolutions[s].backend == "sdk"]
+    # U-cleanup MAJOR-5: a refused (cli-pinned) surface folds to
+    # backend=="sdk" but never reaches a live sdk session -- exclude it
+    # from the pool a profile is picked from, same as `_rollout_rows`.
+    sdk_surfaces = [
+        s for s in SURFACES if resolutions[s].backend == "sdk" and resolutions[s].backend_refused is None
+    ]
     if not sdk_surfaces:
         return Row(
             name="credentials",
@@ -800,14 +862,21 @@ def _models_rows(resolutions: dict[str, ProviderResolution], home: Path | str) -
                 )
             )
             continue
-        if res.backend != "sdk":
+        # U-cleanup MAJOR-5: `res.backend` alone can no longer distinguish
+        # a refused (cli-pinned) surface from a live sdk one -- it folds
+        # to "sdk" either way. `backend_refused` is what actually says
+        # this surface's Bedrock model id will never be checked for real.
+        if res.backend != "sdk" or res.backend_refused is not None:
+            # U-cleanup-B (§8.1, MAJOR-5 extension, same class as the
+            # `_rollout_rows` fix above): "backend=cli" can no longer be
+            # a literal resolved value; corrected to the SEL6 pattern.
             rows.append(
                 Row(
                     name="models",
                     verdict="INFO",
                     detail=(
-                        f"{surface}: {model} ({source}) — backend=cli — Anthropic alias is correct "
-                        "here; provider does not apply"
+                        f"{surface}: {model} ({source}) — backend=REFUSED (cli retired) — "
+                        "Anthropic alias is correct here; provider does not apply"
                     ),
                     surface=surface,
                 )
@@ -868,7 +937,9 @@ def _env_rows(
             detail = f"{surface}: " + ", ".join(f"{k}=<redacted>" for k in sorted(env))
             rows.append(Row(name="env", verdict="PASS", detail=detail, surface=surface))
         elif res.provider == "bedrock":
-            detail = f"{surface}: backend=cli — provider does not apply"
+            # U-cleanup-B (§8.1, MAJOR-5 extension): same "backend=cli"
+            # -> "backend=REFUSED (cli retired)" correction as above.
+            detail = f"{surface}: backend=REFUSED (cli retired) — provider does not apply"
             rows.append(Row(name="env", verdict="SKIP", detail=detail, surface=surface))
         else:
             # `A-0` row 1 (provider=anthropic): `DC7`/`A-f` -- an ambient
@@ -966,8 +1037,9 @@ def _handoff_fields(home: Path | str, rows: list[Row]) -> list[tuple[str, str]]:
         if env:
             fields.append((f"env-keys.{s}", ", ".join(f"{k}=<redacted>" for k in sorted(env))))
         else:
+            # U-cleanup-B (§8.1, MAJOR-5 extension): same correction.
             detail = (
-                "backend=cli — provider does not apply"
+                "backend=REFUSED (cli retired) — provider does not apply"
                 if resolutions[s].provider == "bedrock"
                 else "provider=anthropic"
             )

@@ -10,10 +10,16 @@ authors = [
 keywords = ["claude", "claude-code", "self-learning", "ledger"]
 dependencies = [
     "ruamel.yaml>=0.18",
+    "claude-agent-sdk>=0.2.116,<0.3",
 ]
 
+# U-cleanup S-49: the "cli" backend is retired and claude-agent-sdk moved
+# to a hard dependency above. The [sdk] extra is kept as an EMPTY alias
+# (ruled, Q-3) so `pip install 'self-learn-cli[sdk]'` -- printed at
+# operators by three shipped tests and the runbook -- keeps resolving
+# rather than becoming an error.
 [project.optional-dependencies]
-sdk = ["claude-agent-sdk>=0.2.116,<0.3"]
+sdk = []
 
 [project.scripts]
 self-learn = "self_learn.cli:entrypoint"

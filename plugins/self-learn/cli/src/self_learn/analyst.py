@@ -73,7 +73,6 @@ __all__ = [
     "DOCTRINE_BASENAME",
     "AnalystError",
     "analyze",
-    "build_argv",
     "doctrine_path",
 ]
 
@@ -116,21 +115,6 @@ def _timeout() -> float:
         return float(raw)
     except ValueError:
         return DEFAULT_ANALYST_TIMEOUT
-
-
-def build_argv(prompt: str, doctrine_text: str, model: str) -> list[str]:
-    """The literal ``claude -p`` invocation (see the module docstring)."""
-    return [
-        "claude",
-        "-p",
-        prompt,
-        "--append-system-prompt",
-        doctrine_text,
-        "--model",
-        model,
-        "--allowedTools",
-        ANALYST_ALLOWED_TOOLS,
-    ]
 
 
 def _strip_fences(text: str) -> str:
@@ -250,8 +234,7 @@ def analyze(
             "analyst", allowed_tools=ANALYST_ALLOWED_TOOLS
         ),
         log=lambda _msg: None,
-        cli_argv_builder=lambda _settings: build_argv(prompt, doctrine_text, model),
-        cli_settings_writer=None,
+        doctrine=doctrine_text,
     )
     outcome = invocation.text_session(spec)
     # W-h: every AnalystError message on this path is rendered through

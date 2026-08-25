@@ -14,7 +14,6 @@ import sys
 from pathlib import Path
 
 from .. import config
-from .cli import CliBackend
 from .contract import (
     DEFAULT_BACKEND_FOR_SURFACE,
     LOG_TEMPLATES,
@@ -28,9 +27,7 @@ from .contract import (
 
 __all__ = ["KNOWN_BACKENDS", "backend_for", "write_session", "text_session"]
 
-KNOWN_BACKENDS = ("cli", "sdk")
-
-_CLI_BACKEND = CliBackend()
+KNOWN_BACKENDS = ("sdk",)
 
 #: §3.7.4 — byte-pinned.
 _SDK_UNAVAILABLE_MESSAGE = (
@@ -38,36 +35,47 @@ _SDK_UNAVAILABLE_MESSAGE = (
     "    pip install 'self-learn-cli[sdk]'"
 )
 
+#: U-cleanup §5 — the `cli` backend was retired; a selection of it at any
+#: rung is a NAMED refusal, never folded into the generic unknown-value
+#: path (whose whole design is "unknown means cli", which stops being
+#: sayable once `cli` no longer exists).
+_CLI_RETIRED_MESSAGE = (
+    'the "cli" invocation backend was removed in U-cleanup — every surface '
+    "now runs on the Agent SDK. Unset SELF_LEARN_BACKEND[_<SELECTOR>], or "
+    "remove invocation.backend[_<surface>] from <ledger-home>/config.yaml."
+)
+
 
 def _resolve(surface: str, value: str, *, source: str, is_config: bool) -> Backend:
     """§3.7.2 — fail-closed on an unknown value: warns once on stderr and
-    falls back to `cli`. `R-c`: the config-flavored spelling is emitted
+    falls back to `sdk`. `R-c`: the config-flavored spelling is emitted
     THROUGH `config._warn`, never re-spelled as a local literal — one
-    register, one owner for the operator-facing prefix."""
+    register, one owner for the operator-facing prefix. U-cleanup §5: a
+    `cli` value is NOT an unknown value — it is a named, retired backend,
+    and gets its own refusal rather than the generic fallback."""
+    if value == "cli":
+        raise BackendUnavailable(_CLI_RETIRED_MESSAGE)
     if value not in KNOWN_BACKENDS:
         if is_config:
             config._warn(
-                f'invocation.{source} must be one of cli, sdk; got {value!r} — using "cli"'
+                f'invocation.{source} must be one of sdk; got {value!r} — using "sdk"'
             )
         else:
             print(
-                f'self-learn: unknown invocation backend {value!r} in {source} — using "cli"',
+                f'self-learn: unknown invocation backend {value!r} in {source} — using "sdk"',
                 file=sys.stderr,
             )
-        return _CLI_BACKEND
-    if value == "sdk":
-        try:
-            from ..invocation_sdk import SdkBackend
-        except ImportError as exc:
-            raise BackendUnavailable(_SDK_UNAVAILABLE_MESSAGE) from exc
-        return SdkBackend()
-    return _CLI_BACKEND
+    try:
+        from ..invocation_sdk import SdkBackend
+    except ImportError as exc:
+        raise BackendUnavailable(_SDK_UNAVAILABLE_MESSAGE) from exc
+    return SdkBackend()
 
 
 def backend_for(surface: str, *, home: Path | str | None = None) -> Backend:
     """§3.7.1 — resolves in order, first hit wins: `SELF_LEARN_BACKEND_
     <SELECTOR>` env, `SELF_LEARN_BACKEND` env, `config.yaml`'s per-surface
-    key, `config.yaml`'s general key, the built-in default `"cli"`.
+    key, `config.yaml`'s general key, the built-in default `"sdk"`.
 
     `R-a`: an EMPTY OR UNSET value at a rung is "no answer" and falls
     through silently — an empty string is not an unknown value."""
@@ -91,7 +99,7 @@ def backend_for(surface: str, *, home: Path | str | None = None) -> Backend:
 
     return _resolve(
         surface,
-        DEFAULT_BACKEND_FOR_SURFACE.get(surface, "cli"),
+        DEFAULT_BACKEND_FOR_SURFACE.get(surface, "sdk"),
         source="the built-in default",
         is_config=False,
     )
@@ -124,8 +132,8 @@ def _dispatch(spec: SessionSpec, backend: Backend | None, method: str) -> Outcom
 
 def write_session(spec: SessionSpec, *, backend: Backend | None = None) -> Outcome:
     """§3.2 `S-a`/`S-b` — never raises, except the one deliberate leg
-    (`T-c`) a `CliBackend` on the analyst surface lets an `OSError`
-    escape, and that surface never reaches `write_session`."""
+    (`T-c`) the analyst surface's bare `OSError` is let escape uncaught,
+    and that surface never reaches `write_session`."""
     return _dispatch(spec, backend, "write_session")
 
 

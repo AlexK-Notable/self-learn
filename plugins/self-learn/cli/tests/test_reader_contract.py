@@ -1,19 +1,21 @@
 """U-sdkr acceptance criteria (docs/specs/self-learn/drafts/
 u-sdkr-reader-contract-spec.md Sec 4): SU/MC/CT/RC/TO/SW/FL/HY -- the
-miner-reader's `["cli", "sdk"]` contract suite: output contract, timeout
-semantics and sweep semantics pinned identically on both backends, plus
-the two containment holes `Fix-1` closes (landed in `miner.py` /
-`invocation/contract.py` / `test_invocation.py`, not here).
+miner-reader's contract: output contract, timeout semantics and sweep
+semantics, plus the two containment holes `Fix-1` closes (landed in
+`miner.py` / `invocation/contract.py` / `test_invocation.py`, not here).
+U-cleanup-A collapsed the original `["cli", "sdk"]` two-leg suite to
+`sdk`-only (`CV2`/`CB-3`); U-cleanup-B (§8.3) finishes the job by
+deleting the `cli` leg's dead machinery outright rather than leaving it
+defined-but-unreachable -- `TO4`/`TO5` (the `cli`-only recorder tests
+this docstring used to name) are already gone.
 
-Legs are stated per criterion (`MAJOR-4`): `SW1` is deliberately
-UNPARAMETRIZED (imports `sdk_absent` from `test_invocation_sdk`, per the
-`test_invocation.py:46-48` precedent, rather than a second definition
-site -- U-sdk `SU6` leg (ii)). `CT1`-`CT8` are `sdk`-only or backend-
-independent; `TO4`/`TO5` are `cli`-only recorder tests; `TO6`/`TO7` are
-`sdk`-only. Every `[both]` criterion is driven through the single
-`reader_leg` fixture (`T2-a`), parametrized over `LEGS`, which branches
-on `request.param` and calls plain functions -- it requests no leg-
-specific fixture (`B-8`).
+`SW1` is deliberately UNPARAMETRIZED (imports `sdk_absent` from
+`test_invocation_sdk`, per the `test_invocation.py:46-48` precedent,
+rather than a second definition site -- U-sdk `SU6` leg (ii)). `CT1`-
+`CT8` are `sdk`-only or backend-independent; `TO6`/`TO7` are `sdk`-only.
+Every criterion is driven through the single `reader_leg` fixture
+(`T2-a`), which now yields one unparametrized `sdk`-leg handle and calls
+plain functions -- it requests no leg-specific fixture (`B-8`).
 
 Instrument, diff and AST criteria that need no test function here (their
 result lands in the build report instead): `SU1`-`SU6`, `MC5`-`MC7`,
@@ -25,11 +27,11 @@ from __future__ import annotations
 
 import ast
 import asyncio
-import inspect
 import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -41,8 +43,6 @@ from self_learn import invocation, miner
 from self_learn.invocation_sdk import SdkBackend
 from self_learn.invocation_sdk import backend as backend_mod
 from self_learn.invocation_sdk import lifecycle as lifecycle_mod
-
-import shims
 
 from test_invocation_sdk import (  # noqa: F401 -- fixture resolved by name
     sdk_absent,
@@ -57,7 +57,9 @@ FAKE_CLI = Path(__file__).parent / "fixtures" / "fake_claude.py"
 SURFACE = "miner-reader"
 SELECTOR = "MINER"
 BACKEND_VAR = "SELF_LEARN_BACKEND_MINER"
-LEGS = ("cli", "sdk")
+# U-cleanup-B (§8.3): `LEGS = ("cli", "sdk")` is deleted -- the fixture
+# it once parametrized (`reader_leg`, below) is unparametrized sdk-only
+# since U-cleanup-A's collapse (`CV2`/`CB-3`).
 ARTIFACT = miner.OUTPUT_BASENAME
 EARLY_RETURN = {"timeout", "not-found", "os-error", "unavailable"}
 FALL_THROUGH = {"exit", None}
@@ -123,17 +125,29 @@ def _shadow_claude(shims_dir: Path, tmp_path: Path, tag: str) -> None:
     `env`/`python3` resolution for the fake CLI script). Shadowing adds
     a shim without removing anything. The decoy logs to throwaway
     files, writes nothing, echoes nothing, and exits 1 -- if it is ever
-    actually executed for real, its exit code is the tell."""
+    actually executed for real, its exit code is the tell.
+
+    U-cleanup-B (§8.3): inlined -- `shims.py` (and its `write_reader_
+    claude_shim`, which this call used with `body=None, stdout_text=
+    None, exit_code=1`) is deleted along with the rest of the CLI
+    transport. This decoy is NOT a CliBackend-transport test double --
+    it is a PATH-hygiene safety net that must survive independent of
+    backend (`this leg should never reach CliBackend, but a mutation or
+    bug that breaks BACKEND_VAR routing must fail closed`, per the
+    `reader_leg` fixture's own docstring) -- so it is reproduced here
+    verbatim rather than deleted with its former home."""
     shims_dir.mkdir(exist_ok=True)
-    shims.write_reader_claude_shim(
-        shims_dir,
-        argv_log=tmp_path / f"decoy-{tag}-argv.log",
-        prompt_log=tmp_path / f"decoy-{tag}-prompt.log",
-        out_path=tmp_path / f"decoy-{tag}-out.json",
-        body=None,
-        stdout_text=None,
-        exit_code=1,
+    argv_log = tmp_path / f"decoy-{tag}-argv.log"
+    prompt_log = tmp_path / f"decoy-{tag}-prompt.log"
+    shim = shims_dir / "claude"
+    shim.write_text(
+        "#!/usr/bin/env bash\n"
+        f'printf \'%s\\0\' "$@" > "{argv_log}"\n'
+        f'cat > "{prompt_log}"\n'
+        "exit 1\n",
+        encoding="utf-8",
     )
+    shim.chmod(shim.stat().st_mode | stat.S_IEXEC)
 
 
 def _cli_reader_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -204,13 +218,18 @@ class _ReaderRun:
     outcome: invocation.Outcome
     out_path: Path | None
     home: Path
-    argv: list[str] | None
-    prompt_seen: str | None
 
 
 class _ReaderLeg:
     """`T2-a`'s per-leg handle -- the plain functions the parametrized
-    fixture calls. Never itself a fixture (`B-8`)."""
+    fixture calls. Never itself a fixture (`B-8`).
+
+    U-cleanup-B (§8.3): the `cli`-leg machinery (`shims_dir`/`argv_log`/
+    `prompt_log` constructor params, `.invoke()`'s argv/prompt-log
+    readback, `.drive()`'s bash-shim write, `.arm_timeout()`'s
+    `_FakePopenTO`/`subprocess.Popen` patch) is deleted -- the fixture
+    below has yielded `sdk`-only since U-cleanup-A's collapse (`CV2`/
+    `CB-3`) and `self.name` can now only ever be `"sdk"`."""
 
     def __init__(
         self,
@@ -220,34 +239,16 @@ class _ReaderLeg:
         monkeypatch: pytest.MonkeyPatch,
         *,
         shim_dir: Path,
-        shims_dir: Path | None = None,
-        argv_log: Path | None = None,
-        prompt_log: Path | None = None,
     ) -> None:
         self.name = name
         self.home = home
         self.out_path = out_path
         self.shim_dir = shim_dir
         self._monkeypatch = monkeypatch
-        self._shims_dir = shims_dir
-        self._argv_log = argv_log
-        self._prompt_log = prompt_log
 
     def invoke(self, prompt: str = "PROMPT") -> _ReaderRun:
         out, spec, outcome = _capture_invoke_reader(self.home, prompt)
-        argv: list[str] | None = None
-        prompt_seen: str | None = None
-        if self.name == "cli" and self._argv_log is not None:
-            assert self._prompt_log is not None
-            raw = self._argv_log.read_bytes() if self._argv_log.exists() else b""
-            argv = [a.decode("utf-8") for a in raw.split(b"\0")[:-1]] if raw else []
-            prompt_seen = (
-                self._prompt_log.read_text(encoding="utf-8") if self._prompt_log.exists() else ""
-            )
-        return _ReaderRun(
-            leg=self.name, spec=spec, outcome=outcome, out_path=out, home=self.home,
-            argv=argv, prompt_seen=prompt_seen,
-        )
+        return _ReaderRun(leg=self.name, spec=spec, outcome=outcome, out_path=out, home=self.home)
 
     def drive(
         self,
@@ -258,35 +259,20 @@ class _ReaderLeg:
         prompt: str = "PROMPT",
     ) -> _ReaderRun:
         """`T2-b`/`T2-c` step 6 (`MAJOR-3`): `body`/`stdout_text`/
-        `exit_code` drive the leg-appropriate knob -- the bash shim's
-        params on `cli`, `FAKE_CLAUDE_WRITE_BODY`/`FAKE_CLAUDE_RESULT_TEXT`/
-        `FAKE_CLAUDE_RESULT_IS_ERROR` on `sdk`. `body=None` means the
-        model writes nothing this run (`RC6`): on `sdk` the write target
-        is pointed OUTSIDE the spool so the real artifact path is
-        untouched regardless of the charter's verdict there."""
-        if self.name == "cli":
-            assert self._shims_dir is not None
-            assert self._argv_log is not None
-            assert self._prompt_log is not None
-            shims.write_reader_claude_shim(
-                self._shims_dir,
-                argv_log=self._argv_log,
-                prompt_log=self._prompt_log,
-                out_path=self.out_path,
-                body=body,
-                stdout_text=stdout_text,
-                exit_code=exit_code,
-            )
+        `exit_code` drive the sdk knobs -- `FAKE_CLAUDE_WRITE_BODY`/
+        `FAKE_CLAUDE_RESULT_TEXT`/`FAKE_CLAUDE_RESULT_IS_ERROR`.
+        `body=None` means the model writes nothing this run (`RC6`): the
+        write target is pointed OUTSIDE the spool so the real artifact
+        path is untouched regardless of the charter's verdict there."""
+        self._monkeypatch.setenv("FAKE_CLAUDE_FORCE_SCENARIO", "reader_write")
+        target = self.out_path if body is not None else (self.home / "reader-leg-nowrite-sink.txt")
+        self._monkeypatch.setenv("FAKE_CLAUDE_WRITE_TARGET", str(target))
+        if body is not None:
+            self._monkeypatch.setenv("FAKE_CLAUDE_WRITE_BODY", body)
         else:
-            self._monkeypatch.setenv("FAKE_CLAUDE_FORCE_SCENARIO", "reader_write")
-            target = self.out_path if body is not None else (self.home / "reader-leg-nowrite-sink.txt")
-            self._monkeypatch.setenv("FAKE_CLAUDE_WRITE_TARGET", str(target))
-            if body is not None:
-                self._monkeypatch.setenv("FAKE_CLAUDE_WRITE_BODY", body)
-            else:
-                self._monkeypatch.delenv("FAKE_CLAUDE_WRITE_BODY", raising=False)
-            self._monkeypatch.setenv("FAKE_CLAUDE_RESULT_TEXT", stdout_text)
-            self._monkeypatch.setenv("FAKE_CLAUDE_RESULT_IS_ERROR", "1" if exit_code else "0")
+            self._monkeypatch.delenv("FAKE_CLAUDE_WRITE_BODY", raising=False)
+        self._monkeypatch.setenv("FAKE_CLAUDE_RESULT_TEXT", stdout_text)
+        self._monkeypatch.setenv("FAKE_CLAUDE_RESULT_IS_ERROR", "1" if exit_code else "0")
         return self.invoke(prompt)
 
     def arm_timeout(self) -> None:
@@ -295,11 +281,7 @@ class _ReaderLeg:
         which runs the real kill ladder against the fake child THIS TEST
         spawned -- permitted and deliberate, never a signal to a process
         this test did not itself spawn."""
-        if self.name == "cli":
-            fake = _FakePopenTO(raise_on_communicate=subprocess.TimeoutExpired(cmd=["claude", "x"], timeout=1))
-            self._monkeypatch.setattr(subprocess, "Popen", fake)
-        else:
-            self._monkeypatch.setenv("FAKE_CLAUDE_FORCE_SCENARIO", "hang")
+        self._monkeypatch.setenv("FAKE_CLAUDE_FORCE_SCENARIO", "hang")
 
 
 @pytest.fixture()
@@ -307,14 +289,13 @@ def reader_leg(tmp_path, monkeypatch):
     """`T2-a`, COLLAPSED (U-cleanup-A `CV2`/`CB-3`): formerly
     `params=LEGS` (`LEGS = ("cli", "sdk")`) -- every `[both]` criterion
     parametrized over this fixture now runs the `sdk` leg ONLY, with no
-    parametrization suffix on its node id. The `cli` branch is UNUSED
-    from here on (stays defined; U-cleanup-B deletes it, §8.3). PATH is
-    still shadowed (`T2-f`/U-fake `B-7a`, `MAJOR-3`/`NOTE-1`
-    shadow-not-subtract): this leg should never reach `CliBackend`, but a
-    mutation or bug that breaks `BACKEND_VAR` routing must fail closed
-    onto an inert decoy, never fall through to a real, PATH-resolvable
-    `claude` -- measured live during U-sdkr's `M32` self-check, before
-    this line existed."""
+    parametrization suffix on its node id. The `cli` branch is DELETED
+    (U-cleanup-B, §8.3, `_ReaderLeg` above). PATH is still shadowed
+    (`T2-f`/U-fake `B-7a`, `MAJOR-3`/`NOTE-1` shadow-not-subtract): this
+    leg should never reach `CliBackend`, but a mutation or bug that
+    breaks `BACKEND_VAR` routing must fail closed onto an inert decoy,
+    never fall through to a real, PATH-resolvable `claude` -- measured
+    live during U-sdkr's `M32` self-check, before this line existed."""
     home = tmp_path / "reader-home"
     home.mkdir(exist_ok=True)
     monkeypatch.setenv("SELF_LEARN_HOME", str(home))
@@ -410,10 +391,20 @@ def test_su7_docs_rows_landed_at_the_expected_ids():
 # ===================================================================== #
 
 
-def test_mc1_flag_is_last_element_no_mcp_config():
-    argv = miner.build_reader_argv(Path("/tmp/mc1-settings.json"))
-    assert argv[-1] == "--strict-mcp-config"
-    assert "--mcp-config" not in argv
+def test_mc1_flag_is_last_element_no_mcp_config(monkeypatch, tmp_path):
+    """U-cleanup-B REWRITE (§8.4b): originally recomputed `miner.
+    build_reader_argv`'s own argv and asserted `--strict-mcp-config`
+    was its last element with no `--mcp-config` alongside it -- there is
+    no argv anymore (`build_reader_argv` deleted, §8.1). Reduced per the
+    spec row's own words ("the sdk analogue is `options_kwargs
+    ["strict_mcp_config"] is True`, already asserted by `test_op6`.
+    Reduce to the `CT2` options-table assertion"), driven through the
+    same real sdk call site as `test_mc3`/`test_ct2` -- not deleted
+    silently."""
+    result = _drive_reader_sdk(monkeypatch, tmp_path)
+    kwargs = backend_mod.options_kwargs(result["spec"])
+    assert kwargs["strict_mcp_config"] is True
+    assert kwargs["mcp_servers"] == {}
 
 
 def test_mc2_containment_strict_mcp_is_true():
@@ -470,15 +461,17 @@ def test_mc3_pair_consistent_at_the_real_call_site(monkeypatch, tmp_path):
     assert backend_mod.options_kwargs(spec)["strict_mcp_config"] is True
 
 
-def test_mc4_flag_added_nothing_else_in_the_argv_moves():
-    p = Path("/tmp/mc4-settings.json")
-    argv = miner.build_reader_argv(p)
-    assert argv[:-1] == [
-        "claude", "-p", "--model", miner.miner_model(),
-        "--disallowedTools", miner.READER_DISALLOWED_TOOLS,
-        "--settings", str(p),
-    ]
-    assert argv[-1] == "--strict-mcp-config"
+def test_mc4_flag_added_nothing_else_in_the_argv_moves(monkeypatch, tmp_path):
+    """U-cleanup-B REWRITE (§8.4b): originally recomputed `miner.
+    build_reader_argv`'s full argv shape end to end -- there is no argv
+    anymore (`build_reader_argv` deleted, §8.1). Reduced to the `CT2`
+    options-table assertion, same disposition and same real sdk call
+    site as `test_mc1`/`test_mc3` -- not deleted silently."""
+    result = _drive_reader_sdk(monkeypatch, tmp_path)
+    kwargs = backend_mod.options_kwargs(result["spec"])
+    assert kwargs["strict_mcp_config"] is True
+    assert kwargs["mcp_servers"] == {}
+    assert kwargs["setting_sources"] == []
 
 
 # ===================================================================== #
@@ -647,6 +640,32 @@ def test_rc6_stale_artifact_preseeded_run_writes_nothing_returns_none(reader_leg
     run = reader_leg.drive(body=None)
     assert run.out_path is None
     assert not reader_leg.out_path.exists()
+
+
+def test_rc8_no_dead_settings_write_under_the_cache_dir(reader_leg):
+    """U-cleanup-B `T-NO-DEAD-SETTINGS-WRITE` (`M-7`, §11.1): `miner.
+    write_reader_settings` -- which wrote `miner_dir()/miner.settings.
+    json` (Edit-scoped to the spool, pinning `defaultMode: "default"`)
+    -- is DELETED outright (§8.1); `_invoke_reader`'s `SessionSpec`
+    construction no longer calls it (`doctrine=None`, no settings write
+    at all -- the sdk seam's containment is enforced by `can_use_tool`
+    and `options_kwargs["settings"] is None`, not an on-disk file,
+    `CT1`/`CT2`). `RC1` already proves the SPOOL holds only the
+    artifact; this proves the other half of M-7 -- no settings JSON
+    survives ANYWHERE under the cache dir a real reader run touches,
+    not just inside the spool. Two things are deliberately excluded
+    from the glob's verdict, both real/expected: `journal.jsonl`
+    (`.jsonl`, not `.json`), and the artifact itself
+    (`miner.OUTPUT_BASENAME`, which IS `.json`-suffixed and lives
+    INSIDE the spool -- `RC1` already proves that one's alone there;
+    this test's job is everything OUTSIDE the spool)."""
+    reader_leg.drive()
+    cache_dir = miner.miner_dir().parent
+    spool = miner.spool_dir()
+    json_files = sorted(
+        str(p) for p in cache_dir.rglob("*.json") if spool not in p.parents
+    )
+    assert json_files == [], json_files
 
 
 def test_rc7_prompt_reaches_the_model_on_stdin_never_argv(monkeypatch, tmp_path):
@@ -979,12 +998,14 @@ def test_fl4_no_shipped_assignment_of_backend_var(tmp_path):
 # ===================================================================== #
 
 
-def test_hy1_the_new_shim_builder_satisfies_b9():
-    assert "write_reader_claude_shim" in shims.__all__
-    src = inspect.getsource(shims.write_reader_claude_shim)
-    assert "@pytest.fixture" not in src
-    assert "mkdir" not in src
-    assert "chmod" in src
+# U-cleanup-B DELETE (§8.3): `test_hy1_the_new_shim_builder_satisfies_b9`
+# checked `shims.write_reader_claude_shim` directly against B9's shape
+# ("not a fixture, does not mkdir its own directory, does chmod its
+# output") -- `shims.py` and the function it names are both deleted.
+# `_shadow_claude` (above) reproduces the same two properties inline
+# (chmods, never mkdirs its OWN directory -- its caller does that) but
+# has no separate criterion of its own to check them against; it is a
+# test double, not a unit under test.
 
 
 def test_hy3_sdk_driving_sets_the_fake_cli_path_first_no_undo_on_the_shared_fixture():
@@ -1014,10 +1035,10 @@ def test_hy3_sdk_driving_sets_the_fake_cli_path_first_no_undo_on_the_shared_fixt
         invoke_idx = fn_src.index("_capture_invoke_reader(")
         assert set_idx < invoke_idx, name
 
-    # `reader_leg`'s `sdk` branch is the SECOND branch in source order (the
-    # `cli` branch's own `_ReaderLeg(` call precedes it) -- the LAST
-    # `_ReaderLeg(` call in the function is the sdk branch's, so that is
-    # the one the env-var set must precede.
+    # `reader_leg` yields `_ReaderLeg("sdk", ...)` ONLY now (U-cleanup-B,
+    # §8.3: the `cli` branch's own `_ReaderLeg(` call is deleted) -- one
+    # call remains, so `.index`/`.rindex` find the same occurrence; kept
+    # as `rindex` only to avoid an incidental diff.
     fixture_node = next(
         n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "reader_leg"
     )
@@ -1028,11 +1049,16 @@ def test_hy3_sdk_driving_sets_the_fake_cli_path_first_no_undo_on_the_shared_fixt
 
 
 def test_hy4_no_real_claude_reachable():
-    """`HY4` -- the `cli` leg's PATH is always shim-first (every drive
-    writes the shim before invoking), and the `sdk` leg's `cli_path` is
-    always `FAKE_CLI` -- never a real, resolvable `claude`."""
+    """`HY4` -- the decoy shadow's PATH is always shim-first (installed
+    at fixture setup, before any drive), and the `sdk` leg's `cli_path`
+    is always `FAKE_CLI` -- never a real, resolvable `claude`.
+
+    U-cleanup-B (§8.3): the `cli`-leg half of this claim (`shims.write_
+    reader_claude_shim` written before every drive) is gone with the
+    `cli` branch itself; `_shadow_claude`'s inline decoy (installed at
+    fixture setup) is what stands in its place, verified behaviorally by
+    `test_hy5` below rather than by a source-string check here."""
     src = Path(__file__).read_text(encoding="utf-8")
-    assert "write_reader_claude_shim" in src
     setenv_pattern = re.compile(r'\.setenv\(\s*"SELF_LEARN_SDK_CLI_PATH"')
     for lineno, line in enumerate(src.splitlines(), start=1):
         if setenv_pattern.search(line):

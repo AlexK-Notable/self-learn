@@ -39,7 +39,6 @@ from test_invocation_sdk import (  # noqa: F401 -- fixtures/helpers resolved by 
     FAKE_CLI,
     _run as _sdk_run,
     _spec as _sdk_spec,
-    _worker_argv,
     sdk_cli_path,
 )
 from test_route_cli import TEACH_ARGS, env, sole  # noqa: F401 -- fixtures resolved by name
@@ -352,18 +351,20 @@ def test_pr6_bedrock_env_overrides_and_cli_path_not_in_session_env(tmp_path, mon
 
 
 def _backend_for_expectation(surface: str, home: Path):
-    """The mapping `BK1` names: raises `BackendUnavailable` <=> `"sdk"`;
-    returns a `CliBackend` <=> `"cli"`. Generalized to "anything that is
-    NOT a `CliBackend`" so this also covers the case where the `sdk`
-    extra happens to be installed in the CLI venv and `backend_for`
-    returns a real `SdkBackend` instead of raising."""
+    """U-cleanup: `CliBackend` is deleted and `KNOWN_BACKENDS` has one
+    member now, so `registry.backend_for` either raises
+    `BackendUnavailable` (the `sdk` extra missing, OR the selection was
+    a retired `cli` pin -- `resolve_backend_name`'s fold already treats
+    both as "sdk" intention) or returns a real `SdkBackend`. Either way
+    the name is "sdk" -- there is no other backend left to name. Kept
+    as a function (not a bare constant) so a genuinely UNEXPECTED
+    exception from `backend_for` still propagates and fails the test
+    loudly, matching the original's defensive shape."""
     try:
-        backend = invocation_registry.backend_for(surface, home=home)
+        invocation_registry.backend_for(surface, home=home)
     except invocation_contract.BackendUnavailable:
         return "sdk"
-    from self_learn.invocation.cli import CliBackend
-
-    return "cli" if isinstance(backend, CliBackend) else "sdk"
+    return "sdk"
 
 
 def _bk1_matrix(tmp_path, monkeypatch):
@@ -399,16 +400,18 @@ def test_bk1_agrees_with_registry_over_matrix(tmp_path, monkeypatch):
     cases = _bk1_matrix(tmp_path, monkeypatch)
     assert len(cases) >= 14
     for home, surface in cases:
-        derived, _source = provider.resolve_backend_name(home, surface)
+        derived, _source, _refused = provider.resolve_backend_name(home, surface)
         expected = _backend_for_expectation(surface, home)
         assert derived == expected, (home, surface, derived, expected)
 
-    # unknown value
+    # unknown value -- U-cleanup: unknown values now fold to "sdk" (was
+    # "cli" pre-cleanup, when KNOWN_BACKENDS had two members and "cli"
+    # was the safe fallback; SEL5's discriminator is the current rule).
     unk_home = tmp_path / "bk-unknown"
     unk_home.mkdir()
     monkeypatch.setenv("SELF_LEARN_BACKEND", "bogus")
-    assert provider.resolve_backend_name(unk_home, "worker")[0] == "cli"
-    assert _backend_for_expectation("worker", unk_home) == "cli"
+    assert provider.resolve_backend_name(unk_home, "worker")[0] == "sdk"
+    assert _backend_for_expectation("worker", unk_home) == "sdk"
     monkeypatch.delenv("SELF_LEARN_BACKEND")
 
     # empty value -- falls through to the default rung, which U-flip
@@ -457,16 +460,38 @@ def test_bk1_agrees_with_registry_over_matrix(tmp_path, monkeypatch):
 
 
 def test_bk2_selector_mapping_holds(tmp_path, monkeypatch):
+    # U-cleanup-B (CL8, M-15 grep widening): `KNOWN_BACKENDS = ("sdk",)`
+    # makes `_fold_backend` return `"sdk"` for EVERY input (§8.1) -- a
+    # bare `[0] == "sdk"` assertion is therefore tautological now,
+    # regardless of whether WORKER's pin was actually READ or the
+    # resolution merely fell through to the surface's own default (which
+    # is also `"sdk"`, U-flip). `source` (index 1) is what still
+    # distinguishes "pin was read" (`env:SELF_LEARN_BACKEND_WORKER`) from
+    # "fell through to default" (`"default"`) post-collapse.
     monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "sdk")
-    assert provider.resolve_backend_name(tmp_path, "worker-repair")[0] == "sdk"
+    backend, source, refused = provider.resolve_backend_name(tmp_path, "worker-repair")
+    assert backend == "sdk"
+    assert source == "env:SELF_LEARN_BACKEND_WORKER"
+    assert refused is None
     monkeypatch.delenv("SELF_LEARN_BACKEND_WORKER")
 
     # U-flip: "worker-repair"'s own default is now "sdk", so a MINER-leak
     # stimulus of "sdk" would be tautological with the correct (scoped)
     # answer. Inverted to "cli" -- a leak would read "cli", the correct
     # (non-leaked) answer is "worker-repair"'s own default, "sdk".
+    #
+    # Same tautology as above applies to `backend` alone post-collapse: a
+    # leaked "cli" pin and a correct fall-through to default both fold to
+    # `backend == "sdk"`. `source`/`refused` are what still discriminate
+    # them -- a leak would read `source == "env:SELF_LEARN_BACKEND_MINER"`
+    # and `refused is not None` (CL8: this "cli" stimulus now asserts the
+    # refusal it would trigger, were the leak real); the correct,
+    # non-leaked answer is `source == "default"`, `refused is None`.
     monkeypatch.setenv("SELF_LEARN_BACKEND_MINER", "cli")
-    assert provider.resolve_backend_name(tmp_path, "worker-repair")[0] == "sdk"
+    backend, source, refused = provider.resolve_backend_name(tmp_path, "worker-repair")
+    assert backend == "sdk"
+    assert source == "default", "MINER's pin leaked into worker-repair's own resolution"
+    assert refused is None
 
 
 def test_bk3_resolve_backend_name_never_warns(tmp_path, monkeypatch, capsys):
@@ -489,16 +514,18 @@ def test_bk4_source_names_exact_config_key(tmp_path):
     (tmp_path / "config.yaml").write_text(
         "invocation:\n  backend_worker: sdk\n  backend: cli\n", encoding="utf-8"
     )
-    name, source = provider.resolve_backend_name(tmp_path, "worker")
+    name, source, refused = provider.resolve_backend_name(tmp_path, "worker")
     assert name == "sdk"
     assert source == "config:backend_worker"
+    assert refused is None
 
     home2 = tmp_path / "bk4-general"
     home2.mkdir()
     (home2 / "config.yaml").write_text("invocation:\n  backend: sdk\n", encoding="utf-8")
-    name2, source2 = provider.resolve_backend_name(home2, "worker")
+    name2, source2, refused2 = provider.resolve_backend_name(home2, "worker")
     assert name2 == "sdk"
     assert source2 == "config:backend"
+    assert refused2 is None
 
 
 # ===================================================================== #
@@ -610,13 +637,16 @@ def test_ev1_three_legs_disjoint_empty_and_populated(tmp_path, monkeypatch):
     monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "cli")
     _write_provider_yaml(tmp_path, name="bedrock")
     cli_res_no_region = provider.resolve(tmp_path, "worker")
-    assert cli_res_no_region.backend == "cli"
+    # U-cleanup MAJOR-5: `.backend` folds to "sdk" unconditionally now
+    # (KNOWN_BACKENDS has one member) -- `backend_refused` is what
+    # actually distinguishes this cli-pinned, non-live resolution.
+    assert cli_res_no_region.backend_refused is not None
     assert cli_res_no_region.region is None
     assert provider.session_env(cli_res_no_region, home=tmp_path) == {}
 
     _write_provider_yaml(tmp_path, name="bedrock", bedrock={"region": "us-east-1"})
     cli_res_with_region = provider.resolve(tmp_path, "worker")
-    assert cli_res_with_region.backend == "cli"
+    assert cli_res_with_region.backend_refused is not None
     assert cli_res_with_region.region == "us-east-1"
     assert provider.session_env(cli_res_with_region, home=tmp_path) == {}
     monkeypatch.delenv("SELF_LEARN_BACKEND_WORKER")
@@ -978,7 +1008,7 @@ def test_rt1_gating_and_both_causes(tmp_path):
                 res_mixed = provider.resolve(home, "worker")
             finally:
                 del os.environ["SELF_LEARN_BACKEND_WORKER"]
-            assert res_mixed.backend == "cli"
+            assert res_mixed.backend_refused is not None
             assert res_mixed.refusal is None, (region_set, model_is_alias, res_mixed.refusal)
 
             anthropic_home = tmp_path / f"rt1-anthropic-{region_set}-{model_is_alias}"
@@ -1021,7 +1051,7 @@ def test_rt3_refusing_config_never_reaches_transport(tmp_path, sdk_cli_path, mon
     _refusing_bedrock_worker_config(home)
     monkeypatch.setenv("SELF_LEARN_BACKEND", "sdk")
 
-    outcome = _sdk_run(_sdk_spec("worker", home=home, argv=_worker_argv()))
+    outcome = _sdk_run(_sdk_spec("worker", home=home))
 
     assert outcome.ok is False
     assert outcome.rc is None
@@ -1075,7 +1105,7 @@ def test_rt5_worker_continues_and_miner_stray_file_survives(tmp_path, monkeypatc
     monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "sdk")
     assert (
         worker._invoke_claude(
-            _worker_argv(), "p", 20.0, worker_home, label=""
+            "p", 20.0, worker_home, label=""
         )
         is None
     )
@@ -1126,7 +1156,7 @@ def test_in1_in2_in4_options_env_matches_recomputed_and_leak_disjoint(
         },
     )
     monkeypatch.setenv("SELF_LEARN_BACKEND", "sdk")
-    outcome = _sdk_run(_sdk_spec("worker", home=home, argv=_worker_argv()))
+    outcome = _sdk_run(_sdk_spec("worker", home=home))
     assert outcome.ok is True
     assert len(spy.constructed) == 1
     options = spy.constructed[0]
@@ -1141,7 +1171,7 @@ def test_in1_in2_in4_options_env_matches_recomputed_and_leak_disjoint(
     monkeypatch.delenv("SELF_LEARN_BACKEND", raising=False)
     home2 = tmp_path / "in2-home"
     home2.mkdir()
-    outcome2 = _sdk_run(_sdk_spec("worker", home=home2, argv=_worker_argv()))
+    outcome2 = _sdk_run(_sdk_spec("worker", home=home2))
     assert outcome2.ok is True
     options2 = spy.constructed[0]
     assert set(options2.env) & set(provider.BEDROCK_ENV_KEYS) == set()
@@ -1155,18 +1185,18 @@ def test_in3_options_model_and_cli_path_match_provider(tmp_path, monkeypatch):
         home, name="bedrock", bedrock={"region": "us-east-1", "models": {key: BEDROCK_ID}}
     )
     monkeypatch.setenv("SELF_LEARN_BACKEND", "sdk")
-    kwargs = sdk_backend_mod.options_kwargs(_sdk_spec("worker", home=home, argv=_worker_argv()))
+    kwargs = sdk_backend_mod.options_kwargs(_sdk_spec("worker", home=home))
     assert kwargs["model"] == provider.model_for("worker", home=home)
     assert kwargs["model"] == BEDROCK_ID  # the wiring is real, not coincidental
 
     monkeypatch.delenv("SELF_LEARN_SDK_CLI_PATH", raising=False)
     kwargs_unset = sdk_backend_mod.options_kwargs(
-        _sdk_spec("worker", home=home, argv=_worker_argv())
+        _sdk_spec("worker", home=home)
     )
     assert kwargs_unset["cli_path"] is None  # untouched when the env var is not set
 
     monkeypatch.setenv("SELF_LEARN_SDK_CLI_PATH", str(FAKE_CLI))
-    kwargs_set = sdk_backend_mod.options_kwargs(_sdk_spec("worker", home=home, argv=_worker_argv()))
+    kwargs_set = sdk_backend_mod.options_kwargs(_sdk_spec("worker", home=home))
     assert kwargs_set["cli_path"] == provider.resolve(home, "worker").cli_path
 
 
@@ -1179,7 +1209,7 @@ def test_in5_guarded_call_is_real_product_code_and_narrow(tmp_path, sdk_cli_path
     _refusing_bedrock_worker_config(home)
     monkeypatch.setenv("SELF_LEARN_BACKEND", "sdk")
 
-    outcome = _sdk_run(_sdk_spec("worker", home=home, argv=_worker_argv()))
+    outcome = _sdk_run(_sdk_spec("worker", home=home))
     assert outcome.failure == "unavailable"
     assert outcome.detail.startswith("refused-config: ")
     assert "self-learn doctor invocation" in outcome.detail
@@ -1194,7 +1224,7 @@ def test_in5_guarded_call_is_real_product_code_and_narrow(tmp_path, sdk_cli_path
 
     monkeypatch.setattr(provider, "session_env", _boom)
     with pytest.raises(RuntimeError, match="not a ProviderRefused"):
-        _sdk_run(_sdk_spec("worker", home=home, argv=_worker_argv()))
+        _sdk_run(_sdk_spec("worker", home=home))
 
 
 # ===================================================================== #

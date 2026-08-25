@@ -271,7 +271,9 @@ def test_dc6_id_shapes_and_doc_i_gating(monkeypatch, capsys, _home):
     for cli_surface in ("worker", "worker-repair", "miner-reader"):
         cli_row = next(r for r in rows if r.name == "models" and r.surface == cli_surface)
         assert cli_row.verdict == "INFO"
-        assert "backend=cli" in cli_row.detail
+        # U-cleanup-B (§8.1, MAJOR-5 extension): "backend=cli" corrected
+        # to the SEL6 pattern ("REFUSED (cli retired)") in provider.py.
+        assert "backend=REFUSED (cli retired)" in cli_row.detail
 
     verdict, note = provider._id_verdict(ALIAS)
     assert verdict == "FAIL" and "Anthropic alias, not a Bedrock id" in note
@@ -528,8 +530,12 @@ def test_dc12_mixed_rollout_info_lines_per_surface(monkeypatch, _home):
     rows = provider.preflight(_home)
     rollout_rows = {r.surface: r for r in rows if r.name == "rollout"}
     assert len(rollout_rows) == 4
-    assert rollout_rows["worker"].detail == "worker: backend=cli — provider does not apply"
-    assert rollout_rows["worker-repair"].detail == "worker-repair: backend=cli — provider does not apply"
+    # U-cleanup-B (§8.1, MAJOR-5 extension): the rollout row's non-sdk
+    # wording was "backend=cli" (a value that can no longer be literally
+    # true post-collapse) -- corrected to the SEL6 pattern, matching the
+    # switches row.
+    assert rollout_rows["worker"].detail == "worker: backend=REFUSED (cli retired) — provider does not apply"
+    assert rollout_rows["worker-repair"].detail == "worker-repair: backend=REFUSED (cli retired) — provider does not apply"
     assert "backend=sdk provider=bedrock" in rollout_rows["analyst"].detail
     assert "backend=sdk provider=bedrock" in rollout_rows["miner-reader"].detail
     assert not any(r.verdict == "FAIL" for r in rows)
@@ -676,3 +682,44 @@ def test_dc16_credentials_warn_not_fail_and_dc3_coupling(monkeypatch, _home, tmp
     assert cred_row2.verdict == "PASS"
     assert "env-static" in cred_row2.detail
     assert not any(r.verdict == "FAIL" for r in rows2)
+
+
+def test_dc17_switches_row_reports_cli_selection_as_refused(monkeypatch, capsys):
+    """`SEL6` (U-cleanup §11.1, `T-DOCTOR-SWITCHES`) -- the `switches` row
+    (`provider.py:621-623`) prints `backend=sdk (…)` for all four
+    surfaces on a clean env (dc2 already covers this half; repeated here
+    as the negative control against the same line the positive half
+    reads), and reports a `cli` selection as REFUSED, spelled out as
+    `backend=REFUSED (cli retired) (...)`, never folded into an accepted
+    `backend=cli` or silently absorbed into `backend=sdk`.
+    """
+    # clean env: every surface sdk (default), never REFUSED.
+    rc, out = _run(["doctor", "invocation"], capsys)
+    (line,) = _rows_by_name(out, "switches")
+    for surface in ("worker", "worker-repair", "miner-reader", "analyst"):
+        assert f"{surface}: backend=sdk (default)" in line
+    assert "REFUSED" not in line
+    assert "backend=cli" not in line
+
+    # a single selector pinned to "cli" -- SELECTOR_FOR_SURFACE maps BOTH
+    # worker and worker-repair to WORKER, so setting it flips both of
+    # their cells to REFUSED; miner-reader/analyst (different selectors)
+    # stay sdk (default).
+    monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "cli")
+    rc, out = _run(["doctor", "invocation"], capsys)
+    (line,) = _rows_by_name(out, "switches")
+    for surface in ("worker", "worker-repair"):
+        assert f"{surface}: backend=REFUSED (cli retired) (env:SELF_LEARN_BACKEND_WORKER)" in line
+    assert "backend=cli" not in line
+    for surface in ("miner-reader", "analyst"):
+        assert f"{surface}: backend=sdk (default)" in line
+    monkeypatch.delenv("SELF_LEARN_BACKEND_WORKER")
+
+    # the coarse rung: SELF_LEARN_BACKEND=cli refuses every surface at once.
+    monkeypatch.setenv("SELF_LEARN_BACKEND", "cli")
+    rc, out = _run(["doctor", "invocation"], capsys)
+    (line,) = _rows_by_name(out, "switches")
+    for surface in ("worker", "worker-repair", "miner-reader", "analyst"):
+        assert f"{surface}: backend=REFUSED (cli retired) (env:SELF_LEARN_BACKEND)" in line
+    assert "backend=cli" not in line
+    assert "backend=sdk" not in line

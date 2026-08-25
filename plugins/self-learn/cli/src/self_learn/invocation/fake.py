@@ -54,16 +54,16 @@ FakeStep = Writes | Text | Exits | TimesOut | NotFound | Fails
 
 class FakeBackend:
     """`F-a` -- records, in call order: every `SessionSpec` (`.specs`),
-    every prompt (`.prompts`), and every argv it WOULD have run
-    (`.argvs`, obtained by calling the spec's own closures -- no process
-    is ever spawned)."""
+    every prompt (`.prompts`), and every doctrine (`.doctrines`, U-cleanup
+    §7 -- the SDK's system-prompt append, replacing the CLI-flavoured
+    `.argvs` this recorder carried before the closures were deleted)."""
 
     def __init__(self, steps: list[FakeStep]) -> None:
         self._steps = list(steps)
         self._index = 0
         self.specs: list[SessionSpec] = []
         self.prompts: list[str] = []
-        self.argvs: list[list[str]] = []
+        self.doctrines: list[str | None] = []
 
     def write_session(self, spec: SessionSpec) -> Outcome:
         return self._step(spec)
@@ -76,10 +76,7 @@ class FakeBackend:
     def _step(self, spec: SessionSpec) -> Outcome:
         self.specs.append(spec)
         self.prompts.append(spec.prompt)
-        settings_path = (
-            spec.cli_settings_writer() if spec.cli_settings_writer is not None else None
-        )
-        self.argvs.append(spec.cli_argv_builder(settings_path))
+        self.doctrines.append(spec.doctrine)
 
         step = self._steps[self._index]
         self._index += 1

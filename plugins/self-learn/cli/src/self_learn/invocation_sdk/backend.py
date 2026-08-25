@@ -57,7 +57,7 @@ _DEFAULT_MAX_TURNS: dict[str, int] = {"WORKER": 120, "MINER": 60, "ANALYST": 30}
 
 #: `Map-1` -- surfaces on which the SDK backend enters this build's
 #: analyst-vs-worker/miner OSError/ClaudeSDKError split.
-_CATCHES_OS_ERROR = {surface: spec.catches_os_error for surface, spec in TRANSPORT.items()}
+_CATCHES_OS_ERROR = dict(TRANSPORT)
 
 
 @dataclass(frozen=True)
@@ -113,19 +113,6 @@ def run_sync(factory: Callable[[], Coroutine[Any, Any, T]]) -> T:
 # --------------------------------------------------------------- Opt-1
 
 
-def _read_argv_flag(argv: list[str], flag: str) -> str | None:
-    """`A-1`/`A-4` -- the element after `flag`; a flag absent, or present
-    as argv's LAST element with no value after it, is treated as absent
-    (never an `IndexError`)."""
-    try:
-        idx = argv.index(flag)
-    except ValueError:
-        return None
-    if idx + 1 >= len(argv):
-        return None
-    return argv[idx + 1]
-
-
 def _supported_option_fields() -> set[str]:
     """`O-1a` -- feature detection via `dataclasses.fields`, never
     `hasattr` on an instance."""
@@ -163,19 +150,13 @@ def options_kwargs(spec: SessionSpec, events: EventLog | None = None) -> dict[st
     if events is None:
         events = EventLog()
 
-    # `A-1` -- settings writer first, then argv builder, pinned in that
-    # order (identical to `CliBackend._run`'s first two statements).
-    argv = spec.cli_argv_builder(
-        spec.cli_settings_writer() if spec.cli_settings_writer is not None else None
-    )
-    # `A-5` -- the read set is CLOSED at exactly this one flag. `--model`
-    # was read from `argv` here before `U-bedrock`; `IN3`/`Int-1` require
-    # `options.model` to equal `provider.model_for(spec.surface,
-    # home=home)` instead, so a bedrock resolution's model id actually
-    # reaches the SDK (the pre-`U-bedrock` argv relay could never carry
-    # one -- `worker.build_argv` et al. are not provider-aware and always
-    # emit the anthropic alias, `B-1`/§1.1).
-    doctrine = _read_argv_flag(argv, "--append-system-prompt")
+    # U-cleanup §7 -- `spec.doctrine` is a first-class field now; the CLI
+    # argv relay that used to carry it (`cli_argv_builder` +
+    # `_read_argv_flag`, reading exactly one flag out of a constructed
+    # argv nothing else used) is gone. Only the analyst ever populates
+    # this field (§2.3.1, measured) -- worker and miner-reader pass
+    # `doctrine=None`.
+    doctrine = spec.doctrine
 
     # `A-3`/`F-D` -- never `None` (an absent flag renders `--system-prompt
     # ""`), never a bare `str` (replaces Claude Code's system prompt

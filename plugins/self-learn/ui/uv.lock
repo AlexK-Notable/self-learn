@@ -1053,12 +1053,13 @@ name = "self-learn-cli"
 version = "0.1.0"
 source = { editable = "../cli" }
 dependencies = [
+    { name = "claude-agent-sdk" },
     { name = "ruamel-yaml" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "claude-agent-sdk", marker = "extra == 'sdk'", specifier = ">=0.2.116,<0.3" },
+    { name = "claude-agent-sdk", specifier = ">=0.2.116,<0.3" },
     { name = "ruamel-yaml", specifier = ">=0.18" },
 ]
 provides-extras = ["sdk"]
