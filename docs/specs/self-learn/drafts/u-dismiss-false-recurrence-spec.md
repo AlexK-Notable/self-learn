@@ -323,7 +323,7 @@ contract:
 dismissed_suspects:
   - ref: b68b5811                                        # REQUIRED — the filter key
     ts: '2026-08-19T10:39:13Z'                           # REQUIRED — copied OUT of the event
-    why: complied                                        # REQUIRED — see §5
+    why: rule-followed                                        # REQUIRED — see §5
     origin: 'transcript:8c746bbd-…#L361'                 # copied out of the event
     basis: miner-match                                   # copied out of the event
     dismissed_at: '2026-08-24'                           # when a human ruled
@@ -361,10 +361,10 @@ text on top.** Proposed list (routed upward as §13 Q1 — it binds a schema):
 
 | `--why` | Means |
 |---|---|
-| `complied` | the sighting shows the rule being FOLLOWED, not broken |
-| `different-lesson` | the matched record is about something else entirely |
-| `duplicate-capture` | a re-derivation of the same lesson; no failure occurred |
-| `wrong-record` | a real recurrence, but of a different routed rule |
+| `rule-followed` | the sighting shows the rule being FOLLOWED, not broken |
+| `unrelated` | the matched record is about something else entirely |
+| `duplicate` | a re-derivation of the same lesson; no failure occurred |
+| `misattributed` | a real recurrence, but of a different routed rule |
 | `other` | none of the above (`--note` strongly advised) |
 
 **Why a reason is mandatory at all.** `confirm-recurrence --tolerate` already
@@ -923,7 +923,7 @@ not during it):
 ```
 self-learn dismiss-suspect lrn-566216a6 \
   --event b68b5811 \
-  --why complied \
+  --why rule-followed \
   --note "transcript L361 shows the model stopping a benchmark because a game was at 303% CPU — that is compliance with this rule, not a violation; the miner matched the lesson's text, which its own journal folded to already-canon"
 ```
 
@@ -933,7 +933,7 @@ self-learn dismiss-suspect lrn-566216a6 \
 dismissed_suspects:
   - ref: b68b5811
     ts: '2026-08-19T10:39:13Z'
-    why: complied
+    why: rule-followed
     origin: 'transcript:8c746bbd-917f-4218-ad9a-5fa67bef95ed#L361'
     basis: miner-match
     dismissed_at: '<the day it is run>'
@@ -959,12 +959,20 @@ design (§3 reason 3), and this spec does not fold it in (§13 Q5).
 this section cannot mistake it for an open question. **N1 is normative: the
 builder must act on it.**
 
-**Q1 — the `--why` enum values (§5).** `complied` / `different-lesson` /
-`duplicate-capture` / `wrong-record` / `other`. This binds a record schema
-and is the analyst's x-axis, so it wants a human ruling before the build.
-Specifically: is `duplicate-capture` distinct enough from `complied` to earn
-a slot, given §2.4 says the `miner-match` producer emits *exactly*
-duplicate-capture claims by construction?
+**N2 (RULED 2026-08-24) — the `--why` enum values (§5).** Ruled set:
+`rule-followed` / `unrelated` / `duplicate` / `misattributed` / `other`
+(user ruling 2026-08-24; renamed from `complied` / `different-lesson` /
+`duplicate-capture` / `wrong-record` / `other`). This binds the record
+schema and is the analyst's x-axis. The open question — whether
+`duplicate` is distinct enough from `rule-followed` to earn a slot, given
+§2.4 says the `miner-match` producer emits *exactly* duplicate claims by
+construction — is resolved by the ruling itself: the five-value set
+stands as-is, with only the labels changed for clarity. Worked example:
+`self-learn dismiss-suspect lrn-566216a6 --event <nonce> --why duplicate
+--note '…'` records a `dismissed_suspects[]` entry with `why: duplicate`
+— distinct from `--why rule-followed`, which marks the sighting as the
+rule being followed, not a re-derivation of it. r1 routed this upward as
+Q1; the ruling supersedes that.
 
 **Q2 — the cross-record hole in `confirm_recurrence` (§6.3 step 3).**
 Verified by reading `verbs.py:4265-4279`: the event is located by `kind` +
