@@ -71,52 +71,13 @@ def _no_real_sdk_spawn_tripwire():
         _subprocess_cli.SubprocessCLITransport._find_cli = original
 
 
-@pytest.fixture(scope="session", autouse=True)
-def _cli_backend_unreached_tripwire():
-    """U-cleanup-A `AG1`. The CLI path still SHIPS in A; nothing may
-    REACH it. Symmetric with `_no_real_sdk_spawn_tripwire` above (same
-    scope, same autouse, same hard-fail-on-entry shape, same "patch a
-    bound method for the whole session, restore in `finally`" mechanism)
-    -- that one guards the SDK's OWN real-spawn fallback; this one
-    guards the CLI transport's OWN entry point, `CliBackend._run`. `AG3`
-    (the conftest `cli` pins' removal) is what makes this tripwire
-    meaningful: with no suite-wide pin left, every surface resolves
-    `sdk` by default, so `CliBackend._run` firing at all means either a
-    test still explicitly selects `cli` for real (a migration this build
-    was supposed to complete) or a resolution bug routed a default-sdk
-    surface onto `cli` regardless.
-
-    NOT scoped down to registry-resolved dispatch -- patching the class
-    method directly (not e.g. wrapping `registry._dispatch`) means a
-    test that hands `write_session(spec, backend=CliBackend())` an
-    explicit instance is caught too (orchestrator ruling, 2026-08-24):
-    narrowing the reach would make this criterion green while the CLI
-    transport is still exercised through a side door, the opposite of
-    what `AG1` is for.
-
-    Exemption (`R2-N4`): exactly one test may reach the patched `_run` --
-    `AG2`'s negative control (`test_ag2_tripwire_fires_on_direct_
-    clibackend_call` in `test_u_sdka.py`), which exists to observe the
-    tripwire fire and wraps its own call in `pytest.raises`. No other
-    exemption exists; a second one reaching this function is a
-    migration that was not done. Deleted in U-cleanup-B along with
-    `CliBackend` itself."""
-    from self_learn.invocation.cli import CliBackend
-
-    def _tripped(self, spec):
-        raise AssertionError(
-            "CliBackend._run was reached during the test suite. U-cleanup-A's "
-            "completion criterion is that every surface resolves and drives "
-            "the SDK backend; a test that still reaches the subprocess "
-            "transport has not been migrated."
-        )
-
-    original = CliBackend._run
-    CliBackend._run = _tripped
-    try:
-        yield
-    finally:
-        CliBackend._run = original
+#: U-cleanup-B: `_cli_backend_unreached_tripwire` (U-cleanup-A `AG1`) is
+#: RETIRED here, exactly as its own docstring said it would be -- its
+#: subject, `CliBackend._run`, no longer exists (§8.1), so there is
+#: nothing left to guard being unreached. `AG2`'s negative control
+#: (`test_u_sdka.py::test_ag2_tripwire_fires_on_direct_clibackend_call`)
+#: is deleted alongside it, not retargeted -- it existed solely to prove
+#: THIS tripwire arms, and there is no tripwire left to prove.
 
 
 @pytest.fixture(autouse=True)
@@ -150,11 +111,21 @@ def _worker_test_defaults(monkeypatch, tmp_path):
     # `subprocess.run`, i.e. the cli transport, and names no backend" --
     # CV2/CB-3's migration has made that premise false: the ~109
     # behaviour tests now drive `SdkBackend` -> `fake_claude.py`
-    # end to end (`claude_cli_shim_worker`/`claude_cli_shim_analyst`,
-    # `reader_leg`, `backend`), and every remaining test that still
-    # needs `cli` for real names it explicitly via its own
-    # `monkeypatch.setenv`. With no pin left here, EVERY surface now
+    # end to end (`sdk_fake_worker`/`sdk_fake_analyst`,
+    # `reader_leg`, `backend`). With no pin left here, EVERY surface now
     # resolves through `DEFAULT_BACKEND_FOR_SURFACE` (all `sdk` since
-    # U-flip) unless a test overrides it -- the suite-wide default this
-    # unit's own `AG1` tripwire on `CliBackend._run` is meant to prove
-    # unreached in practice, not merely in theory.
+    # U-flip) unless a test overrides it.
+    # U-cleanup-B (code gate r1, NIT-5): this paragraph used to end by
+    # pointing at "the suite-wide default this unit's own `AG1`
+    # tripwire on `CliBackend._run` is meant to prove unreached in
+    # practice, not merely in theory" and "every remaining test that
+    # still needs `cli` for real names it explicitly via its own
+    # `monkeypatch.setenv`" -- both stale. `AG1`/`_cli_backend_
+    # unreached_tripwire` is RETIRED (see the docstring 30 lines above
+    # this fixture); `CliBackend._run` no longer exists to be reached
+    # or unreached. And no test "needs `cli` for real" any more --
+    # `cli` is a NAMED REFUSAL now (`registry._resolve`), never a
+    # second transport a test could drive; the handful of tests that
+    # still `monkeypatch.setenv(..., "cli")` (SEL1-6, the scoping-
+    # precedence tests) are asserting the refusal fires, not reaching
+    # a real subprocess.

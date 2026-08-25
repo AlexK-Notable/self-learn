@@ -96,7 +96,6 @@ __all__ = [
     "RunResult",
     "TRACE_CONDITIONALS",
     "batch_cap",
-    "build_argv",
     "cache_dir",
     "canon_excerpt",
     "cluster_candidates",
@@ -117,7 +116,6 @@ __all__ = [
     "staged_paths",
     "write_permission_rules",
     "write_repair_settings_file",
-    "write_settings_file",
 ]
 
 DEFAULT_COALESCE_SECS = 600
@@ -878,7 +876,7 @@ def stage_reset(home: Path) -> None:
     removed by the NEXT run's clear, not swept later. ``home`` is unused
     directly (:func:`cache_dir` resolves the ledger home itself, doc 13
     H-4) — kept as a parameter to match the spec's call shape and this
-    module's own convention (e.g. :func:`write_settings_file`)."""
+    module's own convention (e.g. :func:`write_repair_settings_file`)."""
     del home
     path = stage_dir()
     shutil.rmtree(path, ignore_errors=True)
@@ -913,34 +911,6 @@ def _enforce_scope() -> bool:
     omits ``defaultMode`` from both settings files, i.e. the exact shape
     the shipped code wrote before ``GR-a``'s hotfix."""
     return os.environ.get("SELF_LEARN_ENFORCE_SCOPE") != "0"
-
-
-def write_settings_file(home: Path) -> Path:
-    """Per-run settings file carrying the Write scope (E-18: this file +
-    DISALLOWED_TOOLS IS the append-only guarantee).
-
-    U-attrib (``Grant-1``): the batch invocation is granted the STAGE and
-    nothing else (``GR-b``) — ``SELF_LEARN_STAGE=0`` reverts to today's
-    three ledger globs (``GR-c``/§3.7). ``defaultMode`` is what makes
-    either grant ENFORCE rather than merely declare (``GR-a`` — this
-    host's own ``~/.claude/settings.json`` sets
-    ``permissions.defaultMode: bypassPermissions``, which voids a
-    settings-file scope that omits the key; measured, `Z1`); omitted only
-    under ``SELF_LEARN_ENFORCE_SCOPE=0`` (§3.7's enforcement switch, a
-    DELIBERATE asymmetry from the namespace switch above)."""
-    path = _p("worker.settings.json")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    rules = (
-        stage_permission_rules(home) if _stage_enabled() else write_permission_rules(home)
-    )
-    permissions: dict[str, object] = {"allow": rules}
-    if _enforce_scope():
-        permissions["defaultMode"] = "default"
-    path.write_text(
-        json.dumps({"permissions": permissions}, indent=2),
-        encoding="utf-8",
-    )
-    return path
 
 
 def write_repair_settings_file(home: Path, paths: list[Path]) -> Path:
@@ -987,36 +957,6 @@ def write_repair_settings_file(home: Path, paths: list[Path]) -> Path:
         encoding="utf-8",
     )
     return path
-
-
-def build_argv(home: Path, settings_path: Path) -> list[str]:
-    """The prompt is deliberately NOT in argv (audit 2026-07-15, shared
-    with the miner's B1): Linux caps one argv element at 128 KiB, and a
-    full batch — 15 records × (record + canon excerpt) + doctrine +
-    registry — plausibly exceeds it. The prompt rides stdin instead.
-
-    ``--strict-mcp-config`` (U-repair §3.11): the analyst needs no MCP
-    server, and without the flag it inherits the user's, paying startup
-    cost and side effects for tools ``--allowedTools`` will not let it
-    call anyway. Verified against the live CLI (2.1.226, §9-X1): accepted
-    with no ``--mcp-config`` present, rc 0, no diagnostic. ``--bare`` was
-    considered and refused (§3.11, §7.1) — its own help text states OAuth
-    and keychain are never read under it, and the unattended worker has
-    no ``ANTHROPIC_API_KEY``. Both invocations share this ONE builder
-    (F2) — they differ only at ``--settings``."""
-    return [
-        "claude",
-        "-p",
-        "--model",
-        worker_model(),
-        "--allowedTools",
-        ALLOWED_TOOLS,
-        "--disallowedTools",
-        DISALLOWED_TOOLS,
-        "--settings",
-        str(settings_path),
-        "--strict-mcp-config",
-    ]
 
 
 # ------------------------------------------------------------------- kick
@@ -3119,7 +3059,7 @@ def fast_status(home: Path | str) -> dict:
 
 
 def _invoke_claude(
-    argv: list[str], prompt: str, timeout: float, home: Path, *,
+    prompt: str, timeout: float, home: Path, *,
     label: str,
     containment: invocation.Containment | None = None,
 ) -> None:
@@ -3132,15 +3072,14 @@ def _invoke_claude(
 
     U-seam §3.9.1: the transport itself now lives behind the invocation
     seam (``invocation.write_session``) — this function's job is to
-    describe THIS call as a ``SessionSpec`` and hand it over. ``argv`` is
-    already fully assembled by the caller (``B-4``: the settings file is
-    written and the argv built by ``run()`` before this function is
-    reached), so ``cli_argv_builder`` is a closure over the given
-    ``argv`` verbatim — byte-identical to what this function used to pass
-    straight to ``subprocess.run``. ``containment`` is data only (``HY4``
-    — it enforces nothing); when omitted (only `test_repair.py::test_e1`
-    does, per ``B-4``), :data:`invocation.DEGRADED_WORKER_CONTAINMENT`
-    stands in — ``run()`` itself always passes an explicit one (``W-a``)."""
+    describe THIS call as a ``SessionSpec`` and hand it over.
+    U-cleanup §7: the worker carries no doctrine (``doctrine=None``,
+    §2.3.1 measured) — its routing doctrine rides the PROMPT
+    (:func:`compose_batch_prompt`), not a system-prompt append.
+    ``containment`` is data only (``HY4`` — it enforces nothing); when
+    omitted (only `test_repair.py::test_e1` does, per ``B-4``),
+    :data:`invocation.DEGRADED_WORKER_CONTAINMENT` stands in — ``run()``
+    itself always passes an explicit one (``W-a``)."""
     spec = invocation.SessionSpec(
         surface="worker-repair" if label == "repair " else "worker",
         prompt=prompt,
@@ -3148,9 +3087,8 @@ def _invoke_claude(
         timeout=timeout,
         containment=containment or invocation.DEGRADED_WORKER_CONTAINMENT,
         log=log,
-        cli_argv_builder=lambda _settings: argv,
-        cli_settings_writer=None,
         label=label,
+        doctrine=None,
     )
     invocation.write_session(spec)
 
@@ -3207,9 +3145,8 @@ def run(
                     log("run: stage disabled (SELF_LEARN_STAGE=0)")
                 prompt, roster = compose_batch_prompt(home, batch)
                 snap0 = _proposal_snapshot(home)  # S1 — Install-1's baseline now
-                argv = build_argv(home, write_settings_file(home))
                 _invoke_claude(
-                    argv, prompt, invoke_timeout_secs(), home, label="",
+                    prompt, invoke_timeout_secs(), home, label="",
                     containment=invocation.containment_for(
                         "worker",
                         allowed_tools=ALLOWED_TOOLS,
@@ -3284,10 +3221,9 @@ def run(
                         repair_prompt = _compose_repair_prompt(
                             home, repair_eligible_paths
                         )
-                        repair_settings = write_repair_settings_file(
+                        write_repair_settings_file(
                             home, list(repair_eligible_paths)
                         )
-                        repair_argv = build_argv(home, repair_settings)
                         # Pre-declared (not just branch-assigned): the
                         # two blocks below are gated by the SAME
                         # `stage_on` value both times, so exactly one of
@@ -3313,7 +3249,6 @@ def run(
                         else:
                             snap1 = _proposal_snapshot(home)
                         _invoke_claude(
-                            repair_argv,
                             repair_prompt,
                             repair_timeout_secs(),
                             home,

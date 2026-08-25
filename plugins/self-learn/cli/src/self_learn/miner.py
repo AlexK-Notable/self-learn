@@ -61,7 +61,6 @@ __all__ = [
     "DEFAULT_PENDING_GATE",
     "MAX_NEARMISS_SNIPPET_CHARS",
     "MineResult",
-    "build_reader_argv",
     "canaries_path",
     "cap_for",
     "digest_transcript",
@@ -74,7 +73,6 @@ __all__ = [
     "read_journal",
     "run",
     "walk",
-    "write_reader_settings",
 ]
 
 # ---- tunables (doc 12 §8 Q3: values scale/tune; enforcement is hard)
@@ -543,28 +541,6 @@ def spool_dir() -> Path:
     return d
 
 
-def write_reader_settings() -> Path:
-    """Write scope = the CACHE spool only (Edit rule family — the
-    live-verified syntax; the repo is entirely out of reach). Pins
-    ``defaultMode: "default"`` — without it, the session inherits the
-    host's global ``permissions.defaultMode`` (which may be
-    ``bypassPermissions``), voiding the scope above."""
-    path = miner_dir() / "miner.settings.json"
-    path.write_text(
-        json.dumps(
-            {
-                "permissions": {
-                    "allow": [f"Edit(/{spool_dir()}/**)"],
-                    "defaultMode": "default",
-                }
-            },
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
-    return path
-
-
 #: The miner's reader gets NO filesystem tools (audit 2026-07-15,
 #: injection hardening): unlike the worker — which must open record
 #: files — the reader's entire evidence base rides in the prompt, and
@@ -572,40 +548,6 @@ def write_reader_settings() -> Path:
 #: available only through the settings-file Edit rule family, scoped to
 #: the cache spool.
 READER_DISALLOWED_TOOLS = worker.DISALLOWED_TOOLS + ",Read,Grep,Glob"
-
-
-def build_reader_argv(settings_path: Path) -> list[str]:
-    """The prompt is deliberately NOT in argv: Linux caps one argv element
-    at 128 KiB and a busy night's digests exceed it (audit B1, verified
-    E2BIG live) — the prompt goes to the reader on stdin.
-
-    ``--strict-mcp-config`` (U-sdkr): see ``worker.build_argv``'s own
-    docstring for why — it applies here with equal, if not greater,
-    force, since the reader is allowed fewer tools than the worker."""
-    return [
-        "claude",
-        "-p",
-        "--model",
-        miner_model(),
-        "--disallowedTools",
-        READER_DISALLOWED_TOOLS,
-        "--settings",
-        str(settings_path),
-        "--strict-mcp-config",
-    ]
-
-
-def _reader_cli_argv_builder(settings_path: Path | None) -> list[str]:
-    """Adapter satisfying `SessionSpec.cli_argv_builder`'s uniform
-    `Callable[[Path | None], list[str]]` shape (Sec 3.4): `_invoke_reader`
-    always supplies a real `cli_settings_writer`
-    (`write_reader_settings`), so `CliBackend`/`FakeBackend` never call
-    this with `None` in practice (AV3: settings written, then argv
-    built) -- the assert documents that runtime invariant for the type
-    checker rather than silently widening `build_reader_argv`'s own
-    signature."""
-    assert settings_path is not None
-    return build_reader_argv(settings_path)
 
 
 def _rubric() -> tuple[str, str]:
@@ -769,11 +711,11 @@ def _invoke_reader(home: Path, prompt: str) -> Path | None:
     (a hung node child must not outlive the 15-minute budget).
 
     U-seam §3.9.2: the transport lives behind the invocation seam
-    (``invocation.write_session``) — this is the ONE surface that wires a
-    REAL ``cli_settings_writer``/``cli_argv_builder`` pair (``SP-b``): the
-    other three surfaces are forced to close over an already-built argv
-    (``B-4``/no settings file at all), so this is the only construction
-    that exercises the writer-then-builder chain end to end (``AV3``)."""
+    (``invocation.write_session``). U-cleanup §7: the reader carries no
+    doctrine (``doctrine=None``) — closing this unit also closes the
+    live residual §2.3 found (a settings JSON written to disk that
+    nothing under the SDK backend ever reads); the writer that produced
+    it is deleted, not merely unwired."""
     out_path = spool_dir() / OUTPUT_BASENAME
     out_path.unlink(missing_ok=True)
     spec = invocation.SessionSpec(
@@ -787,9 +729,8 @@ def _invoke_reader(home: Path, prompt: str) -> Path | None:
             spool_dir=spool_dir(),
         ),
         log=log,
-        cli_argv_builder=_reader_cli_argv_builder,
-        cli_settings_writer=write_reader_settings,
         timeout_display=INVOKE_TIMEOUT_SECS,
+        doctrine=None,
     )
     outcome = invocation.write_session(spec)
     if outcome.failure in {"timeout", "not-found", "os-error", "unavailable"}:

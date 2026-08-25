@@ -4,7 +4,6 @@ lives behind this package (§1)."""
 
 from __future__ import annotations
 
-from .cli import CliBackend
 from .contract import (
     FAILURE_KINDS,
     LOG_TEMPLATES,
@@ -18,7 +17,6 @@ from .contract import (
     Outcome,
     SessionSpec,
     Surface,
-    TransportSpec,
     containment_for,
     containment_permissions,
     containment_rules,
@@ -44,8 +42,6 @@ __all__ = [
     "SessionSpec",
     "Surface",
     "TRANSPORT",
-    "TransportSpec",
-    "CliBackend",
     "FakeBackend",
     "FakeStep",
     "Writes",

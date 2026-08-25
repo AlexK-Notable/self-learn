@@ -118,7 +118,10 @@ NOT_REPO_TRUTH = {
     "worker._truncate_oldest": "XDG cache: worker.log rotation",
     "worker._log_to": "XDG cache: worker.log",
     "worker.log": "XDG cache: worker.log",
-    "worker.write_settings_file": "XDG cache: the worker's Claude settings",
+    # U-cleanup-B (§8.1): worker.write_settings_file is DELETED — the batch
+    # round no longer writes a settings file at all (settings=None for the
+    # real sdk seam; see WS1 in test_worker_contract.py). No exemption
+    # needed for a function that no longer exists.
     # U-repair §3.7: the repair round's NARROWED settings file — same
     # cache namespace and same shape as write_settings_file above, one
     # exact-path Edit(...) rule per repair-eligible proposal.
@@ -145,7 +148,11 @@ NOT_REPO_TRUTH = {
     "miner._save_cursors": "XDG cache: cursors.json",
     "miner._advance_cursors": "XDG cache: cursors.json",
     "miner.initialize_cursors": "XDG cache: cursors.json",
-    "miner.write_reader_settings": "XDG cache: the reader's Claude settings",
+    # U-cleanup-B (§8.1): miner.write_reader_settings is DELETED along with
+    # the rest of the CLI settings-writer path — the reader round drives
+    # the sdk seam directly now (options_kwargs(spec)["settings"] is None;
+    # see test_reader_contract.py). No exemption needed for a function
+    # that no longer exists.
     "miner._invoke_reader": "XDG cache: the model's spool + its transcript",
     "miner._rejected_counter_bump": "XDG cache: the rejected-resurface counter",
     "miner._rejected_mark_landed": "XDG cache: the rejected-resurface counter",

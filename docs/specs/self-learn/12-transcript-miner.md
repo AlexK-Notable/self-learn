@@ -109,10 +109,20 @@ the "focusing" layer, and it is structural (§5 for why).
 
 One model invocation per run over batched digests (batch cap by digest
 bytes; unread files stay behind the cursor for the next run) — the
-`miner-reader` surface of the invocation seam, `claude -p` by default.
-Containment is the worker posture **tightened, not copied**: the reader
-gets **no filesystem read tools at all** — `build_reader_argv` emits no
-`--allowedTools` flag, and `READER_DISALLOWED_TOOLS` is the worker's deny
+`miner-reader` surface of the invocation seam. *Amended 2026-08-25
+(U-cleanup):* the `claude -p` subprocess backend this sentence used to
+name as the default is retired — every surface, including this one, runs
+on the Agent SDK unconditionally now (`03-decisions.md` `S-49`); "by
+default" no longer means anything, since there is nothing else left to
+default away from. Containment is the worker posture **tightened, not
+copied**: the reader gets **no filesystem read tools at all** —
+`build_reader_argv` (deleted alongside `CliBackend`, §8.1 of the
+U-cleanup spec) used to emit no `--allowedTools` flag for this surface;
+the sdk path's `options_kwargs` sends `allowed_tools: []` unconditionally
+for every surface now (`invocation_sdk/backend.py`, `F-B`), so the whole
+mechanism enforcing "no filesystem read tools" for the reader
+specifically is the deny side alone — `READER_DISALLOWED_TOOLS` is the
+worker's deny
 list **plus `Read,Grep,Glob`** — because the reader's entire evidence base
 rides in the prompt and transcript digests are attacker-influenceable text
 (audit 2026-07-15, injection hardening). Write stays available only
@@ -403,11 +413,18 @@ cron-claude schedules `claude -p` prompts and the miner's entrypoint is
 a CLI verb that spawns its own contained `claude -p` internally.
 *Amended 2026-08-19 (U-docs):* "its own contained `claude -p`" is now
 "its own contained model invocation through the seam's `miner-reader`
-surface"; `claude -p` is the default backend. Note for operators: because
+surface"; `claude -p` is the default backend. *Amended again 2026-08-25
+(U-cleanup, `03-decisions.md` `S-49`):* "the default backend" no longer
+means anything — `claude -p` (the `cli` invocation backend) is retired,
+and the seam's `miner-reader` surface, like all four surfaces, runs on
+the Agent SDK unconditionally; there is no other backend a
+`SELF_LEARN_BACKEND_MINER` pin could select. Note for operators: because
 the miner runs from a **systemd user timer**, and the user manager does
-not inherit a login shell's environment, a `SELF_LEARN_BACKEND_MINER`
-exported in a terminal **does not reach the nightly run** —
-`17-invocation-runbook.md` §4.
+not inherit a login shell's environment, a `config.yaml` edit — not an
+exported env var — is the only flip that reaches the nightly run;
+`17-invocation-runbook.md` §8 (`invocation-runbook.md`'s own numbered
+§4.1 that this note used to cite is retired along with the rest of the
+old §4).
 
 **User requirements added:**
 

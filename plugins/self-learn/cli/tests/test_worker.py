@@ -20,7 +20,6 @@ import pytest
 from self_learn import cli, telemetry, worker
 from self_learn.ledger_ops import create_record, write_proposal
 from self_learn.records import Record
-from shims import write_worker_claude_shim
 from support import commit_all, git, make_behavior, make_env, make_home, proposal_dict
 
 FAKE_CLI = Path(__file__).parent / "fixtures" / "fake_claude.py"
@@ -124,7 +123,7 @@ def env(tmp_path, monkeypatch):
 
 
 @pytest.fixture()
-def claude_cli_shim_worker(tmp_path, monkeypatch, env):
+def sdk_fake_worker(tmp_path, monkeypatch, env):
     """U-cleanup-A migration (RO-1/RO-2/RO-3/RO-4): SDK-backed
     replacement for the bash PATH shim, keeping the EXACT interface every
     dependent test already reads (``["argv"](n)``, ``["call_prompt"](n)``,
@@ -140,8 +139,10 @@ def claude_cli_shim_worker(tmp_path, monkeypatch, env):
     `CLAUDE_SHIM_SCRIPT[_<n>]`/`CLAUDE_SHIM_EXIT[_<n>]` interpreter
     (`RO-3`/`RO-4`) regardless of the real text. Per-invocation argv/
     prompt capture (`RO-1`/`RO-2`) lands in `claude-calls/argv.<n>` /
-    `prompt.<n>` -- the SAME filenames `write_worker_claude_shim`'s
-    `calls_dir` used, so `argv_for`/`prompt_for` below are unchanged.
+    `prompt.<n>` -- the SAME filenames the deleted bash-shim builder's
+    (U-cleanup-B, §8.3: `shims.py` and its `write_worker_claude_shim` are
+    gone) `calls_dir` used, so `argv_for`/`prompt_for` below are
+    unchanged.
 
     The PATH-shim directory (`shims`) SURVIVES here for a reason that has
     nothing to do with `claude` resolution: `notify_shim` and the two
@@ -214,7 +215,7 @@ def claude_cli_shim_worker(tmp_path, monkeypatch, env):
 
 
 @pytest.fixture()
-def notify_shim(claude_cli_shim_worker, tmp_path):
+def notify_shim(sdk_fake_worker, tmp_path):
     """PATH shim for `self-learn-notify` (10 U8): lives in the SAME
     shims dir `claude_shim` already put on PATH, so both binaries
     resolve together. Logs argv NUL-separated; `NOTIFY_SHIM_SCRIPT` (a
@@ -222,7 +223,7 @@ def notify_shim(claude_cli_shim_worker, tmp_path):
     blocking on `notify-send --wait` without touching the real desktop —
     the worker must return long before it exits."""
     log = tmp_path / "notify-argv.log"
-    shim = claude_cli_shim_worker["dir"] / "self-learn-notify"
+    shim = sdk_fake_worker["dir"] / "self-learn-notify"
     shim.write_text(
         "#!/usr/bin/env bash\n"
         f'printf \'%s\\0\' "$@" > "{log}"\n'
@@ -231,7 +232,7 @@ def notify_shim(claude_cli_shim_worker, tmp_path):
         encoding="utf-8",
     )
     shim.chmod(shim.stat().st_mode | stat.S_IEXEC)
-    return {"log": log, "dir": claude_cli_shim_worker["dir"]}
+    return {"log": log, "dir": sdk_fake_worker["dir"]}
 
 
 def _wait_for_file(path: Path, timeout: float = 5.0) -> None:
@@ -270,7 +271,7 @@ def _path_without_real_notify_helper(*leading_dirs: Path) -> str:
     return os.pathsep.join(parts)
 
 
-def test_claude_shim_path_never_resolves_a_real_self_learn_notify(claude_cli_shim_worker):
+def test_claude_shim_path_never_resolves_a_real_self_learn_notify(sdk_fake_worker):
     """FOLD 4 (gate NOTE 2, cheap belt-and-braces) — behavioral companion
     to `test_f6_no_test_invokes_a_real_claude`'s source-level literal
     checks (unchanged, no churn): under `claude_shim`'s OWN PATH
@@ -280,13 +281,13 @@ def test_claude_shim_path_never_resolves_a_real_self_learn_notify(claude_cli_shi
     explicitly added one, e.g. via the `notify_shim` fixture)."""
     resolved = shutil.which("self-learn-notify")
     if resolved is not None:
-        assert Path(resolved).resolve().parent == claude_cli_shim_worker["dir"].resolve(), (
+        assert Path(resolved).resolve().parent == sdk_fake_worker["dir"].resolve(), (
             f"self-learn-notify resolved OUTSIDE claude_shim's own shim "
             f"dir: {resolved!r} — this would be a REAL deployed helper"
         )
 
 
-def test_claude_shim_default_notify_send_stub_is_present(claude_cli_shim_worker):
+def test_claude_shim_default_notify_send_stub_is_present(sdk_fake_worker):
     """gate NOTE (cheap, code gate 2026-08-09) — the default INERT
     `notify-send` stub `claude_shim` writes (gate MAJOR 2 hardening) had
     no test of its own: removing it survives every existing assertion,
@@ -297,7 +298,7 @@ def test_claude_shim_default_notify_send_stub_is_present(claude_cli_shim_worker)
     else."""
     resolved = shutil.which("notify-send")
     assert resolved is not None, "claude_shim's default notify-send stub is missing"
-    assert Path(resolved).resolve().parent == claude_cli_shim_worker["dir"].resolve(), (
+    assert Path(resolved).resolve().parent == sdk_fake_worker["dir"].resolve(), (
         f"notify-send resolved OUTSIDE claude_shim's own shim dir: "
         f"{resolved!r}"
     )
@@ -464,7 +465,7 @@ def test_teach_route_success_does_not_kick(env, monkeypatch):
 # -------------------------------------------------------------------- run
 
 
-def test_run_happy_path(env, claude_cli_shim_worker, monkeypatch):
+def test_run_happy_path(env, sdk_fake_worker, monkeypatch):
     rid = seed_pending(env)
     monkeypatch.setenv("CLAUDE_SHIM_SCRIPT", shim_writes(env, rid))
     result = worker.run(env.home)
@@ -506,14 +507,14 @@ def test_run_happy_path(env, claude_cli_shim_worker, monkeypatch):
 # `test_worker_contract.py`.
 
 
-def test_run_idle_when_nothing_eligible(env, claude_cli_shim_worker):
+def test_run_idle_when_nothing_eligible(env, sdk_fake_worker):
     result = worker.run(env.home)
     assert result.status == "idle"
     assert (worker.cache_dir() / "worker.last-run").is_file()
-    assert not claude_cli_shim_worker["log"].exists()  # claude never invoked
+    assert not sdk_fake_worker["log"].exists()  # claude never invoked
 
 
-def test_run_invalid_output_deleted_and_run_fails(env, claude_cli_shim_worker, monkeypatch):
+def test_run_invalid_output_deleted_and_run_fails(env, sdk_fake_worker, monkeypatch):
     rid = seed_pending(env)
     bad = worker.stage_dir() / f"{rid}.yaml"
     monkeypatch.setenv(
@@ -527,7 +528,7 @@ def test_run_invalid_output_deleted_and_run_fails(env, claude_cli_shim_worker, m
     assert not (worker.cache_dir() / "worker.last-run").exists()
 
 
-def test_run_partial_success(env, claude_cli_shim_worker, monkeypatch):
+def test_run_partial_success(env, sdk_fake_worker, monkeypatch):
     ra = seed_pending(env, "lrn-0000aaaa", created_at="2026-07-01T00:00:00Z")
     rb = seed_pending(env, "lrn-0000bbbb", created_at="2026-07-02T00:00:00Z")
     good = shim_writes(env, ra)
@@ -540,7 +541,7 @@ def test_run_partial_success(env, claude_cli_shim_worker, monkeypatch):
     assert (worker.cache_dir() / "worker.last-run").is_file()
 
 
-def test_fresh_proposals_skipped_stale_reanalyzed(env, claude_cli_shim_worker, monkeypatch):
+def test_fresh_proposals_skipped_stale_reanalyzed(env, sdk_fake_worker, monkeypatch):
     """Content identity, never mtime: a fresh valid proposal keeps the
     record out of the batch; editing the record body re-analyzes."""
     rid = seed_pending(env)
@@ -566,7 +567,7 @@ def test_fresh_proposals_skipped_stale_reanalyzed(env, claude_cli_shim_worker, m
     assert result.proposed == [rid]
 
 
-def test_deferred_records_skipped(env, claude_cli_shim_worker):
+def test_deferred_records_skipped(env, sdk_fake_worker):
     rid = seed_pending(env)
     rpath = env.bucket / "pending" / f"{rid}.md"
     record = Record.from_path(rpath)
@@ -576,7 +577,7 @@ def test_deferred_records_skipped(env, claude_cli_shim_worker):
     assert worker.run(env.home).status == "idle"
 
 
-def test_orphan_proposal_swept(env, claude_cli_shim_worker, monkeypatch):
+def test_orphan_proposal_swept(env, sdk_fake_worker, monkeypatch):
     rid = seed_pending(env)
     # a PRE-EXISTING orphan (its record resolved on another machine, say):
     # step-5's sweep owns it — step-4 validation only sees run-written files
@@ -590,7 +591,7 @@ def test_orphan_proposal_swept(env, claude_cli_shim_worker, monkeypatch):
     assert "lrn-99999999.yaml" in result.orphans_swept
 
 
-def test_kick_mid_run_triggers_followon(env, claude_cli_shim_worker, monkeypatch):
+def test_kick_mid_run_triggers_followon(env, sdk_fake_worker, monkeypatch):
     # AUTOKICK now gates the follow-on too (2026-08-09) — opt back in
     # (mirroring `kick` tests' own convention) so this test exercises the
     # follow-on's real DECISION logic against a mocked `_spawn_window`,
@@ -611,7 +612,7 @@ def test_kick_mid_run_triggers_followon(env, claude_cli_shim_worker, monkeypatch
     assert spawned == [1]
 
 
-def test_run_never_execs_a_sync_script_from_the_ledger_home(env, claude_cli_shim_worker):
+def test_run_never_execs_a_sync_script_from_the_ledger_home(env, sdk_fake_worker):
     """MINOR 10 (audit 2026-07-16): the sync-first step is GONE. It looked
     for `<home>/bin/claude-skills-sync` — which the ledger home will never
     contain, since doc 13 H-5 gives the ledger no watcher — so it logged
@@ -637,7 +638,7 @@ def test_run_never_execs_a_sync_script_from_the_ledger_home(env, claude_cli_shim
 # ------------------------------------------------------------------ digest
 
 
-def test_digest_contains_rejected_with_notes(env, claude_cli_shim_worker, monkeypatch):
+def test_digest_contains_rejected_with_notes(env, sdk_fake_worker, monkeypatch):
     rid = seed_pending(env, "lrn-0000dddd")
     assert cli.main(["reject", rid, "--note", "one-off task instruction", "--no-push"]) == 0
     digest = worker._digest(env.home)
@@ -660,7 +661,7 @@ def test_notification_template_verbatim():
 
 
 def test_notify_kill_switch_both_directions(
-    env, claude_cli_shim_worker, notify_shim, monkeypatch, tmp_path
+    env, sdk_fake_worker, notify_shim, monkeypatch, tmp_path
 ):
     """Bug B (incident 2026-08-09), positive control in BOTH directions —
     a check that passes when the feature is absent is worthless.
@@ -690,7 +691,7 @@ def test_notify_kill_switch_both_directions(
     control: the escalation call must land on the shim, never silently
     vanish and never reach the real binary."""
     notify_send_log = tmp_path / "notify-send.log"
-    ns_shim = claude_cli_shim_worker["dir"] / "notify-send"
+    ns_shim = sdk_fake_worker["dir"] / "notify-send"
     ns_shim.write_text(
         "#!/usr/bin/env bash\n"
         f'printf \'%s\\0\' "$@" >> "{notify_send_log}"\n'
@@ -739,7 +740,7 @@ def test_notify_kill_switch_both_directions(
 
 
 def test_notify_uses_helper_with_pinned_argv_and_matching_ids(
-    env, claude_cli_shim_worker, notify_shim, monkeypatch
+    env, sdk_fake_worker, notify_shim, monkeypatch
 ):
     """10 U8: the proposals notification's transport swaps to a detached
     spawn of `self-learn-notify`, pinned argv (10 §1) — `--line` carries
@@ -778,7 +779,7 @@ def test_notify_uses_helper_with_pinned_argv_and_matching_ids(
 
 
 def test_notify_helper_absent_falls_back_to_direct_notify_send(
-    env, claude_cli_shim_worker, monkeypatch, tmp_path
+    env, sdk_fake_worker, monkeypatch, tmp_path
 ):
     """Graceful degradation (headless/partial-deploy safety, 09 §5):
     `self-learn-notify` missing from PATH → the old M2 direct
@@ -791,7 +792,7 @@ def test_notify_helper_absent_falls_back_to_direct_notify_send(
     monkeypatch.setenv("CLAUDE_SHIM_SCRIPT", shim_writes(env, rid))
 
     notify_send_log = tmp_path / "notify-send.log"
-    shim = claude_cli_shim_worker["dir"] / "notify-send"
+    shim = sdk_fake_worker["dir"] / "notify-send"
     shim.write_text(
         "#!/usr/bin/env bash\n"
         f'printf \'%s\\0\' "$@" > "{notify_send_log}"\n'
@@ -801,7 +802,7 @@ def test_notify_helper_absent_falls_back_to_direct_notify_send(
     shim.chmod(shim.stat().st_mode | stat.S_IEXEC)
     # self-learn-notify deliberately NOT added to claude_shim["dir"];
     # strip any other PATH entry that would resolve a real one too.
-    monkeypatch.setenv("PATH", _path_without_real_notify_helper(claude_cli_shim_worker["dir"]))
+    monkeypatch.setenv("PATH", _path_without_real_notify_helper(sdk_fake_worker["dir"]))
 
     result = worker.run(env.home)
     assert result.status == "ok"  # no crash
@@ -814,7 +815,7 @@ def test_notify_helper_absent_falls_back_to_direct_notify_send(
 
 
 def test_notify_direct_fallback_kill_switch_both_directions(
-    env, claude_cli_shim_worker, monkeypatch, tmp_path
+    env, sdk_fake_worker, monkeypatch, tmp_path
 ):
     """CORRECTED SCOPE (FOLD 1 redo, gate MAJOR 1, code gate 2026-08-09):
     this test does NOT reach `_notify`'s own kill-switch check —
@@ -837,7 +838,7 @@ def test_notify_direct_fallback_kill_switch_both_directions(
     stay fresh (no old `created_at`) so `_maybe_escalate` never fires —
     this test is scoped to the ONE path under test, not a second."""
     notify_send_log = tmp_path / "notify-send.log"
-    shim = claude_cli_shim_worker["dir"] / "notify-send"
+    shim = sdk_fake_worker["dir"] / "notify-send"
     shim.write_text(
         "#!/usr/bin/env bash\n"
         f'printf \'%s\\0\' "$@" >> "{notify_send_log}"\n'
@@ -847,7 +848,7 @@ def test_notify_direct_fallback_kill_switch_both_directions(
     shim.chmod(shim.stat().st_mode | stat.S_IEXEC)
     # self-learn-notify deliberately NOT added to claude_shim["dir"];
     # strip any other PATH entry that would resolve a real one too.
-    monkeypatch.setenv("PATH", _path_without_real_notify_helper(claude_cli_shim_worker["dir"]))
+    monkeypatch.setenv("PATH", _path_without_real_notify_helper(sdk_fake_worker["dir"]))
 
     assert os.environ.get("SELF_LEARN_NO_NOTIFY") == "1", (
         "test assumes the suite-wide conftest default is active"
@@ -873,7 +874,7 @@ def test_notify_direct_fallback_kill_switch_both_directions(
 
 
 def test_notify_escalation_kill_switch_both_directions(
-    env, claude_cli_shim_worker, monkeypatch, tmp_path
+    env, sdk_fake_worker, monkeypatch, tmp_path
 ):
     """FOLD 1 REDO (gate MAJOR 1, code gate 2026-08-09) — `_notify`'s
     OWN kill-switch check has exactly ONE independent entry point:
@@ -902,7 +903,7 @@ def test_notify_escalation_kill_switch_both_directions(
     `_notify_with_ids`'s own "proposals" leg never fires — only
     `_maybe_escalate` -> `_notify` is exercised, in EITHER direction."""
     notify_send_log = tmp_path / "notify-send.log"
-    shim = claude_cli_shim_worker["dir"] / "notify-send"
+    shim = sdk_fake_worker["dir"] / "notify-send"
     shim.write_text(
         "#!/usr/bin/env bash\n"
         f'printf \'%s\\0\' "$@" >> "{notify_send_log}"\n'
@@ -944,7 +945,7 @@ def test_notify_escalation_kill_switch_both_directions(
 
 
 def test_notify_never_blocks_worker_on_detached_helper(
-    env, claude_cli_shim_worker, notify_shim, monkeypatch
+    env, sdk_fake_worker, notify_shim, monkeypatch
 ):
     """The helper is spawned DETACHED — the worker must never wait on
     its exit (self-learn-notify itself blocks on `notify-send --wait`
@@ -970,7 +971,7 @@ def test_notify_never_blocks_worker_on_detached_helper(
     assert notify_shim["log"].exists()
 
 
-def test_escalation_fires_and_debounces(env, claude_cli_shim_worker):
+def test_escalation_fires_and_debounces(env, sdk_fake_worker):
     for i in range(5):
         seed_pending(env, f"lrn-0000000{i}")
     result = worker.run(env.home)  # 5 pending → threshold
@@ -986,7 +987,7 @@ def test_escalation_fires_and_debounces(env, claude_cli_shim_worker):
     assert worker.run(env.home).escalated is False
 
 
-def test_no_escalation_under_thresholds(env, claude_cli_shim_worker, monkeypatch):
+def test_no_escalation_under_thresholds(env, sdk_fake_worker, monkeypatch):
     rid = seed_pending(env)
     monkeypatch.setenv("CLAUDE_SHIM_SCRIPT", shim_writes(env, rid))
     assert worker.run(env.home).escalated is False
@@ -995,7 +996,7 @@ def test_no_escalation_under_thresholds(env, claude_cli_shim_worker, monkeypatch
 # --------------------------------------------- 11 §2.2 recurrence suspects
 
 
-def test_recurrence_suspect_spooled_once(env, claude_cli_shim_worker, monkeypatch):
+def test_recurrence_suspect_spooled_once(env, sdk_fake_worker, monkeypatch):
     routed = seed_pending(env, "lrn-0000aaaa")
     write_proposal(env.home, routed, proposal_dict())
     commit_all(env.home, "p")
@@ -1019,7 +1020,7 @@ def test_recurrence_suspect_spooled_once(env, claude_cli_shim_worker, monkeypatc
 # ---------------------------------------------------- T15: fast status
 
 
-def test_fast_status_shape_and_semantics(env, claude_cli_shim_worker, monkeypatch):
+def test_fast_status_shape_and_semantics(env, sdk_fake_worker, monkeypatch):
     rid = seed_pending(env)
     # one analyzed (fresh proposal), one deferred-hidden
     write_proposal(env.home, rid, proposal_dict())
@@ -1109,7 +1110,7 @@ analyzed_at: "2026-07-15T00:00:00Z"
 """
 
 
-def test_batch_cap_leftovers_keep_dirty_and_followon(env, claude_cli_shim_worker, monkeypatch):
+def test_batch_cap_leftovers_keep_dirty_and_followon(env, sdk_fake_worker, monkeypatch):
     """Pinned: leftovers keep worker.dirty set for a follow-on window.
     16 eligible → batch 15, 1 leftover, dirty kept, follow-on opened.
 
@@ -1141,7 +1142,7 @@ def test_batch_cap_leftovers_keep_dirty_and_followon(env, claude_cli_shim_worker
 
 
 def test_followon_sandboxed_default_leaves_dirty_but_spawns_nothing(
-    env, claude_cli_shim_worker, monkeypatch
+    env, sdk_fake_worker, monkeypatch
 ):
     """Incident 2026-08-09, positive control (Bug D) paired with
     `test_batch_cap_leftovers_keep_dirty_and_followon` above — SAME
@@ -1180,7 +1181,7 @@ def test_followon_sandboxed_default_leaves_dirty_but_spawns_nothing(
     assert "run: follow-on window: disabled" in log_text
 
 
-def test_merge_output_without_shas_survives_and_is_stamped(env, claude_cli_shim_worker, monkeypatch):
+def test_merge_output_without_shas_survives_and_is_stamped(env, sdk_fake_worker, monkeypatch):
     """M2-21: the model must NOT emit record_shas — the CLI stamps them
     before validation. (The old validate-first order deleted every
     spec-compliant merge proposal.)"""
@@ -1212,7 +1213,7 @@ def test_merge_output_without_shas_survives_and_is_stamped(env, claude_cli_shim_
     assert proposals_events and "merge-0000cccc" in proposals_events[-1]["record_ids"]
 
 
-def test_unexpected_artifacts_deleted_never_published(env, claude_cli_shim_worker, monkeypatch):
+def test_unexpected_artifacts_deleted_never_published(env, sdk_fake_worker, monkeypatch):
     rid = seed_pending(env)
     sub = worker.stage_dir() / "sub"
     junk = worker.stage_dir() / "notes.txt"
@@ -1237,7 +1238,7 @@ def test_unexpected_artifacts_deleted_never_published(env, claude_cli_shim_worke
     assert "sneaky.yaml" not in result.proposed
 
 
-def test_secret_bearing_proposal_deleted(env, claude_cli_shim_worker, monkeypatch):
+def test_secret_bearing_proposal_deleted(env, sdk_fake_worker, monkeypatch):
     rid = seed_pending(env)
     bad = _proposal_yaml(env).replace(
         'rationale: "shim-written proposal"',
@@ -1254,7 +1255,7 @@ def test_secret_bearing_proposal_deleted(env, claude_cli_shim_worker, monkeypatc
     assert not (env.proposals / f"{rid}.yaml").exists()  # never installed
 
 
-def test_run_releases_owned_sentinel_and_respects_other_holder(env, claude_cli_shim_worker):
+def test_run_releases_owned_sentinel_and_respects_other_holder(env, sdk_fake_worker):
     from self_learn import sentinel as sentinel_mod
 
     worker.run(env.home)
@@ -1282,7 +1283,7 @@ def test_open_window_absorbed_race(env, monkeypatch):
         assert worker._open_window(env.home) == "absorbed-race"
 
 
-def test_digest_ordered_by_author_date_newest_first(env, claude_cli_shim_worker, monkeypatch):
+def test_digest_ordered_by_author_date_newest_first(env, sdk_fake_worker, monkeypatch):
     older = seed_pending(env, "lrn-0000aaaa")
     newer = seed_pending(env, "lrn-0000bbbb")
     monkeypatch.setenv("GIT_AUTHOR_DATE", "2026-07-01T00:00:00Z")
@@ -1293,7 +1294,7 @@ def test_digest_ordered_by_author_date_newest_first(env, claude_cli_shim_worker,
     assert digest.index(newer) < digest.index(older)
 
 
-def test_run_reasserts_sentinel_deleted_mid_pass(env, claude_cli_shim_worker, monkeypatch):
+def test_run_reasserts_sentinel_deleted_mid_pass(env, sdk_fake_worker, monkeypatch):
     """Audit 2026-07-15 (miner round, M2): a concurrent short holder (the
     miner's landing phase) that created the sentinel can release-delete it
     while this worker run — a mere joiner — is mid-model-pass. The run
@@ -1575,7 +1576,7 @@ def test_canon_excerpt_end_only_case_variant_does_not_match(env):
 
 
 def test_worker_prompt_assembly_carries_the_real_doctrine_lint_schema(
-    env, claude_cli_shim_worker, monkeypatch
+    env, sdk_fake_worker, monkeypatch
 ):
     """One-schema fixture (spec §8): the M2 worker's ACTUAL assembled
     prompt — built from the real shipped routing-doctrine.md via
@@ -1587,7 +1588,7 @@ def test_worker_prompt_assembly_carries_the_real_doctrine_lint_schema(
     rid = seed_pending(env)
     monkeypatch.setenv("CLAUDE_SHIM_SCRIPT", shim_writes(env, rid))
     worker.run(env.home)
-    prompt = claude_cli_shim_worker["prompt"].read_text(encoding="utf-8")
+    prompt = sdk_fake_worker["prompt"].read_text(encoding="utf-8")
     assert "trigger_recognizable" in prompt
     assert "why_present" in prompt
     assert "§9" in prompt

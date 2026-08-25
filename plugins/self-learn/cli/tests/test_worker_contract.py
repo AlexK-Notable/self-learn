@@ -51,11 +51,10 @@ from self_learn.invocation_sdk import backend as backend_mod
 from self_learn.invocation_sdk import charter as charter_mod
 
 from backends import install_fake
-from shims import write_worker_claude_shim
 from test_worker import (  # noqa: F401 -- fixtures resolved by name
     Env,
     PROPOSAL_YAML_TEMPLATE,
-    claude_cli_shim_worker,
+    sdk_fake_worker,
     env,
     seed_pending,
     shim_writes,
@@ -168,7 +167,7 @@ def _step0_real_claude_shadow(tmp_path, monkeypatch):
     sdk, module-wide -- extending HY5 leg 1's property from "one test
     checks this of its own shim" to "true everywhere in this module,
     checked at every test's end." Runs before any explicitly-requested
-    same-scope fixture (`backend`, `claude_cli_shim_worker`, ...) so its
+    same-scope fixture (`backend`, `sdk_fake_worker`, ...) so its
     prepend is always the FLOOR, never the winner, when a real shim
     follows."""
     counter = _install_decoy_shadow(tmp_path, monkeypatch)
@@ -182,45 +181,14 @@ def _step0_real_claude_shadow(tmp_path, monkeypatch):
         )
 
 
-def _build_cli_shim(root: Path, monkeypatch) -> dict:
-    """`Par-1`'s cli row / `P-a`: CALLS `shims.write_worker_claude_shim`
-    directly (never `request.getfixturevalue("claude_cli_shim_worker")`,
-    which would drag a bash shim onto PATH on the `sdk` param too --
-    `HY5`) and PREPENDS its directory to the INHERITED PATH (`P-c1`/
-    `F-c2`) -- `worker.run()` shells out to `git` before it ever reaches
-    an invocation, so a scrubbed PATH kills every `cli`-param criterion
-    at `_digest`. STEP 0: installs the decoy shadow first (idempotent;
-    the autouse fixture already did this for `root == tmp_path`, this
-    call additionally covers `_apply_failure_env`'s per-kind `scratch`
-    subdirectories, which are NOT `tmp_path` itself)."""
-    _install_decoy_shadow(root, monkeypatch)
-    shims_dir = root / "shims"
-    shims_dir.mkdir(exist_ok=True)
-    counter = root / "claude-count"
-    log = root / "claude-argv.log"
-    prompt_log = root / "claude-prompt.log"
-    calls_dir = root / "claude-calls"
-    calls_dir.mkdir(exist_ok=True)
-    write_worker_claude_shim(
-        shims_dir, counter=counter, log=log, prompt_log=prompt_log, calls_dir=calls_dir
-    )
-    monkeypatch.setenv("PATH", f"{shims_dir}{os.pathsep}{os.environ.get('PATH', '')}")
-
-    def count() -> int:
-        try:
-            return int(counter.read_text(encoding="utf-8").strip())
-        except (FileNotFoundError, ValueError):
-            return 0
-
-    def call_prompt(n: int) -> str:
-        p = calls_dir / f"prompt.{n}"
-        return p.read_text(encoding="utf-8") if p.exists() else ""
-
-    def argv_for(n: int) -> list[str]:
-        p = calls_dir / f"argv.{n}"
-        return p.read_text(encoding="utf-8").split("\0")[:-1] if p.exists() else []
-
-    return {"dir": shims_dir, "count": count, "call_prompt": call_prompt, "argv": argv_for}
+# U-cleanup-B DELETE (§8.3): `_build_cli_shim` called `shims.write_
+# worker_claude_shim` directly to drive the `cli`-param leg's bash
+# transport. `backend` (below) is COLLAPSED to `sdk`-only (`Par-1`,
+# U-cleanup-A) and its own docstring already said so: "The `cli` branch
+# and `_build_cli_shim` are UNUSED by this fixture from here on -- they
+# stay defined (U-cleanup-B deletes them, §8.3)." `_apply_failure_env`'s
+# `if param == "cli":` branch (the function's only remaining caller) is
+# deleted alongside it, below.
 
 
 def _build_sdk_env(monkeypatch) -> None:
@@ -234,17 +202,14 @@ def _build_sdk_env(monkeypatch) -> None:
 @dataclass
 class _Backend:
     param: str
-    shim: dict | None  # cli only
     fake_cli: Path | None  # sdk only
 
-    def prompt_of(self, n: int) -> str | None:
-        """The one shape both legs can answer (`Par-1`); the `sdk` leg
-        has no generic per-invocation prompt capture (`BG3` uses its own
-        two-witness mechanism instead), so it is honestly `None` here."""
-        if self.param == "cli":
-            assert self.shim is not None
-            return self.shim["call_prompt"](n)
-        return None
+    # U-cleanup-B DELETE (§8.3): `prompt_of` -- "the one shape both legs
+    # can answer" -- read `self.shim["call_prompt"](n)` on the `cli` leg
+    # and returned `None` unconditionally on `sdk` (the ONLY leg left,
+    # zero callers anywhere in this module even before this deletion:
+    # `BG3`'s own two-witness mechanism replaced it). The `shim` field it
+    # was the sole reader of is dropped alongside it.
 
 
 @pytest.fixture()
@@ -266,7 +231,7 @@ def backend(tmp_path, monkeypatch):
     monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "sdk")
     _build_sdk_env(monkeypatch)
     assert os.environ.get("SELF_LEARN_SDK_CLI_PATH") == str(FAKE_CLI)  # `PB3`
-    return _Backend(param="sdk", shim=None, fake_cli=FAKE_CLI)
+    return _Backend(param="sdk", fake_cli=FAKE_CLI)
 
 
 # U-cleanup-A: `MAJOR-3`'s `_BACKEND_FIXTURE = backend` module-level alias
@@ -280,7 +245,7 @@ def backend(tmp_path, monkeypatch):
 @dataclass
 class _Captured:
     spec: SessionSpec
-    argv: list[str]
+    kwargs: dict
     outcome: Outcome
 
 
@@ -290,17 +255,30 @@ def _spy_write_session(monkeypatch) -> list[_Captured]:
     binding `worker._invoke_claude` calls (`spec = invocation.SessionSpec
     (...)` ... `invocation.write_session(spec)`). Patching
     `invocation.registry.write_session` instead (the `BK-a` mirror trap)
-    is a SILENT NO-OP: `worker.py` never reads that binding. Records
-    `(spec, spec.cli_argv_builder(None), outcome)` -- the spec/argv pair
-    `M-c1` names, plus the outcome (the `CH10`-precedent shape) for
-    criteria that need the driven verdict."""
+    is a SILENT NO-OP: `worker.py` never reads that binding.
+
+    U-cleanup-B rebase (§8.1, CL9): there is no more argv to recompute
+    (`spec.cli_argv_builder` is deleted). Records `(spec, options_kwargs
+    (spec), outcome)` instead -- the sdk seam's own rendering of the
+    spec, which is what every surviving caller actually needs to assert
+    shape against, plus the outcome (the `CH10`-precedent shape) for
+    criteria that need the driven verdict. `options_kwargs` can itself
+    raise `CharterPatternUnsupported` for a deliberately-malformed
+    `write_globs` pattern (`FL1`'s os-error/sdk cell uses exactly this
+    to synthesize a failure) -- the REAL call site catches that
+    internally (`backend.py:411`) and folds it into the returned
+    `Outcome`; this spy must not pre-empt that by raising it a second
+    time, uncaught, before `real()` ever runs."""
     captured: list[_Captured] = []
     real = invocation.write_session
 
     def spy(spec, **kwargs):
-        argv = spec.cli_argv_builder(None)
+        try:
+            rendered = backend_mod.options_kwargs(spec)
+        except Exception:  # noqa: BLE001 -- real() below is the actual authority
+            rendered = {}
         outcome = real(spec, **kwargs)
-        captured.append(_Captured(spec=spec, argv=argv, outcome=outcome))
+        captured.append(_Captured(spec=spec, kwargs=rendered, outcome=outcome))
         return outcome
 
     monkeypatch.setattr(invocation, "write_session", spy)
@@ -336,17 +314,18 @@ def _spec_for(
     prompt: str,
     timeout: float = 20.0,
     containment: invocation.Containment | None = None,
-    argv: list[str] | None = None,
     label: str = "",
+    doctrine: str | None = None,
 ) -> SessionSpec:
+    """U-cleanup-B rebase (§8.1, CL9): `worker.build_argv` and
+    `SessionSpec.cli_argv_builder`/`.cli_settings_writer` are deleted --
+    this helper's only caller (`test_pb2_driven_outcome_backend_
+    asymmetry`) never passed `argv=` (the default path), so the whole
+    settings-file/argv-recompute block is dead weight now, not a
+    property anything still asserts. Replaced with the real seam's own
+    `doctrine` field."""
     if containment is None:
         containment = _worker_containment(home)
-    if argv is None:
-        settings_path = home / "spec-settings.json"
-        if not settings_path.exists():
-            settings_path.write_text("{}", encoding="utf-8")
-        argv = worker.build_argv(home, settings_path)
-    fixed_argv = argv
     return SessionSpec(
         surface=surface,
         prompt=prompt,
@@ -354,9 +333,8 @@ def _spec_for(
         timeout=timeout,
         containment=containment,
         log=lambda _msg: None,
-        cli_argv_builder=lambda _settings, _a=fixed_argv: _a,
-        cli_settings_writer=None,
         label=label,
+        doctrine=doctrine,
     )
 
 
@@ -457,42 +435,11 @@ def _next_rid() -> str:
     return f"lrn-{_RID_COUNTER[0]:08x}"
 
 
-def _make_selective_claude_run(exc: BaseException, real_run=subprocess.run):
-    """A `subprocess.run` wrapper that raises `exc` for a `claude`-argv
-    call and delegates everything else (`git`, in particular) to the REAL
-    function -- `F-c2`'s claude-resolution property applies here too:
-    a BLANKET `subprocess.run` replacement is only safe where
-    `worker.run()`'s own `git` call in `_digest` is never reached
-    (`FL1`/`FL2`, which drive `_invoke_claude` directly, and `HY5`, which
-    drives it against a home with no batch to compose); `FL3` drives a
-    REAL `worker.run()`, so `os-error` and `not-found` both need the same
-    monkeypatch discipline `F-c1` established, scoped to the one argv
-    each leg cares about.
-
-    MAJOR-4 (code-gate fold) -- SPEC-DEVIATION NOTE, disclosed here
-    rather than left implicit: `F-c`'s table, taken literally, names one
-    recipe per (kind, param) cell with no distinction between a direct
-    `_invoke_claude` drive and a full `worker.run()` drive. In practice
-    the `cli` `not-found`/`os-error` recipe is UNACHIEVABLE for `FL3`
-    specifically -- `FL3` drives a real `worker.run()`, whose `_digest`
-    step shells out to `git` before any model invocation is reached, so
-    a recipe that blanket-replaces `subprocess.run` (or scrubs `claude`
-    off PATH entirely) kills the git call too and the leg never reaches
-    the code being tested. This selective, argv-matching `subprocess.run`
-    patch is the sanctioned form for ALL of `FL1`/`FL2`/`FL3`'s cli
-    `not-found`/`os-error` cells -- the mirror of `F-c1`'s own reasoning
-    for `HY5` leg 3 (a bare `subprocess.run` replacement is safe there
-    ONLY because that leg drives `_invoke_claude` directly, with no `git`
-    call in the way). STEP 0's decoy shadow (above) is what now covers
-    the sites this recipe's own `not-found`/`os-error` cells leave
-    exposed if the argv match itself is ever wrong."""
-
-    def _run(args, *a, **kw):
-        if args and args[0] == "claude":
-            raise exc
-        return real_run(args, *a, **kw)
-
-    return _run
+# U-cleanup-B DELETE (§8.3): `_make_selective_claude_run` built a
+# `subprocess.run` wrapper that raised for a `claude`-argv call only
+# -- its sole callers were the `_apply_failure_env` `cli`-param
+# `not-found`/`os-error` cells, deleted alongside it (below). Every
+# caller passes `param="sdk"` now (§8.1).
 
 
 def _apply_failure_env(kind: str, param: str, *, scratch: Path, monkeypatch) -> float:
@@ -523,34 +470,11 @@ def _apply_failure_env(kind: str, param: str, *, scratch: Path, monkeypatch) -> 
         monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "sdk")
         return timeout
 
-    if param == "cli":
-        monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "cli")
-        if kind == "not-found":
-            # STEP 0: the decoy is installed FIRST, so if the selective
-            # `subprocess.run` patch below ever mis-matches (delegates a
-            # `claude`-bound call to the real function instead of
-            # raising), PATH resolution still cannot escape the decoy.
-            _install_decoy_shadow(scratch, monkeypatch)
-            monkeypatch.setattr(
-                subprocess, "run",
-                _make_selective_claude_run(FileNotFoundError(2, "No such file or directory", "claude")),
-            )
-            return timeout
-        if kind == "os-error":
-            _install_decoy_shadow(scratch, monkeypatch)  # STEP 0 backstop
-            monkeypatch.setattr(
-                subprocess, "run",
-                _make_selective_claude_run(OSError("simulated os-error (FL-group)")),
-            )
-            return timeout
-        _build_cli_shim(scratch, monkeypatch)
-        if kind == "exit":
-            monkeypatch.setenv("CLAUDE_SHIM_EXIT_1", "7")
-        elif kind == "timeout":
-            timeout = 1.5
-            monkeypatch.setenv("SELF_LEARN_INVOKE_TIMEOUT_SECS", "1.5")
-            monkeypatch.setenv("CLAUDE_SHIM_SLEEP_1", "5")
-        return timeout
+    # U-cleanup-B DELETE (§8.3): the `if param == "cli":` branch (bash
+    # shim / `_build_cli_shim`, selective-`subprocess.run` patches over
+    # a real `["claude", ...]` argv) is gone -- every caller passes
+    # `param="sdk"` now (`backend.param` is a `KNOWN_BACKENDS = ("sdk",)`
+    # constant, §8.1), so it was unreachable dead code.
 
     # sdk
     _install_decoy_shadow(scratch, monkeypatch)  # STEP 0 / MAJOR-4 backstop
@@ -575,15 +499,19 @@ def _apply_failure_env(kind: str, param: str, *, scratch: Path, monkeypatch) -> 
 # SU -- the suite (SU1, SU2, SU3, SU5 are instrument-only; no function)
 # ===================================================================== #
 
+#: U-cleanup-B re-pins conftest.py/test_invocation.py/test_invocation_
+#: sdk.py a further time on top of U-cleanup-A's content below (AG1's
+#: tripwire deletion + retirement comment; the whole-file rebase §8.1
+#: forces onto the seam's test suite). All three are already members of
+#: `_SU4B_DIFF_EXEMPT` -- only the hash moves, not exempt-set membership.
 _ARMOR_SHAS = {
-    "plugins/self-learn/cli/tests/conftest.py": "567916b3d86f0d89b099ac4577c276cedb300297587ebfa451ec593e46b5e4c6",
-    "plugins/self-learn/cli/tests/shims.py": "c4647decf1838f31791100205217858e907c487974deab12d22cc6a535847548",
+    "plugins/self-learn/cli/tests/conftest.py": "7e248059461888ad80e758002c4b2f7c821a98e2d5aafdff6367815d0e2bca56",  # code gate r1 NIT-5: stale AG1-tripwire paragraph fixed
     "plugins/self-learn/cli/tests/backends.py": "a2ba2d74f117a230740d10e3c9fa67bd30f751ce80ec59667c9136557a906dde",
-    "plugins/self-learn/cli/tests/test_invocation.py": "5885523bd03aa9d2c37fe0576d500e4996e53379cdc4eb9c3912f298c9cc93b3",
-    "plugins/self-learn/cli/tests/test_invocation_sdk.py": "733f280fde327a50673e1a29cb27efcf9b426553e5cb094442e139ef5898d751",
-    "plugins/self-learn/cli/tests/test_u_fake.py": "455f764f72d85db69ae644cb562a734722699d72f158da97478c1a201081a0e1",
-    "plugins/self-learn/cli/tests/test_worker.py": "c3392208c7f172b2a897a6e4f49d876156b53e4d7f66dfa2efb6884d42d93984",
-    "plugins/self-learn/cli/tests/test_repair.py": "6d036ab73dbc6d8443a47c603322905afd9c3423e50b585edced2e9d69114994",
+    "plugins/self-learn/cli/tests/test_invocation.py": "e3875614ab32a760788140d76e26cd542c07bd2f9dfa512f9da0f62c40b9257c",
+    "plugins/self-learn/cli/tests/test_invocation_sdk.py": "22cecabad8d3caf3ccd2c63bc977cfd359f2ea38de3f525c0f2544e02692ad23",
+    "plugins/self-learn/cli/tests/test_u_fake.py": "d1d2e5a55df4ab0f42dbc6f091478015b6dd1414cd162fd1de4d004eb2abf5b1",
+    "plugins/self-learn/cli/tests/test_worker.py": "96ac0b4606a4e643b24c67df7202a897864ea404390fa6fd353655345d6eefe7",
+    "plugins/self-learn/cli/tests/test_repair.py": "40bf4fbd80ce7901d88ad9394de32301213b095d47c9e38fc253773c1d0c631c",
 }
 
 #: U-flip: three of the eight pins above (conftest.py, test_invocation.py,
@@ -639,6 +567,42 @@ _ARMOR_SHAS = {
 #: per file. Both are `test_u_fake.py`-internal corrections, not scope
 #: creep -- hash re-pinned to this build's content, same as the other
 #: four.
+#: U-cleanup-B re-pins `test_u_fake.py` a further time: `_batch_
+#: permissions`/`_capture_batch_permissions` were added to `test_attrib.
+#: py` as the replacement for the deleted `worker.write_settings_file`
+#: (§8.1), widening `REWRITTEN` (six `test_attrib.py` entries whose
+#: bodies now call the new helpers) and `DS1_ADDED` (the two helpers
+#: themselves) plus `_DS1_EXPECTED["test_attrib.py"]`'s count/sha pin
+#: and the `DS2`/`DS1c` literal `expected` sets that mirror both lists
+#: -- again a `test_u_fake.py`-internal correction, hash re-pinned to
+#: this build's content; already a member of the exempt set below.
+#: U-cleanup-B re-pins `test_invocation.py` a FOURTH time (§8.3): the
+#: dead `_ANALYST_CLAUDE_SHIM` bash-script constant is deleted (the
+#: `analyst_shim` fixture beneath it was already fully sdk-routed and
+#: never read it) and `claude_shim` is renamed to `claude_cli_shim_
+#: worker` throughout (8 sites, `test_repair.py`'s `R-1` compat-alias
+#: deletion's one consumer) -- same file, still this unit's own
+#: authorized delta; already a member of the exempt set below.
+#: U-cleanup-B re-pins `test_invocation.py` a FIFTH time (§11.1,
+#: T-DOCTRINE-REACHES-SDK/M-5): adds a `backend_mod` import and
+#: `test_m5_doctrine_reaches_sdk_system_prompt_from_the_real_call_site`,
+#: which drives the REAL `analyst.analyze` call site (via the existing
+#: `analyst_capture` fixture) and asserts the real doctrine file's text
+#: lands in `options_kwargs(spec)["system_prompt"]["append"]` -- same
+#: file, still this unit's own authorized delta; already a member of the
+#: exempt set below.
+#: FOLD ROUND (code gate r1, MAJOR-1): CV7's own instrument
+#: (`pytest --fixtures-per-test | grep -cE "^claude_(cli_)?shim"`) measured
+#: 132 -- the two fixtures' NAMES lied in a tree with no CLI backend, even
+#: though the property (SDK-backed via `fake_claude.py`) already held.
+#: `claude_cli_shim_worker` -> `sdk_fake_worker`, `claude_cli_shim_analyst`
+#: -> `sdk_fake_analyst`, renamed at every use site across ALL 10 files
+#: that touched either name (grep-verified, word-boundary safe, zero
+#: compound identifiers extended either name) -- CV7's command now prints
+#: 0. Re-pins conftest.py/test_invocation.py/test_invocation_sdk.py/
+#: test_u_fake.py/test_worker.py/test_repair.py (6 of the 7 pinned files;
+#: backends.py untouched by the rename) to this round's content; all six
+#: already members of the exempt set below.
 _SU4B_DIFF_EXEMPT = {
     "plugins/self-learn/cli/tests/conftest.py",
     "plugins/self-learn/cli/tests/test_invocation.py",
@@ -652,7 +616,10 @@ _FAKE_CLAUDE_RELPATH = "plugins/self-learn/cli/tests/fixtures/fake_claude.py"
 
 
 def test_su4a_whole_file_armor_shas():
-    """`SU4` clause (a) -- eight whole-file pins, byte-identical to base.
+    """`SU4` clause (a) -- SEVEN whole-file pins, byte-identical to base
+    (U-cleanup-B, §8.3: `shims.py`'s own pin is REMOVED, not exempted --
+    the file it protected is deleted, and a pin over a nonexistent path
+    can only ever crash `read_bytes()`, never usefully pass or fail).
     The LITERAL sha constants are extracted with `git show 89f8ef7:...`
     (never a working tree that may already carry an edit, `U-seam`
     `D-27`) -- that provenance is fixed once, in `_ARMOR_SHAS` itself.
@@ -666,9 +633,10 @@ def test_su4a_whole_file_armor_shas():
     `HEAD` never moves off the base commit while that holds -- so the
     two-ref form is vacuously empty regardless of what the working tree
     actually carries, and would defeat the very obligation `D-27`
-    exists for. U-flip: the diff-empty half is now scoped to the FIVE
-    files not exempted by `_SU4B_DIFF_EXEMPT` (see that constant) -- the
-    hash pins above still cover all eight, unconditionally."""
+    exists for. U-flip/U-cleanup-A/U-cleanup-B: the diff-empty half is
+    now scoped to the ONE file (`backends.py`) not exempted by
+    `_SU4B_DIFF_EXEMPT` (see that constant) -- the hash pins above still
+    cover all seven, unconditionally."""
     for relpath, expected in _ARMOR_SHAS.items():
         working_tree_path = _repo_root() / relpath
         actual = hashlib.sha256(working_tree_path.read_bytes()).hexdigest()
@@ -714,7 +682,7 @@ def _load_fake_claude_module():
 #: preserved (see the function's own comment, and `test_u_sdka.py`'s
 #: `_HY3_SCENARIO_SHAS` re-pin of the same function). The five new
 #: functions back the bash-shim-script interpreter that lets the
-#: migrated `claude_cli_shim_worker`/`claude_cli_shim_analyst` fixtures
+#: migrated `sdk_fake_worker`/`sdk_fake_analyst` fixtures
 #: route the ~109 behaviour tests' existing `CLAUDE_SHIM_SCRIPT_<n>`
 #: content through the sdk-backed fake instead of a real bash process.
 #: `_peek_invocation` is a non-destructive counterpart to the pre-
@@ -957,6 +925,13 @@ def test_pb3_sdk_param_always_uses_the_shipped_fake(backend):
 
 
 def test_ws1_batch_containment_and_settings_agree(backend, env, monkeypatch):
+    """U-cleanup-B RE-BASELINE: `worker.write_settings_file` (Witness B
+    for the BATCH round) is deleted (§8.1) -- there is no on-disk
+    settings file to re-parse and compare against Witness A anymore.
+    Surviving half: the real call site's containment (Witness A) is
+    what `write_session` actually captures, and the sdk seam renders it
+    as `settings=None` (`CT2`/`OP4`'s own assertion, re-checked here
+    against the REAL batch-round spec rather than a hand-built one)."""
     monkeypatch.setenv("SELF_LEARN_REPAIR", "0")
     seed_pending(env, rid=_next_rid())
     captured = _spy_write_session(monkeypatch)
@@ -966,9 +941,7 @@ def test_ws1_batch_containment_and_settings_agree(backend, env, monkeypatch):
     cap = batch_specs[-1]
     assert cap.spec.containment.write_globs == (f"{worker.stage_dir()}/**",)
     assert cap.spec.containment.write_exact == ()
-    settings_path = Path(cap.argv[cap.argv.index("--settings") + 1])
-    perms = json.loads(settings_path.read_text(encoding="utf-8"))["permissions"]
-    assert invocation.containment_permissions(cap.spec.containment) == perms
+    assert cap.kwargs["settings"] is None
 
 
 def test_ws2_sdk_charter_frontier_matches_scope1(env, sdk_cli_path, monkeypatch):
@@ -1012,77 +985,64 @@ def test_ws2_sdk_charter_frontier_matches_scope1(env, sdk_cli_path, monkeypatch)
     assert tool_results_b and tool_results_b[-1]["is_error"] is True
 
 
-def test_ws3_cli_witness_b_is_stage_permission_rules(env, claude_cli_shim_worker, monkeypatch):
-    monkeypatch.setenv("SELF_LEARN_REPAIR", "0")
-    seed_pending(env, rid=_next_rid())
-    worker.run(env.home)
-    settings_path = worker.cache_dir() / "worker.settings.json"
-    perms = json.loads(settings_path.read_text(encoding="utf-8"))["permissions"]
-    expected = worker.stage_permission_rules(env.home)
-    assert perms["allow"] == expected
-    assert not any("proposals" in rule for rule in perms["allow"])
+# U-cleanup-B DELETE ("CLI-only named tests" class, same shape as
+# `test_fr1`/`test_hy5_cli`/`test_ws5a`): `test_ws3_cli_witness_b_is_
+# stage_permission_rules` drove the `sdk_fake_worker` fixture
+# (a real `CliBackend` transport) and re-parsed `worker.cache_dir() /
+# "worker.settings.json"` -- the BATCH round's Witness B on-disk
+# settings file. Both the fixture's transport and the file it wrote are
+# gone: `worker.write_settings_file` is deleted (§8.1) and the batch
+# round has passed `settings=None` to the sdk seam ever since (`WS1`'s
+# own re-baseline above). There is no witness B left for this surface
+# to compare against.
 
 
 def test_ws4_stage_disabled_inverts_the_frontier(backend, env, monkeypatch):
+    # U-cleanup-B DELETE (§8.3): the `if backend.param == "cli":` branch
+    # (re-parsed `worker.cache_dir() / "worker.settings.json"` -- doubly
+    # dead, since `backend.param` can only be `"sdk"` now AND that file
+    # is never written any more, `write_settings_file` deleted, §8.1) is
+    # gone; only the sdk branch's body remains, unconditional.
     monkeypatch.setenv("SELF_LEARN_STAGE", "0")
     monkeypatch.setenv("SELF_LEARN_REPAIR", "0")
-    if backend.param == "cli":
-        seed_pending(env, rid=_next_rid())
-        worker.run(env.home)
-        settings_path = worker.cache_dir() / "worker.settings.json"
-        perms = json.loads(settings_path.read_text(encoding="utf-8"))["permissions"]
-        assert perms["allow"] == worker.write_permission_rules(env.home)
-    else:
-        monkeypatch.setenv("FAKE_CLAUDE_FORCE_SCENARIO", "ok_write")
-        rid_a = _next_rid()
-        seed_pending(env, rid=rid_a)
-        ledger_target = env.bucket / "proposals" / f"{rid_a}.yaml"
-        monkeypatch.setenv("FAKE_CLAUDE_WRITE_TARGET", str(ledger_target))
-        captured = _spy_write_session(monkeypatch)
-        worker.run(env.home)
-        outcome_a = [c.outcome for c in captured if c.spec.surface == "worker"][-1]
-        assert outcome_a.denials == ()
+    monkeypatch.setenv("FAKE_CLAUDE_FORCE_SCENARIO", "ok_write")
+    rid_a = _next_rid()
+    seed_pending(env, rid=rid_a)
+    ledger_target = env.bucket / "proposals" / f"{rid_a}.yaml"
+    monkeypatch.setenv("FAKE_CLAUDE_WRITE_TARGET", str(ledger_target))
+    captured = _spy_write_session(monkeypatch)
+    worker.run(env.home)
+    outcome_a = [c.outcome for c in captured if c.spec.surface == "worker"][-1]
+    assert outcome_a.denials == ()
 
-        captured.clear()
-        rid_b = _next_rid()
-        seed_pending(env, rid=rid_b)
-        stage_target = worker.stage_dir() / f"{rid_b}.yaml"
-        monkeypatch.setenv("FAKE_CLAUDE_WRITE_TARGET", str(stage_target))
-        worker.run(env.home)
-        outcome_b = [c.outcome for c in captured if c.spec.surface == "worker"][-1]
-        assert len(outcome_b.denials) == 1
+    captured.clear()
+    rid_b = _next_rid()
+    seed_pending(env, rid=rid_b)
+    stage_target = worker.stage_dir() / f"{rid_b}.yaml"
+    monkeypatch.setenv("FAKE_CLAUDE_WRITE_TARGET", str(stage_target))
+    worker.run(env.home)
+    outcome_b = [c.outcome for c in captured if c.spec.surface == "worker"][-1]
+    assert len(outcome_b.denials) == 1
 
 
-def test_ws5a_stdout_never_parsed_cli_behavioral(env, claude_cli_shim_worker, monkeypatch):
+# U-cleanup-B DELETE ("CLI-only named tests" class): `test_ws5a_stdout_
+# never_parsed_cli_behavioral` drove the `sdk_fake_worker`
+# fixture (a real `CliBackend` transport) for the batch round and
+# `worker.build_argv` for the repair-surface direct drive -- both gone
+# (§8.1). The property WS5 names (`Outcome.stdout` is always `""`,
+# regardless of noise on the real stdout) survives on the sdk leg,
+# `test_ws5b_stdout_never_parsed_sdk_behavioral` below.
+
+
+def test_ws5b_stdout_never_parsed_sdk_behavioral(env, sdk_cli_path, monkeypatch):
     # MAJOR-2 (code-gate fold): WS5's spec text asserts `Outcome.stdout
     # == ""` on BOTH worker surfaces -- this was previously unimplemented
     # (only `RunResult.status` was checked, which says nothing about
     # what `Outcome.stdout` itself carries). Added via the `M-c1` spy.
-    monkeypatch.setenv("SELF_LEARN_REPAIR", "0")
-    captured = _spy_write_session(monkeypatch)
-    seed_pending(env, rid=_next_rid())
-    monkeypatch.setenv("CLAUDE_SHIM_SCRIPT_1", "echo 'noise on stdout'")
-    result = worker.run(env.home)
-    assert result.status == "failed"
-    batch_outcome = [c.outcome for c in captured if c.spec.surface == "worker"][-1]
-    assert batch_outcome.stdout == ""
-
-    # the repair surface, driven directly (`worker-repair` is the OTHER
-    # half of "both worker surfaces").
-    captured.clear()
-    repair_settings = env.home.parent / "ws5a-repair-settings.json"
-    repair_settings.write_text("{}", encoding="utf-8")
-    repair_argv = worker.build_argv(env.home, repair_settings)
-    worker._invoke_claude(
-        repair_argv, "prompt", 20.0, env.home,
-        label="repair ", containment=invocation.DEGRADED_WORKER_CONTAINMENT,
-    )
-    repair_outcome = captured[-1].outcome
-    assert repair_outcome.stdout == ""
-
-
-def test_ws5b_stdout_never_parsed_sdk_behavioral(env, sdk_cli_path, monkeypatch):
-    # MAJOR-2: see WS5a.
+    # U-cleanup-B RE-BASELINE (§8.4b, incidental reference): the repair
+    # surface's direct drive no longer builds a settings file/argv pair
+    # (`worker.build_argv` deleted, §8.1) -- `_invoke_claude`'s new
+    # signature has no argv parameter at all.
     monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "sdk")
     monkeypatch.setenv("SELF_LEARN_REPAIR", "0")
     monkeypatch.setenv("FAKE_CLAUDE_FORCE_SCENARIO", "ok_text")
@@ -1094,11 +1054,8 @@ def test_ws5b_stdout_never_parsed_sdk_behavioral(env, sdk_cli_path, monkeypatch)
     assert batch_outcome.stdout == ""
 
     captured.clear()
-    repair_settings = env.home.parent / "ws5b-repair-settings.json"
-    repair_settings.write_text("{}", encoding="utf-8")
-    repair_argv = worker.build_argv(env.home, repair_settings)
     worker._invoke_claude(
-        repair_argv, "prompt", 20.0, env.home,
+        "prompt", 20.0, env.home,
         label="repair ", containment=invocation.DEGRADED_WORKER_CONTAINMENT,
     )
     repair_outcome = captured[-1].outcome
@@ -1134,57 +1091,36 @@ def test_ws5d_structural_no_stdout_binding():
 
 
 def test_ws6_attribution_four_cells(backend, env, monkeypatch, tmp_path):
+    # U-cleanup-B DELETE (§8.3): the `if backend.param == "cli":` branch
+    # (bash-shim `CLAUDE_SHIM_SCRIPT_1` scripting) is unreachable dead
+    # code -- only the sdk branch's body remains, unconditional.
     monkeypatch.setenv("SELF_LEARN_REPAIR", "0")
-    if backend.param == "cli":
-        rid_a = _next_rid()
-        seed_pending(env, rid=rid_a)
-        monkeypatch.setenv("CLAUDE_SHIM_SCRIPT_1", shim_writes(env, rid_a))
-        result_a = worker.run(env.home)
-        installed_a = env.proposals / f"{rid_a}.yaml"
-        assert installed_a.is_file()
-        assert result_a.proposed == [rid_a]
-        assert _installed_matches_written(
-            _valid_proposal_yaml(env), installed_a.read_text(encoding="utf-8")
-        )
+    monkeypatch.setenv("FAKE_CLAUDE_FORCE_SCENARIO", "ok_write_real")
+    counter_file = tmp_path / "ws6-calls"
+    monkeypatch.setenv("FAKE_CLAUDE_CALLS", str(counter_file))
 
-        rid_b = _next_rid()
-        seed_pending(env, rid=rid_b)
-        outside = tmp_path / "ws6-outside.yaml"
-        monkeypatch.setenv(
-            "CLAUDE_SHIM_SCRIPT_1",
-            f"mkdir -p {outside.parent} && cat > {outside} <<'YAML'\nnot a proposal\nYAML",
-        )
-        result_b = worker.run(env.home)
-        assert not (env.proposals / f"{rid_b}.yaml").exists()
-        assert list(worker.stage_dir().iterdir()) == []
-        assert result_b.status == "failed"
-    else:
-        monkeypatch.setenv("FAKE_CLAUDE_FORCE_SCENARIO", "ok_write_real")
-        counter_file = tmp_path / "ws6-calls"
-        monkeypatch.setenv("FAKE_CLAUDE_CALLS", str(counter_file))
+    rid_a = _next_rid()
+    seed_pending(env, rid=rid_a)
+    target_a = worker.stage_dir() / f"{rid_a}.yaml"
+    monkeypatch.setenv("FAKE_CLAUDE_WRITE_TARGET", str(target_a))
+    body_a = _valid_proposal_yaml(env)
+    monkeypatch.setenv("FAKE_CLAUDE_WRITE_BODY_1", body_a)
+    result_a = worker.run(env.home)
+    installed_a = env.proposals / f"{rid_a}.yaml"
+    assert installed_a.is_file()
+    assert result_a.proposed == [rid_a]
+    assert _installed_matches_written(body_a, installed_a.read_text(encoding="utf-8"))
 
-        rid_a = _next_rid()
-        seed_pending(env, rid=rid_a)
-        target_a = worker.stage_dir() / f"{rid_a}.yaml"
-        monkeypatch.setenv("FAKE_CLAUDE_WRITE_TARGET", str(target_a))
-        body_a = _valid_proposal_yaml(env)
-        monkeypatch.setenv("FAKE_CLAUDE_WRITE_BODY_1", body_a)
-        result_a = worker.run(env.home)
-        installed_a = env.proposals / f"{rid_a}.yaml"
-        assert installed_a.is_file()
-        assert result_a.proposed == [rid_a]
-        assert _installed_matches_written(body_a, installed_a.read_text(encoding="utf-8"))
-
-        rid_b = _next_rid()
-        seed_pending(env, rid=rid_b)
-        outside = tmp_path / "ws6-sdk-outside.yaml"
-        monkeypatch.setenv("FAKE_CLAUDE_WRITE_TARGET", str(outside))
-        monkeypatch.setenv("FAKE_CLAUDE_WRITE_BODY_2", "denied body\n")
-        result_b = worker.run(env.home)
-        assert not outside.exists()
-        assert not (env.proposals / f"{rid_b}.yaml").exists()
-        assert list(worker.stage_dir().iterdir()) == []
-        assert result_b.status == "failed"
+    rid_b = _next_rid()
+    seed_pending(env, rid=rid_b)
+    outside = tmp_path / "ws6-sdk-outside.yaml"
+    monkeypatch.setenv("FAKE_CLAUDE_WRITE_TARGET", str(outside))
+    monkeypatch.setenv("FAKE_CLAUDE_WRITE_BODY_2", "denied body\n")
+    result_b = worker.run(env.home)
+    assert not outside.exists()
+    assert not (env.proposals / f"{rid_b}.yaml").exists()
+    assert list(worker.stage_dir().iterdir()) == []
+    assert result_b.status == "failed"
 
 
 # ===================================================================== #
@@ -1193,6 +1129,15 @@ def test_ws6_attribution_four_cells(backend, env, monkeypatch, tmp_path):
 
 
 def test_rp1_repair_round_wiring(request, monkeypatch, env):
+    """U-cleanup-B COLLAPSE + RE-BASELINE (§8.4b): the settings-file
+    identity this test named was recovered from argv (`--settings
+    <path>`) -- there is no argv anymore (`worker.build_argv` deleted,
+    §8.1; `FakeBackend.argvs` renamed `.doctrines`, CL9). Rebased onto
+    the real call site's own on-disk artifacts: the BATCH round writes
+    no settings file at all (`worker.write_settings_file` deleted,
+    `WS1`'s own re-baseline above); the REPAIR round's `worker.repair.
+    settings.json` survives (`worker.write_repair_settings_file`
+    explicitly KEPT)."""
     monkeypatch.setenv("SELF_LEARN_REPAIR", "1")
     rid = _next_rid()
     seed_pending(env, rid=rid)
@@ -1209,8 +1154,8 @@ def test_rp1_repair_round_wiring(request, monkeypatch, env):
     assert fake.specs[1].surface == "worker-repair"
     assert fake.specs[1].containment.write_exact == (str(target),)
     assert fake.specs[1].containment.write_globs == ()
-    assert Path(fake.argvs[0][fake.argvs[0].index("--settings") + 1]).name == "worker.settings.json"
-    assert Path(fake.argvs[1][fake.argvs[1].index("--settings") + 1]).name == "worker.repair.settings.json"
+    assert not (worker.cache_dir() / "worker.settings.json").exists()
+    assert (worker.cache_dir() / "worker.repair.settings.json").exists()
 
 
 def test_rp2_repair_reaches_same_backend(backend, env, monkeypatch, tmp_path):
@@ -1231,21 +1176,16 @@ def test_rp2_repair_reaches_same_backend(backend, env, monkeypatch, tmp_path):
 
     rid = _next_rid()
     seed_pending(env, rid=rid)
-    if backend.param == "cli":
-        monkeypatch.setenv(
-            "CLAUDE_SHIM_SCRIPT_1", _defect_script(env, rid, _t4_missing_target(env, rid))
-        )
-        monkeypatch.setenv(
-            "CLAUDE_SHIM_SCRIPT_2", _defect_script(env, rid, _t4_target_fixed(env, rid))
-        )
-    else:
-        target = worker.stage_dir() / f"{rid}.yaml"
-        counter_file = tmp_path / "rp2-calls"
-        monkeypatch.setenv("FAKE_CLAUDE_FORCE_SCENARIO", "ok_write_real")
-        monkeypatch.setenv("FAKE_CLAUDE_WRITE_TARGET", str(target))
-        monkeypatch.setenv("FAKE_CLAUDE_CALLS", str(counter_file))
-        monkeypatch.setenv("FAKE_CLAUDE_WRITE_BODY_1", _dump_yaml(_t4_missing_target(env, rid)))
-        monkeypatch.setenv("FAKE_CLAUDE_WRITE_BODY_2", _dump_yaml(_t4_target_fixed(env, rid)))
+    # U-cleanup-B DELETE (§8.3): the `if backend.param == "cli":` branch
+    # (bash-shim `CLAUDE_SHIM_SCRIPT_1`/`_2` scripting) is unreachable
+    # dead code -- only the sdk branch's body remains, unconditional.
+    target = worker.stage_dir() / f"{rid}.yaml"
+    counter_file = tmp_path / "rp2-calls"
+    monkeypatch.setenv("FAKE_CLAUDE_FORCE_SCENARIO", "ok_write_real")
+    monkeypatch.setenv("FAKE_CLAUDE_WRITE_TARGET", str(target))
+    monkeypatch.setenv("FAKE_CLAUDE_CALLS", str(counter_file))
+    monkeypatch.setenv("FAKE_CLAUDE_WRITE_BODY_1", _dump_yaml(_t4_missing_target(env, rid)))
+    monkeypatch.setenv("FAKE_CLAUDE_WRITE_BODY_2", _dump_yaml(_t4_target_fixed(env, rid)))
 
     worker.run(env.home)
     worker_calls = [b for s, b in resolved if s == "worker"]
@@ -1255,6 +1195,9 @@ def test_rp2_repair_reaches_same_backend(backend, env, monkeypatch, tmp_path):
 
 
 def test_rp3_repair_surface_direct_drive(backend, tmp_path, monkeypatch):
+    """U-cleanup-B COLLAPSE + RE-BASELINE (§8.4b): drop the `build_argv`
+    construction -- `_invoke_claude` no longer takes an argv parameter
+    at all (§7, `S-46`)."""
     home = tmp_path / "rp3-home"
     home.mkdir()
     member = home / "pending" / "lrn-repair-member.md"
@@ -1268,19 +1211,16 @@ def test_rp3_repair_surface_direct_drive(backend, tmp_path, monkeypatch):
         write_exact=(str(member),),
         enforce=True,
     )
-    settings_path = home / "worker.repair.settings.json"
-    settings_path.write_text("{}", encoding="utf-8")
-    repair_argv = worker.build_argv(home, settings_path)
 
     logged: list[str] = []
     monkeypatch.setattr(worker, "log", lambda msg: logged.append(msg))
-    if backend.param == "cli":
-        monkeypatch.setenv("CLAUDE_SHIM_EXIT_1", "9")
-    else:
-        monkeypatch.setenv("FAKE_CLAUDE_FORCE_SCENARIO", "error_result")
+    # U-cleanup-B DELETE (§8.3): the `if backend.param == "cli":` branch
+    # (bash-shim `CLAUDE_SHIM_EXIT_1`) is unreachable dead code -- only
+    # the sdk branch's body remains, unconditional.
+    monkeypatch.setenv("FAKE_CLAUDE_FORCE_SCENARIO", "error_result")
 
     result = worker._invoke_claude(
-        repair_argv, "prompt", worker.repair_timeout_secs(), home,
+        "prompt", worker.repair_timeout_secs(), home,
         label="repair ", containment=containment,
     )
     assert result is None
@@ -1340,10 +1280,10 @@ def test_to1_batch_timeout_bounds_both_backends(backend, env, monkeypatch):
     monkeypatch.setenv("SELF_LEARN_REPAIR", "0")
     logged: list[str] = []
     monkeypatch.setattr(worker, "log", lambda msg: logged.append(msg))
-    if backend.param == "cli":
-        monkeypatch.setenv("CLAUDE_SHIM_SLEEP_1", "5")
-    else:
-        monkeypatch.setenv("FAKE_CLAUDE_FORCE_SCENARIO", "hang")
+    # U-cleanup-B DELETE (§8.3): the `if backend.param == "cli":` branch
+    # (armed `CLAUDE_SHIM_SLEEP_1`) is unreachable dead code -- only the
+    # sdk branch's body remains, unconditional.
+    monkeypatch.setenv("FAKE_CLAUDE_FORCE_SCENARIO", "hang")
 
     seed_pending(env, rid=_next_rid())
     start = time.monotonic()
@@ -1357,23 +1297,23 @@ def test_to1_batch_timeout_bounds_both_backends(backend, env, monkeypatch):
 
 
 def test_to2_repair_timeout_bounds_both_backends(backend, tmp_path, monkeypatch):
+    """U-cleanup-B COLLAPSE + RE-BASELINE (§8.4b): drop the `build_argv`
+    construction -- `_invoke_claude` no longer takes an argv parameter
+    at all (§7, `S-46`)."""
     monkeypatch.setenv("SELF_LEARN_REPAIR_TIMEOUT_SECS", "1.2")
     home = tmp_path / "to2-home"
     home.mkdir()
     logged: list[str] = []
     monkeypatch.setattr(worker, "log", lambda msg: logged.append(msg))
-    settings_path = home / "worker.repair.settings.json"
-    settings_path.write_text("{}", encoding="utf-8")
-    repair_argv = worker.build_argv(home, settings_path)
-    if backend.param == "cli":
-        monkeypatch.setenv("CLAUDE_SHIM_SLEEP_1", "5")
-    else:
-        monkeypatch.setenv("FAKE_CLAUDE_FORCE_SCENARIO", "hang")
+    # U-cleanup-B DELETE (§8.3): the `if backend.param == "cli":` branch
+    # (armed `CLAUDE_SHIM_SLEEP_1`) is unreachable dead code -- only the
+    # sdk branch's body remains, unconditional.
+    monkeypatch.setenv("FAKE_CLAUDE_FORCE_SCENARIO", "hang")
 
     start = time.monotonic()
     with _Watchdog(1.2 * 8):  # BLOCKER-2 -- interrupts, does not just measure
         result = worker._invoke_claude(
-            repair_argv, "prompt", worker.repair_timeout_secs(), home,
+            "prompt", worker.repair_timeout_secs(), home,
             label="repair ", containment=invocation.DEGRADED_WORKER_CONTAINMENT,
         )
     elapsed = time.monotonic() - start
@@ -1400,10 +1340,10 @@ def test_to3_timeouts_independent_transport(backend, env, monkeypatch):
     monkeypatch.setenv("SELF_LEARN_INVOKE_TIMEOUT_SECS", "1.2")
     monkeypatch.setenv("SELF_LEARN_REPAIR_TIMEOUT_SECS", "90")
     monkeypatch.setenv("SELF_LEARN_REPAIR", "0")
-    if backend.param == "cli":
-        monkeypatch.setenv("CLAUDE_SHIM_SLEEP_1", "5")
-    else:
-        monkeypatch.setenv("FAKE_CLAUDE_FORCE_SCENARIO", "hang")
+    # U-cleanup-B DELETE (§8.3): the `if backend.param == "cli":` branch
+    # (armed `CLAUDE_SHIM_SLEEP_1`) is unreachable dead code -- only the
+    # sdk branch's body remains, unconditional.
+    monkeypatch.setenv("FAKE_CLAUDE_FORCE_SCENARIO", "hang")
     logged: list[str] = []
     monkeypatch.setattr(worker, "log", lambda msg: logged.append(msg))
     seed_pending(env, rid=_next_rid())
@@ -1446,15 +1386,12 @@ def test_fl1_failure_legs_never_raise(tmp_path, backend):
             home = tmp_path / f"fl1-{backend.param}-{kind}"
             home.mkdir()
             timeout = _apply_failure_env(kind, backend.param, scratch=home, monkeypatch=mp)
-            settings_path = home / "settings.json"
-            settings_path.write_text("{}", encoding="utf-8")
-            argv = worker.build_argv(home, settings_path)
             containment = _worker_containment(home)
             if kind == "os-error" and backend.param == "sdk":
                 containment = dataclasses.replace(containment, write_globs=("/tmp/[bad/**",))
             with _Watchdog(timeout * 8):  # MAJOR-A (code-gate fold) -- bounds the sdk/timeout cell (M31), same as TO's BLOCKER-2
                 result = worker._invoke_claude(
-                    argv, "PROMPT", timeout, home, label="", containment=containment
+                    "PROMPT", timeout, home, label="", containment=containment
                 )
             assert result is None
             assert captured, f"no session recorded for kind={kind}"
@@ -1487,7 +1424,12 @@ def _drive_fl2_lines(tmp_path: Path, marker_templates) -> dict[str, list[str]]:
     deletion target alive in an sdk-only test path -- replaced by the
     same trivial literal the real sdk-only call sites already use
     (`test_hd4_seam_is_total_on_the_analyst_surface`'s `cli_argv_
-    builder=lambda _s: ["claude", "-p", "p"]`, `test_u_sdka.py`)."""
+    builder=lambda _s: ["claude", "-p", "p"]`, `test_u_sdka.py`).
+
+    U-cleanup-B follow-on: that inert literal argv is ALSO gone now --
+    `_invoke_claude`'s signature dropped the `argv` parameter entirely
+    (§7, `S-46`), so there is nothing left to close over, inert or
+    otherwise."""
     results: dict[str, list[str]] = {}
     for kind in invocation.FAILURE_KINDS:
         mp = pytest.MonkeyPatch()
@@ -1499,13 +1441,12 @@ def _drive_fl2_lines(tmp_path: Path, marker_templates) -> dict[str, list[str]]:
             mp.setitem(invocation.LOG_TEMPLATES, "worker", marker_templates)
 
             timeout = _apply_failure_env(kind, "sdk", scratch=home, monkeypatch=mp)
-            argv = ["claude", "-p", "PROMPT"]  # inert under sdk -- see docstring
             containment = _worker_containment(home)
             if kind == "os-error":
                 containment = dataclasses.replace(containment, write_globs=("/tmp/[bad/**",))
 
             with _Watchdog(timeout * 8):  # MAJOR-A (code-gate fold) -- bounds the sdk/timeout cell (M31), same as TO's BLOCKER-2
-                worker._invoke_claude(argv, "PROMPT", timeout, home, label="", containment=containment)
+                worker._invoke_claude("PROMPT", timeout, home, label="", containment=containment)
             results[kind] = list(logged)
         finally:
             mp.undo()
@@ -1582,7 +1523,20 @@ def test_fl3_run_survives_every_failure(tmp_path, backend):
 # ===================================================================== #
 
 
-def test_ha1_cli_hatch_open_omits_default_mode(env, claude_cli_shim_worker, monkeypatch):
+def test_ha1_hatch_open_omits_default_mode(env, sdk_fake_worker, monkeypatch):
+    """U-cleanup-B RE-BASELINE: the BATCH round's on-disk settings file
+    (`worker.settings.json`) no longer exists -- `worker.write_
+    settings_file` is deleted (§8.1) and the batch round has passed
+    `settings=None` to the sdk seam ever since (`WS1`'s own
+    re-baseline, above). The REPAIR round's file (`worker.repair.
+    settings.json`) survives -- `worker.write_repair_settings_file` is
+    explicitly KEPT by §8.1's deletion inventory.
+
+    Code gate r1 NIT-7: renamed from `test_ha1_cli_hatch_open_omits_
+    default_mode` -- the property this test asserts (the enforcement
+    hatch omits `defaultMode` when open) holds identically for both
+    rounds now, on the one remaining backend; nothing about it is
+    `cli`-specific any more, so the name should not say so."""
     monkeypatch.setenv("SELF_LEARN_ENFORCE_SCOPE", "0")
     rid = _next_rid()
     seed_pending(env, rid=rid)
@@ -1590,16 +1544,14 @@ def test_ha1_cli_hatch_open_omits_default_mode(env, claude_cli_shim_worker, monk
     monkeypatch.setenv("CLAUDE_SHIM_SCRIPT_2", _defect_script(env, rid, _t4_target_fixed(env, rid)))
     captured = _spy_write_session(monkeypatch)
     worker.run(env.home)
-    specs = [c.spec for c in captured]
-    batch_spec = next(s for s in specs if s.surface == "worker")
-    repair_spec = next(s for s in specs if s.surface == "worker-repair")
-    assert batch_spec.containment.default_mode is None
+    batch_cap = next(c for c in captured if c.spec.surface == "worker")
+    repair_spec = next(c.spec for c in captured if c.spec.surface == "worker-repair")
+    assert batch_cap.spec.containment.default_mode is None
     assert repair_spec.containment.default_mode is None
-    settings = json.loads((worker.cache_dir() / "worker.settings.json").read_text(encoding="utf-8"))["permissions"]
+    assert batch_cap.kwargs["settings"] is None
     repair_settings = json.loads(
         (worker.cache_dir() / "worker.repair.settings.json").read_text(encoding="utf-8")
     )["permissions"]
-    assert "defaultMode" not in settings
     assert "defaultMode" not in repair_settings
 
 
@@ -1647,32 +1599,28 @@ def test_ha2_sdk_hatch_open_three_legs(env, sdk_cli_path, monkeypatch):
 
 def test_ha3_hatch_closed_negative_controls(env, monkeypatch, backend):
     # `FL-c`/`FR2`: declared `(T2 + T3)`, parametrized over `backend`
-    # (replacing direct `claude_cli_shim_worker`/`sdk_cli_path` fixture
+    # (replacing direct `sdk_fake_worker`/`sdk_cli_path` fixture
     # use -- `backend`'s own branches already build the same shim/sdk env,
     # `SU5`'s census updated accordingly). Leg (i) splits by param: the
     # `cli` leg checks the settings-file half, the `sdk` leg checks the
     # denial half -- both are "the variable unset" case the spec's leg (i)
     # names, just observed through each backend's own witness.
-    if backend.param == "cli":
-        seed_pending(env, rid=_next_rid())
-        monkeypatch.setenv("SELF_LEARN_REPAIR", "0")
-        worker.run(env.home)
-        settings = json.loads((worker.cache_dir() / "worker.settings.json").read_text(encoding="utf-8"))["permissions"]
-        assert settings.get("defaultMode") == "default"
-    else:
-        monkeypatch.setenv("FAKE_CLAUDE_FORCE_SCENARIO", "ok_write")
-        outside = env.home.parent / "ha3-outside.md"
-        monkeypatch.setenv("FAKE_CLAUDE_WRITE_TARGET", str(outside))
-        captured = _spy_write_session(monkeypatch)
-        seed_pending(env, rid=_next_rid())
-        monkeypatch.setenv("SELF_LEARN_REPAIR", "0")
-        worker.run(env.home)
-        outcome = [c.outcome for c in captured if c.spec.surface == "worker"][-1]
-        assert len(outcome.denials) == 1
-        resolved = str(outside.resolve())
-        assert outcome.denials[0]["reason"] == (
-            f"self-learn invocation charter: Write write scope does not include {resolved}"
-        )
+    # U-cleanup-B DELETE (§8.3): the `if backend.param == "cli":` branch
+    # (settings-file `defaultMode` check) is unreachable dead code -- only
+    # the sdk branch's body remains, unconditional.
+    monkeypatch.setenv("FAKE_CLAUDE_FORCE_SCENARIO", "ok_write")
+    outside = env.home.parent / "ha3-outside.md"
+    monkeypatch.setenv("FAKE_CLAUDE_WRITE_TARGET", str(outside))
+    captured = _spy_write_session(monkeypatch)
+    seed_pending(env, rid=_next_rid())
+    monkeypatch.setenv("SELF_LEARN_REPAIR", "0")
+    worker.run(env.home)
+    outcome = [c.outcome for c in captured if c.spec.surface == "worker"][-1]
+    assert len(outcome.denials) == 1
+    resolved = str(outside.resolve())
+    assert outcome.denials[0]["reason"] == (
+        f"self-learn invocation charter: Write write scope does not include {resolved}"
+    )
 
     # legs (ii)-(iii) are "with the variable SET" (`SELF_LEARN_ENFORCE_SCOPE=0`,
     # the open condition `HA1`/`HA2` use) -- without this, `M39`'s
@@ -1697,57 +1645,32 @@ def test_ha4_the_fence_and_silence(backend, env, monkeypatch):
     logged: list[str] = []
     monkeypatch.setattr(worker, "log", lambda msg: logged.append(msg))
     monkeypatch.setenv("SELF_LEARN_REPAIR", "0")
-    if backend.param == "cli":
-        # NOTE (code-gate fold): HA4's cli half also claims the ARGV is
-        # byte-identical with and without the variable -- previously only
-        # the settings-file `allow` list was checked. Captured via the
-        # `M-c1` spy alongside the existing settings-file comparison.
-        captured = _spy_write_session(monkeypatch)
-        results = {}
-        argvs = {}
-        for scope in ("1", "0"):
-            monkeypatch.setenv("SELF_LEARN_ENFORCE_SCOPE", scope)
-            logged.clear()
-            captured.clear()
-            seed_pending(env, rid=_next_rid())
-            worker.run(env.home)
-            settings = json.loads(
-                (worker.cache_dir() / "worker.settings.json").read_text(encoding="utf-8")
-            )["permissions"]
-            results[scope] = settings
-            argvs[scope] = [c.argv for c in captured if c.spec.surface == "worker"][-1]
-            hatch_lines = [
-                l for l in logged
-                if "enforce" in l.lower() or "hatch" in l.lower() or "ENFORCE_SCOPE" in l
-            ]
-            assert hatch_lines == []
-        assert results["1"]["allow"] == results["0"]["allow"]
-        assert results["1"].get("defaultMode") == "default"
-        assert "defaultMode" not in results["0"]
-        assert argvs["1"] == argvs["0"]
-    else:
-        monkeypatch.setenv("FAKE_CLAUDE_FORCE_SCENARIO", "ok_text")
-        captured = _spy_write_session(monkeypatch)
-        options_by_scope = {}
-        for scope in ("1", "0"):
-            monkeypatch.setenv("SELF_LEARN_ENFORCE_SCOPE", scope)
-            logged.clear()
-            captured.clear()
-            seed_pending(env, rid=_next_rid())
-            worker.run(env.home)
-            spec = [c.spec for c in captured if c.spec.surface == "worker"][-1]
-            options_by_scope[scope] = backend_mod.options_kwargs(spec)
-            hatch_lines = [
-                l for l in logged
-                if "enforce" in l.lower() or "hatch" in l.lower() or "ENFORCE_SCOPE" in l
-            ]
-            assert hatch_lines == []
-        on, off = options_by_scope["1"], options_by_scope["0"]
-        assert on["permission_mode"] == "default" == off["permission_mode"]
-        assert on["setting_sources"] == [] == off["setting_sources"]
-        assert on["strict_mcp_config"] is True and off["strict_mcp_config"] is True
-        assert on["settings"] is None and off["settings"] is None
-        assert on["disallowed_tools"] == off["disallowed_tools"]
+    # U-cleanup-B DELETE (§8.3): the `if backend.param == "cli":` branch
+    # (settings-file `allow`-list + ARGV byte-identity check) is
+    # unreachable dead code -- only the sdk branch's body remains,
+    # unconditional.
+    monkeypatch.setenv("FAKE_CLAUDE_FORCE_SCENARIO", "ok_text")
+    captured = _spy_write_session(monkeypatch)
+    options_by_scope = {}
+    for scope in ("1", "0"):
+        monkeypatch.setenv("SELF_LEARN_ENFORCE_SCOPE", scope)
+        logged.clear()
+        captured.clear()
+        seed_pending(env, rid=_next_rid())
+        worker.run(env.home)
+        spec = [c.spec for c in captured if c.spec.surface == "worker"][-1]
+        options_by_scope[scope] = backend_mod.options_kwargs(spec)
+        hatch_lines = [
+            l for l in logged
+            if "enforce" in l.lower() or "hatch" in l.lower() or "ENFORCE_SCOPE" in l
+        ]
+        assert hatch_lines == []
+    on, off = options_by_scope["1"], options_by_scope["0"]
+    assert on["permission_mode"] == "default" == off["permission_mode"]
+    assert on["setting_sources"] == [] == off["setting_sources"]
+    assert on["strict_mcp_config"] is True and off["strict_mcp_config"] is True
+    assert on["settings"] is None and off["settings"] is None
+    assert on["disallowed_tools"] == off["disallowed_tools"]
 
 
 # ===================================================================== #
@@ -1760,37 +1683,33 @@ def test_ha4_the_fence_and_silence(backend, env, monkeypatch):
 BIG_PROMPT = "self-learn worker contract >128KiB prompt fixture: " + ("x" * 170_000)
 
 
-def _bg_argv(home: Path) -> list[str]:
-    settings_path = home / "settings.json"
-    settings_path.write_text("{}", encoding="utf-8")
-    return worker.build_argv(home, settings_path)
-
-
 def test_bg1_prompt_not_in_argv(backend, tmp_path, monkeypatch):
     # BLOCKER-1 (code-gate fold): re-routed through `worker._invoke_claude`
     # -- the hand-built `_spec_for`/`write_session` drive never exercised
     # the worker's OWN prompt handling, so a mutation truncating the
     # prompt INSIDE `_invoke_claude` (`M12`) was invisible to this group.
+    # U-cleanup-B rebase (§8.1): there is no argv anymore (`_bg_argv`/
+    # `worker.build_argv` deleted) -- the property this test names ("the
+    # prompt never reaches argv") now means "the prompt appears in none
+    # of `options_kwargs`'s values" (the `test_hd7`/`test_wr1`-shaped
+    # check), since `options_kwargs` is everything the sdk seam actually
+    # sends onward.
     assert len(BIG_PROMPT.encode("utf-8")) > 128 * 1024
     home = tmp_path / "bg1-home"
     home.mkdir()
     captured = _spy_write_session(monkeypatch)
-    argv = _bg_argv(home)
     containment = _worker_containment(home)
-    worker._invoke_claude(argv, BIG_PROMPT, 20.0, home, label="", containment=containment)
+    worker._invoke_claude(BIG_PROMPT, 20.0, home, label="", containment=containment)
     cap = captured[-1]
-    assert BIG_PROMPT not in cap.argv
-    assert all(len(a.encode("utf-8")) <= 128 * 1024 for a in cap.argv)
-    if backend.param == "sdk":
-        kwargs = backend_mod.options_kwargs(cap.spec)
-        assert BIG_PROMPT not in str(kwargs.get("system_prompt"))
+    for value in cap.kwargs.values():
+        assert BIG_PROMPT not in repr(value)
 
 
 # U-cleanup-A DELETE (§8.4, "CLI-only named tests outside the
 # parametrization"; §10.2's non-parametrized census): `test_bg2_cli_
 # prompt_delivered_intact_on_stdin` forced `SELF_LEARN_BACKEND_WORKER=
 # cli` and drove `worker._invoke_claude` through a REAL `CliBackend` ->
-# subprocess-on-PATH transport -- the migrated `claude_cli_shim_worker`
+# subprocess-on-PATH transport -- the migrated `sdk_fake_worker`
 # fixture no longer shims anything onto PATH (it routes through
 # `SdkBackend` -> `fake_claude.py` instead), so the test measurably
 # broke the moment the fixture migrated: `delivered` came back `''`
@@ -1821,9 +1740,8 @@ def test_bg3_sdk_prompt_delivered_intact(sdk_cli_path, tmp_path, monkeypatch):
     monkeypatch.setattr(ClaudeSDKClient, "query", spy_query)
     captured = _spy_write_session(monkeypatch)
 
-    argv = _bg_argv(home)
     containment = _worker_containment(home)
-    worker._invoke_claude(argv, BIG_PROMPT, 20.0, home, label="", containment=containment)
+    worker._invoke_claude(BIG_PROMPT, 20.0, home, label="", containment=containment)
     outcome = captured[-1].outcome
 
     assert recorded_prompts and recorded_prompts[0] == BIG_PROMPT  # witness (i)
@@ -1913,7 +1831,7 @@ def test_ev4_tool_events_string_confined_to_events_module():
 # leaves_no_events_file` asserted the CLI transport produces no
 # `tool-events` file (`EV4`'s own finding: that string is confined to
 # `invocation_sdk/events.py`, an sdk-only module). The migrated
-# `claude_cli_shim_worker` fixture routes `worker.run()` through
+# `sdk_fake_worker` fixture routes `worker.run()` through
 # `SdkBackend` unconditionally now, so the property under test --
 # "a CLI-transport run leaves no events file" -- has no reachable
 # subject left to exercise; the positive property (an sdk-transport run
@@ -1926,22 +1844,18 @@ def test_ev4_tool_events_string_confined_to_events_module():
 # ===================================================================== #
 
 
-def test_fr1_backend_worker_cli_resolves_both_surfaces(tmp_path, monkeypatch, sdk_cli_path):
-    # code-gate MAJOR-1: this criterion was
-    # `test_fr1_backend_worker_sdk_resolves_both_surfaces` -- worker and
-    # worker-repair's own default is now sdk too, so an "sdk" stimulus
-    # would be tautological with the (unset) default. Inverted to "cli":
-    # only a WORKER selector that genuinely governs both surfaces can
-    # resolve both to `CliBackend`.
-    monkeypatch.setenv("SELF_LEARN_BACKEND_WORKER", "cli")
-    from self_learn.invocation import CliBackend as _IndependentCliBackend
-
-    home = tmp_path / "fr1-home"
-    home.mkdir()
-    b1 = invocation.backend_for("worker", home=home)
-    b2 = invocation.backend_for("worker-repair", home=home)
-    assert type(b1) is _IndependentCliBackend
-    assert type(b2) is _IndependentCliBackend
+# U-cleanup-B DELETE (§8.4b, "CLI-only named tests" class):
+# `test_fr1_backend_worker_cli_resolves_both_surfaces` asserted that a
+# WORKER selector pinned to `cli` resolves BOTH `worker` and
+# `worker-repair` to a real `CliBackend` -- `CliBackend` no longer
+# exists (§8.1) and a `cli` pin now REFUSES (`SEL1`-`SEL4`), so this
+# outcome is neither reachable nor a legitimate PASS to assert. The
+# scoping property it protected (the WORKER selector governs BOTH
+# worker surfaces) is still covered structurally by `SELECTOR_FOR_
+# SURFACE["worker-repair"] == SELECTOR_FOR_SURFACE["worker"]`
+# (`test_bk2_selector_mapping_holds`, `test_provider.py`) and
+# behaviourally by `test_fr4_selector_mapping_does_not_cross_govern`
+# below.
 
 
 def test_fr3_default_is_now_sdk(tmp_path, monkeypatch, sdk_absent):
@@ -1960,7 +1874,9 @@ def test_fr3_default_is_now_sdk(tmp_path, monkeypatch, sdk_absent):
         invocation.backend_for("worker", home=home)
     with pytest.raises(invocation.BackendUnavailable):
         invocation.backend_for("worker-repair", home=home)
-    assert invocation.KNOWN_BACKENDS == ("cli", "sdk")
+    # U-cleanup-B: KNOWN_BACKENDS has one member now (§8.1) -- "cli" is
+    # deleted, not merely a second choice this surface avoids.
+    assert invocation.KNOWN_BACKENDS == ("sdk",)
     # instrument half: `git diff 89f8ef7..HEAD -- .../registry.py` empty
     # -- recorded in the build report, not asserted here (`FL-b`).
 

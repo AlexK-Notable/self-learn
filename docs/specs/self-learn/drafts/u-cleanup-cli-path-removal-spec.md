@@ -1108,7 +1108,15 @@ def _cli_backend_unreached_tripwire():
   whole of `src/self_learn`, not just `invocation/`** (`MAJOR-5`: `provider.py`
   carries its own `"cli"` literals at `:109`, `:144`, `:148`, none of which
   r1's `invocation/`-scoped grep reached) — the literal `"cli"` appears only
-  inside `_CLI_RETIRED_MESSAGE` and the provider-side refusal it feeds.
+  inside `_CLI_RETIRED_MESSAGE`, the `registry._resolve` comparison that
+  dispatches it (`if value == "cli":`, `registry.py:56` — the check §5 itself
+  mandates), and the provider-side refusal it feeds (`provider._refused_backend`,
+  `:166`). *(Wording fix, code-gate r1 fold, DIVERGENCE-3: r1–r4's phrasing
+  named the message and the provider refusal but not the registry-side
+  comparison that is the actual first-rung check; nothing about the criterion's
+  intent changed. `invocation_sdk/lifecycle.py:85`,`:197`'s `"cli"` dict key
+  is a pre-existing false positive — the resolved claude binary *path* in the
+  pid sidecar, unrelated to backend selection — and is not in scope for CL3.)*
 - **CL4** **[B]** `grep -rn "subprocess" plugins/self-learn/cli/src/self_learn/invocation/`
   returns **0**.
 - **CL5** **[B]** `TransportSpec` is gone; `TRANSPORT` survives **only** as the
@@ -1120,11 +1128,50 @@ def _cli_backend_unreached_tripwire():
   — **7 import sites in 6 files** (§8.3), including `test_u_fake.py` twice.
 - **CL7** **[B]** `SessionSpec` has no `cli_`-prefixed field.
 - **CL8** **[A]** *(moved from [B]; see AG3)* the three
-  `SELF_LEARN_BACKEND_*=cli` lines are gone from `tests/conftest.py`, **and**
-  — widened per `M-15` — `grep -rn '"cli"' plugins/self-learn/cli/tests`
-  returns matches only inside tests that assert the refusal (SEL1–SEL5). A pin
-  relocated from conftest into a module-level `setenv` would otherwise satisfy
-  r1's CL8 while defeating its purpose.
+  `SELF_LEARN_BACKEND_*=cli` lines are gone from `tests/conftest.py`. **Amended
+  by the code-gate r1 fold (§17):** r1/`M-15`'s wording — "matches only
+  inside tests that assert the refusal (SEL1–SEL5)" — is false of this tree;
+  the gate measured **111 hits / 9 files** and ruled the residue **sanctioned,
+  not a defect**, since no LIVE reachable cli-backend path exists. The
+  discharge condition is reworded to the property actually verified: **the
+  string `"cli"` survives in `plugins/self-learn/cli/tests` only inside these
+  five classes**, each re-measurable —
+  1. **refusal assertions** (SEL1–SEL5-shaped: the test drives a `cli`
+     selection and asserts `BackendUnavailable`/`backend_refused`) — the
+     largest class, ~35 hits.
+  2. **deliberate scoping stimuli** — a *foreign* selector pinned to `"cli"`
+     so a precedence leak would redden a neighboring test (e.g.
+     `test_worker_contract.py` fr4 `:1881`/`:1890`, `test_reader_contract.py`
+     fl3 `:958`/`:962`).
+  3. **SEL6/SEL7 doctor/provider-transcription tests** (`test_dc*`,
+     `test_fl5`) asserting the provider-side refusal agrees with `_resolve`.
+  4. **comments/docstrings** explaining the refusal mechanism or citing this
+     spec's own criteria — never a live branch, checked separately by
+     `grep -rn '== "cli"' plugins/self-learn/cli/tests/*.py`, which must
+     return comments only, **0 live conditionals**.
+  5. **false positives** — a `"cli"` substring inside an unrelated path
+     segment (`.../plugins/self-learn/cli/...`; `test_batch_fixes.py:41`,
+     `test_portability_docs.py:112`,`:151`) or the `invocation_sdk/lifecycle.py`
+     pid-sidecar dict key (`"cli": cli`, the resolved *binary path*, not the
+     invocation backend — read back at `test_invocation_sdk.py:1297`).
+
+  A pin relocated from conftest into a module-level `setenv` still satisfies
+  CL8 *only if* it lands in class 1 or 2 above — i.e. the resulting test
+  either asserts the refusal or is a deliberately-inverted scoping stimulus;
+  a bare pin with no refusal assertion and no scoping purpose would not.
+
+  **Re-measure command (from `plugins/self-learn/cli`):**
+  `grep -rn '"cli"' tests` — expect a nonzero count, currently (2026-08-25,
+  post code-gate-r1 fold) **113 hits / 10 files**
+  (`conftest.py` 1 · `test_batch_fixes.py` 1 · `test_invocation_sdk.py` 1 ·
+  `test_portability_docs.py` 2 · `test_reader_contract.py` 8 ·
+  `test_provider.py` 10 · `test_doctor_invocation.py` 14 ·
+  `test_worker_contract.py` 23 · `test_invocation.py` 25 ·
+  `test_u_sdka.py` 28); companion command
+  `grep -rn '== "cli"' tests/*.py` — expect **0 live conditionals** (comments
+  only). The count moves build to build as tests are added/renamed; the
+  **shape** (dominated by classes 1–3, a handful of comments, a fixed 4 false
+  positives) is what a future gate should re-verify, not the literal number.
 - **CL9** **[B]** `grep -rnE "def (build_argv|write_settings_file|write_reader_settings|_reader_cli_argv_builder|build_reader_argv|_read_argv_flag)\b" plugins/self-learn/cli/src`
   returns **0**, and none of those names appears in any `__all__`
   (`worker.py:99`, `:120`; `analyst.py:76`; `miner.py:77`). A dead public
@@ -1898,3 +1945,69 @@ spec-blocking.
   in live prose. Spec is still the sole untracked file at `ee0d671`; no code
   read or written this round beyond re-measuring the four `test_worker_contract.py`
   line numbers.
+- **r5, 2026-08-25** — phase-B **code-gate r1** fold (**NOT CLEAN**: 0
+  BLOCKER, 2 MAJOR, 3 DIVERGENCE, 8 NIT; no code defect — deletion exact,
+  refusal correct at every rung, doctrine byte-identical, `S-48`'s `M11`
+  reproduces, `M-1`/`M-2`/`M-5`/`M-18` all verified, counts reconcile, suites
+  green, both MAJORs are criterion-instrument gaps).
+  **MAJOR-1:** `CV7` **[B]**'s own command,
+  `uv run pytest --fixtures-per-test | grep -cE "^claude_(cli_)?shim"`,
+  returned **132** against a criterion of **0** — the property held (both
+  fixtures are phase-A SDK-backed via `tests/fixtures/fake_claude.py`, no
+  bash `claude` written) but the names `claude_cli_shim_worker`/
+  `claude_cli_shim_analyst` lied in a tree with no CLI backend, so the
+  instrument could not discharge its own criterion. **Fix:** renamed to
+  `sdk_fake_worker`/`sdk_fake_analyst` across every use site (10 files: this
+  draft's product files untouched, only `tests/*`); `CV7`'s command now
+  prints **0**. Armor updated: 6 `_ARMOR_SHAS` whole-file re-pins
+  (`conftest.py`, `test_invocation.py`, `test_invocation_sdk.py`,
+  `test_u_fake.py`, `test_worker.py`, `test_repair.py`), one numstat `bounds`
+  row (`test_invocation_sdk.py`), and `test_route_cli.py`'s 7-function
+  `_ARMOR_21_BY_FILE` entry moved to `_EDITED_CURRENT_NAMES` (the byte-identity
+  pin no longer holds across a signature-level rename).
+  **MAJOR-2:** `CL8` as worded by r1–r4 was false of this tree — the gate
+  measured **111 hits / 9 files** against `plugins/self-learn/cli/tests` and
+  ruled the residue **sanctioned** (no live reachable cli-backend path; the
+  only two `src`-side hits are the refusal mechanisms themselves). **Fix:**
+  `CL8` reworded in place (above) to the property actually verified — five
+  named classes (refusal assertions, scoping stimuli, SEL6/SEL7
+  doctor/provider tests, comments/docstrings, false positives), each with a
+  re-measurable count and the literal grep commands. Re-measured post-fold:
+  **113 hits / 10 files** (the +1/+1 vs. the gate's figure is this round's own
+  `conftest.py` comment fix, itself class 4).
+  **Ruling carried forward:** the builder's 5-site `provider.py` message-text
+  fix (`backend=cli` → `backend=REFUSED (cli retired)`) was **IN MANDATE, not
+  scope creep** — verified correct at every site; no further change made here.
+  **DIVERGENCE-1** (§11.1 location: `T-DOCTRINE-REACHES-SDK` shipped as
+  `test_m5_…` in `test_invocation.py` rather than `test_u_sdka.py`) and
+  **DIVERGENCE-2** (`test_ar3`'s machine-checked bookkeeping covers 3 of 10
+  changed test files, the rest documented by in-file comment only) are
+  informational — the gate verified both by hand and required no fix.
+  **DIVERGENCE-3** (`CL3`'s wording didn't name `registry.py:56`'s own
+  `if value == "cli":` comparison) is fixed above, folded into `CL3` directly.
+  **NITs 1–3** (footprint is 34 modified + 2 deleted, not 31+2;
+  `M-11`'s blast is 52 uncollectable modules, not "2 files"; §11.1 added 9
+  net-new node ids, not 3) are reporting-accuracy corrections with no code or
+  spec change — recorded here so a future gate's own recount isn't read as a
+  fresh finding. **NIT-4** (`worker.write_repair_settings_file` is now a dead
+  write at `worker.py:3224` — spec-conformant, §8.1 deliberately keeps the
+  function) is closed with a new row in `14-forward-work-map.md`, code
+  untouched. **NIT-5** (`tests/conftest.py`'s AG1-tripwire paragraph was
+  stale) fixed in place. **NIT-6** (`tests/test_miner.py:774`, the
+  permanently-skipped dead-subject test holding the suite's last *functional*
+  inline bash `claude` shim) deleted per A's inherit list, disposition
+  comment added; `test_reader_contract.py`'s `_shadow_claude` decoy — a
+  negative control that answers nothing — is a different, surviving,
+  deliberately-kept mechanism and was not this NIT's subject. **NIT-7**
+  (`test_ha1_cli_hatch_open_omits_default_mode`, re-baselined where §8.4/
+  §3.4(a) said delete, still carried the old name) renamed to
+  `test_ha1_hatch_open_omits_default_mode`. **NIT-8** (`S-49` dropped §14's
+  bound "and is not more than that" on the single production datapoint;
+  `test_hy5_numstat_bounds_hold`'s `if not out: continue` is fail-open for an
+  untouched file) — the four words restored verbatim in `03-decisions.md`;
+  the fail-open shape now carries an explanatory comment in
+  `test_u_sdka.py` (behaviour unchanged, all 9 `bounds` rows still fire in
+  this build).
+  All measurements re-run foreground from `plugins/self-learn/cli` under
+  `env -u SELF_LEARN_ANALYST_MODEL -u SELF_LEARN_ANALYST_TIMEOUT`, rc
+  captured unpiped. Tree left uncommitted throughout, branch `u-cleanup-b`.

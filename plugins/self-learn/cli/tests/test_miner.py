@@ -743,60 +743,51 @@ def test_failed_reader_keeps_cursors(home, transcripts, monkeypatch):
 # --------------------------------------------------- reader containment
 
 
-def test_reader_argv_and_settings(home, monkeypatch):
-    monkeypatch.setenv("SELF_LEARN_MINER_MODEL", "claude-test-model")
-    settings = miner.write_reader_settings()
-    settings_data = json.loads(settings.read_text())["permissions"]
-    rules = settings_data["allow"]
-    assert len(rules) == 1
-    assert rules[0].startswith("Edit(/") and rules[0].endswith("/spool/**)")
-    assert str(home) not in rules[0]  # repo entirely out of write reach
-    # security hotfix: without an explicit defaultMode, the session
-    # inherits the host's global permissions.defaultMode (which may be
-    # "bypassPermissions"), voiding the allow-rule above.
-    assert settings_data["defaultMode"] == "default"
-    argv = miner.build_reader_argv(settings)
-    # audit B1: the prompt is NEVER in argv (128 KiB kernel cap) — stdin.
-    assert argv[:2] == ["claude", "-p"]
-    assert "PROMPT" not in argv
-    assert "claude-test-model" in argv
-    # injection hardening: the reader gets NO filesystem tools at all —
-    # its whole evidence base is in the prompt.
-    assert "--allowedTools" not in argv
-    j = argv.index("--disallowedTools")
-    for tool in ("Bash", "Edit", "Read", "Grep", "Glob", "WebFetch"):
-        assert tool in argv[j + 1]
+# U-cleanup-B DELETE (§8.4a: "test_hosting.py, test_miner.py:746 and
+# test_lock_invariant.py:148 cannot be migrated: their subject -- that a
+# settings file is written to a particular place -- is deleted"):
+# `test_reader_argv_and_settings` drove `miner.write_reader_settings` and
+# `miner.build_reader_argv`, both deleted (§8.1/§8.3) -- the reader round
+# has no argv and no on-disk settings file any more (`options_kwargs(spec)`
+# feeds the sdk seam directly, `settings=None`). Every guarantee this test
+# checked survives elsewhere against the real sdk transport:
+#   - allow-rule scoped to .../spool/**, repo out of write reach ->
+#     test_reader_contract.py::test_ct2_options_kwargs_matches_c_c_table_
+#     and_key_set, test_ct4_write_to_spool_artifact_allowed_lands_on_disk,
+#     test_ct5_write_outside_spool_denied_two_targets
+#   - defaultMode "default" (the security hotfix) ->
+#     test_reader_contract.py::test_ct2 (settings=None pins the same
+#     default-mode contract at the containment layer)
+#   - no filesystem tools reach the model (Bash/Edit/Read/Grep/Glob/
+#     WebFetch denied) ->
+#     test_reader_contract.py::test_ct6_read_grep_glob_denied_with_step1_
+#     wording, test_ct5, test_ct8_hatch_permanently_closed_even_with_
+#     enforce_scope_unset
+#   - prompt never in argv, always on stdin (audit B1) ->
+#     test_reader_contract.py::test_rc7_prompt_reaches_the_model_on_
+#     stdin_never_argv
+#   - no dead settings file survives under the cache dir ->
+#     test_reader_contract.py::test_rc8_no_dead_settings_write_under_
+#     the_cache_dir
 
 
-@pytest.mark.skip(
-    reason="U-cleanup-A: E2BIG-via-argv is a CliBackend transport-mechanics "
-    "concern that cannot recur under SdkBackend (the prompt never touches "
-    "argv/exec at all, sdk or cli-legacy alike) -- the >128KiB-prompt/"
-    "on-stdin-never-argv property this test protects is now covered "
-    "against the real sdk transport by "
-    "test_reader_contract.py::test_rc7_prompt_reaches_the_model_on_stdin_"
-    "never_argv (200KiB, spies the real wire + the real child's argv log)."
-)
-def test_reader_survives_oversize_prompt(home, tmp_path, monkeypatch):
-    """Audit B1 regression: a >128 KiB prompt must reach the reader (via
-    stdin) instead of crashing exec with E2BIG — exercised through the
-    REAL exec path with a PATH shim."""
-    shims = tmp_path / "shims-big"
-    shims.mkdir()
-    spool = miner.spool_dir()
-    got = tmp_path / "got-prompt"
-    shim = shims / "claude"
-    shim.write_text(
-        "#!/usr/bin/env bash\n"
-        f'cat > "{got}"\n'
-        f'echo \'{{"candidates": [], "fires": []}}\' > "{spool}/{miner.OUTPUT_BASENAME}"\n'
-    )
-    shim.chmod(0o755)
-    monkeypatch.setenv("PATH", f"{shims}:/usr/bin")
-    big_prompt = "X" * 300_000  # > the 131072-byte argv limit
-    out = miner._invoke_reader(home, big_prompt)
-    assert out is not None and out.is_file()
-    assert got.stat().st_size == 300_000
+# U-cleanup-B DELETE (code gate r1, NIT-6): `test_reader_survives_
+# oversize_prompt` -- left `@pytest.mark.skip`ped by Phase A with no
+# further disposition, per A's inherit list. Its subject (E2BIG-via-
+# argv on a >128KiB prompt) is a `CliBackend` transport-mechanics
+# concern that cannot recur under `SdkBackend` -- the prompt never
+# touches argv/exec at all -- and its own skip reason already named
+# the replacement: `test_reader_contract.py::test_rc7_prompt_reaches_
+# the_model_on_stdin_never_argv` (200KiB, spies the real wire + the
+# real child's argv log). This was also the suite's LAST surviving
+# FUNCTIONAL inline bash `claude` shim -- one whose script actually
+# answers on the model's behalf (writes an `OUTPUT_BASENAME` payload)
+# rather than existing purely as a PATH-hygiene negative control.
+# `test_reader_contract.py::_shadow_claude` still writes a decoy to a
+# `shims/claude` path -- deliberately, per its own docstring: it
+# exits 1 and answers nothing, a tripwire for "this leg should never
+# reach here", not a functioning fake CLI. That one is not this NIT's
+# subject and stays.
 
 
 def test_artifact_contract_sweeps_strays(home, tmp_path, monkeypatch):

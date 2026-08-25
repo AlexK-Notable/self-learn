@@ -13,15 +13,14 @@ from __future__ import annotations
 import ast
 import hashlib
 import inspect
-import os
 import re
 import subprocess
 from pathlib import Path
 
 import pytest
 
-from test_worker import claude_cli_shim_worker, env  # noqa: F401 -- fixtures resolved by name
-from test_route_cli import claude_cli_shim_analyst  # noqa: F401 -- fixture resolved by name
+from test_worker import sdk_fake_worker, env  # noqa: F401 -- fixtures resolved by name
+from test_route_cli import sdk_fake_analyst  # noqa: F401 -- fixture resolved by name
 
 TESTS_DIR = Path(__file__).parent
 
@@ -32,8 +31,12 @@ GUARDED = (
     "test_route_cli.py",
     "test_composer.py",
 )
-ADDED = ("test_u_fake.py", "shims.py", "backends.py")
-FIXTURE_NAMES = ("claude_cli_shim_worker", "claude_cli_shim_analyst")
+# U-cleanup-B (§8.3): `shims.py` is deleted along with the rest of the
+# CLI transport -- dropped from ADDED (SH3 below scans this set for a
+# bare single-element `claude` argv literal; a deleted file has nothing
+# to scan).
+ADDED = ("test_u_fake.py", "backends.py")
+FIXTURE_NAMES = ("sdk_fake_worker", "sdk_fake_analyst")
 LEGACY_NAME = "claude_shim"
 
 #: §3.1 `REWRITTEN` -- the top-level functions this unit may rewrite, as
@@ -43,12 +46,13 @@ LEGACY_NAME = "claude_shim"
 #: `test_ds2` enforces that every `REWRITTEN` entry still resolves in
 #: its module, which a deletion can never satisfy.
 #: `test_e1_timeouts_read_not_hardcoded` keeps its name (not a rename)
-#: but lost its `subprocess.run`-capturing half to the new
-#: `test_e1b_cli_timeout_reaches_subprocess_run` (`DS1_ADDED`) -- a body
-#: edit on an otherwise-unchanged, still-present function, exactly what
-#: `REWRITTEN` is for. `test_attrib.py`'s `_simple_shim` and
-#: `test_composer.py`'s `_shim_env` are the same bash-PATH-shim ->
-#: sdk-env-vars rewrite as `claude_cli_shim_worker`/`claude_cli_shim_
+#: but lost its `subprocess.run`-capturing half to the (now also
+#: deleted, U-cleanup-B §8.4b/AG1) `test_e1b_cli_timeout_reaches_
+#: subprocess_run` -- a body edit on an otherwise-unchanged, still-
+#: present function, exactly what `REWRITTEN` is for. `test_attrib.py`'s
+#: `_simple_shim` and `test_composer.py`'s `_shim_env` are the same
+#: bash-PATH-shim ->
+#: sdk-env-vars rewrite as `sdk_fake_worker`/`claude_cli_shim_
 #: analyst`, just under their ORIGINAL names (neither is a fixture with
 #: dependent callers to keep stable, so no rename was needed).
 #: `test_a12b_trace_less_deletion_and_pipeline_not_dead_control` carried
@@ -58,12 +62,31 @@ LEGACY_NAME = "claude_shim"
 #: transport-only under sdk) -- ALSO tracked, separately, by `test_u_
 #: sdka.py`'s own `_ARMOR_21_BY_FILE`/`_AR3_*` mechanism (two
 #: independent armor systems watch this same file; both must agree).
+#: U-cleanup-B (§8.1/§8.4a): `worker.write_settings_file` is deleted --
+#: the batch round no longer writes a settings file at all. Six
+#: `test_attrib.py` tests that used to read that file back now call the
+#: new `_batch_permissions`/`_capture_batch_permissions` helpers instead
+#: (`DS1_ADDED` below) -- an edited body on an otherwise-unchanged,
+#: still-present test, exactly what `REWRITTEN` is for.
 REWRITTEN = (
-    ("test_worker.py", "claude_cli_shim_worker"),
+    ("test_worker.py", "sdk_fake_worker"),
     ("test_worker.py", "notify_shim"),
     ("test_repair.py", "test_e1_timeouts_read_not_hardcoded"),
+    ("test_repair.py", "_next_run_scripts"),
+    ("test_repair.py", "test_f6_no_test_invokes_a_real_claude"),
+    ("test_repair.py", "test_h4_every_new_line_in_obs1_is_produced_and_pinned"),
     ("test_attrib.py", "_simple_shim"),
-    ("test_route_cli.py", "claude_cli_shim_analyst"),
+    ("test_attrib.py", "test_hy1_no_test_in_the_suite_invokes_a_real_claude"),
+    ("test_attrib.py", "test_gr1_settings_files_enforce_defaultmode"),
+    ("test_attrib.py", "test_gr2_batch_invocation_granted_the_stage_and_nothing_else"),
+    ("test_attrib.py", "test_gr4_write_permission_rules_preserved_for_the_fallback"),
+    ("test_attrib.py", "test_cp8_testworkercontainment_asserts_new_containment_and_h3"),
+    ("test_attrib.py", "test_sw1_self_learn_stage_0_reverts_the_namespace_end_to_end"),
+    (
+        "test_attrib.py",
+        "test_sw2_self_learn_enforce_scope_0_reverts_enforcement_and_only_that",
+    ),
+    ("test_route_cli.py", "sdk_fake_analyst"),
     ("test_route_cli.py", "test_teach_route_analyst_routes_to_shim_destination"),
     ("test_composer.py", "_capture_analyst_prompt"),
     ("test_composer.py", "_shim_env"),
@@ -108,12 +131,22 @@ DS1_REMOVED = (
 #: reason -- excluded from BOTH sides' extraction so a head-only name
 #: doesn't read as an unaccounted body change against a base that never
 #: had it. `test_composer_analyst_fails_ro5` closes a genuine coverage
-#: gap (`RO-5`/`CV6`, see its own docstring); `test_e1b_cli_timeout_
-#: reaches_subprocess_run` is the CliBackend-only half split out of
-#: `test_e1_timeouts_read_not_hardcoded` (skip-decorated, `AG1`).
+#: gap (`RO-5`/`CV6`, see its own docstring).
+#: `_batch_permissions`/`_capture_batch_permissions` (U-cleanup-B,
+#: §8.1/§8.4a) are `test_attrib.py`'s replacement for the deleted
+#: `worker.write_settings_file` -- new top-level helpers, no base
+#: counterpart, called by the six `REWRITTEN` `test_attrib.py` entries
+#: above.
+#: `test_e1b_cli_timeout_reaches_subprocess_run` (the CliBackend-only
+#: half split out of `test_e1_timeouts_read_not_hardcoded`,
+#: skip-decorated, `AG1`) was here U-cleanup-A -- U-cleanup-B deletes
+#: the function outright (§8.4b), so it needs no exclusion entry at all
+#: any more: absent from both head and base, there is nothing for
+#: `_extract_guarded_functions` to find on either side.
 DS1_ADDED = (
     ("test_composer.py", "test_composer_analyst_fails_ro5"),
-    ("test_repair.py", "test_e1b_cli_timeout_reaches_subprocess_run"),
+    ("test_attrib.py", "_batch_permissions"),
+    ("test_attrib.py", "_capture_batch_permissions"),
 )
 
 #: The three `test_fold5_*` MOVE1 tests specifically -- NOT derived by
@@ -162,14 +195,14 @@ PROMPT_ASSERTIONS_BY_LEG = {
 
 def _inverse_rename(name: str) -> str:
     """`FZ-b` step 3."""
-    if name in ("claude_cli_shim_worker", "claude_cli_shim_analyst"):
+    if name in ("sdk_fake_worker", "sdk_fake_analyst"):
         return "claude_shim"
     return name
 
 
 def _inverse_rename_text(text: str) -> str:
-    return text.replace("claude_cli_shim_worker", "claude_shim").replace(
-        "claude_cli_shim_analyst", "claude_shim"
+    return text.replace("sdk_fake_worker", "claude_shim").replace(
+        "sdk_fake_analyst", "claude_shim"
     )
 
 
@@ -230,8 +263,8 @@ def _extract_named_function(source: str, name: str) -> str:
 #: they do not move merely because the extractor broke.
 _DS1_EXPECTED = {
     "test_worker.py": (59, "8514b90da632cd3fb1be4c007c98a8e733f07a673b85b265f981afe0df4d682a"),
-    "test_repair.py": (67, "d683914ad7e2850b7afc5225c72f613418289cf928ac18fbaea4a6621100de43"),
-    "test_attrib.py": (47, "86b0d7619c0cf51ebeae66e35d5c644c8c6eae8cc4310b7b7b780b38d6221302"),
+    "test_repair.py": (64, "c3af3b925322601fda320e44c4c48ad1e1d5f2e984551bbd6adbfb9ab33dea52"),
+    "test_attrib.py": (40, "d7b274c779656cfbcf133a62efce5435cc2441e6091d68329e0795dc42573418"),
     "test_route_cli.py": (39, "ef6048a64b7e260adf5be14507b8d3dba1b6906bc6199f5b3bf5688ed426c9ba"),
     "test_composer.py": (40, "479a3caf84e427a86df6eb17ecefa2ede57a85185df79ff43defe0c9e5f931ec"),
 }
@@ -271,8 +304,8 @@ def test_fx1_no_claude_shim_def_statement_anywhere():
     import test_route_cli
 
     for module, name in (
-        (test_worker, "claude_cli_shim_worker"),
-        (test_route_cli, "claude_cli_shim_analyst"),
+        (test_worker, "sdk_fake_worker"),
+        (test_route_cli, "sdk_fake_analyst"),
     ):
         fn = getattr(module, name)
         assert hasattr(fn, "_fixture_function_marker"), (module.__name__, name)
@@ -284,12 +317,12 @@ def test_fx1_no_claude_shim_def_statement_anywhere():
                 assert node.name != LEGACY_NAME, f"{path.name}:{node.lineno}"
 
 
-def test_fx2_worker_fixture_shape(claude_cli_shim_worker):
-    """FX2 -- `claude_cli_shim_worker`'s returned dict has exactly the
+def test_fx2_worker_fixture_shape(sdk_fake_worker):
+    """FX2 -- `sdk_fake_worker`'s returned dict has exactly the
     base key set; `dir`/`log`/`prompt` are `Path`s, `argv`/`call_prompt`/
     `count` are callables. Driven by REQUESTING the fixture, not by
     reading source."""
-    d = claude_cli_shim_worker
+    d = sdk_fake_worker
     assert set(d.keys()) == {"log", "prompt", "dir", "argv", "call_prompt", "count"}
     for key in ("dir", "log", "prompt"):
         assert isinstance(d[key], Path), key
@@ -297,24 +330,27 @@ def test_fx2_worker_fixture_shape(claude_cli_shim_worker):
         assert callable(d[key]), key
 
 
-def test_fx2_analyst_fixture_shape(claude_cli_shim_analyst):
-    """FX2 -- `claude_cli_shim_analyst`'s returned dict has exactly the
+def test_fx2_analyst_fixture_shape(sdk_fake_analyst):
+    """FX2 -- `sdk_fake_analyst`'s returned dict has exactly the
     base key set, all four values `Path`s. `"prompt"` (U-cleanup-A: the
     sdk-backed replacement's prompt-log capture, `FAKE_CLAUDE_PROMPT_LOG`)
     joined the original three when the fixture was rebased onto
     `SdkBackend` -> `fake_claude.py` -- the bash shim had no equivalent
     (the prompt rode argv, never a logged file of its own)."""
-    d = claude_cli_shim_analyst
+    d = sdk_fake_analyst
     assert set(d.keys()) == {"log", "out", "cwd", "prompt"}
     for key in ("log", "out", "cwd", "prompt"):
         assert isinstance(d[key], Path), key
 
 
-def test_fx4_compat_alias_is_singular():
-    """FX4 -- `Compat-1`'s alias appears exactly once (an AST `Assign`
-    binding `claude_shim` to `claude_cli_shim_worker`, module-level, in
-    `test_repair.py`), and exactly one module (`test_invocation.py`)
-    imports the legacy name."""
+def test_fx4_compat_alias_is_extinct():
+    """FX4, U-cleanup-B RE-BASELINE (§8.3, `R-1`): `Compat-1`'s alias
+    (`claude_shim = sdk_fake_worker`, module-level in
+    `test_repair.py`) is DELETED, and `test_invocation.py` (its one
+    importer) now imports `sdk_fake_worker` directly. Inverted
+    from FX4's original "appears exactly once" shape to its natural
+    successor: a tripwire against the alias, or an importer of the
+    legacy name, ever being reintroduced."""
     alias_sites = []
     importer_sites = []
     for path in sorted(TESTS_DIR.glob("*.py")):
@@ -326,7 +362,7 @@ def test_fx4_compat_alias_is_singular():
                 and isinstance(node.targets[0], ast.Name)
                 and node.targets[0].id == LEGACY_NAME
                 and isinstance(node.value, ast.Name)
-                and node.value.id == "claude_cli_shim_worker"
+                and node.value.id == "sdk_fake_worker"
             ):
                 alias_sites.append(path.name)
         for node in ast.walk(tree):
@@ -335,8 +371,8 @@ def test_fx4_compat_alias_is_singular():
                     if alias.name == LEGACY_NAME:
                         importer_sites.append(path.name)
 
-    assert alias_sites == ["test_repair.py"], alias_sites
-    assert importer_sites == ["test_invocation.py"], importer_sites
+    assert alias_sites == [], alias_sites
+    assert importer_sites == [], importer_sites
 
 
 def test_fx5_renamed_fixture_did_not_rename_two_tests():
@@ -363,37 +399,10 @@ def test_fx5_renamed_fixture_did_not_rename_two_tests():
 # ===================================================================== #
 
 
-def test_sh1_emitted_shim_bytes_are_sha_pinned(tmp_path):
-    """SH1 -- for a FIXED set of input paths (`SH-a1`: the emitted bytes
-    are a function of them), each builder emits a file whose sha256
-    equals a hex literal generated by driving the BASE `claude_shim`
-    fixture at `c2669a9` with these exact literal paths (§9's provenance
-    recipe), never this unit's own builder. Neither builder's caller-
-    supplied write LOCATION (`shims_dir`/`shim_dir`) is among the
-    interpolated paths (`SH-d`), so a throwaway `tmp_path` is used for
-    the actual write."""
-    from shims import write_worker_claude_shim, write_analyst_claude_shim
-
-    counter = Path("/tmp/u-fake-sh1/claude-invocation-count")
-    log = Path("/tmp/u-fake-sh1/claude-argv.log")
-    prompt_log = Path("/tmp/u-fake-sh1/claude-prompt.log")
-    calls_dir = Path("/tmp/u-fake-sh1/claude-calls")
-
-    worker_shim = write_worker_claude_shim(
-        tmp_path, counter=counter, log=log, prompt_log=prompt_log, calls_dir=calls_dir
-    )
-    assert hashlib.sha256(worker_shim.read_bytes()).hexdigest() == (
-        "52fe3084b39ae2e37a1db5a0681cb4a70dde80b3c1409fde14e898f798ffb9e3"
-    )
-    assert os.access(worker_shim, os.X_OK)
-
-    shim_bin = tmp_path / "shim-bin"
-    shim_bin.mkdir()
-    analyst_shim = write_analyst_claude_shim(shim_bin)
-    assert hashlib.sha256(analyst_shim.read_bytes()).hexdigest() == (
-        "961e3f64946e8cf81db312f87249b27e0f2f2bb32f4e7d09f079f287603d53ef"
-    )
-    assert os.access(analyst_shim, os.X_OK)
+# U-cleanup-B DELETE (§8.3): `test_sh1_emitted_shim_bytes_are_sha_pinned`
+# pinned `shims.write_worker_claude_shim`/`write_analyst_claude_shim`'s
+# emitted byte shape directly -- both functions, and the module that
+# defined them, are deleted along with the rest of the CLI transport.
 
 
 def test_sh2_fixture_retains_the_three_guarded_literals():
@@ -401,7 +410,7 @@ def test_sh2_fixture_retains_the_three_guarded_literals():
     stay IN the fixture, not in `shims.py`. The two path literals are
     checked on the AST -- an `Assign` whose VALUE expression carries the
     literal, i.e. the CODE computes that path -- never by a raw
-    source-text search: `claude_cli_shim_worker`'s own DOCSTRING also
+    source-text search: `sdk_fake_worker`'s own DOCSTRING also
     mentions both words in prose, so a text search stays green even
     after the computing `Assign` moves to `shims.py` (gate MAJOR 1,
     `M6`; the shipped `test_attrib.py::test_hy1_...`'s B-2 legs share
@@ -409,7 +418,7 @@ def test_sh2_fixture_retains_the_three_guarded_literals():
     frozen beyond the mechanical rename)."""
     import test_worker
 
-    src = inspect.getsource(test_worker.claude_cli_shim_worker)
+    src = inspect.getsource(test_worker.sdk_fake_worker)
     tree = ast.parse(src)
     func_node = tree.body[0]
     assert isinstance(func_node, (ast.FunctionDef, ast.AsyncFunctionDef))
@@ -422,11 +431,11 @@ def test_sh2_fixture_retains_the_three_guarded_literals():
                     computed_literals.add(sub.value)
 
     assert "claude-invocation-count" in computed_literals, (
-        "no Assign in claude_cli_shim_worker COMPUTES a path containing "
+        "no Assign in sdk_fake_worker COMPUTES a path containing "
         "'claude-invocation-count' — has the counter assignment moved to shims.py?"
     )
     assert "claude-calls" in computed_literals, (
-        "no Assign in claude_cli_shim_worker COMPUTES a path containing "
+        "no Assign in sdk_fake_worker COMPUTES a path containing "
         "'claude-calls' — has the calls_dir assignment moved to shims.py?"
     )
     assert (
@@ -448,34 +457,10 @@ def test_sh3_new_modules_carry_no_bare_claude_argv():
             assert not pattern.search(line), (name, i, line)
 
 
-def test_sh4_shims_public_surface_is_honest():
-    """SH4 -- `__all__` non-empty; every export has an in-suite call
-    site (`SH-c`); no export is fixture-marked (`D-8`); `shims.py`
-    imports nothing from `self_learn` or any `test_*` module (`SH-b`)."""
-    import shims
-
-    assert shims.__all__
-
-    other_src = "\n".join(
-        p.read_text(encoding="utf-8")
-        for p in sorted(TESTS_DIR.glob("*.py"))
-        if p.name != "shims.py"
-    )
-    for name in shims.__all__:
-        assert re.search(rf"\b{re.escape(name)}\s*\(", other_src), name
-        obj = getattr(shims, name)
-        assert not hasattr(obj, "_fixture_function_marker"), name
-
-    tree = ast.parse((TESTS_DIR / "shims.py").read_text(encoding="utf-8"))
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                assert not alias.name.startswith("self_learn"), alias.name
-                assert not alias.name.startswith("test_"), alias.name
-        elif isinstance(node, ast.ImportFrom):
-            mod = node.module or ""
-            assert not mod.startswith("self_learn"), mod
-            assert not mod.startswith("test_"), mod
+# U-cleanup-B DELETE (§8.3): `test_sh4_shims_public_surface_is_honest`
+# checked `shims.__all__`'s exports directly and AST-scanned `shims.py`'s
+# own imports for `self_learn`/`test_*` leakage -- the whole module is
+# deleted.
 
 
 # ===================================================================== #
@@ -493,7 +478,7 @@ def _minimal_session_spec(tmp_path, prompt="p"):
         timeout=5.0,
         containment=containment_for("analyst"),
         log=lambda _msg: None,
-        cli_argv_builder=lambda _settings: ["claude", "-p", prompt],
+        doctrine=None,
     )
 
 
@@ -547,10 +532,11 @@ def test_bk2_assert_fake_was_used_fires_on_an_unused_fake(request, monkeypatch, 
 
 
 def test_bk3_backends_public_surface_is_honest():
-    """BK3 -- as `SH4`'s first two legs, for `backends.py`: `__all__`
-    non-empty, every export consumed in-suite. The import legs do not
-    apply (`BK-d`: `backends.py` DOES import from `self_learn.invocation`,
-    which is required)."""
+    """BK3 -- as the now-deleted `SH4`'s first two legs (U-cleanup-B,
+    §8.3: `shims.py` and its own honesty check are gone) once checked for
+    `shims.py`, for `backends.py`: `__all__` non-empty, every export
+    consumed in-suite. The import legs do not apply (`BK-d`: `backends.py`
+    DOES import from `self_learn.invocation`, which is required)."""
     import backends
 
     assert backends.__all__
@@ -586,29 +572,32 @@ def test_t1a_move1_tests_keep_all_eight_prompt_assertions():
 
 
 def test_t1b_move1_tests_assert_the_fake_was_reached():
-    """T1b -- each of the three contains `assert len(fake.argvs) == 1`,
-    so a fall-through to a real `CliBackend` cannot satisfy them
-    (`M33`, not `M9` -- `M9` mutates `backends.py`, which this source
-    read never looks at)."""
+    """T1b -- each of the three contains `assert len(fake.prompts) == 1`,
+    so a fall-through to a real backend cannot satisfy them (`M33`, not
+    `M9` -- `M9` mutates `backends.py`, which this source read never
+    looks at). U-cleanup-B rebase (§8.1): the literal moved from
+    `fake.argvs` to `fake.prompts` -- `CliBackend` is deleted and there
+    is no argv left to count."""
     import test_composer
 
     for name in MOVE1_TEST_NAMES:
         src = inspect.getsource(getattr(test_composer, name))
-        assert "assert len(fake.argvs) == 1" in src, name
+        assert "assert len(fake.prompts) == 1" in src, name
 
 
 def test_t1c_move1_tests_keep_the_argv_shape_assertions():
-    """T1c -- each of the three still asserts `fake.argvs[0][0] ==
-    "claude"` and `fake.argvs[0][1] == "-p"` and reads the prompt from
-    `fake.argvs[0][2]` -- the analyst's prompt-rides-argv property,
-    preserved across the swap (`MV-c`)."""
+    """T1c -- U-cleanup-B RE-BASELINE (§8.1): the argv-shape assertions
+    this test originally named (`fake.argvs[0][0] == "claude"`, etc.)
+    have no surviving subject -- `analyst.build_argv` is deleted and
+    there is no argv anymore. What survives is the property those
+    assertions served: each of the three still reads the composed
+    prompt from `fake.prompts[0]`, the analyst's own real `SessionSpec.
+    prompt` field, not a hand-recomputed value (`MV-c`)."""
     import test_composer
 
     for name in MOVE1_TEST_NAMES:
         src = inspect.getsource(getattr(test_composer, name))
-        assert 'fake.argvs[0][0] == "claude"' in src, name
-        assert 'fake.argvs[0][1] == "-p"' in src, name
-        assert "fake.argvs[0][2]" in src, name
+        assert "prompt = fake.prompts[0]" in src, name
 
 
 # ===================================================================== #
@@ -690,7 +679,7 @@ def test_ds1_t3_function_bodies_survive_the_inverse_rename():
     base_notify = _extract_named_function(notify_base_source, "notify_shim")
     assert _inverse_rename_text(head_notify) == base_notify, (
         "notify_shim changed beyond its licensed parameter rename "
-        "(claude_shim -> claude_cli_shim_worker) — run: git diff "
+        "(claude_shim -> sdk_fake_worker) — run: git diff "
         f"{BASE_REF}..HEAD -- plugins/self-learn/cli/tests/test_worker.py"
     )
 
@@ -700,11 +689,30 @@ def test_ds2_rewritten_set_is_exact_and_every_entry_is_live():
     table (a stale OR an added entry is caught, not just a missing one),
     and every entry names a function that exists in its module."""
     expected = {
-        ("test_worker.py", "claude_cli_shim_worker"),
+        ("test_worker.py", "sdk_fake_worker"),
         ("test_worker.py", "notify_shim"),
         ("test_repair.py", "test_e1_timeouts_read_not_hardcoded"),
+        ("test_repair.py", "_next_run_scripts"),
+        ("test_repair.py", "test_f6_no_test_invokes_a_real_claude"),
+        ("test_repair.py", "test_h4_every_new_line_in_obs1_is_produced_and_pinned"),
         ("test_attrib.py", "_simple_shim"),
-        ("test_route_cli.py", "claude_cli_shim_analyst"),
+        ("test_attrib.py", "test_hy1_no_test_in_the_suite_invokes_a_real_claude"),
+        ("test_attrib.py", "test_gr1_settings_files_enforce_defaultmode"),
+        (
+            "test_attrib.py",
+            "test_gr2_batch_invocation_granted_the_stage_and_nothing_else",
+        ),
+        ("test_attrib.py", "test_gr4_write_permission_rules_preserved_for_the_fallback"),
+        (
+            "test_attrib.py",
+            "test_cp8_testworkercontainment_asserts_new_containment_and_h3",
+        ),
+        ("test_attrib.py", "test_sw1_self_learn_stage_0_reverts_the_namespace_end_to_end"),
+        (
+            "test_attrib.py",
+            "test_sw2_self_learn_enforce_scope_0_reverts_enforcement_and_only_that",
+        ),
+        ("test_route_cli.py", "sdk_fake_analyst"),
         ("test_route_cli.py", "test_teach_route_analyst_routes_to_shim_destination"),
         ("test_composer.py", "_capture_analyst_prompt"),
         ("test_composer.py", "_shim_env"),
@@ -725,7 +733,7 @@ def test_ds2_rewritten_set_is_exact_and_every_entry_is_live():
             "test_fold5_honest_sentinel_when_project_path_truly_not_supplied",
         ),
     }
-    assert len(REWRITTEN) == 12
+    assert len(REWRITTEN) == 22
     assert set(REWRITTEN) == expected
 
     for module, name in REWRITTEN:
@@ -766,14 +774,15 @@ def test_ds1b_removed_set_is_exact_and_every_entry_is_base_only():
 
 def test_ds1c_added_set_is_exact_and_every_entry_is_head_only():
     """DS1c -- the mirror image of `DS1b` for `DS1_ADDED`: contains
-    exactly the two functions this unit added outright, and every entry
+    exactly the functions this unit added outright, and every entry
     names a function that exists in the current module but NOT in
     `BASE_REF`'s (the reverse of `DS1b`'s existence check)."""
     expected = {
         ("test_composer.py", "test_composer_analyst_fails_ro5"),
-        ("test_repair.py", "test_e1b_cli_timeout_reaches_subprocess_run"),
+        ("test_attrib.py", "_batch_permissions"),
+        ("test_attrib.py", "_capture_batch_permissions"),
     }
-    assert len(DS1_ADDED) == 2
+    assert len(DS1_ADDED) == 3
     assert set(DS1_ADDED) == expected
 
     for module, name in DS1_ADDED:

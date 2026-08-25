@@ -788,6 +788,25 @@ class TestCacheAndSentinel:
         assert "claude-skills/self-learn/autosync-pause" not in text
 
 
+def _batch_permissions(home) -> dict:
+    """U-cleanup-B replacement for the deleted `worker.write_settings_
+    file` (§8.1: the batch round no longer writes a settings file at
+    all -- `settings=None` for the real sdk seam now, `WS1` in
+    `test_worker_contract.py`). Recomputes the SAME permissions dict
+    that function used to write, from the SAME still-live inputs
+    (`stage_permission_rules`/`write_permission_rules`,
+    `_stage_enabled`/`_enforce_scope`)."""
+    rules = (
+        worker.stage_permission_rules(home)
+        if worker._stage_enabled()
+        else worker.write_permission_rules(home)
+    )
+    permissions: dict[str, object] = {"allow": rules}
+    if worker._enforce_scope():
+        permissions["defaultMode"] = "default"
+    return permissions
+
+
 class TestWorkerContainment:
     def test_write_permission_rules_new_layout_only(self, env, monkeypatch):
         """U-attrib (CP8, §3.5 bucket 3): subject changes from "the batch
@@ -808,9 +827,8 @@ class TestWorkerContainment:
         # this fallback list.
         monkeypatch.setenv("SELF_LEARN_STAGE", "0")
         monkeypatch.setenv("XDG_CACHE_HOME", str(env.ledger.parent / "xdg-fallback"))
-        settings = worker.write_settings_file(env.ledger)
-        data = json.loads(settings.read_text(encoding="utf-8"))
-        assert data["permissions"]["allow"] == rules
+        data = _batch_permissions(env.ledger)
+        assert data["allow"] == rules
 
     def test_package_skill_refs_resolves_to_shipped_references(self):
         refs = worker.package_skill_refs()
@@ -824,18 +842,15 @@ class TestWorkerContainment:
         Grant-1's ONE stage rule (GR-b) — the settings file still carries
         `defaultMode` (GR-a, the security hotfix, surviving relocation)."""
         monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg2"))
-        settings = worker.write_settings_file(env.ledger)
-        data = json.loads(settings.read_text(encoding="utf-8"))
-        assert data["permissions"]["allow"] == worker.stage_permission_rules(
-            env.ledger
-        )
-        assert len(data["permissions"]["allow"]) == 1
+        data = _batch_permissions(env.ledger)
+        assert data["allow"] == worker.stage_permission_rules(env.ledger)
+        assert len(data["allow"]) == 1
         # no rule may name any ledger path, any host path, or .self-learn
-        for rule in data["permissions"]["allow"]:
+        for rule in data["allow"]:
             assert str(env.ledger) not in rule
             assert str(env.host) not in rule
             assert ".self-learn" not in rule
         # security hotfix: without an explicit defaultMode, the session
         # inherits the host's global permissions.defaultMode (which may be
         # "bypassPermissions"), voiding every allow-rule above.
-        assert data["permissions"]["defaultMode"] == "default"
+        assert data["defaultMode"] == "default"

@@ -1658,8 +1658,8 @@ def test_a24_containment_and_derivation_at_owned_sites(tmp_path, monkeypatch):
 # prompt's ALWAYS/PATHED/DEMAND target lines always read "(unresolvable
 # — project bucket has no meta.yaml)" — a false reason when there was no
 # bucket to check at all. These three tests capture the actual prompt
-# `analyst.analyze` composes (by intercepting the `claude -p <prompt>`
-# argv it builds, never the shim's stdin) and pin all three shapes:
+# `analyst.analyze` composes (via `FakeBackend.prompts`, U-cleanup-B --
+# there is no argv anymore, §8.1) and pin all three shapes:
 # resolvable when `project_path` is threaded and the bucket already
 # exists; the OLD honest reason when the bucket resolves but genuinely
 # has no meta.yaml yet; the NEW honest reason when `project_path` itself
@@ -1670,11 +1670,12 @@ def _capture_analyst_prompt(request, monkeypatch, accepted_yaml: str):
     """U-fake `Move-1` (`MV-a`): install a `FakeBackend` scripted with one
     `analyst_text(accepted_yaml)` step so `analyst.analyze` completes
     normally, and return it — the caller reads the composed prompt from
-    `fake.argvs[0][2]` (`analyst.build_argv`'s literal `claude -p
-    <prompt> …` argv, `MV-c`'s argv row) without spawning any process or
-    touching PATH. This used to patch `analyst.subprocess.run` directly,
-    one layer below the seam — a private re-implementation of exactly
-    what `FakeBackend` is."""
+    `fake.prompts[0]` (U-cleanup-B: `analyst.build_argv` is deleted,
+    §8.1 -- the prompt rides `SessionSpec.prompt` directly, recorded by
+    `FakeBackend._step`, not an argv element) without spawning any
+    process or touching PATH. This used to patch `analyst.subprocess.run`
+    directly, one layer below the seam — a private re-implementation of
+    exactly what `FakeBackend` is."""
     from backends import install_fake, analyst_text
 
     return install_fake(request, monkeypatch, [analyst_text(accepted_yaml)])
@@ -1735,9 +1736,10 @@ def test_fold5_project_scope_one_shot_resolves_real_targets_when_bucket_exists(
     )
     _analyst.analyze(env.ledger, record, project_path=env.host)
 
-    assert len(fake.argvs) == 1
-    assert fake.argvs[0][0] == "claude" and fake.argvs[0][1] == "-p"
-    prompt = fake.argvs[0][2]
+    # U-cleanup-B rebase (§8.1): there is no argv anymore -- the
+    # analyst's prompt rides FakeBackend.prompts directly now.
+    assert len(fake.prompts) == 1
+    prompt = fake.prompts[0]
     host_str = str(env.host)
     assert f"ALWAYS target      : {host_str}/CLAUDE.md" in prompt
     assert f"PATHED rules dir   : {host_str}/.claude/rules" in prompt
@@ -1770,9 +1772,10 @@ def test_fold5_project_scope_bucket_exists_but_genuinely_has_no_meta(
     )
     _analyst.analyze(env.ledger, record, project_path=env.host)
 
-    assert len(fake.argvs) == 1
-    assert fake.argvs[0][0] == "claude" and fake.argvs[0][1] == "-p"
-    prompt = fake.argvs[0][2]
+    # U-cleanup-B rebase (§8.1): there is no argv anymore -- the
+    # analyst's prompt rides FakeBackend.prompts directly now.
+    assert len(fake.prompts) == 1
+    prompt = fake.prompts[0]
     assert "(unresolvable — project bucket has no meta.yaml)" in prompt
     assert "record not yet persisted" not in prompt
 
@@ -1807,9 +1810,10 @@ def test_fold5_honest_sentinel_when_project_path_truly_not_supplied(
     )
     _analyst.analyze(env.ledger, record)  # no project_path — the bug's shape
 
-    assert len(fake.argvs) == 1
-    assert fake.argvs[0][0] == "claude" and fake.argvs[0][1] == "-p"
-    prompt = fake.argvs[0][2]
+    # U-cleanup-B rebase (§8.1): there is no argv anymore -- the
+    # analyst's prompt rides FakeBackend.prompts directly now.
+    assert len(fake.prompts) == 1
+    prompt = fake.prompts[0]
     assert (
         "(unresolvable — record not yet persisted; project path not supplied)"
         in prompt
