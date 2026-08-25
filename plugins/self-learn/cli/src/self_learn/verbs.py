@@ -4375,10 +4375,10 @@ def confirm_held(
 #: retroactively fails validation if this list grows (the ``_BASIS_LABELS``
 #: lesson, ``ui/models.py:858-863``, applied to the reason side).
 DISMISS_REASONS = (
-    "complied",
-    "different-lesson",
-    "duplicate-capture",
-    "wrong-record",
+    "rule-followed",
+    "unrelated",
+    "duplicate",
+    "misattributed",
     "other",
 )
 

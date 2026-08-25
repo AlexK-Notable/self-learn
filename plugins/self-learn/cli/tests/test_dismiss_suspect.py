@@ -116,7 +116,7 @@ def test_clears_the_recurrence_suspects_row(env):
     rid = seed_routed(env)
     nonce, _ts = spool_suspect(env, rid)
     rc = cli.main(
-        ["dismiss-suspect", rid, "--event", nonce, "--why", "complied", "--no-push"]
+        ["dismiss-suspect", rid, "--event", nonce, "--why", "rule-followed", "--no-push"]
     )
     assert rc == 0
     assert gather(env.home)["recurrence_suspects"] == []
@@ -131,7 +131,7 @@ def test_second_sighting_survives_a_dismissal(env):
     nonce2, _ = spool_suspect(env, rid, origin="lrn-0000ffff")
     assert (
         cli.main(
-            ["dismiss-suspect", rid, "--event", nonce1, "--why", "complied", "--no-push"]
+            ["dismiss-suspect", rid, "--event", nonce1, "--why", "rule-followed", "--no-push"]
         )
         == 0
     )
@@ -147,7 +147,7 @@ def test_entry_shape_carries_the_events_facts_not_now(env):
     nonce, ts = spool_suspect(env, rid, origin="lrn-0000eeee", basis="fire-violated")
     assert (
         cli.main(
-            ["dismiss-suspect", rid, "--event", nonce, "--why", "complied", "--no-push"]
+            ["dismiss-suspect", rid, "--event", nonce, "--why", "rule-followed", "--no-push"]
         )
         == 0
     )
@@ -157,7 +157,7 @@ def test_entry_shape_carries_the_events_facts_not_now(env):
     assert entry["ts"] == ts
     assert entry["origin"] == "lrn-0000eeee"
     assert entry["basis"] == "fire-violated"
-    assert entry["why"] == "complied"
+    assert entry["why"] == "rule-followed"
     assert entry["dismissed_at"]
 
 
@@ -175,7 +175,7 @@ def test_basis_is_copied_for_a_non_default_value(env):
                 "--event",
                 nonce,
                 "--why",
-                "different-lesson",
+                "unrelated",
                 "--no-push",
             ]
         )
@@ -194,7 +194,7 @@ def test_dismissed_at_and_ts_are_two_different_clocks(env):
     nonce, ts = spool_suspect(env, rid, now=past)
     assert (
         cli.main(
-            ["dismiss-suspect", rid, "--event", nonce, "--why", "complied", "--no-push"]
+            ["dismiss-suspect", rid, "--event", nonce, "--why", "rule-followed", "--no-push"]
         )
         == 0
     )
@@ -214,7 +214,7 @@ def test_dismissal_is_not_a_recurrence(env):
     nonce, _ = spool_suspect(env, rid)
     assert (
         cli.main(
-            ["dismiss-suspect", rid, "--event", nonce, "--why", "complied", "--no-push"]
+            ["dismiss-suspect", rid, "--event", nonce, "--why", "rule-followed", "--no-push"]
         )
         == 0
     )
@@ -231,12 +231,12 @@ def test_double_dismiss_refused(env):
     nonce, _ = spool_suspect(env, rid)
     assert (
         cli.main(
-            ["dismiss-suspect", rid, "--event", nonce, "--why", "complied", "--no-push"]
+            ["dismiss-suspect", rid, "--event", nonce, "--why", "rule-followed", "--no-push"]
         )
         == 0
     )
     rc = cli.main(
-        ["dismiss-suspect", rid, "--event", nonce, "--why", "complied", "--no-push"]
+        ["dismiss-suspect", rid, "--event", nonce, "--why", "rule-followed", "--no-push"]
     )
     assert rc == 1
     record = Record.from_path(env.ledger / "resolved" / f"{rid}.md")
@@ -251,7 +251,7 @@ def test_confirmed_then_dismiss_refused(env):
     nonce, _ = spool_suspect(env, rid)
     assert cli.main(["confirm-recurrence", rid, "--event", nonce, "--no-push"]) == 0
     rc = cli.main(
-        ["dismiss-suspect", rid, "--event", nonce, "--why", "complied", "--no-push"]
+        ["dismiss-suspect", rid, "--event", nonce, "--why", "rule-followed", "--no-push"]
     )
     assert rc == 1
     record = Record.from_path(env.ledger / "resolved" / f"{rid}.md")
@@ -270,7 +270,7 @@ def test_dismissed_then_confirm_allowed(env):
     nonce, _ = spool_suspect(env, rid)
     assert (
         cli.main(
-            ["dismiss-suspect", rid, "--event", nonce, "--why", "complied", "--no-push"]
+            ["dismiss-suspect", rid, "--event", nonce, "--why", "rule-followed", "--no-push"]
         )
         == 0
     )
@@ -288,7 +288,7 @@ def test_not_routed_refused(env, capsys):
     assert cli.main(["graduate", rid, "--no-push"]) == 0
     capsys.readouterr()
     rc = cli.main(
-        ["dismiss-suspect", rid, "--event", nonce, "--why", "complied", "--no-push"]
+        ["dismiss-suspect", rid, "--event", nonce, "--why", "rule-followed", "--no-push"]
     )
     assert rc == 1
     assert "suspects only exist against LIVE routed coverage" in capsys.readouterr().err
@@ -301,7 +301,7 @@ def test_unknown_event_refused(env):
     rid = seed_routed(env)
     with pytest.raises(verbs.VerbError, match="no recurrence-suspect event"):
         verbs.dismiss_suspect(
-            env.home, rid, event_ref="deadbeef", why="complied", no_push=True
+            env.home, rid, event_ref="deadbeef", why="rule-followed", no_push=True
         )
 
 
@@ -313,7 +313,7 @@ def test_event_belonging_to_a_different_record_refused(env):
     rid_b = seed_routed(env, rid="lrn-0000bbbb")
     nonce, _ = spool_suspect(env, rid_b)
     rc = cli.main(
-        ["dismiss-suspect", rid_a, "--event", nonce, "--why", "complied", "--no-push"]
+        ["dismiss-suspect", rid_a, "--event", nonce, "--why", "rule-followed", "--no-push"]
     )
     assert rc == 1
     record_a = Record.from_path(env.ledger / "resolved" / f"{rid_a}.md")
@@ -355,10 +355,10 @@ def test_validator_requires_ref():
     r = make_behavior()
     with pytest.raises(ValidationError, match="ref"):
         r.append_dismissed_suspect(
-            {"ts": "2026-08-19T10:39:13Z", "why": "complied"}
+            {"ts": "2026-08-19T10:39:13Z", "why": "rule-followed"}
         )
     r.append_dismissed_suspect(
-        {"ref": "b68b5811", "ts": "2026-08-19T10:39:13Z", "why": "complied"}
+        {"ref": "b68b5811", "ts": "2026-08-19T10:39:13Z", "why": "rule-followed"}
     )
     assert len(r.dismissed_suspects) == 1
 
@@ -371,7 +371,7 @@ def test_commit_subject_pinned(env):
     nonce, _ = spool_suspect(env, rid)
     assert (
         cli.main(
-            ["dismiss-suspect", rid, "--event", nonce, "--why", "complied", "--no-push"]
+            ["dismiss-suspect", rid, "--event", nonce, "--why", "rule-followed", "--no-push"]
         )
         == 0
     )
@@ -392,7 +392,7 @@ def test_secret_in_note_refuses_before_any_write(env):
             "--event",
             nonce,
             "--why",
-            "complied",
+            "rule-followed",
             "--note",
             "key is ghp_" + "a" * 36,
             "--no-push",
@@ -417,7 +417,7 @@ def test_event_preserved_byte_for_byte(env):
     )
     assert (
         cli.main(
-            ["dismiss-suspect", rid, "--event", nonce, "--why", "complied", "--no-push"]
+            ["dismiss-suspect", rid, "--event", nonce, "--why", "rule-followed", "--no-push"]
         )
         == 0
     )
@@ -452,7 +452,7 @@ def test_unknown_record_id_exits_64(env):
             "--event",
             event["nonce"],
             "--why",
-            "complied",
+            "rule-followed",
             "--no-push",
         ]
     )
@@ -472,7 +472,7 @@ def test_no_home_exits_5(tmp_path, monkeypatch):
             "--event",
             "deadbeef",
             "--why",
-            "complied",
+            "rule-followed",
             "--no-push",
         ]
     )
@@ -488,7 +488,7 @@ def test_routed_live_count_increments(env):
     nonce, _ = spool_suspect(env, rid)
     assert (
         cli.main(
-            ["dismiss-suspect", rid, "--event", nonce, "--why", "complied", "--no-push"]
+            ["dismiss-suspect", rid, "--event", nonce, "--why", "rule-followed", "--no-push"]
         )
         == 0
     )
@@ -505,7 +505,7 @@ def test_dismissals_survive_supersession(env):
     nonce, _ = spool_suspect(env, rid)
     assert (
         cli.main(
-            ["dismiss-suspect", rid, "--event", nonce, "--why", "complied", "--no-push"]
+            ["dismiss-suspect", rid, "--event", nonce, "--why", "rule-followed", "--no-push"]
         )
         == 0
     )
@@ -527,7 +527,7 @@ def test_report_json_carries_suspects_dismissed(env, capsys):
     nonce, ts = spool_suspect(env, rid, basis="miner-match")
     assert (
         cli.main(
-            ["dismiss-suspect", rid, "--event", nonce, "--why", "complied", "--no-push"]
+            ["dismiss-suspect", rid, "--event", nonce, "--why", "rule-followed", "--no-push"]
         )
         == 0
     )
@@ -541,7 +541,7 @@ def test_report_json_carries_suspects_dismissed(env, capsys):
     assert row["ref"] == nonce
     assert row["ts"] == ts
     assert row["basis"] == "miner-match"
-    assert row["why"] == "complied"
+    assert row["why"] == "rule-followed"
     assert row["dismissed_at"]
 
 
