@@ -410,7 +410,12 @@ async def _drive(spec: SessionSpec) -> SdkOutcome:
         options = _build_options(spec, events)
     except CharterPatternUnsupported as exc:
         # `C-7`/`CH7` -- the session never starts: no `ClaudeSDKClient` is
-        # ever constructed.
+        # ever constructed. FW-108/M-1 (gate r1): this handler renders the
+        # same template under the same surface guard as its neighbours
+        # below, and unlike them never re-raises because no session exists
+        # yet.
+        if _CATCHES_OS_ERROR.get(surface, True) and templates.os_error is not None:
+            spec.log(_format(templates.os_error, spec, exc=exc))
         return _outcome(
             ok=False, rc=None, stdout="", detail=str(exc), failure="os-error", events=events, exc=exc
         )

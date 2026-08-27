@@ -56,6 +56,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from . import invocation, sentinel, telemetry
 from .compilers import BEGIN_MARKER, END_MARKER
@@ -3062,6 +3063,7 @@ def _invoke_claude(
     prompt: str, timeout: float, home: Path, *,
     label: str,
     containment: invocation.Containment | None = None,
+    charter_denials: list[dict[str, Any]] | None = None,
 ) -> None:
     """One model invocation — round 1 (``label=""``) or the repair round
     (``label="repair "``), same exception handling shape as this project
@@ -3079,7 +3081,20 @@ def _invoke_claude(
     ``containment`` is data only (``HY4`` — it enforces nothing); when
     omitted (only `test_repair.py::test_e1` does, per ``B-4``),
     :data:`invocation.DEGRADED_WORKER_CONTAINMENT` stands in — ``run()``
-    itself always passes an explicit one (``W-a``)."""
+    itself always passes an explicit one (``W-a``).
+
+    FW-107: ``charter_denials``, when given, is a caller-owned list this
+    call EXTENDS with this invocation's charter-sourced denials
+    (``outcome.denials`` entries with ``source == "charter"``) — an
+    additive side channel, not a return-value change, because
+    `test_invocation.py::test_wr1_invoke_claude_signature_and_never_
+    raises` and several `test_worker_contract.py` call sites pin this
+    function returning ``None`` unconditionally (no ``return``
+    statement below); every existing call site that omits the new
+    keyword-only parameter keeps that exact contract. ``run()``'s batch
+    loop is the one caller that passes it, to carry a denial count from
+    this invocation's outcome to its own run-summary log line without
+    otherwise touching what this function returns."""
     spec = invocation.SessionSpec(
         surface="worker-repair" if label == "repair " else "worker",
         prompt=prompt,
@@ -3090,7 +3105,11 @@ def _invoke_claude(
         label=label,
         doctrine=None,
     )
-    invocation.write_session(spec)
+    outcome = invocation.write_session(spec)
+    if charter_denials is not None:
+        charter_denials.extend(
+            d for d in getattr(outcome, "denials", ()) if d.get("source") == "charter"
+        )
 
 
 def run(
@@ -3139,6 +3158,12 @@ def run(
             else:
                 stage_on = _stage_enabled()  # §3.7
                 repairs_enabled = os.environ.get("SELF_LEARN_REPAIR") != "0"
+                # FW-107: accumulates this run's charter-sourced denials
+                # (both rounds feed it) so a fully-denied run can be told
+                # apart from a wrote-nothing one in the FAILED summary
+                # below, without perturbing `_invoke_claude`'s pinned
+                # always-returns-`None` contract.
+                charter_denials: list[dict[str, Any]] = []
                 if stage_on:
                     stage_reset(home)  # S1 (ST-c) — before composing the prompt
                 else:
@@ -3156,6 +3181,7 @@ def run(
                         stage_on=stage_on,
                         enforce=_enforce_scope(),
                     ),
+                    charter_denials=charter_denials,
                 )  # S2
                 # S6 (moved here, §3.3): re-assert the sentinel hold after
                 # the invocation. A CONCURRENT short holder (e.g. the
@@ -3262,6 +3288,7 @@ def run(
                                 ),
                                 enforce=_enforce_scope(),
                             ),
+                            charter_denials=charter_denials,
                         )
                         # G8: re-assert again after the LAST invocation.
                         if not sentinel.heartbeat():
@@ -3421,6 +3448,22 @@ def run(
                         "proposals (last-run not touched; staleness alarm "
                         "is the detector)"
                     )
+                    # FW-107: a fully-denied run (every write attempt
+                    # refused by the charter) used to be byte-identical
+                    # to a run that wrote nothing at all in this log --
+                    # both landed only the line above. Additive line,
+                    # only when this run actually saw a charter denial;
+                    # the FAILED line itself is unchanged (`test_repair.
+                    # py::test_h3_...` pins it verbatim). N-2 (gate r1):
+                    # the file reference is locatable -- no `run_id` is
+                    # in scope here (`_drive` never returns one), so the
+                    # glob is paired with the resolved cache dir instead.
+                    if charter_denials:
+                        log(
+                            f"run: {len(charter_denials)} charter "
+                            "denial(s) this run — see "
+                            f"worker*.tool-events.*.jsonl in {cache_dir()}"
+                        )
 
             # H-5: the producer commits its own writes (proposals +
             # sweeps) — done inside `_harvest`'s lock above, because the

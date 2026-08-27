@@ -1074,20 +1074,50 @@ def test_ws5c_stdout_never_parsed_t1(env, request, monkeypatch):
 
 
 def test_ws5d_structural_no_stdout_binding():
+    """WS5's actual property: `Outcome.stdout` is always `""` on both
+    worker surfaces, and worker.py never READS it, even when the
+    model's real stdout carries noise. This used to be enforced by a
+    blanket ban on ever BINDING `write_session`'s result at all -- a
+    stricter proxy that held only because there was previously no
+    legitimate reason to bind it. FW-107 (U-opsfix) gives worker.py
+    one: `_invoke_claude` now binds the Outcome to thread its
+    `.denials` (charter-sourced only) into the run summary's new log
+    line -- `.stdout` is never touched. Narrowed to what WS5 actually
+    asserts: no `.stdout` attribute access on any name bound from a
+    `write_session`/`text_session` call, anywhere in the module."""
     src = Path(inspect.getfile(worker)).read_text(encoding="utf-8")
     tree = ast.parse(src)
+    bound_names: set[str] = set()
     for node in ast.walk(tree):
         value = None
+        target_names: list[str] = []
         if isinstance(node, ast.Assign):
             value = node.value
+            target_names = [t.id for t in node.targets if isinstance(t, ast.Name)]
         elif isinstance(node, ast.AnnAssign):
             value = node.value
+            if isinstance(node.target, ast.Name):
+                target_names = [node.target.id]
         elif isinstance(node, ast.NamedExpr):
             value = node.value
+            if isinstance(node.target, ast.Name):
+                target_names = [node.target.id]
         if isinstance(value, ast.Call):
             func = value.func
-            if isinstance(func, ast.Attribute) and func.attr == "write_session":
-                pytest.fail(f"worker.py binds the result of write_session at line {node.lineno}")
+            if isinstance(func, ast.Attribute) and func.attr in ("write_session", "text_session"):
+                bound_names.update(target_names)
+    assert bound_names, "no write_session/text_session binding found -- nothing for WS5d to guard"
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Attribute)
+            and node.attr == "stdout"
+            and isinstance(node.value, ast.Name)
+            and node.value.id in bound_names
+        ):
+            pytest.fail(
+                f"worker.py reads .stdout off a write_session/text_session "
+                f"result at line {node.lineno}"
+            )
 
 
 def test_ws6_attribution_four_cells(backend, env, monkeypatch, tmp_path):
@@ -1471,13 +1501,12 @@ def test_fl2_byte_identity_and_provenance(tmp_path, backend):
 
     own = _drive_fl2_lines(tmp_path, marker_templates)
 
-    # provenance and shape, for all five (the os-error/sdk cell is the
-    # documented exception -- R-10, silent by construction).
+    # provenance and shape, for all five. FW-108 (U-opsfix) closed the
+    # os-error/sdk cell's old exception (it used to be silent by
+    # construction, "R-10") -- the CharterPatternUnsupported leg now
+    # renders `templates.os_error` exactly like every other cell here.
     for kind in invocation.FAILURE_KINDS:
         lines = own[kind]
-        if kind == "os-error":
-            assert lines == [], lines
-            continue
         assert lines, (backend.param, kind)
         assert any("MARKER-" in l for l in lines), (backend.param, kind, lines)
 
@@ -1814,16 +1843,57 @@ def test_ev3_denial_pair_both_directions(env, sdk_cli_path, monkeypatch, tmp_pat
     assert tool_result2["content"] == "ok"
 
 
+#: gate r1 B-1: the literal FW-107 log line, byte-pinned. This is
+#: worker.py's ONLY permitted occurrence of the substring "tool-events"
+#: -- see `test_ev4_tool_events_string_confined_to_events_module`.
+_EV4_FW107_PINNED_FRAGMENT = 'f"worker*.tool-events.*.jsonl in {cache_dir()}"'
+
+
 def test_ev4_tool_events_string_confined_to_events_module():
+    """EV4's actual property: exactly one module DEFINES the
+    `tool-events` filename convention -- `invocation_sdk/events.py`
+    (`_event_log_path`/`prune_event_logs`'s pattern).
+
+    Gate r1 B-1: the prior fold's narrowing was a whole-FILE exemption
+    (`path in allowed`) -- the gate proved it unenforced: a real
+    `_gate_probe_tool_events_path()` appended to worker.py stayed
+    green, and the SAME probe appended to miner.py also went green
+    (the check only ever looked at which FILE the substring was in,
+    never how many times or where). Replaced with the narrowest pin
+    that actually admits FW-107 and rejects that probe: worker.py may
+    contain the literal substring "tool-events" EXACTLY ONCE, and that
+    one occurrence must be the pinned FW-107 log-line fragment itself
+    (asserted on the literal text, not just presence/count) --
+    `events.py` remains the unrestricted definer, and every OTHER
+    module (miner.py included) is held to the original zero-occurrence
+    confinement rule."""
     src_root = Path(inspect.getfile(worker)).parent
-    hits = []
+    events_path = src_root / "invocation_sdk" / "events.py"
+    worker_path = src_root / "worker.py"
+
+    assert "tool-events" in events_path.read_text(encoding="utf-8"), (
+        "the definer itself has nothing to pin -- EV4 would be vacuous"
+    )
+
     for path in sorted(src_root.rglob("*.py")):
-        if "tool-events" in path.read_text(encoding="utf-8"):
-            hits.append(path)
-    assert hits, "no occurrence of 'tool-events' found anywhere -- EV4 has nothing to pin"
-    allowed = src_root / "invocation_sdk" / "events.py"
-    for path in hits:
-        assert path == allowed, f"'tool-events' substring found outside {allowed}: {path}"
+        text = path.read_text(encoding="utf-8")
+        count = text.count("tool-events")
+        if path == events_path:
+            continue  # the definer -- unrestricted
+        if path == worker_path:
+            assert count == 1, (
+                f"worker.py must contain 'tool-events' EXACTLY ONCE (the "
+                f"pinned FW-107 log line) -- found {count} occurrence(s)"
+            )
+            assert _EV4_FW107_PINNED_FRAGMENT in text, (
+                "worker.py's one 'tool-events' occurrence has drifted off "
+                f"the pinned FW-107 log line: {_EV4_FW107_PINNED_FRAGMENT!r}"
+            )
+            continue
+        assert count == 0, (
+            f"'tool-events' substring found outside "
+            f"{{{events_path}, {worker_path}}}: {path}"
+        )
 
 
 # U-cleanup-A DELETE (§8.4, "CLI-only named tests outside the

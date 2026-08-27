@@ -982,6 +982,15 @@ closes this on itself; whether `confirm_recurrence` should be retrofitted is
 a separate call (this spec says out of scope, §9 item 6, to keep the diff off
 a shipped verb).
 
+*2026-08-26 — retrofitted by U-opsfix.* `confirm_recurrence` now carries the
+same ownership guard `dismiss_suspect` ships, immediately after the
+`event is None` refusal: `if event.get("record") != record_id: raise
+VerbError(...)`, naming both the event's real owner and the record id typed
+on the command line. §9 item 6's fence (out of scope, to keep the diff off a
+shipped verb) is lifted for this one retrofit by direct instruction; nothing
+else in `confirm_recurrence` changed. Tests: `tests/test_dismiss_suspect.py`
+(the cross-record refusal, its message, and a same-record positive control).
+
 **Q3 — the FW row for the polarity inversion (§2.4, §9 item 2).** Should
 this spec's finding be filed as an FW row now, or held until dismissal data
 exists to size it? The spec's position is *file it now, fix it later* — the

@@ -553,3 +553,63 @@ def test_old_record_without_dismissed_suspects_key_stays_valid():
     assert r.dismissed_suspects == ()
     reparsed = Record.from_text(r.to_text())
     assert reparsed.dismissed_suspects == ()
+
+
+# ============================================================= #
+# Q2 retrofit (U-opsfix, 2026-08-26) -- confirm_recurrence's own
+# T-EVENT-BELONGS. See docs/specs/self-learn/drafts/
+# u-dismiss-false-recurrence-spec.md §13 Q2: `confirm_recurrence`
+# located its event by kind+nonce ALONE and copied `ts`/`origin` onto
+# whatever record id was typed on the command line -- the SAME
+# cross-record hole `dismiss_suspect` is guarded against above
+# (T-EVENT-BELONGS), just never closed on this sibling verb. U-dismiss
+# §9 item 6 fenced the retrofit out at the time to keep that unit's
+# diff off a shipped verb; U-opsfix lifts the fence.
+# ============================================================= #
+
+
+def test_confirm_recurrence_event_belonging_to_a_different_record_refused(env):
+    """Mirrors `test_event_belonging_to_a_different_record_refused`
+    above, for `confirm_recurrence`: an event raised against record B
+    must not be confirmable against record A just because A was typed
+    on the command line. No write lands on A, and no ledger commit is
+    made -- the refusal happens before `_ledger_write`."""
+    rid_a = seed_routed(env, rid="lrn-0000aaaa")
+    rid_b = seed_routed(env, rid="lrn-0000bbbb")
+    nonce, _ = spool_suspect(env, rid_b)
+    before = env.subject()
+    rc = cli.main(
+        ["confirm-recurrence", rid_a, "--event", nonce, "--no-push"]
+    )
+    assert rc == 1
+    record_a = Record.from_path(env.ledger / "resolved" / f"{rid_a}.md")
+    assert record_a.recurrences == ()
+    assert env.subject() == before
+
+
+def test_confirm_recurrence_event_belonging_to_a_different_record_refused_names_both_ids(env):
+    """The refusal message names both the event's real owner and the
+    record id the caller typed (`verbs.py`'s wording, mirroring
+    `dismiss_suspect`'s own)."""
+    rid_a = seed_routed(env, rid="lrn-0000aaaa")
+    rid_b = seed_routed(env, rid="lrn-0000bbbb")
+    nonce, _ = spool_suspect(env, rid_b)
+    with pytest.raises(verbs.VerbError, match=f"{rid_b!r}") as excinfo:
+        verbs.confirm_recurrence(env.home, rid_a, event_ref=nonce, no_push=True)
+    assert rid_a in str(excinfo.value)
+    assert rid_b in str(excinfo.value)
+
+
+def test_confirm_recurrence_same_record_still_confirms(env):
+    """Positive control for the two guards above: an event raised
+    against its OWN record is unaffected by the new ownership check and
+    still confirms normally."""
+    rid = seed_routed(env)
+    nonce, _ = spool_suspect(env, rid)
+    rc = cli.main(
+        ["confirm-recurrence", rid, "--event", nonce, "--no-push"]
+    )
+    assert rc == 0
+    record = Record.from_path(env.ledger / "resolved" / f"{rid}.md")
+    assert len(record.recurrences) == 1
+    assert record.recurrences[0]["ref"] == nonce
