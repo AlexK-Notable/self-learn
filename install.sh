@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # install.sh — self-learn product deploy (live symlinks; doc 13 §7.3).
 #
-# Deploys exactly nine surfaces + the miner units + the G-3 UI unit:
+# Deploys exactly nine surfaces + the miner units + the G-3 UI unit +
+# the U-engine Phase 2 host-process unit:
 #   - ~/.claude/skills/self-learn    -> plugins/self-learn/skills/self-learn
 #   - ~/.claude/commands/self-learn  -> plugins/self-learn/commands
 #   - ~/bin/self-learn               -> plugins/self-learn/scripts/self-learn
@@ -16,14 +17,18 @@
 #   - ~/.config/systemd/user/self-learn-ui.service -> systemd/self-learn-ui.service
 #     (G-3 surface — 10 §1 "Service"/"Companion scripts" rows; explicit link
 #     lines mirroring the miner-units block below, no glob — 13 §7.3)
+#   - ~/.config/systemd/user/self-learn-host.service -> systemd/self-learn-host.service
+#     (U-engine Phase 2 — the long-lived scheduler; NOT enabled by this
+#     script, same as the other two units — u-engine-shared-sdk-core-spec.md §5.7)
 #
 # What this deliberately does NOT touch (13 §7.3 D1 — the product repo is
 # a tool; compiled output lands in the USER'S hosts):
 #   - guard scripts (they are host canon, e.g. claude-skills hooks/self-learn/)
 #   - settings.json (load-bearing; registrations stay manual)
 #   - any autosync watcher (D3: this repo syncs by manual push only)
-#   - enabling/starting either systemd unit (miner timer or the G-3 UI
-#     service) — enable is always a documented, printed manual line
+#   - enabling/starting any systemd unit (miner timer, the G-3 UI
+#     service, or the U-engine host-process unit) — enable is always a
+#     documented, printed manual line
 set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SKILLS_DIR="$HOME/.claude/skills"
@@ -104,5 +109,14 @@ link "$REPO/systemd/self-learn-ui.service" "$UNIT_DIR/self-learn-ui.service"
 run "systemctl --user daemon-reload"
 say "  ACTION NEEDED: enable with: systemctl --user enable --now self-learn-ui.service"
 say "  (no-systemd fallback: run 'self-learn-ui serve' in the foreground — 10 §5)"
+
+say "== host process unit (U-engine Phase 2; systemd --user) =="
+link "$REPO/systemd/self-learn-host.service" "$UNIT_DIR/self-learn-host.service"
+run "systemctl --user daemon-reload"
+say "  enable with: systemctl --user enable --now self-learn-host.service"
+say "  (no-systemd fallback: run 'self-learn serve' in the foreground — U-engine spec §5.7)"
+say "  NOTE: once self-learn-host.service is enabled, self-learn-miner.timer should"
+say "  not also stay enabled — 'self-learn doctor invocation' WARNs (never fails) if"
+say "  both are; a timer left enabled on purpose is a supported belt-and-braces poke."
 
 say "done."

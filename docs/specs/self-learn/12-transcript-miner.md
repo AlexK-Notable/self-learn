@@ -193,10 +193,10 @@ re-offered whole on a later run rather than lost; the M-5 halt still
 takes precedence, so an already-excluded session's cursor is never held
 on its account.
 
-## 3. Scheduling and containment
+## 3. Scheduling and containment (amended 2026-08-27, U-engine Phase 2)
 
-- **Trigger: nightly `cron-claude` timer** (the house scheduler), not a
-  worker phase and not SessionEnd. The worker is event-kicked (a capture
+- **Trigger: two supported topologies, not a worker phase and not
+  SessionEnd** either way. The worker is event-kicked (a capture
   happened); mining is time-driven (transcripts accumulated) — coupling
   them muddies both, and a miner failure must never block analysis.
   SessionEnd was O-3's original shape and is declined: E-11 (1.5s,
@@ -204,9 +204,45 @@ on its account.
   the cross-session view (repeated friction is only visible in batch).
   The nightly batch sees everything SessionEnd would — later, but
   completely. (§6 Q5 ratifies this amendment to O-3's wording.)
+  - **Timer-scheduled (original; unchanged by Phase 2):** the nightly
+    `cron-claude` timer (`self-learn-miner.timer`, the house scheduler)
+    fires `self-learn mine run` as a detached process. This remains the
+    topology on any host that does not adopt the Phase 2 host process —
+    nothing about it changed underneath U-engine.
+  - **`serve`-scheduled (added, U-engine Phase 2; preferred where
+    adopted):** `self-learn serve`, a long-lived host process, starts
+    the same mine job on its own in-process clock instead of a timer
+    starting a detached one (`17-invocation-runbook.md` §10). Neither
+    topology changes the mine job itself — same lock, same cap, same
+    reconciliation, same landing gate, same kill switches (below).
+    Adopting `serve` is a per-host deployment choice, not a code
+    default: `install.sh` links its unit but does not enable it, so a
+    host that never enables it keeps the timer topology exactly as
+    before.
 - `miner.lock` flock; never shares `worker.lock`.
-- Kill switches: disable the timer, or `SELF_LEARN_MINER=0` honored by
-  the entrypoint. **E-11 stands: nothing may depend on the miner
+- **The any-verb watchdog now has two dispositions, not one.** Every
+  `self-learn` verb except `mine` and `init` still opportunistically
+  reacts to a >24h-stale last-run, but what it *does* depends on
+  whether `serve` is both configured and alive: **poke** — if `serve`'s
+  heartbeat is fresh, the verb asks `serve` to run its next job on its
+  own next tick instead of spawning anything itself; **fall back to the
+  original spawn** — a detached `mine run`, `SELF_LEARN_MINER_AUTOKICK`-
+  gated — whenever `serve` is not configured, or is configured but its
+  heartbeat is stale or absent (dead `serve`, or the timer-only
+  topology, read identically here: no live `serve` to poke). The
+  watchdog never blocks on `serve`'s liveness or tries to start it — a
+  dead `serve` is `doctor`'s `serve` row's problem to surface loudly
+  (`17-invocation-runbook.md` §10), not this watchdog's problem to work
+  around.
+- **Kill switches keep their documented meaning under both
+  topologies.** Disabling the timer stops the timer-scheduled trigger;
+  stopping/disabling `self-learn serve` stops the `serve`-scheduled
+  trigger (`17-invocation-runbook.md` §10); `SELF_LEARN_MINER=0`,
+  honored by the entrypoint, stops the mine job itself regardless of
+  which topology (or watchdog leg) tried to start it.
+  `SELF_LEARN_MINER_AUTOKICK=0` disables only the watchdog's fallback
+  spawn leg, exactly as before — it has no poke leg to disable, since a
+  poke is not a spawn. **E-11 stands: nothing may depend on the miner
   running.** It is additive supply; teach and import remain complete
   without it.
 
@@ -438,7 +474,11 @@ old §4).
   `SELF_LEARN_MINER_AUTOKICK=0`, runtime kill via
   `SELF_LEARN_MINER=0`); the SessionStart status line gains a
   miner-staleness clause at >36h (everything-broke — a silent death is
-  humanly visible within a day).
+  humanly visible within a day). *(As ratified 2026-07-15. The middle
+  layer's disposition gained a second leg in U-engine Phase 2 — see §3,
+  amended 2026-08-27: it now pokes a live `serve` instead of spawning,
+  when one is configured and its heartbeat is fresh. The first and
+  third layers, and this layer's fallback spawn, are unchanged.)*
 - **R2 · Manual force:** `self-learn mine run` executes immediately
   (the timer calls the same verb). Force controls *timing* only — caps
   and the secret scan are never bypassable. `--since <date>` performs a

@@ -12,6 +12,29 @@ NOT an untestable contract.**
 `14-forward-work-map.md` for Phase 1 — the S-42 disposition-rule
 obligation §12 already stated, which §9.1/§9.2 had never listed a path
 for; no criterion, mutation, or phase boundary changes.**
+**r6 — amended 2026-08-27 per blind code gate r1 on the Phase 2 build
+(NOT CLEAN: 1 blocker, 3 major, 6 doc/disposition, 7 nit). Structural
+change, not docs-only: adds `HP8` (§7.1) — `_mine_is_due` was missing
+an attempt-cooldown leg (`B-1`) — bringing the count to **19 criteria
+(12 [A], 7 [B])**. Also folds: `HP3`/`HP7`'s “exactly one file” narrowed
+to the three cache-dir files `serve` actually writes (`M-1`, KEPT by
+ruling, not reduced to one); §5.5/§12.3's false “`miner.run`/`worker.run`
+stop being roots” claim removed (`D-2`); `HP2`'s instrument wording
+narrowed to `serve.py`'s own source, matching what the build's test
+already does (`D-3`); §7/`S2A`'s self-contradiction with `HP6`'s `[A]`
+tag resolved by ruling (`D-4`) — 2A is a DEPLOYMENT posture, verified by
+`HP6`'s no-heartbeat leg staying byte-identical plus one added `doctor`
+`SKIP` line, not a separate code checkpoint; §9.3 gains
+`cli/tests/test_u_sdka.py` (`D-5`, the numstat-bound pin `provider.py`
+already forces).
+
+**r7 — amended 2026-08-27 per blind code gate r2 on the Phase 2 build
+(NOT CLEAN: 1 NEW blocker, 0 major, 2 doc, 8 nit). Structural change:
+adds `HP9` (§7.1) — the poke path bypassed BOTH the staleness check and
+HP8's own cooldown, gate r2 B-1' — bringing the count to **20 criteria
+(13 [A], 7 [B])**. Also folds: `HP8`'s prose now names its tests by
+name (`N-1'`); §9.3 gains this spec draft itself as a touchable path
+(`N-8'`); mutation `N-15` added for the poke-bypass fix.
 *(r1, 2026-08-26, ruled the host process out and scoped the extraction to
 four small helpers. The user then ran a four-option discussion and a
 pros/cons on the daemon and reversed both calls. §3 records the decision;
@@ -1015,20 +1038,29 @@ their own lock, by their own pathspec, with their own pinned subject.**
 `reconcile` backstop (§5) is unchanged and still runs at the start of
 every `mine` and before every `push`.
 
-**The one test change this forces, named.**
+**The one test change this forces, named — CORRECTED r6 (gate r1 D-2):**
 `cli/tests/test_lock_invariant.py` derives entrypoints structurally —
 `roots = [q for q in analysis.funcs if not callers[q]]` (`:463`), inside
 `TestNoMutationPrecedesItsLock::test_no_entrypoint_reaches_a_mutation_without_a_lock`
-(`:452`). When `serve` calls `miner.run` and `worker.run`, **those two
-stop being roots and `serve`’s own loop becomes one.** Every mutation
-reachable from `serve` inherits the lock obligation along a path that did
-not exist before. Concretely:
+(`:452`). **`miner.run` and `worker.run` were never roots** — measured at
+`ffa5205`, `cli._cmd_mine` and `cli._cmd_worker` already called them,
+before this unit existed. `serve._run_mine_job`/`serve._run_worker_job`
+become a SECOND caller of each; `serve.run_forever` is not a root either
+(`cli._cmd_serve` calls it). The only root, before and after, is
+`cli.entrypoint` — unchanged. What `serve` actually does is give every
+mutation already reachable from `miner.run`/`worker.run` a SECOND path
+into the lock-obligation walk, one that starts at `cli.entrypoint -> ...
+-> cli._cmd_serve -> serve.run_forever -> serve._run_tick` instead of at
+a verb's dispatch — the walker checks it structurally either way,
+without anyone declaring it. Concretely:
 
-- `serve`’s scheduler loop may appear in `NOT_REPO_TRUTH` **only** if it
-  genuinely writes nothing that is a repo’s truth — it writes the
-  heartbeat file into `cache_dir()`, which is already the
-  `NOT_REPO_TRUTH` category (the XDG cache). Any other write is a
-  violation, and the test is fail-closed by design, so it will say so.
+- `serve`'s scheduler loop writes into `cache_dir()` only — **three
+  files, enumerated by ruling r6 (gate r1 M-1, KEPT not reduced)**:
+  `serve.heartbeat`, `serve.poke`, `serve.schedule`, all already the
+  `NOT_REPO_TRUTH` category (the XDG cache, the same rule
+  `worker.log`/`miner.spool_dir` use). Any write reaching anywhere else
+  is a violation, and the test is fail-closed by design, so it will say
+  so.
 - `test_the_exemption_list_cannot_rot` (`:512`) and
   `test_the_analysis_actually_sees_the_code` (`:492`) must both stay
   green, unedited.
@@ -1376,12 +1408,21 @@ silently changed. These four criteria come FIRST.
 ## 7. Phase 2 criteria — the host process
 
 - **2A** — `serve` exists and runs in SHADOW: it schedules, heartbeats and
-  reports, but `self-learn-miner.timer` is still the authority and the
-  watchdog is unchanged.
+  reports, but `self-learn-miner.timer` is still the authority.
+  **CORRECTED r6 (gate r1 D-4, ruling):** 2A is a DEPLOYMENT posture,
+  not a code checkpoint — achieved by not enabling the unit, never by a
+  separate build; `HP6`'s reduced watchdog (tagged `[A]`) ships as part
+  of the same tree either way. What stays "unchanged" in 2A is
+  OPERATIONAL: `maybe_kick`'s no-heartbeat legs are byte-identical to
+  `ffa5205` (measured — kill-switch check still first, four inserted
+  lines for the poke check, everything after unchanged), and the only
+  observable difference to `doctor invocation` against a fresh,
+  unconfigured home is one added line, `SKIP serve — serve is not
+  configured on this machine`.
 - **2B** — `serve` becomes the schedule: the timer is disabled by the
   runbook, the watchdog is reduced (§5.3), the handoff runs in-process.
 
-**18 criteria — 11 [A], 7 [B].**
+**20 criteria — 13 [A], 7 [B].** (r6: `HP8` added, gate r1 `B-1`. r7: `HP9` added, gate r2 `B-1'`.)
 
 **DONE WHEN (builder-visible):** `serve` runs under systemd, under no
 supervisor at all, and exits cleanly; a mine job hands off to a worker job
@@ -1424,12 +1465,28 @@ makes `doctor` say **FAIL**; `test_lock_invariant.py` is green with
   exits **0** on `SIGTERM` and on `SIGINT` within a stated bound, with no
   job left mid-flight. Driven as a real subprocess in the test.
 - **HP2** **[A]** `serve` **awaits the library directly**: zero
-  `run_sync` calls and zero `asyncio.run` calls on any path reachable from
-  `serve`. AST test over the call graph. (§4.6 R-2 — otherwise every
+  `run_sync` calls and zero `asyncio.run` calls anywhere in `serve.py`'s
+  OWN source. **Instrument, CORRECTED r6 (gate r1 D-3):** an AST test
+  scoped to `serve.py`'s own text, not a transitive call-graph walk —
+  `miner.run`/`worker.run` reach `invocation_sdk/backend.py`'s
+  `run_sync`/`asyncio.run` exactly as `cli._cmd_mine`/`cli._cmd_worker`
+  already do today (§4.6 R-2 / `M-13` deliberately keep them there), so
+  the ORIGINAL wording — "any path reachable from `serve`" — can never
+  be green; a criterion that names an impossible artifact is not a
+  criterion. The property that matters and IS testable: `serve` opens
+  no event loop of its own, so `run_sync`'s `asyncio.run` (one level
+  below, unchanged) never nests inside an ambient one — the actual
+  hazard R-2 names. (§4.6 R-2 — otherwise every
   session blocks a thread.)
 - **HP3** **[A]** `serve` **never stages, commits, pushes or writes into
   the ledger**. It starts `miner.run` / `worker.run` as jobs and writes
-  exactly one file, the heartbeat, into `cache_dir()`. **Instrument:** an
+  into `cache_dir()` only — **three files, all cache-dir-only,
+  enumerated by ruling r6 (gate r1 M-1, KEPT, not reduced to one):**
+  `serve.heartbeat` (`SUP1`'s heartbeat), `serve.poke` (§5.3's poke
+  flag — a file SEPARATE from the heartbeat, deliberately, to avoid a
+  write race between a verb's watchdog and `serve`'s own tick), and
+  `serve.schedule` (the day's jittered mine-target, cached so a restart
+  mid-day does not recompute a different one). **Instrument:** an
   AST/grep sweep of everything reachable from `serve` for
   `gitops.stage`/`gitops.commit`/`git add`/`git commit`/`Record.write`,
   with a **positive control** (the same sweep over `verbs.py` must report
@@ -1453,9 +1510,77 @@ makes `doctor` say **FAIL**; `test_lock_invariant.py` is green with
 - **HP7** **[A]** `test_lock_invariant.py` is **green with `serve` in the
   call graph** — all four tests, including
   `test_it_catches_a_planted_violation` (`:532`), the positive control
-  that proves the walker still fires. Any `NOT_REPO_TRUTH` addition is
-  **exactly** the heartbeat write, with its justification stated in-line
-  as that list requires (§5.5).
+  that proves the walker still fires. **CORRECTED r6 (gate r1 M-1):**
+  any `NOT_REPO_TRUTH` addition is **exactly** the three `HP3` cache
+  files' write/unlink sites — `write_heartbeat`, `request_poke`,
+  `_consume_poke` (`serve.poke`'s unlink leg), `_today_mine_target` —
+  FOUR entries for THREE files, with each entry's justification stated
+  in-line as that list requires (§5.5). No fifth entry, and no entry
+  whose write reaches anywhere but `cache_dir()`.
+- **HP8** **[A]** **Added r6 (gate r1 B-1).** A failing mine is retried
+  at most once per `miner.ATTEMPT_COOLDOWN_SECS` window — `serve`'s
+  tick loop must never re-attempt inside it. Without this leg,
+  `_mine_is_due` reads only `miner.last-run`, which `miner.run` never
+  touches on `status="failed"` (a refused home, a crash, or the
+  reader/model call coming back empty) — a mine stuck failing stayed
+  "due" on every tick, forever. **Instrument, named (gate r2 N-1'):**
+  `test_hp8_a_failing_mine_is_retried_at_most_once_per_cooldown_window` —
+  a failing `miner.run` plus a frozen/advanced `now` (`_run_tick`/
+  `_mine_is_due` both take `now` explicitly — no real clock involved):
+  N ticks inside the window must produce exactly ONE attempt; a further
+  tick past the window must produce a second. **Fidelity leg (gate r2
+  N-2'):** `test_hp8_real_files_the_touch_and_the_read_address_the_same_file` —
+  the arithmetic instrument above monkeypatches `miner.last_attempt_iso`,
+  proving `_mine_is_due`'s arithmetic but never that the real
+  `miner.run` touch and the real `last_attempt_iso()` read address the
+  SAME file; this leg uses a genuinely nonexistent home, the real
+  in-process `run_forever` loop, and 8 real ticks — no monkeypatch of
+  the read function at all. **Positive control, rewritten (gate r2
+  N-3'):** `test_hp8_positive_control_the_cooldown_leg_is_genuinely_consulted` —
+  the r1 version replaced `_mine_is_due` wholesale with a hand-written
+  stub and was PROVEN INSENSITIVE (it passed unchanged under a real
+  inverse edit deleting the cooldown leg, since it never called the
+  real function). The rewrite spies on `_recently_attempted`, the real
+  extracted seam `_mine_is_due` genuinely calls, so it goes red the
+  moment that call is ever removed. **Checked for the worker job too,
+  same shape (gate r2 N-4'):**
+  `test_hp8_a_landed_worker_follow_on_is_not_gated_by_a_due_predicate_at_all` —
+  it does NOT share the hole, because it is never polled against a
+  due-predicate at all — `_run_tick` starts it once, in-tick, only
+  immediately after a mine job that landed candidates in THAT tick, so
+  its own next chance is gated by whichever due-predicate (now
+  cooldown-protected) let mining run again. Its own r1 shape forced
+  every tick via a poke and was rewritten (gate r2 B-1') to force the
+  due decision directly, never via a poke — see `HP9`.
+
+- **HP9** **[A]** **Added r7 (gate r2 B-1').** A poke never causes a
+  mine attempt the watchdog would not have spawned. Gate r2 measured
+  the r6 shape poking on EVERY verb invocation while `serve` was alive
+  — even against a ledger mined 0.0s ago — because `maybe_kick`'s
+  serve-alive check ran BEFORE the staleness check, and `_run_tick`'s
+  `_consume_poke(...) or _mine_is_due(...)` short-circuited past the
+  cooldown entirely once poked. Fixed both ends: `maybe_kick`'s
+  serve-alive check moved to exactly the point the pre-U-engine
+  watchdog would spawn (after disabled/fresh/cooling/busy all pass);
+  `_run_tick` treats a consumed poke as a HINT (`_mine_is_due(...,
+  ignore_schedule=True)`), re-validating staleness and cooldown at
+  consumption time rather than trusting the poke unconditionally.
+  **Instrument:** `test_hp9_a_fresh_ledger_never_pokes_regardless_of_serve` —
+  a freshly-mined ledger with `serve` alive, N verb invocations, must
+  return `"fresh"` every time and must never write a poke.
+  `test_hp9_a_stale_ledger_pokes_once_attempts_once_then_cooldown_holds` —
+  a genuinely >24h-stale ledger with `serve` alive DOES still poke,
+  exactly once, producing exactly one real mine attempt, after which
+  the cooldown holds. `test_hp9_a_stale_poke_whose_conditions_have_since_resolved_does_not_force_a_mine` —
+  the race-condition leg specifically exercising the `_run_tick` end: a
+  poke written while stale, consumed after conditions resolved, must
+  not force a mine. **Positive control (mutation `N-15`):** reverting
+  EITHER end to its r6 shape must go red — verified by real
+  inverse-edit-and-restore against both `maybe_kick` and `_run_tick`
+  independently; each end's own dedicated test (the first two above for
+  `maybe_kick`, the third for `_run_tick`) is what catches its
+  respective revert, since neither end's test alone exercises the
+  other's code path.
 
 ### 7.2 SUP — supervision
 
@@ -1501,8 +1626,14 @@ makes `doctor` say **FAIL**; `test_lock_invariant.py` is green with
 
 ### 7.4 SUITE
 
-- **S2A** **[A]** Both suites green at 2A, with `self-learn-miner.timer`
-  still authoritative and the watchdog unchanged.
+- **S2A** **[A]** **CORRECTED r6 (gate r1 D-4):** both suites green,
+  verified by (a) the pre-existing autokick tests passing unedited, and
+  (b) `HP6`'s no-heartbeat leg being byte-identical to `ffa5205` plus
+  `doctor`'s one added `SKIP` line — NOT a separately built or
+  committed 2A checkpoint. 2A and 2B ship as one tree, matching the
+  Phase 1 precedent (1A/1B also merged as one commit); 2A's properties
+  are ENTAILED by the shipped code, not independently re-verified at an
+  intermediate state.
 - **S2B** **[B]** Both suites green at 2B.
 - **S2C** **[B]** The burn-in observable is **named and recorded** in the
   runbook before the phase merges: candidate volume per night within
@@ -1573,6 +1704,8 @@ part that becomes a parameter.
 | **N-11** | `install.sh` enables the unit | **PORT2** | the house rule at `install.sh:25` |
 | **N-12** | `serve` requires systemd (reads `systemctl`, or refuses without it) | **PORT1** | the portability argument was the deciding one |
 | **N-13** | Both-enabled reported as `FAIL` | **SUP4** | the deliberate poke configuration is supported, not broken |
+| **N-14** | The attempt-cooldown leg removed from `_mine_is_due` (added r6) — due iff past today's target, full stop | **HP8** | gate r1 `B-1`'s exact measured shape: 8 ticks -> 8 full mine attempts against a home `miner.run` refuses |
+| **N-15** | Either end of gate r2 `B-1'`'s poke fix reverted (added r7): (a) `maybe_kick`'s serve-alive check restored to BEFORE the staleness/cooldown/busy checks; (b) `_run_tick`'s poke consumption restored to `_consume_poke(...) or _mine_is_due(...)` (short-circuit, no `ignore_schedule` re-validation) | **HP9** | gate r2's exact measured shape: a ledger mined 0.0s ago still got poked, five verb invocations produced five full mine passes with `serve` alive |
 
 ---
 
@@ -1618,8 +1751,10 @@ Anything not listed is out of bounds.
 | `install.sh` | EDIT — link + daemon-reload + the three printed lines |
 | `cli/tests/test_serve.py` | **NEW** — HP, SUP, PORT1 |
 | `cli/tests/test_lock_invariant.py` | EDIT **only** if `NOT_REPO_TRUTH` needs the heartbeat entry (§5.5) |
+| `cli/tests/test_u_sdka.py` | EDIT **only** if `provider.py`'s numstat pin (`test_hy5_numstat_bounds_hold`) needs its bound widened to the measured delta, never loosened past it — **added r6 (gate r1 D-5)**: the touch is mechanically forced by `provider.py` already being on this table |
 | `ui/tests/test_service_unit.py` | EDIT — extend the conventions tests to the third unit (PORT3) |
 | `docs/specs/self-learn/{03,12,13,14,17}` | EDIT — §12 |
+| `docs/specs/self-learn/drafts/u-engine-shared-sdk-core-spec.md` | EDIT (self-referential) — **added r7 (gate r2 N-8')**: this spec's OWN r5→r6→r7 amendments are themselves edits to a file not listed on its own table, the same class as `D-5`'s finding about `test_u_sdka.py` |
 
 ### 9.4 Explicitly NOT touchable, either phase
 
@@ -1783,7 +1918,13 @@ which is §5.3’s evidence for reducing the watchdog.
 
 ### 12.3 `13-hosting-and-separation.md` §5 — the scheduler/watcher amendment
 
-One paragraph appended to §5, and one clause added to §8’s `H-5` bullet:
+One paragraph appended to §5, and one clause added to §8’s `H-5` bullet
+— **CORRECTED r6 (gate r1 D-1/D-2/M-1)**: `D-1` found the §8 clause was
+never landed (only the §5 paragraph was); `D-2` found the §5 paragraph's
+own "stop being roots" claim is false (§5.5 above has the corrected
+version); `M-1` found the "one file" claim is false (`serve` writes
+three, all cache-dir-only). The blockquote below is the CORRECTED text
+both docs should carry:
 
 > **`serve` is a scheduler, not a watcher (added by `U-engine` Phase 2).**
 > H-5 says the ledger repo needs no autosync watcher, ever. The
@@ -1791,15 +1932,23 @@ One paragraph appended to §5, and one clause added to §8’s `H-5` bullet:
 > STARTS producers (`miner.run`, `worker.run`) on a schedule, and each
 > producer still takes its own `commit_lock`, commits only its own
 > pathspec, and uses its own pinned subject — exactly as when a verb or a
-> timer started it. `serve` never stages, never commits, never pushes, and
-> writes exactly one file: a heartbeat into `cache_dir()`, which is
-> `NOT_REPO_TRUTH` by the same rule as every other cache write. The
-> `reconcile` backstop is unchanged and still runs at the start of every
-> `mine` and before every `push`. The mechanical consequence is in
-> `test_lock_invariant.py`: `serve` becomes a derived ENTRYPOINT and
-> `miner.run` / `worker.run` stop being roots, so every mutation reachable
-> from `serve` inherits the lock obligation along a new path — which the
+> timer started it. `serve` never stages, never commits, never pushes,
+> and writes into `cache_dir()` only — three files (`serve.heartbeat`,
+> `serve.poke`, `serve.schedule`), all already `NOT_REPO_TRUTH` by the
+> same rule as every other cache write. The `reconcile` backstop is
+> unchanged and still runs at the start of every `mine` and before every
+> `push`. The mechanical consequence is in `test_lock_invariant.py`:
+> `miner.run` and `worker.run` were never roots (`cli._cmd_mine`/
+> `cli._cmd_worker` already called them) and stay not-roots — `serve`
+> gives every mutation already reachable from them a SECOND path into
+> the lock-obligation walk, through `cli.entrypoint -> ... ->
+> cli._cmd_serve -> serve.run_forever -> serve._run_tick`, which the
 > walker checks structurally, without anyone declaring it.
+
+**The clause for §8's `H-5` bullet** (owed, not yet landed as of r5):
+append, after the bullet's existing text — *"`self-learn serve`
+(U-engine Phase 2) does not change this: it starts producers on a
+schedule; it does not itself mutate the ledger."*
 
 ### 12.4 `17-invocation-runbook.md`
 

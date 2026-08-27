@@ -188,6 +188,26 @@ fails when any entrypoint can reach a mutation without passing through a
 lock), because three separate review rounds established the rule and
 three separate files still missed it.
 
+**`serve` is a scheduler, not a watcher (added by `U-engine` Phase 2;
+corrected 2026-08-27, gate r1 D-2/M-1).**
+H-5 says the ledger repo needs no autosync watcher, ever. The
+`self-learn serve` host process does not change that and is not one: it
+STARTS producers (`miner.run`, `worker.run`) on a schedule, and each
+producer still takes its own `commit_lock`, commits only its own
+pathspec, and uses its own pinned subject — exactly as when a verb or a
+timer started it. `serve` never stages, never commits, never pushes,
+and writes into `cache_dir()` only — three files (`serve.heartbeat`,
+`serve.poke`, `serve.schedule`), all already `NOT_REPO_TRUTH` by the
+same rule as every other cache write. The `reconcile` backstop is
+unchanged and still runs at the start of every `mine` and before every
+`push`. The mechanical consequence is in `test_lock_invariant.py`:
+`miner.run` and `worker.run` were never roots (`cli._cmd_mine` and
+`cli._cmd_worker` already called them, before `serve` existed) and stay
+not-roots — `serve` gives every mutation already reachable from them a
+SECOND path into the lock-obligation walk, through `cli.entrypoint ->
+... -> cli._cmd_serve -> serve.run_forever -> serve._run_tick`, which the
+walker checks structurally, without anyone declaring it.
+
 ## 6. Cache namespacing
 
 `~/.cache/claude-skills/self-learn/` → `~/.cache/self-learn/` in the
@@ -498,5 +518,11 @@ rollback is purely a code-repo affair.
   writes with pinned subjects. Corollary: a write its producer could not
   commit is committed by nobody, so `self-learn reconcile` is the
   backstop (§5), and no mutation may precede its `commit_lock`.
+  `self-learn serve` (U-engine Phase 2) does not change this: it starts
+  producers on a schedule; it does not itself mutate the ledger. (Owed
+  by spec §12.3 since r5; landed 2026-08-27 — gate r1 D-1 first flagged
+  it missing, gate r2 D-1 found it STILL missing after a first attempt
+  whose inline parenthetical apparently broke a plain-text match; this
+  is the clean, unwrapped form.)
 - **H-6** · Migration preserves resolution-commit history (the
   analyst's negative exemplars are part of the system's memory).

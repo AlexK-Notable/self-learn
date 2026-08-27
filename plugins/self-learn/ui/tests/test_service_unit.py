@@ -8,6 +8,14 @@ Also asserts PARITY with ``systemd/self-learn-miner.service`` on the
 conventions 10 §1 explicitly pins this unit to mirror: %h-relative
 paths, the B-1 explicit env pin (systemd user managers don't inherit
 the shell's env), and the registration-block comment style.
+
+U-engine Phase 2 (spec §7.3 ``PORT3``) extends the SAME conventions
+check to the third unit, ``systemd/self-learn-host.service``. The
+pre-existing ``test_both_units_document_manual_registration_via_symlink``
+below is the suite's ONE known failure (that unit's header does not
+literally contain ``ln -sf`` — a pre-existing defect, not this unit's to
+fix) and is left untouched: the new host-unit checks are separate
+functions so that failure's status does not move in either direction.
 """
 
 from __future__ import annotations
@@ -19,6 +27,9 @@ UI_UNIT = (
 )
 MINER_UNIT = (
     Path(__file__).resolve().parents[4] / "systemd" / "self-learn-miner.service"
+)
+HOST_UNIT = (
+    Path(__file__).resolve().parents[4] / "systemd" / "self-learn-host.service"
 )
 
 
@@ -119,3 +130,80 @@ def test_both_units_have_a_description() -> None:
     for unit_path in (UI_UNIT, MINER_UNIT):
         section = _section(unit_path.read_text(encoding="utf-8"), "Unit")
         assert "Description=" in section
+
+
+# --- U-engine Phase 2 (`PORT3`): self-learn-host.service ----------------
+#
+# A SEPARATE block, deliberately not folded into the miner-parity tests
+# above: those are parametrized/paired against exactly the two
+# pre-existing units, and `test_both_units_document_manual_registration_
+# via_symlink` is the suite's one known failure — adding a third unit
+# into THAT function's own assertions would change its pass/fail status,
+# which PORT3 explicitly forbids ("must not change that failure's status
+# in either direction").
+
+
+def test_host_unit_exists() -> None:
+    assert HOST_UNIT.is_file(), f"missing unit at {HOST_UNIT}"
+
+
+def test_host_unit_exec_start_is_pinned() -> None:
+    content = HOST_UNIT.read_text(encoding="utf-8")
+    service = _section(content, "Service")
+    assert "ExecStart=%h/bin/self-learn serve" in service
+
+
+def test_host_unit_type_is_simple() -> None:
+    content = HOST_UNIT.read_text(encoding="utf-8")
+    service = _section(content, "Service")
+    assert "Type=simple" in service
+
+
+def test_host_unit_restart_on_failure_is_pinned() -> None:
+    content = HOST_UNIT.read_text(encoding="utf-8")
+    service = _section(content, "Service")
+    assert "Restart=on-failure" in service
+    assert "RestartSec=5" in service
+
+
+def test_host_unit_description_present() -> None:
+    content = HOST_UNIT.read_text(encoding="utf-8")
+    unit = _section(content, "Unit")
+    assert "Description=" in unit
+
+
+def test_host_unit_install_section_present_for_direct_enable() -> None:
+    content = HOST_UNIT.read_text(encoding="utf-8")
+    assert "[Install]" in content
+    install = _section(content, "Install")
+    assert "WantedBy=" in install
+
+
+def test_host_unit_registration_documented_in_a_comment() -> None:
+    content = HOST_UNIT.read_text(encoding="utf-8")
+    header = content.split("[Unit]")[0]
+    assert "systemctl --user enable --now self-learn-host.service" in header
+
+
+def test_host_unit_execstart_is_h_relative_like_the_miner_unit() -> None:
+    host_service = _section(HOST_UNIT.read_text(encoding="utf-8"), "Service")
+    miner_service = _section(MINER_UNIT.read_text(encoding="utf-8"), "Service")
+    assert "%h/bin/" in host_service
+    assert "%h/bin/" in miner_service
+
+
+def test_host_unit_carries_the_same_b1_env_pin_as_the_miner_unit() -> None:
+    """B-1 (doc 13 §7.1), carried: the systemd user manager does not
+    inherit the shell's env — all three units pin SELF_LEARN_HOME
+    explicitly rather than relying on ambient environment."""
+    host_service = _section(HOST_UNIT.read_text(encoding="utf-8"), "Service")
+    miner_service = _section(MINER_UNIT.read_text(encoding="utf-8"), "Service")
+    assert "Environment=SELF_LEARN_HOME=%h/.self-learn" in host_service
+    assert "Environment=SELF_LEARN_HOME=%h/.self-learn" in miner_service
+
+
+# Gate r1 N-6: `test_host_unit_has_a_description` was an exact duplicate
+# of `test_host_unit_description_present` above (both assert
+# `"Description=" in _section(..., "Unit")`) -- removed rather than kept,
+# since the earlier name already matches this file's own naming
+# convention for the other `test_host_unit_*_present`/`*_pinned` checks.

@@ -1,0 +1,42 @@
+# self-learn host process (U-engine Phase 2, spec Sec 5) -- the
+# long-lived scheduler: it starts `miner.run`/`worker.run` as jobs
+# (SERIALLY, spec Sec 5.2a), replacing self-learn-miner.timer's nightly
+# fire, the miner-to-worker handoff's setsid Popen (register item #11,
+# closed by construction -- there is no detached child for a cgroup to
+# reap), and the covert any-verb watchdog (reduced, not retired: spec
+# Sec 5.3 -- a verb pokes this daemon instead of spawning its own run
+# once a fresh heartbeat proves it is alive).
+#
+# Conventions mirror self-learn-ui.service (comment header, %h-relative
+# paths, explicit env pin, Restart=on-failure/RestartSec=5).
+#
+# Installed by install.sh (which links this unit into
+# ~/.config/systemd/user/ and runs `systemctl --user daemon-reload`);
+# enabling it is the one step it deliberately leaves to you:
+#   systemctl --user enable --now self-learn-host.service
+#
+# Once enabled, self-learn-miner.timer should NOT also stay enabled --
+# `self-learn doctor invocation` warns (never fails) if both are, since
+# the pairing is merely double work, not corruption (miner.spawn.lock
+# and worker.lock still serialise them either way). A timer left enabled
+# on purpose is supported as a belt-and-braces poke (spec Sec 5.7).
+#
+# systemd absent / non-Linux host (spec Sec 5.7): the documented
+# fallback is running `self-learn serve` in the foreground -- this unit
+# is a convenience, not a hard dependency. `serve` ports unchanged to
+# launchd or a bare terminal window.
+[Unit]
+Description=self-learn host process (scheduler + heartbeat)
+
+[Service]
+Type=simple
+# B-1 (doc 13 Sec 7.1), carried from self-learn-miner.service/self-learn-ui.service:
+# the systemd user manager does not inherit the shell's env -- pin the
+# ledger home explicitly so the unit and the shell agree.
+Environment=SELF_LEARN_HOME=%h/.self-learn
+ExecStart=%h/bin/self-learn serve
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
