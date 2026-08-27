@@ -71,6 +71,7 @@ __all__ = [
     "plant_canary",
     "read_canaries_summary",
     "read_journal",
+    "reader_timeout_secs",
     "run",
     "walk",
 ]
@@ -85,6 +86,8 @@ ATTEMPT_COOLDOWN_SECS = 2 * 60 * 60  # audit 2026-07-15: failure backoff —
 # without it a persistently failing reader converts every CLI invocation
 # into a full walk+digest+15-min model attempt
 STALE_AFTER_SECS = 36 * 60 * 60  # R1 layer 3: SessionStart alarm
+#: FW-100 (U-fw100): the reader session's timeout, env-overridable via
+#: SELF_LEARN_READER_TIMEOUT_SECS (:func:`reader_timeout_secs`).
 INVOKE_TIMEOUT_SECS = 15 * 60
 JOURNAL_CAP_BYTES = 2_000_000
 DEFAULT_MINER_MODEL = "claude-sonnet-5"
@@ -175,6 +178,16 @@ def pending_gate() -> int:
 
 def miner_model() -> str:
     return os.environ.get("SELF_LEARN_MINER_MODEL") or DEFAULT_MINER_MODEL
+
+
+def reader_timeout_secs() -> float:
+    """The reader session's timeout (doc 12 §2 Phase 2), default
+    :data:`INVOKE_TIMEOUT_SECS`, env-overridable via
+    ``SELF_LEARN_READER_TIMEOUT_SECS``. Shares :func:`worker._timeout_secs`
+    with the worker's own :func:`worker.invoke_timeout_secs` /
+    :func:`worker.repair_timeout_secs` — identical parsing, validation,
+    and fallback semantics (FW-100)."""
+    return worker._timeout_secs("SELF_LEARN_READER_TIMEOUT_SECS", INVOKE_TIMEOUT_SECS)
 
 
 def transcripts_root() -> Path:
@@ -718,18 +731,22 @@ def _invoke_reader(home: Path, prompt: str) -> Path | None:
     it is deleted, not merely unwired."""
     out_path = spool_dir() / OUTPUT_BASENAME
     out_path.unlink(missing_ok=True)
+    # N-2a (U-fw100 gate r1): bind once -- enforced and displayed must be
+    # the SAME env read, not two independent calls straddling
+    # containment_for(), so they cannot diverge by construction.
+    timeout_secs = reader_timeout_secs()
     spec = invocation.SessionSpec(
         surface="miner-reader",
         prompt=prompt,
         cwd=home,
-        timeout=INVOKE_TIMEOUT_SECS,
+        timeout=timeout_secs,
         containment=invocation.containment_for(
             "miner-reader",
             disallowed_tools=READER_DISALLOWED_TOOLS,
             spool_dir=spool_dir(),
         ),
         log=log,
-        timeout_display=INVOKE_TIMEOUT_SECS,
+        timeout_display=timeout_secs,
         doctrine=None,
     )
     outcome = invocation.write_session(spec)
