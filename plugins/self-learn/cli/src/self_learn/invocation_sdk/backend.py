@@ -15,6 +15,7 @@ import re
 import threading
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, fields as _dataclass_fields
+from pathlib import Path
 from typing import Any, TypeVar, cast
 
 from claude_agent_sdk import (
@@ -23,18 +24,15 @@ from claude_agent_sdk import (
     ClaudeSDKClient,
     ClaudeSDKError,
     CLINotFoundError,
-    PermissionResultAllow,
-    PermissionResultDeny,
     ProcessError,
     ResultMessage,
     TextBlock,
-    ToolPermissionContext,
     ToolResultBlock,
     ToolUseBlock,
     UserMessage,
 )
 
-from .. import provider
+from .. import provider, worker
 from ..invocation.contract import (
     LOG_TEMPLATES,
     SELECTOR_FOR_SURFACE,
@@ -43,6 +41,9 @@ from ..invocation.contract import (
     Outcome,
     SessionSpec,
 )
+from ..sdksession import policy as sdk_policy
+from ..sdksession import result as sdk_result
+from ..sdksession import session as sdk_session_lib
 from . import charter, lifecycle
 from .charter import CharterPatternUnsupported
 from .events import EventLog, new_run_id, prune_event_logs, write_event_log
@@ -115,7 +116,13 @@ def run_sync(factory: Callable[[], Coroutine[Any, Any, T]]) -> T:
 
 def _supported_option_fields() -> set[str]:
     """`O-1a` -- feature detection via `dataclasses.fields`, never
-    `hasattr` on an instance."""
+    `hasattr` on an instance. **NOT delegated to the shared library**
+    (`sdksession.result.supported_option_fields` exists and is
+    behaviourally identical, but `test_op9_...`/`test_ou4_...`
+    (armor-pinned `test_invocation_sdk.py`) monkeypatch
+    `backend_mod._dataclass_fields` directly -- a name delegation would
+    make invisible, since the library calls `dataclasses.fields` from
+    ITS OWN module namespace, not this one's local alias)."""
     return {f.name for f in _dataclass_fields(ClaudeAgentOptions)}
 
 
@@ -137,6 +144,34 @@ def _max_budget_usd() -> float | None:
         return float(raw)
     except ValueError:
         return None
+
+
+class CliSessionPolicy:
+    """This engine's `sdksession.policy.SessionPolicy` (spec §4.3),
+    structurally -- no import of `SessionPolicy` is needed to satisfy a
+    `Protocol`. One instance per `SessionSpec`; every method is cheap
+    and safe to call more than once except `option_floor()`, which
+    `POL3` requires to be called exactly once per `options_kwargs`
+    construction and to hand back a FRESH dict every time (delegated to
+    `sdksession.policy.default_option_floor`, which does exactly that)."""
+
+    def __init__(self, spec: SessionSpec) -> None:
+        self._spec = spec
+
+    def can_use_tool(self) -> "sdk_policy.CanUseTool":
+        return charter.build_can_use_tool(self._spec.containment)
+
+    def option_floor(self) -> dict[str, object]:
+        return sdk_policy.default_option_floor()
+
+    def messages(self) -> sdk_policy.ShutdownMessages:
+        return lifecycle.CLI_SHUTDOWN_MESSAGES
+
+    def env(self) -> dict[str, str]:
+        return provider_env(self._spec)
+
+    def cache_dir(self) -> Path:
+        return worker.cache_dir()
 
 
 def options_kwargs(spec: SessionSpec, events: EventLog | None = None) -> dict[str, object]:
@@ -170,18 +205,12 @@ def options_kwargs(spec: SessionSpec, events: EventLog | None = None) -> dict[st
     containment = spec.containment
     disallowed = [t for t in (containment.disallowed_tools or "").split(",") if t]
 
-    raw_can_use_tool = charter.build_can_use_tool(containment)
-
-    async def can_use_tool(
-        tool_name: str,
-        tool_input: dict[str, Any],
-        context: ToolPermissionContext,
-    ) -> PermissionResultAllow | PermissionResultDeny:
-        result = await raw_can_use_tool(tool_name, tool_input, context)
-        if isinstance(result, PermissionResultDeny):
-            # `C-9` -- every DENY is recorded, before this wrapper returns.
-            events.add_denial(tool_name, result.message)
-        return result
+    policy = CliSessionPolicy(spec)
+    # `C-9`/`POL2` -- the containment-callback adapter that records every
+    # DENY into this session's EventLog moved to the library verbatim;
+    # only the charter decision itself (`policy.can_use_tool()`) stays
+    # client-owned.
+    can_use_tool = sdk_policy.wrap_can_use_tool(policy.can_use_tool(), events.add_denial)
 
     selector = SELECTOR_FOR_SURFACE.get(spec.surface, spec.surface)
     supported = _supported_option_fields()
@@ -190,16 +219,13 @@ def options_kwargs(spec: SessionSpec, events: EventLog | None = None) -> dict[st
         "cwd": str(spec.cwd),
         "system_prompt": system_prompt,
         "model": provider.model_for(spec.surface, home=spec.cwd),  # `IN3`/`Int-1`
-        "allowed_tools": [],  # `F-B` -- always, every surface
         "disallowed_tools": disallowed,
         "can_use_tool": can_use_tool,
         "permission_mode": "default",  # `O-2` -- unconditionally
-        "setting_sources": [],  # `F-C` -- always
         "settings": None,  # `A-2` -- the charter is the only authority
-        "strict_mcp_config": True,  # `O-3` -- unconditionally
         "mcp_servers": {},
         "include_partial_messages": False,
-        "env": provider_env(spec),  # `PS-a` -- called exactly once, no merge
+        "env": policy.env(),  # `PS-a` -- called exactly once, no merge
         # `O-4`/`IN3` -- unchanged since before `U-bedrock`: this already
         # equals `provider.resolve(home, surface).cli_path` bit-for-bit
         # (`_resolve_str_setting` resolves the same env var the same way,
@@ -207,6 +233,11 @@ def options_kwargs(spec: SessionSpec, events: EventLog | None = None) -> dict[st
         # construction and this line does not need a second `resolve()`
         # call to satisfy it.
         "cli_path": os.environ.get("SELF_LEARN_SDK_CLI_PATH") or None,
+        # `POL3` -- the three keys measured identical in §2.3
+        # (`allowed_tools`, `setting_sources`, `strict_mcp_config`), a
+        # FRESH dict every call, from the ONE shared definition both
+        # engines splat.
+        **policy.option_floor(),
     }
 
     if "max_turns" in supported:
@@ -315,12 +346,9 @@ def _map_result_message(
     stdout = _stdout_for(spec, text)
 
     if result_message.is_error:
-        if result_message.errors:
-            detail = "; ".join(result_message.errors)
-        elif result_message.result:
-            detail = result_message.result
-        else:
-            detail = result_message.subtype
+        # §2.2a's skeleton-identical (1.000) pair -- the ONE mechanism
+        # this unit found written twice, now moved verbatim.
+        detail = sdk_result.reduce_result_error(result_message)
         assert templates.exited is not None  # T-c: worker/miner/analyst all carry this leg
         spec.log(
             _format(templates.exited, spec, rc=1, detail=_render_exit_detail(templates, detail))
@@ -360,19 +388,30 @@ async def _run_session(
     events: EventLog,
     set_child_pid: Callable[[int | None], None],
 ) -> tuple[ResultMessage | None, str]:
-    await client.connect()
+    # `session.py` -- the transport loop, not the vocabulary: `SdkSession`
+    # does nothing except call the same `connect`/`query`/
+    # `receive_response` methods this function already called directly,
+    # so wrapping `client` in it changes no observable behaviour. Child-pid
+    # resolution and the sidecar write stay routed through `lifecycle.*`
+    # (module-attribute calls a test can monkeypatch), unchanged.
+    session = sdk_session_lib.SdkSession(client)
+    await session.connect()
     child_pid = lifecycle.child_pid_of(client)
     set_child_pid(child_pid)
     if child_pid is None:
-        spec.log("run: sdk backend could not resolve the child pid")
+        # gate r1 N-2: routed through the table (byte-identical text)
+        # instead of a bare literal -- `CLI_SHUTDOWN_MESSAGES.
+        # child_pid_unresolved` was written but read by nothing, a
+        # second unwatched copy of one operator string.
+        spec.log(lifecycle.CLI_SHUTDOWN_MESSAGES.child_pid_unresolved)
     else:
         lifecycle.write_sidecar(spec.surface, child_pid, str(options.cli_path or ""))
 
-    await client.query(spec.prompt)
+    await session.query(spec.prompt)
 
     final: ResultMessage | None = None
     last_assistant_text = ""
-    async for message in client.receive_response():
+    async for message in session.drive():
         if isinstance(message, AssistantMessage):
             last_assistant_text = "".join(
                 block.text for block in message.content if isinstance(block, TextBlock)
@@ -404,7 +443,6 @@ async def _drive(spec: SessionSpec) -> SdkOutcome:
 
     # `K-5` -- before connecting.
     lifecycle.sweep_orphans(surface, spec.log)
-    prune_event_logs(surface)  # `E-5`
 
     try:
         options = _build_options(spec, events)
@@ -546,6 +584,13 @@ async def _drive(spec: SessionSpec) -> SdkOutcome:
             },
             events=events,
         )
+        # `E-5`/`F-3`/`MS4` -- retention now runs at session END, not
+        # START: a STARTING session must never unlink a running
+        # session's in-flight log. The CLI's own call site never has a
+        # second in-flight run in this process (`run_sync` blocks), so
+        # this is a pure timing move, not a behaviour change to what
+        # ends up retained.
+        prune_event_logs(surface)
 
     assert outcome is not None
     return outcome

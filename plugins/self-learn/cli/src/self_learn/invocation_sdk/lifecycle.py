@@ -1,26 +1,49 @@
-"""U-sdk §3.7 `Life-1` — the kill ladder (`K-1`/`K-1a`/`K-1b`), the
+"""U-sdk §3.7 `Life-1` -- the kill ladder (`K-1`/`K-1a`/`K-1b`), the
 guarded child kill (`K-2`), the defensive child-pid resolver (`K-3`), the
 pid sidecar (`K-4`) and the start-of-run orphan sweep (`K-5`).
 
-The ONLY module in this unit that sends a signal (§ files-this-unit-may-
-touch table). Import-bounded to stdlib plus `.. import worker` (the
-module object, `I-d`) -- every `worker` use is `worker.cache_dir()` /
-`worker._pid_alive(...)` at CALL time, so a test's
-`monkeypatch.setattr(worker, ...)` is observed.
+**U-engine (spec `u-engine-shared-sdk-core-spec.md` §4, Phase 1A):** the
+MECHANISM now lives in `self_learn.sdksession` -- `ladder.py`,
+`teardown.py`, `children.py` -- shared with the UI pane engine. This
+module is a THIN SURFACE over it, with two deliberate exceptions carved
+out by `test_invocation_sdk.py::test_pl3_filesystem_writes_are_
+enumerated_with_an_exact_count` (armor-pinned, unedited): that test
+counts the LITERAL `write_text`/`unlink` call sites across this whole
+six-file package and asserts an exact total of 5, naming
+`(lifecycle.py, write_text)`/`(lifecycle.py, unlink)` among the allowed
+set. `write_sidecar`/`read_sidecar`/`clear_sidecar`/`_sidecar_path`
+therefore keep their OWN direct file I/O, byte-identical to before this
+unit -- the library ships an equivalent, more general implementation
+(`children.sidecar_path`/`write_sidecar`/`read_sidecar`/`clear_sidecar`,
+session-keyed) for the OTHER two consumers and for direct testing
+(`MS3`/`MS5`), but this surface's own production path is unchanged.
+
+`INTERRUPT_GRACE_SECS`/`KILL_SECS` are bound to the library's `ladder.py`
+objects BY IDENTITY (`LAD2`/`LAD3` carry the analogous UI-side proof).
+`_ABANDONED_DISCONNECTS` is bound to the library's registry object, also
+by identity. `run_kill_ladder` stays a NAME in this module, read at CALL
+TIME by every caller (`lifecycle.run_kill_ladder(...)`) -- and its own
+body reads `KILL_SECS`/`INTERRUPT_GRACE_SECS` from ITS OWN globals at
+call time too (design constraint `C-1`), which is what keeps every
+existing `monkeypatch.setattr(lifecycle_mod, "KILL_SECS", ...)` test
+valid unedited.
+
+Import-bounded to stdlib plus `.. import worker` (`worker.cache_dir()` /
+`worker._pid_alive(...)` at CALL time) plus `..sdksession`.
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
-import os
-import signal
+import os  # noqa: F401 - kept so `lifecycle_mod.os` exists for `monkeypatch.setattr(lifecycle_mod.os, ...)` (test_kl5/test_to6); the real calls run inside `sdksession.teardown`, same global `os` module
 import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from .. import worker
+from ..sdksession import children, ladder, teardown
+from ..sdksession.policy import ShutdownMessages
 
 __all__ = [
     "INTERRUPT_GRACE_SECS",
@@ -34,41 +57,54 @@ __all__ = [
     "write_sidecar",
 ]
 
-#: `K-1` -- `sdk.py`'s tuned 2026-07-18 defaults, ported verbatim.
-INTERRUPT_GRACE_SECS = 1.0
-KILL_SECS = 2.5
+#: `K-1` -- bound by identity to `sdksession.ladder`'s objects (`LAD2`).
+INTERRUPT_GRACE_SECS = ladder.INTERRUPT_GRACE_SECS
+KILL_SECS = ladder.KILL_SECS
 
-#: `K-1` step 2 -- strong references to abandoned `disconnect()` tasks;
-#: asyncio's own registry holds tasks weakly, so this is what keeps a
-#: background escalation alive until it finishes (ported verbatim from
-#: `sdk.py`'s `_ABANDONED_DISCONNECTS`).
-_ABANDONED_DISCONNECTS: set[asyncio.Task[Any]] = set()
+#: `K-1` step 2 -- bound by identity to the library's shared registry.
+_ABANDONED_DISCONNECTS = teardown.ABANDONED_DISCONNECTS
 
-
-def _log_abandoned_disconnect(task: asyncio.Task[Any], log: Callable[[str], None]) -> None:
-    """Ported verbatim from `sdk.py`'s `_log_abandoned_disconnect` --
-    retrieves the abandoned disconnect()'s outcome (never let it die as
-    an un-retrieved exception) and logs the completion."""
-    if task.cancelled():
-        log("run: sdk backend: abandoned disconnect() was cancelled")
-        return
-    exc = task.exception()
-    if exc is not None:
-        log(f"run: sdk backend: abandoned disconnect() finished with: {exc}")
-    else:
-        log("run: sdk backend: abandoned disconnect() completed")
+#: This surface's operator-visible message table (§2.8's CLI-owned
+#: rows: the 5-line teardown ladder, the 6-line orphan sweep, and the
+#: child-pid-unresolved line `_run_session` still emits directly).
+#: Exposed publicly (no leading underscore) so `backend.py`'s
+#: `CliSessionPolicy.messages()` returns THIS object -- one definition,
+#: not two hand-kept copies.
+CLI_SHUTDOWN_MESSAGES = ShutdownMessages(
+    disconnect_timeout=(
+        "run: sdk backend: disconnect() still running at the kill "
+        "bound — caller released; SDK subprocess escalation "
+        "continues in the background"
+    ),
+    disconnect_raised="run: sdk backend: disconnect() raised: {exc}",
+    abandoned_cancelled="run: sdk backend: abandoned disconnect() was cancelled",
+    abandoned_finished="run: sdk backend: abandoned disconnect() finished with: {exc}",
+    abandoned_completed="run: sdk backend: abandoned disconnect() completed",
+    child_pid_unresolved="run: sdk backend could not resolve the child pid",
+    orphan_malformed=lambda surface: (
+        f"run: sdk backend: orphan sweep for {surface} declined (malformed sidecar)"
+    ),
+    orphan_no_live_process=lambda surface, pid: (
+        f"run: sdk backend: orphan sweep for {surface} found no live process at pid {pid}"
+    ),
+    orphan_uncorroborated=lambda surface, pid: (
+        f"run: sdk backend: orphan sweep for {surface} could not corroborate pid {pid}"
+    ),
+    orphan_cmdline_mismatch=lambda surface, pid: (
+        f"run: sdk backend: orphan sweep for {surface} declined (pid {pid} cmdline mismatch)"
+    ),
+    orphan_not_stale=lambda surface, pid: (
+        f"run: sdk backend: orphan sweep for {surface} declined (pid {pid} not stale)"
+    ),
+    orphan_killed=lambda surface, pid: (
+        f"run: sdk backend: orphan sweep for {surface} killed stale pid {pid}"
+    ),
+)
 
 
 def child_pid_of(client: Any) -> int | None:
-    """`K-3` -- DEFENSIVE: walks private attributes and returns `None` on
-    ANY failure, never raising. An SDK-internal rename must degrade to
-    "pid unknown", not a total outage of the backend. `client` is typed
-    `Any` deliberately -- this module may not import `claude_agent_sdk`
-    (§3.1's table)."""
-    try:
-        return client._transport._process.pid  # noqa: SLF001 - deliberate, defensive
-    except (AttributeError, TypeError):
-        return None
+    """`K-3` -- delegates verbatim to the library's defensive walk."""
+    return children.child_pid_of(client)
 
 
 def _sidecar_path(surface: str) -> Path:
@@ -76,10 +112,8 @@ def _sidecar_path(surface: str) -> Path:
 
 
 def write_sidecar(surface: str, pid: int, cli: str) -> None:
-    """`K-4` -- written as soon as the child pid is known. Carries more
-    than a bare pid: a bare pid is a pid-reuse foot-gun -- a sweep that
-    trusts one can SIGKILL an unrelated process that inherited the
-    number."""
+    """`K-4` -- written as soon as the child pid is known. Own direct
+    I/O -- see the module docstring's `test_pl3` note."""
     path = _sidecar_path(surface)
     path.write_text(
         json.dumps({"pid": pid, "started_at": time.time(), "cli": cli}),
@@ -98,139 +132,50 @@ def read_sidecar(surface: str) -> dict[str, Any] | None:
 
 def clear_sidecar(surface: str) -> None:
     """`K-4`/`K-5` -- unlinked whether the session succeeded, failed, or
-    timed out; also the ONE call site the orphan sweep uses once it is
-    done with a sidecar it read (`PL3` pins the exact write/unlink count
-    across this package)."""
+    timed out. Own direct I/O -- see the module docstring's `test_pl3`
+    note."""
     _sidecar_path(surface).unlink(missing_ok=True)
 
 
 def kill_child(pid: int | None, log: Callable[[str], None]) -> None:
-    """`K-2` -- the `getpgid` guard, MEASURED and load-bearing: the SDK's
-    child shares the caller's process group (no `start_new_session`, no
-    `preexec_fn` -- `anyio.open_process` is called plain), so an
-    unguarded `killpg` would kill the worker/miner/analyst itself. Tested
-    through RECORDERS (`K-2a`), never real signals, for exactly this
-    reason."""
-    del log
-    if pid is None or not worker._pid_alive(pid):
-        return
-    try:
-        if os.getpgid(pid) != os.getpgid(0):
-            os.killpg(pid, signal.SIGKILL)
-        else:
-            os.kill(pid, signal.SIGKILL)
-    except (ProcessLookupError, PermissionError):
-        pass
+    """`K-2` -- delegates to the library, passing `worker._pid_alive`
+    looked up at CALL time (an attribute access on the `worker` module
+    object performed inside this function body), so
+    `monkeypatch.setattr(lifecycle_mod.worker, "_pid_alive", ...)`
+    still takes effect."""
+    teardown.kill_child(pid, log, worker._pid_alive)
 
 
-async def run_kill_ladder(
-    client: Any, child_pid: int | None, log: Callable[[str], None]
-) -> None:
-    """`K-1` -- three rungs, run on timeout AND unconditionally in
-    `finally`.
-
-    Step 3 is what makes the ladder terminate in a SYNC frame
-    (`K-1a`/`K-1b`): `run_sync` drives this coroutine via `asyncio.run`,
-    which closes the event loop on return -- any background task (the
-    abandoned `disconnect()` of step 2) dies unfinished, and the SDK's
-    own SIGTERM/SIGKILL escalation inside it never completes. On the
-    timeout path, `close()`'s own teardown spends its first 5s window
-    waiting gracefully with NO signal sent at all -- `KILL_SECS` (2.5s)
-    expires inside that window, so step 3 is, in practice, the only
-    thing that signals the child before the loop closes."""
-    # Step 1 -- bounded interrupt(); ANY failure, including the timeout,
-    # is swallowed and escalates to step 2. Cancel-on-timeout is safe
-    # here: the abandoned control request is moot once step 2
-    # disconnects the transport.
-    try:
-        await asyncio.wait_for(client.interrupt(), timeout=INTERRUPT_GRACE_SECS)
-    except Exception:  # noqa: BLE001 - any transport failure escalates
-        pass
-
-    # Step 2 -- SHIELDED disconnect(): never cancelled -- a raw cancel
-    # pierces the SDK transport's own shielded SIGTERM/SIGKILL escalation
-    # (its own docstring carries the caveat). On expiry the task is
-    # abandoned, never cancelled, held by a strong module-level reference
-    # with both done-callbacks (discard + log).
-    task: asyncio.Task[Any] = asyncio.ensure_future(client.disconnect())
-    try:
-        await asyncio.wait_for(asyncio.shield(task), timeout=KILL_SECS)
-    except TimeoutError:
-        # `MAJOR-1` -- ported verbatim from `sdk.py:300-313`'s TWO
-        # branches: this one fires ONLY when the shielded wait itself
-        # expired (`O-quiet` line 4), never for a `disconnect()` that
-        # raised something else -- collapsing the two into one `except
-        # Exception` would report an immediately-raising disconnect() as
-        # "still running... escalation continues in the background",
-        # which is false, and would track its (already-finished) task in
-        # `_ABANDONED_DISCONNECTS` for no reason.
-        log(
-            "run: sdk backend: disconnect() still running at the kill "
-            "bound — caller released; SDK subprocess escalation "
-            "continues in the background"
-        )
-        _ABANDONED_DISCONNECTS.add(task)
-        task.add_done_callback(_ABANDONED_DISCONNECTS.discard)
-        task.add_done_callback(lambda t: _log_abandoned_disconnect(t, log))
-    except Exception as exc:  # noqa: BLE001 - disconnect() must never raise uncaught
-        # `MAJOR-1` -- the port source's second branch: `disconnect()`
-        # itself raised (not a timeout) -- reported by its own line, and
-        # NOT tracked in `_ABANDONED_DISCONNECTS` (the task is already
-        # done; there is nothing left to escalate in the background).
-        log(f"run: sdk backend: disconnect() raised: {exc}")
-
-    # Step 3 -- explicit child kill, BEFORE this coroutine returns.
-    kill_child(child_pid, log)
+async def run_kill_ladder(client: Any, child_pid: int | None, log: Callable[[str], None]) -> None:
+    """`K-1` -- the CLI's three-rung ladder, run on timeout AND
+    unconditionally in `finally`. Design constraint `C-1`: reads its OWN
+    module-level `KILL_SECS`/`INTERRUPT_GRACE_SECS` at CALL time (bare
+    names, resolved against THIS module's globals), so a test's
+    `monkeypatch.setattr(lifecycle_mod, "KILL_SECS", ...)` is observed
+    by this exact call. `loop_closing=True` (`R-1`): the CLI's
+    `run_sync` bridge means the event loop closes when this coroutine's
+    caller returns, so step 3 (the explicit child kill) always runs --
+    today's exact, unconditional behaviour."""
+    await teardown.run_kill_ladder(
+        client,
+        child_pid,
+        log,
+        kill_secs=KILL_SECS,
+        interrupt_grace_secs=INTERRUPT_GRACE_SECS,
+        loop_closing=True,
+        pid_alive=worker._pid_alive,
+        messages=CLI_SHUTDOWN_MESSAGES,
+    )
 
 
 def sweep_orphans(surface: str, log: Callable[[str], None]) -> None:
-    """`K-5` -- before connecting, kill a sidecar-recorded pid for this
-    surface ONLY when all three corroborating checks hold. Any check that
-    cannot be performed means DO NOT kill -- unlink the sidecar and log
-    one line. Silent when there is nothing to sweep at all (no sidecar
-    present -- `O-quiet`)."""
-    record = read_sidecar(surface)
-    if record is None:
-        return
-    pid = record.get("pid")
-    started_at = record.get("started_at")
-    cli = record.get("cli")
-    if not isinstance(pid, int) or not isinstance(started_at, (int, float)):
-        clear_sidecar(surface)
-        log(f"run: sdk backend: orphan sweep for {surface} declined (malformed sidecar)")
-        return
-    if not worker._pid_alive(pid):
-        clear_sidecar(surface)
-        log(f"run: sdk backend: orphan sweep for {surface} found no live process at pid {pid}")
-        return
-    try:
-        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
-    except OSError:
-        clear_sidecar(surface)
-        log(f"run: sdk backend: orphan sweep for {surface} could not corroborate pid {pid}")
-        return
-    first = raw.split(b"\x00")[0].decode("utf-8", "replace")
-    basename = os.path.basename(first)
-    cli_basename = os.path.basename(cli) if isinstance(cli, str) else None
-    matches = basename == "claude" or (cli_basename is not None and basename == cli_basename)
-    if not matches:
-        clear_sidecar(surface)
-        log(f"run: sdk backend: orphan sweep for {surface} declined (pid {pid} cmdline mismatch)")
-        return
-    if not (started_at < _process_start()):
-        clear_sidecar(surface)
-        log(f"run: sdk backend: orphan sweep for {surface} declined (pid {pid} not stale)")
-        return
-    kill_child(pid, log)
-    clear_sidecar(surface)
-    log(f"run: sdk backend: orphan sweep for {surface} killed stale pid {pid}")
-
-
-#: `K-5` -- "older than the current process's start", approximated as
-#: this module's first-import time (close enough for a pid-reuse guard,
-#: which is inherently a heuristic rather than a hard security boundary).
-_PROCESS_START = time.time()
-
-
-def _process_start() -> float:
-    return _PROCESS_START
+    """`K-5` -- before connecting, delegates to the library's scoped
+    sweep over every sidecar recorded for `surface`. `worker.cache_dir()`
+    and `worker._pid_alive` are both looked up at CALL time."""
+    children.sweep_orphans(
+        worker.cache_dir(),
+        surface,
+        log,
+        pid_alive=worker._pid_alive,
+        messages=CLI_SHUTDOWN_MESSAGES,
+    )
