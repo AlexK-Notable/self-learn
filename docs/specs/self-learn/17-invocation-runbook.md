@@ -445,18 +445,48 @@ you:**
 
 1. **Identify the last commit before `U-cleanup-B` landed** (the decision
    row `S-49` names the build; `git log --oneline -- plugins/self-learn/cli`
-   in the *product* repository, not the ledger, finds it) and reinstall
-   that revision — `git checkout <sha> -- plugins/self-learn/cli && uv sync
-   --project plugins/self-learn/cli` (or the equivalent for a pip
-   install), then restart every running surface (the systemd units, any
-   shell session with `teach --route` in flight).
+   in the *product* repository, not the ledger, finds it — **but not
+   always**: measured 2026-08-26, the merge `163a93e` that `S-49` names is
+   absent from that path-filtered log, because history simplification
+   hides a merge that is tree-identical to its parent for this path. Use
+   `git log --oneline --full-history -- plugins/self-learn/cli`, or take
+   the commit immediately preceding the U-cleanup-B commit in the simplified
+   log — for this path the two trees are identical, `d704aeb` ≡ `163a93e`)
+   and reinstall that revision — `git checkout <sha> -- plugins/self-learn/cli
+   && uv sync --project plugins/self-learn/cli`. `uv sync` restores
+   `claude-agent-sdk` through the `dev` dependency group, NOT the `[sdk]`
+   extra — a `pip install .` or `uv sync --no-dev` will not pull the SDK;
+   for an extras-driven install use `--extra sdk` / `pip install
+   'self-learn-cli[sdk]'`. Then restart every running surface (the systemd
+   units, any shell session with `teach --route` in flight).
 2. **This is a real revert, not a flag flip.** It changes which code
    runs, not which value an existing switch reads. Test it before relying
    on it in an incident — the same way you would test reverting any other
-   dependency.
+   dependency. *Measured 2026-08-26 (FW-116 dry-run, throwaway worktree):
+   the revert is clean, `config.py` is byte-identical across U-cleanup so a
+   post-cleanup `config.yaml` (Bedrock provider keys included) parses under
+   pre-cleanup code with zero warnings, both suites stay green at the
+   reverted state, and the roll-forward returns `pyproject.toml`/`uv.lock`
+   byte-identical.* To test: run the CLI suite with
+   `plugins/self-learn/cli/scripts/suite` (parallel batches, host env
+   scrubbed, exit codes captured unpiped — the one sanctioned runner); run
+   the UI suite from *inside* `plugins/self-learn/ui` (`cd plugins/self-learn/ui
+   && uv run pytest`) — `--project` does not change pytest's cwd, and from
+   the repo root the bare module name `support.py` collides across the two
+   test trees and breaks UI collection.
 3. **`provider` is unaffected.** Rolling back the invocation backend does
    not touch `provider=bedrock`/`anthropic`; that switch still works
    exactly as §4 describes on either side of the revert.
+
+4. **If you rehearse this against a COPY of the ledger, disarm the miner
+   first.** Every CLI verb except `mine` and `init` — `doctor` included —
+   ticks the background-miner watchdog and spawns a real detached `mine`
+   run when the ledger's last completed mine is more than 24 h old (miner.py
+   `SELF_LEARN_MINER_AUTOKICK`). Set `SELF_LEARN_MINER_AUTOKICK=0` (or
+   `SELF_LEARN_MINER=0` to disable runs entirely) before the first command
+   against the copy, and strip the copy's `origin` remote. Measured
+   2026-08-26: the dry-run's first `doctor` call landed five real commits in
+   the copy before this was noticed.
 
 **One caveat that survives the rewrite unchanged.** If you opened the
 incident hatch `SELF_LEARN_ENFORCE_SCOPE=0`, close it — see §7. That
