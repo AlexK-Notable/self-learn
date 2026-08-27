@@ -4278,6 +4278,11 @@ def confirm_recurrence(
             "tracked telemetry — flush first (`self-learn telemetry flush`) "
             "or check `self-learn report`"
         )
+    if event.get("record") != record_id:
+        raise VerbError(
+            f"event {event_ref} was raised against {event.get('record')!r}, "
+            f"not {record_id!r} — confirm it against the record it names"
+        )
     path = find_record_path(home, record_id)
     _scan_or_refuse([path], note)
     record = Record.from_path(path)
