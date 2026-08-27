@@ -54,6 +54,9 @@ from claude_agent_sdk import (
     ToolPermissionContext,
 )
 
+from self_learn.sdksession.toolpaths import TARGET_PATH_KEYS as _PATH_KEYS
+from self_learn.sdksession.toolpaths import extract_target_path as _extract_target_path
+
 from ..doctrine import plugin_references_dir
 
 __all__ = [
@@ -66,12 +69,15 @@ __all__ = [
 #: Tools whose permission decision is a READ-scope decision (09 §4.3).
 _READ_TOOLS = frozenset({"Read", "Grep", "Glob"})
 
-#: tool_input keys that may carry the target path, checked in this order
-#: (Read/NotebookRead use file_path; Grep/Glob use path when the caller
-#: names one explicitly — and only an explicitly-named path ever reaches
-#: this callback at all, since a cwd-relative/absent path auto-approves
-#: before the callback runs — probe 2).
-_PATH_KEYS = ("file_path", "path", "notebook_path")
+#: `AGR1`/`toolpaths.TARGET_PATH_KEYS` — tool_input keys that may carry
+#: the target path, checked in this order (Read/NotebookRead use
+#: file_path; Grep/Glob use path when the caller names one explicitly --
+#: and only an explicitly-named path ever reaches this callback at all,
+#: since a cwd-relative/absent path auto-approves before the callback
+#: runs -- probe 2). Now an import from the shared library (`AGR1`'s
+#: skeleton-identical pair, ported verbatim into `sdksession.toolpaths`)
+#: -- the value and the extraction logic are unchanged; only their home
+#: moved.
 
 
 class CanonReadRootsUnavailable(RuntimeError):
@@ -167,14 +173,6 @@ def _under_any(target: Path, roots: Iterable[Path]) -> bool:
         if target == root or target.is_relative_to(root):
             return True
     return False
-
-
-def _extract_target_path(tool_input: dict[str, Any]) -> str | None:
-    for key in _PATH_KEYS:
-        value = tool_input.get(key)
-        if isinstance(value, str) and value:
-            return value
-    return None
 
 
 def build_can_use_tool(

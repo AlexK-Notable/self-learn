@@ -29,14 +29,13 @@ from claude_agent_sdk import (
 )
 
 from ..invocation.contract import Containment
+from ..sdksession.toolpaths import TARGET_PATH_KEYS as P
+from ..sdksession.toolpaths import extract_target_path as _extract_target_path
 
 __all__ = ["CharterPaths", "CharterPatternUnsupported", "build_can_use_tool"]
 
 #: `C-1` -- the write family, defined once.
 W = frozenset({"Write", "Edit", "NotebookEdit"})
-
-#: `C-1`/`C-5` -- ported verbatim from the UI's charter.py `_PATH_KEYS`.
-P = ("file_path", "path", "notebook_path")
 
 _UNSUPPORTED_CHARS = ("[", "]", "{", "}")
 
@@ -168,15 +167,6 @@ def _build_charter_paths(containment: Containment) -> CharterPaths:
     globs = tuple(_compile_glob(g) for g in containment.write_globs)
     exacts = tuple(_compile_exact(e) for e in containment.write_exact)
     return CharterPaths(glob_patterns=globs, exact_paths=exacts)
-
-
-def _extract_target_path(tool_input: dict[str, Any]) -> str | None:
-    """Ported verbatim from `charter.py`'s `_extract_target_path`."""
-    for key in P:
-        value = tool_input.get(key)
-        if isinstance(value, str) and value:
-            return value
-    return None
 
 
 def _matches_write_scope(target: Path, paths: CharterPaths) -> bool:

@@ -88,13 +88,24 @@ from claude_agent_sdk import (
     tool,
 )
 
+from self_learn.sdksession import ladder as sdk_ladder
+from self_learn.sdksession import policy as sdk_policy
+from self_learn.sdksession import result as sdk_result
+from self_learn.sdksession import session as sdk_session_lib
+from self_learn.sdksession import teardown as sdk_teardown
+
 from .. import uilog
 from ..proposals import PROPOSAL_SERVER_NAME, PROPOSAL_TOOL_NAME, PROPOSAL_TOOL_QUALIFIED_NAME
 from ..store import CacheSdkSessionStore
 from .base import BlockStart, FileChanged, PaneContext, PaneEngine, PaneEvent, Result, TextDelta, ToolUse
 from .charter import build_can_use_tool
 
-__all__ = ["DEFAULT_FALLBACK_MODEL", "TIER2_SESSION_STORE_ENABLED", "SdkPaneEngine"]
+__all__ = [
+    "DEFAULT_FALLBACK_MODEL",
+    "TIER2_SESSION_STORE_ENABLED",
+    "UI_SHUTDOWN_MESSAGES",
+    "SdkPaneEngine",
+]
 
 #: 09 §4.2's pinned default — not env-configurable (only the primary model
 #: has an env var; the fallback is a fixed pin).
@@ -112,8 +123,15 @@ TIER2_SESSION_STORE_ENABLED = True
 #: Tuned 2026-07-18 (09 §4.2, T-E follow-up): the SDK fast-interrupt is
 #: ineffective on the subscription-auth streaming path, so the ladder is
 #: the COMMON Esc path — a keystroke deserves ~2.7 s worst case, not ~5.3.
-DEFAULT_INTERRUPT_GRACE_SECS = 1.0
-DEFAULT_INTERRUPT_KILL_SECS = 2.5
+#: `LAD3` -- rebound to the library's own objects, by IDENTITY (Python
+#: assignment never copies): `sdk_ladder.INTERRUPT_GRACE_SECS is
+#: DEFAULT_INTERRUPT_GRACE_SECS` holds from the moment this module is
+#: imported, not merely `==`. Values unchanged (1.0 / 2.5, tuned
+#: 2026-07-18) -- only the ONE definition moved to `sdksession/ladder.py`
+#: (spec Sec 4.2); `test_default_ladder_constants_match_the_tuned_pin`
+#: (unedited) still passes because the `==` checks it makes still hold.
+DEFAULT_INTERRUPT_GRACE_SECS = sdk_ladder.INTERRUPT_GRACE_SECS
+DEFAULT_INTERRUPT_KILL_SECS = sdk_ladder.KILL_SECS
 
 #: File-writing tool names that make a completed ToolResultBlock worth
 #: turning into a FileChanged event (09 §2.4's live re-render signal).
@@ -150,24 +168,33 @@ def _tool_target(tool_input: dict[str, Any]) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
-#: Strong references to abandoned disconnect tasks (asyncio's registry
-#: holds tasks weakly; delta nit — keep one until done so the background
-#: SDK escalation can never be garbage-collected mid-kill).
-_ABANDONED_DISCONNECTS: set["asyncio.Task[None]"] = set()
+#: `POL2`/`PIN1` -- this client's own shutdown/ladder message table
+#: (spec Sec 2.8's 10 UI-owned rows: 5 close-ladder + 3 interrupt-ladder
+#: + 1 drain + 1 client-owned SDK-log-forwarding line, the last never
+#: carried in this table -- Sec 2.8 CORRECTED-r3 keeps it UI-side by
+#: design, G-4/C-4). Every field's text is byte-identical to what this
+#: module printed before the extraction -- only the close-ladder's FIVE
+#: lines now render through the library (`sdk_teardown.run_kill_ladder`)
+#: instead of being inlined here.
+UI_SHUTDOWN_MESSAGES = sdk_policy.ShutdownMessages(
+    disconnect_timeout=(
+        "pane engine close: disconnect() still running at the kill "
+        "bound — caller released; SDK subprocess escalation "
+        "continues in the background"
+    ),
+    disconnect_raised="pane engine close: disconnect() raised: {exc}",
+    abandoned_cancelled="pane engine close: abandoned disconnect() was cancelled",
+    abandoned_finished="pane engine close: abandoned disconnect() finished with: {exc}",
+    abandoned_completed="pane engine close: abandoned disconnect() completed",
+)
 
-
-def _log_abandoned_disconnect(task: "asyncio.Task[None]") -> None:
-    """Retrieve the abandoned disconnect()'s outcome (never let it die as
-    an un-retrieved exception) and log the completion (review F4: the
-    abandoned teardown must be observable to actually have finished)."""
-    if task.cancelled():
-        uilog.log("pane engine close: abandoned disconnect() was cancelled")
-        return
-    exc = task.exception()
-    if exc is not None:
-        uilog.log(f"pane engine close: abandoned disconnect() finished with: {exc}")
-    else:
-        uilog.log("pane engine close: abandoned disconnect() completed")
+#: `LAD2`/`LAD3` -- rebound to the library's own registry object, by
+#: IDENTITY: `sdk_teardown.ABANDONED_DISCONNECTS is _ABANDONED_DISCONNECTS`
+#: holds from import time. `run_kill_ladder`'s own `shielded_disconnect`
+#: adds/discards tasks on `sdk_teardown.ABANDONED_DISCONNECTS` directly;
+#: this module-level name is the SAME set object, not a copy, so it
+#: still observes every abandoned task this engine creates.
+_ABANDONED_DISCONNECTS = sdk_teardown.ABANDONED_DISCONNECTS
 
 
 class SdkPaneEngine(PaneEngine):
@@ -285,32 +312,33 @@ class SdkPaneEngine(PaneEngine):
         self._session_active = False
         if client is None:
             return
-        # SHIELD-and-abandon, never cancel (review F1, verified against
-        # the installed SDK + an empirical cancel probe): a plain
-        # wait_for CANCELS disconnect() on timeout, and a raw asyncio
-        # cancellation pierces the SDK transport's shielded
-        # SIGTERM/SIGKILL escalation (its own docstring carries the
-        # caveat) — the caller would return "bounded" while a wedged
-        # CLI child lives on with no further escalation. shield() keeps
-        # the CALLER bounded at the kill window while disconnect() —
-        # itself ~20 s-bounded inside the SDK — finishes killing the
-        # subprocess in the background.
-        task = asyncio.ensure_future(client.disconnect())
-        try:
-            await asyncio.wait_for(
-                asyncio.shield(task), timeout=self._interrupt_kill_secs
-            )
-        except TimeoutError:
-            uilog.log(
-                "pane engine close: disconnect() still running at the kill "
-                "bound — caller released; SDK subprocess escalation "
-                "continues in the background"
-            )
-            _ABANDONED_DISCONNECTS.add(task)
-            task.add_done_callback(_ABANDONED_DISCONNECTS.discard)
-            task.add_done_callback(_log_abandoned_disconnect)
-        except Exception as exc:  # noqa: BLE001 - close() must never raise
-            uilog.log(f"pane engine close: disconnect() raised: {exc}")
+        # `teardown.run_kill_ladder` (spec Sec 4.2) -- SHIELD-and-abandon,
+        # never cancel (review F1, verified against the installed SDK + an
+        # empirical cancel probe): a plain wait_for CANCELS disconnect() on
+        # timeout, and a raw asyncio cancellation pierces the SDK
+        # transport's shielded SIGTERM/SIGKILL escalation (its own
+        # docstring carries the caveat) — the caller would return "bounded"
+        # while a wedged CLI child lives on with no further escalation.
+        # shield() keeps the CALLER bounded at the kill window while
+        # disconnect() — itself ~20 s-bounded inside the SDK — finishes
+        # killing the subprocess in the background.
+        #
+        # `interrupt_grace_secs=None` skips step 1 -- this engine's
+        # close() never ran a bounded interrupt() of its own (that is
+        # `interrupt()`'s job). `loop_closing=False` skips step 3 (the
+        # explicit child kill, `R-1`) -- this engine tracks no child pid
+        # and never killed one; the SDK's own shielded escalation is
+        # left to finish on its own, exactly as before this delegation.
+        await sdk_teardown.run_kill_ladder(
+            client,
+            None,
+            uilog.log,
+            kill_secs=self._interrupt_kill_secs,
+            interrupt_grace_secs=None,
+            loop_closing=False,
+            pid_alive=lambda _pid: False,
+            messages=UI_SHUTDOWN_MESSAGES,
+        )
 
     # -- internals ------------------------------------------------------
 
@@ -403,15 +431,17 @@ class SdkPaneEngine(PaneEngine):
             resume = ctx.resume_session_id
         else:
             extra_args = {"no-session-persistence": None}
+        # `POL3` -- the three keys measured identical in Sec 2.3
+        # (`allowed_tools`, `setting_sources`, `strict_mcp_config`), a
+        # FRESH dict every call, from the ONE shared definition both
+        # engines splat (`sdk_policy.default_option_floor`).
+        floor = sdk_policy.default_option_floor()
         return ClaudeAgentOptions(
             cwd=str(ctx.bucket_root),
             system_prompt=ctx.system_prompt,
             include_partial_messages=True,
-            setting_sources=[],
-            allowed_tools=[],
             disallowed_tools=["Bash", "Task", "WebSearch", "WebFetch"],
             can_use_tool=can_use_tool,
-            strict_mcp_config=True,
             mcp_servers=mcp_servers,
             model=self._model,
             fallback_model=self._fallback_model,
@@ -421,13 +451,18 @@ class SdkPaneEngine(PaneEngine):
             extra_args=extra_args,
             session_store=session_store,
             resume=resume,
+            **floor,
         )
 
     async def _drain(self) -> AsyncIterator[PaneEvent]:
         assert self._client is not None
         self._session_active = True
+        # `session.SdkSession` (spec Sec 4.2) -- does nothing except call
+        # the same `receive_response()` this loop already called directly;
+        # wrapping `self._client` in it changes no observable behaviour.
+        session = sdk_session_lib.SdkSession(self._client)
         try:
-            async for message in self._client.receive_response():
+            async for message in session.drive():
                 for event in self._map_message(message):
                     yield event
             self._session_active = False
@@ -497,14 +532,15 @@ class SdkPaneEngine(PaneEngine):
         return events
 
     def _map_result(self, message: ResultMessage) -> Result:
+        # `AGR3`/`result.reduce_result_error` (Sec 2.2a's 1.000
+        # skeleton-identical pair) -- errors joined by "; " when
+        # non-empty, else `result` when truthy, else `subtype`. Only the
+        # reduction itself moved; this engine still decides WHEN to
+        # apply it (only on an errored result) and what to DO with the
+        # string (`Result.error`, vs the CLI's log template).
         error: str | None = None
         if message.is_error:
-            if message.errors:
-                error = "; ".join(message.errors)
-            elif message.result:
-                error = message.result
-            else:
-                error = message.subtype
+            error = sdk_result.reduce_result_error(message)
         turns = getattr(message, "num_turns", None)
         session_id = getattr(message, "session_id", None)
         return Result(

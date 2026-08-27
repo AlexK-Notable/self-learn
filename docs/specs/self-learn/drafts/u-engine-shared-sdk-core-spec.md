@@ -7,6 +7,11 @@ orthogonal orchestrator ruling: `serve` runs jobs SERIALLY.**
 no structural change. `FW-121` restated: the finding is a SURFACE
 MISMATCH between `S-48`’s wording and the symbol the backend branches on,
 NOT an untestable contract.**
+**r5 — amended 2026-08-27, docs-only correction from blind code gate r1
+(orchestrator ruling, D-1): §9.1 now lists `03-decisions.md` and
+`14-forward-work-map.md` for Phase 1 — the S-42 disposition-rule
+obligation §12 already stated, which §9.1/§9.2 had never listed a path
+for; no criterion, mutation, or phase boundary changes.**
 *(r1, 2026-08-26, ruled the host process out and scoped the extraction to
 four small helpers. The user then ran a four-option discussion and a
 pros/cons on the daemon and reversed both calls. §3 records the decision;
@@ -1588,6 +1593,8 @@ Anything not listed is out of bounds.
 | `cli/src/self_learn/invocation_sdk/policy_impl.py` *(name at builder discretion)* | **NEW** — the CLI’s `SessionPolicy`: its charter, its floor, its message table, `provider_env`, `worker.cache_dir()` |
 | `cli/tests/test_u_engine.py` | **NEW** — PIN (CLI half), LIB, MS, LAD1/LAD2, BND, POL2 |
 | `ui/tests/test_engine_shared_core.py` | **NEW, in 1A** — PIN2 captured against the UNCHANGED UI engine |
+| `docs/specs/self-learn/03-decisions.md` | EDIT — **added at r5** (gate r1 D-1): the `S-50` row §12.1 already required in this commit, with no path listed until now |
+| `docs/specs/self-learn/14-forward-work-map.md` | EDIT — **added at r5** (gate r1 D-1): the four `FW-118..121` rows §12.2 already required in this commit, with no path listed until now |
 
 ### 9.2 Phase 1B
 
