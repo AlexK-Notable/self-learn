@@ -424,6 +424,7 @@ DOCTOR_ROWS = (
     "models",
     "env",
     "orphans",
+    "serve",
 )
 VERDICTS = ("PASS", "WARN", "FAIL", "SKIP", "INFO")
 
@@ -612,6 +613,90 @@ def _sdk_row(*, importer: Callable[[], Any] = _default_sdk_importer) -> Row:
 # --------------------------------------------------------- Doc-e: orphans
 
 
+def _serve_row() -> Row:
+    """`Doc-g` / U-engine Phase 2 (spec Sec 5.6) -- the staleness alarm
+    lives OUTSIDE the daemon: this row is what makes a dead `serve` LOUD
+    even when nothing else is watching (`SUP2`/`SUP3`). Local imports of
+    `serve`/`worker` (the pattern `_orphan_report_row` right below
+    already uses for `invocation_sdk`) -- `provider.py` stays import-light
+    at module load, and neither `serve` nor `worker` import `provider`,
+    so there is no cycle either way.
+
+    Four verdicts (`SUP2`): heartbeat fresh -> PASS naming the next job;
+    heartbeat present but stale (older than the daemon's own tick
+    interval) -> FAIL naming the age; no heartbeat and `serve` not
+    configured -> SKIP (this machine does not use it); no heartbeat but
+    `serve` IS configured -> FAIL. `SUP4`: when BOTH `self-learn-
+    host.service` and `self-learn-miner.timer` are systemd-enabled, a
+    PASS is downgraded to WARN naming the deliberate belt-and-braces poke
+    configuration (Sec 5.7) -- never FAIL, because that pairing is
+    supported, not broken."""
+    from . import serve as serve_mod
+
+    # `Doc-0`'s own contract: `preflight` "computes no verdict... and
+    # PRINTS NOTHING" -- and, pinned by `test_ns5_doctor_writes_nothing`,
+    # WRITES nothing either. `worker.cache_dir()` creates the cache
+    # directory as a side effect (`mkdir(parents=True, exist_ok=True)`
+    # plus a migration shim); `cache_dir_readonly()` resolves the SAME
+    # path without ever touching the filesystem.
+    cache_dir = serve_mod.cache_dir_readonly()
+    both_enabled = serve_mod.is_enabled(
+        "self-learn-host.service", "default.target"
+    ) and serve_mod.is_enabled("self-learn-miner.timer", "timers.target")
+
+    record = serve_mod.read_heartbeat(cache_dir)
+    if record is None:
+        if serve_mod.is_configured():
+            # Gate r2 N-6': `read_heartbeat` returns `None` for TWO
+            # different facts -- the file is genuinely absent, or it
+            # exists but failed to parse (`OSError`/`ValueError`,
+            # e.g. a write caught mid-flight before N-2's atomic
+            # rename, or a corrupted file). The verdict is FAIL either
+            # way, but the diagnosis must not claim "never seen" when
+            # the file is sitting right there, unreadable.
+            heartbeat_exists = serve_mod.heartbeat_path(cache_dir).is_file()
+            detail = (
+                "self-learn-host.service is linked but its heartbeat file "
+                "exists and could not be parsed -- is `self-learn serve` "
+                "writing a valid one?"
+                if heartbeat_exists
+                else (
+                    "self-learn-host.service is linked but no heartbeat was "
+                    "ever seen -- is `self-learn serve` running?"
+                )
+            )
+            return Row(name="serve", verdict="FAIL", detail=detail)
+        return Row(
+            name="serve", verdict="SKIP", detail="serve is not configured on this machine"
+        )
+
+    age = serve_mod.heartbeat_age_secs(cache_dir)
+    tick_secs = record.get("tick_secs")
+    tick_secs = tick_secs if isinstance(tick_secs, (int, float)) and tick_secs > 0 else serve_mod.DEFAULT_TICK_SECS
+    if age is None or age > tick_secs:
+        age_detail = "unknown" if age is None else f"{age:.0f}s"
+        return Row(
+            name="serve",
+            verdict="FAIL",
+            detail=f"heartbeat is stale (age={age_detail}, tick={tick_secs:.0f}s) -- serve may have died",
+        )
+
+    next_job = record.get("next_job") or "idle"
+    if both_enabled:
+        return Row(
+            name="serve",
+            verdict="WARN",
+            detail=(
+                f"heartbeat fresh (age={age:.1f}s) -- next: {next_job}; "
+                "self-learn-miner.timer is ALSO enabled -- deliberate "
+                "belt-and-braces poke configuration (Sec 5.7), not a fault"
+            ),
+        )
+    return Row(
+        name="serve", verdict="PASS", detail=f"heartbeat fresh (age={age:.1f}s) -- next: {next_job}"
+    )
+
+
 def _orphan_report_row() -> Row:
     """`Doc-e` -- consumes an OPTIONAL hook U-sdk may export, and never
     acts on it. This build of U-sdk exports no such symbol (`R-6`), so
@@ -728,6 +813,9 @@ def preflight(home: Path | str) -> list[Row]:
 
     # orphans
     rows.append(_orphan_report_row())
+
+    # serve (U-engine Phase 2, Doc-g)
+    rows.append(_serve_row())
 
     return rows
 

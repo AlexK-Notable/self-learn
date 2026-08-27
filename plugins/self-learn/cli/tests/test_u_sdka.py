@@ -1978,10 +1978,17 @@ def test_hy5_numstat_bounds_hold():
     # `provider.py` call sites for (11 total now). `test_doctor_
     # invocation.py` widened alongside it (91, 6) -> (100, 9): test_dc6's
     # and test_dc12's assertions re-spelled to match.
+    # U-engine Phase 2 (spec Sec 5.6/7.2, `SUP2`/`SUP4`): `provider.py`
+    # widened (108, 36) -> (185, 36) -- the new `_serve_row` function
+    # (the `doctor` row for the `self-learn serve` heartbeat/staleness
+    # alarm) plus its `DOCTOR_ROWS`/`preflight` call-site additions,
+    # measured single-ref against _BASE_SHA. Widened again (185, 36) ->
+    # (196, 36) -- gate r2 N-6': the corrupt-vs-absent heartbeat
+    # distinction added to `_serve_row`'s configured-no-heartbeat leg.
     bounds = {
         "plugins/self-learn/cli/src/self_learn/invocation/contract.py": (31, 47),
         "plugins/self-learn/cli/src/self_learn/invocation/registry.py": (34, 20),
-        "plugins/self-learn/cli/src/self_learn/provider.py": (108, 36),
+        "plugins/self-learn/cli/src/self_learn/provider.py": (196, 36),
         "plugins/self-learn/cli/src/self_learn/analyst.py": (4, 18),
         "plugins/self-learn/cli/tests/conftest.py": (34, 0),  # code gate r1 NIT-5: stale AG1-tripwire paragraph fixed
         "plugins/self-learn/cli/tests/fixtures/fake_claude.py": (388, 1),

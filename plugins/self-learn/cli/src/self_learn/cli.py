@@ -34,7 +34,7 @@ from pathlib import Path
 from . import report as report_mod
 from . import hosts as hosts_mod
 from . import reconcile as reconcile_mod
-from . import gitops, miner, provider, refread, selfcheck, sentinel, telemetry, verbs, worker
+from . import gitops, miner, provider, refread, selfcheck, sentinel, serve, telemetry, verbs, worker
 from .chezmoi import ChezmoiAbort, ChezmoiError, UserScopeResult
 from .compilers import CompileError, ReferenceResult
 from .import_backlog import import_backlog
@@ -462,6 +462,18 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("push", help="publish pending local commits (pinned retry)")
 
+    serve_p = sub.add_parser(
+        "serve",
+        help="run the long-lived host process (U-engine Phase 2: scheduler + heartbeat)",
+    )
+    serve_p.add_argument(
+        "--max-ticks",
+        type=int,
+        default=None,
+        metavar="N",
+        help="run exactly N scheduler ticks then exit 0 (default: run forever; smoke-testing hook)",
+    )
+
     doctor_p = sub.add_parser(
         "doctor",
         help="read-only diagnostics: invocation (provider/backend config)",
@@ -823,6 +835,18 @@ def _cmd_worker(args: argparse.Namespace) -> int:
         return EXIT_OK if result.status in ("ok", "idle") else 1
     print("usage: self-learn worker kick | worker run [--coalesce]", file=sys.stderr)
     return EXIT_USAGE
+
+
+def _cmd_serve(args: argparse.Namespace) -> int:
+    """U-engine Phase 2 (spec Sec 5) -- runs `serve.run_forever` in the
+    foreground until SIGINT/SIGTERM, or for exactly `--max-ticks` ticks
+    (a bounded smoke-testing hook -- also what lets `test_lock_invariant.
+    py`'s held-lock harness drive this surface without hanging: HP3
+    means a bounded `serve` tick never blocks on the ledger's commit
+    lock in the first place). Never home-gated: the daemon is meant to
+    be always-on, even against a pristine/uninitialized home."""
+    home = resolve_home()
+    return serve.run_forever(home, max_ticks=args.max_ticks)
 
 
 def _cmd_doctor(args: argparse.Namespace) -> int:
@@ -1983,7 +2007,7 @@ def _main(argv: list[str] | None = None) -> int:
     # the home may not exist or may be unusable — ticking the miner
     # watchdog first spawned a detached run against a home `init` was
     # about to refuse.
-    if args.command not in ("mine", "init"):
+    if args.command not in ("mine", "init", "serve"):
         try:
             # no_push is passed EXPLICITLY (BLOCKER D): this tick runs
             # before dispatch for every command, so `reject --no-push` used
@@ -2091,6 +2115,9 @@ def _main(argv: list[str] | None = None) -> int:
 
     if args.command == "worker":
         return _cmd_worker(args)
+
+    if args.command == "serve":
+        return _cmd_serve(args)
 
     if args.command == "mine":
         return _cmd_mine(args)

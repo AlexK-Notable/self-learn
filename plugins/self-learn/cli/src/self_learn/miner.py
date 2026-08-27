@@ -65,6 +65,7 @@ __all__ = [
     "cap_for",
     "digest_transcript",
     "journal_path",
+    "last_attempt_iso",
     "last_run_iso",
     "maybe_kick",
     "miner_dir",
@@ -198,6 +199,23 @@ def transcripts_root() -> Path:
 def last_run_iso() -> str | None:
     try:
         mtime = (miner_dir() / "miner.last-run").stat().st_mtime
+    except FileNotFoundError:
+        return None
+    return datetime.fromtimestamp(mtime, tz=timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+
+
+def last_attempt_iso() -> str | None:
+    """Gate r1 B-1 -- `serve._mine_is_due` reads this the same way
+    `maybe_kick`'s watchdog reads `_last_attempt_age_secs()` below: the
+    SAME file (`miner.last-attempt`), touched on EVERY attempt (:1759),
+    success OR failure -- so a mine that keeps failing (a refused home,
+    a crash, or the reader/model call coming back empty, none of which
+    touch `miner.last-run`) backs off for `ATTEMPT_COOLDOWN_SECS`
+    instead of being retried on the very next tick."""
+    try:
+        mtime = (miner_dir() / "miner.last-attempt").stat().st_mtime
     except FileNotFoundError:
         return None
     return datetime.fromtimestamp(mtime, tz=timezone.utc).strftime(
@@ -1682,12 +1700,27 @@ def maybe_kick(home: Path | str, *, no_push: bool = False) -> str:
     COMPLETED run is >24 h old AND the last ATTEMPT is >2 h old (audit:
     without the attempt cool-down, a persistently failing reader turns
     every CLI invocation into a full walk + 15-minute model attempt).
-    Returns disabled | fresh | cooling | busy | spawned.
+    Returns disabled | poked | fresh | cooling | busy | spawned.
 
     ``no_push`` is the INVOKING verb's flag, passed explicitly (BLOCKER
-    D). This watchdog ticks before every command except `mine`, so any
-    ``--no-push`` verb can spawn a miner; the spawned run must inherit the
-    policy or the flag is a lie the moment the watchdog fires."""
+    D). This watchdog ticks before every command except `mine`/`serve`,
+    so any ``--no-push`` verb can spawn a miner; the spawned run must
+    inherit the policy or the flag is a lie the moment the watchdog
+    fires.
+
+    U-engine Phase 2 (spec Sec 5.3) -- REDUCED, not retired: when a
+    `self-learn serve` daemon is already running for this home (a fresh
+    heartbeat), this watchdog pokes it instead of spawning -- "no spawn
+    from a verb, ever" while a daemon already owns the schedule (the
+    FW-116 hazard this closes). **Gate r2 B-1' fix**: the serve-alive
+    check moved to EXACTLY the point the pre-U-engine watchdog would
+    otherwise spawn -- after disabled/fresh/cooling/busy ALL pass, never
+    before. The r1 shape checked it FIRST, so a live `serve` poked on
+    EVERY verb invocation regardless of staleness (measured: a ledger
+    mined 0.0s ago still got poked); this shape means a poke fires under
+    the EXACT SAME condition a spawn would have, and nothing else. With
+    no live daemon, every leg below is byte-identical to before this
+    unit."""
     if (
         os.environ.get("SELF_LEARN_MINER") == "0"
         or os.environ.get("SELF_LEARN_MINER_AUTOKICK") == "0"
@@ -1703,6 +1736,19 @@ def maybe_kick(home: Path | str, *, no_push: bool = False) -> str:
         except BlockingIOError:
             return "busy"
         try:
+            # Local import: `serve` imports THIS module (to schedule
+            # mine passes as jobs), so a module-level import here would
+            # be circular -- this one resolves at CALL time instead, the
+            # same pattern `lifecycle.kill_child` already uses for an
+            # analogous reason. Gate r2 B-1': THIS is the point the
+            # pre-U-engine watchdog would spawn -- serve alive (fresh
+            # heartbeat) pokes instead; no live serve spawns exactly as
+            # before.
+            from . import serve as serve_mod
+
+            if serve_mod.heartbeat_is_fresh(worker.cache_dir()):
+                serve_mod.request_poke(worker.cache_dir())
+                return "poked"
             pid = _spawn_run(Path(home), no_push=no_push)
             log(f"watchdog: last run >24h — spawned run (pid {pid})")
             return "spawned"

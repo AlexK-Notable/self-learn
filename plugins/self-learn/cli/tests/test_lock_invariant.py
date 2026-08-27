@@ -190,6 +190,19 @@ NOT_REPO_TRUTH = {
     # _write_hook_script under the host's commit_lock and is checked by
     # the main analysis like every other host mutation.
     "verbs._replay_hook_examples": "transient scratch: replay copy in a TemporaryDirectory, executed then deleted",
+    # U-engine Phase 2 (spec Sec 5.5/5.6): `serve` becomes a derived
+    # entrypoint (`cli.entrypoint` -> `cli.main` -> `cli._main` ->
+    # `cli._cmd_serve` -> `serve.run_forever`), and its own writes are
+    # the ONE thing this list must say something about -- every mutation
+    # it reaches by CALLING OUT (`miner.run`/`worker.run`) is a producer
+    # committing its own writes under its own lock, unaffected by this
+    # list. `serve`'s OWN four writes are all XDG-cache scheduler
+    # bookkeeping -- never a repo's truth, exactly like `worker.window`/
+    # `worker.log` above -- and never staged, never committed:
+    "serve.write_heartbeat": "XDG cache: cache_dir()/serve.heartbeat (SUP1's heartbeat; one of H-5 Sec 5.5's FOUR exemptions for THREE cache-dir-only files, gate r2 N-5')",
+    "serve.request_poke": "XDG cache: cache_dir()/serve.poke (Sec 5.3's verb-to-daemon poke request)",
+    "serve._consume_poke": "XDG cache: cache_dir()/serve.poke, unlinked once the tick has read it",
+    "serve._today_mine_target": "XDG cache: cache_dir()/serve.schedule (the day's jittered mine-pass target, Sec 5.2/5.8.1 Persistent=true parity)",
 }
 
 
@@ -603,6 +616,13 @@ _ARGV_FOR = {
     "_cmd_reconcile": [["reconcile"]],
     "_cmd_recompile": [["recompile"]],
     "_cmd_report": [["report"]],
+    "_cmd_serve": [["serve", "--max-ticks", "1"]],  # U-engine Phase 2:
+    # `--max-ticks 1` bounds the scheduler loop to one tick so it fits
+    # this held-lock harness (an unbounded `serve` would hang it). HP3:
+    # `serve` never stages/commits/pushes the ledger itself, so one tick
+    # against a HELD commit_lock must complete cleanly regardless --
+    # this is a real, live exercise of that property, not a stub. Its
+    # own fuller behaviour is covered by cli/tests/test_serve.py.
     "_cmd_sentinel": [["sentinel", "hold"]],
     "_cmd_status": [["status"]],
     "_cmd_status_fast": [["status", "--fast"]],

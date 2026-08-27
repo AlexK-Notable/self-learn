@@ -422,6 +422,31 @@ this document in place with what was actually measurable. A gate that
 turned out to be unmeasurable should be rewritten here, not quietly
 skipped.
 
+### 5.8 Phase 2 (`serve`) burn-in
+
+`serve` schedules the same producers §5.2 and §5.4 already gate — it
+does not add a new producer, so it does not need a new pass/fail
+instrument. What it adds is a second *trigger* for the mine job (the
+scheduler's own clock, instead of a verb's watchdog or the systemd
+timer), and the one thing that trigger could plausibly change is how
+much a night's run finds.
+
+- **Recorded before merge (this criterion): candidate volume per night
+  within ±1σ of the pre-`serve` nights** — the same instrument §5.2
+  already prescribes for the `cli`→`sdk` flip, re-pointed at the
+  before/after of adopting `serve` as the scheduler instead of the
+  timer. **Collecting it is operator work after the merge**, same as
+  the rest of §5 (per §7.4 trap S2C: the burn-in gate is *recording the
+  observable*, not *having already observed it* — a criterion can be
+  SOUND with the number still unmeasured, because the measurement needs
+  a running system this document does not have).
+- Nothing else in `serve`'s own behavior is burn-in material: it is
+  serial with the same job bodies (`miner.run`, `worker.run`,
+  unmodified), the heartbeat and the doctor `serve` row are structural
+  facts a test already pins (`test_serve.py`), and H-5 (producers
+  commit their own writes) is unchanged by construction — `serve`
+  never stages, commits, or pushes.
+
 ## 6. Rollback
 
 *Rewritten 2026-08-25 (U-cleanup, `S-49`). Everything below this line
@@ -486,7 +511,35 @@ you:**
    `SELF_LEARN_MINER=0` to disable runs entirely) before the first command
    against the copy, and strip the copy's `origin` remote. Measured
    2026-08-26: the dry-run's first `doctor` call landed five real commits in
-   the copy before this was noticed.
+   the copy before this was noticed. **This trap matters more once `serve`
+   exists** (item 5 below) — `serve` is a SECOND thing that can mine a
+   ledger copy, on its own schedule, independently of any verb you run by
+   hand.
+
+### 6.1 U-engine Phase 2 (`serve`) rollback
+
+Rollback is a revert, same as above — `serve` (`cli/src/self_learn/
+serve.py`) and its call sites are ordinary product code, not a switch.
+
+5. **Revert Phase 2 before Phase 1**, if both need undoing — Phase 2
+   (`self-learn serve`, the `serve` CLI verb, the `doctor` `serve` row,
+   the reduced watchdog in `miner.maybe_kick`) is built on Phase 1 (the
+   `sdksession` library); reverting Phase 1 first leaves Phase 2's code
+   importing a library that no longer exists.
+6. **Re-enable `self-learn-miner.timer`** when reverting Phase 2 — with
+   `serve` gone, nothing else fires the nightly mine pass:
+   `systemctl --user enable --now self-learn-miner.timer`. The watchdog's
+   reduced disposition (`miner.maybe_kick`'s poke leg) reverts along with
+   the rest of `miner.py`'s Phase 2 edit, so the pre-Phase-2 any-verb
+   spawn behaviour returns automatically once the code is reverted.
+7. **Neither phase touches either `pyproject.toml`.** Unlike the
+   U-cleanup revert (item 1 above), nothing about `claude-agent-sdk`'s
+   installation changes on either side of a Phase 1 or Phase 2 revert —
+   a plain `git checkout <sha> -- plugins/self-learn/cli` (or `.../ui`
+   for Phase 1B) is sufficient, no `uv sync` extras juggling.
+8. **Test the same way §6's own procedure already prescribes**:
+   `plugins/self-learn/cli/scripts/suite` (foreground, from the repo
+   root) and the UI suite from *inside* `plugins/self-learn/ui`.
 
 **One caveat that survives the rewrite unchanged.** If you opened the
 incident hatch `SELF_LEARN_ENFORCE_SCOPE=0`, close it — see §7. That
@@ -595,3 +648,96 @@ one-backend world; §5.1–§5.5, §5.7, and §7 traps 2/7 are unchanged
 because their subject (per-surface burn-in gates, the systemd-env fact,
 the miner catch-up watchdog) never depended on a second transport
 existing.
+
+**2026-08-27 (U-engine Phase 2, `03-decisions.md` `S-50` / `14-forward-
+work-map.md` `FW-118`–`FW-121`):** a new switch — `self-learn serve`,
+a long-lived host process that schedules the nightly mine and its
+worker follow-on in place of the per-verb any-command watchdog and (on
+hosts that adopt it) `self-learn-miner.timer`. §5.8, §6.1, and §10 are
+added in this same commit; §5.2's watchdog description and §3 of
+`12-transcript-miner.md` describe the two supported topologies (`serve`-
+scheduled and timer-scheduled) rather than picking one, since adopting
+`serve` is a per-host deployment choice, not a code default.
+
+## 10. `serve`
+
+`self-learn serve` is a long-lived scheduler, not a new producer. It
+starts the same `miner.run` / `worker.run` your terminal already calls
+by hand or `self-learn-miner.timer` already calls nightly — on its own
+clock, in-process, one job at a time. It never stages, commits, or
+pushes on a producer's behalf (H-5 unchanged); each job it starts still
+takes its own lock and commits under its own pinned subject.
+
+**Starting and stopping it.** `self-learn serve` runs in the foreground
+until it receives `SIGTERM`/`SIGINT`, at which point it finishes its
+current tick and exits 0 — there is no separate "stop" verb. Three
+supervisor shapes are supported:
+
+- **systemd (Linux, the primary shape):** `systemd/self-learn-host.service`
+  (`Type=simple`, `Restart=on-failure`, `RestartSec=5`,
+  `ExecStart=%h/bin/self-learn serve`). `install.sh` links the unit
+  file into `~/.config/systemd/user/` and reloads the daemon, but does
+  **not** enable or start it — enabling a long-lived host process on a
+  live ledger is a deployment decision the installer does not make for
+  you. Enable it yourself when you're ready:
+  `systemctl --user enable --now self-learn-host.service`.
+- **launchd (macOS) or another init system:** no shipped unit yet —
+  wrap `self-learn serve` the way you would any other long-lived
+  foreground process for that supervisor (a `launchd` plist with
+  `KeepAlive`, a `runit`/`s6` service directory, etc.); the process
+  itself has no systemd dependency.
+- **A plain terminal / `tmux`/`screen` session:** `self-learn serve`
+  with no supervisor at all — fine for trying it out, not for unattended
+  operation (nothing restarts it if it dies or the terminal closes).
+
+**The heartbeat and doctor's four verdicts.** `serve` writes into its
+cache directory (`XDG_CACHE_HOME`-namespaced by ledger, never the ledger
+repo itself: `NOT_REPO_TRUTH` in `test_lock_invariant.py`) and nowhere
+else — three files, corrected 2026-08-27 (gate r1 M-1): the heartbeat
+itself (`serve.heartbeat`: tick time, pid, next scheduled job), a poke
+flag (`serve.poke`, §5.3's watchdog handoff — a separate file so a
+verb's write and `serve`'s own tick never race each other), and the
+day's jittered mine-target (`serve.schedule`, so a restart mid-day does
+not recompute a different one). `doctor`'s `serve` row reads the
+heartbeat and never calls `systemctl`; it reports one of four verdicts:
+
+| Configured (unit linked)? | Heartbeat state | Verdict |
+|---|---|---|
+| No | — (no heartbeat expected) | `SKIP` |
+| Yes | No heartbeat file | `FAIL` |
+| Yes | Fresh (within the tick interval) | `PASS` |
+| Yes | Stale (older than the tick interval) | `FAIL` |
+
+The stale-heartbeat `FAIL` is deliberately **LOUD even when `serve` is
+dead** — `doctor` is reading a file `serve` last wrote while it was
+alive, so a crashed or hung `serve` shows up the next time anyone runs
+`doctor`, without needing `serve` itself to still be running to report
+its own death.
+
+**Do not run the timer and `serve` as rival schedulers** unless you
+mean the timer as a poke. If both `self-learn-miner.timer` and
+`self-learn serve` are enabled at once, `doctor` downgrades a would-be
+`PASS` on the `serve` row to `WARN` (corrected 2026-08-27, gate r1
+D-6: only a `PASS` downgrades — a stale or absent heartbeat with both
+enabled still reports `FAIL`, exactly as it would with only `serve`
+enabled; a dead `serve` is not made less dead by the timer also being
+on). The `WARN` reads: a redundant-but-harmless configuration, not a
+broken one — `miner.maybe_kick`'s watchdog checks `serve`'s heartbeat
+LAST (corrected 2026-08-27, gate r2 B-1': the disabled/staleness/
+cooldown/busy checks all run first, unchanged from before this unit —
+a poke fires only where a spawn would have), and when it is fresh, that
+would-be spawn turns into a poke (`serve.request_poke`) that makes
+`serve` run its next job immediately on its own next tick, instead of
+the verb spawning a second detached `mine` process. So a stray timer
+firing next to a healthy `serve` degrades to "ran a little earlier than
+`serve` would have", not a race between two real miners.
+
+**The reduced watchdog's two legs.** Every CLI verb except `mine` and
+`init` still ticks `miner.maybe_kick` on a stale ledger, but its
+disposition now has exactly two shapes: **poke** `serve` when its
+heartbeat is fresh (above), or **fall back to today's behavior**
+(`SELF_LEARN_MINER_AUTOKICK`-gated detached spawn) when it is not — i.e.
+no `serve` configured, or `serve` configured but its heartbeat is
+stale or absent. The watchdog never blocks on `serve`'s liveness or
+tries to start it; a dead `serve` is `doctor`'s problem to surface
+loudly, not a verb's problem to route around silently.
