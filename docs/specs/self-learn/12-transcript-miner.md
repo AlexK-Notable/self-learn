@@ -360,7 +360,10 @@ findings that ADJUSTED pinned behavior (dated letter-adjustments):
    / 538 transcripts on the build machine.
 5. **Watchdog attempt cool-down (2 h)** beside the 24 h completed-run
    check — a persistently failing reader must not turn every CLI
-   invocation into a walk + 15-minute model attempt.
+   invocation into a walk + 15-minute model attempt. *(2026-08-26,
+   U-fw100/FW-100: the 15-minute figure is now the default, not a
+   fixed value — env-overridable via `SELF_LEARN_READER_TIMEOUT_SECS`,
+   `miner.reader_timeout_secs()`.)*
 6. **Worker re-asserts the sentinel after its model pass** — a
    concurrent short holder (miner landing) could create-then-release
    the sentinel a mid-run worker had merely joined, deleting autosync

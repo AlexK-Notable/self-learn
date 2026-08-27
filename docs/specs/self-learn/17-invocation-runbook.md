@@ -246,7 +246,9 @@ that today has none of them (`S-41`). Watch it accordingly.
 - **An injected timeout lands in `pending/`.** Force a timeout (a
   deliberately tiny `SELF_LEARN_ANALYST_TIMEOUT` — seconds, no `_SECS`
   suffix on this one, unlike the worker's
-  `SELF_LEARN_INVOKE_TIMEOUT_SECS` — or an unreachable
+  `SELF_LEARN_INVOKE_TIMEOUT_SECS` or the miner reader's
+  `SELF_LEARN_READER_TIMEOUT_SECS` (added 2026-08-26, U-fw100 — FW-100's
+  env-override half) — or an unreachable
   transport) and confirm the lesson you typed is **captured to
   `pending/`** rather than lost to a traceback. This is the leg
   `FW-87`/`S-41` exists for: the error contract must catch into
@@ -278,6 +280,9 @@ Plan text: *"miner = 5 clean nightly cycles + 0 orphans at 09:00
 - **Volume within ±1σ of the `cli` baseline.** Candidate counts per
   night, compared against the preceding `cli` nights. A miner that
   suddenly finds half as much has changed behavior, not just transport.
+- **The reader session's timeout is env-overridable too** (added
+  2026-08-26, U-fw100): `SELF_LEARN_READER_TIMEOUT_SECS`, default 900s,
+  same parsing as the worker's `SELF_LEARN_INVOKE_TIMEOUT_SECS` (§5.1).
 
 ### 5.3 How to measure "0 orphans" today, since the doctor cannot
 
