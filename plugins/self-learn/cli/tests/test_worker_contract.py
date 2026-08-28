@@ -517,7 +517,7 @@ _ARMOR_SHAS = {
     "plugins/self-learn/cli/tests/backends.py": "a2ba2d74f117a230740d10e3c9fa67bd30f751ce80ec59667c9136557a906dde",
     "plugins/self-learn/cli/tests/test_invocation.py": "e3875614ab32a760788140d76e26cd542c07bd2f9dfa512f9da0f62c40b9257c",
     "plugins/self-learn/cli/tests/test_invocation_sdk.py": "124c0e8b310ce8dbfeea89348d0ea5a8cf9c96c071642f7e16e89a7ffa1b4e35",  # U-kl4 gate r1 fold (2026-08-28): B-1/N-D1/N-D2/N-D3, see the dated paragraph below
-    "plugins/self-learn/cli/tests/test_u_fake.py": "cf9dc0108131f36e19cd6aa6517ae115cef3c2ac4c682257d7666bab306657b7",  # U-ancestry, 2026-08-28: DS1_REMOVED/DS1_ADDED gain the canon_excerpt-supersession entries and _DS1_EXPECTED["test_worker.py"] moves 59->55 (see block comment above)
+    "plugins/self-learn/cli/tests/test_u_fake.py": "136391df1ecf7f05a312a73bca9d3bd05ba910a92c958915d99f2d0192d3c49b",  # U-ancestry, 2026-08-28: DS1_REMOVED/DS1_ADDED gain the canon_excerpt-supersession entries and _DS1_EXPECTED["test_worker.py"] moves 59->55 (see block comment above)  # merge 2026-08-28: union of U-ancestry's + U-corrob's DS1 extensions (both sanctioned); re-derived from merged bytes
     "plugins/self-learn/cli/tests/test_worker.py": "53287efe8e8f58b0fcda9741f68ca8a0b9b437ccc82a97b8b8cb89784d4bcd7a",  # U-ancestry, 2026-08-28: S-52 (SCAN1) supersedes u-marker §3 criterion A; the four canon_excerpt tests are rewritten to the whole-file contract and criterion B is re-homed as SCAN8
     "plugins/self-learn/cli/tests/test_repair.py": "40bf4fbd80ce7901d88ad9394de32301213b095d47c9e38fc253773c1d0c631c",
 }
