@@ -33,6 +33,7 @@ from support import (
 
 OLD = "lrn-0000aaaa"
 NEW = "lrn-0000bbbb"
+THIRD = "lrn-0000cccc"
 
 SKILL_MD = "# s skill\n\nAuthored prose stays put.\n"
 
@@ -389,6 +390,25 @@ class TestRouteGuards:
             )
         assert env.pending(OLD).exists()
 
+    def test_refuses_already_resolved_exit_1_ledger_unchanged(self, env):
+        # FW-51: `route` used to search pending/ ONLY — a record sitting
+        # in resolved/ came back "not found" (exit 64, a lie: the record
+        # exists, its status just makes a second route illegal). Now:
+        # exit 1, names the status, nothing written.
+        seed(env)
+        verbs.reject(env.home, OLD)
+        before_bytes = env.resolved(OLD).read_bytes()
+        before_head = git(env.home, "rev-parse", "HEAD").stdout.strip()
+
+        with pytest.raises(verbs.VerbError) as excinfo:
+            verbs.route(env.home, OLD, dest="skill-md")
+        assert excinfo.value.exit_code == 1
+        assert "'rejected'" in str(excinfo.value)
+
+        assert env.resolved(OLD).read_bytes() == before_bytes
+        assert git(env.home, "rev-parse", "HEAD").stdout.strip() == before_head
+        assert BEGIN_MARKER not in env.skill_md.read_text(encoding="utf-8")
+
 
 class TestRouteCommit:
     def test_note_lands_in_commit_body_and_record(self, env):
@@ -468,6 +488,63 @@ class TestRouteSupersedes:
         # the compiled section carries the new lesson, not the old one
         skill = env.skill_md.read_text(encoding="utf-8")
         assert NEW in skill and OLD not in skill
+
+    def test_completion_at_route_refuses_terminal_old(self, env):
+        # FW-51: a `teach --supersedes` completion at route time runs the
+        # SAME supersede_record path the standalone `supersede` verb
+        # does — a rejected OLD must refuse here too, before any commit.
+        seed(env, rid=OLD)
+        verbs.reject(env.home, OLD)
+        seed(env, rid=NEW, supersedes=OLD)
+        old_before = env.resolved(OLD).read_bytes()
+        new_before = env.pending(NEW).read_bytes()
+        before_head = git(env.home, "rev-parse", "HEAD").stdout.strip()
+
+        with pytest.raises(verbs.VerbError) as excinfo:
+            verbs.route(env.home, NEW, dest="skill-md")
+        assert excinfo.value.exit_code == 1
+        assert "'rejected'" in str(excinfo.value)
+
+        # nothing committed and NEITHER involved record's bytes moved:
+        # NEW is still pending, OLD still rejected
+        assert env.resolved(OLD).read_bytes() == old_before
+        assert env.pending(NEW).read_bytes() == new_before
+        assert not env.resolved(NEW).exists()
+        assert git(env.home, "rev-parse", "HEAD").stdout.strip() == before_head
+
+    def test_route_direct_supersedes_refuses_terminal_old(self, env):
+        """FW-51 M-1 (code gate r1): `teach --route --supersedes
+        <rejected-id>` drives `route_direct`'s OWN `--supersedes`
+        completion — the SAME `supersede_record` path `route`'s uses —
+        and must refuse a rejected OLD the same way, BEFORE the new
+        record (composed in memory, never on disk before this call) is
+        written to `resolved/` at all. Unlike `route` (which resolves an
+        EXISTING pending record), a refusal that fired AFTER that write
+        — from deep inside `_ledger_write`, as an unconverted
+        `LedgerOpsError` — would leave the half-written shape: a staged,
+        uncommitted file in `resolved/` with no compensating cleanup.
+        The pre-lock guard this test pins (`verbs.py`, `route_direct`,
+        right after the `--note` scan) is what keeps that from
+        happening; deleting it reproduces exactly that shape (exit 64,
+        a new file in `resolved/`, no commit)."""
+        seed(env, rid=OLD)
+        verbs.reject(env.home, OLD)
+        old_before = env.resolved(OLD).read_bytes()
+        before_head = git(env.home, "rev-parse", "HEAD").stdout.strip()
+        new_record = make_behavior(scope="skill:s", record_id=NEW)
+        new_record.set_supersedes(OLD)
+
+        with pytest.raises(verbs.VerbError) as excinfo:
+            verbs.route_direct(env.home, new_record, dest="skill-md")
+        assert excinfo.value.exit_code == 1
+        assert "'rejected'" in str(excinfo.value)
+
+        # nothing written at all: no new file anywhere for NEW, OLD's
+        # bytes untouched, nothing committed
+        assert not env.resolved(NEW).exists()
+        assert not env.pending(NEW).exists()
+        assert env.resolved(OLD).read_bytes() == old_before
+        assert git(env.home, "rev-parse", "HEAD").stdout.strip() == before_head
 
 
 class TestRouteUserScope:
@@ -587,6 +664,24 @@ class TestReject:
         assert record.resolution_note == "not a real lesson"
         assert env.remote_subject() == message
 
+    def test_refuses_already_resolved_exit_1_ledger_unchanged(self, env):
+        # FW-51: `reject` on a record in resolved/ used to lie "not
+        # found" (exit 64) — the record exists, its status just makes a
+        # second reject illegal. Now: exit 1, names the status, and
+        # NOTHING is written (refusal fires before any lock/mutation).
+        seed(env)
+        verbs.reject(env.home, OLD)
+        before_bytes = env.resolved(OLD).read_bytes()
+        before_head = git(env.home, "rev-parse", "HEAD").stdout.strip()
+
+        with pytest.raises(verbs.VerbError) as excinfo:
+            verbs.reject(env.home, OLD)
+        assert excinfo.value.exit_code == 1
+        assert "'rejected'" in str(excinfo.value)
+
+        assert env.resolved(OLD).read_bytes() == before_bytes
+        assert git(env.home, "rev-parse", "HEAD").stdout.strip() == before_head
+
 
 class TestDefer:
     def test_explicit_until_pinned_message(self, env):
@@ -614,6 +709,37 @@ class TestDefer:
         assert abs((until - expected).days) <= 1
         assert result.commit_message == f"self-learn: defer {OLD} until {until}"
 
+    def test_redefer_an_already_deferred_record_succeeds(self, env):
+        # `deferred` is LIVE — a record may be re-deferred (bumping
+        # deferred_count), unlike a terminal status.
+        seed(env)
+        verbs.defer(env.home, OLD, until="2099-01-01")
+
+        verbs.defer(env.home, OLD, until="2099-06-01")
+
+        record = Record.from_path(env.pending(OLD))
+        assert record.status == "deferred"
+        assert record.deferred_count == 2
+        assert str(record.deferred_until) == "2099-06-01"
+
+    def test_refuses_already_resolved_exit_1_ledger_unchanged(self, env):
+        # FW-51: `defer` used to search pending/ ONLY (never a status
+        # check — a deferred record simply stays in that directory) —
+        # so a resolved record came back "not found" (exit 64, a lie).
+        # Now: exit 1, names the status, nothing written.
+        seed(env)
+        verbs.reject(env.home, OLD)
+        before_bytes = env.resolved(OLD).read_bytes()
+        before_head = git(env.home, "rev-parse", "HEAD").stdout.strip()
+
+        with pytest.raises(verbs.VerbError) as excinfo:
+            verbs.defer(env.home, OLD)
+        assert excinfo.value.exit_code == 1
+        assert "'rejected'" in str(excinfo.value)
+
+        assert env.resolved(OLD).read_bytes() == before_bytes
+        assert git(env.home, "rev-parse", "HEAD").stdout.strip() == before_head
+
 
 class TestGraduate:
     def test_pending_already_canon_flavor(self, env):
@@ -637,6 +763,51 @@ class TestGraduate:
         assert record.superseded_by == "canon"
         assert env.remote_subject() == f"self-learn: graduate {OLD}"
         assert result.push.ok
+
+    def test_deferred_flavor_accepted(self, env):
+        seed(env)
+        verbs.defer(env.home, OLD, until="2099-01-01")
+
+        result = verbs.graduate(env.home, OLD)
+
+        record = Record.from_path(env.resolved(OLD))
+        assert record.status == "superseded"
+        assert record.superseded_by == "canon"
+        assert result.commit_message == f"self-learn: graduate {OLD}"
+
+    def test_refuses_rejected_source(self, env):
+        # FW-51's headline defect: `reject A` then `graduate A` used to
+        # rc 0 and silently invert the human's denial into "the lesson
+        # won" (superseded_by: canon). Now: exit 1, nothing written.
+        seed(env)
+        verbs.reject(env.home, OLD)
+        before_bytes = env.resolved(OLD).read_bytes()
+        before_head = git(env.home, "rev-parse", "HEAD").stdout.strip()
+
+        with pytest.raises(verbs.VerbError) as excinfo:
+            verbs.graduate(env.home, OLD)
+        assert excinfo.value.exit_code == 1
+        assert "'rejected'" in str(excinfo.value)
+
+        record = Record.from_path(env.resolved(OLD))
+        assert record.status == "rejected"  # NOT flipped to superseded/canon
+        assert env.resolved(OLD).read_bytes() == before_bytes
+        assert git(env.home, "rev-parse", "HEAD").stdout.strip() == before_head
+
+    def test_refuses_already_graduated_source(self, env):
+        # `supersede B C` with B graduated: refused. Graduating an
+        # already-graduated record twice is the same shape.
+        seed(env)
+        verbs.graduate(env.home, OLD)
+        before_bytes = env.resolved(OLD).read_bytes()
+        before_head = git(env.home, "rev-parse", "HEAD").stdout.strip()
+
+        with pytest.raises(verbs.VerbError) as excinfo:
+            verbs.graduate(env.home, OLD)
+        assert excinfo.value.exit_code == 1
+        assert "'superseded'" in str(excinfo.value)
+        assert env.resolved(OLD).read_bytes() == before_bytes
+        assert git(env.home, "rev-parse", "HEAD").stdout.strip() == before_head
 
 
 class TestSupersedeVerb:
@@ -671,6 +842,107 @@ class TestSupersedeVerb:
         seed(env, rid=OLD)
         with pytest.raises(verbs.VerbError, match="itself"):
             verbs.supersede(env.home, OLD, OLD)
+
+    def test_refuses_terminal_source(self, env):
+        # `supersede` on a rejected (or already-graduated) OLD: refused.
+        seed(env, rid=OLD)
+        seed(env, rid=NEW)
+        verbs.reject(env.home, OLD)
+        old_before = env.resolved(OLD).read_bytes()
+        new_before = env.pending(NEW).read_bytes()
+        before_head = git(env.home, "rev-parse", "HEAD").stdout.strip()
+
+        with pytest.raises(verbs.VerbError) as excinfo:
+            verbs.supersede(env.home, OLD, NEW)
+        assert excinfo.value.exit_code == 1
+        assert "'rejected'" in str(excinfo.value)
+        assert env.resolved(OLD).read_bytes() == old_before
+        assert env.pending(NEW).read_bytes() == new_before  # NEW never touched either
+        assert git(env.home, "rev-parse", "HEAD").stdout.strip() == before_head
+
+    def test_refuses_terminal_target(self, env):
+        # `supersede B C` with C already superseded/rejected: a terminal
+        # record cannot be the "new" replacement either (FW-51's third
+        # measured case).
+        seed(env, rid=OLD)
+        seed(env, rid=NEW)
+        verbs.reject(env.home, NEW)
+        old_before = env.pending(OLD).read_bytes()
+        new_before = env.resolved(NEW).read_bytes()
+        before_head = git(env.home, "rev-parse", "HEAD").stdout.strip()
+
+        with pytest.raises(verbs.VerbError) as excinfo:
+            verbs.supersede(env.home, OLD, NEW)
+        assert excinfo.value.exit_code == 1
+        assert "'rejected'" in str(excinfo.value)
+        assert env.pending(OLD).read_bytes() == old_before  # OLD never touched
+        assert env.resolved(NEW).read_bytes() == new_before  # NEW (the target) either
+        assert git(env.home, "rev-parse", "HEAD").stdout.strip() == before_head
+
+    def test_refuses_direct_two_record_cycle(self, env):
+        # FW-51: `supersede C D` then `supersede D C` used to rc 0,
+        # leaving a two-record cycle with neither record live. The
+        # second call is refused (here: OLD/C is already terminal from
+        # the first call, so the liveness check alone catches it — same
+        # observable fix as the ledger_ops-level cycle test, which
+        # isolates the graph-walk specifically).
+        seed(env, rid=OLD)
+        seed(env, rid=NEW)
+        verbs.supersede(env.home, OLD, NEW)  # C -> D
+        old_before = env.resolved(OLD).read_bytes()
+        new_before = env.pending(NEW).read_bytes()
+        before_head = git(env.home, "rev-parse", "HEAD").stdout.strip()
+
+        with pytest.raises(verbs.VerbError) as excinfo:
+            verbs.supersede(env.home, NEW, OLD)  # D -> C: would cycle
+        assert excinfo.value.exit_code == 1
+
+        # neither record was mutated by the refused call
+        assert env.resolved(OLD).read_bytes() == old_before
+        assert env.pending(NEW).read_bytes() == new_before
+        assert git(env.home, "rev-parse", "HEAD").stdout.strip() == before_head
+        old = Record.from_path(env.resolved(OLD))
+        assert old.status == "superseded" and old.superseded_by == NEW
+        new = Record.from_path(env.pending(NEW))
+        assert new.status == "pending" and new.superseded_by is None
+
+    def test_refuses_a_longer_chain_cycle(self, env):
+        """Isolates the graph-walk from the liveness check (mirrors
+        test_ledger_ops.py::test_supersede_cycle_check_refuses_a_longer_
+        chain, at the verb layer): NEW is LIVE (routed) and OLD is LIVE
+        (pending) — both pass require_status — but NEW's hand-set
+        superseded_by chain (NEW -> THIRD -> OLD) reaches OLD. Only
+        supersede_cycle_check stands between this call and a cycle; if
+        it were removed, `verbs.supersede(env.home, OLD, NEW)` would
+        succeed."""
+        seed(env, rid=OLD)
+        seed(env, rid=NEW)
+        seed(env, rid=THIRD)
+        verbs.route(env.home, NEW, dest="skill-md")  # NEW: live, routed
+
+        new_record = Record.from_path(env.resolved(NEW))
+        new_record.set_superseded_by(THIRD)
+        new_record.write(env.resolved(NEW))
+        third_record = Record.from_path(env.pending(THIRD))
+        third_record.set_superseded_by(OLD)
+        third_record.write(env.pending(THIRD))
+
+        old_before = env.pending(OLD).read_bytes()
+        new_before = env.resolved(NEW).read_bytes()
+        third_before = env.pending(THIRD).read_bytes()
+        before_head = git(env.home, "rev-parse", "HEAD").stdout.strip()
+
+        with pytest.raises(verbs.VerbError, match="cycle") as excinfo:
+            verbs.supersede(env.home, OLD, NEW)
+        assert excinfo.value.exit_code == 1
+
+        # none of the three involved records were touched by the refused
+        # call, and nothing committed
+        assert env.pending(OLD).read_bytes() == old_before
+        assert env.resolved(NEW).read_bytes() == new_before
+        assert env.pending(THIRD).read_bytes() == third_before
+        assert git(env.home, "rev-parse", "HEAD").stdout.strip() == before_head
+        assert Record.from_path(env.pending(OLD)).status == "pending"
 
 
 # ------------------------------------------------------------- sentinel use

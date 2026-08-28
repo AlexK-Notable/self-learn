@@ -116,7 +116,10 @@ from .ledger_ops import (
     PROPOSAL_DESTINATIONS,
     ROSTER_UNAVAILABLE,
     LedgerOpsError,
+    LIVE_STATUSES,
     ProposalError,
+    RESOLVABLE_STATUSES,
+    ROUTED_ONLY,
     bucket_dir_for_scope,
     bucket_project_path,
     DEFAULT_GLOB_PROBE_BUDGET_S,
@@ -130,8 +133,10 @@ from .ledger_ops import (
     rescope_record,
     read_proposal,
     record_title,
+    require_status,
     require_writable_home,
     resolve_record,
+    supersede_cycle_check,
     supersede_record,
     validate_merge_proposal,
     validate_proposal,
@@ -2737,17 +2742,28 @@ def route(
             _validate_follow_up(follow_up)
         except RecordError as exc:
             raise VerbError(str(exc)) from exc
-    path = find_record_path(home, record_id, statuses=("pending",))
+    # pending OR resolved (FW-51: no longer lies "not found" for a
+    # resolved record whose status makes `route` illegal).
+    path = find_record_path(home, record_id)
 
-    # (a) scan the record file BEFORE trusting its contents.
+    # (a) scan the record file BEFORE trusting its contents — same order
+    # as every other resolution verb: raw-bytes scan, THEN parse.
     _scan_or_refuse([path], note)
-    record = Record.from_path(path)
+    try:
+        _, record = require_status(home, record_id, LIVE_STATUSES, verb="route")
+    except LedgerOpsError as exc:
+        raise VerbError(str(exc)) from exc
     old_id = record.supersedes
     old_record: Record | None = None
     if old_id is not None:
         old_path = find_record_path(home, old_id)
         _scan_or_refuse([old_path], None)  # this verb rewrites it too (P2-7)
-        old_record = Record.from_path(old_path)
+        try:
+            _, old_record = require_status(
+                home, old_id, RESOLVABLE_STATUSES, verb="route"
+            )
+        except LedgerOpsError as exc:
+            raise VerbError(str(exc)) from exc
 
     losers: list[str] = []
     merge_path: Path | None = None
@@ -2907,16 +2923,25 @@ def route(
                 rules_paths=list(spec.rules_paths) if spec.rules_paths else None,
                 allow_empty_glob=spec.glob_bypass,
                 glob_bypass_reason=spec.glob_bypass_reason,
+                verb="route",
             )
             if old_id is not None:
                 # teach --supersedes completion-at-route: SAME commit (08 §1
-                # Corrective-supersession pin).
-                touched = touched + supersede_record(home, old_id, record_id)
+                # Corrective-supersession pin). old_id's status was already
+                # gated pre-lock above (RESOLVABLE_STATUSES) — this repeats
+                # the check defensively, never expected to fire here.
+                touched = touched + supersede_record(
+                    home, old_id, record_id, verb="route"
+                )
             for loser_id in losers:
                 # collapse: losers superseded by the survivor, SAME commit;
                 # their analysis proposals (and the merge proposal, via the
                 # survivor's own sibling sweep) are removed by resolve_record.
-                touched = touched + supersede_record(home, loser_id, record_id)
+                # _load_cluster already required every member still pending
+                # pre-lock — this repeats the check defensively too.
+                touched = touched + supersede_record(
+                    home, loser_id, record_id, verb="route"
+                )
             if merge_path is not None and merge_path.exists():
                 # belt-and-braces: the sibling sweep removes it when it names
                 # the survivor; an inconsistent leftover is removed here.
@@ -3126,7 +3151,12 @@ def route_direct(
     if old_id is not None:
         old_path = find_record_path(home, old_id)
         _scan_or_refuse([old_path], None)  # this verb rewrites it too (P2-7)
-        old_record = Record.from_path(old_path)
+        try:
+            _, old_record = require_status(
+                home, old_id, RESOLVABLE_STATUSES, verb="route"
+            )
+        except LedgerOpsError as exc:
+            raise VerbError(str(exc)) from exc
 
     # (b) sentinel self-hold + heartbeat.
     hold = sentinel.hold()
@@ -3231,8 +3261,12 @@ def route_direct(
                 touched.append(ensure_project_meta(bucket_dir, project_path))
             if old_id is not None:
                 # teach --supersedes completion-at-route: SAME commit (08 §1
-                # Corrective-supersession pin).
-                touched = touched + supersede_record(home, old_id, record.id)
+                # Corrective-supersession pin). old_id's status was already
+                # gated pre-lock above (RESOLVABLE_STATUSES) — this repeats
+                # the check defensively, never expected to fire here.
+                touched = touched + supersede_record(
+                    home, old_id, record.id, verb="route"
+                )
             try:
                 staged = gitops.stage(home, touched)
                 diff = gitops.staged_diff(home, staged)
@@ -3617,16 +3651,26 @@ def reject(
     note: str | None = None,
     no_push: bool = False,
 ) -> VerbResult:
-    """Reject a pending record. Commit: ``self-learn: reject lrn-…``."""
+    """Reject a pending (or deferred) record. Commit: ``self-learn:
+    reject lrn-…``. FW-51: refuses BEFORE any lock/mutation, naming the
+    record's actual status, when it is already resolved — never the old
+    lying "not found" (:func:`require_status`). A genuinely UNKNOWN id
+    stays a bare :class:`LedgerOpsError` (exit 64, unwrapped) —
+    `find_record_path` runs first, outside the wrap, exactly as
+    `test_unknown_record_id_is_usage_error` pins."""
     home = Path(home)
-    path = find_record_path(home, record_id, statuses=("pending",))
+    path = find_record_path(home, record_id)  # pending OR resolved
     _scan_or_refuse([path], note)
+    try:
+        require_status(home, record_id, LIVE_STATUSES, verb="reject")
+    except LedgerOpsError as exc:
+        raise VerbError(str(exc)) from exc
     hold = sentinel.hold()
     sentinel.heartbeat()
     try:
         message = f"self-learn: reject {record_id}"
         with _ledger_write(home):
-            touched = resolve_record(home, record_id, "rejected", note=note)
+            touched = resolve_record(home, record_id, "rejected", note=note, verb="reject")
             staged, sha = _stage_and_commit(home, touched, message, note)
         push = _push_ledger(home, no_push)
         return VerbResult(
@@ -3650,13 +3694,22 @@ def defer(
     note: str | None = None,
     no_push: bool = False,
 ) -> VerbResult:
-    """Defer a pending record (default +30 d). Commit: ``self-learn: defer
-    lrn-… until <date>``. The note rides the commit body only —
-    ``resolution_note`` is reserved for resolutions (02 §2), and deferral
-    is not one."""
+    """Defer a pending (or already-deferred) record (default +30 d).
+    Commit: ``self-learn: defer lrn-… until <date>``. The note rides the
+    commit body only — ``resolution_note`` is reserved for resolutions
+    (02 §2), and deferral is not one. FW-51: refuses BEFORE any
+    lock/mutation, naming the record's actual status, when it is already
+    resolved — never the old lying "not found" (:func:`require_status`).
+    A genuinely UNKNOWN id stays a bare :class:`LedgerOpsError` (exit 64,
+    unwrapped) — `find_record_path` runs first, outside the wrap, same
+    contract `reject`/`route` pin."""
     home = Path(home)
-    path = find_record_path(home, record_id, statuses=("pending",))
+    path = find_record_path(home, record_id)  # pending OR resolved
     _scan_or_refuse([path], note)
+    try:
+        require_status(home, record_id, LIVE_STATUSES, verb="defer")
+    except LedgerOpsError as exc:
+        raise VerbError(str(exc)) from exc
     hold = sentinel.hold()
     sentinel.heartbeat()
     try:
@@ -4029,7 +4082,16 @@ def graduate(
     path = find_record_path(home, record_id)  # pending OR resolved
     _scan_or_refuse([path], note)
     warnings = _orphaned_followup_warning(path, record_id)
-    record = Record.from_path(path)
+    # FW-51: refuses BEFORE any lock/mutation, naming the record's actual
+    # status, when it is already terminal (rejected, or already
+    # superseded/graduated) — the reject-then-graduate inversion this
+    # unit closes.
+    try:
+        _, record = require_status(
+            home, record_id, RESOLVABLE_STATUSES, verb="graduate"
+        )
+    except LedgerOpsError as exc:
+        raise VerbError(str(exc)) from exc
     hold = sentinel.hold()
     sentinel.heartbeat()
     try:
@@ -4047,7 +4109,12 @@ def graduate(
         message = f"self-learn: graduate {record_id}"
         with _ledger_write(home):
             touched = resolve_record(
-                home, record_id, "superseded", superseded_by="canon", note=note
+                home,
+                record_id,
+                "superseded",
+                superseded_by="canon",
+                note=note,
+                verb="graduate",
             )
             staged, sha = _stage_and_commit(home, touched, message, note)
 
@@ -4109,7 +4176,20 @@ def supersede(
     find_record_path(home, new_id)  # the replacement must exist
     _scan_or_refuse([old_path], note)
     warnings = _orphaned_followup_warning(old_path, old_id)
-    old_record = Record.from_path(old_path)
+    # FW-51: status/cycle refusals — BEFORE any lock/mutation, naming the
+    # record's actual status. Existence of both ids is already confirmed
+    # above (a genuinely missing id stays LedgerOpsError/64, unwrapped —
+    # test_replacement_must_exist pins this); from here the only failure
+    # mode is a STATUS or CYCLE refusal, exit 1 like every other
+    # resolution-verb refusal.
+    try:
+        _, old_record = require_status(
+            home, old_id, RESOLVABLE_STATUSES, verb="supersede"
+        )
+        require_status(home, new_id, RESOLVABLE_STATUSES, verb="supersede")
+        supersede_cycle_check(home, old_id, new_id)
+    except LedgerOpsError as exc:
+        raise VerbError(str(exc)) from exc
     hold = sentinel.hold()
     sentinel.heartbeat()
     try:
@@ -4211,7 +4291,21 @@ def followup_done(
     home = Path(home)
     path = find_record_path(home, record_id)
     _scan_or_refuse([path], note)
-    record = Record.from_path(path)
+    # FW-51 M-3 (code gate r1): followup_done's own docstring already
+    # said "Clear a ROUTED record's follow-up" — but nothing enforced
+    # it. Measured: route with a follow_up -> graduate (status
+    # superseded, follow_up SURVIVES the transition, graduate only
+    # warns) -> followup_done still succeeded and committed, clearing a
+    # follow-up open_followups() had already stopped calling "open".
+    # Gated on STATUS here, same as every other resolution-adjacent
+    # verb — the "no open follow-up" check below stays SECOND, since a
+    # routed record can still legitimately have no follow_up at all.
+    try:
+        _, record = require_status(
+            home, record_id, ROUTED_ONLY, verb="followup-done"
+        )
+    except LedgerOpsError as exc:
+        raise VerbError(str(exc)) from exc
     if record.follow_up is None:
         raise VerbError(
             f"record {record_id} has no open follow-up — nothing to clear"
@@ -4285,12 +4379,16 @@ def confirm_recurrence(
         )
     path = find_record_path(home, record_id)
     _scan_or_refuse([path], note)
-    record = Record.from_path(path)
-    if record.status != "routed":
-        raise VerbError(
-            f"record {record_id} is {record.status!r} — recurrences confirm "
-            "against LIVE routed coverage (11 §2.2)"
+    try:
+        _, record = require_status(
+            home,
+            record_id,
+            ROUTED_ONLY,
+            verb="confirm-recurrence",
+            reason="recurrences confirm against LIVE routed coverage (11 §2.2)",
         )
+    except LedgerOpsError as exc:
+        raise VerbError(str(exc)) from exc
     if any(r.get("ref") == event_ref for r in record.recurrences):
         raise VerbError(
             f"event {event_ref} is already confirmed on {record_id} — "
@@ -4343,12 +4441,16 @@ def confirm_held(
     home = Path(home)
     path = find_record_path(home, record_id)
     _scan_or_refuse([path], note)
-    record = Record.from_path(path)
-    if record.status != "routed":
-        raise VerbError(
-            f"record {record_id} is {record.status!r} — only live routed "
-            "rules can be confirmed as holding"
+    try:
+        _, record = require_status(
+            home,
+            record_id,
+            ROUTED_ONLY,
+            verb="confirm-held",
+            reason="only live routed rules can be confirmed as holding",
         )
+    except LedgerOpsError as exc:
+        raise VerbError(str(exc)) from exc
     hold = sentinel.hold()
     sentinel.heartbeat()
     try:
@@ -4430,12 +4532,16 @@ def dismiss_suspect(
         )
     path = find_record_path(home, record_id)
     _scan_or_refuse([path], note)
-    record = Record.from_path(path)
-    if record.status != "routed":
-        raise VerbError(
-            f"record {record_id} is {record.status!r} — suspects only exist "
-            "against LIVE routed coverage (11 §2.2)"
+    try:
+        _, record = require_status(
+            home,
+            record_id,
+            ROUTED_ONLY,
+            verb="dismiss-suspect",
+            reason="suspects only exist against LIVE routed coverage (11 §2.2)",
         )
+    except LedgerOpsError as exc:
+        raise VerbError(str(exc)) from exc
     if any(r.get("ref") == event_ref for r in record.recurrences):
         raise VerbError(
             f"event {event_ref} is already confirmed on {record_id} — "

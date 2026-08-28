@@ -15,9 +15,12 @@ import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import markupsafe
 import pytest
 from starlette.testclient import TestClient
 
+from self_learn import verbs
+from self_learn.records import Record
 from self_learn_ui.app import create_app
 from self_learn_ui.env import load_env
 from self_learn_ui.keymap import keymap_as_dicts, keymap_json
@@ -1364,6 +1367,74 @@ class TestArmDisarmConfirm:
         assert r.status_code == 200
         assert "dirty target tree" in r.text
         assert 'data-armed="false"' in r.text  # back to unarmed, nothing optimistic
+
+    def test_confirm_surfaces_fw51_terminal_status_refusal_not_success(
+        self, tmp_path: Path
+    ) -> None:
+        """FW-51 (2026-08-26 verb assessment): `resolve_record` used to
+        skip the terminal-state precondition entirely — a resolution verb
+        on an already-resolved record silently mutated it (`graduate`
+        after `reject` inverted a human denial into "the lesson won").
+        The CLI-side fix and its real discriminators live in
+        test_verbs.py; this pins the UI HALF of §4's requirement — a
+        refused resolution must surface as a visible refusal, never a
+        success redirect.
+
+        Two controls, because a FakeRunner-only test proves nothing about
+        the REAL guard (FakeRunner never touches the filesystem, so it
+        cannot tell an authentic refusal apart from a hand-typed string
+        — the exact "FakeRunner doesn't carry page reads" trap):
+
+        1. POSITIVE CONTROL, first: call the real `verbs.graduate`
+           in-process against the record this test just resolved to
+           "rejected" on disk. If FW-51's guard were reverted, `graduate`
+           would stop raising here and THIS line goes red before the
+           HTTP half ever runs — proof the refusal text below is
+           authentic, not a guess.
+        2. READ CONTROL, last: re-read the record's exact bytes straight
+           off disk (never through FakeRunner, which never wrote
+           anything) and assert both bytes and status are unchanged —
+           the UI's failure leg must never have proceeded into any code
+           path that treats the record as resolved-by-this-action.
+
+        Code gate r1 finding: `data-armed="false"` and a missing
+        `HX-Redirect` header both SURVIVED a mutation that garbled the
+        error text while leaving the surrounding failure-shaped response
+        intact — those markers are generic to "some failure happened",
+        not to THIS refusal. Asserting the exact refusal message text
+        (not merely the substring "rejected") is the actual
+        discriminator, so that is the only HTML-side assertion kept.
+        """
+        sb, rec = self._seed(tmp_path)
+        bucket_dir = sb.ledger / "skills" / "s"
+        resolve_record_directly(sb.ledger, bucket_dir, rec, status="rejected")
+        resolved_path = bucket_dir / "resolved" / f"{rec.id}.md"
+        before_bytes = resolved_path.read_bytes()
+
+        with pytest.raises(verbs.VerbError) as excinfo:
+            verbs.graduate(sb.ledger, rec.id)
+        refusal_message = str(excinfo.value)
+        assert "rejected" in refusal_message  # sanity on the control itself
+
+        runner = FakeRunner()
+        runner.queue_result(
+            RunResult(1, stderr=f"self-learn graduate: {refusal_message}")
+        )
+        c, _runner = make_client(sb, runner=runner)
+        r = c.post(
+            f"/record/{rec.id}/action/confirm",
+            data={"verb": "graduate", "kind": "detail"},
+            headers={"HX-Request": "true"},
+        )
+        assert r.status_code == 200
+        # Jinja2 autoescapes the error strip (markupsafe) — the message
+        # carries a status repr in single quotes, which renders as
+        # `&#39;...&#39;`, so compare against the SAME escaping the
+        # template applies rather than the raw string.
+        assert str(markupsafe.escape(refusal_message)) in r.text
+
+        assert resolved_path.read_bytes() == before_bytes
+        assert Record.from_path(resolved_path).status == "rejected"
 
     def test_error_strip_carries_the_reload_defer_marker(self, tmp_path: Path) -> None:
         """f5-errstrip live-DoD fix: app.js's leg (a) keys on
