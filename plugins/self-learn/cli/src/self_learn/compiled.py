@@ -296,6 +296,37 @@ def write_entry(
     return path
 
 
+def delete_entry(home: Path | str, slug: str, key: str) -> Path | None:
+    """The removal twin of :func:`write_entry` (U-hostmode gate r1 fold,
+    D-3 completion): drop ``targets[key]`` entirely when the region it
+    described no longer exists — a hook script just removed, or any
+    other region a verb's own write leaves genuinely ABSENT. A stale
+    entry left behind for a key that no longer resolves to anything
+    would misread as ``edited`` (REC5's "entry present + region absent"
+    row) the next time ANYTHING checks this key, refusing a legitimate
+    future write over content that is not a hand edit at all — it is
+    simply gone, on purpose. Deleting the entry instead leaves the next
+    check reading ``unknown``/``fresh`` off a clean slate.
+
+    ``None`` (no-op, nothing written) when the record file does not
+    exist yet, or the key was never in it — both are already the state
+    this call is trying to reach, so there is nothing to change on
+    disk."""
+    path = compiled_record_path(home, slug)
+    if not path.is_file():
+        return None
+    y = _yaml()
+    data = y.load(path.read_text(encoding="utf-8")) or {}
+    targets = data.get("targets") or {}
+    if key not in targets:
+        return None
+    del targets[key]
+    buf = io.StringIO()
+    y.dump(data, buf)
+    path.write_text(buf.getvalue(), encoding="utf-8")
+    return path
+
+
 def adopt_entry(
     home: Path | str,
     slug: str,

@@ -566,27 +566,27 @@ def _abort_if_unsound(
 
 def _region_kind_for(spec: TargetSpec) -> str | None:
     """Which of the four compile-record region kinds this spec's
-    PRIMARY target is via the generic (``spec.target``-keyed) write
-    path — ``None`` when the destination is explicitly OUT of the
-    record's scope (``new-skill``, §8 OUT-7: a whole file created once,
-    already covered by its own collision rule) OR when the destination
-    resolves its real target OUTSIDE ``spec.target`` entirely
-    (``reference``/``hook`` — see below).
+    PRIMARY target is via the ``managed``-only, self-computing
+    convenience path (:func:`_write_compile_record_entry`) — ``None``
+    when the destination is explicitly OUT of the record's scope
+    (``new-skill``, §8 OUT-7: a whole file created once, already
+    covered by its own collision rule) OR when the destination's real
+    write target resolves OUTSIDE ``spec.target`` entirely
+    (``reference`` — see below) or needs externally-supplied bytes this
+    function cannot derive on its own (``hook`` — the APPROVED script
+    rides the routing block, not the ledger's compile set).
 
-    REC7 (the four region kinds ARE all covered): ``reference`` (whose
-    real target is :func:`compilers.reference_target_path`, never
-    ``spec.target`` — a `reference` spec's ``target`` field is always
-    ``None``, §4.1) and its ``pointer`` write, plus ``hook``'s
-    ``script`` region, are written by ``route()`` directly, by name,
-    using the generic (``spec.target``-independent)
-    :func:`_write_generic_region_entry`/:func:`_observe_region_hash_at`
-    pair — see the block right before ``route()``'s ``_commit_ledger``
-    call. This function stays ``managed``-only because every OTHER
-    caller (``recompile``/``supersede``/``graduate``/``route_direct``)
-    still keys its compile-record work off ``spec.target`` directly, a
-    scope reduction disclosed in the build report: those four verbs'
-    reference/hook legs do not yet re-sync a compile record the way
-    their managed-destination legs do."""
+    REC7 (the four region kinds ARE all covered, D-3 completion, code
+    gate r1 fold): every verb that writes ANY of the four kinds —
+    ``route``, ``route_direct``, ``supersede``, ``graduate``,
+    ``recompile`` — resyncs the compile record for it, in the SAME
+    ledger commit as whatever ledger-side work that write does. This
+    function stays ``managed``-only by DESIGN, not by gap: ``reference``/
+    ``pointer``/``script`` are always written through the generic,
+    ``spec.target``-independent :func:`_resync_region_entry`, by name,
+    at each write site — see ``route``'s block right before its own
+    ``_commit_ledger`` call for the canonical shape every other site
+    mirrors."""
     if spec.destination in ("skill-md", "claude-md"):
         return "managed"
     return None
@@ -685,7 +685,7 @@ def _observe_region_hash(spec: TargetSpec) -> str | None:
     return _observe_region_hash_at(spec.target, region_kind)
 
 
-def _write_generic_region_entry(
+def _resync_region_entry(
     home: Path,
     *,
     host_path: Path,
@@ -697,15 +697,38 @@ def _write_generic_region_entry(
     observed_hash: str | None,
     by: str,
 ) -> Path | None:
-    """The generalized twin of :func:`_write_compile_record_entry`,
-    decoupled from ``TargetSpec`` for the same reason
-    :func:`_observe_region_hash_at` is — REC7's ``reference``/
-    ``pointer``/``script`` writes."""
-    if expected is None:
-        return None
+    """THE single place, for every verb and every region kind, that
+    writes (or clears) a compile-record entry after a region write —
+    coordinator ruling (code gate r1 fold, D-3 completion): "the
+    compile record is a fact about bytes self-learn wrote, independent
+    of both host mode and region kind — and independent of which verb
+    wrote them." ``expected`` is the region's bytes as of THIS write,
+    supplied by the caller either PREDICTED (route/route_direct, before
+    the host write, riding the ledger's own commit — REC9) or OBSERVED
+    for real off disk after the write already happened (recompile,
+    supersede/graduate's retirement legs, and any hook-script repair —
+    D-2/D-3's "standalone resync commit, same subject convention"
+    shape). Decoupled from ``TargetSpec`` because REC7's ``reference``/
+    ``pointer``/``script`` kinds resolve their real target OUTSIDE
+    ``spec.target`` — see :func:`_observe_region_hash_at`.
+
+    ``expected=None`` means the region no longer exists — a hook
+    script just removed being the concrete case — and DELETES any
+    existing entry for this key (:func:`compiled.delete_entry`) instead
+    of silently writing nothing: a stale entry left behind for a region
+    that is legitimately gone would misread as ``edited`` the next time
+    anything checks this key (REC5's "entry present + region absent"
+    row), refusing a future write over content that was never a hand
+    edit. Every pre-existing caller's own "nothing to predict" legs
+    (:func:`_expected_reference_region`/:func:`_expected_pointer_region`
+    returning ``None`` for a target that never existed) already pass
+    this test harmlessly — :func:`compiled.delete_entry` no-ops when
+    there is nothing to delete."""
     try:
         key = compiled.region_key(host_path, target)
         slug = host_slug(home, host_path, scope_kind=scope_kind)
+        if expected is None:
+            return compiled.delete_entry(home, slug, key)
         host_label = "(user scope — ~/.claude)" if scope_kind == "user" else str(host_path)
         return compiled.write_entry(
             home,
@@ -1860,7 +1883,7 @@ def _resolve_hook_target(home: Path, record: Record, bucket_dir: Path) -> Target
             f"hook script already exists at {target} — refusing to "
             "overwrite; supersede the record that owns it first"
         )
-    scope_kind = "skill" if record.scope.startswith("skill:") else record.scope
+    scope_kind = _hook_scope_kind(record)
     return TargetSpec("hook", scope_kind, bucket_dir, target, root, mode=host_mode(home, root))
 
 
@@ -2158,6 +2181,16 @@ def _hook_manual_steps(snippet: str, name: str) -> list[str]:
         "  2. add this to ~/.claude/settings.json (hooks):\n"
         f"     {snippet}",
     ]
+
+
+def _hook_scope_kind(record: Record) -> str:
+    """The compile-record ``scope_kind`` a hook-routed record's script
+    resolves under — same derivation :func:`_resolve_hook_target` has
+    always used inline (D-3 completion, code gate r1 fold: pulled out
+    here so every OTHER site that needs a hook's ``scope_kind`` for a
+    record resync — a removal, a repair — computes it the SAME way,
+    never a second, drifting copy of the rule)."""
+    return "skill" if record.scope.startswith("skill:") else record.scope
 
 
 def _write_hook_script(target: Path, script: str) -> HookApplyResult:
@@ -3378,6 +3411,37 @@ def route(
                 )
                 if old_record_path is not None:
                     touched = touched + [old_record_path]
+                elif old_retire.removal is not None:
+                    # D-3 completion (code gate r1 fold, coordinator
+                    # ruling 2026-08-28): `--supersedes` completion is
+                    # functionally the same retirement `supersede()`
+                    # does standalone — same gap, same fix. A hook
+                    # script's path can never collide with `spec.target`
+                    # (uniquely named per record via `script_name`), so
+                    # no `skip_target` concern here unlike the managed
+                    # branch above.
+                    assert old_record is not None, (
+                        "old_retire is only ever set (line ~3257) inside "
+                        "`if old_record is not None:` — reaching this "
+                        "branch means old_record was too; pyright cannot "
+                        "connect the two names' narrowing on its own"
+                    )
+                    old_host_repo, old_script_abs, _old_rel, old_removal_mode = (
+                        old_retire.removal
+                    )
+                    old_removal_record_path = _resync_region_entry(
+                        home,
+                        host_path=old_host_repo,
+                        scope_kind=_hook_scope_kind(old_record),
+                        mode=old_removal_mode,
+                        target=old_script_abs,
+                        region_kind="script",
+                        expected=None,
+                        observed_hash=None,
+                        by=f"route {record_id} (supersedes {old_id})",
+                    )
+                    if old_removal_record_path is not None:
+                        touched = touched + [old_removal_record_path]
             # REC7: the record covers the OTHER three region kinds too —
             # `reference` (which also writes a `pointer`) and `script`
             # (hook). `_region_kind_for`/`_write_compile_record_entry`
@@ -3401,7 +3465,7 @@ def route(
                     ref_expected = _expected_reference_region(
                         spec, resolved_record, ref_path
                     )
-                    ref_record_path = _write_generic_region_entry(
+                    ref_record_path = _resync_region_entry(
                         home,
                         host_path=spec.host_path,
                         scope_kind=spec.scope_kind,
@@ -3419,7 +3483,7 @@ def route(
                             spec.pointer_surface, "pointer"
                         )
                         ptr_expected = _expected_pointer_region(spec, ref_path)
-                        ptr_record_path = _write_generic_region_entry(
+                        ptr_record_path = _resync_region_entry(
                             home,
                             host_path=spec.host_path,
                             scope_kind=spec.scope_kind,
@@ -3439,7 +3503,7 @@ def route(
             ):
                 script_observed = _observe_region_hash_at(spec.target, "script")
                 script_expected = hook_route.script.encode("utf-8")
-                script_record_path = _write_generic_region_entry(
+                script_record_path = _resync_region_entry(
                     home,
                     host_path=spec.host_path,
                     scope_kind=spec.scope_kind,
@@ -3796,6 +3860,103 @@ def route_direct(
                 )
                 if old_record_path is not None:
                     touched = touched + [old_record_path]
+                elif old_retire.removal is not None:
+                    # D-3 completion (code gate r1 fold, coordinator
+                    # ruling 2026-08-28): same shape as `route`'s own
+                    # `--supersedes` completion fix, right above the
+                    # matching block there — a hook script's path can
+                    # never collide with `spec.target`, so no
+                    # `skip_target` concern here.
+                    assert old_record is not None, (
+                        "old_retire is only ever set (line ~3722) inside "
+                        "`if old_record is not None:` — reaching this "
+                        "branch means old_record was too; pyright cannot "
+                        "connect the two names' narrowing on its own"
+                    )
+                    old_host_repo, old_script_abs, _old_rel, old_removal_mode = (
+                        old_retire.removal
+                    )
+                    old_removal_record_path = _resync_region_entry(
+                        home,
+                        host_path=old_host_repo,
+                        scope_kind=_hook_scope_kind(old_record),
+                        mode=old_removal_mode,
+                        target=old_script_abs,
+                        region_kind="script",
+                        expected=None,
+                        observed_hash=None,
+                        by=f"route-direct {record.id} (supersedes {old_id})",
+                    )
+                    if old_removal_record_path is not None:
+                        touched = touched + [old_removal_record_path]
+            # D-3 completion (code gate r1 fold, coordinator ruling
+            # 2026-08-28): the SAME three-region-kind coverage `route`
+            # gives its own `reference`/`pointer`/`hook` legs (see the
+            # matching block there) — `route_direct` never had it at
+            # all, so a brand-new reference or hook route landed via
+            # `teach --route`/the one-shot analyst left NO record entry
+            # whatsoever, not merely a stale one. `record` already
+            # carries `routing.routed_at` (`record.set_routing(...)`
+            # above), so no `Record.from_path` re-read is needed the
+            # way `route`'s own block needs one.
+            if spec.destination == "reference" and spec.refs_dir is not None:
+                ref_path = reference_target_path(spec.refs_dir, spec.ref_name)
+                if ref_path.name != FORBIDDEN_REFERENCE_BASENAME:
+                    ref_observed = _observe_region_hash_at(ref_path, "reference")
+                    ref_expected = _expected_reference_region(
+                        spec, record, ref_path
+                    )
+                    ref_record_path = _resync_region_entry(
+                        home,
+                        host_path=spec.host_path,
+                        scope_kind=spec.scope_kind,
+                        mode=spec.mode,
+                        target=ref_path,
+                        region_kind="reference",
+                        expected=ref_expected,
+                        observed_hash=ref_observed,
+                        by=f"route-direct {record.id}",
+                    )
+                    if ref_record_path is not None:
+                        touched = touched + [ref_record_path]
+                    if spec.pointer_surface is not None:
+                        ptr_observed = _observe_region_hash_at(
+                            spec.pointer_surface, "pointer"
+                        )
+                        ptr_expected = _expected_pointer_region(spec, ref_path)
+                        ptr_record_path = _resync_region_entry(
+                            home,
+                            host_path=spec.host_path,
+                            scope_kind=spec.scope_kind,
+                            mode=spec.mode,
+                            target=spec.pointer_surface,
+                            region_kind="pointer",
+                            expected=ptr_expected,
+                            observed_hash=ptr_observed,
+                            by=f"route-direct {record.id}",
+                        )
+                        if ptr_record_path is not None:
+                            touched = touched + [ptr_record_path]
+            elif (
+                spec.destination == "hook"
+                and hook_route is not None
+                and spec.target is not None
+            ):
+                script_observed = _observe_region_hash_at(spec.target, "script")
+                script_expected = hook_route.script.encode("utf-8")
+                script_record_path = _resync_region_entry(
+                    home,
+                    host_path=spec.host_path,
+                    scope_kind=spec.scope_kind,
+                    mode=spec.mode,
+                    target=spec.target,
+                    region_kind="script",
+                    expected=script_expected,
+                    observed_hash=script_observed,
+                    by=f"route-direct {record.id}",
+                )
+                if script_record_path is not None:
+                    touched = touched + [script_record_path]
             try:
                 staged = gitops.stage(home, touched)
                 diff = gitops.staged_diff(home, staged)
@@ -4656,6 +4817,30 @@ def graduate(
                 )
                 if record_path is not None:
                     touched = touched + [record_path]
+                elif retire.removal is not None:
+                    # D-3 completion (code gate r1 fold, coordinator
+                    # ruling 2026-08-28): same shape as `supersede`'s
+                    # own hook-removal leg — `_write_retirement_compile_
+                    # record` only ever covers `retire.spec` (a managed
+                    # drop); a hook-routed record's script disappearing
+                    # at the host phase below needs its record entry
+                    # predictively DELETED here too, or a stale WRITE
+                    # entry misreads the next legitimate route to this
+                    # same script path as `edited`.
+                    host_repo, script_abs, _rel, removal_mode = retire.removal
+                    removal_record_path = _resync_region_entry(
+                        home,
+                        host_path=host_repo,
+                        scope_kind=_hook_scope_kind(record),
+                        mode=removal_mode,
+                        target=script_abs,
+                        region_kind="script",
+                        expected=None,
+                        observed_hash=None,
+                        by=f"graduate {record_id}",
+                    )
+                    if removal_record_path is not None:
+                        touched = touched + [removal_record_path]
                 staged, sha = _stage_and_commit(home, touched, message, note)
 
             post_notes: list[str] = []
@@ -4792,6 +4977,34 @@ def supersede(
                     )
                     if record_path is not None:
                         touched = touched + [record_path]
+                elif removal is not None:
+                    # D-3 completion (code gate r1 fold, coordinator
+                    # ruling 2026-08-28): a hook-routed record's script
+                    # is about to disappear at the host phase below —
+                    # predictively DELETE its record entry in this SAME
+                    # ledger commit (same shape the `spec is not None`
+                    # branch above already uses for a managed drop; H-2
+                    # already tolerates the host phase lagging the
+                    # ledger — a failed removal there is the pre-existing
+                    # "stale, never lost" gap `recompile` repairs, which
+                    # now ALSO resyncs this exact key, see its hook-
+                    # removal-repair leg). A stale WRITE entry left
+                    # behind here would misread the next legitimate
+                    # write to this same script path as `edited`.
+                    host_repo, script_abs, _rel, removal_mode = removal
+                    removal_record_path = _resync_region_entry(
+                        home,
+                        host_path=host_repo,
+                        scope_kind=_hook_scope_kind(old_record),
+                        mode=removal_mode,
+                        target=script_abs,
+                        region_kind="script",
+                        expected=None,
+                        observed_hash=None,
+                        by=f"supersede {old_id} → {new_id}",
+                    )
+                    if removal_record_path is not None:
+                        touched = touched + [removal_record_path]
                 staged, sha = _commit_ledger(home, touched, message, note)
 
             # (e) HOST phase: recompile the target — the entry drops out. For
@@ -5893,7 +6106,7 @@ def recompile(
                     ref_expected = None
                 if ref_expected is not None:
                     with _ledger_write(home):
-                        ref_record_path = _write_generic_region_entry(
+                        ref_record_path = _resync_region_entry(
                             home,
                             host_path=spec.host_path,
                             scope_kind=spec.scope_kind,
@@ -5926,7 +6139,7 @@ def recompile(
                     ptr_expected = None
                 if ptr_expected is not None:
                     with _ledger_write(home):
-                        ptr_record_path = _write_generic_region_entry(
+                        ptr_record_path = _resync_region_entry(
                             home,
                             host_path=spec.host_path,
                             scope_kind=spec.scope_kind,
@@ -5970,6 +6183,11 @@ def recompile(
                 )
                 continue
             sha = None
+            # D-3 completion (code gate r1 fold, coordinator ruling
+            # 2026-08-28): observe BEFORE the write, same reasoning as
+            # every other resync in this function (REC13: `based_on_
+            # sha256` is the state THIS write is based on).
+            script_observed_before = _observe_region_hash_at(script_abs, "script")
             # `host_lock(path, "git")` is byte-identical to `commit_lock`'s
             # own path (UN8) — this widens to plain without moving the
             # git-mode lock at all.
@@ -5988,6 +6206,31 @@ def recompile(
                         host_repo,
                         f"self-learn: recompile {rel}",
                         paths=[script_abs],
+                    )
+            # D-3 completion: resync the record to the APPROVED bytes
+            # this leg just (re-)applied — a standalone ledger commit,
+            # same subject convention M-10/D-2/D-3 established, never
+            # riding the host's own commit just made above (a DIFFERENT
+            # repo).
+            script_expected = (record.routing or {})["hook"]["script"].encode("utf-8")
+            with _ledger_write(home):
+                script_record_path = _resync_region_entry(
+                    home,
+                    host_path=host_repo,
+                    scope_kind=_hook_scope_kind(record),
+                    mode=hook_mode,
+                    target=script_abs,
+                    region_kind="script",
+                    expected=script_expected,
+                    observed_hash=script_observed_before,
+                    by=f"recompile {script_abs}",
+                )
+                if script_record_path is not None:
+                    _commit_ledger(
+                        home,
+                        [script_record_path],
+                        "self-learn: recompile resync record "
+                        + host_slug(home, host_repo, scope_kind=_hook_scope_kind(record)),
                     )
             result.entries.append(
                 RecompileEntry(target=script_abs, changed=True, commit_sha=sha)
@@ -6016,6 +6259,38 @@ def recompile(
                 home, removal, record.id, None, result.warnings, removal_notes
             )
             result.warnings.extend(removal_notes)
+            # D-3 completion (code gate r1 fold, coordinator ruling
+            # 2026-08-28): `_remove_hook_script` returns `None` for
+            # THREE different reasons (already absent, a successful
+            # plain-mode unlink, and a genuine failure) — `sha is not
+            # None` cannot distinguish "removed" from "removal failed".
+            # `script_abs.is_file()` after the call is the reliable
+            # signal: only clear the record entry when the script is
+            # ACTUALLY gone, never on a failed removal that left it in
+            # place (that would wrongly hide a still-present script
+            # behind a deleted entry).
+            if not script_abs.is_file():
+                with _ledger_write(home):
+                    removal_record_path = _resync_region_entry(
+                        home,
+                        host_path=host_repo,
+                        scope_kind=_hook_scope_kind(record),
+                        mode=removal_mode,
+                        target=script_abs,
+                        region_kind="script",
+                        expected=None,
+                        observed_hash=None,
+                        by=f"recompile {script_abs}",
+                    )
+                    if removal_record_path is not None:
+                        _commit_ledger(
+                            home,
+                            [removal_record_path],
+                            "self-learn: recompile resync record "
+                            + host_slug(
+                                home, host_repo, scope_kind=_hook_scope_kind(record)
+                            ),
+                        )
             result.entries.append(
                 RecompileEntry(
                     target=script_abs, changed=sha is not None, commit_sha=sha

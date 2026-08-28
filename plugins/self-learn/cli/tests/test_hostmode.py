@@ -1206,6 +1206,599 @@ class TestPlain11HookRetirementUnlinkNoGit:
         assert plain_calls == []
 
 
+
+
+class TestD3CompletionEveryVerbEveryKindResync:
+    """D-3 completion (code gate r1 fold, coordinator ruling
+    2026-08-28): "the compile record is a fact about bytes self-learn
+    wrote, independent of both host mode and region kind — and
+    independent of which verb wrote them." Six gaps closed, one test
+    each: `route_direct` never resynced `reference`/`pointer` OR
+    `hook`/`script` at all (not merely staleness — NO entry ever
+    existed for a route landed through it); `supersede`/`graduate`
+    never cleared a hook script's record entry when the script was
+    removed (a stale WRITE entry surviving a legitimate removal); and
+    `recompile`'s own two hook loops (re-apply, removal-repair) never
+    resynced either. All six now funnel through the SAME
+    `_resync_region_entry` helper every other region write already
+    uses (`route`'s own reference/pointer/hook blocks, `recompile`'s
+    managed and reference/pointer legs)."""
+
+    def test_route_direct_reference_covers_reference_and_pointer(self, tmp_path):
+        env = make_env(tmp_path)
+        record = make_behavior(scope="skill:s", record_id="lrn-000000d0")
+        result = verbs.route_direct(env.ledger, record, dest="reference", no_push=True)
+        assert result is not None
+
+        from self_learn.compilers import reference_target_path
+
+        ref_path = reference_target_path(env.skill_dir / "references")
+        assert ref_path.is_file()
+        ref_text = ref_path.read_text(encoding="utf-8")
+        assert "lrn-000000d0" in ref_text
+
+        slug = hosts_mod.host_slug(env.ledger, env.host, scope_kind="skill")
+        data = compiled.load_record(env.ledger, slug)
+        ref_key = compiled.region_key(env.host, ref_path)
+        ref_entry = compiled.entry_for(data, ref_key)
+        assert ref_entry is not None, "route_direct wrote NO reference record entry at all"
+        assert ref_entry["region"] == "reference"
+        ref_region = compiled.region_bytes(ref_text, "reference")
+        assert ref_region is not None
+        assert ref_entry["sha256"] == compiled.sha256_hex(ref_region)
+
+        pointer_surface = env.skill_md
+        pointer_text = pointer_surface.read_text(encoding="utf-8")
+        pointer_key = compiled.region_key(env.host, pointer_surface)
+        pointer_entry = compiled.entry_for(data, pointer_key)
+        assert pointer_entry is not None, "route_direct wrote NO pointer record entry at all"
+        assert pointer_entry["region"] == "pointer"
+        pointer_region = compiled.region_bytes(pointer_text, "pointer")
+        assert pointer_region is not None
+        assert pointer_entry["sha256"] == compiled.sha256_hex(pointer_region)
+
+    def test_route_direct_hook_covers_script(self, tmp_path):
+        env = make_env(tmp_path)
+        (env.ledger / "config.yaml").write_text(
+            "one_motion_route:\n  hook: true\n", encoding="utf-8"
+        )
+        rid = "lrn-000000d1"
+        record = make_behavior(scope="skill:s", record_id=rid)
+        hook_input = {
+            "rationale": "deterministic guard; over-block: denies stopped-container edits too",
+            "alternates": ["skill-md"],
+            "hook": {
+                "tools": ["Edit", "Write"],
+                "path_regex": r"\.storage/",
+                "deny_message": "stop the container first",
+            },
+            "examples": {
+                "allow": [
+                    {"tool_name": "Edit", "tool_input": {"file_path": "/x/config.yaml"}},
+                    {"tool_name": "Write", "tool_input": {"file_path": "/x/notes.md"}},
+                ],
+                "deny": [
+                    {"tool_name": "Edit", "tool_input": {"file_path": "/x/.storage/a"}},
+                    {"tool_name": "Write", "tool_input": {"file_path": "/y/.storage/b"}},
+                ],
+            },
+        }
+        result = verbs.route_direct(
+            env.ledger, record, dest="hook", hook_input=hook_input, no_push=True
+        )
+        assert result is not None
+        rel = record.routing["hook"]["script_path"]
+        script = env.host / rel
+        assert script.is_file()
+        script_text = script.read_text(encoding="utf-8")
+
+        slug = hosts_mod.host_slug(env.ledger, env.host, scope_kind="skill")
+        data = compiled.load_record(env.ledger, slug)
+        key = compiled.region_key(env.host, script)
+        entry = compiled.entry_for(data, key)
+        assert entry is not None, "route_direct wrote NO script record entry at all"
+        assert entry["region"] == "script"
+        region = compiled.region_bytes(script_text, "script")
+        assert region is not None
+        assert entry["sha256"] == compiled.sha256_hex(region)
+
+    def test_supersede_clears_the_script_record_entry(self, tmp_path):
+        env = make_env(tmp_path)
+        rid = "lrn-000000d2"
+        trigger = "About to edit .storage while HA is running."
+        record = make_behavior(scope="skill:s", record_id=rid, trigger=trigger)
+        create_record(env.ledger, record)
+        write_proposal(
+            env.ledger,
+            rid,
+            proposal_dict(
+                scope="skill:s",
+                destination="hook",
+                alternates=["skill-md"],
+                **hook_proposal_fields(),
+            ),
+        )
+        stamp_proposal(env.ledger, rid)
+        verbs.route(env.ledger, rid, dest="hook", no_push=True)
+
+        from self_learn.hook_compiler import script_name
+
+        script = env.host / "plugins" / "s-plugin" / "hooks" / script_name(rid, trigger)
+        assert script.is_file()
+
+        slug = hosts_mod.host_slug(env.ledger, env.host, scope_kind="skill")
+        key = compiled.region_key(env.host, script)
+        before_entry = compiled.entry_for(compiled.load_record(env.ledger, slug), key)
+        assert before_entry is not None
+        assert before_entry["region"] == "script"
+
+        new_id = "lrn-000000d3"
+        new_record = make_behavior(scope="skill:s", record_id=new_id)
+        create_record(env.ledger, new_record)
+        verbs.supersede(env.ledger, rid, new_id)
+
+        assert not script.exists()
+        after_entry = compiled.entry_for(compiled.load_record(env.ledger, slug), key)
+        assert after_entry is None, (
+            "stale script record entry survives supersede's hook removal"
+        )
+
+    def test_graduate_clears_the_script_record_entry(self, tmp_path):
+        env = make_env(tmp_path)
+        rid = "lrn-000000d4"
+        trigger = "About to edit .storage while HA is running."
+        record = make_behavior(scope="skill:s", record_id=rid, trigger=trigger)
+        create_record(env.ledger, record)
+        write_proposal(
+            env.ledger,
+            rid,
+            proposal_dict(
+                scope="skill:s",
+                destination="hook",
+                alternates=["skill-md"],
+                **hook_proposal_fields(),
+            ),
+        )
+        stamp_proposal(env.ledger, rid)
+        verbs.route(env.ledger, rid, dest="hook", no_push=True)
+
+        from self_learn.hook_compiler import script_name
+
+        script = env.host / "plugins" / "s-plugin" / "hooks" / script_name(rid, trigger)
+        assert script.is_file()
+
+        slug = hosts_mod.host_slug(env.ledger, env.host, scope_kind="skill")
+        key = compiled.region_key(env.host, script)
+        before_entry = compiled.entry_for(compiled.load_record(env.ledger, slug), key)
+        assert before_entry is not None
+
+        verbs.graduate(env.ledger, rid)
+
+        assert not script.exists()
+        after_entry = compiled.entry_for(compiled.load_record(env.ledger, slug), key)
+        assert after_entry is None, (
+            "stale script record entry survives graduate's hook removal"
+        )
+
+    def test_recompile_reapply_resyncs_the_script_record(self, tmp_path):
+        env = make_env(tmp_path)
+        rid = "lrn-000000d5"
+        trigger = "About to edit .storage while HA is running."
+        record = make_behavior(scope="skill:s", record_id=rid, trigger=trigger)
+        create_record(env.ledger, record)
+        write_proposal(
+            env.ledger,
+            rid,
+            proposal_dict(
+                scope="skill:s",
+                destination="hook",
+                alternates=["skill-md"],
+                **hook_proposal_fields(),
+            ),
+        )
+        stamp_proposal(env.ledger, rid)
+        verbs.route(env.ledger, rid, dest="hook", no_push=True)
+
+        from self_learn.hook_compiler import script_name
+
+        script = env.host / "plugins" / "s-plugin" / "hooks" / script_name(rid, trigger)
+        approved_bytes = script.read_bytes()
+        assert script.is_file()
+
+        slug = hosts_mod.host_slug(env.ledger, env.host, scope_kind="skill")
+        key = compiled.region_key(env.host, script)
+
+        # Corrupt BOTH disk and the record to a WRONG, self-consistent
+        # state -- the SAME discrimination requirement the reference/
+        # pointer D-3 test needed: if the record already matched the
+        # reconstructed (approved) bytes, this test would pass even
+        # with the fix deleted.
+        wrong_text = "#!/bin/sh\necho corrupted\n"
+        script.write_text(wrong_text, encoding="utf-8")
+        commit_all(env.host, "hand-edit script to corrupted content")
+        wrong_region = wrong_text.encode("utf-8")
+        compiled.write_entry(
+            env.ledger,
+            slug,
+            key,
+            region="script",
+            sha256=compiled.sha256_hex(wrong_region),
+            based_on_sha256=compiled.sha256_hex(wrong_region),
+            nbytes=len(wrong_region),
+            by="test setup: corrupt record",
+            host=str(env.host),
+            mode="git",
+        )
+        git(env.ledger, "add", "-A")
+        git(env.ledger, "commit", "-m", "test setup: corrupt record")
+
+        verbs.recompile(env.ledger, no_push=True)
+
+        assert script.read_bytes() == approved_bytes
+        approved_sha = compiled.sha256_hex(approved_bytes)
+        after_entry = compiled.entry_for(compiled.load_record(env.ledger, slug), key)
+        assert after_entry is not None
+        assert after_entry["sha256"] == approved_sha, (
+            "the compile record was not resynced after recompile's "
+            "hook re-apply — it still points at stale/corrupted bytes"
+        )
+        assert compiled.verdict_for(after_entry, approved_sha) == "clean"
+
+    def test_recompile_removal_repair_clears_the_script_record(self, tmp_path):
+        env = make_env(tmp_path)
+        rid = "lrn-000000d6"
+        trigger = "About to edit .storage while HA is running."
+        record = make_behavior(scope="skill:s", record_id=rid, trigger=trigger)
+        create_record(env.ledger, record)
+        write_proposal(
+            env.ledger,
+            rid,
+            proposal_dict(
+                scope="skill:s",
+                destination="hook",
+                alternates=["skill-md"],
+                **hook_proposal_fields(),
+            ),
+        )
+        stamp_proposal(env.ledger, rid)
+        verbs.route(env.ledger, rid, dest="hook", no_push=True)
+
+        from self_learn.hook_compiler import script_name
+
+        script = env.host / "plugins" / "s-plugin" / "hooks" / script_name(rid, trigger)
+        approved_bytes = script.read_bytes()
+
+        new_id = "lrn-000000d7"
+        new_record = make_behavior(scope="skill:s", record_id=new_id)
+        create_record(env.ledger, new_record)
+        verbs.supersede(env.ledger, rid, new_id)
+        assert not script.exists()
+
+        slug = hosts_mod.host_slug(env.ledger, env.host, scope_kind="skill")
+        key = compiled.region_key(env.host, script)
+        # supersede's own fix (this same D-3 completion) already
+        # cleared the entry -- confirm the setup, then re-strand it so
+        # THIS recompile call's own clear is what is actually verified.
+        assert compiled.entry_for(compiled.load_record(env.ledger, slug), key) is None
+
+        # "an interrupted removal (or a pre-fix retirement) left the
+        # guard on disk" -- the loop's own docstring. Hand-recreate
+        # BOTH the script and a stale-but-plausible record entry.
+        script.parent.mkdir(parents=True, exist_ok=True)
+        script.write_bytes(approved_bytes)
+        script.chmod(script.stat().st_mode | 0o755)
+        commit_all(env.host, "simulate an interrupted hook removal")
+        compiled.write_entry(
+            env.ledger,
+            slug,
+            key,
+            region="script",
+            sha256=compiled.sha256_hex(approved_bytes),
+            based_on_sha256=compiled.sha256_hex(approved_bytes),
+            nbytes=len(approved_bytes),
+            by="test setup: simulate stranded entry",
+            host=str(env.host),
+            mode="git",
+        )
+        git(env.ledger, "add", "-A")
+        git(env.ledger, "commit", "-m", "test setup: simulate stranded record entry")
+
+        verbs.recompile(env.ledger, no_push=True)
+
+        assert not script.exists()
+        after_entry = compiled.entry_for(compiled.load_record(env.ledger, slug), key)
+        assert after_entry is None, (
+            "stale script record entry survives recompile's removal repair"
+        )
+
+
+
+class TestD3CompletionSupersedesCompletionClearsHookRecord:
+    """D-3 completion, round 2 (found auditing the walker below): `route`
+    and `route_direct`'s own `--supersedes` completion leg is
+    functionally the SAME retirement `supersede()` does standalone —
+    same gap (a hook-routed old record's script entry survived its own
+    removal), same fix, at the `old_retire.removal is not None` branch
+    right next to each verb's existing managed-retirement branch."""
+
+    def test_route_supersedes_completion_clears_old_hook_script_record(
+        self, tmp_path
+    ):
+        env = make_env(tmp_path)
+        old_id = "lrn-000000d8"
+        trigger = "About to edit .storage while HA is running."
+        old_record = make_behavior(scope="skill:s", record_id=old_id, trigger=trigger)
+        create_record(env.ledger, old_record)
+        write_proposal(
+            env.ledger,
+            old_id,
+            proposal_dict(
+                scope="skill:s",
+                destination="hook",
+                alternates=["skill-md"],
+                **hook_proposal_fields(),
+            ),
+        )
+        stamp_proposal(env.ledger, old_id)
+        verbs.route(env.ledger, old_id, dest="hook", no_push=True)
+
+        from self_learn.hook_compiler import script_name
+
+        script = env.host / "plugins" / "s-plugin" / "hooks" / script_name(
+            old_id, trigger
+        )
+        assert script.is_file()
+
+        slug = hosts_mod.host_slug(env.ledger, env.host, scope_kind="skill")
+        key = compiled.region_key(env.host, script)
+        before_entry = compiled.entry_for(compiled.load_record(env.ledger, slug), key)
+        assert before_entry is not None
+
+        new_id = "lrn-000000d9"
+        new_record = make_behavior(scope="skill:s", record_id=new_id)
+        new_record.set_supersedes(old_id)
+        create_record(env.ledger, new_record)
+        verbs.route(env.ledger, new_id, dest="skill-md", no_push=True)
+
+        assert not script.exists()
+        after_entry = compiled.entry_for(compiled.load_record(env.ledger, slug), key)
+        assert after_entry is None, (
+            "stale script record entry survives route's --supersedes "
+            "completion hook removal"
+        )
+
+    def test_route_direct_supersedes_completion_clears_old_hook_script_record(
+        self, tmp_path
+    ):
+        env = make_env(tmp_path)
+        old_id = "lrn-000000da"
+        trigger = "About to edit .storage while HA is running."
+        old_record = make_behavior(scope="skill:s", record_id=old_id, trigger=trigger)
+        create_record(env.ledger, old_record)
+        write_proposal(
+            env.ledger,
+            old_id,
+            proposal_dict(
+                scope="skill:s",
+                destination="hook",
+                alternates=["skill-md"],
+                **hook_proposal_fields(),
+            ),
+        )
+        stamp_proposal(env.ledger, old_id)
+        verbs.route(env.ledger, old_id, dest="hook", no_push=True)
+
+        from self_learn.hook_compiler import script_name
+
+        script = env.host / "plugins" / "s-plugin" / "hooks" / script_name(
+            old_id, trigger
+        )
+        assert script.is_file()
+
+        slug = hosts_mod.host_slug(env.ledger, env.host, scope_kind="skill")
+        key = compiled.region_key(env.host, script)
+        before_entry = compiled.entry_for(compiled.load_record(env.ledger, slug), key)
+        assert before_entry is not None
+
+        new_record = make_behavior(scope="skill:s", record_id="lrn-000000db")
+        new_record.set_supersedes(old_id)
+        result = verbs.route_direct(
+            env.ledger, new_record, dest="skill-md", no_push=True
+        )
+        assert result is not None
+
+        assert not script.exists()
+        after_entry = compiled.entry_for(compiled.load_record(env.ledger, slug), key)
+        assert after_entry is None, (
+            "stale script record entry survives route_direct's "
+            "--supersedes completion hook removal"
+        )
+
+
+class TestD3RegionResyncCoverageWalker:
+    """D-3 completion's own structural backstop (coordinator's fold-2
+    ruling): "a walker/AST check that every region-writing call site is
+    followed by the re-sync (positive control: the shipped sites)".
+
+    The 8 gap-closing tests above each mutation-verify ONE specific fix
+    site and prove it is load-bearing — that is the strong claim. This
+    class is the complementary, WEAKER-but-broader claim: parse verbs.py
+    fresh (never `inspect`, so a stale `.pyc` cannot lie) and check, for
+    every verb that can write a managed/reference/pointer/script region,
+    that its own body carries a `_resync_region_entry` (or the managed-
+    only convenience wrappers `_write_compile_record_entry` /
+    `_write_retirement_compile_record`) call for every kind it can write
+    — so a FUTURE regression that deletes a resync call without deleting
+    the test file gets caught even if nobody writes a dedicated mutation
+    test for it.
+
+    Two legs:
+
+    (a) kind coverage — per verb, the SET of region kinds reachable
+        through its own write-delegating calls (`_host_phase`,
+        `_retirement_host_phase`, `_apply_target`, `_remove_hook_script`,
+        `compile_reference`, `apply_pointer`, `_write_hook_script`) must
+        be a subset of the SET of kinds it resyncs.
+    (b) multi-leg count — the three known TWO-LEG cases (route's and
+        route_direct's own-hook-write leg + old-hook-retirement leg;
+        recompile's hook-reapply leg + removal-repair leg) must show
+        (at least) two separate `region_kind="script"` resync call
+        sites, not one shared between both branches.
+
+    Positive control: this class asserts the CURRENT shipped shape
+    passes both legs for route, route_direct, supersede, graduate, and
+    recompile — a walker that could not confirm the fixed code is not
+    proof of anything.
+    """
+
+    @staticmethod
+    def _verbs_tree() -> ast.Module:
+        src = (
+            Path(__file__).resolve().parents[1]
+            / "src" / "self_learn" / "verbs.py"
+        ).read_text(encoding="utf-8")
+        return ast.parse(src)
+
+    @staticmethod
+    def _find_func(tree: ast.Module, name: str) -> ast.FunctionDef:
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == name:
+                return node
+        raise AssertionError(f"verbs.py defines no function {name!r}")
+
+    @staticmethod
+    def _callee_name(call: ast.Call) -> str | None:
+        f = call.func
+        if isinstance(f, ast.Attribute):
+            return f.attr
+        if isinstance(f, ast.Name):
+            return f.id
+        return None
+
+    @classmethod
+    def _calls_named(cls, func: ast.FunctionDef, names: tuple[str, ...]) -> list[ast.Call]:
+        return [
+            n for n in ast.walk(func)
+            if isinstance(n, ast.Call) and cls._callee_name(n) in names
+        ]
+
+    @classmethod
+    def _resync_kinds(cls, func: ast.FunctionDef) -> set[str]:
+        """Every region kind `func`'s OWN body resyncs — via a literal
+        `region_kind="..."` keyword on a `_resync_region_entry` call, or
+        implicitly "managed" via the two managed-only convenience
+        wrappers that never took a `region_kind` param at all."""
+        kinds: set[str] = set()
+        for n in ast.walk(func):
+            if not isinstance(n, ast.Call):
+                continue
+            name = cls._callee_name(n)
+            if name == "_resync_region_entry":
+                for kw in n.keywords:
+                    if kw.arg == "region_kind" and isinstance(kw.value, ast.Constant):
+                        kinds.add(kw.value.value)
+            elif name in ("_write_compile_record_entry", "_write_retirement_compile_record"):
+                kinds.add("managed")
+        return kinds
+
+    @classmethod
+    def _resync_calls_of_kind(cls, func: ast.FunctionDef, kind: str) -> list[ast.Call]:
+        hits: list[ast.Call] = []
+        for n in ast.walk(func):
+            if not isinstance(n, ast.Call) or cls._callee_name(n) != "_resync_region_entry":
+                continue
+            for kw in n.keywords:
+                if kw.arg == "region_kind" and isinstance(kw.value, ast.Constant) and kw.value.value == kind:
+                    hits.append(n)
+        return hits
+
+    # -- leg (a): kind coverage, per verb ------------------------------
+
+    @pytest.mark.parametrize(
+        ("verb_name", "delegates_to", "expected_kinds"),
+        [
+            (
+                "route",
+                ("_host_phase", "_retirement_host_phase"),
+                frozenset({"managed", "reference", "pointer", "script"}),
+            ),
+            (
+                "route_direct",
+                ("_host_phase", "_retirement_host_phase"),
+                frozenset({"managed", "reference", "pointer", "script"}),
+            ),
+            (
+                "supersede",
+                ("_host_phase", "_remove_hook_script"),
+                frozenset({"managed", "script"}),
+            ),
+            (
+                "graduate",
+                ("_retirement_host_phase",),
+                frozenset({"managed", "script"}),
+            ),
+            (
+                "recompile",
+                (
+                    "_host_phase", "_apply_target", "compile_reference",
+                    "apply_pointer", "_write_hook_script", "_remove_hook_script",
+                ),
+                frozenset({"managed", "reference", "pointer", "script"}),
+            ),
+        ],
+    )
+    def test_every_write_delegating_verb_resyncs_every_kind_it_can_write(
+        self, verb_name, delegates_to, expected_kinds
+    ):
+        tree = self._verbs_tree()
+        func = self._find_func(tree, verb_name)
+
+        # positive control: the verb must actually call at least one of
+        # its declared write-delegates, or this parametrization no
+        # longer describes the shipped source and the check below would
+        # be vacuous rather than a real coverage proof.
+        called = {name for name in delegates_to if self._calls_named(func, (name,))}
+        assert called, (
+            f"{verb_name}: none of {delegates_to} are called anywhere in "
+            f"its body — this test's delegate list is stale against the "
+            "shipped source, fix the parametrization"
+        )
+
+        resynced = self._resync_kinds(func)
+        missing = expected_kinds - resynced
+        assert not missing, (
+            f"{verb_name}: can write region kind(s) {sorted(missing)} "
+            f"(via {sorted(called)}) but its own body resyncs only "
+            f"{sorted(resynced)} — a `_resync_region_entry(..., "
+            f"region_kind=...)` call for {sorted(missing)} is missing "
+            "(D-3 completion: every verb writing a region kind must "
+            "resync that region's record entry in its own body)"
+        )
+
+    # -- leg (b): multi-leg kinds get one resync call PER leg ----------
+
+    @pytest.mark.parametrize(
+        ("verb_name", "kind", "min_call_sites", "legs"),
+        [
+            ("route", "script", 2, "own hook write + old-hook-retirement (--supersedes)"),
+            ("route_direct", "script", 2, "own hook write + old-hook-retirement (--supersedes)"),
+            ("recompile", "script", 2, "hook re-apply + hook removal-repair"),
+        ],
+    )
+    def test_multi_leg_kinds_have_a_separate_resync_call_per_leg(
+        self, verb_name, kind, min_call_sites, legs
+    ):
+        tree = self._verbs_tree()
+        func = self._find_func(tree, verb_name)
+        calls = self._resync_calls_of_kind(func, kind)
+        assert len(calls) >= min_call_sites, (
+            f"{verb_name}: expected at least {min_call_sites} separate "
+            f"`_resync_region_entry(..., region_kind={kind!r})` call "
+            f"sites — one per write leg ({legs}) — but found only "
+            f"{len(calls)} at line(s) {[c.lineno for c in calls]}"
+        )
+
+
 class TestGate4BrokenPlainHostListed:
     """GATE4: `host list` shows a broken PLAIN entry marked broken — the
     SAME lenient-list contract `test_hosting_fixes.py::TestBROKEN::
