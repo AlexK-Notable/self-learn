@@ -540,7 +540,7 @@ def _apply_failure_env(kind: str, param: str, *, scratch: Path, monkeypatch) -> 
 #: `test_u_sdka.py::_AR1_SANCTIONED_PIN_LINES`'s own D-1 paragraph),
 #: still a member of `_SU4B_DIFF_EXEMPT`.
 _ARMOR_SHAS = {
-    "plugins/self-learn/cli/tests/conftest.py": "0d3f3242c589808602fe7b10ce520a5018d9bb46195c9b4b2eac3a84a5af856a",  # U-hostmode gate r1 fold, D-1: lock-file litter-detection leg appended
+    "plugins/self-learn/cli/tests/conftest.py": "824570c9e7fca02562bb917abc59d8a348992671330c60c3b6567fcf0ffbffe4",  # U-hostmode gate r2 fold, D-1 (2026-08-28): one sentence appended to the litter guard's docstring naming its pytest-only scope and the XDG_CACHE_HOME ad-hoc-script rule -- only the hash moves; still a pure docstring append, still a member of `_SU4B_DIFF_EXEMPT`
     "plugins/self-learn/cli/tests/backends.py": "a2ba2d74f117a230740d10e3c9fa67bd30f751ce80ec59667c9136557a906dde",
     # merge 2026-08-28 (u-hostmode x master): only master changed these
     # four keys since base (1e77ff4) -- ours were byte-unchanged there,
@@ -554,7 +554,11 @@ _ARMOR_SHAS = {
     # sha256-hashing the ACTUAL merged tests/test_u_fake.py bytes after
     # both edits (and the DS1 re-derivation the merge itself required)
     # were combined.
-    "plugins/self-learn/cli/tests/test_u_fake.py": "16497e769bd132e47e3be69e470af34b9b2e1ecf75261d9ced6d11081eb25e03",
+    # U-hostmode gate r2 fold, N-4 (2026-08-28): comment-only fix -- the
+    # test_route_cli.py entry's own comment pointed at a placeholder name
+    # (PLACEHOLDER_DS1_ROUTE_CLI) that never existed as a real symbol;
+    # pure comment text, the (37, sha) pin value itself is unchanged.
+    "plugins/self-learn/cli/tests/test_u_fake.py": "9dd9f0d28a2f95c2089e18968efafe1455346291c11e3cd735d031689780c73b",
     "plugins/self-learn/cli/tests/test_worker.py": "53287efe8e8f58b0fcda9741f68ca8a0b9b437ccc82a97b8b8cb89784d4bcd7a",  # U-ancestry, 2026-08-28: S-52 (SCAN1) supersedes u-marker §3 criterion A; the four canon_excerpt tests are rewritten to the whole-file contract and criterion B is re-homed as SCAN8
     "plugins/self-learn/cli/tests/test_repair.py": "266d2a7b89c741b2e801f8431a31ef43a7c316ae8e7926beb0c03b6293e497c5",  # FW-117 (2026-08-28): B9/D5 rebase, see the dated paragraph below
 }

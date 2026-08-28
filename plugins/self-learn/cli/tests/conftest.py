@@ -416,7 +416,18 @@ def _litter_namespace_guard():
     has for directories: THIS interpreter calling `_flock_lock` on a
     real-cache-rooted lock path is 100% this session's own doing, no
     digest-matching needed, so it is asserted on, hard, exactly like
-    `_INPROCESS_HITS` above."""
+    `_INPROCESS_HITS` above.
+
+    D-1 (code gate r2 fold), scope: this guard runs only INSIDE a
+    pytest session (this fixture) -- an ad-hoc script run outside
+    pytest (a dev-loop probe against the real ~/.cache/self-learn,
+    never through `tmp_path`/`XDG_CACHE_HOME`) is invisible to it and
+    can still litter `host-*.commit.lock` files the guard has no
+    chance to catch or report; five such files, dated 06:09-06:20 on
+    2026-08-28, were the r1 fold's own B-2 probes and were deleted by
+    hand as part of this fold. From now on, every ad-hoc script sets
+    `XDG_CACHE_HOME` to a temp dir before importing anything from this
+    package."""
     orig_mkdir, orig_popen_init, orig_flock_lock = _install_litter_guards()
     try:
         before = set(os.listdir(_REAL_CACHE_ROOT))

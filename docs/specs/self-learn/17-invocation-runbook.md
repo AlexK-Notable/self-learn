@@ -842,14 +842,35 @@ untouched by `host remove`, only the compile gate closes.
 
 **`recompile --adopt`, and when to reach for it.** When the compile
 record's region verdict for a target reads `edited` (a hand edit inside
-the managed markers, on either mode) or `unknown provenance` (a plain
-host's target already carries content self-learn has no record of yet),
-the next route or recompile against that target REFUSES, naming this
-repair: `self-learn recompile --adopt <target>` re-records the on-disk
-region as authoritative — it changes no bytes on disk, only the ledger's
-own record of what is "clean" going forward. There is no `--force`
-anywhere in this path, by design: adopting is the one human decision the
-refusal names, never a way to skip it.
+the managed markers, on either mode) the next route or recompile against
+that target REFUSES, naming this repair: `self-learn recompile --adopt
+<target>` re-records the on-disk region as authoritative — it changes no
+bytes on disk, only the ledger's own record of what is "clean" going
+forward. There is no `--force` anywhere in this path, by design:
+adopting is the one human decision the refusal names, never a way to
+skip it.
+
+`unknown provenance` (a plain host's target already carries content with
+no compile record yet) is now split in two, not a blanket refusal: when
+the on-disk region is byte-for-byte what self-learn's own compiler would
+currently render for that target — the ordinary shape of every host
+routed to before this unit's compile records existed — the route or
+recompile **adopts it automatically**: one notice line to stderr naming
+the target, the record entry gets written by that same call, and the
+write proceeds with no operator action at all. Only when the bytes
+genuinely diverge (real foreign content, not merely a missing receipt)
+does it still refuse and name `recompile --adopt <target>`, exactly as
+above.
+
+**Migration note, first contact after this unit lands.** Every host
+routed to before compile records existed has `unknown provenance` on its
+FIRST post-upgrade route or recompile — there is no separate migration
+step to run. If the on-disk content is still exactly what self-learn
+last compiled (the normal case), that first call self-heals silently
+(the one stderr notice line above) and every later call against that
+target reads `clean`. Only a host whose managed section was hand-edited
+sometime between then and now needs the human `recompile --adopt` — the
+refusal message names it, so there is nothing to pre-empt or remember.
 
 **`--selftest` and `recompile` work identically on both modes** — this
 is the first thing an operator will assume they do not, and it is worth

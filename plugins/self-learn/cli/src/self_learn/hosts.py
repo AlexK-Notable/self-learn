@@ -83,6 +83,7 @@ __all__ = [
     "host_remove",
     "host_path_problem",
     "host_slug",
+    "host_subject_name",
     "hosts_path",
     "is_project_host",
     "is_repo_root",
@@ -165,6 +166,34 @@ def host_slug(home: Path | str, path: Path | str, *, scope_kind: str | None = No
     if scope_kind == "user":
         return "user"
     return slug_for(path)
+
+
+def host_subject_name(
+    home: Path | str, path: Path | str, *, scope_kind: str | None = None
+) -> str:
+    """N-8 (code gate r2 fold): a SHORT identifier for a host, safe to
+    embed in a ledger COMMIT SUBJECT — never :func:`slug_for`'s full
+    shape (the resolved path with every ``/`` replaced by ``-``), which
+    writes the operator's whole home-directory structure verbatim into
+    every standalone resync commit's subject line the moment one fires.
+    hosts.yaml carries no separate per-host name today (a project entry
+    is keyed by its own resolved path — see :class:`Hosts`), so this
+    substitutes the path's OWN basename for that missing name: still
+    greppable by eye, and typically far shorter than the full slug.
+
+    ``"user"`` for the user-scope host (never registered — §4.8, USER3),
+    matching :func:`host_slug`. Otherwise ``<basename>-<digest>`` — the
+    SAME short digest :func:`slug_for` already computes, kept for
+    collision-safety (two different repos can share a basename) — or the
+    bare digest alone on the one degenerate case where the resolved path
+    has no basename at all (a root mount). ``home`` is accepted for
+    signature symmetry with :func:`host_slug`/:func:`host_mode`; unused."""
+    del home
+    if scope_kind == "user":
+        return "user"
+    resolved = Path(path).resolve()
+    digest = hashlib.sha256(str(resolved).encode("utf-8")).hexdigest()[:8]
+    return f"{resolved.name}-{digest}" if resolved.name else digest
 
 
 def hosts_path(home: Path | str) -> Path:
@@ -457,7 +486,12 @@ def _init_for_registration(path: Path | str) -> None:
 
 
 def host_path_problem(
-    home: Path | str, path: Path | str, kind: str, *, mode: str | None = None
+    home: Path | str,
+    path: Path | str,
+    kind: str,
+    *,
+    mode: str | None = None,
+    check_marker: bool = True,
 ) -> str | None:
     """The ONE host-path predicate (audit 2026-07-16 MAJOR 6): a host path
     must exist on disk, be SOUND for its registered mode, and MUST NOT be
@@ -472,11 +506,12 @@ def host_path_problem(
     hosts.yaml naming a plain path with no marker is refused here, before
     any commit (GATE2), exactly as a typo'd git entry always was.
 
-    Used at registration (:func:`host_add`, for GIT-mode entries only —
-    see its own validation for plain, which cannot consult THIS registry
-    for a mode not yet written) AND at every canon-writing gate
-    (``verbs._resolve_target``) — hosts.yaml is data, and data that only
-    gets checked when it is written is data nobody checks.
+    Used at registration (:func:`host_add`, BOTH modes — N-2, code gate
+    r2 fold: `mode=` plus `check_marker=` below closes the LAST reason
+    this function "cannot be reused" for that leg's own validation) AND
+    at every canon-writing gate (``verbs._resolve_target``) — hosts.yaml
+    is data, and data that only gets checked when it is written is data
+    nobody checks.
 
     ``mode`` (M-12, code gate r1 fold): the CARRIED mode, when a caller
     already knows it and ``path`` is not (yet, or ever going to be)
@@ -486,7 +521,16 @@ def host_path_problem(
     matter what the OLD entry's mode was, and a plain host could never
     be rebound to a repo-less directory. ``None`` (the default) keeps
     every other caller's behaviour byte-identical: look the mode up in
-    the registry, exactly as before."""
+    the registry, exactly as before.
+
+    ``check_marker`` (N-2, code gate r2 fold): ``False`` skips the PLAIN-
+    mode marker-presence check — :func:`host_add`'s own case for a NEW
+    plain registration, whose marker does not exist yet BY DESIGN (this
+    call runs BEFORE :func:`_write_host_marker`, not after; demanding the
+    marker here would refuse every first-time plain registration).
+    ``True`` (the default) is every other caller's byte-identical
+    behaviour — route-time gates and an already-registered host's
+    idempotent re-add (M-4) both need the real check."""
     target = Path(path).expanduser()
     label = f"{kind} host {target}"
     if not target.is_dir():
@@ -498,7 +542,7 @@ def host_path_problem(
     target = target.resolve()
     resolved_mode = mode if mode is not None else host_mode(home, target)
     if resolved_mode == "plain":
-        if not (target / MARKER_FILENAME).is_file():
+        if check_marker and not (target / MARKER_FILENAME).is_file():
             return (
                 f"{label} is registered plain but carries no "
                 f"{MARKER_FILENAME} marker — a hand-edited hosts.yaml "
@@ -583,11 +627,14 @@ def host_add(
     byte-unchanged for ``mode == "git"``.
 
     ``mode`` (U-hostmode MODE4): ``"plain"`` skips the git-repo
-    requirement entirely and writes :data:`MARKER_FILENAME` instead —
-    :func:`host_path_problem` cannot be reused for this leg's OWN
-    validation because hosts.yaml does not carry the entry yet (its
-    ``host_mode`` lookup would read "unregistered ⇒ git", the wrong
-    answer for a plain registration in progress).
+    requirement entirely and writes :data:`MARKER_FILENAME` instead. Its
+    soundness check DOES reuse :func:`host_path_problem` now (N-2, code
+    gate r2 fold: passing ``mode=`` explicitly sidesteps hosts.yaml not
+    carrying the entry yet — its ``host_mode`` lookup would otherwise
+    read "unregistered ⇒ git", the wrong answer mid-registration — and
+    ``check_marker=False`` skips the one check that genuinely cannot fire
+    here: a NEW plain registration's marker does not exist until AFTER
+    this validation passes).
 
     Lock discipline (audit 2026-07-16 round 7 BLOCKER 1): the lock opens
     BEFORE :func:`save_hosts`, not at the commit. hosts.yaml is TRACKED,
@@ -646,22 +693,34 @@ def host_add(
             "change it (MODE is set once; there is no in-place flip)"
         )
 
-    if mode == "git" and not _is_git_repo(target):
-        raise HostsError(
-            f"{kind} host {target} is not a git repo — canon hosts must "
-            "be committable in git mode (doc 13 §4 two-phase routing; or "
-            "register it `--mode plain`); fix hosts.yaml via "
-            "`self-learn host add` / `host rebind`"
-        )
-    if Path(home).expanduser().resolve() == target:
-        raise HostsError(
-            f"{kind} host {target} IS the ledger home — the ledger is the "
-            "source of truth, never a canon host (doc 13 §2); re-point it "
-            "with `self-learn host rebind` or remove the entry"
-        )
+    # N-2 (code gate r2 fold): the git-repo-soundness and ledger-home
+    # checks are exactly `host_path_problem`'s own (`check_marker=False`
+    # — a NEW plain registration's marker does not exist yet BY DESIGN,
+    # see its own docstring); MUST run here, AFTER the mode-flip check
+    # above (M-11's pinned ordering — a mode flip must never be masked
+    # by the git-repo check firing first), never before it. Existence
+    # was already confirmed at the top of this function; `target` is
+    # already resolved, so this re-checks it (harmlessly) on the way to
+    # the two checks that matter here.
+    problem = host_path_problem(home, target, kind, mode=mode, check_marker=False)
+    if problem is not None:
+        raise HostsError(problem)
 
     if existing_mode is not None:
-        return hosts  # already registered, same mode — nothing to do
+        # U-hostmode M-4 (code gate r2 fold): idempotent re-registration
+        # of an ALREADY-registered same-mode plain host repairs a
+        # missing marker instead of silently returning "nothing to do".
+        # The marker is the artifact THIS registration owns (§4.4's
+        # ".git" analogue), and `host_path_problem`'s own refusal
+        # (hosts.py, "carries no {MARKER_FILENAME} marker") names this
+        # EXACT command as the repair. Before this fix, running the
+        # named repair returned rc 0 with a success line and left the
+        # host broken (gate r2 M-4's probe: "MARKER RESTORED BY THE
+        # NAMED REPAIR: False") — the named repair must repair.
+        if mode == "plain" and not (target / MARKER_FILENAME).is_file():
+            _write_host_marker(home, target)
+            print(f"host add: marker restored at {target / MARKER_FILENAME}")
+        return hosts  # already registered, same mode — nothing else to do
 
     if mode == "plain":
         _write_host_marker(home, target)

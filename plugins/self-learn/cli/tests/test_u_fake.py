@@ -347,8 +347,11 @@ _DS1_EXPECTED = {
     # (ours: 39->38 for the REC9 rewrite of test_teach_route_dest_end_to_end;
     # master's: 39->38 for U-corrob DEN3's rewrite of
     # test_teach_route_bare_analyst_threads_project_path_at_project_scope) --
-    # re-derived from the MERGED bytes, not picked from either side; see
-    # PLACEHOLDER_DS1_ROUTE_CLI below, filled in by the regeneration script.
+    # re-derived from the MERGED bytes, not picked from either side -- the
+    # (37, sha) pair below IS that re-derived value (N-4, code gate r2
+    # fold: the prior comment pointed at a placeholder name,
+    # PLACEHOLDER_DS1_ROUTE_CLI, that never existed as an actual symbol
+    # anywhere in this file).
     "test_route_cli.py": (37, "6bfa36999a53ebd2137279aba47049e48f4387cfb05d89db3121cb2611d066fd"),
     "test_composer.py": (40, "479a3caf84e427a86df6eb17ecefa2ede57a85185df79ff43defe0c9e5f931ec"),
 }

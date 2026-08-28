@@ -21,7 +21,7 @@ contract.)*
 
 Authored at `50fa815` in the throwaway worktree
 `.claude/worktrees/u-hostmode-spec` (branch `u-hostmode-spec`, based on
-`master` = `50fa815`). Uncommitted. Spec only.
+`master` = `50fa815`).
 
 **Mandate.** User ruling 2026-08-26 16:20, verbatim:
 
@@ -894,6 +894,29 @@ edits table above are NOT additions — they are literal-assertion and
 helper-function EDITS to pre-existing tests, which is why it is carved
 here rather than left to that clause.
 
+**Leg 5 — four more files, forced by two of this unit's OWN code-gate
+folds rather than by anything in the census** *(CARVED-r9, gate r2-M2:
+r1's own fold (`b652992`) already touched all four of these — §9's list
+and `S3`'s whitelist were never widened to admit them, which is what
+gate r2 caught)*:
+
+| file | forcing criterion | what broke / what changed |
+|---|---|---|
+| `cli/tests/conftest.py` | D-1's litter guard (r1: widened to hard-fail on an in-process host-lock file; r2: docstring paragraph documenting the XDG_CACHE_HOME rule for ad-hoc scripts) | the litter-guard fixture's own docstring/body — no test bodies outside it |
+| `ui/tests/conftest.py` | D-1, same shape, mirrored — this file has no armor pin so no re-pin follows from it | the matching litter-guard fixture's docstring |
+| `cli/tests/test_u_sdka.py` | D-1, downstream — `test_hy5_numstat_bounds_hold`'s pinned `(added, deleted)` tuple for `cli/tests/conftest.py` is a byte-count observation of that file, so every D-1 edit to `conftest.py` forces a re-measured bound here (r1 and r2 both) | `bounds["plugins/self-learn/cli/tests/conftest.py"]`, re-measured via `git diff --numstat` against the file's actual pre-fold state, never guessed |
+| `cli/tests/test_context_budget.py` | `B-1` (r1 only — untouched this r2 fold) — `compiled.refuses("unknown", "plain")` went `True`, and `_sync_user_claude_md`'s fixture hand-wrote the managed region into user scope with no matching compile-record entry, landing exactly in the state `B-1` now refuses | the fixture writes the matching record entry, mirroring what a real apply step leaves behind (same `write_entry` call `verbs._write_compile_record_entry` makes) |
+
+None of the four mention chezmoi and none are in the 20-file leg-1/2
+census or leg 4's six files — they were found only by running the full
+suite after B-1/D-1 landed, which is why leg 4's method (an AST census
+over an `[A]` behavior change) could not have found them either: leg 4's
+forcing criteria are single, dated code changes; leg 5's are litter-guard
+*maintenance* (D-1) and a fixture that assumed a state B-1 later closed.
+§9's Phase-1 file list and `S3`'s positive-control whitelist are both
+widened to admit these four, so `S3`'s own membership check (§5.12)
+stays a true statement about what this unit has actually touched.
+
 
 ### 2.11 The lock-invariant walker, and why it cannot be this unit's instrument
 
@@ -1392,7 +1415,7 @@ hash is computable at ledger-commit time, before the host phase runs.
 | `paths:` frontmatter key | `compilers.apply_paths_frontmatter` | **NO** — it already has its own agreement predicate, `compilers.paths_frontmatter_drift`. §8 OUT-6 |
 | new-skill scaffold + `marketplace.json` | whole files, created once | **NO** — §8 OUT-7 |
 
-### 4.5a THE PREDICATE — six cases, and why `based_on_sha256` is the observed hash
+### 4.5a THE PREDICATE — seven cases, and why `based_on_sha256` is the observed hash
 
 *(AMENDED-r3, gate r2-B4.)*
 
@@ -1431,7 +1454,8 @@ verdicts **stale**, `recompile` alone always repairs, and H-2 holds.
 | entry in record | region on disk | verdict | `route` / resolution verbs | `recompile` |
 |---|---|---|---|---|
 | absent | absent | **fresh** | proceed; record written with `based_on: null` | proceed |
-| absent | **present** | **unknown provenance** | **REFUSE** — the H-3-class hazard | **REFUSE**; repair is `recompile --adopt` |
+| absent | **present**, bytes == the compiler's expected render from the ledger's current records | **unknown provenance — self-adopt** *(NEW in r9, gate r2-M3)* | **ADOPT automatically**: print one notice line naming the target, then proceed exactly as `fresh` — the record entry is written in the SAME ledger commit as the in-flight route/recompile, no separate step | same — adopt and proceed |
+| absent | **present**, bytes differ from that expected render | **unknown provenance — foreign** | **REFUSE** — the H-3-class hazard | **REFUSE**; repair is `recompile --adopt`, named in the refusal text |
 | present | hash == `sha256` | **clean** | proceed | no-op |
 | present | region absent | **missing** | proceed (drift; this write lands it), recording `based_on: null` | proceed; repairs |
 | present | hash == `based_on_sha256` | **stale** — our own apply did not land, N times running | proceed (drift) | proceed; repairs |
@@ -1441,6 +1465,24 @@ verdicts **stale**, `recompile` alone always repairs, and H-2 holds.
 region — the `fresh` and `missing` rows — and otherwise it is the observed
 hash.** *(ADDED-r4, gate r3-N1: r3 gave `null` for `fresh` only, leaving
 the field undefined on the write that repairs a `missing` region.)*
+
+**The self-adopt row, and why it is safe** *(NEW in r9, gate r2-M3)*.
+The "unknown provenance" verdict was previously ONE row that always
+refused — correct for genuinely foreign content, wrong for the far more
+common case: a host that carries self-learn's own prior output with no
+ledger receipt for it, because it was written before this unit existed,
+or because its compile record was lost. `_expected_managed_region(home,
+spec)` renders what the CURRENT ledger records would produce for this
+exact target — the same render the write path itself would produce — and
+the comparison runs at PRE-FLIGHT, before the in-flight route's own
+record is marked "routed", so it cannot compare a target against itself.
+A byte-exact match is proof by construction that the on-disk content is
+self-learn's own compiled output: nothing else in the codebase produces
+that exact byte string. Only a mismatch is still treated as foreign, and
+only a mismatch still refuses. This is what makes every pre-existing
+host self-migrate on its first post-upgrade route with no separate
+migration step (§4.13) while the H-3 protection against genuinely
+foreign content is unchanged for the row that still refuses.
 
 `recompile --adopt [<target>]` is a FLAG on the existing verb, not a new
 verb — it re-records the on-disk region as authoritative, the one-command
@@ -1846,11 +1888,21 @@ response is a one-line note at registration time, not a gate (`PLAIN7`).
 
 ### 4.13 Migration and rollback
 
-**Migration: none.** Absent `mode` reads as `git` (`MODE1`),
-`save_hosts` omits the default (`MODE2`), the nine registered hosts keep
-behaving byte-for-byte (`UN1`). Nothing in `~/.self-learn` is rewritten by
-the build. A user who wants an existing host to become plain does
-`host remove` + `host add --mode plain` (R-f).
+**Migration: none required, and none by hand.** Absent `mode` reads as
+`git` (`MODE1`), `save_hosts` omits the default (`MODE2`), the nine
+registered hosts keep behaving byte-for-byte (`UN1`). Nothing in
+`~/.self-learn` is rewritten by the build itself. A user who wants an
+existing host to become plain does `host remove` + `host add --mode
+plain` (R-f). **For every host that already carries self-learn's own
+compiled output with no compile-record entry — the state every
+pre-existing install is in the moment this unit lands, since compile
+records did not exist before it — §4.5a's self-adopt row (*NEW in r9,
+gate r2-M3*) means the FIRST route or `recompile` against that target
+writes the missing record entry automatically, with one printed notice,
+and proceeds; there is no separate migration step to run.** `self-learn
+doctor`'s drift summary (`selfcheck._check_drift`) names the count of
+targets still missing a record so an operator can see it without waiting
+for a route to touch every one.
 
 **Rollback, corrected** *(CORRECTED-r2, gate D-5; the gate ran the shipped
 parser against four fixtures)*: reverting this unit does **not** make a
@@ -1905,7 +1957,7 @@ were `[B]`.)*
   makes the Phase-2 deletion a removal of dead code, so it is filed with
   its group but gated with Phase 1.)
 
-**93 criteria — 81 [A], 12 [B] — across 14 groups. 59 mutations.**
+**94 criteria — 82 [A], 12 [B] — across 14 groups. 59 mutations. *(r9: MODE6a added, gate r2-M4.)***
 
 #### Can Phase 1 land alone? — re-run over every [A] criterion
 
@@ -1964,6 +2016,17 @@ both suites green.
   *different* `--mode` exits **64**, names the repair, and does **not**
   rewrite `hosts.yaml` (file sha256 unchanged) or add a ledger commit
   (`HEAD` unchanged). **Mutation M6.**
+- **MODE6a** **[A]** *(NEW in r9, gate r2-M4.)* `host add` on an
+  already-registered **plain**-mode host with the **SAME** `--mode`
+  re-asserts the `.self-learn-host` marker when it is missing -- printing
+  "marker restored" -- instead of returning early with the marker still
+  absent. The named repair in `GATE2`'s and `MODE6`'s refusal text
+  (`host remove` + `host add --mode`) must actually repair when run in
+  the already-registered state; before this it silently no-op'd.
+  **Check:** delete the marker file on an already-registered plain host,
+  run `host add --mode plain` again, assert the marker file exists and rc
+  is 0; a control run with the marker already present asserts the repair
+  line is NOT printed (a true no-op, not a rewrite every time).
 - **MODE7** **[A]** Every existing consumer of `Hosts.skills_root` /
   `Hosts.projects` compiles and passes unedited — including
   `hosts.canon_read_roots`, `ui/…/engine/charter.py:95`, and
@@ -2024,13 +2087,19 @@ both suites green.
 - **REC4** **[A]** The record is written for **git**-mode hosts as well as
   plain. **Check:** two routes (git host, plain host) each leave an entry.
   *(User scope joins this in Phase 2 — `USER5`.)* **Mutation M13.**
-- **REC5** **[A]** **The six-case predicate of §4.5 is implemented
-  exactly.** **Check:** six fixtures, one per row, asserting the verdict
+- **REC5** **[A]** **The seven-case predicate of §4.5a is implemented
+  exactly.** **Check:** seven fixtures, one per row, asserting the verdict
   string and, for the two refusing rows, exit 1 plus a byte-unchanged
   region on disk. Named explicitly: `entry absent + region absent` →
   proceeds (**this is `PLAIN2`'s first route into a fresh host, and r1's
-  REC5 wrongly refused it**); `entry absent + region present` → refuses.
-  **Mutations M14, M15, M16.**
+  REC5 wrongly refused it**); `entry absent + region present, bytes ==
+  the compiler's expected render` → **self-adopts and proceeds** (*NEW in
+  r9, gate r2-M3* — one printed notice, the record entry written in the
+  same ledger commit); `entry absent + region present, bytes differ` →
+  still refuses. **Mutations M14, M15, M16.** **Self-adopt mutation:**
+  disabling the byte-match branch turns the self-adopt fixture RED while
+  leaving the still-refuses fixture GREEN, proving the two sub-cases are
+  independently reddenable (gate r2-M3's own probe).
 - **REC6** **[A]** `based_on_sha256` distinguishes **stale** from
   **edited**. **Check:** write, then restore the region to the bytes the
   write was based on, assert `stale` and that `recompile` proceeds; then
@@ -2068,12 +2137,25 @@ both suites green.
   `route_direct:3295` and **`graduate:4055`**; (c) the `host_lock` `with`
   **precedes the first mutating call** (`resolve_record` / `Record.write`)
   in the enclosing `_ledger_write` block; (d) the push call is lexically
-  OUTSIDE both. **Mutation M48:** compute the expectation before taking the
-  host lock → red. **Mutation M57:** move the lock from `_host_phase` to
-  its callers → `supersede`'s and `graduate`'s host-write tests redden.
-  **Mutation M58:** acquire the host lock AFTER `resolve_record` → a
-  host-lock timeout leaves the record moved while dispatch returns exit 6
-  → red.
+  OUTSIDE both; **(e) the ledger lock is acquired BEFORE the host lock, on
+  every host-writing verb** (*NEW in r9, gate r2-M1* — `supersede` and
+  `graduate` open `with _ledger_write(home), <host lock>:` as ONE combined
+  statement, ledger item first, matching `route`'s and `route_direct`'s
+  shape; a fifth check instruments the acquisition ORDER itself, not just
+  presence, by patching both lock context managers to append to a shared
+  list and asserting ledger-before-host for every leg). **Mutation M48:**
+  compute the expectation before taking the host lock → red. **Mutation
+  M57:** move the lock from `_host_phase` to its callers →
+  `supersede`'s and `graduate`'s host-write tests redden. **Mutation
+  M58:** acquire the host lock AFTER `resolve_record` → a host-lock
+  timeout leaves the record moved while dispatch returns exit 6 → red.
+  **Mutation, leg (e):** swap `with _ledger_write(home), <host lock>:` to
+  `with <host lock>, _ledger_write(home):` in one verb → red, that verb
+  only. **Runtime probe:** two verbs writing the same host and ledger
+  concurrently (a holder subprocess plus the foreground call, with
+  `gitops.COMMIT_LOCK_TIMEOUT` patched low) complete without either
+  hitting `COMMIT_LOCK_TIMEOUT` — proof the fixed order does not
+  deadlock two real OS processes against each other.
 - **REC7** **[A]** The record covers exactly the four region kinds
   `managed`, `pointer`, `reference`, `script`. **Check:** **three routes
   covering the four region kinds** *(CORRECTED-r2, gate D-11)* —
@@ -2106,12 +2188,19 @@ both suites green.
   `hosts.yaml` naming a plain path **without** `.self-learn-host` is
   refused in PRE-FLIGHT — no canon file created, ledger `HEAD` unchanged.
   **Mutation M22.**
-- **GATE3** **[A]** `host_path_problem` keeps its
-  `(home, path, kind) -> str | None` signature and its three existing
-  refusal texts; `test_host_add_refuses_the_ledger_home`,
+- **GATE3** **[A]** `host_path_problem` keeps its three existing
+  refusal TEXTS byte-identical; `test_host_add_refuses_the_ledger_home`,
   `test_host_pointing_at_the_ledger_itself_is_refused`,
   `test_refusal_names_rebind` pass unedited, plus plain-mode
-  parametrizations of the first two.
+  parametrizations of the first two. *(NARROWED in r9, gate r2-N2: r1's
+  claim that the signature itself — `(home, path, kind) -> str | None` —
+  stays fixed is withdrawn. `host_path_problem` gains keyword-only
+  `mode: str | None = None` and `check_marker: bool = True` so `host_add`
+  can finally reuse it for the git-repo and ledger-home checks instead of
+  duplicating their refusal text — the "cannot be reused" justification
+  r1 gave for the duplication no longer holds. Every existing caller,
+  keyword-free, is unaffected by construction; only the TEXTS were ever
+  the load-bearing claim.)*
 - **GATE4** **[A]** `host list` shows a broken PLAIN entry marked broken
   (the lenient-list contract
   `test_host_list_shows_a_broken_entry_marked_broken` pins for git).
@@ -2504,10 +2593,13 @@ are not renumbered. CORRECTED-r4, gate r3-D5.)*
   `cli/tests/test_a2_rules_local.py` — an empty result means the pathspec
   did not resolve, not that nothing was touched — and **(ii)** name no
   file absent from the §2.10b census, the two new files,
-  `test_lock_invariant.py` (`PLAIN13`), **and the six §2.10b leg 4 files**
+  `test_lock_invariant.py` (`PLAIN13`), **the six §2.10b leg 4 files**
   (`CARVED-r7`: `test_provider.py`, `test_round3_fixes.py`,
   `test_route_cli.py`, `test_u_fake.py`, `test_worker_contract.py`,
-  `ui/tests/test_routes.py`). **Order matters: (i) gates (ii).**
+  `ui/tests/test_routes.py`), **and the four §2.10b leg 5 files**
+  (`CARVED-r9`, gate r2-M2: `cli/tests/conftest.py`,
+  `ui/tests/conftest.py`, `cli/tests/test_u_sdka.py`,
+  `cli/tests/test_context_budget.py`). **Order matters: (i) gates (ii).**
 - **S4** **[B]** Phase 2: **both** suites green — CLI collected
   ≥ `2417 + (new − deleted)` and UI collected ≥ `1268 + (new − deleted)`,
   each delta reconciled by `S5`; the only failure is the known
@@ -2775,7 +2867,10 @@ is on disk is 7.
 reads and cannot survive the rename otherwise)* · the new compile-record
 module · `ui/src/self_learn_ui/routes.py` ·
 `ui/templates/partials/host_add_bar.html` ·
-`cli/tests/{test_hostmode,test_compile_record}.py` (new) · **the §2.10b
+`cli/tests/test_hostmode.py` (new — CORRECTED-r9, gate r2 N-5: r7 also
+named `test_compile_record.py` as a second new file; it was never
+created, every test lives in `test_hostmode.py`, now 4000+ lines) ·
+**the §2.10b
 census files** — `test_a2_rules_local.py`, `test_u_glob.py`,
 `test_xscope_enumeration.py`, `test_pointer.py`, `test_verbs.py`,
 `test_commit_drift.py`, `test_resolution_evidence.py`, plus the nine
@@ -2791,6 +2886,10 @@ touching any existing test body)* · `cli/tests/test_lock_invariant.py`
 **`test_provider.py`, `test_round3_fixes.py`, `test_route_cli.py`,
 `test_u_fake.py`, `test_worker_contract.py`** (`CARVED-r7`, §2.10b leg 4 —
 each forced by an `[A]` behavior change outside the chezmoi census) ·
+**`cli/tests/conftest.py`, `ui/tests/conftest.py`, `test_u_sdka.py`,
+`test_context_budget.py`** (`CARVED-r9`, gate r2-M2, §2.10b leg 5 —
+forced by this unit's own D-1/B-1 code-gate folds, not by anything in
+the census) ·
 `ui/tests/` (additions only, **plus `test_routes.py`'s `CARVED-r7`
 edits**, §2.10b leg 4) · `docs/specs/self-learn/{03,13,14,17,09-surface-spec}`
 *(`09-surface-spec.md` ADDED-r7 — `DOC5`'s stale-quote fix, one line)* ·
@@ -3325,3 +3424,70 @@ build.)*
   updated to match (assertions unchanged).
   **Counts unchanged: two phases, 93 criteria (81 [A], 12 [B]) across 14
   groups, 59 mutations, 10 measured anchors.**
+- **r9** — 2026-08-28, folded in place during the Phase 1 code gate r2
+  fold (0 blockers, 4 majors, 8 nits, 3 defers — z-note
+  `DdsHWMKAs3rCSwQ9knYnM`; both r1 blockers and 11 of r1's 12 majors
+  verified fixed).
+  **M-1**: `supersede` and `graduate` now open
+  `with _ledger_write(home), <host lock>:` as ONE combined statement,
+  ledger item first — matching `route`'s and `route_direct`'s shape --
+  instead of nesting the host lock inside a separate ledger-write block
+  in the opposite order. `REC12` gains leg (e), instrumenting the
+  acquisition ORDER itself (not just presence) across all five
+  host-writing verbs, plus a real two-process runtime probe proving the
+  fixed order does not deadlock (`gitops.COMMIT_LOCK_TIMEOUT` patched low
+  for the probe only). **§4.5a and `REC5` gain a seventh
+  case** (`M-3`): `entry absent + region present` splits on whether the
+  on-disk bytes match `_expected_managed_region`'s current render --
+  a match self-adopts automatically (one printed notice, record entry
+  written in the same commit as the in-flight route); a mismatch still
+  refuses, naming `recompile --adopt`. This is what makes every
+  pre-existing host migrate itself on its first post-upgrade route with
+  no separate migration step — §4.13 and runbook 17 both gain the
+  paragraph saying so, and `selfcheck`'s drift summary gains a count of
+  targets still missing a record. **`MODE6a` is new** (`M-4`): the named
+  repair (`host remove` + `host add --mode`) must actually repair --
+  `host add --mode plain` on an already-registered plain host now
+  re-asserts a missing `.self-learn-host` marker instead of returning
+  early with it still absent. **`GATE3` narrowed** (`N-2`): only the
+  three refusal TEXTS are pinned byte-identical now, not the function
+  signature — `host_path_problem` gains keyword-only `mode` and
+  `check_marker` params so `host_add` can finally reuse it for the
+  git-repo and ledger-home checks instead of duplicating their text.
+  **`compiled.refuses`'s docstring rewritten** as one statement of the
+  now-seven-row table (`N-1`). **§2.10b gains leg 5** (`M-2`, this fold's
+  own finding): `cli/tests/conftest.py`, `ui/tests/conftest.py`,
+  `cli/tests/test_u_sdka.py` and `cli/tests/test_context_budget.py` --
+  all four touched by r1's own D-1/B-1 folds, none admitted by section 9's
+  file list or `S3`'s positive-control whitelist until now. Section 9 and `S3`
+  are both widened to admit them, so `S3`'s own membership check is a
+  true statement again. Also folded: `recompile` batches every automatic
+  resync write into ONE commit per invocation instead of one commit per
+  changed target (`N-6`); `_resync_region_entry` gains an explicit
+  `delete: bool = False` param so an unknown expectation is never
+  conflated with a deliberate removal (`D-2`); the two
+  `assert old_record is not None` invariant guards become explicit
+  `raise VerbError(...)` so they survive `python -O` (`D-3`); the
+  §2.10b/`test_kind_coverage_table` walker's `expected_kinds` now derives
+  from `compiled.REGION_KINDS` itself, with a union-check control
+  (`N-7`); standalone resync commit subjects name the host by
+  `hosts.host_subject_name()` (basename + short digest, `user` for user
+  scope) rather than a path-derived slug shape — though after `N-6`'s
+  batching a subject can no longer name a single host, so the function
+  is unit-tested in `hosts.py` but not called from `verbs.py` (`N-8`);
+  five stray lock files an earlier ad-hoc probe left under the real
+  `~/.cache/self-learn` are deleted, and every ad-hoc script from now on
+  sets `XDG_CACHE_HOME` to a temp dir (`D-1`); `N-3` through `N-5`
+  are wording-only (the spec header's stale "Uncommitted" sentence, a
+  stale comment naming a symbol that never existed, and §9 naming the
+  one real new test file instead of a second file never created).
+  **`REC5` and `REC12`'s criterion text (§5.2), §4.5a's own table and
+  `GATE3` (§5.3) are updated to describe the shipped seven-case predicate,
+  the fifth lock-order leg and the narrowed signature claim** — none of
+  this was asked verbatim by the gate ruling, but leaving them describing
+  the six-case predicate and the four-leg lock check after landing the
+  code that supersedes both would have been a stale spec shipped
+  alongside working code, the exact class of defect this gate exists to
+  catch.
+  **Counts: two phases, 94 criteria (82 [A], 12 [B]) across 14 groups
+  (`MODE6a` added), 59 mutations, 10 measured anchors.**
