@@ -871,6 +871,29 @@ them and `S3` reconciles them individually. *(CORRECTED-r5, gate r4-D3:
 r4 said "the eight one-hit files" — the AST census gives exactly nine —
 and this sentence omitted the three EDIT files its own table lists.)*
 
+**Leg 4 — six files this census missed entirely** *(CARVED-r7, builder
+disclosure 2026-08-28: none of these mention chezmoi, so leg 1/2's AST
+census could not have found them — each is forced by an `[A]` behavior
+change elsewhere in this unit breaking a literal assertion the census
+never scoped. Discovered during the build, not predicted by the spec;
+carved here rather than silently edited so `S3`'s own membership control
+stays a true statement.)*:
+
+| file | forcing criterion | assertion that broke |
+|---|---|---|
+| `test_provider.py` | `MODE3` — `config.effective_default_mode` is a new public export | `test_pr1_provider_setting_and_all`'s `__all__` membership list (missing the new name) |
+| `test_round3_fixes.py` | `REC12`/§4.5b — the ledger lock is now held through the host write, not free during it | `TestLockScope.test_the_ledger_lock_is_free_during_the_host_phase`'s `probe_out.read_text() == "ACQUIRED"` (now `"BLOCKED"` — the test's own premise inverts, name kept, body rewritten to prove the new claim the same way: from inside a real host pre-commit hook) |
+| `test_route_cli.py` | `REC9` — the compile record rides the SAME ledger commit as the routed record, never a second commit | `test_teach_route_dest_end_to_end`'s `env.committed_files() == [f"skills/s/resolved/{record.id}.md"]` (now two paths: the resolved record plus one `compiled/<slug>.yaml`) |
+| `test_u_fake.py` | cross-unit fallout of the `test_route_cli.py` edit above — DS1's `REWRITTEN`/`_DS1_EXPECTED` census pins every function's post-`c2669a9` byte count and sha256, so an in-scope edit of a function it tracks forces a re-pin | `_DS1_EXPECTED["test_route_cli.py"]`'s pinned `(count, sha256)` tuple (added `("test_route_cli.py", "test_teach_route_dest_end_to_end")` to `REWRITTEN`, regenerated the tuple the same way the file's own discipline requires — over `git show c2669a9:...`, never the working tree) |
+| `test_worker_contract.py` | cross-unit fallout of the `test_u_fake.py` edit above — `_ARMOR_SHAS` pins `test_u_fake.py`'s own whole-file sha256 | `_ARMOR_SHAS["plugins/self-learn/cli/tests/test_u_fake.py"]`'s pinned hash (re-pinned to the file's new sha256, one line, dated comment) |
+| `ui/tests/test_routes.py` | `UIM1`/`UIM2` — the confirm route's argv now always carries `--mode <mode>`, and the arming/confirm text always shows it | every `runner.calls == [["host", "add", str(foreign)]]`-shaped assertion (now `[..., "--mode", "git", ...]`) and the rendered-command assertions (`self-learn host add {foreign}` → `self-learn host add --mode git {foreign}`); `_confirm_form_fields`'s regex also broke against `UIM1`'s new same-named `mode` radio pair — a naive `dict(re.findall(...))` let the LAST-rendered radio's `value` silently overwrite the CHECKED one's, so it was rewritten radio-aware (skips any `<input type="radio">` without `checked`) |
+
+This file is **already** covered by §9's own `ui/tests/` "additions only"
+clause for anything newly added (`TestUIM1DefaultModeConfig`), but the
+edits table above are NOT additions — they are literal-assertion and
+helper-function EDITS to pre-existing tests, which is why it is carved
+here rather than left to that clause.
+
 
 ### 2.11 The lock-invariant walker, and why it cannot be this unit's instrument
 
@@ -2468,8 +2491,11 @@ are not renumbered. CORRECTED-r4, gate r3-D5.)*
   **(i) be NON-EMPTY**, naming at least `cli/tests/test_hostmode.py` and
   `cli/tests/test_a2_rules_local.py` — an empty result means the pathspec
   did not resolve, not that nothing was touched — and **(ii)** name no
-  file absent from the §2.10b census, the two new files, and
-  `test_lock_invariant.py` (`PLAIN13`). **Order matters: (i) gates (ii).**
+  file absent from the §2.10b census, the two new files,
+  `test_lock_invariant.py` (`PLAIN13`), **and the six §2.10b leg 4 files**
+  (`CARVED-r7`: `test_provider.py`, `test_round3_fixes.py`,
+  `test_route_cli.py`, `test_u_fake.py`, `test_worker_contract.py`,
+  `ui/tests/test_routes.py`). **Order matters: (i) gates (ii).**
 - **S4** **[B]** Phase 2: **both** suites green — CLI collected
   ≥ `2417 + (new − deleted)` and UI collected ≥ `1268 + (new − deleted)`,
   each delta reconciled by `S5`; the only failure is the known
@@ -2749,8 +2775,14 @@ CORRECTED-r5, gate r4-D3) and
 `test_m2_verbs.py`/`test_compilers.py`/`test_retirement_cleanup.py`
 *(EXTENDED-r4, gate r3-B1 — r3 named one test file and then forbade
 touching any existing test body)* · `cli/tests/test_lock_invariant.py`
-(the one-name `_LOCKS` change, `PLAIN13`) · `ui/tests/` (additions only) ·
-`docs/specs/self-learn/{03,13,14,17}` · this spec draft.
+(the one-name `_LOCKS` change, `PLAIN13`) ·
+**`test_provider.py`, `test_round3_fixes.py`, `test_route_cli.py`,
+`test_u_fake.py`, `test_worker_contract.py`** (`CARVED-r7`, §2.10b leg 4 —
+each forced by an `[A]` behavior change outside the chezmoi census) ·
+`ui/tests/` (additions only, **plus `test_routes.py`'s `CARVED-r7`
+edits**, §2.10b leg 4) · `docs/specs/self-learn/{03,13,14,17,09-surface-spec}`
+*(`09-surface-spec.md` ADDED-r7 — `DOC5`'s stale-quote fix, one line)* ·
+this spec draft.
 
 **Phase 2 [B]:** `cli/src/self_learn/{chezmoi,teach,cli,verbs}.py` ·
 `ui/src/self_learn_ui/{routes,models}.py` ·
@@ -3214,5 +3246,44 @@ build.)*
   §2.10b's closing sentence now names `test_m2_verbs.py`,
   `test_compilers.py` and `test_retirement_cleanup.py`, which its own
   table marks EDIT (`r4-D3`); §11's preamble relabelled (`r4-N1`).
+  **Counts unchanged: two phases, 93 criteria (81 [A], 12 [B]) across 14
+  groups, 59 mutations, 10 measured anchors.**
+- **r7** — 2026-08-28, folded in place during the Phase 1 build itself
+  (builder disclosure per the coordinator's ruling that "satisfied by
+  construction" claims must be verified, not a re-gate; repricing rule
+  2026-07-26 — no design change, no new criterion, no new mutation).
+  **§2.10b gains leg 4**: six files the chezmoi-mention census could
+  not have found (none mention chezmoi) but that Phase 1's OWN `[A]`
+  behavior changes force — `test_provider.py` (`MODE3`'s new export),
+  `test_round3_fixes.py` (`REC12`/§4.5b's widened lock span inverts
+  `TestLockScope`'s premise), `test_route_cli.py` (`REC9`'s compile
+  record riding the route's own ledger commit), `test_u_fake.py` and
+  `test_worker_contract.py` (cascading DS1/armor re-pins forced by the
+  `test_route_cli.py` edit), and `ui/tests/test_routes.py` (`UIM1`/
+  `UIM2`'s always-present `--mode` argv breaking literal `runner.calls`
+  assertions, plus a radio-aware fix to `_confirm_form_fields`). Each
+  carries its forcing criterion and the assertion that broke, one line
+  per file. `§9`'s Phase-1 file list and `S3`'s positive-control
+  membership rule are both widened to admit them, so `S3`'s own control
+  command is a true statement rather than a false negative against work
+  the spec's census structurally could not anticipate.
+  **`DOC5`**: `09-surface-spec.md:1917`'s stale quote — "canon hosts
+  must be committable" stated as an unqualified rule inside an
+  ONBOARDING-copy illustration — is mode-qualified in place ("a
+  git-mode canon host must be committable"), matching the `hosts.py`
+  hits' own existing "when `mode == \"git\"`" phrasing; `09-surface-
+  spec.md` is added to §9's touchable file list for this one line.
+  **A real UN8 defect found and fixed during the build, no criterion
+  or number change**: refactoring `commit_lock`'s flock body into the
+  new shared `_flock_lock` (feeding both `commit_lock` and `host_lock`)
+  left the timeout error's suffix hardcoded to `"wedged mid-write"`
+  instead of parametrized on `wedged_by`, silently changing the
+  LEDGER's own `commit_lock` timeout text from 50fa815's
+  `"...wedged mid-commit"` to `"...wedged mid-write"` — a byte-identity
+  break `UN8` names explicitly, with no prior test pinning the string.
+  Fixed in `gitops.py` (one line, `wedged_by` used in both places the
+  message already had it once); a new dedicated test asserts the
+  ledger's timeout text ends `"wedged mid-commit"`, RED-then-restored
+  with sha256 verification during the build.
   **Counts unchanged: two phases, 93 criteria (81 [A], 12 [B]) across 14
   groups, 59 mutations, 10 measured anchors.**

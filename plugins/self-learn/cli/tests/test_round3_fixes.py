@@ -380,20 +380,31 @@ class TestRebaseAutostashRace:
 
 class TestLockScope:
     """The lock is [first mutation → commit] and [rebase → re-push], and
-    NOTHING else (audit 2026-07-16 round 3)."""
+    NOTHING else (audit 2026-07-16 round 3) — **AMENDED by U-hostmode
+    §4.5b**: the close now widens to also cover the host write (see below)."""
 
     def test_the_ledger_lock_is_free_during_the_host_phase(
         self, tmp_path, monkeypatch
     ):
-        """The old ``_serialized_on_ledger`` decorator held the LEDGER lock
-        across the whole verb — the compile, the host commit and the push
-        included — so every other ledger producer was blocked for the
-        duration of work that never touches the ledger's index.
+        """U-hostmode §4.5b **deliberately reverses** this test's original
+        premise (kept out of the §2.10b census, flagged as a build-report
+        exception): the old ``_serialized_on_ledger`` decorator held the
+        LEDGER lock across the whole verb, which round 3 narrowed to
+        [first mutation → ledger commit] — proven free during the host
+        phase, as this test's name still says.
 
-        Proven from inside the HOST's own pre-commit hook (a real hook, in
-        the real host commit, at the exact moment the old scope was still
-        holding): a REAL second process must be able to take the LEDGER
-        lock there."""
+        §4.5b measured why that narrow scope is UNSOUND once a compile
+        record is written inside the ledger commit: a racing producer's
+        ledger commit landing between this route's OWN ledger commit and
+        its host write would make `_compile_set` re-read a record set the
+        compile-record's `sha256` expectation never accounted for — the
+        next route would then misread the result as a hand edit it never
+        made. The fix holds the LEDGER lock through the host write too
+        (nested with the per-host lock, REC12/`test_lock_invariant.py`'s
+        AST walker is the criterion's own Check). So the ledger lock is
+        now HELD, not free, at the exact instant this test's pre-commit
+        hook fires — proven the same way, from inside the HOST's own real
+        pre-commit hook, that a second process now BLOCKS there."""
         env = make_env(tmp_path)
         home = env.ledger
         monkeypatch.setenv("SELF_LEARN_HOME", str(home))
@@ -429,10 +440,12 @@ class TestLockScope:
 
         verbs.route(home, "lrn-bbbb0001", dest="skill-md")
         assert probe_out.is_file(), "the host pre-commit hook never fired"
-        assert probe_out.read_text() == "ACQUIRED", (
-            "the LEDGER lock was still held during the HOST phase — the "
-            "whole-verb hold is back; it blocks every other producer for "
-            "the length of a compile+push that cannot touch the ledger index"
+        assert probe_out.read_text() == "BLOCKED", (
+            "U-hostmode §4.5b: the ledger lock must be HELD through the "
+            "host write (nested with the per-host lock) — a racing "
+            "producer's ledger commit landing in this window is exactly "
+            "the defect r2 shipped (§4.5b), which the compile record's "
+            "own `sha256`/`based_on_sha256` expectation is not immune to"
         )
 
 

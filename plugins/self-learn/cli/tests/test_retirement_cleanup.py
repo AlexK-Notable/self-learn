@@ -247,23 +247,13 @@ class TestRecompileCompleteness:
 
     def test_user_file_regenerated_via_chezmoi_flow(self, env, tmp_path,
                                                     monkeypatch):
-        """The user CLAUDE.md is no longer recompile-invisible: it runs
-        the same E-17 preflight the route path uses, then the guarded
-        compile."""
-        bindir = tmp_path / "shim-bin"
-        bindir.mkdir()
-        fake = bindir / "chezmoi"
-        fake.write_text(
-            '#!/usr/bin/env bash\nprintf \'%s\\n\' "$*" >> '
-            '"$CHEZMOI_SHIM_LOG"\nexit 0\n',
-            encoding="utf-8",
-        )
-        fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
-        log = tmp_path / "chezmoi-argv.log"
-        log.write_text("", encoding="utf-8")
-        monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
-        monkeypatch.setenv("CHEZMOI_SHIM_LOG", str(log))
-
+        """U-hostmode §4.8.1 (rewritten, name kept — §2.10b census):
+        chezmoi is GONE (CHEZ0/USER2) — user scope is a first-class PLAIN
+        host now, and ``recompile`` repairs it through the SAME general
+        path as any other plain host (no guarded compile, no dotfiles
+        commit of its own). The user CLAUDE.md is still no longer
+        recompile-invisible, which is the property this test always
+        pinned; only the mechanism proving it changed."""
         user_md = tmp_path / "dot-claude" / "CLAUDE.md"
         user_md.parent.mkdir()
         user_md.write_text("# user\n\nAuthored conduct.\n", encoding="utf-8")
@@ -284,47 +274,45 @@ class TestRecompileCompleteness:
         result = verbs.recompile(env.ledger, no_push=True,
                                  user_claude_md=user_md)
         assert OLD_MARK not in user_md.read_text(encoding="utf-8")
-        # delta review finding 1: the entry reports the real outcome
-        # (UserScopeResult.committed, not a nonexistent .changed)
-        assert any(e.changed for e in result.entries
-                   if e.target == user_md)
-        # delta review finding 2: --no-push must not push the dotfiles
-        # repo — compile_user_scope takes push=False on this path
-        argv = log.read_text(encoding="utf-8")
-        assert "git -- commit" in argv       # the guarded commit ran
-        assert "git -- push" not in argv     # ...but never a push
+        entry = next(e for e in result.entries if e.target == user_md)
+        assert entry.changed
+        # PLAIN2/PLAIN10: self-learn commits and pushes NOTHING of its own
+        # for a plain host — the file is written uncommitted, full stop.
+        assert entry.commit_sha is None
 
     def test_user_file_drift_skips_loudly(self, env, tmp_path, monkeypatch):
-        bindir = tmp_path / "shim-bin"
-        bindir.mkdir()
-        fake = bindir / "chezmoi"
-        fake.write_text(
-            '#!/usr/bin/env bash\nif [ "$1" = diff ]; then printf -- '
-            '"--- drift\\n"; fi\nexit 0\n',
-            encoding="utf-8",
-        )
-        fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
-        monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
-
+        """U-hostmode §4.5a/GATE2 (rewritten, name kept — §2.10b census):
+        the plain-host equivalent of chezmoi drift is a hand-edited
+        managed region — the compile record's ``edited`` verdict, the
+        only instrument that can see it on a host with no git status to
+        consult. ``recompile`` must skip it loudly, never guess (H-3)."""
         user_md = tmp_path / "dot-claude" / "CLAUDE.md"
         user_md.parent.mkdir()
         user_md.write_text("# user\n", encoding="utf-8")
 
         record = make_behavior(scope="user", record_id=OLD_ID,
                                trigger=OLD_TRIGGER)
-        record.set_routing({"routed_at": "2026-07-16T00:00:00Z",
-                            "destination": "claude-md", "by": "human"})
-        record.set_status("routed")
-        resolved = env.ledger / "user" / "resolved"
-        resolved.mkdir(parents=True, exist_ok=True)
-        record.write(resolved / f"{OLD_ID}.md")
+        create_record(env.ledger, record)
+        verbs.route(env.ledger, OLD_ID, dest="claude-md", no_push=True,
+                    user_claude_md=user_md)
+        assert OLD_MARK in user_md.read_text(encoding="utf-8")
+
+        # a hand edit INSIDE the markers — the compile record's next
+        # observation matches neither its `sha256` nor `based_on_sha256`.
+        text = user_md.read_text(encoding="utf-8")
+        user_md.write_text(
+            text.replace(OLD_MARK, f"{OLD_MARK}\nhand-typed line"),
+            encoding="utf-8",
+        )
 
         result = verbs.recompile(env.ledger, no_push=True,
                                  user_claude_md=user_md)
         skipped = [e for e in result.entries if e.skipped]
-        assert skipped and any("drift" in (e.skipped or "").lower()
-                               or "chezmoi" in (e.skipped or "").lower()
-                               for e in skipped)
+        assert skipped and any(
+            "hand-edited" in (e.skipped or "").lower()
+            or "edited" in (e.skipped or "").lower()
+            for e in skipped
+        )
         assert result.warnings  # loud, never silent
 
 

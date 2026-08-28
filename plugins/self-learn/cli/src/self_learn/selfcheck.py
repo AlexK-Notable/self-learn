@@ -80,6 +80,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+from . import compiled
 from . import gitops
 from . import provider
 from . import scan as scan_mod
@@ -92,7 +93,7 @@ from .compilers import (
     reference_target_path,
 )
 from .compilers import surface_names_target as _surface_names_target
-from .hosts import HostsError, hosts_path, load_hosts, skill_dir_for
+from .hosts import HostsError, host_mode, host_slug, hosts_path, load_hosts, skill_dir_for
 from .ledger import Bucket, discover_buckets, home_state, home_state_message
 from .ledger_ops import (
     ProposalError,
@@ -228,6 +229,25 @@ def _target_for(home: Path, bucket: Bucket, record: Record) -> Path | None:
     against the operator's real ``~/.claude/CLAUDE.md`` (byte-identical
     to the pre-delegation behavior)."""
     return managed_target_for(home, bucket, record)
+
+
+def _managed_host_for(home: Path, bucket: Bucket, record: Record) -> Path | None:
+    """U-hostmode PLAIN8: the HOST root a managed-destination record's
+    target lives under — ``host_mode`` needs the resolved ROOT, never a
+    file somewhere inside it (exact-match only, MODE9). Mirrors the same
+    per-scope resolution `_reference_target_for`/`_check_drift` already
+    use; ``None`` when unresolvable (the entry-marker check above already
+    reported that as "target unresolvable" — this is never reached then)."""
+    if bucket.scope == "skill":
+        try:
+            root = load_hosts(home).skills_root
+        except HostsError:
+            return None
+        return Path(root) if root is not None else None
+    if record.scope == "project":
+        host = bucket_project_path(bucket.path)
+        return Path(host) if host is not None else None
+    return DEFAULT_USER_CLAUDE_MD.expanduser().parent
 
 
 def _reference_target_for(home: Path, bucket: Bucket, record: Record) -> Path | None:
@@ -456,6 +476,10 @@ def _check_drift(home: Path) -> tuple[bool, str]:
         return True, "hosts.yaml absent — drift not checked"
     failures: list[str] = []
     checked = 0
+    # U-hostmode PLAIN8: non-failing region-verdict notes (unknown/stale/
+    # clean) for PLAIN-mode managed targets — never gate the boolean, but
+    # DO ride the rendered string so the four verdicts stay distinguishable.
+    plain_notes: list[str] = []
     for bucket in discover_buckets(home):
         resolved = bucket.path / "resolved"
         if not resolved.is_dir():
@@ -538,6 +562,56 @@ def _check_drift(home: Path) -> tuple[bool, str]:
                     "run `self-learn recompile`"
                 )
                 continue
+            # U-hostmode PLAIN8: the entry-marker check above is the ONLY
+            # signal a git host needs (`gitops.paths_dirty` covers the
+            # rest); a PLAIN host has no `git status` at all, so the
+            # compile record's own region verdict is the one instrument
+            # that can see a hand edit here — rendered as one of four
+            # distinguishable strings (no compile record yet / clean /
+            # stale / edited), only "edited" counted as drift.
+            host_path = _managed_host_for(home, bucket, record)
+            if host_path is not None and host_mode(home, host_path) != "git":
+                try:
+                    region = compiled.region_bytes(text, "managed")
+                except compiled.CompiledRecordError:
+                    region = None
+                if region is not None:
+                    scope_kind = "user" if bucket.scope == "user" else (
+                        "skill" if bucket.scope == "skill" else "project"
+                    )
+                    slug = host_slug(home, host_path, scope_kind=scope_kind)
+                    entry = compiled.entry_for(
+                        compiled.load_record(home, slug),
+                        compiled.region_key(host_path, target),
+                    )
+                    observed = compiled.sha256_hex(region)
+                    verdict = compiled.verdict_for(entry, observed)
+                    if verdict == "edited":
+                        # the ONE verdict that is drift — GATE2/REC2's own
+                        # refusal semantics, mirrored here as a FAILURE.
+                        failures.append(
+                            f"{record.id}: {target} was hand-edited outside "
+                            f"self-learn (edited) — run `self-learn "
+                            f"recompile --adopt {target}`"
+                        )
+                        continue
+                    if verdict == "unknown":
+                        plain_notes.append(
+                            f"{record.id}: {target} has no compile record "
+                            "yet (unknown provenance) — SKIP, tracking "
+                            "begins at the next route/recompile"
+                        )
+                    elif verdict == "stale":
+                        plain_notes.append(
+                            f"{record.id}: {target} matches the compile "
+                            "record's prior observation (stale) — an "
+                            "unlanded apply; `self-learn recompile` repairs it"
+                        )
+                    else:  # "clean" — the ordinary, quiet case
+                        plain_notes.append(
+                            f"{record.id}: {target} matches its compile "
+                            "record (clean)"
+                        )
             # U-glob §6.6: for a pathed rule, EITHER scope, re-assert
             # every recorded glob still matches ≥1 file via the same
             # anchored probe route time uses (`glob_reaches`) — the same
@@ -589,7 +663,10 @@ def _check_drift(home: Path) -> tuple[bool, str]:
         return False, "; ".join(failures)
     if not checked:
         return True, "no routed managed-destination records — no drift possible"
-    return True, f"{checked} routed record(s) present in their compiled targets"
+    ok_message = f"{checked} routed record(s) present in their compiled targets"
+    if plain_notes:
+        ok_message = ok_message + " — " + "; ".join(plain_notes)
+    return True, ok_message
 
 
 def _check_capture(home: Path) -> tuple[bool, str]:

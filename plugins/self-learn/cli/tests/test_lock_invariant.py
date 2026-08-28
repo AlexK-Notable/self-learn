@@ -90,8 +90,11 @@ _FS_PRIMITIVES = ("write_text", "rename", "unlink")
 #: locking it was the round-3 mistake.)
 _GIT_MUTATING = ("mv", "rm", "add", "commit", "apply", "checkout", "reset", "pull")
 
-#: Names that open the critical section.
-_LOCKS = ("commit_lock", "_ledger_write")
+#: Names that open the critical section. U-hostmode PLAIN13: "host_lock"
+#: is a DETECTOR CONSTANT, not a NOT_REPO_TRUTH exemption — it tells the
+#: walker how to recognise gitops.host_lock(path, mode) as a guard (real
+#: in both modes, §4.3), it does not excuse a write from needing one.
+_LOCKS = ("commit_lock", "_ledger_write", "host_lock")
 
 #: Receivers whose ``.write()`` is a byte stream, not ``Record.write``.
 _STREAMS = ("buf", "fh", "f", "sys", "stderr", "stdout", "out", "handle", "proc")

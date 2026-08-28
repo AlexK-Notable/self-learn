@@ -30,7 +30,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from starlette.responses import StreamingResponse
 
 from self_learn.chezmoi import ADOPT_COMMAND_PREFIX, CHEZMOI_DIRTY_MARKER
-from self_learn.hosts import is_repo_root
+from self_learn.hosts import HOST_MODES, effective_default_mode, is_repo_root
 from self_learn.records import Record
 from self_learn.verbs import GITOPS_DIRTY_MARKER, NO_PROPOSAL_MARKER
 
@@ -2408,12 +2408,20 @@ _RECORD_ID_RE = re.compile(r"^lrn-[0-9a-f]{8}$")
 HOST_ADD_ERROR_LEAD = "Registration did not complete."
 
 
-def build_host_add_argv(path: str, *, init: bool = False) -> list[str]:
-    """``self-learn host add [--init] <path>`` — the one argv this
-    surface maps to (mirrors the CLI parser verbatim, same rule as
-    build_argv). ``init`` is decided by the Y-17 consent invariant at
-    the confirm route, never by a client field alone."""
-    return ["host", "add", "--init", path] if init else ["host", "add", path]
+def build_host_add_argv(path: str, *, mode: str = "git", init: bool = False) -> list[str]:
+    """``self-learn host add --mode <mode> [--init] <path>`` — the one
+    argv this surface maps to (mirrors the CLI parser verbatim, same
+    rule as build_argv). U-hostmode UIM2: ``--mode`` is ALWAYS emitted —
+    the UI's posted choice is authoritative, never left to the CLI's own
+    hosts.default_mode fallback. ``init`` is decided by the Y-17 consent
+    invariant at the confirm route, never by a client field alone, and
+    only ever applies when ``mode == "git"`` (UIM2/UIM3: a plain host is
+    never git-initialized)."""
+    argv = ["host", "add", "--mode", mode]
+    if mode == "git" and init:
+        argv.append("--init")
+    argv.append(path)
+    return argv
 
 
 def _needs_init(path: str) -> bool:
@@ -2433,6 +2441,7 @@ def _host_add_ctx(
     path: str | None = None,
     error: str | None = None,
     needs_init: bool = False,
+    mode: str = "git",
 ) -> dict[str, Any]:
     return {
         "armed": armed,
@@ -2445,6 +2454,12 @@ def _host_add_ctx(
         "error": error,
         "error_lead": HOST_ADD_ERROR_LEAD,
         "needs_init": needs_init,
+        # U-hostmode UIM1: the mode CHOICE (§4.9) — pre-selected from
+        # hosts.default_mode (config.yaml), never inferred from the
+        # path. The git-init disclosure is shown only when this is
+        # "git" AND needs_init both hold — a plain host never needs
+        # `--init` (MODE4), so there is nothing to disclose for it.
+        "mode": mode,
     }
 
 
@@ -2479,10 +2494,15 @@ def host_add_arm(
         record_id=rid,
         armed=True,
         path=path,
-        # Y-17: server-derived, never a client field — when True the arm
-        # banner shows the git-init disclosure + the real --init argv,
-        # and the confirm form carries the server-rendered marker bit.
+        # Y-17: server-derived, never a client field — when True (and
+        # mode is "git") the arm banner shows the git-init disclosure +
+        # the real --init argv, and the confirm form carries the
+        # server-rendered marker bit.
         needs_init=_needs_init(path),
+        # U-hostmode UIM1: the pre-selected consent choice, read from
+        # hosts.default_mode — absent reads "git", byte-identical to
+        # 50fa815's rendering (MODE1's own default).
+        mode=effective_default_mode(_home(request)),
     )
     return _render(request, "partials/host_add_bar.html", ctx)
 
@@ -2506,6 +2526,7 @@ async def host_add_confirm(
     name: str,
     record_id: str | None = Form(None),
     init_disclosed: str | None = Form(None),
+    mode: str | None = Form(None),
 ) -> Response:
     resolved = _host_add_target(request, scope, name)
     if isinstance(resolved, Response):
@@ -2513,20 +2534,28 @@ async def host_add_confirm(
     _bucket, path = resolved
     rid = record_id if record_id and _RECORD_ID_RE.match(record_id) else None
 
+    # U-hostmode UIM2/UIM3: the posted mode choice is authoritative (the
+    # human's consent CHOICE, §4.9) — an unrecognized/missing value falls
+    # back to "git", the safe/pre-existing default, never guessed at.
+    chosen_mode = mode if mode in HOST_MODES else "git"
+
     # Y-17 consent invariant (F1): `--init` executes ONLY when (a) the
     # arm rendering displayed the disclosure (the server-rendered marker
     # bit, posted back verbatim) AND (b) the confirm-time re-derivation
-    # still holds. Any mismatch — becomes-repo (disclosed, but a root by
-    # now: --init dropped, the plain add registers) or goes-stale (not
-    # disclosed, a non-root by now: the plain add runs and the CLI's
-    # committability refusal flows into the Y-16 error leg) — runs plain
-    # `host add`; never a silent init. A forged marker cannot force an
-    # init on a repo-root path: the re-derivation gates every init, so
-    # the bit only ever WEAKENS execution relative to what was read.
-    use_init = init_disclosed == "1" and _needs_init(path)
+    # still holds AND (c) the chosen mode is "git" (a plain host is never
+    # git-initialized, MODE4). Any mismatch — becomes-repo (disclosed,
+    # but a root by now: --init dropped, the plain add registers) or
+    # goes-stale (not disclosed, a non-root by now: the plain add runs
+    # and the CLI's committability refusal flows into the Y-16 error
+    # leg) — runs plain `host add`; never a silent init. A forged marker
+    # (or a forged mode=git for an already-repo-root path) cannot force
+    # an init the live re-derivation would refuse: the re-derivation
+    # gates every init, so the posted bits only ever WEAKEN execution
+    # relative to what was read (UIM3).
+    use_init = chosen_mode == "git" and init_disclosed == "1" and _needs_init(path)
 
     runner = request.app.state.runner
-    result = await runner.run(build_host_add_argv(path, init=use_init))
+    result = await runner.run(build_host_add_argv(path, mode=chosen_mode, init=use_init))
     if not result.ok:
         # Y-16 error leg: plain-words sentence leading, stderr demoted,
         # [data-verb-error] marker, dismiss via the disarm route — and

@@ -132,7 +132,9 @@ it is: **the ledger is the source of truth and canon is a compiled,
 regenerable artifact** (correction = supersede + recompile, never
 revert). Doc 13 promotes that to the general rule:
 
-1. **Ledger-first two-phase.** A resolution verb commits the ledger
+1. **Ledger-first two-phase** *(for a `git`-mode host; a `plain` host
+   runs the ledger phase and then applies canon without a host commit —
+   item 5)*. A resolution verb commits the ledger
    change (pinned subject, in `~/.self-learn`) FIRST, then applies the
    recompiled managed section in the target host and commits there
    (pinned subject referencing the record id), then pushes both.
@@ -146,6 +148,60 @@ revert). Doc 13 promotes that to the general rule:
    (§5), so the sentinel exists only to pause a HOST's autosync during
    the seconds of a canon apply+commit. Same file contract, same TTL,
    per-host documentation; claude-skills-sync keeps its check.
+5. **Hosts are git-optional (added by `U-hostmode`).** A registered host
+   carries a **mode** on its `hosts.yaml` entry: **`git`** (the default,
+   and what every entry written before this unit means) or **`plain`**. A
+   `git` host behaves exactly as items 1–4 describe. A **`plain`** host
+   requires no repository: nothing is staged, committed, or pushed there,
+   and the two-phase rule of item 1 collapses to its ledger half. The mode
+   is set ONCE, by `self-learn host add --mode git|plain`;
+   `config.yaml`'s `hosts.default_mode` sets the default for new
+   registrations, fail-closed to `git` (the `S-10` discipline). `host add
+   --init` is unchanged and remains a **git**-mode convenience — `--mode
+   plain --init` is a usage refusal, not a silent preference. A plain host
+   is gated at registration and at every route by a `.self-learn-host`
+   marker file the registering verb writes — the structural analogue of
+   `.git`, and the replacement for the committability check, not its
+   omission. **User scope (`~/.claude`) is a plain host by construction**:
+   it is never registered, carries no marker, and its mode cannot be
+   anything else.
+
+   **What replaces git for a plain host, and what does not.** Item 2's
+   drift check is unaffected: it was never a git check — it compares the
+   ledger's routed records against `(lrn-…)` entry markers in the target,
+   and `self-learn recompile` remains the one-command repair (H-2). What IS
+   replaced is the **dirty gate**. A plain host is gated by a
+   **ledger-side compile record** — `<home>/compiled/<host-slug>.yaml`, one
+   entry per target, carrying the sha256 of the region the ledger says must
+   be there and the sha256 of **the state that write was based on** — the
+   region as it was observed on disk at pre-flight. A region matching the
+   current hash is clean; matching the based-on hash means our own apply
+   did not land (drift — `recompile` repairs it, however many times in a
+   row it fails); matching neither was hand-edited and the route refuses,
+   naming `recompile --adopt`. **This is
+   stricter than `git status` for the region self-learn owns** — it catches
+   an in-marker hand edit the human has already COMMITTED, which
+   `git status` reports as clean — and narrower where narrowness is
+   correct: an edit outside the markers no longer refuses a write the
+   compiler preserves byte-exactly. The record is written for **git** hosts
+   too; only the *gate* differs by mode. It is written **inside the
+   resolution's own ledger commit**, under the ledger `commit_lock`, before
+   that commit — so it opens no second failure window, and a failure of
+   that commit is already `HalfWrittenError` (exit 7), never a false exit 6.
+   It is swept by `self-learn reconcile` like every other ledger artifact
+   (§5's corollary applies to it, and `_RECONCILABLE` was extended so that
+   is true and not merely asserted).
+
+   **What a plain host gives up, stated plainly.** No `git log` or
+   `git blame` over the compiled canon, no `git revert` of a canon commit
+   (already not a correction mechanism — `S-12`), and **no off-machine
+   backup of the host's file**. A ledger-side record is a record of
+   self-learn's own region, not a backup of the user's file: measured
+   2026-08-27, self-learn's region is **15.8%** of the bytes of the sixteen
+   files carrying a managed section (44 654 of 283 204; **18.4%** across
+   the thirteen that are routable targets rather than `.claude/worktrees/`
+   checkouts). A user whose host content wants history should use `git`
+   mode, which is why it is the default.
 
 ## 5. Producers commit their own writes
 
@@ -512,7 +568,12 @@ rollback is purely a code-repo affair.
   always safe and repairs any two-phase interruption.
 - **H-3** · Compile targets come from hosts.yaml only — capture is
   open, canon is registered. No autonomous process ever writes to an
-  unregistered repo.
+  unregistered repo. A registered host need not be a git repository:
+  `U-hostmode` makes version control a per-host mode (`git` default,
+  `plain` opt-in). H-3 itself is unchanged — compile targets still come
+  from hosts.yaml only, and a plain host is gated by a
+  `.self-learn-host` marker the registering verb writes, never by being
+  writable.
 - **H-4** · Cache state is namespaced by ledger home.
 - **H-5** · No watcher on the ledger repo — producers commit their own
   writes with pinned subjects. Corollary: a write its producer could not

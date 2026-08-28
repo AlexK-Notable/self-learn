@@ -74,6 +74,7 @@ from __future__ import annotations
 
 import contextlib
 import fcntl
+import hashlib
 import os
 import subprocess
 import sys
@@ -99,6 +100,8 @@ __all__ = [
     "commit_lock_path",
     "dirty_paths",
     "has_remote",
+    "host_lock",
+    "host_lock_path",
     "known_paths",
     "paths_dirty",
     "push_if_remote",
@@ -391,6 +394,47 @@ def commit_lock_path(repo: Path) -> Path:
 
 
 @contextlib.contextmanager
+def _flock_lock(path: Path, timeout: float, wedged_by: str) -> Iterator[None]:
+    """The shared flock body behind both :func:`commit_lock` and
+    :func:`host_lock` — one implementation, one :data:`_held_locks`
+    bookkeeping (U-hostmode §4.3: a plain host's lock is a REAL flock,
+    not an omission, so it shares this exactly rather than reimplementing
+    it). ``wedged_by`` names what a timeout blames, in the caller's own
+    words."""
+    key = str(path)
+    if key in _held_locks:  # already ours — nesting must not self-deadlock
+        yield
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fh = open(path, "w", encoding="utf-8")
+    try:
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise GitOpsError(
+                        f"{wedged_by} lock {path} still held after "
+                        f"{timeout:g}s — another self-learn producer "
+                        f"(worker/miner/verb) is wedged mid-{wedged_by}"
+                    ) from None
+                time.sleep(0.02)
+        _held_locks.add(key)
+        try:
+            with contextlib.suppress(OSError):
+                fh.write(f"{os.getpid()}\n")
+                fh.flush()
+            yield
+        finally:
+            _held_locks.discard(key)
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+    finally:
+        fh.close()
+
+
+@contextlib.contextmanager
 def commit_lock(repo: Path, *, timeout: float | None = None) -> Iterator[None]:
     """Serialize a repo's INDEX-AND-WORKTREE-mutating critical sections
     against every other self-learn producer writing *repo*.
@@ -426,38 +470,64 @@ def commit_lock(repo: Path, *, timeout: float | None = None) -> Iterator[None]:
     prove the timeout path without sitting for 150 s)."""
     if timeout is None:
         timeout = COMMIT_LOCK_TIMEOUT
-    path = commit_lock_path(repo)
-    key = str(path)
-    if key in _held_locks:  # already ours — nesting must not self-deadlock
+    with _flock_lock(commit_lock_path(repo), timeout, "commit"):
         yield
-        return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fh = open(path, "w", encoding="utf-8")
-    try:
-        deadline = time.monotonic() + timeout
-        while True:
-            try:
-                fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except BlockingIOError:
-                if time.monotonic() >= deadline:
-                    raise GitOpsError(
-                        f"commit lock {path} still held after {timeout:g}s — "
-                        "another self-learn producer (worker/miner/verb) is "
-                        "wedged mid-commit"
-                    ) from None
-                time.sleep(0.02)
-        _held_locks.add(key)
-        try:
-            with contextlib.suppress(OSError):
-                fh.write(f"{os.getpid()}\n")
-                fh.flush()
-            yield
-        finally:
-            _held_locks.discard(key)
-            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
-    finally:
-        fh.close()
+
+
+#: U-hostmode §4.3: same shape as :func:`slug_for` in ``hosts.py`` —
+#: duplicated here (not imported) to avoid a ``gitops``↔``hosts`` import
+#: cycle: ``hosts.py`` already imports THIS module. Both must be kept in
+#: sync; ``hosts.slug_for`` is the canonical definition this mirrors.
+def _plain_host_cache_key(path: Path) -> str:
+    resolved = str(Path(path).resolve())
+    digest = hashlib.sha256(resolved.encode("utf-8")).hexdigest()[:8]
+    return f"{resolved.replace('/', '-')}-{digest}"
+
+
+def host_lock_path(path: Path, mode: str) -> Path:
+    """U-hostmode §4.3: where a HOST's commit lock lives, by mode.
+
+    ``mode == "git"`` — byte-identical to :func:`commit_lock_path` (UN8):
+    ``<git-common-dir>/self-learn.commit.lock``, derived from the repo
+    itself.
+
+    ``mode == "plain"`` — a plain host has no ``.git`` to hold a lock
+    file, so the lock moves to the global cache dir, keyed by the SAME
+    slug shape ``hosts.slug_for`` uses (the sentinel's own reasoning,
+    ``sentinel.py``: global and NOT ledger-home-namespaced, because a host
+    can be registered by more than one ledger home and the contended
+    resource is the HOST's file, not any one home's view of it):
+    ``${XDG_CACHE_HOME:-~/.cache}/self-learn/host-<slug>.commit.lock``."""
+    if mode == "git":
+        return commit_lock_path(Path(path))
+    if mode == "plain":
+        cache_env = os.environ.get("XDG_CACHE_HOME")
+        base = Path(cache_env).expanduser() if cache_env else Path("~/.cache").expanduser()
+        slug = _plain_host_cache_key(path)
+        return base / "self-learn" / f"host-{slug}.commit.lock"
+    raise GitOpsError(f"unknown host mode {mode!r} — expected 'git' or 'plain'")
+
+
+@contextlib.contextmanager
+def host_lock(path: Path, mode: str, *, timeout: float | None = None) -> Iterator[None]:
+    """U-hostmode §4.3/§4.5b: THE host-side lock, real in both modes —
+    a mode DISPATCH, never an omission for plain hosts. Shares
+    :func:`commit_lock`'s exact flock body (:func:`_flock_lock`) so a
+    plain host's serialization guarantee is the same primitive a git
+    host's always had, not a weaker cousin of it.
+
+    Callers take this in the CALLEE, at entry, BEFORE the first ledger
+    mutation of the resolution it is protecting (REC12) — never
+    caller-side, which would leave some host-write paths (``supersede``,
+    ``graduate``) writing the host unlocked. Re-entrant within one
+    process via the SAME :data:`_held_locks` set :func:`commit_lock`
+    uses, keyed by the resolved lock PATH — so a git-mode host's
+    ``host_lock`` and its ``commit_lock`` (git host, same repo) name the
+    SAME file and correctly pass through one another."""
+    if timeout is None:
+        timeout = COMMIT_LOCK_TIMEOUT
+    with _flock_lock(host_lock_path(path, mode), timeout, "host"):
+        yield
 
 
 def known_paths(repo: Path, paths: Iterable[Path | str]) -> list[str]:

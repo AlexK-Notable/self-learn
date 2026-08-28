@@ -82,6 +82,12 @@ _RECONCILABLE = (
     "meta.yaml",
 )
 
+#: U-hostmode RCN1: the compile record is ledger truth too — one file per
+#: host, HOME-relative (never inside a bucket, so it needs its own check
+#: rather than a `_RECONCILABLE` entry, which `_is_reconcilable` matches
+#: bucket-relatively).
+_RECONCILABLE_HOME = ("compiled/*.yaml",)
+
 #: Porcelain XY codes that mean "this path has a staged deletion or
 #: rename" — the half-committed-``git mv`` shape reconcile must not touch.
 _BLOCKING_CODES = ("R", "D")
@@ -128,9 +134,13 @@ def _porcelain(home: Path) -> list[tuple[str, Path]]:
 
 
 def _is_reconcilable(home: Path, path: Path) -> bool:
-    """True iff *path* is a ledger record/proposal/meta inside a bucket."""
+    """True iff *path* is a ledger record/proposal/meta inside a bucket,
+    OR (U-hostmode RCN1) a compile record directly under *home*."""
     from .ledger import discover_buckets
 
+    for pattern in _RECONCILABLE_HOME:
+        if path.parent == (home / pattern).parent and path.match(pattern):
+            return True
     for bucket in discover_buckets(home):
         for pattern in _RECONCILABLE:
             if path.parent == (bucket.path / pattern).parent and path.match(pattern):

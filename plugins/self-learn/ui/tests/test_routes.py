@@ -463,8 +463,11 @@ class TestArmedHostAdd:
         # Consent consequence (Y-11 pin): both halves, plain words.
         assert "written into this" in r.text
         assert "read its files" in r.text
-        # The exact command with the SERVER-derived path.
-        assert f"self-learn host add {foreign}" in r.text
+        # The exact command with the SERVER-derived path. U-hostmode
+        # UIM1: `--mode` is always shown — "git" absent any
+        # hosts.default_mode, byte-identical in spirit to 50fa815's
+        # rendering (MODE1's own default).
+        assert f"self-learn host add --mode git {foreign}" in r.text
         assert runner.calls == []  # arming never executes anything
 
     def test_confirm_runs_server_derived_argv_and_ignores_client_path(
@@ -477,14 +480,16 @@ class TestArmedHostAdd:
             data={"record_id": rec.id, "path": "/tmp/evil-repo"},
             headers={"HX-Request": "true"},
         )
-        assert runner.calls == [["host", "add", str(foreign)]]
+        # U-hostmode UIM2: `--mode` is ALWAYS emitted — no posted `mode`
+        # field here, so it falls back to "git" (never guessed at).
+        assert runner.calls == [["host", "add", "--mode", "git", str(foreign)]]
         assert r.headers.get("HX-Redirect") == f"/record/{rec.id}"
 
     def test_confirm_without_record_id_returns_to_bucket(self, tmp_path: Path) -> None:
         sb, foreign, _rec, name = self._foreign_sandbox(tmp_path)
         c, runner = make_client(sb)
         r = c.post(f"/bucket/project/{name}/host-add/confirm", headers={"HX-Request": "true"})
-        assert runner.calls == [["host", "add", str(foreign)]]
+        assert runner.calls == [["host", "add", "--mode", "git", str(foreign)]]
         assert r.headers.get("HX-Redirect") == f"/bucket/project/{name}"
 
     def test_malformed_record_id_falls_back_to_bucket_redirect(
@@ -575,10 +580,26 @@ def _plain_dir_sandbox(tmp_path: Path):
 def _confirm_form_fields(html: str, scope: str, name: str) -> dict[str, str]:
     """Template-truth (the round-2 Fix A precedent): exactly the fields
     the RENDERED confirm form posts — what a browser actually sends —
-    never a hand-built dict mirroring the handler."""
+    never a hand-built dict mirroring the handler.
+
+    U-hostmode UIM1-3: radio-aware — a real browser submits only the
+    CHECKED member of a same-named radio group (`host_add_bar.html`'s
+    ``mode`` git/plain pair); an unchecked radio's own ``value`` is never
+    part of the real submission and must not overwrite the checked one's."""
     section = html.split(f'hx-post="/bucket/{scope}/{name}/host-add/confirm"')[1]
     section = section.split("</form>")[0]
-    return dict(re.findall(r'<input[^>]*name="([^"]+)"[^>]*value="([^"]*)"', section))
+    fields: dict[str, str] = {}
+    for tag in re.findall(r"<input[^>]*>", section):
+        name_m = re.search(r'name="([^"]+)"', tag)
+        if not name_m:
+            continue
+        type_m = re.search(r'type="([^"]+)"', tag)
+        field_type = type_m.group(1) if type_m else "text"
+        if field_type == "radio" and "checked" not in tag:
+            continue
+        value_m = re.search(r'value="([^"]*)"', tag)
+        fields[name_m.group(1)] = value_m.group(1) if value_m else ""
+    return fields
 
 
 class TestHostAddInitDisclosure:
@@ -596,8 +617,8 @@ class TestHostAddInitDisclosure:
         # Required content (Y-17 decision 4), plain words:
         assert "new git repository will be created at" in r.text
         assert "as part of registering" in r.text
-        # The displayed command shows the REAL argv:
-        assert f"self-learn host add --init {foreign}" in r.text
+        # The displayed command shows the REAL argv (U-hostmode UIM1/UIM2):
+        assert f"self-learn host add --mode git --init {foreign}" in r.text
         # The server-rendered one-bit marker rides the confirm form:
         fields = _confirm_form_fields(r.text, "project", name)
         assert fields.get("init_disclosed") == "1"
@@ -613,7 +634,7 @@ class TestHostAddInitDisclosure:
         assert r.status_code == 200
         assert "new git repository" not in r.text
         assert "--init" not in r.text
-        assert f"self-learn host add {foreign}" in r.text
+        assert f"self-learn host add --mode git {foreign}" in r.text
         fields = _confirm_form_fields(r.text, "project", name)
         assert "init_disclosed" not in fields
 
@@ -630,7 +651,7 @@ class TestHostAddInitDisclosure:
             data=fields,
             headers={"HX-Request": "true"},
         )
-        assert runner.calls == [["host", "add", "--init", str(foreign)]]
+        assert runner.calls == [["host", "add", "--mode", "git", "--init", str(foreign)]]
         assert r2.headers.get("HX-Redirect") == f"/bucket/project/{name}"
 
     def test_becomes_repo_race_drops_init_and_the_plain_add_registers(
@@ -650,7 +671,7 @@ class TestHostAddInitDisclosure:
             data=fields,
             headers={"HX-Request": "true"},
         )
-        assert runner.calls == [["host", "add", str(foreign)]]  # no --init
+        assert runner.calls == [["host", "add", "--mode", "git", str(foreign)]]  # no --init
         assert r2.headers.get("HX-Redirect") == f"/bucket/project/{name}"
 
     def test_goes_stale_race_runs_plain_add_into_the_error_leg(
@@ -678,7 +699,7 @@ class TestHostAddInitDisclosure:
             data=fields,
             headers={"HX-Request": "true"},
         )
-        assert runner.calls == [["host", "add", str(foreign)]]  # plain, no init
+        assert runner.calls == [["host", "add", "--mode", "git", str(foreign)]]  # plain, no init
         assert "HX-Redirect" not in r2.headers
         assert "data-verb-error" in r2.text
         assert "Registration did not complete." in r2.text
@@ -691,15 +712,73 @@ class TestHostAddInitDisclosure:
     ) -> None:
         # The confirm-time re-derivation gates every init: a forged (or
         # stale) marker bit cannot force --init on a repo-root path.
+        # U-hostmode UIM3: a forged mode=git posted for a path that IS a
+        # repo root still runs no --init — the weaken-only property.
         sb, foreign, _rec, name = _plain_dir_sandbox(tmp_path)
         init_repo(foreign)
         c, runner = make_client(sb)
         c.post(
             f"/bucket/project/{name}/host-add/confirm",
-            data={"init_disclosed": "1"},
+            data={"init_disclosed": "1", "mode": "git"},
             headers={"HX-Request": "true"},
         )
-        assert runner.calls == [["host", "add", str(foreign)]]  # no --init
+        assert runner.calls == [["host", "add", "--mode", "git", str(foreign)]]  # no --init
+
+
+class TestUIM1DefaultModeConfig:
+    """UIM1: with `hosts.default_mode: plain` in config.yaml, the arm
+    rendering for a non-repo path shows the plain option selected and
+    NO git-init disclosure; with the key absent (the default sandbox,
+    already exercised by `TestHostAddInitDisclosure`) it shows git
+    selected and the disclosure, byte-identical to 50fa815's rendering."""
+
+    def test_default_mode_plain_arm_shows_plain_selected_no_disclosure(
+        self, tmp_path: Path
+    ) -> None:
+        sb, foreign, _rec, name = _plain_dir_sandbox(tmp_path)
+        (sb.ledger / "config.yaml").write_text(
+            "hosts:\n  default_mode: plain\n", encoding="utf-8"
+        )
+        c, runner = make_client(sb)
+        r = c.post(f"/bucket/project/{name}/host-add/arm", headers={"HX-Request": "true"})
+        assert r.status_code == 200
+        # no git-init disclosure at all
+        assert "new git repository will be created at" not in r.text
+        # the plain-mode consent paragraph IS present
+        assert "Plain mode:" in r.text
+        assert "self-learn makes no commit, no push" in r.text
+        # the real argv shown carries no --init
+        assert f"self-learn host add --mode plain {foreign}" in r.text
+        # the plain radio renders checked, the git radio does not
+        fields = _confirm_form_fields(r.text, "project", name)
+        assert fields.get("mode") == "plain"
+        assert 'name="mode" value="plain" checked' in r.text
+        assert 'name="mode" value="git" checked' not in r.text
+        assert "init_disclosed" not in fields
+        assert runner.calls == []  # arming never executes anything
+
+    def test_default_mode_absent_arm_shows_git_selected_with_disclosure(
+        self, tmp_path: Path
+    ) -> None:
+        """The negative control, in the SAME shape as the plain case
+        above (not just `TestHostAddInitDisclosure`'s pre-existing
+        test, which predates this class and doesn't check the radio
+        state) — no config.yaml at all reads "git" (MODE3's own
+        fail-closed default), byte-identical to 50fa815's rendering."""
+        sb, foreign, _rec, name = _plain_dir_sandbox(tmp_path)
+        assert not (sb.ledger / "config.yaml").exists()
+        c, runner = make_client(sb)
+        r = c.post(f"/bucket/project/{name}/host-add/arm", headers={"HX-Request": "true"})
+        assert r.status_code == 200
+        assert "new git repository will be created at" in r.text
+        assert "Plain mode:" not in r.text
+        assert f"self-learn host add --mode git --init {foreign}" in r.text
+        fields = _confirm_form_fields(r.text, "project", name)
+        assert fields.get("mode") == "git"
+        assert 'name="mode" value="git" checked' in r.text
+        assert 'name="mode" value="plain" checked' not in r.text
+        assert fields.get("init_disclosed") == "1"
+        assert runner.calls == []
 
 
 class TestHostAddErrorLeg:

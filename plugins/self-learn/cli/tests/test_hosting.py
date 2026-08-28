@@ -603,6 +603,11 @@ class TestTwoPhaseRoute:
         assert f"({record.id})" in claude_md
 
     def test_user_scope_chezmoi_flow_unchanged(self, env, tmp_path, chezmoi_shim):
+        """U-hostmode §4.8.1 (census EDIT, S3): user scope is now a
+        first-class PLAIN host — the write goes through the ordinary
+        plain path (``compile_managed_file``), calling NO chezmoi
+        function at all (USER2/CHEZ0). Name kept per the census
+        discipline; the test now proves the REPLACEMENT behaviour."""
         record = make_knowledge(scope="user")
         create_record(env.ledger, record)
         user_md = tmp_path / "user-claude.md"
@@ -615,13 +620,11 @@ class TestTwoPhaseRoute:
             no_push=True,
             user_claude_md=user_md,
         )
-        # the guarded chezmoi sequence ran: diff, status, re-add, add/commit/push
-        calls = chezmoi_shim()
-        assert any(c.startswith("diff ") for c in calls)
-        assert any("status --porcelain" in c for c in calls)
-        assert any(c.startswith("re-add ") for c in calls)
-        assert any("commit -m self-learn: route" in c for c in calls)
-        # the dotfiles repo commits itself — no host commit here
+        # zero chezmoi calls — the shim recorded nothing (USER2)
+        assert chezmoi_shim() == []
+        # the dotfiles repo commits itself — no host commit here (same
+        # SHAPE as before, new REASON: user scope is plain by
+        # construction, so nothing is ever committed there)
         assert result.host_commit_sha is None
         assert head(env.host) == host_before
         assert f"({record.id})" in user_md.read_text(encoding="utf-8")
