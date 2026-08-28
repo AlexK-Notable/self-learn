@@ -47,6 +47,7 @@ from pathlib import Path
 
 from . import gitops, invocation, sentinel, telemetry, worker
 from . import reconcile as reconcile_mod
+from .corroborate import MISMATCH, NO_EVIDENCE, RunEvidence
 from .hosts import load_hosts
 from .import_common import existing_origins
 from .ledger import discover_buckets, home_state, home_state_message
@@ -749,6 +750,13 @@ def _invoke_reader(home: Path, prompt: str) -> Path | None:
     it is deleted, not merely unwired."""
     out_path = spool_dir() / OUTPUT_BASENAME
     out_path.unlink(missing_ok=True)
+    # U-corrob (`COR7`/`COR9`/`COR10`): the reader's filesystem census is
+    # `len(after - before)` over two RECURSIVE snapshots of `spool_dir()`
+    # -- `before` taken here, immediately after the unlink above, so
+    # pre-existing residue (a stray planted before this run, or a stale
+    # `mine-output.json` an earlier early-return run left behind) cancels
+    # rather than being counted as this run's write.
+    before = {p for p in spool_dir().rglob("*") if p.is_file()}
     # N-2a (U-fw100 gate r1): bind once -- enforced and displayed must be
     # the SAME env read, not two independent calls straddling
     # containment_for(), so they cannot diverge by construction.
@@ -768,6 +776,46 @@ def _invoke_reader(home: Path, prompt: str) -> Path | None:
         doctrine=None,
     )
     outcome = invocation.write_session(spec)
+    # U-corrob: `after` is taken here -- before the early return below
+    # and before the stray sweep -- so a session that times out or fails
+    # to spawn still gets an honest census, and the sweep (which only
+    # ever touches strays, never `out_path`) cannot perturb the count.
+    after = {p for p in spool_dir().rglob("*") if p.is_file()}
+    fs_count = len(after - before)
+    evidence = RunEvidence(spool_dir(), flat=False)
+    evidence.observe(outcome)
+    tag = evidence.verdict(fs_count)
+    if tag == NO_EVIDENCE:
+        log(
+            "run: corroboration — no tool events recorded "
+            f"({fs_count} artifact(s) in the spool)"
+        )
+    elif tag == MISMATCH:
+        log(
+            f"run: corroboration MISMATCH — spool has {fs_count} "
+            f"artifact(s), model reported {len(evidence.inside)} accepted "
+            "write(s) (filesystem is authority)"
+        )
+    outside = evidence.outside_paths()
+    if outside:
+        log(
+            f"run: {len(outside)} accepted write(s) reported OUTSIDE the "
+            f"spool (filesystem is authority; see the event log in {worker.cache_dir()})"
+        )
+    # U-corrob (`DEN1`/`DEN2`, the `FW-107` pattern extended): the
+    # miner-reader has no FAILED line of its own, so a fully-denied
+    # reader run used to be indistinguishable from one that wrote
+    # nothing -- the identical defect `FW-107` fixed for the worker.
+    # `source == "sdk-result"` denials never count (`DEN2`).
+    charter_denials = [
+        d for d in getattr(outcome, "denials", ()) if d.get("source") == "charter"
+    ]
+    if charter_denials:
+        tools = sorted({d.get("tool") for d in charter_denials if d.get("tool")})
+        log(
+            f"run: {len(charter_denials)} charter denial(s) this run "
+            f"({', '.join(tools)}) — see the event log in {worker.cache_dir()}"
+        )
     if outcome.failure in {"timeout", "not-found", "os-error", "unavailable"}:
         return None
     # Artifact contract: exactly OUTPUT_BASENAME; strays are litter.

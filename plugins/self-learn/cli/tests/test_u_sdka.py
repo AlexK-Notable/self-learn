@@ -2064,11 +2064,16 @@ def test_hy5_numstat_bounds_hold():
     # asserting `child_pid is None` on the `not-found` path). Measured
     # single-ref against `_BASE_SHA`, required: the prior bound (414,
     # 166) undercounted this fold's real insertions by 79.
+    # U-corrob DEN3 (2026-08-28, ruling on DEN3: BUILD IT -- the (4, 18)
+    # row below was armor BOOKKEEPING, not a design constraint):
+    # `analyst.py` widened (4, 18) -> (22, 20) for `analyze()`'s new
+    # keyword-only `charter_denials` accumulator (`FW-107`'s shape,
+    # extended -- `DEN3`), measured single-ref against `442385d`.
     bounds = {
         "plugins/self-learn/cli/src/self_learn/invocation/contract.py": (31, 47),
         "plugins/self-learn/cli/src/self_learn/invocation/registry.py": (34, 20),
         "plugins/self-learn/cli/src/self_learn/provider.py": (196, 36),
-        "plugins/self-learn/cli/src/self_learn/analyst.py": (4, 18),
+        "plugins/self-learn/cli/src/self_learn/analyst.py": (22, 20),
         "plugins/self-learn/cli/tests/conftest.py": (44, 0),  # U-servehermetic: XDG_CONFIG_HOME hermetic default added
         "plugins/self-learn/cli/tests/fixtures/fake_claude.py": (388, 1),
         "plugins/self-learn/cli/tests/test_invocation.py": (718, 700),

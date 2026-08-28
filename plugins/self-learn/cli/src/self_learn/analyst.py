@@ -50,6 +50,7 @@ import re
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
@@ -136,7 +137,8 @@ def _parse_yaml_map(text: str) -> dict:
 
 
 def analyze(
-    home: Path | str, record: Record, *, project_path: Path | None = None
+    home: Path | str, record: Record, *, project_path: Path | None = None,
+    charter_denials: list[dict[str, Any]] | None = None,
 ) -> dict:
     """Run the one-shot analyst for ``record``; return a validated proposal
     dict: **every field the model emitted**, plus the CLI-stamped
@@ -169,7 +171,17 @@ def analyze(
     (``_route_now``, ~:683) now threads its own ``project_path`` through;
     a caller that still omits it gets `worker.path_roster`'s newer,
     honest sentinel instead of the old misleading one (see that
-    function's own docstring)."""
+    function's own docstring).
+
+    U-corrob (``DEN3``, 2026-08-28): ``charter_denials``, when given, is a
+    caller-owned list this call EXTENDS with this invocation's
+    charter-sourced denials (``outcome.denials`` entries with
+    ``source == "charter"``) — the same caller-owned-accumulator shape
+    ``worker._invoke_claude`` uses for `FW-107`, and for the same reason:
+    the extend happens BEFORE any of the ``AnalystError`` legs below, so a
+    caller sees this run's denials whether ``analyze`` returns or raises.
+    Every existing call site that omits the new keyword-only parameter is
+    unaffected."""
     doctrine = doctrine_path()
     if not doctrine.is_file():
         # Callers check first for the pinned exit-2 message; this guard is
@@ -237,6 +249,10 @@ def analyze(
         doctrine=doctrine_text,
     )
     outcome = invocation.text_session(spec)
+    if charter_denials is not None:
+        charter_denials.extend(
+            d for d in getattr(outcome, "denials", ()) if d.get("source") == "charter"
+        )
     # W-h: every AnalystError message on this path is rendered through
     # LOG_TEMPLATES["analyst"] -- the analyst does not carry its own
     # copies of these f-strings (see that criterion's docstring, WR6).

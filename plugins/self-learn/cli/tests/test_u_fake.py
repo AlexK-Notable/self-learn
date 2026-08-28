@@ -88,6 +88,13 @@ REWRITTEN = (
     ),
     ("test_route_cli.py", "sdk_fake_analyst"),
     ("test_route_cli.py", "test_teach_route_analyst_routes_to_shim_destination"),
+    # U-corrob DEN3 (2026-08-28): `fake_analyze`'s nested body (inside
+    # this still-present, otherwise-unchanged test) gained a
+    # `charter_denials=None` parameter, so `_route_now`'s now-
+    # unconditional call keeps working against this stand-in --
+    # an edited body on an otherwise-unchanged, still-present test,
+    # exactly what `REWRITTEN` is for.
+    ("test_route_cli.py", "test_teach_route_bare_analyst_threads_project_path_at_project_scope"),
     ("test_composer.py", "_capture_analyst_prompt"),
     ("test_composer.py", "_shim_env"),
     (
@@ -289,11 +296,20 @@ def _extract_named_function(source: str, name: str) -> str:
 #: run over `git show c2669a9:plugins/self-learn/cli/tests/test_worker.py`
 #: with the CURRENT (post-registration) `names` tuple, never over the
 #: working tree. The other four modules' rows are untouched.
+# U-corrob DEN3 (2026-08-28): `test_teach_route_bare_analyst_threads_
+# project_path_at_project_scope` moves into `REWRITTEN` above (its
+# nested `fake_analyze` gained a `charter_denials=None` parameter so it
+# keeps satisfying `_route_now`'s now-unconditional call) -- one fewer
+# name in this module's tracked set (39 -> 38), and the remaining 38
+# functions' sha is unchanged by this edit (Leg 1's own live-base-vs-
+# live-head check confirms it: this row's sha is the base sha, not a
+# re-measured head sha, since `REWRITTEN` exempts the touched function
+# from the comparison entirely).
 _DS1_EXPECTED = {
     "test_worker.py": (55, "39305f65724adfb1634ce91285b483b05aea05c662f2de9ac9bf30fa38daf1f8"),
     "test_repair.py": (64, "c3af3b925322601fda320e44c4c48ad1e1d5f2e984551bbd6adbfb9ab33dea52"),
     "test_attrib.py": (40, "d7b274c779656cfbcf133a62efce5435cc2441e6091d68329e0795dc42573418"),
-    "test_route_cli.py": (39, "ef6048a64b7e260adf5be14507b8d3dba1b6906bc6199f5b3bf5688ed426c9ba"),
+    "test_route_cli.py": (38, "45e55f94f60834643efe1bbab1636649acdd3094dd9210dcf64921b2755fdaea"),
     "test_composer.py": (40, "479a3caf84e427a86df6eb17ecefa2ede57a85185df79ff43defe0c9e5f931ec"),
 }
 
@@ -742,6 +758,11 @@ def test_ds2_rewritten_set_is_exact_and_every_entry_is_live():
         ),
         ("test_route_cli.py", "sdk_fake_analyst"),
         ("test_route_cli.py", "test_teach_route_analyst_routes_to_shim_destination"),
+        # U-corrob DEN3 (2026-08-28):
+        (
+            "test_route_cli.py",
+            "test_teach_route_bare_analyst_threads_project_path_at_project_scope",
+        ),
         ("test_composer.py", "_capture_analyst_prompt"),
         ("test_composer.py", "_shim_env"),
         (
@@ -761,7 +782,7 @@ def test_ds2_rewritten_set_is_exact_and_every_entry_is_live():
             "test_fold5_honest_sentinel_when_project_path_truly_not_supplied",
         ),
     }
-    assert len(REWRITTEN) == 22
+    assert len(REWRITTEN) == 23  # U-corrob DEN3 (2026-08-28)
     assert set(REWRITTEN) == expected
 
     for module, name in REWRITTEN:
