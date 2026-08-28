@@ -1496,6 +1496,13 @@ _AR3_REASONS = {
     # worker` directly (8 sites renamed).
     ("test_invocation.py", "repair_run"): "U-cleanup-B (§8.3, claude_shim -> sdk_fake_worker rename)",
     ("test_invocation.py", "test_rg5_shimmed_worker_run_completes_under_sdk_selection"): "U-cleanup-B (§8.3, claude_shim -> sdk_fake_worker rename)",
+    # U-kl4 (2026-08-28): the pgrep-based liveness check was host-global
+    # (matched ANY process on the machine, not just this run's own child
+    # -- measured 2/2 parallel-suite runs false-red, solo green).
+    # Rebuilt to identify the child by PID, read off a new
+    # `SdkOutcome.child_pid` field (`backend.py`) instead of a name
+    # pattern.
+    ("test_invocation_sdk.py", "test_kl4_hang_sigterm_ignored_child_is_gone_after_run_sync_returns"): "U-kl4 (pid-keyed liveness check, root-cause fix for the host-global pgrep false-red)",
 }
 
 _AR3_RENAMED = {
@@ -1595,6 +1602,18 @@ _AR3_ADDED: dict[str, frozenset[str]] = {
             "test_fake_per_call_error_ro4",
             "test_fake_prompt_log_ro2",
             "test_templates_byte_pinned_ro6",
+            # U-kl4 (2026-08-28): the pid-keyed liveness-check helpers
+            # (module-level, shared by both `test_kl4_...` and its
+            # positive control below) plus the positive control itself.
+            "_proc_start_ticks",
+            "_child_gone",
+            "test_kl4a_pid_check_reddens_when_the_explicit_kill_is_disabled",
+            # U-kl4 gate r1 fold (2026-08-28): B-1's reap helper (used by
+            # `test_kl4a_...`'s finally, once it captures the pid FIRST)
+            # and N/D-2's new committed test (child_pid is None on the
+            # not-found path).
+            "_reap_best_effort",
+            "test_kl4b_child_pid_is_none_on_a_path_where_no_child_ever_spawned",
         }
     ),
     "test_doctor_invocation.py": frozenset(
@@ -2026,6 +2045,25 @@ def test_hy5_numstat_bounds_hold():
     # (44, 0) -- the ten-line `XDG_CONFIG_HOME` hermetic-default addition
     # to `_worker_test_defaults` (see `_AR1_SANCTIONED_PIN_LINES` above,
     # same unit). No other row in this table is touched by this unit.
+    # U-kl4 (2026-08-28): `test_invocation_sdk.py` widened (298, 149) ->
+    # (414, 166) -- `test_kl4_...`'s pgrep-based liveness check (host-
+    # global, measured false-red under concurrent suites) rebuilt to key
+    # on the pid this run's own child actually got, plus its positive
+    # control (`test_kl4a_...`) and the two shared identity-check
+    # helpers (`_proc_start_ticks`/`_child_gone`). Measured single-ref
+    # against `_BASE_SHA`, required (not a discretionary widening): the
+    # unedited bound already sat at exactly 298/149, one insertion below
+    # the true content this build needs.
+    # U-kl4 gate r1 fold (2026-08-28): widened AGAIN, (414, 166) ->
+    # (493, 166) -- B-1 (`test_kl4a_...`'s `try` rescoped to capture
+    # `pid` FIRST so every assertion's cleanup runs, plus a new
+    # `_reap_best_effort` waitpid helper), N/D-3 (re-check start-ticks
+    # immediately before the `SIGKILL`, not just once at capture time),
+    # N/D-1 (one sentence on `NOTE-14` about the PID-reuse guard's
+    # failure mode), and N/D-2 (a new committed test, `test_kl4b_...`,
+    # asserting `child_pid is None` on the `not-found` path). Measured
+    # single-ref against `_BASE_SHA`, required: the prior bound (414,
+    # 166) undercounted this fold's real insertions by 79.
     bounds = {
         "plugins/self-learn/cli/src/self_learn/invocation/contract.py": (31, 47),
         "plugins/self-learn/cli/src/self_learn/invocation/registry.py": (34, 20),
@@ -2034,7 +2072,7 @@ def test_hy5_numstat_bounds_hold():
         "plugins/self-learn/cli/tests/conftest.py": (44, 0),  # U-servehermetic: XDG_CONFIG_HOME hermetic default added
         "plugins/self-learn/cli/tests/fixtures/fake_claude.py": (388, 1),
         "plugins/self-learn/cli/tests/test_invocation.py": (718, 700),
-        "plugins/self-learn/cli/tests/test_invocation_sdk.py": (298, 149),  # code gate r1 MAJOR-1 fold: claude_cli_shim_worker/_analyst -> sdk_fake_worker/_analyst rename
+        "plugins/self-learn/cli/tests/test_invocation_sdk.py": (493, 166),  # U-kl4 gate r1 fold (2026-08-28): B-1 (try scoped to capture pid first + best-effort reap), N/D-2 (new test_kl4b), N/D-3 (re-check start-ticks immediately before the kill), N/D-1 (NOTE-14 sentence); was (298, 149) -> (414, 166) -> (493, 166), measured single-ref against _BASE_SHA
         "plugins/self-learn/cli/tests/test_doctor_invocation.py": (165, 9),
     }
     for relpath, (max_ins, max_del) in bounds.items():

@@ -516,7 +516,7 @@ _ARMOR_SHAS = {
     "plugins/self-learn/cli/tests/conftest.py": "2cb3e5080166f165d05db37b964deafd365d0567b472b91f005df92b2afc0e3c",  # U-servehermetic: XDG_CONFIG_HOME hermetic default added
     "plugins/self-learn/cli/tests/backends.py": "a2ba2d74f117a230740d10e3c9fa67bd30f751ce80ec59667c9136557a906dde",
     "plugins/self-learn/cli/tests/test_invocation.py": "e3875614ab32a760788140d76e26cd542c07bd2f9dfa512f9da0f62c40b9257c",
-    "plugins/self-learn/cli/tests/test_invocation_sdk.py": "22cecabad8d3caf3ccd2c63bc977cfd359f2ea38de3f525c0f2544e02692ad23",
+    "plugins/self-learn/cli/tests/test_invocation_sdk.py": "124c0e8b310ce8dbfeea89348d0ea5a8cf9c96c071642f7e16e89a7ffa1b4e35",  # U-kl4 gate r1 fold (2026-08-28): B-1/N-D1/N-D2/N-D3, see the dated paragraph below
     "plugins/self-learn/cli/tests/test_u_fake.py": "d1d2e5a55df4ab0f42dbc6f091478015b6dd1414cd162fd1de4d004eb2abf5b1",
     "plugins/self-learn/cli/tests/test_worker.py": "96ac0b4606a4e643b24c67df7202a897864ea404390fa6fd353655345d6eefe7",
     "plugins/self-learn/cli/tests/test_repair.py": "40bf4fbd80ce7901d88ad9394de32301213b095d47c9e38fc253773c1d0c631c",
@@ -611,6 +611,52 @@ _ARMOR_SHAS = {
 #: test_u_fake.py/test_worker.py/test_repair.py (6 of the 7 pinned files;
 #: backends.py untouched by the rename) to this round's content; all six
 #: already members of the exempt set below.
+#:
+#: *2026-08-28* **U-kl4** re-pins `test_invocation_sdk.py` again: the
+#: root-cause fix for `test_kl4_hang_sigterm_ignored_child_is_gone_
+#: after_run_sync_returns`'s host-global false-red (`pgrep -f
+#: fake_clau[d]e.py` matched ANY process on the machine, not just this
+#: run's own child -- measured 2/2 parallel-suite runs red, solo green).
+#: The test now identifies its child by PID, read off a new
+#: `SdkOutcome.child_pid` field (`backend.py`) instead of a name
+#: pattern, with a positive control (`test_kl4a_...`, monkeypatches
+#: `teardown_mod.kill_child` to a no-op and confirms the check reddens)
+#: plus two shared identity-check helpers (`_proc_start_ticks`/
+#: `_child_gone`). The `NOTE-14` comment is rewritten in place to
+#: describe the new check rather than deleted, since the file's other
+#: `NOTE-*` comments are kept as historical markers the same way. A
+#: first version of this fix threaded the pid through `spec.log()`
+#: instead of a new `SdkOutcome` field -- MEASURED to break
+#: `test_lg1`/`test_lg6`/`test_fk2` (`test_invocation.py`), `test_ou4`
+#: (this file's sibling `test_invocation_sdk.py`), and `test_fl2`
+#: (`test_worker_contract.py` itself, below) by adding an unexpected
+#: line to every clean session's log; reverted before it shipped.
+#: `backend.py` itself is untouched by any of this file's own pins
+#: (not one of the 7) -- its `SdkOutcome.child_pid` addition has no
+#: whole-file armor here to move.
+#:
+#: *2026-08-28* **U-kl4 gate r1 fold** re-pins `test_invocation_sdk.py`
+#: a further time (1 BLOCKER / 0 MAJOR / 3 NOTE-or-DIRECT, folded, same
+#: worktree, uncommitted). `B-1` (must-fix): `test_kl4a_...`'s `try/
+#: finally` was scoped too narrowly -- `assert outcome.failure ==
+#: "timeout"` and `assert pid is not None` ran OUTSIDE the `try`, so
+#: either firing left `kill_child()` neutered and nothing to reap the
+#: child (`K-5`'s sweep can't find it either, since `_drive`'s
+#: `finally` already cleared the sidecar) -- a real ppid-1 orphan,
+#: reproduced live during gate review and killed by hand from its pid.
+#: Fixed: `pid = outcome.child_pid` is captured FIRST, every assertion
+#: moved INSIDE the `try`, and the `finally` SIGKILLs + best-effort-
+#: reaps (`_reap_best_effort`, new) the captured pid whenever it is not
+#: `None`. `N/D-3`: the kill now re-checks `_proc_start_ticks(pid)`
+#: immediately before sending `SIGKILL` (not just once at capture
+#: time), guarding the ~1.5s window `_child_gone`'s own poll can take
+#: -- kills only if the ticks still match. `N/D-2`: a new committed
+#: test, `test_kl4b_child_pid_is_none_on_a_path_where_no_child_ever_
+#: spawned`, asserts `child_pid is None` on the `not-found` leg (the
+#: one the gate probed) -- one assertion, docstring cites `N/D-2`.
+#: `N/D-1` (accepted as-is, no code change): one sentence added to the
+#: `NOTE-14` comment block stating the PID-reuse guard's own failure
+#: mode is a slower false RED, never a false green.
 _SU4B_DIFF_EXEMPT = {
     "plugins/self-learn/cli/tests/conftest.py",
     "plugins/self-learn/cli/tests/test_invocation.py",
