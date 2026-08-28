@@ -60,6 +60,7 @@ from typing import Any
 
 from . import invocation, sentinel, telemetry
 from .compilers import BEGIN_MARKER, END_MARKER
+from .corroborate import MISMATCH, NO_EVIDENCE, RunEvidence
 from .hosts import Hosts, HostsError, load_hosts, skill_dir_for
 from .ledger import discover_buckets, resolve_home
 from .ledger_ops import bucket_project_path
@@ -3064,6 +3065,7 @@ def _invoke_claude(
     label: str,
     containment: invocation.Containment | None = None,
     charter_denials: list[dict[str, Any]] | None = None,
+    evidence: RunEvidence | None = None,
 ) -> None:
     """One model invocation — round 1 (``label=""``) or the repair round
     (``label="repair "``), same exception handling shape as this project
@@ -3094,7 +3096,15 @@ def _invoke_claude(
     keyword-only parameter keeps that exact contract. ``run()``'s batch
     loop is the one caller that passes it, to carry a denial count from
     this invocation's outcome to its own run-summary log line without
-    otherwise touching what this function returns."""
+    otherwise touching what this function returns.
+
+    U-corrob: ``evidence``, when given, is a caller-owned
+    :class:`~self_learn.corroborate.RunEvidence` this call feeds via
+    :meth:`~self_learn.corroborate.RunEvidence.observe` — the same
+    caller-owned-accumulator shape as ``charter_denials`` above, and for
+    the same reason: this function's always-returns-``None`` contract
+    does not move. Only ``run()``'s round-1 call passes it (`§5.8` — the
+    repair round is excluded)."""
     spec = invocation.SessionSpec(
         surface="worker-repair" if label == "repair " else "worker",
         prompt=prompt,
@@ -3110,6 +3120,8 @@ def _invoke_claude(
         charter_denials.extend(
             d for d in getattr(outcome, "denials", ()) if d.get("source") == "charter"
         )
+    if evidence is not None:
+        evidence.observe(outcome)
 
 
 def run(
@@ -3164,6 +3176,13 @@ def run(
                 # below, without perturbing `_invoke_claude`'s pinned
                 # always-returns-`None` contract.
                 charter_denials: list[dict[str, Any]] = []
+                # U-corrob: round-1 corroboration evidence, constructed
+                # only when the stage IS this round's filesystem
+                # instrument (`§5.8` excludes the repair round; under
+                # `SELF_LEARN_STAGE=0` the original `_written_since` diff
+                # is still the authority and there is nothing to
+                # corroborate against).
+                evidence = RunEvidence(stage_dir(), flat=True) if stage_on else None
                 if stage_on:
                     stage_reset(home)  # S1 (ST-c) — before composing the prompt
                 else:
@@ -3182,6 +3201,7 @@ def run(
                         enforce=_enforce_scope(),
                     ),
                     charter_denials=charter_denials,
+                    evidence=evidence,
                 )  # S2
                 # S6 (moved here, §3.3): re-assert the sentinel hold after
                 # the invocation. A CONCURRENT short holder (e.g. the
@@ -3203,6 +3223,33 @@ def run(
                 if stage_on:
                     staged1 = staged_paths()
                     log(f"run: stage — {len(staged1)} file(s) written by the model")
+                    # U-corrob: at most one of the two verdict lines,
+                    # plus the OUTSIDE line independently (`COR4`/`COR5`;
+                    # both gated internally by `RunEvidence`'s own
+                    # seen/failure/events_present rule — a failed or
+                    # eventless round-1 invocation prints neither).
+                    if evidence is not None:
+                        fs_count = len(staged1)
+                        tag = evidence.verdict(fs_count)
+                        if tag == NO_EVIDENCE:
+                            log(
+                                "run: corroboration — no tool events "
+                                f"recorded ({fs_count} file(s) on disk)"
+                            )
+                        elif tag == MISMATCH:
+                            log(
+                                "run: corroboration MISMATCH — stage has "
+                                f"{fs_count} file(s), model reported "
+                                f"{len(evidence.inside)} accepted write(s) "
+                                "(filesystem is authority)"
+                            )
+                        outside = evidence.outside_paths()
+                        if outside:
+                            log(
+                                f"run: {len(outside)} accepted write(s) "
+                                "reported OUTSIDE the stage (filesystem is "
+                                f"authority; see the event log in {cache_dir()})"
+                            )
                     dest_map1: dict[Path, Path | None] = {
                         p: _resolve_destination(p, batch_by_id) for p in staged1
                     }

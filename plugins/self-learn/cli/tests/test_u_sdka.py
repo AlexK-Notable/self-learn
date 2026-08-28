@@ -1985,11 +1985,16 @@ def test_hy5_numstat_bounds_hold():
     # measured single-ref against _BASE_SHA. Widened again (185, 36) ->
     # (196, 36) -- gate r2 N-6': the corrupt-vs-absent heartbeat
     # distinction added to `_serve_row`'s configured-no-heartbeat leg.
+    # U-corrob DEN3 (2026-08-28, ruling on DEN3: BUILD IT -- the (4, 18)
+    # row below was armor BOOKKEEPING, not a design constraint):
+    # `analyst.py` widened (4, 18) -> (22, 20) for `analyze()`'s new
+    # keyword-only `charter_denials` accumulator (`FW-107`'s shape,
+    # extended -- `DEN3`), measured single-ref against `442385d`.
     bounds = {
         "plugins/self-learn/cli/src/self_learn/invocation/contract.py": (31, 47),
         "plugins/self-learn/cli/src/self_learn/invocation/registry.py": (34, 20),
         "plugins/self-learn/cli/src/self_learn/provider.py": (196, 36),
-        "plugins/self-learn/cli/src/self_learn/analyst.py": (4, 18),
+        "plugins/self-learn/cli/src/self_learn/analyst.py": (22, 20),
         "plugins/self-learn/cli/tests/conftest.py": (34, 0),  # code gate r1 NIT-5: stale AG1-tripwire paragraph fixed
         "plugins/self-learn/cli/tests/fixtures/fake_claude.py": (388, 1),
         "plugins/self-learn/cli/tests/test_invocation.py": (718, 700),

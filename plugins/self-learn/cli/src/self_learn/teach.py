@@ -65,6 +65,7 @@ import argparse
 import re
 import sys
 from datetime import datetime, timezone
+from typing import Any
 
 from pathlib import Path
 
@@ -679,9 +680,25 @@ def _route_now(
         doctrine = analyst.doctrine_path()
         if not doctrine.is_file():
             return _fail(f"routing doctrine not installed — T10 ({doctrine})")
+        # U-corrob (`DEN3`, 2026-08-28): a caller-owned accumulator, the
+        # same shape `FW-107` uses on the worker leg -- `analyze` extends
+        # it with this invocation's charter-sourced denials whether it
+        # returns or raises, so the line below fires on BOTH branches of
+        # this `try` (the only surface where an analyst denial has ever
+        # been silently invisible before this unit: 16 of 22 analyst tool
+        # calls in the corpus errored with no denial line anywhere).
+        charter_denials: list[dict[str, Any]] = []
         try:
-            proposal = analyst.analyze(home, record, project_path=project_path)
+            proposal = analyst.analyze(
+                home, record, project_path=project_path, charter_denials=charter_denials,
+            )
         except analyst.AnalystError as exc:
+            if charter_denials:
+                tools = sorted({tool for d in charter_denials if (tool := d.get("tool"))})
+                print(
+                    f"analyst: {len(charter_denials)} charter denial(s) this run "
+                    f"({', '.join(tools)})"
+                )
             return _capture_to_pending(
                 home,
                 record.to_text(),
@@ -689,6 +706,12 @@ def _route_now(
                 "run review or route --dest",
                 project_path,
                 no_push=args.no_push,
+            )
+        if charter_denials:
+            tools = sorted({tool for d in charter_denials if (tool := d.get("tool"))})
+            print(
+                f"analyst: {len(charter_denials)} charter denial(s) this run "
+                f"({', '.join(tools)})"
             )
         dest = proposal["destination"]
         rationale = proposal.get("rationale") or ""

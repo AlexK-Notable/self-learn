@@ -413,7 +413,12 @@ def test_teach_route_bare_analyst_threads_project_path_at_project_scope(
 
     captured: dict = {}
 
-    def fake_analyze(home, record, *, project_path=None):
+    def fake_analyze(home, record, *, project_path=None, charter_denials=None):
+        # U-corrob (`DEN3`, 2026-08-28): `_route_now` now always passes
+        # `charter_denials=` alongside `project_path=` (`FW-107`'s shape,
+        # extended to the analyst leg) -- accepted and ignored here, this
+        # probe's own job is only the `project_path` kwarg (see docstring
+        # above).
         captured["project_path"] = project_path
         raise analyst.AnalystError("FOLD 6 probe — captured, not routed")
 

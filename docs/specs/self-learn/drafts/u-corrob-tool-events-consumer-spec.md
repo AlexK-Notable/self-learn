@@ -1390,7 +1390,11 @@ mutation id from §10, or the marker **`census-only`** with its reason.
 ### 9.1 COR — the agreement check
 
 - **COR1** `src/self_learn/corroborate.py` exists at TOP LEVEL and exports
-  exactly `RunEvidence`. Its import set is **stdlib +
+  exactly `RunEvidence`, `NO_EVIDENCE`, `MISMATCH` (code gate r1, N-1 —
+  `__all__` corrected to name all three: `NO_EVIDENCE`/`MISMATCH` are
+  genuinely part of the public contract, imported by name from both
+  `worker.py` and `miner.py`; `__all__ = ["RunEvidence"]` alone was not
+  the truth). Its import set is **stdlib +
   `.invocation_sdk.charter` + `.sdksession.toolpaths` only** — no
   `.worker`, no `.miner`, no `.invocation_sdk.events`, no `self_learn_ui`.
   **Check:** an AST test over every `Import`/`ImportFrom`, asserted against
@@ -1570,13 +1574,18 @@ mutation id from §10, or the marker **`census-only`** with its reason.
   shows no change to any of them. → **M38** (its inverse direction: the
   announce-only-first restoration reddens `COR11` while leaving all six
   checks green, which is what proves the fixture body is outside the pinned
-  set) 
+  set)
 
 ### 9.5 UN — behaviours that must not move
 
 - **UN1** `run: stage — {n} file(s) written by the model` and the
-  `run: FAILED — …` line are byte-unchanged (`test_repair.py::test_h3_*`,
-  armor-pinned file, green and unedited). → **M25**
+  `run: FAILED — …` line are byte-unchanged. **Citation corrected (code
+  gate r1, D-1):** `test_repair.py::test_h3_*` pins the `run: FAILED`
+  line (and the ok/invalid-delete/orphan-swept/follow-on lines) but does
+  NOT assert the stage line's text at all; that line is pinned by
+  `test_attrib.py::test_ob1_the_new_lines_exist_with_their_counts` and,
+  as of this unit, also by `test_cor4_agreeing_run_emits_nothing`
+  (`test_u_corrob.py`). → **M25**
 - **UN2** **H-5 — the producers' write paths are byte-identical.**
   **Instrument:** `test_lock_invariant.py`. (a)
   `test_no_entrypoint_reaches_a_mutation_without_a_lock` green; (b) the
@@ -1679,7 +1688,7 @@ reason stated in §9.7.
 | M22 | Add a `return` statement to `_invoke_claude` | RED — `test_wr1` | PIN4 |
 | M23 | Edit a deny message in `charter.py` | RED — PIN5's single-ref diff non-empty | PIN5 |
 | M24 | Place `corroborate.py` in `invocation_sdk/` | RED — `PL1` names ≠ expected (**MEASURED**, §4.1/A-5) | PIN6 |
-| M25 | Change the `run: stage — N file(s)` text | RED — `test_repair.py::test_h3_*` | UN1 |
+| M25 | Change the `run: stage — N file(s)` text | RED — `test_attrib.py::test_ob1_the_new_lines_exist_with_their_counts` and `test_cor4_agreeing_run_emits_nothing` (code gate r1, D-1: NOT `test_h3`, which pins the `FAILED` line and others, never this one) | UN1 |
 | M26 | Plant a `write_text` in `worker.py` / `miner.py` outside a lock | RED — the walker names an unguarded mutation | UN2 |
 | M27 | Plant a `write_text` in `corroborate.py` | RED — the walker's root-level glob reaches it (§4.1) | UN2 |
 | M28 | Plant a `write_text` inside `invocation_sdk/` | RED — `PL3`'s exact count 5 → 6 | UN3 |
@@ -1723,10 +1732,14 @@ none is offered as evidence that this unit works.
 4. `analyst.py` + `teach.py` — the accumulator and one printed line on
    **both** branches of `teach`'s `try` (`Q-1` RULED YES).
 5. `tests/fixtures/fake_claude.py` — `_scenario_shim_script` emits one
-   `tool_use`/`tool_result` pair per write op (§6.6). Test-side, **net −7
-   lines** (the printed block is normative), no armor sha moved and
-   `test_hy5`'s numstat bound left with 7 lines of headroom (measured,
-   `A-8`/`A-10`) *(CORRECTED-r4, gate M-2r3 — r3 said "net zero")*.
+   `tool_use`/`tool_result` pair per write op (§6.6). Test-side, no armor
+   sha moved. **What actually shipped is the printed 7-line block PLUS a
+   2-line dated comment** (the build report's own M38 note), not the bare
+   block alone — measured single-ref against `442385d`: `385 1` tracked,
+   `383` adjusted (the two `SCENARIOS`-dict lines excluded per `test_
+   hy5`'s own convention) against the `388` cap, **5 lines of headroom**,
+   not 7 *(code gate r1, D-3 — corrected from the earlier "7 lines of
+   headroom" prediction, which described the bare block with no comment)*.
 6. `cli/tests/test_u_corrob.py` — new.
 7. Docs: `03-decisions.md` (`S-53`, `S-44` amendment),
    `14-forward-work-map.md` (`FW-128`..`FW-131` + one dated entry),
