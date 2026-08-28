@@ -10,16 +10,20 @@ import pytest
 from self_learn.ledger import discover_buckets
 from self_learn.ledger_ops import (
     LedgerOpsError,
+    LIVE_STATUSES,
     ProposalError,
     bucket_dir_for_scope,
     create_record,
     defer_record,
+    find_record_path,
     is_unanalyzed,
     proposal_info,
     queue,
     read_proposal,
+    require_status,
     resolve_record,
     stamp_proposal,
+    supersede_cycle_check,
     supersede_record,
     unparseable_pending,
     validate_merge_proposal,
@@ -299,6 +303,146 @@ def test_supersede_already_resolved_record_updates_in_place(tmp_path):
     assert updated.status == "superseded"
     assert updated.superseded_by == "lrn-bb000002"
     assert touched == [resolved_path]
+
+
+# ------------------------------------------------- FW-51: require_status
+#
+# (2026-08-26 verb assessment): `resolve_record` used to look a record up
+# via `find_record_path` with NO status precondition at all — every
+# resolution verb inherited that hole. These pin the root-cause fix
+# DIRECTLY at the `resolve_record`/`require_status` layer, independent of
+# the verb-level guards `test_verbs.py` pins (which add the correct exit
+# code + pre-lock timing on top of this).
+
+
+def test_resolve_record_no_longer_lies_not_found_for_a_resolved_record(tmp_path):
+    # FW-51: `route`/`reject`/`defer` used to search pending/ ONLY, so a
+    # record sitting in resolved/ (any terminal status) came back "not
+    # found" (a lie -- the record exists, its STATUS makes the verb
+    # illegal). resolve_record now finds it and refuses on status.
+    home = make_home(tmp_path)
+    create_record(home, make_behavior(record_id="lrn-aa000001"))
+    commit_all(home)
+    resolve_record(home, "lrn-aa000001", "rejected")  # -> resolved/, status rejected
+
+    with pytest.raises(LedgerOpsError) as excinfo:
+        resolve_record(home, "lrn-aa000001", "routed", destination="skill-md")
+    message = str(excinfo.value)
+    assert "not found" not in message
+    assert "lrn-aa000001" in message
+    assert "'rejected'" in message
+
+
+def test_resolve_record_refuses_graduate_after_reject(tmp_path):
+    # The measured FW-51 headline defect: `reject A` then `graduate A`
+    # used to rc 0 and silently invert the human's denial into "the
+    # lesson won" (superseded_by: canon). `graduate` is
+    # `resolve_record(..., "superseded", superseded_by="canon")` at this
+    # layer.
+    home = make_home(tmp_path)
+    create_record(home, make_behavior(record_id="lrn-aa000001"))
+    commit_all(home)
+    resolve_record(home, "lrn-aa000001", "rejected")
+
+    with pytest.raises(LedgerOpsError, match="rejected"):
+        resolve_record(home, "lrn-aa000001", "superseded", superseded_by="canon")
+
+    # nothing written on refusal: still rejected, not superseded
+    resolved_path = home / "skills" / "s" / "resolved" / "lrn-aa000001.md"
+    assert Record.from_path(resolved_path).status == "rejected"
+
+
+@pytest.mark.parametrize("source_status", ["pending", "deferred", "routed"])
+def test_resolve_record_accepts_every_live_source_for_superseded(tmp_path, source_status):
+    home = make_home(tmp_path)
+    create_record(home, make_behavior(record_id="lrn-aa000001"))
+    commit_all(home)
+    if source_status == "deferred":
+        defer_record(home, "lrn-aa000001", "2099-01-01")
+    elif source_status == "routed":
+        resolve_record(home, "lrn-aa000001", "routed", destination="skill-md")
+
+    resolve_record(home, "lrn-aa000001", "superseded", superseded_by="canon")
+    resolved_path = home / "skills" / "s" / "resolved" / "lrn-aa000001.md"
+    assert Record.from_path(resolved_path).status == "superseded"
+
+
+@pytest.mark.parametrize("new_status", ["routed", "rejected"])
+def test_resolve_record_refuses_terminal_source_for_route_and_reject(tmp_path, new_status):
+    home = make_home(tmp_path)
+    create_record(home, make_behavior(record_id="lrn-aa000001"))
+    commit_all(home)
+    resolve_record(home, "lrn-aa000001", "rejected")  # terminalize it first
+
+    with pytest.raises(LedgerOpsError, match="rejected"):
+        if new_status == "routed":
+            resolve_record(home, "lrn-aa000001", new_status, destination="skill-md")
+        else:
+            resolve_record(home, "lrn-aa000001", new_status)
+
+
+def test_supersede_record_refuses_terminal_old(tmp_path):
+    home = make_home(tmp_path)
+    create_record(home, make_behavior(record_id="lrn-aa000001"))
+    commit_all(home)
+    resolve_record(home, "lrn-aa000001", "rejected")
+
+    with pytest.raises(LedgerOpsError, match="rejected"):
+        supersede_record(home, "lrn-aa000001", "lrn-bb000002")
+
+
+def test_supersede_record_refuses_already_graduated_old(tmp_path):
+    # supersede on a canon-graduated record: FW-51's second measured case.
+    home = make_home(tmp_path)
+    create_record(home, make_behavior(record_id="lrn-aa000001"))
+    commit_all(home)
+    supersede_record(home, "lrn-aa000001", "canon")  # graduate-equivalent
+
+    with pytest.raises(LedgerOpsError, match="superseded"):
+        supersede_record(home, "lrn-aa000001", "lrn-bb000002")
+
+
+def test_supersede_record_direct_cycle_refused(tmp_path):
+    # FW-51's two-record cycle: `supersede C D` then `supersede D C` --
+    # neither record ends up live. The second call must refuse.
+    home = make_home(tmp_path)
+    create_record(home, make_behavior(record_id="lrn-cccccccc"))
+    create_record(home, make_behavior(record_id="lrn-dddddddd"))
+    commit_all(home)
+
+    supersede_record(home, "lrn-cccccccc", "lrn-dddddddd")  # C -> D
+
+    with pytest.raises(LedgerOpsError):
+        supersede_record(home, "lrn-dddddddd", "lrn-cccccccc")  # D -> C: cycle
+
+    # neither record was touched by the refused call
+    c = Record.from_path(home / "skills" / "s" / "resolved" / "lrn-cccccccc.md")
+    assert c.status == "superseded" and c.superseded_by == "lrn-dddddddd"
+    d = Record.from_path(home / "skills" / "s" / "pending" / "lrn-dddddddd.md")
+    assert d.status == "pending" and d.superseded_by is None
+
+
+def test_supersede_record_refuses_direct_self_cycle(tmp_path):
+    """Root-cause extra (code gate r1): `supersede_record(home, X, X)`
+    used to be silently ACCEPTED — `supersede_cycle_check`'s walk starts
+    at `superseded_by`'s OWN `superseded_by` field, which for a live
+    record is always None, so the walk finds nothing to hop to and
+    returns clean without ever noticing `old_id == superseded_by`. The
+    result was real corruption: `lrn-aa000001` pointing at itself
+    (`superseded_by: lrn-aa000001`). The standalone `supersede` VERB
+    already had its own `old_id == new_id` guard — this pins the SAME
+    refusal one layer down, in `supersede_record` itself, which `route
+    --supersedes` and any other direct caller also goes through."""
+    home = make_home(tmp_path)
+    pending_path = create_record(home, make_behavior(record_id="lrn-aa000001"))
+
+    with pytest.raises(LedgerOpsError, match="itself"):
+        supersede_record(home, "lrn-aa000001", "lrn-aa000001")
+
+    # nothing written: still pending, no self-reference
+    rec = Record.from_path(pending_path)
+    assert rec.status == "pending"
+    assert rec.superseded_by is None
 
 
 # ----------------------------------------------------------- defer_record
@@ -613,3 +757,122 @@ def test_proposal_info_shapes(tmp_path):
     fresh = proposal_info(by_id[ids["fresh"]])
     assert fresh["proposal_fresh"] is True
     assert fresh["destination"] == "skill-md"
+
+
+# --------------------------------------------------- require_status (unit)
+
+
+def test_require_status_finds_a_resolved_record_not_just_pending(tmp_path):
+    # The FW-51 fix's core mechanism: find_record_path's DEFAULT statuses
+    # (pending, resolved) — an existing record is never "not found"
+    # merely because its status makes the caller's verb illegal.
+    home = make_home(tmp_path)
+    create_record(home, make_behavior(record_id="lrn-aa000001"))
+    commit_all(home)
+    resolve_record(home, "lrn-aa000001", "rejected")
+
+    path, record = require_status(
+        home, "lrn-aa000001", frozenset({"rejected"}), verb="probe"
+    )
+    # not raised — but the record IS found and its real status readable,
+    # proving the lookup itself never lied "not found"
+    assert path == find_record_path(home, "lrn-aa000001")
+    assert record.status == "rejected"
+
+
+def test_require_status_returns_path_and_record_when_allowed(tmp_path):
+    home = make_home(tmp_path)
+    pending_path = create_record(home, make_behavior(record_id="lrn-aa000001"))
+
+    path, record = require_status(home, "lrn-aa000001", LIVE_STATUSES, verb="probe")
+    assert path == pending_path
+    assert record.status == "pending"
+
+
+def test_require_status_refuses_naming_record_status_and_verb(tmp_path):
+    home = make_home(tmp_path)
+    create_record(home, make_behavior(record_id="lrn-aa000001"))
+    commit_all(home)
+    resolve_record(home, "lrn-aa000001", "rejected")
+
+    with pytest.raises(LedgerOpsError) as excinfo:
+        require_status(home, "lrn-aa000001", LIVE_STATUSES, verb="reject")
+    message = str(excinfo.value)
+    assert "lrn-aa000001" in message
+    assert "'rejected'" in message
+    assert "reject" in message
+
+
+def test_require_status_still_raises_not_found_for_a_genuinely_missing_id(tmp_path):
+    home = make_home(tmp_path)
+    with pytest.raises(LedgerOpsError, match="not found"):
+        require_status(home, "lrn-99999999", LIVE_STATUSES, verb="probe")
+
+
+# ---------------------------------------------- supersede_cycle_check (unit)
+
+
+def test_supersede_cycle_check_passes_when_new_has_no_chain(tmp_path):
+    home = make_home(tmp_path)
+    create_record(home, make_behavior(record_id="lrn-aa000001"))
+    create_record(home, make_behavior(record_id="lrn-bb000002"))
+    supersede_cycle_check(home, "lrn-aa000001", "lrn-bb000002")  # no raise
+
+
+def test_supersede_cycle_check_tolerates_a_dangling_new_id(tmp_path):
+    # supersede_record has never validated `superseded_by` names a real
+    # record (metadata-only) -- the cycle walk must not invent a refusal
+    # for an id that simply does not exist.
+    home = make_home(tmp_path)
+    create_record(home, make_behavior(record_id="lrn-aa000001"))
+    supersede_cycle_check(home, "lrn-aa000001", "lrn-99999999")  # no raise
+
+
+def test_supersede_cycle_check_refuses_direct_cycle(tmp_path):
+    home = make_home(tmp_path)
+    create_record(home, make_behavior(record_id="lrn-cccccccc"))
+    create_record(home, make_behavior(record_id="lrn-dddddddd"))
+    commit_all(home)
+    supersede_record(home, "lrn-cccccccc", "lrn-dddddddd")  # C.superseded_by = D
+
+    with pytest.raises(LedgerOpsError, match="cycle"):
+        supersede_cycle_check(home, "lrn-dddddddd", "lrn-cccccccc")
+
+
+def test_supersede_cycle_check_refuses_a_longer_chain(tmp_path):
+    """The genuinely graph-shaped case (u-verbguards §5's "longer chain"
+    obligation), isolated from the liveness check: A is LIVE (status
+    routed) yet ALSO carries a hand-set `superseded_by` chain A -> B -> C
+    reaching back to `old_id` -- a combination the CLI itself can never
+    produce (resolve_record only ever sets `superseded_by` together with
+    a terminal status), but nothing in the schema forbids it (02 §2:
+    `superseded_by` is mutable "in every status"). This proves the walk
+    is a real, independent graph traversal, not just a restatement of
+    the NEW-status liveness check: if `supersede_cycle_check`'s call
+    were deleted from `supersede_record`, THIS record's own status
+    (`routed`) would sail straight through `require_status`, and only
+    the walk below stands between `supersede(C, A)` and a cycle."""
+    home = make_home(tmp_path)
+    bucket_dir = home / "skills" / "s"
+    a_path = create_record(home, make_behavior(record_id="lrn-aaaaaaaa"))
+    create_record(home, make_behavior(record_id="lrn-bbbbbbbb"))
+    create_record(home, make_behavior(record_id="lrn-cccccccc"))
+    commit_all(home)
+    resolve_record(home, "lrn-aaaaaaaa", "routed", destination="skill-md")
+    a_resolved = bucket_dir / "resolved" / "lrn-aaaaaaaa.md"
+    b_pending = bucket_dir / "pending" / "lrn-bbbbbbbb.md"
+
+    # Hand-set the chain A -> B -> C, bypassing resolve_record entirely —
+    # A stays `status: routed` (LIVE) the whole time.
+    a = Record.from_path(a_resolved)
+    a.set_superseded_by("lrn-bbbbbbbb")
+    a.write(a_resolved)
+    b = Record.from_path(b_pending)
+    b.set_superseded_by("lrn-cccccccc")
+    b.write(b_pending)
+
+    with pytest.raises(LedgerOpsError, match="cycle"):
+        supersede_cycle_check(home, "lrn-cccccccc", "lrn-aaaaaaaa")
+
+    # a genuinely live A (routed, no corrupted chain) is unaffected
+    assert Record.from_path(a_resolved).status == "routed"

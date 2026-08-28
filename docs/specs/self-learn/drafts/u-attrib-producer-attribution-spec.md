@@ -1,5 +1,19 @@
 # Spec — U-attrib: producer attribution by exclusive namespace
 
+**Superseded in part 2026-08-28 by `U-fw117`** (FW-117 CLOSED,
+`14-forward-work-map.md`): this spec's `GR-d` work rebases
+`write_repair_settings_file`'s `paths` argument onto staged files (§3.1
+`GR3`) and reasons about its docstring/behavior at length (e.g. the
+`defaultMode` enforcement it and `write_settings_file` share) --
+`worker.write_repair_settings_file` is now DELETED. The narrowed-scope
+PROPERTY this unit gave it (one exact-path `Edit(...)` rule per staged
+member of `E`) is unaffected and still holds -- enforced by the charter
+(`invocation.containment_for`) alone now, verified in `test_attrib.py`
+via a new `_repair_permissions` helper rather than by reading the
+function's on-disk output. The rest of this document is left as written
+below -- it is the historical build record for this unit's own contract
+at the time it shipped.
+
 Status: **r4 — GATED, CLEARED FOR BUILD.** Three review rounds, 25
 findings, all folded (§10 maps each to its change). r1 blind gate:
 **UNSOUND — 3 BLOCKER / 6 MAJOR / 6 NOTE**; r2 delta: **UNSOUND — 1

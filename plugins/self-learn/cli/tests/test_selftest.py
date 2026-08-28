@@ -24,7 +24,7 @@ from self_learn.hosts import Hosts, save_hosts
 from self_learn.ledger import Bucket
 from self_learn.verbs import DEFAULT_USER_CLAUDE_MD
 
-from support import SKILL_MD_SEED, init_repo, make_behavior, make_env, make_knowledge
+from support import SKILL_MD_SEED, commit_all, init_repo, make_behavior, make_env, make_knowledge
 
 SKILL_MD = SKILL_MD_SEED.format(name="s")
 
@@ -230,6 +230,132 @@ def test_reach_reachable_fixture_passes_criterion_1(env):
     assert "1 reference-routed record(s) reachable" in reason
 
     assert cli.main(["--selftest"]) == 0
+
+
+def test_reach_ancestor_only_pointer_makes_a_child_record_reachable_anc7(env, tmp_path):
+    """ANC7 end-to-end leg: a PROJECT-scope reference-routed record's own
+    bucket is the CHILD host; its own `CLAUDE.md` carries NO resolving
+    pointer at all. A resolving pointer is hand-placed ONLY in the
+    registered ANCESTOR's `CLAUDE.md`. `_check_reach` still finds it
+    reachable, because `_loaded_surface`'s project branch appends the
+    registered ancestor's `CLAUDE.md` (nearest-first) after the host's
+    own — the SAME loading fact `InstructionsLoaded` measured (S-52).
+    Reverting that append (dropping the `_loaded_surface` ancestor
+    member) reddens this by turning the pass FAIL, naming the record."""
+    ancestor = tmp_path / "ancestor-repo"
+    init_repo(ancestor)
+    (ancestor / "CLAUDE.md").write_text("# ancestor project\n", encoding="utf-8")
+    commit_all(ancestor, "ancestor seed")
+
+    child = ancestor / "child-repo"
+    init_repo(child)
+    (child / "CLAUDE.md").write_text("# child project\n", encoding="utf-8")
+    commit_all(child, "child seed")
+
+    save_hosts(env.ledger, Hosts(projects=[child, ancestor]))
+
+    from self_learn.hosts import slug_for
+    from self_learn.ledger_ops import ensure_project_meta
+
+    bucket_dir = env.ledger / "projects" / slug_for(child)
+    resolved = bucket_dir / "resolved"
+    resolved.mkdir(parents=True)
+    ensure_project_meta(bucket_dir, child)
+
+    record = make_behavior(scope="project", record_id="lrn-0000a7a7")
+    record.set_routing(
+        {"routed_at": "2026-07-13T18:02:00Z", "destination": "reference", "by": "human"}
+    )
+    record.set_status("routed")
+    record.write(resolved / f"{record.id}.md")
+
+    target = child / "references" / "LEARNINGS.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(f"lesson from {record.id}\n", encoding="utf-8")
+
+    # The resolving pointer lives ONLY in the ancestor's CLAUDE.md, as a
+    # path RELATIVE TO THE ANCESTOR (the token is read as the author
+    # meant it, `compilers.surface_names_target`) -- the child's own
+    # CLAUDE.md never mentions it.
+    (ancestor / "CLAUDE.md").write_text(
+        "# ancestor project\n\n[Learnings](child-repo/references/LEARNINGS.md)\n",
+        encoding="utf-8",
+    )
+
+    ok, reason = selfcheck._check_reach(env.ledger)
+    assert ok, reason
+    assert "1 reference-routed record(s) reachable" in reason
+
+    assert cli.main(["--selftest"]) == 0
+
+
+def test_reach_un3_no_ancestor_reach_row_matches_the_pre_ancestry_shape(env):
+    """UN3: for a project-scope host with NO registered ancestor,
+    `_loaded_surface` returns exactly ONE member (the host's own
+    `CLAUDE.md`, unchanged) and `--selftest`'s reach row reads exactly as
+    it would have before U-ancestry -- proof the ANC7 append is
+    additive-only and never touches the no-ancestor case."""
+    from self_learn.hosts import slug_for
+    from self_learn.ledger_ops import ensure_project_meta
+    from self_learn.ledger import Bucket as _Bucket
+
+    host = env.ledger.parent / "solo-host"
+    init_repo(host)
+    (host / "CLAUDE.md").write_text(
+        "# solo project\n\n[Learnings](references/LEARNINGS.md)\n", encoding="utf-8"
+    )
+    commit_all(host, "solo seed")
+
+    # A second, CHILD host nested inside `host` is also registered here
+    # (unused by the project-scope assertion below, which is about
+    # `host` itself having no ancestor) purely so `hosts.yaml` contains
+    # a real ancestor RELATION somewhere -- the user-scope assertion
+    # after this needs at least one to exist, or M20's leak (appending
+    # `ancestors_of(hosts, p)` for every registered project) would have
+    # nothing to append and could pass while genuinely broken.
+    child = host / "child-repo"
+    init_repo(child)
+    (child / "CLAUDE.md").write_text("# child project\n", encoding="utf-8")
+    commit_all(child, "child seed")
+
+    save_hosts(env.ledger, Hosts(projects=[host, child]))
+
+    bucket_dir = env.ledger / "projects" / slug_for(host)
+    resolved = bucket_dir / "resolved"
+    resolved.mkdir(parents=True)
+    ensure_project_meta(bucket_dir, host)
+
+    record = make_behavior(scope="project", record_id="lrn-000003a3")
+    record.set_routing(
+        {"routed_at": "2026-07-13T18:02:00Z", "destination": "reference", "by": "human"}
+    )
+    record.set_status("routed")
+    record.write(resolved / f"{record.id}.md")
+
+    (host / "references").mkdir()
+    (host / "references" / "LEARNINGS.md").write_text(
+        f"lesson from {record.id}\n", encoding="utf-8"
+    )
+
+    surfaces = selfcheck._loaded_surface(
+        env.ledger, _Bucket(scope="project", name=slug_for(host), path=bucket_dir), record
+    )
+    assert surfaces == [host / "CLAUDE.md"]
+
+    # UN3's other half (M20): USER scope is untouched by the ancestry
+    # append too -- even with a registered host present in hosts.yaml
+    # (the same fixture, above), `_loaded_surface` for a user-scope
+    # record still returns exactly the one real user CLAUDE.md member,
+    # never widened by iterating any host's ancestors.
+    user_record = make_knowledge(scope="user", record_id="lrn-000003a4")
+    user_surfaces = selfcheck._loaded_surface(
+        env.ledger, _Bucket(scope="user", name="user", path=env.ledger / "user"), user_record
+    )
+    assert user_surfaces == [DEFAULT_USER_CLAUDE_MD.expanduser()]
+
+    ok, reason = selfcheck._check_reach(env.ledger)
+    assert ok
+    assert reason == "1 reference-routed record(s) reachable from their scope's loaded surface"
 
 
 def test_reach_unreachable_fixture_fails_criterion_2(env, capsys):

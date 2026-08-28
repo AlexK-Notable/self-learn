@@ -21,6 +21,11 @@
 #     (U-engine Phase 2 — the long-lived scheduler; NOT enabled by this
 #     script, same as the other two units — u-engine-shared-sdk-core-spec.md §5.7)
 #
+# All three `~/.config/systemd/user/...` targets above are the DEFAULT --
+# every one honors `$XDG_CONFIG_HOME/systemd/user` instead when that
+# variable is set (U-servehermetic, 2026-08-27; see `UNIT_DIR` below,
+# resolved the same way `serve.unit_dir()` resolves it).
+#
 # What this deliberately does NOT touch (13 §7.3 D1 — the product repo is
 # a tool; compiled output lands in the USER'S hosts):
 #   - guard scripts (they are host canon, e.g. claude-skills hooks/self-learn/)
@@ -35,7 +40,13 @@ SKILLS_DIR="$HOME/.claude/skills"
 COMMANDS_DIR="$HOME/.claude/commands"
 HOOKS_DIR="$HOME/.claude/hooks"
 BIN_DIR="$HOME/bin"
-UNIT_DIR="$HOME/.config/systemd/user"
+# Resolved the way systemd itself resolves the user unit search path
+# (U-servehermetic, 2026-08-27, matching serve.unit_dir()'s new order):
+# $XDG_CONFIG_HOME/systemd/user if XDG_CONFIG_HOME is set, else the
+# real ~/.config/systemd/user. self-learn's own explicit
+# SELF_LEARN_SERVE_UNIT_DIR override is CLI-only (a test-hermeticity
+# knob for serve.unit_dir()) and has no installer-side equivalent here.
+UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 
 DRY=0; [ "${1:-}" = "--dry-run" ] && DRY=1
 say() { printf '%s\n' "$*"; }

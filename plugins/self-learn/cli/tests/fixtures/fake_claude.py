@@ -528,20 +528,15 @@ def _scenario_shim_script() -> None:
     # (`ok_write`/`ok_write_real`, `CH1`-`CH13`), never through this
     # scenario. A `tool_use`/`tool_result` pair is still emitted (for
     # `EventLog` realism) but never blocks on `_request_permission`.
+    # U-corrob 2026-08-27: one pair per write op -- the announce-only-
+    # first form made a correct multi-write run report a MISMATCH.
     writes = [op for op in ops if op[0] == "write"]
-    if writes:
-        target = writes[0][1]
-        tool_use_id = f"toolu_shim_{n}"
-        emit(
-            assistant_message(
-                "",
-                "u1",
-                content=[
-                    {"type": "tool_use", "id": tool_use_id, "name": "Write", "input": {"file_path": target}}
-                ],
-            )
-        )
-        emit(user_tool_result(tool_use_id, "u2", content="ok", is_error=False))
+    for i, write_op in enumerate(writes, 1):
+        target = write_op[1]
+        tool_use_id = f"toolu_shim_{n}_{i}"
+        emit(assistant_message("", f"u1-{i}", content=[
+            {"type": "tool_use", "id": tool_use_id, "name": "Write", "input": {"file_path": target}}]))
+        emit(user_tool_result(tool_use_id, f"u2-{i}", content="ok", is_error=False))
     for op in ops:
         if op[0] == "write":
             _, path, content = op

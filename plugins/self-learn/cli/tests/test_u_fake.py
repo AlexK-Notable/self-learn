@@ -68,6 +68,19 @@ LEGACY_NAME = "claude_shim"
 #: new `_batch_permissions`/`_capture_batch_permissions` helpers instead
 #: (`DS1_ADDED` below) -- an edited body on an otherwise-unchanged,
 #: still-present test, exactly what `REWRITTEN` is for.
+#: FW-117 (2026-08-28): `worker.write_repair_settings_file` deleted -- a
+#: dead write nothing under the sdk backend ever read (`options_kwargs()`
+#: passes `settings=None` unconditionally, `A-2`). `test_repair.py`'s
+#: `test_b9_...` drops its now-vacuous "settings file does NOT exist"
+#: leg; `test_d5_...` rebased onto a `invocation.write_session` spy
+#: capturing the real `SessionSpec.containment` plus a new mutation-
+#: detecting assertion, instead of reading a file that no longer exists.
+#: `test_attrib.py`'s `test_gr1_...` (already `REWRITTEN` from
+#: U-cleanup-B) and `test_gr3_...` (newly added below) both read the
+#: repair round's permissions via the new `_repair_permissions` helper
+#: (`DS1_ADDED`) instead of calling the deleted function directly --
+#: edited bodies on otherwise-unchanged, still-present tests, exactly
+#: what `REWRITTEN` is for.
 REWRITTEN = (
     ("test_worker.py", "sdk_fake_worker"),
     ("test_worker.py", "notify_shim"),
@@ -75,9 +88,12 @@ REWRITTEN = (
     ("test_repair.py", "_next_run_scripts"),
     ("test_repair.py", "test_f6_no_test_invokes_a_real_claude"),
     ("test_repair.py", "test_h4_every_new_line_in_obs1_is_produced_and_pinned"),
+    ("test_repair.py", "test_b9_kill_switch_disables_composition"),
+    ("test_repair.py", "test_d5_the_narrowed_repair_scope_is_real"),
     ("test_attrib.py", "_simple_shim"),
     ("test_attrib.py", "test_hy1_no_test_in_the_suite_invokes_a_real_claude"),
     ("test_attrib.py", "test_gr1_settings_files_enforce_defaultmode"),
+    ("test_attrib.py", "test_gr3_repair_invocation_is_exact_path_over_staged_paths"),
     ("test_attrib.py", "test_gr2_batch_invocation_granted_the_stage_and_nothing_else"),
     ("test_attrib.py", "test_gr4_write_permission_rules_preserved_for_the_fallback"),
     ("test_attrib.py", "test_cp8_testworkercontainment_asserts_new_containment_and_h3"),
@@ -88,6 +104,13 @@ REWRITTEN = (
     ),
     ("test_route_cli.py", "sdk_fake_analyst"),
     ("test_route_cli.py", "test_teach_route_analyst_routes_to_shim_destination"),
+    # U-corrob DEN3 (2026-08-28): `fake_analyze`'s nested body (inside
+    # this still-present, otherwise-unchanged test) gained a
+    # `charter_denials=None` parameter, so `_route_now`'s now-
+    # unconditional call keeps working against this stand-in --
+    # an edited body on an otherwise-unchanged, still-present test,
+    # exactly what `REWRITTEN` is for.
+    ("test_route_cli.py", "test_teach_route_bare_analyst_threads_project_path_at_project_scope"),
     # U-hostmode (2026-08-28, cross-unit — NOT this unit's own rewrite):
     # REC9 makes the compile record ride every route's OWN ledger commit,
     # so `env.committed_files()` now legitimately carries one extra
@@ -128,9 +151,19 @@ REWRITTEN = (
 #: config`) whose subject does not exist under the sdk backend; the
 #: citation for each (why deleted, what covers it now) is left in place
 #: at the deletion site in its own module, not here.
+#: U-ancestry, 2026-08-28: S-52 (SCAN1) supersedes u-marker §3 criterion
+#: A — the whole-file canon contract replaces the old `canon_excerpt`
+#: marker-window one, and criterion B is re-homed as SCAN8 (see
+#: `test_worker_contract.py::_ARMOR_SHAS`'s matching re-pin comment, the
+#: OTHER armor mechanism covering this same file). These four base-only
+#: names are the tests that contract replaced outright.
 DS1_REMOVED = (
     ("test_worker.py", "test_run_argv_pins"),
     ("test_repair.py", "test_f2_both_invocations_share_one_argv_builder"),
+    ("test_worker.py", "test_canon_excerpt_finds_the_compiler_written_markers_in_a_fat_target"),
+    ("test_worker.py", "test_canon_excerpt_case_variant_of_compiler_marker_does_not_match"),
+    ("test_worker.py", "test_canon_excerpt_begin_only_case_variant_does_not_match"),
+    ("test_worker.py", "test_canon_excerpt_end_only_case_variant_does_not_match"),
 )
 
 #: The mirror image of `DS1_REMOVED`: top-level functions this unit
@@ -151,10 +184,26 @@ DS1_REMOVED = (
 #: the function outright (§8.4b), so it needs no exclusion entry at all
 #: any more: absent from both head and base, there is nothing for
 #: `_extract_guarded_functions` to find on either side.
+#: U-ancestry, 2026-08-28 (see the matching `DS1_REMOVED` comment above):
+#: the four head-only tests SCAN1/SCAN8 replace the deleted ones with,
+#: plus two new head-only fixture-generation helpers
+#: (`_scan8_filler`/`_scan8_fixture_lines`) those tests share.
+#: `_repair_permissions` (FW-117, 2026-08-28) is `test_attrib.py`'s
+#: replacement for the deleted `worker.write_repair_settings_file` --
+#: same shape as `_batch_permissions` above, new top-level helper, no
+#: base counterpart, called by the `REWRITTEN` `test_gr1_.../test_gr3_
+#: ...` entries above.
 DS1_ADDED = (
     ("test_composer.py", "test_composer_analyst_fails_ro5"),
     ("test_attrib.py", "_batch_permissions"),
     ("test_attrib.py", "_capture_batch_permissions"),
+    ("test_worker.py", "_scan8_filler"),
+    ("test_worker.py", "_scan8_fixture_lines"),
+    ("test_worker.py", "test_canon_blocks_whole_file_reaches_the_compiler_written_section"),
+    ("test_worker.py", "test_cap_retains_managed_region"),
+    ("test_worker.py", "test_cap_retains_managed_region_begin_only_case_variant"),
+    ("test_worker.py", "test_cap_retains_managed_region_end_only_case_variant"),
+    ("test_attrib.py", "_repair_permissions"),
 )
 
 #: The three `test_fold5_*` MOVE1 tests specifically -- NOT derived by
@@ -269,16 +318,38 @@ def _extract_named_function(source: str, name: str) -> str:
 #: and not merely "these numbers came from somewhere." An extractor
 #: that returns nothing (`M17`) cannot silently agree with these --
 #: they do not move merely because the extractor broke.
+#: U-ancestry, 2026-08-28: `test_worker.py`'s row is regenerated (55, not
+#: 59) because `DS1_REMOVED` gained 4 more base-side names (the
+#: superseded `canon_excerpt` tests, see the comment above `DS1_REMOVED`)
+#: — those 4 functions' bodies drop OUT of this pin's base-only census,
+#: same provenance discipline as the original: `_extract_guarded_functions`
+#: run over `git show c2669a9:plugins/self-learn/cli/tests/test_worker.py`
+#: with the CURRENT (post-registration) `names` tuple, never over the
+#: working tree. The other four modules' rows are untouched.
+# U-corrob DEN3 (2026-08-28): `test_teach_route_bare_analyst_threads_
+# project_path_at_project_scope` moves into `REWRITTEN` above (its
+# nested `fake_analyze` gained a `charter_denials=None` parameter so it
+# keeps satisfying `_route_now`'s now-unconditional call) -- one fewer
+# name in this module's tracked set (39 -> 38), and the remaining 38
+# functions' sha is unchanged by this edit (Leg 1's own live-base-vs-
+# live-head check confirms it: this row's sha is the base sha, not a
+# re-measured head sha, since `REWRITTEN` exempts the touched function
+# from the comparison entirely).
 _DS1_EXPECTED = {
-    "test_worker.py": (59, "8514b90da632cd3fb1be4c007c98a8e733f07a673b85b265f981afe0df4d682a"),
-    "test_repair.py": (64, "c3af3b925322601fda320e44c4c48ad1e1d5f2e984551bbd6adbfb9ab33dea52"),
-    "test_attrib.py": (40, "d7b274c779656cfbcf133a62efce5435cc2441e6091d68329e0795dc42573418"),
-    # U-hostmode (2026-08-28): re-pinned from (39, "ef6048a...") after
-    # adding "test_teach_route_dest_end_to_end" to REWRITTEN above —
-    # regenerated by running the SAME `_extract_guarded_functions` over
-    # `git show c2669a9:...test_route_cli.py` with the widened exclusion
-    # set, never over the working tree (this file's own FZ-d discipline).
-    "test_route_cli.py": (38, "35e0f5932250803869bf1d2c584b76bc0f0ee64ef1026ec7b6a6c3d5d2b731db"),
+    # U-fw117 (2026-08-28): b9/d5 rewritten -- re-pinned (master's side
+    # differs from base; ours was unchanged here, so master's value wins).
+    "test_worker.py": (55, "39305f65724adfb1634ce91285b483b05aea05c662f2de9ac9bf30fa38daf1f8"),
+    # U-fw117 (2026-08-28): b9/d5 rewritten -- re-pinned
+    "test_repair.py": (62, "21f7bdbb888254603e4136f0bbbe89322465f459fab4dfaa6ca1761dfcf1a81f"),
+    # U-fw117 (2026-08-28): gr3 rewritten, _repair_permissions added -- re-pinned
+    "test_attrib.py": (39, "8ea49a554c77736225c5b7c451c02fceb7e33291bb325204a5bd124b951a0754"),
+    # merge 2026-08-28 (u-hostmode x master): BOTH sides changed this key
+    # (ours: 39->38 for the REC9 rewrite of test_teach_route_dest_end_to_end;
+    # master's: 39->38 for U-corrob DEN3's rewrite of
+    # test_teach_route_bare_analyst_threads_project_path_at_project_scope) --
+    # re-derived from the MERGED bytes, not picked from either side; see
+    # PLACEHOLDER_DS1_ROUTE_CLI below, filled in by the regeneration script.
+    "test_route_cli.py": (37, "6bfa36999a53ebd2137279aba47049e48f4387cfb05d89db3121cb2611d066fd"),
     "test_composer.py": (40, "479a3caf84e427a86df6eb17ecefa2ede57a85185df79ff43defe0c9e5f931ec"),
 }
 
@@ -708,9 +779,12 @@ def test_ds2_rewritten_set_is_exact_and_every_entry_is_live():
         ("test_repair.py", "_next_run_scripts"),
         ("test_repair.py", "test_f6_no_test_invokes_a_real_claude"),
         ("test_repair.py", "test_h4_every_new_line_in_obs1_is_produced_and_pinned"),
+        ("test_repair.py", "test_b9_kill_switch_disables_composition"),
+        ("test_repair.py", "test_d5_the_narrowed_repair_scope_is_real"),
         ("test_attrib.py", "_simple_shim"),
         ("test_attrib.py", "test_hy1_no_test_in_the_suite_invokes_a_real_claude"),
         ("test_attrib.py", "test_gr1_settings_files_enforce_defaultmode"),
+        ("test_attrib.py", "test_gr3_repair_invocation_is_exact_path_over_staged_paths"),
         (
             "test_attrib.py",
             "test_gr2_batch_invocation_granted_the_stage_and_nothing_else",
@@ -727,6 +801,11 @@ def test_ds2_rewritten_set_is_exact_and_every_entry_is_live():
         ),
         ("test_route_cli.py", "sdk_fake_analyst"),
         ("test_route_cli.py", "test_teach_route_analyst_routes_to_shim_destination"),
+        # U-corrob DEN3 (2026-08-28):
+        (
+            "test_route_cli.py",
+            "test_teach_route_bare_analyst_threads_project_path_at_project_scope",
+        ),
         # U-hostmode (2026-08-28, cross-unit) — see REWRITTEN's own comment.
         ("test_route_cli.py", "test_teach_route_dest_end_to_end"),
         ("test_composer.py", "_capture_analyst_prompt"),
@@ -748,7 +827,10 @@ def test_ds2_rewritten_set_is_exact_and_every_entry_is_live():
             "test_fold5_honest_sentinel_when_project_path_truly_not_supplied",
         ),
     }
-    assert len(REWRITTEN) == 23
+    # merge 2026-08-28 (u-hostmode x master): base 22 + master's 4
+    # (U-corrob's 1 + U-fw117's 3) + ours 1 = 27 -- verified below by
+    # actually counting the merged REWRITTEN tuple, not asserted blind.
+    assert len(REWRITTEN) == 27
     assert set(REWRITTEN) == expected
 
     for module, name in REWRITTEN:
@@ -769,8 +851,15 @@ def test_ds1b_removed_set_is_exact_and_every_entry_is_base_only():
     expected = {
         ("test_worker.py", "test_run_argv_pins"),
         ("test_repair.py", "test_f2_both_invocations_share_one_argv_builder"),
+        (
+            "test_worker.py",
+            "test_canon_excerpt_finds_the_compiler_written_markers_in_a_fat_target",
+        ),
+        ("test_worker.py", "test_canon_excerpt_case_variant_of_compiler_marker_does_not_match"),
+        ("test_worker.py", "test_canon_excerpt_begin_only_case_variant_does_not_match"),
+        ("test_worker.py", "test_canon_excerpt_end_only_case_variant_does_not_match"),
     }
-    assert len(DS1_REMOVED) == 2
+    assert len(DS1_REMOVED) == 6
     assert set(DS1_REMOVED) == expected
 
     for module, name in DS1_REMOVED:
@@ -796,8 +885,15 @@ def test_ds1c_added_set_is_exact_and_every_entry_is_head_only():
         ("test_composer.py", "test_composer_analyst_fails_ro5"),
         ("test_attrib.py", "_batch_permissions"),
         ("test_attrib.py", "_capture_batch_permissions"),
+        ("test_worker.py", "_scan8_filler"),
+        ("test_worker.py", "_scan8_fixture_lines"),
+        ("test_worker.py", "test_canon_blocks_whole_file_reaches_the_compiler_written_section"),
+        ("test_worker.py", "test_cap_retains_managed_region"),
+        ("test_worker.py", "test_cap_retains_managed_region_begin_only_case_variant"),
+        ("test_worker.py", "test_cap_retains_managed_region_end_only_case_variant"),
+        ("test_attrib.py", "_repair_permissions"),
     }
-    assert len(DS1_ADDED) == 3
+    assert len(DS1_ADDED) == 10  # merge 2026-08-28: base 3 + master's 6 + U-fw117's 1
     assert set(DS1_ADDED) == expected
 
     for module, name in DS1_ADDED:

@@ -334,6 +334,28 @@ def _batch_permissions(home) -> dict:
     return permissions
 
 
+def _repair_permissions(paths) -> dict:
+    """FW-117 (2026-08-28) replacement for the deleted `worker.write_
+    repair_settings_file` -- a dead write nothing under the sdk backend
+    ever read (`options_kwargs()` passes `settings=None` unconditionally,
+    `A-2`; the cli-era `--settings <path>` reader left with `CliBackend`).
+    Same technique as `_batch_permissions` above: recompute the SAME
+    permissions dict the deleted function used to write to disk, from the
+    SAME still-live inputs -- but here via `invocation.containment_for`/
+    `containment_permissions` directly (the real call site's own
+    machinery, not a hand-rolled re-derivation), since
+    `write_repair_settings_file`'s body was never anything more than
+    `containment_for("worker-repair", write_exact=..., enforce=...)`'s
+    rules rendered to bytes and written."""
+    from self_learn import invocation
+
+    write_exact = tuple(str(p) for p in paths)
+    c = invocation.containment_for(
+        "worker-repair", write_exact=write_exact, enforce=worker._enforce_scope()
+    )
+    return invocation.containment_permissions(c)
+
+
 def _capture_batch_permissions(monkeypatch) -> list[dict]:
     """Drives a REAL `worker.run()` and captures the batch round's own
     permissions (Witness A, via `invocation.containment_permissions` on
@@ -356,14 +378,22 @@ def _capture_batch_permissions(monkeypatch) -> list[dict]:
 
 
 def test_gr1_settings_files_enforce_defaultmode(env):
-    """GR1 -- both settings files carry `defaultMode: default`. Broken:
-    MA7. Past tense per the spec: this failed on the shipped code before
-    GR-a's hotfix; here it verifies the property SURVIVES this unit's
-    relocation of both settings files."""
+    """GR1 -- both rounds' rendered permissions carry `defaultMode:
+    default`. Broken: MA7. Past tense per the spec: this failed on the
+    shipped code before GR-a's hotfix; here it verifies the property
+    SURVIVES this unit's relocation of both settings files.
+
+    FW-117 (2026-08-28): neither round writes a settings FILE any more
+    (`worker.write_repair_settings_file` deleted -- it was a dead write,
+    same as `write_settings_file` before it, §8.1) -- both reads go
+    through `_batch_permissions`/`_repair_permissions` instead, which
+    recompute the identical dict from the same still-live inputs the
+    charter itself renders from. GR1's own property (both rounds pin
+    `defaultMode`) is unchanged by where the dict ends up."""
     batch_settings = _batch_permissions(env.home)
-    repair_settings = worker.write_repair_settings_file(env.home, [])
+    repair_settings = _repair_permissions([])
     assert batch_settings["defaultMode"] == "default"
-    assert json.loads(repair_settings.read_text())["permissions"]["defaultMode"] == "default"
+    assert repair_settings["defaultMode"] == "default"
 
 
 def test_gr2_batch_invocation_granted_the_stage_and_nothing_else(env):
@@ -384,21 +414,24 @@ def test_gr2_batch_invocation_granted_the_stage_and_nothing_else(env):
 def test_gr3_repair_invocation_is_exact_path_over_staged_paths(env):
     """GR3 -- Broken: MA9 (repair settings reuse `stage_permission_
     rules`, a glob over the whole stage instead of one rule per member of
-    E)."""
+    E).
+
+    FW-117 (2026-08-28): read via `_repair_permissions` (containment_for/
+    containment_permissions), not `worker.write_repair_settings_file`
+    (deleted -- a dead write, §8.1's reasoning one build later)."""
     paths = [
         worker.stage_dir() / "lrn-aaaa0000.yaml",
         worker.stage_dir() / "lrn-bbbb0000.yaml",
     ]
-    settings = worker.write_repair_settings_file(env.home, paths)
-    data = json.loads(settings.read_text())
-    allow = data["permissions"]["allow"]
+    data = _repair_permissions(paths)
+    allow = data["allow"]
 
     assert len(allow) == len(paths)
     for rule, p in zip(allow, sorted(paths)):
         assert rule == f"Edit(/{p})"
         assert "*" not in rule
         assert str(worker.stage_dir()) in rule
-    assert data["permissions"]["defaultMode"] == "default"
+    assert data["defaultMode"] == "default"
 
 
 def test_gr4_write_permission_rules_preserved_for_the_fallback(env, monkeypatch):

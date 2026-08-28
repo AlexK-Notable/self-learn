@@ -898,8 +898,47 @@ _POINTER_PREAMBLE = (
     "\n"
 )
 
+#: U-ancestry ANC8/§6.4 -- the verbatim disambiguating sentence, pinned
+#: word for word (a builder may not reword it). All three live pointer
+#: blocks are byte-identical today (Finding C-3), so a host with a
+#: registered ancestor OR a registered descendant is the one
+#: configuration where TWO of these blocks can load in one session, each
+#: saying "this project" about a different project. The base is
+#: deliberately NOT an absolute path (Q2): a CLAUDE.md is a tracked file
+#: and one registered host has a public remote, so an absolute token
+#: would commit a real home path into it. The pointer TOKEN itself is
+#: unchanged -- this sentence lives in the surrounding prose only, never
+#: in a `- \`token\` -- label` line, so `surface_names_target`/
+#: `pointer_token`/every `test_pointer.py` contract keeps its meaning.
+_POINTER_BASE_SENTENCE = (
+    "paths are relative to the directory containing this file, not your "
+    "working directory.\n"
+)
 
-def compile_pointer_text(surface_text: str, line: str) -> tuple[str, bool]:
+
+def _pointer_preamble(*, names_base: bool) -> str:
+    """The bootstrap preamble for a FRESH pointer block. `names_base`
+    (ANC8) appends the verbatim disambiguating sentence when the host
+    this block is being written into has a registered ancestor or a
+    registered descendant -- the only configurations where two
+    self-learn pointer blocks can load in one live session.
+
+    Code gate r1 N8: the `names_base=True` branch is DERIVED from
+    `_POINTER_PREAMBLE` rather than hand-copying its text a second time
+    -- `_POINTER_PREAMBLE` ends in "...before you start.\\n\\n" (the body
+    line, then the block's trailing blank line); stripping exactly the
+    last character removes that trailing blank line's newline, leaving
+    the body ending in a single "\\n", after which the base sentence and
+    a fresh blank line are appended. A single source of truth for the
+    fixed preamble text means the two branches can never drift apart."""
+    if not names_base:
+        return _POINTER_PREAMBLE
+    return _POINTER_PREAMBLE[:-1] + _POINTER_BASE_SENTENCE + "\n"
+
+
+def compile_pointer_text(
+    surface_text: str, line: str, *, names_base: bool = False
+) -> tuple[str, bool]:
     """Pure block arithmetic (no I/O), like :func:`compile_managed_text`:
     insert ``line`` into the pointer block, bootstrapping the block at EOF
     -- exactly one blank line before it, a trailing newline -- when the
@@ -922,7 +961,7 @@ def compile_pointer_text(surface_text: str, line: str) -> tuple[str, bool]:
     if begins == 0 and ends == 0:
         block = (
             f"{POINTER_BEGIN_MARKER}\n"
-            f"{_POINTER_PREAMBLE}"
+            f"{_pointer_preamble(names_base=names_base)}"
             f"{line}\n"
             f"{POINTER_END_MARKER}"
         )
@@ -950,9 +989,21 @@ def compile_pointer_text(surface_text: str, line: str) -> tuple[str, bool]:
 
 
 def apply_pointer(
-    surface: Path | str, target: Path | str, *, label: str, create: bool = False
+    surface: Path | str,
+    target: Path | str,
+    *,
+    label: str,
+    create: bool = False,
+    names_base: bool = False,
 ) -> PointerResult:
     """Write (or confirm) a pointer from ``surface`` to ``target`` (§3.3).
+
+    ``names_base`` (U-ancestry ANC8): when this pointer block is
+    BOOTSTRAPPED fresh, append the verbatim disambiguating sentence to
+    its preamble -- the caller's signal that ``surface``'s host has a
+    registered ancestor or descendant. Has no effect when the block
+    already exists (only a NEW line is inserted then, the preamble is
+    untouched) or when no write happens at all (leg 2 below).
 
     In order:
 
@@ -1000,7 +1051,7 @@ def apply_pointer(
     token = pointer_token(surface, target)
     line = pointer_line(token, label)
     original_text = surface.read_text(encoding="utf-8")
-    new_text, bootstrapped = compile_pointer_text(original_text, line)
+    new_text, bootstrapped = compile_pointer_text(original_text, line, names_base=names_base)
     surface.write_text(new_text, encoding="utf-8")
 
     if not surface_names_target(surface, target):

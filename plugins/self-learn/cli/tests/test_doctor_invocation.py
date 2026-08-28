@@ -723,3 +723,68 @@ def test_dc17_switches_row_reports_cli_selection_as_refused(monkeypatch, capsys)
         assert f"{surface}: backend=REFUSED (cli retired) (env:SELF_LEARN_BACKEND)" in line
     assert "backend=cli" not in line
     assert "backend=sdk" not in line
+
+
+def test_p2_bare_doctor_is_byte_identical_to_doctor_invocation(capsys):
+    """U-papercuts P-2 — bare `self-learn doctor` (no `<verb>`) must behave
+    EXACTLY as `self-learn doctor invocation`: same stdout, same stderr,
+    same exit code. Before this unit, `doctor_command` defaulted to
+    `None` and `_cmd_doctor` printed `usage: self-learn doctor invocation`
+    to stderr and returned `EXIT_USAGE` (64) instead of running any
+    diagnostic — the first-try papercut this test guards against
+    regressing.
+
+    Mutation that turns this red: delete the `doctor_p.set_defaults(
+    doctor_command="invocation")` call added to `_build_parser` in
+    cli.py (or revert it to the pre-fix state) — bare `doctor`'s stdout
+    reverts to empty and its stderr reverts to the old usage line, so
+    both equality asserts fail.
+    """
+    rc_bare = cli_mod.main(["doctor"])
+    captured_bare = capsys.readouterr()
+
+    rc_explicit = cli_mod.main(["doctor", "invocation"])
+    captured_explicit = capsys.readouterr()
+
+    assert rc_bare == rc_explicit
+    assert captured_bare.out == captured_explicit.out
+    assert captured_bare.err == captured_explicit.err
+    # Not a vacuous pass: prove both sides actually ran the diagnostic
+    # (as opposed to both being empty/erroring identically).
+    assert captured_bare.out.startswith("doctor: ")
+    assert captured_bare.err == ""
+
+
+def test_p2_doctor_unknown_verb_still_a_usage_error(capsys):
+    """`self-learn doctor bogus` must stay an argparse usage error — exit
+    2, the "invalid choice" message — unaffected by P-2's bare-form
+    default. This is the negative control for P-2: it proves the fix
+    only supplies a DEFAULT for the missing case, it does not widen
+    `doctor` into accepting an arbitrary verb.
+
+    Mutation that turns this red: a broader fix shape that special-cases
+    `doctor_command is None` inside `_cmd_doctor` instead of the
+    parser-level default (or one that mishandles the subparsers choice
+    validation) could accidentally accept `bogus` too, or change its
+    exit code away from argparse's own 2.
+
+    Note: `_main`'s `parser.parse_known_args(argv)` call catches
+    argparse's `SystemExit` itself and returns its (int) code (see
+    `cli.py::_main`) — `cli_mod.main()` never raises for this case, it
+    returns 2, so this asserts on the return value rather than
+    `pytest.raises`.
+
+    Gate r1 N-2: `doctor_sub`'s `metavar` changed from `"<verb>"` to
+    `"[<verb>]"` (so `doctor -h`'s usage line correctly shows the verb as
+    optional, matching the new bare-form default) -- this DOES change
+    `bogus`'s stderr bytes (`argument <verb>: invalid choice` becomes
+    `argument [<verb>]: invalid choice`; measured via a before/after
+    diff). This test's assertions are substring checks
+    (`"invalid choice: 'bogus'"`, `"invocation"`), not an exact-byte
+    comparison, so both survive unchanged -- no update needed here.
+    """
+    rc = cli_mod.main(["doctor", "bogus"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "invalid choice: 'bogus'" in err
+    assert "invocation" in err

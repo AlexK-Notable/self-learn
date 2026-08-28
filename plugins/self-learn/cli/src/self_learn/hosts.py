@@ -54,6 +54,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import os
 import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -72,6 +73,7 @@ __all__ = [
     "MARKER_FILENAME",
     "Hosts",
     "HostsError",
+    "ancestors_of",
     "canon_read_roots",
     "effective_default_mode",
     "host_add",
@@ -88,6 +90,7 @@ __all__ = [
     "save_hosts",
     "skill_dir_for",
     "slug_for",
+    "unregistered_ancestor_dirs",
     "validate_host_path",
 ]
 
@@ -940,3 +943,60 @@ def canon_read_roots(hosts: Hosts) -> list[Path]:
         roots.append((host / "CLAUDE.md").resolve())
         roots.append((host / "references").resolve())
     return roots
+
+
+def ancestors_of(hosts: Hosts, path: Path | str) -> list[Path]:
+    """U-ancestry §6.1: the registered project hosts that are PROPER
+    resolved-path prefixes of ``path`` — never the target itself, never a
+    sibling, never a descendant — ordered NEAREST-first (longest prefix
+    first).
+
+    Pure path arithmetic over the registered host set: no filesystem
+    consultation beyond ``resolve()`` (no ``is_dir``, no read), no VCS
+    boundary (measured, U-ancestry §2.3: Claude Code's ancestor walk
+    crosses git roots — a derivation that stopped at one would model a
+    rule that does not exist), and **derived, never persisted** — nothing
+    here writes a byte anywhere; the relation is recomputed from
+    ``hosts.yaml`` on every call, so ``host add``/``host remove`` changes
+    it immediately (LOAD6).
+
+    Both sides are ``Path.resolve()``d, matching how the real ancestor
+    walk operates on the live cwd it is given (U-ancestry §6.1 note): a
+    host reached only through a symlink whose realpath sits elsewhere is
+    out of scope — not live on any registered host today."""
+    target = Path(path).resolve()
+    target_str = str(target)
+    candidates = []
+    for project in hosts.projects:
+        candidate = Path(project).resolve()
+        prefix = str(candidate) + os.sep
+        if target_str.startswith(prefix):
+            candidates.append(candidate)
+    # Nearest-first: the longest matching prefix is the closest ancestor.
+    candidates.sort(key=lambda p: len(str(p)), reverse=True)
+    return candidates
+
+
+def unregistered_ancestor_dirs(hosts: Hosts, path: Path | str) -> list[Path]:
+    """U-ancestry §6.1: the content-free probe for doctrine §3's "an
+    unregistered ancestor is a fact you tell the human, never something
+    you register yourself" — directories strictly between ``path`` and
+    its nearest REGISTERED ancestor (or the filesystem root, when there
+    is none) that carry a ``CLAUDE.md`` or ``.claude/CLAUDE.md``.
+
+    Returns PATHS ONLY — no caller may read the bytes of anything this
+    reports (U-ancestry ANC5); this function itself never opens the
+    ``CLAUDE.md``/``.claude/CLAUDE.md`` it detects, only
+    :meth:`Path.is_file`s it. Ordered nearest-first, matching
+    :func:`ancestors_of`."""
+    target = Path(path).resolve()
+    nearest = ancestors_of(hosts, target)
+    floor = nearest[0] if nearest else Path(target.anchor)
+
+    hits: list[Path] = []
+    cur = target.parent
+    while cur != floor and cur != cur.parent:
+        if (cur / "CLAUDE.md").is_file() or (cur / ".claude" / "CLAUDE.md").is_file():
+            hits.append(cur)
+        cur = cur.parent
+    return hits

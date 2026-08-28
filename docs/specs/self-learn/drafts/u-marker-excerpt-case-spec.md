@@ -1,6 +1,41 @@
 # Spec — U-marker: search the excerpt marker the compiler actually writes
 
 Status: **DRAFT r1**. Unit `U-marker` of the r2 routing campaign (playbook
+
+**Superseded in part by S-52 (2026-08-27)** — `u-ancestry-ancestor-canon-spec.md`
+`SCAN1`/`SCAN8`.
+
+**§3 criterion A — only A3 is retired.** `worker.canon_blocks` reads the whole
+own-host `CLAUDE.md` under a byte cap, so **A3**'s exact
+`lines[begin-20:end+21]` equality has no window to assert. **A0, A1 and A2
+survive** and are re-asserted against the whole-file contract by S-52's
+`SCAN1`: A0 as the fixture guard that keeps the target *fat* (which `SCAN8`
+still needs), A1 as "both imported markers are present", A2 as
+"`compilers.entry_line(R)` is present — the payload, not the frame". Nothing
+here weakens the requirement that the compiled section reach the analyst; it
+strengthens it, from a window to the whole file.
+
+**§3 criterion B is re-homed** to `SCAN8`, guarding the **truncation path**
+instead of the branch selector: over the byte cap, the managed region is
+reserved first and located case-sensitively, so a case-variant the compiler
+never wrote cannot capture the retained window.
+
+**The §3.1 mutation table's disposition, one by one.** `M1` (legacy needle,
+begin only) and `M2` (end only) mapped to **A**; under whole-file reading A1
+is *vacuously* true — the file contains the markers whatever needle the code
+searches for — so both are **carried to `SCAN8`** as its `M35`/`M36`, where an
+unlocatable marker means an unreserved managed region. `M3` (case-folded short
+token) and `M5` (case-folding the imported constants) mapped to **B** and are
+carried as `SCAN8`'s `M37`/`M30`. `M4` (return the whole file instead of the
+window) is **retired with A3** — it is the new behaviour. So all five survive
+or are retired **deliberately**, none by omission.
+
+**§2's import rule — search the markers the compiler actually writes, never a
+hand-typed literal — is unchanged and still binding**, and `SCAN8` is now its
+only observable consequence.
+
+The four tests in `cli/tests/test_worker.py` that pinned A and B are rewritten
+by S-52's unit, which also re-pins that file's `_ARMOR_SHAS` entry.
 §2, Wave 1). Register row **FW-44**. File in scope: `worker.py`, nothing else.
 
 **Where prose and the acceptance criteria conflict, the criteria win.** The

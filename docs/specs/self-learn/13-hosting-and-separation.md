@@ -274,6 +274,32 @@ config away, not a redesign. One-time migration moves cursors, journal,
 markers, spool; the sentinel path change is coordinated with
 claude-skills-sync in the same commit pair.
 
+**Hermetic guarantee (`U-cachelit`, 2026-08-28, FW-130):** every test
+suite in this repo (CLI, UI) redirects `XDG_CACHE_HOME` for the whole
+test session — a session-scoped floor UNDERNEATH each package's own
+per-test redirect, never merely per-test alone — so a namespace under
+this scheme is written to the REAL `~/.cache/self-learn` iff a real
+`self-learn` invocation resolved it, never as a side effect of running
+either suite; both suites' `conftest.py` also carry a session-scoped
+guard that fails the suite's own session, by name, if that guarantee
+is ever broken again.
+
+**Running the two suites (pre-existing, unrelated to the guarantee
+above):** a bare `pytest` invoked from the worktree root, given both
+packages' `tests/` directories, collides — neither package's `tests/`
+is an importable package (no `__init__.py`), so pytest's default
+rootdir-based import mode binds each same-named module (`conftest.py`,
+`support.py`, `test_serve.py`, …) to ONE entry in `sys.modules`; the
+second package's copy then either fails to import (`support.py`'s
+UI-only names missing from the CLI's own `support.py`, already bound
+first) or errors outright (`import file mismatch`). Measured: `uv run
+--project plugins/self-learn/ui pytest plugins/self-learn/cli/tests
+plugins/self-learn/ui/tests` — 18 collection errors, all this shape.
+Each suite has its own sanctioned entry point instead (CLI: `plugins/
+self-learn/cli/scripts/suite`; UI: `cd plugins/self-learn/ui && uv run
+pytest`, explicit `tests/` path) — this has always been true and is not
+something this unit changed.
+
 ## 7. Migration plan (ledger-first; worktree + pre-migration audit)
 
 - **T-H1 · Home bootstrap** — `~/.self-learn` git init, private remote,

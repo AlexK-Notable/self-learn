@@ -394,7 +394,9 @@ def test_every_flag_in_the_closed_set_is_accepted():
     """B2: the twin, in three required parts (FOLD-1)."""
     for flag in TRACE_FLAGS:  # (a) never a hardcoded copy
         validate_proposal(proposal_dict(flags=[flag]))
-    assert len(TRACE_FLAGS) == 8  # (b) the count guard
+    # (b) the count guard — 10 since U-ancestry (S-52) added
+    # canon-hand-written / unregistered-ancestor to the closed set.
+    assert len(TRACE_FLAGS) == 10
     assert "pathed-unbuilt" in TRACE_FLAGS  # (c) C1's resolution, by exception
 
 

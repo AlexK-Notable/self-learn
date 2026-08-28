@@ -504,14 +504,50 @@ def _apply_failure_env(kind: str, param: str, *, scratch: Path, monkeypatch) -> 
 #: tripwire deletion + retirement comment; the whole-file rebase §8.1
 #: forces onto the seam's test suite). All three are already members of
 #: `_SU4B_DIFF_EXEMPT` -- only the hash moves, not exempt-set membership.
+#: U-servehermetic (2026-08-27) re-pins `conftest.py` again: `_worker_
+#: test_defaults` now sets `XDG_CONFIG_HOME` to a fresh `tmp_path`
+#: subdir, next to the pre-existing `XDG_CACHE_HOME` line, so
+#: `serve.unit_dir()`'s new `XDG_CONFIG_HOME` fallback leg reads the
+#: fixture dir instead of the real `~/.config/systemd/user` (the defect
+#: this unit fixes -- a live host unit made 18 tests host-dependent).
+#: Already a member of `_SU4B_DIFF_EXEMPT` from U-flip -- only the hash
+#: moves, not exempt-set membership.
+#: U-cachelit (2026-08-28) re-pins `conftest.py` a further time: a new
+#: `_litter_namespace_guard` section is APPENDED whole (pure addition,
+#: nothing existing edited) -- the session-scoped forward guard against
+#: the measured 31,291-namespace cache-litter defect (root cause: the
+#: UI package's module-scoped real-server test fixtures, fixed in
+#: `plugins/self-learn/ui/tests/conftest.py`; this file's own addition
+#: is the CLI-side backstop). Already a member of `_SU4B_DIFF_EXEMPT` --
+#: only the hash moves, not exempt-set membership.
+#: U-cachelit RE-ANCHOR (code gate r1, same day) re-pins `conftest.py`
+#: yet again: the guard section was deleted and rewritten, not edited,
+#: to fold M-1/M-2/M-3 -- a session-scoped `_env_floor_session` for the
+#: CLI package, digest-based namespace attribution
+#: (`_normalized_digests`/`_SESSION_HOMES`) instead of raw `env=`-string
+#: matching, and a `pytest_terminal_summary` warn channel for
+#: unattributable (concurrent-sibling) namespaces. Only the hash moves;
+#: still a pure append over the pre-U-cachelit baseline (see `test_
+#: u_sdka.py::_AR1_SANCTIONED_PIN_LINES`'s own RE-ANCHOR paragraph for
+#: the full accounting), still a member of `_SU4B_DIFF_EXEMPT`.
 _ARMOR_SHAS = {
-    "plugins/self-learn/cli/tests/conftest.py": "7e248059461888ad80e758002c4b2f7c821a98e2d5aafdff6367815d0e2bca56",  # code gate r1 NIT-5: stale AG1-tripwire paragraph fixed
+    "plugins/self-learn/cli/tests/conftest.py": "09d1cfc25026c74684d263332cdd912619bd94b76fafef12f495833f84bddfe4",  # U-cachelit RE-ANCHOR (gate r1): guard section rewritten
     "plugins/self-learn/cli/tests/backends.py": "a2ba2d74f117a230740d10e3c9fa67bd30f751ce80ec59667c9136557a906dde",
-    "plugins/self-learn/cli/tests/test_invocation.py": "e3875614ab32a760788140d76e26cd542c07bd2f9dfa512f9da0f62c40b9257c",
-    "plugins/self-learn/cli/tests/test_invocation_sdk.py": "22cecabad8d3caf3ccd2c63bc977cfd359f2ea38de3f525c0f2544e02692ad23",
-    "plugins/self-learn/cli/tests/test_u_fake.py": "2a39f656a360c906a05454e5ac07c6093c92c590538968df8cdeeaf1fe61e623",  # U-hostmode 2026-08-28: REWRITTEN/_DS1_EXPECTED re-pinned for test_route_cli.py's REC9 fallout (already exempt from the diff-empty half below)
-    "plugins/self-learn/cli/tests/test_worker.py": "96ac0b4606a4e643b24c67df7202a897864ea404390fa6fd353655345d6eefe7",
-    "plugins/self-learn/cli/tests/test_repair.py": "40bf4fbd80ce7901d88ad9394de32301213b095d47c9e38fc253773c1d0c631c",
+    # merge 2026-08-28 (u-hostmode x master): only master changed these
+    # four keys since base (1e77ff4) -- ours were byte-unchanged there,
+    # so master's pinned values win outright.
+    "plugins/self-learn/cli/tests/test_invocation.py": "2b76f2bc4515891734c695993f2a7c203799c5ca35db89002a33a32fcaf86b2a",  # FW-117 (2026-08-28): HY3/CN6/CN7 witness-set trim + gate r1 fold (CN9 docstring truth), see the dated paragraph below
+    "plugins/self-learn/cli/tests/test_invocation_sdk.py": "124c0e8b310ce8dbfeea89348d0ea5a8cf9c96c071642f7e16e89a7ffa1b4e35",  # U-kl4 gate r1 fold (2026-08-28): B-1/N-D1/N-D2/N-D3, see the dated paragraph below
+    # merge 2026-08-28 (u-hostmode x master): BOTH sides changed this key
+    # (ours: REWRITTEN/_DS1_EXPECTED re-pinned for test_route_cli.py's REC9
+    # fallout; master's: U-ancestry + U-corrob DS1 extensions + FW-117
+    # entries) -- neither side's stale value is used; re-derived by
+    # sha256-hashing the ACTUAL merged tests/test_u_fake.py bytes after
+    # both edits (and the DS1 re-derivation the merge itself required)
+    # were combined.
+    "plugins/self-learn/cli/tests/test_u_fake.py": "16497e769bd132e47e3be69e470af34b9b2e1ecf75261d9ced6d11081eb25e03",
+    "plugins/self-learn/cli/tests/test_worker.py": "53287efe8e8f58b0fcda9741f68ca8a0b9b437ccc82a97b8b8cb89784d4bcd7a",  # U-ancestry, 2026-08-28: S-52 (SCAN1) supersedes u-marker §3 criterion A; the four canon_excerpt tests are rewritten to the whole-file contract and criterion B is re-homed as SCAN8
+    "plugins/self-learn/cli/tests/test_repair.py": "266d2a7b89c741b2e801f8431a31ef43a7c316ae8e7926beb0c03b6293e497c5",  # FW-117 (2026-08-28): B9/D5 rebase, see the dated paragraph below
 }
 
 #: U-flip: three of the eight pins above (conftest.py, test_invocation.py,
@@ -603,6 +639,96 @@ _ARMOR_SHAS = {
 #: test_u_fake.py/test_worker.py/test_repair.py (6 of the 7 pinned files;
 #: backends.py untouched by the rename) to this round's content; all six
 #: already members of the exempt set below.
+#:
+#: *2026-08-28* **U-kl4** re-pins `test_invocation_sdk.py` again: the
+#: root-cause fix for `test_kl4_hang_sigterm_ignored_child_is_gone_
+#: after_run_sync_returns`'s host-global false-red (`pgrep -f
+#: fake_clau[d]e.py` matched ANY process on the machine, not just this
+#: run's own child -- measured 2/2 parallel-suite runs red, solo green).
+#: The test now identifies its child by PID, read off a new
+#: `SdkOutcome.child_pid` field (`backend.py`) instead of a name
+#: pattern, with a positive control (`test_kl4a_...`, monkeypatches
+#: `teardown_mod.kill_child` to a no-op and confirms the check reddens)
+#: plus two shared identity-check helpers (`_proc_start_ticks`/
+#: `_child_gone`). The `NOTE-14` comment is rewritten in place to
+#: describe the new check rather than deleted, since the file's other
+#: `NOTE-*` comments are kept as historical markers the same way. A
+#: first version of this fix threaded the pid through `spec.log()`
+#: instead of a new `SdkOutcome` field -- MEASURED to break
+#: `test_lg1`/`test_lg6`/`test_fk2` (`test_invocation.py`), `test_ou4`
+#: (this file's sibling `test_invocation_sdk.py`), and `test_fl2`
+#: (`test_worker_contract.py` itself, below) by adding an unexpected
+#: line to every clean session's log; reverted before it shipped.
+#: `backend.py` itself is untouched by any of this file's own pins
+#: (not one of the 7) -- its `SdkOutcome.child_pid` addition has no
+#: whole-file armor here to move.
+#:
+#: *2026-08-28* **U-kl4 gate r1 fold** re-pins `test_invocation_sdk.py`
+#: a further time (1 BLOCKER / 0 MAJOR / 3 NOTE-or-DIRECT, folded, same
+#: worktree, uncommitted). `B-1` (must-fix): `test_kl4a_...`'s `try/
+#: finally` was scoped too narrowly -- `assert outcome.failure ==
+#: "timeout"` and `assert pid is not None` ran OUTSIDE the `try`, so
+#: either firing left `kill_child()` neutered and nothing to reap the
+#: child (`K-5`'s sweep can't find it either, since `_drive`'s
+#: `finally` already cleared the sidecar) -- a real ppid-1 orphan,
+#: reproduced live during gate review and killed by hand from its pid.
+#: Fixed: `pid = outcome.child_pid` is captured FIRST, every assertion
+#: moved INSIDE the `try`, and the `finally` SIGKILLs + best-effort-
+#: reaps (`_reap_best_effort`, new) the captured pid whenever it is not
+#: `None`. `N/D-3`: the kill now re-checks `_proc_start_ticks(pid)`
+#: immediately before sending `SIGKILL` (not just once at capture
+#: time), guarding the ~1.5s window `_child_gone`'s own poll can take
+#: -- kills only if the ticks still match. `N/D-2`: a new committed
+#: test, `test_kl4b_child_pid_is_none_on_a_path_where_no_child_ever_
+#: spawned`, asserts `child_pid is None` on the `not-found` leg (the
+#: one the gate probed) -- one assertion, docstring cites `N/D-2`.
+#: `N/D-1` (accepted as-is, no code change): one sentence added to the
+#: `NOTE-14` comment block stating the PID-reuse guard's own failure
+#: mode is a slower false RED, never a false green.
+#: U-ancestry re-pins `test_u_fake.py` a further time (same build as the
+#: `test_worker.py` re-pin above, 2026-08-28): the SCAN1/SCAN8 rewrite of
+#: `test_worker.py`'s four `canon_excerpt` tests (S-52) surfaced the same
+#: `test_ds1`-internal drift class U-cleanup-A/-B already fixed here
+#: twice -- `DS1_REMOVED` gains the four superseded names, `DS1_ADDED`
+#: gains the four replacement tests plus two new shared fixture helpers
+#: (`_scan8_filler`/`_scan8_fixture_lines`), and `test_ds1b`/`test_ds1c`'s
+#: mirrored `expected` sets and counts move with them. `_DS1_EXPECTED
+#: ["test_worker.py"]`'s own (count, sha) pin also moves (59 -> 55): the
+#: four newly-excluded base-side names drop out of that pin's base-only
+#: census. Already a member of the exempt set below.
+#:
+#: *2026-08-28* **U-fw117** re-pins `test_invocation.py`, Gate r1 fold (same day): `test_invocation.py` re-pinned again for a docstring-only edit to `test_cn9_direction_guard_one_hop_local_taint` (it had named the deleted CN6/CN7 legs); hy5 row re-measured to (737, 760).
+#: `test_repair.py`, and `test_u_fake.py` (FW-117, `14-forward-work-
+#: map.md:172`):
+#: `worker.write_repair_settings_file` is DELETED, not merely left
+#: unread -- it wrote a real `worker.repair.settings.json` but nothing
+#: under the sdk backend ever read it back (`options_kwargs()` passes
+#: `settings=None` unconditionally, `A-2`; the cli-era `--settings
+#: <path>` reader left with `CliBackend`). `test_invocation.py`:
+#: `_HY3_SHAS`/`test_hy3_witness_b_is_sha_pinned` trimmed from three
+#: witnesses to two; `SETTINGS_WITNESS`, `test_cn6_witnesses_a_and_b_
+#: agree_statically`, and `test_cn7_repair_leg_over_both_enforce_values`
+#: DELETED (no witness function left to agree against, same reasoning
+#: as the already-deleted `test_cn8`/`test_cn7_worker_leg...` above).
+#: `test_repair.py`: `test_b9_kill_switch_disables_composition` drops
+#: its now-vacuous "settings file does NOT exist" leg (true either way
+#: once the function is deleted, so no longer discriminates the kill
+#: switch); `test_d5_the_narrowed_repair_scope_is_real` rebased onto a
+#: `invocation.write_session` spy capturing the real `SessionSpec.
+#: containment` instead of reading a file that no longer exists, plus a
+#: new mutation-detecting `not ... .exists()` assertion (FW-117's whole
+#: point). `test_worker_contract.py` itself (this file, the pinner, not
+#: self-pinned) also gained `test_rp1a_repair_round_writes_no_settings_
+#: artifact_under_cache_dir` (new) and rebased `test_rp1`/`test_ha1_
+#: hatch_open_omits_default_mode` the same way -- all three verified RED
+#: under a temporarily-reinstated one-line write at the repair call
+#: site, reverted before shipping; see the build report. `test_u_fake.
+#: py`'s `DS1`/`DS2` instrument (function-level armor, not this
+#: whole-file mechanism) gained the matching `REWRITTEN`/`DS1_ADDED`
+#: entries and re-derived `_DS1_EXPECTED` count/sha pins for both
+#: touched modules, per its own house rules -- see that file's comments.
+#: All three re-pinned files already members of `_SU4B_DIFF_EXEMPT`
+#: below -- only the hash moves, not exempt-set membership.
 _SU4B_DIFF_EXEMPT = {
     "plugins/self-learn/cli/tests/conftest.py",
     "plugins/self-learn/cli/tests/test_invocation.py",
@@ -1165,9 +1291,21 @@ def test_rp1_repair_round_wiring(request, monkeypatch, env):
     §8.1; `FakeBackend.argvs` renamed `.doctrines`, CL9). Rebased onto
     the real call site's own on-disk artifacts: the BATCH round writes
     no settings file at all (`worker.write_settings_file` deleted,
-    `WS1`'s own re-baseline above); the REPAIR round's `worker.repair.
-    settings.json` survives (`worker.write_repair_settings_file`
-    explicitly KEPT)."""
+    `WS1`'s own re-baseline above).
+
+    FW-117 RE-BASELINE (2026-08-28): the REPAIR round now ALSO writes no
+    settings file -- `worker.write_repair_settings_file` is DELETED, not
+    merely unread; it was a dead write nothing under the sdk backend ever
+    read back (`options_kwargs()` passes `settings=None` unconditionally,
+    `A-2`; the cli-era `--settings <path>` reader left with `CliBackend`).
+    Positive control: at base `61c30b3` this test's last line was `assert
+    (worker.cache_dir() / "worker.repair.settings.json").exists()` --
+    see `git show 61c30b3:plugins/self-learn/cli/tests/test_worker_
+    contract.py` around this test. The wiring assertions above (surface
+    names, `write_exact`/`write_globs` off the real `SessionSpec.
+    containment`) are unchanged and already prove the repair round ran
+    for real -- the NEW final assertion below is the mutation-detecting
+    one: reintroduce the deleted call and this reddens."""
     monkeypatch.setenv("SELF_LEARN_REPAIR", "1")
     rid = _next_rid()
     seed_pending(env, rid=rid)
@@ -1185,7 +1323,48 @@ def test_rp1_repair_round_wiring(request, monkeypatch, env):
     assert fake.specs[1].containment.write_exact == (str(target),)
     assert fake.specs[1].containment.write_globs == ()
     assert not (worker.cache_dir() / "worker.settings.json").exists()
-    assert (worker.cache_dir() / "worker.repair.settings.json").exists()
+    assert not (worker.cache_dir() / "worker.repair.settings.json").exists()
+
+
+def test_rp1a_repair_round_writes_no_settings_artifact_under_cache_dir(request, monkeypatch, env):
+    """FW-117 (2026-08-28) -- the dedicated no-settings-file contract
+    test the finding's disposition calls for: a real, model-producing
+    repair round (same shape as `test_rp1` above) must leave NO new
+    settings-shaped artifact anywhere under `worker.cache_dir()`, not
+    only at the one literal path `worker.write_repair_settings_file`
+    used to write. Snapshots the cache dir's contents BEFORE the run
+    (it already holds `worker.log` and friends from the batch round) and
+    asserts no NEW entry with "settings" in its name appears after --
+    catching a reintroduced write under the OLD exact name (`worker.
+    repair.settings.json`, `test_rp1`'s own assertion) as well as a
+    renamed one this test's own glob would otherwise miss. Mutation:
+    reintroducing `write_repair_settings_file`'s call at the repair call
+    site (`worker.py`, inside `run()`'s repair branch) reddens this --
+    verified live during this unit's build (temporarily reinstated a
+    one-line `_p("worker.repair.settings.json").write_text(...)` at the
+    call site, confirmed RED, reverted; see the build report)."""
+    rid = _next_rid()
+    seed_pending(env, rid=rid)
+    refusable = _dump_yaml(_t4_missing_target(env, rid))
+    fixed = _dump_yaml(_t4_target_fixed(env, rid))
+    target = worker.stage_dir() / f"{rid}.yaml"
+    fake = install_fake(request, monkeypatch, [
+        Writes({target: refusable}),
+        Writes({target: fixed}),
+    ])
+    cache_dir = worker.cache_dir()
+    before = {p.name for p in cache_dir.iterdir()} if cache_dir.is_dir() else set()
+
+    worker.run(env.home)
+
+    assert len(fake.specs) == 2
+    assert fake.specs[1].surface == "worker-repair"  # the repair round really ran
+    after = {p.name for p in cache_dir.iterdir()}
+    new_entries = after - before
+    settings_like = {name for name in new_entries if "settings" in name}
+    assert settings_like == set(), (
+        f"repair round wrote settings-shaped artifact(s) under cache_dir(): {settings_like}"
+    )
 
 
 def test_rp2_repair_reaches_same_backend(backend, env, monkeypatch, tmp_path):
@@ -1557,9 +1736,22 @@ def test_ha1_hatch_open_omits_default_mode(env, sdk_fake_worker, monkeypatch):
     (`worker.settings.json`) no longer exists -- `worker.write_
     settings_file` is deleted (§8.1) and the batch round has passed
     `settings=None` to the sdk seam ever since (`WS1`'s own
-    re-baseline, above). The REPAIR round's file (`worker.repair.
-    settings.json`) survives -- `worker.write_repair_settings_file` is
-    explicitly KEPT by §8.1's deletion inventory.
+    re-baseline, above).
+
+    FW-117 RE-BASELINE (2026-08-28): the REPAIR round's file (`worker.
+    repair.settings.json`) no longer survives either -- `worker.write_
+    repair_settings_file` is DELETED, not merely unread; it was a dead
+    write, same reasoning as `write_settings_file` one build earlier
+    (`options_kwargs()` passes `settings=None` unconditionally for BOTH
+    surfaces, `A-2`). At base `61c30b3` this test's last three lines
+    read the file back off disk and asserted `"defaultMode" not in
+    repair_settings` -- see `git show 61c30b3:plugins/self-learn/cli/
+    tests/test_worker_contract.py` around this test. The property now
+    reads off the same real observable the batch leg already used
+    (`options_kwargs(spec)["settings"]`, captured by `_spy_write_
+    session` regardless of which round it renders for) -- symmetric
+    for both surfaces now that neither has a file -- plus a positive,
+    mutation-detecting check that the old path stays unwritten.
 
     Code gate r1 NIT-7: renamed from `test_ha1_cli_hatch_open_omits_
     default_mode` -- the property this test asserts (the enforcement
@@ -1574,14 +1766,12 @@ def test_ha1_hatch_open_omits_default_mode(env, sdk_fake_worker, monkeypatch):
     captured = _spy_write_session(monkeypatch)
     worker.run(env.home)
     batch_cap = next(c for c in captured if c.spec.surface == "worker")
-    repair_spec = next(c.spec for c in captured if c.spec.surface == "worker-repair")
+    repair_cap = next(c for c in captured if c.spec.surface == "worker-repair")
     assert batch_cap.spec.containment.default_mode is None
-    assert repair_spec.containment.default_mode is None
+    assert repair_cap.spec.containment.default_mode is None
     assert batch_cap.kwargs["settings"] is None
-    repair_settings = json.loads(
-        (worker.cache_dir() / "worker.repair.settings.json").read_text(encoding="utf-8")
-    )["permissions"]
-    assert "defaultMode" not in repair_settings
+    assert repair_cap.kwargs["settings"] is None
+    assert not (worker.cache_dir() / "worker.repair.settings.json").exists()
 
 
 def test_ha2_sdk_hatch_open_three_legs(env, sdk_cli_path, monkeypatch):

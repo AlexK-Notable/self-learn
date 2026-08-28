@@ -60,7 +60,8 @@ from typing import Any
 
 from . import invocation, sentinel, telemetry
 from .compilers import BEGIN_MARKER, END_MARKER
-from .hosts import Hosts, HostsError, load_hosts, skill_dir_for
+from .corroborate import MISMATCH, NO_EVIDENCE, RunEvidence
+from .hosts import Hosts, HostsError, ancestors_of, load_hosts, skill_dir_for, unregistered_ancestor_dirs
 from .ledger import discover_buckets, resolve_home
 from .ledger_ops import bucket_project_path
 from .scan import scan as secret_scan
@@ -83,8 +84,11 @@ from .records import Record, RecordError
 
 __all__ = [
     "ALLOWED_TOOLS",
+    "ANCESTOR_DEPTH_CAP",
     "CANDIDATE_CAP",
     "CANDIDATE_SCORE_FLOOR",
+    "CANON_BYTES_PER_FILE",
+    "CANON_BYTES_PER_RECORD",
     "Candidate",
     "DEFAULT_COALESCE_SECS",
     "DEFAULT_WORKER_MODEL",
@@ -98,7 +102,7 @@ __all__ = [
     "TRACE_CONDITIONALS",
     "batch_cap",
     "cache_dir",
-    "canon_excerpt",
+    "canon_blocks",
     "cluster_candidates",
     "compose_batch_prompt",
     "compose_record_block",
@@ -116,12 +120,19 @@ __all__ = [
     "stage_reset",
     "staged_paths",
     "write_permission_rules",
-    "write_repair_settings_file",
 ]
 
 DEFAULT_COALESCE_SECS = 600
 DEFAULT_WORKER_MODEL = "claude-sonnet-5"
 BATCH_CAP = 15
+#: U-ancestry §5.2 BR-3 — the already-canon scan's byte budget. Chosen
+#: from §3.4's measured surfaces: 32768 covers 8 of 9 hosts' whole
+#: CLAUDE.md untouched (`~/.config` truncates from 72,467 B); the ancestor
+#: depth cap's live max is 1; the per-record total's worst case rises from
+#: 24,328 B (today's excerpt) to 65,536 B.
+CANON_BYTES_PER_FILE = 32768
+ANCESTOR_DEPTH_CAP = 2
+CANON_BYTES_PER_RECORD = 65536
 #: U-repair §3.9 — 900s (the pre-U-repair default) is a coin flip against
 #: the measured maximum (857s live, 745s replayed, both at batch 15);
 #: 1800s is ~2.1x that measurement. Env-overridable via
@@ -615,13 +626,32 @@ def path_roster(home: Path, entry) -> str:
     return "\n".join(lines)
 
 
-def compose_record_block(home: Path, entry, *, roster: Roster, candidates: list) -> str:
+def compose_record_block(
+    home: Path,
+    entry,
+    *,
+    roster: Roster,
+    candidates: list,
+    bytes_sink: list[int] | None = None,
+    log_bytes: bool = True,
+) -> str:
     """The ONE per-record block, shared verbatim by both prompt forms
     (§3.1/A11): record text (``Record.to_text()``, never
     ``entry.path.read_text()`` — §3.5, the two differ whenever ruamel
     re-renders frontmatter, and containment checks the FORMER), the T-N
-    candidate block, the absolute-path roster, and the existing
-    candidate-target canon excerpt."""
+    candidate block, the absolute-path roster, and the canon blocks
+    (U-ancestry §6.2 — own host, registered ancestors, references).
+
+    ``bytes_sink`` is an OPTIONAL side-channel accumulator (BR-2): when a
+    caller passes a list, this record's realised ``canon_bytes`` is
+    appended to it, so :func:`compose_batch_prompt` can log the batch
+    total without re-deriving it. Never affects the returned text (A11's
+    byte-identity contract is untouched by an unset default).
+
+    ``log_bytes`` passes straight through to :func:`canon_blocks` — see
+    its docstring: LG7 forbids the analyst's single-record path from
+    ever writing to `worker.log`, so `compose_single_prompt` passes
+    False here while `compose_batch_prompt` leaves the True default."""
     home = Path(home)
     return (
         f"--- record {entry.record.id} ---\n"
@@ -633,7 +663,7 @@ def compose_record_block(home: Path, entry, *, roster: Roster, candidates: list)
         f"--- path roster ---\n"
         f"{path_roster(home, entry)}\n"
         f"--- candidate target canon excerpt ---\n"
-        f"{_canon_excerpt(home, entry)}\n"
+        f"{_canon_excerpt(home, entry, bytes_sink=bytes_sink, log_bytes=log_bytes)}\n"
     )
 
 
@@ -877,7 +907,9 @@ def stage_reset(home: Path) -> None:
     removed by the NEXT run's clear, not swept later. ``home`` is unused
     directly (:func:`cache_dir` resolves the ledger home itself, doc 13
     H-4) — kept as a parameter to match the spec's call shape and this
-    module's own convention (e.g. :func:`write_repair_settings_file`)."""
+    module's own convention (e.g. :func:`stage_permission_rules`, below —
+    FW-117 deleted the other example this docstring used to cite,
+    :func:`write_repair_settings_file`, a dead write nothing read)."""
     del home
     path = stage_dir()
     shutil.rmtree(path, ignore_errors=True)
@@ -909,55 +941,15 @@ def _stage_enabled() -> bool:
 
 def _enforce_scope() -> bool:
     """``SELF_LEARN_ENFORCE_SCOPE=0`` — the enforcement switch (§3.7):
-    omits ``defaultMode`` from both settings files, i.e. the exact shape
-    the shipped code wrote before ``GR-a``'s hotfix."""
+    omits ``defaultMode`` from both the batch and repair rounds'
+    containment (``invocation.containment_for(..., enforce=...)``), i.e.
+    the exact shape the shipped code wrote before ``GR-a``'s hotfix, back
+    when both rounds still rendered an on-disk settings file (batch's,
+    ``worker.write_settings_file``, deleted by U-cleanup-B §8.1; repair's,
+    ``worker.write_repair_settings_file``, deleted by FW-117 — neither
+    round writes a settings file to disk any more, the charter is the
+    sole authority for both, `A-2`)."""
     return os.environ.get("SELF_LEARN_ENFORCE_SCOPE") != "0"
-
-
-def write_repair_settings_file(home: Path, paths: list[Path]) -> Path:
-    """§3.7 — the repair round's NARROWED settings file: one EXACT-PATH
-    ``Edit(...)`` rule per member of the repair set ``E``, sorted — never
-    a glob. This is the structural half of "the repair round must not
-    enlarge the blast radius" (§2, FW-84): the CLI itself refuses writes
-    outside the assigned set — true because this file pins
-    ``defaultMode: "default"`` below (omitted only under
-    ``SELF_LEARN_ENFORCE_SCOPE=0``); without that key the scopes were
-    decorative (see the next paragraph).
-
-    U-attrib (``GR-d``): ``paths`` now names STAGED files — the caller
-    resolves ``E`` over the stage (or, under ``SELF_LEARN_STAGE=0``, over
-    ledger paths exactly as ``U-repair`` shipped); this function itself
-    is unchanged either way, it just names whatever it is given. The
-    exact-path-vs-glob-fallback branch ``U-repair`` §3.7 left open is
-    CLOSED (`Z2` settled it: an ``Edit(...)`` rule matches for both
-    create and modify, exact-path and glob alike — `GR3`).
-
-    Verified against the live CLI (2.1.226) as a builder obligation
-    (§3.7), not assumed: a scratch home, the worker's real argv shape
-    (``--allowedTools Read,Grep,Glob --disallowedTools
-    ...,Edit,...``, Edit granted ONLY via this settings file), one
-    exact-path rule for a target file — a sibling file in the SAME
-    directory, granted no rule of its own, was refused; the granted
-    target was editable. (This host's OWN interactive
-    ``~/.claude/settings.json`` sets ``permissions.defaultMode:
-    bypassPermissions``, which — same as it did for the batch-invocation
-    globs until ``defaultMode`` was pinned there too — voids any
-    settings-file scope that omits the key; the probe
-    above set ``defaultMode: "default"`` in the probe's OWN ``--settings``
-    file to exercise real enforcement, since a CLI-supplied settings file
-    takes precedence over the user's global one. See the build report.)"""
-    home = Path(home)
-    path = _p("worker.repair.settings.json")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    rules = [f"Edit(/{p})" for p in sorted(paths)]
-    permissions: dict[str, object] = {"allow": rules}
-    if _enforce_scope():
-        permissions["defaultMode"] = "default"
-    path.write_text(
-        json.dumps({"permissions": permissions}, indent=2),
-        encoding="utf-8",
-    )
-    return path
 
 
 # ------------------------------------------------------------------- kick
@@ -1306,58 +1298,279 @@ def _digest(home: Path, limit: int = 20) -> str:
     return "\n".join(lines)
 
 
-def canon_excerpt(home: Path, record: Record, bucket_dir: Path) -> str:
-    """The candidate target's managed section ± 20 lines, or the whole
-    file when < 200 lines (pinned prompt ingredient). Targets resolve
-    through the hosts registry now (doc 13): skill scope → the skills
-    root's SKILL.md; project scope → the bucket's meta-recorded host
-    CLAUDE.md; user scope → the real user CLAUDE.md.
+#: U-ancestry §6.2 item 2 — the label an ancestor's block carries.
+_ANCESTOR_LABEL = "(inherited — loads in every session under this host)"
+#: U-ancestry §6.2 item 3 — the label every references/ block carries,
+#: verbatim (SCAN3). A references file is on the DEMAND shelf, reached by
+#: a pointer, never loaded — so a hit there is never eligible for
+#: `g0.canon` (CARD4).
+_REFERENCE_LABEL = "(captured, NOT loaded — pointer-reached; not eligible for g0.canon)"
 
-    The ONE implementation of this rule (FW-48/U-marker-ui, 2026-08-02):
-    the review pane (``ui/src/self_learn_ui/pane.py``'s
-    ``target_canon_excerpt``) imports and delegates to this function
-    rather than re-declaring it. A hand-copied second implementation is
-    exactly how the pane drifted onto a marker literal the compiler
-    never wrote — see
-    ``docs/specs/self-learn/drafts/u-marker-excerpt-case-spec.md`` §5."""
+#: U-ancestry §6.2 clause (1) — the managed-marker window each side, the
+#: SAME ±20-line convention `canon_excerpt` used for its own window
+#: (superseded by SCAN1's whole-file read; the window survives ONLY as
+#: the always-retained reservation inside the over-cap truncation path —
+#: SCAN8, the re-homed u-marker criterion B).
+_MARKER_WINDOW_LINES = 20
+
+
+def _locate_markers(lines: list[str]) -> tuple[int | None, int | None]:
+    """The imported-marker search (u-marker §2's import rule, unchanged):
+    the exact `BEGIN_MARKER`/`END_MARKER` strings the compiler writes,
+    matched CASE-SENSITIVELY — a case-variant the compiler never wrote is
+    not a managed region (SCAN8)."""
+    begin = next((i for i, ln in enumerate(lines) if BEGIN_MARKER in ln), None)
+    end = next((i for i, ln in enumerate(lines) if END_MARKER in ln), None)
+    return begin, end
+
+
+def _retain_ordered(text: str, cap: int) -> tuple[str, int]:
+    """U-ancestry §6.2's ORDERED truncation priority for one file's whole
+    text, applied only when it exceeds `cap` bytes: (1) the managed
+    region ± `_MARKER_WINDOW_LINES` lines, located case-sensitively and
+    RESERVED FIRST — always retained, whatever its offset in the file;
+    (2) head fill; (3) tail fill, their budgets computed from whatever
+    the reservation leaves. When the markers cannot be located, (1) is
+    empty and the block is head-and-tail fill only, marked as such.
+    Every dropped span is marked in the returned text — a truncated block
+    never silently looks whole.
+
+    Returns ``(retained_text, dropped_bytes)``; ``dropped_bytes == 0``
+    and ``retained_text == text`` when the file is already under the
+    cap (SCAN1: the whole file, unmodified)."""
+    raw = text.encode("utf-8")
+    if len(raw) <= cap:
+        return text, 0
+
+    lines = text.splitlines()
+    begin_idx, end_idx = _locate_markers(lines)
+    m_lo: int
+    m_hi: int
+    if begin_idx is not None and end_idx is not None and end_idx >= begin_idx:
+        has_marker = True
+        m_lo = max(0, begin_idx - _MARKER_WINDOW_LINES)
+        m_hi = min(len(lines), end_idx + _MARKER_WINDOW_LINES + 1)
+    else:
+        # Dead values: every downstream use of m_lo/m_hi is gated on
+        # has_marker being True, so these are never actually read — 0
+        # keeps the type plain `int` (never `int | None`) rather than
+        # threading an Optional through several more lines/loops below.
+        has_marker = False
+        m_lo = m_hi = 0
+
+    reserved_lines = lines[m_lo:m_hi] if has_marker else []
+    reserved_bytes = len("\n".join(reserved_lines).encode("utf-8"))
+    remaining = max(0, cap - reserved_bytes)
+    head_budget = remaining // 2
+    tail_budget = remaining - head_budget
+
+    head_limit = m_lo if has_marker else len(lines)
+    tail_floor = m_hi if has_marker else 0
+
+    head_end = 0
+    used = 0
+    while head_end < head_limit:
+        nxt = used + len(lines[head_end].encode("utf-8")) + 1
+        if nxt > head_budget:
+            break
+        used = nxt
+        head_end += 1
+
+    tail_start = len(lines)
+    used = 0
+    while tail_start > tail_floor and tail_start - 1 >= head_end:
+        nxt = used + len(lines[tail_start - 1].encode("utf-8")) + 1
+        if nxt > tail_budget:
+            break
+        used = nxt
+        tail_start -= 1
+
+    head_lines = lines[:head_end]
+    tail_lines = lines[tail_start:] if tail_start > head_end else []
+
+    def _span_bytes(lo: int, hi: int) -> int:
+        return len("\n".join(lines[lo:hi]).encode("utf-8")) if hi > lo else 0
+
+    gap1_hi = m_lo if has_marker else tail_start
+    dropped1 = _span_bytes(head_end, max(head_end, gap1_hi))
+    dropped2 = _span_bytes(m_hi, max(m_hi, tail_start)) if has_marker else 0
+
+    out: list[str] = list(head_lines)
+    if dropped1 > 0:
+        out.append(f"… ({dropped1} B truncated)")
+    if has_marker:
+        out.extend(reserved_lines)
+        if dropped2 > 0:
+            out.append(f"… ({dropped2} B truncated)")
+    else:
+        out.append("(no managed section located in this file — head/tail fill only)")
+    out.extend(tail_lines)
+    return "\n".join(out), dropped1 + dropped2
+
+
+def _canon_block(path: Path, *, cap: int, label: str | None) -> tuple[str, int]:
+    """One ``### <path> (...)`` block (U-ancestry §6.2): missing/unreadable
+    is an explicit sentinel line, never omission (the `path_roster`
+    "no slot is ever omitted" discipline); otherwise the whole file, capped
+    per :func:`_retain_ordered`. Returns ``(block_text, retained_bytes)`` —
+    the byte count BR-2 logs and BR-1 budgets against."""
+    if not path.is_file():
+        return f"### {path} — target does not exist yet", 0
+    try:
+        text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        return f"### {path} — not valid UTF-8, not read ({exc})", 0
+    except OSError as exc:
+        return f"### {path} — unreadable, not read ({exc})", 0
+
+    original_bytes = len(text.encode("utf-8"))
+    retained_text, dropped = _retain_ordered(text, cap)
+    retained_bytes = len(retained_text.encode("utf-8"))
+    if dropped:
+        header = f"### {path} ({retained_bytes} B, truncated from {original_bytes} B)"
+    else:
+        header = f"### {path} ({retained_bytes} B)"
+    if label:
+        header = f"{header} {label}"
+    return f"{header}\n{retained_text}", retained_bytes
+
+
+def canon_blocks(
+    home: Path,
+    record: Record,
+    bucket_dir: Path,
+    *,
+    bytes_sink: list[int] | None = None,
+    log_bytes: bool = True,
+) -> str:
+    """U-ancestry §6.2 — the analyst's whole canon ingredient for one
+    record, replacing the old ``canon_excerpt`` (which returned exactly
+    one anonymous marker-window excerpt): a set of LABELLED blocks —
+
+    1. **own host** — the record's own candidate target, WHOLE, capped
+       per :data:`CANON_BYTES_PER_FILE` (SCAN1 — this supersedes the old
+       ``<200 lines`` / ``markers ±20`` / ``first-60`` three-way branch;
+       `u-marker-excerpt-case-spec.md` §3 criterion A's `A3` leg is
+       superseded, `A0`/`A1`/`A2` are preserved and re-asserted against
+       the whole-file contract). Skill scope → the skills root's
+       SKILL.md; project scope → the bucket's meta-recorded host
+       CLAUDE.md; user scope → the real user CLAUDE.md — the SAME target
+       resolution `canon_excerpt` used.
+    2. **ancestors** — project scope only, one block per registered
+       ancestor (:func:`self_learn.hosts.ancestors_of`), nearest-first,
+       up to :data:`ANCESTOR_DEPTH_CAP`, labelled `inherited` (ANC1/ANC2).
+       An unregistered ancestor with a `CLAUDE.md` gets a PATH-ONLY line
+       — its bytes are never read (ANC5).
+    3. **references** — sorted, capped, labelled `captured, NOT loaded`
+       (SCAN2/SCAN3): project → `<host>/references/**/*.md`; skill →
+       `<skill_dir>/references/**/*.md`; user → no block at all (S-23).
+
+    Nothing outside `hosts.canon_read_roots`' project family is ever read
+    (SCAN4) — no `docs/`, no bare `<host>/*.md`, no `CLAUDE.local.md`.
+
+    BR-1's per-record cap (:data:`CANON_BYTES_PER_RECORD`) drops
+    references blocks LAST-FIRST when the total exceeds it; BR-2 logs
+    `canon_bytes=<n>` for this record via :func:`log` — a cap that fires
+    is a logged fact, never an exception (SCAN5). ``log_bytes`` defaults
+    to True (the direct-call and worker-batch shape); the ANALYST'S
+    single-record path (`compose_single_prompt`) passes False — LG7
+    (`test_lg7_analyst_invocation_never_grows_worker_or_miner_log`, a
+    pre-existing pinned invariant) refuses `worker.log`/`miner.log`
+    growth from ANY code the analyst surface reaches, and this function
+    is shared between that surface and the worker's own.
+
+    The ONE implementation of this rule (FW-48/U-marker-ui, 2026-08-02,
+    carried forward by U-ancestry): the review pane
+    (``ui/src/self_learn_ui/pane.py``'s ``target_canon_excerpt``) imports
+    and delegates to this function rather than re-declaring it (ANC6)."""
+    home = Path(home)
     scope = record.scope
-    target: Path | None = None
+    try:
+        hosts = load_hosts(home)
+    except HostsError:
+        hosts = Hosts()
+
+    #: (block_text, retained_bytes, droppable) — `droppable` marks a
+    #: references/ block as eligible for BR-1's last-first drop.
+    blocks: list[tuple[str, int, bool]] = []
+
     if scope.startswith("skill:"):
         try:
-            target = skill_dir_for(
-                load_hosts(home), scope.partition(":")[2]
-            ) / "SKILL.md"
+            skill_dir = skill_dir_for(hosts, scope.partition(":")[2])
         except HostsError:
+            if bytes_sink is not None:
+                bytes_sink.append(0)
             return "(skill target unresolvable — no registered skills root)"
+        text, size = _canon_block(skill_dir / "SKILL.md", cap=CANON_BYTES_PER_FILE, label=None)
+        blocks.append((text, size, False))
+        for ref in sorted((skill_dir / "references").glob("**/*.md")):
+            t, s = _canon_block(ref, cap=CANON_BYTES_PER_FILE, label=_REFERENCE_LABEL)
+            blocks.append((t, s, True))
     elif scope == "project":
-        host = bucket_project_path(bucket_dir)
-        if host is None:
+        host_raw = bucket_project_path(bucket_dir)
+        if host_raw is None:
+            if bytes_sink is not None:
+                bytes_sink.append(0)
             return "(project target unresolvable — bucket has no meta.yaml)"
-        target = Path(host) / "CLAUDE.md"
-    else:  # user
+        host = Path(host_raw)
+        text, size = _canon_block(host / "CLAUDE.md", cap=CANON_BYTES_PER_FILE, label=None)
+        blocks.append((text, size, False))
+        for ancestor in ancestors_of(hosts, host)[:ANCESTOR_DEPTH_CAP]:
+            t, s = _canon_block(
+                ancestor / "CLAUDE.md", cap=CANON_BYTES_PER_FILE, label=_ANCESTOR_LABEL
+            )
+            blocks.append((t, s, False))
+        for unreg in unregistered_ancestor_dirs(hosts, host):
+            blocks.append(
+                (f"### (unregistered ancestor with a CLAUDE.md: {unreg}) — not read", 0, False)
+            )
+        for ref in sorted((host / "references").glob("**/*.md")):
+            t, s = _canon_block(ref, cap=CANON_BYTES_PER_FILE, label=_REFERENCE_LABEL)
+            blocks.append((t, s, True))
+    else:  # user — no references block at all (S-23: no user references dir)
         target = Path("~/.claude/CLAUDE.md").expanduser()
-    if not target.is_file():
-        return f"(target {target.name} does not exist yet)"
-    lines = target.read_text(encoding="utf-8").splitlines()
-    if len(lines) < 200:
-        return "\n".join(lines)
-    begin = next(
-        (i for i, ln in enumerate(lines) if BEGIN_MARKER in ln), None
-    )
-    end = next((i for i, ln in enumerate(lines) if END_MARKER in ln), None)
-    if begin is None or end is None:
-        return "\n".join(lines[:60]) + "\n… (truncated)"
-    lo, hi = max(0, begin - 20), min(len(lines), end + 21)
-    return "\n".join(lines[lo:hi])
+        text, size = _canon_block(target, cap=CANON_BYTES_PER_FILE, label=None)
+        blocks.append((text, size, False))
+
+    # BR-1: per-record byte budget. Drop droppable (references) blocks
+    # LAST-FIRST until the total fits, or nothing droppable is left —
+    # a cap that fires is LOGGED (BR-2 below), never enforced by raising.
+    total = sum(size for _, size, _ in blocks)
+    dropped_bytes = 0
+    if total > CANON_BYTES_PER_RECORD:
+        kept = list(blocks)
+        i = len(kept) - 1
+        while total > CANON_BYTES_PER_RECORD and i >= 0:
+            _, size, droppable = kept[i]
+            if droppable:
+                dropped_bytes += size
+                total -= size
+                del kept[i]
+            i -= 1
+        blocks = kept
+
+    canon_bytes = sum(size for _, size, _ in blocks)
+    if bytes_sink is not None:
+        bytes_sink.append(canon_bytes)
+    if log_bytes:
+        log(
+            f"canon_bytes record={record.id} scope={scope} bytes={canon_bytes} "
+            f"dropped_record_cap={dropped_bytes}"
+        )
+    return "\n\n".join(text for text, _, _ in blocks)
 
 
-def _canon_excerpt(home: Path, entry) -> str:
+def _canon_excerpt(
+    home: Path, entry, *, bytes_sink: list[int] | None = None, log_bytes: bool = True
+) -> str:
     """``compose_record_block``'s own call shape: a ``queue()``-yielded
     ``QueueEntry`` (``.record``/``.bucket_dir``), not a bare
-    :class:`~self_learn.records.Record`. Thin wrapper around the shared
-    :func:`canon_excerpt` — kept so this module's existing call site and
+    :class:`~self_learn.records.Record`. Thin wrapper around
+    :func:`canon_blocks` — kept so this module's existing call site and
     test suite (``test_worker.py``) need no signature change."""
-    return canon_excerpt(home, entry.record, entry.bucket_dir)
+    return canon_blocks(
+        home, entry.record, entry.bucket_dir, bytes_sink=bytes_sink, log_bytes=log_bytes
+    )
 
 
 #: U-repair Set-C (§3.1) — the trace-writing contract, harvested from the
@@ -1563,9 +1776,14 @@ def compose_batch_prompt(home: Path, batch: list) -> tuple[str, Roster]:
     doctrine, registry = _doctrine_and_registry_text()
     roster = skill_roster(home)
     candidates_by_id = cluster_candidates(home, batch)
+    batch_canon_bytes: list[int] = []
     blocks = [
         compose_record_block(
-            home, entry, roster=roster, candidates=candidates_by_id.get(entry.record.id, [])
+            home,
+            entry,
+            roster=roster,
+            candidates=candidates_by_id.get(entry.record.id, []),
+            bytes_sink=batch_canon_bytes,
         )
         for entry in batch
     ]
@@ -1579,6 +1797,11 @@ def compose_batch_prompt(home: Path, batch: list) -> tuple[str, Roster]:
         records="\n".join(blocks),
         stage_dir=stage_dir(),
     )
+    # BR-2: the batch total, logged once per composed batch.
+    log(
+        f"canon_bytes batch records={len(batch)} "
+        f"bytes_total={sum(batch_canon_bytes)}"
+    )
     return prompt, roster
 
 
@@ -1587,11 +1810,19 @@ def compose_single_prompt(home: Path, entry) -> tuple[str, Roster]:
     :func:`compose_record_block` block A11 requires byte-identical to the
     worker's, with the roster inline (the analyst never sees the digest,
     the doctrine, or the card registry here — those ride
-    ``--append-system-prompt`` and the doctrine's own §8 pointer)."""
+    ``--append-system-prompt`` and the doctrine's own §8 pointer).
+
+    Deliberately does NOT log a `canon_bytes` line (LG7, a pre-existing
+    pinned invariant: `analyst.analyze` — the only caller of this
+    function — must never grow `worker.log`/`miner.log`; this is a
+    different surface from the worker's own batch loop, which DOES log
+    via :func:`compose_batch_prompt`)."""
     home = Path(home)
     roster = skill_roster(home)
     candidates = cluster_candidates(home, [entry]).get(entry.record.id, [])
-    block = compose_record_block(home, entry, roster=roster, candidates=candidates)
+    block = compose_record_block(
+        home, entry, roster=roster, candidates=candidates, log_bytes=False
+    )
     prompt = _SINGLE_PROMPT_TEMPLATE.format(
         roster_sha=roster.sha,
         roster_text=roster.text,
@@ -3064,6 +3295,7 @@ def _invoke_claude(
     label: str,
     containment: invocation.Containment | None = None,
     charter_denials: list[dict[str, Any]] | None = None,
+    evidence: RunEvidence | None = None,
 ) -> None:
     """One model invocation — round 1 (``label=""``) or the repair round
     (``label="repair "``), same exception handling shape as this project
@@ -3094,7 +3326,15 @@ def _invoke_claude(
     keyword-only parameter keeps that exact contract. ``run()``'s batch
     loop is the one caller that passes it, to carry a denial count from
     this invocation's outcome to its own run-summary log line without
-    otherwise touching what this function returns."""
+    otherwise touching what this function returns.
+
+    U-corrob: ``evidence``, when given, is a caller-owned
+    :class:`~self_learn.corroborate.RunEvidence` this call feeds via
+    :meth:`~self_learn.corroborate.RunEvidence.observe` — the same
+    caller-owned-accumulator shape as ``charter_denials`` above, and for
+    the same reason: this function's always-returns-``None`` contract
+    does not move. Only ``run()``'s round-1 call passes it (`§5.8` — the
+    repair round is excluded)."""
     spec = invocation.SessionSpec(
         surface="worker-repair" if label == "repair " else "worker",
         prompt=prompt,
@@ -3110,6 +3350,8 @@ def _invoke_claude(
         charter_denials.extend(
             d for d in getattr(outcome, "denials", ()) if d.get("source") == "charter"
         )
+    if evidence is not None:
+        evidence.observe(outcome)
 
 
 def run(
@@ -3164,6 +3406,13 @@ def run(
                 # below, without perturbing `_invoke_claude`'s pinned
                 # always-returns-`None` contract.
                 charter_denials: list[dict[str, Any]] = []
+                # U-corrob: round-1 corroboration evidence, constructed
+                # only when the stage IS this round's filesystem
+                # instrument (`§5.8` excludes the repair round; under
+                # `SELF_LEARN_STAGE=0` the original `_written_since` diff
+                # is still the authority and there is nothing to
+                # corroborate against).
+                evidence = RunEvidence(stage_dir(), flat=True) if stage_on else None
                 if stage_on:
                     stage_reset(home)  # S1 (ST-c) — before composing the prompt
                 else:
@@ -3182,6 +3431,7 @@ def run(
                         enforce=_enforce_scope(),
                     ),
                     charter_denials=charter_denials,
+                    evidence=evidence,
                 )  # S2
                 # S6 (moved here, §3.3): re-assert the sentinel hold after
                 # the invocation. A CONCURRENT short holder (e.g. the
@@ -3203,6 +3453,33 @@ def run(
                 if stage_on:
                     staged1 = staged_paths()
                     log(f"run: stage — {len(staged1)} file(s) written by the model")
+                    # U-corrob: at most one of the two verdict lines,
+                    # plus the OUTSIDE line independently (`COR4`/`COR5`;
+                    # both gated internally by `RunEvidence`'s own
+                    # seen/failure/events_present rule — a failed or
+                    # eventless round-1 invocation prints neither).
+                    if evidence is not None:
+                        fs_count = len(staged1)
+                        tag = evidence.verdict(fs_count)
+                        if tag == NO_EVIDENCE:
+                            log(
+                                "run: corroboration — no tool events "
+                                f"recorded ({fs_count} file(s) on disk)"
+                            )
+                        elif tag == MISMATCH:
+                            log(
+                                "run: corroboration MISMATCH — stage has "
+                                f"{fs_count} file(s), model reported "
+                                f"{len(evidence.inside)} accepted write(s) "
+                                "(filesystem is authority)"
+                            )
+                        outside = evidence.outside_paths()
+                        if outside:
+                            log(
+                                f"run: {len(outside)} accepted write(s) "
+                                "reported OUTSIDE the stage (filesystem is "
+                                f"authority; see the event log in {cache_dir()})"
+                            )
                     dest_map1: dict[Path, Path | None] = {
                         p: _resolve_destination(p, batch_by_id) for p in staged1
                     }
@@ -3247,9 +3524,17 @@ def run(
                         repair_prompt = _compose_repair_prompt(
                             home, repair_eligible_paths
                         )
-                        write_repair_settings_file(
-                            home, list(repair_eligible_paths)
-                        )
+                        # FW-117 (2026-08-28): `write_repair_settings_file`
+                        # used to be called here, writing a real settings
+                        # file to `worker.repair.settings.json` -- a dead
+                        # write nothing ever read (`options_kwargs()`
+                        # passes `settings=None` unconditionally, `A-2`;
+                        # the cli-era `--settings <path>` reader is gone
+                        # with `CliBackend`). Deleted outright, not
+                        # guarded: the containment passed to
+                        # `_invoke_claude` below (`write_exact=`) is the
+                        # SAME data this call used to render to disk, and
+                        # is what the charter actually enforces.
                         # Pre-declared (not just branch-assigned): the
                         # two blocks below are gated by the SAME
                         # `stage_on` value both times, so exactly one of

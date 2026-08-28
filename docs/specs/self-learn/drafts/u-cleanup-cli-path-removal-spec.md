@@ -1992,7 +1992,14 @@ spec-blocking.
   fresh finding. **NIT-4** (`worker.write_repair_settings_file` is now a dead
   write at `worker.py:3224` — spec-conformant, §8.1 deliberately keeps the
   function) is closed with a new row in `14-forward-work-map.md`, code
-  untouched. **NIT-5** (`tests/conftest.py`'s AG1-tripwire paragraph was
+  untouched. **Superseded 2026-08-28 by `U-fw117`** (`14-forward-work-
+  map.md`, FW-117 CLOSED): §8.1's "deliberately keeps the function"
+  decision is reversed — `write_repair_settings_file` and every witness
+  of it (three files' worth of tests reading its on-disk artifact) are
+  now deleted outright, per the user's standing ROOT CAUSE preference.
+  This paragraph's account of what NIT-4 found and how it was closed AT
+  THE TIME stays as written above; it no longer describes the function's
+  current disposition. **NIT-5** (`tests/conftest.py`'s AG1-tripwire paragraph was
   stale) fixed in place. **NIT-6** (`tests/test_miner.py:774`, the
   permanently-skipped dead-subject test holding the suite's last *functional*
   inline bash `claude` shim) deleted per A's inherit list, disposition

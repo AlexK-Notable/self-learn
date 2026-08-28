@@ -465,6 +465,49 @@ standard safe rebase-halt (`01` §5) rather than being excluded outright.
   the sibling verb `rehome` emits nothing either, and git is already the
   provenance record. Not agent-proposable in M1 — human-CLI-only, and
   does not join the pane's closed proposable-verb list.
+- **Every resolution verb refuses on status, never mere existence —
+  generalized 2026-08-27 (FW-51, u-verbguards)**: `route`/`reject`/
+  `defer` need the record `pending` or `deferred`; `graduate` and
+  `supersede` (BOTH the old and the new side) need `pending`,
+  `deferred`, or `routed` — a `supersede` also refuses when the new
+  side's `superseded_by` chain would trace back to the old side (a
+  cycle), and refuses outright when old and new are the SAME record
+  (a direct self-cycle the chain-walk alone cannot see, since a live
+  record's own `superseded_by` is `None`). `confirm-held` /
+  `confirm-recurrence` / `dismiss-suspect` / `followup-done` need
+  `routed` — the criterion for needing this precondition is whether
+  the verb's correctness is GATED ON status, never whether the verb
+  happens to WRITE `status` itself (code gate r1 correction:
+  `followup-done` never mutates `status`, but its own docstring always
+  said "Clear a ROUTED record's follow-up" — measured, it cleared a
+  stale follow-up on an already-superseded record just the same, since
+  nothing enforced that docstring).
+
+  One shared precondition, `ledger_ops.require_status`, resolves the
+  record across BOTH `pending/` AND `resolved/` (never "not found"
+  merely because the status makes the verb illegal — the lie
+  `route`/`reject`/`defer` used to tell for a resolved record) and is
+  consulted by `resolve_record` itself, closing the hole at its root
+  rather than per-verb. `confirm-held`/`confirm-recurrence`/
+  `dismiss-suspect` route through the SAME helper via its `reason`
+  kwarg, which overrides only the message TAIL — their pre-existing,
+  differently-worded refusals stay byte-identical (pinned verbatim by
+  `test_dismiss_suspect.py`); `followup-done` takes the helper's
+  generic message, being a new guard with nothing pinned to preserve.
+  `rehome`/`rescope` are the one deliberate exception: their predicate
+  is the BUCKET (directory) AND status together, not status alone
+  (Y-18/u-rescope, above), and their refusal wording is pinned
+  verbatim by `test_rehome.py` — left as their own inline checks, not
+  routed through `require_status`.
+
+  The refusal fires BEFORE any lock or mutation, is exit **1** (never
+  64 — 64 stays reserved for a record that genuinely does not exist;
+  `self-learn host commit-drift`'s unrelated 64 "not found" is a
+  different, host-family verb, 64-mapped by design, and stays out of
+  this pin's scope), and names the record's actual status. FW-51 was
+  the measured gap: `reject A` then `graduate A` used to rc 0 and
+  silently invert the human's denial into `superseded_by: canon` — 14
+  §6a has the dated disposition and the full before/after.
 - **`kind` drives routing, not decay.** Gen 1 gave `kind` decay clocks and
   injection priority; those needed the statistical layer. What remains is
   its routing value: anti-pattern → hook candidate · surface-rule → SKILL.md

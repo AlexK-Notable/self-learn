@@ -338,6 +338,8 @@ filesystem diff agrees) + clean commit/push."*
   operator's push succeeds — no half-written state, no
   `landed-uncommitted`.
 
+**Amended 2026-08-27 (`U-corrob`).** The "denials empty AND filesystem diff agrees" half of this gate is no longer a manual comparison: the worker and the miner-reader now emit a `run: corroboration MISMATCH …` line whenever the two instruments disagree on a successful run, and a separate line whenever the model reports an accepted write outside the granted root — counts only, filesystem named first, never a status change. Accepted writes are counted as **distinct resolved paths**, not events; the reader's filesystem side is a recursive before/after snapshot pair, so spool residue from an earlier run never counts; and a session whose captured event list is **empty** emits `run: corroboration — no tool events recorded (N file(s) on disk)` rather than a mismatch — a session with zero events is not an instrument, while a transport that captured nothing at all says nothing. **What it still does not cover, stated so nobody reads more into it:** it is silent on a failed or timed-out session (whose accounting is known-incomplete), silent on the repair round (a byte-identical rewrite is an accepted write with zero filesystem change), and silent on the analyst's writes (there are none — the analyst is a `text_session`). **The analyst's denials are no longer silent** (coordinator ruling, 2026-08-28, `DEN3`): `analyze()` gained a keyword-only `charter_denials` accumulator (`FW-107`'s shape) and `teach --route` prints the denial-count line on both branches of its `try` — the same line, whether the run lands or raises. `test_u_sdka.py::test_hy5_numstat_bounds_hold`'s `analyst.py` row, which blocked the first attempt at zero headroom, was re-pinned to the measured `(22, 20)` (armor bookkeeping, not a design constraint — `FW-131`). And `fixtures/trials.md` still has no burn-in entry for any surface — an automatic instrument is not a discharged gate.
+
 ### 5.5 Cross-cutting — and the honest gap in it
 
 Plan text: *"Cross-cutting: cost ≤ 1.5× CLI baseline, and isolation
@@ -527,7 +529,18 @@ serve.py`) and its call sites are ordinary product code, not a switch.
    `sdksession` library); reverting Phase 1 first leaves Phase 2's code
    importing a library that no longer exists.
 6. **Re-enable `self-learn-miner.timer`** when reverting Phase 2 — with
-   `serve` gone, nothing else fires the nightly mine pass:
+   `serve` gone, nothing else fires the nightly mine pass. **Run
+   `./install.sh` first, then enable — not bare `enable`.** If the
+   timer was ever taken down with `systemctl --user disable --now
+   self-learn-miner.timer`, `disable` on a *linked* unit deletes the
+   symlink itself, and a linked unit has no package to restore it from
+   — a bare `systemctl --user enable --now self-learn-miner.timer` at
+   that point fails with "Unit file does not exist" (measured
+   2026-08-27). `./install.sh` re-links the timer unit
+   (`install.sh` line 103, the `link "$REPO/systemd/self-learn-
+   miner.timer" "$UNIT_DIR/self-learn-miner.timer"` call — line 102 is
+   the sibling `.service` link, not the timer) and runs `daemon-reload`
+   (line 104) before printing the enable line — run it, then enable:
    `systemctl --user enable --now self-learn-miner.timer`. The watchdog's
    reduced disposition (`miner.maybe_kick`'s poke leg) reverts along with
    the rest of `miner.py`'s Phase 2 edit, so the pre-Phase-2 any-verb
@@ -706,7 +719,10 @@ supervisor shapes are supported:
 - **systemd (Linux, the primary shape):** `systemd/self-learn-host.service`
   (`Type=simple`, `Restart=on-failure`, `RestartSec=5`,
   `ExecStart=%h/bin/self-learn serve`). `install.sh` links the unit
-  file into `~/.config/systemd/user/` and reloads the daemon, but does
+  file into `~/.config/systemd/user/` (or `$XDG_CONFIG_HOME/systemd/user/`
+  if that variable is set — U-servehermetic, 2026-08-27, aligning
+  `install.sh`'s `UNIT_DIR` with `serve.unit_dir()`'s own resolution) and
+  reloads the daemon, but does
   **not** enable or start it — enabling a long-lived host process on a
   live ledger is a deployment decision the installer does not make for
   you. Enable it yourself when you're ready:
@@ -737,6 +753,23 @@ heartbeat and never calls `systemctl`; it reports one of four verdicts:
 | Yes | No heartbeat file | `FAIL` |
 | Yes | Fresh (within the tick interval) | `PASS` |
 | Yes | Stale (older than the tick interval) | `FAIL` |
+
+**(AMENDED 2026-08-27, U-servehermetic):** "unit linked" is checked by
+looking for `self-learn-host.service` under `serve.unit_dir()`, resolved
+`SELF_LEARN_SERVE_UNIT_DIR` (explicit override) -> else
+`$XDG_CONFIG_HOME/systemd/user` if `XDG_CONFIG_HOME` is set -> else the
+real `~/.config/systemd/user`. The `XDG_CONFIG_HOME` leg is new: before
+it existed, a test session on any host that had linked the reference
+unit read that REAL unit as "configured" with no heartbeat ever written
+into the (correctly hermetic) test cache — 18 tests failed the day this
+host's unit was linked, none of them touching `serve` on purpose.
+`install.sh` evaluates the same `XDG_CONFIG_HOME` rule in the INVOKING
+shell's environment at link time, while the systemd user manager
+evaluates it independently, in its own environment, whenever it later
+reads the unit search path — normally identical, since both usually
+inherit the same login environment, but `systemctl --user show-
+environment` is what shows the manager's actual view if the two ever
+diverge.
 
 The stale-heartbeat `FAIL` is deliberately **LOUD even when `serve` is
 dead** — `doctor` is reading a file `serve` last wrote while it was

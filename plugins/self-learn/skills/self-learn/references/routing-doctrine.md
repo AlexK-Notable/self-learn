@@ -99,6 +99,32 @@ procedure: `reject` → `REJECT`, `defer` → `DEFER`, `canon` → `GRADUATE`.
 None of the three is the common case; most records answer `no` to all
 three and continue below.
 
+Canon "that already loads" is wider than the managed section you were
+handed, and it is **exactly two things**: **(1)** the **hand-written** parts
+of this project's own `CLAUDE.md` — you now receive the whole file, not a
+window around the managed block — and **(2)** the `CLAUDE.md` of a registered
+**ancestor host**, which loads in every session under it and is given to you
+as a block labelled *inherited*. Cite whichever one covers the lesson as
+`g0.canon.target` — `<absolute path>:<line>` — with a verbatim span from it
+as `g0.canon.evidence`.
+
+**A `references/` file is NOT on that list.** You are now shown this
+project's `references/` files too, each labelled *captured, NOT loaded —
+pointer-reached*. They are the DEMAND shelf: a session reaches them through a
+pointer, it does not load them. Finding the lesson there is a real and useful
+observation — write it in the *You may already have this* card section, quote
+the span, name the file — but it is **never** a `g0.canon` `yes`, never
+`already_canon: true`, and never a reason to prefer `graduate` over the other
+resolutions. Say what is on the shelf and let the human decide whether a
+shelf entry is enough.
+
+**A mention is not a rule.** When the text you found merely names the same
+subject, or reads as out of date, say so: write the *You may already have
+this* card section, quote the span, name the file and line, and state plainly
+whether it *instructs* or only *mentions*. Add flag `canon-hand-written`. You
+may still recommend `graduate` — the human decides, and "already written
+down" and "still true" are two different claims you must not merge.
+
 **T1 — is this hook-worthy?** Three sub-questions, and `HOOK` fires only
 when **all three** answer `yes`: is the mistake **field-shaped** (a
 tool call a guard can pattern-match — a path, a command shape)? is it
@@ -285,6 +311,17 @@ user scope just because a trigger spans two repos; check for the
 ancestor project first. An unregistered ancestor is a fact you tell the
 human, never something you register yourself.
 
+**Re-home and inheritance are different questions; do not answer one with
+the other.** A re-home says *the record belongs to the umbrella* — its
+trigger's surfaces live outside its own repo (the evidence you must name).
+Inheritance says *the lesson is already loaded there* — the **ancestor host's**
+`CLAUDE.md` already carries it, and every session under that umbrella already
+has it. Inheritance is a **G0.canon** answer, not a re-home; a lesson that is
+already inherited needs no move at all. And an ancestor host is only an
+ancestor when it is **registered**: an unregistered directory on the path is
+reported to you by path alone, never by content, and stays a fact you tell the
+human.
+
 **Escalation is a guard, not more prose or more prominence.** When a
 lesson already at the `ALWAYS` tier keeps recurring, more prominent text
 is not the fix —
@@ -307,6 +344,12 @@ you, re-answering T1 with better evidence, not the table.
   because `~/.claude/CLAUDE.md` loads in every session of every
   project, not because of any sync mechanism — that is reason enough
   for the narrowest-surface bias on its own.
+- **An ancestor host's `CLAUDE.md` is more expensive than the child's and
+  cheaper than `~/.claude/CLAUDE.md`.** It loads in every session under that
+  ancestor — every sibling project, not just this one — so the
+  narrowest-surface bias ranks child `CLAUDE.md` < **ancestor host** `CLAUDE.md`
+  < user `CLAUDE.md`. Prefer the child unless the lesson genuinely fires in
+  the siblings too, and when it does, say which siblings and why.
 - **No secrets in any tracked file, ever.** A verb commits what it
   writes immediately, and that commit enters git history — expensive
   to purge, and the ledger syncs across machines (pushes are manual;

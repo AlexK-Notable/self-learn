@@ -93,7 +93,7 @@ from .compilers import (
     reference_target_path,
 )
 from .compilers import surface_names_target as _surface_names_target
-from .hosts import HostsError, host_mode, host_slug, hosts_path, load_hosts, skill_dir_for
+from .hosts import HostsError, ancestors_of, host_mode, host_slug, hosts_path, load_hosts, skill_dir_for
 from .ledger import Bucket, discover_buckets, home_state, home_state_message
 from .ledger_ops import (
     ProposalError,
@@ -178,7 +178,10 @@ def proposal_validate(home: Path, record_id: str) -> int:
         # and whose human path is lenient.
         record = Record.from_path(record_path)  # an unparseable record cannot be stamped
         validate_proposal(
-            read_proposal(yaml_sibling), record_text=record.to_text(), scope=record.scope
+            read_proposal(yaml_sibling),
+            record_text=record.to_text(),
+            scope=record.scope,
+            home=home,
         )
     except (ProposalError, RecordError) as exc:
         print(
@@ -309,7 +312,20 @@ def _loaded_surface(home: Path, bucket: Bucket, record: Record) -> list[Path]:
             return []
     if record.scope == "project":
         host = bucket_project_path(bucket.path)
-        return [] if host is None else [Path(host) / "CLAUDE.md"]
+        if host is None:
+            return []
+        # U-ancestry ANC7: a registered ancestor's CLAUDE.md loads in
+        # every session under this host too (§2.3, measured) — appended,
+        # nearest-first, after the own-host member. Appending can only
+        # turn an unreachable record reachable, never the reverse (§6.4),
+        # so a no-ancestor host's LS stays exactly one member (UN3).
+        try:
+            hosts = load_hosts(home)
+        except HostsError:
+            return [Path(host) / "CLAUDE.md"]
+        members = [Path(host) / "CLAUDE.md"]
+        members.extend(a / "CLAUDE.md" for a in ancestors_of(hosts, Path(host)))
+        return members
     if record.scope == "user":
         return [DEFAULT_USER_CLAUDE_MD.expanduser()]
     return []

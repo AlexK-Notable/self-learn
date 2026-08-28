@@ -60,6 +60,7 @@ from self_learn.invocation_sdk import charter as charter_mod
 from self_learn.invocation_sdk import events as events_mod
 from self_learn.invocation_sdk import lifecycle as lifecycle_mod
 from self_learn.invocation_sdk import provider_env as provider_env_mod
+from self_learn.sdksession import teardown as teardown_mod
 
 from test_worker import (  # noqa: F401 -- fixtures resolved by name
     Env,
@@ -1174,10 +1175,100 @@ def test_kl_major1_disconnect_raising_is_distinguished_from_a_timeout(monkeypatc
     asyncio.run(_drive())
 
 
+#: `NOTE-14` (superseded, U-kl4): the old check ran `pgrep -f
+#: fake_clau[d]e.py`, which is HOST-GLOBAL -- it matches ANY process on
+#: the MACHINE whose argv contains that literal substring, not just the
+#: one THIS test spawned. Measured: with `scripts/suite`'s three batches
+#: (sanctioned to run in parallel) or a concurrent builder/gate's own
+#: suite also driving `fake_claude.py`, the pgrep saw a sibling run's
+#: child too and the assertion went red on a passing run -- 2/2 parallel
+#: base runs red, solo green. The bracket-escape idiom only defended
+#: against the test's OWN shell command line re-matching itself; it did
+#: nothing about a DIFFERENT process on the host. The replacement below
+#: identifies the child by the PID this exact run spawned, read directly
+#: off `SdkOutcome.child_pid` (a new field, `backend.py`, U-kl4) --
+#: never by a name pattern.
+#:
+#: A first version of this fix threaded the pid through `spec.log()` as
+#: a new operator-visible line instead. MEASURED to be the wrong choice
+#: before it shipped: a clean-session run now logged one line it never
+#: used to, which broke `test_lg1_twelve_byte_identical_log_lines`,
+#: `test_lg6_clean_invocation_logs_nothing`,
+#: `test_fk2_each_fakestep_matches_sdkbackend_for_the_same_failure`
+#: (`test_invocation.py`), `test_ou4_...` (this file), and
+#: `test_fl2_byte_identity_and_provenance` (`test_worker_contract.py`)
+#: -- all of them byte-pinned on the exact set/count/first-line of a
+#: session's log output. `SdkOutcome.child_pid` carries the same fact
+#: through a channel nothing else observes.
+#:
+#: `N/D-1` (gate r1, accepted as-is): the PID-reuse guard below
+#: (`_proc_start_ticks` compared across a poll) has no dedicated
+#: mutation test of its own -- only the whole-file sha in `_ARMOR_SHAS`
+#: would catch its removal. Its failure mode if it were ever wrong is a
+#: SLOWER FALSE RED, never a false green: without it, a pid recycled
+#: onto an unrelated live process just keeps `os.kill(pid, 0)`
+#: succeeding, so `_child_gone` polls out to the full deadline and
+#: reports "still alive" (the test fails) instead of recognizing the
+#: mismatch early -- it can never make `_child_gone` return `True`
+#: (declare victory) while the real child is still running.
+
+
+def _proc_start_ticks(pid: int) -> int | None:
+    """`/proc/<pid>/stat` field 22 (start time in clock ticks since
+    boot) -- read only to detect PID REUSE (a stale poll observing a
+    dead pid's number recycled onto an unrelated process), never to
+    identify a process by name. `None` if the pid is not currently
+    running at all."""
+    try:
+        raw = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    after_comm = raw.rsplit(")", 1)[-1].split()
+    try:
+        return int(after_comm[19])
+    except (IndexError, ValueError):
+        return None
+
+
+def _child_gone(pid: int, start_ticks: int | None, deadline: float) -> bool:
+    """Polls by PID IDENTITY only -- no name pattern anywhere. "Gone"
+    means either `os.kill(pid, 0)` raises `ProcessLookupError`, or (the
+    PID-reuse guard) the process now holding that pid has a different
+    `/proc` start time than the child this run actually spawned."""
+    while True:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        else:
+            if start_ticks is not None and _proc_start_ticks(pid) != start_ticks:
+                return True  # pid recycled onto an unrelated process
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.05)
+
+
+def _reap_best_effort(pid: int, deadline: float) -> None:
+    """Best-effort `waitpid` after a cleanup-owned `SIGKILL` -- the SDK
+    spawns its child as a genuine OS child of THIS process
+    (`asyncio.create_subprocess_exec`, no double-fork), so a reap is
+    possible here even though the event loop that spawned it has since
+    closed. Never raises: `ChildProcessError` means something else
+    (e.g. asyncio's own child watcher) already reaped it first, which
+    is fine -- the goal is no lingering zombie, not "I did the reaping"."""
+    while time.monotonic() < deadline:
+        try:
+            reaped, _status = os.waitpid(pid, os.WNOHANG)
+        except ChildProcessError:
+            return
+        if reaped == pid:
+            return
+        time.sleep(0.05)
+
+
 def test_kl4_hang_sigterm_ignored_child_is_gone_after_run_sync_returns(tmp_path, sdk_cli_path):
     home = tmp_path / "kl4-home"
     home.mkdir()
-    cache_before = set()
     t0 = time.monotonic()
     outcome = _run(_spec("worker", home=home, prompt="hang_sigterm_ignored", timeout=2.0))
     elapsed = time.monotonic() - t0
@@ -1185,22 +1276,109 @@ def test_kl4_hang_sigterm_ignored_child_is_gone_after_run_sync_returns(tmp_path,
     # bounded: interrupt grace + kill secs + slack, not the OS's own reap latency.
     assert elapsed <= 2.0 + lifecycle_mod.INTERRUPT_GRACE_SECS + lifecycle_mod.KILL_SECS + 5.0
 
-    # `NOTE-14`: `pgrep -f fake_claude.py` is HOST-GLOBAL -- it matches
-    # ANY process on the machine whose argv contains that literal
-    # substring, including the gate's/this test's OWN shell command line
-    # if it ever mentions the filename. The bracket-escape idiom
-    # (`fake_clau[d]e.py`) makes the regex still match a real
-    # `fake_claude.py` argv while no longer matching a command line that
-    # merely QUOTES the pattern string itself.
-    deadline = time.monotonic() + 5.0
-    while time.monotonic() < deadline:
-        found = subprocess.run(
-            ["pgrep", "-f", "fake_clau[d]e.py"], capture_output=True, text=True
-        ).stdout.strip()
-        if not found:
-            break
-        time.sleep(0.1)
-    assert not found, f"fake_claude.py child(ren) still alive: {found}"
+    pid = outcome.child_pid
+    assert pid is not None, "no child pid resolved for this run -- nothing to check identity against"
+    start_ticks = _proc_start_ticks(pid)
+    assert _child_gone(pid, start_ticks, deadline=time.monotonic() + 5.0), (
+        f"pid {pid} (THIS run's own child, per outcome.child_pid) still alive after run_sync returned"
+    )
+
+
+def test_kl4a_pid_check_reddens_when_the_explicit_kill_is_disabled(tmp_path, sdk_cli_path, monkeypatch):
+    """Positive control for `test_kl4_...` above: with the kill ladder's
+    rung-3 explicit child kill (`K-2`) turned into a no-op, the
+    `hang_sigterm_ignored` child (which ignores the rung-1/rung-2
+    SIGTERM/shielded-disconnect steps by design) must still be alive
+    when `run_sync` returns -- proving `_child_gone` above would have
+    caught the regression this whole unit exists to catch, not just
+    coincidentally matched a name pattern.
+
+    `run_kill_ladder`'s rung 3 (`sdksession/teardown.py::run_kill_
+    ladder`) calls the bare name `kill_child`, resolved against
+    `teardown.py`'s OWN module globals at call time -- NOT
+    `lifecycle_mod.kill_child` (a separate wrapper with zero production
+    callers; only tests invoke it directly, per `children.py`'s `gate
+    r1 N-3` comment on the analogous orphan-sweep call site). The
+    no-op therefore patches `teardown_mod.kill_child` directly.
+    Mutation: revert this patch (i.e. let the real kill run) -- this
+    test reddens because the child is gone, not still alive.
+    """
+    monkeypatch.setattr(teardown_mod, "kill_child", lambda *_a, **_kw: None)
+    home = tmp_path / "kl4a-home"
+    home.mkdir()
+    outcome = _run(_spec("worker", home=home, prompt="hang_sigterm_ignored", timeout=2.0))
+    # `B-1` (gate r1): `pid` is captured FIRST, before any assertion,
+    # and the `try` below wraps EVERY assertion including
+    # `outcome.failure`/`pid is not None` themselves. With
+    # `kill_child()` disabled, nothing else in this process reaps a
+    # live `hang_sigterm_ignored` child -- `K-5`'s orphan sweep cannot
+    # find it either, since `_drive`'s `finally` has already cleared
+    # the sidecar by the time this line runs -- so an assertion firing
+    # BEFORE the `try` used to leak a real orphan. Reproduced live
+    # during gate review (mutation (a) produced a genuine ppid-1
+    # orphan, killed by hand from its pid).
+    pid = outcome.child_pid
+    start_ticks = _proc_start_ticks(pid) if pid is not None else None
+    try:
+        assert outcome.failure == "timeout", outcome.failure
+        assert pid is not None, (
+            "no child pid resolved for this run -- with kill_child() disabled "
+            "by this test's own monkeypatch, a spawned-but-unidentified child "
+            "cannot be cleaned up BY IDENTITY; if hang_sigterm_ignored left one "
+            "running, it must be found and killed by hand (this test cannot)"
+        )
+        # A short window, deliberately shorter than `test_kl4`'s 5s: the
+        # SDK transport's OWN disconnect()-driven escalation (SIGTERM
+        # then SIGKILL, ~5s+5s, `subprocess_cli.py::close`) would
+        # eventually reap this child too, independent of our ladder --
+        # this control only needs to show the explicit `K-2` kill is
+        # not what did it, within a window that stays well clear of
+        # that independent path.
+        assert not _child_gone(pid, start_ticks, deadline=time.monotonic() + 1.5), (
+            "expected the child to SURVIVE with kill_child() disabled -- "
+            "this positive control did not exercise the code path it claims to"
+        )
+    finally:
+        # Cleanup acts on the CAPTURED pid, never by name pattern, and
+        # runs for every exit from the `try` above (an assertion
+        # failure included).
+        if pid is not None and start_ticks is not None:
+            # `N/D-3` (gate r1): re-check identity IMMEDIATELY before
+            # the kill, not just once at capture time -- `_child_gone`'s
+            # own poll above can take up to ~1.5s, wide enough for this
+            # exact pid to have been reaped and reused by an unrelated
+            # process in that window. Kill only if the process
+            # currently holding `pid` is still the one this run
+            # actually spawned; otherwise leave it alone (a mismatch
+            # means SOMETHING ELSE already reclaimed this pid, and this
+            # test has no business signalling whatever now occupies it).
+            if _proc_start_ticks(pid) == start_ticks:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                else:
+                    _reap_best_effort(pid, deadline=time.monotonic() + 2.0)
+
+
+def test_kl4b_child_pid_is_none_on_a_path_where_no_child_ever_spawned(tmp_path, sdk_cli_path, monkeypatch):
+    """`N/D-2` (gate r1): `SdkOutcome.child_pid` must default to `None`
+    -- never leak an identity from some OTHER run -- on a path where
+    `_drive` never reaches a live child at all. Uses the `not-found`
+    leg the gate itself probed (`SELF_LEARN_SDK_CLI_PATH` pointed at a
+    nonexistent binary, `CLINotFoundError`): `ClaudeSDKClient(...)` is
+    constructed, but `session.connect()` raises before `child_pid =
+    lifecycle.child_pid_of(client)` is ever reached, so
+    `child_pid_holder` stays `[None]` all the way through `_drive`'s
+    `finally`/`_dataclass_replace(outcome, child_pid=child_pid)` call
+    -- this exercises that exact line, not just the two early-return
+    branches (`CharterPatternUnsupported`/`ProviderRefused`) that skip
+    it entirely."""
+    home = tmp_path / "kl4b-home"
+    home.mkdir()
+    monkeypatch.setenv("SELF_LEARN_SDK_CLI_PATH", "/nonexistent/claude-fake")
+    outcome = _run(_spec("worker", home=home, prompt="ok_text"))
+    assert (outcome.failure, outcome.child_pid) == ("not-found", None)
 
 
 def test_kl5_getpgid_guard_via_recorders_no_real_signal(monkeypatch):

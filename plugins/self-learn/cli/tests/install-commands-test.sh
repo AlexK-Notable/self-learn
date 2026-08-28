@@ -35,7 +35,18 @@ FAKE_HOME="$TMP/home"
 mkdir -p "$FAKE_HOME"
 
 run_install() {
-  HOME="$FAKE_HOME" PATH="$SHIMS:$PATH" bash "$INSTALL" > "$TMP/out.$1" 2>&1 \
+  # U-servehermetic (2026-08-27): install.sh's UNIT_DIR now honors
+  # $XDG_CONFIG_HOME (matching serve.unit_dir()'s own resolution order) --
+  # this script's contract ("nothing outside the fake $HOME is touched")
+  # otherwise breaks the instant a CALLER'S OWN XDG_CONFIG_HOME leaks
+  # through: install.sh would then link the four systemd units under
+  # that real/external directory instead of under $FAKE_HOME, invisible
+  # to every check below (which only look under $FAKE_HOME) and never
+  # cleaned by this script's own trap (which only removes $TMP). Explicitly
+  # pin XDG_CONFIG_HOME under $FAKE_HOME for the invocation, the same way
+  # HOME already is, so the fake-HOME contract actually holds regardless
+  # of the invoking shell's own environment.
+  HOME="$FAKE_HOME" XDG_CONFIG_HOME="$FAKE_HOME/.config" PATH="$SHIMS:$PATH" bash "$INSTALL" > "$TMP/out.$1" 2>&1 \
     || { echo "FAIL: install.sh run $1 exited non-zero"; cat "$TMP/out.$1"; exit 1; }
 }
 

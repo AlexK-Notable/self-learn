@@ -1321,6 +1321,53 @@ _AR1_TRIPWIRE_SHA256 = "1b012978efe34788697a854bd40f28d0c1c45125cbca9d56fea36890
 #: is simply whatever text differs from base RIGHT NOW: the original
 #: `AG3` comment (unchanged since U-cleanup-A, still present) plus this
 #: unit's new retirement comment in place of the fixture.
+#:
+#: U-servehermetic (2026-08-27) adds one more sanctioned block: `_worker_
+#: test_defaults` now sets `XDG_CONFIG_HOME` to a fresh `tmp_path` subdir
+#: (the fix for `serve.unit_dir()` reading the real host's linked
+#: `self-learn-host.service` unit during a test run), inserted between
+#: the pre-existing `XDG_CACHE_HOME` line and the `AG3` paragraph -- so
+#: its ten `+` lines land in `added` right where the diff places them,
+#: between the two blank lines above and the `AG3` paragraph below.
+#: U-cachelit (2026-08-28) adds one more sanctioned block, appended at
+#: the END of the file (a wholly new top-level guard, `_litter_
+#: namespace_guard` and its helpers -- see that fixture's own
+#: docstring) -- pure ADDITION, nothing existing touched, so it lands
+#: in `added` strictly AFTER every line already pinned above, in file
+#: order, and `removed` stays empty. Fixes the measured cache-litter
+#: defect (31,291 stray `~/.cache/self-learn/home-<digest>`
+#: namespaces): the guard fails the CLI suite's own session loudly if
+#: this run's own activity (in-process, or a spawned subprocess) ever
+#: creates one for real.
+#:
+#: U-cachelit RE-ANCHOR (code gate r1, same day): the guard section was
+#: rewritten in place -- deleted and replaced, not edited -- to fold in
+#: three MUST-FIX findings: `_env_floor_session`, a session-scoped
+#: hermetic `XDG_CACHE_HOME`/`SELF_LEARN_HOME`/etc. floor for the CLI
+#: package (this package previously had only a function-scoped
+#: `_worker_test_defaults`, so doc 13 SS6's "whole session" claim was
+#: false for CLI until now -- M-2); digest-based attribution
+#: (`_normalized_digests`/`_SESSION_HOMES`) so a namespace is blamed by
+#: `sha256(home)[:8]` membership regardless of HOW its creating process
+#: received `SELF_LEARN_HOME` (explicit `env=`, inherited `os.environ`
+#: via an absent `env=` kwarg, or a non-normalized path) -- M-3; and a
+#: `pytest_terminal_summary` hook so the warn-only channel for
+#: unattributable (concurrent-sibling) namespaces is always visible,
+#: even under `-q`, instead of a teardown `print` capture could swallow
+#: -- also M-3. Also restores the two class-level monkey-patches
+#: (`Path.mkdir`, `Popen.__init__`) at session end instead of leaving
+#: them installed forever (N-3), and corrects `_env_floor_session`'s
+#: docstring to admit it DOES yield and undo, matching the code (N-1).
+#: Because `_BASE_SHA` predates this rewrite too, base-vs-working-tree
+#: `removed` is still `[]` -- the FIRST guard section (added, then
+#: wholesale deleted, then replaced, all before ever being committed)
+#: leaves no trace as `removed`; only the CURRENT working-tree content
+#: appears in `added`. This is again a pure suffix extension over the
+#: pre-U-cachelit baseline: the first 44 sanctioned lines (everything
+#: above this paragraph's own block) are byte-identical to before;
+#: everything from the blank line after `_worker_test_defaults`'s block
+#: onward is this unit's guard section, now 267 lines instead of the
+#: first round's 151, for 311 total `added` lines.
 _AR1_SANCTIONED_PIN_LINES = [
     '#: U-cleanup-B: `_cli_backend_unreached_tripwire` (U-cleanup-A `AG1`) is',
     '#: RETIRED here, exactly as its own docstring said it would be -- its',
@@ -1331,6 +1378,16 @@ _AR1_SANCTIONED_PIN_LINES = [
     '#: THIS tripwire arms, and there is no tripwire left to prove.',
     '',
     '',
+    '    # Config isolation for EVERY test (found 2026-08-27, U-servehermetic:',
+    '    # `serve.unit_dir()` falls back to `XDG_CONFIG_HOME`, then to the',
+    '    # real `~/.config/systemd/user`, exactly mirroring the cache-isolation',
+    '    # reasoning above -- without this, a test session on a host that has',
+    '    # ever linked the `self-learn-host.service` reference unit reads that',
+    '    # REAL unit as "configured" and produces a live-host-dependent FAIL/',
+    '    # SKIP split invisible to the U-engine Phase 2 gate, which ran before',
+    '    # any host had linked the unit). Tests that redirect XDG themselves',
+    '    # simply override this default, same convention as XDG_CACHE_HOME.',
+    '    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config-default"))',
     '    # U-cleanup-A `AG3`: the three suite-wide `cli` pins that used to sit',
     "    # here (U-sdka `Armor-1`'s analyst pin, U-flip's worker/miner pins)",
     '    # are REMOVED, not merely edited. Their premise was "every',
@@ -1356,6 +1413,273 @@ _AR1_SANCTIONED_PIN_LINES = [
     '    # still `monkeypatch.setenv(..., "cli")` (SEL1-6, the scoping-',
     '    # precedence tests) are asserting the refusal fires, not reaching',
     '    # a real subprocess.',
+    '',
+    '',
+    '# ===================================================================== #',
+    '# U-cachelit (2026-08-28, code gate r1 M-1/M-2/M-3/N-1/N-3): the',
+    '# session-wide hermetic floor + the litter-namespace guard',
+    '# ===================================================================== #',
+    '#',
+    '# Measured 2026-08-27/28: ~/.cache/self-learn held 31,291 stray',
+    '# `home-<digest>` namespaces (1.1 GB), rising across suite runs. Root',
+    '# cause and fix: see `docs/specs/self-learn/14-forward-work-map.md`',
+    '# FW-130 and `13-hosting-and-separation.md` §6. `_env_floor_session`',
+    '# below is the ROOT fix -- a session-wide floor UNDERNEATH this',
+    "# package's own per-test redirect, so a module-scoped fixture in ANY",
+    "# test file (this package's own `test_js_dom.py`/`test_js_dom_pane_",
+    '# persistence.py`, or a future CLI file that grows one) cannot reopen',
+    "# the gap a per-test-only redirect leaves between a module fixture's",
+    "# instantiation and the first test's own setup (code gate r1 M-2:",
+    '# the CLI package initially had only the function-scoped `_worker_',
+    '# test_defaults`/`_redirect_env_defaults`; this fixture makes doc 13',
+    '# §6\'s "every suite redirects for the whole session" claim true rather',
+    '# than merely aspirational). `_litter_namespace_guard` is the forward',
+    '# BACKSTOP against a regression of the same class -- see its own',
+    '# docstring.',
+    '',
+    'import hashlib',
+    'import os',
+    'import re',
+    'import subprocess',
+    'from pathlib import Path',
+    '',
+    '',
+    '@pytest.fixture(scope="session", autouse=True)',
+    'def _env_floor_session(tmp_path_factory: pytest.TempPathFactory):',
+    '    """The session-wide hermetic FLOOR underneath this package\'s own',
+    '    per-test redirect. Session-scoped: pytest instantiates it before',
+    '    every module-scoped fixture of every test (session > module > class',
+    '    > function, regardless of file order), and its `setenv` calls are',
+    "    never reverted until this fixture's OWN teardown runs, at the very",
+    '    end of the whole session (`pytest.MonkeyPatch()` instantiated',
+    '    directly, undone explicitly below -- the documented pattern for a',
+    '    fixture broader than function scope, since the built-in',
+    '    `monkeypatch` fixture is function-scoped only). Concretely: once',
+    '    this fixture has run, `os.environ` for these vars is NEVER unset',
+    "    again until the session itself ends -- when a per-test redirect's",
+    "    own `monkeypatch.setenv` undoes at that test's teardown, it restores",
+    '    the value THIS fixture set, never the real unset default. That',
+    "    closes the gap regardless of exactly when a background task's env",
+    '    read lands (the measured UI-package mechanism -- see FW-130), and',
+    '    regardless of which module-scoped fixture in which test file',
+    '    reopens it next.',
+    '',
+    "    The floor's own `SELF_LEARN_HOME` is registered into",
+    "    `_SESSION_HOMES` (`_track_home` below) for the litter guard's",
+    '    attribution -- belt-and-braces on top of the dynamic `os.environ`',
+    '    fallback the `subprocess.Popen` patch already provides (every',
+    '    `monkeypatch.setenv` call, including this one, mutates the SAME',
+    '    live `os.environ` that fallback reads)."""',
+    '    mp = pytest.MonkeyPatch()',
+    '    base = tmp_path_factory.mktemp("session-env-floor")',
+    '    floor_home = base / "home"',
+    '    mp.setenv("XDG_CACHE_HOME", str(base / "cache"))',
+    '    mp.setenv("XDG_RUNTIME_DIR", str(base / "runtime"))',
+    '    mp.setenv("SELF_LEARN_HOME", str(floor_home))',
+    '    mp.setenv("SELF_LEARN_CLAUDE_DIR", str(base / "claude"))',
+    '    mp.setenv("SELF_LEARN_TRANSCRIPTS_DIR", str(base / "transcripts"))',
+    '    mp.setenv("SELF_LEARN_WORKER_AUTOKICK", "0")',
+    '    mp.setenv("SELF_LEARN_MINER_AUTOKICK", "0")',
+    '    _track_home(floor_home)',
+    '    yield',
+    '    mp.undo()',
+    '',
+    '',
+    '#: The REAL cache root, resolved from the environment exactly as it',
+    '#: stood when this file was first imported by pytest -- module import',
+    '#: happens at collection time, before ANY fixture (including',
+    '#: `_env_floor_session` above) has run a single `monkeypatch.setenv`.',
+    "#: Mirrors `worker.cache_dir()`'s own resolution",
+    '#: (`${XDG_CACHE_HOME:-~/.cache}/self-learn`) without its `mkdir` side',
+    '#: effect -- the guard only ever reads this directory, never creates it.',
+    '_cache_env = os.environ.get("XDG_CACHE_HOME")',
+    '_REAL_CACHE_ROOT = (',
+    '    Path(_cache_env).expanduser() if _cache_env else Path("~/.cache").expanduser()',
+    ') / "self-learn"',
+    '',
+    '_HOME_DIR_RE = re.compile(re.escape(str(_REAL_CACHE_ROOT)) + r"/home-[0-9a-f]{8}$")',
+    '',
+    '#: Namespace dirs THIS interpreter created under `_REAL_CACHE_ROOT` --',
+    '#: 100% certain attribution, no digest-matching needed (it happened in',
+    '#: this process). Populated by the `Path.mkdir` patch below.',
+    '_INPROCESS_HITS: set[str] = set()',
+    '',
+    "#: Every home this session has HANDED OUT: the floor's own home, and",
+    "#: every `SELF_LEARN_HOME` a spawned subprocess's environment carried --",
+    '#: either an EXPLICIT `env=` mapping, or (code gate r1 M-3, "probe C")',
+    "#: this PARENT process's own live `os.environ` at spawn time when no",
+    '#: `env=` override was given at all (that is what the child actually',
+    "#: inherits -- `subprocess.Popen`'s own documented default). Raw values",
+    '#: as seen; `_home_digests()` normalizes before hashing (M-3, "probe',
+    '#: E") so a differently-spelled but equivalent path still matches.',
+    '_SESSION_HOMES: set[str] = set()',
+    '',
+    '',
+    'def _track_home(home) -> None:',
+    '    if home:',
+    '        _SESSION_HOMES.add(str(home))',
+    '',
+    '',
+    'def _install_litter_guards():',
+    '    """Two CLASS-level patches, deliberately never a rebound FUNCTION',
+    '    name: `cli.py`/`worker.py`/`self_learn_ui.pane`/`middleware` all do',
+    '    `from ... import resolve_home`/`cache_dir` at import time, which a',
+    '    same-module patch installed after collection cannot reach -- the',
+    "    caller's own bound name still points at the ORIGINAL function.",
+    '    `pathlib.Path` and `subprocess.Popen` are shared, mutable class',
+    '    objects instead: patching a method on the class itself is visible',
+    '    through every already-bound reference, however it was imported,',
+    '    because attribute lookup on an instance resolves through the class',
+    '    at CALL time, not at import time.',
+    '',
+    '    Returns the two ORIGINAL (unpatched) callables so the guard',
+    "    fixture's teardown can restore them (code gate r1 N-3): a",
+    '    session-scoped patch of two STDLIB classes must not outlive the',
+    '    session it was installed for -- left patched, it would leak into',
+    '    whatever runs next in the same interpreter (a `pytester`',
+    '    sub-session sharing this venv, a plugin hook, anything importing',
+    '    `pathlib`/`subprocess` afterward)."""',
+    '    orig_mkdir = Path.mkdir',
+    '',
+    '    def _tracked_mkdir(self, *a, **kw):',
+    '        if _HOME_DIR_RE.fullmatch(str(self)):',
+    '            _INPROCESS_HITS.add(str(self))',
+    '        return orig_mkdir(self, *a, **kw)',
+    '',
+    '    Path.mkdir = _tracked_mkdir',
+    '',
+    '    orig_popen_init = subprocess.Popen.__init__',
+    '',
+    '    def _tracked_popen_init(self, *args, **kwargs):',
+    '        try:',
+    '            if "env" in kwargs and kwargs["env"] is not None:',
+    '                _track_home(kwargs["env"].get("SELF_LEARN_HOME"))',
+    '            else:',
+    '                # No `env=` override at all (code gate r1 M-3, "probe',
+    '                # C") -- subprocess.Popen\'s own documented default is',
+    '                # "inherit THIS process\'s os.environ verbatim", so that',
+    '                # is what the child (and any setsid grandchild it spawns',
+    '                # the same way) actually sees.',
+    '                _track_home(os.environ.get("SELF_LEARN_HOME"))',
+    '        except Exception:  # noqa: BLE001 -- tracking must never break a spawn',
+    '            pass',
+    '        return orig_popen_init(self, *args, **kwargs)',
+    '',
+    '    subprocess.Popen.__init__ = _tracked_popen_init',
+    '    return orig_mkdir, orig_popen_init',
+    '',
+    '',
+    'def _normalized_digests(home: str) -> set[str]:',
+    '    """Code gate r1 M-3, "probe E": a RAW, non-normalized',
+    '    `SELF_LEARN_HOME` string (a trailing slash, a double slash, an',
+    '    unexpanded `~`) must still match the digest the REAL `resolve_',
+    '    home()`/`cache_dir()` call chain produces --',
+    '    ``hashlib.sha256(str(resolve_home())...)`` where ``resolve_home()``',
+    '    is ``Path(raw).expanduser()`` (expanduser only, never a full',
+    '    ``.resolve()``). Hashing the raw string directly, as the first',
+    '    version of this guard did, caused exactly this class of mismatch.',
+    '    Registers BOTH the `.expanduser()` form (the literal production',
+    '    algorithm) and the additionally-`.resolve()`-d form (`..`-safe,',
+    '    symlink-safe) -- verified identical to the `.expanduser()` form for',
+    '    every path this suite ever actually produces (no `..` segments, and',
+    '    no tmp directory on this host sits behind a symlink: `Path("/tmp").',
+    '    is_symlink()` is `False` here) -- so a match holds regardless of',
+    "    which normalization a caller's path needed, without risking a",
+    '    silent divergence from what `cache_dir()` itself will compute."""',
+    '    p = Path(home)',
+    '    out = {hashlib.sha256(str(p.expanduser()).encode("utf-8")).hexdigest()[:8]}',
+    '    try:',
+    '        out.add(',
+    '            hashlib.sha256(str(p.expanduser().resolve()).encode("utf-8")).hexdigest()[:8]',
+    '        )',
+    '    except OSError:',
+    '        pass',
+    '    return out',
+    '',
+    '',
+    'def _home_digests() -> set[str]:',
+    '    digests: set[str] = set()',
+    '    for h in _SESSION_HOMES:',
+    '        digests |= _normalized_digests(h)',
+    '    return digests',
+    '',
+    '',
+    '#: Code gate r1 M-3: namespaces reported (not failed) this session --',
+    '#: read by `pytest_terminal_summary` below, which is ALWAYS printed',
+    '#: (even under `-q`), unlike a bare `print()` during a session',
+    "#: fixture's teardown, which pytest's own capture manager can swallow.",
+    '_WARN_NAMESPACES: list[str] = []',
+    '',
+    '',
+    '@pytest.fixture(scope="session", autouse=True)',
+    'def _litter_namespace_guard():',
+    '    """Fails the SESSION loudly, by name, the instant this run\'s OWN',
+    '    activity -- in-process or a spawned subprocess -- creates a real',
+    '    `home-<digest>` namespace under `~/.cache/self-learn` (the exact',
+    '    defect FW-130 fixed; `_env_floor_session` above is the intended',
+    '    ROOT fix, this is the forward backstop against a regression neither',
+    '    of them anticipated). Concurrency on this shared host: another',
+    "    builder's suite may add namespaces during this session too -- those",
+    '    are reported via `pytest_terminal_summary` (a warning naming them)',
+    '    but never fail this session, since this session did not create them',
+    '    and cannot know it is safe to blame them. Disabling this fixture,',
+    "    or either assertion below, is exactly the mutation this guard's own",
+    '    `pytester`-driven tests (`test_litter_guard_probes.py`) are built to',
+    '    catch."""',
+    '    orig_mkdir, orig_popen_init = _install_litter_guards()',
+    '    try:',
+    '        before = set(os.listdir(_REAL_CACHE_ROOT))',
+    '    except FileNotFoundError:',
+    '        before = set()',
+    '    yield',
+    "    # N-3: restore the two class-level patches BEFORE this fixture's own",
+    '    # assertions run, so a failed assertion here never leaves the real',
+    '    # stdlib classes patched for whatever runs next in this interpreter.',
+    '    Path.mkdir = orig_mkdir',
+    '    subprocess.Popen.__init__ = orig_popen_init',
+    '    assert not _INPROCESS_HITS, (',
+    '        "self-learn cache-litter guard: THIS interpreter created the "',
+    '        f"real namespace dir(s) {sorted(_INPROCESS_HITS)} during this "',
+    '        "session -- XDG_CACHE_HOME did not reach whatever called "',
+    '        "worker.cache_dir()/sentinel.sentinel_path() for that home. "',
+    '        "Find the call site and fix it there, never by widening this "',
+    '        "guard."',
+    '    )',
+    '    try:',
+    '        after = set(os.listdir(_REAL_CACHE_ROOT))',
+    '    except FileNotFoundError:',
+    '        after = set()',
+    '    new = after - before',
+    '    if not new:',
+    '        return',
+    '    digests = _home_digests()',
+    '    mine = sorted(n for n in new if n.startswith("home-") and n[len("home-"):] in digests)',
+    '    theirs = sorted(new - set(mine))',
+    '    if theirs:',
+    '        _WARN_NAMESPACES.extend(theirs)',
+    '    assert not mine, (',
+    '        "self-learn cache-litter guard: a subprocess THIS session "',
+    '        f"spawned created real namespace dir(s) {mine} -- its env "',
+    '        "dropped XDG_CACHE_HOME. Find the spawn site and fix its env, "',
+    '        "never by widening this guard."',
+    '    )',
+    '',
+    '',
+    'def pytest_terminal_summary(terminalreporter, exitstatus, config):',
+    '    """Code gate r1 M-3: the "concurrent sibling, not failed" warning',
+    '    must be VISIBLE even under `-q` -- a bare `print()` during a session',
+    "    fixture's teardown is captured/swallowed by pytest's own capture",
+    '    manager under `-q` and never reaches the terminal.',
+    '    `pytest_terminal_summary` is always printed, `-q` or not."""',
+    '    if _WARN_NAMESPACES:',
+    '        terminalreporter.write_sep("-", "self-learn cache-litter guard")',
+    '        terminalreporter.write_line(',
+    '            f"{len(_WARN_NAMESPACES)} new real {_REAL_CACHE_ROOT} namespace(s) "',
+    '            "appeared this session that do not match any SELF_LEARN_HOME "',
+    '            "this session itself handed out -- presumed a concurrent "',
+    '            f"sibling suite on this shared host, reported but not failed: "',
+    '            f"{_WARN_NAMESPACES}"',
+    '        )',
 ]
 
 
@@ -1460,9 +1784,15 @@ _AR3_REASONS = {
     # against `TRANSPORT`'s new `dict[str, bool]` shape or `KNOWN_BACKENDS
     # = ("sdk",)`.
     ("test_invocation.py", "_spec"): "U-cleanup-B (doctrine rebase, §8.1)",
-    ("test_invocation.py", "test_cn6_witnesses_a_and_b_agree_statically"): "U-cleanup-B (CL9/§8.1, worker/miner-reader legs dropped)",
+    # FW-117 (2026-08-28): `test_cn6_witnesses_a_and_b_agree_statically`'s
+    # U-cleanup-B-era edit above is superseded -- the function is now
+    # DELETED outright (its last leg, worker-repair, lost its witness
+    # function too), so it moves to `_AR3_REMOVED` instead and drops out
+    # of this reasons table entirely (a deleted function has no body left
+    # to reason about an edit to).
     ("test_invocation.py", "test_fk3_fake_is_not_reachable_from_backend_for"): "U-cleanup-B (SdkBackend rebase)",
-    ("test_invocation.py", "test_hy3_witness_b_is_sha_pinned"): "U-cleanup-B (_HY3_SHAS trimmed, §8.1)",
+    ("test_invocation.py", "test_hy3_witness_b_is_sha_pinned"): "U-cleanup-B (_HY3_SHAS trimmed, §8.1); FW-117 (2026-08-28, trimmed again: three witnesses -> two)",
+    ("test_invocation.py", "test_cn9_direction_guard_one_hop_local_taint"): "FW-117 (2026-08-28): docstring only -- named this file's own CN6/CN7 legs, both deleted",
     ("test_invocation.py", "test_rg3_unknown_value_falls_closed_with_byte_exact_warning"): "U-cleanup-B (SEL5, fold target cli->sdk)",
     ("test_invocation.py", "test_rg8_pyproject_sdk_extra_matches_ui_pin"): "U-cleanup-B (DEP3, pin moves to dependencies)",
     ("test_invocation.py", "test_fk1_fakebackend_records_specs_prompts_and_doctrines"): "U-cleanup-B (rename, argvs -> doctrines)",
@@ -1478,6 +1808,13 @@ _AR3_REASONS = {
     # worker` directly (8 sites renamed).
     ("test_invocation.py", "repair_run"): "U-cleanup-B (§8.3, claude_shim -> sdk_fake_worker rename)",
     ("test_invocation.py", "test_rg5_shimmed_worker_run_completes_under_sdk_selection"): "U-cleanup-B (§8.3, claude_shim -> sdk_fake_worker rename)",
+    # U-kl4 (2026-08-28): the pgrep-based liveness check was host-global
+    # (matched ANY process on the machine, not just this run's own child
+    # -- measured 2/2 parallel-suite runs false-red, solo green).
+    # Rebuilt to identify the child by PID, read off a new
+    # `SdkOutcome.child_pid` field (`backend.py`) instead of a name
+    # pattern.
+    ("test_invocation_sdk.py", "test_kl4_hang_sigterm_ignored_child_is_gone_after_run_sync_returns"): "U-kl4 (pid-keyed liveness check, root-cause fix for the host-global pgrep false-red)",
 }
 
 _AR3_RENAMED = {
@@ -1511,10 +1848,16 @@ _AR3_RENAMED = {
 #: catching one.
 #: U-cleanup-B additions (§8.1/§8.4a): the CLI-only argv/transport/
 #: settings-writer machinery those tests exercised is deleted outright,
-#: with no sdk equivalent to rebase onto (12 in test_invocation.py --
+#: with no sdk equivalent to rebase onto (15 in test_invocation.py --
 #: the AV/TR/WR/CN7/LG4 group Phase A left `@pytest.mark.skip`ped with
 #: its own "delete" disposition; 4 in test_invocation_sdk.py -- the argv
-#: helper functions and OP12's settings-writer-ordering test).
+#: helper functions and OP12's settings-writer-ordering test). FW-117
+#: (2026-08-28) fold: this count was pre-existing STALE at "12" --
+#: enumerated from the current set, the AV/TR/WR/CN7/LG4 group is 15
+#: (av x4, tr x7, wr x2, cn7_worker, lg4); `cn8`/`cn10` and
+#: `_assert_argv_matches_containment_iff` are U-cleanup-A (see the
+#: paragraph above), and `cn6`/`cn7_repair_leg` are FW-117's own -- none
+#: counted in this group's tally.
 _AR3_REMOVED: dict[str, frozenset[str]] = {
     "test_invocation.py": frozenset(
         {
@@ -1540,6 +1883,12 @@ _AR3_REMOVED: dict[str, frozenset[str]] = {
             "test_tr7_transport_reached_through_the_subprocess_module_attribute",
             "test_wr3_miner_rc_nonzero_does_not_short_circuit",
             "test_wr4_outcome_stdout_per_surface",
+            # FW-117 (2026-08-28): `worker.write_repair_settings_file`
+            # deleted (dead write, `A-2`) -- these two lost their sole
+            # witness function to agree against, same reasoning as the
+            # `test_cn8`/`test_cn7_worker_leg...` removals above.
+            "test_cn6_witnesses_a_and_b_agree_statically",
+            "test_cn7_repair_leg_over_both_enforce_values",
         }
     ),
     "test_invocation_sdk.py": frozenset(
@@ -1577,6 +1926,18 @@ _AR3_ADDED: dict[str, frozenset[str]] = {
             "test_fake_per_call_error_ro4",
             "test_fake_prompt_log_ro2",
             "test_templates_byte_pinned_ro6",
+            # U-kl4 (2026-08-28): the pid-keyed liveness-check helpers
+            # (module-level, shared by both `test_kl4_...` and its
+            # positive control below) plus the positive control itself.
+            "_proc_start_ticks",
+            "_child_gone",
+            "test_kl4a_pid_check_reddens_when_the_explicit_kill_is_disabled",
+            # U-kl4 gate r1 fold (2026-08-28): B-1's reap helper (used by
+            # `test_kl4a_...`'s finally, once it captures the pid FIRST)
+            # and N/D-2's new committed test (child_pid is None on the
+            # not-found path).
+            "_reap_best_effort",
+            "test_kl4b_child_pid_is_none_on_a_path_where_no_child_ever_spawned",
         }
     ),
     "test_doctor_invocation.py": frozenset(
@@ -1584,6 +1945,14 @@ _AR3_ADDED: dict[str, frozenset[str]] = {
             # U-cleanup-B T-DOCTOR-SWITCHES (SEL6, §11.1): the `switches`
             # row's REFUSED rendering had no test asserting it directly.
             "test_dc17_switches_row_reports_cli_selection_as_refused",
+            # U-papercuts P-2: bare `self-learn doctor` (no `<verb>`) now
+            # defaults to `doctor invocation` instead of printing a usage
+            # error — the positive test (byte-identical stdout/stderr/rc
+            # against the explicit `doctor invocation` form) and its
+            # negative control (`doctor bogus` stays an argparse usage
+            # error, unaffected by the new default).
+            "test_p2_bare_doctor_is_byte_identical_to_doctor_invocation",
+            "test_p2_doctor_unknown_verb_still_a_usage_error",
         }
     ),
 }
@@ -1985,16 +2354,71 @@ def test_hy5_numstat_bounds_hold():
     # measured single-ref against _BASE_SHA. Widened again (185, 36) ->
     # (196, 36) -- gate r2 N-6': the corrupt-vs-absent heartbeat
     # distinction added to `_serve_row`'s configured-no-heartbeat leg.
+    # U-papercuts P-2 (2026-08-27): `test_doctor_invocation.py` widened
+    # (100, 9) -> (156, 9) -- the two `test_p2_*` functions registered in
+    # `_AR3_ADDED["test_doctor_invocation.py"]` above (bare `doctor`
+    # defaults to `doctor invocation`; `doctor bogus` still a usage
+    # error). `cli.py` itself (the actual fix, `_build_parser`'s doctor
+    # block) is not a row in this table -- it was never touched by any
+    # prior unit this armor tracks. Widened again, (156, 9) -> (165, 9)
+    # -- code gate r1 N-2 fix: `doctor_sub`'s `metavar` changed
+    # `"<verb>"` -> `"[<verb>]"` (cli.py, not tracked here either) plus
+    # the provenance note this added to `test_p2_doctor_unknown_verb_
+    # still_a_usage_error`'s docstring.
+    # U-servehermetic (2026-08-27): `conftest.py` widened (34, 0) ->
+    # (44, 0) -- the ten-line `XDG_CONFIG_HOME` hermetic-default addition
+    # to `_worker_test_defaults` (see `_AR1_SANCTIONED_PIN_LINES` above,
+    # same unit). No other row in this table is touched by this unit.
+    # U-kl4 (2026-08-28): `test_invocation_sdk.py` widened (298, 149) ->
+    # (414, 166) -- `test_kl4_...`'s pgrep-based liveness check (host-
+    # global, measured false-red under concurrent suites) rebuilt to key
+    # on the pid this run's own child actually got, plus its positive
+    # control (`test_kl4a_...`) and the two shared identity-check
+    # helpers (`_proc_start_ticks`/`_child_gone`). Measured single-ref
+    # against `_BASE_SHA`, required (not a discretionary widening): the
+    # unedited bound already sat at exactly 298/149, one insertion below
+    # the true content this build needs.
+    # U-kl4 gate r1 fold (2026-08-28): widened AGAIN, (414, 166) ->
+    # (493, 166) -- B-1 (`test_kl4a_...`'s `try` rescoped to capture
+    # `pid` FIRST so every assertion's cleanup runs, plus a new
+    # `_reap_best_effort` waitpid helper), N/D-3 (re-check start-ticks
+    # immediately before the `SIGKILL`, not just once at capture time),
+    # N/D-1 (one sentence on `NOTE-14` about the PID-reuse guard's
+    # failure mode), and N/D-2 (a new committed test, `test_kl4b_...`,
+    # asserting `child_pid is None` on the `not-found` path). Measured
+    # single-ref against `_BASE_SHA`, required: the prior bound (414,
+    # 166) undercounted this fold's real insertions by 79.
+    # U-corrob DEN3 (2026-08-28, ruling on DEN3: BUILD IT -- the (4, 18)
+    # row below was armor BOOKKEEPING, not a design constraint):
+    # `analyst.py` widened (4, 18) -> (22, 20) for `analyze()`'s new
+    # keyword-only `charter_denials` accumulator (`FW-107`'s shape,
+    # extended -- `DEN3`), measured single-ref against `442385d`.
+    # U-cachelit (2026-08-28): `conftest.py` widened AGAIN, (44, 0) ->
+    # (195, 0) -- the whole-file-appended `_litter_namespace_guard`
+    # section (see `_AR1_SANCTIONED_PIN_LINES` above, same unit): a
+    # session-scoped autouse fixture plus its two class-level tracking
+    # patches and their doc comments, 151 pure-addition lines on top of
+    # the 44 already pinned. No other row in this table is touched by
+    # this unit.
+    # U-cachelit RE-ANCHOR (code gate r1, same day): the guard section
+    # was deleted and rewritten (not edited in place) to fold M-1/M-2/
+    # M-3 -- widened AGAIN, (195, 0) -> (311, 0). The rewrite adds the
+    # CLI package's first-ever session-scoped `_env_floor_session`
+    # (M-2), digest-based attribution instead of raw-string matching on
+    # the `env=` kwarg (M-3), and a `pytest_terminal_summary` warn
+    # channel (M-3); see `_AR1_SANCTIONED_PIN_LINES`'s own RE-ANCHOR
+    # paragraph above for the full accounting. 267 pure-addition lines
+    # on top of the 44 pre-U-cachelit lines, none of them removed.
     bounds = {
         "plugins/self-learn/cli/src/self_learn/invocation/contract.py": (31, 47),
         "plugins/self-learn/cli/src/self_learn/invocation/registry.py": (34, 20),
         "plugins/self-learn/cli/src/self_learn/provider.py": (196, 36),
-        "plugins/self-learn/cli/src/self_learn/analyst.py": (4, 18),
-        "plugins/self-learn/cli/tests/conftest.py": (34, 0),  # code gate r1 NIT-5: stale AG1-tripwire paragraph fixed
+        "plugins/self-learn/cli/src/self_learn/analyst.py": (22, 20),
+        "plugins/self-learn/cli/tests/conftest.py": (311, 0),  # U-cachelit RE-ANCHOR (gate r1): guard section rewritten
         "plugins/self-learn/cli/tests/fixtures/fake_claude.py": (388, 1),
-        "plugins/self-learn/cli/tests/test_invocation.py": (718, 700),
-        "plugins/self-learn/cli/tests/test_invocation_sdk.py": (298, 149),  # code gate r1 MAJOR-1 fold: claude_cli_shim_worker/_analyst -> sdk_fake_worker/_analyst rename
-        "plugins/self-learn/cli/tests/test_doctor_invocation.py": (100, 9),
+        "plugins/self-learn/cli/tests/test_invocation.py": (737, 760),  # FW-117 (2026-08-28): HY3 trimmed to two witnesses, SETTINGS_WITNESS/test_cn6/test_cn7_repair_leg deleted, then gate r1 fold (test_cn9 docstring truth) -- widened (718, 700) -> (730, 757) -> (737, 760), EXACT measured value (not a margin), single-ref against _BASE_SHA
+        "plugins/self-learn/cli/tests/test_invocation_sdk.py": (493, 166),  # U-kl4 gate r1 fold (2026-08-28): B-1 (try scoped to capture pid first + best-effort reap), N/D-2 (new test_kl4b), N/D-3 (re-check start-ticks immediately before the kill), N/D-1 (NOTE-14 sentence); was (298, 149) -> (414, 166) -> (493, 166), measured single-ref against _BASE_SHA
+        "plugins/self-learn/cli/tests/test_doctor_invocation.py": (165, 9),
     }
     for relpath, (max_ins, max_del) in bounds.items():
         out = subprocess.run(

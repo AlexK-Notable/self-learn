@@ -2045,23 +2045,34 @@ class TestMode9PostureDecisionSweep:
 # ----------------------------------------------------------------- UN group
 
 
+#: UN1's baseline commit: master's tip BEFORE this branch's merge commit
+#: lands on it -- NOT 50fa815 (the pre-unit commit). Coordinator ruling
+#: 2026-08-28 (bring-up-to-master merge): the invariant UN1 protects is
+#: "hostmode changes nothing in git mode relative to the code it lands
+#: on", not relative to some fixed historical point that predates six
+#: sibling units (U-verbguards, U-kl4, U-ancestry, U-corrob, U-cachelit,
+#: U-fw117) already merged into master. Re-anchored from 50fa815 to
+#: ba90ef9 (master's HEAD at merge time) for exactly that reason.
+_UN1_BASELINE_REF = "ba90ef9"
+
+
 @pytest.fixture(scope="module")
 def un1_baseline_worktree(tmp_path_factory):
-    """UN1: a disposable git worktree checked out at 50fa815 (the last
-    commit before this unit's work began), torn down when this module's
-    UN tests finish. Lets the inlined probe script (`_UN1_PROBE_SCRIPT`
-    below — deliberately written against ONLY the pre-unit-stable API)
-    run unmodified against both trees, so its stdout can be diffed
-    byte-for-byte."""
+    """UN1: a disposable git worktree checked out at `_UN1_BASELINE_REF`
+    (master's tip this branch merges onto — see the re-anchor note
+    above), torn down when this module's UN tests finish. Lets the
+    inlined probe script (`_UN1_PROBE_SCRIPT` below — deliberately
+    written against ONLY the pre-unit-stable API) run unmodified against
+    both trees, so its stdout can be diffed byte-for-byte."""
     worktree_root = Path(hosts_mod.__file__).resolve().parents[5]
     base = tmp_path_factory.mktemp("un1-baseline-wt")
     target = base / "wt"  # `worktree add` refuses a dir that already exists
     proc = subprocess.run(
-        ["git", "-C", str(worktree_root), "worktree", "add", str(target), "50fa815"],
+        ["git", "-C", str(worktree_root), "worktree", "add", str(target), _UN1_BASELINE_REF],
         capture_output=True, text=True, timeout=60,
     )
     if proc.returncode != 0:
-        pytest.skip(f"git worktree add 50fa815 failed: {proc.stderr}")
+        pytest.skip(f"git worktree add {_UN1_BASELINE_REF} failed: {proc.stderr}")
     try:
         yield target
     finally:
@@ -2082,7 +2093,10 @@ _UN1_PROBE_SCRIPT = 'from __future__ import annotations\n\nimport subprocess\nim
 
 class TestUn1GitModeByteIdenticalToBaseline:
     """UN1 [A]: a route into a git host produces a commit whose subject,
-    body, pathspec and resulting tree are byte-identical to 50fa815's."""
+    body, pathspec and resulting tree are byte-identical to
+    `_UN1_BASELINE_REF`'s (master's HEAD at merge time, ba90ef9 — the
+    code this unit actually lands on; re-anchored from 50fa815 per the
+    coordinator's merge ruling 2026-08-28)."""
 
     @staticmethod
     def _run_probe(cli_dir: Path, probe: Path, workdir: Path, *, sync: bool) -> str:

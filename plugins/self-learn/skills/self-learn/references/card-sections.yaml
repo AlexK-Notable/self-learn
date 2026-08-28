@@ -56,6 +56,28 @@ impact:
     cost the first time (an evening, a broken config, nothing much)? Two
     to four tight sentences; decisive, not exhaustive.
 
+already_kept:
+  label: "You may already have this"
+  order: 35
+  required: optional
+  instruction: >
+    Write this section only when the lesson's substance already appears
+    somewhere this project can reach: a parent/umbrella project's CLAUDE.md, a
+    hand-written part of this project's own CLAUDE.md, or one of this project's
+    references files. Quote the shortest span that covers it and name the file
+    and the line it came from. Then say which of two very different things you
+    found. (a) It LOADS — a parent project's CLAUDE.md or this project's own
+    CLAUDE.md is in front of Claude in every session here. (b) It is ON THE
+    SHELF — a references file is only read when someone follows a pointer to
+    it, so the lesson is written down but not in play. Say which, in plain
+    words, every time; a shelf entry is not the same as a rule that is already
+    running, and a reader who cannot tell them apart will make the wrong call.
+    Also say whether the text you found INSTRUCTS or merely MENTIONS the same
+    subject, and if it looks out of date say so and say why — "already written
+    down" and "still true" are two different claims. Never present this as a
+    verdict and never argue for one resolution: it is evidence for the reader's
+    decision, and the reader makes that decision.
+
 discuss:
   label: "Worth discussing"
   order: 40

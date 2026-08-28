@@ -363,6 +363,49 @@ def test_install_commands_shell_suite_runs():
     assert proc.returncode == 0, proc.stdout + proc.stderr
 
 
+@pytest.mark.skipif(not INSTALL_SH.is_file(), reason="script absent")
+def test_install_commands_shell_suite_xdg_config_home_positive_control(tmp_path):
+    """`install-commands-test.sh`'s own header claims it touches nothing
+    outside its fake `$HOME` -- that claim went false the moment
+    `install.sh`'s `UNIT_DIR` started honoring `$XDG_CONFIG_HOME`
+    (U-servehermetic, this same unit): the script's `run_install` only
+    pinned `HOME`, so a CALLER's own `XDG_CONFIG_HOME` leaked straight
+    through `bash "$INSTALL"` and install.sh linked all four systemd
+    units under that real/external directory instead of under the fake
+    home -- invisible to every check inside the script (all scoped to
+    `$FAKE_HOME`) and never cleaned by its own trap (which only removes
+    its internal `$TMP`). Measured before the fix: the script's own PASS
+    line and a zero exit, plus four stray symlinks left under the
+    external directory.
+
+    This test drives the scenario for real: an EXTERNAL `XDG_CONFIG_HOME`
+    (this test's own `tmp_path`, standing in for whatever the invoking
+    shell happens to have set) is exported into the subprocess env, the
+    script still reports its own internal pass line (its fake-`HOME`
+    checks are unaffected), and the external directory must stay
+    completely empty afterward -- nothing must land there.
+
+    MUTATION that turns this red: drop the `XDG_CONFIG_HOME="$FAKE_HOME/
+    .config"` pin from `run_install` in `install-commands-test.sh` -- the
+    external `tmp_path` then gains a `systemd/user/` subdirectory holding
+    the four unit symlinks."""
+    external_xdg_config_home = tmp_path / "external-xdg-config"
+    external_xdg_config_home.mkdir()
+    env = os.environ.copy()
+    env["XDG_CONFIG_HOME"] = str(external_xdg_config_home)
+
+    proc = subprocess.run(
+        ["bash", str(INSTALL_SH)], capture_output=True, text=True, timeout=180, env=env
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "commands surface" in proc.stdout
+
+    leaked = list(external_xdg_config_home.rglob("*"))
+    assert leaked == [], (
+        f"install-commands-test.sh leaked into the external XDG_CONFIG_HOME: {leaked}"
+    )
+
+
 # ---------------------------------------------------- real-chezmoi round trip
 
 
