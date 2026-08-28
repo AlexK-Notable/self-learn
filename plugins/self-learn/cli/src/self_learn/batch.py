@@ -86,9 +86,18 @@ PERMITTED_VERBS = frozenset(PERMITTED_KEYS)
 #: The subset of each verb's permitted keys that must actually be PRESENT
 #: on a sheet item -- caught at BAT1's whole-sheet validation, same as an
 #: unknown key or a malformed id (nothing runs). Every other permitted
-#: key is optional (route's ``dest`` falls back to the proposal sibling;
-#: defer's ``until`` falls back to the default +30 days; etc).
+#: key is optional (defer's ``until`` falls back to the default +30
+#: days; etc). ``route``'s ``dest`` is REQUIRED (amended code gate r1,
+#: N7): a no-dest route item on an already-routed record could only be
+#: classified already-applied by trusting ANY routed status, since the
+#: proposal sibling that would resolve an implicit dest is swept the
+#: moment the FIRST route lands -- that converted a real refusal signal
+#: (a stale/mismatched sheet re-run against a record routed by some
+#: unrelated path) into a silent skip. Requiring ``dest`` up front
+#: removes the ambiguity outright: ``classify``'s route arm now always
+#: compares against a name the sheet itself gave, never a guess.
 REQUIRED_KEYS: dict[str, frozenset[str]] = {
+    "route": frozenset({"dest"}),
     "supersede": frozenset({"new_id"}),
     "rehome": frozenset({"to"}),
     "rescope": frozenset({"to"}),
@@ -265,15 +274,16 @@ def classify(home: Path, item: SheetItem) -> bool:
     if verb == "route":
         if record.status != "routed":
             return False
+        # `dest` is REQUIRED for route items (REQUIRED_KEYS, code gate
+        # r1 N7) -- already-applied is decided ONLY against a
+        # destination the sheet itself named, never a guess. A caller
+        # that bypasses load_sheet's validation and hands classify() a
+        # dest-less route item gets the SAME treatment §3.3b gives any
+        # other unresolvable comparison: not already-applied, so it
+        # reaches the verb at dispatch and refuses there naming the
+        # actual state -- never a silent skip.
         if f.get("dest") is None:
-            # No explicit --dest on the sheet line: the ORIGINAL
-            # resolution came from the proposal sibling, which a
-            # successful route already SWEEPS (remove_proposal_siblings)
-            # -- so re-resolving it on a re-run would spuriously refuse
-            # with NoProposalError, not "already applied". A routed
-            # status is itself sufficient here: there is no further
-            # destination to cross-check against.
-            return True
+            return False
         resolved = _resolved_route_dest(home, path, item)
         if resolved is None:
             return False

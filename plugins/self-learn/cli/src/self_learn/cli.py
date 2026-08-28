@@ -2466,6 +2466,16 @@ def _main(argv: list[str] | None = None) -> int:
             _kick_after_capture(no_push=getattr(args, "no_push", False))
         return code
 
+    if args.command == "route" and getattr(args, "dry_run", False):
+        # U-verbs §4.3 (DRY3, code gate B1): a preview only — deliberately
+        # NOT dispatched through VERB_COMMANDS, same reasoning as `show`
+        # (SHOW3) just above: VERB_COMMANDS's flush COMMITS (and, without
+        # --no-push, PUSHES) whenever the telemetry spool is non-empty, and
+        # a read-only preview must never move the ledger's HEAD. `_cmd_verb`
+        # itself already special-cases this branch first, before any lock
+        # or sentinel — routing it here just keeps it off the epilogue.
+        return _cmd_verb(args)
+
     if args.command in VERB_COMMANDS:
         code = _cmd_verb(args)
         # every resolution verb flushes (11 §4.2); --no-push rides along

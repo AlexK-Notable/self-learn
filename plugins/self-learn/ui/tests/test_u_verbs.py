@@ -25,11 +25,15 @@ from test_proposals import _record_scope, _seed_two_projects
 
 class TestMove9ProposalIntake:
     def test_proposal_to_refuses_scope_literals(self, tmp_path: Path) -> None:
-        """MOVE9 leg (a): the rehome branch still refuses `to: user` and
-        `to: skill:<name>` -- the UI's rehome proposal is deliberately
-        project-only on the DESTINATION side; a bare scope literal never
-        resolves to a registered project, so it refuses the same way an
-        unregistered path does, naming the rationale (never registered)."""
+        """MOVE9 leg (a) (code gate r1, MAJ-4): the rehome branch still
+        refuses `to: user` and `to: skill:<name>` -- but §4.1 is explicit
+        this is its OWN literal-arm refusal, not the generic
+        not-a-registered-project message a project-scoped record also
+        gets: a scope change is a human decision, and the agent is told
+        to say it in `rationale` and let the human type it. The old
+        assertion here ("not a registered project") discriminated
+        NOTHING this unit changed -- pre-change code emitted that same
+        generic string for a project-scoped `to` too."""
         sb, host_b, rec = _seed_two_projects(tmp_path)
         for literal in ("user", "skill:s"):
             result = validate_proposal(
@@ -38,7 +42,8 @@ class TestMove9ProposalIntake:
                 {"verb": "rehome", "record_id": rec.id, "to": literal},
             )
             assert isinstance(result, str), literal
-            assert "not a registered project" in result, literal
+            assert "a scope change is a human verb" in result, literal
+            assert "rationale" in result, literal
 
     def test_proposal_unregistered_and_same_bucket_refusals_unchanged(self, tmp_path: Path) -> None:
         """MOVE9 leg (c): the unregistered-target and same-bucket

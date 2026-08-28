@@ -358,6 +358,18 @@ def validate_proposal(
         # project-only on the DESTINATION side (a `to` naming a skill or
         # `user` is not this proposal's grammar at all — `rescope`, not
         # proposable, is the verb for that).
+        #
+        # §4.1 KEEPS the target narrowing even though `--to`'s CLI/verb
+        # grammar widened: `to == "user"` or `to.startswith("skill:")`
+        # is refused BEFORE the registered-project lookup, with the
+        # named reason — a scope change is a human decision, never an
+        # agent-authored one, so the model is told to say it in
+        # `rationale` and let the human type it instead of proposing it.
+        if to == "user" or to.startswith("skill:"):
+            return _refuse(
+                "a scope change is a human verb — say it in `rationale` "
+                "and let the human type it"
+            )
         target = _registered_project_for(home, to)
         if target is None:
             return _refuse(

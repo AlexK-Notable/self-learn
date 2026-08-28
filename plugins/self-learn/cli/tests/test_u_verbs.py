@@ -21,7 +21,9 @@ All ledger homes are throwaway sandbox repos under pytest tmpdirs
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
+import re
 import subprocess
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -49,6 +51,7 @@ from support import (
     commit_all,
     force_past_deferred,
     git,
+    hook_proposal_fields,
     init_repo,
     make_behavior,
     make_env,
@@ -71,6 +74,22 @@ def redirect(tmp_path, monkeypatch):
 
 
 # --------------------------------------------------------------- helpers
+
+
+def _host_snapshot(host_dir: Path) -> dict[str, tuple[str, int]]:
+    """PH2's own instrument: a (sha256, mtime_ns) pair per tracked file
+    under *host_dir*. ``tree_hash`` (below) fingerprints CONTENT only via
+    ``git write-tree`` — a write that rewrote a file with byte-identical
+    content (touch, or a compile-then-restore) would pass tree_hash
+    unnoticed; mtime closes exactly that gap, which is why PH2 names
+    both in the same snapshot."""
+    snap: dict[str, tuple[str, int]] = {}
+    for f in sorted(host_dir.rglob("*")):
+        if not f.is_file() or ".git" in f.relative_to(host_dir).parts:
+            continue
+        rel = str(f.relative_to(host_dir))
+        snap[rel] = (hashlib.sha256(f.read_bytes()).hexdigest(), f.stat().st_mtime_ns)
+    return snap
 
 
 def tree_hash(repo: Path) -> str:
@@ -188,12 +207,100 @@ class TestPhaseBoundary:
         assert len(control.stdout.splitlines()) >= 12
 
     def test_ph2_batch_module_is_phase1_only(self):
-        """PH2 (this build's proof point): batch.py's own PERMITTED_VERBS
-        is exactly the 15 Phase-1 verbs -- no Phase-2 verb name appears
-        in it, and it is not a superset that would let a sheet name one."""
+        """Supporting check, NOT the PH2 discriminator (code gate r1,
+        MAJ-1): batch.py's own PERMITTED_VERBS is exactly the 15 Phase-1
+        verbs -- no Phase-2 verb name appears in it, and it is not a
+        superset that would let a sheet name one. PH2's own criterion --
+        Phase 1 writes to NO HOST -- is proven by
+        ``test_phase1_touches_no_host`` below."""
         phase2_verbs = {"reroute", "followup add", "reclassify", "host remove", "bucket prune"}
         assert not (batch.PERMITTED_VERBS & phase2_verbs)
         assert len(batch.PERMITTED_VERBS) == 15
+
+    def test_phase1_touches_no_host(self, tmp_path, monkeypatch):
+        """PH2: a fixture with a registered host (env's ``host_a``) runs
+        undefer, reopen, note, rehome, rescope, show, route --dry-run,
+        and a one-item `batch` sheet (item: undefer) -- then the HOST
+        tree's sha256+mtime snapshot is unchanged. Positive control
+        FIRST, same fixture: a real `route` DOES change it. `batch` is
+        the discriminating leg -- a `batch` that reached `_host_phase`
+        for a non-route item would redden here and nowhere else."""
+        e = TwoProjectEnv(tmp_path)
+        monkeypatch.setenv("SELF_LEARN_HOME", str(e.home))
+        home = e.home
+
+        # --- positive control: a REAL route DOES touch the host tree ---
+        rid_route_real = "lrn-face0000"
+        create_record(home, make_knowledge(scope="skill:a", record_id=rid_route_real))
+        commit_all(home, "seed control")
+        write_proposal(home, rid_route_real, proposal_dict(scope="skill:a"))
+        host_before_control = _host_snapshot(e.host_a)
+        verbs.route(home, rid_route_real, dest="skill-md", no_push=True)
+        host_after_control = _host_snapshot(e.host_a)
+        assert host_after_control != host_before_control, (
+            "control is broken: a real route must change the host tree"
+        )
+
+        # baseline for the "unchanged" assertion is taken AFTER the
+        # control's own write, so the eight verbs below are measured
+        # against a host tree already known to be sensitive to writes.
+        host_baseline = host_after_control
+
+        # --- the eight PH2 verbs, none of which may touch the host ---
+        rid_undefer = "lrn-face0001"
+        create_record(home, make_knowledge(scope="skill:a", record_id=rid_undefer))
+        commit_all(home, "seed undefer")
+        defer_record(home, rid_undefer)
+        verbs.undefer(home, rid_undefer, no_push=True)
+
+        rid_reopen = "lrn-face0002"
+        create_record(home, make_knowledge(scope="skill:a", record_id=rid_reopen))
+        commit_all(home, "seed reopen")
+        verbs.reject(home, rid_reopen, no_push=True)
+        verbs.reopen(home, rid_reopen, no_push=True)
+
+        rid_note = "lrn-face0003"
+        create_record(home, make_knowledge(scope="skill:a", record_id=rid_note))
+        commit_all(home, "seed note")
+        verbs.note(home, rid_note, append="a commentary note", no_push=True)
+
+        rid_rehome = "lrn-face0004"
+        create_record(home, make_knowledge(scope="skill:a", record_id=rid_rehome))
+        commit_all(home, "seed rehome")
+        verbs.rehome(home, rid_rehome, to="user", no_push=True)
+
+        rid_rescope = "lrn-face0005"
+        create_record(home, make_knowledge(scope="skill:a", record_id=rid_rescope))
+        commit_all(home, "seed rescope")
+        verbs.rescope(home, rid_rescope, to="skill:b", no_push=True)
+
+        rid_show = "lrn-face0006"
+        create_record(home, make_knowledge(scope="skill:a", record_id=rid_show))
+        commit_all(home, "seed show")
+        verbs.show(home, rid_show)
+
+        rid_dry = "lrn-face0007"
+        create_record(home, make_knowledge(scope="skill:a", record_id=rid_dry))
+        commit_all(home, "seed dry-run")
+        write_proposal(home, rid_dry, proposal_dict(scope="skill:a"))
+        verbs.route_dry_run(home, rid_dry, dest="skill-md")
+
+        # batch: one-line sheet whose SINGLE item is `undefer` -- the
+        # criterion's own discriminating leg.
+        rid_batch = "lrn-face0008"
+        create_record(home, make_knowledge(scope="skill:a", record_id=rid_batch))
+        commit_all(home, "seed batch undefer")
+        defer_record(home, rid_batch)
+        items = batch.load_sheet(_write_sheet(home.parent, [
+            {"id": rid_batch, "verb": "undefer"},
+        ]))
+        result = batch.run(home, items, no_push=True)
+        assert result.items[0].state == "applied"
+
+        host_after = _host_snapshot(e.host_a)
+        assert host_after == host_baseline, (
+            "Phase 1 verb touched the host tree — PH2 violation"
+        )
 
 
 # ================================================================ GUARD
@@ -254,11 +361,17 @@ class TestGuard:
             ("undefer", "pending", "pending"),
             ("reopen", "routed", "routed"),
             ("note", None, None),  # note has no status gate; skipped below
+            ("rehome", "rejected", "rejected"),
+            ("rescope", "rejected", "rejected"),
         ],
     )
     def test_guard3_new_verbs_refuse_on_status(self, tmp_path, monkeypatch, verb, setup, expect_status):
-        """GUARD3: refuse on STATUS, never mere existence -- naming both
-        the record and its actual status; an unknown id still hits 64."""
+        """GUARD3 (code gate r1, N3 -- now all FIVE named verbs, not 2):
+        refuse on STATUS, never mere existence -- naming both the record
+        and its actual status; an unknown id still hits 64. `rehome`/
+        `rescope` were previously covered only incidentally by MOVE7 --
+        this is GUARD3's own assertion of ITS OWN property (the status
+        gate) for those two verbs, in the criterion's own shape."""
         if verb == "note":
             pytest.skip("note carries no status gate by design (STATE8)")
         e = TwoProjectEnv(tmp_path)
@@ -273,9 +386,19 @@ class TestGuard:
         if setup == "pending":
             create_record(e.home, make_knowledge(scope="project", record_id=rid), project_path=e.host_a)
             commit_all(e.home, "seed")
-        fn = {"undefer": verbs.undefer, "reopen": verbs.reopen}[verb]
+
+        if setup == "rejected":
+            create_record(e.home, make_knowledge(scope="skill:a", record_id=rid))
+            commit_all(e.home, "seed")
+            verbs.reject(e.home, rid, no_push=True)
+
+        fn = {
+            "undefer": verbs.undefer, "reopen": verbs.reopen,
+            "rehome": verbs.rehome, "rescope": verbs.rescope,
+        }[verb]
+        kwargs = {"to": "user"} if verb in ("rehome", "rescope") else {}
         with pytest.raises(verbs.VerbError) as exc:
-            fn(e.home, rid, no_push=True)
+            fn(e.home, rid, no_push=True, **kwargs)
         assert rid in str(exc.value)
         assert f"is {expect_status!r}" in str(exc.value)
 
@@ -340,6 +463,31 @@ class TestMove:
         moved = Record.from_path(new_path)
         assert moved.scope == _expected_scope_literal(to)
 
+    def test_move1_subjects(self, env2):
+        """N1 (code gate r1): MOVE1's own criterion wants each leg's
+        commit subject asserted too, via `git log -1 --format=%s` -- the
+        `move_record` matrix above never commits (it is the file-op
+        alone, MOVE10's own concern). This drives the VERB for all
+        THREE dest-label arms `_move_dest_label` can produce -- only the
+        project arm was pinned before (by MOVE5); `skills/<name>` and
+        `user` were not."""
+        rec_project = env2.seed(scope="skill:a")
+        result_project = verbs.rehome(env2.home, rec_project.id, to=str(env2.host_b), no_push=True)
+        assert result_project.commit_message == (
+            f"self-learn: rehome {rec_project.id} → projects/{env2.slug_b}"
+        )
+        assert verb_subject(env2.home) == result_project.commit_message
+
+        rec_skill = env2.seed(scope="user")
+        result_skill = verbs.rescope(env2.home, rec_skill.id, to="skill:b", no_push=True)
+        assert result_skill.commit_message == f"self-learn: rescope {rec_skill.id} → skills/b"
+        assert verb_subject(env2.home) == result_skill.commit_message
+
+        rec_user = env2.seed(scope="skill:a")
+        result_user = verbs.rescope(env2.home, rec_user.id, to="user", no_push=True)
+        assert result_user.commit_message == f"self-learn: rescope {rec_user.id} → user"
+        assert verb_subject(env2.home) == result_user.commit_message
+
     def test_move1_leg9_mismatch_repair(self, env2):
         """Leg 9: a PENDING record sitting in a project bucket whose
         frontmatter wrongly says scope: user is moved project->project,
@@ -399,12 +547,21 @@ class TestMove:
         host_add(home, host_named_user, "project")
         monkeypatch.setenv("SELF_LEARN_HOME", str(home))
 
+        # MAJ-3 (code gate r1): the chdir MUST be in effect for leg 1 too
+        # -- _resolve_move_target falls a bare --to through to
+        # Path(to).expanduser().resolve(), which is cwd-relative; from
+        # the pytest rootdir Path("user").resolve() never reaches this
+        # fixture's host, so a path-first (buggy) resolver would fall
+        # through to the literal and pass anyway. Only with cwd already
+        # at the host's own parent does leg 1 actually exercise "the
+        # reserved literal wins over a same-named path" (M9's probe).
+        monkeypatch.chdir(host_named_user.parent)
+
         scope, bucket, project_path = verbs._resolve_move_target(home, "user")
         assert scope == "user"
         assert bucket == home / "user"
         assert project_path is None
 
-        monkeypatch.chdir(host_named_user.parent)
         for to_literal in ("project:user", "./user"):
             scope2, bucket2, project_path2 = verbs._resolve_move_target(home, to_literal)
             assert scope2 == "project", to_literal
@@ -602,12 +759,24 @@ class TestState:
         r._fm["history"] = []  # simulate: note set, but never displaced into history
         with pytest.raises(MutationError):
             r.clear_resolution_note()
-        proc = subprocess.run(
-            ["grep", "-rc", r"resolution_note.*= None", str(CLI_SRC / "self_learn")],
-            capture_output=True, text=True,
+
+        # N4 (code gate r1): the old leg 2 grepped the WHOLE package for
+        # `resolution_note.*= None` and asserted `>= 1` -- a tautology
+        # that cannot detect an added SECOND clearer anywhere else in the
+        # file, since it never scopes to `clear_resolution_note` itself.
+        # Extract JUST that method's source (AST) and assert an EXACT
+        # count -- it must write `resolution_note = None` precisely
+        # ONCE, and nowhere else in it.
+        records_source = (CLI_SRC / "self_learn" / "records.py").read_text(encoding="utf-8")
+        tree = ast.parse(records_source)
+        method_node = next(
+            n for n in ast.walk(tree)
+            if isinstance(n, ast.FunctionDef) and n.name == "clear_resolution_note"
         )
-        hits = sum(int(line.rsplit(":", 1)[1]) for line in proc.stdout.splitlines() if line.rsplit(":", 1)[1] != "0")
-        assert hits >= 1
+        method_source = ast.get_source_segment(records_source, method_node)
+        assert method_source is not None
+        hits = len(re.findall(r"resolution_note.*= None", method_source))
+        assert hits == 1, method_source
 
     @pytest.mark.parametrize("verb", ["graduate", "route"])
     def test_state6_reopen_refuses_terminal(self, env2, verb):
@@ -735,6 +904,33 @@ class TestDryAndShow:
         assert tree_hash(env2.home) != ledger_before
         assert tree_hash(env2.host_a) != host_before
 
+    def test_dry3b_cli_surface_never_flushes_or_moves_head(self, env2, monkeypatch):
+        """B1 (code gate r1): the CLI surface `self-learn route --dry-run`
+        must be exactly as inert as the library call test_dry3 already
+        proves — SHOW3's fixture shape (a seeded, unflushed spool) applied
+        to `route --dry-run` instead of `show`. Before the fix, `route` was
+        dispatched through VERB_COMMANDS even under --dry-run, so `_main`
+        ran `_mutating_epilogue` on the way out and the epilogue's flush
+        COMMITS (and, without --no-push, pushes)."""
+        monkeypatch.setenv("SELF_LEARN_HOME", str(env2.home))
+        record = env2.seed(scope="skill:a")
+        telemetry.spool_event("offer-declined", reason="later")
+        head_before = git(env2.home, "rev-parse", "HEAD").stdout.strip()
+
+        rc = cli.main(["route", record.id, "--dest", "skill-md", "--dry-run", "--no-push"])
+        assert rc == 0
+        head_after = git(env2.home, "rev-parse", "HEAD").stdout.strip()
+        assert head_after == head_before, (
+            "route --dry-run must not commit the telemetry flush"
+        )
+
+        # positive control: the same fixture WITHOUT --dry-run DOES flush
+        # (mirrors PROBE2 epilogue-alone from the gate finding)
+        rc = cli.main(["route", record.id, "--dest", "skill-md", "--no-push"])
+        assert rc == 0
+        head_after_real = git(env2.home, "rev-parse", "HEAD").stdout.strip()
+        assert head_after_real != head_before
+
     def test_dry4_reports_every_refusal(self, tmp_path, monkeypatch):
         sandbox = make_env(tmp_path, skills=("s",))
         home = sandbox.ledger
@@ -793,6 +989,16 @@ class TestDryAndShow:
         assert "SELF_LEARN_MINER_AUTOKICK" in proc.stdout
 
     def test_show3_does_not_flush_the_spool(self, env2, monkeypatch):
+        """SHOW3. N5 (code gate r1): the positive control must isolate
+        the FLUSH itself as the thing that moves HEAD, not a verb's own
+        (unrelated) resolution commit -- the old control ran `reject`
+        after `show` and compared HEAD, but `reject` commits its OWN
+        resolution regardless of any spool, so a passing assertion there
+        proves nothing about the flush specifically. The isolated
+        control here calls `_mutating_epilogue` ALONE, with no verb run
+        at all, against the SAME seeded spool, and asserts both that
+        HEAD moves AND that the new commit IS the flush (its own pinned
+        subject) -- PROBE2's shape from the gate finding."""
         monkeypatch.setenv("SELF_LEARN_HOME", str(env2.home))
         record = env2.seed(scope="skill:a")
         telemetry.spool_event("offer-declined", reason="later")
@@ -804,18 +1010,14 @@ class TestDryAndShow:
         assert rc == 0
         head_after_show = git(env2.home, "rev-parse", "HEAD").stdout.strip()
         assert head_after_show == head_before
-        spool_path = telemetry.spool_event.__module__  # touch module ref only
-        events = telemetry.read_events(env2.home)
-        # the event is still UNFLUSHED (spooled, not yet in tracked plane) --
-        # or, if flush semantics differ, at minimum HEAD did not move, which
-        # is the criterion's actual assertion.
 
-        # positive control: reject (a VERB_COMMANDS member) DOES flush+commit
-        rc = cli.main(["reject", record.id, "--no-push"])
-        assert rc == 0
+        # positive control: the epilogue ALONE (no verb) DOES flush+commit,
+        # and the commit IS the flush, not something else's write.
         cli._mutating_epilogue(env2.home, no_push=True)
-        head_after_reject = git(env2.home, "rev-parse", "HEAD").stdout.strip()
-        assert head_after_reject != head_before
+        head_after_epilogue = git(env2.home, "rev-parse", "HEAD").stdout.strip()
+        assert head_after_epilogue != head_before
+        subject = git(env2.home, "log", "-1", "--format=%s").stdout.strip()
+        assert subject == "self-learn: telemetry flush 1 event"
 
 
 # =================================================================== BAT
@@ -905,7 +1107,7 @@ class AllVerbsSheetEnv:
     def sheet_path(self, tmp_path) -> Path:
         ids = self.IDS
         lines = ["version: 1", "items:"]
-        lines.append(f"  - {{id: {ids['route']}, verb: route}}")
+        lines.append(f"  - {{id: {ids['route']}, verb: route, dest: skill-md}}")
         lines.append(f"  - {{id: {ids['reject']}, verb: reject}}")
         lines.append(f"  - {{id: {ids['defer']}, verb: defer, until: \"{(date.today() + timedelta(days=20)).isoformat()}\"}}")
         lines.append(f"  - {{id: {ids['undefer']}, verb: undefer}}")
@@ -1053,15 +1255,37 @@ class TestBatch:
         assert len(push_calls) == 0
 
     def test_bat6_refuses_hook_routes(self, env2):
+        """B2 (code gate r1): S-29 must actually bite. The old fixture had
+        NO hook proposal, so the guard being removed (M34) left the test
+        GREEN — `route`'s own unrelated preflight ('no proposal for this
+        id') satisfied the same 3 assertions. Seed a REAL hook proposal
+        (hook_proposal_fields — tools/path_regex/deny_message + replay
+        examples, the same shape a compiling `route --dest hook` needs) so
+        the only thing that can refuse this item is the batch-level S-29
+        guard itself, and assert on the refusal's own text."""
         record = env2.seed(scope="skill:a")
+        write_proposal(
+            env2.home, record.id,
+            proposal_dict(scope="skill:a", destination="hook",
+                          alternates=["skill-md"], **hook_proposal_fields()),
+        )
+        commit_all(env2.home, "hook proposal")
         items = batch.load_sheet(_write_sheet(env2.home.parent, [
             {"id": record.id, "verb": "route", "dest": "hook"},
         ]))
         result = batch.run(env2.home, items, no_push=True)
         assert result.items[0].state == "refused"
         assert result.items[0].rc == 1
+        detail = result.items[0].detail or ""
+        assert "refused inside a batch" in detail
+        assert "S-29" in detail
         # nothing ran — record is still pending
         assert Record.from_path(env2.bucket_skill_a / "pending" / f"{record.id}.md").status == "pending"
+
+        # BAT6's second half: --dry-run names it as a SHEET-LEVEL blocker,
+        # not just a per-item refusal.
+        dr = batch.dry_run(env2.home, items)
+        assert dr.hook_items == [record.id]
 
     def test_bat7_refuses_host_verbs_in_sheet(self, env2, tmp_path):
         good = env2.seed(scope="skill:a")
@@ -1101,21 +1325,45 @@ class TestBatch:
         assert git(home, "rev-parse", "HEAD").stdout.strip() == head_after_run1
 
     def test_bat8_classification_is_a_state_read(self, tmp_path, monkeypatch):
+        """BAT8 leg 2 (code gate r1, MAJ-2): §3.3b requires classify() to
+        be a STATE READ, never a trigger-and-catch of a refusal message.
+        The old ``gibberish`` stub was dead code — this leg replaces it
+        with the real probe: monkeypatch every function whose refusal (or
+        success) TEXT could stand in for a state read -- every verbs.*
+        dispatch function AND Record.append_contradicts, whose
+        ValidationError text is literally "already contradicts" (the
+        exact string M36 found a re-implementation reading instead of
+        `target in record.contradicts`) -- to raise unrelated gibberish.
+        If classify() ever calls (trigger) instead of reads (state) any
+        of these, the gibberish exception propagates and this fails."""
         fixture = AllVerbsSheetEnv(tmp_path)
         home = fixture.e.home
         sheet_path = fixture.sheet_path(tmp_path)
         batch.run(home, batch.load_sheet(sheet_path), no_push=True)
 
-        def gibberish(home, item):
-            return False  # force "not already-applied" regardless of state
-        # instead: monkeypatch each verb's own refusal message construction
-        # is out of scope for a single hook — assert instead that classify()
-        # reads STATE, not a cached/previous refusal string, by corrupting
-        # an unrelated in-memory attribute that a message-parsing classifier
-        # would have needed and confirming classify() still works:
+        def gibberish(*a, **kw):
+            raise AssertionError(
+                "classify() must be a pure state read — it must never call "
+                "a verb dispatch function or a message-constructing method "
+                "(gibberish probe, code gate r1 MAJ-2 / M36)"
+            )
+
+        for fn_name in (
+            "route", "reject", "defer", "undefer", "reopen", "graduate",
+            "supersede", "rehome", "rescope", "note", "confirm_recurrence",
+            "dismiss_suspect", "confirm_held", "link_contradicts",
+            "followup_done",
+        ):
+            monkeypatch.setattr(verbs, fn_name, gibberish)
+        monkeypatch.setattr(Record, "append_contradicts", gibberish)
+
         items_again = batch.load_sheet(sheet_path)
+        assert len(items_again) == 15
         for item in items_again:
-            assert batch.classify(home, item) is True
+            assert batch.classify(home, item) is True, (
+                f"{item.id}/{item.verb} did not classify as already-applied "
+                "under the gibberish probe"
+            )
 
     def test_bat9_dry_run_writes_nothing(self, env2, tmp_path):
         route_rec = env2.seed(scope="skill:a")
@@ -1126,7 +1374,8 @@ class TestBatch:
         ledger_before = tree_hash(env2.home)
         host_before = tree_hash(env2.host_a)
         items = batch.load_sheet(_write_sheet(env2.home.parent, [
-            {"id": route_rec.id, "verb": "route"}, {"id": reject_rec.id, "verb": "reject"},
+            {"id": route_rec.id, "verb": "route", "dest": "skill-md"},
+            {"id": reject_rec.id, "verb": "reject"},
         ]))
         dr = batch.dry_run(env2.home, items)
         assert tree_hash(env2.home) == ledger_before
@@ -1141,6 +1390,43 @@ class TestBatch:
         # positive control: the same fixture WITHOUT --dry-run writes something
         batch.run(env2.home, items, no_push=True)
         assert tree_hash(env2.home) != ledger_before
+
+    def test_bat9b_route_dest_is_required_and_never_a_silent_skip(self, env2, tmp_path):
+        """N7 (code gate r1, real semantic bug fix): `batch.classify`'s
+        `route` arm used to accept ANY routed status as already-applied
+        when the sheet gave no `dest` -- unable to tell 'this is my own
+        prior work, re-run' from 'this id happened to get routed by
+        something else entirely' (the proposal that would resolve an
+        implicit dest is swept the moment the first route lands). Fixed
+        by requiring `dest` on every route sheet item (`REQUIRED_KEYS`),
+        which removes the ambiguity outright. Two legs: (1) a sheet
+        naming `route` with no `dest` is refused at LOAD time -- nothing
+        runs (BAT1's own contract); (2) a route item with an explicit
+        `dest` against a record in a DIFFERENT resolved status (here,
+        already `rejected`) is NEVER already-applied -- it reaches the
+        verb at dispatch and comes back REFUSED, naming the actual
+        state, never a silent already-applied skip."""
+        # leg 1: dest is REQUIRED -- a bare {id, verb: route} sheet item
+        # refuses at load time.
+        good = env2.seed(scope="skill:a")
+        with pytest.raises(batch.BatchError, match="missing required"):
+            batch.load_sheet(_write_sheet(env2.home.parent, [
+                {"id": good.id, "verb": "route"},
+            ]))
+
+        # leg 2: dest given, but the record is REJECTED, not routed --
+        # classify() must say False (not already-applied), and dispatch
+        # must REFUSE naming the actual status, never silently skip it
+        # as if it were done.
+        rejected_rec = env2.seed(scope="skill:a")
+        verbs.reject(env2.home, rejected_rec.id, no_push=True)
+        items = batch.load_sheet(_write_sheet(env2.home.parent, [
+            {"id": rejected_rec.id, "verb": "route", "dest": "skill-md"},
+        ]))
+        assert batch.classify(env2.home, items[0]) is False
+        result = batch.run(env2.home, items, no_push=True)
+        assert result.items[0].state == "refused"
+        assert "rejected" in (result.items[0].detail or "")
 
     def test_bat10_partial_exit_and_head_accounting(self, env2):
         r1, r2, r3 = (env2.seed(scope="skill:a") for _ in range(3))
@@ -1327,7 +1613,18 @@ class TestUnaffected:
         own pinned-subject test) and whose records carry NO `history`/
         `notes` key -- the exact mutation this criterion's cell names
         ('add an unconditional history: [] key to every written
-        record')."""
+        record').
+
+        N6 (code gate r1, disclosed deviation, accepted): the spec's own
+        shape for UN1 is a `baseline.json` generated once against a
+        `b206800` worktree and diffed against commit BODIES and target
+        FILE BYTES, not just subjects. This build asserts the pinned
+        subjects and the history/notes-key absence directly instead --
+        narrower (commit bodies and target file bytes are not compared),
+        but it still catches the named mutation: `M63` (an unconditional
+        `history: []` / `notes: []` write) is RED on both this test and
+        `test_un2_no_empty_history_or_notes_key` below, via the same
+        `"\nhistory:" not in raw` check UN2 makes explicit."""
         monkeypatch.setenv("SELF_LEARN_HOME", str(env2.home))
         r_route = env2.seed(scope="skill:a")
         write_proposal(env2.home, r_route.id, proposal_dict(scope="skill:a"))
@@ -1385,6 +1682,57 @@ class TestUnaffected:
             cwd=str(Path(__file__).parent), capture_output=True, text=True,
         )
         assert proc.returncode == 0, proc.stdout[-4000:] + proc.stderr[-2000:]
+
+    @staticmethod
+    def _method_names(source: str) -> set[str]:
+        tree = ast.parse(source)
+        out: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef):
+                for item in node.body:
+                    if (
+                        isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+                        and item.name.startswith("test_")
+                    ):
+                        out.add(f"{node.name}::{item.name}")
+        return out
+
+    def test_un3_diff_scoped_nothing_lost(self):
+        """N2 (code gate r1): the criterion's own diff leg -- test_rehome.py
+        + test_rescope.py collect the SAME 53 tests before (`b206800`) and
+        after this build, by NAME, not just by count (a same-count swap
+        could still hide a silent deletion). Every name difference is one
+        of the three DECLARED widened-behavior renames (§3.2/§3.2c:
+        `rehome`'s non-project-source refusal, `rescope`'s project-scoped-
+        source refusal, and `rescope`'s skill to skill refusal all became
+        `_now_succeeds` tests) -- nothing else was deleted or renamed."""
+        base = (
+            self._method_names(b206800_text("plugins/self-learn/cli/tests/test_rehome.py"))
+            | self._method_names(b206800_text("plugins/self-learn/cli/tests/test_rescope.py"))
+        )
+        cur = (
+            self._method_names((Path(__file__).parent / "test_rehome.py").read_text())
+            | self._method_names((Path(__file__).parent / "test_rescope.py").read_text())
+        )
+        assert len(base) == 53
+        assert len(cur) == 53
+
+        removed = base - cur
+        added = cur - base
+        expected_removed = {
+            "TestRehomeRefusals::test_non_project_source_refuses",
+            "TestRescopeRefusals::test_refuses_project_scoped_source",
+            "TestRescopeRefusals::test_refuses_skill_to_skill",
+        }
+        expected_added = {
+            "TestRehomeRefusals::test_non_project_source_now_succeeds",
+            "TestRescopeRefusals::test_project_scoped_source_now_succeeds",
+            "TestRescopeRefusals::test_skill_to_skill_now_succeeds",
+        }
+        assert removed == expected_removed, removed
+        assert added == expected_added, added
+        # every OTHER name survives untouched, proving nothing else lost
+        assert (base - expected_removed) <= cur
 
     def test_un4_argv_for_gains_exactly_two_rows(self):
         import sys
