@@ -113,6 +113,21 @@ limit; free-text "Other" is always there beyond them):
 - **Defer** — `self-learn defer <id>` (default +30 days) or
   `self-learn defer <id> --until YYYY-MM-DD` if they name a date.
 
+**Applying decisions — `self-learn batch`, never a hand-written script
+(U-verbs S-54, R3).** Each bullet above names the verb call ONE decision
+resolves to; you record it as one line in this session's decision sheet
+(`{id, verb, ...that verb's own fields — note/until/to/dest/…}`) rather
+than firing it immediately. Apply the whole sheet in **one locked run**
+at Session end (or at any natural pause — mid-batch is fine): `self-learn
+batch <sheet.yaml>`, previewed first with `self-learn batch <sheet.yaml>
+--dry-run` when you want to see every item's outcome before committing
+anything. `batch` is the **one** executor — 42 verb calls across two
+hand-written apply scripts is exactly the scaffolding this replaces; a
+review session must never hand-sequence a run of individual `self-learn
+<verb> <id>` shell commands as its own bulk-apply mechanism. A sheet item
+naming a `host` verb or a hook route is refused at validation (nothing
+runs) — sequence those by hand, outside the sheet.
+
 **Scope mismatch** — not a card option, but tell the user when you see it:
 if a pending record's firing range clearly belongs to a different scope
 than the bucket it's filed in (captured at user scope but really only
@@ -259,9 +274,25 @@ which:
   and say the ledger is half-written. `self-learn reconcile` fixes the
   simple cases (an uncommitted record); a half-committed rename needs the
   printed command.
-- **64** — usage error (bad flag/id).
+- **64** — usage error (bad flag/id); for `batch`, also a whole-sheet
+  validation failure (unknown verb, unknown item key, malformed id,
+  `version != 1`) — nothing in the sheet ran.
+- **8** — `batch` only (`EXIT_BATCH_PARTIAL`): the run completed with
+  **some items applied and at least one refused** — the ledger DID
+  change. Read the `--json` envelope's per-item `rc`/`state` to see which
+  landed and which refused; a refused item's own reason renders the same
+  as a single verb's would. `batch` returns **1** only when **nothing**
+  in the sheet landed — 1 keeps its "nothing was written" meaning exactly
+  even inside a batch; 8 is what a partial run reports instead.
 
-Only 3, 4 and 7 mean "the ledger changed"; 1, 5, 6 and 64 mean it did not.
+Only 3, 4, 7 and 8 mean "the ledger changed"; 1, 5, 6 and 64 mean it did not.
+
+**`batch`'s process code, when more than one item hits a ledger-level
+failure (3/4/6/7), is the WORST of those under the severity order
+`7 > 4 > 3 > 6 > 1 > 0`** — never a raw max of the item codes, which
+gives the wrong answer on two pairs (`{3,6}` and `{4,6}`, where the
+ledger DID change but a naive max reports 6, "nothing written"). Read
+`batch`'s own summary line, never re-derive the process code by hand.
 
 Codes 6 and 7 exist separately because they used to be one code making one
 claim, which was true for one of its two causes (audit 2026-07-16). If you
@@ -271,9 +302,15 @@ class, and it is worth a capture.
 
 ## Session end
 
-1. `self-learn sentinel release`.
-2. Summary: resolved (routed/rejected/graduated), deferred, and what
+1. If the session's decision sheet still has unapplied items, apply it
+   now: `self-learn batch <sheet.yaml>` (one locked run — never a
+   hand-written sequence of individual verb calls). Read its exit code
+   per the table above; on **8** or **1**, show the refused items' own
+   reasons from the `--json` envelope.
+2. `self-learn sentinel release`.
+3. Summary: resolved (routed/rejected/graduated), deferred, and what
    remains pending beyond this batch.
-3. If **any** verb reported a failed push ("PUSH FAILED — commit kept"),
-   run `self-learn push` once and show its result. If it still fails,
-   say so loudly — the commits are safe locally.
+4. If `batch` (or any verb) reported a failed push ("PUSH FAILED —
+   commit kept", exit **3**), run `self-learn push` once and show its
+   result. If it still fails, say so loudly — the commits are safe
+   locally.

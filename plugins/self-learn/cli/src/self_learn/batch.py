@@ -83,6 +83,21 @@ PERMITTED_KEYS: dict[str, frozenset[str]] = {
 }
 PERMITTED_VERBS = frozenset(PERMITTED_KEYS)
 
+#: The subset of each verb's permitted keys that must actually be PRESENT
+#: on a sheet item -- caught at BAT1's whole-sheet validation, same as an
+#: unknown key or a malformed id (nothing runs). Every other permitted
+#: key is optional (route's ``dest`` falls back to the proposal sibling;
+#: defer's ``until`` falls back to the default +30 days; etc).
+REQUIRED_KEYS: dict[str, frozenset[str]] = {
+    "supersede": frozenset({"new_id"}),
+    "rehome": frozenset({"to"}),
+    "rescope": frozenset({"to"}),
+    "note": frozenset({"append"}),
+    "confirm-recurrence": frozenset({"event"}),
+    "dismiss-suspect": frozenset({"event", "why"}),
+    "link-contradicts": frozenset({"target"}),
+}
+
 #: S-29 / Y-17: never accepted inside a sheet, by name — a hook route
 #: replays examples and writes an executable, and host registration is a
 #: disclosed-consent event; neither rides a bulk apply.
@@ -204,6 +219,15 @@ def load_sheet(path: Path | str) -> list[SheetItem]:
                 f"batch {path}: item {n} ({verb}) has unknown key(s): "
                 f"{sorted(unknown)}"
             )
+        missing = {
+            k for k in REQUIRED_KEYS.get(verb, frozenset())
+            if raw.get(k) in (None, "")
+        }
+        if missing:
+            raise BatchError(
+                f"batch {path}: item {n} ({verb}) is missing required "
+                f"key(s): {sorted(missing)}"
+            )
         fields = {k: v for k, v in raw.items() if k not in ("id", "verb")}
         items.append(SheetItem(n=n, id=rid, verb=verb, fields=fields))
     return items
@@ -286,10 +310,10 @@ def classify(home: Path, item: SheetItem) -> bool:
     if verb == "supersede":
         return (
             record.status == "superseded"
-            and record.superseded_by == f.get("new_id")
+            and record.superseded_by == f["new_id"]
         )
     if verb in ("rehome", "rescope"):
-        to = f.get("to")
+        to = f["to"]
         try:
             _target_scope, target_bucket, _project_path = verbs._resolve_move_target(
                 home, to
@@ -306,15 +330,15 @@ def classify(home: Path, item: SheetItem) -> bool:
             return False
         return record.note_has_key(key)
     if verb == "confirm-recurrence":
-        event = f.get("event")
+        event = f["event"]
         return any(r.get("ref") == event for r in record.recurrences)
     if verb == "dismiss-suspect":
-        event = f.get("event")
+        event = f["event"]
         return any(d.get("ref") == event for d in record.dismissed_suspects)
     if verb == "confirm-held":
         return record.last_confirmed is not None
     if verb == "link-contradicts":
-        target = f.get("target")
+        target = f["target"]
         return target in record.contradicts
     if verb == "followup-done":
         return record.follow_up is None and record.follow_up_done is not None
@@ -365,37 +389,37 @@ def _dispatch(home: Path, item: SheetItem) -> ItemResult:
             result = verbs.graduate(home, item.id, note=f.get("note"), no_push=True)
         elif verb == "supersede":
             result = verbs.supersede(
-                home, item.id, f.get("new_id"), note=f.get("note"), no_push=True
+                home, item.id, f["new_id"], note=f.get("note"), no_push=True
             )
         elif verb == "rehome":
             result = verbs.rehome(
-                home, item.id, to=f.get("to"), note=f.get("note"), no_push=True
+                home, item.id, to=f["to"], note=f.get("note"), no_push=True
             )
         elif verb == "rescope":
             result = verbs.rescope(
-                home, item.id, to=f.get("to"), note=f.get("note"), no_push=True
+                home, item.id, to=f["to"], note=f.get("note"), no_push=True
             )
         elif verb == "note":
             result = verbs.note(
-                home, item.id, append=f.get("append"), key=f.get("key"),
+                home, item.id, append=f["append"], key=f.get("key"),
                 no_push=True,
             )
         elif verb == "confirm-recurrence":
             result = verbs.confirm_recurrence(
-                home, item.id, event_ref=f.get("event"),
+                home, item.id, event_ref=f["event"],
                 tolerate=bool(f.get("tolerate", False)), note=f.get("note"),
                 no_push=True,
             )
         elif verb == "dismiss-suspect":
             result = verbs.dismiss_suspect(
-                home, item.id, event_ref=f.get("event"), why=f.get("why"),
+                home, item.id, event_ref=f["event"], why=f["why"],
                 note=f.get("note"), no_push=True,
             )
         elif verb == "confirm-held":
             result = verbs.confirm_held(home, item.id, note=f.get("note"), no_push=True)
         elif verb == "link-contradicts":
             result = verbs.link_contradicts(
-                home, item.id, f.get("target"), note=f.get("note"), no_push=True
+                home, item.id, f["target"], note=f.get("note"), no_push=True
             )
         elif verb == "followup-done":
             result = verbs.followup_done(home, item.id, note=f.get("note"), no_push=True)
@@ -552,7 +576,7 @@ def dry_run(home: Path | str, items: list[SheetItem]) -> DryRunResult:
             continue
         if item.verb in ("rehome", "rescope"):
             try:
-                verbs._resolve_move_target(home, item.fields.get("to"))
+                verbs._resolve_move_target(home, item.fields["to"])
             except verbs.VerbError as exc:
                 result.items.append(
                     DryRunItem(n=item.n, id=item.id, verb=item.verb,

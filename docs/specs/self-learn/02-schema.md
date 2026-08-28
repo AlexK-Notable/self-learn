@@ -269,6 +269,31 @@ standard safe rebase-halt (`01` §5) rather than being excluded outright.
 > is **REQUIRED and load-bearing**, unlike `recurrences[]`'s courtesy
 > pointer: a dismissal is a fact about one specific machine claim, and
 > without the nonce it clears nothing and means nothing.
+>
+> **Amendment 2026-08-28 (U-verbs §4.10):** the frontmatter gains two more
+> append-only lists, both **metadata class** like `recurrences`/
+> `dismissed_suspects` above — verb-written, mutable in every status, the
+> substance freeze below untouched. `history` records what a verb
+> **displaced**: `reopen` moves a `resolved` record back to `pending` and
+> appends the old `resolution_note` as a `history` entry (`event:
+> "resolution"`, carrying the displaced `status`/`note`) before clearing
+> the field, so a write-once value can be superseded without being
+> destroyed; a later verb correcting a wrong routing destination displaces
+> the old `routing` block the same way (`event: "routing"`). `event` is a
+> **closed set** — `{"resolution", "routing"}` — a third displacement kind
+> is a decision, not a silent widening. `notes` records what a human
+> **added**: `self-learn note <id> --append TEXT` appends `{at, by, text}`
+> (plus an optional `key`, the idempotency token `self-learn batch`
+> stamps on a `note` sheet item's entry) to `notes[]`, in any status,
+> never touching `resolution_note` — `notes` is additive commentary,
+> `history` is what the record used to say; merging the two would make
+> both unreadable. `Record.clear_resolution_note()` is the **only**
+> permitted writer of `resolution_note` back to `None`, and it refuses
+> unless the current note already appears in a `history` entry with
+> `event: "resolution"` — the write-once field may be *displaced*, never
+> *destroyed* outright. Neither key exists at all on a record no verb in
+> this set has ever touched — the schema addition is **absent**, not an
+> empty list.
 
 - **Substance freezes at routing** *(S-8/S-12 — settled 2026-07-12,
   blind-adjudicated ADOPT)*: while
