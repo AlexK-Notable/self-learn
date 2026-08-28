@@ -3066,12 +3066,15 @@ def _adopt_hits(root: Path, pattern: str) -> list[str]:
 
 class TestUIC5CensusZeroAdoptReferences:
     """UIC5: zero `adopt` references remain in `ui/src` and
-    `ui/templates`. **Positive control**, run against THIS worktree at
-    `fa02a4c` (Phase 1 tip, adopt surface still present) via `git show`
-    rather than a real checkout: `routes.py` alone carried 5+ `adopt`
-    hits (the verb label, the argv branch, `_extract_adopt_path`,
-    `_adopt_offer_response`, the dismiss route) — proving this census
-    would have caught the surface had Phase 2 left it in place."""
+    `ui/templates`; `ui/static` joins the swept trees at gate r1-N2
+    (2026-08-28) — it carries the UI's whole client-side behaviour and
+    no criterion looked at it before. **Positive control**, run against
+    THIS worktree at `fa02a4c` (Phase 1 tip, adopt surface still
+    present) via `git show` rather than a real checkout: `routes.py`
+    alone carried 5+ `adopt` hits (the verb label, the argv branch,
+    `_extract_adopt_path`, `_adopt_offer_response`, the dismiss route)
+    — proving this census would have caught the surface had Phase 2
+    left it in place."""
 
     def test_positive_control_fa02a4c_routes_py_carries_adopt_hits(self) -> None:
         import subprocess
@@ -3094,6 +3097,21 @@ class TestUIC5CensusZeroAdoptReferences:
         templates_root = pkg_root.parent.parent / "templates"
         hits = _adopt_hits(src_root, "*.py") + _adopt_hits(templates_root, "*.html")
         assert hits == [], hits
+
+    def test_ui_static_carries_only_the_two_dated_retirement_comments(
+        self,
+    ) -> None:
+        """`ui/static/app.js`'s `reloadDeferred` docblock keeps leg (e)
+        as a permanent, dated gap after the offer it deferred for was
+        deleted (gate r1-N2) — retained history, not live behaviour.
+        Exactly two lines, both there, nothing else in the tree."""
+        import self_learn_ui
+
+        pkg_root = Path(self_learn_ui.__file__).resolve().parent
+        static_root = pkg_root.parent.parent / "static"
+        hits = _adopt_hits(static_root, "*.js")
+        assert len(hits) == 2, hits
+        assert all("app.js" in h for h in hits), hits
 
 
 class TestUIC3AdoptOfferSurfaceGone:

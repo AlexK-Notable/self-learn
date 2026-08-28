@@ -59,9 +59,12 @@ LEDGER    ~/.self-learn — a git repo with its own private remote.
           singleton; source of truth for every lesson.
 HOSTS     repos holding COMPILED canon: claude-skills (SKILL.md managed
           sections + its own CLAUDE.md), any registered project's
-          CLAUDE.md, and ~/.claude/CLAUDE.md via the chezmoi/dotfiles
-          flow (a host that was ALWAYS external — the precedent §4
-          leans on). Registered in hosts.yaml, never inferred.
+          CLAUDE.md, and ~/.claude/CLAUDE.md — a first-class PLAIN
+          host by construction (U-hostmode §4.8.1, landed 2026-08-28):
+          no repo, self-learn writes canon but commits nothing. UNTIL
+          2026-08-28 this host routed via the chezmoi/dotfiles flow
+          (history — see §4 item 5). Registered in hosts.yaml, never
+          inferred, except the user host, which is never registered.
 ```
 
 ## 3. Ledger home layout
@@ -88,7 +91,9 @@ HOSTS     repos holding COMPILED canon: claude-skills (SKILL.md managed
   capture-created bucket; hosts.yaml remains the only registration
   authority either way.
 - **User bucket** replaces the root bucket's user half; compile target
-  unchanged (chezmoi flow).
+  unchanged — `~/.claude/CLAUDE.md`, written as a first-class PLAIN host
+  since U-hostmode Phase 1/2 (landed 2026-08-28; UNTIL then, chezmoi
+  flow — history, see §4 item 5).
 - `hosts.yaml` is data, tracked in the ledger repo — one file to read
   to know where canon may land. Registration is a CLI verb
   (`self-learn host add <path>`), never a hand edit the compilers
@@ -125,9 +130,11 @@ HOSTS     repos holding COMPILED canon: claude-skills (SKILL.md managed
 
 ## 4. Routing across repos — the revision of record
 
-02 §2's "route = one commit" was already false for user scope: the
-chezmoi path has committed ledger-side and dotfiles-side separately
-since M1 (E-17 extended). The honest invariant was never single-commit;
+02 §2's "route = one commit" was already false for user scope: UNTIL
+2026-08-28, the chezmoi path had committed ledger-side and dotfiles-side
+separately since M1 (E-17 extended) — history now (`U-hostmode` §4.8.1
+made user scope a plain host, no dotfiles-side commit at all). The
+honest invariant was never single-commit;
 it is: **the ledger is the source of truth and canon is a compiled,
 regenerable artifact** (correction = supersede + recompile, never
 revert). Doc 13 promotes that to the general rule:
@@ -314,13 +321,18 @@ something this unit changed.
   projects:
     - path: /home/komi/repos/claude-skills
   ```
-  **There is no dotfiles/user host** (audit correction 2026-07-16, M-2):
-  `~/.claude/CLAUDE.md` routes through the chezmoi flow, which §2 already
-  calls "a host that was ALWAYS external" — it is deliberately NOT
-  hosts-gated, and `host add --kind dotfiles` is refused by design. An
-  earlier draft of this line said otherwise; the implementation
-  (`HOST_KINDS = skills-root | project`) is correct and this doc was
-  wrong.
+  **There is no dotfiles/user host entry in `hosts.yaml`** (audit
+  correction 2026-07-16, M-2, still true today): `host add --kind
+  dotfiles` is refused by design, and `~/.claude/CLAUDE.md` is
+  deliberately NOT hosts-gated — it is a first-class PLAIN host by
+  construction (`U-hostmode` §4.8.1, landed 2026-08-28, §4 item 5),
+  never registered, never carrying a `.self-learn-host` marker. UNTIL
+  2026-08-28 the SAME never-hosts-gated invariant held for a different
+  reason: it routed through the chezmoi flow, which §2 already called
+  "a host that was ALWAYS external" — history now, not the live
+  mechanism. An earlier draft of this line said otherwise (before the
+  2026-07-16 correction); the implementation (`HOST_KINDS =
+  skills-root | project`) is correct and this doc was wrong.
 - **T-H2 · History extraction** — `git-filter-repo` over a claude-skills
   clone: every `**/.self-learn/**` path (root + per-skill buckets +
   telemetry) rewritten into the §3 layout, grafted into the home repo;

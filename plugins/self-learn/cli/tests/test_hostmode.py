@@ -4725,16 +4725,18 @@ class TestM1LockOrderRuntimeProbe:
 # a mutation, never "by construction". The UI-side criteria (UIC1-5)
 # live in ui/tests/ (a separate venv this suite cannot import).
 #
-# CHEZ6 (below) sweeps this repo for zero mentions of the retired
-# module's name (case-insensitive), so every class/function/variable
-# name and every docstring word in this whole section avoids spelling
-# it -- a literal occurrence here would inflate its own count. The
-# module's real name is unambiguous from `hosts.py`/the spec/the
-# build report; every runtime string this section actually needs is
-# built from `_RETIRED_MODULE` below, never typed out.
+# CHEZ6 (below) sweeps `cli/src`/`ui/src`/`ui/templates`/`ui/tests`/
+# `ui/static` for zero mentions of the retired module's name, and
+# `cli/tests` for exactly the 37-hit accounted total -- EXCLUDING this
+# file BY PATH (gate r1-N1, 2026-08-28): an earlier version instead
+# built the name from `"chez" + "moi"` so its own grep could never see
+# it, which also made the instrument structurally blind to the one
+# file most likely to reintroduce a real dependency the same way. This
+# file now spells the name plainly, like any other test file, and is
+# simply not counted -- greppable, not evasive.
 # ================================================================
 
-_RETIRED_MODULE = "chez" + "moi"  # never spelled whole -- see the note above
+_RETIRED_MODULE = "chezmoi"
 
 
 class TestChez1AdoptVerbGone:
@@ -4884,12 +4886,16 @@ class TestChez5ExceptTuplesShrink:
 
 class TestChez6CensusZeroRetiredModuleLiterals:
     def test_census_by_tree(self):
-        """CHEZ6: zero mentions of the retired module's name
-        (case-insensitive) remain in ``cli/src``, ``ui/src``,
-        ``ui/templates``, ``cli/tests``, ``ui/tests`` -- except the two
-        ``compilers.py`` prose comments (``cli/src``) and, in
-        ``cli/tests``, the UN3-protected pre-existing test/class names
-        in ``test_commit_drift.py`` (11), ``test_hosting.py`` (1), and
+        """CHEZ6 (gate r1-N1/N2, 2026-08-28): zero mentions of the
+        retired module's name (case-insensitive) remain in ``cli/src``,
+        ``ui/src``, ``ui/templates``, ``ui/tests``, ``ui/static`` --
+        except the two ``compilers.py`` prose comments (``cli/src``).
+        ``ui/static`` carries zero -- `ui/static/app.js:517,519`'s two
+        dated retirement comments say "adopt", never the retired
+        module's name, so `UIC5` (which sweeps that word) accounts for
+        them instead. ``cli/tests``, EXCLUDING this file by path, carries
+        exactly 37: the UN3-protected pre-existing test/class names in
+        ``test_commit_drift.py`` (11), ``test_hosting.py`` (1), and
         ``test_verbs.py`` (10 -- two pre-existing class names, the
         module-name half of their identifiers, and the docstring prose
         naming them; see that file's own ``TestRouteUserScope*``
@@ -4904,12 +4910,14 @@ class TestChez6CensusZeroRetiredModuleLiterals:
         ``test_hook_compiler.py``, 2) and one absence-assertion in
         ``test_composer.py`` (1) that already proves the analyst
         doctrine text does NOT mention it -- 11+1+10+12+2+1 = 37, the
-        exact accounted total. This test file's own occurrences are
-        zero by construction (see ``_RETIRED_MODULE`` at the top of
-        this section -- this docstring deliberately never spells the
-        protected names out, for the same reason). ``docs/`` is
-        explicitly NOT swept (OUT-4). Positive control at 50fa815
-        (§2.10a): 205/12/7/343/43."""
+        exact accounted total. THIS file (``test_hostmode.py``) is
+        excluded from the ``cli/tests`` sweep BY PATH, not by evading
+        its own grep (gate r1-N1) -- ``_RETIRED_MODULE`` above is a
+        plain literal, and this docstring spells the protected names out
+        directly, same as any other file. ``docs/`` is explicitly NOT
+        swept (OUT-4). Positive control at 50fa815 (§2.10a): for the
+        original five trees, 205/12/7/343/43; ``ui/static`` was not
+        separately measured before this fold."""
         plugin_root = Path(__file__).resolve().parents[2]  # plugins/self-learn
         trees = {
             "cli/src": plugin_root / "cli" / "src",
@@ -4917,17 +4925,28 @@ class TestChez6CensusZeroRetiredModuleLiterals:
             "ui/src": plugin_root / "ui" / "src",
             "ui/templates": plugin_root / "ui" / "templates",
             "ui/tests": plugin_root / "ui" / "tests",
+            "ui/static": plugin_root / "ui" / "static",
         }
+        excluded_by_path = {Path(__file__).resolve()}
 
         def _hits(path):
             out = subprocess.run(
                 ["grep", "-rn", "-i", _RETIRED_MODULE, str(path)],
                 capture_output=True, text=True,
             ).stdout
-            return [ln for ln in out.splitlines() if ln]
+            hits = []
+            for ln in out.splitlines():
+                if not ln:
+                    continue
+                file_part = ln.split(":", 1)[0]
+                if Path(file_part).resolve() in excluded_by_path:
+                    continue
+                hits.append(ln)
+            return hits
 
         assert len(_hits(trees["cli/src"])) == 2
         assert len(_hits(trees["cli/tests"])) == 37
         assert _hits(trees["ui/src"]) == []
         assert _hits(trees["ui/templates"]) == []
         assert _hits(trees["ui/tests"]) == []
+        assert _hits(trees["ui/static"]) == []  # zero chezmoi mentions; the 2 dated retirement comments say "adopt", not "chezmoi" (UIC5 sweeps that word)
