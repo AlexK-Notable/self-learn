@@ -272,3 +272,270 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo):
             report.sections.append(
                 ("Playwright failure capture", f"artifacts written to: {out_dir}")
             )
+
+
+# ===================================================================== #
+# U-cachelit (2026-08-28, code gate r1 M-1/M-2/M-3/N-1/N-3): the
+# session-wide hermetic floor + the litter-namespace guard
+# ===================================================================== #
+#
+# Measured 2026-08-27/28: ~/.cache/self-learn held 31,291 stray
+# `home-<digest>` namespaces (1.1 GB), rising across suite runs. Root
+# cause and fix: see `docs/specs/self-learn/14-forward-work-map.md`
+# FW-130 and `13-hosting-and-separation.md` §6. `_env_floor_session`
+# below is the ROOT fix -- a session-wide floor UNDERNEATH this
+# package's own per-test redirect, so a module-scoped fixture in ANY
+# test file (this package's own `test_js_dom.py`/`test_js_dom_pane_
+# persistence.py`, or a future CLI file that grows one) cannot reopen
+# the gap a per-test-only redirect leaves between a module fixture's
+# instantiation and the first test's own setup (code gate r1 M-2:
+# the CLI package initially had only the function-scoped `_worker_
+# test_defaults`/`_redirect_env_defaults`; this fixture makes doc 13
+# §6's "every suite redirects for the whole session" claim true rather
+# than merely aspirational). `_litter_namespace_guard` is the forward
+# BACKSTOP against a regression of the same class -- see its own
+# docstring.
+
+import hashlib
+import os
+import re
+import subprocess
+from pathlib import Path
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _env_floor_session(tmp_path_factory: pytest.TempPathFactory):
+    """The session-wide hermetic FLOOR underneath this package's own
+    per-test redirect. Session-scoped: pytest instantiates it before
+    every module-scoped fixture of every test (session > module > class
+    > function, regardless of file order), and its `setenv` calls are
+    never reverted until this fixture's OWN teardown runs, at the very
+    end of the whole session (`pytest.MonkeyPatch()` instantiated
+    directly, undone explicitly below -- the documented pattern for a
+    fixture broader than function scope, since the built-in
+    `monkeypatch` fixture is function-scoped only). Concretely: once
+    this fixture has run, `os.environ` for these vars is NEVER unset
+    again until the session itself ends -- when a per-test redirect's
+    own `monkeypatch.setenv` undoes at that test's teardown, it restores
+    the value THIS fixture set, never the real unset default. That
+    closes the gap regardless of exactly when a background task's env
+    read lands (the measured UI-package mechanism -- see FW-130), and
+    regardless of which module-scoped fixture in which test file
+    reopens it next.
+
+    The floor's own `SELF_LEARN_HOME` is registered into
+    `_SESSION_HOMES` (`_track_home` below) for the litter guard's
+    attribution -- belt-and-braces on top of the dynamic `os.environ`
+    fallback the `subprocess.Popen` patch already provides (every
+    `monkeypatch.setenv` call, including this one, mutates the SAME
+    live `os.environ` that fallback reads)."""
+    mp = pytest.MonkeyPatch()
+    base = tmp_path_factory.mktemp("session-env-floor")
+    floor_home = base / "home"
+    mp.setenv("XDG_CACHE_HOME", str(base / "cache"))
+    mp.setenv("XDG_RUNTIME_DIR", str(base / "runtime"))
+    mp.setenv("SELF_LEARN_HOME", str(floor_home))
+    mp.setenv("SELF_LEARN_CLAUDE_DIR", str(base / "claude"))
+    mp.setenv("SELF_LEARN_TRANSCRIPTS_DIR", str(base / "transcripts"))
+    mp.setenv("SELF_LEARN_WORKER_AUTOKICK", "0")
+    mp.setenv("SELF_LEARN_MINER_AUTOKICK", "0")
+    _track_home(floor_home)
+    yield
+    mp.undo()
+
+
+#: The REAL cache root, resolved from the environment exactly as it
+#: stood when this file was first imported by pytest -- module import
+#: happens at collection time, before ANY fixture (including
+#: `_env_floor_session` above) has run a single `monkeypatch.setenv`.
+#: Mirrors `worker.cache_dir()`'s own resolution
+#: (`${XDG_CACHE_HOME:-~/.cache}/self-learn`) without its `mkdir` side
+#: effect -- the guard only ever reads this directory, never creates it.
+_cache_env = os.environ.get("XDG_CACHE_HOME")
+_REAL_CACHE_ROOT = (
+    Path(_cache_env).expanduser() if _cache_env else Path("~/.cache").expanduser()
+) / "self-learn"
+
+_HOME_DIR_RE = re.compile(re.escape(str(_REAL_CACHE_ROOT)) + r"/home-[0-9a-f]{8}$")
+
+#: Namespace dirs THIS interpreter created under `_REAL_CACHE_ROOT` --
+#: 100% certain attribution, no digest-matching needed (it happened in
+#: this process). Populated by the `Path.mkdir` patch below.
+_INPROCESS_HITS: set[str] = set()
+
+#: Every home this session has HANDED OUT: the floor's own home, and
+#: every `SELF_LEARN_HOME` a spawned subprocess's environment carried --
+#: either an EXPLICIT `env=` mapping, or (code gate r1 M-3, "probe C")
+#: this PARENT process's own live `os.environ` at spawn time when no
+#: `env=` override was given at all (that is what the child actually
+#: inherits -- `subprocess.Popen`'s own documented default). Raw values
+#: as seen; `_home_digests()` normalizes before hashing (M-3, "probe
+#: E") so a differently-spelled but equivalent path still matches.
+_SESSION_HOMES: set[str] = set()
+
+
+def _track_home(home) -> None:
+    if home:
+        _SESSION_HOMES.add(str(home))
+
+
+def _install_litter_guards():
+    """Two CLASS-level patches, deliberately never a rebound FUNCTION
+    name: `cli.py`/`worker.py`/`self_learn_ui.pane`/`middleware` all do
+    `from ... import resolve_home`/`cache_dir` at import time, which a
+    same-module patch installed after collection cannot reach -- the
+    caller's own bound name still points at the ORIGINAL function.
+    `pathlib.Path` and `subprocess.Popen` are shared, mutable class
+    objects instead: patching a method on the class itself is visible
+    through every already-bound reference, however it was imported,
+    because attribute lookup on an instance resolves through the class
+    at CALL time, not at import time.
+
+    Returns the two ORIGINAL (unpatched) callables so the guard
+    fixture's teardown can restore them (code gate r1 N-3): a
+    session-scoped patch of two STDLIB classes must not outlive the
+    session it was installed for -- left patched, it would leak into
+    whatever runs next in the same interpreter (a `pytester`
+    sub-session sharing this venv, a plugin hook, anything importing
+    `pathlib`/`subprocess` afterward)."""
+    orig_mkdir = Path.mkdir
+
+    def _tracked_mkdir(self, *a, **kw):
+        if _HOME_DIR_RE.fullmatch(str(self)):
+            _INPROCESS_HITS.add(str(self))
+        return orig_mkdir(self, *a, **kw)
+
+    Path.mkdir = _tracked_mkdir
+
+    orig_popen_init = subprocess.Popen.__init__
+
+    def _tracked_popen_init(self, *args, **kwargs):
+        try:
+            if "env" in kwargs and kwargs["env"] is not None:
+                _track_home(kwargs["env"].get("SELF_LEARN_HOME"))
+            else:
+                # No `env=` override at all (code gate r1 M-3, "probe
+                # C") -- subprocess.Popen's own documented default is
+                # "inherit THIS process's os.environ verbatim", so that
+                # is what the child (and any setsid grandchild it spawns
+                # the same way) actually sees.
+                _track_home(os.environ.get("SELF_LEARN_HOME"))
+        except Exception:  # noqa: BLE001 -- tracking must never break a spawn
+            pass
+        return orig_popen_init(self, *args, **kwargs)
+
+    subprocess.Popen.__init__ = _tracked_popen_init
+    return orig_mkdir, orig_popen_init
+
+
+def _normalized_digests(home: str) -> set[str]:
+    """Code gate r1 M-3, "probe E": a RAW, non-normalized
+    `SELF_LEARN_HOME` string (a trailing slash, a double slash, an
+    unexpanded `~`) must still match the digest the REAL `resolve_
+    home()`/`cache_dir()` call chain produces --
+    ``hashlib.sha256(str(resolve_home())...)`` where ``resolve_home()``
+    is ``Path(raw).expanduser()`` (expanduser only, never a full
+    ``.resolve()``). Hashing the raw string directly, as the first
+    version of this guard did, caused exactly this class of mismatch.
+    Registers BOTH the `.expanduser()` form (the literal production
+    algorithm) and the additionally-`.resolve()`-d form (`..`-safe,
+    symlink-safe) -- verified identical to the `.expanduser()` form for
+    every path this suite ever actually produces (no `..` segments, and
+    no tmp directory on this host sits behind a symlink: `Path("/tmp").
+    is_symlink()` is `False` here) -- so a match holds regardless of
+    which normalization a caller's path needed, without risking a
+    silent divergence from what `cache_dir()` itself will compute."""
+    p = Path(home)
+    out = {hashlib.sha256(str(p.expanduser()).encode("utf-8")).hexdigest()[:8]}
+    try:
+        out.add(
+            hashlib.sha256(str(p.expanduser().resolve()).encode("utf-8")).hexdigest()[:8]
+        )
+    except OSError:
+        pass
+    return out
+
+
+def _home_digests() -> set[str]:
+    digests: set[str] = set()
+    for h in _SESSION_HOMES:
+        digests |= _normalized_digests(h)
+    return digests
+
+
+#: Code gate r1 M-3: namespaces reported (not failed) this session --
+#: read by `pytest_terminal_summary` below, which is ALWAYS printed
+#: (even under `-q`), unlike a bare `print()` during a session
+#: fixture's teardown, which pytest's own capture manager can swallow.
+_WARN_NAMESPACES: list[str] = []
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _litter_namespace_guard():
+    """Fails the SESSION loudly, by name, the instant this run's OWN
+    activity -- in-process or a spawned subprocess -- creates a real
+    `home-<digest>` namespace under `~/.cache/self-learn` (the exact
+    defect FW-130 fixed; `_env_floor_session` above is the intended
+    ROOT fix, this is the forward backstop against a regression neither
+    of them anticipated). Concurrency on this shared host: another
+    builder's suite may add namespaces during this session too -- those
+    are reported via `pytest_terminal_summary` (a warning naming them)
+    but never fail this session, since this session did not create them
+    and cannot know it is safe to blame them. Disabling this fixture,
+    or either assertion below, is exactly the mutation this guard's own
+    `pytester`-driven tests (`test_litter_guard_probes.py`) are built to
+    catch."""
+    orig_mkdir, orig_popen_init = _install_litter_guards()
+    try:
+        before = set(os.listdir(_REAL_CACHE_ROOT))
+    except FileNotFoundError:
+        before = set()
+    yield
+    # N-3: restore the two class-level patches BEFORE this fixture's own
+    # assertions run, so a failed assertion here never leaves the real
+    # stdlib classes patched for whatever runs next in this interpreter.
+    Path.mkdir = orig_mkdir
+    subprocess.Popen.__init__ = orig_popen_init
+    assert not _INPROCESS_HITS, (
+        "self-learn cache-litter guard: THIS interpreter created the "
+        f"real namespace dir(s) {sorted(_INPROCESS_HITS)} during this "
+        "session -- XDG_CACHE_HOME did not reach whatever called "
+        "worker.cache_dir()/sentinel.sentinel_path() for that home. "
+        "Find the call site and fix it there, never by widening this "
+        "guard."
+    )
+    try:
+        after = set(os.listdir(_REAL_CACHE_ROOT))
+    except FileNotFoundError:
+        after = set()
+    new = after - before
+    if not new:
+        return
+    digests = _home_digests()
+    mine = sorted(n for n in new if n.startswith("home-") and n[len("home-"):] in digests)
+    theirs = sorted(new - set(mine))
+    if theirs:
+        _WARN_NAMESPACES.extend(theirs)
+    assert not mine, (
+        "self-learn cache-litter guard: a subprocess THIS session "
+        f"spawned created real namespace dir(s) {mine} -- its env "
+        "dropped XDG_CACHE_HOME. Find the spawn site and fix its env, "
+        "never by widening this guard."
+    )
+
+
+def pytest_terminal_summary(terminalreporter, exitstatus, config):
+    """Code gate r1 M-3: the "concurrent sibling, not failed" warning
+    must be VISIBLE even under `-q` -- a bare `print()` during a session
+    fixture's teardown is captured/swallowed by pytest's own capture
+    manager under `-q` and never reaches the terminal.
+    `pytest_terminal_summary` is always printed, `-q` or not."""
+    if _WARN_NAMESPACES:
+        terminalreporter.write_sep("-", "self-learn cache-litter guard")
+        terminalreporter.write_line(
+            f"{len(_WARN_NAMESPACES)} new real {_REAL_CACHE_ROOT} namespace(s) "
+            "appeared this session that do not match any SELF_LEARN_HOME "
+            "this session itself handed out -- presumed a concurrent "
+            f"sibling suite on this shared host, reported but not failed: "
+            f"{_WARN_NAMESPACES}"
+        )
