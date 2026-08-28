@@ -29,7 +29,6 @@ from fastapi import APIRouter, BackgroundTasks, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from starlette.responses import StreamingResponse
 
-from self_learn.chezmoi import ADOPT_COMMAND_PREFIX, CHEZMOI_DIRTY_MARKER
 from self_learn.hosts import HOST_MODES, effective_default_mode, is_repo_root
 from self_learn.records import Record
 from self_learn.verbs import GITOPS_DIRTY_MARKER, NO_PROPOSAL_MARKER
@@ -67,11 +66,6 @@ _VERB_LABELS = {
     "confirm-recurrence": "Confirm recurrence",
     "link-contradicts": "Link contradiction",
     "followup-done": "Mark follow-up done",
-    # A2 §10.4(a): the review UI's half of the accepted §10 offer — the
-    # SAME arm-then-confirm affordance as every verb above, never a
-    # bespoke widget. `target` (the generic field already threaded by
-    # `link-contradicts`) carries the rules-file path here.
-    "chezmoi-adopt": "Adopt into chezmoi",
 }
 
 #: Verbs the HUMAN action-bar routes accept. `rehome` is deliberately
@@ -164,14 +158,6 @@ def build_argv(
         argv = ["link", "contradicts", record_id, target or ""]
     elif verb == "followup-done":
         argv = ["followup", "done", record_id]
-    elif verb == "chezmoi-adopt":
-        # A2 §10.4(a)/§10.5: no `record_id` in the real CLI form (`self-
-        # learn chezmoi-adopt <path>`) — `record_id` only scopes the
-        # *route* this bar renders under, same as `build_host_add_argv`'s
-        # bucket-scoped verb takes no record_id either. `--note` (below)
-        # is not a `chezmoi-adopt` flag, but the offer's own form never
-        # supplies one, so that branch is inert here.
-        argv = ["chezmoi-adopt", target or ""]
     else:
         raise ValueError(f"unknown verb: {verb!r}")
     if note:
@@ -1398,7 +1384,7 @@ def _armed_context(
 #
 # The evidence surface is scoped to exactly the four verbs the CLI's
 # `--json` envelope covers (§2.1) — never confirm-recurrence/link-
-# contradicts/followup-done/chezmoi-adopt, which stay on the pre-existing
+# contradicts/followup-done, which stay on the pre-existing
 # HX-Redirect (unchanged, out of scope: they carry no envelope at all,
 # `RunResult.evidence` is always `None` for them by construction).
 _EVIDENCE_VERBS = frozenset({"route", "reject", "defer", "graduate"})
@@ -1878,17 +1864,6 @@ async def action_confirm(
             request, record_id, contradicts_pre, evidence=evidence
         )
 
-    # A2 §10.4(a): checked AFTER the contradicts offer (that offer wins
-    # if both fire on the same route — an edge case, never both rendered
-    # at once) and only for a route that actually succeeded (`result.ok`,
-    # already established by this point).
-    if verb == "route":
-        adopt_target = _extract_adopt_path(result.stderr)
-        if adopt_target:
-            return _adopt_offer_response(
-                request, record_id, adopt_target, evidence=evidence
-            )
-
     if evidence is not None:
         ctx = _unarmed_context(
             kind=kind,
@@ -1903,7 +1878,7 @@ async def action_confirm(
         return _render(request, "partials/action_bar.html", ctx)
 
     # Non-evidence verbs (confirm-recurrence/link-contradicts/followup-
-    # done/chezmoi-adopt) keep the PRE-EXISTING auto-redirect byte-for-
+    # done) keep the PRE-EXISTING auto-redirect byte-for-
     # byte — `next_record_url`'s own bucket-clear fallback, not the
     # evidence leg's absent-link convention above.
     url = (
@@ -1972,94 +1947,27 @@ def _contradicts_offer_response(
     )
 
 
-# ------------------------------------------------- A2 §10.4(a) adopt offer
-#
-# After a successful user-scope `rules` route whose compile leg read
-# UNMANAGED, `_host_phase` (CLI side) prints ONE stderr line built from
-# `chezmoi.adopt_command` (§10.5's "OUT" leg — the same field the bare-CLI
-# hint rides). The runner captures that stderr regardless of exit code
-# (10 §1), so this is the review UI's only channel to the same fact — no
-# new subprocess flag, no `--json` field, no second write mechanism
-# (P-A2b′-offer). Detection AND path-extraction both key off
-# `ADOPT_COMMAND_PREFIX`, imported from `self_learn.chezmoi` — never a
-# hand-copied marker (the same discipline `COMMIT_DRIFT_MARKERS` already
-# uses for its own stderr-borne signal).
-
-
-def _extract_adopt_path(stderr: str | None) -> str | None:
-    """The rules-file path from a route's stderr, if `_host_phase`
-    surfaced an adopt hint on this run — `None` otherwise (ABSENT/MANAGED
-    C2 states, a plain-CLAUDE.md record, or any non-rules destination
-    never print the marker, §10.2's firing gate)."""
-    if not stderr:
-        return None
-    idx = stderr.find(ADOPT_COMMAND_PREFIX)
-    if idx == -1:
-        return None
-    rest = stderr[idx + len(ADOPT_COMMAND_PREFIX):]
-    line = rest.splitlines()[0] if rest else ""
-    return line.strip() or None
-
-
-def _adopt_offer_response(
-    request: Request,
-    record_id: str,
-    target: str,
-    *,
-    evidence: dict[str, Any] | None = None,
-) -> HTMLResponse:
-    """§10.4(a): render the interactive yes/no choice via the SAME
-    arm-then-confirm affordance every other verb here uses (never a
-    bespoke widget) — "consistent with its existing affordances", the
-    spec's own wording. `dom_id` reuses the primary detail bar's own id
-    (never `kind="contradicts"`'s per-edge scheme — there is exactly one
-    offer, and this response swaps into the SAME `#action-bar-*` slot the
-    routine post-verb refresh targets, same trick `_contradicts_offer_
-    response` already relies on).
-
-    ``evidence`` — see :func:`_contradicts_offer_response`'s docstring;
-    same §3.4 composition ruling."""
-    dom_id = _dom_id("adopt", record_id, None)
-    return _render(
-        request,
-        "partials/adopt_offer.html",
-        {"record_id": record_id, "target": target, "dom_id": dom_id, "evidence": evidence},
-    )
-
-
-@router.post("/record/{record_id}/adopt-offer/dismiss", response_class=HTMLResponse)
-def adopt_offer_dismiss(record_id: str) -> HTMLResponse:
-    """§10.4(a)'s "No" — declining is simply not arming; there is no
-    declined-state to persist (§10.2), so this just stops the offer from
-    rendering. A later recompile may re-emit the SAME hint (idempotent,
-    never a blocking modal, exactly like the bare-CLI hint's own
-    re-emission) — `record_id` is unused (the route is
-    record-scoped only because the offer that spawned it was)."""
-    del record_id
-    return HTMLResponse("")
-
-
 # ------------------------------------------------------ commit-drift (U20)
 #
 # f5-round-spec.md §2.2 (F5-5 guided commit-first): the dirty-target
 # refusal stays fully intact — this is the GUIDED path a human takes
-# instead of it. When a `route` confirm fails AND the stderr matches one
-# of the two pinned DIRTY-specific refusal clauses (never the shared
-# advice tail, never the drift clause — gate M2: the drift refusal
-# carries NEITHER marker by construction, so it never grows a button),
-# the error strip gains ONE action button: "Commit that repo's changes,
-# then retry." Armed, two-step, composing INSIDE the existing
-# error-strip/action-bar machinery (no new region, O-9) — never a
-# separate route triple's own template the way host-add needed one,
-# because this state lives INSIDE action_bar.html's existing `error`
-# leg, not a whole alternate `kind`.
+# instead of it. When a `route` confirm fails AND the stderr matches the
+# pinned DIRTY-specific refusal clause (never the shared advice tail,
+# never the drift clause — gate M2: the drift refusal carries no marker
+# by construction, so it never grows a button), the error strip gains ONE
+# action button: "Commit that repo's changes, then retry." Armed,
+# two-step, composing INSIDE the existing error-strip/action-bar
+# machinery (no new region, O-9) — never a separate route triple's own
+# template the way host-add needed one, because this state lives INSIDE
+# action_bar.html's existing `error` leg, not a whole alternate `kind`.
 #
-# gate n12: the marker match imports the SAME constants the CLI raise
-# sites use (self_learn.chezmoi.CHEZMOI_DIRTY_MARKER /
-# self_learn.verbs.GITOPS_DIRTY_MARKER, imported at module top) — never
-# a hand-copied substring, so the marker and the message cannot drift
-# apart undetected.
-COMMIT_DRIFT_MARKERS = (GITOPS_DIRTY_MARKER, CHEZMOI_DIRTY_MARKER)
+# gate n12: the marker match imports the SAME constant the CLI raise
+# site uses (self_learn.verbs.GITOPS_DIRTY_MARKER, imported at module
+# top) — never a hand-copied substring, so the marker and the message
+# cannot drift apart undetected. U-hostmode UIC2: this git-mode-only
+# marker is the whole tuple now — the dotfiles-management sync this repo
+# used to have a second marker for is gone (Phase 2).
+COMMIT_DRIFT_MARKERS = (GITOPS_DIRTY_MARKER,)
 
 
 def _commit_drift_eligible(verb: str, stderr: str | None) -> bool:
@@ -2335,16 +2243,6 @@ async def commit_drift_confirm(
         return _contradicts_offer_response(
             request, record_id, contradicts_pre, evidence=evidence
         )
-    # A2 §10.4(a): this retry IS a `route`, so it can carry the same
-    # adopt signal the primary confirm checks (mirrored here, not
-    # factored out — this whole function already mirrors action_confirm's
-    # sequence for the same reason, per the comment above).
-    adopt_target = _extract_adopt_path(retry.stderr)
-    if adopt_target:
-        return _adopt_offer_response(
-            request, record_id, adopt_target, evidence=evidence
-        )
-
     ctx = _unarmed_context(
         kind=kind,
         record_id=record_id,
@@ -2839,16 +2737,6 @@ async def proposal_confirm(
         return _contradicts_offer_response(
             request, record_id, contradicts_pre, evidence=evidence
         )
-    # A2 §10.4(a): the pane-agent's own `route` proposal can carry the
-    # same adopt signal a human-initiated route can (mirrored, same
-    # reason as the commit-drift retry above).
-    if prop.verb == "route":
-        adopt_target = _extract_adopt_path(result.stderr)
-        if adopt_target:
-            return _adopt_offer_response(
-                request, record_id, adopt_target, evidence=evidence
-            )
-
     if evidence is not None:
         ctx = _unarmed_context(
             kind=kind,

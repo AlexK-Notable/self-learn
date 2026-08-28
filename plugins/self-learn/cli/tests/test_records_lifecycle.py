@@ -163,8 +163,8 @@ def test_last_confirmed_round_trips():
 def test_contradicts_edges_append_and_dedupe():
     r = make_behavior()
     r.append_contradicts("lrn-889241d9")
-    r.append_contradicts("chezmoi/SKILL.md#cd-rule")
-    assert r.contradicts == ("lrn-889241d9", "chezmoi/SKILL.md#cd-rule")
+    r.append_contradicts("dotfiles/SKILL.md#cd-rule")
+    assert r.contradicts == ("lrn-889241d9", "dotfiles/SKILL.md#cd-rule")
     with pytest.raises(ValidationError, match="already contradicts"):
         r.append_contradicts("lrn-889241d9")
     Record.from_text(r.to_text())

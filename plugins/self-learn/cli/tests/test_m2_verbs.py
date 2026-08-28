@@ -163,7 +163,7 @@ def test_proposal_contradicts_field_validates():
     # is untouched by the destination-bounded contradiction rider — only
     # the worker-prompt wording and the doctrine narrowed, never this
     # shape check.
-    validate_proposal(proposal_dict(contradicts=["lrn-889241d9", "chezmoi/SKILL.md#cd"]))
+    validate_proposal(proposal_dict(contradicts=["lrn-889241d9", "dotfiles/SKILL.md#cd"]))
     with pytest.raises(ProposalError, match="contradicts"):
         validate_proposal(proposal_dict(contradicts=[]))
     with pytest.raises(ProposalError, match="contradicts"):
@@ -377,17 +377,17 @@ def test_confirm_recurrence_refuses_non_routed(env, capsys):
 def test_link_contradicts_appends_edge(env):
     rid = seed_routed(env)
     rc = cli.main(
-        ["link", "contradicts", rid, "chezmoi/SKILL.md#cd-rule", "--no-push"]
+        ["link", "contradicts", rid, "dotfiles/SKILL.md#cd-rule", "--no-push"]
     )
     assert rc == 0
     assert env.subject() == (
-        f"self-learn: link {rid} contradicts chezmoi/SKILL.md#cd-rule"
+        f"self-learn: link {rid} contradicts dotfiles/SKILL.md#cd-rule"
     )
     record = Record.from_path(env.ledger / "resolved" / f"{rid}.md")
-    assert record.contradicts == ("chezmoi/SKILL.md#cd-rule",)
+    assert record.contradicts == ("dotfiles/SKILL.md#cd-rule",)
     # duplicate edge refused
     rc = cli.main(
-        ["link", "contradicts", rid, "chezmoi/SKILL.md#cd-rule", "--no-push"]
+        ["link", "contradicts", rid, "dotfiles/SKILL.md#cd-rule", "--no-push"]
     )
     assert rc == 1
 

@@ -81,8 +81,7 @@ class TestT2PositiveControlForT1:
             ),
         )
         result = verbs.route(
-            env.home, OLD, user_claude_md=target, chezmoi_bin="chezmoi-definitely-absent",
-        )
+            env.home, OLD, user_claude_md=target, )
         assert result.commit_sha
         rules_target = target.parent / "rules" / "ts-rules.md"
         assert rules_target.is_file()
@@ -111,8 +110,7 @@ class TestT3AllowEmptyGlobUserScope:
             ),
         )
         result = verbs.route(
-            env.home, OLD, user_claude_md=target, chezmoi_bin="chezmoi-definitely-absent",
-            allow_empty_glob=True,
+            env.home, OLD, user_claude_md=target, allow_empty_glob=True,
         )
         assert result.commit_sha
         routed = Record.from_path(env.home / "user" / "resolved" / f"{OLD}.md")
@@ -120,8 +118,8 @@ class TestT3AllowEmptyGlobUserScope:
         assert routed.routing["glob_bypass_reason"] == "zero-match"
 
     def test_cli_level_bypass_reaches_the_verb(self, tmp_path, env, monkeypatch):
-        """No CLI flag overrides ``user_claude_md``/``chezmoi_bin`` (they
-        are internal, programmatic-only overrides — same precedent as
+        """No CLI flag overrides ``user_claude_md`` (it is an internal,
+        programmatic-only override — same precedent as
         ``verbs.surface_fill``'s own docstring and
         ``test_resolution_evidence.py``'s CLI-level user-scope route
         test): monkeypatch ``verbs.DEFAULT_USER_CLAUDE_MD`` instead, the
@@ -168,8 +166,7 @@ class TestT4BudgetExhaustion:
         )
         with pytest.raises(verbs.VerbError) as exc:
             verbs.route(
-                env.home, OLD, user_claude_md=target, chezmoi_bin="chezmoi-definitely-absent",
-            )
+                env.home, OLD, user_claude_md=target, )
         msg = str(exc.value)
         assert "could not be checked within the 0s reachability budget" in msg
         assert "SELF_LEARN_GLOB_PROBE_BUDGET_S" in msg
@@ -188,8 +185,7 @@ class TestT4BudgetExhaustion:
             ),
         )
         result = verbs.route(
-            env.home, OLD, user_claude_md=target, chezmoi_bin="chezmoi-definitely-absent",
-            allow_empty_glob=True,
+            env.home, OLD, user_claude_md=target, allow_empty_glob=True,
         )
         assert result.commit_sha
         routed = Record.from_path(env.home / "user" / "resolved" / f"{OLD}.md")
@@ -221,8 +217,7 @@ class TestT5MatchingUserGlobAccepted:
             ),
         )
         result = verbs.route(
-            env.home, OLD, user_claude_md=target, chezmoi_bin="chezmoi-definitely-absent",
-        )
+            env.home, OLD, user_claude_md=target, )
         assert result.commit_sha
 
     def test_eight_directories_deep_still_matches_no_depth_bound(self, tmp_path, env):
@@ -244,8 +239,7 @@ class TestT5MatchingUserGlobAccepted:
             ),
         )
         result = verbs.route(
-            env.home, OLD, user_claude_md=target, chezmoi_bin="chezmoi-definitely-absent",
-        )
+            env.home, OLD, user_claude_md=target, )
         assert result.commit_sha
 
 
@@ -300,8 +294,7 @@ class TestUserReachabilityRootsOutsideHomeHost:
             ),
         )
         result = verbs.route(
-            env.home, OLD, user_claude_md=target, chezmoi_bin="chezmoi-definitely-absent",
-        )
+            env.home, OLD, user_claude_md=target, )
         assert result.commit_sha
 
 
@@ -561,8 +554,7 @@ class TestT10SelfcheckUserScopeGlobDrift:
             ),
         )
         verbs.route(
-            env.home, OLD, user_claude_md=target, chezmoi_bin="chezmoi-definitely-absent",
-            allow_empty_glob=allow_empty_glob,
+            env.home, OLD, user_claude_md=target, allow_empty_glob=allow_empty_glob,
         )
         return target
 
@@ -687,8 +679,7 @@ class TestT13MixedFailures:
         )
         with pytest.raises(verbs.VerbError) as exc:
             verbs.route(
-                env.home, OLD, user_claude_md=target, chezmoi_bin="chezmoi-definitely-absent",
-            )
+                env.home, OLD, user_claude_md=target, )
         msg = str(exc.value)
         assert "match nothing under" in msg
         assert "could not be checked within" in msg
@@ -711,8 +702,7 @@ class TestT13MixedFailures:
             ),
         )
         result = verbs.route(
-            env.home, OLD, user_claude_md=target, chezmoi_bin="chezmoi-definitely-absent",
-            allow_empty_glob=True,
+            env.home, OLD, user_claude_md=target, allow_empty_glob=True,
         )
         assert result.commit_sha
         routed = Record.from_path(env.home / "user" / "resolved" / f"{OLD}.md")

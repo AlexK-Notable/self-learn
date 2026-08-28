@@ -1899,6 +1899,11 @@ _AR3_REASONS = {
     # `SdkOutcome.child_pid` field (`backend.py`) instead of a name
     # pattern.
     ("test_invocation_sdk.py", "test_kl4_hang_sigterm_ignored_child_is_gone_after_run_sync_returns"): "U-kl4 (pid-keyed liveness check, root-cause fix for the host-global pgrep false-red)",
+    # U-hostmode Phase 2 (2026-08-28, CHEZ2): the dotfiles-management
+    # module this `excluded_by_name` tuple named as a whole-file
+    # exclusion is deleted outright -- the entry is removed (not
+    # replaced) and the tuple's own length assertion moves 11 -> 10.
+    ("test_invocation.py", "test_wr7_seam_is_only_called_from_the_three_call_sites"): "U-hostmode Phase 2 (excluded_by_name entry for the deleted dotfiles-management module removed, count 11 -> 10)",
 }
 
 _AR3_RENAMED = {
@@ -2505,7 +2510,7 @@ def test_hy5_numstat_bounds_hold():
         "plugins/self-learn/cli/src/self_learn/analyst.py": (22, 20),
         "plugins/self-learn/cli/tests/conftest.py": (385, 0),  # U-hostmode gate r1 fold, D-1: lock-file litter-detection leg appended
         "plugins/self-learn/cli/tests/fixtures/fake_claude.py": (388, 1),
-        "plugins/self-learn/cli/tests/test_invocation.py": (737, 760),  # FW-117 (2026-08-28): HY3 trimmed to two witnesses, SETTINGS_WITNESS/test_cn6/test_cn7_repair_leg deleted, then gate r1 fold (test_cn9 docstring truth) -- widened (718, 700) -> (730, 757) -> (737, 760), EXACT measured value (not a margin), single-ref against _BASE_SHA
+        "plugins/self-learn/cli/tests/test_invocation.py": (738, 762),  # U-hostmode Phase 2 (2026-08-28): the deleted dotfiles-management module's stale excluded_by_name entry removed from test_wr7 -- widened (718, 700) -> (730, 757) -> (737, 760) -> (738, 762), EXACT measured value (not a margin), single-ref against _BASE_SHA
         "plugins/self-learn/cli/tests/test_invocation_sdk.py": (493, 166),  # U-kl4 gate r1 fold (2026-08-28): B-1 (try scoped to capture pid first + best-effort reap), N/D-2 (new test_kl4b), N/D-3 (re-check start-ticks immediately before the kill), N/D-1 (NOTE-14 sentence); was (298, 149) -> (414, 166) -> (493, 166), measured single-ref against _BASE_SHA
         "plugins/self-learn/cli/tests/test_doctor_invocation.py": (165, 9),
     }

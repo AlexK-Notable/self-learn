@@ -6,7 +6,7 @@ sibling; `rehome` stays project<->project only).
 Function layer only — T8 wires these into the CLI. Public signatures:
 
     route(home, record_id, *, dest=None, note=None, no_push=False,
-          user_claude_md=None, chezmoi_bin="chezmoi") -> VerbResult
+          user_claude_md=None) -> VerbResult
     reject(home, record_id, *, note=None, no_push=False) -> VerbResult
     defer(home, record_id, *, until=None, note=None, no_push=False) -> VerbResult
     graduate(home, record_id, *, note=None, no_push=False) -> VerbResult
@@ -31,7 +31,8 @@ Sentinel-scoping pins; 02 §2 commit formats; doc 13 §4 two-phase revision):
     HERE, and an unregistered project host refuses with ``host not
     registered — self-learn host add <path>`` so the review card says why
     (doc 13 §1 Q2). Dirty-compile-target aborts run against the HOST repo;
-    user scope runs the chezmoi drift/dirty preflight. All refusals land
+    user scope runs the same compile-record predicate every plain host
+    uses (§4.5a). All refusals land
     BEFORE any commit — the record stays pending.
 (d) LEDGER commit: the ledger op via ledger_ops (record move + proposal
     sweeps), staged surgically in the LEDGER repo, pinned subject.
@@ -52,7 +53,7 @@ drop, so the host phase recompiles the target.
 Compile-set note (doc 13): because the ledger op now commits FIRST, the
 compile set is read straight off disk — no shadow copies. skill-md
 compiles from the record's own skill bucket; claude-md splits by scope:
-``user`` → the chezmoi-managed user file (all user-scoped records),
+``user`` → the user-scope canon file (all user-scoped records),
 ``project`` → that project bucket's records into the registered host's
 CLAUDE.md, ``skill:*`` → the skills-root host's own CLAUDE.md (doc 13 §2:
 the skills root hosts its own CLAUDE.md canon).
@@ -79,11 +80,6 @@ from .skill_scaffold import (
     scaffold_description,
     skill_md_seed,
     validate_skill_name,
-)
-from . import chezmoi
-from .chezmoi import (
-    ChezmoiAbort,
-    ChezmoiError,
 )
 from . import compiled
 from .compilers import (
@@ -156,7 +152,6 @@ from .scan import format_refusal
 from .scan import scan as secret_scan
 
 __all__ = [
-    "CHEZMOI_DRIFT_REFUSAL",
     "COMMIT_DRIFT_SUBJECT",
     "DEFAULT_USER_CLAUDE_MD",
     "DISMISS_REASONS",
@@ -175,7 +170,6 @@ __all__ = [
     "TargetSpec",
     "VerbError",
     "VerbResult",
-    "chezmoi_adopt",
     "commit_drift",
     "confirm_held",
     "confirm_recurrence",
@@ -281,8 +275,8 @@ class SecretRefusal(VerbError):
 #: U20 gate R1 (F5-5 guided commit-first): the pinned, stable substring of
 #: the gitops-side dirty-target refusal — extracted so the UI's marker
 #: match and the tests import the SAME constant this raise site uses
-#: (never a hand-copied substring; chezmoi.py carries the twin for the
-#: user-scope leg, ``chezmoi.CHEZMOI_DIRTY_MARKER``).
+#: (never a hand-copied substring — the dotfiles-sync module that used
+#: to carry a twin for the user-scope leg is gone, Phase 2).
 GITOPS_DIRTY_MARKER = "has unrelated uncommitted changes"
 
 
@@ -396,8 +390,8 @@ class VerbResult:
     #   steps (M3-11: settings.json snippet, ./install.sh) — callers print
     #   to stdout; the hook is inert by design until the human does them
     # doc 13 §4 two-phase: the HOST half of a canon-touching verb. All None
-    # for ledger-only verbs, for the chezmoi user flow (the dotfiles repo
-    # commits itself), and after a host-phase failure (drift warning set).
+    # for ledger-only verbs, for a plain host (no host commit exists
+    # there — PLAIN3), and after a host-phase failure (drift warning set).
     host_commit_sha: str | None = None
     host_push: gitops.PushResult | None = None
     target: Path | None = None  # the compiled canon file (host side)
@@ -416,7 +410,7 @@ class VerbResult:
     #: U-hostmode PLAIN3: the resolved TargetSpec's mode, when a spec was
     #: resolved (route/route_direct/supersede) — `cli._outcome_state`
     #: reads this to widen the `wrote_uncommitted` branch to every plain
-    #: host, not only the (now-retired) chezmoi UserScopeResult sentinel.
+    #: host.
     #: `None` for ledger-only verbs (reject/defer/graduate).
     mode: str | None = None
 
@@ -1115,7 +1109,8 @@ class TargetSpec:
     U-hostmode §4.1: ``host_repo`` is renamed ``host_path`` and is NEVER
     ``None`` after Phase 1 — user scope became a first-class PLAIN host
     (``~/.claude``, §4.8) rather than the sentinel this field used to
-    carry for "the chezmoi user flow". ``mode`` (``"git"`` | ``"plain"``)
+    carry for the old dotfiles-managed user flow. ``mode`` (``"git"`` |
+    ``"plain"``)
     is the NEW field that carries the posture; no site may infer one from
     ``host_path`` (MODE9)."""
 
@@ -1306,7 +1301,8 @@ def managed_target_for(
     (plain or ``rules``) — never re-derived from anything on ``record`` or
     ``bucket``, which carry no memory of it. Re-deriving the default here
     would return ``~/.claude/CLAUDE.md`` for every override-based caller —
-    every sandboxed test, and the chezmoi flow — silently emptying every
+    every sandboxed test, and a real user-scope route — silently emptying
+    every
     user-scope compile set (and, read-only, aiming selfcheck's checks at
     the operator's REAL file instead of the sandbox under test).
 
@@ -1501,7 +1497,6 @@ def _resolve_rules_target(
     rules_paths: list[str] | tuple[str, ...] | None,
     *,
     user_claude_md: Path | str | None,
-    chezmoi_bin: str,
     project_path: Path | None,
     check_dirty: bool,
     allow_empty_glob: bool,
@@ -1549,11 +1544,11 @@ def _resolve_rules_target(
         bypassed_reason: str | None = None
         if check_dirty and paths_tuple:
             # U-glob §6.3: the glob check comes FIRST — before the
-            # chezmoi-managed refusal below and before
-            # `preflight_user_scope` — because it is the cheaper and
-            # more common refusal, and a chezmoi-managed target with a
-            # dead glob should name the dead glob (the thing the human
-            # can actually fix), not the management state.
+            # plain-host region-predicate refusal below (§4.5a) —
+            # because it is the cheaper and more common refusal, and a
+            # target with a dead glob should name the dead glob (the
+            # thing the human can actually fix), not the pre-flight
+            # gate.
             bypassed_reason = _validate_rules_globs(
                 _user_reachability_roots(home, base), paths_tuple, allow_empty_glob
             )
@@ -1563,8 +1558,8 @@ def _resolve_rules_target(
             # the write goes through the same ordinary plain path every
             # other plain host uses, so the pre-flight gate is the SAME
             # region predicate every plain host gets (§4.5a), not a
-            # chezmoi-specific "managed" check. USER2/CHEZ0: this route
-            # calls NO chezmoi function at all.
+            # dotfiles-management "managed" check. USER2/CHEZ0: this
+            # route calls no dotfiles-management function at all.
             _abort_if_unsound(home, user_host, "plain", target, "managed", scope_kind="user")
         return TargetSpec(
             "claude-md", "user", bucket_dir, target, user_host,
@@ -1595,7 +1590,6 @@ def _resolve_target(
     ref_name: str | None,
     *,
     user_claude_md: Path | str | None = None,
-    chezmoi_bin: str = "chezmoi",
     project_path: Path | None = None,
     check_dirty: bool = True,
     variant: str | None = None,
@@ -1646,7 +1640,6 @@ def _resolve_target(
             return _resolve_rules_target(
                 home, bucket_dir, scope, eff_topic, rules_paths,
                 user_claude_md=user_claude_md,
-                chezmoi_bin=chezmoi_bin,
                 project_path=project_path,
                 check_dirty=check_dirty,
                 allow_empty_glob=allow_empty_glob,
@@ -1659,7 +1652,7 @@ def _resolve_target(
             if check_dirty:
                 # U-hostmode §4.8.1: user scope is a first-class PLAIN
                 # host — the same region predicate every plain host gets
-                # (§4.5a), no chezmoi call (USER2/CHEZ0).
+                # (§4.5a), no dotfiles-management call (USER2/CHEZ0).
                 _abort_if_unsound(home, user_host, "plain", target, "managed", scope_kind="user")
             return TargetSpec(
                 "claude-md", "user", bucket_dir, target, user_host,
@@ -1748,8 +1741,9 @@ def _resolve_target(
             refs_dir, kind = host / "references", "project"
             pointer_surface = host / "CLAUDE.md"
         else:
-            # S-23 (2), §3.1: chezmoi was retired 2026-07-24 — that ground
-            # is dead. The condition below stays byte-identical (the
+            # S-23 (2), §3.1: the dotfiles-management tool this repo used
+            # to depend on was retired 2026-07-24 — that ground is dead.
+            # The condition below stays byte-identical (the
             # refusal's EFFECT is what S-23 mandates); only the reason
             # changed. Item 3 is deliberately conditional (F6, cross-unit
             # with U-composer's D4): naming a rules topic unconditionally
@@ -2508,7 +2502,7 @@ def surface_fill(
 
     ``user_claude_md`` overrides the user-scope target the same way
     :func:`route` accepts it (defaults to :data:`DEFAULT_USER_CLAUDE_MD`,
-    the real chezmoi-managed file — the correct real destination to
+    the real user-scope canon file — the correct real destination to
     report fill for; test callers override it, same idiom as every other
     ``_resolve_target`` call site).
 
@@ -2669,7 +2663,6 @@ def _retirement_preflight(
     warnings: list[str],
     *,
     user_claude_md: Path | str | None = None,
-    chezmoi_bin: str = "chezmoi",
 ) -> _Retirement:
     """Resolve a retiring record's host-side cleanup BEFORE any commit
     (doc 13 §4 step c — the standalone supersede verb has always done
@@ -2691,7 +2684,6 @@ def _retirement_preflight(
                 destination,
                 routing.get("new_skill") if destination == "new-skill" else None,
                 user_claude_md=user_claude_md,
-                chezmoi_bin=chezmoi_bin,
                 # A2 §4.4B note: this is a RETIREMENT read of the STORED
                 # routing block (not a fresh route), so only variant/
                 # rules_topic thread through — they are needed to resolve
@@ -2719,7 +2711,6 @@ def _retirement_host_phase(
     record_id: str,
     *,
     note: str | None,
-    chezmoi_bin: str,
     message: str,
     warnings: list[str],
     post_notes: list[str],
@@ -2740,7 +2731,6 @@ def _retirement_host_phase(
             record_id,
             routed_record=None,
             note=note,
-            chezmoi_bin=chezmoi_bin,
             message=message,
             warnings=warnings,
             user_push=user_push,
@@ -2779,14 +2769,13 @@ def _apply_target(
     spec: TargetSpec,
     routed_record: Record | None,
     *,
-    chezmoi_bin: str = "chezmoi",
     message: str | None = None,
     user_push: bool = True,
     notes: list[str] | None = None,
 ) -> tuple[object, list[Path]]:
     """HOST-phase compile (doc 13 §4 step e): write the target from the
     committed ledger state. Returns (compile_result, host paths to stage —
-    empty for the chezmoi user flow, which commits its own repo).
+    empty for a plain host, which commits nothing there).
 
     U-pathed: for a ``rules`` variant, a ``paths:`` frontmatter pre-pass
     (:func:`compilers.apply_paths_frontmatter`) runs immediately before
@@ -2845,7 +2834,7 @@ def _apply_target(
     # U-hostmode §4.8.1: user scope is no longer a special branch here —
     # it is a first-class PLAIN host now, so it falls into the SAME
     # general branch below every other plain/git host uses
-    # (`compile_managed_file`, never `compile_user_scope`/chezmoi —
+    # (`compile_managed_file`, the same as every other plain host —
     # USER2/CHEZ0). `host_paths` still ends up unused for it: `_host_phase`
     # only stages/commits when `spec.mode == "git"`, and user scope's mode
     # is always "plain".
@@ -2994,8 +2983,6 @@ def _apply_new_skill(home: Path, spec: TargetSpec) -> tuple[NewSkillApplyResult,
 #: Host-phase failure classes: loud drift warning, never a rollback (H-2).
 _HOST_PHASE_ERRORS = (
     CompileError,
-    ChezmoiAbort,
-    ChezmoiError,
     gitops.GitOpsError,
     VerbError,
     OSError,
@@ -3009,7 +2996,6 @@ def _host_phase(
     *,
     routed_record: Record | None,
     note: str | None,
-    chezmoi_bin: str,
     message: str,
     warnings: list[str],
     user_push: bool = True,
@@ -3041,7 +3027,6 @@ def _host_phase(
                 home,
                 spec,
                 routed_record,
-                chezmoi_bin=chezmoi_bin,
                 message=message,
                 user_push=user_push,
                 notes=warnings,
@@ -3070,25 +3055,6 @@ def _host_phase(
                         body=note,
                         paths=host_paths,
                     )
-        # C2 O-5: the ONE user-facing message for a managed-but-broken
-        # chezmoi sync (§3 row 4) — the write already succeeded, only the
-        # sync degraded. getattr guards the other result types (e.g.
-        # NewSkillApplyResult, SectionResult) that carry no such field;
-        # absent/unmanaged (rows 1-2) return sync_warning=None, so nothing
-        # prints there — silent, per the verbosity ruling.
-        sync_warning = getattr(compile_result, "sync_warning", None)
-        if sync_warning:
-            print(f"self-learn: {sync_warning}", file=sys.stderr)
-            warnings.append(sync_warning)
-        # A2 §10.4(b): the bare-CLI chezmoi-adopt hint rides this SAME
-        # channel — one stderr line, never a blocking prompt. Absent for
-        # every result type that carries no such field (skill-md/
-        # reference/new-skill/hook, and a plain-CLAUDE.md UserScopeResult,
-        # which never sets it — §10.1).
-        adopt_hint = getattr(compile_result, "adopt_hint", None)
-        if adopt_hint:
-            print(f"self-learn: {adopt_hint}", file=sys.stderr)
-            warnings.append(adopt_hint)
         return compile_result, host_sha
     except _HOST_PHASE_ERRORS as exc:
         warning = (
@@ -3139,7 +3105,6 @@ def route(
     note: str | None = None,
     no_push: bool = False,
     user_claude_md: Path | str | None = None,
-    chezmoi_bin: str = "chezmoi",
     follow_up: dict | None = None,
     collapse: str | None = None,
     allow_empty_glob: bool = False,
@@ -3218,7 +3183,8 @@ def route(
         ref_name = resolved_dest.ref_name
 
         # (c) PRE-FLIGHT: registry gates (H-3 / doc 13 Q2) + host-repo
-        # dirty checks + chezmoi drift/dirty for user scope. Every refusal
+        # dirty checks + the compile-record predicate for user scope
+        # (§4.5a). Every refusal
         # lands HERE — before any commit; the record stays pending. Hook
         # routes additionally pre-flight the proposal-carried script:
         # stamp presence, record_sha freshness (M3-2), and the M3-12
@@ -3239,7 +3205,6 @@ def route(
                 destination,
                 ref_name,
                 user_claude_md=user_claude_md,
-                chezmoi_bin=chezmoi_bin,
                 variant=resolved_dest.variant,
                 rules_topic=resolved_dest.rules_topic,
                 rules_paths=resolved_dest.rules_paths,
@@ -3261,7 +3226,6 @@ def route(
                 old_path.parent.parent,
                 warnings,
                 user_claude_md=user_claude_md,
-                chezmoi_bin=chezmoi_bin,
             )
             old_observed_hash = _observe_retirement_region(old_retire)
 
@@ -3561,7 +3525,6 @@ def route(
                 record_id,
                 routed_record=routed_record,
                 note=host_note,
-                chezmoi_bin=chezmoi_bin,
                 message=message,
                 warnings=warnings,
                 user_push=not no_push,
@@ -3580,7 +3543,6 @@ def route(
                 old_retire,
                 old_id,
                 note=note,
-                chezmoi_bin=chezmoi_bin,
                 message=message,
                 warnings=warnings,
                 post_notes=retire_notes,
@@ -3645,7 +3607,6 @@ def route_direct(
     note: str | None = None,
     no_push: bool = False,
     user_claude_md: Path | str | None = None,
-    chezmoi_bin: str = "chezmoi",
     project_path: Path | None = None,
     hook_input: dict | None = None,
 ) -> VerbResult:
@@ -3763,7 +3724,6 @@ def route_direct(
                 destination,
                 ref_name,
                 user_claude_md=user_claude_md,
-                chezmoi_bin=chezmoi_bin,
                 project_path=project_path,
             )
 
@@ -3779,7 +3739,6 @@ def route_direct(
                 old_path.parent.parent,
                 warnings,
                 user_claude_md=user_claude_md,
-                chezmoi_bin=chezmoi_bin,
             )
             old_observed_hash = _observe_retirement_region(old_retire)
 
@@ -3994,7 +3953,6 @@ def route_direct(
                 record.id,
                 routed_record=record,
                 note=host_note,
-                chezmoi_bin=chezmoi_bin,
                 message=message,
                 warnings=warnings,
                 user_push=not no_push,
@@ -4023,7 +3981,6 @@ def route_direct(
                 old_retire,
                 old_id,
                 note=note,
-                chezmoi_bin=chezmoi_bin,
                 message=message,
                 warnings=warnings,
                 post_notes=retire_notes,
@@ -4080,26 +4037,20 @@ def route_direct(
 # --------------------------------------------------------- U20 commit-drift
 #
 # F5-5 guided commit-first (ruled 2026-07-19): the dirty-target refusal
-# (DirtyTargetError above / chezmoi.ChezmoiAbort's dirty leg) stays fully
-# intact — no override, no force, no bypass anywhere in this verb. This is
-# the GUIDED path a human takes instead: commit the TARGET repo's OWN
-# pending changes first (their commit, separate from ours, pinned subject
-# below), then the UI retries the original route once. It serves the
-# DIRTY case only — pre-existing chezmoi DRIFT (chezmoi.py:109-111 in the
-# module docstring's step numbering) is refused with the re-add/apply
-# explanation below; a commit cannot fix drift (gate M2).
+# (DirtyTargetError above) stays fully intact — no override, no force, no
+# bypass anywhere in this verb. This is the GUIDED path a human takes
+# instead: commit the TARGET repo's OWN pending changes first (their
+# commit, separate from ours, pinned subject below), then the UI retries
+# the original route once. It serves the DIRTY case only, and only for a
+# git-mode host (CD1: commit-drift refuses a plain host outright) — a
+# plain host's equivalent is the compile-record predicate's own
+# "edited"/"unknown provenance" refusal (§4.5a), which names
+# `recompile --adopt` instead; a commit cannot repair that (it is a
+# ledger-side record, not a git state).
 
 #: Pinned commit subject (§2.1) — never a push, never the ledger, never
 #: our own compile; the commit is theirs, in their repo, of their changes.
 COMMIT_DRIFT_SUBJECT = "chore: commit drift before self-learn route"
-
-#: gate M2: the drift explanation is deliberately NOT ``chezmoi.py``'s own
-#: ChezmoiAbort text (which the UI must never match a button onto) — a
-#: fresh, plain-words refusal that names the one thing a commit cannot do.
-CHEZMOI_DRIFT_REFUSAL = (
-    "the dotfiles file differs from what chezmoi manages — run chezmoi "
-    "re-add or apply first; a commit can't fix drift"
-)
 
 #: The clean-repo refusal (§2.1: "never an empty commit").
 NOTHING_TO_COMMIT = "nothing to commit — the target repo is clean"
@@ -4154,7 +4105,6 @@ def commit_drift(
     *,
     dest: str | None = None,
     user_claude_md: Path | str | None = None,
-    chezmoi_bin: str = "chezmoi",
     dry_run: bool = False,
 ) -> CommitDriftResult:
     """``self-learn host commit-drift`` (§2.1): commit the compile
@@ -4167,9 +4117,9 @@ def commit_drift(
     U-hostmode §4.7 (CD1/CD2): mode-branched, not scope-branched. A
     **plain**-mode host — user scope included — REFUSES at exit 64: there
     is no commit to make, because self-learn commits nothing there and the
-    human's own file is their own to manage. The chezmoi user leg this
-    verb used to run is DELETED (not rewritten) — there is no chezmoi leg
-    left to take, on ANY plain host.
+    human's own file is their own to manage. The dotfiles-management
+    user leg this verb used to run is DELETED (not rewritten) — there is
+    no such leg left to take, on ANY plain host.
 
     **git**-mode host (skill-md / claude-md project·skill-root /
     reference / new-skill), byte-unchanged: :func:`gitops.paths_dirty` is
@@ -4222,7 +4172,6 @@ def commit_drift(
         destination,
         resolved_dest.ref_name,
         user_claude_md=user_claude_md,
-        chezmoi_bin=chezmoi_bin,
         check_dirty=False,
         variant=resolved_dest.variant,
         rules_topic=resolved_dest.rules_topic,
@@ -4286,35 +4235,6 @@ def commit_drift(
     finally:
         if hold is not None:
             hold.release()
-
-
-def chezmoi_adopt(
-    home: Path | str,
-    path: Path | str,
-    *,
-    chezmoi_bin: str = "chezmoi",
-    no_push: bool = False,
-) -> chezmoi.AdoptResult:
-    """A2 §10.5's ENTRYPOINT — the accepted §10 offer (the "yes"). Thin
-    by design (P-A2b′-offer: the offer adds NO new write mechanism): this
-    touches ONLY the dotfiles repo, never the ledger, never a host repo —
-    there is no ledger/host mutation here for :func:`gitops.commit_lock`
-    to serialize against, so this verb takes none (:func:`_ledger_write`
-    guards ledger writes; this is not one). ``home`` is accepted, unused,
-    for the same reason every other verb takes it — CLI dispatch calls
-    every verb the same shape; adoption itself reads and writes no
-    ledger state.
-
-    The bare-CLI hint (:func:`_host_phase`) and the UI-interactive
-    "yes" both name THIS verb, via the single command string
-    :func:`chezmoi.adopt_command` builds — never a second, independently
-    typed command."""
-    del home  # unused — see docstring
-    target = Path(path).expanduser()
-    message = f"self-learn: adopt {target.name} into chezmoi"
-    return chezmoi.adopt_user_scope(
-        target, message=message, chezmoi=chezmoi_bin, push=not no_push
-    )
 
 
 def reject(
@@ -4739,7 +4659,6 @@ def graduate(
     note: str | None = None,
     no_push: bool = False,
     user_claude_md: Path | str | None = None,
-    chezmoi_bin: str = "chezmoi",
 ) -> VerbResult:
     """Graduate a lesson into authored canon: ``superseded_by: canon``
     (02 §2/§4). Works on a routed record (the hand-weave) or a pending
@@ -4776,7 +4695,6 @@ def graduate(
             path.parent.parent,
             warnings,
             user_claude_md=user_claude_md,
-            chezmoi_bin=chezmoi_bin,
         )
         # U-hostmode M-3 (code gate r1 fold, REC12c): one lock discipline,
         # no exceptions — same shape as supersede()'s fix. The host lock
@@ -4849,7 +4767,6 @@ def graduate(
                 retire,
                 record_id,
                 note=note,
-                chezmoi_bin=chezmoi_bin,
                 message=message,
                 warnings=warnings,
                 post_notes=post_notes,
@@ -4885,7 +4802,6 @@ def supersede(
     note: str | None = None,
     no_push: bool = False,
     user_claude_md: Path | str | None = None,
-    chezmoi_bin: str = "chezmoi",
 ) -> VerbResult:
     """Corrective supersession (08 §1 pin): mark ``old`` superseded by
     ``new`` (which must exist). Commit: ``self-learn: supersede lrn-old →
@@ -4933,7 +4849,6 @@ def supersede(
                     destination,
                     routing.get("new_skill") if destination == "new-skill" else None,
                     user_claude_md=user_claude_md,
-                    chezmoi_bin=chezmoi_bin,
                     # A2 §4.4B note: variant/rules_topic only — see the
                     # matching comment in _retirement_preflight.
                     variant=routing.get("variant"),
@@ -5020,7 +4935,6 @@ def supersede(
                     old_id,
                     routed_record=None,
                     note=note,
-                    chezmoi_bin=chezmoi_bin,
                     message=message,
                     warnings=warnings,
                     user_push=not no_push,
@@ -5528,7 +5442,6 @@ def recompile(
     *,
     no_push: bool = False,
     user_claude_md: Path | str | None = None,
-    chezmoi_bin: str = "chezmoi",
     adopt: Path | str | None = None,
 ) -> RecompileResult:
     """The doc-13 drift repair (H-2: recompile is always safe and repairs
@@ -5536,7 +5449,7 @@ def recompile(
     managed target — skill-md files, project/skill-root claude-md files,
     AND the user-scope CLAUDE.md, which is a first-class PLAIN host now
     (§4.8.1) and goes through the SAME general repair as any other
-    plain/git host, never a chezmoi-guarded flow (USER2/CHEZ0) — and
+    plain/git host, never a dotfiles-guarded flow (USER2/CHEZ0) — and
     RE-APPEND every reference-routed record to its references file, then
     commit any HOST whose file changed (pinned subject ``self-learn:
     recompile <relative target>``).
@@ -5648,7 +5561,6 @@ def recompile(
                     destination,
                     ref_name,
                     user_claude_md=user_claude_md,
-                    chezmoi_bin=chezmoi_bin,
                     check_dirty=False,
                     # A2 §4.4B: variant/rules_topic off the STORED routing
                     # block so a rules-routed record's target groups into
@@ -5761,7 +5673,8 @@ def recompile(
                     continue
             if spec.mode != "git":
                 # U-hostmode §4.8.1: every plain host (user scope included)
-                # repairs through the SAME general path — no chezmoi, no
+                # repairs through the SAME general path — no
+                # dotfiles-management leg, no
                 # special-cased user branch (USER2/CHEZ0). The soundness
                 # check `_resolve_target` skipped (`check_dirty=False`)
                 # runs HERE instead: plain mode has no `git status` to
@@ -5814,7 +5727,6 @@ def recompile(
                     "recompile",
                     routed_record=None,
                     note=None,
-                    chezmoi_bin=chezmoi_bin,
                     message=f"self-learn: recompile {target}",
                     warnings=result.warnings,
                     user_push=not no_push,

@@ -545,7 +545,7 @@ _ARMOR_SHAS = {
     # merge 2026-08-28 (u-hostmode x master): only master changed these
     # four keys since base (1e77ff4) -- ours were byte-unchanged there,
     # so master's pinned values win outright.
-    "plugins/self-learn/cli/tests/test_invocation.py": "2b76f2bc4515891734c695993f2a7c203799c5ca35db89002a33a32fcaf86b2a",  # FW-117 (2026-08-28): HY3/CN6/CN7 witness-set trim + gate r1 fold (CN9 docstring truth), see the dated paragraph below
+    "plugins/self-learn/cli/tests/test_invocation.py": "33db4e99a23c011bd207e61dab44df102082adca1b9348fe289e61662fb7eb4d",  # U-hostmode Phase 2 (2026-08-28): stale whole-file exclusion entry removed from `test_wr7_seam_is_only_called_from_the_three_call_sites`'s `excluded_by_name` tuple (its named module is deleted outright -- CHEZ2), count 11 -> 10; see the dated paragraph below
     "plugins/self-learn/cli/tests/test_invocation_sdk.py": "124c0e8b310ce8dbfeea89348d0ea5a8cf9c96c071642f7e16e89a7ffa1b4e35",  # U-kl4 gate r1 fold (2026-08-28): B-1/N-D1/N-D2/N-D3, see the dated paragraph below
     # merge 2026-08-28 (u-hostmode x master): BOTH sides changed this key
     # (ours: REWRITTEN/_DS1_EXPECTED re-pinned for test_route_cli.py's REC9
@@ -738,6 +738,24 @@ _ARMOR_SHAS = {
 #: touched modules, per its own house rules -- see that file's comments.
 #: All three re-pinned files already members of `_SU4B_DIFF_EXEMPT`
 #: below -- only the hash moves, not exempt-set membership.
+#:
+#: *2026-08-28* **U-hostmode Phase 2** re-pins `test_invocation.py`
+#: again: CHEZ2's wholesale deletion of the dotfiles-management module
+#: leaves `test_wr7_seam_is_only_called_from_the_three_call_sites`'s
+#: `excluded_by_name` tuple naming a file that no longer exists on disk
+#: (that test's own `assert (src_dir / entry).is_file()` leg reddens
+#: otherwise) -- the entry is removed, not replaced, and the tuple's own
+#: `assert len(excluded_by_name) == N` moves 11 -> 10 with it. No other
+#: seam behaviour changes: the removed module was never one of the three
+#: `write_session`/`text_session` callers this test enumerates, only a
+#: file named in its OWN exclusion list for an unrelated reason (a
+#: subprocess-spawning module outside the model-invocation seam).
+#: Already a member of `_SU4B_DIFF_EXEMPT` below -- only the hash moves,
+#: not exempt-set membership; `hy5`'s numstat bound and `AR3`'s edited-
+#: function count/reasons in `test_u_sdka.py` move with it (see that
+#: file), and `test_pin2_armor_sha_paths_are_byte_unchanged`
+#: (`test_u_corrob.py`) re-reads this same pin, so nothing there needed
+#: its own edit beyond re-running against the new value.
 _SU4B_DIFF_EXEMPT = {
     "plugins/self-learn/cli/tests/conftest.py",
     "plugins/self-learn/cli/tests/test_invocation.py",

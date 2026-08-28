@@ -13,14 +13,15 @@ survived the suite or a specific documented claim had no test:
 - the crash-window recovery claim in verbs.py was an untested docstring
 - the two shell suites (sentinel-test.sh, install-commands-test.sh) were
   orphaned — nothing ran them
-- the chezmoi flow ended at a shim everywhere; real-binary round trip
-  now runs where chezmoi is installed
+
+U-hostmode Phase 2: the real-dotfiles-tool round trip this file used to
+carry (the last item above) is deleted, not rewritten — its subject,
+the whole dotfiles-management module, no longer exists.
 """
 
 import fcntl
 import json
 import os
-import shutil
 import stat
 import subprocess
 import sys
@@ -404,82 +405,3 @@ def test_install_commands_shell_suite_xdg_config_home_positive_control(tmp_path)
     assert leaked == [], (
         f"install-commands-test.sh leaked into the external XDG_CONFIG_HOME: {leaked}"
     )
-
-
-# ---------------------------------------------------- real-chezmoi round trip
-
-
-@pytest.mark.skipif(shutil.which("chezmoi") is None, reason="chezmoi not installed")
-def test_real_chezmoi_round_trip(tmp_path):
-    """The chezmoi leg previously ended at an argv-logging shim in every
-    test. Where the real binary exists, run the full guarded sequence
-    against a sandboxed source/destination/config — real diff semantics,
-    real re-add, real git commit+push — and assert the round trip."""
-    sandbox = tmp_path / "cz"
-    src = sandbox / "source"
-    dst = sandbox / "dest"
-    cfg = sandbox / "config"
-    data = sandbox / "data"
-    bare = sandbox / "dotfiles.git"
-    for d in (src, dst / ".claude", cfg, data):
-        d.mkdir(parents=True)
-    subprocess.run(
-        ["git", "init", "-q", "--bare", "-b", "main", str(bare)], check=True
-    )
-
-    # Source repo manages .claude/CLAUDE.md
-    (src / "dot_claude").mkdir()
-    base = "# CLAUDE.md\n\nHuman prose.\n"
-    (src / "dot_claude" / "CLAUDE.md").write_text(base, encoding="utf-8")
-    subprocess.run(["git", "init", "-q", "-b", "main", str(src)], check=True)
-    git(src, "config", "user.email", "t@local")
-    git(src, "config", "user.name", "t")
-    git(src, "remote", "add", "origin", str(bare))
-    commit_all(src, "dotfiles seed")
-    git(src, "push", "-q", "-u", "origin", "main")
-
-    # Wrapper: real chezmoi, fully sandboxed (source/dest/config/state).
-    wrapper = sandbox / "chezmoi-sandboxed"
-    wrapper.write_text(
-        "#!/usr/bin/env bash\n"
-        f'export XDG_CONFIG_HOME="{cfg}"\n'
-        f'export XDG_DATA_HOME="{data}"\n'
-        f'exec chezmoi --source "{src}" --destination "{dst}" "$@"\n',
-        encoding="utf-8",
-    )
-    wrapper.chmod(wrapper.stat().st_mode | stat.S_IEXEC)
-
-    subprocess.run([str(wrapper), "apply", "--force"], check=True)
-    target = dst / ".claude" / "CLAUDE.md"
-    assert target.read_text(encoding="utf-8") == base
-
-    from self_learn.chezmoi import compile_user_scope
-
-    record = make_behavior(scope="user")
-    record.set_routing(
-        {"routed_at": "2026-07-15T00:00:00Z", "destination": "claude-md", "by": "human"}
-    )
-    record.set_status("routed")
-    result = compile_user_scope(
-        target, [record], chezmoi=str(wrapper), commit_message="test: managed section"
-    )
-    assert result.committed is True
-
-    # Round trip: target edited, folded into source, committed, pushed,
-    # and no drift remains.
-    assert BEGIN_MARKER in target.read_text(encoding="utf-8")
-    assert BEGIN_MARKER in (src / "dot_claude" / "CLAUDE.md").read_text(
-        encoding="utf-8"
-    )
-    assert git(src, "log", "-1", "--format=%s").stdout.strip() == "test: managed section"
-    remote_head = subprocess.run(
-        ["git", "-C", str(bare), "log", "-1", "--format=%s"],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.strip()
-    assert remote_head == "test: managed section"
-    diff = subprocess.run(
-        [str(wrapper), "diff", str(target)], capture_output=True, text=True, check=True
-    )
-    assert diff.stdout.strip() == ""

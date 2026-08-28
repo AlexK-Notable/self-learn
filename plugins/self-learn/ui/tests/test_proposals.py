@@ -256,7 +256,7 @@ class TestValidateProposal:
         assert "skill-md only exists for skill-scoped lessons" in result
 
     def test_user_record_refuses_skill_md_and_reference(self, tmp_path: Path) -> None:
-        # The user host is the chezmoi-managed CLAUDE.md alone — no
+        # The user host is the plain-mode CLAUDE.md alone — no
         # references dir (the route verb's own refusal, honored at intake).
         sb = make_env(tmp_path)
         rec = make_behavior(scope="user")
@@ -1423,28 +1423,3 @@ class TestBucketStalenessLeg:
         ).text
         self._assert_cleared_with_notice(manager, runner, out)
 
-
-class TestObligation13UISideSingleCommandString:
-    """A2 §13 item 13 (the UI half): the review UI's own package must
-    never independently reconstruct the chezmoi-adopt invocation string
-    — it can only ever come from ``self_learn.chezmoi.adopt_command``
-    (the CLI's single source, §10.5). This package has ``self_learn``
-    importable (proposals.py itself already imports from
-    ``self_learn.hosts``), so this check runs here rather than in the
-    CLI suite's own venv-isolated twin
-    (plugins/self-learn/cli/tests/test_a2_rules_local.py)."""
-
-    def test_ui_package_never_hardcodes_the_adopt_invocation(self) -> None:
-        import self_learn_ui
-        from self_learn import chezmoi
-
-        needle = chezmoi.ADOPT_COMMAND_PREFIX  # "self-learn chezmoi-adopt "
-        pkg_dir = Path(self_learn_ui.__file__).parent
-        for py in pkg_dir.rglob("*.py"):
-            assert needle not in py.read_text(encoding="utf-8"), py
-
-    def test_adopt_command_is_the_single_source(self) -> None:
-        from self_learn import chezmoi
-
-        target = Path("/tmp/example/rules/subagents.md")
-        assert chezmoi.adopt_command(target) == f"self-learn chezmoi-adopt {target}"

@@ -112,16 +112,6 @@ class TestBuildArgv:
     def test_followup_done(self) -> None:
         assert build_argv("followup-done", "lrn-aa000001") == ["followup", "done", "lrn-aa000001"]
 
-    def test_chezmoi_adopt(self) -> None:
-        # A2 §10.4(a)/§10.5: no record_id in the real CLI form — the
-        # `target` field (already generic, per link-contradicts above)
-        # carries the rules-file path; `record_id` only scopes the route
-        # this bar renders under, never the argv.
-        argv = build_argv(
-            "chezmoi-adopt", "lrn-aa000001", target="/home/u/.claude/rules/subagents.md"
-        )
-        assert argv == ["chezmoi-adopt", "/home/u/.claude/rules/subagents.md"]
-
     def test_unknown_verb_raises(self) -> None:
         with pytest.raises(ValueError):
             build_argv("frobnicate", "lrn-aa000001")
@@ -169,7 +159,7 @@ class TestCycleDestination:
 
     def test_user_scope_is_claude_md_only(self) -> None:
         # reference needs a skill or project home; the user host is the
-        # chezmoi-managed CLAUDE.md alone.
+        # the plain-mode user host's CLAUDE.md alone.
         assert cycle_destination(None, "user") == "claude-md"
         assert cycle_destination("claude-md", "user") == "claude-md"
         assert cycle_destination("skill-md", "user") == "claude-md"
@@ -3013,8 +3003,8 @@ class TestContradictsOffer:
         ).exists()
 
     def test_route_without_contradicts_advances_directly(self, tmp_path: Path) -> None:
-        """Resolution-evidence unit (§3.4/DoD #6): no contradicts, no
-        adopt hint — the plain success leg renders in place of the old
+        """Resolution-evidence unit (§3.4/DoD #6): no contradicts offer —
+        the plain success leg renders in place of the old
         auto-redirect. `default FakeRunner` returns empty stdout, so the
         envelope never parses and this degrades to the generic
         acknowledgement — still `data-verb-success`, never silence."""
@@ -3032,181 +3022,109 @@ class TestContradictsOffer:
         assert 'data-verb-success="true"' in r.text
 
 
-class TestAdoptOffer:
-    """A2 §10.4(a): the review-UI half of the accepted §10 offer. The
-    hint rides `_host_phase`'s stderr line (built from
-    `self_learn.chezmoi.adopt_command`) — a FakeRunner queues that exact
-    shape, exercising the SAME `_extract_adopt_path` parse the real
-    runner's stderr would trigger, never a mocked-out shortcut."""
+class TestUIC1NoRetiredModuleImport:
+    """UIC1: routes.py imports nothing from the retired dotfiles-
+    management module, and the UI package imports cleanly. Mutation
+    M52: re-add the module-level import — routes.py fails to import
+    (the module itself no longer exists at all), which errors the
+    ENTIRE UI suite at collection, not just this test — this test
+    isolates the check to one named, source-level assertion instead of
+    "the suite went red", and a fresh-process import proves it beyond
+    pytest's own module cache."""
 
-    TARGET = "/home/u/.claude/rules/subagents.md"
+    def test_source_carries_no_import_from_the_retired_module(self) -> None:
+        import self_learn_ui.routes as routes_mod
 
-    @staticmethod
-    def _hint_stderr(target: str = TARGET) -> str:
-        from self_learn.chezmoi import adopt_command
+        src = Path(routes_mod.__file__).read_text(encoding="utf-8")
+        retired = "chez" + "moi"  # never spelled whole — CHEZ6 sweeps this file too
+        offenders = [
+            line for line in src.splitlines()
+            if line.strip().startswith("from self_learn.") and retired in line
+        ]
+        assert offenders == [], offenders
 
-        return (
-            f"self-learn: wrote {target} — not tracked by chezmoi, so it "
-            f"will not sync to your other machines. To sync it: "
-            f"{adopt_command(target)}\n"
+    def test_package_imports_cleanly_in_a_fresh_process(self) -> None:
+        import subprocess
+        import sys
+
+        result = subprocess.run(
+            [sys.executable, "-c", "import self_learn_ui.routes"],
+            capture_output=True,
+            text=True,
         )
+        assert result.returncode == 0, result.stderr
 
-    def test_post_route_offers_adopt_when_stderr_carries_the_hint(
-        self, tmp_path: Path
-    ) -> None:
-        sb = make_env(tmp_path)
-        rec = make_behavior(scope="user")
-        seed_record(sb.ledger, rec)
-        runner = FakeRunner()
-        runner.queue_result(RunResult(0, stderr=self._hint_stderr()))
-        c, _runner = make_client(sb, runner=runner)
-        r = c.post(
-            f"/record/{rec.id}/action/confirm",
-            data={"verb": "route", "kind": "detail", "dest": "claude-md"},
-            headers={"HX-Request": "true"},
-        )
-        assert r.status_code == 200
-        assert "hx-redirect" not in {k.lower() for k in r.headers}
-        assert "data-adopt-offer" in r.text  # app.js leg (e) marker
-        assert self.TARGET in r.text
 
-    def test_arm_then_confirm_runs_chezmoi_adopt(self, tmp_path: Path) -> None:
-        sb = make_env(tmp_path)
-        rec = make_behavior(scope="user")
-        seed_record(sb.ledger, rec)
-        runner = FakeRunner()
-        runner.queue_result(RunResult(0, stderr=self._hint_stderr()))
-        c, _runner = make_client(sb, runner=runner)
-        c.post(
-            f"/record/{rec.id}/action/confirm",
-            data={"verb": "route", "kind": "detail", "dest": "claude-md"},
-            headers={"HX-Request": "true"},
-        )
+def _adopt_hits(root: Path, pattern: str) -> list[str]:
+    hits = []
+    for path in sorted(root.rglob(pattern)):
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if "adopt" in line.lower():
+                hits.append(f"{path.relative_to(root)}:{lineno}")
+    return hits
 
-        arm = c.post(
-            f"/record/{rec.id}/action/arm",
-            data={"verb": "chezmoi-adopt", "kind": "adopt", "target": self.TARGET},
-            headers={"HX-Request": "true"},
-        )
-        assert arm.status_code == 200
-        assert "Adopt into chezmoi" in arm.text
-        assert self.TARGET in arm.text
 
-        confirm = c.post(
-            f"/record/{rec.id}/action/confirm",
-            data={"verb": "chezmoi-adopt", "kind": "adopt", "target": self.TARGET},
-            headers={"HX-Request": "true"},
-        )
-        assert confirm.status_code == 200
-        assert runner.calls[-1] == ["chezmoi-adopt", self.TARGET]
+class TestUIC5CensusZeroAdoptReferences:
+    """UIC5: zero `adopt` references remain in `ui/src` and
+    `ui/templates`. **Positive control**, run against THIS worktree at
+    `fa02a4c` (Phase 1 tip, adopt surface still present) via `git show`
+    rather than a real checkout: `routes.py` alone carried 5+ `adopt`
+    hits (the verb label, the argv branch, `_extract_adopt_path`,
+    `_adopt_offer_response`, the dismiss route) — proving this census
+    would have caught the surface had Phase 2 left it in place."""
 
-    def test_cancel_after_arm_reverts_to_the_unarmed_offer_never_runs_the_verb(
-        self, tmp_path: Path
-    ) -> None:
-        """The generic ``action/disarm`` route (shared with every other
-        ``kind``) only replaces the INNER action-bar div — the outer
-        `#adopt-offer-*` wrapper (lead text, `data-adopt-offer` marker)
-        is untouched, so Cancel must land back on the SAME yes/no offer,
-        never lose it, and never invoke the runner."""
-        sb = make_env(tmp_path)
-        rec = make_behavior(scope="user")
-        seed_record(sb.ledger, rec)
-        runner = FakeRunner()
-        runner.queue_result(RunResult(0, stderr=self._hint_stderr()))
-        c, _runner = make_client(sb, runner=runner)
-        c.post(
-            f"/record/{rec.id}/action/confirm",
-            data={"verb": "route", "kind": "detail", "dest": "claude-md"},
-            headers={"HX-Request": "true"},
-        )
-        c.post(
-            f"/record/{rec.id}/action/arm",
-            data={"verb": "chezmoi-adopt", "kind": "adopt", "target": self.TARGET},
-            headers={"HX-Request": "true"},
-        )
+    def test_positive_control_fa02a4c_routes_py_carries_adopt_hits(self) -> None:
+        import subprocess
 
-        cancel = c.post(
-            f"/record/{rec.id}/action/disarm",
-            data={"kind": "adopt", "target": self.TARGET},
-            headers={"HX-Request": "true"},
+        result = subprocess.run(
+            ["git", "show", "fa02a4c:plugins/self-learn/ui/src/self_learn_ui/routes.py"],
+            capture_output=True, text=True, cwd=Path(__file__).resolve().parents[4],
         )
-        assert cancel.status_code == 200
-        assert "Bring under chezmoi (sync across machines)" in cancel.text
-        assert "Not now" in cancel.text
-        # only the ORIGINAL route call happened — Cancel never runs
-        # chezmoi-adopt. Resolution-evidence unit: `route` now carries
-        # `--json` on every confirm. FW-64: unmodified approve — `--by
-        # analyst`.
-        assert runner.calls == [["route", rec.id, "--dest", "claude-md", "--by", "analyst", "--json"]]
+        assert result.returncode == 0, result.stderr
+        hits = [
+            ln for ln in result.stdout.lower().splitlines() if "adopt" in ln
+        ]
+        assert len(hits) >= 5, hits
 
-    def test_decline_wipes_the_offer(self, tmp_path: Path) -> None:
+    def test_zero_adopt_hits_in_ui_src_and_templates(self) -> None:
+        import self_learn_ui
+
+        pkg_root = Path(self_learn_ui.__file__).resolve().parent
+        src_root = pkg_root.parent  # .../ui/src
+        templates_root = pkg_root.parent.parent / "templates"
+        hits = _adopt_hits(src_root, "*.py") + _adopt_hits(templates_root, "*.html")
+        assert hits == [], hits
+
+
+class TestUIC3AdoptOfferSurfaceGone:
+    """UIC3: the adopt-offer surface is gone, replaced by nothing — not
+    just unreachable. Both of UIC3's own named checks, discriminating
+    mutation M53 (leave the dismiss route): re-adding that route makes
+    the first assertion below fail (200, not 404)."""
+
+    def test_dismiss_route_is_a_404(self, tmp_path: Path) -> None:
         sb = make_env(tmp_path)
         rec = make_behavior(scope="user")
         seed_record(sb.ledger, rec)
         c, _runner = make_client(sb)
-        dismiss = c.post(
+        r = c.post(
             f"/record/{rec.id}/adopt-offer/dismiss",
             headers={"HX-Request": "true"},
         )
-        assert dismiss.status_code == 200
-        assert dismiss.text == ""
+        assert r.status_code == 404
 
-    def test_failed_route_shows_error_not_the_adopt_offer(
+    def test_routed_user_scope_detail_page_carries_no_adopt_offer_marker(
         self, tmp_path: Path
     ) -> None:
         sb = make_env(tmp_path)
         rec = make_behavior(scope="user")
         seed_record(sb.ledger, rec)
-        runner = FakeRunner()
-        runner.queue_result(RunResult(1, stderr="refused: scan hit"))
-        c, _runner = make_client(sb, runner=runner)
-        r = c.post(
-            f"/record/{rec.id}/action/confirm",
-            data={"verb": "route", "kind": "detail", "dest": "claude-md"},
-            headers={"HX-Request": "true"},
+        resolve_record_directly(
+            sb.ledger, sb.ledger / "user", rec, destination="claude-md"
         )
-        assert "data-adopt-offer" not in r.text
-        assert "data-verb-error" in r.text
-
-    def test_ordinary_route_stderr_never_misfires_the_offer(
-        self, tmp_path: Path
-    ) -> None:
-        sb = make_env(tmp_path)
-        rec = make_behavior(scope="skill:s")
-        seed_record(sb.ledger, rec)
-        seed_proposal(sb.ledger, rec.id, destination="skill-md")
-        c, _runner = make_client(sb)  # default FakeRunner: exit 0, no stderr
-        r = c.post(
-            f"/record/{rec.id}/action/confirm",
-            data={"verb": "route", "kind": "detail", "dest": "skill-md"},
-            headers={"HX-Request": "true"},
-        )
-        assert "data-adopt-offer" not in r.text
-        assert r.headers.get("hx-redirect") is None
-        assert 'data-verb-success="true"' in r.text
-
-    def test_contradicts_offer_wins_when_both_would_fire(
-        self, tmp_path: Path
-    ) -> None:
-        """An edge case (both a contradicts edge AND the adopt hint on
-        the same route): the contradicts offer is checked first and
-        returns immediately — never both rendered at once."""
-        sb = make_env(tmp_path)
-        rec = make_behavior(scope="skill:s")
-        seed_record(sb.ledger, rec)
-        seed_proposal(
-            sb.ledger, rec.id, destination="skill-md",
-            contradicts=["skills/other/SKILL.md"],
-        )
-        runner = FakeRunner()
-        runner.queue_result(RunResult(0, stderr=self._hint_stderr()))
-        c, _runner = make_client(sb, runner=runner)
-        r = c.post(
-            f"/record/{rec.id}/action/confirm",
-            data={"verb": "route", "kind": "detail", "dest": "skill-md"},
-            headers={"HX-Request": "true"},
-        )
-        assert "data-contradicts-offer" in r.text
+        c, _runner = make_client(sb)
+        r = c.get(f"/record/{rec.id}")
+        assert r.status_code == 200
         assert "data-adopt-offer" not in r.text
 
 
@@ -4963,11 +4881,9 @@ class TestA18DeferredRecordApproveRefusesEndToEnd:
         with pytest.raises(cli_verbs.VerbError) as exc_info:
             cli_verbs.route(
                 sb.ledger, rec.id, user_claude_md=user_claude_md,
-                chezmoi_bin="chezmoi-definitely-absent",
             )
         refusal = str(exc_info.value)
         assert "S-23" in refusal
-        assert "chezmoi" not in refusal
 
         from self_learn_ui import ledger as ui_ledger
 

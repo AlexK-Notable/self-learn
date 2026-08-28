@@ -506,7 +506,7 @@ class TestT8UserOverrideBlockerOneGuard:
         seed(env, RID1, "user", "trigger one for the plain user leg")
         verbs.route(
             env.home, RID1, dest="claude-md", user_claude_md=override,
-            chezmoi_bin="chezmoi-definitely-absent", no_push=True,
+            no_push=True,
         )
 
         text = override.read_text(encoding="utf-8")
@@ -517,7 +517,7 @@ class TestT8UserOverrideBlockerOneGuard:
         seed(env, RID2, "user", "trigger two for the plain user leg")
         verbs.route(
             env.home, RID2, dest="claude-md", user_claude_md=override,
-            chezmoi_bin="chezmoi-definitely-absent", no_push=True,
+            no_push=True,
         )
         text2 = override.read_text(encoding="utf-8")
         assert text2.splitlines()[0] == first_line
@@ -546,8 +546,7 @@ class TestT8UserOverrideBlockerOneGuard:
         seed(env, RID1, "user", "rules trigger one")
         verbs.route(
             env.home, RID1, dest="claude-md:rules:xscope-topic",
-            user_claude_md=override, chezmoi_bin="chezmoi-definitely-absent",
-            no_push=True,
+            user_claude_md=override, no_push=True,
         )
 
         text = rules_target.read_text(encoding="utf-8")
@@ -559,8 +558,7 @@ class TestT8UserOverrideBlockerOneGuard:
         seed(env, RID2, "user", "rules trigger two")
         verbs.route(
             env.home, RID2, dest="claude-md:rules:xscope-topic",
-            user_claude_md=override, chezmoi_bin="chezmoi-definitely-absent",
-            no_push=True,
+            user_claude_md=override, no_push=True,
         )
         text2 = rules_target.read_text(encoding="utf-8")
         assert text2.splitlines()[0] == first_line
@@ -571,7 +569,7 @@ class TestT8UserOverrideBlockerOneGuard:
         seed(env, PLAIN, "user", "plain trigger")
         verbs.route(
             env.home, PLAIN, dest="claude-md", user_claude_md=override,
-            chezmoi_bin="chezmoi-definitely-absent", no_push=True,
+            no_push=True,
         )
         assert PLAIN not in rules_target.read_text(encoding="utf-8")
         assert PLAIN in override.read_text(encoding="utf-8")
@@ -622,15 +620,14 @@ class TestT10RulesLocalPartitionWithCollision:
         seed(env, plain_id, "user", "plain trigger")
         verbs.route(
             env.home, plain_id, dest="claude-md", user_claude_md=override,
-            chezmoi_bin="chezmoi-definitely-absent", no_push=True,
+            no_push=True,
         )
 
         rules_id = "lrn-58000004"
         seed(env, rules_id, "user", "rules trigger")
         verbs.route(
             env.home, rules_id, dest="claude-md:rules:t10-topic",
-            user_claude_md=override, chezmoi_bin="chezmoi-definitely-absent",
-            no_push=True,
+            user_claude_md=override, no_push=True,
         )
 
         proj = tmp_path / "t10-proj"
@@ -662,7 +659,7 @@ class TestT10RulesLocalPartitionWithCollision:
 
 class TestT11EmptyIsStillEmpty:
     """T11 (§7.3): a skill whose only record is SUPERSEDED compiles to a
-    ZERO-entry section (the chezmoi shape) — the fix must not resurrect
+    ZERO-entry section — the fix must not resurrect
     retired entries. Critically (§7.6(2)'s own warning): asserting
     emptiness ALONE would also pass under a mutation that blindly forces
     `_compile_set` to return `[]` for skill targets, testing nothing.
