@@ -193,6 +193,25 @@ def days_ago(n: int) -> str:
     return iso(datetime.now(timezone.utc) - timedelta(days=n))
 
 
+def force_past_deferred(home: Path, record_id: str, until: str) -> Path:
+    """Put *record_id* into a DEFERRED state with `deferred_until` set to
+    a PAST date, bypassing `ledger_ops.defer_record`'s own past-date
+    refusal (U-verbs STATE1) — that refusal exists to stop a HUMAN typing
+    a stale `--until`, not to make it impossible to construct the state a
+    record reaches once a legitimately-future deferral simply elapses.
+    Writes the file directly; no commit, no lock, no sentinel — callers
+    that need those wrap this themselves."""
+    from self_learn.ledger_ops import find_record_path
+
+    path = find_record_path(home, record_id)
+    record = Record.from_path(path)
+    record.set_status("deferred")
+    record.set_deferred_until(until)
+    record.set_deferred_count((record.deferred_count or 0) + 1)
+    record.write(path)
+    return path
+
+
 def make_behavior(
     scope: str = "skill:s",
     record_id: str | None = None,

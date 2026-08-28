@@ -621,6 +621,8 @@ _ARGV_FOR = {
     "_cmd_reconcile": [["reconcile"]],
     "_cmd_recompile": [["recompile"]],
     "_cmd_report": [["report"]],
+    "_cmd_batch": [["batch", "{sheet}"]],
+    "_cmd_show": [["show", "lrn-eeee0001"]],
     "_cmd_serve": [["serve", "--max-ticks", "1"]],  # U-engine Phase 2:
     # `--max-ticks 1` bounds the scheduler loop to one tick so it fits
     # this held-lock harness (an unbounded `serve` would hang it). HP3:
@@ -736,12 +738,26 @@ class TestEveryCommandSurvivesAHeldLock:
         commit_all_local(home)
         clean_before = git(home, "status", "--porcelain").stdout
 
+        # U-verbs `_cmd_batch`: a minimal one-item sheet reusing this
+        # fixture's own `lrn-eeee0001` — `batch` must survive a held lock
+        # exactly like every single-verb surface (BAT4's sentinel-hold
+        # discipline is orthogonal to this invariant; this only asserts
+        # the commit_lock leg).
+        sheet_path = tmp_path / "sheet.yaml"
+        sheet_path.write_text(
+            "version: 1\n"
+            "items:\n"
+            '  - {id: lrn-eeee0001, verb: reject, note: "held-lock invariant sheet"}\n',
+            encoding="utf-8",
+        )
+
         argv = [
             a.format(
                 host=str(env.host),
                 host2=str(host2),
                 empty=str(tmp_path / "empty"),
                 project_slug=str(env.host),
+                sheet=str(sheet_path),
             )
             for a in argv
         ]

@@ -351,11 +351,13 @@ def validate_proposal(
                 "rehome needs to — the registered project to move this "
                 "lesson to (path or bucket slug)"
             )
-        if location.scope != "project":
-            return _refuse(
-                f"rehome is project→project only (M1) — {record_id} is "
-                f"{location.scope}-scoped and cannot move"
-            )
+        # U-verbs MOVE9: the CLI-side source-scope restriction (M1,
+        # project-only) is gone — `_move` now accepts any live-status
+        # source scope. Only the TARGET stays narrowed to a registered
+        # project: the UI's `rehome` proposal is deliberately still
+        # project-only on the DESTINATION side (a `to` naming a skill or
+        # `user` is not this proposal's grammar at all — `rescope`, not
+        # proposable, is the verb for that).
         target = _registered_project_for(home, to)
         if target is None:
             return _refuse(

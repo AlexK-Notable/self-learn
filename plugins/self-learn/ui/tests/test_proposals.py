@@ -1234,7 +1234,13 @@ class TestValidateRehome:
         assert isinstance(result, str)
         assert "nothing to move" in result
 
-    def test_non_project_record_refuses(self, tmp_path: Path) -> None:
+    def test_non_project_source_now_succeeds(self, tmp_path: Path) -> None:
+        """U-verbs MOVE9: the CLI-side ``_move`` widened to accept any
+        live-status source scope, and the UI's own source-scope refusal
+        (the old "project→project only (M1)" line) was deleted to match
+        — only the TARGET stays narrowed to a registered project. A
+        skill-scoped record proposing ``rehome`` to a registered project
+        now VALIDATES (a :class:`VerbProposal`, not a refusal string)."""
         sb, host_b, _ = _seed_two_projects(tmp_path)
         skill_rec = make_behavior(scope="skill:s")
         seed_record(sb.ledger, skill_rec)
@@ -1243,8 +1249,10 @@ class TestValidateRehome:
             _record_scope(skill_rec),
             {"verb": "rehome", "record_id": skill_rec.id, "to": str(host_b)},
         )
-        assert isinstance(result, str)
-        assert "project→project only" in result
+        assert isinstance(result, VerbProposal)
+        assert result.verb == "rehome"
+        assert result.record_id == skill_rec.id
+        assert result.to == str(host_b)
 
 
 class TestRehomeProposalRoutes:
