@@ -831,19 +831,28 @@ def test_port1_serve_starts_ticks_and_exits_cleanly_with_no_systemd_on_path(tmp_
     assert result.returncode == 0, (result.stdout, result.stderr)
 
 
-def _run_install_sh_with_logging_shim(tmp_path: Path) -> tuple[subprocess.CompletedProcess, Path, Path]:
-    """Runs the FULL `install.sh` against a throwaway fake `$HOME`, with
-    `systemctl`/`uv` PATH-shimmed (same technique `install-commands-
-    test.sh` already uses for the miner/UI units) so nothing outside the
-    fake home is ever touched. The `systemctl` shim additionally LOGS
-    every invocation's argv (one line each) -- a plain `exit 0` no-op
-    shim proves nothing about whether `enable` was ever attempted, only
-    that its filesystem side effect (a real `.wants/` symlink) is
-    absent; logging what was actually asked for is what makes `N-11`
-    ("install.sh enables the unit") an observable mutation rather than a
-    vacuous one."""
+def _run_install_sh_with_logging_shim(
+    tmp_path: Path,
+    *,
+    extra_env: dict[str, str] | None = None,
+    install_sh: Path | None = None,
+) -> tuple[subprocess.CompletedProcess, Path, Path]:
+    """Runs `install.sh` (the real repo copy, or `install_sh` if given --
+    `test_port2_negative_control_enabling_the_unit_is_caught` passes a
+    mutated COPY through this same param, U-servehermetic, so its own
+    sandboxing/env-clearing logic is not duplicated a second time)
+    against a throwaway fake `$HOME`, with `systemctl`/`uv` PATH-shimmed
+    (same technique `install-commands-test.sh` already uses for the
+    miner/UI units) so nothing outside the fake home is ever touched.
+    The `systemctl` shim additionally LOGS every invocation's argv (one
+    line each) -- a plain `exit 0` no-op shim proves nothing about
+    whether `enable` was ever attempted, only that its filesystem side
+    effect (a real `.wants/` symlink) is absent; logging what was
+    actually asked for is what makes `N-11` ("install.sh enables the
+    unit") an observable mutation rather than a vacuous one."""
     repo_root = Path(__file__).resolve().parents[4]
-    install_sh = repo_root / "install.sh"
+    if install_sh is None:
+        install_sh = repo_root / "install.sh"
     assert install_sh.is_file(), install_sh
 
     shims = tmp_path / "shims"
@@ -863,6 +872,20 @@ def _run_install_sh_with_logging_shim(tmp_path: Path) -> tuple[subprocess.Comple
     env = os.environ.copy()
     env["HOME"] = str(fake_home)
     env["PATH"] = f"{shims}:{env['PATH']}"
+    # U-servehermetic: a caller exercising the new `XDG_CONFIG_HOME` leg
+    # must be able to point it at a fixture dir without inheriting
+    # whatever this TEST process's own `XDG_CONFIG_HOME` happens to be --
+    # and this is not a theoretical concern: conftest.py's autouse
+    # `_worker_test_defaults` sets `XDG_CONFIG_HOME` to a fresh `tmp_path`
+    # subdir for EVERY test in this suite, this one included, so
+    # `os.environ.copy()` above genuinely carries a real value here --
+    # that is exactly WHY the `pop()` below matters: without it, a caller
+    # wanting the unset-XDG_CONFIG_HOME leg would silently get this
+    # unit's own fixture dir instead.
+    if extra_env:
+        env.update(extra_env)
+    else:
+        env.pop("XDG_CONFIG_HOME", None)
 
     result = subprocess.run(
         ["bash", str(install_sh)], env=env, capture_output=True, text=True, timeout=60
@@ -895,12 +918,49 @@ def test_port2_install_sh_links_the_host_unit_without_enabling_it(tmp_path):
     )
 
 
+def test_port2_positive_control_xdg_config_home_governs_the_link_target(tmp_path):
+    """`PORT2` extension, U-servehermetic (2026-08-27): `install.sh`'s
+    `UNIT_DIR` must resolve the same way `serve.unit_dir()` does --
+    `$XDG_CONFIG_HOME/systemd/user` when `XDG_CONFIG_HOME` is set, not
+    unconditionally `$HOME/.config/systemd/user` -- so the installer and
+    the doctor `serve` row that later checks the linked unit never
+    disagree about where it lives. `XDG_CONFIG_HOME` is pointed at a
+    tmp dir SEPARATE from `fake_home`; the link must land under IT, and
+    `fake_home/.config` must stay untouched.
+
+    MUTATION that turns this red: revert `install.sh`'s `UNIT_DIR` line
+    back to `UNIT_DIR="$HOME/.config/systemd/user"` (dropping the
+    `${XDG_CONFIG_HOME:-...}` fallback) -- the unit then links under
+    `fake_home/.config` regardless of `XDG_CONFIG_HOME`, and both
+    assertions below fail."""
+    repo_root = Path(__file__).resolve().parents[4]
+    xdg_config_home = tmp_path / "xdg-config"
+    result, fake_home, _systemctl_log = _run_install_sh_with_logging_shim(
+        tmp_path, extra_env={"XDG_CONFIG_HOME": str(xdg_config_home)}
+    )
+    assert result.returncode == 0, (result.stdout, result.stderr)
+
+    unit_link = xdg_config_home / "systemd" / "user" / "self-learn-host.service"
+    assert unit_link.is_symlink()
+    assert unit_link.resolve() == (repo_root / "systemd" / "self-learn-host.service").resolve()
+
+    stray_link = fake_home / ".config" / "systemd" / "user" / "self-learn-host.service"
+    assert not stray_link.exists(), (
+        "install.sh linked the unit under $HOME/.config even though "
+        "XDG_CONFIG_HOME was set -- it ignored the override"
+    )
+
+
 def test_port2_negative_control_enabling_the_unit_is_caught(tmp_path):
     """`N-11`'s positive control, observed directly: mutate a COPY of
     `install.sh` so it actually runs `systemctl --user enable --now
     self-learn-host.service` instead of only printing the line, and
     confirm the check above (`not any("enable" in line for line in
-    calls)`) would have caught it."""
+    calls)`) would have caught it. Routed through `_run_install_sh_
+    with_logging_shim` (U-servehermetic) rather than duplicating its
+    shim/env setup a second time -- in particular its `XDG_CONFIG_HOME`
+    clearing, so this test is not exposed to whatever this test SESSION's
+    own conftest-set `XDG_CONFIG_HOME` happens to be either."""
     repo_root = Path(__file__).resolve().parents[4]
     real_install_sh = repo_root / "install.sh"
     mutated = tmp_path / "install-mutated.sh"
@@ -922,21 +982,10 @@ def test_port2_negative_control_enabling_the_unit_is_caught(tmp_path):
     )
     mutated.write_text(text, encoding="utf-8")
 
-    shims = tmp_path / "shims"
-    shims.mkdir()
-    systemctl_log = tmp_path / "systemctl.calls.log"
-    (shims / "systemctl").write_text(f'#!/usr/bin/env bash\necho "$@" >> {systemctl_log}\nexit 0\n')
-    (shims / "systemctl").chmod(0o755)
-    for tool in ("uv", "update-desktop-database"):
-        shim = shims / tool
-        shim.write_text("#!/usr/bin/env bash\nexit 0\n")
-        shim.chmod(0o755)
-    fake_home = tmp_path / "home"
-    fake_home.mkdir()
-    env = os.environ.copy()
-    env["HOME"] = str(fake_home)
-    env["PATH"] = f"{shims}:{env['PATH']}"
-    subprocess.run(["bash", str(mutated)], env=env, capture_output=True, text=True, timeout=60, check=True)
+    result, _fake_home, systemctl_log = _run_install_sh_with_logging_shim(
+        tmp_path, install_sh=mutated
+    )
+    assert result.returncode == 0, (result.stdout, result.stderr)
 
     calls = systemctl_log.read_text().splitlines() if systemctl_log.is_file() else []
     assert any("enable" in line for line in calls), (

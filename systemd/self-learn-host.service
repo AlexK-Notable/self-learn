@@ -11,7 +11,8 @@
 # paths, explicit env pin, Restart=on-failure/RestartSec=5).
 #
 # Installed by install.sh (which links this unit into
-# ~/.config/systemd/user/ and runs `systemctl --user daemon-reload`);
+# ~/.config/systemd/user/ -- or $XDG_CONFIG_HOME/systemd/user/ if set,
+# U-servehermetic 2026-08-27 -- and runs `systemctl --user daemon-reload`);
 # enabling it is the one step it deliberately leaves to you:
 #   systemctl --user enable --now self-learn-host.service
 #

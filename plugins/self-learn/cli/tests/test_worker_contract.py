@@ -504,8 +504,16 @@ def _apply_failure_env(kind: str, param: str, *, scratch: Path, monkeypatch) -> 
 #: tripwire deletion + retirement comment; the whole-file rebase §8.1
 #: forces onto the seam's test suite). All three are already members of
 #: `_SU4B_DIFF_EXEMPT` -- only the hash moves, not exempt-set membership.
+#: U-servehermetic (2026-08-27) re-pins `conftest.py` again: `_worker_
+#: test_defaults` now sets `XDG_CONFIG_HOME` to a fresh `tmp_path`
+#: subdir, next to the pre-existing `XDG_CACHE_HOME` line, so
+#: `serve.unit_dir()`'s new `XDG_CONFIG_HOME` fallback leg reads the
+#: fixture dir instead of the real `~/.config/systemd/user` (the defect
+#: this unit fixes -- a live host unit made 18 tests host-dependent).
+#: Already a member of `_SU4B_DIFF_EXEMPT` from U-flip -- only the hash
+#: moves, not exempt-set membership.
 _ARMOR_SHAS = {
-    "plugins/self-learn/cli/tests/conftest.py": "7e248059461888ad80e758002c4b2f7c821a98e2d5aafdff6367815d0e2bca56",  # code gate r1 NIT-5: stale AG1-tripwire paragraph fixed
+    "plugins/self-learn/cli/tests/conftest.py": "2cb3e5080166f165d05db37b964deafd365d0567b472b91f005df92b2afc0e3c",  # U-servehermetic: XDG_CONFIG_HOME hermetic default added
     "plugins/self-learn/cli/tests/backends.py": "a2ba2d74f117a230740d10e3c9fa67bd30f751ce80ec59667c9136557a906dde",
     "plugins/self-learn/cli/tests/test_invocation.py": "e3875614ab32a760788140d76e26cd542c07bd2f9dfa512f9da0f62c40b9257c",
     "plugins/self-learn/cli/tests/test_invocation_sdk.py": "22cecabad8d3caf3ccd2c63bc977cfd359f2ea38de3f525c0f2544e02692ad23",

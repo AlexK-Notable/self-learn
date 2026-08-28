@@ -1321,6 +1321,14 @@ _AR1_TRIPWIRE_SHA256 = "1b012978efe34788697a854bd40f28d0c1c45125cbca9d56fea36890
 #: is simply whatever text differs from base RIGHT NOW: the original
 #: `AG3` comment (unchanged since U-cleanup-A, still present) plus this
 #: unit's new retirement comment in place of the fixture.
+#:
+#: U-servehermetic (2026-08-27) adds one more sanctioned block: `_worker_
+#: test_defaults` now sets `XDG_CONFIG_HOME` to a fresh `tmp_path` subdir
+#: (the fix for `serve.unit_dir()` reading the real host's linked
+#: `self-learn-host.service` unit during a test run), inserted between
+#: the pre-existing `XDG_CACHE_HOME` line and the `AG3` paragraph -- so
+#: its ten `+` lines land in `added` right where the diff places them,
+#: between the two blank lines above and the `AG3` paragraph below.
 _AR1_SANCTIONED_PIN_LINES = [
     '#: U-cleanup-B: `_cli_backend_unreached_tripwire` (U-cleanup-A `AG1`) is',
     '#: RETIRED here, exactly as its own docstring said it would be -- its',
@@ -1331,6 +1339,16 @@ _AR1_SANCTIONED_PIN_LINES = [
     '#: THIS tripwire arms, and there is no tripwire left to prove.',
     '',
     '',
+    '    # Config isolation for EVERY test (found 2026-08-27, U-servehermetic:',
+    '    # `serve.unit_dir()` falls back to `XDG_CONFIG_HOME`, then to the',
+    '    # real `~/.config/systemd/user`, exactly mirroring the cache-isolation',
+    '    # reasoning above -- without this, a test session on a host that has',
+    '    # ever linked the `self-learn-host.service` reference unit reads that',
+    '    # REAL unit as "configured" and produces a live-host-dependent FAIL/',
+    '    # SKIP split invisible to the U-engine Phase 2 gate, which ran before',
+    '    # any host had linked the unit). Tests that redirect XDG themselves',
+    '    # simply override this default, same convention as XDG_CACHE_HOME.',
+    '    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config-default"))',
     '    # U-cleanup-A `AG3`: the three suite-wide `cli` pins that used to sit',
     "    # here (U-sdka `Armor-1`'s analyst pin, U-flip's worker/miner pins)",
     '    # are REMOVED, not merely edited. Their premise was "every',
@@ -1985,12 +2003,16 @@ def test_hy5_numstat_bounds_hold():
     # measured single-ref against _BASE_SHA. Widened again (185, 36) ->
     # (196, 36) -- gate r2 N-6': the corrupt-vs-absent heartbeat
     # distinction added to `_serve_row`'s configured-no-heartbeat leg.
+    # U-servehermetic (2026-08-27): `conftest.py` widened (34, 0) ->
+    # (44, 0) -- the ten-line `XDG_CONFIG_HOME` hermetic-default addition
+    # to `_worker_test_defaults` (see `_AR1_SANCTIONED_PIN_LINES` above,
+    # same unit). No other row in this table is touched by this unit.
     bounds = {
         "plugins/self-learn/cli/src/self_learn/invocation/contract.py": (31, 47),
         "plugins/self-learn/cli/src/self_learn/invocation/registry.py": (34, 20),
         "plugins/self-learn/cli/src/self_learn/provider.py": (196, 36),
         "plugins/self-learn/cli/src/self_learn/analyst.py": (4, 18),
-        "plugins/self-learn/cli/tests/conftest.py": (34, 0),  # code gate r1 NIT-5: stale AG1-tripwire paragraph fixed
+        "plugins/self-learn/cli/tests/conftest.py": (44, 0),  # U-servehermetic: XDG_CONFIG_HOME hermetic default added
         "plugins/self-learn/cli/tests/fixtures/fake_claude.py": (388, 1),
         "plugins/self-learn/cli/tests/test_invocation.py": (718, 700),
         "plugins/self-learn/cli/tests/test_invocation_sdk.py": (298, 149),  # code gate r1 MAJOR-1 fold: claude_cli_shim_worker/_analyst -> sdk_fake_worker/_analyst rename

@@ -93,6 +93,16 @@ def _worker_test_defaults(monkeypatch, tmp_path):
     # home, so an unset SELF_LEARN_HOME was harmless. It no longer is.
     monkeypatch.setenv("SELF_LEARN_HOME", str(tmp_path / "home-default"))
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg-cache-default"))
+    # Config isolation for EVERY test (found 2026-08-27, U-servehermetic:
+    # `serve.unit_dir()` falls back to `XDG_CONFIG_HOME`, then to the
+    # real `~/.config/systemd/user`, exactly mirroring the cache-isolation
+    # reasoning above -- without this, a test session on a host that has
+    # ever linked the `self-learn-host.service` reference unit reads that
+    # REAL unit as "configured" and produces a live-host-dependent FAIL/
+    # SKIP split invisible to the U-engine Phase 2 gate, which ran before
+    # any host had linked the unit). Tests that redirect XDG themselves
+    # simply override this default, same convention as XDG_CACHE_HOME.
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config-default"))
     # Miner defaults: no detached watchdog spawns, and the transcript root
     # NEVER defaults to the real ~/.claude/projects inside tests.
     monkeypatch.setenv("SELF_LEARN_MINER_AUTOKICK", "0")
