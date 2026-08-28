@@ -6,21 +6,16 @@ test_models_detail.py for obligations 5/6/19).
 
 Sandboxes: :func:`support.make_env` pairs an independent LEDGER home
 with a HOST repo registered as BOTH skills-root and project host.
-Chezmoi is a PATH-shimmed fake (never real ``~/.claude`` or real chezmoi
-source) — the same pattern ``chezmoi.py``'s own module docstring and
-``test_verbs.py``/``test_chezmoi.py`` already use.
 """
 
 from __future__ import annotations
 
 import json
-import os
-import stat
 
 import pytest
 from ruamel.yaml import YAML
 
-from self_learn import chezmoi, cli, selfcheck, verbs
+from self_learn import cli, selfcheck, verbs
 from self_learn.compilers import BEGIN_MARKER
 from self_learn.hosts import slug_for
 from self_learn.ledger_ops import (
@@ -33,42 +28,6 @@ from self_learn.records import Record
 from support import commit_all, git, make_behavior, make_env, proposal_dict, verb_files
 
 OLD = "lrn-0000aaaa"
-
-#: The PATH-shimmed fake chezmoi (extends test_verbs.py's shape with a
-#: top-level ``add`` case for ``chezmoi add <target>`` — the one
-#: genuinely new primitive §10.3 adds — and per-subcommand RC controls
-#: for ``git -- commit`` / ``git -- push`` so the H-2 degradation path
-#: (obligation 12) is reachable without also breaking the capability
-#: probe, exactly like ``CHEZMOI_SHIM_SOURCE_RC``'s existing isolation).
-CHEZMOI_SHIM = """#!/usr/bin/env bash
-printf '%s\\n' "$*" >> "$CHEZMOI_SHIM_LOG"
-case "$1" in
-  source-path)
-    printf '%s' "${2:-}"
-    exit "${CHEZMOI_SHIM_SOURCE_RC-0}"
-    ;;
-  diff) printf '%s' "${CHEZMOI_SHIM_DIFF-}" ;;
-  add)
-    if [ -n "${CHEZMOI_SHIM_ADD_RC-}" ]; then exit "$CHEZMOI_SHIM_ADD_RC"; fi
-    ;;
-  re-add)
-    if [ -n "${CHEZMOI_SHIM_READD_RC-}" ]; then exit "$CHEZMOI_SHIM_READD_RC"; fi
-    ;;
-  git)
-    case "$3" in
-      status) printf '%s' "${CHEZMOI_SHIM_STATUS-}" ;;
-      commit)
-        if [ -n "${CHEZMOI_SHIM_COMMIT_RC-}" ]; then exit "$CHEZMOI_SHIM_COMMIT_RC"; fi
-        ;;
-      push)
-        if [ -n "${CHEZMOI_SHIM_PUSH_RC-}" ]; then exit "$CHEZMOI_SHIM_PUSH_RC"; fi
-        ;;
-      rev-parse) printf 'deadbeefcafe' ;;
-    esac
-    ;;
-esac
-exit "${CHEZMOI_SHIM_EXIT-0}"
-"""
 
 
 @pytest.fixture(autouse=True)
@@ -91,28 +50,6 @@ class Env:
 def env(tmp_path):
     return Env(tmp_path)
 
-
-@pytest.fixture
-def chezmoi_shim(tmp_path, monkeypatch):
-    bindir = tmp_path / "shim-bin"
-    bindir.mkdir()
-    fake = bindir / "chezmoi"
-    fake.write_text(CHEZMOI_SHIM, encoding="utf-8")
-    fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
-    log = tmp_path / "chezmoi-argv.log"
-    log.write_text("", encoding="utf-8")
-    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
-    monkeypatch.setenv("CHEZMOI_SHIM_LOG", str(log))
-    monkeypatch.delenv("CHEZMOI_SHIM_SOURCE_RC", raising=False)
-    monkeypatch.delenv("CHEZMOI_SHIM_ADD_RC", raising=False)
-    monkeypatch.delenv("CHEZMOI_SHIM_COMMIT_RC", raising=False)
-    monkeypatch.delenv("CHEZMOI_SHIM_PUSH_RC", raising=False)
-    monkeypatch.delenv("CHEZMOI_SHIM_READD_RC", raising=False)
-
-    def calls():
-        return [ln for ln in log.read_text(encoding="utf-8").splitlines() if ln]
-
-    return calls
 
 
 def seed_user_record(env, record_id=OLD, **kw):
@@ -151,35 +88,19 @@ def read_frontmatter(text):
 
 
 # =====================================================================
-# Obligation 1 — variant absent routes byte-identically (P-A6),
-# across ABSENT / UNMANAGED / MANAGED.
+# Obligation 1 — a plain claude-md (non-rules) user-scope route never
+# carries a `variant` key (P-A6). U-hostmode Phase 2: this used to be
+# asserted across three dotfiles-management capability states (ABSENT/
+# UNMANAGED/MANAGED) because the OLD user-scope write probed that tool's
+# detection before compiling; that probe is gone (USER2/CHEZ0 — zero
+# calls of any kind), so the three cases were already byte-identical
+# bodies once the now-removed capability-selector kwarg is dropped. One
+# test proves the same invariant with no redundant siblings.
 # =====================================================================
 
 
 class TestObligation1VariantAbsentByteIdentical:
     def test_absent_carries_no_variant_key(self, tmp_path, env):
-        target = tmp_path / "dot-claude" / "CLAUDE.md"
-        target.parent.mkdir()
-        target.write_text("# user conduct\n", encoding="utf-8")
-        seed_user_record(env)
-        verbs.route(
-            env.home, OLD, dest="claude-md", user_claude_md=target,
-            chezmoi_bin="chezmoi-definitely-absent",
-        )
-        routed = Record.from_path(env.home / "user" / "resolved" / f"{OLD}.md")
-        assert "variant" not in routed.routing
-
-    def test_unmanaged_carries_no_variant_key(self, tmp_path, env, chezmoi_shim, monkeypatch):
-        monkeypatch.setenv("CHEZMOI_SHIM_SOURCE_RC", "1")
-        target = tmp_path / "dot-claude" / "CLAUDE.md"
-        target.parent.mkdir()
-        target.write_text("# user conduct\n", encoding="utf-8")
-        seed_user_record(env)
-        verbs.route(env.home, OLD, dest="claude-md", user_claude_md=target)
-        routed = Record.from_path(env.home / "user" / "resolved" / f"{OLD}.md")
-        assert "variant" not in routed.routing
-
-    def test_managed_carries_no_variant_key(self, tmp_path, env, chezmoi_shim):
         target = tmp_path / "dot-claude" / "CLAUDE.md"
         target.parent.mkdir()
         target.write_text("# user conduct\n", encoding="utf-8")
@@ -295,7 +216,7 @@ class TestObligation2And3ProjectGlobValidation:
         )
         with pytest.raises(verbs.VerbError, match="match nothing under") as excinfo:
             verbs.route(
-                env.home, OLD, user_claude_md=target, chezmoi_bin="chezmoi-definitely-absent",
+                env.home, OLD, user_claude_md=target,
             )
         # gate NIT-2: §7.3's "under {roots}" half was unpinned — the
         # message must name the fixture's actual root (target's
@@ -345,7 +266,6 @@ class TestObligation4LocalPrivacyAndScopeGuard:
         with pytest.raises(verbs.VerbError, match="exists only per project"):
             verbs.route(
                 env.home, OLD, dest="claude-md:local", user_claude_md=target,
-                chezmoi_bin="chezmoi-definitely-absent",
             )
         # never silently fell through to plain CLAUDE.md
         assert not target.is_file() or "CLAUDE.local" not in target.read_text(
@@ -513,7 +433,7 @@ class TestObligation10SelfcheckGlobDrift:
             ),
         )
         verbs.route(
-            env.home, OLD, user_claude_md=target, chezmoi_bin="chezmoi-definitely-absent",
+            env.home, OLD, user_claude_md=target,
         )
         # drift is clean while the file still exists
         ok, reason = selfcheck._check_drift(env.home)
@@ -550,7 +470,7 @@ class TestObligation10SelfcheckGlobDrift:
             ),
         )
         verbs.route(
-            env.home, OLD, user_claude_md=target, chezmoi_bin="chezmoi-definitely-absent",
+            env.home, OLD, user_claude_md=target,
         )
         ok, reason = selfcheck._check_drift(env.home)
         assert ok is True
@@ -561,231 +481,6 @@ class TestObligation10SelfcheckGlobDrift:
         ok2, reason2 = selfcheck._check_drift(env.home)
         assert ok2 is False
         assert OLD in reason2
-
-
-# =====================================================================
-# Obligation 11 — the chezmoi-adopt offer fires EXACTLY on
-# UNMANAGED + variant==rules + user scope.
-# =====================================================================
-
-
-class TestObligation11OfferFiringMatrix:
-    def test_unmanaged_rules_offer_adopt_true_gets_hint(self, tmp_path, env, chezmoi_shim, monkeypatch):
-        monkeypatch.setenv("CHEZMOI_SHIM_SOURCE_RC", "1")
-        target = tmp_path / "rules" / "subagents.md"
-        target.parent.mkdir(parents=True)
-        target.write_text("", encoding="utf-8")
-        result = chezmoi.compile_user_scope(
-            target, [], offer_adopt=True,
-        )
-        assert result.adopt_hint is not None
-        assert str(target) in result.adopt_hint
-        assert "chezmoi-adopt" in result.adopt_hint
-
-    def test_absent_never_offers_even_with_offer_adopt_true(self, tmp_path, env):
-        target = tmp_path / "rules" / "subagents.md"
-        target.parent.mkdir(parents=True)
-        target.write_text("", encoding="utf-8")
-        result = chezmoi.compile_user_scope(
-            target, [], offer_adopt=True, chezmoi="chezmoi-definitely-absent",
-        )
-        assert result.adopt_hint is None
-
-    def test_managed_never_offers_even_with_offer_adopt_true(self, tmp_path, env, chezmoi_shim):
-        target = tmp_path / "rules" / "subagents.md"
-        target.parent.mkdir(parents=True)
-        target.write_text("", encoding="utf-8")
-        result = chezmoi.compile_user_scope(target, [], offer_adopt=True)
-        assert result.adopt_hint is None
-
-    def test_unmanaged_plain_claude_md_never_offers(self, tmp_path, env, chezmoi_shim, monkeypatch):
-        """§10.1: plain CLAUDE.md's unmanaged state is the user's prior
-        choice — the route verb never threads offer_adopt=True for it
-        (verbs._apply_target gates on spec.variant == "rules"); this
-        proves the primitive itself also respects offer_adopt=False."""
-        monkeypatch.setenv("CHEZMOI_SHIM_SOURCE_RC", "1")
-        target = tmp_path / "dot-claude" / "CLAUDE.md"
-        target.parent.mkdir()
-        target.write_text("# user conduct\n", encoding="utf-8")
-        result = chezmoi.compile_user_scope(target, [], offer_adopt=False)
-        assert result.adopt_hint is None
-
-    def test_route_only_threads_offer_adopt_for_rules_variant(
-        self, tmp_path, env, chezmoi_shim, monkeypatch
-    ):
-        """U-hostmode USER2/CHEZ0 (rewritten, name kept — §2.10b census):
-        the chezmoi-adopt hint was ITSELF a chezmoi-write-path mechanism
-        (`_host_phase`'s ``adopt_hint``, A2 §10.4(b)) — user scope no
-        longer calls any chezmoi function during a route (USER2), so
-        NEITHER leg below can carry the hint anymore, plain-claude-md or
-        rules. (The UI's adopt SURFACE stays reachable — CHEZ0/Phase 2's
-        own scope note — only the route-time SUGGESTION to use it is
-        gone, because nothing about a plain-host write is "unmanaged".)"""
-        monkeypatch.setenv("CHEZMOI_SHIM_SOURCE_RC", "1")
-        target = tmp_path / "dot-claude" / "CLAUDE.md"
-        target.parent.mkdir()
-        target.write_text("# user conduct\n", encoding="utf-8")
-        seed_user_record(env, record_id="lrn-00000001")
-        result = verbs.route(
-            env.home, "lrn-00000001", dest="claude-md", user_claude_md=target,
-        )
-        assert not any("chezmoi-adopt" in w for w in result.warnings)
-
-        seed_user_record(env, record_id="lrn-00000002")
-        result2 = verbs.route(
-            env.home, "lrn-00000002", dest="claude-md:rules:subagents",
-            user_claude_md=target,
-        )
-        assert not any("chezmoi-adopt" in w for w in result2.warnings)
-        assert chezmoi_shim() == []
-
-
-# =====================================================================
-# Obligation 12 — adopt_user_scope: porcelain-guard -> chezmoi add ->
-# commit(+push); H-2 degradation; self-extinguishing.
-# =====================================================================
-
-
-class TestObligation12AdoptAcceptPath:
-    def test_accept_path_argv_order_and_self_extinguishing(
-        self, tmp_path, env, chezmoi_shim
-    ):
-        target = tmp_path / "rules" / "subagents.md"
-        target.parent.mkdir(parents=True)
-        target.write_text("", encoding="utf-8")
-
-        result = chezmoi.adopt_user_scope(target, message="self-learn: adopt")
-        assert result.tracked is True
-        assert result.synced is True
-        assert result.warning is None
-
-        calls = chezmoi_shim()
-        assert calls[0] == "git -- status --porcelain"
-        assert f"add {target}" in calls
-        assert calls.index(f"add {target}") < calls.index("git -- add -A")
-        assert "git -- commit -m self-learn: adopt" in calls
-        assert "git -- push" in calls
-
-    def test_never_uses_target_diff_before_add(self, tmp_path, env, chezmoi_shim):
-        """The porcelain-ONLY guard (never _drift_dirty_guard's target
-        diff, which errors on an unmanaged target)."""
-        target = tmp_path / "rules" / "subagents.md"
-        target.parent.mkdir(parents=True)
-        target.write_text("", encoding="utf-8")
-        chezmoi.adopt_user_scope(target, message="self-learn: adopt")
-        calls = chezmoi_shim()
-        assert f"diff {target}" not in calls
-
-    def test_dirty_dotfiles_repo_aborts_before_add(self, tmp_path, env, chezmoi_shim, monkeypatch):
-        monkeypatch.setenv("CHEZMOI_SHIM_STATUS", " M some-other-file\n")
-        target = tmp_path / "rules" / "subagents.md"
-        target.parent.mkdir(parents=True)
-        target.write_text("", encoding="utf-8")
-        with pytest.raises(chezmoi.ChezmoiAbort):
-            chezmoi.adopt_user_scope(target, message="self-learn: adopt")
-        calls = chezmoi_shim()
-        assert f"add {target}" not in calls
-
-    def test_commit_failure_after_add_degrades_never_rolls_back(
-        self, tmp_path, env, chezmoi_shim, monkeypatch
-    ):
-        monkeypatch.setenv("CHEZMOI_SHIM_COMMIT_RC", "1")
-        target = tmp_path / "rules" / "subagents.md"
-        target.parent.mkdir(parents=True)
-        target.write_text("", encoding="utf-8")
-        result = chezmoi.adopt_user_scope(target, message="self-learn: adopt")
-        assert result.tracked is True  # `chezmoi add` already landed
-        assert result.synced is False
-        assert result.warning is not None
-        calls = chezmoi_shim()
-        assert f"add {target}" in calls  # never rolled back
-
-
-# =====================================================================
-# Obligation 13 — the bare-CLI hint rides the sync-warning channel;
-# the UI-accept and the hint name the SAME entrypoint.
-# =====================================================================
-
-
-class TestObligation13SingleCommandString:
-    def test_no_second_hardcoded_adopt_command_string(self):
-        """Grep-level: the INVOCATION string 'self-learn chezmoi-adopt
-        <path>' — the command a human would actually run — is built from
-        exactly one literal, ``chezmoi.ADOPT_COMMAND_PREFIX`` (whose own
-        value IS the needle below), defined once in ``chezmoi.py`` and
-        referenced everywhere else only as the imported name — never
-        hand-copied. Distinguished from the
-        ``f"self-learn chezmoi-adopt: {exc}"`` ERROR-prefix idiom
-        ``cli.py`` uses (the same ``f"self-learn {args.command}: ..."``
-        shape every OTHER ``_cmd_*`` handler uses for its own refusals)
-        by the character right after "adopt": a SPACE (interpolating a
-        path — an invocation) vs. a COLON (labeling an error) never
-        collide as source text."""
-        import self_learn.chezmoi as chezmoi_mod
-        import self_learn.verbs as verbs_mod
-        import self_learn.cli as cli_mod
-
-        invocation_needle = chezmoi.ADOPT_COMMAND_PREFIX  # "self-learn chezmoi-adopt "
-        chezmoi_src = open(chezmoi_mod.__file__, encoding="utf-8").read()
-        verbs_src = open(verbs_mod.__file__, encoding="utf-8").read()
-        cli_src = open(cli_mod.__file__, encoding="utf-8").read()
-        assert chezmoi_src.count(invocation_needle) == 1  # its own definition only
-        assert invocation_needle not in verbs_src
-        assert invocation_needle not in cli_src
-        # the UI package's own equivalent check lives in
-        # plugins/self-learn/ui/tests/test_proposals.py (a separate venv
-        # — this suite cannot import self_learn_ui).
-
-    def test_bare_cli_hint_text_equals_adopt_command_output(self, tmp_path):
-        target = tmp_path / "rules" / "subagents.md"
-        target.parent.mkdir(parents=True)
-        target.write_text("", encoding="utf-8")
-        hint = chezmoi.adopt_command(target)
-        assert hint == f"self-learn chezmoi-adopt {target}"
-
-    def test_cli_chezmoi_adopt_subcommand_dispatches(
-        self, tmp_path, env, chezmoi_shim, monkeypatch, capsys
-    ):
-        """argparse-level wiring for the accepted §10 offer: ``self-learn
-        chezmoi-adopt <path>`` must reach :func:`verbs.chezmoi_adopt` ->
-        :func:`chezmoi.adopt_user_scope`, not just be a registered-but-
-        dead subparser. No ledger home-gate on this surface (see
-        ``_cmd_chezmoi_adopt``'s docstring) — SELF_LEARN_HOME is set
-        anyway, matching how the real CLI is always invoked."""
-        monkeypatch.setenv("SELF_LEARN_HOME", str(env.home))
-        target = tmp_path / "dot-claude" / "rules" / "subagents.md"
-        target.parent.mkdir(parents=True)
-        target.write_text("# subagents\n", encoding="utf-8")
-
-        rc = cli.main(["chezmoi-adopt", str(target)])
-        assert rc == 0
-        out = capsys.readouterr().out
-        assert "tracked + synced" in out
-        calls = chezmoi_shim()
-        assert any(c.startswith("add ") and str(target) in c for c in calls)
-        assert any("commit" in c for c in calls)
-        # exact subcommand match, never a bare "push" substring — the
-        # target path lives under pytest's per-test tmp_path, whose
-        # directory name is derived from the test's own name and can
-        # itself contain "push" (as the sibling --no-push test's tmp_path
-        # does), which would false-positive a substring check.
-        assert any(c == "git -- push" for c in calls)
-
-    def test_cli_chezmoi_adopt_no_push_flag_skips_only_the_push(
-        self, tmp_path, env, chezmoi_shim, monkeypatch, capsys
-    ):
-        monkeypatch.setenv("SELF_LEARN_HOME", str(env.home))
-        target = tmp_path / "dot-claude" / "rules" / "subagents.md"
-        target.parent.mkdir(parents=True)
-        target.write_text("# subagents\n", encoding="utf-8")
-
-        rc = cli.main(["chezmoi-adopt", str(target), "--no-push"])
-        assert rc == 0
-        out = capsys.readouterr().out
-        assert "tracked + synced" in out  # commit alone still counts as synced
-        calls = chezmoi_shim()
-        assert any("commit" in c for c in calls)
-        assert not any(c == "git -- push" for c in calls)
 
 
 # =====================================================================
@@ -804,17 +499,17 @@ class TestObligation14CompileSetPartition:
         seed_user_record(env, record_id="lrn-1a1a1a1a")
         verbs.route(
             env.home, "lrn-1a1a1a1a", dest="claude-md:rules:topic-a",
-            user_claude_md=target, chezmoi_bin="chezmoi-definitely-absent",
+            user_claude_md=target,
         )
         seed_user_record(env, record_id="lrn-2b2b2b2b")
         verbs.route(
             env.home, "lrn-2b2b2b2b", dest="claude-md:rules:topic-b",
-            user_claude_md=target, chezmoi_bin="chezmoi-definitely-absent",
+            user_claude_md=target,
         )
         seed_user_record(env, record_id="lrn-3c3c3c3c")
         verbs.route(
             env.home, "lrn-3c3c3c3c", dest="claude-md",
-            user_claude_md=target, chezmoi_bin="chezmoi-definitely-absent",
+            user_claude_md=target,
         )
 
         plain = target.read_text(encoding="utf-8")
@@ -846,7 +541,7 @@ class TestObligation15FirstRouteBootstrap:
         seed_user_record(env)
         result = verbs.route(
             env.home, OLD, dest="claude-md:rules:subagents",
-            user_claude_md=target, chezmoi_bin="chezmoi-definitely-absent",
+            user_claude_md=target,
         )
         assert result.commit_sha
         topic_file = target.parent / "rules" / "subagents.md"
@@ -878,7 +573,7 @@ class TestObligation16BareDestOneMotion:
         record = make_behavior(scope="user", record_id=OLD)
         result = verbs.route_direct(
             env.home, record, dest="claude-md:rules:subagents",
-            user_claude_md=target, chezmoi_bin="chezmoi-definitely-absent",
+            user_claude_md=target,
         )
         assert result.commit_sha
         topic_file = target.parent / "rules" / "subagents.md"
@@ -1021,7 +716,7 @@ class TestObligation19PathsEmitToDisk:
             ),
         )
         result = verbs.route(
-            env.home, OLD, user_claude_md=target, chezmoi_bin="chezmoi-definitely-absent",
+            env.home, OLD, user_claude_md=target,
         )
         assert result.commit_sha
         rules_target = target.parent / "rules" / "ts-rules.md"
@@ -1329,7 +1024,7 @@ class TestObligation25AbsoluteAndHomeGlobRefusal:
         )
         with pytest.raises(verbs.VerbError):
             verbs.route(
-                env.home, OLD, user_claude_md=target, chezmoi_bin="chezmoi-definitely-absent",
+                env.home, OLD, user_claude_md=target,
             )
         assert (env.home / "user" / "pending" / f"{OLD}.md").is_file()
 
@@ -1353,32 +1048,33 @@ class TestObligation25AbsoluteAndHomeGlobRefusal:
 
 
 # =====================================================================
-# Obligation 26 — A11: chezmoi MANAGED, both legs of the refusal, plus
+# Obligation 26 — A11: the OLD dotfiles-managed refusal's two legs, plus
 # the unpathed-into-unpathed success leg with an unchanged call count.
 # =====================================================================
 
 
-class TestObligation26ChezmoiManagedRefusal:
+class TestObligation26FormerManagedRefusalNowSucceeds:
     """U-hostmode §4.8.1/USER2 (rewritten, names kept — §2.10b census):
     U-pathed §3.4(2)'s ENTIRE premise was a two-phase hazard specific to
-    chezmoi — the pre-pass frontmatter write landing BEFORE
-    ``compile_user_scope``'s own drift check, which would then read our
-    OWN write as foreign drift and abort unrecoverably AFTER the ledger
-    commit. Phase 1 deletes that check from the write path wholesale
-    (USER2: zero chezmoi calls) — user scope is an ordinary plain host
-    now, with no separate tool watching the file for "drift" at all, so
-    the hazard this refusal existed to prevent is structurally
-    impossible. Every case below that used to refuse now SUCCEEDS."""
+    the old dotfiles-management tool — the pre-pass frontmatter write
+    landing BEFORE the user-scope compile's own drift check, which would
+    then read our OWN write as foreign drift and abort unrecoverably
+    AFTER the ledger commit. Phase 1 deletes that check from the write
+    path wholesale (USER2: zero dotfiles-management calls) — user scope
+    is an ordinary plain host now, with no separate tool watching the
+    file for "drift" at all, so the hazard this refusal existed to
+    prevent is structurally impossible. Every case below that used to
+    refuse now SUCCEEDS."""
 
-    def test_pathed_route_refuses_pre_ledger_on_managed_A11a(self, tmp_path, env, chezmoi_shim):
+    def test_pathed_route_refuses_pre_ledger_on_managed_A11a(self, tmp_path, env):
         target = tmp_path / "dot-claude" / "CLAUDE.md"
         target.parent.mkdir()
         target.write_text("# user conduct\n", encoding="utf-8")
         # U-glob §9.0 T0 case 4 / R-2: a fixture-unique literal anchor
         # (its own rule) rather than the bare `a/**` — and the glob must
-        # actually REACH a file (this fixture is what the OLD chezmoi
-        # refusal fired against; kept so the setup still proves a
-        # matching glob reaches the target).
+        # actually REACH a file (this fixture is what the OLD refusal
+        # fired against; kept so the setup still proves a matching glob
+        # reaches the target).
         (tmp_path / "u-glob-a11a-fixture").mkdir()
         (tmp_path / "u-glob-a11a-fixture" / "x").write_text("x", encoding="utf-8")
         seed_user_record(env)
@@ -1396,11 +1092,11 @@ class TestObligation26ChezmoiManagedRefusal:
         rules_target = target.parent / "rules" / "managed-topic.md"
         assert "u-glob-a11a-fixture/**" in rules_target.read_text(encoding="utf-8")
 
-    def test_pathed_route_refuses_dead_glob_before_chezmoi_on_managed(
-        self, tmp_path, env, chezmoi_shim
+    def test_pathed_route_refuses_dead_glob_before_the_old_managed_refusal(
+        self, tmp_path, env
     ):
-        """U-glob §6.3/§9.0: the glob check runs BEFORE the chezmoi-
-        managed refusal — a chezmoi-managed target with a DEAD glob
+        """U-glob §6.3/§9.0: the glob check runs BEFORE the OLD
+        dotfiles-managed refusal — a managed target with a DEAD glob
         names the dead glob (the thing the human can fix), never the
         management state. Same managed fixture as A11a above, minus the
         matching file, pinning the ordering that test would otherwise
@@ -1421,7 +1117,7 @@ class TestObligation26ChezmoiManagedRefusal:
         assert (env.home / "user" / "pending" / f"{OLD}.md").is_file()
 
     def test_globless_into_already_pathed_topic_refuses_on_managed_A11b(
-        self, tmp_path, env, chezmoi_shim
+        self, tmp_path, env
     ):
         target = tmp_path / "dot-claude" / "CLAUDE.md"
         target.parent.mkdir()
@@ -1444,15 +1140,15 @@ class TestObligation26ChezmoiManagedRefusal:
         assert (env.home / "user" / "resolved" / f"{OLD}.md").is_file()
 
     def test_globless_into_topic_with_empty_list_paths_refuses_on_managed_A11b_F1(
-        self, tmp_path, env, chezmoi_shim
+        self, tmp_path, env
     ):
         """F1's `paths: []` shape (rewritten, name kept — §2.10b census):
         the pre-pass's own agreement predicate (`paths_frontmatter_drift`,
         `compilers.py`, explicitly OUT of this unit's scope — §4.5's own
-        table, §8 OUT-6) is untouched — only the chezmoi two-phase hazard
-        this class used to guard against is gone (see the class
-        docstring). A globless route into a malformed-`paths:` topic now
-        just succeeds like any other plain-host write."""
+        table, §8 OUT-6) is untouched — only the two-phase hazard this
+        class used to guard against is gone (see the class docstring). A
+        globless route into a malformed-`paths:` topic now just succeeds
+        like any other plain-host write."""
         target = tmp_path / "dot-claude" / "CLAUDE.md"
         target.parent.mkdir()
         target.write_text("# user conduct\n", encoding="utf-8")
@@ -1474,11 +1170,11 @@ class TestObligation26ChezmoiManagedRefusal:
         assert (env.home / "user" / "resolved" / f"{OLD}.md").is_file()
 
     def test_globless_into_topic_with_scalar_paths_refuses_on_managed_A11b_F1(
-        self, tmp_path, env, chezmoi_shim
+        self, tmp_path, env
     ):
         """F1's third table row (rewritten, name kept — §2.10b census): a
         scalar `paths: src/**` — same reasoning as the empty-list sibling
-        above, the chezmoi hazard this refusal guarded is gone."""
+        above, the hazard this refusal guarded is gone."""
         target = tmp_path / "dot-claude" / "CLAUDE.md"
         target.parent.mkdir()
         target.write_text("# user conduct\n", encoding="utf-8")
@@ -1500,8 +1196,18 @@ class TestObligation26ChezmoiManagedRefusal:
         assert (env.home / "user" / "resolved" / f"{OLD}.md").is_file()
 
     def test_unpathed_route_into_unpathed_file_succeeds_unchanged_calls_A11c(
-        self, tmp_path, env, chezmoi_shim
+        self, tmp_path, env
     ):
+        """U-hostmode USER2/CHEZ0 (rewritten, name kept — §2.10b census):
+        the OLD two dotfiles-management calls a route through this leg
+        used to make (a capability probe + a second re-derive) are gone
+        at the ROOT — the module they called is deleted (Phase 2), so
+        there is nothing left on PATH for this leg to call even if it
+        tried. `test_worker_contract.py`-style call-count instrumentation
+        would only re-prove what CHEZ2's import-time census already
+        proves structurally; this test keeps its name and asserts the
+        surface behaviour instead (the route succeeds, unchanged, with
+        no separate management tool watching the file)."""
         target = tmp_path / "dot-claude" / "CLAUDE.md"
         target.parent.mkdir()
         target.write_text("# user conduct\n", encoding="utf-8")
@@ -1516,12 +1222,6 @@ class TestObligation26ChezmoiManagedRefusal:
         assert result.commit_sha
         rules_target = target.parent / "rules" / "fresh-topic.md"
         assert OLD in rules_target.read_text(encoding="utf-8")
-        calls = chezmoi_shim()
-        # U-hostmode USER2 (rewritten, name kept — §2.10b census): user
-        # scope calls NO chezmoi function at all now — the OLD two
-        # `source-path` calls (`preflight_user_scope` + `compile_user_
-        # scope`'s own re-derive) are BOTH gone, not merely un-tripled.
-        assert calls == []
 
 
 # =====================================================================
@@ -1641,7 +1341,6 @@ class TestObligation28NonRulesTargetsByteIdentical:
         seed("user", "lrn-00000001")
         r1 = verbs.route(
             home, "lrn-00000001", dest="claude-md", user_claude_md=user_target,
-            chezmoi_bin="chezmoi-definitely-absent",
         )
         assert r1.commit_sha
         assert "paths:" not in user_target.read_text(encoding="utf-8")
@@ -1757,11 +1456,11 @@ class TestObligation29TwoRoadsProduceIdenticalBytes:
 
         r1 = verbs.route(
             sandbox1.ledger, rid,
-            user_claude_md=target1, chezmoi_bin="chezmoi-definitely-absent",
+            user_claude_md=target1,
         )
         r2 = verbs.route(
             sandbox2.ledger, rid, dest="claude-md:rules:t", by="analyst",
-            user_claude_md=target2, chezmoi_bin="chezmoi-definitely-absent",
+            user_claude_md=target2,
         )
         assert r1.commit_sha and r2.commit_sha
 
@@ -1803,7 +1502,7 @@ class TestObligation30BareClaudeMdNeverInherits:
         )
         result = verbs.route(
             env.home, OLD, dest="claude-md",
-            user_claude_md=target, chezmoi_bin="chezmoi-definitely-absent",
+            user_claude_md=target,
         )
         assert result.commit_sha
         assert OLD in target.read_text(encoding="utf-8")
@@ -1834,7 +1533,7 @@ class TestObligation31MismatchedTopicNeverInherits:
         )
         result = verbs.route(
             env.home, OLD, dest="claude-md:rules:other",
-            user_claude_md=target, chezmoi_bin="chezmoi-definitely-absent",
+            user_claude_md=target,
         )
         assert result.commit_sha
         other_file = target.parent / "rules" / "other.md"
@@ -1854,7 +1553,7 @@ class TestObligation32InheritanceNeverRaises:
     def _assert_unpathed_route_succeeds(self, env, target):
         result = verbs.route(
             env.home, OLD, dest="claude-md:rules:t",
-            user_claude_md=target, chezmoi_bin="chezmoi-definitely-absent",
+            user_claude_md=target,
         )
         assert result.commit_sha
         topic_file = target.parent / "rules" / "t.md"
@@ -1925,7 +1624,7 @@ class TestObligation33NonRulesDestByteIdentical:
         seed_user_record(env, record_id="lrn-00000001")
         r1 = verbs.route(
             env.home, "lrn-00000001", dest="claude-md",
-            user_claude_md=target, chezmoi_bin="chezmoi-definitely-absent",
+            user_claude_md=target,
         )
         assert r1.commit_sha
         assert "paths:" not in target.read_text(encoding="utf-8")

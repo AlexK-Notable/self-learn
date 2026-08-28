@@ -26,7 +26,6 @@ from pathlib import Path
 from ruamel.yaml import YAML
 
 from . import gitops, sentinel, verbs
-from .chezmoi import ChezmoiAbort, ChezmoiError
 from .compilers import CompileError
 from .ledger_ops import (
     DEFERRED_ONLY,
@@ -408,7 +407,7 @@ def _dispatch(home: Path, item: SheetItem) -> ItemResult:
     except LedgerOpsError as exc:
         return ItemResult(n=item.n, id=item.id, verb=verb, rc=64,
                            state="refused", detail=str(exc))
-    except (CompileError, ChezmoiAbort, ChezmoiError) as exc:
+    except CompileError as exc:
         return ItemResult(n=item.n, id=item.id, verb=verb, rc=1,
                            state="refused", detail=str(exc))
     except gitops.HalfWrittenError as exc:

@@ -231,9 +231,11 @@ class TestRouteEvidenceRendering:
         )
         assert "not committed" in r.text
         assert "the feature" in r.text
-        assert "chezmoi" not in r.text  # the OTHER (user-scope) branch's wording
+        assert "plain-mode host" not in r.text  # the OTHER (user-scope) branch's wording
 
-    def test_wrote_uncommitted_user_scope_names_chezmoi(self, tmp_path: Path) -> None:
+    def test_wrote_uncommitted_user_scope_names_the_plain_mode_host(
+        self, tmp_path: Path
+    ) -> None:
         sb, rec = _seed(tmp_path, scope="user")
         env_dict = envelope(
             record_id=rec.id,
@@ -252,7 +254,7 @@ class TestRouteEvidenceRendering:
             headers=HX,
         )
         assert "not committed" in r.text
-        assert "chezmoi" in r.text
+        assert "plain-mode host" in r.text
         assert "the feature" not in r.text  # the OTHER (local) branch's wording
 
     def test_drift_names_the_target_but_never_as_written(self, tmp_path: Path) -> None:
@@ -829,34 +831,9 @@ class TestRedirectSuppressionEverySite:
         dupes = sorted({a for a in success_actions if success_actions.count(a) > 1})
         assert not dupes, f"duplicate success_* data-key-action targets: {dupes}"
 
-    def test_site_3_adopt_offer_still_shows_evidence(self, tmp_path: Path) -> None:
-        """action_confirm's adopt-offer branch."""
-        from self_learn.chezmoi import adopt_command
-
-        sb = make_env(tmp_path)
-        rec = make_behavior(scope="user")
-        seed_record(sb.ledger, rec)
-        target = "/home/u/.claude/rules/subagents.md"
-        hint_stderr = (
-            f"self-learn: wrote {target} — not tracked by chezmoi, so it "
-            f"will not sync to your other machines. To sync it: "
-            f"{adopt_command(target)}\n"
-        )
-        env_dict = envelope(
-            record_id=rec.id, destination="claude-md", variant="rules",
-            outcome_state="wrote_uncommitted",
-        )
-        runner = FakeRunner()
-        runner.queue_result(RunResult(0, stdout=json.dumps(env_dict), stderr=hint_stderr))
-        c, _runner = make_client(sb, runner=runner)
-        r = c.post(
-            f"/record/{rec.id}/action/confirm",
-            data={"verb": "route", "kind": "detail", "dest": "claude-md:rules:subagents"},
-            headers=HX,
-        )
-        assert r.headers.get("HX-Redirect") is None
-        assert "data-adopt-offer" in r.text
-        assert 'data-verb-success="true"' in r.text
+    # site 3 (the adopt-offer branch) was retired by U-hostmode Phase 2
+    # (2026-08-28): the offer surface it composed with evidence for is
+    # deleted outright, so there is nothing left at that site to cover.
 
     def test_site_4_pane_proposal_confirm(self, tmp_path: Path) -> None:
         """proposal_confirm — "its own build_argv, runner.run, offer

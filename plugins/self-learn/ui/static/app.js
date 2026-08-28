@@ -514,16 +514,11 @@
    *       route loads a fresh document with no marker at all), so
    *       "stale until the human leaves" is the intended, permanent
    *       hold for this leg specifically.
-   *   (e) a [data-adopt-offer] element is in the document (A2 §10.4(a)):
-   *       the post-route chezmoi-adopt offer, same hazard as (d) — it
-   *       too renders UNARMED first (leg (c) alone does not hold it),
-   *       and the same routine post-verb forced-refresh can arrive while
-   *       this response is still settling. UNLIKE (d), this leg's
-   *       release is NOT only navigation: tapping "Not now" wipes the
-   *       `#adopt-offer-*` element client-side (no persisted declined-
-   *       state, §10.2), which removes the marker and releases the hold
-   *       immediately — arming-then-confirming still releases via
-   *       navigation, same as (d).
+   *   (e) retired — U-hostmode Phase 2 (2026-08-28) deleted the adopt
+   *       offer this leg deferred for (§10.4(a) is gone: no route ever
+   *       renders a [data-adopt-offer] element any more), so there is
+   *       nothing left for a leg here to hold. Letter kept as a gap,
+   *       never reused, so history stays legible.
    *   (f) a [data-verb-success] element is in the document
    *       (resolution-evidence unit, §3.5 ruling): the success leg is
    *       the error leg's sibling (§2.2 "one surface, two legs") —
@@ -539,8 +534,8 @@
    * Deferred-not-dropped: the pending reload fires when no leg holds
    * (dismiss removes (a), completion/error/abort clears (b),
    * disarm-or-resolve removes (c), navigating away is (d)'s only
-   * release, navigating away OR "Not now" releases (e), navigating away
-   * is (f)'s only release); the release re-checks the whole predicate.
+   * release, (e) retired, navigating away is (f)'s only release); the
+   * release re-checks the whole predicate.
    * Deliberate staleness (F9/F12): while any leg holds the page may go
    * stale against the files — accepted; files stay truth and every hold
    * has a user-reachable release. The server-side push is UNCHANGED —
@@ -554,7 +549,7 @@
     if (confirmInFlight) return true; // leg (b)
     if (findArmedBar()) return true; // leg (c)
     if (document.querySelector("[data-contradicts-offer]")) return true; // leg (d)
-    if (document.querySelector("[data-adopt-offer]")) return true; // leg (e)
+    // leg (e) retired — see the docblock above.
     if (document.querySelector("[data-verb-success]")) return true; // leg (f)
     return false;
   }

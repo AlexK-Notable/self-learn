@@ -5,22 +5,21 @@ The dirty-target refusal stays fully intact — this verb is the GUIDED
 path a human takes instead of it: commit the TARGET repo's OWN pending
 changes (their commit, separate from ours), so the caller can retry its
 route. Dirty-vs-drift boundary (gate M2) is the load-bearing distinction:
-DRIFT (chezmoi.py's pre-existing-drift leg) is refused with a plain
+DRIFT (the old dotfiles-management pre-existing-drift leg, retired along
+with that module — U-hostmode Phase 2) was refused with a plain
 explanation and NEVER committed; only DIRTY (uncommitted changes) is
 served.
 
-All git activity happens in sandbox repos under pytest tmpdirs; chezmoi
-is a PATH shim extended (beyond test_verbs.py's read-only shim) to also
-simulate ``add -A`` / ``commit`` / ``rev-parse HEAD`` / ``source-path``,
-since this verb — unlike ``route``'s user-scope leg, which only ever
-PREFLIGHTS — actually performs the chezmoi-side write.
+All git activity happens in sandbox repos under pytest tmpdirs.
+``TestChezmoiLeg`` below keeps its class/test names verbatim per UN3's
+name-set freeze even though its subject is gone (§2.10b census, CD2) —
+every plain host, user scope included, now refuses this verb identically
+at exit 64, with no PATH shim left to simulate anything against.
 """
 
 from __future__ import annotations
 
 import json
-import os
-import stat
 
 import pytest
 
@@ -30,49 +29,11 @@ from support import commit_all, git, init_repo, make_behavior, make_env, proposa
 
 RID = "lrn-0000cafe"
 
-CHEZMOI_SHIM = """#!/usr/bin/env bash
-printf '%s\\n' "$*" >> "$CHEZMOI_SHIM_LOG"
-case "$1" in
-  diff)
-    printf '%s' "${CHEZMOI_SHIM_DIFF-}"
-    ;;
-  source-path)
-    printf '%s' "${CHEZMOI_SHIM_SOURCE-/tmp/fake-dotfiles}"
-    ;;
-  git)
-    case "$3" in
-      status) printf '%s' "${CHEZMOI_SHIM_STATUS-}" ;;
-      rev-parse) printf '%s' "${CHEZMOI_SHIM_SHA-cafe1234cafe1234cafe1234cafe1234cafe123}" ;;
-    esac
-    ;;
-esac
-exit "${CHEZMOI_SHIM_EXIT-0}"
-"""
-
 
 @pytest.fixture(autouse=True)
 def cache_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg-cache"))
 
-
-@pytest.fixture
-def chezmoi_shim(tmp_path, monkeypatch):
-    bindir = tmp_path / "shim-bin"
-    bindir.mkdir()
-    fake = bindir / "chezmoi"
-    fake.write_text(CHEZMOI_SHIM, encoding="utf-8")
-    fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
-    log = tmp_path / "chezmoi-argv.log"
-    log.write_text("", encoding="utf-8")
-    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
-    monkeypatch.setenv("CHEZMOI_SHIM_LOG", str(log))
-    monkeypatch.delenv("CHEZMOI_SHIM_DIFF", raising=False)
-    monkeypatch.delenv("CHEZMOI_SHIM_STATUS", raising=False)
-
-    def calls():
-        return [ln for ln in log.read_text(encoding="utf-8").splitlines() if ln]
-
-    return calls
 
 
 class Env:

@@ -125,7 +125,6 @@ a throwaway sandbox, not problems with the app:
 
 - Pane sessions ("Iterate", "Open bucket chat") show **"Not logged in ·
   Please run /login"**. The sandbox deliberately has no credentials.
-- Routing a lesson says "not tracked by chezmoi".
 - Pushing says "not pushed — no remote configured".
 
 If you hit one, note that you hit it and move on.

@@ -4,18 +4,26 @@ test file (test_hosting.py, test_a2_rules_local.py, test_commit_drift.py,
 test_resolution_evidence.py, test_verbs.py, test_lock_invariant.py, etc.
 already cover UN/CD/USER/most of GATE/PLAIN).
 
-Each test names the [A] criterion it satisfies in its docstring. Where a
-criterion's own spec text names a mutation, this file's docstring or an
-inline comment records the manual RED-then-restore check performed
-against the source during the build (never left as an automated
-self-mutating test — this codebase's discipline is a real discriminator
-proven once at build time, not a mutation harness shipped in CI).
+U-hostmode Phase 2 (added at the end of this file, its own section
+header): dedicated criterion tests for CHEZ1/CHEZ2/CHEZ3/CHEZ5/CHEZ6 —
+the retired dotfiles-management module's wholesale deletion. The
+UI-side criteria (UIC1-5) live in ui/tests/ (a separate venv this suite
+cannot import).
+
+Each test names the [A]/[B] criterion it satisfies in its docstring.
+Where a criterion's own spec text names a mutation, this file's
+docstring or an inline comment records the manual RED-then-restore check
+performed against the source during the build (never left as an
+automated self-mutating test — this codebase's discipline is a real
+discriminator proven once at build time, not a mutation harness shipped
+in CI).
 """
 
 from __future__ import annotations
 
 import ast
 import dataclasses
+import importlib
 import inspect
 import os
 import shutil
@@ -26,7 +34,7 @@ from pathlib import Path
 import pytest
 
 from self_learn import (
-    compiled, compilers, gitops, hosts as hosts_mod, reconcile, selfcheck, verbs,
+    cli, compiled, compilers, gitops, hosts as hosts_mod, reconcile, selfcheck, teach, verbs,
 )
 from self_learn.hosts import HostsError, host_add, host_mode, load_hosts, save_hosts
 from self_learn.ledger import home_state
@@ -3707,7 +3715,8 @@ class TestMode9PostureDecisionSweep:
     """MODE9: no site decides a host's posture except `hosts.host_mode`,
     and no site infers user scope from a missing path. **Instrument
     (a):** any comparison of a `TargetSpec` attribute to `None` used to
-    select a chezmoi/user branch. **Instrument (b):** any call to
+    select a dotfiles-management/user branch. **Instrument (b):** any
+    call to
     `hosts._is_git_repo`/`is_repo_root` outside `hosts.py` and the
     `--init` path. **Positive control:** the same sweep against
     50fa815's tree must report real branch-selecting sites, so an empty
@@ -3719,7 +3728,7 @@ class TestMode9PostureDecisionSweep:
         pre-rename `host_repo`) comparison, keyed by line — EXCLUDING
         `TargetSpec.__post_init__`'s own runtime assertion (USER4's
         licensed exception: it refuses at construction time rather than
-        branching into chezmoi/user logic, and MODE9's own spec text
+        branching into dotfiles-management/user logic, and MODE9's own spec text
         pairs it with this sweep as the intended replacement for the
         five retired branch sites, not another one)."""
         hits: list[int] = []
@@ -4706,3 +4715,238 @@ class TestM1LockOrderRuntimeProbe:
         finally:
             proc.wait(timeout=8)
             monkeypatch.undo()
+
+
+# ================================================================
+# U-hostmode Phase 2 -- the retired-dotfiles-module-deleted-
+# wholesale criteria (CHEZ1, CHEZ2, CHEZ3, CHEZ5, CHEZ6). One named
+# test per [B] criterion, each discriminating -- run RED against a
+# synthetic restore of the deleted surface where the criterion names
+# a mutation, never "by construction". The UI-side criteria (UIC1-5)
+# live in ui/tests/ (a separate venv this suite cannot import).
+#
+# CHEZ6 (below) sweeps `cli/src`/`ui/src`/`ui/templates`/`ui/tests`/
+# `ui/static` for zero mentions of the retired module's name, and
+# `cli/tests` for exactly the 37-hit accounted total -- EXCLUDING this
+# file BY PATH (gate r1-N1, 2026-08-28): an earlier version instead
+# built the name from `"chez" + "moi"` so its own grep could never see
+# it, which also made the instrument structurally blind to the one
+# file most likely to reintroduce a real dependency the same way. This
+# file now spells the name plainly, like any other test file, and is
+# simply not counted -- greppable, not evasive.
+# ================================================================
+
+_RETIRED_MODULE = "chezmoi"
+
+
+class TestChez1AdoptVerbGone:
+    def test_adopt_verb_is_an_unknown_command(self, capsys):
+        """CHEZ1: the adopt verb no longer exists -- passing its old
+        name as the CLI's first argument exits through argparse's own
+        unknown-command path (exit 2, "invalid choice"), and the verb
+        function itself is absent from the module entirely."""
+        argv0 = f"{_RETIRED_MODULE}-adopt"
+        rc = cli.main([argv0, "/x"])
+        assert rc == 2  # argparse's own usage-error exit, caught and
+        # returned by `_main` (never a raw SystemExit — cli.py:2024)
+        err = capsys.readouterr().err
+        assert f"invalid choice: {argv0!r}" in err
+        verb_name = f"{_RETIRED_MODULE}_adopt"
+        assert not hasattr(verbs, verb_name)
+        assert verb_name not in verbs.__all__
+
+
+class TestChez2ModuleGone:
+    def test_import_raises_module_not_found(self):
+        """CHEZ2: importing the retired module raises
+        ``ModuleNotFoundError`` -- it is deleted, not merely
+        unimported."""
+        with pytest.raises(ModuleNotFoundError):
+            importlib.import_module(f"self_learn.{_RETIRED_MODULE}")
+
+    def test_verbs_has_zero_bin_parameters_for_the_retired_module(self):
+        """CHEZ2: ``verbs.py`` contains zero occurrences of the retired
+        module's ``_bin`` parameter, on any function. Positive control
+        (measured during the build, against this same AST sweep re-run
+        over 50fa815's verbs.py): 12 function signatures carried the
+        parameter before this unit -- ``_resolve_rules_target``,
+        ``_resolve_target``, ``_retirement_preflight``,
+        ``_retirement_host_phase``, ``_apply_target``, ``_host_phase``,
+        ``route``, ``route_direct``, ``commit_drift``, ``graduate``,
+        ``supersede``, ``recompile`` (the adopt verb itself, a 13th, is
+        deleted outright -- CHEZ1)."""
+        tree = ast.parse(Path(verbs.__file__).read_text(encoding="utf-8"))
+        param_name = f"{_RETIRED_MODULE}_bin"
+        hits = [
+            (node.name, node.lineno)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef)
+            for arg in node.args.args + node.args.kwonlyargs
+            if arg.arg == param_name
+        ]
+        assert hits == [], hits
+
+    def test_census_two_hits_only_in_compilers_comments(self):
+        """CHEZ2's own check instrument: a case-insensitive grep for
+        the retired module's name over ``cli/src`` returns EXACTLY 2
+        -- the two ``compilers.py:596``/``:605`` prose comments CHEZ6
+        exempts -- and a grep for the bin-parameter name returns 0.
+        Positive control at 50fa815 (§2.10a): 205 and 42."""
+        src_root = Path(verbs.__file__).resolve().parent.parent  # .../cli/src
+        out = subprocess.run(
+            ["grep", "-rn", "-i", _RETIRED_MODULE, str(src_root)],
+            capture_output=True, text=True,
+        ).stdout
+        hits = [ln for ln in out.splitlines() if ln]
+        assert len(hits) == 2, hits
+        assert all("compilers.py" in ln for ln in hits), hits
+
+        bin_out = subprocess.run(
+            ["grep", "-rn", f"{_RETIRED_MODULE}_bin", str(src_root)],
+            capture_output=True, text=True,
+        ).stdout
+        assert [ln for ln in bin_out.splitlines() if ln] == []
+
+
+class TestChez3NoAdoptHintChannel:
+    def test_offer_adopt_and_adopt_hint_absent_from_source(self):
+        """CHEZ3: the ``offer_adopt``/``adopt_hint`` channel is gone --
+        neither literal appears anywhere in ``verbs.py`` (its only
+        carrier was a result class defined only in, and deleted along
+        with, the retired module)."""
+        verbs_src = Path(verbs.__file__).read_text(encoding="utf-8")
+        assert "offer_adopt" not in verbs_src
+        assert "adopt_hint" not in verbs_src
+
+    def test_user_scope_route_prints_no_adopt_hint(self, tmp_path):
+        """CHEZ3: a real user-scope route through the plain-host path
+        emits no adopt-shaped warning -- there is no channel left to
+        fire one. Positive control (§2.10a's deleted Obligation 11, at
+        50fa815): an UNMANAGED user-scope RULES route with
+        ``offer_adopt=True`` DID carry an adopt hint in
+        ``result.warnings``; a plain ``claude-md`` destination like
+        this one never threaded ``offer_adopt`` even then, and now
+        nothing in the codebase can set the field at all."""
+        env = make_env(tmp_path)
+        target = tmp_path / "dot-claude" / "CLAUDE.md"
+        target.parent.mkdir()
+        target.write_text("# user conduct\n", encoding="utf-8")
+        record = make_behavior(scope="user")
+        create_record(env.ledger, record)
+        result = verbs.route(
+            env.ledger, record.id, dest="claude-md", no_push=True,
+            user_claude_md=target,
+        )
+        assert not any("adopt" in w.lower() for w in result.warnings)
+
+
+class TestChez5ExceptTuplesShrink:
+    def test_host_phase_errors_is_exactly_the_four_classes(self):
+        """CHEZ5: ``verbs._HOST_PHASE_ERRORS`` (verbs.py:2561 at
+        50fa815) shrinks to exactly ``CompileError``, ``GitOpsError``,
+        ``VerbError``, ``OSError`` -- the two retired-module exception
+        classes are gone."""
+        from self_learn.compilers import CompileError
+
+        assert verbs._HOST_PHASE_ERRORS == (
+            CompileError, gitops.GitOpsError, verbs.VerbError, OSError,
+        )
+
+    def test_no_except_clause_anywhere_names_the_retired_module(self):
+        """CHEZ5: no ``except`` clause in ``cli.py``, ``verbs.py``, or
+        ``teach.py`` names either of the retired module's exception
+        classes -- covers ``cli._cmd_verb``'s and ``cli._cmd_host``'s
+        tuples directly, the two this criterion names besides
+        ``_HOST_PHASE_ERRORS`` and ``teach.py:722-723``'s (all four
+        shrink together)."""
+        needle = _RETIRED_MODULE[0].upper() + _RETIRED_MODULE[1:]
+        for mod in (cli, verbs, teach):
+            tree = ast.parse(Path(str(mod.__file__)).read_text(encoding="utf-8"))
+            hits = []
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ExceptHandler) and node.type is not None:
+                    names = [n.id for n in ast.walk(node.type) if isinstance(n, ast.Name)]
+                    hits += [n for n in names if needle in n]
+            assert hits == [], (mod.__name__, hits)
+
+    def test_mutation_m51_shape_cannot_survive_cli_load(self):
+        """CHEZ5, mutation M51's shape (leave ``teach.py:75``'s
+        retired-module import line after deleting the module) verified
+        structurally rather than by re-planting the mutation:
+        ``self_learn.cli`` imports ``self_learn.teach``, and this whole
+        test module already imported ``self_learn.cli`` at collection
+        time (see the module-level import above) -- an unremoved
+        import of the deleted module anywhere on that load path would
+        have raised ``ModuleNotFoundError`` before any test in this
+        file could run, exactly M51's predicted failure ("ImportError
+        at CLI load; the whole CLI suite errors")."""
+        assert cli.__name__ == "self_learn.cli"
+        assert teach.__name__ == "self_learn.teach"
+
+
+class TestChez6CensusZeroRetiredModuleLiterals:
+    def test_census_by_tree(self):
+        """CHEZ6 (gate r1-N1/N2, 2026-08-28): zero mentions of the
+        retired module's name (case-insensitive) remain in ``cli/src``,
+        ``ui/src``, ``ui/templates``, ``ui/tests``, ``ui/static`` --
+        except the two ``compilers.py`` prose comments (``cli/src``).
+        ``ui/static`` carries zero -- `ui/static/app.js:517,519`'s two
+        dated retirement comments say "adopt", never the retired
+        module's name, so `UIC5` (which sweeps that word) accounts for
+        them instead. ``cli/tests``, EXCLUDING this file by path, carries
+        exactly 37: the UN3-protected pre-existing test/class names in
+        ``test_commit_drift.py`` (11), ``test_hosting.py`` (1), and
+        ``test_verbs.py`` (10 -- two pre-existing class names, the
+        module-name half of their identifiers, and the docstring prose
+        naming them; see that file's own ``TestRouteUserScope*``
+        classes) that UN3's name-set freeze forbids renaming in EITHER
+        phase (§9: "Explicitly NOT touchable, either phase") -- an
+        earlier build pass renamed four of those names and deleted a
+        fifth test outright before this instrument caught the UN3
+        violation; they are restored, literally, under their original
+        names -- plus two files documenting an UNRELATED, real-world
+        safety guard against the actual externally-installed dotfiles
+        CLI tool's ``cd`` subcommand (``test_route_hook.py``, 12;
+        ``test_hook_compiler.py``, 2) and one absence-assertion in
+        ``test_composer.py`` (1) that already proves the analyst
+        doctrine text does NOT mention it -- 11+1+10+12+2+1 = 37, the
+        exact accounted total. THIS file (``test_hostmode.py``) is
+        excluded from the ``cli/tests`` sweep BY PATH, not by evading
+        its own grep (gate r1-N1) -- ``_RETIRED_MODULE`` above is a
+        plain literal, and this docstring spells the protected names out
+        directly, same as any other file. ``docs/`` is explicitly NOT
+        swept (OUT-4). Positive control at 50fa815 (§2.10a): for the
+        original five trees, 205/12/7/343/43; ``ui/static`` was not
+        separately measured before this fold."""
+        plugin_root = Path(__file__).resolve().parents[2]  # plugins/self-learn
+        trees = {
+            "cli/src": plugin_root / "cli" / "src",
+            "cli/tests": plugin_root / "cli" / "tests",
+            "ui/src": plugin_root / "ui" / "src",
+            "ui/templates": plugin_root / "ui" / "templates",
+            "ui/tests": plugin_root / "ui" / "tests",
+            "ui/static": plugin_root / "ui" / "static",
+        }
+        excluded_by_path = {Path(__file__).resolve()}
+
+        def _hits(path):
+            out = subprocess.run(
+                ["grep", "-rn", "-i", _RETIRED_MODULE, str(path)],
+                capture_output=True, text=True,
+            ).stdout
+            hits = []
+            for ln in out.splitlines():
+                if not ln:
+                    continue
+                file_part = ln.split(":", 1)[0]
+                if Path(file_part).resolve() in excluded_by_path:
+                    continue
+                hits.append(ln)
+            return hits
+
+        assert len(_hits(trees["cli/src"])) == 2
+        assert len(_hits(trees["cli/tests"])) == 37
+        assert _hits(trees["ui/src"]) == []
+        assert _hits(trees["ui/templates"]) == []
+        assert _hits(trees["ui/tests"]) == []
+        assert _hits(trees["ui/static"]) == []  # zero chezmoi mentions; the 2 dated retirement comments say "adopt", not "chezmoi" (UIC5 sweeps that word)

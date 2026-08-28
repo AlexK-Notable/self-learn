@@ -246,8 +246,9 @@ class TestCapRetirementIrreversible:
     """U-cap §7 T1 -- the retirement is complete AND irreversible-by-
     accident. T1.3 and half of T1.4 live above in TestSectionCounts;
     this class is the rest of T1 (u-cap code gate r1, MAJOR 2): T1.1/
-    T1.2 (module-level absence), the remaining T1.4 legs
-    (`compile_managed_file` + the chezmoi wrapper), T1.5
+    T1.2 (module-level absence), the remaining T1.4 leg
+    (`compile_managed_file` -- its old dotfiles-wrapper sibling was
+    deleted outright by U-hostmode Phase 2, not merely re-checked), T1.5
     (`verbs.VerbResult`), and T1.6 (the source-grep guard WITH its
     positive control -- without the positive control, a mis-rooted path
     search passes vacuously, `lrn-ca690038` / `lrn-ea833a5b`)."""
@@ -268,15 +269,6 @@ class TestCapRetirementIrreversible:
         import inspect
 
         params = inspect.signature(compile_managed_file).parameters
-        assert "max_entries" not in params
-        assert "max_words" not in params
-
-    def test_t1_4_chezmoi_wrapper_has_no_override_params(self):
-        import inspect
-
-        from self_learn.chezmoi import compile_user_scope
-
-        params = inspect.signature(compile_user_scope).parameters
         assert "max_entries" not in params
         assert "max_words" not in params
 
@@ -517,7 +509,7 @@ class TestEpisodeBriefCompilerExclusion:
 # mechanics (§3.2's ownership rule, A7/A8/A13/A16/A17). The route/verb-
 # level criteria (A1, A2, A5, A9-A12) live in test_a2_rules_local.py's
 # "Obligation 19" block, matching that file's existing obligation-numbered
-# layout and Env/chezmoi_shim fixtures.
+# layout and Env fixture.
 
 
 def _load_leading_frontmatter(text):
@@ -643,7 +635,7 @@ class TestReadPathsFrontmatter:
         """Nit from the F1 gate round: `paths: null` is a third malformed
         shape (alongside the scalar and `[]` legs above) that the reader
         normalizes down to the same falsy `()` — has_paths_key, not this
-        function, is what the chezmoi-MANAGED refusal keys on (F1)."""
+        function, is what the F1 refusal keys on."""
         assert read_paths_frontmatter("---\npaths: null\n---\n") == ()
         assert read_paths_frontmatter("---\npaths:\n---\n") == ()
 

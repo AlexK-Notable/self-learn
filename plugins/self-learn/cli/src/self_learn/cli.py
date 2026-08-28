@@ -48,7 +48,6 @@ from . import report as report_mod
 from . import hosts as hosts_mod
 from . import reconcile as reconcile_mod
 from . import batch, gitops, miner, provider, refread, selfcheck, sentinel, serve, telemetry, verbs, worker
-from .chezmoi import ChezmoiAbort, ChezmoiError, UserScopeResult
 from .compilers import CompileError, ReferenceResult
 from .import_backlog import import_backlog
 from .import_common import ImporterError
@@ -403,19 +402,6 @@ def _build_parser() -> argparse.ArgumentParser:
         help="why the suspect is false — the analyst's x-axis",
     )
 
-    adopt = sub.add_parser(
-        "chezmoi-adopt",
-        help="A2 §10: bring an unmanaged, self-learn-written user-scope "
-        "rules file under chezmoi management (add + commit + push) — the "
-        "accepted §10 offer",
-    )
-    adopt.add_argument("path", metavar="PATH", help="the rules file to adopt")
-    adopt.add_argument(
-        "--no-push",
-        action="store_true",
-        dest="no_push",
-        help="chezmoi add + commit, skip only the push",
-    )
 
     link = sub.add_parser("link", help="record graph edges (11 §2.4)")
     link_sub = link.add_subparsers(dest="link_command", metavar="<edge>")
@@ -678,8 +664,9 @@ def _build_parser() -> argparse.ArgumentParser:
     hcd = host_sub.add_parser(
         "commit-drift",
         help="F5-5 guided commit-first: commit a dirty compile target's "
-        "OWN pending changes (never chezmoi drift — that refuses with the "
-        "re-add/apply explanation), then the caller retries its route",
+        "OWN pending changes (never a plain-host compile-record mismatch — "
+        "that refuses naming `recompile --adopt`), then the caller "
+        "retries its route",
     )
     hcd.add_argument("id", metavar="ID")
     hcd.add_argument(
@@ -1167,7 +1154,7 @@ def _add_surface_fill(
     ``user_claude_md`` is an internal passthrough to
     :func:`verbs.surface_fill` (blind-review F5) — there is no CLI flag
     for it; ``_cmd_list`` never passes anything but the default, so real
-    invocations keep reading the real chezmoi-managed file for a
+    invocations keep reading the real user-scope canon file for a
     user-scope record, exactly like every other verb call site. It exists
     so an in-process caller (a test) can override the target WITHOUT
     going through a subprocess — the real hazard this closes is a
@@ -1302,10 +1289,7 @@ def _reports_no_change(compile_result: object) -> bool:
     across every compile-result type, so each is read on its own terms:
     ``SectionResult``/``HookApplyResult``/``NewSkillApplyResult`` share
     ``.changed`` (duck-typed, read generically below); ``ReferenceResult``
-    has ``.applied`` instead; ``UserScopeResult`` has neither — read
-    ``.section.changed`` (chezmoi.py:119-132)."""
-    if isinstance(compile_result, UserScopeResult):
-        return not compile_result.section.changed
+    has ``.applied`` instead."""
     if isinstance(compile_result, ReferenceResult):
         return not compile_result.applied
     changed = getattr(compile_result, "changed", None)
@@ -1354,18 +1338,13 @@ def _outcome_state(result: verbs.VerbResult) -> str:
         return "drift"
     if _reports_no_change(result.compile_result):
         return "no_op"
-    # U-hostmode PLAIN3: widened to every PLAIN host, not only the
-    # (Phase-1-dead) chezmoi UserScopeResult sentinel — a plain host's
-    # successful, changed write never sets host_commit_sha (no host
-    # commit exists in plain mode by construction), so without this the
-    # shipped predicate fell through to "unknown" for every plain route.
-    # `result.mode` is `None` for a spec-less verb (reject/defer/
-    # graduate), which correctly never reaches this branch.
-    if (
-        isinstance(result.compile_result, UserScopeResult)
-        or result.variant == "local"
-        or result.mode == "plain"
-    ):
+    # U-hostmode PLAIN3: every PLAIN host's successful, changed write
+    # never sets host_commit_sha (no host commit exists in plain mode by
+    # construction), so without this the shipped predicate fell through
+    # to "unknown" for every plain route. `result.mode` is `None` for a
+    # spec-less verb (reject/defer/graduate), which correctly never
+    # reaches this branch.
+    if result.variant == "local" or result.mode == "plain":
         return "wrote_uncommitted"
     return "unknown"
 
@@ -1632,8 +1611,8 @@ def _cmd_verb(args: argparse.Namespace) -> int:
     except LedgerOpsError as exc:  # unknown/malformed id, proposal trouble
         print(f"self-learn {args.command}: {exc}", file=sys.stderr)
         return EXIT_USAGE
-    except (CompileError, ChezmoiAbort, ChezmoiError) as exc:
-        # broken markers / user-scope chezmoi aborts: refused, nothing lost
+    except CompileError as exc:
+        # broken markers: refused, nothing lost
         print(f"self-learn {args.command}: {exc}", file=sys.stderr)
         return 1
     except gitops.HalfWrittenError as exc:
@@ -1794,7 +1773,7 @@ def _cmd_host_inner(args: argparse.Namespace, home) -> int:
             result = verbs.commit_drift(
                 home, args.id, dest=args.dest, dry_run=args.dry_run
             )
-        except (verbs.VerbError, LedgerOpsError, RecordError, ChezmoiError) as exc:
+        except (verbs.VerbError, LedgerOpsError, RecordError) as exc:
             # gate 64: the commit-drift refusals (clean / drift / bad id /
             # a resolution VerbError) are usage-shaped, like every other
             # host-family refusal — never route's own exit-1 mapping
@@ -1841,29 +1820,6 @@ def _host_line(home, path, kind: str) -> str:
     return f"{path}{mode_suffix}  ⚠ BROKEN — {problem}"
 
 
-def _cmd_chezmoi_adopt(args: argparse.Namespace) -> int:
-    """A2 §10.5's ENTRYPOINT (the accepted §10 offer): ``self-learn
-    chezmoi-adopt <path>``. No ledger home-gate (:func:`_home_gate`) —
-    unlike every OTHER verb, this one touches ONLY the dotfiles repo
-    (P-A2b′-offer), so an absent/unsound ledger home is not this
-    command's business."""
-    try:
-        result = verbs.chezmoi_adopt(
-            resolve_home(), args.path, no_push=args.no_push
-        )
-    except (ChezmoiAbort, ChezmoiError) as exc:
-        print(f"self-learn chezmoi-adopt: {exc}", file=sys.stderr)
-        return 1
-    if result.warning:
-        print(f"self-learn: {result.warning}", file=sys.stderr)
-    if result.synced:
-        sha = f" @ {result.commit_sha[:7]}" if result.commit_sha else ""
-        print(f"chezmoi-adopt {args.path} → tracked + synced{sha}")
-    else:
-        print(f"chezmoi-adopt {args.path} → tracked (sync degraded, see above)")
-    return EXIT_OK
-
-
 def _cmd_recompile(args: argparse.Namespace) -> int:
     """Audit 2026-07-16 MAJOR 5: recompile had no home gate, so against a
     missing home it printed "no managed targets (no routed records)" and
@@ -1894,8 +1850,9 @@ def _cmd_recompile(args: argparse.Namespace) -> int:
         elif entry.changed and entry.commit_sha:
             state = f"recompiled @ {entry.commit_sha[:7]}"
         elif entry.changed:
-            # the chezmoi user flow commits its own repo — no host sha
-            state = "recompiled (dotfiles repo committed)"
+            # a plain host commits nothing (no host commit exists there —
+            # PLAIN3); user scope is one plain host among the rest.
+            state = "recompiled (plain host, no commit)"
         else:
             state = "up to date"
         print(f"recompile: {entry.target} — {state}")
@@ -2549,9 +2506,6 @@ def _main(argv: list[str] | None = None) -> int:
     if args.command == "recompile":
         sentinel.heartbeat()  # mutating invocation class (08 §1)
         return _cmd_recompile(args)
-
-    if args.command == "chezmoi-adopt":
-        return _cmd_chezmoi_adopt(args)
 
     if args.command == "sentinel":
         return _cmd_sentinel(args.action)
