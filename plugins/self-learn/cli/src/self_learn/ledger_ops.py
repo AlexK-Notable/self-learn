@@ -67,14 +67,19 @@ __all__ = [
     "globs_may_intersect",
     "is_unanalyzed",
     "list_items",
+    "LIVE_STATUSES",
     "proposal_info",
     "queue",
     "read_proposal",
     "record_title",
     "rehome_record",
+    "require_status",
     "resolve_record",
+    "RESOLVABLE_STATUSES",
+    "ROUTED_ONLY",
     "stamp_proposal",
     "status_infos",
+    "supersede_cycle_check",
     "supersede_record",
     "unparseable_pending",
     "validate_merge_proposal",
@@ -87,6 +92,29 @@ PROPOSAL_DESTINATIONS = ("skill-md", "claude-md", "reference", "new-skill", "hoo
 
 #: Statuses a record may resolve INTO (02 §2; deferral is not a resolution).
 RESOLUTION_STATUSES = frozenset({"routed", "rejected", "superseded"})
+
+#: FW-51 (2026-08-26 verb assessment) / 02 §2 "refusals... checked on
+#: status, never mere existence" — the statuses a record may legally be
+#: acted on FROM, keyed by the terminal status a resolution verb is moving
+#: it TO. `resolve_record` used to skip this precondition entirely, so
+#: e.g. `graduate` after `reject` silently inverted a human's denial into
+#: "the lesson won" — :func:`require_status` closes that at the one
+#: place every resolution verb (and `resolve_record` itself) now consults.
+LIVE_STATUSES = frozenset({"pending", "deferred"})
+#: `superseded` is also reachable from a ROUTED record — corrective
+#: supersession of live canon (02 §2) — but never from an already-
+#: terminal one (rejected, or already superseded/graduated).
+RESOLVABLE_STATUSES = LIVE_STATUSES | frozenset({"routed"})
+_RESOLVE_ALLOWED_SOURCE: dict[str, frozenset[str]] = {
+    "routed": LIVE_STATUSES,
+    "rejected": LIVE_STATUSES,
+    "superseded": RESOLVABLE_STATUSES,
+}
+#: The `confirm-held` / `confirm-recurrence` / `dismiss-suspect` /
+#: `followup-done` family: LIVE routed coverage ONLY (11 §2.1/§2.2/§2.5)
+#: — a superseded/rejected/pending record has no live coverage for a
+#: human to confirm, dismiss a suspect against, or clear a follow-up on.
+ROUTED_ONLY = frozenset({"routed"})
 
 DEFAULT_DEFER_DAYS = 30  # 02 §2: defer default +30 days
 
@@ -418,6 +446,61 @@ def find_record_path(
             if p.is_file():
                 return p
     raise LedgerOpsError(f"record {record_id} not found under {home}")
+
+
+#: Preferred human-facing order for a status list in a refusal message —
+#: never a bare ``sorted()`` (which would read "deferred/pending/routed",
+#: burying the common case last).
+_STATUS_DISPLAY_ORDER = ("pending", "deferred", "routed", "rejected", "superseded")
+
+
+def _status_phrase(allowed) -> str:
+    ordered = [s for s in _STATUS_DISPLAY_ORDER if s in allowed]
+    ordered += sorted(set(allowed) - set(_STATUS_DISPLAY_ORDER))
+    return "/".join(ordered)
+
+
+def require_status(
+    home: Path,
+    record_id: str,
+    allowed: frozenset[str],
+    *,
+    verb: str,
+    reason: str | None = None,
+) -> tuple[Path, Record]:
+    """Terminal-state precondition helper (02 §2: refusals are checked
+    **on status, never mere existence** — the pin ``rehome``/``rescope``
+    already followed, generalized here as the ONE place every resolution
+    verb, plus :func:`resolve_record` itself, now consults — closing
+    FW-51's root cause).
+
+    Resolves *record_id* across BOTH ``pending/`` AND ``resolved/``
+    (:func:`find_record_path`'s default statuses) — an existing record is
+    never reported "not found" merely because its CURRENT status makes
+    *verb* illegal; that used to surface as a lying exit 64 for `route` /
+    `reject` / `defer` on an already-resolved record (FW-51). When the
+    record's status is not in *allowed*, raises :class:`LedgerOpsError`
+    naming the record and its actual status — BEFORE any lock or
+    mutation; nothing is written on refusal. Returns ``(path, record)``
+    so callers need not re-read the file.
+
+    *reason* (FW-51 code gate r1, root-cause extra (i)): when given,
+    REPLACES the generic ``"{verb} needs status ..."`` tail with this
+    exact text — the one door that lets `confirm-held` / `confirm-
+    recurrence` / `dismiss-suspect` route through this SAME helper while
+    keeping their pre-existing, differently-worded refusal messages
+    byte-identical (pinned verbatim by `test_dismiss_suspect.py`).
+    Absent, the tail is generic and names *verb* itself."""
+    path = find_record_path(home, record_id)
+    record = Record.from_path(path)
+    if record.status not in allowed:
+        detail = (
+            reason
+            if reason is not None
+            else f"{verb} needs status {_status_phrase(allowed)} (02 §2)"
+        )
+        raise LedgerOpsError(f"record {record_id} is {record.status!r} — {detail}")
+    return path, record
 
 
 # ----------------------------------------------------------- proposal I/O
@@ -2060,6 +2143,7 @@ def resolve_record(
     rules_paths: list[str] | None = None,
     allow_empty_glob: bool = False,
     glob_bypass_reason: str | None = None,
+    verb: str | None = None,
 ) -> list[Path]:
     """File-op half of a resolution: update frontmatter via T2's mutation
     API, ``git mv`` pending→resolved (fs move when untracked), and remove
@@ -2067,7 +2151,11 @@ def resolve_record(
     them are pre-staged (git mv/rm) or were untracked.
 
     A record already in ``resolved/`` (corrective supersession of a routed
-    lesson, 02 §2) is updated in place — no move."""
+    lesson, 02 §2) is updated in place — no move.
+
+    ``verb`` names the caller for :func:`require_status`'s refusal message
+    (FW-51) — defaults to *new_status* itself when the caller does not say
+    (every current caller does)."""
     if new_status not in RESOLUTION_STATUSES:
         raise LedgerOpsError(
             f"resolution status must be one of {sorted(RESOLUTION_STATUSES)}, "
@@ -2099,8 +2187,9 @@ def resolve_record(
             "a new-skill routing must name the skill (routing.new_skill) — "
             "recompile and the drift check read it to find the target"
         )
-    path = find_record_path(home, record_id)
-    record = Record.from_path(path)
+    path, record = require_status(
+        home, record_id, _RESOLVE_ALLOWED_SOURCE[new_status], verb=verb or new_status
+    )
     if new_status == "routed":
         # dict[str, object]: the block mixes str/dict/list values below
         # (follow_up/hook are dicts, rules_paths is a list) — a narrower
@@ -2264,13 +2353,72 @@ def rescope_record(
     return touched, swept
 
 
+def supersede_cycle_check(home: Path, old_id: str, new_id: str) -> None:
+    """Refuses (:class:`LedgerOpsError`) when marking *old_id*
+    ``superseded_by`` *new_id* would close a cycle: walks *new_id*'s OWN
+    ``superseded_by`` chain (never *old_id*'s — that direction is
+    irrelevant) and raises if *old_id* is reachable (FW-51's two-record
+    cycle: ``supersede C D`` then ``supersede D C``, and its longer-chain
+    generalization).
+
+    Under normal CLI operation this is provably redundant with
+    :func:`require_status`'s liveness check on *new_id* alone —
+    :func:`resolve_record` only ever sets ``superseded_by`` in the SAME
+    call that terminalizes ``status``, so a live (pending/deferred/
+    routed) *new_id* always has ``superseded_by: null`` and the walk
+    below stops at hop zero. It earns its place as an independent,
+    genuinely graph-shaped check anyway: ``superseded_by`` is documented
+    mutable "in every status" (02 §2), so nothing STRUCTURALLY stops a
+    hand-edited or migrated ledger from carrying a live-status record
+    with a stale ``superseded_by`` pointer — the exact drift this walk
+    catches that a bare status check cannot. Bounded by a visited-set,
+    never loops on a pre-existing cycle it did not create."""
+    seen: set[str] = set()
+    current = new_id
+    while True:
+        if current in seen:
+            return  # a pre-existing cycle elsewhere in the ledger — not this call's corruption to raise
+        seen.add(current)
+        try:
+            path = find_record_path(home, current)
+        except LedgerOpsError:
+            return  # dangling id: not this check's problem
+        record = Record.from_path(path)
+        nxt = record.superseded_by
+        if not nxt or nxt == "canon":
+            return
+        if nxt == old_id:
+            raise LedgerOpsError(
+                f"supersede {old_id} → {new_id} would create a cycle: "
+                f"{new_id} already (transitively) traces back to "
+                f"{old_id} via superseded_by"
+            )
+        current = nxt
+
+
 def supersede_record(
-    home: Path, old_id: str, superseded_by: str, *, note: str | None = None
+    home: Path,
+    old_id: str,
+    superseded_by: str,
+    *,
+    note: str | None = None,
+    verb: str = "supersede",
 ) -> list[Path]:
     """Mark the old record superseded_by=<new-id|'canon'> and move it to
-    ``resolved/`` (``'canon'`` = graduation, 02 §2)."""
+    ``resolved/`` (``'canon'`` = graduation, 02 §2). When *superseded_by*
+    names a real record (not ``'canon'``), refuses a direct self-cycle
+    (``old_id == superseded_by``) — root-cause extra, code gate r1:
+    :func:`supersede_cycle_check` alone does NOT catch this degenerate
+    case, since the walk starts at *superseded_by*'s OWN
+    ``superseded_by`` field, which for a live record is always ``None``
+    (the walk finds nothing to hop to and returns clean) — then refuses
+    a longer cycle, see :func:`supersede_cycle_check`."""
+    if old_id == superseded_by:
+        raise LedgerOpsError(f"record {old_id} cannot supersede itself")
+    if superseded_by != "canon":
+        supersede_cycle_check(home, old_id, superseded_by)
     return resolve_record(
-        home, old_id, "superseded", superseded_by=superseded_by, note=note
+        home, old_id, "superseded", superseded_by=superseded_by, note=note, verb=verb
     )
 
 
@@ -2310,9 +2458,13 @@ def open_followups(home: Path) -> list[dict]:
 
 def defer_record(home: Path, record_id: str, until=None) -> list[Path]:
     """Set deferral metadata in place — the record STAYS in ``pending/``;
-    queue membership is computed from ``deferred_until`` (02 §2)."""
-    path = find_record_path(home, record_id, statuses=("pending",))
-    record = Record.from_path(path)
+    queue membership is computed from ``deferred_until`` (02 §2). FW-51:
+    the old ``find_record_path(..., statuses=("pending",))`` restriction
+    only ever gated on the DIRECTORY (deferred records already live in
+    ``pending/`` too) — it never checked status, and lied "not found"
+    (exit 64) for a record resolved into ``resolved/``. Routed through
+    :func:`require_status` now, same as every other resolution verb."""
+    path, record = require_status(home, record_id, LIVE_STATUSES, verb="defer")
     if until is None:
         until = (
             datetime.now(timezone.utc) + timedelta(days=DEFAULT_DEFER_DAYS)

@@ -152,6 +152,37 @@ def test_followup_done_unknown_id_is_usage(env, capsys):
     assert rc == 64
 
 
+def test_followup_done_refuses_after_status_leaves_routed(env, capsys):
+    """FW-51 M-3 (code gate r1): followup_done's own docstring says
+    "Clear a ROUTED record's follow-up" — nothing enforced it. Measured:
+    route with a follow_up, then graduate (status -> superseded; the
+    follow_up block SURVIVES the transition, graduate only WARNS about
+    it) -> followup_done used to still succeed, clear it, and commit,
+    even though open_followups() had already stopped listing it as open
+    (11 §2.5's status gate). Now gated the same way: exit 1, nothing
+    written, the follow_up block untouched."""
+    rid = seed_pending(env)
+    assert cli.main(["route", rid, "--follow-up", "upgrade-to-hook"]) == 0
+    assert cli.main(["graduate", rid]) == 0
+    record = resolved_record(env)
+    assert record.status == "superseded"
+    assert record.follow_up == {"action": "upgrade-to-hook"}  # survives graduate
+    path = env.home / "skills" / "s" / "resolved" / f"{rid}.md"
+    before_bytes = path.read_bytes()
+    before_head = git(env.home, "rev-parse", "HEAD").stdout.strip()
+
+    rc = cli.main(["followup", "done", rid])
+
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "'superseded'" in err
+    assert path.read_bytes() == before_bytes
+    assert git(env.home, "rev-parse", "HEAD").stdout.strip() == before_head
+    record = resolved_record(env)
+    assert record.status == "superseded"
+    assert record.follow_up == {"action": "upgrade-to-hook"}  # unchanged
+
+
 def test_status_counts_open_followups(env, capsys):
     rid = seed_pending(env)
     assert cli.main(["route", rid, "--follow-up", "upgrade-to-hook"]) == 0
