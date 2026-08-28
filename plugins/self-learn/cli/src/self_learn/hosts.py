@@ -72,6 +72,7 @@ __all__ = [
     "INIT_COMMIT_SUBJECT",
     "MARKER_FILENAME",
     "Hosts",
+    "HostAddResult",
     "HostsError",
     "ancestors_of",
     "canon_read_roots",
@@ -83,7 +84,6 @@ __all__ = [
     "host_remove",
     "host_path_problem",
     "host_slug",
-    "host_subject_name",
     "hosts_path",
     "is_project_host",
     "is_repo_root",
@@ -137,6 +137,21 @@ class Hosts:
     project_modes: dict[str, str] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class HostAddResult:
+    """N-3 (code gate r3 fold): what `host_add` returns — the updated
+    registry, PLUS a structured signal for whether this call repaired a
+    missing marker on an already-registered plain host (M-4, code gate
+    r2 fold). Previously `host_add` printed "marker restored" directly,
+    from inside this LIBRARY function — the one place in this module
+    that talked to a terminal. The CLI layer (`cli.py::_cmd_host_inner`)
+    now owns that print, keyed off `marker_restored`; every existing
+    caller that only reads `.hosts` (the common case) is unaffected."""
+
+    hosts: Hosts
+    marker_restored: bool = False
+
+
 def slug_for(path: Path | str) -> str:
     """The project bucket's directory name: Claude Code's readable
     projects-dir shape (resolved path, ``/`` → ``-``; the leading ``-``
@@ -166,34 +181,6 @@ def host_slug(home: Path | str, path: Path | str, *, scope_kind: str | None = No
     if scope_kind == "user":
         return "user"
     return slug_for(path)
-
-
-def host_subject_name(
-    home: Path | str, path: Path | str, *, scope_kind: str | None = None
-) -> str:
-    """N-8 (code gate r2 fold): a SHORT identifier for a host, safe to
-    embed in a ledger COMMIT SUBJECT — never :func:`slug_for`'s full
-    shape (the resolved path with every ``/`` replaced by ``-``), which
-    writes the operator's whole home-directory structure verbatim into
-    every standalone resync commit's subject line the moment one fires.
-    hosts.yaml carries no separate per-host name today (a project entry
-    is keyed by its own resolved path — see :class:`Hosts`), so this
-    substitutes the path's OWN basename for that missing name: still
-    greppable by eye, and typically far shorter than the full slug.
-
-    ``"user"`` for the user-scope host (never registered — §4.8, USER3),
-    matching :func:`host_slug`. Otherwise ``<basename>-<digest>`` — the
-    SAME short digest :func:`slug_for` already computes, kept for
-    collision-safety (two different repos can share a basename) — or the
-    bare digest alone on the one degenerate case where the resolved path
-    has no basename at all (a root mount). ``home`` is accepted for
-    signature symmetry with :func:`host_slug`/:func:`host_mode`; unused."""
-    del home
-    if scope_kind == "user":
-        return "user"
-    resolved = Path(path).resolve()
-    digest = hashlib.sha256(str(resolved).encode("utf-8")).hexdigest()[:8]
-    return f"{resolved.name}-{digest}" if resolved.name else digest
 
 
 def hosts_path(home: Path | str) -> Path:
@@ -607,7 +594,7 @@ def host_add(
     *,
     init: bool = False,
     mode: str = "git",
-) -> Hosts:
+) -> HostAddResult:
     """The ``host add`` verb's backing function (doc 13 §3): validate the
     path (must exist; must be a git repo when ``mode == "git"``), rewrite
     hosts.yaml, and commit it in the LEDGER repo — pinned subject
@@ -717,10 +704,12 @@ def host_add(
         # named repair returned rc 0 with a success line and left the
         # host broken (gate r2 M-4's probe: "MARKER RESTORED BY THE
         # NAMED REPAIR: False") — the named repair must repair.
+        marker_restored = False
         if mode == "plain" and not (target / MARKER_FILENAME).is_file():
             _write_host_marker(home, target)
-            print(f"host add: marker restored at {target / MARKER_FILENAME}")
-        return hosts  # already registered, same mode — nothing else to do
+            marker_restored = True
+        # already registered, same mode — nothing else to do
+        return HostAddResult(hosts=hosts, marker_restored=marker_restored)
 
     if mode == "plain":
         _write_host_marker(home, target)
@@ -749,7 +738,7 @@ def host_add(
     with gitops.commit_lock(home):
         yaml_path = save_hosts(home, hosts)
         _commit_or_half_written(home, [yaml_path], message)
-    return hosts
+    return HostAddResult(hosts=hosts, marker_restored=False)
 
 
 def _commit_or_half_written(

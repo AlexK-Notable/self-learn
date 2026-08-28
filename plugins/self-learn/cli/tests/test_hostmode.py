@@ -2659,15 +2659,18 @@ class TestRecompileRecordResyncOnRender:
         `hosts.slug_for`'s FULL shape (the resolved path, `/`→`-`, plus
         digest) — `/`-free as required, but very long, and on the real
         machine it writes the operator's whole home-directory structure
-        into a ledger commit subject. `hosts.host_subject_name` (see
-        `TestN8HostSubjectNameNeverTheFullPath` for its own direct unit
-        tests) fixes this AT THE FUNCTION level — the path's own
+        into a ledger commit subject. A dedicated `hosts.host_subject_name`
+        function fixed this AT THE FUNCTION level — the path's own
         BASENAME plus the same short digest, never the full path — but
         N-6 (below) supersedes it as the subject SOURCE for this
         specific commit: a batched run can span several different
         hosts, so naming any ONE of them would be arbitrary. The
         combined subject names a COUNT instead; no host path or name of
-        any shape reaches it.
+        any shape reaches it. N-1 (code gate r3 fold): with N-6 already
+        the only caller-side use, `host_subject_name` was dead code —
+        deleted along with its three direct unit tests; this paragraph's
+        own history is kept because it explains why the subject looks
+        the way it does.
 
         N-6 (code gate r2 fold): recompile used to emit ONE standalone
         ledger commit PER changed target (managed/reference/pointer/
@@ -3030,7 +3033,14 @@ class TestM4NamedRepairActuallyRepairs:
     `self-learn host add --mode plain` as the repair. This is the gate's
     own probe, pinned as a permanent test: delete the marker on an
     already-registered plain host, run the NAMED repair, and check the
-    marker actually comes back — not just rc 0 and a success line."""
+    marker actually comes back — not just rc 0 and a success line.
+
+    N-3 (code gate r3 fold): `host_add` no longer prints "marker
+    restored" itself — it returns a `HostAddResult` carrying the
+    `marker_restored` SIGNAL, and `cli.py::_cmd_host_inner` prints from
+    it. `test_named_repair_restores_a_deleted_marker` now asserts BOTH:
+    the library-level signal (`result.marker_restored`) via a direct
+    `host_add` call, and the CLI-level text via `cli.main`."""
 
     def test_named_repair_restores_a_deleted_marker(self, tmp_path):
         env = make_env(tmp_path)
@@ -3046,11 +3056,42 @@ class TestM4NamedRepairActuallyRepairs:
         result = host_add(env.ledger, plain_host, "project", mode="plain")
 
         assert result is not None  # rc OK — no HostsError raised
+        assert result.marker_restored is True, (
+            "the named repair (`host add --mode plain` on an already-"
+            "registered same-mode plain host) returned successfully but "
+            "its own result did not signal a marker repair — M-4's "
+            "exact defect, now visible at the return-value level (N-3)"
+        )
         assert marker.is_file(), (
             "the named repair (`host add --mode plain` on an already-"
             "registered same-mode plain host) returned successfully but "
             "did not restore the marker it owns — M-4's exact defect"
         )
+
+    def test_named_repair_prints_marker_restored_from_the_cli_layer(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """N-3 (code gate r3 fold): the print moved OUT of `host_add`
+        (a library function) and INTO `cli.py::_cmd_host_inner` — this
+        is the test that actually drives the CLI, the only place left
+        that can observe the terminal text at all."""
+        from self_learn import cli
+
+        env = make_env(tmp_path)
+        monkeypatch.setenv("SELF_LEARN_HOME", str(env.ledger))
+        plain_host = tmp_path / "m4-plain-cli"
+        plain_host.mkdir()
+        host_add(env.ledger, plain_host, "project", mode="plain")
+        marker = plain_host / hosts_mod.MARKER_FILENAME
+        marker.unlink()
+        capsys.readouterr()  # discard the first `host add`'s output
+
+        rc = cli.main(["host", "add", "--mode", "plain", str(plain_host)])
+        out = capsys.readouterr().out
+
+        assert rc == 0
+        assert marker.is_file()
+        assert f"marker restored at {marker}" in out
 
     def test_named_repair_is_a_true_no_op_when_the_marker_is_already_present(
         self, tmp_path
@@ -3058,7 +3099,7 @@ class TestM4NamedRepairActuallyRepairs:
         """The repair must not CHURN an intact marker on every re-add —
         only write when the marker is genuinely absent, so a script that
         re-registers the same host repeatedly does not re-timestamp it
-        every time."""
+        every time. N-3: also checks the returned signal stays False."""
         env = make_env(tmp_path)
         plain_host = tmp_path / "m4-plain-intact"
         plain_host.mkdir()
@@ -3066,49 +3107,17 @@ class TestM4NamedRepairActuallyRepairs:
         marker = plain_host / hosts_mod.MARKER_FILENAME
         before = marker.read_text(encoding="utf-8")
 
-        host_add(env.ledger, plain_host, "project", mode="plain")
+        result = host_add(env.ledger, plain_host, "project", mode="plain")
 
+        assert result.marker_restored is False, (
+            "an intact marker must not be reported as repaired"
+        )
         after = marker.read_text(encoding="utf-8")
         assert after == before, (
             "re-adding an already-registered plain host with an INTACT "
             "marker rewrote it — the repair must be conditional on the "
             "marker being absent, not unconditional"
         )
-
-
-class TestN8HostSubjectNameNeverTheFullPath:
-    """N-8 (code gate r2): `hosts.host_subject_name` — basename + short
-    digest, never `slug_for`'s full resolved-path-with-dashes shape, and
-    never a `/` (the whole point is a ledger-commit-subject-safe host
-    identifier)."""
-
-    def test_project_host_uses_basename_plus_the_slug_for_digest(self, tmp_path):
-        host_path = tmp_path / "some-project"
-        host_path.mkdir()
-        name = hosts_mod.host_subject_name(tmp_path, host_path, scope_kind="project")
-        assert "/" not in name
-        assert name.startswith("some-project-")
-        digest = name.rsplit("-", 1)[-1]
-        assert digest == hosts_mod.slug_for(host_path).rsplit("-", 1)[-1], (
-            "the digest suffix must be the SAME one slug_for computes "
-            "(collision-safety), not a different derivation"
-        )
-        # never the full slug shape (the whole resolved path, /-joined)
-        assert hosts_mod.slug_for(host_path) != name
-        assert str(host_path).replace("/", "-") not in name
-
-    def test_user_scope_returns_the_literal_user_string(self, tmp_path):
-        assert (
-            hosts_mod.host_subject_name(tmp_path, tmp_path / "irrelevant", scope_kind="user")
-            == "user"
-        )
-
-    def test_falls_back_to_the_bare_digest_when_the_path_has_no_basename(self):
-        # the one degenerate case named in the docstring: a root mount
-        # (Path("/").name == "") has no basename to prefix.
-        name = hosts_mod.host_subject_name("irrelevant-home", Path("/"), scope_kind="project")
-        assert "/" not in name
-        assert name == hosts_mod.slug_for(Path("/")).rsplit("-", 1)[-1]
 
 
 # -------------------------------------------------------------- PLAIN group

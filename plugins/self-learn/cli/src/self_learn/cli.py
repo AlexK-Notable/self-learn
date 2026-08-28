@@ -1496,12 +1496,22 @@ def _cmd_host_inner(args: argparse.Namespace, home) -> int:
         # registry-wide setting a human may have opted into.
         mode = args.mode if args.mode is not None else hosts_mod.effective_default_mode(home)
         try:
-            registry = hosts_mod.host_add(home, args.path, kind, init=args.init, mode=mode)
+            result = hosts_mod.host_add(home, args.path, kind, init=args.init, mode=mode)
         except hosts_mod.HostsError as exc:
             print(f"self-learn host add: {exc}", file=sys.stderr)
             return EXIT_USAGE
+        registry = result.hosts
         mode_suffix = f" (mode={mode})" if mode != "git" else ""
         print(f"host add: {kind} {Path(args.path).expanduser().resolve()}{mode_suffix}")
+        if result.marker_restored:
+            # N-3 (code gate r3 fold): the print moved here from inside
+            # hosts.py's host_add (M-4, code gate r2 fold) — the
+            # library layer now returns the SIGNAL, this CLI layer owns
+            # the terminal.
+            marker_path = (
+                Path(args.path).expanduser().resolve() / hosts_mod.MARKER_FILENAME
+            )
+            print(f"host add: marker restored at {marker_path}")
         print(
             f"  registry: skills_root={registry.skills_root or '(none)'} · "
             f"{len(registry.projects)} project host(s)"

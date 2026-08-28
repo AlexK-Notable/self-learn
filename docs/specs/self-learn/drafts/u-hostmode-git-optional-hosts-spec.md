@@ -1106,7 +1106,12 @@ Concretely:
    host target, the sha256 of the region the ledger says must be there,
    plus the previous one so an unlanded apply is distinguishable from a
    hand edit (§4.5). It is written **inside the resolution's own ledger
-   commit**, so it opens no new failure window (§4.5, B-3).
+   commit**, so it opens no new failure window (§4.5, B-3). A route against pre-existing marker-bounded content with
+   no record yet self-adopts — writing the missing entry and
+   proceeding, with one printed notice — only when that content is
+   byte-identical to what the compiler would currently render from the
+   ledger; anything else still refuses and names `recompile --adopt`
+   (§4.5a's seventh row).
 6. **User scope becomes a first-class plain host** (Phase 2), and
    `chezmoi_adopt` / `user_scope_dirty_status` are deleted (§4.8).
 7. Git hosts stay **byte-identical**, proven by the `UN` group (§5.8).
@@ -1957,7 +1962,7 @@ were `[B]`.)*
   makes the Phase-2 deletion a removal of dead code, so it is filed with
   its group but gated with Phase 1.)
 
-**94 criteria — 82 [A], 12 [B] — across 14 groups. 59 mutations. *(r9: MODE6a added, gate r2-M4.)***
+**94 criteria — 82 [A], 12 [B] — across 14 groups. 60 mutations. *(r9: MODE6a added, gate r2-M4; r10: M25 split into M25a/M25b, gate r3-N5.)***
 
 #### Can Phase 1 land alone? — re-run over every [A] criterion
 
@@ -2227,7 +2232,12 @@ both suites green.
   record `(repo_arg, argv)`; assert **zero** entries resolving inside the
   plain host. **Positive control in the same test:** the identical
   instrument over a git-mode route records a non-zero count. **Mutation
-  M25** (drop the control) → the control leg fails.
+  M25a** (drop the control) → the control leg fails, but this is a
+  META-ROW — deleting the test's own positive control is not
+  independently reddenable (§6, r10, gate r3-N5). **Mutation M25b**
+  (a stray `subprocess.run(["git", "status"], cwd=...)` inserted into
+  `_host_phase`'s plain branch) → RED, and is the actual proof that this
+  criterion's instrument catches a real hole.
 - **PLAIN5** **[A]** Two **OS processes** entering the plain-host lock are
   serialized: the second observably blocks until the first releases, and
   the file contains exactly one complete regeneration. **Never threads** —
@@ -2696,7 +2706,8 @@ r3's preamble said "three".)*
 | **M22** | skip the `.self-learn-host` check in `host_path_problem` | **GATE2** | *predicted* |
 | **M23** | `host remove` deletes `.self-learn-host` | GATE5 | *predicted* |
 | **M24** | leave `cli._outcome_state` unedited | **PLAIN3** | *predicted* — **measured anchor, CONFIRMED by the gate:** the shipped predicate at `cli.py:1146-1160` falls through to `"unknown"` for a `SectionResult` with `changed=True`, `host_commit_sha=None`, not `UserScopeResult`, `variant != "local"`. The mutation is the current code |
-| **M25** | drop `PLAIN4`'s git-mode positive control | PLAIN4's control leg | *predicted* — the `lrn-ea833a5b` shape: a gate whose pass output is identical to "could not see the target" |
+| **M25a** | drop `PLAIN4`'s git-mode positive control | PLAIN4's control leg | *META-ROW (r10, gate r3-N5): not independently reddenable.* Deleting a test's own POSITIVE CONTROL removes evidence, it does not redden an assertion — there is nothing left in the test for the deletion itself to fail. Kept in the table as the `lrn-ea833a5b` shape this mutation illustrates (a gate whose pass output is identical to "could not see the target"), not as a runnable row; `M25b` is the row that actually reddens |
+| **M25b** | insert a stray `subprocess.run(["git", "status"], cwd=str(spec.host_path))` into `_host_phase`'s PLAIN branch | PLAIN4 | *predicted — this is the mutation `M25a`'s control exists to catch, and the one gate r2 M-6 found invisible to the pre-fold instrument (`gitops._git` was patched; a raw `subprocess.run` bypassing that wrapper was not). `test_plain4_no_git_subprocess_against_plain_host` now patches BOTH `gitops._git` and raw `subprocess.run`; this mutation reddens the widened instrument. `M25b` RED is the proof that `M25a`'s control is doing real work — `M25a` alone cannot demonstrate that, by construction* |
 | **M26** | **keep `_host_phase`'s lock ternary but make its plain branch yield `contextlib.nullcontext()`** | **PLAIN5 only** | *predicted* — **measured anchor, gate-replicated:** the gate copied `_is_lock` and `_guarded_lines` verbatim and ran them over four shapes; this one leaves the mutation lines guarded and `test_lock_invariant.py` **GREEN**. *(SHAPE-PINNED-r2, gate D-12: replacing the ASSIGNMENT outright with a bare `nullcontext()` leaves zero guarded lines and turns the walker RED — a different result, and not this mutation.)* A gate that sees only PLAIN5 die has confirmed §2.11's blind spot, not found a hole |
 | **M27** | `--selftest` treats "no compile record" as clean | PLAIN8 | *predicted* — assert the rendered string, not the boolean |
 | **M28** | call `check_ignore` on a plain host | PLAIN9 | *predicted* |
@@ -3491,3 +3502,38 @@ build.)*
   catch.
   **Counts: two phases, 94 criteria (82 [A], 12 [B]) across 14 groups
   (`MODE6a` added), 59 mutations, 10 measured anchors.**
+- **r10** — 2026-08-28, folded in place during the Phase 1 code gate r3
+  fold (CLEAN — 0 Blockers, 0 Majors, 5 Nits, 2 Defers; z-note
+  `fFcid-IaulaB12061FOCD`; no re-gate, all five bounded). N-1:
+  `hosts.host_subject_name` deleted — its `__all__` entry and its three
+  direct unit tests (`TestN8HostSubjectNameNeverTheFullPath`) — dead
+  code after N-6's batching already meant nothing called it. N-2: one
+  sentence added to `03-decisions.md`'s `S-51` row, to
+  `13-hosting-and-separation.md` §4 item 5, and to this spec's own §3.3
+  item 5, each stating REC5's seventh row in one line: a route
+  self-adopts pre-existing marker-bounded content only when it is
+  byte-identical to the compiler's render, and still refuses (naming
+  `recompile --adopt`) otherwise. N-3: the marker-repair `print()` moved
+  OUT of `hosts.py` — `host_add` now returns a new `HostAddResult`
+  dataclass (`.hosts`, `.marker_restored: bool`) instead of a bare
+  `Hosts`, and `cli.py::_cmd_host_inner` prints "marker restored" from
+  the returned signal. The one production caller and the seven
+  `test_hosting.py` call sites that captured the return value as a
+  bare `Hosts` gained a trailing `.hosts`; the two
+  `TestM4NamedRepairActuallyRepairs` call sites that already captured
+  it as `result` needed no such change — that class gained a new
+  CLI-driving test plus a `result.marker_restored` assertion on the
+  existing library-level ones. N-4: `_resolve_local_target` built two
+  byte-identical `TargetSpec` calls, one per branch of its
+  `if check_dirty:` — now builds it once, before the branch, and returns
+  the same `spec` either way. N-5: the mutation table's `M25` row is
+  split — `M25a` (drop `PLAIN4`'s positive control) is marked a
+  META-ROW, not independently reddenable by construction (deleting a
+  test's own control removes evidence, it does not redden an
+  assertion); `M25b` (the stray `subprocess.run(["git", "status"], ...)`
+  actually inserted into `_host_phase`'s plain branch, gate r2 M-6's
+  find) is the row that reddens and is `M25a`'s proof. `PLAIN4`'s own
+  criterion text (§5.4) updated to match. D-1/D-2 left exactly as r9
+  documented them — no action, per the gate's own ruling.
+  **Counts: two phases, 94 criteria (82 [A], 12 [B]) across 14 groups,
+  60 mutations (`M25` split into `M25a`/`M25b`), 10 measured anchors.**

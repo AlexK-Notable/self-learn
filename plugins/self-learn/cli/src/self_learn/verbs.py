@@ -1528,6 +1528,14 @@ def _resolve_local_target(
     host = _project_host_or_refuse(home, bucket_dir, project_path)
     target = host / "CLAUDE.local.md"
     mode = host_mode(home, host)
+    # N-4 (code gate r3 fold): ONE `TargetSpec` for both the check_dirty
+    # and no-check_dirty legs — r1/r2 built it twice, byte-identically,
+    # once inside the `if check_dirty:` branch and once again as the
+    # bare fallthrough return; the only difference was whether
+    # `_abort_if_unsound` ran on the way out.
+    spec = TargetSpec(
+        "claude-md", "project", bucket_dir, target, host, variant="local", mode=mode
+    )
     if check_dirty:
         # U-hostmode PLAIN9/§4.11: check_ignore is a GIT-tracking privacy
         # guard (P-A3) — a plain host tracks NOTHING, so nothing can be
@@ -1540,14 +1548,8 @@ def _resolve_local_target(
                 "a personal lesson into a tracked file publishes it to "
                 "the team)"
             )
-        spec = TargetSpec(
-            "claude-md", "project", bucket_dir, target, host, variant="local", mode=mode
-        )
         _abort_if_unsound(home, host, mode, target, "managed", scope_kind="project", spec=spec)
-        return spec
-    return TargetSpec(
-        "claude-md", "project", bucket_dir, target, host, variant="local", mode=mode
-    )
+    return spec
 
 
 def _resolve_rules_target(
