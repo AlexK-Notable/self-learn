@@ -517,8 +517,8 @@ _ARMOR_SHAS = {
     "plugins/self-learn/cli/tests/backends.py": "a2ba2d74f117a230740d10e3c9fa67bd30f751ce80ec59667c9136557a906dde",
     "plugins/self-learn/cli/tests/test_invocation.py": "e3875614ab32a760788140d76e26cd542c07bd2f9dfa512f9da0f62c40b9257c",
     "plugins/self-learn/cli/tests/test_invocation_sdk.py": "124c0e8b310ce8dbfeea89348d0ea5a8cf9c96c071642f7e16e89a7ffa1b4e35",  # U-kl4 gate r1 fold (2026-08-28): B-1/N-D1/N-D2/N-D3, see the dated paragraph below
-    "plugins/self-learn/cli/tests/test_u_fake.py": "d1d2e5a55df4ab0f42dbc6f091478015b6dd1414cd162fd1de4d004eb2abf5b1",
-    "plugins/self-learn/cli/tests/test_worker.py": "96ac0b4606a4e643b24c67df7202a897864ea404390fa6fd353655345d6eefe7",
+    "plugins/self-learn/cli/tests/test_u_fake.py": "cf9dc0108131f36e19cd6aa6517ae115cef3c2ac4c682257d7666bab306657b7",  # U-ancestry, 2026-08-28: DS1_REMOVED/DS1_ADDED gain the canon_excerpt-supersession entries and _DS1_EXPECTED["test_worker.py"] moves 59->55 (see block comment above)
+    "plugins/self-learn/cli/tests/test_worker.py": "53287efe8e8f58b0fcda9741f68ca8a0b9b437ccc82a97b8b8cb89784d4bcd7a",  # U-ancestry, 2026-08-28: S-52 (SCAN1) supersedes u-marker §3 criterion A; the four canon_excerpt tests are rewritten to the whole-file contract and criterion B is re-homed as SCAN8
     "plugins/self-learn/cli/tests/test_repair.py": "40bf4fbd80ce7901d88ad9394de32301213b095d47c9e38fc253773c1d0c631c",
 }
 
@@ -657,6 +657,17 @@ _ARMOR_SHAS = {
 #: `N/D-1` (accepted as-is, no code change): one sentence added to the
 #: `NOTE-14` comment block stating the PID-reuse guard's own failure
 #: mode is a slower false RED, never a false green.
+#: U-ancestry re-pins `test_u_fake.py` a further time (same build as the
+#: `test_worker.py` re-pin above, 2026-08-28): the SCAN1/SCAN8 rewrite of
+#: `test_worker.py`'s four `canon_excerpt` tests (S-52) surfaced the same
+#: `test_ds1`-internal drift class U-cleanup-A/-B already fixed here
+#: twice -- `DS1_REMOVED` gains the four superseded names, `DS1_ADDED`
+#: gains the four replacement tests plus two new shared fixture helpers
+#: (`_scan8_filler`/`_scan8_fixture_lines`), and `test_ds1b`/`test_ds1c`'s
+#: mirrored `expected` sets and counts move with them. `_DS1_EXPECTED
+#: ["test_worker.py"]`'s own (count, sha) pin also moves (59 -> 55): the
+#: four newly-excluded base-side names drop out of that pin's base-only
+#: census. Already a member of the exempt set below.
 _SU4B_DIFF_EXEMPT = {
     "plugins/self-learn/cli/tests/conftest.py",
     "plugins/self-learn/cli/tests/test_invocation.py",

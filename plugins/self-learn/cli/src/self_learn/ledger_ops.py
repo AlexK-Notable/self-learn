@@ -39,6 +39,7 @@ from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
 from . import hosts as hosts_mod
+from .compilers import BEGIN_MARKER, END_MARKER
 from .ledger import Bucket, discover_buckets, home_state, home_state_message
 from .normalize import sha_anchor
 from .records import RECORD_ID_RE, Record, RecordError
@@ -127,10 +128,18 @@ SHA_ANCHOR_RE = re.compile(r"^sha256:[0-9a-f]{12}$")
 #: (§3.3, §6-D2).
 TRACE_GATE_KEYS = ("g0", "t1", "t2", "t3", "t3a", "t4", "tn", "e1", "outcome")
 
-#: Set-F (§3.2): the closed decision-trace flag set. Eight values;
+#: Set-F (§3.2): the closed decision-trace flag set (its length is
+#: pinned by test_decision_trace.py's own `len(TRACE_FLAGS)` assertion,
+#: not restated here as a second hardcoded count -- code gate r1 N11).
 #: `pathed-unbuilt` is required by r2 §1.6's PATHED transition rule even
 #: though r2 §1.2 omits it — resolved in favour of the rule that has to
-#: run (§8-C1). Tests iterate this tuple; they never hardcode a copy.
+#: run (§8-C1). U-ancestry adds the last two (§6.2/§6.1): `canon-hand-
+#: written` marks a `g0.canon` "yes" resolved from a HAND-WRITTEN region
+#: rather than the compiler's managed section (HW-1); `unregistered-
+#: ancestor` marks a directory on the ancestor path that carries a
+#: `CLAUDE.md` but is not a registered host (doctrine §3 — a fact told
+#: to the human, never registered by the analyst). Tests iterate this
+#: tuple; they never hardcode a copy.
 TRACE_FLAGS = (
     "near-cluster",
     "cluster-indeterminate",
@@ -140,6 +149,8 @@ TRACE_FLAGS = (
     "scope-mismatch",
     "consider-local",
     "pathed-unbuilt",
+    "canon-hand-written",
+    "unregistered-ancestor",
 )
 
 #: Set-R (§3.3): the `recommendation` enum.
@@ -1862,8 +1873,115 @@ def _validate_derivation(data: dict, *, scope: str | None = None) -> None:
             )
 
 
+#: U-ancestry SCAN6/CARD4 — the HW-1 target shape the doctrine amendment
+#: teaches: `<absolute path>:<line>`. A `g0.canon.target` in any other
+#: shape (a managed-section citation, `"SKILL.md rule X"`, ...) is simply
+#: not matched here and neither refusal below can fire on it.
+_CANON_TARGET_RE = re.compile(r"^(?P<path>/.+):(?P<line>\d+)$")
+
+
+def _validate_canon_target(data: dict, *, home: Path | None) -> None:
+    """U-ancestry SCAN6 (HW-1) / CARD4: two refusals over
+    `gates.g0.canon.target`, both scoped to the case where
+    `gates.g0.canon.answer` is "yes" and the target is shaped
+    `<absolute path>:<line>` (:data:`_CANON_TARGET_RE`) — the format the
+    doctrine amendment teaches for an ancestor or hand-written hit; a
+    managed-section citation in any other free-form shape is untouched by
+    either check.
+
+    **CARD4 — unconditional, no filesystem access.** A target resolving
+    inside a `references/` directory (project OR skill scope: both are
+    literally named `references`) is refused outright, purely lexically
+    (a path component check, never a read): `selfcheck._loaded_surface`
+    never returns a references/ file, and the compiled pointer block
+    says so verbatim ("Captured lessons that are NOT loaded into this
+    context"). A references hit is a shelf-evidence signal (§7), never
+    `g0.canon` evidence — note this function never names the card
+    section's key: per card-sections.yaml's own contract, nothing
+    downstream of the registry may hardcode a section name, and this
+    validator is downstream too.
+
+    **SCAN6 (HW-1) — opt-in via `home`**, the same idiom as
+    `record_text`/`scope` above (S4: this module performs no filesystem
+    I/O unless a caller hands it something to read, and `home` is that
+    hand-off here). When supplied, the cited target file is read to
+    locate the managed region — the SAME `BEGIN_MARKER`/`END_MARKER` pair
+    `worker.canon_blocks` retains, matched case-sensitively — and when
+    the cited line falls OUTSIDE it (or the markers are altogether
+    absent — every line is then hand-written), the proposal must carry
+    BOTH a non-empty `card` section (any shelf-evidence entry — the SET
+    of section keys is card-sections.yaml's business, never this
+    module's) AND the `canon-hand-written` flag; either alone is refused
+    (a mention is not a rule, and the conjunction is the point). An
+    unreadable/nonexistent target — the live case for most fixtures that
+    never opt into `home` — cannot be classified and is silently
+    skipped: this leg only ever ADDS a refusal, never removes one a
+    caller already gets from `_check_evidence`'s shape rules."""
+    gates = data.get("gates")
+    if not isinstance(gates, dict):
+        return
+    g0 = gates.get("g0")
+    if not isinstance(g0, dict):
+        return
+    canon = g0.get("canon")
+    if not isinstance(canon, dict) or canon.get("answer") != "yes":
+        return
+    target = canon.get("target")
+    if not isinstance(target, str) or not target:
+        return
+    match = _CANON_TARGET_RE.match(target)
+    if match is None:
+        return
+    target_path = Path(match.group("path"))
+
+    if "references" in target_path.parts:
+        raise ProposalError(
+            f"gates.g0.canon.target {target!r} resolves inside a "
+            "references/ directory — a references file is captured, NOT "
+            "loaded (CARD4); write the shelf-evidence card section "
+            "instead of a g0.canon 'yes'"
+        )
+
+    if home is None:
+        return
+    try:
+        lines = target_path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return
+
+    line_no = int(match.group("line"))
+    begin = next((i for i, ln in enumerate(lines) if BEGIN_MARKER in ln), None)
+    end = next((i for i, ln in enumerate(lines) if END_MARKER in ln), None)
+    inside_managed = (
+        begin is not None
+        and end is not None
+        and end >= begin
+        and (begin + 1) <= line_no <= (end + 1)
+    )
+    if inside_managed:
+        return
+
+    flags = data.get("flags")
+    card = data.get("card")
+    has_flag = isinstance(flags, list) and "canon-hand-written" in flags
+    has_card = isinstance(card, dict) and any(
+        isinstance(v, str) and v.strip() for v in card.values()
+    )
+    if not (has_flag and has_card):
+        raise ProposalError(
+            f"gates.g0.canon.target {target!r} names a region outside a "
+            "managed section (HW-1) — the proposal must carry BOTH a "
+            "shelf-evidence card section and the 'canon-hand-written' "
+            "flag; a hand-written mention is not a rule"
+        )
+
+
 def validate_proposal(
-    data: dict, *, record_text: str | None = None, scope: str | None = None
+    data: dict,
+    *,
+    record_text: str | None = None,
+    scope: str | None = None,
+    home: Path | None = None,
 ) -> None:
     """02 §1 single-record proposal schema (incl. the M3 hook-destination
     extension), plus the optional u-schema-decision-trace (§3): `gates`,
@@ -1876,8 +1994,12 @@ def validate_proposal(
     (u-table §3.5/E2): when supplied, `gates.outcome` and the proposal's
     rendered fields are recomputed against Table-1/Render-1 and refused
     on mismatch (`_validate_derivation`); when omitted, no derivation
-    runs at all — never a partial one (BD4). Raises
-    :class:`ProposalError`."""
+    runs at all — never a partial one (BD4). ``home`` is keyword-only
+    with a ``None`` default too (U-ancestry SCAN6/HW-1): when supplied,
+    :func:`_validate_canon_target` reads the cited `g0.canon.target` file
+    to enforce HW-1's card+flag requirement; when omitted, only CARD4's
+    lexical references/ refusal runs (no filesystem I/O at all — S4).
+    Raises :class:`ProposalError`."""
     if not isinstance(data, dict):
         raise ProposalError("proposal is not a mapping")
     dest = data.get("destination")
@@ -1928,6 +2050,7 @@ def validate_proposal(
     _validate_card(data)
     _validate_gates(data, record_text=record_text, scope=scope)
     _validate_derivation(data, scope=scope)
+    _validate_canon_target(data, home=home)
 
 
 def _validate_rules_fields(data: dict) -> None:
@@ -2035,7 +2158,7 @@ def write_proposal(home: Path, record_id: str, data: dict) -> Path:
     )
     record_text = record.to_text() if record is not None else None
     scope = record.scope if record is not None else None
-    validate_proposal(data, record_text=record_text, scope=scope)
+    validate_proposal(data, record_text=record_text, scope=scope, home=home)
     path = _proposal_path(record_path.parent.parent, record_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     _dump_yaml(data, path)

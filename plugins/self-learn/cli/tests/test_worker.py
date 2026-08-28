@@ -1400,14 +1400,65 @@ def test_canon_excerpt_unresolvable_skill_target_never_raises(tmp_path):
     assert "unresolvable" in prompt
 
 
-def test_canon_excerpt_finds_the_compiler_written_markers_in_a_fat_target(env):
-    """U-marker (u-marker-excerpt-case-spec.md §3 criterion A): a fat
-    project-scope target's compiled section must reach the excerpt. The
-    section here is written by the REAL compiler (`compile_managed_text`)
-    — the marker text is never typed in this test, only the imported
-    compiler constants are used to assert on it (spec §2's import rule:
-    `worker._canon_excerpt` must search for the markers the compiler
-    actually writes, not a hand-typed legacy spelling)."""
+def _scan8_filler(prefix: str, min_bytes: int) -> list[str]:
+    """U-ancestry §11 fixture 5: a block of filler lines whose combined
+    UTF-8 byte length is at least `min_bytes` — used so a segment sits
+    OUTSIDE both the head-fill and the tail-fill budget, each bounded by
+    `worker.CANON_BYTES_PER_FILE`."""
+    lines: list[str] = []
+    total = 0
+    i = 0
+    while total < min_bytes:
+        line = f"{prefix} filler line {i:06d}"
+        lines.append(line)
+        total += len(line.encode("utf-8")) + 1
+        i += 1
+    return lines
+
+
+def _scan8_fixture_lines(
+    routed_record, *, uppercase_begin: bool = True, uppercase_end: bool = True
+) -> list[str]:
+    """SCAN8's fixture (U-ancestry §9/§11 fixture 5), load-bearing
+    layout: head filler >= `CANON_BYTES_PER_FILE`, a decoy marker pair
+    placed AFTER that budget (uppercase per `uppercase_begin`/
+    `uppercase_end` — a `False` side is ordinary filler text, never a
+    marker, so a half-fold fixture cannot accidentally create a SECOND
+    genuine pair), more filler >= `CANON_BYTES_PER_FILE`, the REAL
+    compiler-written section (`compile_managed_text` — u-marker §2's
+    import rule: never a hand-typed marker), then >=
+    `CANON_BYTES_PER_FILE` of tail filler. Only this MIDDLE placement
+    makes the over-cap mutations discriminate — every live managed
+    section sits in the last 3% of its file, where tail fill would
+    retain it regardless of how the markers are matched (spec §6.2, r2
+    gate M1)."""
+    from self_learn.compilers import BEGIN_MARKER, END_MARKER, compile_managed_text
+
+    margin = worker.CANON_BYTES_PER_FILE + 4096
+    head = _scan8_filler("head", margin)
+    decoy_begin = BEGIN_MARKER.upper() if uppercase_begin else "decoy filler (not a marker)"
+    decoy_end = END_MARKER.upper() if uppercase_end else "decoy filler (not a marker)"
+    mid = _scan8_filler("mid", margin)
+    real_section = compile_managed_text("", [routed_record]).text.rstrip("\n").splitlines()
+    tail = _scan8_filler("tail", margin)
+    return head + [decoy_begin, decoy_end] + mid + real_section + tail
+
+
+def test_canon_blocks_whole_file_reaches_the_compiler_written_section(env):
+    """SCAN1: the own-host block is the WHOLE file up to
+    `CANON_BYTES_PER_FILE` — the old `<200 lines` / `markers ±20` /
+    `first-60` three-way branch is gone. This SUPERSEDES ONLY u-marker
+    `u-marker-excerpt-case-spec.md` §3 criterion A's **A3** leg (exact
+    `lines[begin-20:end+21]` equality — no window exists to assert once
+    the whole file is read). **A0** (the fixture stays fat — ≥200 lines,
+    begin index >60, so this would fail pre-U-marker whenever the
+    section happened to land in a head-of-file truncation window), **A1**
+    (both compiler-written markers present) and **A2**
+    (`compilers.entry_line(R)` present — the payload, not just the
+    frame) are PRESERVED and re-asserted here against the whole-file
+    contract. The section is written by the REAL compiler
+    (`compile_managed_text`) — no marker spelling is typed in this
+    test, only the imported constants (u-marker §2's import rule)."""
     from self_learn.compilers import (
         BEGIN_MARKER,
         END_MARKER,
@@ -1431,11 +1482,15 @@ def test_canon_excerpt_finds_the_compiler_written_markers_in_a_fat_target(env):
 
     lines = full_text.splitlines()
     begin_idx = next(i for i, ln in enumerate(lines) if BEGIN_MARKER in ln)
-    end_idx = next(i for i, ln in enumerate(lines) if END_MARKER in ln)
-    # A0 — fixture guard: without this, A would pass pre-fix whenever the
-    # section happened to land inside the head-of-file truncation window.
+    # A0 — fixture guard: without this, A0/A1/A2 would already pass under
+    # the OLD ±20-window logic too, so SCAN1's own whole-file claim (every
+    # authored/trailing line present, not just a marker neighbourhood)
+    # would go unexercised.
     assert len(lines) >= 200
     assert begin_idx > 60
+    # SCAN1's cap: this fixture is deliberately UNDER CANON_BYTES_PER_FILE
+    # — the whole-file branch, not the over-cap truncation path (SCAN8).
+    assert len(full_text.encode("utf-8")) < worker.CANON_BYTES_PER_FILE
 
     pending = make_behavior(scope="project", record_id="lrn-0000feed")
     create_record(env.home, pending, project_path=env.host)
@@ -1443,136 +1498,141 @@ def test_canon_excerpt_finds_the_compiler_written_markers_in_a_fat_target(env):
     (entry,) = _queue(bucket)
 
     excerpt = worker._canon_excerpt(env.home, entry)
-    excerpt_lines = excerpt.splitlines()
 
     assert BEGIN_MARKER in excerpt  # A1
     assert END_MARKER in excerpt  # A1
-    assert entry_line(routed_record) in excerpt_lines  # A2 — payload, not frame
-    lo, hi = max(0, begin_idx - 20), min(len(lines), end_idx + 21)
-    assert excerpt_lines == lines[lo:hi]  # A3 — exact list equality
-    # Measured shape (spec §3A): 43 lines, first "authored line 231",
-    # last "trailing line 19".
-    assert excerpt_lines == lines[231:274]
+    assert entry_line(routed_record) in excerpt.splitlines()  # A2 — payload, not frame
+    # SCAN1 — the WHOLE file, not a ±20-line window: content far outside
+    # the old window is present too.
+    assert "authored line 0" in excerpt
+    assert "authored line 249" in excerpt
+    assert "trailing line 29" in excerpt
 
 
-def test_canon_excerpt_case_variant_of_compiler_marker_does_not_match(env):
-    """U-marker (u-marker-excerpt-case-spec.md §3 criterion B): a
-    case-variant of the compiler's own marker must NOT match. Both
-    needles are derived from the imported constants (case-swapped) — no
-    marker spelling is typed in this build at all.
+def test_cap_retains_managed_region(env):
+    """SCAN8 (u-marker §3 criterion B, RE-HOMED from the branch selector
+    to the truncation path): under the byte cap, the compiler-written
+    managed region is reserved FIRST — before any head or tail fill —
+    and located by the imported markers case-sensitively, so an
+    uppercase decoy pair the compiler never wrote is not treated as a
+    managed region. Both needles are derived from the imported constants
+    (case-swapped); no marker spelling is typed in this build.
 
-    This fixture is red pre-fix BECAUSE an uppercased begin marker
-    contains the legacy needle (spec §1) as a substring, and likewise
-    the uppercased end marker contains its counterpart, so
-    unfixed code wrongly finds a window around line 150 instead of
-    falling through to the head-of-file truncation. Do not case-fold
-    this fixture away — it is the positive control that catches a
-    case-folded "defensive" fix (`BEGIN_MARKER.lower() in ln.lower()`),
-    which would match this fixture exactly the way the legacy needle
-    did.
-
-    FW-52 (2026-08-02): uppercasing BOTH markers means a build that
-    case-folds only ONE needle (begin or end) survives this test too —
-    it finds the folded one, misses the untouched one, and lands on the
-    exact same truncation this test asserts. Closed by the two
-    single-needle variants immediately below, added ALONGSIDE this one
-    — this stays the only fixture red against the ORIGINAL (pre-U-marker)
-    legacy-needle bug, so it remains the required positive control and
-    must not be removed."""
-    from self_learn.compilers import BEGIN_MARKER, END_MARKER
+    Positive: the real, compiler-written section is retained wherever it
+    sits (the middle of an over-cap file — §11 fixture 5). Negative: the
+    decoy pair's own text never appears — this is the positive control
+    against a case-FOLDED "defensive" fix (`BEGIN_MARKER.lower() in
+    ln.lower()`, u-marker's M5 / this spec's M30), which would treat the
+    decoy — appearing earlier in the file — as the managed region and
+    both invert this test's two assertions."""
+    from self_learn.compilers import BEGIN_MARKER, END_MARKER, compile_managed_text, entry_line
     from self_learn.ledger import discover_buckets
     from self_learn.ledger_ops import queue as _queue
 
-    lines = [f"line {i}" for i in range(300)]
-    lines[150] = BEGIN_MARKER.upper()
-    lines[160] = END_MARKER.upper()
-    (env.host / "CLAUDE.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    routed_record = make_behavior(record_id="lrn-0000bee5")
+    routed_record.set_routing(
+        {"routed_at": "2026-07-13T18:02:00Z", "destination": "claude-md", "by": "human"}
+    )
+    routed_record.set_status("routed")
 
-    pending = make_behavior(scope="project", record_id="lrn-0000face")
+    lines = _scan8_fixture_lines(routed_record)
+    full_text = "\n".join(lines) + "\n"
+    # Fixture guard: this is the OVER-cap path (SCAN8), not SCAN1's.
+    assert len(full_text.encode("utf-8")) > worker.CANON_BYTES_PER_FILE
+    (env.host / "CLAUDE.md").write_text(full_text, encoding="utf-8")
+
+    pending = make_behavior(scope="project", record_id="lrn-0000bee6")
     create_record(env.home, pending, project_path=env.host)
     (bucket,) = [b for b in discover_buckets(env.home) if b.scope == "project"]
     (entry,) = _queue(bucket)
 
     excerpt = worker._canon_excerpt(env.home, entry)
-    # B1 — exact list equality against the head-of-file truncation.
-    assert excerpt.splitlines() == [f"line {i}" for i in range(60)] + [
-        "… (truncated)"
-    ]
+
+    assert BEGIN_MARKER in excerpt  # (+)
+    assert END_MARKER in excerpt  # (+)
+    assert entry_line(routed_record) in excerpt.splitlines()  # (+) payload, not frame
+    assert BEGIN_MARKER.upper() not in excerpt  # (-) the decoy never appears
+    assert END_MARKER.upper() not in excerpt  # (-)
 
 
-def test_canon_excerpt_begin_only_case_variant_does_not_match(env):
-    """FW-52: the shipped criterion B above uppercases BOTH markers, so it
-    cannot tell a fully case-sensitive extractor (correct) from one that
-    case-folds only the BEGIN needle (`BEGIN_MARKER.lower() in
-    ln.lower()` on begin, plain `END_MARKER in ln` on end) — that
-    half-blind build finds begin via the fold, finds end normally (it is
-    untouched, genuinely lowercase), and produces a real window instead
-    of falling through `begin is None or end is None` to the truncation
-    both fixtures assert. This fixture isolates the BEGIN needle: only
-    line 150 is uppercased, line 160 keeps the real, untyped
-    `END_MARKER`. Shipped (fully case-sensitive) code still finds `end`
-    but not `begin`, so `begin is None` alone is enough to trip the same
-    truncation branch — added ALONGSIDE the both-uppercased fixture, not
-    instead of it (see that test's docstring: it is the only fixture red
-    against the pre-U-marker legacy-needle bug, since an
-    all-uppercase-vs-all-uppercase substring match is exactly what the
-    legacy `"SELF-LEARN:BEGIN"`/`"SELF-LEARN:END"` needles would have hit
-    on both lines here; a single uppercased needle plus one real,
-    lowercase needle does NOT reproduce that failure, so this fixture is
-    NOT red pre-fix — it targets only the half-case-fold class, a defect
-    that postdates the original fix and that the shipped both-uppercased
-    fixture cannot see)."""
-    from self_learn.compilers import BEGIN_MARKER, END_MARKER
+def test_cap_retains_managed_region_begin_only_case_variant(env):
+    """SCAN8's begin-half-fold twin (u-marker's FW-52 discipline, carried
+    forward): the main test above uppercases BOTH the decoy's begin and
+    end, so it cannot tell a fully case-sensitive extractor (correct)
+    from one that case-folds only the BEGIN needle — that half-blind
+    build finds the decoy's begin via the fold, finds the REAL section's
+    end normally (untouched, genuinely lowercase, and the only END
+    marker in this fixture), and reserves a span from the decoy through
+    the real end — which still CONTAINS the real section, so only the
+    negative assertion (the decoy itself must never appear) catches this
+    half-fold, not the positive one. This is `M35` — u-marker's `M1`
+    (restore the legacy needle on the begin line only), carried to its
+    new home."""
+    from self_learn.compilers import BEGIN_MARKER, END_MARKER, compile_managed_text, entry_line
     from self_learn.ledger import discover_buckets
     from self_learn.ledger_ops import queue as _queue
 
-    lines = [f"line {i}" for i in range(300)]
-    lines[150] = BEGIN_MARKER.upper()
-    lines[160] = END_MARKER  # real marker, untouched — the control leg
-    (env.host / "CLAUDE.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    routed_record = make_behavior(record_id="lrn-0000beef")
+    routed_record.set_routing(
+        {"routed_at": "2026-07-13T18:02:00Z", "destination": "claude-md", "by": "human"}
+    )
+    routed_record.set_status("routed")
 
-    pending = make_behavior(scope="project", record_id="lrn-0000beef")
+    lines = _scan8_fixture_lines(routed_record, uppercase_begin=True, uppercase_end=False)
+    full_text = "\n".join(lines) + "\n"
+    assert len(full_text.encode("utf-8")) > worker.CANON_BYTES_PER_FILE
+    (env.host / "CLAUDE.md").write_text(full_text, encoding="utf-8")
+
+    pending = make_behavior(scope="project", record_id="lrn-0000bef0")
     create_record(env.home, pending, project_path=env.host)
     (bucket,) = [b for b in discover_buckets(env.home) if b.scope == "project"]
     (entry,) = _queue(bucket)
 
     excerpt = worker._canon_excerpt(env.home, entry)
-    assert excerpt.splitlines() == [f"line {i}" for i in range(60)] + [
-        "… (truncated)"
-    ]
+
+    assert BEGIN_MARKER in excerpt
+    assert END_MARKER in excerpt
+    assert entry_line(routed_record) in excerpt.splitlines()
+    assert BEGIN_MARKER.upper() not in excerpt
 
 
-def test_canon_excerpt_end_only_case_variant_does_not_match(env):
-    """FW-52, the END-needle twin of the test above: line 150 keeps the
-    real, untyped `BEGIN_MARKER`; only line 160 (the END needle) is
-    uppercased. A build that case-folds only the END check (plain
-    `BEGIN_MARKER in ln` on begin, `END_MARKER.lower() in ln.lower()` on
-    end) finds begin normally and end via the fold, and — like the
-    begin-only variant above — produces a real window where shipped
-    (fully case-sensitive) code correctly finds `end is None` and falls
-    through to the same head-of-file truncation. Added alongside, never
-    replacing, the both-uppercased fixture; not red pre-fix for the same
-    reason as the begin-only variant (one real, lowercase needle here
-    breaks the legacy all-uppercase substring match the original bug
-    needed)."""
-    from self_learn.compilers import BEGIN_MARKER, END_MARKER
+def test_cap_retains_managed_region_end_only_case_variant(env):
+    """SCAN8's end-half-fold twin: only the decoy's END is uppercased, its
+    BEGIN is ordinary filler (never a marker at all — a genuine second
+    BEGIN would corrupt this fixture's claim). A build that case-folds
+    only the END needle finds the decoy's end (earlier in the file than
+    the real section) and the REAL section's begin normally (the only
+    BEGIN marker here) — an END found BEFORE its BEGIN is exactly the
+    unlocatable-pair shape §6.2 clause (1) must treat as empty, so the
+    real section falls into neither fill and the POSITIVE assertions
+    catch this one. This is `M36` — u-marker's `M2` (restore the legacy
+    needle on the end line only), carried to its new home."""
+    from self_learn.compilers import BEGIN_MARKER, END_MARKER, compile_managed_text, entry_line
     from self_learn.ledger import discover_buckets
     from self_learn.ledger_ops import queue as _queue
 
-    lines = [f"line {i}" for i in range(300)]
-    lines[150] = BEGIN_MARKER  # real marker, untouched — the control leg
-    lines[160] = END_MARKER.upper()
-    (env.host / "CLAUDE.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    routed_record = make_behavior(record_id="lrn-0000bef1")
+    routed_record.set_routing(
+        {"routed_at": "2026-07-13T18:02:00Z", "destination": "claude-md", "by": "human"}
+    )
+    routed_record.set_status("routed")
 
-    pending = make_behavior(scope="project", record_id="lrn-0000e0e0")
+    lines = _scan8_fixture_lines(routed_record, uppercase_begin=False, uppercase_end=True)
+    full_text = "\n".join(lines) + "\n"
+    assert len(full_text.encode("utf-8")) > worker.CANON_BYTES_PER_FILE
+    (env.host / "CLAUDE.md").write_text(full_text, encoding="utf-8")
+
+    pending = make_behavior(scope="project", record_id="lrn-0000bef2")
     create_record(env.home, pending, project_path=env.host)
     (bucket,) = [b for b in discover_buckets(env.home) if b.scope == "project"]
     (entry,) = _queue(bucket)
 
     excerpt = worker._canon_excerpt(env.home, entry)
-    assert excerpt.splitlines() == [f"line {i}" for i in range(60)] + [
-        "… (truncated)"
-    ]
+
+    assert BEGIN_MARKER in excerpt
+    assert END_MARKER in excerpt
+    assert entry_line(routed_record) in excerpt.splitlines()
+    assert END_MARKER.upper() not in excerpt
 
 
 def test_worker_prompt_assembly_carries_the_real_doctrine_lint_schema(
