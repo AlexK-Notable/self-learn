@@ -151,7 +151,24 @@ def _sync_user_claude_md(env) -> None:
     non-superseded, ``claude-md``-destined user-scope record on disk and
     writes it into the target, mirroring the real apply step so
     ``file_words``/``managed_share`` see the same state a production
-    fixture would."""
+    fixture would.
+
+    U-hostmode code-gate r1 fold (found running the CLI suite in full,
+    2026-08-28): user scope is now a first-class PLAIN host (`S-51`),
+    so a real `route`/`recompile` apply into it writes a compile-record
+    entry in the SAME breath (REC9) — this shortcut, hand-writing the
+    managed region straight to disk with no entry, left the target in
+    exactly the `entry absent + region present` state B-1 closed (the
+    H-3-class hazard: `compiled.refuses("unknown", "plain")` is now
+    `True`). `TestT10ReportOnlyInvariant`'s later `cli.main(["route",
+    ...])` calls then refused with "hand-edited outside self-learn",
+    which they did not before this unit existed at all — user scope had
+    no such gate to fail. Writing the matching entry here, exactly as
+    the real apply step would (same `write_entry` call `verbs.
+    _write_compile_record_entry` makes), is what "mirroring the real
+    apply step" already promised; it just did not yet cover the record
+    half of that promise."""
+    from self_learn import compiled
     from self_learn.compilers import compile_managed_text
 
     if not env.user_claude_md.is_file():
@@ -173,6 +190,24 @@ def _sync_user_claude_md(env) -> None:
     text = env.user_claude_md.read_text(encoding="utf-8")
     result = compile_managed_text(text, records)
     env.user_claude_md.write_text(result.text, encoding="utf-8")
+
+    region = compiled.region_bytes(result.text, "managed")
+    if region is None:
+        return
+    key = compiled.region_key(env.user_claude_md.parent, env.user_claude_md)
+    digest = compiled.sha256_hex(region)
+    compiled.write_entry(
+        env.ledger,
+        "user",
+        key,
+        region="managed",
+        sha256=digest,
+        based_on_sha256=digest,
+        nbytes=len(region),
+        by="test fixture: _sync_user_claude_md",
+        host="(user scope — ~/.claude)",
+        mode="plain",
+    )
 
 
 def _add_project_host(env, path: Path) -> None:

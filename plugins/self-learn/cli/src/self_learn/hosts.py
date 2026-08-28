@@ -456,7 +456,9 @@ def _init_for_registration(path: Path | str) -> None:
         )
 
 
-def host_path_problem(home: Path | str, path: Path | str, kind: str) -> str | None:
+def host_path_problem(
+    home: Path | str, path: Path | str, kind: str, *, mode: str | None = None
+) -> str | None:
     """The ONE host-path predicate (audit 2026-07-16 MAJOR 6): a host path
     must exist on disk, be SOUND for its registered mode, and MUST NOT be
     the ledger home itself (the ledger holds ledger data; canon compiled
@@ -474,7 +476,17 @@ def host_path_problem(home: Path | str, path: Path | str, kind: str) -> str | No
     see its own validation for plain, which cannot consult THIS registry
     for a mode not yet written) AND at every canon-writing gate
     (``verbs._resolve_target``) — hosts.yaml is data, and data that only
-    gets checked when it is written is data nobody checks."""
+    gets checked when it is written is data nobody checks.
+
+    ``mode`` (M-12, code gate r1 fold): the CARRIED mode, when a caller
+    already knows it and ``path`` is not (yet, or ever going to be)
+    registered under it — :func:`host_rebind`'s own case: the new path
+    is unregistered by definition (rebind is what registers it), so the
+    default ``host_mode`` lookup below reads "unregistered ⇒ git" no
+    matter what the OLD entry's mode was, and a plain host could never
+    be rebound to a repo-less directory. ``None`` (the default) keeps
+    every other caller's behaviour byte-identical: look the mode up in
+    the registry, exactly as before."""
     target = Path(path).expanduser()
     label = f"{kind} host {target}"
     if not target.is_dir():
@@ -484,8 +496,8 @@ def host_path_problem(home: Path | str, path: Path | str, kind: str) -> str | No
             "<new-path>` (or `self-learn host remove` it)"
         )
     target = target.resolve()
-    mode = host_mode(home, target)
-    if mode == "plain":
+    resolved_mode = mode if mode is not None else host_mode(home, target)
+    if resolved_mode == "plain":
         if not (target / MARKER_FILENAME).is_file():
             return (
                 f"{label} is registered plain but carries no "
@@ -509,10 +521,13 @@ def host_path_problem(home: Path | str, path: Path | str, kind: str) -> str | No
     return None
 
 
-def validate_host_path(home: Path | str, path: Path | str, kind: str) -> Path:
+def validate_host_path(
+    home: Path | str, path: Path | str, kind: str, *, mode: str | None = None
+) -> Path:
     """:func:`host_path_problem` as a gate: raise :class:`HostsError` on a
-    bad entry, else return the resolved path."""
-    problem = host_path_problem(home, path, kind)
+    bad entry, else return the resolved path. ``mode`` (M-12) threads
+    straight through — see :func:`host_path_problem`'s own docstring."""
+    problem = host_path_problem(home, path, kind, mode=mode)
     if problem is not None:
         raise HostsError(problem)
     return Path(path).expanduser().resolve()
@@ -602,6 +617,35 @@ def host_add(
             f"rebind {target} <new-path>` (or `self-learn host remove` it)"
         )
     target = target.resolve()
+
+    # U-hostmode M-11 (code gate r1 fold): the mode-flip/already-
+    # registered refusal (MODE6) must run BEFORE the git-repo-soundness
+    # check, in BOTH directions. Pre-fold this ran AFTER it, so a
+    # PLAIN-registered host re-added with `mode="git"` hit the git-repo
+    # check first — it is not (and was never expected to be) a git
+    # repo, so THAT refusal fired instead of MODE6's, masking the repair
+    # it names (`host remove` + `host add --mode`). The git→plain
+    # direction never showed this: the git-repo check only RUNS for
+    # `mode == "git"`, so a plain re-add skipped straight past it to the
+    # (correctly ordered, even before this fix) mode-flip check below —
+    # which is exactly why only that one direction had a test.
+    hosts = load_hosts(home)
+    existing_mode: str | None = None
+    if kind == "skills-root":
+        if hosts.skills_root is not None and hosts.skills_root.resolve() == target:
+            existing_mode = hosts.skills_root_mode
+    else:
+        if is_project_host(hosts, target):
+            existing_mode = host_mode(home, target)
+
+    if existing_mode is not None and existing_mode != mode:
+        raise HostsError(
+            f"{kind} host {target} is already registered as "
+            f"{existing_mode!r} — `self-learn host remove {target}` "
+            f"then `self-learn host add {target} --mode {mode}` to "
+            "change it (MODE is set once; there is no in-place flip)"
+        )
+
     if mode == "git" and not _is_git_repo(target):
         raise HostsError(
             f"{kind} host {target} is not a git repo — canon hosts must "
@@ -616,23 +660,7 @@ def host_add(
             "with `self-learn host rebind` or remove the entry"
         )
 
-    hosts = load_hosts(home)
-    existing_mode: str | None = None
-    if kind == "skills-root":
-        if hosts.skills_root is not None and hosts.skills_root.resolve() == target:
-            existing_mode = hosts.skills_root_mode
-    else:
-        if is_project_host(hosts, target):
-            existing_mode = host_mode(home, target)
-
     if existing_mode is not None:
-        if existing_mode != mode:
-            raise HostsError(
-                f"{kind} host {target} is already registered as "
-                f"{existing_mode!r} — `self-learn host remove {target}` "
-                f"then `self-learn host add {target} --mode {mode}` to "
-                "change it (MODE is set once; there is no in-place flip)"
-            )
         return hosts  # already registered, same mode — nothing to do
 
     if mode == "plain":
@@ -746,7 +774,14 @@ def host_rebind(home: Path | str, ref: str, new_path: Path | str) -> Path:
             "`self-learn status`) or its old absolute path"
         )
     old_mode = host_mode(home, old_path) if old_path is not None else "git"
-    target = validate_host_path(home, new_path, "project")
+    # U-hostmode M-12 (code gate r1 fold): `new_path` is unregistered by
+    # definition (rebind is what registers it), so without `mode=`,
+    # `validate_host_path`'s default registry lookup would read
+    # "unregistered ⇒ git" regardless of `old_mode` — a plain host could
+    # never be rebound to a repo-less directory. Rebind is a path move,
+    # never a mode change (this docstring's own claim), so the OLD
+    # entry's mode is exactly what the NEW path must be validated as.
+    target = validate_host_path(home, new_path, "project", mode=old_mode)
     if old_path is not None and old_path.resolve() == target:
         raise HostsError(f"{target} is already this bucket's path — nothing to rebind")
 
@@ -765,6 +800,13 @@ def host_rebind(home: Path | str, ref: str, new_path: Path | str) -> Path:
     with gitops.commit_lock(home):  # BLOCKER 4 + round 7 BLOCKER 1
         touched: list[Path] = []
         if bucket is not None:
+            # `new_bucket` was reassigned to a real `Path` above, under
+            # this SAME `bucket is not None` condition on the SAME
+            # never-reassigned `bucket` — provably not None here, but
+            # pyright cannot correlate two variables' narrowing across
+            # the statements in between; the assert documents the
+            # invariant instead of leaving a live false-positive.
+            assert new_bucket is not None
             if new_bucket != bucket:
                 proc = gitops._git(  # noqa: SLF001 — same module family
                     home, "mv", str(bucket), str(new_bucket)

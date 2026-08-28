@@ -530,8 +530,17 @@ def _apply_failure_env(kind: str, param: str, *, scratch: Path, monkeypatch) -> 
 #: still a pure append over the pre-U-cachelit baseline (see `test_
 #: u_sdka.py::_AR1_SANCTIONED_PIN_LINES`'s own RE-ANCHOR paragraph for
 #: the full accounting), still a member of `_SU4B_DIFF_EXEMPT`.
+#: U-hostmode gate r1 fold, D-1 (2026-08-28) re-pins `conftest.py` once
+#: more: a third litter-detection leg for `host-*.commit.lock` files
+#: (`_LOCK_FILE_RE`/`_INPROCESS_LOCK_HITS`, a `gitops._flock_lock` wrap,
+#: a matching hard-fail assertion) is APPENDED to the existing guard
+#: section -- the gate found this litter shape structurally invisible
+#: to the pre-fold `_HOME_DIR_RE` (directories only). Only the hash
+#: moves; still a pure append over the pre-U-cachelit baseline (see
+#: `test_u_sdka.py::_AR1_SANCTIONED_PIN_LINES`'s own D-1 paragraph),
+#: still a member of `_SU4B_DIFF_EXEMPT`.
 _ARMOR_SHAS = {
-    "plugins/self-learn/cli/tests/conftest.py": "09d1cfc25026c74684d263332cdd912619bd94b76fafef12f495833f84bddfe4",  # U-cachelit RE-ANCHOR (gate r1): guard section rewritten
+    "plugins/self-learn/cli/tests/conftest.py": "0d3f3242c589808602fe7b10ce520a5018d9bb46195c9b4b2eac3a84a5af856a",  # U-hostmode gate r1 fold, D-1: lock-file litter-detection leg appended
     "plugins/self-learn/cli/tests/backends.py": "a2ba2d74f117a230740d10e3c9fa67bd30f751ce80ec59667c9136557a906dde",
     # merge 2026-08-28 (u-hostmode x master): only master changed these
     # four keys since base (1e77ff4) -- ours were byte-unchanged there,

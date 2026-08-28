@@ -74,7 +74,6 @@ from __future__ import annotations
 
 import contextlib
 import fcntl
-import hashlib
 import os
 import subprocess
 import sys
@@ -474,16 +473,6 @@ def commit_lock(repo: Path, *, timeout: float | None = None) -> Iterator[None]:
         yield
 
 
-#: U-hostmode §4.3: same shape as :func:`slug_for` in ``hosts.py`` —
-#: duplicated here (not imported) to avoid a ``gitops``↔``hosts`` import
-#: cycle: ``hosts.py`` already imports THIS module. Both must be kept in
-#: sync; ``hosts.slug_for`` is the canonical definition this mirrors.
-def _plain_host_cache_key(path: Path) -> str:
-    resolved = str(Path(path).resolve())
-    digest = hashlib.sha256(resolved.encode("utf-8")).hexdigest()[:8]
-    return f"{resolved.replace('/', '-')}-{digest}"
-
-
 def host_lock_path(path: Path, mode: str) -> Path:
     """U-hostmode §4.3: where a HOST's commit lock lives, by mode.
 
@@ -501,9 +490,19 @@ def host_lock_path(path: Path, mode: str) -> Path:
     if mode == "git":
         return commit_lock_path(Path(path))
     if mode == "plain":
+        # N-1 (code gate r1 fold): `hosts.slug_for` used to be
+        # duplicated here verbatim (as `_plain_host_cache_key`) to dodge
+        # a `gitops`<->`hosts` import cycle (`hosts.py` already imports
+        # `gitops`) — the SAME dodge `hosts.host_remove` and
+        # `reconcile._is_reconcilable` already use elsewhere in this
+        # codebase: a function-LOCAL import, resolved only once both
+        # modules are fully loaded, instead of a module-level one two
+        # copies of one slug, free to drift.
+        from .hosts import slug_for
+
         cache_env = os.environ.get("XDG_CACHE_HOME")
         base = Path(cache_env).expanduser() if cache_env else Path("~/.cache").expanduser()
-        slug = _plain_host_cache_key(path)
+        slug = slug_for(path)
         return base / "self-learn" / f"host-{slug}.commit.lock"
     raise GitOpsError(f"unknown host mode {mode!r} — expected 'git' or 'plain'")
 

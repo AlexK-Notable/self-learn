@@ -234,13 +234,29 @@ def _target_for(home: Path, bucket: Bucket, record: Record) -> Path | None:
     return managed_target_for(home, bucket, record)
 
 
-def _managed_host_for(home: Path, bucket: Bucket, record: Record) -> Path | None:
+def _managed_host_for(
+    home: Path,
+    bucket: Bucket,
+    record: Record,
+    *,
+    user_claude_md: Path | str | None = None,
+) -> Path | None:
     """U-hostmode PLAIN8: the HOST root a managed-destination record's
     target lives under — ``host_mode`` needs the resolved ROOT, never a
     file somewhere inside it (exact-match only, MODE9). Mirrors the same
     per-scope resolution `_reference_target_for`/`_check_drift` already
     use; ``None`` when unresolvable (the entry-marker check above already
-    reported that as "target unresolvable" — this is never reached then)."""
+    reported that as "target unresolvable" — this is never reached then).
+
+    ``user_claude_md`` (N-8, code gate r1 fold): honours the SAME
+    test/route-time override every other user-scope resolution site in
+    this codebase threads (``verbs.managed_target_for``,
+    ``_resolve_target``) — pre-fold, this was the one site that
+    hardcoded ``DEFAULT_USER_CLAUDE_MD`` with no way to override it even
+    for a test, silently aiming a user-scope drift/PLAIN8 check at the
+    OPERATOR'S REAL ``~/.claude/CLAUDE.md`` from inside a sandboxed
+    caller that overrode it everywhere else. ``None`` (the default)
+    keeps existing behavior byte-identical."""
     if bucket.scope == "skill":
         try:
             root = load_hosts(home).skills_root
@@ -250,7 +266,10 @@ def _managed_host_for(home: Path, bucket: Bucket, record: Record) -> Path | None
     if record.scope == "project":
         host = bucket_project_path(bucket.path)
         return Path(host) if host is not None else None
-    return DEFAULT_USER_CLAUDE_MD.expanduser().parent
+    resolved_user_claude_md = (
+        Path(user_claude_md) if user_claude_md is not None else DEFAULT_USER_CLAUDE_MD
+    )
+    return resolved_user_claude_md.expanduser().parent
 
 
 def _reference_target_for(home: Path, bucket: Bucket, record: Record) -> Path | None:
@@ -460,7 +479,9 @@ def _section_targets(home: Path) -> dict[Path, list[Record]]:
     return targets
 
 
-def _check_drift(home: Path) -> tuple[bool, str]:
+def _check_drift(
+    home: Path, *, user_claude_md: Path | str | None = None
+) -> tuple[bool, str]:
     """Doc 13 §4.2 drift check: every ROUTED record must be PRESENT in the
     canon it was routed into — a managed destination's ``(lrn-…)`` entry
     marker inside its target's managed section, and a ``reference``
@@ -484,7 +505,15 @@ def _check_drift(home: Path) -> tuple[bool, str]:
     not-a-repo only. ``uninitialized`` is deliberately NOT a failure there
     (it is a real repo that simply was never bootstrapped, and the first
     capture bootstraps it), and a ledger with no layout and no hosts.yaml
-    has no canon to have drifted from: that is a true, quiet skip."""
+    has no canon to have drifted from: that is a true, quiet skip.
+
+    ``user_claude_md`` (N-8, code gate r1 fold): threaded straight
+    through to :func:`_managed_host_for`'s PLAIN8 user-scope leg, the
+    same override every other user-scope resolution site in this
+    codebase accepts (``verbs.managed_target_for``, ``_resolve_target``)
+    — ``None`` (the default; no current caller passes otherwise) keeps
+    every existing behavior byte-identical, resolving against the
+    operator's real ``~/.claude/CLAUDE.md``."""
     state = home_state(home)
     if state in ("missing", "not-a-repo"):
         return False, home_state_message(state, home)
@@ -585,7 +614,9 @@ def _check_drift(home: Path) -> tuple[bool, str]:
             # that can see a hand edit here — rendered as one of four
             # distinguishable strings (no compile record yet / clean /
             # stale / edited), only "edited" counted as drift.
-            host_path = _managed_host_for(home, bucket, record)
+            host_path = _managed_host_for(
+                home, bucket, record, user_claude_md=user_claude_md
+            )
             if host_path is not None and host_mode(home, host_path) != "git":
                 try:
                     region = compiled.region_bytes(text, "managed")

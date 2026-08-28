@@ -95,20 +95,36 @@ def refuses(verdict: str, mode: str) -> bool:
     hazard on a git host too).
 
     ``"unknown"`` (no record at all yet, region already present) does
-    NOT refuse in this build, in EITHER mode — a deliberate, documented
-    scope reduction from §4.5a's literal six-case table. Two pre-existing,
-    non-census tests exercise exactly this shape as an ordinary SUCCEEDING
-    route (a host with pre-existing, self-learn-shaped content and no
-    compile record yet — the realistic state of every one of the nine
-    registered hosts the moment this unit ships; and two different ledger
-    homes legitimately routing into the same physical user-scope target)
-    and must stay byte-unedited (S3/UN3). Refusing on first contact with
-    an already-populated, otherwise-sound host would also make this
-    unit's OWN migration silently regress every existing host on its
-    first post-upgrade route — the opposite of MODE1/UN1's byte-identical
-    promise. The verdict STRING is still computed exactly per the six-case
-    table (:func:`verdict_for`); only its GATING is narrowed here."""
-    return verdict == "edited"
+    NOT refuse in GIT mode — a deliberate, documented scope reduction
+    from §4.5a's literal six-case table, kept for exactly one reason: a
+    host with pre-existing, self-learn-shaped content and no compile
+    record yet is the realistic state of every one of the nine
+    registered (git) hosts the moment this unit ships, and refusing on
+    first contact there would make this unit's OWN migration silently
+    regress every existing host on its first post-upgrade route — the
+    opposite of MODE1/UN1's byte-identical promise. Git's own commit
+    history is that content's provenance either way.
+
+    It DOES refuse in PLAIN mode (code gate r1 B-1) — a plain host has
+    no OTHER trust source, so "no record, content already present" is
+    exactly REC5 row 2's hazard, not a benign migration artifact. This
+    closes a real hole: TWO different ledger homes routing into the SAME
+    physical plain (e.g. user-scope) target used to both silently
+    succeed, the second one overwriting bytes the first ledger's record
+    never accounted for — `TestB1Rec5RowTwoUnknownRefusesPlainMode`
+    (`test_hostmode.py`) is the dedicated regression test; the second
+    ledger now refuses and must use `recompile --adopt` (or route to its
+    OWN target) instead. The verdict STRING is still computed exactly
+    per the six-case
+    table (:func:`verdict_for`); only its GATING was narrowed here --
+    narrowing since REVERSED (code gate r1 B-1): a plain host has no
+    OTHER trust source, so "unknown" (no record yet, content already
+    present) now refuses there too -- REC5 row 2: entry absent +
+    region present -> REFUSE in plain mode; git mode keeps the
+    deliberate scope reduction above (its provenance is git's own
+    committed history, and an uncommitted version is already caught
+    by `_abort_if_dirty`)."""
+    return verdict == "edited" or (verdict == "unknown" and mode == "plain")
 
 
 class CompiledRecordError(Exception):

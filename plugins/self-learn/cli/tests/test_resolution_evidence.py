@@ -540,13 +540,29 @@ class TestStderrByteIdentical:
         adopt-hint assertion are REMOVED — user scope calls no chezmoi
         function at all now (USER2/CHEZ0), so there is no adopt hint to
         fire. The byte-identical proof itself is unaffected and still
-        the point of this test."""
+        the point of this test.
+
+        Code gate r1 B-1 fold: the two ledger homes now route to
+        SEPARATE physical targets (they shared one before) -- user
+        scope is always PLAIN mode, and B-1 makes a plain host correctly
+        REFUSE a second, record-less ledger's route into content the
+        first ledger already wrote (REC5 row 2: entry absent + region
+        present -> refuse). That refusal is the fix, not a regression
+        this test should paper over; it was never this test's OWN
+        subject (stderr byte-identity between --json and plain), so the
+        two runs are decoupled onto their own targets instead."""
         monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg-cache"))
 
-        target = tmp_path / "dot-claude" / "CLAUDE.md"
-        target.parent.mkdir()
-        target.write_text("# user conduct\n", encoding="utf-8")
-        monkeypatch.setattr(verbs, "DEFAULT_USER_CLAUDE_MD", target)
+        # Same LEAF directory name ("dot-claude") under two different
+        # parents -- physically distinct targets (so B-1's plain-mode
+        # refusal never fires) whose rendered paths still end identically,
+        # which is what the byte-identity assertion below actually needs.
+        target_plain = tmp_path / "run-plain" / "dot-claude" / "CLAUDE.md"
+        target_plain.parent.mkdir(parents=True)
+        target_plain.write_text("# user conduct\n", encoding="utf-8")
+        target_json = tmp_path / "run-json" / "dot-claude" / "CLAUDE.md"
+        target_json.parent.mkdir(parents=True)
+        target_json.write_text("# user conduct\n", encoding="utf-8")
 
         plain_env = Env(tmp_path / "plain")
         json_env = Env(tmp_path / "as-json")
@@ -556,10 +572,12 @@ class TestStderrByteIdentical:
         record2 = make_behavior(scope="user", record_id=RID)
         create_record(json_env.home, record2)
 
+        monkeypatch.setattr(verbs, "DEFAULT_USER_CLAUDE_MD", target_plain)
         monkeypatch.setenv("SELF_LEARN_HOME", str(plain_env.home))
         code_plain = cli.main(["route", RID, "--dest", "claude-md:rules:subagents"])
         stderr_plain = capsys.readouterr().err
 
+        monkeypatch.setattr(verbs, "DEFAULT_USER_CLAUDE_MD", target_json)
         monkeypatch.setenv("SELF_LEARN_HOME", str(json_env.home))
         code_json = cli.main(
             ["route", RID, "--dest", "claude-md:rules:subagents", "--json"]
@@ -567,4 +585,16 @@ class TestStderrByteIdentical:
         stderr_json = capsys.readouterr().err
 
         assert code_plain == code_json == 0
-        assert stderr_plain == stderr_json  # byte-identical, per §5
+        # Byte-identical MODULO the one thing that legitimately differs
+        # now that the two runs target separate physical roots (B-1): the
+        # rendered path to whatever the route actually wrote (not
+        # necessarily `target_plain`/`target_json` themselves -- a
+        # `claude-md:rules:subagents` destination writes a SIBLING rules
+        # file, e.g. `dot-claude/rules/subagents.md`), which carries the
+        # "run-plain"/"run-json" parent-dir name. Normalized to a shared
+        # placeholder before the real §5 comparison -- everything else,
+        # including the rendered word/token counts and the managed-share
+        # percentage, must still be byte-for-byte identical.
+        normalized_plain = stderr_plain.replace("run-plain", "<RUN>")
+        normalized_json = stderr_json.replace("run-json", "<RUN>")
+        assert normalized_plain == normalized_json  # byte-identical, per §5

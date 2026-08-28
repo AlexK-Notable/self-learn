@@ -19,11 +19,12 @@ import dataclasses
 import inspect
 import os
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
 
-from self_learn import compiled, gitops, hosts as hosts_mod, reconcile, verbs
+from self_learn import compiled, compilers, gitops, hosts as hosts_mod, reconcile, verbs
 from self_learn.hosts import HostsError, host_add, host_mode, load_hosts, save_hosts
 from self_learn.ledger import home_state
 from self_learn.ledger_ops import create_record, stamp_proposal, write_proposal
@@ -118,21 +119,38 @@ class TestEffectiveDefaultMode:
 class TestModeIncoherentFlags:
     def test_mode_plain_init_refused(self, tmp_path):
         """MODE4: `--mode plain --init` is a usage refusal, never a
-        silent preference for one flag over the other."""
+        silent preference for one flag over the other. Code gate r1
+        M-4: the prior instrument named its fixture directory
+        `would-be-plain`, so `match="plain.*--init|--init.*plain"`
+        matched the FIXTURE NAME appearing in a completely different
+        refusal (`_init_for_registration`'s own "does not exist on
+        disk" error, since the directory was never created) — the
+        mutation this was meant to catch was invisible. This version
+        creates the directory FIRST (so that OTHER refusal cannot
+        pre-empt this one), matches the LITERAL refusal text
+        (`hosts.py`'s own `"--mode plain --init makes no sense"`), and
+        asserts the refusal left NOTHING behind: no `.git`, no
+        `.self-learn-host` marker, `hosts.yaml` byte-unchanged."""
         env = make_env(tmp_path)
         target = tmp_path / "would-be-plain"
-        with pytest.raises(HostsError, match="plain.*--init|--init.*plain"):
+        target.mkdir()
+        hosts_yaml = env.ledger / "hosts.yaml"
+        before_hosts_yaml = hosts_yaml.read_text(encoding="utf-8")
+        with pytest.raises(HostsError, match="--mode plain --init makes no sense"):
             host_add(env.ledger, target, "project", mode="plain", init=True)
-        assert not target.is_dir()  # refused before anything touched disk
+        assert not (target / ".git").exists()
+        assert not (target / hosts_mod.MARKER_FILENAME).exists()
+        assert hosts_yaml.read_text(encoding="utf-8") == before_hosts_yaml
 
-    def test_mode_flip_reregistration_refused(self, tmp_path):
+    def test_mode_flip_reregistration_refused_git_to_plain(self, tmp_path):
         """MODE6: re-adding an already-registered host with a
         DIFFERENT mode refuses — the ruled 'set once' shape; the repair
-        is `host remove` + `host add --mode`. Uses a git-mode host
-        flipping to plain: a plain target doesn't need to BE a git
-        repo, so this isolates the mode-flip refusal from the separate
-        "not a git repo" refusal MODE-flipping the other direction
-        would also trigger."""
+        is `host remove` + `host add --mode`. Git-mode host flipping to
+        plain: a plain target doesn't need to BE a git repo, so this
+        direction alone cannot distinguish MODE6's own refusal from a
+        different "not a git repo" refusal — see the git→plain
+        parametrization below for that other direction, which code gate
+        r1 M-11 found this file never covered."""
         env = make_env(tmp_path)
         git_host = tmp_path / "flip-host"
         init_repo(git_host)
@@ -141,6 +159,27 @@ class TestModeIncoherentFlags:
             host_add(env.ledger, git_host, "project", mode="plain")
         # unchanged: still git
         assert host_mode(env.ledger, git_host) == "git"
+
+    def test_mode_flip_reregistration_refused_plain_to_git(self, tmp_path):
+        """MODE6, the other direction (code gate r1 M-11): a
+        PLAIN-registered host re-added with `mode="git"` must ALSO
+        refuse by naming MODE6's own repair (`host remove` + `host add
+        --mode`) — never the separate "not a git repo" refusal, even
+        though the plain target genuinely is not one. Pre-fold,
+        `host_add` ran its git-repo-soundness check BEFORE the
+        already-registered/mode-flip check, so this direction hit "is
+        not a git repo" instead and never named the real repair; the
+        fix reorders so the mode-flip refusal runs first, in BOTH
+        directions."""
+        env = make_env(tmp_path)
+        plain_host = tmp_path / "flip-host-2"
+        plain_host.mkdir()  # never a git repo — the point of this case
+        host_add(env.ledger, plain_host, "project", mode="plain")
+        with pytest.raises(HostsError, match="host remove|host add.*--mode") as exc_info:
+            host_add(env.ledger, plain_host, "project", mode="git")
+        assert "not a git repo" not in str(exc_info.value)
+        # unchanged: still plain
+        assert host_mode(env.ledger, plain_host) == "plain"
 
     def test_same_mode_reregistration_is_idempotent(self, tmp_path):
         """host_add's own idempotency guarantee extends to a same-mode
@@ -353,7 +392,16 @@ class TestCompileRecordBasics:
     def test_rec1_record_matches_region_read_back_off_disk(self, tmp_path):
         """REC1: after a route, the record's `sha256` equals
         hashlib.sha256 of the region bytes actually read back off the
-        target."""
+        target. Code gate r1 M-1: the prior instrument computed BOTH
+        sides via `compiled.region_bytes` — the record's own `sha256`
+        (indirectly, through `verbs._expected_managed_region` at
+        write time) AND the "read back off disk" comparison side — so a
+        mutation to `region_bytes` itself (M10: hash EXCLUDING
+        `END_MARKER`) moved both hashes together and stayed invisible.
+        This version slices the region with a LITERAL marker pair,
+        independent of `compiled.region_bytes` entirely — a real,
+        from-scratch re-derivation of "what the managed region's bytes
+        are", using nothing from the module under test."""
         env = make_env(tmp_path)
         record = make_behavior(scope="skill:s", record_id="lrn-00000001")
         create_record(env.ledger, record)
@@ -364,11 +412,22 @@ class TestCompileRecordBasics:
         key = compiled.region_key(env.host, env.skill_md)
         entry = compiled.entry_for(data, key)
         assert entry is not None
-        region = compiled.region_bytes(
-            env.skill_md.read_text(encoding="utf-8"), "managed"
-        )
-        assert region is not None
-        assert entry["sha256"] == compiled.sha256_hex(region)
+
+        text = env.skill_md.read_text(encoding="utf-8")
+        begin_marker = "<!-- self-learn:begin (do not hand-edit inside; managed by self-learn) -->"
+        end_marker = "<!-- self-learn:end -->"
+        assert text.count(begin_marker) == 1
+        assert text.count(end_marker) == 1
+        begin_at = text.index(begin_marker)
+        end_at = text.index(end_marker)
+        # INCLUSIVE of both markers — independently re-derived, never
+        # imported from `compiled.region_bytes`.
+        region_bytes = text[begin_at : end_at + len(end_marker)].encode("utf-8")
+
+        import hashlib as _hashlib
+
+        expected_sha256 = _hashlib.sha256(region_bytes).hexdigest()
+        assert entry["sha256"] == expected_sha256
 
     def test_rec4_record_written_for_git_and_plain_hosts(self, tmp_path):
         """REC4: the compile record is written for BOTH modes — two
@@ -417,6 +476,88 @@ class TestCompileRecordBasics:
         names_out = git(env.ledger, "show", "--name-only", "--format=", "HEAD").stdout
         assert "skills/s/resolved/lrn-00000004.md" in names_out
         assert any(line.startswith("compiled/") for line in names_out.splitlines())
+
+    def test_rec8_foreign_keys_round_trip_through_ruamel(self, tmp_path):
+        """REC8 (code gate r1 fold, D-4): the compile record round-trips
+        foreign keys via `ruamel`'s `typ="rt"` mode -- a human
+        annotation, or a future unit's own field, hand-added directly to
+        the YAML file, survives being read (`load_record`) and
+        re-written (`write_entry`, for a DIFFERENT target/field) without
+        being lost. `write_entry` overwrites `targets[key]` as a whole
+        dict for the key it is WRITING (never a merge -- REC8 makes no
+        claim about a foreign sub-key surviving inside THAT SAME
+        overwrite), so this proves the property at the two grains that
+        DO hold: a foreign TOP-LEVEL key, and a foreign key inside a
+        DIFFERENT target's entry this call never touches.
+
+        Not mutation-tested -- the spec's own §6 exempts REC8: the
+        round-trip guarantee is `ruamel`'s, not this codebase's custom
+        logic, and is caught first by `records.py`'s own tests. D-4 is
+        about REC8 having NO INSTRUMENT AT ALL for `compiled.py`'s own
+        `write_entry`/`load_record`; this closes that gap."""
+        import io
+
+        from ruamel.yaml import YAML
+
+        env = make_env(tmp_path)
+        record = make_behavior(scope="skill:s", record_id="lrn-00000072")
+        create_record(env.ledger, record)
+        verbs.route(env.ledger, "lrn-00000072", dest="skill-md", no_push=True)
+
+        slug = hosts_mod.host_slug(env.ledger, env.host, scope_kind="skill")
+        record_path = compiled.compiled_record_path(env.ledger, slug)
+        key = compiled.region_key(env.host, env.skill_md)
+
+        y = YAML(typ="rt")
+        data = y.load(record_path.read_text(encoding="utf-8"))
+        assert key in data["targets"]
+
+        # A foreign TOP-LEVEL key -- a human annotation self-learn never
+        # writes and has no field name for.
+        data["human_annotation"] = "hand-added note, never written by self-learn"
+        # A foreign key WITHIN A DIFFERENT target's entry -- a future
+        # unit's own field self-learn does not know about yet.
+        other_key = "SOME/OTHER/PATH.md"
+        data["targets"][other_key] = {
+            "region": "managed",
+            "sha256": "deadbeef",
+            "based_on_sha256": None,
+            "bytes": 0,
+            "at": "2026-01-01T00:00:00Z",
+            "by": "a future unit",
+            "future_field": "unknown to this codebase",
+        }
+        buf = io.StringIO()
+        y.dump(data, buf)
+        record_path.write_text(buf.getvalue(), encoding="utf-8")
+
+        # The round trip under test: `write_entry` for the ORIGINAL
+        # target, a real field change (never a no-op).
+        compiled.write_entry(
+            env.ledger,
+            slug,
+            key,
+            region="managed",
+            sha256="cafebabe",
+            based_on_sha256="cafebabe",
+            nbytes=0,
+            by="test: rec8 round-trip",
+            host=str(env.host),
+            mode="git",
+        )
+
+        reloaded = compiled.load_record(env.ledger, slug)
+        assert (
+            reloaded["human_annotation"]
+            == "hand-added note, never written by self-learn"
+        )
+        assert (
+            reloaded["targets"][other_key]["future_field"]
+            == "unknown to this codebase"
+        )
+        # And the write actually did what it was asked -- proving this
+        # is a REAL round trip, not a no-op that never touched the file.
+        assert reloaded["targets"][key]["sha256"] == "cafebabe"
 
 
 class TestSixCasePredicate:
@@ -796,12 +937,28 @@ class TestPlain8SelftestDriftFourVerdicts:
 class TestRpt1PlainHostInReport:
     def test_plain_host_row_present_in_report_json(self, tmp_path, monkeypatch):
         """RPT1: a plain host appears in both report surfaces that
-        dropped it (report.py:973, :1480). Check: register a plain
-        host, route a `rules` record into it, assert the row is
-        present in `report --json`."""
+        dropped it (`report.py`'s two plain-host `continue`s, in
+        `_unpathed_rules_rows` and `_rules_cofire_signal`). Check:
+        register a plain host, route a `rules` record into it, assert
+        the row is present in `report --json`.
+
+        Code gate r1 M-8: the prior instrument asserted
+        `str(plain_host) in json.dumps(report_json)` — but the plain
+        host's path is ALREADY in the report from
+        `_resolve_project_rows` (an unconditional row, per its own
+        docstring: "never omitted... an omitted row is indistinguishable
+        from a clean one") independent of the TWO `continue`s M45
+        restores. So a whole-document substring check passed whether or
+        not those two specific sites skipped the plain host. This
+        version asserts on the SPECIFIC rows those two sites produce:
+        an entry for the plain host in `conditional.rules_cofire.scopes`
+        (`_rules_cofire_signal`'s own site), and confirms
+        `_unpathed_rules_rows` (the sibling site) was consulted for it
+        too — both keyed by the plain host's own project key, not by a
+        path substring."""
         import json
 
-        from self_learn import cli
+        from self_learn import cli, report as report_mod
 
         env = make_env(tmp_path)
         monkeypatch.setenv("SELF_LEARN_HOME", str(env.ledger))
@@ -814,6 +971,47 @@ class TestRpt1PlainHostInReport:
             env.ledger, "lrn-00000019", dest="claude-md:rules:infra", no_push=True
         )
 
+        plain_key = hosts_mod.slug_for(plain_host)[-8:]
+
+        # (1) unit-level: both sites, called directly, must reach the
+        # plain host's own project row rather than skipping it.
+        user_internal = report_mod._resolve_user_claude_md_row(env.ledger)
+        project_internal = report_mod._resolve_project_rows(env.ledger)
+        plain_prow = next(
+            (p for p in project_internal if p["key"] == plain_key), None
+        )
+        assert plain_prow is not None and plain_prow["spec"] is not None
+
+        cofire_signal = report_mod._rules_cofire_signal(
+            env.ledger, user_internal, project_internal
+        )
+        plain_scope = next(
+            (s for s in cofire_signal["scopes"] if s["key"] == plain_key), None
+        )
+        assert plain_scope is not None, (
+            "the plain host's project row never reached "
+            "_rules_cofire_signal — its own `continue` (M45) skips it "
+            "entirely, the exact regression this pins"
+        )
+        assert plain_scope["state"] == "ok"
+        # a route with no `--paths` carries no `paths:` frontmatter, so
+        # `_rules_cofire` files this stem under `unpathed`, not `topics`
+        # (its own docstring: membership is the raw-key predicate).
+        assert "infra" in plain_scope["unpathed"]
+
+        unpathed_rows = report_mod._unpathed_rules_rows(user_internal, project_internal)
+        plain_unpathed_row = next(
+            (r for r in unpathed_rows if r["key"] == f"{plain_key}:infra"), None
+        )
+        assert plain_unpathed_row is not None, (
+            "the plain host's own `unpathed-rules` row for its `infra` "
+            "topic never appeared — _unpathed_rules_rows's `continue` "
+            "(the sibling of M45's site) skips the plain host"
+        )
+        assert plain_unpathed_row["surface"] == "unpathed-rules"
+
+        # (2) end-to-end: the full `report --json` CLI surface carries
+        # the same signal through to its public JSON shape.
         import io
         from contextlib import redirect_stdout
 
@@ -823,8 +1021,17 @@ class TestRpt1PlainHostInReport:
         out = buf.getvalue()
         assert rc == 0
         data = json.loads(out)
-        rendered = json.dumps(data)
-        assert str(plain_host) in rendered
+        json_scope = next(
+            (
+                s
+                for s in data["context_budget"]["conditional"]["rules_cofire"]["scopes"]
+                if s["key"] == plain_key
+            ),
+            None,
+        )
+        assert json_scope is not None
+        assert json_scope["state"] == "ok"
+        assert "infra" in json_scope["unpathed"]
 
 
 class TestPlain7ConsentLines:
@@ -1211,56 +1418,246 @@ class TestRec13StaleNeverEdited:
     def test_two_consecutive_host_phase_failures_still_verdict_stale(
         self, tmp_path, monkeypatch
     ):
-        """REC13: two consecutive `_HOST_PHASE_ERRORS` still verdict
-        `stale`, not `edited`, and a plain `recompile` lands the region
-        afterward — H-2 must hold no matter how many times the host
-        phase fails in a row. Mutation M47 (manually verified during
-        the build, then restored): redefining `based_on_sha256` as the
-        PREVIOUS expectation instead of the pre-flight OBSERVED hash
-        makes the second run verdict `edited` and both `route` and
-        `recompile` refuse — confirmed RED against that inverse edit of
-        `_observe_region_hash`'s call-site ordering, restored before
-        this test was written."""
+        """REC13: two consecutive `_HOST_PHASE_ERRORS`, with the region
+        ALREADY on disk from an earlier successful landing, still
+        verdict `stale` — never `missing` (that is a DIFFERENT row of
+        the six-case table: region absent) and never `edited` — and a
+        plain `recompile` repairs once the host phase recovers.
+
+        Code gate r1 M-2: the prior instrument's failures happened
+        against a target that had NEVER successfully landed, so the
+        region was ABSENT on disk throughout — `verdict_for(entry,
+        None) == "missing"` (REC5's row 4), not REC13's `stale` row at
+        all. M47 (redefining `based_on_sha256` as the PREVIOUS
+        expectation, `verbs.py:588-590`, instead of the fresh pre-flight
+        OBSERVED hash) is invisible against an absent region because
+        `verdict_for` short-circuits to `"missing"` the instant
+        `observed_hash is None`, before `based_on_sha256` is ever
+        consulted. This version lands generation 1 for real FIRST (a
+        second record's route into the SAME plain `claude-md` target —
+        the accumulate-in-one-region shape), so BOTH failures below
+        happen with a REAL region on disk the whole time, giving
+        `based_on_sha256` something to matter against."""
         env = make_env(tmp_path)
         plain_host = tmp_path / "rec13-plain"
         plain_host.mkdir()
         host_add(env.ledger, plain_host, "project", mode="plain")
-        record = make_behavior(scope="project", record_id="lrn-00000006")
-        create_record(env.ledger, record, project_path=plain_host)
+
+        # generation 1: a REAL, successful landing — the region exists
+        # on disk from here on, for the rest of this test.
+        rec1 = make_behavior(scope="project", record_id="lrn-00000006")
+        create_record(env.ledger, rec1, project_path=plain_host)
+        verbs.route(env.ledger, "lrn-00000006", dest="claude-md", no_push=True)
+
+        target = plain_host / "CLAUDE.md"
+        slug = hosts_mod.host_slug(env.ledger, plain_host, scope_kind="project")
+        key = compiled.region_key(plain_host, target)
+        gen1_text = target.read_text(encoding="utf-8")
+        gen1_entry = compiled.entry_for(compiled.load_record(env.ledger, slug), key)
+        assert gen1_entry is not None
 
         import self_learn.verbs as verbs_mod
 
         def _boom(*a, **kw):
             raise verbs_mod.CompileError("simulated host-phase failure")
 
-        # route r1: host phase fails (ledger still commits — H-2)
         monkeypatch.setattr(verbs_mod, "_apply_target", _boom)
-        result = verbs.route(env.ledger, "lrn-00000006", dest="claude-md", no_push=True)
-        assert result.commit_sha  # the ledger commit still landed
-        assert any("HOST PHASE FAILED" in w for w in result.warnings)
 
-        # a SECOND resolution-shaped failure: recompile also hits the
-        # simulated failure (host phase still down)
-        recompile_result = verbs.recompile(env.ledger, no_push=True)
-        assert any(
-            "HOST PHASE FAILED" in w or "simulated host-phase failure" in w
-            for w in recompile_result.warnings
+        # failure #1: a SECOND record routes to the SAME target — the
+        # ledger commits (entry updated: `sha256` := gen-2's EXPECTED
+        # hash, `based_on_sha256` := the hash OBSERVED just now, i.e.
+        # gen-1's still-on-disk bytes) — but the host phase fails, so
+        # disk stays at gen 1.
+        rec2 = make_behavior(scope="project", record_id="lrn-00000061")
+        create_record(env.ledger, rec2, project_path=plain_host)
+        result1 = verbs.route(env.ledger, "lrn-00000061", dest="claude-md", no_push=True)
+        assert result1.commit_sha
+        assert any("HOST PHASE FAILED" in w for w in result1.warnings)
+        assert target.read_text(encoding="utf-8") == gen1_text  # write never landed
+
+        # failure #2 (REC13's own "two consecutive" wording): a THIRD
+        # record routes to the SAME target, host phase still down. This
+        # is the discriminating step — M47's bug reads `based_on_sha256`
+        # off the PREVIOUS entry's `sha256` (gen-2's never-landed
+        # EXPECTED hash) instead of freshly observing disk (still gen 1)
+        # again; only a SECOND failure exposes it, since the first
+        # failure's `based_on_sha256` happens to equal the correct value
+        # under BOTH the fix and the bug (both read it off gen 1).
+        rec3 = make_behavior(scope="project", record_id="lrn-00000062")
+        create_record(env.ledger, rec3, project_path=plain_host)
+        result2 = verbs.route(env.ledger, "lrn-00000062", dest="claude-md", no_push=True)
+        assert result2.commit_sha
+        assert any("HOST PHASE FAILED" in w for w in result2.warnings)
+        assert target.read_text(encoding="utf-8") == gen1_text  # still never landed
+
+        entry_after_2_failures = compiled.entry_for(
+            compiled.load_record(env.ledger, slug), key
+        )
+        assert entry_after_2_failures is not None
+        observed_now = compiled.sha256_hex(
+            compiled.region_bytes(target.read_text(encoding="utf-8"), "managed")
+        )
+        assert (
+            compiled.verdict_for(entry_after_2_failures, observed_now) == "stale"
+        ), (
+            "expected `stale` (region on disk matches `based_on_sha256`, "
+            "the last real observation) — got something else, which is "
+            "exactly M47's false-refusal shape if it reads `edited`"
         )
 
-        target = plain_host / "CLAUDE.md"
-        slug = hosts_mod.host_slug(env.ledger, plain_host, scope_kind="project")
-        key = compiled.region_key(plain_host, target)
-        entry = compiled.entry_for(compiled.load_record(env.ledger, slug), key)
-        # region is ABSENT on disk (the host phase never landed a write) —
-        # this is the "missing" row, not "edited": recompile must proceed.
-        assert compiled.verdict_for(entry, None) == "missing"
-
-        # now let the host phase succeed — recompile lands the region.
+        # now let the host phase succeed — recompile REPAIRS (a `stale`
+        # verdict, unlike `edited`, never refuses).
         monkeypatch.undo()
         final = verbs.recompile(env.ledger, no_push=True)
+        assert not any("edited" in w for w in final.warnings)
         entry2 = next((e for e in final.entries if e.target == target), None)
         assert entry2 is not None and entry2.changed
-        assert target.is_file()
+        final_text = target.read_text(encoding="utf-8")
+        assert "lrn-00000006" in final_text
+        assert "lrn-00000061" in final_text
+        assert "lrn-00000062" in final_text
+
+
+class TestUser5CompileRecordSlugAndLabel:
+    def test_user_scope_compile_record_keyed_user_slug_and_label(
+        self, tmp_path, monkeypatch
+    ):
+        """USER5 (code gate r1 fold M-9): a user-scope route writes a
+        compile record at `<home>/compiled/user.yaml` (the literal
+        `"user"` slug, `hosts.host_slug`'s own dedicated branch — never
+        `hosts.slug_for`'s path-derived shape, since `~/.claude` is not
+        registered in `hosts.yaml` at all, §4.8/USER3), with a `host:`
+        label reading the literal `"(user scope — ~/.claude)"` and
+        `mode: plain`.
+
+        Prior to this test, NOTHING asserted on either half: M43
+        (deleting `host_slug`'s `if scope_kind == "user": return "user"`
+        branch) and a supporting probe (replacing the literal label with
+        `str(spec.host_path)`) both stayed GREEN across the whole suite
+        — 162 passed either way."""
+        target = tmp_path / "dot-claude" / "CLAUDE.md"
+        target.parent.mkdir()
+        target.write_text("# user conduct\n", encoding="utf-8")
+        monkeypatch.setattr(verbs, "DEFAULT_USER_CLAUDE_MD", target)
+
+        env = make_env(tmp_path)
+        record = make_behavior(scope="user", record_id="lrn-00000063")
+        create_record(env.ledger, record)
+        verbs.route(env.ledger, "lrn-00000063", dest="claude-md", no_push=True)
+
+        record_path = compiled.compiled_record_path(env.ledger, "user")
+        assert record_path.is_file(), (
+            "no compile record at <home>/compiled/user.yaml — the "
+            '"user" slug (hosts.host_slug\'s dedicated branch) was not '
+            "used to key it"
+        )
+
+        data = compiled.load_record(env.ledger, "user")
+        key = compiled.region_key(target.parent, target)
+        entry = compiled.entry_for(data, key)
+        assert entry is not None
+        # `host`/`mode` are top-level fields on the WHOLE record file
+        # (one host per slug), not per-target entry fields.
+        assert data["host"] == "(user scope — ~/.claude)"
+        assert data["mode"] == "plain"
+
+    def test_deleting_the_user_slug_branch_breaks_the_record_path(
+        self, tmp_path, monkeypatch
+    ):
+        """M43's own mutation (delete `hosts.host_slug`'s
+        `scope_kind == "user"` branch, falling through to
+        `slug_for(path)`), applied directly against `host_slug` here
+        rather than restored-after-probe in `verbs.py` — confirms the
+        `"user"` slug asserted in the test above is load-bearing, not
+        incidental: under this mutation, NO record lands at the `"user"`
+        slug path at all."""
+        target = tmp_path / "dot-claude-2" / "CLAUDE.md"
+        target.parent.mkdir()
+        target.write_text("# user conduct\n", encoding="utf-8")
+        monkeypatch.setattr(verbs, "DEFAULT_USER_CLAUDE_MD", target)
+
+        env = make_env(tmp_path)
+        record = make_behavior(scope="user", record_id="lrn-00000064")
+        create_record(env.ledger, record)
+
+        def _m43_host_slug(home, path, *, scope_kind=None):
+            # the M43 shape: fall through to slug_for regardless of
+            # scope_kind, as if the "user" branch had been deleted.
+            del scope_kind
+            return hosts_mod.slug_for(path)
+
+        monkeypatch.setattr(verbs, "host_slug", _m43_host_slug)
+        verbs.route(env.ledger, "lrn-00000064", dest="claude-md", no_push=True)
+
+        user_record_path = compiled.compiled_record_path(env.ledger, "user")
+        assert not user_record_path.is_file(), (
+            f"expected no record at the 'user' slug under M43's mutation, "
+            f"but found one at {user_record_path} — the mutation did not "
+            "actually take effect against this call path"
+        )
+
+
+class TestN8SelfcheckHonoursUserClaudeMdOverride:
+    def test_managed_host_for_honours_user_claude_md_override(self, tmp_path):
+        """N-8 (code gate r1 fold): `selfcheck._managed_host_for` honours
+        the SAME test/route-time `user_claude_md` override every other
+        user-scope resolution site in this codebase threads
+        (`verbs.managed_target_for`, `_resolve_target`). Pre-fold, this
+        was the one site that hardcoded `DEFAULT_USER_CLAUDE_MD` with no
+        way to override it — a caller sandboxing every OTHER user-scope
+        resolution still had this one silently resolve against the
+        operator's real `~/.claude/CLAUDE.md`."""
+        from self_learn import selfcheck
+        from self_learn.ledger import Bucket
+
+        override = tmp_path / "sandboxed-claude-dir" / "CLAUDE.md"
+        bucket = Bucket(path=tmp_path / "user", scope="user", name="user")
+        record = make_behavior(scope="user", record_id="lrn-00000065")
+
+        host = selfcheck._managed_host_for(
+            tmp_path, bucket, record, user_claude_md=override
+        )
+        assert host == override.parent
+
+        # default (no override) stays byte-identical to pre-fold: the
+        # real DEFAULT_USER_CLAUDE_MD's own parent.
+        host_default = selfcheck._managed_host_for(tmp_path, bucket, record)
+        assert host_default == verbs.DEFAULT_USER_CLAUDE_MD.expanduser().parent
+
+    def test_check_drift_threads_the_override_down_to_managed_host_for(
+        self, tmp_path, monkeypatch
+    ):
+        """`_check_drift`'s own new keyword-only parameter reaches
+        `_managed_host_for` — a PROJECT-scope record (not user-scope)
+        is used here so the entry-marker check upstream of
+        `_managed_host_for` succeeds normally (`_target_for`'s OWN
+        resolution never depends on `user_claude_md`, unlike
+        `_managed_host_for`'s), letting the override's actual VALUE be
+        observed reaching the call, not merely its presence in a
+        signature."""
+        from self_learn import selfcheck
+
+        env = make_env(tmp_path)
+        override = tmp_path / "sandboxed-claude-dir-2" / "CLAUDE.md"
+        record = make_behavior(scope="skill:s", record_id="lrn-00000066")
+        create_record(env.ledger, record)
+        verbs.route(env.ledger, "lrn-00000066", dest="skill-md", no_push=True)
+
+        captured: list[Path | str | None] = []
+        real = selfcheck._managed_host_for
+
+        def spy(home, bucket, record, *, user_claude_md=None):
+            captured.append(user_claude_md)
+            return real(home, bucket, record, user_claude_md=user_claude_md)
+
+        monkeypatch.setattr(selfcheck, "_managed_host_for", spy)
+        ok, reason = selfcheck._check_drift(env.ledger, user_claude_md=override)
+        assert ok, reason
+        assert captured, "the drift loop never reached _managed_host_for at all"
+        assert all(c == override for c in captured), (
+            f"_check_drift did not thread its own user_claude_md kwarg "
+            f"down to _managed_host_for: captured {captured!r}"
+        )
 
 
 class TestRecompileAdopt:
@@ -1471,6 +1868,286 @@ class TestRecompileRecordResyncOnRender:
         assert not any("edited" in w for w in third.warnings)
         assert target.read_text(encoding="utf-8") == final_text
 
+    def test_git_target_render_after_ledger_change_writes_and_resyncs(
+        self, tmp_path
+    ):
+        """D-2 (code gate r1 fold): the SAME residual-defect fix as
+        `test_clean_plain_target_render_after_ledger_change_writes_and_resyncs`
+        above, but for a GIT-mode target. Pre-fold, `recompile`'s git
+        leg committed the HOST's render but never touched the compile
+        record at all — `edited` refuses in BOTH modes (REC2/REC4), so
+        a stale record on a git host is the exact same latent
+        false-refusal channel the plain leg's fix closed there."""
+        env = make_env(tmp_path)
+        rec1 = make_behavior(scope="skill:s", record_id="lrn-00000067")
+        create_record(env.ledger, rec1)
+        verbs.route(env.ledger, "lrn-00000067", dest="skill-md", no_push=True)
+
+        target = env.skill_md
+        slug = hosts_mod.host_slug(env.ledger, env.host, scope_kind="skill")
+        key = compiled.region_key(env.host, target)
+        before_entry = compiled.entry_for(compiled.load_record(env.ledger, slug), key)
+        assert before_entry is not None
+        before_text = target.read_text(encoding="utf-8")
+
+        rec2 = make_behavior(scope="skill:s", record_id="lrn-00000068")
+        create_record(env.ledger, rec2)
+        verbs.route(env.ledger, "lrn-00000068", dest="skill-md", no_push=True)
+        after_route_entry = compiled.entry_for(
+            compiled.load_record(env.ledger, slug), key
+        )
+        assert after_route_entry is not None
+        assert after_route_entry["sha256"] != before_entry["sha256"]
+        after_route_text = target.read_text(encoding="utf-8")
+        assert after_route_text != before_text
+
+        # hand-edit back to the STALE (rec1-only) content, `--adopt`
+        # freezes the record to match it (mode-agnostic per REC4), then
+        # a plain `recompile` call (no `--adopt`) must both rewrite the
+        # git host's target AND resync the record — never leave them
+        # disagreeing.
+        target.write_text(before_text, encoding="utf-8")
+        commit_all(env.host, "hand-edit back to stale content")
+        adopt_result = verbs.recompile(env.ledger, no_push=True, adopt=target)
+        assert not any("edited" in w for w in adopt_result.warnings)
+
+        resync_result = verbs.recompile(env.ledger, no_push=True)
+        assert not any("edited" in w for w in resync_result.warnings)
+        final_text = target.read_text(encoding="utf-8")
+        assert final_text == after_route_text
+        final_entry = compiled.entry_for(compiled.load_record(env.ledger, slug), key)
+        assert final_entry is not None
+        final_region = compiled.region_bytes(final_text, "managed")
+        assert final_region is not None
+        final_observed = compiled.sha256_hex(final_region)
+        assert final_entry["sha256"] == final_observed, (
+            "the compile record was not resynced after the git leg's "
+            "render — it still points at stale bytes"
+        )
+        assert compiled.verdict_for(final_entry, final_observed) == "clean"
+
+        # never-falsely-refuses-again invariant.
+        third = verbs.recompile(env.ledger, no_push=True)
+        assert not any("edited" in w for w in third.warnings)
+        assert target.read_text(encoding="utf-8") == final_text
+
+    def test_resync_commit_subject_names_the_host_by_slug_never_a_path(
+        self, tmp_path
+    ):
+        """M-10 (code gate r1 fold): §4.5/gate B-3 rejected a second
+        ledger commit under the subject `self-learn: compile record …`
+        — that shape must stay rejected even though the resync commit
+        itself is legitimate (the render above happens OUTSIDE
+        `route`'s own commit, so REC9's "the record rides its own
+        resolution's commit" has nothing for a bare `recompile` resync
+        to ride). Evidence this closes (probe run during the gate):
+        `'self-learn: compile record /tmp/pytest-of-komi/.../CLAUDE.md'`
+        — the ONLY pinned subject anywhere in this codebase that
+        embedded an absolute local path. The fix names the host by
+        SLUG (`hosts.slug_for` — `/`-free by construction) instead."""
+        env = make_env(tmp_path)
+        plain_host = tmp_path / "resync-subject-plain"
+        plain_host.mkdir()
+        host_add(env.ledger, plain_host, "project", mode="plain")
+        rec1 = make_behavior(scope="project", record_id="lrn-00000013")
+        create_record(env.ledger, rec1, project_path=plain_host)
+        verbs.route(env.ledger, "lrn-00000013", dest="claude-md", no_push=True)
+
+        target = plain_host / "CLAUDE.md"
+        before_text = target.read_text(encoding="utf-8")
+
+        rec2 = make_behavior(scope="project", record_id="lrn-00000014")
+        create_record(env.ledger, rec2, project_path=plain_host)
+        verbs.route(env.ledger, "lrn-00000014", dest="claude-md", no_push=True)
+        after_route_text = target.read_text(encoding="utf-8")
+        assert after_route_text != before_text
+
+        # same shape as the sibling resync test above: hand-edit back to
+        # the STALE (rec1-only) bytes, `--adopt` freezes the record to
+        # match them exactly, THEN a plain (non-adopting) `recompile`
+        # sees the ledger's true canonical content (both records) differ
+        # from disk and both WRITES it and RESYNCS the record — that
+        # resync's LEDGER commit is the one under test here.
+        target.write_text(before_text, encoding="utf-8")
+        adopt_result = verbs.recompile(env.ledger, no_push=True, adopt=target)
+        assert not any("edited" in w for w in adopt_result.warnings)
+
+        before_head = git(env.ledger, "rev-parse", "HEAD").stdout.strip()
+        result = verbs.recompile(env.ledger, no_push=True)
+        after_head = git(env.ledger, "rev-parse", "HEAD").stdout.strip()
+        assert after_head != before_head, "expected a resync commit, saw none"
+        assert any(e.changed for e in result.entries)
+
+        subject = git(
+            env.ledger, "log", "-1", "--format=%s"
+        ).stdout.strip()
+        assert "compile record" not in subject.lower(), (
+            f"resync commit reused the §4.5/gate-B-3-rejected subject: {subject!r}"
+        )
+        assert "/" not in subject, (
+            f"resync commit subject embeds a path (contains '/'): {subject!r}"
+        )
+        slug = hosts_mod.host_slug(env.ledger, plain_host, scope_kind="project")
+        assert slug in subject, (
+            f"resync commit subject does not name the host by slug: {subject!r}"
+        )
+
+    def test_recompile_reference_and_pointer_render_resyncs_the_record(
+        self, tmp_path
+    ):
+        """D-3 (code gate r1 fold): the SAME residual-defect fix as
+        `test_git_target_render_after_ledger_change_writes_and_resyncs`,
+        extended to the OTHER two region kinds `recompile()`'s own
+        `ref_work` loop writes — `reference` and `pointer`. Unlike the
+        managed-target loop, `ref_work` has no verdict/refusal gate at
+        all (`compile_reference`/`apply_pointer` are unconditionally
+        re-applied, relying on their OWN content-based idempotence) —
+        pre-fold, a render that changed real bytes there left the
+        compile record exactly as stale as the managed leg did, and
+        `_abort_if_unsound`'s `"reference"`/`"pointer"` preflight checks
+        (verbs.py ~1753/1776, run by the NEXT `route()` into the same
+        skill) is the concrete false-refusal channel this closes: a
+        stale record reads as `edited` and refuses a legitimate route.
+
+        Mutation this would catch: wrap the two new resync blocks in
+        `if False and ...:` — the final `route()` call below (rec3)
+        raises `VerbError` with "edited" in it, instead of landing
+        clean."""
+        env = make_env(tmp_path)
+        from self_learn.compilers import reference_target_path
+
+        pointer_surface = env.skill_md
+        before_any_pointer_text = pointer_surface.read_text(encoding="utf-8")
+
+        rec1 = make_behavior(scope="skill:s", record_id="lrn-00000069")
+        create_record(env.ledger, rec1)
+        verbs.route(env.ledger, "lrn-00000069", dest="reference", no_push=True)
+
+        ref_path = reference_target_path(env.skill_dir / "references")
+        after_rec1_ref_text = ref_path.read_text(encoding="utf-8")
+        after_rec1_pointer_text = pointer_surface.read_text(encoding="utf-8")
+        assert after_rec1_pointer_text != before_any_pointer_text  # pointer written
+
+        rec2 = make_behavior(scope="skill:s", record_id="lrn-0000006a")
+        create_record(env.ledger, rec2)
+        verbs.route(env.ledger, "lrn-0000006a", dest="reference", no_push=True)
+
+        after_rec2_ref_text = ref_path.read_text(encoding="utf-8")
+        after_rec2_pointer_text = pointer_surface.read_text(encoding="utf-8")
+        assert "lrn-00000069" in after_rec2_ref_text
+        assert "lrn-0000006a" in after_rec2_ref_text
+        assert after_rec2_ref_text != after_rec1_ref_text
+
+        slug = hosts_mod.host_slug(env.ledger, env.host, scope_kind="skill")
+        ref_key = compiled.region_key(env.host, ref_path)
+        pointer_key = compiled.region_key(env.host, pointer_surface)
+        correct_ref_entry = compiled.entry_for(
+            compiled.load_record(env.ledger, slug), ref_key
+        )
+        correct_pointer_entry = compiled.entry_for(
+            compiled.load_record(env.ledger, slug), pointer_key
+        )
+        assert correct_ref_entry is not None
+        assert correct_pointer_entry is not None
+
+        # Simulate lost/reverted work (the H-2-flavored scenario): BOTH
+        # the disk files AND the ledger's own compile record together
+        # reverted to a self-consistent rec1-only state (never just
+        # disk alone — a stale-but-self-consistent record is what makes
+        # this discriminate at all: `compile_reference`/`apply_pointer`
+        # deterministically reconstruct the SAME rec1+rec2 bytes either
+        # way, so if the record already matched the reconstructed
+        # bytes — e.g. because it still held rec2's own correct
+        # resync — this recompile call's OWN resync would be a
+        # no-op-equivalent and this test would pass even with the fix
+        # deleted). Direct record surgery, not a second `route()` call,
+        # is required to reach this state: any `route()` into this
+        # skill re-syncs the record to match, by design.
+        ref_region_rec1 = compiled.region_bytes(after_rec1_ref_text, "reference")
+        pointer_region_rec1 = compiled.region_bytes(
+            after_rec1_pointer_text, "pointer"
+        )
+        assert ref_region_rec1 is not None
+        assert pointer_region_rec1 is not None
+        compiled.write_entry(
+            env.ledger,
+            slug,
+            ref_key,
+            region="reference",
+            sha256=compiled.sha256_hex(ref_region_rec1),
+            based_on_sha256=compiled.sha256_hex(ref_region_rec1),
+            nbytes=len(ref_region_rec1),
+            by="test setup: revert record to rec1-only",
+            host=str(env.host),
+            mode="git",
+        )
+        compiled.write_entry(
+            env.ledger,
+            slug,
+            pointer_key,
+            region="pointer",
+            sha256=compiled.sha256_hex(pointer_region_rec1),
+            based_on_sha256=compiled.sha256_hex(pointer_region_rec1),
+            nbytes=len(pointer_region_rec1),
+            by="test setup: revert record to rec1-only",
+            host=str(env.host),
+            mode="git",
+        )
+        git(env.ledger, "add", "-A")
+        git(env.ledger, "commit", "-m", "test setup: revert compile record")
+
+        ref_path.write_text(after_rec1_ref_text, encoding="utf-8")
+        pointer_surface.write_text(before_any_pointer_text, encoding="utf-8")
+        commit_all(env.host, "revert reference+pointer to pre-recompile state")
+
+        result = verbs.recompile(env.ledger, no_push=True)
+
+        ref_targets = {e.target: e for e in result.entries}
+        assert ref_targets[ref_path].changed is True
+        assert ref_targets[pointer_surface].changed is True
+        assert ref_path.read_text(encoding="utf-8") == after_rec2_ref_text
+        assert pointer_surface.read_text(encoding="utf-8") == after_rec2_pointer_text
+
+        data_after = compiled.load_record(env.ledger, slug)
+        ref_entry_after = compiled.entry_for(data_after, ref_key)
+        pointer_entry_after = compiled.entry_for(data_after, pointer_key)
+        assert ref_entry_after is not None
+        assert pointer_entry_after is not None
+
+        ref_region = compiled.region_bytes(after_rec2_ref_text, "reference")
+        assert ref_region is not None
+        ref_observed = compiled.sha256_hex(ref_region)
+        assert ref_entry_after["sha256"] == ref_observed, (
+            "the compile record was not resynced after recompile's "
+            "reference-append render — it still points at stale bytes"
+        )
+        assert compiled.verdict_for(ref_entry_after, ref_observed) == "clean"
+        assert ref_entry_after["sha256"] == correct_ref_entry["sha256"]
+
+        pointer_region = compiled.region_bytes(after_rec2_pointer_text, "pointer")
+        assert pointer_region is not None
+        pointer_observed = compiled.sha256_hex(pointer_region)
+        assert pointer_entry_after["sha256"] == pointer_observed, (
+            "the compile record was not resynced after recompile's "
+            "pointer-write render — it still points at stale bytes"
+        )
+        assert compiled.verdict_for(pointer_entry_after, pointer_observed) == "clean"
+        assert pointer_entry_after["sha256"] == correct_pointer_entry["sha256"]
+
+        # The false-refusal closure itself: a THIRD record routed into
+        # the same skill's reference destination must succeed — pre-fix,
+        # `_abort_if_unsound`'s "reference"/"pointer" preflight checks
+        # would see the stale record left behind by this recompile call
+        # and refuse it as `edited`.
+        rec3 = make_behavior(scope="skill:s", record_id="lrn-0000006b")
+        create_record(env.ledger, rec3)
+        verbs.route(env.ledger, "lrn-0000006b", dest="reference", no_push=True)
+        assert "lrn-0000006b" in ref_path.read_text(encoding="utf-8")
+
+        # never-falsely-refuses-again invariant.
+        third = verbs.recompile(env.ledger, no_push=True)
+        assert not any("edited" in w for w in third.warnings)
+
     def test_no_force_flag_exists(self):
         """REC11: `--force` is deliberately NOT offered anywhere in
         this path."""
@@ -1571,17 +2248,51 @@ class TestPlainEndToEnd:
 
     def test_plain4_no_git_subprocess_against_plain_host(self, tmp_path, monkeypatch):
         """PLAIN4: no git subprocess runs against a plain host during a
-        route. Positive control in the same test: the identical
-        instrument over a git-mode route records a non-zero count."""
+        route — checked at BOTH layers this codebase can reach a git
+        subprocess through. Positive control in the same test: the
+        identical instrument over a git-mode route records a non-zero
+        count at both layers.
+
+        Code gate r1 M-6: the prior instrument patched only
+        `gitops._git`, so a raw `subprocess.run(["git", ...], cwd=...)`
+        call bypassing that wrapper entirely — the exact shape
+        `hosts._is_git_repo` already uses live in this codebase, and
+        M25b's mutation (a stray `subprocess.run(["git","status"],
+        cwd=str(spec.host_path))` inserted into `_host_phase`'s plain
+        branch) — was invisible to it. This version patches BOTH
+        `gitops._git` AND raw `subprocess.run`, recording
+        `(repo_arg_or_cwd, argv)` from each."""
+        import subprocess as _subprocess_mod
+
         env = make_env(tmp_path)
-        calls: list[tuple[str, ...]] = []
+        git_calls: list[tuple[str, ...]] = []
         real_git = gitops._git
 
-        def spy(repo, *args, **kw):
-            calls.append((str(repo), *args))
+        def git_spy(repo, *args, **kw):
+            git_calls.append((str(repo), *args))
             return real_git(repo, *args, **kw)
 
-        monkeypatch.setattr(gitops, "_git", spy)
+        monkeypatch.setattr(gitops, "_git", git_spy)
+
+        subprocess_calls: list[tuple[str, tuple]] = []
+        real_run = _subprocess_mod.run
+
+        def run_spy(*args, **kwargs):
+            argv = args[0] if args else kwargs.get("args")
+            cwd = kwargs.get("cwd")
+            subprocess_calls.append((str(cwd) if cwd is not None else "", tuple(argv)))
+            return real_run(*args, **kwargs)
+
+        monkeypatch.setattr(_subprocess_mod, "run", run_spy)
+
+        def _mentions(host: Path, call: tuple[str, tuple]) -> bool:
+            # `gitops._git` never passes `cwd=` — it names the repo via
+            # `git -C <repo> ...` in argv instead — so a call "against"
+            # a host may show up either as the recorded `cwd`, or as a
+            # literal argument in argv (`-C <repo>`, or a raw
+            # `subprocess.run(["git", ...], cwd=str(host))` shape).
+            cwd, argv = call
+            return cwd == str(host) or str(host) in argv
 
         plain_host = tmp_path / "plain4-host"
         plain_host.mkdir()
@@ -1589,15 +2300,27 @@ class TestPlainEndToEnd:
         record = make_behavior(scope="project", record_id="lrn-0000000a")
         create_record(env.ledger, record, project_path=plain_host)
         verbs.route(env.ledger, "lrn-0000000a", dest="claude-md", no_push=True)
-        plain_calls = [c for c in calls if c[0] == str(plain_host)]
-        assert plain_calls == []
+        plain_git_calls = [c for c in git_calls if c[0] == str(plain_host)]
+        assert plain_git_calls == []
+        plain_subprocess_calls = [
+            c for c in subprocess_calls if _mentions(plain_host, c)
+        ]
+        assert plain_subprocess_calls == [], (
+            f"a raw subprocess.run reached the plain host directly, "
+            f"bypassing gitops._git entirely: {plain_subprocess_calls!r}"
+        )
 
-        calls.clear()
+        git_calls.clear()
+        subprocess_calls.clear()
         record2 = make_behavior(scope="skill:s", record_id="lrn-0000000b")
         create_record(env.ledger, record2)
         verbs.route(env.ledger, "lrn-0000000b", dest="skill-md", no_push=True)
-        host_calls = [c for c in calls if c[0] == str(env.host)]
-        assert len(host_calls) > 0  # positive control: git mode DOES call git
+        host_git_calls = [c for c in git_calls if c[0] == str(env.host)]
+        assert len(host_git_calls) > 0  # positive control: git mode DOES call git
+        host_subprocess_calls = [
+            c for c in subprocess_calls if _mentions(env.host, c)
+        ]
+        assert len(host_subprocess_calls) > 0  # same control, the raw-subprocess layer
 
     def test_plain9_local_claude_md_skips_check_ignore(self, tmp_path, monkeypatch):
         """PLAIN9: `claude-md:local` on a plain host does not call
@@ -1630,11 +2353,17 @@ class TestPlainEndToEnd:
             verbs.route(env.ledger, "lrn-0000000d", dest="claude-md:local", no_push=True)
         assert calls != []
 
-    def test_plain10_push_skips_plain_hosts_silently(self, tmp_path, capsys):
-        """PLAIN10: `self-learn push` skips plain hosts silently and
-        without calling `unpushed_commits` on them."""
-        from self_learn import cli
-
+    def test_plain10_push_skips_plain_hosts_silently(self, tmp_path, capsys, monkeypatch):
+        """PLAIN10 (code gate r1 fold M-5): `self-learn push`
+        (`verbs.push_pending`) skips plain hosts silently — no line on
+        EITHER stream, stdout or stderr (the prior instrument asserted
+        on stdout, but `push_pending`'s skip line, when a host IS
+        printed, always goes to stderr — `verbs.py`'s
+        ``print(..., file=sys.stderr)`` — so that assertion could never
+        fail) — and never calls `gitops.unpushed_commits` on a plain
+        host's directory at all (it has no `git status` to consult;
+        calling it would be a raw git subprocess against a non-repo, or
+        worse, an ancestor repo it happens to sit inside)."""
         env = make_env(tmp_path)
         plain_host = tmp_path / "plain10-host"
         plain_host.mkdir()
@@ -1642,36 +2371,64 @@ class TestPlainEndToEnd:
         record = make_behavior(scope="project", record_id="lrn-0000000e")
         create_record(env.ledger, record, project_path=plain_host)
         verbs.route(env.ledger, "lrn-0000000e", dest="claude-md", no_push=True)
-        capsys.readouterr()
-        rc = cli.main(
-            ["push"], env={"SELF_LEARN_HOME": str(env.ledger)}
-        ) if False else None
-        # cli.main doesn't take env=; use monkeypatch-free direct call via os.environ
-        import os
 
-        old = os.environ.get("SELF_LEARN_HOME")
-        os.environ["SELF_LEARN_HOME"] = str(env.ledger)
-        try:
-            rc = cli.main(["push"])
-        finally:
-            if old is None:
-                os.environ.pop("SELF_LEARN_HOME", None)
-            else:
-                os.environ["SELF_LEARN_HOME"] = old
-        out = capsys.readouterr().out
-        assert f"skipping {plain_host}" not in out
+        calls: list[Path] = []
+        real_unpushed = gitops.unpushed_commits
+
+        def _tracking_unpushed(repo, *a, **kw):
+            calls.append(Path(repo))
+            return real_unpushed(repo, *a, **kw)
+
+        monkeypatch.setattr(gitops, "unpushed_commits", _tracking_unpushed)
+        capsys.readouterr()
+        verbs.push_pending(env.ledger)
+        captured = capsys.readouterr()
+        assert f"skipping {plain_host}" not in captured.out
+        assert f"skipping {plain_host}" not in captured.err
+        assert plain_host.resolve() not in calls, (
+            "unpushed_commits was called against the plain host — PLAIN10 "
+            "requires it never be consulted for one"
+        )
 
     def test_plain12_lock_paths(self, tmp_path):
         """PLAIN12: the plain-host lock path is
-        `${XDG_CACHE_HOME}/self-learn/host-<slug>.commit.lock`; the
-        git-host lock path is byte-identical to `commit_lock_path`'s
-        own (UN8)."""
+        `${XDG_CACHE_HOME}/self-learn/host-<slug>.commit.lock`, keyed by
+        the HOST's own slug (never the ledger home's) — §4.3's whole
+        reason for a GLOBAL, non-home-namespaced cache path: "a host
+        can be registered by more than one ledger home and the
+        contended resource is the HOST's file". The git-host lock path
+        is byte-identical to `commit_lock_path`'s own (UN8).
+
+        Code gate r1 M-7: the prior instrument checked only the path's
+        SHAPE (`startswith("host-")`, `endswith(".commit.lock")`,
+        parent named `self-learn`) — never the actual key inside it.
+        M31 (keying the plain lock by `resolve_home()` instead of the
+        host path, `gitops.py:505-507`) satisfied that shape too, since
+        `resolve_home()`'s own string also starts with `host-` and ends
+        with `.commit.lock` once formatted the same way — so the ONE
+        property PLAIN12 exists to pin (two different ledger HOMES
+        registering the SAME host resolve to the SAME lock path) went
+        unchecked. This version asserts the FULL path equals
+        `hosts.slug_for(host)`'s own construction, directly. Note
+        `host_lock_path`'s own signature — `(path, mode)`, no `home`
+        parameter at all — IS the cross-home property already: two
+        different ledger homes registering the SAME physical host call
+        the exact same function with the exact same arguments, so they
+        can only ever resolve to the SAME lock path; there is no
+        home-scoped input for them to diverge on."""
         env = make_env(tmp_path)
         assert gitops.host_lock_path(env.host, "git") == gitops.commit_lock_path(env.host)
-        plain_path = gitops.host_lock_path(env.host, "plain")
-        assert plain_path.name.startswith("host-")
-        assert plain_path.name.endswith(".commit.lock")
-        assert plain_path.parent.name == "self-learn"
+
+        plain_host = tmp_path / "plain12-host"
+        plain_host.mkdir()
+        plain_path = gitops.host_lock_path(plain_host, "plain")
+        expected = (
+            Path(os.environ["XDG_CACHE_HOME"])
+            / "self-learn"
+            / f"host-{hosts_mod.slug_for(plain_host)}.commit.lock"
+        )
+        assert plain_path == expected
+
 
 
 class TestPlain5RealOsLock:
@@ -1714,6 +2471,128 @@ class TestPlain5RealOsLock:
             assert elapsed > 0.8, f"second acquire did not block (elapsed={elapsed})"
         finally:
             proc.wait(timeout=5)
+
+    @staticmethod
+    def _bare_ledger(tmp_path: Path, name: str) -> Path:
+        """A minimal doc-13 ledger home, independent of `make_env`'s own
+        paired host — needed here because TWO ledgers must register the
+        SAME physical plain host (PLAIN12/§4.3's own reasoning: the
+        contended resource is the HOST's file, not any one home's view
+        of it), and `make_env` always creates a fresh host of its own."""
+        ledger = tmp_path / name
+        ledger.mkdir()
+        git(ledger, "init", "-q", "-b", "main")
+        git(ledger, "config", "user.email", "test@example.com")
+        git(ledger, "config", "user.name", "Test")
+        for sub in ("skills", "projects", "user", "telemetry"):
+            (ledger / sub).mkdir()
+        # git tracks no empty directories, so there is nothing to commit
+        # yet -- `host_add` (called next by the caller) makes the
+        # ledger's real first commit, writing hosts.yaml.
+        return ledger
+
+    def test_two_processes_serialize_through_verbs_recompile_itself(self, tmp_path):
+        """B-2 (code gate r1 fold): PLAIN5's REAL instrument. The prior
+        version of this test drove `_host_phase` through `verbs.route`,
+        but `route`/`route_direct` ALSO pre-acquire the SAME host lock
+        one level up (`with _ledger_write(home), gitops.host_lock(...)`,
+        opened before `_observe_region_hash` so REC13's staleness read
+        is itself lock-protected) -- so through `route`, `_host_phase`'s
+        OWN internal `gitops.host_lock` call is a re-entrant pass-through
+        (`gitops._held_locks`) and mutating it to a plain-mode
+        `nullcontext()` (M26) is externally INVISIBLE: proven empirically
+        -- mutating BOTH call sites at once, `route`-driven, still
+        blocked for the holder's full sleep window. `verbs.recompile`
+        does not have this shielding: it calls `_observe_region_hash`
+        and `_host_phase` back to back with no enclosing lock of its
+        own (confirmed by reading `recompile`'s body — zero
+        `gitops.host_lock` calls outside the one inside `_host_phase`
+        itself), so `_host_phase`'s lock is the FIRST and ONLY guard on
+        this path — the one M26 actually targets.
+
+        TWO DIFFERENT ledger homes register the SAME plain host (isolates
+        the HOST lock from the LEDGER lock, same reasoning as PLAIN12/
+        §4.3: the contended resource is the HOST's file). Each ledger
+        routes its OWN record to a DIFFERENT destination under that host
+        (`claude-md` vs. `claude-md:rules:topic-b`) during sequential
+        setup, so neither route call collides with content the other
+        ledger already wrote (B-1 would correctly refuse a SECOND
+        ledger's write into a region it never recorded — that is not
+        this test's subject). The holder process then calls
+        `verbs.recompile(ledger_a)` with `_apply_target` monkeypatched to
+        mark entry and sleep, observably holding the host lock; THIS
+        process concurrently calls `verbs.recompile(ledger_b)` — a
+        DIFFERENT target file, same host lock — and must observably BLOCK
+        until the holder's recompile (lock included) has completed.
+        Verified empirically before being pinned here: elapsed ~1.5-1.7s
+        against the real code, and ~0.005s once `_host_phase`'s internal
+        lock alone is mutated to the M26 shape — i.e. this test goes RED
+        exactly on M26, unlike its `route`-driven predecessor."""
+        plain_host = tmp_path / "plain5c-host"
+        plain_host.mkdir()
+        (plain_host / "CLAUDE.md").write_text(
+            "# plain host\n", encoding="utf-8"
+        )
+
+        ledger_a = self._bare_ledger(tmp_path, "ledger-a")
+        ledger_b = self._bare_ledger(tmp_path, "ledger-b")
+        host_add(ledger_a, plain_host, "project", mode="plain")
+        host_add(ledger_b, plain_host, "project", mode="plain")
+
+        record_a = make_behavior(scope="project", record_id="lrn-000000d1")
+        record_b = make_behavior(scope="project", record_id="lrn-000000d2")
+        create_record(ledger_a, record_a, project_path=plain_host)
+        create_record(ledger_b, record_b, project_path=plain_host)
+
+        # sequential setup -- each ledger routes into its OWN, previously
+        # untouched destination under the shared host, so neither call
+        # can trip B-1's refusal.
+        verbs.route(ledger_a, "lrn-000000d1", dest="claude-md", no_push=True)
+        verbs.route(
+            ledger_b, "lrn-000000d2", dest="claude-md:rules:topic-b", no_push=True
+        )
+
+        marker = tmp_path / "holder-in-lock.txt"
+        cli_src = str(Path(__file__).resolve().parents[1] / "src")
+        holder_script = tmp_path / "holder_recompile.py"
+        holder_script.write_text(
+            "import sys, time\n"
+            f"sys.path.insert(0, {cli_src!r})\n"
+            "from pathlib import Path\n"
+            "from self_learn import verbs\n"
+            "_real_apply = verbs._apply_target\n"
+            "def _slow_apply(*a, **kw):\n"
+            f"    Path({str(marker)!r}).write_text('IN LOCK', encoding='utf-8')\n"
+            "    time.sleep(1.5)\n"
+            "    return _real_apply(*a, **kw)\n"
+            "verbs._apply_target = _slow_apply\n"
+            f"verbs.recompile({str(ledger_a)!r}, no_push=True)\n",
+            encoding="utf-8",
+        )
+        proc = subprocess.Popen(["python3", str(holder_script)])
+        try:
+            deadline = time.monotonic() + 3.0
+            while not marker.is_file() and time.monotonic() < deadline:
+                time.sleep(0.02)
+            assert marker.is_file(), "holder process never entered its critical section"
+
+            t0 = time.monotonic()
+            verbs.recompile(ledger_b, no_push=True)
+            elapsed = time.monotonic() - t0
+            # ledger B's OWN ledger lock was free the whole time (its own
+            # home, never touched by the holder) -- any blocking observed
+            # here can ONLY come from the shared HOST lock inside
+            # `_host_phase`, which is exactly what M26 removes.
+            assert elapsed > 0.8, f"recompile did not block on the holder (elapsed={elapsed})"
+        finally:
+            proc.wait(timeout=5)
+
+        topic_b_text = (plain_host / ".claude" / "rules" / "topic-b.md").read_text(
+            encoding="utf-8"
+        )
+        assert "lrn-000000d2" in topic_b_text
+        assert topic_b_text.count(compilers.BEGIN_MARKER) == 1
+        assert topic_b_text.count(compilers.END_MARKER) == 1
 
 
 # ---------------------------------------------------------------- RCN group
@@ -2195,10 +3074,19 @@ class TestUn2GitModeGatesUnchanged:
         `test_dirty_git_host_route_refuses_through_abort_if_dirty`
         above, then restored with a sha256 check) during this build.
         This positive control re-proves the current source still has
-        the unmutated dispatch that script mutates."""
+        the unmutated dispatch that script mutates.
+
+        Code gate r1 fold N-9: the dispatch line itself gained a
+        `target.is_file()` guard (master's own, dropped when the three
+        original per-call-site guards were consolidated here) — updated
+        to match; the property this control protects (git mode still
+        calls `_abort_if_dirty`) is unchanged."""
         src_path = Path(verbs.__file__)
         text = src_path.read_text(encoding="utf-8")
-        assert "if mode == \"git\":\n        _abort_if_dirty(host_path, target)" in text
+        assert (
+            "if mode == \"git\" and target.is_file():\n"
+            "        _abort_if_dirty(host_path, target)"
+        ) in text
 
 
 class TestUn8HostLockPathAndCommitLockUnchanged:
@@ -2255,3 +3143,310 @@ class TestUn8HostLockPathAndCommitLockUnchanged:
         src_path = Path(gitops.__file__)
         text = src_path.read_text(encoding="utf-8")
         assert 'if mode == "git":\n        return commit_lock_path(Path(path))' in text
+
+
+# ------------------------------------------------------------- gate r1 fold
+
+
+class TestB1Rec5RowTwoUnknownRefusesPlainMode:
+    """B-1 (code gate r1): REC5 row 2 -- `entry absent + region present`
+    -> REFUSE in plain mode. `compiled.refuses`'s `mode` parameter is now
+    load-bearing (closes N-2). Git mode keeps the deliberate `unknown`
+    scope reduction (provenance is git's own committed history)."""
+
+    def test_refuses_unit_row(self):
+        assert compiled.refuses("unknown", "plain") is True
+        assert compiled.refuses("unknown", "git") is False
+        assert compiled.refuses("edited", "plain") is True
+        assert compiled.refuses("edited", "git") is True
+        for verdict in ("fresh", "clean", "missing", "stale"):
+            assert compiled.refuses(verdict, "plain") is False
+            assert compiled.refuses(verdict, "git") is False
+
+    def test_plain_route_refuses_and_leaves_bytes_unchanged_on_marker_bounded_content_the_ledger_never_wrote(
+        self, tmp_path
+    ):
+        """The gate's own probe: a plain host's target already carries a
+        marker-bounded managed section this ledger never wrote (no
+        compile record yet) -- the route must REFUSE (`DirtyTargetError`,
+        the CLI's exit-1 shape) and the file's bytes must be
+        BYTE-UNCHANGED afterwards -- never silently overwritten."""
+        env = make_env(tmp_path)
+        plain_host = tmp_path / "rec5row2-plain"
+        plain_host.mkdir()
+        host_add(env.ledger, plain_host, "project", mode="plain")
+        target = plain_host / "CLAUDE.md"
+        foreign_section = (
+            f"# host project\n\n{verbs.BEGIN_MARKER}\n"
+            "Some other tool's content, never written by this ledger.\n"
+            f"{compilers.END_MARKER}\n"
+        )
+        target.write_text(foreign_section, encoding="utf-8")
+        before = target.read_bytes()
+
+        record = make_behavior(scope="project", record_id="lrn-000000b1")
+        create_record(env.ledger, record, project_path=plain_host)
+        with pytest.raises(verbs.DirtyTargetError) as excinfo:
+            verbs.route(env.ledger, "lrn-000000b1", dest="claude-md", no_push=True)
+        assert verbs.REGION_VERDICT_MARKER in str(excinfo.value)
+        assert "unknown" in str(excinfo.value)
+        assert target.read_bytes() == before
+
+    def test_git_mode_still_proceeds_on_unknown_unchanged(self, tmp_path):
+        """The other half of the mode split: the SAME marker-bounded,
+        record-less content on a GIT host must still PROCEED (S3/UN3's
+        byte-unchanged migration promise) -- git's own commit history is
+        the provenance source there, not the compile record."""
+        env = make_env(tmp_path)
+        foreign_section = (
+            f"# host project\n\n{verbs.BEGIN_MARKER}\n"
+            "Pre-existing content from before this unit shipped.\n"
+            f"{compilers.END_MARKER}\n"
+        )
+        (env.host / "CLAUDE.md").write_text(foreign_section, encoding="utf-8")
+        commit_all(env.host, "pre-existing managed section, no compile record")
+
+        record = make_behavior(scope="project", record_id="lrn-000000b2")
+        create_record(env.ledger, record, project_path=env.host)
+        result = verbs.route(env.ledger, "lrn-000000b2", dest="claude-md", no_push=True)
+        assert result.host_commit_sha is not None
+
+
+# ---------------------------------------------------------------- REC12 group
+
+
+class TestRec12HostLockDiscipline:
+    """REC12 [A]: every host-writing verb takes the host lock before its
+    first host-region READ or ledger mutation, holds it through the host
+    write, and releases it before the push. Structural (AST), like
+    `test_lock_invariant.py`'s own THE INVARIANT — but that walker only
+    tracks FS/git *mutating* primitives, so it cannot see this unit's
+    hazard: `_observe_region_hash`/`_observe_retirement_region` are
+    READS, not mutations, and an unlocked read racing a later locked
+    write is exactly the staleness hole REC13 exists to fence
+    (`_flock_lock`'s own docstring: "the compile record's `based_on_sha256`
+    is the state THIS write is based on, never a later re-read"). Code
+    gate r1 M-3: this instrument did not exist, and the shipped code
+    violated leg (c) in `supersede`/`graduate` (no host lock at all
+    before their region read) — both are fixed in this same commit.
+
+    Four legs, all checked by parsing `verbs.py` fresh (never `inspect`,
+    so a stale `.pyc` cannot lie):
+
+    (a) callee-at-entry — `_host_phase`'s lock is its own FIRST statement.
+    (b) six call sites + `_remove_hook_script` — `route`, `route_direct`,
+        `supersede`, `graduate` each open (or delegate through) the host
+        lock; `_remove_hook_script` takes its own independently.
+    (c) lock precedes the first mutating call — no sensitive read/write
+        in a verb's body lies outside its host-lock-guarded `with`.
+    (d) push outside — `push_if_remote`/`_push_ledger` never lies inside
+        that same `with`.
+    """
+
+    @staticmethod
+    def _verbs_tree() -> ast.Module:
+        src = (
+            Path(__file__).resolve().parents[1]
+            / "src" / "self_learn" / "verbs.py"
+        ).read_text(encoding="utf-8")
+        return ast.parse(src)
+
+    @staticmethod
+    def _find_func(tree: ast.Module, name: str) -> ast.FunctionDef:
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == name:
+                return node
+        raise AssertionError(f"verbs.py defines no function {name!r}")
+
+    @staticmethod
+    def _is_host_lock_call(expr: ast.AST) -> bool:
+        """True if `expr` IS (or, walked, CONTAINS) a call to
+        `gitops.host_lock(...)` — covers both the direct
+        `with gitops.host_lock(...):` shape (route/route_direct) and a
+        ternary/if-else expression that calls it in one branch
+        (supersede/graduate's mode-optional shape)."""
+        for n in ast.walk(expr):
+            if (
+                isinstance(n, ast.Call)
+                and isinstance(n.func, ast.Attribute)
+                and n.func.attr == "host_lock"
+                and isinstance(n.func.value, ast.Name)
+                and n.func.value.id == "gitops"
+            ):
+                return True
+        return False
+
+    @classmethod
+    def _host_lock_with_nodes(cls, func: ast.FunctionDef) -> list[ast.With]:
+        """Every `with` statement anywhere in `func` whose guard is
+        host-lock-shaped — either directly (`with gitops.host_lock(...):`)
+        or via a bare name bound, ANYWHERE in `func` (a flat scan — this
+        codebase never shadows a `_x_host_lock` guard variable across
+        nested scopes, so lexical precedence is not needed), to a
+        host-lock-shaped expression (the `_x_host_lock = gitops.host_lock(
+        ...) if ... else ...`; `with _x_host_lock:` shape — supersede's
+        and graduate's assignment lives inside an `if`/`elif`/`else`,
+        a SIBLING scope to the `with` that consumes it, which a
+        preceding-statement-list walk cannot see; a flat name→shaped map
+        over the whole function can)."""
+        host_lock_names: set[str] = set()
+        for n in ast.walk(func):
+            if (
+                isinstance(n, ast.Assign)
+                and len(n.targets) == 1
+                and isinstance(n.targets[0], ast.Name)
+                and cls._is_host_lock_call(n.value)
+            ):
+                host_lock_names.add(n.targets[0].id)
+
+        found: list[ast.With] = []
+        for n in ast.walk(func):
+            if not isinstance(n, ast.With):
+                continue
+            for item in n.items:
+                ctx = item.context_expr
+                guarded = cls._is_host_lock_call(ctx) or (
+                    isinstance(ctx, ast.Name) and ctx.id in host_lock_names
+                )
+                if guarded:
+                    found.append(n)
+                    break
+        return found
+
+    @staticmethod
+    def _calls_named(func: ast.FunctionDef, names: tuple[str, ...]) -> list[ast.Call]:
+        """Every `Call` anywhere in `func` whose callee's own name (the
+        final `.attr` of an `Attribute`, or a bare `Name`) is in `names`
+        — line-numbered, for containment checks against a `with` node's
+        own line span."""
+        hits: list[ast.Call] = []
+        for n in ast.walk(func):
+            if not isinstance(n, ast.Call):
+                continue
+            f = n.func
+            callee = f.attr if isinstance(f, ast.Attribute) else (
+                f.id if isinstance(f, ast.Name) else None
+            )
+            if callee in names:
+                hits.append(n)
+        return hits
+
+    @staticmethod
+    def _inside_any(call: ast.Call, withs: list[ast.With]) -> bool:
+        return any(
+            w.lineno <= call.lineno <= (w.end_lineno or w.lineno) for w in withs
+        )
+
+    # -- leg (a): callee-at-entry ------------------------------------
+
+    def test_leg_a_host_phase_lock_is_its_own_first_statement(self):
+        tree = self._verbs_tree()
+        func = self._find_func(tree, "_host_phase")
+        # `_host_phase`'s body is `try: with gitops.host_lock(...): ...`
+        # (docstring, then the `try`) — the lock must be the FIRST
+        # statement inside that `try`, before ANY other work.
+        body = [s for s in func.body if not isinstance(s, ast.Expr)]
+        assert body, "_host_phase has no non-docstring statements"
+        try_stmt = body[0]
+        assert isinstance(try_stmt, ast.Try), (
+            f"_host_phase's first statement is {type(try_stmt).__name__}, expected Try"
+        )
+        first_in_try = try_stmt.body[0]
+        assert isinstance(first_in_try, ast.With), (
+            "_host_phase's try-block does not open with a `with` — "
+            f"got {type(first_in_try).__name__}"
+        )
+        assert any(
+            self._is_host_lock_call(item.context_expr)
+            for item in first_in_try.items
+        ), "_host_phase's first `with` does not guard on gitops.host_lock"
+
+    # -- leg (b) + (c) + (d), per verb --------------------------------
+
+    @pytest.mark.parametrize(
+        ("verb_name", "sensitive_names", "push_names"),
+        [
+            (
+                "route",
+                ("_observe_region_hash", "resolve_record", "_host_phase"),
+                ("push_if_remote", "_push_ledger"),
+            ),
+            (
+                "route_direct",
+                ("_observe_region_hash", "_host_phase"),
+                ("push_if_remote", "_push_ledger"),
+            ),
+            (
+                "supersede",
+                (
+                    "_observe_region_hash",
+                    "supersede_record",
+                    "_host_phase",
+                    "_remove_hook_script",
+                ),
+                ("push_if_remote", "_push_ledger"),
+            ),
+            (
+                "graduate",
+                (
+                    "_observe_retirement_region",
+                    "resolve_record",
+                    "_retirement_host_phase",
+                ),
+                ("push_if_remote", "_push_ledger"),
+            ),
+        ],
+    )
+    def test_legs_bcd_verb_holds_host_lock_before_its_reads_and_writes(
+        self, verb_name, sensitive_names, push_names
+    ):
+        tree = self._verbs_tree()
+        func = self._find_func(tree, verb_name)
+        host_lock_withs = self._host_lock_with_nodes(func)
+        # leg (b): the verb must open (or delegate through) the host lock
+        # at least once — a verb with zero host-lock-guarded `with`
+        # blocks has REC12c's obligation reaching an entrypoint with no
+        # lock anywhere on it (the exact M-3 shape: supersede/graduate
+        # pre-fold).
+        assert host_lock_withs, (
+            f"{verb_name} opens no host-lock-guarded `with` at all "
+            "(REC12b/c violation)"
+        )
+
+        # leg (c): every sensitive read/mutation call in the verb's body
+        # must lie inside ONE of those `with` blocks — never before, and
+        # never in a sibling branch outside them.
+        for call in self._calls_named(func, sensitive_names):
+            assert self._inside_any(call, host_lock_withs), (
+                f"{verb_name}: a call to a name in {sensitive_names} at "
+                f"line {call.lineno} lies OUTSIDE every host-lock-guarded "
+                "`with` (REC12c violation — the lock does not precede "
+                "this read/mutation)"
+            )
+
+        # leg (d): the push must never be inside the host-lock `with` —
+        # a push is has_remote-guarded network I/O, never something the
+        # host lock should serialize other producers behind.
+        for call in self._calls_named(func, push_names):
+            assert not self._inside_any(call, host_lock_withs), (
+                f"{verb_name}: a call to a name in {push_names} at line "
+                f"{call.lineno} lies INSIDE a host-lock-guarded `with` "
+                "(REC12d violation — the push must sit outside the lock)"
+            )
+
+    def test_leg_b_remove_hook_script_takes_its_own_host_lock(self):
+        tree = self._verbs_tree()
+        func = self._find_func(tree, "_remove_hook_script")
+        host_lock_withs = self._host_lock_with_nodes(func)
+        assert host_lock_withs, (
+            "_remove_hook_script opens no host-lock-guarded `with` at all "
+            "(REC12b violation — the '+ _remove_hook_script' call site "
+            "the gate named separately from the six verb-level sites)"
+        )
+        # its two mutating shapes: `script.unlink()` and `gitops._git(...)`
+        for call in self._calls_named(func, ("unlink", "_git")):
+            assert self._inside_any(call, host_lock_withs), (
+                f"_remove_hook_script: a call to {call.func.attr!r} at "
+                f"line {call.lineno} lies outside its own host-lock "
+                "`with` (REC12c violation)"
+            )

@@ -468,8 +468,10 @@ class TestArmedHostAdd:
         assert "read its files" in r.text
         # The exact command with the SERVER-derived path. U-hostmode
         # UIM1: `--mode` is always shown — "git" absent any
-        # hosts.default_mode, byte-identical in spirit to 50fa815's
-        # rendering (MODE1's own default).
+        # hosts.default_mode (MODE1's own default). Gate r1 fold N-7:
+        # this is a semantic property (the argv text), never a claim
+        # that the surrounding HTML is byte-identical to 50fa815's —
+        # §4.9's two-option consent radios did not exist there.
         assert f"self-learn host add --mode git {foreign}" in r.text
         assert runner.calls == []  # arming never executes anything
 
@@ -730,10 +732,16 @@ class TestHostAddInitDisclosure:
 
 class TestUIM1DefaultModeConfig:
     """UIM1: with `hosts.default_mode: plain` in config.yaml, the arm
-    rendering for a non-repo path shows the plain option selected and
+    rendering for a non-repo path pre-selects the plain radio and shows
     NO git-init disclosure; with the key absent (the default sandbox,
-    already exercised by `TestHostAddInitDisclosure`) it shows git
-    selected and the disclosure, byte-identical to 50fa815's rendering."""
+    already exercised by `TestHostAddInitDisclosure`) it pre-selects the
+    git radio and shows the disclosure. Gate r1 fold N-7 (spec r8):
+    these are the SEMANTIC properties each test below actually asserts
+    (radio-checked state, disclosure text, argv) — the class previously
+    described this as "byte-identical to 50fa815's rendering", which
+    §4.9's two-option consent radios (new in this build; `50fa815` had
+    no radios at all) make unachievable by construction. No assertion
+    in either test changed; only this docstring's claim did."""
 
     def test_default_mode_plain_arm_shows_plain_selected_no_disclosure(
         self, tmp_path: Path
@@ -767,7 +775,10 @@ class TestUIM1DefaultModeConfig:
         above (not just `TestHostAddInitDisclosure`'s pre-existing
         test, which predates this class and doesn't check the radio
         state) — no config.yaml at all reads "git" (MODE3's own
-        fail-closed default), byte-identical to 50fa815's rendering."""
+        fail-closed default): the git radio pre-selected, the
+        disclosure shown (gate r1 fold N-7 — see the class docstring;
+        no longer claimed byte-identical to `50fa815`'s rendering,
+        which had no radios to be identical to)."""
         sb, foreign, _rec, name = _plain_dir_sandbox(tmp_path)
         assert not (sb.ledger / "config.yaml").exists()
         c, runner = make_client(sb)
