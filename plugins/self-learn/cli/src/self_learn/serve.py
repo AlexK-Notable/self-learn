@@ -238,14 +238,27 @@ def cache_dir_readonly() -> Path:
 
 def unit_dir() -> Path:
     """Where the reference unit(s) get linked (`install.sh`, `PORT2`).
-    `SELF_LEARN_SERVE_UNIT_DIR` is the ONE override — the ONLY way a test
-    points this at a throwaway directory instead of the real
-    `~/.config/systemd/user` (HOST SAFETY: this module must never read or
-    write the real one during a test run, and never shells out to
-    `systemctl` at all — a pure filesystem check costs nothing under
-    `PORT1`, where `systemctl` is absent from `PATH` entirely)."""
+    Resolved the way systemd itself resolves the user unit search path
+    (AMENDED 2026-08-27, U-servehermetic): `SELF_LEARN_SERVE_UNIT_DIR`
+    (explicit override, kept) -> else `$XDG_CONFIG_HOME/systemd/user` if
+    `XDG_CONFIG_HOME` is set -> else the real `~/.config/systemd/user`
+    (HOST SAFETY: this module must never read or write the real one
+    during a test run, and never shells out to `systemctl` at all — a
+    pure filesystem check costs nothing under `PORT1`, where `systemctl`
+    is absent from `PATH` entirely). The docstring used to call
+    `SELF_LEARN_SERVE_UNIT_DIR` "the ONE override — the ONLY way" this
+    resolves away from the real host; that claim was false the moment a
+    test's hermetic `XDG_CACHE_HOME` redirect stopped being mirrored by
+    an equivalent `XDG_CONFIG_HOME` redirect here, and a live host unit
+    (linked 2026-08-27) turned the gap into 18 failing tests that had
+    never been exercised against a linked unit before."""
     override = os.environ.get("SELF_LEARN_SERVE_UNIT_DIR")
-    return Path(override) if override else Path.home() / ".config" / "systemd" / "user"
+    if override:
+        return Path(override)
+    xdg_config_home = os.environ.get("XDG_CONFIG_HOME")
+    if xdg_config_home:
+        return Path(xdg_config_home).expanduser() / "systemd" / "user"
+    return Path.home() / ".config" / "systemd" / "user"
 
 
 def is_configured() -> bool:

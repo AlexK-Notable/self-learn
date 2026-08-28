@@ -1591,6 +1591,21 @@ makes `doctor` say **FAIL**; `test_lock_invariant.py` is green with
   asserted**: fresh -> `PASS` naming the next job; stale -> `FAIL` naming
   the age; absent-and-unconfigured -> `SKIP`; absent-but-configured ->
   `FAIL`.
+  **(AMENDED 2026-08-27, U-servehermetic):** the "configured" leg reads
+  `serve.unit_dir()`, which this spec never pinned a resolution order
+  for beyond code (`serve.py`'s own docstring called
+  `SELF_LEARN_SERVE_UNIT_DIR` "the ONE override — the ONLY way" away
+  from the real `~/.config/systemd/user`). That claim went stale the
+  moment a real host linked `self-learn-host.service` and no test-side
+  mirror of the hermetic `XDG_CACHE_HOME` redirect existed for the unit
+  directory — 18 tests across six files went host-dependent, invisible
+  to this phase's own gate because it ran before any host had linked
+  the unit. `unit_dir()` now resolves `SELF_LEARN_SERVE_UNIT_DIR`
+  (explicit override, kept) -> else `$XDG_CONFIG_HOME/systemd/user` if
+  set -> else the real `~/.config/systemd/user`, and `conftest.py`'s
+  autouse `_worker_test_defaults` sets `XDG_CONFIG_HOME` to a fresh
+  `tmp_path` subdir for every test, the same way it already did for
+  `XDG_CACHE_HOME`.
 - **SUP3** **[A]** **The alarm is genuinely outside the daemon.** Start
   `serve`, kill it, run `doctor`, and **observe the `FAIL`** — not merely
   the absence of a `PASS`. A check that lives inside the daemon cannot

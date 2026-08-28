@@ -687,7 +687,10 @@ supervisor shapes are supported:
 - **systemd (Linux, the primary shape):** `systemd/self-learn-host.service`
   (`Type=simple`, `Restart=on-failure`, `RestartSec=5`,
   `ExecStart=%h/bin/self-learn serve`). `install.sh` links the unit
-  file into `~/.config/systemd/user/` and reloads the daemon, but does
+  file into `~/.config/systemd/user/` (or `$XDG_CONFIG_HOME/systemd/user/`
+  if that variable is set — U-servehermetic, 2026-08-27, aligning
+  `install.sh`'s `UNIT_DIR` with `serve.unit_dir()`'s own resolution) and
+  reloads the daemon, but does
   **not** enable or start it — enabling a long-lived host process on a
   live ledger is a deployment decision the installer does not make for
   you. Enable it yourself when you're ready:
@@ -718,6 +721,23 @@ heartbeat and never calls `systemctl`; it reports one of four verdicts:
 | Yes | No heartbeat file | `FAIL` |
 | Yes | Fresh (within the tick interval) | `PASS` |
 | Yes | Stale (older than the tick interval) | `FAIL` |
+
+**(AMENDED 2026-08-27, U-servehermetic):** "unit linked" is checked by
+looking for `self-learn-host.service` under `serve.unit_dir()`, resolved
+`SELF_LEARN_SERVE_UNIT_DIR` (explicit override) -> else
+`$XDG_CONFIG_HOME/systemd/user` if `XDG_CONFIG_HOME` is set -> else the
+real `~/.config/systemd/user`. The `XDG_CONFIG_HOME` leg is new: before
+it existed, a test session on any host that had linked the reference
+unit read that REAL unit as "configured" with no heartbeat ever written
+into the (correctly hermetic) test cache — 18 tests failed the day this
+host's unit was linked, none of them touching `serve` on purpose.
+`install.sh` evaluates the same `XDG_CONFIG_HOME` rule in the INVOKING
+shell's environment at link time, while the systemd user manager
+evaluates it independently, in its own environment, whenever it later
+reads the unit search path — normally identical, since both usually
+inherit the same login environment, but `systemctl --user show-
+environment` is what shows the manager's actual view if the two ever
+diverge.
 
 The stale-heartbeat `FAIL` is deliberately **LOUD even when `serve` is
 dead** — `doctor` is reading a file `serve` last wrote while it was

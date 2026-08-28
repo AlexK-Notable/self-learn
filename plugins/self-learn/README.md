@@ -134,9 +134,10 @@ digests them structurally, runs one contained `claude -p` reader (same
 write-restriction posture as the worker, pointed at a cache spool), and
 lands `source: session` records in `pending/` — capped, secret-scanned,
 never routed. `install.sh` already links the nightly timer's unit files
-into `~/.config/systemd/user/` (R1 layer 1; `Persistent=true` covers a
-machine asleep at 03:30); enabling it is the one step it deliberately
-leaves to you:
+into `~/.config/systemd/user/` (or `$XDG_CONFIG_HOME/systemd/user/` if
+that variable is set — U-servehermetic, 2026-08-27) (R1 layer 1;
+`Persistent=true` covers a machine asleep at 03:30); enabling it is the
+one step it deliberately leaves to you:
 
 ```bash
 systemctl --user enable --now self-learn-miner.timer
