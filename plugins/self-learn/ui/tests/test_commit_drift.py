@@ -1,19 +1,25 @@
 """U20 — the commit-drift UI leg (F5-5 guided commit-first,
 f5-round-spec.md §2.2).
 
-When a `route` confirm fails AND the stderr matches one of the two
-pinned DIRTY-specific refusal clauses, the error strip gains ONE action
-button ("Commit that repo's changes, then retry"), armed two-step,
-composing inside the existing error-strip/action-bar machinery. The
-drift refusal (gate M2) must NEVER grow the button.
+When a `route` confirm fails AND the stderr matches the pinned
+DIRTY-specific refusal clause, the error strip gains ONE action button
+("Commit that repo's changes, then retry"), armed two-step, composing
+inside the existing error-strip/action-bar machinery. Any other failure
+(gate M2) must NEVER grow the button.
 
-Marker tests import the ACTUAL constants (self_learn.chezmoi.
-CHEZMOI_DIRTY_MARKER / self_learn.verbs.GITOPS_DIRTY_MARKER) — never a
-hand-copied substring (gate n12). The armed leg (dry-run file list) runs
-against a REAL sandboxed dirty repo, same as every other read route
-here (ledger._invoke_json shells the real `self-learn` console script);
-the commit + auto-retry legs run against a FakeRunner so the argv
-sequence is asserted exactly.
+U-hostmode Phase 2 (2026-08-28): this leg is git-tracked-host only now.
+A plain host (user scope, since Phase 1) never reaches "commit-drift" —
+its own compile-record mismatch refuses by naming `recompile --adopt`
+instead, a different code path entirely — so the marker set shrank from
+two to the one real git marker; the retired dotfiles-management
+module's own marker no longer exists (the module itself is deleted).
+
+Marker tests import the ACTUAL constant (self_learn.verbs.
+GITOPS_DIRTY_MARKER) — never a hand-copied substring (gate n12). The
+armed leg (dry-run file list) runs against a REAL sandboxed dirty repo,
+same as every other read route here (ledger._invoke_json shells the real
+`self-learn` console script); the commit + auto-retry legs run against a
+FakeRunner so the argv sequence is asserted exactly.
 
 commit-drift-evidence-spec.md (§4): the commit-drift evidence tests
 below live in this module rather than a new one — this IS the
@@ -29,7 +35,6 @@ from pathlib import Path
 
 from starlette.testclient import TestClient
 
-from self_learn.chezmoi import CHEZMOI_DIRTY_MARKER
 from self_learn.verbs import GITOPS_DIRTY_MARKER
 
 from self_learn_ui.app import create_app
@@ -86,19 +91,18 @@ def _scrape_hidden_fields(html: str, form_marker: str) -> dict[str, str]:
 
 
 class TestMarkerImport:
-    """gate n12: the marker match imports the SAME constants the CLI raise
-    sites use — never a hand-copied substring."""
+    """gate n12: the marker match imports the SAME constant the CLI raise
+    site uses — never a hand-copied substring."""
 
     def test_module_constants_are_the_real_pinned_markers(self) -> None:
-        assert COMMIT_DRIFT_MARKERS == (GITOPS_DIRTY_MARKER, CHEZMOI_DIRTY_MARKER)
+        assert COMMIT_DRIFT_MARKERS == (GITOPS_DIRTY_MARKER,)
 
-    def test_eligible_on_either_marker(self) -> None:
+    def test_eligible_on_the_marker(self) -> None:
         assert _commit_drift_eligible("route", f"boom {GITOPS_DIRTY_MARKER} boom")
-        assert _commit_drift_eligible("route", f"boom {CHEZMOI_DIRTY_MARKER} boom")
 
-    def test_ineligible_on_drift_or_other_verb_or_empty(self) -> None:
+    def test_ineligible_on_near_miss_or_other_verb_or_empty(self) -> None:
         assert not _commit_drift_eligible(
-            "route", "chezmoi reports pre-existing drift on X: fix drift / …"
+            "route", "compile target X has a merge conflict: resolve it first / …"
         )
         assert not _commit_drift_eligible("reject", GITOPS_DIRTY_MARKER)
         assert not _commit_drift_eligible("route", None)
@@ -126,35 +130,18 @@ class TestButtonEligibility:
         assert "Commit that repo" in r.text
         assert f"/record/{rec.id}/action/commit-drift/arm" in r.text
 
-    def test_chezmoi_dirty_marker_shows_button(self, tmp_path: Path) -> None:
+    def test_unrelated_refusal_shows_no_button(self, tmp_path: Path) -> None:
+        """gate M2 — the load-bearing negative: an unrelated refusal never
+        grows the button, even one that also mentions "the record stays
+        pending" (near-miss wording, not the pinned marker)."""
         sb, rec = _seed(tmp_path)
         runner = FakeRunner()
         runner.queue_result(
             RunResult(
                 1,
-                stderr=f"self-learn route: {CHEZMOI_DIRTY_MARKER}: fix drift / "
-                "commit dotfiles first, or route to project scope; the record "
-                "stays pending",
-            )
-        )
-        c, _runner = make_client(sb, runner=runner)
-        r = c.post(
-            f"/record/{rec.id}/action/confirm",
-            data={"verb": "route", "kind": "detail", "dest": "claude-md"},
-            headers={"HX-Request": "true"},
-        )
-        assert "Commit that repo" in r.text
-
-    def test_drift_refusal_shows_no_button(self, tmp_path: Path) -> None:
-        """gate M2 — the load-bearing negative: drift never grows a button."""
-        sb, rec = _seed(tmp_path)
-        runner = FakeRunner()
-        runner.queue_result(
-            RunResult(
-                1,
-                stderr="self-learn route: chezmoi reports pre-existing drift on "
-                "/x/CLAUDE.md: fix drift / commit dotfiles first, or route to "
-                "project scope; the record stays pending",
+                stderr="self-learn route: reference destination needs skill:"
+                "<name> or project scope — user scope has no references dir; "
+                "the record stays pending",
             )
         )
         c, _runner = make_client(sb, runner=runner)
@@ -401,34 +388,6 @@ class TestCommitAndRetry:
         assert "data-contradicts-offer" in r.text
         assert 'data-verb-success="true"' in r.text
 
-    def test_evidence_composes_with_adopt_offer(self, tmp_path: Path) -> None:
-        """§3 acceptance item 3 — likewise for the adopt offer. Mutation
-        guard (§3.1): passing `evidence=None` to `_adopt_offer_response`
-        must fail this."""
-        from self_learn.chezmoi import adopt_command
-
-        sb, rec = _seed_dirty(tmp_path)
-        target = "/home/u/.claude/rules/subagents.md"
-        hint_stderr = (
-            f"self-learn: wrote {target} — not tracked by chezmoi, so it "
-            f"will not sync to your other machines. To sync it: "
-            f"{adopt_command(target)}\n"
-        )
-        env_dict = envelope(record_id=rec.id, destination="skill-md", outcome_state="landed")
-        runner = FakeRunner()
-        runner.queue_result(RunResult(0))  # host commit-drift
-        runner.queue_result(
-            RunResult(0, stdout=json.dumps(env_dict), stderr=hint_stderr)
-        )  # route retry
-        c, _runner = make_client(sb, runner=runner)
-        r = c.post(
-            f"/record/{rec.id}/action/commit-drift/confirm",
-            data={"kind": "detail", "dest": "skill-md"},
-            headers={"HX-Request": "true"},
-        )
-        assert r.status_code == 200
-        assert "data-adopt-offer" in r.text
-        assert 'data-verb-success="true"' in r.text
 
     def test_cleared_bucket_omits_next_pending_link(self, tmp_path: Path) -> None:
         """§3 acceptance item 4 — a cleared bucket omits the "next

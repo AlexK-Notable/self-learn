@@ -301,16 +301,12 @@ def rules_firing_note(
     variant: str | None,
     scope: str | None,
     rules_paths: list[str] | tuple[str, ...] | None = None,
-    *,
-    adopted: bool = True,
 ) -> str:
     """A2 §11: the plain-words firing condition beside a variant label —
     P-A1's honest statement at the point of decision. A pathed rule
-    names its glob; an unpathed one says it loads every session; an
-    UNADOPTED user-scope rule (§10, P-A2b′) never implies cross-machine
-    reach it does not have. ``""`` for anything this note does not
-    apply to (plain claude-md, or a non-claude-md destination) — never a
-    placeholder.
+    names its glob; an unpathed one says it loads every session. ``""``
+    for anything this note does not apply to (plain claude-md, or a
+    non-claude-md destination) — never a placeholder.
 
     U-demand-user §3.3(e) item 3 / A10: the pathed leg gains S-23's rider
     at USER scope only (project scope is byte-identical to before this
@@ -331,8 +327,6 @@ def rules_firing_note(
                 "wherever the session is running, in any project"
             )
         return f"loads when you touch {globs}"
-    if scope == "user" and not adopted:
-        return "loads every session (this machine)"
     return "loads every session"
 
 

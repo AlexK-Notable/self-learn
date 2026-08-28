@@ -16,11 +16,11 @@ def test_empty_home_has_no_buckets(tmp_path):
 
 def test_skill_buckets_found_under_skills_dir(tmp_path):
     a = _mk_skill_bucket(tmp_path, "home-assistant")
-    b = _mk_skill_bucket(tmp_path, "chezmoi")
+    b = _mk_skill_bucket(tmp_path, "dotfiles")
     buckets = discover_buckets(tmp_path)
     assert [x.path for x in buckets] == sorted([a, b])
     assert all(x.scope == "skill" for x in buckets)
-    assert {x.name for x in buckets} == {"home-assistant", "chezmoi"}
+    assert {x.name for x in buckets} == {"home-assistant", "dotfiles"}
 
 
 def test_skill_bucket_named_after_its_dir(tmp_path):

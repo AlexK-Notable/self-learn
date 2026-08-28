@@ -3,13 +3,11 @@ registry, per-project buckets, two-phase routing, recompile drift repair,
 producer commits (H-5), global sentinel, home-namespaced cache.
 
 All git activity happens in sandbox repos under pytest tmpdirs (the
-support.make_env ledger/host pair); chezmoi is a PATH shim; the cache is
-XDG-redirected per test by conftest.
+support.make_env ledger/host pair); the cache is XDG-redirected per test
+by conftest.
 """
 
 import json
-import os
-import stat
 import subprocess
 from pathlib import Path
 
@@ -72,29 +70,6 @@ def project_repo(tmp_path):
     (repo / "README.md").write_text("proj\n", encoding="utf-8")
     commit_all(repo, "proj seed")
     return repo
-
-
-CHEZMOI_SHIM = """#!/usr/bin/env bash
-printf '%s\\n' "$*" >> "$CHEZMOI_SHIM_LOG"
-case "$1" in
-  diff) printf '%s' "${CHEZMOI_SHIM_DIFF-}" ;;
-  git) if [ "$3" = "status" ]; then printf '%s' "${CHEZMOI_SHIM_STATUS-}"; fi ;;
-esac
-exit "${CHEZMOI_SHIM_EXIT-0}"
-"""
-
-
-@pytest.fixture
-def chezmoi_shim(tmp_path, monkeypatch):
-    bindir = tmp_path / "shim-bin"
-    bindir.mkdir()
-    fake = bindir / "chezmoi"
-    fake.write_text(CHEZMOI_SHIM, encoding="utf-8")
-    fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
-    log = tmp_path / "chezmoi-argv.log"
-    monkeypatch.setenv("CHEZMOI_SHIM_LOG", str(log))
-    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
-    return lambda: log.read_text(encoding="utf-8").splitlines() if log.is_file() else []
 
 
 # ------------------------------------------------------- layout + discovery
@@ -602,12 +577,15 @@ class TestTwoPhaseRoute:
         claude_md = (project_repo / "CLAUDE.md").read_text(encoding="utf-8")
         assert f"({record.id})" in claude_md
 
-    def test_user_scope_chezmoi_flow_unchanged(self, env, tmp_path, chezmoi_shim):
-        """U-hostmode §4.8.1 (census EDIT, S3): user scope is now a
-        first-class PLAIN host — the write goes through the ordinary
-        plain path (``compile_managed_file``), calling NO chezmoi
-        function at all (USER2/CHEZ0). Name kept per the census
-        discipline; the test now proves the REPLACEMENT behaviour."""
+    def test_user_scope_chezmoi_flow_unchanged(self, env, tmp_path):
+        """U-hostmode §4.8.1/§4.8.2 (census EDIT, S3): user scope is now
+        a first-class PLAIN host — the write goes through the ordinary
+        plain path (``compile_managed_file``), calling no dotfiles-
+        management function at all (USER2/CHEZ0), and the module that
+        used to make such calls is deleted outright (Phase 2 — there is
+        nothing left on PATH to shim or to prove innocent). Name kept
+        per the census discipline; the test now proves the REPLACEMENT
+        behaviour."""
         record = make_knowledge(scope="user")
         create_record(env.ledger, record)
         user_md = tmp_path / "user-claude.md"
@@ -620,11 +598,8 @@ class TestTwoPhaseRoute:
             no_push=True,
             user_claude_md=user_md,
         )
-        # zero chezmoi calls — the shim recorded nothing (USER2)
-        assert chezmoi_shim() == []
-        # the dotfiles repo commits itself — no host commit here (same
-        # SHAPE as before, new REASON: user scope is plain by
-        # construction, so nothing is ever committed there)
+        # no host commit here: user scope is plain by construction, so
+        # nothing is ever committed there
         assert result.host_commit_sha is None
         assert head(env.host) == host_before
         assert f"({record.id})" in user_md.read_text(encoding="utf-8")

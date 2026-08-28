@@ -821,13 +821,19 @@ class TestRulesFiringNote:
     def test_unpathed_says_every_session(self) -> None:
         assert rules_firing_note("rules", "project", None) == "loads every session"
 
-    def test_unadopted_user_scope_names_this_machine_only(self) -> None:
-        note = rules_firing_note("rules", "user", None, adopted=False)
-        assert note == "loads every session (this machine)"
-
-    def test_adopted_user_scope_drops_the_this_machine_caveat(self) -> None:
-        note = rules_firing_note("rules", "user", None, adopted=True)
-        assert note == "loads every session"
+    def test_unpathed_user_scope_says_every_session_no_caveat(self) -> None:
+        """U-hostmode Phase 2 (2026-08-28): the `adopted` parameter and
+        its "(this machine)" caveat branch are gone — a plain host
+        (user scope, since Phase 1) never distinguishes an "adopted"
+        state, so this now reads exactly like project scope's
+        unpathed note (UIC4). The real template call site
+        (detail.html:147) never passed `adopted` even before this unit
+        — it always defaulted `True` — so the return-value assertion
+        alone does not discriminate a mutant that leaves the parameter
+        in place (M54): the signature check below is load-bearing."""
+        assert rules_firing_note("rules", "user", None) == "loads every session"
+        with pytest.raises(TypeError):
+            rules_firing_note("rules", "user", None, adopted=False)  # type: ignore[call-arg]
 
     def test_local_names_project_and_personal(self) -> None:
         note = rules_firing_note("local", "project", None)

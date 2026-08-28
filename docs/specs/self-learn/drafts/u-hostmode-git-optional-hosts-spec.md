@@ -2248,9 +2248,18 @@ both suites green.
   — see §5.13)*: run from `plugins/self-learn`,
   `git diff 50fa815 -- cli/tests/test_lock_invariant.py` must be
   **NON-EMPTY** (`PLAIN13` edits `_LOCKS`, so an empty diff means the
-  pathspec did not resolve) and must touch **no line inside the
-  `NOT_REPO_TRUTH` dict** — the only permitted hunk is the one-name
-  `_LOCKS` change at `:94`.
+  pathspec did not resolve). **Permitted hunks, r11 (gate r1):** the
+  one-name `_LOCKS` change at `:94` (`PLAIN13`); Phase 2's
+  `NOT_REPO_TRUTH` **shrink by three** dead exemptions for symbols
+  `chezmoi.py`'s deletion removes — `chezmoi._run`,
+  `chezmoi.compile_user_scope`, `chezmoi.preflight_user_scope` — kept
+  out by `test_lock_invariant.py`'s own
+  `test_the_exemption_list_cannot_rot` (a dict entry naming a function
+  that no longer exists fails it); and `_ARGV_FOR`
+  losing its `_cmd_chezmoi_adopt` entry (the verb itself is `CHEZ1`'s
+  own deletion). **No other hunk is permitted** — the rule stays "not
+  grown", never "unchanged": a shrink that removes only symbols this
+  same unit deleted is compliant; any other edit to either dict is not.
 - **PLAIN7** **[A]** `host add --mode plain` prints a consent line naming
   what plain mode does NOT do (no commits, no push, no off-machine backup
   of the host's own file) **and** the `claude-md:local` residual of §4.11,
@@ -2486,10 +2495,45 @@ Phase 1 could not run. §5.0's table shows what each one unblocks.)*
   gate r2-B2 measured that keeping it is incoherent once the write moves,
   and gate r2-M4 measured that the kept `compile_user_scope` would call
   the deleted `adopt_command` at `chezmoi.py:311`.)*
-- **CHEZ3** **[B]** The `offer_adopt` / `adopt_hint` channel is gone,
-  `UserScopeResult` is gone, and no route prints an adopt hint. The 8
-  `adopt` test functions — **all in `test_a2_rules_local.py`** — are
-  deleted, named individually in the build report.
+- **CHEZ3** **[B]** *(CORRECTED-r11, gate r1-M2b: the deletion set is
+  five files, not "8 [tests], all in `test_a2_rules_local.py`" —
+  measured by AST test/class name-set diff against `50fa815`; this
+  ALSO discharges `S5`'s "named individually" requirement, `D-1`.)*
+  The `offer_adopt` / `adopt_hint` channel is gone, `UserScopeResult`
+  is gone, and no route prints an adopt hint. **Deleted/renamed, by
+  file:**
+
+  - `test_a2_rules_local.py` — **20 names** (4 classes, 16 functions):
+    classes `TestObligation11OfferFiringMatrix`,
+    `TestObligation12AdoptAcceptPath`, `TestObligation13SingleCommandString`
+    deleted whole (14 functions between them); `TestObligation26Chezmoi
+    ManagedRefusal` renamed to `TestObligation26FormerManagedRefusalNow
+    Succeeds` (its 6 functions carried over, 5 byte-identical names, 1
+    renamed `test_pathed_route_refuses_dead_glob_before_chezmoi_on_managed`
+    → `…_before_the_old_managed_refusal`); plus 2 standalone functions,
+    `TestObligation1VariantAbsentByteIdentical::test_managed_carries_no_
+    variant_key` and `…test_unmanaged_carries_no_variant_key` (both
+    asserted `"variant" not in routed.routing` byte-identically, differing
+    only in chezmoi shim state — the surviving sibling
+    `test_absent_carries_no_variant_key` still carries the obligation).
+  - `test_chezmoi.py` — **13 tests, whole file** (8 classes:
+    `TestAbsentDegradesToSilentWrite`, `TestBrokenSourceWarns`,
+    `TestChezmoiCapability`, `TestCleanPath`, `TestDirtyRepoAbort`,
+    `TestDriftAbort`, `TestInvocationFailures`,
+    `TestUnmanagedDegradesToSilentWrite`) — sanctioned by §4.8.2, the
+    module's own wholesale deletion.
+  - `test_compilers.py` — 1: `TestCapRetirementIrreversible::
+    test_t1_4_chezmoi_wrapper_has_no_override_params` (imported the
+    deleted `compile_user_scope`).
+  - `test_regime_fixes.py` — 1: `test_real_chezmoi_round_trip`.
+  - `test_retirement_cleanup.py` — 1 renamed (UN3 does not protect this
+    file): `TestRecompileCompleteness::test_user_file_regenerated_via_
+    chezmoi_flow` → `…_via_the_plain_host_path`.
+
+  **None of the 22 UN3-protected names in `test_commit_drift.py`,
+  `test_hosting.py`, `test_verbs.py` were touched** (`CHEZ6`'s
+  accounting, §5.11) — those are retained-not-deleted, a different
+  disposition entirely.
 *(**CHEZ4 is retired**, not missing — r2's "the module still imports" was
 inverted into `CHEZ2` and its number was not reused. The group is CHEZ0,
 1, 2, 3, 5, 6; the mutation table references CHEZ5/CHEZ6 by name, so they
@@ -2502,11 +2546,27 @@ are not renumbered. CORRECTED-r4, gate r3-D5.)*
   members are byte-unchanged, and `teach.py:75`'s import is gone.
   **Mutation M51:** leave one import → `ImportError` at CLI load → the
   whole CLI suite errors → red. *(NEW in r3, gate r2-B2's measurement.)*
-- **CHEZ6** **[B]** **Zero `chezmoi` literals remain in `cli/src`,
-  `ui/src`, `ui/templates`, `cli/tests`, `ui/tests`** — except the two
-  prose comments at `compilers.py:596`/`:605` and one migration note.
-  **Instrument:** `grep -rn -i chezmoi` over exactly those five trees;
-  **positive control** at `50fa815` returns 205 / 12 / 7 / 343 / 43.
+- **CHEZ6** **[B]** *(CORRECTED-r11, gate r1-M2a: the shipped
+  accounting is 37 `cli/tests` hits, not "one migration note" — every
+  one is legitimate, and this criterion now says so instead of leaving
+  the shipped state to look like an overrun. `ui/static` joins the
+  swept trees, gate r1-N2.)* **Zero `chezmoi` literals remain in
+  `cli/src`, `ui/src`, `ui/templates`, `ui/tests`, `ui/static`** —
+  except the two prose comments at `compilers.py:596`/`:605`
+  (`ui/static` carries zero: its two `app.js:517,519` retirement
+  comments say "adopt", not `chezmoi` — see `UIC5`) — and `cli/tests`
+  carries exactly 37, in six categories, MEASURED at `b7e4189`:
+
+  | category | count | files |
+  |---|---|---|
+  | `UN3`-protected pre-existing test/class names (name-set freeze forbids renaming) | 22 | `test_commit_drift.py` 11, `test_hosting.py` 1, `test_verbs.py` 10 |
+  | unrelated real-world guard against the externally-installed `chezmoi` CLI's `cd` subcommand (`lrn-98d42215`) | 14 | `test_route_hook.py` 12, `test_hook_compiler.py` 2 |
+  | absence assertion (`assert "chezmoi" not in text`) | 1 | `test_composer.py` 1 |
+
+  **Instrument:** `grep -rn -i chezmoi` over exactly those six trees
+  (`ui/static` added at r11); **positive control** at `50fa815` returns
+  205 / 12 / 7 / 343 / 43 for the original five — `ui/static` was not
+  separately measured before r11, since no instrument swept it.
   **`docs/` is explicitly NOT swept** — its **421 hits excluding this
   draft** (546 including it, at r4) are history and stay (§2.10a).
   *(CORRECTED-r4, gate r3-D2.)* *(NEW in r3, gate r2-B3's "census, not memory" ruling.)*
@@ -2541,22 +2601,43 @@ are not renumbered. CORRECTED-r4, gate r3-D5.)*
   `if scope == "user" and not adopted:` branch (`:334`) are gone, and
   `ui/tests/test_models_detail.py`'s remaining assertions pass.
   **Mutation M54.**
-- **UIC5** **[B]** Zero `adopt` references remain in `ui/src` and
-  `ui/templates`. **Positive control** at `50fa815`: the §2.10a listing.
-  The six UI test files are reconciled individually by `S5`.
+- **UIC5** **[B]** *(CORRECTED-r11, gate r1-N2: `ui/static` joins the
+  swept trees — it carries the UI's whole client-side behaviour and no
+  criterion looked at it before r11.)* Zero `adopt` references remain
+  in `ui/src`, `ui/templates`, and `ui/static` — except two dated
+  retirement comments in `ui/static/app.js:517,519` (`reloadDeferred`'s
+  docblock, marking leg (e) a permanent gap after the offer it deferred
+  for was deleted; retained-history, not live behaviour). **Positive
+  control** at `50fa815`: the §2.10a listing (`ui/src` 37, `ui/templates`
+  13; `ui/static` was not separately measured before r11). The six UI
+  test files are reconciled individually by `S5`.
 
 
 ### 5.12 DOC (Phase 1) and SUITE (both)
 
-- **DOC1** **[A]** `03-decisions.md` carries `S-51` = §3 of this spec,
-  landed in the SAME commit as Phase 1 (`S-42`) — **with the row's two
-  Phase-2 clauses marked `(landed by Phase 2 of the same unit)`**, because
-  the row otherwise asserts as done something the Phase-1 commit has not
-  done. **Check:** the row text contains that parenthetical on the
-  `chezmoi.py`-deleted clause and on the adopt-surface clause.
-  *(CORRECTED-r3, gate r2-D7.)*
-- **DOC2** **[A]** `14-forward-work-map.md` carries FW-122, FW-123,
-  FW-124 (§12.2), verbatim.
+- **DOC1** **[A]** *(CORRECTED-r11, gate r1: Phase 2 landed under the
+  SAME unit, so the interim parentheticals this criterion pinned are
+  gone by design, not by omission.)* `03-decisions.md` carries `S-51`
+  = §3 of this spec — **with the row's two Phase-2 clauses no longer
+  carrying the `(landed by Phase 2 of the same unit)` parenthetical**,
+  replaced by one closing sentence once both phases exist under this
+  unit: *"Both phases (Phase 1: the mode carrier, the compile record,
+  plain-mode user scope; Phase 2: `chezmoi.py` deletion, UI adopt
+  surface) landed under this unit — see `FW-122`."* **Check:**
+  `grep -o '(landed by Phase 2 of the same unit)' docs/specs/self-learn/03-decisions.md
+  | wc -l` → **0**, and the row's final sentence is the replacement
+  text above (positive control: the same grep at Phase 1's own tip,
+  `fa02a4c`/master `3b8e037`, returns **2**, proving the instrument
+  would have caught an un-updated row). *(CORRECTED-r3, gate r2-D7.)*
+- **DOC2** **[A]** *(CORRECTED-r11, gate r1: §12.2's FW-122 cell pinned
+  the Phase-1-only interim wording; Phase 2 landing under this unit makes
+  that wording stale, not the live doc.)* `14-forward-work-map.md`
+  carries FW-122, FW-123, FW-124 (§12.2), verbatim — where §12.2's own
+  FW-122 disposition cell now reads *"Landed by `U-hostmode` (Phase 1 +
+  Phase 2)"*, replacing r8's interim *"Landed by `U-hostmode` Phase 1
+  (this build); Phase 2 … not yet landed — N-6"*. **Check:** the spec
+  text and the live `14-forward-work-map.md` row agree byte-for-byte on
+  that cell.
 - **DOC3** **[A]** `13-hosting-and-separation.md` §4 carries §12.3's
   amendment — as **item 5** of a list that has **four** items today
   *(CORRECTED-r2, gate D-4)* — and §8 `H-3` gains its clause.
@@ -3067,7 +3148,7 @@ Highest existing row at `50fa815`: **FW-121** (gate-confirmed). Header:
 
 | # | Item | Type | Trigger / when |
 |---|---|---|---|
-| **FW-122** | **Canon hosts are git-optional: `mode: git \| plain` on the hosts.yaml entry, set once at `host add --mode`, defaulting to `git`; a ledger-side compile record is plain mode's integrity instrument; user scope becomes a first-class plain host and the chezmoi adopt surface is deleted.** Measured before the build: 38 of 94 git call sites are host-side, all in `verbs.py`, held by 11 functions; 3 of 9 registered hosts are repos only to satisfy the requirement (`keyboards` `2085fe3`, `.config` `fc5b7dc`, `3d-printing` `d4f7c17`), 2 of those needing whitelist `.gitignore`s; **3 of 9 have no remote**; `~/.claude` has no VCS and holds the largest managed section on the machine (19 279 B). The record is **stricter than `git status`** for the region self-learn owns and rides the resolution's own ledger commit. `TargetSpec.host_repo is None` — which meant "chezmoi user scope" in 17 sites — is retired at the root. Git hosts stay byte-identical, proven by the `UN` group. | BUILD | Landed by `U-hostmode` Phase 1 (this build); Phase 2 (the `chezmoi.py` deletion and adopt-surface removal) not yet landed — N-6 (code gate r1 fold, 2026-08-28) |
+| **FW-122** | **Canon hosts are git-optional: `mode: git \| plain` on the hosts.yaml entry, set once at `host add --mode`, defaulting to `git`; a ledger-side compile record is plain mode's integrity instrument; user scope becomes a first-class plain host and the chezmoi adopt surface is deleted.** Measured before the build: 38 of 94 git call sites are host-side, all in `verbs.py`, held by 11 functions; 3 of 9 registered hosts are repos only to satisfy the requirement (`keyboards` `2085fe3`, `.config` `fc5b7dc`, `3d-printing` `d4f7c17`), 2 of those needing whitelist `.gitignore`s; **3 of 9 have no remote**; `~/.claude` has no VCS and holds the largest managed section on the machine (19 279 B). The record is **stricter than `git status`** for the region self-learn owns and rides the resolution's own ledger commit. `TargetSpec.host_repo is None` — which meant "chezmoi user scope" in 17 sites — is retired at the root. Git hosts stay byte-identical, proven by the `UN` group. | BUILD | Landed by `U-hostmode` (Phase 1 + Phase 2) |
 | **FW-123** | **The lock-invariant walker cannot see whether a `host_repo is None` write is actually serialized, by design, and plain mode widens that blind spot.** `test_lock_invariant.py`'s `_is_lock` walks the whole expression subtree specifically so `lock = commit_lock(r) if r else nullcontext()` — `verbs._host_phase`'s real shape — counts as guarded, without evaluating the condition (its own docstring says so). **Gate-replicated 2026-08-27:** the ternary with a `nullcontext()` plain branch leaves the walker GREEN; replacing the assignment outright leaves zero guarded lines and turns it RED. **Mitigated, not closed:** plain hosts get a real cache-dir lock (`${XDG_CACHE_HOME:-~/.cache}/self-learn/host-<slug>.commit.lock`, keyed by host path for the sentinel's own reason) and a **two-process** runtime serialization test — never threads, because `gitops._held_locks` makes a same-process re-acquire a pass-through. **The residual is the walker's approximation itself**, a deliberate trade. | WATCH | Trigger: a third `nullcontext`-shaped host phase appears, or a real concurrent-write corruption is observed on a plain host |
 | **FW-124** | **`09-surface-spec.md` §11 Y-17's committability sentence is stale on one of its three clauses, and the row is a ratified decision, so it is not corrected in passing.** It reads: *"canon writes are commits; audit, rollback, and recompile all diff against git (13 §4)"*. Measured 2026-08-27: **recompile does not diff against git** — `verbs.recompile` branches on `compile_result.changed`, a content comparison inside `compilers` (`verbs.py:4829-4838`); its git use is the dirty skip and the commit. Nor does drift detection: `selfcheck._check_drift` looks for the `(lrn-…)` entry marker in the target's managed section, and **zero of the nine `--selftest` rows diff a HOST against git** (three consult `ledger.home_state`, whose `is_repo_root(home)` runs one git call against the LEDGER — `ledger.py:70`). Audit and rollback are genuine, and are why `git` mode stays the default. **The real cost:** a reader following Y-17's wording concludes that removing git removes drift repair, which is false, and would over-scope any future git-optional work. `U-hostmode` scopes the *requirement* to git mode in `13 §4` and leaves Y-17's text alone. | BUILD | Not scheduled. One-line docs correction: restate as "audit and rollback diff against git; drift detection and recompile do not". Belongs with whoever next touches Y-17 |
 
@@ -3537,3 +3618,57 @@ build.)*
   documented them — no action, per the gate's own ruling.
   **Counts: two phases, 94 criteria (82 [A], 12 [B]) across 14 groups,
   60 mutations (`M25` split into `M25a`/`M25b`), 10 measured anchors.**
+- **r11** — 2026-08-28, folded in place during the Phase 2 code gate r1
+  fold (NOT CLEAN — 0 Blockers, 3 Majors, 2 Nits, 2 Defers; z-note
+  `ayhM7pjRlJKgqwEGhSKMi`; no re-gate, every finding text/census scope).
+  **The deletion itself was already clean and complete** — all 12 `[B]`
+  criteria discriminate, all 10 mutations run RED, the census reproduces
+  exactly, UN3 held — what the gate found is that the SPEC never
+  described Phase 2 landing, and one ratified doc still asserted retired
+  behaviour in the present tense. M-1: three criteria amended to
+  describe the shipped docs instead of the interim wording they still
+  pinned — `DOC1` no longer requires `03-decisions.md`'s two Phase-2
+  parentheticals (they are correctly gone once both phases exist under
+  one unit; positive control is the replacement sentence, and the same
+  grep at Phase 1's own tip returns 2, proving the instrument would
+  have caught an un-updated row); `DOC2`'s §12.2 FW-122 cell is updated
+  to the LANDED text ("Landed by `U-hostmode` (Phase 1 + Phase 2)"),
+  replacing r8's interim wording, in both the spec and the live
+  `14-forward-work-map.md` row; `PLAIN6` now explicitly permits the
+  `NOT_REPO_TRUTH` shrink by three dead exemptions this unit's own
+  deletion causes (`chezmoi._run`, `chezmoi.compile_user_scope`,
+  `chezmoi.preflight_user_scope`) and `_ARGV_FOR` losing
+  `_cmd_chezmoi_adopt`, alongside the one-name `_LOCKS` change — the
+  "not grown" rule holds; "unchanged" was never the rule. M-2: `CHEZ6`
+  and `CHEZ3`'s criterion texts now state the MEASURED shipped
+  accounting instead of stale predictions — `CHEZ6`: 37 `cli/tests`
+  hits in six categories (22 UN3-protected names, 14 documenting the
+  unrelated real `chezmoi cd` hook guard, 1 absence assertion), not
+  "one migration note"; `CHEZ3`: the deletion set is five files (the 20
+  in `test_a2_rules_local.py`, the 13 in `test_chezmoi.py`, one each in
+  `test_compilers.py`/`test_regime_fixes.py`, one rename in
+  `test_retirement_cleanup.py`), not "8, all in one file" — this
+  by-file listing also discharges `S5`'s "named individually"
+  requirement (`D-1`). M-3: `13-hosting-and-separation.md` §2 (`:62`),
+  §3 (`:91`), §7 (`:318`) rewritten from present-tense "routes via the
+  chezmoi/dotfiles flow" claims to the shipped truth — user scope is a
+  first-class plain host by construction since Phase 1/2 (landed
+  2026-08-28); §7 no longer contradicts its own §4 item 5. `D-2`: doc
+  13 `:129`'s "the chezmoi path has committed … since M1" clause is now
+  dated ("UNTIL 2026-08-28 … — history now"). N-1: `test_hostmode.py`
+  is excluded from `CHEZ6`'s `cli/tests` sweep BY PATH instead of
+  building `_RETIRED_MODULE` from `"chez" + "moi"` to dodge its own
+  grep — the file now spells the retired module's name as a plain
+  literal, greppable like any other file, and simply is not counted.
+  N-2: `ui/static` joins both `CHEZ6`'s and `UIC5`'s swept trees; its
+  only content is `app.js:517,519`'s two dated retirement comments
+  (leg (e) of `reloadDeferred`, kept as a permanent gap) — zero
+  `chezmoi` literals there (`CHEZ6`), two `adopt` literals, both
+  accounted retained-history (`UIC5`). No code change; six criteria
+  amended (`DOC1`, `DOC2`, `PLAIN6`, `CHEZ3`, `CHEZ6`, `UIC5`), one doc
+  (13-hosting-and-separation.md) gets four dated clauses, and
+  `test_hostmode.py`'s census instrument is rewritten to exclude itself
+  by path rather than by evasion.
+  **Counts: two phases, 94 criteria (82 [A], 12 [B]) across 14 groups,
+  60 mutations, 10 measured anchors — unchanged; this fold amends
+  criterion TEXT only.**

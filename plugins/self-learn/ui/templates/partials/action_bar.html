@@ -185,28 +185,14 @@
           title="Retire this lesson — canon (the guidance file it calls for) already covers it, so there's nothing left to write">Graduate (g)</button>
   {% endif %}
 
-  {% elif kind == "adopt" %}
-  {# A2 §10.4(a): "yes" arms exactly like `contradicts`'s single button
-     (Confirm/Cancel then come from the SAME generic `armed` block above);
-     "no" carries no verb at all — it just wipes the whole offer div
-     (§10.2: no declined-state persists). #}
-  <button type="button" data-key-action="chezmoi_adopt"
-          hx-post="/record/{{ record_id }}/action/arm"
-          hx-vals='{{ ({"verb": "chezmoi-adopt", "kind": "adopt", "target": target}) | tojson }}'
-          hx-target="#{{ dom_id }}" hx-swap="outerHTML">Bring under chezmoi (sync across machines)</button>
-  <button type="button" data-key-action="chezmoi_adopt_decline"
-          hx-post="/record/{{ record_id }}/adopt-offer/dismiss"
-          hx-target="#adopt-offer-{{ record_id }}" hx-swap="outerHTML">Not now</button>
-
   {% else %}
   {# Resolution-evidence unit (§3.4/advisor guidance): the default quad
      is guarded — never additive with the success leg above, or `e`
      re-arms a route on a record that already resolved (§3.6: "the
-     buttons leave the DOM" would be false otherwise). The offer
-     branches above (contradicts/adopt) stay reachable regardless —
-     they compose WITH evidence by design (§3.4 ruling), so only this
-     bare unarmed quad — the one shape with nothing to compose with —
-     is suppressed. #}
+     buttons leave the DOM" would be false otherwise). The offer branch
+     above (contradicts) stays reachable regardless — it composes WITH
+     evidence by design (§3.4 ruling), so only this bare unarmed quad —
+     the one shape with nothing to compose with — is suppressed. #}
   {% if not evidence %}
   <form id="form-{{ dom_id }}">
     <input type="hidden" name="dest" value="{{ dest or '' }}">

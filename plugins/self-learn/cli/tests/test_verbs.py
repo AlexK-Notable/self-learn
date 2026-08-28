@@ -5,12 +5,10 @@ pins; 02 §2 pinned commit formats; doc 13 §4 two-phase routing — the
 ledger commits first, canon lands in the HOST repo).
 
 All git activity happens in sandbox repos under tmpdirs with bare remotes
-(one per repo of the ledger/host pair); the sentinel is XDG-redirected;
-chezmoi is a PATH shim.
+(one per repo of the ledger/host pair); the sentinel is XDG-redirected.
 """
 
 import os
-import stat
 import subprocess
 import time
 from datetime import date, datetime, timedelta, timezone
@@ -36,25 +34,6 @@ NEW = "lrn-0000bbbb"
 THIRD = "lrn-0000cccc"
 
 SKILL_MD = "# s skill\n\nAuthored prose stays put.\n"
-
-CHEZMOI_SHIM = """#!/usr/bin/env bash
-printf '%s\\n' "$*" >> "$CHEZMOI_SHIM_LOG"
-case "$1" in
-  source-path)
-    printf '%s' "${2:-}"
-    exit "${CHEZMOI_SHIM_SOURCE_RC-0}"
-    ;;
-  diff) printf '%s' "${CHEZMOI_SHIM_DIFF-}" ;;
-  git) if [ "$3" = "status" ]; then printf '%s' "${CHEZMOI_SHIM_STATUS-}"; fi ;;
-  re-add)
-    if [ -n "${CHEZMOI_SHIM_READD_RC-}" ]; then
-      exit "$CHEZMOI_SHIM_READD_RC"
-    fi
-    ;;
-esac
-exit "${CHEZMOI_SHIM_EXIT-0}"
-"""
-
 
 @pytest.fixture(autouse=True)
 def cache_dir(tmp_path, monkeypatch):
@@ -140,23 +119,6 @@ def seed(env, rid=OLD, scope="skill:s", supersedes=None):
         record.set_supersedes(supersedes)
     return create_record(env.home, record)
 
-
-@pytest.fixture
-def chezmoi_shim(tmp_path, monkeypatch):
-    bindir = tmp_path / "shim-bin"
-    bindir.mkdir()
-    fake = bindir / "chezmoi"
-    fake.write_text(CHEZMOI_SHIM, encoding="utf-8")
-    fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
-    log = tmp_path / "chezmoi-argv.log"
-    log.write_text("", encoding="utf-8")
-    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
-    monkeypatch.setenv("CHEZMOI_SHIM_LOG", str(log))
-
-    def calls():
-        return [ln for ln in log.read_text(encoding="utf-8").splitlines() if ln]
-
-    return calls
 
 
 # ------------------------------------------------------------------- route
@@ -285,12 +247,12 @@ class TestRouteDestination:
 class TestReferenceUserScopeRefusal:
     """A9 / S-23 (2), U-demand-user §3.1: the `reference` refusal keeps
     its EFFECT at user scope (the condition stays byte-identical — only
-    the message changed) and drops its dead chezmoi reason. Measured
-    baseline (the spec's §1.2): before this unit NO test asserted this
-    refusal at all — a grep for its message across cli/tests/ returned
-    nothing, and the only guard was incidental scaffolding in
-    test_batch_fixes.py that names nothing about reference, user scope,
-    or S-23.
+    the message changed) and drops its dead dotfiles-management reason.
+    Measured baseline (the spec's §1.2): before this unit NO test
+    asserted this refusal at all — a grep for its message across
+    cli/tests/ returned nothing, and the only guard was incidental
+    scaffolding in test_batch_fixes.py that names nothing about
+    reference, user scope, or S-23.
 
     Blind code-gate FOLD (round 1): the first cut of this test omitted
     ``user_claude_md=`` (the ONLY other new-CLI-test to do so) — with no
@@ -315,11 +277,9 @@ class TestReferenceUserScopeRefusal:
             verbs.route(
                 env.home, OLD, dest="reference",
                 user_claude_md=target,
-                chezmoi_bin="chezmoi-definitely-absent",
-            )
+                )
         message = str(exc_info.value)
         assert "S-23" in message
-        assert "chezmoi" not in message
         # the record stays pending — nothing committed, nothing built
         assert (env.home / "user" / "pending" / f"{OLD}.md").is_file()
         assert not (env.home / "user" / "resolved" / f"{OLD}.md").exists()
@@ -548,11 +508,15 @@ class TestRouteSupersedes:
 
 
 class TestRouteUserScope:
-    def test_user_claude_md_goes_through_chezmoi_flow(self, tmp_path, env, chezmoi_shim):
-        """U-hostmode §4.8.1 (census EDIT, S3): user scope no longer goes
-        through chezmoi AT ALL — it is a first-class PLAIN host, routed
-        through the same ``compile_managed_file`` path as every other
-        plain host (USER2/CHEZ0). Name kept per the census discipline."""
+    def test_user_claude_md_goes_through_chezmoi_flow(self, tmp_path, env):
+        """U-hostmode §4.8.1/§4.8.2 (census EDIT, S3): user scope no
+        longer goes through chezmoi, or any dotfiles-management tool, AT
+        ALL — it is a first-class PLAIN host, routed through the same
+        ``compile_managed_file`` path as every other plain host
+        (USER2/CHEZ0), and the tool that flow used to call is deleted
+        outright (Phase 2). UN3 forbids renaming this test (one of the
+        ten host-git files) — name kept, literally, per the census
+        discipline; only the docstring says what actually happens now."""
         target = tmp_path / "dot-claude" / "CLAUDE.md"
         target.parent.mkdir()
         target.write_text("# user conduct\n", encoding="utf-8")
@@ -564,8 +528,6 @@ class TestRouteUserScope:
             env.home, OLD, dest="claude-md", user_claude_md=target
         )
 
-        # zero chezmoi calls (USER2)
-        assert chezmoi_shim() == []
         # the real target got the section
         text = target.read_text(encoding="utf-8")
         assert BEGIN_MARKER in text and OLD in text
@@ -579,12 +541,12 @@ class TestRouteUserScope:
 
 
 class TestRouteUserScopeChezmoiAbsent:
-    """U-hostmode §4.8.1 (census EDIT, S3): chezmoi's presence/absence no
-    longer matters at all for a user-scope route — there is no chezmoi
-    call to make. The ``chezmoi_bin`` kwarg is still ACCEPTED (unused) so
-    this call shape stays valid; what it proves now is simply that a
-    user-scope route succeeds and writes silently, exactly like project
-    scope. Name kept per the census discipline."""
+    """U-hostmode §4.8.1/§4.8.2 (census EDIT, S3): chezmoi's presence or
+    absence no longer matters at all for a user-scope route — there is
+    no such call to make, and the module that made it is deleted
+    (Phase 2). What this proves now is simply that a user-scope route
+    succeeds and writes silently, exactly like project scope. UN3
+    forbids renaming this test — name kept, literally."""
 
     def test_absent_chezmoi_still_routes_and_writes_silently(self, tmp_path, env):
         target = tmp_path / "dot-claude" / "CLAUDE.md"
@@ -598,7 +560,6 @@ class TestRouteUserScopeChezmoiAbsent:
             OLD,
             dest="claude-md",
             user_claude_md=target,
-            chezmoi_bin="chezmoi-definitely-absent",
         )
 
         # the record resolved, not pending
@@ -614,25 +575,24 @@ class TestRouteUserScopeChezmoiAbsent:
 
 
 class TestRouteUserScopeChezmoiBrokenSync:
-    """U-hostmode §4.8.1 (census EDIT, S3): there is no chezmoi sync step
-    any more to break — user scope commits nothing anywhere (plain mode).
-    The test now proves H-2's actual replacement guarantee: the write
-    lands and the record resolves regardless of the (now-irrelevant)
-    chezmoi shim's configured behaviour. Name kept per the census
-    discipline."""
+    """U-hostmode §4.8.1/§4.8.2 (census EDIT, S3): there is no chezmoi
+    sync step any more to break — user scope commits nothing anywhere
+    (plain mode), and the module that used to make that call is deleted
+    outright (Phase 2). The test now proves H-2's actual replacement
+    guarantee: the write lands and the record resolves, full stop —
+    there is no longer a sync mechanism whose broken state could even
+    be simulated. UN3 forbids renaming this test — name kept, literally
+    (its body necessarily converges on the same shape as
+    ``TestRouteUserScopeChezmoiAbsent``'s, above, since the two
+    scenarios that used to distinguish them — absent binary, broken
+    readd — no longer exist to distinguish anything)."""
 
-    def test_broken_readd_surfaces_warning_through_route(
-        self, tmp_path, env, chezmoi_shim, monkeypatch
-    ):
+    def test_broken_readd_surfaces_warning_through_route(self, tmp_path, env):
         target = tmp_path / "dot-claude" / "CLAUDE.md"
         target.parent.mkdir()
         target.write_text("# user conduct\n", encoding="utf-8")
         record = make_behavior(scope="user", record_id=OLD)
         create_record(env.home, record)
-
-        # irrelevant now (no chezmoi call is ever made), kept to prove it
-        # truly has no effect any more.
-        monkeypatch.setenv("CHEZMOI_SHIM_READD_RC", "1")
 
         result = verbs.route(env.home, OLD, dest="claude-md", user_claude_md=target)
 
@@ -641,8 +601,8 @@ class TestRouteUserScopeChezmoiBrokenSync:
         assert not (env.home / "user" / "pending" / f"{OLD}.md").is_file()
         text = target.read_text(encoding="utf-8")
         assert BEGIN_MARKER in text and OLD in text
-        # no chezmoi call, no sync_warning-shaped anything, no host commit
-        assert chezmoi_shim() == []
+        # no sync_warning-shaped anything, no host commit — the module
+        # that could have surfaced one is gone
         assert result.host_commit_sha is None
         assert result.compile_result.changed is True
         assert result.warnings == []
