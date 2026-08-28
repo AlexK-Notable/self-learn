@@ -758,7 +758,7 @@ def _resolve_project_rows(home: Path) -> list[dict]:
     numeric field null — never omitted (T2.5): an omitted row is
     indistinguishable from a clean one."""
     from .compilers import CompileError
-    from .hosts import HostsError, host_path_problem, load_hosts, slug_for
+    from .hosts import HostsError, host_mode, host_path_problem, load_hosts, slug_for
     from .verbs import TargetSpec, _compile_set
 
     try:
@@ -778,7 +778,10 @@ def _resolve_project_rows(home: Path) -> list[dict]:
             continue
         host_repo = Path(project).expanduser().resolve()
         target = host_repo / "CLAUDE.md"
-        spec = TargetSpec("claude-md", "project", home, target, host_repo)
+        spec = TargetSpec(
+            "claude-md", "project", home, target, host_repo,
+            mode=host_mode(home, host_repo),
+        )
         if not target.is_file():
             rows.append({
                 "key": key, "state": "absent", "target": target,
@@ -970,9 +973,9 @@ def _unpathed_rules_rows(
             rows.append(_one_unpathed_row("user", stem, rules_dir / f"{stem}.md"))
     for prow in project_rows:
         spec = prow.get("spec")
-        if spec is None or spec.host_repo is None:
+        if spec is None:
             continue
-        rules_dir = _project_rules_dir(spec.host_repo)
+        rules_dir = _project_rules_dir(spec.host_path)
         cofire = _rules_cofire(rules_dir if rules_dir.is_dir() else None)
         for stem in cofire["unpathed"]:
             rows.append(
@@ -1477,9 +1480,9 @@ def _rules_cofire_signal(
     )
     for prow in project_internal:
         spec = prow.get("spec")
-        if spec is None or spec.host_repo is None:
+        if spec is None:
             continue
-        _one("project", prow["key"], _project_rules_dir(spec.host_repo))
+        _one("project", prow["key"], _project_rules_dir(spec.host_path))
 
     scopes_total = len(scopes)
     scopes_measured = sum(1 for s in scopes if s["state"] in ("ok", "absent"))

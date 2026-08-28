@@ -530,12 +530,35 @@ def _apply_failure_env(kind: str, param: str, *, scratch: Path, monkeypatch) -> 
 #: still a pure append over the pre-U-cachelit baseline (see `test_
 #: u_sdka.py::_AR1_SANCTIONED_PIN_LINES`'s own RE-ANCHOR paragraph for
 #: the full accounting), still a member of `_SU4B_DIFF_EXEMPT`.
+#: U-hostmode gate r1 fold, D-1 (2026-08-28) re-pins `conftest.py` once
+#: more: a third litter-detection leg for `host-*.commit.lock` files
+#: (`_LOCK_FILE_RE`/`_INPROCESS_LOCK_HITS`, a `gitops._flock_lock` wrap,
+#: a matching hard-fail assertion) is APPENDED to the existing guard
+#: section -- the gate found this litter shape structurally invisible
+#: to the pre-fold `_HOME_DIR_RE` (directories only). Only the hash
+#: moves; still a pure append over the pre-U-cachelit baseline (see
+#: `test_u_sdka.py::_AR1_SANCTIONED_PIN_LINES`'s own D-1 paragraph),
+#: still a member of `_SU4B_DIFF_EXEMPT`.
 _ARMOR_SHAS = {
-    "plugins/self-learn/cli/tests/conftest.py": "09d1cfc25026c74684d263332cdd912619bd94b76fafef12f495833f84bddfe4",  # U-cachelit RE-ANCHOR (gate r1): guard section rewritten
+    "plugins/self-learn/cli/tests/conftest.py": "824570c9e7fca02562bb917abc59d8a348992671330c60c3b6567fcf0ffbffe4",  # U-hostmode gate r2 fold, D-1 (2026-08-28): one sentence appended to the litter guard's docstring naming its pytest-only scope and the XDG_CACHE_HOME ad-hoc-script rule -- only the hash moves; still a pure docstring append, still a member of `_SU4B_DIFF_EXEMPT`
     "plugins/self-learn/cli/tests/backends.py": "a2ba2d74f117a230740d10e3c9fa67bd30f751ce80ec59667c9136557a906dde",
+    # merge 2026-08-28 (u-hostmode x master): only master changed these
+    # four keys since base (1e77ff4) -- ours were byte-unchanged there,
+    # so master's pinned values win outright.
     "plugins/self-learn/cli/tests/test_invocation.py": "2b76f2bc4515891734c695993f2a7c203799c5ca35db89002a33a32fcaf86b2a",  # FW-117 (2026-08-28): HY3/CN6/CN7 witness-set trim + gate r1 fold (CN9 docstring truth), see the dated paragraph below
     "plugins/self-learn/cli/tests/test_invocation_sdk.py": "124c0e8b310ce8dbfeea89348d0ea5a8cf9c96c071642f7e16e89a7ffa1b4e35",  # U-kl4 gate r1 fold (2026-08-28): B-1/N-D1/N-D2/N-D3, see the dated paragraph below
-    "plugins/self-learn/cli/tests/test_u_fake.py": "1ff0b0fd5c2f43976b160d48e30ec27d4bb665a9a1fb5901627d5dbec41b1294",  # merge 2026-08-28: re-derived from the merged bytes (U-ancestry + U-corrob DS1 extensions + FW-117 entries, all three gate-sanctioned)
+    # merge 2026-08-28 (u-hostmode x master): BOTH sides changed this key
+    # (ours: REWRITTEN/_DS1_EXPECTED re-pinned for test_route_cli.py's REC9
+    # fallout; master's: U-ancestry + U-corrob DS1 extensions + FW-117
+    # entries) -- neither side's stale value is used; re-derived by
+    # sha256-hashing the ACTUAL merged tests/test_u_fake.py bytes after
+    # both edits (and the DS1 re-derivation the merge itself required)
+    # were combined.
+    # U-hostmode gate r2 fold, N-4 (2026-08-28): comment-only fix -- the
+    # test_route_cli.py entry's own comment pointed at a placeholder name
+    # (PLACEHOLDER_DS1_ROUTE_CLI) that never existed as a real symbol;
+    # pure comment text, the (37, sha) pin value itself is unchanged.
+    "plugins/self-learn/cli/tests/test_u_fake.py": "9dd9f0d28a2f95c2089e18968efafe1455346291c11e3cd735d031689780c73b",
     "plugins/self-learn/cli/tests/test_worker.py": "53287efe8e8f58b0fcda9741f68ca8a0b9b437ccc82a97b8b8cb89784d4bcd7a",  # U-ancestry, 2026-08-28: S-52 (SCAN1) supersedes u-marker §3 criterion A; the four canon_excerpt tests are rewritten to the whole-file contract and criterion B is re-homed as SCAN8
     "plugins/self-learn/cli/tests/test_repair.py": "266d2a7b89c741b2e801f8431a31ef43a7c316ae8e7926beb0c03b6293e497c5",  # FW-117 (2026-08-28): B9/D5 rebase, see the dated paragraph below
 }

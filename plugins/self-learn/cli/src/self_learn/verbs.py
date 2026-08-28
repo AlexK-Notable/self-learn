@@ -82,15 +82,13 @@ from .skill_scaffold import (
 )
 from . import chezmoi
 from .chezmoi import (
-    USER_SCOPE_MANAGED,
     ChezmoiAbort,
     ChezmoiError,
-    compile_user_scope,
-    preflight_user_scope,
-    user_scope_capability,
 )
+from . import compiled
 from .compilers import (
     BEGIN_MARKER,
+    FORBIDDEN_REFERENCE_BASENAME,
     CompileError,
     PathsResult,
     SectionResult,
@@ -98,14 +96,25 @@ from .compilers import (
     apply_pointer,
     compile_managed_file,
     compile_managed_text,
+    compile_pointer_text,
     compile_reference,
     has_paths_key,
+    pointer_line,
+    pointer_token,
     read_paths_frontmatter,
     reference_target_path,
+    surface_names_target,
 )
+# REC7: reference/pointer prediction reuses compilers.py's own private
+# helpers directly (never reimplemented) so this module's prediction and
+# the real write cannot drift apart.
+from .compilers import _LEARNINGS_HEADER, _reference_block
 from .hosts import (
     HostsError,
     ancestors_of,
+    host_marker_path,
+    host_mode,
+    host_slug,
     is_project_host,
     load_hosts,
     skill_dir_for,
@@ -404,6 +413,12 @@ class VerbResult:
     destination: str | None = None
     variant: str | None = None
     deferred_until: str | None = None
+    #: U-hostmode PLAIN3: the resolved TargetSpec's mode, when a spec was
+    #: resolved (route/route_direct/supersede) — `cli._outcome_state`
+    #: reads this to widen the `wrote_uncommitted` branch to every plain
+    #: host, not only the (now-retired) chezmoi UserScopeResult sentinel.
+    #: `None` for ledger-only verbs (reject/defer/graduate).
+    mode: str | None = None
 
 
 # ------------------------------------------------------------------ helpers
@@ -471,11 +486,417 @@ def _abort_if_dirty(repo: Path, target: Path) -> None:
         )
 
 
+#: U-hostmode REC2's own text: what a refusing region-predicate verdict
+#: names, distinct from GITOPS_DIRTY_MARKER (a committed in-marker hand
+#: edit is invisible to `git status`, so this refusal must read
+#: differently from "uncommitted changes").
+REGION_VERDICT_MARKER = "was hand-edited outside self-learn"
+
+
+def _abort_if_region_unsound(
+    home: Path,
+    host_path: Path,
+    mode: str,
+    target: Path,
+    region_kind: str,
+    *,
+    scope_kind: str,
+    spec: "TargetSpec | None" = None,
+) -> None:
+    """U-hostmode §4.5a's six-case predicate, run at PRE-FLIGHT (before
+    any ledger mutation), for BOTH modes (REC2/REC4: the record is
+    written for git hosts too, and it is the ONLY instrument that sees a
+    committed in-marker hand edit — a real hazard on a git host as well,
+    which ``gitops.paths_dirty`` cannot see because ``git status`` is
+    clean). Refuses on ``edited`` in EITHER mode; ``unknown provenance``
+    (no record at all yet) refuses ONLY on a plain host —
+    :func:`compiled.refuses` is the mode split, and its own docstring is
+    the reasoning: a git host's existing content is provenanced by its
+    commit history, and an uncommitted foreign edit is already caught by
+    :func:`_abort_if_dirty` (UN2, byte-unchanged). Every other verdict
+    (fresh/clean/missing/stale) proceeds silently.
+
+    ``spec`` (M-3, code gate r2 fold — REC5's seventh row): when the
+    verdict is ``unknown`` on a ``managed`` target, an ``unknown``
+    provenance is not automatically foreign — it is the state of EVERY
+    registered host the moment this unit first ships (no compile record
+    has ever existed for anything routed before it). Given a ``spec``,
+    this compiles what the LEDGER'S CURRENT records (this call's own new
+    record not yet among them — pre-flight runs before ``resolve_record``
+    marks it routed) would render for this exact target; a byte-for-byte
+    match means the on-disk region IS self-learn's own prior output, just
+    missing its ledger-side receipt, and is ADOPTED — printed, not
+    refused — instead of blocking every existing host's first post-
+    upgrade route. Content that does not match is genuinely foreign
+    (H-3) and still refuses, exactly as before this fold. Callers that
+    omit ``spec`` (or the non-``managed`` region kinds — REC5's row 2 is
+    a ``managed``-only compiler comparison; ``reference``/``pointer``/
+    ``script`` have no equivalent single-target render to compile
+    against) keep the pre-M-3 behaviour byte-unchanged."""
+    if not target.is_file():
+        return  # nothing to hash yet — "fresh" or "missing", both proceed
+    try:
+        text = target.read_text(encoding="utf-8")
+        region = compiled.region_bytes(text, region_kind)
+    except (OSError, UnicodeDecodeError, compiled.CompiledRecordError):
+        # let the ordinary compile path raise its own, more specific error
+        return
+    if region is None:
+        return  # region absent on disk — "fresh"/"missing", proceeds
+    slug = host_slug(home, host_path, scope_kind=scope_kind)
+    entry = compiled.entry_for(compiled.load_record(home, slug), compiled.region_key(host_path, target))
+    observed_hash = compiled.sha256_hex(region)
+    verdict = compiled.verdict_for(entry, observed_hash)
+    if verdict == "unknown" and region_kind == "managed" and spec is not None:
+        try:
+            expected = _expected_managed_region(home, spec)
+        except (OSError, UnicodeDecodeError, compiled.CompiledRecordError, CompileError):
+            expected = None
+        if expected is not None and region == expected:
+            # M-3: adopt — the caller's own normal REC9 resync (in the
+            # SAME ledger commit as always) writes the record entry with
+            # `based_on_sha256=observed_hash`, exactly the entry a real
+            # first `route` was always going to write. Nothing extra to
+            # write HERE; this function only decides refuse-vs-proceed.
+            print(
+                f"self-learn: adopting {target} — self-learn-compiled "
+                "content with no compile record yet (first route under "
+                "U-hostmode); this route writes the record entry",
+                file=sys.stderr,
+            )
+            return
+    if compiled.refuses(verdict, mode):
+        raise DirtyTargetError(
+            f"compile target {target} {REGION_VERDICT_MARKER} ({verdict}) "
+            "— the managed region no longer matches what self-learn last "
+            f"wrote; run `self-learn recompile --adopt {target}` to accept "
+            "the on-disk region as authoritative, or restore self-learn's "
+            "last write"
+        )
+
+
+def _abort_if_unsound(
+    home: Path,
+    host_path: Path,
+    mode: str,
+    target: Path,
+    region_kind: str,
+    *,
+    scope_kind: str,
+    spec: "TargetSpec | None" = None,
+) -> None:
+    """The (c) dirty/edited gate, mode-composed: git mode keeps
+    :func:`_abort_if_dirty` byte-unchanged (UN2) AND additionally runs
+    the region predicate (REC2/REC4); plain mode has ONLY the predicate
+    (§4.5a — there is no git status to consult).
+
+    ``spec`` (M-3, code gate r2 fold): threaded straight through to
+    :func:`_abort_if_region_unsound` — see its own docstring. ``None``
+    (the default) is byte-identical to pre-M-3 behaviour.
+
+    N-9 (code gate r1 fold): master guarded EACH of its three original
+    call sites with ``target.is_file()`` before calling
+    ``_abort_if_dirty`` — consolidating them into this one function
+    dropped that guard, so a not-yet-created target now runs an extra
+    ``git status``/``git diff`` per resolve in git mode (harmless, but a
+    behaviour delta under a UN group that promises byte-identity).
+    Restored here, in the ONE place both legs now live."""
+    if mode == "git" and target.is_file():
+        _abort_if_dirty(host_path, target)
+    _abort_if_region_unsound(
+        home, host_path, mode, target, region_kind, scope_kind=scope_kind, spec=spec
+    )
+
+
+def _region_kind_for(spec: TargetSpec) -> str | None:
+    """Which of the four compile-record region kinds this spec's
+    PRIMARY target is via the ``managed``-only, self-computing
+    convenience path (:func:`_write_compile_record_entry`) — ``None``
+    when the destination is explicitly OUT of the record's scope
+    (``new-skill``, §8 OUT-7: a whole file created once, already
+    covered by its own collision rule) OR when the destination's real
+    write target resolves OUTSIDE ``spec.target`` entirely
+    (``reference`` — see below) or needs externally-supplied bytes this
+    function cannot derive on its own (``hook`` — the APPROVED script
+    rides the routing block, not the ledger's compile set).
+
+    REC7 (the four region kinds ARE all covered, D-3 completion, code
+    gate r1 fold): every verb that writes ANY of the four kinds —
+    ``route``, ``route_direct``, ``supersede``, ``graduate``,
+    ``recompile`` — resyncs the compile record for it, in the SAME
+    ledger commit as whatever ledger-side work that write does. This
+    function stays ``managed``-only by DESIGN, not by gap: ``reference``/
+    ``pointer``/``script`` are always written through the generic,
+    ``spec.target``-independent :func:`_resync_region_entry`, by name,
+    at each write site — see ``route``'s block right before its own
+    ``_commit_ledger`` call for the canonical shape every other site
+    mirrors."""
+    if spec.destination in ("skill-md", "claude-md"):
+        return "managed"
+    return None
+
+
+def _expected_managed_region(home: Path, spec: TargetSpec) -> bytes | None:
+    """U-hostmode §4.5/§4.5a: the ``managed`` region THIS write will leave
+    behind, computed from the ledger's NOW-UPDATED record set —
+    independent of the target's current on-disk bytes (the compiler
+    regenerates the whole region from ``_eligible(records)`` alone, per
+    ``compilers.compile_managed_text``'s own contract), so an empty
+    starting string is exactly as accurate as reading the real file and
+    is used here to avoid a second read of a possibly-large file."""
+    records = _compile_set(home, spec)
+    text = compile_managed_text("", records).text
+    return compiled.region_bytes(text, "managed")
+
+
+def _write_compile_record_entry(
+    home: Path,
+    spec: TargetSpec,
+    observed_hash: str | None,
+    *,
+    by: str,
+) -> Path | None:
+    """U-hostmode REC1/REC9: write (but do not commit) the compile-record
+    entry for ``spec``'s primary target, if it is a region kind this
+    build tracks (:func:`_region_kind_for`). The caller adds the
+    returned path to its OWN ``touched`` list and commits it in the SAME
+    ledger commit as the resolution (REC9) — this function never opens a
+    lock and never commits anything itself.
+
+    Returns ``None`` (writing nothing) when the destination is untracked
+    (``_region_kind_for`` — new-skill) or the target could not be
+    resolved into region bytes (defensive: a compile-record failure must
+    never break the resolution it is meant to make safer)."""
+    region_kind = _region_kind_for(spec)
+    if region_kind is None or spec.target is None:
+        return None
+    try:
+        if region_kind == "managed":
+            expected = _expected_managed_region(home, spec)
+        else:
+            return None
+        if expected is None:
+            return None
+        key = compiled.region_key(spec.host_path, spec.target)
+        slug = host_slug(home, spec.host_path, scope_kind=spec.scope_kind)
+        host_label = "(user scope — ~/.claude)" if spec.scope_kind == "user" else str(spec.host_path)
+        return compiled.write_entry(
+            home,
+            slug,
+            key,
+            region=region_kind,
+            sha256=compiled.sha256_hex(expected),
+            based_on_sha256=observed_hash,
+            nbytes=len(expected),
+            by=by,
+            host=host_label,
+            mode=spec.mode,
+        )
+    except (OSError, UnicodeDecodeError, compiled.CompiledRecordError, CompileError):
+        # Defensive only (§4.5's own compile step will raise its own,
+        # more specific error at the host phase if the ledger state is
+        # genuinely broken) — never let record bookkeeping break a
+        # resolution that would otherwise succeed.
+        return None
+
+
+def _observe_region_hash_at(target: Path, region_kind: str) -> str | None:
+    """The generic twin of :func:`_observe_region_hash`, decoupled from
+    ``TargetSpec`` — REC7's ``reference``/``pointer``/``script`` kinds
+    resolve their real target OUTSIDE ``spec.target`` (a reference
+    file's path lives at :func:`compilers.reference_target_path`, a
+    pointer surface at ``spec.pointer_surface``), so the observer
+    cannot be keyed off ``spec.target`` for those. Same contract as the
+    ``spec``-keyed version: read BEFORE the caller's first mutation of
+    THIS target."""
+    if not target.is_file():
+        return None
+    try:
+        region = compiled.region_bytes(target.read_text(encoding="utf-8"), region_kind)
+    except (OSError, UnicodeDecodeError, compiled.CompiledRecordError):
+        return None
+    return compiled.sha256_hex(region) if region is not None else None
+
+
+def _observe_region_hash(spec: TargetSpec) -> str | None:
+    """U-hostmode §4.5a: the region hash OBSERVED ON DISK at pre-flight —
+    ``based_on_sha256``. Must be read BEFORE the caller's first ledger
+    mutation (REC12/REC13: this is "the state this write is based on",
+    never the previous expectation)."""
+    region_kind = _region_kind_for(spec)
+    if region_kind is None or spec.target is None:
+        return None
+    return _observe_region_hash_at(spec.target, region_kind)
+
+
+def _resync_region_entry(
+    home: Path,
+    *,
+    host_path: Path,
+    scope_kind: str,
+    mode: str,
+    target: Path,
+    region_kind: str,
+    expected: bytes | None,
+    observed_hash: str | None,
+    by: str,
+    delete: bool = False,
+) -> Path | None:
+    """THE single place, for every verb and every region kind, that
+    writes (or clears) a compile-record entry after a region write —
+    coordinator ruling (code gate r1 fold, D-3 completion): "the
+    compile record is a fact about bytes self-learn wrote, independent
+    of both host mode and region kind — and independent of which verb
+    wrote them." ``expected`` is the region's bytes as of THIS write,
+    supplied by the caller either PREDICTED (route/route_direct, before
+    the host write, riding the ledger's own commit — REC9) or OBSERVED
+    for real off disk after the write already happened (recompile,
+    supersede/graduate's retirement legs, and any hook-script repair —
+    D-2/D-3's "standalone resync commit, same subject convention"
+    shape). Decoupled from ``TargetSpec`` because REC7's ``reference``/
+    ``pointer``/``script`` kinds resolve their real target OUTSIDE
+    ``spec.target`` — see :func:`_observe_region_hash_at`.
+
+    ``delete=True`` (code gate r2 fold, D-2) is the ONLY way this
+    clears an existing entry (:func:`compiled.delete_entry`) — a
+    caller that POSITIVELY knows the region is gone (a hook script just
+    removed) passes it explicitly. A stale entry left behind for a
+    region that is legitimately gone would misread as ``edited`` the
+    next time anything checks this key (REC5's "entry present + region
+    absent" row), refusing a future write over content that was never
+    a hand edit — ``delete=True`` is what closes that gap.
+
+    ``expected=None`` WITHOUT ``delete=True`` is a true no-op — nothing
+    written, nothing cleared. Before this fold, ``expected=None`` alone
+    deleted the entry, which conflated two different callers: a
+    deliberate removal (the case above) and a predictive leg with
+    genuinely nothing to predict yet (:func:`_expected_reference_region`
+    /:func:`_expected_pointer_region` returning ``None`` for a NAMED
+    reference file that does not exist YET — a first route to it). The
+    latter must leave any existing entry untouched, not erase it: D-2's
+    own finding was that this path was reachable and untested."""
+    try:
+        key = compiled.region_key(host_path, target)
+        slug = host_slug(home, host_path, scope_kind=scope_kind)
+        if delete:
+            return compiled.delete_entry(home, slug, key)
+        if expected is None:
+            return None
+        host_label = "(user scope — ~/.claude)" if scope_kind == "user" else str(host_path)
+        return compiled.write_entry(
+            home,
+            slug,
+            key,
+            region=region_kind,
+            sha256=compiled.sha256_hex(expected),
+            based_on_sha256=observed_hash,
+            nbytes=len(expected),
+            by=by,
+            host=host_label,
+            mode=mode,
+        )
+    except (OSError, UnicodeDecodeError, compiled.CompiledRecordError, CompileError):
+        # Defensive only, matching `_write_compile_record_entry` (never
+        # let record bookkeeping break a resolution that would
+        # otherwise succeed).
+        return None
+
+
+def _expected_reference_region(
+    spec: TargetSpec, routed_record: Record, ref_path: Path
+) -> bytes | None:
+    """REC7: predict :func:`compilers.compile_reference`'s final bytes
+    for THIS write, without writing — calls the SAME pure piece
+    (``compilers._reference_block``) ``compile_reference`` itself
+    calls, over the file's CURRENT (pre-write) text, so prediction and
+    the real write independently compute from identical inputs and
+    cannot drift. ``routed_record`` must be the record AS RESOLVED (its
+    ``routing.routed_at`` already set) — ``_reference_block`` reads
+    that field, so predicting from the pre-resolve record would drift
+    on the ``day`` heading whenever the wall-clock date has since
+    ticked over (a real, if narrow, race the pre-resolve record cannot
+    close)."""
+    if ref_path.name == FORBIDDEN_REFERENCE_BASENAME:
+        return None
+    if spec.ref_name is not None:
+        if not ref_path.is_file():
+            return None
+        text = ref_path.read_text(encoding="utf-8")
+    else:
+        text = ref_path.read_text(encoding="utf-8") if ref_path.is_file() else _LEARNINGS_HEADER
+    if routed_record.id in text:
+        return text.encode("utf-8")
+    block = _reference_block(routed_record)
+    new_text = text.rstrip("\n") + "\n\n" + block + "\n"
+    return new_text.encode("utf-8")
+
+
+def _expected_pointer_region(spec: TargetSpec, reference_path: Path) -> bytes | None:
+    """REC7: predict :func:`compilers.apply_pointer`'s final bytes for
+    the pointer surface without writing — mirrors its own idempotence
+    leg (``surface_names_target``) and pure block arithmetic
+    (``compile_pointer_text``) exactly, over the surface's CURRENT
+    text, then slices out just the pointer region the same way
+    :func:`compiled.region_bytes` does for the real write (the pointer
+    region is NOT the whole surface file, unlike ``reference``/
+    ``script``)."""
+    surface = spec.pointer_surface
+    if surface is None or not surface.is_file():
+        return None  # apply_pointer creates an absent surface; nothing to predict pre-write
+    original_text = surface.read_text(encoding="utf-8")
+    if surface_names_target(surface, reference_path):
+        return compiled.region_bytes(original_text, "pointer")
+    token = pointer_token(surface, reference_path)
+    line = pointer_line(token, POINTER_LABELS[spec.scope_kind])
+    new_text, _bootstrapped = compile_pointer_text(original_text, line)
+    return compiled.region_bytes(new_text, "pointer")
+
+
+def _observe_retirement_region(retire: _Retirement) -> str | None:
+    """The retirement-side twin of :func:`_observe_region_hash`, read at
+    the SAME pre-mutation point as the retirement preflight itself
+    (before ``resolve_record``/``supersede_record`` runs) — ``None`` when
+    this retirement has no doc-target spec (a hook removal, or nothing to
+    retire)."""
+    if retire.spec is None:
+        return None
+    return _observe_region_hash(retire.spec)
+
+
+def _write_retirement_compile_record(
+    home: Path,
+    retire: _Retirement,
+    observed_hash: str | None,
+    *,
+    by: str,
+    skip_target: Path | None = None,
+) -> Path | None:
+    """The retirement-side twin of :func:`_write_compile_record_entry`.
+
+    A retirement's own host phase (:func:`_retirement_host_phase`)
+    REWRITES its doc target's managed region (the retiring record's
+    entry drops out) — when that target differs from the caller's own
+    (``skip_target``), the compile record has no other way to learn the
+    file changed, and the NEXT ``check_dirty=True`` resolve against it
+    would misread the retirement's own repair as a hand edit it never
+    made (found live: ``graduate`` regenerating a shared skill-md file
+    left the record pointing at the pre-graduation region, and the very
+    next ``supersede`` against that same file refused with ``edited``).
+    Skipped, like the host write itself, when the retirement's target IS
+    ``skip_target`` — one compile, one record entry, never two racing
+    writes for the same key."""
+    if retire.spec is None or retire.spec.target is None:
+        return None
+    if skip_target is not None and retire.spec.target == skip_target:
+        return None
+    return _write_compile_record_entry(home, retire.spec, observed_hash, by=by)
+
+
 def _ledger_write(home: Path):
     """THE ledger critical section: hold :func:`gitops.commit_lock` from a
-    verb's first ledger mutation through its commit — and no further
-    (audit 2026-07-16 round 3; see the ``gitops`` module docstring for the
-    probe that fixed this scope).
+    verb's first ledger mutation through its commit (audit 2026-07-16
+    round 3; see the ``gitops`` module docstring for the probe that fixed
+    this scope).
 
     It must open before the first mutation, not at ``commit()``:
     ``resolve_record`` ``git mv``s (staging a rename instantly) and
@@ -484,14 +905,18 @@ def _ledger_write(home: Path):
     to leave the record in pending/ AND resolved/ at once, exit 0, `git
     status` clean.
 
-    It must CLOSE at the commit. The previous shape (a whole-verb
-    decorator) also held the ledger lock across the compile, the host
-    phase and the push, none of which touch the ledger's index — a wedged
-    remote therefore blocked every other producer for a full TCP timeout,
-    and, worse, the shape made it look like host rebases were covered when
-    they took no host lock at all. Pushes now sit outside; the rebase takes
-    its own lock inside :func:`gitops.push_with_retry`, in whichever repo
-    is actually being rebased.
+    **U-hostmode §4.5b widens the CLOSE.** It used to close at the ledger
+    commit; it now stays open through the compile-record's pre-flight
+    OBSERVATION (before ``resolve_record``), the record WRITE (riding
+    this same commit, REC9), and — nested with :func:`gitops.host_lock`
+    — the HOST write itself, because a concurrent producer's ledger
+    commit landing in that window would make ``_compile_set`` re-read a
+    record set our own expectation did not account for, and the next
+    route would misread the result as a hand edit (§4.5b's defect trace).
+    The push still sits OUTSIDE both locks — the reason the whole-verb
+    decorator was retired in round 3 (a wedged remote blocking every
+    other producer) does not apply to the compile/host-write span, which
+    is local file I/O plus one local ``git commit``, no network.
 
     Re-entrant, so a verb may hold it across helpers that take it again."""
     return gitops.commit_lock(home)
@@ -737,15 +1162,21 @@ def _all_bucket_dirs(home: Path) -> list[Path]:
 @dataclass(frozen=True)
 class TargetSpec:
     """A pre-flighted compile target (doc 13 §4): where the canon lands,
-    which HOST repo commits it, and how to gather the compile set.
-    ``host_repo`` is None only for the chezmoi user flow (the dotfiles
-    repo commits itself)."""
+    which HOST commits it (or not — U-hostmode), and how to gather the
+    compile set.
+
+    U-hostmode §4.1: ``host_repo`` is renamed ``host_path`` and is NEVER
+    ``None`` after Phase 1 — user scope became a first-class PLAIN host
+    (``~/.claude``, §4.8) rather than the sentinel this field used to
+    carry for "the chezmoi user flow". ``mode`` (``"git"`` | ``"plain"``)
+    is the NEW field that carries the posture; no site may infer one from
+    ``host_path`` (MODE9)."""
 
     destination: str  # skill-md | claude-md | reference | hook | new-skill
     scope_kind: str  # "skill" | "project" | "skill-root" | "user"
     bucket_dir: Path
     target: Path | None  # None for a default (created-on-demand) reference
-    host_repo: Path | None
+    host_path: Path
     refs_dir: Path | None = None
     ref_name: str | None = None
     new_skill: str | None = None  # new-skill only: analyst-proposed, CLI-validated, human-confirmed (S-21)
@@ -777,6 +1208,26 @@ class TargetSpec:
     #: would desync the moment either side's resolution logic changes).
     #: ``None`` for every non-user-scope spec.
     user_claude_md: Path | str | None = None
+    #: U-hostmode §4.1: the ONE field that carries a host's posture.
+    #: ``"git"`` (default; byte-identical to pre-unit behaviour) or
+    #: ``"plain"``. Always set explicitly by every ``TargetSpec(...)``
+    #: construction site via ``hosts.host_mode(home, host_path)`` — the
+    #: default here exists only so a stray positional-only construction
+    #: fails LOUD elsewhere (a wrong host write) rather than crashing at
+    #: import time; MODE9's AST sweep is what actually enforces "every
+    #: site threads it".
+    mode: str = "git"
+
+    def __post_init__(self) -> None:
+        # U-hostmode USER4: host_path is NEVER None after Phase 1 — the
+        # root-cause fix for the retired `host_repo is None` overload
+        # (§2.5a). A frozen dataclass's __post_init__ may still validate
+        # (it just may not reassign a field via plain attribute set).
+        if self.host_path is None:
+            raise TypeError(
+                "TargetSpec.host_path must never be None (U-hostmode "
+                "USER4) — user scope now carries a real plain host path"
+            )
 
 
 def _gate_host(home: Path, path: Path | str, kind: str) -> Path:
@@ -803,6 +1254,12 @@ def _hosts_skill_dir(home: Path, name: str) -> tuple[Path, Path]:
         skill_dir = skill_dir_for(hosts, name)
     except HostsError as exc:
         raise VerbError(str(exc)) from exc
+    # `skill_dir_for` above raises HostsError when `hosts.skills_root is
+    # None` (same immutable `hosts` object, no reassignment in between)
+    # — provably not None here, but pyright cannot see across that
+    # function-call boundary; the assert documents the invariant
+    # instead of leaving a live false-positive.
+    assert hosts.skills_root is not None
     return _gate_host(home, hosts.skills_root, "skills-root"), skill_dir
 
 
@@ -1070,19 +1527,29 @@ def _resolve_local_target(
         )
     host = _project_host_or_refuse(home, bucket_dir, project_path)
     target = host / "CLAUDE.local.md"
+    mode = host_mode(home, host)
+    # N-4 (code gate r3 fold): ONE `TargetSpec` for both the check_dirty
+    # and no-check_dirty legs — r1/r2 built it twice, byte-identically,
+    # once inside the `if check_dirty:` branch and once again as the
+    # bare fallthrough return; the only difference was whether
+    # `_abort_if_unsound` ran on the way out.
+    spec = TargetSpec(
+        "claude-md", "project", bucket_dir, target, host, variant="local", mode=mode
+    )
     if check_dirty:
-        if not gitops.check_ignore(host, target):
+        # U-hostmode PLAIN9/§4.11: check_ignore is a GIT-tracking privacy
+        # guard (P-A3) — a plain host tracks NOTHING, so nothing can be
+        # published by being tracked; the hazard cannot occur. Skipped
+        # for plain, unchanged (and still refusing) for git.
+        if mode == "git" and not gitops.check_ignore(host, target):
             raise VerbError(
                 f"{target} is not gitignored in {host} — add "
                 "`CLAUDE.local.md` to .gitignore, then re-route (routing "
                 "a personal lesson into a tracked file publishes it to "
                 "the team)"
             )
-        if target.is_file():
-            _abort_if_dirty(host, target)
-    return TargetSpec(
-        "claude-md", "project", bucket_dir, target, host, variant="local"
-    )
+        _abort_if_unsound(home, host, mode, target, "managed", scope_kind="project", spec=spec)
+    return spec
 
 
 def _resolve_rules_target(
@@ -1149,62 +1616,41 @@ def _resolve_rules_target(
             bypassed_reason = _validate_rules_globs(
                 _user_reachability_roots(home, base), paths_tuple, allow_empty_glob
             )
-        if check_dirty:
-            # U-pathed §3.4(2): the pre-pass writes the target BEFORE
-            # compile_user_scope's own _drift_dirty_guard runs — on a
-            # MANAGED target, our own write would be read as pre-existing
-            # drift and abort AFTER the ledger commit (unrecoverable: a
-            # recompile repair hits the identical abort). Refuse here
-            # instead, pre-ledger, under the same check_dirty guard as the
-            # preflight below. Fires when EITHER this route is pathed OR
-            # the target already carries paths: (deleting it is also a
-            # pre-pass write, in the U(T) == () direction — an empty
-            # rules_paths is not a proxy for "writes nothing"). F1:
-            # deliberately `has_paths_key`, NOT `read_paths_frontmatter`
-            # — the reader normalizes a scalar / `[]` / `null` / a
-            # non-string list all down to the same falsy `()` as "no key
-            # at all", but the pre-pass's own agreement predicate
-            # (`paths_frontmatter_drift`, on the RAW value) treats every
-            # one of those as disagreement and rewrites it. A refusal
-            # keyed on the reader would miss exactly those values —
-            # `paths: []` slips this check, the pre-pass then writes it,
-            # and chezmoi's OWN drift check reads that write as
-            # pre-existing drift: an unrecoverable post-ledger abort with
-            # the record already in `resolved/`.
-            _carries_paths = target.is_file() and has_paths_key(
-                target.read_text(encoding="utf-8")
-            )
-            if (
-                paths_tuple or _carries_paths
-            ) and user_scope_capability(target, chezmoi=chezmoi_bin) == USER_SCOPE_MANAGED:
-                raise VerbError(
-                    f"{target} is chezmoi-managed — a pathed rules write "
-                    "would land before chezmoi's own drift check and be "
-                    "read as pre-existing drift, aborting AFTER the ledger "
-                    "commit; route to project scope, or drop rules_paths "
-                    "so this stays an unpathed rule"
-                )
-            # E-17 preflight, same as plain user claude-md: chezmoi
-            # drift/dirty aborts BEFORE the ledger commit.
-            preflight_user_scope(target, chezmoi=chezmoi_bin)
-        return TargetSpec(
-            "claude-md", "user", bucket_dir, target, None,
+        user_host = base.parent
+        spec = TargetSpec(
+            "claude-md", "user", bucket_dir, target, user_host,
             variant="rules", rules_topic=rules_topic, rules_paths=paths_tuple,
             glob_bypass=bool(bypassed_reason), glob_bypass_reason=bypassed_reason,
-            user_claude_md=user_claude_md,
+            user_claude_md=user_claude_md, mode="plain",
         )
+        if check_dirty:
+            # U-hostmode §4.8.1: user scope is a first-class PLAIN host —
+            # the write goes through the same ordinary plain path every
+            # other plain host uses, so the pre-flight gate is the SAME
+            # region predicate every plain host gets (§4.5a), not a
+            # chezmoi-specific "managed" check. USER2/CHEZ0: this route
+            # calls NO chezmoi function at all.
+            _abort_if_unsound(
+                home, user_host, "plain", target, "managed",
+                scope_kind="user", spec=spec,
+            )
+        return spec
     host = _project_host_or_refuse(home, bucket_dir, project_path)
     target = _project_rules_dir(host) / f"{rules_topic}.md"
+    mode = host_mode(home, host)
     bypassed_reason = None
     if check_dirty and paths_tuple:
         bypassed_reason = _validate_rules_globs((host,), paths_tuple, allow_empty_glob)
-    if check_dirty and target.is_file():
-        _abort_if_dirty(host, target)
-    return TargetSpec(
-        "claude-md", "project", bucket_dir, target, host,
+    spec = TargetSpec(
+        "claude-md", "project", bucket_dir, target, host, mode=mode,
         variant="rules", rules_topic=rules_topic, rules_paths=paths_tuple,
         glob_bypass=bool(bypassed_reason), glob_bypass_reason=bypassed_reason,
     )
+    if check_dirty:
+        _abort_if_unsound(
+            home, host, mode, target, "managed", scope_kind="project", spec=spec
+        )
+    return spec
 
 
 def _resolve_target(
@@ -1249,9 +1695,13 @@ def _resolve_target(
                 f"no SKILL.md at {target} — the compiler never creates "
                 "target files, only the section inside an existing one"
             )
+        mode = host_mode(home, root)
+        spec = TargetSpec("skill-md", "skill", bucket_dir, target, root, mode=mode)
         if check_dirty:
-            _abort_if_dirty(root, target)
-        return TargetSpec("skill-md", "skill", bucket_dir, target, root)
+            _abort_if_unsound(
+                home, root, mode, target, "managed", scope_kind="skill", spec=spec
+            )
+        return spec
 
     if destination == "claude-md":
         eff_variant, eff_topic = variant, rules_topic
@@ -1274,20 +1724,30 @@ def _resolve_target(
             target = Path(
                 user_claude_md if user_claude_md is not None else DEFAULT_USER_CLAUDE_MD
             ).expanduser()
-            if check_dirty:
-                # E-17 preflight: chezmoi drift/dirty aborts BEFORE the
-                # ledger commit — the record stays pending (§5 playbook).
-                preflight_user_scope(target, chezmoi=chezmoi_bin)
-            return TargetSpec(
-                "claude-md", "user", bucket_dir, target, None,
-                user_claude_md=user_claude_md,
+            user_host = target.parent
+            spec = TargetSpec(
+                "claude-md", "user", bucket_dir, target, user_host,
+                user_claude_md=user_claude_md, mode="plain",
             )
+            if check_dirty:
+                # U-hostmode §4.8.1: user scope is a first-class PLAIN
+                # host — the same region predicate every plain host gets
+                # (§4.5a), no chezmoi call (USER2/CHEZ0).
+                _abort_if_unsound(
+                    home, user_host, "plain", target, "managed",
+                    scope_kind="user", spec=spec,
+                )
+            return spec
         if scope == "project":
             host = _project_host_or_refuse(home, bucket_dir, project_path)
             target = host / "CLAUDE.md"
-            if check_dirty and target.is_file():
-                _abort_if_dirty(host, target)
-            return TargetSpec("claude-md", "project", bucket_dir, target, host)
+            mode = host_mode(home, host)
+            spec = TargetSpec("claude-md", "project", bucket_dir, target, host, mode=mode)
+            if check_dirty:
+                _abort_if_unsound(
+                    home, host, mode, target, "managed", scope_kind="project", spec=spec
+                )
+            return spec
         # skill:<name> scope → the skills-root host's own CLAUDE.md
         # (doc 13 §2: claude-skills hosts SKILL.md sections + its own
         # CLAUDE.md; the old <home>/CLAUDE.md target maps here).
@@ -1298,9 +1758,13 @@ def _resolve_target(
             )
         root = _gate_host(home, hosts.skills_root, "skills-root")
         target = root / "CLAUDE.md"
-        if check_dirty and target.is_file():
-            _abort_if_dirty(root, target)
-        return TargetSpec("claude-md", "skill-root", bucket_dir, target, root)
+        mode = host_mode(home, root)
+        spec = TargetSpec("claude-md", "skill-root", bucket_dir, target, root, mode=mode)
+        if check_dirty:
+            _abort_if_unsound(
+                home, root, mode, target, "managed", scope_kind="skill-root", spec=spec
+            )
+        return spec
 
     if destination == "new-skill":
         if ref_name is None:
@@ -1339,12 +1803,18 @@ def _resolve_target(
                     "SKILL.md) — refusing to inject (M3-9); pick another "
                     "name or route to its skill-md through review"
                 )
-        if check_dirty:
+        new_skill_mode = host_mode(home, root)
+        if check_dirty and new_skill_mode == "git":
+            # U-hostmode §8 OUT-7: new-skill scaffolds are explicitly NOT
+            # covered by the compile record (created once, whole files) —
+            # git mode keeps its unchanged paths_dirty gate; plain mode
+            # has no record-based gate for this destination.
             for probe in (target, marketplace):
                 if probe.is_file():
                     _abort_if_dirty(root, probe)
         return TargetSpec(
-            "new-skill", "skill-root", bucket_dir, target, root, new_skill=name
+            "new-skill", "skill-root", bucket_dir, target, root,
+            new_skill=name, mode=new_skill_mode,
         )
 
     if destination == "reference":
@@ -1379,9 +1849,10 @@ def _resolve_target(
         # lives" (compilers.reference_target_path's docstring). This site
         # re-implemented it with its own "LEARNINGS.md" literal (audit
         # 2026-07-16 MINOR 7): two copies of one rule, free to drift.
+        ref_mode = host_mode(home, host)
         probe = reference_target_path(refs_dir, ref_name)
-        if check_dirty and probe.is_file():
-            _abort_if_dirty(host, probe)
+        if check_dirty:
+            _abort_if_unsound(home, host, ref_mode, probe, "reference", scope_kind=kind)
         # U-pointer §3.9: three preflight refusals over `pointer_surface`,
         # all gated on `check_dirty` (the same parameter that already
         # gates `_abort_if_dirty` above) — `recompile` calls this with
@@ -1404,7 +1875,7 @@ def _resolve_target(
             if pointer_surface.is_file():
                 # L4: dirty pointer surface — same call already made for
                 # `probe` above.
-                _abort_if_dirty(host, pointer_surface)
+                _abort_if_unsound(home, host, ref_mode, pointer_surface, "pointer", scope_kind=kind)
                 # L5: an undecodable pointer surface can't be searched by
                 # the reachability predicate either — refuse here rather
                 # than committing the ledger and dying in the host phase.
@@ -1417,7 +1888,7 @@ def _resolve_target(
                     ) from exc
         return TargetSpec(
             "reference", kind, bucket_dir, None, host, refs_dir=refs_dir,
-            ref_name=ref_name, pointer_surface=pointer_surface,
+            ref_name=ref_name, pointer_surface=pointer_surface, mode=ref_mode,
         )
 
     raise VerbError(f"unroutable destination {destination!r}")
@@ -1491,8 +1962,8 @@ def _resolve_hook_target(home: Path, record: Record, bucket_dir: Path) -> Target
             f"hook script already exists at {target} — refusing to "
             "overwrite; supersede the record that owns it first"
         )
-    scope_kind = "skill" if record.scope.startswith("skill:") else record.scope
-    return TargetSpec("hook", scope_kind, bucket_dir, target, root)
+    scope_kind = _hook_scope_kind(record)
+    return TargetSpec("hook", scope_kind, bucket_dir, target, root, mode=host_mode(home, root))
 
 
 def _replay_hook_examples(script: str, examples: dict) -> None:
@@ -1669,10 +2140,17 @@ def _prepare_one_motion_hook(
         )
 
     spec = _resolve_hook_target(home, record, bucket_dir)
+    # `_resolve_hook_target` always constructs its TargetSpec with a
+    # real `target` (`hooks_dir / name`) -- `TargetSpec.target` is
+    # `Path | None` generically (a default reference route's own
+    # created-on-demand case), but this constructor never takes that
+    # branch; the assert documents the invariant for this call site
+    # instead of leaving a live pyright false-positive.
+    assert spec.target is not None
     _replay_hook_examples(data["script"], data["examples"])
 
     hook = data["hook"]
-    rel = spec.target.relative_to(spec.host_repo).as_posix()
+    rel = spec.target.relative_to(spec.host_path).as_posix()
     meta = {
         "tools": list(hook["tools"]),
         "path_regex": hook["path_regex"],
@@ -1749,10 +2227,17 @@ def _prepare_hook_route(
         )
 
     spec = _resolve_hook_target(home, record, bucket_dir)
+    # `_resolve_hook_target` always constructs its TargetSpec with a
+    # real `target` (`hooks_dir / name`) -- `TargetSpec.target` is
+    # `Path | None` generically (a default reference route's own
+    # created-on-demand case), but this constructor never takes that
+    # branch; the assert documents the invariant for this call site
+    # instead of leaving a live pyright false-positive.
+    assert spec.target is not None
     _replay_hook_examples(script, data["examples"])
 
     hook = data["hook"]
-    rel = spec.target.relative_to(spec.host_repo).as_posix()
+    rel = spec.target.relative_to(spec.host_path).as_posix()
     meta = {
         "tools": list(hook["tools"]),
         "path_regex": hook["path_regex"],
@@ -1777,6 +2262,16 @@ def _hook_manual_steps(snippet: str, name: str) -> list[str]:
     ]
 
 
+def _hook_scope_kind(record: Record) -> str:
+    """The compile-record ``scope_kind`` a hook-routed record's script
+    resolves under — same derivation :func:`_resolve_hook_target` has
+    always used inline (D-3 completion, code gate r1 fold: pulled out
+    here so every OTHER site that needs a hook's ``scope_kind`` for a
+    record resync — a removal, a repair — computes it the SAME way,
+    never a second, drifting copy of the rule)."""
+    return "skill" if record.scope.startswith("skill:") else record.scope
+
+
 def _write_hook_script(target: Path, script: str) -> HookApplyResult:
     """Write the APPROVED bytes (verbatim — M3-2) + executable bit.
     Idempotent: byte-identical executable content reports unchanged."""
@@ -1794,10 +2289,10 @@ def _write_hook_script(target: Path, script: str) -> HookApplyResult:
 
 def _hook_script_location(
     home: Path, record: Record, warnings: list[str]
-) -> tuple[Path, Path, str] | None:
+) -> tuple[Path, Path, str, str] | None:
     """PRE-FLIGHT the M3-4 rollback: where the routed record's script
-    lives. Returns (host_repo, script_path, rel), or None (with a loud
-    warning) when the record carries no script_path."""
+    lives. Returns (host_repo, script_path, rel, mode), or None (with a
+    loud warning) when the record carries no script_path."""
     meta = (record.routing or {}).get("hook") or {}
     rel = meta.get("script_path")
     if not rel:
@@ -1813,22 +2308,26 @@ def _hook_script_location(
             "remove; self-learn host add <path> --skills-root"
         )
     root = _gate_host(home, hosts.skills_root, "skills-root")
-    return root, root / rel, rel
+    return root, root / rel, rel, host_mode(home, root)
 
 
 def _remove_hook_script(
     home: Path,
-    removal: tuple[Path, Path, str],
+    removal: tuple[Path, Path, str, str],
     record_id: str,
     note: str | None,
     warnings: list[str],
     post_notes: list[str],
 ) -> str | None:
-    """M3-4 host phase: ``git rm`` the script (same resolution flow —
-    ledger committed first, host commit pinned ``… (hook removed)``) and
-    print the un-registration reminder. A failure is loud, never a
-    rollback (the ledger stays truth)."""
-    host_repo, script, rel = removal
+    """M3-4 host phase, mode-branched (U-hostmode PLAIN11): git mode
+    ``git rm``s the script (same resolution flow — ledger committed
+    first, host commit pinned ``… (hook removed)``); plain mode DEGRADES
+    to ``Path.unlink`` — no ``git rm``, no commit (H-j, §2.3). Either way
+    prints the un-registration reminder. A failure is loud, never a
+    rollback (the ledger stays truth). Takes its OWN host lock (REC12:
+    this call site is not lexically inside a caller's ``_ledger_write``
+    block by the time it runs)."""
+    host_repo, script, rel, mode = removal
     name = script.name
     post_notes.append(
         f"hook retired — finish by hand: remove the settings.json "
@@ -1841,7 +2340,10 @@ def _remove_hook_script(
         )
         return None
     try:
-        with gitops.commit_lock(host_repo):
+        with gitops.host_lock(host_repo, mode):
+            if mode != "git":
+                script.unlink()
+                return None
             gitops._git(  # noqa: SLF001 — same module family
                 host_repo, "rm", "-q", "--ignore-unmatch", "--", str(script)
             )
@@ -1955,14 +2457,18 @@ def _compile_set(home: Path, spec: TargetSpec) -> list[Record]:
     # ERASES the other scope's lines and recompile cannot restore them
     # (adversarial review 2026-07-17 finding 3; latent since M1). A
     # single-role host degenerates to exactly the old per-scope set.
-    host = spec.host_repo.resolve() if spec.host_repo is not None else None
+    # U-hostmode MODE9/USER4: host_path is NEVER None after Phase 1 — the
+    # highest-consequence of the retired 17-site overload (a wrong `None`
+    # here silently blanked this UNION, which decides which records
+    # compile into this target).
+    host = spec.host_path.resolve()
     records: list[Record] = []
     seen: set[str] = set()
     for bucket in discover_buckets(home):
         if bucket.scope != "project":
             continue
         project = bucket_project_path(bucket.path)
-        if project is None or host is None:
+        if project is None:
             continue
         if Path(project).resolve() != host:
             continue
@@ -2155,10 +2661,12 @@ def surface_fill(
             # deferred, §9).
             if scope == "user":
                 rules_dir = _user_rules_dir(target)
-            elif spec.host_repo is not None:
-                rules_dir = _project_rules_dir(spec.host_repo)
             else:
-                rules_dir = None
+                # U-hostmode MODE9: host_path is never None — this used
+                # to be the `is not None` branch-select; "skill-root"
+                # never had one anyway (deferred, §9), so this stays the
+                # unconditional project/skill-root leg.
+                rules_dir = _project_rules_dir(spec.host_path)
             entry["rules_topic_count"] = (
                 len(list(rules_dir.glob("*.md")))
                 if rules_dir is not None and rules_dir.is_dir()
@@ -2230,7 +2738,7 @@ class _Retirement:
     references are append-only)."""
 
     spec: TargetSpec | None = None
-    removal: tuple[Path, Path, str] | None = None
+    removal: tuple[Path, Path, str, str] | None = None
 
 
 def _retirement_preflight(
@@ -2316,7 +2824,7 @@ def _retirement_host_phase(
             warnings=warnings,
             user_push=user_push,
         )
-        return host_sha, retirement.spec.host_repo
+        return host_sha, retirement.spec.host_path
     if retirement.removal is not None:
         host_sha = _remove_hook_script(
             home, retirement.removal, record_id, note, warnings, post_notes
@@ -2413,35 +2921,13 @@ def _apply_target(
                     notes.append(
                         f"reference pointer written to {spec.pointer_surface}"
                     )
-    elif spec.scope_kind == "user":
-        assert spec.target is not None  # user/rules/local always resolve a target
-        if spec.variant in ("rules", "local") and not spec.target.is_file():
-            # A2 §4.5B: compile_managed_file (called by compile_user_scope
-            # below) refuses a missing target — "the compiler never
-            # creates target files". A first route to a NEW rules topic
-            # needs its parent dir + an empty file bootstrapped first.
-            # Scoped to the NEW variants only: plain ~/.claude/CLAUDE.md
-            # keeps its pre-existing missing-is-error semantics (it is
-            # never created here).
-            spec.target.parent.mkdir(parents=True, exist_ok=True)
-            spec.target.write_text("", encoding="utf-8")
-        records = _compile_set(home, spec)
-        if spec.variant == "rules":
-            paths_result: PathsResult = apply_paths_frontmatter(spec.target, records)
-            if notes is not None:
-                notes.extend(paths_result.notes)
-        compile_result = compile_user_scope(
-            spec.target,
-            records,
-            chezmoi=chezmoi_bin,
-            commit_message=message,
-            push=user_push,
-            # A2 §10.2/§10.5: the chezmoi-adopt offer fires ONLY for a
-            # rules variant (never plain CLAUDE.md — §10.1) — threaded,
-            # never guessed from the path.
-            offer_adopt=spec.variant == "rules",
-        )
-        host_paths = []
+    # U-hostmode §4.8.1: user scope is no longer a special branch here —
+    # it is a first-class PLAIN host now, so it falls into the SAME
+    # general branch below every other plain/git host uses
+    # (`compile_managed_file`, never `compile_user_scope`/chezmoi —
+    # USER2/CHEZ0). `host_paths` still ends up unused for it: `_host_phase`
+    # only stages/commits when `spec.mode == "git"`, and user scope's mode
+    # is always "plain".
     else:
         assert spec.target is not None  # skill-md/claude-md/new-skill always resolve one
         if spec.variant in ("rules", "local") and not spec.target.is_file():
@@ -2528,7 +3014,7 @@ def _apply_new_skill(home: Path, spec: TargetSpec) -> tuple[NewSkillApplyResult,
             f"named new-skill:{spec.new_skill}, if every one retired)"
         )
     name = spec.new_skill
-    root = spec.host_repo
+    root = spec.host_path
     target = spec.target
     plugin_dir = root / "plugins" / name
     manifest = plugin_dir / ".claude-plugin" / "plugin.json"
@@ -2619,14 +3105,17 @@ def _host_phase(
     ordering, so composing them cannot deadlock. Note the lock is partial
     by design for hosts — a human's own ``git add`` in their repo takes no
     lock of ours, which is exactly why the commit is ALSO pathspec-scoped
-    to ``host_paths``."""
-    lock = (
-        gitops.commit_lock(spec.host_repo)
-        if spec.host_repo is not None
-        else contextlib.nullcontext()
-    )
+    to ``host_paths``.
+
+    U-hostmode §4.3/§4.5b: the lock is now :func:`gitops.host_lock` — a
+    REAL lock in both modes, never a ``nullcontext()`` for a plain host
+    (REC12/PLAIN5). Opened HERE as this function's first statement
+    (REC12a); when a caller (``route``/``route_direct``/``supersede``/
+    ``recompile``) already holds the SAME lock (keyed by the same
+    resolved path), this is a re-entrant pass-through
+    (``gitops._held_locks``)."""
     try:
-        with lock:
+        with gitops.host_lock(spec.host_path, spec.mode):
             compile_result, host_paths = _apply_target(
                 home,
                 spec,
@@ -2637,7 +3126,7 @@ def _host_phase(
                 notes=warnings,
             )
             host_sha = None
-            if spec.host_repo is not None and host_paths:
+            if spec.mode == "git" and host_paths:
                 changed = getattr(compile_result, "changed", None)
                 applied = getattr(compile_result, "applied", None)
                 # U-pointer §3.6: a reference route whose append is a
@@ -2652,10 +3141,10 @@ def _host_phase(
                     getattr(compile_result, "pointer_changed", False)
                 )
                 if pointer_changed or (changed is not False and applied is not False):
-                    gitops.stage(spec.host_repo, host_paths)
-                    rel = host_paths[0].relative_to(spec.host_repo)
+                    gitops.stage(spec.host_path, host_paths)
+                    rel = host_paths[0].relative_to(spec.host_path)
                     host_sha = gitops.commit(
-                        spec.host_repo,
+                        spec.host_path,
                         f"self-learn: apply {record_id} → {rel} ({spec.destination})",
                         body=note,
                         paths=host_paths,
@@ -2843,6 +3332,7 @@ def route(
         # commit.
         warnings: list[str] = []
         old_retire: _Retirement | None = None
+        old_observed_hash: str | None = None
         if old_record is not None:
             old_retire = _retirement_preflight(
                 home,
@@ -2852,6 +3342,7 @@ def route(
                 user_claude_md=user_claude_md,
                 chezmoi_bin=chezmoi_bin,
             )
+            old_observed_hash = _observe_retirement_region(old_retire)
 
         if collapse is not None:
             # Pinned commit shape: route lrn-X → <target> (collapse
@@ -2917,7 +3408,13 @@ def route(
         # `route` telemetry event so the two can never diverge (11 §4.3 /
         # U-reach criterion 24).
         by = by if by is not None else ("human" if dest is not None else "analyst")
-        with _ledger_write(home):
+        with _ledger_write(home), gitops.host_lock(spec.host_path, spec.mode):
+            # U-hostmode §4.5b/REC12/REC13: BOTH locks are open before the
+            # first ledger mutation. Observe the region NOW — before
+            # anything below mutates the ledger — so the compile record's
+            # `based_on_sha256` is the state THIS write is based on, never
+            # a later re-read.
+            observed_hash = _observe_region_hash(spec)
             if merged is not None:
                 merged.write(path)
             touched = resolve_record(
@@ -2971,52 +3468,195 @@ def route(
 
                 if _remove_file(home, merge_path):
                     touched = touched + [merge_path]
+            # U-hostmode REC1/REC9: the compile record's EXPECTATION can
+            # only be computed now — `_compile_set` reads `resolved/`,
+            # and `resolve_record` (above) just moved this record there.
+            # The record file rides THIS SAME ledger commit (REC9): no
+            # second commit, no new failure window (a failure of the
+            # enclosing stage/commit below is already HalfWrittenError,
+            # exit 7 — REC10).
+            record_path = _write_compile_record_entry(
+                home, spec, observed_hash, by=f"route {record_id}"
+            )
+            if record_path is not None:
+                touched = touched + [record_path]
+            if old_retire is not None:
+                old_record_path = _write_retirement_compile_record(
+                    home,
+                    old_retire,
+                    old_observed_hash,
+                    by=f"route {record_id} (supersedes {old_id})",
+                    skip_target=spec.target,
+                )
+                if old_record_path is not None:
+                    touched = touched + [old_record_path]
+                elif old_retire.removal is not None:
+                    # D-3 completion (code gate r1 fold, coordinator
+                    # ruling 2026-08-28): `--supersedes` completion is
+                    # functionally the same retirement `supersede()`
+                    # does standalone — same gap, same fix. A hook
+                    # script's path can never collide with `spec.target`
+                    # (uniquely named per record via `script_name`), so
+                    # no `skip_target` concern here unlike the managed
+                    # branch above.
+                    if old_record is None:
+                        # D-3 (code gate r2 fold): an `assert` here is
+                        # STRIPPED under `python -O` (D-3's own finding
+                        # against the r1-fold version of this guard) --
+                        # an explicit raise stays load-bearing regardless
+                        # of interpreter flags. Provably unreachable in
+                        # practice: `old_retire` is only ever set (line
+                        # ~3257) inside `if old_record is not None:`, and
+                        # this branch sits inside `if old_retire is not
+                        # None:` -- reaching here means old_record was
+                        # set too; pyright just cannot connect the two
+                        # names' narrowing on its own.
+                        raise VerbError(
+                            "internal invariant violated: old_retire is "
+                            "set but old_record is None (route "
+                            f"{record_id} supersedes {old_id})"
+                        )
+                    old_host_repo, old_script_abs, _old_rel, old_removal_mode = (
+                        old_retire.removal
+                    )
+                    old_removal_record_path = _resync_region_entry(
+                        home,
+                        host_path=old_host_repo,
+                        scope_kind=_hook_scope_kind(old_record),
+                        mode=old_removal_mode,
+                        target=old_script_abs,
+                        region_kind="script",
+                        expected=None,
+                        observed_hash=None,
+                        delete=True,
+                        by=f"route {record_id} (supersedes {old_id})",
+                    )
+                    if old_removal_record_path is not None:
+                        touched = touched + [old_removal_record_path]
+            # REC7: the record covers the OTHER three region kinds too —
+            # `reference` (which also writes a `pointer`) and `script`
+            # (hook). `_region_kind_for`/`_write_compile_record_entry`
+            # above only ever resolve `managed` (skill-md/claude-md);
+            # these targets resolve OUTSIDE `spec.target` entirely (a
+            # reference file's path is `reference_target_path`, never on
+            # the spec; a hook's approved bytes ride `hook_route`), so
+            # they are handled here, by name, rather than through that
+            # generic dispatch — same SAME-commit guarantee (REC9): all
+            # of this still runs before `_commit_ledger` below.
+            if spec.destination == "reference" and spec.refs_dir is not None:
+                ref_path = reference_target_path(spec.refs_dir, spec.ref_name)
+                if ref_path.name != FORBIDDEN_REFERENCE_BASENAME:
+                    ref_observed = _observe_region_hash_at(ref_path, "reference")
+                    # Read the record AS RESOLVED (routing.routed_at now
+                    # set) — `_reference_block` depends on it; the
+                    # pre-resolve `record` object does not carry it yet.
+                    resolved_record = Record.from_path(
+                        bucket_dir / "resolved" / f"{record_id}.md"
+                    )
+                    ref_expected = _expected_reference_region(
+                        spec, resolved_record, ref_path
+                    )
+                    ref_record_path = _resync_region_entry(
+                        home,
+                        host_path=spec.host_path,
+                        scope_kind=spec.scope_kind,
+                        mode=spec.mode,
+                        target=ref_path,
+                        region_kind="reference",
+                        expected=ref_expected,
+                        observed_hash=ref_observed,
+                        by=f"route {record_id}",
+                    )
+                    if ref_record_path is not None:
+                        touched = touched + [ref_record_path]
+                    if spec.pointer_surface is not None:
+                        ptr_observed = _observe_region_hash_at(
+                            spec.pointer_surface, "pointer"
+                        )
+                        ptr_expected = _expected_pointer_region(spec, ref_path)
+                        ptr_record_path = _resync_region_entry(
+                            home,
+                            host_path=spec.host_path,
+                            scope_kind=spec.scope_kind,
+                            mode=spec.mode,
+                            target=spec.pointer_surface,
+                            region_kind="pointer",
+                            expected=ptr_expected,
+                            observed_hash=ptr_observed,
+                            by=f"route {record_id}",
+                        )
+                        if ptr_record_path is not None:
+                            touched = touched + [ptr_record_path]
+            elif (
+                spec.destination == "hook"
+                and hook_route is not None
+                and spec.target is not None
+            ):
+                script_observed = _observe_region_hash_at(spec.target, "script")
+                script_expected = hook_route.script.encode("utf-8")
+                script_record_path = _resync_region_entry(
+                    home,
+                    host_path=spec.host_path,
+                    scope_kind=spec.scope_kind,
+                    mode=spec.mode,
+                    target=spec.target,
+                    region_kind="script",
+                    expected=script_expected,
+                    observed_hash=script_observed,
+                    by=f"route {record_id}",
+                )
+                if script_record_path is not None:
+                    touched = touched + [script_record_path]
             # paths=touched, not paths=staged: the git mv-ed OLD path is
             # gone from the worktree (so `stage` drops it) but MUST ride
             # the pathspec or the rename commits in half.
             staged, sha = _commit_ledger(home, touched, message, note)
 
-        # `route` telemetry (11 §4.3, U-reach §2.2): the resolution plane
-        # was previously unobserved — nothing recorded that a routing
-        # happened, where it went, or who chose it. Placement is pinned
-        # immediately after the ledger commit closes above, NOT at the end
-        # of the function: the ledger commit IS the routing (doc 13 §4.1),
-        # so a host-phase failure below must still leave this event
-        # spooled — undercounting exactly the interesting case would make
-        # the instrument worse than silence. `spool_quiet`, never
-        # `spool_event`: telemetry must never break a verb (module
-        # docstring), so a spool refusal is a stderr warning, nothing more.
-        telemetry.spool_quiet(
-            "route",
-            record=record_id,
-            destination=destination,
-            scope=record.scope,
-            by=by,
-            variant=spec.variant,
-        )
+            # `route` telemetry (11 §4.3, U-reach §2.2): the resolution
+            # plane was previously unobserved — nothing recorded that a
+            # routing happened, where it went, or who chose it. Placement
+            # is pinned immediately after the ledger commit closes above,
+            # NOT at the end of the function: the ledger commit IS the
+            # routing (doc 13 §4.1), so a host-phase failure below must
+            # still leave this event spooled — undercounting exactly the
+            # interesting case would make the instrument worse than
+            # silence. `spool_quiet`, never `spool_event`: telemetry must
+            # never break a verb (module docstring), so a spool refusal is
+            # a stderr warning, nothing more.
+            telemetry.spool_quiet(
+                "route",
+                record=record_id,
+                destination=destination,
+                scope=record.scope,
+                by=by,
+                variant=spec.variant,
+            )
 
-        # (e) HOST phase: compile from the committed ledger state + host
-        # commit (pinned apply subject), still under the sentinel hold.
-        # Hook routes log the settings.json snippet in the host commit
-        # body (M3-11) alongside any --note.
-        host_note = note
-        if hook_route is not None:
-            snippet_block = f"settings.json snippet:\n{hook_route.snippet}"
-            host_note = f"{note}\n\n{snippet_block}" if note else snippet_block
-        routed_record = Record.from_path(
-            bucket_dir / "resolved" / f"{record_id}.md"
-        )
-        compile_result, host_sha = _host_phase(
-            home,
-            spec,
-            record_id,
-            routed_record=routed_record,
-            note=host_note,
-            chezmoi_bin=chezmoi_bin,
-            message=message,
-            warnings=warnings,
-            user_push=not no_push,
-        )
+            # (e) HOST phase: compile from the committed ledger state +
+            # host commit (pinned apply subject), still under the
+            # sentinel hold AND both locks (U-hostmode §4.5b: the ledger
+            # lock now stays open through the host write too — only the
+            # push sits outside). Hook routes log the settings.json
+            # snippet in the host commit body (M3-11) alongside any
+            # --note.
+            host_note = note
+            if hook_route is not None:
+                snippet_block = f"settings.json snippet:\n{hook_route.snippet}"
+                host_note = f"{note}\n\n{snippet_block}" if note else snippet_block
+            routed_record = Record.from_path(
+                bucket_dir / "resolved" / f"{record_id}.md"
+            )
+            compile_result, host_sha = _host_phase(
+                home,
+                spec,
+                record_id,
+                routed_record=routed_record,
+                note=host_note,
+                chezmoi_bin=chezmoi_bin,
+                message=message,
+                warnings=warnings,
+                user_push=not no_push,
+            )
 
         # (e2) retirement HOST phase for the superseded old record — its
         # compiled entry drops (or its guard script is removed) in the
@@ -3043,8 +3683,8 @@ def route(
         # unless --no-push.
         push = None if no_push else gitops.push_if_remote(home)
         host_push = None
-        if not no_push and host_sha is not None and spec.host_repo is not None:
-            host_push = gitops.push_if_remote(spec.host_repo)
+        if not no_push and host_sha is not None and spec.mode == "git":
+            host_push = gitops.push_if_remote(spec.host_path)
         if not no_push and old_host_sha is not None and old_host_repo is not None:
             # possibly the same repo as the successor's — a second push is
             # a no-op, and skipping it would strand the retirement commit
@@ -3081,6 +3721,7 @@ def route(
             target=spec.target,
             destination=spec.destination,
             variant=spec.variant,
+            mode=spec.mode,
         )
     finally:
         hold.release()  # (g) release iff owned
@@ -3221,6 +3862,7 @@ def route_direct(
         # host-side cleanup pre-flights before any write (same as route).
         warnings: list[str] = []
         old_retire: _Retirement | None = None
+        old_observed_hash: str | None = None
         if old_record is not None:
             old_retire = _retirement_preflight(
                 home,
@@ -3230,6 +3872,7 @@ def route_direct(
                 user_claude_md=user_claude_md,
                 chezmoi_bin=chezmoi_bin,
             )
+            old_observed_hash = _observe_retirement_region(old_retire)
 
         suffix = f" (supersedes {old_id})" if old_id else ""
         message_target = (
@@ -3274,8 +3917,12 @@ def route_direct(
 
         # (d) LEDGER phase: write directly to resolved/ — the pending/ dir
         # is never touched (02 §2 lifecycle note). Locked from the first
-        # mutation through the commit (:func:`_ledger_write`).
-        with _ledger_write(home):
+        # mutation through the commit (:func:`_ledger_write`), widened
+        # (U-hostmode §4.5b) to also hold the target's host lock, since
+        # the compile record's expectation is computed and written HERE
+        # too (REC1/REC9/REC12).
+        with _ledger_write(home), gitops.host_lock(spec.host_path, spec.mode):
+            observed_hash = _observe_region_hash(spec)
             resolved_path.parent.mkdir(parents=True, exist_ok=True)
             record.write(resolved_path)
             touched: list[Path] = [resolved_path]
@@ -3289,6 +3936,130 @@ def route_direct(
                 touched = touched + supersede_record(
                     home, old_id, record.id, verb="route"
                 )
+            record_path = _write_compile_record_entry(
+                home, spec, observed_hash, by=f"route-direct {record.id}"
+            )
+            if record_path is not None:
+                touched = touched + [record_path]
+            if old_retire is not None:
+                old_record_path = _write_retirement_compile_record(
+                    home,
+                    old_retire,
+                    old_observed_hash,
+                    by=f"route-direct {record.id} (supersedes {old_id})",
+                    skip_target=spec.target,
+                )
+                if old_record_path is not None:
+                    touched = touched + [old_record_path]
+                elif old_retire.removal is not None:
+                    # D-3 completion (code gate r1 fold, coordinator
+                    # ruling 2026-08-28): same shape as `route`'s own
+                    # `--supersedes` completion fix, right above the
+                    # matching block there — a hook script's path can
+                    # never collide with `spec.target`, so no
+                    # `skip_target` concern here.
+                    if old_record is None:
+                        # D-3 (code gate r2 fold): an `assert` here is
+                        # STRIPPED under `python -O` (D-3's own finding
+                        # against the r1-fold version of this guard) --
+                        # an explicit raise stays load-bearing regardless
+                        # of interpreter flags. Provably unreachable in
+                        # practice: `old_retire` is only ever set (line
+                        # ~3722) inside `if old_record is not None:`, and
+                        # this branch sits inside `if old_retire is not
+                        # None:` -- reaching here means old_record was
+                        # set too; pyright just cannot connect the two
+                        # names' narrowing on its own.
+                        raise VerbError(
+                            "internal invariant violated: old_retire is "
+                            "set but old_record is None (route-direct "
+                            f"{record.id} supersedes {old_id})"
+                        )
+                    old_host_repo, old_script_abs, _old_rel, old_removal_mode = (
+                        old_retire.removal
+                    )
+                    old_removal_record_path = _resync_region_entry(
+                        home,
+                        host_path=old_host_repo,
+                        scope_kind=_hook_scope_kind(old_record),
+                        mode=old_removal_mode,
+                        target=old_script_abs,
+                        region_kind="script",
+                        expected=None,
+                        observed_hash=None,
+                        delete=True,
+                        by=f"route-direct {record.id} (supersedes {old_id})",
+                    )
+                    if old_removal_record_path is not None:
+                        touched = touched + [old_removal_record_path]
+            # D-3 completion (code gate r1 fold, coordinator ruling
+            # 2026-08-28): the SAME three-region-kind coverage `route`
+            # gives its own `reference`/`pointer`/`hook` legs (see the
+            # matching block there) — `route_direct` never had it at
+            # all, so a brand-new reference or hook route landed via
+            # `teach --route`/the one-shot analyst left NO record entry
+            # whatsoever, not merely a stale one. `record` already
+            # carries `routing.routed_at` (`record.set_routing(...)`
+            # above), so no `Record.from_path` re-read is needed the
+            # way `route`'s own block needs one.
+            if spec.destination == "reference" and spec.refs_dir is not None:
+                ref_path = reference_target_path(spec.refs_dir, spec.ref_name)
+                if ref_path.name != FORBIDDEN_REFERENCE_BASENAME:
+                    ref_observed = _observe_region_hash_at(ref_path, "reference")
+                    ref_expected = _expected_reference_region(
+                        spec, record, ref_path
+                    )
+                    ref_record_path = _resync_region_entry(
+                        home,
+                        host_path=spec.host_path,
+                        scope_kind=spec.scope_kind,
+                        mode=spec.mode,
+                        target=ref_path,
+                        region_kind="reference",
+                        expected=ref_expected,
+                        observed_hash=ref_observed,
+                        by=f"route-direct {record.id}",
+                    )
+                    if ref_record_path is not None:
+                        touched = touched + [ref_record_path]
+                    if spec.pointer_surface is not None:
+                        ptr_observed = _observe_region_hash_at(
+                            spec.pointer_surface, "pointer"
+                        )
+                        ptr_expected = _expected_pointer_region(spec, ref_path)
+                        ptr_record_path = _resync_region_entry(
+                            home,
+                            host_path=spec.host_path,
+                            scope_kind=spec.scope_kind,
+                            mode=spec.mode,
+                            target=spec.pointer_surface,
+                            region_kind="pointer",
+                            expected=ptr_expected,
+                            observed_hash=ptr_observed,
+                            by=f"route-direct {record.id}",
+                        )
+                        if ptr_record_path is not None:
+                            touched = touched + [ptr_record_path]
+            elif (
+                spec.destination == "hook"
+                and hook_route is not None
+                and spec.target is not None
+            ):
+                script_observed = _observe_region_hash_at(spec.target, "script")
+                script_expected = hook_route.script.encode("utf-8")
+                script_record_path = _resync_region_entry(
+                    home,
+                    host_path=spec.host_path,
+                    scope_kind=spec.scope_kind,
+                    mode=spec.mode,
+                    target=spec.target,
+                    region_kind="script",
+                    expected=script_expected,
+                    observed_hash=script_observed,
+                    by=f"route-direct {record.id}",
+                )
+                if script_record_path is not None:
+                    touched = touched + [script_record_path]
             try:
                 staged = gitops.stage(home, touched)
                 diff = gitops.staged_diff(home, staged)
@@ -3298,42 +4069,44 @@ def route_direct(
                 ) from exc
             _, sha = _commit_ledger(home, touched, message, note)
 
-        # `route` telemetry (11 §4.3, U-reach §2.2) — same placement pin as
-        # `route`'s: immediately after the ledger commit closes above, so a
-        # host-phase failure below still leaves this event spooled (the
-        # ledger commit IS the routing, doc 13 §4.1). `spool_quiet`: a
-        # spool refusal must never break this verb.
-        telemetry.spool_quiet(
-            "route",
-            record=record.id,
-            destination=destination,
-            scope=record.scope,
-            by=by,
-            variant=spec.variant,
-        )
+            # `route` telemetry (11 §4.3, U-reach §2.2) — same placement pin
+            # as `route`'s: immediately after the ledger commit closes
+            # above, so a host-phase failure below still leaves this event
+            # spooled (the ledger commit IS the routing, doc 13 §4.1).
+            # `spool_quiet`: a spool refusal must never break this verb.
+            telemetry.spool_quiet(
+                "route",
+                record=record.id,
+                destination=destination,
+                scope=record.scope,
+                by=by,
+                variant=spec.variant,
+            )
 
-        # (e) HOST phase. Hook routes log the settings snippet in the host
-        # commit body (M3-11), same as the review-gated path.
-        host_note = note
-        if hook_route is not None:
-            snippet_block = f"settings.json snippet:\n{hook_route.snippet}"
-            host_note = f"{note}\n\n{snippet_block}" if note else snippet_block
-        compile_result, host_sha = _host_phase(
-            home,
-            spec,
-            record.id,
-            routed_record=record,
-            note=host_note,
-            chezmoi_bin=chezmoi_bin,
-            message=message,
-            warnings=warnings,
-            user_push=not no_push,
-        )
-        if host_sha is not None and spec.host_repo is not None:
+            # (e) HOST phase. Hook routes log the settings snippet in the
+            # host commit body (M3-11), same as the review-gated path.
+            # Still under BOTH locks (U-hostmode §4.5b): only the push
+            # (below) sits outside.
+            host_note = note
+            if hook_route is not None:
+                snippet_block = f"settings.json snippet:\n{hook_route.snippet}"
+                host_note = f"{note}\n\n{snippet_block}" if note else snippet_block
+            compile_result, host_sha = _host_phase(
+                home,
+                spec,
+                record.id,
+                routed_record=record,
+                note=host_note,
+                chezmoi_bin=chezmoi_bin,
+                message=message,
+                warnings=warnings,
+                user_push=not no_push,
+            )
+        if host_sha is not None and spec.mode == "git":
             # the applied-canon half of the printed diff (informational —
             # invocation is the approval, never a prompt).
             host_diff = gitops._git(  # noqa: SLF001 — same module family
-                spec.host_repo, "show", "--format=", host_sha
+                spec.host_path, "show", "--format=", host_sha
             ).stdout
             diff = diff + host_diff
         if hook_route is not None:
@@ -3377,8 +4150,8 @@ def route_direct(
         # (f) push ledger, then push host (both has_remote-guarded).
         push = None if no_push else gitops.push_if_remote(home)
         host_push = None
-        if not no_push and host_sha is not None and spec.host_repo is not None:
-            host_push = gitops.push_if_remote(spec.host_repo)
+        if not no_push and host_sha is not None and spec.mode == "git":
+            host_push = gitops.push_if_remote(spec.host_path)
         if not no_push and old_host_sha is not None and old_host_repo is not None:
             # possibly the same repo — a second push is a no-op; skipping
             # would strand the retirement commit when the successor's own
@@ -3399,6 +4172,9 @@ def route_direct(
             host_commit_sha=host_sha,
             host_push=host_push,
             target=spec.target,
+            destination=spec.destination,
+            variant=spec.variant,
+            mode=spec.mode,
         )
     finally:
         hold.release()  # (g) release iff owned
@@ -3461,9 +4237,9 @@ def _commit_drift_targets(spec: TargetSpec) -> list[Path]:
       itself used recomputes it (never a second implementation of that
       mapping)."""
     if spec.destination == "new-skill":
-        if spec.target is None or spec.host_repo is None:
+        if spec.target is None:
             raise VerbError("commit-drift: new-skill target unresolved")
-        marketplace = spec.host_repo / ".claude-plugin" / "marketplace.json"
+        marketplace = spec.host_path / ".claude-plugin" / "marketplace.json"
         return [spec.target, marketplace]
     if spec.target is not None:
         return [spec.target]
@@ -3488,27 +4264,26 @@ def commit_drift(
     target's OWN pending changes — the SAME target-resolution a failed
     ``route <record_id> [--dest dest]`` used (:func:`_resolve_target`,
     ``check_dirty=False`` — the E-17 read-only mode; never a second
-    resolver), so this verb refuses any path outside a registered host /
-    the dotfiles source by construction.
+    resolver), so this verb refuses any path outside a registered host by
+    construction.
 
-    Two legs (scope per the resolved target):
+    U-hostmode §4.7 (CD1/CD2): mode-branched, not scope-branched. A
+    **plain**-mode host — user scope included — REFUSES at exit 64: there
+    is no commit to make, because self-learn commits nothing there and the
+    human's own file is their own to manage. The chezmoi user leg this
+    verb used to run is DELETED (not rewritten) — there is no chezmoi leg
+    left to take, on ANY plain host.
 
-    - **user scope** (``spec.host_repo is None``): the dotfiles repo,
-      commit-target-agnostic — ``chezmoi diff`` distinguishes drift
-      (refuse, :data:`CHEZMOI_DRIFT_REFUSAL`) from dirty (commit), and the
-      dirty check + the eventual ``add -A`` are BOTH repo-wide (matches
-      ``preflight_user_scope``'s own read path — gate m8's mirror image
-      for this leg).
-    - **host-repo scope** (skill-md / claude-md project·skill-root /
-      reference / new-skill): :func:`gitops.paths_dirty` is already
-      target-path scoped, so the commit is too — ``git commit --
-      <target(s)>`` (never ``add -A``, gate m8: a repo-wide add would
-      sweep unrelated pending work into the pinned-subject commit).
-      ``new-skill`` is the one COMPOUND target — ``_resolve_target``'s
-      own new-skill branch dirty-checks BOTH the scaffolded SKILL.md
-      AND ``marketplace.json`` (its ``for probe in (target,
-      marketplace)``), so this verb probes and commits the same two
-      paths, scoped to exactly whichever of them is actually dirty.
+    **git**-mode host (skill-md / claude-md project·skill-root /
+    reference / new-skill), byte-unchanged: :func:`gitops.paths_dirty` is
+    already target-path scoped, so the commit is too — ``git commit --
+    <target(s)>`` (never ``add -A``, gate m8: a repo-wide add would
+    sweep unrelated pending work into the pinned-subject commit).
+    ``new-skill`` is the one COMPOUND target — ``_resolve_target``'s
+    own new-skill branch dirty-checks BOTH the scaffolded SKILL.md
+    AND ``marketplace.json`` (its ``for probe in (target,
+    marketplace)``), so this verb probes and commits the same two
+    paths, scoped to exactly whichever of them is actually dirty.
 
     ``--dry-run`` (§2.1 gate R3) runs every precondition and refusal
     (incl. the drift refusal) and writes nothing — the UI's armed display
@@ -3561,39 +4336,18 @@ def commit_drift(
     if hold is not None:
         sentinel.heartbeat()
     try:
-        if spec.host_repo is None:
-            # user/chezmoi scope: repo-wide dirty check + repo-wide add,
-            # mirroring preflight_user_scope's own two-step read path.
-            # A2: `spec.target` (not a re-derived `user_claude_md`) so a
-            # user-scope RULES target's own drift is checked, not always
-            # plain CLAUDE.md — byte-identical to the pre-A2 computation
-            # for the variant-absent case.
-            assert spec.target is not None  # user scope always resolves one
-            target = spec.target
-            status = chezmoi.user_scope_dirty_status(target, chezmoi=chezmoi_bin)
-            if status.drift:
-                raise VerbError(CHEZMOI_DRIFT_REFUSAL)
-            if not status.dirty_files:
-                raise VerbError(NOTHING_TO_COMMIT)
-            repo = chezmoi.dotfiles_source_path(chezmoi=chezmoi_bin)
-            if dry_run:
-                return CommitDriftResult(
-                    repo=repo,
-                    files=status.dirty_files,
-                    commit_sha=None,
-                    commit_message=COMMIT_DRIFT_SUBJECT,
-                    dry_run=True,
-                )
-            sha = chezmoi.commit_all_user_scope(COMMIT_DRIFT_SUBJECT, chezmoi=chezmoi_bin)
-            return CommitDriftResult(
-                repo=repo,
-                files=status.dirty_files,
-                commit_sha=sha,
-                commit_message=COMMIT_DRIFT_SUBJECT,
-                dry_run=False,
+        if spec.mode != "git":
+            # U-hostmode CD1: a plain host (user scope included) has
+            # nothing to commit — self-learn commits nothing there, and
+            # the human's own file is their own to manage. Exit 64,
+            # matching every other `host`-family refusal.
+            raise VerbError(
+                f"commit-drift: {spec.host_path} is a PLAIN host — "
+                "self-learn commits nothing there, so there is nothing "
+                "for this verb to commit; the file is yours to manage"
             )
 
-        # host-repo scope: target-path-scoped dirty check + scoped
+        # git-mode host: target-path-scoped dirty check + scoped
         # commit, under the host's OWN commit lock (mirrors _host_phase:
         # the window between reading dirty state and committing it is
         # exactly what a racing self-learn producer's `pull --rebase
@@ -3603,30 +4357,30 @@ def commit_drift(
         # commit's pathspec is scoped to exactly the DIRTY subset, never
         # the full candidate set (a clean sibling stays untouched).
         targets = _commit_drift_targets(spec)
-        with gitops.commit_lock(spec.host_repo):
+        with gitops.commit_lock(spec.host_path):
             dirty_targets = [
-                t for t in targets if gitops.paths_dirty(spec.host_repo, t)
+                t for t in targets if gitops.paths_dirty(spec.host_path, t)
             ]
             if not dirty_targets:
                 raise VerbError(NOTHING_TO_COMMIT)
             files = [
                 f
                 for t in dirty_targets
-                for f in gitops.dirty_paths(spec.host_repo, t)
+                for f in gitops.dirty_paths(spec.host_path, t)
             ]
             if dry_run:
                 return CommitDriftResult(
-                    repo=spec.host_repo,
+                    repo=spec.host_path,
                     files=files,
                     commit_sha=None,
                     commit_message=COMMIT_DRIFT_SUBJECT,
                     dry_run=True,
                 )
             sha = gitops.commit(
-                spec.host_repo, COMMIT_DRIFT_SUBJECT, paths=dirty_targets
+                spec.host_path, COMMIT_DRIFT_SUBJECT, paths=dirty_targets
             )
         return CommitDriftResult(
-            repo=spec.host_repo,
+            repo=spec.host_path,
             files=files,
             commit_sha=sha,
             commit_message=COMMIT_DRIFT_SUBJECT,
@@ -4127,9 +4881,26 @@ def graduate(
             user_claude_md=user_claude_md,
             chezmoi_bin=chezmoi_bin,
         )
+        # U-hostmode M-3 (code gate r1 fold, REC12c): one lock discipline,
+        # no exceptions — same shape as supersede()'s fix. The host lock
+        # opens HERE, before the region hash is observed, and stays open
+        # through the host write (only the push sits outside).
+        # `_retirement_host_phase` (via `_host_phase`/`_remove_hook_script`)
+        # re-acquires the SAME lock internally — a re-entrant pass-through
+        # (`gitops._held_locks`), never a self-deadlock. A record with no
+        # host presence to retire (pending, reference-routed) takes no
+        # host lock at all.
+        if retire.spec is not None:
+            _graduate_host_lock = gitops.host_lock(retire.spec.host_path, retire.spec.mode)
+        elif retire.removal is not None:
+            _graduate_host_lock = gitops.host_lock(retire.removal[0], retire.removal[3])
+        else:
+            _graduate_host_lock = contextlib.nullcontext()
 
-        message = f"self-learn: graduate {record_id}"
-        with _ledger_write(home):
+        with _ledger_write(home), _graduate_host_lock:
+            observed_hash = _observe_retirement_region(retire)
+
+            message = f"self-learn: graduate {record_id}"
             touched = resolve_record(
                 home,
                 record_id,
@@ -4138,20 +4909,55 @@ def graduate(
                 note=note,
                 verb="graduate",
             )
+            # U-hostmode REC1/REC9: the graduated record's own doc-target
+            # entry drops out of the compile at the host phase below — the
+            # compile record must be kept in sync with that rewrite (see
+            # `_write_retirement_compile_record`'s docstring for the bug
+            # this closes), inside this SAME ledger commit.
+            record_path = _write_retirement_compile_record(
+                home, retire, observed_hash, by=f"graduate {record_id}"
+            )
+            if record_path is not None:
+                touched = touched + [record_path]
+            elif retire.removal is not None:
+                # D-3 completion (code gate r1 fold, coordinator
+                # ruling 2026-08-28): same shape as `supersede`'s
+                # own hook-removal leg — `_write_retirement_compile_
+                # record` only ever covers `retire.spec` (a managed
+                # drop); a hook-routed record's script disappearing
+                # at the host phase below needs its record entry
+                # predictively DELETED here too, or a stale WRITE
+                # entry misreads the next legitimate route to this
+                # same script path as `edited`.
+                host_repo, script_abs, _rel, removal_mode = retire.removal
+                removal_record_path = _resync_region_entry(
+                    home,
+                    host_path=host_repo,
+                    scope_kind=_hook_scope_kind(record),
+                    mode=removal_mode,
+                    target=script_abs,
+                    region_kind="script",
+                    expected=None,
+                    observed_hash=None,
+                    delete=True,
+                    by=f"graduate {record_id}",
+                )
+                if removal_record_path is not None:
+                    touched = touched + [removal_record_path]
             staged, sha = _stage_and_commit(home, touched, message, note)
 
-        post_notes: list[str] = []
-        host_sha, host_repo = _retirement_host_phase(
-            home,
-            retire,
-            record_id,
-            note=note,
-            chezmoi_bin=chezmoi_bin,
-            message=message,
-            warnings=warnings,
-            post_notes=post_notes,
-            user_push=not no_push,
-        )
+            post_notes: list[str] = []
+            host_sha, host_repo = _retirement_host_phase(
+                home,
+                retire,
+                record_id,
+                note=note,
+                chezmoi_bin=chezmoi_bin,
+                message=message,
+                warnings=warnings,
+                post_notes=post_notes,
+                user_push=not no_push,
+            )
 
         push = _push_ledger(home, no_push)
         host_push = None
@@ -4218,7 +5024,7 @@ def supersede(
         # (c) PRE-FLIGHT the recompile target when this drops a live entry
         # — or the hook script this retires (M3-4).
         spec: TargetSpec | None = None
-        removal: tuple[Path, Path, str] | None = None
+        removal: tuple[Path, Path, str, str] | None = None
         if old_record.status == "routed":
             routing = old_record.routing or {}
             destination = routing.get("destination")
@@ -4239,41 +5045,99 @@ def supersede(
             elif destination == "hook":
                 removal = _hook_script_location(home, old_record, warnings)
 
-        # (d) LEDGER phase (locked from the first mutation through the
-        # commit — :func:`_ledger_write`).
-        message = f"self-learn: supersede {old_id} → {new_id}"
-        with _ledger_write(home):
+        # U-hostmode M-3 (code gate r1 fold, REC12c): one lock discipline,
+        # no exceptions — the host lock opens HERE, before the region
+        # hash is observed, and stays open through the host write, the
+        # same shape route()/route_direct() use (only the push sits
+        # outside). `_host_phase`/`_remove_hook_script` re-acquire the
+        # SAME lock internally; `gitops._held_locks` makes that a
+        # re-entrant pass-through, never a self-deadlock. A record with
+        # no host presence to retire (pending, reference-routed) takes
+        # no host lock at all.
+        if spec is not None:
+            _supersede_host_lock = gitops.host_lock(spec.host_path, spec.mode)
+        elif removal is not None:
+            _supersede_host_lock = gitops.host_lock(removal[0], removal[3])
+        else:
+            _supersede_host_lock = contextlib.nullcontext()
+
+        with _ledger_write(home), _supersede_host_lock:
+            observed_hash = _observe_region_hash(spec) if spec is not None else None
+
+            # (d) LEDGER phase (locked from the first mutation through the
+            # commit — :func:`_ledger_write`).
+            message = f"self-learn: supersede {old_id} → {new_id}"
             touched = supersede_record(home, old_id, new_id, note=note)
+            # U-hostmode REC1/REC9: the superseded record's own doc-target
+            # entry drops out of the compile at the host phase below — kept
+            # in sync with that rewrite inside this SAME ledger commit (the
+            # bug this closes: `_write_retirement_compile_record`'s
+            # docstring).
+            if spec is not None:
+                record_path = _write_compile_record_entry(
+                    home, spec, observed_hash, by=f"supersede {old_id} → {new_id}"
+                )
+                if record_path is not None:
+                    touched = touched + [record_path]
+            elif removal is not None:
+                # D-3 completion (code gate r1 fold, coordinator
+                # ruling 2026-08-28): a hook-routed record's script
+                # is about to disappear at the host phase below —
+                # predictively DELETE its record entry in this SAME
+                # ledger commit (same shape the `spec is not None`
+                # branch above already uses for a managed drop; H-2
+                # already tolerates the host phase lagging the
+                # ledger — a failed removal there is the pre-existing
+                # "stale, never lost" gap `recompile` repairs, which
+                # now ALSO resyncs this exact key, see its hook-
+                # removal-repair leg). A stale WRITE entry left
+                # behind here would misread the next legitimate
+                # write to this same script path as `edited`.
+                host_repo, script_abs, _rel, removal_mode = removal
+                removal_record_path = _resync_region_entry(
+                    home,
+                    host_path=host_repo,
+                    scope_kind=_hook_scope_kind(old_record),
+                    mode=removal_mode,
+                    target=script_abs,
+                    region_kind="script",
+                    expected=None,
+                    observed_hash=None,
+                    delete=True,
+                    by=f"supersede {old_id} → {new_id}",
+                )
+                if removal_record_path is not None:
+                    touched = touched + [removal_record_path]
             staged, sha = _commit_ledger(home, touched, message, note)
 
-        # (e) HOST phase: recompile the target — the entry drops out. For
-        # hooks: git rm the script in the host repo (M3-4 rollback pin)
-        # and print the un-registration reminder.
-        compile_result = None
-        host_sha = None
-        post_notes: list[str] = []
-        if spec is not None:
-            compile_result, host_sha = _host_phase(
-                home,
-                spec,
-                old_id,
-                routed_record=None,
-                note=note,
-                chezmoi_bin=chezmoi_bin,
-                message=message,
-                warnings=warnings,
-                user_push=not no_push,
-            )
-        elif removal is not None:
-            host_sha = _remove_hook_script(
-                home, removal, old_id, note, warnings, post_notes
-            )
+            # (e) HOST phase: recompile the target — the entry drops out. For
+            # hooks: git rm the script in the host repo (M3-4 rollback pin)
+            # and print the un-registration reminder.
+            compile_result = None
+            host_sha = None
+            post_notes: list[str] = []
+            if spec is not None:
+                compile_result, host_sha = _host_phase(
+                    home,
+                    spec,
+                    old_id,
+                    routed_record=None,
+                    note=note,
+                    chezmoi_bin=chezmoi_bin,
+                    message=message,
+                    warnings=warnings,
+                    user_push=not no_push,
+                )
+            elif removal is not None:
+                host_sha = _remove_hook_script(
+                    home, removal, old_id, note, warnings, post_notes
+                )
 
         # (f) push ledger, then host (both has_remote-guarded).
         push = None if no_push else gitops.push_if_remote(home)
         host_push = None
         host_repo = (
-            spec.host_repo if spec is not None
+            spec.host_path if spec is not None
             else removal[0] if removal is not None
             else None
         )
@@ -4724,6 +5588,16 @@ def push_pending(home: Path | str) -> PushReport:
         if repo in seen:
             continue
         seen.add(repo)
+        # U-hostmode M-5 (code gate r1 fold, PLAIN10): a plain host has no
+        # `git status` to consult at all — `unpushed_commits` is a raw
+        # git subprocess, so calling it against a plain host's directory
+        # would either misfire against whatever repo happens to be an
+        # ancestor of it, or fail outright. Skip SILENTLY (never a print
+        # — a plain host publishing nothing to push is the expected,
+        # every-run state, not an anomaly worth a line) and never touch
+        # `unpushed_commits` for it.
+        if host_mode(home, repo) == "plain":
+            continue
         if gitops.unpushed_commits(repo):
             entries.append((repo, gitops.push_if_remote(repo)))
     return PushReport(entries)
@@ -4758,14 +5632,25 @@ def recompile(
     no_push: bool = False,
     user_claude_md: Path | str | None = None,
     chezmoi_bin: str = "chezmoi",
+    adopt: Path | str | None = None,
 ) -> RecompileResult:
     """The doc-13 drift repair (H-2: recompile is always safe and repairs
     any two-phase interruption). For every ROUTED record, recompute each
-    managed target — skill-md files and project/skill-root claude-md files
-    (the chezmoi-managed user file keeps its own guarded flow) — and
+    managed target — skill-md files, project/skill-root claude-md files,
+    AND the user-scope CLAUDE.md, which is a first-class PLAIN host now
+    (§4.8.1) and goes through the SAME general repair as any other
+    plain/git host, never a chezmoi-guarded flow (USER2/CHEZ0) — and
     RE-APPEND every reference-routed record to its references file, then
     commit any HOST whose file changed (pinned subject ``self-learn:
     recompile <relative target>``).
+
+    ``adopt`` (REC11, U-hostmode §4.5a): when given, the ON-DISK managed
+    region at that resolved target path is re-recorded as authoritative
+    IN THE COMPILE RECORD before this run's own soundness check — the one
+    human decision an ``edited``/``unknown provenance`` refusal names.
+    Adopting writes and commits ONLY the record entry; it never changes
+    the target's bytes. ``--force`` is deliberately not offered anywhere
+    in this path.
 
     References are append-only, which is exactly why they belong here
     (audit 2026-07-16 BLOCKER 2): a ``reference`` route interrupted
@@ -4791,8 +5676,8 @@ def recompile(
     # retired was never revisited — the stale advisory lived forever.
     specs: dict[tuple[Path | None, Path | None], TargetSpec] = {}
     ref_work: dict[tuple[Path, Path], tuple[TargetSpec, list[Record]]] = {}
-    hook_work: list[tuple[Record, Path, Path, str]] = []  # record, host, abs, rel
-    hook_removals: list[tuple[Record, tuple[Path, Path, str]]] = []  # m-4
+    hook_work: list[tuple[Record, Path, Path, str, str]] = []  # record, host, abs, rel, mode
+    hook_removals: list[tuple[Record, tuple[Path, Path, str, str]]] = []  # m-4
     for bucket in discover_buckets(home):
         resolved = bucket.path / "resolved"
         if not resolved.is_dir():
@@ -4843,8 +5728,10 @@ def recompile(
                     result.warnings.append(f"{record.id}: {exc}")
                     continue
                 if removal is not None:
-                    host_repo, script_abs, rel = removal
-                    hook_work.append((record, host_repo, script_abs, rel))
+                    host_repo, script_abs, rel, hook_mode = removal
+                    hook_work.append(
+                        (record, host_repo, script_abs, rel, hook_mode)
+                    )
                 continue
             if destination == "reference":
                 if retired:
@@ -4884,53 +5771,203 @@ def recompile(
                 continue
             if destination == "reference":
                 probe = reference_target_path(spec.refs_dir, spec.ref_name)
-                entry = ref_work.setdefault((spec.host_repo, probe), (spec, []))
+                entry = ref_work.setdefault((spec.host_path, probe), (spec, []))
                 entry[1].append(record)
                 continue
-            specs.setdefault((spec.host_repo, spec.target), spec)
+            specs.setdefault((spec.host_path, spec.target), spec)
 
     hold = sentinel.hold()
     sentinel.heartbeat()
     try:
         touched_hosts: list[Path] = []
+        # N-6 (code gate r2 fold): every automatic drift-resync entry
+        # written below (managed, reference, pointer, hook re-apply,
+        # hook removal-repair) is ACCUMULATED here instead of committed
+        # on the spot — one changed target used to mean one standalone
+        # ledger commit, so a large repair run could emit many resync
+        # commits in a single invocation. ONE combined commit fires at
+        # the end of this function instead (right before the push loop),
+        # covering everything this run touched. `--adopt`'s own commit
+        # (just below) is a SEPARATE, deliberate single-target human
+        # action — never batched in here.
+        resync_touched: list[Path] = []
+        # REC11: an --adopt target re-records the ON-DISK region as
+        # authoritative before this run's own soundness check runs — the
+        # write is mode-agnostic (REC4: the record covers git hosts too),
+        # so it is resolved once, ahead of the mode split below.
+        adopt_target = Path(adopt).resolve() if adopt is not None else None
+        adopt_matched = False
         for (host_repo, target), spec in sorted(
             specs.items(), key=lambda kv: str(kv[0][1])
         ):
-            if host_repo is None:
-                # The chezmoi-guarded user file (E-17): run the same
-                # drift/dirty preflight the route path uses, and skip
-                # LOUDLY on any refusal — recompile repairs, it never
-                # guesses at a drifted dotfiles state. The apply goes
-                # through _host_phase (compile_user_scope commits its own
-                # repo; there is no host repo of ours to lock or stage).
+            region_kind = _region_kind_for(spec)
+            if (
+                adopt_target is not None
+                and region_kind is not None
+                and target.resolve() == adopt_target
+            ):
+                adopt_matched = True
                 try:
-                    preflight_user_scope(target, chezmoi=chezmoi_bin)
-                except (ChezmoiAbort, ChezmoiError) as exc:
+                    text = target.read_text(encoding="utf-8")
+                    region = compiled.region_bytes(text, region_kind)
+                except (
+                    OSError,
+                    UnicodeDecodeError,
+                    compiled.CompiledRecordError,
+                ) as exc:
                     result.entries.append(
                         RecompileEntry(target=target, changed=False, skipped=str(exc))
                     )
-                    result.warnings.append(f"{target}: {exc}")
+                    result.warnings.append(f"{target}: --adopt: {exc}")
                     continue
-                compile_result, _ = _host_phase(
+                if region is None:
+                    result.warnings.append(
+                        f"{target}: --adopt: no {region_kind} region on disk "
+                        "— nothing to adopt"
+                    )
+                else:
+                    slug = host_slug(home, spec.host_path, scope_kind=spec.scope_kind)
+                    host_label = (
+                        "(user scope — ~/.claude)"
+                        if spec.scope_kind == "user"
+                        else str(spec.host_path)
+                    )
+                    key = compiled.region_key(spec.host_path, target)
+                    with _ledger_write(home):
+                        record_path = compiled.adopt_entry(
+                            home,
+                            slug,
+                            key,
+                            region=region_kind,
+                            observed_hash=compiled.sha256_hex(region),
+                            nbytes=len(region),
+                            host=host_label,
+                            mode=spec.mode,
+                        )
+                        _commit_ledger(
+                            home,
+                            [record_path],
+                            f"self-learn: recompile --adopt {key}",
+                        )
+                    # target is non-None here: adopt_matched only sets
+                    # when region_kind is not None, which _region_kind_for
+                    # only returns for a spec carrying a real target.
+                    assert target is not None
+                    result.entries.append(
+                        RecompileEntry(target=target, changed=True, commit_sha=None)
+                    )
+                    # REC11: adopting means the ON-DISK region — just
+                    # re-recorded above as authoritative — IS the new
+                    # reference; falling through into the render leg
+                    # below would immediately re-derive canonical
+                    # content from the ledger and overwrite the very
+                    # bytes this block just adopted, leaving the
+                    # compile record's `sha256` pointing at bytes the
+                    # target no longer holds (a real bug this fix
+                    # closes: confirmed by writing a hand edit, running
+                    # `recompile --adopt`, and observing the entry's
+                    # `sha256` no longer matched the post-call on-disk
+                    # region before this `continue` was added). One
+                    # `recompile --adopt <target>` call fully settles
+                    # THAT target; other targets in the same run are
+                    # untouched by this `continue` and still recompile
+                    # normally below.
+                    continue
+            if spec.mode != "git":
+                # U-hostmode §4.8.1: every plain host (user scope included)
+                # repairs through the SAME general path — no chezmoi, no
+                # special-cased user branch (USER2/CHEZ0). The soundness
+                # check `_resolve_target` skipped (`check_dirty=False`)
+                # runs HERE instead: plain mode has no `git status` to
+                # consult, so the compile record is the only instrument
+                # that can see a committed-equivalent hand edit
+                # (REC2/REC4), and recompile must never guess past one
+                # (H-3) — `--adopt`, just above, is the named repair.
+                if region_kind is not None:
+                    try:
+                        _abort_if_unsound(
+                            home,
+                            spec.host_path,
+                            spec.mode,
+                            target,
+                            region_kind,
+                            scope_kind=spec.scope_kind,
+                            spec=spec,
+                        )
+                    except DirtyTargetError as exc:
+                        result.entries.append(
+                            RecompileEntry(target=target, changed=False, skipped=str(exc))
+                        )
+                        result.warnings.append(f"{target}: {exc}")
+                        continue
+                # RESIDUAL-DEFECT FIX (2026-08-28, coordinator ruling on
+                # the U-hostmode Phase 1 build): observe the region hash
+                # BEFORE the render, so a change CAN be re-synced below.
+                # Bug this closes — a plain recompile past a "clean"
+                # verdict (e.g. right after `--adopt`, or any target
+                # whose record was never written by this leg to begin
+                # with) rendered canonical content whenever it differed
+                # from disk, same as always, but never told the compile
+                # record about it: the record kept whatever `sha256` it
+                # already held while the file moved on, so the NEXT
+                # verdict computation compared a stale record against
+                # fresh disk content and read `edited` — a false refusal
+                # on content this very tool just wrote. Confirmed by
+                # writing a hand edit, `recompile --adopt`ing it (which
+                # settles the record to the hand-edited bytes), then
+                # running a second, unadopted `recompile`: the render
+                # correctly restored canonical content, but the record
+                # still pointed at the adopted (now-overwritten) hash —
+                # a THIRD `recompile` verdicted `edited` against content
+                # that was, in fact, exactly canonical.
+                observed_hash = (
+                    _observe_region_hash(spec) if region_kind is not None else None
+                )
+                compile_result, host_sha = _host_phase(
                     home,
                     spec,
                     "recompile",
                     routed_record=None,
                     note=None,
                     chezmoi_bin=chezmoi_bin,
-                    message="self-learn: recompile user CLAUDE.md",
+                    message=f"self-learn: recompile {target}",
                     warnings=result.warnings,
                     user_push=not no_push,
                 )
+                changed = bool(getattr(compile_result, "changed", False))
+                if changed and region_kind is not None:
+                    # The render just made disk and the ledger's
+                    # canonical content agree — re-sync the record to
+                    # match in the SAME breath, under the ledger's own
+                    # lock, so no verdict computed after this point can
+                    # ever see the record and disk disagree because of
+                    # a render THIS TOOL performed. A no-op render
+                    # (`changed=False`, the common "already clean" case)
+                    # skips this entirely — the record was already
+                    # truthful, and writing a no-op ledger commit would
+                    # be its own unwanted divergence from REC9's "the
+                    # record rides its OWN resolution's commit" shape.
+                    with _ledger_write(home):
+                        record_path = _write_compile_record_entry(
+                            home, spec, observed_hash, by=f"recompile {target}"
+                        )
+                        # U-hostmode M-10 (code gate r1 fold): §4.5/gate
+                        # B-3 rejected a second ledger commit under the
+                        # subject `self-learn: compile record …` — that
+                        # shape stays rejected. N-6 (code gate r2 fold):
+                        # this write's own commit is now BATCHED (see
+                        # `resync_touched` above), not fired here.
+                        if record_path is not None and record_path not in resync_touched:
+                            resync_touched.append(record_path)
                 result.entries.append(
                     RecompileEntry(
                         target=target,
-                        # UserScopeResult reports committed, not changed —
-                        # the dotfiles repo commits itself, no commit_sha
-                        # of ours to show (delta review finding 1)
-                        changed=bool(getattr(compile_result, "committed", False)),
+                        changed=changed,
+                        commit_sha=host_sha,
                     )
                 )
+                if host_sha is not None and host_repo not in touched_hosts:
+                    touched_hosts.append(host_repo)
                 continue
             if target.is_file() and gitops.paths_dirty(host_repo, target):
                 result.entries.append(
@@ -4940,6 +5977,16 @@ def recompile(
                     f"{target}: uncommitted changes — commit/stash, then re-run"
                 )
                 continue
+            # D-2 (code gate r1 fold): observe the region hash BEFORE
+            # the render, same as the plain leg below — the compile
+            # record's own resync (after a successful commit) needs the
+            # PRE-render observation, not a later re-read (REC13's own
+            # reasoning, mode-agnostic: `_flock_lock`'s own docstring —
+            # "the compile record's `based_on_sha256` is the state THIS
+            # write is based on, never a later re-read").
+            observed_hash = (
+                _observe_region_hash(spec) if region_kind is not None else None
+            )
             # compile→commit under the HOST's lock (see :func:`_host_phase`:
             # the compile writes the managed file into the host worktree, so
             # a racing autostash there would stash it away mid-flight).
@@ -4964,11 +6011,34 @@ def recompile(
                 sha = gitops.commit(
                     host_repo, f"self-learn: recompile {rel}", paths=host_paths
                 )
+            # D-2 (code gate r1 fold): re-sync the compile record here
+            # too — `edited` refuses in BOTH modes (REC2/REC4), so a
+            # git-mode render leaving the record stale is the exact same
+            # latent false-refusal channel the plain leg's own
+            # RESIDUAL-DEFECT FIX (above) closed for plain hosts. A
+            # SEPARATE standalone ledger commit (never riding the HOST's
+            # own commit just made — that landed in a DIFFERENT repo),
+            # same subject shape M-10 established for the plain leg.
+            if region_kind is not None:
+                with _ledger_write(home):
+                    record_path = _write_compile_record_entry(
+                        home, spec, observed_hash, by=f"recompile {target}"
+                    )
+                    # N-6 (code gate r2 fold): batched, not committed here
+                    # — see `resync_touched` above.
+                    if record_path is not None and record_path not in resync_touched:
+                        resync_touched.append(record_path)
             result.entries.append(
                 RecompileEntry(target=target, changed=True, commit_sha=sha)
             )
             if host_repo not in touched_hosts:
                 touched_hosts.append(host_repo)
+
+        if adopt_target is not None and not adopt_matched:
+            result.warnings.append(
+                f"{adopt_target}: --adopt: no routed managed target at this "
+                "path — nothing adopted"
+            )
 
         # Reference targets: re-append every routed record (idempotent per
         # record id), commit the file ONCE if anything landed; ALSO the
@@ -5019,6 +6089,17 @@ def recompile(
             # below, asymmetric with the managed-file path above, which
             # correctly wraps ``_apply_target``. Same rule, both paths:
             # lock before the first mutation of the repo.
+            # D-3 (code gate r1 fold): observe the region hashes BEFORE
+            # this loop's first mutation of either file, same reasoning
+            # as D-2 (REC13: `based_on_sha256` is the state THIS write
+            # is based on, never a later re-read). `probe` is the
+            # reference file; `spec.pointer_surface` may be absent.
+            ref_observed_before = _observe_region_hash_at(probe, "reference")
+            ptr_observed_before = (
+                _observe_region_hash_at(spec.pointer_surface, "pointer")
+                if spec.pointer_surface is not None
+                else None
+            )
             with gitops.commit_lock(host_repo):  # ledger→host order
                 applied = False
                 failed = False
@@ -5102,13 +6183,82 @@ def recompile(
                     if host_repo not in touched_hosts:
                         touched_hosts.append(host_repo)
 
+            # D-3 (code gate r1 fold): resync the compile record for the
+            # `reference`/`pointer` region kinds too — mirrors D-2's fix
+            # for `managed` targets, closing the same latent
+            # false-`edited`-refusal channel (REC2/REC4) for these two
+            # kinds. Unlike `route()` (fully predictive: one record, one
+            # ledger commit, never-yet-written bytes), `recompile` here
+            # writes for REAL, in a loop over MANY records, before any
+            # resync happens — so this reads the ACTUAL post-write bytes
+            # off disk rather than predicting them. Each resync is its
+            # own standalone ledger commit (never riding the host's own
+            # commit just made above — that landed in a DIFFERENT repo),
+            # same subject convention M-10/D-2 established.
+            if applied:
+                try:
+                    ref_expected = compiled.region_bytes(
+                        probe.read_text(encoding="utf-8"), "reference"
+                    )
+                except (OSError, UnicodeDecodeError, compiled.CompiledRecordError):
+                    ref_expected = None
+                if ref_expected is not None:
+                    with _ledger_write(home):
+                        ref_record_path = _resync_region_entry(
+                            home,
+                            host_path=spec.host_path,
+                            scope_kind=spec.scope_kind,
+                            mode=spec.mode,
+                            target=probe,
+                            region_kind="reference",
+                            expected=ref_expected,
+                            observed_hash=ref_observed_before,
+                            by=f"recompile {probe}",
+                        )
+                        # N-6 (code gate r2 fold): batched, see
+                        # `resync_touched` above.
+                        if ref_record_path is not None and ref_record_path not in resync_touched:
+                            resync_touched.append(ref_record_path)
+            if pointer_changed:
+                pointer_surface = spec.pointer_surface
+                assert pointer_surface is not None
+                try:
+                    ptr_expected = compiled.region_bytes(
+                        pointer_surface.read_text(encoding="utf-8"), "pointer"
+                    )
+                except (OSError, UnicodeDecodeError, compiled.CompiledRecordError):
+                    ptr_expected = None
+                if ptr_expected is not None:
+                    with _ledger_write(home):
+                        ptr_record_path = _resync_region_entry(
+                            home,
+                            host_path=spec.host_path,
+                            scope_kind=spec.scope_kind,
+                            mode=spec.mode,
+                            target=pointer_surface,
+                            region_kind="pointer",
+                            expected=ptr_expected,
+                            observed_hash=ptr_observed_before,
+                            by=f"recompile {probe}",
+                        )
+                        # N-6 (code gate r2 fold): batched, see
+                        # `resync_touched` above.
+                        if ptr_record_path is not None and ptr_record_path not in resync_touched:
+                            resync_touched.append(ptr_record_path)
+
         # Hook scripts: re-apply the APPROVED bytes where missing, edited,
         # or stripped of the executable bit (a hook two-phase interruption
         # is exactly a missing script — H-2's repair must cover it).
-        for record, host_repo, script_abs, rel in sorted(
+        for record, host_repo, script_abs, rel, hook_mode in sorted(
             hook_work, key=lambda item: str(item[2])
         ):
-            if script_abs.is_file() and gitops.paths_dirty(host_repo, script_abs):
+            # U-hostmode: a plain host has no `git status` to consult —
+            # the dirty gate is git-only, unchanged for git (UN2/UN3).
+            if (
+                hook_mode == "git"
+                and script_abs.is_file()
+                and gitops.paths_dirty(host_repo, script_abs)
+            ):
                 result.entries.append(
                     RecompileEntry(target=script_abs, changed=False, skipped="dirty")
                 )
@@ -5116,7 +6266,16 @@ def recompile(
                     f"{script_abs}: uncommitted changes — commit/stash, then re-run"
                 )
                 continue
-            with gitops.commit_lock(host_repo):  # ledger→host order
+            sha = None
+            # D-3 completion (code gate r1 fold, coordinator ruling
+            # 2026-08-28): observe BEFORE the write, same reasoning as
+            # every other resync in this function (REC13: `based_on_
+            # sha256` is the state THIS write is based on).
+            script_observed_before = _observe_region_hash_at(script_abs, "script")
+            # `host_lock(path, "git")` is byte-identical to `commit_lock`'s
+            # own path (UN8) — this widens to plain without moving the
+            # git-mode lock at all.
+            with gitops.host_lock(host_repo, hook_mode):  # ledger→host order
                 apply_result = _write_hook_script(
                     script_abs, (record.routing or {})["hook"]["script"]
                 )
@@ -5125,16 +6284,39 @@ def recompile(
                         RecompileEntry(target=script_abs, changed=False)
                     )
                     continue
-                gitops.stage(host_repo, [script_abs])
-                sha = gitops.commit(
-                    host_repo,
-                    f"self-learn: recompile {rel}",
-                    paths=[script_abs],
+                if hook_mode == "git":
+                    gitops.stage(host_repo, [script_abs])
+                    sha = gitops.commit(
+                        host_repo,
+                        f"self-learn: recompile {rel}",
+                        paths=[script_abs],
+                    )
+            # D-3 completion: resync the record to the APPROVED bytes
+            # this leg just (re-)applied — a standalone ledger commit,
+            # same subject convention M-10/D-2/D-3 established, never
+            # riding the host's own commit just made above (a DIFFERENT
+            # repo).
+            script_expected = (record.routing or {})["hook"]["script"].encode("utf-8")
+            with _ledger_write(home):
+                script_record_path = _resync_region_entry(
+                    home,
+                    host_path=host_repo,
+                    scope_kind=_hook_scope_kind(record),
+                    mode=hook_mode,
+                    target=script_abs,
+                    region_kind="script",
+                    expected=script_expected,
+                    observed_hash=script_observed_before,
+                    by=f"recompile {script_abs}",
                 )
+                # N-6 (code gate r2 fold): batched, see `resync_touched`
+                # above.
+                if script_record_path is not None and script_record_path not in resync_touched:
+                    resync_touched.append(script_record_path)
             result.entries.append(
                 RecompileEntry(target=script_abs, changed=True, commit_sha=sha)
             )
-            if host_repo not in touched_hosts:
+            if sha is not None and host_repo not in touched_hosts:
                 touched_hosts.append(host_repo)
 
         # m-4: RETIRED hook records whose script still exists — an
@@ -5144,8 +6326,8 @@ def recompile(
         for record, removal in sorted(
             hook_removals, key=lambda item: str(item[1][1])
         ):
-            host_repo, script_abs, rel = removal
-            if gitops.paths_dirty(host_repo, script_abs):
+            host_repo, script_abs, rel, removal_mode = removal
+            if removal_mode == "git" and gitops.paths_dirty(host_repo, script_abs):
                 result.entries.append(
                     RecompileEntry(target=script_abs, changed=False, skipped="dirty")
                 )
@@ -5158,6 +6340,34 @@ def recompile(
                 home, removal, record.id, None, result.warnings, removal_notes
             )
             result.warnings.extend(removal_notes)
+            # D-3 completion (code gate r1 fold, coordinator ruling
+            # 2026-08-28): `_remove_hook_script` returns `None` for
+            # THREE different reasons (already absent, a successful
+            # plain-mode unlink, and a genuine failure) — `sha is not
+            # None` cannot distinguish "removed" from "removal failed".
+            # `script_abs.is_file()` after the call is the reliable
+            # signal: only clear the record entry when the script is
+            # ACTUALLY gone, never on a failed removal that left it in
+            # place (that would wrongly hide a still-present script
+            # behind a deleted entry).
+            if not script_abs.is_file():
+                with _ledger_write(home):
+                    removal_record_path = _resync_region_entry(
+                        home,
+                        host_path=host_repo,
+                        scope_kind=_hook_scope_kind(record),
+                        mode=removal_mode,
+                        target=script_abs,
+                        region_kind="script",
+                        expected=None,
+                        observed_hash=None,
+                        delete=True,
+                        by=f"recompile {script_abs}",
+                    )
+                    # N-6 (code gate r2 fold): batched, see
+                    # `resync_touched` above.
+                    if removal_record_path is not None and removal_record_path not in resync_touched:
+                        resync_touched.append(removal_record_path)
             result.entries.append(
                 RecompileEntry(
                     target=script_abs, changed=sha is not None, commit_sha=sha
@@ -5165,6 +6375,25 @@ def recompile(
             )
             if sha is not None and host_repo not in touched_hosts:
                 touched_hosts.append(host_repo)
+
+        # N-6 (code gate r2 fold): the ONE combined resync commit for
+        # this ENTIRE invocation — every write accumulated above
+        # (managed, reference, pointer, hook re-apply, hook removal-
+        # repair; `--adopt`'s own commit above is separate and already
+        # landed). A no-op run (nothing drifted) commits nothing, same
+        # as always. `compiled/*.yaml` is inside `_RECONCILABLE` (RCN1),
+        # so a failure between one entry's write and this final commit
+        # leaves an uncommitted record file the reconcile mechanism
+        # sweeps — never a lost write, same failure-mode reasoning the
+        # per-target commits already relied on.
+        if resync_touched:
+            with _ledger_write(home):
+                _commit_ledger(
+                    home,
+                    resync_touched,
+                    "self-learn: recompile resync record(s) "
+                    f"({len(resync_touched)})",
+                )
 
         if not no_push:
             # Outside every lock (a push touches no index); the rebase

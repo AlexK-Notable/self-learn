@@ -36,16 +36,33 @@
     Registering means lessons can be <strong>written into this project</strong>
     (its CLAUDE.md gains a managed section the next time you approve one)
     and the review agent may <strong>read its files</strong>.
-    {% if needs_init %}
+    {% if mode == "git" and needs_init %}
     A new git repository will be created at <code>{{ path }}</code>
     (<code>git init</code>) as part of registering.
     {% endif %}
-    This runs: <code>self-learn host add {% if needs_init %}--init {% endif %}{{ path }}</code>
+    {% if mode == "plain" %}
+    <strong>Plain mode:</strong> self-learn makes no commit, no push, and
+    keeps no off-machine backup of this host's own file — every write
+    lands uncommitted; committing and publishing it is entirely yours to
+    do, or not.
+    {% endif %}
+    This runs: <code>self-learn host add --mode {{ mode }}{% if mode == "git" and needs_init %} --init{% endif %} {{ path }}</code>
   </p>
   <form hx-post="/bucket/{{ scope }}/{{ name }}/host-add/confirm"
         hx-target="#host-add-bar" hx-swap="outerHTML">
     {% if record_id %}<input type="hidden" name="record_id" value="{{ record_id }}">{% endif %}
-    {% if needs_init %}<input type="hidden" name="init_disclosed" value="1">{% endif %}
+    {% if mode == "git" and needs_init %}<input type="hidden" name="init_disclosed" value="1">{% endif %}
+    <fieldset class="host-add-mode">
+      <legend>Compile mode</legend>
+      <label>
+        <input type="radio" name="mode" value="git" {% if mode == "git" %}checked{% endif %}>
+        git — self-learn commits and pushes canon here
+      </label>
+      <label>
+        <input type="radio" name="mode" value="plain" {% if mode == "plain" %}checked{% endif %}>
+        plain — self-learn writes canon uncommitted; nothing of ours is committed or pushed
+      </label>
+    </fieldset>
     <p class="action-bar-armed">
       <strong>Register project</strong>
       <span class="confirm-hint"><kbd>Enter</kbd> to confirm &middot; any other key cancels</span>

@@ -1914,8 +1914,8 @@ removed the last competing workstream — the build gate is open.*
   Why the exception is justified: registration is the surface's
   ONBOARDING moment — the person it renders to has, by
   construction, not yet integrated this project into the system,
-  and "canon hosts must be committable (doc 13 §4 two-phase
-  routing)" is system vocabulary aimed at spec readers, not at them
+  and "a git-mode canon host must be committable (doc 13 §4
+  two-phase routing)" is system vocabulary aimed at spec readers, not at them
   (the Y-9 jargon failure's third live instance). §5's
   verbatim-first pin stands for every other verb: those stderr
   lines name records and verbs the adjudicating user is already

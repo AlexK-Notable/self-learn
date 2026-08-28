@@ -529,6 +529,18 @@ def _build_parser() -> argparse.ArgumentParser:
         "only; no-op when PATH is already a root, zero-commit included; "
         "nested inside a parent work tree is intended)",
     )
+    hadd.add_argument(
+        "--mode",
+        choices=hosts_mod.HOST_MODES,
+        default=None,
+        help="U-hostmode: 'git' (default) commits and pushes canon there "
+        "like every host always has; 'plain' writes canon UNCOMMITTED — "
+        "self-learn makes no commit, no push, and no off-machine backup "
+        "of the host's own file, ever, for that host (incompatible with "
+        "--init: a plain host is never a git repo self-learn manages). "
+        "Omit to use hosts.default_mode (config.yaml), or 'git' when that "
+        "is also unset.",
+    )
     hrebind = host_sub.add_parser(
         "rebind",
         help="re-point a project bucket + its hosts.yaml entry at a MOVED "
@@ -573,6 +585,14 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         dest="no_push",
         help="commit host changes exactly as pinned, skip only the pushes",
+    )
+    recompile_p.add_argument(
+        "--adopt",
+        metavar="TARGET",
+        default=None,
+        help="re-record TARGET's on-disk managed region as authoritative, "
+        "clearing an edited/unknown-provenance refusal — content is never "
+        "changed (no --force is offered)",
     )
 
     sentinel_p = sub.add_parser(
@@ -1164,7 +1184,18 @@ def _outcome_state(result: verbs.VerbResult) -> str:
         return "drift"
     if _reports_no_change(result.compile_result):
         return "no_op"
-    if isinstance(result.compile_result, UserScopeResult) or result.variant == "local":
+    # U-hostmode PLAIN3: widened to every PLAIN host, not only the
+    # (Phase-1-dead) chezmoi UserScopeResult sentinel — a plain host's
+    # successful, changed write never sets host_commit_sha (no host
+    # commit exists in plain mode by construction), so without this the
+    # shipped predicate fell through to "unknown" for every plain route.
+    # `result.mode` is `None` for a spec-less verb (reject/defer/
+    # graduate), which correctly never reaches this branch.
+    if (
+        isinstance(result.compile_result, UserScopeResult)
+        or result.variant == "local"
+        or result.mode == "plain"
+    ):
         return "wrote_uncommitted"
     return "unknown"
 
@@ -1459,12 +1490,28 @@ def _report_half_written(surface: str, exc: gitops.HalfWrittenError) -> int:
 def _cmd_host_inner(args: argparse.Namespace, home) -> int:
     if args.host_command == "add":
         kind = "skills-root" if args.skills_root else "project"
+        # U-hostmode MODE1/§4.2: an explicit --mode wins; omitted falls
+        # back to hosts.default_mode (config.yaml), or "git" when that is
+        # also unset — never a silent per-call default divorced from the
+        # registry-wide setting a human may have opted into.
+        mode = args.mode if args.mode is not None else hosts_mod.effective_default_mode(home)
         try:
-            registry = hosts_mod.host_add(home, args.path, kind, init=args.init)
+            result = hosts_mod.host_add(home, args.path, kind, init=args.init, mode=mode)
         except hosts_mod.HostsError as exc:
             print(f"self-learn host add: {exc}", file=sys.stderr)
             return EXIT_USAGE
-        print(f"host add: {kind} {Path(args.path).expanduser().resolve()}")
+        registry = result.hosts
+        mode_suffix = f" (mode={mode})" if mode != "git" else ""
+        print(f"host add: {kind} {Path(args.path).expanduser().resolve()}{mode_suffix}")
+        if result.marker_restored:
+            # N-3 (code gate r3 fold): the print moved here from inside
+            # hosts.py's host_add (M-4, code gate r2 fold) — the
+            # library layer now returns the SIGNAL, this CLI layer owns
+            # the terminal.
+            marker_path = (
+                Path(args.path).expanduser().resolve() / hosts_mod.MARKER_FILENAME
+            )
+            print(f"host add: marker restored at {marker_path}")
         print(
             f"  registry: skills_root={registry.skills_root or '(none)'} · "
             f"{len(registry.projects)} project host(s)"
@@ -1475,6 +1522,22 @@ def _cmd_host_inner(args: argparse.Namespace, home) -> int:
             "  consent: registers this repo's canon surfaces as compile "
             "targets and analyst-readable"
         )
+        if mode == "plain":
+            # PLAIN7: name what plain mode does NOT do, plus §4.11's
+            # residual (a plain host is only ever unpublished until a
+            # human's own later `git init` + push change that).
+            print(
+                "  consent (plain mode): self-learn makes NO commit, NO "
+                "push, and keeps NO off-machine backup of this host's own "
+                "file — every write lands uncommitted; committing and "
+                "publishing it is entirely yours to do, or not"
+            )
+            print(
+                "  note: a claude-md:local file written here is NOT "
+                "gitignore-protected (nothing is tracked) — if you later "
+                "git init and push this host yourself, anything already "
+                "written here publishes with it"
+            )
         return EXIT_OK
     if args.host_command == "rebind":
         try:
@@ -1555,11 +1618,20 @@ def _cmd_host_inner(args: argparse.Namespace, home) -> int:
 
 
 def _host_line(home, path, kind: str) -> str:
-    """One registry line, with any gate problem spelled out inline."""
+    """One registry line, with any gate problem spelled out inline.
+
+    U-hostmode MODE11/UN4: the mode suffix appears ONLY for a non-git
+    host — a registry with no plain entries renders byte-identical to
+    50fa815's (git stays the silent, unannotated default everywhere else
+    in this line's shape)."""
     if path is None:
         return "(none registered)"
     problem = hosts_mod.host_path_problem(home, path, kind)
-    return str(path) if problem is None else f"{path}  ⚠ BROKEN — {problem}"
+    mode = hosts_mod.host_mode(home, path)
+    mode_suffix = f"  [mode={mode}]" if mode != "git" else ""
+    if problem is None:
+        return f"{path}{mode_suffix}"
+    return f"{path}{mode_suffix}  ⚠ BROKEN — {problem}"
 
 
 def _cmd_chezmoi_adopt(args: argparse.Namespace) -> int:
@@ -1596,7 +1668,11 @@ def _cmd_recompile(args: argparse.Namespace) -> int:
     if (code := _home_gate(home)) is not None:
         return code
     try:
-        result = verbs.recompile(home, no_push=args.no_push)
+        result = verbs.recompile(
+            home,
+            no_push=args.no_push,
+            adopt=Path(args.adopt) if args.adopt else None,
+        )
     except gitops.GitOpsError as exc:  # BLOCKER B: never a traceback
         print(f"self-learn recompile: {exc}", file=sys.stderr)
         return EXIT_GIT_FAILED

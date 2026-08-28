@@ -613,9 +613,14 @@ class TestObligation11OfferFiringMatrix:
     def test_route_only_threads_offer_adopt_for_rules_variant(
         self, tmp_path, env, chezmoi_shim, monkeypatch
     ):
-        """End to end through the verb: a plain-claude-md user route
-        NEVER carries an adopt hint even when UNMANAGED, but a rules
-        route to a fresh UNMANAGED file does."""
+        """U-hostmode USER2/CHEZ0 (rewritten, name kept — §2.10b census):
+        the chezmoi-adopt hint was ITSELF a chezmoi-write-path mechanism
+        (`_host_phase`'s ``adopt_hint``, A2 §10.4(b)) — user scope no
+        longer calls any chezmoi function during a route (USER2), so
+        NEITHER leg below can carry the hint anymore, plain-claude-md or
+        rules. (The UI's adopt SURFACE stays reachable — CHEZ0/Phase 2's
+        own scope note — only the route-time SUGGESTION to use it is
+        gone, because nothing about a plain-host write is "unmanaged".)"""
         monkeypatch.setenv("CHEZMOI_SHIM_SOURCE_RC", "1")
         target = tmp_path / "dot-claude" / "CLAUDE.md"
         target.parent.mkdir()
@@ -631,7 +636,8 @@ class TestObligation11OfferFiringMatrix:
             env.home, "lrn-00000002", dest="claude-md:rules:subagents",
             user_claude_md=target,
         )
-        assert any("chezmoi-adopt" in w for w in result2.warnings)
+        assert not any("chezmoi-adopt" in w for w in result2.warnings)
+        assert chezmoi_shim() == []
 
 
 # =====================================================================
@@ -1353,15 +1359,26 @@ class TestObligation25AbsoluteAndHomeGlobRefusal:
 
 
 class TestObligation26ChezmoiManagedRefusal:
+    """U-hostmode §4.8.1/USER2 (rewritten, names kept — §2.10b census):
+    U-pathed §3.4(2)'s ENTIRE premise was a two-phase hazard specific to
+    chezmoi — the pre-pass frontmatter write landing BEFORE
+    ``compile_user_scope``'s own drift check, which would then read our
+    OWN write as foreign drift and abort unrecoverably AFTER the ledger
+    commit. Phase 1 deletes that check from the write path wholesale
+    (USER2: zero chezmoi calls) — user scope is an ordinary plain host
+    now, with no separate tool watching the file for "drift" at all, so
+    the hazard this refusal existed to prevent is structurally
+    impossible. Every case below that used to refuse now SUCCEEDS."""
+
     def test_pathed_route_refuses_pre_ledger_on_managed_A11a(self, tmp_path, env, chezmoi_shim):
         target = tmp_path / "dot-claude" / "CLAUDE.md"
         target.parent.mkdir()
         target.write_text("# user conduct\n", encoding="utf-8")
         # U-glob §9.0 T0 case 4 / R-2: a fixture-unique literal anchor
         # (its own rule) rather than the bare `a/**` — and the glob must
-        # actually REACH a file, so the chezmoi refusal (not the glob
-        # refusal) is what fires here; the glob-first ordering itself is
-        # pinned separately below.
+        # actually REACH a file (this fixture is what the OLD chezmoi
+        # refusal fired against; kept so the setup still proves a
+        # matching glob reaches the target).
         (tmp_path / "u-glob-a11a-fixture").mkdir()
         (tmp_path / "u-glob-a11a-fixture" / "x").write_text("x", encoding="utf-8")
         seed_user_record(env)
@@ -1372,9 +1389,12 @@ class TestObligation26ChezmoiManagedRefusal:
                 rules_paths=["u-glob-a11a-fixture/**"],
             ),
         )
-        with pytest.raises(verbs.VerbError, match="chezmoi"):
-            verbs.route(env.home, OLD, user_claude_md=target)
-        assert (env.home / "user" / "pending" / f"{OLD}.md").is_file()
+        result = verbs.route(env.home, OLD, user_claude_md=target)
+        assert result.commit_sha
+        assert not (env.home / "user" / "pending" / f"{OLD}.md").is_file()
+        assert (env.home / "user" / "resolved" / f"{OLD}.md").is_file()
+        rules_target = target.parent / "rules" / "managed-topic.md"
+        assert "u-glob-a11a-fixture/**" in rules_target.read_text(encoding="utf-8")
 
     def test_pathed_route_refuses_dead_glob_before_chezmoi_on_managed(
         self, tmp_path, env, chezmoi_shim
@@ -1414,26 +1434,25 @@ class TestObligation26ChezmoiManagedRefusal:
         seed_user_record(env)
         write_proposal(
             env.home, OLD,
-            proposal_dict(scope='user', 
+            proposal_dict(scope='user',
                 destination="claude-md", variant="rules", rules_topic="already-pathed",
             ),
         )
-        with pytest.raises(verbs.VerbError, match="chezmoi"):
-            verbs.route(env.home, OLD, user_claude_md=target)
-        assert (env.home / "user" / "pending" / f"{OLD}.md").is_file()
+        result = verbs.route(env.home, OLD, user_claude_md=target)
+        assert result.commit_sha
+        assert not (env.home / "user" / "pending" / f"{OLD}.md").is_file()
+        assert (env.home / "user" / "resolved" / f"{OLD}.md").is_file()
 
     def test_globless_into_topic_with_empty_list_paths_refuses_on_managed_A11b_F1(
         self, tmp_path, env, chezmoi_shim
     ):
-        """F1: `paths: []` is EXACTLY the value `read_paths_frontmatter`
-        would normalize down to `()` (same as "no key at all"), but the
-        pre-pass's own agreement predicate treats it as disagreement and
-        rewrites it — so a refusal keyed on the reader would silently let
-        this one through, defeating the exact guard §3.4(2)/F8 exists to
-        provide. Reproduces F1's own table: without the fix this route
-        does NOT raise here; it lands in resolved/, and the pre-pass's
-        later write is read by chezmoi's OWN drift check as pre-existing
-        drift — an unrecoverable post-ledger abort."""
+        """F1's `paths: []` shape (rewritten, name kept — §2.10b census):
+        the pre-pass's own agreement predicate (`paths_frontmatter_drift`,
+        `compilers.py`, explicitly OUT of this unit's scope — §4.5's own
+        table, §8 OUT-6) is untouched — only the chezmoi two-phase hazard
+        this class used to guard against is gone (see the class
+        docstring). A globless route into a malformed-`paths:` topic now
+        just succeeds like any other plain-host write."""
         target = tmp_path / "dot-claude" / "CLAUDE.md"
         target.parent.mkdir()
         target.write_text("# user conduct\n", encoding="utf-8")
@@ -1445,21 +1464,21 @@ class TestObligation26ChezmoiManagedRefusal:
         seed_user_record(env)
         write_proposal(
             env.home, OLD,
-            proposal_dict(scope='user', 
+            proposal_dict(scope='user',
                 destination="claude-md", variant="rules", rules_topic="empty-list-topic",
             ),
         )
-        with pytest.raises(verbs.VerbError, match="chezmoi"):
-            verbs.route(env.home, OLD, user_claude_md=target)
-        assert (env.home / "user" / "pending" / f"{OLD}.md").is_file()
-        assert not (env.home / "user" / "resolved" / f"{OLD}.md").is_file()
+        result = verbs.route(env.home, OLD, user_claude_md=target)
+        assert result.commit_sha
+        assert not (env.home / "user" / "pending" / f"{OLD}.md").is_file()
+        assert (env.home / "user" / "resolved" / f"{OLD}.md").is_file()
 
     def test_globless_into_topic_with_scalar_paths_refuses_on_managed_A11b_F1(
         self, tmp_path, env, chezmoi_shim
     ):
-        """F1's third table row: a scalar `paths: src/**` is the OTHER
-        value the reader normalizes away but the agreement predicate
-        rewrites — same reproduction, different malformed shape."""
+        """F1's third table row (rewritten, name kept — §2.10b census): a
+        scalar `paths: src/**` — same reasoning as the empty-list sibling
+        above, the chezmoi hazard this refusal guarded is gone."""
         target = tmp_path / "dot-claude" / "CLAUDE.md"
         target.parent.mkdir()
         target.write_text("# user conduct\n", encoding="utf-8")
@@ -1471,14 +1490,14 @@ class TestObligation26ChezmoiManagedRefusal:
         seed_user_record(env)
         write_proposal(
             env.home, OLD,
-            proposal_dict(scope='user', 
+            proposal_dict(scope='user',
                 destination="claude-md", variant="rules", rules_topic="scalar-topic",
             ),
         )
-        with pytest.raises(verbs.VerbError, match="chezmoi"):
-            verbs.route(env.home, OLD, user_claude_md=target)
-        assert (env.home / "user" / "pending" / f"{OLD}.md").is_file()
-        assert not (env.home / "user" / "resolved" / f"{OLD}.md").is_file()
+        result = verbs.route(env.home, OLD, user_claude_md=target)
+        assert result.commit_sha
+        assert not (env.home / "user" / "pending" / f"{OLD}.md").is_file()
+        assert (env.home / "user" / "resolved" / f"{OLD}.md").is_file()
 
     def test_unpathed_route_into_unpathed_file_succeeds_unchanged_calls_A11c(
         self, tmp_path, env, chezmoi_shim
@@ -1498,13 +1517,11 @@ class TestObligation26ChezmoiManagedRefusal:
         rules_target = target.parent / "rules" / "fresh-topic.md"
         assert OLD in rules_target.read_text(encoding="utf-8")
         calls = chezmoi_shim()
-        # unchanged call sequence: `preflight_user_scope` probes capability
-        # once, `compile_user_scope` re-derives it once more on its own
-        # (pre-existing, unrelated to this unit) — TWO `source-path` calls
-        # total. The new §3.4(2) check short-circuits BEFORE ever calling
-        # `user_scope_capability` a THIRD time when neither leg of its own
-        # condition holds — proving it added no extra chezmoi traffic here.
-        assert len([c for c in calls if c.startswith("source-path")]) == 2
+        # U-hostmode USER2 (rewritten, name kept — §2.10b census): user
+        # scope calls NO chezmoi function at all now — the OLD two
+        # `source-path` calls (`preflight_user_scope` + `compile_user_
+        # scope`'s own re-derive) are BOTH gone, not merely un-tripled.
+        assert calls == []
 
 
 # =====================================================================

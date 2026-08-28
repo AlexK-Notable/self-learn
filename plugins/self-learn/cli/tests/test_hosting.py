@@ -213,7 +213,7 @@ class TestHostsRegistry:
             host_add(env.ledger, env.host, "banana")
 
     def test_host_add_project_rewrites_and_commits(self, env, project_repo):
-        hosts = host_add(env.ledger, project_repo, "project")
+        hosts = host_add(env.ledger, project_repo, "project").hosts
         assert is_project_host(hosts, project_repo)
         assert is_project_host(load_hosts(env.ledger), project_repo)  # persisted
         assert (
@@ -222,7 +222,7 @@ class TestHostsRegistry:
         )
 
     def test_host_add_skills_root(self, env, project_repo):
-        hosts = host_add(env.ledger, project_repo, "skills-root")
+        hosts = host_add(env.ledger, project_repo, "skills-root").hosts
         assert hosts.skills_root == project_repo.resolve()
         assert (
             subjects(env.ledger)[0]
@@ -310,7 +310,7 @@ class TestHostAddInit:
 
     def test_noop_on_existing_repo_root(self, env, project_repo, git_identity):
         before = head(project_repo)
-        hosts = host_add(env.ledger, project_repo, "project", init=True)
+        hosts = host_add(env.ledger, project_repo, "project", init=True).hosts
         assert is_project_host(hosts, project_repo)
         assert head(project_repo) == before  # init leg no-op'd: no new commit
         assert INIT_COMMIT_SUBJECT not in _target_commit_subjects(project_repo)
@@ -320,7 +320,7 @@ class TestHostAddInit:
         # the init leg leaves the repo commit-less.
         target = tmp_path / "zero-commit-target"
         init_repo(target)
-        hosts = host_add(env.ledger, target, "project", init=True)
+        hosts = host_add(env.ledger, target, "project", init=True).hosts
         assert is_project_host(hosts, target)
         count = git(target, "rev-list", "--all", "--count").stdout.strip()
         assert count == "0"
@@ -331,7 +331,7 @@ class TestHostAddInit:
         target = tmp_path / "plain-project"
         target.mkdir()
         (target / "notes.txt").write_text("plain text project\n", encoding="utf-8")
-        hosts = host_add(env.ledger, target, "project", init=True)
+        hosts = host_add(env.ledger, target, "project", init=True).hosts
         assert is_project_host(hosts, target)
         assert is_repo_root(target)
         assert _target_commit_subjects(target) == [INIT_COMMIT_SUBJECT]
@@ -350,7 +350,7 @@ class TestHostAddInit:
         init_repo(parent)
         sub = parent / "inner-project"
         sub.mkdir()
-        hosts = host_add(env.ledger, sub, "project", init=True)
+        hosts = host_add(env.ledger, sub, "project", init=True).hosts
         assert is_project_host(hosts, sub)
         toplevel = git(sub, "rev-parse", "--show-toplevel").stdout.strip()
         assert Path(toplevel).resolve() == sub.resolve()
@@ -411,7 +411,7 @@ class TestHostAddInit:
         assert is_repo_root(target)  # honest half-init state
         # Retry: the zero-commit repo counts as a root — init leg skipped,
         # registration proceeds (ledger commits use its LOCAL identity).
-        hosts = host_add(env.ledger, target, "project", init=True)
+        hosts = host_add(env.ledger, target, "project", init=True).hosts
         assert is_project_host(hosts, target)
         assert git(target, "rev-list", "--all", "--count").stdout.strip() == "0"
 
@@ -603,6 +603,11 @@ class TestTwoPhaseRoute:
         assert f"({record.id})" in claude_md
 
     def test_user_scope_chezmoi_flow_unchanged(self, env, tmp_path, chezmoi_shim):
+        """U-hostmode §4.8.1 (census EDIT, S3): user scope is now a
+        first-class PLAIN host — the write goes through the ordinary
+        plain path (``compile_managed_file``), calling NO chezmoi
+        function at all (USER2/CHEZ0). Name kept per the census
+        discipline; the test now proves the REPLACEMENT behaviour."""
         record = make_knowledge(scope="user")
         create_record(env.ledger, record)
         user_md = tmp_path / "user-claude.md"
@@ -615,13 +620,11 @@ class TestTwoPhaseRoute:
             no_push=True,
             user_claude_md=user_md,
         )
-        # the guarded chezmoi sequence ran: diff, status, re-add, add/commit/push
-        calls = chezmoi_shim()
-        assert any(c.startswith("diff ") for c in calls)
-        assert any("status --porcelain" in c for c in calls)
-        assert any(c.startswith("re-add ") for c in calls)
-        assert any("commit -m self-learn: route" in c for c in calls)
-        # the dotfiles repo commits itself — no host commit here
+        # zero chezmoi calls — the shim recorded nothing (USER2)
+        assert chezmoi_shim() == []
+        # the dotfiles repo commits itself — no host commit here (same
+        # SHAPE as before, new REASON: user scope is plain by
+        # construction, so nothing is ever committed there)
         assert result.host_commit_sha is None
         assert head(env.host) == host_before
         assert f"({record.id})" in user_md.read_text(encoding="utf-8")

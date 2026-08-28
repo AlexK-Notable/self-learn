@@ -111,6 +111,14 @@ REWRITTEN = (
     # an edited body on an otherwise-unchanged, still-present test,
     # exactly what `REWRITTEN` is for.
     ("test_route_cli.py", "test_teach_route_bare_analyst_threads_project_path_at_project_scope"),
+    # U-hostmode (2026-08-28, cross-unit — NOT this unit's own rewrite):
+    # REC9 makes the compile record ride every route's OWN ledger commit,
+    # so `env.committed_files()` now legitimately carries one extra
+    # `compiled/<slug>.yaml` path alongside the routed record. Body edit
+    # on an otherwise-unchanged, still-present test — exactly what
+    # `REWRITTEN` is for; `_DS1_EXPECTED["test_route_cli.py"]` is
+    # re-pinned below to match.
+    ("test_route_cli.py", "test_teach_route_dest_end_to_end"),
     ("test_composer.py", "_capture_analyst_prompt"),
     ("test_composer.py", "_shim_env"),
     (
@@ -328,10 +336,23 @@ def _extract_named_function(source: str, name: str) -> str:
 # re-measured head sha, since `REWRITTEN` exempts the touched function
 # from the comparison entirely).
 _DS1_EXPECTED = {
+    # U-fw117 (2026-08-28): b9/d5 rewritten -- re-pinned (master's side
+    # differs from base; ours was unchanged here, so master's value wins).
     "test_worker.py": (55, "39305f65724adfb1634ce91285b483b05aea05c662f2de9ac9bf30fa38daf1f8"),
-    "test_repair.py": (62, "21f7bdbb888254603e4136f0bbbe89322465f459fab4dfaa6ca1761dfcf1a81f"),  # FW-117 (2026-08-28): b9/d5 rewritten -- re-pinned
-    "test_attrib.py": (39, "8ea49a554c77736225c5b7c451c02fceb7e33291bb325204a5bd124b951a0754"),  # FW-117 (2026-08-28): gr3 rewritten, _repair_permissions added -- re-pinned
-    "test_route_cli.py": (38, "45e55f94f60834643efe1bbab1636649acdd3094dd9210dcf64921b2755fdaea"),
+    # U-fw117 (2026-08-28): b9/d5 rewritten -- re-pinned
+    "test_repair.py": (62, "21f7bdbb888254603e4136f0bbbe89322465f459fab4dfaa6ca1761dfcf1a81f"),
+    # U-fw117 (2026-08-28): gr3 rewritten, _repair_permissions added -- re-pinned
+    "test_attrib.py": (39, "8ea49a554c77736225c5b7c451c02fceb7e33291bb325204a5bd124b951a0754"),
+    # merge 2026-08-28 (u-hostmode x master): BOTH sides changed this key
+    # (ours: 39->38 for the REC9 rewrite of test_teach_route_dest_end_to_end;
+    # master's: 39->38 for U-corrob DEN3's rewrite of
+    # test_teach_route_bare_analyst_threads_project_path_at_project_scope) --
+    # re-derived from the MERGED bytes, not picked from either side -- the
+    # (37, sha) pair below IS that re-derived value (N-4, code gate r2
+    # fold: the prior comment pointed at a placeholder name,
+    # PLACEHOLDER_DS1_ROUTE_CLI, that never existed as an actual symbol
+    # anywhere in this file).
+    "test_route_cli.py": (37, "6bfa36999a53ebd2137279aba47049e48f4387cfb05d89db3121cb2611d066fd"),
     "test_composer.py": (40, "479a3caf84e427a86df6eb17ecefa2ede57a85185df79ff43defe0c9e5f931ec"),
 }
 
@@ -788,6 +809,8 @@ def test_ds2_rewritten_set_is_exact_and_every_entry_is_live():
             "test_route_cli.py",
             "test_teach_route_bare_analyst_threads_project_path_at_project_scope",
         ),
+        # U-hostmode (2026-08-28, cross-unit) — see REWRITTEN's own comment.
+        ("test_route_cli.py", "test_teach_route_dest_end_to_end"),
         ("test_composer.py", "_capture_analyst_prompt"),
         ("test_composer.py", "_shim_env"),
         (
@@ -807,7 +830,10 @@ def test_ds2_rewritten_set_is_exact_and_every_entry_is_live():
             "test_fold5_honest_sentinel_when_project_path_truly_not_supplied",
         ),
     }
-    assert len(REWRITTEN) == 26  # merge 2026-08-28: base 22 + master's 1 + U-fw117's 3
+    # merge 2026-08-28 (u-hostmode x master): base 22 + master's 4
+    # (U-corrob's 1 + U-fw117's 3) + ours 1 = 27 -- verified below by
+    # actually counting the merged REWRITTEN tuple, not asserted blind.
+    assert len(REWRITTEN) == 27
     assert set(REWRITTEN) == expected
 
     for module, name in REWRITTEN:

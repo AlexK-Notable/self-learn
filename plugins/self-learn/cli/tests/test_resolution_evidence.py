@@ -403,20 +403,14 @@ class TestReferenceShape:
 
 class TestUserScopeShape:
     def test_user_scope_route_is_wrote_uncommitted(self, env, tmp_path, monkeypatch, capsys):
-        """§3.3 state 3: UserScopeResult is keyed EXPLICITLY
-        (isinstance check), never inferred — host_commit_sha is always
-        None for user scope (host_paths=[] unconditionally, verbs.py
-        ~1648), so without the explicit key this would misread as
-        drift."""
-        bindir = tmp_path / "shim-bin"
-        bindir.mkdir()
-        fake = bindir / "chezmoi"
-        fake.write_text(CHEZMOI_SHIM, encoding="utf-8")
-        fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
-        monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
-        monkeypatch.setenv("CHEZMOI_SHIM_LOG", str(tmp_path / "chezmoi.log"))
-        monkeypatch.setenv("CHEZMOI_SHIM_SOURCE_RC", "1")  # UNMANAGED
-
+        """U-hostmode §4.8.1 (census EDIT, USER6/S3): the chezmoi shim is
+        REMOVED — user scope is now a first-class PLAIN host and calls no
+        chezmoi function at all (USER2/CHEZ0). ``_outcome_state``'s
+        ``wrote_uncommitted`` is now keyed by ``spec.mode == "plain"``
+        (PLAIN3), not by an ``isinstance(..., UserScopeResult)`` check —
+        host_commit_sha is None for EVERY plain host (never just user
+        scope), so the four asserted envelope fields below are unchanged
+        (USER6's own concession)."""
         target = tmp_path / "dot-claude" / "CLAUDE.md"
         target.parent.mkdir()
         target.write_text("# user conduct\n", encoding="utf-8")
@@ -538,26 +532,37 @@ class TestNoOpStateRealFixture:
 
 class TestStderrByteIdentical:
     def test_stderr_unchanged_with_and_without_json(self, tmp_path, monkeypatch, capsys):
-        """§5: `--json` must not touch stderr — `_extract_adopt_path`
-        (routes.py) and `_commit_drift_eligible` both key off it. Proven
-        by an ACTUAL byte diff between two otherwise-identical runs, not
-        by re-asserting "the adopt hint is still there" (advisor
-        guidance: the weaker assertion would pass even if warnings moved
-        entirely into the envelope, silently killing the adopt offer)."""
-        bindir = tmp_path / "shim-bin"
-        bindir.mkdir()
-        fake = bindir / "chezmoi"
-        fake.write_text(CHEZMOI_SHIM, encoding="utf-8")
-        fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
-        monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
-        monkeypatch.setenv("CHEZMOI_SHIM_LOG", str(tmp_path / "chezmoi.log"))
-        monkeypatch.setenv("CHEZMOI_SHIM_SOURCE_RC", "1")  # UNMANAGED -> adopt_hint fires
+        """§5: `--json` must not touch stderr — `_commit_drift_eligible`
+        keys off it. Proven by an ACTUAL byte diff between two otherwise-
+        identical runs.
+
+        U-hostmode §4.8.1 (census EDIT, S3): the chezmoi shim and its
+        adopt-hint assertion are REMOVED — user scope calls no chezmoi
+        function at all now (USER2/CHEZ0), so there is no adopt hint to
+        fire. The byte-identical proof itself is unaffected and still
+        the point of this test.
+
+        Code gate r1 B-1 fold: the two ledger homes now route to
+        SEPARATE physical targets (they shared one before) -- user
+        scope is always PLAIN mode, and B-1 makes a plain host correctly
+        REFUSE a second, record-less ledger's route into content the
+        first ledger already wrote (REC5 row 2: entry absent + region
+        present -> refuse). That refusal is the fix, not a regression
+        this test should paper over; it was never this test's OWN
+        subject (stderr byte-identity between --json and plain), so the
+        two runs are decoupled onto their own targets instead."""
         monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg-cache"))
 
-        target = tmp_path / "dot-claude" / "CLAUDE.md"
-        target.parent.mkdir()
-        target.write_text("# user conduct\n", encoding="utf-8")
-        monkeypatch.setattr(verbs, "DEFAULT_USER_CLAUDE_MD", target)
+        # Same LEAF directory name ("dot-claude") under two different
+        # parents -- physically distinct targets (so B-1's plain-mode
+        # refusal never fires) whose rendered paths still end identically,
+        # which is what the byte-identity assertion below actually needs.
+        target_plain = tmp_path / "run-plain" / "dot-claude" / "CLAUDE.md"
+        target_plain.parent.mkdir(parents=True)
+        target_plain.write_text("# user conduct\n", encoding="utf-8")
+        target_json = tmp_path / "run-json" / "dot-claude" / "CLAUDE.md"
+        target_json.parent.mkdir(parents=True)
+        target_json.write_text("# user conduct\n", encoding="utf-8")
 
         plain_env = Env(tmp_path / "plain")
         json_env = Env(tmp_path / "as-json")
@@ -567,10 +572,12 @@ class TestStderrByteIdentical:
         record2 = make_behavior(scope="user", record_id=RID)
         create_record(json_env.home, record2)
 
+        monkeypatch.setattr(verbs, "DEFAULT_USER_CLAUDE_MD", target_plain)
         monkeypatch.setenv("SELF_LEARN_HOME", str(plain_env.home))
         code_plain = cli.main(["route", RID, "--dest", "claude-md:rules:subagents"])
         stderr_plain = capsys.readouterr().err
 
+        monkeypatch.setattr(verbs, "DEFAULT_USER_CLAUDE_MD", target_json)
         monkeypatch.setenv("SELF_LEARN_HOME", str(json_env.home))
         code_json = cli.main(
             ["route", RID, "--dest", "claude-md:rules:subagents", "--json"]
@@ -578,5 +585,16 @@ class TestStderrByteIdentical:
         stderr_json = capsys.readouterr().err
 
         assert code_plain == code_json == 0
-        assert "chezmoi-adopt" in stderr_plain  # the offer fires in the base case
-        assert stderr_plain == stderr_json  # byte-identical, per §5
+        # Byte-identical MODULO the one thing that legitimately differs
+        # now that the two runs target separate physical roots (B-1): the
+        # rendered path to whatever the route actually wrote (not
+        # necessarily `target_plain`/`target_json` themselves -- a
+        # `claude-md:rules:subagents` destination writes a SIBLING rules
+        # file, e.g. `dot-claude/rules/subagents.md`), which carries the
+        # "run-plain"/"run-json" parent-dir name. Normalized to a shared
+        # placeholder before the real §5 comparison -- everything else,
+        # including the rendered word/token counts and the managed-share
+        # percentage, must still be byte-for-byte identical.
+        normalized_plain = stderr_plain.replace("run-plain", "<RUN>")
+        normalized_json = stderr_json.replace("run-json", "<RUN>")
+        assert normalized_plain == normalized_json  # byte-identical, per §5

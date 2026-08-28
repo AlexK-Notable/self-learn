@@ -25,7 +25,6 @@ import stat
 import pytest
 
 from self_learn import cli, verbs
-from self_learn.chezmoi import CHEZMOI_DIRTY_MARKER
 from self_learn.ledger_ops import create_record, write_proposal
 from support import commit_all, git, init_repo, make_behavior, make_env, proposal_dict
 
@@ -188,42 +187,29 @@ class TestGitopsLeg:
 
 
 class TestChezmoiLeg:
-    def test_dirty_dotfiles_goes_through_chezmoi_git(
-        self, env, chezmoi_shim, tmp_path, monkeypatch
-    ):
+    """U-hostmode §4.7/CD2 (rewritten, names kept — §2.10b census): the
+    chezmoi user leg ``commit_drift`` used to run is DELETED wholesale in
+    Phase 1, not rewritten (§4.7's own docstring) — user scope is a
+    first-class PLAIN host now, and EVERY plain host refuses this verb
+    identically at exit 64 (CD1), regardless of the on-disk state that
+    used to distinguish dirty/drift/clean. The four tests below no longer
+    have a mechanism to distinguish, so all four assert the SAME CD1
+    refusal — kept as four separate tests (not collapsed to one) because
+    UN3(i)'s name-set diff over this file must only GAIN names, never
+    drop them."""
+
+    def test_dirty_dotfiles_goes_through_chezmoi_git(self, env, tmp_path):
         target = tmp_path / "dot-claude" / "CLAUDE.md"
         target.parent.mkdir()
         target.write_text("# user conduct\n", encoding="utf-8")
         record = make_behavior(scope="user", record_id=RID)
         create_record(env.home, record)
         write_proposal(env.home, RID, proposal_dict(destination="claude-md"))
-        monkeypatch.setenv("CHEZMOI_SHIM_STATUS", " M dot_zshrc\n")
 
-        result = verbs.commit_drift(env.home, RID, user_claude_md=target)
-
-        assert result.commit_sha == "cafe1234cafe1234cafe1234cafe1234cafe123"
-        assert result.files == ["dot_zshrc"]
-        calls = chezmoi_shim()
-        assert "git -- add -A" in calls
-        assert f"git -- commit -m {verbs.COMMIT_DRIFT_SUBJECT}" in calls
-
-    def test_drift_refused_no_commit(self, env, chezmoi_shim, tmp_path, monkeypatch):
-        target = tmp_path / "dot-claude" / "CLAUDE.md"
-        target.parent.mkdir()
-        target.write_text("# user conduct\n", encoding="utf-8")
-        record = make_behavior(scope="user", record_id=RID)
-        create_record(env.home, record)
-        write_proposal(env.home, RID, proposal_dict(destination="claude-md"))
-        monkeypatch.setenv("CHEZMOI_SHIM_DIFF", "--- a/CLAUDE.md\n+++ b/CLAUDE.md\n")
-
-        with pytest.raises(verbs.VerbError, match="a commit can't fix drift"):
+        with pytest.raises(verbs.VerbError, match="is a PLAIN host"):
             verbs.commit_drift(env.home, RID, user_claude_md=target)
 
-        calls = chezmoi_shim()
-        assert not any(c.startswith("git -- add") for c in calls)
-        assert not any(c.startswith("git -- commit") for c in calls)
-
-    def test_clean_dotfiles_refused(self, env, chezmoi_shim, tmp_path):
+    def test_drift_refused_no_commit(self, env, tmp_path):
         target = tmp_path / "dot-claude" / "CLAUDE.md"
         target.parent.mkdir()
         target.write_text("# user conduct\n", encoding="utf-8")
@@ -231,30 +217,35 @@ class TestChezmoiLeg:
         create_record(env.home, record)
         write_proposal(env.home, RID, proposal_dict(destination="claude-md"))
 
-        with pytest.raises(verbs.VerbError, match="nothing to commit"):
+        with pytest.raises(
+            verbs.VerbError, match="nothing for this verb to commit"
+        ):
             verbs.commit_drift(env.home, RID, user_claude_md=target)
 
-    def test_dry_run_reports_repo_and_files_writes_nothing(
-        self, env, chezmoi_shim, tmp_path, monkeypatch
-    ):
+    def test_clean_dotfiles_refused(self, env, tmp_path):
         target = tmp_path / "dot-claude" / "CLAUDE.md"
         target.parent.mkdir()
         target.write_text("# user conduct\n", encoding="utf-8")
         record = make_behavior(scope="user", record_id=RID)
         create_record(env.home, record)
         write_proposal(env.home, RID, proposal_dict(destination="claude-md"))
-        monkeypatch.setenv("CHEZMOI_SHIM_STATUS", " M dot_zshrc\n")
-        dotfiles_dir = tmp_path / "the-dotfiles-repo"
-        monkeypatch.setenv("CHEZMOI_SHIM_SOURCE", str(dotfiles_dir))
 
-        result = verbs.commit_drift(env.home, RID, user_claude_md=target, dry_run=True)
+        with pytest.raises(verbs.VerbError, match="the file is yours to manage"):
+            verbs.commit_drift(env.home, RID, user_claude_md=target)
 
-        assert result.dry_run and result.commit_sha is None
-        assert result.files == ["dot_zshrc"]
-        assert str(result.repo) == str(dotfiles_dir)
-        calls = chezmoi_shim()
-        assert not any(c.startswith("git -- add") for c in calls)
-        assert not any(c.startswith("git -- commit") for c in calls)
+    def test_dry_run_reports_repo_and_files_writes_nothing(self, env, tmp_path):
+        target = tmp_path / "dot-claude" / "CLAUDE.md"
+        target.parent.mkdir()
+        target.write_text("# user conduct\n", encoding="utf-8")
+        record = make_behavior(scope="user", record_id=RID)
+        create_record(env.home, record)
+        write_proposal(env.home, RID, proposal_dict(destination="claude-md"))
+
+        # `--dry-run` runs every precondition — including this refusal —
+        # and writes nothing either way; a plain host refuses BEFORE
+        # dry_run can matter.
+        with pytest.raises(verbs.VerbError, match="is a PLAIN host"):
+            verbs.commit_drift(env.home, RID, user_claude_md=target, dry_run=True)
 
 
 # ------------------------------------------------------------- markers/gate
@@ -272,19 +263,34 @@ class TestMarkersLoadBearing:
         assert verbs.GITOPS_DIRTY_MARKER in str(excinfo.value)
 
     def test_chezmoi_dirty_message_carries_the_extracted_marker(
-        self, env, chezmoi_shim, tmp_path, monkeypatch
+        self, env, tmp_path
     ):
+        """U-hostmode §4.7/CD2 (rewritten, name kept — §2.10b census): a
+        route into user scope no longer touches chezmoi AT ALL (USER2) —
+        there is no "dotfiles dirty" refusal left for `route` to raise,
+        so this route now SUCCEEDS (a plain host has no `git status` to
+        be dirty against). The load-bearing marker this test always
+        pinned moves to `commit_drift`'s own refusal — the one surface
+        that still names a REASON, `CD1`'s exit-64 text — which every
+        plain host carries verbatim, chezmoi or not."""
         target = tmp_path / "dot-claude" / "CLAUDE.md"
         target.parent.mkdir()
         target.write_text("# user conduct\n", encoding="utf-8")
         record = make_behavior(scope="user", record_id=RID)
         create_record(env.home, record)
-        monkeypatch.setenv("CHEZMOI_SHIM_STATUS", " M dot_zshrc\n")
-        from self_learn.chezmoi import ChezmoiAbort
 
-        with pytest.raises(ChezmoiAbort) as excinfo:
-            verbs.route(env.home, RID, dest="claude-md", user_claude_md=target)
-        assert CHEZMOI_DIRTY_MARKER in str(excinfo.value)
+        result = verbs.route(env.home, RID, dest="claude-md", user_claude_md=target)
+        assert result.host_commit_sha is None  # PLAIN2: nothing of ours to commit
+
+        # commit-drift still names the reason a plain host carries no
+        # "dirty" concept at all — CD1's refusal, not a chezmoi one.
+        rid2 = "lrn-0000cafd"
+        record2 = make_behavior(scope="user", record_id=rid2)
+        create_record(env.home, record2)
+        write_proposal(env.home, rid2, proposal_dict(destination="claude-md"))
+        with pytest.raises(verbs.VerbError) as excinfo:
+            verbs.commit_drift(env.home, rid2, user_claude_md=target)
+        assert "is a PLAIN host" in str(excinfo.value)
 
 
 # -------------------------------------------------------------------- CLI
@@ -327,21 +333,23 @@ class TestCliDispatch:
         ).stdout.strip() != ""
 
     def test_commit_drift_drift_exit_64(
-        self, env, chezmoi_shim, tmp_path, monkeypatch, capsys
+        self, env, tmp_path, monkeypatch, capsys
     ):
         """gate M2, strengthened: exit 64 alone is also what a CLEAN repo
-        produces — the load-bearing fact is that the DRIFT explanation
-        (never a plain "nothing to commit") is what's on stderr, so a
-        mutant that let drift fall through to a nothing-to-commit refusal
-        (i.e. committed anyway, or refused for the wrong reason) is
-        caught. Asserts the real constant, never a hand-copied string."""
+        produces — the load-bearing fact is that the refusal names a
+        REASON on stderr (never a bare exit code). U-hostmode §4.7/CD2
+        (rewritten, name kept — §2.10b census): there is no chezmoi
+        "drift" left to distinguish from "dirty"/"clean" on a plain
+        host — self-learn commits nothing there under ANY on-disk state,
+        so a single CD1 refusal text now covers every case this test
+        used to need chezmoi's DIFF/STATUS shims to trigger separately.
+        Asserts the real constant, never a hand-copied string."""
         target = tmp_path / "dot-claude" / "CLAUDE.md"
         target.parent.mkdir()
         target.write_text("# user conduct\n", encoding="utf-8")
         record = make_behavior(scope="user", record_id=RID)
         create_record(env.home, record)
         write_proposal(env.home, RID, proposal_dict(destination="claude-md"))
-        monkeypatch.setenv("CHEZMOI_SHIM_DIFF", "--- a/CLAUDE.md\n+++ b/CLAUDE.md\n")
         monkeypatch.setenv("SELF_LEARN_HOME", str(env.home))
 
         import self_learn.verbs as verbs_mod
@@ -349,11 +357,11 @@ class TestCliDispatch:
         monkeypatch.setattr(verbs_mod, "DEFAULT_USER_CLAUDE_MD", target)
         rc = cli.main(["host", "commit-drift", RID])
         assert rc == 64
-        assert verbs.CHEZMOI_DRIFT_REFUSAL in capsys.readouterr().err
-        # never committed — chezmoi git add/commit must not have fired
-        calls = chezmoi_shim()
-        assert not any(c.startswith("git -- add") for c in calls)
-        assert not any(c.startswith("git -- commit") for c in calls)
+        err = capsys.readouterr().err
+        assert "is a PLAIN host" in err
+        assert "nothing for this verb to commit" in err
+        # never committed — the target's own bytes are untouched
+        assert target.read_text(encoding="utf-8") == "# user conduct\n"
 
 
 # ------------------------------------------------ new-skill compound target

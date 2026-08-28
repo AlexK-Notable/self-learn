@@ -52,6 +52,7 @@ __all__ = [
     "CONFIG_BASENAME",
     "PROVIDER_KEYS",
     "config_path",
+    "effective_default_mode",
     "invocation_backend",
     "one_motion_enabled",
     "provider_setting",
@@ -62,6 +63,10 @@ CONFIG_BASENAME = "config.yaml"
 
 #: The section gating S-10's one-motion path for the M3 destinations.
 ONE_MOTION_SECTION = "one_motion_route"
+
+#: U-hostmode §4.2: the section carrying the default mode for newly
+#: registered hosts.
+HOSTS_SECTION = "hosts"
 
 #: U-bedrock `Key-1` -- the closed, whitelisted provider config key set.
 #: Every value here is a NON-SECRET (`K-a`): a region name, a profile
@@ -284,3 +289,53 @@ def one_motion_enabled(home: Path | str, destination: str) -> bool:
         f"true, got {value!r}; staying review-gated"
     )
     return False
+
+
+def effective_default_mode(home: Path | str) -> str:
+    """U-hostmode MODE3: the default ``mode`` for a NEWLY registered host
+    (``host add`` with no explicit ``--mode``), from ``<home>/config.yaml``
+    ``hosts.default_mode``. Same fail-closed discipline as
+    :func:`one_motion_enabled` — S-10's precedent carried over verbatim:
+    only the literal YAML string ``"plain"`` enables plain mode. Every
+    other shape — missing file, unparseable, non-mapping top level,
+    non-mapping section, a missing key, or any value that is not exactly
+    ``"plain"`` or ``"git"`` — reads as ``"git"``; a PRESENT but wrong
+    value warns on stderr (a typo must never silently become a policy
+    decision)."""
+    path = config_path(home)
+    if not path.is_file():
+        return "git"
+    try:
+        data = YAML(typ="safe").load(path.read_text(encoding="utf-8"))
+    except (YAMLError, OSError, UnicodeDecodeError) as exc:
+        _warn(f"unparseable ({exc}); hosts default to git mode")
+        return "git"
+    if data is None:
+        return "git"
+    if not isinstance(data, dict):
+        _warn(
+            f"top level must be a mapping, got {type(data).__name__}; "
+            "hosts default to git mode"
+        )
+        return "git"
+    section = data.get(HOSTS_SECTION)
+    if section is None:
+        return "git"
+    if not isinstance(section, dict):
+        _warn(
+            f"{HOSTS_SECTION} must be a mapping, got {section!r}; hosts "
+            "default to git mode"
+        )
+        return "git"
+    value = section.get("default_mode")
+    if value is None:
+        return "git"
+    if value == "plain":
+        return "plain"
+    if value == "git":
+        return "git"
+    _warn(
+        f"{HOSTS_SECTION}.default_mode must be the literal string "
+        f"'plain' or 'git', got {value!r}; defaulting to git"
+    )
+    return "git"

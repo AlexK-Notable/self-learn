@@ -208,7 +208,13 @@ def test_teach_route_dest_end_to_end(env, capsys):
     # HOST commit applies the compiled SKILL.md. Each repo touched exactly
     # its own path, and both were pushed.
     assert env.local_subject() == f"self-learn: route {record.id} → skill-md"
-    assert env.committed_files() == [f"skills/s/resolved/{record.id}.md"]
+    # U-hostmode REC9: the compile record rides this SAME ledger commit —
+    # one extra `compiled/<slug>.yaml` path, never a second commit.
+    committed = env.committed_files()
+    assert f"skills/s/resolved/{record.id}.md" in committed
+    compiled_paths = [p for p in committed if p.startswith("compiled/")]
+    assert len(compiled_paths) == 1 and compiled_paths[0].endswith(".yaml")
+    assert len(committed) == 2
     assert env.remote_subject() == f"self-learn: route {record.id} → skill-md"
     assert f"skills/s/resolved/{record.id}.md" in "\n".join(env.remote_files())
 

@@ -559,6 +559,36 @@ incident hatch `SELF_LEARN_ENFORCE_SCOPE=0`, close it — see §7. That
 hatch's sdk-vs-host-settings semantics are unrelated to which backend is
 installed.
 
+### 6.2 U-hostmode rollback
+
+*(Gate r2-M1, strengthened at gate r3-D6: no forward code change can
+close this — `MODE10` hardens the new `hosts.yaml` parser, and after a
+revert the new parser is gone.)* Reverting this unit leaves any
+`mode: plain` **projects** entry silently re-read as a **git** host: the
+reverted parser accepts `{path, mode}` and drops the `mode` key
+(`hosts.py:150-155`); only a `skills_root` MAPPING raises `HostsError`.
+**The hazard is a silent resumption of host commits into a directory the
+user chose to keep repo-less, not a crash** — so this revert is not safe
+to perform blind. Three numbered steps, in order:
+
+9. **`self-learn host list`** and note every host whose mode reads
+   `plain` — `MODE11` is why that column exists (a registry with no
+   plain entries needs none of the following, and reverting is a plain
+   `git checkout`).
+10. **For each plain host, either `git init` it** — making the reverted
+    code's git-mode assumption true — **or `self-learn host remove`
+    it.** Do this BEFORE reverting: the reverted code has no `--mode`
+    flag to make the choice explicit again afterward.
+11. **Commit or delete the `<home>/compiled/*.yaml` files, then revert,
+    Phase 2 before Phase 1** (same ordering rule as item 5 above, if this
+    unit ever grows its own Phase 2). These files are inert to the
+    reverted code — nothing in it reads them — **but they are also
+    UNSWEPT by it**: the revert takes `compiled/*.yaml` out of
+    `_RECONCILABLE`, so any uncommitted record file becomes exactly the
+    H-5-corollary orphan `13-hosting-and-separation.md` §4 item 4/§5
+    exists to prevent — "committed by nobody, ever … until a clone
+    deletes it."
+
 ## 7. Traps, all measured
 
 Each of these was reproduced on a real install while this document was
@@ -774,3 +804,87 @@ no `serve` configured, or `serve` configured but its heartbeat is
 stale or absent. The watchdog never blocks on `serve`'s liveness or
 tries to start it; a dead `serve` is `doctor`'s problem to surface
 loudly, not a verb's problem to route around silently.
+
+## 11. Host modes
+
+*(Added by `U-hostmode`, Phase 1. See `03-decisions.md` `S-51` and
+`13-hosting-and-separation.md` §4 item 5 for the full decision text and
+mechanism; this section is the operator-facing summary.)*
+
+**What `--mode plain` does and does not do.** A registered host's mode
+is set once, at `self-learn host add --mode git|plain <path>`. A
+**`plain`** host gets NO commit, NO push, and NO off-machine backup of
+its own file, ever, from self-learn — every write lands on disk
+uncommitted, and publishing it (or not) is entirely the operator's own
+call. It still gets everything else: the managed section compiles and
+writes exactly like a `git` host, `--selftest` and `recompile` both work
+identically on it (see below), and the compile record still protects it
+against a silent regeneration over a hand edit. A **`git`** host (the
+default, and every host registered before this unit) is unchanged:
+self-learn commits and pushes canon there exactly as it always has.
+
+`host add --mode plain` prints the consent line naming what plain mode
+does NOT do, at registration time — read it once; it does not repeat on
+every route.
+
+**How to change a host's mode.** The mode is set ONCE and never flips in
+place — `self-learn host remove <path>` followed by
+`self-learn host add --mode <new-mode> <path>` is the only path from one
+to the other. This is deliberate (a silent mode flip mid-flight is a
+worse hazard than the two extra commands).
+
+**The `.self-learn-host` marker.** A plain host is gated at registration
+and at every route by a `.self-learn-host` marker file the registering
+verb writes at the host's root — the structural analogue of `.git` for a
+host that has none. `host remove` leaves this marker in place (removing
+it would silently invalidate a re-add): the bucket and its records are
+untouched by `host remove`, only the compile gate closes.
+
+**`recompile --adopt`, and when to reach for it.** When the compile
+record's region verdict for a target reads `edited` (a hand edit inside
+the managed markers, on either mode) the next route or recompile against
+that target REFUSES, naming this repair: `self-learn recompile --adopt
+<target>` re-records the on-disk region as authoritative — it changes no
+bytes on disk, only the ledger's own record of what is "clean" going
+forward. There is no `--force` anywhere in this path, by design:
+adopting is the one human decision the refusal names, never a way to
+skip it.
+
+`unknown provenance` (a plain host's target already carries content with
+no compile record yet) is now split in two, not a blanket refusal: when
+the on-disk region is byte-for-byte what self-learn's own compiler would
+currently render for that target — the ordinary shape of every host
+routed to before this unit's compile records existed — the route or
+recompile **adopts it automatically**: one notice line to stderr naming
+the target, the record entry gets written by that same call, and the
+write proceeds with no operator action at all. Only when the bytes
+genuinely diverge (real foreign content, not merely a missing receipt)
+does it still refuse and name `recompile --adopt <target>`, exactly as
+above.
+
+**Migration note, first contact after this unit lands.** Every host
+routed to before compile records existed has `unknown provenance` on its
+FIRST post-upgrade route or recompile — there is no separate migration
+step to run. If the on-disk content is still exactly what self-learn
+last compiled (the normal case), that first call self-heals silently
+(the one stderr notice line above) and every later call against that
+target reads `clean`. Only a host whose managed section was hand-edited
+sometime between then and now needs the human `recompile --adopt` — the
+refusal message names it, so there is nothing to pre-empt or remember.
+
+**`--selftest` and `recompile` work identically on both modes** — this
+is the first thing an operator will assume they do not, and it is worth
+stating explicitly: the drift check (`(lrn-…)` entry markers vs. the
+ledger's routed records) was never a git check, and `recompile`'s repair
+is the same compile, byte for byte, whichever mode the target host is
+in. Only the *gate* differs by mode — `git status` for a `git` host, the
+compile record for a `plain` one.
+
+**One sentence on user scope, because it is easy to conflate with a
+different repo that happens to share a name:** `~/.claude/CLAUDE.md` —
+the user-scope canon target — is not in any git repository and has not
+been since chezmoi's retirement (measured 2026-08-27:
+`git -C ~/.claude rev-parse` exits 128). The local git repo in
+`~/.config` is a different thing: `~/.config` is a registered
+**project** host, and its `CLAUDE.md` is project-scope canon. Both
+statements are true; they are about different files.

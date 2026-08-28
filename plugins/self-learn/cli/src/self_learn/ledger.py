@@ -30,6 +30,17 @@ DEFAULT_HOME = "~/.self-learn"
 #: The layout dirs + registry that a bootstrapped home has (doc 13 §3).
 _LAYOUT = ("skills", "projects", "user", "telemetry")
 
+#: U-hostmode RCN3: NOT folded into `_LAYOUT` itself — that tuple also
+#: drives `init_home`'s eager dir-creation/`added_dirs` set
+#: (`test_init.py`'s exact expectations there are UN3(ii)-pinned, and
+#: adding "compiled" there would add it to every fresh `init`, which
+#: RCN3 never asks for: `compiled/` is created lazily, on the first
+#: compile record write, same as every other bucket dir). Consulted ONLY
+#: by `home_state` below, so a home containing solely `compiled/` (no
+#: skills/projects/user/telemetry yet) still reads `ok`, never
+#: `uninitialized`.
+_BOOTSTRAP_EVIDENCE = _LAYOUT + ("compiled",)
+
 HOME_STATES = ("ok", "missing", "not-a-repo", "uninitialized")
 
 #: A surface asked about a home that is missing / not a git repo. Distinct
@@ -69,7 +80,10 @@ def home_state(home: Path | str | None = None) -> str:
         return "missing"
     if not is_repo_root(home):
         return "not-a-repo"
-    if any((home / d).is_dir() for d in _LAYOUT) or (home / "hosts.yaml").is_file():
+    if (
+        any((home / d).is_dir() for d in _BOOTSTRAP_EVIDENCE)
+        or (home / "hosts.yaml").is_file()
+    ):
         return "ok"
     return "uninitialized"
 

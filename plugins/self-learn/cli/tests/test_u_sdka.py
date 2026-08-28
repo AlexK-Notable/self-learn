@@ -1368,6 +1368,22 @@ _AR1_TRIPWIRE_SHA256 = "1b012978efe34788697a854bd40f28d0c1c45125cbca9d56fea36890
 #: everything from the blank line after `_worker_test_defaults`'s block
 #: onward is this unit's guard section, now 267 lines instead of the
 #: first round's 151, for 311 total `added` lines.
+#: U-hostmode gate r1 fold, D-1 (2026-08-28) re-pins a further time: the
+#: guard section gains a THIRD litter-detection leg (`_LOCK_FILE_RE`,
+#: `_INPROCESS_LOCK_HITS`, the `gitops._flock_lock` wrap in
+#: `_install_litter_guards`, and the matching hard-fail assertion in
+#: `_litter_namespace_guard`) for `host-*.commit.lock` files -- the gate
+#: found this litter shape entirely invisible to the pre-fold guard
+#: (`_HOME_DIR_RE` only ever matched a `home-<8hex>` directory
+#: basename). Still a pure suffix extension over the pre-U-cachelit
+#: baseline -- `removed` stays `[]`, verified below -- 385 `added`
+#: lines then, up from 311.
+#: U-hostmode gate r2 fold, D-1 (2026-08-28) re-pins once more: the
+#: fixture's own docstring gains one closing paragraph naming this
+#: guard's pytest-only scope, the five stray lock files this fold
+#: deleted by hand, and the new "every ad-hoc script sets
+#: XDG_CACHE_HOME" rule -- a pure docstring-body suffix, no code path
+#: changed. `removed` stays `[]`; 396 `added` lines now, up from 385.
 _AR1_SANCTIONED_PIN_LINES = [
     '#: U-cleanup-B: `_cli_backend_unreached_tripwire` (U-cleanup-A `AG1`) is',
     '#: RETIRED here, exactly as its own docstring said it would be -- its',
@@ -1443,6 +1459,8 @@ _AR1_SANCTIONED_PIN_LINES = [
     'import subprocess',
     'from pathlib import Path',
     '',
+    'from self_learn import gitops as _gitops_mod',
+    '',
     '',
     '@pytest.fixture(scope="session", autouse=True)',
     'def _env_floor_session(tmp_path_factory: pytest.TempPathFactory):',
@@ -1499,10 +1517,34 @@ _AR1_SANCTIONED_PIN_LINES = [
     '',
     '_HOME_DIR_RE = re.compile(re.escape(str(_REAL_CACHE_ROOT)) + r"/home-[0-9a-f]{8}$")',
     '',
+    '#: D-1 (U-hostmode code gate r1 fold, 2026-08-28): the SAME real-cache',
+    "#: litter channel, one file-shape wider. `gitops.host_lock_path`'s plain",
+    '#: branch (U-hostmode §4.3) writes `host-<slug>.commit.lock` FILES',
+    '#: directly under `_REAL_CACHE_ROOT` -- a sibling of the `home-<digest>`',
+    '#: NAMESPACE DIRS this guard already watches, through the identical',
+    '#: XDG_CACHE_HOME-redirect mechanism, but the gate found 35 such files',
+    '#: already stranded there (pre-`_env_floor_session`, now flat) and noted',
+    '#: this guard "structurally cannot see this new file-shaped channel" --',
+    '#: `_HOME_DIR_RE` only ever matched a directory basename. This regex is',
+    '#: that missing half.',
+    '_LOCK_FILE_RE = re.compile(re.escape(str(_REAL_CACHE_ROOT)) + r"/host-[^/]+\\.commit\\.lock$")',
+    '',
     '#: Namespace dirs THIS interpreter created under `_REAL_CACHE_ROOT` --',
     '#: 100% certain attribution, no digest-matching needed (it happened in',
     '#: this process). Populated by the `Path.mkdir` patch below.',
     '_INPROCESS_HITS: set[str] = set()',
+    '',
+    '#: D-1: lock files THIS interpreter created under `_REAL_CACHE_ROOT` via',
+    '#: `gitops._flock_lock` -- same 100% certain in-process attribution as',
+    '#: `_INPROCESS_HITS` above, populated by the wrap installed alongside',
+    '#: the `Path.mkdir`/`subprocess.Popen` patches below. Unlike a',
+    "#: `home-<digest>` namespace, a lock file's name is keyed by the HOST",
+    "#: PATH's slug (`hosts.slug_for`), not by `SELF_LEARN_HOME` -- there is",
+    '#: no digest scheme to attribute a lock file this session did NOT',
+    '#: create in-process to a subprocess THIS session spawned, so (below)',
+    '#: any such file is reported, never asserted against (same posture as',
+    '#: `theirs`/`_WARN_NAMESPACES` for namespace dirs).',
+    '_INPROCESS_LOCK_HITS: set[str] = set()',
     '',
     "#: Every home this session has HANDED OUT: the floor's own home, and",
     "#: every `SELF_LEARN_HOME` a spawned subprocess's environment carried --",
@@ -1532,13 +1574,28 @@ _AR1_SANCTIONED_PIN_LINES = [
     '    because attribute lookup on an instance resolves through the class',
     '    at CALL time, not at import time.',
     '',
-    '    Returns the two ORIGINAL (unpatched) callables so the guard',
+    '    D-1 (code gate r1 fold) adds a THIRD patch that IS a rebound',
+    '    function name (`gitops._flock_lock`) -- safe here for a reason the',
+    '    class-patch rule above does not cover: `_flock_lock` is never',
+    '    imported anywhere outside `gitops.py` itself (`grep -rn',
+    "    '_flock_lock' cli/src/self_learn/*.py` -- one definition, one",
+    '    module-internal call site each in `host_lock`/`commit_lock`, no',
+    '    `from .gitops import _flock_lock` anywhere). `host_lock`/',
+    '    `commit_lock` reference the bare name `_flock_lock` from INSIDE the',
+    '    same module, which Python resolves through `gitops.__dict__` at',
+    '    CALL time, not at their own def time -- rebinding',
+    '    `_gitops_mod._flock_lock` from here is visible to both, the exact',
+    '    property the class patches above rely on for `Path`/`Popen`, just',
+    '    reached through a different mechanism (module globals rather than a',
+    '    shared class).',
+    '',
+    '    Returns the three ORIGINAL (unpatched) callables so the guard',
     "    fixture's teardown can restore them (code gate r1 N-3): a",
-    '    session-scoped patch of two STDLIB classes must not outlive the',
-    '    session it was installed for -- left patched, it would leak into',
-    '    whatever runs next in the same interpreter (a `pytester`',
+    '    session-scoped patch of shared interpreter state must not outlive',
+    '    the session it was installed for -- left patched, it would leak',
+    '    into whatever runs next in the same interpreter (a `pytester`',
     '    sub-session sharing this venv, a plugin hook, anything importing',
-    '    `pathlib`/`subprocess` afterward)."""',
+    '    `pathlib`/`subprocess`/`gitops` afterward)."""',
     '    orig_mkdir = Path.mkdir',
     '',
     '    def _tracked_mkdir(self, *a, **kw):',
@@ -1566,7 +1623,17 @@ _AR1_SANCTIONED_PIN_LINES = [
     '        return orig_popen_init(self, *args, **kwargs)',
     '',
     '    subprocess.Popen.__init__ = _tracked_popen_init',
-    '    return orig_mkdir, orig_popen_init',
+    '',
+    '    orig_flock_lock = _gitops_mod._flock_lock',
+    '',
+    '    def _tracked_flock_lock(path, timeout, wedged_by):',
+    '        if _LOCK_FILE_RE.fullmatch(str(path)):',
+    '            _INPROCESS_LOCK_HITS.add(str(path))',
+    '        return orig_flock_lock(path, timeout, wedged_by)',
+    '',
+    '    _gitops_mod._flock_lock = _tracked_flock_lock',
+    '',
+    '    return orig_mkdir, orig_popen_init, orig_flock_lock',
     '',
     '',
     'def _normalized_digests(home: str) -> set[str]:',
@@ -1625,18 +1692,44 @@ _AR1_SANCTIONED_PIN_LINES = [
     '    and cannot know it is safe to blame them. Disabling this fixture,',
     "    or either assertion below, is exactly the mutation this guard's own",
     '    `pytester`-driven tests (`test_litter_guard_probes.py`) are built to',
-    '    catch."""',
-    '    orig_mkdir, orig_popen_init = _install_litter_guards()',
+    '    catch.',
+    '',
+    '    D-1 (code gate r1 fold) widens the SAME guard to a sibling litter',
+    "    shape: `host-*.commit.lock` FILES (`gitops.host_lock_path`'s plain",
+    '    branch), not just `home-<digest>` DIRS. The before/after',
+    '    `os.listdir` diff below already swept any such file into `theirs`',
+    '    (it is not `home-`-prefixed, so it was never `mine`) -- reported,',
+    '    never asserted on, indistinguishable from a genuine concurrent',
+    '    sibling. `_INPROCESS_LOCK_HITS` (populated by the `gitops.',
+    '    _flock_lock` wrap in `_install_litter_guards`) closes that gap with',
+    '    the SAME certain, in-process attribution `_INPROCESS_HITS` already',
+    '    has for directories: THIS interpreter calling `_flock_lock` on a',
+    "    real-cache-rooted lock path is 100% this session's own doing, no",
+    '    digest-matching needed, so it is asserted on, hard, exactly like',
+    '    `_INPROCESS_HITS` above.',
+    '',
+    '    D-1 (code gate r2 fold), scope: this guard runs only INSIDE a',
+    '    pytest session (this fixture) -- an ad-hoc script run outside',
+    '    pytest (a dev-loop probe against the real ~/.cache/self-learn,',
+    '    never through `tmp_path`/`XDG_CACHE_HOME`) is invisible to it and',
+    '    can still litter `host-*.commit.lock` files the guard has no',
+    '    chance to catch or report; five such files, dated 06:09-06:20 on',
+    "    2026-08-28, were the r1 fold's own B-2 probes and were deleted by",
+    '    hand as part of this fold. From now on, every ad-hoc script sets',
+    '    `XDG_CACHE_HOME` to a temp dir before importing anything from this',
+    '    package."""',
+    '    orig_mkdir, orig_popen_init, orig_flock_lock = _install_litter_guards()',
     '    try:',
     '        before = set(os.listdir(_REAL_CACHE_ROOT))',
     '    except FileNotFoundError:',
     '        before = set()',
     '    yield',
-    "    # N-3: restore the two class-level patches BEFORE this fixture's own",
-    '    # assertions run, so a failed assertion here never leaves the real',
-    '    # stdlib classes patched for whatever runs next in this interpreter.',
+    "    # N-3: restore the THREE patches BEFORE this fixture's own",
+    '    # assertions run, so a failed assertion here never leaves shared',
+    '    # interpreter state patched for whatever runs next in this process.',
     '    Path.mkdir = orig_mkdir',
     '    subprocess.Popen.__init__ = orig_popen_init',
+    '    _gitops_mod._flock_lock = orig_flock_lock',
     '    assert not _INPROCESS_HITS, (',
     '        "self-learn cache-litter guard: THIS interpreter created the "',
     '        f"real namespace dir(s) {sorted(_INPROCESS_HITS)} during this "',
@@ -1644,6 +1737,14 @@ _AR1_SANCTIONED_PIN_LINES = [
     '        "worker.cache_dir()/sentinel.sentinel_path() for that home. "',
     '        "Find the call site and fix it there, never by widening this "',
     '        "guard."',
+    '    )',
+    '    # D-1: same hard-fail shape as `_INPROCESS_HITS`, for lock files.',
+    '    assert not _INPROCESS_LOCK_HITS, (',
+    '        "self-learn cache-litter guard: THIS interpreter took a real "',
+    '        f"host-mode lock at {sorted(_INPROCESS_LOCK_HITS)} during this "',
+    '        "session -- XDG_CACHE_HOME did not reach whatever called "',
+    '        "gitops.host_lock()/host_lock_path() for that host. Find the "',
+    '        "call site and fix it there, never by widening this guard."',
     '    )',
     '    try:',
     '        after = set(os.listdir(_REAL_CACHE_ROOT))',
@@ -2409,12 +2510,22 @@ def test_hy5_numstat_bounds_hold():
     # channel (M-3); see `_AR1_SANCTIONED_PIN_LINES`'s own RE-ANCHOR
     # paragraph above for the full accounting. 267 pure-addition lines
     # on top of the 44 pre-U-cachelit lines, none of them removed.
+    # U-hostmode gate r1 fold, D-1 (2026-08-28): `conftest.py` widened
+    # AGAIN, (311, 0) -> (385, 0) -- the third litter-detection leg for
+    # `host-*.commit.lock` files (see `_AR1_SANCTIONED_PIN_LINES`'s own
+    # D-1 paragraph above for the full accounting). 74 pure-addition
+    # lines on top of the 311 already pinned, none of them removed.
+    # U-hostmode gate r2 fold, D-1 (2026-08-28): widened once more,
+    # (385, 0) -> (396, 0) -- one sentence appended to the litter
+    # guard's docstring (both `cli/` and `ui/` conftests) naming its
+    # pytest-only scope and the XDG_CACHE_HOME ad-hoc-script rule. 11
+    # more pure-addition lines, none removed.
     bounds = {
         "plugins/self-learn/cli/src/self_learn/invocation/contract.py": (31, 47),
         "plugins/self-learn/cli/src/self_learn/invocation/registry.py": (34, 20),
         "plugins/self-learn/cli/src/self_learn/provider.py": (196, 36),
         "plugins/self-learn/cli/src/self_learn/analyst.py": (22, 20),
-        "plugins/self-learn/cli/tests/conftest.py": (311, 0),  # U-cachelit RE-ANCHOR (gate r1): guard section rewritten
+        "plugins/self-learn/cli/tests/conftest.py": (396, 0),  # U-hostmode gate r2 fold, D-1 (2026-08-28): scope sentence appended to the litter guard docstring
         "plugins/self-learn/cli/tests/fixtures/fake_claude.py": (388, 1),
         "plugins/self-learn/cli/tests/test_invocation.py": (737, 760),  # FW-117 (2026-08-28): HY3 trimmed to two witnesses, SETTINGS_WITNESS/test_cn6/test_cn7_repair_leg deleted, then gate r1 fold (test_cn9 docstring truth) -- widened (718, 700) -> (730, 757) -> (737, 760), EXACT measured value (not a margin), single-ref against _BASE_SHA
         "plugins/self-learn/cli/tests/test_invocation_sdk.py": (493, 166),  # U-kl4 gate r1 fold (2026-08-28): B-1 (try scoped to capture pid first + best-effort reap), N/D-2 (new test_kl4b), N/D-3 (re-check start-ticks immediately before the kill), N/D-1 (NOTE-14 sentence); was (298, 149) -> (414, 166) -> (493, 166), measured single-ref against _BASE_SHA

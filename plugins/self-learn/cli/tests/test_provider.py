@@ -170,6 +170,11 @@ def test_pr1_provider_setting_and_all(tmp_path):
         "CONFIG_BASENAME",
         "PROVIDER_KEYS",
         "config_path",
+        # U-hostmode MODE3: hosts.default_mode's fail-closed reader, added
+        # alongside the other config.yaml accessors this module already
+        # exports (kept out of the §2.10b census — this is the one-line
+        # consequence of MODE3 existing at all).
+        "effective_default_mode",
         "invocation_backend",
         "one_motion_enabled",
         "provider_setting",
