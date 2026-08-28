@@ -527,7 +527,18 @@ serve.py`) and its call sites are ordinary product code, not a switch.
    `sdksession` library); reverting Phase 1 first leaves Phase 2's code
    importing a library that no longer exists.
 6. **Re-enable `self-learn-miner.timer`** when reverting Phase 2 — with
-   `serve` gone, nothing else fires the nightly mine pass:
+   `serve` gone, nothing else fires the nightly mine pass. **Run
+   `./install.sh` first, then enable — not bare `enable`.** If the
+   timer was ever taken down with `systemctl --user disable --now
+   self-learn-miner.timer`, `disable` on a *linked* unit deletes the
+   symlink itself, and a linked unit has no package to restore it from
+   — a bare `systemctl --user enable --now self-learn-miner.timer` at
+   that point fails with "Unit file does not exist" (measured
+   2026-08-27). `./install.sh` re-links the timer unit
+   (`install.sh` line 103, the `link "$REPO/systemd/self-learn-
+   miner.timer" "$UNIT_DIR/self-learn-miner.timer"` call — line 102 is
+   the sibling `.service` link, not the timer) and runs `daemon-reload`
+   (line 104) before printing the enable line — run it, then enable:
    `systemctl --user enable --now self-learn-miner.timer`. The watchdog's
    reduced disposition (`miner.maybe_kick`'s poke leg) reverts along with
    the rest of `miner.py`'s Phase 2 edit, so the pre-Phase-2 any-verb

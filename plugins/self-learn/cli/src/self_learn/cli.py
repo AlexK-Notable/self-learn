@@ -476,13 +476,25 @@ def _build_parser() -> argparse.ArgumentParser:
 
     doctor_p = sub.add_parser(
         "doctor",
-        help="read-only diagnostics: invocation (provider/backend config)",
+        help="read-only diagnostics: invocation (provider/backend config); "
+        "bare `doctor` defaults to `doctor invocation`",
     )
-    doctor_sub = doctor_p.add_subparsers(dest="doctor_command", metavar="<verb>")
+    doctor_sub = doctor_p.add_subparsers(dest="doctor_command", metavar="[<verb>]")
     doctor_sub.add_parser(
         "invocation",
-        help="provider/backend switches, model ids, and Bedrock env assembly (U-bedrock)",
+        help="provider/backend switches, model ids, and Bedrock env assembly "
+        "(U-bedrock) — the default when no <verb> is given",
     )
+    # Bare `doctor` (no <verb>) behaves exactly as `doctor invocation` —
+    # there is only one verb today, and forcing operators to spell it out
+    # was a papercut nobody chose on purpose (U-papercuts P-2). This sets
+    # the namespace default BEFORE parsing; an explicit `doctor invocation`
+    # still sets the same value via the subparser action itself, and an
+    # unknown verb (`doctor bogus`) is still rejected by argparse's own
+    # choice validation before this default is ever consulted — `_cmd_doctor`
+    # is unchanged, its `!= "invocation"` guard is now unreachable but kept
+    # as a defensive backstop.
+    doctor_p.set_defaults(doctor_command="invocation")
 
     rec = sub.add_parser(
         "reconcile",

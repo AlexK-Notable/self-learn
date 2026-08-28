@@ -1584,6 +1584,14 @@ _AR3_ADDED: dict[str, frozenset[str]] = {
             # U-cleanup-B T-DOCTOR-SWITCHES (SEL6, §11.1): the `switches`
             # row's REFUSED rendering had no test asserting it directly.
             "test_dc17_switches_row_reports_cli_selection_as_refused",
+            # U-papercuts P-2: bare `self-learn doctor` (no `<verb>`) now
+            # defaults to `doctor invocation` instead of printing a usage
+            # error — the positive test (byte-identical stdout/stderr/rc
+            # against the explicit `doctor invocation` form) and its
+            # negative control (`doctor bogus` stays an argparse usage
+            # error, unaffected by the new default).
+            "test_p2_bare_doctor_is_byte_identical_to_doctor_invocation",
+            "test_p2_doctor_unknown_verb_still_a_usage_error",
         }
     ),
 }
@@ -1985,6 +1993,17 @@ def test_hy5_numstat_bounds_hold():
     # measured single-ref against _BASE_SHA. Widened again (185, 36) ->
     # (196, 36) -- gate r2 N-6': the corrupt-vs-absent heartbeat
     # distinction added to `_serve_row`'s configured-no-heartbeat leg.
+    # U-papercuts P-2 (2026-08-27): `test_doctor_invocation.py` widened
+    # (100, 9) -> (156, 9) -- the two `test_p2_*` functions registered in
+    # `_AR3_ADDED["test_doctor_invocation.py"]` above (bare `doctor`
+    # defaults to `doctor invocation`; `doctor bogus` still a usage
+    # error). `cli.py` itself (the actual fix, `_build_parser`'s doctor
+    # block) is not a row in this table -- it was never touched by any
+    # prior unit this armor tracks. Widened again, (156, 9) -> (165, 9)
+    # -- code gate r1 N-2 fix: `doctor_sub`'s `metavar` changed
+    # `"<verb>"` -> `"[<verb>]"` (cli.py, not tracked here either) plus
+    # the provenance note this added to `test_p2_doctor_unknown_verb_
+    # still_a_usage_error`'s docstring.
     bounds = {
         "plugins/self-learn/cli/src/self_learn/invocation/contract.py": (31, 47),
         "plugins/self-learn/cli/src/self_learn/invocation/registry.py": (34, 20),
@@ -1994,7 +2013,7 @@ def test_hy5_numstat_bounds_hold():
         "plugins/self-learn/cli/tests/fixtures/fake_claude.py": (388, 1),
         "plugins/self-learn/cli/tests/test_invocation.py": (718, 700),
         "plugins/self-learn/cli/tests/test_invocation_sdk.py": (298, 149),  # code gate r1 MAJOR-1 fold: claude_cli_shim_worker/_analyst -> sdk_fake_worker/_analyst rename
-        "plugins/self-learn/cli/tests/test_doctor_invocation.py": (100, 9),
+        "plugins/self-learn/cli/tests/test_doctor_invocation.py": (165, 9),
     }
     for relpath, (max_ins, max_del) in bounds.items():
         out = subprocess.run(
