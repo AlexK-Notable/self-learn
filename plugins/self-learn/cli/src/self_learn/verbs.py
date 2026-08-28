@@ -105,6 +105,7 @@ from .compilers import (
 )
 from .hosts import (
     HostsError,
+    ancestors_of,
     is_project_host,
     load_hosts,
     skill_dir_for,
@@ -2319,6 +2320,26 @@ def _retirement_host_phase(
     return None, None
 
 
+def _pointer_names_base(home: Path, spec: "TargetSpec") -> bool:
+    """U-ancestry ANC8: does ``spec``'s pointer surface's host have a
+    registered ancestor OR a registered descendant? Project scope only —
+    skill scope has no path-ancestry relation to a project host. Read at
+    APPLY time (never inside `_resolve_target`, which ANC4 pins
+    byte-identical) — this influences only the pointer block's
+    surrounding prose, never a write TARGET."""
+    if spec.scope_kind != "project" or spec.pointer_surface is None:
+        return False
+    host = spec.pointer_surface.parent
+    try:
+        hosts = load_hosts(home)
+    except HostsError:
+        return False
+    if ancestors_of(hosts, host):
+        return True
+    resolved_prefix = str(host.resolve()) + os.sep
+    return any(str(Path(p).resolve()).startswith(resolved_prefix) for p in hosts.projects)
+
+
 def _apply_target(
     home: Path,
     spec: TargetSpec,
@@ -2378,6 +2399,7 @@ def _apply_target(
                 compile_result.path,
                 label=POINTER_LABELS[spec.scope_kind],
                 create=spec.scope_kind == "project",
+                names_base=_pointer_names_base(home, spec),
             )
             if pointer.changed:
                 compile_result = replace(compile_result, pointer_changed=True)
@@ -4921,6 +4943,7 @@ def recompile(
                             probe,
                             label=POINTER_LABELS[spec.scope_kind],
                             create=spec.scope_kind == "project",
+                            names_base=_pointer_names_base(home, spec),
                         )
                     except (CompileError, OSError, UnicodeDecodeError) as exc:
                         result.warnings.append(f"{spec.pointer_surface}: {exc}")

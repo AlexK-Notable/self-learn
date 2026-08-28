@@ -691,53 +691,40 @@ class TestTargetCanonExcerpt:
         monkeypatch.setenv("HOME", str(fake_home))
         record = make_behavior(scope="user", record_id="lrn-aa00000e")
         excerpt = pane.target_canon_excerpt(tmp_path, record, tmp_path / "bucket")
-        assert excerpt == "short doc\nline two"
+        assert "short doc" in excerpt
+        assert "line two" in excerpt
 
-    def test_over_threshold_excerpts_around_markers(
+    def test_delegates_to_worker_canon_blocks(self, tmp_path: Path) -> None:
+        """ANC6/S-52: `pane.target_canon_excerpt` is ONE implementation,
+        never a hand-copy — it must return the exact same text
+        `worker.canon_blocks` does for the identical arguments. This
+        replaces the pre-S-52 marker-window-specific tests below (whole-
+        file reach and the over-cap ordered-retention truncation are the
+        CLI's own contract, pinned once in `test_worker.py`'s SCAN1/
+        SCAN8 tests — re-asserting the algorithm here would just be a
+        second, driftable copy of that pin)."""
+        from self_learn import worker
+
+        sb = make_env(tmp_path)
+        record = make_behavior(scope="project", record_id="lrn-aa000017")
+        seed_record(sb.ledger, record, project_path=sb.host)
+        from self_learn.hosts import slug_for
+
+        bucket_dir = sb.ledger / "projects" / slug_for(sb.host)
+        pane_excerpt = pane.target_canon_excerpt(sb.ledger, record, bucket_dir)
+        worker_blocks = worker.canon_blocks(sb.ledger, record, bucket_dir)
+        assert pane_excerpt == worker_blocks
+
+    def test_whole_file_reaches_the_compiler_written_section(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """FW-48/U-marker-ui: the two needles come from the imported
-        compiler constants — no marker spelling is typed in this test.
-        (Prior to the fix this fixture hand-wrote the legacy
-        ``SELF-LEARN:BEGIN``/``END`` needle, a string no compiler has
-        ever emitted, so the test passed BECAUSE the code was broken;
-        see u-marker-excerpt-case-spec.md §5 / the CLI sibling fix's
-        own positive control in test_worker.py.) This test's own
-        claim is the ±20-line WINDOW MATH given arbitrary marker
-        placement — see ``test_over_threshold_finds_the_compiler_
-        written_section`` below for the compiler-realistic shape."""
-        from self_learn.compilers import BEGIN_MARKER, END_MARKER
-
-        fake_home = tmp_path / "fake-home"
-        (fake_home / ".claude").mkdir(parents=True)
-        lines = [f"line {i}" for i in range(300)]
-        lines[150] = BEGIN_MARKER
-        lines[160] = END_MARKER
-        (fake_home / ".claude" / "CLAUDE.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
-        monkeypatch.setenv("HOME", str(fake_home))
-        record = make_behavior(scope="user", record_id="lrn-aa00000f")
-        excerpt = pane.target_canon_excerpt(tmp_path, record, tmp_path / "bucket")
-        # lo = max(0, 150-20) = 130; hi = min(len, 160+20+1) = 181 ->
-        # lines[130:181] covers indices 130..180 inclusive.
-        assert "line 130" in excerpt
-        assert "line 180" in excerpt
-        assert "line 129" not in excerpt
-        assert "line 181" not in excerpt
-        assert BEGIN_MARKER in excerpt
-        assert END_MARKER in excerpt
-
-    def test_over_threshold_finds_the_compiler_written_section(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """FW-48/U-marker-ui's positive control, mirrored from the CLI
-        sibling fix (test_worker.py::test_canon_excerpt_finds_the_
-        compiler_written_markers_in_a_fat_target): the excerpt must
-        reach a section the REAL compiler wrote
-        (``compile_managed_text``), not a hand-placed sentinel. Red
-        pre-fix — the unfixed pane hand-copy searched for a needle
-        (``SELF-LEARN:BEGIN``) the compiler has never written, so it
-        fell through to the head-of-file truncation regardless of
-        where the real section landed."""
+        """S-52 (SCAN1), pane-side: the excerpt reaches a section the
+        REAL compiler wrote (``compile_managed_text``), including text
+        far from it on BOTH sides — the whole-file contract, not a
+        window. Delegation (the test above) already proves this is the
+        exact same algorithm `test_worker.py`'s own SCAN1 test pins; this
+        one exists so a pane-only regression (e.g. a stale local excerpt
+        function reintroduced by a future edit) still reddens here too."""
         from self_learn.compilers import BEGIN_MARKER, END_MARKER, compile_managed_text, entry_line
 
         fake_home = tmp_path / "fake-home"
@@ -757,61 +744,17 @@ class TestTargetCanonExcerpt:
 
         lines = full_text.splitlines()
         begin_idx = next(i for i, ln in enumerate(lines) if BEGIN_MARKER in ln)
-        end_idx = next(i for i, ln in enumerate(lines) if END_MARKER in ln)
-        # Fixture guard: without this, the test would pass pre-fix
-        # whenever the section happened to land inside the first 60
-        # lines — same rationale as the CLI sibling's A0.
         assert len(lines) >= 200
         assert begin_idx > 60
 
         record = make_behavior(scope="user", record_id="lrn-aa000015")
         excerpt = pane.target_canon_excerpt(tmp_path, record, tmp_path / "bucket")
-        excerpt_lines = excerpt.splitlines()
 
         assert BEGIN_MARKER in excerpt
         assert END_MARKER in excerpt
-        assert entry_line(routed_record) in excerpt_lines  # the payload, not just the frame
-        lo, hi = max(0, begin_idx - 20), min(len(lines), end_idx + 21)
-        assert excerpt_lines == lines[lo:hi]
-
-    def test_over_threshold_case_variant_of_compiler_marker_does_not_match(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """FW-48/U-marker-ui's negative control, mirrored from the CLI
-        sibling fix (test_worker.py::test_canon_excerpt_case_variant_
-        of_compiler_marker_does_not_match): a case-variant of the
-        compiler's own marker must NOT match — catches a "defensive"
-        case-folded fix (``BEGIN_MARKER.lower() in ln.lower()``) that
-        would silently reinstate the legacy needle's failure mode by a
-        different route. Both needles are derived from the imported
-        constants; no marker spelling is typed in this build."""
-        from self_learn.compilers import BEGIN_MARKER, END_MARKER
-
-        fake_home = tmp_path / "fake-home"
-        (fake_home / ".claude").mkdir(parents=True)
-        lines = [f"line {i}" for i in range(300)]
-        lines[150] = BEGIN_MARKER.upper()
-        lines[160] = END_MARKER.upper()
-        (fake_home / ".claude" / "CLAUDE.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
-        monkeypatch.setenv("HOME", str(fake_home))
-        record = make_behavior(scope="user", record_id="lrn-aa000016")
-        excerpt = pane.target_canon_excerpt(tmp_path, record, tmp_path / "bucket")
-        assert excerpt.splitlines() == [f"line {i}" for i in range(60)] + ["… (truncated)"]
-
-    def test_over_threshold_no_markers_truncates_first_60(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        fake_home = tmp_path / "fake-home"
-        (fake_home / ".claude").mkdir(parents=True)
-        lines = [f"line {i}" for i in range(300)]
-        (fake_home / ".claude" / "CLAUDE.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
-        monkeypatch.setenv("HOME", str(fake_home))
-        record = make_behavior(scope="user", record_id="lrn-aa000010")
-        excerpt = pane.target_canon_excerpt(tmp_path, record, tmp_path / "bucket")
-        assert "line 0" in excerpt
-        assert "line 59" in excerpt
-        assert "truncated" in excerpt
-        assert "line 60" not in excerpt
+        assert entry_line(routed_record) in excerpt.splitlines()  # the payload, not just the frame
+        assert "authored line 0" in excerpt  # far above the section — whole file, not a window
+        assert "trailing line 0" in excerpt  # far below the section
 
 
 class TestComposeFirstMessage:

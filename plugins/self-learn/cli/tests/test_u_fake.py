@@ -120,9 +120,19 @@ REWRITTEN = (
 #: config`) whose subject does not exist under the sdk backend; the
 #: citation for each (why deleted, what covers it now) is left in place
 #: at the deletion site in its own module, not here.
+#: U-ancestry, 2026-08-28: S-52 (SCAN1) supersedes u-marker §3 criterion
+#: A — the whole-file canon contract replaces the old `canon_excerpt`
+#: marker-window one, and criterion B is re-homed as SCAN8 (see
+#: `test_worker_contract.py::_ARMOR_SHAS`'s matching re-pin comment, the
+#: OTHER armor mechanism covering this same file). These four base-only
+#: names are the tests that contract replaced outright.
 DS1_REMOVED = (
     ("test_worker.py", "test_run_argv_pins"),
     ("test_repair.py", "test_f2_both_invocations_share_one_argv_builder"),
+    ("test_worker.py", "test_canon_excerpt_finds_the_compiler_written_markers_in_a_fat_target"),
+    ("test_worker.py", "test_canon_excerpt_case_variant_of_compiler_marker_does_not_match"),
+    ("test_worker.py", "test_canon_excerpt_begin_only_case_variant_does_not_match"),
+    ("test_worker.py", "test_canon_excerpt_end_only_case_variant_does_not_match"),
 )
 
 #: The mirror image of `DS1_REMOVED`: top-level functions this unit
@@ -143,10 +153,20 @@ DS1_REMOVED = (
 #: the function outright (§8.4b), so it needs no exclusion entry at all
 #: any more: absent from both head and base, there is nothing for
 #: `_extract_guarded_functions` to find on either side.
+#: U-ancestry, 2026-08-28 (see the matching `DS1_REMOVED` comment above):
+#: the four head-only tests SCAN1/SCAN8 replace the deleted ones with,
+#: plus two new head-only fixture-generation helpers
+#: (`_scan8_filler`/`_scan8_fixture_lines`) those tests share.
 DS1_ADDED = (
     ("test_composer.py", "test_composer_analyst_fails_ro5"),
     ("test_attrib.py", "_batch_permissions"),
     ("test_attrib.py", "_capture_batch_permissions"),
+    ("test_worker.py", "_scan8_filler"),
+    ("test_worker.py", "_scan8_fixture_lines"),
+    ("test_worker.py", "test_canon_blocks_whole_file_reaches_the_compiler_written_section"),
+    ("test_worker.py", "test_cap_retains_managed_region"),
+    ("test_worker.py", "test_cap_retains_managed_region_begin_only_case_variant"),
+    ("test_worker.py", "test_cap_retains_managed_region_end_only_case_variant"),
 )
 
 #: The three `test_fold5_*` MOVE1 tests specifically -- NOT derived by
@@ -261,8 +281,16 @@ def _extract_named_function(source: str, name: str) -> str:
 #: and not merely "these numbers came from somewhere." An extractor
 #: that returns nothing (`M17`) cannot silently agree with these --
 #: they do not move merely because the extractor broke.
+#: U-ancestry, 2026-08-28: `test_worker.py`'s row is regenerated (55, not
+#: 59) because `DS1_REMOVED` gained 4 more base-side names (the
+#: superseded `canon_excerpt` tests, see the comment above `DS1_REMOVED`)
+#: — those 4 functions' bodies drop OUT of this pin's base-only census,
+#: same provenance discipline as the original: `_extract_guarded_functions`
+#: run over `git show c2669a9:plugins/self-learn/cli/tests/test_worker.py`
+#: with the CURRENT (post-registration) `names` tuple, never over the
+#: working tree. The other four modules' rows are untouched.
 _DS1_EXPECTED = {
-    "test_worker.py": (59, "8514b90da632cd3fb1be4c007c98a8e733f07a673b85b265f981afe0df4d682a"),
+    "test_worker.py": (55, "39305f65724adfb1634ce91285b483b05aea05c662f2de9ac9bf30fa38daf1f8"),
     "test_repair.py": (64, "c3af3b925322601fda320e44c4c48ad1e1d5f2e984551bbd6adbfb9ab33dea52"),
     "test_attrib.py": (40, "d7b274c779656cfbcf133a62efce5435cc2441e6091d68329e0795dc42573418"),
     "test_route_cli.py": (39, "ef6048a64b7e260adf5be14507b8d3dba1b6906bc6199f5b3bf5688ed426c9ba"),
@@ -754,8 +782,15 @@ def test_ds1b_removed_set_is_exact_and_every_entry_is_base_only():
     expected = {
         ("test_worker.py", "test_run_argv_pins"),
         ("test_repair.py", "test_f2_both_invocations_share_one_argv_builder"),
+        (
+            "test_worker.py",
+            "test_canon_excerpt_finds_the_compiler_written_markers_in_a_fat_target",
+        ),
+        ("test_worker.py", "test_canon_excerpt_case_variant_of_compiler_marker_does_not_match"),
+        ("test_worker.py", "test_canon_excerpt_begin_only_case_variant_does_not_match"),
+        ("test_worker.py", "test_canon_excerpt_end_only_case_variant_does_not_match"),
     }
-    assert len(DS1_REMOVED) == 2
+    assert len(DS1_REMOVED) == 6
     assert set(DS1_REMOVED) == expected
 
     for module, name in DS1_REMOVED:
@@ -781,8 +816,14 @@ def test_ds1c_added_set_is_exact_and_every_entry_is_head_only():
         ("test_composer.py", "test_composer_analyst_fails_ro5"),
         ("test_attrib.py", "_batch_permissions"),
         ("test_attrib.py", "_capture_batch_permissions"),
+        ("test_worker.py", "_scan8_filler"),
+        ("test_worker.py", "_scan8_fixture_lines"),
+        ("test_worker.py", "test_canon_blocks_whole_file_reaches_the_compiler_written_section"),
+        ("test_worker.py", "test_cap_retains_managed_region"),
+        ("test_worker.py", "test_cap_retains_managed_region_begin_only_case_variant"),
+        ("test_worker.py", "test_cap_retains_managed_region_end_only_case_variant"),
     }
-    assert len(DS1_ADDED) == 3
+    assert len(DS1_ADDED) == 9
     assert set(DS1_ADDED) == expected
 
     for module, name in DS1_ADDED:

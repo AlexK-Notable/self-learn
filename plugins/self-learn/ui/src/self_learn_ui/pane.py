@@ -69,7 +69,7 @@ from pathlib import Path
 from typing import Any
 
 from self_learn.records import Record
-from self_learn.worker import cache_dir, canon_excerpt
+from self_learn.worker import cache_dir, canon_blocks
 
 from . import ledger
 from .doctrine import read_doctrine
@@ -264,17 +264,20 @@ def _terminal_status_words(terminal_status: str | None) -> str | None:
 # CLI-side worker fix's own diagnosis of how it drifted there (see
 # docs/specs/self-learn/drafts/u-marker-excerpt-case-spec.md §2) — the
 # duplication was the defect, not just the string. The worker now
-# exposes the rule as a public, record/bucket_dir-shaped function
-# (self_learn.worker.canon_excerpt); this module imports and delegates
-# to it instead of maintaining a second copy.
+# exposes the rule as a public, record/bucket_dir-shaped function; this
+# module imports and delegates to it instead of maintaining a second
+# copy. U-ancestry (S-52, ANC6) carries the same discipline forward: the
+# worker's `canon_excerpt` became `canon_blocks` (whole own-host file,
+# capped, plus labelled ancestor and references blocks) and this
+# function's delegation target moved with it — still ONE implementation.
 
 
 def target_canon_excerpt(home: Path, record: Record, bucket_dir: Path) -> str:
-    """The candidate target's managed section ± 20 lines, or the whole
-    file when under 200 lines — the SAME function the worker's own
+    """The candidate target's canon ingredient — the SAME
+    :func:`self_learn.worker.canon_blocks` the worker's own
     routing-analyst prompt uses (see module section docstring above);
-    this is a direct delegation, not a second implementation."""
-    return canon_excerpt(home, record, bucket_dir)
+    this is a direct delegation, not a second implementation (ANC6)."""
+    return canon_blocks(home, record, bucket_dir)
 
 
 def compose_first_message(
