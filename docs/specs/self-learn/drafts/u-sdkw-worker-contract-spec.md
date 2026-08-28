@@ -1,5 +1,17 @@
 # Spec — U-sdkw: the worker surfaces' SDK contract tests
 
+**Superseded in part 2026-08-28 by `U-fw117`** (FW-117 CLOSED,
+`14-forward-work-map.md`): the twin-witness treatment this document
+gives `worker.write_repair_settings_file` (e.g. the `cli`/`M10`/`M3`
+rows below, and the `worker.settings.json`/`worker.repair.settings.json`
+pair) describes a function that is now DELETED — it was a dead write
+nothing under the sdk backend ever read back
+(`options_kwargs()` passes `settings=None` unconditionally for every
+surface, batch and repair alike). Enforcement for the repair round's
+narrowed scope is the charter alone now, with no on-disk proxy. The
+rest of this document is left as written below — it is the historical
+build record for this unit's own contract at the time it shipped.
+
 Status: **r5 — CLEARED FOR BUILD.** Three gate rounds, 32 findings, all
 folded (§10 maps each to its change). The close-out gate verified six of
 seven r4 landings **by execution** — both blockers genuinely closed, the

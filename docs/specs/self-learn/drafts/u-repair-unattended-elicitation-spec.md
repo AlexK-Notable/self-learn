@@ -1,5 +1,18 @@
 # Spec — U-repair: the unattended elicitation contract, one bounded repair round, and the throttle
 
+**Superseded in part 2026-08-28 by `U-fw117`** (FW-117 CLOSED,
+`14-forward-work-map.md`): §3.7's repair-round settings file
+(`write_repair_settings_file`, `worker.repair.settings.json`) is
+DELETED — under the sdk-only seam (`U-cleanup`/`U-sdka`, later than this
+spec) it was a dead write nothing ever read back
+(`options_kwargs()` passes `settings=None` unconditionally). The
+narrowed-scope PROPERTY §3.7 introduced (one exact-path `Edit(...)` rule
+per repair-eligible file, never a glob) is unaffected and still holds —
+enforced by the charter (`invocation.containment_for`) alone now, with
+no on-disk proxy. The rest of this document is left as written below —
+it is the historical build record for this unit's own contract at the
+time it shipped.
+
 Status: **r4 — GATED, CLEARED FOR BUILD.** Three review rounds, 27
 findings, all folded: r1 blind gate **UNSOUND — 3 BLOCKER / 4 MAJOR /
 5 NOTE**; r2 delta **UNSOUND — 1 BLOCKER / 3 MAJOR / 5 NOTE** with all

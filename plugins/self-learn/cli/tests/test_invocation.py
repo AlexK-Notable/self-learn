@@ -496,13 +496,17 @@ def test_hy2_no_module_in_invocation_imports_the_forbidden_modules():
 #
 # U-cleanup §8.4a: `write_settings_file` and `write_reader_settings` are
 # DELETED (§8.1) -- they are Witness B's other half, for the two surfaces
-# whose settings file nothing under the SDK backend ever reads. The
-# remaining three witnesses (`write_repair_settings_file`, still called
-# from the repair round; `write_permission_rules`/`stage_permission_rules`,
-# the rule-rendering helpers `containment_for`'s worker branch parallels)
-# are unaffected by this unit and stay sha-pinned.
+# whose settings file nothing under the SDK backend ever reads.
+# FW-117 (2026-08-28): `write_repair_settings_file` -- the THIRD witness,
+# repair's own -- is now DELETED too, same reasoning: it wrote a real
+# file (`worker.repair.settings.json`) but nothing under the sdk backend
+# ever read it either (`options_kwargs()` passes `settings=None`
+# unconditionally, `A-2`; the cli-era `--settings <path>` reader left with
+# `CliBackend`). The remaining two witnesses (`write_permission_rules`/
+# `stage_permission_rules`, the rule-rendering helpers `containment_for`'s
+# worker branch parallels) are unaffected by this unit and stay
+# sha-pinned.
 _HY3_SHAS = {
-    "write_repair_settings_file": "077adf3c99453c21640219a2ba8c10866ff1240c51442d3b1559a258ce566448",
     "write_permission_rules": "745ceedd12d0720e0c36c8411b43a5292db6e3399a7f6d02c5473f441d99fc66",
     "stage_permission_rules": "1ad0fba43230779635e8eee20d6580cab170c228ff367fa09d3d1c447812c864",
 }
@@ -511,11 +515,11 @@ _HY3_SHAS = {
 def test_hy3_witness_b_is_sha_pinned():
     """HY3 -- Witness B (the surviving shipped settings-file writers) is
     sha256 pinned, not substring-guarded (M34's defeat of the r1
-    substring form). Any edit to these three functions -- even an
+    substring form). Any edit to these two functions -- even an
     innocent docstring fix -- reddens this test; that is the deliberate,
-    documented cost (Sec 3.11)."""
+    documented cost (Sec 3.11). FW-117: down from three witnesses to two
+    -- `write_repair_settings_file` is deleted, not merely unpinned."""
     checks = [
-        (worker.write_repair_settings_file, "write_repair_settings_file"),
         (worker.write_permission_rules, "write_permission_rules"),
         (worker.stage_permission_rules, "stage_permission_rules"),
     ]
@@ -699,80 +703,31 @@ def test_cn5_default_mode_omitted_when_none_present_when_default():
     assert perms_on["defaultMode"] == "default"
 
 
-# CN6/TW-a -- the static twin-witness registry, exactly as Sec 3.10 names
-# it. U-cleanup §8.1: `write_settings_file` (worker) and
-# `write_reader_settings` (miner-reader) are DELETED -- nothing under the
-# SDK backend ever reads a settings file for those two surfaces, so their
-# on-disk "witness B" no longer exists. `worker-repair`'s survives
-# (`write_repair_settings_file`, still called from the repair round,
-# §8.1); `analyst` never had one.
-SETTINGS_WITNESS = {
-    "worker-repair": worker.write_repair_settings_file,
-    "analyst": None,
-}
-
-
-def test_cn6_witnesses_a_and_b_agree_statically():
-    """U-cleanup: trimmed to the ONE surviving on-disk witness
-    (worker-repair) plus the analyst's no-witness leg. The worker and
-    miner-reader legs are DELETED here, not migrated -- same reasoning as
-    the already-deleted `test_cn8` (§3.4/§8.1): their witness function is
-    gone, and containment enforcement for those two surfaces is now the
-    charter's job alone (`CH1`-`CH13`, `test_invocation_sdk.py`), with no
-    second, independently-computed witness to agree against."""
-    home = Path(os.environ["SELF_LEARN_HOME"])
-
-    # N-f: write_exact supplied REVERSE-SORTED -- both witnesses sort
-    # internally, so a pre-sorted input would agree whether or not either
-    # sort survives; reverse order makes the leg discriminate.
-    exact_paths = [home / "z.yaml", home / "m.yaml", home / "a.yaml"]
-    assert exact_paths == sorted(exact_paths, reverse=True)
-    c_repair = invocation.containment_for(
-        "worker-repair",
-        allowed_tools=worker.ALLOWED_TOOLS,
-        disallowed_tools=worker.DISALLOWED_TOOLS,
-        write_exact=tuple(str(p) for p in exact_paths),
-        enforce=True,
-    )
-    witness_repair_path = SETTINGS_WITNESS["worker-repair"](home, exact_paths)
-    witness_repair_perms = json.loads(witness_repair_path.read_text(encoding="utf-8"))["permissions"]
-    assert invocation.containment_permissions(c_repair) == witness_repair_perms
-
-    assert SETTINGS_WITNESS["analyst"] is None
-    c_analyst = invocation.containment_for("analyst", allowed_tools=analyst.ANALYST_ALLOWED_TOOLS)
-    assert invocation.containment_rules(c_analyst) == []
-
-
-# U-cleanup-B: `test_cn7_worker_leg_over_all_four_switch_combinations`
-# DELETED here, not migrated -- same reasoning as `test_cn8` (§3.4) and
-# the worker leg of `test_cn6` above: its subject (containment_for's
-# worker permissions agreeing with `write_settings_file`'s on-disk
-# rendering) cannot exist once `write_settings_file` is deleted (§8.1).
-# `containment_for`'s worker branch is still exercised end to end by
-# `CH10` (`test_worker_contract.py`), against the real charter, not a
-# settings-file witness.
-
-
-@pytest.mark.parametrize("enforce_env", [None, "0"])
-def test_cn7_repair_leg_over_both_enforce_values(enforce_env, monkeypatch):
-    if enforce_env is None:
-        monkeypatch.delenv("SELF_LEARN_ENFORCE_SCOPE", raising=False)
-    else:
-        monkeypatch.setenv("SELF_LEARN_ENFORCE_SCOPE", enforce_env)
-
-    home = Path(os.environ["SELF_LEARN_HOME"])
-    enforce = worker._enforce_scope()
-    exact_paths = [home / "z.yaml", home / "m.yaml", home / "a.yaml"]
-    c = invocation.containment_for(
-        "worker-repair",
-        allowed_tools=worker.ALLOWED_TOOLS,
-        disallowed_tools=worker.DISALLOWED_TOOLS,
-        write_exact=tuple(str(p) for p in exact_paths),
-        enforce=enforce,
-    )
-    witness_path = SETTINGS_WITNESS["worker-repair"](home, exact_paths)
-    witness_perms = json.loads(witness_path.read_text(encoding="utf-8"))["permissions"]
-    assert invocation.containment_permissions(c) == witness_perms
+# CN6/TW-a -- the static twin-witness registry, exactly as Sec 3.10 named
+# it, is GONE. U-cleanup §8.1 deleted `write_settings_file` (worker) and
+# `write_reader_settings` (miner-reader) -- nothing under the SDK backend
+# ever reads a settings file for those two surfaces, so their on-disk
+# "witness B" no longer existed; `analyst` never had one either. FW-117
+# (2026-08-28) deletes the LAST entry, `worker-repair`'s
+# `write_repair_settings_file` -- same reasoning, one build later: it
+# wrote `worker.repair.settings.json` but nothing under the SDK backend
+# ever read that file back (`options_kwargs()` passes `settings=None`
+# unconditionally, `A-2`). `SETTINGS_WITNESS` (the dict) and
+# `test_cn6_witnesses_a_and_b_agree_statically`/
+# `test_cn7_repair_leg_over_both_enforce_values` (which read it) are
+# DELETED here, not migrated -- same reasoning as the already-deleted
+# `test_cn8` and `test_cn7_worker_leg_over_all_four_switch_combinations`
+# above: there is no second, independently-computed witness left to
+# agree against for ANY surface. `containment_for`'s worker-repair
+# branch (exact-path `write_exact` rendering, `defaultMode`) is still
+# exercised end to end by `CH10`'s third leg (`test_invocation_sdk.py`)
+# against the real charter, and by `test_worker_contract.py::test_rp1`/
+# `test_d5_the_narrowed_repair_scope_is_real` (`test_repair.py`) against
+# the real `SessionSpec.containment` off a driven `worker.run()` --
+# neither reads a settings file, both read the same containment the
+# charter itself is built from. The analyst's empty-rules property this
+# test also checked stays covered by `test_cn1`/`test_cn3` above, which
+# assert `containment_rules(analyst_c) == []` independently.
 
 
 # U-cleanup-A: `test_cn8_twin_witnesses_agree_at_runtime_on_a_repair_producing_run`
@@ -848,9 +803,13 @@ def _one_hop_taint_violations(path: Path) -> list[tuple]:
 
 def test_cn9_direction_guard_one_hop_local_taint():
     """CN9 -- the DIRECTION guard (C-c), as a ONE-HOP LOCAL taint check,
-    AST-only, over worker.py/miner.py/analyst.py AND this file's own
-    CN6/CN7 legs (the collapse is just as fatal in the test meant to
-    detect it)."""
+    AST-only, over worker.py/miner.py/analyst.py and this file's own
+    `containment_for` call sites (`Path(__file__)`). FW-117 (2026-08-28):
+    this docstring used to name "this file's own CN6/CN7 legs" as the
+    subject on this file's side -- both are DELETED now (their witness
+    function, `worker.write_repair_settings_file`, is gone), so what this
+    walk actually polices on `test_invocation.py` today is the surviving
+    `cn1`-`cn5` `containment_for` call sites, not CN6/CN7."""
     files = [Path(worker.__file__), Path(miner.__file__), Path(analyst.__file__), Path(__file__)]
     all_violations = []
     for f in files:

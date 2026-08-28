@@ -68,6 +68,19 @@ LEGACY_NAME = "claude_shim"
 #: new `_batch_permissions`/`_capture_batch_permissions` helpers instead
 #: (`DS1_ADDED` below) -- an edited body on an otherwise-unchanged,
 #: still-present test, exactly what `REWRITTEN` is for.
+#: FW-117 (2026-08-28): `worker.write_repair_settings_file` deleted -- a
+#: dead write nothing under the sdk backend ever read (`options_kwargs()`
+#: passes `settings=None` unconditionally, `A-2`). `test_repair.py`'s
+#: `test_b9_...` drops its now-vacuous "settings file does NOT exist"
+#: leg; `test_d5_...` rebased onto a `invocation.write_session` spy
+#: capturing the real `SessionSpec.containment` plus a new mutation-
+#: detecting assertion, instead of reading a file that no longer exists.
+#: `test_attrib.py`'s `test_gr1_...` (already `REWRITTEN` from
+#: U-cleanup-B) and `test_gr3_...` (newly added below) both read the
+#: repair round's permissions via the new `_repair_permissions` helper
+#: (`DS1_ADDED`) instead of calling the deleted function directly --
+#: edited bodies on otherwise-unchanged, still-present tests, exactly
+#: what `REWRITTEN` is for.
 REWRITTEN = (
     ("test_worker.py", "sdk_fake_worker"),
     ("test_worker.py", "notify_shim"),
@@ -75,9 +88,12 @@ REWRITTEN = (
     ("test_repair.py", "_next_run_scripts"),
     ("test_repair.py", "test_f6_no_test_invokes_a_real_claude"),
     ("test_repair.py", "test_h4_every_new_line_in_obs1_is_produced_and_pinned"),
+    ("test_repair.py", "test_b9_kill_switch_disables_composition"),
+    ("test_repair.py", "test_d5_the_narrowed_repair_scope_is_real"),
     ("test_attrib.py", "_simple_shim"),
     ("test_attrib.py", "test_hy1_no_test_in_the_suite_invokes_a_real_claude"),
     ("test_attrib.py", "test_gr1_settings_files_enforce_defaultmode"),
+    ("test_attrib.py", "test_gr3_repair_invocation_is_exact_path_over_staged_paths"),
     ("test_attrib.py", "test_gr2_batch_invocation_granted_the_stage_and_nothing_else"),
     ("test_attrib.py", "test_gr4_write_permission_rules_preserved_for_the_fallback"),
     ("test_attrib.py", "test_cp8_testworkercontainment_asserts_new_containment_and_h3"),
@@ -164,6 +180,11 @@ DS1_REMOVED = (
 #: the four head-only tests SCAN1/SCAN8 replace the deleted ones with,
 #: plus two new head-only fixture-generation helpers
 #: (`_scan8_filler`/`_scan8_fixture_lines`) those tests share.
+#: `_repair_permissions` (FW-117, 2026-08-28) is `test_attrib.py`'s
+#: replacement for the deleted `worker.write_repair_settings_file` --
+#: same shape as `_batch_permissions` above, new top-level helper, no
+#: base counterpart, called by the `REWRITTEN` `test_gr1_.../test_gr3_
+#: ...` entries above.
 DS1_ADDED = (
     ("test_composer.py", "test_composer_analyst_fails_ro5"),
     ("test_attrib.py", "_batch_permissions"),
@@ -174,6 +195,7 @@ DS1_ADDED = (
     ("test_worker.py", "test_cap_retains_managed_region"),
     ("test_worker.py", "test_cap_retains_managed_region_begin_only_case_variant"),
     ("test_worker.py", "test_cap_retains_managed_region_end_only_case_variant"),
+    ("test_attrib.py", "_repair_permissions"),
 )
 
 #: The three `test_fold5_*` MOVE1 tests specifically -- NOT derived by
@@ -307,8 +329,8 @@ def _extract_named_function(source: str, name: str) -> str:
 # from the comparison entirely).
 _DS1_EXPECTED = {
     "test_worker.py": (55, "39305f65724adfb1634ce91285b483b05aea05c662f2de9ac9bf30fa38daf1f8"),
-    "test_repair.py": (64, "c3af3b925322601fda320e44c4c48ad1e1d5f2e984551bbd6adbfb9ab33dea52"),
-    "test_attrib.py": (40, "d7b274c779656cfbcf133a62efce5435cc2441e6091d68329e0795dc42573418"),
+    "test_repair.py": (62, "21f7bdbb888254603e4136f0bbbe89322465f459fab4dfaa6ca1761dfcf1a81f"),  # FW-117 (2026-08-28): b9/d5 rewritten -- re-pinned
+    "test_attrib.py": (39, "8ea49a554c77736225c5b7c451c02fceb7e33291bb325204a5bd124b951a0754"),  # FW-117 (2026-08-28): gr3 rewritten, _repair_permissions added -- re-pinned
     "test_route_cli.py": (38, "45e55f94f60834643efe1bbab1636649acdd3094dd9210dcf64921b2755fdaea"),
     "test_composer.py": (40, "479a3caf84e427a86df6eb17ecefa2ede57a85185df79ff43defe0c9e5f931ec"),
 }
@@ -739,9 +761,12 @@ def test_ds2_rewritten_set_is_exact_and_every_entry_is_live():
         ("test_repair.py", "_next_run_scripts"),
         ("test_repair.py", "test_f6_no_test_invokes_a_real_claude"),
         ("test_repair.py", "test_h4_every_new_line_in_obs1_is_produced_and_pinned"),
+        ("test_repair.py", "test_b9_kill_switch_disables_composition"),
+        ("test_repair.py", "test_d5_the_narrowed_repair_scope_is_real"),
         ("test_attrib.py", "_simple_shim"),
         ("test_attrib.py", "test_hy1_no_test_in_the_suite_invokes_a_real_claude"),
         ("test_attrib.py", "test_gr1_settings_files_enforce_defaultmode"),
+        ("test_attrib.py", "test_gr3_repair_invocation_is_exact_path_over_staged_paths"),
         (
             "test_attrib.py",
             "test_gr2_batch_invocation_granted_the_stage_and_nothing_else",
@@ -782,7 +807,7 @@ def test_ds2_rewritten_set_is_exact_and_every_entry_is_live():
             "test_fold5_honest_sentinel_when_project_path_truly_not_supplied",
         ),
     }
-    assert len(REWRITTEN) == 23  # U-corrob DEN3 (2026-08-28)
+    assert len(REWRITTEN) == 26  # merge 2026-08-28: base 22 + master's 1 + U-fw117's 3
     assert set(REWRITTEN) == expected
 
     for module, name in REWRITTEN:
@@ -843,8 +868,9 @@ def test_ds1c_added_set_is_exact_and_every_entry_is_head_only():
         ("test_worker.py", "test_cap_retains_managed_region"),
         ("test_worker.py", "test_cap_retains_managed_region_begin_only_case_variant"),
         ("test_worker.py", "test_cap_retains_managed_region_end_only_case_variant"),
+        ("test_attrib.py", "_repair_permissions"),
     }
-    assert len(DS1_ADDED) == 9
+    assert len(DS1_ADDED) == 10  # merge 2026-08-28: base 3 + master's 6 + U-fw117's 1
     assert set(DS1_ADDED) == expected
 
     for module, name in DS1_ADDED:

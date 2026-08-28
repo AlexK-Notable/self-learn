@@ -1,5 +1,16 @@
 # Spec — U-sdk: the SDK backend
 
+**Superseded in part 2026-08-28 by `U-fw117`** (FW-117 CLOSED,
+`14-forward-work-map.md`): this spec quotes `write_repair_settings_file`'s
+live-CLI-verified docstring at length as evidence for the sdk backend's
+`settings=None` design -- the function itself is now DELETED (a dead
+write nothing under the sdk backend ever read back). The evidence and
+verification this spec records stay true as a historical measurement;
+they are not undone by the function's deletion, they are simply no
+longer readable from a function that no longer exists. The rest of this
+document is left as written below -- it is the historical build record
+for this unit's own contract at the time it shipped.
+
 Status: **r4 — SOUND. Cleared for build; no further spec gate.** Unit
 `U-sdk`, **Wave 1** of the approved Agent-SDK migration. Wave 0
 (`U-seam`) is merged; this is the first unit in the repo that imports

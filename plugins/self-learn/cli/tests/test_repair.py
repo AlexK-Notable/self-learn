@@ -970,11 +970,21 @@ def test_b8_world_repair_output_still_invalid(env, sdk_fake_worker, monkeypatch)
 def test_b9_kill_switch_disables_composition(env, sdk_fake_worker, monkeypatch):
     """B9 — the kill switch is exact, and switches off COMPOSITION, not
     just the call. With SELF_LEARN_REPAIR=0 on an entirely-invalid
-    fixture, all five: one invocation; the disabled log line and no
-    `repair round —` line; the narrowed settings file does NOT exist;
-    the repair-prompt composer was never called; the concrete RunResult
-    shape, including `touched == [<every fixture PATH>]` — deletions ARE
-    in `touched` by design."""
+    fixture, all four: one invocation; the disabled log line and no
+    `repair round —` line; the repair-prompt composer was never called;
+    the concrete RunResult shape, including `touched ==
+    [<every fixture PATH>]` — deletions ARE in `touched` by design.
+
+    FW-117 (2026-08-28): dropped from five checks to four. The fifth
+    used to be "the narrowed settings file does NOT exist" — a
+    discriminating check while `worker.write_repair_settings_file`
+    existed (it distinguished "the kill switch also disabled the write"
+    from "the write always happens"). That function is DELETED now, not
+    merely un-called: the file never exists whether the switch is on or
+    off, so the assertion would be vacuously true here and asserts
+    nothing about the kill switch specifically — moved to `test_rp1`/
+    `test_d5`, which assert it under repair ENABLED, the leg where a
+    reintroduced write would actually be caught."""
     rid = seed_pending(env)
     monkeypatch.setenv("SELF_LEARN_REPAIR", "0")
     monkeypatch.setenv(
@@ -993,7 +1003,6 @@ def test_b9_kill_switch_disables_composition(env, sdk_fake_worker, monkeypatch):
     log_text = (worker.cache_dir() / "worker.log").read_text(encoding="utf-8")
     assert "run: repair round disabled (SELF_LEARN_REPAIR=0)" in log_text
     assert "run: repair round —" not in log_text
-    assert not worker._p("worker.repair.settings.json").exists()
     assert composer_calls == []
 
     assert result.status == "failed"
@@ -1548,12 +1557,45 @@ def test_d4_repair_round_does_not_enlarge_the_blast_radius(env, sdk_fake_worker,
 
 
 def test_d5_the_narrowed_repair_scope_is_real(env, sdk_fake_worker, monkeypatch):
-    """D5 — the narrowed repair scope is real: the repair settings file
-    has exactly one entry per member of E, every entry an absolute
-    Edit(/<path>) rule naming a member of E, no entry a glob (this
-    unit's exact-path design, live-verified per §3.7 — see the build
-    report; the OR-branch for `write_permission_rules` glob fallback
-    does not apply here)."""
+    """D5 — the narrowed repair scope is real: exactly one entry per
+    member of E, every entry an absolute Edit(/<path>) rule naming a
+    member of E, no entry a glob (this unit's exact-path design,
+    live-verified per §3.7 — see the build report; the OR-branch for
+    `write_permission_rules` glob fallback does not apply here).
+
+    FW-117 (2026-08-28): `worker.write_repair_settings_file` is DELETED
+    — it was a dead write nothing ever read (`invocation_sdk/backend.py`
+    ::`options_kwargs()` has passed `settings=None` unconditionally
+    since before this unit; the cli-era `--settings <path>` reader left
+    with `CliBackend`). At base `61c30b3` this test read the file back
+    off disk: `settings_path = worker._p("worker.repair.settings.json")`,
+    `assert settings_path.exists()`, then asserted the rules/defaultMode
+    shape above off the parsed JSON — see `git show 61c30b3:plugins/
+    self-learn/cli/tests/test_repair.py` around this test for the exact
+    old body.
+
+    NEW contract, two parts: (1) the mutation-detecting assertion — the
+    repair round writes NO settings file at all, full stop; reintroduce
+    the deleted call and this reddens. (2) the narrowed-scope PROPERTY
+    is not gone, only its on-disk proxy is — it is captured here off the
+    real `SessionSpec.containment` via a spy on `invocation.
+    write_session` (the same real observable `options_kwargs()`/
+    `can_use_tool` are built from, not a second, independently-computed
+    file that could silently drift from it), and is exercised end to
+    end by `CH10`'s third leg (`test_invocation_sdk.py`) against the
+    charter directly."""
+    from self_learn import invocation
+
+    captured_containment = []
+    real_write_session = invocation.write_session
+
+    def spy(spec, **kwargs):
+        if spec.surface == "worker-repair":
+            captured_containment.append(spec.containment)
+        return real_write_session(spec, **kwargs)
+
+    monkeypatch.setattr(invocation, "write_session", spy)
+
     ra = seed_pending(env, "lrn-0000aaaa", created_at="2026-07-01T00:00:00Z")
     rb = seed_pending(env, "lrn-0000bbbb", created_at="2026-07-02T00:00:00Z")
     round1 = "\n".join([
@@ -1569,14 +1611,20 @@ def test_d5_the_narrowed_repair_scope_is_real(env, sdk_fake_worker, monkeypatch)
         ]),
     )
     worker.run(env.home)
-    settings_path = worker._p("worker.repair.settings.json")
-    assert settings_path.exists()
-    settings_data = json.loads(settings_path.read_text(encoding="utf-8"))
-    rules = settings_data["permissions"]["allow"]
+
+    # (1) the mutation-detecting assertion -- FW-117's whole point.
+    assert not worker._p("worker.repair.settings.json").exists()
+
+    # (2) the narrowed-scope property, off the real containment instead.
+    assert len(captured_containment) == 1
+    containment = captured_containment[0]
     # U-attrib (GR-d): E's members are now STAGED paths, not ledger ones.
     expected_paths = sorted(
         [str(worker.stage_dir() / f"{ra}.yaml"), str(worker.stage_dir() / f"{rb}.yaml")]
     )
+    assert containment.write_exact == tuple(expected_paths)
+    assert containment.write_globs == ()
+    rules = invocation.containment_rules(containment)
     assert rules == [f"Edit(/{p})" for p in expected_paths]
     for rule in rules:
         assert rule.startswith("Edit(//")
@@ -1584,7 +1632,8 @@ def test_d5_the_narrowed_repair_scope_is_real(env, sdk_fake_worker, monkeypatch)
     # security hotfix: without an explicit defaultMode, the session
     # inherits the host's global permissions.defaultMode (which may be
     # "bypassPermissions"), voiding every allow-rule above.
-    assert settings_data["permissions"]["defaultMode"] == "default"
+    permissions = invocation.containment_permissions(containment)
+    assert permissions["defaultMode"] == "default"
 
 
 def test_d6i_f_a_is_enforced(env, sdk_fake_worker, monkeypatch):

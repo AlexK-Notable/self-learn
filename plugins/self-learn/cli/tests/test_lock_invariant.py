@@ -122,10 +122,12 @@ NOT_REPO_TRUTH = {
     # round no longer writes a settings file at all (settings=None for the
     # real sdk seam; see WS1 in test_worker_contract.py). No exemption
     # needed for a function that no longer exists.
-    # U-repair §3.7: the repair round's NARROWED settings file — same
-    # cache namespace and same shape as write_settings_file above, one
-    # exact-path Edit(...) rule per repair-eligible proposal.
-    "worker.write_repair_settings_file": "XDG cache: the repair round's Claude settings",
+    # FW-117 (2026-08-28): worker.write_repair_settings_file is DELETED
+    # too — the repair round's NARROWED settings file was a dead write,
+    # same cache namespace and same shape as write_settings_file above,
+    # but nothing under the sdk backend ever read it back
+    # (`options_kwargs()` passes settings=None unconditionally, `A-2`).
+    # No exemption needed for a function that no longer exists.
     # U-attrib §3.1/§3.4: the exclusive stage and its bookkeeping — never
     # a ledger path (Stage-1's whole thesis).
     "worker.stage_reset": "XDG cache: the worker's exclusive stage (Stage-1)",

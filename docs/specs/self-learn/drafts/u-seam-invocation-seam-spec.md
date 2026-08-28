@@ -1,5 +1,17 @@
 # Spec — U-seam: the invocation seam
 
+**Superseded in part 2026-08-28 by `U-fw117`** (FW-117 CLOSED,
+`14-forward-work-map.md`): this spec introduces the twin-witness
+registry `SETTINGS_WITNESS` (including its `worker-repair` entry,
+`worker.write_repair_settings_file`) and the CN6/CN7 legs built on it —
+`worker.write_repair_settings_file` is now DELETED, along with
+`SETTINGS_WITNESS`, `test_cn6_witnesses_a_and_b_agree_statically`, and
+`test_cn7_repair_leg_over_both_enforce_values` (`test_invocation.py`).
+It was a dead write nothing under the sdk backend ever read back
+(`options_kwargs()` passes `settings=None` unconditionally). The rest of
+this document is left as written below — it is the historical build
+record for this unit's own contract at the time it shipped.
+
 Status: **r3 — CLEARED FOR BUILD.** Two gate rounds, 31 findings, all
 folded (§10 maps each to its change). r1 blind gate: **NOT SOUND — 2
 BLOCKER / 6 MAJOR / 13 NOTE**; r2 delta: **NOT SOUND — 2 MAJOR / 8
