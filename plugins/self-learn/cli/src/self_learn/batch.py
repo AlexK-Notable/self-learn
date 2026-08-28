@@ -87,17 +87,18 @@ PERMITTED_VERBS = frozenset(PERMITTED_KEYS)
 #: on a sheet item -- caught at BAT1's whole-sheet validation, same as an
 #: unknown key or a malformed id (nothing runs). Every other permitted
 #: key is optional (defer's ``until`` falls back to the default +30
-#: days; etc). ``route``'s ``dest`` is REQUIRED (amended code gate r1,
-#: N7): a no-dest route item on an already-routed record could only be
-#: classified already-applied by trusting ANY routed status, since the
-#: proposal sibling that would resolve an implicit dest is swept the
-#: moment the FIRST route lands -- that converted a real refusal signal
-#: (a stale/mismatched sheet re-run against a record routed by some
-#: unrelated path) into a silent skip. Requiring ``dest`` up front
-#: removes the ambiguity outright: ``classify``'s route arm now always
-#: compares against a name the sheet itself gave, never a guess.
+#: days; ``route``'s ``dest`` falls back to the proposal sibling; etc).
+#: ``route``'s ``dest`` is deliberately NOT required (code gate r2,
+#: MAJ-r2-1): §4.4's own example sheet carries a dest-less
+#: ``{verb: route, collapse: merge-...}`` line, and §4.4's permitted-key
+#: rule is "exactly the keys that verb's CLI accepts" -- the CLI's
+#: ``--dest`` is optional. `classify`'s own ``if f.get("dest") is None:
+#: return False`` (below) already closes the N7 gap this once tried to
+#: close by requiring the key: a dest-less route item against an
+#: ALREADY-routed record is never silently marked already-applied --
+#: it reaches the verb at dispatch and refuses there, naming the actual
+#: status.
 REQUIRED_KEYS: dict[str, frozenset[str]] = {
-    "route": frozenset({"dest"}),
     "supersede": frozenset({"new_id"}),
     "rehome": frozenset({"to"}),
     "rescope": frozenset({"to"}),
@@ -274,14 +275,19 @@ def classify(home: Path, item: SheetItem) -> bool:
     if verb == "route":
         if record.status != "routed":
             return False
-        # `dest` is REQUIRED for route items (REQUIRED_KEYS, code gate
-        # r1 N7) -- already-applied is decided ONLY against a
-        # destination the sheet itself named, never a guess. A caller
-        # that bypasses load_sheet's validation and hands classify() a
-        # dest-less route item gets the SAME treatment §3.3b gives any
-        # other unresolvable comparison: not already-applied, so it
+        # `dest` is OPTIONAL on a route sheet item (code gate r2,
+        # MAJ-r2-1 -- §4.4's own example sheet carries a dest-less
+        # `{verb: route, collapse: merge-...}` line). But already-
+        # applied is decided ONLY against a destination the sheet
+        # itself named, never a guess: a dest-less item against an
+        # ALREADY-routed record gets the SAME treatment §3.3b gives any
+        # other unresolvable comparison -- not already-applied, so it
         # reaches the verb at dispatch and refuses there naming the
-        # actual state -- never a silent skip.
+        # actual state, never a silent skip (code gate r1 N7). A
+        # dest-less item against a PENDING record still classifies
+        # False here (status != "routed" above) and applies normally,
+        # resolving its destination from the proposal sibling exactly
+        # as `route` itself would without `--dest`.
         if f.get("dest") is None:
             return False
         resolved = _resolved_route_dest(home, path, item)

@@ -106,7 +106,12 @@ frontmatter field — prose does not belong in machine frontmatter and it
 would bloat every `list --json` parse; a sibling file — the analyst's
 space, an extra thing to sweep on rehome/resolve and scan out-of-band,
 whereas a body section is secret-scanned on every write (§2), moves
-byte-untouched on rehome (§2 `rehome`), and is git-versioned with the
+byte-untouched on rehome/rescope *(true of the BODY unconditionally —
+corrected 2026-08-28, code gate r2, N-r2-2: since U-verbs §3.2 widened
+`--to` past project↔project, a cross-scope move now rewrites the
+record's `scope:` frontmatter to match the destination — §2 `rehome`'s
+own amendment above — so only the body, never the whole record byte-
+for-byte, is guaranteed untouched)*, and is git-versioned with the
 record.)*
 
 - **Validator (register it as optional; do not gate compilers on it).**
@@ -511,8 +516,12 @@ standard safe rebase-halt (`01` §5) rather than being excluded outright.
   refusals that used to open this list — source in a `projects/*`
   bucket, `--to == project`, `skill → skill` — are GONE; `rescope`
   reaches project buckets exactly as `rehome` does, via the same
-  shared resolver.)* No `meta.yaml` (`user`/`skill:` buckets carry no
-  project identity). No telemetry event — `EVENT_KINDS` is a closed set,
+  shared resolver.)* `meta.yaml` stamped **IFF the target is a project
+  bucket** *(corrected 2026-08-28, code gate r2, N-r2-1 — the widened
+  grammar above means a `rescope --to <project>` now stamps one, same
+  rule `rehome` always used — MOVE2; only a `user`/`skill:<name>`
+  target carries no `meta.yaml`, since those buckets carry no project
+  identity to stamp)*. No telemetry event — `EVENT_KINDS` is a closed set,
   the sibling verb `rehome` emits nothing either, and git is already the
   provenance record. Not agent-proposable in M1 — human-CLI-only, and
   does not join the pane's closed proposable-verb list.

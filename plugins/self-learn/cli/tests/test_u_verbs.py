@@ -56,6 +56,7 @@ from support import (
     make_behavior,
     make_env,
     make_knowledge,
+    merge_proposal_text,
     proposal_dict,
     verb_files,
     verb_subject,
@@ -778,6 +779,22 @@ class TestState:
         hits = len(re.findall(r"resolution_note.*= None", method_source))
         assert hits == 1, method_source
 
+        # N-r2-3 (code gate r2, optional hardening): the method-scoped
+        # count above cannot see a SECOND clearer added elsewhere in the
+        # package. One package-wide grep closes that: today there are
+        # exactly 2 hits total -- this method's own write, and
+        # `Record.create`'s field default (a creation default, not a
+        # clearer) -- so "the only writer that may clear it" holds.
+        proc = subprocess.run(
+            ["grep", "-rc", r"resolution_note.*= None", str(CLI_SRC / "self_learn")],
+            capture_output=True, text=True,
+        )
+        package_hits = sum(
+            int(line.rsplit(":", 1)[1]) for line in proc.stdout.splitlines()
+            if line.rsplit(":", 1)[1] != "0"
+        )
+        assert package_hits == 2, proc.stdout
+
     @pytest.mark.parametrize("verb", ["graduate", "route"])
     def test_state6_reopen_refuses_terminal(self, env2, verb):
         record = env2.seed(scope="skill:a")
@@ -1391,33 +1408,27 @@ class TestBatch:
         batch.run(env2.home, items, no_push=True)
         assert tree_hash(env2.home) != ledger_before
 
-    def test_bat9b_route_dest_is_required_and_never_a_silent_skip(self, env2, tmp_path):
-        """N7 (code gate r1, real semantic bug fix): `batch.classify`'s
-        `route` arm used to accept ANY routed status as already-applied
-        when the sheet gave no `dest` -- unable to tell 'this is my own
-        prior work, re-run' from 'this id happened to get routed by
-        something else entirely' (the proposal that would resolve an
-        implicit dest is swept the moment the first route lands). Fixed
-        by requiring `dest` on every route sheet item (`REQUIRED_KEYS`),
-        which removes the ambiguity outright. Two legs: (1) a sheet
-        naming `route` with no `dest` is refused at LOAD time -- nothing
-        runs (BAT1's own contract); (2) a route item with an explicit
-        `dest` against a record in a DIFFERENT resolved status (here,
-        already `rejected`) is NEVER already-applied -- it reaches the
-        verb at dispatch and comes back REFUSED, naming the actual
-        state, never a silent already-applied skip."""
-        # leg 1: dest is REQUIRED -- a bare {id, verb: route} sheet item
-        # refuses at load time.
-        good = env2.seed(scope="skill:a")
-        with pytest.raises(batch.BatchError, match="missing required"):
-            batch.load_sheet(_write_sheet(env2.home.parent, [
-                {"id": good.id, "verb": "route"},
-            ]))
-
-        # leg 2: dest given, but the record is REJECTED, not routed --
-        # classify() must say False (not already-applied), and dispatch
-        # must REFUSE naming the actual status, never silently skip it
-        # as if it were done.
+    def test_bat9b_route_dest_optional_never_a_silent_skip(self, env2, tmp_path):
+        """N7 (code gate r1) then MAJ-r2-1 (code gate r2, over-correction
+        fixed): `batch.classify`'s `route` arm used to accept ANY routed
+        status as already-applied when the sheet gave no `dest` --
+        unable to tell 'this is my own prior work, re-run' from 'this id
+        happened to get routed by something else entirely' (the
+        proposal that would resolve an implicit dest is swept the
+        moment the first route lands). r1 closed the gap by making
+        `dest` REQUIRED on every route sheet item -- but that refused
+        the spec's OWN §4.4 example sheet line (`{verb: route,
+        collapse: merge-...}`, no `dest`) at load time, exit 64.
+        `classify`'s own `if f.get("dest") is None: return False`
+        already closes the gap by itself (see
+        `test_bat9c_spec_example_route_with_collapse_loads_and_applies`
+        for the load-and-apply leg) -- so `REQUIRED_KEYS` no longer
+        names `route` at all. This test is leg 2 of N7's original pair:
+        a route item with an explicit `dest` against a record in a
+        DIFFERENT resolved status (here, already `rejected`) is NEVER
+        already-applied -- it reaches the verb at dispatch and comes
+        back REFUSED, naming the actual state, never a silent
+        already-applied skip."""
         rejected_rec = env2.seed(scope="skill:a")
         verbs.reject(env2.home, rejected_rec.id, no_push=True)
         items = batch.load_sheet(_write_sheet(env2.home.parent, [
@@ -1427,6 +1438,63 @@ class TestBatch:
         result = batch.run(env2.home, items, no_push=True)
         assert result.items[0].state == "refused"
         assert "rejected" in (result.items[0].detail or "")
+
+    def test_bat9c_spec_example_route_with_collapse_loads_and_applies(self, env2):
+        """MAJ-r2-1 (code gate r2): the spec's own §4.4 example sheet is
+        quoted verbatim with a THIRD line that has no `dest` at all --
+        `{id: lrn-4e95b3a6, verb: route, collapse: merge-1a2b3c4d}` --
+        because a merge-collapse route's destination comes from the
+        SURVIVOR's own proposal, never a literal the sheet author would
+        type. r1's `REQUIRED_KEYS["route"] = {"dest"}` refused this
+        exact shape at load time (exit 64, nothing runs) -- a contract
+        §4.4 pins ('a permitted key is exactly a key that verb's CLI
+        accepts'; the CLI's `--dest` is optional). Reproduces the gate's
+        own probe: the example-shaped item LOADS, `classify` reads it
+        as not-yet-applied (the record is still pending, not routed),
+        and `batch.run` APPLIES it -- resolving the destination from
+        the proposal sibling via `_resolved_route_dest`/
+        `_resolve_destination`, exactly as `route` itself would without
+        `--dest` on the command line."""
+        survivor_id = "lrn-c0110001"
+        loser_id = "lrn-c0110002"
+        cluster = "merge-c0110000"
+        survivor = make_behavior(
+            record_id=survivor_id, scope="skill:a",
+            trigger="Editing .storage live via the r2 collapse probe.",
+        )
+        loser = make_behavior(
+            record_id=loser_id, scope="skill:a",
+            trigger="Editing .storage while HA runs, r2 collapse probe.",
+        )
+        create_record(env2.home, survivor)
+        create_record(env2.home, loser)
+        lpath = env2.bucket_skill_a / "pending" / f"{loser_id}.md"
+        lrec = Record.from_path(lpath)
+        lrec.append_evidence({"session": "sess-b", "ts": "2026-07-14T00:00:00Z"})
+        lrec.write(lpath)
+        write_proposal(env2.home, survivor_id, proposal_dict(scope="skill:a"))
+        write_proposal(env2.home, loser_id, proposal_dict(scope="skill:a"))
+        (env2.bucket_skill_a / "proposals" / f"{cluster}.yaml").write_text(
+            merge_proposal_text(cluster, [survivor_id, loser_id], survivor_id),
+            encoding="utf-8",
+        )
+        commit_all(env2.home, "cluster seeded")
+
+        # the spec's own example line shape: verb: route, collapse
+        # given, dest OMITTED entirely.
+        items = batch.load_sheet(_write_sheet(env2.home.parent, [
+            {"id": survivor_id, "verb": "route", "collapse": cluster},
+        ]))
+        assert batch.classify(env2.home, items[0]) is False  # not yet routed
+
+        result = batch.run(env2.home, items, no_push=True)
+        assert result.items[0].state == "applied", result.items[0].detail
+
+        survivor_rec = Record.from_path(env2.bucket_skill_a / "resolved" / f"{survivor_id}.md")
+        assert survivor_rec.status == "routed"
+        loser_rec = Record.from_path(env2.bucket_skill_a / "resolved" / f"{loser_id}.md")
+        assert loser_rec.status == "superseded"
+        assert loser_rec.superseded_by == survivor_id
 
     def test_bat10_partial_exit_and_head_accounting(self, env2):
         r1, r2, r3 = (env2.seed(scope="skill:a") for _ in range(3))
