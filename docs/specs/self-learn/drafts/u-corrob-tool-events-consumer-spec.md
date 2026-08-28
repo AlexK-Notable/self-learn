@@ -15,6 +15,8 @@ noise analysis was **re-aimed at the mode that exists at HEAD** with a
 34 → 40. **Gate r3: NOT SOUND** — **0 BLOCKER**, 2 MAJOR, 4 NIT, 1 DOCS; all
 nine r2 findings verified folded, and `PIN7`'s armor argument upheld exactly
 as written.
+**r5 (2026-08-27)** — two gate nits folded post-SOUND r4 (no re-gate, repricing rule 2026-07-26): anchor `A-8` net delta −7; `RunEvidence(root, *, flat)` spelled at every site; absolute home paths scrubbed to `~`.
+
 **r4 (2026-08-27)** — the two r3 majors, four nits and one doc fold. Changed
 sections carry **(CORRECTED-r4, gate X-n)**; earlier markers are left in place
 so the fold history stays legible. Structural changes, both bounded: the
@@ -140,12 +142,12 @@ proposes nothing from `G-1`'s list.
 
 `worker.cache_dir()` (`worker.py:640`) is
 `${XDG_CACHE_HOME:-~/.cache}/self-learn/home-<sha256(resolved home)[:8]>/`.
-For the live home `/home/komi/.self-learn` that digest is `0f24de4d`,
+For this host's live home (`~/.self-learn`, absolute path hashed) that digest is `0f24de4d`,
 computed without invoking the CLI (`cache_dir()` calls `mkdir`, and
 `~/.self-learn` is read-only for this unit):
 
 ```
-$ python3 -c "import hashlib;print(hashlib.sha256(b'/home/komi/.self-learn').hexdigest()[:8])"
+$ python3 -c "import hashlib;print(hashlib.sha256(b'<absolute ledger home>').hexdigest()[:8])"
 0f24de4d
 ```
 
@@ -260,7 +262,7 @@ analyst run                          tool_use  charter  sdk-result   tools
 each.** The same denial is recorded THREE times per run: once as
 `{"source":"charter","tool":"Bash","reason":"self-learn invocation charter:
 Bash is outside the permitted surface — denied by default"}`, once as
-`{"source":"sdk-result","value":{…"tool_input":{"command":"find /home/komi
+`{"source":"sdk-result","value":{…"tool_input":{"command":"find ~
 -name card-sections.yaml …"}}}` (the SDK's own `permission_denials`,
 carrying the full unscrubbed input), and once as the paired
 `tool_result`'s `is_error` content, which is the charter's deny message
@@ -293,7 +295,7 @@ surface can open the hatch.
 **A second finding the corpus volunteered.** Of the analyst's **22**
 `tool_use` events in that window, **16 results (72.7%) are errors** — the
 8 charter `Bash` denials plus **8 `Read` calls returning `File does not
-exist. Note: your current working directory is /home/komi/.self-learn.`**
+exist. Note: your current working directory is ~/.self-learn.`**
 The analyst was hunting for a file that is not there, was denied the tool
 that would have found it, and produced its answer anyway. **None of this
 reached the operator, who was sitting in front of an attended
@@ -389,7 +391,7 @@ because it is the directory this unit reads:
 $ ls -d ~/.cache/self-learn/home-* | wc -l
 31269
 $ du -sh ~/.cache/self-learn
-1.1G    /home/komi/.cache/self-learn
+1.1G    ~/.cache/self-learn
 $ find ~/.cache/self-learn -maxdepth 2 -name '*.tool-events.*.jsonl' -printf '%h\n' | sort -u | wc -l
 2
 ```
@@ -983,7 +985,7 @@ Top level, not `invocation_sdk/` (§4.0). It consumes outcomes; it is not
 part of the seam.
 
 ```
-RunEvidence(root: Path)                 # caller constructs with its granted root
+RunEvidence(root: Path, *, flat: bool)  # caller constructs with its granted root; worker flat=True, reader flat=False
   .seen: bool                           # an outcome was observed at all
   .failure: str | None                  # the last observed outcome's failure
   .events_present: bool                 # the outcome HAS a `tool_events` attribute
@@ -1144,7 +1146,7 @@ ruling refuses; do not write it.
 ### 6.4 `miner.py` — the reader *(CORRECTED-r2, gate B-2)*
 
 `_invoke_reader` already binds `outcome` (`miner.py:770`) and already
-logs. One `RunEvidence(root=spool_dir())`, observed on that outcome.
+logs. One `RunEvidence(root=spool_dir(), flat=False)`, observed on that outcome.
 
 **The filesystem census is a before/after snapshot pair, recursive**
 *(CORRECTED-r3, gates M-1r2 and N-5r2 — §3.0 has the full derivation)*:
@@ -1645,7 +1647,7 @@ reason stated in §9.7.
 | A-5 | The full pin census against `src/self_learn/corroborate.py` (§4.1) | `PL1` True, `PL3` 5, EV4-a True, EV4-b no violations, BND4 clean, `POL2` 0/3, walker sees the module — **all six pins green unedited**. Also the `M-4` inversion. |
 | A-6 | Retention ordering | `backend.py:574` write then `:593` prune, comment at `:587-592`; `git log -S` → `ead58ad 2026-08-27 03:41:26` — steady state `keep`=20, today's 21 is residue |
 | A-7 | EV4-b reddens on a second `tool-events` occurrence in a scratch copy of `worker.py`, and on the probe in a copy of `miner.py` | Verified by the `U-opsfix` gate, 2026-08-26 (14 `:522`); **the builder re-runs it, adding a `corroborate.py` copy** (`PIN1`/`M19`) — this is the PARTIALLY-measured one |
-| A-8 | The §6.6 fixture edit against all five armor legs, on a scratch copy | `_scenario_shim_script in base_func_names` **False**; leg 1 violations **NONE**; leg 2 `new_names == sanctioned` **True**; leg 3 `cur − base == {"shim_script"}` **True** and every base key still bound to its original `__name__`; leg 4 statement dumps **identical**; `test_hy3` shas changed **NONE**, key set unchanged; net line delta **0**. `PIN7` holds. |
+| A-8 | The §6.6 fixture edit against all five armor legs, on a scratch copy | `_scenario_shim_script in base_func_names` **False**; leg 1 violations **NONE**; leg 2 `new_names == sanctioned` **True**; leg 3 `cur − base == {"shim_script"}` **True** and every base key still bound to its original `__name__`; leg 4 statement dumps **identical**; `test_hy3` shas changed **NONE**, key set unchanged; net line delta **−7** (14 → 7; the four spellings are `A-10`). `PIN7` holds. |
 | A-9 | The `worker.log` line-class census that fixes the `run:` prefix (`COR12`) | `run:` **84** timestamped + **27** bare `worker run: …`, `window` **46**, `escalation:` **11** — 168/168 lines, four classes, no fifth |
 | A-10 | The `test_hy5` numstat bound under all four edit spellings (`PIN7`, §6.6) | live tracked `git diff --numstat 442385d -- …/fake_claude.py` → **`390 1`**; `--no-index` control reproduces `390 1`; printed 7-line block → **`383 1`** (adjusted 381 vs cap 388, **7 under**); printed block + the 2-line comment → `385 1` (383, still green); line-preserving spelling → `390 1` (388, at the cap) |
 
@@ -1911,7 +1913,7 @@ becomes the record of the refusal rather than of a build.)*
   ATTENDED surface.** Measured over the only window with analyst tool
   events (2026-08-21, 8 runs): **16 of 22 tool calls (72.7%) errored** — 8
   charter `Bash` denials plus 8 `Read` calls returning `File does not
-  exist. Note: your current working directory is /home/komi/.self-learn.`
+  exist. Note: your current working directory is ~/.self-learn.`
   The analyst's `SessionSpec` passes `log=lambda _msg: None`
   (`analyst.py:236`), so none of it reaches the operator. **`U-corrob`
   closes the DENIAL half** (`DEN3`: `teach --route` prints a denial count
@@ -2137,6 +2139,7 @@ has no owning unit. It is named in the row; it is not scheduled.
   anchors (`A-8` the armor replication, `A-9` the log-prefix census).
   **Gate r3: NOT SOUND** (0 B, 2 M, 4 N, 1 D) — all nine r2 findings verified
   folded; `PIN7`'s argument upheld; both majors introduced by the r3 folds.
+- **r5 (2026-08-27)** — two post-SOUND nits + home-path scrub.
 - **r4 (2026-08-27)** — the two r3 majors, four nits and one doc fold.
   Structural: the worker's accepted-inside predicate narrowed to
   **parent == `stage_dir()`** (`COR13`/`M41`), because the r3 fixture fix
