@@ -116,7 +116,6 @@ __all__ = [
     "stage_reset",
     "staged_paths",
     "write_permission_rules",
-    "write_repair_settings_file",
 ]
 
 DEFAULT_COALESCE_SECS = 600
@@ -877,7 +876,9 @@ def stage_reset(home: Path) -> None:
     removed by the NEXT run's clear, not swept later. ``home`` is unused
     directly (:func:`cache_dir` resolves the ledger home itself, doc 13
     H-4) — kept as a parameter to match the spec's call shape and this
-    module's own convention (e.g. :func:`write_repair_settings_file`)."""
+    module's own convention (e.g. :func:`stage_permission_rules`, below —
+    FW-117 deleted the other example this docstring used to cite,
+    :func:`write_repair_settings_file`, a dead write nothing read)."""
     del home
     path = stage_dir()
     shutil.rmtree(path, ignore_errors=True)
@@ -909,55 +910,15 @@ def _stage_enabled() -> bool:
 
 def _enforce_scope() -> bool:
     """``SELF_LEARN_ENFORCE_SCOPE=0`` — the enforcement switch (§3.7):
-    omits ``defaultMode`` from both settings files, i.e. the exact shape
-    the shipped code wrote before ``GR-a``'s hotfix."""
+    omits ``defaultMode`` from both the batch and repair rounds'
+    containment (``invocation.containment_for(..., enforce=...)``), i.e.
+    the exact shape the shipped code wrote before ``GR-a``'s hotfix, back
+    when both rounds still rendered an on-disk settings file (batch's,
+    ``worker.write_settings_file``, deleted by U-cleanup-B §8.1; repair's,
+    ``worker.write_repair_settings_file``, deleted by FW-117 — neither
+    round writes a settings file to disk any more, the charter is the
+    sole authority for both, `A-2`)."""
     return os.environ.get("SELF_LEARN_ENFORCE_SCOPE") != "0"
-
-
-def write_repair_settings_file(home: Path, paths: list[Path]) -> Path:
-    """§3.7 — the repair round's NARROWED settings file: one EXACT-PATH
-    ``Edit(...)`` rule per member of the repair set ``E``, sorted — never
-    a glob. This is the structural half of "the repair round must not
-    enlarge the blast radius" (§2, FW-84): the CLI itself refuses writes
-    outside the assigned set — true because this file pins
-    ``defaultMode: "default"`` below (omitted only under
-    ``SELF_LEARN_ENFORCE_SCOPE=0``); without that key the scopes were
-    decorative (see the next paragraph).
-
-    U-attrib (``GR-d``): ``paths`` now names STAGED files — the caller
-    resolves ``E`` over the stage (or, under ``SELF_LEARN_STAGE=0``, over
-    ledger paths exactly as ``U-repair`` shipped); this function itself
-    is unchanged either way, it just names whatever it is given. The
-    exact-path-vs-glob-fallback branch ``U-repair`` §3.7 left open is
-    CLOSED (`Z2` settled it: an ``Edit(...)`` rule matches for both
-    create and modify, exact-path and glob alike — `GR3`).
-
-    Verified against the live CLI (2.1.226) as a builder obligation
-    (§3.7), not assumed: a scratch home, the worker's real argv shape
-    (``--allowedTools Read,Grep,Glob --disallowedTools
-    ...,Edit,...``, Edit granted ONLY via this settings file), one
-    exact-path rule for a target file — a sibling file in the SAME
-    directory, granted no rule of its own, was refused; the granted
-    target was editable. (This host's OWN interactive
-    ``~/.claude/settings.json`` sets ``permissions.defaultMode:
-    bypassPermissions``, which — same as it did for the batch-invocation
-    globs until ``defaultMode`` was pinned there too — voids any
-    settings-file scope that omits the key; the probe
-    above set ``defaultMode: "default"`` in the probe's OWN ``--settings``
-    file to exercise real enforcement, since a CLI-supplied settings file
-    takes precedence over the user's global one. See the build report.)"""
-    home = Path(home)
-    path = _p("worker.repair.settings.json")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    rules = [f"Edit(/{p})" for p in sorted(paths)]
-    permissions: dict[str, object] = {"allow": rules}
-    if _enforce_scope():
-        permissions["defaultMode"] = "default"
-    path.write_text(
-        json.dumps({"permissions": permissions}, indent=2),
-        encoding="utf-8",
-    )
-    return path
 
 
 # ------------------------------------------------------------------- kick
@@ -3247,9 +3208,17 @@ def run(
                         repair_prompt = _compose_repair_prompt(
                             home, repair_eligible_paths
                         )
-                        write_repair_settings_file(
-                            home, list(repair_eligible_paths)
-                        )
+                        # FW-117 (2026-08-28): `write_repair_settings_file`
+                        # used to be called here, writing a real settings
+                        # file to `worker.repair.settings.json` -- a dead
+                        # write nothing ever read (`options_kwargs()`
+                        # passes `settings=None` unconditionally, `A-2`;
+                        # the cli-era `--settings <path>` reader is gone
+                        # with `CliBackend`). Deleted outright, not
+                        # guarded: the containment passed to
+                        # `_invoke_claude` below (`write_exact=`) is the
+                        # SAME data this call used to render to disk, and
+                        # is what the charter actually enforces.
                         # Pre-declared (not just branch-assigned): the
                         # two blocks below are gated by the SAME
                         # `stage_on` value both times, so exactly one of

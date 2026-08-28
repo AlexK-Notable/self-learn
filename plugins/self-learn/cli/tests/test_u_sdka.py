@@ -1478,9 +1478,15 @@ _AR3_REASONS = {
     # against `TRANSPORT`'s new `dict[str, bool]` shape or `KNOWN_BACKENDS
     # = ("sdk",)`.
     ("test_invocation.py", "_spec"): "U-cleanup-B (doctrine rebase, §8.1)",
-    ("test_invocation.py", "test_cn6_witnesses_a_and_b_agree_statically"): "U-cleanup-B (CL9/§8.1, worker/miner-reader legs dropped)",
+    # FW-117 (2026-08-28): `test_cn6_witnesses_a_and_b_agree_statically`'s
+    # U-cleanup-B-era edit above is superseded -- the function is now
+    # DELETED outright (its last leg, worker-repair, lost its witness
+    # function too), so it moves to `_AR3_REMOVED` instead and drops out
+    # of this reasons table entirely (a deleted function has no body left
+    # to reason about an edit to).
     ("test_invocation.py", "test_fk3_fake_is_not_reachable_from_backend_for"): "U-cleanup-B (SdkBackend rebase)",
-    ("test_invocation.py", "test_hy3_witness_b_is_sha_pinned"): "U-cleanup-B (_HY3_SHAS trimmed, §8.1)",
+    ("test_invocation.py", "test_hy3_witness_b_is_sha_pinned"): "U-cleanup-B (_HY3_SHAS trimmed, §8.1); FW-117 (2026-08-28, trimmed again: three witnesses -> two)",
+    ("test_invocation.py", "test_cn9_direction_guard_one_hop_local_taint"): "FW-117 (2026-08-28): docstring only -- named this file's own CN6/CN7 legs, both deleted",
     ("test_invocation.py", "test_rg3_unknown_value_falls_closed_with_byte_exact_warning"): "U-cleanup-B (SEL5, fold target cli->sdk)",
     ("test_invocation.py", "test_rg8_pyproject_sdk_extra_matches_ui_pin"): "U-cleanup-B (DEP3, pin moves to dependencies)",
     ("test_invocation.py", "test_fk1_fakebackend_records_specs_prompts_and_doctrines"): "U-cleanup-B (rename, argvs -> doctrines)",
@@ -1536,10 +1542,16 @@ _AR3_RENAMED = {
 #: catching one.
 #: U-cleanup-B additions (§8.1/§8.4a): the CLI-only argv/transport/
 #: settings-writer machinery those tests exercised is deleted outright,
-#: with no sdk equivalent to rebase onto (12 in test_invocation.py --
+#: with no sdk equivalent to rebase onto (15 in test_invocation.py --
 #: the AV/TR/WR/CN7/LG4 group Phase A left `@pytest.mark.skip`ped with
 #: its own "delete" disposition; 4 in test_invocation_sdk.py -- the argv
-#: helper functions and OP12's settings-writer-ordering test).
+#: helper functions and OP12's settings-writer-ordering test). FW-117
+#: (2026-08-28) fold: this count was pre-existing STALE at "12" --
+#: enumerated from the current set, the AV/TR/WR/CN7/LG4 group is 15
+#: (av x4, tr x7, wr x2, cn7_worker, lg4); `cn8`/`cn10` and
+#: `_assert_argv_matches_containment_iff` are U-cleanup-A (see the
+#: paragraph above), and `cn6`/`cn7_repair_leg` are FW-117's own -- none
+#: counted in this group's tally.
 _AR3_REMOVED: dict[str, frozenset[str]] = {
     "test_invocation.py": frozenset(
         {
@@ -1565,6 +1577,12 @@ _AR3_REMOVED: dict[str, frozenset[str]] = {
             "test_tr7_transport_reached_through_the_subprocess_module_attribute",
             "test_wr3_miner_rc_nonzero_does_not_short_circuit",
             "test_wr4_outcome_stdout_per_surface",
+            # FW-117 (2026-08-28): `worker.write_repair_settings_file`
+            # deleted (dead write, `A-2`) -- these two lost their sole
+            # witness function to agree against, same reasoning as the
+            # `test_cn8`/`test_cn7_worker_leg...` removals above.
+            "test_cn6_witnesses_a_and_b_agree_statically",
+            "test_cn7_repair_leg_over_both_enforce_values",
         }
     ),
     "test_invocation_sdk.py": frozenset(
@@ -2071,7 +2089,7 @@ def test_hy5_numstat_bounds_hold():
         "plugins/self-learn/cli/src/self_learn/analyst.py": (4, 18),
         "plugins/self-learn/cli/tests/conftest.py": (44, 0),  # U-servehermetic: XDG_CONFIG_HOME hermetic default added
         "plugins/self-learn/cli/tests/fixtures/fake_claude.py": (388, 1),
-        "plugins/self-learn/cli/tests/test_invocation.py": (718, 700),
+        "plugins/self-learn/cli/tests/test_invocation.py": (737, 760),  # FW-117 (2026-08-28): HY3 trimmed to two witnesses, SETTINGS_WITNESS/test_cn6/test_cn7_repair_leg deleted, then gate r1 fold (test_cn9 docstring truth) -- widened (718, 700) -> (730, 757) -> (737, 760), EXACT measured value (not a margin), single-ref against _BASE_SHA
         "plugins/self-learn/cli/tests/test_invocation_sdk.py": (493, 166),  # U-kl4 gate r1 fold (2026-08-28): B-1 (try scoped to capture pid first + best-effort reap), N/D-2 (new test_kl4b), N/D-3 (re-check start-ticks immediately before the kill), N/D-1 (NOTE-14 sentence); was (298, 149) -> (414, 166) -> (493, 166), measured single-ref against _BASE_SHA
         "plugins/self-learn/cli/tests/test_doctor_invocation.py": (165, 9),
     }
