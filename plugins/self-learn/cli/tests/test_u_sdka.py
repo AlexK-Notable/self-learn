@@ -1377,7 +1377,13 @@ _AR1_TRIPWIRE_SHA256 = "1b012978efe34788697a854bd40f28d0c1c45125cbca9d56fea36890
 #: (`_HOME_DIR_RE` only ever matched a `home-<8hex>` directory
 #: basename). Still a pure suffix extension over the pre-U-cachelit
 #: baseline -- `removed` stays `[]`, verified below -- 385 `added`
-#: lines now, up from 311.
+#: lines then, up from 311.
+#: U-hostmode gate r2 fold, D-1 (2026-08-28) re-pins once more: the
+#: fixture's own docstring gains one closing paragraph naming this
+#: guard's pytest-only scope, the five stray lock files this fold
+#: deleted by hand, and the new "every ad-hoc script sets
+#: XDG_CACHE_HOME" rule -- a pure docstring-body suffix, no code path
+#: changed. `removed` stays `[]`; 396 `added` lines now, up from 385.
 _AR1_SANCTIONED_PIN_LINES = [
     '#: U-cleanup-B: `_cli_backend_unreached_tripwire` (U-cleanup-A `AG1`) is',
     '#: RETIRED here, exactly as its own docstring said it would be -- its',
@@ -1700,7 +1706,18 @@ _AR1_SANCTIONED_PIN_LINES = [
     '    has for directories: THIS interpreter calling `_flock_lock` on a',
     "    real-cache-rooted lock path is 100% this session's own doing, no",
     '    digest-matching needed, so it is asserted on, hard, exactly like',
-    '    `_INPROCESS_HITS` above."""',
+    '    `_INPROCESS_HITS` above.',
+    '',
+    '    D-1 (code gate r2 fold), scope: this guard runs only INSIDE a',
+    '    pytest session (this fixture) -- an ad-hoc script run outside',
+    '    pytest (a dev-loop probe against the real ~/.cache/self-learn,',
+    '    never through `tmp_path`/`XDG_CACHE_HOME`) is invisible to it and',
+    '    can still litter `host-*.commit.lock` files the guard has no',
+    '    chance to catch or report; five such files, dated 06:09-06:20 on',
+    "    2026-08-28, were the r1 fold's own B-2 probes and were deleted by",
+    '    hand as part of this fold. From now on, every ad-hoc script sets',
+    '    `XDG_CACHE_HOME` to a temp dir before importing anything from this',
+    '    package."""',
     '    orig_mkdir, orig_popen_init, orig_flock_lock = _install_litter_guards()',
     '    try:',
     '        before = set(os.listdir(_REAL_CACHE_ROOT))',
@@ -2503,12 +2520,17 @@ def test_hy5_numstat_bounds_hold():
     # `host-*.commit.lock` files (see `_AR1_SANCTIONED_PIN_LINES`'s own
     # D-1 paragraph above for the full accounting). 74 pure-addition
     # lines on top of the 311 already pinned, none of them removed.
+    # U-hostmode gate r2 fold, D-1 (2026-08-28): widened once more,
+    # (385, 0) -> (396, 0) -- one sentence appended to the litter
+    # guard's docstring (both `cli/` and `ui/` conftests) naming its
+    # pytest-only scope and the XDG_CACHE_HOME ad-hoc-script rule. 11
+    # more pure-addition lines, none removed.
     bounds = {
         "plugins/self-learn/cli/src/self_learn/invocation/contract.py": (31, 47),
         "plugins/self-learn/cli/src/self_learn/invocation/registry.py": (34, 20),
         "plugins/self-learn/cli/src/self_learn/provider.py": (196, 36),
         "plugins/self-learn/cli/src/self_learn/analyst.py": (22, 20),
-        "plugins/self-learn/cli/tests/conftest.py": (385, 0),  # U-hostmode gate r1 fold, D-1: lock-file litter-detection leg appended
+        "plugins/self-learn/cli/tests/conftest.py": (396, 0),  # U-hostmode gate r2 fold, D-1 (2026-08-28): scope sentence appended to the litter guard docstring
         "plugins/self-learn/cli/tests/fixtures/fake_claude.py": (388, 1),
         "plugins/self-learn/cli/tests/test_invocation.py": (738, 762),  # U-hostmode Phase 2 (2026-08-28): the deleted dotfiles-management module's stale excluded_by_name entry removed from test_wr7 -- widened (718, 700) -> (730, 757) -> (737, 760) -> (738, 762), EXACT measured value (not a margin), single-ref against _BASE_SHA
         "plugins/self-learn/cli/tests/test_invocation_sdk.py": (493, 166),  # U-kl4 gate r1 fold (2026-08-28): B-1 (try scoped to capture pid first + best-effort reap), N/D-2 (new test_kl4b), N/D-3 (re-check start-ticks immediately before the kill), N/D-1 (NOTE-14 sentence); was (298, 149) -> (414, 166) -> (493, 166), measured single-ref against _BASE_SHA

@@ -525,6 +525,14 @@ def _check_drift(
     # clean) for PLAIN-mode managed targets — never gate the boolean, but
     # DO ride the rendered string so the four verdicts stay distinguishable.
     plain_notes: list[str] = []
+    # M-3 (code gate r2 fold): a running count of the "unknown provenance"
+    # verdict specifically — every host routed before compile records
+    # existed has this shape on its markers, and it self-heals one
+    # target at a time (auto-adopted on its own next route/recompile,
+    # REC5's seventh row). The per-record `plain_notes` line above
+    # already names each one; this is the SUMMARY count doc 17's
+    # migration paragraph promises.
+    unknown_provenance_count = 0
     for bucket in discover_buckets(home):
         resolved = bucket.path / "resolved"
         if not resolved.is_dir():
@@ -643,6 +651,7 @@ def _check_drift(
                         )
                         continue
                     if verdict == "unknown":
+                        unknown_provenance_count += 1
                         plain_notes.append(
                             f"{record.id}: {target} has no compile record "
                             "yet (unknown provenance) — SKIP, tracking "
@@ -711,6 +720,12 @@ def _check_drift(
     if not checked:
         return True, "no routed managed-destination records — no drift possible"
     ok_message = f"{checked} routed record(s) present in their compiled targets"
+    if unknown_provenance_count:
+        n = unknown_provenance_count
+        ok_message = ok_message + (
+            f" — {n} target(s) carry self-learn markers with no compile "
+            "record — run `self-learn recompile --adopt`"
+        )
     if plain_notes:
         ok_message = ok_message + " — " + "; ".join(plain_notes)
     return True, ok_message

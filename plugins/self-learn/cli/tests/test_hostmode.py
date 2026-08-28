@@ -26,13 +26,16 @@ import dataclasses
 import importlib
 import inspect
 import os
+import shutil
 import subprocess
 import time
 from pathlib import Path
 
 import pytest
 
-from self_learn import cli, compiled, compilers, gitops, hosts as hosts_mod, reconcile, teach, verbs
+from self_learn import (
+    cli, compiled, compilers, gitops, hosts as hosts_mod, reconcile, selfcheck, teach, verbs,
+)
 from self_learn.hosts import HostsError, host_add, host_mode, load_hosts, save_hosts
 from self_learn.ledger import home_state
 from self_learn.ledger_ops import create_record, stamp_proposal, write_proposal
@@ -1722,38 +1725,65 @@ class TestD3RegionResyncCoverageWalker:
 
     # -- leg (a): kind coverage, per verb ------------------------------
 
+    #: N-7 (code gate r2 fold): hand-written per-verb rows -- there is no
+    #: mechanical way to derive "which kinds THIS verb can write" from
+    #: `verbs.py`'s AST alone (that IS what the rest of this walker
+    #: exists to check). What CAN be derived, and is (the test right
+    #: below this table): the UNION of every row's `expected_kinds` must
+    #: equal `compiled.REGION_KINDS` exactly, so a fifth region kind
+    #: added to that enum without a matching row here reddens the table
+    #: itself, not just silently under-covers it.
+    _KIND_COVERAGE_TABLE = [
+        (
+            "route",
+            ("_host_phase", "_retirement_host_phase"),
+            frozenset({"managed", "reference", "pointer", "script"}),
+        ),
+        (
+            "route_direct",
+            ("_host_phase", "_retirement_host_phase"),
+            frozenset({"managed", "reference", "pointer", "script"}),
+        ),
+        (
+            "supersede",
+            ("_host_phase", "_remove_hook_script"),
+            frozenset({"managed", "script"}),
+        ),
+        (
+            "graduate",
+            ("_retirement_host_phase",),
+            frozenset({"managed", "script"}),
+        ),
+        (
+            "recompile",
+            (
+                "_host_phase", "_apply_target", "compile_reference",
+                "apply_pointer", "_write_hook_script", "_remove_hook_script",
+            ),
+            frozenset({"managed", "reference", "pointer", "script"}),
+        ),
+    ]
+
+    def test_kind_coverage_table_accounts_for_every_region_kind_the_code_defines(
+        self,
+    ):
+        """N-7 (code gate r2): the control for `_KIND_COVERAGE_TABLE`
+        above going STALE — a region kind added to (or removed from)
+        `compiled.REGION_KINDS` without a matching update to the table's
+        rows reddens THIS test, before it can silently under-cover the
+        walker below."""
+        covered: set[str] = set()
+        for _verb_name, _delegates_to, expected_kinds in self._KIND_COVERAGE_TABLE:
+            covered |= expected_kinds
+        assert covered == set(compiled.REGION_KINDS), (
+            f"_KIND_COVERAGE_TABLE's rows cover {sorted(covered)} but "
+            f"compiled.REGION_KINDS is {sorted(compiled.REGION_KINDS)} — "
+            "a region kind was added to (or removed from) the enum "
+            "without updating every row that should now name it"
+        )
+
     @pytest.mark.parametrize(
-        ("verb_name", "delegates_to", "expected_kinds"),
-        [
-            (
-                "route",
-                ("_host_phase", "_retirement_host_phase"),
-                frozenset({"managed", "reference", "pointer", "script"}),
-            ),
-            (
-                "route_direct",
-                ("_host_phase", "_retirement_host_phase"),
-                frozenset({"managed", "reference", "pointer", "script"}),
-            ),
-            (
-                "supersede",
-                ("_host_phase", "_remove_hook_script"),
-                frozenset({"managed", "script"}),
-            ),
-            (
-                "graduate",
-                ("_retirement_host_phase",),
-                frozenset({"managed", "script"}),
-            ),
-            (
-                "recompile",
-                (
-                    "_host_phase", "_apply_target", "compile_reference",
-                    "apply_pointer", "_write_hook_script", "_remove_hook_script",
-                ),
-                frozenset({"managed", "reference", "pointer", "script"}),
-            ),
-        ],
+        ("verb_name", "delegates_to", "expected_kinds"), _KIND_COVERAGE_TABLE
     )
     def test_every_write_delegating_verb_resyncs_every_kind_it_can_write(
         self, verb_name, delegates_to, expected_kinds
@@ -1804,6 +1834,93 @@ class TestD3RegionResyncCoverageWalker:
             f"`_resync_region_entry(..., region_kind={kind!r})` call "
             f"sites — one per write leg ({legs}) — but found only "
             f"{len(calls)} at line(s) {[c.lineno for c in calls]}"
+        )
+
+
+class TestD2ResyncExpectedNoneWithoutDeleteIsANoOp:
+    """D-2 (code gate r2): `_resync_region_entry(expected=None)` used to
+    delete any existing entry unconditionally. That conflated two
+    different callers — a DELIBERATE removal (a hook script just
+    disappeared) and a PREDICTIVE leg with genuinely nothing to predict
+    YET (`_expected_reference_region`/`_expected_pointer_region`
+    returning `None` for a named reference file that does not exist
+    yet — a first route to it, before the file is ever written).
+    Deletion is now an explicit `delete=True`; `expected=None` alone is
+    a true no-op. Both rows tested directly against the helper — the
+    smallest surface that actually discriminates the two."""
+
+    @staticmethod
+    def _seed_entry(env, host_path, scope_kind="project", mode="plain"):
+        key = compiled.region_key(host_path, host_path / "REFERENCE.md")
+        slug = verbs.host_slug(env.ledger, host_path, scope_kind=scope_kind)
+        compiled.write_entry(
+            env.ledger, slug, key,
+            region="reference", sha256="a" * 64, based_on_sha256=None,
+            nbytes=123, by="test-seed", host=str(host_path), mode=mode,
+        )
+        return key, slug
+
+    def test_delete_true_removes_an_existing_entry(self, tmp_path):
+        env = make_env(tmp_path)
+        host_path = tmp_path / "d2-host"
+        host_path.mkdir()
+        host_add(env.ledger, host_path, "project", mode="plain")
+        key, slug = self._seed_entry(env, host_path)
+        assert compiled.entry_for(compiled.load_record(env.ledger, slug), key) is not None
+
+        result = verbs._resync_region_entry(
+            env.ledger,
+            host_path=host_path,
+            scope_kind="project",
+            mode="plain",
+            target=host_path / "REFERENCE.md",
+            region_kind="reference",
+            expected=None,
+            observed_hash=None,
+            by="test-delete",
+            delete=True,
+        )
+        assert result is not None
+        assert compiled.entry_for(compiled.load_record(env.ledger, slug), key) is None, (
+            "delete=True must still remove an existing entry"
+        )
+
+    def test_expected_none_without_delete_leaves_an_existing_entry_untouched(
+        self, tmp_path
+    ):
+        """The D-2 row: a NAMED reference file that does not exist YET
+        computes `expected=None` (nothing to predict) — this must NOT
+        erase an entry that (for whatever reason — a prior write, a
+        hand-recovered record) already exists for that same key."""
+        env = make_env(tmp_path)
+        host_path = tmp_path / "d2-host-no-delete"
+        host_path.mkdir()
+        host_add(env.ledger, host_path, "project", mode="plain")
+        key, slug = self._seed_entry(env, host_path)
+        before = compiled.entry_for(compiled.load_record(env.ledger, slug), key)
+        assert before is not None
+
+        result = verbs._resync_region_entry(
+            env.ledger,
+            host_path=host_path,
+            scope_kind="project",
+            mode="plain",
+            target=host_path / "REFERENCE.md",
+            region_kind="reference",
+            expected=None,  # "nothing to predict yet" -- NOT a removal
+            observed_hash=None,
+            by="test-no-delete",
+        )
+        assert result is None, (
+            "expected=None without delete=True must be a true no-op — "
+            "returning a path here would mean something was WRITTEN"
+        )
+        after = compiled.entry_for(compiled.load_record(env.ledger, slug), key)
+        assert after == before, (
+            "expected=None without delete=True erased an existing entry "
+            "— D-2's exact defect: a predictive leg with nothing to "
+            "predict yet must never be indistinguishable from a "
+            "deliberate removal"
         )
 
 
@@ -2532,7 +2649,7 @@ class TestRecompileRecordResyncOnRender:
         assert not any("edited" in w for w in third.warnings)
         assert target.read_text(encoding="utf-8") == final_text
 
-    def test_resync_commit_subject_names_the_host_by_slug_never_a_path(
+    def test_resync_commit_subject_names_the_host_by_subject_name_never_a_path(
         self, tmp_path
     ):
         """M-10 (code gate r1 fold): §4.5/gate B-3 rejected a second
@@ -2544,8 +2661,34 @@ class TestRecompileRecordResyncOnRender:
         to ride). Evidence this closes (probe run during the gate):
         `'self-learn: compile record /tmp/pytest-of-komi/.../CLAUDE.md'`
         — the ONLY pinned subject anywhere in this codebase that
-        embedded an absolute local path. The fix names the host by
-        SLUG (`hosts.slug_for` — `/`-free by construction) instead."""
+        embedded an absolute local path.
+
+        N-8 (code gate r2 fold): the fix originally named the host by
+        `hosts.slug_for`'s FULL shape (the resolved path, `/`→`-`, plus
+        digest) — `/`-free as required, but very long, and on the real
+        machine it writes the operator's whole home-directory structure
+        into a ledger commit subject. A dedicated `hosts.host_subject_name`
+        function fixed this AT THE FUNCTION level — the path's own
+        BASENAME plus the same short digest, never the full path — but
+        N-6 (below) supersedes it as the subject SOURCE for this
+        specific commit: a batched run can span several different
+        hosts, so naming any ONE of them would be arbitrary. The
+        combined subject names a COUNT instead; no host path or name of
+        any shape reaches it. N-1 (code gate r3 fold): with N-6 already
+        the only caller-side use, `host_subject_name` was dead code —
+        deleted along with its three direct unit tests; this paragraph's
+        own history is kept because it explains why the subject looks
+        the way it does.
+
+        N-6 (code gate r2 fold): recompile used to emit ONE standalone
+        ledger commit PER changed target (managed/reference/pointer/
+        hook, potentially several per run) — see the dedicated
+        `TestN6RecompileBatchesResyncIntoOneCommit` below for a run that
+        actually drives more than one. Every automatic resync in a
+        single `recompile()` invocation now lands in exactly ONE
+        combined commit; this test's own single-target run still
+        produces exactly one, unchanged in outcome, just no longer
+        naming the host at all."""
         env = make_env(tmp_path)
         plain_host = tmp_path / "resync-subject-plain"
         plain_host.mkdir()
@@ -2588,9 +2731,14 @@ class TestRecompileRecordResyncOnRender:
         assert "/" not in subject, (
             f"resync commit subject embeds a path (contains '/'): {subject!r}"
         )
-        slug = hosts_mod.host_slug(env.ledger, plain_host, scope_kind="project")
-        assert slug in subject, (
-            f"resync commit subject does not name the host by slug: {subject!r}"
+        full_slug = hosts_mod.host_slug(env.ledger, plain_host, scope_kind="project")
+        assert full_slug not in subject, (
+            "resync commit subject reverted to the FULL slug shape "
+            f"(embeds the whole resolved path) — N-8: {subject!r}"
+        )
+        assert subject == "self-learn: recompile resync record(s) (1)", (
+            "N-6: the combined resync subject must name a COUNT, never "
+            f"any host at all (a batched run can span several): {subject!r}"
         )
 
     def test_recompile_reference_and_pointer_render_resyncs_the_record(
@@ -2763,6 +2911,85 @@ class TestRecompileRecordResyncOnRender:
                 parser.parse_args(["recompile", "--force"])
 
 
+class TestN6RecompileBatchesResyncIntoOneCommit:
+    """N-6 (code gate r2): recompile used to emit ONE standalone ledger
+    commit PER changed target — a repair run touching several drifted
+    targets in one invocation used to make several resync commits. This
+    drives TWO independent plain hosts' managed targets into needing a
+    resync in the SAME `recompile()` call and counts the commits that
+    land — exactly one, not two."""
+
+    @staticmethod
+    def _drift(env, host, rec1_id, rec2_id):
+        """Route rec1, snapshot, route rec2 (canonical now differs),
+        hand-write the target back to the rec1-only bytes. No `--adopt`
+        needed: rec2's own route observed those EXACT bytes pre-write
+        (`based_on_sha256`), so writing back to them verdicts `stale`
+        (matches `based_on_sha256`), never `edited` — `stale` does not
+        refuse in either mode (`compiled.refuses`). A later bare
+        `recompile()` sees real drift (canonical now includes rec2 too)
+        and renders + resyncs exactly once for this host. (An earlier
+        version of this helper called `recompile(adopt=...)` per host —
+        wrong: recompile renders EVERY drifted host it finds, adopted
+        target or not, so adopting host A as a side effect already
+        fixed host A's drift before host B was even set up, leaving
+        only ONE host actually drifted by the time the real,
+        under-test `recompile()` call ran.)"""
+        target = host / "CLAUDE.md"
+        rec1 = make_behavior(scope="project", record_id=rec1_id)
+        create_record(env.ledger, rec1, project_path=host)
+        verbs.route(env.ledger, rec1_id, dest="claude-md", no_push=True)
+        stale_bytes = target.read_text(encoding="utf-8")
+
+        rec2 = make_behavior(scope="project", record_id=rec2_id)
+        create_record(env.ledger, rec2, project_path=host)
+        verbs.route(env.ledger, rec2_id, dest="claude-md", no_push=True)
+
+        target.write_text(stale_bytes, encoding="utf-8")
+        return target
+
+    def test_two_drifted_hosts_in_one_run_produce_exactly_one_commit(
+        self, tmp_path
+    ):
+        env = make_env(tmp_path)
+        host_a = tmp_path / "n6-host-a"
+        host_a.mkdir()
+        host_add(env.ledger, host_a, "project", mode="plain")
+        host_b = tmp_path / "n6-host-b"
+        host_b.mkdir()
+        host_add(env.ledger, host_b, "project", mode="plain")
+
+        target_a = self._drift(env, host_a, "lrn-000000f8", "lrn-000000f9")
+        target_b = self._drift(env, host_b, "lrn-000000fa", "lrn-000000fb")
+
+        before_head = git(env.ledger, "rev-parse", "HEAD").stdout.strip()
+        before_count = git(
+            env.ledger, "rev-list", "--count", "HEAD"
+        ).stdout.strip()
+        result = verbs.recompile(env.ledger, no_push=True)
+        after_head = git(env.ledger, "rev-parse", "HEAD").stdout.strip()
+        after_count = git(
+            env.ledger, "rev-list", "--count", "HEAD"
+        ).stdout.strip()
+
+        # both targets actually rendered (real drift, not a no-op run) --
+        # the positive control this test needs to mean anything.
+        changed_targets = {e.target for e in result.entries if e.changed}
+        assert target_a in changed_targets
+        assert target_b in changed_targets
+
+        assert after_head != before_head, "expected at least one new commit"
+        assert int(after_count) - int(before_count) == 1, (
+            "two independently-drifted hosts in ONE recompile() call "
+            f"produced {int(after_count) - int(before_count)} new "
+            "commit(s), not exactly one — N-6's batching regressed"
+        )
+        subject = git(env.ledger, "log", "-1", "--format=%s").stdout.strip()
+        assert subject == "self-learn: recompile resync record(s) (2)", (
+            f"unexpected batched subject: {subject!r}"
+        )
+
+
 # --------------------------------------------------------------- GATE group
 
 
@@ -2806,6 +3033,99 @@ class TestGate5MarkerSurvivesRemove:
 
         hosts_mod.host_remove(env.ledger, plain_host)
         assert marker.is_file()  # removal deregisters, never deletes the marker
+
+
+class TestM4NamedRepairActuallyRepairs:
+    """M-4 (code gate r2): `host_path_problem`'s missing-marker refusal
+    (hosts.py, "carries no {MARKER_FILENAME} marker") names
+    `self-learn host add --mode plain` as the repair. This is the gate's
+    own probe, pinned as a permanent test: delete the marker on an
+    already-registered plain host, run the NAMED repair, and check the
+    marker actually comes back — not just rc 0 and a success line.
+
+    N-3 (code gate r3 fold): `host_add` no longer prints "marker
+    restored" itself — it returns a `HostAddResult` carrying the
+    `marker_restored` SIGNAL, and `cli.py::_cmd_host_inner` prints from
+    it. `test_named_repair_restores_a_deleted_marker` now asserts BOTH:
+    the library-level signal (`result.marker_restored`) via a direct
+    `host_add` call, and the CLI-level text via `cli.main`."""
+
+    def test_named_repair_restores_a_deleted_marker(self, tmp_path):
+        env = make_env(tmp_path)
+        plain_host = tmp_path / "m4-plain"
+        plain_host.mkdir()
+        host_add(env.ledger, plain_host, "project", mode="plain")
+        marker = plain_host / hosts_mod.MARKER_FILENAME
+        assert marker.is_file()
+        marker.unlink()
+        assert not marker.is_file()
+
+        # the exact repair `host_path_problem` names: re-add, same mode.
+        result = host_add(env.ledger, plain_host, "project", mode="plain")
+
+        assert result is not None  # rc OK — no HostsError raised
+        assert result.marker_restored is True, (
+            "the named repair (`host add --mode plain` on an already-"
+            "registered same-mode plain host) returned successfully but "
+            "its own result did not signal a marker repair — M-4's "
+            "exact defect, now visible at the return-value level (N-3)"
+        )
+        assert marker.is_file(), (
+            "the named repair (`host add --mode plain` on an already-"
+            "registered same-mode plain host) returned successfully but "
+            "did not restore the marker it owns — M-4's exact defect"
+        )
+
+    def test_named_repair_prints_marker_restored_from_the_cli_layer(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """N-3 (code gate r3 fold): the print moved OUT of `host_add`
+        (a library function) and INTO `cli.py::_cmd_host_inner` — this
+        is the test that actually drives the CLI, the only place left
+        that can observe the terminal text at all."""
+        from self_learn import cli
+
+        env = make_env(tmp_path)
+        monkeypatch.setenv("SELF_LEARN_HOME", str(env.ledger))
+        plain_host = tmp_path / "m4-plain-cli"
+        plain_host.mkdir()
+        host_add(env.ledger, plain_host, "project", mode="plain")
+        marker = plain_host / hosts_mod.MARKER_FILENAME
+        marker.unlink()
+        capsys.readouterr()  # discard the first `host add`'s output
+
+        rc = cli.main(["host", "add", "--mode", "plain", str(plain_host)])
+        out = capsys.readouterr().out
+
+        assert rc == 0
+        assert marker.is_file()
+        assert f"marker restored at {marker}" in out
+
+    def test_named_repair_is_a_true_no_op_when_the_marker_is_already_present(
+        self, tmp_path
+    ):
+        """The repair must not CHURN an intact marker on every re-add —
+        only write when the marker is genuinely absent, so a script that
+        re-registers the same host repeatedly does not re-timestamp it
+        every time. N-3: also checks the returned signal stays False."""
+        env = make_env(tmp_path)
+        plain_host = tmp_path / "m4-plain-intact"
+        plain_host.mkdir()
+        host_add(env.ledger, plain_host, "project", mode="plain")
+        marker = plain_host / hosts_mod.MARKER_FILENAME
+        before = marker.read_text(encoding="utf-8")
+
+        result = host_add(env.ledger, plain_host, "project", mode="plain")
+
+        assert result.marker_restored is False, (
+            "an intact marker must not be reported as repaired"
+        )
+        after = marker.read_text(encoding="utf-8")
+        assert after == before, (
+            "re-adding an already-registered plain host with an INTACT "
+            "marker rewrote it — the repair must be conditional on the "
+            "marker being absent, not unconditional"
+        )
 
 
 # -------------------------------------------------------------- PLAIN group
@@ -3814,6 +4134,150 @@ class TestB1Rec5RowTwoUnknownRefusesPlainMode:
         assert result.host_commit_sha is not None
 
 
+class TestM3Rec5RowSevenSelfAdopt:
+    """M-3 (code gate r2): REC5's seventh row — `entry absent + region
+    present + region bytes == the compiler's expected render from the
+    ledger's CURRENT records for that target` -> ADOPT (write the entry,
+    print one notice, proceed) instead of refusing. Real hazard on THIS
+    machine (the gate's own measured finding): every host routed to
+    before this unit shipped compile records has exactly this shape on
+    its first post-upgrade route, and B-1's fix alone would refuse ALL
+    of them. Only a genuine BYTE MISMATCH (real foreign content) still
+    refuses — H-3 is unweakened."""
+
+    def test_self_adopt_row_adopts_matching_content_and_proceeds(
+        self, tmp_path, capsys
+    ):
+        env = make_env(tmp_path)
+        plain_host = tmp_path / "m3-plain"
+        plain_host.mkdir()
+        host_add(env.ledger, plain_host, "project", mode="plain")
+        target = plain_host / "CLAUDE.md"
+
+        # record A: routed NORMALLY first -- this is the pre-existing
+        # content a real host would already carry.
+        record_a = make_behavior(scope="project", record_id="lrn-000000f1")
+        create_record(env.ledger, record_a, project_path=plain_host)
+        verbs.route(env.ledger, "lrn-000000f1", dest="claude-md", no_push=True)
+        assert (env.ledger / "compiled").is_dir()
+
+        # simulate "this unit never wrote a compile record for this
+        # host" -- the gate's own measured real-machine state: markers
+        # present, no `compiled/` dir AT ALL (not just a missing entry).
+        shutil.rmtree(env.ledger / "compiled")
+        assert not (env.ledger / "compiled").exists()
+        before = target.read_bytes()
+
+        # record B: a NEW route to the SAME target. Pre-flight sees
+        # `unknown` (entry absent, region present) for A's own content
+        # -- but at THIS moment B is not yet marked routed, so the
+        # compiler's render of the ledger's CURRENT records (A alone)
+        # is byte-identical to what's on disk. Must ADOPT, not refuse.
+        record_b = make_behavior(scope="project", record_id="lrn-000000f2")
+        create_record(env.ledger, record_b, project_path=plain_host)
+        result = verbs.route(env.ledger, "lrn-000000f2", dest="claude-md", no_push=True)
+
+        assert result is not None
+        assert target.read_bytes() != before  # B's own content was added
+        captured = capsys.readouterr()
+        assert "adopting" in captured.err
+        assert str(target) in captured.err
+
+        # B's own normal REC9 resync (unconditional, unrelated to the
+        # adopt path) writes the entry -- proving "proceed" really did
+        # proceed all the way through, not just skip the refusal.
+        slug = verbs.host_slug(env.ledger, plain_host, scope_kind="project")
+        key = compiled.region_key(plain_host, target)
+        entry = compiled.entry_for(compiled.load_record(env.ledger, slug), key)
+        assert entry is not None
+
+    def test_still_refuses_when_on_disk_content_does_not_match(self, tmp_path):
+        """The discriminating half: identical setup, but the on-disk
+        content is hand-altered after A's route (real foreign content,
+        not merely a missing receipt) -- must still REFUSE, byte-
+        unchanged, H-3 unweakened."""
+        env = make_env(tmp_path)
+        plain_host = tmp_path / "m3-plain-mismatch"
+        plain_host.mkdir()
+        host_add(env.ledger, plain_host, "project", mode="plain")
+        target = plain_host / "CLAUDE.md"
+
+        record_a = make_behavior(scope="project", record_id="lrn-000000f3")
+        create_record(env.ledger, record_a, project_path=plain_host)
+        verbs.route(env.ledger, "lrn-000000f3", dest="claude-md", no_push=True)
+        shutil.rmtree(env.ledger / "compiled")
+
+        # hand-edit INSIDE the managed markers -- a real divergence from
+        # what self-learn's compiler would render, not a benign gap.
+        text = target.read_text(encoding="utf-8")
+        assert verbs.BEGIN_MARKER in text
+        text = text.replace(
+            verbs.BEGIN_MARKER, verbs.BEGIN_MARKER + "\nHAND-EDITED LINE\n"
+        )
+        target.write_text(text, encoding="utf-8")
+        before = target.read_bytes()
+
+        record_b = make_behavior(scope="project", record_id="lrn-000000f4")
+        create_record(env.ledger, record_b, project_path=plain_host)
+        with pytest.raises(verbs.DirtyTargetError) as excinfo:
+            verbs.route(env.ledger, "lrn-000000f4", dest="claude-md", no_push=True)
+        assert "unknown" in str(excinfo.value)
+        assert "recompile --adopt" in str(excinfo.value)
+        assert target.read_bytes() == before
+
+    def test_probe_matches_the_gate_shape_user_scope_markers_no_compiled_dir(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """The gate's OWN measured probe, reproduced: user scope
+        specifically (`~/.claude/CLAUDE.md` on the real machine) with
+        self-learn markers already present and NO `compiled/` directory
+        at all -- "the one host GUARANTEED to be in that state" on
+        first contact after this unit ships."""
+        target = tmp_path / "dot-claude-m3" / "CLAUDE.md"
+        target.parent.mkdir()
+        monkeypatch.setattr(verbs, "DEFAULT_USER_CLAUDE_MD", target)
+
+        env = make_env(tmp_path)
+        assert not (env.ledger / "compiled").exists()
+
+        record_a = make_behavior(scope="user", record_id="lrn-000000f5")
+        create_record(env.ledger, record_a)
+        verbs.route(env.ledger, "lrn-000000f5", dest="claude-md", no_push=True)
+        shutil.rmtree(env.ledger / "compiled")
+        assert not (env.ledger / "compiled").exists()
+
+        record_b = make_behavior(scope="user", record_id="lrn-000000f6")
+        create_record(env.ledger, record_b)
+        result = verbs.route(env.ledger, "lrn-000000f6", dest="claude-md", no_push=True)
+        assert result is not None
+        assert "adopting" in capsys.readouterr().err
+
+    def test_doctor_summary_line_counts_unknown_provenance_targets(self, tmp_path):
+        """M-3 (code gate r2): the SUMMARY doctor line doc 17's migration
+        paragraph promises -- "N target(s) carry self-learn markers with
+        no compile record -- run `recompile --adopt`" -- measured on a
+        FIXTURE (never the real ledger). `_check_drift` must still
+        report `ok=True` (unknown provenance is not itself drift; only
+        `edited` is)."""
+        env = make_env(tmp_path)
+        plain_host = tmp_path / "m3-doctor-plain"
+        plain_host.mkdir()
+        host_add(env.ledger, plain_host, "project", mode="plain")
+
+        record = make_behavior(scope="project", record_id="lrn-000000f7")
+        create_record(env.ledger, record, project_path=plain_host)
+        verbs.route(env.ledger, "lrn-000000f7", dest="claude-md", no_push=True)
+        shutil.rmtree(env.ledger / "compiled")
+
+        ok, reason = selfcheck._check_drift(env.ledger)
+        assert ok is True
+        assert (
+            "1 target(s) carry self-learn markers with no compile record"
+            in reason
+        )
+        assert "recompile --adopt" in reason
+
+
 # ---------------------------------------------------------------- REC12 group
 
 
@@ -3832,7 +4296,7 @@ class TestRec12HostLockDiscipline:
     violated leg (c) in `supersede`/`graduate` (no host lock at all
     before their region read) — both are fixed in this same commit.
 
-    Four legs, all checked by parsing `verbs.py` fresh (never `inspect`,
+    Five legs, all checked by parsing `verbs.py` fresh (never `inspect`,
     so a stale `.pyc` cannot lie):
 
     (a) callee-at-entry — `_host_phase`'s lock is its own FIRST statement.
@@ -3843,6 +4307,19 @@ class TestRec12HostLockDiscipline:
         in a verb's body lies outside its host-lock-guarded `with`.
     (d) push outside — `push_if_remote`/`_push_ledger` never lies inside
         that same `with`.
+    (e) ORDER — code gate r2 M-1: presence alone (legs b/c) is not
+        enough. `_ledger_write(home)` must be one of the SAME `with`
+        statement's OWN context managers as the host lock, at a LOWER
+        index — `with _ledger_write(home), <host lock>:`, matching
+        §4.5b's pinned "ledger first, host second" for every verb, no
+        exceptions. The r1 fold gave `supersede`/`graduate` the host
+        lock legs (b)/(c)/(d) demanded, but nested it OUTSIDE
+        `_ledger_write` (host first) while `route`/`route_direct` open
+        both in one combined `with` (ledger first) — two DIFFERENT
+        orders that can deadlock two OS processes against each other
+        until `gitops.COMMIT_LOCK_TIMEOUT` (150s). See
+        `TestM1LockOrderRuntimeProbe` below for the live, real-process
+        proof that this no longer happens.
     """
 
     @staticmethod
@@ -4052,6 +4529,192 @@ class TestRec12HostLockDiscipline:
                 f"line {call.lineno} lies outside its own host-lock "
                 "`with` (REC12c violation)"
             )
+
+    # -- leg (e): ORDER — ledger acquired before host, same `with` -----
+
+    @staticmethod
+    def _is_ledger_write_call(expr: ast.AST) -> bool:
+        """True if `expr` is a direct call to `_ledger_write(...)` —
+        every verb calls it inline as a `with` item, never through an
+        aliased variable, so no name-indirection tracking is needed here
+        the way host-lock's `_x_host_lock` variable needs
+        `_host_lock_with_nodes` above."""
+        return (
+            isinstance(expr, ast.Call)
+            and isinstance(expr.func, ast.Name)
+            and expr.func.id == "_ledger_write"
+        )
+
+    @pytest.mark.parametrize(
+        "verb_name", ["route", "route_direct", "supersede", "graduate"]
+    )
+    def test_leg_e_ledger_lock_is_acquired_before_the_host_lock(self, verb_name):
+        """M-1 (code gate r2): §4.5b pins ONE order — ledger first, host
+        second — for every host-writing verb, no exceptions. Legs (b)/(c)
+        above only prove BOTH locks are held before the sensitive work;
+        neither says anything about their relative order. The r1 fold
+        gave `supersede`/`graduate` the host lock they were missing, but
+        nested it OUTSIDE `_ledger_write` (host first, ledger second)
+        while `route`/`route_direct` open both in ONE combined `with`
+        (ledger first) — two DIFFERENT orders, which is exactly the
+        shape that can deadlock two OS processes against each other
+        until `gitops.COMMIT_LOCK_TIMEOUT` (150s): see
+        `TestM1LockOrderRuntimeProbe` for the live proof.
+
+        Every host-lock-guarded `with` in the verb must ALSO carry
+        `_ledger_write(home)` as one of its OWN context managers
+        (`with _ledger_write(home), <host lock>:`), at a LOWER index
+        than the host-lock item — never a separate, differently-ordered
+        `with` for either lock."""
+        tree = self._verbs_tree()
+        func = self._find_func(tree, verb_name)
+        host_lock_withs = self._host_lock_with_nodes(func)
+        assert host_lock_withs, (
+            f"{verb_name} opens no host-lock-guarded `with` at all"
+        )
+
+        host_lock_names: set[str] = set()
+        for n in ast.walk(func):
+            if (
+                isinstance(n, ast.Assign)
+                and len(n.targets) == 1
+                and isinstance(n.targets[0], ast.Name)
+                and self._is_host_lock_call(n.value)
+            ):
+                host_lock_names.add(n.targets[0].id)
+
+        for w in host_lock_withs:
+            ledger_idx = None
+            host_idx = None
+            for idx, item in enumerate(w.items):
+                ctx = item.context_expr
+                if self._is_ledger_write_call(ctx):
+                    ledger_idx = idx
+                if self._is_host_lock_call(ctx) or (
+                    isinstance(ctx, ast.Name) and ctx.id in host_lock_names
+                ):
+                    host_idx = idx
+
+            assert ledger_idx is not None, (
+                f"{verb_name}: the host-lock-guarded `with` at line "
+                f"{w.lineno} does not ALSO carry `_ledger_write(home)` as "
+                "one of its own context managers — the two locks are "
+                "opened by SEPARATE `with` statements, so Python's own "
+                "left-to-right `with A, B:` evaluation no longer pins "
+                "their relative order (M-1, code gate r2)"
+            )
+            assert host_idx is not None
+            assert ledger_idx < host_idx, (
+                f"{verb_name}: `_ledger_write` is item {ledger_idx} and "
+                f"the host lock is item {host_idx} in the SAME `with` at "
+                f"line {w.lineno} — ledger must come FIRST (§4.5b: "
+                "ledger→host, always; M-1, code gate r2). Two verbs "
+                "disagreeing on this order can deadlock each other for "
+                "the full gitops.COMMIT_LOCK_TIMEOUT (150s)."
+            )
+
+
+class TestM1LockOrderRuntimeProbe:
+    """M-1 (code gate r2): the gate's own runtime deadlock proof, kept
+    alive as a permanent regression test rather than a throwaway probe.
+
+    Before this fold, `route`/`route_direct` opened `with _ledger_write(
+    home), gitops.host_lock(...):` (ledger first) while `supersede`/
+    `graduate` opened the host lock, THEN `_ledger_write` nested inside
+    it (host first) — two OS processes running one of each, contending
+    for the SAME ledger AND the SAME host, could each acquire their own
+    FIRST lock and then block forever on the other's, until
+    `gitops.COMMIT_LOCK_TIMEOUT` (150s) finally kills one of them.
+    `serve` schedules producers exactly this way (the spec's own reason
+    for REC12), so this was not hypothetical.
+
+    Both sides patch `gitops.COMMIT_LOCK_TIMEOUT` down to a few seconds
+    before acquiring anything — this process directly, the holder
+    subprocess via an equivalent line in its own script — so a
+    REGRESSION of this fix fails fast (a `GitOpsError` within single-
+    digit seconds) instead of hanging the suite for 150s. A passing run
+    means what it always meant: the two calls serialized cleanly on the
+    shared ledger lock, exactly as `TestPlain5RealOsLock` already proves
+    for the host lock alone.
+    """
+
+    def test_two_verbs_on_the_same_host_and_ledger_never_deadlock(self, tmp_path):
+        plain_host = tmp_path / "m1-order-host"
+        plain_host.mkdir()
+        (plain_host / "CLAUDE.md").write_text("# plain host\n", encoding="utf-8")
+
+        env = make_env(tmp_path)
+        host_add(env.ledger, plain_host, "project", mode="plain")
+        monkeypatch = pytest.MonkeyPatch()
+        monkeypatch.setattr(gitops, "COMMIT_LOCK_TIMEOUT", 6.0)
+
+        old_record = make_behavior(scope="project", record_id="lrn-000000e1")
+        new_record = make_behavior(scope="project", record_id="lrn-000000e2")
+        create_record(env.ledger, old_record, project_path=plain_host)
+        create_record(env.ledger, new_record, project_path=plain_host)
+        # e1 routed first (sequential, no contention yet) so `supersede`
+        # below has a real host-side target to retire; e2 stays pending
+        # -- `supersede`'s replacement need only EXIST (RESOLVABLE_STATUSES).
+        verbs.route(env.ledger, "lrn-000000e1", dest="claude-md", no_push=True)
+
+        marker = tmp_path / "m1-order-holder-in-lock.txt"
+        cli_src = str(Path(__file__).resolve().parents[1] / "src")
+        holder_script = tmp_path / "m1_order_holder.py"
+        holder_record = make_behavior(scope="project", record_id="lrn-000000e3")
+        create_record(env.ledger, holder_record, project_path=plain_host)
+        holder_script.write_text(
+            "import sys, time\n"
+            f"sys.path.insert(0, {cli_src!r})\n"
+            "from pathlib import Path\n"
+            "from self_learn import verbs, gitops\n"
+            "gitops.COMMIT_LOCK_TIMEOUT = 6.0\n"
+            "_real_apply = verbs._apply_target\n"
+            "def _slow_apply(*a, **kw):\n"
+            f"    Path({str(marker)!r}).write_text('IN LOCK', encoding='utf-8')\n"
+            "    time.sleep(1.2)\n"
+            "    return _real_apply(*a, **kw)\n"
+            "verbs._apply_target = _slow_apply\n"
+            f"verbs.route({str(env.ledger)!r}, 'lrn-000000e3', "
+            "dest='claude-md:rules:topic-m1-order', no_push=True)\n",
+            encoding="utf-8",
+        )
+        proc = subprocess.Popen(["python3", str(holder_script)])
+        try:
+            deadline = time.monotonic() + 3.0
+            while not marker.is_file() and time.monotonic() < deadline:
+                time.sleep(0.02)
+            assert marker.is_file(), (
+                "holder process never entered its critical section"
+            )
+
+            # `supersede` on the SAME ledger AND the SAME host, while the
+            # holder (a `route`) still holds both locks: under the r1-fold
+            # bug this would deadlock (each process holding its own first
+            # lock, waiting on the other's) until the patched 6s timeout;
+            # under the fix, this call simply waits behind the holder's
+            # ~1.2s critical section on the shared ledger lock.
+            t0 = time.monotonic()
+            result = verbs.supersede(
+                env.ledger, "lrn-000000e1", "lrn-000000e2", no_push=True
+            )
+            elapsed = time.monotonic() - t0
+            assert result is not None
+            assert elapsed < 4.0, (
+                f"supersede took {elapsed:.2f}s against a concurrent "
+                "route() on the same host+ledger -- expected ~1.2s "
+                "(serialized behind the holder's own critical section), "
+                "not a lock-order deadlock heading for the (patched) "
+                "COMMIT_LOCK_TIMEOUT"
+            )
+            assert elapsed > 0.6, (
+                "supersede completed suspiciously fast -- it should have "
+                "had to wait for the holder's ~1.2s critical section, "
+                "meaning it may not have actually contended for the SAME "
+                "locks at all (a false pass this probe must not give)"
+            )
+        finally:
+            proc.wait(timeout=8)
+            monkeypatch.undo()
 
 
 # ================================================================

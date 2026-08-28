@@ -495,6 +495,7 @@ def _abort_if_region_unsound(
     region_kind: str,
     *,
     scope_kind: str,
+    spec: "TargetSpec | None" = None,
 ) -> None:
     """U-hostmode §4.5a's six-case predicate, run at PRE-FLIGHT (before
     any ledger mutation), for BOTH modes (REC2/REC4: the record is
@@ -507,7 +508,25 @@ def _abort_if_region_unsound(
     the reasoning: a git host's existing content is provenanced by its
     commit history, and an uncommitted foreign edit is already caught by
     :func:`_abort_if_dirty` (UN2, byte-unchanged). Every other verdict
-    (fresh/clean/missing/stale) proceeds silently."""
+    (fresh/clean/missing/stale) proceeds silently.
+
+    ``spec`` (M-3, code gate r2 fold — REC5's seventh row): when the
+    verdict is ``unknown`` on a ``managed`` target, an ``unknown``
+    provenance is not automatically foreign — it is the state of EVERY
+    registered host the moment this unit first ships (no compile record
+    has ever existed for anything routed before it). Given a ``spec``,
+    this compiles what the LEDGER'S CURRENT records (this call's own new
+    record not yet among them — pre-flight runs before ``resolve_record``
+    marks it routed) would render for this exact target; a byte-for-byte
+    match means the on-disk region IS self-learn's own prior output, just
+    missing its ledger-side receipt, and is ADOPTED — printed, not
+    refused — instead of blocking every existing host's first post-
+    upgrade route. Content that does not match is genuinely foreign
+    (H-3) and still refuses, exactly as before this fold. Callers that
+    omit ``spec`` (or the non-``managed`` region kinds — REC5's row 2 is
+    a ``managed``-only compiler comparison; ``reference``/``pointer``/
+    ``script`` have no equivalent single-target render to compile
+    against) keep the pre-M-3 behaviour byte-unchanged."""
     if not target.is_file():
         return  # nothing to hash yet — "fresh" or "missing", both proceed
     try:
@@ -522,6 +541,24 @@ def _abort_if_region_unsound(
     entry = compiled.entry_for(compiled.load_record(home, slug), compiled.region_key(host_path, target))
     observed_hash = compiled.sha256_hex(region)
     verdict = compiled.verdict_for(entry, observed_hash)
+    if verdict == "unknown" and region_kind == "managed" and spec is not None:
+        try:
+            expected = _expected_managed_region(home, spec)
+        except (OSError, UnicodeDecodeError, compiled.CompiledRecordError, CompileError):
+            expected = None
+        if expected is not None and region == expected:
+            # M-3: adopt — the caller's own normal REC9 resync (in the
+            # SAME ledger commit as always) writes the record entry with
+            # `based_on_sha256=observed_hash`, exactly the entry a real
+            # first `route` was always going to write. Nothing extra to
+            # write HERE; this function only decides refuse-vs-proceed.
+            print(
+                f"self-learn: adopting {target} — self-learn-compiled "
+                "content with no compile record yet (first route under "
+                "U-hostmode); this route writes the record entry",
+                file=sys.stderr,
+            )
+            return
     if compiled.refuses(verdict, mode):
         raise DirtyTargetError(
             f"compile target {target} {REGION_VERDICT_MARKER} ({verdict}) "
@@ -540,11 +577,16 @@ def _abort_if_unsound(
     region_kind: str,
     *,
     scope_kind: str,
+    spec: "TargetSpec | None" = None,
 ) -> None:
     """The (c) dirty/edited gate, mode-composed: git mode keeps
     :func:`_abort_if_dirty` byte-unchanged (UN2) AND additionally runs
     the region predicate (REC2/REC4); plain mode has ONLY the predicate
     (§4.5a — there is no git status to consult).
+
+    ``spec`` (M-3, code gate r2 fold): threaded straight through to
+    :func:`_abort_if_region_unsound` — see its own docstring. ``None``
+    (the default) is byte-identical to pre-M-3 behaviour.
 
     N-9 (code gate r1 fold): master guarded EACH of its three original
     call sites with ``target.is_file()`` before calling
@@ -555,7 +597,9 @@ def _abort_if_unsound(
     Restored here, in the ONE place both legs now live."""
     if mode == "git" and target.is_file():
         _abort_if_dirty(host_path, target)
-    _abort_if_region_unsound(home, host_path, mode, target, region_kind, scope_kind=scope_kind)
+    _abort_if_region_unsound(
+        home, host_path, mode, target, region_kind, scope_kind=scope_kind, spec=spec
+    )
 
 
 def _region_kind_for(spec: TargetSpec) -> str | None:
@@ -690,6 +734,7 @@ def _resync_region_entry(
     expected: bytes | None,
     observed_hash: str | None,
     by: str,
+    delete: bool = False,
 ) -> Path | None:
     """THE single place, for every verb and every region kind, that
     writes (or clears) a compile-record entry after a region write —
@@ -706,23 +751,31 @@ def _resync_region_entry(
     ``pointer``/``script`` kinds resolve their real target OUTSIDE
     ``spec.target`` — see :func:`_observe_region_hash_at`.
 
-    ``expected=None`` means the region no longer exists — a hook
-    script just removed being the concrete case — and DELETES any
-    existing entry for this key (:func:`compiled.delete_entry`) instead
-    of silently writing nothing: a stale entry left behind for a region
-    that is legitimately gone would misread as ``edited`` the next time
-    anything checks this key (REC5's "entry present + region absent"
-    row), refusing a future write over content that was never a hand
-    edit. Every pre-existing caller's own "nothing to predict" legs
-    (:func:`_expected_reference_region`/:func:`_expected_pointer_region`
-    returning ``None`` for a target that never existed) already pass
-    this test harmlessly — :func:`compiled.delete_entry` no-ops when
-    there is nothing to delete."""
+    ``delete=True`` (code gate r2 fold, D-2) is the ONLY way this
+    clears an existing entry (:func:`compiled.delete_entry`) — a
+    caller that POSITIVELY knows the region is gone (a hook script just
+    removed) passes it explicitly. A stale entry left behind for a
+    region that is legitimately gone would misread as ``edited`` the
+    next time anything checks this key (REC5's "entry present + region
+    absent" row), refusing a future write over content that was never
+    a hand edit — ``delete=True`` is what closes that gap.
+
+    ``expected=None`` WITHOUT ``delete=True`` is a true no-op — nothing
+    written, nothing cleared. Before this fold, ``expected=None`` alone
+    deleted the entry, which conflated two different callers: a
+    deliberate removal (the case above) and a predictive leg with
+    genuinely nothing to predict yet (:func:`_expected_reference_region`
+    /:func:`_expected_pointer_region` returning ``None`` for a NAMED
+    reference file that does not exist YET — a first route to it). The
+    latter must leave any existing entry untouched, not erase it: D-2's
+    own finding was that this path was reachable and untested."""
     try:
         key = compiled.region_key(host_path, target)
         slug = host_slug(home, host_path, scope_kind=scope_kind)
-        if expected is None:
+        if delete:
             return compiled.delete_entry(home, slug, key)
+        if expected is None:
+            return None
         host_label = "(user scope — ~/.claude)" if scope_kind == "user" else str(host_path)
         return compiled.write_entry(
             home,
@@ -1471,6 +1524,14 @@ def _resolve_local_target(
     host = _project_host_or_refuse(home, bucket_dir, project_path)
     target = host / "CLAUDE.local.md"
     mode = host_mode(home, host)
+    # N-4 (code gate r3 fold): ONE `TargetSpec` for both the check_dirty
+    # and no-check_dirty legs — r1/r2 built it twice, byte-identically,
+    # once inside the `if check_dirty:` branch and once again as the
+    # bare fallthrough return; the only difference was whether
+    # `_abort_if_unsound` ran on the way out.
+    spec = TargetSpec(
+        "claude-md", "project", bucket_dir, target, host, variant="local", mode=mode
+    )
     if check_dirty:
         # U-hostmode PLAIN9/§4.11: check_ignore is a GIT-tracking privacy
         # guard (P-A3) — a plain host tracks NOTHING, so nothing can be
@@ -1483,10 +1544,8 @@ def _resolve_local_target(
                 "a personal lesson into a tracked file publishes it to "
                 "the team)"
             )
-        _abort_if_unsound(home, host, mode, target, "managed", scope_kind="project")
-    return TargetSpec(
-        "claude-md", "project", bucket_dir, target, host, variant="local", mode=mode
-    )
+        _abort_if_unsound(home, host, mode, target, "managed", scope_kind="project", spec=spec)
+    return spec
 
 
 def _resolve_rules_target(
@@ -1553,6 +1612,12 @@ def _resolve_rules_target(
                 _user_reachability_roots(home, base), paths_tuple, allow_empty_glob
             )
         user_host = base.parent
+        spec = TargetSpec(
+            "claude-md", "user", bucket_dir, target, user_host,
+            variant="rules", rules_topic=rules_topic, rules_paths=paths_tuple,
+            glob_bypass=bool(bypassed_reason), glob_bypass_reason=bypassed_reason,
+            user_claude_md=user_claude_md, mode="plain",
+        )
         if check_dirty:
             # U-hostmode §4.8.1: user scope is a first-class PLAIN host —
             # the write goes through the same ordinary plain path every
@@ -1560,26 +1625,27 @@ def _resolve_rules_target(
             # region predicate every plain host gets (§4.5a), not a
             # dotfiles-management "managed" check. USER2/CHEZ0: this
             # route calls no dotfiles-management function at all.
-            _abort_if_unsound(home, user_host, "plain", target, "managed", scope_kind="user")
-        return TargetSpec(
-            "claude-md", "user", bucket_dir, target, user_host,
-            variant="rules", rules_topic=rules_topic, rules_paths=paths_tuple,
-            glob_bypass=bool(bypassed_reason), glob_bypass_reason=bypassed_reason,
-            user_claude_md=user_claude_md, mode="plain",
-        )
+            _abort_if_unsound(
+                home, user_host, "plain", target, "managed",
+                scope_kind="user", spec=spec,
+            )
+        return spec
     host = _project_host_or_refuse(home, bucket_dir, project_path)
     target = _project_rules_dir(host) / f"{rules_topic}.md"
     mode = host_mode(home, host)
     bypassed_reason = None
     if check_dirty and paths_tuple:
         bypassed_reason = _validate_rules_globs((host,), paths_tuple, allow_empty_glob)
-    if check_dirty:
-        _abort_if_unsound(home, host, mode, target, "managed", scope_kind="project")
-    return TargetSpec(
+    spec = TargetSpec(
         "claude-md", "project", bucket_dir, target, host, mode=mode,
         variant="rules", rules_topic=rules_topic, rules_paths=paths_tuple,
         glob_bypass=bool(bypassed_reason), glob_bypass_reason=bypassed_reason,
     )
+    if check_dirty:
+        _abort_if_unsound(
+            home, host, mode, target, "managed", scope_kind="project", spec=spec
+        )
+    return spec
 
 
 def _resolve_target(
@@ -1624,9 +1690,12 @@ def _resolve_target(
                 "target files, only the section inside an existing one"
             )
         mode = host_mode(home, root)
+        spec = TargetSpec("skill-md", "skill", bucket_dir, target, root, mode=mode)
         if check_dirty:
-            _abort_if_unsound(home, root, mode, target, "managed", scope_kind="skill")
-        return TargetSpec("skill-md", "skill", bucket_dir, target, root, mode=mode)
+            _abort_if_unsound(
+                home, root, mode, target, "managed", scope_kind="skill", spec=spec
+            )
+        return spec
 
     if destination == "claude-md":
         eff_variant, eff_topic = variant, rules_topic
@@ -1649,22 +1718,29 @@ def _resolve_target(
                 user_claude_md if user_claude_md is not None else DEFAULT_USER_CLAUDE_MD
             ).expanduser()
             user_host = target.parent
+            spec = TargetSpec(
+                "claude-md", "user", bucket_dir, target, user_host,
+                user_claude_md=user_claude_md, mode="plain",
+            )
             if check_dirty:
                 # U-hostmode §4.8.1: user scope is a first-class PLAIN
                 # host — the same region predicate every plain host gets
                 # (§4.5a), no dotfiles-management call (USER2/CHEZ0).
-                _abort_if_unsound(home, user_host, "plain", target, "managed", scope_kind="user")
-            return TargetSpec(
-                "claude-md", "user", bucket_dir, target, user_host,
-                user_claude_md=user_claude_md, mode="plain",
-            )
+                _abort_if_unsound(
+                    home, user_host, "plain", target, "managed",
+                    scope_kind="user", spec=spec,
+                )
+            return spec
         if scope == "project":
             host = _project_host_or_refuse(home, bucket_dir, project_path)
             target = host / "CLAUDE.md"
             mode = host_mode(home, host)
+            spec = TargetSpec("claude-md", "project", bucket_dir, target, host, mode=mode)
             if check_dirty:
-                _abort_if_unsound(home, host, mode, target, "managed", scope_kind="project")
-            return TargetSpec("claude-md", "project", bucket_dir, target, host, mode=mode)
+                _abort_if_unsound(
+                    home, host, mode, target, "managed", scope_kind="project", spec=spec
+                )
+            return spec
         # skill:<name> scope → the skills-root host's own CLAUDE.md
         # (doc 13 §2: claude-skills hosts SKILL.md sections + its own
         # CLAUDE.md; the old <home>/CLAUDE.md target maps here).
@@ -1676,9 +1752,12 @@ def _resolve_target(
         root = _gate_host(home, hosts.skills_root, "skills-root")
         target = root / "CLAUDE.md"
         mode = host_mode(home, root)
+        spec = TargetSpec("claude-md", "skill-root", bucket_dir, target, root, mode=mode)
         if check_dirty:
-            _abort_if_unsound(home, root, mode, target, "managed", scope_kind="skill-root")
-        return TargetSpec("claude-md", "skill-root", bucket_dir, target, root, mode=mode)
+            _abort_if_unsound(
+                home, root, mode, target, "managed", scope_kind="skill-root", spec=spec
+            )
+        return spec
 
     if destination == "new-skill":
         if ref_name is None:
@@ -3384,12 +3463,23 @@ def route(
                     # (uniquely named per record via `script_name`), so
                     # no `skip_target` concern here unlike the managed
                     # branch above.
-                    assert old_record is not None, (
-                        "old_retire is only ever set (line ~3257) inside "
-                        "`if old_record is not None:` — reaching this "
-                        "branch means old_record was too; pyright cannot "
-                        "connect the two names' narrowing on its own"
-                    )
+                    if old_record is None:
+                        # D-3 (code gate r2 fold): an `assert` here is
+                        # STRIPPED under `python -O` (D-3's own finding
+                        # against the r1-fold version of this guard) --
+                        # an explicit raise stays load-bearing regardless
+                        # of interpreter flags. Provably unreachable in
+                        # practice: `old_retire` is only ever set (line
+                        # ~3257) inside `if old_record is not None:`, and
+                        # this branch sits inside `if old_retire is not
+                        # None:` -- reaching here means old_record was
+                        # set too; pyright just cannot connect the two
+                        # names' narrowing on its own.
+                        raise VerbError(
+                            "internal invariant violated: old_retire is "
+                            "set but old_record is None (route "
+                            f"{record_id} supersedes {old_id})"
+                        )
                     old_host_repo, old_script_abs, _old_rel, old_removal_mode = (
                         old_retire.removal
                     )
@@ -3402,6 +3492,7 @@ def route(
                         region_kind="script",
                         expected=None,
                         observed_hash=None,
+                        delete=True,
                         by=f"route {record_id} (supersedes {old_id})",
                     )
                     if old_removal_record_path is not None:
@@ -3826,12 +3917,23 @@ def route_direct(
                     # matching block there — a hook script's path can
                     # never collide with `spec.target`, so no
                     # `skip_target` concern here.
-                    assert old_record is not None, (
-                        "old_retire is only ever set (line ~3722) inside "
-                        "`if old_record is not None:` — reaching this "
-                        "branch means old_record was too; pyright cannot "
-                        "connect the two names' narrowing on its own"
-                    )
+                    if old_record is None:
+                        # D-3 (code gate r2 fold): an `assert` here is
+                        # STRIPPED under `python -O` (D-3's own finding
+                        # against the r1-fold version of this guard) --
+                        # an explicit raise stays load-bearing regardless
+                        # of interpreter flags. Provably unreachable in
+                        # practice: `old_retire` is only ever set (line
+                        # ~3722) inside `if old_record is not None:`, and
+                        # this branch sits inside `if old_retire is not
+                        # None:` -- reaching here means old_record was
+                        # set too; pyright just cannot connect the two
+                        # names' narrowing on its own.
+                        raise VerbError(
+                            "internal invariant violated: old_retire is "
+                            "set but old_record is None (route-direct "
+                            f"{record.id} supersedes {old_id})"
+                        )
                     old_host_repo, old_script_abs, _old_rel, old_removal_mode = (
                         old_retire.removal
                     )
@@ -3844,6 +3946,7 @@ def route_direct(
                         region_kind="script",
                         expected=None,
                         observed_hash=None,
+                        delete=True,
                         by=f"route-direct {record.id} (supersedes {old_id})",
                     )
                     if old_removal_record_path is not None:
@@ -4712,54 +4815,54 @@ def graduate(
         else:
             _graduate_host_lock = contextlib.nullcontext()
 
-        with _graduate_host_lock:
+        with _ledger_write(home), _graduate_host_lock:
             observed_hash = _observe_retirement_region(retire)
 
             message = f"self-learn: graduate {record_id}"
-            with _ledger_write(home):
-                touched = resolve_record(
+            touched = resolve_record(
+                home,
+                record_id,
+                "superseded",
+                superseded_by="canon",
+                note=note,
+                verb="graduate",
+            )
+            # U-hostmode REC1/REC9: the graduated record's own doc-target
+            # entry drops out of the compile at the host phase below — the
+            # compile record must be kept in sync with that rewrite (see
+            # `_write_retirement_compile_record`'s docstring for the bug
+            # this closes), inside this SAME ledger commit.
+            record_path = _write_retirement_compile_record(
+                home, retire, observed_hash, by=f"graduate {record_id}"
+            )
+            if record_path is not None:
+                touched = touched + [record_path]
+            elif retire.removal is not None:
+                # D-3 completion (code gate r1 fold, coordinator
+                # ruling 2026-08-28): same shape as `supersede`'s
+                # own hook-removal leg — `_write_retirement_compile_
+                # record` only ever covers `retire.spec` (a managed
+                # drop); a hook-routed record's script disappearing
+                # at the host phase below needs its record entry
+                # predictively DELETED here too, or a stale WRITE
+                # entry misreads the next legitimate route to this
+                # same script path as `edited`.
+                host_repo, script_abs, _rel, removal_mode = retire.removal
+                removal_record_path = _resync_region_entry(
                     home,
-                    record_id,
-                    "superseded",
-                    superseded_by="canon",
-                    note=note,
-                    verb="graduate",
+                    host_path=host_repo,
+                    scope_kind=_hook_scope_kind(record),
+                    mode=removal_mode,
+                    target=script_abs,
+                    region_kind="script",
+                    expected=None,
+                    observed_hash=None,
+                    delete=True,
+                    by=f"graduate {record_id}",
                 )
-                # U-hostmode REC1/REC9: the graduated record's own doc-target
-                # entry drops out of the compile at the host phase below — the
-                # compile record must be kept in sync with that rewrite (see
-                # `_write_retirement_compile_record`'s docstring for the bug
-                # this closes), inside this SAME ledger commit.
-                record_path = _write_retirement_compile_record(
-                    home, retire, observed_hash, by=f"graduate {record_id}"
-                )
-                if record_path is not None:
-                    touched = touched + [record_path]
-                elif retire.removal is not None:
-                    # D-3 completion (code gate r1 fold, coordinator
-                    # ruling 2026-08-28): same shape as `supersede`'s
-                    # own hook-removal leg — `_write_retirement_compile_
-                    # record` only ever covers `retire.spec` (a managed
-                    # drop); a hook-routed record's script disappearing
-                    # at the host phase below needs its record entry
-                    # predictively DELETED here too, or a stale WRITE
-                    # entry misreads the next legitimate route to this
-                    # same script path as `edited`.
-                    host_repo, script_abs, _rel, removal_mode = retire.removal
-                    removal_record_path = _resync_region_entry(
-                        home,
-                        host_path=host_repo,
-                        scope_kind=_hook_scope_kind(record),
-                        mode=removal_mode,
-                        target=script_abs,
-                        region_kind="script",
-                        expected=None,
-                        observed_hash=None,
-                        by=f"graduate {record_id}",
-                    )
-                    if removal_record_path is not None:
-                        touched = touched + [removal_record_path]
-                staged, sha = _stage_and_commit(home, touched, message, note)
+                if removal_record_path is not None:
+                    touched = touched + [removal_record_path]
+            staged, sha = _stage_and_commit(home, touched, message, note)
 
             post_notes: list[str] = []
             host_sha, host_repo = _retirement_host_phase(
@@ -4873,54 +4976,54 @@ def supersede(
         else:
             _supersede_host_lock = contextlib.nullcontext()
 
-        with _supersede_host_lock:
+        with _ledger_write(home), _supersede_host_lock:
             observed_hash = _observe_region_hash(spec) if spec is not None else None
 
             # (d) LEDGER phase (locked from the first mutation through the
             # commit — :func:`_ledger_write`).
             message = f"self-learn: supersede {old_id} → {new_id}"
-            with _ledger_write(home):
-                touched = supersede_record(home, old_id, new_id, note=note)
-                # U-hostmode REC1/REC9: the superseded record's own doc-target
-                # entry drops out of the compile at the host phase below — kept
-                # in sync with that rewrite inside this SAME ledger commit (the
-                # bug this closes: `_write_retirement_compile_record`'s
-                # docstring).
-                if spec is not None:
-                    record_path = _write_compile_record_entry(
-                        home, spec, observed_hash, by=f"supersede {old_id} → {new_id}"
-                    )
-                    if record_path is not None:
-                        touched = touched + [record_path]
-                elif removal is not None:
-                    # D-3 completion (code gate r1 fold, coordinator
-                    # ruling 2026-08-28): a hook-routed record's script
-                    # is about to disappear at the host phase below —
-                    # predictively DELETE its record entry in this SAME
-                    # ledger commit (same shape the `spec is not None`
-                    # branch above already uses for a managed drop; H-2
-                    # already tolerates the host phase lagging the
-                    # ledger — a failed removal there is the pre-existing
-                    # "stale, never lost" gap `recompile` repairs, which
-                    # now ALSO resyncs this exact key, see its hook-
-                    # removal-repair leg). A stale WRITE entry left
-                    # behind here would misread the next legitimate
-                    # write to this same script path as `edited`.
-                    host_repo, script_abs, _rel, removal_mode = removal
-                    removal_record_path = _resync_region_entry(
-                        home,
-                        host_path=host_repo,
-                        scope_kind=_hook_scope_kind(old_record),
-                        mode=removal_mode,
-                        target=script_abs,
-                        region_kind="script",
-                        expected=None,
-                        observed_hash=None,
-                        by=f"supersede {old_id} → {new_id}",
-                    )
-                    if removal_record_path is not None:
-                        touched = touched + [removal_record_path]
-                staged, sha = _commit_ledger(home, touched, message, note)
+            touched = supersede_record(home, old_id, new_id, note=note)
+            # U-hostmode REC1/REC9: the superseded record's own doc-target
+            # entry drops out of the compile at the host phase below — kept
+            # in sync with that rewrite inside this SAME ledger commit (the
+            # bug this closes: `_write_retirement_compile_record`'s
+            # docstring).
+            if spec is not None:
+                record_path = _write_compile_record_entry(
+                    home, spec, observed_hash, by=f"supersede {old_id} → {new_id}"
+                )
+                if record_path is not None:
+                    touched = touched + [record_path]
+            elif removal is not None:
+                # D-3 completion (code gate r1 fold, coordinator
+                # ruling 2026-08-28): a hook-routed record's script
+                # is about to disappear at the host phase below —
+                # predictively DELETE its record entry in this SAME
+                # ledger commit (same shape the `spec is not None`
+                # branch above already uses for a managed drop; H-2
+                # already tolerates the host phase lagging the
+                # ledger — a failed removal there is the pre-existing
+                # "stale, never lost" gap `recompile` repairs, which
+                # now ALSO resyncs this exact key, see its hook-
+                # removal-repair leg). A stale WRITE entry left
+                # behind here would misread the next legitimate
+                # write to this same script path as `edited`.
+                host_repo, script_abs, _rel, removal_mode = removal
+                removal_record_path = _resync_region_entry(
+                    home,
+                    host_path=host_repo,
+                    scope_kind=_hook_scope_kind(old_record),
+                    mode=removal_mode,
+                    target=script_abs,
+                    region_kind="script",
+                    expected=None,
+                    observed_hash=None,
+                    delete=True,
+                    by=f"supersede {old_id} → {new_id}",
+                )
+                if removal_record_path is not None:
+                    touched = touched + [removal_record_path]
+            staged, sha = _commit_ledger(home, touched, message, note)
 
             # (e) HOST phase: recompile the target — the entry drops out. For
             # hooks: git rm the script in the host repo (M3-4 rollback pin)
@@ -5589,6 +5692,17 @@ def recompile(
     sentinel.heartbeat()
     try:
         touched_hosts: list[Path] = []
+        # N-6 (code gate r2 fold): every automatic drift-resync entry
+        # written below (managed, reference, pointer, hook re-apply,
+        # hook removal-repair) is ACCUMULATED here instead of committed
+        # on the spot — one changed target used to mean one standalone
+        # ledger commit, so a large repair run could emit many resync
+        # commits in a single invocation. ONE combined commit fires at
+        # the end of this function instead (right before the push loop),
+        # covering everything this run touched. `--adopt`'s own commit
+        # (just below) is a SEPARATE, deliberate single-target human
+        # action — never batched in here.
+        resync_touched: list[Path] = []
         # REC11: an --adopt target re-records the ON-DISK region as
         # authoritative before this run's own soundness check runs — the
         # write is mode-agnostic (REC4: the record covers git hosts too),
@@ -5691,6 +5805,7 @@ def recompile(
                             target,
                             region_kind,
                             scope_kind=spec.scope_kind,
+                            spec=spec,
                         )
                     except DirtyTargetError as exc:
                         result.entries.append(
@@ -5748,26 +5863,14 @@ def recompile(
                         record_path = _write_compile_record_entry(
                             home, spec, observed_hash, by=f"recompile {target}"
                         )
-                        if record_path is not None:
-                            # U-hostmode M-10 (code gate r1 fold): §4.5/
-                            # gate B-3 rejected a second ledger commit
-                            # under the subject `self-learn: compile
-                            # record …` — that shape stays rejected. This
-                            # standalone resync commit (unavoidable: the
-                            # render above happened OUTSIDE `route`'s own
-                            # commit, so there is no route commit for the
-                            # record to ride) gets its OWN, DISTINCT
-                            # subject, and names the host by SLUG — never
-                            # by path, absolute or relative (a slug is
-                            # `/`-free by construction, `hosts.slug_for`).
-                            _commit_ledger(
-                                home,
-                                [record_path],
-                                "self-learn: recompile resync record "
-                                + host_slug(
-                                    home, spec.host_path, scope_kind=spec.scope_kind
-                                ),
-                            )
+                        # U-hostmode M-10 (code gate r1 fold): §4.5/gate
+                        # B-3 rejected a second ledger commit under the
+                        # subject `self-learn: compile record …` — that
+                        # shape stays rejected. N-6 (code gate r2 fold):
+                        # this write's own commit is now BATCHED (see
+                        # `resync_touched` above), not fired here.
+                        if record_path is not None and record_path not in resync_touched:
+                            resync_touched.append(record_path)
                 result.entries.append(
                     RecompileEntry(
                         target=target,
@@ -5833,15 +5936,10 @@ def recompile(
                     record_path = _write_compile_record_entry(
                         home, spec, observed_hash, by=f"recompile {target}"
                     )
-                    if record_path is not None:
-                        _commit_ledger(
-                            home,
-                            [record_path],
-                            "self-learn: recompile resync record "
-                            + host_slug(
-                                home, spec.host_path, scope_kind=spec.scope_kind
-                            ),
-                        )
+                    # N-6 (code gate r2 fold): batched, not committed here
+                    # — see `resync_touched` above.
+                    if record_path is not None and record_path not in resync_touched:
+                        resync_touched.append(record_path)
             result.entries.append(
                 RecompileEntry(target=target, changed=True, commit_sha=sha)
             )
@@ -6029,17 +6127,10 @@ def recompile(
                             observed_hash=ref_observed_before,
                             by=f"recompile {probe}",
                         )
-                        if ref_record_path is not None:
-                            _commit_ledger(
-                                home,
-                                [ref_record_path],
-                                "self-learn: recompile resync record "
-                                + host_slug(
-                                    home,
-                                    spec.host_path,
-                                    scope_kind=spec.scope_kind,
-                                ),
-                            )
+                        # N-6 (code gate r2 fold): batched, see
+                        # `resync_touched` above.
+                        if ref_record_path is not None and ref_record_path not in resync_touched:
+                            resync_touched.append(ref_record_path)
             if pointer_changed:
                 pointer_surface = spec.pointer_surface
                 assert pointer_surface is not None
@@ -6062,17 +6153,10 @@ def recompile(
                             observed_hash=ptr_observed_before,
                             by=f"recompile {probe}",
                         )
-                        if ptr_record_path is not None:
-                            _commit_ledger(
-                                home,
-                                [ptr_record_path],
-                                "self-learn: recompile resync record "
-                                + host_slug(
-                                    home,
-                                    spec.host_path,
-                                    scope_kind=spec.scope_kind,
-                                ),
-                            )
+                        # N-6 (code gate r2 fold): batched, see
+                        # `resync_touched` above.
+                        if ptr_record_path is not None and ptr_record_path not in resync_touched:
+                            resync_touched.append(ptr_record_path)
 
         # Hook scripts: re-apply the APPROVED bytes where missing, edited,
         # or stripped of the executable bit (a hook two-phase interruption
@@ -6137,13 +6221,10 @@ def recompile(
                     observed_hash=script_observed_before,
                     by=f"recompile {script_abs}",
                 )
-                if script_record_path is not None:
-                    _commit_ledger(
-                        home,
-                        [script_record_path],
-                        "self-learn: recompile resync record "
-                        + host_slug(home, host_repo, scope_kind=_hook_scope_kind(record)),
-                    )
+                # N-6 (code gate r2 fold): batched, see `resync_touched`
+                # above.
+                if script_record_path is not None and script_record_path not in resync_touched:
+                    resync_touched.append(script_record_path)
             result.entries.append(
                 RecompileEntry(target=script_abs, changed=True, commit_sha=sha)
             )
@@ -6192,17 +6273,13 @@ def recompile(
                         region_kind="script",
                         expected=None,
                         observed_hash=None,
+                        delete=True,
                         by=f"recompile {script_abs}",
                     )
-                    if removal_record_path is not None:
-                        _commit_ledger(
-                            home,
-                            [removal_record_path],
-                            "self-learn: recompile resync record "
-                            + host_slug(
-                                home, host_repo, scope_kind=_hook_scope_kind(record)
-                            ),
-                        )
+                    # N-6 (code gate r2 fold): batched, see
+                    # `resync_touched` above.
+                    if removal_record_path is not None and removal_record_path not in resync_touched:
+                        resync_touched.append(removal_record_path)
             result.entries.append(
                 RecompileEntry(
                     target=script_abs, changed=sha is not None, commit_sha=sha
@@ -6210,6 +6287,25 @@ def recompile(
             )
             if sha is not None and host_repo not in touched_hosts:
                 touched_hosts.append(host_repo)
+
+        # N-6 (code gate r2 fold): the ONE combined resync commit for
+        # this ENTIRE invocation — every write accumulated above
+        # (managed, reference, pointer, hook re-apply, hook removal-
+        # repair; `--adopt`'s own commit above is separate and already
+        # landed). A no-op run (nothing drifted) commits nothing, same
+        # as always. `compiled/*.yaml` is inside `_RECONCILABLE` (RCN1),
+        # so a failure between one entry's write and this final commit
+        # leaves an uncommitted record file the reconcile mechanism
+        # sweeps — never a lost write, same failure-mode reasoning the
+        # per-target commits already relied on.
+        if resync_touched:
+            with _ledger_write(home):
+                _commit_ledger(
+                    home,
+                    resync_touched,
+                    "self-learn: recompile resync record(s) "
+                    f"({len(resync_touched)})",
+                )
 
         if not no_push:
             # Outside every lock (a push touches no index); the rebase

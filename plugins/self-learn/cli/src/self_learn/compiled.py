@@ -89,41 +89,41 @@ REFUSING_VERDICTS = ("edited", "unknown")
 
 def refuses(verdict: str, mode: str) -> bool:
     """Whether *verdict* should REFUSE a route/recompile for a host in
-    *mode*. ``"edited"`` always refuses (a divergence from what self-learn
-    itself last recorded, in EITHER mode — REC2/REC4: the record is the
-    only instrument that sees a committed in-marker hand edit, a real
-    hazard on a git host too).
+    *mode*, per REC5's table — six verdicts (:func:`verdict_for`), mode-
+    scoped in exactly two places:
 
-    ``"unknown"`` (no record at all yet, region already present) does
-    NOT refuse in GIT mode — a deliberate, documented scope reduction
-    from §4.5a's literal six-case table, kept for exactly one reason: a
-    host with pre-existing, self-learn-shaped content and no compile
-    record yet is the realistic state of every one of the nine
-    registered (git) hosts the moment this unit ships, and refusing on
-    first contact there would make this unit's OWN migration silently
-    regress every existing host on its first post-upgrade route — the
-    opposite of MODE1/UN1's byte-identical promise. Git's own commit
-    history is that content's provenance either way.
+    ``"edited"`` (region matches neither the record's expectation nor
+    its prior observation) always refuses, in EITHER mode — REC2/REC4:
+    the record is the only instrument that sees a committed in-marker
+    hand edit, a real hazard on a git host too.
 
-    It DOES refuse in PLAIN mode (code gate r1 B-1) — a plain host has
-    no OTHER trust source, so "no record, content already present" is
-    exactly REC5 row 2's hazard, not a benign migration artifact. This
-    closes a real hole: TWO different ledger homes routing into the SAME
-    physical plain (e.g. user-scope) target used to both silently
-    succeed, the second one overwriting bytes the first ledger's record
-    never accounted for — `TestB1Rec5RowTwoUnknownRefusesPlainMode`
-    (`test_hostmode.py`) is the dedicated regression test; the second
-    ledger now refuses and must use `recompile --adopt` (or route to its
-    OWN target) instead. The verdict STRING is still computed exactly
-    per the six-case
-    table (:func:`verdict_for`); only its GATING was narrowed here --
-    narrowing since REVERSED (code gate r1 B-1): a plain host has no
-    OTHER trust source, so "unknown" (no record yet, content already
-    present) now refuses there too -- REC5 row 2: entry absent +
-    region present -> REFUSE in plain mode; git mode keeps the
-    deliberate scope reduction above (its provenance is git's own
-    committed history, and an uncommitted version is already caught
-    by `_abort_if_dirty`)."""
+    ``"unknown"`` (no record at all yet, region already present — REC5
+    row 2) is mode-split. It does NOT refuse in GIT mode: git's own
+    commit history is that content's provenance, and an uncommitted
+    foreign version is already caught by `_abort_if_dirty` — refusing on
+    first contact there would regress every registered git host's first
+    post-upgrade route, the opposite of MODE1/UN1's byte-identical
+    promise. It DOES refuse in PLAIN mode (code gate r1 B-1) — a plain
+    host has no OTHER trust source, so "no record, content already
+    present" is a real hazard, not a benign artifact (closes the hole
+    where two different ledger homes routing the SAME physical plain
+    target could both silently succeed, the second overwriting bytes the
+    first's record never accounted for — `TestB1Rec5RowTwoUnknownRefuses
+    PlainMode`, `test_hostmode.py`).
+
+    THIS function's contract stops there — a caller may still avoid ever
+    reaching a `True` return for "unknown" in plain mode: code gate r2
+    M-3 gives REC5 a seventh row, checked by the CALLER
+    (`verbs._abort_if_region_unsound`) BEFORE it consults this function
+    at all — when the on-disk region is byte-for-byte what self-learn's
+    own compiler currently renders for that target (the ordinary shape
+    of every host routed to before compile records existed), the caller
+    ADOPTS instead of asking `refuses` to gate anything: one notice
+    line, the record entry gets written by that same call, no refusal
+    ever happens. Only a genuine byte MISMATCH — foreign content, not
+    merely a missing receipt — reaches `refuses("unknown", "plain")` at
+    all, and `recompile --adopt` remains the named repair for exactly
+    that case."""
     return verdict == "edited" or (verdict == "unknown" and mode == "plain")
 
 

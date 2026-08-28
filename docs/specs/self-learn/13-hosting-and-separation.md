@@ -178,7 +178,12 @@ revert). Doc 13 promotes that to the general rule:
    current hash is clean; matching the based-on hash means our own apply
    did not land (drift — `recompile` repairs it, however many times in a
    row it fails); matching neither was hand-edited and the route refuses,
-   naming `recompile --adopt`. **This is
+   naming `recompile --adopt`. **No entry at all, region present, is not
+   automatically foreign:** if the on-disk bytes are byte-identical to
+   what the ledger's current records would render for that target, the
+   route self-adopts — writing the missing entry and proceeding, with one
+   printed notice — since nothing else in the codebase produces that
+   exact byte string; only a genuine mismatch still refuses. **This is
    stricter than `git status` for the region self-learn owns** — it catches
    an in-marker hand edit the human has already COMMITTED, which
    `git status` reports as clean — and narrower where narrowness is
