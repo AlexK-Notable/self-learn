@@ -2659,7 +2659,7 @@ class TestRecompileRecordResyncOnRender:
         `route`'s own commit, so REC9's "the record rides its own
         resolution's commit" has nothing for a bare `recompile` resync
         to ride). Evidence this closes (probe run during the gate):
-        `'self-learn: compile record /tmp/pytest-of-komi/.../CLAUDE.md'`
+        `'self-learn: compile record /tmp/pytest-of-user/.../CLAUDE.md'`
         — the ONLY pinned subject anywhere in this codebase that
         embedded an absolute local path.
 

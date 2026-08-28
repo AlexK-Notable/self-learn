@@ -1,7 +1,10 @@
 # Spec — de-personalize the shipped product (and close the `DEFAULT_MEMORY_DIR` wrong-target defect)
 
-Status: DRAFT rev 1 — for BLIND Opus spec gate (reviewer reads this spec +
-the code only; no review notes).
+Status: SHIPPED 2026-07-24 at 6105983 (gate-cwd pin ac28695); re-verified
+2026-08-28 — one drift found and fixed, gate now enforced by
+test_personal_literals.py. Out-of-scope observation: `.codeboarding/
+file_coverage.json` still references the pre-rename `nova-host.md`
+fixture path; outside §9's `plugins/` pathspec, left as-is.
 Origin: the user audited the repo for shareability. Verified finding:
 there are **no** secrets, credentials, third-party PII, or employer
 content anywhere in the tree or the 336-commit history. What remains is
