@@ -317,9 +317,9 @@ something this unit changed.
 - **T-H1 · Home bootstrap** — `~/.self-learn` git init, private remote,
   layout dirs, hosts.yaml seeded with EXACTLY two entries:
   ```yaml
-  skills_root: /home/komi/repos/claude-skills   # covers all 3 skills (glob)
+  skills_root: ~/repos/claude-skills   # covers all 3 skills (glob)
   projects:
-    - path: /home/komi/repos/claude-skills
+    - path: ~/repos/claude-skills
   ```
   **There is no dotfiles/user host entry in `hosts.yaml`** (audit
   correction 2026-07-16, M-2, still true today): `host add --kind
@@ -397,7 +397,7 @@ findings):
    cannot find, silently opening a SECOND one beside it. So:
    ```bash
    slug=$(python -c 'from self_learn.hosts import slug_for; \
-     print(slug_for("/home/komi/repos/claude-skills"))')
+     print(slug_for("~/repos/claude-skills"))')
    mkdir -p ~/.self-learn/projects/"$slug"/{pending,resolved,proposals}
    ```
    (Verified no live impact at the time of writing: no `projects/<slug>`
