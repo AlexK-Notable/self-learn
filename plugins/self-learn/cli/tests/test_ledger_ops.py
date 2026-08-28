@@ -34,6 +34,7 @@ from self_learn.normalize import sha_anchor
 from self_learn.records import Record
 
 from support import (
+    force_past_deferred,
     commit_all,
     git,
     hook_proposal_fields,
@@ -487,7 +488,11 @@ def test_queue_hides_future_deferred_shows_past_deferred(tmp_path):
     create_record(home, make_behavior(record_id="lrn-bb000002"))
     create_record(home, make_behavior(record_id="lrn-cc000003"))
     defer_record(home, "lrn-bb000002", "2099-01-01")  # future → hidden
-    defer_record(home, "lrn-cc000003", "2020-01-01")  # past → visible again
+    # U-verbs STATE1: `defer_record` itself now refuses a past `--until`
+    # (the human-typo guard) — simulate a deferral that has already
+    # ELAPSED instead, which is the real-world way `deferred_until` ends
+    # up in the past.
+    force_past_deferred(home, "lrn-cc000003", "2020-01-01")  # past → visible again
 
     bucket = _bucket(home)
     ids = [e.record.id for e in queue(bucket)]

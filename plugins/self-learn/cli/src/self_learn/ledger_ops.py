@@ -68,14 +68,17 @@ __all__ = [
     "globs_may_intersect",
     "is_unanalyzed",
     "list_items",
+    "DEFERRED_ONLY",
     "LIVE_STATUSES",
     "proposal_info",
     "queue",
     "read_proposal",
     "record_title",
-    "rehome_record",
+    "reopen_record",
+    "move_record",
     "require_status",
     "resolve_record",
+    "REOPENABLE_STATUSES",
     "RESOLVABLE_STATUSES",
     "ROUTED_ONLY",
     "stamp_proposal",
@@ -116,6 +119,15 @@ _RESOLVE_ALLOWED_SOURCE: dict[str, frozenset[str]] = {
 #: — a superseded/rejected/pending record has no live coverage for a
 #: human to confirm, dismiss a suspect against, or clear a follow-up on.
 ROUTED_ONLY = frozenset({"routed"})
+
+#: `reopen` (U-verbs §3.1): only a REJECTED record returns to the draft
+#: plane. A SUPERSEDED one has a live successor (or is a merge-collapse
+#: loser whose evidence was merged into a survivor) — reopening it would
+#: orphan that link; a ROUTED one is `supersede`/a later correcting-
+#: destination verb's territory.
+REOPENABLE_STATUSES = frozenset({"rejected"})
+#: `undefer` (U-verbs §3.1): the exact inverse of `defer`'s own write.
+DEFERRED_ONLY = frozenset({"deferred"})
 
 DEFAULT_DEFER_DAYS = 30  # 02 §2: defer default +30 days
 
@@ -2384,74 +2396,47 @@ def resolve_record(
     return touched
 
 
-def rehome_record(
-    home: Path, record_id: str, target_bucket: Path, project_path: Path
-) -> list[Path]:
-    """File-op half of ``rehome`` (02 §2 verb pin): one ``git mv`` of the
-    PENDING record file into *target_bucket*'s ``pending/`` — the record's
-    bytes are untouched (a re-home is a filing move, never a substance
-    edit) — plus the pinned sweep of its source-bucket proposal siblings
-    (``lrn-<id>.{yaml,diff}`` AND any ``merge-*.yaml`` naming it — the
-    resolution sweep's own shape, :func:`remove_proposal_siblings`).
-
-    The target bucket's ``{pending,resolved,proposals}/`` dirs are created
-    when absent and its ``meta.yaml`` stamped from *project_path* (the
-    hosts.yaml entry — 13 §3; hosts.yaml stays the only registration
-    authority, this op registers nothing). The destination-collision check
-    runs HERE too, BEFORE any dir/meta creation (belt — the verb has
-    already refused before taking the lock): a duplicated id is corruption
-    to surface, never to merge into. Returns the exact touched-path list;
-    deletions among them are pre-staged (git mv/rm) or were untracked."""
-    path = find_record_path(home, record_id, statuses=("pending",))
-    source_bucket = path.parent.parent
-    for sub in ("pending", "resolved"):
-        if (target_bucket / sub / path.name).exists():
-            raise LedgerOpsError(
-                f"record {record_id} already exists in {target_bucket} — a "
-                "duplicated id is corruption to surface, never to merge "
-                "into; inspect both files by hand"
-            )
-    meta = ensure_project_meta(target_bucket, project_path)
-    for sub in ("pending", "resolved", "proposals"):
-        (target_bucket / sub).mkdir(parents=True, exist_ok=True)
-    dest_path = target_bucket / "pending" / path.name
-    if _is_tracked(home, path):
-        _git_ok(home, "mv", str(path), str(dest_path))
-    else:
-        path.rename(dest_path)
-    touched: list[Path] = [path, dest_path, meta]
-    touched.extend(remove_proposal_siblings(home, source_bucket, record_id))
-    return touched
-
-
-def rescope_record(
-    home: Path, record_id: str, target_scope: str, target_bucket: Path
+def move_record(
+    home: Path,
+    record_id: str,
+    *,
+    target_scope: str,
+    target_bucket: Path,
+    project_path: Path | None = None,
 ) -> tuple[list[Path], list[Path]]:
-    """File-op half of ``rescope`` (u-rescope §6.3): a PENDING record's
-    scope literal is rewritten AND the record moves between buckets in
-    one motion — unlike :func:`rehome_record`, the bytes are NOT
-    untouched, because ``scope:`` lives in the frontmatter and
-    :func:`bucket_dir_for_scope` maps ``scope -> bucket``; a record whose
-    frontmatter disagrees with its bucket is corruption (§4.1).
+    """The ONE file-op behind both ``rehome`` and ``rescope`` (U-verbs
+    §3.2a, ruling R1 — replaces the two half-complete
+    the predecessor `rehome_record` / `rescope_record`, deleted wholesale
+    rather than kept as wrappers): a PENDING record's ``git mv`` into
+    *target_bucket*'s ``pending/``, its ``scope:`` rewritten
+    UNCONDITIONALLY to *target_scope* (§3.2a step 5 — ``Record.write`` is
+    a byte-perfect round-trip, so an unconditional write and one
+    conditioned on a field/bucket comparison are behaviourally
+    equivalent; the simpler, unconditional form is the one that ships),
+    ``meta.yaml`` stamped IFF *project_path* is not ``None`` (i.e. the
+    target is a project bucket — §3.2b: only a project scope carries a
+    path a bucket cannot derive from its own name), and the source
+    bucket's proposal siblings swept and returned alongside the touched
+    paths (u-rescope's ``(touched, swept)`` shape — only the pair makes
+    the disclosure implementable, R-DISCLOSE-1/2).
 
-    Ordering is modelled on :func:`resolve_record`'s tail (``git mv`` THEN
-    ``record.write`` at the destination), not on :func:`rehome_record`'s
-    move-only ordering — a kill between the two calls leaves a STAGED
-    rename (`reconcile` blocks it, visibly stuck) rather than a merely
-    MODIFIED tracked file at the source (`reconcile` would silently
-    auto-commit a scope/bucket mismatch). See §6.4.
+    Ordering is mv-first (u-rescope §6.4, the stricter of the two
+    predecessor orderings, adopted for every leg): ``git mv`` THEN
+    ``record.write`` at the destination — a kill between the two leaves a
+    STAGED rename (`reconcile` blocks it, visibly stuck) rather than a
+    merely MODIFIED tracked file at the source (`reconcile` would
+    silently auto-commit a scope/bucket mismatch).
 
-    No ``meta.yaml``: ``user`` and ``skill:<name>`` buckets carry no
-    project identity (§4), so :func:`ensure_project_meta` is never called
-    here — unlike :func:`rehome_record`.
+    Destination-collision refusal (the F4 ``create_record`` precedent)
+    runs BEFORE any dir/meta creation: a duplicated id is corruption to
+    surface, never to merge into. Callers resolve *record_id* themselves
+    (``find_record_path(..., statuses=("pending",))``) — this function
+    trusts the path it is handed.
 
-    Returns ``(touched, swept)`` — a PAIR, not a flat list. ``touched`` is
-    the exact path list :func:`_commit_ledger` should stage (deletions
-    pre-staged by ``git mv``/``git rm``, or untracked); ``swept`` is the
-    subset :func:`remove_proposal_siblings` removed. Only from the pair
-    can the caller tell a swept proposal apart from a rename half — that
-    distinction is what makes R-DISCLOSE-1/R-DISCLOSE-2 (§5.5)
-    implementable; a flat ``touched`` cannot do it."""
+    Returns ``(touched, swept)`` — ``touched`` is the exact path list
+    :func:`_commit_ledger` should stage; ``swept`` is the subset
+    :func:`remove_proposal_siblings` removed (a strict subset of
+    ``touched``)."""
     path = find_record_path(home, record_id, statuses=("pending",))
     source_bucket = path.parent.parent
     for sub in ("pending", "resolved"):
@@ -2461,10 +2446,13 @@ def rescope_record(
                 "duplicated id is corruption to surface, never to merge "
                 "into; inspect both files by hand"
             )
+    meta_path: Path | None = None
+    if project_path is not None:
+        meta_path = ensure_project_meta(target_bucket, project_path)
     for sub in ("pending", "resolved", "proposals"):
         (target_bucket / sub).mkdir(parents=True, exist_ok=True)
     record = Record.from_path(path)
-    record.set_scope(target_scope)  # the one substance change
+    record.set_scope(target_scope)  # written unconditionally (§3.2a step 5)
     dest_path = target_bucket / "pending" / path.name
     if _is_tracked(home, path):
         _git_ok(home, "mv", str(path), str(dest_path))
@@ -2472,6 +2460,43 @@ def rescope_record(
         path.rename(dest_path)
     record.write(dest_path)  # rewrite AT THE DESTINATION — mv-first (§6.4)
     swept = remove_proposal_siblings(home, source_bucket, record_id)
+    touched: list[Path] = [path, dest_path]
+    if meta_path is not None:
+        touched.append(meta_path)
+    touched.extend(swept)
+    return touched, swept
+
+
+def reopen_record(home: Path, record_id: str) -> tuple[list[Path], list[Path]]:
+    """File-op half of ``reopen`` (U-verbs §4.2): a REJECTED record's old
+    resolution is DISPLACED into ``history`` (never destroyed —
+    :meth:`Record.clear_resolution_note` refuses unless it is already
+    there), ``status`` returns to ``pending``, and the file moves
+    ``resolved/`` → ``pending/`` — mv-first (u-rescope §6.4, the
+    stricter ordering, adopted here too): ``git mv`` THEN
+    ``record.write`` at the destination, so a kill between the two
+    leaves a STAGED rename (`reconcile` blocks it) rather than a
+    silently-committable modified file at the OLD path. Proposal
+    siblings are swept, same shape as the move verbs. Trusts the caller
+    to have already gated on status (:func:`require_status` with
+    ``REOPENABLE_STATUSES`` — same trust boundary :func:`move_record`
+    has toward its own caller). Returns ``(touched, swept)``."""
+    path = find_record_path(home, record_id, statuses=("resolved",))
+    record = Record.from_path(path)
+    bucket_dir = path.parent.parent
+    old_note = record.resolution_note
+    record.append_history("resolution", {"status": record.status, "note": old_note})
+    record.clear_resolution_note()
+    record.set_status("pending")
+    pending_dir = bucket_dir / "pending"
+    pending_dir.mkdir(parents=True, exist_ok=True)
+    dest_path = pending_dir / path.name
+    if _is_tracked(home, path):
+        _git_ok(home, "mv", str(path), str(dest_path))
+    else:
+        path.rename(dest_path)
+    record.write(dest_path)  # rewrite AT THE DESTINATION — mv-first (§6.4)
+    swept = remove_proposal_siblings(home, bucket_dir, record_id)
     touched: list[Path] = [path, dest_path, *swept]
     return touched, swept
 
@@ -2586,16 +2611,37 @@ def defer_record(home: Path, record_id: str, until=None) -> list[Path]:
     only ever gated on the DIRECTORY (deferred records already live in
     ``pending/`` too) — it never checked status, and lied "not found"
     (exit 64) for a record resolved into ``resolved/``. Routed through
-    :func:`require_status` now, same as every other resolution verb."""
+    :func:`require_status` now, same as every other resolution verb.
+
+    U-verbs §4.2: an explicit ``until`` strictly BEFORE today (the
+    caller's local date — the same clock :data:`DEFAULT_DEFER_DAYS`
+    counts from) refuses — nothing written — naming today's date and
+    pointing at ``undefer`` as the real verb for "bring it back now".
+    ``until == today`` is ACCEPTED: a same-day re-queue is meaningful and
+    ``list``'s eligibility is ``deferred_until <= now``. The default
+    (+30 d) can never be in the past, so this check only ever runs for
+    an EXPLICIT ``until``."""
     path, record = require_status(home, record_id, LIVE_STATUSES, verb="defer")
     if until is None:
         until = (
             datetime.now(timezone.utc) + timedelta(days=DEFAULT_DEFER_DAYS)
         ).strftime("%Y-%m-%d")
-    elif isinstance(until, (datetime, date)):
-        until = until.strftime("%Y-%m-%d")
     else:
-        until = str(until)
+        if isinstance(until, datetime):
+            until_date = until.date()
+        elif isinstance(until, date):
+            until_date = until
+        else:
+            until_date = date.fromisoformat(str(until))
+        today = datetime.now(timezone.utc).date()
+        if until_date < today:
+            raise LedgerOpsError(
+                f"defer {record_id}: --until {until_date.isoformat()} is in "
+                f"the past (today is {today.isoformat()}) — a defer must "
+                f"name a future date; `self-learn undefer {record_id}` is "
+                "the verb for bringing a deferred record back now"
+            )
+        until = until_date.strftime("%Y-%m-%d")
     record.set_status("deferred")
     record.set_deferred_until(until)
     record.set_deferred_count((record.deferred_count or 0) + 1)

@@ -351,10 +351,24 @@ def validate_proposal(
                 "rehome needs to — the registered project to move this "
                 "lesson to (path or bucket slug)"
             )
-        if location.scope != "project":
+        # U-verbs MOVE9: the CLI-side source-scope restriction (M1,
+        # project-only) is gone — `_move` now accepts any live-status
+        # source scope. Only the TARGET stays narrowed to a registered
+        # project: the UI's `rehome` proposal is deliberately still
+        # project-only on the DESTINATION side (a `to` naming a skill or
+        # `user` is not this proposal's grammar at all — `rescope`, not
+        # proposable, is the verb for that).
+        #
+        # §4.1 KEEPS the target narrowing even though `--to`'s CLI/verb
+        # grammar widened: `to == "user"` or `to.startswith("skill:")`
+        # is refused BEFORE the registered-project lookup, with the
+        # named reason — a scope change is a human decision, never an
+        # agent-authored one, so the model is told to say it in
+        # `rationale` and let the human type it instead of proposing it.
+        if to == "user" or to.startswith("skill:"):
             return _refuse(
-                f"rehome is project→project only (M1) — {record_id} is "
-                f"{location.scope}-scoped and cannot move"
+                "a scope change is a human verb — say it in `rationale` "
+                "and let the human type it"
             )
         target = _registered_project_for(home, to)
         if target is None:

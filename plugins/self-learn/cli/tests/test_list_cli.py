@@ -8,7 +8,7 @@ import pytest
 from self_learn import cli
 from self_learn.ledger_ops import create_record, defer_record, stamp_proposal, write_proposal
 
-from support import hook_proposal_fields, days_ago, make_behavior, make_home, make_knowledge, proposal_dict
+from support import hook_proposal_fields, days_ago, force_past_deferred, make_behavior, make_home, make_knowledge, proposal_dict
 
 PINNED_ITEM_KEYS = [
     "id",
@@ -133,7 +133,9 @@ def test_list_json_hides_future_deferred_by_default(home, capsys):
 
 def test_list_json_past_deferred_visible_again(home, capsys):
     create_record(home, make_knowledge(scope="user", record_id="lrn-aa000001"))
-    defer_record(home, "lrn-aa000001", "2020-01-01")
+    # U-verbs STATE1: `defer_record` refuses a past `--until` directly —
+    # simulate a deferral that has already ELAPSED instead.
+    force_past_deferred(home, "lrn-aa000001", "2020-01-01")
     items = _list_json(capsys)
     assert [i["id"] for i in items] == ["lrn-aa000001"]
 

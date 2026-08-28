@@ -20,6 +20,19 @@ push failure after a kept commit exits with the push result's code
 (``EXIT_PUSH_FAILED`` 3, ``EXIT_REBASE_CONFLICT`` 4 — gitops). `proposal
 validate` has its own pinned trio (P2-8): 0 valid+stamped · 1
 schema-invalid · 2 scan hit.
+
+U-verbs §3.3a: the eight-integer contract above describes ONE mutation;
+``self-learn batch`` performs many, so it gains exactly ONE new integer,
+``EXIT_BATCH_PARTIAL = 8`` — "batch completed; N items applied, M
+refused; the ledger DID change; read the ``--json`` envelope for which."
+`0` only when every item applied; `8` on an applied+refused mix; `1`
+ONLY when nothing landed (its ratified meaning is never forked); `3`/
+`4`/`7` propagate, worst wins; `5`/`6`/`64` as today. Rendered on three
+surfaces (measured, `S-54`): here, ``commands/review.md:230-264`` (whose
+"Only 3, 4 and 7 mean 'the ledger changed'" becomes "Only 3, 4, 7 and
+8"), and ``skills/self-learn/SKILL.md:96-101``. `commands/teach.md` and
+`11-telemetry-and-lifecycle.md` take neither row — a different contract,
+a different owner.
 """
 
 from __future__ import annotations
@@ -34,7 +47,7 @@ from pathlib import Path
 from . import report as report_mod
 from . import hosts as hosts_mod
 from . import reconcile as reconcile_mod
-from . import gitops, miner, provider, refread, selfcheck, sentinel, serve, telemetry, verbs, worker
+from . import batch, gitops, miner, provider, refread, selfcheck, sentinel, serve, telemetry, verbs, worker
 from .compilers import CompileError, ReferenceResult
 from .import_backlog import import_backlog
 from .import_common import ImporterError
@@ -68,6 +81,13 @@ EXIT_OK = 0
 # never see usage errors aliased onto scan hits). argparse's own flag-error
 # exit stays 2 but cannot occur on a well-formed programmatic invocation.
 EXIT_USAGE = 64
+
+#: U-verbs §3.3a: the ONE integer the batch executor adds to the
+#: eight-integer contract above — "batch completed; N applied, M
+#: refused; the ledger DID change; read the --json envelope". The next
+#: free integer (0-7 and 64 are taken; 2 is proposal-validate's own
+#: scan-hit code, pinned un-aliasable at :71 below).
+EXIT_BATCH_PARTIAL = 8
 
 #: Re-exported (defined in :mod:`self_learn.ledger` / :mod:`self_learn.
 #: gitops`, beside the concepts they name) so every surface — including
@@ -147,6 +167,19 @@ def _build_parser() -> argparse.ArgumentParser:
         help="scope the listing to one record id — with --surface-fill, "
         "computes fill for ONLY this record's targets, not every pending "
         "record's (delta F9; the UI Detail call site)",
+    )
+
+    show_p = sub.add_parser(
+        "show", help="read-only record detail (U-verbs §4.3) — mutates nothing"
+    )
+    show_p.add_argument("id", metavar="ID")
+    show_p.add_argument(
+        "--json",
+        action="store_true",
+        dest="as_json",
+        help="read-only (U-verbs §4.3) — still ticks the miner watchdog "
+        "like every other command; SELF_LEARN_MINER_AUTOKICK=0 "
+        "suppresses it, same as `list`",
     )
 
     add_teach_parser(sub)
@@ -239,6 +272,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "usual rule applies (an explicit --dest you typed IS your own "
         "choice).",
     )
+    route.add_argument(
+        "--dry-run",
+        action="store_true",
+        dest="dry_run",
+        help="U-verbs §4.3: run every preflight, compute the bytes the "
+        "compiler would write, and throw them away — writes nothing, "
+        "commits nothing, takes no lock, holds no sentinel",
+    )
 
     reject = _verb("reject", "reject a pending record", json_flag=True)
     reject.add_argument("id", metavar="ID")
@@ -255,31 +296,68 @@ def _build_parser() -> argparse.ArgumentParser:
     graduate.add_argument("id", metavar="ID")
 
     rehome = _verb(
-        "rehome", "move a pending record to another registered project bucket"
+        "rehome", "move a pending record to any registered scope"
     )
     rehome.add_argument("id", metavar="ID")
     rehome.add_argument(
         "--to",
         required=True,
-        metavar="PATH_OR_SLUG",
-        help="the registered project to move it to — its path or its "
-        "bucket slug (project→project only; the target must already be "
-        "in hosts.yaml — self-learn host add <path> registers it)",
+        metavar="TARGET",
+        help="U-verbs §3.2: 'user' | 'skill:<name>' | 'project:<path-or-"
+        "slug>' | a bare project path/slug (byte-compatible with every "
+        "existing call) — the target must already be registered; "
+        "self-learn host add <path> [--skills-root] registers one",
     )
 
     rescope = _verb(
         "rescope",
-        "move a pending record between the user bucket and a skill bucket",
+        "move a pending record between the user bucket, a skill bucket, "
+        "or any registered project",
     )
     rescope.add_argument("id", metavar="ID")
     rescope.add_argument(
         "--to",
         required=True,
-        metavar="SCOPE",
-        help="the scope to move it to — 'user' or 'skill:<name>' "
-        "(user<->skill:<name> only; the skill must already be under the "
-        "registered skills root — self-learn host add <path> "
-        "--skills-root registers one)",
+        metavar="TARGET",
+        help="U-verbs §3.2: 'user' | 'skill:<name>' | 'project:<path-or-"
+        "slug>' | a bare project path/slug — the target must already be "
+        "registered; self-learn host add <path> [--skills-root] "
+        "registers one",
+    )
+
+    undefer = _verb(
+        "undefer", "bring a deferred record back to the queue now (U-verbs §4.2)"
+    )
+    undefer.add_argument("id", metavar="ID")
+
+    reopen = _verb(
+        "reopen", "return a rejected record to the draft plane (U-verbs §4.2)"
+    )
+    reopen.add_argument("id", metavar="ID")
+
+    note_p = sub.add_parser(
+        "note", help="append a commentary entry to a record (U-verbs §4.2)"
+    )
+    note_p.add_argument("id", metavar="ID")
+    note_p.add_argument(
+        "--append",
+        required=True,
+        metavar="TEXT",
+        help="the commentary text to append to notes[] — any status, "
+        "never touches resolution_note",
+    )
+    note_p.add_argument(
+        "--key",
+        metavar="KEY",
+        help="idempotency token (self-learn batch's own sheet-line hash) "
+        "— when a notes[] entry already carries this key, nothing is "
+        "appended (rc 0, no commit); a human at a terminal omits this",
+    )
+    note_p.add_argument(
+        "--no-push",
+        action="store_true",
+        dest="no_push",
+        help="commit exactly as pinned, skip only the push",
     )
 
     supersede = _verb("supersede", "mark OLD superseded by NEW (metadata only)")
@@ -400,14 +478,29 @@ def _build_parser() -> argparse.ArgumentParser:
         "worker", help="background pre-analysis worker: kick | run (08 §7.1)"
     )
     worker_sub = worker_p.add_subparsers(dest="worker_command", metavar="<verb>")
-    worker_sub.add_parser(
+    wkick = worker_sub.add_parser(
         "kick", help="mark dirty + open a coalescing window (absorbed if open)"
+    )
+    wkick.add_argument(
+        "--json",
+        action="store_true",
+        dest="as_json",
+        help="U-verbs §3.7/§4.8: one outcome object on stdout — the "
+        "library's own outcome string, never a re-derived label; the "
+        "exit status is unchanged (07 §4 contract 2)",
     )
     wrun = worker_sub.add_parser("run", help="one worker run (normally spawned)")
     wrun.add_argument(
         "--coalesce",
         action="store_true",
         help="sleep SELF_LEARN_COALESCE_SECS first (the kick-spawned form)",
+    )
+    wrun.add_argument(
+        "--json",
+        action="store_true",
+        dest="as_json",
+        help="U-verbs §3.7/§4.8: one outcome object on stdout; exit "
+        "status unchanged",
     )
 
     mine_p = sub.add_parser(
@@ -429,6 +522,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help="deliberate backfill: re-read transcripts modified on/after "
         "this date from line 0 (origin dedup makes replays safe)",
     )
+    mrun.add_argument(
+        "--json",
+        action="store_true",
+        dest="as_json",
+        help="U-verbs §3.7/§4.8: one outcome object on stdout — the "
+        "library's own status string, never a re-derived label; exit "
+        "status unchanged (07 §4 contract 2)",
+    )
     mstatus = mine_sub.add_parser(
         "status", help="last runs, outcomes, and staleness — from the journal"
     )
@@ -444,6 +545,27 @@ def _build_parser() -> argparse.ArgumentParser:
     cplant.add_argument("--lesson", required=True, metavar="TEXT")
     cplant.add_argument(
         "--expect", metavar="TEXT", help="optional trigger phrase the miner should catch"
+    )
+
+    batch_p = sub.add_parser(
+        "batch",
+        help="apply a decision sheet in one locked run (U-verbs §3.3/§4.4) "
+        "— the review skill's apply path; never hand-write a batch script",
+    )
+    batch_p.add_argument("sheet", metavar="SHEET.yaml")
+    batch_p.add_argument(
+        "--dry-run",
+        action="store_true",
+        dest="dry_run",
+        help="report every item's preflight (all refusals, not the "
+        "first) and any sheet-level prerequisite; writes nothing",
+    )
+    batch_p.add_argument("--json", action="store_true", dest="as_json")
+    batch_p.add_argument(
+        "--no-push",
+        action="store_true",
+        dest="no_push",
+        help="hold the sentinel, run every item, skip only the final push",
     )
 
     sub.add_parser("push", help="publish pending local commits (pinned retry)")
@@ -740,11 +862,33 @@ def _cmd_mine(args: argparse.Namespace) -> int:
             since=args.since,
             no_push=worker.no_push_requested(),
         )
-        print(
-            f"mine run: {result.status} — {len(result.landed)} landed, "
-            f"{len(result.folded)} folded, {len(result.recurrences)} "
-            f"recurrence(s), {result.fires} fire(s)"
-        )
+        if getattr(args, "as_json", False):
+            # U-verbs §3.7/§4.8: one outcome object, nothing else on
+            # stdout. The library's own `status` string rides through
+            # UNCHANGED as `outcome` — never a re-derived label (PROD1).
+            # Exit codes are byte-unchanged (PROD3): `ok` is derived
+            # from the same two statuses the return below already maps
+            # to non-zero, never from the integer itself (PROD2).
+            print(
+                json.dumps(
+                    {
+                        "command": "mine run",
+                        "outcome": result.status,
+                        "ok": result.status not in ("failed", "landed-uncommitted"),
+                        "landed": len(result.landed),
+                        "folded": len(result.folded),
+                        "recurrences": len(result.recurrences),
+                        "fires": result.fires,
+                        "run_id": result.run_id,
+                    }
+                )
+            )
+        else:
+            print(
+                f"mine run: {result.status} — {len(result.landed)} landed, "
+                f"{len(result.folded)} folded, {len(result.recurrences)} "
+                f"recurrence(s), {result.fires} fire(s)"
+            )
         if result.status == "landed-uncommitted":
             # BLOCKER B (c): records written, commit failed, cursors gone.
             # Round 7 MAJOR 4: no longer data loss — name the recovery.
@@ -839,19 +983,45 @@ def _cmd_worker(args: argparse.Namespace) -> int:
     home = resolve_home()
     if args.worker_command == "kick":
         outcome = worker.kick(home)
-        print(f"worker kick: {outcome}")
+        if getattr(args, "as_json", False):
+            # U-verbs §3.7/§4.8: one outcome object, nothing else on
+            # stdout — `outcome` is the library's own string UNCHANGED
+            # (PROD1), never re-derived; exit stays byte-unchanged (PROD3).
+            print(
+                json.dumps(
+                    {"command": "worker kick", "outcome": outcome, "ok": True}
+                )
+            )
+        else:
+            print(f"worker kick: {outcome}")
         return EXIT_OK
     if args.worker_command == "run":
         result = worker.run(
             home, coalesce=args.coalesce, no_push=worker.no_push_requested()
         )
-        n = len(result.proposed)
-        print(
-            f"worker run: {result.status} — {n} proposal(s), "
-            f"{len(result.merge_proposed)} merge, {result.eligible} eligible,"
-            f" {result.suspects} recurrence suspect(s)"
-        )
-        return EXIT_OK if result.status in ("ok", "idle") else 1
+        ok = result.status in ("ok", "idle")
+        if getattr(args, "as_json", False):
+            print(
+                json.dumps(
+                    {
+                        "command": "worker run",
+                        "outcome": result.status,
+                        "ok": ok,
+                        "proposed": len(result.proposed),
+                        "merge_proposed": len(result.merge_proposed),
+                        "eligible": result.eligible,
+                        "suspects": result.suspects,
+                    }
+                )
+            )
+        else:
+            n = len(result.proposed)
+            print(
+                f"worker run: {result.status} — {n} proposal(s), "
+                f"{len(result.merge_proposed)} merge, {result.eligible} eligible,"
+                f" {result.suspects} recurrence suspect(s)"
+            )
+        return EXIT_OK if ok else 1
     print("usage: self-learn worker kick | worker run [--coalesce]", file=sys.stderr)
     return EXIT_USAGE
 
@@ -1289,6 +1459,30 @@ def _cmd_verb(args: argparse.Namespace) -> int:
     if (code := _home_gate(home)) is not None:
         return code
     try:
+        if args.command == "route" and getattr(args, "dry_run", False):
+            # U-verbs §4.3 (DRY3): no sentinel, no lock — a preview only.
+            dr = verbs.route_dry_run(
+                home,
+                args.id,
+                dest=args.dest,
+                allow_empty_glob=args.allow_empty_glob,
+            )
+            if args.as_json:
+                print(json.dumps(dr.to_json()))
+            else:
+                if dr.would_refuse:
+                    for reason in dr.would_refuse:
+                        print(f"self-learn route --dry-run: {reason}", file=sys.stderr)
+                else:
+                    print(
+                        f"route --dry-run {args.id} → {dr.destination} "
+                        f"@ {dr.target or '(no single target)'} "
+                        f"(+{dr.added_lines}/-{dr.removed_lines}"
+                        f"{', already present' if dr.already_present else ''})"
+                    )
+                    if dr.unified_diff:
+                        print(dr.unified_diff)
+            return EXIT_OK if dr.ok else 1
         if args.command == "route":
             follow_up = None
             if args.follow_up is not None:
@@ -1356,14 +1550,16 @@ def _cmd_verb(args: argparse.Namespace) -> int:
             result = verbs.rescope(
                 home, args.id, to=args.to, note=args.note, no_push=args.no_push
             )
-            # Do NOT reuse `_routed_destination` — its split-on-"→" parse
-            # is accidental for a second target vocabulary (u-rescope
-            # §6.1). Pass the resolved target explicitly instead, via the
-            # SAME helper the verb itself uses to build the commit
-            # subject and the disclosure line (`args.to` is already a
-            # validated scope literal here — the verb call above raised
-            # before this point if it were not).
-            return _finish_verb(result, verbs._rescope_dest_label(args.to))
+            # U-verbs §3.2: `rescope --to` now accepts the same UNION
+            # grammar `rehome` does, so `args.to` is no longer always a
+            # bare scope literal `_rescope_dest_label` could parse
+            # directly — `_routed_destination` reads the RESOLVED
+            # dest-label back off the verb's own commit message instead,
+            # the same generic "text after →" parse `rehome` already
+            # uses (both verbs build that label through the same
+            # `_move_dest_label` helper now, so the two can never
+            # diverge).
+            return _finish_verb(result, _routed_destination(result))
         if args.command == "supersede":
             result = verbs.supersede(
                 home,
@@ -1398,6 +1594,17 @@ def _cmd_verb(args: argparse.Namespace) -> int:
                 no_push=args.no_push,
             )
             return _finish_verb(result, "suspect dismissed")
+        if args.command == "undefer":
+            result = verbs.undefer(home, args.id, note=args.note, no_push=args.no_push)
+            return _finish_verb(result, "pending")
+        if args.command == "reopen":
+            result = verbs.reopen(home, args.id, note=args.note, no_push=args.no_push)
+            return _finish_verb(result, "pending")
+        if args.command == "note":
+            result = verbs.note(
+                home, args.id, append=args.append, key=args.key, no_push=args.no_push
+            )
+            return _finish_verb(result, "noted")
     except verbs.VerbError as exc:  # incl. SecretRefusal
         print(f"self-learn {args.command}: {exc}", file=sys.stderr)
         return exc.exit_code
@@ -1913,7 +2120,7 @@ def _cmd_report(as_json: bool) -> int:
     # U-readref §6.7/§10.2: the flush outcome is PASSED IN, never inferred
     # from the spool at gather time — a concurrent session's spool write
     # would misreport a healthy run as `refused`.
-    flush_state = _flush_spool_best_effort(home)
+    flush_state = _mutating_epilogue(home)
     facts = report_mod.gather(home, flush_state=flush_state)
     print(report_mod.render_json(facts) if as_json else report_mod.render_text(facts))
     return EXIT_OK
@@ -1950,6 +2157,148 @@ def _flush_spool_best_effort(home=None, *, no_push: bool = False) -> str:
         return "ok"
 
 
+def _mutating_epilogue(home=None, *, no_push: bool = False) -> str:
+    """U-verbs §3.3c: THE one place 11 §4.2's flush rule is written.
+    Carries :func:`_flush_spool_best_effort`'s EXACT signature and
+    return so every substitution is a one-line, in-place edit — every
+    dispatch that may commit ends HERE, so a new surface cannot miss the
+    rule by forgetting to copy a line. `_flush_spool_best_effort` itself
+    has exactly one caller after the fold: this function (`BAT11` leg
+    (a)). The seven normative call SITES (§3.3c's table): `_cmd_report`,
+    `_main`'s teach/`VERB_COMMANDS`/followup/link/import branches, and
+    `batch.run` (after its item loop, inside the sentinel hold, before
+    the push, always with `no_push=True` — the batch owns the single
+    push, so the flush's own commit rides it rather than publishing
+    itself)."""
+    return _flush_spool_best_effort(home, no_push=no_push)
+
+
+def _cmd_show(args: argparse.Namespace) -> int:
+    """Read-only record detail (U-verbs §4.3, ``SHOW2``/``SHOW3``) — its
+    own `_cmd_*`, deliberately OUTSIDE ``VERB_COMMANDS``: that set's
+    dispatch flushes the telemetry spool (`_main`), and the flush
+    COMMITS (`_flush_spool_best_effort`'s own docstring) — a read-only
+    verb wired through it would move the ledger's ``HEAD`` whenever a
+    spool happened to be non-empty. Like every command except
+    `mine`/`init`/`serve`, it still ticks the miner watchdog
+    (`_main`'s own tick, unconditional here) —
+    ``SELF_LEARN_MINER_AUTOKICK=0`` suppresses it, same as `list`."""
+    home = resolve_home()
+    if (code := _home_gate(home)) is not None:
+        return code
+    try:
+        data = verbs.show(home, args.id)
+    except LedgerOpsError as exc:
+        print(f"self-learn show: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    if args.as_json:
+        print(json.dumps(data))
+        return EXIT_OK
+    print(f"{data['id']}  {data['status']}  {data['scope']}  {data['bucket']}")
+    if data["kind"]:
+        print(f"  kind: {data['kind']}  type: {data['type']}")
+    else:
+        print(f"  type: {data['type']}")
+    print(f"  created: {data['created_at']}  sightings: {data['sightings']}")
+    if data["deferred_until"]:
+        print(
+            f"  deferred until {data['deferred_until']} "
+            f"(count {data['deferred_count']})"
+        )
+    if data["superseded_by"]:
+        print(f"  superseded by: {data['superseded_by']}")
+    if data["resolution_note"]:
+        print(f"  resolution note: {data['resolution_note']}")
+    routing = data["routing"]
+    if routing is not None:
+        print(
+            f"  routed → {routing['destination']} "
+            f"({routing['by']}, {routing['routed_at']})"
+        )
+        canon = data["canon"]
+        if canon["target"]:
+            present = "present" if canon["present"] else "NOT present"
+            print(f"  canon: {canon['target']} — {present}")
+        if routing.get("follow_up"):
+            print(f"  open follow-up: {routing['follow_up'].get('action')}")
+    prop = data["proposal"]
+    if prop["present"]:
+        fresh = "fresh" if prop["fresh"] else "stale"
+        print(f"  proposal: {prop['destination']} ({fresh})")
+    if data["last_confirmed"]:
+        print(f"  last confirmed: {data['last_confirmed']}")
+    for note_entry in data["notes"]:
+        print(f"  note ({note_entry.get('at')}): {note_entry.get('text')}")
+    if data["lifecycle"]:
+        print("  lifecycle:")
+        for row in data["lifecycle"]:
+            print(f"    {row['sha']}  {row['date']}  {row['subject']}")
+    return EXIT_OK
+
+
+def _cmd_batch(args: argparse.Namespace) -> int:
+    """``self-learn batch`` (U-verbs §3.3/§4.4) — apply a decision sheet
+    in one locked run. Deliberately OUTSIDE ``VERB_COMMANDS``: the flush
+    and the push are both ``batch.run``'s own responsibility
+    (``_mutating_epilogue``'s docstring names ``batch.run`` as call site
+    #7) — wiring `batch` through `VERB_COMMANDS` would flush and push a
+    SECOND time on top of the one `batch.run` already does internally.
+    ``--dry-run`` takes neither the sentinel nor the lock (BAT9) — a
+    preview only, same shape as `route --dry-run` (DRY3)."""
+    home = resolve_home()
+    if (code := _home_gate(home)) is not None:
+        return code
+    try:
+        items = batch.load_sheet(args.sheet)
+    except batch.BatchError as exc:
+        print(f"self-learn batch: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+
+    if args.dry_run:
+        dr = batch.dry_run(home, items)
+        if args.as_json:
+            print(json.dumps(dr.to_json()))
+        else:
+            for it in dr.items:
+                line = f"  [{it.n}] {it.id} {it.verb}: {it.state}"
+                if it.detail:
+                    line += f" — {it.detail}"
+                print(line)
+            if dr.hook_items:
+                print(
+                    "self-learn batch --dry-run: hook route(s) present "
+                    f"({', '.join(dr.hook_items)}) — refused inside a "
+                    "batch, route by hand",
+                    file=sys.stderr,
+                )
+        return EXIT_OK if dr.ok else 1
+
+    sentinel.heartbeat()  # mutating invocation class (08 §1)
+    result = batch.run(home, items, no_push=args.no_push)
+    if args.as_json:
+        print(json.dumps(result.to_json()))
+    else:
+        for it in result.items:
+            line = f"  [{it.n}] {it.id} {it.verb}: {it.state}"
+            if it.detail:
+                line += f" — {it.detail}"
+            print(line)
+        summary = result.summary
+        print(
+            f"self-learn batch: {summary['applied']} applied, "
+            f"{summary['already_applied']} already-applied, "
+            f"{summary['refused']} refused (of {summary['total']})",
+            file=sys.stderr,
+        )
+        if result.stopped_at is not None:
+            print(
+                f"self-learn batch: stopped at item {result.stopped_at} "
+                "— ledger-level failure, unsafe to keep writing",
+                file=sys.stderr,
+            )
+    return result.process_code
+
+
 def _cmd_proposal(args: argparse.Namespace) -> int:
     if args.proposal_command != "validate":
         print("usage: self-learn proposal validate <id>", file=sys.stderr)
@@ -1973,6 +2322,12 @@ VERB_COMMANDS = frozenset(
         "confirm-recurrence",
         "confirm-held",
         "dismiss-suspect",
+        # U-verbs Phase 1: undefer/reopen/note dispatch through the same
+        # `_cmd_verb` ladder and therefore ride the SAME flush call site
+        # (§3.3c) — no eighth caller added.
+        "undefer",
+        "reopen",
+        "note",
     }
 )
 
@@ -2089,6 +2444,11 @@ def _main(argv: list[str] | None = None) -> int:
             record_id=args.record_id,
         )
 
+    if args.command == "show":
+        # U-verbs §4.3 (SHOW3): read-only — deliberately NOT in
+        # VERB_COMMANDS, so no flush runs here (the flush COMMITS).
+        return _cmd_show(args)
+
     if args.command in ("teach", "import", "prune-memory", "proposal", "report"):
         sentinel.heartbeat()  # 08 §1: every mutating invocation touches a
         # live sentinel; heartbeat never resurrects a stale one.
@@ -2099,27 +2459,37 @@ def _main(argv: list[str] | None = None) -> int:
     if args.command == "teach":
         code = run_teach(args)
         # teach is a flushing verb (11 §4.2); --no-push rides along
-        _flush_spool_best_effort(no_push=getattr(args, "no_push", False))
+        _mutating_epilogue(no_push=getattr(args, "no_push", False))
         # Kick when a PENDING record landed (08 §7.1 trigger pin):
         # plain teach success, or a --route that fell back to pending (4).
         if (code == EXIT_OK and not args.route) or code == 4:
             _kick_after_capture(no_push=getattr(args, "no_push", False))
         return code
 
+    if args.command == "route" and getattr(args, "dry_run", False):
+        # U-verbs §4.3 (DRY3, code gate B1): a preview only — deliberately
+        # NOT dispatched through VERB_COMMANDS, same reasoning as `show`
+        # (SHOW3) just above: VERB_COMMANDS's flush COMMITS (and, without
+        # --no-push, PUSHES) whenever the telemetry spool is non-empty, and
+        # a read-only preview must never move the ledger's HEAD. `_cmd_verb`
+        # itself already special-cases this branch first, before any lock
+        # or sentinel — routing it here just keeps it off the epilogue.
+        return _cmd_verb(args)
+
     if args.command in VERB_COMMANDS:
         code = _cmd_verb(args)
         # every resolution verb flushes (11 §4.2); --no-push rides along
-        _flush_spool_best_effort(no_push=getattr(args, "no_push", False))
+        _mutating_epilogue(no_push=getattr(args, "no_push", False))
         return code
 
     if args.command == "followup":
         code = _cmd_followup(args)
-        _flush_spool_best_effort(no_push=getattr(args, "no_push", False))
+        _mutating_epilogue(no_push=getattr(args, "no_push", False))
         return code
 
     if args.command == "link":
         code = _cmd_link(args)
-        _flush_spool_best_effort(no_push=getattr(args, "no_push", False))
+        _mutating_epilogue(no_push=getattr(args, "no_push", False))
         return code
 
     if args.command == "telemetry":
@@ -2130,6 +2500,9 @@ def _main(argv: list[str] | None = None) -> int:
 
     if args.command == "push":
         return _cmd_push()
+
+    if args.command == "batch":
+        return _cmd_batch(args)
 
     if args.command == "doctor":
         return _cmd_doctor(args)
@@ -2150,7 +2523,7 @@ def _main(argv: list[str] | None = None) -> int:
     if args.command == "import":
         code = _cmd_import(args)
         # import is a flushing verb (11 §4.2); --no-push rides along
-        _flush_spool_best_effort(no_push=getattr(args, "no_push", False))
+        _mutating_epilogue(no_push=getattr(args, "no_push", False))
         if code == EXIT_OK:
             _kick_after_capture(no_push=getattr(args, "no_push", False))
         return code
