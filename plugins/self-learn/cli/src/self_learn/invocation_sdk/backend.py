@@ -14,7 +14,7 @@ import os
 import re
 import threading
 from collections.abc import Callable, Coroutine
-from dataclasses import dataclass, fields as _dataclass_fields
+from dataclasses import dataclass, fields as _dataclass_fields, replace as _dataclass_replace
 from pathlib import Path
 from typing import Any, TypeVar, cast
 
@@ -65,13 +65,27 @@ _CATCHES_OS_ERROR = dict(TRANSPORT)
 class SdkOutcome(Outcome):
     """`E-1` -- a frozen SUBCLASS of `Outcome`, not five new fields on it:
     `contract.py` stays byte-frozen, and four of these five facts are
-    ones no CLI-shaped backend can ever populate."""
+    ones no CLI-shaped backend can ever populate.
+
+    `child_pid` (U-kl4) is a SIXTH, added later: `None` unless `_drive`
+    actually resolved a live child pid for this run. Lets a caller
+    identify the exact child process THIS run spawned -- `test_kl4`'s
+    pid-keyed liveness check reads it off the returned outcome instead
+    of inferring the child from a host-global name pattern (the defect
+    this field exists to close). Deliberately NOT threaded through
+    `spec.log()`/any operator-visible line: an earlier version of this
+    fix did exactly that and broke `test_lg1`/`test_lg6`/`test_fk2`/
+    `test_ou4`/`test_fl2` (all of `test_invocation.py`/`test_worker_
+    contract.py`), whose byte-pinned log-shape assertions ("a clean
+    session logs nothing", "exactly N lines") did not expect a new
+    unconditional line -- measured, then reverted."""
 
     tool_events: tuple[dict[str, Any], ...] = ()
     denials: tuple[dict[str, Any], ...] = ()
     cost_usd: float | None = None
     turns: int | None = None
     session_id: str | None = None
+    child_pid: int | None = None
 
 
 # --------------------------------------------------------------- Sync-1
@@ -593,7 +607,14 @@ async def _drive(spec: SessionSpec) -> SdkOutcome:
         prune_event_logs(surface)
 
     assert outcome is not None
-    return outcome
+    # U-kl4: attach the resolved child pid (if any) to the outcome the
+    # caller sees -- `child_pid` is a plain local, set by `finally`
+    # above, still in scope here (Python has no block scoping); every
+    # early-return branch above this point (`CharterPatternUnsupported`/
+    # `ProviderRefused`) exits BEFORE a client/child ever exists, so its
+    # `_outcome(...)` call correctly leaves `child_pid` at the
+    # dataclass's own `None` default instead of reaching this line.
+    return _dataclass_replace(outcome, child_pid=child_pid)
 
 
 # --------------------------------------------------------------- SdkBackend
