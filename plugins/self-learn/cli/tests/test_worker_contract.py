@@ -512,8 +512,26 @@ def _apply_failure_env(kind: str, param: str, *, scratch: Path, monkeypatch) -> 
 #: this unit fixes -- a live host unit made 18 tests host-dependent).
 #: Already a member of `_SU4B_DIFF_EXEMPT` from U-flip -- only the hash
 #: moves, not exempt-set membership.
+#: U-cachelit (2026-08-28) re-pins `conftest.py` a further time: a new
+#: `_litter_namespace_guard` section is APPENDED whole (pure addition,
+#: nothing existing edited) -- the session-scoped forward guard against
+#: the measured 31,291-namespace cache-litter defect (root cause: the
+#: UI package's module-scoped real-server test fixtures, fixed in
+#: `plugins/self-learn/ui/tests/conftest.py`; this file's own addition
+#: is the CLI-side backstop). Already a member of `_SU4B_DIFF_EXEMPT` --
+#: only the hash moves, not exempt-set membership.
+#: U-cachelit RE-ANCHOR (code gate r1, same day) re-pins `conftest.py`
+#: yet again: the guard section was deleted and rewritten, not edited,
+#: to fold M-1/M-2/M-3 -- a session-scoped `_env_floor_session` for the
+#: CLI package, digest-based namespace attribution
+#: (`_normalized_digests`/`_SESSION_HOMES`) instead of raw `env=`-string
+#: matching, and a `pytest_terminal_summary` warn channel for
+#: unattributable (concurrent-sibling) namespaces. Only the hash moves;
+#: still a pure append over the pre-U-cachelit baseline (see `test_
+#: u_sdka.py::_AR1_SANCTIONED_PIN_LINES`'s own RE-ANCHOR paragraph for
+#: the full accounting), still a member of `_SU4B_DIFF_EXEMPT`.
 _ARMOR_SHAS = {
-    "plugins/self-learn/cli/tests/conftest.py": "2cb3e5080166f165d05db37b964deafd365d0567b472b91f005df92b2afc0e3c",  # U-servehermetic: XDG_CONFIG_HOME hermetic default added
+    "plugins/self-learn/cli/tests/conftest.py": "09d1cfc25026c74684d263332cdd912619bd94b76fafef12f495833f84bddfe4",  # U-cachelit RE-ANCHOR (gate r1): guard section rewritten
     "plugins/self-learn/cli/tests/backends.py": "a2ba2d74f117a230740d10e3c9fa67bd30f751ce80ec59667c9136557a906dde",
     "plugins/self-learn/cli/tests/test_invocation.py": "e3875614ab32a760788140d76e26cd542c07bd2f9dfa512f9da0f62c40b9257c",
     "plugins/self-learn/cli/tests/test_invocation_sdk.py": "22cecabad8d3caf3ccd2c63bc977cfd359f2ea38de3f525c0f2544e02692ad23",
