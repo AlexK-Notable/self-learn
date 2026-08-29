@@ -1842,12 +1842,23 @@ class TestUnaffected:
         assert proc.returncode == 0, proc.stdout[-4000:] + proc.stderr[-2000:]
 
     def test_un5_no_armor_sha_moves(self):
+        """2026-08-28: retargeted from `test_worker_contract.py -k armor`
+        when U-armor's own DEL1/DEL2 retired `_ARMOR_SHAS` and its
+        `test_su4a_*`/`test_su4b_*` tests -- `-k armor` now matches
+        nothing there (exit 5), not 0. The property this guard exists
+        to protect -- "this unit moved no armor pins" -- survives
+        intact: it now lives in `test_armor.py`'s own byte-identity
+        check, `test_fix1_fixtures_are_byte_identical`, which this
+        guard runs instead."""
         proc = subprocess.run(
             [
                 "env", "-u", "SELF_LEARN_ANALYST_MODEL", "-u", "SELF_LEARN_ANALYST_TIMEOUT",
                 "python3", "-m", "pytest", "-p", "no:cacheprovider", "-q",
-                "test_worker_contract.py", "-k", "armor",
+                "test_armor.py", "-k", "fix1",
             ],
             cwd=str(Path(__file__).parent), capture_output=True, text=True,
         )
-        assert proc.returncode == 0, proc.stdout[-4000:] + proc.stderr[-2000:]
+        assert proc.returncode == 0, (
+            "test_armor.py::test_fix1_fixtures_are_byte_identical (this unit's own "
+            "armor-pin guard) failed:\n" + proc.stdout[-4000:] + proc.stderr[-2000:]
+        )
