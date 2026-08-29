@@ -846,9 +846,81 @@ def _resolve_build_base() -> str:
 _BUILD_BASE = _resolve_build_base()
 
 
+#: This landing's own permanent base/tip pair (r2 gate fold: post-
+#: landing, `_BUILD_BASE` (`_incorporated_master_point`) collapses onto
+#: `HEAD` itself -- measured live, right after the `u-armor` merge
+#: (`9ada450`) landed, `merge-base master HEAD == HEAD`, so "this
+#: unit's own diff" read empty for UN1/UN3/UN5 all at once.
+#: `_LANDING_BASE` is `master`'s tip immediately BEFORE this unit's
+#: merge (the merge's own first parent, `6815503`); `_LANDING_TIP` is
+#: the merge commit itself (`9ada450`). Both are a ONE-TIME census of
+#: THIS landing -- fixed forever, like the retired `c3b48e7`-era
+#: controls, never re-measured. `--remeasure` never rewrites either
+#: literal: it only ever touches `ANCHOR` and the `Behaviour`/`Fixture`
+#: rows (section 4.2) -- these two are written once, by this commit,
+#: and never again.
+_LANDING_BASE = "6815503"
+_LANDING_TIP = "9ada450"
+
+
+def _landing_is_absorbed() -> bool:
+    """Has this branch already reached (or been fast-forwarded onto)
+    `_LANDING_TIP`? True from that moment on, PERMANENTLY -- including
+    across every later housekeeping commit this branch makes on top of
+    it (this very commit is one), which is the whole point: UN1/UN3/
+    UN5 must pin to THIS landing once, not re-measure it every time
+    `HEAD` moves again. Checked via `merge-base --is-ancestor
+    _LANDING_TIP HEAD`, deliberately NOT via `merge-base master HEAD ==
+    HEAD`: the two coincide exactly at the single instant right after a
+    fast-forward with no further commits (the moment the gate observed
+    the failure), but the literal-`master` comparison flips back to
+    "not yet" the instant this branch gains even one unrelated
+    follow-up commit -- which would silently hand UN1/UN3/UN5 back to
+    `_BUILD_BASE`'s now-degenerate pre-landing math (verified: it does,
+    see the RED/restore proof in this commit's own report). The
+    ancestor form is the one that stays right forever, matching
+    "immune to every later landing"."""
+    proc = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", _LANDING_TIP, "HEAD"], cwd=_REPO_ROOT,
+    )
+    return proc.returncode == 0
+
+
+def _assert_landing_pair_is_real_history() -> None:
+    """Both `_LANDING_BASE`/`_LANDING_TIP` resolve to real commits, and
+    `_LANDING_TIP`'s own first parent is exactly `_LANDING_BASE` -- the
+    merge shape section 4.2 defines (the merge's first-parent PARENT is
+    the anchor). A typo'd literal fails LOUD here, not by silently
+    measuring the wrong diff."""
+    for sha in (_LANDING_BASE, _LANDING_TIP):
+        r = subprocess.run(["git", "cat-file", "-e", sha], cwd=_REPO_ROOT)
+        assert r.returncode == 0, f"_LANDING pair: {sha!r} does not resolve to a real commit"
+    parent = subprocess.run(
+        ["git", "rev-parse", "--short=7", f"{_LANDING_TIP}^1"], cwd=_REPO_ROOT,
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    assert parent == _LANDING_BASE, (
+        f"_LANDING_TIP's first parent is {parent!r}, not _LANDING_BASE ({_LANDING_BASE!r})"
+    )
+
+
 def _numstat(base: str, *paths: str) -> str:
     proc = subprocess.run(
         ["git", "diff", "--numstat", base, "--", *paths],
+        cwd=_REPO_ROOT, capture_output=True, text=True, check=True,
+    )
+    return proc.stdout
+
+
+def _numstat2(base: str, tip: str, *paths: str) -> str:
+    """Two-ref numstat: `base`'s tree against `tip`'s tree, both
+    committed shas -- unlike `_numstat` (which diffs `base` against
+    whatever is currently on disk, deliberately, per its own note
+    above), this never reads the working tree or `HEAD`, so it stays
+    byte-identical forever once `base`/`tip` are fixed (r2 gate fold:
+    UN1/UN3/UN5's post-landing pin)."""
+    proc = subprocess.run(
+        ["git", "diff", "--numstat", base, tip, "--", *paths],
         cwd=_REPO_ROOT, capture_output=True, text=True, check=True,
     )
     return proc.stdout
@@ -2557,7 +2629,19 @@ def test_gate3_only_insertions():
 def test_un1_no_production_source_changes():
     """`UN1`. `plugins/self-learn/cli/src` and `plugins/self-learn/ui`
     are byte-identical to the build base. Positive control: the same
-    command scoped to `cli/tests` is non-empty."""
+    command scoped to `cli/tests` is non-empty. Post-landing (r2 gate
+    fold), this pins to the permanent `_LANDING_BASE`/`_LANDING_TIP`
+    pair instead of `_BUILD_BASE`/`HEAD` -- see the module note above
+    `_LANDING_BASE`."""
+    if _landing_is_absorbed():
+        _assert_landing_pair_is_real_history()
+        out = _numstat2(_LANDING_BASE, _LANDING_TIP, "plugins/self-learn/cli/src", "plugins/self-learn/ui")
+        assert out.strip() == "", out
+
+        control = _numstat2(_LANDING_BASE, _LANDING_TIP, "plugins/self-learn/cli/tests")
+        assert control.strip() != "", "positive control: cli/tests SHOULD show a diff in the landing"
+        return
+
     out = _numstat(_BUILD_BASE, "plugins/self-learn/cli/src", "plugins/self-learn/ui")
     assert out.strip() == "", out
 
@@ -2586,25 +2670,20 @@ def _collect_count(cwd: Path, python: str) -> int:
     return int(m.group(1))
 
 
-def _base_collected_at_build_base() -> int:
-    """`UN3`'s hermetic base count (r1 gate fold, M-3): a throwaway
-    DETACHED `git worktree` checked out at `_BUILD_BASE` (NOT the bare
-    `ANCHOR` literal -- `_BUILD_BASE` already resolves to `master` once
-    this unit's own fold has landed it, exactly like UN1/UN2/UN5's own
-    fix; using `ANCHOR` here would undercount every sibling-unit test
-    this unit's OWN merge just brought in, e.g. U-verbs' `test_u_verbs.
-    py`), collected with THIS worktree's already-synced venv (no second
-    `uv sync` -- close enough behind HEAD, same lockfile). Never a saved
-    literal: a hardcoded total silently drifts the moment a sibling
-    unit lands on master mid-session -- measured live, the r1 gate's
-    own venv resolved `self_learn` to master's MOVING src for the same
-    reason, one layer down (never a bare `python`/`pytest` off PATH;
-    always this worktree's own `.venv` interpreter, explicit path)."""
-    tmp_dir = tempfile.mkdtemp(prefix="armor-un3-base-")
+def _collect_count_at(ref: str) -> int:
+    """Hermetic collected count at a fixed committed *ref*: a throwaway
+    DETACHED `git worktree`, collected with THIS worktree's already-
+    synced venv (no second `uv sync` -- close enough behind HEAD, same
+    lockfile; never a bare `python`/`pytest` off PATH, always this
+    worktree's own `.venv` interpreter, explicit path). Shared by
+    `_base_collected_at_build_base` (pre-landing, ref = `_BUILD_BASE`)
+    and `UN3`'s post-landing pin (ref = `_LANDING_BASE`/`_LANDING_TIP`,
+    r2 gate fold)."""
+    tmp_dir = tempfile.mkdtemp(prefix="armor-un3-at-")
     shutil.rmtree(tmp_dir)  # `git worktree add` must create the path itself
     try:
         subprocess.run(
-            ["git", "worktree", "add", "--detach", tmp_dir, _BUILD_BASE],
+            ["git", "worktree", "add", "--detach", tmp_dir, ref],
             cwd=str(_REPO_ROOT), capture_output=True, text=True, check=True,
         )
         venv_python = str(_REPO_ROOT / "plugins/self-learn/cli" / ".venv" / "bin" / "python")
@@ -2616,16 +2695,63 @@ def _base_collected_at_build_base() -> int:
         )
 
 
+def _armor_test_names_at(ref: str) -> set[str]:
+    """`_armor_test_names`, but reading `test_armor.py`'s content AT A
+    FIXED REF (`git show ref:path`) instead of the live file -- UN3's
+    post-landing pin must count exactly what LANDED, never whatever
+    this branch's later housekeeping commits add or remove afterward
+    (r2 gate fold)."""
+    relpath = Path(__file__).resolve().relative_to(_REPO_ROOT).as_posix()
+    proc = subprocess.run(
+        ["git", "show", f"{ref}:{relpath}"], cwd=_REPO_ROOT,
+        capture_output=True, text=True, check=True,
+    )
+    tree = ast.parse(proc.stdout)
+    return {
+        n.name for n in tree.body
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name.startswith("test_")
+    }
+
+
+def _base_collected_at_build_base() -> int:
+    """`UN3`'s hermetic PRE-landing base count (r1 gate fold, M-3): NOT
+    the bare `ANCHOR` literal -- `_BUILD_BASE` already resolves to
+    `master` once this unit's own fold has landed it, exactly like
+    UN1/UN2/UN5's own fix; using `ANCHOR` here would undercount every
+    sibling-unit test this unit's OWN merge just brought in, e.g.
+    U-verbs' `test_u_verbs.py`. Never a saved literal: a hardcoded
+    total silently drifts the moment a sibling unit lands on master
+    mid-session -- measured live, the r1 gate's own venv resolved
+    `self_learn` to master's MOVING src for the same reason, one layer
+    down. Delegates to `_collect_count_at`, shared with the post-
+    landing pin."""
+    return _collect_count_at(_BUILD_BASE)
+
+
 def test_un3_suite_grows_by_exactly_the_delta():
     """`UN3`. The suite grows by exactly the new armor tests and shrinks
     by exactly the ten retired ones: `base_collected -> base_collected -
-    10 + N`, with `base_collected` measured fresh from `ANCHOR`'s own
-    tree (r1 gate fold, M-3) -- never the literal `2666`, which was
-    true only at THIS unit's original 3b8e037-era anchor and silently
-    goes stale the moment a sibling unit lands on master. `N` is the
-    live `test_`-prefixed count in `test_armor.py` (`_armor_test_names`,
-    itself gate-fixed to exclude helpers -- see that function's own
-    docstring)."""
+    10 + N`. Pre-landing this is measured fresh from `_BUILD_BASE`'s own
+    tree (r1 gate fold, M-3) -- never the literal `2666`, which was true
+    only at THIS unit's original 3b8e037-era anchor and silently goes
+    stale the moment a sibling unit lands on master. Post-landing (r2
+    gate fold), `HEAD` itself IS the landing, so a live/`_BUILD_BASE`
+    measurement degenerates to `base_collected == total_now` (delta 0)
+    -- this pins to the permanent `_LANDING_BASE`/`_LANDING_TIP` pair
+    instead, both legs hermetic detached checkouts, `N` read from
+    `_LANDING_TIP`'s own `test_armor.py` (`_armor_test_names_at`), not
+    whatever this branch's later commits do to the live file."""
+    if _landing_is_absorbed():
+        _assert_landing_pair_is_real_history()
+        base_collected = _collect_count_at(_LANDING_BASE)
+        total_now = _collect_count_at(_LANDING_TIP)
+        n_armor_tests = len(_armor_test_names_at(_LANDING_TIP))
+        n_retired = 10
+        assert total_now == base_collected - n_retired + n_armor_tests, (
+            total_now, base_collected, n_retired, n_armor_tests
+        )
+        return
+
     base_collected = _base_collected_at_build_base()
     total_now = _collect_count(_REPO_ROOT / _TESTS_DIR, sys.executable)
 
@@ -2651,6 +2777,24 @@ def test_un5_protected_files_unedited_by_this_unit():
     same command over the three retired-mechanism files, INCLUDING
     `test_u_fake.py`, is non-empty."""
     assert len(STRICT_PROTECTED_RELPATHS) == len(PROTECTED_RELPATHS) - 1, STRICT_PROTECTED_RELPATHS
+
+    if _landing_is_absorbed():
+        _assert_landing_pair_is_real_history()
+        out = _numstat2(_LANDING_BASE, _LANDING_TIP, *STRICT_PROTECTED_RELPATHS)
+        assert out.strip() == "", out
+
+        fake_out = _numstat2(_LANDING_BASE, _LANDING_TIP, "plugins/self-learn/cli/tests/test_u_fake.py")
+        assert fake_out.strip() != "", "test_u_fake.py: this unit's own DS1 retirement should show a diff"
+
+        control = _numstat2(
+            _LANDING_BASE, _LANDING_TIP,
+            "plugins/self-learn/cli/tests/test_worker_contract.py",
+            "plugins/self-learn/cli/tests/test_u_sdka.py",
+            "plugins/self-learn/cli/tests/test_u_fake.py",
+        )
+        assert control.strip() != "", "positive control: the three retired-mechanism files SHOULD show a diff"
+        return
+
     out = _numstat(_BUILD_BASE, *STRICT_PROTECTED_RELPATHS)
     assert out.strip() == "", out
 
