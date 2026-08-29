@@ -65,6 +65,11 @@ Every substantive unit moves through, in order:
 > the previous chain run's `git diff --stat <old> <new> --
 > plugins/self-learn/cli/tests` output: read it first, and treat anything
 > in this diff that it does not explain as unaccounted for.
+> (For `u-armor` specifically: once its own merge has landed, its
+> UN1/UN3/UN5 criteria stop re-deriving this diff dynamically and
+> pin permanently to that landing's own base/tip commit pair — see
+> `test_armor.py`'s `_LANDING_BASE`/`_LANDING_TIP`.)
+>
 >
 > The blindness rules (§4) are unchanged: the reviewer sees the diff and
 > the gated spec, never `reviews/`. Source:

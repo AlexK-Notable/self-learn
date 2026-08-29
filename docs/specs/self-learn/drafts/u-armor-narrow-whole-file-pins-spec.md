@@ -1733,6 +1733,14 @@ mechanism beside seven"* the mandate forbids. **Criteria are all [A].**
 
 ### 5.8 UN — the unaffected group
 
+**Post-landing (r2 gate fold):** once this unit's own merge has
+landed, UN1/UN3/UN5 pin permanently to that landing's own
+base/tip commit pair (`_LANDING_BASE`/`_LANDING_TIP` in
+`test_armor.py`) rather than re-deriving "this unit's own diff"
+dynamically — the dynamic form degenerates to an empty diff
+against itself the moment `HEAD` IS the landing.
+
+
 | ID | Ph | Criterion | Check | Mutation |
 |---|---|---|---|---|
 | **UN1** | [A] | **No production source file changes.** `plugins/self-learn/cli/src` and `plugins/self-learn/ui` are byte-identical | `git diff --numstat <build base> -- plugins/self-learn/cli/src plugins/self-learn/ui` is **empty**, `rc` unpiped. **Positive control**: the same command scoped to `plugins/self-learn/cli/tests` is non-empty | touch any `src/` file ⇒ UN1 red · `predicted` |
