@@ -65,6 +65,17 @@
     return document.querySelector('.action-bar[data-armed="true"]');
   }
 
+  /** N10 (code gate r2): the identity of the record currently on
+   * screen, read from the ONE place it is stamped -- the detail
+   * page's `<article data-record-id>` (absent on Front, which has no
+   * single record). Used to catch a deferred clickAction() intent
+   * that has gone stale because the record itself changed underneath
+   * it, not just because its target element moved. */
+  function currentRecordId() {
+    const article = document.querySelector("[data-record-id]");
+    return article ? article.getAttribute("data-record-id") : null;
+  }
+
   /**
    * UI-walk defect fix: keyboard `b` (toggle_brief) "did nothing
    * visible" — measured, not assumed. On a Detail page long enough to
@@ -86,13 +97,95 @@
    * pressed a key while scrolled away from its target" gap applies
    * to any of them on a long enough page. */
   function clickAction(action) {
-    const el = document.querySelector('[data-key-action="' + action + '"]');
-    if (el) {
-      el.click();
-      el.scrollIntoView({ block: "nearest" });
-      return true;
+    const selector = '[data-key-action="' + action + '"]';
+    const el = document.querySelector(selector);
+    if (!el) return false;
+    // D1 (U-jsdom disposition, 14 §6a, code gate r1): re-resolve BY
+    // SELECTOR at fire time, never close over `el` above -- a second
+    // overlapping swap landing between defer and fire can detach the
+    // element clickAction saw at dispatch time (its container's
+    // outerHTML replaced again before the first swap even settled).
+    // `.click()` on a detached node is silently inert -- indistinguishable
+    // from the outside from "the action just didn't happen" -- so fire()
+    // must always act on whatever the LIVE document holds right now,
+    // never a reference captured earlier.
+    //
+    // N10 (code gate r2): re-resolving by selector alone is not
+    // enough -- a resolution swap can replace the WHOLE record (A's
+    // detail page swapped out for B's) before a deferred click fires,
+    // and B's page repeats the same [data-key-action] markup, so the
+    // selector would happily find and click INTO B with an intent that
+    // was only ever formed against A. The record id is stamped at
+    // defer time and re-checked at fire time; a mismatch no-ops
+    // (logged, so a dropped fire is diagnosable instead of just
+    // silently absent).
+    const recordAtDefer = currentRecordId();
+    function fire() {
+      const recordNow = currentRecordId();
+      if (recordNow !== recordAtDefer) {
+        console.warn(
+          'clickAction("' + action + '"): dropped -- record changed from ' +
+            recordAtDefer + " to " + recordNow + " before this deferred click fired"
+        );
+        return;
+      }
+      const live = document.querySelector(selector);
+      if (!live) return;
+      live.click();
+      live.scrollIntoView({ block: "nearest" });
     }
-    return false;
+    if (pendingSwaps.length > 0) {
+      // U-jsdom disposition (14 §6a, code gate r1): this element may
+      // have just landed in the DOM via a swap htmx has not finished
+      // settling yet, which means htmx has not finished ATTACHING its
+      // own hx-post/hx-get listeners to it either — clicking now would
+      // click blind into a target that is not htmx-interactive yet.
+      // Wait for the settle that finishes that wiring instead of
+      // racing it.
+      //
+      // code gate r2/r3: gated on pendingSwaps -- a BAG of tokens
+      // keyed by each request's own identity (M2: its xhr, not merely
+      // its target), not a bare counter. See pendingSwaps's own
+      // comment for why (M1/M2/N9), and for how it still requires two
+      // resolutions for two overlapping swaps sharing the same key.
+      //
+      // N1: this call is queued into the SHARED pendingDispatches
+      // array, drained together by releasePendingDispatches() —
+      // never a private listener this call alone owns. Measured
+      // without that: a key pressed FIRST could fire ~499ms AFTER a
+      // key pressed later, because the first one's own request failed
+      // (an F14 leg) while it sat waiting on an `afterSettle` that was
+      // never coming, and nothing told it to stop waiting — only ITS
+      // OWN fallback timer, half a second later, ever released it
+      // (`[reject@4ms, route@503ms]`). A shared queue drained on
+      // EVERY resolution path (a real settle OR any F14 failure that
+      // owns the pending target) is released the instant we know it's
+      // safe, never merely when its own private timer happens to
+      // expire.
+      //
+      // N12 (code gate r3): each pendingSwaps token bounds ITSELF to
+      // 500ms (addPendingSwap's own comment), but that alone does not
+      // bound THIS dispatch -- a continuous stream of overlapping
+      // swaps (a new token always landing before the bag empties) can
+      // keep the bag non-empty far longer than any single token's own
+      // 500ms, stranding a queued click for as long as the stream
+      // runs (measured without a bound of its own: 3503ms). No known
+      // production driver produces that stream today, but the bound
+      // is cheap, so this dispatch gets its OWN independent 500ms
+      // fallback too -- whichever resolves first (the bag emptying,
+      // or this timer) releases it; releasePendingDispatches() clears
+      // the other so neither can double-fire it.
+      const entry = { fire: fire, timer: null };
+      entry.timer = setTimeout(function () {
+        const idx = pendingDispatches.indexOf(entry);
+        if (idx !== -1) pendingDispatches.splice(idx, 1);
+        entry.fire();
+      }, 500);
+      pendingDispatches.push(entry);
+    } else {
+      fire();
+    }
+    return true;
   }
 
   function toggleHelp() {
@@ -548,6 +641,155 @@
    */
   var reloadPending = false;
   var confirmInFlight = false;
+  /** U-jsdom disposition (14 §6a): htmx does not finish "hydrating"
+   * swapped-in content (attaching its own hx-post/hx-get listeners to
+   * it) at SWAP time -- only at SETTLE time, a short
+   * (htmx.config.defaultSettleDelay, 20ms by default) delay later. A
+   * DOM attribute a caller waits on (e.g. an armed bar's
+   * `data-armed="true"`) appears at swap time, not settle time, so a
+   * key-driven clickAction() dispatched in that gap can target a
+   * `<button>` htmx has not wired up yet. For a plain `hx-post`
+   * button that is a silent no-op (nothing intercepts the click, and
+   * a `type="button"` has no native fallback action of its own); for
+   * a `<button type="submit">` inside a `<form>` (the armed bar's
+   * confirm/disarm pair) it is worse -- the click's native
+   * form-submission default action runs completely un-intercepted:
+   * the form (no `method`/`action` of its own) submits as a plain GET
+   * to the current URL with its hidden fields serialized as a query
+   * string, discarding the intended POST and navigating the page out
+   * from under whatever was mid-flight (Page.query_selector:
+   * "Execution context was destroyed" is that navigation, observed
+   * from the test side). Measured directly: a synthetic `submit`
+   * event dispatched on a just-swapped form only came back
+   * `defaultPrevented` once `htmx:afterSettle` had fired for that
+   * swap -- never before, across 20 samples; waiting for that same
+   * event before dispatching a synthetic click made 20/20 samples
+   * `defaultPrevented`.
+   *
+   * pendingSwaps (code gate r2/r3): a BAG of tokens, one per
+   * outstanding (swapped, not yet settled-or-failed) request, each
+   * carrying a KEY that identifies the ONE request it belongs to.
+   * Replaces an r1 plain counter that counted resolutions without
+   * asking whose they were.
+   *
+   * M1 (code gate r2, reproduced end-to-end): the r1 counter's own
+   * defect. htmx maps a failing (4xx/5xx) request to `swap:false,
+   * error:true` -- NO `htmx:afterSwap` ever fires for it, so that
+   * request was never counted in. But the r1 counter's F14 failure
+   * legs decremented UNCONDITIONALLY on ANY failure, so an unrelated
+   * request's failure could still consume the decrement a genuinely
+   * pending, DIFFERENT swap owned -- draining queued clicks into
+   * content that was never wired (a native GET navigation where the
+   * fixed build should have POSTed).
+   *
+   * M2 (code gate r3): the r2 fix above scoped removal by TARGET
+   * (`evt.detail.target`), which closes M1 but is still only an
+   * APPROXIMATE key -- every arm/confirm/disarm request on one action
+   * bar targets the SAME element, so a failing request aimed at that
+   * element could still remove a token a DIFFERENT, genuinely live
+   * request on the SAME element owned, reproducing the identical
+   * native-GET failure M1 fixed, just narrowed to same-target
+   * collisions. Keyed instead by `evt.detail.xhr` -- the actual
+   * request object htmx attaches, unique PER REQUEST rather than per
+   * element -- falling back to `evt.detail.target` only when no xhr
+   * is present at all (a synthetic event with no real request behind
+   * it; htmx's own events always carry one). `pendingSwapKey()` below
+   * computes it once, used identically by the add leg and both
+   * removal legs. Per-request identity, not target, is what an F14
+   * failure leg's removal must be scoped to: a failure whose OWN
+   * request never swapped -- whatever its target -- removes nothing.
+   *
+   * N9 (code gate r2): each token carries its OWN 500ms fallback
+   * timer (addPendingSwap below), not a queue-level one -- so a swap
+   * that never settles and never fails (an orphaned afterSwap)
+   * self-evicts after 500ms regardless of any other token's state.
+   * Under the r1 counter this never healed: an orphaned increment
+   * permanently occupied the counter, so even a LATER, fully balanced
+   * afterSwap/afterSettle cycle could only bring it from 2 back to 1
+   * -- never to 0 -- leaving every subsequent keystroke ~503ms late
+   * forever, not just the one racing the orphan itself.
+   *
+   * Two swaps overlapping in flight for the SAME request key still
+   * require TWO resolutions: each `htmx:afterSwap` pushes its own
+   * token, so a single `htmx:afterSettle` only removes one, leaving
+   * the bag non-empty -- the double-swap guarantee N3 established,
+   * preserved here per-key rather than via a shared count.
+   *
+   * pendingDispatches (N1, code gate r1; N12, code gate r3): every
+   * clickAction() call deferred while the bag is non-empty is queued
+   * HERE, as a shared array, rather than each call owning a private
+   * `htmx:afterSettle` listener of its own. Drained together by
+   * releasePendingDispatches() the instant the bag empties -- from
+   * WHICHEVER token's removal got it there, including a token's own
+   * N9 fallback. A private per-call listener has no way to learn that
+   * a DIFFERENT leg (an F14 failure owning a DIFFERENT request, say)
+   * already resolved the wait; measured live under the r1 design: a
+   * key pressed FIRST could fire ~499ms AFTER a key pressed later
+   * this way (`[reject@4ms, route@503ms]`) -- the first one's own
+   * request failed, but with no shared drain, only ITS OWN fallback
+   * timer ever released it. Each dispatch ALSO carries its own 500ms
+   * fallback (N12, clickAction's own comment) as a second, independent
+   * bound alongside the bag -- a continuous stream of overlapping
+   * swaps can keep the bag non-empty far longer than any one token's
+   * own 500ms. */
+  const pendingSwaps = [];
+  const pendingDispatches = [];
+
+  // M2 (code gate r3): the request's own key, shared by the add leg
+  // and both removal legs below. Prefers `evt.detail.xhr` (unique per
+  // REQUEST); falls back to `evt.detail.target` only when no xhr is
+  // present (a synthetic event with no real request behind it); falls
+  // back to `undefined` (itself a valid, stable key, compared with
+  // `===`) when neither is present.
+  function pendingSwapKey(evt) {
+    const d = evt && evt.detail;
+    if (!d) return undefined;
+    if (d.xhr) return d.xhr;
+    return d.target;
+  }
+
+  // Bounded regardless (htmx's own default settle delay is 20ms; 500ms
+  // is a generous multiple, chosen to stay invisible to a human while
+  // still being a real bound) so a swap that somehow never settles and
+  // never fails can't wedge key dispatch permanently — defense in
+  // depth under the bag/queue above, not the primary guard.
+  function addPendingSwap(key) {
+    const token = { key: key, timer: null };
+    token.timer = setTimeout(function () {
+      removePendingSwap(token);
+    }, 500);
+    pendingSwaps.push(token);
+  }
+
+  // Removes at most ONE token owned by `key` (FIFO) and drains if the
+  // bag is now empty. Used by afterSettle (which always owns a token
+  // for its own request, barring a defect elsewhere) and by an F14
+  // failure leg (which may legitimately own NONE -- see M1/M2 above:
+  // a request whose OWN key never swapped has no token to remove,
+  // regardless of what target it shares with some other request).
+  function removePendingSwapForKey(key) {
+    const idx = pendingSwaps.findIndex(function (t) {
+      return t.key === key;
+    });
+    if (idx === -1) return;
+    removePendingSwap(pendingSwaps[idx]);
+  }
+
+  function removePendingSwap(token) {
+    const idx = pendingSwaps.indexOf(token);
+    if (idx === -1) return; // already removed by another leg (or N9's own timer)
+    clearTimeout(token.timer);
+    pendingSwaps.splice(idx, 1);
+    if (pendingSwaps.length === 0) releasePendingDispatches();
+  }
+
+  function releasePendingDispatches() {
+    const toRun = pendingDispatches.splice(0, pendingDispatches.length);
+    toRun.forEach(function (entry) {
+      clearTimeout(entry.timer); // N12: cancel the dispatch's own fallback, it already fired
+      entry.fire();
+    });
+  }
 
   function reloadDeferred() {
     if (document.querySelector("[data-verb-error]")) return true; // leg (a)
@@ -591,19 +833,37 @@
   document.addEventListener("htmx:beforeRequest", function (evt) {
     if (isConfirmRequest(evt)) confirmInFlight = true;
   });
+  // pendingSwaps' own add leg: a swap just landed new content for
+  // this request's OWN key (M2: its xhr, not merely its target) — one
+  // more resolution (its OWN settle or an F14 failure that owns it)
+  // now owed, bounded by its own N9 fallback regardless.
+  document.addEventListener("htmx:afterSwap", function (evt) {
+    addPendingSwap(pendingSwapKey(evt));
+  });
   // Success leg: cleared at swap SETTLE (never earlier — the error
   // marker must be in the DOM before leg (b) lets go, else the raced
   // SSE frame wipes it in the settle gap). Every settle also attempts
   // release: dismiss/disarm swaps are what remove legs (a)/(c).
   document.addEventListener("htmx:afterSettle", function (evt) {
     if (isConfirmRequest(evt)) confirmInFlight = false;
+    removePendingSwapForKey(pendingSwapKey(evt)); // N1, drains at zero
     releaseReload();
   });
-  // Failure legs (F14): no swap will come — clear unconditionally.
+  // Failure legs (F14, extended to pendingSwaps/pendingDispatches,
+  // M1/M2/N1): no swap will come for THIS request — remove ONLY the
+  // token this request's OWN key owns (M1/M2: a request whose OWN key
+  // never swapped owns no token, regardless of what TARGET it shares
+  // with some other, genuinely live request — an UNRELATED failure
+  // must never release a DIFFERENT request's pending swap, even one
+  // aimed at the identical element). Draining happens immediately
+  // once nothing is left pending; this is what stops a deferred click
+  // from waiting out its own fallback timer once its OWN failure
+  // already tells us it's safe to fire now.
   ["htmx:responseError", "htmx:swapError", "htmx:sendError", "htmx:sendAbort", "htmx:timeout"].forEach(
     function (name) {
       document.addEventListener(name, function (evt) {
         if (isConfirmRequest(evt)) confirmInFlight = false;
+        removePendingSwapForKey(pendingSwapKey(evt));
         releaseReload();
       });
     }

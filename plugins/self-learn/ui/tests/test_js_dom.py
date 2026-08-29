@@ -92,9 +92,23 @@ pytestmark = pytest.mark.js
 _STARTUP_TIMEOUT_S = 15.0
 _SHUTDOWN_TIMEOUT_S = 10.0
 #: A generous ceiling for a same-host SSE frame to arrive and reload() to
-#: navigate. Frames land in <50 ms on loopback; this is only the failure
-#: bound.
-_RELOAD_TIMEOUT_MS = 5000
+#: navigate. Widened 5000 -> 20000 (U-jsdom disposition, 14 §6a, code
+#: gate r1 N5): the previous "<50 ms on loopback" premise did not hold
+#: under CPU starvation. TestReloadRaceLiveOrdering's own
+#: test_inflight_refresh_then_offer_settles_never_reloads, reproduced
+#: under self-generated full-core CPU load (`yes` x nproc), measured a
+#: real ~1.28s reload latency at THIS exact wait — a DIFFERENT
+#: mechanism from the `o`-on-armed-bar race this module also fixes
+#: (that one is "a query races a navigation that should never have
+#: happened"; this one is "an expected navigation genuinely took
+#: longer than the ceiling under CPU starvation"). 20000 gives roughly
+#: 15x headroom (~18.7s) over that measured worst case — comfortably
+#: bounded, not merely generous — and remains only a MAX wait:
+#: wait_for_function returns as soon as the condition holds, so
+#: raising it cannot slow down an already-fast pass, only rescue a
+#: starved one. Confirmed at 20000: 3/3 under the same load, 0
+#: regressions solo.
+_RELOAD_TIMEOUT_MS = 20000
 #: How long to wait before concluding a reload was correctly DEFERRED.
 #: Also loopback-fast; a held leg must never navigate within this window.
 _DEFER_QUIET_S = 0.6
@@ -627,6 +641,32 @@ def _wait_for_held(held: dict, timeout: float = 5.0) -> None:
         if time.monotonic() > deadline:
             raise AssertionError("the expected POST was never intercepted")
         time.sleep(0.02)
+
+
+def _poll_held_actively(page: "Page", held: dict, timeout: float = 5.0) -> float:
+    """Same wait as `_wait_for_held`, but for tests that need the ELAPSED
+    TIME to mean something (U-jsdom disposition, 14 §6a, code gate r1
+    N1/N2/N3): a pure `time.sleep()` poll loop with no `page.evaluate()`
+    calls in it, like `_wait_for_held` above, measurably lags CDP event
+    delivery on this host when the page is otherwise idle -- a request a
+    JS-side `setTimeout` instrumentation proved fires at t=500ms±1ms was
+    only OBSERVED by a bare-sleep poll loop after ~2-2.5s, while a loop
+    that also fires a trivial no-op `evaluate()` each iteration (keeping
+    the CDP channel active) observed the SAME request at t=0.538s --
+    matching the true firing time. This can only make an OBSERVED time
+    later than the true one, never earlier, so a LOWER bound on elapsed
+    time (a click could not have fired before some interval) stays valid
+    with either poll style; only an UPPER bound (fired fast) needs this
+    one. Returns the elapsed time in seconds so a caller can assert on
+    it directly."""
+    t0 = time.monotonic()
+    deadline = t0 + timeout
+    while "route" not in held:
+        if time.monotonic() > deadline:
+            raise AssertionError("the expected POST was never intercepted")
+        page.evaluate("() => true")
+        time.sleep(0.02)
+    return time.monotonic() - t0
 
 
 def _wait_for_js_flag(page: "Page", expr: str, timeout: float = 5.0) -> None:
@@ -1251,6 +1291,333 @@ class TestReloadFiresWhenClear:
         _arm_reload_sentinel(page)
         server.push_refresh("front")
         _assert_reloaded(page)
+
+
+
+# U-jsdom disposition (14 §6a, code gate r1 N1/N2/N3/D1): unit-style
+# coverage of clickAction()'s own settle-gating machinery, isolated from
+# any real htmx swap via the SAME synthetic-CustomEvent technique
+# _dispatch_htmx already uses above — `document.dispatchEvent(new
+# CustomEvent("htmx:afterSwap"/"htmx:afterSettle"/an F14 name, {detail:
+# {}}))`. `[data-key-action="route"]` (the unarmed "Approve (e)" button,
+# present on every Detail page since initial load, already htmx-processed
+# — no arming needed) is the shared target: pressing `e` dispatches
+# `clickAction("route")`, which POSTs `/action/arm` when it actually
+# fires — intercepted via `_hold_post`/`_wait_for_held` so timing is
+# measured from the Python side rather than trusted from the DOM alone.
+class TestClickActionSettleGating:
+    def test_f14_for_the_request_that_owns_the_pending_swap_drains_immediately(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        """N1/N11 (split from the original single F14 test, code gate
+        r2): a deferred click must release the instant a failure leg
+        for ITS OWN pending target tells us that swap will never
+        settle — not wait out its own 500ms fallback timer. Measured
+        live before N1: a key pressed FIRST could fire ~499ms AFTER a
+        key pressed later (`[reject@4ms, route@503ms]`), because the
+        first one's own request failed while nothing but its own timer
+        was watching. See the sibling test below (N11/M1) for the
+        complementary case — an UNRELATED failure must release
+        NOTHING."""
+        _open(page, server, f"/record/{REC_BRIEF}")
+        page.evaluate(
+            "document.dispatchEvent(new CustomEvent('htmx:afterSwap', {detail: {}}))"
+        )
+        held = _hold_post(page, "/action/arm")
+        page.keyboard.press("e")
+        page.evaluate(
+            "document.dispatchEvent(new CustomEvent('htmx:sendError', {detail: {}}))"
+        )
+        elapsed = _poll_held_actively(page, held, timeout=2.0)
+        assert elapsed < 0.3, (
+            f"drain was not immediate: {elapsed:.3f}s (the fallback alone is 500ms)"
+        )
+
+    def test_f14_for_an_unrelated_request_releases_nothing(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        """N11/M1 (code gate r2 — the gate's own reproduction probe):
+        an F14 failure for a DIFFERENT target than the one a deferred
+        click is waiting on must not release it. Reproduced live under
+        the r1 counter: an unrelated failure decremented the SAME
+        shared counter a genuinely pending, DIFFERENT swap was relying
+        on, draining queued clicks into content that was never wired —
+        a native GET navigation within 120ms of the F14, where the
+        fixed build correctly POSTs. The pending swap's own target is
+        left completely untouched by the unrelated failure; its own
+        later settle is what actually releases it, proving the click
+        was never dropped — only correctly still pending. See
+        test_f14_for_a_request_sharing_the_pending_target_but_not_the_xhr_releases_nothing
+        below (M2, code gate r3) for the SAME-target sharper case this
+        target-only key could not yet catch."""
+        _open(page, server, f"/record/{REC_BRIEF}")
+        page.evaluate(
+            """() => {
+                window.__unrelatedTarget = document.createElement('div');
+                document.body.appendChild(window.__unrelatedTarget);
+                document.dispatchEvent(new CustomEvent('htmx:afterSwap', {detail: {}}));
+            }"""
+        )
+        held = _hold_post(page, "/action/arm")
+        page.keyboard.press("e")
+        page.evaluate(
+            """() => {
+                document.dispatchEvent(new CustomEvent('htmx:sendError', {
+                    detail: { target: window.__unrelatedTarget }
+                }));
+            }"""
+        )
+        time.sleep(0.3)
+        assert "route" not in held, (
+            "an UNRELATED F14 failure released a click waiting on a different target"
+        )
+        page.evaluate(
+            "document.dispatchEvent(new CustomEvent('htmx:afterSettle', {detail: {}}))"
+        )
+        _poll_held_actively(page, held, timeout=3.0)
+
+    def test_bare_after_swap_with_no_settle_still_fires_via_fallback_timer(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        """N2: makes the 500ms fallback load-bearing. Only `htmx:afterSwap`
+        is ever dispatched here — no `afterSettle`, no F14 leg, ever
+        arrives — so ONLY the fallback timer can release this click.
+        Mutation check: delete the fallback timer from clickAction() and
+        this goes RED (the held POST never arrives, `_wait_for_held`
+        times out); today it is GREEN."""
+        _open(page, server, f"/record/{REC_BRIEF}")
+        page.evaluate(
+            "document.dispatchEvent(new CustomEvent('htmx:afterSwap', {detail: {}}))"
+        )
+        held = _hold_post(page, "/action/arm")
+        page.keyboard.press("e")
+        elapsed = _poll_held_actively(page, held, timeout=5.0)
+        assert 0.45 <= elapsed < 2.0, (
+            f"elapsed {elapsed:.3f}s is not consistent with the 500ms fallback alone "
+            "(too fast: something else fired it; too slow: the fallback may be broken)"
+        )
+
+    def test_two_overlapping_swaps_require_two_settles(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        """N3: pendingSwaps is a BAG, not a boolean flag. Two
+        `afterSwap` dispatches followed by only ONE `afterSettle` must
+        still defer — a plain boolean would have released after the
+        first settle even while a second swap's own content was still
+        unwired."""
+        _open(page, server, f"/record/{REC_BRIEF}")
+        page.evaluate(
+            """() => {
+                document.dispatchEvent(new CustomEvent('htmx:afterSwap', {detail: {}}));
+                document.dispatchEvent(new CustomEvent('htmx:afterSwap', {detail: {}}));
+            }"""
+        )
+        held = _hold_post(page, "/action/arm")
+        page.keyboard.press("e")
+        page.evaluate(
+            "document.dispatchEvent(new CustomEvent('htmx:afterSettle', {detail: {}}))"
+        )
+        time.sleep(0.3)
+        assert "route" not in held, (
+            "fired after only ONE settle when TWO swaps were in flight"
+        )
+        page.evaluate(
+            "document.dispatchEvent(new CustomEvent('htmx:afterSettle', {detail: {}}))"
+        )
+        _poll_held_actively(page, held, timeout=3.0)
+
+    def test_deferred_click_reresolves_element_not_a_detached_node(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        """D1: a second overlapping swap can detach the element
+        clickAction saw when it deferred (its container's outerHTML
+        replaced again before the first swap even settled). The fix
+        re-resolves by selector at fire time; a naive implementation
+        that closes over the original element would silently click a
+        detached node instead — indistinguishable from the outside from
+        "the action did nothing"."""
+        _open(page, server, f"/record/{REC_BRIEF}")
+        page.evaluate(
+            "document.dispatchEvent(new CustomEvent('htmx:afterSwap', {detail: {}}))"
+        )
+        page.keyboard.press("e")
+        page.evaluate(
+            """() => {
+                const stale = document.querySelector('[data-key-action="route"]');
+                window.__staleClicked = false;
+                window.__freshClicked = false;
+                stale.addEventListener('click', () => { window.__staleClicked = true; });
+                const fresh = stale.cloneNode(true);
+                fresh.addEventListener('click', () => { window.__freshClicked = true; });
+                stale.replaceWith(fresh);
+            }"""
+        )
+        page.evaluate(
+            "document.dispatchEvent(new CustomEvent('htmx:afterSettle', {detail: {}}))"
+        )
+        time.sleep(0.3)
+        assert page.evaluate("window.__freshClicked") is True
+        assert page.evaluate("window.__staleClicked") is False
+
+    def test_orphaned_after_swap_self_heals_and_does_not_taint_later_cycles(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        """N9 (code gate r2, the gate's RP7 orphan probe): an
+        `htmx:afterSwap` that never resolves (no `afterSettle`, no F14
+        leg — an ORPHAN) must self-evict via its own 500ms fallback
+        timer and never permanently wedge later keystrokes. Under the
+        r1 counter this never healed: an orphaned increment occupied
+        the counter forever, so even a LATER, fully BALANCED
+        afterSwap/afterSettle cycle could only bring it from 2 back to
+        1 — never to 0 — leaving every subsequent keystroke ~503ms
+        late forever. Here, once the orphan's own timer has expired, a
+        fully balanced cycle nets back to an EMPTY bag, and the next
+        keystroke fires immediately — in ~ms, not 503."""
+        _open(page, server, f"/record/{REC_BRIEF}")
+        # the orphan: a swap that will never settle and never fail.
+        page.evaluate(
+            "document.dispatchEvent(new CustomEvent('htmx:afterSwap', {detail: {}}))"
+        )
+        time.sleep(0.7)  # let the orphan's own 500ms fallback expire
+        # a later, fully balanced cycle — must not still be tainted.
+        page.evaluate(
+            """() => {
+                document.dispatchEvent(new CustomEvent('htmx:afterSwap', {detail: {}}));
+                document.dispatchEvent(new CustomEvent('htmx:afterSettle', {detail: {}}));
+            }"""
+        )
+        held = _hold_post(page, "/action/arm")
+        page.keyboard.press("e")
+        elapsed = _poll_held_actively(page, held, timeout=2.0)
+        assert elapsed < 0.3, (
+            f"a keystroke after an orphan + a balanced cycle was late: {elapsed:.3f}s "
+            "(the bag never self-healed)"
+        )
+
+    def test_deferred_click_no_ops_when_record_changes_before_fire(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        """N10 (code gate r2): a deferred click's intent is stamped
+        with the CURRENT record id at defer time; if a resolution swap
+        replaces the WHOLE record (A -> B) before the deferred click
+        fires, firing anyway would act on B despite having been formed
+        against A — D1's re-resolve-by-selector alone can't tell the
+        difference, since B's detail page repeats the same
+        `[data-key-action="route"]` markup. The fix no-ops instead of
+        clicking into the wrong record."""
+        _open(page, server, f"/record/{REC_BRIEF}")
+        page.evaluate(
+            "document.dispatchEvent(new CustomEvent('htmx:afterSwap', {detail: {}}))"
+        )
+        held = _hold_post(page, "/action/arm")
+        page.keyboard.press("e")  # deferred, stamped against REC_BRIEF's record id
+        page.evaluate(
+            """() => {
+                document.querySelector('[data-record-id]')
+                    .setAttribute('data-record-id', 'a-different-record');
+            }"""
+        )
+        page.evaluate(
+            "document.dispatchEvent(new CustomEvent('htmx:afterSettle', {detail: {}}))"
+        )
+        time.sleep(0.3)
+        assert "route" not in held, (
+            "fired a deferred click after the record changed underneath it"
+        )
+
+    def test_f14_for_a_request_sharing_the_pending_target_but_not_the_xhr_releases_nothing(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        """M2 (code gate r3): a target-only key is only an APPROXIMATE
+        match -- every arm/confirm/disarm request on ONE action bar
+        targets the SAME element, so a failing request aimed at that
+        element could still release a token a DIFFERENT, genuinely
+        live request on the SAME element owned, reproducing the
+        identical native-GET failure M1 fixed, just narrowed to
+        same-target collisions. Reproduced here with two requests
+        sharing a target but carrying DIFFERENT `xhr` identities:
+        sameSwapSettle=True (afterSettle shares its own swap's xhr and
+        correctly releases), failSharesSwapXhr=False (the failing
+        request's xhr differs from the live swap's), failSharesSwapTarget
+        =True (both point at the SAME element) -- exactly the
+        discrimination a target-only key cannot make. Keying by xhr
+        instead (falling back to target only when no xhr exists) fixes
+        it: the failure removes nothing, and the pending swap's own
+        later settle -- carrying its OWN xhr -- is what actually
+        releases it."""
+        _open(page, server, f"/record/{REC_BRIEF}")
+        page.evaluate(
+            """() => {
+                window.__sharedTarget = document.createElement('div');
+                document.body.appendChild(window.__sharedTarget);
+                window.__swapXhr = {};
+                document.dispatchEvent(new CustomEvent('htmx:afterSwap', {
+                    detail: { target: window.__sharedTarget, xhr: window.__swapXhr }
+                }));
+            }"""
+        )
+        held = _hold_post(page, "/action/arm")
+        page.keyboard.press("e")
+        page.evaluate(
+            """() => {
+                window.__failXhr = {}; // a DIFFERENT request, SAME target
+                document.dispatchEvent(new CustomEvent('htmx:sendError', {
+                    detail: { target: window.__sharedTarget, xhr: window.__failXhr }
+                }));
+            }"""
+        )
+        time.sleep(0.3)
+        assert "route" not in held, (
+            "a failing request sharing the TARGET (but not the xhr) with a "
+            "pending swap released it -- the key is not discriminating requests"
+        )
+        page.evaluate(
+            """() => {
+                document.dispatchEvent(new CustomEvent('htmx:afterSettle', {
+                    detail: { target: window.__sharedTarget, xhr: window.__swapXhr }
+                }));
+            }"""
+        )
+        _poll_held_actively(page, held, timeout=3.0)
+
+    def test_dispatch_level_fallback_fires_even_under_a_continuous_swap_stream(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        """N12 (code gate r3): the per-TOKEN 500ms fallback bounds
+        each individual pendingSwaps entry, but with no bound of its
+        own on the queued DISPATCH beyond that, a continuous stream of
+        overlapping swaps (a new one always landing before the bag
+        empties) can keep the bag non-empty far longer than any single
+        token's own 500ms -- stranding a queued click for as long as
+        the stream runs. Measured without a dispatch-level bound:
+        3503ms. No known production driver produces this today, but
+        the bound is cheap; this test drives the stream from JS (a
+        `setInterval` dispatching a fresh `afterSwap` every 150ms, for
+        3s -- well past any single token's own 500ms) and asserts the
+        deferred click still fires close to the 500ms fallback window
+        regardless."""
+        _open(page, server, f"/record/{REC_BRIEF}")
+        page.evaluate(
+            "document.dispatchEvent(new CustomEvent('htmx:afterSwap', {detail: {}}))"
+        )
+        held = _hold_post(page, "/action/arm")
+        page.keyboard.press("e")
+        page.evaluate(
+            """() => {
+                let count = 0;
+                window.__streamInterval = setInterval(() => {
+                    document.dispatchEvent(new CustomEvent('htmx:afterSwap', {detail: {}}));
+                    count++;
+                    if (count >= 20) clearInterval(window.__streamInterval);
+                }, 150);
+            }"""
+        )
+        elapsed = _poll_held_actively(page, held, timeout=5.0)
+        assert elapsed < 1.0, (
+            f"a queued dispatch waited {elapsed:.3f}s under a continuous swap "
+            "stream (no dispatch-level bound protecting it)"
+        )
+
 
 
 # ============================================================= item 2:
