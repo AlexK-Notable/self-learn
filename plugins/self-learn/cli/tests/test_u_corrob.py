@@ -1420,10 +1420,32 @@ def test_pin2_armor_sha_paths_are_byte_unchanged():
         # A `Fixture.repinned = (sha, reason)` entry (F2's re-pin door)
         # lets live bytes differ from anchor and ONLY to that pinned
         # sha -- parsed from the SAME per-row source span, still no
-        # cross-module import.
-        row_start = block.index(f'"{rel}"')
-        row_end = block.index('),\n', row_start) + 1
-        row_text = block[row_start:row_end]
+        # cross-module import. Root fix (U-xdist, 2026-08-28): the row's
+        # span is found by a BALANCED-PAREN scan from the matching
+        # `Fixture(` open paren, not a naive "next '),\n'" search -- the
+        # naive form silently ran PAST a same-line `Fixture(),  # ...`
+        # row that has no `),\n` of its own (a trailing comment sits
+        # before the newline) and INTO the NEXT row's multi-line
+        # `repinned=(...)` tuple, misattributing that sha to the wrong
+        # file entirely (measured: exactly this shape, once conftest.py
+        # gained a multi-line `repinned` entry and support.py -- the row
+        # immediately before it, itself `repinned`-free -- was the one
+        # whose naive scan ran past its own comment and into conftest's
+        # tuple).
+        call_start = block.index(f'"{rel}": Fixture(')
+        paren_start = call_start + len(f'"{rel}": Fixture')
+        depth = 0
+        row_end = None
+        for i in range(paren_start, len(block)):
+            if block[i] == "(":
+                depth += 1
+            elif block[i] == ")":
+                depth -= 1
+                if depth == 0:
+                    row_end = i + 1
+                    break
+        assert row_end is not None, f"{rel}: could not find the matching close paren"
+        row_text = block[call_start:row_end]
         repin_match = _re.search(r'repinned=\(\s*"([0-9a-f]{64})"', row_text)
         if repin_match:
             assert live == repin_match.group(1), (rel, "repinned sha mismatch")

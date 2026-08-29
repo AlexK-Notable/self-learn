@@ -238,7 +238,20 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
     # docs-only) moved ANCHOR to 9c7ebdd itself, folding that content
     # IN and making the repin vacuous -- dropped, same motion as
     # test_wr7's own fold (section 4.1).
-    "conftest.py": Fixture(),  # 2 importers
+    "conftest.py": Fixture(
+        repinned=(
+            "8327c4cf2abfdc07db18718b3356052dda09f0bfce1411cd975e6dabdc34339b",
+            "2026-08-28 U-xdist T1, per §4.3 (F2's re-pin door): "
+            "conftest.py's cache-litter guard gains a worker -> controller "
+            "relay (pytest_sessionfinish/pytest_testnodedown, appended at "
+            "the file's end) so its 'concurrent sibling' warning survives "
+            "under the new pytest-xdist -n auto suite runner -- the "
+            "warning was silently dead under -n before this (the "
+            "controller executes zero tests, so its own tracking list was "
+            "always empty). Section 4.7 row 1 migrated this file's prior "
+            "whole-file pin (test_worker_contract.py's _ARMOR_SHAS) here.",
+        ),
+    ),  # 2 importers
     "backends.py": Fixture(),  # 3 importers
     # --- ADDITIVE: the one fixture V-2 lets grow (section 4.4) --------
     "fixtures/fake_claude.py": Additive(
@@ -262,7 +275,24 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
         nodes=94, dump_sha="eb90005324f7f1483dcd618a80501d03a11e2f0ebb2541b5af696d31b48644fe"
     ),
     "test_invocation_sdk.py": Behaviour(
-        nodes=139, dump_sha="2517577cbfc385476eba58d5e580a5bf5ea6d6691b15c14e1e51eb618168d7f0"
+        nodes=139, dump_sha="2517577cbfc385476eba58d5e580a5bf5ea6d6691b15c14e1e51eb618168d7f0",
+        edited={
+            "func:test_rs8_lockfiles_no_package_added_or_removed_no_version_changed": (
+                "2026-08-28 U-xdist T1, per §4.5 (B3/B4, the node "
+                "census's own exemption door): RS8's lockfile-drift bound "
+                "widened to allow EXACTLY the sanctioned `uv add --dev "
+                "pytest-xdist` addition (itself plus its own dependency "
+                "execnet) to the CLI lockfile -- nothing else may differ. "
+                "The prior growth-ceiling mechanism this class of edit used "
+                "to need (HY5, test_u_sdka.py) is retired by section 4.7 "
+                "row 11; this node's own body-level equality/subset check "
+                "is unchanged in shape, only the sanctioned-addition set "
+                "is new. The anchor version would flag pytest-xdist/"
+                "execnet as unauthorized lockfile drift; the head version "
+                "correctly allows this one, named, addition and nothing "
+                "wider."
+            ),
+        },
     ),
     "test_worker.py": Behaviour(
         nodes=80, dump_sha="16e45a867ecebd6471586640f1f52417427c235d04777e74ec4f34c14506627c"
@@ -1831,15 +1861,19 @@ def test_beh3_no_protected_node_is_edited():
     """`B3`. Dump identity, node-wide. Four MEASURED positive controls
     (all GREEN under the retired test-only census, all RED here) plus
     two gate probes (setup-line flip; `pytest.raises` deletion), plus
-    the `c3b48e7` control at 184 edited (re-measured 2026-08-28, was
-    190 at spec-gate time -- see `test_beh1`'s docstring)."""
+    the `c3b48e7` control at 185 edited (re-measured 2026-08-28, was
+    190 at spec-gate time -- see `test_beh1`'s docstring; U-xdist T1,
+    same day, per §4.5: 184 -> 185, one more node genuinely edited
+    relative to c3b48e7 -- RS8's own body widened for the sanctioned
+    pytest-xdist/execnet lockfile addition, exempted in `ARMOR`'s
+    `test_invocation_sdk.py` row)."""
     total_edited_c3b48e7 = 0
     for key in BEHAVIOUR_KEYS:
         a = _census(_git_show_text("c3b48e7", key))
         h = _head_census(key)
         edited = [k for k in a if k in h and h[k] != a[k]]
         total_edited_c3b48e7 += len(edited)
-    assert total_edited_c3b48e7 == 184, total_edited_c3b48e7
+    assert total_edited_c3b48e7 == 185, total_edited_c3b48e7
 
     for key in BEHAVIOUR_KEYS:
         row = ARMOR[key]
@@ -2242,7 +2276,14 @@ def test_exm3_doors_match_what_the_anchor_owes():
     missing / 184 edited (re-measured from the spec's 56/190 -- this
     unit's own test_u_fake.py deletions moved several c3b48e7-edited
     nodes into c3b48e7-missing, and some further into outright common
-    ancestry; not vacuous on a small number either way)."""
+    ancestry; not vacuous on a small number either way).
+    U-xdist T1 (same day, per §4.5): census edited 0 -> 1 -- RS8's own
+    body widened for the sanctioned pytest-xdist/execnet lockfile
+    addition, exempted in `ARMOR`'s `test_invocation_sdk.py` row; the
+    exemption grammar/coverage legs above already assert this row's
+    reason is valid and its key is genuinely in the census diff, so
+    this positive-control total is the only literal that needs
+    bumping."""
     # `Fixture.repinned` gets the SAME "owed" exception (r1 gate
     # fold): `support.py` now legitimately carries one (U-verbs'
     # `force_past_deferred`, landed on master and merged in by this
@@ -2278,7 +2319,7 @@ def test_exm3_doors_match_what_the_anchor_owes():
             assert ok, (key, k, why)
 
     assert census_missing_total == 14, census_missing_total
-    assert census_edited_total == 0, census_edited_total
+    assert census_edited_total == 1, census_edited_total
     assert shipped_edited_total == census_edited_total, (shipped_edited_total, census_edited_total)
     assert shipped_missing_total == census_missing_total, (shipped_missing_total, census_missing_total)
 
@@ -2287,6 +2328,11 @@ def test_exm3_doors_match_what_the_anchor_owes():
     assert set(additive.edited_funcs) == {"main", "_scenario_error_result"}, set(additive.edited_funcs)
 
     # Positive control: c3b48e7 is NOT vacuous.
+    # U-xdist T1 (2026-08-28, per §4.5): c_edited 184 -> 185, same one
+    # more genuinely-edited node as `test_beh3`'s own colocated control
+    # (RS8's body, widened for the sanctioned pytest-xdist/execnet
+    # lockfile addition, exempted in `ARMOR`'s `test_invocation_sdk.py`
+    # row).
     c_missing = c_edited = 0
     for key in BEHAVIOUR_KEYS:
         a = _census(_git_show_text("c3b48e7", key))
@@ -2294,7 +2340,7 @@ def test_exm3_doors_match_what_the_anchor_owes():
         c_missing += len([k for k in a if k not in h])
         c_edited += len([k for k in a if k in h and h[k] != a[k]])
     assert c_missing == 66, c_missing
-    assert c_edited == 184, c_edited
+    assert c_edited == 185, c_edited
 
 
 # ======================================================================= #
