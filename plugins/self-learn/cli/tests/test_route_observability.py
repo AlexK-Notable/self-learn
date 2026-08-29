@@ -519,8 +519,17 @@ def _route_sites(
     # `class _SneakyRouter` with a set_routing() call and no spool passed
     # the whole suite under `tree.body`. Same defect class as M22, one
     # scope level deeper.
+    # U-verbs §4.3: `route_dry_run` calls `set_routing()` too, but on an
+    # in-memory, NEVER-PERSISTED `Record` copy built purely to predict
+    # canon bytes (DRY1/DRY2) — no ledger write, no host write, and
+    # (deliberately, DRY3's "zero side effects" spirit) no telemetry
+    # spool either. It is excluded BY NAME, not by weakening the
+    # `set_routing`/`resolve_record` match this criterion is built on.
+    _DRY_RUN_EXEMPT = {"route_dry_run"}
     for node in ast.walk(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if node.name in _DRY_RUN_EXEMPT:
             continue
         for inner in ast.walk(node):
             if not isinstance(inner, ast.Call):

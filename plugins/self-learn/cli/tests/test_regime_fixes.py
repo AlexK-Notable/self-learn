@@ -34,7 +34,7 @@ from self_learn.analyst import doctrine_path
 from self_learn.compilers import BEGIN_MARKER, compile_managed_file
 from self_learn.ledger_ops import create_record, write_proposal
 from self_learn.records import Record
-from support import commit_all, git, make_behavior, make_env, proposal_dict
+from support import commit_all, force_past_deferred, git, make_behavior, make_env, proposal_dict
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 SRC_DIR = Path(__file__).resolve().parents[1] / "src"
@@ -104,12 +104,17 @@ def test_report_counts_each_terminal_status(env, capsys):
         ("lrn-0000aaaa", ["route", "lrn-0000aaaa"]),
         ("lrn-0000bbbb", ["reject", "lrn-0000bbbb"]),
         ("lrn-0000cccc", ["graduate", "lrn-0000cccc"]),
-        ("lrn-0000dddd", ["defer", "lrn-0000dddd", "--until", "2026-01-01"]),
+        # U-verbs STATE1: `defer --until` in the past now REFUSES at the
+        # CLI (a human-typo guard) — defer to a future date here, then
+        # force the state an ELAPSED deferral reaches below, same as a
+        # real overdue defer eventually would.
+        ("lrn-0000dddd", ["defer", "lrn-0000dddd", "--until", "2099-01-01"]),
     ]:
         create_record(env.home, make_behavior(record_id=rid))
         write_proposal(env.home, rid, proposal_dict())
         commit_all(env.home, f"pending {rid}")
         assert cli.main(args) == 0
+    force_past_deferred(env.home, "lrn-0000dddd", "2026-01-01")
     capsys.readouterr()
     assert cli.main(["report", "--json"]) == 0
     facts = json.loads(capsys.readouterr().out)

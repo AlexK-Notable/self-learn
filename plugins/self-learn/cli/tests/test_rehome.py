@@ -192,14 +192,18 @@ class TestRehomeRefusals:
             verbs.rehome(env.home, "lrn-deadbeef", to=str(env.host_b))
 
     def test_resolved_record_refuses_on_status_never_existence(self, env):
+        """S-54 / GUARD1 (U-verbs): `rehome` now refuses through the ONE
+        guard vocabulary, `ledger_ops.require_status` — replacing the
+        hand-rolled status check this test used to pin the wording of.
+        The INTENT is unchanged (refuse on status, never existence);
+        only the message's wording moved to the shared helper's."""
         rec = env.seed_project_record()
         verbs.reject(env.home, rec.id, no_push=True)
         with pytest.raises(verbs.VerbError) as exc:
             verbs.rehome(env.home, rec.id, to=str(env.host_b))
         assert str(exc.value) == (
-            f"record {rec.id} is not pending (status 'rejected') — a "
-            "resolved lesson does not move; supersede is the correction "
-            "machinery (02 §2)"
+            f"record {rec.id} is 'rejected' — rehome needs status "
+            "pending/deferred (02 §2)"
         )
 
     def test_unregistered_target_names_host_add_as_repair(self, env):
@@ -228,18 +232,20 @@ class TestRehomeRefusals:
         with pytest.raises(verbs.VerbError, match="nothing to move"):
             verbs.rehome(env.home, rec.id, to=str(env.host_b))
 
-    def test_non_project_source_refuses(self, env):
+    def test_non_project_source_now_succeeds(self, env):
+        """S-54 / MOVE1 (U-verbs): `rehome` widens beyond project→project
+        — a skill-scoped source now moves to a project target instead of
+        refusing. `rehome`'s own `test_move_matrix` (test_u_verbs.py)
+        covers the full 8-cell matrix; this is the direct regression
+        guard against the OLD hand-rolled "project→project only"
+        restriction resurfacing on THIS verb's own suite."""
         rec = make_behavior(scope="skill:s")
         create_record(env.home, rec)
         commit_all(env.home, "skill record seed")
-        with pytest.raises(verbs.VerbError) as exc:
-            verbs.rehome(env.home, rec.id, to=str(env.host_b))
-        assert str(exc.value) == (
-            f"record {rec.id} lives in a non-project bucket (s) — rehome "
-            "is project→project only (M1); self-learn rescope is the "
-            "repair for a user<->skill:<name> move — project↔user/skill "
-            "moves remain dated future work, not silent extensions"
-        )
+        verbs.rehome(env.home, rec.id, to=str(env.host_b))
+        moved = env.pending_b(rec.id)
+        assert moved.is_file()
+        assert Record.from_path(moved).scope == "project"
 
     def test_destination_collision_refuses_before_any_creation(self, env):
         rec = env.seed_project_record()

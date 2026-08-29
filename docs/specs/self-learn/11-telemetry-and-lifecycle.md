@@ -152,6 +152,9 @@ of rationale prose; §8 declares this schema addition honestly).
 | `dismiss-suspect <id> --event <ref> --why <reason> [--note …]` | `dismissed_suspects[]` append | `self-learn: suspect dismissed on lrn-<id>` |
 | `link contradicts <id> <target>` | `links.contradicts` append | `self-learn: link lrn-<id> contradicts <target>` |
 | `followup done <id> [--note …]` | clears `routing.follow_up` (moves it to a dated `follow_up_done` block) | `self-learn: follow-up done on lrn-<id>` |
+| `undefer <id> [--note …]` | `status: pending`, clears `deferred_until` (keeps `deferred_count`) *(U-verbs Phase 1, §4.2 — pulled forward from D1's Phase-2 sweep, code gate r1: shipping without a row here left the doc table three verbs short of the code it documents)* | `self-learn: undefer lrn-<id>` |
+| `reopen <id> [--note …]` | `status: pending`, displaces `resolution_note` into `history` (event: `resolution`), sweeps stale proposal/merge siblings *(U-verbs Phase 1, §4.2 — pulled forward, code gate r1)* | `self-learn: reopen lrn-<id>` |
+| `note <id> --append <text> [--key <token>]` | `notes[]` append *(ANY status — never touches `resolution_note`; U-verbs Phase 1, §4.2 — pulled forward, code gate r1)* | `self-learn: note lrn-<id>` |
 | `telemetry note <kind> [flags]` | **spool only (§4.2) — no repo write, no commit** | — |
 | `telemetry flush` | spool → tracked telemetry file (§4.2) | *(none — autosync commits; never part of a verb's surgical commit)* |
 

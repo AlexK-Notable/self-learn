@@ -69,6 +69,12 @@ DRAFT_STATUSES = frozenset({"pending", "deferred"})
 
 #: Required / optional body section headings by record type (02 §1).
 REQUIRED_SECTIONS = {"behavior": ("Trigger", "Instruction"), "knowledge": ("Fact",)}
+#: U-verbs §4.10: the closed set of things a `history` entry may
+#: record as DISPLACED — `reopen` displaces a resolution; a future
+#: verb correcting a wrong routing destination displaces a routing
+#: block the same way. A future third displacement is a decision,
+#: not a silent widening.
+HISTORY_EVENTS = frozenset({"resolution", "routing"})
 #: "Episode brief" (02 §1 amendment, 10 §3 U18): a miner-only, optional
 #: body section for BOTH types — no ``required`` weight, duplicate-guarded
 #: by ``_validate_body`` once registered here like any other optional
@@ -321,6 +327,25 @@ class Record:
         )
 
     @property
+    def history(self) -> tuple:
+        """Read-only view of the append-only ``history`` list (U-verbs
+        §4.10): values a verb DISPLACED — the old ``resolution_note``
+        (``reopen``) or an old ``routing`` block a later correcting verb
+        displaces. Same
+        metadata class as ``recurrences``: optional, verb-written,
+        mutable in every status, never part of the substance freeze."""
+        return tuple(copy.deepcopy(dict(h)) for h in self._fm.get("history") or [])
+
+    @property
+    def notes(self) -> tuple:
+        """Read-only view of the append-only ``notes`` list (U-verbs
+        §4.10): commentary a human ADDED via ``self-learn note --append``.
+        Distinct from ``history`` — ``notes`` records what was ADDED,
+        ``history`` records what was DISPLACED; merging the two would make
+        both unreadable."""
+        return tuple(copy.deepcopy(dict(n)) for n in self._fm.get("notes") or [])
+
+    @property
     def last_confirmed(self):
         return self._fm.get("last_confirmed")
 
@@ -475,6 +500,29 @@ class Record:
             raise ValidationError("resolution_note must be non-empty text")
         self._fm["resolution_note"] = note
 
+    def clear_resolution_note(self) -> None:
+        """The ONLY writer permitted to set ``resolution_note`` back to
+        ``None`` — ``reopen``'s displacement (U-verbs §4.10/02 §2
+        amendment). Refuses UNLESS the current note already appears in a
+        ``history`` entry with ``event: "resolution"`` — so the
+        write-once field can be DISPLACED but never DESTROYED. A record
+        with no ``resolution_note`` set is a no-op (idempotent: `reopen`
+        calls this after appending the history entry, never before)."""
+        note = self._fm.get("resolution_note")
+        if note is None:
+            return
+        history = self._fm.get("history") or []
+        if not any(
+            h.get("event") == "resolution" and h.get("note") == note
+            for h in history
+        ):
+            raise MutationError(
+                f"resolution_note cannot be cleared on {self.id}: it is not "
+                "yet displaced into a `history` entry (event: resolution) — "
+                "call append_history first (02 §2)"
+            )
+        self._fm["resolution_note"] = None
+
     def set_redacted(self, value: bool = True) -> None:
         """Mark that the secret scan replaced spans (``--redact``). Absent
         when never redacted — writers set it only on an actual redaction."""
@@ -605,6 +653,53 @@ class Record:
         if self._fm.get("dismissed_suspects") is None:
             self._fm["dismissed_suspects"] = []
         self._fm["dismissed_suspects"].append(dict(entry))
+
+    def append_history(self, event: str, payload: dict) -> None:
+        """Append one DISPLACED-value entry (U-verbs §4.10) — append-only,
+        never rewritten, never removed. ``event`` is the closed set
+        :data:`HISTORY_EVENTS`: ``reopen`` displaces the old resolution
+        (``event="resolution"``, payload carrying ``status``/``note``);
+        a later verb correcting a wrong routing destination displaces
+        the old routing block (``event="routing"``,
+        payload carrying ``routing``). A future third displacement is a
+        decision, not a silent widening."""
+        if event not in HISTORY_EVENTS:
+            raise ValidationError(
+                f"history event must be one of {sorted(HISTORY_EVENTS)}, got {event!r}"
+            )
+        if not isinstance(payload, dict):
+            raise ValidationError("history payload must be a mapping")
+        entry: dict = {"at": _now_iso(), "event": event}
+        entry.update(payload)
+        if self._fm.get("history") is None:
+            self._fm["history"] = []
+        self._fm["history"].append(entry)
+
+    def append_note(self, text: str, *, by: str = "human", key: str | None = None) -> None:
+        """Append one commentary entry to ``notes`` (U-verbs §4.10) — ANY
+        status, and NEVER touches ``resolution_note``: ``notes`` records
+        what a human ADDED, ``history`` records what a verb DISPLACED.
+        ``key`` is the optional sheet-line idempotency token
+        ``self-learn batch`` stamps on a ``note`` item's entry — never
+        generated here; a human call at a terminal omits it and every
+        call appends (two identical observations on two days are two
+        facts)."""
+        if not isinstance(text, str) or not text.strip():
+            raise ValidationError("note text must be non-empty")
+        entry: dict = {"at": _now_iso(), "by": by, "text": text}
+        if key is not None:
+            entry["key"] = key
+        if self._fm.get("notes") is None:
+            self._fm["notes"] = []
+        self._fm["notes"].append(entry)
+
+    def note_has_key(self, key: str) -> bool:
+        """True iff a ``notes[]`` entry already carries this idempotency
+        key — the read ``self-learn batch`` classifies a ``note`` item's
+        already-applied state on (§3.3b row 10). The one verb whose
+        effect is not derivable from record state, so it is the one verb
+        that carries a key."""
+        return any(n.get("key") == key for n in self._fm.get("notes") or [])
 
     def append_contradicts(self, target: str) -> None:
         """Append one contradiction edge (11 §2.4): a record id or a canon
@@ -753,6 +848,18 @@ class Record:
         links = fm.get("links")
         if links is not None:
             _validate_links(links)
+        history = fm.get("history")
+        if history is not None:
+            if not isinstance(history, list):
+                raise ValidationError("history must be a list")
+            for entry in history:
+                _validate_history_entry(entry)
+        notes = fm.get("notes")
+        if notes is not None:
+            if not isinstance(notes, list):
+                raise ValidationError("notes must be a list")
+            for entry in notes:
+                _validate_note_entry(entry)
 
         self._validate_body(fm["type"], self._body)
 
@@ -829,6 +936,37 @@ def _validate_dismissal(entry: object) -> None:
         value = entry.get(key)
         if value is None or (isinstance(value, str) and not value.strip()):
             raise ValidationError(f"dismissal needs {key} (11 §2.2), got {entry!r}")
+
+
+def _validate_history_entry(entry: object) -> None:
+    """One ``history`` entry (U-verbs §4.10): ``at`` + ``event`` are the
+    minimal facts; ``event`` must be in the closed set, checked here too
+    (not only at append time) so a hand-edited or migrated ledger cannot
+    carry a widened event a future reader has never heard of."""
+    if not isinstance(entry, dict) or not entry:
+        raise ValidationError(f"history entry must be a non-empty mapping, got {entry!r}")
+    at = entry.get("at")
+    if at is None or (isinstance(at, str) and not at.strip()):
+        raise ValidationError(f"history entry needs at (U-verbs §4.10), got {entry!r}")
+    event = entry.get("event")
+    if event not in HISTORY_EVENTS:
+        raise ValidationError(
+            f"history entry event must be one of {sorted(HISTORY_EVENTS)}, got {event!r}"
+        )
+
+
+def _validate_note_entry(entry: object) -> None:
+    """One ``notes`` entry (U-verbs §4.10): ``at`` is the minimal fact;
+    ``key``, when present, must be non-empty text (the batch idempotency
+    token)."""
+    if not isinstance(entry, dict) or not entry:
+        raise ValidationError(f"note entry must be a non-empty mapping, got {entry!r}")
+    at = entry.get("at")
+    if at is None or (isinstance(at, str) and not at.strip()):
+        raise ValidationError(f"note entry needs at (U-verbs §4.10), got {entry!r}")
+    key = entry.get("key")
+    if key is not None and (not isinstance(key, str) or not key.strip()):
+        raise ValidationError("note entry key must be non-empty text")
 
 
 def _validate_links(links: object) -> None:

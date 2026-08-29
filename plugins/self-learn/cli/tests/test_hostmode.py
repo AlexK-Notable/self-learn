@@ -2659,7 +2659,7 @@ class TestRecompileRecordResyncOnRender:
         `route`'s own commit, so REC9's "the record rides its own
         resolution's commit" has nothing for a bare `recompile` resync
         to ride). Evidence this closes (probe run during the gate):
-        `'self-learn: compile record /tmp/pytest-of-komi/.../CLAUDE.md'`
+        `'self-learn: compile record /tmp/pytest-of-user/.../CLAUDE.md'`
         — the ONLY pinned subject anywhere in this codebase that
         embedded an absolute local path.
 
@@ -4909,7 +4909,13 @@ class TestChez6CensusZeroRetiredModuleLiterals:
         CLI tool's ``cd`` subcommand (``test_route_hook.py``, 12;
         ``test_hook_compiler.py``, 2) and one absence-assertion in
         ``test_composer.py`` (1) that already proves the analyst
-        doctrine text does NOT mention it -- 11+1+10+12+2+1 = 37, the
+        doctrine text does NOT mention it -- plus, as of U-armor
+        (2026-08-28, ``test_armor.py``), two literal-text EXM1
+        grammar-control example strings that cite the real
+        ``chezmoi.py`` deletion this same file documents (one
+        negative control isolating the date/anchor grammar halves,
+        one worked-example reason string for the shipped
+        ``test_wr7`` exemption) -- 11+1+10+12+2+1+2 = 39, the
         exact accounted total. THIS file (``test_hostmode.py``) is
         excluded from the ``cli/tests`` sweep BY PATH, not by evading
         its own grep (gate r1-N1) -- ``_RETIRED_MODULE`` above is a
@@ -4945,7 +4951,7 @@ class TestChez6CensusZeroRetiredModuleLiterals:
             return hits
 
         assert len(_hits(trees["cli/src"])) == 2
-        assert len(_hits(trees["cli/tests"])) == 37
+        assert len(_hits(trees["cli/tests"])) == 39
         assert _hits(trees["ui/src"]) == []
         assert _hits(trees["ui/templates"]) == []
         assert _hits(trees["ui/tests"]) == []
