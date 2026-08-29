@@ -101,7 +101,7 @@ def _git_show_text(rev: str, key: str) -> str:
 # anchor is byte-identical to what the spec measured at `fe5a012`
 # (`= 3b8e037`'s child). The landing chain rewrites this via
 # `--remeasure`, never a human (section 4.2).
-ANCHOR = "99d310e"
+ANCHOR = "9c7ebdd"
 
 
 # ===================================================================== #
@@ -231,15 +231,13 @@ class Behaviour:
 
 ARMOR: dict[str, Fixture | Additive | Behaviour] = {
     # --- FIXTURES: ground truth, whole-file byte-pinned (section 4.3) -
-    "support.py": Fixture(
-        repinned=(
-            "ffd9ac3838e623b1dd02c209c6f138b5671a034f79303cd896e9d77ef6663125",
-            "2026-08-28 r1 gate fold, \u00a74.3: U-verbs landed on master "
-            "(9c7ebdd) after this unit's ANCHOR merge point, adding "
-            "support.py's force_past_deferred (U-verbs STATE1's own "
-            "test helper) -- byte-identical otherwise.",
-        ),
-    ),  # 62 importers  (NEW under this unit -- FIX3)
+    "support.py": Fixture(),  # 62 importers  (NEW under this unit -- FIX3)
+    # r1 gate fold note: support.py briefly carried a `repinned` entry
+    # (U-verbs' force_past_deferred, landed at 9c7ebdd) while ANCHOR sat
+    # at 99d310e; a second landing-chain round (U-land-spec, 8c7a220,
+    # docs-only) moved ANCHOR to 9c7ebdd itself, folding that content
+    # IN and making the repin vacuous -- dropped, same motion as
+    # test_wr7's own fold (section 4.1).
     "conftest.py": Fixture(),  # 2 importers
     "backends.py": Fixture(),  # 3 importers
     # --- ADDITIVE: the one fixture V-2 lets grow (section 4.4) --------
