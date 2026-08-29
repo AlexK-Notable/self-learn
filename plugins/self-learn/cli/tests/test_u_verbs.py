@@ -184,6 +184,17 @@ def spool_suspect(home, routed_id, *, origin="lrn-0000eeee", basis="miner-match"
 
 
 class TestPhaseBoundary:
+    @pytest.mark.skip(
+        reason="PH1 (S-54, U-verbs Phase 2 build): PH1's own claim was "
+        "temporal -- 'Phase 1 references no Phase-2 symbol', asserted so "
+        "a reviewer could verify Phase 1 lands ALONE (spec S5.0). That "
+        "claim was TRUE at Phase 1's own commit (9c7ebdd) and is retired, "
+        "on purpose, the moment Phase 2 lands in the SAME tree: reroute/"
+        "retire_reference/records_targeting/bucket_prune/followup_add/"
+        "reclassify now exist by design (RER/HOST/META). Kept, not "
+        "deleted, for provenance -- it is not a discriminating check for "
+        "anything Phase 2 owns."
+    )
     def test_ph1_no_phase2_symbol_in_phase1_tree(self):
         """PH1: a literal, unpiped grep for the six Phase-2 names across
         cli/src + ui/src returns 0 -- with a positive control proving the

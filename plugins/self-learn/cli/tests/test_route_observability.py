@@ -525,7 +525,20 @@ def _route_sites(
     # (deliberately, DRY3's "zero side effects" spirit) no telemetry
     # spool either. It is excluded BY NAME, not by weakening the
     # `set_routing`/`resolve_record` match this criterion is built on.
-    _DRY_RUN_EXEMPT = {"route_dry_run"}
+    _DRY_RUN_EXEMPT = {
+        "route_dry_run",
+        # U-verbs S-54 (Phase 2, §4.7): `followup_add` reconstructs the
+        # EXISTING routing block (already carrying `routed_at`/
+        # `destination`/`by`) and merges in ONLY `routing.follow_up`
+        # before calling `Record.set_routing` -- it re-validates and
+        # rewrites the same routing block, it never ROUTES the record
+        # (status stays `routed`, `destination` is unchanged, no host
+        # write follows). Excluded BY NAME, same discipline as
+        # `route_dry_run` above -- never by weakening the
+        # `set_routing`/`resolve_record` match this criterion is built
+        # on.
+        "followup_add",
+    }
     for node in ast.walk(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue

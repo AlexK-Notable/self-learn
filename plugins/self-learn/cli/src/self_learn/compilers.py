@@ -142,6 +142,7 @@ __all__ = [
     "compile_managed_file",
     "compile_reference",
     "reference_target_path",
+    "retire_reference",
     "expected_paths",
     "read_paths_frontmatter",
     "has_paths_key",
@@ -173,9 +174,10 @@ FORBIDDEN_REFERENCE_BASENAME = "GOTCHAS.journal.md"
 _LEARNINGS_HEADER = (
     "# Learnings\n"
     "\n"
-    "Reference-routed lessons, appended by self-learn (newest last). Each\n"
-    "entry carries its record id for provenance; regenerate nothing here —\n"
-    "this file is append-only.\n"
+    "Reference-routed lessons, appended and retired by self-learn (newest\n"
+    "last). Each entry carries its record id for provenance; regenerate\n"
+    "nothing here — entries are added or removed only by self-learn's own\n"
+    "verbs (U-verbs S-54), never hand-edited in place.\n"
 )
 
 _HEADING_RE = re.compile(r"^## +(.+?)\s*$", re.MULTILINE)
@@ -1184,3 +1186,63 @@ def compile_reference(
     new_text = text.rstrip("\n") + "\n\n" + block + "\n"
     path.write_text(new_text, encoding="utf-8")
     return ReferenceResult(path=path, applied=True, created=created, entry=block)
+
+
+def _retire_reference_text(text: str, record_id: str) -> tuple[str, str | None]:
+    """Pure text transform (REC7's own discipline, applied to a removal
+    instead of an append): remove *record_id*'s entry block -- the
+    heading matching ``^## \\S+ — <record_id>\\s*$`` through the line
+    BEFORE the next ``^## `` (or EOF) -- from *text*. Heading-bounded,
+    never blank-line-bounded (the plausible wrong implementation, M45):
+    a multi-paragraph entry's own blank lines never truncate the
+    removal. Returns ``(new_text, removed)`` -- ``removed`` is ``None``
+    (``new_text == text``) when no matching block is present.
+
+    THE ONE PLACE this algorithm lives: :func:`retire_reference` (the
+    real write) and verbs.py's same-commit prediction
+    (``_expected_retired_reference_region``) both call this, so
+    prediction and the write cannot drift."""
+    heading_re = re.compile(
+        rf"^## \S+ — {re.escape(record_id)}\s*$", re.MULTILINE
+    )
+    match = heading_re.search(text)
+    if match is None:
+        return text, None
+    start = match.start()
+    next_heading = re.compile(r"^## ", re.MULTILINE).search(text, match.end())
+    end = next_heading.start() if next_heading is not None else len(text)
+    removed = text[start:end]
+    new_text = text[:start] + text[end:]
+    # Collapse any blank-line run left behind (three+ consecutive
+    # newlines) to exactly one blank line, and strip a trailing blank
+    # left at EOF when the removed block was the last entry.
+    new_text = re.sub(r"\n{3,}", "\n\n", new_text)
+    new_text = new_text.rstrip("\n") + "\n"
+    return new_text, removed
+
+
+def retire_reference(
+    references_dir: Path | str,
+    record_id: str,
+    *,
+    dest: str | None = None,
+) -> ReferenceResult:
+    """Remove one record's entry block from a references file (U-verbs
+    S-54 / 3.5, RER5-RER7) via :func:`_retire_reference_text`.
+
+    Idempotent -- a record with no block present in the FILE (its own
+    truth, never a compile prediction) returns ``applied=False`` and
+    writes nothing.
+
+    ``dest`` resolves through the SAME :func:`reference_target_path`
+    mapping the write leg, ``recompile`` and the drift check all share
+    (audit 2026-07-16 BLOCKER 2) -- never a second lookup."""
+    path = reference_target_path(references_dir, dest)
+    if not path.is_file():
+        return ReferenceResult(path=path, applied=False, created=False, entry=None)
+    text = path.read_text(encoding="utf-8")
+    new_text, removed = _retire_reference_text(text, record_id)
+    if removed is None:
+        return ReferenceResult(path=path, applied=False, created=False, entry=None)
+    path.write_text(new_text, encoding="utf-8")
+    return ReferenceResult(path=path, applied=True, created=False, entry=removed)
