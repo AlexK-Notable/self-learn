@@ -332,6 +332,17 @@ PROTECTED_RELPATHS: tuple[str, ...] = tuple(
     _relpath(k) for k in (*FIXTURE_KEYS, *BEHAVIOUR_KEYS)
 )
 
+#: `PROTECTED_RELPATHS` minus `test_u_fake.py` (r1 gate discovery,
+#: shared by `UN5` and `ARM5` leg (c)): the one protected file this
+#: unit is BOTH protecting and, by DEL1/DEL2 mandate, itself editing
+#: (section 4.7 row 12) -- its diff is sanctioned and checked
+#: precisely at the node level (`BEH1`/`BEH8`/`EXM3`'s `missing`-door
+#: coverage) elsewhere, not by these two blunt whole-file/whole-repo
+#: checks.
+STRICT_PROTECTED_RELPATHS: tuple[str, ...] = tuple(
+    p for p in PROTECTED_RELPATHS if not p.endswith("/test_u_fake.py")
+)
+
 
 # ===================================================================== #
 # Anchor-side recovery, cached per session (section 12 item 4: the
@@ -762,30 +773,44 @@ def _kept_file_contains(relpath_from_cli: str, symbol: str) -> bool:
 # ===================================================================== #
 
 
-def _master_is_caught_up() -> bool:
-    """Is literal `master` already an ancestor of `HEAD` -- i.e. has
-    this unit's OWN landing-chain fold already merged master's
-    current tip in? If so, querying `master` directly is race-free
-    (this exact commit is provably already absorbed); if master races
-    ahead again later, this check goes false again and callers fall
-    back to their own race-safe alternative. Shared by `_BUILD_BASE`'s
-    resolution and `_latest_first_parent_merge_root` (`ARM5`)."""
-    caught_up = subprocess.run(
-        ["git", "merge-base", "--is-ancestor", "master", "HEAD"], cwd=_REPO_ROOT,
-    )
-    return caught_up.returncode == 0
+def _incorporated_master_point() -> str:
+    """The most recent commit on `master`'s own history that `HEAD`
+    has actually absorbed (r1 gate fold, THIRD discovery, found after
+    `cc8abe1`): neither literal `master` nor a bare `HEAD` walk stays
+    race-safe once this unit has folded master in at least once.
+    Literal `master` can race ahead with content not yet merged --
+    measured live, a same-day hotfix (`6815503`) landed on master with
+    no merge marker at all, so a simple "is master an ancestor of
+    HEAD" check reads False even though nothing new needs folding in
+    yet for THIS purpose. And `HEAD` itself became a 2-parent merge
+    the moment this unit's OWN landing-chain fold committed (`93bfb5d`,
+    then `cc8abe1`), so a bare first-parent walk from `HEAD` finds
+    THAT fold commit, not master's mainline -- the exact bug the
+    caught-up/fallback split was built to dodge, reappearing through
+    its OTHER branch once both conditions hit at once. `git merge-base
+    master HEAD` sidesteps the whole class by construction: it is
+    always the latest commit reachable from BOTH histories, i.e.
+    exactly the master content this branch has already absorbed,
+    however that absorption happened and however far master has since
+    moved. Shared by `_BUILD_BASE`'s resolution and
+    `_latest_first_parent_merge_root` (`ARM5`)."""
+    return subprocess.run(
+        ["git", "merge-base", "master", "HEAD"], cwd=_REPO_ROOT,
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
 
 
 def _resolve_build_base() -> str:
-    """`_BUILD_BASE`'s own resolution (r1 gate fold). Once `master`
-    is caught up in `HEAD` (this unit's own fold has landed it),
-    `UN1`/`UN2`/`UN5` must diff against literal `master` -- not
-    `ANCHOR`, which is deliberately behind it until the NEXT
-    `--remeasure`. Before any fold, falls back to the historical
-    `ANCHOR`-based value, which coincides with this unit's own fork
-    point closely enough in practice (both sit on docs-only-adjacent
-    commits)."""
-    return "master" if _master_is_caught_up() else ANCHOR
+    """`_BUILD_BASE`'s own resolution (r1 gate fold). Diffing against
+    `ANCHOR` directly misreads any sibling unit's own legitimate
+    changes -- brought in through this unit's OWN merges -- as if this
+    unit made them, the moment `ANCHOR` sits one or more merges behind
+    what `HEAD` actually contains (deliberately: `ANCHOR` only advances
+    on the NEXT `--remeasure`). `_incorporated_master_point` is exactly
+    the master content already folded into `HEAD`, so `UN1`/`UN2`/`UN5`
+    never misattribute a sibling's already-absorbed change, and never
+    reach past what `HEAD` has actually merged either."""
+    return _incorporated_master_point()
 
 
 _BUILD_BASE = _resolve_build_base()
@@ -1057,11 +1082,11 @@ def test_arm4_anchor_is_real():
 def _latest_first_parent_merge_root() -> str:
     """`ARM5`'s walk root (r1 gate fold discovery). See
     `test_arm5_anchor_is_not_stale`'s own docstring for the full
-    reasoning; short form: trust literal `master` only once `HEAD`
-    already contains it as an ancestor (no race possible, via the
-    shared `_master_is_caught_up`), else fall back to the old
-    race-safe `HEAD`-pinned behavior."""
-    return "master" if _master_is_caught_up() else "HEAD"
+    reasoning; delegates to the shared `_incorporated_master_point`,
+    which is always the master content `HEAD` has actually absorbed --
+    never a fold commit HEAD made itself, never content master gained
+    afterward that HEAD hasn't merged yet."""
+    return _incorporated_master_point()
 
 
 def test_arm5_anchor_is_not_stale():
@@ -1070,19 +1095,21 @@ def test_arm5_anchor_is_not_stale():
 
     Resolves the walk ROOT via `_latest_first_parent_merge_root` (r1
     gate fold discovery -- not a named finding, a correctness gap this
-    unit's own landing-chain fold surfaced): a bare, permanent `HEAD`
-    is only a race-safe proxy for master while this branch has made NO
-    merge commits of its own. The moment this unit performs its OWN
-    landing-chain fold -- `git merge master`, then commit -- `HEAD`
-    BECOMES a 2-parent merge whose first parent is this branch's OLD
-    tip, not master's mainline; walking first-parent from `HEAD`
-    directly would then find that fold commit itself and derive the
-    WRONG parent. `_latest_first_parent_merge_root` degrades to the
-    old race-safe `HEAD` behavior whenever master is not (yet, or no
-    longer) fully contained in `HEAD`, and only trusts literal
-    `master` once `HEAD` demonstrably already absorbed that exact
-    commit -- which is exactly the moment `--remeasure`'s own
-    production logic (`_resolve_new_anchor`) trusts it too."""
+    unit's own landing-chain folds surfaced, in two stages). Neither a
+    bare, permanent `HEAD` nor literal `master` stays race-safe once
+    this branch has folded master in at least once: `HEAD` BECOMES a
+    2-parent merge the moment this unit performs its OWN landing-chain
+    fold, so walking first-parent from `HEAD` directly finds that fold
+    commit itself, not master's mainline; and literal `master` can
+    race ahead again afterward with content -- merge or not -- that
+    `HEAD` hasn't absorbed yet (measured live: a same-day hotfix landed
+    on master with no merge marker at all). `git merge-base master
+    HEAD` sidesteps both failure modes at once: it is always exactly
+    the master content this branch has already absorbed, which is the
+    same moment `--remeasure`'s own production logic
+    (`_resolve_new_anchor`) trusts a fresh `master` query too -- just
+    computed from HEAD's side of that same absorption point instead of
+    master's live tip."""
     root = _latest_first_parent_merge_root()
     merge = subprocess.run(
         ["git", "rev-list", "--first-parent", "--merges", "-1", root],
@@ -1098,7 +1125,7 @@ def test_arm5_anchor_is_not_stale():
         leg_a = a.returncode == 0
         leg_b = anchor == merge_parent_short
         moved = subprocess.run(
-            ["git", "diff", "--name-only", f"{merge}..{tip}", "--", *PROTECTED_RELPATHS],
+            ["git", "diff", "--name-only", f"{merge}..{tip}", "--", *STRICT_PROTECTED_RELPATHS],
             cwd=_REPO_ROOT, capture_output=True, text=True, check=True,
         ).stdout.splitlines()
         return leg_a, leg_b, len(moved)
@@ -2571,9 +2598,8 @@ def test_un5_protected_files_unedited_by_this_unit():
     exclusion from this same leg already set). Positive control: the
     same command over the three retired-mechanism files, INCLUDING
     `test_u_fake.py`, is non-empty."""
-    strict_relpaths = tuple(p for p in PROTECTED_RELPATHS if not p.endswith("/test_u_fake.py"))
-    assert len(strict_relpaths) == len(PROTECTED_RELPATHS) - 1, strict_relpaths
-    out = _numstat(_BUILD_BASE, *strict_relpaths)
+    assert len(STRICT_PROTECTED_RELPATHS) == len(PROTECTED_RELPATHS) - 1, STRICT_PROTECTED_RELPATHS
+    out = _numstat(_BUILD_BASE, *STRICT_PROTECTED_RELPATHS)
     assert out.strip() == "", out
 
     fake_out = _numstat(_BUILD_BASE, "plugins/self-learn/cli/tests/test_u_fake.py")
