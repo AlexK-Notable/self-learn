@@ -93,12 +93,16 @@ section; design is `docs/specs/self-learn/09-surface-spec.md` +
   the settings.json registration step stays manual either way.
 - Analyst (bare-terminal `teach --route`): `SELF_LEARN_ANALYST_MODEL`
   (default `claude-sonnet-5`), `SELF_LEARN_ANALYST_TIMEOUT` (default 120 s).
-- Exit codes — verbs: 0 ok · 1 refusal (dirty target, scan hit, chezmoi
-  abort, replay/freshness abort on a hook route) · 3 push failed (commit
+- Exit codes — verbs: 0 ok · 1 refusal (dirty target, scan hit,
+  replay/freshness abort on a hook route) · 3 push failed (commit
   kept — run `self-learn push`) · 4 rebase conflict · 64 usage/unknown
   id. (All five destinations compile as of M3 — hook needs a validated
   hook proposal, new-skill is `--dest new-skill:<name>`; the old exit-2
-  "unbuilt destination" is gone.)
+  "unbuilt destination" is gone.) `batch` shares this contract plus one
+  new integer, · 8 batch partial (some sheet items applied, some
+  refused — the ledger DID change; `batch` returns 1 only when nothing
+  landed) — the review skill invokes `batch` as its one apply path,
+  never a hand-written sequence of verb calls.
   `proposal validate`: **0 valid+stamped · 1 schema-invalid (file intact) ·
   2 scan hit (wins)**. `--selftest`: 0 all green · 1 any FAIL.
 

@@ -6,7 +6,7 @@ sibling; `rehome` stays project<->project only).
 Function layer only — T8 wires these into the CLI. Public signatures:
 
     route(home, record_id, *, dest=None, note=None, no_push=False,
-          user_claude_md=None, chezmoi_bin="chezmoi") -> VerbResult
+          user_claude_md=None) -> VerbResult
     reject(home, record_id, *, note=None, no_push=False) -> VerbResult
     defer(home, record_id, *, until=None, note=None, no_push=False) -> VerbResult
     graduate(home, record_id, *, note=None, no_push=False) -> VerbResult
@@ -31,7 +31,8 @@ Sentinel-scoping pins; 02 §2 commit formats; doc 13 §4 two-phase revision):
     HERE, and an unregistered project host refuses with ``host not
     registered — self-learn host add <path>`` so the review card says why
     (doc 13 §1 Q2). Dirty-compile-target aborts run against the HOST repo;
-    user scope runs the chezmoi drift/dirty preflight. All refusals land
+    user scope runs the same compile-record predicate every plain host
+    uses (§4.5a). All refusals land
     BEFORE any commit — the record stays pending.
 (d) LEDGER commit: the ledger op via ledger_ops (record move + proposal
     sweeps), staged surgically in the LEDGER repo, pinned subject.
@@ -52,7 +53,7 @@ drop, so the host phase recompiles the target.
 Compile-set note (doc 13): because the ledger op now commits FIRST, the
 compile set is read straight off disk — no shadow copies. skill-md
 compiles from the record's own skill bucket; claude-md splits by scope:
-``user`` → the chezmoi-managed user file (all user-scoped records),
+``user`` → the user-scope canon file (all user-scoped records),
 ``project`` → that project bucket's records into the registered host's
 CLAUDE.md, ``skill:*`` → the skills-root host's own CLAUDE.md (doc 13 §2:
 the skills root hosts its own CLAUDE.md canon).
@@ -62,6 +63,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass, field, replace
@@ -79,11 +81,6 @@ from .skill_scaffold import (
     scaffold_description,
     skill_md_seed,
     validate_skill_name,
-)
-from . import chezmoi
-from .chezmoi import (
-    ChezmoiAbort,
-    ChezmoiError,
 )
 from . import compiled
 from .compilers import (
@@ -125,9 +122,12 @@ from .ledger import Bucket, discover_buckets
 from .ledger_ops import (
     PROPOSAL_DESTINATIONS,
     ROSTER_UNAVAILABLE,
+    DEFERRED_ONLY,
     LedgerOpsError,
     LIVE_STATUSES,
     ProposalError,
+    QueueEntry,
+    REOPENABLE_STATUSES,
     RESOLVABLE_STATUSES,
     ROUTED_ONLY,
     bucket_dir_for_scope,
@@ -139,10 +139,12 @@ from .ledger_ops import (
     find_record_path,
     glob_reaches,
     globs_may_intersect,
-    rehome_record,
-    rescope_record,
+    move_record,
+    proposal_info,
     read_proposal,
+    reopen_record,
     record_title,
+    remove_proposal_siblings,
     require_status,
     require_writable_home,
     resolve_record,
@@ -156,7 +158,6 @@ from .scan import format_refusal
 from .scan import scan as secret_scan
 
 __all__ = [
-    "CHEZMOI_DRIFT_REFUSAL",
     "COMMIT_DRIFT_SUBJECT",
     "DEFAULT_USER_CLAUDE_MD",
     "DISMISS_REASONS",
@@ -171,11 +172,11 @@ __all__ = [
     "PushReport",
     "RecompileEntry",
     "RecompileResult",
+    "RouteDryRunResult",
     "SecretRefusal",
     "TargetSpec",
     "VerbError",
     "VerbResult",
-    "chezmoi_adopt",
     "commit_drift",
     "confirm_held",
     "confirm_recurrence",
@@ -186,15 +187,20 @@ __all__ = [
     "graduate",
     "link_contradicts",
     "managed_target_for",
+    "note",
     "push_pending",
     "recompile",
     "rehome",
+    "reopen",
     "rescope",
     "reject",
     "route",
     "route_direct",
+    "route_dry_run",
+    "show",
     "supersede",
     "surface_fill",
+    "undefer",
 ]
 
 DEFAULT_USER_CLAUDE_MD = Path("~/.claude/CLAUDE.md")
@@ -281,8 +287,8 @@ class SecretRefusal(VerbError):
 #: U20 gate R1 (F5-5 guided commit-first): the pinned, stable substring of
 #: the gitops-side dirty-target refusal — extracted so the UI's marker
 #: match and the tests import the SAME constant this raise site uses
-#: (never a hand-copied substring; chezmoi.py carries the twin for the
-#: user-scope leg, ``chezmoi.CHEZMOI_DIRTY_MARKER``).
+#: (never a hand-copied substring — the dotfiles-sync module that used
+#: to carry a twin for the user-scope leg is gone, Phase 2).
 GITOPS_DIRTY_MARKER = "has unrelated uncommitted changes"
 
 
@@ -396,8 +402,8 @@ class VerbResult:
     #   steps (M3-11: settings.json snippet, ./install.sh) — callers print
     #   to stdout; the hook is inert by design until the human does them
     # doc 13 §4 two-phase: the HOST half of a canon-touching verb. All None
-    # for ledger-only verbs, for the chezmoi user flow (the dotfiles repo
-    # commits itself), and after a host-phase failure (drift warning set).
+    # for ledger-only verbs, for a plain host (no host commit exists
+    # there — PLAIN3), and after a host-phase failure (drift warning set).
     host_commit_sha: str | None = None
     host_push: gitops.PushResult | None = None
     target: Path | None = None  # the compiled canon file (host side)
@@ -416,7 +422,7 @@ class VerbResult:
     #: U-hostmode PLAIN3: the resolved TargetSpec's mode, when a spec was
     #: resolved (route/route_direct/supersede) — `cli._outcome_state`
     #: reads this to widen the `wrote_uncommitted` branch to every plain
-    #: host, not only the (now-retired) chezmoi UserScopeResult sentinel.
+    #: host.
     #: `None` for ledger-only verbs (reject/defer/graduate).
     mode: str | None = None
 
@@ -636,15 +642,28 @@ def _region_kind_for(spec: TargetSpec) -> str | None:
     return None
 
 
-def _expected_managed_region(home: Path, spec: TargetSpec) -> bytes | None:
+def _expected_managed_region(
+    home: Path, spec: TargetSpec, *, extra_record: Record | None = None
+) -> bytes | None:
     """U-hostmode §4.5/§4.5a: the ``managed`` region THIS write will leave
     behind, computed from the ledger's NOW-UPDATED record set —
     independent of the target's current on-disk bytes (the compiler
     regenerates the whole region from ``_eligible(records)`` alone, per
     ``compilers.compile_managed_text``'s own contract), so an empty
     starting string is exactly as accurate as reading the real file and
-    is used here to avoid a second read of a possibly-large file."""
+    is used here to avoid a second read of a possibly-large file.
+
+    ``extra_record`` (U-verbs §4.3, DRY1/DRY2): `route --dry-run`'s ONE
+    hook into this function — an in-memory, AS-IF-ROUTED copy of the
+    record being previewed (never written to disk). ``compilers.
+    _eligible`` sorts by ``(routing.routed_at, id)``, so appending it
+    anywhere in the list is enough; its final position is exactly where
+    a real route would place it. Every other caller passes nothing, and
+    the byte-identical default keeps the real `route`/`recompile`/
+    `supersede` paths untouched (UN1)."""
     records = _compile_set(home, spec)
+    if extra_record is not None and extra_record.id not in {r.id for r in records}:
+        records = [*records, extra_record]
     text = compile_managed_text("", records).text
     return compiled.region_bytes(text, "managed")
 
@@ -1168,7 +1187,8 @@ class TargetSpec:
     U-hostmode §4.1: ``host_repo`` is renamed ``host_path`` and is NEVER
     ``None`` after Phase 1 — user scope became a first-class PLAIN host
     (``~/.claude``, §4.8) rather than the sentinel this field used to
-    carry for "the chezmoi user flow". ``mode`` (``"git"`` | ``"plain"``)
+    carry for the old dotfiles-managed user flow. ``mode`` (``"git"`` |
+    ``"plain"``)
     is the NEW field that carries the posture; no site may infer one from
     ``host_path`` (MODE9)."""
 
@@ -1359,7 +1379,8 @@ def managed_target_for(
     (plain or ``rules``) — never re-derived from anything on ``record`` or
     ``bucket``, which carry no memory of it. Re-deriving the default here
     would return ``~/.claude/CLAUDE.md`` for every override-based caller —
-    every sandboxed test, and the chezmoi flow — silently emptying every
+    every sandboxed test, and a real user-scope route — silently emptying
+    every
     user-scope compile set (and, read-only, aiming selfcheck's checks at
     the operator's REAL file instead of the sandbox under test).
 
@@ -1560,7 +1581,6 @@ def _resolve_rules_target(
     rules_paths: list[str] | tuple[str, ...] | None,
     *,
     user_claude_md: Path | str | None,
-    chezmoi_bin: str,
     project_path: Path | None,
     check_dirty: bool,
     allow_empty_glob: bool,
@@ -1608,11 +1628,11 @@ def _resolve_rules_target(
         bypassed_reason: str | None = None
         if check_dirty and paths_tuple:
             # U-glob §6.3: the glob check comes FIRST — before the
-            # chezmoi-managed refusal below and before
-            # `preflight_user_scope` — because it is the cheaper and
-            # more common refusal, and a chezmoi-managed target with a
-            # dead glob should name the dead glob (the thing the human
-            # can actually fix), not the management state.
+            # plain-host region-predicate refusal below (§4.5a) —
+            # because it is the cheaper and more common refusal, and a
+            # target with a dead glob should name the dead glob (the
+            # thing the human can actually fix), not the pre-flight
+            # gate.
             bypassed_reason = _validate_rules_globs(
                 _user_reachability_roots(home, base), paths_tuple, allow_empty_glob
             )
@@ -1628,8 +1648,8 @@ def _resolve_rules_target(
             # the write goes through the same ordinary plain path every
             # other plain host uses, so the pre-flight gate is the SAME
             # region predicate every plain host gets (§4.5a), not a
-            # chezmoi-specific "managed" check. USER2/CHEZ0: this route
-            # calls NO chezmoi function at all.
+            # dotfiles-management "managed" check. USER2/CHEZ0: this
+            # route calls no dotfiles-management function at all.
             _abort_if_unsound(
                 home, user_host, "plain", target, "managed",
                 scope_kind="user", spec=spec,
@@ -1661,7 +1681,6 @@ def _resolve_target(
     ref_name: str | None,
     *,
     user_claude_md: Path | str | None = None,
-    chezmoi_bin: str = "chezmoi",
     project_path: Path | None = None,
     check_dirty: bool = True,
     variant: str | None = None,
@@ -1715,7 +1734,6 @@ def _resolve_target(
             return _resolve_rules_target(
                 home, bucket_dir, scope, eff_topic, rules_paths,
                 user_claude_md=user_claude_md,
-                chezmoi_bin=chezmoi_bin,
                 project_path=project_path,
                 check_dirty=check_dirty,
                 allow_empty_glob=allow_empty_glob,
@@ -1732,7 +1750,7 @@ def _resolve_target(
             if check_dirty:
                 # U-hostmode §4.8.1: user scope is a first-class PLAIN
                 # host — the same region predicate every plain host gets
-                # (§4.5a), no chezmoi call (USER2/CHEZ0).
+                # (§4.5a), no dotfiles-management call (USER2/CHEZ0).
                 _abort_if_unsound(
                     home, user_host, "plain", target, "managed",
                     scope_kind="user", spec=spec,
@@ -1827,8 +1845,9 @@ def _resolve_target(
             refs_dir, kind = host / "references", "project"
             pointer_surface = host / "CLAUDE.md"
         else:
-            # S-23 (2), §3.1: chezmoi was retired 2026-07-24 — that ground
-            # is dead. The condition below stays byte-identical (the
+            # S-23 (2), §3.1: the dotfiles-management tool this repo used
+            # to depend on was retired 2026-07-24 — that ground is dead.
+            # The condition below stays byte-identical (the
             # refusal's EFFECT is what S-23 mandates); only the reason
             # changed. Item 3 is deliberately conditional (F6, cross-unit
             # with U-composer's D4): naming a rules topic unconditionally
@@ -2587,7 +2606,7 @@ def surface_fill(
 
     ``user_claude_md`` overrides the user-scope target the same way
     :func:`route` accepts it (defaults to :data:`DEFAULT_USER_CLAUDE_MD`,
-    the real chezmoi-managed file — the correct real destination to
+    the real user-scope canon file — the correct real destination to
     report fill for; test callers override it, same idiom as every other
     ``_resolve_target`` call site).
 
@@ -2748,7 +2767,6 @@ def _retirement_preflight(
     warnings: list[str],
     *,
     user_claude_md: Path | str | None = None,
-    chezmoi_bin: str = "chezmoi",
 ) -> _Retirement:
     """Resolve a retiring record's host-side cleanup BEFORE any commit
     (doc 13 §4 step c — the standalone supersede verb has always done
@@ -2770,7 +2788,6 @@ def _retirement_preflight(
                 destination,
                 routing.get("new_skill") if destination == "new-skill" else None,
                 user_claude_md=user_claude_md,
-                chezmoi_bin=chezmoi_bin,
                 # A2 §4.4B note: this is a RETIREMENT read of the STORED
                 # routing block (not a fresh route), so only variant/
                 # rules_topic thread through — they are needed to resolve
@@ -2798,7 +2815,6 @@ def _retirement_host_phase(
     record_id: str,
     *,
     note: str | None,
-    chezmoi_bin: str,
     message: str,
     warnings: list[str],
     post_notes: list[str],
@@ -2819,7 +2835,6 @@ def _retirement_host_phase(
             record_id,
             routed_record=None,
             note=note,
-            chezmoi_bin=chezmoi_bin,
             message=message,
             warnings=warnings,
             user_push=user_push,
@@ -2858,14 +2873,13 @@ def _apply_target(
     spec: TargetSpec,
     routed_record: Record | None,
     *,
-    chezmoi_bin: str = "chezmoi",
     message: str | None = None,
     user_push: bool = True,
     notes: list[str] | None = None,
 ) -> tuple[object, list[Path]]:
     """HOST-phase compile (doc 13 §4 step e): write the target from the
     committed ledger state. Returns (compile_result, host paths to stage —
-    empty for the chezmoi user flow, which commits its own repo).
+    empty for a plain host, which commits nothing there).
 
     U-pathed: for a ``rules`` variant, a ``paths:`` frontmatter pre-pass
     (:func:`compilers.apply_paths_frontmatter`) runs immediately before
@@ -2924,7 +2938,7 @@ def _apply_target(
     # U-hostmode §4.8.1: user scope is no longer a special branch here —
     # it is a first-class PLAIN host now, so it falls into the SAME
     # general branch below every other plain/git host uses
-    # (`compile_managed_file`, never `compile_user_scope`/chezmoi —
+    # (`compile_managed_file`, the same as every other plain host —
     # USER2/CHEZ0). `host_paths` still ends up unused for it: `_host_phase`
     # only stages/commits when `spec.mode == "git"`, and user scope's mode
     # is always "plain".
@@ -3073,8 +3087,6 @@ def _apply_new_skill(home: Path, spec: TargetSpec) -> tuple[NewSkillApplyResult,
 #: Host-phase failure classes: loud drift warning, never a rollback (H-2).
 _HOST_PHASE_ERRORS = (
     CompileError,
-    ChezmoiAbort,
-    ChezmoiError,
     gitops.GitOpsError,
     VerbError,
     OSError,
@@ -3088,7 +3100,6 @@ def _host_phase(
     *,
     routed_record: Record | None,
     note: str | None,
-    chezmoi_bin: str,
     message: str,
     warnings: list[str],
     user_push: bool = True,
@@ -3120,7 +3131,6 @@ def _host_phase(
                 home,
                 spec,
                 routed_record,
-                chezmoi_bin=chezmoi_bin,
                 message=message,
                 user_push=user_push,
                 notes=warnings,
@@ -3149,25 +3159,6 @@ def _host_phase(
                         body=note,
                         paths=host_paths,
                     )
-        # C2 O-5: the ONE user-facing message for a managed-but-broken
-        # chezmoi sync (§3 row 4) — the write already succeeded, only the
-        # sync degraded. getattr guards the other result types (e.g.
-        # NewSkillApplyResult, SectionResult) that carry no such field;
-        # absent/unmanaged (rows 1-2) return sync_warning=None, so nothing
-        # prints there — silent, per the verbosity ruling.
-        sync_warning = getattr(compile_result, "sync_warning", None)
-        if sync_warning:
-            print(f"self-learn: {sync_warning}", file=sys.stderr)
-            warnings.append(sync_warning)
-        # A2 §10.4(b): the bare-CLI chezmoi-adopt hint rides this SAME
-        # channel — one stderr line, never a blocking prompt. Absent for
-        # every result type that carries no such field (skill-md/
-        # reference/new-skill/hook, and a plain-CLAUDE.md UserScopeResult,
-        # which never sets it — §10.1).
-        adopt_hint = getattr(compile_result, "adopt_hint", None)
-        if adopt_hint:
-            print(f"self-learn: {adopt_hint}", file=sys.stderr)
-            warnings.append(adopt_hint)
         return compile_result, host_sha
     except _HOST_PHASE_ERRORS as exc:
         warning = (
@@ -3209,6 +3200,394 @@ def _load_cluster(
     return merge_path, [rid for rid in members if rid != record_id]
 
 
+@dataclass(frozen=True)
+class RouteDryRunResult:
+    """U-verbs §4.3: the outcome of `route --dry-run` — writes nothing,
+    takes no lock, holds no sentinel (`DRY3`). `would_refuse` is a LIST
+    (`DRY4`) — every preflight failure found, not just the first."""
+
+    id: str
+    destination: str | None = None
+    variant: str | None = None
+    scope: str | None = None
+    host: str | None = None
+    mode: str | None = None
+    target: str | None = None
+    region: str | None = None
+    already_present: bool | None = None
+    added_lines: int = 0
+    removed_lines: int = 0
+    unified_diff: str = ""
+    managed_share: float | None = None
+    budget_flagged: bool = False
+    would_refuse: list[str] = field(default_factory=list)
+
+    @property
+    def ok(self) -> bool:
+        return not self.would_refuse
+
+    def to_json(self) -> dict:
+        return {
+            "id": self.id,
+            "verb": "route",
+            "dry_run": True,
+            "destination": self.destination,
+            "variant": self.variant,
+            "scope": self.scope,
+            "host": self.host,
+            "mode": self.mode,
+            "target": self.target,
+            "region": self.region,
+            "already_present": self.already_present,
+            "diff": {
+                "added_lines": self.added_lines,
+                "removed_lines": self.removed_lines,
+                "unified": self.unified_diff,
+            },
+            "budget": {
+                "managed_share": self.managed_share,
+                "flagged": self.budget_flagged,
+            },
+            "would_refuse": list(self.would_refuse),
+        }
+
+
+def _unified_diff_stats(before: bytes, after: bytes) -> tuple[str, int, int]:
+    """A small ``difflib`` unified diff plus its added/removed line
+    counts — U-verbs §4.3's ``diff`` envelope. Decodes leniently
+    (``errors="replace"``): a preview must never crash on bytes the
+    compiler itself would have written cleanly as UTF-8; a genuine
+    encoding problem surfaces at the REAL write, not here."""
+    import difflib
+
+    before_lines = before.decode("utf-8", errors="replace").splitlines(keepends=True)
+    after_lines = after.decode("utf-8", errors="replace").splitlines(keepends=True)
+    diff = list(
+        difflib.unified_diff(before_lines, after_lines, lineterm="", n=2)
+    )
+    added = sum(1 for line in diff if line.startswith("+") and not line.startswith("+++"))
+    removed = sum(1 for line in diff if line.startswith("-") and not line.startswith("---"))
+    return "\n".join(diff), added, removed
+
+
+def route_dry_run(
+    home: Path | str,
+    record_id: str,
+    *,
+    dest: str | None = None,
+    by: str | None = None,
+    user_claude_md: Path | str | None = None,
+    allow_empty_glob: bool = False,
+) -> RouteDryRunResult:
+    """U-verbs §4.3: runs every preflight the real `route` runs, in the
+    SAME order, and computes the bytes the compiler would write instead
+    of writing them. Reuses U-hostmode's own `_expected_*_region`
+    helpers verbatim (`DRY2`) — nothing here recomputes canon bytes a
+    second way. Takes NO lock, holds NO sentinel, mutates nothing
+    (`DRY3`) — every record touched is a fresh in-memory copy."""
+    home = Path(home)
+    path = find_record_path(home, record_id)  # unknown id: bare LedgerOpsError, 64
+
+    # DRY4: every failed preflight is REPORTED, not just the first — so
+    # none of the checks below early-return on its own failure. Each is
+    # independent of the others' success (the scan reads raw bytes, the
+    # status check reads frontmatter, destination/target resolution
+    # reads hosts.yaml — none needs a PRIOR check to have passed), so a
+    # record that both trips the secret scan and names an unregistered
+    # host reports two entries.
+    would_refuse: list[str] = []
+
+    try:
+        _scan_or_refuse([path], None)
+    except VerbError as exc:
+        would_refuse.append(str(exc))
+
+    record: Record | None = None
+    try:
+        _, record = require_status(home, record_id, LIVE_STATUSES, verb="route")
+    except LedgerOpsError as exc:
+        would_refuse.append(str(exc))
+        record = Record.from_path(path)  # still needed below (scope)
+
+    bucket_dir = path.parent.parent
+    resolved_dest: _Destination | None = None
+    try:
+        resolved_dest = _resolve_destination(bucket_dir, record_id, dest)
+    except (VerbError, LedgerOpsError, ProposalError) as exc:
+        would_refuse.append(str(exc))
+
+    if resolved_dest is None:
+        return RouteDryRunResult(
+            id=record_id, scope=record.scope, would_refuse=would_refuse
+        )
+    destination = resolved_dest.destination
+    ref_name = resolved_dest.ref_name
+
+    if destination == "hook":
+        # A hook route is a one-motion approval flow (M3: the whole
+        # generated script IS the preview) — a dry run over the
+        # registration gate that guards every OTHER destination has
+        # nothing to add here; report the destination and any refusal
+        # already collected (the ALWAYS gate still applies to a hook).
+        return RouteDryRunResult(
+            id=record_id, destination=destination, scope=record.scope,
+            would_refuse=would_refuse,
+        )
+
+    spec: TargetSpec | None = None
+    try:
+        spec = _resolve_target(
+            home,
+            bucket_dir,
+            record.scope,
+            destination,
+            ref_name,
+            user_claude_md=user_claude_md,
+            variant=resolved_dest.variant,
+            rules_topic=resolved_dest.rules_topic,
+            rules_paths=resolved_dest.rules_paths,
+            allow_empty_glob=allow_empty_glob,
+        )
+    except VerbError as exc:
+        would_refuse.append(str(exc))
+
+    if spec is None:
+        return RouteDryRunResult(
+            id=record_id, destination=destination, scope=record.scope,
+            would_refuse=would_refuse,
+        )
+
+    # The AS-IF-ROUTED record the byte prediction is computed from — a
+    # fresh in-memory copy; the file on disk is never touched.
+    simulated = Record.from_path(path)
+    routed_at = _now_iso()
+    resolved_by = by if by is not None else ("human" if dest is not None else "analyst")
+    routing: dict = {
+        "routed_at": routed_at,
+        "destination": destination,
+        "by": resolved_by,
+    }
+    if destination == "reference" and ref_name is not None:
+        routing["reference_file"] = ref_name
+    if resolved_dest.variant is not None:
+        routing["variant"] = resolved_dest.variant
+    simulated.set_routing(routing)
+    simulated.set_status("routed")
+
+    region_kind = _region_kind_for(spec)
+    unified, added, removed = "", 0, 0
+    already_present: bool | None = None
+
+    if region_kind == "managed":
+        current = (
+            compiled.region_bytes(
+                spec.target.read_text(encoding="utf-8"), "managed"
+            )
+            if spec.target is not None and spec.target.is_file()
+            else None
+        ) or b""
+        expected = _expected_managed_region(home, spec, extra_record=simulated) or b""
+        already_present = current == expected
+        unified, added, removed = _unified_diff_stats(current, expected)
+    elif destination == "reference":
+        ref_path = (
+            spec.target
+            if spec.target is not None
+            else reference_target_path(spec.refs_dir, ref_name)
+            if spec.refs_dir is not None
+            else None
+        )
+        if ref_path is not None:
+            current = (
+                ref_path.read_bytes() if ref_path.is_file() else b""
+            )
+            expected = _expected_reference_region(spec, simulated, ref_path) or current
+            already_present = simulated.id in current.decode("utf-8", errors="replace")
+            unified, added, removed = _unified_diff_stats(current, expected)
+    # new-skill: scaffolds a directory, not a single region — no diff to
+    # preview; destination/target/host are still reported below.
+
+    return RouteDryRunResult(
+        id=record_id,
+        destination=destination,
+        variant=resolved_dest.variant,
+        scope=record.scope,
+        host=str(spec.host_path),
+        mode=spec.mode,
+        target=str(spec.target) if spec.target is not None else None,
+        region=region_kind,
+        already_present=already_present,
+        added_lines=added,
+        removed_lines=removed,
+        unified_diff=unified,
+        would_refuse=would_refuse,
+    )
+
+
+def _show_bucket_of(home: Path, path: Path):
+    """Reconstruct the :class:`Bucket` a record path lives under, without
+    a second `discover_buckets` scan — `show` already has the path."""
+    bucket_dir = path.parent.parent
+    if bucket_dir == home / "user":
+        return Bucket(path=bucket_dir, scope="user", name="user")
+    if bucket_dir.parent == home / "skills":
+        return Bucket(path=bucket_dir, scope="skill", name=bucket_dir.name)
+    return Bucket(path=bucket_dir, scope="project", name=bucket_dir.name)
+
+
+def _show_canon_info(home: Path, bucket, record: Record) -> dict:
+    """`show`'s ``canon`` block (U-verbs §4.3) — resolved READ-ONLY off
+    the record's stored ``routing`` block (never invents a target for an
+    unrouted record). ``present`` is computed from the TARGET FILE'S
+    ACTUAL CONTENT — never from ``routing`` (``SHOW1``'s own
+    discriminator: a hand-deleted entry must read ``present: false``
+    while ``routing.destination`` stays unchanged)."""
+    info: dict = {
+        "destination": None,
+        "target": None,
+        "host": None,
+        "mode": None,
+        "present": False,
+    }
+    routing = record.routing
+    if routing is None:
+        return info
+    destination = routing.get("destination")
+    info["destination"] = destination
+    target: Path | None = None
+    host: Path | None = None
+    if destination in ("skill-md", "claude-md", "new-skill"):
+        target = managed_target_for(home, bucket, record)
+        try:
+            if bucket.scope == "skill":
+                root = load_hosts(home).skills_root
+                host = Path(root) if root is not None else None
+            elif record.scope == "project":
+                h = bucket_project_path(bucket.path)
+                host = Path(h) if h is not None else None
+            else:
+                host = DEFAULT_USER_CLAUDE_MD.expanduser().parent
+        except HostsError:
+            host = None
+    elif destination == "reference":
+        try:
+            if bucket.scope == "skill":
+                refs = skill_dir_for(load_hosts(home), bucket.name) / "references"
+                root = load_hosts(home).skills_root
+                host = Path(root) if root is not None else None
+            elif record.scope == "project":
+                h = bucket_project_path(bucket.path)
+                refs = Path(h) / "references" if h is not None else None
+                host = Path(h) if h is not None else None
+            else:
+                refs = None
+        except HostsError:
+            refs = None
+        if refs is not None:
+            target = reference_target_path(refs, routing.get("reference_file"))
+    elif destination == "hook":
+        hook_meta = routing.get("hook") or {}
+        rel = hook_meta.get("path")
+        if rel is not None and record.scope == "project":
+            h = bucket_project_path(bucket.path)
+            if h is not None:
+                host = Path(h)
+                target = Path(h) / rel
+    if host is not None:
+        info["host"] = str(host)
+        try:
+            info["mode"] = host_mode(home, host)
+        except Exception:  # noqa: BLE001 — a resolution problem here must
+            info["mode"] = None  # never break a read-only detail view
+    if target is not None:
+        info["target"] = str(target)
+        if target.is_file():
+            try:
+                text = target.read_text(encoding="utf-8")
+                info["present"] = record.id in text
+            except (OSError, UnicodeDecodeError):
+                info["present"] = False
+    return info
+
+
+def _show_lifecycle(home: Path, record_id: str) -> list[dict]:
+    """The record's commit history — ``git -C <home> log --grep=<id>
+    --oneline``, newest-first as git itself orders it."""
+    proc = subprocess.run(
+        [
+            "git", "-C", str(home), "log",
+            f"--grep={record_id}", "--fixed-strings",
+            "--pretty=format:%H%x09%ad%x09%s", "--date=short",
+        ],
+        capture_output=True, text=True, check=False,
+    )
+    out: list[dict] = []
+    for line in proc.stdout.splitlines():
+        parts = line.split("\t", 2)
+        if len(parts) != 3:
+            continue
+        sha, date_str, subject = parts
+        out.append({"sha": sha[:7], "date": date_str, "subject": subject})
+    return out
+
+
+def show(home: Path | str, record_id: str) -> dict:
+    """Read-only record detail (U-verbs §4.3). Mutates nothing, takes no
+    lock, holds no sentinel — every field is a read. ``canon.present`` is
+    computed from the target file's ACTUAL content, never from
+    ``routing`` (``SHOW1``)."""
+    home = Path(home)
+    path = find_record_path(home, record_id)  # pending OR resolved
+    record = Record.from_path(path)
+    bucket = _show_bucket_of(home, path)
+    bucket_label = (
+        "user" if bucket.scope == "user"
+        else f"skills/{bucket.name}" if bucket.scope == "skill"
+        else f"projects/{bucket.name}"
+    )
+    entry = QueueEntry(path=path, record=record)
+    prop = proposal_info(entry)
+    routing = record.routing
+    return {
+        "id": record.id,
+        "status": record.status,
+        "scope": record.scope,
+        "kind": record.kind,
+        "type": record.type,
+        "bucket": bucket_label,
+        "created_at": record.created_at,
+        "sightings": record.sightings,
+        "deferred_until": record.deferred_until,
+        "deferred_count": record.deferred_count,
+        "superseded_by": record.superseded_by,
+        "resolution_note": record.resolution_note,
+        "routing": (
+            {
+                "destination": routing.get("destination"),
+                "routed_at": routing.get("routed_at"),
+                "by": routing.get("by"),
+                "variant": routing.get("variant"),
+                "follow_up": routing.get("follow_up"),
+            }
+            if routing is not None
+            else None
+        ),
+        "canon": _show_canon_info(home, bucket, record),
+        "proposal": {
+            "present": prop["has_proposal"],
+            "fresh": prop["proposal_fresh"] if prop["has_proposal"] else None,
+            "destination": prop["destination"],
+            "already_canon": prop["already_canon"] if prop["has_proposal"] else None,
+        },
+        "recurrences": list(record.recurrences),
+        "dismissed_suspects": list(record.dismissed_suspects),
+        "last_confirmed": record.last_confirmed,
+        "history": list(record.history),
+        "notes": list(record.notes),
+        "lifecycle": _show_lifecycle(home, record_id),
+    }
+
+
 def route(
     home: Path | str,
     record_id: str,
@@ -3218,7 +3597,6 @@ def route(
     note: str | None = None,
     no_push: bool = False,
     user_claude_md: Path | str | None = None,
-    chezmoi_bin: str = "chezmoi",
     follow_up: dict | None = None,
     collapse: str | None = None,
     allow_empty_glob: bool = False,
@@ -3297,7 +3675,8 @@ def route(
         ref_name = resolved_dest.ref_name
 
         # (c) PRE-FLIGHT: registry gates (H-3 / doc 13 Q2) + host-repo
-        # dirty checks + chezmoi drift/dirty for user scope. Every refusal
+        # dirty checks + the compile-record predicate for user scope
+        # (§4.5a). Every refusal
         # lands HERE — before any commit; the record stays pending. Hook
         # routes additionally pre-flight the proposal-carried script:
         # stamp presence, record_sha freshness (M3-2), and the M3-12
@@ -3318,7 +3697,6 @@ def route(
                 destination,
                 ref_name,
                 user_claude_md=user_claude_md,
-                chezmoi_bin=chezmoi_bin,
                 variant=resolved_dest.variant,
                 rules_topic=resolved_dest.rules_topic,
                 rules_paths=resolved_dest.rules_paths,
@@ -3340,7 +3718,6 @@ def route(
                 old_path.parent.parent,
                 warnings,
                 user_claude_md=user_claude_md,
-                chezmoi_bin=chezmoi_bin,
             )
             old_observed_hash = _observe_retirement_region(old_retire)
 
@@ -3652,7 +4029,6 @@ def route(
                 record_id,
                 routed_record=routed_record,
                 note=host_note,
-                chezmoi_bin=chezmoi_bin,
                 message=message,
                 warnings=warnings,
                 user_push=not no_push,
@@ -3671,7 +4047,6 @@ def route(
                 old_retire,
                 old_id,
                 note=note,
-                chezmoi_bin=chezmoi_bin,
                 message=message,
                 warnings=warnings,
                 post_notes=retire_notes,
@@ -3736,7 +4111,6 @@ def route_direct(
     note: str | None = None,
     no_push: bool = False,
     user_claude_md: Path | str | None = None,
-    chezmoi_bin: str = "chezmoi",
     project_path: Path | None = None,
     hook_input: dict | None = None,
 ) -> VerbResult:
@@ -3854,7 +4228,6 @@ def route_direct(
                 destination,
                 ref_name,
                 user_claude_md=user_claude_md,
-                chezmoi_bin=chezmoi_bin,
                 project_path=project_path,
             )
 
@@ -3870,7 +4243,6 @@ def route_direct(
                 old_path.parent.parent,
                 warnings,
                 user_claude_md=user_claude_md,
-                chezmoi_bin=chezmoi_bin,
             )
             old_observed_hash = _observe_retirement_region(old_retire)
 
@@ -4097,7 +4469,6 @@ def route_direct(
                 record.id,
                 routed_record=record,
                 note=host_note,
-                chezmoi_bin=chezmoi_bin,
                 message=message,
                 warnings=warnings,
                 user_push=not no_push,
@@ -4126,7 +4497,6 @@ def route_direct(
                 old_retire,
                 old_id,
                 note=note,
-                chezmoi_bin=chezmoi_bin,
                 message=message,
                 warnings=warnings,
                 post_notes=retire_notes,
@@ -4183,26 +4553,20 @@ def route_direct(
 # --------------------------------------------------------- U20 commit-drift
 #
 # F5-5 guided commit-first (ruled 2026-07-19): the dirty-target refusal
-# (DirtyTargetError above / chezmoi.ChezmoiAbort's dirty leg) stays fully
-# intact — no override, no force, no bypass anywhere in this verb. This is
-# the GUIDED path a human takes instead: commit the TARGET repo's OWN
-# pending changes first (their commit, separate from ours, pinned subject
-# below), then the UI retries the original route once. It serves the
-# DIRTY case only — pre-existing chezmoi DRIFT (chezmoi.py:109-111 in the
-# module docstring's step numbering) is refused with the re-add/apply
-# explanation below; a commit cannot fix drift (gate M2).
+# (DirtyTargetError above) stays fully intact — no override, no force, no
+# bypass anywhere in this verb. This is the GUIDED path a human takes
+# instead: commit the TARGET repo's OWN pending changes first (their
+# commit, separate from ours, pinned subject below), then the UI retries
+# the original route once. It serves the DIRTY case only, and only for a
+# git-mode host (CD1: commit-drift refuses a plain host outright) — a
+# plain host's equivalent is the compile-record predicate's own
+# "edited"/"unknown provenance" refusal (§4.5a), which names
+# `recompile --adopt` instead; a commit cannot repair that (it is a
+# ledger-side record, not a git state).
 
 #: Pinned commit subject (§2.1) — never a push, never the ledger, never
 #: our own compile; the commit is theirs, in their repo, of their changes.
 COMMIT_DRIFT_SUBJECT = "chore: commit drift before self-learn route"
-
-#: gate M2: the drift explanation is deliberately NOT ``chezmoi.py``'s own
-#: ChezmoiAbort text (which the UI must never match a button onto) — a
-#: fresh, plain-words refusal that names the one thing a commit cannot do.
-CHEZMOI_DRIFT_REFUSAL = (
-    "the dotfiles file differs from what chezmoi manages — run chezmoi "
-    "re-add or apply first; a commit can't fix drift"
-)
 
 #: The clean-repo refusal (§2.1: "never an empty commit").
 NOTHING_TO_COMMIT = "nothing to commit — the target repo is clean"
@@ -4257,7 +4621,6 @@ def commit_drift(
     *,
     dest: str | None = None,
     user_claude_md: Path | str | None = None,
-    chezmoi_bin: str = "chezmoi",
     dry_run: bool = False,
 ) -> CommitDriftResult:
     """``self-learn host commit-drift`` (§2.1): commit the compile
@@ -4270,9 +4633,9 @@ def commit_drift(
     U-hostmode §4.7 (CD1/CD2): mode-branched, not scope-branched. A
     **plain**-mode host — user scope included — REFUSES at exit 64: there
     is no commit to make, because self-learn commits nothing there and the
-    human's own file is their own to manage. The chezmoi user leg this
-    verb used to run is DELETED (not rewritten) — there is no chezmoi leg
-    left to take, on ANY plain host.
+    human's own file is their own to manage. The dotfiles-management
+    user leg this verb used to run is DELETED (not rewritten) — there is
+    no such leg left to take, on ANY plain host.
 
     **git**-mode host (skill-md / claude-md project·skill-root /
     reference / new-skill), byte-unchanged: :func:`gitops.paths_dirty` is
@@ -4325,7 +4688,6 @@ def commit_drift(
         destination,
         resolved_dest.ref_name,
         user_claude_md=user_claude_md,
-        chezmoi_bin=chezmoi_bin,
         check_dirty=False,
         variant=resolved_dest.variant,
         rules_topic=resolved_dest.rules_topic,
@@ -4389,35 +4751,6 @@ def commit_drift(
     finally:
         if hold is not None:
             hold.release()
-
-
-def chezmoi_adopt(
-    home: Path | str,
-    path: Path | str,
-    *,
-    chezmoi_bin: str = "chezmoi",
-    no_push: bool = False,
-) -> chezmoi.AdoptResult:
-    """A2 §10.5's ENTRYPOINT — the accepted §10 offer (the "yes"). Thin
-    by design (P-A2b′-offer: the offer adds NO new write mechanism): this
-    touches ONLY the dotfiles repo, never the ledger, never a host repo —
-    there is no ledger/host mutation here for :func:`gitops.commit_lock`
-    to serialize against, so this verb takes none (:func:`_ledger_write`
-    guards ledger writes; this is not one). ``home`` is accepted, unused,
-    for the same reason every other verb takes it — CLI dispatch calls
-    every verb the same shape; adoption itself reads and writes no
-    ledger state.
-
-    The bare-CLI hint (:func:`_host_phase`) and the UI-interactive
-    "yes" both name THIS verb, via the single command string
-    :func:`chezmoi.adopt_command` builds — never a second, independently
-    typed command."""
-    del home  # unused — see docstring
-    target = Path(path).expanduser()
-    message = f"self-learn: adopt {target.name} into chezmoi"
-    return chezmoi.adopt_user_scope(
-        target, message=message, chezmoi=chezmoi_bin, push=not no_push
-    )
 
 
 def reject(
@@ -4490,7 +4823,15 @@ def defer(
     sentinel.heartbeat()
     try:
         with _ledger_write(home):
-            touched = defer_record(home, record_id, until)
+            try:
+                touched = defer_record(home, record_id, until)
+            except LedgerOpsError as exc:
+                # U-verbs §4.2: a past `--until` is a REFUSAL (exit 1,
+                # nothing written), never a usage error (64) — the flag
+                # parsed fine and it is the record's target STATE that
+                # makes it illegal (02 §2's own distinction). Nothing has
+                # been written yet at this point.
+                raise VerbError(str(exc)) from exc
             deferred_until = _date_str(Record.from_path(touched[0]).deferred_until)
             message = f"self-learn: defer {record_id} until {deferred_until}"
             staged, sha = _stage_and_commit(home, touched, message, note)
@@ -4530,151 +4871,74 @@ def _resolve_rehome_target(home: Path, to: str) -> Path:
     )
 
 
-def rehome(
-    home: Path | str,
-    record_id: str,
-    *,
-    to: str,
-    note: str | None = None,
-    no_push: bool = False,
-) -> VerbResult:
-    """Move a PENDING record to another registered project bucket
-    (02 §2 verb pin; 09 §11 Y-18) — the repair for capture-cwd filing a
-    lesson under a narrower repo than its real firing range. Ledger-only
-    (one commit, pinned subject ``self-learn: rehome lrn-… →
-    projects/<slug>``; ``--note`` rides the commit body only — rehome is
-    not a resolution, ``resolution_note`` stays untouched). The record's
-    bytes are untouched: a deferred record moves and stays deferred.
-    Proposal siblings are swept, never moved, plus any source-bucket
-    ``merge-*.yaml`` naming the record (:func:`ledger_ops.rehome_record`).
+def _resolve_move_target(home: Path, to: str) -> tuple[str, Path, Path | None]:
+    """The ONE target resolver behind both ``rehome --to`` and ``rescope
+    --to`` (U-verbs §4.1, ruling R1 — one grammar, one resolver, matched
+    in this order, first match wins):
 
-    Refusals — each on STATUS, never mere existence (``find_record_path``
-    also sees ``resolved/``), all BEFORE any commit or dir creation:
-    unknown id · not pending/deferred · source not a project bucket (M1
-    is project→project only) · target not a registered project (the
-    refusal names ``host add``) · target == current bucket · id already
-    present in the target bucket, ``pending/`` OR ``resolved/`` (the
-    create-record collision precedent, F4)."""
-    home = Path(home)
-    path = find_record_path(home, record_id)  # pending OR resolved
+    | ``--to``                         | resolves to                                  |
+    |-----------------------------------|-----------------------------------------------|
+    | exactly ``user``                  | ``("user", home/"user", None)``                |
+    | ``skill:<name>``, non-empty       | ``(f"skill:{name}", home/"skills"/name, None)`` |
+    | ``project:<rest>``                | as the bare form below, over ``<rest>``        |
+    | anything else                     | ``("project", home/"projects"/slug, resolved)`` |
 
-    # (a) scan the record file BEFORE trusting its contents — plus the
-    # note (F6: the file scan is a no-op in practice since the bytes do
-    # not change, but every record-writing verb scans both and
-    # uniformity beats the micro-optimization).
-    _scan_or_refuse([path], note)
-
-    record = Record.from_path(path)
-    if path.parent.name != "pending" or record.status not in (
-        "pending",
-        "deferred",
-    ):
-        raise VerbError(
-            f"record {record_id} is not pending (status "
-            f"{record.status!r}) — a resolved lesson does not move; "
-            "supersede is the correction machinery (02 §2)"
-        )
-    source_bucket = path.parent.parent
-    if source_bucket.parent != home / "projects":
-        raise VerbError(
-            f"record {record_id} lives in a non-project bucket "
-            f"({source_bucket.name}) — rehome is project→project only "
-            "(M1); self-learn rescope is the repair for a user<->"
-            "skill:<name> move — project↔user/skill moves remain dated "
-            "future work, not silent extensions"
-        )
-
-    target_path = _resolve_rehome_target(home, to)
-    target_slug = slug_for(target_path)
-    target_bucket = home / "projects" / target_slug
-    if target_bucket == source_bucket:
-        raise VerbError(
-            f"record {record_id} already lives in projects/{target_slug} "
-            "— nothing to move"
-        )
-    # Destination collision (F4 — the create_record precedent), checked
-    # BEFORE any target-dir/meta.yaml creation: a duplicated id is
-    # corruption to surface, never to merge into.
-    for sub in ("pending", "resolved"):
-        if (target_bucket / sub / f"{record_id}.md").exists():
-            raise VerbError(
-                f"record {record_id} already exists in {target_bucket} — "
-                "a duplicated id is corruption to surface, never to merge "
-                "into; inspect both files by hand"
-            )
-
-    # (b) sentinel self-hold + heartbeat (standard record-writing verb
-    # sequence; rehome is ledger-only — no host phase).
-    hold = sentinel.hold()
-    sentinel.heartbeat()
-    try:
-        message = f"self-learn: rehome {record_id} → projects/{target_slug}"
-        with _ledger_write(home):
-            touched = rehome_record(home, record_id, target_bucket, target_path)
-            staged, sha = _commit_ledger(home, touched, message, note)
-        push = _push_ledger(home, no_push)
-        return VerbResult(
-            action="rehome",
-            record_id=record_id,
-            commit_message=message,
-            commit_sha=sha,
-            staged=staged,
-            push=push,
-            sentinel_owned=hold.owned,
-        )
-    finally:
-        hold.release()
-
-
-def _resolve_rescope_target(home: Path, to: str) -> tuple[str, Path]:
-    """``rescope --to`` accepts a SCOPE LITERAL — ``user`` or
-    ``skill:<name>`` — a different kind of thing from `rehome --to`'s
-    project path/slug (u-rescope §3 rationale 1: a different registry,
-    a different resolver, a different refusal string). Everything else
-    — ``project``, a bare ``skill``/``skill:``, a path, empty — refuses.
-
-    The skill-name validity gate calls :func:`hosts.skill_dir_for`
-    DIRECTLY rather than going through
-    :func:`ledger_ops.bucket_dir_for_scope` (whose ``skill:`` arm runs
-    the identical gate): every skill-name failure here must raise
-    ``VerbError`` (exit 1, §8's exit-1 row), and
-    ``bucket_dir_for_scope`` wraps the same check as
-    ``LedgerOpsError`` (exit 64) — the wrong code for a `rescope`
-    refusal."""
+    The reserved literals ``user`` and ``skill:...`` are matched as
+    LITERALS before any path resolution, so a registered project host
+    whose directory is literally named ``user`` is unreachable by the
+    bare form — the escapes are ``project:user``, ``./user``, or the
+    absolute path. Returns ``(target_scope, target_bucket,
+    project_path)`` — ``project_path`` is the resolved host path, set
+    IFF the target is a project bucket (§3.2b: only project scope
+    carries a path a bucket cannot derive from its own name)."""
     if to == "user":
-        return "user", home / "user"
+        return "user", home / "user", None
     if isinstance(to, str) and to.startswith("skill:") and len(to) > len("skill:"):
         name = to[len("skill:") :]
         try:
             skill_dir_for(load_hosts(home), name)  # validity gate only
         except HostsError as exc:
             raise VerbError(str(exc)) from exc
-        return f"skill:{name}", home / "skills" / name
-    raise VerbError(
-        f"--to must be 'user' or 'skill:<name>', got {to!r} — rescope "
-        "supports only user<->skill:<name> (M1); a project target is "
-        "rehome's territory"
-    )
+        return f"skill:{name}", home / "skills" / name, None
+    rest = to[len("project:") :] if isinstance(to, str) and to.startswith("project:") else to
+    project_path = _resolve_rehome_target(home, rest)
+    slug = slug_for(project_path)
+    return "project", home / "projects" / slug, project_path
 
 
-def _rescope_dest_label(target_scope: str) -> str:
-    """The commit-subject/disclosure-line spelling of a target scope:
-    ``skills/<name>`` for ``skill:<name>``, ``user`` for ``user`` —
-    never the raw scope literal (matches `rehome`'s
-    ``projects/<slug>`` subject shape)."""
+def _bucket_scope_literal(home: Path, bucket: Path) -> str:
+    """The scope LITERAL a bucket dir's own IDENTITY implies — never the
+    record's ``scope:`` field (U-verbs §4.1 step 5: a record whose
+    frontmatter disagrees with its bucket is what the move verbs repair,
+    so the field cannot be trusted to answer "is this a move at all")."""
+    if bucket == home / "user":
+        return "user"
+    if bucket.parent == home / "skills":
+        return f"skill:{bucket.name}"
+    return "project"
+
+
+def _move_dest_label(target_scope: str, target_bucket: Path) -> str:
+    """The commit-subject/disclosure-line spelling of a move target
+    (U-verbs §4.1 — widens the predecessor ``_rescope_dest_label`` by one
+    arm): ``projects/<slug>`` | ``skills/<name>`` | ``user`` — never the
+    raw scope literal. The project arm is byte-identical to `rehome`'s
+    pre-existing subject shape (``target_bucket.name`` IS the slug)."""
+    if target_scope == "user":
+        return "user"
     if target_scope.startswith("skill:"):
         return f"skills/{target_scope[len('skill:') :]}"
-    return "user"
+    return f"projects/{target_bucket.name}"
 
 
 def _rescope_sweep_note(record_id: str, swept: list[Path], dest_label: str) -> str:
-    """R-DISCLOSE-1 (u-rescope §5.5): one human-facing line naming the
-    count of each swept component and the fact of re-analysis, e.g.
-    ``swept 1 proposal + 2 merge clusters — lrn-… will be re-analyzed in
-    skills/bitwarden-cli``. Lists ONLY the non-zero components — a
-    merge-cluster-only sweep must not print "swept 0 proposal". Called
-    only when ``swept`` is non-empty (empty means no note at all — never
-    "swept 0")."""
+    """R-DISCLOSE-1 (u-rescope §5.5, widened to `rehome` too — U-verbs
+    §3.2): one human-facing line naming the count of each swept
+    component and the fact of re-analysis, e.g. ``swept 1 proposal + 2
+    merge clusters — lrn-… will be re-analyzed in skills/bitwarden-cli``.
+    Lists ONLY the non-zero components — a merge-cluster-only sweep must
+    not print "swept 0 proposal". Called only when ``swept`` is
+    non-empty (empty means no note at all — never "swept 0")."""
     has_proposal = any(
         p.name in (f"{record_id}.yaml", f"{record_id}.diff") for p in swept
     )
@@ -4702,97 +4966,59 @@ def _rescope_commit_body(note: str | None, swept: list[Path]) -> str | None:
     return "\n\n".join(parts) if parts else None
 
 
-def rescope(
+def _move(
     home: Path | str,
     record_id: str,
     *,
     to: str,
+    verb: str,
     note: str | None = None,
     no_push: bool = False,
 ) -> VerbResult:
-    """Move a PENDING (or ``deferred``) record between the ``user``
-    bucket and a ``skills/<name>`` bucket, rewriting ``scope:`` in the
-    same motion (u-rescope spec §6). **Unlike** `rehome`, the record's
-    bytes are NOT untouched — the scope literal lives in frontmatter and
-    :func:`ledger_ops.bucket_dir_for_scope` maps ``scope -> bucket``, so
-    a record whose frontmatter disagrees with its bucket is exactly the
-    corruption this verb exists to repair (§4.1). Ledger-only (one
-    commit, pinned subject ``self-learn: rescope lrn-… → skills/<name>``
-    or ``→ user``; ``--note`` rides the commit body only — rescope is
-    not a resolution, ``resolution_note`` stays untouched). A deferred
-    record re-scopes and stays deferred.
-
-    Proposal siblings are SWEPT, never carried (§5) — the analyst's
-    destination judgment is bucket-relative and ``record_sha`` staleness
-    cannot catch a scope-only edit (§5.2: scope is frontmatter, not
-    body). The sweep is DISCLOSED, which `rehome`'s sweep is not:
-    ``post_notes`` names the count (R-DISCLOSE-1) and the commit body
-    names the swept paths (R-DISCLOSE-2).
+    """The ONE verb body behind both ``rehome`` and ``rescope`` (U-verbs
+    §4.1, ruling R1 / criterion ``MOVE10``): neither entry point may
+    contain a file-op of its own — every byte reaches disk only through
+    :func:`ledger_ops.move_record`, called from HERE. Step order is
+    ``rescope``'s, the stricter of the two predecessor orderings.
 
     Refusals — each on STATUS, never mere existence (``find_record_path``
     also sees ``resolved/``), all BEFORE any commit or dir creation:
-    unknown id · not pending/deferred · source lives in a ``projects/*``
-    bucket (rehome's territory) · ``--to`` unparseable or ``project`` ·
-    skill name not under the registered skills root, ambiguous, or no
-    skills root registered · target scope == source scope ·
-    ``skill -> skill`` (dated future work, §4) · id already present in
-    the target bucket, ``pending/`` OR ``resolved/`` (the create-record
-    collision precedent, F4). **The BUCKET is the single authority for
-    the source scope, never the record's ``scope:`` field** — a record
-    whose frontmatter disagrees with its bucket is repaired by this
-    verb (its rewrite sets ``scope`` to match the destination), never
-    refused on the strength of the field the corruption lives in."""
+    unknown id (64, bare ``LedgerOpsError``) · not pending/deferred (1,
+    :func:`require_status`) · ``--to`` unparseable / unregistered project
+    / unknown skill (1, named repair) · same bucket (1) · id already
+    present in the target bucket, ``pending/`` OR ``resolved/`` (1, the
+    F4 create-record collision precedent)."""
     home = Path(home)
     path = find_record_path(home, record_id)  # pending OR resolved
 
-    # scan BEFORE trusting the record's contents — plus the note (P2-7).
-    # Load-bearing here (unlike rehome): the file is genuinely rewritten
-    # (§4.1), so this is not a formality.
+    # (a) scan the record file BEFORE trusting its contents — plus the
+    # note (P2-7): `rescope`/project legs genuinely rewrite the file
+    # (`scope:` changes), so this is load-bearing, not a formality.
     _scan_or_refuse([path], note)
 
-    record = Record.from_path(path)
-    if path.parent.name != "pending" or record.status not in (
-        "pending",
-        "deferred",
-    ):
-        raise VerbError(
-            f"record {record_id} is not pending (status "
-            f"{record.status!r}) — a resolved lesson does not move; "
-            "supersede is the correction machinery (02 §2)"
-        )
+    try:
+        require_status(home, record_id, LIVE_STATUSES, verb=verb)
+    except LedgerOpsError as exc:
+        raise VerbError(str(exc)) from exc
 
-    target_scope, target_bucket = _resolve_rescope_target(home, to)
+    target_scope, target_bucket, project_path = _resolve_move_target(home, to)
 
-    # Source-scope refusals — the BUCKET is the single authority, never
-    # the record's `scope:` field (§6.2 step 5 / T18b).
+    # Source scope from the BUCKET, never the record's `scope:` field
+    # (u-rescope §6.2 step 5 — a record whose frontmatter disagrees with
+    # its bucket is what this verb repairs).
     source_bucket = path.parent.parent
-    if source_bucket.parent == home / "projects":
+    source_scope = _bucket_scope_literal(home, source_bucket)
+    if source_scope == target_scope and target_bucket == source_bucket:
         raise VerbError(
-            f"record {record_id} lives in a project bucket "
-            f"({source_bucket.name}) — rescope supports only "
-            "user<->skill:<name> (M1); rehome is project->project's "
-            "own verb"
-        )
-    source_scope = (
-        f"skill:{source_bucket.name}"
-        if source_bucket.parent == home / "skills"
-        else "user"
-    )
-    if source_scope == target_scope:
-        raise VerbError(
-            f"record {record_id} already lives in scope {target_scope!r} "
-            "— nothing to move"
-        )
-    if source_scope.startswith("skill:") and target_scope.startswith("skill:"):
-        raise VerbError(
-            f"record {record_id}: skill -> skill re-scope "
-            f"({source_scope} -> {target_scope}) is dated future work, "
-            "not a silent extension (u-rescope §4)"
+            f"record {record_id} already lives in "
+            f"{_move_dest_label(target_scope, target_bucket)} — nothing to move"
         )
 
     # Destination collision (F4 — the create_record precedent), checked
-    # BEFORE any target-dir creation: a duplicated id is corruption to
-    # surface, never to merge into.
+    # BEFORE any target-dir/meta.yaml creation — belt: the verb has
+    # already refused before taking the lock; :func:`move_record` checks
+    # again inside, since a duplicated id is corruption to surface,
+    # never to merge into.
     for sub in ("pending", "resolved"):
         if (target_bucket / sub / f"{record_id}.md").exists():
             raise VerbError(
@@ -4801,15 +5027,19 @@ def rescope(
                 "into; inspect both files by hand"
             )
 
-    dest_label = _rescope_dest_label(target_scope)
+    dest_label = _move_dest_label(target_scope, target_bucket)
 
     hold = sentinel.hold()
     sentinel.heartbeat()
     try:
-        message = f"self-learn: rescope {record_id} → {dest_label}"
+        message = f"self-learn: {verb} {record_id} → {dest_label}"
         with _ledger_write(home):
-            touched, swept = rescope_record(
-                home, record_id, target_scope, target_bucket
+            touched, swept = move_record(
+                home,
+                record_id,
+                target_scope=target_scope,
+                target_bucket=target_bucket,
+                project_path=project_path,
             )
             relswept = [
                 p.relative_to(home) if p.is_relative_to(home) else p for p in swept
@@ -4818,7 +5048,7 @@ def rescope(
             staged, sha = _commit_ledger(home, touched, message, body)
         push = _push_ledger(home, no_push)
         return VerbResult(
-            action="rescope",
+            action=verb,
             record_id=record_id,
             commit_message=message,
             commit_sha=sha,
@@ -4826,10 +5056,228 @@ def rescope(
             push=push,
             sentinel_owned=hold.owned,
             post_notes=(
-                [_rescope_sweep_note(record_id, swept, dest_label)]
-                if swept
-                else []
+                [_rescope_sweep_note(record_id, swept, dest_label)] if swept else []
             ),
+        )
+    finally:
+        hold.release()
+
+
+def rehome(
+    home: Path | str,
+    record_id: str,
+    *,
+    to: str,
+    note: str | None = None,
+    no_push: bool = False,
+) -> VerbResult:
+    """Move a PENDING (or ``deferred``) record to any registered scope —
+    ``user`` | ``skill:<name>`` | a registered project (02 §2 verb pin;
+    09 §11 Y-18; widened U-verbs §3.2, ruling R1). ``--to`` accepts the
+    UNION grammar :func:`_resolve_move_target` parses; a bare path/slug
+    is byte-compatible with every existing project-only call. Ledger-only
+    (one commit; ``--note`` rides the commit body only — rehome is not a
+    resolution, ``resolution_note`` stays untouched). The record's bytes
+    are otherwise untouched apart from ``scope:`` (§3.2b: a project→
+    project move rewrites no ``scope:``, since both read the literal
+    ``"project"`` — the ROUND-TRIP write is byte-identical there); a
+    deferred record moves and stays deferred. Proposal siblings are
+    swept and the sweep DISCLOSED (u-rescope's shape — `rehome`'s own
+    sweep used to be silent; §3.2 closes that).
+
+    All work is delegated to :func:`_move` — this function contains no
+    file-op of its own (``MOVE10``)."""
+    return _move(home, record_id, to=to, verb="rehome", note=note, no_push=no_push)
+
+
+def rescope(
+    home: Path | str,
+    record_id: str,
+    *,
+    to: str,
+    note: str | None = None,
+    no_push: bool = False,
+) -> VerbResult:
+    """Move a PENDING (or ``deferred``) record to any registered scope —
+    ``user`` | ``skill:<name>`` | a registered project (u-rescope spec
+    §6; widened U-verbs §3.2, ruling R1). Argv and commit-subject
+    grammar are RETAINED unchanged from the shipped verb — ``--to``
+    additionally accepts the project forms `rehome` always took.
+    ``scope:`` is rewritten whenever the target scope literal differs
+    from the source bucket's own (§3.2b); a project→project move
+    rewrites no ``scope:`` (both read ``"project"``). Ledger-only (one
+    commit; ``--note`` rides the commit body only — rescope is not a
+    resolution, ``resolution_note`` stays untouched). A deferred record
+    re-scopes and stays deferred. Proposal siblings are swept and the
+    sweep DISCLOSED (R-DISCLOSE-1/2, u-rescope §5.5).
+
+    All work is delegated to :func:`_move` — this function contains no
+    file-op of its own (``MOVE10``)."""
+    return _move(home, record_id, to=to, verb="rescope", note=note, no_push=no_push)
+
+
+def undefer(
+    home: Path | str,
+    record_id: str,
+    *,
+    note: str | None = None,
+    no_push: bool = False,
+) -> VerbResult:
+    """Bring a deferred record back to the queue NOW (U-verbs §4.2) — the
+    exact inverse of `defer`'s own write: `status: pending`, clears
+    `deferred_until`, KEEPS `deferred_count` (the "at 2 the card
+    suggests reject" signal is history, not state — `undefer` never
+    clears it). The record already lives in `pending/` (deferred records
+    never leave it), so this is a frontmatter rewrite in place, no
+    `git mv`. Ledger-only, one commit `self-learn: undefer lrn-…`;
+    `--note` rides the commit body only (`resolution_note` untouched —
+    an un-defer is not a resolution). Re-running it refuses naming
+    'pending' (GUARD3/GUARD4)."""
+    home = Path(home)
+    path = find_record_path(home, record_id)  # pending OR resolved
+    _scan_or_refuse([path], note)
+    try:
+        require_status(home, record_id, DEFERRED_ONLY, verb="undefer")
+    except LedgerOpsError as exc:
+        raise VerbError(str(exc)) from exc
+
+    hold = sentinel.hold()
+    sentinel.heartbeat()
+    try:
+        message = f"self-learn: undefer {record_id}"
+        with _ledger_write(home):
+            record = Record.from_path(path)
+            record.set_status("pending")
+            record.set_deferred_until(None)
+            record.write(path)
+            staged, sha = _commit_ledger(home, [path], message, note)
+        push = _push_ledger(home, no_push)
+        return VerbResult(
+            action="undefer",
+            record_id=record_id,
+            commit_message=message,
+            commit_sha=sha,
+            staged=staged,
+            push=push,
+            sentinel_owned=hold.owned,
+        )
+    finally:
+        hold.release()
+
+
+def reopen(
+    home: Path | str,
+    record_id: str,
+    *,
+    note: str | None = None,
+    no_push: bool = False,
+) -> VerbResult:
+    """Return a REJECTED record to the draft plane (U-verbs §4.2) — the
+    inverse motion 02 §2's freeze-at-routing pin never had to give a
+    rejected record: the old resolution is DISPLACED into `history`
+    (never destroyed — :meth:`Record.clear_resolution_note` refuses
+    unless the note is already there), the record moves resolved/ →
+    pending/ (mv-first, §6.4), and any stale proposal sibling is swept
+    and the sweep DISCLOSED, same shape as the move verbs. `--note`
+    rides the commit body only.
+
+    Refused, each naming the status AND the reason: `superseded` (a live
+    successor, or a merge-collapse evidence merge, would be orphaned)
+    and `routed` (un-writing canon is FW-133 — deliberately out of this
+    unit's scope; correcting a wrong DESTINATION on an already-routed
+    record is separate, dated work)."""
+    home = Path(home)
+    path = find_record_path(home, record_id)  # pending OR resolved
+    _scan_or_refuse([path], note)
+    try:
+        require_status(home, record_id, REOPENABLE_STATUSES, verb="reopen")
+    except LedgerOpsError as exc:
+        raise VerbError(str(exc)) from exc
+
+    hold = sentinel.hold()
+    sentinel.heartbeat()
+    try:
+        message = f"self-learn: reopen {record_id}"
+        with _ledger_write(home):
+            touched, swept = reopen_record(home, record_id)
+            relswept = [
+                p.relative_to(home) if p.is_relative_to(home) else p for p in swept
+            ]
+            body = _rescope_commit_body(note, relswept)
+            staged, sha = _commit_ledger(home, touched, message, body)
+        push = _push_ledger(home, no_push)
+        post_notes = ["re-entering the queue — this record will be re-analyzed"]
+        if swept:
+            post_notes.append(_rescope_sweep_note(record_id, swept, "the queue"))
+        return VerbResult(
+            action="reopen",
+            record_id=record_id,
+            commit_message=message,
+            commit_sha=sha,
+            staged=staged,
+            push=push,
+            sentinel_owned=hold.owned,
+            post_notes=post_notes,
+        )
+    finally:
+        hold.release()
+
+
+def note(
+    home: Path | str,
+    record_id: str,
+    *,
+    append: str,
+    key: str | None = None,
+    no_push: bool = False,
+) -> VerbResult:
+    """Append one commentary entry to a record's `notes[]` (U-verbs
+    §4.2) — ANY status, and NEVER touches `resolution_note`: `notes`
+    records what was ADDED, `history` records what was DISPLACED.
+    Secret-scanned like every other verb-written text.
+
+    `--key` is the idempotency token `self-learn batch` stamps on a
+    `note` item's entry (§3.3b row 10) — the sha256 of the sheet line
+    that produced it. When a `notes[]` entry already carries `key`,
+    NOTHING is appended: no lock taken, no commit, rc 0 — the
+    already-applied state is a READ, never a parse of a refusal
+    message. A human call at a terminal omits `key` and every call
+    appends (two identical observations on two days are two facts)."""
+    home = Path(home)
+    path = find_record_path(home, record_id)  # pending OR resolved
+    _scan_or_refuse([path], append)
+
+    if key is not None and Record.from_path(path).note_has_key(key):
+        # already-applied (§3.3b row 10): SKIPPED — nothing written, no
+        # lock, no commit.
+        return VerbResult(
+            action="note",
+            record_id=record_id,
+            commit_message=f"self-learn: note {record_id} (already applied)",
+            commit_sha=gitops.head_sha(home),
+            staged=[],
+            push=None,
+            sentinel_owned=False,
+        )
+
+    hold = sentinel.hold()
+    sentinel.heartbeat()
+    try:
+        message = f"self-learn: note {record_id}"
+        with _ledger_write(home):
+            record = Record.from_path(path)
+            record.append_note(append, key=key)
+            record.write(path)
+            staged, sha = _commit_ledger(home, [path], message, append)
+        push = _push_ledger(home, no_push)
+        return VerbResult(
+            action="note",
+            record_id=record_id,
+            commit_message=message,
+            commit_sha=sha,
+            staged=staged,
+            push=push,
+            sentinel_owned=hold.owned,
         )
     finally:
         hold.release()
@@ -4842,7 +5290,6 @@ def graduate(
     note: str | None = None,
     no_push: bool = False,
     user_claude_md: Path | str | None = None,
-    chezmoi_bin: str = "chezmoi",
 ) -> VerbResult:
     """Graduate a lesson into authored canon: ``superseded_by: canon``
     (02 §2/§4). Works on a routed record (the hand-weave) or a pending
@@ -4879,7 +5326,6 @@ def graduate(
             path.parent.parent,
             warnings,
             user_claude_md=user_claude_md,
-            chezmoi_bin=chezmoi_bin,
         )
         # U-hostmode M-3 (code gate r1 fold, REC12c): one lock discipline,
         # no exceptions — same shape as supersede()'s fix. The host lock
@@ -4952,7 +5398,6 @@ def graduate(
                 retire,
                 record_id,
                 note=note,
-                chezmoi_bin=chezmoi_bin,
                 message=message,
                 warnings=warnings,
                 post_notes=post_notes,
@@ -4988,7 +5433,6 @@ def supersede(
     note: str | None = None,
     no_push: bool = False,
     user_claude_md: Path | str | None = None,
-    chezmoi_bin: str = "chezmoi",
 ) -> VerbResult:
     """Corrective supersession (08 §1 pin): mark ``old`` superseded by
     ``new`` (which must exist). Commit: ``self-learn: supersede lrn-old →
@@ -5036,7 +5480,6 @@ def supersede(
                     destination,
                     routing.get("new_skill") if destination == "new-skill" else None,
                     user_claude_md=user_claude_md,
-                    chezmoi_bin=chezmoi_bin,
                     # A2 §4.4B note: variant/rules_topic only — see the
                     # matching comment in _retirement_preflight.
                     variant=routing.get("variant"),
@@ -5123,7 +5566,6 @@ def supersede(
                     old_id,
                     routed_record=None,
                     note=note,
-                    chezmoi_bin=chezmoi_bin,
                     message=message,
                     warnings=warnings,
                     user_push=not no_push,
@@ -5631,7 +6073,6 @@ def recompile(
     *,
     no_push: bool = False,
     user_claude_md: Path | str | None = None,
-    chezmoi_bin: str = "chezmoi",
     adopt: Path | str | None = None,
 ) -> RecompileResult:
     """The doc-13 drift repair (H-2: recompile is always safe and repairs
@@ -5639,7 +6080,7 @@ def recompile(
     managed target — skill-md files, project/skill-root claude-md files,
     AND the user-scope CLAUDE.md, which is a first-class PLAIN host now
     (§4.8.1) and goes through the SAME general repair as any other
-    plain/git host, never a chezmoi-guarded flow (USER2/CHEZ0) — and
+    plain/git host, never a dotfiles-guarded flow (USER2/CHEZ0) — and
     RE-APPEND every reference-routed record to its references file, then
     commit any HOST whose file changed (pinned subject ``self-learn:
     recompile <relative target>``).
@@ -5751,7 +6192,6 @@ def recompile(
                     destination,
                     ref_name,
                     user_claude_md=user_claude_md,
-                    chezmoi_bin=chezmoi_bin,
                     check_dirty=False,
                     # A2 §4.4B: variant/rules_topic off the STORED routing
                     # block so a rules-routed record's target groups into
@@ -5875,7 +6315,8 @@ def recompile(
                     continue
             if spec.mode != "git":
                 # U-hostmode §4.8.1: every plain host (user scope included)
-                # repairs through the SAME general path — no chezmoi, no
+                # repairs through the SAME general path — no
+                # dotfiles-management leg, no
                 # special-cased user branch (USER2/CHEZ0). The soundness
                 # check `_resolve_target` skipped (`check_dirty=False`)
                 # runs HERE instead: plain mode has no `git status` to
@@ -5929,7 +6370,6 @@ def recompile(
                     "recompile",
                     routed_record=None,
                     note=None,
-                    chezmoi_bin=chezmoi_bin,
                     message=f"self-learn: recompile {target}",
                     warnings=result.warnings,
                     user_push=not no_push,

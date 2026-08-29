@@ -106,7 +106,12 @@ frontmatter field — prose does not belong in machine frontmatter and it
 would bloat every `list --json` parse; a sibling file — the analyst's
 space, an extra thing to sweep on rehome/resolve and scan out-of-band,
 whereas a body section is secret-scanned on every write (§2), moves
-byte-untouched on rehome (§2 `rehome`), and is git-versioned with the
+byte-untouched on rehome/rescope *(true of the BODY unconditionally —
+corrected 2026-08-28, code gate r2, N-r2-2: since U-verbs §3.2 widened
+`--to` past project↔project, a cross-scope move now rewrites the
+record's `scope:` frontmatter to match the destination — §2 `rehome`'s
+own amendment above — so only the body, never the whole record byte-
+for-byte, is guaranteed untouched)*, and is git-versioned with the
 record.)*
 
 - **Validator (register it as optional; do not gate compilers on it).**
@@ -269,6 +274,31 @@ standard safe rebase-halt (`01` §5) rather than being excluded outright.
 > is **REQUIRED and load-bearing**, unlike `recurrences[]`'s courtesy
 > pointer: a dismissal is a fact about one specific machine claim, and
 > without the nonce it clears nothing and means nothing.
+>
+> **Amendment 2026-08-28 (U-verbs §4.10):** the frontmatter gains two more
+> append-only lists, both **metadata class** like `recurrences`/
+> `dismissed_suspects` above — verb-written, mutable in every status, the
+> substance freeze below untouched. `history` records what a verb
+> **displaced**: `reopen` moves a `resolved` record back to `pending` and
+> appends the old `resolution_note` as a `history` entry (`event:
+> "resolution"`, carrying the displaced `status`/`note`) before clearing
+> the field, so a write-once value can be superseded without being
+> destroyed; a later verb correcting a wrong routing destination displaces
+> the old `routing` block the same way (`event: "routing"`). `event` is a
+> **closed set** — `{"resolution", "routing"}` — a third displacement kind
+> is a decision, not a silent widening. `notes` records what a human
+> **added**: `self-learn note <id> --append TEXT` appends `{at, by, text}`
+> (plus an optional `key`, the idempotency token `self-learn batch`
+> stamps on a `note` sheet item's entry) to `notes[]`, in any status,
+> never touching `resolution_note` — `notes` is additive commentary,
+> `history` is what the record used to say; merging the two would make
+> both unreadable. `Record.clear_resolution_note()` is the **only**
+> permitted writer of `resolution_note` back to `None`, and it refuses
+> unless the current note already appears in a `history` entry with
+> `event: "resolution"` — the write-once field may be *displaced*, never
+> *destroyed* outright. Neither key exists at all on a record no verb in
+> this set has ever touched — the schema addition is **absent**, not an
+> empty list.
 
 - **Substance freezes at routing** *(S-8/S-12 — settled 2026-07-12,
   blind-adjudicated ADOPT)*: while
@@ -364,21 +394,31 @@ standard safe rebase-halt (`01` §5) rather than being excluded outright.
   add/add-conflict on every parallel capture.
 - **`self-learn rehome <id> --to <path-or-slug>`** *(added 2026-07-18 —
   feedback round 3 item 3; 09 §11 Y-18 is the surface register entry)*:
-  moves a **pending** record to another **registered project** bucket —
-  the repair for capture-cwd filing the lesson under a narrower repo
-  than its real firing range (the umbrella-project case,
-  routing-doctrine §3). `--to` accepts the registered project's path or
-  its bucket slug (the `host rebind` naming precedent — the two things
-  a human can say). What moves: `pending/lrn-<id>.md` alone, one
+  moves a **pending** (or **deferred**) record to **any registered
+  scope** — `user` | `skill:<name>` | a registered project bucket
+  *(widened 2026-08-28 — U-verbs §3.2, ruling R1; originally
+  project→project only — the repair for capture-cwd filing the lesson
+  under a narrower repo than its real firing range, the umbrella-project
+  case, routing-doctrine §3)*. `--to` accepts the UNION grammar shared
+  with `rescope` below (`_resolve_move_target`, one resolver behind
+  both verbs): the literal `user`; `skill:<name>`; a
+  `project:<path-or-slug>` prefix; or a bare path/slug, read as a
+  project (the `host rebind` naming precedent) unless it collides with
+  a reserved literal — a registered project host directory literally
+  named `user` needs `project:user` or `./user` to reach it. What moves: `pending/lrn-<id>.md` alone, one
   `git mv` into the target bucket's `pending/`; the target bucket's
   `{pending,resolved,proposals}/` dirs are created if absent and its
   `meta.yaml` stamped from the registered path (13 §3) — hosts.yaml
   stays the only registration authority; the verb registers nothing.
-  The record file is **byte-untouched**: `scope: project` already reads
-  correctly in the destination, so a re-home is a filing move, never a
-  substance edit (the freeze rules above are unaffected; `sightings`,
-  `evidence`, deferral metadata all ride along unchanged — a deferred
-  record moves and stays deferred). **Proposal siblings are swept
+  The record's bytes are untouched **apart from `scope:`** *(amended
+  2026-08-28 — U-verbs §3.2)*: a project→project move rewrites nothing
+  (both read the literal `"project"` — the round-trip write is
+  byte-identical there), but a move crossing a scope literal
+  (`user ↔ skill:<name> ↔ project`) rewrites `scope:` to match the
+  destination — a re-home is still a filing move, never a substance
+  edit of anything else (the freeze rules above are unaffected;
+  `sightings`, `evidence`, deferral metadata all ride along unchanged —
+  a deferred record moves and stays deferred). **Proposal siblings are swept
   (`git rm proposals/lrn-<id>.{yaml,diff}`), never moved**: the
   analyst's destination judgment is bucket-relative (which CLAUDE.md,
   which references file) and `record_sha` staleness cannot catch a
@@ -396,7 +436,9 @@ standard safe rebase-halt (`01` §5) rather than being excluded outright.
   in the source bucket, swept by the worker's own next-run orphan
   sweep, and the two writers serialize on `commit_lock`. One
   ledger commit, pinned subject `self-learn: rehome lrn-… →
-  projects/<slug>`; optional `--note` rides the commit body only
+  projects/<slug>` (or `→ user` / `→ skills/<name>`, once the widened
+  grammar above targets one of those — amended 2026-08-28, U-verbs
+  §3.2); optional `--note` rides the commit body only
   (rehome is not a resolution — `resolution_note` stays write-once and
   untouched). Refusals, each checked on **status, never mere
   existence** (`find_record_path` also sees `resolved/`) and rendered
@@ -408,12 +450,12 @@ standard safe rebase-halt (`01` §5) rather than being excluded outright.
   `lrn-<id>.md` already present in the target bucket, `pending/` OR
   `resolved/` *(F4 — the create-record collision precedent)*, checked
   **before** any target-dir/`meta.yaml` creation: a duplicated id is
-  corruption to surface, never to merge into · source not a project
-  bucket (**M1 is project→project only** — user-scope targets and
-  skill/user-scope sources are dated future work, not silent
-  extensions: a cross-scope move is a re-classification with its own
-  consent story). Sequence otherwise standard for a record-writing
-  verb: secret scan of the record file AND the note *(F6 — the file
+  corruption to surface, never to merge into. *(The "source not a
+  project bucket" refusal that used to close this list is GONE —
+  amended 2026-08-28, U-verbs §3.2, ruling R1: a cross-scope move,
+  `user`/`skill:<name>`/project source to any other registered scope,
+  is now this verb's own business, not dated future work.)* Sequence
+  otherwise standard for a record-writing verb: secret scan of the record file AND the note *(F6 — the file
   scan is a no-op in practice since the bytes don't change, but every
   record-writing verb scans both and uniformity beats the
   micro-optimization)*, `commit_lock` before the first mutation,
@@ -422,18 +464,26 @@ standard safe rebase-halt (`01` §5) rather than being excluded outright.
   the `rehome` sibling for the `user ↔ skill:<name>` pair; 09 §11 Y-25 is the
   surface register entry)*: moves a **pending** (or `deferred`) record
   between the `user` bucket and a `skills/<name>` bucket, rewriting
-  `scope:` in the SAME motion. `rehome` stays project↔project only and is
-  untouched beyond one line of its refusal string naming this verb;
-  `rescope` refuses `project` on either side (that is `rehome`'s
-  territory) and refuses `skill:<a> → skill:<b>` (dated future work — no
-  live motivating case, and the sharpest form of the proposal-sweep
-  hazard below). `--to` accepts `user` or `skill:<name>`, resolved
+  `scope:` in the SAME motion. *(Amended 2026-08-28 — U-verbs §3.2,
+  ruling R1): `rehome` and `rescope` are no longer scope-partitioned
+  siblings — both now delegate to the SAME resolver and the SAME verb
+  body (`_move`, `MOVE10`), differing only in the commit-subject
+  label. `rehome` is no longer project↔project only, and `rescope` no
+  longer refuses `project` on either side nor `skill:<a> → skill:<b>`
+  — either verb reaches any registered scope from any registered
+  scope, gated on record status alone. The two entry points remain
+  distinct call surfaces (argv, CLI help text, the pane's
+  proposable-verb list) for human legibility — "rehome" reads as a
+  project move, "rescope" as a scope-literal move — but the widened
+  grammar means either name now reaches every destination the other
+  does.)* `--to` accepts `user` or `skill:<name>`, resolved
   against the registered `skills_root` (a typo or an unregistered root
-  refuses, never silently creates a bucket). **Unlike `rehome`, the
-  record's bytes are NOT untouched**: the scope literal lives in
-  frontmatter and `bucket_dir_for_scope` maps `scope → bucket`, so a
-  record whose `scope:` disagrees with its bucket is exactly the
-  corruption this verb exists to repair — `rescope` rewrites `scope` to
+  refuses, never silently creates a bucket). **Same as `rehome` now**
+  *(amended 2026-08-28, see the byte-untouched-apart-from-`scope:`
+  amendment above)*: the scope literal lives in frontmatter and
+  `bucket_dir_for_scope` maps `scope → bucket`, so a record whose
+  `scope:` disagrees with its bucket is exactly the corruption this
+  verb exists to repair — `rescope` rewrites `scope` to
   match the destination in the same `git mv`-then-write motion
   `resolve_record` uses (mv first, so a kill leaves a loudly-blocked
   staged rename that `reconcile` refuses to auto-commit, never a
@@ -444,8 +494,10 @@ standard safe rebase-halt (`01` §5) rather than being excluded outright.
   Y-18 decision `rehome` already made, re-affirmed on fresh evidence: a
   scope-only edit does not change `record_sha` (scope is frontmatter,
   not body), so a carried proposal would render an honest-looking stale
-  card reasoning from the wrong scope. **The sweep is DISCLOSED**, which
-  `rehome`'s is not: when the sweep removes at least one file, the
+  card reasoning from the wrong scope. **The sweep is DISCLOSED** —
+  the same behavior `rehome` now has too *(U-verbs `MOVE6`, amended
+  2026-08-28: `rehome`'s sweep used to be silent, no longer is)*: when
+  the sweep removes at least one file, the
   human-facing output gets one line naming the non-zero swept components
   (`swept 1 proposal — lrn-… will be re-analyzed in skills/<name>`; a
   component at zero is never named, and nothing swept means no line at
@@ -456,12 +508,20 @@ standard safe rebase-halt (`01` §5) rather than being excluded outright.
   the source scope — on **the bucket, never the record's `scope:`
   field** (a scope↔bucket disagreement is repaired by this verb, not
   refused on the strength of the field the corruption lives in): unknown
-  id · not pending/deferred · source in a `projects/*` bucket (rehome's
-  territory) · `--to` unparseable or `project` · unknown/ambiguous skill
-  name or no skills root registered · target == source scope ·
-  `skill → skill` · id already present in the target bucket, `pending/`
-  OR `resolved/` (F4). No `meta.yaml` (`user`/`skill:` buckets carry no
-  project identity). No telemetry event — `EVENT_KINDS` is a closed set,
+  id · not pending/deferred · `--to` unparseable, an unregistered
+  project, or an unknown/ambiguous skill name (no skills root
+  registered) · target == source (same bucket) · id already present in
+  the target bucket, `pending/` OR `resolved/` (F4). *(Amended
+  2026-08-28 — U-verbs §3.2, ruling R1: the three scope-partition
+  refusals that used to open this list — source in a `projects/*`
+  bucket, `--to == project`, `skill → skill` — are GONE; `rescope`
+  reaches project buckets exactly as `rehome` does, via the same
+  shared resolver.)* `meta.yaml` stamped **IFF the target is a project
+  bucket** *(corrected 2026-08-28, code gate r2, N-r2-1 — the widened
+  grammar above means a `rescope --to <project>` now stamps one, same
+  rule `rehome` always used — MOVE2; only a `user`/`skill:<name>`
+  target carries no `meta.yaml`, since those buckets carry no project
+  identity to stamp)*. No telemetry event — `EVENT_KINDS` is a closed set,
   the sibling verb `rehome` emits nothing either, and git is already the
   provenance record. Not agent-proposable in M1 — human-CLI-only, and
   does not join the pane's closed proposable-verb list.

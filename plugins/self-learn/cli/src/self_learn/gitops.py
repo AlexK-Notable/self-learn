@@ -84,6 +84,7 @@ from typing import Iterable, Iterator
 
 __all__ = [
     "EXIT_GIT_FAILED",
+    "head_sha",
     "EXIT_HALF_WRITTEN",
     "EXIT_PUSH_FAILED",
     "EXIT_REBASE_CONFLICT",
@@ -588,6 +589,13 @@ def commit(
             )
         args += ["--", *scoped]
     _git_ok(repo, *args)
+    return _git_ok(repo, "rev-parse", "HEAD").stdout.strip()
+
+
+def head_sha(repo: Path) -> str:
+    """The repo's current ``HEAD`` sha — U-verbs' `note --key`
+    already-applied leg reads this to report a no-op success without
+    opening the commit lock (nothing changed, so nothing to stage)."""
     return _git_ok(repo, "rev-parse", "HEAD").stdout.strip()
 
 

@@ -108,8 +108,6 @@ KNOWN_DIVERGENCES = (
     "before any billable call. VERIFIED 2026-07-26: it does spawn, writes "
     "its whole ~/.claude tree (.claude.json, sessions/, backups/, "
     "projects/) INSIDE the sandbox, and reaches no model.",
-    "No chezmoi source state, so route offers 'not tracked by chezmoi' on "
-    "every claude-md destination.",
     "The ledger git repo has no remote — push reports 'not pushed'.",
 )
 

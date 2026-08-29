@@ -256,7 +256,7 @@ class TestValidateProposal:
         assert "skill-md only exists for skill-scoped lessons" in result
 
     def test_user_record_refuses_skill_md_and_reference(self, tmp_path: Path) -> None:
-        # The user host is the chezmoi-managed CLAUDE.md alone — no
+        # The user host is the plain-mode CLAUDE.md alone — no
         # references dir (the route verb's own refusal, honored at intake).
         sb = make_env(tmp_path)
         rec = make_behavior(scope="user")
@@ -1234,7 +1234,13 @@ class TestValidateRehome:
         assert isinstance(result, str)
         assert "nothing to move" in result
 
-    def test_non_project_record_refuses(self, tmp_path: Path) -> None:
+    def test_non_project_source_now_succeeds(self, tmp_path: Path) -> None:
+        """U-verbs MOVE9: the CLI-side ``_move`` widened to accept any
+        live-status source scope, and the UI's own source-scope refusal
+        (the old "project→project only (M1)" line) was deleted to match
+        — only the TARGET stays narrowed to a registered project. A
+        skill-scoped record proposing ``rehome`` to a registered project
+        now VALIDATES (a :class:`VerbProposal`, not a refusal string)."""
         sb, host_b, _ = _seed_two_projects(tmp_path)
         skill_rec = make_behavior(scope="skill:s")
         seed_record(sb.ledger, skill_rec)
@@ -1243,8 +1249,10 @@ class TestValidateRehome:
             _record_scope(skill_rec),
             {"verb": "rehome", "record_id": skill_rec.id, "to": str(host_b)},
         )
-        assert isinstance(result, str)
-        assert "project→project only" in result
+        assert isinstance(result, VerbProposal)
+        assert result.verb == "rehome"
+        assert result.record_id == skill_rec.id
+        assert result.to == str(host_b)
 
 
 class TestRehomeProposalRoutes:
@@ -1423,28 +1431,3 @@ class TestBucketStalenessLeg:
         ).text
         self._assert_cleared_with_notice(manager, runner, out)
 
-
-class TestObligation13UISideSingleCommandString:
-    """A2 §13 item 13 (the UI half): the review UI's own package must
-    never independently reconstruct the chezmoi-adopt invocation string
-    — it can only ever come from ``self_learn.chezmoi.adopt_command``
-    (the CLI's single source, §10.5). This package has ``self_learn``
-    importable (proposals.py itself already imports from
-    ``self_learn.hosts``), so this check runs here rather than in the
-    CLI suite's own venv-isolated twin
-    (plugins/self-learn/cli/tests/test_a2_rules_local.py)."""
-
-    def test_ui_package_never_hardcodes_the_adopt_invocation(self) -> None:
-        import self_learn_ui
-        from self_learn import chezmoi
-
-        needle = chezmoi.ADOPT_COMMAND_PREFIX  # "self-learn chezmoi-adopt "
-        pkg_dir = Path(self_learn_ui.__file__).parent
-        for py in pkg_dir.rglob("*.py"):
-            assert needle not in py.read_text(encoding="utf-8"), py
-
-    def test_adopt_command_is_the_single_source(self) -> None:
-        from self_learn import chezmoi
-
-        target = Path("/tmp/example/rules/subagents.md")
-        assert chezmoi.adopt_command(target) == f"self-learn chezmoi-adopt {target}"

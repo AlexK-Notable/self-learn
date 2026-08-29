@@ -5,7 +5,7 @@ record through ``teach --supersedes`` + route-of-the-successor, or through
 ``graduate``, left the old compiled line in canon — and ``recompile``
 could not repair it because it enumerated targets only off still-ACTIVE
 routed records (a target whose LAST record retired was never revisited),
-and skipped the chezmoi-guarded user file entirely.
+and skipped the (then-)dotfiles-guarded user file entirely.
 
 Also here: the m-4/m-5 reviewer residuals (recompile repairs an
 interrupted hook REMOVAL; route re-derives and compares the stamped hook
@@ -245,15 +245,17 @@ class TestRecompileCompleteness:
         result = verbs.recompile(env.ledger, no_push=True)
         assert not any("already absent" in w for w in result.warnings)
 
-    def test_user_file_regenerated_via_chezmoi_flow(self, env, tmp_path,
+    def test_user_file_regenerated_via_the_plain_host_path(self, env, tmp_path,
                                                     monkeypatch):
-        """U-hostmode §4.8.1 (rewritten, name kept — §2.10b census):
-        chezmoi is GONE (CHEZ0/USER2) — user scope is a first-class PLAIN
-        host now, and ``recompile`` repairs it through the SAME general
-        path as any other plain host (no guarded compile, no dotfiles
-        commit of its own). The user CLAUDE.md is still no longer
-        recompile-invisible, which is the property this test always
-        pinned; only the mechanism proving it changed."""
+        """U-hostmode §4.8.1/§4.8.2 (rewritten — §2.10b census): the old
+        dotfiles-management flow is GONE, module and all (CHEZ0/USER2) —
+        user scope is a first-class PLAIN host now, and ``recompile``
+        repairs it through the SAME general path as any other plain host
+        (no guarded compile, no dotfiles commit of its own). The user
+        CLAUDE.md is still no longer recompile-invisible, which is the
+        property this test always pinned; only the mechanism proving it
+        changed. (Not one of UN3's ten name-frozen host-git files, so
+        the rename to drop the retired module's name is in scope.)"""
         user_md = tmp_path / "dot-claude" / "CLAUDE.md"
         user_md.parent.mkdir()
         user_md.write_text("# user\n\nAuthored conduct.\n", encoding="utf-8")
@@ -282,10 +284,11 @@ class TestRecompileCompleteness:
 
     def test_user_file_drift_skips_loudly(self, env, tmp_path, monkeypatch):
         """U-hostmode §4.5a/GATE2 (rewritten, name kept — §2.10b census):
-        the plain-host equivalent of chezmoi drift is a hand-edited
-        managed region — the compile record's ``edited`` verdict, the
-        only instrument that can see it on a host with no git status to
-        consult. ``recompile`` must skip it loudly, never guess (H-3)."""
+        the plain-host equivalent of the old dotfiles-management drift
+        concept is a hand-edited managed region — the compile record's
+        ``edited`` verdict, the only instrument that can see it on a
+        host with no git status to consult. ``recompile`` must skip it
+        loudly, never guess (H-3)."""
         user_md = tmp_path / "dot-claude" / "CLAUDE.md"
         user_md.parent.mkdir()
         user_md.write_text("# user\n", encoding="utf-8")

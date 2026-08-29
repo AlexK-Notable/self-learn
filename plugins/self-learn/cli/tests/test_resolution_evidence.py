@@ -44,20 +44,6 @@ from support import (
 RID = "lrn-0000aaaa"
 RID2 = "lrn-0000bbbb"
 
-#: Same PATH-shimmed fake chezmoi test_a2_rules_local.py uses — never
-#: the real chezmoi, never the real ~/.claude. `CHEZMOI_SHIM_SOURCE_RC=1`
-#: makes `source-path` fail, which `user_scope_capability` reads as
-#: UNMANAGED (rc 0 = managed, nonzero = unmanaged).
-CHEZMOI_SHIM = """#!/usr/bin/env bash
-printf '%s\\n' "$*" >> "$CHEZMOI_SHIM_LOG"
-case "$1" in
-  source-path) exit "${CHEZMOI_SHIM_SOURCE_RC-0}" ;;
-  diff) printf '%s' "${CHEZMOI_SHIM_DIFF-}" ;;
-esac
-exit "${CHEZMOI_SHIM_EXIT-0}"
-"""
-
-
 class Env:
     """The doc-13 sandbox pair, WITH bare remotes (both repos) so
     `pushed`/`host_pushed` read "pushed" rather than "no remote
@@ -403,9 +389,11 @@ class TestReferenceShape:
 
 class TestUserScopeShape:
     def test_user_scope_route_is_wrote_uncommitted(self, env, tmp_path, monkeypatch, capsys):
-        """U-hostmode §4.8.1 (census EDIT, USER6/S3): the chezmoi shim is
-        REMOVED — user scope is now a first-class PLAIN host and calls no
-        chezmoi function at all (USER2/CHEZ0). ``_outcome_state``'s
+        """U-hostmode §4.8.1/§4.8.2 (census EDIT, USER6/S3): the old
+        dotfiles-management PATH shim is REMOVED — user scope is now a
+        first-class PLAIN host and calls no such function at all
+        (USER2/CHEZ0), and the module that made those calls is deleted
+        outright (Phase 2). ``_outcome_state``'s
         ``wrote_uncommitted`` is now keyed by ``spec.mode == "plain"``
         (PLAIN3), not by an ``isinstance(..., UserScopeResult)`` check —
         host_commit_sha is None for EVERY plain host (never just user
@@ -536,11 +524,12 @@ class TestStderrByteIdentical:
         keys off it. Proven by an ACTUAL byte diff between two otherwise-
         identical runs.
 
-        U-hostmode §4.8.1 (census EDIT, S3): the chezmoi shim and its
-        adopt-hint assertion are REMOVED — user scope calls no chezmoi
-        function at all now (USER2/CHEZ0), so there is no adopt hint to
-        fire. The byte-identical proof itself is unaffected and still
-        the point of this test.
+        U-hostmode §4.8.1/§4.8.2 (census EDIT, S3): the old dotfiles-
+        management PATH shim and its adopt-hint assertion are REMOVED —
+        user scope calls no such function at all now (USER2/CHEZ0), and
+        the adopt-offer channel the hint rode is deleted outright
+        (Phase 2), so there is no adopt hint to fire. The byte-identical
+        proof itself is unaffected and still the point of this test.
 
         Code gate r1 B-1 fold: the two ledger homes now route to
         SEPARATE physical targets (they shared one before) -- user

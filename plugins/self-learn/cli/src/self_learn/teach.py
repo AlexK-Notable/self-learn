@@ -73,7 +73,6 @@ from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
 from . import analyst, gitops, telemetry, verbs
-from .chezmoi import ChezmoiAbort, ChezmoiError
 from .compilers import CompileError
 from .gitops import EXIT_GIT_FAILED as _EXIT_GIT_FAILED
 from .gitops import EXIT_HALF_WRITTEN as _EXIT_HALF_WRITTEN
@@ -742,8 +741,6 @@ def _route_now(
         verbs.VerbError,
         LedgerOpsError,
         CompileError,
-        ChezmoiAbort,
-        ChezmoiError,
     ) as exc:
         return _capture_to_pending(
             home,

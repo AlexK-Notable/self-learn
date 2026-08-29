@@ -174,12 +174,6 @@ NOT_REPO_TRUTH = {
     # rewrites it in place, by explicit user command (08 §3).
     "import_memory._drop_index_line": "~/.claude auto-memory (not a repo)",
     "import_memory.prune_memory": "~/.claude auto-memory (not a repo)",
-    # The chezmoi user-scope flow writes the chezmoi SOURCE dir and lets
-    # chezmoi's own repo commit it (doc 13 §4.3) — a repo we do not own
-    # and never commit, so our lock would mean nothing there.
-    "chezmoi._run": "the chezmoi source dir — chezmoi commits its own repo",
-    "chezmoi.compile_user_scope": "the chezmoi source dir (see chezmoi._run)",
-    "chezmoi.preflight_user_scope": "the chezmoi source dir (see chezmoi._run)",
     # INSIDE the ledger home, and still not its truth: --selftest's
     # round-trip probe writes a scratch record into a TemporaryDirectory
     # under the home and deletes it in the same breath. It is never staged,
@@ -599,9 +593,6 @@ def _cmd_functions() -> list[str]:
 #: hide in the first place.
 _ARGV_FOR = {
     "_cmd_canary": None,  # writes canaries.json (cache-local), not the ledger
-    "_cmd_chezmoi_adopt": None,  # A2 §10.5: writes only the dotfiles repo
-    # (its OWN git, chezmoi's), never the ledger — no _home_gate either,
-    # same reasoning as _cmd_canary/_cmd_prune_memory.
     "_cmd_doctor": [["doctor", "invocation"]],
     "_cmd_followup": [["followup", "done", "lrn-eeee0001"]],
     "_cmd_host": [
@@ -621,6 +612,8 @@ _ARGV_FOR = {
     "_cmd_reconcile": [["reconcile"]],
     "_cmd_recompile": [["recompile"]],
     "_cmd_report": [["report"]],
+    "_cmd_batch": [["batch", "{sheet}"]],
+    "_cmd_show": [["show", "lrn-eeee0001"]],
     "_cmd_serve": [["serve", "--max-ticks", "1"]],  # U-engine Phase 2:
     # `--max-ticks 1` bounds the scheduler loop to one tick so it fits
     # this held-lock harness (an unbounded `serve` would hang it). HP3:
@@ -736,12 +729,26 @@ class TestEveryCommandSurvivesAHeldLock:
         commit_all_local(home)
         clean_before = git(home, "status", "--porcelain").stdout
 
+        # U-verbs `_cmd_batch`: a minimal one-item sheet reusing this
+        # fixture's own `lrn-eeee0001` — `batch` must survive a held lock
+        # exactly like every single-verb surface (BAT4's sentinel-hold
+        # discipline is orthogonal to this invariant; this only asserts
+        # the commit_lock leg).
+        sheet_path = tmp_path / "sheet.yaml"
+        sheet_path.write_text(
+            "version: 1\n"
+            "items:\n"
+            '  - {id: lrn-eeee0001, verb: reject, note: "held-lock invariant sheet"}\n',
+            encoding="utf-8",
+        )
+
         argv = [
             a.format(
                 host=str(env.host),
                 host2=str(host2),
                 empty=str(tmp_path / "empty"),
                 project_slug=str(env.host),
+                sheet=str(sheet_path),
             )
             for a in argv
         ]

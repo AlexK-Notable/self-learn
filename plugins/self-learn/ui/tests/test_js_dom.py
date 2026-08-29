@@ -337,8 +337,8 @@ def _seed_noop_ledger(tmp_path: Path) -> Path:
         make_behavior(
             scope="user",
             record_id=REC_USER,
-            trigger="About to hand-edit a chezmoi-managed dotfile.",
-            instruction="Run chezmoi apply instead.",
+            trigger="About to hand-edit a synced dotfile directly.",
+            instruction="Run the sync script instead.",
         ),
     )
     seed_record(
@@ -947,57 +947,9 @@ class TestReloadDeferLegD:
         _assert_reloaded(page)
 
 
-class TestReloadDeferLegE:
-    """Leg (e), A2 §10.4(a): a [data-adopt-offer] element defers — same
-    hazard as leg (d) (the post-route chezmoi-adopt offer also renders
-    UNARMED first, so leg (c) alone would not hold it). Two releases,
-    unlike (d): navigating away (mirrors (d) exactly), AND tapping "Not
-    now", which wipes the `#adopt-offer-*` element client-side without
-    any navigation (§10.2: no persisted declined-state) — both must
-    release the hold."""
-
-    def test_adopt_offer_defers_then_fires_on_removal(
-        self, page: "Page", server: ServerHandle
-    ) -> None:
-        _open(page, server, "/")
-        page.evaluate(
-            "document.body.insertAdjacentHTML('beforeend', "
-            "'<div data-adopt-offer=\"true\" id=\"t-adopt-offer\">"
-            "<div class=\"action-bar\" data-armed=\"false\"></div></div>')"
-        )
-        _arm_reload_sentinel(page)
-
-        server.push_refresh("front")
-        _assert_deferred(page)  # leg (e) holds — even though nothing is armed
-
-        # Navigating away (element gone) is one pinned release, same as (d).
-        page.evaluate("document.getElementById('t-adopt-offer').remove()")
-        _dispatch_htmx(page, "htmx:afterSettle", "/record/x/action/arm")
-        _assert_reloaded(page)
-
-    def test_adopt_offer_defers_then_fires_on_decline_swap(
-        self, page: "Page", server: ServerHandle
-    ) -> None:
-        """The non-navigation release: "Not now" swaps `#adopt-offer-*`'s
-        outerHTML to empty (the dismiss route's real response shape) —
-        the marker is gone without leaving the page, and that alone must
-        release leg (e)."""
-        _open(page, server, "/")
-        page.evaluate(
-            "document.body.insertAdjacentHTML('beforeend', "
-            "'<div data-adopt-offer=\"true\" id=\"t-adopt-offer\">"
-            "<div class=\"action-bar\" data-armed=\"false\"></div></div>')"
-        )
-        _arm_reload_sentinel(page)
-
-        server.push_refresh("front")
-        _assert_deferred(page)
-
-        # Simulate the dismiss route's outerHTML swap to empty content —
-        # the element (and its marker) disappears with no navigation.
-        page.evaluate("document.getElementById('t-adopt-offer').outerHTML = ''")
-        _dispatch_htmx(page, "htmx:afterSettle", "/record/x/adopt-offer/dismiss")
-        _assert_reloaded(page)
+# TestReloadDeferLegE retired — U-hostmode Phase 2 (2026-08-28)
+# deleted the adopt offer leg (e) deferred for; see app.js's own
+# docblock note at reloadDeferred().
 
 
 class TestReloadDeferLegF:

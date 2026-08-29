@@ -555,7 +555,7 @@ class TestCommitGate:
         warnings: list[str] = []
         compile_result, host_sha = verbs._host_phase(
             env.ledger, spec, record.id, routed_record=record, note=None,
-            chezmoi_bin="chezmoi", message="self-learn: apply", warnings=warnings,
+            message="self-learn: apply", warnings=warnings,
         )
 
         assert compile_result.applied is False
@@ -581,7 +581,7 @@ class TestCommitGate:
         warnings: list[str] = []
         compile_result, host_sha = verbs._host_phase(
             env.ledger, spec, rec.id, routed_record=resolved_rec, note=None,
-            chezmoi_bin="chezmoi", message="self-learn: apply", warnings=warnings,
+            message="self-learn: apply", warnings=warnings,
         )
         assert compile_result.changed is False
         assert host_sha is None  # (a) no commit
@@ -636,7 +636,7 @@ class TestCommitGate:
         warnings: list[str] = []
         compile_result, host_sha = verbs._host_phase(
             env.ledger, spec, record.id, routed_record=record, note=None,
-            chezmoi_bin="chezmoi", message="self-learn: apply", warnings=warnings,
+            message="self-learn: apply", warnings=warnings,
         )
         result = verbs.VerbResult(
             action="route", record_id=record.id, commit_message="x", commit_sha="y",

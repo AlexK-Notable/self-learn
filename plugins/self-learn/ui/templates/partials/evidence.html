@@ -2,8 +2,8 @@
    evidence spec). One surface, two legs (§2.2 ruling) — this is the
    SUCCESS leg beside action_bar.html's `error` leg, included from
    there (never rendered standalone). Also reached, via `evidence=`
-   threaded through contradicts_offer.html/adopt_offer.html's own
-   `{% with %}` blocks, composed alongside those offers — §3.4's
+   threaded through contradicts_offer.html's own
+   `{% with %}` block, composed alongside that offer — §3.4's
    ruling: an offer is an ADDITIONAL decision about a resolution that
    already happened, so suppressing the evidence would hide the thing
    the offer is about.
@@ -43,8 +43,8 @@
       stays written on disk, outside git, forever — not committing it
       is the feature, not a gap.
       {% else %}
-      This user-scope file is not tracked by chezmoi, so it will not
-      sync to your other machines.
+      This target lives on a plain-mode host: canon is written here but
+      nothing is committed, so this write has no git history.
       {% endif %}</p>
     {% elif evidence.outcome_state == "drift" %}
     <p class="evidence-drift">Routed <code>{{ evidence.record_id }}</code> —

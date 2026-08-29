@@ -392,17 +392,28 @@ class TestRescopeProposalSweep:
 
 class TestRescopeRefusals:
     def test_refuses_resolved_record(self, env):
+        """S-54 / GUARD1 (U-verbs): `rescope` now refuses through the ONE
+        guard vocabulary, `ledger_ops.require_status` — replacing the
+        hand-rolled status check this test used to pin the message of.
+        Refuse-on-status intent is unchanged; the wording moved."""
         rec = env.seed_user_record()
         verbs.reject(env.home, rec.id, no_push=True)
-        with pytest.raises(verbs.VerbError, match="supersede is the correction"):
+        with pytest.raises(verbs.VerbError, match="needs status pending/deferred"):
             verbs.rescope(env.home, rec.id, to="skill:s")
 
-    def test_refuses_project_scoped_source(self, env):
+    def test_project_scoped_source_now_succeeds(self, env):
+        """S-54 / MOVE1 (U-verbs): `rescope` widens beyond user<->skill —
+        a project-scoped source now moves to `user` instead of refusing.
+        `test_u_verbs.py::test_move_matrix` covers the full 8-cell
+        matrix; this is the direct regression guard on THIS verb's own
+        suite against the OLD "rehome's territory" restriction."""
         rec = make_knowledge(scope="project")
         create_record(env.home, rec, project_path=env.host)
         commit_all(env.home, "project record seed")
-        with pytest.raises(verbs.VerbError, match="rehome"):
-            verbs.rescope(env.home, rec.id, to="user")
+        verbs.rescope(env.home, rec.id, to="user")
+        moved = env.pending_user(rec.id)
+        assert moved.is_file()
+        assert Record.from_path(moved).scope == "user"
 
     def test_refuses_project_target(self, env):
         rec = env.seed_user_record()
@@ -451,10 +462,17 @@ class TestRescopeRefusals:
         with pytest.raises(verbs.VerbError, match="already lives in"):
             verbs.rescope(env.home, rec.id, to="user")
 
-    def test_refuses_skill_to_skill(self, env):
+    def test_skill_to_skill_now_succeeds(self, env):
+        """S-54 / MOVE1 leg / §3.2c (U-verbs, ruling R2): skill→skill is
+        ruled IN — FW-114's blocker (a carried proposal's judgment
+        drift) is moot because u-rescope §5 decided SWEEP, so nothing is
+        ever carried across a bucket boundary. Regression guard against
+        the OLD "dated future work" refusal resurfacing."""
         rec = env.seed_skill_record("s")
-        with pytest.raises(verbs.VerbError, match="dated future work"):
-            verbs.rescope(env.home, rec.id, to="skill:t")
+        verbs.rescope(env.home, rec.id, to="skill:t")
+        moved = env.pending_t(rec.id)
+        assert moved.is_file()
+        assert Record.from_path(moved).scope == "skill:t"
 
     def test_refuses_destination_collision_before_creating_anything(self, env):
         # Direction chosen deliberately: `find_record_path` searches
@@ -581,7 +599,16 @@ class TestRescopeMvFirstOrdering:
 
         monkeypatch.setattr(Record, "write", boom)
         with pytest.raises(RuntimeError):
-            ledger_ops.rescope_record(env.home, rec.id, "skill:s", env.bucket_s)
+            # U-verbs §3.2a (ruling R1): `rescope_record` is replaced by
+            # `move_record`, the ONE file-op behind both `rehome` and
+            # `rescope` — same mv-then-write ordering discipline this
+            # test pins, called through the new keyword grammar.
+            ledger_ops.move_record(
+                env.home,
+                rec.id,
+                target_scope="skill:s",
+                target_bucket=env.bucket_s,
+            )
 
         status = git(env.home, "status", "--porcelain").stdout
         assert status.strip().startswith("R "), status
@@ -625,10 +652,14 @@ class TestRescopeMvFirstOrdering:
 
         monkeypatch.setattr(Record, "write", spy_write)
 
-        ledger_ops.rescope_record(env.home, rec.id, "skill:s", env.bucket_s)
+        # U-verbs §3.2a (ruling R1): the file-op is `move_record` now —
+        # same ordering discipline, new keyword call shape.
+        ledger_ops.move_record(
+            env.home, rec.id, target_scope="skill:s", target_bucket=env.bucket_s
+        )
 
         assert order == ["mv", "write"], (
-            "rescope_record must git-mv BEFORE rewriting the record at "
+            "move_record must git-mv BEFORE rewriting the record at "
             "the destination (§6.4) — a write-then-mv order turns a "
             f"kill into a silently-committable corruption; observed: {order}"
         )

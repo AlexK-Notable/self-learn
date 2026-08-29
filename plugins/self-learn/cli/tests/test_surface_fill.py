@@ -16,8 +16,8 @@ no refread hook script at that sandboxed path) without ever touching a
 real `~/.claude`.
 
 Hygiene trap (blind-review F5): ``verbs.surface_fill`` resolves a
-user-scope ``claude-md`` target to the REAL chezmoi-managed
-``~/.claude/CLAUDE.md`` unless ``user_claude_md`` is explicitly
+user-scope ``claude-md`` target to the REAL user-scope canon file,
+``~/.claude/CLAUDE.md``, unless ``user_claude_md`` is explicitly
 overridden — exactly like every other ``_resolve_target`` call site
 (``route`` included). Never call it, or ``cli._add_surface_fill``, on a
 user-scope record without passing ``user_claude_md`` — a CLI-path test

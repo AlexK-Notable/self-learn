@@ -1948,10 +1948,9 @@ def test_wr7_seam_is_only_called_from_the_three_call_sites():
         "hosts.py",
         "ledger.py",
         "ledger_ops.py",
-        "chezmoi.py",
         "hook_compiler.py",
     )
-    assert len(excluded_by_name) == 11
+    assert len(excluded_by_name) == 10
 
     # F3 (gate NOTE-6): the tuple above only fails if someone EDITS it --
     # it says nothing about whether the names it lists still exist. A

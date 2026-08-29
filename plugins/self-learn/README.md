@@ -38,14 +38,12 @@ self-learn --selftest
 ## The offer line (S-15) — a documented install step
 
 The capture loop starts with Claude *offering* to record a lesson. That
-behavior comes from one paragraph in `~/.claude/CLAUDE.md` — which is
-**chezmoi-managed**: edit it through chezmoi (see the `chezmoi` skill),
-never the target file directly, or the next `chezmoi apply` reverts it.
+behavior comes from one paragraph in `~/.claude/CLAUDE.md` — a **plain
+host**: edit the file directly, there is no separate managed source to
+run through first, and self-learn itself never commits it.
 
 ```bash
-chezmoi edit ~/.claude/CLAUDE.md   # add the paragraph below, then:
-chezmoi apply
-cd $(chezmoi source-path) && git add -A && git commit -m "add self-learn offer line" && git push
+$EDITOR ~/.claude/CLAUDE.md   # add the paragraph below, then save
 ```
 
 Paste this text exactly (load-bearing spec — 08 §1; revocable by deleting

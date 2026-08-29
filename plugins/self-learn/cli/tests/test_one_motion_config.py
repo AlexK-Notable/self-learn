@@ -236,7 +236,7 @@ class TestEnabledHook:
         YAML(typ="safe").dump(hook_input(), buf)
         payload.write_text(buf.getvalue(), encoding="utf-8")
         rc = cli.main(
-            ["teach", "chezmoi guard", "--skill", "s", "--type", "behavior",
+            ["teach", "dotfiles guard", "--skill", "s", "--type", "behavior",
              "--trigger", TRIGGER, "--instruction", "Stop the container first.",
              "--route", "--dest", "hook", "--hook-input", str(payload),
              "--no-push"]
