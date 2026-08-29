@@ -1328,25 +1328,46 @@ class TestClickActionSettleGating:
         )
         _poll_held_actively(page, held, timeout=3.0)
 
-    def test_bare_after_swap_with_no_settle_still_fires_via_fallback_timer(
+    def test_bare_after_swap_with_no_settle_drops_via_fallback_timer(
         self, page: "Page", server: ServerHandle
     ) -> None:
-        """N2: makes the 500ms fallback load-bearing. Only `htmx:afterSwap`
-        is ever dispatched here — no `afterSettle`, no F14 leg, ever
-        arrives — so ONLY the fallback timer can release this click.
-        Mutation check: delete the fallback timer from clickAction() and
-        this goes RED (the held POST never arrives, `_wait_for_held`
-        times out); today it is GREEN."""
+        """N2, corrected for N17's fail-closed drop semantics (code
+        gate r4): makes the 500ms fallback load-bearing. Only
+        `htmx:afterSwap` is ever dispatched here -- no `afterSettle`,
+        no F14 leg, ever arrives -- so nothing but a timeout can ever
+        resolve this click's wait. Before N17, "resolve" meant FIRE
+        (the fallback executed the click regardless); the gate proved
+        that firing on a mere timeout -- as opposed to a genuine
+        settle -- is exactly how the original bug re-enters under CPU
+        starvation (a real, still-in-flight swap gets treated as
+        "safe" once 500ms have passed, when the only safe signal is
+        its own real settle). So a swap that NEVER settles must now
+        DROP, not fire: no POST ever arrives, and exactly one
+        `console.warn` says so. Mutation check: delete the fallback
+        timer from clickAction() entirely and this goes RED a
+        different way (no warning ever fires, `_poll_held_actively`-
+        style waits would hang instead of observing a clean drop);
+        today it is GREEN."""
         _open(page, server, f"/record/{REC_BRIEF}")
         page.evaluate(
             "document.dispatchEvent(new CustomEvent('htmx:afterSwap', {detail: {}}))"
         )
+        warnings: list[str] = []
+        page.on(
+            "console",
+            lambda msg: warnings.append(msg.text) if msg.type == "warning" else None,
+        )
         held = _hold_post(page, "/action/arm")
         page.keyboard.press("e")
-        elapsed = _poll_held_actively(page, held, timeout=5.0)
-        assert 0.45 <= elapsed < 2.0, (
-            f"elapsed {elapsed:.3f}s is not consistent with the 500ms fallback alone "
-            "(too fast: something else fired it; too slow: the fallback may be broken)"
+        for _ in range(60):
+            if any("dropped" in w.lower() for w in warnings):
+                break
+            page.evaluate("() => true")
+            time.sleep(0.02)
+        drop_warnings = [w for w in warnings if "dropped" in w.lower()]
+        assert len(drop_warnings) == 1, f"expected exactly one drop warning, got: {warnings}"
+        assert "route" not in held, (
+            "the bare, never-settling swap fired a click instead of dropping it"
         )
 
     def test_two_overlapping_swaps_require_two_settles(
@@ -1532,25 +1553,112 @@ class TestClickActionSettleGating:
         )
         _poll_held_actively(page, held, timeout=3.0)
 
-    def test_dispatch_level_fallback_fires_even_under_a_continuous_swap_stream(
+    def test_dispatch_fallback_drops_when_swap_has_not_really_settled(
         self, page: "Page", server: ServerHandle
     ) -> None:
-        """N12 (code gate r3): the per-TOKEN 500ms fallback bounds
-        each individual pendingSwaps entry, but with no bound of its
-        own on the queued DISPATCH beyond that, a continuous stream of
-        overlapping swaps (a new one always landing before the bag
-        empties) can keep the bag non-empty far longer than any single
-        token's own 500ms -- stranding a queued click for as long as
-        the stream runs. Measured without a dispatch-level bound:
-        3503ms. No known production driver produces this today, but
-        the bound is cheap; this test drives the stream from JS (a
-        `setInterval` dispatching a fresh `afterSwap` every 150ms, for
-        3s -- well past any single token's own 500ms) and asserts the
-        deferred click still fires close to the 500ms fallback window
-        regardless."""
+        """N17 (code gate r4, fail-closed): the dispatch-level 500ms
+        fallback (N12) is a LIVENESS bound only -- it must never fire a
+        click into content htmx has not finished wiring. Reproduced by
+        the gate: with `htmx.config.defaultSettleDelay` raised to
+        1500ms (CPU starvation can stretch a real settle just as far),
+        the r3/r4 dispatch fired BLIND at its own 500ms mark, landing
+        on a `<button type="submit">` htmx had not yet attached its
+        own listener to -- the form's native, un-intercepted
+        submission ran instead: a plain GET to the current URL with
+        its hidden fields serialized as a query string, navigating the
+        page out from under everything (the ORIGINAL bug this whole
+        unit exists to fix, re-entering under CPU starvation). Ruling:
+        when the fallback fires and the swap has NOT settled, DROP the
+        dispatch -- never `.click()` a form that has not settled --
+        clear the pending entry (liveness kept: the queue itself is
+        not stuck), leave the bar armed so the next key press
+        dispatches normally, and warn once, naming the record and the
+        elapsed time."""
+        _open(page, server, f"/record/{REC_BRIEF}")
+        page.evaluate("htmx.config.defaultSettleDelay = 1500")
+        warnings: list[str] = []
+        page.on(
+            "console",
+            lambda msg: warnings.append(msg.text) if msg.type == "warning" else None,
+        )
+        disarm_posts: list[str] = []
+
+        def handler(route) -> None:
+            if route.request.method == "POST" and route.request.url.endswith(
+                "/action/disarm"
+            ):
+                disarm_posts.append(route.request.url)
+            route.continue_()
+
+        page.route("**/*", handler)
+
+        final_url_before = page.url
+        page.keyboard.press("e")  # arms the bar -- fires immediately (bag was empty)
+        page.wait_for_selector('.action-bar[data-armed="true"]')  # appears at SWAP time
+
+        # Disarm immediately, while the arm swap is still mid-settle
+        # (the 1500ms override has not elapsed) -- this defers via
+        # pendingSwaps, same as any other settle-gated dispatch.
+        page.keyboard.press("s")  # any non-Enter, non-n key while armed -> disarm
+        time.sleep(0.7)  # past the 500ms dispatch fallback, still well under 1500ms
+
+        assert len(disarm_posts) == 0, (
+            f"the dispatch fired into an unsettled swap: {disarm_posts}"
+        )
+        assert page.url == final_url_before, (
+            f"navigated away: {page.url!r} (the original bug, re-entered)"
+        )
+        assert page.query_selector('.action-bar[data-armed="true"]') is not None, (
+            "the bar disarmed even though the dispatch should have been dropped"
+        )
+        # CDP console-event delivery measurably lags a pure Python-side
+        # sleep on this host (same phenomenon _poll_held_actively works
+        # around for network events) -- an active poke flushes it.
+        for _ in range(25):
+            if any("dropped" in w.lower() for w in warnings):
+                break
+            page.evaluate("() => true")
+            time.sleep(0.02)
+        drop_warnings = [w for w in warnings if "dropped" in w.lower()]
+        assert len(drop_warnings) == 1, f"expected exactly one drop warning, got: {warnings}"
+        assert REC_BRIEF in drop_warnings[0]
+
+        time.sleep(1.0)  # let the real 1500ms settle actually complete
+
+        page.keyboard.press("s")  # press again -- the bag is empty now, fires for real
+        deadline = time.monotonic() + 3.0
+        while len(disarm_posts) == 0 and time.monotonic() < deadline:
+            page.evaluate("() => true")
+            time.sleep(0.02)
+        assert len(disarm_posts) == 1, f"expected exactly one disarm POST, got: {disarm_posts}"
+
+    def test_dispatch_level_fallback_drops_under_a_continuous_swap_stream(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        """N12 (code gate r3), corrected for N17's drop semantics (code
+        gate r4): the per-TOKEN 500ms fallback bounds each individual
+        pendingSwaps entry, but with no bound of its own on the queued
+        DISPATCH beyond that, a continuous stream of overlapping swaps
+        (a new one always landing before the bag empties) can keep the
+        bag non-empty far longer than any single token's own 500ms.
+        Before N17, the dispatch FIRED once its own 500ms fallback
+        expired regardless of whether the bag had actually emptied --
+        which reproduced the original bug (a click landing on unwired
+        content) whenever a real stream outlasted 500ms without ever
+        truly settling. After N17 that firing must not happen: the
+        dispatch is DROPPED instead once its own fallback expires
+        while the bag is still non-empty -- no POST, exactly one
+        console.warn, and the dropped intent never revives even once
+        the stream eventually stops and the bag empties on its own --
+        proven here by a FRESH keypress firing normally afterward."""
         _open(page, server, f"/record/{REC_BRIEF}")
         page.evaluate(
             "document.dispatchEvent(new CustomEvent('htmx:afterSwap', {detail: {}}))"
+        )
+        warnings: list[str] = []
+        page.on(
+            "console",
+            lambda msg: warnings.append(msg.text) if msg.type == "warning" else None,
         )
         held = _hold_post(page, "/action/arm")
         page.keyboard.press("e")
@@ -1564,10 +1672,32 @@ class TestClickActionSettleGating:
                 }, 150);
             }"""
         )
-        elapsed = _poll_held_actively(page, held, timeout=5.0)
-        assert elapsed < 1.0, (
-            f"a queued dispatch waited {elapsed:.3f}s under a continuous swap "
-            "stream (no dispatch-level bound protecting it)"
+        # give the dispatch's own 500ms fallback time to resolve one
+        # way or the other, well before the stream (~3s) or its tail
+        # tokens' own self-eviction (up to ~3.5s) could empty the bag.
+        time.sleep(1.0)
+        assert "route" not in held, (
+            "the dispatch fired into unwired content under a continuous, "
+            "never-settling swap stream -- it must be DROPPED instead"
+        )
+        # Same CDP console-delivery lag as above -- poke to flush it.
+        for _ in range(25):
+            if any("dropped" in w.lower() for w in warnings):
+                break
+            page.evaluate("() => true")
+            time.sleep(0.02)
+        drop_warnings = [w for w in warnings if "dropped" in w.lower()]
+        assert len(drop_warnings) == 1, f"expected exactly one drop warning, got: {warnings}"
+
+        # once the stream stops (~3s) and every token has also
+        # self-evicted, the bag empties naturally -- the system
+        # healed, which is what N12 always meant by "bounded": a
+        # FRESH keypress now dispatches normally.
+        time.sleep(3.0)
+        page.keyboard.press("e")
+        elapsed = _poll_held_actively(page, held, timeout=2.0)
+        assert elapsed < 0.3, (
+            f"a fresh keypress after the stream ended was not immediate: {elapsed:.3f}s"
         )
 
 

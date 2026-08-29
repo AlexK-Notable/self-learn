@@ -168,18 +168,45 @@
       // bound THIS dispatch -- a continuous stream of overlapping
       // swaps (a new token always landing before the bag empties) can
       // keep the bag non-empty far longer than any single token's own
-      // 500ms, stranding a queued click for as long as the stream
-      // runs (measured without a bound of its own: 3503ms). No known
-      // production driver produces that stream today, but the bound
-      // is cheap, so this dispatch gets its OWN independent 500ms
-      // fallback too -- whichever resolves first (the bag emptying,
-      // or this timer) releases it; releasePendingDispatches() clears
-      // the other so neither can double-fire it.
+      // 500ms. So this dispatch also gets its OWN independent 500ms
+      // fallback timer -- but see N17 below for what that timer does
+      // when it actually fires; it is bounded, not a license to fire.
+      //
+      // N17 (code gate r4, fail-closed): this timer firing at ALL
+      // means the bag did NOT empty within 500ms of this dispatch --
+      // if it had, releasePendingDispatches() would already have
+      // cleared this timer and fired the click for real (see there).
+      // The gate reproduced what firing BLIND here actually does:
+      // with a real settle delay of 1500ms (CPU starvation stretches
+      // a real one just as far), the r3 dispatch fired at its own
+      // 500ms mark onto a `<button type="submit">` htmx had not yet
+      // finished wiring -- the form's native, un-intercepted
+      // submission ran instead, a plain GET to the current URL with
+      // its hidden fields as a query string, navigating the page out
+      // from under everything. That is the ORIGINAL bug this whole
+      // unit exists to fix, re-entering under CPU starvation. This
+      // 500ms bound is a LIVENESS guarantee (never wedge a keystroke
+      // forever waiting on a swap that will never resolve) -- it is
+      // NOT a license to act on a swap that merely hasn't resolved
+      // YET. So: never `.click()` a form that has not settled. DROP
+      // the dispatch instead -- the entry is discarded (liveness
+      // kept: nothing is left pending, so nothing is stuck), the bar
+      // is left exactly as it was (nothing was clicked, so nothing
+      // changed -- the NEXT keypress dispatches normally, and fires
+      // for real once the swap actually does settle), and exactly one
+      // `console.warn` names the record and how long it waited, so a
+      // dropped keystroke is diagnosable instead of silently absent.
+      const deferredAt = performance.now();
       const entry = { fire: fire, timer: null };
       entry.timer = setTimeout(function () {
         const idx = pendingDispatches.indexOf(entry);
         if (idx !== -1) pendingDispatches.splice(idx, 1);
-        entry.fire();
+        const elapsed = Math.round(performance.now() - deferredAt);
+        console.warn(
+          'clickAction("' + action + '"): dropped -- record ' +
+            recordAtDefer + "'s swap had not settled after " + elapsed +
+            "ms (fallback bound); never fired"
+        );
       }, 500);
       pendingDispatches.push(entry);
     } else {
@@ -748,10 +775,26 @@
   // still being a real bound) so a swap that somehow never settles and
   // never fails can't wedge key dispatch permanently — defense in
   // depth under the bag/queue above, not the primary guard.
+  //
+  // N17 (code gate r4, fail-closed): this timer firing means the swap
+  // did NOT settle or fail within the bound -- it does NOT mean the
+  // swap is done; it may still be genuinely in flight (a real settle
+  // delay stretched by CPU starvation, exactly what the gate
+  // reproduced at 1500ms). Removing the token here is bookkeeping
+  // ONLY -- it must never itself drain pendingDispatches. Measured
+  // live: without this split, an orphaned token's own timeout could
+  // bring the bag to zero and releasePendingDispatches() would fire a
+  // QUEUED click for real onto a swap that had only TIMED OUT, never
+  // actually settled -- the exact native-GET bug N17 exists to close,
+  // reached through this second door instead of the dispatch's own
+  // fallback. Only removePendingSwapForKey() below (driven by a REAL
+  // htmx:afterSettle or an F14 failure that owns this key) may ever
+  // call releasePendingDispatches() -- a timeout is a reason to stop
+  // WAITING on this one token, never a reason to declare victory.
   function addPendingSwap(key) {
     const token = { key: key, timer: null };
     token.timer = setTimeout(function () {
-      removePendingSwap(token);
+      removePendingSwapSilently(token);
     }, 500);
     pendingSwaps.push(token);
   }
@@ -762,20 +805,27 @@
   // failure leg (which may legitimately own NONE -- see M1/M2 above:
   // a request whose OWN key never swapped has no token to remove,
   // regardless of what target it shares with some other request).
+  // This is the ONLY path that may drain pendingDispatches -- see
+  // N17's note on addPendingSwap above for why.
   function removePendingSwapForKey(key) {
     const idx = pendingSwaps.findIndex(function (t) {
       return t.key === key;
     });
     if (idx === -1) return;
-    removePendingSwap(pendingSwaps[idx]);
-  }
-
-  function removePendingSwap(token) {
-    const idx = pendingSwaps.indexOf(token);
-    if (idx === -1) return; // already removed by another leg (or N9's own timer)
+    const token = pendingSwaps[idx];
     clearTimeout(token.timer);
     pendingSwaps.splice(idx, 1);
     if (pendingSwaps.length === 0) releasePendingDispatches();
+  }
+
+  // A token's own orphan/timeout removal (N17): bookkeeping only,
+  // deliberately never drains pendingDispatches -- see addPendingSwap's
+  // own comment.
+  function removePendingSwapSilently(token) {
+    const idx = pendingSwaps.indexOf(token);
+    if (idx === -1) return; // already removed by a real settle/failure
+    clearTimeout(token.timer);
+    pendingSwaps.splice(idx, 1);
   }
 
   function releasePendingDispatches() {
