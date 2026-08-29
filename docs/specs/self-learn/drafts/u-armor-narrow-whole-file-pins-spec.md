@@ -1,5 +1,8 @@
 # U-armor — narrow the whole-file pins to the fixtures, and give the behaviour files a property guard
 
+**Status:** BUILT — blind code gate r2 CLEAN (`G5hZtmGKQW-Umdcil936B`);
+shipped by the landing merge, which advances ANCHOR by §4.2.
+
 **r7 — SOUND.** Blind spec gate r5 (delta) returned **SOUND (0 blockers,
 0 majors, 2 prose nits)**; both nits are folded here. Authored in the
 throwaway worktree `.claude/worktrees/u-armor-spec`. **Anchor: `3b8e037`**
@@ -1235,6 +1238,12 @@ the gate's evidence for the next round.
 
 *(r4, gate B-1: r3 defined it correctly here and then shipped `fe5a012` —
 the merge — in §4.1, which is the value control (iii) below rejects.)*
+
+*(r2 gate, N-1: while a branch is in flight — before its own landing
+merge exists — `ARM5`'s own walk root narrows this literal rule to
+`git merge-base master HEAD`, i.e. the master content `HEAD` has
+actually absorbed, which coincides with it exactly once the landing
+merge below lands and `HEAD` contains that same `master` tip.)*
 
 **The landing chain, in order.** The re-anchor is not a follow-up commit:
 

@@ -1085,7 +1085,11 @@ def _latest_first_parent_merge_root() -> str:
     reasoning; delegates to the shared `_incorporated_master_point`,
     which is always the master content `HEAD` has actually absorbed --
     never a fold commit HEAD made itself, never content master gained
-    afterward that HEAD hasn't merged yet."""
+    afterward that HEAD hasn't merged yet. (r2 gate, N-1: this is
+    `§4.2`'s own literal-`master` rule narrowed to what HEAD has
+    absorbed while this branch is still in flight -- the two forms
+    coincide exactly once the landing merge lands and HEAD contains
+    that same `master` tip.)"""
     return _incorporated_master_point()
 
 
@@ -1109,7 +1113,9 @@ def test_arm5_anchor_is_not_stale():
     same moment `--remeasure`'s own production logic
     (`_resolve_new_anchor`) trusts a fresh `master` query too -- just
     computed from HEAD's side of that same absorption point instead of
-    master's live tip."""
+    master's live tip. (r2 gate, N-2: leg (c) is commit-scoped
+    (`merge..HEAD`) by design -- an uncommitted protected-file edit is
+    not this leg's job, and is already caught by UN5/BEH1/BEH3.)"""
     root = _latest_first_parent_merge_root()
     merge = subprocess.run(
         ["git", "rev-list", "--first-parent", "--merges", "-1", root],
