@@ -617,7 +617,7 @@ class TestMove:
 
     def test_move8_preserves_deferral(self, env2):
         record = env2.seed(scope="skill:a")
-        defer_record(env2.home, record.id, until=(date.today() + timedelta(days=30)))
+        defer_record(env2.home, record.id, until=(datetime.now(timezone.utc).date() + timedelta(days=30)))
         result = verbs.rehome(env2.home, record.id, to=str(env2.host_b), no_push=True)
         new_path = env2.bucket_b / "pending" / f"{record.id}.md"
         moved = Record.from_path(new_path)
@@ -698,10 +698,10 @@ class TestState:
     def test_state1_defer_past_date_refuses(self, env2):
         record = env2.seed(scope="skill:a")
         before = tree_hash(env2.home)
-        yesterday = (date.today() - timedelta(days=1)).isoformat()
+        yesterday = (datetime.now(timezone.utc).date() - timedelta(days=1)).isoformat()
         with pytest.raises(LedgerOpsError) as exc:
             defer_record(env2.home, record.id, until=yesterday)
-        assert date.today().isoformat() in str(exc.value)
+        assert datetime.now(timezone.utc).date().isoformat() in str(exc.value)
         assert "undefer" in str(exc.value)
         assert tree_hash(env2.home) == before
 
@@ -710,10 +710,30 @@ class TestState:
         body = pre.split("def defer_record")[1].split("\ndef ")[0]
         assert "today" not in body
 
+    def test_state1b_defer_clock_is_one_utc_clock(self, env2):
+        """One clock, injectable: at 23:30 UTC on day D, ``--until D`` is
+        accepted and ``--until D-1`` refuses naming ``D UTC`` — whatever the
+        host's local date is (the 2026-08-28 17:00 PDT red: two clocks)."""
+        d = date(2026, 8, 29)
+        clock = datetime(2026, 8, 29, 23, 30, tzinfo=timezone.utc)
+        rec_ok = env2.seed(scope="skill:a")
+        [p_ok] = defer_record(env2.home, rec_ok.id, until=d.isoformat(), now=clock)
+        assert Record.from_path(p_ok).deferred_until == "2026-08-29"
+        rec_no = env2.seed(scope="skill:a")
+        before = tree_hash(env2.home)
+        with pytest.raises(LedgerOpsError) as exc:
+            defer_record(env2.home, rec_no.id, until=(d - timedelta(days=1)).isoformat(), now=clock)
+        assert "(today is 2026-08-29 UTC)" in str(exc.value)
+        assert tree_hash(env2.home) == before
+        # the default +30 d counts from the SAME clock
+        rec_def = env2.seed(scope="skill:a")
+        [p_def] = defer_record(env2.home, rec_def.id, now=clock)
+        assert Record.from_path(p_def).deferred_until == "2026-09-28"
+
     def test_state2_defer_today_is_accepted(self, env2, capsys, monkeypatch):
         record = env2.seed(scope="skill:a")
         monkeypatch.setenv("SELF_LEARN_HOME", str(env2.home))
-        today = date.today().isoformat()
+        today = datetime.now(timezone.utc).date().isoformat()
         rc = cli.main(["defer", record.id, "--until", today, "--no-push"])
         assert rc == 0
         rc = cli.main(["list", "--json"])
@@ -725,7 +745,7 @@ class TestState:
 
     def test_state3_undefer(self, env2):
         record = env2.seed(scope="skill:a")
-        defer_record(env2.home, record.id, until=(date.today() + timedelta(days=10)))
+        defer_record(env2.home, record.id, until=(datetime.now(timezone.utc).date() + timedelta(days=10)))
         deferred = Record.from_path(env2.bucket_skill_a / "pending" / f"{record.id}.md")
         assert deferred.deferred_count == 1
         result = verbs.undefer(env2.home, record.id, no_push=True)
@@ -1076,7 +1096,7 @@ class AllVerbsSheetEnv:
         # undefer: deferred
         create_record(home, make_knowledge(scope="skill:a", record_id=ids["undefer"]))
         commit_all(home, "seed undefer")
-        defer_record(home, ids["undefer"], until=(date.today() + timedelta(days=5)))
+        defer_record(home, ids["undefer"], until=(datetime.now(timezone.utc).date() + timedelta(days=5)))
 
         # reopen: rejected
         create_record(home, make_knowledge(scope="skill:a", record_id=ids["reopen"]))
@@ -1126,7 +1146,7 @@ class AllVerbsSheetEnv:
         lines = ["version: 1", "items:"]
         lines.append(f"  - {{id: {ids['route']}, verb: route, dest: skill-md}}")
         lines.append(f"  - {{id: {ids['reject']}, verb: reject}}")
-        lines.append(f"  - {{id: {ids['defer']}, verb: defer, until: \"{(date.today() + timedelta(days=20)).isoformat()}\"}}")
+        lines.append(f"  - {{id: {ids['defer']}, verb: defer, until: \"{(datetime.now(timezone.utc).date() + timedelta(days=20)).isoformat()}\"}}")
         lines.append(f"  - {{id: {ids['undefer']}, verb: undefer}}")
         lines.append(f"  - {{id: {ids['reopen']}, verb: reopen}}")
         lines.append(f"  - {{id: {ids['graduate']}, verb: graduate}}")
@@ -1705,7 +1725,7 @@ class TestUnaffected:
         assert verb_subject(env2.home) == f"self-learn: reject {r_reject.id}"
 
         r_defer = env2.seed(scope="skill:a")
-        until = (date.today() + timedelta(days=30)).isoformat()
+        until = (datetime.now(timezone.utc).date() + timedelta(days=30)).isoformat()
         assert cli.main(["defer", r_defer.id, "--until", until, "--no-push"]) == 0
         assert verb_subject(env2.home) == f"self-learn: defer {r_defer.id} until {until}"
 
@@ -1822,12 +1842,23 @@ class TestUnaffected:
         assert proc.returncode == 0, proc.stdout[-4000:] + proc.stderr[-2000:]
 
     def test_un5_no_armor_sha_moves(self):
+        """2026-08-28: retargeted from `test_worker_contract.py -k armor`
+        when U-armor's own DEL1/DEL2 retired `_ARMOR_SHAS` and its
+        `test_su4a_*`/`test_su4b_*` tests -- `-k armor` now matches
+        nothing there (exit 5), not 0. The property this guard exists
+        to protect -- "this unit moved no armor pins" -- survives
+        intact: it now lives in `test_armor.py`'s own byte-identity
+        check, `test_fix1_fixtures_are_byte_identical`, which this
+        guard runs instead."""
         proc = subprocess.run(
             [
                 "env", "-u", "SELF_LEARN_ANALYST_MODEL", "-u", "SELF_LEARN_ANALYST_TIMEOUT",
                 "python3", "-m", "pytest", "-p", "no:cacheprovider", "-q",
-                "test_worker_contract.py", "-k", "armor",
+                "test_armor.py", "-k", "fix1",
             ],
             cwd=str(Path(__file__).parent), capture_output=True, text=True,
         )
-        assert proc.returncode == 0, proc.stdout[-4000:] + proc.stderr[-2000:]
+        assert proc.returncode == 0, (
+            "test_armor.py::test_fix1_fixtures_are_byte_identical (this unit's own "
+            "armor-pin guard) failed:\n" + proc.stdout[-4000:] + proc.stderr[-2000:]
+        )

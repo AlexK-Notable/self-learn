@@ -2604,7 +2604,9 @@ def open_followups(home: Path) -> list[dict]:
     return out
 
 
-def defer_record(home: Path, record_id: str, until=None) -> list[Path]:
+def defer_record(
+    home: Path, record_id: str, until=None, *, now: datetime | None = None
+) -> list[Path]:
     """Set deferral metadata in place — the record STAYS in ``pending/``;
     queue membership is computed from ``deferred_until`` (02 §2). FW-51:
     the old ``find_record_path(..., statuses=("pending",))`` restriction
@@ -2613,19 +2615,22 @@ def defer_record(home: Path, record_id: str, until=None) -> list[Path]:
     (exit 64) for a record resolved into ``resolved/``. Routed through
     :func:`require_status` now, same as every other resolution verb.
 
-    U-verbs §4.2: an explicit ``until`` strictly BEFORE today (the
-    caller's local date — the same clock :data:`DEFAULT_DEFER_DAYS`
-    counts from) refuses — nothing written — naming today's date and
-    pointing at ``undefer`` as the real verb for "bring it back now".
+    U-verbs §4.2: an explicit ``until`` strictly BEFORE today refuses —
+    nothing written — naming today's date and pointing at ``undefer`` as
+    the real verb for "bring it back now". "Today" is the UTC date from
+    ONE clock (``now``, injectable like every sibling verb's) — the same
+    clock :data:`DEFAULT_DEFER_DAYS` counts from, every ledger timestamp
+    is written in, and ``list``'s eligibility compares against. It is
+    NOT the caller's local date: 2026-08-28 17:00 PDT is already 08-29
+    UTC, and a check on a second clock went red at exactly that hour.
     ``until == today`` is ACCEPTED: a same-day re-queue is meaningful and
     ``list``'s eligibility is ``deferred_until <= now``. The default
     (+30 d) can never be in the past, so this check only ever runs for
     an EXPLICIT ``until``."""
     path, record = require_status(home, record_id, LIVE_STATUSES, verb="defer")
+    clock = _now(now)
     if until is None:
-        until = (
-            datetime.now(timezone.utc) + timedelta(days=DEFAULT_DEFER_DAYS)
-        ).strftime("%Y-%m-%d")
+        until = (clock + timedelta(days=DEFAULT_DEFER_DAYS)).strftime("%Y-%m-%d")
     else:
         if isinstance(until, datetime):
             until_date = until.date()
@@ -2633,11 +2638,11 @@ def defer_record(home: Path, record_id: str, until=None) -> list[Path]:
             until_date = until
         else:
             until_date = date.fromisoformat(str(until))
-        today = datetime.now(timezone.utc).date()
+        today = clock.date()
         if until_date < today:
             raise LedgerOpsError(
                 f"defer {record_id}: --until {until_date.isoformat()} is in "
-                f"the past (today is {today.isoformat()}) — a defer must "
+                f"the past (today is {today.isoformat()} UTC) — a defer must "
                 f"name a future date; `self-learn undefer {record_id}` is "
                 "the verb for bringing a deferred record back now"
             )
