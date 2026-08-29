@@ -1,0 +1,1 @@
+plugins/self-learn/ui/tests/test_service_unit.py::test_both_units_document_manual_registration_via_symlink

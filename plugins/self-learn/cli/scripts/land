@@ -1,0 +1,571 @@
+#!/usr/bin/env bash
+# self-learn landing runner — the twin of `scripts/suite`, and the last
+# step of every unit: land a gated branch on master and push.
+#
+#   plugins/self-learn/cli/scripts/land \
+#       --branch u-something \
+#       --verdict 'blind Opus code gate CLEAN r3 with mutation verification' \
+#       [--resolver <path>=<name> ...] [--sanitize-ack '<file>:<line>:<sha>=<reason>' ...] \
+#       [--dry-run] [--continue]
+#
+# What it encodes (see docs/specs/self-learn/drafts/u-land-landing-runner-spec.md):
+#   - set -uo pipefail, NOT -e: `-e` and explicit rc-capture are mutually
+#     exclusive (measured, §4.10/EXC1/SUI5) -- every stage boundary is an
+#     explicit `|| die <code>`, never relies on -e to abort.
+#   - preconditions (main checkout, clean trees, reachable+fetched origin)
+#     before anything is touched.
+#   - `git merge-tree --write-tree` preview, then `git -c
+#     merge.conflictStyle=diff3 merge --no-ff --no-commit` -- the runner
+#     supplies diff3 on its OWN invocation, never trusting the operator's
+#     dotfiles.
+#   - named resolvers only (--resolver <path>=<name>); an unmapped
+#     conflict refuses, printing the block list and the resolver names
+#     that WOULD apply (a diagnostic, never a default).
+#   - landing checks + the armor re-measure, INSIDE the merge commit --
+#     never after it (incident 2's exact shape).
+#   - the suites (CLI via scripts/suite; UI from inside plugins/self-learn/ui);
+#     a docs-only landing runs a derived test set instead.
+#   - a sanitize scan of the outgoing diff's ADDED lines only, with an
+#     exact-coverage --sanitize-ack.
+#   - push origin master, then a best-effort prune.
+#   - every refusal exits its own §4.10 code and prints the one command
+#     that inspects the state it left; codes 5-7 leave the merge commit
+#     local and are resumable with --continue.
+# Run it in the FOREGROUND: a backgrounded run dies with the turn
+# (scripts/suite's own rule).
+set -uo pipefail
+
+die() {
+  local code=$1 msg=$2 inspect=${3:-}
+  printf 'land: %s\n' "$msg" >&2
+  if [ -n "$inspect" ]; then
+    printf '  inspect: %s\n' "$inspect" >&2
+  fi
+  exit "$code"
+}
+
+# root resolution FIRST (§4.1: one rule for the whole package) -- before
+# argument parsing, so --help can list the registry dynamically rather
+# than a hand-copied string RES4 could drift from.
+ROOT=$(git rev-parse --path-format=absolute --show-toplevel 2>/dev/null) \
+  || die 2 "not inside a git repository"
+cd "$ROOT" || die 2 "cannot cd to repo root: $ROOT"
+
+# PROJECT is where THIS SCRIPT lives (its own venv/installed code), which
+# is deliberately independent of --root/$ROOT: every landing module takes
+# --root explicitly and never infers it (§4.1's one rule), so the CODE
+# that runs it may safely be the shipped build's own venv even when
+# operating on a throwaway fixture or a --dry-run worktree as data. The
+# one documented exception is CHK5, which shells out to THAT tree's own
+# copy of test_personal_literals.py by path (gate M-10) rather than
+# through this venv, because that test resolves its root from its own
+# on-disk location.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT="$(cd "$SCRIPT_DIR/.." && pwd)"
+LANDING_SRC="$PROJECT/src"
+RESOLVER_NAMES=$(PYTHONPATH="$LANDING_SRC" python3 -c \
+  "from self_learn.landing import resolvers as R; print(' '.join(sorted(R.REGISTRY)))")
+
+print_help() {
+  cat <<EOF
+usage: land --branch <name> --verdict '<text>' [options]
+
+  --branch <name>            the branch to land onto master (required)
+  --verdict '<text>'         the gate verdict line, verbatim in the merge
+                              commit subject (required unless --continue)
+  --resolver <path>=<name>   map a conflicted path to a named resolver;
+                              repeatable. registry: $RESOLVER_NAMES
+  --sanitize-ack '<file>:<line>:<sha256>=<reason>'
+                              acknowledge one sanitize hit; repeatable
+  --dry-run                  simulate the whole landing in a throwaway
+                              worktree; nothing on master is touched or pushed
+  --continue                 resume a landing that refused after the merge
+                              commit (exit 5/6/7), never re-merging
+  --help                     this text
+EOF
+}
+
+# ---------------------------------------------------------------------------
+# argument parsing
+
+BRANCH=""
+VERDICT=""
+DRY_RUN=0
+CONTINUE_FLAG=0
+declare -A RESOLVER_MAP=()
+SANITIZE_ACK_ARGS=()
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --branch)
+      [ $# -ge 2 ] || die 2 "--branch requires a value"
+      BRANCH=$2; shift 2 ;;
+    --verdict)
+      [ $# -ge 2 ] || die 2 "--verdict requires a value"
+      VERDICT=$2; shift 2 ;;
+    --resolver)
+      [ $# -ge 2 ] || die 2 "--resolver requires a value"
+      spec=$2
+      case "$spec" in
+        *=*) rpath=${spec%%=*}; rname=${spec#*=} ;;
+        *) die 2 "--resolver value must be <path>=<name>: $spec" ;;
+      esac
+      RESOLVER_MAP["$rpath"]=$rname
+      shift 2 ;;
+    --sanitize-ack)
+      [ $# -ge 2 ] || die 2 "--sanitize-ack requires a value"
+      SANITIZE_ACK_ARGS+=("$2")
+      shift 2 ;;
+    --dry-run) DRY_RUN=1; shift ;;
+    --continue) CONTINUE_FLAG=1; shift ;;
+    --help|-h) print_help; exit 0 ;;
+    *) die 2 "unknown argument: $1" ;;
+  esac
+done
+
+[ -n "$BRANCH" ] || die 2 "--branch is required"
+if [ "$CONTINUE_FLAG" = "0" ]; then
+  [ -n "$VERDICT" ] || die 2 "--verdict is required (unless --continue)"
+fi
+
+OUT=$(mktemp -d -t self-learn-land.XXXXXX)
+
+uv sync --project "$PROJECT" -q || die 2 "uv sync (this build's own CLI project) failed"
+
+py_landing() {
+  # $1 = submodule name, rest = its args
+  local mod=$1; shift
+  ( cd "$PROJECT" && uv run --no-sync python3 -m "self_learn.landing.$mod" "$@" )
+}
+
+# ---------------------------------------------------------------------------
+# --continue / CNT1
+
+state_check() {
+  py_landing state --root "$ROOT" --branch "$BRANCH" check 2>/dev/null
+}
+
+if [ "$CONTINUE_FLAG" = "1" ]; then
+  CHECK_OUT=$(state_check)
+  IN_STATE=$(printf '%s\n' "$CHECK_OUT" | sed -n 's/^in_post_commit_refusal_state=//p')
+  OK=$(printf '%s\n' "$CHECK_OUT" | sed -n 's/^ok=//p')
+  RESUME_STEP=$(printf '%s\n' "$CHECK_OUT" | sed -n 's/^resume_step=//p')
+  REASON=$(printf '%s\n' "$CHECK_OUT" | sed -n 's/^reason=//p')
+  [ "$OK" = "yes" ] || die 2 "--continue impossible: $REASON" "python3 -m self_learn.landing.state --root $ROOT --branch $BRANCH read"
+else
+  CHECK_OUT=$(state_check)
+  IN_STATE=$(printf '%s\n' "$CHECK_OUT" | sed -n 's/^in_post_commit_refusal_state=//p')
+  if [ "$IN_STATE" = "yes" ]; then
+    die 2 "CNT1: '$BRANCH' has a merge commit from a refused landing not yet on origin/master; re-run with --continue" \
+      "python3 -m self_learn.landing.state --root $ROOT --branch $BRANCH read"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# Step 1 — preconditions (PRE1-PRE8), skipped when resuming via --continue
+# (HEAD is deliberately not master while a merge commit is pending resume).
+
+if [ "$CONTINUE_FLAG" = "0" ]; then
+  GITDIR=$(git rev-parse --path-format=absolute --git-dir)
+  COMMONDIR=$(git rev-parse --path-format=absolute --git-common-dir)
+  [ "$GITDIR" = "$COMMONDIR" ] \
+    || die 2 "PRE1: not run from the main checkout (git-dir=$GITDIR common-dir=$COMMONDIR)" "git worktree list"
+
+  HEAD_REF=$(git symbolic-ref --short HEAD 2>/dev/null) || die 2 "PRE2: HEAD is detached" "git status"
+  [ "$HEAD_REF" = "master" ] || die 2 "PRE2: HEAD is '$HEAD_REF', not master" "git status"
+
+  DIRTY_MASTER=$(git status --porcelain | wc -l | tr -d ' ')
+  [ "$DIRTY_MASTER" = "0" ] || die 2 "PRE3: master's tree is dirty ($DIRTY_MASTER lines)" "git status"
+
+  BRANCH_WT=""
+  cur_wt=""
+  while IFS= read -r line; do
+    case "$line" in
+      worktree\ *) cur_wt=${line#worktree } ;;
+      "branch refs/heads/$BRANCH") BRANCH_WT=$cur_wt ;;
+    esac
+  done < <(git worktree list --porcelain)
+  if [ -n "$BRANCH_WT" ]; then
+    WT_DIRTY=$(git -C "$BRANCH_WT" status --porcelain | wc -l | tr -d ' ')
+    [ "$WT_DIRTY" = "0" ] \
+      || die 2 "PRE4: branch worktree $BRANCH_WT is dirty ($WT_DIRTY lines)" "git -C $BRANCH_WT status"
+  fi
+
+  [ "$BRANCH" != "master" ] || die 2 "PRE5: branch cannot be master"
+  git rev-parse --verify -q "refs/heads/$BRANCH" >/dev/null 2>&1 \
+    || die 2 "PRE5: branch '$BRANCH' does not exist"
+  git merge-base master "$BRANCH" >/dev/null 2>&1 \
+    || die 2 "PRE5: '$BRANCH' shares no history with master"
+
+  git ls-remote --exit-code origin HEAD >/dev/null 2>&1
+  RC_REMOTE=$?
+  [ "$RC_REMOTE" = "0" ] || die 2 "PRE6: origin is unreachable (rc=$RC_REMOTE)"
+
+  BASE_BEFORE=$(git rev-parse origin/master 2>/dev/null || echo "")
+  git fetch origin master >"$OUT/fetch.log" 2>&1
+  RC_FETCH=$?
+  [ "$RC_FETCH" = "0" ] || die 2 "PRE8: git fetch origin master failed (rc=$RC_FETCH)" "cat $OUT/fetch.log"
+  BASE_AFTER=$(git rev-parse origin/master)
+  if [ -n "$BASE_BEFORE" ] && [ "$BASE_BEFORE" != "$BASE_AFTER" ]; then
+    die 2 "PRE8: origin/master moved during fetch ($BASE_BEFORE -> $BASE_AFTER); re-run against the new base"
+  fi
+  BASE_SHA=$BASE_AFTER
+else
+  # resuming: the sanitize range must stay anchored to the SAME base the
+  # original run computed it against (PRE8's freshness guarantee was for
+  # that run; a --continue does not re-fetch or re-scope).
+  BASE_SHA=$(py_landing state --root "$ROOT" --branch "$BRANCH" read 2>/dev/null \
+    | python3 -c "import json,sys; print(json.load(sys.stdin).get('base_sha',''))")
+  [ -n "$BASE_SHA" ] || die 2 "--continue: state file has no recorded base_sha"
+fi
+
+# ---------------------------------------------------------------------------
+# GITROOT: the tree every subsequent git/module operation acts on --
+# $ROOT for a real landing, a throwaway detached worktree for --dry-run.
+
+TMP=""
+cleanup_tmp() {
+  # PSH3: this script has no forcing capability anywhere, in any form --
+  # an ordinary worktree remove, then rm+prune as the fallback if the
+  # throwaway tree isn't itself clean enough for that.
+  if [ -n "$TMP" ] && [ -d "$TMP" ]; then
+    git -C "$ROOT" worktree remove "$TMP" >/dev/null 2>&1 \
+      || { rm -rf "$TMP"; git -C "$ROOT" worktree prune >/dev/null 2>&1 || true; }
+  fi
+}
+trap cleanup_tmp EXIT
+
+if [ "$DRY_RUN" = "1" ]; then
+  TMP=$(mktemp -d -t self-learn-land-dry.XXXXXX)
+  rmdir "$TMP"
+  git -C "$ROOT" worktree add --detach "$TMP" master >"$OUT/dryrun-worktree.log" 2>&1 \
+    || die 3 "--dry-run: could not create throwaway worktree" "cat $OUT/dryrun-worktree.log"
+  GITROOT="$TMP"
+else
+  GITROOT="$ROOT"
+fi
+
+if [ "$CONTINUE_FLAG" = "1" ]; then
+  # Resuming: GITROOT is $ROOT and HEAD is already the merge commit.
+  RESUME_ONLY=1
+else
+  RESUME_ONLY=0
+fi
+
+# ---------------------------------------------------------------------------
+# Step 2 — preview (PRV1-PRV4)
+
+run_merge_and_checks() {
+  local gr=$1
+
+  local preview_rc
+  git -C "$gr" merge-tree --write-tree master "$BRANCH" >"$OUT/preview.txt" 2>&1
+  preview_rc=$?
+  case "$preview_rc" in
+    0) LANE_CLEAN=1 ;;
+    1) LANE_CLEAN=0 ;;
+    *) die 3 "merge-tree failed rc=$preview_rc" "cat $OUT/preview.txt" ;;
+  esac
+
+  if [ "$LANE_CLEAN" = "1" ] && [ "${#RESOLVER_MAP[@]}" -gt 0 ]; then
+    die 3 "PRV1: --resolver given but the preview is clean (no conflict) -- the operator's model of this merge is wrong"
+  fi
+
+  # Step 2b/3 — the merge itself, with diff3 supplied on OUR invocation (PRV3/F-1).
+  # Runs BEFORE the unmapped-path check: PRV2's suggestion surface reads
+  # REAL diff3-marked conflict blocks off disk, which only exist after
+  # this merge actually runs (a merge-tree --name-only preview lists
+  # PATHS, never block content).
+  git -C "$gr" -c merge.conflictStyle=diff3 merge --no-ff --no-commit "$BRANCH" \
+    >"$OUT/merge.txt" 2>&1
+  local merge_rc=$?
+  if [ "$merge_rc" != "0" ] && [ "$LANE_CLEAN" = "1" ]; then
+    die 3 "merge failed unexpectedly on a clean preview (rc=$merge_rc)" "cat $OUT/merge.txt"
+  fi
+
+  if [ "$LANE_CLEAN" = "0" ]; then
+    local conflicted
+    # --name-only's output is: <tree-oid>\n<path>\n...<path>\n\n<messages...>
+    # -- paths run from line 2 up to (not including) the first blank line;
+    # everything after that blank line is "Auto-merging"/"CONFLICT (...)"
+    # prose, never a path.
+    conflicted=$(git -C "$gr" merge-tree --write-tree --name-only master "$BRANCH" 2>/dev/null \
+      | tail -n +2 | sed '/^$/q' | sed '$ { /^$/d }')
+    local unmapped=()
+    local path
+    while IFS= read -r path; do
+      [ -n "$path" ] || continue
+      if [ -z "${RESOLVER_MAP[$path]:-}" ]; then
+        unmapped+=("$path")
+      fi
+    done <<<"$conflicted"
+    if [ "${#unmapped[@]}" -gt 0 ]; then
+      {
+        echo "PRV2: the following conflicted paths have no --resolver mapping:"
+        for path in "${unmapped[@]}"; do
+          local suggestion
+          suggestion=$(py_landing resolve --root "$gr" --path "$path" --suggest 2>/dev/null)
+          echo "  $path  (candidates: ${suggestion:-none})"
+        done
+      } >"$OUT/prv2.txt"
+      cat "$OUT/prv2.txt" >&2
+      git -C "$gr" merge --abort >/dev/null 2>&1 || true
+      die 3 "PRV2: unmapped conflicted path(s), see above" "cat $OUT/prv2.txt"
+    fi
+
+    local name
+    for path in "${!RESOLVER_MAP[@]}"; do
+      name=${RESOLVER_MAP[$path]}
+      [ -f "$gr/$path" ] || die 3 "PRV2: --resolver names a path not in the conflict: $path"
+      if ! grep -q '^||||||| ' "$gr/$path"; then
+        git -C "$gr" merge --abort >/dev/null 2>&1 || true
+        die 3 "PRV3: $path has no ||||||| base marker -- refusing to parse a conflict without its base" "cat $gr/$path"
+      fi
+      py_landing resolve --root "$gr" --path "$path" --resolver "$name" --branch "$BRANCH" \
+        >>"$OUT/resolvers.log" 2>&1
+      local resolve_rc=$?
+      if [ "$resolve_rc" != "0" ]; then
+        git -C "$gr" merge --abort >/dev/null 2>&1 || true
+        die 3 "resolver '$name' refused on $path" "cat $OUT/resolvers.log"
+      fi
+      git -C "$gr" add -- "$path"
+    done
+  fi
+
+  # CHK1 -- conflict markers over the merge-touched set (not a hardcoded list)
+  local touched
+  touched=$(git -C "$gr" diff --name-only HEAD 2>/dev/null | sort -u)
+  local abspaths=()
+  local t
+  while IFS= read -r t; do
+    [ -n "$t" ] || continue
+    abspaths+=("$gr/$t")
+  done <<<"$touched"
+  if ! py_landing checks --root "$gr" markers "${abspaths[@]}" >"$OUT/chk1.log" 2>&1; then
+    git -C "$gr" merge --abort >/dev/null 2>&1 || true
+    die 4 "CHK1: conflict markers remain in the merge-touched set" "cat $OUT/chk1.log"
+  fi
+
+  # CHK3 -- row order, per contiguous run
+  if ! py_landing checks --root "$gr" roworder >"$OUT/chk3.log" 2>&1; then
+    git -C "$gr" merge --abort >/dev/null 2>&1 || true
+    die 4 "CHK3: S-/FW- row order violation" "cat $OUT/chk3.log"
+  fi
+
+  # CHK4 -- landing-state prose
+  if ! py_landing checks --root "$gr" prose >"$OUT/chk4.log" 2>&1; then
+    git -C "$gr" merge --abort >/dev/null 2>&1 || true
+    die 4 "CHK4: landing-state prose found" "cat $OUT/chk4.log"
+  fi
+
+  # CHK5 -- personal-literals gate, via U-scrub's SHIPPED test (never a private copy),
+  # against THIS tree's own copy of the test (root-relative -- gate M-10).
+  local literals_test="$gr/plugins/self-learn/cli/tests/test_personal_literals.py"
+  if [ -f "$literals_test" ]; then
+    if ! ( cd "$PROJECT" && uv run --no-sync pytest "$literals_test" -q -p no:cacheprovider ) \
+        >"$OUT/chk5.log" 2>&1; then
+      git -C "$gr" merge --abort >/dev/null 2>&1 || true
+      die 4 "CHK5: personal-literals gate failed" "cat $OUT/chk5.log"
+    fi
+  fi
+
+  # CHK6 -- verdict shape (only meaningful on a fresh landing; --continue reuses the recorded verdict)
+  if [ "$RESUME_ONLY" = "0" ]; then
+    if ! py_landing checks --root "$gr" verdict --verdict "$VERDICT" >"$OUT/chk6.log" 2>&1; then
+      git -C "$gr" merge --abort >/dev/null 2>&1 || true
+      die 4 "CHK6: --verdict rejected" "cat $OUT/chk6.log"
+    fi
+  fi
+
+  # world detection -- POST-merge, on the staged tree (M-6). Runs LAST,
+  # immediately before `git commit`: CHK8 requires NOTHING test-shaped
+  # between the armor check/remeasure below and the commit, so every
+  # other check (including CHK5's pytest shell-out) must already be done.
+  local world
+  world=$(py_landing checks --root "$gr" world 2>"$OUT/world.err")
+  local world_rc=$?
+  if [ "$world_rc" != "0" ]; then
+    git -C "$gr" merge --abort >/dev/null 2>&1 || true
+    die 4 "world detection: $(cat "$OUT/world.err")" "cat $OUT/world.err"
+  fi
+
+  # CHK2 / armor, per the detected world -- the LAST check before commit.
+  if [ "$world" = "armor_shas" ]; then
+    if ! py_landing checks --root "$gr" pins >"$OUT/chk2.log" 2>&1; then
+      git -C "$gr" merge --abort >/dev/null 2>&1 || true
+      die 4 "CHK2: armor pin check failed" "cat $OUT/chk2.log"
+    fi
+  else
+    local armor_test="$gr/plugins/self-learn/cli/tests/test_armor.py"
+    local anchor
+    anchor=$(git -C "$gr" rev-parse --short=7 HEAD)
+    if ! ( cd "$PROJECT" && uv run --no-sync python3 "$armor_test" --remeasure --anchor "$anchor" ) \
+        >"$OUT/remeasure.log" 2>&1; then
+      git -C "$gr" merge --abort >/dev/null 2>&1 || true
+      die 4 "WLD2: --remeasure refused" "cat $OUT/remeasure.log"
+    fi
+    git -C "$gr" add -- plugins/self-learn/cli/tests/test_armor.py
+  fi
+  # CHK8: nothing test-shaped runs between the line above and `git commit`.
+}
+
+if [ "$RESUME_ONLY" = "0" ]; then
+  run_merge_and_checks "$GITROOT"
+
+  # ---------------------------------------------------------------------
+  # commit -- everything above rides INSIDE this commit
+  UNIT_GUESS=${BRANCH#u-}
+  SUBJECT="Merge branch '$BRANCH' ($UNIT_GUESS — $VERDICT)"
+  git -C "$GITROOT" commit -q -m "$SUBJECT" || die 4 "git commit failed"
+  MERGE_SHA=$(git -C "$GITROOT" rev-parse HEAD)
+  MERGE_PARENTS=$(git -C "$GITROOT" log -1 --format=%P HEAD)
+
+  if [ "$DRY_RUN" = "0" ]; then
+    py_landing state --root "$ROOT" --branch "$BRANCH" write \
+      --json "$(python3 -c "import json,sys; print(json.dumps({'base_sha': sys.argv[1], 'merge_sha': sys.argv[2], 'parent_shas': sys.argv[3].split(), 'verdict': sys.argv[4]}))" "$BASE_SHA" "$MERGE_SHA" "$MERGE_PARENTS" "$VERDICT")" \
+      >/dev/null
+  fi
+fi
+
+record_refusal_step() {
+  local step=$1
+  if [ "$DRY_RUN" = "0" ]; then
+    py_landing state --root "$ROOT" --branch "$BRANCH" write \
+      --json "$(python3 -c "import json,sys; print(json.dumps({'refusal_step': sys.argv[1]}))" "$step")" \
+      >/dev/null 2>&1 || true
+  fi
+}
+
+RESUME_STEP=${RESUME_STEP:-}
+
+# ---------------------------------------------------------------------------
+# Step 4 — the suites (skipped entirely under --dry-run; DRY2 parameterises
+# only over PRE3/PRV2/CHK2/CHK5/SAN3/WLD1/WLD2, never the suites)
+
+if [ "$DRY_RUN" = "0" ] && { [ "$RESUME_ONLY" = "0" ] || [ "$RESUME_STEP" = "suites" ]; }; then
+  SUITE_TIMEOUT=${SUITE_TIMEOUT:-600}
+
+  # docs-only lane detector (SUI6): an ALLOWLIST, `--no-renames` (gate M-12)
+  NONDOC=$(git -C "$GITROOT" diff --no-renames --name-only "$BASE_SHA..HEAD" | grep -cv '^docs/' || true)
+  if [ "$NONDOC" = "0" ]; then
+    LANE=docs
+  else
+    LANE=full
+  fi
+
+  run_suite() {
+    local name=$1 dir=$2; shift 2
+    ( cd "$dir" && timeout "$SUITE_TIMEOUT" "$@" ) >"$OUT/$name.log" 2>&1
+    local rc=$?
+    printf '%s\n' "$rc" >"$OUT/$name.rc"
+    return 0
+  }
+
+  allowlisted_only() {
+    local log=$1
+    local allow="$GITROOT/plugins/self-learn/cli/src/self_learn/landing/known_failures.txt"
+    [ -f "$allow" ] || return 1
+    local failing
+    failing=$(grep -E '^(FAILED|ERROR) ' "$log" | sed -E 's/^(FAILED|ERROR) ([^ ]+).*/\2/' | sort -u)
+    [ -n "$failing" ] || return 0
+    local f
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      grep -qxF "$f" "$allow" || return 1
+    done <<<"$failing"
+    return 0
+  }
+
+  adjudicate_suite() {
+    local n=$1
+    local rc
+    rc=$(cat "$OUT/$n.rc" 2>/dev/null || echo 99)
+    case "$rc" in
+      0) ;;
+      124) record_refusal_step suites; die 5 "$n suite TIMED OUT after ${SUITE_TIMEOUT}s -- see $OUT/$n.log" "less $OUT/$n.log" ;;
+      2) record_refusal_step suites; die 5 "$n suite COLLECTION ERROR (rc 2) -- NOT a test failure; the allowlist cannot adjudicate it. See $OUT/$n.log" "less $OUT/$n.log" ;;
+      *) allowlisted_only "$OUT/$n.log" || { record_refusal_step suites; die 5 "$n suite red -- see $OUT/$n.log" "less $OUT/$n.log"; } ;;
+    esac
+  }
+
+  if [ "$LANE" = "docs" ]; then
+    DOC_SET_FILE="$GITROOT/plugins/self-learn/cli/src/self_learn/landing/doc_reading_set.txt"
+    DOC_ARGS=()
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      DOC_ARGS+=("$GITROOT/$line")
+    done < "$DOC_SET_FILE"
+    run_suite docslane "$GITROOT" \
+      env -u SELF_LEARN_ANALYST_MODEL -u SELF_LEARN_ANALYST_TIMEOUT \
+      uv run --project "$PROJECT" --no-sync pytest -p no:cacheprovider -q "${DOC_ARGS[@]}"
+    adjudicate_suite docslane
+  else
+    run_suite cli "$GITROOT" "$GITROOT/plugins/self-learn/cli/scripts/suite"
+    run_suite ui "$GITROOT/plugins/self-learn/ui" \
+      env -u SELF_LEARN_ANALYST_MODEL -u SELF_LEARN_ANALYST_TIMEOUT \
+      uv run --project . pytest -q
+    adjudicate_suite cli
+    adjudicate_suite ui
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# Step 5 — sanitize (§4.7): ADDED lines of origin/master..HEAD only
+
+if [ "$DRY_RUN" = "1" ] || [ "$RESUME_ONLY" = "0" ] || [ "$RESUME_STEP" = "suites" ] || [ "$RESUME_STEP" = "sanitize" ]; then
+  SAN_ARGS=()
+  for a in "${SANITIZE_ACK_ARGS[@]+"${SANITIZE_ACK_ARGS[@]}"}"; do
+    SAN_ARGS+=(--sanitize-ack "$a")
+  done
+  if ! py_landing sanitize --root "$GITROOT" --range "$BASE_SHA..HEAD" --check "${SAN_ARGS[@]}" >"$OUT/sanitize.log" 2>&1; then
+    record_refusal_step sanitize
+    # N-18: print paste-ready --sanitize-ack strings on refusal, not just
+    # point at the log file.
+    cat "$OUT/sanitize.log" >&2
+    die 6 "sanitize gate refused -- see $OUT/sanitize.log" "cat $OUT/sanitize.log"
+  fi
+fi
+
+if [ "$DRY_RUN" = "1" ]; then
+  echo "would-be merge commit: $(git -C "$GITROOT" rev-parse HEAD)"
+  echo "DRY RUN — nothing pushed"
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Step 6 — push and prune
+
+if [ "$RESUME_ONLY" = "0" ] || [ "$RESUME_STEP" = "suites" ] || [ "$RESUME_STEP" = "sanitize" ] || [ "$RESUME_STEP" = "push" ]; then
+  OLD_ORIGIN=$(git -C "$ROOT" rev-parse origin/master 2>/dev/null || echo "")
+  git -C "$ROOT" push origin master >"$OUT/push.log" 2>&1
+  PUSH_RC=$?
+  if [ "$PUSH_RC" != "0" ]; then
+    record_refusal_step push
+    die 7 "push failed (rc=$PUSH_RC) -- see $OUT/push.log" "cat $OUT/push.log"
+  fi
+  NEW_ORIGIN=$(git -C "$ROOT" rev-parse origin/master)
+  printf 'pushed: %s..%s\n' "$OLD_ORIGIN" "$NEW_ORIGIN"
+
+  py_landing state --root "$ROOT" --branch "$BRANCH" clear >/dev/null 2>&1 || true
+
+  # prune -- best-effort, never fails the landing (N-8)
+  WT=""
+  cur=""
+  while IFS= read -r line; do
+    case "$line" in
+      worktree\ *) cur=${line#worktree } ;;
+      "branch refs/heads/$BRANCH") WT=$cur ;;
+    esac
+  done < <(git -C "$ROOT" worktree list --porcelain)
+  if [ -n "$WT" ]; then
+    if ! git -C "$ROOT" worktree remove "$WT" >"$OUT/prune.log" 2>&1; then
+      echo "land: warning -- could not prune worktree $WT (see $OUT/prune.log); clean it up by hand"
+    fi
+  fi
+  if ! git -C "$ROOT" branch -d "$BRANCH" >>"$OUT/prune.log" 2>&1; then
+    echo "land: warning -- could not delete branch $BRANCH (see $OUT/prune.log); clean it up by hand"
+  fi
+fi
+
+echo "land: done. logs=$OUT"
+exit 0

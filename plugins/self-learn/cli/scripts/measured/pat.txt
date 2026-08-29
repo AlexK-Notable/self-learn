@@ -1,0 +1,1 @@
+bearer [A-Za-z0-9_-]{8,}|api[_-]?key|secret|password|PRIVATE KEY|ghp_

@@ -1,0 +1,16 @@
+# landing/sanitize_fragments.txt -- one pattern ALTERNATIVE per line, fields
+# separated by "|". The loader (sanitize.py:load_fragments) concatenates
+# each line's fields into one regex alternative; a field wrapped in double
+# quotes is inserted verbatim (used to preserve a leading space, or to hold
+# raw regex syntax). No line spells a full pattern word by itself -- the
+# assembled regex must equal CLAUDE.local.md's set (SAN5 leg (b)):
+#   bearer [A-Za-z0-9_-]{8,}|api[_-]?key|secret|password|PRIVATE KEY|ghp_|<home>
+# %HOME% is substituted from $HOME at read time (SAN1) -- no absolute home
+# path is ever a tracked byte in this file.
+bea | rer | " [A-Za-z0-9_-]{8,}"
+api | [_-]? | k | ey
+sec | ret
+pass | word
+PRIVATE | " " | K | EY
+gh | p_
+%HOME%
