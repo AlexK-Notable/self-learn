@@ -613,6 +613,31 @@ while the pass itself is parked (O-9).
   runner replaces, and are retired once `land` has completed one real
   landing. The build is the next step; no runner code exists under
   `scripts/` from this unit yet.
+- *2026-08-28*: **U-xdist** moved the CLI suite's sanctioned runner
+  (`plugins/self-learn/cli/scripts/suite`) from three parallel serial
+  batches (A/B/C, ~298s gated by the slowest batch on a 28-core host) to
+  one `pytest-xdist` `-n auto` run over the whole tree (~85s measured, 3
+  runs), fixing at the root the two things that made a shared worker pool
+  unsafe or blind: `pytest-xdist` is now a real dev dependency (`uv add
+  --dev pytest-xdist`, 3.8.0, survives the script's own `uv sync` instead
+  of being silently wiped by it); and `test_u_corrob.py`'s M2 mutation
+  test no longer writes the mutated source into the LIVE, shared
+  `src/self_learn/corroborate.py` — it builds the mutation into a private
+  `tmp_path` copy of the whole package and shadows it onto a fresh
+  interpreter via `PYTHONPATH`, removing a real race (~20% per-run in the
+  scout's sampling) where a sibling worker's own fresh-interpreter
+  subprocess test could read the file mid-mutation. The litter guard's
+  "concurrent sibling" warning, previously silent under `-n` (the
+  controller executes zero tests, so its own tracking list was always
+  empty), now travels worker → controller via xdist's own
+  `config.workeroutput`/`pytest_testnodedown` channel, deduplicated so
+  one real sibling namespace reports once even when two workers both
+  observe it. `SUITE_WORKERS`/`SUITE_SERIAL` env overrides exist for
+  bisection only, never routine use. Armor fallout from the sanctioned
+  dependency addition (RS8's lockfile-drift bound, `_ARMOR_SHAS`'s
+  `conftest.py`/`test_invocation_sdk.py` hashes, `_AR1_SANCTIONED_
+  PIN_LINES`, `_AR3_REASONS`, HY5's numstat bounds) re-pinned in place,
+  each with a dated justification.
 
 ## 7. Change control
 

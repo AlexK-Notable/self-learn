@@ -1,55 +1,65 @@
 #!/usr/bin/env bash
 # self-learn CLI test suite — THE one way to run it (agents and humans).
 #
-#   plugins/self-learn/cli/scripts/suite            # full suite, 3 batches in parallel
-#   SUITE_OUT=/some/dir plugins/self-learn/cli/scripts/suite   # keep the logs there
+#   plugins/self-learn/cli/scripts/suite                  # full suite, one pytest-xdist run
+#   SUITE_OUT=/some/dir plugins/self-learn/cli/scripts/suite      # keep the log there
+#   SUITE_WORKERS=8 plugins/self-learn/cli/scripts/suite          # override -n (default: auto)
+#   SUITE_SERIAL=1 plugins/self-learn/cli/scripts/suite           # single-process serial run (bisection)
 #
 # What it encodes (each line is a past false-red or a lost cycle):
 #   - strips SELF_LEARN_ANALYST_MODEL / SELF_LEARN_ANALYST_TIMEOUT from the env
 #     (host exports distort 8 tests into false failures)
-#   - one explicit `uv sync`, then `uv run --no-sync` so three parallel
-#     runs never race the venv
-#   - three batches (A/B/C) in parallel, `-p no:cacheprovider`; the --ignore
-#     list for C is DERIVED from A and B so nothing is double-counted
-#   - every batch's exit code is captured unpiped (redirect, never a pipe)
-#   - exit 0 iff every batch exited 0; one summary line per batch
+#   - one explicit `uv sync`, then `uv run --no-sync` so this run never races
+#     the venv against a concurrent `uv sync`
+#   - U-xdist (2026-08-28): ONE `pytest tests -n auto` run over the WHOLE
+#     tree, `-p no:cacheprovider` — replaces the old three-way A/B/C
+#     `--ignore`-derived batch split (three parallel `uv run` processes,
+#     each internally serial; measured ~298s, gated by the slowest batch)
+#     now that the two things that made a shared xdist worker pool unsafe
+#     are fixed at the root: `pytest-xdist` is a real dev dependency (`uv
+#     add --dev pytest-xdist` in this package, so it survives this
+#     script's own `uv sync` instead of being silently wiped by it — the
+#     scout's own measured failure mode before the fix), and
+#     `test_u_corrob.py`'s M2 mutation test no longer writes into the
+#     LIVE, shared `src/self_learn/corroborate.py` (it mutates a private
+#     `tmp_path` copy of the whole package instead, so a sibling worker's
+#     fresh-interpreter subprocess test can never read it mid-mutation).
+#     Measured ~85s for all 89 files under `-n auto` on this host, down
+#     from ~298s for the old three-batch layout — see this unit's build
+#     report for the full timing table.
+#   - `SUITE_WORKERS`/`SUITE_SERIAL` exist for bisecting a suspected
+#     worker-unsafety regression, never for routine use — routine use is
+#     the bare invocation, `-n auto`.
+#   - exit code captured unpiped (redirect, never a pipe)
+#   - one summary line, `grep -E '^[0-9]+ (passed|failed|error)'`-findable
+#     (CLAUDE.local.md's push-loop gate and the runbook both grep for it)
 # Run it in the FOREGROUND from an agent: a backgrounded run dies with the turn.
 set -u
 ROOT=$(cd "$(dirname "$0")/../../../.." && pwd)
 cd "$ROOT" || exit 2
 PROJECT=plugins/self-learn/cli
-T=$PROJECT/tests
-A=("$T/test_invocation.py" "$T/test_invocation_sdk.py" "$T/test_u_sdka.py")
-B=("$T/test_worker_contract.py" "$T/test_reader_contract.py" "$T/test_repair.py" "$T/test_attrib.py")
-IGN=()
-for f in "${A[@]}" "${B[@]}"; do IGN+=("--ignore=$f"); done
 OUT=${SUITE_OUT:-$(mktemp -d -t self-learn-suite.XXXXXX)}
 mkdir -p "$OUT"
 
 uv sync --project "$PROJECT" -q || { echo "suite: uv sync failed"; exit 2; }
 
-run_batch() {
-  local name=$1; shift
-  env -u SELF_LEARN_ANALYST_MODEL -u SELF_LEARN_ANALYST_TIMEOUT \
-    uv run --no-sync --project "$PROJECT" pytest "$@" -p no:cacheprovider -q \
-    > "$OUT/$name.log" 2>&1
-  echo $? > "$OUT/$name.rc"
-}
+if [ "${SUITE_SERIAL:-0}" = "1" ]; then
+  NFLAG=""
+else
+  NFLAG="-n ${SUITE_WORKERS:-auto}"
+fi
 
 start=$(date +%s)
-run_batch A "${A[@]}" &
-run_batch B "${B[@]}" &
-run_batch C "$T" "${IGN[@]}" &
-wait
+# shellcheck disable=SC2086 -- $NFLAG is either empty or exactly "-n <value>"
+env -u SELF_LEARN_ANALYST_MODEL -u SELF_LEARN_ANALYST_TIMEOUT \
+  uv run --no-sync --project "$PROJECT" pytest "$PROJECT/tests" \
+    -p no:cacheprovider -q $NFLAG \
+  > "$OUT/suite.log" 2>&1
+rc=$?
 elapsed=$(( $(date +%s) - start ))
 
-rc=0
-for n in A B C; do
-  r=$(cat "$OUT/$n.rc" 2>/dev/null || echo 99)
-  summary=$(grep -E '^[0-9]+ (passed|failed|error)' "$OUT/$n.log" | tail -1)
-  [ -n "$summary" ] || summary=$(tail -1 "$OUT/$n.log")
-  printf 'suite %s rc=%s  %s\n' "$n" "$r" "$summary"
-  [ "$r" = "0" ] || rc=1
-done
+summary=$(grep -E '^[0-9]+ (passed|failed|error)' "$OUT/suite.log" | tail -1)
+[ -n "$summary" ] || summary=$(tail -1 "$OUT/suite.log")
+printf 'suite rc=%s  %s\n' "$rc" "$summary"
 printf 'suite total rc=%s  %ss  logs=%s\n' "$rc" "$elapsed" "$OUT"
 exit $rc

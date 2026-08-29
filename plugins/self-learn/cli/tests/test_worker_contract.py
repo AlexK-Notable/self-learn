@@ -539,14 +539,31 @@ def _apply_failure_env(kind: str, param: str, *, scratch: Path, monkeypatch) -> 
 #: moves; still a pure append over the pre-U-cachelit baseline (see
 #: `test_u_sdka.py::_AR1_SANCTIONED_PIN_LINES`'s own D-1 paragraph),
 #: still a member of `_SU4B_DIFF_EXEMPT`.
+#: U-xdist gate r1 fold, T1 (2026-08-28) re-pins `conftest.py` a further
+#: time: the litter guard's warn channel now travels worker -> controller
+#: (`pytest_sessionfinish` on the worker stashes `_WARN_NAMESPACES` into
+#: `config.workeroutput`; `pytest_testnodedown` on the controller reads it
+#: back) -- both appended at the very end of the file. The scout found
+#: the pre-existing warning silently dead under `-n` (the controller
+#: executes zero tests, so its own `_WARN_NAMESPACES` was always empty).
+#: Only the hash moves; still a pure append, still a member of
+#: `_SU4B_DIFF_EXEMPT` -- see `test_u_sdka.py::_AR1_SANCTIONED_PIN_LINES`'s
+#: own U-xdist paragraph for the full accounting.
+#: U-xdist gate r2 fold, T1 (2026-08-28) re-pins once more: the
+#: `pytest_testnodedown` relay deduped (`if namespace not in
+#: _WARN_NAMESPACES`) -- verified live under `-n 2` with an injected
+#: sibling namespace: two workers independently observed the SAME real
+#: directory, and a plain `.extend()` printed it twice for one real
+#: event. Only the hash moves; still a pure append, still a member of
+#: `_SU4B_DIFF_EXEMPT`.
 _ARMOR_SHAS = {
-    "plugins/self-learn/cli/tests/conftest.py": "824570c9e7fca02562bb917abc59d8a348992671330c60c3b6567fcf0ffbffe4",  # U-hostmode gate r2 fold, D-1 (2026-08-28): one sentence appended to the litter guard's docstring naming its pytest-only scope and the XDG_CACHE_HOME ad-hoc-script rule -- only the hash moves; still a pure docstring append, still a member of `_SU4B_DIFF_EXEMPT`
+    "plugins/self-learn/cli/tests/conftest.py": "8327c4cf2abfdc07db18718b3356052dda09f0bfce1411cd975e6dabdc34339b",  # U-xdist gate r2 fold, T1 (2026-08-28): the `pytest_testnodedown` relay deduped (two xdist workers can observe the same real sibling namespace independently -- see the dated paragraph below) -- only the hash moves; still a pure append, still a member of `_SU4B_DIFF_EXEMPT` -- see `test_u_sdka.py::_AR1_SANCTIONED_PIN_LINES`'s own re-anchor paragraph for the full accounting
     "plugins/self-learn/cli/tests/backends.py": "a2ba2d74f117a230740d10e3c9fa67bd30f751ce80ec59667c9136557a906dde",
     # merge 2026-08-28 (u-hostmode x master): only master changed these
     # four keys since base (1e77ff4) -- ours were byte-unchanged there,
     # so master's pinned values win outright.
     "plugins/self-learn/cli/tests/test_invocation.py": "33db4e99a23c011bd207e61dab44df102082adca1b9348fe289e61662fb7eb4d",  # U-hostmode Phase 2 (2026-08-28): stale whole-file exclusion entry removed from `test_wr7_seam_is_only_called_from_the_three_call_sites`'s `excluded_by_name` tuple (its named module is deleted outright -- CHEZ2), count 11 -> 10; see the dated paragraph below
-    "plugins/self-learn/cli/tests/test_invocation_sdk.py": "124c0e8b310ce8dbfeea89348d0ea5a8cf9c96c071642f7e16e89a7ffa1b4e35",  # U-kl4 gate r1 fold (2026-08-28): B-1/N-D1/N-D2/N-D3, see the dated paragraph below
+    "plugins/self-learn/cli/tests/test_invocation_sdk.py": "cfbb5e6c951ec01925d4f249bb9de127b172f0d28b3142b6813ca8021d2cf8a9",  # U-xdist gate r1 fold, T1 (2026-08-28): RS8's lockfile-drift bound widened to allow the sanctioned `pytest-xdist`/`execnet` addition to the CLI lockfile -- see `test_u_sdka.py::test_hy5_numstat_bounds_hold`'s own dated paragraph
     # merge 2026-08-28 (u-hostmode x master): BOTH sides changed this key
     # (ours: REWRITTEN/_DS1_EXPECTED re-pinned for test_route_cli.py's REC9
     # fallout; master's: U-ancestry + U-corrob DS1 extensions + FW-117

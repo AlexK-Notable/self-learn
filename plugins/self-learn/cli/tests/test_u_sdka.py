@@ -1384,6 +1384,25 @@ _AR1_TRIPWIRE_SHA256 = "1b012978efe34788697a854bd40f28d0c1c45125cbca9d56fea36890
 #: deleted by hand, and the new "every ad-hoc script sets
 #: XDG_CACHE_HOME" rule -- a pure docstring-body suffix, no code path
 #: changed. `removed` stays `[]`; 396 `added` lines now, up from 385.
+#: U-xdist gate r1 fold, T1 (2026-08-28) re-pins a further time: the
+#: litter guard gains its worker -> controller relay for xdist
+#: (`pytest_sessionfinish`/`pytest_testnodedown`, appended at the very
+#: end of the file) -- the CLI suite's own scout found the guard's
+#: "concurrent sibling" WARNING (never the hard-fail assertions, which
+#: xdist already relays structurally) silently dead under `-n`, since
+#: the controller executes zero tests and its own `_WARN_NAMESPACES`
+#: was always empty. Pure suffix extension over the pre-U-xdist
+#: baseline -- `removed` stays `[]`, verified below.
+#: U-xdist gate r2 fold, T1 (2026-08-28) re-pins once more: the
+#: `pytest_testnodedown` relay above is deduped (`if namespace not in
+#: _WARN_NAMESPACES`, not a plain `.extend()`) -- two xdist workers
+#: whose session windows both span the same real event independently
+#: observed the SAME injected sibling namespace in the `-n 2` positive
+#: control and a plain extend printed it twice for one real directory;
+#: serial mode never had this failure mode (one process, one `after -
+#: before` SET diff). Pure suffix extension over the pre-U-xdist
+#: baseline -- `removed` stays `[]`, verified below -- 438 `added`
+#: lines now, up from 396 (was 427 before this fold).
 _AR1_SANCTIONED_PIN_LINES = [
     '#: U-cleanup-B: `_cli_backend_unreached_tripwire` (U-cleanup-A `AG1`) is',
     '#: RETIRED here, exactly as its own docstring said it would be -- its',
@@ -1781,6 +1800,48 @@ _AR1_SANCTIONED_PIN_LINES = [
     '            f"sibling suite on this shared host, reported but not failed: "',
     '            f"{_WARN_NAMESPACES}"',
     '        )',
+    '',
+    '',
+    '# ===================================================================== #',
+    '# U-xdist (2026-08-28): worker -> controller channel for the litter',
+    '# guard\'s "concurrent sibling" WARNING (never the two hard-fail',
+    '# assertions above -- those are ordinary fixture-teardown assertions,',
+    '# which xdist already relays to the controller as structured test',
+    '# failures with no help needed here). Under `-n`, `pytest_terminal_',
+    '# summary` fires once per WORKER process too (verified directly by the',
+    "# U-xdist scout, 2026-08-28) but only the CONTROLLER's own call is ever",
+    '# visible on the terminal -- and the controller executes zero tests, so',
+    '# its own `_WARN_NAMESPACES` was always empty, silently dropping this',
+    '# warning under `-n` even in the exact "concurrent sibling" case it',
+    "# exists to report. Fix: relay each worker's OWN `_WARN_NAMESPACES`",
+    "# through xdist's documented `config.workeroutput`/`pytest_testnodedown`",
+    '# channel and EXTEND this SAME `_WARN_NAMESPACES` list on the',
+    '# controller -- `pytest_terminal_summary` above needs no edit at all,',
+    '# since by the time it runs on the controller every worker has already',
+    '# gone down (a worker cannot finish the whole session before it does)',
+    '# and `pytest_testnodedown` has already fired for each one. A plain',
+    '# serial run (no xdist at all) never triggers either hook below, so its',
+    '# behaviour is unchanged -- byte for byte.',
+    'def pytest_sessionfinish(session):',
+    '    config = session.config',
+    '    if hasattr(config, "workeroutput"):',
+    '        config.workeroutput["warn_namespaces"] = list(_WARN_NAMESPACES)',
+    '',
+    '',
+    'def pytest_testnodedown(node, error):',
+    '    # DEDUPED, not a plain `.extend()`: two workers whose session windows',
+    '    # both span the same real event (the common case -- xdist workers',
+    '    # start together and run for close to the whole session) can each',
+    '    # independently observe the SAME sibling namespace and report it in',
+    '    # their own `_WARN_NAMESPACES`; a plain extend would then print it',
+    '    # twice for one real directory. Serial mode never had this failure',
+    '    # mode at all (one process, one `after - before` SET diff), so this',
+    '    # keeps the aggregated result true to that same "one entry per real',
+    '    # namespace" property.',
+    '    remote = getattr(node, "workeroutput", None) or {}',
+    '    for namespace in remote.get("warn_namespaces", []):',
+    '        if namespace not in _WARN_NAMESPACES:',
+    '            _WARN_NAMESPACES.append(namespace)',
 ]
 
 
@@ -1921,6 +1982,16 @@ _AR3_REASONS = {
     # exclusion is deleted outright -- the entry is removed (not
     # replaced) and the tuple's own length assertion moves 11 -> 10.
     ("test_invocation.py", "test_wr7_seam_is_only_called_from_the_three_call_sites"): "U-hostmode Phase 2 (excluded_by_name entry for the deleted dotfiles-management module removed, count 11 -> 10)",
+    # U-xdist gate r1 fold, T1 (2026-08-28): RS8's lockfile-drift bound
+    # (`test_rs8_lockfiles_no_package_added_or_removed_no_version_
+    # changed`) is widened to allow EXACTLY this unit's own sanctioned
+    # `uv add --dev pytest-xdist` addition (itself plus its own
+    # dependency `execnet`) to the CLI lockfile, never any other drift
+    # -- see `test_u_sdka.py::test_hy5_numstat_bounds_hold`'s own dated
+    # paragraph for the numstat accounting. 23 tracked functions now,
+    # not 21 (already 22 before this edit, per SU6's own comment above);
+    # the test's own name stays historical, same convention.
+    ("test_invocation_sdk.py", "test_rs8_lockfiles_no_package_added_or_removed_no_version_changed"): "U-xdist (2026-08-28): RS8's lockfile-drift bound widened for the sanctioned pytest-xdist/execnet addition",
 }
 
 _AR3_RENAMED = {
@@ -2525,15 +2596,30 @@ def test_hy5_numstat_bounds_hold():
     # guard's docstring (both `cli/` and `ui/` conftests) naming its
     # pytest-only scope and the XDG_CACHE_HOME ad-hoc-script rule. 11
     # more pure-addition lines, none removed.
+    # U-xdist gate r1 fold, T1 (2026-08-28): `conftest.py` widened AGAIN,
+    # (396, 0) -> (427, 0) -- the litter guard's worker -> controller
+    # relay (`pytest_sessionfinish`/`pytest_testnodedown`, see `_AR1_
+    # SANCTIONED_PIN_LINES`'s own U-xdist paragraph above for the full
+    # accounting), 31 more pure-addition lines, none removed.
+    # `test_invocation_sdk.py` widened, (493, 166) -> (514, 172) -- RS8's
+    # lockfile-drift bound (`test_rs8_lockfiles_...`) is widened to allow
+    # EXACTLY this unit's own sanctioned `uv add --dev pytest-xdist`
+    # addition (itself plus its own dependency `execnet`) to the CLI
+    # lockfile, never any other drift; measured single-ref against
+    # `_BASE_SHA`.
+    # U-xdist gate r2 fold, T1 (2026-08-28): `conftest.py` widened AGAIN,
+    # (427, 0) -> (438, 0) -- the `pytest_testnodedown` relay deduped
+    # (see `_AR1_SANCTIONED_PIN_LINES`'s own r2 paragraph), 11 more
+    # pure-addition lines, none removed.
     bounds = {
         "plugins/self-learn/cli/src/self_learn/invocation/contract.py": (31, 47),
         "plugins/self-learn/cli/src/self_learn/invocation/registry.py": (34, 20),
         "plugins/self-learn/cli/src/self_learn/provider.py": (196, 36),
         "plugins/self-learn/cli/src/self_learn/analyst.py": (22, 20),
-        "plugins/self-learn/cli/tests/conftest.py": (396, 0),  # U-hostmode gate r2 fold, D-1 (2026-08-28): scope sentence appended to the litter guard docstring
+        "plugins/self-learn/cli/tests/conftest.py": (438, 0),  # U-xdist gate r2 fold, T1 (2026-08-28): pytest_testnodedown relay deduped
         "plugins/self-learn/cli/tests/fixtures/fake_claude.py": (388, 1),
         "plugins/self-learn/cli/tests/test_invocation.py": (738, 762),  # U-hostmode Phase 2 (2026-08-28): the deleted dotfiles-management module's stale excluded_by_name entry removed from test_wr7 -- widened (718, 700) -> (730, 757) -> (737, 760) -> (738, 762), EXACT measured value (not a margin), single-ref against _BASE_SHA
-        "plugins/self-learn/cli/tests/test_invocation_sdk.py": (493, 166),  # U-kl4 gate r1 fold (2026-08-28): B-1 (try scoped to capture pid first + best-effort reap), N/D-2 (new test_kl4b), N/D-3 (re-check start-ticks immediately before the kill), N/D-1 (NOTE-14 sentence); was (298, 149) -> (414, 166) -> (493, 166), measured single-ref against _BASE_SHA
+        "plugins/self-learn/cli/tests/test_invocation_sdk.py": (514, 172),  # U-xdist gate r1 fold, T1 (2026-08-28): RS8's lockfile-drift bound widened to allow the sanctioned pytest-xdist/execnet addition; was (298, 149) -> (414, 166) -> (493, 166) -> (514, 172), measured single-ref against _BASE_SHA
         "plugins/self-learn/cli/tests/test_doctor_invocation.py": (165, 9),
     }
     for relpath, (max_ins, max_del) in bounds.items():

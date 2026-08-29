@@ -159,16 +159,48 @@ def test_m2_fresh_interpreter_import_does_not_circular_import():
     assert "M2-OK" in result.stdout, (result.stdout, result.stderr)
 
 
-def test_m2_mutation_constants_below_imports_reintroduces_the_cycle():
+def test_m2_mutation_constants_below_imports_reintroduces_the_cycle(tmp_path):
     """M-2's own mutation: move `NO_EVIDENCE`/`MISMATCH` back BELOW the
     two relative imports (the shape the gate actually caught) -- the
-    fresh-interpreter test above must go RED. Applied to the LIVE file,
-    confirmed, then restored via inverse edit and sha256-verified back
-    to the pre-mutation bytes."""
-    import hashlib
+    fresh-interpreter test above must go RED.
 
-    target = _SRC / "corroborate.py"
-    original = target.read_text(encoding="utf-8")
+    U-xdist root fix (2026-08-28, scout classification "(f)", a NEW
+    worker-unsafety class): the ORIGINAL version of this test wrote the
+    mutated source directly into the LIVE, shared `src/self_learn/
+    corroborate.py` and restored it in a `finally` block -- safe only
+    under strict serial test ordering. Under pytest-xdist a sibling
+    worker running any of the 12 OTHER fresh-interpreter-subprocess
+    tests in this suite (this build's own report tables all 13, file
+    and line) could land on that file during the write -> spawn ->
+    restore window and see a spurious circular-import failure that has
+    nothing to do with its own test -- reproduced once directly in the
+    scout's own sampling.
+
+    Fixed at the root, not papered over with a lock: the mutation is
+    built into a PRIVATE copy of the WHOLE `self_learn` package under
+    `tmp_path`, never the live tree. A lone-file copy of `corroborate.py`
+    would not reproduce the cycle -- it runs through `worker.py` ->
+    `invocation_sdk/__init__.py` -> `backend.py` -> back into
+    `corroborate.py` -- so the copy has to be the whole package. A
+    fresh interpreter given `PYTHONPATH` pointed at the copy's PARENT
+    shadows the editable-installed `src/self_learn` for that ONE
+    subprocess only (the same shadow-via-`PYTHONPATH` mechanism
+    `test_provider.py`/`test_regime_fixes.py` already use elsewhere in
+    this suite for the identical reason: a fresh interpreter that
+    resolves `self_learn` to a chosen tree, not whatever is editable-
+    installed). The mutation criterion still has to discriminate, so it
+    is run BOTH ways against the SAME copy: RED with the mutation
+    applied, then GREEN once the copy is restored to the unmutated
+    bytes (proves the RED result came from the mutation, not from the
+    shadow mechanism itself) -- and the LIVE file's sha256 is asserted
+    unchanged before either subprocess ever runs and again after both
+    finish, since this test no longer writes to it at all."""
+    import hashlib
+    import os
+    import shutil
+
+    live_target = _SRC / "corroborate.py"
+    original = live_target.read_text(encoding="utf-8")
     original_sha = hashlib.sha256(original.encode()).hexdigest()
 
     anchor_block = (
@@ -190,6 +222,9 @@ def test_m2_mutation_constants_below_imports_reintroduces_the_cycle():
         "class RunEvidence:"
     )
     assert original.count(anchor_block) == 1, "anchor not found -- has the shape moved?"
+    assert original_sha == hashlib.sha256(live_target.read_text(encoding="utf-8").encode()).hexdigest(), (
+        "PRE-CONDITION: the live file must be unread-back-unchanged before either subprocess runs"
+    )
 
     import_pair = (
         "from .invocation_sdk.charter import W\n"
@@ -205,24 +240,48 @@ def test_m2_mutation_constants_below_imports_reintroduces_the_cycle():
     mutated = mutated[:idx] + mutated[idx + len(import_pair):]
     assert mutated != original
 
-    target.write_text(mutated, encoding="utf-8")
-    try:
-        result = subprocess.run(
-            [sys.executable, "-c", "import self_learn.corroborate; print('M2-OK')"],
-            capture_output=True, text=True, timeout=30,
-        )
-        assert result.returncode != 0, (
-            "M-2 mutation stayed GREEN -- the circular import did not reproduce\n"
-            f"{result.stdout}\n{result.stderr}"
-        )
-        assert "circular import" in result.stderr or "partially initialized" in result.stderr, (
-            result.stderr
-        )
-    finally:
-        target.write_text(original, encoding="utf-8")
-        assert hashlib.sha256(target.read_text(encoding="utf-8").encode()).hexdigest() == original_sha, (
-            "RESTORE FAILED -- corroborate.py is not byte-identical to its pre-mutation content"
-        )
+    # A PRIVATE copy of the WHOLE package, never the live tree -- see
+    # this test's own docstring for why a lone-file copy is not enough.
+    shadow_root = tmp_path / "shadow_src"
+    shadow_pkg = shadow_root / "self_learn"
+    shutil.copytree(_SRC, shadow_pkg, ignore=shutil.ignore_patterns("__pycache__"))
+    shadow_corrob = shadow_pkg / "corroborate.py"
+    assert shadow_corrob.read_text(encoding="utf-8") == original
+
+    child_env = dict(os.environ, PYTHONPATH=str(shadow_root))
+
+    # RED: the mutation, applied to the SHADOW copy only.
+    shadow_corrob.write_text(mutated, encoding="utf-8")
+    result_red = subprocess.run(
+        [sys.executable, "-c", "import self_learn.corroborate; print('M2-OK')"],
+        capture_output=True, text=True, timeout=30, env=child_env,
+    )
+    assert result_red.returncode != 0, (
+        "M-2 mutation stayed GREEN -- the circular import did not reproduce\n"
+        f"{result_red.stdout}\n{result_red.stderr}"
+    )
+    assert "circular import" in result_red.stderr or "partially initialized" in result_red.stderr, (
+        result_red.stderr
+    )
+
+    # GREEN control: the SAME shadow copy, restored to the unmutated
+    # bytes -- must import clean, proving the RED result above is the
+    # mutation's own doing, not an artifact of the shadow mechanism.
+    shadow_corrob.write_text(original, encoding="utf-8")
+    result_green = subprocess.run(
+        [sys.executable, "-c", "import self_learn.corroborate; print('M2-OK')"],
+        capture_output=True, text=True, timeout=30, env=child_env,
+    )
+    assert result_green.returncode == 0, (result_green.stdout, result_green.stderr)
+    assert "M2-OK" in result_green.stdout, (result_green.stdout, result_green.stderr)
+
+    # The live, shared file was never written to by this test at all --
+    # asserted directly, not merely inferred from "no exception raised".
+    live_bytes_after = live_target.read_text(encoding="utf-8")
+    assert live_bytes_after == original, "the LIVE corroborate.py changed even though this test never writes to it"
+    assert hashlib.sha256(live_bytes_after.encode()).hexdigest() == original_sha, (
+        "the LIVE corroborate.py's sha256 changed even though this test never writes to it"
+    )
 
 
 # ===================================================================== #
