@@ -241,6 +241,31 @@ class TestUIP3ActionBarButtons:
         # (same nonce confirm-recurrence/graduate already reuse).
         assert "<input type=\"hidden\" name=\"event\" value=\"n1\">" in r.text
 
+    def test_dismiss_confirm_carries_the_event_nonce_to_the_cli(
+        self, tmp_path: Path
+    ) -> None:
+        """Minor (code gate r1): UIP3's OWN wording is "arms dismiss-
+        suspect WITH THE CARD'S event nonce" -- a POST-level fact, not a
+        markup one. The two tests above only prove the button's HTML
+        LOOKS wired to carry `event`; this proves it actually DOES,
+        following the SAME arm/confirm POST shape TestHoldingRowTC uses
+        for confirm-recurrence's own event nonce (test_routes.py)."""
+        sb = make_behavior_env(tmp_path)
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+        c, runner = make_client(sb)
+        c.post(
+            f"/record/{rec.id}/action/confirm",
+            data={
+                "verb": "dismiss-suspect", "kind": "holding",
+                "event": "nonce-abc", "why": "misattributed",
+            },
+            headers={"HX-Request": "true"},
+        )
+        assert runner.calls == [
+            ["dismiss-suspect", rec.id, "--event", "nonce-abc", "--why", "misattributed"]
+        ]
+
     def test_resolved_card_offers_confirm_held(self, tmp_path: Path) -> None:
         from support import make_env
 
@@ -254,6 +279,26 @@ class TestUIP3ActionBarButtons:
         assert "data-page=\"resolved\"" in r.text  # positive control -- the resolved view rendered
         assert "Still holding (m)" in r.text
         assert "hx-vals='{\"verb\":\"confirm-held\",\"kind\":\"resolved\"}'" in r.text
+
+    def test_confirm_held_carries_to_the_cli(self, tmp_path: Path) -> None:
+        """Minor (code gate r1), the confirm-held half: same POST-vs-
+        markup gap, proven the same way -- confirm-held needs no event
+        nonce (its own CLI argv is just `confirm-held <id>`, verbs.py's
+        dispatch), so this proves the bare record id reaches the CLI
+        call untouched, the way `hx-vals` alone claims it does."""
+        from support import make_env
+
+        sb = make_env(tmp_path)
+        rec = make_behavior(scope="skill:s")
+        seed_record(sb.ledger, rec)
+        resolve_record_directly(sb.ledger, sb.ledger / "skills" / "s", rec)
+        c, runner = make_client(sb)
+        c.post(
+            f"/record/{rec.id}/action/confirm",
+            data={"verb": "confirm-held", "kind": "resolved"},
+            headers={"HX-Request": "true"},
+        )
+        assert runner.calls == [["confirm-held", rec.id]]
 
 
 def make_behavior_env(tmp_path: Path):

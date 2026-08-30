@@ -656,11 +656,17 @@ lock helper is introduced. `NOT_REPO_TRUTH` does **not** grow.
 
 ### 2.10 Test baselines
 
+*(CORRECTED at Phase 2 code gate r1 landing: the two totals below were
+the PRE-BUILD baseline at `b206800` -- badly stale once Phase 1 AND
+Phase 2 landed in the same tree. Re-measured LIVE, after the gate r1
+Blocker/Major/Minor fix round (PH1's deletion + the six tests M-1/M-2/
+M-3/the three Minors added):)*
+
 ```
 $ (cd plugins/self-learn/cli && uv run --project . pytest --collect-only -q | tail -1)
-2636 tests collected in 0.50s
+2823 tests collected in 0.54s
 $ (cd plugins/self-learn/ui  && uv run --project . pytest --collect-only -q | tail -1)
-1279 tests collected in 0.52s
+1282 tests collected in 0.54s
 ```
 
 Per-file, for every file this unit reads or extends:
@@ -677,6 +683,7 @@ Per-file, for every file this unit reads or extends:
 | `test_dismiss_suspect.py` | 27 | unchanged |
 | `test_ledger_ops.py` | 56 | unchanged |
 | `test_miner.py` / `test_worker.py` | 100 / 52 | unchanged |
+| `test_u_verbs.py` (this unit's own) | **94** (was 95) | PH1's skip-marked tombstone deleted outright at gate r1 landing (see `TestPhaseBoundary`'s own docstring); `phase2_verbs`'s `"followup add"` entry corrected to `"followup-add"` (Minor, gate r1: spelling unification) |
 
 ---
 

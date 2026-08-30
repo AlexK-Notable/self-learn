@@ -86,6 +86,24 @@ class TestRER1RewritesRoutingAndHistory:
         assert entry["event"] == "routing"
         assert entry["routing"]["destination"] == "skill-md"
 
+    def test_reroute_commit_message_names_the_destination_qualifier(self, env2):
+        """Minor (U-verbs Phase 2 code gate r1): the commit subject must
+        NAME any destination qualifier -- claude-md:rules:<topic>,
+        reference:<file> -- not just the bare destination word. The old
+        `message = f"self-learn: reroute {record_id} \u2192 {destination}"`
+        line dropped it; `_routing_dest_label` is the ONE place this
+        vocabulary is already spelled out (RER3's own same-destination
+        refusal message uses it for the OLD side; this pins the NEW
+        side too)."""
+        rid = seed_routed(env2.home, scope="skill:a")
+        result = verbs.reroute(
+            env2.home, rid, dest="reference:CustomFile.md", no_push=True
+        )
+        assert (
+            result.commit_message
+            == f"self-learn: reroute {rid} \u2192 reference:CustomFile.md"
+        )
+
 
 class TestRER2RetiresAndCompilesOneMotion:
     def test_reroute_retires_and_compiles_claude_md_to_skill_md(self, env2):
@@ -209,6 +227,40 @@ class TestRER5RetireReference:
         result2 = compilers.retire_reference(refs_dir, "lrn-00000002")
         assert result2.applied is False
         assert ref_path.read_text(encoding="utf-8") == text
+
+    def test_retire_reference_never_touches_bytes_outside_the_removed_block(
+        self, tmp_path
+    ):
+        """M-2 (U-verbs Phase 2 code gate r1): a SURVIVING entry's own
+        internal blank-line run is not the removal's business -- the old
+        `re.sub(r"\n{3,}", "\n\n", new_text)` was GLOBAL (whole-file),
+        so it silently collapsed a human's own 3+-blank-line gap anywhere
+        in the file, not just at the removal seam. e1's body carries a
+        deliberate 4-newline gap that has nothing to do with e2's
+        removal; it must survive byte-for-byte."""
+        from self_learn import compilers
+
+        refs_dir = tmp_path / "refdir"
+        refs_dir.mkdir()
+        ref_path = refs_dir / "LEARNINGS.md"
+        header = compilers._LEARNINGS_HEADER
+        e1 = (
+            "## 2026-08-01 \u2014 lrn-00000001\n\n**Trigger:** t1.\n\n\n\n"
+            "**Instruction:** i1."
+        )
+        e2 = "## 2026-08-02 \u2014 lrn-00000002\n\n**Trigger:** t2.\n\n**Instruction:** i2."
+        e3 = "## 2026-08-03 \u2014 lrn-00000003\n\n**Trigger:** t3.\n\n**Instruction:** i3."
+        ref_path.write_text(
+            header + "\n" + e1 + "\n\n" + e2 + "\n\n" + e3 + "\n", encoding="utf-8"
+        )
+        result = compilers.retire_reference(refs_dir, "lrn-00000002")
+        assert result.applied is True
+        text = ref_path.read_text(encoding="utf-8")
+        assert "lrn-00000002" not in text
+        # e1's own internal 4-newline gap survives byte-for-byte -- the
+        # old global collapse would have shrunk it to exactly "\n\n" here.
+        assert "**Trigger:** t1.\n\n\n\n**Instruction:** i1." in text
+        assert header + "\n" + e1 + "\n\n" + e3 + "\n" == text
 
 
 class TestRER6GraduateAndSupersedeRetireReference:
@@ -372,9 +424,39 @@ class TestHOST3NoBulkRetirement:
         assert "--force" not in help_text
 
     def test_hosts_py_never_calls_graduate_or_supersede(self):
+        r"""HOST3's grep leg. The spec's own literal command (§7,
+        `grep -c 'graduate\|supersede' cli/src/self_learn/hosts.py` = 0)
+        is a SELF-MATCHING search: MEASURED, it returns 2, both hits
+        landing inside `host_remove`'s own docstring -- prose EXPLAINING
+        why no bulk retirement exists ("`graduate` ("canon already
+        covers it") and `supersede` ("another record replaces it")
+        are both FALSE statements...") legitimately contains both bare
+        words, with no call anywhere near them. Asserted here as its
+        own positive control, so a future docstring edit that happens
+        to remove those two words cannot silently turn this into a
+        vacuous check without the control itself going red first.
+
+        Re-scoped to `\bgraduate\(|\bsupersede\(` -- an ACTUAL call
+        (word boundary + open-paren), never the bare word -- so the
+        unit's own explanatory prose cannot satisfy or defeat the
+        check either way. M50 (mutation table) proves this narrower
+        pattern still catches a real violation: adding `--retire`
+        calling `graduate(...)` in a loop reddens this exact test."""
         hosts_py = (
             REPO_ROOT / "plugins" / "self-learn" / "cli" / "src" / "self_learn" / "hosts.py"
         )
+        literal = subprocess.run(
+            ["grep", "-c", r"graduate\|supersede", str(hosts_py)],
+            capture_output=True, text=True,
+        )
+        literal_count = int(literal.stdout.strip() or "0")
+        assert literal_count == 2, (
+            "positive control: the spec's own literal pattern is EXPECTED "
+            "to self-match host_remove's docstring prose right now -- if "
+            f"this is no longer {2}, re-measure before touching the "
+            "narrowed pattern below"
+        )
+
         proc = subprocess.run(
             ["grep", "-cE", r"\bgraduate\(|\bsupersede\(", str(hosts_py)],
             capture_output=True, text=True,
@@ -442,6 +524,9 @@ class TestHOST4BucketPrune:
         assert user_bucket.is_dir()  # positive control -- exists before prune too
 
         dry = verbs.bucket_prune(sb.ledger, dry_run=True)
+        # Minor (code gate r1): BucketPruneResult.pruned is ABSOLUTE, not
+        # home-relative (the docstring used to claim the opposite).
+        assert all(p.is_absolute() for p in dry.pruned)
         dry_names = {p.name for p in dry.pruned}
         assert dry_names == {slug_for(empty_hosts[0]), slug_for(empty_hosts[1]), "doomed"}
         # --dry-run writes nothing.
@@ -527,7 +612,7 @@ class TestMETA2FollowupAddRefusesWhenOpen:
         verbs.followup_done(env2.home, rid, no_push=True)
         # succeeds now that the open one is cleared.
         result = verbs.followup_add(env2.home, rid, action="second upgrade", no_push=True)
-        assert result.action == "followup add"
+        assert result.action == "followup-add"
 
 
 class TestMETA3ReclassifyStatusAsymmetry:
@@ -606,10 +691,73 @@ class TestMETA4ReclassifyTypeRevalidates:
         with pytest.raises(verbs.VerbError) as exc_info:
             verbs.reclassify(env2.home, rid, type="behavior", no_push=True)
         message = str(exc_info.value)
-        assert "missing required section(s)" in message
-        assert "Trigger" in message
-        assert "Instruction" in message
+        # M-3 (code gate r1): names the missing heading through the ONE
+        # shipped validator, Record._validate_body -- which reports the
+        # FIRST missing required section it finds ("Trigger" precedes
+        # "Instruction" in REQUIRED_SECTIONS["behavior"]), not a
+        # hand-collected list of every missing one at once. That is the
+        # real, single-validator shape; a knowledge record's body (only
+        # "## Fact") is missing both, so asserting just the first is
+        # what a genuine call to the shipped validator can promise.
+        assert "must contain a '## Trigger' section" in message
         # the record is never rewritten to fit.
+        after = find_record_path(env2.home, rid).read_bytes()
+        assert after == before
+
+    def test_reclassify_type_accepts_a_present_but_empty_section(self, env2):
+        """M-3 (code gate r1), disagreement direction 1: present-but-
+        EMPTY '## Trigger'/'## Instruction' headings must be ACCEPTED
+        -- Record._validate_body counts HEADINGS, not content (the
+        verb's own docstring: "the body is never rewritten to fit" --
+        content is never this verb's business). The retired hand-rolled
+        check refused this. `--type behavior` on an already-behavior
+        record still runs the SAME pre-lock section check any `--type`
+        call runs; paired with a REAL `--kind` change (kind and type
+        both stay "behavior" throughout, so the unrelated set_kind-
+        before-set_type ordering constraint elsewhere in this verb
+        never triggers) so the write is not a no-op git refuses to
+        commit."""
+        rid = "lrn-0000bbbb"
+        record = make_behavior(record_id=rid, scope="skill:a")
+        record.set_body("## Trigger\n\n## Instruction\n")
+        create_record(env2.home, record)
+        commit_all(env2.home, "pending behavior, empty trigger/instruction")
+
+        result = verbs.reclassify(
+            env2.home, rid, type="behavior", kind="surface-rule", no_push=True
+        )
+        assert result.action == "reclassify"
+        after = Record.from_path(find_record_path(env2.home, rid))
+        assert after.type == "behavior"
+        assert after.kind == "surface-rule"
+
+    def test_reclassify_type_refuses_a_duplicate_heading_pre_lock(self, env2):
+        """M-3 (code gate r1), disagreement direction 2: a DUPLICATE
+        '## Fact' heading must refuse BEFORE any lock/mutation, once
+        the reclassify TARGET (knowledge) requires it -- the retired
+        hand-rolled check (a dict-shaped `_body_sections`) could not
+        represent a count > 1 at all, so it silently passed a duplicate
+        through pre-lock, only for `set_type`'s OWN `_validate_body`
+        call to catch it later, under the lock -- the record still
+        untouched by luck (the mutation never landed), not by a check
+        that actually saw the problem where it claimed to. Source type
+        is behavior (Trigger/Instruction unique -- valid at creation on
+        its own terms); '## Fact' rides along duplicated, unchecked by
+        behavior's own validation (Fact is neither required nor
+        optional for behavior), and only starts mattering once the
+        reclassify TARGET (knowledge) is checked."""
+        rid = "lrn-0000cccc"
+        record = make_behavior(record_id=rid, scope="skill:a")
+        record.set_body(
+            "## Trigger\nt1.\n\n## Instruction\ni1.\n\n## Fact\nf1.\n\n## Fact\nf2."
+        )
+        create_record(env2.home, record)
+        commit_all(env2.home, "pending behavior, duplicate Fact")
+        before = find_record_path(env2.home, rid).read_bytes()
+
+        with pytest.raises(verbs.VerbError) as exc_info:
+            verbs.reclassify(env2.home, rid, type="knowledge", no_push=True)
+        assert "duplicate" in str(exc_info.value)
         after = find_record_path(env2.home, rid).read_bytes()
         assert after == before
 

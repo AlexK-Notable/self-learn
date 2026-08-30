@@ -1213,10 +1213,27 @@ def _retire_reference_text(text: str, record_id: str) -> tuple[str, str | None]:
     end = next_heading.start() if next_heading is not None else len(text)
     removed = text[start:end]
     new_text = text[:start] + text[end:]
-    # Collapse any blank-line run left behind (three+ consecutive
-    # newlines) to exactly one blank line, and strip a trailing blank
-    # left at EOF when the removed block was the last entry.
-    new_text = re.sub(r"\n{3,}", "\n\n", new_text)
+    # M-2 (U-verbs Phase 2 code gate r1): a `re.sub(r"\n{3,}", ...)`
+    # USED to sit here, meant to collapse a blank-line run left behind
+    # at the removal seam -- but the seam is PROVABLY always exactly
+    # `\n\n` already (compile_reference's own writer, just above,
+    # always separates entries with exactly one blank line and ends
+    # the file with exactly one trailing newline; text[:start] and
+    # text[end:] concatenate back to that same one blank line, or to
+    # nothing when the removed entry was last). The regex therefore
+    # never had a seam to collapse -- being GLOBAL, its only observed
+    # effect was collapsing a human's OWN 3+-blank-line run anywhere
+    # else in the file, reachable end-to-end through shipped verbs with
+    # no hand edit (`route` into a pre-existing hand-written references
+    # file, then `graduate` collapses the human's blank line). Deleted
+    # outright, not narrowed: code that cannot do its stated job and
+    # can still damage a human's file has no defensible narrowed form.
+    # The trailing-newline normalisation below is NOT the same class of
+    # bug: it matches compile_reference's own write-leg convention
+    # (every append already rstrips trailing newlines before writing),
+    # so a file that has been through compile_reference even once
+    # already carries this same normalisation -- retirement staying
+    # consistent with it is not a new overreach.
     new_text = new_text.rstrip("\n") + "\n"
     return new_text, removed
 

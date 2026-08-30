@@ -159,7 +159,6 @@ from .ledger_ops import (
 )
 from . import records as records_mod
 from .records import RECORD_ID_RE, Record, RecordError, _validate_follow_up
-from .compilers import _body_sections
 from .scan import format_refusal
 from .scan import scan as secret_scan
 
@@ -5534,7 +5533,24 @@ def reroute(
             )
 
         by = by if by is not None else "human"
-        message = f"self-learn: reroute {record_id} → {destination}"
+        # M-1 (U-verbs Phase 2 code gate r1): the commit subject used
+        # to show the bare `destination` string, dropping any
+        # qualifier (`claude-md:rules:<topic>`, `reference:<file>`) --
+        # `_routing_dest_label` is the ONE place that vocabulary is
+        # already spelled out (RER3's own same-destination refusal
+        # message uses it for the OLD side; this is the NEW side).
+        # `new-skill`/`hook` never reach here (ONE_MOTION_UNROUTABLE
+        # already refused above), so only reference/claude-md carry a
+        # qualifier worth naming.
+        message_target = _routing_dest_label(
+            {
+                "destination": destination,
+                "reference_file": spec.ref_name if destination == "reference" else None,
+                "variant": spec.variant,
+                "rules_topic": spec.rules_topic,
+            }
+        )
+        message = f"self-learn: reroute {record_id} → {message_target}"
         routed_at = _now_iso()
 
         with _ledger_write(home), gitops.host_lock(spec.host_path, spec.mode):
@@ -5627,6 +5643,26 @@ def reroute(
                     touched = touched + [old_ref_record_path]
 
             staged, sha = _commit_ledger(home, touched, message, note)
+
+            # M-1 (U-verbs Phase 2 code gate r1): `reroute` writes a
+            # routing block via `ledger_ops.reroute_record` (its own
+            # `set_routing` call) but, unlike `route`/`route_direct`,
+            # never spooled a `route` event -- the AST guard
+            # (test_route_observability.py, criterion 20) only walked
+            # verbs.py, so it never saw `reroute_record`'s call in
+            # ledger_ops.py either. Same placement pin as route()'s own
+            # (criterion 19): immediately after the ledger commit
+            # closes above, NOT at the end of the function, so a
+            # host-phase failure below still leaves this event spooled
+            # -- the ledger commit IS the routing (doc 13 §4.1).
+            telemetry.spool_quiet(
+                "route",
+                record=record_id,
+                destination=destination,
+                scope=record.scope,
+                by=by,
+                variant=spec.variant,
+            )
 
             post_notes: list[str] = []
             old_host_sha, old_host_repo = _retirement_host_phase(
@@ -7330,9 +7366,14 @@ def recompile(
 class BucketPruneResult:
     """Outcome of ``bucket prune`` (U-verbs S-54 / §4.6, HOST4). ``pruned``
     lists the removed (or, under ``dry_run``, WOULD-remove) bucket
-    directories, relative to *home*. ``dry_run=True`` writes nothing,
-    takes no lock, holds no sentinel (DRY3's own discipline, reused
-    here)."""
+    directories — ABSOLUTE paths (Minor, code gate r1: this docstring
+    used to say "relative to *home*", which was simply wrong;
+    :func:`ledger.discover_buckets` builds ``Bucket.path`` via
+    ``home.glob(...)`` off an already-absolute ``home``, so every path
+    here is absolute, matching what a caller would need to act on it
+    directly without re-joining ``home``). ``dry_run=True`` writes
+    nothing, takes no lock, holds no sentinel (DRY3's own discipline,
+    reused here)."""
 
     pruned: list[Path]
     dry_run: bool
@@ -7415,18 +7456,28 @@ def followup_add(
     """``self-learn followup add`` (U-verbs S-54 / §4.7, Phase 2, META1-
     META2): open a follow-up on a ROUTED record — the verb `daad648`'s
     hand commit (2026-07-14) did by hand. ``require_status(...,
-    ROUTED_ONLY, verb="followup add")``; refuses (rc 1) when
+    ROUTED_ONLY, verb="followup-add")``; refuses (rc 1) when
     ``routing.follow_up`` is already open, naming the open action —
     ``followup done`` clears it first (META2). Validated through the
     SAME shipped :func:`records._validate_follow_up` `route`'s own
     ``--follow-up`` uses (META1 — never a second, hand-rolled shape
     check). Commit ``self-learn: follow-up add lrn-…`` (matching the
-    existing ``self-learn: follow-up done lrn-…`` subject family)."""
+    existing ``self-learn: follow-up done lrn-…`` subject family).
+
+    M-1 (U-verbs Phase 2 code gate r1): applies the follow-up through
+    :meth:`Record.set_follow_up` — the SAME sibling method ``route
+    --follow-up`` already uses — never :meth:`Record.set_routing`
+    directly. This verb re-validates and rewrites the SAME routing
+    block that already exists (status stays ``routed``, ``destination``
+    is unchanged, no host write follows); it never ROUTES the record,
+    so it must not be mistaken for a route site — the same reasoning
+    :meth:`Record.complete_follow_up` already gives ``followup done``
+    below."""
     home = Path(home)
     path = find_record_path(home, record_id)  # pending OR resolved
     _scan_or_refuse([path], note)
     try:
-        _, record = require_status(home, record_id, ROUTED_ONLY, verb="followup add")
+        _, record = require_status(home, record_id, ROUTED_ONLY, verb="followup-add")
     except LedgerOpsError as exc:
         raise VerbError(str(exc)) from exc
     existing = (record.routing or {}).get("follow_up")
@@ -7451,14 +7502,15 @@ def followup_add(
         message = f"self-learn: follow-up add {record_id}"
         with _ledger_write(home):
             record = Record.from_path(path)  # fresh read under the lock
-            routing = dict(record.routing or {})
-            routing["follow_up"] = follow_up
-            record.set_routing(routing)
+            try:
+                record.set_follow_up(action, unblocks_on=unblocks_on, note=note)
+            except RecordError as exc:
+                raise VerbError(str(exc)) from exc
             record.write(path)
             staged, sha = _commit_ledger(home, [path], message, note)
         push = _push_ledger(home, no_push)
         return VerbResult(
-            action="followup add",
+            action="followup-add",
             record_id=record_id,
             commit_message=message,
             commit_sha=sha,
@@ -7516,15 +7568,31 @@ def reclassify(
             require_status(home, record_id, LIVE_STATUSES, verb="reclassify --type")
         except LedgerOpsError as exc:
             raise VerbError(str(exc)) from exc
-        required = records_mod.REQUIRED_SECTIONS[type]
-        sections = _body_sections(record)
-        missing = [h for h in required if not sections.get(h, "").strip()]
-        if missing:
+        # M-3 (U-verbs Phase 2 code gate r1): re-validates through the ONE
+        # shipped body validator, Record._validate_body -- the SAME one
+        # set_type calls again under the lock below (twice on purpose,
+        # never a second implementation). The hand-rolled
+        # `_body_sections(record)` + truthiness check this replaces
+        # DISAGREED with it in both directions, measured: a present-but-
+        # EMPTY '## Trigger' section was refused as "missing" even
+        # though `_validate_body` accepts it (it counts HEADINGS, not
+        # content -- consistent with this verb's own "the body is never
+        # rewritten to fit" contract: content is never this verb's
+        # business to begin with); and a DUPLICATE heading passed the
+        # hand-rolled check silently (a dict-shaped `_body_sections`
+        # cannot represent a count > 1) and surfaced only later, inside
+        # `_ledger_write`, when `set_type`'s own `_validate_body` call
+        # caught it for real -- the exact opposite of what the
+        # `except RecordError` branch below used to claim ("already
+        # cover the live paths").
+        try:
+            records_mod.Record._validate_body(type, record.body)
+        except RecordError as exc:
             raise VerbError(
                 f"record {record_id} cannot reclassify to type {type!r}: "
-                f"missing required section(s) {', '.join(missing)} — the "
-                "body is never rewritten to fit; edit it by hand first"
-            )
+                f"{exc} — the body is never rewritten to fit; edit it by "
+                "hand first"
+            ) from exc
 
     hold = sentinel.hold()
     sentinel.heartbeat()
@@ -7537,8 +7605,13 @@ def reclassify(
                     record.set_kind(kind)
                 if type is not None:
                     record.set_type(type)
-            except RecordError as exc:  # defensive: pre-lock checks above
-                raise VerbError(str(exc)) from exc  # already cover the live paths
+            except RecordError as exc:
+                # M-3: genuinely defensive now -- the pre-lock check just
+                # above calls the SAME Record._validate_body this
+                # set_type call does, so this branch is only reachable
+                # by a race (the record changed between the pre-lock read
+                # and this fresh, under-the-lock one).
+                raise VerbError(str(exc)) from exc
             record.write(path)
             staged, sha = _commit_ledger(home, [path], message, note)
         push = _push_ledger(home, no_push)
