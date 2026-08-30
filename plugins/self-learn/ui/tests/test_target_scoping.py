@@ -508,11 +508,32 @@ class TestS1NoSameRowDuplicates:
     bound to `followup_done` tomorrow is scoped the day it is bound);
     this is what stops a TEMPLATE from re-opening it.
 
-    **Stated coverage, honestly:** this guard does NOT catch the
-    bulk-collapse shape — the bulk row and the record rows are distinct
-    `[data-row]`s — which is why `B1`/`B2`/`B3` exist as separate
-    criteria. A guard whose coverage is overstated is worse than no
-    guard."""
+    **Stated coverage, honestly — TWO gaps, both named rather than
+    papered over.** A guard whose coverage is overstated is worse than
+    no guard.
+
+    1. It does NOT catch the bulk-collapse shape — the bulk row and the
+       record rows are distinct `[data-row]`s — which is why
+       `B1`/`B2`/`B3` exist as separate criteria.
+    2. **It inspects GET-rendered surfaces ONLY** (code gate r1
+       MINOR-1). Its three fixtures are plain `GET`s, so a surface that
+       reaches the browser as a POST FRAGMENT is invisible to it, and
+       one such surface violates the rule as written: a 2-edge
+       `contradicts_offer` emits one `link_contradicts` per edge
+       (`{% for edge in edges %}` -> `action_bar.html` with
+       `kind="contradicts"`) and the file contains **zero** `data-row`
+       (verified here), so both occurrences have NO `[data-row]`
+       ancestor. It is not a live defect on two independent legs:
+       `link_contradicts` has no `KEYMAP` entry (verified: 0
+       occurrences in `keymap.py`), and dispatch would REFUSE on the
+       multiplicity anyway — `resolveScoped` returns `ambiguous` for
+       two page-wide matches. The fragment is emitted only from
+       `_contradicts_offer_response`, called at three **POST** handlers
+       (`/record/{id}/action/confirm`,
+       `/record/{id}/action/commit-drift/confirm`, `/proposal/confirm`)
+       — never from a page GET, which is exactly why no fixture here
+       can reach it. Extending the guard to composed POST fragments is
+       a fixture-vocabulary problem, not a rule change."""
 
     def test_s1_front(self, tmp_path: Path) -> None:
         sb = _front_sandbox(tmp_path)

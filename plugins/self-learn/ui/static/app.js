@@ -107,6 +107,18 @@
    * Two `.selected` rows is `ambiguous`, never "pick one".
    * `moveSelection` clears all before setting one, so this is
    * defensive — but it must not silently degrade to first-match.
+   *
+   * NOTE the exact reach of that first branch (code gate r1 NIT-1): it
+   * short-circuits BEFORE querying anything, so with two rows selected
+   * this returns `ambiguous` even for a selector that matches NOTHING
+   * anywhere on the page. That is deliberate and spec-sanctioned — the
+   * caller must refuse, not act — and it is unreachable through
+   * `moveSelection`/`ensureRowSelected`, which never leave two rows
+   * marked. It is written down because it has one real consequence:
+   * an EXISTENCE test built on this primitive (`status !== "none"`)
+   * would report "something is armed" on a page with ZERO armed bars.
+   * That is precisely why `findArmedBar()` below stays page-wide rather
+   * than being re-expressed in terms of this function.
    */
   function resolveScoped(selector) {
     const sels = document.querySelectorAll(
@@ -178,8 +190,8 @@
    * DELIBERATELY page-wide, and NOT routed through `resolveScoped`.
    * This answers a DIFFERENT question from dispatch: "is anything armed
    * anywhere on this page?", asked by the Y-16 reload-defer legs and the
-   * pane-proposal belt below (leg (c), `handlePaneProposal`,
-   * `paneProposalBlocked`). Those legs must hold a reload while ANY bar
+   * pane-proposal belt below (leg (c), `paneSwapBlocked`,
+   * `handlePaneProposal`). Those legs must hold a reload while ANY bar
    * is armed — scoping them would make a page with TWO armed bars
    * resolve `ambiguous` and therefore NOT defer, letting a broadcast
    * refresh wipe both armed bars. That is strictly worse than today.
@@ -783,6 +795,18 @@
     } else if (armedResolved.status === "one") {
       const armed = armedResolved.el;
       const armedBarId = armed.id;
+      // KNOWN PRE-EXISTING STATE, recorded so a reader does not have to
+      // wonder whether this unit caused it (code gate r1 NIT-2). A bar
+      // whose `data-armed="true"` comes from `commit_drift.armed`
+      // (action_bar.html:10's second disjunct) carries
+      // `commit_drift_confirm`/`commit_drift_disarm`, NOT
+      // `confirm`/`disarm` — so both lookups below find nothing in it
+      // and the branch is keyboard-INERT there. That was already true
+      // before U-target, and scoping makes it strictly SAFER: the old
+      // page-wide lookup could resolve `confirm` in a DIFFERENT bar and
+      // fire it; a within-bar lookup cannot reach outside the bar the
+      // operator is actually in. Binding those two actions is not this
+      // unit's business.
       event.preventDefault();
       if (event.key === "Enter") {
         clickAction("confirm", armedBarId);
