@@ -257,9 +257,39 @@ override is per-round, not a new default.
 
     ```
     OWED: <armor-key>: <missing|edited>:<node-key>
-    VACUOUS: <armor-key>: <missing|edited>:<node-key>
-    VACUOUS: <armor-key>: repinned
+    VACUOUS: <armor-key>: <entry>
     ```
+
+    `VACUOUS:`'s `<entry>` is one of **seven** shapes — one per checked
+    field. All seven are listed because a caller must not infer the set
+    from a sample; the two that used to be documented alone hide both
+    traps below.
+
+    | door | `<entry>` shape | real example |
+    |---|---|---|
+    | `repinned` | bare — **no suffix at all** | `repinned` |
+    | `missing` | `missing:<node-key>` | `missing:assign:REWRITTEN` |
+    | `edited` | `edited:<node-key>` | `edited:func:test_wr7_reader_contract` |
+    | `edited_exports` | `edited_exports:<def-name>` | `edited_exports:_skill_gates_yaml` |
+    | `new_funcs` | `new_funcs:<function name>` | `new_funcs:_gate_probe` |
+    | `new_scenario_keys` | `new_scenario_keys:<scenario key>` | `new_scenario_keys:budget_probe` |
+    | `new_stmt_keys` | `new_stmt_keys:<part>\|<part>…` — **contains `\|`** | `new_stmt_keys:assign\|SESSION_ID` |
+
+    **Two traps, both invisible from the `missing`/`edited` pair alone:**
+
+    - `new_stmt_keys` entries are `|`-joined, so **never split an entry
+      on `|`**. A nested key flattens to its leaves
+      (`import|os|sys`), and a part carrying whitespace is replaced by
+      the first 12 hex of its sha256 (`other|4f2a91c0d3be`) so the
+      whole entry stays one `\S+` token.
+    - `missing`/`edited` node keys **contain their own `:`**
+      (`assign:REWRITTEN`, `func:test_x`), so an entry can hold three
+      or more colon-separated parts. **Never split an entry on `:`.**
+
+    Parse a report line as `line.split(": ", 2)` → `(token, armor-key,
+    entry)` and stop there; then match `entry` against a door name,
+    prefix-wise. Treat everything after the door as an opaque
+    identifier — it is only ever echoed back to a human.
 
     `STALE:` is a **three-line record**, always in this order:
 

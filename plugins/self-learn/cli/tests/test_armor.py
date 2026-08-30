@@ -1393,12 +1393,43 @@ def _vac_new_scenario_keys(new_anchor: str, key: str, row) -> list[str]:
     return [f"new_scenario_keys:{k}" for k in row.new_scenario_keys if k not in added]
 
 
+def _vacuous_stmt_token(stmt_key) -> str:
+    """One `new_stmt_keys` entry rendered as a single WHITESPACE-FREE
+    token, `|`-joined (`ANC6`; gate r2 MINOR-2).
+
+    `_additive_stmt_key` returns nested tuples, and two of its five
+    kinds carry whitespace once flattened naively -- measured
+    2026-08-30: `("import", ("os", "sys"))` renders `import|('os',
+    'sys')` and the `("other", ast.dump(node))` fallback renders the
+    whole dump. Either breaks the `\\S+` token shape §5.1 publishes
+    and `_VACUOUS_RE` enforces, which is exactly the trap publishing
+    the seven shapes was meant to remove. Nested tuples are flattened
+    to their leaves; a leaf that carries whitespace is replaced by the
+    first 12 hex of its sha256, which stays deterministic and greppable
+    without ever being parsed."""
+    parts: list[str] = []
+
+    def _walk(part) -> None:
+        if isinstance(part, tuple):
+            for inner in part:
+                _walk(inner)
+            return
+        text = str(part)
+        parts.append(
+            text if text and not any(c.isspace() for c in text)
+            else hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
+        )
+
+    _walk(stmt_key)
+    return "|".join(parts)
+
+
 def _vac_new_stmt_keys(new_anchor: str, key: str, row) -> list[str]:
     if not row.new_stmt_keys:
         return []
     added = _additive_stmt_keys(_head_text(key)) - _additive_stmt_keys(_git_show_text(new_anchor, key))
     return [
-        "new_stmt_keys:" + "|".join(str(part) for part in k)
+        "new_stmt_keys:" + _vacuous_stmt_token(k)
         for k in row.new_stmt_keys if tuple(k) not in added
     ]
 
@@ -1467,7 +1498,19 @@ def _compute_vacuous(new_anchor: str) -> dict[str, list[str]]:
     dispatched through `VACUITY_MODEL`, with an unmodelled row type or
     field raising `SystemExit` rather than passing silently. See that
     table's own header for why an enumerated list was the wrong shape
-    here specifically."""
+    here specifically.
+
+    ONE EXCEPTION to that claim, stated because "the walk raises on
+    anything unmodelled" is this unit's headline (gate r2 NIT-3). The
+    dispatch key is `type(row).__name__`, so a DIFFERENT class that
+    happens to share a name -- say a second `Behaviour` carrying a
+    SUBSET of the fields -- finds the existing rules, has a rule for
+    every field it does have, and returns `{}` silently instead of
+    raising. Nothing here catches it. `ANC7` leg 1 does: it asserts
+    `set(rules) == {f.name for f in dataclasses.fields(row)}` for every
+    shipped row, so the surplus rules make the mismatch loud in the
+    suite even though the CLI would not. Contained, not absent -- and
+    the containment lives in a test, not in this function."""
     dead: dict[str, list[str]] = {}
     for key, row in ARMOR.items():
         type_name = type(row).__name__
@@ -3965,6 +4008,42 @@ def test_anc6_refusal_leg_contract(capsys):
     The rc-0 success leg is asserted by `ARM6` (which already drives a
     genuine write at `15fb676`); duplicating its ~35s here would buy
     nothing."""
+    # --- Leg 0 (gate r2 MINOR-1): the published line shapes are
+    # DERIVED. Re-derived here independently of the constant, so a
+    # reversion to a hand-written tuple reddens; then exercised
+    # behaviourally, so a door that stopped being recognised reddens
+    # too. `MG6` replaced the derivation with `("edited", "missing")`
+    # and left the suite green -- this leg is that mutation's cover.
+    checked_doors = tuple(sorted(
+        field for rules in VACUITY_MODEL.values() for field, rule in rules.items()
+        if rule.check is not None
+    ))
+    assert checked_doors == _VACUOUS_DOORS, (checked_doors, _VACUOUS_DOORS)
+    for door in checked_doors:
+        sample = f"VACUOUS: fixtures/fake_claude.py: {door}"
+        if door != "repinned":
+            sample += ":__probe"
+        assert _VACUOUS_RE.match(sample), (door, sample)
+    assert not _VACUOUS_RE.match("VACUOUS: fixtures/fake_claude.py: not_a_door:__probe")
+
+    # Every `_additive_stmt_key` kind renders as ONE whitespace-free
+    # token -- the `\S+` shape §5.1 publishes. Two of the five did not
+    # before `_vacuous_stmt_token` (gate r2 MINOR-2).
+    for stmt_source, expected in (
+        ("import os, sys", "import|os|sys"),
+        ("from typing import Any", "importfrom|typing|Any"),
+        ("SESSION_ID = 1", "assign|SESSION_ID"),
+        ("class C: pass", "class|C"),
+        ("del x", None),
+    ):
+        token = _vacuous_stmt_token(_additive_stmt_key(ast.parse(stmt_source).body[0]))
+        assert not any(c.isspace() for c in token), (stmt_source, token)
+        if expected is not None:
+            assert token == expected, (stmt_source, token)
+        assert _VACUOUS_RE.match(
+            f"VACUOUS: fixtures/fake_claude.py: new_stmt_keys:{token}"
+        ), (stmt_source, token)
+
     # --- Leg 1: the no-op guard. A pristine scratch copy with
     # `--anchor` equal to its own `ANCHOR` owes nothing, strands
     # nothing and invalidates nothing, so the run reaches the WRITE and
