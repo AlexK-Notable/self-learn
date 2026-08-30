@@ -1,8 +1,11 @@
+plugins/self-learn/cli/tests/test_armor.py
 plugins/self-learn/cli/tests/test_decision_trace.py
+plugins/self-learn/cli/tests/test_land_runner.py
+plugins/self-learn/cli/tests/test_landing_checks.py
+plugins/self-learn/cli/tests/test_landing_fixture.py
 plugins/self-learn/cli/tests/test_personal_literals.py
 plugins/self-learn/cli/tests/test_pointer.py
 plugins/self-learn/cli/tests/test_reader_contract.py
 plugins/self-learn/cli/tests/test_u_ancestry.py
 plugins/self-learn/cli/tests/test_u_corrob.py
 plugins/self-learn/cli/tests/test_u_glob.py
-plugins/self-learn/cli/tests/test_u_sdka.py

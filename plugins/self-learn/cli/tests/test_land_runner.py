@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -1573,3 +1574,110 @@ def test_chk3_an_absent_baseline_file_does_not_void_the_others(tmp_path):
     bad = roworder()
     assert bad.returncode == 1, bad.stdout + bad.stderr
     assert "INTRODUCED by this merge" in bad.stderr, bad.stderr
+
+
+# ---------------------------------------------------------------------------
+# SUI7 -- the docs-only lane's test set is a checked-in file, and the walk
+# ships as code
+#
+# Found unbuilt at build time, and the shipped file had already ROTTED:
+# measured 2026-08-29, `walk.py --union` derived 11 modules while
+# doc_reading_set.txt carried 8 -- missing test_armor.py (which arrived
+# with U-armor's merge) and this unit's own test_land_runner.py /
+# test_landing_checks.py / test_landing_fixture.py, and still carrying
+# test_u_sdka.py, whose doc literal U-armor removed. A docs-only landing
+# would have run a set that omitted the modules that actually read docs,
+# including the ones reading 03-decisions.md and 14-forward-work-map.md.
+
+
+def _walk(*args: str) -> str:
+    return subprocess.run(
+        [sys.executable, str(LF.THIS_REPO_CLI / "scripts/measured/walk.py"), *args],
+        cwd=_repo_root(), capture_output=True, text=True, check=True,
+    ).stdout.strip()
+
+
+def test_doc_reading_set():
+    """SUI7, six legs.
+
+    (a) the shipped set EQUALS the union of direct-hit and part-constant
+        modules under the walk;
+    (b) the strict `src/` count is 0 and must stay 0 -- a detector: any
+        `src/` module gaining a real doc-path constant forces the full
+        lane. Positive control constructed live;
+    (c) the three columns are reported together, naive >= inclusive >=
+        strict, so a docstring-inclusive count can never again be shown
+        as strict;
+    (d) `test_reader_contract.py` -- which holds `'docs'` and `'specs'`
+        as SEPARATE constants -- is in the set, pinning the part-built
+        route;
+    (e) a SYNTHETIC part-built module that is not a direct hit is picked
+        up by the union (today the part-built set is a subset of the
+        direct set, so a dropped union step would otherwise be invisible);
+    (f) the walk reads the same with the §6.1 helpers installed at their
+        SHIPPED path -- and demonstrably different if they were under
+        `cli/tests/`, which is why they are not.
+
+    The absolute counts are deliberately NOT pinned. They drift with the
+    corpus (144 modules at spec time, 153 now), and pinning a drifting
+    number into a criterion is the M-19 class of defect: a build that
+    refuses everywhere but one machine at one moment.
+    """
+    root = _repo_root()
+    shipped_path = root / "plugins/self-learn/cli/src/self_learn/landing/doc_reading_set.txt"
+    shipped = [l for l in shipped_path.read_text().split("\n") if l.strip()]
+
+    # (a)
+    union = [l for l in _walk("--union").split("\n") if l.strip()]
+    assert sorted(shipped) == sorted(union), {
+        "missing_from_shipped": sorted(set(union) - set(shipped)),
+        "stale_in_shipped": sorted(set(shipped) - set(union)),
+    }
+    assert shipped == sorted(shipped), "the shipped set must be sorted, so a diff is readable"
+
+    # (b) -- the detector, with a live positive control
+    assert _walk("src", "strict") == "0"
+    probe = root / "plugins/self-learn/cli/src/self_learn/probe_sui7b.py"
+    assert not probe.exists()
+    probe.write_text('DOC = "docs/specs/self-learn/03-decisions.md"\n')
+    try:
+        assert _walk("src", "strict") != "0", "leg (b) is vacuous: a real src doc constant went unseen"
+    finally:
+        probe.unlink()
+    assert _walk("src", "strict") == "0"
+
+    # (c)
+    naive, incl, strict = (int(_walk("tests", c)) for c in ("naive", "incl", "strict"))
+    assert naive >= incl >= strict > 0, (naive, incl, strict)
+
+    # (d)
+    assert "plugins/self-learn/cli/tests/test_reader_contract.py" in shipped
+
+    # (e) -- a synthetic part-built module that is NOT a direct hit
+    synth = root / "plugins/self-learn/cli/tests/test_sui7e_partbuilt_probe.py"
+    assert not synth.exists()
+    synth.write_text('_A = "docs"\n_B = "specs"\nPATH = _A + "/" + _B\n')
+    try:
+        union2 = [l for l in _walk("--union").split("\n") if l.strip()]
+        direct = [l for l in _walk("--direct").split("\n") if l.strip()]
+        rel = "plugins/self-learn/cli/tests/test_sui7e_partbuilt_probe.py"
+        assert rel not in direct, "the probe must NOT be a direct hit, or leg (e) proves nothing"
+        assert rel in union2, "the union dropped a part-built module"
+    finally:
+        synth.unlink()
+    assert not synth.exists()
+
+    # (f) -- the shipped location, and the location that would self-count
+    before = _walk("tests", "strict")
+    probe_dir = root / "plugins/self-learn/cli/tests/measured_sui7f_probe"
+    probe_dir.mkdir()
+    try:
+        shutil.copy(LF.THIS_REPO_CLI / "scripts/measured/walk.py", probe_dir / "walk.py")
+        after = _walk("tests", "strict")
+        assert int(after) > int(before), (
+            "leg (f) is vacuous: walk.py under cli/tests did not count itself, so the "
+            "shipped location under cli/scripts/measured/ is not load-bearing"
+        )
+    finally:
+        shutil.rmtree(probe_dir)
+    assert _walk("tests", "strict") == before
