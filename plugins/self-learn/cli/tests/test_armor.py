@@ -1444,10 +1444,17 @@ VACUITY_MODEL: dict[str, dict[str, _VacuityRule]] = {
     "Additive": {
         "edited_funcs": _VacuityRule(
             excluded_reason=(
-                "2026-08-29 §4.4, ANCHOR 6815503: a PERMANENT allowlist, not an "
-                "anchor-diff artifact -- `Additive`'s own docstring says so, and "
-                "ADD1 leg 1 exempts these two names regardless of where the "
-                "anchor sits. It cannot become vacuous by an anchor advance."
+                "2026-08-30 §4.4, ANCHOR 6815503: excluded because these entries "
+                "must NOT be dropped even when ADD1 leg 1 owes them nothing -- "
+                "EXM3 pins the set exactly and ADD3 pins _scenario_error_result's "
+                "sha, so auto-dropping one would redden both. Corrected from an "
+                "earlier reason claiming the field 'cannot become vacuous by an "
+                "anchor advance' (gate r2 NIT-1): it is structurally an "
+                "anchor-diff artifact -- leg 1's base IS the anchor and this map "
+                "is its skip set -- and is measured already in the owed-nothing "
+                "state, fake_claude.py being byte-identical anchor to HEAD "
+                "(d665829a96906f2a both sides, 2026-08-30). The exclusion is "
+                "right; only its stated ground was wrong."
             )
         ),
         "new_funcs": _VacuityRule(check=_vac_new_funcs),
@@ -4345,6 +4352,16 @@ def test_anc7_vacuity_coverage_is_structural_not_enumerated():
             if rule.excluded_reason is not None:
                 ok, why = _exm1_check(rule.excluded_reason)
                 assert ok, (key, field_name, why)
+                # `_exm1_check` short-circuits its resolution leg on a
+                # `§N` citation, so a FABRICATED sha passes it. `ANC4`
+                # applies the stronger form to every `MEASURED` reason;
+                # these exclusions claim "the same discipline §4.6/§4.7
+                # apply to an exemption entry", so they get it too
+                # (gate r2 NIT-2).
+                hex_tokens = _EXM1_HEX_RE.findall(rule.excluded_reason)
+                assert any(_resolves_as_commit(h) for h in hex_tokens), (
+                    key, field_name, hex_tokens
+                )
     # The regression, named: `Additive`'s three anchor-diff sets are
     # CHECKED -- not excluded, not absent.
     additive_rules = VACUITY_MODEL["Additive"]
