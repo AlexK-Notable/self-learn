@@ -5274,10 +5274,12 @@ def test_the_unit_leaves_masters_suite_green_after_the_prune(tmp_path):
     128 in a tree where the prune had deleted it. One measurement is not a
     property; the criterion is a claim about every future master, so it is
     re-taken whenever the tip moves. It went red TWICE that way, and both
-    times the failure was this test: first the helper read `origin/u-land`
-    unconditionally, then -- after that fix -- the test still asserted the
-    ref was there, so it passed from the worktree and failed in the tree the
-    criterion is about. Post-prune master `883e12f`, built by the shipped
+    times the failure was this test. First the helper read `origin/u-land`
+    unconditionally. Then, after that fix measured green, closing the
+    helper's untested post-prune branch introduced `assert landed is not
+    None` -- true in the branch world, false in the one this criterion is a
+    claim about -- and the next re-take went red on it. A control this test
+    itself had just added. Post-prune master `883e12f`, built by the shipped
     runner's own steps from branch tip `c8acec2`; the commits after that tip
     change only this docstring and the spec's prose -- no runner behaviour
     and no test logic:
