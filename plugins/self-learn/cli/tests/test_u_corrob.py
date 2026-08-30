@@ -1317,27 +1317,59 @@ def test_pin1_miner_and_corroborate_never_spell_tool_events():
 
 
 def test_pin2_armor_sha_paths_are_byte_unchanged():
-    """PIN2 (post-landing form, 2026-08-28): every `_ARMOR_SHAS` entry in
-    `test_worker_contract.py` matches the live bytes of the file it pins.
-    The unit-time form diffed six pinned paths against this unit's own
-    base commit; that instrument cannot survive OTHER units landing
-    (U-servehermetic/U-kl4/U-ancestry legitimately re-pinned conftest.py,
-    test_invocation_sdk.py, test_worker.py, test_u_fake.py around this
-    unit's merge), so the durable claim -- "no pinned file drifts from
-    its pin" -- is asserted directly, the same invariant
-    `test_su4a_whole_file_armor_shas` enforces. The table is parsed from
-    the pinning file's source so this test needs no cross-module import."""
+    """PIN2 (post-U-armor form, 2026-08-28): `test_worker_contract.py`'s
+    `_ARMOR_SHAS` whole-file-pin mechanism is RETIRED -- U-armor's
+    `test_armor.py::ARMOR`/ARM1..ARM6 replace it (spec
+    `u-armor-narrow-whole-file-pins-spec.md` §4.7). The durable claim
+    this test corroborates -- "every whole-file-pinned fixture is byte-
+    unchanged from what it is pinned to" -- now lives in `test_armor.py`
+    as `Fixture` rows (`support.py`, `conftest.py`, `backends.py`), each
+    proven byte-identical (to its anchor, or to its `Fixture.repinned`
+    sha under the anti-rot leg) with full mutation coverage by
+    `test_fix1_fixtures_are_byte_identical`/
+    `test_fix2_repin_door_is_exact_and_cannot_rot`. This test is an
+    INDEPENDENT corroboration of the same live state, not a duplicate of
+    that machinery: it parses `ARMOR`'s three `Fixture()` entries
+    straight from `test_armor.py` source (still no cross-module import)
+    and re-checks each against the SAME anchor commit `test_armor.py`
+    itself uses (`ANCHOR`, also parsed from source), consistent with
+    what F1/F2 require for a `repinned is None` row -- byte-identical to
+    the anchor's own bytes."""
     import hashlib
     import re as _re
 
-    src = (_REPO_ROOT / "plugins/self-learn/cli/tests/test_worker_contract.py").read_text()
-    block = src[src.index("_ARMOR_SHAS") :]
+    armor_src = (_REPO_ROOT / "plugins/self-learn/cli/tests/test_armor.py").read_text()
+
+    anchor_match = _re.search(r'^ANCHOR = "([0-9a-f]+)"', armor_src, _re.MULTILINE)
+    assert anchor_match, "ANCHOR literal not found in test_armor.py"
+    anchor = anchor_match.group(1)
+
+    block = armor_src[armor_src.index("ARMOR: dict") :]
     block = block[: block.index("\n}\n") + 3]
-    pins = dict(_re.findall(r'"(plugins/self-learn/cli/tests/[A-Za-z_0-9./]+)"\s*:\s*"([0-9a-f]{64})"', block))
-    assert len(pins) == 7, sorted(pins)
-    for rel, pinned in pins.items():
-        live = hashlib.sha256((_REPO_ROOT / rel).read_bytes()).hexdigest()
-        assert live == pinned, rel
+    fixture_rows = _re.findall(r'"([A-Za-z_0-9./]+)":\s*Fixture\(', block)
+    assert len(fixture_rows) == 3, sorted(fixture_rows)
+
+    for rel in fixture_rows:
+        full_rel = f"plugins/self-learn/cli/tests/{rel}"
+        live = hashlib.sha256((_REPO_ROOT / full_rel).read_bytes()).hexdigest()
+        anchor_bytes = subprocess.run(
+            ["git", "show", f"{anchor}:{full_rel}"],
+            cwd=_REPO_ROOT, capture_output=True, check=True,
+        ).stdout
+        anchor_sha = hashlib.sha256(anchor_bytes).hexdigest()
+
+        # A `Fixture.repinned = (sha, reason)` entry (F2's re-pin door)
+        # lets live bytes differ from anchor and ONLY to that pinned
+        # sha -- parsed from the SAME per-row source span, still no
+        # cross-module import.
+        row_start = block.index(f'"{rel}"')
+        row_end = block.index('),\n', row_start) + 1
+        row_text = block[row_start:row_end]
+        repin_match = _re.search(r'repinned=\(\s*"([0-9a-f]{64})"', row_text)
+        if repin_match:
+            assert live == repin_match.group(1), (rel, "repinned sha mismatch")
+        else:
+            assert live == anchor_sha, rel
 
 
 def test_pin5_charter_py_byte_unchanged():
