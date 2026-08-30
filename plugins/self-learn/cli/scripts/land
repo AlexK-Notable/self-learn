@@ -35,6 +35,34 @@
 # (scripts/suite's own rule).
 set -uo pipefail
 
+# B-2 (gate r1). Every input this runner reads goes through one of these.
+# An absent, empty or unresolvable input is FATAL -- never "nothing to
+# check". Two instances of that shape shipped in this unit already
+# (`allowlisted_only`'s empty failing set, and `doc_reading_set.txt`
+# vanishing into a bare root pytest that exited 0 and PUSHED), so the
+# reader is centralised rather than guarded line by line.
+need_file() {
+  local path=$1 what=$2 code=${3:-2}
+  [ -e "$path" ] || die "$code" "$what: required input is ABSENT: $path" "ls -l $(dirname "$path")"
+  [ -f "$path" ] || die "$code" "$what: required input is not a regular file: $path" "ls -l $path"
+  [ -r "$path" ] || die "$code" "$what: required input is unreadable: $path" "ls -l $path"
+}
+
+need_nonempty_file() {
+  local path=$1 what=$2 code=${3:-2}
+  need_file "$path" "$what" "$code"
+  local n
+  n=$(grep -cve '^[[:space:]]*$' -e '^[[:space:]]*#' "$path" || true)
+  [ "$n" -ge 1 ] \
+    || die "$code" "$what: required input has NO usable lines: $path" "cat $path"
+  printf '%s' "$n"
+}
+
+need_dir() {
+  local path=$1 what=$2 code=${3:-2}
+  [ -d "$path" ] || die "$code" "$what: required directory is ABSENT: $path" "ls -l $(dirname "$path")"
+}
+
 die() {
   local code=$1 msg=$2 inspect=${3:-}
   printf 'land: %s\n' "$msg" >&2
@@ -64,7 +92,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT="$(cd "$SCRIPT_DIR/.." && pwd)"
 LANDING_SRC="$PROJECT/src"
 RESOLVER_NAMES=$(PYTHONPATH="$LANDING_SRC" python3 -c \
-  "from self_learn.landing import resolvers as R; print(' '.join(sorted(R.REGISTRY)))")
+  "from self_learn.landing import resolvers as R; print(' '.join(sorted(R.REGISTRY)))") \
+  || die 2 "cannot import the resolver registry from $LANDING_SRC" "ls -l $LANDING_SRC/self_learn/landing"
+[ -n "$RESOLVER_NAMES" ] \
+  || die 2 "the resolver registry resolved EMPTY -- --resolver could name nothing"
 
 print_help() {
   cat <<EOF
@@ -334,13 +365,21 @@ run_merge_and_checks() {
 
   # CHK1 -- conflict markers over the merge-touched set (not a hardcoded list)
   local touched
-  touched=$(git -C "$gr" diff --name-only HEAD 2>/dev/null | sort -u)
+  touched=$(git -C "$gr" diff --name-only HEAD | sort -u) \
+    || die 4 "CHK1: could not enumerate the merge-touched set"
   local abspaths=()
   local t
   while IFS= read -r t; do
     [ -n "$t" ] || continue
     abspaths+=("$gr/$t")
   done <<<"$touched"
+  # B-2 floor: a --no-ff merge ALWAYS touches something. An empty set means
+  # the enumeration failed, and scanning zero files for conflict markers
+  # would print "no conflict markers" -- the exact shape this unit exists
+  # to end.
+  [ "${#abspaths[@]}" -ge 1 ] \
+    || { git -C "$gr" merge --abort >/dev/null 2>&1 || true
+         die 4 "CHK1: the merge-touched set is EMPTY -- refusing to report clean over zero files" "git -C $gr status"; }
   if ! py_landing checks --root "$gr" markers "${abspaths[@]}" >"$OUT/chk1.log" 2>&1; then
     git -C "$gr" merge --abort >/dev/null 2>&1 || true
     die 4 "CHK1: conflict markers remain in the merge-touched set" "cat $OUT/chk1.log"
@@ -364,13 +403,23 @@ run_merge_and_checks() {
 
   # CHK5 -- personal-literals gate, via U-scrub's SHIPPED test (never a private copy),
   # against THIS tree's own copy of the test (root-relative -- gate M-10).
+  # B-2: absence is FATAL, not a skip. The old `if [ -f ... ]` guard meant a
+  # tree that had LOST the personal-literals gate landed with the gate
+  # silently not run -- on a PUBLIC repository.
   local literals_test="$gr/plugins/self-learn/cli/tests/test_personal_literals.py"
-  if [ -f "$literals_test" ]; then
-    if ! ( cd "$PROJECT" && uv run --no-sync pytest "$literals_test" -q -p no:cacheprovider ) \
-        >"$OUT/chk5.log" 2>&1; then
-      git -C "$gr" merge --abort >/dev/null 2>&1 || true
-      die 4 "CHK5: personal-literals gate failed" "cat $OUT/chk5.log"
-    fi
+  if [ ! -f "$literals_test" ]; then
+    git -C "$gr" merge --abort >/dev/null 2>&1 || true
+    die 4 "CHK5: the personal-literals gate is ABSENT from the tree being landed ($literals_test) -- refusing to land unscanned" "ls -l $gr/plugins/self-learn/cli/tests/"
+  fi
+  # PYTHONDONTWRITEBYTECODE: CHK5 must not leave `__pycache__` in the tree
+  # it is judging. Measured -- it did, and `git status --porcelain` on the
+  # landed tree came back dirty afterwards. It also removes one more way for
+  # this runner to author bytecode that a later step could read as stale.
+  if ! ( cd "$PROJECT" && PYTHONDONTWRITEBYTECODE=1 \
+         uv run --no-sync pytest "$literals_test" -q -p no:cacheprovider ) \
+      >"$OUT/chk5.log" 2>&1; then
+    git -C "$gr" merge --abort >/dev/null 2>&1 || true
+    die 4 "CHK5: personal-literals gate failed" "cat $OUT/chk5.log"
   fi
 
   # CHK6 -- verdict shape (only meaningful on a fresh landing; --continue reuses the recorded verdict)
@@ -401,6 +450,7 @@ run_merge_and_checks() {
     fi
   else
     local armor_test="$gr/plugins/self-learn/cli/tests/test_armor.py"
+    need_file "$armor_test" "WLD2 (armor re-measure)" 4
     local anchor
     anchor=$(git -C "$gr" rev-parse --short=7 HEAD)
     if ! ( cd "$PROJECT" && uv run --no-sync python3 "$armor_test" --remeasure --anchor "$anchor" ) \
@@ -475,51 +525,34 @@ if [ "$DRY_RUN" = "0" ] && { [ "$RESUME_ONLY" = "0" ] || [ "$RESUME_STEP" = "sui
     LANE=full
   fi
 
+  # `run_suite` records the cwd it used ALONGSIDE the log. That pairing is
+  # B-1's fix: the adjudicator re-expresses every node id from THIS
+  # directory into the repo-root frame the allowlist is written in, so the
+  # allowlist can no longer drift from the invocation.
   run_suite() {
     local name=$1 dir=$2; shift 2
+    need_dir "$dir" "suite '$name' working directory" 5
+    printf '%s\n' "$dir" >"$OUT/$name.cwd"
     ( cd "$dir" && timeout "$SUITE_TIMEOUT" "$@" ) >"$OUT/$name.log" 2>&1
     local rc=$?
     printf '%s\n' "$rc" >"$OUT/$name.rc"
     return 0
   }
 
-  # SUI3/SUI9. Returns 0 ONLY when the log yielded at least one parsed
-  # failing node id AND every one of them is in the allowlist. It never
-  # returns 0 because it found nothing: a non-zero rc whose log carries no
-  # `FAILED`/`ERROR ` line at all means the adjudicator could not SEE its
-  # target (the suite died before pytest reported, ran at the wrong cwd,
-  # or the venv failed to resolve), and "no violations found" and "the
-  # check is blind" must never share an outcome -- that is the exact class
-  # S-56 exists to end (lrn-ea833a5b; §4.6/SUI9).
-  #
-  # The verdict is written to "$OUT/$n.adjudication" as a positive
-  # control: the file's CONTENT differs per outcome, so a caller (and a
-  # human reading the log dir) can tell "allowlisted-only" from
-  # "unparseable-log" without re-deriving it.
+  ALLOWLIST="$GITROOT/plugins/self-learn/cli/src/self_learn/landing/known_failures.txt"
+  need_file "$ALLOWLIST" "SUI3 known-failure allowlist" 5
+
+  # SUI3/SUI9. The verdict comes from self_learn.landing.suites, which owns
+  # the frame arithmetic and refuses on an unparseable log rather than
+  # reading it as clean. Its stdout is the adjudication record.
   allowlisted_only() {
-    local log=$1 n=$2
-    local verdict="$OUT/$n.adjudication"
-    local allow="$GITROOT/plugins/self-learn/cli/src/self_learn/landing/known_failures.txt"
-    if [ ! -f "$allow" ]; then
-      printf 'unreadable-allowlist %s\n' "$allow" >"$verdict"
-      return 1
-    fi
-    local failing
-    failing=$(grep -E '^(FAILED|ERROR) ' "$log" | sed -E 's/^(FAILED|ERROR) ([^ ]+).*/\2/' | sort -u)
-    if [ -z "$failing" ]; then
-      printf 'unparseable-log %s\n' "$log" >"$verdict"
-      return 1
-    fi
-    local f
-    while IFS= read -r f; do
-      [ -n "$f" ] || continue
-      if ! grep -qxF "$f" "$allow"; then
-        printf 'not-allowlisted %s\n' "$f" >"$verdict"
-        return 1
-      fi
-    done <<<"$failing"
-    printf 'allowlisted-only %s\n' "$(printf '%s' "$failing" | tr '\n' ' ')" >"$verdict"
-    return 0
+    local n=$1
+    local cwd
+    cwd=$(cat "$OUT/$n.cwd")
+    py_landing suites --root "$GITROOT" adjudicate \
+      --cwd "$cwd" --log "$OUT/$n.log" --allow "$ALLOWLIST" \
+      >"$OUT/$n.adjudication" 2>&1
+    return $?
   }
 
   adjudicate_suite() {
@@ -532,7 +565,7 @@ if [ "$DRY_RUN" = "0" ] && { [ "$RESUME_ONLY" = "0" ] || [ "$RESUME_STEP" = "sui
       2) record_refusal_step suites; die 5 "$n suite COLLECTION ERROR (rc 2) -- NOT a test failure; the allowlist cannot adjudicate it. See $OUT/$n.log" "less $OUT/$n.log" ;;
       5) record_refusal_step suites; die 5 "$n suite collected NO TESTS (rc 5) -- the suite ran but had nothing to adjudicate; an empty run must never read as green (SUI9). See $OUT/$n.log" "less $OUT/$n.log" ;;
       *)
-        if ! allowlisted_only "$OUT/$n.log" "$n"; then
+        if ! allowlisted_only "$n"; then
           record_refusal_step suites
           local why
           why=$(cat "$OUT/$n.adjudication" 2>/dev/null || echo "unknown")
@@ -550,17 +583,28 @@ if [ "$DRY_RUN" = "0" ] && { [ "$RESUME_ONLY" = "0" ] || [ "$RESUME_STEP" = "sui
 
   if [ "$LANE" = "docs" ]; then
     DOC_SET_FILE="$GITROOT/plugins/self-learn/cli/src/self_learn/landing/doc_reading_set.txt"
+    # B-2: this file vanishing used to produce an empty DOC_ARGS, a bare
+    # root `pytest`, rc 0, and a PUSH. Measured twice by the r1 gate.
+    DOC_SET_N=$(need_nonempty_file "$DOC_SET_FILE" "SUI7 docs-lane test set" 5)
     DOC_ARGS=()
     while IFS= read -r line; do
-      [ -n "$line" ] || continue
+      case "$line" in ""|\#*) continue ;; esac
+      need_file "$GITROOT/$line" "SUI7 docs-lane entry" 5
       DOC_ARGS+=("$GITROOT/$line")
     done < "$DOC_SET_FILE"
+    # positive control: the count the file promised is the count we built.
+    [ "${#DOC_ARGS[@]}" = "$DOC_SET_N" ] \
+      || die 5 "SUI7 docs-lane set: read $DOC_SET_N usable lines but built ${#DOC_ARGS[@]} arguments" "cat $DOC_SET_FILE"
+    echo "land: docs lane over ${#DOC_ARGS[@]} module(s)"
     run_suite docslane "$GITROOT" \
       env -u SELF_LEARN_ANALYST_MODEL -u SELF_LEARN_ANALYST_TIMEOUT \
       uv run --project "$PROJECT" --no-sync pytest -p no:cacheprovider -q "${DOC_ARGS[@]}"
     adjudicate_suite docslane
   else
-    run_suite cli "$GITROOT" "$GITROOT/plugins/self-learn/cli/scripts/suite"
+    CLI_SUITE="$GITROOT/plugins/self-learn/cli/scripts/suite"
+    need_file "$CLI_SUITE" "SUI1 CLI suite runner" 5
+    [ -x "$CLI_SUITE" ] || die 5 "SUI1 CLI suite runner is not executable: $CLI_SUITE" "ls -l $CLI_SUITE"
+    run_suite cli "$GITROOT" "$CLI_SUITE"
     run_suite ui "$GITROOT/plugins/self-learn/ui" \
       env -u SELF_LEARN_ANALYST_MODEL -u SELF_LEARN_ANALYST_TIMEOUT \
       uv run --project . pytest -q

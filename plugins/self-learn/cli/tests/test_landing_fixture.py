@@ -223,12 +223,21 @@ def _sha256_of(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+#: The always-present form: a real, collected test that asserts nothing
+#: about seeded content. CHK5 must never be SKIPPED, so there is always a
+#: gate to run; `with_literals=True` swaps in the one that can fail.
+_FIXTURE_LITERALS_TRIVIAL = (
+    "def test_no_personal_literals():\n    assert True\n"
+)
+
+
 def make_repo(
     tmp_path: Path,
     *,
     with_ui: bool = False,
     armor: str = "shas",
     with_literals: bool = False,
+    fw_disorder: bool = False,
 ) -> Path:
     """A clean, pushed origin+master fixture with everything `land` needs
     to run its full non-docs lane (a trivial CLI + optionally UI suite).
@@ -265,9 +274,18 @@ def make_repo(
         "# decisions\n\n| id | statement | rationale |\n|---|---|---|\n"
         "| S-1 | first | r |\n| S-2 | second | r |\n"
     )
+    fw_rows = (
+        "| FW-1 | first | WATCH | n |\n| FW-2 | second | WATCH | n |\n"
+        if not fw_disorder
+        # PRE-EXISTING disorder on master, mirroring the real corpus (nine
+        # descending adjacent pairs inside one contiguous table). CHK3 leg 2
+        # must forgive exactly this and no more.
+        else "| FW-1 | first | WATCH | n |\n| FW-9 | ninth | WATCH | n |\n"
+             "| FW-4 | fourth | WATCH | n |\n| FW-7 | seventh | WATCH | n |\n"
+    )
     (repo / "docs/specs/self-learn/14-forward-work-map.md").write_text(
         "# forward work\n\n| id | statement | status | note |\n|---|---|---|---|\n"
-        "| FW-1 | first | WATCH | n |\n| FW-2 | second | WATCH | n |\n"
+        + fw_rows
     )
     (repo / "docs/specs/self-learn/15-orchestration-runbook.md").write_text("# runbook\n")
 
@@ -308,13 +326,27 @@ def make_repo(
             _FIXTURE_ARMOR.replace("@@ANCHOR@@", "0000000")
         )
 
-    if with_literals:
-        (cli / "tests" / "test_personal_literals.py").write_text(_FIXTURE_LITERALS)
+    # Always shipped: `land` treats an ABSENT personal-literals gate as
+    # fatal (B-2), because a tree that lost it would otherwise land
+    # unscanned on a public repository. `with_literals` is retained only as
+    # the switch that makes CHK5 meaningfully assert something.
+    (cli / "tests" / "test_personal_literals.py").write_text(
+        _FIXTURE_LITERALS if with_literals else _FIXTURE_LITERALS_TRIVIAL
+    )
 
     # a trivial, FAST `scripts/suite` for the full (non-docs) lane, and a
     # matching test the suite can run.
     (cli / "tests" / "test_alpha.py").write_text(
         "def test_docs():\n    assert (1 + 1) == 2\n"
+    )
+    # A second test that exists on MASTER and is never touched by a branch.
+    # It keeps the CLI suite non-empty when a branch renames test_alpha.py
+    # away, WITHOUT adding a second changed non-docs path -- which is what
+    # made SUI6 leg (h) vacuous (measured NONDOC 2 vs 1: both the correct
+    # `--no-renames` form and the mutated one took the full lane, so the
+    # mutation changed nothing observable).
+    (cli / "tests" / "test_keep.py").write_text(
+        "def test_keep():\n    assert True\n"
     )
     suite_script = cli / "scripts" / "suite"
     suite_script.write_text(

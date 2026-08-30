@@ -256,7 +256,7 @@ def test_chk6_refuses_empty_verdict(tmp_path):
 # SUI*
 
 def test_sui1_refuses_red_suite(tmp_path):
-    repo = LF.make_repo(tmp_path)
+    repo = LF.make_repo(tmp_path, with_ui=True)
     LF.make_branch(
         repo, "u-red",
         edits={"plugins/self-learn/cli/tests/test_red.py": "def test_fails():\n    assert False\n"},
@@ -314,26 +314,33 @@ def test_sui6_rename_into_docs_without_no_renames_takes_full_lane(tmp_path):
     repo = LF.make_repo(tmp_path, with_ui=True)
     LF.git(repo, "checkout", "-q", "-b", "u-rename")
     (repo / "docs/specs/self-learn/drafts").mkdir(parents=True, exist_ok=True)
-    # A keeper test, so the rename cannot empty the CLI suite. Without it
-    # the fixture's suite collected ZERO tests and exited pytest's rc 5,
-    # which the pre-SUI9 adjudicator read as green (no FAILED/ERROR lines
-    # to compare) -- the full lane "ran" and proved nothing. The lane
-    # question this test asks (M71/--no-renames) is independent of that.
-    (repo / "plugins/self-learn/cli/tests/test_keep.py").write_text(
-        "def test_keep():\n    assert True\n"
-    )
+    # The keeper (`test_keep.py`) lives on MASTER, not here. Gate r1 M-4:
+    # adding it on the BRANCH made this test vacuous -- it became a second
+    # changed non-docs path, so NONDOC was 2 with `--no-renames` and 1
+    # without, and BOTH forms took the full lane. The rename must be the
+    # branch's ONLY change for the detector's two forms to disagree.
     LF.git(
         repo, "mv",
         "plugins/self-learn/cli/tests/test_alpha.py",
         "docs/specs/self-learn/drafts/renamed-test-alpha.py",
     )
-    LF.git(repo, "add", "-A")
     LF.git(repo, "commit", "-q", "-m", "rename a src module into docs/")
     LF.git(repo, "checkout", "-q", "master")
+
+    # the discriminating measurement, before the landing: the two detector
+    # forms must DISAGREE on this branch, or the test proves nothing
+    def nondoc(*extra: str) -> int:
+        out = LF.git(repo, "diff", *extra, "--name-only", f"master..u-rename").stdout
+        return len([l for l in out.split("\n") if l.strip() and not l.startswith("docs/")])
+
+    assert nondoc("--no-renames") == 1, LF.git(repo, "diff", "--no-renames", "--name-only", "master..u-rename").stdout
+    assert nondoc() == 0, LF.git(repo, "diff", "--name-only", "master..u-rename").stdout
+
     r = LF.run_land(repo, tmp_path, "--branch", "u-rename", "--verdict", "v", timeout=180)
     assert r.returncode == 0, r.stdout + r.stderr
-    # the CLI suite log must exist (full lane ran it)
-    assert Path(r.stdout.split("logs=")[-1].strip() + "/cli.log").exists()
+    logs = Path(r.stdout.split("logs=")[-1].strip())
+    assert (logs / "cli.log").exists(), "took the docs lane -- --no-renames was not applied"
+    assert not (logs / "docslane.log").exists()
 
 
 def test_sui6_non_py_non_docs_file_takes_full_lane(tmp_path):
@@ -686,333 +693,112 @@ def test_chk_refusal_leaves_masters_head_exactly_where_it_was(tmp_path):
     assert before == after
 
 
-def test_chk8_world_and_pins_check_run_strictly_before_commit():
-    """CHK8/WLD2/CHK2 (M18/M21/M55): nothing test-shaped runs between the
-    armor re-measure/pins check and `git commit` -- a textual-position
-    proxy over the shipped, straight-line script: every world-detection
-    and pins-check call site occurs BEFORE the commit line."""
-    text = LF.LAND.read_text()
-    commit_idx = text.index('git -C "$GITROOT" commit -q -m "$SUBJECT"')
-    for marker in ('checks --root "$gr" world', 'checks --root "$gr" pins', "remeasure.log"):
-        idx = text.index(marker)
-        assert idx < commit_idx, f"{marker!r} must precede the commit line"
+def _shell_functions(text: str) -> dict[str, str]:
+    """name -> body, for every `name() {` ... `}` at any indent. The closing
+    brace is found by brace depth, so nested blocks do not end a body early."""
+    out: dict[str, str] = {}
+    lines = text.split("\n")
+    for i, line in enumerate(lines):
+        m = re.match(r"^(\s*)([A-Za-z_][A-Za-z0-9_]*)\(\)\s*\{\s*$", line)
+        if not m:
+            continue
+        depth = 1
+        body: list[str] = []
+        for nxt in lines[i + 1:]:
+            depth += nxt.count("{") - nxt.count("}")
+            if depth <= 0:
+                break
+            body.append(nxt)
+        out[m.group(2)] = "\n".join(body)
+    return out
 
 
-def test_chk5_invokes_the_real_shipped_personal_literals_test_not_a_private_grep():
-    """M25: CHK5 must shell out to U-scrub's real test_personal_literals.py
-    via pytest, never reimplement it as a private in-runner grep scoped to
-    docs/ (which would miss any hit outside docs/)."""
-    text = LF.LAND.read_text()
-    chk5_start = text.index("CHK5 --")
-    chk5_block = text[chk5_start:chk5_start + 700]
-    assert "test_personal_literals.py" in chk5_block
-    assert "pytest" in chk5_block
-    assert "grep" not in chk5_block
+def _reachable_text(slice_text: str, funcs: dict[str, str]) -> str:
+    """`slice_text` plus the bodies of every function it calls, transitively.
+    A file-position slice alone cannot see a helper DEFINED earlier and
+    CALLED inside the window -- which is exactly what CHK8 forbids."""
+    seen: set[str] = set()
+    acc = [slice_text]
+    frontier = [slice_text]
+    while frontier:
+        chunk = frontier.pop()
+        for name, body in funcs.items():
+            if name in seen:
+                continue
+            if re.search(r"(?:^|[\s;(&|`$])" + re.escape(name) + r"(?:\s|$|;|\))", chunk, re.M):
+                seen.add(name)
+                acc.append(body)
+                frontier.append(body)
+    return "\n".join(acc)
 
 
-# ---------------------------------------------------------------------------
-# SUI2 (timeout message) / SUI4+SUI8c (collection error) -- gaps filled
-# during mutation testing
+def _post_remeasure_window(text: str, funcs: dict[str, str]) -> tuple[str, str]:
+    """The text that actually EXECUTES between the armor re-measure and
+    `git commit`, which is not a file slice:
 
-def test_sui2_timeout_case_is_a_distinct_branch_not_the_generic_red_message():
-    """M31: rc 124 (SUITE_TIMEOUT) must produce a message distinct from
-    the ordinary 'suite red' path -- a textual-structure proxy: the
-    adjudicate_suite() case statement has its own `124)` arm."""
-    text = LF.LAND.read_text()
-    adj_start = text.index("adjudicate_suite() {")
-    adj_block = text[adj_start:adj_start + 700]
-    assert "124)" in adj_block
-    assert "TIMED OUT" in adj_block
+      (a) the tail of the function that CONTAINS the re-measure, from that
+          line to the end of its body; then
+      (b) from that function's call site to the commit line.
 
-
-def test_sui4_and_sui8c_collection_error_refuses_distinctly_not_via_allowlist(tmp_path):
-    """M33/M70: a pytest COLLECTION error (rc 2) must refuse distinctly,
-    never fall through to the allowlist adjudication (which would find no
-    named FAILED/ERROR node id to check and pass vacuously)."""
-    repo = LF.make_repo(tmp_path)
-    LF.make_branch(
-        repo, "u-collecterr",
-        edits={"plugins/self-learn/cli/tests/test_broken_syntax.py": "def test_broken(:\n    pass\n"},
-    )
-    r = LF.run_land(repo, tmp_path, "--branch", "u-collecterr", "--verdict", "v", timeout=180)
-    assert r.returncode == 5
-    assert "COLLECTION ERROR" in r.stderr
-
-
-# ---------------------------------------------------------------------------
-# PSH4's `-D` leg / prune-only-after-push -- gaps filled during mutation
-# testing
-
-def test_psh4_never_force_deletes_the_branch():
-    """PSH4's second leg: `-d`, never `-D` (PSH3's no-force rule extends
-    to the prune step too)."""
-    text = LF.LAND.read_text()
-    assert "branch -D" not in text
-    assert "branch -d" in text
-
-
-def test_psh_prune_runs_only_after_a_successful_push(tmp_path):
-    """M40's first leg: if push fails, the branch/worktree must still be
-    there afterward -- prune must not run before push."""
-    repo = LF.make_repo(tmp_path)
-    LF.make_branch(repo, "u-pushfail", edits={"docs/specs/self-learn/drafts/n.md": "x\n"})
-    wt = tmp_path / "wt-u-pushfail"
-    LF.git(repo, "worktree", "add", str(wt), "u-pushfail")
-    # make the push fail: replace origin with a bare repo that rejects
-    # non-fast-forward-looking updates by way of a pre-receive hook.
-    origin = tmp_path / "origin.git"
-    hook = origin / "hooks" / "pre-receive"
-    hook.write_text("#!/bin/sh\nexit 1\n")
-    hook.chmod(0o755)
-    r = LF.run_land(repo, tmp_path, "--branch", "u-pushfail", "--verdict", "v", timeout=180)
-    assert r.returncode == 7
-    assert wt.exists()
-    branches = LF.git(repo, "branch", "--list", "u-pushfail").stdout
-    assert "u-pushfail" in branches
-
-
-# ---------------------------------------------------------------------------
-# EXC1 / UN1 / UN2 -- shell contract and shipped-file invariants
-
-def test_exc1_shell_contract():
-    text = LF.LAND.read_text()
-    assert "set -uo pipefail" in text
-    assert "set -euo pipefail" not in text.split("\n")[0:5]  # not the top-level contract
-    import re
-    assert not re.search(r"^set -e\b", text, re.M)
-
-
-def test_un1_suite_script_is_the_real_one_not_edited_by_this_unit():
-    """This unit does not change scripts/suite -- a static content check
-    against what this build actually ships."""
-    suite = LF.THIS_REPO_CLI / "scripts" / "suite"
-    assert suite.exists()
-    assert "uv sync" in suite.read_text()
-
-
-def test_un2_never_touches_the_ledger():
-    """UN2: no `SELF_LEARN_HOME` env read and no functional `.self-learn`
-    path construction anywhere in the shipped script/package. Prose
-    explaining the exclusion (this module's own docstrings, which quote
-    the term to say it is never touched) is not itself a violation --
-    the check is for FUNCTIONAL usage: an env-var read, or the literal
-    used as a path component/argument rather than as documentation."""
-    import re
-
-    func_patterns = [
-        re.compile(r"os\.environ.{0,20}SELF_LEARN_HOME"),
-        re.compile(r"getenv\(.{0,5}SELF_LEARN_HOME"),
-        re.compile(r'"\.self-learn"'),
-        re.compile(r"'\.self-learn'"),
-    ]
-
-    def offenders(text: str) -> list[str]:
-        return [p.pattern for p in func_patterns if p.search(text)]
-
-    assert offenders(LF.LAND.read_text()) == []
-    for py in LF.LANDING_PKG.glob("*.py"):
-        assert offenders(py.read_text()) == [], py
-
-
-# ---------------------------------------------------------------------------
-# WLD2 / the armor `--remeasure` world (U-armor, live on master since 9ada450)
-#
-# The contract these exercise was MEASURED against the REAL
-# cli/tests/test_armor.py in an isolated clone before any of it was
-# fixtured -- misc/u-land-work/armor_contract_probe.sh and
-# armor_owed_probe.sh, 2026-08-29:
-#
-#   success  --anchor $(git rev-parse --short=7 HEAD) read mid-merge
-#            (= master's tip = the merge's first parent) -> rc 0,
-#            "ANCHOR 6815503 -> dfa2a24", the module rewritten
-#   no-op    --anchor == the ANCHOR already in the file -> rc 1,
-#            "ANCHOR did not change (6815503 -> 6815503)", bytes unchanged
-#   owed     --anchor 15fb676 -> rc 1, 2 "OWED:" lines, bytes unchanged
-#
-# and, separately measured on the same clone: ARM5 (`test_arm5_anchor_is_
-# not_stale`) is RED before the merge commit exists and GREEN after it --
-# rc 1 then rc 0 -- which is why `land` runs NO armor test between
-# `--remeasure` and `git commit` (CHK8), and runs the suites only after.
-
-
-def _armor_anchor(repo: Path) -> str:
-    text = (repo / "plugins/self-learn/cli/tests/test_armor.py").read_text()
-    m = re.search(r'^ANCHOR = "([^"]*)"', text, re.M)
-    assert m is not None, text[:200]
-    return m.group(1)
-
-
-def test_wld1_detect_world_reads_the_two_worlds_apart(tmp_path):
-    """WLD1. Both fixture worlds, and the REAL repo, adjudicated by the
-    shipped detector -- not by reasoning about what it should say."""
-    from self_learn.landing.checks import (
-        WORLD_ARMOR_SHAS,
-        WORLD_REMEASURE,
-        detect_world,
-    )
-
-    shas_repo = LF.make_repo(tmp_path / "a", armor="shas")
-    rem_repo = LF.make_repo(tmp_path / "b", armor="remeasure")
-    assert detect_world(shas_repo) == WORLD_ARMOR_SHAS
-    assert detect_world(rem_repo) == WORLD_REMEASURE
-
-    # The live tree this unit will actually land on. U-armor deleted
-    # `_ARMOR_SHAS` outright rather than emptying it, so the failure mode
-    # worth ruling out is `armor_shas` reached with ZERO pins (which
-    # CHK2's N<1 floor would then refuse for the wrong reason).
-    real_root = Path(
-        subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            cwd=LF.THIS_REPO_CLI, capture_output=True, text=True, check=True,
-        ).stdout.strip()
-    )
-    assert detect_world(real_root) == WORLD_REMEASURE
-
-
-def test_wld2_remeasure_advances_the_anchor_inside_the_merge_commit(tmp_path):
-    """WLD2/CHK8. The success leg, end to end: `land` runs the TARGET
-    tree's own test_armor.py with `--anchor $(rev-parse --short=7 HEAD)`
-    read while HEAD is still master's pre-merge tip, and the rewritten
-    module rides INSIDE the merge commit -- never after it (incident 2)."""
-    repo = LF.make_repo(tmp_path, with_ui=True, armor="remeasure")
-    pre_merge_tip = LF.git(repo, "rev-parse", "--short=7", "HEAD").stdout.strip()
-    assert _armor_anchor(repo) == "0000000"
-
-    LF.make_branch(
-        repo, "u-armorworld",
-        edits={"plugins/self-learn/cli/tests/test_gamma.py": "def test_g():\n    assert True\n"},
-    )
-    r = LF.run_land(repo, tmp_path, "--branch", "u-armorworld", "--verdict", "v", timeout=180)
-    assert r.returncode == 0, r.stdout + r.stderr
-
-    # the anchor advanced, and to exactly the merge's FIRST PARENT
-    assert _armor_anchor(repo) == pre_merge_tip
-    parents = LF.git(repo, "log", "-1", "--format=%P").stdout.split()
-    assert LF.git(repo, "rev-parse", "--short=7", parents[0]).stdout.strip() == pre_merge_tip
-
-    # and the rewrite is IN the merge commit's own tree, not a later edit
-    committed = LF.git(
-        repo, "show", "HEAD:plugins/self-learn/cli/tests/test_armor.py",
-    ).stdout
-    assert f'ANCHOR = "{pre_merge_tip}"' in committed
-    # negative control: the pre-merge tree carried the stale literal
-    old = LF.git(
-        repo, "show", f"{parents[0]}:plugins/self-learn/cli/tests/test_armor.py",
-    ).stdout
-    assert 'ANCHOR = "0000000"' in old
-
-
-def test_wld2_owed_refusal_aborts_the_chain_and_commits_nothing(tmp_path):
-    """WLD2. A watched node edited since the anchor with no exemption
-    entry: `--remeasure` prints OWED: lines, writes nothing, exits 1 --
-    and the &&-chain must abort with NO merge commit."""
-    repo = LF.make_repo(tmp_path, with_ui=True, armor="remeasure")
-    head_before = LF.git(repo, "rev-parse", "HEAD").stdout.strip()
-    LF.make_branch(
-        repo, "u-owed",
-        edits={
-            # edits test_watched_one's BODY -- an EDIT, not an addition
-            "plugins/self-learn/cli/tests/test_watched.py":
-                "def test_watched_one():\n    assert (2 + 2) == 5 - 1\n\n\n"
-                "def test_watched_two():\n    assert (3 * 3) == 9\n",
-        },
-    )
-    r = LF.run_land(repo, tmp_path, "--branch", "u-owed", "--verdict", "v", timeout=180)
-    assert r.returncode == 4, r.stdout + r.stderr
-    assert "WLD2: --remeasure refused" in r.stderr
-    assert LF.git(repo, "rev-parse", "HEAD").stdout.strip() == head_before
-    assert _armor_anchor(repo) == "0000000"
-    # the refusal names the log that carries the OWED: lines
-    log = Path(r.stderr.split("cat ")[-1].strip()).read_text()
-    assert "OWED:" in log, log
-
-
-def test_wld2_noop_anchor_refusal_aborts_the_chain(tmp_path):
-    """WLD2. `--remeasure`'s OTHER rc-1 leg: the anchor did not change.
-    Both refusals are rc 1 from the same CLI and both must abort -- a
-    runner that only modelled the OWED leg would land an un-advanced
-    anchor and redden ARM5 (b) on the NEXT landing."""
-    repo = LF.make_repo(tmp_path, with_ui=True, armor="remeasure")
-    tip = LF.git(repo, "rev-parse", "--short=7", "HEAD").stdout.strip()
-    head_before = LF.git(repo, "rev-parse", "HEAD").stdout.strip()
-    armor_src = (repo / "plugins/self-learn/cli/tests/test_armor.py").read_text()
-    LF.make_branch(
-        repo, "u-noop",
-        edits={
-            "plugins/self-learn/cli/tests/test_armor.py":
-                armor_src.replace('ANCHOR = "0000000"', f'ANCHOR = "{tip}"', 1),
-        },
-    )
-    r = LF.run_land(repo, tmp_path, "--branch", "u-noop", "--verdict", "v", timeout=180)
-    assert r.returncode == 4, r.stdout + r.stderr
-    assert "WLD2: --remeasure refused" in r.stderr
-    assert LF.git(repo, "rev-parse", "HEAD").stdout.strip() == head_before
-    log = Path(r.stderr.split("cat ")[-1].strip()).read_text()
-    assert "ANCHOR did not change" in log, log
-
-
-def test_arm5_is_a_post_commit_property_and_the_runner_never_runs_it_early(tmp_path):
-    """The armor anchor-staleness check passes only AFTER the merge commit
-    exists (its walk root is `git merge-base master HEAD`, i.e. master's
-    OLD tip until then). Two legs:
-
-    (a) RED control, measured, not assumed: the fixture's ARM5-shaped test
-        fails on the pre-landing tree.
-    (b) the landing nevertheless succeeds, and the suite log shows that
-        same test PASSING -- so the runner ran it strictly after `git
-        commit`, which is what CHK8's ordering buys.
+    Returns (window, owner-function-name).
     """
-    repo = LF.make_repo(tmp_path, with_ui=True, armor="remeasure")
-    node = "plugins/self-learn/cli/tests/test_armor.py::test_fixture_arm5_anchor_is_not_stale"
-
-    red = subprocess.run(
-        [sys.executable, "-m", "pytest", node, "-q", "-p", "no:cacheprovider"],
-        cwd=repo, capture_output=True, text=True,
-    )
-    assert red.returncode != 0, red.stdout + red.stderr
-    assert "no first-parent merge on master yet" in (red.stdout + red.stderr)
-
-    # That control run left cached bytecode for test_armor.py. It is the
-    # guard's own positive control, not incidental: `--remeasure` swaps a
-    # 7-char anchor for another 7-char anchor, so the file's SIZE is
-    # unchanged, and CPython's (mtime, size) staleness check -- both at
-    # 1-second resolution -- can therefore keep serving the OLD module.
-    # Measured: the suite read ANCHOR "0000000" from such a .pyc while
-    # the file on disk said "69d6b72", and the landing refused at exit 5
-    # on a false ARM5 red. If this assert stops holding, the rest of this
-    # test is no longer exercising that path.
-    pycache = repo / "plugins/self-learn/cli/tests/__pycache__"
-    assert list(pycache.glob("test_armor.*.pyc")), sorted(pycache.glob("*"))
-
-    LF.make_branch(
-        repo, "u-arm5",
-        edits={"plugins/self-learn/cli/tests/test_delta.py": "def test_d():\n    assert True\n"},
-    )
-    r = LF.run_land(repo, tmp_path, "--branch", "u-arm5", "--verdict", "v", timeout=180)
-    assert r.returncode == 0, r.stdout + r.stderr
-    cli_log = Path(r.stdout.split("logs=")[-1].strip() + "/cli.log").read_text()
-    assert "passed" in cli_log and "failed" not in cli_log, cli_log
-    assert not list(pycache.glob("test_armor.*.pyc")) or _armor_anchor(repo) != "0000000"
-
-    green = subprocess.run(
-        [sys.executable, "-m", "pytest", node, "-q", "-p", "no:cacheprovider"],
-        cwd=repo, capture_output=True, text=True,
-    )
-    assert green.returncode == 0, green.stdout + green.stderr
-
-
-def test_chk8_no_test_shaped_run_between_the_armor_step_and_the_commit():
-    """CHK8, on the shipped text (M55/M56). Everything test-shaped --
-    CHK5's pytest shell-out, `run_suite`, the suite scripts -- must sit
-    either strictly before the `--remeasure`/pins step or strictly after
-    `git commit`. Nothing in between."""
-    text = LF.LAND.read_text()
-    armor_at = text.index("--remeasure --anchor")
+    owner = next((n for n, b in funcs.items() if "--remeasure --anchor" in b), None)
+    assert owner is not None, "no function contains the re-measure"
+    body = funcs[owner]
+    tail = body[body.index("--remeasure --anchor"):]
+    call_at = text.index(owner + ' "$GITROOT"')
     commit_at = text.index('commit -q -m "$SUBJECT"')
-    assert armor_at < commit_at
-    between = text[armor_at:commit_at]
-    for needle in ("pytest", "run_suite", "scripts/suite", "adjudicate_suite"):
-        assert needle not in between, (needle, between)
+    assert call_at < commit_at
+    after_call = text[call_at + len(owner):commit_at]
+    return tail + "\n" + after_call, owner
+
+
+def test_chk8_nothing_test_shaped_runs_between_the_armor_step_and_the_commit():
+    """CHK8 (M55/M56). Gate r1 M-2: the old test was a file-position slice,
+    which the criterion explicitly forbids -- a pytest helper DEFINED
+    earlier in the script and CALLED inside the window satisfied it.
+
+    This models EXECUTION order (see `_post_remeasure_window`) and then
+    resolves every function call in that window to its body, transitively,
+    before searching. Two positive controls, both constructed live: an
+    injected call to an earlier-defined helper is caught, and a bare
+    injected `pytest` is caught.
+    """
+    text = LF.LAND.read_text()
+    funcs = _shell_functions(text)
+    assert "run_suite" in funcs and "adjudicate_suite" in funcs, sorted(funcs)
+
+    window, owner = _post_remeasure_window(text, funcs)
+    callable_bodies = {n: b for n, b in funcs.items() if n != owner}
+    reachable = _reachable_text(window, callable_bodies)
+    for needle in ("pytest", "run_suite", "adjudicate_suite"):
+        assert needle not in reachable, (needle, window[:400])
+
+    # control 1 -- a CALL to an earlier-defined test-shaped helper, which a
+    # file-position slice cannot see and this instrument must. The needle
+    # SET is what the real assertion uses, so that is what is controlled.
+    needles = ("pytest", "run_suite", "adjudicate_suite")
+    doctored = _reachable_text(window + "\n  adjudicate_suite cli\n", callable_bodies)
+    assert any(n in doctored for n in needles), doctored[-400:]
+    # and it reached through the helper to its OWN callees, not just matched
+    # the injected token -- `allowlisted_only` is one hop further in
+    assert "allowlisted_only" in doctored
+
+    # control 2 -- a bare inline invocation
+    assert "pytest" in _reachable_text(window + "\n  uv run pytest x\n", callable_bodies)
+
+
+def test_chk8_the_instrument_resolves_calls_transitively():
+    """The resolver's own unit control: a two-hop chain (window -> outer ->
+    inner) must reach `inner`'s body. Without transitivity CHK8 is only a
+    one-level check and a helper that wraps a helper slips through."""
+    funcs = {
+        "outer": "  inner\n",
+        "inner": "  uv run pytest something\n",
+        "unrelated": "  echo hi\n",
+    }
+    assert "pytest" in _reachable_text("  outer\n", funcs)
+    assert "pytest" not in _reachable_text("  unrelated\n", funcs)
 
 
 # ---------------------------------------------------------------------------
@@ -1030,6 +816,8 @@ def test_sui9_a_suite_that_could_not_run_refuses_instead_of_passing(tmp_path):
     must REFUSE. Positive control: the identical landing with a real UI
     tree proceeds, so the refusal is about the blind adjudication and not
     about the fixture being broken in some other way."""
+    # (i) the suite's own working directory is absent: B-2's guard catches
+    # this BEFORE the suite runs, and says so.
     repo = LF.make_repo(tmp_path / "blind", with_ui=False)
     LF.make_branch(
         repo, "u-noui",
@@ -1037,8 +825,22 @@ def test_sui9_a_suite_that_could_not_run_refuses_instead_of_passing(tmp_path):
     )
     r = LF.run_land(repo, tmp_path / "blind", "--branch", "u-noui", "--verdict", "v", timeout=180)
     assert r.returncode == 5, r.stdout + r.stderr
-    assert "NO FAILED/ERROR node id" in r.stderr, r.stderr
-    assert "SUI9" in r.stderr
+    assert "working directory: required directory is ABSENT" in r.stderr, r.stderr
+
+    # (ii) the suite RUNS, fails, and prints nothing a node id can be parsed
+    # from -- the shape the allowlist genuinely cannot adjudicate.
+    silent = LF.make_repo(tmp_path / "silent", with_ui=True)
+    LF.git(silent, "checkout", "-q", "-b", "u-silent")
+    s = silent / "plugins/self-learn/cli/scripts/suite"
+    s.write_text("#!/usr/bin/env bash\necho 'the runner exploded' >&2\nexit 3\n")
+    s.chmod(0o755)
+    LF.git(silent, "add", "-A")
+    LF.git(silent, "commit", "-q", "-m", "a suite that fails without reporting")
+    LF.git(silent, "checkout", "-q", "master")
+    r2 = LF.run_land(silent, tmp_path / "silent", "--branch", "u-silent", "--verdict", "v", timeout=180)
+    assert r2.returncode == 5, r2.stdout + r2.stderr
+    assert "NO FAILED/ERROR node id" in r2.stderr, r2.stderr
+    assert "SUI9" in r2.stderr
 
     ok_repo = LF.make_repo(tmp_path / "seeing", with_ui=True)
     LF.make_branch(
@@ -1059,10 +861,15 @@ def test_sui9_an_empty_collection_is_not_green(tmp_path):
     tests and the landing exit 0."""
     repo = LF.make_repo(tmp_path, with_ui=True)
     LF.git(repo, "checkout", "-q", "-b", "u-empty")
-    LF.git(repo, "rm", "-q", "plugins/self-learn/cli/tests/test_alpha.py")
-    (repo / "plugins/self-learn/cli/tests/notatest.py").write_text("X = 1\n")
+    # Point the suite runner at a directory that holds no tests -- the
+    # realistic shape of this regression (a suite whose target path moved),
+    # and one that leaves CHK5's own gate file in place, since an ABSENT
+    # personal-literals gate is now its own fatal refusal (B-2).
+    suite = repo / "plugins/self-learn/cli/scripts/suite"
+    suite.write_text(suite.read_text().replace(
+        "plugins/self-learn/cli/tests", "plugins/self-learn/cli/src", 1))
     LF.git(repo, "add", "-A")
-    LF.git(repo, "commit", "-q", "-m", "empty the cli suite")
+    LF.git(repo, "commit", "-q", "-m", "point the suite at a directory with no tests")
     LF.git(repo, "checkout", "-q", "master")
     r = LF.run_land(repo, tmp_path, "--branch", "u-empty", "--verdict", "v", timeout=180)
     assert r.returncode == 5, r.stdout + r.stderr
@@ -1090,12 +897,30 @@ def test_sui9_writes_a_distinguishable_verdict_per_outcome(tmp_path):
     assert node_id in (logs / "cli.adjudication").read_text()
 
 
-def test_sui9_source_shape_the_empty_case_never_returns_success():
-    """A source-level guard on the exact line that was wrong: the
-    `[ -n "$failing" ] || return 0` form must not come back."""
-    text = LF.LAND.read_text()
-    assert '[ -n "$failing" ] || return 0' not in text
-    assert 'printf \'unparseable-log %s\\n\'' in text
+def test_sui9_the_empty_case_never_returns_success():
+    """The adjudicator's own unit control, at the seam where the defect
+    lived. An empty failing set is `unparseable-log`, never the OK verdict
+    -- and the OK verdict requires at least one id that IS allowlisted, so
+    "found nothing" and "found nothing wrong" can never coincide."""
+    from self_learn.landing import suites as S
+
+    root = _repo_root()
+    allow = root / "plugins/self-learn/cli/src/self_learn/landing/known_failures.txt"
+    entry = S.allowlist_entries(allow)[0]
+    ui = root / "plugins/self-learn/ui"
+
+    assert S.adjudicate("", ui, root, allow)[0] == S.VERDICT_UNPARSEABLE
+    assert S.adjudicate("1 failed, 0 passed\n", ui, root, allow)[0] == S.VERDICT_UNPARSEABLE
+    # positive control: a parseable, allowlisted failure IS the OK verdict
+    local = entry.split("plugins/self-learn/ui/", 1)[1]
+    assert S.adjudicate(f"FAILED {local}\n", ui, root, allow)[0] == S.VERDICT_OK
+    # and one more failure alongside it is not
+    assert S.adjudicate(f"FAILED {local}\nFAILED tests/test_other.py::test_z\n",
+                        ui, root, allow)[0] == S.VERDICT_NOT_ALLOWLISTED
+    # a missing allowlist is its own refusal, never a pass
+    assert S.adjudicate(f"FAILED {local}\n", ui, root, root / "nope.txt")[0] == S.VERDICT_NO_ALLOWLIST
+    # the shell no longer carries the defective form
+    assert '[ -n "$failing" ] || return 0' not in LF.LAND.read_text()
 
 
 # ---------------------------------------------------------------------------
@@ -1181,6 +1006,13 @@ def test_pre1_predicate_is_the_absolute_compare_not_the_dot_git_string(tmp_path)
 
 # ---------------------------------------------------------------------------
 # SUI8 -- the UI suite's collection root (gate B-2, M-19, N-17)
+
+
+def _armor_anchor(repo: Path) -> str:
+    text = (repo / "plugins/self-learn/cli/tests/test_armor.py").read_text()
+    m = re.search(r'^ANCHOR = "([^"]*)"', text, re.M)
+    assert m is not None, text[:200]
+    return m.group(1)
 
 
 def _repo_root() -> Path:
@@ -1681,3 +1513,308 @@ def test_doc_reading_set():
     finally:
         shutil.rmtree(probe_dir)
     assert _walk("tests", "strict") == before
+
+
+# ---------------------------------------------------------------------------
+# Restored verbatim after a slice-based edit removed them (r2 build round).
+# Recovered from the bytes saved before the edit, not retyped from memory.
+
+def test_chk5_invokes_the_real_shipped_personal_literals_test_not_a_private_grep():
+    """M25: CHK5 must shell out to U-scrub's real test_personal_literals.py
+    via pytest, never reimplement it as a private in-runner grep scoped to
+    docs/ (which would miss any hit outside docs/)."""
+    text = LF.LAND.read_text()
+    # Structural, not a fixed-width slice: take every NON-comment line that
+    # mentions the gate file, plus the command they are part of. A byte
+    # window silently stops covering the invocation the moment the block
+    # grows -- which is exactly what happened when CHK5's absence became
+    # fatal and the block gained six lines.
+    lines = [
+        ln for ln in text.split("\n")
+        if "test_personal_literals.py" in ln and not ln.lstrip().startswith("#")
+    ]
+    assert lines, "CHK5 names the gate file nowhere outside comments"
+    # follow the variable the path is bound to, so the check does not depend
+    # on the invocation spelling the filename out
+    var = None
+    for ln in lines:
+        m = re.match(r"\s*local\s+([A-Za-z_][A-Za-z0-9_]*)=", ln)
+        if m:
+            var = m.group(1)
+            break
+    assert var, lines
+    users = [ln for ln in text.split("\n")
+             if f'${var}' in ln and not ln.lstrip().startswith("#")]
+    invocation = [ln for ln in users if "pytest" in ln]
+    assert invocation, users
+    assert all("grep" not in ln for ln in lines + users), lines + users
+    # it runs the TARGET TREE's copy ($gr), never the main checkout's ($ROOT)
+    assert any('"$gr/plugins/self-learn/cli/tests/test_personal_literals.py"' in ln
+               or '$gr/plugins/self-learn/cli/tests/test_personal_literals.py' in ln
+               for ln in lines), lines
+    # and absence is FATAL, not a skip (B-2)
+    assert "refusing to land unscanned" in text
+
+
+def test_sui2_timeout_case_is_a_distinct_branch_not_the_generic_red_message():
+    """M31: rc 124 (SUITE_TIMEOUT) must produce a message distinct from
+    the ordinary 'suite red' path -- a textual-structure proxy: the
+    adjudicate_suite() case statement has its own `124)` arm."""
+    text = LF.LAND.read_text()
+    adj_start = text.index("adjudicate_suite() {")
+    adj_block = text[adj_start:adj_start + 700]
+    assert "124)" in adj_block
+    assert "TIMED OUT" in adj_block
+
+
+def test_sui4_and_sui8c_collection_error_refuses_distinctly_not_via_allowlist(tmp_path):
+    """M33/M70: a pytest COLLECTION error (rc 2) must refuse distinctly,
+    never fall through to the allowlist adjudication (which would find no
+    named FAILED/ERROR node id to check and pass vacuously)."""
+    repo = LF.make_repo(tmp_path, with_ui=True)
+    LF.make_branch(
+        repo, "u-collecterr",
+        edits={"plugins/self-learn/cli/tests/test_broken_syntax.py": "def test_broken(:\n    pass\n"},
+    )
+    r = LF.run_land(repo, tmp_path, "--branch", "u-collecterr", "--verdict", "v", timeout=180)
+    assert r.returncode == 5
+    assert "COLLECTION ERROR" in r.stderr
+
+
+def test_psh4_never_force_deletes_the_branch():
+    """PSH4's second leg: `-d`, never `-D` (PSH3's no-force rule extends
+    to the prune step too)."""
+    text = LF.LAND.read_text()
+    assert "branch -D" not in text
+    assert "branch -d" in text
+
+
+def test_psh_prune_runs_only_after_a_successful_push(tmp_path):
+    """M40's first leg: if push fails, the branch/worktree must still be
+    there afterward -- prune must not run before push."""
+    repo = LF.make_repo(tmp_path)
+    LF.make_branch(repo, "u-pushfail", edits={"docs/specs/self-learn/drafts/n.md": "x\n"})
+    wt = tmp_path / "wt-u-pushfail"
+    LF.git(repo, "worktree", "add", str(wt), "u-pushfail")
+    # make the push fail: replace origin with a bare repo that rejects
+    # non-fast-forward-looking updates by way of a pre-receive hook.
+    origin = tmp_path / "origin.git"
+    hook = origin / "hooks" / "pre-receive"
+    hook.write_text("#!/bin/sh\nexit 1\n")
+    hook.chmod(0o755)
+    r = LF.run_land(repo, tmp_path, "--branch", "u-pushfail", "--verdict", "v", timeout=180)
+    assert r.returncode == 7
+    assert wt.exists()
+    branches = LF.git(repo, "branch", "--list", "u-pushfail").stdout
+    assert "u-pushfail" in branches
+
+
+def test_un2_never_touches_the_ledger():
+    """UN2: no `SELF_LEARN_HOME` env read and no functional `.self-learn`
+    path construction anywhere in the shipped script/package. Prose
+    explaining the exclusion (this module's own docstrings, which quote
+    the term to say it is never touched) is not itself a violation --
+    the check is for FUNCTIONAL usage: an env-var read, or the literal
+    used as a path component/argument rather than as documentation."""
+    import re
+
+    func_patterns = [
+        re.compile(r"os\.environ.{0,20}SELF_LEARN_HOME"),
+        re.compile(r"getenv\(.{0,5}SELF_LEARN_HOME"),
+        re.compile(r'"\.self-learn"'),
+        re.compile(r"'\.self-learn'"),
+    ]
+
+    def offenders(text: str) -> list[str]:
+        return [p.pattern for p in func_patterns if p.search(text)]
+
+    assert offenders(LF.LAND.read_text()) == []
+    for py in LF.LANDING_PKG.glob("*.py"):
+        assert offenders(py.read_text()) == [], py
+
+
+def test_wld1_detect_world_reads_the_two_worlds_apart(tmp_path):
+    """WLD1. Both fixture worlds, and the REAL repo, adjudicated by the
+    shipped detector -- not by reasoning about what it should say."""
+    from self_learn.landing.checks import (
+        WORLD_ARMOR_SHAS,
+        WORLD_REMEASURE,
+        detect_world,
+    )
+
+    shas_repo = LF.make_repo(tmp_path / "a", armor="shas")
+    rem_repo = LF.make_repo(tmp_path / "b", armor="remeasure")
+    assert detect_world(shas_repo) == WORLD_ARMOR_SHAS
+    assert detect_world(rem_repo) == WORLD_REMEASURE
+
+    # The live tree this unit will actually land on. U-armor deleted
+    # `_ARMOR_SHAS` outright rather than emptying it, so the failure mode
+    # worth ruling out is `armor_shas` reached with ZERO pins (which
+    # CHK2's N<1 floor would then refuse for the wrong reason).
+    real_root = Path(
+        subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=LF.THIS_REPO_CLI, capture_output=True, text=True, check=True,
+        ).stdout.strip()
+    )
+    assert detect_world(real_root) == WORLD_REMEASURE
+
+
+def test_wld2_remeasure_advances_the_anchor_inside_the_merge_commit(tmp_path):
+    """WLD2/CHK8. The success leg, end to end: `land` runs the TARGET
+    tree's own test_armor.py with `--anchor $(rev-parse --short=7 HEAD)`
+    read while HEAD is still master's pre-merge tip, and the rewritten
+    module rides INSIDE the merge commit -- never after it (incident 2)."""
+    repo = LF.make_repo(tmp_path, with_ui=True, armor="remeasure")
+    pre_merge_tip = LF.git(repo, "rev-parse", "--short=7", "HEAD").stdout.strip()
+    assert _armor_anchor(repo) == "0000000"
+
+    LF.make_branch(
+        repo, "u-armorworld",
+        edits={"plugins/self-learn/cli/tests/test_gamma.py": "def test_g():\n    assert True\n"},
+    )
+    r = LF.run_land(repo, tmp_path, "--branch", "u-armorworld", "--verdict", "v", timeout=180)
+    assert r.returncode == 0, r.stdout + r.stderr
+
+    # the anchor advanced, and to exactly the merge's FIRST PARENT
+    assert _armor_anchor(repo) == pre_merge_tip
+    parents = LF.git(repo, "log", "-1", "--format=%P").stdout.split()
+    assert LF.git(repo, "rev-parse", "--short=7", parents[0]).stdout.strip() == pre_merge_tip
+
+    # and the rewrite is IN the merge commit's own tree, not a later edit
+    committed = LF.git(
+        repo, "show", "HEAD:plugins/self-learn/cli/tests/test_armor.py",
+    ).stdout
+    assert f'ANCHOR = "{pre_merge_tip}"' in committed
+    # negative control: the pre-merge tree carried the stale literal
+    old = LF.git(
+        repo, "show", f"{parents[0]}:plugins/self-learn/cli/tests/test_armor.py",
+    ).stdout
+    assert 'ANCHOR = "0000000"' in old
+
+
+def test_wld2_owed_refusal_aborts_the_chain_and_commits_nothing(tmp_path):
+    """WLD2. A watched node edited since the anchor with no exemption
+    entry: `--remeasure` prints OWED: lines, writes nothing, exits 1 --
+    and the &&-chain must abort with NO merge commit."""
+    repo = LF.make_repo(tmp_path, with_ui=True, armor="remeasure")
+    head_before = LF.git(repo, "rev-parse", "HEAD").stdout.strip()
+    LF.make_branch(
+        repo, "u-owed",
+        edits={
+            # edits test_watched_one's BODY -- an EDIT, not an addition
+            "plugins/self-learn/cli/tests/test_watched.py":
+                "def test_watched_one():\n    assert (2 + 2) == 5 - 1\n\n\n"
+                "def test_watched_two():\n    assert (3 * 3) == 9\n",
+        },
+    )
+    r = LF.run_land(repo, tmp_path, "--branch", "u-owed", "--verdict", "v", timeout=180)
+    assert r.returncode == 4, r.stdout + r.stderr
+    assert "WLD2: --remeasure refused" in r.stderr
+    assert LF.git(repo, "rev-parse", "HEAD").stdout.strip() == head_before
+    assert _armor_anchor(repo) == "0000000"
+    # the refusal names the log that carries the OWED: lines
+    log = Path(r.stderr.split("cat ")[-1].strip()).read_text()
+    assert "OWED:" in log, log
+
+
+def test_wld2_noop_anchor_refusal_aborts_the_chain(tmp_path):
+    """WLD2. `--remeasure`'s OTHER rc-1 leg: the anchor did not change.
+    Both refusals are rc 1 from the same CLI and both must abort -- a
+    runner that only modelled the OWED leg would land an un-advanced
+    anchor and redden ARM5 (b) on the NEXT landing."""
+    repo = LF.make_repo(tmp_path, with_ui=True, armor="remeasure")
+    tip = LF.git(repo, "rev-parse", "--short=7", "HEAD").stdout.strip()
+    head_before = LF.git(repo, "rev-parse", "HEAD").stdout.strip()
+    armor_src = (repo / "plugins/self-learn/cli/tests/test_armor.py").read_text()
+    LF.make_branch(
+        repo, "u-noop",
+        edits={
+            "plugins/self-learn/cli/tests/test_armor.py":
+                armor_src.replace('ANCHOR = "0000000"', f'ANCHOR = "{tip}"', 1),
+        },
+    )
+    r = LF.run_land(repo, tmp_path, "--branch", "u-noop", "--verdict", "v", timeout=180)
+    assert r.returncode == 4, r.stdout + r.stderr
+    assert "WLD2: --remeasure refused" in r.stderr
+    assert LF.git(repo, "rev-parse", "HEAD").stdout.strip() == head_before
+    log = Path(r.stderr.split("cat ")[-1].strip()).read_text()
+    assert "ANCHOR did not change" in log, log
+
+
+def test_arm5_is_a_post_commit_property_and_the_runner_never_runs_it_early(tmp_path):
+    """The armor anchor-staleness check passes only AFTER the merge commit
+    exists (its walk root is `git merge-base master HEAD`, i.e. master's
+    OLD tip until then). Two legs:
+
+    (a) RED control, measured, not assumed: the fixture's ARM5-shaped test
+        fails on the pre-landing tree.
+    (b) the landing nevertheless succeeds, and the suite log shows that
+        same test PASSING -- so the runner ran it strictly after `git
+        commit`, which is what CHK8's ordering buys.
+    """
+    repo = LF.make_repo(tmp_path, with_ui=True, armor="remeasure")
+    node = "plugins/self-learn/cli/tests/test_armor.py::test_fixture_arm5_anchor_is_not_stale"
+
+    red = subprocess.run(
+        [sys.executable, "-m", "pytest", node, "-q", "-p", "no:cacheprovider"],
+        cwd=repo, capture_output=True, text=True,
+    )
+    assert red.returncode != 0, red.stdout + red.stderr
+    assert "no first-parent merge on master yet" in (red.stdout + red.stderr)
+
+    # That control run left cached bytecode for test_armor.py. It is the
+    # guard's own positive control, not incidental: `--remeasure` swaps a
+    # 7-char anchor for another 7-char anchor, so the file's SIZE is
+    # unchanged, and CPython's (mtime, size) staleness check -- both at
+    # 1-second resolution -- can therefore keep serving the OLD module.
+    # Measured: the suite read ANCHOR "0000000" from such a .pyc while
+    # the file on disk said "69d6b72", and the landing refused at exit 5
+    # on a false ARM5 red. If this assert stops holding, the rest of this
+    # test is no longer exercising that path.
+    pycache = repo / "plugins/self-learn/cli/tests/__pycache__"
+    assert list(pycache.glob("test_armor.*.pyc")), sorted(pycache.glob("*"))
+
+    LF.make_branch(
+        repo, "u-arm5",
+        edits={"plugins/self-learn/cli/tests/test_delta.py": "def test_d():\n    assert True\n"},
+    )
+    r = LF.run_land(repo, tmp_path, "--branch", "u-arm5", "--verdict", "v", timeout=180)
+    assert r.returncode == 0, r.stdout + r.stderr
+    cli_log = Path(r.stdout.split("logs=")[-1].strip() + "/cli.log").read_text()
+    assert "passed" in cli_log and "failed" not in cli_log, cli_log
+    assert not list(pycache.glob("test_armor.*.pyc")) or _armor_anchor(repo) != "0000000"
+
+    green = subprocess.run(
+        [sys.executable, "-m", "pytest", node, "-q", "-p", "no:cacheprovider"],
+        cwd=repo, capture_output=True, text=True,
+    )
+    assert green.returncode == 0, green.stdout + green.stderr
+
+
+def test_exc1_shell_contract():
+    """EXC1. The shell contract is `set -uo pipefail`, never `-e`.
+
+    Gate r1 M-6: the previous form was vacuous in BOTH directions.
+    `"set -uo pipefail" in text` was satisfied by the header COMMENT that
+    explains the rule, so dropping the real directive passed; and
+    `re.search(r"^set -e\b")` never matched `set -euo pipefail`, because
+    the character after `-e` is `u`, a word character, so there is no word
+    boundary there. Both mutants were green.
+
+    The fix is to derive the EXECUTABLE directives and compare the LIST.
+    """
+    text = LF.LAND.read_text()
+    directives = [
+        ln.strip() for ln in text.split("\n")
+        if ln.strip().startswith("set ") and not ln.lstrip().startswith("#")
+    ]
+    assert directives == ["set -uo pipefail"], directives
+
+    # every mutant the old form let through, shown caught by THIS comparison
+    for mutant in ("set -euo pipefail", "set -uo", "set -e", "set -eo pipefail"):
+        assert [mutant] != directives
+
+    # and the comment that used to satisfy the old check is still present,
+    # so this is not passing merely because the explanatory prose vanished
+    assert "set -uo pipefail, NOT -e" in text
