@@ -285,6 +285,23 @@ override is per-round, not a new default.
     false for *every* refusal — caught by this unit's own first test
     run, and now pinned by `ANC6`.
 
+  - **What `VACUOUS:` covers.** Every anchor-diff field of every
+    `ARMOR` row type, derived from the row types themselves rather than
+    enumerated: `Behaviour.missing` / `.edited` / `.edited_exports`,
+    `Fixture.repinned`, and `Additive.new_funcs` / `.new_scenario_keys`
+    / `.new_stmt_keys`. Two fields are explicit, dated exclusions
+    because they carry no anchor-diff state at all (`Behaviour.nodes`
+    and `.dump_sha` are rewritten by the run itself; `edited_funcs` is
+    a permanent allowlist per §4.4). A row type or a field that no rule
+    covers makes the run abort **loudly** rather than pass silently —
+    see `test_armor.py::VACUITY_MODEL` and `ANC7`. An earlier draft
+    enumerated three families by hand and omitted `Additive`'s, so a
+    landing could strand a declaration and leave `ADD1` red with rc 0.
+
+  - **Order is not part of the contract.** Report lines follow
+    `ARMOR` table order, then field-declaration order within a row.
+    Match on tokens, never on position.
+
   - **What a caller should do.** rc `0` → proceed. rc `1` with any
     `^OWED:`/`^VACUOUS:`/`^STALE:` line → stop; the tree is untouched
     and the report says what to edit. rc `1` with

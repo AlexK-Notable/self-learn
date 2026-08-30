@@ -810,20 +810,25 @@ MEASURED: dict[str, Measured] = {
     ),
     "BEH5.export_counts": Measured(
         value=(4, 5, 6, 10, 0, 4, 2, 0),
-        scope=_SCOPE_ANCHOR,
+        scope=_SCOPE_ANCHOR_HEAD,
         reason=(
-            "2026-08-28 §4.5/`B5`, measured by hand at ANCHOR 6815503: "
-            "per-file exported-name counts, anchor_set | head_set, derived "
-            "with ast.ImportFrom (never a line regex)."
+            "2026-08-28 §4.5/`B5`, transcribed at ANCHOR 6815503: per-file "
+            "exported-name counts, anchor_set | head_set, derived with "
+            "ast.ImportFrom (never a line regex). Scope CORRECTED 2026-08-29 "
+            "from `anchor` (gate r1 Minor 1): the union reads BOTH sides, so "
+            "a head-only edit moves it -- measured `(4, 5, 6, ...)` -> "
+            "`(4, 5, 7, ...)` with the anchor untouched. `ANC8` now derives "
+            "every scope label instead of trusting one."
         ),
         measure=_measure_export_counts,
     ),
     "BEH5.export_total": Measured(
         value=31,
-        scope=_SCOPE_ANCHOR,
+        scope=_SCOPE_ANCHOR_HEAD,
         reason=(
-            "2026-08-28 §4.5/`B5`, measured by hand at ANCHOR 6815503: the "
-            "sum of BEH5.export_counts."
+            "2026-08-28 §4.5/`B5`, transcribed at ANCHOR 6815503: the sum of "
+            "BEH5.export_counts. Scope CORRECTED 2026-08-29 with it (gate r1 "
+            "Minor 1) -- measured 31 -> 32 on the same head-only edit."
         ),
         measure=_measure_export_total,
     ),
@@ -1256,6 +1261,190 @@ def _compute_owed(new_anchor: str) -> dict[str, list[str]]:
     return owed
 
 
+# ===================================================================== #
+# The vacuity model -- WHICH fields of WHICH `ARMOR` row types carry
+# anchor-diff state, derived from the row types themselves rather than
+# from a hand-written list (`ANC7`, gate r1 MAJOR-1).
+#
+# The first version of `_compute_vacuous` enumerated three families by
+# hand -- `Behaviour.missing`, `Behaviour.edited`, `Fixture.repinned` --
+# and silently omitted `Additive`'s three anchor-diff sets, which is the
+# one file the design explicitly lets GROW. The gate demonstrated it end
+# to end: declare `new_funcs={"_gate_probe"}` (ADD1 green), land it, and
+# `--remeasure` returns rc 0 with zero `VACUOUS:` lines while `ADD1` goes
+# RED on `set() != {'_gate_probe'}` -- the pre-fix symptom verbatim,
+# inside the unit built to eliminate it.
+#
+# Appending a fourth entry to that list would leave a fifth free to slip
+# through the same way. This unit exists because anchor-derived state
+# was hand-maintained and could silently go stale; its own coverage list
+# had exactly that defect. So the walk below is driven by
+# `dataclasses.fields()` over each row's ACTUAL type, and a row type or
+# a field that no rule covers raises `SystemExit` -- the landing chain
+# aborts loudly instead of passing silently. An unmodellable field is an
+# EXPLICIT, dated, cited exclusion that `ANC7` asserts is still the
+# complete exclusion set: the same discipline section 4.6/4.7 already
+# apply to an exemption entry.
+# ===================================================================== #
+
+
+@dataclass(frozen=True)
+class _VacuityRule:
+    """How `_compute_vacuous` treats ONE field of one `ARMOR` row type.
+    Exactly one of the two is set, and `ANC7` asserts it: `check`
+    returns the field entries `new_anchor` no longer owes, or
+    `excluded_reason` says -- dated and cited, `EXM1` grammar -- why
+    the field carries no anchor-diff state at all."""
+
+    check: Callable[[str, str, object], list[str]] | None = None
+    excluded_reason: str | None = None
+
+
+def _full_sha(rev: str) -> str:
+    """The 40-character sha for `rev`. Used by the refusal tests to
+    name the SAME commit as `ANCHOR` with a DIFFERENT literal, so a
+    render genuinely changes content and the byte-identity legs
+    actually pin atomicity (gate r1 Minor 3)."""
+    return subprocess.run(
+        ["git", "rev-parse", rev], cwd=_REPO_ROOT,
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+
+
+def _additive_func_names(source: str) -> set[str]:
+    """`ADD1` leg 2's own set: top-level `FunctionDef` names. Kept
+    identical to the leg (not `_top_level_def_names`, which also counts
+    `AsyncFunctionDef`) so vacuity and the leg agree by construction."""
+    return {n.name for n in ast.parse(source).body if isinstance(n, ast.FunctionDef)}
+
+
+def _additive_scenario_keys(source: str) -> set:
+    """`SCENARIOS`' literal key set, read from the AST. `ADD1` leg 3
+    reads the same set from the IMPORTED module; `ANC7` asserts the two
+    agree on the shipped file, so this cheaper path never has to be
+    taken on faith -- and `--remeasure` never has to import a fixture."""
+    node = _find_scenarios_assign(ast.parse(source))
+    dict_node = node.value
+    assert isinstance(dict_node, ast.Dict)
+    return {k.value for k in dict_node.keys if isinstance(k, ast.Constant)}
+
+
+def _additive_stmt_keys(source: str) -> set:
+    """`ADD1` leg 4's own key set: every top-level non-`FunctionDef`
+    statement except the `SCENARIOS` assignment."""
+    tree = ast.parse(source)
+    scen = _find_scenarios_assign(tree)
+    return {
+        _additive_stmt_key(n) for n in tree.body
+        if not isinstance(n, ast.FunctionDef) and n is not scen
+    }
+
+
+def _vac_missing(new_anchor: str, key: str, row) -> list[str]:
+    missing, _edited = _diff_maps(_census_at(new_anchor, key), _head_census(key))
+    return [f"missing:{k}" for k in row.missing if k not in missing]
+
+
+def _vac_edited(new_anchor: str, key: str, row) -> list[str]:
+    _missing, edited = _diff_maps(_census_at(new_anchor, key), _head_census(key))
+    return [f"edited:{k}" for k in row.edited if k not in edited]
+
+
+def _vac_edited_exports(new_anchor: str, key: str, row) -> list[str]:
+    """`BEH5`'s door: an entry is owed only while the exported def's
+    SOURCE actually differs between the anchor and head. If it is
+    identical again -- or the name has gone from either side -- the
+    entry exempts nothing."""
+    if not row.edited_exports:
+        return []
+    anchor_src = _git_show_text(new_anchor, key)
+    head_src = _head_text(key)
+    anchor_defs = _top_level_def_names(anchor_src)
+    head_defs = _top_level_def_names(head_src)
+    gone = []
+    for name in row.edited_exports:
+        if name not in anchor_defs or name not in head_defs:
+            gone.append(f"edited_exports:{name}")
+        elif _exported_def_source(key, name, anchor_src) == _exported_def_source(key, name, head_src):
+            gone.append(f"edited_exports:{name}")
+    return gone
+
+
+def _vac_repinned(new_anchor: str, key: str, row) -> list[str]:
+    if row.repinned is None:
+        return []
+    anchor_sha = hashlib.sha256(_git_show_bytes(new_anchor, key)).hexdigest()
+    if hashlib.sha256(_head_bytes(key)).hexdigest() == anchor_sha:
+        return ["repinned"]
+    return []
+
+
+def _vac_new_funcs(new_anchor: str, key: str, row) -> list[str]:
+    if not row.new_funcs:
+        return []
+    added = _additive_func_names(_head_text(key)) - _additive_func_names(_git_show_text(new_anchor, key))
+    return [f"new_funcs:{n}" for n in row.new_funcs if n not in added]
+
+
+def _vac_new_scenario_keys(new_anchor: str, key: str, row) -> list[str]:
+    if not row.new_scenario_keys:
+        return []
+    added = _additive_scenario_keys(_head_text(key)) - _additive_scenario_keys(_git_show_text(new_anchor, key))
+    return [f"new_scenario_keys:{k}" for k in row.new_scenario_keys if k not in added]
+
+
+def _vac_new_stmt_keys(new_anchor: str, key: str, row) -> list[str]:
+    if not row.new_stmt_keys:
+        return []
+    added = _additive_stmt_keys(_head_text(key)) - _additive_stmt_keys(_git_show_text(new_anchor, key))
+    return [
+        "new_stmt_keys:" + "|".join(str(part) for part in k)
+        for k in row.new_stmt_keys if tuple(k) not in added
+    ]
+
+
+#: One rule per FIELD of every `ARMOR` row type. `ANC7` asserts this
+#: covers `dataclasses.fields()` of each type EXACTLY -- no field
+#: unmodelled, no rule for a field that no longer exists.
+VACUITY_MODEL: dict[str, dict[str, _VacuityRule]] = {
+    "Fixture": {
+        "repinned": _VacuityRule(check=_vac_repinned),
+    },
+    "Additive": {
+        "edited_funcs": _VacuityRule(
+            excluded_reason=(
+                "2026-08-29 §4.4, ANCHOR 6815503: a PERMANENT allowlist, not an "
+                "anchor-diff artifact -- `Additive`'s own docstring says so, and "
+                "ADD1 leg 1 exempts these two names regardless of where the "
+                "anchor sits. It cannot become vacuous by an anchor advance."
+            )
+        ),
+        "new_funcs": _VacuityRule(check=_vac_new_funcs),
+        "new_scenario_keys": _VacuityRule(check=_vac_new_scenario_keys),
+        "new_stmt_keys": _VacuityRule(check=_vac_new_stmt_keys),
+    },
+    "Behaviour": {
+        "nodes": _VacuityRule(
+            excluded_reason=(
+                "2026-08-29 §4.2, ANCHOR 6815503: written BY `--remeasure` at "
+                "the new anchor in the same run, so it is never left behind. "
+                "`ARM2` checks it against a live census; there is no entry here "
+                "that could be owed nothing."
+            )
+        ),
+        "dump_sha": _VacuityRule(
+            excluded_reason=(
+                "2026-08-29 §4.2, ANCHOR 6815503: same as `nodes` -- rewritten "
+                "by the run itself, not an exemption entry."
+            )
+        ),
+        "missing": _VacuityRule(check=_vac_missing),
+        "edited": _VacuityRule(check=_vac_edited),
+        "edited_exports": _VacuityRule(check=_vac_edited_exports),
+    },
+}
+
+
 def _compute_vacuous(new_anchor: str) -> dict[str, list[str]]:
     """Every SHIPPED exemption entry that `new_anchor` no longer owes
     (`ANC5`) -- section 4.7's own fold rule (`FW-140`): "every
@@ -1265,31 +1454,44 @@ def _compute_vacuous(new_anchor: str) -> dict[str, list[str]]:
     this is entries that exist and are owed nothing.
 
     Both directions have to be refused for the same reason: `EXM3`'s
-    `shipped == census` leg and `FIX2`'s anti-rot leg are the two
-    that go RED on a vacuous entry, and an advance that leaves one
-    behind is the same silent-red landing `ANC1` closes for the
+    `shipped == census` leg, `FIX2`'s anti-rot leg and `ADD1`'s legs
+    2-4 are what go RED on a vacuous entry, and an advance that leaves
+    one behind is the same silent-red landing `ANC1` closes for the
     measured literals. Measured 2026-08-29 in a throwaway clone: the
     fourteen `test_u_fake.py` `missing` entries all become vacuous the
     instant `ANCHOR` reaches `a768696`, and `EXM3` fails on the first
     of them (`assign:REWRITTEN`) before it ever reaches its own
-    hand-written totals."""
+    transcribed totals.
+
+    The walk is STRUCTURAL (gate r1 MAJOR-1): every field of every row,
+    dispatched through `VACUITY_MODEL`, with an unmodelled row type or
+    field raising `SystemExit` rather than passing silently. See that
+    table's own header for why an enumerated list was the wrong shape
+    here specifically."""
     dead: dict[str, list[str]] = {}
-    for key in BEHAVIOUR_KEYS:
-        row = ARMOR[key]
-        if not isinstance(row, Behaviour):
-            continue
-        missing, edited = _diff_maps(_census_at(new_anchor, key), _head_census(key))
-        gone = [f"missing:{k}" for k in row.missing if k not in missing]
-        gone += [f"edited:{k}" for k in row.edited if k not in edited]
+    for key, row in ARMOR.items():
+        type_name = type(row).__name__
+        rules = VACUITY_MODEL.get(type_name)
+        if rules is None:
+            raise SystemExit(
+                f"vacuity model has no rules for ARMOR row type {type_name!r} "
+                f"(key {key!r}) -- add them to VACUITY_MODEL, with a dated, "
+                "cited `excluded_reason` for any field that carries no "
+                "anchor-diff state (section 4.6's grammar, ANC7)"
+            )
+        gone: list[str] = []
+        for field in dataclasses.fields(row):
+            rule = rules.get(field.name)
+            if rule is None:
+                raise SystemExit(
+                    f"vacuity model has no rule for {type_name}.{field.name} "
+                    f"(key {key!r}) -- every field must be either checked or "
+                    "given a dated, cited `excluded_reason` (ANC7)"
+                )
+            if rule.check is not None:
+                gone.extend(rule.check(new_anchor, key, row))
         if gone:
             dead[key] = gone
-    for key in FIXTURE_KEYS:
-        frow = ARMOR[key]
-        if not isinstance(frow, Fixture) or frow.repinned is None:
-            continue
-        anchor_sha = hashlib.sha256(_git_show_bytes(new_anchor, key)).hexdigest()
-        if hashlib.sha256(_head_bytes(key)).hexdigest() == anchor_sha:
-            dead.setdefault(key, []).append("repinned")
     return dead
 
 
@@ -1413,15 +1615,6 @@ def _remeasure(argv: list[str]) -> int:
         return 1
     print(f"ANCHOR {old_anchor} -> {new_anchor}", file=sys.stderr)
     return 0
-
-
-if __name__ == "__main__":
-    if "--remeasure" in sys.argv[1:]:
-        raise SystemExit(_remeasure(sys.argv[1:]))
-    raise SystemExit(
-        "test_armor.py has no standalone CLI mode other than --remeasure "
-        "(ARM6's refused-CLI-mode leg) -- run it under pytest."
-    )
 
 
 # ======================================================================= #
@@ -3487,7 +3680,15 @@ def test_anc1_remeasure_refuses_a_stale_measured_literal(capsys):
     scratch_dir = Path(tempfile.mkdtemp(dir=str(_REPO_ROOT)))
     try:
         scratch_module, ns = _scratch_armor_namespace(scratch_dir, "_armor_anc1")
-        anchor = ns["ANCHOR"]
+        # The SAME commit as `ANCHOR`, named by its 40-character sha
+        # (gate r1 Minor 3). The census is identical either way, so the
+        # refusal stays attributable to the corruption alone -- but a
+        # render WOULD now rewrite the `ANCHOR` literal, so the
+        # byte-identity assertion below genuinely pins ATOMICITY.
+        # Driven at the short literal the render was content-neutral,
+        # and hoisting the write above the refusal left this test (and
+        # `ANC5`, and `ANC6`) green while destroying the guarantee.
+        anchor = ns["_full_sha"](ns["ANCHOR"])
 
         # Negative control FIRST: untouched, at its own anchor, nothing
         # is owed, vacuous or stale -- so anything below is the
@@ -3647,7 +3848,8 @@ def test_anc5_remeasure_refuses_a_vacuous_exemption(capsys):
     scratch_dir = Path(tempfile.mkdtemp(dir=str(_REPO_ROOT)))
     try:
         scratch_module, ns = _scratch_armor_namespace(scratch_dir, "_armor_anc5")
-        anchor = ns["ANCHOR"]
+        # A content-changing render -- see `ANC1` (gate r1 Minor 3).
+        anchor = ns["_full_sha"](ns["ANCHOR"])
         assert ns["_compute_vacuous"](anchor) == {}
 
         behaviour_key = "test_worker.py"
@@ -3696,10 +3898,16 @@ def test_anc5_remeasure_refuses_a_vacuous_exemption(capsys):
         # Report LINES only -- see `ANC1` on why a whole-stream
         # substring check is worthless here.
         report = [ln for ln in err.splitlines() if ln.startswith(("OWED:", "VACUOUS:", "STALE:"))]
-        assert report == [
+        # Compared as a SET: report order follows `ARMOR` table order,
+        # which the §5.1 contract deliberately does not promise. The
+        # structural vacuity walk changed that order (it now walks the
+        # table once instead of BEHAVIOUR-then-FIXTURE), which is
+        # exactly the kind of churn an ordered assertion would make
+        # look like a regression.
+        assert sorted(report) == sorted([
             f"VACUOUS: {behaviour_key}: missing:{live_node}",
             f"VACUOUS: {fixture_key}: repinned",
-        ], report
+        ]), report
     finally:
         shutil.rmtree(scratch_dir, ignore_errors=True)
 
@@ -3713,7 +3921,16 @@ _NOOP_PREFIX = "ANCHOR did not change ("
 _TRAILER_PREFIX = "refusing to write test_armor.py ("
 _SUCCESS_RE = re.compile(r"^ANCHOR [0-9a-f]{7,40} -> [0-9a-f]{7,40}$")
 _OWED_RE = re.compile(r"^OWED: \S+\.py: (missing|edited):\S+$")
-_VACUOUS_RE = re.compile(r"^VACUOUS: \S+\.py: ((missing|edited):\S+|repinned)$")
+#: DERIVED from `VACUITY_MODEL`, never spelled out: a newly checked
+#: family must not need this regex hand-edited to be recognised -- that
+#: hand-maintained shape is what produced gate r1 MAJOR-1.
+_VACUOUS_DOORS: tuple[str, ...] = tuple(sorted(
+    field for rules in VACUITY_MODEL.values() for field, rule in rules.items()
+    if rule.check is not None
+))
+_VACUOUS_RE = re.compile(
+    r"^VACUOUS: \S+\.py: (?:" + "|".join(_VACUOUS_DOORS) + r")(?::\S+)?$"
+)
 _STALE_HEAD_RE = re.compile(
     r"^STALE: \S+: MEASURED\['[^']+'\] \(scope=(anchor|anchor\+head|head)\)$"
 )
@@ -3760,10 +3977,12 @@ def test_anc6_refusal_leg_contract(capsys):
         scratch_module, ns = _scratch_armor_namespace(scratch_dir, "_armor_anc6a")
         anchor = ns["ANCHOR"]
         sha_before = hashlib.sha256(scratch_module.read_bytes()).hexdigest()
+        inode_before = scratch_module.stat().st_ino
         capsys.readouterr()
         rc = ns["_remeasure"](["--remeasure", "--anchor", anchor])
         cap = capsys.readouterr()
         sha_after = hashlib.sha256(scratch_module.read_bytes()).hexdigest()
+        inode_after = scratch_module.stat().st_ino
 
         assert rc == 1, rc
         assert cap.out == "", cap.out
@@ -3772,6 +3991,15 @@ def test_anc6_refusal_leg_contract(capsys):
         assert _report_lines(cap.err) == [], cap.err
         assert sha_after == sha_before, (
             "no-op leg: the write happens, but with byte-identical content"
+        )
+        # ... and the write REALLY happens (gate r1 Minor 2). The
+        # runbook §5.1 table says this leg rewrites the file; nothing
+        # tested it, so a mutation that skipped the write entirely
+        # stayed green. `os.replace` swaps the inode, which byte
+        # identity cannot see.
+        assert inode_after != inode_before, (
+            "no-op leg: os.replace must still have written the file "
+            "(runbook §5.1 documents this leg as post-write)"
         )
     finally:
         shutil.rmtree(scratch_dir, ignore_errors=True)
@@ -3809,7 +4037,8 @@ def test_anc6_refusal_leg_contract(capsys):
     scratch_dir = Path(tempfile.mkdtemp(dir=str(_REPO_ROOT)))
     try:
         scratch_module, ns = _scratch_armor_namespace(scratch_dir, "_armor_anc6b")
-        anchor = ns["ANCHOR"]
+        # A content-changing render -- see `ANC1` (gate r1 Minor 3).
+        anchor = ns["_full_sha"](ns["ANCHOR"])
 
         # OWED: censor one anchor node out of head. Anchor-independent.
         owed_key = "test_worker.py"
@@ -3924,3 +4153,295 @@ def test_anc6_refusal_leg_contract(capsys):
             assert token.strip() in cap.err, token
     finally:
         shutil.rmtree(scratch_dir, ignore_errors=True)
+
+
+#: The module attributes `_observed_scope` instruments -- every seam a
+#: measurement can read an anchor side or a head side through. Held as a
+#: module constant, not string literals inside the function, so `EXM2`'s
+#: hardcoded-skip walk has nothing to trip over.
+_SCOPE_SEAMS: tuple[str, ...] = (
+    "_census_at", "_git_show_text", "_git_show_bytes",
+    "_head_text", "_head_bytes", "_head_census", "_all_tree_paths",
+)
+
+
+def _observed_scope(name: str, anchor: str) -> str:
+    """The scope `MEASURED[name]`'s recomputation actually EXHIBITS,
+    measured by instrumenting every read seam -- never by reading the
+    code, which is how two labels shipped wrong (gate r1 Minor 1).
+
+    An anchor-side read counts only when the rev being read IS the
+    anchor passed in, so `_measure_control_*` -- which reads the fixed
+    retired control anchor and ignores its argument -- is correctly NOT
+    anchor-scoped. `_census_at` is instrumented as well as
+    `_git_show_text`, because the session cache would otherwise hide
+    every read after the first and silently downgrade a label."""
+    module = sys.modules[__name__]
+    seen = {"anchor": False, "head": False}
+    saved = {attr: getattr(module, attr) for attr in _SCOPE_SEAMS}
+
+    def _rev_reader(real):
+        def reader(rev, key):
+            if rev == anchor:
+                seen["anchor"] = True
+            return real(rev, key)
+        return reader
+
+    def _head_reader(real):
+        def reader(key):
+            seen["head"] = True
+            return real(key)
+        return reader
+
+    def _tree_reader(real):
+        def reader(rev):
+            if rev is None:
+                seen["head"] = True
+            return real(rev)
+        return reader
+
+    try:
+        for attr in _SCOPE_SEAMS[:3]:
+            setattr(module, attr, _rev_reader(saved[attr]))
+        for attr in _SCOPE_SEAMS[3:6]:
+            setattr(module, attr, _head_reader(saved[attr]))
+        setattr(module, _SCOPE_SEAMS[6], _tree_reader(saved[_SCOPE_SEAMS[6]]))
+        MEASURED[name].measure(anchor)
+    finally:
+        for attr, real in saved.items():
+            setattr(module, attr, real)
+
+    if seen["anchor"] and seen["head"]:
+        return _SCOPE_ANCHOR_HEAD
+    if seen["anchor"]:
+        return _SCOPE_ANCHOR
+    if seen["head"]:
+        return _SCOPE_HEAD
+    raise AssertionError(f"{name}: reads neither side -- a constant, not a measurement")
+
+
+def test_anc7_vacuity_coverage_is_structural_not_enumerated():
+    """`ANC7` (gate r1 MAJOR-1). `_compute_vacuous` used to enumerate
+    three families by hand and silently omitted `Additive`'s three
+    anchor-diff sets -- the one file the design lets GROW. The gate
+    demonstrated it end to end: declare `new_funcs={"_gate_probe"}`,
+    land it, and `--remeasure` returns rc 0 with zero `VACUOUS:` lines
+    while `ADD1` goes RED. Five legs, all of which a fourth item
+    appended to a list would have left open:
+
+    1. COVERAGE IS EXACT. Every `ARMOR` row's type has rules, and they
+       cover `dataclasses.fields()` of that type exactly -- no field
+       unmodelled, no rule for a field that no longer exists, never
+       both a `check` and an `excluded_reason`, and every exclusion
+       carrying `EXM1`'s dated, cited grammar.
+    2. IT FAILS LOUD. Dropping a row type's rules, or one field's
+       rule, makes `_compute_vacuous` raise `SystemExit` naming what
+       is missing -- "a fifth family appears", simulated.
+    3. EVERY CHECK ACTUALLY FIRES. A constructed vacuous entry in each
+       checked field is reported. `Additive`'s three ship EMPTY, so
+       without this leg they would be covered only on paper.
+    4. THE CLI CAN REACH THEM. `--remeasure` executes this module
+       top-to-bottom and stops at the `__main__` guard, so a helper
+       defined after it is invisible to a CLI run -- and the
+       `Additive` checks call `_find_scenarios_assign` /
+       `_additive_stmt_key`, which live far below in the ADD section.
+       Proven by running the REAL CLI in a subprocess against a
+       scratch copy carrying a declared-but-vacuous `new_funcs`, the
+       exact shape the gate used. An in-process drive proves nothing
+       here: `__name__` is not `__main__` there, so the whole module
+       execs regardless.
+    5. The measured equivalence `_additive_scenario_keys` rests on:
+       its AST-read key set equals the IMPORTED module's, so
+       `--remeasure` never has to import a fixture to check leg 3's
+       family."""
+    # --- Leg 1: coverage is exact.
+    row_types = {type(row).__name__ for row in ARMOR.values()}
+    assert set(VACUITY_MODEL) == row_types, (set(VACUITY_MODEL), row_types)
+    for key, row in ARMOR.items():
+        rules = VACUITY_MODEL[type(row).__name__]
+        field_names = {f.name for f in dataclasses.fields(row)}
+        assert set(rules) == field_names, (key, set(rules) ^ field_names)
+        for field_name, rule in rules.items():
+            assert (rule.check is None) != (rule.excluded_reason is None), (key, field_name)
+            if rule.excluded_reason is not None:
+                ok, why = _exm1_check(rule.excluded_reason)
+                assert ok, (key, field_name, why)
+    # The regression, named: `Additive`'s three anchor-diff sets are
+    # CHECKED -- not excluded, not absent.
+    additive_rules = VACUITY_MODEL["Additive"]
+    for field_name in ("new_funcs", "new_scenario_keys", "new_stmt_keys"):
+        assert additive_rules[field_name].check is not None, field_name
+
+    # --- Leg 5 (cheap, no scratch copy): AST keys == imported keys.
+    ast_keys = _additive_scenario_keys(_head_text(_FAKE_CLAUDE_KEY))
+    live_mod = _load_module_from_path(_abspath(_FAKE_CLAUDE_KEY), "_fake_claude_anc7")
+    assert ast_keys, ast_keys
+    assert ast_keys == set(live_mod.SCENARIOS), ast_keys ^ set(live_mod.SCENARIOS)
+
+    scratch_dir = Path(tempfile.mkdtemp(dir=str(_REPO_ROOT)))
+    try:
+        _scratch_module, ns = _scratch_armor_namespace(scratch_dir, "_armor_anc7")
+        anchor = ns["ANCHOR"]
+        pristine = {t: dict(rules) for t, rules in ns["VACUITY_MODEL"].items()}
+        assert ns["_compute_vacuous"](anchor) == {}
+
+        # --- Leg 2: an unmodelled row type, then an unmodelled field.
+        broken = {t: dict(r) for t, r in pristine.items()}
+        del broken["Additive"]
+        ns["VACUITY_MODEL"] = broken
+        with pytest.raises(SystemExit, match="no rules for ARMOR row type 'Additive'"):
+            ns["_compute_vacuous"](anchor)
+
+        broken2 = {t: dict(r) for t, r in pristine.items()}
+        del broken2["Behaviour"]["missing"]
+        ns["VACUITY_MODEL"] = broken2
+        with pytest.raises(SystemExit, match=r"no rule for Behaviour\.missing"):
+            ns["_compute_vacuous"](anchor)
+
+        ns["VACUITY_MODEL"] = pristine
+        assert ns["_compute_vacuous"](anchor) == {}
+
+        # --- Leg 3: one constructed vacuous entry per checked field.
+        reason = "2026-08-29 §4.7 ANC7 test scaffold, 6815503."
+        exports = ns["_exported_names_anchor"]()
+        beh_key = "test_worker.py"
+        export_key = next(k for k in ns["BEHAVIOUR_KEYS"] if exports[k] and k != beh_key)
+        export_name = sorted(exports[export_key])[0]
+        fixture_key = next(
+            k for k in FIXTURE_KEYS
+            if hashlib.sha256(ns["_head_bytes"](k)).hexdigest()
+            == hashlib.sha256(ns["_anchor_bytes"](k)).hexdigest()
+        )
+        live_node = next(iter(ns["_head_census"](beh_key)))
+
+        patched = dict(ns["ARMOR"])
+        beh_row = patched[beh_key]
+        patched[beh_key] = ns["Behaviour"](
+            nodes=beh_row.nodes, dump_sha=beh_row.dump_sha,
+            missing={live_node: reason}, edited={live_node: reason},
+        )
+        exp_row = patched[export_key]
+        patched[export_key] = ns["Behaviour"](
+            nodes=exp_row.nodes, dump_sha=exp_row.dump_sha,
+            missing=dict(exp_row.missing), edited=dict(exp_row.edited),
+            edited_exports={export_name: reason},
+        )
+        patched[fixture_key] = ns["Fixture"](
+            repinned=(hashlib.sha256(ns["_head_bytes"](fixture_key)).hexdigest(), reason)
+        )
+        patched[_FAKE_CLAUDE_KEY] = dataclasses.replace(
+            ns["ARMOR"][_FAKE_CLAUDE_KEY],
+            new_funcs=frozenset({"__anc7_func"}),
+            new_scenario_keys=frozenset({"__anc7_scenario"}),
+            new_stmt_keys=frozenset({("assign", "__anc7_stmt")}),
+        )
+        ns["ARMOR"] = patched
+
+        vacuous = ns["_compute_vacuous"](anchor)
+        assert vacuous.get(beh_key) == [f"missing:{live_node}", f"edited:{live_node}"], vacuous
+        assert vacuous.get(export_key) == [f"edited_exports:{export_name}"], vacuous
+        assert vacuous.get(fixture_key) == ["repinned"], vacuous
+        assert vacuous.get(_FAKE_CLAUDE_KEY) == [
+            "new_funcs:__anc7_func",
+            "new_scenario_keys:__anc7_scenario",
+            "new_stmt_keys:assign|__anc7_stmt",
+        ], vacuous
+    finally:
+        shutil.rmtree(scratch_dir, ignore_errors=True)
+
+    # --- Leg 4: the REAL CLI, in a subprocess, reaches the `Additive`
+    # checks. The injection goes immediately BEFORE the `__main__`
+    # guard, which this leg also pins as the LAST top-level statement:
+    # anything after it is dead code to a CLI run.
+    source = _module_source()
+    tree = ast.parse(source)
+    guard = tree.body[-1]
+    assert isinstance(guard, ast.If), (
+        "the `__main__` guard must be the LAST top-level statement -- "
+        "`--remeasure` cannot call a helper defined after it"
+    )
+    cli_dir = Path(tempfile.mkdtemp(dir=str(_REPO_ROOT)))
+    try:
+        cli_module = cli_dir / "test_armor.py"
+        lines = source.splitlines(keepends=True)
+        # All THREE `Additive` sets, not just `new_funcs`: only
+        # `new_scenario_keys` / `new_stmt_keys` reach
+        # `_find_scenarios_assign` / `_additive_stmt_key`, the helpers
+        # that live below the guard's old position. A `new_funcs`-only
+        # probe would pass even with the guard back where it was.
+        injection = (
+            "ARMOR[_FAKE_CLAUDE_KEY] = dataclasses.replace(\n"
+            "    ARMOR[_FAKE_CLAUDE_KEY],\n"
+            '    new_funcs=frozenset({"__anc7_cli_probe"}),\n'
+            '    new_scenario_keys=frozenset({"__anc7_cli_scenario"}),\n'
+            '    new_stmt_keys=frozenset({("assign", "__anc7_cli_stmt")}),\n'
+            ")\n"
+        )
+        cli_module.write_text(
+            "".join(lines[: guard.lineno - 1]) + injection + "".join(lines[guard.lineno - 1:]),
+            encoding="utf-8",
+        )
+        proc = subprocess.run(
+            [sys.executable, str(cli_module), "--remeasure", "--anchor", ANCHOR],
+            cwd=str(cli_dir), capture_output=True, text=True,
+        )
+        assert proc.returncode == 1, (proc.returncode, proc.stderr[-3000:])
+        assert proc.stdout == "", proc.stdout
+        assert "NameError" not in proc.stderr, proc.stderr[-3000:]
+        cli_report = proc.stderr.splitlines()
+        for expected in (
+            f"VACUOUS: {_FAKE_CLAUDE_KEY}: new_funcs:__anc7_cli_probe",
+            f"VACUOUS: {_FAKE_CLAUDE_KEY}: new_scenario_keys:__anc7_cli_scenario",
+            f"VACUOUS: {_FAKE_CLAUDE_KEY}: new_stmt_keys:assign|__anc7_cli_stmt",
+        ):
+            assert expected in cli_report, (expected, proc.stderr[-3000:])
+    finally:
+        shutil.rmtree(cli_dir, ignore_errors=True)
+
+
+def test_anc8_every_scope_label_is_measured():
+    """`ANC8` (gate r1 Minor 1). Every `MEASURED` row's `scope` equals
+    the scope its recomputation actually exhibits, measured by
+    instrumenting the read seams. Two labels shipped WRONG:
+    `BEH5.export_counts` and `BEH5.export_total` were `anchor`, and
+    are `anchor+head` -- `_exported_names_union` reads BOTH sides, so
+    a head-only edit moves them (the gate measured
+    `(4, 5, 6, ...)` -> `(4, 5, 7, ...)` and `31` -> `32` with the
+    anchor untouched). A wrong label misdescribes which edits the
+    refusal is watching, so it is now derived rather than claimed.
+
+    Positive controls: all three scopes are represented (the
+    classification is not degenerate), and the four rows whose scope
+    was reasoned about explicitly are each named."""
+    observed = {name: _observed_scope(name, ANCHOR) for name in MEASURED}
+    mismatched = {
+        name: (MEASURED[name].scope, observed[name])
+        for name in MEASURED if MEASURED[name].scope != observed[name]
+    }
+    assert mismatched == {}, mismatched
+
+    assert set(observed.values()) == set(_SCOPES), observed
+    assert observed["BEH7.node_counts"] == _SCOPE_ANCHOR, observed
+    assert observed["BEH5.export_counts"] == _SCOPE_ANCHOR_HEAD, observed
+    assert observed["EXM3.census_missing"] == _SCOPE_ANCHOR_HEAD, observed
+    assert observed["BEH1.control_missing"] == _SCOPE_HEAD, observed
+
+
+# ===================================================================== #
+# The CLI entry point -- the LAST top-level statement in this file, and
+# it must stay last (`ANC7` leg 4 pins it, and says why). `--remeasure`
+# executes the module top-to-bottom and stops HERE, so any helper
+# defined after this guard is invisible to a CLI run. It used to sit
+# just below `_remeasure`, which silently limited the tool to helpers
+# defined above it -- and the vacuity checks call
+# `_find_scenarios_assign` / `_additive_stmt_key` from the ADD section
+# far below (gate r1 MAJOR-1).
+# ===================================================================== #
+
+if __name__ == "__main__":
+    if "--remeasure" in sys.argv[1:]:
+        raise SystemExit(_remeasure(sys.argv[1:]))
+    raise SystemExit(
+        "test_armor.py has no standalone CLI mode other than --remeasure "
+        "(ARM6's refused-CLI-mode leg) -- run it under pytest."
+    )
