@@ -181,8 +181,16 @@ def main(argv: list[str] | None = None) -> int:
 
     entries = allowlist_entries(args.allow)
     if not entries:
-        print("empty-allowlist 0 entries")
-        return 0
+        # "0 entries, all of them fine" and "there is nothing here to check"
+        # are the same output at rc 0, which is the shape this unit keeps
+        # removing. An empty allowlist is a refusal: SUI4 exists to prove
+        # the ids in it still resolve, and it cannot prove that of none.
+        print(
+            f"REFUSE: the known-failure allowlist is EMPTY ({args.allow}) -- "
+            "'every entry collects' over zero entries is not a result",
+            file=sys.stderr,
+        )
+        return 1
     bad = [(e, rc) for e, rc in collect_check(root, entries) if rc != 0]
     for e, rc in bad:
         print(f"STALE: {e} does not collect (rc {rc})", file=sys.stderr)

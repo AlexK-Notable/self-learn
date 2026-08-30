@@ -48,14 +48,25 @@ need_file() {
   [ -r "$path" ] || die "$code" "$what: required input is unreadable: $path" "ls -l $path"
 }
 
+# `usable_lines` is PURE -- it prints a count and never dies, so it is safe
+# to call from `$( )`. `need_nonempty_file` dies and therefore returns
+# NOTHING: a guard that both refuses and yields a value has to be called
+# inside a command substitution, and `die` runs `exit`, which inside `$( )`
+# ends only the SUBSHELL. That is the third instance of this shape in this
+# unit (allowlisted_only's empty set, state_check's discarded rc, and this
+# one); `test_exc1_no_die_is_reachable_from_a_command_substitution` now
+# sweeps for it.
+usable_lines() {
+  grep -cve '^[[:space:]]*$' -e '^[[:space:]]*#' "$1" 2>/dev/null || true
+}
+
 need_nonempty_file() {
   local path=$1 what=$2 code=${3:-2}
   need_file "$path" "$what" "$code"
   local n
-  n=$(grep -cve '^[[:space:]]*$' -e '^[[:space:]]*#' "$path" || true)
+  n=$(usable_lines "$path")
   [ "$n" -ge 1 ] \
     || die "$code" "$what: required input has NO usable lines: $path" "cat $path"
-  printf '%s' "$n"
 }
 
 # MAJOR-1 (gate r3). `git add` exits 0 when it stages NOTHING -- a pathspec
@@ -636,7 +647,19 @@ if [ "$DRY_RUN" = "0" ] && { [ "$RESUME_ONLY" = "0" ] || [ "$RESUME_STEP" = "sui
   SUITE_TIMEOUT=${SUITE_TIMEOUT:-600}
 
   # docs-only lane detector (SUI6): an ALLOWLIST, `--no-renames` (gate M-12)
-  NONDOC=$(git -C "$GITROOT" diff --no-renames --name-only "$BASE_SHA..HEAD" | grep -cv '^docs/' || true)
+  # SUI6's detector needs a floor of its own. `grep -cv` over an empty diff
+  # yields 0, which selects the NARROWER docs lane -- so a bogus range, or a
+  # diff that failed, silently runs FEWER tests. That is the worst direction
+  # for this one to fail, so the total is measured first and a zero-path
+  # range refuses rather than choosing a lane.
+  CHANGED=$(git -C "$GITROOT" diff --no-renames --name-only "$BASE_SHA..HEAD") \
+    || die 5 "SUI6: could not enumerate the changed paths for $BASE_SHA..HEAD"
+  CHANGED_N=$(printf '%s\n' "$CHANGED" | grep -c . || true)
+  [ "$CHANGED_N" -ge 1 ] \
+    || die 5 "SUI6: the range $BASE_SHA..HEAD changed ZERO paths -- refusing to pick a lane from a diff that saw nothing" \
+            "git -C $GITROOT diff --stat $BASE_SHA..HEAD"
+  NONDOC=$(printf '%s\n' "$CHANGED" | grep -cv '^docs/' || true)
+  echo "land: lane detector -- $CHANGED_N changed path(s), $NONDOC outside docs/"
   if [ "$NONDOC" = "0" ]; then
     LANE=docs
   else
@@ -703,7 +726,8 @@ if [ "$DRY_RUN" = "0" ] && { [ "$RESUME_ONLY" = "0" ] || [ "$RESUME_STEP" = "sui
     DOC_SET_FILE="$GITROOT/plugins/self-learn/cli/src/self_learn/landing/doc_reading_set.txt"
     # B-2: this file vanishing used to produce an empty DOC_ARGS, a bare
     # root `pytest`, rc 0, and a PUSH. Measured twice by the r1 gate.
-    DOC_SET_N=$(need_nonempty_file "$DOC_SET_FILE" "SUI7 docs-lane test set" 5)
+    need_nonempty_file "$DOC_SET_FILE" "SUI7 docs-lane test set" 5
+    DOC_SET_N=$(usable_lines "$DOC_SET_FILE")
     DOC_ARGS=()
     while IFS= read -r line; do
       case "$line" in ""|\#*) continue ;; esac

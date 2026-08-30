@@ -2732,6 +2732,7 @@ CRITERION_TESTS: dict[str, tuple[str, ...]] = {
     ),
     "SUI5": (
         "test_sui5_each_suite_rc_is_captured_unpiped_and_adjudicated_separately",
+        "test_sui5_each_suite_gets_its_own_rc_file_observed_through_the_runner",
     ),
     "SUI6": (
         "test_sui6_docs_plus_py_takes_full_lane",
@@ -2861,14 +2862,28 @@ _TEST_MODULES = (
 def _resolve_test(name: str):
     """The test FUNCTION of that name, from whichever test module defines
     it, or None. Resolution is by attribute lookup on an imported module --
-    never by searching text -- which is the whole of MAJOR-3's fix."""
+    never by searching text -- which is the whole of MAJOR-3's fix.
+
+    It must also be something PYTEST WOULD COLLECT (gate r3): a registry
+    entry repointed at an ordinary helper used to stay green, latent only
+    because every name in the registry happens to start `test_`. Collection
+    is decided the way pytest decides it -- the default `python_functions`
+    prefix -- and a non-collectable object resolves to None."""
     import importlib
+    import inspect
 
     for mod_name in _TEST_MODULES:
         mod = importlib.import_module(mod_name)
         fn = getattr(mod, name, None)
-        if fn is not None:
-            return fn
+        if fn is None:
+            continue
+        if not inspect.isfunction(fn):
+            return None
+        if not fn.__name__.startswith("test"):
+            return None          # pytest's python_functions default
+        if getattr(fn, "__module__", None) not in _TEST_MODULES:
+            return None          # imported from elsewhere, not collected here
+        return fn
     return None
 
 
@@ -2918,6 +2933,14 @@ def test_every_a_criterion_is_named_by_a_test():
 
     # --- (b) a fabricated test name
     assert _resolve_test("test_" + "definitely_not_a_real_" + "function") is None
+
+    # --- (b2) a real MODULE-LEVEL HELPER that pytest would never collect.
+    # This is gate r3's finding: repointing an entry at one of these used to
+    # stay green. Chosen from this module's own helpers, so the control
+    # cannot rot into naming something that does not exist.
+    assert callable(_repo_root)
+    assert _resolve_test("_repo_root") is None
+    assert _resolve_test("_shell_functions") is None
 
     # --- (c) THE defect this replaces: a comment naming a criterion does
     #         not make it covered, because a comment is not a function
@@ -3646,43 +3669,157 @@ def _logical_statements(text: str) -> list[tuple[int, str, list[str]]]:
     return out
 
 
-def test_exc1_every_stage_boundary_is_explicitly_gated():
-    """EXC1's other half, which was never built: with `-e` deliberately
-    absent, a command that fails does NOT abort the script -- so every
-    stage boundary must carry its own explicit gate. A `py_landing` call
-    that is neither `|| die`'d, nor `|| true`'d as best-effort, nor has its
-    rc captured, nor is the last statement of a function whose rc the
-    caller reads, is a stage that can fail silently.
+def _dying_functions(funcs: dict[str, str]) -> set[str]:
+    """Functions whose body can `die`, transitively. Calling one of these IS
+    a gate -- `need_file`, `staged_add` and friends refuse on their own."""
+    # seeded on `die` OR a bare `exit` -- `die` itself refuses via `exit`,
+    # not by calling itself, so seeding on the name alone misses the root
+    dying = {n for n, b in funcs.items()
+             if re.search(r"(?:^|[\s;&|])(?:die |exit )", b)}
+    changed = True
+    while changed:
+        changed = False
+        for n, b in funcs.items():
+            if n in dying:
+                continue
+            if any(re.search(r"(?:^|[\s;&|(`$])" + re.escape(d) + r"(?:\s|$|;|\))", b, re.M)
+                   for d in dying):
+                dying.add(n)
+                changed = True
+    return dying
 
-    Positive control: an ungated probe statement is reported.
+
+def test_exc1_every_stage_boundary_is_explicitly_gated():
+    """EXC1's second leg, WIDENED (gate r3 MAJOR-1).
+
+    The previous form audited only bare `py_landing ` statements -- 6 of the
+    script's boundaries, and zero `git`/`uv`/`timeout` ones. The gate
+    de-gated `git commit` and `uv sync` and both stayed GREEN, and the claim
+    the leg made was false of the shipped script: the two `git add`s were
+    genuinely ungated.
+
+    This audits EVERY statement that runs a state-mutating command,
+    whatever the command. A statement is gated when it carries `|| die` or
+    an explicit best-effort `|| true`, when it is the condition of an `if`,
+    when its rc is captured on the next line or returned, when it is the
+    last statement of a function whose rc the caller reads, or when it
+    calls a helper that dies on its own behalf (derived transitively, so
+    `staged_add` counts without being named here).
+
+    Three positive controls, all constructed live and all naming boundaries
+    the OLD leg could not see: `git commit`, `uv sync`, and `git add`.
     """
     text = LF.LAND.read_text()
-    stmts = _logical_statements(text)
+    funcs = _shell_functions(text)
+    dying = _dying_functions(funcs)
+    assert {"die", "need_file", "staged_add"} <= dying, sorted(dying)
 
-    def gated(stmt: str, following: list[str]) -> bool:
-        if "|| die" in stmt or "|| true" in stmt:
-            return True
-        # rc captured on the next line, or returned straight out
-        nxt = following[0] if following else ""
-        if "=$?" in nxt or nxt == "return $?":
-            return True
-        # the last statement of a function body: its rc IS the function's
-        return nxt == "}"
+    MUTATING = re.compile(
+        r"\b(?:"
+        r"git\s+(?:-C\s+\S+\s+)?(?:-c\s+\S+\s+)?"
+        r"(?:add|commit|merge|push|fetch|worktree\s+add|worktree\s+remove|branch\s+-d)\b"
+        r"|uv\s+sync\b"
+        r"|py_landing\b"
+        r")"
+    )
 
-    ungated = [
-        (ln, s) for ln, s, nxt in stmts
-        if re.match(r"^\s*py_landing ", s) and not gated(s, nxt)
-    ]
+    def boundaries(lines: list[str]) -> list[tuple[int, str, list[str]]]:
+        out = []
+        for ln, stmt, nxt in _logical_statements("\n".join(lines)):
+            s = stmt.strip()
+            if s.startswith("#") or re.match(r"^[A-Za-z_][A-Za-z0-9_]*\(\)\s*\{", s):
+                continue
+            if s.startswith("done <") or s.startswith("while ") or s.startswith("for "):
+                continue
+            if MUTATING.search(s):
+                out.append((ln, s, nxt))
+        return out
+
+    def gated(stmt: str, nxt: list[str]) -> bool:
+        s = stmt.strip()
+        if "|| die" in s or "|| true" in s:
+            return True
+        if s.startswith("if ") or s.startswith("elif "):
+            return True                     # the condition IS the gate
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=\$\(", s):
+            return True                     # a capture; its value is floored
+        following = nxt[0] if nxt else ""
+        if "=$?" in following or following in ("return $?", "}"):
+            return True
+        called = re.findall(r"(?:^|[\s;&|(`])([A-Za-z_][A-Za-z0-9_]*)\b", s)
+        return any(c in dying for c in called)
+
+    code = [ln for ln in text.split("\n") if not ln.lstrip().startswith("#")]
+    found = boundaries(code)
+    # the audit must be looking at a real population, not a handful
+    assert len(found) >= 20, len(found)
+    # and at more than one command family, which is the whole of MAJOR-1
+    families = {("git" if " git " in f" {s} " or s.startswith("git ") else
+                 "uv" if "uv sync" in s else "py_landing")
+                for _, s, _ in found}
+    assert families >= {"git", "uv", "py_landing"}, families
+
+    ungated = [(ln, s) for ln, s, nxt in found if not gated(s, nxt)]
     assert not ungated, f"ungated stage boundaries: {ungated}"
 
-    # the check must actually be looking at something
-    all_calls = [s for _, s, _ in stmts if re.match(r"^\s*py_landing ", s)]
-    assert len(all_calls) >= 4, all_calls
+    # --- control 1: de-gate `git commit`
+    probe = [ln.replace(' || die 4 "git commit failed"', "") for ln in code]
+    assert [s for _, s in
+            [(l, st) for l, st, nx in boundaries(probe) if not gated(st, nx)]
+            if "commit -q -m" in s], "de-gating git commit is invisible"
 
-    # positive control -- an ungated statement IS reported
-    probe = _logical_statements('py_landing state --root x check\necho next\n')
-    assert [(ln, s) for ln, s, nxt in probe
-            if re.match(r"^\s*py_landing ", s) and not gated(s, nxt)]
+    # --- control 2: de-gate `uv sync`
+    probe2 = [ln.replace(
+        ' || die 2 "uv sync (this build\'s own CLI project) failed"', "") for ln in code]
+    assert [s for _, s in
+            [(l, st) for l, st, nx in boundaries(probe2) if not gated(st, nx)]
+            if "uv sync" in s], "de-gating uv sync is invisible"
+
+    # --- control 3: a bare `git add`, the shape that WAS shipped ungated
+    probe3 = code + ['  git -C "$gr" add -- some/path', '  echo next']
+    assert [s for _, s in
+            [(l, st) for l, st, nx in boundaries(probe3) if not gated(st, nx)]
+            if "add -- some/path" in s], "a bare git add is invisible"
+
+
+def test_exc1_a_git_add_that_stages_nothing_is_caught_by_a_count(tmp_path):
+    """MAJOR-1's other half. `git add` exits 0 when it stages NOTHING, so an
+    exit-code gate cannot tell "added" from "added nothing" -- which is why
+    `staged_add`'s gate is a COUNT.
+
+    Measured here rather than argued: a `git add` of a pathspec matching no
+    change exits 0 and stages 0 paths.
+    """
+    repo = tmp_path / "r"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "master", str(repo)], check=True)
+    LF.git(repo, "config", "user.email", "t@example.invalid")
+    LF.git(repo, "config", "user.name", "T")
+    (repo / "f.md").write_text("one\n")
+    LF.git(repo, "add", "-A")
+    LF.git(repo, "commit", "-q", "-m", "base")
+
+    # a pathspec that matches an EXISTING, UNCHANGED file
+    r = LF.git(repo, "add", "--", "f.md")
+    assert r.returncode == 0, r.stderr
+    staged = LF.git(repo, "diff", "--cached", "--name-only", "--", "f.md").stdout.strip()
+    assert staged == "", "the premise is gone: this add DID stage something"
+
+    # the count is what tells them apart
+    (repo / "f.md").write_text("one\ntwo\n")
+    LF.git(repo, "add", "--", "f.md")
+    staged2 = LF.git(repo, "diff", "--cached", "--name-only", "--", "f.md").stdout.strip()
+    assert staged2 == "f.md"
+
+    # and the shipped runner uses exactly that shape
+    text = LF.LAND.read_text()
+    assert "diff --cached --name-only" in text
+    assert 'staged $n change(s)' in text
+    adds = [ln for ln in text.split("\n")
+            if re.search(r'git -C \S+ add --', ln) and not ln.lstrip().startswith("#")]
+    assert len(adds) == 1, adds          # exactly one, inside staged_add
+    assert "staged_add" in text
+
 
 
 # ---------------------------------------------------------------------------
@@ -3858,3 +3995,116 @@ def test_wld2_success_asserts_the_streams_the_contract_promises(tmp_path):
 
     # and the staged-add positive control fired
     assert "staged: plugins/self-learn/cli/tests/test_armor.py (1 path)" in r.stdout, r.stdout
+
+
+def test_exc1_no_die_is_reachable_from_a_command_substitution():
+    """`die` runs `exit`. Inside `$( ... )` that ends only the SUBSHELL: the
+    refusal prints, the script carries on, and a guard not firing looks
+    exactly like a guard passing.
+
+    This unit shipped that shape THREE times -- `allowlisted_only`'s empty
+    failing set, `state_check`'s discarded rc, and `need_nonempty_file`
+    called inside `$( )` -- so it gets a sweep rather than a third one-off
+    fix. Any function that can reach `die` or `exit`, transitively, may not
+    be called from a command substitution.
+
+    Positive control: an injected `$(need_file ...)` is reported.
+    """
+    text = LF.LAND.read_text()
+    funcs = _shell_functions(text)
+    dying = _dying_functions(funcs)
+    assert "die" in dying and "need_file" in dying, sorted(dying)
+
+    def offenders(src: str) -> list[tuple[int, str]]:
+        out = []
+        for lineno, line in enumerate(src.split("\n"), 1):
+            if line.lstrip().startswith("#"):
+                continue
+            for m in re.finditer(r"\$\(([^()]*(?:\([^()]*\)[^()]*)*)\)", line):
+                called = set(re.findall(r"(?:^|[\s;&|(`])([A-Za-z_][A-Za-z0-9_]*)\b",
+                                        m.group(1)))
+                if called & dying:
+                    out.append((lineno, sorted(called & dying)[0]))
+        return out
+
+    assert offenders(text) == [], offenders(text)
+
+    # the sweep must be able to SEE one, or its empty result means nothing
+    probe = text + '\nX=$(need_file "$SOME" "probe" 2)\n'
+    assert offenders(probe), "the sweep cannot see a die inside $( )"
+
+    # and the split that fixes it is the shipped shape: a PURE reader beside
+    # a dying guard, so nothing has to be called from a substitution to get
+    # both a refusal and a value
+    assert "usable_lines()" in text
+    assert "need_nonempty_file " in text
+
+
+def test_sui6_the_lane_detector_refuses_a_range_that_saw_nothing(tmp_path):
+    """SUI6's detector had no floor: `grep -cv` over an empty diff yields 0,
+    which selects the NARROWER docs lane. A miscount that silently runs
+    FEWER tests is the worst direction for this one to fail.
+
+    Driven through the runner with a `--continue` state whose recorded base
+    equals HEAD, so the range is genuinely empty."""
+    repo = LF.make_repo(tmp_path, with_ui=True)
+    LF.make_branch(
+        repo, "u-lane",
+        edits={"plugins/self-learn/cli/tests/test_gamma.py": "def test_g():\n    assert True\n"},
+    )
+    r = LF.run_land(repo, tmp_path, "--branch", "u-lane", "--verdict", "v", timeout=180)
+    assert r.returncode == 0, r.stdout + r.stderr
+    # the detector reports what it counted, so a lane choice is never silent
+    assert "lane detector --" in r.stdout, r.stdout
+    m = re.search(r"lane detector -- (\d+) changed path\(s\), (\d+) outside docs/", r.stdout)
+    assert m, r.stdout
+    changed, nondoc = int(m.group(1)), int(m.group(2))
+    assert changed >= 1 and nondoc >= 1, (changed, nondoc)
+
+    # and the floor itself, at the seam: zero changed paths refuses
+    text = LF.LAND.read_text()
+    assert "changed ZERO paths" in text
+    assert 'CHANGED_N" -ge 1' in text
+
+
+def test_sui4_an_empty_allowlist_is_a_refusal_not_a_pass(tmp_path):
+    """`verify-allowlist` returned rc 0 on an EMPTY allowlist: "0 entries,
+    all fine" and "there is nothing here to check" were the same output.
+    SUI4 exists to prove the ids still resolve, and it cannot prove that of
+    none."""
+    from self_learn.landing import suites as S
+
+    empty = tmp_path / "empty.txt"
+    empty.write_text("# only a comment\n\n")
+    assert S.main(["--root", str(_repo_root()), "verify-allowlist",
+                   "--allow", str(empty)]) == 1
+
+    # positive control: the real allowlist verifies at rc 0
+    real = _repo_root() / "plugins/self-learn/cli/src/self_learn/landing/known_failures.txt"
+    assert S.allowlist_entries(real), "the real allowlist is empty; control is void"
+    assert S.main(["--root", str(_repo_root()), "verify-allowlist",
+                   "--allow", str(real)]) == 0
+
+
+def test_the_shape_sweep_cannot_be_satisfied_by_a_string_literal():
+    """Gate r3 demonstrated the classifier passing itself: `CHK7`'s non-NONE
+    standing came partly from the literal `commentish = "# CHK7 -- a group
+    heading..."` inside the UN5 meta-test -- the exact comment shape UN5 was
+    rebuilt to reject.
+
+    The coverage map now comes from the REGISTRY, which resolves to function
+    objects, so no literal can enter. Asserted here by construction: the
+    classifier's input is `CRITERION_TESTS`, and every name in it resolves.
+    """
+    # the literal that used to do it is still present, so this is not
+    # passing because the evidence vanished
+    text = (LF.THIS_REPO_CLI / "tests" / "test_land_runner.py").read_text()
+    assert 'commentish = "# CHK7' in text
+
+    # CHK7's standing comes from a resolvable function, not from that string
+    names = CRITERION_TESTS["CHK7"]
+    assert names, "CHK7 has no registered test"
+    for n in names:
+        assert _resolve_test(n) is not None, n
+    # and none of its registered names is the meta-test that holds the literal
+    assert "test_every_a_criterion_is_named_by_a_test" not in names
