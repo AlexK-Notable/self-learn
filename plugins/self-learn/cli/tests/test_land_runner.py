@@ -3071,6 +3071,10 @@ CRITERION_TESTS: dict[str, tuple[str, ...]] = {
         "test_sui9_the_empty_case_never_returns_success",
         "test_sui9_writes_a_distinguishable_verdict_per_outcome",
     ),
+    "SUI10": (
+        "test_minor3_a_suite_that_silently_skipped_is_not_green",
+        "test_minor3_the_ceiling_clears_the_real_skip_counts",
+    ),
     "SUI8": (
         "test_sui4_and_sui8c_collection_error_refuses_distinctly_not_via_allowlist",
         "test_sui8_ui_suite_collection_root",
@@ -3131,12 +3135,16 @@ CRITERION_TESTS: dict[str, tuple[str, ...]] = {
     ),
     "WLD2": (
         "test_dry2_refusals_match_the_real_run_over_every_named_case",
+        "test_minor2_every_in_merge_refusal_aborts_or_announces",
         "test_wld2_noop_anchor_refusal_aborts_the_chain",
         "test_wld2_owed_refusal_aborts_the_chain_and_commits_nothing",
         "test_wld2_remeasure_advances_the_anchor_inside_the_merge_commit",
     ),
     "EXC1": (
+        "test_exc1_a_git_add_that_stages_nothing_is_caught_by_a_count",
         "test_exc1_every_refusal_family_exits_its_own_code",
+        "test_exc1_every_stage_boundary_is_explicitly_gated",
+        "test_exc1_no_die_is_reachable_from_a_command_substitution",
         "test_exc1_shell_contract",
     ),
     "CNT1": (
@@ -3150,12 +3158,17 @@ CRITERION_TESTS: dict[str, tuple[str, ...]] = {
     ),
     "UN1": (
         "test_un1_this_unit_does_not_change_the_suite_runner",
+        "test_un1_the_frame_survives_this_units_own_landing",
+        "test_un1_the_guard_depends_on_no_branch_ref",
     ),
     "UN2": (
         "test_un2_never_touches_the_ledger",
     ),
     "UN5": (
         "test_every_a_criterion_is_named_by_a_test",
+    ),
+    "UN6": (
+        "test_the_unit_leaves_masters_suite_green_after_the_prune",
     ),
     "UN4": (
         "test_un4_a_helper_with_a_missing_dependency_fails_LOUDLY",
