@@ -2409,29 +2409,92 @@ def test_b2_an_empty_sanitize_pattern_set_is_fatal(tmp_path):
 
 
 def test_b2_the_audit_covers_every_input_the_script_reads():
-    """The audit itself, kept honest: every literal `.txt` input path and
-    every suite working directory named in the script must be reached by a
-    guard. A new unguarded input added later fails this."""
+    """The audit itself, kept honest.
+
+    Gate r2: the previous version's docstring claimed more than it
+    checked -- it looked only at `$GITROOT/...` paths ending `.txt`, so a
+    `.json` input or an unguarded suite working directory both left it
+    green. The guard is WIDENED rather than the claim narrowed:
+
+      (a) every `$GITROOT/`- or `$gr/`-rooted path literal WITH A FILE
+          EXTENSION, whatever the extension;
+      (b) every directory handed to `run_suite` as its working directory;
+      (c) every executable the script runs from the target tree.
+
+    Each must be reached by one of the three fail-closed readers, either
+    on the spot or through the variable it is bound to.
+
+    Two positive controls, constructed live: an unguarded `.json` input
+    and an unguarded suite cwd are both reported.
+    """
     text = LF.LAND.read_text()
     code = [ln for ln in text.split("\n") if not ln.lstrip().startswith("#")]
     body = "\n".join(code)
 
-    guarded = {"need_file", "need_nonempty_file", "need_dir"}
-    assert all(g in body for g in guarded), body[:200]
+    GUARDS = ("need_file", "need_nonempty_file", "need_dir")
+    assert all(g in body for g in GUARDS), body[:200]
 
-    # every `.txt` under the landing package that the script names
-    inputs = set(re.findall(r'\$GITROOT/[A-Za-z0-9_./-]+\.txt', body))
-    assert inputs, "no declared inputs found -- this check would be vacuous"
-    for path_expr in inputs:
-        var_users = [ln for ln in code if path_expr in ln]
-        assert var_users
-        # it is either guarded on the spot, or bound to a name that is
-        bound = [re.match(r'\s*([A-Z_]+)=', ln) for ln in var_users]
-        names = {m.group(1) for m in bound if m}
-        reached = any(g in ln for ln in var_users for g in guarded) or any(
-            any(g in ln and f'${n}' in ln for g in guarded) for ln in code for n in names
-        )
-        assert reached, path_expr
+    def declared_inputs(lines: list[str]) -> set[str]:
+        joined = "\n".join(lines)
+        # (a) any extension, not just .txt
+        paths = set(re.findall(r'\$(?:GITROOT|gr)/[A-Za-z0-9_./-]+\.[A-Za-z0-9]+', joined))
+        # (b) the second argument of every run_suite call
+        paths |= {m.group(1) for m in
+                  re.finditer(r'run_suite\s+\S+\s+"([^"]+)"', joined)}
+        return paths
+
+    # `run_suite` guards its own second argument, so a path handed to it is
+    # reached even though the guard names `$dir` rather than the literal.
+    funcs = _shell_functions("\n".join(code))
+    assert "need_dir" in funcs.get("run_suite", ""), (
+        "run_suite no longer guards its working directory, so passing a path "
+        "to it can no longer be treated as guarded"
+    )
+
+    def unguarded(lines: list[str]) -> list[str]:
+        joined = "\n".join(lines)
+        run_suite_args = {m.group(1) for m in
+                          re.finditer(r'run_suite\s+\S+\s+"([^"]+)"', joined)}
+        out = []
+        for expr in sorted(declared_inputs(lines)):
+            users = [ln for ln in lines if expr in ln]
+            if not users:
+                continue
+            if expr in run_suite_args:
+                continue          # guarded inside run_suite, asserted above
+            # bindings may be lowercase and `local`
+            names = {m.group(1) for m in
+                     (re.match(r'\s*(?:local\s+)?([A-Za-z_][A-Za-z0-9_]*)=', ln)
+                      for ln in users) if m}
+            def guards(ln: str) -> bool:
+                # one of the three readers, or an explicit existence test
+                return (any(g in ln for g in GUARDS)
+                        or re.search(r'\[\s*!?\s*-[fdre]\s+"\$', ln) is not None)
+            reached = any(guards(ln) for ln in users) or any(
+                guards(ln) and any(f'${n}' in ln or f'${{{n}}}' in ln for n in names)
+                for ln in lines
+            )
+            if not reached:
+                out.append(expr)
+        return out
+
+    found = declared_inputs(code)
+    assert len(found) >= 4, sorted(found)
+    assert unguarded(code) == [], unguarded(code)
+
+    # --- control 1: a `.json` input, which the old `.txt`-only form missed
+    probe_json = code + ['  CFG="$GITROOT/plugins/self-learn/cli/src/self_learn/landing/x.json"',
+                         '  cat "$CFG"']
+    assert unguarded(probe_json), "a .json input is still invisible to this guard"
+
+    # --- control 2: a directory used WITHOUT going through `run_suite`.
+    # A path handed TO run_suite is genuinely guarded (its body calls
+    # need_dir, asserted above), so the hole is a suite run some other way.
+    probe_dir = code + [
+        '  OTHER="$GITROOT/plugins/self-learn/other.d"',
+        '  ( cd "$OTHER" && env true )',
+    ]
+    assert unguarded(probe_dir), "a directory used outside run_suite is invisible"
 
 
 def test_un1_this_unit_does_not_change_the_suite_runner():
