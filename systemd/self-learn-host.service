@@ -47,7 +47,15 @@ Environment=SELF_LEARN_HOME=%h/.self-learn
 # ahead of the standard system dirs; the wrapper itself also falls back
 # to well-known absolute uv locations independently (belt and braces --
 # this fixes the unit even if the wrapper is ever bypassed).
-Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+# Gate r1 fold (2026-08-29): %h/bin is in this floor too -- worker.py's
+# self-learn-notify dispatch resolves that helper with shutil.which()
+# (the ~/bin deploy surface, install.sh links it there), degrading to a
+# direct notify-send only when the helper can't be found. This unit's
+# PATH used to have none at all, so %h/bin arrived by the same
+# boot-order accident as everything else pinned here; a hard PATH
+# replacement that dropped it would quietly regress a path that
+# previously worked.
+Environment=PATH=%h/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=%h/bin/self-learn serve
 Restart=on-failure
 RestartSec=5

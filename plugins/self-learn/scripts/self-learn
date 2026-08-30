@@ -15,10 +15,26 @@
 # any user-chosen uv earlier on PATH — is unchanged, then fall back to
 # well-known absolute locations, and fail LOUDLY rather than let a bare
 # `exec uv` degrade into a silent, unexplained 127.
+#
+# Gate r1 fold (2026-08-29): `-x` alone accepts a DIRECTORY named `uv`
+# (a candidate collision would exec it and produce bash's own opaque
+# "Is a directory", not this script's diagnostic), and this bash's own
+# `command -v` can hand back a path that is not actually an executable
+# regular file (a stale/broken entry on some PATH directory). Every
+# candidate — the `command -v` hit included — is now required to be a
+# regular file (`-f`, which still follows a symlink to its target, so
+# uv's real pipx symlink shape is unaffected) AND executable (`-x`)
+# before it is accepted; anything that fails either check falls through
+# to the next candidate instead of being trusted blindly.
+_uv_is_valid() {
+  [[ -n "$1" && -f "$1" && -x "$1" ]]
+}
+
 UV_BIN="$(command -v uv 2>/dev/null)"
-if [[ -z "$UV_BIN" ]]; then
+if ! _uv_is_valid "$UV_BIN"; then
+  UV_BIN=""
   for _uv_candidate in "$HOME/.local/bin/uv" /usr/local/bin/uv /usr/bin/uv; do
-    if [[ -x "$_uv_candidate" ]]; then
+    if _uv_is_valid "$_uv_candidate"; then
       UV_BIN="$_uv_candidate"
       break
     fi
