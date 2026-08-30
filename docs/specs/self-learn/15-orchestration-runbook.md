@@ -83,8 +83,15 @@ Every substantive unit moves through, in order:
 7. **Records** — review record in `reviews/` (gate chains, verdicts,
    mutations), status addenda in the touched docs, README revision-log
    entry, `records-index.md` row. Then commit; push stays manual (D3).
-8. **Land** — `plugins/self-learn/cli/scripts/land --branch <b> --verdict
-   '<the gate's verdict line>'`. Run it in the **foreground** (a
+8. **Land** — run the BRANCH WORKTREE's copy by absolute path, with the
+   cwd on master:
+   `cd <main checkout> && <branch worktree>/plugins/self-learn/cli/scripts/land
+   --branch <b> --verdict '<the gate's verdict line>'`.
+   The relative form `plugins/self-learn/cli/scripts/land …` exits **127**
+   at bootstrap time, because the runner does not exist on `master` until
+   the unit that adds it has landed; §4.1's root resolution is built for
+   exactly this — the script's own location and `--root` are independent.
+   Run it in the **foreground** (a
    backgrounded run dies with the turn — `plugins/self-learn/cli/scripts/suite`'s
    own rule). It refuses rather than proceeding at every stage; each
    refusal prints the one command that inspects the state it left.

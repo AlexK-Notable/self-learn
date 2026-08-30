@@ -1125,22 +1125,44 @@ def test_sui8_ui_suite_collection_root(tmp_path):
     files = {i.split("::", 1)[0] for i in ids}
     assert files <= tracked, sorted(files - tracked)[:10]
 
-    scratch = ui / "tests" / "test_sui8_untracked_scratch_probe.py"
-    assert not scratch.exists()
-    scratch.write_text("def test_probe():\n    assert True\n")
-    try:
-        again = _collect(ui)
-        ids2 = _node_ids(again.stdout)
-        probe = [i for i in ids2 if "test_sui8_untracked_scratch_probe" in i]
-        assert probe, again.stdout[-2000:]
-        # the prefix check is satisfied by it -- that is the blind spot
-        assert all(i.startswith("tests/") for i in probe), probe
-        # the ls-files check is NOT
-        files2 = {i.split("::", 1)[0] for i in ids2}
-        assert not files2 <= tracked
-    finally:
-        scratch.unlink()
-    assert not scratch.exists()
+    # N-17's blind spot, WITHOUT writing into the live tracked tree.
+    # Gate r4 MIN-4: this used to create `ui/tests/test_sui8_untracked_
+    # scratch_probe.py` in the production checkout. A sibling agent's stray
+    # probe in that exact directory nearly broke a landing tonight -- while
+    # present it would have tripped PRE3 at exit 2 -- and a test that does
+    # it is worse than an agent doing it, because it recurs.
+    #
+    # The property does not need pytest to collect the file: it is that a
+    # PREFIX check and an `ls-files` MEMBERSHIP check disagree about a path
+    # that is inside `tests/` but untracked. That is decidable from the
+    # real collected ids plus one synthetic id, and touches nothing.
+    synthetic = "tests/test_sui8_untracked_scratch_probe.py::test_probe"
+    assert synthetic.split("::", 1)[0] not in tracked, "the probe path is tracked; control void"
+    ids_with_probe = ids + [synthetic]
+
+    def prefix_ok(node_ids: list[str]) -> bool:
+        """The check N-17 measured as INSUFFICIENT."""
+        return all(i.startswith("tests/") for i in node_ids)
+
+    def membership_ok(node_ids: list[str]) -> bool:
+        """Leg (e) itself: every collected id maps to a TRACKED file."""
+        return {i.split("::", 1)[0] for i in node_ids} <= tracked
+
+    # on the real collection the two agree, so neither is trivially false
+    assert prefix_ok(ids) and membership_ok(ids)
+
+    # the whole of leg (e) is that they DISAGREE about an untracked path
+    # inside tests/. Stated as the disagreement, so replacing the
+    # membership check with a prefix check cannot pass: the two would then
+    # agree and this assertion fails.
+    assert prefix_ok(ids_with_probe), "the prefix check should be satisfied -- that is the blind spot"
+    assert not membership_ok(ids_with_probe), "leg (e) did not see the untracked path"
+    assert prefix_ok(ids_with_probe) != membership_ok(ids_with_probe), (
+        "leg (e) has collapsed into the prefix check it exists to strengthen"
+    )
+
+    # and nothing was written into the live tree by this test at all
+    assert not (ui / "tests" / "test_sui8_untracked_scratch_probe.py").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -1525,11 +1547,22 @@ def test_doc_reading_set(tmp_path):
     # M92 (dropping the part-built union) came back STILL-GREEN.
     live_measured = root / "plugins/self-learn/cli/scripts/measured"
     clone_measured = clone / "plugins/self-learn/cli/scripts/measured"
+
+    # NIT-1: asserting the copy equals its source right after copying is a
+    # tautology, and this assertion IS the fix for the clone blind spot --
+    # a tautological one leaves the blind spot free to come back. So the
+    # clone's copy is POISONED first: the assertion below now fails if the
+    # refresh is removed, which is exactly the regression it guards.
+    poison = b"raise SystemExit('the clone was not refreshed from the live tree')\n"
+    (clone_measured / "walk.py").write_bytes(poison)
+    assert (clone_measured / "walk.py").read_bytes() == poison
+
     shutil.rmtree(clone_measured)
     shutil.copytree(live_measured, clone_measured,
                     ignore=shutil.ignore_patterns("__pycache__"))
     walk_py = clone_measured / "walk.py"
     assert walk_py.read_bytes() == (live_measured / "walk.py").read_bytes()
+    assert walk_py.read_bytes() != poison
 
     def cwalk(*args: str) -> str:
         return subprocess.run(
@@ -3027,15 +3060,25 @@ def test_sui5_each_suite_rc_is_captured_unpiped_and_adjudicated_separately():
     body = funcs["run_suite"]
 
     # the invocation is a redirect, and the rc is taken on the NEXT line
-    lines = [ln.strip() for ln in body.split("\n") if ln.strip()]
+    lines = [ln.strip() for ln in body.split("\n")
+             if ln.strip() and not ln.strip().startswith("#")]
     redirect = next(i for i, ln in enumerate(lines) if ln.startswith("( cd "))
+
+    # PROPERTIES, not positions. The body legitimately gained the
+    # porcelain snapshots (MIN-3), and a positional assertion turned that
+    # into a false failure -- the same brittleness CHK8's file-position
+    # slice had.
     assert '>"$OUT/$name.log" 2>&1' in lines[redirect], lines[redirect]
     assert "|" not in lines[redirect].split(">")[0], lines[redirect]
+
+    # the rc is taken on the very next line, before anything can clobber $?
     assert lines[redirect + 1] == "local rc=$?", lines[redirect + 1]
-    assert 'printf \'%s\\n\' "$rc" >"$OUT/$name.rc"' in lines[redirect + 2]
+    # ... and written to its own file, from the VARIABLE, so later commands
+    # cannot change what is recorded
+    assert any('printf \'%s\\n\' "$rc" >"$OUT/$name.rc"' in ln for ln in lines), lines
 
     # and `run_suite` returns 0 deliberately -- the rc is DATA, never an abort
-    assert lines[redirect + 3] == "return 0", lines[redirect + 3]
+    assert lines[-1] == "return 0", lines[-1]
 
     # the adjudication is a separate function reading the file back
     adj = funcs["adjudicate_suite"]
@@ -4349,3 +4392,170 @@ def test_maj1_the_other_two_legs_really_do_restore_the_tree(tmp_path):
     rb = LF.run_land(b, tmp_path / "unmod", "--branch", "u-unmod2", "--verdict", "v", timeout=180)
     assert rb.returncode == 4, rb.stdout + rb.stderr
     assert assert_message_matches_tree(rb.stderr, b) == "aborted"
+
+
+def test_sui3_the_fixture_stub_matches_the_shipped_suite_output_contract(tmp_path):
+    """MAJ-2. Every SUI3 test drives the fixture's `scripts/suite` stub, so
+    the criterion is only worth what that stub's OUTPUT CONTRACT shares
+    with the shipped one.
+
+    The shipped runner redirects pytest into its own `$OUT/suite.log` and
+    prints two summary lines, the second ending `logs=<dir>`. The stub used
+    to pipe pytest straight to stdout, so a red CLI suite adjudicated
+    `unparseable-log` on the real path and the allowlist never applied --
+    fail-closed, but proving nothing.
+
+    Three legs: the shipped contract is asserted from the shipped file, the
+    stub is asserted to match it, and the adjudicator is shown to recover
+    node ids through the `logs=` pointer.
+    """
+    from self_learn.landing import suites as S
+
+    # (a) the SHIPPED contract, read from the shipped file
+    shipped = (LF.THIS_REPO_CLI / "scripts" / "suite").read_text()
+    assert '> "$OUT/suite.log" 2>&1' in shipped
+    assert "logs=%s" in shipped
+    assert "printf 'suite rc=%s" in shipped
+
+    # (b) the stub reproduces it
+    repo = LF.make_repo(tmp_path, with_ui=True)
+    stub = (repo / "plugins/self-learn/cli/scripts/suite").read_text()
+    assert '"$OUT/suite.log" 2>&1' in stub
+    assert "logs=%s" in stub
+    # and it does NOT pipe pytest to stdout, which is what made it lie
+    assert "pytest plugins/self-learn/cli/tests -q -p no:cacheprovider\n" not in stub
+
+    # (c) the adjudicator recovers ids through the pointer
+    logdir = tmp_path / "suitelogs"
+    logdir.mkdir()
+    (logdir / "suite.log").write_text(
+        "FAILED plugins/self-learn/cli/tests/test_red.py::test_fails - assert False\n"
+        "1 failed, 10 passed in 3.0s\n"
+    )
+    runner_stdout = (
+        "suite rc=1  1 failed, 10 passed in 3.0s\n"
+        f"suite total rc=1  3s  logs={logdir}\n"
+    )
+    # the runner's own captured stdout carries NO node id -- that is the
+    # whole problem, and it is asserted rather than assumed
+    assert S.parse_failing(runner_stdout) == []
+    assert S.parse_failing(S._expand_referenced_logs(runner_stdout)) == [
+        "plugins/self-learn/cli/tests/test_red.py::test_fails"
+    ]
+
+    allow = tmp_path / "allow.txt"
+    allow.write_text("plugins/self-learn/cli/tests/test_red.py::test_fails\n")
+    root = _repo_root()
+    assert S.adjudicate(runner_stdout, root, root, allow)[0] == S.VERDICT_OK
+    # ... and one that is NOT on the list still refuses
+    allow.write_text("plugins/self-learn/cli/tests/test_other.py::test_x\n")
+    assert S.adjudicate(runner_stdout, root, root, allow)[0] == S.VERDICT_NOT_ALLOWLISTED
+    # a pointer to a directory that is not there contributes nothing, and
+    # the empty-set rule then refuses rather than passing
+    gone = runner_stdout.replace(str(logdir), str(tmp_path / "nope"))
+    assert S.adjudicate(gone, root, root, allow)[0] == S.VERDICT_UNPARSEABLE
+
+
+def test_sui3_a_red_cli_suite_is_adjudicated_by_the_allowlist_end_to_end(tmp_path):
+    """The real path, through the runner: a CLI suite that fails ONLY on an
+    allowlisted id must land. Before MAJ-2 this refused with
+    `unparseable-log`, because the ids lived in the suite's own log and
+    nothing followed the pointer."""
+    repo = LF.make_repo(tmp_path, with_ui=True)
+    node_id = "plugins/self-learn/cli/tests/test_red.py::test_fails"
+    (repo / "plugins/self-learn/cli/src/self_learn/landing/known_failures.txt").write_text(
+        node_id + "\n")
+    LF.git(repo, "add", "-A")
+    LF.git(repo, "commit", "-q", "-m", "allowlist the known CLI failure")
+    LF.make_branch(
+        repo, "u-cliallow",
+        edits={"plugins/self-learn/cli/tests/test_red.py": "def test_fails():\n    assert False\n"},
+    )
+    r = LF.run_land(repo, tmp_path, "--branch", "u-cliallow", "--verdict", "v", timeout=180)
+    assert r.returncode == 0, r.stdout + r.stderr
+    logs = Path(r.stdout.split("logs=")[-1].strip())
+    verdict = (logs / "cli.adjudication").read_text()
+    assert verdict.startswith("allowlisted-only"), verdict
+    assert node_id in verdict, verdict
+
+
+def test_sui2_the_suite_budget_clears_the_measured_ui_cost(tmp_path):
+    """MAJ-3. The per-suite budget must clear the SLOWER suite by a real
+    margin, not by 1 %.
+
+    Measured 2026-08-30: the UI suite runs SERIALLY -- no xdist in the UI
+    venv -- at ~595 s (406 tests / 369.5 s plus 909 / 225.0 s), and a
+    direct full run did not finish inside 580 s. Against the old 600 s
+    budget that is a cliff: a machine 1 % slower turns a green suite into a
+    SUI2 timeout refusal, which is a refusal that says nothing true about
+    the code.
+    """
+    text = LF.LAND.read_text()
+    m = re.search(r"SUITE_TIMEOUT=\$\{SUITE_TIMEOUT:-(\d+)\}", text)
+    assert m, "the budget is no longer a single overridable default"
+    budget = int(m.group(1))
+
+    MEASURED_UI_SECONDS = 595          # dated above, and in the script
+    assert budget >= 3 * MEASURED_UI_SECONDS, (
+        f"budget {budget}s is under 3x the measured {MEASURED_UI_SECONDS}s UI cost"
+    )
+    # the measurement that sets it must be recorded beside it, or the next
+    # reader has a number with no provenance
+    assert "595" in text and "369.5" in text and "225.0" in text, (
+        "the budget's justifying measurement is not recorded in the script"
+    )
+    # and it stays overridable, since the attended bootstrap raises it
+    assert "SUITE_TIMEOUT:-" in text
+
+
+def test_min3_a_suite_run_records_what_it_left_behind(tmp_path):
+    """MIN-3. A killed suite can leave artefacts in the tree being landed,
+    and nothing observed that -- the same 'an outcome nothing notices'
+    family as everything else this unit has fixed.
+
+    Every suite run now snapshots the porcelain either side of itself and
+    records the delta, so 'the suite left the tree as it found it' is a
+    measurement. Asserted on a clean run, and the timeout message is
+    asserted to name the count."""
+    repo = LF.make_repo(tmp_path, with_ui=True)
+    LF.make_branch(
+        repo, "u-litter",
+        edits={"plugins/self-learn/cli/tests/test_gamma.py": "def test_g():\n    assert True\n"},
+    )
+    r = LF.run_land(repo, tmp_path, "--branch", "u-litter", "--verdict", "v", timeout=180)
+    assert r.returncode == 0, r.stdout + r.stderr
+    logs = Path(r.stdout.split("logs=")[-1].strip())
+
+    for name in ("cli", "ui"):
+        assert (logs / f"{name}.porcelain.before").exists(), name
+        assert (logs / f"{name}.porcelain.after").exists(), name
+        assert (logs / f"{name}.litter").exists(), name
+        count = (logs / f"{name}.litter.count").read_text().strip()
+        assert count.isdigit(), (name, count)
+
+    # the timeout refusal names the count, so a killed suite's leavings are
+    # reported rather than discovered later
+    text = LF.LAND.read_text()
+    assert "litter.count" in text
+    assert "a killed suite does not clean up after itself" in text
+
+
+def test_doc3_the_runbook_command_works_at_bootstrap_time():
+    """MIN-2. Step 8's literal command exits 127 at bootstrap time: the
+    runner does not exist on `master` until the unit adding it has landed.
+    The runbook must give the form that works -- the branch worktree's copy
+    by ABSOLUTE path, with the cwd on master -- which is what §4.1's
+    root-resolution rule is built for."""
+    section = _runbook_section_one()
+    assert "plugins/self-learn/cli/scripts/land" in section
+
+    # the corrected form, and the reason it is needed
+    assert "absolute path" in section.lower()
+    assert "127" in section
+    assert "cd <main checkout>" in section
+
+    # the shipped script really does decouple its own location from --root,
+    # which is what makes the absolute-path invocation work at all
+    text = LF.LAND.read_text()
+    assert 'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"' in text
+    assert 'ROOT=$(git rev-parse --path-format=absolute --show-toplevel' in text

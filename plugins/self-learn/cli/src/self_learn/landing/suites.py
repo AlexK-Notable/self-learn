@@ -105,6 +105,31 @@ def package_root_for(root: Path, rel_file: str) -> Path:
         d = d.parent
 
 
+#: `scripts/suite` redirects pytest into its OWN log and prints only two
+#: summary lines, the second ending `logs=<dir>`. So the runner's captured
+#: stdout carries no node ids at all, and an allowlist applied to it alone
+#: is inert for the CLI suite (gate r4 MAJ-2 -- measured with a 1-failure
+#: suite). The pointer is part of that published output, so it is followed.
+_LOGS_POINTER = re.compile(r"^\s*\S.*\blogs=(\S+)\s*$", re.M)
+
+
+def _expand_referenced_logs(log_text: str) -> str:
+    """`log_text` plus the contents of every `logs=<dir>` it names. A dir
+    that does not exist, or holds no logs, contributes nothing -- and the
+    caller's empty-set rule then refuses, as it should."""
+    extra: list[str] = []
+    for d in _LOGS_POINTER.findall(log_text):
+        p = Path(d)
+        if not p.is_dir():
+            continue
+        for f in sorted(p.glob("*.log")):
+            try:
+                extra.append(f.read_text(errors="replace"))
+            except OSError:
+                continue
+    return log_text + "\n" + "\n".join(extra) if extra else log_text
+
+
 def adjudicate(
     log_text: str, cwd: Path, root: Path, allow_path: Path
 ) -> tuple[str, list[str]]:
@@ -114,7 +139,7 @@ def adjudicate(
     if not allow_path.is_file():
         return VERDICT_NO_ALLOWLIST, [str(allow_path)]
     allowed = {to_root_frame(e, root, root) for e in allowlist_entries(allow_path)}
-    failing = parse_failing(log_text)
+    failing = parse_failing(_expand_referenced_logs(log_text))
     if not failing:
         return VERDICT_UNPARSEABLE, []
     normalised = [to_root_frame(f, cwd, root) for f in failing]

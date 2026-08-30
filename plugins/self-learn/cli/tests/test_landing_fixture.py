@@ -390,12 +390,27 @@ def make_repo(
     (cli / "tests" / "test_keep.py").write_text(
         "def test_keep():\n    assert True\n"
     )
+    # The stub reproduces the SHIPPED `scripts/suite`'s OUTPUT CONTRACT,
+    # not just its exit code (gate r4 MAJ-2). The real runner redirects
+    # pytest into its own `$OUT/suite.log` and prints only two summary
+    # lines ending `logs=<dir>`; the stub used to pipe pytest straight to
+    # stdout. So every SUI3 test was faithfully exercising an output shape
+    # that does not ship, and on the real path a red CLI suite adjudicated
+    # `unparseable-log` and refused -- the known-failure allowlist never
+    # applied at all. Fail-closed, but the criterion proved nothing.
     suite_script = cli / "scripts" / "suite"
     suite_script.write_text(
         "#!/usr/bin/env bash\nset -u\n"
         "ROOT=$(cd \"$(dirname \"$0\")/../../../..\" && pwd)\ncd \"$ROOT\" || exit 2\n"
-        "python3 -m pytest plugins/self-learn/cli/tests -q -p no:cacheprovider\n"
-        "exit $?\n"
+        "OUT=$(mktemp -d -t self-learn-suite.XXXXXX)\n"
+        "python3 -m pytest plugins/self-learn/cli/tests -q -p no:cacheprovider"
+        " > \"$OUT/suite.log\" 2>&1\n"
+        "rc=$?\n"
+        "summary=$(grep -E '^[0-9]+ (passed|failed|error)' \"$OUT/suite.log\" | tail -1)\n"
+        "[ -n \"$summary\" ] || summary=$(tail -1 \"$OUT/suite.log\")\n"
+        "printf 'suite rc=%s  %s\\n' \"$rc\" \"$summary\"\n"
+        "printf 'suite total rc=%s  0s  logs=%s\\n' \"$rc\" \"$OUT\"\n"
+        "exit $rc\n"
     )
     suite_script.chmod(0o755)
 

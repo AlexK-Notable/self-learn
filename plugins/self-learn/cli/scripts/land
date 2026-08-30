@@ -729,7 +729,18 @@ RESUME_STEP=${RESUME_STEP:-}
 # only over PRE3/PRV2/CHK2/CHK5/SAN3/WLD1/WLD2, never the suites)
 
 if [ "$DRY_RUN" = "0" ] && { [ "$RESUME_ONLY" = "0" ] || [ "$RESUME_STEP" = "suites" ]; }; then
-  SUITE_TIMEOUT=${SUITE_TIMEOUT:-600}
+  # MAJ-3, measured 2026-08-30. The UI suite runs SERIALLY -- there is no
+  # xdist in the UI venv -- and costs ~595 s (406 tests / 369.5 s plus
+  # 909 / 225.0 s); a direct full run did not finish inside 580 s. Against
+  # the old 600 s budget that is a cliff, not a margin: a machine 1 %
+  # slower turns a green suite into a `SUI2` timeout refusal. The CLI
+  # suite is ~87 s under `-n auto`, so the budget is set by the UI one.
+  #
+  # 1800 s is ~3x the measured UI cost, matching the headroom the original
+  # 600 s was chosen to give over the then-measured 243/230 s. The real
+  # fix is xdist in the UI venv, which is its own unit with its own gate
+  # and is recommended in the handoff, NOT absorbed here.
+  SUITE_TIMEOUT=${SUITE_TIMEOUT:-1800}
 
   # docs-only lane detector (SUI6): an ALLOWLIST, `--no-renames` (gate M-12)
   # SUI6's detector needs a floor of its own. `grep -cv` over an empty diff
@@ -759,9 +770,21 @@ if [ "$DRY_RUN" = "0" ] && { [ "$RESUME_ONLY" = "0" ] || [ "$RESUME_STEP" = "sui
     local name=$1 dir=$2; shift 2
     need_dir "$dir" "suite '$name' working directory" 5
     printf '%s\n' "$dir" >"$OUT/$name.cwd"
+    # MIN-3: a killed suite can leave artefacts behind in the tree being
+    # landed, and nothing observed that. The porcelain is snapshotted
+    # either side of every run and the DELTA recorded, so "the suite left
+    # the tree as it found it" is a measurement rather than an assumption.
+    git -C "$GITROOT" status --porcelain >"$OUT/$name.porcelain.before" 2>/dev/null || true
     ( cd "$dir" && timeout "$SUITE_TIMEOUT" "$@" ) >"$OUT/$name.log" 2>&1
     local rc=$?
     printf '%s\n' "$rc" >"$OUT/$name.rc"
+    git -C "$GITROOT" status --porcelain >"$OUT/$name.porcelain.after" 2>/dev/null || true
+    diff "$OUT/$name.porcelain.before" "$OUT/$name.porcelain.after" \
+      >"$OUT/$name.litter" 2>&1 || true
+    local litter
+    litter=$(grep -c '^>' "$OUT/$name.litter" || true)
+    printf '%s\n' "$litter" >"$OUT/$name.litter.count"
+    [ "$litter" = "0" ] || echo "land: warning -- the $name suite left $litter new untracked path(s) in the tree (see $OUT/$name.litter)"
     return 0
   }
 
@@ -787,7 +810,8 @@ if [ "$DRY_RUN" = "0" ] && { [ "$RESUME_ONLY" = "0" ] || [ "$RESUME_STEP" = "sui
     rc=$(cat "$OUT/$n.rc" 2>/dev/null || echo 99)
     case "$rc" in
       0) ;;
-      124) record_refusal_step suites; die 5 "$n suite TIMED OUT after ${SUITE_TIMEOUT}s -- see $OUT/$n.log" "less $OUT/$n.log" ;;
+      124) record_refusal_step suites
+           die 5 "$n suite TIMED OUT after ${SUITE_TIMEOUT}s, leaving $(cat "$OUT/$n.litter.count" 2>/dev/null || echo '?') new untracked path(s) in the tree -- a killed suite does not clean up after itself. See $OUT/$n.log and $OUT/$n.litter" "less $OUT/$n.log" ;;
       2) record_refusal_step suites; die 5 "$n suite COLLECTION ERROR (rc 2) -- NOT a test failure; the allowlist cannot adjudicate it. See $OUT/$n.log" "less $OUT/$n.log" ;;
       5) record_refusal_step suites; die 5 "$n suite collected NO TESTS (rc 5) -- the suite ran but had nothing to adjudicate; an empty run must never read as green (SUI9). See $OUT/$n.log" "less $OUT/$n.log" ;;
       *)
