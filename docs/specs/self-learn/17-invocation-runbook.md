@@ -498,8 +498,11 @@ you:**
    `plugins/self-learn/cli/scripts/suite` (one `pytest-xdist` `-n auto`
    run over the whole tree, host env scrubbed, exit code captured unpiped
    — the one sanctioned runner; U-xdist, 2026-08-28, replaced the old
-   three-way A/B/C batch split with this single run, ~85s measured on a
-   28-core host versus ~298s for the old layout); run the UI suite from
+   three-way A/B/C batch split with this single run, 85.72s/86.00s/
+   86.61s measured on a 28-core host (3 runs) versus 275-276s for the
+   old layout (2 runs) -- a 3.20x-3.21x speedup on adjacent pairs,
+   measured interleaved under the same live load, gate r1 2026-08-29);
+   run the UI suite from
    *inside* `plugins/self-learn/ui` (`cd plugins/self-learn/ui
    && uv run pytest`) — `--project` does not change pytest's cwd, and from
    the repo root the bare module name `support.py` collides across the two

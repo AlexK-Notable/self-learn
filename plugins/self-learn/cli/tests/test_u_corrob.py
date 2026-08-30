@@ -1431,19 +1431,38 @@ def test_pin2_armor_sha_paths_are_byte_unchanged():
         # gained a multi-line `repinned` entry and support.py -- the row
         # immediately before it, itself `repinned`-free -- was the one
         # whose naive scan ran past its own comment and into conftest's
-        # tuple).
+        # tuple). String-literal-aware (U-xdist code gate r1 fold,
+        # 2026-08-29): a bare paren-depth count over the RAW text is
+        # fooled by a paren inside a reason STRING (e.g. this same
+        # unit's own conftest.py reason mentions "(pytest_sessionfinish/
+        # pytest_testnodedown, appended at the file's end)") the instant
+        # one such string is left UNBALANCED -- so the scan below tracks
+        # whether it is inside a quoted string and skips paren counting
+        # there entirely, the same way a real Python tokenizer would.
         call_start = block.index(f'"{rel}": Fixture(')
         paren_start = call_start + len(f'"{rel}": Fixture')
         depth = 0
         row_end = None
-        for i in range(paren_start, len(block)):
-            if block[i] == "(":
+        in_string = None  # None, or the quote char ("'" / '"') we are inside
+        i = paren_start
+        while i < len(block):
+            ch = block[i]
+            if in_string:
+                if ch == "\\":
+                    i += 2
+                    continue
+                if ch == in_string:
+                    in_string = None
+            elif ch in ("'", '"'):
+                in_string = ch
+            elif ch == "(":
                 depth += 1
-            elif block[i] == ")":
+            elif ch == ")":
                 depth -= 1
                 if depth == 0:
                     row_end = i + 1
                     break
+            i += 1
         assert row_end is not None, f"{rel}: could not find the matching close paren"
         row_text = block[call_start:row_end]
         repin_match = _re.search(r'repinned=\(\s*"([0-9a-f]{64})"', row_text)

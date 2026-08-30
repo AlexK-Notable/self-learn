@@ -14,7 +14,8 @@
 #   - U-xdist (2026-08-28): ONE `pytest tests -n auto` run over the WHOLE
 #     tree, `-p no:cacheprovider` — replaces the old three-way A/B/C
 #     `--ignore`-derived batch split (three parallel `uv run` processes,
-#     each internally serial; measured ~298s, gated by the slowest batch)
+#     each internally serial; measured 275-276s from master's own
+#     runner, 2 runs, gated by the slowest batch)
 #     now that the two things that made a shared xdist worker pool unsafe
 #     are fixed at the root: `pytest-xdist` is a real dev dependency (`uv
 #     add --dev pytest-xdist` in this package, so it survives this
@@ -24,9 +25,11 @@
 #     LIVE, shared `src/self_learn/corroborate.py` (it mutates a private
 #     `tmp_path` copy of the whole package instead, so a sibling worker's
 #     fresh-interpreter subprocess test can never read it mid-mutation).
-#     Measured ~85s for all 89 files under `-n auto` on this host, down
-#     from ~298s for the old three-batch layout — see this unit's build
-#     report for the full timing table.
+#     Measured 85.72s/86.00s/86.61s for all 89 files under `-n auto` on
+#     this host (3 runs), versus 275-276s for the old three-batch layout
+#     (2 runs) -- a 3.20x-3.21x speedup on adjacent pairs, measured
+#     interleaved under the same live load (gate r1, 2026-08-29) — see
+#     this unit's build report for the full timing table.
 #   - `SUITE_WORKERS`/`SUITE_SERIAL` exist for bisecting a suspected
 #     worker-unsafety regression, never for routine use — routine use is
 #     the bare invocation, `-n auto`.

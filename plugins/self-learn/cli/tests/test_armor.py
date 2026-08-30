@@ -2293,10 +2293,15 @@ def test_exm1_every_reason_carries_a_date_and_an_anchor():
     ok, why = _exm1_check(f"2026-08-28 {ANCHOR}: unrelated citation.")
     assert ok, why
 
-    # Applied to every live reason string this table actually ships
-    # (currently zero, since EXM3 requires all four doors shut) -- the
-    # grammar/resolution functions themselves are exercised above; this
-    # loop keeps the assertion meaningful once a real entry lands.
+    # Applied to every live reason string this table actually ships.
+    # Corrected 2026-08-29 (U-xdist code gate r1, Minor): this was NOT
+    # zero even before this unit -- test_u_fake.py's 14 DEL1/DEL2
+    # `missing` entries (its own anchor-era migration) already shipped
+    # at ANCHOR. This unit adds two more: test_invocation_sdk.py's one
+    # RS8 `edited` entry and conftest.py's one Fixture.repinned entry.
+    # The grammar/resolution functions themselves are exercised above
+    # too; this loop is the coverage half -- every row EXM3 actually
+    # ships, not a placeholder waiting for a first real entry.
     for key in BEHAVIOUR_KEYS:
         row = ARMOR[key]
         assert isinstance(row, Behaviour)

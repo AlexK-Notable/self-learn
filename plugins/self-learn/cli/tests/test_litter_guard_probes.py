@@ -1,5 +1,7 @@
-"""U-cachelit code gate r1 M-1/M-3: guard-of-the-guard for `conftest.py`'s
-`_litter_namespace_guard`/`_env_floor_session` -- proves the guard
+"""U-cachelit code gate r1 M-1/M-3, plus U-xdist code gate r1 Minor
+(probe F): guard-of-the-guard for `conftest.py`'s
+`_litter_namespace_guard`/`_env_floor_session`/the worker -> controller
+relay -- proves the guard
 actually FIRES (a committed test asserting only that the fixture and its
 assertions exist would pass even with a one-line `return` gutting the
 teardown check entirely; the unchanged 2419/1270 suite counts after this
@@ -41,7 +43,7 @@ to import the REAL `conftest.py` by absolute path
 its guard fixtures/hook under their real names -- so every probe
 exercises the SHIPPED implementation, never a reimplementation of it.
 
-Probe table (A-E), each proving one class of bypass the guard must
+Probe table (A-F), each proving one class of bypass the guard must
 catch (or correctly decline to blame):
 
   A. In-process `delenv` + a direct `worker.cache_dir()` call --
@@ -65,6 +67,15 @@ catch (or correctly decline to blame):
      hashing the RAW tracked string mismatched the digest
      `resolve_home()`'s `Path(raw).expanduser()` actually produces,
      falling to warn-only; the fix normalizes before hashing.
+  F. Probe D's own scenario, driven under `-n 2` instead of the
+     default serial run -- proves the worker -> controller relay
+     (`pytest_sessionfinish`/`pytest_testnodedown`, U-xdist,
+     2026-08-28) reports the one real namespace EXACTLY ONCE even
+     when two separate worker processes each independently observe
+     it, rather than the byte-pin `test_armor.py` already carries
+     for the hooks' own source text -- a hook-ordering change could
+     resurrect the pre-fix silence, or a dedup regression could
+     double-report, while a byte pin alone stays green either way.
 
 Mutation, verified by hand during this unit's build (not itself
 committed -- a one-line source mutation applied, ALL FIVE probes
@@ -77,6 +88,20 @@ own `result.assert_outcomes(...)` then fails), AND leaving `_WARN_
 NAMESPACES` never populated, so probe D's own `"reported but not
 failed" in combined` assertion fails too (`pytest_terminal_summary`
 finds nothing to print). All five went red under this one mutation.
+
+Probe F's own two mutations, verified by hand during the U-xdist code
+gate r1 fold the same way (applied, probe F re-run solo to confirm
+RED, reverted, sha256-diffed byte-identical to before): (1) with
+`pytest_sessionfinish`/`pytest_testnodedown` deleted from the SPLICED
+conftest (`_make_probe_conftest`'s own re-export lines removed, not
+the real conftest.py), probe F's sub-session goes SILENT under `-n
+2` -- no "cache-litter guard" separator at all -- while the same
+scenario re-run with no `-n` flag (serial) still reports it, proving
+the silence is specific to the relay, not the scenario; (2) with the
+dedup's `if namespace not in _WARN_NAMESPACES` guard in the real
+`pytest_testnodedown` replaced by a plain `.extend()`, the SAME `-n
+2` scenario reports "2 new real ... namespace(s)" for the one real
+directory, and `home-deadbeef` appears twice in the printed list.
 """
 
 from __future__ import annotations
@@ -103,7 +128,9 @@ def _digest(home) -> str:
 
 
 def _make_probe_conftest(pytester: pytest.Pytester) -> None:
-    """Splices the REAL conftest.py's guard fixtures/hook into the
+    """Splices the REAL conftest.py's guard fixtures/hooks (including
+    U-xdist's worker -> controller relay, `pytest_sessionfinish`/
+    `pytest_testnodedown`, needed by probe F) into the
     sub-run's own generated conftest.py -- `importlib.util.spec_from_
     file_location` loads the REAL file by absolute path so the sub-run
     exercises the SHIPPED implementation (same pattern `test_pw_
@@ -123,6 +150,8 @@ def _make_probe_conftest(pytester: pytest.Pytester) -> None:
         _env_floor_session = _real._env_floor_session
         _litter_namespace_guard = _real._litter_namespace_guard
         pytest_terminal_summary = _real.pytest_terminal_summary
+        pytest_sessionfinish = _real.pytest_sessionfinish
+        pytest_testnodedown = _real.pytest_testnodedown
         _REAL_CACHE_ROOT = _real._REAL_CACHE_ROOT
         """
     )
@@ -333,3 +362,119 @@ def test_probe_e_non_normalized_home_still_fails(pytester: pytest.Pytester, tmp_
     expected = f"home-{_digest(home)}"  # the NORMALIZED digest
     assert expected in combined, combined
     assert (scratch_home / ".cache" / "self-learn" / expected).is_dir()
+
+
+# ------------------------------------------------------------- Probe F
+
+
+def test_probe_f_xdist_relay_reports_a_concurrent_sibling_exactly_once(
+    pytester: pytest.Pytester, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F (U-xdist code gate r1, Minor): pins the worker -> controller
+    relay (`pytest_sessionfinish`/`pytest_testnodedown`, appended to
+    `conftest.py` for U-xdist) by BEHAVIOUR, not merely by the byte sha
+    `test_armor.py` already carries for the file -- a hook-ordering
+    change could resurrect the exact silent-under-`-n` failure this
+    relay exists to fix while a byte pin alone stays green.
+
+    Same probe-D scenario (a foreign namespace, unattributable to this
+    session, created via a raw `os.makedirs` that bypasses both the
+    `Path.mkdir` and `Popen` patches -- simulating a CONCURRENT SIBLING
+    builder's own process on this shared host) but driven under `-n 2`
+    with TWO test items. BOTH items create the SAME namespace
+    (`exist_ok=True`, so idempotent regardless of ordering) and BOTH
+    sleep 0.5s FIRST -- a fixed measured margin, comfortably longer
+    than xdist's own worker-connection time (0.7s observed for the
+    WHOLE two-worker session, connection included), so both workers'
+    own `before` snapshots are guaranteed to complete before either
+    mkdir fires. An earlier version had only ONE item sleep, on the
+    theory that whichever worker landed which item, both before/after
+    windows would still likely span the directory's appearance --
+    measured false 1 run in 3 (code gate r1 fold, 2026-08-29): a
+    late-starting second worker's `before` scan landed AFTER the
+    first worker's near-instant mkdir, so the second worker saw no
+    "new" directory at all and only one relay fired, regardless of
+    the dedup under test -- silently passing a mutation this probe
+    exists to catch. Symmetric sleeps close that gap. When xdist
+    splits the two items across two separate worker processes (the
+    common, intended case -- two items, `-n 2`), each worker session
+    independently discovers the SAME namespace as "new" in its own
+    before/after diff and relays it to the controller; this is
+    exactly the double-observation race the dedup in
+    `pytest_testnodedown` exists to collapse.
+
+    Asserts the controller's terminal summary reports it EXACTLY ONCE:
+    `pytest_terminal_summary`'s own `f"{len(_WARN_NAMESPACES)} new
+    real..."` count is the one assertion that actually distinguishes
+    deduped from not -- a duplicated list entry still contains the
+    namespace NAME exactly once per occurrence, so a raw substring
+    count of "home-deadbeef" would not by itself prove single-vs-double
+    (the printed Python list repr `['home-deadbeef', 'home-deadbeef']`
+    does contain the substring twice, so a substring count would in
+    fact catch it too, but the explicit count line is the mechanism the
+    real code prints for exactly this purpose and is checked directly
+    to keep the assertion legible).
+
+    Verified by hand during this unit's code gate r1 fold (not itself
+    committed -- applied, probe F re-run solo to confirm RED, reverted,
+    sha256-diffed byte-identical to before): (1) with
+    `pytest_sessionfinish`/`pytest_testnodedown` deleted from the
+    SPLICED conftest (`_make_probe_conftest`'s own re-export lines
+    removed -- the real conftest.py is untouched), this same scenario
+    goes SILENT under `-n 2` (no "cache-litter guard" separator in the
+    combined output at all) while the identical scenario re-run with no
+    `-n` flag (serial, one process, no worker/controller split) still
+    reports it -- proving the silence is specific to the relay's
+    absence, not the scenario. (2) with the real `pytest_testnodedown`'s
+    dedup (`if namespace not in _WARN_NAMESPACES`) replaced by a plain
+    `.extend()`, the SAME `-n 2` scenario reports "2 new real ...
+    namespace(s)" for the one real directory, with `home-deadbeef`
+    appearing twice in the printed list."""
+    scratch_cache = tmp_path / "fake-real-cache"
+    monkeypatch.setenv("XDG_CACHE_HOME", str(scratch_cache))
+
+    _make_probe_conftest(pytester)
+    pytester.makepyfile(
+        test_probe_1="""
+        import os
+        import time
+
+        from conftest import _REAL_CACHE_ROOT
+
+        def test_probe_1():
+            # Both items sleep BEFORE creating (not just one) -- an
+            # earlier version had only item 2 sleep, and an empirically
+            # observed race (measured during the code gate r1 fold,
+            # 2026-08-29: 1 of 3 runs) showed gw1's OWN session can start
+            # late enough that its `before` scan lands AFTER gw0's
+            # near-instant mkdir, making gw1 see no "new" directory at
+            # all and collapsing the intended dual-observation down to a
+            # single relay regardless of the dedup under test. A fixed
+            # delay on BOTH items, comfortably longer than xdist's own
+            # worker connection time (observed under 0.7s total for the
+            # whole two-worker session), guarantees both workers' own
+            # `before` snapshots complete before either mkdir fires.
+            time.sleep(0.5)
+            foreign = _REAL_CACHE_ROOT / "home-deadbeef"
+            os.makedirs(foreign, exist_ok=True)
+        """,
+        test_probe_2="""
+        import os
+        import time
+
+        from conftest import _REAL_CACHE_ROOT
+
+        def test_probe_2():
+            time.sleep(0.5)
+            foreign = _REAL_CACHE_ROOT / "home-deadbeef"
+            os.makedirs(foreign, exist_ok=True)
+        """,
+    )
+    result = pytester.runpytest_subprocess("-n", "2")
+    combined = "\n".join(result.outlines + result.errlines)
+    result.assert_outcomes(passed=2, failed=0, errors=0)
+    assert "home-deadbeef" in combined, combined
+    assert "1 new real" in combined, combined
+    assert combined.count("home-deadbeef") <= 2, combined  # 1 list entry + maybe 1 label mention, never 2 list entries
+    assert "reported but not failed" in combined, combined
+    assert (scratch_cache / "self-learn" / "home-deadbeef").is_dir()
