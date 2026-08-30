@@ -19,7 +19,8 @@ P="plugins/self-learn/ui/static/app.js plugins/self-learn/ui/static/style.css \
 git ls-files -- $P | wc -l                      # -> 25
 
 # CONTROL 2 -- can this pathspec + diff ever PRODUCE output? MUST be non-empty.
-git diff --stat <a range that touched these files> -- $P   # -> 3 files changed
+git diff --stat $(git log -2 --format=%H -- $P | tail -1) \
+                $(git log -1 --format=%H -- $P) -- $P     # -> 3 files changed
 
 # THE AUDIT -- MUST be empty.
 git diff --stat 502ca8d HEAD -- $P              # -> (empty)
@@ -45,9 +46,17 @@ otherwise.
 **Gate history.** r1: **NOT SOUND** — 0 blockers, 4 majors, 7 minors.
 r2: **NOT SOUND** — 0 blockers, 1 major, 5 minors, 2 nits, with the
 audit that matters coming back clean (**30/30 `[A]` criteria state a
-mutation and 30/30 redden as literally written**). Every finding from
-both rounds is folded here, and each major was **re-verified by this
-author before folding**, not taken on report.
+mutation and 30/30 redden as literally written**). **All 19 findings
+across both rounds are folded here**, and every major was **re-verified
+by this author before folding**, not taken on report.
+
+*Four of r2's eight findings (MINOR-4, MINOR-5, NIT-1, NIT-2) reached
+this author only after reading the gate report directly — the relay
+carried MAJOR-1, MINOR-1, MINOR-2 and MINOR-3. Recorded because the
+count in a verdict line is itself a check: "1 major, 5 minors, 2 nits"
+against four folded items is a discrepancy visible without reading
+anything, and it is the same class as §8.7 — a summary that reports
+success about material it did not look at.*
 
 **r2's findings:** MAJOR-1 — `F1b` corrected the *fixture* but left the
 *acting position* on row 2, so a build that scoped correctly while
@@ -178,11 +187,20 @@ directory:
   14  user/pending
    2  projects/<a project bucket>/pending
    1  projects/<another project bucket>/pending
-   0  … eleven further project buckets
+   0  … ten further project buckets
+   0  … five skill buckets
+      (18 pending/ directories in total)
 ```
 
 *(Positive control: the zero-count buckets printed too, so an empty result
 would have been visible as `0` rather than as silence.)*
+
+*(Gate r2 NIT-1, re-measured here: r2 of this spec said "eleven further
+project buckets" and omitted the skill buckets entirely — because its
+command globbed only `user/pending` and `projects/*/pending`, so the five
+skill buckets were never in view. The corrected command walks **every**
+`pending/` directory: `find . -type d -name pending`, 18 of them. The
+load-bearing figure is unchanged and exact: `user/pending` holds 14.)*
 
 Surface #2 of §3.1 — Bucket pending record rows, keys `e`/`x`/`f`/`g`/`o`
 — is therefore **mis-targeting in production right now, on a 14-row
@@ -866,7 +884,9 @@ Reasoning, in order of weight:
    to act on. This path prints nothing and writes N records on one
    keystroke (§2.5). *The qualifier is load-bearing and is not a claim
    that this is the only un-armed POST* (gate r1 MINOR-7):
-   `cycle_destination` (`action_bar.html:267`, bound to `o`) also posts
+   `cycle_destination` (`action_bar.html:265` for the
+   `data-key-action`, its `hx-post` at `:267` — gate r2 NIT-2; bound to
+   `o`) also posts
    immediately with no arm step — but single-record, reversible by
    cycling again, and re-rendering the destination it changed in place.
 2. **Making it key-reachable safely requires inventing an arm step for
@@ -1099,7 +1119,7 @@ and a deferred dispatch drops itself fail-closed 500 ms after deferring
 |---|---|---|
 | **S1** `[A]` | For **every `data-key-action` value present in the document** — not only the KEYMAP-bound ones (gate r1 MAJOR-4: scoping it to bound actions meant it never inspected `followup_done` or `link_contradicts`, the very latent class §3.2 says must be closed, and made its own "≥2 follow-up rows" fixture requirement decorative) — in each of Front (≥2 holding rows, ≥2 follow-up rows), Bucket (≥2 record rows **and a bulk-collapse group; no cluster expanded** — see `S1b`) and Detail: either the action occurs **exactly once** in the document, or **every** occurrence has a `[data-row]` ancestor **and** no two occurrences share the same `[data-row]` ancestor. | add a second `data-key-action="route"` inside one `[data-row]`. **Stated plainly: this guard does NOT catch the bulk-collapse shape** (bulk row and record rows are distinct `[data-row]`s), which is why `B1`/`B2`/`B3` exist as separate criteria. A guard whose coverage is overstated is worse than no guard. |
 | **S1b** `[A]` | On a Bucket fixture **with a cluster expanded**: the *only* same-`[data-row]` duplicate sets in the document are the `route` buttons inside a `.cluster-expanded` element. Every other `data-key-action` still satisfies `S1`'s rule. This is the one sanctioned same-row multiplicity in the codebase — it is dispatch-covered by `T6`'s refusal, and removing it means making members individually selectable, which is `[B-2]`. | add a second `data-key-action="route"` inside a `.record-row` (i.e. a same-row duplicate **outside** `.cluster-expanded`) → RED. *Why this is split from `S1` rather than folded into it: `S1`'s clause (b) is false on the intended tree the moment a cluster is expanded, so a single-fixture `S1` covering both shapes would be a criterion that cannot pass — the mirror image of the defect class this unit exists to fix.* |
-| **S2** `[A]` | **The arming-control inventory.** In a rendered Bucket document with a cluster expanded and a bulk-collapse group present, the set of elements that carry an `hx-post` ending in `/action/arm` (or that submit a form posting to one) **and** have no `.action-bar` ancestor is exactly the cluster-member "Route as survivor" buttons. Rationale: `style.css:433` neutralises a second mouse-arm only for triggers **inside** a `.action-bar` (§2.7 b/c), so any *new* arming control outside one silently re-opens the co-arm door that `A1`/`A2`/`A5` exist to govern — and would do so with no test noticing. The bulk-collapse button is named in the test as a known, separately-tracked exception: it is not an *arming* control but an un-armed **write** outside a `.action-bar` (`[B-1]`). | add an `hx-post=".../action/arm"` control outside any `.action-bar` (e.g. a second survivor button in `bucket.html` itself) → RED. *This guard is a detector, not a fix: it does not close the door, it makes a third one impossible to add unnoticed. Closing it is `[B-7]`.* |
+| **S2** `[A]` | **The arming-control inventory.** In a rendered Bucket document with a cluster expanded and a bulk-collapse group present, the set of elements that carry an `hx-post` **ending in `/arm`** (or that submit a form posting to one) **and** have no `.action-bar` ancestor is exactly the cluster-member "Route as survivor" buttons. **The predicate is `/arm$`, not `/action/arm$`** (gate r2 MINOR-4): four distinct arming routes exist, and only one of them has the `/action/arm` shape — measured here across `templates/`, 16 `hx-post`s end in `/arm`: `/record/{id}/action/arm` (×12 in `action_bar.html`, ×1 in `cluster_expanded.html`), `/record/{id}/action/commit-drift/arm`, `/proposal/arm`, and `/bucket/{scope}/{name}/host-add/arm`. The narrower suffix would have been **green while blind to three of the four routes** — a new control on any of them placed outside a bar would re-open exactly the door §2.7(c) describes, unseen. `/arm$` covers all four and still yields exactly the cluster button today (`cluster_expanded.html` contains zero occurrences of `class="action-bar"`; the other three files each carry it). Rationale: `style.css:433` neutralises a second mouse-arm only for triggers **inside** a `.action-bar` (§2.7 b/c), so any *new* arming control outside one silently re-opens the co-arm door that `A1`/`A2`/`A5` exist to govern — and would do so with no test noticing. The bulk-collapse button is named in the test as a known, separately-tracked exception: it is not an *arming* control but an un-armed **write** outside a `.action-bar` (`[B-1]`). | add an `hx-post` ending in `/arm` outside any `.action-bar` (e.g. a second survivor button in `bucket.html`, or a `/proposal/arm` trigger placed outside `proposal_bar.html`) → RED. *This guard is a detector, not a fix: it does not close the door, it makes a new one impossible to add **unnoticed**.* **Stated coverage, honestly — the same sentence `S1` owes and pays** (gate r2 MINOR-4): `S2` sees only controls whose own `hx-post` ends in `/arm`. It does **not** see a control that arms indirectly (a plain `<button>` wired by future JS, a link, a form whose action is computed at runtime), and it does not see the bulk-collapse **write** (`/graduate-bulk`), which is outside a `.action-bar` too and is tracked separately as `[B-1]`. A guard whose coverage is overstated is worse than no guard. Closing the door itself is `[B-7]`. |
 | **C1** `[A]` | `data-key-context` appears **zero** times under `plugins/self-learn/ui/` (templates and source). The test carries its own positive control: the same search for `data-noop-hint` returns a non-zero count. | re-add `data-key-context` to `action_bar.html` |
 | **SIG1** `[A]` | No template under `plugins/self-learn/ui/templates/` uses htmx's `data-hx-*` prefixed attribute form. (The signature in §4.4 reads the plain form; if a template ever switches, the signature silently weakens and this fails first.) Positive control in the same test: the search for `hx-post` returns a non-zero count. | add `data-hx-post="…"` to any template |
 
@@ -1122,7 +1142,7 @@ and no other. Any *new* failure blocks.
 | **B-4** | Make the cluster "Expand" button keyboard-reachable (§3.4) — its `data-key-action="drill_in"` is inert because the keymap switch intercepts `drill_in` before `clickAction`. | a keyboard-coverage gap, not a targeting defect |
 | **B-5** | Reconsider what `ensureRowSelected()` selects on load (the first row owns no action on Front). | taste; the page-wide fallback makes it harmless |
 | **B-6** | A quiet "acted on a row you are not standing on" signal when the **page-wide fallback** fires with a selection present that owns no such target. | the MINOR-6 ruling (§4.2): the case is not signal-free (`fire()` scrolls the acted element into view; the arming verbs print the record id in the armed strip, `o` persists nothing, `j`/`u`/`v` are navigations — no fallback-reachable verb performs a durable write, checked at the handlers); a hint would be loudest on Detail and single-row Front where it is least needed; and routing a *success* message through `showNoopHint` — a channel whose whole vocabulary is "that key did nothing" — makes the line ambiguous. Needs its own affordance and its own taste call. |
-| **B-7** | Close the outside-`.action-bar` door: bring the cluster-member arming buttons (and the bulk-collapse write) under `style.css:433`'s modal rule, or give that rule a selector that does not depend on `.action-bar` ancestry. | **must not land in this unit**: it would make the CO-ARM fixture (§6.4) unbuildable and take `A1`/`A2`/`A3`/`A5` with it. `S2` detects a third such control in the meantime. Sequencing note for whoever takes it: land it *after* U-target, and expect to re-anchor those four criteria on whatever door remains — or retire them with the hazard. |
+| **B-7** | Close the outside-`.action-bar` door: bring the cluster-member arming buttons (and the bulk-collapse write) under `style.css:433`'s modal rule, or give that rule a selector that does not depend on `.action-bar` ancestry. | **1. After U-target the residual hazard is mouse-only, and strictly smaller than before it.** The keyboard cannot reach the co-armed state at all (`onKeyDown`, `app.js:455`, consults the armed bar and returns before the `KEYMAP` switch, so while any bar is armed every key confirms or disarms), and this unit makes the keyboard *safe* in that state: `A2` refuses, `A5` breaks the tie toward the selected row. **2. It is a consent-surface change with its own blast radius** — widening `style.css:433` past `.action-bar` ancestry would make "Route as survivor" un-clickable while *any* bar anywhere on the page is armed, which is an interaction decision about the cluster UI, not a targeting fix, and belongs on its own merits. **3. Sequencing note, not a reason:** landing it here would make the CO-ARM fixture (§6.4) unbuildable and take `A1`/`A2`/`A3`/`A5` with it — so land it *after* U-target and expect to re-anchor those four on whatever door remains, or retire them with the hazard (§8.5, §10.4). *Ordering corrected per gate r2 MINOR-5: r2 led with reason 3. "Do not close a consent hazard because it would orphan my tests" is not a reason to leave one open — if that were the whole argument, the right answer would be to close the door and retire the criteria. `S2` is the interim detector.* |
 
 ---
 
