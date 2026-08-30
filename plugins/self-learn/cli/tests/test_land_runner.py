@@ -1500,7 +1500,19 @@ def test_doc_reading_set(tmp_path):
     clone = tmp_path / "clone"
     subprocess.run(["git", "clone", "-q", "--no-hardlinks", str(root), str(clone)],
                    check=True, capture_output=True)
-    walk_py = clone / "plugins/self-learn/cli/scripts/measured/walk.py"
+    # A clone carries COMMITTED content, so an uncommitted edit to the walk
+    # -- which is exactly what a mutation is, and what a code gate reviews --
+    # would be invisible to every leg below. The live instrument is copied
+    # in, and asserted byte-identical, so the clone isolates the WRITES
+    # without also isolating the code under test. Measured: without this,
+    # M92 (dropping the part-built union) came back STILL-GREEN.
+    live_measured = root / "plugins/self-learn/cli/scripts/measured"
+    clone_measured = clone / "plugins/self-learn/cli/scripts/measured"
+    shutil.rmtree(clone_measured)
+    shutil.copytree(live_measured, clone_measured,
+                    ignore=shutil.ignore_patterns("__pycache__"))
+    walk_py = clone_measured / "walk.py"
+    assert walk_py.read_bytes() == (live_measured / "walk.py").read_bytes()
 
     def cwalk(*args: str) -> str:
         return subprocess.run(
