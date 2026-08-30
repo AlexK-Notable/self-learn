@@ -12,6 +12,58 @@ Type=oneshot
 # B-1 (doc 13 §7.1): the systemd user manager does not inherit the shell's
 # env — pin the ledger home explicitly so the unit and the shell agree.
 Environment=SELF_LEARN_HOME=%h/.self-learn
+# U-uvpath (2026-08-29, gate r1 MINOR-3 — ruled in scope, the identical
+# defect class as the host/ui units): this unit's ExecStart goes through
+# the same scripts/self-learn wrapper, so it depends on `uv` being
+# resolvable exactly like self-learn-host.service did when it
+# crash-looped six times on 2026-08-28 (see that unit's own comment).
+# Gate r2 MAJOR-2 CORRECTED the round-1 measurement below: %h/bin IS
+# needed here after all. `mine run` -> `worker.kick(home)` whenever a
+# candidate lands (miner.py:2108, pinned by
+# test_miner.py::test_run_lands_candidate) -> `_open_window` ->
+# `_spawn_window`, which spawns `worker run --coalesce` with
+# `env = dict(os.environ)` (worker.py) -- i.e. THIS unit's own
+# environment, PATH included. That spawned `worker.run` is exactly the
+# one that calls `shutil.which("self-learn-notify")` (worker.py:3102),
+# the ~/bin deploy surface -- so this unit DOES reach that call, through
+# the miner-kicks-worker chain, not by running `worker.run` directly.
+# Measured live on this host (2026-08-29): `~/bin/self-learn-notify`
+# EXISTS (a symlink into this repo) but `%h/bin` was NEVER on the
+# systemd user-manager's own PATH (`systemctl --user show-environment`
+# has no `~/bin` entry at all, among an ABSURDLY duplicated run of
+# `.local/bin` entries -- measured three times across this unit's own
+# gate rounds, a different three-digit count each time (536, then 558,
+# then 560 on a later re-check): a real, load-bearing boot-order
+# artifact, not a number worth pinning exactly, since it will keep
+# drifting), and `shutil.which("self-learn-notify")` under that exact
+# PATH returns `None`. Gate r3 CORRECTED the conclusion drawn
+# from that measurement (r2 called it a silent failure -- it is not):
+# `worker.py:3103-3106` logs a line and degrades to `_notify()`, a plain
+# `notify-send self-learn <message>` with no `-A`/action flag -- neither
+# silent nor a failure, notify-send itself resolves fine under this
+# manager's PATH (/usr/bin is on it) and DBUS_SESSION_BUS_ADDRESS is
+# present, and self-learn-miner.timer is not even installed on this host
+# (three units listed, no timer) -- the real ledger's worker.log carries
+# zero notify lines either way. What adding %h/bin actually changes:
+# `self-learn-notify` (this same repo's script) registers a click-to-open
+# `-A "open=Open"` action tied to `--ids <csv-of-record-ids>`, which the
+# plain `_notify()` fallback above never does (no `-A` anywhere in it) --
+# so this pin upgrades a working-but-action-less notification to one the
+# user can click to open the record, it does not repair anything that
+# was dropping silently.
+#
+# The `claude` CLI itself still needs no PATH pin, on any of the three
+# units: `claude_agent_sdk`'s own `_find_cli()` (used by ALL FOUR
+# surfaces, miner included, since U-cleanup-B) checks a binary BUNDLED
+# inside the installed package first — confirmed present in this
+# project's own .venv (claude_agent_sdk/_bundled/claude) — before ever
+# touching PATH, and even lacking that bundle it already tries
+# `shutil.which("claude")` then a hardcoded ~/.local/bin/claude-shaped
+# fallback list on its own, the same PATH-then-fallback shape this
+# unit's own wrapper now implements for uv. No wrapper-style treatment
+# is owed to `claude` anywhere in this codebase; sized as zero
+# additional work, not scoped out as a bigger unit.
+Environment=PATH=%h/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=%h/bin/self-learn mine run --trigger timer
 # The run spawns a contained `claude -p` reader; give it headroom.
 TimeoutStartSec=30m
