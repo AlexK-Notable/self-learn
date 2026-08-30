@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # m69.sh -- SUI8's STABLE PREDICATES (gate B-2/M-19/N-20): from the repo
 # root, `uv run --project` sets the venv but not pytest's cwd, so
-# collection hits the CLI tree too (rc 2, >=1 id under cli/tests); from
+# collection hits the CLI tree too (unusable rc, >=1 id under cli/tests); from
 # inside plugins/self-learn/ui, collection is clean (rc 0, 0 ids outside
 # ui/tests). Counts are deliberately NOT asserted (§4.6's OBSERVED table:
 # they depend on untracked scratch state) -- only these predicates.
@@ -10,6 +10,15 @@ source "$(dirname "${BASH_SOURCE[0]}")/_lib.sh"
 root_out=$(cd "$ROOT" && env -u SELF_LEARN_ANALYST_MODEL -u SELF_LEARN_ANALYST_TIMEOUT \
   uv run --project plugins/self-learn/ui pytest --collect-only -q 2>&1)
 root_rc=$?
+# The exact FAILING code is not the predicate. Observed 2 (collection
+# errors) until U-xdist landed and 3 (pluggy INTERNALERROR: the CLI
+# conftest declares the xdist hook `pytest_testnodedown`, which the UI
+# venv has no plugin for) after it. Pinning the code would have made this
+# row refuse on a correct tree the day that landed -- exactly the M-19
+# lesson. What is stable is that the root run produces NO USABLE
+# COLLECTION while still reaching the CLI tree.
+root_usable=no
+[ "$root_rc" = "0" ] && root_usable=yes
 root_cli_ids_ge1=no
 # a bash builtin substring test, not `| grep -q` -- `-q` exits after the
 # first match, SIGPIPEs the upstream printf on this much output, and
@@ -26,4 +35,4 @@ ui_rc=$?
 # node ids in --collect-only -q output are lines of the form <path>::<test>
 ui_outside=$(printf '%s\n' "$ui_out" | grep -E '::' | grep -vc '^tests/' || true)
 
-printf 'root_rc=%s root_cli_ids_ge1=%s ui_rc=%s ui_outside=%s\n' "$root_rc" "$root_cli_ids_ge1" "$ui_rc" "$ui_outside"
+printf 'root_usable=%s root_cli_ids_ge1=%s ui_rc=%s ui_outside=%s\n' "$root_usable" "$root_cli_ids_ge1" "$ui_rc" "$ui_outside"

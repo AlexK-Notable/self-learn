@@ -1083,7 +1083,13 @@ def test_sui8_ui_suite_collection_root(tmp_path):
 
     # (b)
     from_root = _collect(root, "--project", "plugins/self-learn/ui")
-    assert from_root.returncode == 2, from_root.stdout[-2000:]
+    # The predicate is "no USABLE collection", not a specific failing code.
+    # Measured 2 (collection errors) until U-xdist landed and 3 (pluggy
+    # INTERNALERROR -- the CLI conftest declares `pytest_testnodedown`,
+    # which the UI venv has no plugin for) after it. Pinning the code would
+    # have reddened this on a correct tree the day that landed: the M-19
+    # lesson, one criterion over.
+    assert from_root.returncode != 0, from_root.stdout[-2000:]
     assert "plugins/self-learn/cli/tests" in (from_root.stdout + from_root.stderr)
 
     from_ui = _collect(ui)
