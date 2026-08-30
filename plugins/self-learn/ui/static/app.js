@@ -794,7 +794,33 @@
   // correctness one: Layer 2 below (the submit guard) is what makes
   // even a hole in THIS bookkeeping harmless, which is what lets this
   // set stay conservative rather than clever about when to give up.
-  const abandonedSwaps = [];
+  //
+  // Minor 1 (code gate r6): "stay conservative forever" turned out to
+  // have a real cost the r5 framing above did not reckon with --
+  // measured live: a SINGLE key that never gets a real resolution
+  // deafens every later keypress PERMANENTLY (`[False, False, False]`
+  // across three separate presses, each dropping via its own fallback
+  // but NONE ever dispatching immediately again), contradicting r4's
+  // own "the NEXT keypress dispatches normally" guarantee. Treating a
+  // stale absence-of-evidence as permanent evidence is its own version
+  // of the exact proxy-lying mistake this unit has chased for six
+  // rounds now, just pointed the other way -- so each entry ALSO
+  // carries its own staleness ceiling (ABANDONED_SWAP_CEILING_MS,
+  // below), well past any plausible swap, past which it ages out
+  // silently. "Silently" is load-bearing: aging out must NEVER drain
+  // pendingDispatches itself (removeAbandonedSwapSilently below) --
+  // the rule that a timeout is a reason to give up and never a reason
+  // to act applies here exactly as it does to pendingSwaps' own N17
+  // eviction. A dispatch already queued and waiting on a key at the
+  // moment it ages out still only ever drops via ITS OWN independent
+  // fallback (clickAction's own 500ms timer) -- what recovers here is
+  // only the ability of a LATER, not-yet-issued keypress to stop
+  // seeing this key as unresolved.
+  const ABANDONED_SWAP_CEILING_MS = 10000; // 20x the 500ms bound, well
+  // past the gate's own 1500ms CPU-starvation stress scenario (6.7x),
+  // and far past any duration a human would plausibly still be
+  // waiting on ONE keypress before assuming something else is wrong.
+  const abandonedSwaps = []; // array of { key, timer }
 
   // B-1 (code gate r5): the one gating question clickAction() and
   // removePendingSwapForKey()'s drain condition both ask -- "is there
@@ -877,8 +903,18 @@
       clearTimeout(pendingSwaps[idx].timer);
       pendingSwaps.splice(idx, 1);
     } else {
-      const aIdx = abandonedSwaps.indexOf(key);
-      if (aIdx !== -1) abandonedSwaps.splice(aIdx, 1);
+      // Minor 1 (code gate r6): abandonedSwaps now holds { key, timer }
+      // entries, not bare keys (each carries its own staleness
+      // ceiling) -- find by key, clear ITS ceiling timer too, so a
+      // real late resolution here means the entry can never also
+      // silently age out afterward.
+      const aIdx = abandonedSwaps.findIndex(function (t) {
+        return t.key === key;
+      });
+      if (aIdx !== -1) {
+        clearTimeout(abandonedSwaps[aIdx].timer);
+        abandonedSwaps.splice(aIdx, 1);
+      }
     }
     if (pendingSwaps.length === 0 && abandonedSwaps.length === 0) {
       releasePendingDispatches();
@@ -892,8 +928,10 @@
   // code gate r5 (B-1/B-2): the token does not simply vanish -- its
   // key moves to abandonedSwaps, which keeps gating exactly like
   // pendingSwaps did until this SAME key's real resolution eventually
-  // arrives (removePendingSwapForKey above). Before this: a vanished
-  // token left pendingSwaps.length reading "safe" while the swap it
+  // arrives (removePendingSwapForKey above), OR (code gate r6, Minor
+  // 1) until its own staleness ceiling ages it out (see
+  // removeAbandonedSwapSilently below). Before r5: a vanished token
+  // left pendingSwaps.length reading "safe" while the swap it
   // represented was still genuinely in flight -- see abandonedSwaps'
   // own comment for both ways that lied (B-1/B-2).
   function removePendingSwapSilently(token) {
@@ -901,7 +939,27 @@
     if (idx === -1) return; // already removed by a real settle/failure
     clearTimeout(token.timer);
     pendingSwaps.splice(idx, 1);
-    abandonedSwaps.push(token.key);
+    const entry = { key: token.key, timer: null };
+    entry.timer = setTimeout(function () {
+      removeAbandonedSwapSilently(entry);
+    }, ABANDONED_SWAP_CEILING_MS);
+    abandonedSwaps.push(entry);
+  }
+
+  // Minor 1 (code gate r6): an abandoned entry's own staleness
+  // ceiling. Bookkeeping only, deliberately never drains
+  // pendingDispatches -- same invariant as removePendingSwapSilently
+  // above, one level further out. This key has outlived any plausible
+  // swap and is no longer evidence of anything either way; ageing it
+  // out here only lets FUTURE, not-yet-issued dispatches stop seeing
+  // it as unresolved. A dispatch already queued and waiting on it
+  // keeps waiting out its OWN independent fallback and drops there,
+  // exactly as if this function did not exist.
+  function removeAbandonedSwapSilently(entry) {
+    const idx = abandonedSwaps.indexOf(entry);
+    if (idx === -1) return; // already removed by a real, late resolution
+    clearTimeout(entry.timer);
+    abandonedSwaps.splice(idx, 1);
   }
 
   function releasePendingDispatches() {
@@ -990,65 +1048,162 @@
     }
   );
 
-  // Layer 2 (code gate r5, the durable guard). Ruling: every round of
-  // bugs this unit has found (r1 through r5) caused harm through
-  // exactly ONE mechanism -- a native, un-intercepted form submission
-  // navigating the page, because htmx had not yet attached its own
-  // interception to the form being clicked (the swap/settle gap this
-  // whole unit exists to close, entered through one new door each
-  // round). That mechanism is narrower than every way the pendingSwaps
-  // / pendingDispatches / abandonedSwaps bookkeeping above can be
-  // wrong -- and there is no proof B-1/B-2 above are the LAST way.
-  // This guard does not depend on any of that bookkeeping at all: a
-  // capture-phase `submit` listener on `document` runs before the
-  // target form's own listeners (htmx's included), and can veto the
-  // native submission directly whenever htmx has not finished wiring
-  // THIS specific form -- converting a click that lands in the race
-  // into NOTHING HAPPENING (a dropped keystroke) instead of a
-  // destroyed page.
+  // Layer 2 (code gate r5, the durable guard; redesigned code gate r6
+  // MAJOR-1). Ruling: every round of bugs this unit has found (r1
+  // through r5) caused harm through exactly ONE mechanism -- a native,
+  // un-intercepted form submission navigating the page, because htmx
+  // had not yet attached its own interception to the form being
+  // clicked (the swap/settle gap this whole unit exists to close,
+  // entered through one new door each round). That mechanism is
+  // narrower than every way the pendingSwaps / pendingDispatches /
+  // abandonedSwaps bookkeeping above can be wrong -- and there is no
+  // proof B-1/B-2 above are the LAST way. This guard does not depend
+  // on any of that bookkeeping at all: a capture-phase `submit`
+  // listener on `document` runs before the target form's own
+  // listeners (htmx's included), and can veto the native submission
+  // directly whenever htmx will not (yet, or ever) handle it --
+  // converting a click that lands in the race into NOTHING HAPPENING
+  // (a dropped keystroke) instead of a destroyed page.
   //
-  // The check asks htmx directly, not this file's own bag: htmx marks
-  // an element's own internal bookkeeping object (a private expando,
-  // `elt["htmx-internal-data"]`) with `firstInitCompleted = true` the
-  // instant its own per-node processing -- including attaching this
-  // exact submit trigger listener, for the `<form hx-post=...>` shape
-  // every armed/commit-drift bar uses -- has finished
-  // (htmx-2.0.9.min.js, function `kt`, the last statement before it
-  // fires its own `htmx:afterProcessNode`). Reading the property
-  // directly, rather than calling htmx's own `getInternalData()`,
-  // avoids that function's create-on-read side effect (it lazily
-  // creates the object if absent). No public htmx API exposes this
-  // marker, so this is a private-implementation dependency -- if it
-  // ever reads as `undefined` (a future htmx upgrade renaming or
-  // dropping the field), the check below fails CLOSED: "unknown" is
-  // treated the same as "not yet wired," and the native submit is
-  // blocked rather than assumed safe.
+  // MAJOR-1 (code gate r6): the r5 version of this guard asked the
+  // wrong question. It read `elt["htmx-internal-data"].
+  // firstInitCompleted` -- which tells you htmx has PROCESSED a node,
+  // never whether htmx will actually INTERCEPT that node's submit.
+  // Those differ, and htmx 2.0.9 makes them differ badly: its own
+  // node-discovery selector (`findElementsToProcess` in
+  // htmx-2.0.9.min.js) literally includes ", form,", so EVERY `<form>`
+  // gets processed and marked `firstInitCompleted = true` -- including
+  // the three bare `<form id="form-{{ dom_id }}">` note-input wrapper
+  // forms (`action_bar.html:122`, `:142`, `:197`) that carry NO
+  // `hx-*` verb of their own at all. Those forms exist purely as
+  // `hx-include` scoping containers -- every actual submission from
+  // them happens via a SEPARATE sibling `<button hx-post=... hx-
+  // include="#form-{{ dom_id }}">` elsewhere, never the form itself --
+  // so htmx never attaches anything that would intercept a submit ON
+  // THEM, yet the r5 check read `wired === true` for them FOREVER
+  // (processed at page load, same as everything else), permitting
+  // their native submission unconditionally. Each has exactly one text
+  // field and zero submit buttons, so pressing Enter in the note field
+  // triggers the browser's OWN implicit-submission rule -- measured
+  // live: `/record/lrn-b71e0001` -> `?dest=&note=...`, a real
+  // navigation, no guard warning, `defaultPrevented` false at every
+  // phase. The exact original failure signature this whole unit exists
+  // to close, reproduced on the very build whose own r5 prose claimed
+  // "this layer closes the exit."
   //
-  // Scope note: some forms in this app (the Worker/Miner "Force run"
-  // buttons, index.html) carry `hx-post` on the BUTTON rather than the
-  // FORM, with an explicit `formmethod`/`formaction` native fallback
-  // for genuinely no-JS clients. htmx's default trigger for such a
-  // button is "click", not "submit" (getTriggerSpecs' fallback case),
-  // so a WIRED click never reaches a native submit at all -- htmx
-  // preventDefault()s the click itself before the browser would ever
-  // dispatch one. This guard is therefore unreachable for that button
-  // in the wired case regardless, and those buttons are never
-  // re-swapped by htmx after initial load (Front only ever refreshes
-  // via a full, whole-page browser reload -- see the ONE reload()
-  // chokepoint below, never a partial swap of that section), so their
-  // own race window closes before any human could physically click --
-  // this guard cannot regress their no-JS fallback in practice.
+  // Fixed by asking the real question directly, computed from the DOM
+  // this file already controls rather than inferred from a private
+  // htmx marker: will htmx EVER intercept THIS form's submit at all?
+  // htmx only ever wires a submit-trigger listener for a form that (a)
+  // carries an `hx-get`/`hx-post`/`hx-put`/`hx-delete`/`hx-patch` (or
+  // `data-hx-*` equivalent) attribute directly, matching exactly the
+  // five-verb list htmx's own selector construction uses, or (b) is
+  // boosted -- `hx-boost="true"` (or `data-hx-boost`) on the form
+  // itself or an ancestor, htmx's OWN `getClosestAttributeValue`
+  // inheriting exactly that way. A form with NEITHER is, structurally,
+  // never going to be intercepted -- no timing question to ask at all
+  // -- so its native submission is blocked UNCONDITIONALLY, not merely
+  // until some marker flips. A form with EITHER might simply not be
+  // WIRED YET (the original r5 swap/settle race this layer was built
+  // for), and for that narrower, correctly-scoped case
+  // `firstInitCompleted` remains the right signal: htmx's own `kt()`
+  // wires the verb (via `wt()`) or the boost (via `at()`) EARLIER in
+  // the SAME synchronous call that sets `firstInitCompleted = true` as
+  // its last statement, so by the time that flag reads true, the
+  // interception it actually promises for a VERB/BOOST-carrying form
+  // has already happened. Reading `elt["htmx-internal-data"]` directly
+  // (never htmx's own `getInternalData()`, whose create-on-read side
+  // effect would fabricate the object if absent) is still a
+  // private-implementation dependency -- if it ever reads as
+  // `undefined` (a future htmx upgrade renaming or dropping the
+  // field), the check fails CLOSED exactly as before: "unknown" is
+  // treated the same as "not yet wired."
+  //
+  // Determining form intent (code gate r6, ruling item 2): the three
+  // note forms above are not missing their `hx-post` by accident --
+  // every OTHER form in this app that IS meant to be submitted (the
+  // armed/confirm/disarm/commit-drift bars) carries `hx-post` directly
+  // on the `<form>`, and these three deliberately do not, because their
+  // actual submission always happens through a sibling button's own
+  // `hx-include`. Enter silently navigating the page was the bug, not
+  // the missing wiring -- so the fix here is to block their implicit
+  // submission permanently, not to give them an `hx-post` they were
+  // never meant to have.
+  //
+  // Scope note: the Worker/Miner "Force run" buttons (index.html)
+  // carry `hx-post` on the BUTTON rather than the FORM, with an
+  // explicit `formmethod`/`formaction` native fallback for genuinely
+  // no-JS clients -- under this check their FORM has no verb/boost of
+  // its own either, so it is now ALWAYS blocked, same as the three note
+  // forms. This narrows what r5 already argued was a purely
+  // theoretical, unreachable race window (htmx's default trigger for
+  // such a button is "click", so a WIRED click never reaches a native
+  // submit at all -- htmx preventDefault()s the click itself first --
+  // and those buttons are never re-swapped after initial load) into an
+  // UNREACHABLE-AND-blocked one: strictly safer, consistent with this
+  // whole guard's fail-closed posture, and confirmed by the gate driving
+  // it for real (one POST per click, zero submit events, zero
+  // navigations, no double-submit).
+  const HX_VERB_NAMES = ["get", "post", "put", "delete", "patch"];
+
+  function formHasOwnHtmxVerb(form) {
+    return HX_VERB_NAMES.some(function (verb) {
+      return (
+        form.hasAttribute("hx-" + verb) || form.hasAttribute("data-hx-" + verb)
+      );
+    });
+  }
+
+  function formHasHtmxBoost(form) {
+    // htmx's own hx-boost inherits from the closest ancestor (or the
+    // element itself) that sets it -- walking up here mirrors that.
+    for (let el = form; el; el = el.parentElement) {
+      const v =
+        (el.getAttribute && el.getAttribute("hx-boost")) ||
+        (el.getAttribute && el.getAttribute("data-hx-boost"));
+      if (v != null) return v === "true";
+    }
+    return false;
+  }
+
+  // The real question this guard exists to answer: will htmx EVER
+  // intercept this form's submit? Not "has htmx walked past it."
+  function htmxWillInterceptSubmit(form) {
+    return formHasOwnHtmxVerb(form) || formHasHtmxBoost(form);
+  }
+
   document.addEventListener(
     "submit",
     function (evt) {
       const form = evt.target;
-      const data = form && form["htmx-internal-data"];
+      if (!form || typeof form.hasAttribute !== "function") return;
+      if (!htmxWillInterceptSubmit(form)) {
+        // This form carries no hx-* verb and no hx-boost (own or
+        // inherited) -- htmx will NEVER wire a submit interception for
+        // it, so this is not a timing question and there is nothing to
+        // wait for. "No request was sent" is accurate here: with no
+        // verb and no boost, htmx wires, at most, a no-op trigger
+        // handler for it (see the block comment above) -- nothing that
+        // could ever issue a request.
+        evt.preventDefault();
+        console.warn(
+          "blocked a native form submission -- this form carries no " +
+            "htmx verb or boost, so htmx will never intercept it " +
+            "(no request was sent)"
+        );
+        return;
+      }
+      const data = form["htmx-internal-data"];
       const wired = !!(data && data.firstInitCompleted === true);
       if (!wired) {
         evt.preventDefault();
         console.warn(
-          "blocked a native form submission -- htmx had not finished " +
-            "wiring this form yet (the swap/settle gap); no request was sent"
+          "blocked this form's native submission fallback -- htmx did " +
+            "not yet appear wired for it (the swap/settle gap); if " +
+            "htmx's own listener is already attached despite that, its " +
+            "request still goes through regardless of this block, " +
+            "since preventDefault() here only stops OTHER listeners' " +
+            "default action, never htmx's own already-attached handling"
         );
       }
       // else: htmx has already attached its own submit interception to

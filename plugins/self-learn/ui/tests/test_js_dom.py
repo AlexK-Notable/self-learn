@@ -1850,11 +1850,15 @@ class TestClickActionSettleGating:
     def test_submit_guard_blocks_a_native_post_when_htmx_has_not_wired_the_form(
         self, page: "Page", server: ServerHandle
     ) -> None:
-        """Layer 2 (code gate r5, the durable guard). Every bug this
-        unit has found and fixed (B-1/B-2 included) caused harm
-        through exactly ONE mechanism -- a native, un-intercepted form
-        submission navigating the page, because htmx had not yet
-        attached its own interception to the form being clicked. This
+        """Layer 2 (code gate r5, the durable guard; redesigned code
+        gate r6, MAJOR-1). Every bug this unit has found and fixed
+        (B-1/B-2 included) caused harm through exactly ONE mechanism --
+        a native, un-intercepted form submission navigating the page,
+        because htmx had not yet attached its own interception to the
+        form being clicked. This test exercises the TIMING branch of
+        the r6-redesigned guard specifically (this confirm form DOES
+        carry `hx-post` -- see the sibling test below for the OTHER
+        branch, a form that will never be intercepted at all). This
         test does not go through clickAction()'s gating AT ALL -- it
         deliberately clicks the confirm button on a freshly-armed bar
         DURING the swap/settle gap, exactly as if some future hole in
@@ -1911,15 +1915,213 @@ class TestClickActionSettleGating:
             "the page is no longer the same document -- a navigation destroyed it"
         )
         # Same CDP console-delivery lag as the other warning-checking
-        # tests in this class -- poke to flush it.
+        # tests in this class -- poke to flush it. Text matches the
+        # "not yet wired" branch specifically (code gate r6, MAJOR-1) --
+        # this confirm form DOES carry hx-post directly, so it goes
+        # through the timing check, not the never-intercepted one (see
+        # test_native_submission_is_blocked_forever_for_a_form_with_no_
+        # htmx_verb_or_boost below for that branch).
         for _ in range(25):
-            if any("blocked a native form submission" in w for w in warnings):
+            if any("htmx did not yet appear wired" in w for w in warnings):
                 break
             page.evaluate("() => true")
             time.sleep(0.02)
-        blocked_warnings = [w for w in warnings if "blocked a native form submission" in w]
+        blocked_warnings = [w for w in warnings if "htmx did not yet appear wired" in w]
         assert len(blocked_warnings) == 1, (
             f"expected exactly one submit-guard warning, got: {warnings}"
+        )
+
+    def test_native_submission_is_blocked_forever_for_a_form_with_no_htmx_verb_or_boost(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        """MAJOR-1 (code gate r6): the r5 guard's `firstInitCompleted`
+        check answers "has htmx processed this element", never "will
+        htmx intercept its submit" -- and htmx 2.0.9 marks EVERY
+        `<form>` as processed regardless of whether it carries an
+        `hx-*` verb (its own `findElementsToProcess` selector literally
+        includes ", form,"). The three bare `<form id="form-{{
+        dom_id }}">` note-input wrapper forms (`action_bar.html:122`,
+        `:142`, `:197`) exist purely as `hx-include` scoping containers
+        -- their actual submission always happens via a SEPARATE
+        sibling button's own `hx-post`+`hx-include`, never the form
+        itself -- so the r5 guard read them as permanently "wired" and
+        let Enter-in-the-note-field's native implicit submission
+        through completely unguarded. Reproduced live by the gate on
+        the r5-shipped build: `/record/lrn-b71e0001` ->
+        `?dest=&note=nwhy`, a real navigation, no guard warning at all,
+        `defaultPrevented` false at every phase -- the ORIGINAL failure
+        signature this whole unit exists to close. Fixed by asking
+        whether htmx will EVER intercept a form's submit (an `hx-*`
+        verb, or `hx-boost`, present directly or inherited) rather than
+        whether it has merely been processed -- these forms have
+        neither, so the guard now blocks their native submission
+        UNCONDITIONALLY, not merely until some marker flips, and the
+        typed note text survives (never cleared, never lost) since
+        nothing but the native navigation is prevented."""
+        _open(page, server, f"/record/{REC_BRIEF}")
+        warnings: list[str] = []
+        page.on(
+            "console",
+            lambda msg: warnings.append(msg.text) if msg.type == "warning" else None,
+        )
+        final_url_before = page.url
+        note = page.locator('.action-bar input[name="note"]')
+        note.fill("nwhy")
+        note.press("Enter")
+        time.sleep(0.3)
+
+        assert page.url == final_url_before, (
+            f"navigated away: {page.url!r} -- Enter in the note field "
+            f"triggered a native implicit submission (MAJOR-1's original bug)"
+        )
+        for _ in range(25):
+            if any("htmx will never intercept it" in w for w in warnings):
+                break
+            page.evaluate("() => true")
+            time.sleep(0.02)
+        blocked_warnings = [w for w in warnings if "htmx will never intercept it" in w]
+        assert len(blocked_warnings) == 1, (
+            f"expected exactly one never-intercepted warning, got: {warnings}"
+        )
+        assert note.input_value() == "nwhy", (
+            "the note field's own typed text was lost -- blocking the "
+            "implicit submit must not clear the input"
+        )
+
+    def test_an_unresolved_abandoned_key_eventually_stops_deafening_later_keypresses(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        """Minor 1 (code gate r6): an abandoned key that NEVER gets a
+        real resolution used to gate every future dispatch FOREVER --
+        measured by the gate as `[False, False, False]` across three
+        separate keypresses, each dropping via its own fallback but
+        NONE ever dispatching immediately again -- contradicting r4's
+        own "the NEXT keypress dispatches normally" guarantee, and
+        reproducing a form of the exact proxy-lying mistake this unit
+        has chased for six rounds now (treating a stale
+        absence-of-evidence as permanent evidence), just pointed the
+        other way. Fixed by giving each abandoned entry its own
+        staleness ceiling (`ABANDONED_SWAP_CEILING_MS`, 10s): once a
+        key has outlived any plausible swap, it silently ages out --
+        NEVER draining `pendingDispatches` itself, so a timeout is
+        still never a reason to act -- letting only FUTURE, not-yet-
+        issued keypresses recover the ability to dispatch immediately;
+        any dispatch already queued and waiting on it still only ever
+        drops via its OWN independent 500ms fallback, exactly as
+        before (reproduced here first, matching the gate's own
+        three-drop measurement, before the ceiling is ever reached)."""
+        _open(page, server, f"/record/{REC_BRIEF}")
+        page.evaluate(
+            """() => {
+                window.__deafXhr = {};
+                document.dispatchEvent(new CustomEvent('htmx:afterSwap', {
+                    detail: { xhr: window.__deafXhr }
+                }));
+            }"""
+        )
+        time.sleep(0.7)  # the token self-evicts into abandonedSwaps
+
+        warnings: list[str] = []
+        page.on(
+            "console",
+            lambda msg: warnings.append(msg.text) if msg.type == "warning" else None,
+        )
+        held = _hold_post(page, "/action/arm")
+
+        # Three keypresses while abandoned, spaced past each one's own
+        # 500ms fallback -- each must still drop, never fire (the
+        # gate's own [False, False, False] measurement, reproduced).
+        for _ in range(3):
+            page.keyboard.press("e")
+            time.sleep(0.7)
+        assert "route" not in held, (
+            "a keypress fired while the abandoned key was still within "
+            "its staleness ceiling"
+        )
+        for _ in range(60):
+            if len([w for w in warnings if "dropped" in w.lower()]) >= 3:
+                break
+            page.evaluate("() => true")
+            time.sleep(0.02)
+        drop_warnings = [w for w in warnings if "dropped" in w.lower()]
+        assert len(drop_warnings) == 3, f"expected 3 drop warnings, got: {warnings}"
+
+        # Past the abandoned entry's own staleness ceiling (10s, and
+        # ~2.1s have already elapsed above) -- a FRESH keypress must now
+        # dispatch immediately, not defer -- the deafened keyboard
+        # recovers on its own, with no real resolution ever supplied.
+        time.sleep(8.5)
+        page.keyboard.press("e")
+        elapsed = _poll_held_actively(page, held, timeout=2.0)
+        assert elapsed < 0.3, (
+            f"a keypress after the abandoned key's own ceiling was not "
+            f"immediate: {elapsed:.3f}s -- the deafened keyboard never "
+            f"recovered"
+        )
+
+    def test_abandoned_ceiling_never_drains_a_dispatch_that_is_still_queued(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        """Minor 1 (code gate r6), the sharper half: the previous test
+        proves the ceiling eventually lets a FUTURE keypress dispatch
+        again, but does not by itself prove the ceiling firing WHILE a
+        dispatch is still queued and waiting on it never releases that
+        dispatch early -- exactly the historical N17 mistake (a timeout
+        draining pendingDispatches instead of merely giving up), now at
+        this second layer instead of the token layer it was originally
+        found at. Constructed so the ceiling (10s after the token
+        becomes abandoned) fires WHILE a dispatch queued shortly before
+        it is still within its OWN, independent 500ms fallback window:
+        the dispatch must still only ever drop via THAT timer, at its
+        own ~500ms mark, never fire early when the ceiling passes."""
+        _open(page, server, f"/record/{REC_BRIEF}")
+        page.evaluate(
+            """() => {
+                window.__deafXhr2 = {};
+                document.dispatchEvent(new CustomEvent('htmx:afterSwap', {
+                    detail: { xhr: window.__deafXhr2 }
+                }));
+            }"""
+        )
+        # Token self-evicts at ~0.5s after the dispatch above -> the
+        # abandoned entry's own ceiling fires at ~10.5s measured from
+        # NOW (t=0 here).
+        warnings: list[str] = []
+        page.on(
+            "console",
+            lambda msg: warnings.append(msg.text) if msg.type == "warning" else None,
+        )
+        held = _hold_post(page, "/action/arm")
+
+        # Queue a dispatch at ~10.2s -- comfortably past the token's
+        # own 500ms eviction, and late enough that its OWN 500ms
+        # fallback (~10.7s) lands AFTER the ~10.5s ceiling: the ceiling
+        # passes WHILE this dispatch is still queued and waiting.
+        time.sleep(10.2)
+        page.keyboard.press("e")
+
+        # Wait comfortably past BOTH the ~10.5s ceiling and this
+        # dispatch's own ~10.7s fallback -- generously padded (this
+        # host runs multiple concurrent sibling agents; a busy event
+        # loop delays JS timers, never fires them early, so extra
+        # margin here cannot manufacture a false pass) -- then check
+        # the terminal state: fired (bug -- the ceiling drained the
+        # queue early) or dropped (correct -- only its own fallback
+        # ever resolved it).
+        for _ in range(250):
+            if any("dropped" in w.lower() for w in warnings) or "route" in held:
+                break
+            page.evaluate("() => true")
+            time.sleep(0.02)
+        assert "route" not in held, (
+            "the queued dispatch fired -- either the ceiling drained "
+            "the queue early, or its own fallback fired instead of "
+            "dropping"
+        )
+        drop_warnings = [w for w in warnings if "dropped" in w.lower()]
+        assert len(drop_warnings) == 1, f"expected one drop warning, got: {warnings}"
+        assert "route" not in held, (
+            "fired instead of dropping once its own fallback finally ran"
         )
 
 
