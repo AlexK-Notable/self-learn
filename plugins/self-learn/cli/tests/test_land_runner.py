@@ -290,7 +290,12 @@ def test_sui3_known_failure_allowlist_tolerates_exactly_that_id(tmp_path):
 
 
 def test_sui3_extra_failure_beyond_the_allowlist_still_refuses(tmp_path):
-    repo = LF.make_repo(tmp_path)
+    """SUI3 leg 2. `with_ui=True` is load-bearing exactly as it is one
+    screen above: without a UI tree, B-2's `need_dir` exits 5 BEFORE the
+    allowlist is ever consulted, so inverting the allowlist rule wholesale
+    left both SUI3 tests green (gate r2). The refusal must come from the
+    adjudication, and the assertions below say so."""
+    repo = LF.make_repo(tmp_path, with_ui=True)
     node_id = "plugins/self-learn/cli/tests/test_red.py::test_fails"
     (repo / "plugins/self-learn/cli/src/self_learn/landing/known_failures.txt").write_text(node_id + "\n")
     LF.git(repo, "add", "-A")
@@ -303,7 +308,11 @@ def test_sui3_extra_failure_beyond_the_allowlist_still_refuses(tmp_path):
         },
     )
     r = LF.run_land(repo, tmp_path, "--branch", "u-twofail", "--verdict", "v", timeout=180)
-    assert r.returncode == 5
+    assert r.returncode == 5, r.stdout + r.stderr
+    # the refusal is the ALLOWLIST's, naming the id that is not on it --
+    # not a guard that fired before the allowlist ran
+    assert "not-allowlisted" in r.stderr, r.stderr
+    assert "test_red2.py::test_also_fails" in r.stderr, r.stderr
 
 
 def test_sui6_rename_into_docs_without_no_renames_takes_full_lane(tmp_path):
@@ -2748,3 +2757,313 @@ def test_san_floor_zero_scanned_added_lines_refuses(tmp_path):
     LF.git(repo, "commit", "-q", "-m", "add")
     assert SAN.main(["--root", str(repo), "--range", "HEAD~1..HEAD", "--check",
                      "--fragments", str(frags)]) == 0
+
+
+# ---------------------------------------------------------------------------
+# The helper-not-runner shape (gate r2's five Majors)
+#
+# A criterion about WHEN or IN WHAT ORDER the runner does something cannot
+# be verified by calling the helper in isolation. WLD1's six tests all
+# exercised `detect_world()` on hand-built trees; none observed when `land`
+# actually calls it, so moving the call PRE-merge left the full suite green.
+#
+# The fixture below makes the two answers DIFFER. Master is the pre-U-armor
+# world (pins, no test_armor.py); the branch is U-armor's own shape --
+# it DELETES the pins and ADDS test_armor.py. So:
+#
+#   detection on master's tree      -> "armor_shas"  -> CHK2 -> 0 pins -> refuse
+#   detection on the merged tree    -> "remeasure"   -> the anchor advances
+#
+# and the landing's OUTCOME reports which tree was read.
+
+
+def _divergent_world_repo(tmp_path: Path) -> Path:
+    """Master: pins, no test_armor.py. Branch: no pins, test_armor.py.
+    The world differs pre- and post-merge, which is what makes WLD1's
+    'POST-merge' clause observable from outside."""
+    repo = LF.make_repo(tmp_path, with_ui=True, armor="shas")
+    cli = repo / "plugins/self-learn/cli"
+    # The watched file must exist AT THE ANCHOR -- the anchor is master's
+    # pre-merge tip, and a census of a file that is not there at that rev is
+    # an error, not a clean read. So it lands on master first.
+    (cli / "tests" / "test_watched.py").write_text(LF._FIXTURE_WATCHED)
+    LF.git(repo, "add", "-A")
+    LF.git(repo, "commit", "-q", "-m", "the watched behaviour file")
+    LF.git(repo, "push", "-q", "origin", "master")
+
+    LF.git(repo, "checkout", "-q", "-b", "u-armorworld")
+    (cli / "tests" / "test_worker_contract.py").write_text(
+        '"""_ARMOR_SHAS retired by U-armor; the census lives in test_armor.py."""\n'
+    )
+    (cli / "tests" / "test_armor.py").write_text(
+        LF._FIXTURE_ARMOR.replace("@@ANCHOR@@", "0000000")
+    )
+    LF.git(repo, "add", "-A")
+    LF.git(repo, "commit", "-q", "-m", "retire the pins, add the census")
+    LF.git(repo, "checkout", "-q", "master")
+    return repo
+
+
+def test_wld1_detection_reads_the_POST_merge_tree_observed_through_the_runner(tmp_path):
+    """WLD1, observed end to end rather than by calling the helper.
+
+    Red control FIRST, measured on this very fixture: the two trees give
+    DIFFERENT answers, so the criterion is discriminable here. Then the
+    landing is run, and the artefacts say which tree was read -- a
+    `remeasure.log` means the merged tree, a `chk2.log` means master's.
+    """
+    from self_learn.landing.checks import (
+        WORLD_ARMOR_SHAS, WORLD_REMEASURE, detect_world,
+    )
+
+    repo = _divergent_world_repo(tmp_path)
+
+    # the discriminating precondition, measured
+    assert detect_world(repo) == WORLD_ARMOR_SHAS          # master's tree
+    LF.git(repo, "checkout", "-q", "u-armorworld")
+    assert detect_world(repo) == WORLD_REMEASURE           # the branch's
+    LF.git(repo, "checkout", "-q", "master")
+
+    r = LF.run_land(repo, tmp_path, "--branch", "u-armorworld", "--verdict", "v", timeout=180)
+    assert r.returncode == 0, r.stdout + r.stderr
+    logs = Path(r.stdout.split("logs=")[-1].strip())
+    assert (logs / "remeasure.log").exists(), sorted(p.name for p in logs.iterdir())
+    assert not (logs / "chk2.log").exists(), "took the pins branch -- detection read master's tree"
+    assert "ANCHOR 0000000 ->" in (logs / "remeasure.log").read_text()
+
+
+def test_wld1_refuses_when_both_or_neither_mechanism_is_present(tmp_path):
+    """WLD1's other two cells, also through the runner: exactly one
+    mechanism must be present. Both -> refuse; neither -> refuse. The
+    `0:0` cell is the one that matters, since a pre-merge detector would
+    pick `armor_shas` and then find zero pins."""
+    # BOTH
+    both = LF.make_repo(tmp_path / "both", with_ui=True, armor="shas")
+    cli = both / "plugins/self-learn/cli"
+    LF.git(both, "checkout", "-q", "-b", "u-both")
+    (cli / "tests" / "test_watched.py").write_text(LF._FIXTURE_WATCHED)
+    (cli / "tests" / "test_armor.py").write_text(
+        LF._FIXTURE_ARMOR.replace("@@ANCHOR@@", "0000000"))
+    LF.git(both, "add", "-A")
+    LF.git(both, "commit", "-q", "-m", "add the census WITHOUT retiring the pins")
+    LF.git(both, "checkout", "-q", "master")
+    rb = LF.run_land(both, tmp_path / "both", "--branch", "u-both", "--verdict", "v", timeout=180)
+    assert rb.returncode == 4, rb.stdout + rb.stderr
+    assert "BOTH armor mechanisms" in rb.stderr, rb.stderr
+
+    # NEITHER
+    none = LF.make_repo(tmp_path / "none", with_ui=True, armor="shas")
+    LF.git(none, "checkout", "-q", "-b", "u-none")
+    (none / "plugins/self-learn/cli/tests/test_worker_contract.py").write_text(
+        '"""no pins, and no census either"""\n')
+    LF.git(none, "add", "-A")
+    LF.git(none, "commit", "-q", "-m", "retire the pins with nothing to replace them")
+    LF.git(none, "checkout", "-q", "master")
+    rn = LF.run_land(none, tmp_path / "none", "--branch", "u-none", "--verdict", "v", timeout=180)
+    assert rn.returncode == 4, rn.stdout + rn.stderr
+    assert "NEITHER armor mechanism" in rn.stderr, rn.stderr
+
+
+def test_prv3_the_runner_supplies_diff3_itself_observed_end_to_end(tmp_path):
+    """PRV3, three legs, through the runner.
+
+    (a) the confound control: the fixture's repo-local
+        `merge.conflictStyle` is asserted UNSET, so a pass cannot come
+        from the fixture's own configuration;
+    (b) the landing runs with `GIT_CONFIG_GLOBAL`/`SYSTEM` neutralised --
+        this machine sets `merge.conflictStyle=diff3` globally, and
+        without that isolation the runner could drop its own `-c` and
+        still see base markers;
+    (c) the conflicted file really did carry a `|||||||` base section
+        during the merge, which is what the resolver needs.
+    """
+    repo = LF.make_repo(tmp_path, with_ui=True)
+    fw = "docs/specs/self-learn/14-forward-work-map.md"
+
+    # (a) confound control
+    got = LF.git(repo, "config", "--local", "--get", "merge.conflictStyle", check=False)
+    assert got.returncode != 0, f"the fixture sets merge.conflictStyle locally: {got.stdout!r}"
+
+    LF.git(repo, "checkout", "-q", "-b", "u-conflict")
+    (repo / fw).write_text((repo / fw).read_text() + "| FW-3 | branch | WATCH | n |\n")
+    LF.git(repo, "add", "-A")
+    LF.git(repo, "commit", "-q", "-m", "branch row")
+    LF.git(repo, "checkout", "-q", "master")
+    (repo / fw).write_text((repo / fw).read_text() + "| FW-4 | master | WATCH | n |\n")
+    LF.git(repo, "add", "-A")
+    LF.git(repo, "commit", "-q", "-m", "master row")
+
+    # (c) what the merge itself produces under the runner's own -c, with the
+    # operator's config neutralised exactly as `land` runs it
+    import os as _os
+    probe_env = dict(_os.environ, GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_SYSTEM="/dev/null")
+    subprocess.run(["git", "-C", str(repo), "-c", "merge.conflictStyle=diff3",
+                    "merge", "--no-ff", "--no-commit", "u-conflict"],
+                   capture_output=True, text=True, env=probe_env)
+    with_c = (repo / fw).read_text()
+    subprocess.run(["git", "-C", str(repo), "merge", "--abort"], capture_output=True)
+    subprocess.run(["git", "-C", str(repo), "merge", "--no-ff", "--no-commit", "u-conflict"],
+                   capture_output=True, text=True, env=probe_env)
+    without_c = (repo / fw).read_text()
+    subprocess.run(["git", "-C", str(repo), "merge", "--abort"], capture_output=True)
+    assert "|||||||" in with_c, with_c[:400]
+    assert "|||||||" not in without_c, (
+        "the fixture produced base markers WITHOUT the runner's -c, so this "
+        "test cannot tell whether the runner supplies it"
+    )
+
+    # (b) and the real landing, which needs those markers to resolve
+    r = LF.run_land(repo, tmp_path, "--branch", "u-conflict", "--verdict", "v",
+                    "--resolver", f"{fw}=numeric-rows", timeout=180)
+    assert r.returncode == 0, r.stdout + r.stderr
+    text = (repo / fw).read_text()
+    assert "FW-3" in text and "FW-4" in text and "<<<<<<<" not in text
+
+
+def test_prv4_a_conflict_refusal_restores_masters_tree(tmp_path):
+    """PRV4. Every conflict refusal must leave master's tree restored --
+    `git merge --abort` ran, porcelain 0, HEAD unmoved. Driven on PRV1,
+    PRV2 and PRV3's refusal paths, because a refusal that leaves a
+    half-merged tree is worse than the conflict."""
+    fw = "docs/specs/self-learn/14-forward-work-map.md"
+
+    def state(repo: Path) -> tuple[str, str]:
+        return (LF.git(repo, "rev-parse", "HEAD").stdout.strip(),
+                LF.git(repo, "status", "--porcelain").stdout.strip())
+
+    # PRV1: --resolver given but the preview is clean
+    a = LF.make_repo(tmp_path / "prv1", with_ui=True)
+    LF.make_branch(a, "u-clean", edits={"docs/specs/self-learn/drafts/n.md": "x\n"})
+    before = state(a)
+    ra = LF.run_land(a, tmp_path / "prv1", "--branch", "u-clean", "--verdict", "v",
+                     "--resolver", f"{fw}=numeric-rows", timeout=180)
+    assert ra.returncode == 3, ra.stdout + ra.stderr
+    assert state(a) == before, (state(a), before)
+
+    # PRV2: a conflicted path with no --resolver mapping
+    b = LF.make_repo(tmp_path / "prv2", with_ui=True)
+    LF.git(b, "checkout", "-q", "-b", "u-conf")
+    (b / fw).write_text((b / fw).read_text() + "| FW-3 | branch | WATCH | n |\n")
+    LF.git(b, "add", "-A"); LF.git(b, "commit", "-q", "-m", "branch")
+    LF.git(b, "checkout", "-q", "master")
+    (b / fw).write_text((b / fw).read_text() + "| FW-4 | master | WATCH | n |\n")
+    LF.git(b, "add", "-A"); LF.git(b, "commit", "-q", "-m", "master")
+    before_b = state(b)
+    rb = LF.run_land(b, tmp_path / "prv2", "--branch", "u-conf", "--verdict", "v", timeout=180)
+    assert rb.returncode == 3, rb.stdout + rb.stderr
+    assert state(b) == before_b, (state(b), before_b)
+    assert "PRV2" in rb.stderr
+
+
+def test_dry1_and_dry3_dry_run_touches_nothing_and_never_pushes(tmp_path):
+    """DRY1/DRY3. After `--dry-run`: master's sha, the porcelain output and
+    the `git worktree list` line count are all identical to pre-run, the
+    origin has not moved, and the run says `DRY RUN`."""
+    repo = LF.make_repo(tmp_path, with_ui=True)
+    LF.make_branch(
+        repo, "u-dry",
+        edits={"plugins/self-learn/cli/tests/test_gamma.py": "def test_g():\n    assert True\n"},
+    )
+
+    def snapshot():
+        return (
+            LF.git(repo, "rev-parse", "master").stdout.strip(),
+            LF.git(repo, "status", "--porcelain").stdout,
+            len(LF.git(repo, "worktree", "list").stdout.strip().split("\n")),
+            subprocess.run(["git", "--git-dir", str(tmp_path / "origin.git"),
+                            "rev-parse", "master"], capture_output=True,
+                           text=True, check=True).stdout.strip(),
+        )
+
+    before = snapshot()
+    r = LF.run_land(repo, tmp_path, "--branch", "u-dry", "--verdict", "v",
+                    "--dry-run", timeout=180)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "DRY RUN" in r.stdout and "nothing pushed" in r.stdout
+    assert "pushed:" not in r.stdout
+    assert snapshot() == before, (snapshot(), before)
+
+    # positive control: the SAME landing without --dry-run does move things,
+    # so "identical" above is not a statement about a run that did nothing
+    ok = LF.run_land(repo, tmp_path, "--branch", "u-dry", "--verdict", "v", timeout=180)
+    assert ok.returncode == 0, ok.stdout + ok.stderr
+    assert snapshot() != before
+
+
+def test_dry2_refusals_match_the_real_run_over_every_named_case(tmp_path):
+    """DRY2, parameterised over all SIX cases the spec names -- PRE3, PRV2,
+    CHK2, CHK5, SAN3 and WLD1/WLD2 -- not the three that were built.
+
+    For each: the dry run and the real run must produce the SAME exit code
+    and the same refusal message, and the dry run must have judged `$TMP`
+    rather than the main checkout.
+    """
+    fw = "docs/specs/self-learn/14-forward-work-map.md"
+    cases: list[tuple[str, "Callable[[Path], str]"]] = []
+
+    def _pre3(repo: Path) -> str:
+        # the dirt must be created AFTER the branch, or `make_branch`'s own
+        # `git add -A` commits it and master is clean again
+        LF.make_branch(repo, "u-x", edits={"docs/specs/self-learn/drafts/n.md": "x\n"})
+        (repo / "dirty.txt").write_text("uncommitted\n")
+        return "u-x"
+
+    def _prv2(repo: Path) -> str:
+        LF.git(repo, "checkout", "-q", "-b", "u-x")
+        (repo / fw).write_text((repo / fw).read_text() + "| FW-3 | b | WATCH | n |\n")
+        LF.git(repo, "add", "-A"); LF.git(repo, "commit", "-q", "-m", "b")
+        LF.git(repo, "checkout", "-q", "master")
+        (repo / fw).write_text((repo / fw).read_text() + "| FW-4 | m | WATCH | n |\n")
+        LF.git(repo, "add", "-A"); LF.git(repo, "commit", "-q", "-m", "m")
+        return "u-x"
+
+    def _chk2(repo: Path) -> str:
+        LF.git(repo, "checkout", "-q", "-b", "u-x")
+        (repo / "plugins/self-learn/cli/tests/backends.py").write_text("CHANGED\n")
+        LF.git(repo, "add", "-A"); LF.git(repo, "commit", "-q", "-m", "break the pin")
+        LF.git(repo, "checkout", "-q", "master")
+        return "u-x"
+
+    def _chk5(repo: Path) -> str:
+        LF.make_branch(repo, "u-x", edits={"seeded_literal.txt": "a personal path\n"})
+        return "u-x"
+
+    def _san3(repo: Path) -> str:
+        LF.make_branch(repo, "u-x", edits={"docs/specs/self-learn/drafts/n.md":
+                                           "ghp_deadbeefcafe1234\n"})
+        return "u-x"
+
+    def _wld(repo: Path) -> str:
+        LF.git(repo, "checkout", "-q", "-b", "u-x")
+        (repo / "plugins/self-learn/cli/tests/test_worker_contract.py").write_text(
+            '"""no pins, and no census either"""\n')
+        LF.git(repo, "add", "-A"); LF.git(repo, "commit", "-q", "-m", "neither mechanism")
+        LF.git(repo, "checkout", "-q", "master")
+        return "u-x"
+
+    cases = [("PRE3", _pre3), ("PRV2", _prv2), ("CHK2", _chk2),
+             ("CHK5", _chk5), ("SAN3", _san3), ("WLD", _wld)]
+
+    seen = []
+    for name, build in cases:
+        dry_dir = tmp_path / f"{name}-dry"
+        real_dir = tmp_path / f"{name}-real"
+        results = {}
+        for kind, base in (("dry", dry_dir), ("real", real_dir)):
+            repo = LF.make_repo(base, with_ui=True, with_literals=True)
+            branch = build(repo)
+            args = ["--branch", branch, "--verdict", "v"]
+            if kind == "dry":
+                args.append("--dry-run")
+            r = LF.run_land(repo, base, *args, timeout=180)
+            results[kind] = (r.returncode, r.stderr.strip())
+        assert results["dry"][0] != 0, (name, results["dry"])
+        assert results["dry"][0] == results["real"][0], (name, results)
+        # the messages differ only in the mktemp'd log directory
+        import re as _re
+        norm = lambda s: _re.sub(r"/tmp/self-learn-land\.[A-Za-z0-9]+", "<OUT>",
+                                 _re.sub(r"/tmp/[^ \n]*", "<PATH>", s))
+        assert norm(results["dry"][1]) == norm(results["real"][1]), (name, results)
+        seen.append(name)
+
+    assert seen == ["PRE3", "PRV2", "CHK2", "CHK5", "SAN3", "WLD"], seen
