@@ -481,12 +481,18 @@ class TestHOST3NoBulkRetirement:
         )
 
         tree = ast.parse(hosts_py.read_text(encoding="utf-8"), filename=str(hosts_py))
-        called = {
-            _call_name(node.func)
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Call)
-            and _call_name(node.func) in ("graduate", "supersede")
-        }
+        # gate r2 fold, pyright re-measure: a plain set-comprehension
+        # calling `_call_name` twice (once in the value, once in the
+        # `in` guard) left `called` typed `set[str | None]` -- `_call_name`
+        # returns `str | None`, and pyright cannot narrow a value it never
+        # bound to a name. Bind it once and narrow through the `in` check
+        # instead -- same runtime set, `set[str]`.
+        called: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                name = _call_name(node.func)
+                if name in ("graduate", "supersede"):
+                    called.add(name)
         assert called == set(), (
             f"hosts.py CALLS {sorted(called)} -- HOST3 forbids bulk "
             "retirement through host-side code, not just its own prose"
@@ -821,9 +827,12 @@ class TestMETA4ReclassifyTypeRevalidates:
         `set_type(...)` call inside the pre-lock simulation just below
         it -- so the duplicate is refused before any lock or write
         EITHER WAY, never surfacing under the lock. MU12 (delete the
-        early check) still reddens this test: the simulation's own
-        `set_type` call catches it instead, through the identical
-        validator, before the lock opens."""
+        early check only) does NOT silence this test -- MEASURED
+        (not hand-traced): re-run with just the early check disabled
+        still gives `1 passed` -- the simulation's own `set_type`
+        call catches the duplicate instead, through the identical
+        validator, before the lock opens.
+        """
         rid = "lrn-0000cccc"
         record = make_behavior(record_id=rid, scope="skill:a")
         record.set_body(

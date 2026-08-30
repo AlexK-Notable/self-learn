@@ -7627,7 +7627,7 @@ def reclassify(
         except LedgerOpsError as exc:
             raise VerbError(str(exc)) from exc
         # M-3 (gate r1), reached through the public surface now (gate r2
-        # m-4 — records_mod.Record._validate_body was the only
+        # m-4 — reaching Record's own private body-shape staticmethod was the only
         # cross-module access to a Record-private member in either src
         # tree): an early, body-shape-specific refusal, through the ONE
         # shipped validator — the SAME one set_type calls again below,

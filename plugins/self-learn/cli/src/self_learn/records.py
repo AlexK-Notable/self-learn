@@ -105,14 +105,14 @@ def validate_body(type: str, body: str) -> None:
     """Body-shape validator for ``type`` (02 §1: ``behavior`` needs
     ``Trigger``+``Instruction``, ``knowledge`` needs ``Fact``) -- the ONE
     validator. :meth:`Record.set_body`, :meth:`Record.set_type`, and
-    :meth:`Record.validate` all reach it through the private
-    :meth:`Record._validate_body` staticmethod, which delegates here; this
+    :meth:`Record.validate` all reach it through Record's own private
+    body-shape staticmethod, which delegates here; this
     module-level function is the public surface for any caller outside
     this module that needs to check a body's shape against a type without
     constructing or mutating a :class:`Record` (gate r2 m-4: before this,
-    the one caller with that need reached ``Record._validate_body``
-    directly -- the only cross-module access to a ``Record``-private
-    member in either src tree). Counts headings; never inspects content
+    the one caller with that need reached Record's own private
+    body-shape staticmethod directly -- the only cross-module access to a
+    private member in either src tree). Counts headings; never inspects content
     (a present-but-empty required section is NOT a violation -- gate r2
     B-1/M-3: that is a body-quality question, orthogonal to this shape
     check, and measured to have zero live instances -- see
@@ -263,6 +263,15 @@ class Record:
         return f"{_DELIM}\n{buf.getvalue()}{_DELIM}\n{self._body}"
 
     def write(self, path: Path | str) -> None:
+        # gate r2 B-1 (advisor re-check): the universal choke point --
+        # MEASURED, not assumed, to be safe for every existing caller
+        # (full CLI + UI suites green, identical pass/fail counts to
+        # baseline, including UI's own direct `record.write(...)` fixture
+        # call sites, which bypass `reclassify`'s pre-lock validation
+        # entirely). A future caller that mutates type/kind without
+        # `_reclassify_apply`'s discipline is now caught HERE, not left
+        # to become a new instance of B-1's defect class.
+        self.validate()
         Path(path).write_text(self.to_text(), encoding="utf-8")
 
     # ------------------------------------------------------------ read view
