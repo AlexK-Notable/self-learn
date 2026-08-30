@@ -1432,39 +1432,116 @@ class TestClickActionSettleGating:
         assert page.evaluate("window.__freshClicked") is True
         assert page.evaluate("window.__staleClicked") is False
 
-    def test_orphaned_after_swap_self_heals_and_does_not_taint_later_cycles(
+    def test_orphaned_after_swap_heals_only_via_its_own_late_settle_not_an_unrelated_cycle(
         self, page: "Page", server: ServerHandle
     ) -> None:
-        """N9 (code gate r2, the gate's RP7 orphan probe): an
-        `htmx:afterSwap` that never resolves (no `afterSettle`, no F14
-        leg — an ORPHAN) must self-evict via its own 500ms fallback
-        timer and never permanently wedge later keystrokes. Under the
-        r1 counter this never healed: an orphaned increment occupied
-        the counter forever, so even a LATER, fully BALANCED
-        afterSwap/afterSettle cycle could only bring it from 2 back to
-        1 — never to 0 — leaving every subsequent keystroke ~503ms
-        late forever. Here, once the orphan's own timer has expired, a
-        fully balanced cycle nets back to an EMPTY bag, and the next
-        keystroke fires immediately — in ~ms, not 503."""
+        """N9 (code gate r2, the gate's RP7 orphan probe), corrected
+        for B-1/B-2 (code gate r5): an `htmx:afterSwap` that never
+        resolves (no `afterSettle`, no F14 leg for ITS OWN key — an
+        ORPHAN) must self-evict via its own 500ms fallback timer and
+        never permanently wedge later keystrokes -- but self-evicting
+        is not the same as being SAFE, which is exactly what r5's gate
+        reproduced two ways this test's original version could not
+        catch: it dispatched every event with a bare `detail: {}`, so
+        the orphan and the "later balanced cycle" it used to prove
+        healing shared the SAME `undefined` fallback key and were, by
+        construction, indistinguishable -- the r1 counter's own blind
+        spot, carried forward unnoticed into r2's bag and never
+        actually exercised until r5's gate insisted on distinct
+        identities.
+
+        Corrected here with genuinely DISTINCT keys: (B-1) a fresh
+        dispatch queued right after the orphan's own silent eviction
+        must still DEFER, not fire immediately, because the evicted
+        token moved to `abandonedSwaps` rather than vanishing; (B-2,
+        the gate's required interleaving direction 2) an UNRELATED
+        request's own real, balanced afterSwap/afterSettle cycle -- a
+        DIFFERENT key entirely -- must NOT release that queued click
+        while the orphan's own fate is still unknown, even though it
+        empties `pendingSwaps` back to zero all on its own. Only the
+        orphan's OWN real resolution, arriving late, finally heals it
+        -- proven by the queued click firing right after that arrives,
+        and a FRESH keystroke afterward firing immediately (in ~ms,
+        not 500), same guarantee the original N9 test made, just
+        gated on the right signal now."""
         _open(page, server, f"/record/{REC_BRIEF}")
-        # the orphan: a swap that will never settle and never fail.
-        page.evaluate(
-            "document.dispatchEvent(new CustomEvent('htmx:afterSwap', {detail: {}}))"
-        )
-        time.sleep(0.7)  # let the orphan's own 500ms fallback expire
-        # a later, fully balanced cycle — must not still be tainted.
+        # the orphan: a swap that will never settle and never fail,
+        # carrying its own distinct identity.
         page.evaluate(
             """() => {
-                document.dispatchEvent(new CustomEvent('htmx:afterSwap', {detail: {}}));
-                document.dispatchEvent(new CustomEvent('htmx:afterSettle', {detail: {}}));
+                window.__orphanXhr = {};
+                document.dispatchEvent(new CustomEvent('htmx:afterSwap', {
+                    detail: { xhr: window.__orphanXhr }
+                }));
             }"""
         )
+        time.sleep(0.7)  # let the orphan's own 500ms fallback expire
+
+        # B-1: a fresh dispatch queued right after that silent
+        # eviction must still defer -- not take the un-gated
+        # immediate-fire path.
         held = _hold_post(page, "/action/arm")
         page.keyboard.press("e")
+        time.sleep(0.2)
+        assert "route" not in held, (
+            "fired immediately after the orphan's own silent eviction -- "
+            "an evicted token must still gate a fresh dispatch (B-1)"
+        )
+
+        # B-2: an UNRELATED, distinct-keyed balanced cycle resolves
+        # cleanly on its own (pendingSwaps empties) but must NOT
+        # release the click above -- the orphan's own fate is still
+        # unknown, and nothing here has told us anything about it.
+        page.evaluate(
+            """() => {
+                window.__unrelatedXhr = {};
+                document.dispatchEvent(new CustomEvent('htmx:afterSwap', {
+                    detail: { xhr: window.__unrelatedXhr }
+                }));
+                document.dispatchEvent(new CustomEvent('htmx:afterSettle', {
+                    detail: { xhr: window.__unrelatedXhr }
+                }));
+            }"""
+        )
+        time.sleep(0.2)
+        assert "route" not in held, (
+            "an UNRELATED request's real settle drained a click that was "
+            "actually waiting on the orphan's still-unknown fate (B-2)"
+        )
+
+        # Only the orphan's OWN real resolution -- arriving late, well
+        # past its own 500ms eviction -- finally heals it.
+        page.evaluate(
+            """() => {
+                document.dispatchEvent(new CustomEvent('htmx:afterSettle', {
+                    detail: { xhr: window.__orphanXhr }
+                }));
+            }"""
+        )
+        _poll_held_actively(page, held, timeout=2.0)
+
+        # And the system is genuinely clean afterward, not merely
+        # emptied for one release -- a FRESH keystroke fires
+        # immediately (the original N9 guarantee, still true). Uses a
+        # DIFFERENT action ("x"/reject) than the one just fired
+        # ("e"/route), not merely a fresh `held` dict: `held` above is
+        # never fulfilled or continued (by design -- `_hold_post` never
+        # resolves the request it captures), so from htmx's own point
+        # of view the "route" element still has a request permanently
+        # in flight -- htmx's default per-element concurrency guard
+        # (the same mechanism `hx-sync="this:queue last"` documents)
+        # silently QUEUES rather than ISSUES a second click on that
+        # SAME element instead of ever creating a new XHR, which is
+        # unrelated to this unit entirely and would falsely read as
+        # "not healed." "reject" is a distinct DOM element with its
+        # own independent in-flight slot, so a click on it is not
+        # affected by "route"'s still-open request.
+        held.clear()
+        page.keyboard.press("x")
         elapsed = _poll_held_actively(page, held, timeout=2.0)
         assert elapsed < 0.3, (
-            f"a keystroke after an orphan + a balanced cycle was late: {elapsed:.3f}s "
-            "(the bag never self-healed)"
+            f"a fresh keystroke after the orphan's own real resolution "
+            f"was late: {elapsed:.3f}s (not genuinely healed)"
         )
 
     def test_deferred_click_no_ops_when_record_changes_before_fire(
@@ -1477,10 +1554,32 @@ class TestClickActionSettleGating:
         against A — D1's re-resolve-by-selector alone can't tell the
         difference, since B's detail page repeats the same
         `[data-key-action="route"]` markup. The fix no-ops instead of
-        clicking into the wrong record."""
+        clicking into the wrong record.
+
+        M-1 (code gate r5): this test's ONLY assertion used to be
+        `"route" not in held` — but r4's own fail-closed dispatch
+        fallback (N17) DROPS any dispatch that never gets a real
+        release regardless of WHY, so once that fix shipped this
+        assertion stayed green even with the record-id guard in
+        fire() mutated away entirely (measured: 1 of 7 full-class runs
+        still passed under that exact mutation — the assertion no
+        longer discriminated the record-id guard from the fallback
+        timer at all, since either mechanism produces an identical
+        "no POST arrived" outcome). Fixed to assert on fire()'s own
+        `record changed from ... to ...` warning text specifically —
+        the one signal that can only come from the record-id check
+        itself, and that fires within milliseconds of the real
+        afterSettle dispatched below, well inside the 500ms fallback
+        bound, so there is no ambiguity about which mechanism produced
+        the drop."""
         _open(page, server, f"/record/{REC_BRIEF}")
         page.evaluate(
             "document.dispatchEvent(new CustomEvent('htmx:afterSwap', {detail: {}}))"
+        )
+        warnings: list[str] = []
+        page.on(
+            "console",
+            lambda msg: warnings.append(msg.text) if msg.type == "warning" else None,
         )
         held = _hold_post(page, "/action/arm")
         page.keyboard.press("e")  # deferred, stamped against REC_BRIEF's record id
@@ -1493,7 +1592,22 @@ class TestClickActionSettleGating:
         page.evaluate(
             "document.dispatchEvent(new CustomEvent('htmx:afterSettle', {detail: {}}))"
         )
-        time.sleep(0.3)
+        # Same CDP console-delivery lag as the other warning-checking
+        # tests in this class -- poke to flush it. This releases via
+        # the REAL afterSettle above (not the 500ms fallback), so the
+        # warning is expected within milliseconds, not 500ms.
+        for _ in range(25):
+            if any("record changed from" in w for w in warnings):
+                break
+            page.evaluate("() => true")
+            time.sleep(0.02)
+        record_warnings = [w for w in warnings if "record changed from" in w]
+        assert len(record_warnings) == 1, (
+            f"expected exactly one record-id-guard warning, got: {warnings}"
+        )
+        assert REC_BRIEF in record_warnings[0] and "a-different-record" in record_warnings[0], (
+            f"warning did not name both records: {record_warnings[0]!r}"
+        )
         assert "route" not in held, (
             "fired a deferred click after the record changed underneath it"
         )
@@ -1648,9 +1762,22 @@ class TestClickActionSettleGating:
         truly settling. After N17 that firing must not happen: the
         dispatch is DROPPED instead once its own fallback expires
         while the bag is still non-empty -- no POST, exactly one
-        console.warn, and the dropped intent never revives even once
-        the stream eventually stops and the bag empties on its own --
-        proven here by a FRESH keypress firing normally afterward."""
+        console.warn, and the dropped intent never revives on elapsed
+        time alone.
+
+        B-1/B-2 (code gate r5): every one of this stream's own
+        afterSwap events shares the SAME `detail: {}` fallback key, so
+        once the stream stops, each one self-evicts into
+        `abandonedSwaps` rather than vanishing -- a FRESH keypress
+        must stay gated until those are genuinely resolved, never fire
+        just because enough time has passed (the same proxy the r1
+        counter and, unnoticed, this test's own original ending relied
+        on -- "the stream ended, so it must be safe now" is exactly
+        the elapsed-time signal the gate closed). Supplying real
+        `afterSettle` resolutions for the stream's own key is what
+        actually heals it, proven by a keypress firing immediately
+        right after that -- not merely after enough time has gone
+        by."""
         _open(page, server, f"/record/{REC_BRIEF}")
         page.evaluate(
             "document.dispatchEvent(new CustomEvent('htmx:afterSwap', {detail: {}}))"
@@ -1689,15 +1816,110 @@ class TestClickActionSettleGating:
         drop_warnings = [w for w in warnings if "dropped" in w.lower()]
         assert len(drop_warnings) == 1, f"expected exactly one drop warning, got: {warnings}"
 
-        # once the stream stops (~3s) and every token has also
-        # self-evicted, the bag empties naturally -- the system
-        # healed, which is what N12 always meant by "bounded": a
-        # FRESH keypress now dispatches normally.
+        # code gate r5 (B-1/B-2): once the stream stops and every
+        # token has self-evicted, pendingSwaps is empty but
+        # abandonedSwaps is not -- a fresh keypress must NOT fire
+        # merely because time has passed.
         time.sleep(3.0)
         page.keyboard.press("e")
+        time.sleep(0.2)
+        assert "route" not in held, (
+            "fired after an unresolved stream's tokens merely timed out -- "
+            "an abandoned swap must heal only via its OWN real resolution, "
+            "never by elapsed time alone (B-1)"
+        )
+        # Supply that real resolution now (every stream tick shared
+        # the same fallback key, `detail: {}` -- 25 is a deliberately
+        # generous upper bound on the >= 20 entries that could still
+        # be abandoned; extra afterSettle dispatches beyond what is
+        # actually outstanding are harmless no-ops) and confirm the
+        # system heals for real once it has one, not before.
+        page.evaluate(
+            """() => {
+                for (let i = 0; i < 25; i++) {
+                    document.dispatchEvent(new CustomEvent('htmx:afterSettle', {detail: {}}));
+                }
+            }"""
+        )
         elapsed = _poll_held_actively(page, held, timeout=2.0)
         assert elapsed < 0.3, (
-            f"a fresh keypress after the stream ended was not immediate: {elapsed:.3f}s"
+            f"did not fire promptly once the stream's own requests were "
+            f"genuinely resolved: {elapsed:.3f}s"
+        )
+
+    def test_submit_guard_blocks_a_native_post_when_htmx_has_not_wired_the_form(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        """Layer 2 (code gate r5, the durable guard). Every bug this
+        unit has found and fixed (B-1/B-2 included) caused harm
+        through exactly ONE mechanism -- a native, un-intercepted form
+        submission navigating the page, because htmx had not yet
+        attached its own interception to the form being clicked. This
+        test does not go through clickAction()'s gating AT ALL -- it
+        deliberately clicks the confirm button on a freshly-armed bar
+        DURING the swap/settle gap, exactly as if some future hole in
+        the pendingSwaps/abandonedSwaps bookkeeping (a class of bug r1
+        through r5 have each found a new instance of) let a click
+        through too early. With `htmx.config.defaultSettleDelay`
+        raised to 1500ms, the click lands on a `<button type="submit">`
+        that genuinely has not been wired yet -- the submit guard is
+        the ONLY thing standing between that click and a destroyed
+        page. Confirms: no navigation, no POST, and the page stays
+        alive and queryable afterward -- a dropped keystroke, not a
+        catastrophe."""
+        _open(page, server, f"/record/{REC_BRIEF}")
+        page.evaluate("htmx.config.defaultSettleDelay = 1500")
+        warnings: list[str] = []
+        page.on(
+            "console",
+            lambda msg: warnings.append(msg.text) if msg.type == "warning" else None,
+        )
+        confirm_posts: list[str] = []
+
+        def handler(route) -> None:
+            if route.request.method == "POST" and route.request.url.endswith(
+                "/action/confirm"
+            ):
+                confirm_posts.append(route.request.url)
+            route.continue_()
+
+        page.route("**/*", handler)
+
+        final_url_before = page.url
+        page.keyboard.press("e")  # arms the bar via the real, gated path
+        page.wait_for_selector('.action-bar[data-armed="true"]')  # appears at SWAP time
+
+        # Bypass clickAction() entirely -- a raw DOM click on the
+        # confirm button, landing while the arm swap is still
+        # genuinely mid-settle (the 1500ms override has not elapsed).
+        page.evaluate(
+            """() => {
+                document.querySelector('[data-key-action="confirm"]').click();
+            }"""
+        )
+        time.sleep(0.3)
+
+        assert len(confirm_posts) == 0, (
+            f"a raw click on an unwired submit button still reached the "
+            f"server: {confirm_posts}"
+        )
+        assert page.url == final_url_before, (
+            f"navigated away: {page.url!r} (the original bug, with "
+            f"clickAction's own gating bypassed entirely)"
+        )
+        assert page.query_selector('.action-bar[data-armed="true"]') is not None, (
+            "the page is no longer the same document -- a navigation destroyed it"
+        )
+        # Same CDP console-delivery lag as the other warning-checking
+        # tests in this class -- poke to flush it.
+        for _ in range(25):
+            if any("blocked a native form submission" in w for w in warnings):
+                break
+            page.evaluate("() => true")
+            time.sleep(0.02)
+        blocked_warnings = [w for w in warnings if "blocked a native form submission" in w]
+        assert len(blocked_warnings) == 1, (
+            f"expected exactly one submit-guard warning, got: {warnings}"
         )
 
 
