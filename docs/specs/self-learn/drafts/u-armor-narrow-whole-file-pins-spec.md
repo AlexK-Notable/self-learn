@@ -1,5 +1,8 @@
 # U-armor — narrow the whole-file pins to the fixtures, and give the behaviour files a property guard
 
+**Status:** BUILT — blind code gate r2 CLEAN (`G5hZtmGKQW-Umdcil936B`);
+shipped by the landing merge, which advances ANCHOR by §4.2.
+
 **r7 — SOUND.** Blind spec gate r5 (delta) returned **SOUND (0 blockers,
 0 majors, 2 prose nits)**; both nits are folded here. Authored in the
 throwaway worktree `.claude/worktrees/u-armor-spec`. **Anchor: `3b8e037`**
@@ -1236,6 +1239,12 @@ the gate's evidence for the next round.
 *(r4, gate B-1: r3 defined it correctly here and then shipped `fe5a012` —
 the merge — in §4.1, which is the value control (iii) below rejects.)*
 
+*(r2 gate, N-1: while a branch is in flight — before its own landing
+merge exists — `ARM5`'s own walk root narrows this literal rule to
+`git merge-base master HEAD`, i.e. the master content `HEAD` has
+actually absorbed, which coincides with it exactly once the landing
+merge below lands and `HEAD` contains that same `master` tip.)*
+
 **The landing chain, in order.** The re-anchor is not a follow-up commit:
 
 ```sh
@@ -1304,7 +1313,7 @@ merge:
 - **(a)** `ANCHOR` is an ancestor of `HEAD`.
 - **(b)** `ANCHOR` **equals** `M^1`.
 - **(c)** **No protected file has moved since the anchor merge**:
-  `git diff --name-only M..master -- <the 12 protected paths>` is **empty**.
+  `git diff --name-only M..master -- <the 11 protected paths>` is **empty**.
 
 ```sh
 $ git merge-base --is-ancestor 3b8e037 master ; echo "(a) rc=$?"
@@ -1312,7 +1321,7 @@ $ git merge-base --is-ancestor 3b8e037 master ; echo "(a) rc=$?"
 $ M=$(git rev-list --first-parent --merges -1 master)
 $ [ 3b8e037 = "$(git rev-parse --short=7 "$M^1")" ] && echo "(b) SAME"
 (b) SAME
-$ git diff --name-only "$M"..master -- <the 12 protected paths> | wc -l
+$ git diff --name-only "$M"..master -- <the 11 protected paths> | wc -l
 0                                                              # (c)
 ```
 
@@ -1662,7 +1671,7 @@ mechanism beside seven"* the mandate forbids. **Criteria are all [A].**
 | **ARM2** | [A] | Every `Behaviour.nodes` / `.dump_sha` literal equals the census measured at `ANCHOR`, and every `Fixture` sha likewise. Only `--remeasure` may move one | `pytest -k test_arm2_literals_match_the_anchor`: run `_census`/`_dump_sha` over `git show ANCHOR:<path>` for all 8 behaviour rows and `sha256(git show ANCHOR:<path>)` for the 3 fixture rows. **MEASURED at `3b8e037`**: **627 nodes** across 8 files with the 8 `dump_sha` values in §2.10 | change any one literal ⇒ ARM2 red naming the file; hand-edit instead of `--remeasure` ⇒ same · `predicted` |
 | **ARM3** | [A] | The table is **exhaustive**: every non-`test_*.py` module under `cli/tests` (excluding `__init__`/`__pycache__`) is a key, and every path that `3b8e037`'s `_ARMOR_SHAS` or `_DS1_EXPECTED` named is a key | `pytest -k test_arm3_table_is_exhaustive`: derive both sets live and assert `⊆ set(ARMOR)`. **Positive control**: deleting the `support.py` row makes the first half red; deleting `test_composer.py` makes the second half red — both asserted by a fixture copy of the table, not by editing the real one | drop any row ⇒ ARM3 red · `predicted` |
 | **ARM4** | [A] | `ANCHOR` is a real commit **reachable from `master`**, and is not one of the three retired anchors | `pytest -k test_arm4_anchor_is_real`: `git merge-base --is-ancestor ANCHOR HEAD` returns 0, `git cat-file -t ANCHOR` is `commit`, and `ANCHOR` ∉ {`c3b48e7`, `442385d`, `c2669a9`} | set `ANCHOR` to a nonexistent sha ⇒ ARM4 red (not a silent skip) · `predicted` |
-| **ARM5** | [A] | **A stale anchor is reported loudly by the census itself.** `ANCHOR` (= `M^1`, the first parent of the latest first-parent merge `M`) must satisfy: (a) it is an ancestor of `HEAD`; (b) it **equals** `M^1`; (c) **no protected file has moved since the anchor merge** — `git diff --name-only M..master -- <the 12 protected paths>` is empty. Failure names the landing chain and `--remeasure`; never a warn, never a skip | `pytest -k test_arm5_anchor_is_not_stale`, the commands in §4.2. **MEASURED at live master `6038eee`**: `rc=0` / `SAME` / **0**. **Three red controls, all real history, asserted first**: (i) tip `1251552` (a post-merge commit that touched `test_repair.py`, on merge `c8dcaf3`, `ANCHOR=5803a36`) — (a) and (b) both PASS, **only (c) discriminates at 1**; (ii) `ANCHOR=15fb676` — (b) `STALE`; (iii) `ANCHOR=fe5a012`, r3's own shipped value — (b) `STALE`. **Leg (c) is deliberately not `rev-list --count ANCHOR..master^`**: that form reads **4** on live master because of the landing chain's own docs-only scrub, i.e. red on a correct tree (§3.6) | land a commit touching a protected file after the anchor merge ⇒ ARM5 red on (c); leave `ANCHOR` one merge stale ⇒ red on (b) · **MEASURED** predicates |
+| **ARM5** | [A] | **A stale anchor is reported loudly by the census itself.** `ANCHOR` (= `M^1`, the first parent of the latest first-parent merge `M`) must satisfy: (a) it is an ancestor of `HEAD`; (b) it **equals** `M^1`; (c) **no protected file has moved since the anchor merge** — `git diff --name-only M..master -- <the 11 protected paths>` is empty. Failure names the landing chain and `--remeasure`; never a warn, never a skip | `pytest -k test_arm5_anchor_is_not_stale`, the commands in §4.2. **MEASURED at live master `6038eee`**: `rc=0` / `SAME` / **0**. **Three red controls, all real history, asserted first**: (i) tip `1251552` (a post-merge commit that touched `test_repair.py`, on merge `c8dcaf3`, `ANCHOR=5803a36`) — (a) and (b) both PASS, **only (c) discriminates at 1**; (ii) `ANCHOR=15fb676` — (b) `STALE`; (iii) `ANCHOR=fe5a012`, r3's own shipped value — (b) `STALE`. **Leg (c) is deliberately not `rev-list --count ANCHOR..master^`**: that form reads **4** on live master because of the landing chain's own docs-only scrub, i.e. red on a correct tree (§3.6) | land a commit touching a protected file after the anchor merge ⇒ ARM5 red on (c); leave `ANCHOR` one merge stale ⇒ red on (b) · **MEASURED** predicates |
 | **ARM6** | [A] | **A refusing `--remeasure` leaves `test_armor.py` byte-identical.** It computes the anchor, the census and the owed set BEFORE writing anything; on a non-empty owed set it exits non-zero naming the keys and writes nothing; on an empty one it renders the whole module to a temp file and `os.replace()`s it, so the file is never half-updated *(r6, gate M-2: the ordering was unspecified, and write-then-refuse **deadlocks the landing chain** — the literals are already advanced when the refusal fires, so the post-fix re-run trips the no-op guard instead and the only escape is the hand-edit `ARM2` exists to catch)* | `pytest -k test_arm6_refusal_writes_nothing`: on a tree with one owed-but-unexempted key, capture `sha256(test_armor.py)` before, run `--remeasure`, assert rc != 0, the owed key is named in stderr, and `sha256` after **==** before. **Second leg, the deadlock itself**: write the owed entry, re-run, assert rc == 0 **and** the `ANCHOR` literal changed in that run. **Positive control**: on a clean census the same harness rewrites the file (sha differs) and exits 0 | move the write above the check ⇒ leg 1 red (sha differs) and leg 2 red (the second run trips the no-op guard) · `predicted` |
 
 ### 5.2 FIX — the fixtures
@@ -1723,6 +1732,14 @@ mechanism beside seven"* the mandate forbids. **Criteria are all [A].**
 | **GATE3** | [A] | The runbook's **existing** §1 numbering and §4 blindness rules are byte-unchanged apart from the insertion | `git diff -- docs/specs/self-learn/15-orchestration-runbook.md` shows insertions only inside §1 (after step 4) and one line in §8; `git diff --numstat` deletions on that file = **0**. **Positive control**: the same numstat on a copy with step 5 reworded shows a nonzero deletion count | reword step 4 while inserting 4a ⇒ GATE3 red · `predicted` |
 
 ### 5.8 UN — the unaffected group
+
+**Post-landing (r2 gate fold):** once this unit's own merge has
+landed, UN1/UN3/UN5 pin permanently to that landing's own
+base/tip commit pair (`_LANDING_BASE`/`_LANDING_TIP` in
+`test_armor.py`) rather than re-deriving "this unit's own diff"
+dynamically — the dynamic form degenerates to an empty diff
+against itself the moment `HEAD` IS the landing.
+
 
 | ID | Ph | Criterion | Check | Mutation |
 |---|---|---|---|---|
@@ -1891,13 +1908,17 @@ claim — six attacks, six measured colour changes.
 | `plugins/self-learn/cli/tests/test_u_sdka.py` | DELETE `_BASE_SHA`, `_AR1_*`, the five `_AR3_*`, `_HY3_SCENARIO_SHAS`, `test_ar1_*`, `test_ar3_*`, `test_hy3_*`, `test_hy5_*` and their prose. `test_ar5_*` and everything else stays (§4.7 row 13) |
 | `plugins/self-learn/cli/tests/test_u_fake.py` | DELETE `REWRITTEN`, `DS1_ADDED`, `DS1_REMOVED`, `_DS1_EXPECTED`, `BASE_REF`, `_git_show_base`, `_extract_guarded_functions`, `_extract_named_function`, `_inverse_rename*`, `test_ds1*`, `test_ds2*`. Its `FX`/`T1` tests stay — and the file becomes a `Behaviour` key, protected by the mechanism it used to be |
 | `plugins/self-learn/cli/tests/test_u_corrob.py` | RETARGET `test_pin2_*` only (`DEL4`). No other test in that file is touched |
+| `plugins/self-learn/cli/tests/test_hostmode.py` | **r1 gate fold, N-3.** A different, already-landed unit's own regression guard (`TestChez6CensusZeroRetiredModuleLiterals::test_census_by_tree`) hardcodes an exhaustive, hand-itemized count of every legitimate mention of the retired `chezmoi` module name across `cli/tests`. `EXM1`'s own ratified, MEASURED example strings (worked examples of a real historical citation) legitimately add two such mentions. Not a file this unit protects — its own census/itemization is updated by 2 (37 → 39), same motion the test's own design anticipates for any future legitimate addition |
 | `docs/specs/self-learn/15-orchestration-runbook.md` | INSERT §1.4a, one §8 line, **and** §5's landing-chain re-anchor step (§10.3). Deletions **0** (`GATE3`) |
 | `docs/specs/self-learn/03-decisions.md` | APPEND row `S-55` |
 | `docs/specs/self-learn/14-forward-work-map.md` | APPEND rows `FW-140`, `FW-141` |
 | `docs/specs/self-learn/drafts/u-armor-narrow-whole-file-pins-spec.md` | This file |
 
-**Explicitly NOT touched**, and asserted: the 12 protected files (`UN5`),
-`test_lock_invariant.py` (`UN2`), all of `cli/src` and `ui/` (`UN1`).
+**Explicitly NOT touched**, and asserted: the 11 protected files
+(`UN5`, r1 gate fold N-2: corrected from a stray "12" — 3 `Fixture` +
+8 `Behaviour` keys; `fixtures/fake_claude.py` is `Additive`, excluded
+by design, covered instead by `ADD1`'s own four legs), `test_lock_
+invariant.py` (`UN2`), all of `cli/src` and `ui/` (`UN1`).
 
 **A note the builder must not miss.** Three files carry *prose references*
 to the retired symbols that are not code and do not break: `report.py:703`,

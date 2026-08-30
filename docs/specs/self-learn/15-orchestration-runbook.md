@@ -30,6 +30,52 @@ Every substantive unit moves through, in order:
    test the builder claims, the reviewer mutates the guarded code and
    confirms exactly that test fails. Verdict CLEAN / NOT CLEAN; fold;
    delta.
+
+> **4a. Guard-amendment review (when the diff touches a protected file).**
+> A file is protected if it is a key in `cli/tests/test_armor.py::ARMOR`.
+> If the diff touches one, the code gate additionally checks, **against the
+> unit's gated spec**, and reports each as its own finding:
+>
+> - **Deleted or renamed nodes.** Every key added to
+> `Behaviour.missing` must be named in the spec, with the section that
+> authorises it. A test that vanished without a `missing` entry is a
+> BLOCKER regardless of whether the suite is green — `B1` should have
+> caught it, and if it did not, the guard itself is the finding.
+> - **Edited nodes.** Every entry added to `Behaviour.edited` must be
+> reviewed as a diff of the test's **body**, anchor beside head, and the
+> gate must say which failure the anchor version could see that the head
+> version cannot. "Refactored" is not a reason. Note the edit may be
+> anywhere in the body — a setup line, a `with pytest.raises(...)` block,
+> a loop bound — not only in an assertion.
+> - **Re-pinned fixtures.** Every `Fixture.repinned` entry is reviewed as
+> production code: the gate diffs the fixture against its anchor bytes
+> and mutates the new body to confirm a test reddens.
+> - **Removed positive controls.** If a deleted or edited node's name, or
+> the docstring of a **test function** (never the module docstring —
+> a module-docstring reword is always free), contains `positive control`,
+> `negative control`, `tripwire`, or `guard`, the finding is a BLOCKER by
+> default. These are the tests that prove the other tests can fail.
+> - **Edited exports.** Every entry added to `Behaviour.edited_exports` is
+> reviewed as production code: the gate mutates the new body and confirms
+> a test reddens.
+>
+> - **Anchor advance.** A diff that changes `ANCHOR` is **refused**. The
+> anchor is advanced by the landing chain after the merge, never inside a
+> reviewed diff (§5). Conversely, the gate's own starting evidence IS
+> the previous chain run's `git diff --stat <old> <new> --
+> plugins/self-learn/cli/tests` output: read it first, and treat anything
+> in this diff that it does not explain as unaccounted for.
+> (For `u-armor` specifically: once its own merge has landed, its
+> UN1/UN3/UN5 criteria stop re-deriving this diff dynamically and
+> pin permanently to that landing's own base/tip commit pair — see
+> `test_armor.py`'s `_LANDING_BASE`/`_LANDING_TIP`.)
+>
+>
+> The blindness rules (§4) are unchanged: the reviewer sees the diff and
+> the gated spec, never `reviews/`. Source:
+> `docs/specs/self-learn/drafts/u-armor-narrow-whole-file-pins-spec.md`
+> §4.8.
+
 5. **Merge** — orchestrator merges (never the builder), resolves
    cross-unit joins by hand (§5), re-runs combined suites.
 6. **Trials** — sandboxed live walk of the DoD legs (§6); log in
@@ -99,6 +145,28 @@ override is per-round, not a new default.
   `re.subn` over the markers, theirs-then-ours by register number —
   never hand-retype spec text (a hand-resolve once corrupted a
   load-bearing schema bullet; script + assert the anchor).
+- **The armor re-anchor rides inside the merge commit, never a
+  follow-up.** After the last unit's suite/pyright bar is met and the
+  merge is ready, run:
+
+  ```sh
+  git merge-tree HEAD "$BRANCH"                      # 1. preview
+  git merge --no-ff --no-commit "$BRANCH"            # 2. merge, NOT committed
+  #    ... resolve conflicts by hand ...             # 3. resolve
+  python3 plugins/self-learn/cli/tests/test_armor.py --remeasure \
+          --anchor "$(git rev-parse --short=7 HEAD)" \
+  && git add plugins/self-learn/cli/tests/test_armor.py \
+  && git commit --no-edit                            # 4. re-anchor RIDES INSIDE the merge
+  ```
+
+  `--remeasure` computes the anchor, the census and the owed set
+  BEFORE writing anything, and refuses (writing nothing) on a
+  non-empty owed set — a builder never advances `ANCHOR`; only this
+  chain, after the gate has passed, does. The resulting
+  `git diff --stat <old> <new> -- plugins/self-learn/cli/tests` is the
+  NEXT code gate's starting evidence (§1.4a). Source:
+  `docs/specs/self-learn/drafts/u-armor-narrow-whole-file-pins-spec.md`
+  §4.2.
 
 ## 6. Sandbox invariants (H-3 protection)
 
@@ -130,6 +198,13 @@ tests silently run the wrong code.
   `body.focus()` before keyboard y/Enter arming.
 - pyright baseline: ui src = 0 errors required; cli src carries 56
   pre-existing — new code adds zero.
+- pyright baseline CORRECTION (r1 gate fold, N-1, GATE3-safe: pure
+  addition, the bullet above is unedited): re-measured 2026-08-28
+  with `uv run --no-sync pyright src` from each of `plugins/self-
+  learn/cli` and `plugins/self-learn/ui` — this is the instrument, a
+  bare `pyright` off PATH resolves the wrong interpreter. cli src
+  still carries **56**, unchanged; ui src carries **30**, not the 0
+  claimed above — new code adds zero to either baseline.
 - No sudo via the tool shell (no tty → pam_faillock locks the user
   account for 10 min).
 - `~/bin/self-learn` (the install.sh wrapper) resolves via
@@ -148,6 +223,8 @@ target, the blindness constraint (§4), dimensions, severity scale,
 verdict rule, mutation mandate (code gates), and "verify by
 executing". Both: `model:` explicit; worktree isolation for anything
 that mutates files in parallel.
+
+Reviewer, additionally: if the diff touches a key of `cli/tests/test_armor.py::ARMOR`, run §1.4a's guard-amendment review and report each clause separately.
 
 ## 9. Change control
 

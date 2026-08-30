@@ -1421,10 +1421,10 @@ What the intake gate keeps, and what it gains:
 
 **`defer --until <past>` refuses.** In `ledger_ops.defer_record`, after
 the date is normalised: if the parsed date is **strictly before today**
-(the caller's local date, the same clock `DEFAULT_DEFER_DAYS` uses),
+(the **UTC** date — the one clock `DEFAULT_DEFER_DAYS` counts from, every ledger timestamp is written in, and `list`'s eligibility compares against; *amended 2026-08-28 17:10 PDT: r6 read "the caller's local date", which the product never implemented and which STATE1/STATE2 measured with `date.today()` — both went red at 00:00 UTC on the landed build; fixed forward on master with `defer_record(..., now=)` injectable*),
 raise `LedgerOpsError` naming today and pointing at the real verb:
 
-> `defer lrn-…: --until 2026-08-01 is in the past (today is 2026-08-28)
+> `defer lrn-…: --until 2026-08-01 is in the past (today is 2026-08-28 UTC)
 > — a defer must name a future date; `self-learn undefer lrn-…` is the
 > verb for bringing a deferred record back now`
 
