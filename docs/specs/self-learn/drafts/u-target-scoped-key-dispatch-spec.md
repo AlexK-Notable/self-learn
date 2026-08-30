@@ -1,18 +1,64 @@
 # U-target — keyboard dispatch resolves against the row the operator means, and refuses when it cannot
 
-**Status:** SPEC r2, not built. Authored against live `master` at HEAD
+**Status:** SPEC r3, not built. Authored against live `master` at HEAD
 `502ca8d`; revised in the worktree `u-target`, whose base has since
 advanced to `ee62df0` (the `u-xdist` merge). **Every file this spec cites
-by line number is byte-identical across that move** — measured:
-`git diff 502ca8d ee62df0 -- static/app.js static/style.css templates/
-keymap.py models.py routes.py ledger.py` is empty, with the merge's 11
-other changed files as the positive control that the diff can see
-anything at all. Every measurement in §2 was taken by this author unless
-the row says otherwise.
+by line number is byte-identical across that move.** The audit, with the
+pathspec written out in full and two controls that fail for the specific
+reason it could silently succeed:
 
-**Blind spec gate r1: NOT SOUND — 0 blockers, 4 majors, 7 minors.** Every
-finding is folded here, and each of the four majors was **re-verified by
-this author before folding**, not taken on report:
+```sh
+P="plugins/self-learn/ui/static/app.js plugins/self-learn/ui/static/style.css \
+   plugins/self-learn/ui/templates \
+   plugins/self-learn/ui/src/self_learn_ui/keymap.py \
+   plugins/self-learn/ui/src/self_learn_ui/models.py \
+   plugins/self-learn/ui/src/self_learn_ui/routes.py \
+   plugins/self-learn/ui/src/self_learn_ui/ledger.py"
+
+# CONTROL 1 -- can this pathspec match anything at all? MUST be > 0.
+git ls-files -- $P | wc -l                      # -> 25
+
+# CONTROL 2 -- can this pathspec + diff ever PRODUCE output? MUST be non-empty.
+git diff --stat <a range that touched these files> -- $P   # -> 3 files changed
+
+# THE AUDIT -- MUST be empty.
+git diff --stat 502ca8d HEAD -- $P              # -> (empty)
+```
+
+**Why both controls, and what r2 of this spec got wrong** (gate r2): the
+control r2 published was "the merge changed 11 other files", which proves
+**the range has content** — a different proposition from **the pathspec
+can match**, and only the second is what the audit needed. r2's *written*
+command used cwd-relative pathspecs (`static/app.js`, `keymap.py`, …)
+that match **zero** tracked files from the repo root; run as documented it
+printed nothing, which is byte-identical to a pass. Reproduced here before
+fixing it: `git ls-files -- static/app.js … keymap.py` → `0`. The
+conclusion was true (the command actually executed at the time used full
+paths), but the published check could not have failed. **A positive
+control must fail for the specific reason the check could silently
+succeed** — that is the whole point of one, and it went wrong inside a
+control added to prevent exactly this (`lrn-ea833a5b`).
+
+Every measurement in §2 was taken by this author unless the row says
+otherwise.
+
+**Gate history.** r1: **NOT SOUND** — 0 blockers, 4 majors, 7 minors.
+r2: **NOT SOUND** — 0 blockers, 1 major, 5 minors, 2 nits, with the
+audit that matters coming back clean (**30/30 `[A]` criteria state a
+mutation and 30/30 redden as literally written**). Every finding from
+both rounds is folded here, and each major was **re-verified by this
+author before folding**, not taken on report.
+
+**r2's findings:** MAJOR-1 — `F1b` corrected the *fixture* but left the
+*acting position* on row 2, so a build that scoped correctly while
+leaving the selector wide passed `F1`, `F1b` and `F2` alike; **zero of
+the 30 criteria reddened on the selector narrowing alone**, leaving §4.2's
+`input[type="text"]` mandate unenforced. Fixed at §6.6 by moving `F1b`'s
+selection to row 1. MINOR-2 — `B3`'s mutation could be rescued by
+`_GROUP_ORDER`; fixed by pinning its groups. Plus the `[B-6]` sentence
+(§4.2) and the audit command above.
+
+**r1's findings:**
 
 | finding | what it was | where it landed |
 |---|---|---|
@@ -602,10 +648,26 @@ in order of weight:
 1. **It is not signal-free, contra the obvious reading.** `fire()`
    already ends `live.click(); live.scrollIntoView({block: "nearest"})`
    (`app.js:224-225`, read here), so a fallback dispatch **scrolls the
-   element it acted on into view**; and every verb reachable this way
-   arms rather than writes, with `action_bar.html:95` rendering
-   `<code>{{ armed.record_id }}</code>` in the armed strip. The operator
-   is taken to the row and shown its id before `Enter` executes anything.
+   element it acted on into view**. **No verb reachable through the
+   fallback performs a durable write** — that is the load-bearing claim,
+   and it is checked at the handlers, not inferred from the templates
+   (gate r2). It has three shapes, not one, and the exceptions are
+   written down beside it:
+   - **The arming verbs** (`e`/`x`/`f`/`g`/`t`/`c`/`k`) POST to
+     `/action/arm`, and `action_bar.html:95` renders
+     `<code>{{ armed.record_id }}</code>` — the operator is taken to the
+     row and shown its id before `Enter` executes anything.
+   - **`o` (`cycle_destination`) neither arms nor writes.** It is *not*
+     covered by the sentence above, which r2 of this spec wrongly stated
+     as universal. Verified at the handler:
+     `action_cycle_destination` (`routes.py:1715-1756`) recomputes
+     `new_dest`, rebuilds `_unarmed_context(…, dest_touched=True)` and
+     returns `_render(...)` — it touches no file, calls no runner, and
+     persists nothing. So it is an exception that makes the conclusion
+     *stronger*, not weaker.
+   - **`j`/`u`/`v` (`success_*`) are plain `<a href>` navigations**
+     (`evidence.html:93/94/106`) — per-row links, not writes, also
+     uncovered by the arming sentence.
 2. **A hint here would be loudest where it is least needed.** The
    fallback also fires on every Detail page (no `[data-row]` at all) and
    on a single-holding-row Front, which are the common cases and the ones
@@ -954,7 +1016,7 @@ collects the CLI tree instead. Foreground only, with an explicit
 |---|---|---|
 | **B1** `[A]` | A rendered bucket page whose group is bulk-collapsed: the bulk button carries **no** `data-key-action`, and carries `data-noop-hint` together with `data-noop-action="graduate"`. Asserted against the real rendered HTML of a fixture seeded so `all(r.already_canon)` holds for one group. | restore `data-key-action="graduate"` on `bucket.html:70` |
 | **B2** `[A]` | Bucket with a bulk-collapse group **and exactly one** pending record row in another group. **Bulk row selected.** `g` → zero network requests, and the bulk row's own hint text is visible. | drop the `[data-noop-hint][data-noop-action]` clause from `targetSelector` → the lone record row becomes the only page-wide match and **graduates** (an arm POST fires). This is the subtlest trap in the unit. |
-| **B3** `[A]` | Same page, **record row selected**: `g` POSTs `/record/<that-id>/action/arm` and **never** `/bucket/<scope>/<name>/graduate-bulk`. | global `querySelector` → POSTs `graduate-bulk` with a multi-id body |
+| **B3** `[A]` | **Its own fixture, with the group destinations pinned** (gate r2 MINOR-2): a bulk-collapse group in **`skill-md`** and **two** pending record rows in **`no-analysis`** — first and last in `_GROUP_ORDER` (`models.py:534`, read here), so the bulk row provably precedes both record rows in document order and the ordering cannot rescue the mutant. Selection on record row **2**. `g` POSTs `/record/<row2-id>/action/arm`; assert **no** request to `graduate-bulk` **and** none to row 1's arm. | revert the row scoping to a global `querySelector` → the first `graduate` in document order is **row 1's** (post-`B1` the bulk button carries none), so the POST names row 1 → RED. *Why the fixture changed: r1 reused `B2`'s single-record-row page, where — post-`B1` — a global lookup finds exactly one `graduate` and POSTs it correctly, so the stated mutation left `B3` green. `B2` keeps its one-row page deliberately (its own mutation needs the fallback to find exactly one target); `B3` needs two. The "never `graduate-bulk`" half is a composite assertion guarded by `B1`/`B2`, not something `B3` claims to redden on its own.* |
 | **B4** `[A]` | Two mechanically checkable halves (gate r1 MINOR-3 — r1's "or any other name bound to the bulk button" was not checkable and could only fail if someone added what nobody proposed): (a) the bulk-collapse button carries **no** `data-key-action` attribute at all; (b) `[e.action for e in KEYMAP]` equals a literal list pinned in the test, so **any** entry added or renamed reddens — including one named for the bulk write. | (a) restore the attribute; (b) append any `KeymapEntry` to `KEYMAP` → the pinned list comparison fails. *Honesty note: `B4` is a cheap guard, not a load-bearing pin — it is listed so the `[A]` count is not read as N equally weighted criteria.* |
 
 ### 6.4 Group A — the armed branch
@@ -1022,7 +1084,7 @@ and a deferred dispatch drops itself fail-closed 500 ms after deferring
 | id | criterion | RED mutation |
 |---|---|---|
 | **F1** `[A]` | Front, 2 holding rows, selection on row 2: `n` puts focus in **row 2's** note input, and that input is **visible** (`document.activeElement`'s enclosing `.action-bar` id is `action-bar-<row2-id>`, and its `type` is `text`). | revert `focusNote` to `document.querySelector` → focus lands in row 1 |
-| **F1b** `[A]` | Bucket, 2 record rows, where **row 1 carries a failed-verb error whose retry carried a NOTE** — the full precondition, not merely "a failed verb" (gate r1 MINOR-1: `action_bar.html:67`'s hidden input is guarded by `{% if commit_drift.retry.note %}`, so a note-less failure yields a criterion that is green before *and* after the narrowing) — and the selection is on row 2: `n` focuses row 2's **text** note input. Assert the precondition itself: row 1's bar contains an `input[type="hidden"][name="note"]`. | widen the selector back to `input[name="note"]` **and** revert the row scoping → focus lands on row 1's hidden input, i.e. nowhere visible |
+| **F1b** `[A]` | **The one criterion that reddens on the selector narrowing alone.** Bucket, 2 record rows. Row 1 carries a **failed `route` whose retry carried a note** — the full precondition: `_commit_drift_eligible` (`routes.py:2077`) admits only a failed `route` whose stderr holds the pinned dirty marker, and `action_bar.html:67`'s hidden input is further guarded by `{% if commit_drift.retry.note %}`, so the builder must type a note into row 1's field before arming and confirming it. The failed-verb re-render builds an **unarmed** context with no `evidence` (`routes.py:1885-1911`, read here), so row 1's bar renders **both** note inputs: the hidden retry one (`:67`) and the unarmed quad's text one (`:232`). **Selection on row 1** — the row that owns both. `n` focuses row 1's **text** note input. Assert the precondition explicitly: row 1's bar contains exactly one `input[type="hidden"][name="note"]` **and** exactly one `input[type="text"][name="note"]`. | **widen the selector back to `input[name="note"]`, row scoping left intact** → 2 in-row matches → `ambiguous` → refuse → nothing focused → RED. *(Gate r2 MAJOR-1: r1 of this spec put the acting position on row 2, which carries no `commit_drift` and therefore exactly one in-row `name="note"` — so a correctly-scoped build with a wide selector passed `F1`, `F1b` and `F2` alike, and §4.2's `input[type="text"]` mandate had no enforcement anywhere in the 30. Moving the selection to row 1 is what supplies it.)* |
 | **F2** `[A]` | Front, 2 holding rows, selection on a bucket-table row: `n` leaves `document.activeElement` unchanged **and** shows the multi-note hint. | (a) global `querySelector` → focus moves; (b) delete the hint call → no hint element |
 
 ### 6.7 Group R — the return contract
@@ -1059,7 +1121,7 @@ and no other. Any *new* failure blocks.
 | **B-3** | Cap or paginate the holding and follow-up lists. There is no cap today: `_build_holding_rows` emits one row per grouped suspect record and `_build_followup_rows` is a straight passthrough. | a model/surface decision, unrelated to targeting |
 | **B-4** | Make the cluster "Expand" button keyboard-reachable (§3.4) — its `data-key-action="drill_in"` is inert because the keymap switch intercepts `drill_in` before `clickAction`. | a keyboard-coverage gap, not a targeting defect |
 | **B-5** | Reconsider what `ensureRowSelected()` selects on load (the first row owns no action on Front). | taste; the page-wide fallback makes it harmless |
-| **B-6** | A quiet "acted on a row you are not standing on" signal when the **page-wide fallback** fires with a selection present that owns no such target. | the MINOR-6 ruling (§4.2): the case is not signal-free (`fire()` scrolls the acted element into view; the armed strip prints the record id), a hint would be loudest on Detail and single-row Front where it is least needed, and routing a *success* message through `showNoopHint` — a channel whose whole vocabulary is "that key did nothing" — makes the line ambiguous. Needs its own affordance and its own taste call. |
+| **B-6** | A quiet "acted on a row you are not standing on" signal when the **page-wide fallback** fires with a selection present that owns no such target. | the MINOR-6 ruling (§4.2): the case is not signal-free (`fire()` scrolls the acted element into view; the arming verbs print the record id in the armed strip, `o` persists nothing, `j`/`u`/`v` are navigations — no fallback-reachable verb performs a durable write, checked at the handlers); a hint would be loudest on Detail and single-row Front where it is least needed; and routing a *success* message through `showNoopHint` — a channel whose whole vocabulary is "that key did nothing" — makes the line ambiguous. Needs its own affordance and its own taste call. |
 | **B-7** | Close the outside-`.action-bar` door: bring the cluster-member arming buttons (and the bulk-collapse write) under `style.css:433`'s modal rule, or give that rule a selector that does not depend on `.action-bar` ancestry. | **must not land in this unit**: it would make the CO-ARM fixture (§6.4) unbuildable and take `A1`/`A2`/`A3`/`A5` with it. `S2` detects a third such control in the meantime. Sequencing note for whoever takes it: land it *after* U-target, and expect to re-anchor those four criteria on whatever door remains — or retire them with the hazard. |
 
 ---
@@ -1105,6 +1167,16 @@ and no other. Any *new* failure blocks.
    checking whether anything downstream prevented it. Any new "live"
    claim in a revision owes a measurement of the live ledger or of a
    rendered document.
+7. **A positive control must fail for the specific reason the check
+   could silently succeed.** r2 shipped a control that proved *the range
+   has content* beside a command whose *pathspec matched nothing* — two
+   different propositions, and only the second was load-bearing (see the
+   status header). The generalisation, which applies to every criterion
+   in §6 as much as to that audit: name the failure mode you fear, then
+   ask what the control prints when exactly that failure is present. If
+   the answer is "the same thing it prints on success", it is not a
+   control. This is `lrn-ea833a5b`'s shape, and it recurred *inside* a
+   control added to prevent it.
 
 ---
 
