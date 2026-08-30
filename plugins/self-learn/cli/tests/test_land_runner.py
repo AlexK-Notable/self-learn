@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -1619,27 +1620,87 @@ def test_psh_prune_runs_only_after_a_successful_push(tmp_path):
 
 
 def test_un2_never_touches_the_ledger():
-    """UN2: no `SELF_LEARN_HOME` env read and no functional `.self-learn`
-    path construction anywhere in the shipped script/package. Prose
-    explaining the exclusion (this module's own docstrings, which quote
-    the term to say it is never touched) is not itself a violation --
-    the check is for FUNCTIONAL usage: an env-var read, or the literal
-    used as a path component/argument rather than as documentation."""
-    import re
+    """UN2. Neither the runner nor the landing package may read or write
+    the ledger (`~/.self-learn`, `SELF_LEARN_HOME`).
 
-    func_patterns = [
+    Gate r2 MAJOR-4: this used to be PYTHON regexes applied to a BASH
+    script -- `os.environ.*SELF_LEARN_HOME` and two quoted-literal forms --
+    so a shell `${SELF_LEARN_HOME:-...}` read passed straight through, and
+    only 47 fixtures breaking incidentally caught the case. Each language
+    is now checked in its own terms, and the claim is narrowed to what is
+    actually detected: the TOKENS, anywhere outside a comment or docstring.
+
+    Positive controls, constructed live, for BOTH languages.
+    """
+    import ast as _ast
+
+    TOKENS = ("SELF_LEARN_HOME", ".self-learn")
+
+    def shell_offenders(text: str) -> list[str]:
+        """Bash: any occurrence outside a whole-line comment. Deliberately
+        blunt -- the runner has no legitimate use for either token, so
+        there is nothing to distinguish and no reason to parse."""
+        out = []
+        for i, line in enumerate(text.split("\n"), 1):
+            if line.lstrip().startswith("#"):
+                continue
+            for tok in TOKENS:
+                if tok in line:
+                    out.append(f"{i}: {line.strip()}")
+        return out
+
+    def python_offenders(text: str) -> list[str]:
+        """Python: every string constant and every Name/Attribute, with
+        docstrings excluded by walking the AST rather than by regex --
+        prose that NAMES the ledger to say it is never touched is not a
+        read, and `state.py`'s module docstring does exactly that."""
+        tree = _ast.parse(text)
+        docstrings = set()
+        for node in _ast.walk(tree):
+            if isinstance(node, (_ast.Module, _ast.FunctionDef, _ast.AsyncFunctionDef, _ast.ClassDef)):
+                body = getattr(node, "body", None)
+                if body and isinstance(body[0], _ast.Expr) and isinstance(body[0].value, _ast.Constant) \
+                        and isinstance(body[0].value.value, str):
+                    docstrings.add(id(body[0].value))
+        out = []
+        for node in _ast.walk(tree):
+            if isinstance(node, _ast.Constant) and isinstance(node.value, str):
+                if id(node) in docstrings:
+                    continue
+                if any(tok in node.value for tok in TOKENS):
+                    out.append(f"line {node.lineno}: string {node.value[:40]!r}")
+            elif isinstance(node, _ast.Name) and any(tok in node.id for tok in TOKENS):
+                out.append(f"line {node.lineno}: name {node.id}")
+            elif isinstance(node, _ast.Attribute) and any(tok in node.attr for tok in TOKENS):
+                out.append(f"line {node.lineno}: attribute {node.attr}")
+        return out
+
+    land_text = LF.LAND.read_text()
+    assert shell_offenders(land_text) == [], shell_offenders(land_text)
+    for py in sorted(LF.LANDING_PKG.glob("*.py")):
+        found = python_offenders(py.read_text())
+        assert found == [], (py.name, found)
+
+    # --- positive control 1: the SHELL form the old check could not see
+    shell_probe = 'HOME_DIR="${SELF_LEARN_HOME:-$HOME/.self-learn}"\n'
+    assert shell_offenders(shell_probe), "the shell check cannot see a ${...} read"
+    # and the OLD regex form is shown blind to it, so the control is real
+    old_form = [
         re.compile(r"os\.environ.{0,20}SELF_LEARN_HOME"),
         re.compile(r"getenv\(.{0,5}SELF_LEARN_HOME"),
         re.compile(r'"\.self-learn"'),
         re.compile(r"'\.self-learn'"),
     ]
+    assert not any(p.search(shell_probe) for p in old_form), (
+        "the old regexes DO catch this, so MAJOR-4's premise no longer holds"
+    )
 
-    def offenders(text: str) -> list[str]:
-        return [p.pattern for p in func_patterns if p.search(text)]
+    # --- positive control 2: the PYTHON forms
+    assert python_offenders('import os\nx = os.environ["SELF_LEARN_HOME"]\n')
+    assert python_offenders('p = Path.home() / ".self-learn"\n')
+    # ... and prose that merely NAMES it is not a violation
+    assert python_offenders('"""never reads ~/.self-learn."""\n') == []
 
-    assert offenders(LF.LAND.read_text()) == []
-    for py in LF.LANDING_PKG.glob("*.py"):
-        assert offenders(py.read_text()) == [], py
 
 
 def test_wld1_detect_world_reads_the_two_worlds_apart(tmp_path):
@@ -2431,41 +2492,373 @@ def _all_test_source() -> str:
     )
 
 
+#: UN5's registry: every `[A]` criterion -> the test FUNCTIONS that cover
+#: it. Gate r2 MAJOR-3: the previous form was a substring search over the
+#: test files' TEXT, so deleting CHK7's only test left it green -- a group
+#: HEADING still named CHK7. A comment cannot satisfy this one: each name
+#: is resolved to a real function object on a real module.
+CRITERION_TESTS: dict[str, tuple[str, ...]] = {
+    "PRE1": (
+        "test_pre1_predicate_is_the_absolute_compare_not_the_dot_git_string",
+        "test_pre1_refuses_when_not_run_from_main_checkout",
+    ),
+    "PRE2": (
+        "test_pre2_positive_control_on_master_proceeds",
+        "test_pre2_refuses_off_master",
+    ),
+    "PRE3": (
+        "test_dry2_refusals_match_the_real_run_over_every_named_case",
+        "test_pre3_refuses_dirty_master",
+    ),
+    "PRE4": (
+        "test_pre4_refuses_dirty_branch_worktree",
+    ),
+    "PRE5": (
+        "test_pre5_refuses_master_as_branch",
+        "test_pre5_refuses_missing_branch",
+        "test_pre5_refuses_unrelated_history",
+    ),
+    "PRE6": (
+        "test_pre6_refuses_unreachable_origin",
+    ),
+    "PRE7": (
+        "test_pre7_no_merge_abort_call_anywhere_in_the_precondition_block",
+    ),
+    "PRE8": (
+        "test_pre8_refuses_when_its_own_fetch_moves_origin_master",
+    ),
+    "PRV1": (
+        "test_prv1_refuses_resolver_without_conflict",
+        "test_prv4_a_conflict_refusal_restores_masters_tree",
+    ),
+    "PRV2": (
+        "test_dry2_refusals_match_the_real_run_over_every_named_case",
+        "test_prv2_refuses_unmapped_conflict_and_suggests",
+        "test_prv2_two_conflicts_names_only_the_unmapped_one",
+        "test_prv4_a_conflict_refusal_restores_masters_tree",
+    ),
+    "PRV3": (
+        "test_blocks_no_base_marker_raises",
+        "test_prv3_the_runner_supplies_diff3_itself_observed_end_to_end",
+        "test_prv4_a_conflict_refusal_restores_masters_tree",
+    ),
+    "PRV4": (
+        "test_prv4_a_conflict_refusal_restores_masters_tree",
+    ),
+    "RES1": (
+        "test_res1_keep_both_purely_additive",
+        "test_res1_keep_both_refuses_nonempty_base",
+        "test_res1_keep_both_refuses_overlap",
+    ),
+    "RES2": (
+        "test_res2_per_key_executed_duplicate_key_case_now_refuses",
+        "test_res2_per_key_refuses_both_changed_no_rederive",
+        "test_res2_per_key_refuses_differing_key_sets",
+        "test_res2_per_key_refuses_line_with_no_colon",
+        "test_res2_per_key_side_differing_from_base_wins",
+    ),
+    "RES3": (
+        "test_res3_numeric_rows_refuses_duplicate",
+        "test_res3_numeric_rows_refuses_non_row_line",
+        "test_res3_numeric_rows_unions_and_sorts",
+    ),
+    "RES4": (
+        "test_res4_candidates_for_empty_base_suggests_keep_both",
+        "test_res4_candidates_for_key_value_suggests_per_key",
+        "test_res4_candidates_for_unrecognisable_block_suggests_nothing",
+        "test_res4_registry_matches_expected_names",
+        "test_res4_unknown_resolver_name_refuses_at_cli_not_a_silent_keep_both",
+    ),
+    "RES5": (
+        "test_res5_rederive_refuses_trivial_reason",
+        "test_res5_rederive_refuses_without_date",
+        "test_res5_rederive_writes_sha_of_merged_bytes",
+    ),
+    "RES6": (
+        "test_blocks_no_base_marker_raises",
+        "test_res6_every_test_function_here_reaches_a_git_merge",
+        "test_res6_positive_control_hand_written_markers_would_be_caught",
+    ),
+    "RES7": (
+        "test_res7_count_line_arithmetic",
+        "test_res7_count_line_refuses_multiline_side",
+        "test_res7_count_line_refuses_name_mismatch",
+        "test_res7_count_line_refuses_negative_result",
+    ),
+    "CHK1": (
+        "test_chk1_finds_markers_outside_the_hardcoded_three_docs",
+        "test_chk1_finds_markers_outside_the_hardcoded_three_docs_e2e",
+        "test_chk1_floor_zero_scanned_is_a_refusal_not_a_pass",
+        "test_chk1_positive_control_clean_files_pass",
+        "test_chk4_floor_end_to_end_a_missing_named_doc_refuses",
+        "test_dry_run_still_runs_the_landing_checks",
+    ),
+    "CHK2": (
+        "test_chk2_positive_control_matching_pins_pass",
+        "test_chk2_refuses_on_mismatch",
+        "test_chk2_refuses_pin_mismatch",
+        "test_chk2_refuses_when_zero_pins_checked_gate_m6",
+        "test_dry2_refusals_match_the_real_run_over_every_named_case",
+        "test_wld1_detection_reads_the_POST_merge_tree_observed_through_the_runner",
+    ),
+    "CHK3": (
+        "test_chk3_a_new_row_file_stays_strict",
+        "test_chk3_an_absent_baseline_file_does_not_void_the_others",
+        "test_chk3_duplicate_leg_red_green_on_real_history",
+        "test_chk3_passes_on_the_real_repository_with_its_own_baseline",
+        "test_chk3_positive_control_monotonic_passes",
+        "test_chk3_real_history_duplicate_fw130_is_a_genuine_red_green_pair",
+        "test_chk3_refuses_a_duplicate_row_a_merge_introduces",
+        "test_chk3_refuses_row_disorder",
+        "test_chk3_refuses_within_one_contiguous_run",
+        "test_chk3_separate_tables_do_not_collide",
+        "test_chk3_still_refuses_disorder_a_merge_introduces",
+        "test_chk3_the_baseline_is_load_bearing_on_a_disordered_master",
+    ),
+    "CHK4": (
+        "test_chk4_finds_a_live_hit",
+        "test_chk4_floor_end_to_end_a_missing_named_doc_refuses",
+        "test_chk4_positive_control_clean_docs_pass",
+        "test_chk4_quoted_pattern_table_is_exempt",
+        "test_chk4_refuses_landing_state_prose",
+    ),
+    "CHK5": (
+        "test_chk5_dry_run_judges_the_dry_run_worktree_not_the_main_checkout",
+        "test_chk5_invokes_the_real_shipped_personal_literals_test_not_a_private_grep",
+        "test_dry2_refusals_match_the_real_run_over_every_named_case",
+    ),
+    "CHK6": (
+        "test_chk6_158_chars_is_within_budget",
+        "test_chk6_positive_control_normal_verdict_passes",
+        "test_chk6_refuses_empty",
+        "test_chk6_refuses_empty_verdict",
+        "test_chk6_refuses_newline",
+        "test_chk6_refuses_over_budget",
+    ),
+    "CHK7": (
+        "test_chk_refusal_leaves_masters_head_exactly_where_it_was",
+    ),
+    "CHK8": (
+        "test_arm5_is_a_post_commit_property_and_the_runner_never_runs_it_early",
+        "test_chk8_nothing_test_shaped_runs_between_the_armor_step_and_the_commit",
+        "test_chk8_the_instrument_resolves_calls_transitively",
+        "test_wld2_remeasure_advances_the_anchor_inside_the_merge_commit",
+    ),
+    "SUI1": (
+        "test_sui1_refuses_red_suite",
+    ),
+    "SUI2": (
+        "test_sui2_timeout_case_is_a_distinct_branch_not_the_generic_red_message",
+    ),
+    "SUI3": (
+        "test_sui3_extra_failure_beyond_the_allowlist_still_refuses",
+        "test_sui3_known_failure_allowlist_tolerates_exactly_that_id",
+    ),
+    "SUI4": (
+        "test_sui4_a_bogus_allowlist_entry_makes_a_landing_refuse",
+        "test_sui4_and_sui8c_collection_error_refuses_distinctly_not_via_allowlist",
+        "test_sui4_known_failures_all_resolve",
+        "test_sui4_the_allowlist_is_readable_in_the_frame_the_suite_runs_from",
+    ),
+    "SUI5": (
+        "test_sui5_each_suite_rc_is_captured_unpiped_and_adjudicated_separately",
+    ),
+    "SUI6": (
+        "test_sui6_docs_plus_py_takes_full_lane",
+        "test_sui6_non_py_non_docs_file_takes_full_lane",
+        "test_sui6_rename_into_docs_without_no_renames_takes_full_lane",
+    ),
+    "SUI7": (
+        "test_doc_reading_set",
+    ),
+    "SUI9": (
+        "test_sui9_a_suite_that_could_not_run_refuses_instead_of_passing",
+        "test_sui9_an_empty_collection_is_not_green",
+        "test_sui9_the_empty_case_never_returns_success",
+        "test_sui9_writes_a_distinguishable_verdict_per_outcome",
+    ),
+    "SUI8": (
+        "test_sui4_and_sui8c_collection_error_refuses_distinctly_not_via_allowlist",
+        "test_sui8_ui_suite_collection_root",
+    ),
+    "SAN1": (
+        "test_san1_no_home_literal_and_the_prefix_comes_from_the_environment",
+    ),
+    "SAN2": (
+        "test_san2_positive_control_clean_diff_proceeds",
+        "test_san2_seeded_hit_refuses",
+    ),
+    "SAN3": (
+        "test_dry2_refusals_match_the_real_run_over_every_named_case",
+        "test_san3_a_deleted_dash_line_cannot_spoof_a_file_header",
+        "test_san3_modifying_a_file_does_not_rescan_its_unchanged_lines",
+        "test_san3_the_shipped_gate_refuses_the_seeded_credential",
+        "test_san_collision_line_that_looks_like_a_header_is_still_content",
+    ),
+    "SAN4": (
+        "test_san3_a_deleted_dash_line_cannot_spoof_a_file_header",
+        "test_san4_ack_lets_a_verified_hit_through",
+    ),
+    "SAN5": (
+        "test_san5_pattern_is_read_from_the_given_fragments_file_not_hardcoded",
+        "test_san_fragment_file_scores_zero_self_hits",
+    ),
+    "PSH1": (
+        "test_psh1_and_psh2_push_once_and_print_a_real_before_after_pair",
+    ),
+    "PSH2": (
+        "test_psh1_and_psh2_push_once_and_print_a_real_before_after_pair",
+    ),
+    "PSH3": (
+        "test_psh3_no_force_capability_in_the_shipped_script",
+        "test_psh4_never_force_deletes_the_branch",
+    ),
+    "PSH4": (
+        "test_psh4_never_force_deletes_the_branch",
+        "test_psh4_no_worktree_still_prunes_cleanly",
+        "test_psh4_prunes_worktree_and_branch_after_push",
+    ),
+    "DRY1": (
+        "test_dry1_and_dry3_dry_run_touches_nothing_and_never_pushes",
+    ),
+    "DRY2": (
+        "test_chk5_dry_run_judges_the_dry_run_worktree_not_the_main_checkout",
+        "test_dry2_refusals_match_the_real_run_over_every_named_case",
+        "test_dry_run_still_runs_the_landing_checks",
+    ),
+    "DRY3": (
+        "test_dry1_and_dry3_dry_run_touches_nothing_and_never_pushes",
+    ),
+    "WLD1": (
+        "test_dry2_refusals_match_the_real_run_over_every_named_case",
+        "test_wld1_detect_world_reads_the_two_worlds_apart",
+        "test_wld1_detection_reads_the_POST_merge_tree_observed_through_the_runner",
+        "test_wld1_refuses_when_both_or_neither_mechanism_is_present",
+    ),
+    "WLD2": (
+        "test_dry2_refusals_match_the_real_run_over_every_named_case",
+        "test_wld2_noop_anchor_refusal_aborts_the_chain",
+        "test_wld2_owed_refusal_aborts_the_chain_and_commits_nothing",
+        "test_wld2_remeasure_advances_the_anchor_inside_the_merge_commit",
+    ),
+    "EXC1": (
+        "test_exc1_every_refusal_family_exits_its_own_code",
+        "test_exc1_shell_contract",
+    ),
+    "CNT1": (
+        "test_cnt1_bare_rerun_after_commit_refusal_refuses",
+        "test_cnt1_no_state_file_control_proceeds_normally",
+        "test_cnt1_state_check_failure_refuses_rather_than_assuming_clean",
+    ),
+    "CNT2": (
+        "test_cnt2_continue_resumes_and_lands",
+        "test_cnt2_fourth_precondition_rejects_an_amended_merge",
+    ),
+    "UN1": (
+        "test_un1_this_unit_does_not_change_the_suite_runner",
+    ),
+    "UN2": (
+        "test_un2_never_touches_the_ledger",
+    ),
+    "UN5": (
+        "test_every_a_criterion_is_named_by_a_test",
+    ),
+    "UN4": (
+        "test_un4_a_helper_with_a_missing_dependency_fails_LOUDLY",
+        "test_un4_every_helper_sources_the_shared_guard",
+        "test_un4_every_measured_block_reproduces",
+        "test_un4_the_derived_floor_holds",
+        "test_un4_the_shared_need_guard_refuses_a_missing_path",
+    ),
+    "DOC1": (
+        "test_s56_matches_the_runner",
+    ),
+    "DOC2": (
+        "test_fw_rows_added_and_ordered",
+    ),
+    "DOC3": (
+        "test_runbook_names_the_runner",
+    ),
+}
+
+
+_TEST_MODULES = (
+    "test_land_runner", "test_landing_checks",
+    "test_landing_resolvers", "test_landing_fixture",
+)
+
+
+def _resolve_test(name: str):
+    """The test FUNCTION of that name, from whichever test module defines
+    it, or None. Resolution is by attribute lookup on an imported module --
+    never by searching text -- which is the whole of MAJOR-3's fix."""
+    import importlib
+
+    for mod_name in _TEST_MODULES:
+        mod = importlib.import_module(mod_name)
+        fn = getattr(mod, name, None)
+        if fn is not None:
+            return fn
+    return None
+
+
 def test_every_a_criterion_is_named_by_a_test():
-    """UN5. Every `[A]` criterion must be named somewhere in this unit's tests.
+    """UN5. Every `[A]` criterion maps to at least one test FUNCTION that
+    exists, is callable, and is collected as a test.
 
-    This is a NAMING check, not a proof of coverage -- a criterion can be
-    named by a weak test. It exists because the failure it catches is
-    coarser and kept happening: a criterion with NO test at all, which no
-    mutation can redden and which reads as covered in every summary.
+    Gate r2 MAJOR-3: the previous form searched the test files' TEXT for
+    the criterion id, so deleting CHK7's only test left it GREEN -- the
+    group heading `# CHK7 ...` still contained the string. A criterion
+    could be "covered" by a comment.
 
-    Positive control: a fabricated id is reported missing, so an empty
-    result cannot mean the walk matched nothing.
+    Four controls, all constructed live:
+      (a) a fabricated criterion id is reported missing;
+      (b) a fabricated test NAME does not resolve;
+      (c) a criterion whose id appears only in a COMMENT is not satisfied,
+          which is the exact defect this replaces;
+      (d) resolution really is by object -- the returned value is the
+          function pytest itself would run.
     """
     rows = _spec_criteria()
     assert len(rows) >= 55, len(rows)
     a_ids = [i for i, kind in rows if kind == "A"]
     assert len(a_ids) >= 55, len(a_ids)
 
-    source = _all_test_source()
+    # (1) every [A] criterion has at least one registered test
+    unregistered = [i for i in a_ids if not CRITERION_TESTS.get(i)]
+    assert not unregistered, f"[A] criteria with no registered test: {unregistered}"
 
-    def named(cid: str) -> bool:
-        # `SUI1` must not be satisfied by `SUI10`; ids appear inside test
-        # names as `test_sui1_...`, so word boundaries cannot be used
-        return re.search(cid + r"(?!\d)", source, re.I) is not None
+    # (2) the registry may not rot in the other direction either
+    stale_ids = sorted(set(CRITERION_TESTS) - set(a_ids))
+    assert not stale_ids, f"registry names criteria that are not [A]: {stale_ids}"
 
-    missing = [i for i in a_ids if not named(i)]
-    assert not missing, f"[A] criteria named by no test: {missing}"
+    # (3) every registered name resolves to a real, callable test function
+    unresolved = []
+    for cid, names in CRITERION_TESTS.items():
+        for nm in names:
+            fn = _resolve_test(nm)
+            if fn is None or not callable(fn) or getattr(fn, "__name__", None) != nm:
+                unresolved.append((cid, nm))
+    assert not unresolved, f"registered tests that do not resolve: {unresolved}"
 
-    # positive control -- the instrument can report a miss. The probe id is
-    # ASSEMBLED at runtime, never written as a literal, because a literal
-    # control id in this file would match itself and pass vacuously
-    # (measured: it did, on the first run of this test).
-    probe = "Q" + "ZX" + "97"
-    assert probe not in source
-    assert not named(probe)
-    # and it really is reading the tests, not an empty string
-    assert named("CHK8") and named("SUI9")
+    # --- (a) a fabricated criterion id
+    probe_id = "Q" + "ZX" + "97"
+    assert probe_id not in CRITERION_TESTS
+    assert not CRITERION_TESTS.get(probe_id)
+
+    # --- (b) a fabricated test name
+    assert _resolve_test("test_" + "definitely_not_a_real_" + "function") is None
+
+    # --- (c) THE defect this replaces: a comment naming a criterion does
+    #         not make it covered, because a comment is not a function
+    commentish = "# CHK7 -- a group heading that names the criterion\n"
+    assert "CHK7" in commentish
+    assert _resolve_test("CHK7") is None
+
+    # --- (d) resolution is by object: this very test resolves to itself
+    assert _resolve_test("test_every_a_criterion_is_named_by_a_test") is \
+        test_every_a_criterion_is_named_by_a_test
+
 
 
 # ---------------------------------------------------------------------------
@@ -2506,6 +2899,32 @@ def test_sui5_each_suite_rc_is_captured_unpiped_and_adjudicated_separately():
     for ln in text.split("\n"):
         if "rc=$?" in ln:
             assert "|" not in ln, ln
+
+
+def test_sui5_each_suite_gets_its_own_rc_file_observed_through_the_runner(tmp_path):
+    """SUI5, observed end to end rather than only in the script's shape:
+    a full-lane landing must leave a SEPARATE `.rc` file per suite, each
+    carrying that suite's own exit code, and the adjudication must read
+    them back. A single shared file would let one suite's verdict stand in
+    for the other's."""
+    repo = LF.make_repo(tmp_path, with_ui=True)
+    LF.make_branch(
+        repo, "u-rc",
+        edits={"plugins/self-learn/cli/tests/test_gamma.py": "def test_g():\n    assert True\n"},
+    )
+    r = LF.run_land(repo, tmp_path, "--branch", "u-rc", "--verdict", "v", timeout=180)
+    assert r.returncode == 0, r.stdout + r.stderr
+    logs = Path(r.stdout.split("logs=")[-1].strip())
+
+    rcs = sorted(p.name for p in logs.glob("*.rc"))
+    assert rcs == ["cli.rc", "ui.rc"], rcs
+    for name in rcs:
+        assert (logs / name).read_text().strip() == "0", name
+    # each suite also recorded the cwd it ran from -- the pairing B-1 needs
+    cwds = sorted(p.name for p in logs.glob("*.cwd"))
+    assert cwds == ["cli.cwd", "ui.cwd"], cwds
+    assert (logs / "ui.cwd").read_text().strip().endswith("plugins/self-learn/ui")
+    assert not (logs / "cli.cwd").read_text().strip().endswith("plugins/self-learn/ui")
 
 
 def test_san1_no_home_literal_and_the_prefix_comes_from_the_environment():
@@ -2999,7 +3418,7 @@ def test_dry2_refusals_match_the_real_run_over_every_named_case(tmp_path):
     rather than the main checkout.
     """
     fw = "docs/specs/self-learn/14-forward-work-map.md"
-    cases: list[tuple[str, "Callable[[Path], str]"]] = []
+    cases: list[tuple[str, Any]] = []
 
     def _pre3(repo: Path) -> str:
         # the dirt must be created AFTER the branch, or `make_branch`'s own
@@ -3067,3 +3486,130 @@ def test_dry2_refusals_match_the_real_run_over_every_named_case(tmp_path):
         seen.append(name)
 
     assert seen == ["PRE3", "PRV2", "CHK2", "CHK5", "SAN3", "WLD"], seen
+
+
+def test_exc1_every_refusal_family_exits_its_own_code(tmp_path):
+    """EXC1 leg 1, which was never built: each refusal family exits its OWN
+    §4.10 code, end to end. Six families, six codes, all distinct -- the
+    grep leg above says `-e` is absent, this one says the codes that
+    replace it actually arrive.
+
+    Exit 7 is driven by a `pre-receive` hook in the throwaway origin, so
+    the push genuinely fails rather than being simulated.
+    """
+    fw = "docs/specs/self-learn/14-forward-work-map.md"
+    got: dict[int, str] = {}
+
+    # 2 -- precondition (HEAD is not master)
+    a = LF.make_repo(tmp_path / "c2", with_ui=True)
+    LF.make_branch(a, "u-x", edits={"docs/specs/self-learn/drafts/n.md": "x\n"})
+    LF.git(a, "checkout", "-q", "u-x")
+    r = LF.run_land(a, tmp_path / "c2", "--branch", "u-x", "--verdict", "v", timeout=180)
+    got[r.returncode] = "PRE2"
+
+    # 3 -- preview/merge family (an unmapped conflicted path)
+    b = LF.make_repo(tmp_path / "c3", with_ui=True)
+    LF.git(b, "checkout", "-q", "-b", "u-x")
+    (b / fw).write_text((b / fw).read_text() + "| FW-3 | b | WATCH | n |\n")
+    LF.git(b, "add", "-A"); LF.git(b, "commit", "-q", "-m", "b")
+    LF.git(b, "checkout", "-q", "master")
+    (b / fw).write_text((b / fw).read_text() + "| FW-4 | m | WATCH | n |\n")
+    LF.git(b, "add", "-A"); LF.git(b, "commit", "-q", "-m", "m")
+    r = LF.run_land(b, tmp_path / "c3", "--branch", "u-x", "--verdict", "v", timeout=180)
+    got[r.returncode] = "PRV2"
+
+    # 4 -- landing checks (an empty verdict)
+    c = LF.make_repo(tmp_path / "c4", with_ui=True)
+    LF.make_branch(c, "u-x", edits={"docs/specs/self-learn/drafts/n.md": "x\n"})
+    LF.git(c, "checkout", "-q", "-b", "u-y")
+    (c / fw).write_text((c / fw).read_text() + "| FW-1 | out of order | WATCH | n |\n")
+    LF.git(c, "add", "-A"); LF.git(c, "commit", "-q", "-m", "disorder")
+    LF.git(c, "checkout", "-q", "master")
+    r = LF.run_land(c, tmp_path / "c4", "--branch", "u-y", "--verdict", "v", timeout=180)
+    got[r.returncode] = "CHK3"
+
+    # 5 -- the suites
+    d = LF.make_repo(tmp_path / "c5", with_ui=True)
+    LF.make_branch(d, "u-x", edits={"plugins/self-learn/cli/tests/test_red.py":
+                                    "def test_fails():\n    assert False\n"})
+    r = LF.run_land(d, tmp_path / "c5", "--branch", "u-x", "--verdict", "v", timeout=180)
+    got[r.returncode] = "SUI1"
+
+    # 6 -- the sanitize gate
+    e = LF.make_repo(tmp_path / "c6", with_ui=True)
+    LF.make_branch(e, "u-x", edits={"docs/specs/self-learn/drafts/n.md":
+                                    "ghp_deadbeefcafe1234\n"})
+    r = LF.run_land(e, tmp_path / "c6", "--branch", "u-x", "--verdict", "v", timeout=180)
+    got[r.returncode] = "SAN"
+
+    # 7 -- the push, refused by the origin itself
+    f = LF.make_repo(tmp_path / "c7", with_ui=True)
+    hook = tmp_path / "c7" / "origin.git" / "hooks" / "pre-receive"
+    hook.parent.mkdir(parents=True, exist_ok=True)
+    hook.write_text("#!/bin/sh\necho 'refused by the receiving end' >&2\nexit 1\n")
+    hook.chmod(0o755)
+    LF.make_branch(f, "u-x", edits={"plugins/self-learn/cli/tests/test_gamma.py":
+                                    "def test_g():\n    assert True\n"})
+    r = LF.run_land(f, tmp_path / "c7", "--branch", "u-x", "--verdict", "v", timeout=180)
+    got[r.returncode] = "PSH"
+
+    assert sorted(got) == [2, 3, 4, 5, 6, 7], got
+    assert len(set(got.values())) == 6, got
+
+
+def _logical_statements(text: str) -> list[tuple[int, str, list[str]]]:
+    """(line-number, joined statement, following lines). Continuation lines
+    ending in a backslash are joined, so a multi-line invocation is one
+    statement -- which is what "gated by `|| die`" is a property of."""
+    lines = text.split("\n")
+    out = []
+    i = 0
+    while i < len(lines):
+        start = i
+        parts = [lines[i]]
+        while parts[-1].rstrip().endswith("\\") and i + 1 < len(lines):
+            i += 1
+            parts.append(lines[i])
+        out.append((start + 1, " ".join(p.rstrip().rstrip("\\").strip() for p in parts),
+                    [l.strip() for l in lines[i + 1:i + 3]]))
+        i += 1
+    return out
+
+
+def test_exc1_every_stage_boundary_is_explicitly_gated():
+    """EXC1's other half, which was never built: with `-e` deliberately
+    absent, a command that fails does NOT abort the script -- so every
+    stage boundary must carry its own explicit gate. A `py_landing` call
+    that is neither `|| die`'d, nor `|| true`'d as best-effort, nor has its
+    rc captured, nor is the last statement of a function whose rc the
+    caller reads, is a stage that can fail silently.
+
+    Positive control: an ungated probe statement is reported.
+    """
+    text = LF.LAND.read_text()
+    stmts = _logical_statements(text)
+
+    def gated(stmt: str, following: list[str]) -> bool:
+        if "|| die" in stmt or "|| true" in stmt:
+            return True
+        # rc captured on the next line, or returned straight out
+        nxt = following[0] if following else ""
+        if "=$?" in nxt or nxt == "return $?":
+            return True
+        # the last statement of a function body: its rc IS the function's
+        return nxt == "}"
+
+    ungated = [
+        (ln, s) for ln, s, nxt in stmts
+        if re.match(r"^\s*py_landing ", s) and not gated(s, nxt)
+    ]
+    assert not ungated, f"ungated stage boundaries: {ungated}"
+
+    # the check must actually be looking at something
+    all_calls = [s for _, s, _ in stmts if re.match(r"^\s*py_landing ", s)]
+    assert len(all_calls) >= 4, all_calls
+
+    # positive control -- an ungated statement IS reported
+    probe = _logical_statements('py_landing state --root x check\necho next\n')
+    assert [(ln, s) for ln, s, nxt in probe
+            if re.match(r"^\s*py_landing ", s) and not gated(s, nxt)]

@@ -522,9 +522,13 @@ if [ "$RESUME_ONLY" = "0" ]; then
   MERGE_PARENTS=$(git -C "$GITROOT" log -1 --format=%P HEAD)
 
   if [ "$DRY_RUN" = "0" ]; then
+    # EXC1: this write is what `--continue` resumes from. A silent failure
+    # here leaves a merge commit that exists but cannot be resumed, so it
+    # gets its own `|| die` like every other stage boundary.
     py_landing state --root "$ROOT" --branch "$BRANCH" write \
       --json "$(python3 -c "import json,sys; print(json.dumps({'base_sha': sys.argv[1], 'merge_sha': sys.argv[2], 'parent_shas': sys.argv[3].split(), 'verdict': sys.argv[4]}))" "$BASE_SHA" "$MERGE_SHA" "$MERGE_PARENTS" "$VERDICT")" \
-      >/dev/null
+      >/dev/null \
+      || die 4 "the merge commit exists but its landing state could not be recorded -- --continue would be impossible" "git -C $ROOT log -1"
   fi
 fi
 
