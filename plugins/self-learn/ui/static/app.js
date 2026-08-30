@@ -65,6 +65,17 @@
     return document.querySelector('.action-bar[data-armed="true"]');
   }
 
+  /** N10 (code gate r2): the identity of the record currently on
+   * screen, read from the ONE place it is stamped -- the detail
+   * page's `<article data-record-id>` (absent on Front, which has no
+   * single record). Used to catch a deferred clickAction() intent
+   * that has gone stale because the record itself changed underneath
+   * it, not just because its target element moved. */
+  function currentRecordId() {
+    const article = document.querySelector("[data-record-id]");
+    return article ? article.getAttribute("data-record-id") : null;
+  }
+
   /**
    * UI-walk defect fix: keyboard `b` (toggle_brief) "did nothing
    * visible" — measured, not assumed. On a Detail page long enough to
@@ -85,16 +96,235 @@
    * action dispatched through here, not just `b` — the same "the human
    * pressed a key while scrolled away from its target" gap applies
    * to any of them on a long enough page. */
-  function clickAction(action) {
-    const el = document.querySelector('[data-key-action="' + action + '"]');
-    if (el) {
-      el.click();
-      el.scrollIntoView({ block: "nearest" });
-      return true;
-    }
-    return false;
+  /**
+   * code gate r7 (MAJOR-1 follow-up, the coordinator's ruling): the
+   * keyed wait above (waitingIds) proves every swap outstanding AT
+   * DEFER TIME resolved or is known unresolvable -- it says nothing
+   * about a swap that started AFTER deferral and happens to replace
+   * THIS dispatch's own target (a second, later swap for the same
+   * element). fire() re-checks the actual precondition right before
+   * acting instead of trusting the keyed wait alone: is the LIVE
+   * element wired RIGHT NOW? For a `[data-key-action]` target that
+   * carries its OWN `hx-*` verb this is exactly what
+   * `elt["htmx-internal-data"].firstInitCompleted` answers HONESTLY --
+   * unlike Layer 2's forms (r6's MAJOR-1: htmx marks every `<form>`
+   * processed regardless of whether anything was ever wired for it), a
+   * verb-carrying element's `firstInitCompleted` reading true DOES
+   * mean htmx's click listener is attached (kt() wires the verb via
+   * wt() strictly before it sets that flag, in the same synchronous
+   * call -- see Layer 2's own comment below for the trace).
+   *
+   * NOT every `[data-key-action]` target carries a verb, though --
+   * `data-key-action="up"` is a plain `<a href>` (`bucket.html`,
+   * `detail.html`, etc.), never touched by htmx's own node-discovery
+   * walk at all (its selector only sweeps an `<a>` in when it carries
+   * `hx-boost`/`data-hx-boost` itself or sits under an ancestor that
+   * does -- these plain navigation links do neither), and
+   * `toggle_brief` is a bare `<summary>` with no hx-* attribute of any
+   * kind. For those, `firstInitCompleted` never becomes true -- not a
+   * timing gap, a permanent absence -- so checking it unconditionally
+   * would deafen EVERY click on them forever, which live full-suite
+   * runs caught immediately (`b`, `Escape` with no pane open). Scoped
+   * with `formHasOwnHtmxVerb(live)` below (the SAME check Layer 2 uses
+   * for a form's own verb, reused here for the click target itself) --
+   * only elements this file expects htmx to wire a click for at all
+   * are ever subject to this check; anything else fires exactly as it
+   * always has, r1 through r6.
+   *
+   * Read DIRECTLY (never via htmx's own getInternalData(), whose
+   * create-on-read side effect would fabricate the object on an
+   * element htmx has never touched) -- so an element htmx genuinely
+   * has not processed yet reads as absent, not as a freshly-created
+   * empty object that would otherwise mask the very case this exists
+   * to catch.
+   *
+   * Fail-closed here is more dangerous than in Layer 2: Layer 2
+   * failing closed drops ONE submit; failing closed on a mechanism
+   * that vanished ENTIRELY (a future htmx upgrade renaming or
+   * dropping the expando) would silently deafen the keyboard forever,
+   * every dispatch -- worse than the race this guards against. So
+   * this is split into two questions, not one:
+   * htmxInternalDataMechanismAlive() asks whether the marker
+   * mechanism itself still exists on THIS page at all, using
+   * `document.body` as the canary -- htmx's own bootstrap always
+   * processes `document.body` as part of loading (kt() runs on it
+   * regardless of what markup exists below), so body carries the
+   * expando on any page where htmx has run AT ALL, whether or not any
+   * SPECIFIC target has been individually processed yet. If body
+   * itself never got it, the mechanism is unavailable everywhere (htmx
+   * failed to load, or a future version renamed the field), and
+   * reading it on any OTHER element would be trusting a signal already
+   * shown to be gone -- so this case falls back to firing on the keyed
+   * wait alone, exactly the r1-r6 behavior, rather than vetoing blind.
+   * Only when the canary confirms the mechanism is alive AND the
+   * target carries its own verb does elementLooksWired()'s per-element
+   * read get trusted to veto.
+   */
+  function htmxInternalDataMechanismAlive() {
+    const bodyData = document.body && document.body["htmx-internal-data"];
+    return !!(bodyData && typeof bodyData === "object");
   }
 
+  function elementLooksWired(el) {
+    const data = el && el["htmx-internal-data"];
+    return !!(data && data.firstInitCompleted === true);
+  }
+
+  function clickAction(action) {
+    const selector = '[data-key-action="' + action + '"]';
+    const el = document.querySelector(selector);
+    if (!el) return false;
+    // D1 (U-jsdom disposition, 14 §6a, code gate r1): re-resolve BY
+    // SELECTOR at fire time, never close over `el` above -- a second
+    // overlapping swap landing between defer and fire can detach the
+    // element clickAction saw at dispatch time (its container's
+    // outerHTML replaced again before the first swap even settled).
+    // `.click()` on a detached node is silently inert -- indistinguishable
+    // from the outside from "the action just didn't happen" -- so fire()
+    // must always act on whatever the LIVE document holds right now,
+    // never a reference captured earlier.
+    //
+    // N10 (code gate r2): re-resolving by selector alone is not
+    // enough -- a resolution swap can replace the WHOLE record (A's
+    // detail page swapped out for B's) before a deferred click fires,
+    // and B's page repeats the same [data-key-action] markup, so the
+    // selector would happily find and click INTO B with an intent that
+    // was only ever formed against A. The record id is stamped at
+    // defer time and re-checked at fire time; a mismatch no-ops
+    // (logged, so a dropped fire is diagnosable instead of just
+    // silently absent).
+    const recordAtDefer = currentRecordId();
+    function fire() {
+      const recordNow = currentRecordId();
+      if (recordNow !== recordAtDefer) {
+        console.warn(
+          'clickAction("' + action + '"): dropped -- record changed from ' +
+            recordAtDefer + " to " + recordNow + " before this deferred click fired"
+        );
+        return;
+      }
+      const live = document.querySelector(selector);
+      if (!live) return;
+      // code gate r7 (MAJOR-1 follow-up): the fire-time wired check --
+      // see this function's own docblock above for what it proves and
+      // why the canary matters.
+      if (
+        formHasOwnHtmxVerb(live) &&
+        htmxInternalDataMechanismAlive() &&
+        !elementLooksWired(live)
+      ) {
+        console.warn(
+          'clickAction("' + action + '"): dropped -- record ' +
+            recordAtDefer + "'s target was not wired at fire time (a " +
+            "later swap likely replaced it after this dispatch's own " +
+            "wait already cleared); never fired"
+        );
+        return;
+      }
+      live.click();
+      live.scrollIntoView({ block: "nearest" });
+    }
+    if (unresolvedSwapsExist()) {
+      // U-jsdom disposition (14 §6a, code gate r1): this element may
+      // have just landed in the DOM via a swap htmx has not finished
+      // settling yet, which means htmx has not finished ATTACHING its
+      // own hx-post/hx-get listeners to it either — clicking now would
+      // click blind into a target that is not htmx-interactive yet.
+      // Wait for the settle that finishes that wiring instead of
+      // racing it.
+      //
+      // code gate r2/r3: gated on pendingSwaps -- a BAG of tokens
+      // keyed by each request's own identity (M2: its xhr, not merely
+      // its target), not a bare counter. See pendingSwaps's own
+      // comment for why (M1/M2/N9), and for how it still requires two
+      // resolutions for two overlapping swaps sharing the same key.
+      //
+      // code gate r5 (B-1): gated on unresolvedSwapsExist(), not
+      // pendingSwaps alone -- a token silently evicted by its own
+      // orphan timeout is UNKNOWN, not resolved (see abandonedSwaps'
+      // own comment below). Reproduced without this: a fresh dispatch
+      // landing right after such an eviction saw pendingSwaps read
+      // empty and took this branch's `else` path, clicking blind into
+      // content that had swapped but never actually settled.
+      //
+      // N1 / code gate r7 (MAJOR-1): this call is queued into the
+      // SHARED pendingDispatches array, keyed to the specific token
+      // ids outstanding right now (`waitingIds`, captured once via
+      // outstandingIds()) and released ONLY once every one of THOSE
+      // ids is known resolved (resolveDispatchesWaitingOnId) or DROPPED
+      // the instant any one of them is known unresolvable
+      // (dropDispatchesWaitingOnId) -- never a private listener this
+      // call alone owns, and never merely "whichever token's removal
+      // happened to bring some shared bag to zero" (see
+      // pendingDispatches' own comment for the r7 history of getting
+      // that release condition right). Measured without a shared,
+      // keyed queue: a key pressed FIRST could fire ~499ms AFTER a key
+      // pressed later, because the first one's own request failed (an
+      // F14 leg) while it sat waiting on an `afterSettle` that was
+      // never coming, and nothing told it to stop waiting -- only ITS
+      // OWN fallback timer, half a second later, ever released it
+      // (`[reject@4ms, route@503ms]`). A shared queue drained on EVERY
+      // resolution path (a real settle OR any F14 failure that owns
+      // the pending target) is released the instant we know it's safe,
+      // never merely when its own private timer happens to expire.
+      //
+      // N12 (code gate r3): each pendingSwaps token bounds ITSELF to
+      // 500ms (addPendingSwap's own comment), but that alone does not
+      // bound THIS dispatch -- a continuous stream of overlapping
+      // swaps (a new token always landing before the bag empties) can
+      // keep the bag non-empty far longer than any single token's own
+      // 500ms. So this dispatch also gets its OWN independent 500ms
+      // fallback timer -- but see N17 below for what that timer does
+      // when it actually fires; it is bounded, not a license to fire.
+      //
+      // N17 (code gate r4, fail-closed): this timer firing at ALL
+      // means the bag did NOT empty within 500ms of this dispatch --
+      // if it had, this dispatch would already have been released for
+      // real (see resolveDispatchesWaitingOnId). The gate reproduced
+      // what firing BLIND here actually does: with a real settle delay
+      // of 1500ms (CPU starvation stretches a real one just as far),
+      // the r3 dispatch fired at its own 500ms mark onto a `<button
+      // type="submit">` htmx had not yet finished wiring -- the form's
+      // native, un-intercepted submission ran instead, a plain GET to
+      // the current URL with its hidden fields as a query string,
+      // navigating the page out from under everything. That is the
+      // ORIGINAL bug this whole unit exists to fix, re-entering under
+      // CPU starvation. This 500ms bound is a LIVENESS guarantee
+      // (never wedge a keystroke forever waiting on a swap that will
+      // never resolve) -- it is NOT a license to act on a swap that
+      // merely hasn't resolved YET. So: never `.click()` a form that
+      // has not settled. DROP the dispatch instead -- the entry is
+      // discarded (liveness kept: nothing is left pending, so nothing
+      // is stuck), the bar is left exactly as it was (nothing was
+      // clicked, so nothing changed -- the NEXT keypress dispatches
+      // normally, and fires for real once the swap actually does
+      // settle), and exactly one `console.warn` names the record and
+      // how long it waited, so a dropped keystroke is diagnosable
+      // instead of silently absent.
+      const deferredAt = performance.now();
+      const entry = {
+        fire: fire,
+        timer: null,
+        waitingIds: outstandingIds(), // code gate r7: fixed at defer time, never added to
+        action: action,
+        recordAtDefer: recordAtDefer,
+      };
+      entry.timer = setTimeout(function () {
+        const idx = pendingDispatches.indexOf(entry);
+        if (idx !== -1) pendingDispatches.splice(idx, 1);
+        const elapsed = Math.round(performance.now() - deferredAt);
+        console.warn(
+          'clickAction("' + action + '"): dropped -- record ' +
+            recordAtDefer + "'s swap had not settled after " + elapsed +
+            "ms (fallback bound); never fired"
+        );
+      }, 500);
+      pendingDispatches.push(entry);
+    } else {
+      fire();
+    }
+    return true;
+  }
   function toggleHelp() {
     const overlay = document.getElementById("self-learn-ui-help");
     if (!overlay) return;
@@ -543,7 +773,416 @@
    */
   var reloadPending = false;
   var confirmInFlight = false;
+  /** U-jsdom disposition (14 §6a): htmx does not finish "hydrating"
+   * swapped-in content (attaching its own hx-post/hx-get listeners to
+   * it) at SWAP time -- only at SETTLE time, a short
+   * (htmx.config.defaultSettleDelay, 20ms by default) delay later. A
+   * DOM attribute a caller waits on (e.g. an armed bar's
+   * `data-armed="true"`) appears at swap time, not settle time, so a
+   * key-driven clickAction() dispatched in that gap can target a
+   * `<button>` htmx has not wired up yet. For a plain `hx-post`
+   * button that is a silent no-op (nothing intercepts the click, and
+   * a `type="button"` has no native fallback action of its own); for
+   * a `<button type="submit">` inside a `<form>` (the armed bar's
+   * confirm/disarm pair) it is worse -- the click's native
+   * form-submission default action runs completely un-intercepted:
+   * the form (no `method`/`action` of its own) submits as a plain GET
+   * to the current URL with its hidden fields serialized as a query
+   * string, discarding the intended POST and navigating the page out
+   * from under whatever was mid-flight (Page.query_selector:
+   * "Execution context was destroyed" is that navigation, observed
+   * from the test side). Measured directly: a synthetic `submit`
+   * event dispatched on a just-swapped form only came back
+   * `defaultPrevented` once `htmx:afterSettle` had fired for that
+   * swap -- never before, across 20 samples; waiting for that same
+   * event before dispatching a synthetic click made 20/20 samples
+   * `defaultPrevented`.
+   *
+   * pendingSwaps (code gate r2/r3): a BAG of tokens, one per
+   * outstanding (swapped, not yet settled-or-failed) request, each
+   * carrying a KEY that identifies the ONE request it belongs to.
+   * Replaces an r1 plain counter that counted resolutions without
+   * asking whose they were.
+   *
+   * M1 (code gate r2, reproduced end-to-end): the r1 counter's own
+   * defect. htmx maps a failing (4xx/5xx) request to `swap:false,
+   * error:true` -- NO `htmx:afterSwap` ever fires for it, so that
+   * request was never counted in. But the r1 counter's F14 failure
+   * legs decremented UNCONDITIONALLY on ANY failure, so an unrelated
+   * request's failure could still consume the decrement a genuinely
+   * pending, DIFFERENT swap owned -- draining queued clicks into
+   * content that was never wired (a native GET navigation where the
+   * fixed build should have POSTed).
+   *
+   * M2 (code gate r3): the r2 fix above scoped removal by TARGET
+   * (`evt.detail.target`), which closes M1 but is still only an
+   * APPROXIMATE key -- every arm/confirm/disarm request on one action
+   * bar targets the SAME element, so a failing request aimed at that
+   * element could still remove a token a DIFFERENT, genuinely live
+   * request on the SAME element owned, reproducing the identical
+   * native-GET failure M1 fixed, just narrowed to same-target
+   * collisions. Keyed instead by `evt.detail.xhr` -- the actual
+   * request object htmx attaches, unique PER REQUEST rather than per
+   * element -- falling back to `evt.detail.target` only when no xhr
+   * is present at all (a synthetic event with no real request behind
+   * it; htmx's own events always carry one). `pendingSwapKey()` below
+   * computes it once, used identically by the add leg and both
+   * removal legs. Per-request identity, not target, is what an F14
+   * failure leg's removal must be scoped to: a failure whose OWN
+   * request never swapped -- whatever its target -- removes nothing.
+   *
+   * N9 (code gate r2): each token carries its OWN 500ms fallback
+   * timer (addPendingSwap below), not a queue-level one -- so a swap
+   * that never settles and never fails (an orphaned afterSwap)
+   * self-evicts after 500ms regardless of any other token's state.
+   * Under the r1 counter this never healed: an orphaned increment
+   * permanently occupied the counter, so even a LATER, fully balanced
+   * afterSwap/afterSettle cycle could only bring it from 2 back to 1
+   * -- never to 0 -- leaving every subsequent keystroke ~503ms late
+   * forever, not just the one racing the orphan itself.
+   *
+   * Two swaps overlapping in flight for the SAME request key still
+   * require TWO resolutions: each `htmx:afterSwap` pushes its own
+   * token, so a single `htmx:afterSettle` only removes one, leaving
+   * the bag non-empty -- the double-swap guarantee N3 established,
+   * preserved here per-key rather than via a shared count.
+   *
+   * pendingDispatches (N1, code gate r1; N12, code gate r3): every
+   * clickAction() call deferred while the bag is non-empty is queued
+   * HERE, as a shared array, rather than each call owning a private
+   * `htmx:afterSettle` listener of its own.
+   *
+   * MAJOR-1 (code gate r7): through r6 this was drained "the instant
+   * the bag empties" -- and that phrase is exactly the bug, the same
+   * shape a SEVENTH time. removeAbandonedSwapSilently's own r6 fix
+   * (Minor 1) never drains pendingDispatches itself, correctly -- but
+   * it DOES silently empty abandonedSwaps, and nothing stopped some
+   * UNRELATED later request's genuine resolution from finding BOTH
+   * bags empty at that point and draining a dispatch that was never
+   * actually waiting on THAT request -- it was waiting on the key
+   * that had just aged out unresolved. Reproduced 9/9 across three
+   * sessions: a dispatch queued behind an abandoned key fires the
+   * instant an unrelated settle arrives after the ceiling passes,
+   * having learned nothing about the key it actually needed. That is
+   * r5's Blocker B-2 verbatim, one layer further out, behind the r6
+   * ceiling instead of a raw eviction -- releasing a wait because some
+   * GLOBAL collection became empty, rather than because the SPECIFIC
+   * thing it was waiting for resolved or is now known unresolvable.
+   *
+   * Fixed by keying the release the same way pendingSwaps itself is
+   * keyed. Every token gets a unique numeric `id` at creation
+   * (`nextSwapId` below), carried over when a token moves from
+   * pendingSwaps into abandonedSwaps (removePendingSwapSilently) so a
+   * LATE real resolution can still find it there. Each queued
+   * dispatch snapshots the ids of every token outstanding AT THE
+   * MOMENT it defers (`outstandingIds()`, clickAction's own comment)
+   * into its own `waitingIds` -- a fixed list, never added to later,
+   * so a token that starts AFTER this dispatch deferred was never
+   * anything this dispatch was waiting on and cannot affect it. A
+   * token's REAL resolution (removePendingSwapForKey) removes its id
+   * from every dispatch's waitingIds that still has it
+   * (resolveDispatchesWaitingOnId); a dispatch whose set empties this
+   * way fires -- released because everything IT was gated on
+   * resolved, never because some other bag happened to. A token that
+   * instead AGES OUT unresolved (removeAbandonedSwapSilently, the r6
+   * ceiling) can, by construction, never resolve -- so any dispatch
+   * still holding its id is DROPPED right then
+   * (dropDispatchesWaitingOnId), fail-closed, rather than left to
+   * possibly be released later by something that was never actually
+   * evidence of anything for it. There is no path from "an unrelated
+   * key resolved" to "this dispatch fires" any more -- not merely no
+   * path this bookkeeping currently happens to take.
+   *
+   * A private per-call listener has no way to learn that a DIFFERENT
+   * leg (an F14 failure owning a DIFFERENT request, say) already
+   * resolved the wait; measured live under the r1 design: a key
+   * pressed FIRST could fire ~499ms AFTER a key pressed later this way
+   * (`[reject@4ms, route@503ms]`) -- the first one's own request
+   * failed, but with no shared drain, only ITS OWN fallback timer ever
+   * released it. Each dispatch ALSO carries its own 500ms fallback
+   * (N12, clickAction's own comment) as a second, independent bound
+   * alongside the keyed wait -- a continuous stream of overlapping
+   * swaps can keep a dispatch's waitingIds non-empty far longer than
+   * any one token's own 500ms, and this bound still closes that
+   * liveness gap regardless of anything above. */
+  let nextSwapId = 1;
+  const pendingSwaps = [];
+  const pendingDispatches = [];
 
+  // NIT-2 (code gate r7): a test seam for the ceiling below, matching
+  // how htmx exposes its OWN `htmx.config` for tests to override live
+  // rather than burning 10+ real seconds per ceiling-timing test.
+  // Read fresh at every scheduling site (abandonedSwapCeilingMs()
+  // below), never cached, so a test can set this any time after page
+  // load and before the specific scenario it is testing, exactly like
+  // `htmx.config.defaultSettleDelay`.
+  window.SELF_LEARN_UI_CONFIG = window.SELF_LEARN_UI_CONFIG || {};
+  const DEFAULT_ABANDONED_SWAP_CEILING_MS = 10000; // 20x the 500ms
+  // bound, well past the gate's own 1500ms CPU-starvation stress
+  // scenario (6.7x), and far past any duration a human would
+  // plausibly still be waiting on ONE keypress before assuming
+  // something else is wrong.
+  function abandonedSwapCeilingMs() {
+    return typeof window.SELF_LEARN_UI_CONFIG.ABANDONED_SWAP_CEILING_MS ===
+      "number"
+      ? window.SELF_LEARN_UI_CONFIG.ABANDONED_SWAP_CEILING_MS
+      : DEFAULT_ABANDONED_SWAP_CEILING_MS;
+  }
+
+  // B-1/B-2 (code gate r5): pendingSwaps.length === 0 was being read
+  // as a POSITIVE signal that clicking is safe -- but a token's own
+  // 500ms orphan timeout (addPendingSwap's N9/N17 self-eviction) only
+  // ever means "we gave up WAITING on this one," never "it resolved."
+  // Before this set existed, a silently-evicted token just vanished,
+  // so the bag could read "empty" while the swap it represented was
+  // genuinely still unsettled -- reproduced two ways: (B-1) a FRESH
+  // clickAction() landing right after such an eviction took the
+  // un-gated `else { fire(); }` path and clicked blind; (B-2) an
+  // UNRELATED request's own real settle brought pendingSwaps to zero
+  // and drained a DIFFERENT, already-queued dispatch that was
+  // actually waiting on the evicted swap, never the one that just
+  // resolved.
+  //
+  // abandonedSwaps holds exactly the keys self-eviction has moved out
+  // of pendingSwaps -- their fate is UNKNOWN, not resolved -- and it
+  // still gates unresolvedSwapsExist() (clickAction's own defer
+  // decision, B-1) identically to pendingSwaps. A key leaves this set
+  // either via its OWN real resolution eventually arriving (a late
+  // htmx:afterSettle or F14 failure carrying the SAME key, via
+  // removePendingSwapForKey below) or (code gate r6, Minor 1) via its
+  // own staleness ceiling (below). Layer 2 below (the submit guard) is
+  // what makes even a hole in THIS bookkeeping harmless, which is what
+  // lets this set stay conservative about WHEN to defer rather than
+  // clever about it.
+  //
+  // Minor 1 (code gate r6): "stay conservative forever" turned out to
+  // have a real cost -- measured live: a SINGLE key that never gets a
+  // real resolution deafened every later keypress PERMANENTLY
+  // (`[False, False, False]` across three separate presses),
+  // contradicting r4's own "the NEXT keypress dispatches normally"
+  // guarantee. So each entry carries its own staleness ceiling
+  // (abandonedSwapCeilingMs(), above), past which it ages out.
+  //
+  // MAJOR-1 (code gate r7) corrected what "ages out" is allowed to
+  // mean. r6 shipped it as pure bookkeeping that "never drains
+  // pendingDispatches... a dispatch already queued and waiting on it
+  // keeps waiting out its OWN independent fallback and drops there,
+  // exactly as if this function did not exist." That sentence is now
+  // FALSE, and was the seventh hole -- see the MAJOR-1 paragraph above
+  // pendingDispatches' own declaration for the measured proof and the
+  // fix. Ageing out still never RESOLVES anything (a timeout is still
+  // never a reason to declare a dispatch safe to fire) -- but it now
+  // actively finds every dispatch that was waiting on THIS id
+  // specifically and drops each one, fail-closed, right then
+  // (removeAbandonedSwapSilently below) -- not later, not via whatever
+  // bag some UNRELATED resolution happens to empty. A dispatch waiting
+  // on a DIFFERENT key that is still genuinely outstanding is
+  // untouched by this -- only the ids actually present in its own
+  // waitingIds snapshot can ever affect it.
+  const abandonedSwaps = []; // array of { key, id, timer }
+
+  // B-1 (code gate r5): the one question clickAction() asks before
+  // deciding whether to defer at all -- "is there anything whose
+  // outcome we do not yet know for certain?" -- answered by BOTH sets
+  // together, never pendingSwaps alone. This governs ONLY the defer
+  // decision; the RELEASE decision (code gate r7) is keyed per-id, see
+  // resolveDispatchesWaitingOnId/dropDispatchesWaitingOnId below --
+  // it never re-reads this boolean.
+  function unresolvedSwapsExist() {
+    return pendingSwaps.length > 0 || abandonedSwaps.length > 0;
+  }
+
+  // code gate r7 (MAJOR-1): every token id currently outstanding, in
+  // EITHER set, at the moment this is called -- a queued dispatch
+  // snapshots this ONCE, at defer time, into its own waitingIds;
+  // nothing added to either set AFTER that moment is ever added to an
+  // already-queued dispatch's snapshot.
+  function outstandingIds() {
+    return pendingSwaps
+      .map(function (t) {
+        return t.id;
+      })
+      .concat(
+        abandonedSwaps.map(function (t) {
+          return t.id;
+        })
+      );
+  }
+
+  // code gate r7 (MAJOR-1): a token's id RESOLVED for real (a genuine
+  // htmx:afterSettle or F14 failure owning it, via
+  // removePendingSwapForKey below). Removes this id from every queued
+  // dispatch's waitingIds that still has it; a dispatch whose set
+  // empties this way is released -- fired because everything IT was
+  // gated on is now known resolved, never because some other bag
+  // emptied.
+  function resolveDispatchesWaitingOnId(id) {
+    pendingDispatches.slice().forEach(function (entry) {
+      const wIdx = entry.waitingIds.indexOf(id);
+      if (wIdx === -1) return;
+      entry.waitingIds.splice(wIdx, 1);
+      if (entry.waitingIds.length === 0) {
+        const pIdx = pendingDispatches.indexOf(entry);
+        if (pIdx !== -1) pendingDispatches.splice(pIdx, 1);
+        clearTimeout(entry.timer); // N12: cancel the dispatch's own fallback, it is being released for real
+        entry.fire();
+      }
+    });
+  }
+
+  // code gate r7 (MAJOR-1): a token's id AGED OUT unresolved
+  // (removeAbandonedSwapSilently below) -- it can never resolve for
+  // real now. Any dispatch still holding this id in its waitingIds is
+  // DROPPED here, fail-closed -- not fired, and not left pending on
+  // the theory that something else might later look like permission.
+  function dropDispatchesWaitingOnId(id) {
+    pendingDispatches.slice().forEach(function (entry) {
+      if (entry.waitingIds.indexOf(id) === -1) return;
+      const pIdx = pendingDispatches.indexOf(entry);
+      if (pIdx !== -1) pendingDispatches.splice(pIdx, 1);
+      clearTimeout(entry.timer);
+      console.warn(
+        'clickAction("' + entry.action + '"): dropped -- record ' +
+          entry.recordAtDefer + "'s swap it was waiting on aged out " +
+          "after " + abandonedSwapCeilingMs() + "ms unresolved (never " +
+          "fired; fail-closed, not released by anything else resolving)"
+      );
+    });
+  }
+
+  // M2 (code gate r3): the request's own key, shared by the add leg
+  // and both removal legs below. Prefers `evt.detail.xhr` (unique per
+  // REQUEST); falls back to `evt.detail.target` only when no xhr is
+  // present (a synthetic event with no real request behind it); falls
+  // back to `undefined` (itself a valid, stable key, compared with
+  // `===`) when neither is present.
+  function pendingSwapKey(evt) {
+    const d = evt && evt.detail;
+    if (!d) return undefined;
+    if (d.xhr) return d.xhr;
+    return d.target;
+  }
+
+  // Bounded regardless (htmx's own default settle delay is 20ms; 500ms
+  // is a generous multiple, chosen to stay invisible to a human while
+  // still being a real bound) so a swap that somehow never settles and
+  // never fails can't wedge key dispatch permanently — defense in
+  // depth under the bag/queue above, not the primary guard.
+  //
+  // N17 (code gate r4, fail-closed): this timer firing means the swap
+  // did NOT settle or fail within the bound -- it does NOT mean the
+  // swap is done; it may still be genuinely in flight (a real settle
+  // delay stretched by CPU starvation, exactly what the gate
+  // reproduced at 1500ms). Removing the token here is bookkeeping
+  // ONLY -- it must never itself resolve or release a queued dispatch.
+  // Only removePendingSwapForKey() below (driven by a REAL
+  // htmx:afterSettle or an F14 failure that owns this key) may ever
+  // call resolveDispatchesWaitingOnId() -- a timeout is a reason to
+  // stop WAITING on this one token, never a reason to declare victory.
+  function addPendingSwap(key) {
+    const token = { key: key, id: nextSwapId++, timer: null };
+    token.timer = setTimeout(function () {
+      removePendingSwapSilently(token);
+    }, 500);
+    pendingSwaps.push(token);
+  }
+
+  // Removes at most ONE token owned by `key` (FIFO) and, if a token
+  // was actually found, resolves every dispatch waiting on ITS id.
+  // Used by afterSettle (which always owns a token for its own
+  // request, barring a defect elsewhere) and by an F14 failure leg
+  // (which may legitimately own NONE -- see M1/M2 above: a request
+  // whose OWN key never swapped has no token to remove, regardless of
+  // what target it shares with some other request). This is the ONLY
+  // path that may resolve a queued dispatch for real -- see N17's note
+  // on addPendingSwap above for why.
+  //
+  // code gate r5 (B-1/B-2), corrected r7 (MAJOR-1): a matching key can
+  // be sitting in EITHER set -- still in pendingSwaps (the common
+  // case) or already moved to abandonedSwaps (a LATE resolution,
+  // arriving after that eviction but before its own ceiling). Either
+  // way this is the one place a key's REAL, definitive outcome becomes
+  // known, so either way it is removed from wherever it currently sits
+  // and its id is handed to resolveDispatchesWaitingOnId(), which
+  // releases only the dispatches that were actually waiting on THIS
+  // id -- never a global "both sets empty" check, which is what let an
+  // unrelated resolution release a dispatch waiting on a DIFFERENT,
+  // still-unresolved key (B-2, and again as MAJOR-1's r7 ceiling
+  // variant).
+  function removePendingSwapForKey(key) {
+    const idx = pendingSwaps.findIndex(function (t) {
+      return t.key === key;
+    });
+    let resolvedId = null;
+    if (idx !== -1) {
+      resolvedId = pendingSwaps[idx].id;
+      clearTimeout(pendingSwaps[idx].timer);
+      pendingSwaps.splice(idx, 1);
+    } else {
+      const aIdx = abandonedSwaps.findIndex(function (t) {
+        return t.key === key;
+      });
+      if (aIdx !== -1) {
+        resolvedId = abandonedSwaps[aIdx].id;
+        clearTimeout(abandonedSwaps[aIdx].timer);
+        abandonedSwaps.splice(aIdx, 1);
+      }
+    }
+    if (resolvedId !== null) resolveDispatchesWaitingOnId(resolvedId);
+  }
+
+  // A token's own orphan/timeout removal (N17): bookkeeping only,
+  // deliberately never resolves a dispatch -- see addPendingSwap's own
+  // comment. The token does not simply vanish -- its `id` (and key)
+  // move to abandonedSwaps (code gate r5), which keeps gating exactly
+  // like pendingSwaps did until this SAME id's real resolution
+  // eventually arrives (removePendingSwapForKey above, matched by key
+  // -- the id travels with it), OR (code gate r6/r7) until its own
+  // staleness ceiling ages it out (removeAbandonedSwapSilently below).
+  // Carrying `id` across this move (not just `key`) is what lets a
+  // LATE real resolution still find and release whatever was waiting
+  // on this exact token, and what lets the ceiling drop exactly the
+  // right dispatches and no others.
+  function removePendingSwapSilently(token) {
+    const idx = pendingSwaps.indexOf(token);
+    if (idx === -1) return; // already removed by a real settle/failure
+    clearTimeout(token.timer);
+    pendingSwaps.splice(idx, 1);
+    const entry = { key: token.key, id: token.id, timer: null };
+    entry.timer = setTimeout(function () {
+      removeAbandonedSwapSilently(entry);
+    }, abandonedSwapCeilingMs());
+    abandonedSwaps.push(entry);
+  }
+
+  // Minor 1 (code gate r6): an abandoned entry's own staleness
+  // ceiling -- this key has outlived any plausible swap and is no
+  // longer evidence of anything either way.
+  //
+  // MAJOR-1 (code gate r7) corrected what happens next. The r6 version
+  // stopped here, bookkeeping only, on the theory that a dispatch
+  // already waiting on this id would harmlessly keep waiting out its
+  // own independent 500ms fallback -- false: the r6 ceiling fires at
+  // 10s, long after any dispatch's own 500ms fallback would already
+  // have fired FIRST if that fallback were really the only bound in
+  // play. A dispatch waiting on an id that ages out is not actually
+  // bounded by its own fallback by the time the ceiling fires -- it is
+  // sitting there waiting on THIS id specifically, and nothing was
+  // telling it that id could never resolve. So this now actively finds
+  // every dispatch still holding this id and drops each one,
+  // fail-closed, right here (dropDispatchesWaitingOnId) -- the timeout
+  // still never RESOLVES anything (it does not fire a click, does not
+  // treat absence-of-evidence as evidence), it now correctly ENFORCES
+  // its own consequence instead of leaving it to a mechanism (the
+  // dispatch's own fallback, or worse, some unrelated bag emptying)
+  // that r7 measured does not reliably do the job.
+  function removeAbandonedSwapSilently(entry) {
+    const idx = abandonedSwaps.indexOf(entry);
+    if (idx === -1) return; // already removed by a real, late resolution
+    clearTimeout(entry.timer);
+    abandonedSwaps.splice(idx, 1);
+    dropDispatchesWaitingOnId(entry.id);
+  }
   function reloadDeferred() {
     if (document.querySelector("[data-verb-error]")) return true; // leg (a)
     if (confirmInFlight) return true; // leg (b)
@@ -586,22 +1225,371 @@
   document.addEventListener("htmx:beforeRequest", function (evt) {
     if (isConfirmRequest(evt)) confirmInFlight = true;
   });
+  // pendingSwaps' own add leg: a swap just landed new content for
+  // this request's OWN key (M2: its xhr, not merely its target) — one
+  // more resolution (its OWN settle or an F14 failure that owns it)
+  // now owed, bounded by its own N9 fallback regardless.
+  document.addEventListener("htmx:afterSwap", function (evt) {
+    addPendingSwap(pendingSwapKey(evt));
+  });
   // Success leg: cleared at swap SETTLE (never earlier — the error
   // marker must be in the DOM before leg (b) lets go, else the raced
   // SSE frame wipes it in the settle gap). Every settle also attempts
   // release: dismiss/disarm swaps are what remove legs (a)/(c).
   document.addEventListener("htmx:afterSettle", function (evt) {
     if (isConfirmRequest(evt)) confirmInFlight = false;
+    removePendingSwapForKey(pendingSwapKey(evt)); // N1, drains at zero
     releaseReload();
   });
-  // Failure legs (F14): no swap will come — clear unconditionally.
+  // Failure legs (F14, extended to pendingSwaps/pendingDispatches,
+  // M1/M2/N1): no swap will come for THIS request — remove ONLY the
+  // token this request's OWN key owns (M1/M2: a request whose OWN key
+  // never swapped owns no token, regardless of what TARGET it shares
+  // with some other, genuinely live request — an UNRELATED failure
+  // must never release a DIFFERENT request's pending swap, even one
+  // aimed at the identical element). Draining happens immediately
+  // once nothing is left pending; this is what stops a deferred click
+  // from waiting out its own fallback timer once its OWN failure
+  // already tells us it's safe to fire now.
   ["htmx:responseError", "htmx:swapError", "htmx:sendError", "htmx:sendAbort", "htmx:timeout"].forEach(
     function (name) {
       document.addEventListener(name, function (evt) {
         if (isConfirmRequest(evt)) confirmInFlight = false;
+        removePendingSwapForKey(pendingSwapKey(evt));
         releaseReload();
       });
     }
+  );
+
+  // Layer 2 (code gate r5, the durable guard; redesigned code gate r6
+  // MAJOR-1). Ruling: every round of bugs this unit has found (r1
+  // through r5) caused harm through exactly ONE mechanism -- a native,
+  // un-intercepted form submission navigating the page, because htmx
+  // had not yet attached its own interception to the form being
+  // clicked (the swap/settle gap this whole unit exists to close,
+  // entered through one new door each round). That mechanism is
+  // narrower than every way the pendingSwaps / pendingDispatches /
+  // abandonedSwaps bookkeeping above can be wrong -- and there is no
+  // proof B-1/B-2 above are the LAST way. This guard does not depend
+  // on any of that bookkeeping at all: a capture-phase `submit`
+  // listener on `document` runs before the target form's own
+  // listeners (htmx's included), and can veto the native submission
+  // directly whenever htmx will not (yet, or ever) handle it --
+  // converting a click that lands in the race into NOTHING HAPPENING
+  // (a dropped keystroke) instead of a destroyed page.
+  //
+// MAJOR-1 (code gate r6): the r5 version of this guard asked the
+  // wrong question. It read `elt["htmx-internal-data"].
+  // firstInitCompleted` -- which tells you htmx has PROCESSED a node,
+  // never whether htmx will actually INTERCEPT that node's submit.
+  // Those differ, and htmx 2.0.9 makes them differ badly: its own
+  // node-discovery selector (`findElementsToProcess` in
+  // htmx-2.0.9.min.js) literally includes ", form,", so EVERY `<form>`
+  // gets processed and marked `firstInitCompleted = true` -- including
+  // the three bare `<form id="form-{{ dom_id }}">` note-input wrapper
+  // forms (`action_bar.html:122`, `:142`, `:197`) that carry NO
+  // `hx-*` verb of their own at all. Those forms exist purely as
+  // `hx-include` scoping containers -- every actual submission from
+  // them happens via a SEPARATE sibling `<button hx-post=... hx-
+  // include="#form-{{ dom_id }}">` elsewhere, never the form itself --
+  // so htmx never attaches anything that would intercept a submit ON
+  // THEM, yet the r5 check read `wired === true` for them FOREVER
+  // (processed at page load, same as everything else), permitting
+  // their native submission unconditionally. Each has exactly one text
+  // field and zero submit buttons, so pressing Enter in the note field
+  // triggers the browser's OWN implicit-submission rule -- measured
+  // live: `/record/lrn-b71e0001` -> `?dest=&note=...`, a real
+  // navigation, no guard warning, `defaultPrevented` false at every
+  // phase. The exact original failure signature this whole unit exists
+  // to close, reproduced on the very build whose own r5 prose claimed
+  // "this layer closes the exit."
+  //
+  // Fixed by asking the real question directly, computed from the DOM
+  // this file already controls rather than inferred from a private
+  // htmx marker: will htmx EVER intercept THIS form's submit at all?
+  // htmx only ever wires a submit-trigger listener for a form that (a)
+  // carries an `hx-get`/`hx-post`/`hx-put`/`hx-delete`/`hx-patch` (or
+  // `data-hx-*` equivalent) attribute directly, matching exactly the
+  // five-verb list htmx's own selector construction uses, or (b) is
+  // boosted -- `hx-boost="true"` (or `data-hx-boost`) on the form
+  // itself or an ancestor, htmx's OWN `getClosestAttributeValue`
+  // inheriting exactly that way. A form with NEITHER is, structurally,
+  // never going to be intercepted -- no timing question to ask at all
+  // -- so its native submission is blocked UNCONDITIONALLY, not merely
+  // until some marker flips. A form with EITHER might simply not be
+  // WIRED YET (the original r5 swap/settle race this layer was built
+  // for), and for that narrower, correctly-scoped case
+  // `firstInitCompleted` remains the right signal: htmx's own `kt()`
+  // wires the verb (via `wt()`) or the boost (via `at()`) EARLIER in
+  // the SAME synchronous call that sets `firstInitCompleted = true` as
+  // its last statement, so by the time that flag reads true, the
+  // interception it actually promises for a VERB/BOOST-carrying form
+  // has already happened. Reading `elt["htmx-internal-data"]` directly
+  // (never htmx's own `getInternalData()`, whose create-on-read side
+  // effect would fabricate the object if absent) is still a
+  // private-implementation dependency -- if it ever reads as
+  // `undefined` (a future htmx upgrade renaming or dropping the
+  // field), the check fails CLOSED exactly as before: "unknown" is
+  // treated the same as "not yet wired."
+  //
+  // Determining form intent (code gate r6, ruling item 2): the three
+  // note forms above are not missing their `hx-post` by accident --
+  // every OTHER form in this app that IS meant to be submitted (the
+  // armed/confirm/disarm/commit-drift bars) carries `hx-post` directly
+  // on the `<form>`, and these three deliberately do not, because their
+  // actual submission always happens through a sibling button's own
+  // `hx-include`. Enter silently navigating the page was the bug, not
+  // the missing wiring -- so the fix here is to block their implicit
+  // submission permanently, not to give them an `hx-post` they were
+  // never meant to have.
+  //
+  // Scope note (code gate r6, softened r7 Minor 3): the Worker/Miner
+  // "Force run" buttons (`templates/index.html:117-120`, `:183-190`)
+  // carry `hx-post` on the BUTTON rather than the FORM, with an
+  // explicit `formmethod`/`formaction` native fallback intended for a
+  // client where htmx never loaded at all -- under this check their
+  // FORM has no verb/boost of its own either, so it is now ALWAYS
+  // blocked, same as the three note forms. Measured with htmx present
+  // (the only case actually measured): one POST per click, zero submit
+  // events, zero navigations, no double-submit -- SAFER than r5's
+  // purely theoretical race window given that assumption. But "safer"
+  // is conditional on that assumption, not unconditional: both
+  // `<script>` tags (`base.html:41-42`) are same-origin `defer` tags
+  // loaded in order, so htmx failing to load while `app.js` still runs
+  // is a remote failure mode, not an impossible one -- and in exactly
+  // that case, this guard now makes the no-JS fallback these buttons
+  // were written for permanently DEAD (blocked here, with no htmx ever
+  // coming to intercept it either) where before this whole unit
+  // existed it degraded to a working native POST. Scoped claim: safer
+  // GIVEN htmx loaded, which is what was actually measured -- not
+  // safer in every case these buttons were originally written to
+  // survive.
+  //
+  // MINOR-1 (code gate r7): a 19-row interception matrix (every
+  // combination of own-verb, boost, inheritance, and the three cases
+  // below) found zero false-BLOCKs, and three false-ALLOWs -- cases
+  // where htmxWillInterceptSubmit() below says "will intercept" but
+  // htmx 2.0.9 would not actually wire anything, so a submit would go
+  // native unblocked. All three are unreachable in this app's shipped
+  // markup today (`grep -rn 'hx-trigger=\"[^\"]*\"' 'hx-disinherit'
+  // 'method=\"dialog\"' templates/` finds none of the three
+  // combinations below anywhere a form also carries a verb or sits
+  // under a boosted ancestor), which is why the gate rated this Minor
+  // rather than Major -- but documenting a known gap beats leaving it
+  // silent, per this unit's own history of "latent" turning real:
+  //
+  //   1. `hx-trigger` overriding a verb-carrying form's trigger AWAY
+  //      from `submit` (e.g. `hx-trigger="click"`). htmx reads the
+  //      verb and wires SOME listener, but not on the `submit` event
+  //      -- a real submit still goes native. Closed below via
+  //      `formEffectiveTriggerIsSubmit()`.
+  //   2. `hx-disinherit="hx-boost"` (or `"*"`) on an ancestor BETWEEN
+  //      the form and a still-higher `hx-boost="true"` ancestor. htmx's
+  //      own inheritance walk (`ne()`/`o()` in htmx-2.0.9.min.js) stops
+  //      dead at the FIRST ancestor that disinherits `hx-boost`, before
+  //      ever reading a higher one's value -- checked on EVERY ancestor
+  //      visited, not just the one carrying the boost. Closed below by
+  //      `formHasHtmxBoost()`'s walk checking disinherit at each step.
+  //   3. `method="dialog"`. htmx's own boost-eligibility check (`at()`)
+  //      explicitly excludes it (`tagName==="FORM" &&
+  //      method!=="dialog"`) -- boost never wires it either way. This
+  //      one is not a hole to BLOCK closed: native `method="dialog"`
+  //      submission does not navigate at all, it closes the nearest
+  //      ancestor `<dialog>` and sets its `returnValue`, with no
+  //      request ever sent -- there is nothing here for this guard to
+  //      prevent. Closed below as an explicit, documented ALLOW that
+  //      matches htmx's own exclusion, checked first.
+  const HX_VERB_NAMES = ["get", "post", "put", "delete", "patch"];
+
+  function formHasOwnHtmxVerb(form) {
+    return HX_VERB_NAMES.some(function (verb) {
+      return (
+        form.hasAttribute("hx-" + verb) || form.hasAttribute("data-hx-" + verb)
+      );
+    });
+  }
+
+  function formHasHtmxBoost(form) {
+    // htmx's own hx-boost inherits from the closest ancestor (or the
+    // element itself) that sets it -- walking up here mirrors that.
+    //
+    // MINOR-1 sub-fix 2 (code gate r7): an element's OWN hx-boost is
+    // never subject to ITS OWN hx-disinherit (checked only for
+    // `el !== form`, matching htmx's `o(e,t,n)`: the disinherit check
+    // only runs when `e!==t`, i.e. only while examining an ancestor of
+    // the original starting element, never the starting element
+    // itself). For every STRICT ancestor visited, if it declares
+    // `hx-disinherit` (or `data-hx-disinherit`) covering `"hx-boost"`
+    // or `"*"`, the walk stops here -- that ancestor's OWN boost value
+    // (if any) and everything above it are both unreachable from the
+    // form, exactly as htmx's own `o()` returns its "unset" sentinel
+    // before ever reading `r = a(t,"hx-boost")` in that branch.
+    for (let el = form; el; el = el.parentElement) {
+      if (el !== form) {
+        const disinherit =
+          (el.getAttribute && el.getAttribute("hx-disinherit")) ||
+          (el.getAttribute && el.getAttribute("data-hx-disinherit"));
+        if (
+          disinherit &&
+          (disinherit === "*" || disinherit.split(" ").indexOf("hx-boost") !== -1)
+        ) {
+          return false;
+        }
+      }
+      const v =
+        (el.getAttribute && el.getAttribute("hx-boost")) ||
+        (el.getAttribute && el.getAttribute("data-hx-boost"));
+      if (v != null) return v === "true";
+    }
+    return false;
+  }
+
+  // MINOR-1 sub-fix 1 (code gate r7): htmx resolves a form's actual
+  // trigger via `st(e)` in htmx-2.0.9.min.js, which reads ONLY the
+  // element's own `hx-trigger`/`data-hx-trigger` (never inherited --
+  // `st()` uses the plain own-attribute getter, not the ancestor-
+  // walking one) and falls back to `submit` for a `<form>` when that
+  // attribute is absent OR present-but-empty (`if(t){...} if(n.length
+  // >0) return n; else if (h(e,"form")) return [{trigger:"submit"}]`
+  // -- an empty string is falsy, so it takes the SAME default path as
+  // no attribute at all). Crucially, htmx passes this SAME resolved
+  // trigger spec to the BOOST path too (`kt()`: `const e=st(t); const
+  // r=wt(t,n,e); if(!r){ if (boosted) at(t,n,e) ... }`) -- so this
+  // check applies identically whether interception would come from an
+  // own verb or from boost.
+  //
+  // Deliberately NOT a full trigger-spec parser (htmx's own handles
+  // modifiers like `changed`, `once`, `delay:500ms`, `from:`,
+  // `consume`, polling intervals, and multiple comma-separated specs)
+  // -- this answers only what this guard needs: is `submit` one of the
+  // trigger NAMES this form was given. Each comma-separated spec's
+  // trigger name is its first whitespace-delimited token.
+  function formEffectiveTriggerIsSubmit(form) {
+    const raw = form.getAttribute("hx-trigger") || form.getAttribute("data-hx-trigger");
+    if (!raw) return true; // absent or empty -- htmx's own default for a form is submit
+    return raw.split(",").some(function (spec) {
+      const name = spec.trim().split(/\s+/)[0];
+      return name === "submit";
+    });
+  }
+
+  // The real question this guard exists to answer: will htmx EVER
+  // intercept this form's submit? Not "has htmx walked past it."
+  function htmxWillInterceptSubmit(form) {
+    return (
+      (formHasOwnHtmxVerb(form) || formHasHtmxBoost(form)) &&
+      formEffectiveTriggerIsSubmit(form)
+    );
+  }
+
+  document.addEventListener(
+    "submit",
+    function (evt) {
+      const form = evt.target;
+      // NIT-1 (code gate r7): every OTHER branch below fails CLOSED on
+      // an unknown -- "unknown" is treated the same as "not yet
+      // wired," never as "must be fine." This early return used to do
+      // the opposite: an event whose target this guard cannot even
+      // examine (not a form-like Element -- e.g. a synthetic `submit`
+      // dispatched directly at `document`, which native form
+      // submission never produces) fell through UNBLOCKED. Measured: a
+      // bubbling `submit` dispatched at `document` produced no warning
+      // at all, against a `<form>` positive control that correctly
+      // warns. There is nothing here this guard can verify will be
+      // intercepted, so treat it exactly like the unverified case it
+      // already is everywhere else in this function.
+      if (!form || typeof form.hasAttribute !== "function") {
+        evt.preventDefault();
+        console.warn(
+          "blocked a submit event this guard could not examine -- its " +
+            "target was not a recognizable form element, so whether " +
+            "htmx will intercept it is unknown and treated as unwired"
+        );
+        return;
+      }
+      // MINOR-1 sub-fix 3 (code gate r7): htmx's own boost-eligibility
+      // check excludes `method="dialog"` forms entirely (see this
+      // block's own comment above) -- native dialog-closing submission
+      // does not navigate and sends no request, so there is nothing
+      // for this guard to prevent here. Checked first and explicitly,
+      // rather than relying on formHasHtmxBoost()/htmxWillInterceptSubmit()
+      // to happen to agree with htmx's own exclusion.
+      const method = form.getAttribute("method");
+      if (method && method.toLowerCase() === "dialog") return;
+      if (!htmxWillInterceptSubmit(form)) {
+        // MINOR-2 (code gate r8): this branch covers TWO distinct
+        // reasons, and the warning used to collapse them into one
+        // string that was only accurate for the first -- "this form
+        // carries no htmx verb or boost" is false for a form like
+        // `<form hx-post hx-trigger="click">`, which the gate measured
+        // reaching this exact branch: it DOES carry a verb, it is
+        // blocked because hx-trigger routes that verb to click, never
+        // submit. Naming the real reason matters because this string
+        // is what a developer sees in the console and reasons from.
+        evt.preventDefault();
+        const hasVerbOrBoost = formHasOwnHtmxVerb(form) || formHasHtmxBoost(form);
+        if (!hasVerbOrBoost) {
+          // No hx-* verb and no hx-boost (own or inherited) -- htmx
+          // will NEVER wire a submit interception for it, so this is
+          // not a timing question and there is nothing to wait for.
+          // "No request was sent" is accurate here: with no verb and
+          // no boost, htmx wires, at most, a no-op trigger handler for
+          // it (see the block comment above) -- nothing that could
+          // ever issue a request.
+          console.warn(
+            "blocked a native form submission -- this form carries no " +
+              "htmx verb or boost, so htmx will never intercept it " +
+              "(no request was sent)"
+          );
+        } else {
+          // Has a verb or boost, but its own hx-trigger names
+          // something other than submit -- htmx wires a listener for
+          // THAT trigger, never for the submit event, so a native
+          // submit still reaches nothing of htmx's. Also accurate to
+          // say "no request was sent": nothing submit-driven was ever
+          // going to be sent by htmx from a form wired this way.
+          console.warn(
+            "blocked a native form submission -- this form's hx-trigger " +
+              "routes its htmx verb away from submit, so htmx will " +
+              "never intercept this submit event (no request was sent)"
+          );
+        }
+        // MINOR-2 (code gate r7): a blocked Enter used to be entirely
+        // console-only -- the app's own rationale for showNoopHint()
+        // elsewhere (Y-9) is exactly this case: silence "reads as a
+        // broken shortcut" once it is reachable deliberately rather
+        // than accidentally (the three note forms, always). Give it
+        // the same visible surface a no-op key already gets.
+        showNoopHint("Enter doesn't submit here -- use the buttons below.");
+        return;
+      }
+      const data = form["htmx-internal-data"];
+      const wired = !!(data && data.firstInitCompleted === true);
+      if (!wired) {
+        evt.preventDefault();
+        console.warn(
+          "blocked this form's native submission fallback -- htmx did " +
+            "not yet appear wired for it (the swap/settle gap); if " +
+            "htmx's own listener is already attached despite that, its " +
+            "request still goes through regardless of this block, " +
+            "since preventDefault() here only stops OTHER listeners' " +
+            "default action, never htmx's own already-attached handling"
+        );
+        // MINOR-2 (code gate r7): same visible-feedback gap as the
+        // unconditional block above -- a transient block here still
+        // looks, to the user, like nothing happened.
+        showNoopHint("Still loading -- try that again in a moment.");
+      }
+      // else: htmx has already attached its own submit interception to
+      // THIS form -- let it run untouched. It calls preventDefault()
+      // itself once it takes over; this listener's job here is done
+      // either way.
+    },
+    true // capture: runs before htmx's own listener has a chance to
+    // act, so this can veto BEFORE any AJAX/native path proceeds --
+    // irrelevant when htmx has not attached anything yet (there is
+    // nothing else to race), and harmless when it has (this branch
+    // does nothing).
   );
 
   function showReconnectStrip(show) {
