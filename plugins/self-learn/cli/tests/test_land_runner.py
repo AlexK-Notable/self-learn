@@ -5195,12 +5195,40 @@ def test_minor2_every_in_merge_refusal_aborts_or_announces():
     assert bare_dies(synth_pre, 0, 1) == [], "a pre-merge die is wrongly reported"
 
 
-def _land_by_hand(clone: Path, src_cli: Path) -> str:
+def _land_by_hand(clone: Path, src_cli: Path) -> str | None:
     """Do to `clone` exactly what a successful landing does, ending in the
     POST-PRUNE state: merge --no-ff, advance the anchor, stage it, commit,
-    and delete every ref naming the branch. Returns the merge sha."""
+    and delete every ref naming the branch. Returns the merge sha.
+
+    Returns None when the clone's SOURCE is already a post-landing master:
+    there is then no branch to merge, because the prune deleted it, and the
+    tree in hand is the real article rather than a simulation of it.
+
+    That branch is not a convenience. The first version of this helper read
+    `origin/u-land` unconditionally, and running master's own suite on a
+    post-prune clone made it die with `rev-parse origin/u-land` exit 128 --
+    the terminal criterion's own probe depending on the very ref whose
+    deletion is the thing being measured, which is the Blocker's shape one
+    level further out. Measured 2026-08-30 at `0ed1f18`."""
     LF.git(clone, "checkout", "-q", "-B", "master", "origin/master")
-    unit_tip = LF.git(clone, "rev-parse", "origin/u-land").stdout.strip()
+    tip = LF.git(clone, "rev-parse", "-q", "--verify", "origin/u-land",
+                 check=False)
+    if tip.returncode != 0:
+        # Positive control: 'no branch to merge' must mean ALREADY LANDED,
+        # never 'could not look'. A clone with neither the ref nor the
+        # landing in its history has nothing here to measure, and must say
+        # so rather than passing quietly.
+        assert (clone / "plugins/self-learn/cli/scripts/land").exists(), (
+            "no `u-land` ref and no `scripts/land` either -- this clone is "
+            "not a post-landing master, so there is nothing to measure"
+        )
+        rng, state = _unit_diff_frame(clone)
+        assert state == "landed", (
+            f"no `u-land` ref, but the history does not carry the landing "
+            f"either: frame={rng} state={state}"
+        )
+        return None
+    unit_tip = tip.stdout.strip()
     # `-c` is a GIT option, not a merge one, so it precedes the subcommand.
     # Placed after it the whole call fails, and with check=False that failure
     # is silent -- measured: the merge never happened and the frame came back
@@ -5235,11 +5263,20 @@ def test_the_unit_leaves_masters_suite_green_after_the_prune(tmp_path):
     AFTER the suite has already run, so no landing can ever catch a test
     that depends on that ref.
 
-    Measured with the full runner on a fresh clone of post-landing master,
-    2026-08-30:
+    Measured twice with the full runner on a fresh clone of post-landing
+    master, 2026-08-30. The first run, on a clone taken at `1adaa2a`:
 
         POST_PRUNE_SUITE_RC=0
         suite rc=0  3045 passed, 6 skipped in 89.55s
+
+    Re-taken at the shipping tip, it came back RED -- and the failure was
+    THIS TEST, whose helper read `origin/u-land` unconditionally and died
+    128 in a tree where the prune had deleted it. One measurement is not a
+    property; the criterion is a claim about every future master, so it is
+    re-taken whenever the tip moves. Post-prune master `<POSTPRUNE_SHA>`:
+
+        POST_PRUNE_SUITE_RC=<POSTPRUNE_RC>
+        suite rc=<POSTPRUNE_RC>  <POSTPRUNE_LINE>
 
     Re-running the whole suite here would cost ~90 s plus a venv sync, so
     this test carries the part that was actually red -- every landing test,
