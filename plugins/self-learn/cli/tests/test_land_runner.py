@@ -5277,12 +5277,13 @@ def test_the_unit_leaves_masters_suite_green_after_the_prune(tmp_path):
     times the failure was this test: first the helper read `origin/u-land`
     unconditionally, then -- after that fix -- the test still asserted the
     ref was there, so it passed from the worktree and failed in the tree the
-    criterion is about. Post-prune master `fd78c47`, built by the shipped
-    runner's own steps from branch tip `2e9be1b`, which differs from the tip
-    that ships only in these lines:
+    criterion is about. Post-prune master `883e12f`, built by the shipped
+    runner's own steps from branch tip `c8acec2`; the commits after that tip
+    change only this docstring and the spec's prose -- no runner behaviour
+    and no test logic:
 
         POST_PRUNE_SUITE_RC=0
-        suite rc=0  3046 passed, 6 skipped in 90.96s (0:01:30)
+        suite rc=0  3046 passed, 6 skipped in 91.31s (0:01:31)
 
     Zero `u-land` refs in that tree, and `scripts/land` present in it.
 
