@@ -423,3 +423,41 @@ class TestOtherSetterDomains:
         record.set_kind(None)
         with pytest.raises(ValidationError, match="Fact"):
             record.set_type("knowledge")  # body still behavior-shaped
+
+
+class TestWriteValidates:
+    """gate r3 Minor 1: `Record.write()`'s own `self.validate()` call
+    (gate r2 B-1's advisor-re-check guard) had ZERO test coverage --
+    MU-W-FULL stayed green across the entire 2823-test CLI suite. Both
+    prior full-suite runs proved the guard doesn't BREAK anything;
+    nothing proved it WORKS. These two tests do, and are mutation-
+    verified: removing `self.validate()` from `write()` must turn the
+    refusal test RED."""
+
+    def test_write_refuses_a_record_that_fails_validate(self, tmp_path):
+        """The one PUBLIC-API way to get an in-memory `Record` into a
+        state `validate()` rejects, without reaching into `Record`'s
+        private frontmatter: `set_kind(None)` on a still-`behavior`-typed
+        record. Gate r3's own audit names this the one setter weaker
+        than `validate()` -- it has exactly one caller
+        (`_reclassify_apply`), and that caller only invokes it when the
+        resulting type is non-behavior, changing `type` in the SAME
+        breath. This test deliberately does not -- it isolates the
+        failure window the audit described and asserts `write()` closes
+        it: the record is never persisted, valid or not."""
+        record = make_behavior()
+        record.set_kind(None)  # type is still "behavior" -- now invalid
+        path = tmp_path / f"{record.id}.md"
+        with pytest.raises(ValidationError, match="kind"):
+            record.write(path)
+        assert not path.exists()
+
+    def test_write_still_writes_a_valid_record(self, tmp_path):
+        """Paired positive control for the refusal above -- `write()`'s
+        own `validate()` call must not be a blanket refusal that quietly
+        breaks every normal write."""
+        record = make_behavior()
+        path = tmp_path / f"{record.id}.md"
+        record.write(path)
+        assert path.exists()
+        assert Record.from_path(path).to_text() == record.to_text()

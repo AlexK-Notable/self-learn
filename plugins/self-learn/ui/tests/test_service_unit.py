@@ -58,6 +58,33 @@ def test_miner_unit_exists_for_parity_checks() -> None:
     assert MINER_UNIT.is_file(), f"missing precedent unit at {MINER_UNIT}"
 
 
+def test_miner_unit_carries_a_path_floor_including_home_local_bin() -> None:
+    """Gate r1 MINOR-3 — ruled IN SCOPE (reversing the original build's
+    cut): this unit's ExecStart goes through the same scripts/self-learn
+    wrapper as the host unit that measured six crash-loop restarts on
+    2026-08-28, so it depends on `uv` being resolvable exactly the same
+    way.
+
+    Gate r2 MAJOR-2 CORRECTED the round-1 "no %h/bin here" claim: `mine
+    run` -> `worker.kick` (miner.py:2108, pinned by
+    test_miner.py::test_run_lands_candidate) -> a spawned `worker run`
+    that inherits this unit's own environment -> `worker.py:3102`'s
+    `shutil.which("self-learn-notify")` -- so this unit DOES reach that
+    call, through the miner-kicks-worker chain. Measured live: `%h/bin`
+    was never on the systemd user-manager's own PATH, so this repairs a
+    pre-existing silent notification failure rather than merely
+    preserving something that worked by accident."""
+    miner_service = _section(MINER_UNIT.read_text(encoding="utf-8"), "Service")
+    assert "Environment=PATH=" in miner_service
+    path_line = next(
+        line
+        for line in miner_service.splitlines()
+        if line.startswith("Environment=PATH=")
+    )
+    assert "%h/.local/bin" in path_line
+    assert "%h/bin" in path_line
+
+
 # --- pinned fields (10 §1 "Service" row) --------------------------------
 
 
@@ -116,6 +143,32 @@ def test_carries_the_same_b1_env_pin_as_the_miner_unit() -> None:
     miner_service = _section(MINER_UNIT.read_text(encoding="utf-8"), "Service")
     assert "Environment=SELF_LEARN_HOME=%h/.self-learn" in ui_service
     assert "Environment=SELF_LEARN_HOME=%h/.self-learn" in miner_service
+
+
+def test_carries_a_path_floor_including_home_local_bin() -> None:
+    """U-uvpath (2026-08-29): self-learn-host.service crash-looped six
+    times on 2026-08-28 22:17-22:18 with `exec: uv: not found` (exit
+    127/n/a) because ExecStart's wrapper resolves `uv` off ambient
+    PATH, and the systemd user manager's PATH does not reliably include
+    %h/.local/bin (uv's pipx install dir on this host) — the same B-1
+    reasoning the SELF_LEARN_HOME pin above already states, applied
+    here to PATH. This unit pins a PATH floor with %h/.local/bin ahead
+    of the standard system dirs. Gate r1 MINOR-1 fold: %h/bin is in
+    that floor too — worker.py's self-learn-notify dispatch resolves
+    that helper via shutil.which() (the ~/bin deploy surface), and a
+    hard PATH replacement that dropped %h/bin would quietly regress a
+    path that used to work by the same boot-order accident as
+    everything else pinned here. (The miner unit gets its own,
+    separately-scoped PATH pin below — corrected by gate r2 MAJOR-2 to
+    ALSO carry %h/bin: `mine run` reaches `worker.run` too, indirectly,
+    via `worker.kick`'s spawned process — see that test's docstring.)"""
+    ui_service = _section(UI_UNIT.read_text(encoding="utf-8"), "Service")
+    assert "Environment=PATH=" in ui_service
+    path_line = next(
+        line for line in ui_service.splitlines() if line.startswith("Environment=PATH=")
+    )
+    assert "%h/.local/bin" in path_line
+    assert "%h/bin" in path_line
 
 
 def test_both_units_document_manual_registration_via_symlink() -> None:
@@ -200,6 +253,33 @@ def test_host_unit_carries_the_same_b1_env_pin_as_the_miner_unit() -> None:
     miner_service = _section(MINER_UNIT.read_text(encoding="utf-8"), "Service")
     assert "Environment=SELF_LEARN_HOME=%h/.self-learn" in host_service
     assert "Environment=SELF_LEARN_HOME=%h/.self-learn" in miner_service
+
+
+def test_host_unit_carries_a_path_floor_including_home_local_bin() -> None:
+    """U-uvpath (2026-08-29): this unit is the one that was actually
+    measured crash-looping — six times, 2026-08-28 22:17-22:18, `exec:
+    uv: not found` (exit 127/n/a) — because ExecStart's wrapper resolves
+    `uv` off ambient PATH, and the systemd user manager's PATH does not
+    reliably include %h/.local/bin (uv's pipx install dir on this
+    host). Same B-1 reasoning as the SELF_LEARN_HOME pin above, applied
+    to PATH. Gate r1 MINOR-1 fold: %h/bin is in that floor too —
+    worker.py's self-learn-notify dispatch (worker.py:3102) resolves
+    that helper via shutil.which() (the ~/bin deploy surface), and this
+    unit runs worker.run, so a hard PATH replacement that dropped %h/bin
+    would quietly regress a path that used to work by accident. (The
+    miner unit gets its own, separately-scoped PATH pin below —
+    corrected by gate r2 MAJOR-2 to ALSO carry %h/bin: `mine run`
+    reaches `worker.run` too, indirectly, via `worker.kick`'s spawned
+    process — see that test's docstring.)"""
+    host_service = _section(HOST_UNIT.read_text(encoding="utf-8"), "Service")
+    assert "Environment=PATH=" in host_service
+    path_line = next(
+        line
+        for line in host_service.splitlines()
+        if line.startswith("Environment=PATH=")
+    )
+    assert "%h/.local/bin" in path_line
+    assert "%h/bin" in path_line
 
 
 # Gate r1 N-6: `test_host_unit_has_a_description` was an exact duplicate

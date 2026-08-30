@@ -592,6 +592,9 @@ def _cmd_functions() -> list[str]:
 #: dispatch function is the same too-coarse granularity that let this class
 #: hide in the first place.
 _ARGV_FOR = {
+    "_cmd_bucket": [["bucket", "prune", "--dry-run"]],  # U-verbs Phase 2:
+    # --dry-run so this held-lock probe never depends on there being an
+    # actual empty bucket to remove in the fixture.
     "_cmd_canary": None,  # writes canaries.json (cache-local), not the ledger
     "_cmd_doctor": [["doctor", "invocation"]],
     "_cmd_followup": [["followup", "done", "lrn-eeee0001"]],

@@ -35,6 +35,27 @@ Type=simple
 # the systemd user manager does not inherit the shell's env -- pin the
 # ledger home explicitly so the unit and the shell agree.
 Environment=SELF_LEARN_HOME=%h/.self-learn
+# U-uvpath (2026-08-29), same B-1 reasoning applied to PATH: this unit
+# crash-looped six times on 2026-08-28 22:17-22:18 with "exec: uv: not
+# found" (exit 127/n/a) -- ExecStart's wrapper resolves `uv` off PATH,
+# and the systemd user manager's PATH does not reliably include
+# %h/.local/bin (uv's pipx install dir on this host). The prior
+# "it works" was a boot-order race against the desktop session's
+# imported PATH, not a fix -- with Restart=on-failure and no
+# StartLimitBurst, a boot that loses the race gives an infinite silent
+# restart loop with no working daemon. Pin a floor with %h/.local/bin
+# ahead of the standard system dirs; the wrapper itself also falls back
+# to well-known absolute uv locations independently (belt and braces --
+# this fixes the unit even if the wrapper is ever bypassed).
+# Gate r1 fold (2026-08-29): %h/bin is in this floor too -- worker.py's
+# self-learn-notify dispatch resolves that helper with shutil.which()
+# (the ~/bin deploy surface, install.sh links it there), degrading to a
+# direct notify-send only when the helper can't be found. This unit's
+# PATH used to have none at all, so %h/bin arrived by the same
+# boot-order accident as everything else pinned here; a hard PATH
+# replacement that dropped it would quietly regress a path that
+# previously worked.
+Environment=PATH=%h/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=%h/bin/self-learn serve
 Restart=on-failure
 RestartSec=5

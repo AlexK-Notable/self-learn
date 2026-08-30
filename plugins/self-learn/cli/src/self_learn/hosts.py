@@ -117,6 +117,15 @@ class HostsError(Exception):
     """hosts.yaml is malformed, or a registration was refused."""
 
 
+class HostRemoveRefused(HostsError):
+    """U-verbs S-54 / HOST1: ``host remove`` refused because >= 1 ROUTED
+    record still compiles into the target host. A :class:`HostsError`
+    subclass (every existing ``except HostsError`` catch still works),
+    distinguished so the CLI can map THIS refusal to exit 1 ("refused,
+    nothing written") rather than the 64 every other ``HostsError`` (a
+    usage mistake — an unknown/malformed host argument) maps to."""
+
+
 @dataclass(frozen=True)
 class Hosts:
     """The parsed registry: one optional skills root + registered
@@ -906,13 +915,81 @@ def host_rebind(home: Path | str, ref: str, new_path: Path | str) -> Path:
     return new_bucket if new_bucket is not None else target
 
 
-def host_remove(home: Path | str, path: Path | str) -> Hosts:
+def records_targeting(home: Path | str, path: Path | str) -> list[str]:
+    """Every ROUTED record whose bucket compiles into *path* (U-verbs
+    S-54 / HOST1/HOST5): a project bucket whose OWN recorded host
+    (``meta.yaml``, via ``ledger_ops.bucket_project_path``) resolves to
+    *path*, or any skill bucket's record when *path* resolves to the
+    registered skills root. **Pending records are never counted** — they
+    compile nothing yet, so ``host remove`` must still deregister a host
+    whose only waiters are pending (M48's own witness, ``host_pending_
+    only``).
+
+    Resolves through ``hosts.yaml`` + each bucket's own ``meta.yaml``
+    (HOST5) — ``Path.resolve()`` on both sides, never a bare string
+    compare, so a host reached through a symlink still matches. Local
+    imports: :mod:`ledger`/:mod:`ledger_ops` both import THIS module at
+    their own top level, so importing either of them back at hosts.py's
+    top level would cycle."""
+    from .ledger import discover_buckets
+    from .ledger_ops import bucket_project_path
+    from .records import Record, RecordError
+
+    home = Path(home)
+    target = Path(path).expanduser().resolve()
+    hosts = load_hosts(home)
+    skills_root = (
+        Path(hosts.skills_root).expanduser().resolve()
+        if hosts.skills_root is not None
+        else None
+    )
+    ids: list[str] = []
+    for bucket in discover_buckets(home):
+        if bucket.scope == "project":
+            project_path = bucket_project_path(bucket.path)
+            if project_path is None:
+                continue
+            if Path(project_path).expanduser().resolve() != target:
+                continue
+        elif bucket.scope == "skill":
+            if skills_root is None or skills_root != target:
+                continue
+        else:
+            continue  # user scope never targets a project/skills-root host
+        resolved_dir = bucket.path / "resolved"
+        if not resolved_dir.is_dir():
+            continue
+        for record_path in sorted(resolved_dir.glob("lrn-*.md")):
+            try:
+                record = Record.from_path(record_path)
+            except RecordError:
+                continue  # unparseable resolved file: never counted
+            if record.status == "routed":
+                ids.append(record.id)
+    return ids
+
+
+def host_remove(
+    home: Path | str, path: Path | str, *, gate_only: bool = False
+) -> Hosts:
     """``host remove <path>``: drop a registered host from hosts.yaml (one
     ledger commit, pinned subject ``self-learn: host remove <path>``). The
     bucket and its records are NEVER touched — deregistering a host closes
     the compile gate (H-3), it does not delete truth. Unlike ``host add``,
     the path is not gate-validated: removing an entry whose repo is GONE
     is exactly the case this serves.
+
+    U-verbs S-54 §3.6 (HOST1-HOST3): refuses (raises :class:`HostsError`)
+    when >= 1 ROUTED record still compiles into *path*
+    (:func:`records_targeting`), naming the count, up to five ids, and
+    both repairs — move them first (``self-learn rehome <id> --to
+    <target>``), or pass ``gate_only=True`` to close the compile gate
+    anyway. **No bulk retirement is offered** (HOST3): ``graduate``
+    ("canon already covers it") and ``supersede`` ("another record
+    replaces it") are both FALSE statements about every record in the
+    set, and writing false resolutions to make a deregistration
+    convenient is the FW-51 inversion this refusal exists to prevent.
+    Pending records never block — they compile nothing yet.
 
     U-hostmode GATE5: for a plain host, the :data:`MARKER_FILENAME`
     marker is deliberately LEFT IN PLACE — deleting it would silently
@@ -934,6 +1011,20 @@ def host_remove(home: Path | str, path: Path | str) -> Hosts:
     root_hit = root is not None and Path(root).expanduser().resolve() == target
     if len(projects) == len(hosts.projects) and not root_hit:
         raise HostsError(f"{target} is not a registered host — nothing to remove")
+    if not gate_only:
+        routed = records_targeting(home, target)
+        if routed:
+            shown = ", ".join(routed[:5])
+            more = len(routed) - 5
+            more_suffix = f" and {more} more" if more > 0 else ""
+            raise HostRemoveRefused(
+                f"host remove {target}: {len(routed)} routed record(s) "
+                f"still compile into this host ({shown}{more_suffix}). "
+                "Deregistering it would leave that canon unmanaged — "
+                "`recompile` will WARN and skip it. Repairs: move them "
+                "first (`self-learn rehome <id> --to <target>`), or pass "
+                "--gate-only to close the compile gate anyway."
+            )
     new_modes = {k: v for k, v in hosts.project_modes.items() if k != str(target)}
     hosts = Hosts(
         skills_root=None if root_hit else root,

@@ -155,6 +155,9 @@ of rationale prose; §8 declares this schema addition honestly).
 | `undefer <id> [--note …]` | `status: pending`, clears `deferred_until` (keeps `deferred_count`) *(U-verbs Phase 1, §4.2 — pulled forward from D1's Phase-2 sweep, code gate r1: shipping without a row here left the doc table three verbs short of the code it documents)* | `self-learn: undefer lrn-<id>` |
 | `reopen <id> [--note …]` | `status: pending`, displaces `resolution_note` into `history` (event: `resolution`), sweeps stale proposal/merge siblings *(U-verbs Phase 1, §4.2 — pulled forward, code gate r1)* | `self-learn: reopen lrn-<id>` |
 | `note <id> --append <text> [--key <token>]` | `notes[]` append *(ANY status — never touches `resolution_note`; U-verbs Phase 1, §4.2 — pulled forward, code gate r1)* | `self-learn: note lrn-<id>` |
+| `reroute <id> --dest <target> [--by human|analyst|agent] [--note …]` | `routing` (old block displaced into `history`, event: `routing`) — corrects a wrong routing destination on an already-`routed` record; never `hook`/`new-skill` (U-verbs S-54 §4.5, Phase 2) | `self-learn: reroute lrn-<id> → <target>` |
+| `followup add <id> --action <text> [--unblocks-on <gate>] [--note …]` | `routing.follow_up` on a `routed` record (U-verbs S-54 §4.7, Phase 2) | `self-learn: follow-up add lrn-<id>` |
+| `reclassify <id> [--kind <kind>] [--type <type>] [--note …]` | `kind` (any status) and/or `type` (`pending`/`deferred` only, re-validates required sections; U-verbs S-54 §4.7, Phase 2) | `self-learn: reclassify lrn-<id>` |
 | `telemetry note <kind> [flags]` | **spool only (§4.2) — no repo write, no commit** | — |
 | `telemetry flush` | spool → tracked telemetry file (§4.2) | *(none — autosync commits; never part of a verb's surgical commit)* |
 
@@ -224,7 +227,10 @@ plane, fixes the mechanism.
   inside the human-triggered class), and explicit `telemetry flush`.
   **At flush, the §1 secret scan runs over every flushed line — a hit
   refuses the flush** (belt-and-suspenders; payloads are ids/enums by
-  schema, §4.4).
+  schema, §4.4). Every mutating dispatch — single verb or batch —
+  flushes once, through the ONE shared epilogue (`cli._mutating_epilogue`,
+  §3.3c) — never per-item inside a batch loop, never skipped for a
+  single verb.
 - Flushed telemetry files are **never staged by a resolution verb's
   surgical commit** (they would sweep other sessions' lines into a
   pinned per-lesson commit); autosync commits them on its normal cycle.

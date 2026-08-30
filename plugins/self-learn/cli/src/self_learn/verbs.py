@@ -63,6 +63,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -85,6 +86,7 @@ from .skill_scaffold import (
 from . import compiled
 from .compilers import (
     BEGIN_MARKER,
+    DEFAULT_REFERENCE_BASENAME,
     FORBIDDEN_REFERENCE_BASENAME,
     CompileError,
     PathsResult,
@@ -100,12 +102,13 @@ from .compilers import (
     pointer_token,
     read_paths_frontmatter,
     reference_target_path,
+    retire_reference,
     surface_names_target,
 )
 # REC7: reference/pointer prediction reuses compilers.py's own private
 # helpers directly (never reimplemented) so this module's prediction and
 # the real write cannot drift apart.
-from .compilers import _LEARNINGS_HEADER, _reference_block
+from .compilers import _LEARNINGS_HEADER, _reference_block, _retire_reference_text
 from .hosts import (
     HostsError,
     ancestors_of,
@@ -145,6 +148,7 @@ from .ledger_ops import (
     reopen_record,
     record_title,
     remove_proposal_siblings,
+    reroute_record,
     require_status,
     require_writable_home,
     resolve_record,
@@ -153,6 +157,7 @@ from .ledger_ops import (
     validate_merge_proposal,
     validate_proposal,
 )
+from . import records as records_mod
 from .records import RECORD_ID_RE, Record, RecordError, _validate_follow_up
 from .scan import format_refusal
 from .scan import scan as secret_scan
@@ -177,6 +182,7 @@ __all__ = [
     "TargetSpec",
     "VerbError",
     "VerbResult",
+    "VerbUsageError",
     "commit_drift",
     "confirm_held",
     "confirm_recurrence",
@@ -192,6 +198,7 @@ __all__ = [
     "recompile",
     "rehome",
     "reopen",
+    "reroute",
     "rescope",
     "reject",
     "route",
@@ -274,6 +281,20 @@ class VerbError(Exception):
     """A resolution verb refused or failed before committing."""
 
     exit_code = 1
+
+
+class VerbUsageError(VerbError):
+    """A verb refused a MALFORMED invocation before touching any state
+    -- sysexits EX_USAGE, distinct from VerbError's normal exit_code=1
+    domain refusal (U-verbs S-54 META5): ``reclassify`` with neither
+    ``--kind``/``--type``, or an out-of-enum value for either, is a
+    usage error, never a business-rule one -- the SAME distinction
+    cli.py's own EXIT_USAGE=64 comment draws for argparse's flag
+    errors, mirrored here for the one verb whose usage gate lives
+    inside the verbs layer (a direct :func:`reclassify` call bypasses
+    argparse's own ``choices=`` entirely)."""
+
+    exit_code = 64
 
 
 class SecretRefusal(VerbError):
@@ -2750,14 +2771,22 @@ def surface_fill(
 @dataclass(frozen=True)
 class _Retirement:
     """Pre-flighted host-side cleanup for a ROUTED record being retired
-    (standalone supersede, supersede-completion-at-route, graduate): the
-    doc target whose compiled entry must drop, or the hook script to
-    remove (M3-4). At most one of the two is set; both None means the
-    record has no host presence to clean (pending, reference-routed —
-    references are append-only)."""
+    (standalone supersede, supersede-completion-at-route, graduate, and
+    Phase 2's ``reroute``): the doc target whose compiled entry must
+    drop, the hook script to remove (M3-4), or the references FILE
+    whose ``## <day> — <id>`` block must be removed (U-verbs S-54 /
+    §3.5 / §4.5 — reference retirement made real; RER1-RER7). At most
+    one of the THREE is set; all None means the record has no host
+    presence to clean (pending, or a destination this build does not
+    track)."""
 
     spec: TargetSpec | None = None
     removal: tuple[Path, Path, str, str] | None = None
+    #: U-verbs: the resolved references FILE whose ``## <day> — <id>``
+    #: block must be removed, plus the spec that resolved it (the host
+    #: phase needs ``host_path``/``mode`` for ``gitops.host_lock`` and
+    #: the compile record). Set ONLY for ``destination == "reference"``.
+    reference: tuple[Path, TargetSpec] | None = None
 
 
 def _retirement_preflight(
@@ -2770,11 +2799,19 @@ def _retirement_preflight(
 ) -> _Retirement:
     """Resolve a retiring record's host-side cleanup BEFORE any commit
     (doc 13 §4 step c — the standalone supersede verb has always done
-    this; route's ``teach --supersedes`` completion and graduate now
-    share it, closing the stale-line gap found live 2026-07-16: a
-    cross-surface supersede left the old advisory in canon with no
-    repair path). Raises (refusal, nothing committed) when the old
-    record's host is unsound."""
+    this; route's ``teach --supersedes`` completion, graduate and
+    ``reroute`` now share it, closing the stale-line gap found live
+    2026-07-16: a cross-surface supersede left the old advisory in
+    canon with no repair path). Raises (refusal, nothing committed)
+    when the old record's host is unsound.
+
+    U-verbs S-54 (RER6): the ``reference`` branch is the one this build
+    used to skip entirely — a bare ``_Retirement()`` for every
+    reference-routed record, "references are append-only". They are no
+    longer append-only for their own lifetime (§3.5): a
+    graduate/supersede/reroute now retires the record's own entry block
+    through the SAME shared path every other destination already used,
+    never a per-verb branch (the M46 mutation's own wrong shape)."""
     if record.status != "routed":
         return _Retirement()
     routing = record.routing or {}
@@ -2806,7 +2843,97 @@ def _retirement_preflight(
         return _Retirement(
             removal=_hook_script_location(home, record, warnings)
         )
+    if destination == "reference":
+        ref_spec = _resolve_target(
+            home,
+            bucket_dir,
+            record.scope,
+            "reference",
+            routing.get("reference_file"),
+            user_claude_md=user_claude_md,
+            # Same A2 §4.4B note as the managed branch above:
+            # variant/rules_topic only — never rules_paths.
+            variant=routing.get("variant"),
+            rules_topic=routing.get("rules_topic"),
+        )
+        # `TargetSpec.target` is None for a reference spec (the file is
+        # resolved through `refs_dir`/`ref_name` — see `_resolve_target`'s
+        # own reference branch); the retirement's own file identity comes
+        # from `reference_target_path`, the ONE mapping the write leg,
+        # recompile and the drift check all share (audit 2026-07-16
+        # BLOCKER 2, quoted again here so this is not a second lookup).
+        # `refs_dir` is `Path | None` generically (TargetSpec's other
+        # destinations never set it), but `_resolve_target`'s OWN
+        # `destination == "reference"` branch always resolves a concrete
+        # dir before returning -- never None here. Same invariant
+        # `assert spec.target is not None` documents nearby for the
+        # managed branches; this documents the reference one.
+        assert ref_spec.refs_dir is not None
+        ref_path = reference_target_path(ref_spec.refs_dir, ref_spec.ref_name)
+        return _Retirement(reference=(ref_path, ref_spec))
     return _Retirement()
+
+
+def _predicted_retired_reference_region(ref_path: Path, record_id: str) -> bytes | None:
+    """REC7's own discipline, applied to a reference RETIREMENT (RER5/
+    RER7's same-commit prediction, mirroring `_expected_reference_region`'s
+    write-side contract): predict :func:`compilers.retire_reference`'s
+    final bytes for THIS removal, without writing, via the SAME pure
+    text transform (:func:`compilers._retire_reference_text`) the real
+    removal calls — prediction and the write cannot drift."""
+    if not ref_path.is_file():
+        return None
+    text = ref_path.read_text(encoding="utf-8")
+    new_text, _removed = _retire_reference_text(text, record_id)
+    return new_text.encode("utf-8")
+
+
+def _retire_reference_host_phase(
+    home: Path,
+    reference: tuple[Path, TargetSpec],
+    record_id: str,
+    *,
+    note: str | None,
+    warnings: list[str],
+) -> str | None:
+    """Host phase of a REFERENCE retirement (U-verbs S-54 / RER2):
+    removes the record's own entry block from its references file
+    (:func:`compilers.retire_reference` — the real write; the ledger
+    commit already carried the SAME-commit compile-record prediction,
+    same shape the hook-removal leg uses). Self-contained (REC12: takes
+    its OWN host lock, like :func:`_remove_hook_script` — this call site
+    is not lexically inside the caller's :func:`_ledger_write` block by
+    the time it runs). git mode commits (pinned subject `... (reference
+    retired)`); plain mode degrades to an uncommitted write, the same
+    posture every other plain-host write takes (PLAIN11/H-j)."""
+    ref_path, spec = reference
+    # `refs_dir` is `Path | None` generically; this function only ever
+    # receives a reference-destination `TargetSpec` (the caller's own
+    # `_Retirement.reference` leg), so it is never None here -- same
+    # invariant as `_retirement_preflight`'s own reference branch.
+    assert spec.refs_dir is not None
+    try:
+        with gitops.host_lock(spec.host_path, spec.mode):
+            result = retire_reference(spec.refs_dir, record_id, dest=spec.ref_name)
+            if not result.applied or spec.mode != "git":
+                return None
+            gitops.stage(spec.host_path, [ref_path])
+            rel = ref_path.relative_to(spec.host_path)
+            return gitops.commit(
+                spec.host_path,
+                f"self-learn: apply {record_id} → {rel} (reference retired)",
+                body=note,
+                paths=[ref_path],
+            )
+    except (gitops.GitOpsError, OSError) as exc:
+        warning = (
+            f"REFERENCE RETIREMENT FAILED after the ledger commit ({exc}) "
+            f"— {ref_path} is stale, never lost (H-2); run `self-learn "
+            "recompile` to repair"
+        )
+        print(f"self-learn: {warning}", file=sys.stderr)
+        warnings.append(warning)
+        return None
 
 
 def _retirement_host_phase(
@@ -2822,8 +2949,9 @@ def _retirement_host_phase(
     user_push: bool = True,
 ) -> tuple[str | None, Path | None]:
     """HOST phase of a retirement: recompile the doc target (the entry
-    drops — the ledger already committed the resolution) or ``git rm``
-    the hook script. ``skip_target`` short-circuits when the successor's
+    drops — the ledger already committed the resolution), ``git rm`` the
+    hook script, or retire the record's entry from its references file
+    (U-verbs S-54). ``skip_target`` short-circuits when the successor's
     own compile just regenerated the same file (same-target supersede:
     one compile is the whole story). Returns (host_sha, host_repo)."""
     if retirement.spec is not None:
@@ -2845,6 +2973,11 @@ def _retirement_host_phase(
             home, retirement.removal, record_id, note, warnings, post_notes
         )
         return host_sha, retirement.removal[0]
+    if retirement.reference is not None:
+        host_sha = _retire_reference_host_phase(
+            home, retirement.reference, record_id, note=note, warnings=warnings
+        )
+        return host_sha, retirement.reference[1].host_path
     return None, None
 
 
@@ -5283,6 +5416,307 @@ def note(
         hold.release()
 
 
+def _routing_dest_label(routing: dict) -> str:
+    """A human label for a STORED routing block's destination —
+    ``reference:LEARNINGS.md``, ``claude-md:rules:<topic>``,
+    ``claude-md:local``, ``claude-md``, ``skill-md``, ``new-skill:<name>``,
+    ``hook`` — the same vocabulary ``--dest`` accepts. Used only for
+    ``reroute``'s same-destination refusal message (RER3); never a
+    second destination grammar."""
+    destination = routing.get("destination")
+    if destination == "reference":
+        ref_name = routing.get("reference_file") or DEFAULT_REFERENCE_BASENAME
+        return f"reference:{ref_name}"
+    if destination == "claude-md":
+        variant = routing.get("variant")
+        if variant == "local":
+            return "claude-md:local"
+        if variant == "rules":
+            return f"claude-md:rules:{routing.get('rules_topic')}"
+        return "claude-md"
+    if destination == "new-skill":
+        return f"new-skill:{routing.get('new_skill')}"
+    return str(destination)
+
+
+def reroute(
+    home: Path | str,
+    record_id: str,
+    *,
+    dest: str,
+    by: str | None = None,
+    note: str | None = None,
+    no_push: bool = False,
+    user_claude_md: Path | str | None = None,
+) -> VerbResult:
+    """Correct a wrong routing DESTINATION on an already-ROUTED record
+    (U-verbs S-54 / §4.5, Phase 2) — the live-motivated half of what
+    FW-133 leaves out (a true retraction, routed → pending, stays out of
+    scope: 02 §2's freeze-at-routing pin forbids un-freezing substance).
+
+    The OLD routing block is DISPLACED into ``history`` (``event:
+    "routing"``, never destroyed — the same discipline ``reopen`` already
+    gives ``resolution_note``), the new one is written, and BOTH
+    host-side motions — retiring the OLD target's entry and compiling
+    the NEW one — land in the SAME motion (RER2), through the shared
+    retirement path (``_retirement_preflight``/``_retirement_host_phase``)
+    so a reference-routed record's block drops exactly as
+    ``graduate``/``supersede`` already do (RER6).
+
+    Refuses (rc 1), each BEFORE any lock: the record is not ``routed``
+    (``require_status``); the new destination resolves to the SAME file
+    the record already targets — ``"already routed to X — nothing to
+    change"`` (RER3, the idempotency refusal); ``--dest hook`` / ``--dest
+    new-skill`` (RER4 — both are ``ONE_MOTION_UNROUTABLE``: rerouting
+    INTO either is a fresh ``route`` decision on a fresh record, not a
+    correction; rerouting AWAY FROM either is supported — the retirement
+    half already exists for both)."""
+    home = Path(home)
+    path = find_record_path(home, record_id)  # pending OR resolved
+    _scan_or_refuse([path], note)
+    try:
+        _, record = require_status(home, record_id, ROUTED_ONLY, verb="reroute")
+    except LedgerOpsError as exc:
+        raise VerbError(str(exc)) from exc
+    bucket_dir = path.parent.parent
+    old_routing = dict(record.routing or {})
+
+    hold = sentinel.hold()
+    sentinel.heartbeat()
+    try:
+        warnings: list[str] = []
+        # Both preflights run BEFORE the lock (§4.5): the OLD target's
+        # retirement, and the NEW target's resolution.
+        old_retire = _retirement_preflight(
+            home, record, bucket_dir, warnings, user_claude_md=user_claude_md
+        )
+        resolved_dest = _resolve_destination(bucket_dir, record_id, dest)
+        destination = resolved_dest.destination
+        if destination in ONE_MOTION_UNROUTABLE:
+            raise VerbError(
+                f"reroute --dest {destination}: a one-motion destination — "
+                "rerouting INTO it is a fresh `route` decision on a fresh "
+                "record, not a correction (S-54)"
+            )
+        ref_name = resolved_dest.ref_name
+        spec = _resolve_target(
+            home,
+            bucket_dir,
+            record.scope,
+            destination,
+            ref_name,
+            user_claude_md=user_claude_md,
+            variant=resolved_dest.variant,
+            rules_topic=resolved_dest.rules_topic,
+            rules_paths=resolved_dest.rules_paths,
+        )
+
+        # RER3: the idempotency refusal, decided by resolved FILE
+        # identity — the one comparison that cannot be fooled by two
+        # differently-spelled `--dest` strings resolving to the same
+        # target (a bare `claude-md` vs. an explicit qualifier-free one).
+        old_target = (
+            old_retire.spec.target if old_retire.spec is not None
+            else old_retire.reference[0] if old_retire.reference is not None
+            else None
+        )
+        new_target = (
+            spec.target if spec.target is not None
+            else reference_target_path(spec.refs_dir, spec.ref_name)
+            if spec.destination == "reference" and spec.refs_dir is not None
+            else None
+        )
+        if old_target is not None and old_target == new_target:
+            raise VerbError(
+                f"record {record_id} already routed to "
+                f"{_routing_dest_label(old_routing)} — nothing to change"
+            )
+
+        by = by if by is not None else "human"
+        # M-1 (U-verbs Phase 2 code gate r1): the commit subject used
+        # to show the bare `destination` string, dropping any
+        # qualifier (`claude-md:rules:<topic>`, `reference:<file>`) --
+        # `_routing_dest_label` is the ONE place that vocabulary is
+        # already spelled out (RER3's own same-destination refusal
+        # message uses it for the OLD side; this is the NEW side).
+        # `new-skill`/`hook` never reach here (ONE_MOTION_UNROUTABLE
+        # already refused above), so only reference/claude-md carry a
+        # qualifier worth naming.
+        message_target = _routing_dest_label(
+            {
+                "destination": destination,
+                "reference_file": spec.ref_name if destination == "reference" else None,
+                "variant": spec.variant,
+                "rules_topic": spec.rules_topic,
+            }
+        )
+        message = f"self-learn: reroute {record_id} → {message_target}"
+        routed_at = _now_iso()
+
+        with _ledger_write(home), gitops.host_lock(spec.host_path, spec.mode):
+            observed_hash = _observe_region_hash(spec)
+            old_observed_hash = _observe_retirement_region(old_retire)
+
+            touched = reroute_record(
+                home,
+                record_id,
+                destination=destination,
+                by=by,
+                routed_at=routed_at,
+                reference_file=ref_name if destination == "reference" else None,
+                variant=spec.variant,
+                rules_topic=spec.rules_topic,
+                rules_paths=list(spec.rules_paths) if spec.rules_paths else None,
+            )
+            routed_record = Record.from_path(path)  # AS RESOLVED — routed_at now set
+
+            # REC9: the compile record's SAME-commit prediction, same
+            # shape route()'s own write leg uses — managed via the
+            # generic helper, reference via the pure-transform predictor
+            # (+ its pointer surface, when the scope carries one).
+            if spec.destination in ("skill-md", "claude-md"):
+                record_path = _write_compile_record_entry(
+                    home, spec, observed_hash, by=message
+                )
+                if record_path is not None:
+                    touched = touched + [record_path]
+            elif spec.destination == "reference" and spec.refs_dir is not None:
+                ref_path = reference_target_path(spec.refs_dir, spec.ref_name)
+                if ref_path.name != FORBIDDEN_REFERENCE_BASENAME:
+                    ref_observed = _observe_region_hash_at(ref_path, "reference")
+                    ref_expected = _expected_reference_region(spec, routed_record, ref_path)
+                    ref_record_path = _resync_region_entry(
+                        home,
+                        host_path=spec.host_path,
+                        scope_kind=spec.scope_kind,
+                        mode=spec.mode,
+                        target=ref_path,
+                        region_kind="reference",
+                        expected=ref_expected,
+                        observed_hash=ref_observed,
+                        by=message,
+                    )
+                    if ref_record_path is not None:
+                        touched = touched + [ref_record_path]
+                    if spec.pointer_surface is not None:
+                        ptr_observed = _observe_region_hash_at(spec.pointer_surface, "pointer")
+                        ptr_expected = _expected_pointer_region(spec, ref_path)
+                        ptr_record_path = _resync_region_entry(
+                            home,
+                            host_path=spec.host_path,
+                            scope_kind=spec.scope_kind,
+                            mode=spec.mode,
+                            target=spec.pointer_surface,
+                            region_kind="pointer",
+                            expected=ptr_expected,
+                            observed_hash=ptr_observed,
+                            by=message,
+                        )
+                        if ptr_record_path is not None:
+                            touched = touched + [ptr_record_path]
+
+            # The OLD target's retirement, same-commit prediction — the
+            # managed branch resyncs through the shared helper; the
+            # reference branch through its own pure-transform predictor
+            # (RER1/RER7).
+            old_record_path = _write_retirement_compile_record(
+                home, old_retire, old_observed_hash, by=message, skip_target=spec.target
+            )
+            if old_record_path is not None:
+                touched = touched + [old_record_path]
+            elif old_retire.reference is not None:
+                old_ref_path, old_ref_spec = old_retire.reference
+                old_ref_observed = _observe_region_hash_at(old_ref_path, "reference")
+                old_ref_expected = _predicted_retired_reference_region(old_ref_path, record_id)
+                old_ref_record_path = _resync_region_entry(
+                    home,
+                    host_path=old_ref_spec.host_path,
+                    scope_kind=old_ref_spec.scope_kind,
+                    mode=old_ref_spec.mode,
+                    target=old_ref_path,
+                    region_kind="reference",
+                    expected=old_ref_expected,
+                    observed_hash=old_ref_observed,
+                    by=message,
+                )
+                if old_ref_record_path is not None:
+                    touched = touched + [old_ref_record_path]
+
+            staged, sha = _commit_ledger(home, touched, message, note)
+
+            # M-1 (U-verbs Phase 2 code gate r1): `reroute` writes a
+            # routing block via `ledger_ops.reroute_record` (its own
+            # `set_routing` call) but, unlike `route`/`route_direct`,
+            # never spooled a `route` event -- the AST guard
+            # (test_route_observability.py, criterion 20) only walked
+            # verbs.py, so it never saw `reroute_record`'s call in
+            # ledger_ops.py either. Same placement pin as route()'s own
+            # (criterion 19): immediately after the ledger commit
+            # closes above, NOT at the end of the function, so a
+            # host-phase failure below still leaves this event spooled
+            # -- the ledger commit IS the routing (doc 13 §4.1).
+            telemetry.spool_quiet(
+                "route",
+                record=record_id,
+                destination=destination,
+                scope=record.scope,
+                by=by,
+                variant=spec.variant,
+            )
+
+            post_notes: list[str] = []
+            old_host_sha, old_host_repo = _retirement_host_phase(
+                home,
+                old_retire,
+                record_id,
+                note=note,
+                message=message,
+                warnings=warnings,
+                post_notes=post_notes,
+                skip_target=spec.target,
+                user_push=not no_push,
+            )
+            compile_result, host_sha = _host_phase(
+                home,
+                spec,
+                record_id,
+                routed_record=routed_record,
+                note=note,
+                message=message,
+                warnings=warnings,
+                user_push=not no_push,
+            )
+
+        push = _push_ledger(home, no_push)
+        host_push = None
+        if not no_push and host_sha is not None and spec.mode == "git":
+            host_push = gitops.push_if_remote(spec.host_path)
+        if (
+            not no_push
+            and old_host_sha is not None
+            and old_host_repo is not None
+            and old_host_repo != spec.host_path
+        ):
+            gitops.push_if_remote(old_host_repo)
+        return VerbResult(
+            action="reroute",
+            record_id=record_id,
+            commit_message=message,
+            commit_sha=sha,
+            staged=staged,
+            push=push,
+            compile_result=compile_result,
+            sentinel_owned=hold.owned,
+            warnings=warnings,
+            post_notes=post_notes,
+            host_commit_sha=host_sha,
+            host_push=host_push,
+            target=spec.target,
+        )
+    finally:
+        hold.release()
+
+
 def graduate(
     home: Path | str,
     record_id: str,
@@ -5340,6 +5774,10 @@ def graduate(
             _graduate_host_lock = gitops.host_lock(retire.spec.host_path, retire.spec.mode)
         elif retire.removal is not None:
             _graduate_host_lock = gitops.host_lock(retire.removal[0], retire.removal[3])
+        elif retire.reference is not None:
+            _graduate_host_lock = gitops.host_lock(
+                retire.reference[1].host_path, retire.reference[1].mode
+            )
         else:
             _graduate_host_lock = contextlib.nullcontext()
 
@@ -5365,6 +5803,29 @@ def graduate(
             )
             if record_path is not None:
                 touched = touched + [record_path]
+            elif retire.reference is not None:
+                # U-verbs S-54 (RER6/RER7): same same-commit-prediction
+                # shape as the managed branch above — `_write_retirement_
+                # compile_record` only ever covers `retire.spec`, so a
+                # reference retirement's compile-record entry is resynced
+                # here, predicted via the SAME pure text transform the
+                # real removal (host phase, below) applies.
+                ref_path, ref_spec = retire.reference
+                ref_observed = _observe_region_hash_at(ref_path, "reference")
+                ref_expected = _predicted_retired_reference_region(ref_path, record_id)
+                ref_record_path = _resync_region_entry(
+                    home,
+                    host_path=ref_spec.host_path,
+                    scope_kind=ref_spec.scope_kind,
+                    mode=ref_spec.mode,
+                    target=ref_path,
+                    region_kind="reference",
+                    expected=ref_expected,
+                    observed_hash=ref_observed,
+                    by=f"graduate {record_id}",
+                )
+                if ref_record_path is not None:
+                    touched = touched + [ref_record_path]
             elif retire.removal is not None:
                 # D-3 completion (code gate r1 fold, coordinator
                 # ruling 2026-08-28): same shape as `supersede`'s
@@ -5439,8 +5900,9 @@ def supersede(
     lrn-new``. When the old record was ROUTED to a managed target this
     verb is canon-touching (doc 13 §4): its entry must drop, so after the
     ledger commit the host phase recompiles the target and commits the
-    host. A pending old record stays a single ledger commit. Reference-
-    routed records need no host phase — references are append-only."""
+    host. A pending old record stays a single ledger commit. A
+    reference-routed old record's entry drops too (U-verbs S-54 —
+    references are no longer append-only for their own lifetime)."""
     home = Path(home)
     if old_id == new_id:
         raise VerbError("a record cannot supersede itself")
@@ -5469,6 +5931,7 @@ def supersede(
         # — or the hook script this retires (M3-4).
         spec: TargetSpec | None = None
         removal: tuple[Path, Path, str, str] | None = None
+        reference: tuple[Path, TargetSpec] | None = None
         if old_record.status == "routed":
             routing = old_record.routing or {}
             destination = routing.get("destination")
@@ -5487,6 +5950,32 @@ def supersede(
                 )
             elif destination == "hook":
                 removal = _hook_script_location(home, old_record, warnings)
+            elif destination == "reference":
+                # U-verbs S-54 (RER6): the same reference-retirement
+                # preflight `_retirement_preflight` runs for `graduate` —
+                # `supersede` pre-flights its own doc-target/hook cleanup
+                # by hand rather than through that shared dataclass (a
+                # pre-existing duplication this unit does not collapse),
+                # so the third leg is added here in the SAME shape.
+                ref_spec = _resolve_target(
+                    home,
+                    old_path.parent.parent,
+                    old_record.scope,
+                    "reference",
+                    routing.get("reference_file"),
+                    user_claude_md=user_claude_md,
+                    variant=routing.get("variant"),
+                    rules_topic=routing.get("rules_topic"),
+                )
+                # Same invariant as `_retirement_preflight`'s reference
+                # branch: `_resolve_target`'s `destination == "reference"`
+                # arm always resolves a concrete `refs_dir` before
+                # returning -- never None here.
+                assert ref_spec.refs_dir is not None
+                reference = (
+                    reference_target_path(ref_spec.refs_dir, ref_spec.ref_name),
+                    ref_spec,
+                )
 
         # U-hostmode M-3 (code gate r1 fold, REC12c): one lock discipline,
         # no exceptions — the host lock opens HERE, before the region
@@ -5501,6 +5990,8 @@ def supersede(
             _supersede_host_lock = gitops.host_lock(spec.host_path, spec.mode)
         elif removal is not None:
             _supersede_host_lock = gitops.host_lock(removal[0], removal[3])
+        elif reference is not None:
+            _supersede_host_lock = gitops.host_lock(reference[1].host_path, reference[1].mode)
         else:
             _supersede_host_lock = contextlib.nullcontext()
 
@@ -5522,6 +6013,27 @@ def supersede(
                 )
                 if record_path is not None:
                     touched = touched + [record_path]
+            elif reference is not None:
+                # U-verbs S-54 (RER6/RER7): same same-commit prediction
+                # shape as `graduate`'s reference leg — predicted via the
+                # SAME pure text transform the real removal (host phase,
+                # below) applies.
+                ref_path, ref_spec = reference
+                ref_observed = _observe_region_hash_at(ref_path, "reference")
+                ref_expected = _predicted_retired_reference_region(ref_path, old_id)
+                ref_record_path = _resync_region_entry(
+                    home,
+                    host_path=ref_spec.host_path,
+                    scope_kind=ref_spec.scope_kind,
+                    mode=ref_spec.mode,
+                    target=ref_path,
+                    region_kind="reference",
+                    expected=ref_expected,
+                    observed_hash=ref_observed,
+                    by=f"supersede {old_id} → {new_id}",
+                )
+                if ref_record_path is not None:
+                    touched = touched + [ref_record_path]
             elif removal is not None:
                 # D-3 completion (code gate r1 fold, coordinator
                 # ruling 2026-08-28): a hook-routed record's script
@@ -5574,6 +6086,10 @@ def supersede(
                 host_sha = _remove_hook_script(
                     home, removal, old_id, note, warnings, post_notes
                 )
+            elif reference is not None:
+                host_sha = _retire_reference_host_phase(
+                    home, reference, old_id, note=note, warnings=warnings
+                )
 
         # (f) push ledger, then host (both has_remote-guarded).
         push = None if no_push else gitops.push_if_remote(home)
@@ -5581,6 +6097,7 @@ def supersede(
         host_repo = (
             spec.host_path if spec is not None
             else removal[0] if removal is not None
+            else reference[1].host_path if reference is not None
             else None
         )
         if not no_push and host_sha is not None and host_repo is not None:
@@ -6843,3 +7360,387 @@ def recompile(
     finally:
         hold.release()
     return result
+
+
+@dataclass(frozen=True)
+class BucketPruneResult:
+    """Outcome of ``bucket prune`` (U-verbs S-54 / §4.6, HOST4). ``pruned``
+    lists the removed (or, under ``dry_run``, WOULD-remove) bucket
+    directories — ABSOLUTE paths (Minor, code gate r1: this docstring
+    used to say "relative to *home*", which was simply wrong;
+    :func:`ledger.discover_buckets` builds ``Bucket.path`` via
+    ``home.glob(...)`` off an already-absolute ``home``, so every path
+    here is absolute, matching what a caller would need to act on it
+    directly without re-joining ``home``). ``dry_run=True`` writes
+    nothing, takes no lock, holds no sentinel (DRY3's own discipline,
+    reused here)."""
+
+    pruned: list[Path]
+    dry_run: bool
+    commit_sha: str | None = None
+    push: gitops.PushResult | None = None
+
+
+def _bucket_is_empty(bucket_dir: Path) -> bool:
+    """HOST4's own definition of empty: no ``lrn-*.md`` in ``pending/``
+    or ``resolved/``, no FILE at all under ``proposals/``, and nothing
+    else in the bucket but ``meta.yaml`` and empty directories. A bucket
+    holding an orphan proposal (no record) is **not** empty — pruning it
+    would lose that proposal (M51's own guard; §2.6 measured 2 such
+    buckets live)."""
+    for sub in ("pending", "resolved"):
+        d = bucket_dir / sub
+        if d.is_dir() and any(d.glob("lrn-*.md")):
+            return False
+    proposals = bucket_dir / "proposals"
+    if proposals.is_dir() and any(f.is_file() for f in proposals.rglob("*")):
+        return False
+    for entry in bucket_dir.rglob("*"):
+        if entry.is_file() and entry.name != "meta.yaml":
+            return False
+    return True
+
+
+def bucket_prune(
+    home: Path | str, *, dry_run: bool = False, no_push: bool = False
+) -> BucketPruneResult:
+    """``self-learn bucket prune`` (U-verbs S-54 / §4.6, HOST4): remove
+    every record-less, proposal-less bucket directory under
+    ``projects/``, ``skills/`` and ``user/`` — one ledger commit
+    ``self-learn: bucket prune <n> empty bucket(s)``. ``--dry-run``
+    reports the list and writes nothing, takes no lock, holds no
+    sentinel. **Never prunes the ``user/`` bucket** (HOST4) — the one
+    bucket that must always exist."""
+    home = Path(home)
+    candidates = [
+        b for b in discover_buckets(home)
+        if b.scope != "user" and _bucket_is_empty(b.path)
+    ]
+    if dry_run:
+        return BucketPruneResult(pruned=[b.path for b in candidates], dry_run=True)
+    if not candidates:
+        return BucketPruneResult(pruned=[], dry_run=False)
+    from .ledger_ops import _remove_file
+
+    hold = sentinel.hold()
+    sentinel.heartbeat()
+    try:
+        message = f"self-learn: bucket prune {len(candidates)} empty bucket(s)"
+        with _ledger_write(home):
+            touched: list[Path] = []
+            for b in candidates:
+                meta = b.path / "meta.yaml"
+                if _remove_file(home, meta):
+                    touched.append(meta)
+            staged, sha = _commit_ledger(home, touched, message, None)
+            for b in candidates:
+                if b.path.is_dir():
+                    shutil.rmtree(b.path, ignore_errors=True)
+        push = _push_ledger(home, no_push)
+        return BucketPruneResult(
+            pruned=[b.path for b in candidates], dry_run=False, commit_sha=sha, push=push
+        )
+    finally:
+        hold.release()
+
+
+def followup_add(
+    home: Path | str,
+    record_id: str,
+    *,
+    action: str,
+    unblocks_on: str | None = None,
+    note: str | None = None,
+    no_push: bool = False,
+) -> VerbResult:
+    """``self-learn followup add`` (U-verbs S-54 / §4.7, Phase 2, META1-
+    META2): open a follow-up on a ROUTED record — the verb `daad648`'s
+    hand commit (2026-07-14) did by hand. ``require_status(...,
+    ROUTED_ONLY, verb="followup-add")``; refuses (rc 1) when
+    ``routing.follow_up`` is already open, naming the open action —
+    ``followup done`` clears it first (META2). Validated through the
+    SAME shipped :func:`records._validate_follow_up` `route`'s own
+    ``--follow-up`` uses (META1 — never a second, hand-rolled shape
+    check). Commit ``self-learn: follow-up add lrn-…`` (matching the
+    existing ``self-learn: follow-up done lrn-…`` subject family).
+
+    M-1 (U-verbs Phase 2 code gate r1): applies the follow-up through
+    :meth:`Record.set_follow_up` — the SAME sibling method ``route
+    --follow-up`` already uses — never :meth:`Record.set_routing`
+    directly. This verb re-validates and rewrites the SAME routing
+    block that already exists (status stays ``routed``, ``destination``
+    is unchanged, no host write follows); it never ROUTES the record,
+    so it must not be mistaken for a route site — the same reasoning
+    :meth:`Record.complete_follow_up` already gives ``followup done``
+    below."""
+    home = Path(home)
+    path = find_record_path(home, record_id)  # pending OR resolved
+    _scan_or_refuse([path], note)
+    try:
+        _, record = require_status(home, record_id, ROUTED_ONLY, verb="followup-add")
+    except LedgerOpsError as exc:
+        raise VerbError(str(exc)) from exc
+    existing = (record.routing or {}).get("follow_up")
+    if existing:
+        raise VerbError(
+            f"lrn-{record_id[4:]} already has an open follow-up: "
+            f"{existing.get('action')} — `followup done` clears it first"
+        )
+    follow_up: dict[str, object] = {"action": action}
+    if unblocks_on is not None:
+        follow_up["unblocks_on"] = unblocks_on
+    if note is not None:
+        follow_up["note"] = note
+    try:
+        _validate_follow_up(follow_up)
+    except RecordError as exc:
+        raise VerbError(str(exc)) from exc
+
+    hold = sentinel.hold()
+    sentinel.heartbeat()
+    try:
+        message = f"self-learn: follow-up add {record_id}"
+        with _ledger_write(home):
+            record = Record.from_path(path)  # fresh read under the lock
+            try:
+                record.set_follow_up(action, unblocks_on=unblocks_on, note=note)
+            except records_mod.MutationError as exc:
+                # gate r2 M-A: NOT a blanket `except RecordError`. The
+                # pre-lock `_validate_follow_up(follow_up)` call above
+                # already owns shape validation (META1: the SAME shipped
+                # validator `Record.set_follow_up` calls again internally
+                # -- twice on purpose, never a second implementation). A
+                # `ValidationError` reaching this point would mean that
+                # pre-lock check was bypassed or wrong, and must escape
+                # rather than be relabelled -- a blanket catch here
+                # silently absorbed spec mutation M53 (hand-roll the
+                # pre-lock shape check instead of calling the shipped
+                # validator) into an indistinguishable VerbError, which
+                # hollowed out META1's own named mutation. `MutationError`
+                # (record has no routing block; record is not `routed`)
+                # is a genuine race between the pre-lock read and this
+                # fresh one -- that, and only that, is what this catches.
+                raise VerbError(str(exc)) from exc
+            record.write(path)
+            staged, sha = _commit_ledger(home, [path], message, note)
+        push = _push_ledger(home, no_push)
+        return VerbResult(
+            action="followup-add",
+            record_id=record_id,
+            commit_message=message,
+            commit_sha=sha,
+            staged=staged,
+            push=push,
+            sentinel_owned=hold.owned,
+        )
+    finally:
+        hold.release()
+
+
+def _reclassify_apply(record: Record, *, kind: str | None, type: str | None) -> None:
+    """Apply ``reclassify --kind K --type T`` to ``record`` in the one
+    order that can ever land on a pair :meth:`Record.validate` accepts
+    (gate r2 B-1, three faces of one omission): clear ``kind`` FIRST
+    whenever the resulting type will not be ``behavior`` -- ``kind`` is
+    behavior-only by definition (:meth:`Record.set_kind`), and the CLI's
+    own ``--kind`` has no way to name a clear (``choices=sorted(KINDS)``
+    at ``cli.py``), so this auto-clear is the ONLY path that makes
+    behavior -> knowledge reachable through this verb at all -- THEN
+    change ``type`` (so ``set_type``'s own "clear kind first" guard never
+    fires on a target this function already cleared for), THEN set the
+    new ``kind`` if one was given (so ``set_kind``'s own
+    behavior-only guard sees the ALREADY-updated type, not the stale
+    one -- the exact ordering bug gate r2 found: the old code called
+    ``set_kind`` before ``set_type``, so a legal ``--type behavior
+    --kind X`` on a non-behavior record was refused though the verb's
+    own pre-lock guard had just admitted it).
+
+    Never writes to disk -- but gate r3 Minor 2: the guarantee this
+    docstring used to state here ("every call below validates itself")
+    does NOT hold for the first call. ``set_kind(None)`` performs NO
+    check at all (gate r3's own primary-attack audit: it is the one
+    setter weaker than :meth:`Record.validate`, by design -- clearing
+    ``kind`` is legal on ANY type, so there is nothing for it to check
+    in isolation); ``set_type`` and ``set_kind(kind)`` DO validate their
+    own field against the type in front of them at that moment, never
+    the full cross-field pair ``Record.validate`` checks. So a record
+    can sit in a state ``Record.validate`` would reject BETWEEN the
+    three calls below (immediately after ``set_kind(None)``, on a
+    behavior-typed record with no kind, until ``set_type`` runs) --
+    that window never reaches disk or an external observer only
+    because this function is synchronous and its caller controls when
+    ``record`` is read again. The guarantee this function DOES keep:
+    the three calls run in the one order that can ever land the WHOLE
+    sequence on a pair ``Record.validate`` accepts, and any call that
+    itself rejects a step raises immediately, before any later step
+    runs. Whether the RESULT is checked against ``Record.validate`` in
+    full is the caller's job, not this function's: :func:`reclassify`
+    does it twice on purpose (pre-lock simulation, then again under
+    the lock via a fresh read) -- a caller that skips both gets no
+    such check from calling this function alone. Callers decide
+    whether ``record`` is a disposable simulation copy (pre-lock,
+    fail-closed) or the real fresh-under-lock instance."""
+    resulting_type = type if type is not None else record.type
+    if resulting_type != "behavior":
+        record.set_kind(None)
+    if type is not None:
+        record.set_type(type)
+    if kind is not None:
+        record.set_kind(kind)
+
+
+def reclassify(
+    home: Path | str,
+    record_id: str,
+    *,
+    kind: str | None = None,
+    type: str | None = None,
+    note: str | None = None,
+    no_push: bool = False,
+) -> VerbResult:
+    """``self-learn reclassify`` (U-verbs S-54 / §4.7, Phase 2, META3-
+    META5): re-file a record's ``kind``/``type`` — at least one of the
+    two required (else the CLI's own usage gate, 64).
+
+    ``kind`` (``records.KINDS``): **every status** — 02 §2: *"scope/kind
+    (triage may re-classify — the filing is never frozen)"*. ``type``
+    (``records.TYPES``): refused (rc 1) outside ``LIVE_STATUSES`` — 02
+    §2 freezes ``type`` at routing, the SAME paragraph, the OTHER half
+    of its asymmetry. A ``type`` change RE-VALIDATES the required body
+    sections (``records.REQUIRED_SECTIONS``) and refuses (rc 1) naming
+    the missing headings — the record is never rewritten to fit (META4).
+    One commit ``self-learn: reclassify lrn-…``; a ``kind``-only change
+    on a routed record touches no host (kind is not compiled).
+
+    gate r2 B-1: the RESULTING ``(type, kind)`` pair is validated —
+    fail-closed, on a disposable in-memory copy, through
+    :meth:`Record.validate` itself (never a second, hand-rolled pair
+    check) — before any lock or write. Without this, ``--type behavior``
+    on a record with no kind (given or existing) used to commit a
+    ``kind: null`` behavior record that ``Record.from_path`` then refused
+    to load; the same omission made a legal ``--type behavior --kind X``
+    on a non-behavior record refusable-though-admitted; and made
+    ``--type knowledge`` on any kinded behavior record unconditionally
+    unreachable through this CLI (``--kind`` cannot name a clear). One
+    gap, three faces, one fix — see :func:`_reclassify_apply`."""
+    home = Path(home)
+    if kind is None and type is None:
+        raise VerbUsageError("reclassify needs --kind and/or --type")
+    path = find_record_path(home, record_id)  # pending OR resolved
+    _scan_or_refuse([path], note)
+    record = Record.from_path(path)
+    if kind is not None and kind not in records_mod.KINDS:
+        raise VerbUsageError(
+            f"--kind must be one of {sorted(records_mod.KINDS)}, got {kind!r}"
+        )
+    if kind is not None and (type or record.type) != "behavior":
+        raise VerbError(
+            f"--kind applies to behavior records only (02 §1) — "
+            f"record {record_id} is {record.type!r}"
+        )
+    if type is not None:
+        if type not in records_mod.TYPES:
+            raise VerbUsageError(
+                f"--type must be one of {sorted(records_mod.TYPES)}, got {type!r}"
+            )
+        try:
+            require_status(home, record_id, LIVE_STATUSES, verb="reclassify --type")
+        except LedgerOpsError as exc:
+            raise VerbError(str(exc)) from exc
+        # M-3 (gate r1), reached through the public surface now (gate r2
+        # m-4 — reaching Record's own private body-shape staticmethod was the only
+        # cross-module access to a Record-private member in either src
+        # tree): an early, body-shape-specific refusal, through the ONE
+        # shipped validator — the SAME one set_type calls again below,
+        # inside _reclassify_apply (twice on purpose, never a second
+        # implementation; and gate r2 measured the redundancy is not
+        # vacuous — see test_reclassify_type_refuses_a_duplicate_heading_pre_lock).
+        try:
+            records_mod.validate_body(type, record.body)
+        except RecordError as exc:
+            raise VerbError(
+                f"record {record_id} cannot reclassify to type {type!r}: "
+                f"{exc} — the body is never rewritten to fit; edit it by "
+                "hand first"
+            ) from exc
+
+    # gate r2 B-1: validate the RESULTING (kind, type) pair -- not just
+    # the incoming flags -- on a disposable in-memory copy, fail-closed,
+    # before any lock or write. `Record.validate()` is the ONE authority
+    # for "does this pair make sense" (kind required for behavior,
+    # forbidden otherwise) -- never a second, hand-rolled pair check.
+    sim = records_mod.Record.from_text(record.to_text())
+    try:
+        _reclassify_apply(sim, kind=kind, type=type)
+        sim.validate()
+    except RecordError as exc:
+        raise VerbError(
+            f"record {record_id} cannot reclassify to kind={kind!r} "
+            f"type={type!r}: {exc}"
+        ) from exc
+
+    hold = sentinel.hold()
+    sentinel.heartbeat()
+    try:
+        message = f"self-learn: reclassify {record_id}"
+        with _ledger_write(home):
+            record = Record.from_path(path)  # fresh read under the lock
+            # gate r3 Minor 3: a --type change that lands outside
+            # `behavior` silently clears `kind` (`_reclassify_apply`'s own
+            # docstring names this the ONLY path that makes behavior ->
+            # knowledge reachable) -- intended, recoverable from git
+            # history, but a verb dropping a user's field with no visible
+            # trace is a surprise a week later. Capture the value BEFORE
+            # `_reclassify_apply` clears it, and leave a one-line `notes`
+            # entry naming what was cleared -- `notes` (not `history`),
+            # because this is commentary for the NEXT human reader, not a
+            # write-once-field displacement (`Record.append_history`'s own
+            # contract, `resolution_note`'s the only current user).
+            resulting_type = type if type is not None else record.type
+            cleared_kind = (
+                record.kind
+                if resulting_type != "behavior" and record.kind is not None
+                else None
+            )
+            try:
+                _reclassify_apply(record, kind=kind, type=type)
+            except records_mod.MutationError as exc:
+                # gate r2 M-A's lesson applied here too: NOT a blanket
+                # `except RecordError`. `set_kind`/`set_type` never raise
+                # `MutationError` today (only `_check_thawed`, reached
+                # through `set_type`, can — a genuine race where the
+                # record's status left LIVE_STATUSES between the pre-lock
+                # check and this fresh read); every OTHER failure mode
+                # is `ValidationError`, and the pre-lock simulation just
+                # above already covers those on the SAME transform via
+                # the SAME function. A `ValidationError` reaching this
+                # point would mean that simulation was bypassed or wrong,
+                # and must escape rather than be relabelled indistinguishably
+                # from a fail-closed refusal — the exact mechanism that
+                # hollowed out META1's own mutation (M-A) one verb over.
+                raise VerbError(str(exc)) from exc
+            if cleared_kind is not None:
+                # criterion 25 (test_route_observability.py): no `by=`
+                # string literal at a call site anywhere in verbs.py --
+                # `append_note`'s own default (`by="human"`) applies; a
+                # human genuinely did invoke reclassify, and the note
+                # TEXT already names the mechanism ("reclassify cleared
+                # kind=..."), so no separate actor literal is needed.
+                record.append_note(
+                    f"reclassify cleared kind={cleared_kind!r} (type -> "
+                    f"{type!r}); recoverable from the ledger's git history"
+                )
+            record.write(path)
+            staged, sha = _commit_ledger(home, [path], message, note)
+        push = _push_ledger(home, no_push)
+        return VerbResult(
+            action="reclassify",
+            record_id=record_id,
+            commit_message=message,
+            commit_sha=sha,
+            staged=staged,
+            push=push,
+            sentinel_owned=hold.owned,
+        )
+    finally:
+        hold.release()

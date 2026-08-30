@@ -18,6 +18,8 @@ from fastapi.templating import Jinja2Templates
 from jinja2 import Environment, FileSystemLoader
 from starlette.staticfiles import StaticFiles
 
+from self_learn import verbs
+
 from . import ledger, models, pane, rendering
 from .env import EnvConfig
 from .idle import ActivityTracker, IdleMonitor
@@ -66,6 +68,13 @@ def _build_templates() -> Jinja2Templates:
     # model-computed tuple instead (single source: models.py's own
     # function, never a second one).
     env.globals["destinations_for_scope"] = models.destinations_for_scope
+    # U-verbs S-54 §4.9 (UIP3): the holding card's Dismiss control needs
+    # the CLI's own closed reason set (`verbs.DISMISS_REASONS`) — a
+    # GLOBAL, not threaded through every "kind: holding" context builder
+    # (action_arm/action_confirm/the GET detail render all reach this
+    # partial through different call sites; a global is the one place
+    # this cannot drift from the CLI's own enum).
+    env.globals["dismiss_reasons"] = verbs.DISMISS_REASONS
     return Jinja2Templates(env=env)
 
 

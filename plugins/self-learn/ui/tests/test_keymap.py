@@ -34,6 +34,10 @@ EXPECTED_ACTIONS = {
     "success_next",
     "success_bucket",
     "success_view",
+    # U-verbs S-54 §4.9 (UIP3/UIP4, Phase 2): two of the four free
+    # letters spent -- see keymap.py's own KEYMAP entry comment.
+    "dismiss_suspect",
+    "confirm_held",
 }
 
 
@@ -100,6 +104,9 @@ def test_pinned_key_bindings() -> None:
     assert by_action["success_next"] == ("j",)
     assert by_action["success_bucket"] == ("u",)
     assert by_action["success_view"] == ("v",)
+    # U-verbs S-54 §4.9 (UIP3/UIP4): `k`/`m`, the two free letters spent.
+    assert by_action["dismiss_suspect"] == ("k",)
+    assert by_action["confirm_held"] == ("m",)
 
 
 def test_success_row_never_claims_h() -> None:
@@ -129,9 +136,23 @@ def test_every_key_is_globally_unique() -> None:
 def test_holding_row_keys_are_t_and_c() -> None:
     """t/c live on the 'is it holding?' row context (09 §11 Y-4).
     F6 fix (2026-07-24, human-ratified): the `c` action is now named
-    "confirm_recurrence", not "confirm" — same key, corrected name."""
+    "confirm_recurrence", not "confirm" — same key, corrected name.
+    U-verbs S-54 §4.9 (UIP3, Phase 2, gate authority): `k`
+    (dismiss_suspect) joins the same row -- the fourth resolution the
+    holding card's own `commands/review.md:219` documentation already
+    named, offered nowhere in the UI until now. Name kept (t/c
+    predate this unit); body widened."""
     holding = {entry.action for entry in KEYMAP if entry.context == "holding"}
-    assert holding == {"tolerate", "confirm_recurrence"}
+    assert holding == {"tolerate", "confirm_recurrence", "dismiss_suspect"}
+
+
+def test_resolved_row_key_is_m() -> None:
+    """U-verbs S-54 §4.9 (UIP3, Phase 2): the resolved card's own
+    context row -- `confirm-held` had 0 uses ever (§2.1) and
+    `last_confirmed` present on 0 records (§4.9); the UI is now the
+    surface that can feed it."""
+    resolved = {entry.action for entry in KEYMAP if entry.context == "resolved"}
+    assert resolved == {"confirm_held"}
 
 
 def test_success_row_actions() -> None:

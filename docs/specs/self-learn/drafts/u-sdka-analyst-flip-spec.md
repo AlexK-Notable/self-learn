@@ -230,9 +230,12 @@ re-raises on that surface. Same class of loss, different exception type.
 `[dependency-groups] dev`, not through the `[sdk]` extra.** Measured (§9
 `E2`): `uv run --project plugins/self-learn/cli python -c "import
 claude_agent_sdk"` succeeds, resolving **0.2.134** from the project venv;
-`~/bin/self-learn` is `exec uv run --project …/cli self-learn "$@"` and
-`install.sh` runs `uv sync --project "$P/cli"` — both include the `dev`
-group by default. The flip therefore lands on a runtime where the SDK is
+`~/bin/self-learn` was, at measurement time, `exec uv run --project …/cli
+self-learn "$@"` **(U-uvpath, 2026-08-29, gate r2 Minor: now resolves `uv`
+via `command -v` then a fallback list before the same final `exec "$UV_BIN"
+run --project ...` — still goes through the `dev` group's `uv run` either
+way, so this measurement is unaffected)** and `install.sh` runs
+`uv sync --project "$P/cli"` — both include the `dev` group by default. The flip therefore lands on a runtime where the SDK is
 importable. §10 `V-1` routes the packaging question this exposes; `FL7`
 pins what happens when it is *not* importable, so the answer is never a
 lost lesson.
@@ -1412,7 +1415,7 @@ reproduce these should stop.
 | # | Measurement | Command | Result |
 |---|---|---|---|
 | `E1` | CLI suite baseline | `uv run --project plugins/self-learn/cli pytest plugins/self-learn/cli/tests -q` | **1868 passed, 5 skipped**, 251.51 s. 1873 collected. |
-| `E2` | SDK reachability in the shipped runtime | `uv run --project plugins/self-learn/cli python -c "import claude_agent_sdk"`; `cat ~/bin/self-learn`; `grep 'uv sync' install.sh`; `ls ~/.self-learn/` | Importable, **0.2.134**, from the CLI project venv. Launcher is `exec uv run --project …/cli self-learn "$@"`; installer is `uv sync --project "$P/cli"`. No `config.yaml` in the live ledger. |
+| `E2` | SDK reachability in the shipped runtime | `uv run --project plugins/self-learn/cli python -c "import claude_agent_sdk"`; `cat ~/bin/self-learn`; `grep 'uv sync' install.sh`; `ls ~/.self-learn/` | Importable, **0.2.134**, from the CLI project venv. Launcher was, at measurement time, `exec uv run --project …/cli self-learn "$@"` (U-uvpath, 2026-08-29, gate r2 Minor: now resolves `uv` via `command -v` + fallback before the same `exec "$UV_BIN" run --project ...`; unaffected by this measurement); installer is `uv sync --project "$P/cli"`. No `config.yaml` in the live ledger. |
 | `E3` | **The flip's blast radius, simulated without touching product code** | `SELF_LEARN_BACKEND_ANALYST=sdk uv run --project plugins/self-learn/cli pytest plugins/self-learn/cli/tests -q -p no:randomly --tb=no` | **18 FAILED + 4 ERROR = 22** — `test_route_cli.py` 12, `test_invocation.py` 7, `test_composer.py` 2, `test_regime_fixes.py` 1. Rung 1 shadows every lower rung, so this is what the table's rung 5 does to a test that names no backend. **This defines `SHADOW_22`** — a LOWER BOUND, not the built state's failure set (`A-0`, `E12`, `E13`). |
 | `E3a` | The failure signature | same, `--tb=short`, one test | `AssertionError: claude_agent_sdk._find_cli() was called during the test suite` — the `conftest.py` tripwire, for **21 of the 22**. `test_wr6_…` is the exception: it requests `sdk_absent`, so it fails **pre-transport** on `BackendUnavailable` and never reaches `_find_cli`. **No test spawned a real session** either way (`B-2`). |
 | `E3b` | What `E3` could **not** see | read of `_clear_backend_env` (`test_invocation.py`) and of `_clear_provider_env` (`test_doctor_invocation.py`, `test_provider.py`) | Both `delenv` the ambient variable, so tests that clear it were measured as unaffected but **will** move under the real table. That set is `FLIP_EDITS` (§3.3 `A-c`): `test_rg1_…`, `test_dc2_…`, `test_dc3_…`. |
@@ -1492,7 +1495,7 @@ than a rediscovery.
 `[dependency-groups] dev`, and both entry points go through uv, which
 resolves that group by default —
 
-- `~/bin/self-learn` is `exec uv run --project "…/cli" self-learn "$@"`;
+- `~/bin/self-learn` was, at measurement time, `exec uv run --project "…/cli" self-learn "$@"` (U-uvpath, 2026-08-29, gate r2 Minor: now resolves `uv` via `command -v` + fallback before the same `exec "$UV_BIN" run --project ...`; unaffected by this measurement);
 - `install.sh` runs `uv sync --project "$P/cli"`.
 
 So the SDK is present on **every real install on this host**, and the

@@ -43,7 +43,7 @@ import json
 
 import pytest
 
-from self_learn import cli, report as report_mod, telemetry, verbs
+from self_learn import cli, ledger_ops, report as report_mod, telemetry, verbs
 from self_learn.ledger_ops import create_record, write_proposal
 from self_learn.records import Record
 
@@ -220,13 +220,73 @@ def test_route_sites_are_derived_and_all_spool():
     "Every collected function spools" is vacuously true against an empty
     set (F3 / M22 — hoisting the "routed" literal into a module constant
     would silently empty the derived set while this guard stayed green)."""
-    tree = _verbs_ast()
-    sites = _route_sites(tree)
+    # M-1 (U-verbs Phase 2 code gate r1): walk BOTH files -- `route`/
+    # `route_direct` call `set_routing` directly inside verbs.py, but
+    # `reroute` calls `ledger_ops.reroute_record`, whose OWN
+    # `set_routing` call the old verbs.py-only walk could never see.
+    sites = _route_sites(_verbs_ast())
+    sites.update(_route_sites(_ledger_ops_ast()))
 
-    assert {"route", "route_direct"} <= set(sites)
+    # `reroute_record` in the floor control too: proves the ledger_ops.py
+    # walk actually ran and found a real set_routing() site there, not
+    # just an empty pass-through (M-1's own failure shape, one file over).
+    assert {"route", "route_direct", "reroute_record"} <= set(sites)
 
     for name, node in sites.items():
-        assert _spools_route(node), f"{name} routes without spooling a `route` event"
+        assert _spools_route(node) or name in _CALLER_SPOOLS_EXEMPT, (
+            f"{name} routes without spooling a `route` event"
+        )
+
+
+def test_reroute_spools_a_route_event(env):
+    """M-1 (U-verbs Phase 2 code gate r1): the runtime half of the fix
+    above -- `reroute` spools a `route` event for real, not just a
+    shape the AST guard is satisfied by. Two `route` events end up in
+    the spool for this record: the original `route`, and `reroute`'s
+    own, carrying the NEW destination and the caller's `by`."""
+    record = seed_pending(env)
+    verbs.route(env.ledger, record.id, dest="skill-md")
+
+    verbs.reroute(env.ledger, record.id, dest="claude-md", by="human")
+
+    route_events = _spooled_events("route")
+    assert len(route_events) == 2
+    reroute_events = [e for e in route_events if e["destination"] == "claude-md"]
+    assert len(reroute_events) == 1
+    event = reroute_events[0]
+    assert event["record"] == record.id
+    assert event["by"] == "human"
+
+
+def test_reroute_host_phase_failure_still_spools_the_route_event(env, monkeypatch):
+    """gate r2 m-5: `reroute`'s own eight-line comment claims the SAME
+    spool-survives-host-failure placement pin criterion 19 gives
+    `route` (`test_host_phase_failure_still_spools_the_route_event`
+    above) -- but until this test, nothing proved it for `reroute`;
+    `test_reroute_spools_a_route_event` only exercises the happy path.
+    Moving `reroute`'s spool call to the end of the function -- exactly
+    the defect the comment exists to prevent -- would leave the rest of
+    the suite green without this test."""
+    record = seed_pending(env)
+    verbs.route(env.ledger, record.id, dest="skill-md")
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("simulated host-phase failure")
+
+    monkeypatch.setattr(verbs, "_host_phase", boom)
+
+    with pytest.raises(RuntimeError):
+        verbs.reroute(env.ledger, record.id, dest="claude-md", by="human")
+
+    # the ledger commit IS the routing (doc 13 §4.1) -- it happened
+    # despite the host-phase raise.
+    rerouted = Record.from_path(resolved_path(env, record.id))
+    assert rerouted.routing["destination"] == "claude-md"
+
+    route_events = _spooled_events("route")
+    reroute_events = [e for e in route_events if e["destination"] == "claude-md"]
+    assert len(reroute_events) == 1
+    assert reroute_events[0]["record"] == record.id
 
 
 # --------------------------------------------------------- Part C: `by`
@@ -468,6 +528,17 @@ def _verbs_ast() -> ast.Module:
     return ast.parse(inspect.getsource(verbs), filename=verbs.__file__)
 
 
+def _ledger_ops_ast() -> ast.Module:
+    """M-1 (U-verbs Phase 2 code gate r1): `reroute`'s `set_routing`
+    call lives in `ledger_ops.reroute_record`, not in `verbs.py` --
+    `route`/`route_direct` call `set_routing`/`resolve_record` DIRECTLY
+    inside their own bodies, so criterion 20's single-file walk was
+    sound for them, but it structurally could not see a `set_routing`
+    call one file away. Walking `ledger_ops.py` too is what makes
+    ROUTE-SITES complete rather than merely convenient."""
+    return ast.parse(inspect.getsource(ledger_ops), filename=ledger_ops.__file__)
+
+
 def _by_literal_violations(tree: ast.AST) -> list[tuple[str, int | None]]:
     """Every `by=<string constant>` keyword arg at a call site, and every
     `"by": <string constant>` dict-literal entry, in `tree`."""
@@ -501,6 +572,41 @@ def _call_name(func: ast.expr) -> str | None:
     return None
 
 
+#: M-1 (U-verbs Phase 2 code gate r1): `reroute_record` (`ledger_ops.py`)
+#: calls `set_routing` directly -- a REAL route site, not a dry-run one,
+#: so unlike `_DRY_RUN_EXEMPT` it is NOT hidden from `_route_sites`'
+#: discovery (that would just recreate the single-file blind spot this
+#: fix exists to close, one exemption at a time). It IS exempted from
+#: the "must spool ITSELF" check `test_route_sites_are_derived_and_
+#: all_spool` runs, because it has exactly one caller in the whole
+#: tree -- `verbs.reroute` (grep-verified: `grep -rn 'reroute_record('
+#: cli/src` finds only its own `def` and that one call, inside
+#: `reroute`'s own `_ledger_write` lock) -- and `reroute` is what
+#: spools the `route` event, immediately after the SAME ledger commit
+#: this helper's write closes (verbs.py, same placement pin as
+#: route()/route_direct()'s own, criterion 19). The spool call cannot
+#: live inside this helper without either duplicating it or moving
+#: `_commit_ledger` into `ledger_ops.py`, neither of which this unit's
+#: scope calls for.
+#:
+#: `resolve_record` (also `ledger_ops.py`) is the SAME shape, found the
+#: same way -- widening the walk to `ledger_ops.py` surfaces it too, not
+#: just `reroute_record`. It is the shared file-op helper EVERY
+#: resolution verb calls (route, route_direct, reject, graduate,
+#: supersede, confirm_recurrence, ...), and calls `set_routing()`
+#: internally ONLY when `new_status == "routed"` -- it has always done
+#: this, the guard simply never saw it before this widening. Its real
+#: `new_status="routed"` callers (`route`, `route_direct`) are each
+#: ALREADY, independently, caught by this SAME criterion's OTHER
+#: detection leg -- a `resolve_record(..., "routed", ...)` call site
+#: inside `verbs.py` itself (see `route`'s own call, `verbs.py:3931`) --
+#: and are already required to spool via that leg. Exempting the shared
+#: helper here narrows nothing the criterion actually verifies; it only
+#: stops re-flagging the one function whose job is to be called for
+#: EVERY resolution status, "routed" among five others.
+_CALLER_SPOOLS_EXEMPT = {"reroute_record", "resolve_record"}
+
+
 def _route_sites(
     tree: ast.Module,
 ) -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
@@ -525,7 +631,16 @@ def _route_sites(
     # (deliberately, DRY3's "zero side effects" spirit) no telemetry
     # spool either. It is excluded BY NAME, not by weakening the
     # `set_routing`/`resolve_record` match this criterion is built on.
-    _DRY_RUN_EXEMPT = {"route_dry_run"}
+    _DRY_RUN_EXEMPT = {
+        "route_dry_run",
+        # M-1 fold (U-verbs Phase 2 code gate r1): `followup_add` was
+        # exempted here for one gate round -- the gate proved that
+        # avoidable (its sibling `followup_done` uses
+        # `Record.complete_follow_up` and never touches `set_routing`
+        # at all), so `followup_add` was rewritten to match rather
+        # than kept as a second, weaker exemption. This set stays at
+        # its original one entry.
+    }
     for node in ast.walk(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue

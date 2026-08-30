@@ -89,6 +89,7 @@
     {% if armed.tolerate %}<input type="hidden" name="tolerate" value="true">{% endif %}
     {% if armed.target %}<input type="hidden" name="target" value="{{ armed.target }}">{% endif %}
     {% if armed.dest_touched %}<input type="hidden" name="dest_touched" value="true">{% endif %}
+    {% if armed.why %}<input type="hidden" name="why" value="{{ armed.why }}">{% endif %}
     <p class="action-bar-armed">
       <strong>{{ armed.verb_label }}</strong>
       <code>{{ armed.record_id }}</code>
@@ -122,6 +123,18 @@
   <form id="form-{{ dom_id }}">
     <input type="hidden" name="event" value="{{ event }}">
     <label>Note <input type="text" name="note" placeholder="why the rule stays"></label>
+    {# U-verbs S-54 §4.9 (UIP3): the fourth resolution `commands/
+       review.md:219` already documents — the UI was the only surface
+       that lacked it. Reuses the SAME `event` hidden field above
+       (dismiss-suspect needs the recurrence-suspect's own nonce, not a
+       second one). #}
+    <label>Reason
+      <select name="why">
+        {% for reason in dismiss_reasons %}
+        <option value="{{ reason }}">{{ reason }}</option>
+        {% endfor %}
+      </select>
+    </label>
     <button type="button" data-key-action="tolerate"
             hx-post="/record/{{ record_id }}/action/arm" hx-include="#form-{{ dom_id }}"
             hx-vals='{"verb":"confirm-recurrence","kind":"holding","tolerate":"true"}'
@@ -135,6 +148,11 @@
             hx-vals='{"verb":"graduate","kind":"holding"}'
             hx-target="#{{ dom_id }}" hx-swap="outerHTML"
             title="Retire this lesson — canon (the guidance file it calls for) already covers it, so there's nothing left to write">Graduate (g)</button>
+    <button type="button" data-key-action="dismiss_suspect"
+            hx-post="/record/{{ record_id }}/action/arm" hx-include="#form-{{ dom_id }}"
+            hx-vals='{"verb":"dismiss-suspect","kind":"holding"}'
+            hx-target="#{{ dom_id }}" hx-swap="outerHTML"
+            title="The recurrence-suspect telemetry claim was a matcher false-positive">Dismiss (k)</button>
   </form>
   <p class="session-note">Revise / Escalate: capture with <code>teach --supersedes</code> (session work).</p>
 
@@ -183,6 +201,15 @@
           hx-vals='{"verb":"graduate","kind":"resolved"}'
           hx-target="#{{ dom_id }}" hx-swap="outerHTML"
           title="Retire this lesson — canon (the guidance file it calls for) already covers it, so there's nothing left to write">Graduate (g)</button>
+  {# U-verbs S-54 §4.9 (UIP3): the verb with 0 uses ever (§2.1) and
+     `last_confirmed` present on 0 records (§4.9) — the staleness
+     metric is unfed because the surface a human actually reviews on
+     had no way to feed it. #}
+  <button type="button" data-key-action="confirm_held"
+          hx-post="/record/{{ record_id }}/action/arm"
+          hx-vals='{"verb":"confirm-held","kind":"resolved"}'
+          hx-target="#{{ dom_id }}" hx-swap="outerHTML"
+          title="Record that this routed rule was seen working">Still holding (m)</button>
   {% endif %}
 
   {% else %}
