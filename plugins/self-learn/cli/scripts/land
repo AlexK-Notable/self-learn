@@ -90,19 +90,44 @@ staged_add() {
   printf 'staged: %s (%s path)\n' "$rel" "$n"
 }
 
-# MAJ-1's durable form. A refusal must describe the state it actually
-# left, so the sentence is DERIVED from the tree, never asserted about it.
-# `git merge --abort` can fail -- it refuses when local modifications would
-# be overwritten, which is exactly the situation after `--remeasure`'s
-# post-write no-op leg -- and its rc was swallowed with `|| true`, so the
-# message went on claiming a restored tree over a merge that was still
-# there (measured, gate r4 MAJ-1's shape one leg over).
-tree_state_sentence() {
+# MAJOR-1 (gate r5). `--continue-merge` exists so a refusal LEAVES the
+# merge for the operator to edit. A SECOND refusal must therefore not throw
+# away the work the first one asked them to do -- measured before this
+# guard: `EDIT SURVIVED: False`, with no message naming the loss, and
+# unstaged edits surviving only by accident (git happens to refuse the
+# abort when it would overwrite them). Staged ones did not survive at all.
+#
+# So every refusal inside the merge routes through here: it aborts on a
+# FIRST pass, and on a resume it keeps the merge and says so.
+abort_merge_unless_resuming() {
   local gr=$1
-  if git -C "$gr" rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1; then
-    printf 'The merge is LEFT UNCOMMITTED'
+  if [ "$CONTINUE_MERGE" = "1" ]; then
+    RESUME_KEPT=1
+    # Say it. A refusal that silently preserved the work would be as hard
+    # to act on as one that silently destroyed it.
+    printf 'land: --continue-merge -- the merge and your in-merge edits are KEPT (%s changed path(s)); fix the refusal above and re-run with --continue-merge\n' \
+      "$(git -C "$gr" status --porcelain | grep -c . || true)" >&2
+    return 0
+  fi
+  git -C "$gr" update-index -q --refresh >>"$OUT/abort.log" 2>&1 || true
+  git -C "$gr" merge --abort >>"$OUT/abort.log" 2>&1
+  printf 'merge --abort rc=%s\n' "$?" >>"$OUT/abort.log"
+}
+
+# MINOR-1/NIT-4: BOTH halves derived, never asserted. Deriving the first
+# half is what exposed the swallowed `merge --abort` rc and the
+# `os.replace` stat-cache trap, so the second half gets the same treatment
+# rather than a claim about a tree nobody looked at.
+tree_state_sentence() {
+  local gr=$1 merging="no" dirty
+  git -C "$gr" rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1 && merging="yes"
+  dirty=$(git -C "$gr" status --porcelain | grep -c . || true)
+  if [ "$merging" = "yes" ]; then
+    printf 'The merge is LEFT UNCOMMITTED (%s changed path(s) in the tree)' "$dirty"
+  elif [ "$dirty" = "0" ]; then
+    printf 'The merge was ABORTED and the tree restored (0 changed paths, measured)'
   else
-    printf 'The merge was ABORTED and the tree restored'
+    printf 'The merge was ABORTED but the tree is NOT clean (%s changed path(s) remain -- inspect before re-running)' "$dirty"
   fi
 }
 
@@ -184,6 +209,8 @@ CONTINUE_FLAG=0
 # refuses the re-run as a dirty tree, and the refusal that told the
 # operator to re-run would be its own second false claim.
 CONTINUE_MERGE=0
+#: set when a refusal KEPT the merge because we were resuming (MAJOR-1)
+RESUME_KEPT=0
 declare -A RESOLVER_MAP=()
 SANITIZE_ACK_ARGS=()
 
@@ -217,6 +244,12 @@ while [ $# -gt 0 ]; do
 done
 
 [ -n "$BRANCH" ] || die 2 "--branch is required"
+# NIT-5: --continue-merge resumes a merge in the MAIN checkout; --dry-run
+# builds a throwaway worktree that has no such merge, so the combination
+# would refuse with a message about the wrong tree. Refuse it by name.
+if [ "$DRY_RUN" = "1" ] && [ "$CONTINUE_MERGE" = "1" ]; then
+  die 2 "--dry-run and --continue-merge are mutually exclusive: --continue-merge resumes the merge in the MAIN checkout, and --dry-run never creates one there"
+fi
 if [ "$CONTINUE_FLAG" = "0" ]; then
   [ -n "$VERDICT" ] || die 2 "--verdict is required (unless --continue)"
 fi
@@ -298,12 +331,16 @@ if [ "$CONTINUE_FLAG" = "0" ]; then
 
   DIRTY_MASTER=$(git status --porcelain | wc -l | tr -d ' ')
   if [ "$CONTINUE_MERGE" = "1" ]; then
-    # PRE3 still runs; what changes is which dirt is legitimate. Exactly
-    # one state is: an in-progress merge whose MERGE_HEAD is this branch's
-    # tip. Anything else -- no merge, or a merge of something else -- is
-    # refused, so the flag cannot be used to smuggle an unrelated dirty
-    # tree past the precondition.
-    [ -f "$ROOT/.git/MERGE_HEAD" ] \
+    # MINOR-2, stated to match what is ENFORCED. This verifies the merge's
+    # IDENTITY -- that one is in progress, and that it is THIS branch's tip
+    # -- and nothing about the provenance of the individual dirty paths. It
+    # deliberately cannot: the point of the flag is that the operator has
+    # edited the tree by hand, so "which dirt is legitimate" is not
+    # decidable here. What it does buy is that the flag cannot be pointed
+    # at a tree with no merge, or at a merge of something else.
+    # NIT-1: asked of git rather than by probing $ROOT/.git, which is a
+    # FILE, not a directory, in a linked worktree.
+    git -C "$ROOT" rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1 \
       || die 2 "PRE3/--continue-merge: there is no merge in progress to resume" "git status"
     MERGING=$(git rev-parse MERGE_HEAD)
     BRANCH_TIP=$(git rev-parse "refs/heads/$BRANCH")
@@ -453,7 +490,7 @@ run_merge_and_checks() {
         done
       } >"$OUT/prv2.txt"
       cat "$OUT/prv2.txt" >&2
-      git -C "$gr" merge --abort >/dev/null 2>&1 || true
+      abort_merge_unless_resuming "$gr"
       die 3 "PRV2: unmapped conflicted path(s), see above" "cat $OUT/prv2.txt"
     fi
 
@@ -462,14 +499,14 @@ run_merge_and_checks() {
       name=${RESOLVER_MAP[$path]}
       [ -f "$gr/$path" ] || die 3 "PRV2: --resolver names a path not in the conflict: $path"
       if ! grep -q '^||||||| ' "$gr/$path"; then
-        git -C "$gr" merge --abort >/dev/null 2>&1 || true
+        abort_merge_unless_resuming "$gr"
         die 3 "PRV3: $path has no ||||||| base marker -- refusing to parse a conflict without its base" "cat $gr/$path"
       fi
       py_landing resolve --root "$gr" --path "$path" --resolver "$name" --branch "$BRANCH" \
         >>"$OUT/resolvers.log" 2>&1
       local resolve_rc=$?
       if [ "$resolve_rc" != "0" ]; then
-        git -C "$gr" merge --abort >/dev/null 2>&1 || true
+        abort_merge_unless_resuming "$gr"
         die 3 "resolver '$name' refused on $path" "cat $OUT/resolvers.log"
       fi
       staged_add "$gr" "$path" "resolver '$name'" 3
@@ -493,10 +530,10 @@ run_merge_and_checks() {
   # would print "no conflict markers" -- the exact shape this unit exists
   # to end.
   [ "${#abspaths[@]}" -ge 1 ] \
-    || { git -C "$gr" merge --abort >/dev/null 2>&1 || true
+    || { abort_merge_unless_resuming "$gr"
          die 4 "CHK1: the merge-touched set is EMPTY -- refusing to report clean over zero files" "git -C $gr status"; }
   if ! py_landing checks --root "$gr" markers "${abspaths[@]}" >"$OUT/chk1.log" 2>&1; then
-    git -C "$gr" merge --abort >/dev/null 2>&1 || true
+    abort_merge_unless_resuming "$gr"
     die 4 "CHK1: conflict markers remain in the merge-touched set" "cat $OUT/chk1.log"
   fi
 
@@ -506,13 +543,13 @@ run_merge_and_checks() {
   # 14-forward-work-map.md carries 9 descending adjacent pairs inside ONE
   # contiguous table, so the strict whole-file form refuses every landing.
   if ! py_landing checks --root "$gr" roworder --base HEAD >"$OUT/chk3.log" 2>&1; then
-    git -C "$gr" merge --abort >/dev/null 2>&1 || true
+    abort_merge_unless_resuming "$gr"
     die 4 "CHK3: S-/FW- row order violation" "cat $OUT/chk3.log"
   fi
 
   # CHK4 -- landing-state prose
   if ! py_landing checks --root "$gr" prose >"$OUT/chk4.log" 2>&1; then
-    git -C "$gr" merge --abort >/dev/null 2>&1 || true
+    abort_merge_unless_resuming "$gr"
     die 4 "CHK4: landing-state prose found" "cat $OUT/chk4.log"
   fi
 
@@ -523,7 +560,7 @@ run_merge_and_checks() {
   # silently not run -- on a PUBLIC repository.
   local literals_test="$gr/plugins/self-learn/cli/tests/test_personal_literals.py"
   if [ ! -f "$literals_test" ]; then
-    git -C "$gr" merge --abort >/dev/null 2>&1 || true
+    abort_merge_unless_resuming "$gr"
     die 4 "CHK5: the personal-literals gate is ABSENT from the tree being landed ($literals_test) -- refusing to land unscanned" "ls -l $gr/plugins/self-learn/cli/tests/"
   fi
   # PYTHONDONTWRITEBYTECODE: CHK5 must not leave `__pycache__` in the tree
@@ -533,14 +570,14 @@ run_merge_and_checks() {
   if ! ( cd "$PROJECT" && PYTHONDONTWRITEBYTECODE=1 \
          uv run --no-sync pytest "$literals_test" -q -p no:cacheprovider ) \
       >"$OUT/chk5.log" 2>&1; then
-    git -C "$gr" merge --abort >/dev/null 2>&1 || true
+    abort_merge_unless_resuming "$gr"
     die 4 "CHK5: personal-literals gate failed" "cat $OUT/chk5.log"
   fi
 
   # CHK6 -- verdict shape (only meaningful on a fresh landing; --continue reuses the recorded verdict)
   if [ "$RESUME_ONLY" = "0" ]; then
     if ! py_landing checks --root "$gr" verdict --verdict "$VERDICT" >"$OUT/chk6.log" 2>&1; then
-      git -C "$gr" merge --abort >/dev/null 2>&1 || true
+      abort_merge_unless_resuming "$gr"
       die 4 "CHK6: --verdict rejected" "cat $OUT/chk6.log"
     fi
   fi
@@ -553,14 +590,14 @@ run_merge_and_checks() {
   world=$(py_landing checks --root "$gr" world 2>"$OUT/world.err")
   local world_rc=$?
   if [ "$world_rc" != "0" ]; then
-    git -C "$gr" merge --abort >/dev/null 2>&1 || true
+    abort_merge_unless_resuming "$gr"
     die 4 "world detection: $(cat "$OUT/world.err")" "cat $OUT/world.err"
   fi
 
   # CHK2 / armor, per the detected world -- the LAST check before commit.
   if [ "$world" = "armor_shas" ]; then
     if ! py_landing checks --root "$gr" pins >"$OUT/chk2.log" 2>&1; then
-      git -C "$gr" merge --abort >/dev/null 2>&1 || true
+      abort_merge_unless_resuming "$gr"
       die 4 "CHK2: armor pin check failed" "cat $OUT/chk2.log"
     fi
   else
@@ -627,7 +664,7 @@ run_merge_and_checks() {
         # and then describe a merge that no longer existed (gate r4
         # MAJ-1). On the bootstrap it fires with certainty, so it is the
         # first thing the operator reads.
-        die 4 "WLD2: --remeasure refused BEFORE writing -- $owed OWED, $vacuous VACUOUS, $stale STALE record(s); file intact: $intact. $(tree_state_sentence "$gr") on purpose: make those edits here, then re-run this same command with --continue-merge, and the transcription rides inside the merge commit. To walk away instead: git -C $gr merge --abort" \
+        die 4 "WLD2: --remeasure refused BEFORE writing -- $owed OWED, $vacuous VACUOUS, $stale STALE record(s); file intact: $intact. $(tree_state_sentence "$gr") on purpose: make those edits here, then re-run this same command with --continue-merge, and the transcription rides inside the merge commit. To walk away instead: git -C $gr add -A && git -C $gr merge --abort -- a BARE abort refuses while your edits are unstaged (measured: rc 128, merge still in progress)" \
               "cat $OUT/remeasure.err"
       fi
 
@@ -646,10 +683,7 @@ run_merge_and_checks() {
       # rc 128, after which the old code claimed a restored tree over a
       # merge that was still there. Refreshing the index is the narrow
       # remedy; it touches no content and is not a reset.
-      git -C "$gr" update-index -q --refresh >"$OUT/abort.log" 2>&1 || true
-      git -C "$gr" merge --abort >>"$OUT/abort.log" 2>&1
-      local abort_rc=$?
-      printf 'merge --abort rc=%s\n' "$abort_rc" >>"$OUT/abort.log"
+      abort_merge_unless_resuming "$gr"
       if [ "$remeasure_rc" = "1" ] && [ "$noop" -gt 0 ]; then
         die 4 "WLD2: --remeasure had nothing to advance (the no-op guard); file intact: $intact. $(tree_state_sentence "$gr") -- there is nothing to edit here" \
               "cat $OUT/remeasure.err"
@@ -729,9 +763,13 @@ RESUME_STEP=${RESUME_STEP:-}
 # only over PRE3/PRV2/CHK2/CHK5/SAN3/WLD1/WLD2, never the suites)
 
 if [ "$DRY_RUN" = "0" ] && { [ "$RESUME_ONLY" = "0" ] || [ "$RESUME_STEP" = "suites" ]; }; then
-  # MAJ-3, measured 2026-08-30. The UI suite runs SERIALLY -- there is no
-  # xdist in the UI venv -- and costs ~595 s (406 tests / 369.5 s plus
-  # 909 / 225.0 s); a direct full run did not finish inside 580 s. Against
+  # MAJ-3, measured 2026-08-30 on this host, in the two runs the constraints
+  # require -- a split that is reproducible from what is written here:
+  #     pytest tests/test_js_dom.py                 106 tests, 312.3 s
+  #     pytest tests --ignore=tests/test_js_dom.py 1208 tests, 264.9 s
+  #                                               -----------------------
+  #                                               1314 tests,   577.2 s
+  # The UI suite runs SERIALLY -- there is no xdist in the UI venv. Against
   # the old 600 s budget that is a cliff, not a margin: a machine 1 %
   # slower turns a green suite into a `SUI2` timeout refusal. The CLI
   # suite is ~87 s under `-n auto`, so the budget is set by the UI one.
@@ -784,7 +822,10 @@ if [ "$DRY_RUN" = "0" ] && { [ "$RESUME_ONLY" = "0" ] || [ "$RESUME_STEP" = "sui
     local litter
     litter=$(grep -c '^>' "$OUT/$name.litter" || true)
     printf '%s\n' "$litter" >"$OUT/$name.litter.count"
-    [ "$litter" = "0" ] || echo "land: warning -- the $name suite left $litter new untracked path(s) in the tree (see $OUT/$name.litter)"
+    # NIT-2: the porcelain delta counts CHANGED paths -- new, modified or
+    # deleted -- not only untracked ones. Same class as the STALE
+    # records-versus-lines noun.
+    [ "$litter" = "0" ] || echo "land: warning -- the $name suite left $litter changed path(s) in the tree (see $OUT/$name.litter)"
     return 0
   }
 
@@ -811,7 +852,7 @@ if [ "$DRY_RUN" = "0" ] && { [ "$RESUME_ONLY" = "0" ] || [ "$RESUME_STEP" = "sui
     case "$rc" in
       0) ;;
       124) record_refusal_step suites
-           die 5 "$n suite TIMED OUT after ${SUITE_TIMEOUT}s, leaving $(cat "$OUT/$n.litter.count" 2>/dev/null || echo '?') new untracked path(s) in the tree -- a killed suite does not clean up after itself. See $OUT/$n.log and $OUT/$n.litter" "less $OUT/$n.log" ;;
+           die 5 "$n suite TIMED OUT after ${SUITE_TIMEOUT}s, leaving $(cat "$OUT/$n.litter.count" 2>/dev/null || echo '?') changed path(s) in the tree -- a killed suite does not clean up after itself. See $OUT/$n.log and $OUT/$n.litter" "less $OUT/$n.log" ;;
       2) record_refusal_step suites; die 5 "$n suite COLLECTION ERROR (rc 2) -- NOT a test failure; the allowlist cannot adjudicate it. See $OUT/$n.log" "less $OUT/$n.log" ;;
       5) record_refusal_step suites; die 5 "$n suite collected NO TESTS (rc 5) -- the suite ran but had nothing to adjudicate; an empty run must never read as green (SUI9). See $OUT/$n.log" "less $OUT/$n.log" ;;
       *)
@@ -830,6 +871,14 @@ if [ "$DRY_RUN" = "0" ] && { [ "$RESUME_ONLY" = "0" ] || [ "$RESUME_STEP" = "sui
         fi ;;
     esac
   }
+
+  # MINOR-4, FIXED rather than documented. The suite step is the longest
+  # phase (~11 min) and the one an operator is most likely to interrupt,
+  # and until now an interrupt left NO resumable state -- the step was
+  # recorded only on a refusal. Recording it here means a Ctrl-C leaves a
+  # landing `--continue` picks up at the suites; it is advanced to
+  # `sanitize` once they pass, so a later resume does not redo them.
+  record_refusal_step suites
 
   if [ "$LANE" = "docs" ]; then
     DOC_SET_FILE="$GITROOT/plugins/self-learn/cli/src/self_learn/landing/doc_reading_set.txt"
@@ -862,6 +911,7 @@ if [ "$DRY_RUN" = "0" ] && { [ "$RESUME_ONLY" = "0" ] || [ "$RESUME_STEP" = "sui
     adjudicate_suite cli
     adjudicate_suite ui
   fi
+  record_refusal_step sanitize
 fi
 
 # ---------------------------------------------------------------------------

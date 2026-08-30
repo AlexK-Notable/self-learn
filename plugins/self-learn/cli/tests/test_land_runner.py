@@ -623,26 +623,35 @@ def test_pre7_no_merge_abort_call_anywhere_in_the_precondition_block():
     in the shipped script lives inside run_merge_and_checks(), never in
     the Step-1 precondition block that precedes it."""
     text = LF.LAND.read_text()
-    pre_block, _, _rest = text.partition("run_merge_and_checks() {")
     assert "run_merge_and_checks() {" in text, "structural anchor missing"
 
-    # The property is about CALLS, not mentions. A whole-block substring
-    # test flags a COMMENT that explains why the call is not there --
-    # measured: it did, on the comment documenting that `merge --abort`
-    # can fail. Same mention-versus-use family as UN2.
+    # The property is about what the STEP-1 precondition block EXECUTES.
+    # Two things a substring over "everything above run_merge_and_checks"
+    # gets wrong, both measured: it flags the COMMENT explaining why the
+    # call is absent, and it flags a helper DEFINED above that block and
+    # only ever CALLED from inside the merge.
+    start = text.index("# Step 1 — preconditions")
+    end = text.index("# GITROOT:")
+    step1 = text[start:end]
+    funcs = _shell_functions(text)
+    reachable = _reachable_text(step1, funcs)
+
     def calls(block: str) -> list[str]:
         return [
             ln.strip() for ln in block.split("\n")
             if "merge --abort" in ln and not ln.lstrip().startswith("#")
         ]
 
-    assert calls(pre_block) == [], calls(pre_block)
+    assert calls(reachable) == [], calls(reachable)
 
-    # positive control -- a real call in that block IS reported
-    assert calls(pre_block + '\n  git -C "$ROOT" merge --abort\n')
-    # and the prose the old form tripped on is still there, so this is not
-    # passing because the explanation vanished
-    assert "merge --abort" in pre_block
+    # control 1 -- a direct call in the block IS reported
+    assert calls(_reachable_text(step1 + '\n  git -C "$ROOT" merge --abort\n', funcs))
+    # control 2 -- and so is one reached THROUGH a helper, which a flat
+    # slice of the block alone could not see
+    assert "abort_merge_unless_resuming" in funcs
+    assert calls(_reachable_text(step1 + '\n  abort_merge_unless_resuming "$ROOT"\n', funcs))
+    # the prose the old form tripped on is still in the file
+    assert "merge --abort" in text
 
 
 # ---------------------------------------------------------------------------
@@ -3953,7 +3962,7 @@ def test_exc1_every_stage_boundary_is_explicitly_gated():
         if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=\$\(", s):
             return True                     # a capture; its value is floored
         following = nxt[0] if nxt else ""
-        if "=$?" in following or following in ("return $?", "}"):
+        if "=$?" in following or '"$?"' in following or following in ("return $?", "}"):
             return True
         called = re.findall(r"(?:^|[\s;&|(`])([A-Za-z_][A-Za-z0-9_]*)\b", s)
         return any(c in dying for c in called)
@@ -4607,13 +4616,13 @@ def test_sui2_the_suite_budget_clears_the_measured_ui_cost(tmp_path):
     assert m, "the budget is no longer a single overridable default"
     budget = int(m.group(1))
 
-    MEASURED_UI_SECONDS = 595          # dated above, and in the script
+    MEASURED_UI_SECONDS = 577          # the split above, reproducible
     assert budget >= 3 * MEASURED_UI_SECONDS, (
         f"budget {budget}s is under 3x the measured {MEASURED_UI_SECONDS}s UI cost"
     )
     # the measurement that sets it must be recorded beside it, or the next
     # reader has a number with no provenance
-    assert "595" in text and "369.5" in text and "225.0" in text, (
+    assert "577.2" in text and "312.3" in text and "264.9" in text, (
         "the budget's justifying measurement is not recorded in the script"
     )
     # and it stays overridable, since the attended bootstrap raises it
@@ -4671,3 +4680,82 @@ def test_doc3_the_runbook_command_works_at_bootstrap_time():
     text = LF.LAND.read_text()
     assert 'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"' in text
     assert 'ROOT=$(git rev-parse --path-format=absolute --show-toplevel' in text
+
+
+def test_major1_a_refusing_resume_keeps_the_staged_transcription(tmp_path):
+    """MAJOR-1 (gate r5). `--continue-merge` exists so the merge survives a
+    refusal. A SECOND refusal must not throw away the work the FIRST one
+    asked the operator to do -- measured before this guard: `EDIT
+    SURVIVED: False`, with no message naming the loss, and unstaged edits
+    surviving only by accident. **No test covered a refusing resume.**
+
+    The path here: refuse on the armor leg, make the transcription AND
+    STAGE it, then resume in a state that refuses again for a DIFFERENT
+    reason (CHK4). The staged edit must still be there, the merge must
+    still be in progress, and the refusal must say so.
+    """
+    repo = LF.make_repo(tmp_path, with_ui=True, armor="remeasure")
+    _armor_branch(
+        repo, "u-resume",
+        lambda s: s.replace('STRANDED: tuple[str, ...] = ()',
+                            'STRANDED: tuple[str, ...] = ("repinned",)', 1),
+    )
+    first = LF.run_land(repo, tmp_path, "--branch", "u-resume", "--verdict", "v", timeout=180)
+    assert first.returncode == 4, first.stdout + first.stderr
+    assert assert_message_matches_tree(first.stderr, repo) == "left-uncommitted"
+
+    # the operator does what the message says, and STAGES it
+    armor = repo / "plugins/self-learn/cli/tests/test_armor.py"
+    # A REAL transcription: drop the stranded entry and record why, dated --
+    # what 4.7 requires of an exemption edit anyway. It matters here that the
+    # result differs from BOTH sides of the merge, or the staged diff is
+    # empty and there is nothing to lose.
+    armor.write_text(armor.read_text().replace(
+        'STRANDED: tuple[str, ...] = ("repinned",)',
+        'STRANDED: tuple[str, ...] = ()  # dropped 2026-08-30, no longer owed', 1))
+    LF.git(repo, "add", "--", "plugins/self-learn/cli/tests/test_armor.py")
+    staged_before = LF.git(repo, "diff", "--cached", "--name-only").stdout
+    assert "test_armor.py" in staged_before
+
+    # ... and something else now makes the resume refuse, for a reason
+    # that has nothing to do with the armor edit
+    doc = repo / "docs/specs/self-learn/13-hosting-and-separation.md"
+    doc.write_text(doc.read_text() + "\nstill uncommitted\n")
+
+    second = LF.run_land(repo, tmp_path, "--branch", "u-resume", "--verdict", "v",
+                         "--continue-merge", timeout=180)
+    assert second.returncode == 4, second.stdout + second.stderr
+    assert "CHK4" in second.stderr, second.stderr
+
+    # THE PROPERTY: the merge and the staged transcription both survived
+    assert (repo / ".git" / "MERGE_HEAD").exists(), "the resume aborted the merge"
+    assert 'no longer owed' in armor.read_text(), "the edit was lost"
+    assert "test_armor.py" in LF.git(repo, "diff", "--cached", "--name-only").stdout, (
+        "the STAGED transcription was lost"
+    )
+    # and the refusal SAYS so, rather than leaving the operator to find out
+    assert "your in-merge edits are KEPT" in second.stderr, second.stderr
+
+    # and the loop still closes from there
+    doc.write_text(doc.read_text().replace("\nstill uncommitted\n", ""))
+    third = LF.run_land(repo, tmp_path, "--branch", "u-resume", "--verdict", "v",
+                        "--continue-merge", timeout=180)
+    assert third.returncode == 0, third.stdout + third.stderr
+    committed = LF.git(repo, "show", "HEAD:plugins/self-learn/cli/tests/test_armor.py").stdout
+    assert 'no longer owed' in committed
+
+
+def test_major1_a_FIRST_pass_refusal_still_aborts(tmp_path):
+    """The other direction, so the guard is not just "never abort": without
+    `--continue-merge` a check refusal must still restore the tree, because
+    there is no operator work in it to protect."""
+    repo = LF.make_repo(tmp_path, with_ui=True)
+    head_before = LF.git(repo, "rev-parse", "HEAD").stdout.strip()
+    fw = "docs/specs/self-learn/14-forward-work-map.md"
+    LF.make_branch(repo, "u-dis",
+                   edits={fw: (repo / fw).read_text() + "| FW-1 | out of order | WATCH | n |\n"})
+    r = LF.run_land(repo, tmp_path, "--branch", "u-dis", "--verdict", "v", timeout=180)
+    assert r.returncode == 4, r.stdout + r.stderr
+    assert not (repo / ".git" / "MERGE_HEAD").exists(), "a first-pass refusal left the merge"
+    assert LF.git(repo, "status", "--porcelain").stdout.strip() == ""
+    assert LF.git(repo, "rev-parse", "HEAD").stdout.strip() == head_before
