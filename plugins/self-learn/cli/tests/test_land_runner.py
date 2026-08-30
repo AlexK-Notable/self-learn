@@ -5292,8 +5292,17 @@ def test_the_unit_leaves_masters_suite_green_after_the_prune(tmp_path):
                    check=True, capture_output=True)
     LF.git(clone, "config", "user.email", "t@example.invalid")
     LF.git(clone, "config", "user.name", "T")
+    # Both worlds converge on the same tree. Run from the branch worktree,
+    # the clone still has `origin/u-land` and the landing is simulated; run
+    # from a post-prune master -- which is what master's OWN suite does, and
+    # is the tree this criterion is a claim about -- there is no branch to
+    # merge and the checkout in hand is already the real article. The
+    # control is that those two cases must correspond exactly: a source with
+    # the ref must land, a source without it must not.
+    had_branch = LF.git(clone, "rev-parse", "-q", "--verify", "origin/u-land",
+                        check=False).returncode == 0
     landed = _land_by_hand(clone, LF.THIS_REPO_CLI)
-    assert landed is not None, "the source still has the branch, so it must land"
+    assert (landed is not None) == had_branch, (landed, had_branch)
 
     # the state the prune actually leaves: no ref names this branch
     refs = LF.git(clone, "for-each-ref", "--format=%(refname)").stdout
