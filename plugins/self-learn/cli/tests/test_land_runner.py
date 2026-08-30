@@ -4108,3 +4108,52 @@ def test_the_shape_sweep_cannot_be_satisfied_by_a_string_literal():
         assert _resolve_test(n) is not None, n
     # and none of its registered names is the meta-test that holds the literal
     assert "test_every_a_criterion_is_named_by_a_test" not in names
+
+
+def test_staged_add_refuses_an_add_that_stages_nothing(tmp_path):
+    """MAJOR-1's positive control, driven against the SHIPPED function.
+
+    `git add` exits 0 when it stages nothing, so `staged_add`'s gate is a
+    COUNT. The function's body is lifted out of the script and run against
+    a real repository with a stub `die`, so the assertion is about the
+    shipped code and not about a paraphrase of it.
+
+    Two legs: a pathspec matching no change refuses with the count in the
+    message; a real change stages exactly one path and exits 0.
+    """
+    body = _shell_functions(LF.LAND.read_text())["staged_add"]
+    probe = tmp_path / "probe.sh"
+    probe.write_text(
+        "set -uo pipefail\n"
+        'die() { printf "DIE %s: %s\\n" "$1" "$2" >&2; exit "$1"; }\n'
+        "staged_add() {\n" + body + "\n}\n"
+        'staged_add "$1" "$2" "probe" 9\n'
+    )
+
+    repo = tmp_path / "r"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "master", str(repo)], check=True)
+    LF.git(repo, "config", "user.email", "t@example.invalid")
+    LF.git(repo, "config", "user.name", "T")
+    (repo / "f.md").write_text("one\n")
+    LF.git(repo, "add", "-A")
+    LF.git(repo, "commit", "-q", "-m", "base")
+
+    def run() -> subprocess.CompletedProcess:
+        return subprocess.run(["bash", str(probe), str(repo), "f.md"],
+                              capture_output=True, text=True,
+                              env={**os.environ, "OUT": str(tmp_path)})
+
+    # leg 1: nothing to stage. `git add` itself exits 0 -- measured -- so
+    # only the count can tell this apart from a real add.
+    plain = LF.git(repo, "add", "--", "f.md")
+    assert plain.returncode == 0, plain.stderr
+    refused = run()
+    assert refused.returncode == 9, (refused.stdout, refused.stderr)
+    assert "staged 0 change(s)" in refused.stderr, refused.stderr
+
+    # leg 2: a real change stages exactly one path
+    (repo / "f.md").write_text("one\ntwo\n")
+    ok = run()
+    assert ok.returncode == 0, (ok.stdout, ok.stderr)
+    assert "staged: f.md (1 path)" in ok.stdout, ok.stdout
