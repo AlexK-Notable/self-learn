@@ -1780,12 +1780,16 @@ def test_wld2_owed_refusal_aborts_the_chain_and_commits_nothing(tmp_path):
     )
     r = LF.run_land(repo, tmp_path, "--branch", "u-owed", "--verdict", "v", timeout=180)
     assert r.returncode == 4, r.stdout + r.stderr
-    assert "WLD2: --remeasure refused" in r.stderr
+    # the refusal names the LEG and counts its lines (runbook 5.1)
+    assert "refused BEFORE writing" in r.stderr, r.stderr
+    assert "1 OWED" in r.stderr, r.stderr
+    assert "file intact: yes" in r.stderr, r.stderr
     assert LF.git(repo, "rev-parse", "HEAD").stdout.strip() == head_before
     assert _armor_anchor(repo) == "0000000"
-    # the refusal names the log that carries the OWED: lines
     log = Path(r.stderr.split("cat ")[-1].strip()).read_text()
-    assert "OWED:" in log, log
+    assert log.startswith("OWED: "), log
+    # the trailer carries no bare token, so an anchored match is the contract
+    assert "refusing to write test_armor.py (" in log
 
 
 def test_wld2_noop_anchor_refusal_aborts_the_chain(tmp_path):
@@ -1806,10 +1810,13 @@ def test_wld2_noop_anchor_refusal_aborts_the_chain(tmp_path):
     )
     r = LF.run_land(repo, tmp_path, "--branch", "u-noop", "--verdict", "v", timeout=180)
     assert r.returncode == 4, r.stdout + r.stderr
-    assert "WLD2: --remeasure refused" in r.stderr
+    assert "nothing to advance (the no-op guard)" in r.stderr, r.stderr
+    # the no-op is POST-write: the contract promises byte-IDENTICAL, and the
+    # runner verifies that rather than trusting it
+    assert "file intact: yes" in r.stderr, r.stderr
     assert LF.git(repo, "rev-parse", "HEAD").stdout.strip() == head_before
     log = Path(r.stderr.split("cat ")[-1].strip()).read_text()
-    assert "ANCHOR did not change" in log, log
+    assert log.startswith("ANCHOR did not change ("), log
 
 
 def test_arm5_is_a_post_commit_property_and_the_runner_never_runs_it_early(tmp_path):
@@ -3676,3 +3683,178 @@ def test_exc1_every_stage_boundary_is_explicitly_gated():
     probe = _logical_statements('py_landing state --root x check\necho next\n')
     assert [(ln, s) for ln, s, nxt in probe
             if re.match(r"^\s*py_landing ", s) and not gated(s, nxt)]
+
+
+# ---------------------------------------------------------------------------
+# The four-leg `--remeasure` refusal contract (runbook §5.1)
+#
+# Implemented against that PROSE, not against test_armor.py -- which is what
+# the section exists for. All four legs, both parse traps, and the
+# unmodelled case that must never be read as either success or a known
+# refusal.
+
+
+def _armor_branch(repo: Path, name: str, edit) -> None:
+    """A branch that mutates the fixture's armor stand-in in place."""
+    src = repo / "plugins/self-learn/cli/tests/test_armor.py"
+    LF.git(repo, "checkout", "-q", "-b", name)
+    src.write_text(edit(src.read_text()))
+    LF.git(repo, "add", "-A")
+    LF.git(repo, "commit", "-q", "-m", f"branch {name}")
+    LF.git(repo, "checkout", "-q", "master")
+
+
+def test_wld2_vacuous_leg_aborts_the_chain(tmp_path):
+    """`VACUOUS:` -- an exemption entry the new anchor no longer owes. A
+    pre-write leg: the file is byte-unchanged and nothing is committed.
+
+    The entry shapes deliberately include the two the contract calls traps:
+    a `new_stmt_keys` entry containing a `|`, and a `missing` entry whose
+    node key contains its own `:`. The runner must not split on either.
+    """
+    repo = LF.make_repo(tmp_path, with_ui=True, armor="remeasure")
+    head_before = LF.git(repo, "rev-parse", "HEAD").stdout.strip()
+    _armor_branch(
+        repo, "u-vacuous",
+        lambda s: s.replace(
+            'STRANDED: tuple[str, ...] = ()',
+            'STRANDED: tuple[str, ...] = (\n'
+            '    "repinned",\n'
+            '    "missing:assign:REWRITTEN",\n'
+            '    "new_stmt_keys:assign|SESSION_ID",\n'
+            ')', 1),
+    )
+    r = LF.run_land(repo, tmp_path, "--branch", "u-vacuous", "--verdict", "v", timeout=180)
+    assert r.returncode == 4, r.stdout + r.stderr
+    assert "refused BEFORE writing" in r.stderr, r.stderr
+    assert "3 VACUOUS" in r.stderr, r.stderr
+    assert "file intact: yes" in r.stderr, r.stderr
+    assert LF.git(repo, "rev-parse", "HEAD").stdout.strip() == head_before
+
+    log = Path(r.stderr.split("cat ")[-1].strip()).read_text()
+    lines = [l for l in log.split("\n") if l.startswith("VACUOUS: ")]
+    assert len(lines) == 3, log
+
+    # the contract's parse rule: split(": ", 2), never on ':' or '|'
+    parsed = [l.split(": ", 2) for l in lines]
+    assert all(len(p) == 3 for p in parsed), parsed
+    entries = [p[2] for p in parsed]
+    assert "repinned" in entries                      # bare, no suffix
+    assert "missing:assign:REWRITTEN" in entries      # three colon parts
+    assert "new_stmt_keys:assign|SESSION_ID" in entries  # contains a pipe
+    # and the naive splits the contract warns about would both mangle it
+    assert "new_stmt_keys:assign|SESSION_ID".split("|")[0] != "new_stmt_keys:assign|SESSION_ID"
+    assert len("missing:assign:REWRITTEN".split(":")) == 3
+
+
+def test_wld2_stale_leg_aborts_the_chain(tmp_path):
+    """`STALE:` -- a transcribed MEASURED literal the new anchor
+    invalidates. A three-line record whose third line pastes verbatim into
+    the row's `value=`."""
+    repo = LF.make_repo(tmp_path, with_ui=True, armor="remeasure")
+    head_before = LF.git(repo, "rev-parse", "HEAD").stdout.strip()
+    _armor_branch(
+        repo, "u-stale",
+        lambda s: s.replace(
+            "MEASURED: dict[str, str] = {}",
+            "MEASURED: dict[str, str] = {'nodes': '99'}", 1),
+    )
+    r = LF.run_land(repo, tmp_path, "--branch", "u-stale", "--verdict", "v", timeout=180)
+    assert r.returncode == 4, r.stdout + r.stderr
+    assert "refused BEFORE writing" in r.stderr, r.stderr
+    assert "1 STALE" in r.stderr, r.stderr
+    assert LF.git(repo, "rev-parse", "HEAD").stdout.strip() == head_before
+
+    log = Path(r.stderr.split("cat ")[-1].strip()).read_text()
+    stale = [l for l in log.split("\n") if l.startswith("STALE: ")]
+    assert len(stale) == 3, log        # the record is always three lines
+    assert "MEASURED['nodes']" in stale[0]
+    # both values are python reprs; the shipped one is the row's literal
+    # verbatim, so `99` (a repr of an int), not a quoted string
+    assert "shipped value: 99" in stale[1], stale[1]
+    assert "value at " in stale[2]
+    # the third line's value pastes straight into that row's `value=`
+    pasted = stale[2].split(": ", 2)[2]
+    assert pasted.isdigit(), pasted
+    assert pasted != "99", "the fixture's shipped value is not actually stale"
+
+
+def test_wld2_three_pre_write_legs_can_fire_together(tmp_path):
+    """The contract says the three pre-write legs "can appear together in
+    one run -- a landing behind a sibling unit routinely produces two or
+    three at once". A runner that stopped at the first token would report
+    one of three and send its operator round the loop twice more."""
+    repo = LF.make_repo(tmp_path, with_ui=True, armor="remeasure")
+    def edit(s: str) -> str:
+        s = s.replace('STRANDED: tuple[str, ...] = ()',
+                      'STRANDED: tuple[str, ...] = ("repinned",)', 1)
+        s = s.replace("MEASURED: dict[str, str] = {}",
+                      "MEASURED: dict[str, str] = {'nodes': '99'}", 1)
+        return s
+    _armor_branch(repo, "u-all3", edit)
+    # and an OWED one too: edit the watched node's body on the same branch
+    LF.git(repo, "checkout", "-q", "u-all3")
+    w = repo / "plugins/self-learn/cli/tests/test_watched.py"
+    w.write_text(w.read_text().replace("(2 + 2) == 4", "(2 + 2) == 5 - 1", 1))
+    LF.git(repo, "add", "-A")
+    LF.git(repo, "commit", "-q", "-m", "and an owed node")
+    LF.git(repo, "checkout", "-q", "master")
+
+    r = LF.run_land(repo, tmp_path, "--branch", "u-all3", "--verdict", "v", timeout=180)
+    assert r.returncode == 4, r.stdout + r.stderr
+    assert "1 OWED" in r.stderr and "1 VACUOUS" in r.stderr and "1 STALE" in r.stderr, r.stderr
+    log = Path(r.stderr.split("cat ")[-1].strip()).read_text()
+    assert any(l.startswith("OWED: ") for l in log.split("\n"))
+    assert any(l.startswith("VACUOUS: ") for l in log.split("\n"))
+    assert any(l.startswith("STALE: ") for l in log.split("\n"))
+
+
+def test_wld2_an_unmodelled_failure_is_not_read_as_a_known_refusal(tmp_path):
+    """The contract's last clause: "rc 1 with none of these -- an unmodelled
+    failure; do not proceed." A runner that treated every non-zero as a
+    known refusal would report the wrong cause and, worse, a runner that
+    treated a non-1 rc as success would proceed on a run that modelled
+    nothing."""
+    repo = LF.make_repo(tmp_path, with_ui=True, armor="remeasure")
+    head_before = LF.git(repo, "rev-parse", "HEAD").stdout.strip()
+    _armor_branch(
+        repo, "u-unmodelled",
+        # exits 3 with a diagnostic that carries none of the four tokens
+        lambda s: s.replace(
+            "    old = ANCHOR\n",
+            '    old = ANCHOR\n'
+            '    print("something went wrong in a way this contract does not model",\n'
+            '          file=sys.stderr)\n'
+            '    raise SystemExit(3)\n', 1),
+    )
+    r = LF.run_land(repo, tmp_path, "--branch", "u-unmodelled", "--verdict", "v", timeout=180)
+    assert r.returncode == 4, r.stdout + r.stderr
+    assert "UNMODELLED" in r.stderr, r.stderr
+    assert "rc=3" in r.stderr, r.stderr
+    assert "refused BEFORE writing" not in r.stderr
+    assert "no-op guard" not in r.stderr
+    assert LF.git(repo, "rev-parse", "HEAD").stdout.strip() == head_before
+
+
+def test_wld2_success_asserts_the_streams_the_contract_promises(tmp_path):
+    """Success: rc 0, stdout EMPTY, stderr exactly the advance line, and the
+    file actually changed. The runner asserts all four, because a success
+    that talked on the wrong stream is a contract change it must not ride
+    over silently."""
+    repo = LF.make_repo(tmp_path, with_ui=True, armor="remeasure")
+    tip = LF.git(repo, "rev-parse", "--short=7", "HEAD").stdout.strip()
+    LF.make_branch(
+        repo, "u-ok",
+        edits={"plugins/self-learn/cli/tests/test_gamma.py": "def test_g():\n    assert True\n"},
+    )
+    r = LF.run_land(repo, tmp_path, "--branch", "u-ok", "--verdict", "v", timeout=180)
+    assert r.returncode == 0, r.stdout + r.stderr
+    logs = Path(r.stdout.split("logs=")[-1].strip())
+    assert (logs / "remeasure.out").read_text() == "", "stdout was not empty"
+    err = (logs / "remeasure.err").read_text().strip().split("\n")
+    assert len(err) == 1, err
+    assert err[0] == f"ANCHOR 0000000 -> {tip}", err
+    assert _armor_anchor(repo) == tip
+
+    # and the staged-add positive control fired
+    assert "staged: plugins/self-learn/cli/tests/test_armor.py (1 path)" in r.stdout, r.stdout

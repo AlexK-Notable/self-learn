@@ -58,6 +58,27 @@ need_nonempty_file() {
   printf '%s' "$n"
 }
 
+# MAJOR-1 (gate r3). `git add` exits 0 when it stages NOTHING -- a pathspec
+# that matched no change, a path already identical to HEAD. So an exit-code
+# gate cannot tell "added" from "added nothing", and the two `git add`s in
+# this script were ungated entirely. If the armor one silently added
+# nothing, the merge commit would ship WITHOUT the new anchor while the
+# working-tree suite still passed: incident 2's shape exactly.
+#
+# The gate is therefore a COUNT that reads differently if the add did not
+# happen, not an exit code.
+staged_add() {
+  local gr=$1 rel=$2 what=$3 code=${4:-4}
+  git -C "$gr" add -- "$rel" \
+    || die "$code" "$what: git add failed for $rel" "git -C $gr status"
+  local n
+  n=$(git -C "$gr" diff --cached --name-only -- "$rel" | grep -c . || true)
+  [ "$n" = "1" ] \
+    || die "$code" "$what: git add exited 0 but staged $n change(s) for $rel -- an add that stages nothing is not an add" \
+            "git -C $gr status --porcelain -- $rel"
+  printf 'staged: %s (%s path)\n' "$rel" "$n"
+}
+
 need_dir() {
   local path=$1 what=$2 code=${3:-2}
   [ -d "$path" ] || die "$code" "$what: required directory is ABSENT: $path" "ls -l $(dirname "$path")"
@@ -388,7 +409,7 @@ run_merge_and_checks() {
         git -C "$gr" merge --abort >/dev/null 2>&1 || true
         die 3 "resolver '$name' refused on $path" "cat $OUT/resolvers.log"
       fi
-      git -C "$gr" add -- "$path"
+      staged_add "$gr" "$path" "resolver '$name'" 3
     done
   fi
 
@@ -482,12 +503,76 @@ run_merge_and_checks() {
     need_file "$armor_test" "WLD2 (armor re-measure)" 4
     local anchor
     anchor=$(git -C "$gr" rev-parse --short=7 HEAD)
-    if ! ( cd "$PROJECT" && uv run --no-sync python3 "$armor_test" --remeasure --anchor "$anchor" ) \
-        >"$OUT/remeasure.log" 2>&1; then
+
+    # The four-leg refusal contract, per 15-orchestration-runbook.md 5.1 --
+    # implemented against that prose, which exists so a runner need not read
+    # test_armor.py. Its terms, and what each one costs to get wrong:
+    #   * stdout is ALWAYS empty, success and refusal alike; every
+    #     diagnostic is on stderr. So the two streams are captured
+    #     SEPARATELY -- merging them would throw away the one invariant
+    #     that distinguishes "said nothing" from "said it on the wrong
+    #     stream".
+    #   * rc 0 = success (stderr is exactly `ANCHOR <old7> -> <new7>`).
+    #   * rc 1 carrying a START-OF-LINE token is a modelled refusal:
+    #     `OWED: `, `VACUOUS: `, `STALE: ` (pre-write, file byte-unchanged,
+    #     and they can appear TOGETHER in one run) or
+    #     `ANCHOR did not change (` (post-write, byte-identical).
+    #   * anything else -- rc 2 from argparse, a raised git failure, or an
+    #     rc 1 with none of the tokens -- is UNMODELLED. Do not proceed.
+    # The tokens are matched anchored (`^TOKEN`), as the contract states;
+    # the trailer is deliberately written to contain no bare token, so an
+    # unanchored match would also work today, but the anchored form is what
+    # is promised.
+    local armor_sha_before
+    armor_sha_before=$(sha256sum "$armor_test" | cut -d" " -f1)
+    ( cd "$PROJECT" && uv run --no-sync python3 "$armor_test" --remeasure --anchor "$anchor" ) \
+      >"$OUT/remeasure.out" 2>"$OUT/remeasure.err"
+    local remeasure_rc=$?
+    local armor_sha_after
+    armor_sha_after=$(sha256sum "$armor_test" | cut -d" " -f1)
+    cat "$OUT/remeasure.out" "$OUT/remeasure.err" >"$OUT/remeasure.log"
+
+    local owed vacuous stale noop stdout_bytes
+    owed=$(grep -c "^OWED: " "$OUT/remeasure.err" || true)
+    vacuous=$(grep -c "^VACUOUS: " "$OUT/remeasure.err" || true)
+    # `STALE:` is a THREE-line RECORD (the row, its shipped value, its
+    # value at the new anchor), so counting lines would report 3 where an
+    # operator has 1 row to transcribe. Count the record's first line.
+    stale=$(grep -cE "^STALE: .*MEASURED\[" "$OUT/remeasure.err" || true)
+    noop=$(grep -c "^ANCHOR did not change (" "$OUT/remeasure.err" || true)
+    stdout_bytes=$(wc -c <"$OUT/remeasure.out" | tr -d " ")
+
+    if [ "$remeasure_rc" != "0" ]; then
       git -C "$gr" merge --abort >/dev/null 2>&1 || true
-      die 4 "WLD2: --remeasure refused" "cat $OUT/remeasure.log"
+      # The contract promises the file is byte-unchanged on the three
+      # pre-write legs and byte-identical on the no-op. Verify rather than
+      # trust: a refusal that MOVED the file is not a state this runner
+      # knows how to leave behind.
+      local intact="yes"
+      [ "$armor_sha_before" = "$armor_sha_after" ] || intact="NO"
+      if [ "$remeasure_rc" = "1" ] && [ $((owed + vacuous + stale)) -gt 0 ]; then
+        die 4 "WLD2: --remeasure refused BEFORE writing -- $owed OWED, $vacuous VACUOUS, $stale STALE line(s); file intact: $intact. Fix each inside this still-uncommitted merge, then re-run" \
+              "cat $OUT/remeasure.err"
+      fi
+      if [ "$remeasure_rc" = "1" ] && [ "$noop" -gt 0 ]; then
+        die 4 "WLD2: --remeasure had nothing to advance (the no-op guard); file intact: $intact" \
+              "cat $OUT/remeasure.err"
+      fi
+      die 4 "WLD2: --remeasure failed UNMODELLED (rc=$remeasure_rc, no OWED/VACUOUS/STALE/no-op token on stderr, stdout $stdout_bytes bytes) -- refusing rather than guessing what it did" \
+            "cat $OUT/remeasure.err"
     fi
-    git -C "$gr" add -- plugins/self-learn/cli/tests/test_armor.py
+
+    # Success. The contract says stdout is empty and stderr is exactly the
+    # one advance line; both are asserted, because a success that talked on
+    # the wrong stream is a contract change this runner must not ride over.
+    [ "$stdout_bytes" = "0" ] \
+      || die 4 "WLD2: --remeasure succeeded but wrote $stdout_bytes byte(s) to STDOUT; the contract says stdout is always empty" "cat $OUT/remeasure.out"
+    grep -qE "^ANCHOR [0-9a-f]{7} -> $anchor\$" "$OUT/remeasure.err" \
+      || die 4 "WLD2: --remeasure exited 0 but stderr is not the expected 'ANCHOR <old> -> $anchor' line" "cat $OUT/remeasure.err"
+    [ "$armor_sha_before" != "$armor_sha_after" ] \
+      || die 4 "WLD2: --remeasure exited 0 but left test_armor.py byte-identical -- the anchor did not actually advance" "cat $OUT/remeasure.err"
+
+    staged_add "$gr" plugins/self-learn/cli/tests/test_armor.py "WLD2 (armor re-measure)" 4
     # The rewritten module must be the one the POST-COMMIT suite imports.
     # Measured 2026-08-29: `--remeasure` swaps one 7-char anchor literal
     # for another, so the file's SIZE does not change; CPython invalidates

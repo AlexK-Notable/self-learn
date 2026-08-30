@@ -91,8 +91,15 @@ from pathlib import Path
 
 ANCHOR = "@@ANCHOR@@"
 WATCHED = "plugins/self-learn/cli/tests/test_watched.py"
-#: dated, anchored exemption entries -- node names the census may differ on.
+#: dated, anchored exemption entries -- node keys the census may differ on.
 EXEMPT: tuple[str, ...] = ()
+#: entries the CURRENT anchor no longer owes; the VACUOUS: leg reports these.
+#: Deliberately a plain tuple of `<door>:<opaque>` strings, so the stand-in
+#: exercises the shapes a caller must parse without splitting on ':' or '|'.
+STRANDED: tuple[str, ...] = ()
+#: transcribed literals the new anchor would invalidate; STALE: reports these
+#: as the contract's THREE-line record.
+MEASURED: dict[str, str] = {}
 
 _REPO_ROOT = Path(
     subprocess.run(
@@ -108,7 +115,7 @@ def _census(source: str) -> dict[str, str]:
         name = getattr(node, "name", None)
         if name is None:
             continue
-        out[name] = hashlib.sha256(ast.dump(node).encode()).hexdigest()
+        out["func:" + name] = hashlib.sha256(ast.dump(node).encode()).hexdigest()
     return out
 
 
@@ -128,15 +135,43 @@ def _owed(new_anchor: str) -> list[str]:
     return [o for o in owed if o.split(":", 1)[1] not in EXEMPT]
 
 
+def _stale(new_anchor: str) -> list[tuple[str, str, str]]:
+    """(row, shipped repr, value-at-new-anchor repr) for every MEASURED row
+    the new anchor invalidates."""
+    a = _at(new_anchor)
+    out = []
+    for row, shipped in MEASURED.items():
+        actual = repr(len(a)) if row == "nodes" else repr(sorted(a)[:1])
+        if actual != shipped:
+            out.append((row, shipped, actual))
+    return out
+
+
 def _remeasure(new_anchor: str) -> int:
+    """The four-leg contract of 15-orchestration-runbook.md 5.1: every
+    diagnostic on STDERR, stdout always empty, rc 1 for every modelled
+    refusal, and the three pre-write legs may fire TOGETHER."""
     old = ANCHOR
     owed = _owed(new_anchor)
-    if owed:
-        for o in owed:
-            print("OWED: " + WATCHED + ": " + o, file=sys.stderr)
+    stale = _stale(new_anchor)
+    refused = False
+    for o in owed:
+        print("OWED: " + WATCHED + ": " + o, file=sys.stderr)
+        refused = True
+    for entry in STRANDED:
+        print("VACUOUS: " + WATCHED + ": " + entry, file=sys.stderr)
+        refused = True
+    for row, shipped, actual in stale:
+        print("STALE: " + WATCHED + ": MEASURED[" + repr(row) + "] (scope=anchor)",
+              file=sys.stderr)
+        print("STALE:       shipped value: " + shipped, file=sys.stderr)
+        print("STALE:   value at " + new_anchor + ": " + actual, file=sys.stderr)
+        refused = True
+    if refused:
+        # the trailer carries NO bare token, exactly as the contract requires
         print(
-            "refusing to write test_armor.py -- the above nodes are owed a "
-            "dated, anchored exemption entry naming a spec section first",
+            "refusing to write test_armor.py (the report above names what to "
+            "edit inside this still-uncommitted merge, then re-run)",
             file=sys.stderr,
         )
         return 1
@@ -150,7 +185,7 @@ def _remeasure(new_anchor: str) -> int:
     if new_anchor == old:
         print(
             "ANCHOR did not change (" + old + " -> " + new_anchor + ") -- the "
-            "landing chain's &&-chain must abort here (the no-op guard)",
+            "landing chain\'s &&-chain must abort here (the no-op guard)",
             file=sys.stderr,
         )
         return 1
@@ -159,7 +194,7 @@ def _remeasure(new_anchor: str) -> int:
 
 
 def test_fixture_arm5_anchor_is_not_stale():
-    """ARM5's shape. RED until this landing's merge commit exists, GREEN
+    """ARM5\'s shape. RED until this landing\'s merge commit exists, GREEN
     the moment it does -- which is exactly why `land` must run no armor
     test between `--remeasure` and `git commit`."""
     merge = subprocess.run(
