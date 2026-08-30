@@ -19,6 +19,20 @@ Three kinds, one anchor:
   in ``Behaviour.missing`` / ``.edited`` / ``.edited_exports``
   (``B1``-``B7``, section 4.5).
 
+A second table, ``MEASURED``, holds the literals ``BEH5``/``BEH7``/
+``EXM3`` check the ``ARMOR`` table against. They are anchor-scoped, so
+every landing invalidates them, and ``--remeasure`` never rewrites one:
+it REFUSES to advance the anchor while any is stale and prints what to
+transcribe (``ANC1``-``ANC6``, U-anchorlit). That buys two things and
+no more. First, the motion stops at a NAMED refusal before anything is
+written -- before this door existed the anchor advanced and the suite
+went red afterwards, with assertions naming nothing about the anchor
+(measured 2026-08-29: ``2 failed, 39 passed``). Second, the literals
+change only through a deliberate, dated, justified edit -- the same
+posture section 4.7 already requires of an exemption entry. The author
+of that edit is whoever performs the landing; an AGENT is a sanctioned
+author here, exactly as for an exemption entry (``e59534b``).
+
 ``ANCHOR`` is the first-parent PARENT of the most recent first-parent
 merge on ``master`` (section 4.2) -- never the merge itself. It is
 advanced only by the landing chain's ``--remeasure`` step, which
@@ -42,9 +56,10 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import types
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Mapping
+from typing import Callable, Mapping
 
 import pytest
 
@@ -101,7 +116,7 @@ def _git_show_text(rev: str, key: str) -> str:
 # anchor is byte-identical to what the spec measured at `fe5a012`
 # (`= 3b8e037`'s child). The landing chain rewrites this via
 # `--remeasure`, never a human (section 4.2).
-ANCHOR = "6815503"
+ANCHOR = "a768696"
 
 
 # ===================================================================== #
@@ -280,39 +295,13 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
         nodes=58, dump_sha="3c920c0066c5f9db54b2a243a4714d331822cba6e82c6e029d8add6c6f4c7a5f"
     ),
     "test_u_fake.py": Behaviour(
-        nodes=45, dump_sha="e8655e2be8863fc8d10edbd993edb65633d5e82c80ec79e5625e3bf2a7da9df5",
-        # DS1's own migration source -- fourteen anchor-era nodes this
-        # build itself removes (section 4.7 row 12). The one place the
-        # anchor->HEAD diff genuinely owes a `missing` entry. Reasons
-        # below are grouped by role (r1 gate fold, N-4: distinct
-        # citations, not one boilerplate string repeated 14 times).
-        missing={
-            # DS1's own head-side bookkeeping tables -- migrated INTO
-            # this Behaviour census, which tracks the same information
-            # anchor-side (`nodes`/`dump_sha`/`missing`/`edited`) instead.
-            "assign:REWRITTEN": "2026-08-28 §4.7 row 12: DS1's head-side rewrite-tracking table, superseded by this row's own nodes/dump_sha/missing/edited fields.",
-            "assign:DS1_REMOVED": "2026-08-28 §4.7 row 12: DS1's head-side removed-symbols table, superseded by this row's own `missing` field.",
-            "assign:DS1_ADDED": "2026-08-28 §4.7 row 12: DS1's head-side added-symbols table, superseded by this row's own `edited` field (adding is free, BEH2).",
-            "assign:_DS1_EXPECTED": "2026-08-28 §4.7 row 12: DS1's hand-maintained expected-census literal, superseded by the node census's own live `nodes`/`dump_sha` computation.",
-            # The Freeze-1 extractor and its base-commit plumbing (DS-d,
-            # spec section 3.6's own account) -- DS1's mechanism for
-            # reading base-commit content and reconstructing pre-rename
-            # names, superseded by `_anchor_census`/`_git_show_text`.
-            "assign:BASE_REF": "2026-08-28 §4.7 row 12 / DS-d: the base commit DS1 diffed against, superseded by `ANCHOR` (section 4.2).",
-            "func:_git_show_base": "2026-08-28 §4.7 row 12 / DS-d: DS1's base-commit content reader, superseded by `_git_show_text`/`_anchor_text`.",
-            "func:_inverse_rename": "2026-08-28 §4.7 row 12 / DS-d: DS1's pre-rename NAME reconstructor (Freeze-1), superseded by the node census reading real anchor-side source directly.",
-            "func:_inverse_rename_text": "2026-08-28 §4.7 row 12 / DS-d: DS1's pre-rename TEXT reconstructor (Freeze-1), superseded the same way as `_inverse_rename`.",
-            "func:_extract_guarded_functions": "2026-08-28 §4.7 row 12 / DS-d: DS1's guarded-function-body extractor, superseded by `_census`'s own per-node AST walk.",
-            "func:_extract_named_function": "2026-08-28 §4.7 row 12 / DS-d: DS1's single-named-function extractor, superseded the same way as `_extract_guarded_functions`.",
-            # DS1/DS2's own four census-assertion tests -- the invariant
-            # each checked (count/sha exactness over base/head/rewritten
-            # sets) is now BEH1/BEH3/BEH8/BEH9's job, over ALL eight
-            # Behaviour files, not just this one.
-            "func:test_ds1_t3_function_bodies_survive_the_inverse_rename": "2026-08-28 §4.7 row 12 / DEL2: DS1's function-body-survives-rename assertion, superseded by BEH3 (dump identity, node-wide).",
-            "func:test_ds2_rewritten_set_is_exact_and_every_entry_is_live": "2026-08-28 §4.7 row 12 / DEL2: DS2's REWRITTEN-set-is-exact assertion, superseded by BEH1/BEH9 (missing/edited-set exactness, node-wide).",
-            "func:test_ds1b_removed_set_is_exact_and_every_entry_is_base_only": "2026-08-28 §4.7 row 12 / DEL2: DS1b's REMOVED-set-is-exact assertion, superseded by BEH1/BEH8 (missing-set exactness and its anti-rot leg).",
-            "func:test_ds1c_added_set_is_exact_and_every_entry_is_head_only": "2026-08-28 §4.7 row 12 / DEL2: DS1c's ADDED-set-is-exact assertion, superseded by BEH2 (adding is free, positive control).",
-        },
+        nodes=31, dump_sha="4fbcee5f5481c7a339d32fe303760e5ea8a024e647cb2c1a82795da70c942f46",
+        # 2026-08-30, ANCHOR a768696: the fourteen DS1-era `missing`
+        # doors that lived here were dropped as VACUOUS by this
+        # landing's own refusal -- u-armor's retirement is now at or
+        # behind the anchor, so those nodes are absent ANCHOR-side
+        # rather than missing at HEAD (section 4.7 FW-140's fold rule).
+        missing={},
     ),
 }
 
@@ -568,6 +557,320 @@ def _exm1_check(reason: str) -> tuple[bool, str]:
     if not section_hit and hex_tokens and not any(_resolves_as_commit(h) for h in hex_tokens):
         return False, f"hex anchor {hex_tokens} does not resolve as a commit (git cat-file -e)"
     return True, ""
+
+
+# ===================================================================== #
+# The MEASURED literals -- section 4.6's exemption discipline, extended
+# to the NUMBERS the landing's author writes down (`ANC1`-`ANC6`,
+# U-anchorlit).
+#
+# Two kinds of literal live in this module, and the difference between
+# them is WHO WRITES THEM -- not which is the stronger check:
+#
+# * `ARMOR`'s `Behaviour.nodes`/`.dump_sha` are written by
+#   `--remeasure`, silently, as part of every landing.
+# * The values below are never written by `--remeasure` (`ANC3` is the
+#   leg that holds this). They change only when the landing's author
+#   edits this table deliberately, having been shown the old value
+#   beside the new one, and re-dates the row's `reason`.
+#
+# WHAT THAT SEPARATION BUYS -- stated exactly, because the tempting
+# stronger claim is false and was corrected here on 2026-08-29. It is
+# NOT an independent measurement, and it is NOT corroboration against a
+# drifted extractor: the author transcribes the numbers this module's
+# own refusal printed, and that printout comes from the SAME `_census`
+# that fills the `ARMOR` table. Copying one tool's output into a second
+# location does not check that tool. What it does deliver is two
+# things, both real:
+#
+#   1. A REFUSAL AGAINST SILENT STALENESS. An anchor-scoped literal
+#      goes stale the instant `ANCHOR` advances, which every landing
+#      does. `--remeasure` measures every row below at the NEW anchor
+#      BEFORE it writes anything and stops, naming each stale row and
+#      printing its shipped value beside its newly measured one --
+#      exactly as it already refuses an unexempted `OWED:` node
+#      (section 4.2's check-then-write order). Before this door, the
+#      write went through and the suite went red AFTERWARDS. Measured
+#      2026-08-29 in a throwaway clone carrying a synthetic landing
+#      merge: a SUCCESSFUL `--remeasure` advanced `ANCHOR`
+#      `6815503 -> a768696` and left the armor suite at `2 failed, 39
+#      passed` (`BEH7` at `('test_u_fake.py', 31, 45)`, `EXM3` at
+#      `assign:REWRITTEN`), with two assertion failures that named
+#      nothing about the anchor. Nothing had landed since `u-armor`
+#      shipped, which is the only reason it had not bitten yet.
+#   2. A DATED AUDIT TRAIL. Each value changes only through a
+#      deliberate, recorded act carrying a date and an anchor -- the
+#      same discipline section 4.6/4.7 already require of every
+#      exemption entry, and the same reviewability at the gate.
+#
+# WHO MAY WRITE THESE VALUES: the author of the landing, whoever that
+# is. An AGENT performing the landing is a sanctioned author, exactly
+# as for an exemption entry -- `e59534b` landed agent-written exemption
+# entries with dated justifications, and that was correct. The
+# discipline requires the change to be deliberate, attributed and
+# dated; it does not require a person at a keyboard. What it forbids is
+# `--remeasure` doing it as a side effect, because that would remove
+# the refusal (1) and the record (2) in one move.
+#
+# `scope` says what a row is a function of, so a reader can tell at a
+# glance which rows an anchor advance can move:
+#   `anchor`       -- the anchor side alone.
+#   `anchor+head`  -- the anchor->HEAD diff; either side moves it.
+#   `head`         -- a FIXED historical rev against HEAD. An anchor
+#                     advance can NEVER move one of these; a landing
+#                     that edits a protected file can.
+#
+# `BEH7`'s OTHER half -- the `_census` -> `{}` monkeypatch control -- is
+# deliberately NOT in this table. It is anchor-INDEPENDENT, never goes
+# stale, and is the leg that actually proves the extractor can fail.
+# Only the measured half is anchor-scoped, and the two must not be
+# confused: an anchor advance is allowed to invalidate the numbers, and
+# is never allowed to invalidate the control.
+# ===================================================================== #
+
+_SCOPE_ANCHOR = "anchor"
+_SCOPE_ANCHOR_HEAD = "anchor+head"
+_SCOPE_HEAD = "head"
+_SCOPES: tuple[str, ...] = (_SCOPE_ANCHOR, _SCOPE_ANCHOR_HEAD, _SCOPE_HEAD)
+
+#: The retired anchor `BEH1`/`BEH3`/`EXM3` still drive their
+#: not-vacuous positive controls from (one of section 4.2's three
+#: retired anchors, which `ARM4` forbids `ANCHOR` from ever becoming
+#: again). Fixed history: it is never advanced, which is exactly why
+#: the rows measured against it are `head`-scoped, not `anchor`-scoped.
+_RETIRED_ANCHOR_CONTROL = "c3b48e7"
+
+#: Non-`ANCHOR` revs, memoized per (rev, key). `ANCHOR` itself keeps
+#: using `_ANCHOR_CENSUS_CACHE`, untouched, so `BEH7`'s monkeypatch
+#: control still poisons and drops exactly the one entry it always did.
+_REV_CENSUS_CACHE: dict[tuple[str, str], dict[str, str]] = {}
+
+
+def _census_at(rev: str, key: str) -> dict[str, str]:
+    """The node census of one Behaviour file at `rev`. Routes through
+    the session cache when `rev` IS the shipped `ANCHOR` -- the common
+    case, and the path `BEH7`'s monkeypatch control already drives; a
+    `--remeasure` run's NEW anchor, and the retired control anchor, are
+    read and memoized separately."""
+    if rev == ANCHOR:
+        return _anchor_census(key)
+    cache_key = (rev, key)
+    if cache_key not in _REV_CENSUS_CACHE:
+        _REV_CENSUS_CACHE[cache_key] = _census(_git_show_text(rev, key))
+    return _REV_CENSUS_CACHE[cache_key]
+
+
+def _measure_node_counts(anchor: str) -> tuple[int, ...]:
+    """`BEH7`'s per-file top-level node counts, in `BEHAVIOUR_KEYS`
+    order."""
+    return tuple(len(_census_at(anchor, k)) for k in BEHAVIOUR_KEYS)
+
+
+def _measure_dump_prefixes(anchor: str) -> tuple[str, ...]:
+    """`BEH7`'s eight 12-character `dump_sha` prefixes."""
+    return tuple(_dump_sha(_census_at(anchor, k))[:12] for k in BEHAVIOUR_KEYS)
+
+
+def _measure_node_total(anchor: str) -> int:
+    return sum(_measure_node_counts(anchor))
+
+
+def _measure_export_counts(anchor: str) -> tuple[int, ...]:
+    """`BEH5`'s per-file exported-name counts, `anchor_set | head_set`.
+    Anchor-scoped even though half the union is head-side: measured
+    2026-08-29, the same union reads `(4, 5, 6, 10, 0, 4, 2, 0)` at
+    `6815503`/`a768696`/`15fb676`/`3b8e037` and `(4, 6, 7, 10, 0, 5, 2,
+    0)` at `c3b48e7`, so the anchor genuinely moves it -- it has simply
+    not moved across the four most recent anchors, which is how this
+    row survived two independent hunts for anchor-scoped literals."""
+    anchor_side = _exported_names_one_side(anchor)
+    head_side = _exported_names_one_side(None)
+    return tuple(len(anchor_side[k] | head_side[k]) for k in BEHAVIOUR_KEYS)
+
+
+def _measure_export_total(anchor: str) -> int:
+    return sum(_measure_export_counts(anchor))
+
+
+def _measure_diff_totals(anchor: str) -> tuple[int, int]:
+    """`(missing, edited)` summed over every Behaviour file, `anchor`
+    against HEAD -- the shared core `EXM3`'s own census totals and the
+    retired-anchor controls both read."""
+    missing_total = 0
+    edited_total = 0
+    for key in BEHAVIOUR_KEYS:
+        missing, edited = _diff_maps(_census_at(anchor, key), _head_census(key))
+        missing_total += len(missing)
+        edited_total += len(edited)
+    return missing_total, edited_total
+
+
+def _measure_census_missing(anchor: str) -> int:
+    return _measure_diff_totals(anchor)[0]
+
+
+def _measure_census_edited(anchor: str) -> int:
+    return _measure_diff_totals(anchor)[1]
+
+
+def _measure_control_missing(_anchor: str) -> int:
+    """`BEH1`/`EXM3`'s not-vacuous control. `_anchor` is ignored BY
+    CONSTRUCTION -- this row reads the retired control anchor, which is
+    why its `scope` is `head`."""
+    return _measure_diff_totals(_RETIRED_ANCHOR_CONTROL)[0]
+
+
+def _measure_control_edited(_anchor: str) -> int:
+    """`BEH3`/`EXM3`'s not-vacuous control. See `_measure_control_
+    missing` on the ignored parameter."""
+    return _measure_diff_totals(_RETIRED_ANCHOR_CONTROL)[1]
+
+
+@dataclass(frozen=True)
+class Measured:
+    """One transcribed measurement, with the recomputation that proves
+    it. `value` is what the landing's author wrote down (an agent is a
+    sanctioned author here, exactly as for an exemption entry --
+    `e59534b`); `measure(anchor)` recomputes it live at `anchor`;
+    `reason` carries the same dated, cited grammar `EXM1` requires of
+    every exemption reason (section 4.6).
+
+    `--remeasure` may READ `measure`; it may never WRITE `value`
+    (`ANC3`). Not because the transcribed number is an independent
+    check on the extractor -- it is not, it is copied from this same
+    code's own printout (see the section header) -- but because a tool
+    that rewrote it would remove both the refusal that stops a stale
+    landing and the dated record of the change."""
+
+    value: object
+    scope: str
+    reason: str
+    measure: Callable[[str], object]
+
+
+MEASURED: dict[str, Measured] = {
+    "BEH7.node_counts": Measured(
+        value=(94, 139, 80, 85, 68, 58, 58, 31),
+        scope=_SCOPE_ANCHOR,
+        reason=(
+            "2026-08-30 §4.5/§2.10, transcribed at ANCHOR a768696 from this "
+            "module's own STALE refusal (u-anchorlit's landing): per-file "
+            "top-level node counts, in BEHAVIOUR_KEYS order. Was "
+            "(..., 45) at 6815503; test_u_fake.py drops to 31 because "
+            "u-armor's DS1 retirement is now at or behind the anchor, so "
+            "those 14 nodes are absent anchor-side rather than missing."
+        ),
+        measure=_measure_node_counts,
+    ),
+    "BEH7.dump_prefixes": Measured(
+        value=(
+            "eb90005324f7", "2517577cbfc3", "16e45a867ece", "f7d067023480",
+            "124dcc0dd69f", "5bb83e2da3fe", "3c920c0066c5", "4fbcee5f5481",
+        ),
+        scope=_SCOPE_ANCHOR,
+        reason=(
+            "2026-08-30 §4.5/§2.10, transcribed at ANCHOR a768696 from this "
+            "module's own STALE refusal: the first 12 characters of each "
+            "file's normalized-dump sha256, in BEHAVIOUR_KEYS order. Only "
+            "test_u_fake.py's prefix moves, with its node count."
+        ),
+        measure=_measure_dump_prefixes,
+    ),
+    "BEH7.node_total": Measured(
+        value=613,
+        scope=_SCOPE_ANCHOR,
+        reason=(
+            "2026-08-30 §4.5/§2.10, transcribed at ANCHOR a768696 from this "
+            "module's own STALE refusal: the sum of BEH7.node_counts, "
+            "carried separately so a transcription that drops or "
+            "duplicates one file reddens on the total too. 627 -> 613 is "
+            "exactly the 14 test_u_fake.py nodes now absent anchor-side."
+        ),
+        measure=_measure_node_total,
+    ),
+    "BEH5.export_counts": Measured(
+        value=(4, 5, 6, 10, 0, 4, 2, 0),
+        scope=_SCOPE_ANCHOR_HEAD,
+        reason=(
+            "2026-08-28 §4.5/`B5`, transcribed at ANCHOR 6815503: per-file "
+            "exported-name counts, anchor_set | head_set, derived with "
+            "ast.ImportFrom (never a line regex). Scope CORRECTED 2026-08-29 "
+            "from `anchor` (gate r1 Minor 1): the union reads BOTH sides, so "
+            "a head-only edit moves it -- measured `(4, 5, 6, ...)` -> "
+            "`(4, 5, 7, ...)` with the anchor untouched. `ANC8` now derives "
+            "every scope label instead of trusting one."
+        ),
+        measure=_measure_export_counts,
+    ),
+    "BEH5.export_total": Measured(
+        value=31,
+        scope=_SCOPE_ANCHOR_HEAD,
+        reason=(
+            "2026-08-28 §4.5/`B5`, transcribed at ANCHOR 6815503: the sum of "
+            "BEH5.export_counts. Scope CORRECTED 2026-08-29 with it (gate r1 "
+            "Minor 1) -- measured 31 -> 32 on the same head-only edit."
+        ),
+        measure=_measure_export_total,
+    ),
+    "EXM3.census_missing": Measured(
+        value=0,
+        scope=_SCOPE_ANCHOR_HEAD,
+        reason=(
+            "2026-08-30 §4.7 row 12, transcribed at ANCHOR a768696 from this "
+            "module's own STALE refusal: anchor nodes absent at HEAD, "
+            "summed over every Behaviour file. 14 -> 0 because u-armor's "
+            "DS1 retirement is now at or behind the anchor: those nodes no "
+            "longer exist anchor-side, so nothing is absent at HEAD and the "
+            "14 `missing` doors became VACUOUS and were dropped with it."
+        ),
+        measure=_measure_census_missing,
+    ),
+    "EXM3.census_edited": Measured(
+        value=0,
+        scope=_SCOPE_ANCHOR_HEAD,
+        reason=(
+            "2026-08-28 §4.1's fold note, measured by hand at ANCHOR "
+            "6815503: anchor nodes whose dump differs at HEAD, summed over "
+            "every Behaviour file. Zero because the one historical `edited` "
+            "entry (test_wr7) is now INSIDE the anchor."
+        ),
+        measure=_measure_census_edited,
+    ),
+    "BEH1.control_missing": Measured(
+        value=66,
+        scope=_SCOPE_HEAD,
+        reason=(
+            "2026-08-28 §4.7 row 12, measured by hand against the RETIRED "
+            "anchor c3b48e7 (never advanced): the not-vacuous control for "
+            "BEH1 and EXM3. Re-measured from the spec-gate-era 56 by "
+            "u-armor's own test_u_fake.py deletions."
+        ),
+        measure=_measure_control_missing,
+    ),
+    "BEH3.control_edited": Measured(
+        value=184,
+        scope=_SCOPE_HEAD,
+        reason=(
+            "2026-08-28 §4.7 row 12, measured by hand against the RETIRED "
+            "anchor c3b48e7 (never advanced): the not-vacuous control for "
+            "BEH3 and EXM3. Re-measured from the spec-gate-era 190, same "
+            "cause as BEH1.control_missing."
+        ),
+        measure=_measure_control_edited,
+    ),
+}
+
+
+def _module_relpath() -> str:
+    """This module's repo-relative path, for the refusal output. Falls
+    back to the bare filename rather than ever printing an absolute
+    path (the scratch copies `ARM6`/`ANC1` exec live inside the repo,
+    so the relative form normally resolves)."""
+    p = Path(__file__).resolve()
+    try:
+        return p.relative_to(_REPO_ROOT).as_posix()
+    except ValueError:
+        return p.name
 
 
 # ===================================================================== #
@@ -940,6 +1243,315 @@ def _compute_owed(new_anchor: str) -> dict[str, list[str]]:
     return owed
 
 
+# ===================================================================== #
+# The vacuity model -- WHICH fields of WHICH `ARMOR` row types carry
+# anchor-diff state, derived from the row types themselves rather than
+# from a hand-written list (`ANC7`, gate r1 MAJOR-1).
+#
+# The first version of `_compute_vacuous` enumerated three families by
+# hand -- `Behaviour.missing`, `Behaviour.edited`, `Fixture.repinned` --
+# and silently omitted `Additive`'s three anchor-diff sets, which is the
+# one file the design explicitly lets GROW. The gate demonstrated it end
+# to end: declare `new_funcs={"_gate_probe"}` (ADD1 green), land it, and
+# `--remeasure` returns rc 0 with zero `VACUOUS:` lines while `ADD1` goes
+# RED on `set() != {'_gate_probe'}` -- the pre-fix symptom verbatim,
+# inside the unit built to eliminate it.
+#
+# Appending a fourth entry to that list would leave a fifth free to slip
+# through the same way. This unit exists because anchor-derived state
+# was hand-maintained and could silently go stale; its own coverage list
+# had exactly that defect. So the walk below is driven by
+# `dataclasses.fields()` over each row's ACTUAL type, and a row type or
+# a field that no rule covers raises `SystemExit` -- the landing chain
+# aborts loudly instead of passing silently. An unmodellable field is an
+# EXPLICIT, dated, cited exclusion that `ANC7` asserts is still the
+# complete exclusion set: the same discipline section 4.6/4.7 already
+# apply to an exemption entry.
+# ===================================================================== #
+
+
+@dataclass(frozen=True)
+class _VacuityRule:
+    """How `_compute_vacuous` treats ONE field of one `ARMOR` row type.
+    Exactly one of the two is set, and `ANC7` asserts it: `check`
+    returns the field entries `new_anchor` no longer owes, or
+    `excluded_reason` says -- dated and cited, `EXM1` grammar -- why
+    the field carries no anchor-diff state at all."""
+
+    check: Callable[[str, str, object], list[str]] | None = None
+    excluded_reason: str | None = None
+
+
+def _full_sha(rev: str) -> str:
+    """The 40-character sha for `rev`. Used by the refusal tests to
+    name the SAME commit as `ANCHOR` with a DIFFERENT literal, so a
+    render genuinely changes content and the byte-identity legs
+    actually pin atomicity (gate r1 Minor 3)."""
+    return subprocess.run(
+        ["git", "rev-parse", rev], cwd=_REPO_ROOT,
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+
+
+def _additive_func_names(source: str) -> set[str]:
+    """`ADD1` leg 2's own set: top-level `FunctionDef` names. Kept
+    identical to the leg (not `_top_level_def_names`, which also counts
+    `AsyncFunctionDef`) so vacuity and the leg agree by construction."""
+    return {n.name for n in ast.parse(source).body if isinstance(n, ast.FunctionDef)}
+
+
+def _additive_scenario_keys(source: str) -> set:
+    """`SCENARIOS`' literal key set, read from the AST. `ADD1` leg 3
+    reads the same set from the IMPORTED module; `ANC7` asserts the two
+    agree on the shipped file, so this cheaper path never has to be
+    taken on faith -- and `--remeasure` never has to import a fixture."""
+    node = _find_scenarios_assign(ast.parse(source))
+    dict_node = node.value
+    assert isinstance(dict_node, ast.Dict)
+    return {k.value for k in dict_node.keys if isinstance(k, ast.Constant)}
+
+
+def _additive_stmt_keys(source: str) -> set:
+    """`ADD1` leg 4's own key set: every top-level non-`FunctionDef`
+    statement except the `SCENARIOS` assignment."""
+    tree = ast.parse(source)
+    scen = _find_scenarios_assign(tree)
+    return {
+        _additive_stmt_key(n) for n in tree.body
+        if not isinstance(n, ast.FunctionDef) and n is not scen
+    }
+
+
+def _vac_missing(new_anchor: str, key: str, row) -> list[str]:
+    missing, _edited = _diff_maps(_census_at(new_anchor, key), _head_census(key))
+    return [f"missing:{k}" for k in row.missing if k not in missing]
+
+
+def _vac_edited(new_anchor: str, key: str, row) -> list[str]:
+    _missing, edited = _diff_maps(_census_at(new_anchor, key), _head_census(key))
+    return [f"edited:{k}" for k in row.edited if k not in edited]
+
+
+def _vac_edited_exports(new_anchor: str, key: str, row) -> list[str]:
+    """`BEH5`'s door: an entry is owed only while the exported def's
+    SOURCE actually differs between the anchor and head. If it is
+    identical again -- or the name has gone from either side -- the
+    entry exempts nothing."""
+    if not row.edited_exports:
+        return []
+    anchor_src = _git_show_text(new_anchor, key)
+    head_src = _head_text(key)
+    anchor_defs = _top_level_def_names(anchor_src)
+    head_defs = _top_level_def_names(head_src)
+    gone = []
+    for name in row.edited_exports:
+        if name not in anchor_defs or name not in head_defs:
+            gone.append(f"edited_exports:{name}")
+        elif _exported_def_source(key, name, anchor_src) == _exported_def_source(key, name, head_src):
+            gone.append(f"edited_exports:{name}")
+    return gone
+
+
+def _vac_repinned(new_anchor: str, key: str, row) -> list[str]:
+    if row.repinned is None:
+        return []
+    anchor_sha = hashlib.sha256(_git_show_bytes(new_anchor, key)).hexdigest()
+    if hashlib.sha256(_head_bytes(key)).hexdigest() == anchor_sha:
+        return ["repinned"]
+    return []
+
+
+def _vac_new_funcs(new_anchor: str, key: str, row) -> list[str]:
+    if not row.new_funcs:
+        return []
+    added = _additive_func_names(_head_text(key)) - _additive_func_names(_git_show_text(new_anchor, key))
+    return [f"new_funcs:{n}" for n in row.new_funcs if n not in added]
+
+
+def _vac_new_scenario_keys(new_anchor: str, key: str, row) -> list[str]:
+    if not row.new_scenario_keys:
+        return []
+    added = _additive_scenario_keys(_head_text(key)) - _additive_scenario_keys(_git_show_text(new_anchor, key))
+    return [f"new_scenario_keys:{k}" for k in row.new_scenario_keys if k not in added]
+
+
+def _vacuous_stmt_token(stmt_key) -> str:
+    """One `new_stmt_keys` entry rendered as a single WHITESPACE-FREE
+    token, `|`-joined (`ANC6`; gate r2 MINOR-2).
+
+    `_additive_stmt_key` returns nested tuples, and two of its five
+    kinds carry whitespace once flattened naively -- measured
+    2026-08-30: `("import", ("os", "sys"))` renders `import|('os',
+    'sys')` and the `("other", ast.dump(node))` fallback renders the
+    whole dump. Either breaks the `\\S+` token shape §5.1 publishes
+    and `_VACUOUS_RE` enforces, which is exactly the trap publishing
+    the seven shapes was meant to remove. Nested tuples are flattened
+    to their leaves; a leaf that carries whitespace is replaced by the
+    first 12 hex of its sha256, which stays deterministic and greppable
+    without ever being parsed."""
+    parts: list[str] = []
+
+    def _walk(part) -> None:
+        if isinstance(part, tuple):
+            for inner in part:
+                _walk(inner)
+            return
+        text = str(part)
+        parts.append(
+            text if text and not any(c.isspace() for c in text)
+            else hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
+        )
+
+    _walk(stmt_key)
+    return "|".join(parts)
+
+
+def _vac_new_stmt_keys(new_anchor: str, key: str, row) -> list[str]:
+    if not row.new_stmt_keys:
+        return []
+    added = _additive_stmt_keys(_head_text(key)) - _additive_stmt_keys(_git_show_text(new_anchor, key))
+    return [
+        "new_stmt_keys:" + _vacuous_stmt_token(k)
+        for k in row.new_stmt_keys if tuple(k) not in added
+    ]
+
+
+#: One rule per FIELD of every `ARMOR` row type. `ANC7` asserts this
+#: covers `dataclasses.fields()` of each type EXACTLY -- no field
+#: unmodelled, no rule for a field that no longer exists.
+VACUITY_MODEL: dict[str, dict[str, _VacuityRule]] = {
+    "Fixture": {
+        "repinned": _VacuityRule(check=_vac_repinned),
+    },
+    "Additive": {
+        "edited_funcs": _VacuityRule(
+            excluded_reason=(
+                "2026-08-30 §4.4, ANCHOR 6815503: excluded because these entries "
+                "must NOT be dropped even when ADD1 leg 1 owes them nothing -- "
+                "EXM3 pins the set exactly and ADD3 pins _scenario_error_result's "
+                "sha, so auto-dropping one would redden both. Corrected from an "
+                "earlier reason claiming the field 'cannot become vacuous by an "
+                "anchor advance' (gate r2 NIT-1): it is structurally an "
+                "anchor-diff artifact -- leg 1's base IS the anchor and this map "
+                "is its skip set -- and is measured already in the owed-nothing "
+                "state, fake_claude.py being byte-identical anchor to HEAD "
+                "(d665829a96906f2a both sides, 2026-08-30). The exclusion is "
+                "right; only its stated ground was wrong."
+            )
+        ),
+        "new_funcs": _VacuityRule(check=_vac_new_funcs),
+        "new_scenario_keys": _VacuityRule(check=_vac_new_scenario_keys),
+        "new_stmt_keys": _VacuityRule(check=_vac_new_stmt_keys),
+    },
+    "Behaviour": {
+        "nodes": _VacuityRule(
+            excluded_reason=(
+                "2026-08-29 §4.2, ANCHOR 6815503: written BY `--remeasure` at "
+                "the new anchor in the same run, so it is never left behind. "
+                "`ARM2` checks it against a live census; there is no entry here "
+                "that could be owed nothing."
+            )
+        ),
+        "dump_sha": _VacuityRule(
+            excluded_reason=(
+                "2026-08-29 §4.2, ANCHOR 6815503: same as `nodes` -- rewritten "
+                "by the run itself, not an exemption entry."
+            )
+        ),
+        "missing": _VacuityRule(check=_vac_missing),
+        "edited": _VacuityRule(check=_vac_edited),
+        "edited_exports": _VacuityRule(check=_vac_edited_exports),
+    },
+}
+
+
+def _compute_vacuous(new_anchor: str) -> dict[str, list[str]]:
+    """Every SHIPPED exemption entry that `new_anchor` no longer owes
+    (`ANC5`) -- section 4.7's own fold rule (`FW-140`): "every
+    accumulated ... entry whose subject node is now INSIDE the new
+    anchor becomes vacuous and must be dropped". `_compute_owed` is
+    the other direction (nodes owed an entry that does not exist);
+    this is entries that exist and are owed nothing.
+
+    Both directions have to be refused for the same reason: `EXM3`'s
+    `shipped == census` leg, `FIX2`'s anti-rot leg and `ADD1`'s legs
+    2-4 are what go RED on a vacuous entry, and an advance that leaves
+    one behind is the same silent-red landing `ANC1` closes for the
+    measured literals. Measured 2026-08-29 in a throwaway clone: the
+    fourteen `test_u_fake.py` `missing` entries all become vacuous the
+    instant `ANCHOR` reaches `a768696`, and `EXM3` fails on the first
+    of them (`assign:REWRITTEN`) before it ever reaches its own
+    transcribed totals.
+
+    The walk is STRUCTURAL (gate r1 MAJOR-1): every field of every row,
+    dispatched through `VACUITY_MODEL`, with an unmodelled row type or
+    field raising `SystemExit` rather than passing silently. See that
+    table's own header for why an enumerated list was the wrong shape
+    here specifically.
+
+    ONE EXCEPTION to that claim, stated because "the walk raises on
+    anything unmodelled" is this unit's headline (gate r2 NIT-3). The
+    dispatch key is `type(row).__name__`, so a DIFFERENT class that
+    happens to share a name -- say a second `Behaviour` carrying a
+    SUBSET of the fields -- finds the existing rules, has a rule for
+    every field it does have, and returns `{}` silently instead of
+    raising. Nothing here catches it. `ANC7` leg 1 does: it asserts
+    `set(rules) == {f.name for f in dataclasses.fields(row)}` for every
+    shipped row, so the surplus rules make the mismatch loud in the
+    suite even though the CLI would not. Contained, not absent -- and
+    the containment lives in a test, not in this function."""
+    dead: dict[str, list[str]] = {}
+    for key, row in ARMOR.items():
+        type_name = type(row).__name__
+        rules = VACUITY_MODEL.get(type_name)
+        if rules is None:
+            raise SystemExit(
+                f"vacuity model has no rules for ARMOR row type {type_name!r} "
+                f"(key {key!r}) -- add them to VACUITY_MODEL, with a dated, "
+                "cited `excluded_reason` for any field that carries no "
+                "anchor-diff state (section 4.6's grammar, ANC7)"
+            )
+        gone: list[str] = []
+        for field in dataclasses.fields(row):
+            rule = rules.get(field.name)
+            if rule is None:
+                raise SystemExit(
+                    f"vacuity model has no rule for {type_name}.{field.name} "
+                    f"(key {key!r}) -- every field must be either checked or "
+                    "given a dated, cited `excluded_reason` (ANC7)"
+                )
+            if rule.check is not None:
+                gone.extend(rule.check(new_anchor, key, row))
+        if gone:
+            dead[key] = gone
+    return dead
+
+
+def _compute_stale(new_anchor: str) -> list[tuple[str, object, object]]:
+    """Every `MEASURED` row whose live value at `new_anchor` differs
+    from the value this module ships -- `(name, shipped, live)`,
+    `ANC1`. Computed BEFORE anything is written, exactly like
+    `_compute_owed` (section 4.2's check-then-write order, and for the
+    same reason: under write-then-check the anchor literal is already
+    advanced on disk when the refusal fires, and the no-op guard
+    deadlocks the chain on the re-run).
+
+    `--remeasure` reads these rows and never writes one. The reason
+    is NOT that the shipped value is an independent measurement -- it
+    is transcribed from this same code's own printout -- but that a
+    silent rewrite would delete the refusal itself: nothing would ever
+    be reported stale, the anchor would advance unannounced, and the
+    dated record of the change would be gone. So the refusal prints
+    what the landing's author must transcribe, in the same posture the
+    `OWED:` leg already takes for an exemption entry."""
+    stale: list[tuple[str, object, object]] = []
+    for name, row in MEASURED.items():
+        live = row.measure(new_anchor)
+        if live != row.value:
+            stale.append((name, row.value, live))
+    return stale
+
+
 def _render_module(new_anchor: str) -> str:
     """Render the WHOLE module with `ANCHOR` and every `Behaviour`
     row's `nodes`/`dump_sha` recomputed at `new_anchor`. Exemption maps
@@ -973,15 +1585,48 @@ def _remeasure(argv: list[str]) -> int:
     new_anchor = args.anchor
     old_anchor = ANCHOR
 
+    # Three refusal legs, all computed BEFORE anything is written and
+    # all reported in ONE run, so the author transcribes once instead of
+    # discovering the next leg on the next attempt (section 4.2's
+    # check-then-write order; `ARM6` drives the whole loop end to end).
     owed = _compute_owed(new_anchor)
-    if owed:
+    vacuous = _compute_vacuous(new_anchor)
+    stale = _compute_stale(new_anchor)
+    if owed or vacuous or stale:
+        relpath = _module_relpath()
         for key, entries in owed.items():
             for e in entries:
                 print(f"OWED: {key}: {e}", file=sys.stderr)
+        for key, entries in vacuous.items():
+            for e in entries:
+                print(f"VACUOUS: {key}: {e}", file=sys.stderr)
+        for name, shipped, live in stale:
+            print(f"STALE: {relpath}: MEASURED[{name!r}] (scope={MEASURED[name].scope})", file=sys.stderr)
+            print(f"STALE:       shipped value: {shipped!r}", file=sys.stderr)
+            print(f"STALE:   value at {new_anchor}: {live!r}", file=sys.stderr)
+        # The trailer deliberately spells NO bare `OWED:`/`VACUOUS:`/
+        # `STALE:` token (note the article-and-space forms below), so a
+        # caller's unanchored substring match on a token still matches
+        # only real report lines. An earlier draft did spell them out,
+        # which made `"OWED:" not in stderr` false for every refusal --
+        # caught by this unit's own first test run, and now pinned by
+        # `ANC6` and by the runbook §5 contract table.
         print(
-            "refusing to write test_armor.py -- the above nodes are owed a "
-            "dated, anchored exemption entry naming a spec section first "
-            "(see docs/specs/self-learn/15-orchestration-runbook.md §1.4a)",
+            f"refusing to write test_armor.py ({relpath}) -- NOTHING was "
+            "written and the file is byte-unchanged. Fix every line above, "
+            "then re-run this exact command.\n"
+            "  An OWED line   -- that node needs a dated, anchored exemption "
+            "entry naming a spec section (Behaviour.missing / .edited).\n"
+            "  A VACUOUS line -- the new anchor owes that entry nothing; DROP "
+            "it (section 4.7 FW-140's fold rule).\n"
+            "  A STALE line   -- copy the printed 'value at' into that "
+            "MEASURED row's `value=` and re-date its `reason`. --remeasure "
+            "never writes a MEASURED value: rewriting it silently would "
+            "remove this refusal and the dated record of the change. The "
+            "landing's author writes it -- an agent is a sanctioned author "
+            "here, exactly as for an exemption entry.\n"
+            "(see docs/specs/self-learn/15-orchestration-runbook.md §5 for "
+            "the full refusal contract, and §1.4a for the gate's own review)",
             file=sys.stderr,
         )
         return 1
@@ -1002,15 +1647,6 @@ def _remeasure(argv: list[str]) -> int:
         return 1
     print(f"ANCHOR {old_anchor} -> {new_anchor}", file=sys.stderr)
     return 0
-
-
-if __name__ == "__main__":
-    if "--remeasure" in sys.argv[1:]:
-        raise SystemExit(_remeasure(sys.argv[1:]))
-    raise SystemExit(
-        "test_armor.py has no standalone CLI mode other than --remeasure "
-        "(ARM6's refused-CLI-mode leg) -- run it under pytest."
-    )
 
 
 # ======================================================================= #
@@ -1246,15 +1882,47 @@ def test_arm5_anchor_is_not_stale():
     assert count_form.isdigit()
 
 
-def test_arm6_refusal_writes_nothing():
-    """`ARM6`. A refusing `--remeasure` leaves the file byte-identical
-    (sha256 before == after); a subsequent run with the owed entry
-    written succeeds AND the `ANCHOR` literal changes in that run.
-    Positive control: a clean census rewrites the file (sha differs) and
-    exits 0. Also: plain CLI invocation with no `--remeasure` refuses."""
-    import shutil
-    import tempfile
+def _scratch_armor_namespace(scratch_dir: Path, mod_name: str) -> tuple[Path, dict]:
+    """`(scratch_module_path, namespace)` -- a COPY of this module
+    exec'd in an isolated namespace whose `__file__` points at a
+    throwaway file INSIDE the repo tree, so the copy's own
+    `_REPO_ROOT` computation (`git rev-parse --show-toplevel` from
+    `Path(__file__).parent`) still resolves.
 
+    Every `--remeasure` drive in this file goes through here: the real
+    `test_armor.py`, the real `ARMOR` and the real `MEASURED` are
+    never touched by a test. `ARM6` grew this pattern; `ANC1`/`ANC5`
+    reuse it (r1 U-anchorlit fold: it was three inline copies)."""
+    scratch_module = scratch_dir / "test_armor.py"
+    shutil.copyfile(Path(__file__), scratch_module)
+    scratch_mod = types.ModuleType(mod_name)
+    scratch_mod.__file__ = str(scratch_module)
+    sys.modules[mod_name] = scratch_mod
+    ns = scratch_mod.__dict__
+    code = compile(scratch_module.read_text(encoding="utf-8"), str(scratch_module), "exec")
+    try:
+        exec(code, ns)
+    finally:
+        del sys.modules[mod_name]
+    return scratch_module, ns
+
+
+def test_arm6_refusal_writes_nothing(capsys):
+    """`ARM6`. A refusing `--remeasure` leaves the file byte-identical
+    (sha256 before == after); a subsequent run with everything the
+    refusal named written succeeds AND the `ANCHOR` literal changes in
+    that run. Positive control: a clean census rewrites the file (sha
+    differs) and exits 0. Also: plain CLI invocation with no
+    `--remeasure` refuses.
+
+    "Everything the refusal named" now includes the `MEASURED` rows
+    the advance invalidates (`ANC1`, U-anchorlit), so this test is the
+    landing bootstrap in miniature -- refuse, transcribe by hand,
+    re-run, succeed -- driven in-process against a scratch copy at a
+    FIXED historical anchor (`15fb676`), which no later landing can
+    invalidate. The transcription happens in the SCRATCH namespace
+    only; `ANC3` is the leg proving `--remeasure` itself never writes
+    a `MEASURED` value into the file."""
     real_module = Path(__file__)
 
     # In-process leg: exec a SCRATCH COPY of this module's text in an
@@ -1263,30 +1931,9 @@ def test_arm6_refusal_writes_nothing():
     # `--remeasure` against `15fb676` (one merge stale) is a real anchor
     # the spec's own census measures as owing 5 unexempted `edited`
     # entries (section 2.10) -- a genuine owed set, not a synthetic one.
-    # The scratch copy is placed INSIDE the repo tree (not a bare
-    # tempdir) so its own `_REPO_ROOT` computation (`git rev-parse
-    # --show-toplevel` from `Path(__file__).parent`) still resolves.
     scratch_dir = Path(tempfile.mkdtemp(dir=str(_REPO_ROOT)))
     try:
-        scratch_module = scratch_dir / "test_armor.py"
-        shutil.copyfile(real_module, scratch_module)
-        # Corrupt: pick test_composer.py's dump_sha and flip a character,
-        # so this MODULE's own head-side text (unedited) reads `edited`
-        # for that key relative to a fresh remeasure -- but since head
-        # equals anchor for real content, we instead force the owed set
-        # by pointing the remeasure at a KNOWN-DIFFERENT historical
-        # anchor (`15fb676`), which the spec's own census measures as
-        # owing 5 edited entries with zero exemptions recorded.
-        import types
-        scratch_mod = types.ModuleType("_armor_scratch")
-        scratch_mod.__file__ = str(scratch_module)
-        sys.modules["_armor_scratch"] = scratch_mod
-        ns = scratch_mod.__dict__
-        code = compile(scratch_module.read_text(encoding="utf-8"), str(scratch_module), "exec")
-        try:
-            exec(code, ns)
-        finally:
-            del sys.modules["_armor_scratch"]
+        scratch_module, ns = _scratch_armor_namespace(scratch_dir, "_armor_scratch")
 
         owed = ns["_compute_owed"]("15fb676")
         assert owed, "expected 15fb676 to owe at least one unexempted node (section 2.10: 5 edited)"
@@ -1320,12 +1967,43 @@ def test_arm6_refusal_writes_nothing():
         owed2 = ns["_compute_owed"]("15fb676")
         assert owed2 == {}, owed2
 
+        # ... and transcribe every `MEASURED` row the advance
+        # invalidates, exactly as the landing's author copies the printed
+        # `value at 15fb676:` into `value=`. Asserted non-empty first:
+        # if the advance stopped invalidating anything, this leg would
+        # be silently vacuous and the bootstrap unproven.
+        stale = ns["_compute_stale"]("15fb676")
+        assert stale, "expected 15fb676 to invalidate at least one MEASURED row"
+        transcribed = dict(ns["MEASURED"])
+        for name, _shipped, live in stale:
+            transcribed[name] = dataclasses.replace(transcribed[name], value=live)
+        ns["MEASURED"] = transcribed
+        assert ns["_compute_stale"]("15fb676") == []
+        assert ns["_compute_vacuous"]("15fb676") == {}
+
+        capsys.readouterr()
         anchor_before_run2 = ns["ANCHOR"]
         rc2 = ns["_remeasure"](["--remeasure", "--anchor", "15fb676"])
+        cap2 = capsys.readouterr()
         assert rc2 == 0
+
+        # The rc-0 success shape, for the runbook §5 contract table
+        # (`ANC6` pins the three refusal legs; this is the fourth
+        # outcome, and the only one `ANC6` cannot cheaply reach).
+        assert cap2.out == "", cap2.out
+        success_lines = [ln for ln in cap2.err.splitlines() if ln.strip()]
+        assert len(success_lines) == 1, success_lines
+        assert success_lines[0] == f"ANCHOR {anchor_before_run2} -> 15fb676", success_lines
+        assert _SUCCESS_RE.match(success_lines[0]), success_lines[0]
         new_text = scratch_module.read_text(encoding="utf-8")
         assert 'ANCHOR = "15fb676"' in new_text
         assert anchor_before_run2 != "15fb676"
+
+        # The written file carries the NEW anchor and the NEW Behaviour
+        # rows -- and the SAME `MEASURED` block it started with, because
+        # `--remeasure` never authors one (`ANC3`). The transcription
+        # above lived in the namespace, never in the rendered text.
+        assert _measured_block(new_text) == _measured_block(real_module.read_text(encoding="utf-8"))
 
         # Positive control: a clean run against a genuinely new anchor
         # with nothing owed rewrites the file (sha differs from a fresh
@@ -1832,7 +2510,7 @@ def test_beh1_no_node_is_deleted_or_renamed():
         h = _head_census(key)
         missing = [k for k in a if k not in h]
         total_missing_c3b48e7 += len(missing)
-    assert total_missing_c3b48e7 == 66, total_missing_c3b48e7
+    assert total_missing_c3b48e7 == MEASURED["BEH1.control_missing"].value, total_missing_c3b48e7
 
     for key in BEHAVIOUR_KEYS:
         row = ARMOR[key]
@@ -1911,7 +2589,7 @@ def test_beh3_no_protected_node_is_edited():
         h = _head_census(key)
         edited = [k for k in a if k in h and h[k] != a[k]]
         total_edited_c3b48e7 += len(edited)
-    assert total_edited_c3b48e7 == 184, total_edited_c3b48e7
+    assert total_edited_c3b48e7 == MEASURED["BEH3.control_edited"].value, total_edited_c3b48e7
 
     for key in BEHAVIOUR_KEYS:
         row = ARMOR[key]
@@ -2054,8 +2732,15 @@ def test_beh5_exported_fixtures_are_byte_pinned():
     discriminate between the correct and the broken derivation."""
     union = _exported_names_union()
     counts = {k: len(v) for k, v in union.items()}
-    assert [counts[k] for k in BEHAVIOUR_KEYS] == [4, 5, 6, 10, 0, 4, 2, 0], counts
-    assert sum(counts.values()) == 31
+    # Anchor-SCOPED literals, transcribed, sourced from `MEASURED`
+    # (U-anchorlit): `_exported_names_union` reads the ANCHOR side, so
+    # these move when the anchor does -- measured at `c3b48e7` they read
+    # `(4, 6, 7, 10, 0, 5, 2, 0)` / 34. `--remeasure` refuses to advance
+    # `ANCHOR` past a stale value here rather than rewriting it (`ANC1`/
+    # `ANC3`); the multi-line-import positive control below is
+    # anchor-INDEPENDENT and never goes stale.
+    assert [counts[k] for k in BEHAVIOUR_KEYS] == list(MEASURED["BEH5.export_counts"].value), counts
+    assert sum(counts.values()) == MEASURED["BEH5.export_total"].value
 
     # Byte-identity of each exported name's def source, anchor vs head,
     # unless in `edited_exports`.
@@ -2124,24 +2809,45 @@ def test_beh6_export_surface_cannot_shrink():
 
 
 def test_beh7_extractor_positive_control(monkeypatch):
-    """`B7`. The anchor-side census yields exactly `Behaviour.nodes` keys
-    and a `_dump_sha` equal to `Behaviour.dump_sha`, under the algorithm
-    quoted in section 2.10/4.5. MEASURED literals: nodes
-    94/139/80/85/68/58/58/45 (627) with the eight `dump_sha` prefixes.
-    Monkeypatch `_census` to `{}` and confirm BEH1/BEH3/BEH7 all
-    redden."""
-    expected_nodes = [94, 139, 80, 85, 68, 58, 58, 45]
-    expected_prefixes = [
-        "eb90005324f7", "2517577cbfc3", "16e45a867ece", "f7d067023480",
-        "124dcc0dd69f", "5bb83e2da3fe", "3c920c0066c5", "e8655e2be886",
-    ]
+    """`B7`. Two halves, and they are NOT the same kind of thing --
+    U-anchorlit's whole subject, so the split is stated here rather
+    than left to be rediscovered:
+
+    * The MEASURED half (first) is ANCHOR-SCOPED. The anchor-side
+      census must yield exactly `Behaviour.nodes` keys and a
+      `_dump_sha` equal to `Behaviour.dump_sha`, checked against the
+      transcribed numbers in `MEASURED`. Every landing advances
+      `ANCHOR` and invalidates these, which is why `--remeasure`
+      refuses the advance and prints them rather than rewriting them
+      (`ANC1`/`ANC3`) -- so the staleness surfaces as a named refusal
+      BEFORE the write, instead of as this assertion failing after it.
+    * The CONTROL half (second) is ANCHOR-INDEPENDENT and never goes
+      stale: monkeypatch `_census` to `{}` and confirm BEH1/BEH3/BEH7
+      all redden. This is the leg that actually proves the extractor
+      can fail, and no anchor advance may ever invalidate it."""
+    expected_nodes = list(MEASURED["BEH7.node_counts"].value)
+    expected_prefixes = list(MEASURED["BEH7.dump_prefixes"].value)
+    # `zip` truncates silently: without these two, a transcription that
+    # dropped a file would skip it rather than redden.
+    assert len(expected_nodes) == len(BEHAVIOUR_KEYS), expected_nodes
+    assert len(expected_prefixes) == len(BEHAVIOUR_KEYS), expected_prefixes
     total = 0
+    narrow = 0
     for key, exp_n, exp_prefix in zip(BEHAVIOUR_KEYS, expected_nodes, expected_prefixes):
         c = _anchor_census(key)
         assert len(c) == exp_n, (key, len(c), exp_n)
         assert _dump_sha(c)[:12] == exp_prefix, (key, _dump_sha(c)[:12], exp_prefix)
         total += len(c)
-    assert total == 627, total
+        # r2's retired shape narrowed the census to `test_*` defs only
+        # -- the shape this positive control's own "narrow the
+        # extractor back" mutation (M21) would produce. Counted LIVE
+        # here (and inside this loop, before the monkeypatch below
+        # poisons `_census`) rather than saved as a literal: it is
+        # anchor-scoped like everything else in this half, and a saved
+        # `627 != 366` pair would be two more numbers to transcribe.
+        narrow += sum(1 for node_key in c if node_key.startswith("func:test_"))
+    assert total == MEASURED["BEH7.node_total"].value, total
+    assert 0 < narrow < total, (narrow, total)
 
     key = "test_worker.py"
     _ANCHOR_CENSUS_CACHE.pop(key, None)
@@ -2158,12 +2864,6 @@ def test_beh7_extractor_positive_control(monkeypatch):
     finally:
         _ANCHOR_CENSUS_CACHE.pop(key, None)  # drop the poisoned cache entry
 
-    # r2's retired shape narrowed the census to `test_*` defs only,
-    # measured (section 2.10) at 366 of the same 627 -- the number this
-    # positive control's own "narrow the extractor back" mutation (M21)
-    # would produce; not re-derived here since `_census` above already
-    # IS the correct, node-wide algorithm under test.
-    assert 627 != 366
 
 
 def test_beh8_missing_set_cannot_rot():
@@ -2349,8 +3049,11 @@ def test_exm3_doors_match_what_the_anchor_owes():
             ok, why = _exm1_check(row.missing[k])
             assert ok, (key, k, why)
 
-    assert census_missing_total == 14, census_missing_total
-    assert census_edited_total == 0, census_edited_total
+    # Anchor-scoped, transcribed, sourced from `MEASURED`
+    # (U-anchorlit): both move on every anchor advance, and
+    # `--remeasure` refuses the advance rather than rewriting them.
+    assert census_missing_total == MEASURED["EXM3.census_missing"].value, census_missing_total
+    assert census_edited_total == MEASURED["EXM3.census_edited"].value, census_edited_total
     assert shipped_edited_total == census_edited_total, (shipped_edited_total, census_edited_total)
     assert shipped_missing_total == census_missing_total, (shipped_missing_total, census_missing_total)
 
@@ -2365,8 +3068,11 @@ def test_exm3_doors_match_what_the_anchor_owes():
         h = _head_census(key)
         c_missing += len([k for k in a if k not in h])
         c_edited += len([k for k in a if k in h and h[k] != a[k]])
-    assert c_missing == 66, c_missing
-    assert c_edited == 184, c_edited
+    # HEAD-scoped, not anchor-scoped: `c3b48e7` is fixed history, so an
+    # anchor advance can never move these -- a landing that edits a
+    # protected file can. Same two rows `BEH1`/`BEH3` read.
+    assert c_missing == MEASURED["BEH1.control_missing"].value, c_missing
+    assert c_edited == MEASURED["BEH3.control_edited"].value, c_edited
 
 
 # ======================================================================= #
@@ -2937,3 +3643,883 @@ def test_doc4_permanent_rows_describe_the_shipped_design():
     )
     for neg in negatives:
         assert _grep_count(r4_s55_fragment, re.escape(neg)) >= 1, neg
+
+
+# ======================================================================= #
+# ======================================================================= #
+#  5.10 ANC -- the measured literals, and who may write them
+#       (U-anchorlit: every landing advances `ANCHOR`, and until this
+#       section shipped every landing therefore left the suite red)
+# ======================================================================= #
+# ======================================================================= #
+
+
+def _measured_keys_read_by_tests(source: str) -> set[str]:
+    """Every `MEASURED["..."]` key read DIRECTLY inside a `test_`
+    function in `source` -- the anti-orphan walk `ANC4` runs. A
+    nested read through a scratch namespace (`ns["MEASURED"][...]`)
+    is deliberately NOT counted: it proves the CLI's behaviour, not
+    that any shipped assertion reads the row."""
+    keys: set[str] = set()
+    for top in ast.parse(source).body:
+        if not (isinstance(top, (ast.FunctionDef, ast.AsyncFunctionDef)) and top.name.startswith("test_")):
+            continue
+        for node in ast.walk(top):
+            if (
+                isinstance(node, ast.Subscript)
+                and isinstance(node.value, ast.Name)
+                and node.value.id == "MEASURED"
+                and isinstance(node.slice, ast.Constant)
+                and isinstance(node.slice.value, str)
+            ):
+                keys.add(node.slice.value)
+    return keys
+
+
+def _measured_block(source: str) -> str:
+    """The `MEASURED = {...}` assignment's own source lines, located by
+    AST (never a text marker, which a docstring mention would fool).
+    `ANC3` compares this block before and after a render."""
+    lines = source.splitlines()
+    for node in ast.parse(source).body:
+        if (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and node.target.id == "MEASURED"
+            and node.end_lineno is not None
+        ):
+            return "\n".join(lines[node.lineno - 1:node.end_lineno])
+    raise AssertionError("MEASURED assignment not found in source")
+
+
+def test_anc1_remeasure_refuses_a_stale_measured_literal(capsys):
+    """`ANC1`. A `MEASURED` row that no longer matches its live
+    measurement makes `--remeasure` REFUSE: rc 1, the stale row named
+    with its file, its shipped value AND its newly measured value, and
+    the module byte-identical afterwards. A refusal that says
+    "something is stale" without saying what to write is a refusal
+    that gets worked around, so both values are asserted present.
+
+    Driven over a scratch COPY whose `MEASURED` carries one corrupted
+    row, with `--anchor` pointing at the copy's own `ANCHOR` -- so the
+    refusal is attributable to the STALE leg ALONE (`_compute_owed`
+    and `_compute_vacuous` are both asserted empty first) and the
+    probe is permanent: it can never be invalidated by a later
+    landing, unlike a hardcoded "some other anchor" would be. The
+    anchor-ADVANCE half of the story is `ANC2`'s second leg (these
+    rows genuinely move at a different real anchor) and `ARM6`'s
+    refuse -> transcribe -> succeed loop at `15fb676`."""
+    scratch_dir = Path(tempfile.mkdtemp(dir=str(_REPO_ROOT)))
+    try:
+        scratch_module, ns = _scratch_armor_namespace(scratch_dir, "_armor_anc1")
+        # The SAME commit as `ANCHOR`, named by its 40-character sha
+        # (gate r1 Minor 3). The census is identical either way, so the
+        # refusal stays attributable to the corruption alone -- but a
+        # render WOULD now rewrite the `ANCHOR` literal, so the
+        # byte-identity assertion below genuinely pins ATOMICITY.
+        # Driven at the short literal the render was content-neutral,
+        # and hoisting the write above the refusal left this test (and
+        # `ANC5`, and `ANC6`) green while destroying the guarantee.
+        anchor = ns["_full_sha"](ns["ANCHOR"])
+
+        # Negative control FIRST: untouched, at its own anchor, nothing
+        # is owed, vacuous or stale -- so anything below is the
+        # corruption's doing, not a pre-existing refusal.
+        assert ns["_compute_owed"](anchor) == {}
+        assert ns["_compute_vacuous"](anchor) == {}
+        assert ns["_compute_stale"](anchor) == []
+
+        row = ns["MEASURED"]["BEH7.node_counts"]
+        corrupted = tuple(n + 1 for n in row.value)
+        patched = dict(ns["MEASURED"])
+        patched["BEH7.node_counts"] = dataclasses.replace(row, value=corrupted)
+        ns["MEASURED"] = patched
+
+        stale = ns["_compute_stale"](anchor)
+        assert [name for name, _shipped, _live in stale] == ["BEH7.node_counts"], stale
+
+        capsys.readouterr()  # drop anything buffered before the drive
+        sha_before = hashlib.sha256(scratch_module.read_bytes()).hexdigest()
+        rc = ns["_remeasure"](["--remeasure", "--anchor", anchor])
+        sha_after = hashlib.sha256(scratch_module.read_bytes()).hexdigest()
+        err = capsys.readouterr().err
+
+        assert rc == 1, rc
+        assert sha_after == sha_before, "a refusing --remeasure must leave the file byte-identical"
+
+        # Assert on the REPORT LINES, never on substrings of the whole
+        # stream: the trailer's own legend spells out the words OWED:,
+        # VACUOUS: and STALE: (indented), so a naive `"OWED:" not in
+        # err` is true of no refusal at all. Caught by this test's own
+        # first run, 2026-08-29.
+        report = [ln for ln in err.splitlines() if ln.startswith(("OWED:", "VACUOUS:", "STALE:"))]
+        assert len(report) == 3, report
+        assert report[0].startswith("STALE: "), report[0]
+        assert report[0].endswith("MEASURED['BEH7.node_counts'] (scope=anchor)"), report[0]
+        assert "test_armor.py" in report[0], report[0]  # which file to edit
+        assert report[1] == f"STALE:       shipped value: {corrupted!r}", report[1]
+        assert report[2] == f"STALE:   value at {anchor}: {row.value!r}", report[2]
+        assert not [ln for ln in report if ln.startswith(("OWED:", "VACUOUS:"))], report
+    finally:
+        shutil.rmtree(scratch_dir, ignore_errors=True)
+
+
+def test_anc2_the_refusal_does_not_fire_when_the_literals_are_current():
+    """`ANC2`. Two legs, the negative one asserted first: over the
+    SHIPPED table at the SHIPPED anchor, `_compute_stale` and
+    `_compute_vacuous` are both empty -- the refusal `ANC1` proves can
+    fire does NOT fire on a current tree, so it is a gate and not a
+    brick.
+
+    Second leg, not-vacuous: every `anchor`-scoped and `anchor+head`-
+    scoped row genuinely MOVES at a different real anchor (the retired
+    `c3b48e7`), so `ANC1`'s detector watches something an anchor
+    advance can actually change; and every `head`-scoped row does NOT
+    move there, which is what makes the `scope` labels honest rather
+    than decorative."""
+    assert _compute_stale(ANCHOR) == []
+    assert _compute_vacuous(ANCHOR) == {}
+
+    moved = {name for name, _shipped, _live in _compute_stale(_RETIRED_ANCHOR_CONTROL)}
+    by_scope: dict[str, set[str]] = {s: set() for s in _SCOPES}
+    for name, row in MEASURED.items():
+        by_scope[row.scope].add(name)
+
+    assert by_scope[_SCOPE_ANCHOR], by_scope
+    assert by_scope[_SCOPE_ANCHOR] <= moved, by_scope[_SCOPE_ANCHOR] - moved
+    assert by_scope[_SCOPE_ANCHOR_HEAD] <= moved, by_scope[_SCOPE_ANCHOR_HEAD] - moved
+    assert by_scope[_SCOPE_HEAD] & moved == set(), by_scope[_SCOPE_HEAD] & moved
+
+
+def test_anc3_remeasure_never_writes_a_measured_literal():
+    """`ANC3`. `_render_module` -- the ONLY thing `--remeasure` ever
+    writes -- rewrites `ANCHOR` and the eight `Behaviour` rows and
+    leaves the whole `MEASURED = {...}` block byte-identical.
+
+    Why that matters, stated exactly: NOT because the transcribed
+    numbers are an independent check on the extractor. They are not --
+    they are copied from this same code's own printout. Because a
+    silent rewrite would delete the two things the table does deliver:
+    `_compute_stale` would report nothing, so the refusal that stops a
+    stale landing would never fire, and the dated record of what
+    changed and why would be gone with it.
+
+    Positive control, asserted first: the same comparison over a
+    rendering that DOES rewrite one measured literal reports a
+    difference -- so the instrument can see the thing it forbids. Plus
+    a render-is-not-a-no-op leg, so "block unchanged" can never be
+    satisfied by a renderer that changed nothing at all."""
+    source = _module_source()
+    rendered = _render_module(_RETIRED_ANCHOR_CONTROL)
+
+    # Positive control: a rendering that DID author a measured literal.
+    # The target is DERIVED from the table, never spelled out -- a
+    # hardcoded `value=627,` here would itself be an anchor-scoped hand
+    # literal, i.e. the exact class this unit exists to remove (found
+    # by mutation M-A5, which reddened this test for the wrong reason).
+    target = f"value={MEASURED['BEH7.node_total'].value},"
+    broken = rendered.replace(target, "value=-1,", 1)
+    assert broken != rendered, ("the control mutation found nothing to change", target)
+    assert _measured_block(broken) != _measured_block(source)
+
+    # The render is real work, not a no-op.
+    assert rendered != source
+    assert f'ANCHOR = "{_RETIRED_ANCHOR_CONTROL}"' in rendered
+    assert f'ANCHOR = "{ANCHOR}"' not in rendered
+
+    # ... and it leaves every hand-written measurement alone.
+    assert _measured_block(rendered) == _measured_block(source)
+
+
+def test_anc4_every_measured_row_is_dated_anchored_and_used():
+    """`ANC4`. `EXM1`'s grammar applied to `MEASURED`: every row's
+    `reason` carries a date and a citation, and names a hex anchor
+    that RESOLVES as a real commit -- strictly stronger than `EXM1`
+    itself, whose leg 2 lets a bare `§N` citation stand without any
+    sha at all. Every `scope` is one of the three declared kinds. And
+    every row is READ by at least one shipped assertion in this
+    module: an orphan row is a literal nothing checks, which is the
+    same hole in a different place. Positive controls: a reason with
+    no date, and one whose only anchor is a fabricated sha, both
+    fail."""
+    for name, row in MEASURED.items():
+        ok, why = _exm1_check(row.reason)
+        assert ok, (name, why)
+        hex_tokens = _EXM1_HEX_RE.findall(row.reason)
+        assert any(_resolves_as_commit(h) for h in hex_tokens), (name, hex_tokens)
+        assert row.scope in _SCOPES, (name, row.scope)
+        assert callable(row.measure), name
+
+    read_by_tests = _measured_keys_read_by_tests(_module_source())
+    assert read_by_tests == set(MEASURED), (
+        set(MEASURED) - read_by_tests, read_by_tests - set(MEASURED)
+    )
+
+    undated_ok, _why = _exm1_check("no date here, but a citation: 4.5")
+    assert not undated_ok
+    fabricated_ok, _why2 = _exm1_check("2026-08-29 anchor ffffffffffff0000")
+    assert not fabricated_ok
+
+
+def test_anc5_remeasure_refuses_a_vacuous_exemption(capsys):
+    """`ANC5`. Section 4.7 `FW-140`'s fold rule, enforced by the tool
+    instead of discovered by a red suite. An exemption entry the NEW
+    anchor no longer owes makes `--remeasure` refuse, rc 1, naming the
+    entry -- because `EXM3`'s `shipped == census` leg and `FIX2`'s
+    anti-rot leg are exactly what go red on one. Measured 2026-08-29
+    in a throwaway clone: all fourteen `test_u_fake.py` `missing`
+    entries turn vacuous the instant `ANCHOR` reaches `a768696`, and
+    `EXM3` fails on the first of them before it ever reaches its own
+    hand-written totals.
+
+    Negative control asserted first (via `ANC2` for the shipped table,
+    and again here for the scratch copy). Both doors are driven: a
+    `Behaviour.missing` entry naming a node that is still present at
+    head, and a `Fixture.repinned` entry on a file identical to its
+    anchor."""
+    scratch_dir = Path(tempfile.mkdtemp(dir=str(_REPO_ROOT)))
+    try:
+        scratch_module, ns = _scratch_armor_namespace(scratch_dir, "_armor_anc5")
+        # A content-changing render -- see `ANC1` (gate r1 Minor 3).
+        anchor = ns["_full_sha"](ns["ANCHOR"])
+        assert ns["_compute_vacuous"](anchor) == {}
+
+        behaviour_key = "test_worker.py"
+        # DERIVED, not named: a `repinned` entry is only vacuous when
+        # head still equals the anchor, so this must pick a fixture
+        # that is not already legitimately repinned. Naming
+        # `conftest.py` outright would break this leg the day some
+        # unit repins it. `next()` raising is the right failure --
+        # loud, not a silent pass.
+        fixture_key = next(
+            k for k in FIXTURE_KEYS
+            if hashlib.sha256(ns["_head_bytes"](k)).hexdigest()
+            == hashlib.sha256(ns["_anchor_bytes"](k)).hexdigest()
+        )
+        live_node = next(iter(ns["_head_census"](behaviour_key)))
+        patched = dict(ns["ARMOR"])
+        patched[behaviour_key] = ns["Behaviour"](
+            nodes=ns["ARMOR"][behaviour_key].nodes,
+            dump_sha=ns["ARMOR"][behaviour_key].dump_sha,
+            missing={live_node: "2026-08-29 §4.7 ANC5 test scaffold, 6815503."},
+        )
+        patched[fixture_key] = ns["Fixture"](
+            repinned=(
+                hashlib.sha256(ns["_head_bytes"](fixture_key)).hexdigest(),
+                "2026-08-29 §4.3 ANC5 test scaffold, 6815503.",
+            )
+        )
+        ns["ARMOR"] = patched
+
+        # Per-key equality, not whole-map equality: the shipped
+        # table's own emptiness is already asserted above, so extra
+        # keys cannot appear from anywhere but these two.
+        vacuous = ns["_compute_vacuous"](anchor)
+        assert vacuous.get(behaviour_key) == [f"missing:{live_node}"], vacuous
+        assert vacuous.get(fixture_key) == ["repinned"], vacuous
+
+        capsys.readouterr()
+        sha_before = hashlib.sha256(scratch_module.read_bytes()).hexdigest()
+        rc = ns["_remeasure"](["--remeasure", "--anchor", anchor])
+        sha_after = hashlib.sha256(scratch_module.read_bytes()).hexdigest()
+        err = capsys.readouterr().err
+
+        assert rc == 1, rc
+        assert sha_after == sha_before, "a refusing --remeasure must leave the file byte-identical"
+
+        # Report LINES only -- see `ANC1` on why a whole-stream
+        # substring check is worthless here.
+        report = [ln for ln in err.splitlines() if ln.startswith(("OWED:", "VACUOUS:", "STALE:"))]
+        # Compared as a SET: report order follows `ARMOR` table order,
+        # which the §5.1 contract deliberately does not promise. The
+        # structural vacuity walk changed that order (it now walks the
+        # table once instead of BEHAVIOUR-then-FIXTURE), which is
+        # exactly the kind of churn an ordered assertion would make
+        # look like a regression.
+        assert sorted(report) == sorted([
+            f"VACUOUS: {behaviour_key}: missing:{live_node}",
+            f"VACUOUS: {fixture_key}: repinned",
+        ]), report
+    finally:
+        shutil.rmtree(scratch_dir, ignore_errors=True)
+
+
+#: The four `--remeasure` outcomes, as a caller sees them (`ANC6`, and
+#: the runbook §5 contract table this pins). Start-of-line tokens: an
+#: unanchored substring match is NOT part of the contract, though the
+#: trailer is written so that one still happens to work.
+_REFUSAL_TOKENS: tuple[str, ...] = ("OWED: ", "VACUOUS: ", "STALE: ")
+_NOOP_PREFIX = "ANCHOR did not change ("
+_TRAILER_PREFIX = "refusing to write test_armor.py ("
+_SUCCESS_RE = re.compile(r"^ANCHOR [0-9a-f]{7,40} -> [0-9a-f]{7,40}$")
+_OWED_RE = re.compile(r"^OWED: \S+\.py: (missing|edited):\S+$")
+#: DERIVED from `VACUITY_MODEL`, never spelled out: a newly checked
+#: family must not need this regex hand-edited to be recognised -- that
+#: hand-maintained shape is what produced gate r1 MAJOR-1.
+_VACUOUS_DOORS: tuple[str, ...] = tuple(sorted(
+    field for rules in VACUITY_MODEL.values() for field, rule in rules.items()
+    if rule.check is not None
+))
+_VACUOUS_RE = re.compile(
+    r"^VACUOUS: \S+\.py: (?:" + "|".join(_VACUOUS_DOORS) + r")(?::\S+)?$"
+)
+_STALE_HEAD_RE = re.compile(
+    r"^STALE: \S+: MEASURED\['[^']+'\] \(scope=(anchor|anchor\+head|head)\)$"
+)
+_STALE_SHIPPED_RE = re.compile(r"^STALE:       shipped value: .+$")
+_STALE_LIVE_RE = re.compile(r"^STALE:   value at [0-9a-f]{7,40}: .+$")
+
+
+def _report_lines(err: str) -> list[str]:
+    """The refusal's REPORT lines -- start-of-line token matches only.
+    Never a substring scan of the whole stream (`ANC6`'s own subject)."""
+    return [ln for ln in err.splitlines() if ln.startswith(_REFUSAL_TOKENS)]
+
+
+def test_anc6_refusal_leg_contract(capsys):
+    """`ANC6`. The `--remeasure` CLI contract, pinned mechanically so a
+    sibling unit's landing runner can implement against the runbook's
+    §5 table without reading this file. `U-land` is building exactly
+    such a runner against the TWO-leg contract that predates this unit
+    (`OWED:` and `ANCHOR did not change`); this unit adds two more, and
+    the two gates are blind to each other, so the contract has to be
+    legible somewhere both can see it.
+
+    Pinned here: exit code, stream, stdout-is-always-empty, the
+    start-of-line token for each leg, the three-line shape of a
+    `STALE:` record, whether the file is written, and -- the leg that
+    actually bit -- that the TRAILER contains no bare token. An
+    earlier draft's trailer spelled `OWED:`/`VACUOUS:`/`STALE:` out in
+    its legend, which made an unanchored `"OWED:" not in err` false
+    for every refusal, including ones reporting no owed node at all.
+    That was caught by this unit's own first test run, not by review.
+
+    The rc-0 success leg is asserted by `ARM6` (which already drives a
+    genuine write at `15fb676`); duplicating its ~35s here would buy
+    nothing."""
+    # --- Leg 0 (gate r2 MINOR-1): the published line shapes are
+    # DERIVED. Re-derived here independently of the constant, so a
+    # reversion to a hand-written tuple reddens; then exercised
+    # behaviourally, so a door that stopped being recognised reddens
+    # too. `MG6` replaced the derivation with `("edited", "missing")`
+    # and left the suite green -- this leg is that mutation's cover.
+    checked_doors = tuple(sorted(
+        field for rules in VACUITY_MODEL.values() for field, rule in rules.items()
+        if rule.check is not None
+    ))
+    assert checked_doors == _VACUOUS_DOORS, (checked_doors, _VACUOUS_DOORS)
+    for door in checked_doors:
+        sample = f"VACUOUS: fixtures/fake_claude.py: {door}"
+        if door != "repinned":
+            sample += ":__probe"
+        assert _VACUOUS_RE.match(sample), (door, sample)
+    assert not _VACUOUS_RE.match("VACUOUS: fixtures/fake_claude.py: not_a_door:__probe")
+
+    # Every `_additive_stmt_key` kind renders as ONE whitespace-free
+    # token -- the `\S+` shape §5.1 publishes. Two of the five did not
+    # before `_vacuous_stmt_token` (gate r2 MINOR-2).
+    for stmt_source, expected in (
+        ("import os, sys", "import|os|sys"),
+        ("from typing import Any", "importfrom|typing|Any"),
+        ("SESSION_ID = 1", "assign|SESSION_ID"),
+        ("class C: pass", "class|C"),
+        ("del x", None),
+    ):
+        token = _vacuous_stmt_token(_additive_stmt_key(ast.parse(stmt_source).body[0]))
+        assert not any(c.isspace() for c in token), (stmt_source, token)
+        if expected is not None:
+            assert token == expected, (stmt_source, token)
+        assert _VACUOUS_RE.match(
+            f"VACUOUS: fixtures/fake_claude.py: new_stmt_keys:{token}"
+        ), (stmt_source, token)
+
+    # --- Leg 1: the no-op guard. A pristine scratch copy with
+    # `--anchor` equal to its own `ANCHOR` owes nothing, strands
+    # nothing and invalidates nothing, so the run reaches the WRITE and
+    # only then reports the no-op (section 4.2 step 6). This is the one
+    # leg that is post-write: the file IS rewritten, with byte-
+    # identical content whenever the table was already current --
+    # measured here rather than assumed.
+    scratch_dir = Path(tempfile.mkdtemp(dir=str(_REPO_ROOT)))
+    try:
+        scratch_module, ns = _scratch_armor_namespace(scratch_dir, "_armor_anc6a")
+        anchor = ns["ANCHOR"]
+        sha_before = hashlib.sha256(scratch_module.read_bytes()).hexdigest()
+        inode_before = scratch_module.stat().st_ino
+        capsys.readouterr()
+        rc = ns["_remeasure"](["--remeasure", "--anchor", anchor])
+        cap = capsys.readouterr()
+        sha_after = hashlib.sha256(scratch_module.read_bytes()).hexdigest()
+        inode_after = scratch_module.stat().st_ino
+
+        assert rc == 1, rc
+        assert cap.out == "", cap.out
+        err_lines = [ln for ln in cap.err.splitlines() if ln.strip()]
+        assert err_lines[0].startswith(f"{_NOOP_PREFIX}{anchor} -> {anchor})"), err_lines
+        assert _report_lines(cap.err) == [], cap.err
+        assert sha_after == sha_before, (
+            "no-op leg: the write happens, but with byte-identical content"
+        )
+        # ... and the write REALLY happens (gate r1 Minor 2). The
+        # runbook §5.1 table says this leg rewrites the file; nothing
+        # tested it, so a mutation that skipped the write entirely
+        # stayed green. `os.replace` swaps the inode, which byte
+        # identity cannot see.
+        assert inode_after != inode_before, (
+            "no-op leg: os.replace must still have written the file "
+            "(runbook §5.1 documents this leg as post-write)"
+        )
+    finally:
+        shutil.rmtree(scratch_dir, ignore_errors=True)
+
+    # --- Leg 2: one run carrying all three pre-write tokens at once,
+    # which is what a real landing behind a sibling unit looks like.
+    #
+    # ANCHOR-INDEPENDENCE IS THE WHOLE DIFFICULTY HERE, and the first
+    # draft of this leg got it wrong in the most embarrassing possible
+    # way: it built the OWED family by stripping `test_u_fake.py`'s
+    # shipped `missing` map, so its fourteen anchor-era nodes became
+    # owed, and asserted `len(owed) == 14`. That 14 is an anchor-
+    # derived hand literal -- the exact class `MEASURED` exists to
+    # remove -- sitting inside this unit's own contract test. It goes
+    # RED on this unit's own landing: once `ANCHOR` reaches the merge's
+    # first parent those fourteen nodes are INSIDE the anchor, the
+    # author drops the now-vacuous entries (the `VACUOUS:` leg forces
+    # it), stripping an already-empty map owes nothing, and the assert
+    # reads `assert 0 == 14`. Measured, not reasoned: the bootstrap
+    # clone's post-landing armor run gave exactly that, `1 failed, 46
+    # passed`, before this rewrite.
+    #
+    # The construction below cannot rot that way. An anchor node that
+    # is ABSENT at head and carries no exemption is owed at EVERY
+    # anchor, so the leg is built by censoring one node out of
+    # `_head_census` -- victim taken from the ANCHOR census and
+    # filtered against the row's own `missing` map, so a future
+    # exemption cannot silently neutralise it. And every expectation
+    # is DERIVED from the namespace's own `_compute_*` functions
+    # rather than counted by hand: censoring head has knock-ons
+    # (`EXM3.census_missing` gains one; `BEH1.control_missing` gains
+    # one too IF the victim also exists at the retired control
+    # anchor), and hardcoding any of those totals would just plant the
+    # same landmine again.
+    scratch_dir = Path(tempfile.mkdtemp(dir=str(_REPO_ROOT)))
+    try:
+        scratch_module, ns = _scratch_armor_namespace(scratch_dir, "_armor_anc6b")
+        # A content-changing render -- see `ANC1` (gate r1 Minor 3).
+        anchor = ns["_full_sha"](ns["ANCHOR"])
+
+        # OWED: censor one anchor node out of head. Anchor-independent.
+        owed_key = "test_worker.py"
+        owed_row = ns["ARMOR"][owed_key]
+        # TWO victims, not one: with a single owed entry a report that
+        # printed only the FIRST entry per armor key would satisfy
+        # `len(owed) == n_owed` anyway. Measured -- mutation M-B6
+        # (`for e in entries[:1]`) came back GREEN against the
+        # one-victim version and RED against this one.
+        victims = [k for k in ns["_anchor_census"](owed_key) if k not in owed_row.missing][:2]
+        assert len(victims) == 2, victims
+        real_head_census = ns["_head_census"]
+
+        def _censored_head_census(key, _real=real_head_census, _key=owed_key, _victims=victims):
+            census = dict(_real(key))
+            if key == _key:
+                for _victim in _victims:
+                    census.pop(_victim, None)
+            return census
+
+        ns["_head_census"] = _censored_head_census
+
+        # VACUOUS: a `missing` entry naming a node still present at
+        # head, on a DIFFERENT file so the two families cannot
+        # interact.
+        vacuous_key = "test_composer.py"
+        live_node = next(iter(ns["_head_census"](vacuous_key)))
+        patched = dict(ns["ARMOR"])
+        patched[vacuous_key] = ns["Behaviour"](
+            nodes=ns["ARMOR"][vacuous_key].nodes,
+            dump_sha=ns["ARMOR"][vacuous_key].dump_sha,
+            missing={live_node: "2026-08-29 §4.7 ANC6 test scaffold, 6815503."},
+        )
+        ns["ARMOR"] = patched
+
+        # STALE: corrupt one row. `BEH7.node_total` reads the anchor
+        # side only, so the censored head cannot also move it -- the
+        # shipped/live pair asserted below stays exact.
+        stale_row = "BEH7.node_total"
+        measured = dict(ns["MEASURED"])
+        measured[stale_row] = dataclasses.replace(
+            measured[stale_row], value=measured[stale_row].value + 1
+        )
+        ns["MEASURED"] = measured
+
+        # Every expectation DERIVED, and each family asserted non-empty
+        # first so no count below can be vacuously satisfied.
+        owed_map = ns["_compute_owed"](anchor)
+        vacuous_map = ns["_compute_vacuous"](anchor)
+        stale_list = ns["_compute_stale"](anchor)
+        assert owed_map, owed_map
+        assert vacuous_map, vacuous_map
+        assert stale_list, stale_list
+        assert stale_row in {name for name, _s, _l in stale_list}, stale_list
+        n_owed = sum(len(v) for v in owed_map.values())
+        n_vacuous = sum(len(v) for v in vacuous_map.values())
+        n_stale = len(stale_list)
+
+        sha_before = hashlib.sha256(scratch_module.read_bytes()).hexdigest()
+        capsys.readouterr()
+        rc = ns["_remeasure"](["--remeasure", "--anchor", anchor])
+        cap = capsys.readouterr()
+        sha_after = hashlib.sha256(scratch_module.read_bytes()).hexdigest()
+
+        assert rc == 1, rc
+        assert cap.out == "", cap.out
+        assert sha_after == sha_before, "a pre-write refusal must leave the file byte-identical"
+
+        report = _report_lines(cap.err)
+        owed = [ln for ln in report if ln.startswith("OWED: ")]
+        vacuous = [ln for ln in report if ln.startswith("VACUOUS: ")]
+        stale = [ln for ln in report if ln.startswith("STALE: ")]
+        assert len(owed) == n_owed, (owed, n_owed)
+        assert len(vacuous) == n_vacuous, (vacuous, n_vacuous)
+        assert len(stale) == 3 * n_stale, (stale, n_stale)
+        assert len(report) == len(owed) + len(vacuous) + len(stale), report
+
+        for ln in owed:
+            assert _OWED_RE.match(ln), ln
+        for _victim in victims:
+            assert f"OWED: {owed_key}: missing:{_victim}" in owed, (owed, _victim)
+        for ln in vacuous:
+            assert _VACUOUS_RE.match(ln), ln
+        assert f"VACUOUS: {vacuous_key}: missing:{live_node}" in vacuous, vacuous
+
+        # Every STALE record is three lines, in order, both values
+        # `repr()` so line 3 pastes straight into `value=`.
+        heads = [i for i, ln in enumerate(stale) if _STALE_HEAD_RE.match(ln)]
+        assert len(heads) == n_stale, stale
+        for i in heads:
+            assert _STALE_SHIPPED_RE.match(stale[i + 1]), stale[i + 1]
+            assert _STALE_LIVE_RE.match(stale[i + 2]), stale[i + 2]
+        idx = next(
+            i for i in heads
+            if stale[i].endswith(f"MEASURED['{stale_row}'] (scope=anchor)")
+        )
+        assert stale[idx + 1].endswith(repr(measured[stale_row].value)), stale[idx + 1]
+        assert stale[idx + 2].endswith(repr(MEASURED[stale_row].value)), stale[idx + 2]
+
+        # The trailer: named, and token-free. Both halves matter -- the
+        # first so a caller can find it, the second so an unanchored
+        # token match cannot be satisfied by the trailer alone.
+        trailer = cap.err[cap.err.index(_TRAILER_PREFIX):]
+        assert trailer.startswith(_TRAILER_PREFIX), trailer[:120]
+        for token in _REFUSAL_TOKENS:
+            assert token.strip() not in trailer, (token, trailer)
+
+        # Positive control on that last leg: the report lines DO carry
+        # the tokens the trailer must not, so "token absent" is not
+        # vacuously true of this stream.
+        for token in _REFUSAL_TOKENS:
+            assert token.strip() in cap.err, token
+    finally:
+        shutil.rmtree(scratch_dir, ignore_errors=True)
+
+
+#: The module attributes `_observed_scope` instruments -- every seam a
+#: measurement can read an anchor side or a head side through. Held as a
+#: module constant, not string literals inside the function, so `EXM2`'s
+#: hardcoded-skip walk has nothing to trip over.
+_SCOPE_SEAMS: tuple[str, ...] = (
+    "_census_at", "_git_show_text", "_git_show_bytes",
+    "_head_text", "_head_bytes", "_head_census", "_all_tree_paths",
+)
+
+
+def _observed_scope(name: str, anchor: str) -> str:
+    """The scope `MEASURED[name]`'s recomputation actually EXHIBITS,
+    measured by instrumenting every read seam -- never by reading the
+    code, which is how two labels shipped wrong (gate r1 Minor 1).
+
+    An anchor-side read counts only when the rev being read IS the
+    anchor passed in, so `_measure_control_*` -- which reads the fixed
+    retired control anchor and ignores its argument -- is correctly NOT
+    anchor-scoped. `_census_at` is instrumented as well as
+    `_git_show_text`, because the session cache would otherwise hide
+    every read after the first and silently downgrade a label."""
+    module = sys.modules[__name__]
+    seen = {"anchor": False, "head": False}
+    saved = {attr: getattr(module, attr) for attr in _SCOPE_SEAMS}
+
+    def _rev_reader(real):
+        def reader(rev, key):
+            if rev == anchor:
+                seen["anchor"] = True
+            return real(rev, key)
+        return reader
+
+    def _head_reader(real):
+        def reader(key):
+            seen["head"] = True
+            return real(key)
+        return reader
+
+    def _tree_reader(real):
+        def reader(rev):
+            if rev is None:
+                seen["head"] = True
+            return real(rev)
+        return reader
+
+    try:
+        for attr in _SCOPE_SEAMS[:3]:
+            setattr(module, attr, _rev_reader(saved[attr]))
+        for attr in _SCOPE_SEAMS[3:6]:
+            setattr(module, attr, _head_reader(saved[attr]))
+        setattr(module, _SCOPE_SEAMS[6], _tree_reader(saved[_SCOPE_SEAMS[6]]))
+        MEASURED[name].measure(anchor)
+    finally:
+        for attr, real in saved.items():
+            setattr(module, attr, real)
+
+    if seen["anchor"] and seen["head"]:
+        return _SCOPE_ANCHOR_HEAD
+    if seen["anchor"]:
+        return _SCOPE_ANCHOR
+    if seen["head"]:
+        return _SCOPE_HEAD
+    raise AssertionError(f"{name}: reads neither side -- a constant, not a measurement")
+
+
+def test_anc7_vacuity_coverage_is_structural_not_enumerated():
+    """`ANC7` (gate r1 MAJOR-1). `_compute_vacuous` used to enumerate
+    three families by hand and silently omitted `Additive`'s three
+    anchor-diff sets -- the one file the design lets GROW. The gate
+    demonstrated it end to end: declare `new_funcs={"_gate_probe"}`,
+    land it, and `--remeasure` returns rc 0 with zero `VACUOUS:` lines
+    while `ADD1` goes RED. Five legs, all of which a fourth item
+    appended to a list would have left open:
+
+    1. COVERAGE IS EXACT. Every `ARMOR` row's type has rules, and they
+       cover `dataclasses.fields()` of that type exactly -- no field
+       unmodelled, no rule for a field that no longer exists, never
+       both a `check` and an `excluded_reason`, and every exclusion
+       carrying `EXM1`'s dated, cited grammar.
+    2. IT FAILS LOUD. Dropping a row type's rules, or one field's
+       rule, makes `_compute_vacuous` raise `SystemExit` naming what
+       is missing -- "a fifth family appears", simulated.
+    3. EVERY CHECK ACTUALLY FIRES. A constructed vacuous entry in each
+       checked field is reported. `Additive`'s three ship EMPTY, so
+       without this leg they would be covered only on paper.
+    4. THE CLI CAN REACH THEM. `--remeasure` executes this module
+       top-to-bottom and stops at the `__main__` guard, so a helper
+       defined after it is invisible to a CLI run -- and the
+       `Additive` checks call `_find_scenarios_assign` /
+       `_additive_stmt_key`, which live far below in the ADD section.
+       Proven by running the REAL CLI in a subprocess against a
+       scratch copy carrying a declared-but-vacuous `new_funcs`, the
+       exact shape the gate used. An in-process drive proves nothing
+       here: `__name__` is not `__main__` there, so the whole module
+       execs regardless.
+    5. The measured equivalence `_additive_scenario_keys` rests on:
+       its AST-read key set equals the IMPORTED module's, so
+       `--remeasure` never has to import a fixture to check leg 3's
+       family."""
+    # --- Leg 1: coverage is exact.
+    row_types = {type(row).__name__ for row in ARMOR.values()}
+    assert set(VACUITY_MODEL) == row_types, (set(VACUITY_MODEL), row_types)
+    for key, row in ARMOR.items():
+        rules = VACUITY_MODEL[type(row).__name__]
+        field_names = {f.name for f in dataclasses.fields(row)}
+        assert set(rules) == field_names, (key, set(rules) ^ field_names)
+        for field_name, rule in rules.items():
+            assert (rule.check is None) != (rule.excluded_reason is None), (key, field_name)
+            if rule.excluded_reason is not None:
+                ok, why = _exm1_check(rule.excluded_reason)
+                assert ok, (key, field_name, why)
+                # `_exm1_check` short-circuits its resolution leg on a
+                # `§N` citation, so a FABRICATED sha passes it. `ANC4`
+                # applies the stronger form to every `MEASURED` reason;
+                # these exclusions claim "the same discipline §4.6/§4.7
+                # apply to an exemption entry", so they get it too
+                # (gate r2 NIT-2).
+                hex_tokens = _EXM1_HEX_RE.findall(rule.excluded_reason)
+                assert any(_resolves_as_commit(h) for h in hex_tokens), (
+                    key, field_name, hex_tokens
+                )
+    # The regression, named: `Additive`'s three anchor-diff sets are
+    # CHECKED -- not excluded, not absent.
+    additive_rules = VACUITY_MODEL["Additive"]
+    for field_name in ("new_funcs", "new_scenario_keys", "new_stmt_keys"):
+        assert additive_rules[field_name].check is not None, field_name
+
+    # --- Leg 5 (cheap, no scratch copy): AST keys == imported keys.
+    ast_keys = _additive_scenario_keys(_head_text(_FAKE_CLAUDE_KEY))
+    live_mod = _load_module_from_path(_abspath(_FAKE_CLAUDE_KEY), "_fake_claude_anc7")
+    assert ast_keys, ast_keys
+    assert ast_keys == set(live_mod.SCENARIOS), ast_keys ^ set(live_mod.SCENARIOS)
+
+    scratch_dir = Path(tempfile.mkdtemp(dir=str(_REPO_ROOT)))
+    try:
+        _scratch_module, ns = _scratch_armor_namespace(scratch_dir, "_armor_anc7")
+        anchor = ns["ANCHOR"]
+        pristine = {t: dict(rules) for t, rules in ns["VACUITY_MODEL"].items()}
+        assert ns["_compute_vacuous"](anchor) == {}
+
+        # --- Leg 2: an unmodelled row type, then an unmodelled field.
+        broken = {t: dict(r) for t, r in pristine.items()}
+        del broken["Additive"]
+        ns["VACUITY_MODEL"] = broken
+        with pytest.raises(SystemExit, match="no rules for ARMOR row type 'Additive'"):
+            ns["_compute_vacuous"](anchor)
+
+        broken2 = {t: dict(r) for t, r in pristine.items()}
+        del broken2["Behaviour"]["missing"]
+        ns["VACUITY_MODEL"] = broken2
+        with pytest.raises(SystemExit, match=r"no rule for Behaviour\.missing"):
+            ns["_compute_vacuous"](anchor)
+
+        ns["VACUITY_MODEL"] = pristine
+        assert ns["_compute_vacuous"](anchor) == {}
+
+        # --- Leg 3: one constructed vacuous entry per checked field.
+        reason = "2026-08-29 §4.7 ANC7 test scaffold, 6815503."
+        exports = ns["_exported_names_anchor"]()
+        beh_key = "test_worker.py"
+        export_key = next(k for k in ns["BEHAVIOUR_KEYS"] if exports[k] and k != beh_key)
+        export_name = sorted(exports[export_key])[0]
+        fixture_key = next(
+            k for k in FIXTURE_KEYS
+            if hashlib.sha256(ns["_head_bytes"](k)).hexdigest()
+            == hashlib.sha256(ns["_anchor_bytes"](k)).hexdigest()
+        )
+        live_node = next(iter(ns["_head_census"](beh_key)))
+
+        patched = dict(ns["ARMOR"])
+        beh_row = patched[beh_key]
+        patched[beh_key] = ns["Behaviour"](
+            nodes=beh_row.nodes, dump_sha=beh_row.dump_sha,
+            missing={live_node: reason}, edited={live_node: reason},
+        )
+        exp_row = patched[export_key]
+        patched[export_key] = ns["Behaviour"](
+            nodes=exp_row.nodes, dump_sha=exp_row.dump_sha,
+            missing=dict(exp_row.missing), edited=dict(exp_row.edited),
+            edited_exports={export_name: reason},
+        )
+        patched[fixture_key] = ns["Fixture"](
+            repinned=(hashlib.sha256(ns["_head_bytes"](fixture_key)).hexdigest(), reason)
+        )
+        patched[_FAKE_CLAUDE_KEY] = dataclasses.replace(
+            ns["ARMOR"][_FAKE_CLAUDE_KEY],
+            new_funcs=frozenset({"__anc7_func"}),
+            new_scenario_keys=frozenset({"__anc7_scenario"}),
+            new_stmt_keys=frozenset({("assign", "__anc7_stmt")}),
+        )
+        ns["ARMOR"] = patched
+
+        vacuous = ns["_compute_vacuous"](anchor)
+        assert vacuous.get(beh_key) == [f"missing:{live_node}", f"edited:{live_node}"], vacuous
+        assert vacuous.get(export_key) == [f"edited_exports:{export_name}"], vacuous
+        assert vacuous.get(fixture_key) == ["repinned"], vacuous
+        assert vacuous.get(_FAKE_CLAUDE_KEY) == [
+            "new_funcs:__anc7_func",
+            "new_scenario_keys:__anc7_scenario",
+            "new_stmt_keys:assign|__anc7_stmt",
+        ], vacuous
+    finally:
+        shutil.rmtree(scratch_dir, ignore_errors=True)
+
+    # --- Leg 4: the REAL CLI, in a subprocess, reaches the `Additive`
+    # checks. The injection goes immediately BEFORE the `__main__`
+    # guard, which this leg also pins as the LAST top-level statement:
+    # anything after it is dead code to a CLI run.
+    source = _module_source()
+    tree = ast.parse(source)
+    guard = tree.body[-1]
+    assert isinstance(guard, ast.If), (
+        "the `__main__` guard must be the LAST top-level statement -- "
+        "`--remeasure` cannot call a helper defined after it"
+    )
+    cli_dir = Path(tempfile.mkdtemp(dir=str(_REPO_ROOT)))
+    try:
+        cli_module = cli_dir / "test_armor.py"
+        lines = source.splitlines(keepends=True)
+        # All THREE `Additive` sets, not just `new_funcs`: only
+        # `new_scenario_keys` / `new_stmt_keys` reach
+        # `_find_scenarios_assign` / `_additive_stmt_key`, the helpers
+        # that live below the guard's old position. A `new_funcs`-only
+        # probe would pass even with the guard back where it was.
+        injection = (
+            "ARMOR[_FAKE_CLAUDE_KEY] = dataclasses.replace(\n"
+            "    ARMOR[_FAKE_CLAUDE_KEY],\n"
+            '    new_funcs=frozenset({"__anc7_cli_probe"}),\n'
+            '    new_scenario_keys=frozenset({"__anc7_cli_scenario"}),\n'
+            '    new_stmt_keys=frozenset({("assign", "__anc7_cli_stmt")}),\n'
+            ")\n"
+        )
+        cli_module.write_text(
+            "".join(lines[: guard.lineno - 1]) + injection + "".join(lines[guard.lineno - 1:]),
+            encoding="utf-8",
+        )
+        proc = subprocess.run(
+            [sys.executable, str(cli_module), "--remeasure", "--anchor", ANCHOR],
+            cwd=str(cli_dir), capture_output=True, text=True,
+        )
+        assert proc.returncode == 1, (proc.returncode, proc.stderr[-3000:])
+        assert proc.stdout == "", proc.stdout
+        assert "NameError" not in proc.stderr, proc.stderr[-3000:]
+        cli_report = proc.stderr.splitlines()
+        for expected in (
+            f"VACUOUS: {_FAKE_CLAUDE_KEY}: new_funcs:__anc7_cli_probe",
+            f"VACUOUS: {_FAKE_CLAUDE_KEY}: new_scenario_keys:__anc7_cli_scenario",
+            f"VACUOUS: {_FAKE_CLAUDE_KEY}: new_stmt_keys:assign|__anc7_cli_stmt",
+        ):
+            assert expected in cli_report, (expected, proc.stderr[-3000:])
+    finally:
+        shutil.rmtree(cli_dir, ignore_errors=True)
+
+
+def test_anc8_every_scope_label_is_measured():
+    """`ANC8` (gate r1 Minor 1). Every `MEASURED` row's `scope` equals
+    the scope its recomputation actually exhibits, measured by
+    instrumenting the read seams. Two labels shipped WRONG:
+    `BEH5.export_counts` and `BEH5.export_total` were `anchor`, and
+    are `anchor+head` -- `_exported_names_union` reads BOTH sides, so
+    a head-only edit moves them (the gate measured
+    `(4, 5, 6, ...)` -> `(4, 5, 7, ...)` and `31` -> `32` with the
+    anchor untouched). A wrong label misdescribes which edits the
+    refusal is watching, so it is now derived rather than claimed.
+
+    Positive controls: all three scopes are represented (the
+    classification is not degenerate), and the four rows whose scope
+    was reasoned about explicitly are each named."""
+    observed = {name: _observed_scope(name, ANCHOR) for name in MEASURED}
+    mismatched = {
+        name: (MEASURED[name].scope, observed[name])
+        for name in MEASURED if MEASURED[name].scope != observed[name]
+    }
+    assert mismatched == {}, mismatched
+
+    assert set(observed.values()) == set(_SCOPES), observed
+    assert observed["BEH7.node_counts"] == _SCOPE_ANCHOR, observed
+    assert observed["BEH5.export_counts"] == _SCOPE_ANCHOR_HEAD, observed
+    assert observed["EXM3.census_missing"] == _SCOPE_ANCHOR_HEAD, observed
+    assert observed["BEH1.control_missing"] == _SCOPE_HEAD, observed
+
+
+# ===================================================================== #
+# The CLI entry point -- the LAST top-level statement in this file, and
+# it must stay last (`ANC7` leg 4 pins it, and says why). `--remeasure`
+# executes the module top-to-bottom and stops HERE, so any helper
+# defined after this guard is invisible to a CLI run. It used to sit
+# just below `_remeasure`, which silently limited the tool to helpers
+# defined above it -- and the vacuity checks call
+# `_find_scenarios_assign` / `_additive_stmt_key` from the ADD section
+# far below (gate r1 MAJOR-1).
+# ===================================================================== #
+
+if __name__ == "__main__":
+    if "--remeasure" in sys.argv[1:]:
+        raise SystemExit(_remeasure(sys.argv[1:]))
+    raise SystemExit(
+        "test_armor.py has no standalone CLI mode other than --remeasure "
+        "(ARM6's refused-CLI-mode leg) -- run it under pytest."
+    )
