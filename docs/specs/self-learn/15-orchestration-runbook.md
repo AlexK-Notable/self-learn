@@ -168,6 +168,36 @@ override is per-round, not a new default.
   `docs/specs/self-learn/drafts/u-armor-narrow-whole-file-pins-spec.md`
   §4.2.
 
+  **Refusing is the normal FIRST outcome, and it refuses more than an
+  owed node.** The same run also refuses when the advance would strand
+  an exemption entry the new anchor no longer owes (`VACUOUS:`) or a
+  hand-measured literal in `cli/tests/test_armor.py::MEASURED` that
+  the new anchor invalidates (`STALE:` — the numbers `BEH5`, `BEH7`
+  and `EXM3` assert). All three are computed before anything is
+  written and printed together, and the file is left byte-identical,
+  so the `&&`-chain stops with the merge still uncommitted. Do exactly
+  what the report says, **by hand, inside that uncommitted merge**:
+  write the owed exemption entry, drop the vacuous one, and copy each
+  printed `value at <anchor>:` into that `MEASURED` row's `value=`,
+  re-dating its `reason`. Then re-run the same command — it writes,
+  and the transcription rides inside the merge commit alongside the
+  anchor advance. Between the transcription and that second run the
+  armor suite is briefly red; that is inherent to check-then-write and
+  is why the transcription is never committed on its own.
+
+  **Never teach `--remeasure` to write a `MEASURED` value.** Those
+  numbers are the second, HUMAN-authored opinion that `BEH5`/`BEH7`/
+  `EXM3` check the tool-authored `ARMOR` table against. A tool that
+  wrote both would agree with itself forever, and an extractor that
+  drifted would produce two consistent-but-wrong numbers with nothing
+  left to notice. Before this door existed, every landing advanced
+  `ANCHOR` and left those literals behind, so every landing shipped a
+  red suite with two assertion failures that named nothing about the
+  anchor (measured 2026-08-29 in a throwaway clone: `2 failed, 39
+  passed`). Source:
+  `docs/specs/self-learn/drafts/u-armor-narrow-whole-file-pins-spec.md`
+  §4.2/§4.6, and `test_armor.py`'s own `ANC1`–`ANC5`.
+
 ## 6. Sandbox invariants (H-3 protection)
 
 Dev/test instances ALWAYS redirect `SELF_LEARN_HOME` +
