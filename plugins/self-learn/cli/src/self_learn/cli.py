@@ -335,6 +335,48 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     reopen.add_argument("id", metavar="ID")
 
+    reroute = _verb(
+        "reroute",
+        "correct a wrong routing destination on a routed record "
+        "(U-verbs §4.5, Phase 2)",
+        json_flag=True,
+    )
+    reroute.add_argument("id", metavar="ID")
+    reroute.add_argument(
+        "--dest",
+        required=True,
+        metavar="TARGET",
+        help="the new destination: skill-md | claude-md[:local|:rules:"
+        "<topic>] | reference[:<file>] — never hook or new-skill "
+        "(rerouting INTO either is a fresh `route`, not a correction)",
+    )
+    reroute.add_argument(
+        "--by",
+        choices=sorted(verbs.ROUTING_BY_VALUES),
+        help="FW-64: names the actor that chose the NEW destination "
+        "(defaults to 'human' — a terminal reroute IS a human decision)",
+    )
+
+    reclassify = _verb(
+        "reclassify", "re-file a record's kind/type (U-verbs §4.7, Phase 2)"
+    )
+    reclassify.add_argument("id", metavar="ID")
+    reclassify.add_argument(
+        "--kind",
+        choices=sorted(verbs.records_mod.KINDS),
+        default=None,
+        help="every status (02 §2: the filing is never frozen) — "
+        "behavior records only",
+    )
+    reclassify.add_argument(
+        "--type",
+        choices=sorted(verbs.records_mod.TYPES),
+        default=None,
+        help="pending/deferred only (02 §2 freezes type at routing); "
+        "re-validates the required body sections and refuses rather "
+        "than rewriting the body to fit",
+    )
+
     note_p = sub.add_parser(
         "note", help="append a commentary entry to a record (U-verbs §4.2)"
     )
@@ -426,6 +468,26 @@ def _build_parser() -> argparse.ArgumentParser:
     fdone.add_argument("id", metavar="ID")
     fdone.add_argument("--note", metavar="TEXT", help="done note → record + commit body")
     fdone.add_argument(
+        "--no-push",
+        action="store_true",
+        dest="no_push",
+        help="commit exactly as pinned, skip only the push",
+    )
+    fadd = followup_sub.add_parser(
+        "add",
+        help="open a follow-up on a routed record (U-verbs §4.7, Phase 2)",
+    )
+    fadd.add_argument("id", metavar="ID")
+    fadd.add_argument(
+        "--action", required=True, metavar="TEXT",
+        help="the planned upgrade (11 §2.1)",
+    )
+    fadd.add_argument(
+        "--unblocks-on", dest="unblocks_on", metavar="GATE",
+        help="human-readable gate label (e.g. M3)",
+    )
+    fadd.add_argument("--note", metavar="TEXT", help="why the strong form matters")
+    fadd.add_argument(
         "--no-push",
         action="store_true",
         dest="no_push",
@@ -660,7 +722,32 @@ def _build_parser() -> argparse.ArgumentParser:
         "remove", help="deregister a host (records and buckets are untouched)"
     )
     hrm.add_argument("path", metavar="PATH")
+    hrm.add_argument(
+        "--gate-only",
+        action="store_true",
+        dest="gate_only",
+        help="U-verbs §3.6: proceed even while >=1 routed record still "
+        "compiles into this host — today's behaviour, made explicit and "
+        "loud (a post-note names the count and the `recompile` "
+        "WARN-and-skip consequence). Without this flag, host remove "
+        "REFUSES on any such record.",
+    )
     host_sub.add_parser("list", help="show the registered hosts")
+
+    bucket_p = sub.add_parser(
+        "bucket", help="ledger bucket lifecycle (U-verbs §4.6, Phase 2)"
+    )
+    bucket_sub = bucket_p.add_subparsers(dest="bucket_command", metavar="<verb>")
+    bprune = bucket_sub.add_parser(
+        "prune",
+        help="remove every record-less, proposal-less bucket directory "
+        "(never the user/ bucket)",
+    )
+    bprune.add_argument("--dry-run", action="store_true", dest="dry_run")
+    bprune.add_argument(
+        "--no-push", action="store_true", dest="no_push",
+        help="commit exactly as pinned, skip only the push",
+    )
     hcd = host_sub.add_parser(
         "commit-drift",
         help="F5-5 guided commit-first: commit a dirty compile target's "
@@ -1605,6 +1692,20 @@ def _cmd_verb(args: argparse.Namespace) -> int:
                 home, args.id, append=args.append, key=args.key, no_push=args.no_push
             )
             return _finish_verb(result, "noted")
+        if args.command == "reroute":
+            result = verbs.reroute(
+                home, args.id, dest=args.dest, by=args.by, note=args.note,
+                no_push=args.no_push,
+            )
+            return _finish_verb(
+                result, _routed_destination(result), as_json=args.as_json
+            )
+        if args.command == "reclassify":
+            result = verbs.reclassify(
+                home, args.id, kind=args.kind, type=args.type, note=args.note,
+                no_push=args.no_push,
+            )
+            return _finish_verb(result, "reclassified")
     except verbs.VerbError as exc:  # incl. SecretRefusal
         print(f"self-learn {args.command}: {exc}", file=sys.stderr)
         return exc.exit_code
@@ -1737,8 +1838,19 @@ def _cmd_host_inner(args: argparse.Namespace, home) -> int:
         return EXIT_OK
 
     if args.host_command == "remove":
+        gate_only = getattr(args, "gate_only", False)
+        # N-3-style split (host_add's own precedent): the LIBRARY layer
+        # returns the fact (records_targeting), this CLI layer owns the
+        # terminal note — computed BEFORE the call so a --gate-only run
+        # can name the exact count it is bypassing (HOST2).
+        bypassed = (
+            hosts_mod.records_targeting(home, args.path) if gate_only else []
+        )
         try:
-            registry = hosts_mod.host_remove(home, args.path)
+            registry = hosts_mod.host_remove(home, args.path, gate_only=gate_only)
+        except hosts_mod.HostRemoveRefused as exc:
+            print(f"self-learn host remove: {exc}", file=sys.stderr)
+            return 1
         except hosts_mod.HostsError as exc:
             print(f"self-learn host remove: {exc}", file=sys.stderr)
             return EXIT_USAGE
@@ -1749,6 +1861,12 @@ def _cmd_host_inner(args: argparse.Namespace, home) -> int:
         )
         print("  the bucket and its records are untouched — only the "
               "compile gate closed")
+        if bypassed:
+            print(
+                f"  --gate-only: {len(bypassed)} routed record(s) still "
+                "compiled into this host — that canon is now UNMANAGED; "
+                "`recompile` will WARN and skip it"
+            )
         return EXIT_OK
 
     if args.host_command == "list":
@@ -1801,6 +1919,43 @@ def _cmd_host_inner(args: argparse.Namespace, home) -> int:
         file=sys.stderr,
     )
     return EXIT_USAGE
+
+
+def _cmd_bucket(args: argparse.Namespace) -> int:
+    """The ``bucket`` surface (U-verbs S-54 / §4.6, Phase 2, HOST4) —
+    same home-gate/GitOpsError discipline as ``_cmd_host`` (round 7
+    BLOCKER 1's own reasoning applies here too: a missing home makes
+    ``commit_lock_path`` raise)."""
+    if args.bucket_command != "prune":
+        print("usage: self-learn bucket prune [--dry-run] [--no-push]", file=sys.stderr)
+        return EXIT_USAGE
+    home = resolve_home()
+    if (code := _home_gate(home)) is not None:
+        return code
+    try:
+        result = verbs.bucket_prune(home, dry_run=args.dry_run, no_push=args.no_push)
+    except gitops.HalfWrittenError as exc:
+        return _report_half_written("bucket prune", exc)
+    except gitops.GitOpsError as exc:
+        print(f"self-learn bucket prune: {exc}", file=sys.stderr)
+        return EXIT_GIT_FAILED
+    if args.dry_run:
+        if not result.pruned:
+            print("bucket prune (dry-run): nothing to prune")
+        else:
+            print(f"bucket prune (dry-run): {len(result.pruned)} empty bucket(s)")
+            for b in result.pruned:
+                print(f"  {b}")
+        return EXIT_OK
+    if not result.pruned:
+        print("bucket prune: nothing to prune")
+        return EXIT_OK
+    print(f"bucket prune: {len(result.pruned)} empty bucket(s) removed")
+    for b in result.pruned:
+        print(f"  {b}")
+    if result.push is not None and not result.push.ok:
+        return result.push.exit_code
+    return EXIT_OK
 
 
 def _host_line(home, path, kind: str) -> str:
@@ -2028,26 +2183,39 @@ def _cmd_prune_memory(args: argparse.Namespace) -> int:
 
 
 def _cmd_followup(args: argparse.Namespace) -> int:
-    if args.followup_command != "done":
-        print("usage: self-learn followup done <id> [--note TEXT]", file=sys.stderr)
+    if args.followup_command not in ("done", "add"):
+        print(
+            "usage: self-learn followup done <id> [--note TEXT] | "
+            "followup add <id> --action TEXT [--unblocks-on GATE] "
+            "[--note TEXT]",
+            file=sys.stderr,
+        )
         return EXIT_USAGE
     home = resolve_home()
     if (code := _home_gate(home)) is not None:  # see _cmd_verb
         return code
+    surface = f"followup {args.followup_command}"
     try:
-        result = verbs.followup_done(
-            home, args.id, note=args.note, no_push=args.no_push
-        )
+        if args.followup_command == "add":
+            result = verbs.followup_add(
+                home, args.id, action=args.action, unblocks_on=args.unblocks_on,
+                note=args.note, no_push=args.no_push,
+            )
+        else:
+            result = verbs.followup_done(
+                home, args.id, note=args.note, no_push=args.no_push
+            )
     except verbs.VerbError as exc:
-        print(f"self-learn followup done: {exc}", file=sys.stderr)
+        print(f"self-learn {surface}: {exc}", file=sys.stderr)
         return exc.exit_code
     except LedgerOpsError as exc:
-        print(f"self-learn followup done: {exc}", file=sys.stderr)
+        print(f"self-learn {surface}: {exc}", file=sys.stderr)
         return EXIT_USAGE
     except gitops.GitOpsError as exc:  # BLOCKER B: never a traceback
-        print(f"self-learn followup done: {exc}", file=sys.stderr)
+        print(f"self-learn {surface}: {exc}", file=sys.stderr)
         return EXIT_GIT_FAILED
-    return _finish_verb(result, "follow-up done")
+    label = "follow-up added" if args.followup_command == "add" else "follow-up done"
+    return _finish_verb(result, label)
 
 
 def _cmd_telemetry(args: argparse.Namespace) -> int:
@@ -2328,6 +2496,10 @@ VERB_COMMANDS = frozenset(
         "undefer",
         "reopen",
         "note",
+        # U-verbs Phase 2: reroute/reclassify dispatch through the SAME
+        # `_cmd_verb` ladder too — no new caller of the epilogue.
+        "reroute",
+        "reclassify",
     }
 )
 
@@ -2512,6 +2684,9 @@ def _main(argv: list[str] | None = None) -> int:
 
     if args.command == "host":
         return _cmd_host(args)
+
+    if args.command == "bucket":
+        return _cmd_bucket(args)
 
     if args.command == "recompile":
         sentinel.heartbeat()  # mutating invocation class (08 §1)

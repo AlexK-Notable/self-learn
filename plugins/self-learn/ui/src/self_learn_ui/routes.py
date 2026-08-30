@@ -66,6 +66,19 @@ _VERB_LABELS = {
     "confirm-recurrence": "Confirm recurrence",
     "link-contradicts": "Link contradiction",
     "followup-done": "Mark follow-up done",
+    # U-verbs S-54 §4.9 (Phase 2, G10 + POST-surface parity): the four
+    # G10 verbs, this unit's Phase-1 additions, and its Phase-2
+    # additions — every one of `UI_PARITY_VERBS` below.
+    "dismiss-suspect": "Dismiss suspect",
+    "rescope": "Change scope",
+    "supersede": "Supersede",
+    "confirm-held": "Still holding",
+    "reroute": "Re-route",
+    "reopen": "Reopen",
+    "undefer": "Un-defer",
+    "note": "Add note",
+    "followup-add": "Add follow-up",
+    "reclassify": "Reclassify",
 }
 
 #: Verbs the HUMAN action-bar routes accept. `rehome` is deliberately
@@ -73,6 +86,44 @@ _VERB_LABELS = {
 #: in M1 — agent proposal + the CLI verb are the two hands); its label
 #: above serves the proposal bar only.
 _KNOWN_VERBS = frozenset(_VERB_LABELS) - {"rehome"}
+
+#: U-verbs S-54 §4.9 / UIP1 (normative, asserted as a literal by the UI
+#: test): the record-mutating verb set the UI action bar is exhaustively
+#: proved to know about — NEVER derived from a positional-name
+#: heuristic (r2's form: `grep -c 'add_argument("id"'` swept in
+#: `proposal validate` and `host commit-drift`, neither excludable by
+#: name, and missed `supersede` entirely — its positionals are
+#: `OLD_ID`/`NEW_ID`, not `id`). Excluded, each with its reason: `rehome`
+#: (09 §11 Y-18 decision 3 — proposal-bar label only); `teach` (creates,
+#: does not act on an existing record); `show` / `route --dry-run`
+#: (read-only); `batch` (takes a sheet, not a record id); `proposal
+#: validate` / `host commit-drift` (a positional ID, but not a record
+#: resolution).
+UI_PARITY_VERBS = frozenset(
+    {
+        # G10
+        "dismiss-suspect",
+        "rescope",
+        "supersede",
+        "confirm-held",
+        # already present
+        "route",
+        "reject",
+        "defer",
+        "graduate",
+        "confirm-recurrence",
+        "link-contradicts",
+        "followup-done",
+        # U-verbs Phase 1
+        "undefer",
+        "reopen",
+        "note",
+        # U-verbs Phase 2
+        "reroute",
+        "followup-add",
+        "reclassify",
+    }
+)
 
 #: The Y-18 bucket-change staleness notice (plain words, the
 #: resolved-elsewhere shape): a CLI-side rehome moved the record while
@@ -98,6 +149,11 @@ def build_argv(
     tolerate: bool = False,
     target: str | None = None,
     to: str | None = None,
+    why: str | None = None,
+    action: str | None = None,
+    unblocks_on: str | None = None,
+    kind: str | None = None,
+    record_type: str | None = None,
     no_push: bool = False,
     as_json: bool = False,
 ) -> list[str]:
@@ -158,6 +214,48 @@ def build_argv(
         argv = ["link", "contradicts", record_id, target or ""]
     elif verb == "followup-done":
         argv = ["followup", "done", record_id]
+    elif verb == "dismiss-suspect":
+        argv = [
+            "dismiss-suspect", record_id, "--event", event or "", "--why", why or "",
+        ]
+    elif verb == "rescope":
+        argv = ["rescope", record_id, "--to", to or ""]
+    elif verb == "supersede":
+        # `supersede`'s positionals are OLD_ID/NEW_ID, never a single
+        # record id + a flag (§2.8's own measured shape) — `target`
+        # (already the "a second record" slot `link-contradicts` uses)
+        # carries the replacement id.
+        argv = ["supersede", record_id, target or ""]
+    elif verb == "confirm-held":
+        argv = ["confirm-held", record_id]
+    elif verb == "reroute":
+        argv = ["reroute", record_id, "--dest", dest or ""]
+        if by:
+            argv += ["--by", by]
+        if as_json:
+            argv.append("--json")
+    elif verb == "reopen":
+        argv = ["reopen", record_id]
+    elif verb == "undefer":
+        argv = ["undefer", record_id]
+    elif verb == "note":
+        # `note`'s own parser has no `--note` flag at all — the shared
+        # tail below must not append one (the exact bug class this
+        # docstring already names for `--json`, on a different flag).
+        argv = ["note", record_id, "--append", note or ""]
+        if no_push:
+            argv.append("--no-push")
+        return argv
+    elif verb == "followup-add":
+        argv = ["followup", "add", record_id, "--action", action or ""]
+        if unblocks_on:
+            argv += ["--unblocks-on", unblocks_on]
+    elif verb == "reclassify":
+        argv = ["reclassify", record_id]
+        if kind:
+            argv += ["--kind", kind]
+        if record_type:
+            argv += ["--type", record_type]
     else:
         raise ValueError(f"unknown verb: {verb!r}")
     if note:
@@ -1335,6 +1433,7 @@ def _armed_context(
     target: str | None,
     dest_touched: bool = False,
     scope: str | None = None,
+    why: str | None = None,
 ) -> dict[str, Any]:
     return {
         "kind": kind,
@@ -1363,6 +1462,7 @@ def _armed_context(
             "event": event,
             "tolerate": tolerate,
             "target": target,
+            "why": why,
             "show_note_hint": verb == "reject" and not note,
             # FW-64: carried through to the confirm form as a hidden
             # field, same discipline as every other armed.* value here
@@ -1466,6 +1566,7 @@ def action_arm(
     tolerate: bool = Form(False),
     target: str | None = Form(None),
     dest_touched: bool = Form(False),
+    why: str | None = Form(None),
 ) -> HTMLResponse:
     if verb not in _KNOWN_VERBS:
         return HTMLResponse("unknown verb", status_code=400)
@@ -1485,6 +1586,7 @@ def action_arm(
         target=target or None,
         dest_touched=dest_touched,
         scope=_record_scope(request, record_id),
+        why=why or None,
     )
     return _render(request, "partials/action_bar.html", ctx)
 
@@ -1717,6 +1819,7 @@ async def action_confirm(
     tolerate: bool = Form(False),
     target: str | None = Form(None),
     dest_touched: bool = Form(False),
+    why: str | None = Form(None),
 ) -> Response:
     if verb not in _KNOWN_VERBS:
         return HTMLResponse("unknown verb", status_code=400)
@@ -1745,6 +1848,7 @@ async def action_confirm(
         event=event or None,
         tolerate=tolerate,
         target=target or None,
+        why=why or None,
         as_json=verb in _EVIDENCE_VERBS,
     )
 

@@ -184,28 +184,20 @@ def spool_suspect(home, routed_id, *, origin="lrn-0000eeee", basis="miner-match"
 
 
 class TestPhaseBoundary:
-    def test_ph1_no_phase2_symbol_in_phase1_tree(self):
-        """PH1: a literal, unpiped grep for the six Phase-2 names across
-        cli/src + ui/src returns 0 -- with a positive control proving the
-        grep itself can find something (``require_status``, >= 12 hits)."""
-        pattern = (
-            r"\breroute\b|retire_reference|records_targeting|bucket_prune"
-            r"|followup_add|reclassify"
-        )
-        proc = subprocess.run(
-            ["grep", "-rnE", pattern, str(CLI_SRC), str(UI_SRC)],
-            capture_output=True, text=True,
-        )
-        assert proc.returncode == 1, (
-            "PH1 violation(s) found:\n" + proc.stdout
-        )  # rc 1 == grep found nothing; rc 0 would BE the violation
-
-        control = subprocess.run(
-            ["grep", "-rn", "require_status", str(CLI_SRC), str(UI_SRC)],
-            capture_output=True, text=True,
-        )
-        assert control.returncode == 0
-        assert len(control.stdout.splitlines()) >= 12
+    """PH1 (S-54, U-verbs Phase 2 build) lived here as a skip-marked
+    tombstone through the code gate r1 round; deleted per the
+    orchestrator's landing ruling (gate-confirmed safe: nothing
+    references it by name, no test asserts a suite total, and armor's
+    UN3 is hermetic post-landing so this working-tree deletion cannot
+    move it). PH1 asserted the ABSENCE of six Phase-2 symbols
+    (`reroute`, `retire_reference`, `records_targeting`, `bucket_prune`,
+    `followup_add`, `reclassify`) from the Phase-1 tree -- true only
+    while Phase 1 stood alone (spec S5.0's own verification window);
+    once Phase 2 landed in the SAME tree those symbols exist BY DESIGN
+    (RER/HOST/META), making the criterion genuinely obsolete rather
+    than merely unneeded. It is not renamed or repurposed to check
+    anything else -- it checked one thing, that thing stopped being
+    true on purpose, and no successor criterion needs the same shape."""
 
     def test_ph2_batch_module_is_phase1_only(self):
         """Supporting check, NOT the PH2 discriminator (code gate r1,
@@ -213,8 +205,18 @@ class TestPhaseBoundary:
         verbs -- no Phase-2 verb name appears in it, and it is not a
         superset that would let a sheet name one. PH2's own criterion --
         Phase 1 writes to NO HOST -- is proven by
-        ``test_phase1_touches_no_host`` below."""
-        phase2_verbs = {"reroute", "followup add", "reclassify", "host remove", "bucket prune"}
+        ``test_phase1_touches_no_host`` below.
+
+        gate r2 m-2: the hyphenated ``"followup-add"`` spelling below
+        (matching the established sibling ``"followup-done"`` this
+        module already uses at PERMITTED_KEYS/verbs.py/routes.py) is
+        invisible to its OWN edit -- reverting it to the old
+        ``"followup add"`` leaves the overlap assertion green either
+        way, because NEITHER spelling is in PERMITTED_VERBS today. The
+        explicit membership pin just below makes the correct spelling
+        self-verifying: it fails directly if the literal reverts."""
+        phase2_verbs = {"reroute", "followup-add", "reclassify", "host remove", "bucket prune"}
+        assert "followup-add" in phase2_verbs  # gate r2 m-2: pins the spelling itself
         assert not (batch.PERMITTED_VERBS & phase2_verbs)
         assert len(batch.PERMITTED_VERBS) == 15
 

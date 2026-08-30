@@ -75,6 +75,7 @@ __all__ = [
     "read_proposal",
     "record_title",
     "reopen_record",
+    "reroute_record",
     "move_record",
     "require_status",
     "resolve_record",
@@ -2499,6 +2500,52 @@ def reopen_record(home: Path, record_id: str) -> tuple[list[Path], list[Path]]:
     swept = remove_proposal_siblings(home, bucket_dir, record_id)
     touched: list[Path] = [path, dest_path, *swept]
     return touched, swept
+
+
+def reroute_record(
+    home: Path,
+    record_id: str,
+    *,
+    destination: str,
+    by: str,
+    routed_at: str | None = None,
+    reference_file: str | None = None,
+    variant: str | None = None,
+    rules_topic: str | None = None,
+    rules_paths: list[str] | None = None,
+) -> list[Path]:
+    """File-op half of ``reroute`` (U-verbs S-54 / §4.5, Phase 2):
+    correct a wrong routing DESTINATION on an already-ROUTED record. The
+    OLD routing block is DISPLACED into ``history`` (``event="routing"``,
+    never destroyed — the SAME discipline :func:`reopen_record` already
+    gives ``resolution_note``), and the new one is written; ``status``
+    stays ``routed`` and the file stays in ``resolved/`` — no move, no
+    plane change (only ``routed → routed`` reroutes an already-resolved
+    record).
+
+    Trusts the caller to have already gated on status
+    (:func:`require_status` with :data:`ROUTED_ONLY`) — same trust
+    boundary :func:`move_record`/:func:`reopen_record` have toward
+    theirs; re-reads the record fresh here (the state THIS write is
+    based on, never the caller's pre-lock read)."""
+    path, record = require_status(home, record_id, ROUTED_ONLY, verb="reroute")
+    record.append_history("routing", {"routing": dict(record.routing or {})})
+    routing: dict[str, object] = {
+        "routed_at": routed_at if routed_at is not None else _now_iso(),
+        "destination": destination,
+        "by": by,
+    }
+    if reference_file is not None:
+        routing["reference_file"] = reference_file
+    if variant is not None:
+        routing["variant"] = variant
+        if rules_topic is not None:
+            routing["rules_topic"] = rules_topic
+        if rules_paths is not None:
+            routing["rules_paths"] = list(rules_paths)
+    record.set_routing(routing)
+    record.write(path)
+    return [path]
 
 
 def supersede_cycle_check(home: Path, old_id: str, new_id: str) -> None:

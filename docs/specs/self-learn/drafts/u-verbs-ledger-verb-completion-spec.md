@@ -656,11 +656,17 @@ lock helper is introduced. `NOT_REPO_TRUTH` does **not** grow.
 
 ### 2.10 Test baselines
 
+*(CORRECTED at Phase 2 code gate r1 landing: the two totals below were
+the PRE-BUILD baseline at `b206800` -- badly stale once Phase 1 AND
+Phase 2 landed in the same tree. Re-measured LIVE, after the gate r1
+Blocker/Major/Minor fix round (PH1's deletion + the six tests M-1/M-2/
+M-3/the three Minors added):)*
+
 ```
 $ (cd plugins/self-learn/cli && uv run --project . pytest --collect-only -q | tail -1)
-2636 tests collected in 0.50s
+2823 tests collected in 0.54s
 $ (cd plugins/self-learn/ui  && uv run --project . pytest --collect-only -q | tail -1)
-1279 tests collected in 0.52s
+1282 tests collected in 0.54s
 ```
 
 Per-file, for every file this unit reads or extends:
@@ -677,6 +683,7 @@ Per-file, for every file this unit reads or extends:
 | `test_dismiss_suspect.py` | 27 | unchanged |
 | `test_ledger_ops.py` | 56 | unchanged |
 | `test_miner.py` / `test_worker.py` | 100 / 52 | unchanged |
+| `test_u_verbs.py` (this unit's own) | **94** (was 95) | PH1's skip-marked tombstone deleted outright at gate r1 landing (see `TestPhaseBoundary`'s own docstring); `phase2_verbs`'s `"followup add"` entry corrected to `"followup-add"` (Minor, gate r1: spelling unification) |
 
 ---
 
@@ -2104,11 +2111,11 @@ fact and only the "after" half is a prediction).
 | M50 | `host remove`: add `--retire`, looping `verbs.graduate` over the set | HOST3 | `predicted` |
 | M51 | `bucket prune`: treat "no `lrn-*.md`" alone as empty (ignore `proposals/`) | HOST4 | `predicted` |
 | M52 | `hosts.records_targeting`: compare `str(path)` instead of resolving both sides | HOST5 | `predicted` |
-| M53 | `verbs.followup_add`: hand-roll a shape check instead of calling `records._validate_follow_up` | META1 | `predicted` |
-| M54 | `verbs.followup_add`: overwrite an open `routing.follow_up` | META2 | `predicted` |
-| M55 | `verbs.reclassify`: apply `LIVE_STATUSES` to `--kind` as well as `--type` | META3 | `predicted` |
-| M56 | `verbs.reclassify`: append the missing required heading on a `--type` change | META4 | `predicted` |
-| M57 | `cli`: make `--kind` a free string instead of `choices=sorted(records.KINDS)` | META5 | `predicted` |
+| M53 | `verbs.followup_add`: hand-roll a shape check instead of calling `records._validate_follow_up` | META1 | `predicted`, **MEASURED** (gate r2 M-A re-verify): pre-M-A the r1 fold's blanket `except RecordError` wrapper caught the ValidationError `Record.set_follow_up` raises regardless of this mutation and relabelled it `VerbError`, so `test_followup_add_malformed_unblocks_on_refuses` (`pytest.raises(VerbError)`) passed either way -- hollowed out. Post-M-A-fix (narrowed to `except records_mod.MutationError`), re-run: RC=1, the SAME `ValidationError` now escapes UNCAUGHT ("follow_up unblocks_on must be non-empty text") past `pytest.raises(verbs.VerbError)` -- lethality restored, MEASURED fresh this fold. |
+| M54 | `verbs.followup_add`: overwrite an open `routing.follow_up` | META2 | `predicted`, **MEASURED** (gate r2 fold, re-verified against the rewritten `reclassify`/`followup_add` shape): neutralizing the `if existing: raise VerbError(...)` guard reddens `TestMETA2FollowupAddRefusesWhenOpen::test_followup_add_refuses_when_open` cleanly -- `Failed: DID NOT RAISE VerbError`. |
+| M55 | `verbs.reclassify`: apply `LIVE_STATUSES` to `--kind` as well as `--type` | META3 | `predicted`, **MEASURED** (gate r2 fold, re-verified against `_reclassify_apply`): adding a `require_status(..., LIVE_STATUSES, verb="reclassify --kind")` gate to the `kind is not None` branch reddens `TestMETA3ReclassifyStatusAsymmetry::test_reclassify_status_asymmetry` cleanly on the first non-live status in the loop (`routed`) -- `VerbError: record lrn-50000003 is 'routed' — reclassify --kind needs status pending/deferred (02 §2)`, uncaught by the test (the loop expects success in every status). |
+| M56 | `verbs.reclassify`: append the missing required heading on a `--type` change | META4 *(retargeted gate r2 fold, re-verified against `_reclassify_apply`: swallowing the early `except RecordError` refusal in the pre-lock type-change block alone leaves `test_reclassify_type_revalidates` GREEN -- MEASURED (`1 passed`). The criterion IS guarded, one layer down: gate r2's B-1 fix added an independent pre-lock simulate-and-`Record.validate()` step whose own `set_type(...)` call re-runs the identical body-shape validator and raises the SAME `ValidationError` -- only that inner validator message ("must contain a '## Trigger' section") is shared; the two `VerbError` WRAPPER f-strings differ ("cannot reclassify to type ...: the body is never rewritten to fit" vs "cannot reclassify to kind=None type=..."). So disabling the early check alone does not silence the refusal -- the refusal still fires, through the OTHER layer, and the test still PASSES. Disabling BOTH the early check AND the B-1 simulation step DOES silence the test's easy path, but the LOCK BODY's own `_reclassify_apply(record, ...)` call (a fresh, unsimulated `set_type`) still raises the same `ValidationError` -- and gate r2 M-A's narrowed `except records_mod.MutationError` does NOT catch it, so it escapes UNCAUGHT past `pytest.raises(VerbError)` -- MEASURED RED, but via an uncaught `ValidationError` (wrong exception type, not the value sailing through unrefused), not the clean shape M56's own name suggests. Those three layers were what would have needed removing to let a malformed body through to disk AT THE TIME this cell was first written; a fourth, `Record.write()`'s own now-unconditional `self.validate()` (added the same advisor-re-check round as this correction), independently closes the same gap even if all three above were removed.)* | `predicted`, **MEASURED** (gate r2) |
+| M57 | `cli`: make `--kind` a free string instead of `choices=sorted(records.KINDS)` | META5 *(retargeted gate r2, m-3: `TestMETA5ReclassifyUsage` drives `verbs.reclassify(...)` directly, never `cli.main`, so removing the CLI's own `choices=` alone leaves it GREEN -- MEASURED. The criterion IS guarded, one layer down: `verbs.reclassify`'s own `if kind not in records_mod.KINDS: raise VerbUsageError` (`verbs.py`) is what M57 actually needs to disable to redden META5 -- MEASURED RED, though not by the clean shape either mutation's own name suggests: gate r2's B-1 fix added an independent resulting-pair check (`_reclassify_apply` + `Record.validate()`) that ALSO rejects an out-of-enum `--kind` one layer further in, through `Record.set_kind`'s own enum check -- so disabling the verb-layer gate alone still reddens the test, but via an uncaught `VerbError` escaping a `pytest.raises(VerbUsageError)` block (wrong exit code, 1 not 64) rather than the value sailing through unrefused. Both checks would need removing to actually silence the test (as of this cell's own writing -- `sim.validate()`'s own pre-lock call and, since the same advisor-re-check round as M56's correction, `Record.write()`'s own unconditional `self.validate()` both still independently catch it even if both checks named here were removed; not re-measured, a parenthetical not a re-verify).)* | `predicted`, **MEASURED** (gate r2)
 | M58 | `ui/routes.py`: drop `supersede` from `_VERB_LABELS` (and therefore from `_KNOWN_VERBS`) | **UIP1 leg (a)** — `supersede` is in the normative `UI_PARITY_VERBS` set *(retargeted r3, gate M-3: r2's mutation was "hand-write the expected list", whose own cell admitted it "would go green", i.e. it reddened no criterion)* | `predicted` |
 | M59 | `ui.build_argv`: append `--json` at the shared `--note`/`--no-push` tail | UIP2 | `predicted` (**MEASURED** anchor: `build_argv`'s docstring records this exact bug class) |
 | M60 | `action_bar.html`: omit the `event` hidden field from the Dismiss control | UIP3 | `predicted` |
