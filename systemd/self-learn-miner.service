@@ -32,15 +32,23 @@ Environment=SELF_LEARN_HOME=%h/.self-learn
 # systemd user-manager's own PATH (`systemctl --user show-environment`
 # has no `~/bin` entry at all, among 536 duplicated
 # `.local/bin` entries), and `shutil.which("self-learn-notify")` under
-# that exact PATH returns `None` -- so notifications kicked from a
-# miner-triggered worker run have been SILENTLY FAILING all along, not
-# since this unit's PATH pin, and not because of it. Adding %h/bin here
-# does not merely preserve something that worked by accident (as the
-# host/ui units' own pins do) -- it REPAIRS a live, pre-existing silent
-# failure. After this lands, notifications that were being silently
-# dropped may start firing — a user-visible behaviour change, flagged
-# here rather than left for the desktop to announce on its own. The
-# `claude` CLI itself still needs no PATH pin, on any of the three
+# that exact PATH returns `None`. Gate r3 CORRECTED the conclusion drawn
+# from that measurement (r2 called it a silent failure -- it is not):
+# `worker.py:3103-3106` logs a line and degrades to `_notify()`, a plain
+# `notify-send self-learn <message>` with no `-A`/action flag -- neither
+# silent nor a failure, notify-send itself resolves fine under this
+# manager's PATH (/usr/bin is on it) and DBUS_SESSION_BUS_ADDRESS is
+# present, and self-learn-miner.timer is not even installed on this host
+# (three units listed, no timer) -- the real ledger's worker.log carries
+# zero notify lines either way. What adding %h/bin actually changes:
+# `self-learn-notify` (this same repo's script) registers a click-to-open
+# `-A "open=Open"` action tied to `--ids <csv-of-record-ids>`, which the
+# plain `_notify()` fallback above never does (no `-A` anywhere in it) --
+# so this pin upgrades a working-but-action-less notification to one the
+# user can click to open the record, it does not repair anything that
+# was dropping silently.
+#
+# The `claude` CLI itself still needs no PATH pin, on any of the three
 # units: `claude_agent_sdk`'s own `_find_cli()` (used by ALL FOUR
 # surfaces, miner included, since U-cleanup-B) checks a binary BUNDLED
 # inside the installed package first — confirmed present in this

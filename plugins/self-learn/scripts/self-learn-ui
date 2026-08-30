@@ -75,6 +75,21 @@ _resolve_uv_bin() {
 
 # Only resolve-and-exec when this file is EXECUTED, not when it is
 # `source`d to load the functions above as a library (gate r2 MAJOR-1).
+# Gate r3 Nit: this guard is a comparison of two STRINGS, not a check
+# of "was this sourced" -- two non-shipped invocation shapes fall out
+# of that, worth naming rather than leaving for a future reader to
+# rediscover. (1) `source`ing this file with `$0` DELIBERATELY set to
+# equal this file's own path (e.g. `bash -c 'source "$1"' "$WRAPPER"
+# "$WRAPPER"`) still triggers resolve-and-exec, because the guard only
+# compares the two strings -- the shipped tests avoid this by sourcing
+# with `$0` set to an unrelated placeholder (`"_"` in
+# `_call_resolve_uv_bin`), never to this file's own path. (2) `bash -s
+# < this-file` (script read from stdin) is a silent NO-OP: `$0` is
+# `bash` there and `BASH_SOURCE[0]` never equals it, so the guard
+# quietly skips resolve-and-exec with no diagnostic at all -- not an
+# error, just nothing happening. Neither shape is how this file is
+# ever invoked in production (ExecStart calls it by path, install.sh
+# symlinks it by path) or by any shipped test.
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
   if UV_BIN="$(_resolve_uv_bin "$HOME/.local/bin/uv" /usr/local/bin/uv /usr/bin/uv)"; then
     exec "$UV_BIN" run --project "$(dirname "$(readlink -f "$0")")/../ui" self-learn-ui "$@"

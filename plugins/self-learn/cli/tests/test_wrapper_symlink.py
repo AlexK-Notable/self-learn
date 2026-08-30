@@ -41,11 +41,28 @@ anyway, because none of them checked stderr. Now provides `dirname` and
 `readlink` too, and every call site asserts the directory holds exactly
 those three names -- proof, not assumption, and no longer overclaimed
 in this docstring (round 1's version claimed "each caller" already made
-the assertion; it was false for 2 of this file's 4 call sites)."""
+the assertion; it was false for 2 of this file's 4 call sites).
+
+Gate r3 fold (2026-08-29): round 2's decomposition was necessary but
+not sufficient. `_resolve_uv_bin`'s new function-level tests
+(`_call_resolve_uv_bin` above) are hermetic, but the WHOLE-WRAPPER
+subprocess tests below never touched /usr/local/bin/uv or
+/usr/bin/uv -- the gate reproduced round 2's exact signature in an
+unprivileged mount namespace with a real uv planted at
+/usr/local/bin/uv (2 CLI failures, named at each affected test). Fixed
+with `_run_wrapper_uv_masked`: runs the REAL wrapper end to end inside
+a fresh, unprivileged `unshare --user --map-root-user --mount`
+namespace where /usr/local/bin and /usr/bin are guaranteed uv-free (or,
+for this file's own mutation-verification, guaranteed to hold a
+controlled stub) -- regardless of what this host actually has there,
+and never visible outside that namespace. See that function's own
+docstring for the mirror/clone mechanism, and the affected tests'
+docstrings for the regression each closes."""
 
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -114,6 +131,129 @@ def _call_resolve_uv_bin(*candidates: str) -> subprocess.CompletedProcess:
         capture_output=True,
         text=True,
         timeout=30,
+    )
+
+
+def _unprivileged_userns_available() -> bool:
+    """Gate r3 MAJOR-1: probes whether this host permits an
+    unprivileged `unshare --user --map-root-user --mount` -- the
+    technique below uses it to hermeticize the wrapper's ABSOLUTE
+    fallback candidates (`/usr/local/bin/uv`, `/usr/bin/uv`), which a
+    hermetic PATH cannot touch (`_uv_is_valid` checks them by absolute
+    path, never via PATH lookup -- that is their whole purpose). False
+    on a kernel/policy that disables unprivileged user namespaces (a
+    `kernel.unprivileged_userns_clone=0` sysctl, or an AppArmor policy
+    some distros ship) -- the three tests below skip rather than fail
+    there, so the suite stays portable. Needs no privilege of its own:
+    this same probe command is what the gate itself used to prove
+    round 2's MAJOR-1 was still open."""
+    unshare = shutil.which("unshare")
+    if not unshare:
+        return False
+    try:
+        probe = subprocess.run(
+            [unshare, "--user", "--map-root-user", "--mount", "--", "true"],
+            capture_output=True,
+            timeout=10,
+        )
+    except OSError:
+        return False
+    return probe.returncode == 0
+
+
+_NAMESPACE_AVAILABLE = _unprivileged_userns_available()
+_NAMESPACE_SKIP_REASON = (
+    "unprivileged user namespaces unavailable on this host/policy "
+    "(kernel.unprivileged_userns_clone=0 or an AppArmor restriction) -- "
+    "the three namespace-hermetic wrapper tests need `unshare --user "
+    "--map-root-user --mount` to neutralize /usr/local/bin/uv and "
+    "/usr/bin/uv regardless of what this host actually has there"
+)
+
+
+def _run_wrapper_uv_masked(
+    *,
+    home: Path,
+    path_dir: Path,
+    args: list[str],
+    plant_stub_uv_at: str | None = None,
+) -> subprocess.CompletedProcess:
+    """Gate r3 MAJOR-1: run the REAL wrapper end to end inside a fresh,
+    unprivileged mount namespace where `/usr/local/bin/uv` and
+    `/usr/bin/uv` are GUARANTEED absent (or, with `plant_stub_uv_at`
+    set, guaranteed to hold a controlled stub) -- regardless of what
+    this actual host has at those absolute paths. This is the same
+    class of proof the gate used to disprove round 2's MAJOR-1: a
+    hermetic PATH cannot touch these two candidates, because
+    `_uv_is_valid` checks them by absolute path.
+
+    Technique: `/usr/local/bin` is replaced outright with an empty
+    tmpfs (nothing there is needed by the wrapper). `/usr/bin` is
+    replaced with a CLONE -- a fresh directory of symlinks pointing at
+    a separately bind-mounted MIRROR of the real `/usr/bin` (so every
+    other binary, `env` included -- the wrapper's own shebang target --
+    keeps working exactly as before) -- EXCLUDING `uv` (or replacing it
+    with a stub, when `plant_stub_uv_at` asks for one). The mirror
+    indirection is load-bearing: a symlink placed directly at
+    `/usr/bin/<name> -> /usr/bin/<name>` would, once the clone is
+    mounted OVER `/usr/bin`, resolve to ITSELF (ELOOP) -- the mirror
+    lives at a separate, stable path the swap never touches.
+
+    A brand-new mount namespace this test creates is never visible
+    outside it and never propagates back to the real host (confirmed
+    directly: the real `/usr/local/bin` and `/usr/bin/uv` are
+    unaffected after every run of this helper) -- `mount
+    --make-rprivate /` is added defensively so this holds even on a
+    host whose root mount happens to be marked shared.
+
+    `plant_stub_uv_at` (`"usr-local-bin"` or `"usr-bin"`) writes a
+    distinguishable, non-network stub `uv` at that location BEFORE the
+    final mount swap -- used only for this file's own mutation-
+    verification (proving the mask is real, not merely absent because
+    this dev host never had a packaged uv to begin with), never by a
+    shipped test's must-pass path."""
+    plant_local = ""
+    plant_bin = ""
+    if plant_stub_uv_at == "usr-local-bin":
+        plant_local = (
+            "printf '#!/usr/bin/env bash\necho "
+            "\"NAMESPACE_PLANTED_UV: $*\"\n' > /usr/local/bin/uv\n"
+            "chmod 0755 /usr/local/bin/uv\n"
+        )
+    elif plant_stub_uv_at == "usr-bin":
+        plant_bin = (
+            "printf '#!/usr/bin/env bash\necho "
+            "\"NAMESPACE_PLANTED_UV: $*\"\n' > \"$CLONE_BIN/uv\"\n"
+            "chmod 0755 \"$CLONE_BIN/uv\"\n"
+        )
+    elif plant_stub_uv_at is not None:
+        raise ValueError(f"unknown plant_stub_uv_at: {plant_stub_uv_at!r}")
+
+    wrapper_argv = " ".join(
+        shlex.quote(a) for a in [str(WRAPPER), *args]
+    )
+    script = f"""
+set -euo pipefail
+shopt -s nullglob
+mount --make-rprivate / 2>/dev/null || true
+[ -d /usr/local/bin ] || mkdir -p /usr/local/bin
+mount -t tmpfs tmpfs /usr/local/bin
+{plant_local}MIRROR_BIN="$(mktemp -d)"
+mount --bind /usr/bin "$MIRROR_BIN"
+CLONE_BIN="$(mktemp -d)"
+for e in "$MIRROR_BIN"/*; do
+  name="$(basename "$e")"
+  if [ "$name" = "uv" ]; then continue; fi
+  ln -s "$e" "$CLONE_BIN/$name"
+done
+{plant_bin}mount --bind "$CLONE_BIN" /usr/bin
+exec env -i HOME={shlex.quote(str(home))} PATH={shlex.quote(str(path_dir))} {wrapper_argv}
+"""
+    return subprocess.run(
+        ["unshare", "--user", "--map-root-user", "--mount", "--", "bash", "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=60,
     )
 
 
@@ -198,29 +338,32 @@ def test_wrapper_falls_back_to_home_local_bin_uv_when_path_lacks_it(tmp_path):
     assert "self-learn status --json" in result.stdout
 
 
+@pytest.mark.skipif(not _NAMESPACE_AVAILABLE, reason=_NAMESPACE_SKIP_REASON)
 def test_wrapper_fails_loudly_with_no_bare_127_when_uv_is_nowhere(tmp_path):
     """Not-found path: PATH is `_hermetic_bin`'s single uv-free
-    directory, and $HOME/.local/bin/uv (the only fallback candidate
-    this sandboxed HOME could satisfy) doesn't exist either. Before the
-    fix this was the measured failure itself:
+    directory, $HOME/.local/bin/uv (the only fallback candidate this
+    sandboxed HOME could satisfy) doesn't exist, AND -- gate r3
+    MAJOR-1 -- /usr/local/bin/uv and /usr/bin/uv are masked absent by
+    `_run_wrapper_uv_masked`'s namespace, regardless of what this host
+    actually has there. Round 2's version of this test hermeticized
+    PATH only, so on a host that packages a real `uv` in one of those
+    two absolute locations it would find and EXEC that real `uv`
+    instead of hitting this diagnostic -- reproduced by the gate via a
+    mount namespace planting one at /usr/local/bin/uv (CLI 2 failures).
+    Before the original fix this was the measured failure itself:
     `/…/self-learn: line 6: exec: uv: not found` with no diagnostic
     naming what was looked for. The wrapper must now name every
-    location it checked and exit non-zero."""
+    location it checked and exit non-zero, on ANY host."""
     fake_home = tmp_path / "empty-home"
     fake_home.mkdir()
 
     hermetic_bin = _hermetic_bin(tmp_path)
     assert {p.name for p in hermetic_bin.iterdir()} == {"bash", "dirname", "readlink"}
 
-    env = {"HOME": str(fake_home), "PATH": str(hermetic_bin)}
-    result = subprocess.run(
-        [str(WRAPPER), "status", "--json"],
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=30,
+    result = _run_wrapper_uv_masked(
+        home=fake_home, path_dir=hermetic_bin, args=["status", "--json"]
     )
-    assert result.returncode != 0
+    assert result.returncode != 0, result.stderr
     assert result.stdout == ""
     assert "uv not found" in result.stderr
     assert "$HOME/.local/bin/uv" in result.stderr
@@ -262,31 +405,36 @@ def test_wrapper_prefers_a_path_visible_uv_over_the_fallback_location(tmp_path):
     assert "FALLBACK_UV_INVOKED" not in result.stdout
 
 
+@pytest.mark.skipif(not _NAMESPACE_AVAILABLE, reason=_NAMESPACE_SKIP_REASON)
 def test_wrapper_rejects_a_directory_named_uv_at_the_fallback_location(tmp_path):
     """Gate r1 MINOR-2/MINOR-5 (behavioral counterpart to the static
     check in ui/tests/test_wrapper.py -- the same `_uv_is_valid` fix
     covers this wrapper too): a DIRECTORY named `uv` sitting exactly
-    where the fallback would look must be treated as invalid, not
-    exec'd. Before the fix, bare `[[ -x ]]` accepts a directory (it is
+    where the $HOME fallback would look must be treated as invalid,
+    not exec'd, and -- gate r3 MAJOR-1 -- that must hold even when
+    /usr/local/bin/uv or /usr/bin/uv is a REAL, valid uv on the host
+    running this test: `_run_wrapper_uv_masked` masks both absent, so
+    the wrapper has nowhere left to fall through to but the diagnostic.
+    Round 2's version of this test only planted the directory and
+    hermeticized PATH, so a host packaging uv in either absolute
+    fallback location would find and exec THAT instead of ever
+    reaching this diagnostic -- reproduced by the gate via a mount
+    namespace (CLI 2 failures, this test named explicitly). Before the
+    original fix, bare `[[ -x ]]` accepts a directory (it is
     traversable) and `exec`ing it produces bash's own opaque "Is a
-    directory" (rc=126) -- measured against the pre-tightening wrapper
-    in the same scratch sandbox this test uses. The fixed wrapper must
-    fall through to the loud not-found diagnostic instead."""
+    directory" (rc=126) -- measured against the pre-tightening
+    wrapper. The fixed wrapper must fall through to the loud
+    not-found diagnostic instead."""
     fake_home = tmp_path / "home"
     (fake_home / ".local" / "bin" / "uv").mkdir(parents=True)
 
     hermetic_bin = _hermetic_bin(tmp_path)
     assert {p.name for p in hermetic_bin.iterdir()} == {"bash", "dirname", "readlink"}
 
-    env = {"HOME": str(fake_home), "PATH": str(hermetic_bin)}
-    result = subprocess.run(
-        [str(WRAPPER), "status", "--json"],
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=30,
+    result = _run_wrapper_uv_masked(
+        home=fake_home, path_dir=hermetic_bin, args=["status", "--json"]
     )
-    assert result.returncode != 0
+    assert result.returncode != 0, result.stderr
     assert "uv not found" in result.stderr
     assert "Is a directory" not in result.stderr
 
@@ -326,7 +474,19 @@ def test_resolve_uv_bin_rejects_a_mode_0111_candidate(tmp_path):
     (rc=126, measured directly against a throwaway mode-0111 script),
     not this script's diagnostic, because reading a shebang line needs
     read permission too. `_uv_is_valid`'s `-r` check must reject it and
-    let resolution fall through to the next candidate (or failure)."""
+    let resolution fall through to the next candidate (or failure).
+
+    Gate r3 measured artifact, recorded so a future reader does not
+    need to rediscover it: this test must NEVER be run as fake-root
+    inside an unprivileged user namespace (the technique
+    `_run_wrapper_uv_masked` above uses for the whole-wrapper tests) --
+    `uid 0` bypasses the `-r` DAC check entirely (confirmed directly:
+    `[[ -r mode0111-file ]]` is false as this suite's normal user, true
+    under `unshare --user --map-root-user`), which defeats the exact
+    property this test exists to verify. It uses `_call_resolve_uv_bin`
+    instead, which never enters a namespace -- correct, and must stay
+    that way; a future consolidation of this test into the namespace
+    helper would silently make it untestable, not merely redundant."""
     candidate = tmp_path / "mode0111" / "uv"
     candidate.parent.mkdir(parents=True)
     candidate.write_text("#!/usr/bin/env bash\necho should-never-run\n", encoding="utf-8")
