@@ -2395,3 +2395,172 @@ def test_un1_this_unit_does_not_change_the_suite_runner():
     # changed must be non-empty, so "unchanged" cannot be "looked at nothing"
     control = "plugins/self-learn/cli/scripts/land"
     assert numstat(control) != "", "UN1's instrument reported no diff for a file this unit wrote"
+
+
+# ---------------------------------------------------------------------------
+# The detector for the CLASS this round is about: an `[A]` criterion with no
+# test at all. Three were found that way across two gate rounds (SUI7, SUI8,
+# then SUI4 and UN4), each time by a human walking the table. This walks it.
+
+
+def _spec_criteria() -> list[tuple[str, str]]:
+    spec = (_spec_docs() / "drafts/u-land-landing-runner-spec.md").read_text()
+    section = spec[spec.index("## 5. "):spec.index("## 6. Mutation plan")]
+    return re.findall(r"^\| \*\*([A-Z]+\d+[a-z]?)\*\* \| \[(A|B)\]", section, re.M)
+
+
+def _all_test_source() -> str:
+    d = LF.THIS_REPO_CLI / "tests"
+    return "".join(
+        (d / n).read_text() for n in (
+            "test_land_runner.py", "test_landing_checks.py",
+            "test_landing_resolvers.py", "test_landing_fixture.py",
+        )
+    )
+
+
+def test_every_a_criterion_is_named_by_a_test():
+    """Every `[A]` criterion must be named somewhere in this unit's tests.
+
+    This is a NAMING check, not a proof of coverage -- a criterion can be
+    named by a weak test. It exists because the failure it catches is
+    coarser and kept happening: a criterion with NO test at all, which no
+    mutation can redden and which reads as covered in every summary.
+
+    Positive control: a fabricated id is reported missing, so an empty
+    result cannot mean the walk matched nothing.
+    """
+    rows = _spec_criteria()
+    assert len(rows) >= 55, len(rows)
+    a_ids = [i for i, kind in rows if kind == "A"]
+    assert len(a_ids) >= 55, len(a_ids)
+
+    source = _all_test_source()
+
+    def named(cid: str) -> bool:
+        # `SUI1` must not be satisfied by `SUI10`; ids appear inside test
+        # names as `test_sui1_...`, so word boundaries cannot be used
+        return re.search(cid + r"(?!\d)", source, re.I) is not None
+
+    missing = [i for i in a_ids if not named(i)]
+    assert not missing, f"[A] criteria named by no test: {missing}"
+
+    # positive control -- the instrument can report a miss. The probe id is
+    # ASSEMBLED at runtime, never written as a literal, because a literal
+    # control id in this file would match itself and pass vacuously
+    # (measured: it did, on the first run of this test).
+    probe = "Q" + "ZX" + "97"
+    assert probe not in source
+    assert not named(probe)
+    # and it really is reading the tests, not an empty string
+    assert named("CHK8") and named("SUI9")
+
+
+# ---------------------------------------------------------------------------
+# The four criteria the detector found unnamed
+
+
+def test_sui5_each_suite_rc_is_captured_unpiped_and_adjudicated_separately():
+    """SUI5. `-e` and rc-capture are mutually exclusive (gate B-1 of the
+    spec round): each suite's rc is taken by redirect, written to its own
+    `.rc` file, and adjudicated by a SEPARATE statement -- never read
+    downstream of a pipe, where it would be the pipe's status.
+
+    Derived from the shipped text: the capture line, the write line, and
+    the adjudication must be three distinct statements, and no `.rc` value
+    may be produced through a pipe.
+    """
+    text = LF.LAND.read_text()
+    funcs = _shell_functions(text)
+    body = funcs["run_suite"]
+
+    # the invocation is a redirect, and the rc is taken on the NEXT line
+    lines = [ln.strip() for ln in body.split("\n") if ln.strip()]
+    redirect = next(i for i, ln in enumerate(lines) if ln.startswith("( cd "))
+    assert '>"$OUT/$name.log" 2>&1' in lines[redirect], lines[redirect]
+    assert "|" not in lines[redirect].split(">")[0], lines[redirect]
+    assert lines[redirect + 1] == "local rc=$?", lines[redirect + 1]
+    assert 'printf \'%s\\n\' "$rc" >"$OUT/$name.rc"' in lines[redirect + 2]
+
+    # and `run_suite` returns 0 deliberately -- the rc is DATA, never an abort
+    assert lines[redirect + 3] == "return 0", lines[redirect + 3]
+
+    # the adjudication is a separate function reading the file back
+    adj = funcs["adjudicate_suite"]
+    assert 'rc=$(cat "$OUT/$n.rc"' in adj
+    assert "case \"$rc\" in" in adj
+
+    # nothing anywhere pipes into an rc read
+    for ln in text.split("\n"):
+        if "rc=$?" in ln:
+            assert "|" not in ln, ln
+
+
+def test_san1_no_home_literal_and_the_prefix_comes_from_the_environment():
+    """SAN1. The shipped runner and the landing package contain NO absolute
+    home path, and the home prefix is substituted from `$HOME` at read
+    time via the `%HOME%` placeholder.
+
+    Positive control: the assembled pattern is shown to MATCH a path built
+    from the current `$HOME`, so "no literal" cannot mean "no coverage"."""
+    from self_learn.landing import sanitize as SAN
+
+    home = os.environ.get("HOME", "")
+    assert home and home != "/", home
+
+    files = [LF.LAND] + sorted(LF.LANDING_PKG.glob("*.py")) + \
+        sorted(LF.LANDING_PKG.glob("*.txt"))
+    for f in files:
+        assert home not in f.read_text(), f"absolute home path in {f.name}"
+
+    # the placeholder is what carries it instead
+    frag = (LF.LANDING_PKG / "sanitize_fragments.txt").read_text()
+    assert "%HOME%" in frag
+
+    # positive control: assembled with a home value, the pattern matches a
+    # path under it, and the placeholder itself is gone
+    pat = SAN.assemble_pattern(LF.LANDING_PKG / "sanitize_fragments.txt", home)
+    assert pat.search(f"{home}/repos/self-learn/x.py")
+    assert "%HOME%" not in pat.pattern
+    # and with a DIFFERENT home it does not
+    other = SAN.assemble_pattern(LF.LANDING_PKG / "sanitize_fragments.txt", "/opt/elsewhere")
+    assert not other.search(f"{home}/repos/self-learn/x.py") or home.startswith("/opt/elsewhere")
+
+
+def test_psh1_and_psh2_push_once_and_print_a_real_before_after_pair(tmp_path):
+    """PSH1/PSH2. On success the runner pushes `origin master` exactly once
+    and prints `old..new`, where both ends are read from `origin/master`
+    around the push -- a REAL pair, not a formatted guess.
+
+    Legs: the printed `old` equals the origin's head BEFORE the run and the
+    printed `new` equals it AFTER; and the pair genuinely moved."""
+    repo = LF.make_repo(tmp_path, with_ui=True)
+    origin = tmp_path / "origin.git"
+
+    def origin_head() -> str:
+        return subprocess.run(["git", "--git-dir", str(origin), "rev-parse", "master"],
+                              capture_output=True, text=True, check=True).stdout.strip()
+
+    before = origin_head()
+    LF.make_branch(
+        repo, "u-push",
+        edits={"plugins/self-learn/cli/tests/test_gamma.py": "def test_g():\n    assert True\n"},
+    )
+    r = LF.run_land(repo, tmp_path, "--branch", "u-push", "--verdict", "v", timeout=180)
+    assert r.returncode == 0, r.stdout + r.stderr
+    after = origin_head()
+
+    line = [ln for ln in r.stdout.split("\n") if ln.startswith("pushed: ")]
+    assert len(line) == 1, r.stdout
+    old_printed, _, new_printed = line[0][len("pushed: "):].partition("..")
+    assert old_printed == before, (old_printed, before)
+    assert new_printed == after, (new_printed, after)
+    assert before != after, "the control did not actually move origin"
+
+    # PSH1: exactly one push invocation in the shipped script
+    text = LF.LAND.read_text()
+    pushes = [ln for ln in text.split("\n")
+              if "push origin master" in ln and not ln.lstrip().startswith("#")]
+    assert len(pushes) == 1, pushes
+    assert "|" not in pushes[0], pushes[0]
+    assert 'PUSH_RC=$?' in text
