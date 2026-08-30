@@ -931,7 +931,38 @@ class TestB1ReclassifyResultingPairValidated:
         reloaded = Record.from_path(find_record_path(env2.home, rid))
         assert reloaded.type == "knowledge"
         assert reloaded.kind is None
-        assert "kind" not in reloaded._fm
+        # gate r3 Observation 3: public-surface check, not a private
+        # `_fm` reach -- the key is truly ABSENT from the serialized
+        # frontmatter (not merely `kind: null`), isolated by splitting
+        # on `to_text()`'s own `---\n` delimiter rather than touching
+        # `Record`'s private attribute.
+        frontmatter = reloaded.to_text().split("---\n", 2)[1]
+        assert "kind:" not in frontmatter
+        # gate r3 Minor 3: the cleared kind must not vanish with no
+        # visible trace -- one `notes` entry naming what was cleared
+        # (the old value otherwise survives ONLY in the ledger's git
+        # history, per the gate's own end-to-end measurement).
+        assert len(reloaded.notes) == 1
+        assert "anti-pattern" in reloaded.notes[0]["text"]
+        # `append_note`'s own default (`by="human"`) applies -- no
+        # `by=` string literal at this call site (criterion 25).
+        assert reloaded.notes[0]["by"] == "human"
+
+    def test_kind_only_change_leaves_no_cleared_kind_note(self, env2):
+        """Paired negative control for the note above -- a `--kind`-only
+        change (or a `--type` change that STAYS behavior) clears
+        nothing, so it must add no note. Without this, a mutation that
+        made the note fire unconditionally would slip through green."""
+        rid = "lrn-0000d005"
+        record = make_behavior(record_id=rid, scope="skill:a")  # kind="anti-pattern"
+        create_record(env2.home, record)
+        commit_all(env2.home, "pending behavior")
+
+        result = verbs.reclassify(env2.home, rid, kind="surface-rule", no_push=True)
+        assert result.action == "reclassify"
+        reloaded = Record.from_path(find_record_path(env2.home, rid))
+        assert reloaded.kind == "surface-rule"
+        assert reloaded.notes == ()
 
     def test_face1_end_to_end_through_cli_main(self, env2, capsys):
         """gate r2's own probe ran end to end through `cli.main`, not

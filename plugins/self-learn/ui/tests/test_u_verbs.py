@@ -237,6 +237,14 @@ class TestUIP3ActionBarButtons:
         assert "Is it holding?" in r.text  # positive control -- the card renders at all
         assert "Dismiss (k)" in r.text
         assert "hx-vals='{\"verb\":\"dismiss-suspect\",\"kind\":\"holding\"}'" in r.text
+        # gate r3 Minor 4: the KEY-DISPATCH attribute clickAction() reads
+        # off the button -- distinct from the hx-vals POST payload above,
+        # and previously asserted by no test (8 of 16 rendered
+        # data-key-action values had none; this was one of the 2 that
+        # were this unit's own). A sibling unit is rewriting
+        # clickAction()'s dispatch path -- pin this so it cannot silently
+        # break under a green suite.
+        assert 'data-key-action="dismiss_suspect"' in r.text
         # the shared event hidden field the dismiss button relies on
         # (same nonce confirm-recurrence/graduate already reuse).
         assert "<input type=\"hidden\" name=\"event\" value=\"n1\">" in r.text
@@ -279,6 +287,9 @@ class TestUIP3ActionBarButtons:
         assert "data-page=\"resolved\"" in r.text  # positive control -- the resolved view rendered
         assert "Still holding (m)" in r.text
         assert "hx-vals='{\"verb\":\"confirm-held\",\"kind\":\"resolved\"}'" in r.text
+        # gate r3 Minor 4: same pin as dismiss_suspect above -- the
+        # KEY-DISPATCH attribute, not the hx-vals POST payload.
+        assert 'data-key-action="confirm_held"' in r.text
 
     def test_confirm_held_carries_to_the_cli(self, tmp_path: Path) -> None:
         """Minor (code gate r1), the confirm-held half: same POST-vs-

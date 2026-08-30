@@ -7555,10 +7555,31 @@ def _reclassify_apply(record: Record, *, kind: str | None, type: str | None) -> 
     --kind X`` on a non-behavior record was refused though the verb's
     own pre-lock guard had just admitted it).
 
-    Never writes to disk and never partially applies to something
-    :meth:`Record.validate` would reject -- every call below validates
-    itself. Callers decide whether ``record`` is a disposable simulation
-    copy (pre-lock, fail-closed) or the real fresh-under-lock instance."""
+    Never writes to disk -- but gate r3 Minor 2: the guarantee this
+    docstring used to state here ("every call below validates itself")
+    does NOT hold for the first call. ``set_kind(None)`` performs NO
+    check at all (gate r3's own primary-attack audit: it is the one
+    setter weaker than :meth:`Record.validate`, by design -- clearing
+    ``kind`` is legal on ANY type, so there is nothing for it to check
+    in isolation); ``set_type`` and ``set_kind(kind)`` DO validate their
+    own field against the type in front of them at that moment, never
+    the full cross-field pair ``Record.validate`` checks. So a record
+    can sit in a state ``Record.validate`` would reject BETWEEN the
+    three calls below (immediately after ``set_kind(None)``, on a
+    behavior-typed record with no kind, until ``set_type`` runs) --
+    that window never reaches disk or an external observer only
+    because this function is synchronous and its caller controls when
+    ``record`` is read again. The guarantee this function DOES keep:
+    the three calls run in the one order that can ever land the WHOLE
+    sequence on a pair ``Record.validate`` accepts, and any call that
+    itself rejects a step raises immediately, before any later step
+    runs. Whether the RESULT is checked against ``Record.validate`` in
+    full is the caller's job, not this function's: :func:`reclassify`
+    does it twice on purpose (pre-lock simulation, then again under
+    the lock via a fresh read) -- a caller that skips both gets no
+    such check from calling this function alone. Callers decide
+    whether ``record`` is a disposable simulation copy (pre-lock,
+    fail-closed) or the real fresh-under-lock instance."""
     resulting_type = type if type is not None else record.type
     if resulting_type != "behavior":
         record.set_kind(None)
@@ -7664,6 +7685,23 @@ def reclassify(
         message = f"self-learn: reclassify {record_id}"
         with _ledger_write(home):
             record = Record.from_path(path)  # fresh read under the lock
+            # gate r3 Minor 3: a --type change that lands outside
+            # `behavior` silently clears `kind` (`_reclassify_apply`'s own
+            # docstring names this the ONLY path that makes behavior ->
+            # knowledge reachable) -- intended, recoverable from git
+            # history, but a verb dropping a user's field with no visible
+            # trace is a surprise a week later. Capture the value BEFORE
+            # `_reclassify_apply` clears it, and leave a one-line `notes`
+            # entry naming what was cleared -- `notes` (not `history`),
+            # because this is commentary for the NEXT human reader, not a
+            # write-once-field displacement (`Record.append_history`'s own
+            # contract, `resolution_note`'s the only current user).
+            resulting_type = type if type is not None else record.type
+            cleared_kind = (
+                record.kind
+                if resulting_type != "behavior" and record.kind is not None
+                else None
+            )
             try:
                 _reclassify_apply(record, kind=kind, type=type)
             except records_mod.MutationError as exc:
@@ -7681,6 +7719,17 @@ def reclassify(
                 # from a fail-closed refusal — the exact mechanism that
                 # hollowed out META1's own mutation (M-A) one verb over.
                 raise VerbError(str(exc)) from exc
+            if cleared_kind is not None:
+                # criterion 25 (test_route_observability.py): no `by=`
+                # string literal at a call site anywhere in verbs.py --
+                # `append_note`'s own default (`by="human"`) applies; a
+                # human genuinely did invoke reclassify, and the note
+                # TEXT already names the mechanism ("reclassify cleared
+                # kind=..."), so no separate actor literal is needed.
+                record.append_note(
+                    f"reclassify cleared kind={cleared_kind!r} (type -> "
+                    f"{type!r}); recoverable from the ledger's git history"
+                )
             record.write(path)
             staged, sha = _commit_ledger(home, [path], message, note)
         push = _push_ledger(home, no_push)
