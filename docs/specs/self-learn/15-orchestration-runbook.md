@@ -171,12 +171,12 @@ override is per-round, not a new default.
   **Refusing is the normal FIRST outcome, and it refuses more than an
   owed node.** The same run also refuses when the advance would strand
   an exemption entry the new anchor no longer owes (`VACUOUS:`) or a
-  hand-measured literal in `cli/tests/test_armor.py::MEASURED` that
+  transcribed literal in `cli/tests/test_armor.py::MEASURED` that
   the new anchor invalidates (`STALE:` — the numbers `BEH5`, `BEH7`
   and `EXM3` assert). All three are computed before anything is
   written and printed together, and the file is left byte-identical,
   so the `&&`-chain stops with the merge still uncommitted. Do exactly
-  what the report says, **by hand, inside that uncommitted merge**:
+  what the report says, **inside that still-uncommitted merge**:
   write the owed exemption entry, drop the vacuous one, and copy each
   printed `value at <anchor>:` into that `MEASURED` row's `value=`,
   re-dating its `reason`. Then re-run the same command — it writes,
@@ -185,18 +185,106 @@ override is per-round, not a new default.
   armor suite is briefly red; that is inherent to check-then-write and
   is why the transcription is never committed on its own.
 
-  **Never teach `--remeasure` to write a `MEASURED` value.** Those
-  numbers are the second, HUMAN-authored opinion that `BEH5`/`BEH7`/
-  `EXM3` check the tool-authored `ARMOR` table against. A tool that
-  wrote both would agree with itself forever, and an extractor that
-  drifted would produce two consistent-but-wrong numbers with nothing
-  left to notice. Before this door existed, every landing advanced
-  `ANCHOR` and left those literals behind, so every landing shipped a
-  red suite with two assertion failures that named nothing about the
-  anchor (measured 2026-08-29 in a throwaway clone: `2 failed, 39
-  passed`). Source:
+  **Never teach `--remeasure` to write a `MEASURED` value.** Not
+  because those numbers are an independent check on the census — they
+  are not. Whoever advances the anchor transcribes what the refusal
+  printed, and that printout comes from the same extractor that fills
+  the `ARMOR` table, so copying it into a second location corroborates
+  nothing. Two other things are what the rule buys, and both are real:
+
+  1. **A refusal against silent staleness.** Before this door existed,
+     the anchor advanced, the write went through, and the suite went
+     red *afterwards* — with assertions naming nothing about the
+     anchor (measured 2026-08-29 in a throwaway clone: `2 failed, 39
+     passed`, `BEH7` and `EXM3`). Now the motion stops at a named
+     refusal before anything is written. A tool that rewrote the value
+     would report nothing stale and advance unannounced.
+  2. **A dated audit trail.** These literals change only through a
+     deliberate, recorded, justified edit carrying a date and an
+     anchor — the same discipline §4.7 already requires of every
+     exemption entry, and reviewable the same way at the gate.
+
+  **Who writes them.** The author of the landing, whoever that is. An
+  **agent** performing the landing is a sanctioned author, exactly as
+  for an exemption entry — commit `e59534b` landed agent-written
+  exemption entries with dated justifications and that was correct.
+  What is required is that the change be deliberate, attributed and
+  dated; not that a person be at the keyboard. Source:
   `docs/specs/self-learn/drafts/u-armor-narrow-whole-file-pins-spec.md`
-  §4.2/§4.6, and `test_armor.py`'s own `ANC1`–`ANC5`.
+  §4.2/§4.6, and `test_armor.py`'s own `ANC1`–`ANC6`.
+
+  ### 5.1 The `--remeasure` refusal contract
+
+  Written so another unit's runner can implement against it **without
+  reading `test_armor.py`**. Measured against the CLI on 2026-08-29
+  and pinned by `ANC6`; `ARM6` pins the success leg.
+
+  - **Exit code.** `0` on success, `1` on every refusal. Nothing else.
+  - **Stream.** Every diagnostic goes to **stderr**. **stdout is
+    always empty** — success and refusal alike. A caller that treats
+    empty stdout as failure, or empty stderr as success, is wrong in
+    both directions.
+  - **Success.** stderr is exactly one line, and the file is written:
+
+    ```
+    ANCHOR <old7> -> <new7>
+    ```
+
+  - **The four legs, distinguished by a START-OF-LINE token.** Match
+    anchored at the beginning of a line (`^TOKEN: `). The trailer is
+    written to contain no bare token, so an unanchored substring match
+    also happens to work — but the contract is the anchored form.
+
+    | token | leg | file after the run |
+    |---|---|---|
+    | `OWED: ` | a node has no exemption entry covering it | byte-unchanged |
+    | `VACUOUS: ` | an exemption entry the new anchor no longer owes (§4.7 `FW-140`) | byte-unchanged |
+    | `STALE: ` | a `MEASURED` literal the new anchor invalidates | byte-unchanged |
+    | `ANCHOR did not change (` | the no-op guard | **rewritten**, byte-identical content |
+
+    The first three are **pre-write** and can appear together in one
+    run — a landing behind a sibling unit routinely produces two or
+    three at once. The fourth is **post-write**: it fires after the
+    `os.replace()`, so the file is rewritten, with byte-identical
+    content whenever the table was already current (measured, `ANC6`).
+
+  - **Line shapes.**
+
+    ```
+    OWED: <armor-key>: <missing|edited>:<node-key>
+    VACUOUS: <armor-key>: <missing|edited>:<node-key>
+    VACUOUS: <armor-key>: repinned
+    ```
+
+    `STALE:` is a **three-line record**, always in this order:
+
+    ```
+    STALE: <repo-relative path>: MEASURED['<row>'] (scope=<anchor|anchor+head|head>)
+    STALE:       shipped value: <python repr>
+    STALE:   value at <new7>: <python repr>
+    ```
+
+    Both values are `repr()`, so the third line's value pastes
+    verbatim into that row's `value=`.
+
+  - **Trailer.** After the report comes one multi-line explanation
+    whose first line begins:
+
+    ```
+    refusing to write test_armor.py (
+    ```
+
+    It deliberately contains **no** bare `OWED:` / `VACUOUS:` /
+    `STALE:` token. An earlier draft's trailer spelled all three out
+    in its legend, which made an unanchored `"OWED:" not in stderr`
+    false for *every* refusal — caught by this unit's own first test
+    run, and now pinned by `ANC6`.
+
+  - **What a caller should do.** rc `0` → proceed. rc `1` with any
+    `^OWED:`/`^VACUOUS:`/`^STALE:` line → stop; the tree is untouched
+    and the report says what to edit. rc `1` with
+    `^ANCHOR did not change (` → stop; there was nothing to advance.
+    rc `1` with none of these → an unmodelled failure; do not proceed.
 
 ## 6. Sandbox invariants (H-3 protection)
 

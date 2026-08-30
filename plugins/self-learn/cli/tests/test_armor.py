@@ -19,13 +19,19 @@ Three kinds, one anchor:
   in ``Behaviour.missing`` / ``.edited`` / ``.edited_exports``
   (``B1``-``B7``, section 4.5).
 
-A second table, ``MEASURED``, holds the numbers a HUMAN measured --
-the ones ``BEH5``/``BEH7``/``EXM3`` check the ``ARMOR`` table against.
-``--remeasure`` never writes one; it REFUSES to advance the anchor
-while any is stale and prints what to transcribe (``ANC1``-``ANC5``,
-U-anchorlit). Before that door existed, every landing advanced
-``ANCHOR`` and left those literals behind, so every landing shipped a
-red suite (measured 2026-08-29: ``2 failed, 39 passed``).
+A second table, ``MEASURED``, holds the literals ``BEH5``/``BEH7``/
+``EXM3`` check the ``ARMOR`` table against. They are anchor-scoped, so
+every landing invalidates them, and ``--remeasure`` never rewrites one:
+it REFUSES to advance the anchor while any is stale and prints what to
+transcribe (``ANC1``-``ANC6``, U-anchorlit). That buys two things and
+no more. First, the motion stops at a NAMED refusal before anything is
+written -- before this door existed the anchor advanced and the suite
+went red afterwards, with assertions naming nothing about the anchor
+(measured 2026-08-29: ``2 failed, 39 passed``). Second, the literals
+change only through a deliberate, dated, justified edit -- the same
+posture section 4.7 already requires of an exemption entry. The author
+of that edit is whoever performs the landing; an AGENT is a sanctioned
+author here, exactly as for an exemption entry (``e59534b``).
 
 ``ANCHOR`` is the first-parent PARENT of the most recent first-parent
 merge on ``master`` (section 4.2) -- never the merge itself. It is
@@ -581,37 +587,56 @@ def _exm1_check(reason: str) -> tuple[bool, str]:
 
 # ===================================================================== #
 # The MEASURED literals -- section 4.6's exemption discipline, extended
-# to the NUMBERS a human wrote down (`ANC1`-`ANC5`, U-anchorlit).
+# to the NUMBERS the landing's author writes down (`ANC1`-`ANC6`,
+# U-anchorlit).
 #
-# Two kinds of literal live in this module, and confusing them is the
-# defect this table exists to prevent:
+# Two kinds of literal live in this module, and the difference between
+# them is WHO WRITES THEM -- not which is the stronger check:
 #
-# * `ARMOR`'s `Behaviour.nodes`/`.dump_sha` are written BY
-#   `--remeasure`. `ARM2` checks them against a live census -- but the
-#   tool that wrote them and the census that checks them are the SAME
-#   code, so `ARM2` alone cannot see an extractor that drifted: it
-#   compares two numbers the drifted code produced, and they agree.
-# * The values below are written BY A HUMAN, from a separate act of
-#   measurement, and `--remeasure` NEVER writes one (`ANC3` proves it).
-#   `BEH1`/`BEH3`/`BEH5`/`BEH7`/`EXM3` compare a live census against
-#   THESE, which a drifted extractor cannot move. Teaching
-#   `--remeasure` to rewrite them -- the obvious fix for the staleness
-#   below -- would collapse that second opinion into a tautology, and
-#   is the design this unit deliberately did not build.
+# * `ARMOR`'s `Behaviour.nodes`/`.dump_sha` are written by
+#   `--remeasure`, silently, as part of every landing.
+# * The values below are never written by `--remeasure` (`ANC3` is the
+#   leg that holds this). They change only when the landing's author
+#   edits this table deliberately, having been shown the old value
+#   beside the new one, and re-dates the row's `reason`.
 #
-# The price of a hand copy is that an ANCHOR-scoped one goes stale the
-# instant `ANCHOR` advances, which every landing does. Measured
-# 2026-08-29 in a throwaway clone carrying a synthetic landing merge: a
-# SUCCESSFUL `--remeasure` advanced `ANCHOR` `6815503 -> a768696` and
-# left the armor suite at `2 failed, 39 passed` (`BEH7` at
-# `('test_u_fake.py', 31, 45)`, `EXM3` at `assign:REWRITTEN`), with two
-# assertion failures that named nothing about the anchor. Nothing had
-# landed since `u-armor` shipped, which is the only reason it had not
-# bitten yet. The fix is `ANC1`: `--remeasure` measures every row below
-# at the NEW anchor BEFORE it writes anything, and refuses -- printing
-# each stale row's shipped value beside its newly measured one --
-# exactly as it already refuses an unexempted `OWED:` node (section
-# 4.2's check-then-write order).
+# WHAT THAT SEPARATION BUYS -- stated exactly, because the tempting
+# stronger claim is false and was corrected here on 2026-08-29. It is
+# NOT an independent measurement, and it is NOT corroboration against a
+# drifted extractor: the author transcribes the numbers this module's
+# own refusal printed, and that printout comes from the SAME `_census`
+# that fills the `ARMOR` table. Copying one tool's output into a second
+# location does not check that tool. What it does deliver is two
+# things, both real:
+#
+#   1. A REFUSAL AGAINST SILENT STALENESS. An anchor-scoped literal
+#      goes stale the instant `ANCHOR` advances, which every landing
+#      does. `--remeasure` measures every row below at the NEW anchor
+#      BEFORE it writes anything and stops, naming each stale row and
+#      printing its shipped value beside its newly measured one --
+#      exactly as it already refuses an unexempted `OWED:` node
+#      (section 4.2's check-then-write order). Before this door, the
+#      write went through and the suite went red AFTERWARDS. Measured
+#      2026-08-29 in a throwaway clone carrying a synthetic landing
+#      merge: a SUCCESSFUL `--remeasure` advanced `ANCHOR`
+#      `6815503 -> a768696` and left the armor suite at `2 failed, 39
+#      passed` (`BEH7` at `('test_u_fake.py', 31, 45)`, `EXM3` at
+#      `assign:REWRITTEN`), with two assertion failures that named
+#      nothing about the anchor. Nothing had landed since `u-armor`
+#      shipped, which is the only reason it had not bitten yet.
+#   2. A DATED AUDIT TRAIL. Each value changes only through a
+#      deliberate, recorded act carrying a date and an anchor -- the
+#      same discipline section 4.6/4.7 already require of every
+#      exemption entry, and the same reviewability at the gate.
+#
+# WHO MAY WRITE THESE VALUES: the author of the landing, whoever that
+# is. An AGENT performing the landing is a sanctioned author, exactly
+# as for an exemption entry -- `e59534b` landed agent-written exemption
+# entries with dated justifications, and that was correct. The
+# discipline requires the change to be deliberate, attributed and
+# dated; it does not require a person at a keyboard. What it forbids is
+# `--remeasure` doing it as a side effect, because that would remove
+# the refusal (1) and the record (2) in one move.
 #
 # `scope` says what a row is a function of, so a reader can tell at a
 # glance which rows an anchor advance can move:
@@ -729,13 +754,19 @@ def _measure_control_edited(_anchor: str) -> int:
 
 @dataclass(frozen=True)
 class Measured:
-    """One hand-transcribed measurement, with the recomputation that
-    proves it. `value` is what a HUMAN wrote down; `measure(anchor)`
-    recomputes it live at `anchor`; `reason` carries the same dated,
-    cited grammar `EXM1` requires of every exemption reason (section
-    4.6). `--remeasure` may READ `measure`; it may never WRITE
-    `value` -- that separation is the table's whole purpose, and
-    `ANC3` is the leg that holds it."""
+    """One transcribed measurement, with the recomputation that proves
+    it. `value` is what the landing's author wrote down (an agent is a
+    sanctioned author here, exactly as for an exemption entry --
+    `e59534b`); `measure(anchor)` recomputes it live at `anchor`;
+    `reason` carries the same dated, cited grammar `EXM1` requires of
+    every exemption reason (section 4.6).
+
+    `--remeasure` may READ `measure`; it may never WRITE `value`
+    (`ANC3`). Not because the transcribed number is an independent
+    check on the extractor -- it is not, it is copied from this same
+    code's own printout (see the section header) -- but because a tool
+    that rewrote it would remove both the refusal that stops a stale
+    landing and the dated record of the change."""
 
     value: object
     scope: str
@@ -1271,12 +1302,14 @@ def _compute_stale(new_anchor: str) -> list[tuple[str, object, object]]:
     advanced on disk when the refusal fires, and the no-op guard
     deadlocks the chain on the re-run).
 
-    `--remeasure` reads these rows and never writes one: a tool that
-    authored both the `ARMOR` table and the numbers `BEH5`/`BEH7`/
-    `EXM3` check the table against would agree with itself forever,
-    including when the extractor has drifted. So the refusal prints
-    what a HUMAN must transcribe, in the same posture the `OWED:` leg
-    already takes for an exemption entry."""
+    `--remeasure` reads these rows and never writes one. The reason
+    is NOT that the shipped value is an independent measurement -- it
+    is transcribed from this same code's own printout -- but that a
+    silent rewrite would delete the refusal itself: nothing would ever
+    be reported stale, the anchor would advance unannounced, and the
+    dated record of the change would be gone. So the refusal prints
+    what the landing's author must transcribe, in the same posture the
+    `OWED:` leg already takes for an exemption entry."""
     stale: list[tuple[str, object, object]] = []
     for name, row in MEASURED.items():
         live = row.measure(new_anchor)
@@ -1319,7 +1352,7 @@ def _remeasure(argv: list[str]) -> int:
     old_anchor = ANCHOR
 
     # Three refusal legs, all computed BEFORE anything is written and
-    # all reported in ONE run, so a human transcribes once instead of
+    # all reported in ONE run, so the author transcribes once instead of
     # discovering the next leg on the next attempt (section 4.2's
     # check-then-write order; `ARM6` drives the whole loop end to end).
     owed = _compute_owed(new_anchor)
@@ -1337,20 +1370,29 @@ def _remeasure(argv: list[str]) -> int:
             print(f"STALE: {relpath}: MEASURED[{name!r}] (scope={MEASURED[name].scope})", file=sys.stderr)
             print(f"STALE:       shipped value: {shipped!r}", file=sys.stderr)
             print(f"STALE:   value at {new_anchor}: {live!r}", file=sys.stderr)
+        # The trailer deliberately spells NO bare `OWED:`/`VACUOUS:`/
+        # `STALE:` token (note the article-and-space forms below), so a
+        # caller's unanchored substring match on a token still matches
+        # only real report lines. An earlier draft did spell them out,
+        # which made `"OWED:" not in stderr` false for every refusal --
+        # caught by this unit's own first test run, and now pinned by
+        # `ANC6` and by the runbook §5 contract table.
         print(
-            f"refusing to write {relpath} -- NOTHING was written and the file "
-            "is byte-unchanged. Fix every line above by hand, then re-run "
-            "this exact command:\n"
-            "  OWED:    the node needs a dated, anchored exemption entry "
-            "naming a spec section (Behaviour.missing / .edited).\n"
-            "  VACUOUS: the new anchor owes this entry nothing -- DROP it "
-            "(section 4.7 FW-140's fold rule).\n"
-            "  STALE:   copy the printed 'value at' into that MEASURED row's "
-            "`value=` and re-date its `reason`. --remeasure deliberately "
-            "never writes a MEASURED value: it is the second, human-authored "
-            "opinion BEH5/BEH7/EXM3 check the ARMOR table against, and a tool "
-            "that wrote both would agree with itself forever.\n"
-            "(see docs/specs/self-learn/15-orchestration-runbook.md §1.4a)",
+            f"refusing to write test_armor.py ({relpath}) -- NOTHING was "
+            "written and the file is byte-unchanged. Fix every line above, "
+            "then re-run this exact command.\n"
+            "  An OWED line   -- that node needs a dated, anchored exemption "
+            "entry naming a spec section (Behaviour.missing / .edited).\n"
+            "  A VACUOUS line -- the new anchor owes that entry nothing; DROP "
+            "it (section 4.7 FW-140's fold rule).\n"
+            "  A STALE line   -- copy the printed 'value at' into that "
+            "MEASURED row's `value=` and re-date its `reason`. --remeasure "
+            "never writes a MEASURED value: rewriting it silently would "
+            "remove this refusal and the dated record of the change. The "
+            "landing's author writes it -- an agent is a sanctioned author "
+            "here, exactly as for an exemption entry.\n"
+            "(see docs/specs/self-learn/15-orchestration-runbook.md §5 for "
+            "the full refusal contract, and §1.4a for the gate's own review)",
             file=sys.stderr,
         )
         return 1
@@ -1640,7 +1682,7 @@ def _scratch_armor_namespace(scratch_dir: Path, mod_name: str) -> tuple[Path, di
     return scratch_module, ns
 
 
-def test_arm6_refusal_writes_nothing():
+def test_arm6_refusal_writes_nothing(capsys):
     """`ARM6`. A refusing `--remeasure` leaves the file byte-identical
     (sha256 before == after); a subsequent run with everything the
     refusal named written succeeds AND the `ANCHOR` literal changes in
@@ -1701,7 +1743,7 @@ def test_arm6_refusal_writes_nothing():
         assert owed2 == {}, owed2
 
         # ... and transcribe every `MEASURED` row the advance
-        # invalidates, exactly as a human copies the printed
+        # invalidates, exactly as the landing's author copies the printed
         # `value at 15fb676:` into `value=`. Asserted non-empty first:
         # if the advance stopped invalidating anything, this leg would
         # be silently vacuous and the bootstrap unproven.
@@ -1714,9 +1756,20 @@ def test_arm6_refusal_writes_nothing():
         assert ns["_compute_stale"]("15fb676") == []
         assert ns["_compute_vacuous"]("15fb676") == {}
 
+        capsys.readouterr()
         anchor_before_run2 = ns["ANCHOR"]
         rc2 = ns["_remeasure"](["--remeasure", "--anchor", "15fb676"])
+        cap2 = capsys.readouterr()
         assert rc2 == 0
+
+        # The rc-0 success shape, for the runbook §5 contract table
+        # (`ANC6` pins the three refusal legs; this is the fourth
+        # outcome, and the only one `ANC6` cannot cheaply reach).
+        assert cap2.out == "", cap2.out
+        success_lines = [ln for ln in cap2.err.splitlines() if ln.strip()]
+        assert len(success_lines) == 1, success_lines
+        assert success_lines[0] == f"ANCHOR {anchor_before_run2} -> 15fb676", success_lines
+        assert _SUCCESS_RE.match(success_lines[0]), success_lines[0]
         new_text = scratch_module.read_text(encoding="utf-8")
         assert 'ANCHOR = "15fb676"' in new_text
         assert anchor_before_run2 != "15fb676"
@@ -2454,7 +2507,7 @@ def test_beh5_exported_fixtures_are_byte_pinned():
     discriminate between the correct and the broken derivation."""
     union = _exported_names_union()
     counts = {k: len(v) for k, v in union.items()}
-    # Anchor-SCOPED literals, hand-measured, sourced from `MEASURED`
+    # Anchor-SCOPED literals, transcribed, sourced from `MEASURED`
     # (U-anchorlit): `_exported_names_union` reads the ANCHOR side, so
     # these move when the anchor does -- measured at `c3b48e7` they read
     # `(4, 6, 7, 10, 0, 5, 2, 0)` / 34. `--remeasure` refuses to advance
@@ -2537,12 +2590,12 @@ def test_beh7_extractor_positive_control(monkeypatch):
 
     * The MEASURED half (first) is ANCHOR-SCOPED. The anchor-side
       census must yield exactly `Behaviour.nodes` keys and a
-      `_dump_sha` equal to `Behaviour.dump_sha`, checked against
-      hand-written numbers in `MEASURED` -- the second opinion that
-      makes `ARM2` more than the `--remeasure` tool agreeing with
-      itself. Every landing advances `ANCHOR` and invalidates these,
-      which is why `--remeasure` refuses the advance and prints them
-      instead of rewriting them (`ANC1`/`ANC3`).
+      `_dump_sha` equal to `Behaviour.dump_sha`, checked against the
+      transcribed numbers in `MEASURED`. Every landing advances
+      `ANCHOR` and invalidates these, which is why `--remeasure`
+      refuses the advance and prints them rather than rewriting them
+      (`ANC1`/`ANC3`) -- so the staleness surfaces as a named refusal
+      BEFORE the write, instead of as this assertion failing after it.
     * The CONTROL half (second) is ANCHOR-INDEPENDENT and never goes
       stale: monkeypatch `_census` to `{}` and confirm BEH1/BEH3/BEH7
       all redden. This is the leg that actually proves the extractor
@@ -2771,7 +2824,7 @@ def test_exm3_doors_match_what_the_anchor_owes():
             ok, why = _exm1_check(row.missing[k])
             assert ok, (key, k, why)
 
-    # Anchor-scoped, hand-measured, sourced from `MEASURED`
+    # Anchor-scoped, transcribed, sourced from `MEASURED`
     # (U-anchorlit): both move on every anchor advance, and
     # `--remeasure` refuses the advance rather than rewriting them.
     assert census_missing_total == MEASURED["EXM3.census_missing"].value, census_missing_total
@@ -3506,15 +3559,17 @@ def test_anc2_the_refusal_does_not_fire_when_the_literals_are_current():
 
 
 def test_anc3_remeasure_never_writes_a_measured_literal():
-    """`ANC3`. The anti-tautology leg, and the reason this unit did not
-    simply teach `--remeasure` to rewrite the stale values.
-    `_render_module` -- the ONLY thing `--remeasure` ever writes --
-    rewrites `ANCHOR` and the eight `Behaviour` rows and leaves the
-    whole `MEASURED = {...}` block byte-identical. If it rewrote them,
-    `BEH5`/`BEH7`/`EXM3` would be checking the `ARMOR` table against
-    numbers the same tool wrote, and an extractor that drifted would
-    emit two consistent-but-wrong values that agree with each other
-    forever.
+    """`ANC3`. `_render_module` -- the ONLY thing `--remeasure` ever
+    writes -- rewrites `ANCHOR` and the eight `Behaviour` rows and
+    leaves the whole `MEASURED = {...}` block byte-identical.
+
+    Why that matters, stated exactly: NOT because the transcribed
+    numbers are an independent check on the extractor. They are not --
+    they are copied from this same code's own printout. Because a
+    silent rewrite would delete the two things the table does deliver:
+    `_compute_stale` would report nothing, so the refusal that stops a
+    stale landing would never fire, and the dated record of what
+    changed and why would be gone with it.
 
     Positive control, asserted first: the same comparison over a
     rendering that DOES rewrite one measured literal reports a
@@ -3634,5 +3689,162 @@ def test_anc5_remeasure_refuses_a_vacuous_exemption(capsys):
             f"VACUOUS: {behaviour_key}: missing:{live_node}",
             f"VACUOUS: {fixture_key}: repinned",
         ], report
+    finally:
+        shutil.rmtree(scratch_dir, ignore_errors=True)
+
+
+#: The four `--remeasure` outcomes, as a caller sees them (`ANC6`, and
+#: the runbook §5 contract table this pins). Start-of-line tokens: an
+#: unanchored substring match is NOT part of the contract, though the
+#: trailer is written so that one still happens to work.
+_REFUSAL_TOKENS: tuple[str, ...] = ("OWED: ", "VACUOUS: ", "STALE: ")
+_NOOP_PREFIX = "ANCHOR did not change ("
+_TRAILER_PREFIX = "refusing to write test_armor.py ("
+_SUCCESS_RE = re.compile(r"^ANCHOR [0-9a-f]{7,40} -> [0-9a-f]{7,40}$")
+_OWED_RE = re.compile(r"^OWED: \S+\.py: (missing|edited):\S+$")
+_VACUOUS_RE = re.compile(r"^VACUOUS: \S+\.py: ((missing|edited):\S+|repinned)$")
+_STALE_HEAD_RE = re.compile(
+    r"^STALE: \S+: MEASURED\['[^']+'\] \(scope=(anchor|anchor\+head|head)\)$"
+)
+_STALE_SHIPPED_RE = re.compile(r"^STALE:       shipped value: .+$")
+_STALE_LIVE_RE = re.compile(r"^STALE:   value at [0-9a-f]{7,40}: .+$")
+
+
+def _report_lines(err: str) -> list[str]:
+    """The refusal's REPORT lines -- start-of-line token matches only.
+    Never a substring scan of the whole stream (`ANC6`'s own subject)."""
+    return [ln for ln in err.splitlines() if ln.startswith(_REFUSAL_TOKENS)]
+
+
+def test_anc6_refusal_leg_contract(capsys):
+    """`ANC6`. The `--remeasure` CLI contract, pinned mechanically so a
+    sibling unit's landing runner can implement against the runbook's
+    §5 table without reading this file. `U-land` is building exactly
+    such a runner against the TWO-leg contract that predates this unit
+    (`OWED:` and `ANCHOR did not change`); this unit adds two more, and
+    the two gates are blind to each other, so the contract has to be
+    legible somewhere both can see it.
+
+    Pinned here: exit code, stream, stdout-is-always-empty, the
+    start-of-line token for each leg, the three-line shape of a
+    `STALE:` record, whether the file is written, and -- the leg that
+    actually bit -- that the TRAILER contains no bare token. An
+    earlier draft's trailer spelled `OWED:`/`VACUOUS:`/`STALE:` out in
+    its legend, which made an unanchored `"OWED:" not in err` false
+    for every refusal, including ones reporting no owed node at all.
+    That was caught by this unit's own first test run, not by review.
+
+    The rc-0 success leg is asserted by `ARM6` (which already drives a
+    genuine write at `15fb676`); duplicating its ~35s here would buy
+    nothing."""
+    # --- Leg 1: the no-op guard. A pristine scratch copy with
+    # `--anchor` equal to its own `ANCHOR` owes nothing, strands
+    # nothing and invalidates nothing, so the run reaches the WRITE and
+    # only then reports the no-op (section 4.2 step 6). This is the one
+    # leg that is post-write: the file IS rewritten, with byte-
+    # identical content whenever the table was already current --
+    # measured here rather than assumed.
+    scratch_dir = Path(tempfile.mkdtemp(dir=str(_REPO_ROOT)))
+    try:
+        scratch_module, ns = _scratch_armor_namespace(scratch_dir, "_armor_anc6a")
+        anchor = ns["ANCHOR"]
+        sha_before = hashlib.sha256(scratch_module.read_bytes()).hexdigest()
+        capsys.readouterr()
+        rc = ns["_remeasure"](["--remeasure", "--anchor", anchor])
+        cap = capsys.readouterr()
+        sha_after = hashlib.sha256(scratch_module.read_bytes()).hexdigest()
+
+        assert rc == 1, rc
+        assert cap.out == "", cap.out
+        err_lines = [ln for ln in cap.err.splitlines() if ln.strip()]
+        assert err_lines[0].startswith(f"{_NOOP_PREFIX}{anchor} -> {anchor})"), err_lines
+        assert _report_lines(cap.err) == [], cap.err
+        assert sha_after == sha_before, (
+            "no-op leg: the write happens, but with byte-identical content"
+        )
+    finally:
+        shutil.rmtree(scratch_dir, ignore_errors=True)
+
+    # --- Leg 2: one run carrying all three pre-write tokens at once,
+    # which is what a real landing behind a sibling unit looks like.
+    # Built at the copy's own `ANCHOR` (permanent -- no later landing
+    # can invalidate this probe) by: dropping test_u_fake.py's shipped
+    # `missing` entries, so its fourteen anchor-era nodes become OWED;
+    # adding a `missing` entry naming a node that is still present at
+    # head, which is VACUOUS; and corrupting one `MEASURED` row, which
+    # is STALE.
+    scratch_dir = Path(tempfile.mkdtemp(dir=str(_REPO_ROOT)))
+    try:
+        scratch_module, ns = _scratch_armor_namespace(scratch_dir, "_armor_anc6b")
+        anchor = ns["ANCHOR"]
+
+        owed_key = "test_u_fake.py"
+        vacuous_key = "test_worker.py"
+        live_node = next(iter(ns["_head_census"](vacuous_key)))
+        patched = dict(ns["ARMOR"])
+        patched[owed_key] = ns["Behaviour"](
+            nodes=ns["ARMOR"][owed_key].nodes,
+            dump_sha=ns["ARMOR"][owed_key].dump_sha,
+        )
+        patched[vacuous_key] = ns["Behaviour"](
+            nodes=ns["ARMOR"][vacuous_key].nodes,
+            dump_sha=ns["ARMOR"][vacuous_key].dump_sha,
+            missing={live_node: "2026-08-29 §4.7 ANC6 test scaffold, 6815503."},
+        )
+        ns["ARMOR"] = patched
+
+        stale_row = "BEH7.node_total"
+        measured = dict(ns["MEASURED"])
+        measured[stale_row] = dataclasses.replace(
+            measured[stale_row], value=measured[stale_row].value + 1
+        )
+        ns["MEASURED"] = measured
+
+        sha_before = hashlib.sha256(scratch_module.read_bytes()).hexdigest()
+        capsys.readouterr()
+        rc = ns["_remeasure"](["--remeasure", "--anchor", anchor])
+        cap = capsys.readouterr()
+        sha_after = hashlib.sha256(scratch_module.read_bytes()).hexdigest()
+
+        assert rc == 1, rc
+        assert cap.out == "", cap.out
+        assert sha_after == sha_before, "a pre-write refusal must leave the file byte-identical"
+
+        report = _report_lines(cap.err)
+        owed = [ln for ln in report if ln.startswith("OWED: ")]
+        vacuous = [ln for ln in report if ln.startswith("VACUOUS: ")]
+        stale = [ln for ln in report if ln.startswith("STALE: ")]
+        assert len(owed) == 14, owed
+        assert len(vacuous) == 1, vacuous
+        assert len(stale) == 3, stale
+        assert len(report) == len(owed) + len(vacuous) + len(stale), report
+
+        for ln in owed:
+            assert _OWED_RE.match(ln), ln
+        assert _VACUOUS_RE.match(vacuous[0]), vacuous[0]
+        assert vacuous[0] == f"VACUOUS: {vacuous_key}: missing:{live_node}", vacuous[0]
+
+        # The three-line STALE record, in order, both values `repr()`
+        # so line 3 can be pasted straight into `value=`.
+        assert _STALE_HEAD_RE.match(stale[0]), stale[0]
+        assert stale[0].endswith(f"MEASURED['{stale_row}'] (scope=anchor)"), stale[0]
+        assert _STALE_SHIPPED_RE.match(stale[1]), stale[1]
+        assert _STALE_LIVE_RE.match(stale[2]), stale[2]
+        assert stale[1].endswith(repr(measured[stale_row].value)), stale[1]
+        assert stale[2].endswith(repr(MEASURED[stale_row].value)), stale[2]
+
+        # The trailer: named, and token-free. Both halves matter -- the
+        # first so a caller can find it, the second so an unanchored
+        # token match cannot be satisfied by the trailer alone.
+        trailer = cap.err[cap.err.index(_TRAILER_PREFIX):]
+        assert trailer.startswith(_TRAILER_PREFIX), trailer[:120]
+        for token in _REFUSAL_TOKENS:
+            assert token.strip() not in trailer, (token, trailer)
+
+        # Positive control on that last leg: the report lines DO carry
+        # the tokens the trailer must not, so "token absent" is not
+        # vacuously true of this stream.
+        for token in _REFUSAL_TOKENS:
+            assert token.strip() in cap.err, token
     finally:
         shutil.rmtree(scratch_dir, ignore_errors=True)
