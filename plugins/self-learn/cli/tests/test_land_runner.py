@@ -2406,7 +2406,10 @@ def test_un1_this_unit_does_not_change_the_suite_runner():
 def _spec_criteria() -> list[tuple[str, str]]:
     spec = (_spec_docs() / "drafts/u-land-landing-runner-spec.md").read_text()
     section = spec[spec.index("## 5. "):spec.index("## 6. Mutation plan")]
-    return re.findall(r"^\| \*\*([A-Z]+\d+[a-z]?)\*\* \| \[(A|B)\]", section, re.M)
+    # the kind cell is sometimes bolded (`**[A]**`) -- measured: RES7 is, and
+    # a regex that missed it silently under-counted the table by one
+    return re.findall(
+        r"^\| \*\*([A-Z]+\d+[a-z]?)\*\* \| \*{0,2}\[(A|B)\]", section, re.M)
 
 
 def _all_test_source() -> str:
@@ -2420,7 +2423,7 @@ def _all_test_source() -> str:
 
 
 def test_every_a_criterion_is_named_by_a_test():
-    """Every `[A]` criterion must be named somewhere in this unit's tests.
+    """UN5. Every `[A]` criterion must be named somewhere in this unit's tests.
 
     This is a NAMING check, not a proof of coverage -- a criterion can be
     named by a weak test. It exists because the failure it catches is
