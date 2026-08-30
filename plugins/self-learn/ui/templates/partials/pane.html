@@ -13,7 +13,7 @@
    URL rides data-pane-panel-url (delta R3 — never scraped from hx-post
    values). The starting line clears at the first streamed frame
    (delta/F7 — app.js removes #pane-starting-line). #}
-<div id="pane-region-wrapper" class="pane-region" data-key-context="pane" data-pane-state="{{ pane.state }}"
+<div id="pane-region-wrapper" class="pane-region" data-pane-state="{{ pane.state }}"
      data-pane-panel-url="{{ pane_base | default('/record/' ~ record_id ~ '/pane') }}/panel">
   <div id="pane-transcript" aria-live="polite">
     {# NOT shown while interrupting (review NIT-2): a stopping session

@@ -61,8 +61,193 @@
 
   const KEYMAP = loadKeymap();
 
+  /**
+   * U-target §4.7 — the three plain-words refusals. Each names the way
+   * OUT, per Y-9: a refusal that does not say what to press instead is
+   * the same dead key this unit exists to remove, only quieter.
+   */
+  const MULTI_TARGET_HINT =
+    "More than one row here can do that. Move to the row you mean " +
+    "(w or s), then press the key again.";
+  const MULTI_ARMED_HINT =
+    "More than one action is armed. Click Confirm or Cancel on the one " +
+    "you mean, or press Esc to leave.";
+  const MULTI_NOTE_HINT =
+    "More than one note field here. Move to the row you mean (w or s), " +
+    "then press n.";
+
+  /**
+   * U-target §4.1 — the ONE resolution primitive every keyboard-driven
+   * DOM lookup in this file goes through.
+   *
+   * The defect it replaces: `document.querySelector(selector)` returns
+   * the FIRST match in document order, page-wide, and Front, Bucket and
+   * an expanded cluster each render one action bar PER ROW inside a
+   * `{% for %}` loop. So a keystroke silently acted on a record the
+   * operator was not looking at — measured on the wire: with the
+   * selection asserted on holding row 2, `t`/`c`/`g`/`k` all POSTed row
+   * 1's arm URL carrying row 1's nonce, console empty.
+   *
+   * The rule, in order:
+   *   1. resolve INSIDE the unique `#self-learn-ui-content
+   *      [data-row].selected` row — the same container `rows()` walks,
+   *      so the two agree on what a row is;
+   *   2. if that row has EXACTLY ZERO matches, fall back page-wide and
+   *      act only when there is exactly ONE candidate. The fallback is
+   *      deliberately NOT scoped to `#self-learn-ui-content` — `up`
+   *      lives in the status strip, outside it, and must stay
+   *      reachable. It exists because `ensureRowSelected()` selects the
+   *      first `[data-row]`, which on Front owns no action, and because
+   *      Detail has no `[data-row]` at all: a selection-only rule would
+   *      turn a targeting defect into a dead keyboard (§4.2).
+   *   3. otherwise REFUSE — `ambiguous`, and every caller turns that
+   *      into zero requests plus a visible hint. Picking "the nearest"
+   *      or "the last" would be the same defect with better odds.
+   *
+   * Two `.selected` rows is `ambiguous`, never "pick one".
+   * `moveSelection` clears all before setting one, so this is
+   * defensive — but it must not silently degrade to first-match.
+   *
+   * NOTE the exact reach of that first branch (code gate r1 NIT-1): it
+   * short-circuits BEFORE querying anything, so with two rows selected
+   * this returns `ambiguous` even for a selector that matches NOTHING
+   * anywhere on the page. That is deliberate and spec-sanctioned — the
+   * caller must refuse, not act — and it is unreachable through
+   * `moveSelection`/`ensureRowSelected`, which never leave two rows
+   * marked. It is written down because it has one real consequence:
+   * an EXISTENCE test built on this primitive (`status !== "none"`)
+   * would report "something is armed" on a page with ZERO armed bars.
+   * That is precisely why `findArmedBar()` below stays page-wide rather
+   * than being re-expressed in terms of this function.
+   */
+  function resolveScoped(selector) {
+    const sels = document.querySelectorAll(
+      "#self-learn-ui-content [data-row].selected"
+    );
+    if (sels.length > 1) return { status: "ambiguous", el: null };
+    if (sels.length === 1) {
+      const inRow = sels[0].querySelectorAll(selector);
+      if (inRow.length === 1) return { status: "one", el: inRow[0] };
+      if (inRow.length > 1) return { status: "ambiguous", el: null };
+      // exactly 0 in the selected row -> fall through, page-wide
+    }
+    const all = document.querySelectorAll(selector);
+    if (all.length === 1) return { status: "one", el: all[0] };
+    if (all.length === 0) return { status: "none", el: null };
+    return { status: "ambiguous", el: null };
+  }
+
+  /**
+   * U-target §4.1/§4.2 — an action's own COMBINED target set: a live
+   * control, or a server-marked gated control (the
+   * `[data-noop-hint][data-noop-action]` pair `action_bar.html` already
+   * uses for the singleton `o` cycle, and that `bucket.html`'s
+   * bulk-collapse button gains at §4.5).
+   *
+   * The gated half is inside the SCOPED query, not only the fallback,
+   * and that is the subtlest rule in this unit. With the bulk row
+   * SELECTED, a `data-key-action`-only query would find 0 in scope,
+   * fall through page-wide, find the single record row in another
+   * group, and GRADUATE a record the operator never selected — a new,
+   * quieter version of the same bug. Treating the selected row's gated
+   * control as a positive, in-scope answer is what stops that (`B2`).
+   *
+   * Action names are `[a-z_]+` (every `KeymapEntry.action` in
+   * keymap.py), so concatenating them into a selector needs no
+   * escaping. If a future action name ever contains anything else this
+   * becomes a selector injection — noted, not guarded.
+   */
+  function targetSelector(action) {
+    return (
+      '[data-key-action="' + action + '"], ' +
+      '[data-noop-hint][data-noop-action="' + action + '"]'
+    );
+  }
+
+  function isGatedTarget(el) {
+    return (
+      !!el &&
+      !el.hasAttribute("data-key-action") &&
+      el.hasAttribute("data-noop-hint")
+    );
+  }
+
+  /**
+   * U-target §4.3 — the armed branch's resolution. `ambiguous` here is
+   * "two bars are armed and the selection cannot break the tie": the
+   * key refuses instead of routing to whichever bar sits first in the
+   * DOM. On a bucket page with an expanded cluster, document order puts
+   * the cluster ABOVE the record rows (`bucket.html:48` vs `:61`), so
+   * first-match meant `Enter` POSTing a cluster member's confirm
+   * carrying `collapse=merge-…` — EXECUTING A MERGE the operator never
+   * armed (§2.7 c, reproduced on the wire).
+   */
+  function resolveArmedBar() {
+    return resolveScoped('.action-bar[data-armed="true"]');
+  }
+
+  /**
+   * DELIBERATELY page-wide, and NOT routed through `resolveScoped`.
+   * This answers a DIFFERENT question from dispatch: "is anything armed
+   * anywhere on this page?", asked by the Y-16 reload-defer legs and the
+   * pane-proposal belt below (leg (c), `paneSwapBlocked`,
+   * `handlePaneProposal`). Those legs must hold a reload while ANY bar
+   * is armed — scoping them would make a page with TWO armed bars
+   * resolve `ambiguous` and therefore NOT defer, letting a broadcast
+   * refresh wipe both armed bars. That is strictly worse than today.
+   * U-target §2.1 lists those call sites as out of scope and untouched;
+   * only the KEY DISPATCH lookup is narrowed (`resolveArmedBar`).
+   */
   function findArmedBar() {
     return document.querySelector('.action-bar[data-armed="true"]');
+  }
+
+  /**
+   * U-target §4.4 — "what request would this element actually issue",
+   * computed from what the templates already carry.
+   *
+   * This replaces N10's record-id comparison as the deferred-fire
+   * identity check on Front and Bucket, where `[data-record-id]` does
+   * not exist at all (§2.4: it is stamped only on the three Detail
+   * templates, so `recordNow !== recordAtDefer` is `null !== null` —
+   * always false, always passes, never warns).
+   *
+   * Stamping `data-record-id` on each row is the obvious move and it is
+   * REJECTED, for two reasons. Additively, `currentScopes()` reads that
+   * attribute to build the SSE scope list, so a Bucket page would
+   * suddenly claim `record:<first row's id>` as one of its scopes.
+   * Subtractively — the stronger one — `handlePaneProposal()` treats
+   * ANY `[data-record-id]` in the document as the record-only branch
+   * and RETURNS before the bucket check, so a Bucket page with stamped
+   * rows would stop reloading on bucket-scoped `pane_proposal`
+   * envelopes entirely. The signature needs no new attribute anywhere.
+   *
+   * Measured premise: no template uses htmx's `data-hx-*` prefixed form
+   * (`SIG1` is the pin that fails first if one ever does), so reading
+   * the plain attributes is complete.
+   */
+  function targetSignature(el) {
+    if (!el) return null;
+    const host = el.closest("[hx-post],[hx-get],[hx-put],[hx-delete]");
+    const verb = host
+      ? host.getAttribute("hx-post") ||
+        host.getAttribute("hx-get") ||
+        host.getAttribute("hx-put") ||
+        host.getAttribute("hx-delete")
+      : "";
+    const bar = el.closest(".action-bar");
+    return [
+      el.getAttribute("data-key-action") || "",
+      verb || "",
+      el.getAttribute("hx-vals") ||
+        (host ? host.getAttribute("hx-vals") : "") ||
+        "",
+      el.getAttribute("hx-include") ||
+        (host ? host.getAttribute("hx-include") : "") ||
+        "",
+      el.getAttribute("href") || "",
+      bar ? bar.id : "",
+    ].join("|");
   }
 
   /** N10 (code gate r2): the identity of the record currently on
@@ -170,10 +355,56 @@
     return !!(data && data.firstInitCompleted === true);
   }
 
-  function clickAction(action) {
-    const selector = '[data-key-action="' + action + '"]';
-    const el = document.querySelector(selector);
-    if (!el) return false;
+  /**
+   * U-target §4.1/§4.2 — resolve `action`'s target the ONE way this
+   * file resolves anything keyboard-driven.
+   *
+   * `barId` is the armed branch's scope: while a bar is armed, its
+   * Confirm/Cancel are THAT BAR'S, looked up inside it rather than
+   * page-wide (§4.3). Re-resolution at fire time goes through this same
+   * function with the same `barId`, never a closed-over element — the
+   * bar is re-found by id, so a swap that replaced it drops the fire
+   * instead of clicking a detached node.
+   */
+  function resolveDispatch(action, barId) {
+    const selector = targetSelector(action);
+    if (barId) {
+      const bar = document.getElementById(barId);
+      if (!bar) return { status: "none", el: null };
+      const found = bar.querySelectorAll(selector);
+      if (found.length === 1) return { status: "one", el: found[0] };
+      if (found.length === 0) return { status: "none", el: null };
+      return { status: "ambiguous", el: null };
+    }
+    return resolveScoped(selector);
+  }
+
+  /**
+   * U-target §4.2 — the return contract, which `goUp()` branches on:
+   * `clickAction` reports HANDLED for `one`-that-fired,
+   * `one`-that-hinted AND `ambiguous`; only `none` reports NOT handled.
+   * A refusal that reported not-handled would refuse AND THEN navigate
+   * away (`goUp()` falls through to `window.history.back()`) — the
+   * worst of both. Pinned by `R1`.
+   */
+  function clickAction(action, barId) {
+    const resolved = resolveDispatch(action, barId);
+    if (resolved.status === "none") return false;
+    if (resolved.status === "ambiguous") {
+      // Zero requests. The operator moves the selection and presses
+      // again; acting on the first match is the defect.
+      showNoopHint(MULTI_TARGET_HINT);
+      return true;
+    }
+    const el = resolved.el;
+    if (isGatedTarget(el)) {
+      // Server-marked gated control (the singleton `o` cycle; the
+      // bulk-collapse graduate after §4.5). Nothing to defer or click —
+      // say why, and report HANDLED so the caller does not fall through
+      // to a page-wide search of its own.
+      showNoopHint(el.getAttribute("data-noop-hint"));
+      return true;
+    }
     // D1 (U-jsdom disposition, 14 §6a, code gate r1): re-resolve BY
     // SELECTOR at fire time, never close over `el` above -- a second
     // overlapping swap landing between defer and fire can detach the
@@ -193,7 +424,15 @@
     // defer time and re-checked at fire time; a mismatch no-ops
     // (logged, so a dropped fire is diagnosable instead of just
     // silently absent).
+    //
+    // U-target §4.4: N10's record-id leg is KEPT, not replaced -- it is
+    // the only leg that catches a whole-page record change for an
+    // IDENTITY-LESS target (`up` to the same bucket, `toggle_brief`),
+    // whose signature is unchanged across records. The signature leg
+    // below is what finally works on Front and Bucket, where
+    // `currentRecordId()` is `null` on both sides of N10's comparison.
     const recordAtDefer = currentRecordId();
+    const sigAtDefer = targetSignature(el);
     function fire() {
       const recordNow = currentRecordId();
       if (recordNow !== recordAtDefer) {
@@ -203,8 +442,36 @@
         );
         return;
       }
-      const live = document.querySelector(selector);
-      if (!live) return;
+      // U-target §4.4 step 1: re-resolve by the SAME RULE, never a
+      // closed-over element. Step 2: a `none` or `ambiguous`
+      // re-resolution DROPS WITH A WARN. Today's code is a bare
+      // `if (!live) return;` -- a dropped keystroke indistinguishable
+      // from a key that does nothing (`D3`, `D3b`).
+      const reResolved = resolveDispatch(action, barId);
+      if (reResolved.status !== "one") {
+        console.warn(
+          'clickAction("' + action + '"): dropped -- target re-resolved to "' +
+            reResolved.status + '" at fire time (the document changed ' +
+            "under this deferred dispatch); never fired"
+        );
+        return;
+      }
+      const live = reResolved.el;
+      // U-target §4.4 step 4: the leg that works on all three surfaces.
+      // "What request would this element actually issue" -- if that is
+      // not what was intended at defer time, the intent is stale even
+      // though something matching the selector is still there. Measured
+      // without it: a deferred `k` relocated onto a DIFFERENT holding
+      // row and POSTed, with zero console output.
+      const sigNow = targetSignature(live);
+      if (sigNow !== sigAtDefer) {
+        console.warn(
+          'clickAction("' + action + '"): dropped -- target signature ' +
+            "changed from [" + sigAtDefer + "] to [" + sigNow +
+            "] before this deferred click fired"
+        );
+        return;
+      }
       // code gate r7 (MAJOR-1 follow-up): the fire-time wired check --
       // see this function's own docblock above for what it proves and
       // why the canary matters.
@@ -335,8 +602,32 @@
     // The note input lives in the unarmed bar only — there is nothing to
     // focus while a confirm strip is up, which is why the armed branch
     // no-ops `n` with a hint instead of calling this.
-    const input = document.querySelector('.action-bar input[name="note"]');
-    if (input) input.focus();
+    //
+    // U-target §4.2: TWO corrections here, and the second is a defect
+    // this unit found rather than inherited.
+    //   1. `document.querySelector` is page-wide, so `n` focused the
+    //      FIRST row's note field, not the selected row's — the same
+    //      targeting defect as `clickAction`, not previously reported.
+    //   2. `input[name="note"]` can match a HIDDEN input.
+    //      `action_bar.html`'s commit-drift retry branch renders
+    //      `<input type="hidden" name="note">` when a FAILED route's
+    //      retry carried a note (`:67`, the un-armed branch — the only
+    //      one `focusNote` can reach, since an armed bar routes `n`
+    //      through the armed branch's own hint). In that state a Bucket
+    //      page puts a hidden `note` input AHEAD of every real one and
+    //      `n` "focuses" something invisible — a silently dead key, the
+    //      exact shape `NOOP_MESSAGES` exists for. The selector must
+    //      name the visible one (`F1b`).
+    const resolved = resolveScoped('.action-bar input[type="text"][name="note"]');
+    if (resolved.status === "one") {
+      resolved.el.focus();
+      return;
+    }
+    if (resolved.status === "ambiguous") {
+      showNoopHint(MULTI_NOTE_HINT);
+      return;
+    }
+    // `none` -> silent no-op, today's behaviour.
   }
 
   /** w/s (and arrows) move a `.selected` marker among the visible
@@ -482,11 +773,43 @@
 
     hideNoopHint(); // F5-1/2: any key clears a stale no-op hint
 
-    const armed = findArmedBar();
-    if (armed) {
+    // U-target §4.3: the armed branch resolves the SAME way dispatch
+    // does, and acts WITHIN the bar it resolved.
+    const armedResolved = resolveArmedBar();
+    if (armedResolved.status === "ambiguous") {
+      // Two bars armed and the selection cannot break the tie. Refuse —
+      // today document order decides, which on a bucket page with an
+      // expanded cluster means `Enter` executing a merge (§2.7 c).
+      //
+      // Escape is EXEMPT and falls through to the ordinary `up` action.
+      // Without this the keyboard is TRAPPED until a mouse click: every
+      // key refused, no way out. Escape cannot disambiguate WHICH bar
+      // to cancel, but leaving the page abandons both harmlessly —
+      // arming renders a partial and issues no write, so nothing is
+      // lost. `MULTI_ARMED_HINT` says so in words (`A3`).
+      if (event.key !== "Escape") {
+        event.preventDefault();
+        showNoopHint(MULTI_ARMED_HINT);
+        return;
+      }
+    } else if (armedResolved.status === "one") {
+      const armed = armedResolved.el;
+      const armedBarId = armed.id;
+      // KNOWN PRE-EXISTING STATE, recorded so a reader does not have to
+      // wonder whether this unit caused it (code gate r1 NIT-2). A bar
+      // whose `data-armed="true"` comes from `commit_drift.armed`
+      // (action_bar.html:10's second disjunct) carries
+      // `commit_drift_confirm`/`commit_drift_disarm`, NOT
+      // `confirm`/`disarm` — so both lookups below find nothing in it
+      // and the branch is keyboard-INERT there. That was already true
+      // before U-target, and scoping makes it strictly SAFER: the old
+      // page-wide lookup could resolve `confirm` in a DIFFERENT bar and
+      // fire it; a within-bar lookup cannot reach outside the bar the
+      // operator is actually in. Binding those two actions is not this
+      // unit's business.
       event.preventDefault();
       if (event.key === "Enter") {
-        clickAction("confirm");
+        clickAction("confirm", armedBarId);
       } else {
         // The armed strip advertises "n to say why" one line below "any
         // other key cancels", and this branch honoured only the second:
@@ -505,7 +828,7 @@
           showNoopHint("Cancel first (Esc), then n to add a note.");
           return;
         }
-        clickAction("disarm");
+        clickAction("disarm", armedBarId);
       }
       return;
     }
@@ -564,14 +887,15 @@
   };
 
   function dispatchOrHint(action) {
+    // U-target §4.2: leg 1 (present-but-noop) is now FOLDED INTO
+    // `clickAction` — the `[data-noop-hint][data-noop-action]` pair is
+    // part of `targetSelector`, so it is resolved by the SAME scoped
+    // rule as a live control rather than by a second, page-wide
+    // `document.querySelector` that would answer a different question
+    // (and, with the bulk row selected, the wrong one — see
+    // `targetSelector`'s own comment). Only leg 2 (absent-target)
+    // remains here.
     if (clickAction(action)) return;
-    const noop = document.querySelector(
-      '[data-noop-hint][data-noop-action="' + action + '"]'
-    );
-    if (noop) {
-      showNoopHint(noop.getAttribute("data-noop-hint"));
-      return;
-    }
     const message = NOOP_MESSAGES[action];
     if (message) showNoopHint(message);
   }
