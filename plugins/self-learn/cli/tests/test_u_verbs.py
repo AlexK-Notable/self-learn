@@ -205,8 +205,18 @@ class TestPhaseBoundary:
         verbs -- no Phase-2 verb name appears in it, and it is not a
         superset that would let a sheet name one. PH2's own criterion --
         Phase 1 writes to NO HOST -- is proven by
-        ``test_phase1_touches_no_host`` below."""
+        ``test_phase1_touches_no_host`` below.
+
+        gate r2 m-2: the hyphenated ``"followup-add"`` spelling below
+        (matching the established sibling ``"followup-done"`` this
+        module already uses at PERMITTED_KEYS/verbs.py/routes.py) is
+        invisible to its OWN edit -- reverting it to the old
+        ``"followup add"`` leaves the overlap assertion green either
+        way, because NEITHER spelling is in PERMITTED_VERBS today. The
+        explicit membership pin just below makes the correct spelling
+        self-verifying: it fails directly if the literal reverts."""
         phase2_verbs = {"reroute", "followup-add", "reclassify", "host remove", "bucket prune"}
+        assert "followup-add" in phase2_verbs  # gate r2 m-2: pins the spelling itself
         assert not (batch.PERMITTED_VERBS & phase2_verbs)
         assert len(batch.PERMITTED_VERBS) == 15
 

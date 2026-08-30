@@ -23,6 +23,7 @@ All ledger homes are throwaway sandbox repos under pytest tmpdirs
 
 from __future__ import annotations
 
+import ast
 import subprocess
 from pathlib import Path
 
@@ -57,6 +58,18 @@ from support import (
 from test_u_verbs import env2, seed_routed
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
+
+
+def _call_name(func: ast.expr) -> str | None:
+    """gate r2 m-1: the SAME name-of-a-call-target helper
+    `test_route_observability.py` already uses for its own AST guards --
+    a plain `name(...)` or a `module.name(...)`/`self.name(...)`
+    attribute call, never a string match."""
+    if isinstance(func, ast.Name):
+        return func.id
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    return None
 
 
 @pytest.fixture(autouse=True)
@@ -424,7 +437,7 @@ class TestHOST3NoBulkRetirement:
         assert "--force" not in help_text
 
     def test_hosts_py_never_calls_graduate_or_supersede(self):
-        r"""HOST3's grep leg. The spec's own literal command (§7,
+        r"""HOST3's leg. The spec's own literal command (§7,
         `grep -c 'graduate\|supersede' cli/src/self_learn/hosts.py` = 0)
         is a SELF-MATCHING search: MEASURED, it returns 2, both hits
         landing inside `host_remove`'s own docstring -- prose EXPLAINING
@@ -436,12 +449,22 @@ class TestHOST3NoBulkRetirement:
         to remove those two words cannot silently turn this into a
         vacuous check without the control itself going red first.
 
-        Re-scoped to `\bgraduate\(|\bsupersede\(` -- an ACTUAL call
-        (word boundary + open-paren), never the bare word -- so the
-        unit's own explanatory prose cannot satisfy or defeat the
-        check either way. M50 (mutation table) proves this narrower
-        pattern still catches a real violation: adding `--retire`
-        calling `graduate(...)` in a loop reddens this exact test."""
+        gate r2 m-1: a NARROWED grep (`\bgraduate\(|\bsupersede\(`,
+        an open-paren after a word boundary) still stops the FALSE-GREEN
+        direction (a real call never satisfies it into passing) but is
+        measurably NOT prose-immune the other way -- a `hosts.py`
+        docstring containing the literal text `graduate(record)` (no
+        call anywhere) makes that pattern match too, turning a harmless
+        prose edit into a false red. Any TEXT pattern over the file's
+        bytes has this failure mode by construction; the fix this unit
+        already uses elsewhere for exactly this problem
+        (`test_route_observability.py`'s own words: "AST, not regex -- a
+        docstring naming `set_routing()` must not turn this red") is to
+        stop reading bytes and read the parse tree: a docstring is a
+        `Constant` string node, never an `ast.Call`, so no prose --
+        forbidden words, real code quoted in a comment, anything -- can
+        ever satisfy or defeat this leg either way. That is the claim
+        the docstring makes now, and unlike the grep it is true."""
         hosts_py = (
             REPO_ROOT / "plugins" / "self-learn" / "cli" / "src" / "self_learn" / "hosts.py"
         )
@@ -454,16 +477,55 @@ class TestHOST3NoBulkRetirement:
             "positive control: the spec's own literal pattern is EXPECTED "
             "to self-match host_remove's docstring prose right now -- if "
             f"this is no longer {2}, re-measure before touching the "
-            "narrowed pattern below"
+            "AST check below"
         )
 
-        proc = subprocess.run(
-            ["grep", "-cE", r"\bgraduate\(|\bsupersede\(", str(hosts_py)],
-            capture_output=True, text=True,
+        tree = ast.parse(hosts_py.read_text(encoding="utf-8"), filename=str(hosts_py))
+        called = {
+            _call_name(node.func)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and _call_name(node.func) in ("graduate", "supersede")
+        }
+        assert called == set(), (
+            f"hosts.py CALLS {sorted(called)} -- HOST3 forbids bulk "
+            "retirement through host-side code, not just its own prose"
         )
-        # grep -c prints "0" (rc 1, no match) rather than erroring.
-        count = int(proc.stdout.strip() or "0")
-        assert count == 0
+
+    def test_hosts_py_graduate_call_reddens_the_ast_leg(self, tmp_path, monkeypatch):
+        """gate r2 m-1's own positive control for the AST leg itself,
+        matching M50's spirit but proving the NEW check (not the grep)
+        is what fires: a docstring-only occurrence of `graduate(record)`
+        must NOT redden the AST leg (prose is inert to it), while an
+        ACTUAL call parses as a real `ast.Call` and does."""
+        src_with_prose_only = (
+            'def host_remove():\n'
+            '    """Explains why not: calling graduate(record) here '
+            'would be bulk retirement."""\n'
+            '    pass\n'
+        )
+        tree = ast.parse(src_with_prose_only)
+        called = {
+            _call_name(node.func)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and _call_name(node.func) in ("graduate", "supersede")
+        }
+        assert called == set(), "a docstring mentioning the call must stay clean"
+
+        src_with_real_call = (
+            'def host_remove():\n'
+            '    for r in targets:\n'
+            '        graduate(r)\n'
+        )
+        tree2 = ast.parse(src_with_real_call)
+        called2 = {
+            _call_name(node.func)
+            for node in ast.walk(tree2)
+            if isinstance(node, ast.Call)
+            and _call_name(node.func) in ("graduate", "supersede")
+        }
+        assert called2 == {"graduate"}
 
 
 class TestHOST4BucketPrune:
@@ -738,14 +800,30 @@ class TestMETA4ReclassifyTypeRevalidates:
         hand-rolled check (a dict-shaped `_body_sections`) could not
         represent a count > 1 at all, so it silently passed a duplicate
         through pre-lock, only for `set_type`'s OWN `_validate_body`
-        call to catch it later, under the lock -- the record still
-        untouched by luck (the mutation never landed), not by a check
-        that actually saw the problem where it claimed to. Source type
-        is behavior (Trigger/Instruction unique -- valid at creation on
-        its own terms); '## Fact' rides along duplicated, unchecked by
+        call to catch it later, under the lock. Source type is behavior
+        (Trigger/Instruction unique -- valid at creation on its own
+        terms); '## Fact' rides along duplicated, unchecked by
         behavior's own validation (Fact is neither required nor
         optional for behavior), and only starts mattering once the
-        reclassify TARGET (knowledge) is checked."""
+        reclassify TARGET (knowledge) is checked.
+
+        gate r2 m-6: this docstring used to claim the duplicate
+        "surfaced only later, under the lock, when set_type's OWN
+        _validate_body call caught it for real" -- measured FALSE even
+        before B-1's fix (deleting the pre-lock check made the mutated
+        code hit `set_kind`-before-`set_type`'s ordering bug and refuse
+        with "clear kind first", never reaching `_validate_body` at
+        all). After B-1's fix the true account is simpler and does not
+        depend on that bug: `reclassify` now validates the duplicate in
+        TWO places on the SAME pre-lock path -- the early
+        `records_mod.validate_body(type, record.body)` call above, and
+        (redundantly, on purpose) `_reclassify_apply`'s own
+        `set_type(...)` call inside the pre-lock simulation just below
+        it -- so the duplicate is refused before any lock or write
+        EITHER WAY, never surfacing under the lock. MU12 (delete the
+        early check) still reddens this test: the simulation's own
+        `set_type` call catches it instead, through the identical
+        validator, before the lock opens."""
         rid = "lrn-0000cccc"
         record = make_behavior(record_id=rid, scope="skill:a")
         record.set_body(
@@ -760,6 +838,113 @@ class TestMETA4ReclassifyTypeRevalidates:
         assert "duplicate" in str(exc_info.value)
         after = find_record_path(env2.home, rid).read_bytes()
         assert after == before
+
+
+class TestB1ReclassifyResultingPairValidated:
+    """gate r2 B-1 (Blocker) regression coverage: `reclassify` never
+    checked that the RESULTING `(type, kind)` pair was one
+    `Record.validate()` would accept -- only the incoming flags in
+    isolation. One omission, three faces (all fixed by
+    `verbs._reclassify_apply` + the pre-lock simulate-and-validate
+    step): (1) `--type behavior` with no kind, given or existing, used
+    to commit a `kind: null` behavior record `Record.from_path` then
+    refused to load; (2) a legal `--type behavior --kind X` on a
+    non-behavior record was refused though the verb's own pre-lock
+    guard had just admitted it (the `set_kind`-before-`set_type`
+    ordering bug); (3) `--type knowledge` on ANY kinded behavior record
+    was unconditionally unreachable through the CLI (no way to clear
+    `kind` -- `--kind` uses `choices=sorted(KINDS)`)."""
+
+    def test_face1_type_behavior_with_no_kind_refuses_before_writing(self, env2):
+        """Face 1 -- B-1's exact corruption scenario, now refused
+        instead of committed. A knowledge record hand-edited to carry
+        Trigger/Instruction (exactly what META4's own refusal message
+        instructs: "edit it by hand first"), no kind anywhere."""
+        rid = "lrn-0000d001"
+        record = make_knowledge(record_id=rid, scope="skill:a")
+        record.set_body("## Trigger\nt1.\n\n## Instruction\ni1.\n\n## Fact\nf1.")
+        create_record(env2.home, record)
+        commit_all(env2.home, "pending knowledge, behavior-shaped body")
+        before = find_record_path(env2.home, rid).read_bytes()
+
+        with pytest.raises(verbs.VerbError) as exc_info:
+            verbs.reclassify(env2.home, rid, type="behavior", no_push=True)
+        message = str(exc_info.value)
+        assert "kind" in message
+
+        after_path = find_record_path(env2.home, rid)
+        assert after_path.read_bytes() == before
+        # the record must still be loadable -- the refusal did not
+        # commit anything a later verb would choke on.
+        reloaded = Record.from_path(after_path)
+        assert reloaded.type == "knowledge"
+
+    def test_face2_type_behavior_with_kind_on_nonbehavior_now_succeeds(self, env2):
+        """Face 2 -- the ordering bug: `--type behavior --kind X` on a
+        knowledge record whose body already satisfies behavior's
+        sections used to be refused ("kind applies to behavior records
+        only") even though the verb's own pre-lock guard had just
+        admitted the combination as legal. Now succeeds, and the
+        written record survives a fresh `Record.from_path` (the same
+        check B-1's own corruption would have failed)."""
+        rid = "lrn-0000d002"
+        record = make_knowledge(record_id=rid, scope="skill:a")
+        record.set_body("## Trigger\nt1.\n\n## Instruction\ni1.\n\n## Fact\nf1.")
+        create_record(env2.home, record)
+        commit_all(env2.home, "pending knowledge, behavior-shaped body")
+
+        result = verbs.reclassify(
+            env2.home, rid, type="behavior", kind="surface-rule", no_push=True
+        )
+        assert result.action == "reclassify"
+        reloaded = Record.from_path(find_record_path(env2.home, rid))
+        assert reloaded.type == "behavior"
+        assert reloaded.kind == "surface-rule"
+
+    def test_face3_type_knowledge_clears_kind_and_is_reachable(self, env2):
+        """Face 3 -- reachability: `--type knowledge` on a KINDED
+        behavior record used to be unconditionally refused ("clear kind
+        first (set_kind(None))") with no CLI-level way to satisfy that
+        instruction (`--kind` only accepts `records.KINDS` values).
+        `_reclassify_apply` auto-clears `kind` as PART OF a type change
+        away from behavior -- the only path that makes this transition
+        reachable at all -- so this must now succeed, with `kind`
+        actually gone from the written record, not merely unchecked."""
+        rid = "lrn-0000d003"
+        record = make_behavior(record_id=rid, scope="skill:a")  # kind="anti-pattern"
+        record.set_body("## Trigger\nt1.\n\n## Instruction\ni1.\n\n## Fact\nf1.")
+        create_record(env2.home, record)
+        commit_all(env2.home, "pending behavior, knowledge-shaped body too")
+        assert record.kind == "anti-pattern"
+
+        result = verbs.reclassify(env2.home, rid, type="knowledge", no_push=True)
+        assert result.action == "reclassify"
+        reloaded = Record.from_path(find_record_path(env2.home, rid))
+        assert reloaded.type == "knowledge"
+        assert reloaded.kind is None
+        assert "kind" not in reloaded._fm
+
+    def test_face1_end_to_end_through_cli_main(self, env2, capsys):
+        """gate r2's own probe ran end to end through `cli.main`, not
+        just the verb layer -- this pins the SAME shape there: rc != 0,
+        nothing committed, the record still loadable by a later verb
+        (`show`) instead of raising an uncaught `ValidationError`."""
+        rid = "lrn-0000d004"
+        record = make_knowledge(record_id=rid, scope="skill:a")
+        record.set_body("## Trigger\nt1.\n\n## Instruction\ni1.\n\n## Fact\nf1.")
+        create_record(env2.home, record)
+        commit_all(env2.home, "pending knowledge, behavior-shaped body")
+        before_log = git(env2.home, "log", "--oneline").stdout
+
+        rc = cli.main(["reclassify", rid, "--type", "behavior", "--no-push"])
+        assert rc != 0
+
+        after_log = git(env2.home, "log", "--oneline").stdout
+        assert after_log == before_log  # nothing committed
+
+        capsys.readouterr()  # drain the refusal message
+        rc_show = cli.main(["show", rid])
+        assert rc_show == 0  # never raises -- the record is still sane
 
 
 class TestMETA5ReclassifyUsage:

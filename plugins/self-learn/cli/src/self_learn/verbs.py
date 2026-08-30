@@ -7504,7 +7504,22 @@ def followup_add(
             record = Record.from_path(path)  # fresh read under the lock
             try:
                 record.set_follow_up(action, unblocks_on=unblocks_on, note=note)
-            except RecordError as exc:
+            except records_mod.MutationError as exc:
+                # gate r2 M-A: NOT a blanket `except RecordError`. The
+                # pre-lock `_validate_follow_up(follow_up)` call above
+                # already owns shape validation (META1: the SAME shipped
+                # validator `Record.set_follow_up` calls again internally
+                # -- twice on purpose, never a second implementation). A
+                # `ValidationError` reaching this point would mean that
+                # pre-lock check was bypassed or wrong, and must escape
+                # rather than be relabelled -- a blanket catch here
+                # silently absorbed spec mutation M53 (hand-roll the
+                # pre-lock shape check instead of calling the shipped
+                # validator) into an indistinguishable VerbError, which
+                # hollowed out META1's own named mutation. `MutationError`
+                # (record has no routing block; record is not `routed`)
+                # is a genuine race between the pre-lock read and this
+                # fresh one -- that, and only that, is what this catches.
                 raise VerbError(str(exc)) from exc
             record.write(path)
             staged, sha = _commit_ledger(home, [path], message, note)
@@ -7520,6 +7535,37 @@ def followup_add(
         )
     finally:
         hold.release()
+
+
+def _reclassify_apply(record: Record, *, kind: str | None, type: str | None) -> None:
+    """Apply ``reclassify --kind K --type T`` to ``record`` in the one
+    order that can ever land on a pair :meth:`Record.validate` accepts
+    (gate r2 B-1, three faces of one omission): clear ``kind`` FIRST
+    whenever the resulting type will not be ``behavior`` -- ``kind`` is
+    behavior-only by definition (:meth:`Record.set_kind`), and the CLI's
+    own ``--kind`` has no way to name a clear (``choices=sorted(KINDS)``
+    at ``cli.py``), so this auto-clear is the ONLY path that makes
+    behavior -> knowledge reachable through this verb at all -- THEN
+    change ``type`` (so ``set_type``'s own "clear kind first" guard never
+    fires on a target this function already cleared for), THEN set the
+    new ``kind`` if one was given (so ``set_kind``'s own
+    behavior-only guard sees the ALREADY-updated type, not the stale
+    one -- the exact ordering bug gate r2 found: the old code called
+    ``set_kind`` before ``set_type``, so a legal ``--type behavior
+    --kind X`` on a non-behavior record was refused though the verb's
+    own pre-lock guard had just admitted it).
+
+    Never writes to disk and never partially applies to something
+    :meth:`Record.validate` would reject -- every call below validates
+    itself. Callers decide whether ``record`` is a disposable simulation
+    copy (pre-lock, fail-closed) or the real fresh-under-lock instance."""
+    resulting_type = type if type is not None else record.type
+    if resulting_type != "behavior":
+        record.set_kind(None)
+    if type is not None:
+        record.set_type(type)
+    if kind is not None:
+        record.set_kind(kind)
 
 
 def reclassify(
@@ -7543,7 +7589,19 @@ def reclassify(
     sections (``records.REQUIRED_SECTIONS``) and refuses (rc 1) naming
     the missing headings — the record is never rewritten to fit (META4).
     One commit ``self-learn: reclassify lrn-…``; a ``kind``-only change
-    on a routed record touches no host (kind is not compiled)."""
+    on a routed record touches no host (kind is not compiled).
+
+    gate r2 B-1: the RESULTING ``(type, kind)`` pair is validated —
+    fail-closed, on a disposable in-memory copy, through
+    :meth:`Record.validate` itself (never a second, hand-rolled pair
+    check) — before any lock or write. Without this, ``--type behavior``
+    on a record with no kind (given or existing) used to commit a
+    ``kind: null`` behavior record that ``Record.from_path`` then refused
+    to load; the same omission made a legal ``--type behavior --kind X``
+    on a non-behavior record refusable-though-admitted; and made
+    ``--type knowledge`` on any kinded behavior record unconditionally
+    unreachable through this CLI (``--kind`` cannot name a clear). One
+    gap, three faces, one fix — see :func:`_reclassify_apply`."""
     home = Path(home)
     if kind is None and type is None:
         raise VerbUsageError("reclassify needs --kind and/or --type")
@@ -7568,31 +7626,37 @@ def reclassify(
             require_status(home, record_id, LIVE_STATUSES, verb="reclassify --type")
         except LedgerOpsError as exc:
             raise VerbError(str(exc)) from exc
-        # M-3 (U-verbs Phase 2 code gate r1): re-validates through the ONE
-        # shipped body validator, Record._validate_body -- the SAME one
-        # set_type calls again under the lock below (twice on purpose,
-        # never a second implementation). The hand-rolled
-        # `_body_sections(record)` + truthiness check this replaces
-        # DISAGREED with it in both directions, measured: a present-but-
-        # EMPTY '## Trigger' section was refused as "missing" even
-        # though `_validate_body` accepts it (it counts HEADINGS, not
-        # content -- consistent with this verb's own "the body is never
-        # rewritten to fit" contract: content is never this verb's
-        # business to begin with); and a DUPLICATE heading passed the
-        # hand-rolled check silently (a dict-shaped `_body_sections`
-        # cannot represent a count > 1) and surfaced only later, inside
-        # `_ledger_write`, when `set_type`'s own `_validate_body` call
-        # caught it for real -- the exact opposite of what the
-        # `except RecordError` branch below used to claim ("already
-        # cover the live paths").
+        # M-3 (gate r1), reached through the public surface now (gate r2
+        # m-4 — records_mod.Record._validate_body was the only
+        # cross-module access to a Record-private member in either src
+        # tree): an early, body-shape-specific refusal, through the ONE
+        # shipped validator — the SAME one set_type calls again below,
+        # inside _reclassify_apply (twice on purpose, never a second
+        # implementation; and gate r2 measured the redundancy is not
+        # vacuous — see test_reclassify_type_refuses_a_duplicate_heading_pre_lock).
         try:
-            records_mod.Record._validate_body(type, record.body)
+            records_mod.validate_body(type, record.body)
         except RecordError as exc:
             raise VerbError(
                 f"record {record_id} cannot reclassify to type {type!r}: "
                 f"{exc} — the body is never rewritten to fit; edit it by "
                 "hand first"
             ) from exc
+
+    # gate r2 B-1: validate the RESULTING (kind, type) pair -- not just
+    # the incoming flags -- on a disposable in-memory copy, fail-closed,
+    # before any lock or write. `Record.validate()` is the ONE authority
+    # for "does this pair make sense" (kind required for behavior,
+    # forbidden otherwise) -- never a second, hand-rolled pair check.
+    sim = records_mod.Record.from_text(record.to_text())
+    try:
+        _reclassify_apply(sim, kind=kind, type=type)
+        sim.validate()
+    except RecordError as exc:
+        raise VerbError(
+            f"record {record_id} cannot reclassify to kind={kind!r} "
+            f"type={type!r}: {exc}"
+        ) from exc
 
     hold = sentinel.hold()
     sentinel.heartbeat()
@@ -7601,16 +7665,21 @@ def reclassify(
         with _ledger_write(home):
             record = Record.from_path(path)  # fresh read under the lock
             try:
-                if kind is not None:
-                    record.set_kind(kind)
-                if type is not None:
-                    record.set_type(type)
-            except RecordError as exc:
-                # M-3: genuinely defensive now -- the pre-lock check just
-                # above calls the SAME Record._validate_body this
-                # set_type call does, so this branch is only reachable
-                # by a race (the record changed between the pre-lock read
-                # and this fresh, under-the-lock one).
+                _reclassify_apply(record, kind=kind, type=type)
+            except records_mod.MutationError as exc:
+                # gate r2 M-A's lesson applied here too: NOT a blanket
+                # `except RecordError`. `set_kind`/`set_type` never raise
+                # `MutationError` today (only `_check_thawed`, reached
+                # through `set_type`, can — a genuine race where the
+                # record's status left LIVE_STATUSES between the pre-lock
+                # check and this fresh read); every OTHER failure mode
+                # is `ValidationError`, and the pre-lock simulation just
+                # above already covers those on the SAME transform via
+                # the SAME function. A `ValidationError` reaching this
+                # point would mean that simulation was bypassed or wrong,
+                # and must escape rather than be relabelled indistinguishably
+                # from a fail-closed refusal — the exact mechanism that
+                # hollowed out META1's own mutation (M-A) one verb over.
                 raise VerbError(str(exc)) from exc
             record.write(path)
             staged, sha = _commit_ledger(home, [path], message, note)

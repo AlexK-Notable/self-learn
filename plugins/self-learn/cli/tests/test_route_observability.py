@@ -258,6 +258,37 @@ def test_reroute_spools_a_route_event(env):
     assert event["by"] == "human"
 
 
+def test_reroute_host_phase_failure_still_spools_the_route_event(env, monkeypatch):
+    """gate r2 m-5: `reroute`'s own eight-line comment claims the SAME
+    spool-survives-host-failure placement pin criterion 19 gives
+    `route` (`test_host_phase_failure_still_spools_the_route_event`
+    above) -- but until this test, nothing proved it for `reroute`;
+    `test_reroute_spools_a_route_event` only exercises the happy path.
+    Moving `reroute`'s spool call to the end of the function -- exactly
+    the defect the comment exists to prevent -- would leave the rest of
+    the suite green without this test."""
+    record = seed_pending(env)
+    verbs.route(env.ledger, record.id, dest="skill-md")
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("simulated host-phase failure")
+
+    monkeypatch.setattr(verbs, "_host_phase", boom)
+
+    with pytest.raises(RuntimeError):
+        verbs.reroute(env.ledger, record.id, dest="claude-md", by="human")
+
+    # the ledger commit IS the routing (doc 13 §4.1) -- it happened
+    # despite the host-phase raise.
+    rerouted = Record.from_path(resolved_path(env, record.id))
+    assert rerouted.routing["destination"] == "claude-md"
+
+    route_events = _spooled_events("route")
+    reroute_events = [e for e in route_events if e["destination"] == "claude-md"]
+    assert len(reroute_events) == 1
+    assert reroute_events[0]["record"] == record.id
+
+
 # --------------------------------------------------------- Part C: `by`
 
 
