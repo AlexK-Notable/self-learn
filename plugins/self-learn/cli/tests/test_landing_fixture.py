@@ -1,6 +1,18 @@
-"""landing_fixture.py -- shared throwaway-repo builder for `land`'s
-end-to-end tests (test_land_runner.py). NOT collected by pytest itself
-(no test_ prefix) -- a plain helper module.
+"""test_landing_fixture.py -- shared throwaway-repo builder for `land`'s
+end-to-end tests (test_land_runner.py). A helper module, not a test
+module: it defines no `test_*` function, so pytest collects it and finds
+nothing, which is the intended outcome.
+
+The `test_` prefix is load-bearing and is NOT a naming slip. U-armor's
+`ARM3` (test_armor.py::test_arm3_table_is_exhaustive) requires every
+NON-`test_`-prefixed `.py` file under `plugins/self-learn/cli/tests/` to
+be a key in the `ARMOR` table -- and an `ARMOR` key is pinned against
+`ANCHOR`, so a file this unit is ADDING cannot have one (it does not
+exist at the anchor to be pinned against). Measured 2026-08-29: named
+`landing_fixture.py`, `ARM3` fails with
+`{'landing_fixture.py'}` both before and after a correct landing. The
+prefix is the only resolution available without editing a protected
+file. See the handoff for the underlying design gap.
 
 Every fixture repo is built fresh under tmp_path: a bare "origin" plus a
 "repo" main checkout, with the minimal file layout `land` requires

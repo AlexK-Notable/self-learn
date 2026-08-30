@@ -1,5 +1,5 @@
 """End-to-end tests for `scripts/land`, against THROWAWAY git fixture
-repos only (never the real repo or the real remote) -- landing_fixture.py
+repos only (never the real repo or the real remote) -- test_landing_fixture.py
 builds a fresh bare "origin" + main-checkout "repo" per test, under
 tmp_path, with XDG_CACHE_HOME/SELF_LEARN_HOME redirected there too.
 """
@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-import landing_fixture as LF
+import test_landing_fixture as LF
 
 
 # ---------------------------------------------------------------------------
