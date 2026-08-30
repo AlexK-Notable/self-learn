@@ -304,7 +304,11 @@ because the lesson will never load in the sessions where the mistake
 happens. The **nearest registered ancestor project** (the umbrella repo
 containing the trigger's surfaces) is then the narrowest surface that
 still fires, honestly applied. Propose a re-home (the `rehome` verb
-where you have it, prose in `rationale` where you don't) and **name the
+where you have it — its `--to` now reaches every scope: `user`,
+`skill:<name>`, `project:<path-or-slug>`, or a bare project path/slug —
+prose in `rationale` where you don't. **You may propose only a PROJECT
+target**: a scope change is a human verb, so say it in `rationale` and
+let the human type it.) and **name the
 evidence: which trigger elements live outside the record's own repo**
 — a re-home proposal without that evidence is a hunch. Never leap to
 user scope just because a trigger spans two repos; check for the

@@ -32,7 +32,7 @@ from dataclasses import asdict, dataclass
 #: are live; the others gate on where focus/attention currently is.
 #: Context gates DISPLAY only (footer filtering, style.css) — dispatch is
 #: first-match with no context filter, which is why every key is unique.
-Context = str  # "global" | "list" | "detail" | "holding" | "pane" | "bucket" | "proposal" | "success"
+Context = str  # "global" | "list" | "detail" | "holding" | "resolved" | "pane" | "bucket" | "proposal" | "success"
 
 
 @dataclass(frozen=True)
@@ -101,6 +101,14 @@ KEYMAP: tuple[KeymapEntry, ...] = (
     # were updated under this same authority — see 03-decisions.md's
     # S-row.
     KeymapEntry(("c",), "confirm_recurrence", "Confirm recurrence", "holding"),
+    # U-verbs S-54 §4.9 (UIP3/UIP4, Phase 2): two of the four free
+    # letters (`hklmz`, §2.8 — `h` stays excluded, already printed on
+    # the header back-link and bound to nothing, ui-walks.md W2-F1).
+    # `l` and `z` stay free (FW-136): reroute/reopen/undefer/rescope/
+    # supersede are corrections, reached through the generic
+    # arm-then-confirm POST path from a form, never a hot key.
+    KeymapEntry(("k",), "dismiss_suspect", "Dismiss suspect", "holding"),
+    KeymapEntry(("m",), "confirm_held", "Still holding", "resolved"),
     KeymapEntry(("r",), "retry", "Retry pane", "pane"),
     KeymapEntry(("q",), "close_pane", "Close split (ends the session)", "pane"),
     # Y-13 (09 §1/§2.2/§4.5, 2026-07-17): both keys were unbound — the
