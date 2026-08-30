@@ -48,7 +48,7 @@ def resolve_one(root: Path, rel_path: str, resolver_name: str, branch: str) -> i
         both_changed = _both_changed_keys(text)
         today = datetime.date.today()
 
-        def resolver(ours, base, theirs):
+        def _per_key_resolver(ours, base, theirs):
             res = R.per_key(ours, base, theirs, both_changed=both_changed)
             out = []
             for line in res:
@@ -59,9 +59,10 @@ def resolve_one(root: Path, rel_path: str, resolver_name: str, branch: str) -> i
                 else:
                     out.append(line)
             return out
+
+        resolver = _per_key_resolver
     elif resolver_name == "count-line":
-        def resolver(ours, base, theirs):
-            return R.count_line(ours, base, theirs)
+        resolver = R.count_line
     elif resolver_name in R.REGISTRY:
         resolver = R.REGISTRY[resolver_name]
     else:

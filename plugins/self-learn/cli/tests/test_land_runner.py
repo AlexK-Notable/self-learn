@@ -836,7 +836,9 @@ def test_un2_never_touches_the_ledger():
 
 def _armor_anchor(repo: Path) -> str:
     text = (repo / "plugins/self-learn/cli/tests/test_armor.py").read_text()
-    return re.search(r'^ANCHOR = "([^"]*)"', text, re.M).group(1)
+    m = re.search(r'^ANCHOR = "([^"]*)"', text, re.M)
+    assert m is not None, text[:200]
+    return m.group(1)
 
 
 def test_wld1_detect_world_reads_the_two_worlds_apart(tmp_path):
@@ -969,6 +971,18 @@ def test_arm5_is_a_post_commit_property_and_the_runner_never_runs_it_early(tmp_p
     assert red.returncode != 0, red.stdout + red.stderr
     assert "no first-parent merge on master yet" in (red.stdout + red.stderr)
 
+    # That control run left cached bytecode for test_armor.py. It is the
+    # guard's own positive control, not incidental: `--remeasure` swaps a
+    # 7-char anchor for another 7-char anchor, so the file's SIZE is
+    # unchanged, and CPython's (mtime, size) staleness check -- both at
+    # 1-second resolution -- can therefore keep serving the OLD module.
+    # Measured: the suite read ANCHOR "0000000" from such a .pyc while
+    # the file on disk said "69d6b72", and the landing refused at exit 5
+    # on a false ARM5 red. If this assert stops holding, the rest of this
+    # test is no longer exercising that path.
+    pycache = repo / "plugins/self-learn/cli/tests/__pycache__"
+    assert list(pycache.glob("test_armor.*.pyc")), sorted(pycache.glob("*"))
+
     LF.make_branch(
         repo, "u-arm5",
         edits={"plugins/self-learn/cli/tests/test_delta.py": "def test_d():\n    assert True\n"},
@@ -977,6 +991,7 @@ def test_arm5_is_a_post_commit_property_and_the_runner_never_runs_it_early(tmp_p
     assert r.returncode == 0, r.stdout + r.stderr
     cli_log = Path(r.stdout.split("logs=")[-1].strip() + "/cli.log").read_text()
     assert "passed" in cli_log and "failed" not in cli_log, cli_log
+    assert not list(pycache.glob("test_armor.*.pyc")) or _armor_anchor(repo) != "0000000"
 
     green = subprocess.run(
         [sys.executable, "-m", "pytest", node, "-q", "-p", "no:cacheprovider"],
@@ -1513,3 +1528,48 @@ def test_chk3_a_new_row_file_stays_strict():
     with pytest.raises(CheckFailure) as exc:
         check_row_order_or_raise(root, {d03_rel: d03})
     assert "FW" in str(exc.value)
+
+
+def test_chk3_an_absent_baseline_file_does_not_void_the_others(tmp_path):
+    """CHK3's baseline is per FILE. A row file that does not exist at the
+    baseline has no prior disorder to forgive and stays strict -- and that
+    must NOT collapse the whole baseline to None, which would hand the
+    OTHER file back to the strict form and refuse a correct landing.
+
+    Driven through the shipped CLI, because that is where the baseline is
+    assembled. The fixture puts pre-existing disorder in the FW file at
+    the base and adds the decisions file only in the working tree.
+    """
+    repo = tmp_path / "r"
+    (repo / "docs/specs/self-learn").mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", "-b", "master", str(repo)], check=True)
+    LF.git(repo, "config", "user.email", "t@example.invalid")
+    LF.git(repo, "config", "user.name", "T")
+    fw = repo / "docs/specs/self-learn/14-forward-work-map.md"
+    fw.write_text(
+        "| id | s | st | n |\n|---|---|---|---|\n"
+        "| FW-5 | five | WATCH | n |\n| FW-3 | three | WATCH | n |\n"
+    )
+    LF.git(repo, "add", "-A")
+    LF.git(repo, "commit", "-q", "-m", "base: FW already disordered, 03 absent")
+
+    d03 = repo / "docs/specs/self-learn/03-decisions.md"
+    d03.write_text("| id | s | r |\n|---|---|---|\n| S-1 | one | r |\n| S-2 | two | r |\n")
+
+    def roworder() -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["uv", "run", "--no-sync", "python3", "-m", "self_learn.landing.checks",
+             "--root", str(repo), "roworder", "--base", "HEAD"],
+            cwd=LF.THIS_REPO_CLI, capture_output=True, text=True,
+        )
+
+    ok = roworder()
+    assert ok.returncode == 0, ok.stdout + ok.stderr
+    # the baseline really was partial -- one file, not two
+    assert "1 file(s)" in ok.stdout, ok.stdout
+
+    # positive control: disorder this "merge" ADDS is still refused
+    fw.write_text(fw.read_text() + "| FW-1 | one | WATCH | n |\n")
+    bad = roworder()
+    assert bad.returncode == 1, bad.stdout + bad.stderr
+    assert "INTRODUCED by this merge" in bad.stderr, bad.stderr

@@ -67,12 +67,20 @@ def naive_hits(path: Path) -> int:
 def incl_hits(path: Path) -> int:
     """AST-based, EVERY string Constant, docstrings included."""
     consts, _ = _consts(path)
-    return sum(1 for n in consts if CORPUS.search(n.value))
+    return sum(
+        1 for n in consts
+        if isinstance(n.value, str) and CORPUS.search(n.value)
+    )
 
 
 def strict_hits(path: Path) -> int:
     consts, skip = _consts(path)
-    return sum(1 for n in consts if id(n) not in skip and CORPUS.search(n.value))
+    return sum(
+        1 for n in consts
+        if id(n) not in skip
+        and isinstance(n.value, str)
+        and CORPUS.search(n.value)
+    )
 
 
 def _files(scope: str) -> list[Path]:

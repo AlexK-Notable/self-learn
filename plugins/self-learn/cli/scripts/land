@@ -409,6 +409,24 @@ run_merge_and_checks() {
       die 4 "WLD2: --remeasure refused" "cat $OUT/remeasure.log"
     fi
     git -C "$gr" add -- plugins/self-learn/cli/tests/test_armor.py
+    # The rewritten module must be the one the POST-COMMIT suite imports.
+    # Measured 2026-08-29: `--remeasure` swaps one 7-char anchor literal
+    # for another, so the file's SIZE does not change; CPython invalidates
+    # cached bytecode on (source mtime, source size), both at 1-second
+    # granularity, so a .pyc written in the same second as the rewrite is
+    # still considered valid. Reproduced end to end in a fixture -- the
+    # suite read ANCHOR "0000000" out of a stale .pyc while the file on
+    # disk said "69d6b72", and the landing refused at exit 5 on a FALSE
+    # ARM5 red. Dropping the cached bytecode is the narrowest fix
+    # available from here: test_armor.py is itself a protected file this
+    # unit may not edit.
+    rm -f "$gr"/plugins/self-learn/cli/tests/__pycache__/test_armor.*.pyc
+    local stale_pyc
+    stale_pyc=$(find "$gr/plugins/self-learn/cli/tests/__pycache__" \
+      -maxdepth 1 -name 'test_armor.*.pyc' 2>/dev/null | wc -l | tr -d ' ')
+    [ "$stale_pyc" = "0" ] \
+      || die 4 "WLD2: cached test_armor bytecode survived removal ($stale_pyc file(s)); the suite would import a stale ANCHOR" \
+              "ls $gr/plugins/self-learn/cli/tests/__pycache__/"
   fi
   # CHK8: nothing test-shaped runs between the line above and `git commit`.
 }

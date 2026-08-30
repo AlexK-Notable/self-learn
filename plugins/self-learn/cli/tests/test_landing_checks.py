@@ -386,6 +386,7 @@ def test_state_write_read_roundtrip(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
     ST.write_state("u-test", base_sha="abc", merge_sha="def", parent_shas=["a", "b"])
     st = ST.read_state("u-test")
+    assert st is not None
     assert st["base_sha"] == "abc"
     assert st["merge_sha"] == "def"
     ST.clear_state("u-test")

@@ -273,6 +273,7 @@ def test_res6_positive_control_hand_written_markers_would_be_caught():
     tree = ast.parse(src)
     fn = tree.body[0]
     seg = ast.get_source_segment(src, fn)
+    assert seg is not None
     assert "make_conflict(" not in seg and 'git(repo, "-c"' not in seg
 
 

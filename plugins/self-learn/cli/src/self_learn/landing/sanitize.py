@@ -64,6 +64,10 @@ def added_lines(root: Path, rng: str) -> list[tuple[str, int, str]]:
         if l.startswith("\\"):  # "\ No newline at end of file"
             continue
         if l.startswith("+"):
+            # `path` is set by the `diff --git` header that must precede any
+            # hunk; a `+` line before one is malformed input, not a hit.
+            if path is None:
+                continue
             out.append((path, ln, l[1:]))
             ln += 1
     return out
