@@ -4660,6 +4660,16 @@ def test_min3_a_suite_run_records_what_it_left_behind(tmp_path):
     assert "litter.count" in text
     assert "a killed suite does not clean up after itself" in text
 
+    # NIT-2: the noun must match what is counted. The porcelain delta counts
+    # CHANGED paths -- new, modified or deleted -- so calling them
+    # "untracked" describes a narrower thing than the number measures. Same
+    # class as the STALE records-versus-lines noun.
+    reports = [ln for ln in text.split("\n")
+               if "$litter" in ln or "litter.count" in ln]
+    assert reports
+    assert not any("untracked" in ln for ln in reports), reports
+    assert any("changed path(s)" in ln for ln in reports), reports
+
 
 def test_doc3_the_runbook_command_works_at_bootstrap_time():
     """MIN-2. Step 8's literal command exits 127 at bootstrap time: the
@@ -4759,3 +4769,108 @@ def test_major1_a_FIRST_pass_refusal_still_aborts(tmp_path):
     assert not (repo / ".git" / "MERGE_HEAD").exists(), "a first-pass refusal left the merge"
     assert LF.git(repo, "status", "--porcelain").stdout.strip() == ""
     assert LF.git(repo, "rev-parse", "HEAD").stdout.strip() == head_before
+
+
+def test_minor4_the_suite_step_is_resumable_after_an_interrupt(tmp_path):
+    """MINOR-4, FIXED rather than documented. The suite step is the longest
+    phase and the one an operator is most likely to interrupt, and it used
+    to leave NO resumable state -- the step was recorded only on a refusal.
+
+    Asserted at the seam and through the runner: the state file names
+    `suites` while they run, and `sanitize` once they pass, so a resume
+    does not redo an eleven-minute phase that already succeeded."""
+    text = LF.LAND.read_text()
+    suites_at = text.index("record_refusal_step suites\n\n  if [ \"$LANE\" = \"docs\" ]")
+    sanitize_at = text.index("record_refusal_step sanitize")
+    step5_at = text.index("# Step 5 — sanitize")
+    assert suites_at < sanitize_at < step5_at, (suites_at, sanitize_at, step5_at)
+
+    repo = LF.make_repo(tmp_path, with_ui=True)
+    LF.make_branch(
+        repo, "u-int",
+        edits={"plugins/self-learn/cli/tests/test_gamma.py": "def test_g():\n    assert True\n"},
+    )
+    r = LF.run_land(repo, tmp_path, "--branch", "u-int", "--verdict", "v", timeout=180)
+    assert r.returncode == 0, r.stdout + r.stderr
+    # a completed landing clears its state, which is the other half of the
+    # contract -- a stale `suites` would send the next run round again
+    state = subprocess.run(
+        ["uv", "run", "--no-sync", "python3", "-m", "self_learn.landing.state",
+         "--root", str(repo), "--branch", "u-int", "read"],
+        cwd=LF.THIS_REPO_CLI, capture_output=True, text=True,
+        env={**LF.env_for(tmp_path)},
+    )
+    assert state.returncode != 0 or state.stdout.strip() in ("", "null"), state.stdout
+
+
+def test_nit5_dry_run_and_continue_merge_are_refused_by_name(tmp_path):
+    """NIT-5. `--continue-merge` resumes a merge in the MAIN checkout;
+    `--dry-run` builds a throwaway worktree that has no such merge, so the
+    combination used to refuse with a message about the wrong tree."""
+    repo = LF.make_repo(tmp_path, with_ui=True)
+    LF.make_branch(repo, "u-both",
+                   edits={"docs/specs/self-learn/drafts/n.md": "x\n"})
+    r = LF.run_land(repo, tmp_path, "--branch", "u-both", "--verdict", "v",
+                    "--dry-run", "--continue-merge", timeout=180)
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "mutually exclusive" in r.stderr, r.stderr
+    assert "PRE3" not in r.stderr, "it still refuses via a message about the wrong tree"
+
+
+def test_minor3_the_printed_escape_hatch_actually_works(tmp_path):
+    """MINOR-3. A message that invalidates its own advice is worse than no
+    advice: the printed `git merge --abort` stopped working once the
+    operator did what the SAME message told them to do.
+
+    Measured here rather than asserted: with the edits unstaged a bare
+    abort exits 128 and the merge survives; staging them first makes it
+    work. The runner prints the form that works."""
+    repo = tmp_path / "r"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "master", str(repo)], check=True)
+    LF.git(repo, "config", "user.email", "t@example.invalid")
+    LF.git(repo, "config", "user.name", "T")
+    (repo / "f.txt").write_text("base\n")
+    (repo / "g.txt").write_text("other\n")
+    LF.git(repo, "add", "-A"); LF.git(repo, "commit", "-q", "-m", "base")
+    LF.git(repo, "checkout", "-q", "-b", "br")
+    (repo / "g.txt").write_text("branch\n")
+    LF.git(repo, "add", "-A"); LF.git(repo, "commit", "-q", "-m", "br")
+    LF.git(repo, "checkout", "-q", "master")
+    (repo / "f.txt").write_text("master\n")
+    LF.git(repo, "add", "-A"); LF.git(repo, "commit", "-q", "-m", "m")
+    LF.git(repo, "merge", "--no-ff", "--no-commit", "br", check=False)
+
+    # the operator transcribes, in place, exactly as instructed
+    (repo / "g.txt").write_text((repo / "g.txt").read_text() + "transcribed\n")
+
+    bare = LF.git(repo, "merge", "--abort", check=False)
+    assert bare.returncode != 0, "the premise is gone: a bare abort now works"
+    assert LF.git(repo, "rev-parse", "-q", "--verify", "MERGE_HEAD",
+                  check=False).returncode == 0, "the merge vanished anyway"
+
+    LF.git(repo, "add", "-A")
+    staged = LF.git(repo, "merge", "--abort", check=False)
+    assert staged.returncode == 0, staged.stderr
+    assert LF.git(repo, "rev-parse", "-q", "--verify", "MERGE_HEAD",
+                  check=False).returncode != 0
+    assert LF.git(repo, "status", "--porcelain").stdout.strip() == ""
+
+    # and that is what the runner prints
+    text = LF.LAND.read_text()
+    assert "add -A && git -C $gr merge --abort" in text
+    assert "a BARE abort refuses" in text
+
+
+def test_minor1_the_state_sentence_derives_both_halves():
+    """MINOR-1/NIT-4. The first half was derived; the second ("and the tree
+    restored") was still asserted. Deriving the first half is what exposed
+    the swallowed `merge --abort` rc and the os.replace trap, so the second
+    gets the same treatment -- including a THIRD case for a tree that is
+    neither, which an assert-only form cannot express."""
+    body = _shell_functions(LF.LAND.read_text())["tree_state_sentence"]
+    assert "status --porcelain" in body, "the restored half is not measured"
+    assert "rev-parse -q --verify MERGE_HEAD" in body
+    # three outcomes, not two
+    assert body.count("printf") >= 3, body
+    assert "NOT clean" in body, "there is no case for an abort that left changes"
