@@ -116,8 +116,8 @@ abort_merge_unless_resuming() {
     RESUME_KEPT=1
     # Say it. A refusal that silently preserved the work would be as hard
     # to act on as one that silently destroyed it.
-    printf 'land: --continue-merge -- the merge and your in-merge edits are KEPT (%s changed path(s)); fix the refusal above and re-run with --continue-merge\n' \
-      "$(git -C "$gr" status --porcelain | grep -c . || true)" >&2
+    printf 'land: --continue-merge -- the merge and your in-merge edits are KEPT (%s changed path(s)); fix the refusal printed BELOW and re-run with --continue-merge. To walk away instead: git -C %s add -A && git -C %s merge --abort\n' \
+      "$(git -C "$gr" status --porcelain | grep -c . || true)" "$gr" "$gr" >&2
     return 0
   fi
   git -C "$gr" update-index -q --refresh >>"$OUT/abort.log" 2>&1 || true
@@ -788,6 +788,13 @@ if [ "$DRY_RUN" = "0" ] && { [ "$RESUME_ONLY" = "0" ] || [ "$RESUME_STEP" = "sui
   #     pytest tests --ignore=tests/test_js_dom.py 1208 tests, 264.9 s | 303.3 s
   #                                               ------------------------------
   #                                               1314 tests,   577.2 s | 608.1 s
+  # UI_COLLECTED_AT_MEASUREMENT=1348
+  # The collected count is carried so STALENESS is detectable. The two runs
+  # above were timed when the UI suite collected 1314; `u-target` has since
+  # landed and it now collects 1348, and nothing in the record could tell --
+  # the sum-check verifies the record's internal ARITHMETIC, not whether it
+  # still describes the tree (gate r6 MINOR-1). The test compares this
+  # number against a LIVE collection and reddens when they diverge.
   # TWO runs, hours apart, on the same host: 577.2 s and 608.1 s. The gate
   # independently measured 568 s. So the honest figure is a RANGE, 568-608 s,
   # and the budget is set against the WORST observed rather than any single

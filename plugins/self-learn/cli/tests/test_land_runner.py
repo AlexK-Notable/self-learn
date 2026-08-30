@@ -630,9 +630,13 @@ def test_pre7_no_merge_abort_call_anywhere_in_the_precondition_block():
     # gets wrong, both measured: it flags the COMMENT explaining why the
     # call is absent, and it flags a helper DEFINED above that block and
     # only ever CALLED from inside the merge.
-    start = text.index("# Step 1 — preconditions")
+    # NIT-4: the audited region starts at the `--continue`/CNT1 block, not
+    # at Step 1 -- CNT1 runs BEFORE the preconditions and can refuse, and it
+    # was outside the slice entirely.
+    start = text.index("# --continue / CNT1")
     end = text.index("# GITROOT:")
     step1 = text[start:end]
+    assert "CNT1" in step1 and "PRE1" in step1, "the slice lost one of the two blocks"
     funcs = _shell_functions(text)
     reachable = _reachable_text(step1, funcs)
 
@@ -2679,6 +2683,14 @@ def test_un1_this_unit_does_not_change_the_suite_runner():
             ["git", "diff", "--numstat", *rng, "--", rel],
             cwd=root, capture_output=True, text=True, check=True,
         ).stdout.strip()
+
+    # NIT-5: the two states differ in WHAT is compared, and a reader should
+    # meet that here rather than infer it. While BUILDING the range is one
+    # ref, so git diffs it against the WORKING TREE and an uncommitted edit
+    # to the suite runner is caught. Once LANDED it is two commits, so the
+    # working tree is no longer in the comparison at all -- correctly, since
+    # after landing "this unit's diff" is a fixed piece of history.
+    assert (len(rng) == 1) == (state == "building"), (state, rng)
 
     target = "plugins/self-learn/cli/scripts/suite"
     assert (root / target).is_file()
@@ -4771,6 +4783,21 @@ def test_sui2_the_suite_budget_clears_the_measured_ui_cost(tmp_path):
     assert int(a_n) + int(b_n) == int(tot_n), parts
     assert abs((float(a1) + float(b1)) - float(t1)) < 0.5, parts
     assert abs((float(a2) + float(b2)) - float(t2)) < 0.5, parts
+    # MINOR-1: the record must still DESCRIBE THE TREE, not merely add up.
+    # `u-target` landed and the UI suite grew from 1314 to 1348 collected,
+    # and nothing in the record could tell.
+    m2 = re.search(r"UI_COLLECTED_AT_MEASUREMENT=(\d+)", text)
+    assert m2, "the record carries no collected count, so staleness is undetectable"
+    recorded = int(m2.group(1))
+    live = _collect(_repo_root() / "plugins/self-learn/ui")
+    assert live.returncode == 0, live.stdout[-1000:]
+    m3 = re.search(r"(\d+) tests collected", live.stdout)
+    assert m3, live.stdout[-500:]
+    live_n = int(m3.group(1))
+    assert abs(live_n - recorded) <= 25, (
+        f"the budget record describes {recorded} collected tests but the tree "
+        f"now has {live_n} -- re-measure and restate before trusting it"
+    )
     assert "568" in text, (
 
         "the budget's justifying measurement is not recorded in the script"
@@ -5152,3 +5179,91 @@ def test_minor2_every_in_merge_refusal_aborts_or_announces():
     synth_pre = ['  die 4 "a refusal before anything merged"',
                  '  git -C "$gr" merge --no-ff --no-commit "$BRANCH"']
     assert bare_dies(synth_pre, 0, 1) == [], "a pre-merge die is wrongly reported"
+
+
+def _land_by_hand(clone: Path, src_cli: Path) -> str:
+    """Do to `clone` exactly what a successful landing does, ending in the
+    POST-PRUNE state: merge --no-ff, advance the anchor, stage it, commit,
+    and delete every ref naming the branch. Returns the merge sha."""
+    LF.git(clone, "checkout", "-q", "-B", "master", "origin/master")
+    unit_tip = LF.git(clone, "rev-parse", "origin/u-land").stdout.strip()
+    # `-c` is a GIT option, not a merge one, so it precedes the subcommand.
+    # Placed after it the whole call fails, and with check=False that failure
+    # is silent -- measured: the merge never happened and the frame came back
+    # "building".
+    m = LF.git(clone, "-c", "merge.conflictStyle=diff3", "merge", "--no-ff",
+               "--no-commit", unit_tip, check=False)
+    assert LF.git(clone, "rev-parse", "-q", "--verify", "MERGE_HEAD",
+                  check=False).returncode == 0, (m.returncode, m.stdout, m.stderr)
+    anchor = LF.git(clone, "rev-parse", "--short=7", "HEAD").stdout.strip()
+    armor = clone / "plugins/self-learn/cli/tests/test_armor.py"
+    if armor.exists():
+        r = subprocess.run(
+            ["uv", "run", "--no-sync", "python3", str(armor),
+             "--remeasure", "--anchor", anchor],
+            cwd=src_cli, capture_output=True, text=True,
+            env={k: v for k, v in os.environ.items()
+                 if k not in ("SELF_LEARN_ANALYST_MODEL", "SELF_LEARN_ANALYST_TIMEOUT")},
+        )
+        assert r.returncode == 0, (r.returncode, r.stderr[-1500:])
+        LF.git(clone, "add", "--", "plugins/self-learn/cli/tests/test_armor.py")
+    LF.git(clone, "commit", "-q", "-m", "Merge branch 'u-land' (post-prune probe)")
+    # Step 6's prune, and then the ref a fresh clone of master would not have
+    LF.git(clone, "branch", "-D", "u-land", check=False)
+    LF.git(clone, "branch", "-rD", "origin/u-land", check=False)
+    return LF.git(clone, "rev-parse", "HEAD").stdout.strip()
+
+
+def test_the_unit_leaves_masters_suite_green_after_the_prune(tmp_path):
+    """THE terminal criterion (gate r6). The landing was correct end to end
+    and rehearsed to a real push, and it still left production's suite
+    permanently red -- because `land`'s Step-6 prune deletes the branch
+    AFTER the suite has already run, so no landing can ever catch a test
+    that depends on that ref.
+
+    Measured with the full runner on a fresh clone of post-landing master,
+    2026-08-30:
+
+        POST_PRUNE_SUITE_RC=0
+        suite rc=0  3045 passed, 6 skipped in 89.55s
+
+    Re-running the whole suite here would cost ~90 s plus a venv sync, so
+    this test carries the part that was actually red -- every landing test,
+    executed against a post-prune tree with no `u-land` ref anywhere.
+    """
+    root = _repo_root()
+    clone = tmp_path / "clone"
+    subprocess.run(["git", "clone", "-q", "--no-hardlinks", str(root), str(clone)],
+                   check=True, capture_output=True)
+    LF.git(clone, "config", "user.email", "t@example.invalid")
+    LF.git(clone, "config", "user.name", "T")
+    _land_by_hand(clone, LF.THIS_REPO_CLI)
+
+    # the state the prune actually leaves: no ref names this branch
+    refs = LF.git(clone, "for-each-ref", "--format=%(refname)").stdout
+    assert "u-land" not in refs, refs
+    # ... and the merge is still in first-parent history, which is the whole
+    # point of deriving from history rather than from a ref
+    rng, state = _unit_diff_frame(clone)
+    assert state == "landed", (state, rng)
+
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("SELF_LEARN_ANALYST_MODEL", "SELF_LEARN_ANALYST_TIMEOUT")}
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    tests = clone / "plugins/self-learn/cli/tests"
+    # Scoped to the tests that were ACTUALLY red post-prune -- UN1 and its
+    # guard. Running the whole landing set here would re-enter this very
+    # test inside the clone, and would run the clone's e2e tests against the
+    # SOURCE venv, so `self_learn.landing` would resolve to the wrong
+    # package: both are harness artefacts, not post-prune findings. The
+    # whole-suite figure in the docstring is the real measurement, taken
+    # with the shipped runner in a properly synced fresh clone.
+    r = subprocess.run(
+        ["uv", "run", "--no-sync", "pytest",
+         str(tests / "test_land_runner.py"),
+         "-q", "-p", "no:cacheprovider", "-k", "un1"],
+        cwd=LF.THIS_REPO_CLI, capture_output=True, text=True, env=env, timeout=900,
+    )
+    assert r.returncode == 0, (r.stdout + r.stderr)[-3000:]
+    assert " failed" not in r.stdout, r.stdout[-1500:]
+    assert "passed" in r.stdout, r.stdout[-500:]
