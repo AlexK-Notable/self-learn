@@ -7,7 +7,7 @@
    TOO — app.js's Y-16 leg (c) (`.action-bar[data-armed="true"]`) already
    defers a broadcast reload over ANY armed bar; reusing it (never new
    JS) is what makes the file list survive a stray SSE refresh mid-tap. #}
-<div id="{{ dom_id }}" class="action-bar" data-armed="{{ 'true' if (armed or (commit_drift and commit_drift.armed)) else 'false' }}" data-key-context="{{ kind }}">
+<div id="{{ dom_id }}" class="action-bar" data-armed="{{ 'true' if (armed or (commit_drift and commit_drift.armed)) else 'false' }}">
   {% if evidence %}
   {% include "partials/evidence.html" %}
   {% endif %}

@@ -116,7 +116,7 @@ def _git_show_text(rev: str, key: str) -> str:
 # anchor is byte-identical to what the spec measured at `fe5a012`
 # (`= 3b8e037`'s child). The landing chain rewrites this via
 # `--remeasure`, never a human (section 4.2).
-ANCHOR = "502ca8d"
+ANCHOR = "ee62df0"
 
 
 # ===================================================================== #
@@ -253,20 +253,11 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
     # docs-only) moved ANCHOR to 9c7ebdd itself, folding that content
     # IN and making the repin vacuous -- dropped, same motion as
     # test_wr7's own fold (section 4.1).
-    "conftest.py": Fixture(
-        repinned=(
-            "8327c4cf2abfdc07db18718b3356052dda09f0bfce1411cd975e6dabdc34339b",
-            "2026-08-28 U-xdist T1, per §4.3 (F2's re-pin door): "
-            "conftest.py's cache-litter guard gains a worker -> controller "
-            "relay (pytest_sessionfinish/pytest_testnodedown, appended at "
-            "the file's end) so its 'concurrent sibling' warning survives "
-            "under the new pytest-xdist -n auto suite runner -- the "
-            "warning was silently dead under -n before this (the "
-            "controller executes zero tests, so its own tracking list was "
-            "always empty). Section 4.7 row 1 migrated this file's prior "
-            "whole-file pin (test_worker_contract.py's _ARMOR_SHAS) here.",
-        ),
-    ),  # 2 importers
+    # 2026-08-30, ANCHOR ee62df0: the U-xdist repin that lived here was
+    # dropped as VACUOUS by this landing's own refusal -- that landing is
+    # now at or behind the anchor, so the relay it pinned is anchor-side
+    # content rather than a sanctioned divergence (section 4.7 FW-140).
+    "conftest.py": Fixture(),  # 2 importers
     "backends.py": Fixture(),  # 3 importers
     # --- ADDITIVE: the one fixture V-2 lets grow (section 4.4) --------
     "fixtures/fake_claude.py": Additive(
@@ -289,25 +280,11 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
     "test_invocation.py": Behaviour(
         nodes=94, dump_sha="eb90005324f7f1483dcd618a80501d03a11e2f0ebb2541b5af696d31b48644fe"
     ),
+    # 2026-08-30, ANCHOR ee62df0: RS8's `edited` exemption was dropped as
+    # VACUOUS by this landing's refusal -- U-xdist landed, so the widened
+    # lockfile bound IS the anchor content and nothing is owed.
     "test_invocation_sdk.py": Behaviour(
-        nodes=139, dump_sha="2517577cbfc385476eba58d5e580a5bf5ea6d6691b15c14e1e51eb618168d7f0",
-        edited={
-            "func:test_rs8_lockfiles_no_package_added_or_removed_no_version_changed": (
-                "2026-08-28 U-xdist T1, per §4.5 (B3/B4, the node "
-                "census's own exemption door): RS8's lockfile-drift bound "
-                "widened to allow EXACTLY the sanctioned `uv add --dev "
-                "pytest-xdist` addition (itself plus its own dependency "
-                "execnet) to the CLI lockfile -- nothing else may differ. "
-                "The prior growth-ceiling mechanism this class of edit used "
-                "to need (HY5, test_u_sdka.py) is retired by section 4.7 "
-                "row 11; this node's own body-level equality/subset check "
-                "is unchanged in shape, only the sanctioned-addition set "
-                "is new. The anchor version would flag pytest-xdist/"
-                "execnet as unauthorized lockfile drift; the head version "
-                "correctly allows this one, named, addition and nothing "
-                "wider."
-            ),
-        },
+        nodes=139, dump_sha="220caae2560deffa78287813a855ca32d13ff069652a23afb7c5d937ae69e608"
     ),
     "test_worker.py": Behaviour(
         nodes=80, dump_sha="16e45a867ecebd6471586640f1f52417427c235d04777e74ec4f34c14506627c"
@@ -794,7 +771,7 @@ MEASURED: dict[str, Measured] = {
     ),
     "BEH7.dump_prefixes": Measured(
         value=(
-            "eb90005324f7", "2517577cbfc3", "16e45a867ece", "f7d067023480",
+            "eb90005324f7", "220caae2560d", "16e45a867ece", "f7d067023480",
             "124dcc0dd69f", "5bb83e2da3fe", "3c920c0066c5", "4fbcee5f5481",
         ),
         scope=_SCOPE_ANCHOR,
@@ -856,11 +833,11 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_census_missing,
     ),
     "EXM3.census_edited": Measured(
-        value=1,
+        value=0,
         scope=_SCOPE_ANCHOR_HEAD,
         reason=(
-            "2026-08-30 U-xdist re-gated merge-up fold, per §5.1's STALE "
-            "remediation: 0 -> 1 at ANCHOR cf1e32d, printed by this "
+            "2026-08-30 U-target landing, per §5.1's STALE remediation: "
+            "1 -> 0 at ANCHOR ee62df0, printed by this "
             "module's own --remeasure refusal. RS8's lockfile-drift-bound "
             "node (test_invocation_sdk.py) is the one anchor node whose "
             "dump differs at HEAD -- widened for the sanctioned "

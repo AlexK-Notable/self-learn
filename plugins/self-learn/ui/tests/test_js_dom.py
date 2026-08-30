@@ -3782,9 +3782,18 @@ class TestInFlightDisabling:
     ) -> None:
         """hx-swap="none": the button is NEVER swapped out, so htmx's own
         post-request re-enable (independent of swap) is what must fire —
-        re-enabled, not detached."""
+        re-enabled, not detached.
+
+        U-target §4.5: the locator moved from `data-key-action='graduate'`
+        to `data-noop-action='graduate'` — this button is now CLICK-ONLY
+        and carries the gated `[data-noop-hint][data-noop-action]` pair
+        instead of a key action (one press of `g` used to POST
+        `graduate-bulk` with a multi-record `ids` field, un-armed). The
+        subject of this test — htmx's swap-independent post-request
+        re-enable — is unchanged, and the new attribute is just as
+        specific a handle on the same element."""
         _open(f2_page, f2_server, "/bucket/skill/s")
-        button = f2_page.locator(".bulk-collapse-row button[data-key-action='graduate']")
+        button = f2_page.locator(".bulk-collapse-row button[data-noop-action='graduate']")
         expect(button).to_be_visible()
         held = _hold_post(f2_page, "/graduate-bulk")
         button.click()
