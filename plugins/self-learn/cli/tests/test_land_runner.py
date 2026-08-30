@@ -2567,3 +2567,184 @@ def test_psh1_and_psh2_push_once_and_print_a_real_before_after_pair(tmp_path):
     assert len(pushes) == 1, pushes
     assert "|" not in pushes[0], pushes[0]
     assert 'PUSH_RC=$?' in text
+
+
+# ---------------------------------------------------------------------------
+# The FLOOR AUDIT, as an executable table (gate r2 MAJOR-5)
+#
+# One rule: every check that can return an empty result must distinguish
+# "I looked and found nothing" from "I could not look". Two instances of
+# that shape shipped in this unit in one round (CHK1 got a floor, CHK4 did
+# not), which is why the audit is a table here rather than prose in a
+# handoff: a new check that cannot tell the two apart fails this.
+
+
+def test_floor_audit_every_emptiable_check_refuses_when_it_could_not_look(tmp_path):
+    """Each row: a check, an input on which it CANNOT look, and the refusal
+    it must produce. Every row is executed; a row that passes silently is
+    itself a failure, because the point is that the empty case is loud."""
+    from self_learn.landing import checks as CH
+    from self_learn.landing import sanitize as SAN
+    from self_learn.landing import suites as SU
+
+    root = tmp_path / "r"
+    (root / "docs/specs/self-learn/drafts").mkdir(parents=True)
+    (root / "plugins/self-learn/cli/tests").mkdir(parents=True)
+
+    # --- CHK1: an unreadable path in the merge-touched set
+    d = root / "a-directory-not-a-file"
+    d.mkdir()
+    with pytest.raises(CH.CheckFailure, match="could not read"):
+        CH.check_no_markers([d])
+    # and the clean case reports WHAT IT SCANNED
+    good = root / "clean.md"
+    good.write_text("nothing here\n")
+    assert CH.check_no_markers([good]) == 1
+    # a DELETED merge-touched path is legitimately absent, not unreadable
+    assert CH.check_no_markers([root / "was-deleted.md"]) == 0
+
+    # --- CHK4: a NAMED landing-state doc that is absent
+    with pytest.raises(CH.CheckFailure, match="ABSENT"):
+        CH.check_prose_or_raise(root)
+    for rel in CH.DEFAULT_DOCS:
+        (root / rel).write_text("ordinary prose\n")
+    assert CH.check_prose_or_raise(root) >= 3
+    # ... and zero documents read is refused even with none named missing
+    with pytest.raises(CH.CheckFailure, match="read 0 documents"):
+        CH.check_prose_or_raise(root, docs=[])
+
+    # --- CHK3: a row file with no rows at all
+    fw = root / "docs/specs/self-learn/14-forward-work-map.md"
+    d03 = root / "docs/specs/self-learn/03-decisions.md"
+    fw.write_text("# forward work\n\nno rows here\n")
+    d03.write_text("# decisions\n\nno rows here\n")
+    with pytest.raises(CH.CheckFailure, match="ZERO"):
+        CH.check_row_order_or_raise(root, None)
+    # ... and an absent row file is its own refusal
+    fw.unlink()
+    with pytest.raises(CH.CheckFailure, match="ABSENT"):
+        CH.check_row_order_or_raise(root, None)
+
+    # --- SAN: an empty pattern set, and an empty scan
+    frag = root / "frag.txt"
+    frag.write_text("# only a comment\n")
+    with pytest.raises(ValueError, match="EMPTY"):
+        SAN.assemble_pattern(frag, "/nowhere")
+
+    # --- SUI3/SUI9: a log with nothing to adjudicate
+    allow = root / "allow.txt"
+    allow.write_text("plugins/self-learn/cli/tests/test_x.py::test_y\n")
+    assert SU.adjudicate("", root, root, allow)[0] == SU.VERDICT_UNPARSEABLE
+    assert SU.adjudicate("x\n", root, root, root / "gone.txt")[0] == SU.VERDICT_NO_ALLOWLIST
+
+    # --- CHK2: zero pins
+    (root / "plugins/self-learn/cli/tests/test_worker_contract.py").write_text(
+        '"""no pins here"""\n'
+    )
+    with pytest.raises(CH.CheckFailure, match="N < 1"):
+        CH.check_pins_or_raise(root)
+
+
+def test_chk1_floor_zero_scanned_is_a_refusal_not_a_pass(tmp_path):
+    """CHK1's floor at the CLI seam, which is what `land` actually calls:
+    an EMPTY path list must refuse, not print 'no conflict markers'.
+    That is M97's oracle -- the spec row existed with no mutation behind
+    it until this round."""
+    from self_learn.landing import checks as CH
+
+    root = tmp_path / "r"
+    root.mkdir()
+    # given NOTHING to scan
+    assert CH.main(["--root", str(root), "markers"]) == 1
+
+    # a path that exists but cannot be READ is fatal too
+    (root / "adir").mkdir()
+    assert CH.main(["--root", str(root), "markers", "adir"]) == 1
+
+    # but a DELETED merge-touched path is not a hole -- a delete-only merge
+    # legitimately scans zero files, and refusing that is a false refusal
+    assert CH.main(["--root", str(root), "markers", "was-deleted.md"]) == 0
+
+    # positive control: one real file scanned prints the count and passes
+    f = root / "f.md"
+    f.write_text("ordinary\n")
+    assert CH.main(["--root", str(root), "markers", "f.md"]) == 0
+
+
+def test_chk4_floor_end_to_end_a_missing_named_doc_refuses(tmp_path):
+    """CHK4's floor through the RUNNER. Before this round a tree missing
+    every named landing-state doc produced `[]` and the CLI printed 'no
+    landing-state prose' -- the identical shape CHK1 was given a floor for
+    in the same round."""
+    repo = LF.make_repo(tmp_path, with_ui=True)
+    head_before = LF.git(repo, "rev-parse", "HEAD").stdout.strip()
+    LF.git(repo, "checkout", "-q", "-b", "u-nodoc")
+    LF.git(repo, "rm", "-q", "docs/specs/self-learn/13-hosting-and-separation.md")
+    LF.git(repo, "commit", "-q", "-m", "delete a named landing-state doc")
+    LF.git(repo, "checkout", "-q", "master")
+    r = LF.run_land(repo, tmp_path, "--branch", "u-nodoc", "--verdict", "v", timeout=180)
+    assert r.returncode == 4, r.stdout + r.stderr
+    assert "CHK4" in r.stderr, r.stderr
+    assert LF.git(repo, "rev-parse", "HEAD").stdout.strip() == head_before
+
+
+def test_cnt1_state_check_failure_refuses_rather_than_assuming_clean(tmp_path):
+    """CNT1's guard used to discard the state check's rc: if the module
+    failed, its output was empty, the `[ "$IN_STATE" = "yes" ]` test did
+    not fire, and the guard silently not running looked exactly like the
+    guard passing.
+
+    Driven by making the state module unrunnable for the duration."""
+    repo = LF.make_repo(tmp_path, with_ui=True)
+    LF.make_branch(
+        repo, "u-state",
+        edits={"plugins/self-learn/cli/tests/test_gamma.py": "def test_g():\n    assert True\n"},
+    )
+    env = LF.env_for(tmp_path)
+    # a PYTHONPATH entry that shadows the landing package with a broken
+    # module makes `python3 -m self_learn.landing.state` fail loudly
+    shadow = tmp_path / "shadow"
+    (shadow / "self_learn" / "landing").mkdir(parents=True)
+    (shadow / "self_learn" / "__init__.py").write_text("")
+    (shadow / "self_learn" / "landing" / "__init__.py").write_text("")
+    (shadow / "self_learn" / "landing" / "state.py").write_text("raise SystemExit(9)\n")
+    env["PYTHONPATH"] = str(shadow)
+    r = subprocess.run(
+        [str(LF.LAND), "--branch", "u-state", "--verdict", "v"],
+        cwd=str(repo), env=env, capture_output=True, text=True, timeout=180,
+    )
+    assert r.returncode == 2, r.stdout + r.stderr
+    assert "CNT1: the landing-state check" in r.stderr, r.stderr
+
+    # positive control: without the shadow, the same landing proceeds
+    ok = LF.run_land(repo, tmp_path, "--branch", "u-state", "--verdict", "v", timeout=180)
+    assert ok.returncode == 0, ok.stdout + ok.stderr
+
+
+def test_san_floor_zero_scanned_added_lines_refuses(tmp_path):
+    """The sanitize gate's own floor: 'sanitize OK' over a range with no
+    added lines is not a result. The push is gated on this verdict."""
+    from self_learn.landing import sanitize as SAN
+
+    repo = tmp_path / "r"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "master", str(repo)], check=True)
+    LF.git(repo, "config", "user.email", "t@example.invalid")
+    LF.git(repo, "config", "user.name", "T")
+    (repo / "f.md").write_text("one line\n")
+    LF.git(repo, "add", "-A")
+    LF.git(repo, "commit", "-q", "-m", "base")
+    frags = LF.LANDING_PKG / "sanitize_fragments.txt"
+
+    # an EMPTY range: nothing added between a commit and itself
+    rc = SAN.main(["--root", str(repo), "--range", "HEAD..HEAD", "--check",
+                   "--fragments", str(frags)])
+    assert rc == 1
+
+    # positive control: a range WITH added lines and no hits passes, and
+    # says how many lines that verdict is about
+    (repo / "f.md").write_text("one line\ntwo line\n")
+    LF.git(repo, "add", "-A")
+    LF.git(repo, "commit", "-q", "-m", "add")
+    assert SAN.main(["--root", str(repo), "--range", "HEAD~1..HEAD", "--check",
+                     "--fragments", str(frags)]) == 0

@@ -191,7 +191,10 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     root = args.root.resolve()
-    hs = hits(root, args.range, args.fragments)
+    scanned = added_lines(root, args.range)
+    hs = [(f, n, txt) for f, n, txt in scanned
+          if assemble_pattern(args.fragments or default_fragments_path(root),
+                              os.environ.get("HOME", "")).search(txt)]
 
     if args.count:
         print(len(hs))
@@ -201,9 +204,20 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{f}:{n}:{line_sha(t)}\t{t}")
         return 0
     if args.check:
+        # Floor rule (gate r2 MAJOR-5): "no hits" and "nothing scanned" must
+        # not render the same. A `--no-ff` merge always adds lines, so an
+        # empty scan means the range was wrong or the diff failed, and a
+        # clean verdict over zero lines is not a result.
+        if not scanned:
+            print(
+                f"REFUSE: scanned 0 added lines over {args.range} -- 'sanitize "
+                "OK' over nothing scanned is not a result",
+                file=sys.stderr,
+            )
+            return 1
         result = check_coverage(hs, args.acks)
         if result.ok:
-            print("sanitize OK")
+            print(f"sanitize OK (scanned {len(scanned)} added line(s))")
             return 0
         for h in result.unacked:
             print(f"UNACKED: {ack_suggestion(h)}  # {h[2]}", file=sys.stderr)

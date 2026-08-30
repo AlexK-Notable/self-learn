@@ -289,6 +289,12 @@ def make_repo(
         + fw_rows
     )
     (repo / "docs/specs/self-learn/15-orchestration-runbook.md").write_text("# runbook\n")
+    # Every doc named in checks.DEFAULT_DOCS must exist: CHK4 now refuses on a
+    # NAMED doc that is absent rather than skipping it, so a fixture missing
+    # one would be testing the floor instead of the check (gate r2 MAJOR-5).
+    (repo / "docs/specs/self-learn/13-hosting-and-separation.md").write_text(
+        "# hosting and separation\n"
+    )
 
     cli = repo / "plugins/self-learn/cli"
     (cli / "scripts" / "measured").mkdir(parents=True)

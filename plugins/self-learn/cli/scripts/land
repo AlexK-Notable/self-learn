@@ -172,20 +172,49 @@ py_landing() {
 # ---------------------------------------------------------------------------
 # --continue / CNT1
 
+# CNT1's guard. Its rc used to be DISCARDED (gate r2 MAJOR-5): if the module
+# failed, CHECK_OUT came back empty, IN_STATE came back empty, and the
+# `[ "$IN_STATE" = "yes" ]` test simply did not fire -- the guard silently
+# not running looked exactly like the guard passing.
 state_check() {
-  py_landing state --root "$ROOT" --branch "$BRANCH" check 2>/dev/null
+  py_landing state --root "$ROOT" --branch "$BRANCH" check 2>"$OUT/state.err"
+}
+
+# NOTE, measured the hard way: this must NOT be called inside `$(...)`.
+# `die` runs `exit`, and inside a command substitution that exits only the
+# SUBSHELL -- the refusal prints, the script carries on, and the guard not
+# firing looks exactly like the guard passing. The first version of this
+# fix had that shape and reached CHK1 after announcing a fatal CNT1
+# refusal. So it takes the value it needs to check as an ARGUMENT and
+# returns nothing.
+require_state_answer() {
+  local rc=$1 value=$2 key=$3
+  # `state ... check` answers with rc 0 (resumable) or rc 1 (not) -- BOTH
+  # are real answers and both print the key. Any other rc is the module
+  # failing to run, and an ABSENT key is the only reliable signal of that,
+  # since a crash prints nothing at all.
+  case "$rc" in
+    0|1) ;;
+    *) die 2 "CNT1: the landing-state check exited $rc, which is not one of its two answers (0 resumable / 1 not) -- its guard cannot be relied on" "cat $OUT/state.err" ;;
+  esac
+  [ -n "$value" ] \
+    || die 2 "CNT1: the landing-state check produced no '$key' line (rc=$rc) -- refusing rather than reading its silence as 'no'" "cat $OUT/state.err"
 }
 
 if [ "$CONTINUE_FLAG" = "1" ]; then
   CHECK_OUT=$(state_check)
+  STATE_RC=$?
   IN_STATE=$(printf '%s\n' "$CHECK_OUT" | sed -n 's/^in_post_commit_refusal_state=//p')
+  require_state_answer "$STATE_RC" "$IN_STATE" in_post_commit_refusal_state
   OK=$(printf '%s\n' "$CHECK_OUT" | sed -n 's/^ok=//p')
   RESUME_STEP=$(printf '%s\n' "$CHECK_OUT" | sed -n 's/^resume_step=//p')
   REASON=$(printf '%s\n' "$CHECK_OUT" | sed -n 's/^reason=//p')
   [ "$OK" = "yes" ] || die 2 "--continue impossible: $REASON" "python3 -m self_learn.landing.state --root $ROOT --branch $BRANCH read"
 else
   CHECK_OUT=$(state_check)
+  STATE_RC=$?
   IN_STATE=$(printf '%s\n' "$CHECK_OUT" | sed -n 's/^in_post_commit_refusal_state=//p')
+  require_state_answer "$STATE_RC" "$IN_STATE" in_post_commit_refusal_state
   if [ "$IN_STATE" = "yes" ]; then
     die 2 "CNT1: '$BRANCH' has a merge commit from a refused landing not yet on origin/master; re-run with --continue" \
       "python3 -m self_learn.landing.state --root $ROOT --branch $BRANCH read"

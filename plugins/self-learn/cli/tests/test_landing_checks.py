@@ -129,20 +129,20 @@ def test_chk3_refuses_within_one_contiguous_run(tmp_path):
 
 def test_chk4_positive_control_clean_docs_pass(tmp_path):
     root = make_min_repo(tmp_path)
-    assert CH.check_prose(root) == []
+    assert CH.check_prose(root)[0] == []
 
 
 def test_chk4_finds_a_live_hit(tmp_path):
     root = make_min_repo(tmp_path)
     (root / "docs/specs/self-learn/drafts/u-x.md").write_text("worktree left uncommitted\n")
-    hits = CH.check_prose(root)
+    hits = CH.check_prose(root)[0]
     assert hits
 
 
 def test_chk4_quoted_pattern_table_is_exempt(tmp_path):
     root = make_min_repo(tmp_path)
     (root / "docs/specs/self-learn/drafts/u-x.md").write_text("still uncommitted 6 0\n")
-    assert CH.check_prose(root) == []
+    assert CH.check_prose(root)[0] == []
 
 
 # ---------------------------------------------------------------------------

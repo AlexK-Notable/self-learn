@@ -59,19 +59,44 @@ class CheckFailure(Exception):
 # ---------------------------------------------------------------------------
 # CHK1 — conflict markers, over the merge-touched set (not a hardcoded list)
 
-def check_no_markers(paths: list[Path]) -> None:
-    hits = []
+def check_no_markers(paths: list[Path]) -> int:
+    """CHK1. Returns the number of files actually SCANNED.
+
+    Floor rule (gate r2 MAJOR-5): a check that can return an empty result
+    must distinguish "I looked and found nothing" from "I could not look".
+    Three ways this one could previously return clean without looking:
+    a path that is not a regular file was skipped, an unreadable file was
+    skipped, and an EMPTY path list scanned nothing at all. The first two
+    are now fatal and the third is floored by the caller, which compares
+    the returned count against the set it asked for."""
+    hits: list[str] = []
+    unreadable: list[str] = []
+    scanned = 0
     for p in paths:
+        if not p.exists():
+            # a merge-touched path that has been DELETED is legitimately
+            # absent; a marker cannot hide in a file that is not there
+            continue
         if not p.is_file():
+            unreadable.append(f"{p} (not a regular file)")
             continue
         try:
             text = p.read_text(errors="replace")
-        except (UnicodeDecodeError, OSError):
+        except OSError as exc:
+            unreadable.append(f"{p} ({exc.__class__.__name__})")
             continue
+        scanned += 1
         if MARKER_RE.search(text):
             hits.append(str(p))
+    if unreadable:
+        raise CheckFailure(
+            f"could not read {len(unreadable)} of the {len(paths)} merge-touched "
+            f"path(s), so 'no conflict markers' would be a claim about files "
+            f"this check never opened: {unreadable}"
+        )
     if hits:
         raise CheckFailure(f"conflict markers found in: {hits}")
+    return scanned
 
 
 # ---------------------------------------------------------------------------
@@ -183,8 +208,16 @@ def check_row_order_or_raise(root: Path, base: dict[str, str] | None = None) -> 
     }
     dupes: dict[str, list[int]] = {}
     added: dict[str, list[tuple[int, int]]] = {}
+    parsed: dict[str, int] = {}
     for prefix, rel in paths.items():
-        text = (root / rel).read_text()
+        src = root / rel
+        if not src.is_file():
+            raise CheckFailure(
+                f"CHK3: the {prefix}- row file is ABSENT ({rel}); a clean row "
+                "order over a file that is not there is not a result"
+            )
+        text = src.read_text()
+        parsed[prefix] = sum(len(r) for r in _row_runs(text.split("\n"), prefix))
         d = check_duplicate_rows(text, prefix)
         if d:
             dupes[prefix] = d
@@ -194,6 +227,12 @@ def check_row_order_or_raise(root: Path, base: dict[str, str] | None = None) -> 
             bad = [p for p in bad if p not in before]
         if bad:
             added[prefix] = bad
+    empty = [p for p, n in parsed.items() if n < 1]
+    if empty:
+        raise CheckFailure(
+            f"CHK3: parsed ZERO {empty} rows; refusing -- no violations over no "
+            f"rows is not a result (parsed: {parsed})"
+        )
     if dupes or added:
         raise CheckFailure(
             f"row duplicates: {dupes or '{}'}; row order violations "
@@ -205,28 +244,50 @@ def check_row_order_or_raise(root: Path, base: dict[str, str] | None = None) -> 
 # ---------------------------------------------------------------------------
 # CHK4 — landing-state prose, quoted-pattern exemption preserved
 
-def check_prose(root: Path, docs: list[str] | None = None) -> list[str]:
-    docs = list(docs) if docs is not None else list(DEFAULT_DOCS)
+def check_prose(root: Path, docs: list[str] | None = None) -> tuple[list[str], int, list[str]]:
+    """CHK4. Returns (hits, docs_read, missing).
+
+    Floor rule (gate r2 MAJOR-5): this used to `continue` past any doc that
+    was not a file, so a tree missing all three named docs returned `[]`
+    and the CLI printed "no landing-state prose" -- the identical shape
+    `CHK1` was given a floor for in the same round. The caller now refuses
+    on a missing NAMED doc and on a zero read count."""
+    named = list(docs) if docs is not None else list(DEFAULT_DOCS)
+    globbed: list[str] = []
     drafts_dir = root / DRAFTS_SUBDIR
     if drafts_dir.is_dir():
-        docs += [
-            str(p.relative_to(root)) for p in sorted(drafts_dir.glob("u-*.md"))
-        ]
+        globbed = [str(p.relative_to(root)) for p in sorted(drafts_dir.glob("u-*.md"))]
     hits: list[str] = []
-    for rel in docs:
+    missing: list[str] = []
+    read = 0
+    for rel in named + globbed:
         p = root / rel
         if not p.is_file():
+            # a NAMED doc that is absent is a hole; a globbed one cannot be
+            missing.append(rel)
             continue
+        read += 1
         for i, line in enumerate(p.read_text().split("\n"), 1):
             if PROSE_RE.search(line) and not QUOTED_EXEMPT_RE.match(line):
                 hits.append(f"{rel}:{i}")
-    return hits
+    return hits, read, [m for m in missing if m in named]
 
 
-def check_prose_or_raise(root: Path, docs: list[str] | None = None) -> None:
-    hits = check_prose(root, docs)
+def check_prose_or_raise(root: Path, docs: list[str] | None = None) -> int:
+    hits, read, missing = check_prose(root, docs)
+    if missing:
+        raise CheckFailure(
+            f"{len(missing)} named landing-state doc(s) are ABSENT, so a clean "
+            f"result would describe files this check never opened: {missing}"
+        )
+    if read < 1:
+        raise CheckFailure(
+            "read 0 documents; refusing -- 'no landing-state prose' over zero "
+            "files is not a result"
+        )
     if hits:
         raise CheckFailure(f"landing-state prose hits: {hits}")
+    return read
 
 
 # ---------------------------------------------------------------------------
@@ -293,8 +354,24 @@ def main(argv: list[str] | None = None) -> int:
     root: Path = args.root.resolve()
     try:
         if args.cmd == "markers":
-            check_no_markers([root / p for p in args.paths])
-            print("no conflict markers")
+            # The floor is on being GIVEN nothing, not on FINDING nothing to
+            # read: a merge that only DELETES files legitimately scans zero,
+            # and refusing that would be a false refusal (measured -- it
+            # refused a delete-only branch). Paths that exist but cannot be
+            # read are already fatal inside check_no_markers.
+            if not args.paths:
+                raise CheckFailure(
+                    "given 0 paths; refusing -- 'no conflict markers' over an "
+                    "empty set is not a result"
+                )
+            n = check_no_markers([root / p for p in args.paths])
+            # positive control in the OUTPUT: a clean result always carries
+            # the counts it is a claim about, so "nothing found" and "nothing
+            # looked at" never render the same.
+            print(
+                f"no conflict markers (scanned {n} of {len(args.paths)} "
+                f"merge-touched path(s); {len(args.paths) - n} absent/deleted)"
+            )
         elif args.cmd == "pins":
             n = check_pins_or_raise(root)
             print(f"pins checked: {n}; mismatches: []")
@@ -324,8 +401,8 @@ def main(argv: list[str] | None = None) -> int:
                 + (f" (baseline {args.base}: {len(base or {})} file(s))" if args.base else "")
             )
         elif args.cmd == "prose":
-            check_prose_or_raise(root)
-            print("no landing-state prose")
+            n = check_prose_or_raise(root)
+            print(f"no landing-state prose (read {n} document(s))")
         elif args.cmd == "verdict":
             check_verdict_or_raise(args.verdict)
             print("verdict OK")
