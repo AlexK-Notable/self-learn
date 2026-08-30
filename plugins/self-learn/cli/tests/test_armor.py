@@ -2651,9 +2651,39 @@ def test_un1_no_production_source_changes():
 
 def test_un2_lock_invariant_untouched():
     """`UN2`. `test_lock_invariant.py` is byte-unchanged (a sibling
-    unit's own pin, `U-verbs`' `UN4`, depends on it)."""
+    unit's own pin, `U-verbs`' `UN4`, depends on it). Post-landing this
+    pins to the permanent `_LANDING_BASE`/`_LANDING_TIP` pair instead
+    of `_BUILD_BASE`/`HEAD` -- the same fix `UN1`/`UN3`/`UN5` received
+    in `dfa2a24`, which this criterion was simply missed out of
+    (repaired 2026-08-29, found by `U-verbs` Phase 2's own code gate).
+    Left on `_BUILD_BASE` the check is VACUOUSLY green on master --
+    the diff of master against its own merge-base is empty, so it
+    passes without measuring anything -- while going RED on every
+    later branch that merges this landing and then legitimately edits
+    the file. Measured on `u-verbs-p2`, whose own `UN4` REQUIRES the
+    three lines it adds (`3\t0\t.../test_lock_invariant.py`): a
+    self-scoped, branch-time promise had leaked into a permanent
+    global constraint on every sibling unit. Positive control (also
+    new, and the reason the vacuity went unnoticed for a landing):
+    `cli/tests` SHOULD show a diff, so an empty result can never be
+    mistaken for a check that looked at nothing."""
+    if _landing_is_absorbed():
+        _assert_landing_pair_is_real_history()
+        out = _numstat2(
+            _LANDING_BASE, _LANDING_TIP,
+            "plugins/self-learn/cli/tests/test_lock_invariant.py",
+        )
+        assert out.strip() == "", out
+
+        control = _numstat2(_LANDING_BASE, _LANDING_TIP, "plugins/self-learn/cli/tests")
+        assert control.strip() != "", "positive control: cli/tests SHOULD show a diff in the landing"
+        return
+
     out = _numstat(_BUILD_BASE, "plugins/self-learn/cli/tests/test_lock_invariant.py")
     assert out.strip() == "", out
+
+    control = _numstat(_BUILD_BASE, "plugins/self-learn/cli/tests")
+    assert control.strip() != "", "positive control: cli/tests SHOULD show a diff by now"
 
 
 def _collect_count(cwd: Path, python: str) -> int:
