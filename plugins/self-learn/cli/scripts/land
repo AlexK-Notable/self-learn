@@ -346,8 +346,12 @@ run_merge_and_checks() {
     die 4 "CHK1: conflict markers remain in the merge-touched set" "cat $OUT/chk1.log"
   fi
 
-  # CHK3 -- row order, per contiguous run
-  if ! py_landing checks --root "$gr" roworder >"$OUT/chk3.log" 2>&1; then
+  # CHK3 -- duplicates always refuse; row DISORDER refuses only when this
+  # merge introduced it. The baseline is HEAD, which mid-merge is still
+  # master's pre-merge tip. Measured 2026-08-29: master's own
+  # 14-forward-work-map.md carries 9 descending adjacent pairs inside ONE
+  # contiguous table, so the strict whole-file form refuses every landing.
+  if ! py_landing checks --root "$gr" roworder --base HEAD >"$OUT/chk3.log" 2>&1; then
     git -C "$gr" merge --abort >/dev/null 2>&1 || true
     die 4 "CHK3: S-/FW- row order violation" "cat $OUT/chk3.log"
   fi
@@ -461,18 +465,42 @@ if [ "$DRY_RUN" = "0" ] && { [ "$RESUME_ONLY" = "0" ] || [ "$RESUME_STEP" = "sui
     return 0
   }
 
+  # SUI3/SUI9. Returns 0 ONLY when the log yielded at least one parsed
+  # failing node id AND every one of them is in the allowlist. It never
+  # returns 0 because it found nothing: a non-zero rc whose log carries no
+  # `FAILED`/`ERROR ` line at all means the adjudicator could not SEE its
+  # target (the suite died before pytest reported, ran at the wrong cwd,
+  # or the venv failed to resolve), and "no violations found" and "the
+  # check is blind" must never share an outcome -- that is the exact class
+  # S-56 exists to end (lrn-ea833a5b; §4.6/SUI9).
+  #
+  # The verdict is written to "$OUT/$n.adjudication" as a positive
+  # control: the file's CONTENT differs per outcome, so a caller (and a
+  # human reading the log dir) can tell "allowlisted-only" from
+  # "unparseable-log" without re-deriving it.
   allowlisted_only() {
-    local log=$1
+    local log=$1 n=$2
+    local verdict="$OUT/$n.adjudication"
     local allow="$GITROOT/plugins/self-learn/cli/src/self_learn/landing/known_failures.txt"
-    [ -f "$allow" ] || return 1
+    if [ ! -f "$allow" ]; then
+      printf 'unreadable-allowlist %s\n' "$allow" >"$verdict"
+      return 1
+    fi
     local failing
     failing=$(grep -E '^(FAILED|ERROR) ' "$log" | sed -E 's/^(FAILED|ERROR) ([^ ]+).*/\2/' | sort -u)
-    [ -n "$failing" ] || return 0
+    if [ -z "$failing" ]; then
+      printf 'unparseable-log %s\n' "$log" >"$verdict"
+      return 1
+    fi
     local f
     while IFS= read -r f; do
       [ -n "$f" ] || continue
-      grep -qxF "$f" "$allow" || return 1
+      if ! grep -qxF "$f" "$allow"; then
+        printf 'not-allowlisted %s\n' "$f" >"$verdict"
+        return 1
+      fi
     done <<<"$failing"
+    printf 'allowlisted-only %s\n' "$(printf '%s' "$failing" | tr '\n' ' ')" >"$verdict"
     return 0
   }
 
@@ -484,7 +512,21 @@ if [ "$DRY_RUN" = "0" ] && { [ "$RESUME_ONLY" = "0" ] || [ "$RESUME_STEP" = "sui
       0) ;;
       124) record_refusal_step suites; die 5 "$n suite TIMED OUT after ${SUITE_TIMEOUT}s -- see $OUT/$n.log" "less $OUT/$n.log" ;;
       2) record_refusal_step suites; die 5 "$n suite COLLECTION ERROR (rc 2) -- NOT a test failure; the allowlist cannot adjudicate it. See $OUT/$n.log" "less $OUT/$n.log" ;;
-      *) allowlisted_only "$OUT/$n.log" || { record_refusal_step suites; die 5 "$n suite red -- see $OUT/$n.log" "less $OUT/$n.log"; } ;;
+      5) record_refusal_step suites; die 5 "$n suite collected NO TESTS (rc 5) -- the suite ran but had nothing to adjudicate; an empty run must never read as green (SUI9). See $OUT/$n.log" "less $OUT/$n.log" ;;
+      *)
+        if ! allowlisted_only "$OUT/$n.log" "$n"; then
+          record_refusal_step suites
+          local why
+          why=$(cat "$OUT/$n.adjudication" 2>/dev/null || echo "unknown")
+          case "$why" in
+            unparseable-log*)
+              die 5 "$n suite exited rc=$rc but its log yields NO FAILED/ERROR node id -- the known-failure allowlist cannot see its target, so this is a REFUSAL, never a pass (SUI9). See $OUT/$n.log" "less $OUT/$n.log" ;;
+            unreadable-allowlist*)
+              die 5 "$n suite red (rc=$rc) and the known-failure allowlist is unreadable: $why" "less $OUT/$n.log" ;;
+            *)
+              die 5 "$n suite red -- $why -- see $OUT/$n.log" "less $OUT/$n.log" ;;
+          esac
+        fi ;;
     esac
   }
 

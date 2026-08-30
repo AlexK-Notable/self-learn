@@ -131,13 +131,75 @@ def check_row_order(text: str, prefix: str) -> list[tuple[int, int]]:
     return bad
 
 
-def check_row_order_or_raise(root: Path) -> None:
-    fw = (root / (_SPEC_DIR + "/14-forward-work-map.md")).read_text()
-    d03 = (root / (_SPEC_DIR + "/03-decisions.md")).read_text()
-    bad_fw = check_row_order(fw, "FW")
-    bad_s = check_row_order(d03, "S")
-    if bad_fw or bad_s:
-        raise CheckFailure(f"row order violations: FW={bad_fw} S={bad_s}")
+def check_duplicate_rows(text: str, prefix: str) -> list[int]:
+    """Every row id appearing twice inside ONE contiguous table run.
+
+    This is the half of CHK3 with a red/green pair on real history --
+    measured 2026-08-29 with this function: at `37f48c4` it returns
+    `[130]` (the duplicate a keep-both merge left) and at its child
+    `6038eee`, at `master`, and at this branch's HEAD it returns `[]`.
+
+    Per-run, not whole-file: `FW-30` legitimately appears in two
+    different tables (the row itself at line 85 and a later index run of
+    length 1), so a whole-file duplicate check reddens on correct content
+    -- measured, it returns `[130, 30]` at `37f48c4` and `[30]` at
+    `6038eee`, i.e. it cannot tell the defect from the corpus."""
+    dupes: list[int] = []
+    for run in _row_runs(text.split("\n"), prefix):
+        seen: set[int] = set()
+        for n in run:
+            if n in seen and n not in dupes:
+                dupes.append(n)
+            seen.add(n)
+    return dupes
+
+
+def check_row_order_or_raise(root: Path, base: dict[str, str] | None = None) -> None:
+    """CHK3, two legs.
+
+    Leg 1 -- **duplicates refuse, always.** Whole file, both prefixes.
+
+    Leg 2 -- **a landing may not ADD row disorder.** Measured on the real
+    tree 2026-08-29: `14-forward-work-map.md` carries **9** descending
+    adjacent pairs on master (`[(53,52), (52,49), (70,62), (67,57),
+    (61,54), (56,50), (127,120), (132,128), (131,122)]`), and they are
+    *inside one contiguous table* -- FW-48/53/52/49/60/61/54 sit on
+    consecutive lines, grouped by fix batch rather than by number. So the
+    spec's "per contiguous table run" framing (§4.5 CHK3, §11 item 5,
+    which flags exactly this as unconfirmed) does not rescue them: a
+    check that demands global monotonicity refuses EVERY landing,
+    including this unit's own. With `base` supplied -- the pre-merge
+    content of the same files -- the check refuses only on pairs the
+    merge INTRODUCED, which keeps the teeth (`test_land_refuses_row_
+    disorder`'s fixture still reddens) without asserting a property the
+    corpus has never had. With `base` omitted the old strict form is
+    kept, so a caller that has no baseline still fails closed.
+
+    `base` maps the repo-relative doc path to its baseline text.
+    """
+    paths = {
+        "FW": _SPEC_DIR + "/14-forward-work-map.md",
+        "S": _SPEC_DIR + "/03-decisions.md",
+    }
+    dupes: dict[str, list[int]] = {}
+    added: dict[str, list[tuple[int, int]]] = {}
+    for prefix, rel in paths.items():
+        text = (root / rel).read_text()
+        d = check_duplicate_rows(text, prefix)
+        if d:
+            dupes[prefix] = d
+        bad = check_row_order(text, prefix)
+        if base is not None and rel in base:
+            before = set(check_row_order(base[rel], prefix))
+            bad = [p for p in bad if p not in before]
+        if bad:
+            added[prefix] = bad
+    if dupes or added:
+        raise CheckFailure(
+            f"row duplicates: {dupes or '{}'}; row order violations "
+            f"{'INTRODUCED by this merge' if base is not None else '(no baseline supplied)'}: "
+            f"{added or '{}'}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -212,7 +274,14 @@ def main(argv: list[str] | None = None) -> int:
     p_markers.add_argument("paths", nargs="*")
 
     sub.add_parser("pins")
-    sub.add_parser("roworder")
+    p_roworder = sub.add_parser("roworder")
+    p_roworder.add_argument(
+        "--base",
+        default=None,
+        help="a git rev whose copies of the two row files are the baseline "
+             "(CHK3 leg 2 then refuses only on disorder this merge ADDED). "
+             "Omitted, the check is the strict whole-file form.",
+    )
     sub.add_parser("prose")
 
     p_verdict = sub.add_parser("verdict")
@@ -230,8 +299,30 @@ def main(argv: list[str] | None = None) -> int:
             n = check_pins_or_raise(root)
             print(f"pins checked: {n}; mismatches: []")
         elif args.cmd == "roworder":
-            check_row_order_or_raise(root)
-            print("row order OK")
+            base = None
+            if args.base:
+                import subprocess
+
+                base = {}
+                for rel in (
+                    _SPEC_DIR + "/14-forward-work-map.md",
+                    _SPEC_DIR + "/03-decisions.md",
+                ):
+                    proc = subprocess.run(
+                        ["git", "show", f"{args.base}:{rel}"],
+                        cwd=root, capture_output=True, text=True,
+                    )
+                    # A file absent at the baseline is a NEW file: it has no
+                    # prior disorder to forgive, so it stays strict. It must
+                    # never silently become "no baseline, forgive nothing"
+                    # for the OTHER file too.
+                    if proc.returncode == 0:
+                        base[rel] = proc.stdout
+            check_row_order_or_raise(root, base)
+            print(
+                "row order OK"
+                + (f" (baseline {args.base}: {len(base or {})} file(s))" if args.base else "")
+            )
         elif args.cmd == "prose":
             check_prose_or_raise(root)
             print("no landing-state prose")

@@ -82,7 +82,19 @@ Every substantive unit moves through, in order:
    `fixtures/ui-trials.md` (or `fixtures/trials.md` for CLI-only).
 7. **Records** — review record in `reviews/` (gate chains, verdicts,
    mutations), status addenda in the touched docs, README revision-log
-   entry, `records-index.md` row. Then commit; push stays manual (D3).
+   entry, `records-index.md` row. Then commit; no hand-typed `git push`
+   (D3) — the push is step 8's, which is D3's own "ship-completion step,
+   by precedent" clause, not an autosync.
+8. **Land** — `plugins/self-learn/cli/scripts/land --branch <b> --verdict
+   '<the gate's verdict line>'`. Run it in the **foreground** (a
+   backgrounded run dies with the turn — `plugins/self-learn/cli/scripts/suite`'s
+   own rule). It refuses rather than proceeding at every stage; each
+   refusal prints the one command that inspects the state it left.
+   Nothing about a landing is done by hand, and no landing chain is
+   retyped. *(S-56, 2026-08-28. This step replaces the prose chain that
+   used to be typed per unit; `misc/landing-scripts-2026-08-28/` is the
+   only record of what it replaced, and FW-143 retires those scripts once
+   `land` has completed one real landing.)*
 
 Docs-only status/record maintenance (revision logs, index rows, dated
 disposition notes) is orchestrator-direct — no gate. Anything that
