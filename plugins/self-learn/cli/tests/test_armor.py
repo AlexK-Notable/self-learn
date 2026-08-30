@@ -3651,7 +3651,17 @@ def test_anc5_remeasure_refuses_a_vacuous_exemption(capsys):
         assert ns["_compute_vacuous"](anchor) == {}
 
         behaviour_key = "test_worker.py"
-        fixture_key = "conftest.py"
+        # DERIVED, not named: a `repinned` entry is only vacuous when
+        # head still equals the anchor, so this must pick a fixture
+        # that is not already legitimately repinned. Naming
+        # `conftest.py` outright would break this leg the day some
+        # unit repins it. `next()` raising is the right failure --
+        # loud, not a silent pass.
+        fixture_key = next(
+            k for k in FIXTURE_KEYS
+            if hashlib.sha256(ns["_head_bytes"](k)).hexdigest()
+            == hashlib.sha256(ns["_anchor_bytes"](k)).hexdigest()
+        )
         live_node = next(iter(ns["_head_census"](behaviour_key)))
         patched = dict(ns["ARMOR"])
         patched[behaviour_key] = ns["Behaviour"](
@@ -3667,11 +3677,12 @@ def test_anc5_remeasure_refuses_a_vacuous_exemption(capsys):
         )
         ns["ARMOR"] = patched
 
+        # Per-key equality, not whole-map equality: the shipped
+        # table's own emptiness is already asserted above, so extra
+        # keys cannot appear from anywhere but these two.
         vacuous = ns["_compute_vacuous"](anchor)
-        assert vacuous == {
-            behaviour_key: [f"missing:{live_node}"],
-            fixture_key: ["repinned"],
-        }, vacuous
+        assert vacuous.get(behaviour_key) == [f"missing:{live_node}"], vacuous
+        assert vacuous.get(fixture_key) == ["repinned"], vacuous
 
         capsys.readouterr()
         sha_before = hashlib.sha256(scratch_module.read_bytes()).hexdigest()
@@ -3767,25 +3778,66 @@ def test_anc6_refusal_leg_contract(capsys):
 
     # --- Leg 2: one run carrying all three pre-write tokens at once,
     # which is what a real landing behind a sibling unit looks like.
-    # Built at the copy's own `ANCHOR` (permanent -- no later landing
-    # can invalidate this probe) by: dropping test_u_fake.py's shipped
-    # `missing` entries, so its fourteen anchor-era nodes become OWED;
-    # adding a `missing` entry naming a node that is still present at
-    # head, which is VACUOUS; and corrupting one `MEASURED` row, which
-    # is STALE.
+    #
+    # ANCHOR-INDEPENDENCE IS THE WHOLE DIFFICULTY HERE, and the first
+    # draft of this leg got it wrong in the most embarrassing possible
+    # way: it built the OWED family by stripping `test_u_fake.py`'s
+    # shipped `missing` map, so its fourteen anchor-era nodes became
+    # owed, and asserted `len(owed) == 14`. That 14 is an anchor-
+    # derived hand literal -- the exact class `MEASURED` exists to
+    # remove -- sitting inside this unit's own contract test. It goes
+    # RED on this unit's own landing: once `ANCHOR` reaches the merge's
+    # first parent those fourteen nodes are INSIDE the anchor, the
+    # author drops the now-vacuous entries (the `VACUOUS:` leg forces
+    # it), stripping an already-empty map owes nothing, and the assert
+    # reads `assert 0 == 14`. Measured, not reasoned: the bootstrap
+    # clone's post-landing armor run gave exactly that, `1 failed, 46
+    # passed`, before this rewrite.
+    #
+    # The construction below cannot rot that way. An anchor node that
+    # is ABSENT at head and carries no exemption is owed at EVERY
+    # anchor, so the leg is built by censoring one node out of
+    # `_head_census` -- victim taken from the ANCHOR census and
+    # filtered against the row's own `missing` map, so a future
+    # exemption cannot silently neutralise it. And every expectation
+    # is DERIVED from the namespace's own `_compute_*` functions
+    # rather than counted by hand: censoring head has knock-ons
+    # (`EXM3.census_missing` gains one; `BEH1.control_missing` gains
+    # one too IF the victim also exists at the retired control
+    # anchor), and hardcoding any of those totals would just plant the
+    # same landmine again.
     scratch_dir = Path(tempfile.mkdtemp(dir=str(_REPO_ROOT)))
     try:
         scratch_module, ns = _scratch_armor_namespace(scratch_dir, "_armor_anc6b")
         anchor = ns["ANCHOR"]
 
-        owed_key = "test_u_fake.py"
-        vacuous_key = "test_worker.py"
+        # OWED: censor one anchor node out of head. Anchor-independent.
+        owed_key = "test_worker.py"
+        owed_row = ns["ARMOR"][owed_key]
+        # TWO victims, not one: with a single owed entry a report that
+        # printed only the FIRST entry per armor key would satisfy
+        # `len(owed) == n_owed` anyway. Measured -- mutation M-B6
+        # (`for e in entries[:1]`) came back GREEN against the
+        # one-victim version and RED against this one.
+        victims = [k for k in ns["_anchor_census"](owed_key) if k not in owed_row.missing][:2]
+        assert len(victims) == 2, victims
+        real_head_census = ns["_head_census"]
+
+        def _censored_head_census(key, _real=real_head_census, _key=owed_key, _victims=victims):
+            census = dict(_real(key))
+            if key == _key:
+                for _victim in _victims:
+                    census.pop(_victim, None)
+            return census
+
+        ns["_head_census"] = _censored_head_census
+
+        # VACUOUS: a `missing` entry naming a node still present at
+        # head, on a DIFFERENT file so the two families cannot
+        # interact.
+        vacuous_key = "test_composer.py"
         live_node = next(iter(ns["_head_census"](vacuous_key)))
         patched = dict(ns["ARMOR"])
-        patched[owed_key] = ns["Behaviour"](
-            nodes=ns["ARMOR"][owed_key].nodes,
-            dump_sha=ns["ARMOR"][owed_key].dump_sha,
-        )
         patched[vacuous_key] = ns["Behaviour"](
             nodes=ns["ARMOR"][vacuous_key].nodes,
             dump_sha=ns["ARMOR"][vacuous_key].dump_sha,
@@ -3793,12 +3845,28 @@ def test_anc6_refusal_leg_contract(capsys):
         )
         ns["ARMOR"] = patched
 
+        # STALE: corrupt one row. `BEH7.node_total` reads the anchor
+        # side only, so the censored head cannot also move it -- the
+        # shipped/live pair asserted below stays exact.
         stale_row = "BEH7.node_total"
         measured = dict(ns["MEASURED"])
         measured[stale_row] = dataclasses.replace(
             measured[stale_row], value=measured[stale_row].value + 1
         )
         ns["MEASURED"] = measured
+
+        # Every expectation DERIVED, and each family asserted non-empty
+        # first so no count below can be vacuously satisfied.
+        owed_map = ns["_compute_owed"](anchor)
+        vacuous_map = ns["_compute_vacuous"](anchor)
+        stale_list = ns["_compute_stale"](anchor)
+        assert owed_map, owed_map
+        assert vacuous_map, vacuous_map
+        assert stale_list, stale_list
+        assert stale_row in {name for name, _s, _l in stale_list}, stale_list
+        n_owed = sum(len(v) for v in owed_map.values())
+        n_vacuous = sum(len(v) for v in vacuous_map.values())
+        n_stale = len(stale_list)
 
         sha_before = hashlib.sha256(scratch_module.read_bytes()).hexdigest()
         capsys.readouterr()
@@ -3814,24 +3882,32 @@ def test_anc6_refusal_leg_contract(capsys):
         owed = [ln for ln in report if ln.startswith("OWED: ")]
         vacuous = [ln for ln in report if ln.startswith("VACUOUS: ")]
         stale = [ln for ln in report if ln.startswith("STALE: ")]
-        assert len(owed) == 14, owed
-        assert len(vacuous) == 1, vacuous
-        assert len(stale) == 3, stale
+        assert len(owed) == n_owed, (owed, n_owed)
+        assert len(vacuous) == n_vacuous, (vacuous, n_vacuous)
+        assert len(stale) == 3 * n_stale, (stale, n_stale)
         assert len(report) == len(owed) + len(vacuous) + len(stale), report
 
         for ln in owed:
             assert _OWED_RE.match(ln), ln
-        assert _VACUOUS_RE.match(vacuous[0]), vacuous[0]
-        assert vacuous[0] == f"VACUOUS: {vacuous_key}: missing:{live_node}", vacuous[0]
+        for _victim in victims:
+            assert f"OWED: {owed_key}: missing:{_victim}" in owed, (owed, _victim)
+        for ln in vacuous:
+            assert _VACUOUS_RE.match(ln), ln
+        assert f"VACUOUS: {vacuous_key}: missing:{live_node}" in vacuous, vacuous
 
-        # The three-line STALE record, in order, both values `repr()`
-        # so line 3 can be pasted straight into `value=`.
-        assert _STALE_HEAD_RE.match(stale[0]), stale[0]
-        assert stale[0].endswith(f"MEASURED['{stale_row}'] (scope=anchor)"), stale[0]
-        assert _STALE_SHIPPED_RE.match(stale[1]), stale[1]
-        assert _STALE_LIVE_RE.match(stale[2]), stale[2]
-        assert stale[1].endswith(repr(measured[stale_row].value)), stale[1]
-        assert stale[2].endswith(repr(MEASURED[stale_row].value)), stale[2]
+        # Every STALE record is three lines, in order, both values
+        # `repr()` so line 3 pastes straight into `value=`.
+        heads = [i for i, ln in enumerate(stale) if _STALE_HEAD_RE.match(ln)]
+        assert len(heads) == n_stale, stale
+        for i in heads:
+            assert _STALE_SHIPPED_RE.match(stale[i + 1]), stale[i + 1]
+            assert _STALE_LIVE_RE.match(stale[i + 2]), stale[i + 2]
+        idx = next(
+            i for i in heads
+            if stale[i].endswith(f"MEASURED['{stale_row}'] (scope=anchor)")
+        )
+        assert stale[idx + 1].endswith(repr(measured[stale_row].value)), stale[idx + 1]
+        assert stale[idx + 2].endswith(repr(MEASURED[stale_row].value)), stale[idx + 2]
 
         # The trailer: named, and token-free. Both halves matter -- the
         # first so a caller can find it, the second so an unanchored

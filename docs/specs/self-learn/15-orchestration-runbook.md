@@ -219,7 +219,12 @@ override is per-round, not a new default.
   reading `test_armor.py`**. Measured against the CLI on 2026-08-29
   and pinned by `ANC6`; `ARM6` pins the success leg.
 
-  - **Exit code.** `0` on success, `1` on every refusal. Nothing else.
+  - **Exit code.** `0` on success, `1` on every modelled refusal.
+    Other codes mean the run did not get far enough to model
+    anything — argparse exits `2` on a malformed invocation, and an
+    unexpected `git` failure raises. Treat anything that is not `0`
+    or a `1` carrying one of the tokens below as an unmodelled
+    failure and do not proceed.
   - **Stream.** Every diagnostic goes to **stderr**. **stdout is
     always empty** — success and refusal alike. A caller that treats
     empty stdout as failure, or empty stderr as success, is wrong in
