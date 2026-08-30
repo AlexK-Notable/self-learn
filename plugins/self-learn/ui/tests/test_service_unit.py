@@ -118,6 +118,24 @@ def test_carries_the_same_b1_env_pin_as_the_miner_unit() -> None:
     assert "Environment=SELF_LEARN_HOME=%h/.self-learn" in miner_service
 
 
+def test_carries_a_path_floor_including_home_local_bin() -> None:
+    """U-uvpath (2026-08-29): self-learn-host.service crash-looped six
+    times on 2026-08-28 22:17-22:18 with `exec: uv: not found` (exit
+    127/n/a) because ExecStart's wrapper resolves `uv` off ambient
+    PATH, and the systemd user manager's PATH does not reliably include
+    %h/.local/bin (uv's pipx install dir on this host) — the same B-1
+    reasoning the SELF_LEARN_HOME pin above already states, applied
+    here to PATH. This unit (miner is out of this fix's scope — not
+    asserted against) pins a PATH floor with %h/.local/bin ahead of the
+    standard system dirs."""
+    ui_service = _section(UI_UNIT.read_text(encoding="utf-8"), "Service")
+    assert "Environment=PATH=" in ui_service
+    path_line = next(
+        line for line in ui_service.splitlines() if line.startswith("Environment=PATH=")
+    )
+    assert "%h/.local/bin" in path_line
+
+
 def test_both_units_document_manual_registration_via_symlink() -> None:
     ui_header = UI_UNIT.read_text(encoding="utf-8").split("[Unit]")[0]
     miner_header = MINER_UNIT.read_text(encoding="utf-8").split("[Unit]")[0]
@@ -200,6 +218,24 @@ def test_host_unit_carries_the_same_b1_env_pin_as_the_miner_unit() -> None:
     miner_service = _section(MINER_UNIT.read_text(encoding="utf-8"), "Service")
     assert "Environment=SELF_LEARN_HOME=%h/.self-learn" in host_service
     assert "Environment=SELF_LEARN_HOME=%h/.self-learn" in miner_service
+
+
+def test_host_unit_carries_a_path_floor_including_home_local_bin() -> None:
+    """U-uvpath (2026-08-29): this unit is the one that was actually
+    measured crash-looping — six times, 2026-08-28 22:17-22:18, `exec:
+    uv: not found` (exit 127/n/a) — because ExecStart's wrapper resolves
+    `uv` off ambient PATH, and the systemd user manager's PATH does not
+    reliably include %h/.local/bin (uv's pipx install dir on this
+    host). Same B-1 reasoning as the SELF_LEARN_HOME pin above, applied
+    to PATH (miner is out of this fix's scope — not asserted against)."""
+    host_service = _section(HOST_UNIT.read_text(encoding="utf-8"), "Service")
+    assert "Environment=PATH=" in host_service
+    path_line = next(
+        line
+        for line in host_service.splitlines()
+        if line.startswith("Environment=PATH=")
+    )
+    assert "%h/.local/bin" in path_line
 
 
 # Gate r1 N-6: `test_host_unit_has_a_description` was an exact duplicate

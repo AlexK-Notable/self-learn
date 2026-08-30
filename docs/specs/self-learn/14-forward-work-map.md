@@ -349,6 +349,76 @@ while the pass itself is parked (O-9).
 - *2026-08-28*: **U-armor spec landed** (S-55, FW-140/FW-141
   reserved; FW-139 deliberately skipped — a tombstone in the
   `U-verbs` spec). Five blind spec gates, SOUND at r5.
+- *2026-08-29*: **`U-uvpath` built** (unit `u-uvpath`, T1
+  gate-characterized fix; gate-pending, worktree uncommitted). No FW
+  register row — a closed, fully-fixed defect, not a lingering watch
+  item. **Measured failure:** `self-learn-host.service` crash-looped
+  six times on 2026-08-28 22:17–22:18 with `/…/self-learn: line 6:
+  exec: uv: not found` / `Main process exited, code=exited,
+  status=127/n/a`. **Root cause:** both launcher wrappers
+  (`plugins/self-learn/scripts/self-learn`, `…/self-learn-ui`) exec a
+  bare `uv` resolved off ambient `PATH`, while `uv` on this host lives
+  at `~/.local/bin/uv` (a pipx symlink) — not part of any guaranteed
+  systemd user-manager environment. Both units
+  (`systemd/self-learn-host.service`, `systemd/self-learn-ui.service`)
+  already pin `Environment=SELF_LEARN_HOME=%h/.self-learn` on exactly
+  this reasoning (their own comment: "the systemd user manager does
+  not inherit the shell's env") but pinned no `PATH` at all — the B-1
+  reasoning was applied to the ledger home and not to `PATH`. Positive
+  control (reproduced, not re-derived): `env -i HOME="$HOME"
+  PATH=/usr/local/bin:/usr/bin:/bin bash -c 'command -v uv'` finds
+  nothing on this host (rc=1) — the exact PATH shape a unit sees when
+  it loses the boot-order race against the desktop session's PATH
+  import. The pre-existing "it works today" condition is a boot-order
+  race, **not correctness**: with `Restart=on-failure` and no
+  `StartLimitBurst`, a boot that loses the race gives an infinite
+  silent restart loop with no working daemon — exactly what the
+  2026-08-28 log showed. **Both halves of the fix, belt and braces
+  (deliberately not just one):** (1) both wrappers now try `command -v
+  uv` first (a normal interactive invocation, or any user-chosen `uv`
+  earlier on `PATH`, is unchanged), fall back through
+  `$HOME/.local/bin/uv`, `/usr/local/bin/uv`, `/usr/bin/uv` in order,
+  and — if none is found — print a one-line diagnostic naming every
+  location checked and exit 127, rather than the old bare, unexplained
+  127; the load-bearing `readlink -f "$0"` resolution (P3-1, covered by
+  `test_wrapper_symlink.py`/`test_wrapper.py`) is untouched. (2) both
+  units gain `Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin`
+  alongside their existing `SELF_LEARN_HOME` pin, each with a dated
+  comment citing the same B-1 reasoning; `self-learn-miner.service` is
+  deliberately untouched (out of this fix's scope). **Measurements:** a
+  scratch copy of the pre-fix wrapper, run under `PATH=/usr/bin:/bin`
+  with a `HOME` that has no `~/.local/bin/uv`, reproduces the exact
+  measured failure shape (`line 6: exec: uv: not found`, rc=127, no
+  diagnostic). The fixed wrapper under the same minimal `PATH`, with a
+  stub `uv` planted at `$HOME/.local/bin/uv`, resolves and execs the
+  stub (rc=0); with no `uv` anywhere reachable, it exits 127 with the
+  new diagnostic naming all four locations checked. **Tests** (all
+  mutation-verified — fix reverted to the pre-`U-uvpath` bytes, new
+  tests confirmed RED; fix restored, sha256-verified byte-identical to
+  the pre-revert copy, tests confirmed GREEN):
+  `plugins/self-learn/cli/tests/test_wrapper_symlink.py` gained two
+  behavioral tests (`self-learn` wrapper: the `$HOME/.local/bin/uv`
+  fallback under a `PATH` that lacks it; the not-found path's loud
+  diagnostic + nonzero exit) — the pre-existing symlink test is
+  unaffected (still 3/3 passing).
+  `plugins/self-learn/ui/tests/test_wrapper.py` gained six tests for
+  the `self-learn-ui` wrapper (static checks for `command -v uv`, the
+  three absolute fallbacks, and the diagnostic/exit-127 text, plus the
+  same two behavioral tests as the CLI side) and its one pre-existing
+  static test asserting the literal `"exec uv run"` substring was
+  rewritten to assert `'exec "$UV_BIN" run --project'` instead — the
+  wrapper no longer execs a bare `uv`, so the old literal cannot hold
+  (10/10 passing).
+  `plugins/self-learn/ui/tests/test_service_unit.py` gained one test
+  per unit asserting `Environment=PATH=` is present in the `[Service]`
+  section and that its value contains `%h/.local/bin` (22/22 collected,
+  21 passing — the suite's one pre-existing known failure,
+  `test_both_units_document_manual_registration_via_symlink`, is
+  unaffected in either direction, as PORT3 required of the earlier
+  `U-engine` build touching this same file). No literal absolute home
+  path anywhere in the diff — every path in the shipped code and tests
+  is `~`/`%h`/repo-relative or computed from `tmp_path`/`HOME` at test
+  time.
 
 ## 6b. Dated additions log
 

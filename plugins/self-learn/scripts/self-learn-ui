@@ -4,4 +4,28 @@
 # this file as a ~/bin symlink; $(dirname "$0") would resolve beside the
 # symlink, not the repo (home-net-capture precedent; same rule as
 # scripts/self-learn and the sibling self-learn-ui-open/self-learn-notify).
-exec uv run --project "$(dirname "$(readlink -f "$0")")/../ui" self-learn-ui "$@"
+#
+# uv resolution (U-uvpath, 2026-08-29): same fix as scripts/self-learn —
+# self-learn-host.service crash-looped six times on 2026-08-28
+# 22:17-22:18 with "exec: uv: not found" (exit 127/n/a) because a bare
+# `exec uv` depends on ambient PATH, and the systemd user manager does
+# not reliably inherit one that includes ~/.local/bin (uv's pipx
+# install dir on this host). Try `command -v uv` first, so a normal
+# interactive invocation — or any user-chosen uv earlier on PATH — is
+# unchanged, then fall back to well-known absolute locations, and fail
+# LOUDLY rather than let a bare `exec uv` degrade into a silent,
+# unexplained 127.
+UV_BIN="$(command -v uv 2>/dev/null)"
+if [[ -z "$UV_BIN" ]]; then
+  for _uv_candidate in "$HOME/.local/bin/uv" /usr/local/bin/uv /usr/bin/uv; do
+    if [[ -x "$_uv_candidate" ]]; then
+      UV_BIN="$_uv_candidate"
+      break
+    fi
+  done
+fi
+if [[ -z "$UV_BIN" ]]; then
+  echo "self-learn-ui: uv not found on \$PATH, \$HOME/.local/bin/uv, /usr/local/bin/uv, or /usr/bin/uv -- install uv (https://docs.astral.sh/uv/) or add it to PATH" >&2
+  exit 127
+fi
+exec "$UV_BIN" run --project "$(dirname "$(readlink -f "$0")")/../ui" self-learn-ui "$@"
