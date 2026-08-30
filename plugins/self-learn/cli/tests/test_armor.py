@@ -1436,7 +1436,13 @@ def test_fix1_fixtures_are_byte_identical(tmp_path):
         != hashlib.sha256(_anchor_bytes("conftest.py")).hexdigest()
     )
 
-    # The shipped fixtures themselves are byte-identical to ANCHOR right now.
+    # Corrected 2026-08-29 (code gate r2, same class as MINOR-1): this
+    # said "byte-identical to ANCHOR right now" unconditionally, true
+    # at master `93bfb5d`, falsified the same way by this branch's own
+    # `e59534b` -- conftest.py is explicitly NOT byte-identical to
+    # ANCHOR (it is repinned to differ, on purpose). The branch below
+    # already handled this correctly (repinned rows check against
+    # their own pinned sha, not ANCHOR); only the comment overclaimed.
     for key in FIXTURE_KEYS:
         row = ARMOR[key]
         assert isinstance(row, Fixture)
@@ -1464,9 +1470,15 @@ def test_fix2_repin_door_is_exact_and_cannot_rot():
     def _check_repin(key: str, row: Fixture) -> None:
         _check_repin_shas(key, row, _f1(key), hashlib.sha256(_anchor_bytes(key)).hexdigest())
 
-    # The shipped table: all three `repinned is None` -- EXM3 covers the
-    # unconditional assertion; here we only confirm `_check_repin` is a
-    # no-op for it.
+    # Corrected 2026-08-29 (code gate r2, MINOR-1): this said "all
+    # three `repinned is None`", true at master `93bfb5d` and
+    # falsified by this branch's own `e59534b` -- support.py and
+    # backends.py still ship `repinned is None` (2 of 3, still a
+    # no-op here), but conftest.py's own `repinned` entry (U-xdist,
+    # 2026-08-28) makes `_check_repin` a REAL check for it: its pinned
+    # sha must match HEAD's actual bytes, not just be absent. EXM3
+    # covers the unconditional (`repinned`-present-or-not) assertion
+    # either way.
     for key in FIXTURE_KEYS:
         row = ARMOR[key]
         assert isinstance(row, Fixture)

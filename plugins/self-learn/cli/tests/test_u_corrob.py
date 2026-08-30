@@ -1431,14 +1431,27 @@ def test_pin2_armor_sha_paths_are_byte_unchanged():
         # gained a multi-line `repinned` entry and support.py -- the row
         # immediately before it, itself `repinned`-free -- was the one
         # whose naive scan ran past its own comment and into conftest's
-        # tuple). String-literal-aware (U-xdist code gate r1 fold,
-        # 2026-08-29): a bare paren-depth count over the RAW text is
-        # fooled by a paren inside a reason STRING (e.g. this same
+        # tuple). String-and-comment-aware (U-xdist code gate r1/r2
+        # folds, 2026-08-29): a bare paren-depth count over the RAW text
+        # is fooled by a paren inside a reason STRING (e.g. this same
         # unit's own conftest.py reason mentions "(pytest_sessionfinish/
-        # pytest_testnodedown, appended at the file's end)") the instant
-        # one such string is left UNBALANCED -- so the scan below tracks
-        # whether it is inside a quoted string and skips paren counting
-        # there entirely, the same way a real Python tokenizer would.
+        # pytest_testnodedown, appended at the file's end)") -- fixed at
+        # r1 by tracking whether the scan is inside a quoted string and
+        # skipping paren counting there. That fix was ITSELF incomplete:
+        # gate r2 MEASURED that an apostrophe inside a `#` COMMENT (e.g.
+        # a prose aside like "support.py's own importers") opened a
+        # phantom string the same way, running the scan past the row's
+        # real close paren and returning `row_end is None` on an
+        # otherwise well-formed table (confirmed both ways: the r1 scan
+        # measured `row_end is None` on this exact shape; the fix below
+        # measured matching on it, plus six further synthetic shapes
+        # covering the r1-fixed paren-in-string case and this one in
+        # combination). Fix: a `#` seen OUTSIDE a string now ends
+        # scanning at that line's newline, and a quote seen INSIDE a
+        # comment never opens a string. This handles exactly the two
+        # failure classes measured against it and no more -- it does not
+        # handle triple-quoted strings or line continuations, neither of
+        # which appears in this table.
         call_start = block.index(f'"{rel}": Fixture(')
         paren_start = call_start + len(f'"{rel}": Fixture')
         depth = 0
@@ -1453,6 +1466,10 @@ def test_pin2_armor_sha_paths_are_byte_unchanged():
                     continue
                 if ch == in_string:
                     in_string = None
+            elif ch == "#":
+                nl = block.find("\n", i)
+                i = len(block) if nl == -1 else nl
+                continue
             elif ch in ("'", '"'):
                 in_string = ch
             elif ch == "(":

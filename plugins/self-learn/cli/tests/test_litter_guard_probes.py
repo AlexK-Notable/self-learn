@@ -382,38 +382,53 @@ def test_probe_f_xdist_relay_reports_a_concurrent_sibling_exactly_once(
     `Path.mkdir` and `Popen` patches -- simulating a CONCURRENT SIBLING
     builder's own process on this shared host) but driven under `-n 2`
     with TWO test items. BOTH items create the SAME namespace
-    (`exist_ok=True`, so idempotent regardless of ordering) and BOTH
-    sleep 0.5s FIRST -- a fixed measured margin, comfortably longer
-    than xdist's own worker-connection time (0.7s observed for the
-    WHOLE two-worker session, connection included), so both workers'
-    own `before` snapshots are guaranteed to complete before either
-    mkdir fires. An earlier version had only ONE item sleep, on the
-    theory that whichever worker landed which item, both before/after
-    windows would still likely span the directory's appearance --
-    measured false 1 run in 3 (code gate r1 fold, 2026-08-29): a
-    late-starting second worker's `before` scan landed AFTER the
-    first worker's near-instant mkdir, so the second worker saw no
-    "new" directory at all and only one relay fired, regardless of
-    the dedup under test -- silently passing a mutation this probe
-    exists to catch. Symmetric sleeps close that gap. When xdist
-    splits the two items across two separate worker processes (the
-    common, intended case -- two items, `-n 2`), each worker session
+    (`exist_ok=True`, so idempotent regardless of ordering), and
+    BOTH synchronize on a marker-file BARRIER before creating it
+    (code gate r2 nit, structural over statistical, 2026-08-29): each
+    item touches its own `PYTEST_XDIST_WORKER`-named file under a
+    shared `PROBE_F_MARKER_DIR`, then waits (bounded, 5s) for a peer
+    marker to appear. Since fixture setup (the `before` scan)
+    unconditionally precedes the test BODY, observing a peer marker
+    proves both workers' `before` scans are already done -- a
+    guarantee, not a margin. An earlier version used a fixed 0.5s
+    sleep on both items instead of the barrier: sound by a wide
+    measured margin on its own (gate-measured worker-start skew:
+    <=1.0 ms unloaded, <=3.0 ms stressed under a manufactured load
+    average of 48.8 on 28 cores -- a ~165x margin over 0.5s) but
+    still statistical rather than structural. It replaced a version
+    with only ONE item sleeping, on the theory that whichever worker
+    landed which item, both before/after windows would still likely
+    span the directory's appearance -- measured false 1 run in 3
+    (code gate r1 fold, 2026-08-28): a late-starting second worker's
+    `before` scan landed AFTER the first worker's near-instant
+    mkdir, so the second worker saw no "new" directory at all and
+    only one relay fired, regardless of the dedup under test --
+    silently passing a mutation this probe exists to catch. The
+    barrier removes that failure mode by construction rather than by
+    margin. When xdist splits the two items across two separate
+    worker processes (the common, intended case -- two items, `-n
+    2`), each worker session
     independently discovers the SAME namespace as "new" in its own
     before/after diff and relays it to the controller; this is
     exactly the double-observation race the dedup in
     `pytest_testnodedown` exists to collapse.
 
-    Asserts the controller's terminal summary reports it EXACTLY ONCE:
+    Asserts the controller's terminal summary reports it EXACTLY ONCE,
+    via TWO independent, both-measured discriminators: (1)
     `pytest_terminal_summary`'s own `f"{len(_WARN_NAMESPACES)} new
-    real..."` count is the one assertion that actually distinguishes
-    deduped from not -- a duplicated list entry still contains the
-    namespace NAME exactly once per occurrence, so a raw substring
-    count of "home-deadbeef" would not by itself prove single-vs-double
-    (the printed Python list repr `['home-deadbeef', 'home-deadbeef']`
-    does contain the substring twice, so a substring count would in
-    fact catch it too, but the explicit count line is the mechanism the
-    real code prints for exactly this purpose and is checked directly
-    to keep the assertion legible).
+    real..."` count line, and (2) a raw substring count of
+    "home-deadbeef" in the combined output. Corrected 2026-08-29
+    (code gate r2, MINOR-3): an earlier version of (2) asserted
+    `<= 2`, which is INERT for this mutation -- MEASURED count is 1 for
+    the clean scenario and 2 for the dedup-removed one, and 1 <= 2 and
+    2 <= 2 both pass, so it discriminated nothing; the earlier
+    docstring here claimed a substring count "would in fact catch it
+    too", which was also false as written (asserted `<= 2`, not `==
+    1`). The fix is `== 1`: "home-deadbeef" appears exactly once, in
+    `_WARN_NAMESPACES`'s own list repr at the end of the printed line,
+    and MEASURED nowhere else in the combined output for either
+    scenario, so `== 1` is a real second discriminator, not the same
+    check restated.
 
     Verified by hand during this unit's code gate r1 fold (not itself
     committed -- applied, probe F re-run solo to confirm RED, reverted,
@@ -432,40 +447,63 @@ def test_probe_f_xdist_relay_reports_a_concurrent_sibling_exactly_once(
     appearing twice in the printed list."""
     scratch_cache = tmp_path / "fake-real-cache"
     monkeypatch.setenv("XDG_CACHE_HOME", str(scratch_cache))
+    marker_dir = tmp_path / "probe-f-markers"
+    marker_dir.mkdir()
+    monkeypatch.setenv("PROBE_F_MARKER_DIR", str(marker_dir))
 
     _make_probe_conftest(pytester)
     pytester.makepyfile(
         test_probe_1="""
         import os
         import time
+        from pathlib import Path
 
         from conftest import _REAL_CACHE_ROOT
 
         def test_probe_1():
-            # Both items sleep BEFORE creating (not just one) -- an
-            # earlier version had only item 2 sleep, and an empirically
-            # observed race (measured during the code gate r1 fold,
-            # 2026-08-29: 1 of 3 runs) showed gw1's OWN session can start
-            # late enough that its `before` scan lands AFTER gw0's
-            # near-instant mkdir, making gw1 see no "new" directory at
-            # all and collapsing the intended dual-observation down to a
-            # single relay regardless of the dedup under test. A fixed
-            # delay on BOTH items, comfortably longer than xdist's own
-            # worker connection time (observed under 0.7s total for the
-            # whole two-worker session), guarantees both workers' own
-            # `before` snapshots complete before either mkdir fires.
-            time.sleep(0.5)
+            # Structural barrier (code gate r2 nit), not a timing
+            # margin: an earlier version had item 2 alone sleep 0.5s
+            # before creating, on the theory that this was comfortably
+            # longer than xdist's own worker-connection time -- sound
+            # (gate-measured worker-start skew: <=1.0 ms unloaded,
+            # <=3.0 ms stressed, a ~165x margin), but still statistical.
+            # This touches a marker file for THIS worker
+            # (`PYTEST_XDIST_WORKER`, e.g. 'gw0'/'gw1') and waits
+            # (bounded, 5s) for the OTHER worker's marker to appear
+            # before creating the namespace -- both workers' fixture
+            # setup (their own `before` scan) has unconditionally
+            # already run by the time either test BODY starts, so
+            # observing a peer marker here proves both `before` scans
+            # are done, structurally, not by a measured margin.
+            marker_dir = Path(os.environ["PROBE_F_MARKER_DIR"])
+            my_id = os.environ.get("PYTEST_XDIST_WORKER", "solo")
+            (marker_dir / my_id).touch()
+            deadline = time.time() + 5.0
+            while time.time() < deadline:
+                if any(p.name != my_id for p in marker_dir.iterdir()):
+                    break
+                time.sleep(0.01)
             foreign = _REAL_CACHE_ROOT / "home-deadbeef"
             os.makedirs(foreign, exist_ok=True)
         """,
         test_probe_2="""
         import os
         import time
+        from pathlib import Path
 
         from conftest import _REAL_CACHE_ROOT
 
         def test_probe_2():
-            time.sleep(0.5)
+            # Same structural barrier as test_probe_1 -- see its
+            # comment for the rationale.
+            marker_dir = Path(os.environ["PROBE_F_MARKER_DIR"])
+            my_id = os.environ.get("PYTEST_XDIST_WORKER", "solo")
+            (marker_dir / my_id).touch()
+            deadline = time.time() + 5.0
+            while time.time() < deadline:
+                if any(p.name != my_id for p in marker_dir.iterdir()):
+                    break
+                time.sleep(0.01)
             foreign = _REAL_CACHE_ROOT / "home-deadbeef"
             os.makedirs(foreign, exist_ok=True)
         """,
@@ -475,6 +513,16 @@ def test_probe_f_xdist_relay_reports_a_concurrent_sibling_exactly_once(
     result.assert_outcomes(passed=2, failed=0, errors=0)
     assert "home-deadbeef" in combined, combined
     assert "1 new real" in combined, combined
-    assert combined.count("home-deadbeef") <= 2, combined  # 1 list entry + maybe 1 label mention, never 2 list entries
+    # MINOR-3 fix (code gate r2, 2026-08-29): `<= 2` was INERT for the
+    # dedup mutation -- clean measures count 1, doubled measures count 2,
+    # and 1 <= 2 and 2 <= 2 both pass, so it discriminated nothing (the
+    # docstring above claiming a substring count "would in fact catch it
+    # too" was false; only the "1 new real" line above actually did).
+    # `== 1` is the real, independently-measured count for the clean
+    # scenario -- "home-deadbeef" appears exactly once, inside `_WARN_
+    # NAMESPACES`'s own list repr at the end of the printed line, and
+    # nowhere else in the combined output. A second, independent
+    # discriminator alongside "1 new real" -- both must hold for a pass.
+    assert combined.count("home-deadbeef") == 1, combined
     assert "reported but not failed" in combined, combined
     assert (scratch_cache / "self-learn" / "home-deadbeef").is_dir()
