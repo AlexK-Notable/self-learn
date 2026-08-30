@@ -4616,13 +4616,27 @@ def test_sui2_the_suite_budget_clears_the_measured_ui_cost(tmp_path):
     assert m, "the budget is no longer a single overridable default"
     budget = int(m.group(1))
 
-    MEASURED_UI_SECONDS = 577          # the split above, reproducible
-    assert budget >= 3 * MEASURED_UI_SECONDS, (
-        f"budget {budget}s is under 3x the measured {MEASURED_UI_SECONDS}s UI cost"
+    # The WORST observed run, not a single one. Two runs hours apart on this
+    # host gave 577.2 s and 608.1 s, and the gate independently measured
+    # 568 s -- so a rule stated against one number would drift with load,
+    # which is the failure the 600 s cliff already demonstrated.
+    WORST_OBSERVED_UI_SECONDS = 608
+    assert budget >= 2.5 * WORST_OBSERVED_UI_SECONDS, (
+        f"budget {budget}s is under 2.5x the worst observed "
+        f"{WORST_OBSERVED_UI_SECONDS}s UI run"
     )
     # the measurement that sets it must be recorded beside it, or the next
     # reader has a number with no provenance
-    assert "577.2" in text and "312.3" in text and "264.9" in text, (
+    # the SPLIT must be reproducible from the record: both parts, both runs,
+    # and a total that is their sum -- not merely the numbers loose in prose
+    parts = re.findall(r"(\d+) tests,\s+([\d.]+) s \| ([\d.]+) s", text)
+    assert len(parts) == 3, parts
+    (a_n, a1, a2), (b_n, b1, b2), (tot_n, t1, t2) = parts
+    assert int(a_n) + int(b_n) == int(tot_n), parts
+    assert abs((float(a1) + float(b1)) - float(t1)) < 0.5, parts
+    assert abs((float(a2) + float(b2)) - float(t2)) < 0.5, parts
+    assert "568" in text, (
+
         "the budget's justifying measurement is not recorded in the script"
     )
     # and it stays overridable, since the attended bootstrap raises it

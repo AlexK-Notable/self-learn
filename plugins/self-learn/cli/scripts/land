@@ -764,18 +764,23 @@ RESUME_STEP=${RESUME_STEP:-}
 
 if [ "$DRY_RUN" = "0" ] && { [ "$RESUME_ONLY" = "0" ] || [ "$RESUME_STEP" = "suites" ]; }; then
   # MAJ-3, measured 2026-08-30 on this host, in the two runs the constraints
-  # require -- a split that is reproducible from what is written here:
-  #     pytest tests/test_js_dom.py                 106 tests, 312.3 s
-  #     pytest tests --ignore=tests/test_js_dom.py 1208 tests, 264.9 s
-  #                                               -----------------------
-  #                                               1314 tests,   577.2 s
+  # require -- a split reproducible from what is written here:
+  #     pytest tests/test_js_dom.py                 106 tests, 312.3 s | 304.8 s
+  #     pytest tests --ignore=tests/test_js_dom.py 1208 tests, 264.9 s | 303.3 s
+  #                                               ------------------------------
+  #                                               1314 tests,   577.2 s | 608.1 s
+  # TWO runs, hours apart, on the same host: 577.2 s and 608.1 s. The gate
+  # independently measured 568 s. So the honest figure is a RANGE, 568-608 s,
+  # and the budget is set against the WORST observed rather than any single
+  # run -- which is the whole lesson of the 600 s cliff this replaced.
   # The UI suite runs SERIALLY -- there is no xdist in the UI venv. Against
   # the old 600 s budget that is a cliff, not a margin: a machine 1 %
   # slower turns a green suite into a `SUI2` timeout refusal. The CLI
   # suite is ~87 s under `-n auto`, so the budget is set by the UI one.
   #
-  # 1800 s is ~3x the measured UI cost, matching the headroom the original
-  # 600 s was chosen to give over the then-measured 243/230 s. The real
+  # 1800 s is ~2.96x the WORST observed run (608.1 s) and ~3.2x the median,
+  # matching the headroom the original 600 s was chosen to give over the
+  # then-measured 243/230 s. The real
   # fix is xdist in the UI venv, which is its own unit with its own gate
   # and is recommended in the handoff, NOT absorbed here.
   SUITE_TIMEOUT=${SUITE_TIMEOUT:-1800}
