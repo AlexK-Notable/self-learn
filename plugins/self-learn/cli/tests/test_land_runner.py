@@ -2591,37 +2591,149 @@ def test_b2_the_audit_covers_every_input_the_script_reads():
     assert unguarded(probe_dir), "a directory used outside run_suite is invisible"
 
 
+#: The path this unit ADDS, and nothing else does. It is how the landing
+#: that brought this unit in is found in history -- see `_unit_diff_frame`.
+_UNIT_MARKER_PATH = "plugins/self-learn/cli/scripts/land"
+
+
+def _unit_diff_frame(root: Path) -> tuple[list[str], str]:
+    """(git-diff range arguments, state) for "this unit's own diff".
+
+    Gate r5 BLOCKER-1: `git merge-base master HEAD` is the right base while
+    BUILDING and a degenerate one once LANDED -- the moment the merge
+    commit is on master, the merge-base IS `HEAD`, so both the measurement
+    and its positive control compare a tree against itself, return `""`,
+    and the control fires. Measured end to end: the CLI suite went
+    `1 failed, 3033 passed`, `land` refused at exit 5, and it stayed red
+    permanently. The control was telling the truth; the BASE was the
+    defect.
+
+    `test_armor.py` solved the same shape with a hand-pinned
+    `_LANDING_BASE`/`_LANDING_TIP` pair (`_landing_is_absorbed`, and the
+    post-landing commit `dfa2a24` that wrote the numbers). That works, but
+    the pin can only be written AFTER the landing exists, so the criterion
+    is red in the window between them -- which is exactly the window that
+    would block this unit's own bootstrap.
+
+    So the pair is DERIVED instead of pinned. The commit that ADDED
+    `scripts/land` on first-parent history is:
+
+      * while building -- the branch commit that created it, so the frame
+        is the build base against the working tree (an uncommitted edit to
+        the suite runner is exactly what this criterion forbids, and the
+        code gate reads the tree);
+      * once landed -- the MERGE that brought the unit in, because
+        first-parent history attributes the addition to the merge. Its
+        `^1` is master's pre-merge tip, so `^1..merge` is precisely "what
+        this landing brought in", and it is fixed forever.
+
+    Verified in a simulated landing (see the test below): post-merge it
+    resolves to the merge commit, yields `suite` empty and `land`
+    non-empty, and stays put after further commits on master.
+    """
+    add = subprocess.run(
+        ["git", "log", "--first-parent", "--diff-filter=A", "--format=%H",
+         "--", _UNIT_MARKER_PATH],
+        cwd=root, capture_output=True, text=True, check=True,
+    ).stdout.split()
+    if add:
+        tip = add[-1]                      # the EARLIEST such commit
+        parents = subprocess.run(
+            ["git", "log", "-1", "--format=%P", tip], cwd=root,
+            capture_output=True, text=True, check=True,
+        ).stdout.split()
+        if len(parents) >= 2:
+            return [f"{parents[0]}", tip], "landed"
+    base = subprocess.run(
+        ["git", "merge-base", "master", "HEAD"], cwd=root,
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    return [base], "building"
+
+
 def test_un1_this_unit_does_not_change_the_suite_runner():
     """UN1. Gate r1 M-3: the old test asserted `"uv sync" in text`, so
     rewriting the whole file left it green. The property is BYTE identity
     across this unit's own diff, so that is what is measured -- with a
     positive control, because an empty diff is also what a broken diff
-    command returns."""
+    command returns.
+
+    Gate r5 BLOCKER-1: the FRAME that diff is taken in now survives this
+    unit's own landing. See `_unit_diff_frame`.
+    """
     root = _repo_root()
-    base = subprocess.run(
-        ["git", "merge-base", "master", "HEAD"], cwd=root,
-        capture_output=True, text=True, check=True,
-    ).stdout.strip()
+    rng, state = _unit_diff_frame(root)
+    assert state in ("building", "landed"), state
 
     def numstat(rel: str) -> str:
-        # `<base>` with no second ref diffs the base against the WORKING
-        # TREE, not against HEAD. That is the frame that matters: the code
-        # gate reviews the tree, and an uncommitted edit to the suite runner
-        # is exactly the change this criterion forbids. Measured: the
-        # `..HEAD` form left the mutation invisible.
         return subprocess.run(
-            ["git", "diff", "--numstat", base, "--", rel],
+            ["git", "diff", "--numstat", *rng, "--", rel],
             cwd=root, capture_output=True, text=True, check=True,
         ).stdout.strip()
 
     target = "plugins/self-learn/cli/scripts/suite"
     assert (root / target).is_file()
-    assert numstat(target) == "", numstat(target)
+    assert numstat(target) == "", (state, rng, numstat(target))
 
     # positive control: the SAME command over a file this unit definitely
-    # changed must be non-empty, so "unchanged" cannot be "looked at nothing"
-    control = "plugins/self-learn/cli/scripts/land"
-    assert numstat(control) != "", "UN1's instrument reported no diff for a file this unit wrote"
+    # changed must be non-empty, so "unchanged" cannot be "looked at
+    # nothing". This is the assertion that exposed BLOCKER-1; it is not
+    # weakened, it is given a frame in which it can still speak.
+    assert numstat(_UNIT_MARKER_PATH) != "", (
+        f"UN1's instrument reported no diff for a file this unit wrote "
+        f"(state={state}, range={rng}) -- the frame has collapsed"
+    )
+
+
+def test_un1_the_frame_survives_this_units_own_landing(tmp_path):
+    """BLOCKER-1's regression guard, run against a SIMULATED landing.
+
+    The defect was invisible from the worktree and reachable only by
+    running a landing, so the guard simulates one: clone, merge this
+    branch into master exactly as `land` would (`--no-ff`), and re-run
+    UN1's own frame resolution and both of its assertions there.
+
+    Also asserts the OLD resolution is degenerate in that state, so the
+    regression cannot come back unnoticed.
+    """
+    root = _repo_root()
+    clone = tmp_path / "clone"
+    subprocess.run(["git", "clone", "-q", "--no-hardlinks", str(root), str(clone)],
+                   check=True, capture_output=True)
+    LF.git(clone, "config", "user.email", "t@example.invalid")
+    LF.git(clone, "config", "user.name", "T")
+    LF.git(clone, "checkout", "-q", "-B", "u-land", "origin/u-land")
+    LF.git(clone, "checkout", "-q", "-B", "master", "origin/master")
+    LF.git(clone, "merge", "-q", "--no-ff", "-m", "Merge branch 'u-land' (simulated)", "u-land")
+
+    # the OLD base is degenerate here -- this is BLOCKER-1 itself
+    old_base = LF.git(clone, "merge-base", "master", "HEAD").stdout.strip()
+    assert old_base == LF.git(clone, "rev-parse", "HEAD").stdout.strip(), (
+        "the simulated landing did not reproduce the degenerate state"
+    )
+    old_control = LF.git(clone, "diff", "--numstat", old_base, "--",
+                         _UNIT_MARKER_PATH).stdout.strip()
+    assert old_control == "", "the old frame is no longer degenerate; this guard is void"
+
+    # the NEW frame still measures something
+    rng, state = _unit_diff_frame(clone)
+    assert state == "landed", (state, rng)
+    assert len(rng) == 2, rng
+
+    def numstat(rel: str) -> str:
+        return LF.git(clone, "diff", "--numstat", *rng, "--", rel).stdout.strip()
+
+    assert numstat("plugins/self-learn/cli/scripts/suite") == "", numstat(
+        "plugins/self-learn/cli/scripts/suite")
+    assert numstat(_UNIT_MARKER_PATH) != "", (rng, "the control cannot speak after landing")
+
+    # and it stays put once master moves on
+    (clone / "later.txt").write_text("x\n")
+    LF.git(clone, "add", "-A")
+    LF.git(clone, "commit", "-q", "-m", "a later unrelated commit")
+    rng2, state2 = _unit_diff_frame(clone)
+    assert (rng2, state2) == (rng, state), (rng2, rng)
+
 
 
 # ---------------------------------------------------------------------------
