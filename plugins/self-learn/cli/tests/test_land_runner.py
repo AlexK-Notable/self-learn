@@ -4765,51 +4765,52 @@ def test_sui2_the_suite_budget_clears_the_measured_ui_cost(tmp_path):
     """MAJ-3. The per-suite budget must clear the SLOWER suite by a real
     margin, not by 1 %.
 
-    Measured 2026-08-30: the UI suite runs SERIALLY -- no xdist in the UI
-    venv -- at ~595 s (406 tests / 369.5 s plus 909 / 225.0 s), and a
-    direct full run did not finish inside 580 s. Against the old 600 s
+    The UI suite runs SERIALLY -- no xdist in the UI venv -- and an
+    undivided run has failed to finish inside 580 s. Against the old 600 s
     budget that is a cliff: a machine 1 % slower turns a green suite into a
     SUI2 timeout refusal, which is a refusal that says nothing true about
     the code.
+
+    Deliberately, this test names NO measurement of its own. The runs live
+    in the script's `UI_MEASUREMENT:` rows and both the worst cost and the
+    described tree size are read out of them, because the version that
+    hardcoded 608 s here was stale within one round.
     """
     text = LF.LAND.read_text()
     m = re.search(r"SUITE_TIMEOUT=\$\{SUITE_TIMEOUT:-(\d+)\}", text)
     assert m, "the budget is no longer a single overridable default"
     budget = int(m.group(1))
 
-    # The WORST observed run, not a single one. Two runs hours apart on this
-    # host gave 577.2 s and 608.1 s, and the gate independently measured
-    # 568 s -- so a rule stated against one number would drift with load,
-    # which is the failure the 600 s cliff already demonstrated.
-    WORST_OBSERVED_UI_SECONDS = 608
-    assert budget >= 2.5 * WORST_OBSERVED_UI_SECONDS, (
-        f"budget {budget}s is under 2.5x the worst observed "
-        f"{WORST_OBSERVED_UI_SECONDS}s UI run"
+    # Every number this test judges the budget by is DERIVED from the
+    # record. The previous version hardcoded 608 as the worst observed, and
+    # by the next round a 674.3 s run had been measured -- a number written
+    # down twice goes stale in one place first, which is MINOR-1's shape in
+    # the time dimension rather than the count one.
+    rows = re.findall(
+        r"UI_MEASUREMENT: (\d+) tests, ([\d.]+) s \+ ([\d.]+) s = ([\d.]+) s",
+        text,
     )
-    # the measurement that sets it must be recorded beside it, or the next
-    # reader has a number with no provenance
-    # the SPLIT must be reproducible from the record: both parts, both runs,
-    # and a total that is their sum -- not merely the numbers loose in prose
-    parts = re.findall(r"(\d+) tests,\s+([\d.]+) s \| ([\d.]+) s", text)
-    assert len(parts) == 3, parts
-    (a_n, a1, a2), (b_n, b1, b2), (tot_n, t1, t2) = parts
-    assert int(a_n) + int(b_n) == int(tot_n), parts
-    assert abs((float(a1) + float(b1)) - float(t1)) < 0.5, parts
-    assert abs((float(a2) + float(b2)) - float(t2)) < 0.5, parts
+    assert len(rows) >= 3, f"the record carries {len(rows)} measured runs: {rows}"
+    # the SPLIT must be reproducible: each row's parts must sum to its total
+    for n, p1, p2, tot in rows:
+        assert abs((float(p1) + float(p2)) - float(tot)) < 0.5, (n, p1, p2, tot)
+    worst = max(float(r[3]) for r in rows)
+    assert budget >= 2.5 * worst, (
+        f"budget {budget}s is under 2.5x the worst RECORDED run ({worst}s). "
+        f"Rows: {rows}"
+    )
     # MINOR-1: the record must still DESCRIBE THE TREE, not merely add up.
-    # `u-target` landed and the UI suite grew from 1314 to 1348 collected,
-    # and nothing in the record could tell.
-    m2 = re.search(r"UI_COLLECTED_AT_MEASUREMENT=(\d+)", text)
-    assert m2, "the record carries no collected count, so staleness is undetectable"
-    recorded = int(m2.group(1))
+    # The newest row is the one that makes that claim.
+    recorded = int(rows[-1][0])
     live = _collect(_repo_root() / "plugins/self-learn/ui")
     assert live.returncode == 0, live.stdout[-1000:]
     m3 = re.search(r"(\d+) tests collected", live.stdout)
     assert m3, live.stdout[-500:]
     live_n = int(m3.group(1))
     assert abs(live_n - recorded) <= 25, (
-        f"the budget record describes {recorded} collected tests but the tree "
-        f"now has {live_n} -- re-measure and restate before trusting it"
+        f"the budget record's newest run describes {recorded} collected tests "
+        f"but the tree now has {live_n} -- re-measure and restate before "
+        f"trusting it"
     )
     assert "568" in text, (
 

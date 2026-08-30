@@ -782,33 +782,37 @@ RESUME_STEP=${RESUME_STEP:-}
 # only over PRE3/PRV2/CHK2/CHK5/SAN3/WLD1/WLD2, never the suites)
 
 if [ "$DRY_RUN" = "0" ] && { [ "$RESUME_ONLY" = "0" ] || [ "$RESUME_STEP" = "suites" ]; }; then
-  # MAJ-3, measured 2026-08-30 on this host, in the two runs the constraints
-  # require -- a split reproducible from what is written here:
-  #     pytest tests/test_js_dom.py                 106 tests, 312.3 s | 304.8 s
-  #     pytest tests --ignore=tests/test_js_dom.py 1208 tests, 264.9 s | 303.3 s
-  #                                               ------------------------------
-  #                                               1314 tests,   577.2 s | 608.1 s
-  # UI_COLLECTED_AT_MEASUREMENT=1348
-  # The collected count is carried so STALENESS is detectable. The two runs
-  # above were timed when the UI suite collected 1314; `u-target` has since
-  # landed and it now collects 1348, and nothing in the record could tell --
-  # the sum-check verifies the record's internal ARITHMETIC, not whether it
-  # still describes the tree (gate r6 MINOR-1). The test compares this
-  # number against a LIVE collection and reddens when they diverge.
-  # TWO runs, hours apart, on the same host: 577.2 s and 608.1 s. The gate
-  # independently measured 568 s. So the honest figure is a RANGE, 568-608 s,
-  # and the budget is set against the WORST observed rather than any single
-  # run -- which is the whole lesson of the 600 s cliff this replaced.
-  # The UI suite runs SERIALLY -- there is no xdist in the UI venv. Against
-  # the old 600 s budget that is a cliff, not a margin: a machine 1 %
-  # slower turns a green suite into a `SUI2` timeout refusal. The CLI
-  # suite is ~87 s under `-n auto`, so the budget is set by the UI one.
+  # MAJ-3: the budget, and the measurements that justify it.
   #
-  # 1800 s is ~2.96x the WORST observed run (608.1 s) and ~3.2x the median,
-  # matching the headroom the original 600 s was chosen to give over the
-  # then-measured 243/230 s. The real
-  # fix is xdist in the UI venv, which is its own unit with its own gate
-  # and is recommended in the handoff, NOT absorbed here.
+  # A record can rot in TWO dimensions -- the tree it describes (how many
+  # tests) and the cost it claims (how long they take). Gate r6 MINOR-1
+  # caught the first: the record said 1314 while the tree collected 1348.
+  # The very next round produced the second: a 674.3 s run was measured
+  # while this record still called 608.1 s the worst observed, and the test
+  # had 608 hardcoded, so a number written down twice went stale in one
+  # place first. BOTH are now DERIVED from the rows below. Nothing restates
+  # them.
+  #
+  # One row per whole UI run. The suite is SERIAL -- no xdist in the UI
+  # venv -- and a single undivided run has failed to finish inside 580 s,
+  # so every run is split in two; `part1 + part2` must equal `total`.
+  #
+  # UI_MEASUREMENT: 1314 tests, 312.3 s + 264.9 s = 577.2 s  (js_dom | rest)
+  # UI_MEASUREMENT: 1314 tests, 304.8 s + 303.3 s = 608.1 s  (js_dom | rest)
+  # UI_MEASUREMENT: 1348 tests, 376.8 s + 297.5 s = 674.3 s  (js_dom + js_dom_targeting | rest)
+  #
+  # The blind gate independently measured 568 s, inside that range. The
+  # NEWEST row must still describe the tree -- the test compares its count
+  # against a LIVE collection -- and the budget is 2.5x the WORST row, never
+  # any single run, which is the whole lesson of the 600 s cliff this
+  # replaced. Against the old 600 s budget a machine 1 % slower turned a
+  # green suite into a `SUI2` timeout refusal, a refusal saying nothing true
+  # about the code.
+  #
+  # 1800 / 674.3 = 2.67x. The CLI suite is ~87 s under `-n auto`, so the UI
+  # one sets the budget. The real fix is xdist in the UI venv, which is its
+  # own unit with its own gate and is recommended in the handoff, NOT
+  # absorbed here.
   SUITE_TIMEOUT=${SUITE_TIMEOUT:-1800}
 
   # docs-only lane detector (SUI6): an ALLOWLIST, `--no-renames` (gate M-12)
