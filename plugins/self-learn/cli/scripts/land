@@ -90,6 +90,22 @@ staged_add() {
   printf 'staged: %s (%s path)\n' "$rel" "$n"
 }
 
+# MAJ-1's durable form. A refusal must describe the state it actually
+# left, so the sentence is DERIVED from the tree, never asserted about it.
+# `git merge --abort` can fail -- it refuses when local modifications would
+# be overwritten, which is exactly the situation after `--remeasure`'s
+# post-write no-op leg -- and its rc was swallowed with `|| true`, so the
+# message went on claiming a restored tree over a merge that was still
+# there (measured, gate r4 MAJ-1's shape one leg over).
+tree_state_sentence() {
+  local gr=$1
+  if git -C "$gr" rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1; then
+    printf 'The merge is LEFT UNCOMMITTED'
+  else
+    printf 'The merge was ABORTED and the tree restored'
+  fi
+}
+
 need_dir() {
   local path=$1 what=$2 code=${3:-2}
   [ -d "$path" ] || die "$code" "$what: required directory is ABSENT: $path" "ls -l $(dirname "$path")"
@@ -144,6 +160,10 @@ usage: land --branch <name> --verdict '<text>' [options]
                               worktree; nothing on master is touched or pushed
   --continue                 resume a landing that refused after the merge
                               commit (exit 5/6/7), never re-merging
+  --continue-merge           resume a landing that refused BEFORE the merge
+                              commit, with the merge still in the tree and
+                              the owed armor edits made in place; re-runs
+                              the checks without re-merging
   --help                     this text
 EOF
 }
@@ -155,6 +175,15 @@ BRANCH=""
 VERDICT=""
 DRY_RUN=0
 CONTINUE_FLAG=0
+# The PRE-COMMIT sibling of --continue. `--remeasure`'s three pre-write
+# refusals leave the merge UNCOMMITTED on purpose, because the runbook's
+# §5.1 loop is to make the owed edits inside that merge and re-run -- so
+# the transcription rides in the merge commit beside the anchor advance,
+# never committed on its own (between the two the armor suite is briefly
+# red, which is inherent to check-then-write). Without this flag PRE3
+# refuses the re-run as a dirty tree, and the refusal that told the
+# operator to re-run would be its own second false claim.
+CONTINUE_MERGE=0
 declare -A RESOLVER_MAP=()
 SANITIZE_ACK_ARGS=()
 
@@ -181,6 +210,7 @@ while [ $# -gt 0 ]; do
       shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
     --continue) CONTINUE_FLAG=1; shift ;;
+    --continue-merge) CONTINUE_MERGE=1; shift ;;
     --help|-h) print_help; exit 0 ;;
     *) die 2 "unknown argument: $1" ;;
   esac
@@ -267,7 +297,22 @@ if [ "$CONTINUE_FLAG" = "0" ]; then
   [ "$HEAD_REF" = "master" ] || die 2 "PRE2: HEAD is '$HEAD_REF', not master" "git status"
 
   DIRTY_MASTER=$(git status --porcelain | wc -l | tr -d ' ')
-  [ "$DIRTY_MASTER" = "0" ] || die 2 "PRE3: master's tree is dirty ($DIRTY_MASTER lines)" "git status"
+  if [ "$CONTINUE_MERGE" = "1" ]; then
+    # PRE3 still runs; what changes is which dirt is legitimate. Exactly
+    # one state is: an in-progress merge whose MERGE_HEAD is this branch's
+    # tip. Anything else -- no merge, or a merge of something else -- is
+    # refused, so the flag cannot be used to smuggle an unrelated dirty
+    # tree past the precondition.
+    [ -f "$ROOT/.git/MERGE_HEAD" ] \
+      || die 2 "PRE3/--continue-merge: there is no merge in progress to resume" "git status"
+    MERGING=$(git rev-parse MERGE_HEAD)
+    BRANCH_TIP=$(git rev-parse "refs/heads/$BRANCH")
+    [ "$MERGING" = "$BRANCH_TIP" ] \
+      || die 2 "PRE3/--continue-merge: the merge in progress is $MERGING, not '$BRANCH' ($BRANCH_TIP)" "git status"
+    echo "land: resuming the in-progress merge of $BRANCH ($DIRTY_MASTER dirty path(s))"
+  else
+    [ "$DIRTY_MASTER" = "0" ] || die 2 "PRE3: master's tree is dirty ($DIRTY_MASTER lines)" "git status"
+  fi
 
   BRANCH_WT=""
   cur_wt=""
@@ -350,6 +395,13 @@ fi
 run_merge_and_checks() {
   local gr=$1
 
+  if [ "$CONTINUE_MERGE" = "1" ]; then
+    # The merge is already in the tree and its conflicts (if any) were
+    # resolved on the first pass. Re-merging would discard the operator's
+    # in-merge edits, which are the whole point of the resume.
+    echo "land: --continue-merge -- skipping preview and merge, re-running the checks"
+    LANE_CLEAN=1
+  else
   local preview_rc
   git -C "$gr" merge-tree --write-tree master "$BRANCH" >"$OUT/preview.txt" 2>&1
   preview_rc=$?
@@ -422,6 +474,8 @@ run_merge_and_checks() {
       fi
       staged_add "$gr" "$path" "resolver '$name'" 3
     done
+  fi
+
   fi
 
   # CHK1 -- conflict markers over the merge-touched set (not a hardcoded list)
@@ -554,22 +608,53 @@ run_merge_and_checks() {
     stdout_bytes=$(wc -c <"$OUT/remeasure.out" | tr -d " ")
 
     if [ "$remeasure_rc" != "0" ]; then
-      git -C "$gr" merge --abort >/dev/null 2>&1 || true
       # The contract promises the file is byte-unchanged on the three
       # pre-write legs and byte-identical on the no-op. Verify rather than
       # trust: a refusal that MOVED the file is not a state this runner
       # knows how to leave behind.
       local intact="yes"
       [ "$armor_sha_before" = "$armor_sha_after" ] || intact="NO"
+
       if [ "$remeasure_rc" = "1" ] && [ $((owed + vacuous + stale)) -gt 0 ]; then
-        die 4 "WLD2: --remeasure refused BEFORE writing -- $owed OWED, $vacuous VACUOUS, $stale STALE line(s); file intact: $intact. Fix each inside this still-uncommitted merge, then re-run" \
+        # The MERGE IS LEFT IN PLACE, deliberately, and that is why this
+        # message can say so. The runbook's §5.1 loop is: write the owed
+        # exemption entry, drop the vacuous one, copy each printed
+        # `value at <anchor>:` into that MEASURED row, then re-run the same
+        # command -- all of it INSIDE the still-uncommitted merge, so the
+        # transcription rides in the merge commit beside the anchor
+        # advance. Aborting here would destroy the state the operator is
+        # being told to edit; this refusal used to abort eight lines above
+        # and then describe a merge that no longer existed (gate r4
+        # MAJ-1). On the bootstrap it fires with certainty, so it is the
+        # first thing the operator reads.
+        die 4 "WLD2: --remeasure refused BEFORE writing -- $owed OWED, $vacuous VACUOUS, $stale STALE record(s); file intact: $intact. $(tree_state_sentence "$gr") on purpose: make those edits here, then re-run this same command with --continue-merge, and the transcription rides inside the merge commit. To walk away instead: git -C $gr merge --abort" \
               "cat $OUT/remeasure.err"
       fi
+
+      # The remaining legs give the operator nothing to edit in place, so
+      # the tree IS restored -- and each message says which of the two
+      # states it left behind.
+      # The no-op leg REWRITES the file before refusing, so the working
+      # tree carries a local modification and a bare `merge --abort` can
+      # refuse to overwrite it. Restore that one file first -- by asking
+      # git for the merge's own version of it, never a blanket reset --
+      # then abort, then SAY WHAT IS TRUE.
+      # `--remeasure`'s no-op leg rewrites the file via `os.replace()`, so
+      # its mtime moves even when the bytes do not, and git's stat cache
+      # goes stale. `merge --abort` then refuses outright -- measured:
+      # "error: Entry '...test_armor.py' not uptodate. Cannot merge." at
+      # rc 128, after which the old code claimed a restored tree over a
+      # merge that was still there. Refreshing the index is the narrow
+      # remedy; it touches no content and is not a reset.
+      git -C "$gr" update-index -q --refresh >"$OUT/abort.log" 2>&1 || true
+      git -C "$gr" merge --abort >>"$OUT/abort.log" 2>&1
+      local abort_rc=$?
+      printf 'merge --abort rc=%s\n' "$abort_rc" >>"$OUT/abort.log"
       if [ "$remeasure_rc" = "1" ] && [ "$noop" -gt 0 ]; then
-        die 4 "WLD2: --remeasure had nothing to advance (the no-op guard); file intact: $intact" \
+        die 4 "WLD2: --remeasure had nothing to advance (the no-op guard); file intact: $intact. $(tree_state_sentence "$gr") -- there is nothing to edit here" \
               "cat $OUT/remeasure.err"
       fi
-      die 4 "WLD2: --remeasure failed UNMODELLED (rc=$remeasure_rc, no OWED/VACUOUS/STALE/no-op token on stderr, stdout $stdout_bytes bytes) -- refusing rather than guessing what it did" \
+      die 4 "WLD2: --remeasure failed UNMODELLED (rc=$remeasure_rc, no OWED/VACUOUS/STALE/no-op token on stderr, stdout $stdout_bytes bytes) -- refusing rather than guessing what it did. $(tree_state_sentence "$gr")" \
             "cat $OUT/remeasure.err"
     fi
 

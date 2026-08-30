@@ -625,7 +625,24 @@ def test_pre7_no_merge_abort_call_anywhere_in_the_precondition_block():
     text = LF.LAND.read_text()
     pre_block, _, _rest = text.partition("run_merge_and_checks() {")
     assert "run_merge_and_checks() {" in text, "structural anchor missing"
-    assert "merge --abort" not in pre_block
+
+    # The property is about CALLS, not mentions. A whole-block substring
+    # test flags a COMMENT that explains why the call is not there --
+    # measured: it did, on the comment documenting that `merge --abort`
+    # can fail. Same mention-versus-use family as UN2.
+    def calls(block: str) -> list[str]:
+        return [
+            ln.strip() for ln in block.split("\n")
+            if "merge --abort" in ln and not ln.lstrip().startswith("#")
+        ]
+
+    assert calls(pre_block) == [], calls(pre_block)
+
+    # positive control -- a real call in that block IS reported
+    assert calls(pre_block + '\n  git -C "$ROOT" merge --abort\n')
+    # and the prose the old form tripped on is still there, so this is not
+    # passing because the explanation vanished
+    assert "merge --abort" in pre_block
 
 
 # ---------------------------------------------------------------------------
@@ -3869,10 +3886,19 @@ def test_exc1_a_git_add_that_stages_nothing_is_caught_by_a_count(tmp_path):
 
 
 def _armor_branch(repo: Path, name: str, edit) -> None:
-    """A branch that mutates the fixture's armor stand-in in place."""
+    """A branch that mutates the fixture's armor stand-in in place.
+
+    It also carries ONE ordinary change, so the merge has content of its
+    own. Without that, an in-merge edit that happens to revert the armor
+    change leaves the merge net-empty and CHK1's floor refuses it -- true
+    of the fixture, but not of any real landing, and it would make the
+    resume path untestable for the wrong reason."""
     src = repo / "plugins/self-learn/cli/tests/test_armor.py"
     LF.git(repo, "checkout", "-q", "-b", name)
     src.write_text(edit(src.read_text()))
+    (repo / f"plugins/self-learn/cli/tests/test_{name.replace('-', '_')}.py").write_text(
+        "def test_carried():\n    assert True\n"
+    )
     LF.git(repo, "add", "-A")
     LF.git(repo, "commit", "-q", "-m", f"branch {name}")
     LF.git(repo, "checkout", "-q", "master")
@@ -4194,3 +4220,132 @@ def test_staged_add_refuses_an_add_that_stages_nothing(tmp_path):
     ok = run()
     assert ok.returncode == 0, (ok.stdout, ok.stderr)
     assert "staged: f.md (1 path)" in ok.stdout, ok.stdout
+
+
+# ---------------------------------------------------------------------------
+# MAJ-1: a refusal may not describe a state it has destroyed
+#
+# `land` used to run `git merge --abort` and then, eight lines later, tell
+# the operator to "fix each inside this still-uncommitted merge". Measured
+# on a real run: porcelain 0, no MERGE_HEAD, HEAD unmoved -- there was no
+# merge to fix anything inside. It fires with certainty on the bootstrap
+# (`0 OWED, 2 VACUOUS, 2 STALE`), so it was the first thing the bootstrap
+# operator would read, and it was wrong.
+#
+# The three WLD2 tests asserted that the abort HAPPENED; none asserted that
+# the sentence beside it was TRUE. That is the shape this unit has now
+# fixed five times: the mechanism pinned, the claim unchecked.
+
+
+def _tree_state(repo: Path) -> dict:
+    """What the tree actually is, in the two terms the messages claim."""
+    return {
+        "merge_in_progress": (repo / ".git" / "MERGE_HEAD").exists(),
+        "porcelain_lines": len(
+            [l for l in LF.git(repo, "status", "--porcelain").stdout.split("\n") if l.strip()]
+        ),
+        "head": LF.git(repo, "rev-parse", "HEAD").stdout.strip(),
+    }
+
+
+def assert_message_matches_tree(stderr: str, repo: Path) -> str:
+    """Every refusal that says something about the tree must be TRUE of it.
+
+    Returns the claim it recognised, so a caller can assert WHICH claim was
+    made and this cannot pass by recognising none.
+    """
+    left = "The merge is LEFT UNCOMMITTED" in stderr
+    aborted = "The merge was ABORTED and the tree restored" in stderr
+    assert left != aborted, (
+        "a refusal must make exactly one claim about the tree it left; "
+        f"left={left} aborted={aborted}\n{stderr}"
+    )
+    state = _tree_state(repo)
+    if left:
+        assert state["merge_in_progress"], (
+            "the message says the merge is left uncommitted, but there is no "
+            f"MERGE_HEAD: {state}"
+        )
+        assert state["porcelain_lines"] > 0, (
+            f"the message says there is a merge to edit, but the tree is clean: {state}"
+        )
+        return "left-uncommitted"
+    assert not state["merge_in_progress"], (
+        f"the message says the merge was aborted, but MERGE_HEAD is present: {state}"
+    )
+    assert state["porcelain_lines"] == 0, (
+        f"the message says the tree was restored, but it is dirty: {state}"
+    )
+    return "aborted"
+
+
+def test_maj1_a_prewrite_refusal_really_does_leave_the_merge_to_edit(tmp_path):
+    """The bootstrap's own case. `--remeasure` refuses before writing, and
+    the operator is told to make the edits HERE and re-run -- so the merge
+    must still be there to edit, with `test_armor.py` in it.
+
+    Then the loop is CLOSED in the same test: the edit is made in place,
+    the same landing is re-run, and it succeeds. That is the runbook §5.1
+    workflow end to end, and it is only possible because the refusal
+    preserved the merge."""
+    repo = LF.make_repo(tmp_path, with_ui=True, armor="remeasure")
+    head_before = LF.git(repo, "rev-parse", "HEAD").stdout.strip()
+    _armor_branch(
+        repo, "u-strand",
+        lambda s: s.replace('STRANDED: tuple[str, ...] = ()',
+                            'STRANDED: tuple[str, ...] = ("repinned",)', 1),
+    )
+    r = LF.run_land(repo, tmp_path, "--branch", "u-strand", "--verdict", "v", timeout=180)
+    assert r.returncode == 4, r.stdout + r.stderr
+
+    # the claim, checked against the tree
+    assert assert_message_matches_tree(r.stderr, repo) == "left-uncommitted"
+    assert "1 VACUOUS" in r.stderr
+    assert "STALE record(s)" in r.stderr, r.stderr
+    assert "merge --abort" in r.stderr, "the escape hatch is not offered"
+    assert "--continue-merge" in r.stderr, "the message names no way to finish"
+    assert LF.git(repo, "rev-parse", "HEAD").stdout.strip() == head_before
+
+    # the merged test_armor.py really is present and editable
+    armor = repo / "plugins/self-learn/cli/tests/test_armor.py"
+    assert armor.exists()
+    assert 'STRANDED: tuple[str, ...] = ("repinned",)' in armor.read_text()
+
+    # --- close the loop, in place, exactly as the message instructs
+    armor.write_text(armor.read_text().replace(
+        'STRANDED: tuple[str, ...] = ("repinned",)',
+        'STRANDED: tuple[str, ...] = ()', 1))
+    again = LF.run_land(repo, tmp_path, "--branch", "u-strand", "--verdict", "v",
+                        "--continue-merge", timeout=180)
+    assert again.returncode == 0, again.stdout + again.stderr
+    # and the transcription rode INSIDE the merge commit
+    committed = LF.git(repo, "show", "HEAD:plugins/self-learn/cli/tests/test_armor.py").stdout
+    assert 'STRANDED: tuple[str, ...] = ()' in committed
+    assert LF.git(repo, "rev-parse", "HEAD").stdout.strip() != head_before
+
+
+def test_maj1_the_other_two_legs_really_do_restore_the_tree(tmp_path):
+    """The no-op and UNMODELLED legs give the operator nothing to edit, so
+    they abort -- and they say so. Same assertion, opposite claim, so the
+    checker cannot be passing by recognising only one."""
+    # no-op
+    a = LF.make_repo(tmp_path / "noop", with_ui=True, armor="remeasure")
+    tip = LF.git(a, "rev-parse", "--short=7", "HEAD").stdout.strip()
+    _armor_branch(a, "u-noop2",
+                  lambda s: s.replace('ANCHOR = "0000000"', f'ANCHOR = "{tip}"', 1))
+    ra = LF.run_land(a, tmp_path / "noop", "--branch", "u-noop2", "--verdict", "v", timeout=180)
+    assert ra.returncode == 4, ra.stdout + ra.stderr
+    assert assert_message_matches_tree(ra.stderr, a) == "aborted"
+
+    # unmodelled
+    b = LF.make_repo(tmp_path / "unmod", with_ui=True, armor="remeasure")
+    _armor_branch(
+        b, "u-unmod2",
+        lambda s: s.replace("    old = ANCHOR\n",
+                            '    old = ANCHOR\n'
+                            '    print("unmodelled", file=sys.stderr)\n'
+                            '    raise SystemExit(3)\n', 1),
+    )
+    rb = LF.run_land(b, tmp_path / "unmod", "--branch", "u-unmod2", "--verdict", "v", timeout=180)
+    assert rb.returncode == 4, rb.stdout + rb.stderr
+    assert assert_message_matches_tree(rb.stderr, b) == "aborted"
