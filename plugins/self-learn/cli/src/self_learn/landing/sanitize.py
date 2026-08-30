@@ -95,7 +95,17 @@ def load_fragments(path: Path) -> list[str]:
 
 
 def assemble_pattern(fragments_path: Path, home: str) -> re.Pattern:
+    """B-2 floor: an EMPTY fragment set compiles to the empty regex, which
+    matches at position 0 of every line -- so the scanner would report every
+    added line as a hit and refuse every landing. Fail-closed, but for the
+    wrong reason and with no way to tell the two apart. An unusable pattern
+    set is fatal and says so."""
     alts = load_fragments(fragments_path)
+    if not alts:
+        raise ValueError(
+            f"the sanitize pattern set is EMPTY ({fragments_path}) -- refusing "
+            "to scan with a pattern that matches everything or nothing"
+        )
     parts = [re.escape(home) if a == "%HOME%" else a for a in alts]
     return re.compile("|".join(parts), re.I)
 

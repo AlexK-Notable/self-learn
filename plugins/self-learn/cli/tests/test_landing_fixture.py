@@ -281,7 +281,8 @@ def make_repo(
         # descending adjacent pairs inside one contiguous table). CHK3 leg 2
         # must forgive exactly this and no more.
         else "| FW-1 | first | WATCH | n |\n| FW-9 | ninth | WATCH | n |\n"
-             "| FW-4 | fourth | WATCH | n |\n| FW-7 | seventh | WATCH | n |\n"
+             "| FW-4 | fourth | WATCH | n |\n| FW-8 | eighth | WATCH | n |\n"
+             "| FW-3 | third | WATCH | n |\n| FW-6 | sixth | WATCH | n |\n"
     )
     (repo / "docs/specs/self-learn/14-forward-work-map.md").write_text(
         "# forward work\n\n| id | statement | status | note |\n|---|---|---|---|\n"

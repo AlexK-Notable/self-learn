@@ -1818,3 +1818,486 @@ def test_exc1_shell_contract():
     # and the comment that used to satisfy the old check is still present,
     # so this is not passing merely because the explanatory prose vanished
     assert "set -uo pipefail, NOT -e" in text
+
+
+# ---------------------------------------------------------------------------
+# B-3 / SUI4 -- the allowlist's own accuracy, and the frame it lives in
+#
+# This criterion was `[A]` with NO test, and it is the one that would have
+# caught B-1: the shipped allowlist entry named a node id in the repo-root
+# frame while the UI suite ran from `plugins/self-learn/ui`, so pytest
+# printed `tests/…` and the entry matched nothing. Every real landing
+# refused. A bogus entry left 139/139 green.
+
+
+def test_sui4_known_failures_all_resolve():
+    """SUI4. Every id in `known_failures.txt` must still COLLECT, run from
+    the package that owns it (found by walking up to the nearest
+    `pyproject.toml`, never a hardcoded suite table). Two controls:
+    a bogus id must NOT collect, and a real one must."""
+    from self_learn.landing import suites as S
+
+    root = _repo_root()
+    allow = root / "plugins/self-learn/cli/src/self_learn/landing/known_failures.txt"
+    entries = S.allowlist_entries(allow)
+    assert entries, "an EMPTY allowlist would make this test vacuous"
+
+    results = S.collect_check(root, entries)
+    stale = [(e, rc) for e, rc in results if rc != 0]
+    assert not stale, stale
+
+    # positive control -- a bogus id in the same frame must be reported stale
+    bogus = "plugins/self-learn/ui/tests/test_service_unit.py::test_this_does_not_exist"
+    assert S.collect_check(root, [bogus])[0][1] != 0
+
+    # and the package resolution is real, not a guess
+    assert S.package_root_for(root, "plugins/self-learn/ui/tests/test_service_unit.py") \
+        == root / "plugins/self-learn/ui"
+    assert S.package_root_for(root, "plugins/self-learn/cli/tests/test_land_runner.py") \
+        == root / "plugins/self-learn/cli"
+
+
+def test_sui4_the_allowlist_is_readable_in_the_frame_the_suite_runs_from():
+    """B-1's regression guard, stated as the property that failed: every
+    allowlist entry must normalise to the SAME string whether it is read
+    from the repo root or produced by pytest in the package it belongs to.
+
+    Red control first: the naive same-frame comparison that shipped is
+    shown to reject the very entry the repository carries."""
+    from self_learn.landing import suites as S
+
+    root = _repo_root()
+    allow = root / "plugins/self-learn/cli/src/self_learn/landing/known_failures.txt"
+    for entry in S.allowlist_entries(allow):
+        rel_file, rest = S.split_node_id(entry)
+        pkg = S.package_root_for(root, rel_file)
+        as_pytest_prints_it = str(Path(rel_file).relative_to(pkg.relative_to(root))) + rest \
+            if pkg != root else entry
+
+        # the shipped, naive comparison -- what B-1 actually was
+        assert as_pytest_prints_it != entry or pkg == root, (
+            "this entry is in the same frame either way, so it cannot "
+            "demonstrate the defect"
+        )
+        naive_ok = as_pytest_prints_it in set(S.allowlist_entries(allow))
+        assert not naive_ok, "the naive compare accepted it -- the red control is gone"
+
+        # the shipped fix
+        assert S.to_root_frame(as_pytest_prints_it, pkg, root) == \
+            S.to_root_frame(entry, root, root)
+
+
+def test_sui4_a_bogus_allowlist_entry_makes_a_landing_refuse(tmp_path):
+    """SUI4 end to end. An allowlist naming a test that does not exist must
+    not quietly tolerate a red suite: the failing id is compared against it
+    and does not match, so the landing refuses."""
+    repo = LF.make_repo(tmp_path, with_ui=True)
+    (repo / "plugins/self-learn/cli/src/self_learn/landing/known_failures.txt").write_text(
+        "plugins/self-learn/cli/tests/test_ghost.py::test_that_never_existed\n"
+    )
+    LF.git(repo, "add", "-A")
+    LF.git(repo, "commit", "-q", "-m", "a stale allowlist")
+    LF.make_branch(
+        repo, "u-stale",
+        edits={"plugins/self-learn/cli/tests/test_red.py": "def test_fails():\n    assert False\n"},
+    )
+    r = LF.run_land(repo, tmp_path, "--branch", "u-stale", "--verdict", "v", timeout=180)
+    assert r.returncode == 5, r.stdout + r.stderr
+    assert "not-allowlisted" in r.stderr, r.stderr
+
+
+# ---------------------------------------------------------------------------
+# B-4 / UN4 -- the MEASURED ledger's instruments are exercised by the suite
+#
+# `floor.py` and `parse.py` ran nowhere in the suite, so gutting `_lib.sh`'s
+# `need()` left 139/139 green. Both reproduce today; this is coverage, and
+# an instrument nothing exercises is one nobody will notice breaking.
+
+
+def _measured(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [sys.executable, str(LF.THIS_REPO_CLI / "scripts/measured" / args[0]), *args[1:]],
+        cwd=_repo_root(), capture_output=True, text=True,
+    )
+
+
+def test_un4_the_derived_floor_holds():
+    """UN4 leg (b). `floor.py` compares the SET of MEASURED-labelled rows
+    against the SET of ledger blocks. Control: `--delete-one` removes a
+    block and the floor must report it missing."""
+    ok = _measured("floor.py")
+    assert ok.returncode == 0, ok.stdout + ok.stderr
+    assert "missing=none extra=none" in ok.stdout, ok.stdout
+    assert "totals-line MATCH" in ok.stdout, ok.stdout
+
+    red = _measured("floor.py", "--delete-one")
+    assert red.returncode != 0, red.stdout
+    assert "missing=M" in red.stdout, red.stdout
+
+
+def test_un4_every_measured_block_reproduces():
+    """UN4 legs (a)/(c). `parse.py` RUNS every ledger block and compares the
+    last line of stdout to `expect:`. This is the only thing in the suite
+    that executes the helper scripts at all."""
+    r = _measured("parse.py")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "fail=0" in r.stdout, r.stdout
+    n = int(r.stdout.split("pass=")[1].split()[0])
+    assert n >= 13, r.stdout
+
+
+def test_un4_a_helper_with_a_missing_dependency_fails_LOUDLY(tmp_path):
+    """UN4 leg (e), the property `need()` exists for: a helper whose input
+    is gone must exit non-zero, never print an empty/plausible value at
+    rc 0. Measured before this guard existed: `m54.sh` with `pat.txt`
+    absent matched all 7 lines at rc 0 instead of 4.
+
+    Driven against a COPY of the helper tree, so the shipped one is never
+    modified."""
+    # The copy must sit INSIDE the repository: `_lib.sh` resolves ROOT with
+    # `git rev-parse --show-toplevel` and refuses outside it -- which is the
+    # guard working, but not the one under test here. `misc/` is
+    # git-excluded, so nothing tracked is touched.
+    src = LF.THIS_REPO_CLI / "scripts" / "measured"
+    holder = _repo_root() / "misc" / "u-land-work"
+    holder.mkdir(parents=True, exist_ok=True)
+    dst = holder / f"_un4_probe_{os.getpid()}"
+    if dst.exists():
+        shutil.rmtree(dst)
+    shutil.copytree(src, dst, ignore=shutil.ignore_patterns("__pycache__"))
+
+    baseline = subprocess.run(["bash", str(dst / "m54.sh")], cwd=_repo_root(),
+                              capture_output=True, text=True)
+    assert baseline.returncode == 0, baseline.stdout + baseline.stderr
+    assert baseline.stdout.strip().splitlines()[-1] == "4", baseline.stdout
+
+    try:
+        (dst / "pat.txt").unlink()
+        starved = subprocess.run(["bash", str(dst / "m54.sh")], cwd=_repo_root(),
+                                 capture_output=True, text=True)
+        assert starved.returncode != 0, (
+            "a helper with its input removed exited 0 -- `need()` is not guarding it"
+        )
+        assert "FATAL" in (starved.stdout + starved.stderr), starved.stdout + starved.stderr
+    finally:
+        shutil.rmtree(dst, ignore_errors=True)
+    assert not dst.exists()
+
+
+def test_un4_every_helper_sources_the_shared_guard():
+    """UN4 leg (e), structurally: every `.sh` helper must source `_lib.sh`,
+    which is where `set -uo pipefail` and `need()` live. A helper that does
+    not is one that can fail open."""
+    src = LF.THIS_REPO_CLI / "scripts" / "measured"
+    helpers = sorted(p for p in src.glob("*.sh") if p.name != "_lib.sh")
+    assert helpers, "no helpers found -- this check would be vacuous"
+    for h in helpers:
+        assert "_lib.sh" in h.read_text(), h.name
+
+
+# ---------------------------------------------------------------------------
+# B-5 / SAN3 -- a deleted line beginning `-- ` must not spoof a file header
+#
+# The secret scanner gates the push on its hit COUNT. Under r5's
+# `---`-then-`+++` header heuristic a deleted line whose content begins
+# `-- ` supplies the first half of that pair, and the next added line
+# beginning `++ ` is eaten as a header. Measured on real git output, both
+# legs below: the credential is either attributed to a path that does not
+# exist in the tree (so its ack key can never be verified) or dropped
+# ENTIRELY -- a scanner that reports clean while a credential goes out to a
+# public repository.
+
+
+def _r5_added_lines(diff_text: str):
+    """r5's rule, reimplemented here as the RED control, so the
+    discrimination is demonstrated rather than asserted."""
+    from self_learn.landing.sanitize import HUNK_RE
+
+    out, path, ln, prev_minus = [], None, 0, False
+    for l in diff_text.split("\n"):
+        if l.startswith("--- "):
+            prev_minus = True
+            continue
+        if l.startswith("+++ ") and prev_minus:
+            path = l[6:] if l.startswith("+++ b/") else l[4:]
+            prev_minus = False
+            continue
+        prev_minus = False
+        m = HUNK_RE.match(l)
+        if m:
+            ln = int(m.group(1))
+            continue
+        if l.startswith("\\"):
+            continue
+        if l.startswith("+"):
+            out.append((path, ln, l[1:]))
+            ln += 1
+    return out
+
+
+def _spoof_repo(tmp_path: Path, head_first_line: str, head_third_line: str):
+    from self_learn.landing import sanitize as SAN
+
+    repo = tmp_path / "r"
+    repo.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", "-b", "master", str(repo)], check=True)
+    LF.git(repo, "config", "user.email", "t@example.invalid")
+    LF.git(repo, "config", "user.name", "T")
+    # line 1's content begins "-- ", so its DELETION is wired as "--- x"
+    (repo / "f.md").write_text("-- x\nkeep\nplaceholder\n")
+    LF.git(repo, "add", "-A")
+    LF.git(repo, "commit", "-q", "-m", "base")
+    base = LF.git(repo, "rev-parse", "HEAD").stdout.strip()
+    (repo / "f.md").write_text(f"{head_first_line}\nkeep\n{head_third_line}\n")
+    LF.git(repo, "add", "-A")
+    LF.git(repo, "commit", "-q", "-m", "head")
+    rng = f"{base}..HEAD"
+    raw = subprocess.run(["git", "diff", "--unified=0", "--no-renames", rng],
+                         cwd=repo, capture_output=True, text=True, check=True).stdout
+    return repo, rng, raw, SAN
+
+
+def test_san3_a_deleted_dash_line_cannot_spoof_a_file_header(tmp_path):
+    """SAN3's deleted-`-- ` leg, both shapes, on real `git diff` output.
+
+    Leg A -- the credential sits on a later added line: the shipped parser
+    reports it at `f.md:3`; the r5 heuristic reports `evil-path:3`, a file
+    that is not in the tree, so `SAN4`'s `(file, line, sha)` ack key is
+    fabricated and can never be verified against anything.
+
+    Leg B -- the credential is ON the spoofed line: the shipped parser
+    reports `f.md:1`; the r5 heuristic reports NOTHING. That is the
+    fail-open case, and the one that matters, because the runner gates the
+    push on this count.
+    """
+    import re as _re
+
+    cred = _re.compile(r"ghp_")
+
+    def creds(rows):
+        return sorted((f, n) for f, n, txt in rows if cred.search(txt))
+
+    # --- leg A
+    repo, rng, raw, SAN = _spoof_repo(
+        tmp_path / "a", "++ b/evil-path", "SEEDED ghp_deadbeefcafe1234")
+    shipped = creds(SAN.added_lines(repo, rng))
+    mutant = creds(_r5_added_lines(raw))
+    assert shipped == [("f.md", 3)], shipped
+    assert mutant == [("evil-path", 3)], mutant
+    assert shipped != mutant
+    # the fabricated path is not in the tree -- that is why it matters
+    assert not (repo / "evil-path").exists()
+
+    # --- leg B: the credential is DROPPED
+    repo2, rng2, raw2, SAN2 = _spoof_repo(
+        tmp_path / "b", "++ b/evil-path ghp_deadbeefcafe1234", "placeholder")
+    shipped2 = creds(SAN2.added_lines(repo2, rng2))
+    mutant2 = creds(_r5_added_lines(raw2))
+    assert shipped2 == [("f.md", 1)], shipped2
+    assert mutant2 == [], mutant2
+
+    # and the full gate, not just the parser: the seeded credential must be
+    # an UNACKED hit, so the runner would refuse
+    hits = SAN2.hits(repo2, rng2, LF.LANDING_PKG / "sanitize_fragments.txt")
+    assert any(cred.search(t) for _, _, t in hits), hits
+
+
+def test_san3_the_shipped_gate_refuses_the_seeded_credential(tmp_path):
+    """The end of the chain: a seeded credential reaches `--check` as an
+    UNACKED hit and the CLI exits non-zero. Positive control: acking that
+    exact (file, line, sha) lets it through, so the refusal is content-
+    bound and not a blanket."""
+    from self_learn.landing import sanitize as SAN
+
+    frags = LF.LANDING_PKG / "sanitize_fragments.txt"
+    repo, rng, raw, _ = _spoof_repo(
+        tmp_path, "++ b/evil-path ghp_deadbeefcafe1234", "placeholder")
+    hits = [h for h in SAN.hits(repo, rng, frags) if "ghp_" in h[2]]
+    assert len(hits) == 1, hits
+    f, n, text = hits[0]
+    assert (f, n) == ("f.md", 1)
+
+    rc = SAN.main(["--root", str(repo), "--range", rng, "--check",
+                   "--fragments", str(frags)])
+    assert rc != 0
+
+    ack = f"{f}:{n}:{SAN.line_sha(text)}=seeded by this test"
+    rc_ok = SAN.main(["--root", str(repo), "--range", rng, "--check",
+                      "--fragments", str(frags), "--sanitize-ack", ack])
+    assert rc_ok == 0
+
+
+# ---------------------------------------------------------------------------
+# M-1 / CHK3 -- the baseline is load-bearing, measured end to end
+
+
+def test_chk3_the_baseline_is_load_bearing_on_a_disordered_master(tmp_path):
+    """CHK3 (gate r1 M-1). Dropping `--base HEAD` left 139/139 green,
+    because no fixture had PRE-EXISTING disorder on master -- the state the
+    real repository is in, and the state that made the strict form refuse
+    every landing.
+
+    This fixture's master carries disorder; the branch adds none. The
+    landing must SUCCEED. Red control, measured in the same test: the
+    baseline-free form of the very same check refuses this tree.
+    """
+    from self_learn.landing.checks import (
+        CheckFailure, check_row_order, check_row_order_or_raise,
+    )
+
+    repo = LF.make_repo(tmp_path, with_ui=True, fw_disorder=True)
+    fw_rel = "docs/specs/self-learn/14-forward-work-map.md"
+    d03_rel = "docs/specs/self-learn/03-decisions.md"
+
+    # the fixture really is disordered, or this proves nothing
+    pre = check_row_order((repo / fw_rel).read_text(), "FW")
+    assert len(pre) >= 2, pre
+
+    # red control: the strict form refuses this tree
+    with pytest.raises(CheckFailure):
+        check_row_order_or_raise(repo, None)
+    # and the baseline form does not
+    base = {rel: (repo / rel).read_text() for rel in (fw_rel, d03_rel)}
+    check_row_order_or_raise(repo, base)
+
+    LF.make_branch(
+        repo, "u-clean",
+        edits={"plugins/self-learn/cli/tests/test_gamma.py": "def test_g():\n    assert True\n"},
+    )
+    r = LF.run_land(repo, tmp_path, "--branch", "u-clean", "--verdict", "v", timeout=180)
+    assert r.returncode == 0, r.stdout + r.stderr
+    logs = Path(r.stdout.split("logs=")[-1].strip())
+    assert "baseline" in (logs / "chk3.log").read_text(), (logs / "chk3.log").read_text()
+
+    # and disorder the branch ADDS is still refused, on the same tree
+    repo2 = LF.make_repo(tmp_path / "b", with_ui=True, fw_disorder=True)
+    LF.make_branch(
+        repo2, "u-more",
+        edits={fw_rel: (repo2 / fw_rel).read_text() + "| FW-2 | added out of order | WATCH | n |\n"},
+    )
+    r2 = LF.run_land(repo2, tmp_path / "b", "--branch", "u-more", "--verdict", "v", timeout=180)
+    assert r2.returncode == 4, r2.stdout + r2.stderr
+    assert "CHK3" in r2.stderr
+
+
+# ---------------------------------------------------------------------------
+# B-2 -- the input audit, as a test
+
+
+def _docs_lane_repo(tmp_path: Path, name: str, mutate) -> tuple[Path, Path]:
+    """A fixture whose MASTER carries the (possibly broken) docs-lane input,
+    and whose branch changes ONLY a docs path -- so the landing genuinely
+    takes the docs lane and the input under test is the thing that decides."""
+    repo = LF.make_repo(tmp_path / name, with_ui=True)
+    mutate(repo)
+    LF.git(repo, "add", "-A")
+    if LF.git(repo, "status", "--porcelain").stdout.strip():
+        LF.git(repo, "commit", "-q", "-m", f"master state for {name}")
+    # pushed, so `origin/master..HEAD` covers ONLY the branch's docs change --
+    # otherwise the master-side edit is itself a non-docs path in the range
+    # and the landing takes the full lane, testing nothing about the input
+    LF.git(repo, "push", "-q", "origin", "master")
+    LF.make_branch(repo, f"u-{name}", edits={"docs/specs/self-learn/drafts/n.md": "x\n"})
+    return repo, tmp_path / name
+
+
+def _origin_head(repo: Path) -> str:
+    return subprocess.run(
+        ["git", "--git-dir", str(repo.parent / "origin.git"), "rev-parse", "master"],
+        capture_output=True, text=True, check=True).stdout.strip()
+
+
+def test_b2_every_declared_input_is_fail_closed(tmp_path):
+    """B-2. Every input the runner reads goes through a fail-closed reader,
+    and an absent / empty / unresolvable one is FATAL -- never "nothing to
+    check". Driven end to end against `doc_reading_set.txt`, the one that
+    shipped broken: deleted or emptied it produced an empty argument list, a
+    bare root `pytest`, rc 0, and a PUSH.
+
+    Each leg asserts the ORIGIN did not move, because "it refused" and "it
+    pushed and then refused" are not the same outcome.
+    """
+    DOC_SET = "plugins/self-learn/cli/src/self_learn/landing/doc_reading_set.txt"
+
+    # (a) absent
+    repo, tp = _docs_lane_repo(tmp_path, "gone", lambda r: (r / DOC_SET).unlink())
+    before = _origin_head(repo)
+    r = LF.run_land(repo, tp, "--branch", "u-gone", "--verdict", "v", timeout=180)
+    assert r.returncode == 5, r.stdout + r.stderr
+    assert "ABSENT" in r.stderr, r.stderr
+    assert "pushed:" not in r.stdout
+    assert _origin_head(repo) == before
+
+    # (b) present but with no usable line
+    repo2, tp2 = _docs_lane_repo(
+        tmp_path, "empty",
+        lambda r: (r / DOC_SET).write_text("# every line a comment\n\n"))
+    before2 = _origin_head(repo2)
+    r2 = LF.run_land(repo2, tp2, "--branch", "u-empty", "--verdict", "v", timeout=180)
+    assert r2.returncode == 5, r2.stdout + r2.stderr
+    assert "NO usable lines" in r2.stderr, r2.stderr
+    assert _origin_head(repo2) == before2
+
+    # (c) an entry naming a file that is not there
+    repo3, tp3 = _docs_lane_repo(
+        tmp_path, "ghost",
+        lambda r: (r / DOC_SET).write_text(
+            "plugins/self-learn/cli/tests/test_alpha.py\n"
+            "plugins/self-learn/cli/tests/test_never_existed.py\n"))
+    before3 = _origin_head(repo3)
+    r3 = LF.run_land(repo3, tp3, "--branch", "u-ghost", "--verdict", "v", timeout=180)
+    assert r3.returncode == 5, r3.stdout + r3.stderr
+    assert "ABSENT" in r3.stderr, r3.stderr
+    assert _origin_head(repo3) == before3
+
+    # positive control -- the UNTOUCHED input takes the docs lane and PASSES,
+    # so the three refusals are about the input and not about the lane
+    repo4, tp4 = _docs_lane_repo(tmp_path, "ok", lambda r: None)
+    before4 = _origin_head(repo4)
+    ok = LF.run_land(repo4, tp4, "--branch", "u-ok", "--verdict", "v", timeout=180)
+    assert ok.returncode == 0, ok.stdout + ok.stderr
+    assert "docs lane over 1 module(s)" in ok.stdout, ok.stdout
+    assert _origin_head(repo4) != before4, "the control did not actually push"
+
+
+def test_b2_an_empty_sanitize_pattern_set_is_fatal(tmp_path):
+    """B-2, the other file the gate reads. An empty fragment file compiles
+    to the empty regex, which matches at position 0 of EVERY line -- so the
+    scanner would refuse every landing while looking like it found hits.
+    Fatal instead, with a message that names the cause."""
+    from self_learn.landing import sanitize as SAN
+
+    frags = tmp_path / "frag.txt"
+    frags.write_text("# nothing but a comment\n\n")
+    with pytest.raises(ValueError, match="EMPTY"):
+        SAN.assemble_pattern(frags, "/nowhere")
+    # positive control: the shipped file assembles, and to more than nothing
+    real = SAN.assemble_pattern(LF.LANDING_PKG / "sanitize_fragments.txt", "/nowhere")
+    assert real.search("ghp_deadbeefcafe")
+    assert not real.search("an ordinary sentence")
+
+
+def test_b2_the_audit_covers_every_input_the_script_reads():
+    """The audit itself, kept honest: every literal `.txt` input path and
+    every suite working directory named in the script must be reached by a
+    guard. A new unguarded input added later fails this."""
+    text = LF.LAND.read_text()
+    code = [ln for ln in text.split("\n") if not ln.lstrip().startswith("#")]
+    body = "\n".join(code)
+
+    guarded = {"need_file", "need_nonempty_file", "need_dir"}
+    assert all(g in body for g in guarded), body[:200]
+
+    # every `.txt` under the landing package that the script names
+    inputs = set(re.findall(r'\$GITROOT/[A-Za-z0-9_./-]+\.txt', body))
+    assert inputs, "no declared inputs found -- this check would be vacuous"
+    for path_expr in inputs:
+        var_users = [ln for ln in code if path_expr in ln]
+        assert var_users
+        # it is either guarded on the spot, or bound to a name that is
+        bound = [re.match(r'\s*([A-Z_]+)=', ln) for ln in var_users]
+        names = {m.group(1) for m in bound if m}
+        reached = any(g in ln for ln in var_users for g in guarded) or any(
+            any(g in ln and f'${n}' in ln for g in guarded) for ln in code for n in names
+        )
+        assert reached, path_expr
