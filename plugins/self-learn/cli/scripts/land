@@ -99,6 +99,17 @@ staged_add() {
 #
 # So every refusal inside the merge routes through here: it aborts on a
 # FIRST pass, and on a resume it keeps the merge and says so.
+# MINOR-2 (gate r6). Ten in-merge refusals neither aborted nor announced,
+# and one of them -- a typo'd `--resolver` path -- is a CONFLICT refusal,
+# which contradicts `PRV4` outright. Every refusal raised while a merge is
+# in the tree now goes through here: it aborts unless we are resuming, and
+# it always tells the operator which state it left, measured.
+die_in_merge() {
+  local gr=$1 code=$2 msg=$3 inspect=${4:-}
+  abort_merge_unless_resuming "$gr"
+  die "$code" "$msg $(tree_state_sentence "$gr")" "$inspect"
+}
+
 abort_merge_unless_resuming() {
   local gr=$1
   if [ "$CONTINUE_MERGE" = "1" ]; then
@@ -111,7 +122,14 @@ abort_merge_unless_resuming() {
   fi
   git -C "$gr" update-index -q --refresh >>"$OUT/abort.log" 2>&1 || true
   git -C "$gr" merge --abort >>"$OUT/abort.log" 2>&1
-  printf 'merge --abort rc=%s\n' "$?" >>"$OUT/abort.log"
+  local abort_rc=$?
+  printf 'merge --abort rc=%s\n' "$abort_rc" >>"$OUT/abort.log"
+  # A captured rc that is only PRINTED is not a gate (gate r6 MAJOR-1), so
+  # this one is tested. The abort is best-effort by design -- the authority
+  # on what the tree became is `tree_state_sentence`, which measures it --
+  # but a non-zero rc is worth saying out loud.
+  [ "$abort_rc" = "0" ] \
+    || echo "land: note -- merge --abort exited $abort_rc; the tree state reported below is MEASURED, not assumed (see $OUT/abort.log)" >&2
 }
 
 # MINOR-1/NIT-4: BOTH halves derived, never asserted. Deriving the first
@@ -461,7 +479,7 @@ run_merge_and_checks() {
     >"$OUT/merge.txt" 2>&1
   local merge_rc=$?
   if [ "$merge_rc" != "0" ] && [ "$LANE_CLEAN" = "1" ]; then
-    die 3 "merge failed unexpectedly on a clean preview (rc=$merge_rc)" "cat $OUT/merge.txt"
+    die_in_merge "$gr" 3 "merge failed unexpectedly on a clean preview (rc=$merge_rc)." "cat $OUT/merge.txt"
   fi
 
   if [ "$LANE_CLEAN" = "0" ]; then
@@ -497,7 +515,8 @@ run_merge_and_checks() {
     local name
     for path in "${!RESOLVER_MAP[@]}"; do
       name=${RESOLVER_MAP[$path]}
-      [ -f "$gr/$path" ] || die 3 "PRV2: --resolver names a path not in the conflict: $path"
+      [ -f "$gr/$path" ] \
+        || die_in_merge "$gr" 3 "PRV2: --resolver names a path not in the conflict: $path." "git -C $gr status"
       if ! grep -q '^||||||| ' "$gr/$path"; then
         abort_merge_unless_resuming "$gr"
         die 3 "PRV3: $path has no ||||||| base marker -- refusing to parse a conflict without its base" "cat $gr/$path"
@@ -518,7 +537,7 @@ run_merge_and_checks() {
   # CHK1 -- conflict markers over the merge-touched set (not a hardcoded list)
   local touched
   touched=$(git -C "$gr" diff --name-only HEAD | sort -u) \
-    || die 4 "CHK1: could not enumerate the merge-touched set"
+    || die_in_merge "$gr" 4 "CHK1: could not enumerate the merge-touched set." "git -C $gr status"
   local abspaths=()
   local t
   while IFS= read -r t; do
@@ -696,11 +715,11 @@ run_merge_and_checks() {
     # one advance line; both are asserted, because a success that talked on
     # the wrong stream is a contract change this runner must not ride over.
     [ "$stdout_bytes" = "0" ] \
-      || die 4 "WLD2: --remeasure succeeded but wrote $stdout_bytes byte(s) to STDOUT; the contract says stdout is always empty" "cat $OUT/remeasure.out"
+      || die_in_merge "$gr" 4 "WLD2: --remeasure succeeded but wrote $stdout_bytes byte(s) to STDOUT; the contract says stdout is always empty." "cat $OUT/remeasure.out"
     grep -qE "^ANCHOR [0-9a-f]{7} -> $anchor\$" "$OUT/remeasure.err" \
-      || die 4 "WLD2: --remeasure exited 0 but stderr is not the expected 'ANCHOR <old> -> $anchor' line" "cat $OUT/remeasure.err"
+      || die_in_merge "$gr" 4 "WLD2: --remeasure exited 0 but stderr is not the expected 'ANCHOR <old> -> $anchor' line." "cat $OUT/remeasure.err"
     [ "$armor_sha_before" != "$armor_sha_after" ] \
-      || die 4 "WLD2: --remeasure exited 0 but left test_armor.py byte-identical -- the anchor did not actually advance" "cat $OUT/remeasure.err"
+      || die_in_merge "$gr" 4 "WLD2: --remeasure exited 0 but left test_armor.py byte-identical -- the anchor did not actually advance." "cat $OUT/remeasure.err"
 
     staged_add "$gr" plugins/self-learn/cli/tests/test_armor.py "WLD2 (armor re-measure)" 4
     # The rewritten module must be the one the POST-COMMIT suite imports.
@@ -719,7 +738,7 @@ run_merge_and_checks() {
     stale_pyc=$(find "$gr/plugins/self-learn/cli/tests/__pycache__" \
       -maxdepth 1 -name 'test_armor.*.pyc' 2>/dev/null | wc -l | tr -d ' ')
     [ "$stale_pyc" = "0" ] \
-      || die 4 "WLD2: cached test_armor bytecode survived removal ($stale_pyc file(s)); the suite would import a stale ANCHOR" \
+      || die_in_merge "$gr" 4 "WLD2: cached test_armor bytecode survived removal ($stale_pyc file(s)); the suite would import a stale ANCHOR." \
               "ls $gr/plugins/self-learn/cli/tests/__pycache__/"
   fi
   # CHK8: nothing test-shaped runs between the line above and `git commit`.
@@ -850,12 +869,36 @@ if [ "$DRY_RUN" = "0" ] && { [ "$RESUME_ONLY" = "0" ] || [ "$RESUME_STEP" = "sui
     return $?
   }
 
+  # MINOR-3 (gate r6). A UI run that silently SKIPPED 136 browser tests was
+  # adjudicated GREEN and pushed. That is this unit's own shape landing in
+  # the adjudicator: an outcome that is not a failure read as a success. A
+  # suite that skipped that many is not green -- it is UNMEASURED.
+  #
+  # Measured 2026-08-30 for the ceiling: the CLI suite skips 6 (sanctioned,
+  # stable across every run this session); the UI suite skips 0. The
+  # pathological run the gate observed skipped 136. A ceiling of 20 clears
+  # the real ones by 3x and catches that by 6x.
+  SUITE_SKIP_CEILING=${SUITE_SKIP_CEILING:-20}
+
+  suite_skipped() {
+    local n=$1 v
+    v=$(grep -oE '[0-9]+ skipped' "$OUT/$n.log" | tail -1 | grep -oE '^[0-9]+')
+    printf '%s' "${v:-0}"
+  }
+
   adjudicate_suite() {
     local n=$1
     local rc
     rc=$(cat "$OUT/$n.rc" 2>/dev/null || echo 99)
     case "$rc" in
-      0) ;;
+      0)
+        local skipped
+        skipped=$(suite_skipped "$n")
+        [ "$skipped" -le "$SUITE_SKIP_CEILING" ] \
+          || { record_refusal_step suites
+               die 5 "$n suite exited 0 but SKIPPED $skipped tests (ceiling $SUITE_SKIP_CEILING) -- a run that skipped that many is UNMEASURED, not green. See $OUT/$n.log" "less $OUT/$n.log"; }
+        echo "land: $n suite green ($skipped skipped, ceiling $SUITE_SKIP_CEILING)"
+        ;;
       124) record_refusal_step suites
            die 5 "$n suite TIMED OUT after ${SUITE_TIMEOUT}s, leaving $(cat "$OUT/$n.litter.count" 2>/dev/null || echo '?') changed path(s) in the tree -- a killed suite does not clean up after itself. See $OUT/$n.log and $OUT/$n.litter" "less $OUT/$n.log" ;;
       2) record_refusal_step suites; die 5 "$n suite COLLECTION ERROR (rc 2) -- NOT a test failure; the allowlist cannot adjudicate it. See $OUT/$n.log" "less $OUT/$n.log" ;;

@@ -2695,54 +2695,157 @@ def test_un1_this_unit_does_not_change_the_suite_runner():
 
 
 def test_un1_the_frame_survives_this_units_own_landing(tmp_path):
-    """BLOCKER-1's regression guard, run against a SIMULATED landing.
+    """BLOCKER-1's regression guard, itself rebuilt for gate r6's BLOCKER-1.
 
-    The defect was invisible from the worktree and reachable only by
-    running a landing, so the guard simulates one: clone, merge this
-    branch into master exactly as `land` would (`--no-ff`), and re-run
-    UN1's own frame resolution and both of its assertions there.
+    The first version cloned and ran `git checkout -B u-land origin/u-land`
+    -- and `land`'s own Step-6 prune DELETES that branch after a successful
+    push, so a clone of post-landing master has no such ref. Measured by
+    rehearsing a landing to a real push and running master's suite:
+    `1 failed, 3040 passed`, cause `rc 128`, with
+    `prune.log: "Deleted branch u-land"`. The blocker was RELOCATED, not
+    fixed -- from the measurement to its guard -- and invisible to the
+    landing, because the suite runs BEFORE the prune.
 
-    Also asserts the OLD resolution is degenerate in that state, so the
-    regression cannot come back unnoticed.
+    The ruling is the one that produced the derived pair: **depend on
+    history, not on a ref**. The merge is in first-parent history forever;
+    the branch is deleted by design, by this very tool. So:
+
+      * if the unit has ALREADY landed, verify the frame in place -- there
+        is nothing to simulate and no ref to want;
+      * if it has not, simulate by merging the unit's tip **by sha**, never
+        by branch name.
+
+    Either way the guard then deletes every `u-land` ref it can see and
+    re-resolves, which is the state the prune actually leaves behind.
     """
     root = _repo_root()
-    clone = tmp_path / "clone"
-    subprocess.run(["git", "clone", "-q", "--no-hardlinks", str(root), str(clone)],
-                   check=True, capture_output=True)
-    LF.git(clone, "config", "user.email", "t@example.invalid")
-    LF.git(clone, "config", "user.name", "T")
-    LF.git(clone, "checkout", "-q", "-B", "u-land", "origin/u-land")
-    LF.git(clone, "checkout", "-q", "-B", "master", "origin/master")
-    LF.git(clone, "merge", "-q", "--no-ff", "-m", "Merge branch 'u-land' (simulated)", "u-land")
+    rng_here, state_here = _unit_diff_frame(root)
 
-    # the OLD base is degenerate here -- this is BLOCKER-1 itself
-    old_base = LF.git(clone, "merge-base", "master", "HEAD").stdout.strip()
-    assert old_base == LF.git(clone, "rev-parse", "HEAD").stdout.strip(), (
-        "the simulated landing did not reproduce the degenerate state"
+    if state_here == "landed":
+        work = root
+        note = "already landed; verified in place"
+    else:
+        unit_tip = LF.git(root, "rev-parse", "HEAD").stdout.strip()
+        work = tmp_path / "clone"
+        subprocess.run(["git", "clone", "-q", "--no-hardlinks", str(root), str(work)],
+                       check=True, capture_output=True)
+        LF.git(work, "config", "user.email", "t@example.invalid")
+        LF.git(work, "config", "user.name", "T")
+        LF.git(work, "checkout", "-q", "-B", "master", "origin/master")
+        # by SHA -- a branch name is what this unit's own success destroys
+        LF.git(work, "merge", "-q", "--no-ff", "-m",
+               "Merge branch 'u-land' (simulated)", unit_tip)
+        note = "simulated by sha"
+
+    # the OLD base is degenerate here -- this is r5's BLOCKER-1 itself
+    old_base = LF.git(work, "merge-base", "master", "HEAD").stdout.strip()
+    assert old_base == LF.git(work, "rev-parse", "HEAD").stdout.strip(), (
+        f"the landed state was not reproduced ({note})"
     )
-    old_control = LF.git(clone, "diff", "--numstat", old_base, "--",
-                         _UNIT_MARKER_PATH).stdout.strip()
-    assert old_control == "", "the old frame is no longer degenerate; this guard is void"
+    assert LF.git(work, "diff", "--numstat", old_base, "--",
+                  _UNIT_MARKER_PATH).stdout.strip() == "", (
+        "the old frame is no longer degenerate; this guard is void")
 
-    # the NEW frame still measures something
-    rng, state = _unit_diff_frame(clone)
-    assert state == "landed", (state, rng)
+    # POST-PRUNE: remove every u-land ref, which is what Step 6 does
+    for ref in ("u-land", "origin/u-land"):
+        LF.git(work, "branch", "-D", ref, check=False)
+        LF.git(work, "branch", "-rD", ref, check=False)
+    refs = LF.git(work, "for-each-ref", "--format=%(refname)").stdout
+    assert "u-land" not in refs, refs
+
+    rng, state = _unit_diff_frame(work)
+    assert state == "landed", (state, rng, note)
     assert len(rng) == 2, rng
 
     def numstat(rel: str) -> str:
-        return LF.git(clone, "diff", "--numstat", *rng, "--", rel).stdout.strip()
+        return LF.git(work, "diff", "--numstat", *rng, "--", rel).stdout.strip()
 
     assert numstat("plugins/self-learn/cli/scripts/suite") == "", numstat(
         "plugins/self-learn/cli/scripts/suite")
     assert numstat(_UNIT_MARKER_PATH) != "", (rng, "the control cannot speak after landing")
 
     # and it stays put once master moves on
-    (clone / "later.txt").write_text("x\n")
-    LF.git(clone, "add", "-A")
-    LF.git(clone, "commit", "-q", "-m", "a later unrelated commit")
-    rng2, state2 = _unit_diff_frame(clone)
+    (work / "later_probe.txt").write_text("x\n")
+    LF.git(work, "add", "--", "later_probe.txt")
+    LF.git(work, "commit", "-q", "-m", "a later unrelated commit")
+    rng2, state2 = _unit_diff_frame(work)
     assert (rng2, state2) == (rng, state), (rng2, rng)
+    if work is root:
+        LF.git(root, "reset", "-q", "--soft", "HEAD~1")
+        (root / "later_probe.txt").unlink(missing_ok=True)
 
+
+def test_un1_the_guard_depends_on_no_branch_ref():
+    """The regression in its own terms. `land` deletes the branch after a
+    successful push, so anything a guard needs from `origin/<branch>` is
+    something this unit's success destroys -- and no landing can catch it,
+    because the suite runs BEFORE the prune.
+
+    Source-level, because the failure is structural: neither UN1 nor its
+    guard may name a branch ref.
+    """
+    src = (LF.THIS_REPO_CLI / "tests" / "test_land_runner.py").read_text()
+    fns = ("_unit_diff_frame",
+           "test_un1_this_unit_does_not_change_the_suite_runner",
+           "test_un1_the_frame_survives_this_units_own_landing")
+
+    # The forbidden thing is naming a REMOTE-TRACKING branch of this unit --
+    # the ref the prune destroys. A commit MESSAGE mentioning the branch is
+    # prose, and `branch -D u-land` is the guard deliberately removing it,
+    # so the rule is about the tracking ref specifically.
+    import ast as _ast
+
+    def refs_used_as_revisions(body: str) -> list[str]:
+        """Every branch-shaped string handed to a git subcommand that
+        RESOLVES a revision. Docstring prose about the old form, and the
+        guard's own `branch -D`, are not that -- the defect was using the
+        ref as a source to check out or merge."""
+        RESOLVING = {"checkout", "merge", "rev-parse", "rev-list", "merge-base"}
+        out = []
+        for node in _ast.walk(_ast.parse(body)):
+            if not isinstance(node, _ast.Call):
+                continue
+            args = [a.value for a in node.args
+                    if isinstance(a, _ast.Constant) and isinstance(a.value, str)]
+            if not (RESOLVING & set(args)):
+                continue
+            # a commit MESSAGE is not a revision -- skip whatever follows -m
+            skip = {i + 1 for i, a in enumerate(args) if a in ("-m", "--message")}
+            out += [a for i, a in enumerate(args)
+                    if "u-land" in a and i not in skip]
+        return out
+
+    for fn in fns:
+        body = _python_function_source(src, fn)
+        assert body, fn
+        assert refs_used_as_revisions(body) == [], (fn, refs_used_as_revisions(body))
+
+    # positive control: the form that WAS shipped is detected
+    assert refs_used_as_revisions(
+        'def f():\n    LF.git(clone, "checkout", "-q", "-B", "u-land", "origin/u-land")\n'
+    ) == ["u-land", "origin/u-land"]
+
+    # ... and the simulation merges a SHA, held in a variable, not a name
+    sim = _python_function_source(src, "test_un1_the_frame_survives_this_units_own_landing")
+    assert 'unit_tip = LF.git(root, "rev-parse", "HEAD")' in sim
+    assert '"merge", "-q", "--no-ff", "-m",' in sim
+    assert "unit_tip)" in sim
+
+
+
+    # and the prune that motivates it is really there, in the shipped runner
+    land = LF.LAND.read_text()
+    assert 'branch -d "$BRANCH"' in land
+    assert "prune.log" in land
+
+
+def _python_function_source(src: str, name: str) -> str:
+    import ast as _ast
+
+    for node in _ast.parse(src).body:
+        if isinstance(node, _ast.FunctionDef) and node.name == name:
+            return _ast.get_source_segment(src, node) or ""
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -3954,6 +4057,15 @@ def test_exc1_every_stage_boundary_is_explicitly_gated():
         return out
 
     def gated(stmt: str, nxt: list[str]) -> bool:
+        """A gate is a CONTROL-FLOW construct, not a string in the vicinity.
+
+        Gate r6 MAJOR-1: this used to accept `'"$?"' in following`, which
+        treats a PRINTED rc as a gate. Two probes showed how badly: de-gating
+        `git commit` left this leg passing (the red came only from a control
+        breaking), and a synthetic ungated `git fetch` whose rc was merely
+        printf'd left the whole test green. A captured rc counts only if the
+        variable is later TESTED.
+        """
         s = stmt.strip()
         if "|| die" in s or "|| true" in s:
             return True
@@ -3962,8 +4074,17 @@ def test_exc1_every_stage_boundary_is_explicitly_gated():
         if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=\$\(", s):
             return True                     # a capture; its value is floored
         following = nxt[0] if nxt else ""
-        if "=$?" in following or '"$?"' in following or following in ("return $?", "}"):
+        if following in ("return $?", "}"):
             return True
+        m = re.match(r"^(?:local\s+)?([A-Za-z_][A-Za-z0-9_]*)=\$\?$", following)
+        if m:
+            var = m.group(1)
+            # captured -- but only a gate if something later TESTS it
+            tested = re.search(
+                r"(?:\[\s+\"?\$\{?" + re.escape(var) + r"\}?|case\s+\"?\$\{?"
+                + re.escape(var) + r"\}?|\[\s+\"\$" + re.escape(var) + r"\")",
+                text)
+            return bool(tested)
         called = re.findall(r"(?:^|[\s;&|(`])([A-Za-z_][A-Za-z0-9_]*)\b", s)
         return any(c in dying for c in called)
 
@@ -3998,6 +4119,21 @@ def test_exc1_every_stage_boundary_is_explicitly_gated():
     assert [s for _, s in
             [(l, st) for l, st, nx in boundaries(probe3) if not gated(st, nx)]
             if "add -- some/path" in s], "a bare git add is invisible"
+
+    # --- control 4 (gate r6 MAJOR-1's own probe): an rc that is merely
+    # PRINTED is not a gate. Injected where no other control splices.
+    probe4 = code + ['  git -C "$ROOT" fetch origin master',
+                     '  printf \'fetch rc=%s\\n\' "$?"']
+    assert [s for _, s in
+            [(l, st) for l, st, nx in boundaries(probe4) if not gated(st, nx)]
+            if "fetch origin master" in s], "a printf'd rc still counts as a gate"
+
+    # --- control 5: a captured rc that nothing tests is not a gate either
+    probe5 = code + ['  git -C "$ROOT" fetch origin master',
+                     '  unused_rc_probe=$?']
+    assert [s for _, s in
+            [(l, st) for l, st, nx in boundaries(probe5) if not gated(st, nx)]
+            if "fetch origin master" in s], "an untested captured rc counts as a gate"
 
 
 def test_exc1_a_git_add_that_stages_nothing_is_caught_by_a_count(tmp_path):
@@ -4888,3 +5024,131 @@ def test_minor1_the_state_sentence_derives_both_halves():
     # three outcomes, not two
     assert body.count("printf") >= 3, body
     assert "NOT clean" in body, "there is no case for an abort that left changes"
+
+
+def test_minor3_a_suite_that_silently_skipped_is_not_green(tmp_path):
+    """MINOR-3 (gate r6). A UI run that silently SKIPPED 136 browser tests
+    was adjudicated GREEN and pushed. That is this unit's own shape landing
+    in the adjudicator: an outcome that is not a failure being read as a
+    success. A suite that skipped that many is not green -- it is
+    UNMEASURED.
+
+    Two legs, both through the runner: a branch whose tests all skip is
+    refused; the untouched fixture, which skips none, still lands.
+    """
+    # (a) a suite that runs and skips everything
+    repo = LF.make_repo(tmp_path / "skip", with_ui=True)
+    LF.git(repo, "checkout", "-q", "-b", "u-skip")
+    many = "\n".join(
+        f"@pytest.mark.skip(reason='browser unavailable')\ndef test_s{i}():\n    assert True\n"
+        for i in range(25)
+    )
+    (repo / "plugins/self-learn/cli/tests/test_skips.py").write_text(
+        "import pytest\n\n" + many)
+    LF.git(repo, "add", "-A")
+    LF.git(repo, "commit", "-q", "-m", "a suite that skips 25 tests")
+    LF.git(repo, "checkout", "-q", "master")
+    r = LF.run_land(repo, tmp_path / "skip", "--branch", "u-skip", "--verdict", "v", timeout=180)
+    assert r.returncode == 5, r.stdout + r.stderr
+    assert "SKIPPED 25 tests" in r.stderr, r.stderr
+    assert "UNMEASURED, not green" in r.stderr, r.stderr
+
+    # (b) positive control: no skips, and it lands -- so the floor is not
+    # simply refusing everything
+    ok = LF.make_repo(tmp_path / "clean", with_ui=True)
+    LF.make_branch(
+        ok, "u-noskip",
+        edits={"plugins/self-learn/cli/tests/test_gamma.py": "def test_g():\n    assert True\n"},
+    )
+    r2 = LF.run_land(ok, tmp_path / "clean", "--branch", "u-noskip", "--verdict", "v", timeout=180)
+    assert r2.returncode == 0, r2.stdout + r2.stderr
+    # and the count is REPORTED on the green path, so "0 skipped" is a
+    # measurement rather than an absence of news
+    assert "suite green (0 skipped, ceiling" in r2.stdout, r2.stdout
+
+
+def test_minor3_the_ceiling_clears_the_real_skip_counts():
+    """The ceiling is grounded in measurement, not taste. Measured
+    2026-08-30: the CLI suite skips **6** (sanctioned, stable across every
+    run this session), the UI suite skips **0**, and the pathological run
+    the gate observed skipped **136**. The ceiling must clear the real ones
+    and catch that one."""
+    text = LF.LAND.read_text()
+    m = re.search(r"SUITE_SKIP_CEILING=\$\{SUITE_SKIP_CEILING:-(\d+)\}", text)
+    assert m, "the ceiling is no longer a single overridable default"
+    ceiling = int(m.group(1))
+    assert ceiling >= 3 * 6, f"ceiling {ceiling} is under 3x the CLI's 6 sanctioned skips"
+    assert ceiling < 136, f"ceiling {ceiling} would not have caught the observed 136"
+    # the numbers that justify it are recorded beside it
+    for n in ("6", "0", "136"):
+        assert n in text
+
+
+def test_minor2_every_in_merge_refusal_aborts_or_announces():
+    """MINOR-2 (gate r6). Ten in-merge refusals neither aborted nor
+    announced, and one of them -- a typo'd `--resolver` path -- is a
+    CONFLICT refusal, which contradicts PRV4 outright.
+
+    The invariant, derived from the script rather than listed: every `die`
+    raised inside `run_merge_and_checks` must either
+
+      * run BEFORE the merge exists (the preview and PRV1), or
+      * route through `die_in_merge` / `abort_merge_unless_resuming`, or
+      * carry `tree_state_sentence` itself, which announces the measured
+        state.
+
+    Positive control: an injected bare `die` inside the merge is reported.
+    """
+    text = LF.LAND.read_text()
+    lines = text.split("\n")
+    start = next(i for i, l in enumerate(lines) if l.startswith("run_merge_and_checks() {"))
+    depth, end = 1, start
+    for i in range(start + 1, len(lines)):
+        depth += lines[i].count("{") - lines[i].count("}")
+        if depth <= 0:
+            end = i
+            break
+    assert end > start, "could not delimit run_merge_and_checks"
+
+    # everything before the real merge invocation is pre-merge
+    merge_at = next(i for i in range(start, end)
+                    if "merge --no-ff --no-commit" in lines[i]
+                    and not lines[i].lstrip().startswith("#"))
+
+    def bare_dies(body: list[str], first: int, merge_line: int) -> list[tuple[int, str]]:
+        out, last_guard = [], -99
+        for i, l in enumerate(body, start=first):
+            if not l.lstrip().startswith("#") and (
+                    "abort_merge_unless_resuming" in l or "die_in_merge" in l):
+                last_guard = i
+            if l.lstrip().startswith("#"):
+                continue
+            if not re.search(r"(?:^|[\s;&|{])die \d", l):
+                continue
+            if i <= merge_line:
+                continue                      # nothing merged yet
+            if "tree_state_sentence" in l:
+                continue                      # announces the measured state
+            if i - last_guard <= 6:
+                continue                      # guarded just above
+            out.append((i + 1, l.strip()[:90]))
+        return out
+
+    assert bare_dies(lines[start:end + 1], start, merge_at) == [], \
+        bare_dies(lines[start:end + 1], start, merge_at)
+
+    # the typo'd-resolver refusal specifically -- the one that contradicted PRV4
+    assert 'die_in_merge "$gr" 3 "PRV2: --resolver names a path not in the conflict' in text
+
+    # positive control, on a synthetic body so the splice arithmetic cannot
+    # be what makes it pass: a bare die AFTER the merge line is reported,
+    # and the same die BEFORE it is not.
+    synth = [
+        '  git -C "$gr" merge --no-ff --no-commit "$BRANCH"',
+    ] + ['  echo filler'] * 8 + [
+        '  die 4 "a bare refusal inside the merge"',
+    ]
+    assert bare_dies(synth, 0, 0), "a bare in-merge die is invisible"
+    synth_pre = ['  die 4 "a refusal before anything merged"',
+                 '  git -C "$gr" merge --no-ff --no-commit "$BRANCH"']
+    assert bare_dies(synth_pre, 0, 1) == [], "a pre-merge die is wrongly reported"
