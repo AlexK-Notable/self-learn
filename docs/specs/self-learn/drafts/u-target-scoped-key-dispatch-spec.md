@@ -15,18 +15,31 @@ P="plugins/self-learn/ui/static/app.js plugins/self-learn/ui/static/style.css \
    plugins/self-learn/ui/src/self_learn_ui/routes.py \
    plugins/self-learn/ui/src/self_learn_ui/ledger.py"
 
-# CONTROL 1 -- can this pathspec match anything at all? MUST be > 0.
+# CONTROL 1 (pathspec) -- can this pathspec match anything at all? MUST be > 0.
 git ls-files -- $P | wc -l                      # -> 25
 
-# CONTROL 2 -- can this pathspec + diff ever PRODUCE output? MUST be non-empty.
+# CONTROL 2 (pathspec x diff) -- can this pathspec ever PRODUCE diff output?
 git diff --stat $(git log -2 --format=%H -- $P | tail -1) \
                 $(git log -1 --format=%H -- $P) -- $P     # -> 3 files changed
+
+# CONTROL 3 (range) -- is the range real and non-degenerate? BOTH must hold.
+git merge-base --is-ancestor 502ca8d HEAD && echo "ancestor ok"
+git rev-list --count 502ca8d..HEAD              # -> > 0
 
 # THE AUDIT -- MUST be empty.
 git diff --stat 502ca8d HEAD -- $P              # -> (empty)
 ```
 
-**Why both controls, and what r2 of this spec got wrong** (gate r2): the
+**Why three controls — one per proposition.** This audit means nothing
+unless **both** halves hold: *the pathspec can match* (CONTROLs 1-2) and
+*the range is real and has content* (CONTROL 3). r3 of this spec fixed
+the pathspec half by **replacing** r2's range-level control rather than
+adding to it, leaving the other proposition unguarded — the audit stayed
+sound only because `502ca8d` happens to be a real ancestor (gate r3
+NIT-1). A control per proposition is the cheap way to keep both; trading
+one control for another re-opens the hole at the other end.
+
+**What r2 of this spec got wrong** (gate r2): the
 control r2 published was "the merge changed 11 other files", which proves
 **the range has content** — a different proposition from **the pathspec
 can match**, and only the second is what the audit needed. r2's *written*
@@ -46,9 +59,24 @@ otherwise.
 **Gate history.** r1: **NOT SOUND** — 0 blockers, 4 majors, 7 minors.
 r2: **NOT SOUND** — 0 blockers, 1 major, 5 minors, 2 nits, with the
 audit that matters coming back clean (**30/30 `[A]` criteria state a
-mutation and 30/30 redden as literally written**). **All 19 findings
-across both rounds are folded here**, and every major was **re-verified
-by this author before folding**, not taken on report.
+mutation and 30/30 redden as literally written** — re-confirmed at r3).
+r3: **NOT SOUND** — 0 blockers, 1 major, 1 minor, 1 nit, all prose and
+criterion placement, no design change. **All 22 findings across the
+three rounds are folded here**, and every major was **re-verified by
+this author before folding**, not taken on report.
+
+**r3's findings:** MAJOR-1 — `[B-6]`'s reason 1 asserted "no
+fallback-reachable verb performs a durable write" from an enumeration of
+11 of the 24 bound actions; it is **false** (`q` unlinks files), and the
+repair is a better claim, not a redesign: the fallback's targets split
+into **row-scoped** (9, bounded by arm-then-confirm) and
+**page-singleton** (9, where one match on the page *is* correct
+targeting). Rebuilt at §4.2 with all 24 enumerated at the handlers.
+MINOR-1 — `S1b`/`S2` required a document the server never emits, so they
+could pass while inspecting a cluster-free page; fixture provenance and
+a fail-loud precondition added (§6.8). NIT-1 — the audit traded its
+range control for pathspec controls instead of keeping both; now one
+control per proposition (header).
 
 *Four of r2's eight findings (MINOR-4, MINOR-5, NIT-1, NIT-2) reached
 this author only after reading the gate report directly — the relay
@@ -663,30 +691,66 @@ a follow-up row, press `t`/`c`/`g`/`k`. **Ruling: the fallback acts
 silently in this unit; a signal is `[B-6]`, not `[A]`.** Three reasons,
 in order of weight:
 
-1. **It is not signal-free, contra the obvious reading.** `fire()`
-   already ends `live.click(); live.scrollIntoView({block: "nearest"})`
-   (`app.js:224-225`, read here), so a fallback dispatch **scrolls the
-   element it acted on into view**. **No verb reachable through the
-   fallback performs a durable write** — that is the load-bearing claim,
-   and it is checked at the handlers, not inferred from the templates
-   (gate r2). It has three shapes, not one, and the exceptions are
-   written down beside it:
-   - **The arming verbs** (`e`/`x`/`f`/`g`/`t`/`c`/`k`) POST to
-     `/action/arm`, and `action_bar.html:95` renders
-     `<code>{{ armed.record_id }}</code>` — the operator is taken to the
-     row and shown its id before `Enter` executes anything.
-   - **`o` (`cycle_destination`) neither arms nor writes.** It is *not*
-     covered by the sentence above, which r2 of this spec wrongly stated
-     as universal. Verified at the handler:
-     `action_cycle_destination` (`routes.py:1715-1756`) recomputes
-     `new_dest`, rebuilds `_unarmed_context(…, dest_touched=True)` and
-     returns `_render(...)` — it touches no file, calls no runner, and
-     persists nothing. So it is an exception that makes the conclusion
-     *stronger*, not weaker.
-   - **`j`/`u`/`v` (`success_*`) are plain `<a href>` navigations**
-     (`evidence.html:93/94/106`) — per-row links, not writes, also
-     uncovered by the arming sentence.
-2. **A hint here would be loudest where it is least needed.** The
+1. **The fallback is not guessing — for every action it can resolve,
+   "exactly one on the page" is either the correct answer or a bounded
+   one.** `fire()` already ends `live.click();
+   live.scrollIntoView({block: "nearest"})` (`app.js:224-225`, read
+   here), so a fallback dispatch **scrolls the element it acted on into
+   view**. The rest of the argument needs the **full** action set, not a
+   sample — r2 of this spec claimed "no fallback-reachable verb performs
+   a durable write" from a partial enumeration, and it is **false**
+   (gate r3 MAJOR-1). All **24** bound actions (`KEYMAP`, `keymap.py`),
+   classified at the **handlers**:
+
+   **(a) Four never reach resolution at all** — `onKeyDown`'s switch
+   (`app.js:516-537`) handles them by name: `move_down` (`s`/`↓`),
+   `move_up` (`w`/`↑`), `drill_in` (`Enter`/`d`/`→`), `help` (`?`).
+
+   **(b) Two reach it through a dedicated helper, both scoped by this
+   unit:** `up` (`Esc`/`a`/`←`) via `goUp()` →
+   `clickAction("interrupt")` then `clickAction("up")`; `note` (`n`) via
+   `focusNote()`.
+
+   **(c) Nine are ROW-SCOPED** — they exist once per row, and are the
+   whole subject of this unit: `route` `e`, `reject` `x`, `defer` `f`,
+   `graduate` `g`, `tolerate` `t`, `confirm_recurrence` `c`,
+   `dismiss_suspect` `k`, `confirm_held` `m` (**eight arming verbs** —
+   all POST `/action/arm`, and `action_bar.html:95` renders
+   `<code>{{ armed.record_id }}</code>`, so the operator is taken to the
+   row and shown its id before `Enter` executes anything), plus
+   `cycle_destination` `o`, which **neither arms nor writes**:
+   `action_cycle_destination` (`routes.py:1715-1756`, read here)
+   recomputes `new_dest`, rebuilds `_unarmed_context(…,
+   dest_touched=True)` and returns `_render(...)` — no file, no runner,
+   nothing persisted. **This class is where a fallback can act on a row
+   the operator is not standing on, and it is bounded by
+   arm-then-confirm plus the scroll.**
+
+   **(d) Nine are PAGE-SINGLETON controls with no row identity at all** —
+   `iterate` `i`, `bucket_pane` `p`, `close_pane` `q`, `retry` `r`,
+   `arm_proposal` `y`, `toggle_brief` `b`, and `success_next`/
+   `success_bucket`/`success_view` `j`/`u`/`v`. **For these the
+   page-wide fallback is CORRECT targeting, not a guess**: there is no
+   row to scope to, so the single match on the page is by construction
+   the one the operator meant. Measured: on a Bucket page the pane is
+   rendered inside `.bucket-right` (`bucket.html:147-167`) with **no
+   `[data-row]` ancestor** — the `[data-row]` elements all live in
+   `.bucket-left` — so `p`/`q`/`r` resolve **only** via the fallback
+   there.
+
+   **The correction that matters, stated plainly:** three of class (d)
+   perform **durable writes**, so r2's blanket sentence was wrong.
+   `i`/`p` → `/pane/start` → `store.start_new` (`store.py:210-228`)
+   archives any existing transcript and writes a new header; `r` →
+   `/pane/retry` appends to it; **`q` → `/pane/close` flushes and calls
+   `prune()`, which DELETES FILES** (`store.py:486-497` →
+   `_prune_by_age`/`_prune_by_bytes` → `_unlink_with_meta` →
+   `path.unlink()`; `pane.py:872`, `:1195`, `:1262` are the call sites).
+   All four were read here. **The deferral survives because they are
+   page-singletons**, not because they are harmless: the fallback
+   resolving `q` is the *right* target, so there is nothing for a
+   "you acted elsewhere" hint to warn about. A durable write reached by
+   correct targeting is not the hazard `[B-6]` is about.2. **A hint here would be loudest where it is least needed.** The
    fallback also fires on every Detail page (no `[data-row]` at all) and
    on a single-holding-row Front, which are the common cases and the ones
    where the key means exactly one thing. Gating the hint on "a selection
@@ -879,7 +943,8 @@ it"):
 Reasoning, in order of weight:
 
 1. **It is the only un-armed, MULTI-RECORD, immediately-writing control
-   in the app.** Every other destructive verb goes through
+   that touches the LEDGER.** *(Both qualifiers are load-bearing and
+   neither is decoration — see the exceptions named below and in §4.2.)* Every other destructive verb goes through
    arm-then-confirm, and the armed strip prints the record id it is about
    to act on. This path prints nothing and writes N records on one
    keystroke (§2.5). *The qualifier is load-bearing and is not a claim
@@ -888,7 +953,15 @@ Reasoning, in order of weight:
    `data-key-action`, its `hx-post` at `:267` — gate r2 NIT-2; bound to
    `o`) also posts
    immediately with no arm step — but single-record, reversible by
-   cycling again, and re-rendering the destination it changed in place.
+   cycling again, re-rendering the destination it changed in place, and
+   (measured at the handler, §4.2) persisting nothing at all. **Nor is
+   it the only un-armed control that deletes something** (gate r3
+   MAJOR-1): `q` (`close_pane`) flushes and prunes, and `prune()`
+   unlinks files. That is not a counterexample to the sentence above
+   because those files are **pane transcripts under the UI cache**
+   (`pane.py:1606` — `cache_dir() / "panes"`), never ledger records —
+   which is exactly why the "touches the LEDGER" qualifier is there
+   rather than a bare "immediately-writing".
 2. **Making it key-reachable safely requires inventing an arm step for
    `graduate-bulk`** — a route change, a nonce, an armed partial. That is
    a real unit, not a line in this one (§7, `[B-1]`).
@@ -1118,8 +1191,8 @@ and a deferred dispatch drops itself fail-closed 500 ms after deferring
 | id | criterion | RED mutation |
 |---|---|---|
 | **S1** `[A]` | For **every `data-key-action` value present in the document** — not only the KEYMAP-bound ones (gate r1 MAJOR-4: scoping it to bound actions meant it never inspected `followup_done` or `link_contradicts`, the very latent class §3.2 says must be closed, and made its own "≥2 follow-up rows" fixture requirement decorative) — in each of Front (≥2 holding rows, ≥2 follow-up rows), Bucket (≥2 record rows **and a bulk-collapse group; no cluster expanded** — see `S1b`) and Detail: either the action occurs **exactly once** in the document, or **every** occurrence has a `[data-row]` ancestor **and** no two occurrences share the same `[data-row]` ancestor. | add a second `data-key-action="route"` inside one `[data-row]`. **Stated plainly: this guard does NOT catch the bulk-collapse shape** (bulk row and record rows are distinct `[data-row]`s), which is why `B1`/`B2`/`B3` exist as separate criteria. A guard whose coverage is overstated is worse than no guard. |
-| **S1b** `[A]` | On a Bucket fixture **with a cluster expanded**: the *only* same-`[data-row]` duplicate sets in the document are the `route` buttons inside a `.cluster-expanded` element. Every other `data-key-action` still satisfies `S1`'s rule. This is the one sanctioned same-row multiplicity in the codebase — it is dispatch-covered by `T6`'s refusal, and removing it means making members individually selectable, which is `[B-2]`. | add a second `data-key-action="route"` inside a `.record-row` (i.e. a same-row duplicate **outside** `.cluster-expanded`) → RED. *Why this is split from `S1` rather than folded into it: `S1`'s clause (b) is false on the intended tree the moment a cluster is expanded, so a single-fixture `S1` covering both shapes would be a criterion that cannot pass — the mirror image of the defect class this unit exists to fix.* |
-| **S2** `[A]` | **The arming-control inventory.** In a rendered Bucket document with a cluster expanded and a bulk-collapse group present, the set of elements that carry an `hx-post` **ending in `/arm`** (or that submit a form posting to one) **and** have no `.action-bar` ancestor is exactly the cluster-member "Route as survivor" buttons. **The predicate is `/arm$`, not `/action/arm$`** (gate r2 MINOR-4): four distinct arming routes exist, and only one of them has the `/action/arm` shape — measured here across `templates/`, 16 `hx-post`s end in `/arm`: `/record/{id}/action/arm` (×12 in `action_bar.html`, ×1 in `cluster_expanded.html`), `/record/{id}/action/commit-drift/arm`, `/proposal/arm`, and `/bucket/{scope}/{name}/host-add/arm`. The narrower suffix would have been **green while blind to three of the four routes** — a new control on any of them placed outside a bar would re-open exactly the door §2.7(c) describes, unseen. `/arm$` covers all four and still yields exactly the cluster button today (`cluster_expanded.html` contains zero occurrences of `class="action-bar"`; the other three files each carry it). Rationale: `style.css:433` neutralises a second mouse-arm only for triggers **inside** a `.action-bar` (§2.7 b/c), so any *new* arming control outside one silently re-opens the co-arm door that `A1`/`A2`/`A5` exist to govern — and would do so with no test noticing. The bulk-collapse button is named in the test as a known, separately-tracked exception: it is not an *arming* control but an un-armed **write** outside a `.action-bar` (`[B-1]`). | add an `hx-post` ending in `/arm` outside any `.action-bar` (e.g. a second survivor button in `bucket.html`, or a `/proposal/arm` trigger placed outside `proposal_bar.html`) → RED. *This guard is a detector, not a fix: it does not close the door, it makes a new one impossible to add **unnoticed**.* **Stated coverage, honestly — the same sentence `S1` owes and pays** (gate r2 MINOR-4): `S2` sees only controls whose own `hx-post` ends in `/arm`. It does **not** see a control that arms indirectly (a plain `<button>` wired by future JS, a link, a form whose action is computed at runtime), and it does not see the bulk-collapse **write** (`/graduate-bulk`), which is outside a `.action-bar` too and is tracked separately as `[B-1]`. A guard whose coverage is overstated is worse than no guard. Closing the door itself is `[B-7]`. |
+| **S1b** `[A]` | **Fixture provenance — the document must be composed, because the server never emits it** (gate r3 MINOR-1): `cluster_expanded.html` renders from exactly one route, `GET /cluster/{scope}/{name}/{cluster_id}` (`routes.py:1296-1311`; grep confirms one render site repo-wide), so a plain Bucket `GET` contains **no cluster at all**. The fixture must therefore either splice the cluster response into the bucket page at its `#cluster-target-<id>` slot (the `_swap_outer_html` technique `test_resolution_evidence.py` already uses) or drive a real Expand click in the browser. **Precondition, asserted before any comparison: the document contains ≥1 `.cluster-expanded` element carrying ≥2 `data-key-action="route"` buttons.** Without it this criterion compares an empty set to an empty expectation and passes while inspecting a document with no cluster in it — §8.7's own vacuous-pass shape, inside the guard §7 names as `[B-7]`'s interim detector. On that fixture: the *only* same-`[data-row]` duplicate sets in the document are the `route` buttons inside a `.cluster-expanded` element. Every other `data-key-action` still satisfies `S1`'s rule. This is the one sanctioned same-row multiplicity in the codebase — it is dispatch-covered by `T6`'s refusal, and removing it means making members individually selectable, which is `[B-2]`. | add a second `data-key-action="route"` inside a `.record-row` (i.e. a same-row duplicate **outside** `.cluster-expanded`) → RED. *Why this is split from `S1` rather than folded into it: `S1`'s clause (b) is false on the intended tree the moment a cluster is expanded, so a single-fixture `S1` covering both shapes would be a criterion that cannot pass — the mirror image of the defect class this unit exists to fix.* |
+| **S2** `[A]` | **The arming-control inventory.** **Same composed fixture and same precondition as `S1b`** — assert ≥1 `.cluster-expanded` with ≥2 `route` buttons is present *before* comparing, or the inventory half compares empty to empty and passes on a document containing no cluster (gate r3 MINOR-1). In that composed Bucket document, with a bulk-collapse group present, the set of elements that carry an `hx-post` **ending in `/arm`** (or that submit a form posting to one) **and** have no `.action-bar` ancestor is exactly the cluster-member "Route as survivor" buttons. **The predicate is `/arm$`, not `/action/arm$`** (gate r2 MINOR-4): four distinct arming routes exist, and only one of them has the `/action/arm` shape — measured here across `templates/`, 16 `hx-post`s end in `/arm`: `/record/{id}/action/arm` (×12 in `action_bar.html`, ×1 in `cluster_expanded.html`), `/record/{id}/action/commit-drift/arm`, `/proposal/arm`, and `/bucket/{scope}/{name}/host-add/arm`. The narrower suffix would have been **green while blind to three of the four routes** — a new control on any of them placed outside a bar would re-open exactly the door §2.7(c) describes, unseen. `/arm$` covers all four and still yields exactly the cluster button today (`cluster_expanded.html` contains zero occurrences of `class="action-bar"`; the other three files each carry it). Rationale: `style.css:433` neutralises a second mouse-arm only for triggers **inside** a `.action-bar` (§2.7 b/c), so any *new* arming control outside one silently re-opens the co-arm door that `A1`/`A2`/`A5` exist to govern — and would do so with no test noticing. The bulk-collapse button is named in the test as a known, separately-tracked exception: it is not an *arming* control but an un-armed **write** outside a `.action-bar` (`[B-1]`). | add an `hx-post` ending in `/arm` outside any `.action-bar` (e.g. a second survivor button in `bucket.html`, or a `/proposal/arm` trigger placed outside `proposal_bar.html`) → RED. *This guard is a detector, not a fix: it does not close the door, it makes a new one impossible to add **unnoticed**.* **Stated coverage, honestly — the same sentence `S1` owes and pays** (gate r2 MINOR-4): `S2` sees only controls whose own `hx-post` ends in `/arm`. It does **not** see a control that arms indirectly (a plain `<button>` wired by future JS, a link, a form whose action is computed at runtime), and it does not see the bulk-collapse **write** (`/graduate-bulk`), which is outside a `.action-bar` too and is tracked separately as `[B-1]`. A guard whose coverage is overstated is worse than no guard. Closing the door itself is `[B-7]`. |
 | **C1** `[A]` | `data-key-context` appears **zero** times under `plugins/self-learn/ui/` (templates and source). The test carries its own positive control: the same search for `data-noop-hint` returns a non-zero count. | re-add `data-key-context` to `action_bar.html` |
 | **SIG1** `[A]` | No template under `plugins/self-learn/ui/templates/` uses htmx's `data-hx-*` prefixed attribute form. (The signature in §4.4 reads the plain form; if a template ever switches, the signature silently weakens and this fails first.) Positive control in the same test: the search for `hx-post` returns a non-zero count. | add `data-hx-post="…"` to any template |
 
