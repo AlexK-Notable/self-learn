@@ -1517,19 +1517,43 @@
       const method = form.getAttribute("method");
       if (method && method.toLowerCase() === "dialog") return;
       if (!htmxWillInterceptSubmit(form)) {
-        // This form carries no hx-* verb and no hx-boost (own or
-        // inherited) -- htmx will NEVER wire a submit interception for
-        // it, so this is not a timing question and there is nothing to
-        // wait for. "No request was sent" is accurate here: with no
-        // verb and no boost, htmx wires, at most, a no-op trigger
-        // handler for it (see the block comment above) -- nothing that
-        // could ever issue a request.
+        // MINOR-2 (code gate r8): this branch covers TWO distinct
+        // reasons, and the warning used to collapse them into one
+        // string that was only accurate for the first -- "this form
+        // carries no htmx verb or boost" is false for a form like
+        // `<form hx-post hx-trigger="click">`, which the gate measured
+        // reaching this exact branch: it DOES carry a verb, it is
+        // blocked because hx-trigger routes that verb to click, never
+        // submit. Naming the real reason matters because this string
+        // is what a developer sees in the console and reasons from.
         evt.preventDefault();
-        console.warn(
-          "blocked a native form submission -- this form carries no " +
-            "htmx verb or boost, so htmx will never intercept it " +
-            "(no request was sent)"
-        );
+        const hasVerbOrBoost = formHasOwnHtmxVerb(form) || formHasHtmxBoost(form);
+        if (!hasVerbOrBoost) {
+          // No hx-* verb and no hx-boost (own or inherited) -- htmx
+          // will NEVER wire a submit interception for it, so this is
+          // not a timing question and there is nothing to wait for.
+          // "No request was sent" is accurate here: with no verb and
+          // no boost, htmx wires, at most, a no-op trigger handler for
+          // it (see the block comment above) -- nothing that could
+          // ever issue a request.
+          console.warn(
+            "blocked a native form submission -- this form carries no " +
+              "htmx verb or boost, so htmx will never intercept it " +
+              "(no request was sent)"
+          );
+        } else {
+          // Has a verb or boost, but its own hx-trigger names
+          // something other than submit -- htmx wires a listener for
+          // THAT trigger, never for the submit event, so a native
+          // submit still reaches nothing of htmx's. Also accurate to
+          // say "no request was sent": nothing submit-driven was ever
+          // going to be sent by htmx from a form wired this way.
+          console.warn(
+            "blocked a native form submission -- this form's hx-trigger " +
+              "routes its htmx verb away from submit, so htmx will " +
+              "never intercept this submit event (no request was sent)"
+          );
+        }
         // MINOR-2 (code gate r7): a blocked Enter used to be entirely
         // console-only -- the app's own rationale for showNoopHint()
         // elsewhere (Y-9) is exactly this case: silence "reads as a

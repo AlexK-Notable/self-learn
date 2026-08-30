@@ -1881,7 +1881,8 @@ class TestClickActionSettleGating:
         the ONLY thing standing between that click and a destroyed
         page. Confirms: no navigation, no POST, and the page stays
         alive and queryable afterward -- a dropped keystroke, not a
-        catastrophe."""
+        catastrophe. Also pins NIT-A (code gate r8): this branch's
+        "Still loading" hint, previously untested anywhere."""
         _open(page, server, f"/record/{REC_BRIEF}")
         page.evaluate("htmx.config.defaultSettleDelay = 1500")
         warnings: list[str] = []
@@ -1940,6 +1941,16 @@ class TestClickActionSettleGating:
         blocked_warnings = [w for w in warnings if "htmx did not yet appear wired" in w]
         assert len(blocked_warnings) == 1, (
             f"expected exactly one submit-guard warning, got: {warnings}"
+        )
+        # NIT-A (code gate r8): this branch's showNoopHint("Still
+        # loading -- try that again in a moment.") had no test anywhere
+        # pinning it. Text-specific, not mere presence -- the tier-1
+        # no-verb/boost test above also shows a hint, so a presence-only
+        # check here could not distinguish which branch actually fired.
+        hint = page.locator("[data-noop-hint-active]")
+        assert hint.count() == 1, "no visible hint shown for the timing-blocked submit"
+        assert "Still loading" in (hint.text_content() or ""), (
+            f"unexpected hint text: {hint.text_content()!r}"
         )
 
     def test_native_submission_is_blocked_forever_for_a_form_with_no_htmx_verb_or_boost(
@@ -2023,14 +2034,19 @@ class TestClickActionSettleGating:
         absence-of-evidence as permanent evidence), just pointed the
         other way. Fixed by giving each abandoned entry its own
         staleness ceiling (`ABANDONED_SWAP_CEILING_MS`, 10s): once a
-        key has outlived any plausible swap, it silently ages out --
-        NEVER draining `pendingDispatches` itself, so a timeout is
-        still never a reason to act -- letting only FUTURE, not-yet-
-        issued keypresses recover the ability to dispatch immediately;
-        any dispatch already queued and waiting on it still only ever
-        drops via its OWN independent 500ms fallback, exactly as
-        before (reproduced here first, matching the gate's own
-        three-drop measurement, before the ceiling is ever reached)."""
+        key has outlived any plausible swap, it silently ages out,
+        letting FUTURE, not-yet-issued keypresses recover the ability
+        to dispatch immediately (reproduced here: three keypresses,
+        matching the gate's own three-drop measurement). This test's
+        own three keypresses each drop via their OWN independent 500ms
+        fallback -- they land and resolve strictly before the 10s
+        ceiling is ever reached here, so what happens to a dispatch
+        still queued WHEN the ceiling itself fires is not what this
+        test exercises -- see
+        test_abandoned_ceiling_never_drains_a_dispatch_that_is_still_queued
+        for that (code gate r7 redesigned the ceiling to proactively
+        drop a still-queued dispatch itself, not merely leave it to run
+        out its own fallback)."""
         _open(page, server, f"/record/{REC_BRIEF}")
         page.evaluate(
             """() => {
@@ -2394,8 +2410,20 @@ class TestClickActionSettleGating:
         All three are latent in shipped markup (the guard's own comment
         documents the grep showing that); constructed here directly so
         the closes are exercised without needing shipped markup to
-        change."""
+        change.
+
+        MINOR-2 (code gate r8, pinned here): the tier-1 warning used to
+        say "this form carries no htmx verb or boost" unconditionally
+        -- false for this exact trigger-override case, which DOES carry
+        a verb. Collects console warnings alongside the three closes
+        above and asserts the trigger case's warning names its own,
+        different reason."""
         _open(page, server, f"/record/{REC_BRIEF}")
+        warnings: list[str] = []
+        page.on(
+            "console",
+            lambda msg: warnings.append(msg.text) if msg.type == "warning" else None,
+        )
         result = page.evaluate(
             """() => {
                 const results = {};
@@ -2465,6 +2493,28 @@ class TestClickActionSettleGating:
             'method="dialog" was blocked -- native dialog-closing '
             "submission never navigates and sends no request; blocking "
             "it is a regression, not a fix"
+        )
+        # MINOR-2 (code gate r8): the trigger-override case DOES carry
+        # an htmx verb -- the warning must name hx-trigger routing it
+        # away from submit, not the "no verb or boost" reason that
+        # belongs to the sibling no-verb/no-boost test instead.
+        for _ in range(25):
+            if any("routes its htmx verb away from submit" in w for w in warnings):
+                break
+            page.evaluate("() => true")
+            time.sleep(0.02)
+        # NOTE: the disinherit-form case above also legitimately warns
+        # with the "carries no htmx verb or boost" text -- once its own
+        # boost is cut off by hx-disinherit it genuinely has neither a
+        # verb nor a boost, so that text is correct FOR IT. Only the
+        # trigger case is asserted here: it is the one that DOES carry
+        # a verb (hx-post) and must not be described as verb/boost-less.
+        trigger_reason_warnings = [
+            w for w in warnings if "routes its htmx verb away from submit" in w
+        ]
+        assert len(trigger_reason_warnings) == 1, (
+            f"expected the trigger-override case to warn with its own "
+            f"reason, got: {warnings}"
         )
 
 
