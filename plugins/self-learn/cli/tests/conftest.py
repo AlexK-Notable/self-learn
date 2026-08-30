@@ -491,3 +491,45 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
             f"sibling suite on this shared host, reported but not failed: "
             f"{_WARN_NAMESPACES}"
         )
+
+
+# ===================================================================== #
+# U-xdist (2026-08-28): worker -> controller channel for the litter
+# guard's "concurrent sibling" WARNING (never the two hard-fail
+# assertions above -- those are ordinary fixture-teardown assertions,
+# which xdist already relays to the controller as structured test
+# failures with no help needed here). Under `-n`, `pytest_terminal_
+# summary` fires once per WORKER process too (verified directly by the
+# U-xdist scout, 2026-08-28) but only the CONTROLLER's own call is ever
+# visible on the terminal -- and the controller executes zero tests, so
+# its own `_WARN_NAMESPACES` was always empty, silently dropping this
+# warning under `-n` even in the exact "concurrent sibling" case it
+# exists to report. Fix: relay each worker's OWN `_WARN_NAMESPACES`
+# through xdist's documented `config.workeroutput`/`pytest_testnodedown`
+# channel and EXTEND this SAME `_WARN_NAMESPACES` list on the
+# controller -- `pytest_terminal_summary` above needs no edit at all,
+# since by the time it runs on the controller every worker has already
+# gone down (a worker cannot finish the whole session before it does)
+# and `pytest_testnodedown` has already fired for each one. A plain
+# serial run (no xdist at all) never triggers either hook below, so its
+# behaviour is unchanged -- byte for byte.
+def pytest_sessionfinish(session):
+    config = session.config
+    if hasattr(config, "workeroutput"):
+        config.workeroutput["warn_namespaces"] = list(_WARN_NAMESPACES)
+
+
+def pytest_testnodedown(node, error):
+    # DEDUPED, not a plain `.extend()`: two workers whose session windows
+    # both span the same real event (the common case -- xdist workers
+    # start together and run for close to the whole session) can each
+    # independently observe the SAME sibling namespace and report it in
+    # their own `_WARN_NAMESPACES`; a plain extend would then print it
+    # twice for one real directory. Serial mode never had this failure
+    # mode at all (one process, one `after - before` SET diff), so this
+    # keeps the aggregated result true to that same "one entry per real
+    # namespace" property.
+    remote = getattr(node, "workeroutput", None) or {}
+    for namespace in remote.get("warn_namespaces", []):
+        if namespace not in _WARN_NAMESPACES:
+            _WARN_NAMESPACES.append(namespace)

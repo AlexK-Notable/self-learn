@@ -2262,14 +2262,29 @@ def test_rs8_lockfiles_no_package_added_or_removed_no_version_changed():
         names = [p["name"] for p in head_data["package"]]
         assert len(names) == len(set(names))  # sanity: no dup stanzas
 
-        # The bound itself: identical (name, version) sets vs c2669a9.
-        assert _pkg_set(head_data) == _pkg_set(base_data), (
-            f"{rel_path}: package (name, version) set differs from c2669a9"
+        # U-xdist (2026-08-28): `pytest-xdist` is now a real CLI dev
+        # dependency (`uv add --dev pytest-xdist` in `plugins/self-learn/
+        # cli`) -- its own two new locked packages, itself plus its own
+        # dependency `execnet`, CLI lockfile only. RS8's bound widens to
+        # allow EXACTLY this addition; nothing else may differ.
+        added = {("pytest-xdist", "3.8.0"), ("execnet", "2.1.2")} if lock_path == cli_lock else set()
+
+        # The bound itself: identical (name, version) sets vs c2669a9,
+        # plus exactly this unit's own sanctioned `added` set above --
+        # equality here also catches a REMOVED base package (head minus
+        # added would then be a proper subset of base, not equal).
+        assert _pkg_set(head_data) - added == _pkg_set(base_data), (
+            f"{rel_path}: package (name, version) set differs from c2669a9 beyond the sanctioned addition"
         )
 
-        # Only `self-learn-cli`'s own stanza may differ AT ALL; every
-        # other package's full stanza must be byte-for-byte the same dict.
-        head_others = [p for p in head_data["package"] if p["name"] != "self-learn-cli"]
+        # Only `self-learn-cli`'s own stanza may differ AT ALL among the
+        # PRE-EXISTING packages; every other pre-existing package's full
+        # stanza must be byte-for-byte the same dict as base.
+        added_names = {name for name, _version in added}
+        head_others = [
+            p for p in head_data["package"]
+            if p["name"] != "self-learn-cli" and p["name"] not in added_names
+        ]
         base_others = [p for p in base_data["package"] if p["name"] != "self-learn-cli"]
         assert head_others == base_others, f"{rel_path}: a non-self-learn-cli stanza changed"
 

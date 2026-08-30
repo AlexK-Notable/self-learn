@@ -732,6 +732,34 @@ while the pass itself is parked (O-9).
   runner replaces, and are retired once `land` has completed one real
   landing. The build is the next step; no runner code exists under
   `scripts/` from this unit yet.
+- *2026-08-28*: **U-xdist** moved the CLI suite's sanctioned runner
+  (`plugins/self-learn/cli/scripts/suite`) from three parallel serial batches
+  (A/B/C, 275-276s measured from master's own runner, 2 runs; batch C alone
+  274.8s, gated by the slowest batch on a 28-core host) to one `pytest-xdist`
+  `-n auto` run over the whole tree (85.72s/86.00s/86.61s measured, 3 runs) --
+  a 3.20x-3.21x speedup on adjacent pairs, measured interleaved with the old
+  runner under the same live load (gate r1, 2026-08-29), fixing at the root the
+  two things that made a shared worker pool unsafe or blind: `pytest-xdist` is
+  now a real dev dependency (`uv add --dev pytest-xdist`, 3.8.0, survives the
+  script's own `uv sync` instead of being silently wiped by it); and
+  `test_u_corrob.py`'s M2 mutation test no longer writes the mutated source
+  into the LIVE, shared `src/self_learn/corroborate.py` — it builds the
+  mutation into a private `tmp_path` copy of the whole package and shadows it
+  onto a fresh interpreter via `PYTHONPATH`, removing a real race (~20% per-run
+  in the scout's sampling) where a sibling worker's own fresh-interpreter
+  subprocess test could read the file mid-mutation. The litter guard's
+  "concurrent sibling" warning, previously silent under `-n` (the controller
+  executes zero tests, so its own tracking list was always empty), now travels
+  worker → controller via xdist's own
+  `config.workeroutput`/`pytest_testnodedown` channel, deduplicated so one real
+  sibling namespace reports once even when two workers both observe it.
+  `SUITE_WORKERS`/`SUITE_SERIAL` env overrides exist for bisection only, never
+  routine use. Under `test_armor.py`'s node-census armor (landed by `U-armor`
+  mid-branch), the two nodes this unit touches carry their own dated record:
+  `conftest.py`'s `Fixture.repinned` entry re-pins the file's byte sha for the
+  litter-guard relay appended at its end, and `test_invocation_sdk.py`'s
+  `Behaviour.edited` entry exempts RS8's lockfile-drift-bound node, widened to
+  allow exactly the sanctioned `pytest-xdist`/`execnet` addition.
 
 ## 7. Change control
 

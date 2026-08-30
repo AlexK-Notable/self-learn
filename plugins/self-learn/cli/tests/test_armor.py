@@ -116,7 +116,7 @@ def _git_show_text(rev: str, key: str) -> str:
 # anchor is byte-identical to what the spec measured at `fe5a012`
 # (`= 3b8e037`'s child). The landing chain rewrites this via
 # `--remeasure`, never a human (section 4.2).
-ANCHOR = "cf1e32d"
+ANCHOR = "502ca8d"
 
 
 # ===================================================================== #
@@ -253,7 +253,20 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
     # docs-only) moved ANCHOR to 9c7ebdd itself, folding that content
     # IN and making the repin vacuous -- dropped, same motion as
     # test_wr7's own fold (section 4.1).
-    "conftest.py": Fixture(),  # 2 importers
+    "conftest.py": Fixture(
+        repinned=(
+            "8327c4cf2abfdc07db18718b3356052dda09f0bfce1411cd975e6dabdc34339b",
+            "2026-08-28 U-xdist T1, per §4.3 (F2's re-pin door): "
+            "conftest.py's cache-litter guard gains a worker -> controller "
+            "relay (pytest_sessionfinish/pytest_testnodedown, appended at "
+            "the file's end) so its 'concurrent sibling' warning survives "
+            "under the new pytest-xdist -n auto suite runner -- the "
+            "warning was silently dead under -n before this (the "
+            "controller executes zero tests, so its own tracking list was "
+            "always empty). Section 4.7 row 1 migrated this file's prior "
+            "whole-file pin (test_worker_contract.py's _ARMOR_SHAS) here.",
+        ),
+    ),  # 2 importers
     "backends.py": Fixture(),  # 3 importers
     # --- ADDITIVE: the one fixture V-2 lets grow (section 4.4) --------
     "fixtures/fake_claude.py": Additive(
@@ -277,7 +290,24 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
         nodes=94, dump_sha="eb90005324f7f1483dcd618a80501d03a11e2f0ebb2541b5af696d31b48644fe"
     ),
     "test_invocation_sdk.py": Behaviour(
-        nodes=139, dump_sha="2517577cbfc385476eba58d5e580a5bf5ea6d6691b15c14e1e51eb618168d7f0"
+        nodes=139, dump_sha="2517577cbfc385476eba58d5e580a5bf5ea6d6691b15c14e1e51eb618168d7f0",
+        edited={
+            "func:test_rs8_lockfiles_no_package_added_or_removed_no_version_changed": (
+                "2026-08-28 U-xdist T1, per §4.5 (B3/B4, the node "
+                "census's own exemption door): RS8's lockfile-drift bound "
+                "widened to allow EXACTLY the sanctioned `uv add --dev "
+                "pytest-xdist` addition (itself plus its own dependency "
+                "execnet) to the CLI lockfile -- nothing else may differ. "
+                "The prior growth-ceiling mechanism this class of edit used "
+                "to need (HY5, test_u_sdka.py) is retired by section 4.7 "
+                "row 11; this node's own body-level equality/subset check "
+                "is unchanged in shape, only the sanctioned-addition set "
+                "is new. The anchor version would flag pytest-xdist/"
+                "execnet as unauthorized lockfile drift; the head version "
+                "correctly allows this one, named, addition and nothing "
+                "wider."
+            ),
+        },
     ),
     "test_worker.py": Behaviour(
         nodes=80, dump_sha="16e45a867ecebd6471586640f1f52417427c235d04777e74ec4f34c14506627c"
@@ -826,13 +856,18 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_census_missing,
     ),
     "EXM3.census_edited": Measured(
-        value=0,
+        value=1,
         scope=_SCOPE_ANCHOR_HEAD,
         reason=(
-            "2026-08-28 §4.1's fold note, measured by hand at ANCHOR "
-            "6815503: anchor nodes whose dump differs at HEAD, summed over "
-            "every Behaviour file. Zero because the one historical `edited` "
-            "entry (test_wr7) is now INSIDE the anchor."
+            "2026-08-30 U-xdist re-gated merge-up fold, per §5.1's STALE "
+            "remediation: 0 -> 1 at ANCHOR cf1e32d, printed by this "
+            "module's own --remeasure refusal. RS8's lockfile-drift-bound "
+            "node (test_invocation_sdk.py) is the one anchor node whose "
+            "dump differs at HEAD -- widened for the sanctioned "
+            "pytest-xdist/execnet addition, exempted in ARMOR's "
+            "test_invocation_sdk.py row (2026-08-28 U-xdist T1, per "
+            "§4.5). The prior value (0) dated from before this branch's "
+            "own RS8 edit existed."
         ),
         measure=_measure_census_edited,
     ),
@@ -848,13 +883,16 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_control_missing,
     ),
     "BEH3.control_edited": Measured(
-        value=184,
+        value=185,
         scope=_SCOPE_HEAD,
         reason=(
-            "2026-08-28 §4.7 row 12, measured by hand against the RETIRED "
-            "anchor c3b48e7 (never advanced): the not-vacuous control for "
-            "BEH3 and EXM3. Re-measured from the spec-gate-era 190, same "
-            "cause as BEH1.control_missing."
+            "2026-08-30 U-xdist re-gated merge-up fold, per §5.1's STALE "
+            "remediation: 184 -> 185 at ANCHOR cf1e32d (HEAD-scoped, "
+            "against the fixed retired anchor c3b48e7 -- moves whenever "
+            "HEAD does, independent of the live ANCHOR), printed by this "
+            "module's own --remeasure refusal. Same cause as "
+            "EXM3.census_edited above: RS8's node, genuinely edited "
+            "relative to c3b48e7, exempted the same way."
         ),
         measure=_measure_control_edited,
     ),
@@ -2084,7 +2122,13 @@ def test_fix1_fixtures_are_byte_identical(tmp_path):
         != hashlib.sha256(_anchor_bytes("conftest.py")).hexdigest()
     )
 
-    # The shipped fixtures themselves are byte-identical to ANCHOR right now.
+    # Corrected 2026-08-29 (code gate r2, same class as MINOR-1): this
+    # said "byte-identical to ANCHOR right now" unconditionally, true
+    # at master `93bfb5d`, falsified the same way by this branch's own
+    # `e59534b` -- conftest.py is explicitly NOT byte-identical to
+    # ANCHOR (it is repinned to differ, on purpose). The branch below
+    # already handled this correctly (repinned rows check against
+    # their own pinned sha, not ANCHOR); only the comment overclaimed.
     for key in FIXTURE_KEYS:
         row = ARMOR[key]
         assert isinstance(row, Fixture)
@@ -2112,9 +2156,15 @@ def test_fix2_repin_door_is_exact_and_cannot_rot():
     def _check_repin(key: str, row: Fixture) -> None:
         _check_repin_shas(key, row, _f1(key), hashlib.sha256(_anchor_bytes(key)).hexdigest())
 
-    # The shipped table: all three `repinned is None` -- EXM3 covers the
-    # unconditional assertion; here we only confirm `_check_repin` is a
-    # no-op for it.
+    # Corrected 2026-08-29 (code gate r2, MINOR-1): this said "all
+    # three `repinned is None`", true at master `93bfb5d` and
+    # falsified by this branch's own `e59534b` -- support.py and
+    # backends.py still ship `repinned is None` (2 of 3, still a
+    # no-op here), but conftest.py's own `repinned` entry (U-xdist,
+    # 2026-08-28) makes `_check_repin` a REAL check for it: its pinned
+    # sha must match HEAD's actual bytes, not just be absent. EXM3
+    # covers the unconditional (`repinned`-present-or-not) assertion
+    # either way.
     for key in FIXTURE_KEYS:
         row = ARMOR[key]
         assert isinstance(row, Fixture)
@@ -2581,8 +2631,12 @@ def test_beh3_no_protected_node_is_edited():
     """`B3`. Dump identity, node-wide. Four MEASURED positive controls
     (all GREEN under the retired test-only census, all RED here) plus
     two gate probes (setup-line flip; `pytest.raises` deletion), plus
-    the `c3b48e7` control at 184 edited (re-measured 2026-08-28, was
-    190 at spec-gate time -- see `test_beh1`'s docstring)."""
+    the `c3b48e7` control at 185 edited (re-measured 2026-08-28, was
+    190 at spec-gate time -- see `test_beh1`'s docstring; U-xdist T1,
+    same day, per §4.5: 184 -> 185, one more node genuinely edited
+    relative to c3b48e7 -- RS8's own body widened for the sanctioned
+    pytest-xdist/execnet lockfile addition, exempted in `ARMOR`'s
+    `test_invocation_sdk.py` row)."""
     total_edited_c3b48e7 = 0
     for key in BEHAVIOUR_KEYS:
         a = _census(_git_show_text("c3b48e7", key))
@@ -2959,10 +3013,15 @@ def test_exm1_every_reason_carries_a_date_and_an_anchor():
     ok, why = _exm1_check(f"2026-08-28 {ANCHOR}: unrelated citation.")
     assert ok, why
 
-    # Applied to every live reason string this table actually ships
-    # (currently zero, since EXM3 requires all four doors shut) -- the
-    # grammar/resolution functions themselves are exercised above; this
-    # loop keeps the assertion meaningful once a real entry lands.
+    # Applied to every live reason string this table actually ships.
+    # Corrected 2026-08-29 (U-xdist code gate r1, Minor): this was NOT
+    # zero even before this unit -- test_u_fake.py's 14 DEL1/DEL2
+    # `missing` entries (its own anchor-era migration) already shipped
+    # at ANCHOR. This unit adds two more: test_invocation_sdk.py's one
+    # RS8 `edited` entry and conftest.py's one Fixture.repinned entry.
+    # The grammar/resolution functions themselves are exercised above
+    # too; this loop is the coverage half -- every row EXM3 actually
+    # ships, not a placeholder waiting for a first real entry.
     for key in BEHAVIOUR_KEYS:
         row = ARMOR[key]
         assert isinstance(row, Behaviour)
@@ -3014,7 +3073,14 @@ def test_exm3_doors_match_what_the_anchor_owes():
     missing / 184 edited (re-measured from the spec's 56/190 -- this
     unit's own test_u_fake.py deletions moved several c3b48e7-edited
     nodes into c3b48e7-missing, and some further into outright common
-    ancestry; not vacuous on a small number either way)."""
+    ancestry; not vacuous on a small number either way).
+    U-xdist T1 (same day, per §4.5): census edited 0 -> 1 -- RS8's own
+    body widened for the sanctioned pytest-xdist/execnet lockfile
+    addition, exempted in `ARMOR`'s `test_invocation_sdk.py` row; the
+    exemption grammar/coverage legs above already assert this row's
+    reason is valid and its key is genuinely in the census diff, so
+    this positive-control total is the only literal that needs
+    bumping."""
     # `Fixture.repinned` gets the SAME "owed" exception (r1 gate
     # fold): `support.py` now legitimately carries one (U-verbs'
     # `force_past_deferred`, landed on master and merged in by this
@@ -3062,6 +3128,11 @@ def test_exm3_doors_match_what_the_anchor_owes():
     assert set(additive.edited_funcs) == {"main", "_scenario_error_result"}, set(additive.edited_funcs)
 
     # Positive control: c3b48e7 is NOT vacuous.
+    # U-xdist T1 (2026-08-28, per §4.5): c_edited 184 -> 185, same one
+    # more genuinely-edited node as `test_beh3`'s own colocated control
+    # (RS8's body, widened for the sanctioned pytest-xdist/execnet
+    # lockfile addition, exempted in `ARMOR`'s `test_invocation_sdk.py`
+    # row).
     c_missing = c_edited = 0
     for key in BEHAVIOUR_KEYS:
         a = _census(_git_show_text("c3b48e7", key))
