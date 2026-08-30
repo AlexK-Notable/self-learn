@@ -57,7 +57,26 @@ for this file's own mutation-verification, guaranteed to hold a
 controlled stub) -- regardless of what this host actually has there,
 and never visible outside that namespace. See that function's own
 docstring for the mirror/clone mechanism, and the affected tests'
-docstrings for the regression each closes."""
+docstrings for the regression each closes.
+
+Gate r4 fold (2026-08-29): CLEAN verdict, four Nits folded. Nit 1
+(elevated by the coordinator): `_run_wrapper_uv_masked`'s mirror/clone
+directories used to leak onto the real, shared /tmp (measured: 2 per
+invocation, one holding ~5,962 symlinks, never cleaned) -- now created
+via nested `tempfile.TemporaryDirectory` context managers under the
+caller's own `tmp_path`, guaranteeing cleanup on every exit path.
+Before/after measured directly: the OLD code leaked exactly 4 real
+`/tmp` directories across 2 test invocations (reproduced live); the
+FIXED code leaves zero across every affected test in both packages,
+repeatedly. Nit 2: `_unprivileged_userns_available`'s probe now also
+catches `subprocess.SubprocessError` (`TimeoutExpired` is one, NOT an
+`OSError` -- a slow probe under load used to fail COLLECTION of this
+whole file, losing all 9 tests, rather than skipping the 2-3 that need
+the namespace; reproduced and fixed, confirmed via a real timed-out
+probe against the shipped function). Nit 3: `plant_stub_uv_at` now has
+a shipped call site, `test_uv_masked_namespace_resolves_a_planted_stub_uv`
+(parametrized over both branches) -- the positive affirmative proof the
+mask can show presence, not just absence."""
 
 import json
 import os
@@ -65,6 +84,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -156,7 +176,17 @@ def _unprivileged_userns_available() -> bool:
             capture_output=True,
             timeout=10,
         )
-    except OSError:
+    except (OSError, subprocess.SubprocessError):
+        # Gate r4 Nit 2: `subprocess.TimeoutExpired` is a
+        # `SubprocessError`, NOT an `OSError` -- a probe that times out
+        # under load (this host regularly runs five or six concurrent
+        # agents) used to propagate UNCAUGHT out of this module-level
+        # call, failing collection of this ENTIRE file (measured: rc=2,
+        # every test in it lost) instead of degrading to "namespace
+        # unavailable, skip the three that need it". `SubprocessError`
+        # is the base of `TimeoutExpired` and `CalledProcessError`
+        # (the latter unreachable here since `check=` is never passed,
+        # kept for robustness against a future edit that adds it).
         return False
     return probe.returncode == 0
 
@@ -173,6 +203,7 @@ _NAMESPACE_SKIP_REASON = (
 
 def _run_wrapper_uv_masked(
     *,
+    tmp_path: Path,
     home: Path,
     path_dir: Path,
     args: list[str],
@@ -206,41 +237,78 @@ def _run_wrapper_uv_masked(
     --make-rprivate /` is added defensively so this holds even on a
     host whose root mount happens to be marked shared.
 
+    Gate r4 Nit 1 (elevated -- this codebase already paid for
+    `U-cachelit`'s lesson about exactly this class of leak): the
+    mirror and clone directories used to be created via `mktemp -d`
+    INSIDE the namespace's own bash script, landing on the REAL,
+    shared `/tmp` -- a mount namespace tears down the MOUNTS it
+    creates when its last process exits, but the mirror/clone
+    directories themselves are ordinary filesystem objects on the real
+    `/tmp`, never namespace-scoped, so they silently outlived every
+    run (measured: 2 directories per invocation, one holding the
+    ~5,962-entry symlink clone of `/usr/bin`, never cleaned). Both are
+    now created by THIS function, under the caller's own `tmp_path` --
+    a location the pytest harness already owns and manages -- and
+    removed in a `finally` covering every exit path (normal return,
+    a non-zero wrapper exit, a subprocess timeout, or any other
+    exception), not merely relied upon to eventually age out.
+
     `plant_stub_uv_at` (`"usr-local-bin"` or `"usr-bin"`) writes a
     distinguishable, non-network stub `uv` at that location BEFORE the
-    final mount swap -- used only for this file's own mutation-
-    verification (proving the mask is real, not merely absent because
-    this dev host never had a packaged uv to begin with), never by a
-    shipped test's must-pass path."""
-    plant_local = ""
-    plant_bin = ""
-    if plant_stub_uv_at == "usr-local-bin":
-        plant_local = (
-            "printf '#!/usr/bin/env bash\necho "
-            "\"NAMESPACE_PLANTED_UV: $*\"\n' > /usr/local/bin/uv\n"
-            "chmod 0755 /usr/local/bin/uv\n"
-        )
-    elif plant_stub_uv_at == "usr-bin":
-        plant_bin = (
-            "printf '#!/usr/bin/env bash\necho "
-            "\"NAMESPACE_PLANTED_UV: $*\"\n' > \"$CLONE_BIN/uv\"\n"
-            "chmod 0755 \"$CLONE_BIN/uv\"\n"
-        )
-    elif plant_stub_uv_at is not None:
+    final mount swap -- exercised by a shipped test
+    (`test_uv_masked_namespace_resolves_a_planted_stub_uv` below),
+    proving the mask can show PRESENCE as well as absence, not merely
+    absence by accident of this dev host never having a packaged uv."""
+    if plant_stub_uv_at not in (None, "usr-local-bin", "usr-bin"):
         raise ValueError(f"unknown plant_stub_uv_at: {plant_stub_uv_at!r}")
 
-    wrapper_argv = " ".join(
-        shlex.quote(a) for a in [str(WRAPPER), *args]
-    )
-    script = f"""
+    # Gate r4 Nit 1: genuine context managers, not a manual mkdtemp +
+    # try/finally -- `tempfile.TemporaryDirectory` guarantees cleanup on
+    # every exit path via its own `__exit__`, INCLUDING the case a bare
+    # try/finally around two separate `mkdtemp()` calls gets wrong: if
+    # the SECOND `TemporaryDirectory.__enter__` ever raised, the first's
+    # `__exit__` still fires (Python's `with A, B:` is nested `with A:
+    # with B:`, verified directly). `ignore_cleanup_errors=True` matches
+    # this file's own risk posture elsewhere (never let a CLEANUP
+    # failure mask the actual test result).
+    with (
+        tempfile.TemporaryDirectory(
+            prefix="ns-mirror-bin-", dir=str(tmp_path), ignore_cleanup_errors=True
+        ) as mirror_bin_str,
+        tempfile.TemporaryDirectory(
+            prefix="ns-clone-bin-", dir=str(tmp_path), ignore_cleanup_errors=True
+        ) as clone_bin_str,
+    ):
+        mirror_bin = Path(mirror_bin_str)
+        clone_bin = Path(clone_bin_str)
+
+        plant_local = ""
+        plant_bin = ""
+        if plant_stub_uv_at == "usr-local-bin":
+            plant_local = (
+                "printf '#!/usr/bin/env bash\necho "
+                "\"NAMESPACE_PLANTED_UV: $*\"\n' > /usr/local/bin/uv\n"
+                "chmod 0755 /usr/local/bin/uv\n"
+            )
+        elif plant_stub_uv_at == "usr-bin":
+            plant_bin = (
+                "printf '#!/usr/bin/env bash\necho "
+                "\"NAMESPACE_PLANTED_UV: $*\"\n' > \"$CLONE_BIN/uv\"\n"
+                "chmod 0755 \"$CLONE_BIN/uv\"\n"
+            )
+
+        wrapper_argv = " ".join(
+            shlex.quote(a) for a in [str(WRAPPER), *args]
+        )
+        script = f"""
 set -euo pipefail
 shopt -s nullglob
 mount --make-rprivate / 2>/dev/null || true
 [ -d /usr/local/bin ] || mkdir -p /usr/local/bin
 mount -t tmpfs tmpfs /usr/local/bin
-{plant_local}MIRROR_BIN="$(mktemp -d)"
+{plant_local}MIRROR_BIN={shlex.quote(str(mirror_bin))}
+CLONE_BIN={shlex.quote(str(clone_bin))}
 mount --bind /usr/bin "$MIRROR_BIN"
-CLONE_BIN="$(mktemp -d)"
 for e in "$MIRROR_BIN"/*; do
   name="$(basename "$e")"
   if [ "$name" = "uv" ]; then continue; fi
@@ -249,12 +317,12 @@ done
 {plant_bin}mount --bind "$CLONE_BIN" /usr/bin
 exec env -i HOME={shlex.quote(str(home))} PATH={shlex.quote(str(path_dir))} {wrapper_argv}
 """
-    return subprocess.run(
-        ["unshare", "--user", "--map-root-user", "--mount", "--", "bash", "-c", script],
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
+        return subprocess.run(
+            ["unshare", "--user", "--map-root-user", "--mount", "--", "bash", "-c", script],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
 
 
 @pytest.mark.skipif(shutil.which("uv") is None, reason="uv not on PATH")
@@ -339,6 +407,41 @@ def test_wrapper_falls_back_to_home_local_bin_uv_when_path_lacks_it(tmp_path):
 
 
 @pytest.mark.skipif(not _NAMESPACE_AVAILABLE, reason=_NAMESPACE_SKIP_REASON)
+@pytest.mark.parametrize("plant_stub_uv_at", ["usr-local-bin", "usr-bin"])
+def test_uv_masked_namespace_resolves_a_planted_stub_uv(tmp_path, plant_stub_uv_at):
+    """Gate r4 Nit 3: `_run_wrapper_uv_masked`'s `plant_stub_uv_at` had
+    zero shipped call sites -- exercised only manually (by the gate,
+    and by this file's own scratch mutation-verification runs, neither
+    of which ships). This is the positive affirmative counterpart to
+    the not-found/rejection tests below: it proves the masking
+    technique can show PRESENCE, not merely absence by accident of
+    this dev host never packaging a real `uv` in either fallback
+    location. If the wrapper's resolution logic ever stopped checking
+    `/usr/local/bin/uv` or `/usr/bin/uv` at all, the not-found tests
+    would stay green (nothing to find either way) -- only THIS test
+    would catch it. `plant_stub_uv_at` writes a distinguishable,
+    non-network stub (never a real `uv run`, preserving this module's
+    own no-network invariant) at the given location just before the
+    namespace's final mount swap; the wrapper must find and exec it."""
+    fake_home = tmp_path / "empty-home"
+    fake_home.mkdir()
+
+    hermetic_bin = _hermetic_bin(tmp_path)
+    assert {p.name for p in hermetic_bin.iterdir()} == {"bash", "dirname", "readlink"}
+
+    result = _run_wrapper_uv_masked(
+        tmp_path=tmp_path,
+        home=fake_home,
+        path_dir=hermetic_bin,
+        args=["status", "--json"],
+        plant_stub_uv_at=plant_stub_uv_at,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == ""
+    assert result.stdout.startswith("NAMESPACE_PLANTED_UV: run --project ")
+
+
+@pytest.mark.skipif(not _NAMESPACE_AVAILABLE, reason=_NAMESPACE_SKIP_REASON)
 def test_wrapper_fails_loudly_with_no_bare_127_when_uv_is_nowhere(tmp_path):
     """Not-found path: PATH is `_hermetic_bin`'s single uv-free
     directory, $HOME/.local/bin/uv (the only fallback candidate this
@@ -361,7 +464,7 @@ def test_wrapper_fails_loudly_with_no_bare_127_when_uv_is_nowhere(tmp_path):
     assert {p.name for p in hermetic_bin.iterdir()} == {"bash", "dirname", "readlink"}
 
     result = _run_wrapper_uv_masked(
-        home=fake_home, path_dir=hermetic_bin, args=["status", "--json"]
+        tmp_path=tmp_path, home=fake_home, path_dir=hermetic_bin, args=["status", "--json"]
     )
     assert result.returncode != 0, result.stderr
     assert result.stdout == ""
@@ -432,7 +535,7 @@ def test_wrapper_rejects_a_directory_named_uv_at_the_fallback_location(tmp_path)
     assert {p.name for p in hermetic_bin.iterdir()} == {"bash", "dirname", "readlink"}
 
     result = _run_wrapper_uv_masked(
-        home=fake_home, path_dir=hermetic_bin, args=["status", "--json"]
+        tmp_path=tmp_path, home=fake_home, path_dir=hermetic_bin, args=["status", "--json"]
     )
     assert result.returncode != 0, result.stderr
     assert "uv not found" in result.stderr

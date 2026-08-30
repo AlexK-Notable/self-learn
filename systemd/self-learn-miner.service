@@ -30,9 +30,13 @@ Environment=SELF_LEARN_HOME=%h/.self-learn
 # Measured live on this host (2026-08-29): `~/bin/self-learn-notify`
 # EXISTS (a symlink into this repo) but `%h/bin` was NEVER on the
 # systemd user-manager's own PATH (`systemctl --user show-environment`
-# has no `~/bin` entry at all, among 536 duplicated
-# `.local/bin` entries), and `shutil.which("self-learn-notify")` under
-# that exact PATH returns `None`. Gate r3 CORRECTED the conclusion drawn
+# has no `~/bin` entry at all, among an ABSURDLY duplicated run of
+# `.local/bin` entries -- measured three times across this unit's own
+# gate rounds, a different three-digit count each time (536, then 558,
+# then 560 on a later re-check): a real, load-bearing boot-order
+# artifact, not a number worth pinning exactly, since it will keep
+# drifting), and `shutil.which("self-learn-notify")` under that exact
+# PATH returns `None`. Gate r3 CORRECTED the conclusion drawn
 # from that measurement (r2 called it a silent failure -- it is not):
 # `worker.py:3103-3106` logs a line and degrades to `_notify()`, a plain
 # `notify-send self-learn <message>` with no `-A`/action flag -- neither
