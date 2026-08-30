@@ -5273,10 +5273,14 @@ def test_the_unit_leaves_masters_suite_green_after_the_prune(tmp_path):
     THIS TEST, whose helper read `origin/u-land` unconditionally and died
     128 in a tree where the prune had deleted it. One measurement is not a
     property; the criterion is a claim about every future master, so it is
-    re-taken whenever the tip moves. Post-prune master `<POSTPRUNE_SHA>`:
+    re-taken whenever the tip moves. Post-prune master `5ca8f83`, built by
+    the shipped runner's own steps from branch tip `bf05291` -- which
+    differs from the tip that ships only in these lines:
 
-        POST_PRUNE_SUITE_RC=<POSTPRUNE_RC>
-        suite rc=<POSTPRUNE_RC>  <POSTPRUNE_LINE>
+        POST_PRUNE_SUITE_RC=0
+        suite rc=0  3046 passed, 6 skipped in 91.28s (0:01:31)
+
+    Zero `u-land` refs in that tree, and `scripts/land` present in it.
 
     Re-running the whole suite here would cost ~90 s plus a venv sync, so
     this test carries the part that was actually red -- every landing test,
@@ -5288,11 +5292,42 @@ def test_the_unit_leaves_masters_suite_green_after_the_prune(tmp_path):
                    check=True, capture_output=True)
     LF.git(clone, "config", "user.email", "t@example.invalid")
     LF.git(clone, "config", "user.name", "T")
-    _land_by_hand(clone, LF.THIS_REPO_CLI)
+    landed = _land_by_hand(clone, LF.THIS_REPO_CLI)
+    assert landed is not None, "the source still has the branch, so it must land"
 
     # the state the prune actually leaves: no ref names this branch
     refs = LF.git(clone, "for-each-ref", "--format=%(refname)").stdout
     assert "u-land" not in refs, refs
+
+    # The helper's OTHER branch, which no worktree run can otherwise reach:
+    # a clone whose SOURCE is already a post-prune master has no `u-land`
+    # ref to merge. That branch is what the shipping tree hits when master's
+    # own suite runs, and reading the ref unconditionally there is what made
+    # this test the single failure of the re-taken measurement.
+    onward = tmp_path / "onward"
+    subprocess.run(["git", "clone", "-q", "--no-hardlinks", str(clone), str(onward)],
+                   check=True, capture_output=True)
+    LF.git(onward, "config", "user.email", "t@example.invalid")
+    LF.git(onward, "config", "user.name", "T")
+    assert LF.git(onward, "rev-parse", "-q", "--verify", "origin/u-land",
+                  check=False).returncode != 0, "the probe's source still has the ref"
+    assert _land_by_hand(onward, LF.THIS_REPO_CLI) is None
+    assert _unit_diff_frame(onward)[1] == "landed"
+
+    # ... and its positive control: 'no branch to merge' must mean ALREADY
+    # LANDED, never 'could not look'. A repo with neither must FAIL.
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    LF.git(empty, "init", "-q", "-b", "master")
+    LF.git(empty, "config", "user.email", "t@example.invalid")
+    LF.git(empty, "config", "user.name", "T")
+    (empty / "f.md").write_text("nothing landed here\n")
+    LF.git(empty, "add", "-A")
+    LF.git(empty, "commit", "-q", "-m", "unrelated")
+    LF.git(empty, "remote", "add", "origin", str(empty))
+    LF.git(empty, "fetch", "-q", "origin")
+    with pytest.raises(AssertionError):
+        _land_by_hand(empty, LF.THIS_REPO_CLI)
     # ... and the merge is still in first-parent history, which is the whole
     # point of deriving from history rather than from a ref
     rng, state = _unit_diff_frame(clone)
