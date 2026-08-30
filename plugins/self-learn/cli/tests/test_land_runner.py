@@ -1756,9 +1756,15 @@ def test_arm5_is_a_post_commit_property_and_the_runner_never_runs_it_early(tmp_p
     repo = LF.make_repo(tmp_path, with_ui=True, armor="remeasure")
     node = "plugins/self-learn/cli/tests/test_armor.py::test_fixture_arm5_anchor_is_not_stale"
 
+    # PYTHONDONTWRITEBYTECODE is explicitly REMOVED: this run exists to
+    # author the .pyc whose staleness the rest of the test is about, so it
+    # must not inherit an ambient setting that suppresses it (the mutation
+    # harness sets exactly that).
+    bytecode_env = {k: v for k, v in os.environ.items()
+                    if k != "PYTHONDONTWRITEBYTECODE"}
     red = subprocess.run(
         [sys.executable, "-m", "pytest", node, "-q", "-p", "no:cacheprovider"],
-        cwd=repo, capture_output=True, text=True,
+        cwd=repo, capture_output=True, text=True, env=bytecode_env,
     )
     assert red.returncode != 0, red.stdout + red.stderr
     assert "no first-parent merge on master yet" in (red.stdout + red.stderr)
@@ -1787,7 +1793,7 @@ def test_arm5_is_a_post_commit_property_and_the_runner_never_runs_it_early(tmp_p
 
     green = subprocess.run(
         [sys.executable, "-m", "pytest", node, "-q", "-p", "no:cacheprovider"],
-        cwd=repo, capture_output=True, text=True,
+        cwd=repo, capture_output=True, text=True, env=bytecode_env,
     )
     assert green.returncode == 0, green.stdout + green.stderr
 
@@ -1971,17 +1977,72 @@ def test_un4_a_helper_with_a_missing_dependency_fails_LOUDLY(tmp_path):
     assert baseline.returncode == 0, baseline.stdout + baseline.stderr
     assert baseline.stdout.strip().splitlines()[-1] == "4", baseline.stdout
 
+    def run() -> subprocess.CompletedProcess:
+        return subprocess.run(["bash", str(dst / "m54.sh")], cwd=_repo_root(),
+                              capture_output=True, text=True)
+
     try:
-        (dst / "pat.txt").unlink()
-        starved = subprocess.run(["bash", str(dst / "m54.sh")], cwd=_repo_root(),
-                                 capture_output=True, text=True)
-        assert starved.returncode != 0, (
+        # (i) the input is ABSENT -- `_lib.sh`'s `need()` must refuse
+        pat = dst / "pat.txt"
+        saved = pat.read_bytes()
+        pat.unlink()
+        gone = run()
+        assert gone.returncode != 0, (
             "a helper with its input removed exited 0 -- `need()` is not guarding it"
         )
-        assert "FATAL" in (starved.stdout + starved.stderr), starved.stdout + starved.stderr
+        assert "FATAL" in (gone.stdout + gone.stderr), gone.stdout + gone.stderr
+
+        # (ii) the input EXISTS but is EMPTY -- a distinct hole, and the more
+        # dangerous one: an empty pattern matches EVERY line, so the helper
+        # would print 7 at rc 0 instead of 4. `need()` cannot see this case
+        # (the file is there), so the helper carries its own second guard.
+        pat.write_bytes(b"")
+        empty = run()
+        assert empty.returncode != 0, (
+            "a helper whose pattern file is EMPTY exited 0 -- an empty pattern "
+            "matches every line, so this reports a plausible wrong number"
+        )
+        assert "FATAL" in (empty.stdout + empty.stderr), empty.stdout + empty.stderr
+
+        # positive control: restored, it measures 4 again
+        pat.write_bytes(saved)
+        assert run().stdout.strip().splitlines()[-1] == "4"
     finally:
         shutil.rmtree(dst, ignore_errors=True)
     assert not dst.exists()
+
+
+def test_un4_the_shared_need_guard_refuses_a_missing_path(tmp_path):
+    """`_lib.sh`'s `need()` on its own. It has exactly ONE call site, and
+    there a second guard fires first for the absent case -- so without this
+    direct test, `need()` can be gutted with every suite still green.
+    Measured while building: that mutation WAS invisible."""
+    lib = LF.THIS_REPO_CLI / "scripts" / "measured" / "_lib.sh"
+    probe = _repo_root() / "misc" / "u-land-work" / f"_need_probe_{os.getpid()}.sh"
+    probe.parent.mkdir(parents=True, exist_ok=True)
+    probe.write_text(
+        f'source "{lib}"\n'
+        'need "$HERE/definitely-not-there.txt"\n'
+        'echo "REACHED THE CODE AFTER need()"\n'
+    )
+    try:
+        r = subprocess.run(["bash", str(probe)], cwd=_repo_root(),
+                           capture_output=True, text=True)
+        assert r.returncode == 3, (r.returncode, r.stdout, r.stderr)
+        assert "FATAL" in r.stderr, r.stderr
+        assert "REACHED THE CODE AFTER" not in r.stdout, r.stdout
+        # positive control: an EXISTING path passes straight through
+        probe.write_text(
+            f'source "{lib}"\n'
+            f'need "{lib}"\n'
+            'echo "REACHED THE CODE AFTER need()"\n'
+        )
+        ok = subprocess.run(["bash", str(probe)], cwd=_repo_root(),
+                            capture_output=True, text=True)
+        assert ok.returncode == 0, (ok.stdout, ok.stderr)
+        assert "REACHED THE CODE AFTER" in ok.stdout
+    finally:
+        probe.unlink(missing_ok=True)
 
 
 def test_un4_every_helper_sources_the_shared_guard():
@@ -2301,3 +2362,36 @@ def test_b2_the_audit_covers_every_input_the_script_reads():
             any(g in ln and f'${n}' in ln for g in guarded) for ln in code for n in names
         )
         assert reached, path_expr
+
+
+def test_un1_this_unit_does_not_change_the_suite_runner():
+    """UN1. Gate r1 M-3: the old test asserted `"uv sync" in text`, so
+    rewriting the whole file left it green. The property is BYTE identity
+    across this unit's own diff, so that is what is measured -- with a
+    positive control, because an empty diff is also what a broken diff
+    command returns."""
+    root = _repo_root()
+    base = subprocess.run(
+        ["git", "merge-base", "master", "HEAD"], cwd=root,
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+
+    def numstat(rel: str) -> str:
+        # `<base>` with no second ref diffs the base against the WORKING
+        # TREE, not against HEAD. That is the frame that matters: the code
+        # gate reviews the tree, and an uncommitted edit to the suite runner
+        # is exactly the change this criterion forbids. Measured: the
+        # `..HEAD` form left the mutation invisible.
+        return subprocess.run(
+            ["git", "diff", "--numstat", base, "--", rel],
+            cwd=root, capture_output=True, text=True, check=True,
+        ).stdout.strip()
+
+    target = "plugins/self-learn/cli/scripts/suite"
+    assert (root / target).is_file()
+    assert numstat(target) == "", numstat(target)
+
+    # positive control: the SAME command over a file this unit definitely
+    # changed must be non-empty, so "unchanged" cannot be "looked at nothing"
+    control = "plugins/self-learn/cli/scripts/land"
+    assert numstat(control) != "", "UN1's instrument reported no diff for a file this unit wrote"

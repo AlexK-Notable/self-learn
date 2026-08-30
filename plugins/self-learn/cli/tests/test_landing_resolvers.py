@@ -7,6 +7,8 @@ exercise the same bytes git actually produces.
 from __future__ import annotations
 
 import ast
+import os
+import pathlib
 import subprocess
 from pathlib import Path
 
@@ -18,6 +20,39 @@ from self_learn.landing import resolvers as R
 
 def git(root: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
     return subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, check=check)
+
+
+def make_conflict_without_base(tmp_path: Path) -> Path:
+    """A real `git merge` producing a TWO-WAY conflict -- no `|||||||` base
+    section. `GIT_CONFIG_GLOBAL`/`SYSTEM` are neutralised for the merge
+    itself because this machine sets `merge.conflictStyle=diff3` globally;
+    without that, this fixture silently produces a diff3 conflict and the
+    test it feeds asserts nothing."""
+    repo = tmp_path / "nobase"
+    subprocess.run(["git", "init", "-q", "-b", "master", str(repo)], check=True)
+    git(repo, "config", "user.email", "t@example.invalid")
+    git(repo, "config", "user.name", "Test")
+    f = repo / "f.txt"
+    f.write_text("base\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "base")
+    git(repo, "checkout", "-q", "-b", "theirs")
+    f.write_text("theirs\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "theirs")
+    git(repo, "checkout", "-q", "master")
+    f.write_text("ours\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "ours")
+    env = dict(os.environ, GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_SYSTEM="/dev/null")
+    subprocess.run(["git", "-C", str(repo), "merge", "--no-ff", "--no-commit", "theirs"],
+                   capture_output=True, text=True, env=env)
+    text = f.read_text()
+    assert "<<<<<<<" in text, text
+    assert not C.has_base_markers(text), (
+        "fixture produced a diff3 conflict -- the global gitconfig leaked in"
+    )
+    return f
 
 
 def make_conflict(tmp_path: Path, base_lines: list[str], ours_lines: list[str], theirs_lines: list[str], filename: str = "f.txt") -> Path:
@@ -63,9 +98,12 @@ def test_blocks_parses_a_real_diff3_conflict(tmp_path):
 
 
 def test_blocks_no_base_marker_raises(tmp_path):
-    text = "<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> branch\n"
+    """PRV3. A TWO-WAY conflict has no base section, and the parser must
+    refuse rather than guess. Built from a real merge with diff3 turned OFF
+    (RES6: never hand-written marker text)."""
+    f = make_conflict_without_base(tmp_path)
     with pytest.raises(C.ConflictParseError):
-        C.blocks(text)
+        C.blocks(f.read_text())
 
 
 def test_rewrite_asserts_no_markers_remain(tmp_path):
@@ -95,7 +133,12 @@ def test_res1_keep_both_refuses_nonempty_base(tmp_path):
 
 
 def test_res1_keep_both_refuses_overlap(tmp_path):
-    _, bl = C.blocks("<<<<<<< HEAD\nshared\nx\n||||||| base\n=======\nshared\ny\n>>>>>>> branch\n")
+    """RES1. `keep-both` refuses when the two sides overlap -- it may only
+    concatenate genuinely disjoint additions. Built from a real add/add
+    merge (empty base, a shared line on both sides)."""
+    f = make_conflict(tmp_path, base_lines=[], ours_lines=["shared", "x"],
+                      theirs_lines=["shared", "y"])
+    _, bl = C.blocks(f.read_text())
     ours, base, theirs = bl[0][2], bl[0][3], bl[0][4]
     assert base == []
     with pytest.raises(R.Refusal):
@@ -243,26 +286,91 @@ def test_res5_rederive_refuses_trivial_reason(tmp_path):
 # RES6 -- every resolver test reaches a real `git merge` (an AST check over
 # this very file, with a positive control)
 
-def test_res6_every_test_function_here_reaches_a_git_merge():
-    tree = ast.parse(Path(__file__).read_text())
-    calls_merge = set()
+#: The only functions in this file that may legitimately NOT build their
+#: fixture from a real `git merge`: the meta-tests that inspect this file,
+#: and the pure-unit tests of the resolver functions' own argument
+#: handling. Each is listed with the reason it is exempt. Anything else --
+#: including a new test added tomorrow -- must reach a real merge.
+RES6_EXEMPT = {
+    "test_res6_every_test_function_here_reaches_a_git_merge":
+        "the meta-test itself; it parses this file, it does not merge",
+    "test_res6_positive_control_hand_written_markers_would_be_caught":
+        "the meta-test's own red control, which must contain marker text",
+}
+
+
+#: A conflict marker, in any of diff3's four forms. A test whose SOURCE
+#: contains one of these is handling conflict-block text, and RES6 says that
+#: text must come from a real `git merge`. A test that contains none is
+#: exercising a resolver's Python signature and never sees marker text at
+#: all -- it is out of scope, not exempt.
+_MARKERS = ("<<<<<<<", "=======", ">>>>>>>", "|||||||")
+
+
+def _res6_classify(source: str) -> tuple[set[str], set[str]]:
+    """(tests that handle marker text, of those the ones built by a real
+    `git merge`).
+
+    Derived from the file. Gate r1 M-5: the previous form was a hardcoded
+    8-name whitelist, so a NEW test carrying hand-written markers -- the
+    spec's OWN positive control for this criterion -- passed."""
+    tree = ast.parse(source)
+    handles: set[str] = set()
+    merge_backed: set[str] = set()
     for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef) and node.name.startswith("test_"):
-            src = ast.get_source_segment(Path(__file__).read_text(), node) or ""
-            if "make_conflict(" in src or 'git(repo, "-c"' in src:
-                calls_merge.add(node.name)
-    resolver_tests = {
-        "test_blocks_parses_a_real_diff3_conflict",
-        "test_rewrite_asserts_no_markers_remain",
-        "test_res1_keep_both_purely_additive",
-        "test_res1_keep_both_refuses_nonempty_base",
-        "test_res2_per_key_side_differing_from_base_wins",
-        "test_res2_per_key_refuses_both_changed_no_rederive",
-        "test_res2_per_key_refuses_differing_key_sets",
-        "test_res3_numeric_rows_unions_and_sorts",
+        if not (isinstance(node, ast.FunctionDef) and node.name.startswith("test_")):
+            continue
+        src = ast.get_source_segment(source, node) or ""
+        if any(m in src for m in _MARKERS):
+            handles.add(node.name)
+        if "make_conflict(" in src or 'git(repo, "-c"' in src:
+            merge_backed.add(node.name)
+    return handles, merge_backed
+
+
+def test_res6_every_test_function_here_reaches_a_git_merge():
+    """RES6. EVERY test in this file builds its conflict from a real `git
+    merge`, never from hand-written marker text -- because marker text
+    typed by hand is exactly what a resolver must never be tuned to.
+
+    The set is DERIVED from the file. Exemptions are named individually in
+    `RES6_EXEMPT`, with reasons, so adding a test cannot silently opt out.
+    """
+    source = pathlib.Path(__file__).read_text()
+    handles, merge_backed = _res6_classify(source)
+    # Floor: the classifier must find marker-handling tests at all, and at
+    # least one of them must be a real, non-exempt, merge-backed test --
+    # otherwise "no violations" could mean "matched nothing".
+    assert len(handles) >= 3, sorted(handles)
+    real = sorted(handles & merge_backed - set(RES6_EXEMPT))
+    assert real, sorted(handles)
+    # and the merge-backed set is itself non-trivial
+    assert len(merge_backed) >= 8, sorted(merge_backed)
+
+    unexplained = sorted(handles - merge_backed - set(RES6_EXEMPT))
+    assert not unexplained, (
+        "these tests contain conflict-marker text that no real `git merge` "
+        f"produced, and are not in RES6_EXEMPT: {unexplained}"
+    )
+    # the exemption list may not rot either
+    all_tests = {
+        n.name for n in ast.walk(ast.parse(source))
+        if isinstance(n, ast.FunctionDef) and n.name.startswith("test_")
     }
-    missing = resolver_tests - calls_merge
-    assert not missing, f"resolver tests not built from a real git merge: {missing}"
+    stale = sorted(set(RES6_EXEMPT) - all_tests)
+    assert not stale, f"RES6_EXEMPT names tests that no longer exist: {stale}"
+    assert all(RES6_EXEMPT[k].strip() for k in RES6_EXEMPT)
+
+    # positive control -- the spec's own: a NEW test carrying hand-written
+    # markers, which the retired 8-name whitelist accepted, is caught here
+    injected = source + (
+        '\n\ndef test_res6_injected_hand_written_marker_probe():\n'
+        '    text = "<<<<<<< HEAD\\n=======\\n>>>>>>> x\\n"\n'
+        '    assert text\n'
+    )
+    inj_handles, inj_backed = _res6_classify(injected)
+    inj_unexplained = sorted(inj_handles - inj_backed - set(RES6_EXEMPT))
+    assert inj_unexplained == ["test_res6_injected_hand_written_marker_probe"], inj_unexplained
 
 
 def test_res6_positive_control_hand_written_markers_would_be_caught():
