@@ -26,22 +26,59 @@
 # uv's real pipx symlink shape is unaffected) AND executable (`-x`)
 # before it is accepted; anything that fails either check falls through
 # to the next candidate instead of being trusted blindly.
+#
+# Gate r2 fold (2026-08-29): two more findings closed here.
+#
+# MAJOR-1: a hermetic PATH does not hermeticize this wrapper -- the
+# fallback candidates below are checked by ABSOLUTE path regardless of
+# PATH, so a test that only controls PATH cannot prove anything about
+# them (the gate proved this with a mount namespace planting a real uv
+# at /usr/local/bin/uv: the wrapper found and exec'd it, bypassing
+# every PATH-only test double). Fixed by DECOMPOSITION, not a test-only
+# hook: `_resolve_uv_bin` below takes the candidate list as ARGUMENTS
+# instead of hardcoding it, so a test can pass temp-path candidates in
+# its place and exercise the exact same resolution logic production
+# uses -- production passes the real, hardcoded candidate list at the
+# bottom of this file. `_resolve_uv_bin` is deliberately usable
+# stand-alone: this file can be `source`d (BASH_SOURCE[0] != $0) to
+# load it as a library without triggering the resolve-and-exec sequence
+# below -- a plain, general bash idiom (works identically whether or
+# not a test ever exists), not a branch that exists only for tests.
+#
+# MINOR-2/5 (continued): `-f`+`-x` alone still admits a mode-0111 file
+# (execute-only, no read bit) -- `exec`ing one produces bash's own
+# opaque "Permission denied" (measured, rc=126), not this script's
+# diagnostic, because reading a script's shebang line needs read
+# permission too. `-r` closes it.
 _uv_is_valid() {
-  [[ -n "$1" && -f "$1" && -x "$1" ]]
+  [[ -n "$1" && -f "$1" && -r "$1" && -x "$1" ]]
 }
 
-UV_BIN="$(command -v uv 2>/dev/null)"
-if ! _uv_is_valid "$UV_BIN"; then
-  UV_BIN=""
-  for _uv_candidate in "$HOME/.local/bin/uv" /usr/local/bin/uv /usr/bin/uv; do
-    if _uv_is_valid "$_uv_candidate"; then
-      UV_BIN="$_uv_candidate"
-      break
+# Resolve uv: `command -v uv` first, then each candidate given as an
+# argument, in order. Prints the resolved absolute path and returns 0
+# on success; prints nothing and returns 1 if none is valid.
+_resolve_uv_bin() {
+  local candidate
+  candidate="$(command -v uv 2>/dev/null)"
+  if _uv_is_valid "$candidate"; then
+    printf '%s\n' "$candidate"
+    return 0
+  fi
+  for candidate in "$@"; do
+    if _uv_is_valid "$candidate"; then
+      printf '%s\n' "$candidate"
+      return 0
     fi
   done
-fi
-if [[ -z "$UV_BIN" ]]; then
+  return 1
+}
+
+# Only resolve-and-exec when this file is EXECUTED, not when it is
+# `source`d to load the functions above as a library (gate r2 MAJOR-1).
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  if UV_BIN="$(_resolve_uv_bin "$HOME/.local/bin/uv" /usr/local/bin/uv /usr/bin/uv)"; then
+    exec "$UV_BIN" run --project "$(dirname "$(readlink -f "$0")")/../cli" self-learn "$@"
+  fi
   echo "self-learn: uv not found on \$PATH, \$HOME/.local/bin/uv, /usr/local/bin/uv, or /usr/bin/uv -- install uv (https://docs.astral.sh/uv/) or add it to PATH" >&2
   exit 127
 fi
-exec "$UV_BIN" run --project "$(dirname "$(readlink -f "$0")")/../cli" self-learn "$@"

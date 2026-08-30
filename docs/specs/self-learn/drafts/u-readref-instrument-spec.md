@@ -351,9 +351,15 @@ The two-stage shape in §4 exists to keep the 105 ms off the common path: a
 reference read is rare, an ordinary `Read` is not.
 
 **There is no installed console-script on this host.** `~/bin/self-learn` is a
-symlink to `plugins/self-learn/scripts/self-learn`, whose body is
-`exec uv run --project "$(dirname "$(readlink -f "$0")")/../cli" self-learn "$@"`,
-and `type -a self-learn` finds only that. So every `self-learn` call pays the
+symlink to `plugins/self-learn/scripts/self-learn`, whose body — at the time
+this spec's measurements were taken — was
+`exec uv run --project "$(dirname "$(readlink -f "$0")")/../cli" self-learn "$@"`
+**(U-uvpath, 2026-08-29, gate r2 Minor: the wrapper now resolves `uv` via
+`command -v` then a well-known-absolute-path fallback before this same final
+`exec "$UV_BIN" run --project ...` line — the resolution logic adds
+negligible bash-builtin overhead, so the 105 ms figure below, which is
+`uv run`'s own cost, is unaffected)**, and `type -a self-learn` found only
+that. So every `self-learn` call pays the
 `uv run` cost, and the two figures measured for this spec (72 ms warm via
 `~/bin/self-learn`, 105.4 ms with an explicit `--project`; the gate re-measured
 ~80 ms) are the **same wrapper**, not two different install routes. The table

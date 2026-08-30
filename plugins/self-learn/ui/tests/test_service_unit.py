@@ -63,12 +63,17 @@ def test_miner_unit_carries_a_path_floor_including_home_local_bin() -> None:
     cut): this unit's ExecStart goes through the same scripts/self-learn
     wrapper as the host unit that measured six crash-loop restarts on
     2026-08-28, so it depends on `uv` being resolvable exactly the same
-    way. No %h/bin here, unlike the host/ui units (see the miner unit's
-    own comment): this unit only ever runs `mine run --trigger timer`,
-    which never calls the self-learn-notify helper (worker-only,
-    worker.py:3102) and re-spawns itself (if at all) via `sys.executable
-    -m self_learn.cli`, an absolute interpreter path, never a bare-name
-    PATH lookup."""
+    way.
+
+    Gate r2 MAJOR-2 CORRECTED the round-1 "no %h/bin here" claim: `mine
+    run` -> `worker.kick` (miner.py:2108, pinned by
+    test_miner.py::test_run_lands_candidate) -> a spawned `worker run`
+    that inherits this unit's own environment -> `worker.py:3102`'s
+    `shutil.which("self-learn-notify")` -- so this unit DOES reach that
+    call, through the miner-kicks-worker chain. Measured live: `%h/bin`
+    was never on the systemd user-manager's own PATH, so this repairs a
+    pre-existing silent notification failure rather than merely
+    preserving something that worked by accident."""
     miner_service = _section(MINER_UNIT.read_text(encoding="utf-8"), "Service")
     assert "Environment=PATH=" in miner_service
     path_line = next(
@@ -77,6 +82,7 @@ def test_miner_unit_carries_a_path_floor_including_home_local_bin() -> None:
         if line.startswith("Environment=PATH=")
     )
     assert "%h/.local/bin" in path_line
+    assert "%h/bin" in path_line
 
 
 # --- pinned fields (10 §1 "Service" row) --------------------------------
@@ -153,8 +159,9 @@ def test_carries_a_path_floor_including_home_local_bin() -> None:
     hard PATH replacement that dropped %h/bin would quietly regress a
     path that used to work by the same boot-order accident as
     everything else pinned here. (The miner unit gets its own,
-    separately-scoped PATH pin below — MINOR-3 — without %h/bin, since
-    it never runs worker.run.)"""
+    separately-scoped PATH pin below — corrected by gate r2 MAJOR-2 to
+    ALSO carry %h/bin: `mine run` reaches `worker.run` too, indirectly,
+    via `worker.kick`'s spawned process — see that test's docstring.)"""
     ui_service = _section(UI_UNIT.read_text(encoding="utf-8"), "Service")
     assert "Environment=PATH=" in ui_service
     path_line = next(
@@ -260,8 +267,10 @@ def test_host_unit_carries_a_path_floor_including_home_local_bin() -> None:
     that helper via shutil.which() (the ~/bin deploy surface), and this
     unit runs worker.run, so a hard PATH replacement that dropped %h/bin
     would quietly regress a path that used to work by accident. (The
-    miner unit gets its own, separately-scoped PATH pin below — MINOR-3
-    — without %h/bin, since it never runs worker.run.)"""
+    miner unit gets its own, separately-scoped PATH pin below —
+    corrected by gate r2 MAJOR-2 to ALSO carry %h/bin: `mine run`
+    reaches `worker.run` too, indirectly, via `worker.kick`'s spawned
+    process — see that test's docstring.)"""
     host_service = _section(HOST_UNIT.read_text(encoding="utf-8"), "Service")
     assert "Environment=PATH=" in host_service
     path_line = next(

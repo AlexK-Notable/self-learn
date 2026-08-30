@@ -17,25 +17,41 @@ Environment=SELF_LEARN_HOME=%h/.self-learn
 # the same scripts/self-learn wrapper, so it depends on `uv` being
 # resolvable exactly like self-learn-host.service did when it
 # crash-looped six times on 2026-08-28 (see that unit's own comment).
-# No %h/bin here, unlike the host/ui units — measured: this unit only
-# ever runs `mine run --trigger timer`, which re-spawns itself (if at
-# all) via `sys.executable -m self_learn.cli` (miner.py's
-# `_spawn_run`), an absolute interpreter path, never a bare-name PATH
-# lookup, and it never calls the self-learn-notify helper the host/ui
-# units' %h/bin exists for (that dispatch is worker-only, worker.py:3102
-# — this unit never runs `worker.run`). The `claude` CLI itself needs no
-# PATH pin either, on any of the three units: `claude_agent_sdk`'s own
-# `_find_cli()` (used by ALL FOUR surfaces, miner included, since
-# U-cleanup-B) checks a binary BUNDLED inside the installed package
-# first — confirmed present in this project's own .venv
-# (claude_agent_sdk/_bundled/claude) — before ever touching PATH, and
-# even lacking that bundle it already tries `shutil.which("claude")`
-# then a hardcoded ~/.local/bin/claude-shaped fallback list on its own,
-# the same PATH-then-fallback shape this unit's own wrapper now
-# implements for uv. No wrapper-style treatment is owed to `claude`
-# anywhere in this codebase; sized as zero additional work, not scoped
-# out as a bigger unit.
-Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+# Gate r2 MAJOR-2 CORRECTED the round-1 measurement below: %h/bin IS
+# needed here after all. `mine run` -> `worker.kick(home)` whenever a
+# candidate lands (miner.py:2108, pinned by
+# test_miner.py::test_run_lands_candidate) -> `_open_window` ->
+# `_spawn_window`, which spawns `worker run --coalesce` with
+# `env = dict(os.environ)` (worker.py) -- i.e. THIS unit's own
+# environment, PATH included. That spawned `worker.run` is exactly the
+# one that calls `shutil.which("self-learn-notify")` (worker.py:3102),
+# the ~/bin deploy surface -- so this unit DOES reach that call, through
+# the miner-kicks-worker chain, not by running `worker.run` directly.
+# Measured live on this host (2026-08-29): `~/bin/self-learn-notify`
+# EXISTS (a symlink into this repo) but `%h/bin` was NEVER on the
+# systemd user-manager's own PATH (`systemctl --user show-environment`
+# has no `~/bin` entry at all, among 536 duplicated
+# `.local/bin` entries), and `shutil.which("self-learn-notify")` under
+# that exact PATH returns `None` -- so notifications kicked from a
+# miner-triggered worker run have been SILENTLY FAILING all along, not
+# since this unit's PATH pin, and not because of it. Adding %h/bin here
+# does not merely preserve something that worked by accident (as the
+# host/ui units' own pins do) -- it REPAIRS a live, pre-existing silent
+# failure. After this lands, notifications that were being silently
+# dropped may start firing — a user-visible behaviour change, flagged
+# here rather than left for the desktop to announce on its own. The
+# `claude` CLI itself still needs no PATH pin, on any of the three
+# units: `claude_agent_sdk`'s own `_find_cli()` (used by ALL FOUR
+# surfaces, miner included, since U-cleanup-B) checks a binary BUNDLED
+# inside the installed package first — confirmed present in this
+# project's own .venv (claude_agent_sdk/_bundled/claude) — before ever
+# touching PATH, and even lacking that bundle it already tries
+# `shutil.which("claude")` then a hardcoded ~/.local/bin/claude-shaped
+# fallback list on its own, the same PATH-then-fallback shape this
+# unit's own wrapper now implements for uv. No wrapper-style treatment
+# is owed to `claude` anywhere in this codebase; sized as zero
+# additional work, not scoped out as a bigger unit.
+Environment=PATH=%h/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=%h/bin/self-learn mine run --trigger timer
 # The run spawns a contained `claude -p` reader; give it headroom.
 TimeoutStartSec=30m
