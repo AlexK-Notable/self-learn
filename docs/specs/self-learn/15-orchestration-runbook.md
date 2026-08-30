@@ -168,6 +168,176 @@ override is per-round, not a new default.
   `docs/specs/self-learn/drafts/u-armor-narrow-whole-file-pins-spec.md`
   §4.2.
 
+  **Refusing is the normal FIRST outcome, and it refuses more than an
+  owed node.** The same run also refuses when the advance would strand
+  an exemption entry the new anchor no longer owes (`VACUOUS:`) or a
+  transcribed literal in `cli/tests/test_armor.py::MEASURED` that
+  the new anchor invalidates (`STALE:` — the numbers `BEH5`, `BEH7`
+  and `EXM3` assert). All three are computed before anything is
+  written and printed together, and the file is left byte-identical,
+  so the `&&`-chain stops with the merge still uncommitted. Do exactly
+  what the report says, **inside that still-uncommitted merge**:
+  write the owed exemption entry, drop the vacuous one, and copy each
+  printed `value at <anchor>:` into that `MEASURED` row's `value=`,
+  re-dating its `reason`. Then re-run the same command — it writes,
+  and the transcription rides inside the merge commit alongside the
+  anchor advance. Between the transcription and that second run the
+  armor suite is briefly red; that is inherent to check-then-write and
+  is why the transcription is never committed on its own.
+
+  **Never teach `--remeasure` to write a `MEASURED` value.** Not
+  because those numbers are an independent check on the census — they
+  are not. Whoever advances the anchor transcribes what the refusal
+  printed, and that printout comes from the same extractor that fills
+  the `ARMOR` table, so copying it into a second location corroborates
+  nothing. Two other things are what the rule buys, and both are real:
+
+  1. **A refusal against silent staleness.** Before this door existed,
+     the anchor advanced, the write went through, and the suite went
+     red *afterwards* — with assertions naming nothing about the
+     anchor (measured 2026-08-29 in a throwaway clone: `2 failed, 39
+     passed`, `BEH7` and `EXM3`). Now the motion stops at a named
+     refusal before anything is written. A tool that rewrote the value
+     would report nothing stale and advance unannounced.
+  2. **A dated audit trail.** These literals change only through a
+     deliberate, recorded, justified edit carrying a date and an
+     anchor — the same discipline §4.7 already requires of every
+     exemption entry, and reviewable the same way at the gate.
+
+  **Who writes them.** The author of the landing, whoever that is. An
+  **agent** performing the landing is a sanctioned author, exactly as
+  for an exemption entry — commit `e59534b` landed agent-written
+  exemption entries with dated justifications and that was correct.
+  What is required is that the change be deliberate, attributed and
+  dated; not that a person be at the keyboard. Source:
+  `docs/specs/self-learn/drafts/u-armor-narrow-whole-file-pins-spec.md`
+  §4.2/§4.6, and `test_armor.py`'s own `ANC1`–`ANC6`.
+
+  ### 5.1 The `--remeasure` refusal contract
+
+  Written so another unit's runner can implement against it **without
+  reading `test_armor.py`**. Measured against the CLI on 2026-08-29
+  and pinned by `ANC6`; `ARM6` pins the success leg.
+
+  - **Exit code.** `0` on success, `1` on every modelled refusal.
+    Other codes mean the run did not get far enough to model
+    anything — argparse exits `2` on a malformed invocation, and an
+    unexpected `git` failure raises. Treat anything that is not `0`
+    or a `1` carrying one of the tokens below as an unmodelled
+    failure and do not proceed.
+  - **Stream.** Every diagnostic goes to **stderr**. **stdout is
+    always empty** — success and refusal alike. A caller that treats
+    empty stdout as failure, or empty stderr as success, is wrong in
+    both directions.
+  - **Success.** stderr is exactly one line, and the file is written:
+
+    ```
+    ANCHOR <old7> -> <new7>
+    ```
+
+  - **The four legs, distinguished by a START-OF-LINE token.** Match
+    anchored at the beginning of a line (`^TOKEN: `). The trailer is
+    written to contain no bare token, so an unanchored substring match
+    also happens to work — but the contract is the anchored form.
+
+    | token | leg | file after the run |
+    |---|---|---|
+    | `OWED: ` | a node has no exemption entry covering it | byte-unchanged |
+    | `VACUOUS: ` | an exemption entry the new anchor no longer owes (§4.7 `FW-140`) | byte-unchanged |
+    | `STALE: ` | a `MEASURED` literal the new anchor invalidates | byte-unchanged |
+    | `ANCHOR did not change (` | the no-op guard | **rewritten**, byte-identical content |
+
+    The first three are **pre-write** and can appear together in one
+    run — a landing behind a sibling unit routinely produces two or
+    three at once. The fourth is **post-write**: it fires after the
+    `os.replace()`, so the file is rewritten, with byte-identical
+    content whenever the table was already current (measured, `ANC6`).
+
+  - **Line shapes.**
+
+    ```
+    OWED: <armor-key>: <missing|edited>:<node-key>
+    VACUOUS: <armor-key>: <entry>
+    ```
+
+    `VACUOUS:`'s `<entry>` is one of **seven** shapes — one per checked
+    field. All seven are listed because a caller must not infer the set
+    from a sample; the two that used to be documented alone hide both
+    traps below.
+
+    | door | `<entry>` shape | real example |
+    |---|---|---|
+    | `repinned` | bare — **no suffix at all** | `repinned` |
+    | `missing` | `missing:<node-key>` | `missing:assign:REWRITTEN` |
+    | `edited` | `edited:<node-key>` | `edited:func:test_wr7_reader_contract` |
+    | `edited_exports` | `edited_exports:<def-name>` | `edited_exports:_skill_gates_yaml` |
+    | `new_funcs` | `new_funcs:<function name>` | `new_funcs:_gate_probe` |
+    | `new_scenario_keys` | `new_scenario_keys:<scenario key>` | `new_scenario_keys:budget_probe` |
+    | `new_stmt_keys` | `new_stmt_keys:<part>\|<part>…` — **contains `\|`** | `new_stmt_keys:assign\|SESSION_ID` |
+
+    **Two traps, both invisible from the `missing`/`edited` pair alone:**
+
+    - `new_stmt_keys` entries are `|`-joined, so **never split an entry
+      on `|`**. A nested key flattens to its leaves
+      (`import|os|sys`), and a part carrying whitespace is replaced by
+      the first 12 hex of its sha256 (`other|4f2a91c0d3be`) so the
+      whole entry stays one `\S+` token.
+    - `missing`/`edited` node keys **contain their own `:`**
+      (`assign:REWRITTEN`, `func:test_x`), so an entry can hold three
+      or more colon-separated parts. **Never split an entry on `:`.**
+
+    Parse a report line as `line.split(": ", 2)` → `(token, armor-key,
+    entry)` and stop there; then match `entry` against a door name,
+    prefix-wise. Treat everything after the door as an opaque
+    identifier — it is only ever echoed back to a human.
+
+    `STALE:` is a **three-line record**, always in this order:
+
+    ```
+    STALE: <repo-relative path>: MEASURED['<row>'] (scope=<anchor|anchor+head|head>)
+    STALE:       shipped value: <python repr>
+    STALE:   value at <new7>: <python repr>
+    ```
+
+    Both values are `repr()`, so the third line's value pastes
+    verbatim into that row's `value=`.
+
+  - **Trailer.** After the report comes one multi-line explanation
+    whose first line begins:
+
+    ```
+    refusing to write test_armor.py (
+    ```
+
+    It deliberately contains **no** bare `OWED:` / `VACUOUS:` /
+    `STALE:` token. An earlier draft's trailer spelled all three out
+    in its legend, which made an unanchored `"OWED:" not in stderr`
+    false for *every* refusal — caught by this unit's own first test
+    run, and now pinned by `ANC6`.
+
+  - **What `VACUOUS:` covers.** Every anchor-diff field of every
+    `ARMOR` row type, derived from the row types themselves rather than
+    enumerated: `Behaviour.missing` / `.edited` / `.edited_exports`,
+    `Fixture.repinned`, and `Additive.new_funcs` / `.new_scenario_keys`
+    / `.new_stmt_keys`. Two fields are explicit, dated exclusions
+    because they carry no anchor-diff state at all (`Behaviour.nodes`
+    and `.dump_sha` are rewritten by the run itself; `edited_funcs` is
+    a permanent allowlist per §4.4). A row type or a field that no rule
+    covers makes the run abort **loudly** rather than pass silently —
+    see `test_armor.py::VACUITY_MODEL` and `ANC7`. An earlier draft
+    enumerated three families by hand and omitted `Additive`'s, so a
+    landing could strand a declaration and leave `ADD1` red with rc 0.
+
+  - **Order is not part of the contract.** Report lines follow
+    `ARMOR` table order, then field-declaration order within a row.
+    Match on tokens, never on position.
+
+  - **What a caller should do.** rc `0` → proceed. rc `1` with any
+    `^OWED:`/`^VACUOUS:`/`^STALE:` line → stop; the tree is untouched
+    and the report says what to edit. rc `1` with
+    `^ANCHOR did not change (` → stop; there was nothing to advance.
+    rc `1` with none of these → an unmodelled failure; do not proceed.
+
 ## 6. Sandbox invariants (H-3 protection)
 
 Dev/test instances ALWAYS redirect `SELF_LEARN_HOME` +

@@ -92,9 +92,23 @@ pytestmark = pytest.mark.js
 _STARTUP_TIMEOUT_S = 15.0
 _SHUTDOWN_TIMEOUT_S = 10.0
 #: A generous ceiling for a same-host SSE frame to arrive and reload() to
-#: navigate. Frames land in <50 ms on loopback; this is only the failure
-#: bound.
-_RELOAD_TIMEOUT_MS = 5000
+#: navigate. Widened 5000 -> 20000 (U-jsdom disposition, 14 §6a, code
+#: gate r1 N5): the previous "<50 ms on loopback" premise did not hold
+#: under CPU starvation. TestReloadRaceLiveOrdering's own
+#: test_inflight_refresh_then_offer_settles_never_reloads, reproduced
+#: under self-generated full-core CPU load (`yes` x nproc), measured a
+#: real ~1.28s reload latency at THIS exact wait — a DIFFERENT
+#: mechanism from the `o`-on-armed-bar race this module also fixes
+#: (that one is "a query races a navigation that should never have
+#: happened"; this one is "an expected navigation genuinely took
+#: longer than the ceiling under CPU starvation"). 20000 gives roughly
+#: 15x headroom (~18.7s) over that measured worst case — comfortably
+#: bounded, not merely generous — and remains only a MAX wait:
+#: wait_for_function returns as soon as the condition holds, so
+#: raising it cannot slow down an already-fast pass, only rescue a
+#: starved one. Confirmed at 20000: 3/3 under the same load, 0
+#: regressions solo.
+_RELOAD_TIMEOUT_MS = 20000
 #: How long to wait before concluding a reload was correctly DEFERRED.
 #: Also loopback-fast; a held leg must never navigate within this window.
 _DEFER_QUIET_S = 0.6
@@ -627,6 +641,32 @@ def _wait_for_held(held: dict, timeout: float = 5.0) -> None:
         if time.monotonic() > deadline:
             raise AssertionError("the expected POST was never intercepted")
         time.sleep(0.02)
+
+
+def _poll_held_actively(page: "Page", held: dict, timeout: float = 5.0) -> float:
+    """Same wait as `_wait_for_held`, but for tests that need the ELAPSED
+    TIME to mean something (U-jsdom disposition, 14 §6a, code gate r1
+    N1/N2/N3): a pure `time.sleep()` poll loop with no `page.evaluate()`
+    calls in it, like `_wait_for_held` above, measurably lags CDP event
+    delivery on this host when the page is otherwise idle -- a request a
+    JS-side `setTimeout` instrumentation proved fires at t=500ms±1ms was
+    only OBSERVED by a bare-sleep poll loop after ~2-2.5s, while a loop
+    that also fires a trivial no-op `evaluate()` each iteration (keeping
+    the CDP channel active) observed the SAME request at t=0.538s --
+    matching the true firing time. This can only make an OBSERVED time
+    later than the true one, never earlier, so a LOWER bound on elapsed
+    time (a click could not have fired before some interval) stays valid
+    with either poll style; only an UPPER bound (fired fast) needs this
+    one. Returns the elapsed time in seconds so a caller can assert on
+    it directly."""
+    t0 = time.monotonic()
+    deadline = t0 + timeout
+    while "route" not in held:
+        if time.monotonic() > deadline:
+            raise AssertionError("the expected POST was never intercepted")
+        page.evaluate("() => true")
+        time.sleep(0.02)
+    return time.monotonic() - t0
 
 
 def _wait_for_js_flag(page: "Page", expr: str, timeout: float = 5.0) -> None:
@@ -1203,6 +1243,1279 @@ class TestReloadFiresWhenClear:
         _arm_reload_sentinel(page)
         server.push_refresh("front")
         _assert_reloaded(page)
+
+
+
+# U-jsdom disposition (14 §6a, code gate r1 N1/N2/N3/D1): unit-style
+# coverage of clickAction()'s own settle-gating machinery, isolated from
+# any real htmx swap via the SAME synthetic-CustomEvent technique
+# _dispatch_htmx already uses above — `document.dispatchEvent(new
+# CustomEvent("htmx:afterSwap"/"htmx:afterSettle"/an F14 name, {detail:
+# {}}))`. `[data-key-action="route"]` (the unarmed "Approve (e)" button,
+# present on every Detail page since initial load, already htmx-processed
+# — no arming needed) is the shared target: pressing `e` dispatches
+# `clickAction("route")`, which POSTs `/action/arm` when it actually
+# fires — intercepted via `_hold_post`/`_wait_for_held` so timing is
+# measured from the Python side rather than trusted from the DOM alone.
+class TestClickActionSettleGating:
+    def test_f14_for_the_request_that_owns_the_pending_swap_drains_immediately(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        """N1/N11 (split from the original single F14 test, code gate
+        r2): a deferred click must release the instant a failure leg
+        for ITS OWN pending target tells us that swap will never
+        settle — not wait out its own 500ms fallback timer. Measured
+        live before N1: a key pressed FIRST could fire ~499ms AFTER a
+        key pressed later (`[reject@4ms, route@503ms]`), because the
+        first one's own request failed while nothing but its own timer
+        was watching. See the sibling test below (N11/M1) for the
+        complementary case — an UNRELATED failure must release
+        NOTHING."""
+        _open(page, server, f"/record/{REC_BRIEF}")
+        page.evaluate(
+            "document.dispatchEvent(new CustomEvent('htmx:afterSwap', {detail: {}}))"
+        )
+        held = _hold_post(page, "/action/arm")
+        page.keyboard.press("e")
+        page.evaluate(
+            "document.dispatchEvent(new CustomEvent('htmx:sendError', {detail: {}}))"
+        )
+        elapsed = _poll_held_actively(page, held, timeout=2.0)
+        assert elapsed < 0.3, (
+            f"drain was not immediate: {elapsed:.3f}s (the fallback alone is 500ms)"
+        )
+
+    def test_f14_for_an_unrelated_request_releases_nothing(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        """N11/M1 (code gate r2 — the gate's own reproduction probe):
+        an F14 failure for a DIFFERENT target than the one a deferred
+        click is waiting on must not release it. Reproduced live under
+        the r1 counter: an unrelated failure decremented the SAME
+        shared counter a genuinely pending, DIFFERENT swap was relying
+        on, draining queued clicks into content that was never wired —
+        a native GET navigation within 120ms of the F14, where the
+        fixed build correctly POSTs. The pending swap's own target is
+        left completely untouched by the unrelated failure; its own
+        later settle is what actually releases it, proving the click
+        was never dropped — only correctly still pending. See
+        test_f14_for_a_request_sharing_the_pending_target_but_not_the_xhr_releases_nothing
+        below (M2, code gate r3) for the SAME-target sharper case this
+        target-only key could not yet catch."""
+        _open(page, server, f"/record/{REC_BRIEF}")
+        page.evaluate(
+            """() => {
+                window.__unrelatedTarget = document.createElement('div');
+                document.body.appendChild(window.__unrelatedTarget);
+                document.dispatchEvent(new CustomEvent('htmx:afterSwap', {detail: {}}));
+            }"""
+        )
+        held = _hold_post(page, "/action/arm")
+        page.keyboard.press("e")
+        page.evaluate(
+            """() => {
+                document.dispatchEvent(new CustomEvent('htmx:sendError', {
+                    detail: { target: window.__unrelatedTarget }
+                }));
+            }"""
+        )
+        time.sleep(0.3)
+        assert "route" not in held, (
+            "an UNRELATED F14 failure released a click waiting on a different target"
+        )
+        page.evaluate(
+            "document.dispatchEvent(new CustomEvent('htmx:afterSettle', {detail: {}}))"
+        )
+        _poll_held_actively(page, held, timeout=3.0)
+
+    def test_bare_after_swap_with_no_settle_drops_via_fallback_timer(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        """N2, corrected for N17's fail-closed drop semantics (code
+        gate r4): makes the 500ms fallback load-bearing. Only
+        `htmx:afterSwap` is ever dispatched here -- no `afterSettle`,
+        no F14 leg, ever arrives -- so nothing but a timeout can ever
+        resolve this click's wait. Before N17, "resolve" meant FIRE
+        (the fallback executed the click regardless); the gate proved
+        that firing on a mere timeout -- as opposed to a genuine
+        settle -- is exactly how the original bug re-enters under CPU
+        starvation (a real, still-in-flight swap gets treated as
+        "safe" once 500ms have passed, when the only safe signal is
+        its own real settle). So a swap that NEVER settles must now
+        DROP, not fire: no POST ever arrives, and exactly one
+        `console.warn` says so. Mutation check: delete the fallback
+        timer from clickAction() entirely and this goes RED a
+        different way (no warning ever fires, `_poll_held_actively`-
+        style waits would hang instead of observing a clean drop);
+        today it is GREEN."""
+        _open(page, server, f"/record/{REC_BRIEF}")
+        page.evaluate(
+            "document.dispatchEvent(new CustomEvent('htmx:afterSwap', {detail: {}}))"
+        )
+        warnings: list[str] = []
+        page.on(
+            "console",
+            lambda msg: warnings.append(msg.text) if msg.type == "warning" else None,
+        )
+        held = _hold_post(page, "/action/arm")
+        page.keyboard.press("e")
+        for _ in range(60):
+            if any("dropped" in w.lower() for w in warnings):
+                break
+            page.evaluate("() => true")
+            time.sleep(0.02)
+        drop_warnings = [w for w in warnings if "dropped" in w.lower()]
+        assert len(drop_warnings) == 1, f"expected exactly one drop warning, got: {warnings}"
+        assert "route" not in held, (
+            "the bare, never-settling swap fired a click instead of dropping it"
+        )
+
+    def test_two_overlapping_swaps_require_two_settles(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        """N3: pendingSwaps is a BAG, not a boolean flag. Two
+        `afterSwap` dispatches followed by only ONE `afterSettle` must
+        still defer — a plain boolean would have released after the
+        first settle even while a second swap's own content was still
+        unwired."""
+        _open(page, server, f"/record/{REC_BRIEF}")
+        page.evaluate(
+            """() => {
+                document.dispatchEvent(new CustomEvent('htmx:afterSwap', {detail: {}}));
+                document.dispatchEvent(new CustomEvent('htmx:afterSwap', {detail: {}}));
+            }"""
+        )
+        held = _hold_post(page, "/action/arm")
+        page.keyboard.press("e")
+        page.evaluate(
+            "document.dispatchEvent(new CustomEvent('htmx:afterSettle', {detail: {}}))"
+        )
+        time.sleep(0.3)
+        assert "route" not in held, (
+            "fired after only ONE settle when TWO swaps were in flight"
+        )
+        page.evaluate(
+            "document.dispatchEvent(new CustomEvent('htmx:afterSettle', {detail: {}}))"
+        )
+        _poll_held_actively(page, held, timeout=3.0)
+
+    def test_deferred_click_reresolves_element_not_a_detached_node(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        """D1: a second overlapping swap can detach the element
+        clickAction saw when it deferred (its container's outerHTML
+        replaced again before the first swap even settled). The fix
+        re-resolves by selector at fire time; a naive implementation
+        that closes over the original element would silently click a
+        detached node instead — indistinguishable from the outside from
+        "the action did nothing".
+
+        code gate r7 (MAJOR-1 follow-up): `cloneNode()` alone does not
+        carry htmx's own `htmx-internal-data` expando (a JS-level
+        property, not an HTML attribute), so the clone below is run
+        through `htmx.process()` after replacing — exactly what a REAL
+        overlapping swap would have done to genuinely new content —
+        so this test's fake replacement is wired by the time
+        `htmx:afterSettle` fires, same as reality, and does not trip
+        the fire-time wired veto (clickAction's own docblock) that
+        exists to drop an UNWIRED replacement, not a wired one."""
+        _open(page, server, f"/record/{REC_BRIEF}")
+        page.evaluate(
+            "document.dispatchEvent(new CustomEvent('htmx:afterSwap', {detail: {}}))"
+        )
+        page.keyboard.press("e")
+        page.evaluate(
+            """() => {
+                const stale = document.querySelector('[data-key-action="route"]');
+                window.__staleClicked = false;
+                window.__freshClicked = false;
+                stale.addEventListener('click', () => { window.__staleClicked = true; });
+                const fresh = stale.cloneNode(true);
+                fresh.addEventListener('click', () => { window.__freshClicked = true; });
+                stale.replaceWith(fresh);
+                window.htmx.process(fresh);
+            }"""
+        )
+        page.evaluate(
+            "document.dispatchEvent(new CustomEvent('htmx:afterSettle', {detail: {}}))"
+        )
+        time.sleep(0.3)
+        assert page.evaluate("window.__freshClicked") is True
+        assert page.evaluate("window.__staleClicked") is False
+
+    def test_orphaned_after_swap_heals_only_via_its_own_late_settle_not_an_unrelated_cycle(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        """N9 (code gate r2, the gate's RP7 orphan probe), corrected
+        for B-1/B-2 (code gate r5): an `htmx:afterSwap` that never
+        resolves (no `afterSettle`, no F14 leg for ITS OWN key — an
+        ORPHAN) must self-evict via its own 500ms fallback timer and
+        never permanently wedge later keystrokes -- but self-evicting
+        is not the same as being SAFE, which is exactly what r5's gate
+        reproduced two ways this test's original version could not
+        catch: it dispatched every event with a bare `detail: {}`, so
+        the orphan and the "later balanced cycle" it used to prove
+        healing shared the SAME `undefined` fallback key and were, by
+        construction, indistinguishable -- the r1 counter's own blind
+        spot, carried forward unnoticed into r2's bag and never
+        actually exercised until r5's gate insisted on distinct
+        identities.
+
+        Corrected here with genuinely DISTINCT keys: (B-1) a fresh
+        dispatch queued right after the orphan's own silent eviction
+        must still DEFER, not fire immediately, because the evicted
+        token moved to `abandonedSwaps` rather than vanishing; (B-2,
+        the gate's required interleaving direction 2) an UNRELATED
+        request's own real, balanced afterSwap/afterSettle cycle -- a
+        DIFFERENT key entirely -- must NOT release that queued click
+        while the orphan's own fate is still unknown, even though it
+        empties `pendingSwaps` back to zero all on its own. Only the
+        orphan's OWN real resolution, arriving late, finally heals it
+        -- proven by the queued click firing right after that arrives,
+        and a FRESH keystroke afterward firing immediately (in ~ms,
+        not 500), same guarantee the original N9 test made, just
+        gated on the right signal now."""
+        _open(page, server, f"/record/{REC_BRIEF}")
+        # the orphan: a swap that will never settle and never fail,
+        # carrying its own distinct identity.
+        page.evaluate(
+            """() => {
+                window.__orphanXhr = {};
+                document.dispatchEvent(new CustomEvent('htmx:afterSwap', {
+                    detail: { xhr: window.__orphanXhr }
+                }));
+            }"""
+        )
+        time.sleep(0.7)  # let the orphan's own 500ms fallback expire
+
+        # B-1: a fresh dispatch queued right after that silent
+        # eviction must still defer -- not take the un-gated
+        # immediate-fire path.
+        held = _hold_post(page, "/action/arm")
+        page.keyboard.press("e")
+        time.sleep(0.2)
+        assert "route" not in held, (
+            "fired immediately after the orphan's own silent eviction -- "
+            "an evicted token must still gate a fresh dispatch (B-1)"
+        )
+
+        # B-2: an UNRELATED, distinct-keyed balanced cycle resolves
+        # cleanly on its own (pendingSwaps empties) but must NOT
+        # release the click above -- the orphan's own fate is still
+        # unknown, and nothing here has told us anything about it.
+        page.evaluate(
+            """() => {
+                window.__unrelatedXhr = {};
+                document.dispatchEvent(new CustomEvent('htmx:afterSwap', {
+                    detail: { xhr: window.__unrelatedXhr }
+                }));
+                document.dispatchEvent(new CustomEvent('htmx:afterSettle', {
+                    detail: { xhr: window.__unrelatedXhr }
+                }));
+            }"""
+        )
+        time.sleep(0.2)
+        assert "route" not in held, (
+            "an UNRELATED request's real settle drained a click that was "
+            "actually waiting on the orphan's still-unknown fate (B-2)"
+        )
+
+        # Only the orphan's OWN real resolution -- arriving late, well
+        # past its own 500ms eviction -- finally heals it.
+        page.evaluate(
+            """() => {
+                document.dispatchEvent(new CustomEvent('htmx:afterSettle', {
+                    detail: { xhr: window.__orphanXhr }
+                }));
+            }"""
+        )
+        _poll_held_actively(page, held, timeout=2.0)
+
+        # And the system is genuinely clean afterward, not merely
+        # emptied for one release -- a FRESH keystroke fires
+        # immediately (the original N9 guarantee, still true). Uses a
+        # DIFFERENT action ("x"/reject) than the one just fired
+        # ("e"/route), not merely a fresh `held` dict: `held` above is
+        # never fulfilled or continued (by design -- `_hold_post` never
+        # resolves the request it captures), so from htmx's own point
+        # of view the "route" element still has a request permanently
+        # in flight -- htmx's default per-element concurrency guard
+        # (the same mechanism `hx-sync="this:queue last"` documents)
+        # silently QUEUES rather than ISSUES a second click on that
+        # SAME element instead of ever creating a new XHR, which is
+        # unrelated to this unit entirely and would falsely read as
+        # "not healed." "reject" is a distinct DOM element with its
+        # own independent in-flight slot, so a click on it is not
+        # affected by "route"'s still-open request.
+        held.clear()
+        page.keyboard.press("x")
+        elapsed = _poll_held_actively(page, held, timeout=2.0)
+        assert elapsed < 0.3, (
+            f"a fresh keystroke after the orphan's own real resolution "
+            f"was late: {elapsed:.3f}s (not genuinely healed)"
+        )
+
+    def test_deferred_click_no_ops_when_record_changes_before_fire(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        """N10 (code gate r2): a deferred click's intent is stamped
+        with the CURRENT record id at defer time; if a resolution swap
+        replaces the WHOLE record (A -> B) before the deferred click
+        fires, firing anyway would act on B despite having been formed
+        against A — D1's re-resolve-by-selector alone can't tell the
+        difference, since B's detail page repeats the same
+        `[data-key-action="route"]` markup. The fix no-ops instead of
+        clicking into the wrong record.
+
+        M-1 (code gate r5): this test's ONLY assertion used to be
+        `"route" not in held` — but r4's own fail-closed dispatch
+        fallback (N17) DROPS any dispatch that never gets a real
+        release regardless of WHY, so once that fix shipped this
+        assertion stayed green even with the record-id guard in
+        fire() mutated away entirely (measured: 1 of 7 full-class runs
+        still passed under that exact mutation — the assertion no
+        longer discriminated the record-id guard from the fallback
+        timer at all, since either mechanism produces an identical
+        "no POST arrived" outcome). Fixed to assert on fire()'s own
+        `record changed from ... to ...` warning text specifically —
+        the one signal that can only come from the record-id check
+        itself, and that fires within milliseconds of the real
+        afterSettle dispatched below, well inside the 500ms fallback
+        bound, so there is no ambiguity about which mechanism produced
+        the drop."""
+        _open(page, server, f"/record/{REC_BRIEF}")
+        page.evaluate(
+            "document.dispatchEvent(new CustomEvent('htmx:afterSwap', {detail: {}}))"
+        )
+        warnings: list[str] = []
+        page.on(
+            "console",
+            lambda msg: warnings.append(msg.text) if msg.type == "warning" else None,
+        )
+        held = _hold_post(page, "/action/arm")
+        page.keyboard.press("e")  # deferred, stamped against REC_BRIEF's record id
+        page.evaluate(
+            """() => {
+                document.querySelector('[data-record-id]')
+                    .setAttribute('data-record-id', 'a-different-record');
+            }"""
+        )
+        page.evaluate(
+            "document.dispatchEvent(new CustomEvent('htmx:afterSettle', {detail: {}}))"
+        )
+        # Same CDP console-delivery lag as the other warning-checking
+        # tests in this class -- poke to flush it. This releases via
+        # the REAL afterSettle above (not the 500ms fallback), so the
+        # warning is expected within milliseconds, not 500ms.
+        for _ in range(25):
+            if any("record changed from" in w for w in warnings):
+                break
+            page.evaluate("() => true")
+            time.sleep(0.02)
+        record_warnings = [w for w in warnings if "record changed from" in w]
+        assert len(record_warnings) == 1, (
+            f"expected exactly one record-id-guard warning, got: {warnings}"
+        )
+        assert REC_BRIEF in record_warnings[0] and "a-different-record" in record_warnings[0], (
+            f"warning did not name both records: {record_warnings[0]!r}"
+        )
+        assert "route" not in held, (
+            "fired a deferred click after the record changed underneath it"
+        )
+
+    def test_f14_for_a_request_sharing_the_pending_target_but_not_the_xhr_releases_nothing(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        """M2 (code gate r3): a target-only key is only an APPROXIMATE
+        match -- every arm/confirm/disarm request on ONE action bar
+        targets the SAME element, so a failing request aimed at that
+        element could still release a token a DIFFERENT, genuinely
+        live request on the SAME element owned, reproducing the
+        identical native-GET failure M1 fixed, just narrowed to
+        same-target collisions. Reproduced here with two requests
+        sharing a target but carrying DIFFERENT `xhr` identities:
+        sameSwapSettle=True (afterSettle shares its own swap's xhr and
+        correctly releases), failSharesSwapXhr=False (the failing
+        request's xhr differs from the live swap's), failSharesSwapTarget
+        =True (both point at the SAME element) -- exactly the
+        discrimination a target-only key cannot make. Keying by xhr
+        instead (falling back to target only when no xhr exists) fixes
+        it: the failure removes nothing, and the pending swap's own
+        later settle -- carrying its OWN xhr -- is what actually
+        releases it."""
+        _open(page, server, f"/record/{REC_BRIEF}")
+        page.evaluate(
+            """() => {
+                window.__sharedTarget = document.createElement('div');
+                document.body.appendChild(window.__sharedTarget);
+                window.__swapXhr = {};
+                document.dispatchEvent(new CustomEvent('htmx:afterSwap', {
+                    detail: { target: window.__sharedTarget, xhr: window.__swapXhr }
+                }));
+            }"""
+        )
+        held = _hold_post(page, "/action/arm")
+        page.keyboard.press("e")
+        page.evaluate(
+            """() => {
+                window.__failXhr = {}; // a DIFFERENT request, SAME target
+                document.dispatchEvent(new CustomEvent('htmx:sendError', {
+                    detail: { target: window.__sharedTarget, xhr: window.__failXhr }
+                }));
+            }"""
+        )
+        time.sleep(0.3)
+        assert "route" not in held, (
+            "a failing request sharing the TARGET (but not the xhr) with a "
+            "pending swap released it -- the key is not discriminating requests"
+        )
+        page.evaluate(
+            """() => {
+                document.dispatchEvent(new CustomEvent('htmx:afterSettle', {
+                    detail: { target: window.__sharedTarget, xhr: window.__swapXhr }
+                }));
+            }"""
+        )
+        _poll_held_actively(page, held, timeout=3.0)
+
+    def test_dispatch_fallback_drops_when_swap_has_not_really_settled(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        """N17 (code gate r4, fail-closed): the dispatch-level 500ms
+        fallback (N12) is a LIVENESS bound only -- it must never fire a
+        click into content htmx has not finished wiring. Reproduced by
+        the gate: with `htmx.config.defaultSettleDelay` raised to
+        1500ms (CPU starvation can stretch a real settle just as far),
+        the r3/r4 dispatch fired BLIND at its own 500ms mark, landing
+        on a `<button type="submit">` htmx had not yet attached its
+        own listener to -- the form's native, un-intercepted
+        submission ran instead: a plain GET to the current URL with
+        its hidden fields serialized as a query string, navigating the
+        page out from under everything (the ORIGINAL bug this whole
+        unit exists to fix, re-entering under CPU starvation). Ruling:
+        when the fallback fires and the swap has NOT settled, DROP the
+        dispatch -- never `.click()` a form that has not settled --
+        clear the pending entry (liveness kept: the queue itself is
+        not stuck), leave the bar armed so the next key press
+        dispatches normally, and warn once, naming the record and the
+        elapsed time."""
+        _open(page, server, f"/record/{REC_BRIEF}")
+        page.evaluate("htmx.config.defaultSettleDelay = 1500")
+        warnings: list[str] = []
+        page.on(
+            "console",
+            lambda msg: warnings.append(msg.text) if msg.type == "warning" else None,
+        )
+        disarm_posts: list[str] = []
+
+        def handler(route) -> None:
+            if route.request.method == "POST" and route.request.url.endswith(
+                "/action/disarm"
+            ):
+                disarm_posts.append(route.request.url)
+            route.continue_()
+
+        page.route("**/*", handler)
+
+        final_url_before = page.url
+        page.keyboard.press("e")  # arms the bar -- fires immediately (bag was empty)
+        page.wait_for_selector('.action-bar[data-armed="true"]')  # appears at SWAP time
+
+        # Disarm immediately, while the arm swap is still mid-settle
+        # (the 1500ms override has not elapsed) -- this defers via
+        # pendingSwaps, same as any other settle-gated dispatch.
+        page.keyboard.press("s")  # any non-Enter, non-n key while armed -> disarm
+        time.sleep(0.7)  # past the 500ms dispatch fallback, still well under 1500ms
+
+        assert len(disarm_posts) == 0, (
+            f"the dispatch fired into an unsettled swap: {disarm_posts}"
+        )
+        assert page.url == final_url_before, (
+            f"navigated away: {page.url!r} (the original bug, re-entered)"
+        )
+        assert page.query_selector('.action-bar[data-armed="true"]') is not None, (
+            "the bar disarmed even though the dispatch should have been dropped"
+        )
+        # CDP console-event delivery measurably lags a pure Python-side
+        # sleep on this host (same phenomenon _poll_held_actively works
+        # around for network events) -- an active poke flushes it.
+        for _ in range(25):
+            if any("dropped" in w.lower() for w in warnings):
+                break
+            page.evaluate("() => true")
+            time.sleep(0.02)
+        drop_warnings = [w for w in warnings if "dropped" in w.lower()]
+        assert len(drop_warnings) == 1, f"expected exactly one drop warning, got: {warnings}"
+        assert REC_BRIEF in drop_warnings[0]
+
+        time.sleep(1.0)  # let the real 1500ms settle actually complete
+
+        page.keyboard.press("s")  # press again -- the bag is empty now, fires for real
+        deadline = time.monotonic() + 3.0
+        while len(disarm_posts) == 0 and time.monotonic() < deadline:
+            page.evaluate("() => true")
+            time.sleep(0.02)
+        assert len(disarm_posts) == 1, f"expected exactly one disarm POST, got: {disarm_posts}"
+
+    def test_dispatch_level_fallback_drops_under_a_continuous_swap_stream(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        """N12 (code gate r3), corrected for N17's drop semantics (code
+        gate r4): the per-TOKEN 500ms fallback bounds each individual
+        pendingSwaps entry, but with no bound of its own on the queued
+        DISPATCH beyond that, a continuous stream of overlapping swaps
+        (a new one always landing before the bag empties) can keep the
+        bag non-empty far longer than any single token's own 500ms.
+        Before N17, the dispatch FIRED once its own 500ms fallback
+        expired regardless of whether the bag had actually emptied --
+        which reproduced the original bug (a click landing on unwired
+        content) whenever a real stream outlasted 500ms without ever
+        truly settling. After N17 that firing must not happen: the
+        dispatch is DROPPED instead once its own fallback expires
+        while the bag is still non-empty -- no POST, exactly one
+        console.warn, and the dropped intent never revives on elapsed
+        time alone.
+
+        B-1/B-2 (code gate r5): every one of this stream's own
+        afterSwap events shares the SAME `detail: {}` fallback key, so
+        once the stream stops, each one self-evicts into
+        `abandonedSwaps` rather than vanishing -- a FRESH keypress
+        must stay gated until those are genuinely resolved, never fire
+        just because enough time has passed (the same proxy the r1
+        counter and, unnoticed, this test's own original ending relied
+        on -- "the stream ended, so it must be safe now" is exactly
+        the elapsed-time signal the gate closed). Supplying real
+        `afterSettle` resolutions for the stream's own key is what
+        actually heals it, proven by a keypress firing immediately
+        right after that -- not merely after enough time has gone
+        by."""
+        _open(page, server, f"/record/{REC_BRIEF}")
+        page.evaluate(
+            "document.dispatchEvent(new CustomEvent('htmx:afterSwap', {detail: {}}))"
+        )
+        warnings: list[str] = []
+        page.on(
+            "console",
+            lambda msg: warnings.append(msg.text) if msg.type == "warning" else None,
+        )
+        held = _hold_post(page, "/action/arm")
+        page.keyboard.press("e")
+        page.evaluate(
+            """() => {
+                let count = 0;
+                window.__streamInterval = setInterval(() => {
+                    document.dispatchEvent(new CustomEvent('htmx:afterSwap', {detail: {}}));
+                    count++;
+                    if (count >= 20) clearInterval(window.__streamInterval);
+                }, 150);
+            }"""
+        )
+        # give the dispatch's own 500ms fallback time to resolve one
+        # way or the other, well before the stream (~3s) or its tail
+        # tokens' own self-eviction (up to ~3.5s) could empty the bag.
+        time.sleep(1.0)
+        assert "route" not in held, (
+            "the dispatch fired into unwired content under a continuous, "
+            "never-settling swap stream -- it must be DROPPED instead"
+        )
+        # Same CDP console-delivery lag as above -- poke to flush it.
+        for _ in range(25):
+            if any("dropped" in w.lower() for w in warnings):
+                break
+            page.evaluate("() => true")
+            time.sleep(0.02)
+        drop_warnings = [w for w in warnings if "dropped" in w.lower()]
+        assert len(drop_warnings) == 1, f"expected exactly one drop warning, got: {warnings}"
+
+        # code gate r5 (B-1/B-2): once the stream stops and every
+        # token has self-evicted, pendingSwaps is empty but
+        # abandonedSwaps is not -- a fresh keypress must NOT fire
+        # merely because time has passed.
+        time.sleep(3.0)
+        page.keyboard.press("e")
+        time.sleep(0.2)
+        assert "route" not in held, (
+            "fired after an unresolved stream's tokens merely timed out -- "
+            "an abandoned swap must heal only via its OWN real resolution, "
+            "never by elapsed time alone (B-1)"
+        )
+        # Supply that real resolution now (every stream tick shared
+        # the same fallback key, `detail: {}` -- 25 is a deliberately
+        # generous upper bound on the >= 20 entries that could still
+        # be abandoned; extra afterSettle dispatches beyond what is
+        # actually outstanding are harmless no-ops) and confirm the
+        # system heals for real once it has one, not before.
+        page.evaluate(
+            """() => {
+                for (let i = 0; i < 25; i++) {
+                    document.dispatchEvent(new CustomEvent('htmx:afterSettle', {detail: {}}));
+                }
+            }"""
+        )
+        elapsed = _poll_held_actively(page, held, timeout=2.0)
+        assert elapsed < 0.3, (
+            f"did not fire promptly once the stream's own requests were "
+            f"genuinely resolved: {elapsed:.3f}s"
+        )
+
+    def test_submit_guard_blocks_a_native_post_when_htmx_has_not_wired_the_form(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        """Layer 2 (code gate r5, the durable guard; redesigned code
+        gate r6, MAJOR-1). Every bug this unit has found and fixed
+        (B-1/B-2 included) caused harm through exactly ONE mechanism --
+        a native, un-intercepted form submission navigating the page,
+        because htmx had not yet attached its own interception to the
+        form being clicked. This test exercises the TIMING branch of
+        the r6-redesigned guard specifically (this confirm form DOES
+        carry `hx-post` -- see the sibling test below for the OTHER
+        branch, a form that will never be intercepted at all). This
+        test does not go through clickAction()'s gating AT ALL -- it
+        deliberately clicks the confirm button on a freshly-armed bar
+        DURING the swap/settle gap, exactly as if some future hole in
+        the pendingSwaps/abandonedSwaps bookkeeping (a class of bug r1
+        through r5 have each found a new instance of) let a click
+        through too early. With `htmx.config.defaultSettleDelay`
+        raised to 1500ms, the click lands on a `<button type="submit">`
+        that genuinely has not been wired yet -- the submit guard is
+        the ONLY thing standing between that click and a destroyed
+        page. Confirms: no navigation, no POST, and the page stays
+        alive and queryable afterward -- a dropped keystroke, not a
+        catastrophe. Also pins NIT-A (code gate r8): this branch's
+        "Still loading" hint, previously untested anywhere."""
+        _open(page, server, f"/record/{REC_BRIEF}")
+        page.evaluate("htmx.config.defaultSettleDelay = 1500")
+        warnings: list[str] = []
+        page.on(
+            "console",
+            lambda msg: warnings.append(msg.text) if msg.type == "warning" else None,
+        )
+        confirm_posts: list[str] = []
+
+        def handler(route) -> None:
+            if route.request.method == "POST" and route.request.url.endswith(
+                "/action/confirm"
+            ):
+                confirm_posts.append(route.request.url)
+            route.continue_()
+
+        page.route("**/*", handler)
+
+        final_url_before = page.url
+        page.keyboard.press("e")  # arms the bar via the real, gated path
+        page.wait_for_selector('.action-bar[data-armed="true"]')  # appears at SWAP time
+
+        # Bypass clickAction() entirely -- a raw DOM click on the
+        # confirm button, landing while the arm swap is still
+        # genuinely mid-settle (the 1500ms override has not elapsed).
+        page.evaluate(
+            """() => {
+                document.querySelector('[data-key-action="confirm"]').click();
+            }"""
+        )
+        time.sleep(0.3)
+
+        assert len(confirm_posts) == 0, (
+            f"a raw click on an unwired submit button still reached the "
+            f"server: {confirm_posts}"
+        )
+        assert page.url == final_url_before, (
+            f"navigated away: {page.url!r} (the original bug, with "
+            f"clickAction's own gating bypassed entirely)"
+        )
+        assert page.query_selector('.action-bar[data-armed="true"]') is not None, (
+            "the page is no longer the same document -- a navigation destroyed it"
+        )
+        # Same CDP console-delivery lag as the other warning-checking
+        # tests in this class -- poke to flush it. Text matches the
+        # "not yet wired" branch specifically (code gate r6, MAJOR-1) --
+        # this confirm form DOES carry hx-post directly, so it goes
+        # through the timing check, not the never-intercepted one (see
+        # test_native_submission_is_blocked_forever_for_a_form_with_no_
+        # htmx_verb_or_boost below for that branch).
+        for _ in range(25):
+            if any("htmx did not yet appear wired" in w for w in warnings):
+                break
+            page.evaluate("() => true")
+            time.sleep(0.02)
+        blocked_warnings = [w for w in warnings if "htmx did not yet appear wired" in w]
+        assert len(blocked_warnings) == 1, (
+            f"expected exactly one submit-guard warning, got: {warnings}"
+        )
+        # NIT-A (code gate r8): this branch's showNoopHint("Still
+        # loading -- try that again in a moment.") had no test anywhere
+        # pinning it. Text-specific, not mere presence -- the tier-1
+        # no-verb/boost test above also shows a hint, so a presence-only
+        # check here could not distinguish which branch actually fired.
+        hint = page.locator("[data-noop-hint-active]")
+        assert hint.count() == 1, "no visible hint shown for the timing-blocked submit"
+        assert "Still loading" in (hint.text_content() or ""), (
+            f"unexpected hint text: {hint.text_content()!r}"
+        )
+
+    def test_native_submission_is_blocked_forever_for_a_form_with_no_htmx_verb_or_boost(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        """MAJOR-1 (code gate r6): the r5 guard's `firstInitCompleted`
+        check answers "has htmx processed this element", never "will
+        htmx intercept its submit" -- and htmx 2.0.9 marks EVERY
+        `<form>` as processed regardless of whether it carries an
+        `hx-*` verb (its own `findElementsToProcess` selector literally
+        includes ", form,"). The three bare `<form id="form-{{
+        dom_id }}">` note-input wrapper forms (`action_bar.html:122`,
+        `:142`, `:197`) exist purely as `hx-include` scoping containers
+        -- their actual submission always happens via a SEPARATE
+        sibling button's own `hx-post`+`hx-include`, never the form
+        itself -- so the r5 guard read them as permanently "wired" and
+        let Enter-in-the-note-field's native implicit submission
+        through completely unguarded. Reproduced live by the gate on
+        the r5-shipped build: `/record/lrn-b71e0001` ->
+        `?dest=&note=nwhy`, a real navigation, no guard warning at all,
+        `defaultPrevented` false at every phase -- the ORIGINAL failure
+        signature this whole unit exists to close. Fixed by asking
+        whether htmx will EVER intercept a form's submit (an `hx-*`
+        verb, or `hx-boost`, present directly or inherited) rather than
+        whether it has merely been processed -- these forms have
+        neither, so the guard now blocks their native submission
+        UNCONDITIONALLY, not merely until some marker flips, and the
+        typed note text survives (never cleared, never lost) since
+        nothing but the native navigation is prevented."""
+        _open(page, server, f"/record/{REC_BRIEF}")
+        warnings: list[str] = []
+        page.on(
+            "console",
+            lambda msg: warnings.append(msg.text) if msg.type == "warning" else None,
+        )
+        final_url_before = page.url
+        note = page.locator('.action-bar input[name="note"]')
+        note.fill("nwhy")
+        note.press("Enter")
+        time.sleep(0.3)
+
+        assert page.url == final_url_before, (
+            f"navigated away: {page.url!r} -- Enter in the note field "
+            f"triggered a native implicit submission (MAJOR-1's original bug)"
+        )
+        for _ in range(25):
+            if any("htmx will never intercept it" in w for w in warnings):
+                break
+            page.evaluate("() => true")
+            time.sleep(0.02)
+        blocked_warnings = [w for w in warnings if "htmx will never intercept it" in w]
+        assert len(blocked_warnings) == 1, (
+            f"expected exactly one never-intercepted warning, got: {warnings}"
+        )
+        # MINOR-2 (code gate r7): a blocked Enter used to be console-
+        # only -- "reads as a broken shortcut" by the app's own
+        # showNoopHint() rationale (Y-9) once it is reachable
+        # deliberately, not by accident. The same visible surface a
+        # no-op key already gets must now appear here too.
+        hint = page.locator("[data-noop-hint-active]")
+        assert hint.count() == 1, "no visible hint shown for the blocked Enter"
+        assert "Enter doesn't submit" in (hint.text_content() or ""), (
+            f"unexpected hint text: {hint.text_content()!r}"
+        )
+        assert note.input_value() == "nwhy", (
+            "the note field's own typed text was lost -- blocking the "
+            "implicit submit must not clear the input"
+        )
+
+    def test_an_unresolved_abandoned_key_eventually_stops_deafening_later_keypresses(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        """Minor 1 (code gate r6): an abandoned key that NEVER gets a
+        real resolution used to gate every future dispatch FOREVER --
+        measured by the gate as `[False, False, False]` across three
+        separate keypresses, each dropping via its own fallback but
+        NONE ever dispatching immediately again -- contradicting r4's
+        own "the NEXT keypress dispatches normally" guarantee, and
+        reproducing a form of the exact proxy-lying mistake this unit
+        has chased for six rounds now (treating a stale
+        absence-of-evidence as permanent evidence), just pointed the
+        other way. Fixed by giving each abandoned entry its own
+        staleness ceiling (`ABANDONED_SWAP_CEILING_MS`, 10s): once a
+        key has outlived any plausible swap, it silently ages out,
+        letting FUTURE, not-yet-issued keypresses recover the ability
+        to dispatch immediately (reproduced here: three keypresses,
+        matching the gate's own three-drop measurement). This test's
+        own three keypresses each drop via their OWN independent 500ms
+        fallback -- they land and resolve strictly before the 10s
+        ceiling is ever reached here, so what happens to a dispatch
+        still queued WHEN the ceiling itself fires is not what this
+        test exercises -- see
+        test_abandoned_ceiling_never_drains_a_dispatch_that_is_still_queued
+        for that (code gate r7 redesigned the ceiling to proactively
+        drop a still-queued dispatch itself, not merely leave it to run
+        out its own fallback)."""
+        _open(page, server, f"/record/{REC_BRIEF}")
+        page.evaluate(
+            """() => {
+                window.__deafXhr = {};
+                document.dispatchEvent(new CustomEvent('htmx:afterSwap', {
+                    detail: { xhr: window.__deafXhr }
+                }));
+            }"""
+        )
+        time.sleep(0.7)  # the token self-evicts into abandonedSwaps
+
+        warnings: list[str] = []
+        page.on(
+            "console",
+            lambda msg: warnings.append(msg.text) if msg.type == "warning" else None,
+        )
+        held = _hold_post(page, "/action/arm")
+
+        # Three keypresses while abandoned, spaced past each one's own
+        # 500ms fallback -- each must still drop, never fire (the
+        # gate's own [False, False, False] measurement, reproduced).
+        for _ in range(3):
+            page.keyboard.press("e")
+            time.sleep(0.7)
+        assert "route" not in held, (
+            "a keypress fired while the abandoned key was still within "
+            "its staleness ceiling"
+        )
+        for _ in range(60):
+            if len([w for w in warnings if "dropped" in w.lower()]) >= 3:
+                break
+            page.evaluate("() => true")
+            time.sleep(0.02)
+        drop_warnings = [w for w in warnings if "dropped" in w.lower()]
+        assert len(drop_warnings) == 3, f"expected 3 drop warnings, got: {warnings}"
+
+        # Past the abandoned entry's own staleness ceiling (10s, and
+        # ~2.1s have already elapsed above) -- a FRESH keypress must now
+        # dispatch immediately, not defer -- the deafened keyboard
+        # recovers on its own, with no real resolution ever supplied.
+        time.sleep(8.5)
+        page.keyboard.press("e")
+        elapsed = _poll_held_actively(page, held, timeout=2.0)
+        assert elapsed < 0.3, (
+            f"a keypress after the abandoned key's own ceiling was not "
+            f"immediate: {elapsed:.3f}s -- the deafened keyboard never "
+            f"recovered"
+        )
+
+    def test_abandoned_ceiling_never_drains_a_dispatch_that_is_still_queued(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        """Minor 1 (code gate r6), the sharper half: the previous test
+        proves the ceiling eventually lets a FUTURE keypress dispatch
+        again, but does not by itself prove the ceiling firing WHILE a
+        dispatch is still queued and waiting on it never releases that
+        dispatch early -- exactly the historical N17 mistake (a timeout
+        draining pendingDispatches instead of merely giving up), now at
+        this second layer instead of the token layer it was originally
+        found at.
+
+        code gate r7 (MAJOR-1, MINOR-4 positive control): through r6
+        this dispatch would drop via its OWN independent 500ms fallback,
+        untouched by the ceiling (which never drained anything). r7
+        changed that on purpose: the ceiling now actively finds and
+        drops any dispatch still waiting on the id it ages out, right
+        then, fail-closed -- so THIS test now expects the ceiling's OWN
+        "aged out" warning, landing BEFORE the dispatch's own 500ms
+        fallback would have (queued late enough -- ~10.2s -- that its
+        own fallback, ~10.7s, lands after the ~10.5s ceiling). Asserting
+        the SPECIFIC warning text, not merely "some drop happened," is
+        the positive control that the ceiling actually fired rather
+        than nothing happening at all (MINOR-4: under r6-era code with
+        no ceiling-triggered drop, this test's generic "dropped"
+        assertion alone could not tell "the ceiling fired and correctly
+        did nothing" apart from "no ceiling exists at all" -- both look
+        identical to a substring match on the OWN-fallback text)."""
+        _open(page, server, f"/record/{REC_BRIEF}")
+        page.evaluate(
+            """() => {
+                window.__deafXhr2 = {};
+                document.dispatchEvent(new CustomEvent('htmx:afterSwap', {
+                    detail: { xhr: window.__deafXhr2 }
+                }));
+            }"""
+        )
+        # Token self-evicts at ~0.5s after the dispatch above -> the
+        # abandoned entry's own ceiling fires at ~10.5s measured from
+        # NOW (t=0 here).
+        warnings: list[str] = []
+        page.on(
+            "console",
+            lambda msg: warnings.append(msg.text) if msg.type == "warning" else None,
+        )
+        held = _hold_post(page, "/action/arm")
+
+        # Queue a dispatch at ~10.2s -- comfortably past the token's
+        # own 500ms eviction, and late enough that its OWN 500ms
+        # fallback (~10.7s) lands AFTER the ~10.5s ceiling: the ceiling
+        # passes WHILE this dispatch is still queued and waiting, so it
+        # must be dropped BY THE CEILING, not by its own fallback.
+        time.sleep(10.2)
+        page.keyboard.press("e")
+
+        # Wait comfortably past BOTH the ~10.5s ceiling and this
+        # dispatch's own ~10.7s fallback -- generously padded (this
+        # host runs multiple concurrent sibling agents; a busy event
+        # loop delays JS timers, never fires them early, so extra
+        # margin here cannot manufacture a false pass) -- then check
+        # the terminal state: fired (bug -- the ceiling drained the
+        # queue early) or dropped (correct -- and by WHICH mechanism).
+        for _ in range(250):
+            if any("dropped" in w.lower() for w in warnings) or "route" in held:
+                break
+            page.evaluate("() => true")
+            time.sleep(0.02)
+        assert "route" not in held, (
+            "the queued dispatch fired -- either the ceiling drained "
+            "the queue early, or its own fallback fired instead of "
+            "dropping"
+        )
+        aged_out_warnings = [w for w in warnings if "aged out" in w.lower()]
+        fallback_warnings = [
+            w for w in warnings if "dropped" in w.lower() and "aged out" not in w.lower()
+        ]
+        assert len(aged_out_warnings) == 1, (
+            f"expected the ceiling to drop this dispatch with its OWN "
+            f"aged-out warning (code gate r7), not the fallback-bound "
+            f"text -- got: {warnings}"
+        )
+        assert len(fallback_warnings) == 0, (
+            f"the dispatch's own 500ms fallback also fired -- it should "
+            f"have already been cleared once the ceiling dropped it -- "
+            f"got: {warnings}"
+        )
+        assert "route" not in held, (
+            "fired instead of dropping once its own fallback finally ran"
+        )
+
+    def test_ceiling_age_out_is_not_reversed_by_a_later_unrelated_resolution(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        """MAJOR-1 (code gate r7): the actual seventh hole, reproduced
+        directly -- "the shipped test that fires a subsequent unrelated
+        resolution" the gate said did not exist before this round.
+        removeAbandonedSwapSilently's own r6 fix never drains
+        pendingDispatches itself -- correct -- but through r6 it also
+        never told a dispatch still waiting on the id it just aged out
+        that its wait was now hopeless, so nothing stopped a
+        SUBSEQUENT, wholly UNRELATED request's genuine resolution from
+        finding both bags empty (the abandoned entry gone, nothing else
+        outstanding) and draining that dispatch anyway -- releasing it
+        because a GLOBAL bag emptied, never because the SPECIFIC thing
+        it was waiting on resolved. Reproduced 9/9 by the gate across
+        three sessions (loads 8.31/7.94/10.74). Fixed by having the
+        ceiling itself proactively drop every dispatch still waiting on
+        the id it ages out (dropDispatchesWaitingOnId), so by the time
+        any later unrelated resolution arrives there is nothing left
+        for it to accidentally release -- no path, not merely no path
+        this specific timing happens to exercise.
+
+        Uses the NIT-2 config seam (`SELF_LEARN_UI_CONFIG.
+        ABANDONED_SWAP_CEILING_MS`) to shrink the ceiling from the
+        production 10s down to 400ms -- this reproduction needs the
+        ceiling to actually fire, not any particular duration, and a
+        real htmx settle/afterSwap cycle completes in single-digit
+        milliseconds, comfortably inside a 400ms window even under
+        this host's concurrent-agent load."""
+        _open(page, server, f"/record/{REC_BRIEF}")
+        page.evaluate("window.SELF_LEARN_UI_CONFIG.ABANDONED_SWAP_CEILING_MS = 400")
+        warnings: list[str] = []
+        page.on(
+            "console",
+            lambda msg: warnings.append(msg.text) if msg.type == "warning" else None,
+        )
+
+        # K1: an afterSwap that never resolves -- self-evicts into
+        # abandonedSwaps at ~500ms, ages out via the (now 400ms)
+        # ceiling at roughly ~900ms from K1's own creation.
+        page.evaluate(
+            """() => {
+                window.__majorOneK1 = {};
+                document.dispatchEvent(new CustomEvent('htmx:afterSwap', {
+                    detail: { xhr: window.__majorOneK1 }
+                }));
+            }"""
+        )
+        held = _hold_post(page, "/action/arm")
+
+        # Queue a dispatch while K1 is still outstanding (past its own
+        # 500ms self-eviction, before its ceiling) -- its waitingIds
+        # snapshot captures ONLY K1's id.
+        time.sleep(0.6)
+        page.keyboard.press("e")
+
+        # Wait past K1's ceiling -- the dispatch above must be dropped
+        # HERE, fail-closed, by the ceiling itself, before anything
+        # unrelated ever resolves.
+        for _ in range(150):
+            if any("aged out" in w.lower() for w in warnings) or "route" in held:
+                break
+            page.evaluate("() => true")
+            time.sleep(0.02)
+        assert "route" not in held, (
+            "the dispatch fired before any resolution arrived at all"
+        )
+        aged_out_warnings = [w for w in warnings if "aged out" in w.lower()]
+        assert len(aged_out_warnings) == 1, (
+            f"expected the ceiling to proactively drop the queued "
+            f"dispatch with an aged-out warning, got: {warnings}"
+        )
+
+        # NOW fire a completely UNRELATED, fresh request's real
+        # resolution -- the exact scenario the gate said no shipped
+        # test previously exercised. Under the r6-era bug this alone
+        # would have found both bags empty and drained the dispatch
+        # above (still queued, under that bug); under the r7 fix it
+        # was already dropped and this touches nothing that concerns it.
+        page.evaluate(
+            """() => {
+                window.__majorOneK2 = {};
+                document.dispatchEvent(new CustomEvent('htmx:afterSwap', {
+                    detail: { xhr: window.__majorOneK2 }
+                }));
+                document.dispatchEvent(new CustomEvent('htmx:afterSettle', {
+                    detail: { xhr: window.__majorOneK2 }
+                }));
+            }"""
+        )
+        time.sleep(0.3)
+        assert "route" not in held, (
+            "an unrelated request's genuine resolution fired a dispatch "
+            "that was actually waiting on a DIFFERENT key which had "
+            "already aged out unresolved -- MAJOR-1 (code gate r7)"
+        )
+
+    def test_submit_guard_fails_closed_on_an_unrecognizable_target(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        """NIT-1 (code gate r7): every OTHER branch in this guard fails
+        CLOSED on an unknown ("unknown" treated the same as "not yet
+        wired," never as "must be fine") -- this early return used to
+        do the opposite, letting a submit event it could not even
+        examine through completely unblocked. Positive control:
+        `evt.target` here is `document` itself (a bubbling `submit`
+        dispatched directly at `document`, never produced by real form
+        submission -- native submission always targets the actual
+        `<form>`), which lacks `hasAttribute` entirely; the tier-1/
+        tier-2 tests elsewhere already show a bare `<form>` correctly
+        warns, so this is the negative-control half."""
+        _open(page, server, f"/record/{REC_BRIEF}")
+        warnings: list[str] = []
+        page.on(
+            "console",
+            lambda msg: warnings.append(msg.text) if msg.type == "warning" else None,
+        )
+        page.evaluate(
+            "document.dispatchEvent(new Event('submit', {bubbles: true, cancelable: true}))"
+        )
+        time.sleep(0.2)
+        unexaminable_warnings = [w for w in warnings if "could not examine" in w]
+        assert len(unexaminable_warnings) == 1, (
+            f"expected the fail-closed warning for an unexaminable submit "
+            f"target, got: {warnings}"
+        )
+
+    def test_fire_time_wired_check_drops_a_late_replacement_and_falls_back_when_mechanism_absent(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        """code gate r7 (MAJOR-1 follow-up, the coordinator's ruling):
+        the keyed snapshot only proves everything outstanding AT DEFER
+        TIME resolved -- it says nothing about a swap that starts AFTER
+        deferral and replaces the SAME target. fire() re-checks the
+        live element's own wired state right before acting. Two cases:
+        (a) the marker mechanism is alive (document.body carries the
+        canary) but the live target itself reads as unprocessed at fire
+        time -- drop, fail-closed, with a distinct warning; (b) the
+        marker mechanism is entirely absent (the canary itself missing,
+        simulating a future htmx upgrade renaming the expando) -- fall
+        back to firing on the keyed wait alone, exactly the r1-r6
+        behavior, rather than silently deafening the keyboard forever
+        (the coordinator's own explicit "worse than the bug" concern)."""
+        _open(page, server, f"/record/{REC_BRIEF}")
+        warnings: list[str] = []
+        page.on(
+            "console",
+            lambda msg: warnings.append(msg.text) if msg.type == "warning" else None,
+        )
+
+        # (a) mechanism alive, target unwired at fire time.
+        page.evaluate(
+            """() => {
+                window.__wiredCheckXhr = {};
+                document.dispatchEvent(new CustomEvent('htmx:afterSwap', {
+                    detail: { xhr: window.__wiredCheckXhr }
+                }));
+            }"""
+        )
+        held = _hold_post(page, "/action/arm")
+        page.keyboard.press("e")
+        page.evaluate(
+            """() => {
+                const live = document.querySelector('[data-key-action="route"]');
+                delete live["htmx-internal-data"];
+            }"""
+        )
+        page.evaluate(
+            """() => {
+                document.dispatchEvent(new CustomEvent('htmx:afterSettle', {
+                    detail: { xhr: window.__wiredCheckXhr }
+                }));
+            }"""
+        )
+        for _ in range(100):
+            if any("not wired at fire time" in w for w in warnings) or "route" in held:
+                break
+            page.evaluate("() => true")
+            time.sleep(0.02)
+        assert "route" not in held, (
+            "clicked into a target that read as unwired at fire time"
+        )
+        assert any("not wired at fire time" in w for w in warnings), (
+            f"expected the fire-time veto warning, got: {warnings}"
+        )
+
+        # (b) mechanism absent entirely (the canary itself missing) --
+        # must fall back to firing rather than deafen the keyboard
+        # forever.
+        held2 = _hold_post(page, "/action/arm")
+        page.evaluate(
+            """() => {
+                delete document.body["htmx-internal-data"];
+                window.__wiredCheckXhr2 = {};
+                document.dispatchEvent(new CustomEvent('htmx:afterSwap', {
+                    detail: { xhr: window.__wiredCheckXhr2 }
+                }));
+            }"""
+        )
+        page.keyboard.press("e")
+        page.evaluate(
+            """() => {
+                document.dispatchEvent(new CustomEvent('htmx:afterSettle', {
+                    detail: { xhr: window.__wiredCheckXhr2 }
+                }));
+            }"""
+        )
+        _poll_held_actively(page, held2, timeout=3.0)
+        assert "route" in held2, (
+            "with the marker mechanism entirely absent, the dispatch "
+            "never fired at all -- fail-closed here deafens the "
+            "keyboard forever instead of falling back to the keyed wait"
+        )
+
+    def test_interception_check_closes_the_r7_minor1_false_allows(
+        self, page: "Page", server: ServerHandle
+    ) -> None:
+        """MINOR-1 (code gate r7): three FALSE-ALLOW cases the gate's
+        own 19-row interception matrix found -- htmxWillInterceptSubmit()
+        said "will intercept" when htmx 2.0.9 actually would not have
+        wired anything, so a submit would have gone native, unblocked.
+        All three are latent in shipped markup (the guard's own comment
+        documents the grep showing that); constructed here directly so
+        the closes are exercised without needing shipped markup to
+        change.
+
+        MINOR-2 (code gate r8, pinned here): the tier-1 warning used to
+        say "this form carries no htmx verb or boost" unconditionally
+        -- false for this exact trigger-override case, which DOES carry
+        a verb. Collects console warnings alongside the three closes
+        above and asserts the trigger case's warning names its own,
+        different reason."""
+        _open(page, server, f"/record/{REC_BRIEF}")
+        warnings: list[str] = []
+        page.on(
+            "console",
+            lambda msg: warnings.append(msg.text) if msg.type == "warning" else None,
+        )
+        result = page.evaluate(
+            """() => {
+                const results = {};
+
+                // 1. hx-trigger overrides a verb-carrying form away
+                // from submit -- htmx wires SOME listener, never on
+                // the submit event.
+                const triggerForm = document.createElement('form');
+                triggerForm.setAttribute('hx-post', '/action/arm');
+                triggerForm.setAttribute('hx-trigger', 'click');
+                document.body.appendChild(triggerForm);
+                // Process for real -- isolates tier 1's own decision:
+                // without this, an unprocessed element is ALSO blocked
+                // by tier 2 (never wired) regardless of what tier 1
+                // decides, masking whatever this case is meant to prove.
+                window.htmx.process(triggerForm);
+                results.triggerPrevented = !triggerForm.dispatchEvent(
+                    new Event('submit', {bubbles: true, cancelable: true})
+                );
+
+                // 2. hx-disinherit="hx-boost" on an ancestor BETWEEN the
+                // form and a still-higher boosted ancestor -- htmx's own
+                // inheritance walk stops dead at the disinheriting
+                // ancestor, never reaching the boost above it.
+                const boosted = document.createElement('div');
+                boosted.setAttribute('hx-boost', 'true');
+                const disinheriting = document.createElement('div');
+                disinheriting.setAttribute('hx-disinherit', 'hx-boost');
+                const disinheritForm = document.createElement('form');
+                disinheriting.appendChild(disinheritForm);
+                boosted.appendChild(disinheriting);
+                document.body.appendChild(boosted);
+                // Process the whole subtree for real (same reason as
+                // above) -- this also exercises REAL htmx's own
+                // disinherit handling, not just this file's mimicry of it.
+                window.htmx.process(boosted);
+                results.disinheritPrevented = !disinheritForm.dispatchEvent(
+                    new Event('submit', {bubbles: true, cancelable: true})
+                );
+
+                // 3. method="dialog" under a boosted ancestor -- htmx's
+                // OWN boost-eligibility check excludes this; native
+                // dialog-closing submission never navigates and sends
+                // no request, so this must be an explicit ALLOW.
+                const dialogBoosted = document.createElement('div');
+                dialogBoosted.setAttribute('hx-boost', 'true');
+                const dialogForm = document.createElement('form');
+                dialogForm.setAttribute('method', 'dialog');
+                dialogBoosted.appendChild(dialogForm);
+                document.body.appendChild(dialogBoosted);
+                results.dialogPrevented = !dialogForm.dispatchEvent(
+                    new Event('submit', {bubbles: true, cancelable: true})
+                );
+
+                return results;
+            }"""
+        )
+        assert result["triggerPrevented"] is True, (
+            'hx-trigger="click" on a verb-carrying form still let a '
+            "native submit through unblocked"
+        )
+        assert result["disinheritPrevented"] is True, (
+            'hx-disinherit="hx-boost" between a form and a still-higher '
+            "boosted ancestor still read as boosted"
+        )
+        assert result["dialogPrevented"] is False, (
+            'method="dialog" was blocked -- native dialog-closing '
+            "submission never navigates and sends no request; blocking "
+            "it is a regression, not a fix"
+        )
+        # MINOR-2 (code gate r8): the trigger-override case DOES carry
+        # an htmx verb -- the warning must name hx-trigger routing it
+        # away from submit, not the "no verb or boost" reason that
+        # belongs to the sibling no-verb/no-boost test instead.
+        for _ in range(25):
+            if any("routes its htmx verb away from submit" in w for w in warnings):
+                break
+            page.evaluate("() => true")
+            time.sleep(0.02)
+        # NOTE: the disinherit-form case above also legitimately warns
+        # with the "carries no htmx verb or boost" text -- once its own
+        # boost is cut off by hx-disinherit it genuinely has neither a
+        # verb nor a boost, so that text is correct FOR IT. Only the
+        # trigger case is asserted here: it is the one that DOES carry
+        # a verb (hx-post) and must not be described as verb/boost-less.
+        trigger_reason_warnings = [
+            w for w in warnings if "routes its htmx verb away from submit" in w
+        ]
+        assert len(trigger_reason_warnings) == 1, (
+            f"expected the trigger-override case to warn with its own "
+            f"reason, got: {warnings}"
+        )
 
 
 # ============================================================= item 2:
