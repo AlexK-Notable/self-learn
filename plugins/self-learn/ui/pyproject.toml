@@ -40,8 +40,12 @@ dev = [
     # python package is a pip/uv dependency (its driver is bundled — this
     # adds NO npm/node toolchain the developer manages); the matched
     # Chromium build is fetched once via `uv run playwright install
-    # chromium`. The suite is marked `js` and auto-skips when the browser
-    # is absent, so the default `pytest` run never depends on it.
+    # chromium-headless-shell`. The suite is marked `js`, selected with
+    # `-m js` / excluded with `-m 'not js'`; the default `pytest` run
+    # (no `-m` filter) still collects it. U-browserfail (2026-08-29): a
+    # missing Chromium build now FAILS these tests, it no longer
+    # auto-skips them — set SELF_LEARN_UI_NO_BROWSER=1 to restore the
+    # old skip on an environment that genuinely has no browser.
     "playwright>=1.47",
 ]
 
@@ -57,5 +61,5 @@ testpaths = ["tests"]
 addopts = "-ra"
 asyncio_mode = "auto"
 markers = [
-    "js: browser-driven DOM tests for static/app.js (FW-17). Slower than the unit suite; select with `-m js`, exclude with `-m 'not js'`. Auto-skipped when Playwright's Chromium is not installed.",
+    "js: browser-driven DOM tests for static/app.js (FW-17). Slower than the unit suite; select with `-m js`, exclude with `-m 'not js'`. FAILS (does not skip) when Playwright's Chromium is not installed, unless SELF_LEARN_UI_NO_BROWSER=1 is set (U-browserfail).",
 ]

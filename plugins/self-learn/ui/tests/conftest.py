@@ -655,3 +655,256 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
             f"sibling suite on this shared host, reported but not failed: "
             f"{_WARN_NAMESPACES}"
         )
+
+
+# ===================================================================== #
+# U-browserfail (2026-08-29): an absent Chromium build must read as a
+# FAILURE, not a SKIP a green run swallows indistinguishably from "not
+# applicable".
+# ===================================================================== #
+#
+# Measured 2026-08-29: the UI suite reported `3 failed, 1209 passed, 136
+# skipped` on production's venv -- all 136 skips traced to the SAME
+# `pytest.skip(f"Chromium unavailable for Playwright: {exc}")` line,
+# duplicated three times (the `browser` fixture in each of
+# `test_js_dom.py`, `test_js_dom_targeting.py`,
+# `test_js_dom_pane_persistence.py`), because Playwright 1.61.0 (pinned
+# in `uv.lock`) wants Chromium build 1228 and the cache held
+# 1194/1200/1234. After installing the matched build, the SAME suite
+# reported `1 failed, 1347 passed, 0 skipped` -- the 136 tests were fine
+# all along; the REPORTING was the defect, the same class this repo has
+# fought all week (a check that reports success -- or here, merely "not
+# applicable" -- without having looked).
+#
+# `_browser_gate` below probes for Chromium EXACTLY ONCE, at session
+# scope, shared by all three files. `_browser_or_sentinel` is the shared
+# body every one of their `browser` fixtures now delegates to: available
+# -> launch a real Chromium for that module, exactly as before;
+# unavailable + `SELF_LEARN_UI_NO_BROWSER` unset -> yield a poison-pill
+# sentinel whose very first REAL use (any Playwright call a test body
+# makes on `page`/`context`/`browser`) raises with the missing
+# executable path and the fix command baked in -- landing as a genuine
+# pytest "F"/failed, call-phase outcome (verified empirically: a
+# `pytest.fail()` raised from INSIDE a fixture's own setup instead lands
+# in the "E"/error bucket, not "failed" -- the sentinel's lazy raise,
+# firing from inside the test body itself, is what gets "failed" instead
+# of "error", with no hookwrapper surgery needed); unavailable +
+# `SELF_LEARN_UI_NO_BROWSER` set -> the old skip, restored, plus one
+# loud banner at session start (`_no_browser_banner`) naming the
+# request explicitly. Known boundary of this mechanism: a test that
+# requested a page-family fixture but never touched it would pass
+# silently -- a non-existent shape in this suite (every JS-DOM test
+# drives the page; that is the whole point of these tests), accepted
+# rather than defended against with more machinery.
+
+#: The REAL Playwright browsers root, resolved with the SAME priority
+#: Playwright's own driver uses (`registry.js`: `PLAYWRIGHT_BROWSERS_
+#: PATH` env var first, else `${XDG_CACHE_HOME:-~/.cache}/ms-playwright`)
+#: -- captured at CONFTEST IMPORT TIME, before ANY fixture (including
+#: `_env_floor_session` above) has run a single `monkeypatch.setenv`.
+#: Mirrors `_REAL_CACHE_ROOT`'s established pattern above, and the
+#: identical computation each of the three Playwright-driven test
+#: modules already does for ITSELF, at ITS OWN import time, in its own
+#: top-of-module `os.environ.setdefault` call (conftest.py is always
+#: imported before any test file it shares a directory with is
+#: collected, so this constant is never resolved any later than theirs
+#: -- often earlier).
+_playwright_browsers_env = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
+_REAL_PLAYWRIGHT_BROWSERS_ROOT = (
+    Path(_playwright_browsers_env).expanduser()
+    if _playwright_browsers_env
+    else (
+        Path(os.environ.get("XDG_CACHE_HOME") or (Path.home() / ".cache")).expanduser()
+        / "ms-playwright"
+    )
+)
+
+
+def _floor_playwright_browsers_path() -> None:
+    """Re-asserts the import-time-resolved `_REAL_PLAYWRIGHT_BROWSERS_
+    ROOT` as `PLAYWRIGHT_BROWSERS_PATH`, so `_browser_gate` below is
+    correct even on a run that never collects any of the three
+    Playwright-driven test modules (a narrow `-k`/path-scoped
+    invocation) and none of THEIR OWN top-level `setdefault` calls ever
+    executed. Reading `os.environ` again HERE (at fixture-setup time,
+    long after `_env_floor_session` above has already redirected
+    `XDG_CACHE_HOME` under a throwaway tmpdir) would resolve the SANDBOX
+    path, not the real one -- this function deliberately reasserts the
+    pre-computed MODULE-LEVEL constant instead, never a fresh
+    `os.environ.get` call, for exactly that reason. `setdefault` makes
+    this a no-op whenever one of the three files' own copy (or an
+    earlier call to this same function) already won.
+    """
+    os.environ.setdefault(
+        "PLAYWRIGHT_BROWSERS_PATH", str(_REAL_PLAYWRIGHT_BROWSERS_ROOT)
+    )
+
+
+class _BrowserGate:
+    """The session-wide verdict from ONE Chromium launch attempt.
+
+    Deliberately a PLAIN class, not `@dataclasses.dataclass` -- this
+    module has `from __future__ import annotations` (PEP 563) active,
+    which turns a dataclass's field annotations into strings that
+    `dataclasses._process_class` resolves via `sys.modules[cls.__module__]`.
+    A module loaded through `importlib.util.spec_from_file_location`
+    without also being registered into `sys.modules` (exactly how this
+    package's own `test_browser_gate.py`/`test_litter_guard_probes.py`/
+    `test_pw_failure_capture.py` splice this file for their `pytester`
+    sub-runs) has `cls.__module__` resolve to `None` there, and
+    dataclass field processing crashes on `None.__dict__` -- measured
+    directly while building this unit. A hand-written `__init__` has no
+    such dependency.
+    """
+
+    def __init__(self, available: bool, fail_message: str) -> None:
+        self.available = available
+        self.fail_message = fail_message
+
+
+_PLAYWRIGHT_INSTALL_CMD = "uv run playwright install chromium-headless-shell"
+
+
+def _browser_fail_message(exc: Exception) -> str:
+    """Names the missing executable path (parsed out of Playwright's own
+    error text when present) and the one command that fixes it, so a
+    forced failure is actionable from the report alone -- never just
+    "something went wrong"."""
+    text = str(exc)
+    match = re.search(r"Executable doesn't exist at (\S+)", text)
+    missing = match.group(1) if match else "the pinned Chromium build (see uv.lock)"
+    return (
+        f"Chromium unavailable for Playwright -- missing executable: "
+        f"{missing}. Fix: run `{_PLAYWRIGHT_INSTALL_CMD}` from "
+        f"plugins/self-learn/ui (or set SELF_LEARN_UI_NO_BROWSER=1 to "
+        f"skip browser tests instead). Original error: {text}"
+    )
+
+
+@pytest.fixture(scope="session")
+def _browser_gate() -> _BrowserGate:
+    """Probes for Chromium EXACTLY ONCE for the whole session, shared by
+    the `browser` fixture in each of the three Playwright-driven test
+    modules -- not autouse and not eagerly evaluated: pytest only ever
+    constructs this the first time a browser-dependent test actually
+    needs one, so a `pytest -k`/path-scoped run that never touches those
+    three files never pays for a launch attempt, and every non-browser
+    test in this 1300+-test package is completely unaffected.
+
+    A missing `playwright` PACKAGE (as opposed to a missing Chromium
+    BUILD) is a different, pre-existing, deliberately-preserved SKIP
+    class -- `pytest.importorskip` below still skips cleanly in that
+    case, exactly as each of the three files' own module-level
+    `pytest.importorskip("playwright.sync_api")` already does; this
+    fixture is never reached in practice within this package's own `uv`
+    environment, where `playwright` is a normal (always-installed) dev
+    dependency (`pyproject.toml`'s `[dependency-groups] dev`).
+    """
+    _floor_playwright_browsers_path()
+    playwright_sync_api = pytest.importorskip("playwright.sync_api")
+    try:
+        with playwright_sync_api.sync_playwright() as p:
+            b = p.chromium.launch()
+            b.close()
+    except Exception as exc:  # pragma: no cover - env-dependent
+        return _BrowserGate(available=False, fail_message=_browser_fail_message(exc))
+    return _BrowserGate(available=True, fail_message="")
+
+
+def _no_browser_requested() -> bool:
+    """Truthy iff `SELF_LEARN_UI_NO_BROWSER` is set to anything other
+    than an explicit false-ish spelling -- `=1` (the documented
+    spelling) is the common case, but `=0`/`=false`/unset all mean "off"
+    rather than surprising an operator who greps their own env dump."""
+    raw = os.environ.get("SELF_LEARN_UI_NO_BROWSER", "")
+    return raw.strip().lower() not in ("", "0", "false", "no")
+
+
+class _UnavailableBrowser:
+    """Poison-pill stand-in for a real Playwright `Browser` (and, via its
+    own `new_context()`/`new_page()`, `BrowserContext`/`Page` too --
+    every `browser`/`page`-family fixture in the Playwright trio has the
+    identical `browser.new_context() -> context.new_page() -> pg` shape)
+    yielded when the session-wide probe found no Chromium and
+    `SELF_LEARN_UI_NO_BROWSER` was not set. The three chain methods below
+    are harmless no-ops (so fixture SETUP/TEARDOWN, which is all they
+    are ever used for, succeeds normally); every OTHER attribute --
+    which is what a test body actually touches (`page.goto`,
+    `page.locator`, `page.keyboard`, ...) -- raises immediately, naming
+    the missing executable and the fix command. That raise fires from
+    INSIDE the test's own call phase (not fixture setup), which is what
+    makes it land as pytest's "F"/failed outcome rather than "E"/error
+    (verified empirically -- see this section's header comment).
+
+    `__getattr__` deliberately raises `RuntimeError`, never
+    `AttributeError`: `hasattr()` swallows only `AttributeError`, so
+    `_capture_playwright_failure`'s page-shaped duck-type probe
+    (`hasattr(value, "screenshot")` et al, above) propagates this
+    exception straight out of its own detection loop -- caught by that
+    function's own outer `except Exception: return None` guard (gate r1
+    M-1) -- so a failure THIS mechanism forced never spawns a junk
+    `pwfail-*` capture directory (nothing real happened to screenshot).
+    """
+
+    def __init__(self, message: str) -> None:
+        self._message = message
+
+    def new_context(self, *args, **kwargs) -> "_UnavailableBrowser":
+        return self
+
+    def new_page(self, *args, **kwargs) -> "_UnavailableBrowser":
+        return self
+
+    def close(self, *args, **kwargs) -> None:
+        return None
+
+    def __getattr__(self, name: str):
+        raise RuntimeError(self._message)
+
+
+def _browser_or_sentinel(gate: _BrowserGate):
+    """Shared body for every `browser` fixture in the Playwright trio --
+    the launch-attempt/probe/escape-hatch decision lives in exactly ONE
+    place, so a future fourth Playwright test module cannot copy-paste a
+    stale, un-fixed version of the three-times-duplicated `pytest.skip`
+    this whole unit exists to retire. `SELF_LEARN_UI_NO_BROWSER` is
+    checked UNCONDITIONALLY (before even looking at `gate.available`):
+    the var means "this environment truly has no browser and knows it",
+    so setting it restores the old skip regardless of whether Chromium
+    happens to be present too."""
+    if _no_browser_requested():
+        pytest.skip(
+            "SELF_LEARN_UI_NO_BROWSER is set: skipping this "
+            "browser-dependent test by explicit request."
+        )
+    if not gate.available:
+        yield _UnavailableBrowser(gate.fail_message)
+        return
+    playwright_sync_api = pytest.importorskip("playwright.sync_api")
+    with playwright_sync_api.sync_playwright() as p:
+        b = p.chromium.launch()
+        try:
+            yield b
+        finally:
+            b.close()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _no_browser_banner(request: pytest.FixtureRequest) -> None:
+    """Prints ONE loud line at session start when the escape hatch is
+    set -- session-scoped and autouse so it fires before the first test
+    regardless of which file (if any) first requests a browser fixture.
+    A bare `print()` here would be swallowed by pytest's own capture
+    manager under `-q` (the SAME reasoning `pytest_terminal_summary`
+    above already documents for the litter guard's warning);
+    `terminalreporter.write_line` writes to the un-captured stream that
+    hook uses, so this is visible under `-q` too."""
+    if not _no_browser_requested():
+        return
+    reporter = request.config.pluginmanager.get_plugin("terminalreporter")
+    if reporter is not None:
+        reporter.write_line(
+            "SELF_LEARN_UI_NO_BROWSER is set -- skipping every "
+            "Chromium-dependent UI test by explicit request.",
+            bold=True,
+        )
