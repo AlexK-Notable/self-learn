@@ -49,6 +49,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import cast
 
 from . import gitops, invocation, sentinel, settings, telemetry, worker
 from . import reconcile as reconcile_mod
@@ -165,15 +166,16 @@ def log(message: str) -> None:
 def cap_for(sessions_scanned: int, *, home: Path | str | None = None) -> int:
     """Use-scaled landing cap (§8 Q3): min(per-session × scanned, max).
 
-    U-settings Phase 1: both caps resolve through the registry (env >
-    config.yaml `miner.cap_per_session`/`miner.cap_max` > their module
-    defaults) rather than a bare env read; `home` defaults to
+    U-settings Phase 1: both caps resolve through the registry
+    (config.yaml `miner.cap_per_session`/`miner.cap_max` > env > their
+    module defaults -- U-flip 2026-09-01, S-58: config wins) rather
+    than a bare env read; `home` defaults to
     :func:`resolve_home` so the existing single-arg call shape is
     unaffected."""
     resolved_home = home if home is not None else resolve_home()
     per, _per_source = settings.resolve_setting(resolved_home, settings.by_name("miner.cap_per_session"))
     cap_max, _max_source = settings.resolve_setting(resolved_home, settings.by_name("miner.cap_max"))
-    return min(per * max(sessions_scanned, 1), cap_max)
+    return min(cast(int, per) * max(sessions_scanned, 1), cast(int, cap_max))
 
 
 def pending_gate(*, home: Path | str | None = None) -> int:
@@ -183,7 +185,7 @@ def pending_gate(*, home: Path | str | None = None) -> int:
     value, _source = settings.resolve_setting(
         home if home is not None else resolve_home(), settings.by_name("miner.pending_gate")
     )
-    return value
+    return cast(int, value)
 
 
 def miner_model() -> str:
@@ -207,7 +209,7 @@ def transcripts_root() -> Path:
     :func:`walk`) threads a `home`, so this falls back to
     :func:`resolve_home` the same way :func:`telemetry.actor` does."""
     raw, _source = settings.resolve_setting(resolve_home(), settings.by_name("miner.transcripts_dir"))
-    return Path(raw).expanduser()
+    return Path(cast(str, raw)).expanduser()
 
 
 def last_run_iso() -> str | None:
@@ -251,8 +253,9 @@ def stale() -> bool:
     marker even when idle. A deliberately disabled miner never alarms.
 
     U-settings Phase 1: resolves through the registry's `miner.enabled`
-    entry (env `SELF_LEARN_MINER` > config.yaml `miner.enabled` >
-    `True`); no `home` is threaded here, so this falls back to
+    entry (config.yaml `miner.enabled` > env `SELF_LEARN_MINER` >
+    `True` -- U-flip 2026-09-01, S-58: config wins); no `home` is
+    threaded here, so this falls back to
     :func:`resolve_home` the same way :func:`telemetry.actor` does."""
     enabled, _source = settings.resolve_setting(resolve_home(), settings.by_name("miner.enabled"))
     if not enabled:
@@ -1842,7 +1845,8 @@ def run(
     if no_push is None:
         no_push = worker.no_push_requested()
     # U-settings Phase 1: resolves through the registry's `miner.enabled`
-    # entry (env `SELF_LEARN_MINER` > config.yaml `miner.enabled` > `True`).
+    # entry (config.yaml `miner.enabled` > env `SELF_LEARN_MINER` > `True`
+    # -- U-flip 2026-09-01, S-58: config wins).
     enabled, _source = settings.resolve_setting(home, settings.by_name("miner.enabled"))
     if not enabled:
         return MineResult(status="disabled")

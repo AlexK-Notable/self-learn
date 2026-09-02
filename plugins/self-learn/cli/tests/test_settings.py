@@ -16,6 +16,8 @@ precedent): `env`, `sdk_fake_worker`, `seed_pending`, `_defect_script`,
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -23,6 +25,8 @@ from ruamel.yaml import YAML
 
 from self_learn import analyst, miner, serve, settings, telemetry, worker
 from self_learn import cli as cli_mod
+from self_learn import ledger_ops as ledger_ops_mod
+from self_learn import verbs as verbs_mod
 from self_learn.invocation_sdk import backend as backend_mod
 from self_learn.invocation_sdk import events as events_mod
 
@@ -85,6 +89,7 @@ def _env_string(value: object) -> str:
 
 
 _NUMERIC_OR_BOOL_NAMES = [s.name for s in settings.REGISTRY if s.kind != "str"]
+_STR_NAMES = [s.name for s in settings.REGISTRY if s.kind == "str"]
 _ALL_NAMES = [s.name for s in settings.REGISTRY]
 
 
@@ -137,6 +142,7 @@ def test_registry_defaults_match_their_source_constants():
     assert by_name["sdk.max_turns.miner"].default == backend_mod._DEFAULT_MAX_TURNS["MINER"]
     assert by_name["sdk.max_turns.analyst"].default == backend_mod._DEFAULT_MAX_TURNS["ANALYST"]
     assert by_name["serve.tick_secs"].default == serve.DEFAULT_TICK_SECS
+    assert by_name["ledger.glob_probe_budget_s"].default == ledger_ops_mod.DEFAULT_GLOB_PROBE_BUDGET_S
 
 
 def test_by_name_raises_for_an_unknown_key():
@@ -290,6 +296,43 @@ def test_empty_env_value_falls_through_not_treated_as_present(tmp_path):
     assert value == _default_value(setting)
 
 
+@pytest.mark.parametrize("name", _STR_NAMES)
+def test_empty_config_str_value_falls_through_silently(name, tmp_path, capsys):
+    """M-4 (review 2026-09-01): the config.yaml mirror of the test
+    above — before this fix, `transcripts_dir: ""` was accepted as a
+    VALID (empty) string and resolved to `Path('.')`, while the
+    identically-empty ENV var already fell through silently (no warn).
+    An empty config string must now match: "no answer", not a
+    malformed one — no warn, straight through to the default (no env
+    set in this test)."""
+    home = tmp_path / "home"
+    setting = settings.by_name(name)
+    _write_config(home, setting.config_section, setting.config_key, "")
+    value, source = settings.resolve_setting(home, setting)
+    assert source == "default"
+    assert value == _default_value(setting)
+    assert capsys.readouterr().err == ""  # silent -- NOT the "not a valid str" warn path
+
+
+@pytest.mark.parametrize("name", _STR_NAMES)
+def test_malformed_config_str_value_warns_and_falls_back(name, tmp_path, capsys):
+    """M-4's other half: `str` was the one kind excluded from every
+    malformed-value test above (any actual string always "parses" as a
+    str, so `"not-a-real-value"` can't exercise this kind) — a
+    NON-scalar YAML value (a list) is what a str-kind config leaf can
+    actually fail to parse as, and it must warn + fall through exactly
+    like every other kind's malformed case, not be silently accepted."""
+    home = tmp_path / "home"
+    setting = settings.by_name(name)
+    _write_config(home, setting.config_section, setting.config_key, ["not", "a", "string"])
+    value, source = settings.resolve_setting(home, setting)
+    assert value == _default_value(setting)
+    assert source == "default"
+    err = capsys.readouterr().err
+    assert setting.config_section in err
+    assert setting.name in err
+
+
 # ===================================================================== #
 # Positive controls: no caching, and the resolver reads PER-SETTING data
 # ===================================================================== #
@@ -324,6 +367,91 @@ def test_resolver_is_not_a_stub_two_settings_resolve_independently(tmp_path):
     assert v1 == 15
     assert v2 == 60.0
     assert v1 != v2
+
+
+# ===================================================================== #
+# The override channel (Blocker fix, review 2026-09-01) -- a rung ABOVE
+# config.yaml, for a process asserting a runtime invariant about itself,
+# distinct from S-58's operator-preference precedence entirely.
+# ===================================================================== #
+
+
+def test_override_beats_config_and_env_in_process(tmp_path, monkeypatch):
+    """Both the config.yaml rung AND the env rung say `True` -- if
+    `override` merely matched whichever of those already won, this
+    would pass by coincidence. It must win over BOTH at once."""
+    home = tmp_path / "home"
+    _write_config(home, "worker", "autokick", True)
+    monkeypatch.setenv("SELF_LEARN_WORKER_AUTOKICK", "1")
+    setting = settings.by_name("worker.autokick")
+    with settings.override("worker.autokick", False):
+        value, source = settings.resolve_setting(home, setting)
+        assert (value, source) == (False, "override:worker.autokick")
+    # restored: config (not env, not override) wins again, S-58 intact
+    value, source = settings.resolve_setting(home, setting)
+    assert (value, source) == (True, "config:worker.autokick")
+
+
+def test_override_nests_and_restores_to_the_prior_override(tmp_path):
+    """Mirrors `serve._worker_autokick_disabled`'s own restore-on-exit
+    contract, preserved byte-for-byte from its pre-fix `os.environ`
+    version: a NESTED override restores to the OUTER override on exit,
+    never past it to config/env/default -- `_run_tick` depends on this
+    exact nesting to hold the switch open across both the mine job and
+    the worker job in one tick."""
+    home = tmp_path / "home"
+    home.mkdir()
+    setting = settings.by_name("worker.autokick")
+    with settings.override("worker.autokick", False):
+        value1, source1 = settings.resolve_setting(home, setting)
+        assert (value1, source1) == (False, "override:worker.autokick")
+        with settings.override("worker.autokick", True):
+            value2, source2 = settings.resolve_setting(home, setting)
+            assert (value2, source2) == (True, "override:worker.autokick")
+        # back to the OUTER override, not past it
+        value3, source3 = settings.resolve_setting(home, setting)
+        assert (value3, source3) == (False, "override:worker.autokick")
+    # both exited: ordinary default
+    value4, source4 = settings.resolve_setting(home, setting)
+    assert (value4, source4) == (True, "default")
+
+
+def test_override_unknown_name_raises():
+    with pytest.raises(KeyError):
+        with settings.override("not-a-real-setting", True):
+            pass  # pragma: no cover -- must never be reached
+
+
+def test_override_channel_propagates_to_a_real_child_process(tmp_path):
+    """THE leg no other test covers, and the one that matters (review
+    2026-09-01): an earlier draft of this fix used an in-process dict,
+    which would pass every test above and STILL be wrong, because a
+    detached spawn started with `start_new_session=True` (this
+    codebase's own convention, `worker.py:1103-1115`) inherits a flag
+    only as ENVIRONMENT, never Python state. `config.yaml` names
+    `worker.autokick: true` here on purpose, disagreeing with the
+    override, so a build that let the child fall through to config
+    (env-inherited but not override-recognised, or override recognised
+    but losing to config in the CHILD too) fails this exactly where it
+    would matter in production. Mutation check performed by hand: with
+    `override`'s env write removed, the child sees no
+    `SELF_LEARN_OVERRIDE_WORKER_AUTOKICK` at all and this test goes red
+    (`True|config:worker.autokick`, not `False|override:...`)."""
+    home = tmp_path / "home"
+    _write_config(home, "worker", "autokick", True)
+    script = (
+        "from self_learn import settings\n"
+        "value, source = settings.resolve_setting(\n"
+        f"    {str(home)!r}, settings.by_name('worker.autokick')\n"
+        ")\n"
+        "print(f'{value}|{source}')\n"
+    )
+    with settings.override("worker.autokick", False):
+        result = subprocess.run(
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=30
+        )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "False|override:worker.autokick"
 
 
 # ===================================================================== #
@@ -460,7 +588,13 @@ def test_worker_run_repair_kill_switch_reads_config(env, sdk_fake_worker, monkey
     a REAL `worker.run()`, mirroring `test_repair.py::test_b9_kill_
     switch_disables_composition`'s env-driven shape byte for byte,
     substituting `worker.repair: false` in config.yaml for
-    `SELF_LEARN_REPAIR=0`."""
+    `SELF_LEARN_REPAIR=0`.
+
+    M-3 (review 2026-09-01): the disabled-round log line now names the
+    ACTUAL source that resolved to False — this test's own config-only
+    setup must see `config:worker.repair`, never the hardcoded env
+    spelling the pre-fix log line always printed regardless of source
+    (which this exact test, pinning that wrong text, used to hide)."""
     rid = seed_pending(env)
     _write_config(env.home, "worker", "repair", False)
     monkeypatch.setenv(
@@ -468,7 +602,7 @@ def test_worker_run_repair_kill_switch_reads_config(env, sdk_fake_worker, monkey
     )
     worker.run(env.home)
     log_text = (worker.cache_dir() / "worker.log").read_text(encoding="utf-8")
-    assert "run: repair round disabled (SELF_LEARN_REPAIR=0)" in log_text
+    assert "run: repair round disabled (config:worker.repair)" in log_text
     assert sdk_fake_worker["count"]() == 1  # one invocation only — the repair round never ran
 
 
@@ -573,3 +707,23 @@ def test_telemetry_actor_reads_config(tmp_path, monkeypatch):
     monkeypatch.setenv("SELF_LEARN_HOME", str(home))
     _write_config(home, "ledger", "actor", "config-actor")
     assert telemetry.actor() == "config-actor"
+
+
+def test_ledger_ops_glob_probe_budget_s_reads_config(tmp_path):
+    """M-5 (review 2026-09-01): `SELF_LEARN_GLOB_PROBE_BUDGET_S` was
+    reclassified operator-facing because the shipped refusal message
+    already tells a human to raise it."""
+    home = tmp_path / "home"
+    _write_config(home, "ledger", "glob_probe_budget_s", 5.0)
+    assert ledger_ops_mod._glob_probe_budget_s(home) == 5.0
+
+
+def test_verbs_glob_probe_budget_display_agrees_with_the_probe(tmp_path):
+    """The invariant `_glob_probe_budget_display`'s own docstring names:
+    the refusal text must never disagree with the probe that produced
+    it. Both must read the SAME registry entry, so a config.yaml value
+    changes both together."""
+    home = tmp_path / "home"
+    _write_config(home, "ledger", "glob_probe_budget_s", 5.0)
+    assert verbs_mod._glob_probe_budget_display(home) == "5"
+    assert ledger_ops_mod._glob_probe_budget_s(home) == 5.0

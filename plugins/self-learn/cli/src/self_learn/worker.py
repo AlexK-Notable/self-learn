@@ -56,7 +56,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from . import invocation, sentinel, settings, telemetry
 from .compilers import BEGIN_MARKER, END_MARKER
@@ -819,7 +819,7 @@ def coalesce_secs(home: Path | str | None = None) -> float:
     value, _source = settings.resolve_setting(
         home if home is not None else resolve_home(), settings.by_name("worker.coalesce_secs")
     )
-    return float(value)
+    return cast(float, value)
 
 
 def worker_model() -> str:
@@ -866,7 +866,7 @@ def invoke_timeout_secs(home: Path | str | None = None) -> float:
     value, _source = settings.resolve_setting(
         home if home is not None else resolve_home(), settings.by_name("worker.invoke_timeout_secs")
     )
-    return float(value)
+    return cast(float, value)
 
 
 def repair_timeout_secs(home: Path | str | None = None) -> float:
@@ -879,7 +879,7 @@ def repair_timeout_secs(home: Path | str | None = None) -> float:
     value, _source = settings.resolve_setting(
         home if home is not None else resolve_home(), settings.by_name("worker.repair_timeout_secs")
     )
-    return float(value)
+    return cast(float, value)
 
 
 #: Read-only tool grant — Write is deliberately ABSENT here: path-scoped
@@ -1008,16 +1008,20 @@ def no_push_requested() -> bool:
 
 def _autokick_disabled(home: Path | str | None = None) -> bool:
     """True iff the ``worker.autokick`` setting resolves to `False`
-    (env `SELF_LEARN_WORKER_AUTOKICK=0`, or config.yaml `worker.autokick:
-    false` — U-settings Phase 1) — the shared kill-switch for ANY code
-    path that would auto-spawn a detached ``worker run --coalesce``
-    window, not just an explicit :func:`kick`. Resolved fresh on every
-    call, never cached (:func:`settings.resolve_setting`'s own
-    discipline) — both a test's `monkeypatch.setenv`/`delenv` AND
-    :func:`serve._worker_autokick_disabled`'s mid-process env mutation
-    take effect immediately; env still beats config.yaml on every call,
-    so that mechanism (a temporary env override neutralizing the switch
-    for one span) is unchanged by the config.yaml rung's addition.
+    (config.yaml `worker.autokick: false` — U-flip 2026-09-01, S-58 —
+    or env `SELF_LEARN_WORKER_AUTOKICK=0`) — the shared kill-switch for
+    ANY code path that would auto-spawn a detached ``worker run
+    --coalesce`` window, not just an explicit :func:`kick`. Resolved
+    fresh on every call, never cached (:func:`settings.resolve_setting`'s
+    own discipline) — a test's `monkeypatch.setenv`/`delenv` takes
+    effect immediately, as does :func:`serve._worker_autokick_disabled`'s
+    mid-process assertion, but the LATTER no longer rides the plain env
+    rung: under config-wins a bare env write can be outranked by a
+    saved `worker.autokick: true`, so that mechanism was moved to
+    :func:`settings.override` (review Blocker, 2026-09-01) — a THIRD
+    rung this function's own :func:`settings.resolve_setting` checks
+    ABOVE config.yaml, precisely so a running process's own assertion
+    about itself can never be defeated by a saved policy.
 
     Incident 2026-08-09: before this helper existed, only :func:`kick`
     checked the env var — the run-end follow-on (see :func:`run`) called
@@ -3402,13 +3406,22 @@ def run(
 ) -> RunResult:
     """``no_push=None`` reads the process boundary once
     (:func:`no_push_requested`) and then threads the answer as a parameter
-    — BLOCKER D: the policy is data, not ambience."""
+    — BLOCKER D: the policy is data, not ambience.
+
+    M-2 (review 2026-09-01): :func:`coalesce_secs`, :func:`invoke_
+    timeout_secs`, and :func:`repair_timeout_secs` are all called with
+    this SAME ``home`` below, not bare — each is optional-`home` and
+    silently falls back to :func:`resolve_home` when omitted, so a bare
+    call still "worked" pre-flip, but under config-wins it could read a
+    DIFFERENT config.yaml than the rest of this very run whenever
+    ``resolve_home()`` and this call's ``home`` disagree (measured: 99.0
+    vs. home-A's 11.0). One run must read one policy file."""
     home = Path(home)
     if no_push is None:
         no_push = no_push_requested()
     cache_dir().mkdir(parents=True, exist_ok=True)
     if coalesce:
-        time.sleep(coalesce_secs())
+        time.sleep(coalesce_secs(home))
 
     with open(_p("worker.lock"), "w", encoding="utf-8") as lock_fh:
         fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)  # blocking (pinned)
@@ -3470,7 +3483,7 @@ def run(
                 prompt, roster = compose_batch_prompt(home, batch)
                 snap0 = _proposal_snapshot(home)  # S1 — Install-1's baseline now
                 _invoke_claude(
-                    prompt, invoke_timeout_secs(), home, label="",
+                    prompt, invoke_timeout_secs(home), home, label="",
                     containment=invocation.containment_for(
                         "worker",
                         allowed_tools=ALLOWED_TOOLS,
@@ -3541,7 +3554,14 @@ def run(
                 refuse: dict[Path, str] = {}
 
                 if not repairs_enabled:
-                    log("run: repair round disabled (SELF_LEARN_REPAIR=0)")
+                    # M-3 (review 2026-09-01): report the ACTUAL source
+                    # that resolved `repairs_enabled` to False, not a
+                    # hardcoded env spelling -- since the flip, that
+                    # source is at least as often `config:worker.repair`
+                    # as it is `env:SELF_LEARN_REPAIR`, and a log line
+                    # that always names the env var misattributes every
+                    # config-driven disable.
+                    log(f"run: repair round disabled ({_repair_source})")
                 else:
                     verdicts = _dry_check_batch(home, staged1, roster, dest_map1)  # S4
                     n_refused = sum(1 for v in verdicts.values() if v.error is not None)
@@ -3611,7 +3631,7 @@ def run(
                             snap1 = _proposal_snapshot(home)
                         _invoke_claude(
                             repair_prompt,
-                            repair_timeout_secs(),
+                            repair_timeout_secs(home),
                             home,
                             label="repair ",
                             containment=invocation.containment_for(

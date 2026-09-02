@@ -290,7 +290,22 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
         nodes=80, dump_sha="16e45a867ecebd6471586640f1f52417427c235d04777e74ec4f34c14506627c"
     ),
     "test_repair.py": Behaviour(
-        nodes=85, dump_sha="f7d0670234803960b1475444399bd83481234b308646589c7e3e35cc61c56e6e"
+        nodes=85, dump_sha="f7d0670234803960b1475444399bd83481234b308646589c7e3e35cc61c56e6e",
+        # 2026-09-01, S-58 (review Blocker fix's M-3): `worker.run`'s
+        # repair-disabled log line now names the ACTUAL resolved source
+        # (`env:SELF_LEARN_REPAIR` / `config:worker.repair`) instead of
+        # a hardcoded `(SELF_LEARN_REPAIR=0)` literal that misattributed
+        # every config-driven disable -- both pre-existing pins of that
+        # literal text updated to match, not reopened.
+        edited={
+            "func:test_b9_kill_switch_disables_composition": (
+                "2026-09-01 S-58: repair-disabled log text now reads "
+                "(env:SELF_LEARN_REPAIR), not the hardcoded literal"
+            ),
+            "func:test_h4_every_new_line_in_obs1_is_produced_and_pinned": (
+                "2026-09-01 S-58: same log-text fix, second pinned occurrence"
+            ),
+        },
     ),
     "test_attrib.py": Behaviour(
         nodes=68, dump_sha="124dcc0dd69f9868195289eed661c5ad3d7d6569dc0fe41558d5fd54e8825c0d"
@@ -833,18 +848,17 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_census_missing,
     ),
     "EXM3.census_edited": Measured(
-        value=0,
+        value=2,
         scope=_SCOPE_ANCHOR_HEAD,
         reason=(
-            "2026-08-30 U-target landing, per §5.1's STALE remediation: "
-            "1 -> 0 at ANCHOR ee62df0, printed by this "
-            "module's own --remeasure refusal. RS8's lockfile-drift-bound "
-            "node (test_invocation_sdk.py) is the one anchor node whose "
-            "dump differs at HEAD -- widened for the sanctioned "
-            "pytest-xdist/execnet addition, exempted in ARMOR's "
-            "test_invocation_sdk.py row (2026-08-28 U-xdist T1, per "
-            "§4.5). The prior value (0) dated from before this branch's "
-            "own RS8 edit existed."
+            "2026-09-01 S-58 (review Blocker fix's M-3): 0 -> 2, measured "
+            "by hand against the still-unchanged ANCHOR ee62df0 (not a "
+            "--remeasure run -- this branch does not advance ANCHOR, only "
+            "`land` does at merge time). The two new nodes are "
+            "test_repair.py's own `edited={}` entries: worker.run's "
+            "repair-disabled log line now names the actual resolved "
+            "source instead of a hardcoded env literal, and both "
+            "pre-existing pins of that literal text were updated to match."
         ),
         measure=_measure_census_edited,
     ),

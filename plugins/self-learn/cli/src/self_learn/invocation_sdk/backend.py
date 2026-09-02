@@ -151,24 +151,25 @@ _MAX_TURNS_SETTING_NAME = {
 
 def _max_turns_for(selector: str, *, home: Path | str) -> int:
     """U-settings Phase 1: resolves through the registry's per-surface
-    `sdk.max_turns.<surface>` entry (env `SELF_LEARN_SDK_MAX_TURNS_
-    <selector>` > config.yaml `sdk.max_turns.<surface>` >
-    :data:`_DEFAULT_MAX_TURNS`). `selector` outside `_MAX_TURNS_SETTING_
+    `sdk.max_turns.<surface>` entry (config.yaml `sdk.max_turns.<surface>`
+    > env `SELF_LEARN_SDK_MAX_TURNS_<selector>` > :data:`_DEFAULT_MAX_TURNS`
+    -- U-flip 2026-09-01, S-58: config wins). `selector` outside `_MAX_TURNS_SETTING_
     NAME` (never real input — `SELECTOR_FOR_SURFACE`'s three members are
     the only callers) falls back to the bare default, unregistered."""
     name = _MAX_TURNS_SETTING_NAME.get(selector)
     if name is None:
         return _DEFAULT_MAX_TURNS.get(selector, 120)
     value, _source = settings.resolve_setting(home, settings.by_name(name))
-    return value
+    return cast(int, value)
 
 
 def _max_budget_usd(*, home: Path | str) -> float | None:
     """U-settings Phase 1: resolves through the registry's `sdk.
-    max_budget_usd` entry (env `SELF_LEARN_SDK_MAX_BUDGET_USD` >
-    config.yaml `sdk.max_budget_usd` > `None`, meaning unlimited)."""
+    max_budget_usd` entry (config.yaml `sdk.max_budget_usd` > env
+    `SELF_LEARN_SDK_MAX_BUDGET_USD` > `None`, meaning unlimited --
+    U-flip 2026-09-01, S-58: config wins)."""
     value, _source = settings.resolve_setting(home, settings.by_name("sdk.max_budget_usd"))
-    return value
+    return cast("float | None", value)
 
 
 class CliSessionPolicy:

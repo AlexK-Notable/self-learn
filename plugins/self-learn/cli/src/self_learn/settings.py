@@ -11,7 +11,8 @@ This module generalizes the ONE pattern that already works --
 ``A-0``) -- rather than inventing a second mechanism.
 :func:`resolve_setting` reuses ``provider.py``'s exact source
 vocabulary verbatim: ``"env:NAME"`` / ``"config:section.key"`` /
-``"default"``.
+``"default"`` -- plus one new label this module adds,
+``"override:NAME"`` (below).
 
 **Two precedence directions, on purpose (ruling: user, 2026-09-01,
 confirming their own 2026-07-19 ruling recorded in
@@ -34,6 +35,25 @@ machine that needs a local exception expresses it in config or unsets
 the key. The two directions coexist on purpose -- do not "fix" the
 discrepancy by unifying them.
 
+**A third rung, above both (Blocker fix, review 2026-09-01): process
+overrides via** :func:`override`. **The flip conflated two different
+things that both happened to travel through ``os.environ``:** (1) an
+operator's AMBIENT environment -- a preference, correctly demoted below
+config.yaml by the flip above -- and (2) a PROCESS asserting a value on
+ITSELF for a span -- not a preference, a runtime invariant that must
+hold no matter what any file says. Before the flip both worked,
+accidentally, because env beat config; after it, (2) broke, because it
+was smuggled through the same channel as (1).
+:func:`serve._worker_autokick_disabled` is the motivating case: it
+must be able to neutralise the worker-autokick kill switch for a span
+regardless of what ``config.yaml`` says, in EVERY process that
+inherits the span (parent and any detached child alike -- see
+:func:`override`'s own docstring for why this has to be a real,
+namespaced env var, not an in-process dict). Precedence is now
+**override channel ``>`` config.yaml ``>`` env ``>`` default**, with
+source label ``"override:NAME"`` so ``doctor settings`` shows when a
+running process is asserting one.
+
 **Scope discipline (Phase 1, root-cause fix, not a display layer).** A
 setting only gets a :class:`Setting` row here if some real call site was
 rewired to resolve THROUGH it -- see each registry entry's home module.
@@ -49,12 +69,20 @@ escape hatches. The full classification (which of the ~46 audited env
 vars landed in which bucket, and why) is recorded in the U-settings
 Phase 1 build report, not duplicated here.
 
-**No caching, anywhere in this module (load-bearing, not style).**
-``serve._worker_autokick_disabled()`` mutates ``os.environ`` mid-process
-as a real API (temporarily neutralizing the SAME kill switch a human
-has); :func:`resolve_setting` must re-read ``os.environ`` and
-``config.yaml`` on every call for that mechanism to keep working, the
-same discipline ``config.py`` already holds for every reader in it.
+**No caching, anywhere in this module (load-bearing, not style --
+necessary, but on its own no longer SUFFICIENT).**
+:func:`resolve_setting` re-reads ``os.environ`` and ``config.yaml`` on
+every call, the same discipline ``config.py`` already holds for every
+reader in it; without that, no mid-process mutation of ANY rung could
+ever be seen. But under config-wins, no-caching alone stopped being
+enough to keep ``serve._worker_autokick_disabled()``'s mechanism
+working: that helper used to mutate ``os.environ`` at the ENV rung,
+and once config.yaml could outrank env, a saved ``worker.autokick:
+true`` would be re-read fresh on every call too -- and WIN, silently
+defeating the mutation. Fresh reads guarantee a mutation is SEEN; they
+say nothing about which rung's mutation wins. That is what the third
+rung above (:func:`override`) is for -- it sits where no config.yaml
+value can outrank it, so freshness and precedence are both satisfied.
 
 **UI settings (``SELF_LEARN_PANE_*``, ``SELF_LEARN_UI_*``) are OUT OF
 SCOPE for Phase 1.** They live in the separate ``self_learn_ui``
@@ -68,18 +96,20 @@ defaults into this table now would let the two drift.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import socket
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 from . import config
 
 __all__ = [
     "Kind",
+    "SettingValue",
     "Setting",
     "SettingRow",
     "REGISTRY",
@@ -87,9 +117,26 @@ __all__ = [
     "by_name",
     "unknown_keys",
     "preflight",
+    "override",
 ]
 
 Kind = Literal["str", "int", "float", "bool"]
+
+#: Every value this registry can ever resolve to -- REPLACES the bare
+#: `object` the review's M-1 flagged (24 pyright errors against a
+#: 1-error baseline, root-caused to `resolve_setting`'s old `-> tuple
+#: [object, str]`). `object` is unbounded (any Python value); this is
+#: the actual closed set `_parse_env_value`/`_parse_config_value` can
+#: ever produce. A registry entry's OWN `kind` narrows this further
+#: still (a "float" entry only ever resolves to `float`, never `str`),
+#: but that per-entry precision is not statically knowable through
+#: `by_name`'s string-keyed lookup without per-name `@overload`
+#: boilerplate this Phase doesn't warrant -- so each numeric `validate`
+#: lambda below `cast`s to its OWN entry's `kind`, a narrow, auditable
+#: assertion of a fact the registry's own dispatch already guarantees
+#: at that exact point (`validate` only ever runs on a value that just
+#: parsed AS that `kind`).
+SettingValue = str | int | float | bool | None
 
 
 def _warn(message: str) -> None:
@@ -104,17 +151,24 @@ class Setting:
     #: ``config_key`` by construction, checked at import time below).
     name: str
     env_var: str
-    #: ``None`` => a bootstrap var with no config.yaml rung (mirrors
-    #: ``provider._resolve_str_setting``'s ``config_key=None`` shape --
-    #: `SELF_LEARN_HOME` is the one entry that needs this: resolving the
-    #: ledger home FROM a file inside that same home is circular).
+    #: ``None`` => a bootstrap var with no config.yaml rung at all
+    #: (mirrors ``provider._resolve_str_setting``'s ``config_key=None``
+    #: shape). NO current registry entry uses this -- every var this
+    #: Phase registered has a real config.yaml rung; a var that can't
+    #: (e.g. `SELF_LEARN_HOME`, which locates `config.yaml` itself and
+    #: so cannot be governed BY it) is simply never registered here at
+    #: all, not registered with `config_section=None`. This field exists
+    #: for a FUTURE bootstrap-shaped var that still wants `doctor
+    #: settings` visibility without a config.yaml rung; until one is
+    #: added, the `config_section is None` branches below are reachable
+    #: only by a test exercising this field directly.
     config_section: str | None
     config_key: str | None
     kind: Kind
     #: A literal, or a zero-arg callable evaluated lazily ONLY when every
     #: rung above misses (mirrors ``provider.model_for``'s "the surface's
     #: shipped default function, CALLED, never copied").
-    default: object
+    default: SettingValue | Callable[[], SettingValue]
     description: str
     operator_facing: bool = True
     #: Optional post-parse adjustment/gate, applied to a value that
@@ -125,14 +179,14 @@ class Setting:
     #: `worker.invoke_timeout_secs`'s "fall back below or at 0" both ride
     #: the one resolver despite opposite policies for an out-of-range
     #: number (E4's asymmetry, carried over from `worker._timeout_secs`).
-    validate: Callable[[object], object | None] | None = None
+    validate: Callable[[SettingValue], SettingValue | None] | None = None
 
 
-def _default_value(setting: Setting) -> object:
+def _default_value(setting: Setting) -> SettingValue:
     return setting.default() if callable(setting.default) else setting.default
 
 
-def _parse_env_value(raw: str, kind: Kind) -> object | None:
+def _parse_env_value(raw: str, kind: Kind) -> SettingValue:
     if kind == "str":
         return raw
     if kind == "int":
@@ -159,7 +213,7 @@ def _parse_env_value(raw: str, kind: Kind) -> object | None:
     raise ValueError(f"resolve_setting: unknown kind {kind!r}")  # pragma: no cover - closed Kind
 
 
-def _parse_config_value(value: object, kind: Kind) -> object | None:
+def _parse_config_value(value: object, kind: Kind) -> SettingValue:
     if kind == "str":
         return value if isinstance(value, str) else None
     if kind == "int":
@@ -177,54 +231,139 @@ def _parse_config_value(value: object, kind: Kind) -> object | None:
     raise ValueError(f"resolve_setting: unknown kind {kind!r}")  # pragma: no cover - closed Kind
 
 
-def resolve_setting(home: Path | str, setting: Setting) -> tuple[object, str]:
-    """The registry's ONE resolution function (U-settings Phase 1 §2,
-    flipped 2026-09-01 -- module docstring's "Two precedence
-    directions, on purpose"): config.yaml, then env, then the built-in
-    default -- ``provider.py``'s exact source-string vocabulary, just
-    the opposite rung ORDER from that mechanism.
+def _override_env_var(name: str) -> str:
+    """The override channel's env-var name for registry entry `name`:
+    `SELF_LEARN_OVERRIDE_<NAME>`, dots to underscores, uppercased --
+    e.g. `worker.autokick` -> `SELF_LEARN_OVERRIDE_WORKER_AUTOKICK`.
+    Namespaced (not the setting's own `env_var`) so an operator's
+    ordinary env pin can never collide with a process's override of
+    itself -- the two channels stay distinguishable on sight."""
+    return "SELF_LEARN_OVERRIDE_" + name.upper().replace(".", "_")
+
+
+def _encode_override_value(value: SettingValue, kind: Kind) -> str:
+    """:func:`override`'s WRITER side -- the exact string spellings
+    `_parse_env_value` reads back (`1`/`0` for bool; `str()` for
+    numeric/str), so a round trip through the override channel can
+    never drift from the ambient-env rung's own parsing vocabulary."""
+    if kind == "bool":
+        return "1" if value else "0"
+    return str(value)
+
+
+def _apply_validate(
+    parsed: SettingValue, validate: Callable[[SettingValue], SettingValue | None] | None
+) -> tuple[SettingValue, bool]:
+    """Runs `validate` (if present) on a value that ALREADY parsed as
+    `kind`. Returns `(final, rejected)` -- `rejected` is True only when
+    `validate` itself said no, which each rung below words differently
+    from a parse failure (nit fold, review 2026-09-01): a value
+    `validate` rejects as out-of-range DID parse fine as `kind` -- it
+    is not "not a valid {kind}", the message a genuine parse failure
+    gets; it is "out of range", a distinct claim about a distinct
+    failure."""
+    if validate is None:
+        return parsed, False
+    result = validate(parsed)
+    return result, result is None
+
+
+def resolve_setting(home: Path | str, setting: Setting) -> tuple[SettingValue, str]:
+    """The registry's ONE resolution function (U-settings Phase 1 §2;
+    flipped 2026-09-01, S-58; override channel added same day, a
+    Blocker fix -- module docstring's "Three rungs, on purpose"):
+    **override channel, then config.yaml, then env, then the built-in
+    default** -- ``provider.py``'s exact source-string vocabulary
+    (plus the new `"override:<name>"` label), a different rung ORDER
+    from that mechanism, and now a rung ABOVE both.
 
     Fail-closed PER RUNG, not per resolution (the spec's §1.2 boundary
-    pin, carried through the flip): a value that is present at a rung
-    but does not parse as `setting.kind`, or that `validate` rejects,
-    warns on stderr naming the key and the offending raw value and
-    FALLS THROUGH to the next rung -- it does not dead-end at the
-    default. A typo in config.yaml must never brick a role the env var
-    (or the default) would have served; a malformed env value still
-    falls through to the default, same as before the flip since env is
-    now the last LIVE rung.
+    pin, carried through the flip and the override addition): a value
+    that is present at a rung but does not parse as `setting.kind`, or
+    that `validate` rejects, warns on stderr naming the key and the
+    offending raw value and FALLS THROUGH to the next rung -- it does
+    not dead-end at the default. A typo in config.yaml must never
+    brick a role the env var (or the default) would have served; a
+    malformed env value still falls through to the default, same as
+    before the flip since env is the last LIVE rung.
 
-    No caching: every call re-reads ``os.environ`` and ``config.yaml``
-    fresh (module docstring)."""
+    No caching of config.yaml/env: every call re-reads ``os.environ``
+    and ``config.yaml`` fresh (module docstring) -- necessary but, per
+    the Blocker review, NOT by itself sufficient to keep
+    :func:`serve._worker_autokick_disabled`'s mechanism working under
+    config-wins; see :func:`override` for why a THIRD rung was needed."""
+    override_var = _override_env_var(setting.name)
+    override_raw = os.environ.get(override_var)
+    if override_raw:
+        parsed = _parse_env_value(override_raw, setting.kind)
+        if parsed is None:
+            _warn(
+                f"{override_var}={override_raw!r} is not a valid {setting.kind} for "
+                f"{setting.name} — falling through to config/env/default"
+            )
+        else:
+            final, rejected = _apply_validate(parsed, setting.validate)
+            if final is not None:
+                return final, f"override:{setting.name}"
+            if rejected:
+                _warn(
+                    f"{override_var}={override_raw!r} is out of range for "
+                    f"{setting.name} — falling through to config/env/default"
+                )
+            # `rejected` is only ever True here (validate ran on a value
+            # that already parsed) -- the `if final is not None` above
+            # already returned on any other outcome.
+
     if setting.config_section is not None:
         assert setting.config_key is not None  # invariant: paired at registration
         found = config.settings_leaf(home, setting.config_section, setting.config_key)
+        if found is not None and setting.kind == "str" and found[1] == "":
+            # M-4 fold (review 2026-09-01): an empty config.yaml string is
+            # "no answer", exactly like the env rung's own `if raw:` — not
+            # a malformed value (no warn), just silently not-present here.
+            # Before this, `transcripts_dir: ""` parsed as a VALID empty
+            # string and resolved to `Path('.')`, while the identically
+            # empty env var fell through silently -- asymmetric.
+            found = None
         if found is not None:
             key, value = found
             parsed = _parse_config_value(value, setting.kind)
-            if parsed is not None and setting.validate is not None:
-                parsed = setting.validate(parsed)
-            if parsed is not None:
-                return parsed, f"config:{setting.config_section}.{key}"
-            _warn(
-                f"config.yaml {setting.config_section}.{key}={value!r} is not a "
-                f"valid {setting.kind} for {setting.name} — falling through to env/default"
-            )
-            # NOT a return: falls through to the env rung below, per the
-            # spec's §1.2 boundary pin -- a malformed config value must
-            # not dead-end a role the env var (or default) would serve.
+            if parsed is None:
+                _warn(
+                    f"config.yaml {setting.config_section}.{key}={value!r} is not a "
+                    f"valid {setting.kind} for {setting.name} — falling through to env/default"
+                )
+                # NOT a return: falls through to the env rung below, per
+                # the spec's §1.2 boundary pin -- a malformed config
+                # value must not dead-end a role the env var (or
+                # default) would serve.
+            else:
+                final, rejected = _apply_validate(parsed, setting.validate)
+                if final is not None:
+                    return final, f"config:{setting.config_section}.{key}"
+                if rejected:
+                    _warn(
+                        f"config.yaml {setting.config_section}.{key}={value!r} is out "
+                        f"of range for {setting.name} — falling through to env/default"
+                    )
 
     raw = os.environ.get(setting.env_var)
     if raw:
         parsed = _parse_env_value(raw, setting.kind)
-        if parsed is not None and setting.validate is not None:
-            parsed = setting.validate(parsed)
-        if parsed is not None:
-            return parsed, f"env:{setting.env_var}"
-        _warn(
-            f"{setting.env_var}={raw!r} is not a valid {setting.kind} for "
-            f"{setting.name} — using the default"
-        )
+        if parsed is None:
+            _warn(
+                f"{setting.env_var}={raw!r} is not a valid {setting.kind} for "
+                f"{setting.name} — using the default"
+            )
+        else:
+            final, rejected = _apply_validate(parsed, setting.validate)
+            if final is not None:
+                return final, f"env:{setting.env_var}"
+            if rejected:
+                _warn(
+                    f"{setting.env_var}={raw!r} is out of range for "
+                    f"{setting.name} — using the default"
+                )
 
     return _default_value(setting), "default"
 
@@ -251,7 +390,7 @@ REGISTRY: tuple[Setting, ...] = (
         kind="float",
         default=600.0,  # worker.DEFAULT_COALESCE_SECS
         description="seconds the worker sleeps to coalesce a run before invoking",
-        validate=lambda v: max(0.0, v),  # a zero coalesce is meaningful; never falls back
+        validate=lambda v: max(0.0, cast(float, v)),  # a zero coalesce is meaningful; never falls back
     ),
     Setting(
         name="worker.invoke_timeout_secs",
@@ -261,7 +400,7 @@ REGISTRY: tuple[Setting, ...] = (
         kind="float",
         default=1800.0,  # worker.INVOKE_TIMEOUT_SECS
         description="subprocess timeout (seconds) for the worker's batch invocation",
-        validate=lambda v: v if v > 0 else None,  # a <=0 timeout kills every run instantly (E4)
+        validate=lambda v: v if cast(float, v) > 0 else None,  # a <=0 timeout kills every run instantly (E4)
     ),
     Setting(
         name="worker.repair_timeout_secs",
@@ -271,7 +410,7 @@ REGISTRY: tuple[Setting, ...] = (
         kind="float",
         default=600.0,  # worker.REPAIR_TIMEOUT_SECS
         description="subprocess timeout (seconds) for the worker's repair round",
-        validate=lambda v: v if v > 0 else None,
+        validate=lambda v: v if cast(float, v) > 0 else None,
     ),
     Setting(
         name="worker.repair",
@@ -309,7 +448,7 @@ REGISTRY: tuple[Setting, ...] = (
         kind="int",
         default=15,  # miner.DEFAULT_CAP_MAX
         description="hard cap on records mined in one run",
-        validate=lambda v: max(0, v),
+        validate=lambda v: max(0, cast(int, v)),
     ),
     Setting(
         name="miner.cap_per_session",
@@ -319,7 +458,7 @@ REGISTRY: tuple[Setting, ...] = (
         kind="int",
         default=2,  # miner.DEFAULT_CAP_PER_SESSION
         description="cap on records mined per scanned session, before the run-wide cap",
-        validate=lambda v: max(0, v),
+        validate=lambda v: max(0, cast(int, v)),
     ),
     Setting(
         name="miner.pending_gate",
@@ -329,7 +468,7 @@ REGISTRY: tuple[Setting, ...] = (
         kind="int",
         default=25,  # miner.DEFAULT_PENDING_GATE
         description="pending-queue size that gates a mining run",
-        validate=lambda v: max(0, v),
+        validate=lambda v: max(0, cast(int, v)),
     ),
     Setting(
         name="miner.enabled",
@@ -400,7 +539,7 @@ REGISTRY: tuple[Setting, ...] = (
         kind="int",
         default=20,  # invocation_sdk.events._DEFAULT_EVENT_LOGS
         description="count of tool-event log files retained per surface",
-        validate=lambda v: max(v, 0),
+        validate=lambda v: max(cast(int, v), 0),
     ),
     Setting(
         name="sdk.max_turns.worker",
@@ -438,7 +577,7 @@ REGISTRY: tuple[Setting, ...] = (
         kind="float",
         default=60.0,  # serve.DEFAULT_TICK_SECS
         description="seconds between the daemon's scheduler ticks",
-        validate=lambda v: v if v > 0 else None,
+        validate=lambda v: v if cast(float, v) > 0 else None,
     ),
     # -------------------------------------------------------- ledger
     Setting(
@@ -450,6 +589,32 @@ REGISTRY: tuple[Setting, ...] = (
         default=socket.gethostname,  # telemetry.actor()'s own fallback, called lazily
         description="machine/user identity recorded on telemetry writes",
     ),
+    # M-5 (review 2026-09-01): reclassified from internal to operator-
+    # facing -- `ledger_ops.py`'s own refusal text (`verbs.py`'s
+    # `_validate_rules_globs`) already tells a human operator to "raise
+    # SELF_LEARN_GLOB_PROBE_BUDGET_S". A setting a shipped message tells
+    # a human to set is operator-facing by definition, regardless of how
+    # it was first classified.
+    Setting(
+        name="ledger.glob_probe_budget_s",
+        env_var="SELF_LEARN_GLOB_PROBE_BUDGET_S",
+        config_section="ledger",
+        config_key="glob_probe_budget_s",
+        kind="float",
+        default=30.0,  # ledger_ops.DEFAULT_GLOB_PROBE_BUDGET_S
+        description="per-pattern reachability probe budget (seconds) for rules_paths globs",
+        # No positivity validate, deliberately: the ORIGINAL
+        # `_glob_probe_budget_s()` accepted any parseable float verbatim,
+        # including `0` -- and `test_u_glob.py`'s own `TestT4BudgetExhaustion`
+        # / `TestT10SelfcheckUserScopeGlobDrift` rely on `BUDGET_S=0` to
+        # deterministically force an exhausted-budget probe outcome without
+        # a real slow filesystem. A worker/serve TIMEOUT clamps `<=0`
+        # because it would kill a run instantly (E4); a probe BUDGET of
+        # exactly 0 is the opposite: a legitimate, meaningful "probe with
+        # no time at all" the test suite exercises on purpose (M-5's
+        # discovery, review 2026-09-01 -- caught by the pre-existing suite,
+        # not guessed).
+    ),
 )
 
 #: Registration-time invariant: `name` is always `f"{config_section}.
@@ -459,7 +624,13 @@ REGISTRY: tuple[Setting, ...] = (
 for _setting in REGISTRY:
     if _setting.config_section is not None:
         assert _setting.name == f"{_setting.config_section}.{_setting.config_key}", _setting.name
-del _setting
+# No `del _setting` (pyright M-1 fold, review 2026-09-01): pyright cannot
+# prove a `for` loop over a non-empty tuple LITERAL always binds its
+# target (it does not reason about literal length here), so a `del`
+# right after reads as "possibly unbound" -- `assert REGISTRY` first does
+# not help either (a non-empty tuple literal makes that assert itself
+# "always true", a second warning). Leaving the loop-scratch name bound
+# (already `_`-prefixed, never read again) is the smaller wart.
 
 _BY_NAME: dict[str, Setting] = {s.name: s for s in REGISTRY}
 
@@ -468,6 +639,71 @@ def by_name(name: str) -> Setting:
     """The one registry entry named `name`. Raises `KeyError` for a name
     outside `REGISTRY` (a programming error, never operator input)."""
     return _BY_NAME[name]
+
+
+@contextlib.contextmanager
+def override(name: str, value: SettingValue) -> Iterator[None]:
+    """A process-local override, resolved ABOVE both config.yaml and
+    env (Blocker fix, review 2026-09-01) -- for the one case S-58's
+    config-wins ruling was never meant to cover: a PROCESS asserting a
+    runtime invariant about ITSELF for a span, not an operator's
+    ambient preference. `serve._worker_autokick_disabled` is the
+    motivating case: it neutralises the worker-autokick kill switch
+    for as long as `serve` is already driving jobs in-process, so
+    neither producer double-spawns a detached follow-on (gate r1 M-2,
+    the 2026-08-09 incident -- 6,508 shells, 39.3 hours, a dead desktop
+    session). Under config-wins, an ordinary env write can no longer
+    guarantee that: a saved `worker.autokick: true` would silently
+    outrank it.
+
+    THIS IS NOT A PYTHON-LOCAL MECHANISM (an earlier draft of this fix
+    was, and was wrong -- caught before landing). `worker.py:1103-1115`
+    documents this codebase's own convention: a detached spawn is
+    `start_new_session=True`, so a parent's flag reaches a CHILD only
+    as inherited environment -- and the 2026-08-09 incident was
+    exactly a self-respawning detached CHAIN, where containment is a
+    property of the whole process tree, not one process's memory. So
+    :func:`override` writes a REAL, namespaced env var
+    (:func:`_override_env_var`: `SELF_LEARN_OVERRIDE_<NAME>`) rather
+    than an in-process dict -- any child spawned while this is set
+    inherits it automatically (nothing special required at the spawn
+    site: `Popen` without an explicit `env=` already inherits the full
+    parent environment, which is how `SELF_LEARN_WORKER_AUTOKICK`
+    itself reached children before this fix), and `resolve_setting`
+    checks this channel BEFORE config.yaml in every process that
+    inherits it, parent or child alike -- beating a config.yaml value
+    that says the opposite, not just the ambient env var beside it.
+
+    Restored to whatever `SELF_LEARN_OVERRIDE_<NAME>` held when the
+    span STARTED (nests correctly) -- the exact restore-on-exit
+    contract the pre-fix `os.environ["SELF_LEARN_WORKER_AUTOKICK"]`
+    write held, preserved byte-for-byte: `_run_tick` holds this open
+    across BOTH the mine job and the worker job that may follow it in
+    the same tick, and restoring it BETWEEN them (rather than after
+    both) reopens exactly the window M-2 measured.
+
+    Side effect worth naming (not a design goal): this gives an
+    operator a documented shell-level escape hatch --
+    `SELF_LEARN_OVERRIDE_<NAME>=<value>` beats a synced config.yaml on
+    whatever machine sets it -- which is an emergency override S-58's
+    §1.2 trade said operators would not have. It exists here only
+    because a PROCESS needed to out-rank config for its own runtime
+    invariant; a human using the same channel for the same reason
+    (a live emergency) is a reasonable use of the same mechanism, not
+    a hole in the ruling -- but it is a consequence, not something
+    this fix set out to add."""
+    by_name(name)  # raises KeyError on a typo -- fail loudly, never silently
+    env_var = _override_env_var(name)
+    kind = _BY_NAME[name].kind
+    prior = os.environ.get(env_var)
+    os.environ[env_var] = _encode_override_value(value, kind)
+    try:
+        yield
+    finally:
+        if prior is None:
+            os.environ.pop(env_var, None)
+        else:
+            os.environ[env_var] = prior
 
 
 def unknown_keys(home: Path | str) -> list[str]:
@@ -480,6 +716,7 @@ def unknown_keys(home: Path | str) -> list[str]:
     for setting in REGISTRY:
         if setting.config_section is None:
             continue
+        assert setting.config_key is not None  # invariant: paired at registration
         by_section.setdefault(setting.config_section, set()).add(setting.config_key)
     found: list[str] = []
     for section in sorted(by_section):

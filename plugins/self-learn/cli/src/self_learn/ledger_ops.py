@@ -34,13 +34,15 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
+from typing import cast
 
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
 from . import hosts as hosts_mod
+from . import settings
 from .compilers import BEGIN_MARKER, END_MARKER
-from .ledger import Bucket, discover_buckets, home_state, home_state_message
+from .ledger import Bucket, discover_buckets, home_state, home_state_message, resolve_home
 from .normalize import sha_anchor
 from .records import RECORD_ID_RE, Record, RecordError
 from .skill_scaffold import SkillScaffoldError, validate_skill_name
@@ -887,16 +889,22 @@ GLOB_PROBE_BUDGET_ENV = "SELF_LEARN_GLOB_PROBE_BUDGET_S"
 DEFAULT_GLOB_PROBE_BUDGET_S = 30.0
 
 
-def _glob_probe_budget_s() -> float:
-    """`GLOB_PROBE_BUDGET_ENV`, parsed as a float; absent or unparseable
-    falls back to `DEFAULT_GLOB_PROBE_BUDGET_S` without raising (§4.3)."""
-    raw = os.environ.get(GLOB_PROBE_BUDGET_ENV)
-    if raw is None:
-        return DEFAULT_GLOB_PROBE_BUDGET_S
-    try:
-        return float(raw)
-    except ValueError:
-        return DEFAULT_GLOB_PROBE_BUDGET_S
+def _glob_probe_budget_s(home: Path | str | None = None) -> float:
+    """M-5 (review 2026-09-01): resolves through the registry's
+    `ledger.glob_probe_budget_s` entry (override > config.yaml
+    `ledger.glob_probe_budget_s` > env `GLOB_PROBE_BUDGET_ENV` >
+    `DEFAULT_GLOB_PROBE_BUDGET_S`) rather than a bare env read --
+    reclassified operator-facing because `verbs.py`'s own refusal text
+    already tells a human to raise this var. `home` defaults to
+    :func:`resolve_home`, matching this module's other home-optional
+    readers (mirrors `_glob_probe_budget_display`'s own rewire in
+    `verbs.py`, which MUST agree with this function's answer -- the
+    refusal text must never disagree with the probe that produced it,
+    this function's own prior docstring's own invariant)."""
+    value, _source = settings.resolve_setting(
+        home if home is not None else resolve_home(), settings.by_name("ledger.glob_probe_budget_s")
+    )
+    return cast(float, value)
 
 
 def _first_hit(base: Path, rem: str) -> bool:

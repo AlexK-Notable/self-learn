@@ -1001,7 +1001,7 @@ def test_b9_kill_switch_disables_composition(env, sdk_fake_worker, monkeypatch):
 
     assert sdk_fake_worker["count"]() == 1
     log_text = (worker.cache_dir() / "worker.log").read_text(encoding="utf-8")
-    assert "run: repair round disabled (SELF_LEARN_REPAIR=0)" in log_text
+    assert "run: repair round disabled (env:SELF_LEARN_REPAIR)" in log_text
     assert "run: repair round —" not in log_text
     assert composer_calls == []
 
@@ -2408,7 +2408,7 @@ def test_h4_every_new_line_in_obs1_is_produced_and_pinned(env, sdk_fake_worker, 
     )
     worker.run(env.home)
     log_text = (worker.cache_dir() / "worker.log").read_text(encoding="utf-8")
-    assert "run: repair round disabled (SELF_LEARN_REPAIR=0)" in log_text
+    assert "run: repair round disabled (env:SELF_LEARN_REPAIR)" in log_text
     monkeypatch.delenv("SELF_LEARN_REPAIR")
 
     # timed out. rid3's leftover invalid file was deleted above (repairs

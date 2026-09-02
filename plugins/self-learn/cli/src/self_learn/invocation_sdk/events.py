@@ -64,8 +64,9 @@ def prune_event_logs(surface: str) -> None:
     (`EV6`'s negative control).
 
     U-settings Phase 1: resolves through the registry's `sdk.event_logs`
-    entry (env `SELF_LEARN_SDK_EVENT_LOGS` > config.yaml `sdk.event_logs`
-    > `_DEFAULT_EVENT_LOGS`) -- signature UNCHANGED (this function's one
+    entry (config.yaml `sdk.event_logs` > env `SELF_LEARN_SDK_EVENT_LOGS`
+    > `_DEFAULT_EVENT_LOGS` -- U-flip 2026-09-01, S-58: config wins) --
+    signature UNCHANGED (this function's one
     real call site, `invocation_sdk/backend.py`'s `_run_session`, is spy-
     wrapped by `test_ms4_production_retention_runs_exactly_once_and_
     after_the_log_write` with a fixed `(surface)` shim; a new parameter

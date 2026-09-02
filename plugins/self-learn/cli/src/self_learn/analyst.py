@@ -50,7 +50,7 @@ import re
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
@@ -110,13 +110,14 @@ def _model() -> str:
 
 def _timeout(home: Path | str) -> float:
     """U-settings Phase 1: resolves through the registry's `analyst.
-    timeout_secs` entry (env `SELF_LEARN_ANALYST_TIMEOUT` > config.yaml
-    `analyst.timeout_secs` > :data:`DEFAULT_ANALYST_TIMEOUT`). No
+    timeout_secs` entry (config.yaml `analyst.timeout_secs` > env
+    `SELF_LEARN_ANALYST_TIMEOUT` > :data:`DEFAULT_ANALYST_TIMEOUT` --
+    U-flip 2026-09-01, S-58: config wins). No
     positivity clamp (unlike the worker/miner timeouts) — this function
     never validated a <=0 value pre-Phase-1 either; preserved rather than
     tightened as a side effect."""
     value, _source = settings.resolve_setting(home, settings.by_name("analyst.timeout_secs"))
-    return float(value)
+    return cast(float, value)
 
 
 def _strip_fences(text: str) -> str:
