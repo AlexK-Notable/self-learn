@@ -31,6 +31,7 @@ from starlette.responses import StreamingResponse
 
 from self_learn.hosts import HOST_MODES, effective_default_mode, is_repo_root
 from self_learn.records import Record
+from self_learn.settings import REGISTRY as SETTINGS_REGISTRY
 from self_learn.verbs import GITOPS_DIRTY_MARKER, NO_PROPOSAL_MARKER
 
 from . import ledger, models, pane, proposals, rendering, runner
@@ -1304,10 +1305,24 @@ def report_page(request: Request) -> HTMLResponse:
 # write in this app uses (never a second mutation path).
 
 #: The registry's own section order (`settings.py`'s `REGISTRY` literal,
-#: worker -> miner -> analyst -> sdk -> serve -> ledger) -- the page reads
-#: in the same order a human reading the registry source would, never
-#: re-sorted alphabetically.
-_SETTINGS_SECTION_ORDER = ("worker", "miner", "analyst", "sdk", "serve", "ledger")
+#: worker -> miner -> analyst -> sdk -> serve -> ledger today) -- the
+#: page reads in the same order a human reading the registry source
+#: would, never re-sorted alphabetically.
+#:
+#: NIT-3 (code-gate review r1 2026-09-01): this used to be a HAND-
+#: MAINTAINED tuple, a second copy of a fact `settings.REGISTRY` already
+#: states -- a new section added there and never mirrored here would
+#: silently vanish from the page (no error, no test failure, just a
+#: table that never renders). Derived directly from the registry now:
+#: `dict.fromkeys` dedupes while preserving first-seen order (a section
+#: appears once per `Setting` entry, `REGISTRY` has many entries per
+#: section), and `config_section is not None` skips the one reserved
+#: shape (MINOR-4, same review) that has no section to group under.
+_SETTINGS_SECTION_ORDER: tuple[str, ...] = tuple(
+    dict.fromkeys(
+        s.config_section for s in SETTINGS_REGISTRY if s.config_section is not None
+    )
+)
 
 
 def _setting_section(name: str) -> str:
@@ -1390,8 +1405,24 @@ async def settings_set(
         # the verb's own stderr -- the row must still render SOMETHING
         # (never a blank swap), never the client's unvalidated posted
         # value.
+        #
+        # MAJOR-1 (code-gate review r1 2026-09-01): `config set` used to
+        # be reachable with an UNCAUGHT Python exception on a malformed
+        # `config.yaml` (a scalar section, an unparseable file, a
+        # non-mapping top level, a mid-walk scalar) -- Python's own
+        # traceback (absolute repo paths included) landed here VERBATIM,
+        # painted straight into this row's error strip. `cli.py`'s
+        # `_cmd_config` now catches that family and prints one clean
+        # sentence instead, so ordinarily `stderr` is already safe -- this
+        # is belt-and-suspenders: if stderr EVER again looks like a
+        # Python traceback, render a generic refusal instead of
+        # forwarding raw internals to a browser.
         row = dict(current)
-        row["error"] = result.stderr or f"self-learn config set {name} failed"
+        stderr = result.stderr or ""
+        if "Traceback (most recent call last)" in stderr:
+            row["error"] = f"self-learn config set {name} failed (internal error -- check server logs)"
+        else:
+            row["error"] = stderr or f"self-learn config set {name} failed"
     return _render(request, "partials/settings_row.html", {"row": row})
 
 

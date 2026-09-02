@@ -123,6 +123,7 @@ __all__ = [
     "SettingsError",
     "UnknownSettingError",
     "InvalidSettingValueError",
+    "NoConfigRungError",
     "setting_row",
     "config_set",
     "config_unset",
@@ -188,6 +189,20 @@ class Setting:
     #: the one resolver despite opposite policies for an out-of-range
     #: number (E4's asymmetry, carried over from `worker._timeout_secs`).
     validate: Callable[[SettingValue], SettingValue | None] | None = None
+    #: U-settings Phase 2 (code-gate MAJOR/NIT fold, review r1 2026-09-01
+    #: NIT-1): a human-readable description of `validate`'s own bound,
+    #: e.g. ``"must be > 0"`` -- consulted ONLY when `validate` actually
+    #: rejects a value (`config_set`'s "out of range" refusal), so the
+    #: message names the bound instead of just the type. Left `None` on
+    #: every CLAMPING `validate` (`max(0, v)`-shaped -- those never
+    #: reject, so the hint is never read); set explicitly on the three
+    #: entries whose `validate` CAN reject (`worker.invoke_timeout_secs`,
+    #: `worker.repair_timeout_secs`, `serve.tick_secs` — all ``v if v >
+    #: 0 else None``). A registry-time invariant below (`_setting` loop)
+    #: does not enforce this pairing -- the field is display-only and a
+    #: missing hint degrades to the old, less-specific message, never a
+    #: crash.
+    validate_hint: str | None = None
     #: U-settings Phase 2 (the settings page) — the exposure tier the
     #: page's editor honors (dispatch's ruling, carrying the ratified
     #: `settings-surface-spec.md` §3 table's CATEGORIES onto THIS
@@ -458,6 +473,7 @@ REGISTRY: tuple[Setting, ...] = (
         default=1800.0,  # worker.INVOKE_TIMEOUT_SECS
         description="subprocess timeout (seconds) for the worker's batch invocation",
         validate=lambda v: v if cast(float, v) > 0 else None,  # a <=0 timeout kills every run instantly (E4)
+        validate_hint="must be > 0",
     ),
     Setting(
         name="worker.repair_timeout_secs",
@@ -468,6 +484,7 @@ REGISTRY: tuple[Setting, ...] = (
         default=600.0,  # worker.REPAIR_TIMEOUT_SECS
         description="subprocess timeout (seconds) for the worker's repair round",
         validate=lambda v: v if cast(float, v) > 0 else None,
+        validate_hint="must be > 0",
     ),
     Setting(
         name="worker.repair",
@@ -643,6 +660,7 @@ REGISTRY: tuple[Setting, ...] = (
         default=60.0,  # serve.DEFAULT_TICK_SECS
         description="seconds between the daemon's scheduler ticks",
         validate=lambda v: v if cast(float, v) > 0 else None,
+        validate_hint="must be > 0",
     ),
     # -------------------------------------------------------- ledger
     Setting(
@@ -690,6 +708,23 @@ _override_vars_seen: set[str] = set()
 for _setting in REGISTRY:
     if _setting.config_section is not None:
         assert _setting.name == f"{_setting.config_section}.{_setting.config_key}", _setting.name
+    else:
+        # U-settings Phase 2 code-gate MINOR-4 (review r1 2026-09-01):
+        # a `config_section=None` entry (the shape this dataclass's own
+        # `config_section` docstring reserves for a FUTURE bootstrap
+        # var with no config.yaml rung at all) has nothing `config set`
+        # could ever write -- `tier="A"` on one would render a LIVE,
+        # POSTing editor for a row `config_set`/`config_unset` can only
+        # ever refuse (their own `config_section is None` guard raises
+        # `NoConfigRungError`, never silently no-ops). Make that
+        # combination impossible to register rather than trusting every
+        # future entry to remember the pairing by hand -- exactly the
+        # "hand-maintained list" class this repo has been burned by
+        # this week (NIT-3, same review, on `_SETTINGS_SECTION_ORDER`).
+        assert _setting.tier == "C", (
+            f"{_setting.name}: a config_section=None (bootstrap) entry "
+            "has no config.yaml rung to edit -- it must be tier C"
+        )
     # NIT-3 (review r2 2026-09-01): `_override_env_var` is NOT injective
     # (`.` and `_` both fold to `_` -- `a.b_c` and `a_b.c` collide). 21
     # entries give 21 distinct vars today; this catches the day a 22nd
@@ -968,6 +1003,28 @@ class InvalidSettingValueError(SettingsError):
     invocation refused on a business rule, never a usage error."""
 
 
+class NoConfigRungError(SettingsError):
+    """`name` resolves through `REGISTRY` but has no `config.yaml` rung
+    to write to (`config_section is None` -- currently reserved for a
+    future bootstrap-var shape; see the `Setting.config_section`
+    docstring). `config set`/`unset` raise this instead of the bare
+    `assert` it replaces (code-gate MINOR-4, review r1 2026-09-01): an
+    `assert` is stripped under `python -O` and, before this fix, was
+    reachable at all only because nothing enforced its own premise --
+    the registry-time invariant added alongside this class
+    (`_setting.tier == "C"` whenever `config_section is None`) now
+    makes the case unreachable from a real registry entry, but
+    `config_set`/`config_unset` still refuse it explicitly rather than
+    trust that invariant never regresses. The CLI maps this to exit 1,
+    same family as `InvalidSettingValueError`."""
+
+    def __init__(self, name: str) -> None:
+        super().__init__(
+            f"{name}: no config.yaml rung to write -- this setting cannot be set/unset"
+        )
+        self.name = name
+
+
 def setting_row(home: Path | str, setting: Setting) -> dict[str, object]:
     """The ONE row shape `config get --json` and `config set --json`
     both emit (dispatch pin: "set --json should emit the same row
@@ -1031,6 +1088,48 @@ def _commit_or_half_written(home: Path, touched: list[Path], message: str, body:
         raise gitops.HalfWrittenError.for_commit(home, message, touched, exc) from exc
 
 
+def _scan_config_write_or_refuse(name: str, note: str | None, value: str | None) -> None:
+    """MAJOR-2 (code-gate review r1 2026-09-01): `config set --note`
+    was the one note-bearing verb that skipped the secret scan every
+    OTHER verb runs (`verbs._scan_or_refuse`) -- measured live: `reject
+    --note "...ghp_..."` refused rc 1, `config set --note "...ghp_..."`
+    committed rc 0. Coordinator's ruling (same review): skipping the
+    scan on a typed int/float/bool VALUE is right (a number cannot
+    carry a token) -- but `note` is free prose landing in a committed
+    (and eventually PUSHED) commit BODY regardless of `kind`, and a
+    `kind == "str"` VALUE can itself be a token (`ledger.actor` lands
+    in the commit SUBJECT itself, not just the body). Scans `note`
+    unconditionally and `value` only when the caller passes one
+    (callers pass `None` for every non-`str` kind) -- both BEFORE the
+    ledger's commit lock opens, the same pre-flight tier as
+    `_dirty_config_check`. `verbs.SecretRefusal`/`scan.scan`/`scan.
+    format_refusal` are imported HERE, lazily, for the same
+    import-cycle reason `_dirty_config_check` already documents (only
+    `verbs` closes a cycle; `scan.py` itself has zero internal package
+    imports, but importing everything from one place keeps this
+    function's dependency story in one paragraph)."""
+    from .scan import format_refusal, scan as secret_scan
+    from .verbs import SecretRefusal
+
+    findings: list[tuple[str, list]] = []
+    if note:
+        hits = secret_scan(note)
+        if hits:
+            findings.append(("--note", hits))
+    if value:
+        hits = secret_scan(value)
+        if hits:
+            findings.append((f"{name} value", hits))
+    if not findings:
+        return
+    parts = [f"{label}:\n{format_refusal(hits)}" for label, hits in findings]
+    all_hits = [h for _, hits in findings for h in hits]
+    raise SecretRefusal(
+        "secret scan hit -- refusing this verb (P2-7; no bypass):\n" + "\n".join(parts),
+        all_hits,
+    )
+
+
 def config_set(
     home: Path | str, name: str, raw_value: str, *, note: str | None = None
 ) -> Setting:
@@ -1061,40 +1160,69 @@ def config_set(
     except KeyError:
         raise UnknownSettingError(name) from None
 
+    # MINOR-4 (review r1 2026-09-01): this used to be a bare `assert`
+    # AFTER value-parsing -- checked first now, both because "can this
+    # setting even be written" is more fundamental than "is this value
+    # valid for it", and because an `assert` is not a refusal a caller
+    # (the CLI, the UI route) can catch and print cleanly.
+    if setting.config_section is None or setting.config_key is None:
+        raise NoConfigRungError(name)
+
     parsed = _parse_env_value(raw_value, setting.kind)
     if parsed is None:
-        raise InvalidSettingValueError(
-            f"{name}={raw_value!r} is not a valid {setting.kind} "
-            f"(bool settings take 1 or 0)"
-        )
+        # MINOR-3 (review r1 2026-09-01): the "(bool settings take 1 or
+        # 0)" hint used to be appended UNCONDITIONALLY -- an int/float/
+        # str parse failure showed a hint about a completely different
+        # kind. Only a `bool` setting takes that literal-1-or-0 shape.
+        hint = " (bool settings take 1 or 0)" if setting.kind == "bool" else ""
+        raise InvalidSettingValueError(f"{name}={raw_value!r} is not a valid {setting.kind}{hint}")
     final, rejected = _apply_validate(parsed, setting.validate)
     if final is None:
         assert rejected  # _apply_validate only returns None via a validate rejection here
-        raise InvalidSettingValueError(f"{name}={raw_value!r} is out of range for {setting.kind}")
+        # NIT-1 (review r1 2026-09-01): "is out of range for float"
+        # names the TYPE, not the bound -- append the entry's own
+        # `validate_hint` (e.g. "must be > 0") when it has one, so the
+        # refusal says what would have been accepted.
+        hint = f" ({setting.validate_hint})" if setting.validate_hint else ""
+        raise InvalidSettingValueError(f"{name}={raw_value!r} is out of range for {setting.kind}{hint}")
 
     home = Path(home)
-    assert setting.config_section is not None and setting.config_key is not None
+
+    # MAJOR-2 (review r1 2026-09-01): scan `note` always, and the
+    # parsed VALUE too when this is a `str`-kind setting (`_parse_env_
+    # value` only ever returns `str | None` for that kind -- `cast` is
+    # a type-checker fact, not a runtime branch). Pre-lock, beside the
+    # dirty check below -- see `_scan_config_write_or_refuse`'s own
+    # docstring for the full "why".
+    _scan_config_write_or_refuse(
+        name, note, cast(str, final) if setting.kind == "str" else None
+    )
+
+    # MINOR-1 (review r1 2026-09-01): the dirty-check used to run AFTER
+    # the idempotent short-circuit below, so a no-op `set` (the value
+    # already matches) printed success against an uncommitted config.
+    # yaml without ever looking at it. Dirty check first; the
+    # short-circuit only fires against a tree already known clean.
+    _dirty_config_check(home)
 
     # Idempotent leg (`host_add`'s own precedent: an unchanged re-
-    # registration commits nothing) -- checked BEFORE the dirty-check
-    # and the lock, against the RAW stored value (never the resolved
-    # one -- an active override must not make this look like a no-op
-    # write when the file itself would genuinely change). Without this,
-    # `git commit` on a byte-identical write fails "nothing to commit",
-    # which the write-already-happened wrapper below would misreport as
-    # a HALF-WRITTEN state -- caught live: setting a key to the value it
-    # already holds a second time crashed with exactly that false
-    # "WRITE NOT COMMITTED" before this fix. `type(...) is type(...)`
-    # guards the one gap plain `==` leaves open in Python (`1 == True`)
-    # -- a hand-written `1` where this registry's `bool` kind expects
-    # `true` must still be treated as a real change worth writing/
-    # normalizing, not silently left in place because it happens to
-    # compare equal.
+    # registration commits nothing) -- against the RAW stored value
+    # (never the resolved one -- an active override must not make this
+    # look like a no-op write when the file itself would genuinely
+    # change). Without this, `git commit` on a byte-identical write
+    # fails "nothing to commit", which the write-already-happened
+    # wrapper below would misreport as a HALF-WRITTEN state -- caught
+    # live: setting a key to the value it already holds a second time
+    # crashed with exactly that false "WRITE NOT COMMITTED" before this
+    # fix. `type(...) is type(...)` guards the one gap plain `==`
+    # leaves open in Python (`1 == True`) -- a hand-written `1` where
+    # this registry's `bool` kind expects `true` must still be treated
+    # as a real change worth writing/normalizing, not silently left in
+    # place because it happens to compare equal.
     current = config.settings_leaf(home, setting.config_section, setting.config_key)
     if current is not None and type(current[1]) is type(final) and current[1] == final:
         return setting
 
-    _dirty_config_check(home)
     message = f"self-learn: config set {name}={final!r}"
     with gitops.commit_lock(home):
         path = config.set_leaf(home, setting.config_section, setting.config_key, final)
@@ -1108,20 +1236,42 @@ def config_unset(home: Path | str, name: str, *, note: str | None = None) -> tup
     including the section itself), commits `self-learn: config unset
     <name>`. Idempotent, `host_add`-style: an ALREADY-absent key is a
     no-op that opens no lock and commits nothing (checked via
-    `config.settings_leaf`, the same read primitive `resolve_setting`
-    uses, BEFORE the lock -- a pre-flight fact, not a mutation).
-    Returns `(setting, removed)`."""
+    `config.present`, BEFORE the lock -- a pre-flight fact, not a
+    mutation). Returns `(setting, removed)`.
+
+    Uses `config.present` here, NOT `config.settings_leaf` (MINOR-2,
+    review r1 2026-09-01): `settings_leaf` is the LENIENT read path
+    `resolve_setting` uses -- it warns-and-returns-`None` on a
+    malformed `config.yaml`, which made THIS function report "already
+    unset, nothing to remove" against the exact same broken file
+    `config set` refuses outright. `config.present` raises
+    :class:`config.ConfigWriteError` on that same malformed shape --
+    same file, same refusal, matching `set`'s own posture."""
     try:
         setting = by_name(name)
     except KeyError:
         raise UnknownSettingError(name) from None
-    assert setting.config_section is not None and setting.config_key is not None
+    if setting.config_section is None or setting.config_key is None:
+        raise NoConfigRungError(name)  # MINOR-4, same fix as config_set
 
     home = Path(home)
-    if config.settings_leaf(home, setting.config_section, setting.config_key) is None:
-        return setting, False  # nothing to remove -- no lock, no commit
 
+    # MAJOR-2 (review r1 2026-09-01): `unset` takes a `--note` too --
+    # it lands in the unset commit's body exactly like `set`'s does,
+    # so it gets the same pre-lock scan (no VALUE to scan here, only
+    # `note`).
+    _scan_config_write_or_refuse(name, note, None)
+
+    # MINOR-1's ordering fix applies here too, for the same reason the
+    # review gave for `set`: an existence pre-check reachable BEFORE
+    # the dirty-check would let a no-op `unset` succeed silently
+    # against an uncommitted config.yaml. Dirty check runs first; the
+    # short-circuit only fires against a tree already known clean.
     _dirty_config_check(home)
+
+    is_set, _current_value = config.present(home, setting.config_section, setting.config_key)
+    if not is_set:
+        return setting, False  # nothing to remove -- no lock, no commit
 
     message = f"self-learn: config unset {name}"
     with gitops.commit_lock(home):

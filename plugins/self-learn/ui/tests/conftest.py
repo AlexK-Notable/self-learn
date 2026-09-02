@@ -6,9 +6,39 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
+
+#: Coordinator's "MINE" item (code-gate review r1 2026-09-01): this
+#: package's own venv `self-learn` binary, derived from `sys.
+#: executable`'s own directory -- NEVER a hardcoded path, since the venv
+#: location is not fixed across machines/CI. Both `self_learn_ui.
+#: runner.resolve_self_learn_argv_prefix` (the POST/write path) and
+#: `self_learn_ui.ledger._self_learn_bin` (the read path) now resolve
+#: `SELF_LEARN_UI_CLI_BIN` FIRST, ahead of `shutil.which`'s raw-PATH
+#: lookup -- pinning it here closes the gap BOTH resolvers had: a test
+#: process invoked in some non-canonical way (`.venv/bin` not first on
+#: `PATH`) could silently resolve to PRODUCTION's real `~/bin/self-learn`
+#: instead of this worktree's own binary. Measured: before this pin
+#: existed, 10 of 11 `test_settings_route.py` tests 503'd exactly this
+#: way, because production's `self-learn` on master has no `config` verb
+#: at all -- a route test that "passes" by hitting a 503 from the WRONG
+#: binary is a measurement hazard, not a green test.
+_VENV_SELF_LEARN_BIN = Path(sys.executable).parent / "self-learn"
+
+
+@pytest.fixture(autouse=True)
+def _pin_self_learn_cli_bin(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Autouse for every UI test (mirrors `_redirect_env_defaults` right
+    below): pin `SELF_LEARN_UI_CLI_BIN` to this package's own venv
+    binary so every subprocess call this suite makes -- through either
+    resolver -- runs the CODE UNDER TEST, never whatever `self-learn`
+    the invoking shell's PATH happens to turn up first. See
+    `_VENV_SELF_LEARN_BIN`'s own comment for the measured failure this
+    closes."""
+    monkeypatch.setenv("SELF_LEARN_UI_CLI_BIN", str(_VENV_SELF_LEARN_BIN))
 
 
 @pytest.fixture(autouse=True)

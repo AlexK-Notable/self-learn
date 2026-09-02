@@ -179,6 +179,22 @@ class TestConfigSet:
         # nothing was written
         assert not (home / "config.yaml").exists()
 
+    def test_bool_hint_absent_from_a_non_bool_parse_failure(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """MINOR-3 (review r1 2026-09-01): the "(bool settings take 1 or
+        0)" hint used to be appended to EVERY kind's parse-failure
+        message, including this one -- a float setting's own error
+        talked about bool syntax that has nothing to do with it."""
+        home = make_home(tmp_path)
+        monkeypatch.setenv("SELF_LEARN_HOME", str(home))
+        rc = cli_mod.main(["config", "set", "worker.coalesce_secs", "not-a-float"])
+        err = capsys.readouterr().err
+        assert rc == 1
+        assert "worker.coalesce_secs" in err
+        assert "float" in err
+        assert "bool settings take 1 or 0" not in err
+
     def test_refuses_a_value_validate_rejects_as_out_of_range(
         self, tmp_path, monkeypatch, capsys
     ):
@@ -189,6 +205,11 @@ class TestConfigSet:
         err = capsys.readouterr().err
         assert rc == 1
         assert "worker.invoke_timeout_secs" in err
+        # NIT-1 (review r1 2026-09-01): the refusal used to only name
+        # the TYPE ("out of range for float"), never the bound -- now it
+        # says what would have been accepted (the entry's own
+        # `validate_hint`).
+        assert "must be > 0" in err
         assert not (home / "config.yaml").exists()
 
     def test_refuses_unregistered_name_rc_64(self, tmp_path, monkeypatch, capsys):
@@ -307,6 +328,92 @@ class TestConfigSet:
         assert "Traceback" not in out.err
         assert _log_subjects(home) == before  # no second commit
 
+    def test_a_no_op_set_still_refuses_on_a_dirty_config_yaml(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """MINOR-1 (review r1 2026-09-01): the idempotent short-circuit
+        used to run BEFORE the dirty-check -- a `set` whose value
+        already matches printed a clean "success" even though
+        config.yaml itself had unrelated uncommitted changes sitting on
+        disk. Dirty check now runs first; the short-circuit only ever
+        fires against a tree already known clean."""
+        home = make_home(tmp_path)
+        monkeypatch.setenv("SELF_LEARN_HOME", str(home))
+        rc1 = cli_mod.main(["config", "set", "worker.no_notify", "1"])
+        assert rc1 == 0
+        capsys.readouterr()
+        before = _log_subjects(home)
+        # an unrelated, uncommitted edit to config.yaml -- the dirty check's
+        # target, left dirty on purpose
+        text = (home / "config.yaml").read_text(encoding="utf-8")
+        (home / "config.yaml").write_text(text + "  # a hand edit\n", encoding="utf-8")
+        rc2 = cli_mod.main(["config", "set", "worker.no_notify", "1"])  # same value
+        err = capsys.readouterr().err
+        assert rc2 == 1
+        assert "uncommitted" in err
+        assert _log_subjects(home) == before  # no commit happened
+
+
+# ===================================================================== #
+# config set -- secret scan (MAJOR-2)
+# ===================================================================== #
+
+
+class TestConfigSetSecretScan:
+    """MAJOR-2 (review r1 2026-09-01): `config set --note` was the one
+    note-bearing verb that skipped the secret scan every OTHER verb
+    runs (`verbs._scan_or_refuse`) -- measured live: `reject --note
+    "...ghp_..."` refused rc 1, `config set --note "...ghp_..."`
+    committed rc 0. Coordinator's ruling: a typed int/float/bool VALUE
+    can't carry a token (skip stays right there), but `note` is free
+    prose landing in a committed+pushed commit BODY regardless of kind,
+    and a `str`-kind VALUE can itself be a token (`ledger.actor` lands
+    in the commit SUBJECT itself)."""
+
+    GHP_TOKEN = "ghp_" + "a" * 36  # fires the github-token scan rule
+
+    def test_note_with_a_token_is_refused(self, tmp_path, monkeypatch, capsys):
+        home = make_home(tmp_path)
+        monkeypatch.setenv("SELF_LEARN_HOME", str(home))
+        before = _log_subjects(home)
+        rc = cli_mod.main(
+            [
+                "config",
+                "set",
+                "worker.no_notify",
+                "1",
+                "--note",
+                f"key is {self.GHP_TOKEN}",
+            ]
+        )
+        err = capsys.readouterr().err
+        assert rc == 1
+        assert "secret scan" in err
+        assert _log_subjects(home) == before  # no commit happened
+        assert not (home / "config.yaml").exists()
+
+    def test_str_kind_value_carrying_a_token_is_refused(self, tmp_path, monkeypatch, capsys):
+        home = make_home(tmp_path)
+        monkeypatch.setenv("SELF_LEARN_HOME", str(home))
+        before = _log_subjects(home)
+        rc = cli_mod.main(["config", "set", "ledger.actor", self.GHP_TOKEN])
+        err = capsys.readouterr().err
+        assert rc == 1
+        assert "secret scan" in err
+        assert _log_subjects(home) == before
+        assert not (home / "config.yaml").exists()
+
+    def test_int_value_is_not_scanned_positive_control(self, tmp_path, monkeypatch, capsys):
+        """The scan must not be over-broad: a plain digit-string VALUE
+        for an int-kind setting commits normally, exactly like before
+        this fix -- proving the scan targets `note`/`str`-kind VALUEs
+        only, never every argument on the command line."""
+        home = make_home(tmp_path)
+        monkeypatch.setenv("SELF_LEARN_HOME", str(home))
+        rc = cli_mod.main(["config", "set", "miner.cap_max", "7"])
+        assert rc == 0
+        assert capsys.readouterr().err == ""
+
 
 # ===================================================================== #
 # config unset
@@ -388,3 +495,218 @@ class TestConfigUnset:
         assert rc == 0
         assert row["source"] == "default"
         assert row["value"] is False
+
+
+# ===================================================================== #
+# MAJOR-1 (review r1 2026-09-01): four reachable committed-but-malformed
+# config.yaml states used to exit `config set`/`unset` with a raw Python
+# traceback (absolute paths and all) instead of a refusal sentence --
+# `config.ConfigWriteError` propagated uncaught past `cli._cmd_config`'s
+# except chain. Each of these seeds config.yaml with a malformed shape,
+# COMMITS it (a clean tree -- so the dirty-check does not short-circuit
+# before the write attempt ever runs), then asserts rc 1, the class's
+# own composed message, and NO "Traceback" anywhere in stderr.
+# ===================================================================== #
+
+
+def _seed_committed_config(home: Path, text: str) -> None:
+    (home / "config.yaml").write_text(text, encoding="utf-8")
+    git(home, "add", "-A")
+    git(home, "commit", "-q", "-m", "seed a malformed config.yaml")
+
+
+class TestConfigSetMalformedConfigYaml:
+    def test_scalar_section_refuses_cleanly(self, tmp_path, monkeypatch, capsys):
+        home = make_home(tmp_path)
+        _seed_committed_config(home, "worker: 5\n")
+        monkeypatch.setenv("SELF_LEARN_HOME", str(home))
+        before = _log_subjects(home)
+        rc = cli_mod.main(["config", "set", "worker.no_notify", "1"])
+        err = capsys.readouterr().err
+        assert rc == 1
+        assert "Traceback" not in err
+        assert "worker" in err
+        assert "not a mapping" in err
+        assert _log_subjects(home) == before  # no commit happened
+
+    def test_unparseable_file_refuses_cleanly(self, tmp_path, monkeypatch, capsys):
+        home = make_home(tmp_path)
+        _seed_committed_config(home, "key: [1, 2\n")  # unclosed flow sequence
+        monkeypatch.setenv("SELF_LEARN_HOME", str(home))
+        before = _log_subjects(home)
+        rc = cli_mod.main(["config", "set", "worker.no_notify", "1"])
+        err = capsys.readouterr().err
+        assert rc == 1
+        assert "Traceback" not in err
+        assert "unparseable" in err
+        assert _log_subjects(home) == before
+
+    def test_non_mapping_top_level_refuses_cleanly(self, tmp_path, monkeypatch, capsys):
+        home = make_home(tmp_path)
+        _seed_committed_config(home, "- a\n- b\n- c\n")  # a YAML list, not a mapping
+        monkeypatch.setenv("SELF_LEARN_HOME", str(home))
+        before = _log_subjects(home)
+        rc = cli_mod.main(["config", "set", "worker.no_notify", "1"])
+        err = capsys.readouterr().err
+        assert rc == 1
+        assert "Traceback" not in err
+        assert "must be a YAML mapping" in err
+        assert _log_subjects(home) == before
+
+    def test_mid_walk_scalar_refuses_cleanly(self, tmp_path, monkeypatch, capsys):
+        home = make_home(tmp_path)
+        _seed_committed_config(home, "sdk:\n  max_turns: 5\n")
+        monkeypatch.setenv("SELF_LEARN_HOME", str(home))
+        before = _log_subjects(home)
+        # sdk.max_turns.worker walks THROUGH sdk.max_turns -- a scalar
+        # (5) in the committed file, mid-path toward the leaf.
+        rc = cli_mod.main(["config", "set", "sdk.max_turns.worker", "3"])
+        err = capsys.readouterr().err
+        assert rc == 1
+        assert "Traceback" not in err
+        assert "max_turns" in err
+        assert "not a mapping" in err
+        assert _log_subjects(home) == before
+
+
+class TestConfigUnsetMalformedConfigYaml:
+    def test_scalar_section_refuses_same_as_set(self, tmp_path, monkeypatch, capsys):
+        """MINOR-2 (review r1 2026-09-01): `config unset` used to report
+        "already unset, nothing to remove" against a malformed
+        config.yaml -- the exact file `config set` refuses outright.
+        Same file, same refusal now."""
+        home = make_home(tmp_path)
+        _seed_committed_config(home, "worker: 5\n")
+        monkeypatch.setenv("SELF_LEARN_HOME", str(home))
+        before = _log_subjects(home)
+        rc = cli_mod.main(["config", "unset", "worker.no_notify"])
+        out = capsys.readouterr()
+        assert rc == 1
+        assert "already unset" not in out.out
+        assert "Traceback" not in out.err
+        assert "not a mapping" in out.err
+        assert _log_subjects(home) == before
+
+
+# ===================================================================== #
+# MINOR-4 (review r1 2026-09-01): a `config_section=None` REGISTRY entry
+# (reserved for a future bootstrap var with no config.yaml rung) used to
+# hit a bare `assert` in `config_set`/`config_unset` instead of a typed
+# refusal. No REAL registry entry has this shape today (the registry-
+# time invariant added alongside this fix makes it impossible to
+# register one with the wrong tier), so this exercises the refusal
+# directly against a synthetic entry, monkeypatched into `by_name`'s
+# lookup table for the duration of the test.
+# ===================================================================== #
+
+
+class TestConfigNoConfigRungError:
+    @pytest.fixture
+    def bootstrap_setting(self, monkeypatch):
+        from self_learn.settings import Setting
+
+        synthetic = Setting(
+            name="bootstrap.no-rung",
+            env_var="SELF_LEARN_BOOTSTRAP_NO_RUNG",
+            config_section=None,
+            config_key=None,
+            kind="str",
+            default="x",
+            description="test-only: no config.yaml rung",
+            tier="C",
+        )
+        monkeypatch.setitem(settings._BY_NAME, synthetic.name, synthetic)
+        return synthetic
+
+    def test_config_set_refuses_with_a_typed_message(
+        self, tmp_path, monkeypatch, capsys, bootstrap_setting
+    ):
+        home = make_home(tmp_path)
+        monkeypatch.setenv("SELF_LEARN_HOME", str(home))
+        rc = cli_mod.main(["config", "set", bootstrap_setting.name, "y"])
+        err = capsys.readouterr().err
+        assert rc == 1
+        assert "Traceback" not in err
+        assert bootstrap_setting.name in err
+        assert not (home / "config.yaml").exists()
+
+    def test_config_unset_refuses_with_a_typed_message(
+        self, tmp_path, monkeypatch, capsys, bootstrap_setting
+    ):
+        home = make_home(tmp_path)
+        monkeypatch.setenv("SELF_LEARN_HOME", str(home))
+        rc = cli_mod.main(["config", "unset", bootstrap_setting.name])
+        err = capsys.readouterr().err
+        assert rc == 1
+        assert "Traceback" not in err
+        assert bootstrap_setting.name in err
+
+
+# ===================================================================== #
+# NIT-2 (review r1 2026-09-01): a `config set` VALUE beginning with `-`
+# that is not a bare negative number is swallowed by argparse's own
+# optional-argument matching before `_cmd_config` ever runs -- these pin
+# the narrow pre-check `cli._swallowed_config_set_value` that catches
+# exactly that shape and refuses with a message pointing at `--`,
+# instead of argparse's generic "the following arguments are required:
+# value".
+# ===================================================================== #
+
+
+class TestConfigSetNegativeValueHandling:
+    # `-5`/`-5.5`/`-` are the shapes argparse's own "looks like a
+    # negative number" heuristic lets through unassisted on EVERY
+    # Python version this repo runs on (measured on 3.13 and 3.14 --
+    # more exotic shapes like `-5e10`/`-1abc`/`-5.` sit right on a
+    # boundary argparse's internal regex has actually changed ACROSS
+    # those two versions, which is exactly why
+    # `_swallowed_config_set_value` asks argparse's own matcher
+    # directly (`_looks_option_like`) instead of a hand-written regex
+    # guess -- these parametrized cases stick to the shapes stable on
+    # every version, not the version-sensitive boundary itself).
+    @pytest.mark.parametrize(
+        "value", ["-5", "-5.5", "-"],
+        ids=["int", "float", "bare-dash"],
+    )
+    def test_values_argparse_already_parses_are_left_alone(self, value):
+        assert cli_mod._swallowed_config_set_value(["config", "set", "n", value]) is None
+
+    @pytest.mark.parametrize(
+        "value", ["-abc", "-x", "--foo", "-n5"],
+        ids=["alpha", "short-flag-like", "long-flag-like", "letter-then-digit"],
+    )
+    def test_flag_like_values_are_flagged(self, value):
+        assert cli_mod._swallowed_config_set_value(["config", "set", "n", value]) == value
+
+    def test_a_correctly_escaped_value_is_left_alone(self):
+        argv = ["config", "set", "n", "--", "-abc"]
+        assert cli_mod._swallowed_config_set_value(argv) is None
+
+    def test_flags_before_the_value_are_skipped_correctly(self):
+        argv = ["config", "set", "n", "--json", "--note", "hi", "-abc"]
+        assert cli_mod._swallowed_config_set_value(argv) == "-abc"
+
+    def test_other_verbs_are_not_this_checks_concern(self):
+        assert cli_mod._swallowed_config_set_value(["config", "get", "-abc"]) is None
+        assert cli_mod._swallowed_config_set_value(["config", "unset", "-abc"]) is None
+        assert cli_mod._swallowed_config_set_value(["host", "add", "-abc"]) is None
+
+    def test_end_to_end_prints_a_clear_refusal_not_argparse_noise(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        home = make_home(tmp_path)
+        monkeypatch.setenv("SELF_LEARN_HOME", str(home))
+        rc = cli_mod.main(["config", "set", "worker.no_notify", "-abc"])
+        err = capsys.readouterr().err
+        assert rc == 2
+        assert "-abc" in err
+        assert "--" in err
+        assert not (home / "config.yaml").exists()
+
+    def test_end_to_end_a_bare_negative_number_still_works_unassisted(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        home = make_home(tmp_path)
+        monkeypatch.setenv("SELF_LEARN_HOME", str(home))
+        rc = cli_mod.main(["config", "set", "worker.coalesce_secs", "-5.5"])
+        assert rc == 0

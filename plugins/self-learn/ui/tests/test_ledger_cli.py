@@ -6,6 +6,8 @@ driven against a REAL throwaway SELF_LEARN_HOME with the real
 from __future__ import annotations
 
 import subprocess
+import sys
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -112,3 +114,41 @@ class TestCliFailureSurfaces:
         assert read.ok is False
         assert read.error is not None
         assert "failed to start" in read.error
+
+
+class TestSelfLearnBinResolution:
+    """Coordinator's "MINE" item (code-gate review r1 2026-09-01):
+    `ledger._self_learn_bin` used to have NO env override at all and
+    resolved via `shutil.which("self-learn")` against the raw process
+    `PATH` unconditionally — a test process invoked in some
+    non-canonical way could silently land on PRODUCTION's real
+    `~/bin/self-learn` instead of this worktree's own venv binary
+    (measured: 10 of 11 `test_settings_route.py` tests 503'd this way).
+    `conftest.py`'s `_pin_self_learn_cli_bin` autouse fixture now pins
+    `SELF_LEARN_UI_CLI_BIN` to this package's own venv binary for every
+    test in this package; this is the POSITIVE CONTROL proving that pin
+    actually reaches `_self_learn_bin` and resolves inside the current
+    venv, not just that the env var is set somewhere."""
+
+    def test_resolves_inside_the_current_venv(self):
+        resolved = ledger._self_learn_bin()
+        venv_bin_dir = Path(sys.executable).parent
+        assert Path(resolved).parent == venv_bin_dir
+        assert Path(resolved).is_file()
+
+    def test_matches_the_pinned_env_var_verbatim(self, monkeypatch):
+        # Repin to a value this test controls directly — proves
+        # `_self_learn_bin` reads SELF_LEARN_UI_CLI_BIN (the override),
+        # not just that it happens to land somewhere plausible.
+        monkeypatch.setenv("SELF_LEARN_UI_CLI_BIN", "/not/a/real/path/self-learn")
+        assert ledger._self_learn_bin() == "/not/a/real/path/self-learn"
+
+    def test_falls_back_to_which_when_unpinned(self, monkeypatch):
+        # The negative control: with the override absent, resolution
+        # still falls through to shutil.which/sys.executable-relative,
+        # unchanged from before this fix -- still resolves to a real,
+        # existing file, just via the OLD path.
+        monkeypatch.delenv("SELF_LEARN_UI_CLI_BIN", raising=False)
+        resolved = ledger._self_learn_bin()
+        assert resolved
+        assert Path(resolved).is_file()

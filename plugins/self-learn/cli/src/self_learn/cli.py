@@ -47,7 +47,7 @@ from pathlib import Path
 from . import report as report_mod
 from . import hosts as hosts_mod
 from . import reconcile as reconcile_mod
-from . import batch, gitops, miner, provider, refread, selfcheck, sentinel, serve, settings, telemetry, verbs, worker
+from . import batch, config, gitops, miner, provider, refread, selfcheck, sentinel, serve, settings, telemetry, verbs, worker
 from .compilers import CompileError, ReferenceResult
 from .import_backlog import import_backlog
 from .import_common import ImporterError
@@ -694,7 +694,13 @@ def _build_parser() -> argparse.ArgumentParser:
         "value + source afterward",
     )
     cset.add_argument("name", metavar="NAME")
-    cset.add_argument("value", metavar="VALUE")
+    cset.add_argument(
+        "value",
+        metavar="VALUE",
+        help="a VALUE starting with '-' that isn't a bare negative "
+        "number (e.g. -5, -5.5) needs `--` before it: "
+        "`config set NAME -- -abc`",
+    )
     cset.add_argument("--note", metavar="TEXT", default=None)
     cset.add_argument("--json", action="store_true", dest="as_json")
     cunset = config_sub.add_parser(
@@ -1275,7 +1281,17 @@ def _cmd_config(args: argparse.Namespace) -> int:
     `InvalidSettingValueError` -> 1) alongside `verbs.VerbError`
     (`DirtyTargetError`'s own home, raised via a lazy import inside
     `settings.py` to avoid a module cycle — see its docstring) for the
-    dirty-config-yaml refusal."""
+    dirty-config-yaml refusal. `config.ConfigWriteError`/`settings.
+    NoConfigRungError` (MAJOR-1/MINOR-4, code-gate review r1
+    2026-09-01) join this chain for the same reason `UnknownSettingError`/
+    `InvalidSettingValueError` are here: a malformed `config.yaml`
+    (a scalar section, an unparseable file, a non-mapping top level, a
+    mid-walk scalar) used to propagate past every branch below all the
+    way to a raw Python traceback (absolute paths and all) — the UI's
+    settings row then painted that traceback verbatim into its error
+    strip (`routes.py`'s `settings_set`, measured with `RealRunner`).
+    Both new branches print ONLY the exception's own composed message
+    and exit 1, never a stack trace."""
     home = resolve_home()
     if args.config_command in ("set", "unset") and (code := _home_gate(home)) is not None:
         return code
@@ -1284,10 +1300,16 @@ def _cmd_config(args: argparse.Namespace) -> int:
     except settings.UnknownSettingError as exc:
         print(f"self-learn config {args.config_command}: {exc}", file=sys.stderr)
         return EXIT_USAGE
+    except settings.NoConfigRungError as exc:
+        print(f"self-learn config {args.config_command}: {exc}", file=sys.stderr)
+        return 1
     except settings.InvalidSettingValueError as exc:
         print(f"self-learn config {args.config_command}: {exc}", file=sys.stderr)
         return 1
-    except verbs.VerbError as exc:  # DirtyTargetError, exit_code=1
+    except config.ConfigWriteError as exc:
+        print(f"self-learn config {args.config_command}: {exc}", file=sys.stderr)
+        return 1
+    except verbs.VerbError as exc:  # DirtyTargetError, SecretRefusal, exit_code=1
         print(f"self-learn config {args.config_command}: {exc}", file=sys.stderr)
         return exc.exit_code
     except gitops.HalfWrittenError as exc:
@@ -2707,7 +2729,100 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_GIT_FAILED
 
 
+#: NIT-2 (code-gate review r1 2026-09-01): a `config set` VALUE token
+#: beginning with `-` that argparse reads as an attempted FLAG (not a
+#: value) is swallowed by argparse's own optional-argument matching
+#: before `_cmd_config` ever runs, and the user sees a generic "the
+#: following arguments are required: value" instead of anything
+#: explaining what happened. argparse's own `--` separator already
+#: handles this correctly (`config set NAME --json -- -abc` works
+#: today, unmodified) -- `_swallowed_config_set_value` is a narrow
+#: PRE-CHECK, run before the real parser even sees argv, that
+#: recognizes exactly this one swallowed-value shape and prints a clear
+#: pointer at `--` instead of argparse's confusing message. It never
+#: fires when `--` is already present (that already parses correctly)
+#: or when VALUE is one of the many shapes argparse's OWN internal
+#: "looks like a negative number" heuristic already lets through
+#: unassisted (`-5`, `-5.5`, `-5e10`, and less obviously `-1abc`,
+#: `-5.5.5`, `-1_000` -- measured on this interpreter: a hand-written
+#: `^-\d+$`-style regex guess was WRONG about several of these, so
+#: :func:`_looks_option_like` asks argparse's own matcher directly
+#: rather than re-deriving its rule) -- see `test_config_cli.py`'s
+#: NIT-2 cases for the exact shapes covered.
+_PROBE_PARSER = argparse.ArgumentParser(add_help=False)
+
+
+def _looks_option_like(token: str) -> bool:
+    """True iff argparse's OWN optional-argument matcher would treat
+    `token` as an attempted flag rather than an ordinary positional
+    value -- delegates to `ArgumentParser._parse_optional` (a private
+    method, but the exact logic the real `config set` subparser applies
+    when it decides whether a token is "still might be an option"). A
+    throwaway parser with zero registered options classifies identically
+    to `cset` for this purpose: the special case that lets a
+    negative-looking token through does not depend on what options are
+    registered, only on argparse's own internal heuristic for "looks
+    like a negative number." Falls back to "not option-like" (never
+    flags anything) if this private method is ever removed in some
+    future Python -- degrades to argparse's own native error message,
+    never a crash."""
+    parse_optional = getattr(_PROBE_PARSER, "_parse_optional", None)
+    if parse_optional is None:
+        return False
+    try:
+        return parse_optional(token) is not None
+    except Exception:
+        return False
+
+
+def _swallowed_config_set_value(argv: list[str]) -> str | None:
+    """Return the VALUE token `config set NAME VALUE` would lose to
+    argparse's optional-argument matching, or `None` when nothing would
+    be swallowed. Only ever looks at a `config set ...` argv shape --
+    `config get`/`config unset` take no free-form VALUE positional and
+    are not this Nit's concern."""
+    if len(argv) < 2 or argv[0] != "config" or argv[1] != "set":
+        return None
+    rest = argv[2:]
+    pre_separator_positionals: list[str] = []
+    i = 0
+    while i < len(rest):
+        tok = rest[i]
+        if tok == "--":
+            break  # everything after this is already correctly escaped
+        if tok == "--json":
+            i += 1
+            continue
+        if tok == "--note":
+            i += 2  # the flag and its own value -- neither is VALUE
+            continue
+        if tok.startswith("--note="):
+            i += 1
+            continue
+        pre_separator_positionals.append(tok)
+        i += 1
+    if len(pre_separator_positionals) != 2:
+        # 0/1: too few tokens to have reached VALUE yet. >2: a shape
+        # argparse will refuse on its own terms either way -- not this
+        # check's job.
+        return None
+    value_tok = pre_separator_positionals[1]
+    if not _looks_option_like(value_tok):
+        return None
+    return value_tok
+
+
 def _main(argv: list[str] | None = None) -> int:
+    resolved_argv = argv if argv is not None else sys.argv[1:]
+    swallowed = _swallowed_config_set_value(resolved_argv)
+    if swallowed is not None:
+        print(
+            f"self-learn config set: {swallowed!r} looks like a flag, not "
+            "a value -- put `--` before it, e.g. "
+            f"`self-learn config set NAME -- {swallowed}`",
+            file=sys.stderr,
+        )
+        return 2  # matches what argparse itself would have exited with here
     parser = _build_parser()
     try:
         args, _extra = parser.parse_known_args(argv)

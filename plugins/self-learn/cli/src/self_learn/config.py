@@ -60,6 +60,7 @@ __all__ = [
     "invocation_backend",
     "load_editable",
     "one_motion_enabled",
+    "present",
     "provider_setting",
     "provider_unknown_keys",
     "set_leaf",
@@ -541,24 +542,44 @@ def set_leaf(home: Path | str, section: str, key: str, value: object) -> Path:
 def unset_leaf(home: Path | str, section: str, key: str) -> bool:
     """Remove `section.key`, pruning now-empty nested maps upward --
     including `section` itself when it becomes empty. Returns `True` iff
-    something was actually removed; a key that is already absent (or
-    unreachable through a non-mapping path segment) is a silent no-op
-    (`False`), never an error -- `unset` of an already-unset key stays
-    idempotent, same posture as `host_add`'s already-registered leg."""
+    something was actually removed; a section/segment that is simply
+    ABSENT is a silent no-op (`False`), never an error -- `unset` of an
+    already-unset key stays idempotent, same posture as `host_add`'s
+    already-registered leg.
+
+    U-settings Phase 2 code-gate MINOR-2 (review r1 2026-09-01): a
+    section/mid-walk segment that IS PRESENT but not a mapping (the
+    same `worker: 5` / `sdk.max_turns: 5` shapes `set_leaf` refuses)
+    now RAISES :class:`ConfigWriteError` here too, instead of the old
+    silent `False` -- same file, same refusal, matching `set`'s own
+    posture rather than reporting "nothing to remove" against a file
+    `config set` would refuse outright."""
     data = load_editable(home)
-    if section not in data or not isinstance(data[section], dict):
+    if section not in data:
         return False
+    node: object = data[section]
+    if not isinstance(node, dict):
+        raise ConfigWriteError(
+            f"{section}: already a {type(node).__name__}, not a mapping -- "
+            f"refusing to operate on {section}.{key}"
+        )
     segments = key.split(".")
     # `chain[i]` = (dict, key-within-that-dict) walking DOWN toward the
     # leaf's own parent -- kept so the prune-upward pass below can climb
     # back out by exact key, not by re-deriving a path from `key`.
     chain: list[tuple[dict, str]] = [(data, section)]
-    node: dict = data[section]
+    path_so_far = section
     for segment in segments[:-1]:
-        if segment not in node or not isinstance(node[segment], dict):
+        path_so_far = f"{path_so_far}.{segment}"
+        if segment not in node:
             return False
         chain.append((node, segment))
         node = node[segment]
+        if not isinstance(node, dict):
+            raise ConfigWriteError(
+                f"{path_so_far}: already a {type(node).__name__}, not a mapping -- "
+                f"refusing to operate on {section}.{key}"
+            )
     leaf = segments[-1]
     if leaf not in node:
         return False
@@ -571,3 +592,50 @@ def unset_leaf(home: Path | str, section: str, key: str) -> bool:
         current = parent
     dump_editable(home, data)
     return True
+
+
+def present(home: Path | str, section: str, key: str) -> tuple[bool, object]:
+    """A validated, NON-mutating "is `section.key` set" check --
+    `config_unset`'s existence pre-check needs this BEFORE opening the
+    ledger's commit lock. Uses the SAME round-trip WRITE-path load as
+    `set_leaf`/`unset_leaf` (never the lenient `settings_leaf`, which
+    warns-and-returns-`None` on a malformed file or a non-mapping
+    mid-path -- exactly the silence code-gate MINOR-2 found: `config
+    unset` reported "already unset" against a file `config set` refused
+    outright). `config_set`'s own idempotency check deliberately keeps
+    using `settings_leaf` instead (a malformed file there just means
+    "not idempotent, proceed to the write" -- `set_leaf`, under the
+    lock, raises this same family on the same shapes, so the refusal
+    still happens, just one step later than `unset`'s pre-lock check).
+    Raises :class:`ConfigWriteError` on any of the same malformed shapes
+    `set_leaf`/`unset_leaf` refuse (unparseable file, non-mapping top
+    level, a scalar section, a scalar mid-walk segment) -- so a caller
+    doing this check FIRST refuses IDENTICALLY to the write itself,
+    before ever touching the lock. Returns `(True, raw_value)` when the
+    leaf is set, `(False, None)` when the path is well-formed but the
+    leaf genuinely is not."""
+    data = load_editable(home)
+    if section not in data:
+        return False, None
+    node: object = data[section]
+    if not isinstance(node, dict):
+        raise ConfigWriteError(
+            f"{section}: already a {type(node).__name__}, not a mapping -- "
+            f"refusing to operate on {section}.{key}"
+        )
+    segments = key.split(".")
+    path_so_far = section
+    for segment in segments[:-1]:
+        path_so_far = f"{path_so_far}.{segment}"
+        if segment not in node:
+            return False, None
+        node = node[segment]
+        if not isinstance(node, dict):
+            raise ConfigWriteError(
+                f"{path_so_far}: already a {type(node).__name__}, not a mapping -- "
+                f"refusing to operate on {section}.{key}"
+            )
+    leaf = segments[-1]
+    if leaf not in node:
+        return False, None
+    return True, node[leaf]

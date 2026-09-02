@@ -186,6 +186,16 @@ def test_pr1_provider_setting_and_all(tmp_path):
         "invocation_backend",
         "load_editable",
         "one_motion_enabled",
+        # MINOR-2 (code-gate review r1 2026-09-01): a validated,
+        # NON-mutating "is section.key set" read against the SAME
+        # round-trip write-path load `set_leaf`/`unset_leaf` use --
+        # `settings_leaf` above is deliberately lenient (fail-closed-
+        # silent on a malformed file); `present` raises `ConfigWriteError`
+        # on that same malformed shape instead, so `config_unset`'s
+        # pre-lock existence check refuses IDENTICALLY to `config_set`'s
+        # own write attempt rather than reporting "already unset"
+        # against a file `set` would refuse outright.
+        "present",
         "provider_setting",
         "provider_unknown_keys",
         "set_leaf",
