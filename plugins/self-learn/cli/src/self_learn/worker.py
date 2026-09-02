@@ -809,8 +809,9 @@ def _pid_alive(pid: int) -> bool:
 
 def coalesce_secs(home: Path | str | None = None) -> float:
     """U-settings Phase 1: resolves through the registry's ``worker.
-    coalesce_secs`` entry (env > config.yaml `worker.coalesce_secs` >
-    :data:`DEFAULT_COALESCE_SECS`) rather than reading
+    coalesce_secs`` entry (config.yaml `worker.coalesce_secs` > env >
+    :data:`DEFAULT_COALESCE_SECS` -- U-flip 2026-09-01, S-58: config
+    wins) rather than reading
     ``SELF_LEARN_COALESCE_SECS`` directly — `home` defaults to
     :func:`resolve_home` so every existing zero-arg call site (this
     module's own :func:`run`, and the tests that call it bare) is
@@ -857,8 +858,9 @@ def _timeout_secs(env_var: str, default: float) -> float:
 
 def invoke_timeout_secs(home: Path | str | None = None) -> float:
     """The batch invocation's timeout (§3.9): resolves through the
-    registry's ``worker.invoke_timeout_secs`` entry (env > config.yaml
-    `worker.invoke_timeout_secs` > :data:`INVOKE_TIMEOUT_SECS`). `home`
+    registry's ``worker.invoke_timeout_secs`` entry (config.yaml
+    `worker.invoke_timeout_secs` > env > :data:`INVOKE_TIMEOUT_SECS` --
+    U-flip 2026-09-01, S-58: config wins). `home`
     defaults to :func:`resolve_home`, so every existing zero-arg call
     site is unaffected."""
     value, _source = settings.resolve_setting(
@@ -869,8 +871,9 @@ def invoke_timeout_secs(home: Path | str | None = None) -> float:
 
 def repair_timeout_secs(home: Path | str | None = None) -> float:
     """The repair round's timeout (§3.9): resolves through the
-    registry's ``worker.repair_timeout_secs`` entry (env > config.yaml
-    `worker.repair_timeout_secs` > :data:`REPAIR_TIMEOUT_SECS`). `home`
+    registry's ``worker.repair_timeout_secs`` entry (config.yaml
+    `worker.repair_timeout_secs` > env > :data:`REPAIR_TIMEOUT_SECS` --
+    U-flip 2026-09-01, S-58: config wins). `home`
     defaults to :func:`resolve_home`, so every existing zero-arg call
     site is unaffected."""
     value, _source = settings.resolve_setting(
@@ -3077,11 +3080,11 @@ def _notifications_suppressed() -> bool:
     exercised opts back out via ``monkeypatch.delenv``.
 
     U-settings Phase 1: resolves through the registry's ``worker.
-    no_notify`` entry (env > config.yaml `worker.no_notify` > `False`)
-    rather than reading the env var directly — env still wins on every
-    call, so the two callers below (neither of which threads a `home`)
-    keep working unchanged; :func:`resolve_home` supplies the home for
-    the new config.yaml rung."""
+    no_notify`` entry (config.yaml `worker.no_notify` > env > `False` --
+    U-flip 2026-09-01, S-58: config wins) rather than reading the env
+    var directly — the two callers below (neither of which threads a
+    `home`) keep working unchanged since neither writes a config.yaml;
+    :func:`resolve_home` supplies the home for the config.yaml rung."""
     value, _source = settings.resolve_setting(resolve_home(), settings.by_name("worker.no_notify"))
     return bool(value)
 
@@ -3439,10 +3442,11 @@ def run(
                 result = RunResult(status="idle", eligible=0, suspects=suspects)
             else:
                 stage_on = _stage_enabled()  # §3.7
-                # U-settings Phase 1: env > config.yaml `worker.repair` >
-                # True — env still decides on its own (a garbage value
-                # now warns on stderr and falls back to True, same net
-                # outcome the old `!= "0"` check gave any non-"0" value).
+                # U-settings Phase 1 (config.yaml `worker.repair` > env >
+                # True -- U-flip 2026-09-01, S-58: config wins). A garbage
+                # value at either rung warns on stderr and falls through;
+                # the eventual fallback is True, same net outcome the old
+                # `!= "0"` env check gave any non-"0" value.
                 repairs_enabled, _repair_source = settings.resolve_setting(
                     home, settings.by_name("worker.repair")
                 )

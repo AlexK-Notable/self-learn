@@ -7,11 +7,32 @@ every other setting is env-only with no config fallback and no
 ``doctor`` visibility.
 
 This module generalizes the ONE pattern that already works --
-``provider.py``'s ``env > config.yaml > default`` precedence, with a
-source string on every resolved value (``Prov-1``, ``A-0``) -- rather
-than inventing a second mechanism. :func:`resolve_setting` reuses
-``provider.py``'s exact source vocabulary verbatim: ``"env:NAME"`` /
-``"config:section.key"`` / ``"default"``.
+``provider.py``'s per-resolved-value source string (``Prov-1``,
+``A-0``) -- rather than inventing a second mechanism.
+:func:`resolve_setting` reuses ``provider.py``'s exact source
+vocabulary verbatim: ``"env:NAME"`` / ``"config:section.key"`` /
+``"default"``.
+
+**Two precedence directions, on purpose (ruling: user, 2026-09-01,
+confirming their own 2026-07-19 ruling recorded in
+``docs/specs/self-learn/drafts/settings-surface-spec.md`` §1.2; see
+``docs/specs/self-learn/03-decisions.md`` S-58).** This registry's 20
+settings resolve **``config.yaml > explicit env var > code
+default``**: the committed config is the single source of truth, and
+an env var only fills a gap config.yaml leaves silent -- it never
+overrides a saved policy. This is the OPPOSITE direction from
+``provider.py``'s ``model_for()``/``_resolve_provider()`` and
+``invocation/registry.py``'s backend-selection chain, which stay
+**``env > config.yaml > default``** and are explicitly OUT OF SCOPE
+for this flip -- untouched, not an oversight. That second mechanism
+governs provider/model/backend selection: those are emergency rollback
+switches, and an operator must be able to override one from a live
+shell without waiting on a commit+sync round-trip. This registry's 20
+settings are ordinary operating policy, where the opposite trade holds:
+a synced ``config.yaml`` should beat a machine-local env pin, and a
+machine that needs a local exception expresses it in config or unsets
+the key. The two directions coexist on purpose -- do not "fix" the
+discrepancy by unifying them.
 
 **Scope discipline (Phase 1, root-cause fix, not a display layer).** A
 setting only gets a :class:`Setting` row here if some real call site was
@@ -157,32 +178,24 @@ def _parse_config_value(value: object, kind: Kind) -> object | None:
 
 
 def resolve_setting(home: Path | str, setting: Setting) -> tuple[object, str]:
-    """The registry's ONE resolution function (U-settings Phase 1 §2):
-    env, then config.yaml, then the built-in default -- ``provider.py``'s
-    exact vocabulary. Fail-closed at both live rungs (§3): a value that
-    is present but does not parse as `setting.kind`, or that `validate`
-    rejects, warns on stderr naming the key and the offending raw value
-    and resolves straight to the DEFAULT -- it does NOT fall through to
-    the next rung, matching ``provider._resolve_provider``'s precedent
-    for an unknown `SELF_LEARN_PROVIDER` value (a malformed HIGHER-
-    precedence answer is a mistake to report, never a cue to keep
-    guessing at a lower one).
+    """The registry's ONE resolution function (U-settings Phase 1 §2,
+    flipped 2026-09-01 -- module docstring's "Two precedence
+    directions, on purpose"): config.yaml, then env, then the built-in
+    default -- ``provider.py``'s exact source-string vocabulary, just
+    the opposite rung ORDER from that mechanism.
+
+    Fail-closed PER RUNG, not per resolution (the spec's §1.2 boundary
+    pin, carried through the flip): a value that is present at a rung
+    but does not parse as `setting.kind`, or that `validate` rejects,
+    warns on stderr naming the key and the offending raw value and
+    FALLS THROUGH to the next rung -- it does not dead-end at the
+    default. A typo in config.yaml must never brick a role the env var
+    (or the default) would have served; a malformed env value still
+    falls through to the default, same as before the flip since env is
+    now the last LIVE rung.
 
     No caching: every call re-reads ``os.environ`` and ``config.yaml``
     fresh (module docstring)."""
-    raw = os.environ.get(setting.env_var)
-    if raw:
-        parsed = _parse_env_value(raw, setting.kind)
-        if parsed is not None and setting.validate is not None:
-            parsed = setting.validate(parsed)
-        if parsed is not None:
-            return parsed, f"env:{setting.env_var}"
-        _warn(
-            f"{setting.env_var}={raw!r} is not a valid {setting.kind} for "
-            f"{setting.name} — using the default"
-        )
-        return _default_value(setting), "default"
-
     if setting.config_section is not None:
         assert setting.config_key is not None  # invariant: paired at registration
         found = config.settings_leaf(home, setting.config_section, setting.config_key)
@@ -195,9 +208,23 @@ def resolve_setting(home: Path | str, setting: Setting) -> tuple[object, str]:
                 return parsed, f"config:{setting.config_section}.{key}"
             _warn(
                 f"config.yaml {setting.config_section}.{key}={value!r} is not a "
-                f"valid {setting.kind} for {setting.name} — using the default"
+                f"valid {setting.kind} for {setting.name} — falling through to env/default"
             )
-            return _default_value(setting), "default"
+            # NOT a return: falls through to the env rung below, per the
+            # spec's §1.2 boundary pin -- a malformed config value must
+            # not dead-end a role the env var (or default) would serve.
+
+    raw = os.environ.get(setting.env_var)
+    if raw:
+        parsed = _parse_env_value(raw, setting.kind)
+        if parsed is not None and setting.validate is not None:
+            parsed = setting.validate(parsed)
+        if parsed is not None:
+            return parsed, f"env:{setting.env_var}"
+        _warn(
+            f"{setting.env_var}={raw!r} is not a valid {setting.kind} for "
+            f"{setting.name} — using the default"
+        )
 
     return _default_value(setting), "default"
 

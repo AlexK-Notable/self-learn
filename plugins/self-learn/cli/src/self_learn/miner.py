@@ -27,8 +27,11 @@ pane reads the same file.
 Kill switches: ``SELF_LEARN_MINER=0`` disables runs entirely;
 ``SELF_LEARN_MINER_AUTOKICK=0`` disables only the verb watchdog (the
 test suite sets it globally in conftest). U-settings Phase 1: both now
-also resolve a ``config.yaml`` rung below the env var (``miner.enabled``,
-``miner.autokick`` — see ``settings.py``'s registry); env still wins.
+also resolve a ``config.yaml`` rung (``miner.enabled``, ``miner.
+autokick`` — see ``settings.py``'s registry); config.yaml wins over the
+env var (U-flip 2026-09-01, S-58) — a saved ``miner.enabled: false``
+overrides a machine-local env var, and a local exception must be
+expressed in config or by unsetting the key.
 """
 
 from __future__ import annotations
@@ -175,8 +178,8 @@ def cap_for(sessions_scanned: int, *, home: Path | str | None = None) -> int:
 
 def pending_gate(*, home: Path | str | None = None) -> int:
     """U-settings Phase 1: resolves through the registry's `miner.
-    pending_gate` entry (env > config.yaml `miner.pending_gate` >
-    :data:`DEFAULT_PENDING_GATE`)."""
+    pending_gate` entry (config.yaml `miner.pending_gate` > env >
+    :data:`DEFAULT_PENDING_GATE` -- U-flip 2026-09-01, S-58: config wins)."""
     value, _source = settings.resolve_setting(
         home if home is not None else resolve_home(), settings.by_name("miner.pending_gate")
     )
@@ -199,8 +202,8 @@ def reader_timeout_secs() -> float:
 
 def transcripts_root() -> Path:
     """U-settings Phase 1: resolves through the registry's `miner.
-    transcripts_dir` entry (env > config.yaml `miner.transcripts_dir` >
-    `"~/.claude/projects"`); neither caller (:func:`initialize_cursors`,
+    transcripts_dir` entry (config.yaml `miner.transcripts_dir` > env >
+    `"~/.claude/projects"` -- U-flip 2026-09-01, S-58: config wins); neither caller (:func:`initialize_cursors`,
     :func:`walk`) threads a `home`, so this falls back to
     :func:`resolve_home` the same way :func:`telemetry.actor` does."""
     raw, _source = settings.resolve_setting(resolve_home(), settings.by_name("miner.transcripts_dir"))
@@ -1786,7 +1789,8 @@ def maybe_kick(home: Path | str, *, no_push: bool = False) -> str:
     no live daemon, every leg below is byte-identical to before this
     unit."""
     # U-settings Phase 1: both switches resolve through the registry
-    # (`miner.enabled` / `miner.autokick`, env > config.yaml > `True`).
+    # (`miner.enabled` / `miner.autokick`, config.yaml > env > `True` --
+    # U-flip 2026-09-01, S-58: config wins).
     enabled, _e_source = settings.resolve_setting(home, settings.by_name("miner.enabled"))
     autokick, _a_source = settings.resolve_setting(home, settings.by_name("miner.autokick"))
     if not enabled or not autokick:

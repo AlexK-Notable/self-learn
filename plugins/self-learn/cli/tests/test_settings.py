@@ -1,6 +1,8 @@
 """U-settings Phase 1 — the settings registry (``settings.py``): the
-registry's own resolution mechanics (env > config.yaml > default,
-fail-closed on a malformed value, no caching), the registry-wide
+registry's own resolution mechanics (config.yaml > env > default —
+flipped 2026-09-01, S-58; see `settings.py`'s module docstring "Two
+precedence directions, on purpose" — fail-closed PER RUNG with
+fall-through on a malformed value, no caching), the registry-wide
 structural invariants, the `doctor settings` verb, and one consumer-
 level test per rewired call site proving the config.yaml rung actually
 reaches real production code, not just `resolve_setting` in isolation.
@@ -169,11 +171,14 @@ def test_config_beats_default(name, tmp_path):
 
 
 @pytest.mark.parametrize("name", _ALL_NAMES)
-def test_env_beats_config(name, tmp_path, monkeypatch):
-    """The env value and the config value are chosen to be DIFFERENT
-    (opposite booleans; 111 vs 999 for numerics; distinct strings) so a
-    build that silently read config instead of env would fail this,
-    not pass it by coincidence."""
+def test_config_beats_env(name, tmp_path, monkeypatch):
+    """U-flip (2026-09-01, S-58): config.yaml now outranks an explicit
+    env var for every registry entry — the opposite of `provider.py`'s
+    own env-first chain (deliberately; see `settings.py`'s module
+    docstring). The env value and the config value are chosen to be
+    DIFFERENT (opposite booleans; 111 vs 999 for numerics; distinct
+    strings) so a build that silently read env instead of config would
+    fail this, not pass it by coincidence."""
     home = tmp_path / "home"
     setting = settings.by_name(name)
     default = _default_value(setting)
@@ -188,8 +193,8 @@ def test_env_beats_config(name, tmp_path, monkeypatch):
     _write_config(home, setting.config_section, setting.config_key, config_value)
     monkeypatch.setenv(setting.env_var, _env_string(env_value))
     value, source = settings.resolve_setting(home, setting)
-    assert value == env_value
-    assert source == f"env:{setting.env_var}"
+    assert value == config_value
+    assert source == f"config:{setting.config_section}.{setting.config_key}"
 
 
 @pytest.mark.parametrize("name", _NUMERIC_OR_BOOL_NAMES)
@@ -209,6 +214,10 @@ def test_malformed_env_warns_and_falls_back(name, tmp_path, monkeypatch, capsys)
 
 @pytest.mark.parametrize("name", _NUMERIC_OR_BOOL_NAMES)
 def test_malformed_config_warns_and_falls_back(name, tmp_path, capsys):
+    """No env var set — the malformed config value falls through the
+    (absent) env rung straight to the default. See
+    `test_malformed_config_falls_through_to_env` below for the leg
+    where a valid env var IS there to catch the fall-through."""
     home = tmp_path / "home"
     setting = settings.by_name(name)
     _write_config(home, setting.config_section, setting.config_key, "not-a-real-value")
@@ -218,6 +227,51 @@ def test_malformed_config_warns_and_falls_back(name, tmp_path, capsys):
     err = capsys.readouterr().err
     assert setting.config_section in err
     assert setting.name in err
+
+
+@pytest.mark.parametrize("name", _NUMERIC_OR_BOOL_NAMES)
+def test_malformed_config_falls_through_to_env(name, tmp_path, monkeypatch, capsys):
+    """The new leg the U-flip adds (S-58, spec §1.2's boundary pin: "a
+    typo in config.yaml can never brick a role a unit's env var...
+    would have served"). A malformed config value must NOT dead-end at
+    the default while a perfectly valid env var sits one rung down —
+    resolution continues past the bad rung to the good one, still
+    warning exactly once (for the config rung only; the env rung never
+    fails, so it never warns)."""
+    home = tmp_path / "home"
+    setting = settings.by_name(name)
+    env_value = _valid_override(setting)
+    _write_config(home, setting.config_section, setting.config_key, "not-a-real-value")
+    monkeypatch.setenv(setting.env_var, _env_string(env_value))
+    value, source = settings.resolve_setting(home, setting)
+    assert value == env_value
+    assert source == f"env:{setting.env_var}"
+    err = capsys.readouterr().err
+    assert setting.config_section in err  # the config-rung warn still fires
+    assert setting.name in err
+    assert setting.env_var not in err  # the env rung resolved cleanly -- no second warn
+
+
+@pytest.mark.parametrize("name", _NUMERIC_OR_BOOL_NAMES)
+def test_malformed_config_and_malformed_env_both_warn_then_default(name, tmp_path, monkeypatch, capsys):
+    """Fail-closed is PER LAYER, not per resolution (spec §1.2): when
+    BOTH rungs are malformed, each warns independently and the final
+    answer is still the default — two warn lines, one per bad rung,
+    never a swallowed second failure."""
+    home = tmp_path / "home"
+    setting = settings.by_name(name)
+    _write_config(home, setting.config_section, setting.config_key, "not-a-real-config-value")
+    monkeypatch.setenv(setting.env_var, "not-a-real-env-value")
+    value, source = settings.resolve_setting(home, setting)
+    assert value == _default_value(setting)
+    assert source == "default"
+    err = capsys.readouterr().err
+    assert "not-a-real-config-value" in err
+    assert "not-a-real-env-value" in err
+    assert setting.config_section in err  # the config-rung warn fired
+    assert setting.env_var in err  # the env-rung warn ALSO fired -- not swallowed
+    lines = [line for line in err.splitlines() if line.strip()]
+    assert len(lines) == 2  # one warn line per malformed rung, no more, no fewer
 
 
 def test_empty_env_value_falls_through_not_treated_as_present(tmp_path):
