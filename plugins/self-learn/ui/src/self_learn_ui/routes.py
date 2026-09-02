@@ -1292,6 +1292,109 @@ def report_page(request: Request) -> HTMLResponse:
     )
 
 
+# ---------------------------------------------------------------- settings
+#
+# U-settings Phase 2 (the settings page, sitting on the Phase 1 registry):
+# one table per section (worker/miner/analyst/sdk/serve/ledger), rendering
+# `self-learn config get --json`'s own rows verbatim -- 09 §3's rule for
+# this app applies here exactly as it does to `/report`: no derived
+# numbers this module computes itself, only what the CLI already
+# resolved. Tier A rows POST to `/settings/set`, which builds the CLI's
+# own argv and runs it through the SAME `VerbRunner` seam every other
+# write in this app uses (never a second mutation path).
+
+#: The registry's own section order (`settings.py`'s `REGISTRY` literal,
+#: worker -> miner -> analyst -> sdk -> serve -> ledger) -- the page reads
+#: in the same order a human reading the registry source would, never
+#: re-sorted alphabetically.
+_SETTINGS_SECTION_ORDER = ("worker", "miner", "analyst", "sdk", "serve", "ledger")
+
+
+def _setting_section(name: str) -> str:
+    """The top-level `config.yaml` section a dotted setting name lives
+    under -- `"worker.no_notify"` -> `"worker"`, `"sdk.max_turns.worker"`
+    -> `"sdk"`. Mirrors `settings.Setting.config_section` without
+    needing the CLI package's registry object here (`config get --json`
+    already gives every row's plain fields; this is a display-grouping
+    derivation over the `name` string it returns, not a second source of
+    truth for what the section actually is)."""
+    return name.split(".", 1)[0]
+
+
+def _group_settings(rows: list[dict]) -> list[dict[str, Any]]:
+    """`config get --json`'s flat row list, grouped by section in the
+    registry's own order (`_SETTINGS_SECTION_ORDER`) -- a section with no
+    rows (should not happen against the real registry, but a partial/
+    filtered read must not crash the page) is simply omitted."""
+    by_section: dict[str, list[dict]] = {}
+    for row in rows:
+        by_section.setdefault(_setting_section(row["name"]), []).append(row)
+    return [
+        {"section": section, "rows": by_section[section]}
+        for section in _SETTINGS_SECTION_ORDER
+        if by_section.get(section)
+    ]
+
+
+@router.get("/settings", response_class=HTMLResponse)
+def settings_page(request: Request) -> HTMLResponse:
+    home = _home(request)
+    settings_read = ledger.settings(home)
+    groups = _group_settings(settings_read.data) if settings_read.ok and settings_read.data else []
+    return _render(
+        request,
+        "settings.html",
+        {
+            "groups": groups,
+            "settings_error": settings_read.error,
+        },
+    )
+
+
+@router.post("/settings/set", response_class=HTMLResponse)
+async def settings_set(
+    request: Request, name: str = Form(...), value: str = Form(...)
+) -> Response:
+    """Builds `["config", "set", NAME, VALUE, "--json"]` verbatim and
+    runs it through the runner seam -- never a second mutation path.
+
+    Server-side tier enforcement (Y-17 pattern: posted bits only ever
+    WEAKEN what runs, never strengthen it): the template renders no
+    editor for a tier-C row, but that alone is not enforcement -- a
+    forged POST for `worker.autokick`/`miner.autokick` (the spawn-
+    containment kill switches, `settings.py`'s own tier ruling) must
+    refuse here too, read fresh from the CLI's own `tier` field for the
+    posted name, never a name list hardcoded in this module (the one
+    place a drifted copy could quietly re-open the boundary)."""
+    home = _home(request)
+    settings_read = ledger.settings(home)
+    if not settings_read.ok or not settings_read.data:
+        return HTMLResponse(settings_read.error or "settings unavailable", status_code=503)
+    current = next((r for r in settings_read.data if r["name"] == name), None)
+    if current is None:
+        return HTMLResponse(f"unknown setting {name!r}", status_code=404)
+    if current["tier"] != "A":
+        return HTMLResponse(
+            f"{name} is tier C (a boundary, not a preference) -- read-only in "
+            "the UI; set it with the CLI verb instead",
+            status_code=400,
+        )
+
+    runner = request.app.state.runner
+    result = await runner.run(["config", "set", name, value, "--json"])
+    if result.ok and result.evidence is not None:
+        row = result.evidence
+    else:
+        # The verb refused (a malformed value, a dirty config.yaml, ...):
+        # re-render the row from what this handler already read, plus
+        # the verb's own stderr -- the row must still render SOMETHING
+        # (never a blank swap), never the client's unvalidated posted
+        # value.
+        row = dict(current)
+        row["error"] = result.stderr or f"self-learn config set {name} failed"
+    return _render(request, "partials/settings_row.html", {"row": row})
+
+
 # ------------------------------------------------------------------ cluster
 
 

@@ -77,6 +77,7 @@ __all__ = [
     "read_registry",
     "report",
     "sentinel_mtime",
+    "settings",
     "status",
     "watch_ledger",
     "watch_paths",
@@ -173,6 +174,16 @@ def report(home: Path, *, env: dict[str, str] | None = None) -> CliRead:
 
 def mine_status(home: Path, *, env: dict[str, str] | None = None) -> CliRead:
     return _invoke_json(["mine", "status", "--json"], home=home, env=env)
+
+
+def settings(home: Path, *, env: dict[str, str] | None = None) -> CliRead:
+    """U-settings Phase 2 (the settings page): every registry entry's
+    resolved value/source/tier, verbatim from ``self-learn config get
+    --json`` -- the CLI's own computed shape (09 §3's rule for this
+    module: never re-derived here). ``data`` is a list of row dicts
+    (``settings.setting_row``'s shape); a CLI failure comes back as
+    ``CliRead(data=None, error=...)``, same as every other read here."""
+    return _invoke_json(["config", "get", "--json"], home=home, env=env)
 
 
 def commit_drift_dry_run(

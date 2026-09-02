@@ -1,0 +1,54 @@
+{# One settings-registry row (U-settings Phase 2). Rendered both inline
+   (settings.html's per-section loop, `row` from the loop var) and as the
+   htmx swap target of `POST /settings/set` (routes.py passes `row`
+   explicitly) -- the WHOLE `<tr>` is the swap unit so a warn banner that
+   appears or disappears on save is never stranded in a sibling element
+   the swap didn't touch.
+   CSP: no inline style/script. No [data-key-action]/[data-row] anywhere
+   in this partial -- the settings page adds no keyboard binding
+   (dispatch pin). #}
+{% set dom_name = row.name | replace(".", "-") %}
+{% set source_kind = row.source.split(":")[0] %}
+{% set editable = row.tier == "A" %}
+<tr id="setting-row-{{ dom_name }}" class="settings-row">
+  <td class="settings-name" title="{{ row.description }}">{{ row.name }}</td>
+  <td class="settings-value">
+    {% if editable %}
+    <form hx-post="/settings/set" hx-target="#setting-row-{{ dom_name }}"
+          hx-swap="outerHTML" hx-disabled-elt="find button">
+      <input type="hidden" name="name" value="{{ row.name }}">
+      {% if row.kind == "bool" %}
+      <select name="value">
+        <option value="1" {% if row.value %}selected{% endif %}>on</option>
+        <option value="0" {% if not row.value %}selected{% endif %}>off</option>
+      </select>
+      {% elif row.kind == "int" %}
+      <input type="number" step="1" name="value" value="{{ row.value if row.value is not none else '' }}">
+      {% elif row.kind == "float" %}
+      <input type="number" step="any" name="value" value="{{ row.value if row.value is not none else '' }}">
+      {% else %}
+      <input type="text" name="value" value="{{ row.value if row.value is not none else '' }}">
+      {% endif %}
+      <button type="submit">Save</button>
+    </form>
+    {% if row.error %}
+    <p class="error-strip settings-row-error" role="alert" data-setting-error>{{ row.error }}</p>
+    {% endif %}
+    {% else %}
+    <span class="settings-value-readonly">{{ row.value }}</span>
+    {# Y-11 (09 §11): no runnable `self-learn …` command line here --
+       names the escape hatch (the CLI's own config verb) without
+       spelling it as an instruction to type. #}
+    <span class="settings-tier-c-note"
+          title="a boundary, not a preference -- changeable only through the CLI's own config verb, outside this page">read-only</span>
+    {% endif %}
+  </td>
+  <td class="settings-source">
+    <span class="badge badge-source-{{ source_kind }}">{{ source_kind }}</span>
+    {% if row.warn %}
+    <p class="banner banner-warning settings-warn" role="alert">{{ row.warn }}</p>
+    {% endif %}
+  </td>
+  <td class="settings-kind">{{ row.kind }}</td>
+  <td class="settings-default">{{ row.default if row.default is not none else "—" }}</td>
+</tr>

@@ -596,6 +596,21 @@ _ARGV_FOR = {
     # --dry-run so this held-lock probe never depends on there being an
     # actual empty bucket to remove in the fixture.
     "_cmd_canary": None,  # writes canaries.json (cache-local), not the ledger
+    "_cmd_config": [
+        # U-settings Phase 2: `get` never mutates (ungated, like `doctor`);
+        # `set`/`unset` ARE ledger-mutating and must take the lock -- the
+        # bool value is "1" (the registry's own env-rung spelling,
+        # `_parse_env_value`'s vocabulary, NOT config.yaml's "true"/
+        # "false" -- `config set` parses argv strings with that same
+        # function).
+        ["config", "get"],
+        ["config", "set", "worker.no_notify", "1"],
+        ["config", "unset", "worker.no_notify"],
+    ],
+    "_cmd_config_get": None,  # driven through _cmd_config
+    "_cmd_config_inner": None,  # driven through _cmd_config
+    "_cmd_config_set": None,  # driven through _cmd_config
+    "_cmd_config_unset": None,  # driven through _cmd_config
     "_cmd_doctor": [["doctor", "invocation"]],
     "_cmd_doctor_settings": None,  # driven through _cmd_doctor (U-settings
     # Phase 1's `doctor settings` verb) -- same precedent as
@@ -734,6 +749,16 @@ class TestEveryCommandSurvivesAHeldLock:
             _project_record("lrn-eeee0003"),
             project_path=env.host,
         )
+        if cmd == "_cmd_config" and argv[:2] == ["config", "unset"]:
+            # U-settings Phase 2: `config_unset`'s pre-lock idempotent
+            # check (`config.settings_leaf` -> None when the key is
+            # already absent) returns BEFORE ever opening `commit_lock`
+            # -- against a fresh ledger with no config.yaml at all, this
+            # case would pass vacuously, the same `_cmd_init`-class gap
+            # the comment a few lines below names for a different
+            # surface. Seed the key it is about to remove, committed, so
+            # this case actually reaches the lock.
+            (home / "config.yaml").write_text("worker:\n  no_notify: true\n", encoding="utf-8")
         commit_all_local(home)
         clean_before = git(home, "status", "--porcelain").stdout
 

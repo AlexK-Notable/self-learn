@@ -673,6 +673,36 @@ def _build_parser() -> argparse.ArgumentParser:
     # dispatch below branches on `doctor_command` explicitly.
     doctor_p.set_defaults(doctor_command="invocation")
 
+    config_p = sub.add_parser(
+        "config",
+        help="the U-settings registry's write path (Phase 2): "
+        "get | set | unset — `doctor settings` stays the read-only "
+        "diagnostic view of the same registry",
+    )
+    config_sub = config_p.add_subparsers(dest="config_command", metavar="<verb>")
+    cget = config_sub.add_parser(
+        "get",
+        help="print every registry entry as `name = value (source)`, or "
+        "just one with NAME",
+    )
+    cget.add_argument("name", nargs="?", metavar="NAME", default=None)
+    cget.add_argument("--json", action="store_true", dest="as_json")
+    cset = config_sub.add_parser(
+        "set",
+        help="write NAME=VALUE to config.yaml (validated through the "
+        "registry's own parser), commit it, and print the resolved "
+        "value + source afterward",
+    )
+    cset.add_argument("name", metavar="NAME")
+    cset.add_argument("value", metavar="VALUE")
+    cset.add_argument("--note", metavar="TEXT", default=None)
+    cset.add_argument("--json", action="store_true", dest="as_json")
+    cunset = config_sub.add_parser(
+        "unset", help="remove NAME's config.yaml key and commit"
+    )
+    cunset.add_argument("name", metavar="NAME")
+    cunset.add_argument("--note", metavar="TEXT", default=None)
+
     rec = sub.add_parser(
         "reconcile",
         help="commit ledger records/proposals a producer left uncommitted",
@@ -1172,6 +1202,99 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     for field, value in provider._handoff_fields(home, rows):
         print(f"doctor: handoff: {field} = {value}")
     return 1 if failed else EXIT_OK
+
+
+def _print_setting_row(row: dict, *, prefix: str = "") -> None:
+    """The one non-JSON renderer for a `settings.setting_row` dict --
+    shared by `config get` and `config set` so the printed shape never
+    drifts between the two verbs. Mirrors `doctor settings`'s own
+    `name = value (source)` line; the WARN, when present, goes to
+    stderr like every other WARN this CLI prints, verbatim (never
+    paraphrased — the settings page reuses this same `warn` string)."""
+    print(f"{prefix}{row['name']} = {row['value']!r} ({row['source']})")
+    if row["warn"]:
+        print(f"self-learn: settings — {row['warn']}", file=sys.stderr)
+
+
+def _cmd_config_get(args: argparse.Namespace, home: Path) -> int:
+    if args.name is not None:
+        try:
+            target = settings.by_name(args.name)
+        except KeyError:
+            print(f"self-learn config get: unknown setting {args.name!r}", file=sys.stderr)
+            return EXIT_USAGE
+        rows = [settings.setting_row(home, target)]
+    else:
+        rows = [settings.setting_row(home, s) for s in settings.REGISTRY]
+    if args.as_json:
+        print(json.dumps(rows))
+        return EXIT_OK
+    for row in rows:
+        _print_setting_row(row)
+    return EXIT_OK
+
+
+def _cmd_config_set(args: argparse.Namespace, home: Path) -> int:
+    setting = settings.config_set(home, args.name, args.value, note=args.note)
+    row = settings.setting_row(home, setting)
+    if args.as_json:
+        print(json.dumps(row))
+        return EXIT_OK
+    _print_setting_row(row, prefix="config set: ")
+    return EXIT_OK
+
+
+def _cmd_config_unset(args: argparse.Namespace, home: Path) -> int:
+    setting, removed = settings.config_unset(home, args.name, note=args.note)
+    if removed:
+        print(f"config unset: {setting.name}")
+    else:
+        print(f"config unset: {setting.name} — already unset, nothing to remove")
+    return EXIT_OK
+
+
+def _cmd_config_inner(args: argparse.Namespace, home: Path) -> int:
+    if args.config_command == "get":
+        return _cmd_config_get(args, home)
+    if args.config_command == "set":
+        return _cmd_config_set(args, home)
+    if args.config_command == "unset":
+        return _cmd_config_unset(args, home)
+    print("usage: self-learn config get [NAME] | set NAME VALUE | unset NAME", file=sys.stderr)
+    return EXIT_USAGE
+
+
+def _cmd_config(args: argparse.Namespace) -> int:
+    """The `config` surface (U-settings Phase 2). `get` is read-only,
+    ungated, exactly like `doctor` (`Doc-c`'s reasoning: it must work on
+    a pristine home with no config.yaml at all). `set`/`unset` are
+    ledger-mutating and home-gated like `host add`/`rebind`/`remove`
+    (`_cmd_host`'s own precedent) — same two documented git failure
+    codes (`EXIT_HALF_WRITTEN`/`EXIT_GIT_FAILED`), and the settings-
+    registry refusal family (`UnknownSettingError` -> `EXIT_USAGE`,
+    `InvalidSettingValueError` -> 1) alongside `verbs.VerbError`
+    (`DirtyTargetError`'s own home, raised via a lazy import inside
+    `settings.py` to avoid a module cycle — see its docstring) for the
+    dirty-config-yaml refusal."""
+    home = resolve_home()
+    if args.config_command in ("set", "unset") and (code := _home_gate(home)) is not None:
+        return code
+    try:
+        return _cmd_config_inner(args, home)
+    except settings.UnknownSettingError as exc:
+        print(f"self-learn config {args.config_command}: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    except settings.InvalidSettingValueError as exc:
+        print(f"self-learn config {args.config_command}: {exc}", file=sys.stderr)
+        return 1
+    except verbs.VerbError as exc:  # DirtyTargetError, exit_code=1
+        print(f"self-learn config {args.config_command}: {exc}", file=sys.stderr)
+        return exc.exit_code
+    except gitops.HalfWrittenError as exc:
+        return _report_half_written(f"config {args.config_command}", exc)
+    except gitops.GitOpsError as exc:  # lock timeout / wedged git: nothing written
+        print(f"self-learn config {args.config_command}: {exc}", file=sys.stderr)
+        return EXIT_GIT_FAILED
 
 
 def _kick_after_capture(*, no_push: bool = False) -> None:
@@ -2704,6 +2827,9 @@ def _main(argv: list[str] | None = None) -> int:
 
     if args.command == "doctor":
         return _cmd_doctor(args)
+
+    if args.command == "config":
+        return _cmd_config(args)
 
     if args.command == "reconcile":
         return _cmd_reconcile(args)

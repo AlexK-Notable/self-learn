@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}self-learn — settings{% endblock %}
+{% block page_kind %}settings{% endblock %}
+
+{# U-target: keyboard dispatch is scoped per page kind; this page adds no
+   [data-key-action] anywhere in it, so it gains no new global binding --
+   deliberate, not an oversight (dispatch pin). #}
+
+{% block status_strip %}
+<div class="status-strip">
+  <span class="brand">self-learn</span>
+  <a href="/" title="Back to the front page">&larr; Front</a>
+  <span class="status-item">settings</span>
+</div>
+{% endblock %}
+
+{% block content %}
+{# Y-11 (09 §11, template-source guard test_terminal_command_text_only_
+   in_the_y11_exempt_surfaces): no surface text here spells out a
+   runnable `self-learn …` command line — this page names WHAT verb
+   applies (config set/unset), never an imperative "type this". #}
+<p class="settings-intro">Every operator setting this machine reads, its
+current value, and where that value comes from — an active
+<strong>override</strong>, your committed <code>config.yaml</code>, an
+ambient <strong>environment</strong> variable, or the built-in
+<strong>default</strong>. Saving a row writes and commits
+<code>config.yaml</code> through the same config verb the CLI uses.</p>
+
+{% if settings_error %}
+<div class="error-strip" role="alert"><p>{{ settings_error }}</p></div>
+{% endif %}
+
+{% for group in groups %}
+<section aria-label="{{ group.section }} settings">
+  <h2>{{ group.section }}</h2>
+  <table class="settings-table">
+    <thead>
+      <tr>
+        <th>setting</th>
+        <th>value</th>
+        <th>source</th>
+        <th>kind</th>
+        <th>default</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in group.rows %}
+      {% include "partials/settings_row.html" %}
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endfor %}
+{% endblock %}

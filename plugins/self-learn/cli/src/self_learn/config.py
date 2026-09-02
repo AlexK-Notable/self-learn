@@ -42,23 +42,30 @@ policy decision).
 
 from __future__ import annotations
 
+import io
 import sys
 from pathlib import Path
 
 from ruamel.yaml import YAML
+from ruamel.yaml.comments import CommentedMap
 from ruamel.yaml.error import YAMLError
 
 __all__ = [
     "CONFIG_BASENAME",
     "PROVIDER_KEYS",
+    "ConfigWriteError",
     "config_path",
+    "dump_editable",
     "effective_default_mode",
     "invocation_backend",
+    "load_editable",
     "one_motion_enabled",
     "provider_setting",
     "provider_unknown_keys",
+    "set_leaf",
     "settings_leaf",
     "settings_unknown_keys",
+    "unset_leaf",
 ]
 
 CONFIG_BASENAME = "config.yaml"
@@ -431,3 +438,136 @@ def effective_default_mode(home: Path | str) -> str:
         f"'plain' or 'git', got {value!r}; defaulting to git"
     )
     return "git"
+
+
+# ===================================================================== #
+# U-settings Phase 2 -- the settings page's WRITE path. Every reader
+# above (`settings_leaf` included) loads with `YAML(typ="safe")`: that
+# stays the security boundary, strict, no arbitrary tag construction
+# (this file's own module docstring). A WRITE needs the round-trip
+# type instead, so the operator's own comments and key ordering survive
+# an edit -- `hosts.py`'s `_yaml()`/`save_hosts` is the model this
+# mirrors, generalized over an arbitrary section the way `settings_leaf`
+# already generalizes the READ side over `provider_setting`'s one
+# section.
+# ===================================================================== #
+
+
+class ConfigWriteError(Exception):
+    """A `config.yaml` write could not proceed without either clobbering
+    operator content it cannot safely merge past (a path segment that is
+    already a scalar, not a mapping) or writing over a top level that
+    is not a mapping at all. Never raised by a READER above -- those
+    stay fail-closed-to-default; a WRITE must refuse loudly instead,
+    the same asymmetry `hosts.HostsError` already draws for hosts.yaml."""
+
+
+def _rt_yaml() -> YAML:
+    y = YAML(typ="rt")
+    y.default_flow_style = False
+    return y
+
+
+def load_editable(home: Path | str) -> CommentedMap:
+    """Round-trip load of `config.yaml` for a WRITE. A missing file (or
+    an empty one) loads as a fresh, empty mapping -- `config.yaml` is
+    created on first write, same as `hosts.yaml` is not required to
+    exist before `host add`'s first call. Raises :class:`ConfigWriteError`
+    on a non-mapping top level (a malformed file a WRITE must not paper
+    over silently, unlike the fail-closed-to-default readers above)."""
+    path = config_path(home)
+    if not path.is_file():
+        return CommentedMap()
+    try:
+        data = _rt_yaml().load(path.read_text(encoding="utf-8"))
+    except (YAMLError, OSError, UnicodeDecodeError) as exc:
+        raise ConfigWriteError(f"{path} is unparseable ({exc}) -- refusing to write over it") from exc
+    if data is None:
+        return CommentedMap()
+    if not isinstance(data, dict):
+        raise ConfigWriteError(
+            f"{path} must be a YAML mapping, got {type(data).__name__} -- refusing to write over it"
+        )
+    return data
+
+
+def dump_editable(home: Path | str, data: CommentedMap) -> Path:
+    """Serialize `data` back to `config.yaml`, round-trip (comments,
+    key order, and every untouched key survive). Returns the path
+    written -- the caller's `gitops.stage`/`commit` pathspec."""
+    path = config_path(home)
+    buf = io.StringIO()
+    _rt_yaml().dump(data, buf)
+    path.write_text(buf.getvalue(), encoding="utf-8")
+    return path
+
+
+def set_leaf(home: Path | str, section: str, key: str, value: object) -> Path:
+    """Write `value` at `section.key` (dotted `key` walks/creates nested
+    maps, e.g. `sdk`/`max_turns.worker` -> `sdk: {max_turns: {worker:
+    ...}}`) preserving every other key and comment. A path segment that
+    already holds a non-mapping value (e.g. `sdk: 5` in the file, mid-
+    walk toward `sdk.max_turns.worker`) REFUSES with
+    :class:`ConfigWriteError` rather than clobbering it -- the write-path
+    counterpart to `settings_leaf`'s own "must be a mapping" warn, made
+    loud instead of fail-closed-silent because a write, unlike a read,
+    has no safe default to fall back to."""
+    data = load_editable(home)
+    node: object = data
+    if section not in node or node[section] is None:
+        node[section] = CommentedMap()
+    node = node[section]
+    if not isinstance(node, dict):
+        raise ConfigWriteError(
+            f"{section}: already a {type(node).__name__}, not a mapping -- "
+            f"refusing to write {section}.{key} over it"
+        )
+    segments = key.split(".")
+    path_so_far = section
+    for segment in segments[:-1]:
+        path_so_far = f"{path_so_far}.{segment}"
+        if segment not in node or node[segment] is None:
+            node[segment] = CommentedMap()
+        node = node[segment]
+        if not isinstance(node, dict):
+            raise ConfigWriteError(
+                f"{path_so_far}: already a {type(node).__name__}, not a mapping -- "
+                f"refusing to write {section}.{key} over it"
+            )
+    node[segments[-1]] = value
+    return dump_editable(home, data)
+
+
+def unset_leaf(home: Path | str, section: str, key: str) -> bool:
+    """Remove `section.key`, pruning now-empty nested maps upward --
+    including `section` itself when it becomes empty. Returns `True` iff
+    something was actually removed; a key that is already absent (or
+    unreachable through a non-mapping path segment) is a silent no-op
+    (`False`), never an error -- `unset` of an already-unset key stays
+    idempotent, same posture as `host_add`'s already-registered leg."""
+    data = load_editable(home)
+    if section not in data or not isinstance(data[section], dict):
+        return False
+    segments = key.split(".")
+    # `chain[i]` = (dict, key-within-that-dict) walking DOWN toward the
+    # leaf's own parent -- kept so the prune-upward pass below can climb
+    # back out by exact key, not by re-deriving a path from `key`.
+    chain: list[tuple[dict, str]] = [(data, section)]
+    node: dict = data[section]
+    for segment in segments[:-1]:
+        if segment not in node or not isinstance(node[segment], dict):
+            return False
+        chain.append((node, segment))
+        node = node[segment]
+    leaf = segments[-1]
+    if leaf not in node:
+        return False
+    del node[leaf]
+    current: dict = node
+    for parent, at_key in reversed(chain):
+        if len(current) > 0:
+            break
+        del parent[at_key]
+        current = parent
+    dump_editable(home, data)
+    return True

@@ -1382,6 +1382,80 @@ dd {
   font-variant-numeric: tabular-nums;
 }
 
+/* ----------------------------------------------------------- settings --- */
+/* U-settings Phase 2 (the settings page). Reuses the existing badge/table/
+   banner vocabulary above rather than inventing a parallel one -- only the
+   four source-badge color mappings and a handful of layout rules are new. */
+
+.settings-intro {
+  max-width: 60ch;
+  color: var(--slu-fg-muted);
+}
+
+.settings-table td,
+.settings-table th {
+  vertical-align: top;
+}
+
+.settings-name {
+  font-family: var(--slu-font-mono);
+  font-size: 0.85rem;
+}
+
+.settings-value form {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.settings-value input,
+.settings-value select {
+  font-variant-numeric: tabular-nums;
+}
+
+.settings-value-readonly {
+  font-variant-numeric: tabular-nums;
+}
+
+.settings-tier-c-note {
+  margin-left: 0.4em;
+  font-size: 0.72rem;
+  color: var(--slu-fg-faint);
+  cursor: help;
+  border-bottom: 1px dotted var(--slu-border-strong);
+}
+
+.settings-row-error {
+  margin-top: 0.35rem;
+}
+
+.settings-warn {
+  margin: 0.35rem 0 0;
+  max-width: 60ch;
+}
+
+/* Source badges: config (the saved, authoritative policy) reads success;
+   override (a live, ambient escape hatch that can split brain from
+   config.yaml) reads warning; env (a gap-fill, editable) reads accent;
+   default gets no color override -- the ordinary, unstyled badge. */
+.badge-source-config {
+  background: var(--slu-success-bg);
+  color: var(--slu-success);
+  border-color: color-mix(in srgb, var(--slu-success) 35%, transparent);
+}
+
+.badge-source-override {
+  background: var(--slu-warning-bg);
+  color: var(--slu-warning);
+  border-color: color-mix(in srgb, var(--slu-warning) 35%, transparent);
+}
+
+.badge-source-env {
+  background: var(--slu-accent-bg);
+  color: var(--slu-accent);
+  border-color: color-mix(in srgb, var(--slu-accent) 35%, transparent);
+}
+
 /* -------------------------------------------------------------- htmx --- */
 /* htmx indicator styles — normally injected inline by htmx on boot, but the
    pinned CSP (style-src 'self') blocks that injection, so they are served

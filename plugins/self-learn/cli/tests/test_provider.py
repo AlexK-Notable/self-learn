@@ -169,22 +169,33 @@ def test_pr1_provider_setting_and_all(tmp_path):
     assert config.__all__ == [
         "CONFIG_BASENAME",
         "PROVIDER_KEYS",
+        # U-settings Phase 2: the settings PAGE's write path -- round-trip
+        # load/dump + the two generic, section-agnostic mutators (`set_leaf`/
+        # `unset_leaf`) that `settings.config_set`/`config_unset` call into,
+        # mirroring `settings_leaf`/`settings_unknown_keys`'s own read-side
+        # generalization above rather than growing hosts.py-style special
+        # casing per section.
+        "ConfigWriteError",
         "config_path",
+        "dump_editable",
         # U-hostmode MODE3: hosts.default_mode's fail-closed reader, added
         # alongside the other config.yaml accessors this module already
         # exports (kept out of the §2.10b census — this is the one-line
         # consequence of MODE3 existing at all).
         "effective_default_mode",
         "invocation_backend",
+        "load_editable",
         "one_motion_enabled",
         "provider_setting",
         "provider_unknown_keys",
+        "set_leaf",
         # U-settings Phase 1: the settings registry's two generic,
         # section-agnostic primitives (generalizing `provider_setting`/
         # `provider_unknown_keys`'s pattern rather than a second one —
         # `config.py`'s own module docstring, "U-settings Phase 1" note).
         "settings_leaf",
         "settings_unknown_keys",
+        "unset_leaf",
     ]
 
 
