@@ -60,18 +60,28 @@ from support import (
     seed_record,
 )
 
+from conftest import _browser_or_sentinel
+
 if TYPE_CHECKING:
     from playwright.sync_api import Browser, Page
 
 # Pin Playwright's browser registry to its REAL location NOW, at import —
 # before any fixture redirects XDG_CACHE_HOME under a tmpdir (which would
 # send Playwright looking for Chromium in the sandbox and never finding
-# it, so the whole module would SKIP rather than fail).
+# it). `conftest.py`'s `_browser_gate`/`_floor_playwright_browsers_path`
+# reassert the identical value at fixture time (U-browserfail) -- this
+# module-level copy stays, since it is what makes THIS constant correct
+# even when this module is the ONLY one of the Playwright trio collected.
 os.environ.setdefault(
     "PLAYWRIGHT_BROWSERS_PATH",
     str(Path(os.environ.get("XDG_CACHE_HOME") or (Path.home() / ".cache")) / "ms-playwright"),
 )
 
+# Playwright's python package is an optional dev extra; the whole module
+# skips cleanly when it is missing. A missing Chromium BUILD is a
+# different matter (U-browserfail): `conftest.py`'s `browser`/
+# `_browser_gate` fixtures now FAIL every dependent test below instead
+# of skipping it.
 sync_api = pytest.importorskip("playwright.sync_api")
 
 pytestmark = pytest.mark.js
@@ -279,16 +289,11 @@ def bucket_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[ServerHa
 
 
 @pytest.fixture(scope="module")
-def browser(request) -> Iterator["Browser"]:
-    with sync_api.sync_playwright() as p:
-        try:
-            b = p.chromium.launch()
-        except Exception as exc:  # pragma: no cover - env-dependent
-            pytest.skip(f"Chromium unavailable for Playwright: {exc}")
-        try:
-            yield b
-        finally:
-            b.close()
+def browser(request, _browser_gate) -> Iterator["Browser"]:
+    """U-browserfail: see `test_js_dom.py`'s identical `browser`
+    fixture -- the launch/probe/escape-hatch logic lives once in
+    `conftest.py`'s `_browser_or_sentinel`."""
+    yield from _browser_or_sentinel(_browser_gate)
 
 
 def _page_for(browser: "Browser") -> Iterator["Page"]:
