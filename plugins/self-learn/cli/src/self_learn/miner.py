@@ -1840,7 +1840,15 @@ def run(
 ) -> MineResult:
     """``no_push=None`` reads the process boundary once
     (:func:`worker.no_push_requested`) and threads the answer as a
-    parameter from there (BLOCKER D)."""
+    parameter from there (BLOCKER D).
+
+    MINOR-1 (review r2 2026-09-01, `worker.run`'s own M-2 residual):
+    :func:`pending_gate` and :func:`cap_for` below are now called with
+    THIS run's own `home`, not bare -- measured before this fix: inside
+    one `miner.run(A)`, `miner.enabled` (already threaded, above) read
+    A's config.yaml while the gate and cap read `resolve_home()`'s
+    config.yaml instead, disagreeing whenever the two differ. One run
+    must read one policy file."""
     home = Path(home)
     if no_push is None:
         no_push = worker.no_push_requested()
@@ -1986,7 +1994,7 @@ def _run_locked(
 
     # Flood gate (§8 Q3): don't advance cursors — nothing is missed.
     total_pending = worker.fast_status(home)["total_pending"]
-    gate = pending_gate()
+    gate = pending_gate(home=home)
     if total_pending >= gate:
         result.status = "held-gate"
         (miner_dir() / "miner.last-run").touch()
@@ -2030,7 +2038,7 @@ def _run_locked(
                   "duration_secs": round(time.time() - t0, 1)})
         return result
 
-    cap = cap_for(len(digests))
+    cap = cap_for(len(digests), home=home)
     hold = sentinel.hold()
     try:
         # ONE lock spanning [first mutation → commit] (audit 2026-07-16

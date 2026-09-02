@@ -32,6 +32,8 @@ from self_learn.invocation_sdk import events as events_mod
 
 from test_worker import env, sdk_fake_worker, seed_pending  # noqa: F401 -- fixtures resolved by name
 from test_repair import _defect_script, _t4_missing_target  # noqa: F401
+from test_miner import a as miner_a, candidate as miner_candidate, shim_reader, u as miner_u, write_transcript
+from support import make_home
 
 
 # ===================================================================== #
@@ -455,6 +457,88 @@ def test_override_channel_propagates_to_a_real_child_process(tmp_path):
 
 
 # ===================================================================== #
+# MINOR-4 (review r2 2026-09-01): override() must either round-trip
+# every SettingValue member (str, int, float, bool, None) or REFUSE
+# loudly at call time for the ones it cannot safely hold -- one test
+# per member.
+# ===================================================================== #
+
+
+def test_override_round_trips_str_including_empty(tmp_path):
+    """The exact regression named in the review: `override(name, "")`
+    used to be read back as "nothing set" (`if override_raw:`) and
+    silently dropped -- an empty string IS a real, present override
+    value, not an absent one."""
+    home = tmp_path / "home"
+    home.mkdir()
+    setting = settings.by_name("miner.transcripts_dir")
+    with settings.override("miner.transcripts_dir", ""):
+        value, source = settings.resolve_setting(home, setting)
+        assert (value, source) == ("", "override:miner.transcripts_dir")
+    with settings.override("miner.transcripts_dir", "/custom/path"):
+        value, source = settings.resolve_setting(home, setting)
+        assert (value, source) == ("/custom/path", "override:miner.transcripts_dir")
+
+
+def test_override_round_trips_int(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    setting = settings.by_name("miner.cap_max")
+    with settings.override("miner.cap_max", 7):
+        value, source = settings.resolve_setting(home, setting)
+        assert (value, source) == (7, "override:miner.cap_max")
+
+
+def test_override_round_trips_float(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    setting = settings.by_name("serve.tick_secs")
+    with settings.override("serve.tick_secs", 12.5):
+        value, source = settings.resolve_setting(home, setting)
+        assert (value, source) == (12.5, "override:serve.tick_secs")
+
+
+def test_override_round_trips_bool(tmp_path):
+    """Bool coverage already exists above (`worker.autokick` throughout
+    this section) -- this one is here only so the union-member list is
+    complete and explicit, not implied."""
+    home = tmp_path / "home"
+    home.mkdir()
+    setting = settings.by_name("worker.repair")
+    with settings.override("worker.repair", False):
+        value, source = settings.resolve_setting(home, setting)
+        assert (value, source) == (False, "override:worker.repair")
+
+
+def test_override_round_trips_none_for_the_one_setting_that_allows_it(tmp_path):
+    """`None` is `sdk.max_budget_usd`'s OWN default (meaning
+    "unlimited") -- the one setting in the registry where `None` is a
+    real resolved value, not a parse-failure signal. Config.yaml is
+    deliberately set to a REAL budget here, so a build that silently
+    fell through to config instead of honouring the override would
+    fail this, not pass it by coincidence."""
+    home = tmp_path / "home"
+    _write_config(home, "sdk", "max_budget_usd", 5.0)
+    setting = settings.by_name("sdk.max_budget_usd")
+    with settings.override("sdk.max_budget_usd", None):
+        value, source = settings.resolve_setting(home, setting)
+        assert (value, source) == (None, "override:sdk.max_budget_usd")
+    # restored: config wins again
+    value, source = settings.resolve_setting(home, setting)
+    assert (value, source) == (5.0, "config:sdk.max_budget_usd")
+
+
+def test_override_none_refuses_for_a_setting_whose_default_is_not_none():
+    """Every OTHER setting's `None` would mean "this rung's parse
+    failed" internally, not a real resolved value -- `override()` must
+    refuse loudly (a programming error, never operator input) rather
+    than write something a typed consumer (or `validate`) cannot hold."""
+    with pytest.raises(ValueError, match="None is not a valid resolved value"):
+        with settings.override("worker.autokick", None):
+            pass  # pragma: no cover -- must never be reached
+
+
+# ===================================================================== #
 # The unknown-key sweep
 # ===================================================================== #
 
@@ -617,6 +701,50 @@ def test_miner_pending_gate_reads_config(tmp_path):
     home = tmp_path / "home"
     _write_config(home, "miner", "pending_gate", 9)
     assert miner.pending_gate(home=home) == 9
+
+
+def test_miner_run_threads_its_own_home_to_pending_gate_and_cap_for(tmp_path, monkeypatch):
+    """MINOR-1 (review r2 2026-09-01): `miner.run(home)`'s internal
+    `pending_gate()`/`cap_for()` calls must resolve against THIS run's
+    `home`, not `resolve_home()`'s ambient `SELF_LEARN_HOME` -- the two
+    tests above both pass `home=` explicitly and so can never observe a
+    regression here; this drives the DEFAULT path (no `home=` at either
+    call site) through a REAL `miner.run()`, spying on what `home` each
+    one actually received. `other_home` (via `SELF_LEARN_HOME`) and
+    `real_home` (passed to `run()`) are deliberately DIFFERENT
+    directories, so a build that read the wrong one is caught by
+    identity, not by a coincidentally-matching value."""
+    real_home = make_home(tmp_path / "real")
+    other_home = tmp_path / "other"
+    other_home.mkdir()
+    monkeypatch.setenv("SELF_LEARN_HOME", str(other_home))
+    transcripts_root = tmp_path / "transcripts"
+    (transcripts_root / "-home-u-proj").mkdir(parents=True)
+    monkeypatch.setenv("SELF_LEARN_TRANSCRIPTS_DIR", str(transcripts_root))
+    miner._save_cursors({"__initialized__": "test-fixture"})
+    write_transcript(transcripts_root, "sess-e2e", [miner_u("work"), miner_a("found the cause")])
+    shim_reader(monkeypatch, {"candidates": [miner_candidate()], "fires": []})
+    monkeypatch.setattr(miner.worker, "kick", lambda h, **kw: "spawned")
+
+    captured: dict[str, object] = {}
+    orig_gate = miner.pending_gate
+    orig_cap = miner.cap_for
+
+    def spy_gate(*, home=None):
+        captured["gate_home"] = home
+        return orig_gate(home=home)
+
+    def spy_cap(n, *, home=None):
+        captured["cap_home"] = home
+        return orig_cap(n, home=home)
+
+    monkeypatch.setattr(miner, "pending_gate", spy_gate)
+    monkeypatch.setattr(miner, "cap_for", spy_cap)
+    miner.run(real_home, trigger="timer")
+    assert captured["gate_home"] == real_home
+    assert captured["cap_home"] == real_home
+    assert captured["gate_home"] != other_home
+    assert captured["cap_home"] != other_home
 
 
 def test_miner_transcripts_root_reads_config(tmp_path, monkeypatch):

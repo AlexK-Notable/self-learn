@@ -116,6 +116,7 @@ __all__ = [
     "resolve_setting",
     "by_name",
     "unknown_keys",
+    "unknown_override_vars",
     "preflight",
     "override",
 ]
@@ -241,11 +242,29 @@ def _override_env_var(name: str) -> str:
     return "SELF_LEARN_OVERRIDE_" + name.upper().replace(".", "_")
 
 
+#: A reserved marker distinguishing "the override IS the value `None`"
+#: from "no override is set" (env-var absence, tested `is not None`
+#: below) and from every ordinary encoded value (`_encode_override_
+#: value`'s other branches never produce this exact string -- no `str`-
+#: kind setting's `str(value)` can equal it either, short of an
+#: operator deliberately typing this literal token). Needed because
+#: `None` is semantically overloaded THROUGHOUT this module: it is
+#: `sdk.max_budget_usd`'s own default (meaning "unlimited"), and it is
+#: also every parse function's "this value did not parse" signal --
+#: two different meanings that must never be confused on the wire
+#: (MINOR-4, review r2 2026-09-01).
+_OVERRIDE_NONE_MARKER = "\x01SELF_LEARN_OVERRIDE_NONE\x01"
+
+
 def _encode_override_value(value: SettingValue, kind: Kind) -> str:
     """:func:`override`'s WRITER side -- the exact string spellings
     `_parse_env_value` reads back (`1`/`0` for bool; `str()` for
-    numeric/str), so a round trip through the override channel can
-    never drift from the ambient-env rung's own parsing vocabulary."""
+    numeric/str; `_OVERRIDE_NONE_MARKER` for `None`), so a round trip
+    through the override channel can never drift from the ambient-env
+    rung's own parsing vocabulary (and never collide with it either,
+    for `None`)."""
+    if value is None:
+        return _OVERRIDE_NONE_MARKER
     if kind == "bool":
         return "1" if value else "0"
     return str(value)
@@ -294,7 +313,24 @@ def resolve_setting(home: Path | str, setting: Setting) -> tuple[SettingValue, s
     config-wins; see :func:`override` for why a THIRD rung was needed."""
     override_var = _override_env_var(setting.name)
     override_raw = os.environ.get(override_var)
-    if override_raw:
+    # MINOR-4 (review r2 2026-09-01): presence is `is not None`, NOT
+    # truthiness -- `override("miner.transcripts_dir", "")` writes the
+    # literal empty string, and a truthy check would read that as
+    # "nothing set" and silently fall through to config/env/default,
+    # losing the override the caller explicitly asked for. This is a
+    # DIFFERENT rule from the config/env rungs below, on purpose: an
+    # empty CONFIG.YAML string or empty ENV VAR is ambient and
+    # ambiguous ("did the operator mean this, or leave it blank by
+    # accident?" -- M-4's own call was "no answer"); a programmatic
+    # `override(name, "")` is neither ambient nor accidental -- the
+    # caller named the exact value.
+    if override_raw is not None:
+        if override_raw == _OVERRIDE_NONE_MARKER:
+            # The override IS `None` -- bypasses parse/validate entirely
+            # (both are for TYPED values; `None` here is `override()`'s
+            # own refusal-guarded escape hatch, not a `kind`-shaped
+            # answer to range-check).
+            return None, f"override:{setting.name}"
         parsed = _parse_env_value(override_raw, setting.kind)
         if parsed is None:
             _warn(
@@ -621,9 +657,21 @@ REGISTRY: tuple[Setting, ...] = (
 #: {config_key}"` (or bare, for a bootstrap var with no config rung) --
 #: relied on by `preflight`'s row labels and by callers building a
 #: `by_name` lookup. Checked once at import time, not per-call.
+_override_vars_seen: set[str] = set()
 for _setting in REGISTRY:
     if _setting.config_section is not None:
         assert _setting.name == f"{_setting.config_section}.{_setting.config_key}", _setting.name
+    # NIT-3 (review r2 2026-09-01): `_override_env_var` is NOT injective
+    # (`.` and `_` both fold to `_` -- `a.b_c` and `a_b.c` collide). 21
+    # entries give 21 distinct vars today; this catches the day a 22nd
+    # entry's name silently steals another entry's override channel,
+    # the same invariant-at-registration-time discipline as the
+    # `name == section.key` assert above.
+    _override_var = _override_env_var(_setting.name)
+    assert _override_var not in _override_vars_seen, (
+        f"override env var collision: {_override_var!r} (from {_setting.name!r})"
+    )
+    _override_vars_seen.add(_override_var)
 # No `del _setting` (pyright M-1 fold, review 2026-09-01): pyright cannot
 # prove a `for` loop over a non-empty tuple LITERAL always binds its
 # target (it does not reason about literal length here), so a `del`
@@ -666,13 +714,21 @@ def override(name: str, value: SettingValue) -> Iterator[None]:
     :func:`override` writes a REAL, namespaced env var
     (:func:`_override_env_var`: `SELF_LEARN_OVERRIDE_<NAME>`) rather
     than an in-process dict -- any child spawned while this is set
-    inherits it automatically (nothing special required at the spawn
-    site: `Popen` without an explicit `env=` already inherits the full
-    parent environment, which is how `SELF_LEARN_WORKER_AUTOKICK`
-    itself reached children before this fix), and `resolve_setting`
-    checks this channel BEFORE config.yaml in every process that
-    inherits it, parent or child alike -- beating a config.yaml value
-    that says the opposite, not just the ambient env var beside it.
+    inherits it, and `resolve_setting` checks this channel BEFORE
+    config.yaml in every process that inherits it, parent or child
+    alike -- beating a config.yaml value that says the opposite, not
+    just the ambient env var beside it. NIT-2 (review r2 2026-09-01),
+    the real invariant, stated correctly: every detached spawn in this
+    codebase copies the FULL environment explicitly (`env = dict(
+    os.environ)`, then passes `env=env`) -- worker.py:1138,
+    miner.py:1744-1749, the UI's `runner.py:318` and `ledger.py:117`,
+    all four. None of them relies on `Popen`'s bare-inheritance default;
+    the conclusion above (a child sees this override) holds BECAUSE
+    every spawn site does that copy, not because any of them omits
+    `env=`. `miner.py`'s copy additionally POPS `worker.NO_PUSH_ENV`
+    (a DIFFERENT, unrelated kill switch) before spawning -- that pop is
+    key-scoped on purpose and must stay that way; a blanket-cleared env
+    would drop this override (and every other real env var) too.
 
     Restored to whatever `SELF_LEARN_OVERRIDE_<NAME>` held when the
     span STARTED (nests correctly) -- the exact restore-on-exit
@@ -692,11 +748,30 @@ def override(name: str, value: SettingValue) -> Iterator[None]:
     (a live emergency) is a reasonable use of the same mechanism, not
     a hole in the ruling -- but it is a consequence, not something
     this fix set out to add."""
-    by_name(name)  # raises KeyError on a typo -- fail loudly, never silently
+    setting = by_name(name)  # raises KeyError on a typo -- fail loudly, never silently
+    if value is None and setting.default is not None:
+        # MINOR-4 (review r2 2026-09-01): `None` is a legitimate
+        # RESOLVED value for exactly one thing in this registry today
+        # -- a setting whose own `default` IS `None`
+        # (`sdk.max_budget_usd`, meaning "unlimited"). For every other
+        # setting, `None` means only "this rung's parse failed"
+        # internally -- it is not a `kind`-shaped answer `validate` (or
+        # a typed consumer) can hold. Writing it anyway would either
+        # crash downstream (`cast(float, None)` used by a caller that
+        # assumes a real float) or silently misbehave (`_apply_
+        # validate` skipped, an untyped `None` handed to code that
+        # never expected one) -- refuse loudly here instead, at the
+        # one place that knows which outcome it would be.
+        raise ValueError(
+            f"settings.override({name!r}, None): None is not a valid "
+            f"resolved value for {name!r} (its own default is "
+            f"{setting.default!r}, not None) -- refusing rather than "
+            f"writing an override this span cannot safely hold. Only a "
+            f"setting whose OWN default is None accepts None here."
+        )
     env_var = _override_env_var(name)
-    kind = _BY_NAME[name].kind
     prior = os.environ.get(env_var)
-    os.environ[env_var] = _encode_override_value(value, kind)
+    os.environ[env_var] = _encode_override_value(value, setting.kind)
     try:
         yield
     finally:
@@ -726,6 +801,22 @@ def unknown_keys(home: Path | str) -> list[str]:
     return found
 
 
+def unknown_override_vars() -> list[str]:
+    """MINOR-3(a) (review r2 2026-09-01): the override-channel mirror
+    of `unknown_keys` -- every `SELF_LEARN_OVERRIDE_*` env var PRESENT
+    that names no registry entry. Before this, a typo'd or miscased
+    override (`SELF_LEARN_OVERIDE_WORKER_AUTOKICK`,
+    `SELF_LEARN_OVERRIDE_WORKER_Autokick`) did NOTHING -- zero warns,
+    zero rows, `doctor settings` rc 0 -- while the identically-shaped
+    mistake in config.yaml already got a WARN row. Never warns by
+    itself; `doctor settings` renders one WARN row per hit."""
+    legal = frozenset(_override_env_var(s.name) for s in REGISTRY)
+    return sorted(
+        k for k in os.environ
+        if k.startswith("SELF_LEARN_OVERRIDE_") and k not in legal
+    )
+
+
 @dataclass(frozen=True)
 class SettingRow:
     name: str
@@ -735,17 +826,62 @@ class SettingRow:
 
 def preflight(home: Path | str) -> list[SettingRow]:
     """`doctor settings`'s single source of truth (mirrors `provider.
-    preflight`'s `Doc-0`: computes every row, prints nothing). One INFO
-    row per registry entry (name, resolved value, source), then one WARN
-    row per unknown config.yaml key (`unknown_keys`)."""
+    preflight`'s `Doc-0`: computes every row, prints nothing).
+
+    Per registry entry: an INFO row (name, resolved value, source) --
+    UNLESS the source is an active override, which renders WARN instead
+    (MINOR-3(b), review r2 2026-09-01: the old severity ordering had
+    this backwards -- a harmless stray config key already got a WARN,
+    while a LIVE rung sitting above every saved policy rendered as
+    ordinary INFO, no different from a boring default). The WARN names
+    the split brain this channel creates: `doctor` runs interactively,
+    never sets an override itself, so any override it sees here is
+    AMBIENT -- exported in the calling shell. That export reaches this
+    shell and everything IT spawns (§`override`'s own docstring), but
+    NOT `self-learn-host.service`: that unit's `[Service]` block sets
+    only explicit `Environment=` lines, no `PassEnvironment=` (measured
+    against every shipped unit file), so a systemd-launched `serve`
+    never sees a shell-exported override at all. The practical hazard:
+    autokick can read "off" for a human at the terminal and "on" inside
+    `serve` at the same moment, on the same machine.
+
+    Then one WARN row per unknown config.yaml key (`unknown_keys`), and
+    one WARN row per unrecognised `SELF_LEARN_OVERRIDE_*` env var
+    (`unknown_override_vars`, MINOR-3(a))."""
     rows: list[SettingRow] = []
     for setting in REGISTRY:
         value, source = resolve_setting(home, setting)
-        rows.append(
-            SettingRow(name=setting.name, verdict="INFO", detail=f"{setting.name} = {value!r} ({source})")
-        )
+        if source.startswith("override:"):
+            rows.append(
+                SettingRow(
+                    name=setting.name,
+                    verdict="WARN",
+                    detail=(
+                        f"{setting.name} = {value!r} ({source}) -- ACTIVE OVERRIDE, "
+                        f"outranks config.yaml. This is ambient (exported in the "
+                        f"calling shell, not set by `doctor` itself): it applies to "
+                        f"this shell and everything it spawns, but NOT to "
+                        f"self-learn-host.service (its unit sets only explicit "
+                        f"Environment= lines, no PassEnvironment -- a systemd-run "
+                        f"`serve` never sees it). Unset "
+                        f"{_override_env_var(setting.name)} to stop overriding."
+                    ),
+                )
+            )
+        else:
+            rows.append(
+                SettingRow(name=setting.name, verdict="INFO", detail=f"{setting.name} = {value!r} ({source})")
+            )
     for key in unknown_keys(home):
         rows.append(
             SettingRow(name="unknown", verdict="WARN", detail=f"unknown settings config key: {key}")
+        )
+    for var in unknown_override_vars():
+        rows.append(
+            SettingRow(
+                name="unknown",
+                verdict="WARN",
+                detail=f"unrecognized override env var (typo or wrong case?): {var}",
+            )
         )
     return rows

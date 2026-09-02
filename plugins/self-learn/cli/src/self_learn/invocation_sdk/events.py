@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from .. import settings, worker
 from ..ledger import resolve_home
@@ -76,6 +76,7 @@ def prune_event_logs(surface: str) -> None:
     supplies the home this function has never taken."""
     cache = worker.cache_dir()
     keep, _source = settings.resolve_setting(resolve_home(), settings.by_name("sdk.event_logs"))
+    keep = cast(int, keep)
     pattern = f"{surface}.tool-events.*.jsonl"
     matches = sorted(cache.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
     for stale in matches[keep:]:

@@ -133,8 +133,11 @@ def actor() -> str:
     ``SELF_LEARN_ACTOR`` overrides (tests; team-scale ``machine.user``).
 
     U-settings Phase 1: resolves through the registry's ``ledger.actor``
-    entry (env ``SELF_LEARN_ACTOR`` > config.yaml ``ledger.actor`` >
-    ``socket.gethostname()``, called lazily). Neither caller in this
+    entry (config.yaml ``ledger.actor`` > env ``SELF_LEARN_ACTOR`` >
+    ``socket.gethostname()``, called lazily -- U-flip 2026-09-01, S-58:
+    config wins; MINOR-2 review r2 fold, this file was the ninth of nine
+    stale docstrings and was missed in the first review pass). Neither
+    caller in this
     module (:func:`spool_event`) threads a ``home`` — telemetry spooling
     is home-independent (XDG cache, not the ledger) — so this falls back
     to :func:`resolve_home` for the config.yaml rung only."""
