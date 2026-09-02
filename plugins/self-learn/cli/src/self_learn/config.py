@@ -57,6 +57,8 @@ __all__ = [
     "one_motion_enabled",
     "provider_setting",
     "provider_unknown_keys",
+    "settings_leaf",
+    "settings_unknown_keys",
 ]
 
 CONFIG_BASENAME = "config.yaml"
@@ -247,6 +249,96 @@ def provider_unknown_keys(home: Path | str) -> list[str]:
     found: set = set()
     _collect_leaf_paths(section, "", found)
     return sorted(p for p in found if p not in PROVIDER_KEYS)
+
+
+# ===================================================================== #
+# U-settings Phase 1 -- the settings registry's TWO generic primitives.
+# `provider_setting`/`provider_unknown_keys` above are scoped to the one
+# `provider:` section and its `PROVIDER_KEYS` whitelist; `settings.py`
+# needs the SAME fail-closed discipline over an arbitrary section (one
+# per settings-registry domain: `worker:`, `miner:`, `analyst:`, `sdk:`,
+# `serve:`, `ledger:`) -- generalizing the pattern rather than growing a
+# second one, per doctrine (settings-surface-spec's reframe). Neither
+# function below changes anything above; both are strictly additive.
+# ===================================================================== #
+
+
+def settings_leaf(home: Path | str, section: str, key: str) -> tuple[str, object] | None:
+    """The settings-registry's one generic config.yaml reader. Walks the
+    dotted `key` under top-level `section`, returning `(key, raw_value)`
+    for the leaf when present -- `raw_value` is whatever native YAML
+    scalar the operator wrote (`str`/`int`/`float`/`bool`), UNVALIDATED
+    against any expected type; that judgement belongs to the registry's
+    own parser (mirrors `provider_setting`'s division of labor, `K-b`).
+
+    Same fail-closed discipline as every reader above, generalized over
+    `section`: missing file -> `None` silent; empty file -> `None`
+    silent; unparseable file, non-mapping top level, `section` absent,
+    or a non-mapping node encountered while walking `key`'s dotted path
+    -> `_warn` (except `section` absent, which is silent -- an operator
+    who has not written that section yet is not misusing config.yaml)
+    + `None`; `key` (or a segment of it) absent -> `None` silent."""
+    path = config_path(home)
+    if not path.is_file():
+        return None
+    try:
+        data = YAML(typ="safe").load(path.read_text(encoding="utf-8"))
+    except (YAMLError, OSError, UnicodeDecodeError) as exc:
+        _warn(f"unparseable ({exc}); {section}.{key} ignored")
+        return None
+    if data is None:
+        return None
+    if not isinstance(data, dict):
+        _warn(
+            f"top level must be a mapping, got {type(data).__name__}; "
+            f"{section}.{key} ignored"
+        )
+        return None
+    node: object = data.get(section)
+    if node is None:
+        return None
+
+    segments = key.split(".")
+    path_so_far = section
+    for segment in segments[:-1]:
+        if not isinstance(node, dict):
+            _warn(f"{path_so_far} must be a mapping, got {node!r}; {section}.{key} ignored")
+            return None
+        path_so_far = f"{path_so_far}.{segment}"
+        if segment not in node:
+            return None
+        node = node[segment]
+
+    if not isinstance(node, dict):
+        _warn(f"{path_so_far} must be a mapping, got {node!r}; {section}.{key} ignored")
+        return None
+    leaf = segments[-1]
+    if leaf not in node:
+        return None
+    return (key, node[leaf])
+
+
+def settings_unknown_keys(home: Path | str, section: str, known_keys: frozenset) -> list[str]:
+    """The settings-registry's per-section unknown-key sweep -- same
+    shape as :func:`provider_unknown_keys` (`K-c`): the sorted dotted
+    paths present under top-level `section` that are NOT in
+    `known_keys`. Never warns by itself; the doctor renders one WARN row
+    per section from this list."""
+    path = config_path(home)
+    if not path.is_file():
+        return []
+    try:
+        data = YAML(typ="safe").load(path.read_text(encoding="utf-8"))
+    except (YAMLError, OSError, UnicodeDecodeError):
+        return []
+    if data is None or not isinstance(data, dict):
+        return []
+    node = data.get(section)
+    if node is None or not isinstance(node, dict):
+        return []
+    found: set = set()
+    _collect_leaf_paths(node, "", found)
+    return sorted(p for p in found if p not in known_keys)
 
 
 def one_motion_enabled(home: Path | str, destination: str) -> bool:

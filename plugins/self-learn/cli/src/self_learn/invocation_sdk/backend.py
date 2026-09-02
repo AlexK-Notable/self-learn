@@ -32,7 +32,7 @@ from claude_agent_sdk import (
     UserMessage,
 )
 
-from .. import provider, worker
+from .. import provider, settings, worker
 from ..invocation.contract import (
     LOG_TEMPLATES,
     SELECTOR_FOR_SURFACE,
@@ -140,24 +140,36 @@ def _supported_option_fields() -> set[str]:
     return {f.name for f in _dataclass_fields(ClaudeAgentOptions)}
 
 
-def _max_turns_for(selector: str) -> int:
-    raw = os.environ.get(f"SELF_LEARN_SDK_MAX_TURNS_{selector}")
-    if raw:
-        try:
-            return int(raw)
-        except ValueError:
-            pass
-    return _DEFAULT_MAX_TURNS.get(selector, 120)
+#: Selector ("WORKER"/"MINER"/"ANALYST") -> the registry entry naming
+#: that surface's max-turns setting (U-settings Phase 1).
+_MAX_TURNS_SETTING_NAME = {
+    "WORKER": "sdk.max_turns.worker",
+    "MINER": "sdk.max_turns.miner",
+    "ANALYST": "sdk.max_turns.analyst",
+}
 
 
-def _max_budget_usd() -> float | None:
-    raw = os.environ.get("SELF_LEARN_SDK_MAX_BUDGET_USD")
-    if not raw:
-        return None
-    try:
-        return float(raw)
-    except ValueError:
-        return None
+def _max_turns_for(selector: str, *, home: Path | str) -> int:
+    """U-settings Phase 1: resolves through the registry's per-surface
+    `sdk.max_turns.<surface>` entry (config.yaml `sdk.max_turns.<surface>`
+    > env `SELF_LEARN_SDK_MAX_TURNS_<selector>` > :data:`_DEFAULT_MAX_TURNS`
+    -- U-flip 2026-09-01, S-58: config wins). `selector` outside `_MAX_TURNS_SETTING_
+    NAME` (never real input — `SELECTOR_FOR_SURFACE`'s three members are
+    the only callers) falls back to the bare default, unregistered."""
+    name = _MAX_TURNS_SETTING_NAME.get(selector)
+    if name is None:
+        return _DEFAULT_MAX_TURNS.get(selector, 120)
+    value, _source = settings.resolve_setting(home, settings.by_name(name))
+    return cast(int, value)
+
+
+def _max_budget_usd(*, home: Path | str) -> float | None:
+    """U-settings Phase 1: resolves through the registry's `sdk.
+    max_budget_usd` entry (config.yaml `sdk.max_budget_usd` > env
+    `SELF_LEARN_SDK_MAX_BUDGET_USD` > `None`, meaning unlimited --
+    U-flip 2026-09-01, S-58: config wins)."""
+    value, _source = settings.resolve_setting(home, settings.by_name("sdk.max_budget_usd"))
+    return cast("float | None", value)
 
 
 class CliSessionPolicy:
@@ -255,12 +267,12 @@ def options_kwargs(spec: SessionSpec, events: EventLog | None = None) -> dict[st
     }
 
     if "max_turns" in supported:
-        kwargs["max_turns"] = _max_turns_for(selector)
+        kwargs["max_turns"] = _max_turns_for(selector, home=spec.cwd)
     else:
         spec.log("run: sdk backend could not apply max_turns on this claude-agent-sdk version")
 
     if "max_budget_usd" in supported:
-        kwargs["max_budget_usd"] = _max_budget_usd()
+        kwargs["max_budget_usd"] = _max_budget_usd(home=spec.cwd)
     else:
         spec.log(
             "run: sdk backend could not apply max_budget_usd on this claude-agent-sdk version"

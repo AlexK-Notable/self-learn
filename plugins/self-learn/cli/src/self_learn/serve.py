@@ -37,12 +37,13 @@ import random
 import signal
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace as _dataclass_replace
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
-from . import miner, worker
+from . import miner, settings, worker
+from .ledger import resolve_home
 
 __all__ = [
     "DEFAULT_TICK_SECS",
@@ -111,15 +112,21 @@ class JobRecord:
     error: str | None = None
 
 
-def tick_secs_from_env(default: float = DEFAULT_TICK_SECS) -> float:
-    raw = os.environ.get("SELF_LEARN_SERVE_TICK_SECS")
-    if not raw:
-        return default
-    try:
-        value = float(raw)
-    except ValueError:
-        return default
-    return value if value > 0 else default
+def tick_secs_from_env(default: float = DEFAULT_TICK_SECS, *, home: Path | str | None = None) -> float:
+    """U-settings Phase 1: resolves through the registry's `serve.
+    tick_secs` entry (config.yaml `serve.tick_secs` > env
+    `SELF_LEARN_SERVE_TICK_SECS` > `default` -- U-flip 2026-09-01, S-58:
+    config wins). `default` overrides the registry
+    entry's own built-in default (`dataclasses.replace`) rather than
+    being a second, parallel fallback — the one real call site
+    (:func:`run_forever`) never passes a non-default value, but the
+    parameter stays honoured for any caller that does. `home` defaults
+    to :func:`resolve_home`."""
+    setting = settings.by_name("serve.tick_secs")
+    if default != setting.default:
+        setting = _dataclass_replace(setting, default=default)
+    value, _source = settings.resolve_setting(home if home is not None else resolve_home(), setting)
+    return cast(float, value)
 
 
 # ----------------------------------------------------------------- heartbeat
@@ -227,9 +234,9 @@ def cache_dir_readonly() -> Path:
     merely asking whether a heartbeat exists. Mirrors `worker.cache_dir`'s
     path formula exactly; if the directory does not exist yet, callers
     read that as "no heartbeat" (`read_heartbeat` already treats a
-    missing file as `None`), which is the correct answer regardless."""
-    from .ledger import resolve_home
-
+    missing file as `None`), which is the correct answer regardless.
+    (U-settings Phase 1: `resolve_home` moved to a module-level import --
+    `tick_secs_from_env` below needs it too.)"""
     cache = os.environ.get("XDG_CACHE_HOME")
     base = Path(cache).expanduser() if cache else Path("~/.cache").expanduser()
     digest = hashlib.sha256(str(resolve_home()).encode("utf-8")).hexdigest()[:8]
@@ -433,29 +440,39 @@ def run_one_job(cache_dir: Path, job: Job, *, pid: int | None = None, tick_secs:
 
 @contextlib.contextmanager
 def _worker_autokick_disabled():
-    """Gate r1 M-2: neutralises `SELF_LEARN_WORKER_AUTOKICK` — the SAME
+    """Gate r1 M-2: neutralises the `worker.autokick` setting — the SAME
     kill switch a human already has — for the whole span this wraps,
-    restored to whatever was ambient when the span STARTED. TWO
-    producers each have a tail that can spawn a detached follow-on
-    behind this switch: `miner.run`'s own `worker.kick(home)` call
-    (`N-1`'s shape) and `worker.run`'s OWN run-end follow-on window
-    (`_open_window` -> `_spawn_window` -> a setsid `Popen`, gate r1
-    M-2's shape, worker.py:3550-3558). `serve` IS the follow-on for
-    both (`HP4`: register item #11, closed by construction), so neither
-    producer may launch a second one for as long as `serve` itself is
-    already driving the next job in-process. `_run_tick` holds this
-    open across BOTH the mine job and the worker job that may follow it
-    in the same tick — restoring it between them (as the pre-fix code
-    did) reopened exactly the window M-2 measured."""
-    prior = os.environ.get("SELF_LEARN_WORKER_AUTOKICK")
-    os.environ["SELF_LEARN_WORKER_AUTOKICK"] = "0"
-    try:
+    restored to whatever it held when the span STARTED. TWO producers
+    each have a tail that can spawn a detached follow-on behind this
+    switch: `miner.run`'s own `worker.kick(home)` call (`N-1`'s shape)
+    and `worker.run`'s OWN run-end follow-on window (`_open_window` ->
+    `_spawn_window` -> a setsid `Popen`, gate r1 M-2's shape,
+    worker.py:3550-3558). `serve` IS the follow-on for both (`HP4`:
+    register item #11, closed by construction), so neither producer may
+    launch a second one for as long as `serve` itself is already
+    driving the next job in-process. `_run_tick` holds this open across
+    BOTH the mine job and the worker job that may follow it in the same
+    tick — restoring it between them (as the pre-fix code did) reopened
+    exactly the window M-2 measured.
+
+    Review Blocker (2026-09-01): under S-58's config-wins flip, a plain
+    `os.environ["SELF_LEARN_WORKER_AUTOKICK"] = "0"` write (this
+    function's ORIGINAL shape) is silently DEFEATED whenever
+    `config.yaml` names `worker.autokick` -- config now outranks that
+    env var, so the neutralisation would stop working the moment a
+    Phase-2 settings UI ever saved the (defaulted-`True`) key. Routes
+    through :func:`settings.override` instead: a rung ABOVE config.yaml
+    (not just above env), and -- because it is a real, namespaced env
+    var under the hood, not an in-process dict -- one that also reaches
+    any DETACHED CHILD this span spawns (`worker.py:1103-1115`'s own
+    documented convention: a `start_new_session=True` child inherits a
+    flag only via environment; the 2026-08-09 incident this switch
+    guards against was itself a self-respawning detached chain, where
+    containment has to hold for the whole process tree, not just this
+    one process). `settings.override`'s own restore-on-exit contract is
+    byte-for-byte what this function relied on before this fix."""
+    with settings.override("worker.autokick", False):
         yield
-    finally:
-        if prior is None:
-            os.environ.pop("SELF_LEARN_WORKER_AUTOKICK", None)
-        else:
-            os.environ["SELF_LEARN_WORKER_AUTOKICK"] = prior
 
 
 def _run_mine_job(home: Path) -> "miner.MineResult":
@@ -555,7 +572,7 @@ def run_forever(
     hazard) never triggers."""
     home = Path(home)
     cd = cache_dir if cache_dir is not None else worker.cache_dir()
-    secs = tick_secs if tick_secs is not None else tick_secs_from_env()
+    secs = tick_secs if tick_secs is not None else tick_secs_from_env(home=home)
     pid = os.getpid()
     stop = threading.Event()
 

@@ -56,9 +56,9 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
-from . import invocation, sentinel, telemetry
+from . import invocation, sentinel, settings, telemetry
 from .compilers import BEGIN_MARKER, END_MARKER
 from .corroborate import MISMATCH, NO_EVIDENCE, RunEvidence
 from .hosts import Hosts, HostsError, ancestors_of, load_hosts, skill_dir_for, unregistered_ancestor_dirs
@@ -807,14 +807,19 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
-def coalesce_secs() -> float:
-    raw = os.environ.get("SELF_LEARN_COALESCE_SECS")
-    if not raw:
-        return float(DEFAULT_COALESCE_SECS)
-    try:
-        return max(0.0, float(raw))
-    except ValueError:
-        return float(DEFAULT_COALESCE_SECS)
+def coalesce_secs(home: Path | str | None = None) -> float:
+    """U-settings Phase 1: resolves through the registry's ``worker.
+    coalesce_secs`` entry (config.yaml `worker.coalesce_secs` > env >
+    :data:`DEFAULT_COALESCE_SECS` -- U-flip 2026-09-01, S-58: config
+    wins) rather than reading
+    ``SELF_LEARN_COALESCE_SECS`` directly — `home` defaults to
+    :func:`resolve_home` so every existing zero-arg call site (this
+    module's own :func:`run`, and the tests that call it bare) is
+    unaffected."""
+    value, _source = settings.resolve_setting(
+        home if home is not None else resolve_home(), settings.by_name("worker.coalesce_secs")
+    )
+    return cast(float, value)
 
 
 def worker_model() -> str:
@@ -826,12 +831,21 @@ def batch_cap() -> int:
 
 
 def _timeout_secs(env_var: str, default: float) -> float:
-    """Shared reader for the two env-overridable invocation timeouts
-    (§3.9). Differs from :func:`coalesce_secs` in ONE way, deliberately:
-    a value <= 0 or unparseable falls back to the default rather than
-    being clamped to 0 — a zero coalesce is meaningful, but a zero
-    ``subprocess.run(timeout=...)`` expires instantly and would kill
-    every run (E4)."""
+    """Env-only reader for :func:`miner.reader_timeout_secs` (§3.9): a
+    value <= 0 or unparseable falls back to the default rather than
+    being clamped to 0 — a zero coalesce is meaningful (see
+    :func:`coalesce_secs`), but a zero ``subprocess.run(timeout=...)``
+    expires instantly and would kill every run (E4).
+
+    U-settings Phase 1: :func:`invoke_timeout_secs` and :func:`repair_
+    timeout_secs` below no longer call this — they resolve through the
+    settings registry, which gives them a config.yaml rung this helper
+    does not have. This function stays env-only DELIBERATELY: `miner.
+    reader_timeout_secs()` calling through it is a pinned build decision
+    (``test_u_fw100.py::test_shares_worker_helper_not_a_reimplementation``
+    monkeypatches this exact function) — see `settings.py`'s registry
+    comment at ``miner.transcripts_dir`` for why that setting was left
+    out of Phase 1's registry rather than reopening it."""
     raw = os.environ.get(env_var)
     if not raw:
         return float(default)
@@ -842,18 +856,30 @@ def _timeout_secs(env_var: str, default: float) -> float:
     return value if value > 0 else float(default)
 
 
-def invoke_timeout_secs() -> float:
-    """The batch invocation's timeout (§3.9), default
-    :data:`INVOKE_TIMEOUT_SECS`, env-overridable via
-    ``SELF_LEARN_INVOKE_TIMEOUT_SECS``."""
-    return _timeout_secs("SELF_LEARN_INVOKE_TIMEOUT_SECS", INVOKE_TIMEOUT_SECS)
+def invoke_timeout_secs(home: Path | str | None = None) -> float:
+    """The batch invocation's timeout (§3.9): resolves through the
+    registry's ``worker.invoke_timeout_secs`` entry (config.yaml
+    `worker.invoke_timeout_secs` > env > :data:`INVOKE_TIMEOUT_SECS` --
+    U-flip 2026-09-01, S-58: config wins). `home`
+    defaults to :func:`resolve_home`, so every existing zero-arg call
+    site is unaffected."""
+    value, _source = settings.resolve_setting(
+        home if home is not None else resolve_home(), settings.by_name("worker.invoke_timeout_secs")
+    )
+    return cast(float, value)
 
 
-def repair_timeout_secs() -> float:
-    """The repair round's timeout (§3.9), default
-    :data:`REPAIR_TIMEOUT_SECS`, env-overridable via
-    ``SELF_LEARN_REPAIR_TIMEOUT_SECS``."""
-    return _timeout_secs("SELF_LEARN_REPAIR_TIMEOUT_SECS", REPAIR_TIMEOUT_SECS)
+def repair_timeout_secs(home: Path | str | None = None) -> float:
+    """The repair round's timeout (§3.9): resolves through the
+    registry's ``worker.repair_timeout_secs`` entry (config.yaml
+    `worker.repair_timeout_secs` > env > :data:`REPAIR_TIMEOUT_SECS` --
+    U-flip 2026-09-01, S-58: config wins). `home`
+    defaults to :func:`resolve_home`, so every existing zero-arg call
+    site is unaffected."""
+    value, _source = settings.resolve_setting(
+        home if home is not None else resolve_home(), settings.by_name("worker.repair_timeout_secs")
+    )
+    return cast(float, value)
 
 
 #: Read-only tool grant — Write is deliberately ABSENT here: path-scoped
@@ -980,12 +1006,22 @@ def no_push_requested() -> bool:
     return os.environ.get(NO_PUSH_ENV) == "1"
 
 
-def _autokick_disabled() -> bool:
-    """True iff ``SELF_LEARN_WORKER_AUTOKICK=0`` — the shared kill-switch
-    for ANY code path that would auto-spawn a detached ``worker run
-    --coalesce`` window, not just an explicit :func:`kick`. Read fresh
-    (never cached) so a test's `monkeypatch.setenv`/`delenv` takes effect
-    immediately.
+def _autokick_disabled(home: Path | str | None = None) -> bool:
+    """True iff the ``worker.autokick`` setting resolves to `False`
+    (config.yaml `worker.autokick: false` — U-flip 2026-09-01, S-58 —
+    or env `SELF_LEARN_WORKER_AUTOKICK=0`) — the shared kill-switch for
+    ANY code path that would auto-spawn a detached ``worker run
+    --coalesce`` window, not just an explicit :func:`kick`. Resolved
+    fresh on every call, never cached (:func:`settings.resolve_setting`'s
+    own discipline) — a test's `monkeypatch.setenv`/`delenv` takes
+    effect immediately, as does :func:`serve._worker_autokick_disabled`'s
+    mid-process assertion, but the LATTER no longer rides the plain env
+    rung: under config-wins a bare env write can be outranked by a
+    saved `worker.autokick: true`, so that mechanism was moved to
+    :func:`settings.override` (review Blocker, 2026-09-01) — a THIRD
+    rung this function's own :func:`settings.resolve_setting` checks
+    ABOVE config.yaml, precisely so a running process's own assertion
+    about itself can never be defeated by a saved policy.
 
     Incident 2026-08-09: before this helper existed, only :func:`kick`
     checked the env var — the run-end follow-on (see :func:`run`) called
@@ -999,7 +1035,10 @@ def _autokick_disabled() -> bool:
     6,508 wrapper shells, each a G-3 notifier riding the same leak) ran
     39.3 hours and exhausted the user-scope dbus-broker's file
     descriptors, killing the desktop session."""
-    return os.environ.get("SELF_LEARN_WORKER_AUTOKICK") == "0"
+    value, _source = settings.resolve_setting(
+        home if home is not None else resolve_home(), settings.by_name("worker.autokick")
+    )
+    return not value
 
 
 def _followon_progress(home: Path, eligible_before: int) -> bool:
@@ -1153,7 +1192,7 @@ def kick(home: Path | str, *, no_push: bool = False) -> str:
 
     ``no_push`` binds the spawned worker to the caller's ``--no-push``
     (BLOCKER 3) — see :func:`no_push_requested` for the exact semantics."""
-    if _autokick_disabled():
+    if _autokick_disabled(home):
         return "disabled"
     home = Path(home)
     cache_dir().mkdir(parents=True, exist_ok=True)
@@ -3042,8 +3081,16 @@ def _notifications_suppressed() -> bool:
     suite's conftest.py sets THIS explicit var globally (mirroring
     ``SELF_LEARN_WORKER_AUTOKICK``'s own convention) so every test is
     silent by default; a harness that wants the shimmed transport
-    exercised opts back out via ``monkeypatch.delenv``."""
-    return os.environ.get("SELF_LEARN_NO_NOTIFY") == "1"
+    exercised opts back out via ``monkeypatch.delenv``.
+
+    U-settings Phase 1: resolves through the registry's ``worker.
+    no_notify`` entry (config.yaml `worker.no_notify` > env > `False` --
+    U-flip 2026-09-01, S-58: config wins) rather than reading the env
+    var directly — the two callers below (neither of which threads a
+    `home`) keep working unchanged since neither writes a config.yaml;
+    :func:`resolve_home` supplies the home for the config.yaml rung."""
+    value, _source = settings.resolve_setting(resolve_home(), settings.by_name("worker.no_notify"))
+    return bool(value)
 
 
 def _notify(message: str) -> None:
@@ -3359,13 +3406,22 @@ def run(
 ) -> RunResult:
     """``no_push=None`` reads the process boundary once
     (:func:`no_push_requested`) and then threads the answer as a parameter
-    — BLOCKER D: the policy is data, not ambience."""
+    — BLOCKER D: the policy is data, not ambience.
+
+    M-2 (review 2026-09-01): :func:`coalesce_secs`, :func:`invoke_
+    timeout_secs`, and :func:`repair_timeout_secs` are all called with
+    this SAME ``home`` below, not bare — each is optional-`home` and
+    silently falls back to :func:`resolve_home` when omitted, so a bare
+    call still "worked" pre-flip, but under config-wins it could read a
+    DIFFERENT config.yaml than the rest of this very run whenever
+    ``resolve_home()`` and this call's ``home`` disagree (measured: 99.0
+    vs. home-A's 11.0). One run must read one policy file."""
     home = Path(home)
     if no_push is None:
         no_push = no_push_requested()
     cache_dir().mkdir(parents=True, exist_ok=True)
     if coalesce:
-        time.sleep(coalesce_secs())
+        time.sleep(coalesce_secs(home))
 
     with open(_p("worker.lock"), "w", encoding="utf-8") as lock_fh:
         fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)  # blocking (pinned)
@@ -3399,7 +3455,14 @@ def run(
                 result = RunResult(status="idle", eligible=0, suspects=suspects)
             else:
                 stage_on = _stage_enabled()  # §3.7
-                repairs_enabled = os.environ.get("SELF_LEARN_REPAIR") != "0"
+                # U-settings Phase 1 (config.yaml `worker.repair` > env >
+                # True -- U-flip 2026-09-01, S-58: config wins). A garbage
+                # value at either rung warns on stderr and falls through;
+                # the eventual fallback is True, same net outcome the old
+                # `!= "0"` env check gave any non-"0" value.
+                repairs_enabled, _repair_source = settings.resolve_setting(
+                    home, settings.by_name("worker.repair")
+                )
                 # FW-107: accumulates this run's charter-sourced denials
                 # (both rounds feed it) so a fully-denied run can be told
                 # apart from a wrote-nothing one in the FAILED summary
@@ -3420,7 +3483,7 @@ def run(
                 prompt, roster = compose_batch_prompt(home, batch)
                 snap0 = _proposal_snapshot(home)  # S1 — Install-1's baseline now
                 _invoke_claude(
-                    prompt, invoke_timeout_secs(), home, label="",
+                    prompt, invoke_timeout_secs(home), home, label="",
                     containment=invocation.containment_for(
                         "worker",
                         allowed_tools=ALLOWED_TOOLS,
@@ -3491,7 +3554,14 @@ def run(
                 refuse: dict[Path, str] = {}
 
                 if not repairs_enabled:
-                    log("run: repair round disabled (SELF_LEARN_REPAIR=0)")
+                    # M-3 (review 2026-09-01): report the ACTUAL source
+                    # that resolved `repairs_enabled` to False, not a
+                    # hardcoded env spelling -- since the flip, that
+                    # source is at least as often `config:worker.repair`
+                    # as it is `env:SELF_LEARN_REPAIR`, and a log line
+                    # that always names the env var misattributes every
+                    # config-driven disable.
+                    log(f"run: repair round disabled ({_repair_source})")
                 else:
                     verdicts = _dry_check_batch(home, staged1, roster, dest_map1)  # S4
                     n_refused = sum(1 for v in verdicts.values() if v.error is not None)
@@ -3561,7 +3631,7 @@ def run(
                             snap1 = _proposal_snapshot(home)
                         _invoke_claude(
                             repair_prompt,
-                            repair_timeout_secs(),
+                            repair_timeout_secs(home),
                             home,
                             label="repair ",
                             containment=invocation.containment_for(
@@ -3832,7 +3902,7 @@ def run(
                 f"'{result.status}' run); `self-learn worker kick` retries"
             )
             result.followon = False
-        elif _autokick_disabled():
+        elif _autokick_disabled(home):
             log("run: follow-on window: disabled")
             result.followon = False
         else:

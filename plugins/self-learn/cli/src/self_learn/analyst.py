@@ -50,12 +50,12 @@ import re
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from ruamel.yaml import YAML
 from ruamel.yaml.error import YAMLError
 
-from . import invocation
+from . import invocation, settings
 from .ledger_ops import (
     ROSTER_UNAVAILABLE,
     LedgerOpsError,
@@ -108,14 +108,16 @@ def _model() -> str:
     return os.environ.get("SELF_LEARN_ANALYST_MODEL") or DEFAULT_ANALYST_MODEL
 
 
-def _timeout() -> float:
-    raw = os.environ.get("SELF_LEARN_ANALYST_TIMEOUT")
-    if not raw:
-        return DEFAULT_ANALYST_TIMEOUT
-    try:
-        return float(raw)
-    except ValueError:
-        return DEFAULT_ANALYST_TIMEOUT
+def _timeout(home: Path | str) -> float:
+    """U-settings Phase 1: resolves through the registry's `analyst.
+    timeout_secs` entry (config.yaml `analyst.timeout_secs` > env
+    `SELF_LEARN_ANALYST_TIMEOUT` > :data:`DEFAULT_ANALYST_TIMEOUT` --
+    U-flip 2026-09-01, S-58: config wins). No
+    positivity clamp (unlike the worker/miner timeouts) — this function
+    never validated a <=0 value pre-Phase-1 either; preserved rather than
+    tightened as a side effect."""
+    value, _source = settings.resolve_setting(home, settings.by_name("analyst.timeout_secs"))
+    return cast(float, value)
 
 
 def _strip_fences(text: str) -> str:
@@ -236,7 +238,7 @@ def analyze(
     entry = QueueEntry(path=record_path, record=record)
     prompt, roster = compose_single_prompt(home, entry)
 
-    timeout = _timeout()
+    timeout = _timeout(home)
     spec = invocation.SessionSpec(
         surface="analyst",
         prompt=prompt,

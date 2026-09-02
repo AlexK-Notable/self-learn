@@ -72,7 +72,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 from . import config as policy_config
-from . import gitops, sentinel, telemetry
+from . import gitops, ledger_ops, sentinel, telemetry
 from .hook_compiler import replay_examples, script_name, settings_snippet
 from .normalize import sha_anchor
 from .skill_scaffold import (
@@ -121,7 +121,7 @@ from .hosts import (
     slug_for,
     validate_host_path,
 )
-from .ledger import Bucket, discover_buckets
+from .ledger import Bucket, discover_buckets, resolve_home
 from .ledger_ops import (
     PROPOSAL_DESTINATIONS,
     ROSTER_UNAVAILABLE,
@@ -135,8 +135,6 @@ from .ledger_ops import (
     ROUTED_ONLY,
     bucket_dir_for_scope,
     bucket_project_path,
-    DEFAULT_GLOB_PROBE_BUDGET_S,
-    GLOB_PROBE_BUDGET_ENV,
     defer_record,
     ensure_project_meta,
     find_record_path,
@@ -1356,18 +1354,15 @@ def _project_rules_dir(host_repo: Path) -> Path:
     return host_repo / ".claude" / "rules"
 
 
-def _glob_probe_budget_display() -> str:
+def _glob_probe_budget_display(home: Path | str | None = None) -> str:
     """U-glob §7.4: the active reachability budget, formatted with
-    ``:g`` so ``30.0`` renders ``30`` — the same env var
-    :func:`ledger_ops.glob_reaches` itself reads, so the refusal text
-    never disagrees with the probe that produced it."""
-    raw = os.environ.get(GLOB_PROBE_BUDGET_ENV)
-    if raw is not None:
-        try:
-            return f"{float(raw):g}"
-        except ValueError:
-            pass
-    return f"{DEFAULT_GLOB_PROBE_BUDGET_S:g}"
+    ``:g`` so ``30.0`` renders ``30`` — resolved through the SAME
+    `ledger.glob_probe_budget_s` registry entry
+    :func:`ledger_ops._glob_probe_budget_s` itself reads (M-5, review
+    2026-09-01), so the refusal text never disagrees with the probe
+    that produced it. `home` defaults to :func:`resolve_home`."""
+    value = ledger_ops._glob_probe_budget_s(home if home is not None else resolve_home())
+    return f"{value:g}"
 
 
 def managed_target_for(
