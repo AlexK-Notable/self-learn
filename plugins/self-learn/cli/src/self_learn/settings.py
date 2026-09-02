@@ -1130,6 +1130,41 @@ def _scan_config_write_or_refuse(name: str, note: str | None, value: str | None)
     )
 
 
+def _plain_scalar(value: object) -> object:
+    """Unwrap a `config.present` (round-trip `load_editable`) scalar
+    down to the plain builtin type `_parse_env_value` would have
+    produced for the SAME value, so `config_set`'s idempotent check
+    below can compare like to like via `type(...) is type(...)`.
+
+    Round-trip mode wraps some scalars in a format-preserving subtype
+    -- confirmed empirically (not just for specially-formatted values):
+    a plain `6.5` in `config.yaml` round-trips as `ScalarFloat`, NEVER
+    bare `float`. Left unnormalized, `type(...) is type(...)` would
+    NEVER match for a float setting whose value already matches (`
+    ScalarFloat is not float`), so a byte-identical re-`set` of ANY
+    float setting would always look like a change -- reach `set_leaf`,
+    write byte-identical content, and `git commit` would refuse
+    "nothing to commit", which `_commit_or_half_written` misreports as
+    a false HALF-WRITTEN state. Exactly the bug the idempotent check
+    exists to prevent (this function's own docstring, above), just
+    reintroduced through the read side instead of the write side.
+
+    `bool` is checked FIRST because it is itself an `int` subclass in
+    Python -- `1 == True` must keep comparing as DIFFERENT (a
+    hand-written `1` where a `bool` setting expects `true` is still a
+    real change), so a `bool` value is returned as-is, never coerced
+    through the `int` branch below it."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return int(value)
+    if isinstance(value, float):
+        return float(value)
+    if isinstance(value, str):
+        return str(value)
+    return value
+
+
 def config_set(
     home: Path | str, name: str, raw_value: str, *, note: str | None = None
 ) -> Setting:
@@ -1219,8 +1254,27 @@ def config_set(
     # this registry's `bool` kind expects `true` must still be treated
     # as a real change worth writing/normalizing, not silently left in
     # place because it happens to compare equal.
-    current = config.settings_leaf(home, setting.config_section, setting.config_key)
-    if current is not None and type(current[1]) is type(final) and current[1] == final:
+    #
+    # MINOR-1 (review r2 2026-09-02): this used to read via the LENIENT
+    # `config.settings_leaf` (silent `None` on a malformed config.yaml),
+    # so a malformed committed file fell all the way through to
+    # `gitops.commit_lock` below before anything noticed -- if another
+    # producer already held that lock, `set` sat out the full 150s
+    # `COMMIT_LOCK_TIMEOUT` and reported "another self-learn producer is
+    # wedged mid-commit", sending the operator hunting a producer that
+    # does not exist. `config.present` -- the SAME strict, pre-lock
+    # check `config_unset` already used (MINOR-2, review r1) -- raises
+    # `ConfigWriteError` HERE instead, before the lock is ever
+    # requested, so the real problem (the malformed file) is what the
+    # operator sees, fast, lock contention or not. `_plain_scalar`
+    # (right above this function) unwraps `present`'s round-trip
+    # scalar type before the `type(...) is type(...)` compare below --
+    # see its own docstring for why that is NOT optional (a plain
+    # `ScalarFloat is not float` regression this switch would
+    # otherwise reintroduce for every float-kind setting).
+    is_set, current_value = config.present(home, setting.config_section, setting.config_key)
+    current_value = _plain_scalar(current_value)
+    if is_set and type(current_value) is type(final) and current_value == final:
         return setting
 
     message = f"self-learn: config set {name}={final!r}"

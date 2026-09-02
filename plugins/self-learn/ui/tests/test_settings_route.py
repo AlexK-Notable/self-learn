@@ -20,6 +20,7 @@ mutation in this app -- `FakeRunner` for argv/rendering assertions, one
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -30,7 +31,7 @@ from self_learn_ui.app import create_app
 from self_learn_ui.env import load_env
 from self_learn_ui.runner import FakeRunner, RealRunner, RunResult
 
-from support import make_env
+from support import commit_all, make_env
 
 TOKEN = "test-token"
 
@@ -188,7 +189,11 @@ class TestSettingsSetRoute:
         c, runner = make_client(sb, runner=runner)
         r = c.post("/settings/set", data={"name": "worker.no_notify", "value": "1"}, headers={"HX-Request": "true"})
         assert r.status_code == 200
-        assert runner.calls == [["config", "set", "worker.no_notify", "1", "--json"]]
+        # NIT-1 (review r2 2026-09-02): VALUE sits after `--` (with
+        # `--json` before it) so a leading `-` in a posted value can
+        # never be swallowed by argparse -- see `routes.py`'s
+        # `settings_set` docstring.
+        assert runner.calls == [["config", "set", "worker.no_notify", "--json", "--", "1"]]
         assert 'id="setting-row-worker-no_notify"' in r.text
         assert "badge-source-config" in r.text
 
@@ -229,7 +234,7 @@ class TestSettingsSetRoute:
         c, runner = make_client(sb, runner=runner)
         r = c.post("/settings/set", data={"name": "worker.no_notify", "value": "true"}, headers={"HX-Request": "true"})
         assert r.status_code == 200
-        assert runner.calls == [["config", "set", "worker.no_notify", "true", "--json"]]
+        assert runner.calls == [["config", "set", "worker.no_notify", "--json", "--", "true"]]
         assert 'id="setting-row-worker-no_notify"' in r.text
         assert "not a valid bool" in r.text
 
@@ -303,3 +308,121 @@ class TestSettingsSetRealRunner:
             capture_output=True, text=True, check=True,
         )
         assert log.stdout.strip() == "self-learn: config set miner.cap_max=7"
+
+    @pytest.mark.asyncio
+    async def test_a_leading_dash_value_sets_cleanly_from_the_page(
+        self, tmp_path: Path
+    ) -> None:
+        """NIT-1 (code-gate review r2 2026-09-02): a VALUE beginning
+        with `-` (`ledger.actor = -alex`) used to be swallowed by
+        argparse's own optional-argument matching before `_cmd_config`
+        ever ran -- the CLI's `_swallowed_config_set_value` pre-check
+        caught the shape and printed terminal advice ("put `--` before
+        it, e.g. `self-learn config set NAME -- -alex`") that this
+        row's error strip then rendered verbatim on a WEB page, where
+        typing `--` in a form field means nothing. `settings_set` now
+        inserts `--` into the argv itself (`routes.py`), so the real
+        subprocess never sees the ambiguity -- proved end-to-end here,
+        `RealRunner` and all: rc 0, the value actually lands in
+        config.yaml (a second, independent `doctor settings` read
+        proves it), and no `--` advice text reaches the row."""
+        sb = make_env(tmp_path)
+        runner = RealRunner(home=sb.ledger, env=sb.env)
+        app = create_app(env=load_env(sb.env), token=TOKEN, runner=runner, start_watcher=False)
+        c = TestClient(app, base_url="http://127.0.0.1:7357")
+        c.cookies.set("slu_token", TOKEN)
+
+        r = c.post(
+            "/settings/set", data={"name": "ledger.actor", "value": "-alex"}, headers={"HX-Request": "true"}
+        )
+        assert r.status_code == 200
+        assert "badge-source-config" in r.text
+        assert "--" not in r.text  # no leftover `--` advice text in the row
+        assert "looks like a flag" not in r.text
+
+        import subprocess
+
+        from self_learn_ui.runner import resolve_self_learn_argv_prefix
+
+        prefix = resolve_self_learn_argv_prefix(sb.env)
+        full_env = dict(sb.env)
+        full_env["SELF_LEARN_HOME"] = str(sb.ledger)
+        proc = subprocess.run(
+            [*prefix, "doctor", "settings"],
+            env=full_env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert proc.returncode == 0
+        assert "ledger.actor = '-alex' (config:ledger.actor)" in proc.stdout
+
+
+# ===================================================================== #
+# MINOR-2 (code-gate review r2 2026-09-02): the row error strip used to
+# forward the CLI's stderr WHOLE -- on a malformed config.yaml, the
+# CLI's read path ALSO warns once per OTHER known setting it resolves
+# on the way to this one (two of which, on the way to resolving
+# `worker.no_notify`/`sdk.max_turns.worker`, come from settings this
+# handler's own `ledger.settings` read touches), landing above the
+# actual refusal (worst case measured: ~24 lines in one `<td>`).
+# `routes.py`'s `settings_set` now trims to the `self-learn config
+# set:` marker onward. Each of MAJOR-1's four malformed shapes (review
+# r1 2026-09-01) is proved here end-to-end -- `RealRunner`, a real
+# committed config.yaml, a real subprocess -- the row must carry
+# EXACTLY the refusal sentence and nothing above it.
+# ===================================================================== #
+
+
+def _error_strip_text(html: str) -> str:
+    m = re.search(r'<p class="error-strip settings-row-error"[^>]*>(.*)</p>', html, re.S)
+    assert m is not None, html
+    return m.group(1).strip()
+
+
+class TestSettingsSetMalformedConfigYamlErrorStripTrim:
+    async def _post(self, tmp_path: Path, config_text: str, name: str, value: str) -> str:
+        sb = make_env(tmp_path)
+        (sb.ledger / "config.yaml").write_text(config_text, encoding="utf-8")
+        commit_all(sb.ledger, "seed a malformed config.yaml")
+        runner = RealRunner(home=sb.ledger, env=sb.env)
+        app = create_app(env=load_env(sb.env), token=TOKEN, runner=runner, start_watcher=False)
+        c = TestClient(app, base_url="http://127.0.0.1:7357")
+        c.cookies.set("slu_token", TOKEN)
+        r = c.post("/settings/set", data={"name": name, "value": value}, headers={"HX-Request": "true"})
+        assert r.status_code == 200
+        return _error_strip_text(r.text)
+
+    @pytest.mark.asyncio
+    async def test_scalar_section(self, tmp_path: Path) -> None:
+        err = await self._post(tmp_path, "worker: 5\n", "worker.no_notify", "1")
+        assert err == (
+            "self-learn config set: worker: already a int, not a mapping "
+            "-- refusing to write worker.no_notify over it"
+        )
+
+    @pytest.mark.asyncio
+    async def test_unparseable(self, tmp_path: Path) -> None:
+        err = await self._post(tmp_path, "key: [1, 2\n", "worker.no_notify", "1")
+        assert err.startswith("self-learn config set: ")
+        assert "is unparseable" in err
+        assert "refusing to write over it" in err
+        assert "config.yaml ignored" not in err
+        assert "miner.enabled ignored" not in err
+        assert "miner.autokick ignored" not in err
+
+    @pytest.mark.asyncio
+    async def test_non_mapping_top_level(self, tmp_path: Path) -> None:
+        err = await self._post(tmp_path, "- a\n- b\n- c\n", "worker.no_notify", "1")
+        assert err.startswith("self-learn config set: ")
+        assert "must be a YAML mapping, got CommentedSeq" in err
+        assert "refusing to write over it" in err
+        assert "config.yaml ignored" not in err
+
+    @pytest.mark.asyncio
+    async def test_mid_walk_scalar(self, tmp_path: Path) -> None:
+        err = await self._post(tmp_path, "sdk:\n  max_turns: 5\n", "sdk.max_turns.worker", "3")
+        assert err == (
+            "self-learn config set: sdk.max_turns: already a int, not a mapping "
+            "-- refusing to write sdk.max_turns.worker over it"
+        )

@@ -503,6 +503,67 @@ def dump_editable(home: Path | str, data: CommentedMap) -> Path:
     return path
 
 
+def _walk_leaf(
+    data: CommentedMap, section: str, key: str, *, create: bool
+) -> tuple[list[tuple[dict, str]], bool]:
+    """The one walk-and-refuse behind `set_leaf`/`unset_leaf`/`present`
+    (NIT-2, code-gate review r2 2026-09-02: three near-identical
+    walkers, each with its own copy of the same "not a mapping" refusal
+    under a slightly different wording, collapsed into one walker and
+    one message).
+
+    Descends `section`, then `key`'s dotted segments, through `data`.
+    The instant an ALREADY-WALKED segment holds something other than a
+    mapping, refuses loudly with :class:`ConfigWriteError` -- the leaf
+    ITSELF is never type-checked here (overwriting, deleting, or
+    reading a scalar leaf is fine; only a scalar mid-walk, blocking
+    whatever comes after it, is the refusal).
+
+    Returns `(chain, found)`: `chain[i]` is `(dict, key-within-that-
+    dict)` for every segment walked, `section` first -- `chain[-1]` is
+    always `(the leaf's own parent mapping, the leaf's own key)` when
+    `found`, so `chain[-1][0][chain[-1][1]]` reads/writes/deletes the
+    leaf directly, and a caller pruning empty maps back upward (`unset_
+    leaf`) walks `chain[:-1]` in reverse.
+
+    `create=True` (`set_leaf`'s mode): a missing OR `None`-valued
+    segment (`section` included -- a bare `section:` key with no value
+    parses as `None`) is (re)created as a fresh empty mapping as the
+    walk passes through it, so the walk always reaches the leaf and
+    `found` is always `True`. `create=False` (`unset_leaf`/`present`'s
+    mode): a missing segment stops the walk early and `found` is
+    `False` -- genuinely absent is not an error for either of those
+    two, just "nothing (yet) to unset/read". Kept asymmetric on
+    purpose: a `None`-valued MID-WALK segment under `create=False`
+    still falls through to the mapping check below and refuses (same
+    as this function has always done) -- only the creating mode treats
+    `None` as "as good as absent"."""
+    node: dict = data
+    chain: list[tuple[dict, str]] = []
+    segments = [section, *key.split(".")]
+    path_so_far = ""
+    for segment in segments[:-1]:
+        path_so_far = segment if not path_so_far else f"{path_so_far}.{segment}"
+        if segment not in node:
+            if not create:
+                return chain, False
+            node[segment] = CommentedMap()
+        elif create and node[segment] is None:
+            node[segment] = CommentedMap()
+        chain.append((node, segment))
+        node = node[segment]
+        if not isinstance(node, dict):
+            raise ConfigWriteError(
+                f"{path_so_far}: already a {type(node).__name__}, not a mapping -- "
+                f"refusing to write {section}.{key} over it"
+            )
+    leaf = segments[-1]
+    if not create and leaf not in node:
+        return chain, False
+    chain.append((node, leaf))
+    return chain, True
+
+
 def set_leaf(home: Path | str, section: str, key: str, value: object) -> Path:
     """Write `value` at `section.key` (dotted `key` walks/creates nested
     maps, e.g. `sdk`/`max_turns.worker` -> `sdk: {max_turns: {worker:
@@ -514,28 +575,9 @@ def set_leaf(home: Path | str, section: str, key: str, value: object) -> Path:
     loud instead of fail-closed-silent because a write, unlike a read,
     has no safe default to fall back to."""
     data = load_editable(home)
-    node: object = data
-    if section not in node or node[section] is None:
-        node[section] = CommentedMap()
-    node = node[section]
-    if not isinstance(node, dict):
-        raise ConfigWriteError(
-            f"{section}: already a {type(node).__name__}, not a mapping -- "
-            f"refusing to write {section}.{key} over it"
-        )
-    segments = key.split(".")
-    path_so_far = section
-    for segment in segments[:-1]:
-        path_so_far = f"{path_so_far}.{segment}"
-        if segment not in node or node[segment] is None:
-            node[segment] = CommentedMap()
-        node = node[segment]
-        if not isinstance(node, dict):
-            raise ConfigWriteError(
-                f"{path_so_far}: already a {type(node).__name__}, not a mapping -- "
-                f"refusing to write {section}.{key} over it"
-            )
-    node[segments[-1]] = value
+    chain, _found = _walk_leaf(data, section, key, create=True)
+    parent, leaf = chain[-1]
+    parent[leaf] = value
     return dump_editable(home, data)
 
 
@@ -555,58 +597,44 @@ def unset_leaf(home: Path | str, section: str, key: str) -> bool:
     posture rather than reporting "nothing to remove" against a file
     `config set` would refuse outright."""
     data = load_editable(home)
-    if section not in data:
+    chain, found = _walk_leaf(data, section, key, create=False)
+    if not found:
         return False
-    node: object = data[section]
-    if not isinstance(node, dict):
-        raise ConfigWriteError(
-            f"{section}: already a {type(node).__name__}, not a mapping -- "
-            f"refusing to operate on {section}.{key}"
-        )
-    segments = key.split(".")
-    # `chain[i]` = (dict, key-within-that-dict) walking DOWN toward the
-    # leaf's own parent -- kept so the prune-upward pass below can climb
-    # back out by exact key, not by re-deriving a path from `key`.
-    chain: list[tuple[dict, str]] = [(data, section)]
-    path_so_far = section
-    for segment in segments[:-1]:
-        path_so_far = f"{path_so_far}.{segment}"
-        if segment not in node:
-            return False
-        chain.append((node, segment))
-        node = node[segment]
-        if not isinstance(node, dict):
-            raise ConfigWriteError(
-                f"{path_so_far}: already a {type(node).__name__}, not a mapping -- "
-                f"refusing to operate on {section}.{key}"
-            )
-    leaf = segments[-1]
-    if leaf not in node:
-        return False
-    del node[leaf]
-    current: dict = node
-    for parent, at_key in reversed(chain):
+    parent, leaf = chain[-1]
+    del parent[leaf]
+    current: dict = parent
+    for ancestor, at_key in reversed(chain[:-1]):
         if len(current) > 0:
             break
-        del parent[at_key]
-        current = parent
+        del ancestor[at_key]
+        current = ancestor
     dump_editable(home, data)
     return True
 
 
 def present(home: Path | str, section: str, key: str) -> tuple[bool, object]:
-    """A validated, NON-mutating "is `section.key` set" check --
-    `config_unset`'s existence pre-check needs this BEFORE opening the
-    ledger's commit lock. Uses the SAME round-trip WRITE-path load as
-    `set_leaf`/`unset_leaf` (never the lenient `settings_leaf`, which
-    warns-and-returns-`None` on a malformed file or a non-mapping
-    mid-path -- exactly the silence code-gate MINOR-2 found: `config
-    unset` reported "already unset" against a file `config set` refused
-    outright). `config_set`'s own idempotency check deliberately keeps
-    using `settings_leaf` instead (a malformed file there just means
-    "not idempotent, proceed to the write" -- `set_leaf`, under the
-    lock, raises this same family on the same shapes, so the refusal
-    still happens, just one step later than `unset`'s pre-lock check).
+    """A validated, NON-mutating "is `section.key` set" check -- both
+    `config_set`'s idempotency check and `config_unset`'s existence
+    pre-check need this BEFORE opening the ledger's commit lock. Uses
+    the SAME round-trip WRITE-path load as `set_leaf`/`unset_leaf`
+    (never the lenient `settings_leaf`, which warns-and-returns-`None`
+    on a malformed file or a non-mapping mid-path -- exactly the
+    silence code-gate MINOR-2 found: `config unset` reported "already
+    unset" against a file `config set` refused outright).
+
+    `config_set` used to keep its idempotency check on `settings_leaf`
+    instead, on the theory that a malformed file there just means "not
+    idempotent, proceed to the write" and `set_leaf` would raise this
+    same family one step later, under the lock. Code-gate MINOR-1
+    (review r2 2026-09-02) found the flaw in that theory: "proceed to
+    the write" means proceeding all the way to `gitops.commit_lock`,
+    and if another producer already held that lock, `set` sat out the
+    full 150s `COMMIT_LOCK_TIMEOUT` before reporting a wedged-producer
+    error that misdiagnosed a malformed file as lock contention.
+    `config_set` now uses THIS function too, for the same reason
+    `config_unset` already did: raising here happens before the lock is
+    ever requested, so the real problem surfaces fast, held lock or not.
+
     Raises :class:`ConfigWriteError` on any of the same malformed shapes
     `set_leaf`/`unset_leaf` refuse (unparseable file, non-mapping top
     level, a scalar section, a scalar mid-walk segment) -- so a caller
@@ -615,27 +643,8 @@ def present(home: Path | str, section: str, key: str) -> tuple[bool, object]:
     leaf is set, `(False, None)` when the path is well-formed but the
     leaf genuinely is not."""
     data = load_editable(home)
-    if section not in data:
+    chain, found = _walk_leaf(data, section, key, create=False)
+    if not found:
         return False, None
-    node: object = data[section]
-    if not isinstance(node, dict):
-        raise ConfigWriteError(
-            f"{section}: already a {type(node).__name__}, not a mapping -- "
-            f"refusing to operate on {section}.{key}"
-        )
-    segments = key.split(".")
-    path_so_far = section
-    for segment in segments[:-1]:
-        path_so_far = f"{path_so_far}.{segment}"
-        if segment not in node:
-            return False, None
-        node = node[segment]
-        if not isinstance(node, dict):
-            raise ConfigWriteError(
-                f"{path_so_far}: already a {type(node).__name__}, not a mapping -- "
-                f"refusing to operate on {section}.{key}"
-            )
-    leaf = segments[-1]
-    if leaf not in node:
-        return False, None
-    return True, node[leaf]
+    parent, leaf = chain[-1]
+    return True, parent[leaf]

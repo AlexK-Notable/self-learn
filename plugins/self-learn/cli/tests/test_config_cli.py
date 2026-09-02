@@ -14,13 +14,15 @@ convention `test_settings.py`'s own `doctor settings` tests already use).
 
 from __future__ import annotations
 
+import fcntl
 import json
+import time
 from pathlib import Path
 
 import pytest
 
 from self_learn import cli as cli_mod
-from self_learn import settings
+from self_learn import gitops, settings
 
 from support import git, make_home
 
@@ -328,6 +330,39 @@ class TestConfigSet:
         assert "Traceback" not in out.err
         assert _log_subjects(home) == before  # no second commit
 
+    def test_setting_the_same_float_value_twice_is_a_clean_no_op(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """MINOR-1 (review r2 2026-09-02) regression: the idempotent
+        check moved from `config.settings_leaf` (`YAML(typ="safe")`,
+        plain `float`) to `config.present` (`load_editable`, round-trip
+        mode) -- ruamel's round-trip loader wraps EVERY float scalar in
+        `ScalarFloat`, never bare `float` (confirmed empirically, not
+        just for specially-formatted values), so an unnormalized
+        `type(...) is type(...)` compare would NEVER match for a
+        float-kind setting even when the value is unchanged --
+        `ScalarFloat is not float`. That reintroduces the exact bug the
+        idempotent check exists to prevent (see the bool-only pin right
+        above this test): a byte-identical re-`set` would reach
+        `set_leaf`, `git commit` would refuse "nothing to commit", and
+        the write-already-happened wrapper would misreport a false
+        HALF-WRITTEN state (rc 7). `worker.no_notify` above is a `bool`
+        -- the one kind round-trip mode can never subclass -- so it
+        could not have caught this; this test uses a REAL float-kind
+        setting instead."""
+        home = make_home(tmp_path)
+        monkeypatch.setenv("SELF_LEARN_HOME", str(home))
+        rc1 = cli_mod.main(["config", "set", "worker.coalesce_secs", "12.5"])
+        assert rc1 == 0
+        capsys.readouterr()
+        before = _log_subjects(home)
+        rc2 = cli_mod.main(["config", "set", "worker.coalesce_secs", "12.5"])
+        out = capsys.readouterr()
+        assert rc2 == 0
+        assert "WRITE NOT COMMITTED" not in out.err
+        assert "Traceback" not in out.err
+        assert _log_subjects(home) == before  # no second commit
+
     def test_a_no_op_set_still_refuses_on_a_dirty_config_yaml(
         self, tmp_path, monkeypatch, capsys
     ):
@@ -567,6 +602,54 @@ class TestConfigSetMalformedConfigYaml:
         assert "max_turns" in err
         assert "not a mapping" in err
         assert _log_subjects(home) == before
+
+
+# ===================================================================== #
+# MINOR-1 (code-gate review r2 2026-09-02): `config set`'s idempotent
+# short-circuit used to read via the LENIENT `config.settings_leaf`
+# (silent `None` on a malformed config.yaml), so a malformed committed
+# file fell all the way through to `gitops.commit_lock` before anything
+# noticed. If another producer already held that lock, `set` sat out
+# the FULL `gitops.COMMIT_LOCK_TIMEOUT` (150s) before reporting "another
+# self-learn producer is wedged mid-commit" -- misdiagnosing a malformed
+# file as lock contention and sending the operator hunting a producer
+# that does not exist. Fixed the same way `config_unset` already was
+# (MINOR-2, review r1): the idempotent check now uses the strict,
+# pre-lock `config.present`, which raises before the lock is ever
+# requested. Proved here by genuinely holding the lock (a raw flock on
+# `gitops.commit_lock_path`, bypassing `_flock_lock` entirely so the
+# OS-level conflict is real) and timing the call.
+# ===================================================================== #
+
+
+class TestConfigSetLockMisdiagnosis:
+    def test_a_malformed_config_refuses_fast_even_with_the_lock_held(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        home = make_home(tmp_path)
+        _seed_committed_config(home, "worker: 5\n")
+        monkeypatch.setenv("SELF_LEARN_HOME", str(home))
+
+        lock_path = gitops.commit_lock_path(home)
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        fh = open(lock_path, "w")
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)  # "another self-learn producer"
+        try:
+            start = time.monotonic()
+            rc = cli_mod.main(["config", "set", "worker.no_notify", "1"])
+            elapsed = time.monotonic() - start
+        finally:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            fh.close()
+
+        err = capsys.readouterr().err
+        assert rc == 1
+        assert "not a mapping" in err
+        assert "worker" in err
+        assert "wedged" not in err  # never reached the lock-contention path at all
+        # miles under COMMIT_LOCK_TIMEOUT (150s) -- proves the lock was
+        # never even requested, not just that it timed out quickly.
+        assert elapsed < 5.0
 
 
 class TestConfigUnsetMalformedConfigYaml:

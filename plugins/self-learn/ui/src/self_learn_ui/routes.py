@@ -1370,8 +1370,21 @@ def settings_page(request: Request) -> HTMLResponse:
 async def settings_set(
     request: Request, name: str = Form(...), value: str = Form(...)
 ) -> Response:
-    """Builds `["config", "set", NAME, VALUE, "--json"]` verbatim and
-    runs it through the runner seam -- never a second mutation path.
+    """Builds `["config", "set", NAME, "--json", "--", VALUE]` and runs
+    it through the runner seam -- never a second mutation path.
+
+    NIT-1 (code-gate review r2 2026-09-02): VALUE sits after a `--`
+    separator (with `--json` placed BEFORE it, since argparse stops
+    recognizing flags once `--` appears) so a posted value beginning
+    with `-` (e.g. `ledger.actor=-alex`) can never be swallowed by
+    argparse's own "looks like a flag" matching -- the CLI's own
+    `_swallowed_config_set_value` pre-check (`cli.py`) never even fires
+    on an argv shape that already carries `--`. Before this, the CLI's
+    refusal for that shape ("put `--` before it, e.g. `self-learn
+    config set NAME -- -alex`") is terminal advice with no meaning on a
+    web form, and it was reaching this row's error strip verbatim. A
+    CLI user invoking `config set` directly still gets that hint --
+    only THIS route's own argv construction changed.
 
     Server-side tier enforcement (Y-17 pattern: posted bits only ever
     WEAKEN what runs, never strengthen it): the template renders no
@@ -1396,7 +1409,7 @@ async def settings_set(
         )
 
     runner = request.app.state.runner
-    result = await runner.run(["config", "set", name, value, "--json"])
+    result = await runner.run(["config", "set", name, "--json", "--", value])
     if result.ok and result.evidence is not None:
         row = result.evidence
     else:
@@ -1422,7 +1435,25 @@ async def settings_set(
         if "Traceback (most recent call last)" in stderr:
             row["error"] = f"self-learn config set {name} failed (internal error -- check server logs)"
         else:
-            row["error"] = stderr or f"self-learn config set {name} failed"
+            # MINOR-2 (code-gate review r2 2026-09-02): this used to
+            # forward `stderr` WHOLE -- on a malformed config.yaml the
+            # CLI's read path also warns once per OTHER known setting
+            # it resolves on the way (two of which, `miner.enabled`/
+            # `miner.autokick`, come from `_main`'s miner-watchdog
+            # tick, a path this page's user never invoked), so the row
+            # could carry ~24 lines in one `<td>` above the actual
+            # refusal. `cli.py`'s `_cmd_config` refusal branches all
+            # print starting with `self-learn config set:` (this route
+            # only ever runs `config set`) -- trim to that marker
+            # onward. No diagnostic content is lost: the refusal
+            # sentence already carries the full detail (e.g. the
+            # unparseable case's ruamel error, line and column
+            # included); only the OTHER settings' repeated warnings
+            # above it are dropped.
+            marker = "self-learn config set:"
+            idx = stderr.find(marker)
+            trimmed = stderr[idx:].strip() if idx != -1 else stderr
+            row["error"] = trimmed or f"self-learn config set {name} failed"
     return _render(request, "partials/settings_row.html", {"row": row})
 
 
