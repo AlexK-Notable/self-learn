@@ -116,7 +116,7 @@ def _git_show_text(rev: str, key: str) -> str:
 # anchor is byte-identical to what the spec measured at `fe5a012`
 # (`= 3b8e037`'s child). The landing chain rewrites this via
 # `--remeasure`, never a human (section 4.2).
-ANCHOR = "a235b51"
+ANCHOR = "2d7db74"
 
 
 # ===================================================================== #
@@ -290,22 +290,7 @@ ARMOR: dict[str, Fixture | Additive | Behaviour] = {
         nodes=80, dump_sha="16e45a867ecebd6471586640f1f52417427c235d04777e74ec4f34c14506627c"
     ),
     "test_repair.py": Behaviour(
-        nodes=85, dump_sha="f7d0670234803960b1475444399bd83481234b308646589c7e3e35cc61c56e6e",
-        # 2026-09-01, S-58 (review Blocker fix's M-3): `worker.run`'s
-        # repair-disabled log line now names the ACTUAL resolved source
-        # (`env:SELF_LEARN_REPAIR` / `config:worker.repair`) instead of
-        # a hardcoded `(SELF_LEARN_REPAIR=0)` literal that misattributed
-        # every config-driven disable -- both pre-existing pins of that
-        # literal text updated to match, not reopened.
-        edited={
-            "func:test_b9_kill_switch_disables_composition": (
-                "2026-09-01 S-58: repair-disabled log text now reads "
-                "(env:SELF_LEARN_REPAIR), not the hardcoded literal"
-            ),
-            "func:test_h4_every_new_line_in_obs1_is_produced_and_pinned": (
-                "2026-09-01 S-58: same log-text fix, second pinned occurrence"
-            ),
-        },
+        nodes=85, dump_sha="6bd9c4787b4d5a2f2887548228694edf88d76f82596ce4f4c2ed9d2598e1730d"
     ),
     "test_attrib.py": Behaviour(
         nodes=68, dump_sha="124dcc0dd69f9868195289eed661c5ad3d7d6569dc0fe41558d5fd54e8825c0d"
@@ -786,15 +771,17 @@ MEASURED: dict[str, Measured] = {
     ),
     "BEH7.dump_prefixes": Measured(
         value=(
-            "eb90005324f7", "220caae2560d", "16e45a867ece", "f7d067023480",
+            "eb90005324f7", "220caae2560d", "16e45a867ece", "6bd9c4787b4d",
             "124dcc0dd69f", "5bb83e2da3fe", "3c920c0066c5", "4fbcee5f5481",
         ),
         scope=_SCOPE_ANCHOR,
         reason=(
-            "2026-08-30 §4.5/§2.10, transcribed at ANCHOR a768696 from this "
-            "module's own STALE refusal: the first 12 characters of each "
-            "file's normalized-dump sha256, in BEHAVIOUR_KEYS order. Only "
-            "test_u_fake.py's prefix moves, with its node count."
+            "2026-09-01 §4.5/§2.10, transcribed at ANCHOR 2d7db74 from this "
+            "module's own STALE refusal (U-browserfail landing): the first 12 "
+            "characters of each file's normalized-dump sha256, in "
+            "BEHAVIOUR_KEYS order. test_repair.py's prefix moved because "
+            "U-settings (0aadcd1) edited two of its pins and is now at or "
+            "behind the anchor; previously transcribed at a768696."
         ),
         measure=_measure_dump_prefixes,
     ),
@@ -848,17 +835,14 @@ MEASURED: dict[str, Measured] = {
         measure=_measure_census_missing,
     ),
     "EXM3.census_edited": Measured(
-        value=2,
+        value=0,
         scope=_SCOPE_ANCHOR_HEAD,
         reason=(
-            "2026-09-01 S-58 (review Blocker fix's M-3): 0 -> 2, measured "
-            "by hand against the still-unchanged ANCHOR ee62df0 (not a "
-            "--remeasure run -- this branch does not advance ANCHOR, only "
-            "`land` does at merge time). The two new nodes are "
-            "test_repair.py's own `edited={}` entries: worker.run's "
-            "repair-disabled log line now names the actual resolved "
-            "source instead of a hardcoded env literal, and both "
-            "pre-existing pins of that literal text were updated to match."
+            "2026-09-01, transcribed at ANCHOR 2d7db74 from this module's own "
+            "STALE refusal (U-browserfail landing): 2 -> 0. The two "
+            "test_repair.py `edited` doors U-settings (0aadcd1, S-58 M-3) "
+            "opened became VACUOUS once that landing was at or behind the "
+            "anchor, and were dropped with this transcription."
         ),
         measure=_measure_census_edited,
     ),
